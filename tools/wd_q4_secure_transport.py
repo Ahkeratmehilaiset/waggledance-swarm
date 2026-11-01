@@ -22,6 +22,8 @@ quarantines its memory/handles and disables further calls, rather than freeing
 an in-use OVERLAPPED or claiming complete cleanup. Lead owns conformance tests.
 """
 
+import base64
+import contextlib
 import ctypes as C
 from ctypes import wintypes as W
 import hashlib
@@ -341,12 +343,25 @@ _MAX_PLAN = 4096
 _MAX_BUNDLE = 16 * 1024 * 1024
 _MAX_RUNTIME_MANIFEST = 1024 * 1024
 _PEER_CODE_LIMIT = 131072
-# Only the synthetic backend is wired. A query_public_snapshot backend needs a
-# verified runtime loader in the child (manifest-pinned code/site/model on
-# sys.path) that does not exist on this path; it is refused, never faked.
-_FIXED_BACKENDS = frozenset({"synthetic-v1"})
+# synthetic-v1 needs no runtime. public-snapshot-v1 is default-off: the parent
+# refuses it unless explicitly enabled, and the child verifies the externally
+# pinned runtime manifest with the pinned verifier before importing any
+# runtime code or site. No approved runtime tree exists on this path yet.
+_FIXED_BACKENDS = frozenset({"synthetic-v1", "public-snapshot-v1"})
 _PLAN_KEYS = frozenset({"schema", "backend", "interpreter_sha256", "peer_code_sha256",
                         "runtime_manifest_sha256", "bundle_sha256", "bundle_bytes"})
+_PUBLIC_PINS = ("expected_pointer_sha256", "policy_sha256", "roster_sha256", "expected_public_policy_sha256",
+                "expected_source_sha256", "expected_encoder_sha256")
+_PUBLIC_PLAN_KEYS = _PLAN_KEYS | frozenset(_PUBLIC_PINS) | frozenset({
+    "verifier_sha256", "runtime_root", "runtime_manifest_path", "runtime_generation", "runtime_revision",
+    "approved_tasks"})
+_PLAN_SCHEMAS = {"wd.q4-fixed-plan.v1": ("synthetic-v1", _PLAN_KEYS),
+                 "wd.q4-fixed-plan.v2": ("public-snapshot-v1", _PUBLIC_PLAN_KEYS)}
+_VERIFIER_LIMIT = 131072
+_VERIFIER_PARTS = ("sandbox", "mind", "step2", "runtime_manifest.py")
+_BUNDLE_SCHEMA = "wd.q4-fixed-snapshot-bundle.v1"
+_BUNDLE_KEYS = frozenset({"schema", "pointer", "policy", "roster", "public_policy", "active_artifacts", "history",
+                          "cells"})
 
 
 def _sha(data):
@@ -367,11 +382,26 @@ def _fixed_plan(plan_bytes):
     _check(type(plan_bytes) is bytes and 0 < len(plan_bytes) <= _MAX_PLAN)
     plan = json.loads(plan_bytes.decode("ascii", "strict"), object_pairs_hook=_unique_pairs,
                       parse_constant=lambda _: _check(False))
-    _check(type(plan) is dict and set(plan) == _PLAN_KEYS and plan["schema"] == "wd.q4-fixed-plan.v1"
-           and type(plan["backend"]) is str and plan["backend"] in _FIXED_BACKENDS)
+    _check(type(plan) is dict and type(plan.get("schema")) is str and plan["schema"] in _PLAN_SCHEMAS)
+    backend, keys = _PLAN_SCHEMAS[plan["schema"]]
+    _check(set(plan) == keys and plan["backend"] == backend and backend in _FIXED_BACKENDS)
     for name in ("interpreter_sha256", "peer_code_sha256", "runtime_manifest_sha256", "bundle_sha256"):
         _hex64(plan[name])
     _check(type(plan["bundle_bytes"]) is int and 0 < plan["bundle_bytes"] <= _MAX_BUNDLE)
+    if backend == "public-snapshot-v1":
+        for name in _PUBLIC_PINS + ("verifier_sha256",):
+            _hex64(plan[name])
+        for name in ("runtime_root", "runtime_manifest_path"):
+            value = plan[name]
+            _check(type(value) is str and 0 < len(value) <= 512 and value.isascii() and value.isprintable()
+                   and os.path.isabs(value))
+        for name in ("runtime_generation", "runtime_revision"):
+            value = plan[name]
+            _check(type(value) is str and len(value) in (40, 64) and all(c in "0123456789abcdef" for c in value))
+        tasks = plan["approved_tasks"]
+        _check(type(tasks) is list and 0 < len(tasks) <= 64
+               and all(type(t) is str and 0 < len(t) <= 128 and t.isascii() and t.isprintable() for t in tasks)
+               and tasks == sorted(set(tasks)))
     _check(_canonical(plan) == plan_bytes)
     return plan
 
@@ -438,15 +468,152 @@ def _fixed_child_verify(plan_bytes, bundle_bytes, peer_code_sha256):
     return plan
 
 
-def _fixed_child_protocol(read_frame, write_frame, peer_code_sha256):
-    """Child order: plan, challenge, READY; bundle (read limit = plan length), ACK; then query.
+def _b64(data):
+    return base64.b64encode(data).decode("ascii")
+
+
+def _unb64(text):
+    _check(type(text) is str)
+    data = base64.b64decode(text.encode("ascii"), validate=True)
+    _check(_b64(data) == text)
+    return data
+
+
+def _b64_map(mapping):
+    _check(type(mapping) is dict and len(mapping) <= 4096
+           and all(type(key) is str and type(value) is bytes for key, value in mapping.items()))
+    return {key: _b64(value) for key, value in mapping.items()}
+
+
+def _unb64_map(mapping):
+    _check(type(mapping) is dict and len(mapping) <= 4096 and all(type(key) is str for key in mapping))
+    return {key: _unb64(value) for key, value in mapping.items()}
+
+
+def fixed_snapshot_bundle(*, pointer_bytes, policy_bytes, roster_bytes, public_policy_bytes,
+                          active_artifact_bytes, history_bytes, cell_snapshots):
+    """Closed canonical container for the byte inputs of query_public_snapshot.
+
+    Packaging only: contents are validated by query_public_snapshot itself
+    against the plan's pins in the child. Bounded by the 16 MiB bundle cap.
+    """
+    try:
+        _check(all(type(value) is bytes for value in (pointer_bytes, policy_bytes, roster_bytes, public_policy_bytes)))
+        _check(type(cell_snapshots) is dict and len(cell_snapshots) <= 4096)
+        cells = {}
+        for cell_id, item in cell_snapshots.items():
+            _check(type(cell_id) is str and type(item) is dict and set(item) == {"pointer", "log", "artifacts"}
+                   and type(item["pointer"]) is bytes and type(item["log"]) is bytes)
+            cells[cell_id] = {"pointer": _b64(item["pointer"]), "log": _b64(item["log"]),
+                              "artifacts": _b64_map(item["artifacts"])}
+        raw = _canonical({"schema": _BUNDLE_SCHEMA, "pointer": _b64(pointer_bytes), "policy": _b64(policy_bytes),
+                          "roster": _b64(roster_bytes), "public_policy": _b64(public_policy_bytes),
+                          "active_artifacts": _b64_map(active_artifact_bytes), "history": _b64_map(history_bytes),
+                          "cells": cells})
+        _check(len(raw) <= _MAX_BUNDLE)
+        return raw
+    except Exception:
+        pass
+    raise _Refused() from None
+
+
+def _fixed_bundle_decode(bundle_bytes):
+    """Strict inverse of fixed_snapshot_bundle; canonical bytes and strict base64 only."""
+    try:
+        _check(type(bundle_bytes) is bytes and 0 < len(bundle_bytes) <= _MAX_BUNDLE)
+        document = json.loads(bundle_bytes.decode("ascii", "strict"), object_pairs_hook=_unique_pairs,
+                              parse_constant=lambda _: _check(False))
+        _check(type(document) is dict and set(document) == _BUNDLE_KEYS and document["schema"] == _BUNDLE_SCHEMA
+               and _canonical(document) == bundle_bytes)
+        cells = document["cells"]
+        _check(type(cells) is dict and len(cells) <= 4096)
+        decoded = {}
+        for cell_id, item in cells.items():
+            _check(type(cell_id) is str and type(item) is dict and set(item) == {"pointer", "log", "artifacts"})
+            decoded[cell_id] = {"pointer": _unb64(item["pointer"]), "log": _unb64(item["log"]),
+                                "artifacts": _unb64_map(item["artifacts"])}
+        return {"pointer_bytes": _unb64(document["pointer"]), "policy_bytes": _unb64(document["policy"]),
+                "roster_bytes": _unb64(document["roster"]), "public_policy_bytes": _unb64(document["public_policy"]),
+                "active_artifact_bytes": _unb64_map(document["active_artifacts"]),
+                "history_bytes": _unb64_map(document["history"]), "cell_snapshots": decoded}
+    except Exception:
+        pass
+    raise _Refused() from None
+
+
+def _fixed_child_backend(plan, peer_path):
+    """Child phase 1 backend preparation, run BEFORE READY; returns the answer function.
+
+    public-snapshot-v1: requires -I -S -B and no preloaded sandbox package; reads
+    the verifier beside this repo's tools directory ONCE, checks it against the
+    plan pin and executes those exact bytes; runs verify_runtime on the plan's
+    root and manifest (pin, generation, revision); only then puts the verified
+    assets/code first and site last on sys.path and imports the snapshot module,
+    which must resolve inside the verified tree. Limits: files can still change
+    between verification and import (same-user TOCTOU); native DLL search and
+    the interpreter's own stdlib/DLLs are not verified; READY from this child
+    is self-reported consistency, never independent authentication.
+    """
+    if plan["backend"] == "synthetic-v1":
+        return _fixed_child_answer
+    _check(plan["backend"] == "public-snapshot-v1" and type(peer_path) is str)
+    _check(sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode)
+    _check(not any(name == "sandbox" or name.startswith("sandbox.") for name in sys.modules))
+    verifier = Path(peer_path).absolute().parents[1].joinpath(*_VERIFIER_PARTS)
+    with open(verifier, "rb") as stream:
+        source = stream.read(_VERIFIER_LIMIT + 1)
+    _check(len(source) <= _VERIFIER_LIMIT and hmac.compare_digest(_sha(source), plan["verifier_sha256"]))
+    scope = {"__name__": "_wd_fixed_runtime_manifest"}
+    exec(compile(source, "<wd-runtime-verifier>", "exec"), scope)
+    root = Path(plan["runtime_root"])
+    scope["verify_runtime"](root, Path(plan["runtime_manifest_path"]), plan["runtime_manifest_sha256"],
+                            expected_generation=plan["runtime_generation"], expected_revision=plan["runtime_revision"])
+    code, site, model = root / "assets" / "code", root / "site", root / "model"
+    entry = code.joinpath("sandbox", "mind", "step2", "shared_index_checkpoint.py")
+    _check(code.is_dir() and site.is_dir() and model.is_dir() and entry.is_file())
+    sys.path.insert(0, str(code))
+    sys.path.append(str(site))
+    import importlib
+    module = importlib.import_module("sandbox.mind.step2.shared_index_checkpoint")
+    _check(os.path.normcase(os.path.abspath(module.__file__)) == os.path.normcase(os.path.abspath(entry)))
+    query_public_snapshot = module.query_public_snapshot
+    _check(callable(query_public_snapshot))
+
+    def answer(plan_, plan_bytes, bundle_bytes, query):
+        _check(plan_ is plan and type(query) is bytes and 0 < len(query) <= _MAX_INPUT)
+        result = query_public_snapshot(**_fixed_bundle_decode(bundle_bytes),
+                                       **{name: plan[name] for name in _PUBLIC_PINS},
+                                       approved_tasks=frozenset(plan["approved_tasks"]), query_bytes=query,
+                                       model_dir=str(model), expected_runtime_revision=plan["runtime_revision"],
+                                       enabled=True)
+        _check(type(result) is dict and result.get("status") in ("ANSWER", "ABSTAIN", "DEGRADED")
+               and type(result.get("results")) is list)
+        return _canonical({"schema": "wd.q4-fixed-public-answer.v1", "status": result["status"],
+                           "results": result["results"], "plan_sha256": _sha(plan_bytes),
+                           "bundle_sha256": _sha(bundle_bytes), "backend": plan["backend"],
+                           "source_authentication": "UNKNOWN", "freshness": "UNKNOWN",
+                           "runtime": "MANIFEST_VERIFIED_BEFORE_IMPORT_NOT_ISOLATED"})
+    return answer
+
+
+def _fixed_child_protocol(read_frame, write_frame, peer_code_sha256, peer_path=None):
+    """Child order: plan, backend preparation, challenge, READY; bundle (read limit = plan length), ACK; query.
 
     No bundle byte is read before READY is written, and the query is not read
-    before the bundle ACK. READY and ACK are derived from verified bytes but are
+    before the bundle ACK. For public-snapshot-v1 the runtime is verified and
+    imported before READY. READY and ACK are derived from verified bytes but are
     consistency only, not runtime or peer authentication.
     """
     plan_bytes = read_frame(_MAX_PLAN)
     plan = _fixed_child_plan(plan_bytes, peer_code_sha256)
+    backend = None
+    try:
+        backend = _fixed_child_backend(plan, peer_path)
+    except Exception:
+        pass
+    if backend is None:
+        # Fixed refusal: no verifier, runtime or import detail leaves the child.
+        raise _Refused() from None
     challenge = json.loads(read_frame(4096).decode("ascii", "strict"), object_pairs_hook=_unique_pairs)
     _check(type(challenge) is dict and set(challenge) == {"schema", "nonce"}
            and challenge["schema"] == "wd.q4-fixed-challenge.v1" and type(challenge["nonce"]) is str
@@ -458,7 +625,7 @@ def _fixed_child_protocol(read_frame, write_frame, peer_code_sha256):
     _fixed_child_bundle(plan, bundle_bytes)
     write_frame(_fixed_ack(challenge["nonce"], _sha(bundle_bytes)))
     query = read_frame(_MAX_INPUT)
-    return _fixed_child_answer(plan, plan_bytes, bundle_bytes, query)
+    return backend(plan, plan_bytes, bundle_bytes, query)
 
 
 def _fixed_child_answer(plan, plan_bytes, bundle_bytes, query):
@@ -682,8 +849,8 @@ def _run_bounded_impl(*, executable, arguments, cwd, stdin_bytes, timeout_second
 
 def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
                    expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
-                   timeout_seconds, max_output_bytes):
-    """Fixed peer of THIS file over the bounded pipe; synthetic backend only.
+                   timeout_seconds, max_output_bytes, public_snapshot_enabled=False):
+    """Fixed peer of THIS file over the bounded pipe; synthetic by default.
 
     Every caller pin is checked before spawning: the plan digest, the plan's
     interpreter and peer-code pins against the caller's interpreter pin and this
@@ -696,10 +863,20 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
     plan length), and a closed bundle ACK naming the parent-computed bundle
     digest before the query is sent. READY and ACK are consistency,
     not authentication: a peer echoing pins from the plan proves nothing.
-    The runtime pin is a byte pin on the caller's manifest only; the runtime
-    tree (stdlib, DLLs, site, model) is NOT verified on this path, and the only
-    wired backend is synthetic: the real backend is unavailable, so no
-    query_public_snapshot result is produced.
+    For synthetic-v1 the runtime pin is a byte pin on the caller's manifest
+    only; the runtime tree (stdlib, DLLs, site, model) is NOT verified.
+    public-snapshot-v1 (plan v2) is default-off: refused before spawning unless
+    public_snapshot_enabled is True; the parent also checks and leases the
+    pinned verifier file. Before READY the child executes that verifier from
+    the exact pinned bytes, runs verify_runtime on the plan's root, manifest,
+    generation and revision, and only then imports the snapshot module from the
+    verified tree; after the ACK and the query it calls query_public_snapshot
+    with the decoded bundle and the plan's pins. Limits: verifier/runtime
+    TOCTOU between verification and import (same-user writers), native DLL
+    search and the interpreter's stdlib/DLLs are NOT verified, no sandbox or
+    ACL proof; READY is self-reported and never independent authentication.
+    No approved runtime tree or anchored pin exists yet, so in practice the
+    real backend is unavailable; only a synthetic runtime exercises this path.
     Source authentication and freshness are UNKNOWN. Same limits as run_bounded.
     """
     cleanup_type = cleanup_lease = failure = None
@@ -707,7 +884,7 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
         from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown as cleanup_type
         return _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
                                     expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
-                                    timeout_seconds, max_output_bytes)
+                                    timeout_seconds, max_output_bytes, public_snapshot_enabled)
     except BaseException as exc:
         if cleanup_type is not None and isinstance(exc, cleanup_type):
             cleanup_lease = exc.lease
@@ -721,6 +898,7 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
             failure = "refused"
     del executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes, expected_plan_sha256
     del bundle_bytes, runtime_manifest_bytes, query_bytes, cwd, timeout_seconds, max_output_bytes
+    del public_snapshot_enabled
     if cleanup_lease is not None:
         raise cleanup_type(cleanup_lease) from None
     if failure == "timeout":
@@ -734,10 +912,12 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
 
 def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
                          expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
-                         timeout_seconds, max_output_bytes):
+                         timeout_seconds, max_output_bytes, public_snapshot_enabled=False):
     _validate(query_bytes, timeout_seconds, max_output_bytes)
-    _check(len(query_bytes) > 0)
+    _check(len(query_bytes) > 0 and type(public_snapshot_enabled) is bool)
     plan = _fixed_plan(plan_bytes)
+    public = plan["backend"] == "public-snapshot-v1"
+    _check(public_snapshot_enabled or not public)
     _check(hmac.compare_digest(_sha(plan_bytes), _hex64(expected_plan_sha256)))
     _check(hmac.compare_digest(plan["interpreter_sha256"], _hex64(expected_interpreter_sha256)))
     _check(type(executable) is str and
@@ -750,13 +930,20 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
            and hmac.compare_digest(_sha(runtime_manifest_bytes), plan["runtime_manifest_sha256"]))
     _check(type(bundle_bytes) is bytes and len(bundle_bytes) == plan["bundle_bytes"]
            and hmac.compare_digest(_sha(bundle_bytes), plan["bundle_sha256"]))
+    verifier = str(Path(path).parents[1].joinpath(*_VERIFIER_PARTS))
+    if public:
+        with open(verifier, "rb") as stream:
+            source = stream.read(_VERIFIER_LIMIT + 1)
+        _check(len(source) <= _VERIFIER_LIMIT and hmac.compare_digest(_sha(source), plan["verifier_sha256"]))
     control = {"schema": "wd.q4-fixed-control.v1", "nonce": os.urandom(16).hex(), "binding_sha256": _sha(plan_bytes)}
     command = [executable, "-I", "-S", "-B", "-c", _FIXED_BOOTSTRAP, path, plan["peer_code_sha256"]]
     from tools.wd_q4_fixed_parent_attestation import attest_file
     with attest_file(executable, expected_interpreter_sha256, max_bytes=interpreter_max_bytes, enabled=True):
         with attest_file(path, plan["peer_code_sha256"], max_bytes=_PEER_CODE_LIMIT, enabled=True):
-            return _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds, max_output_bytes,
-                        fixed=(control, plan_bytes, bundle_bytes))
+            with (attest_file(verifier, plan["verifier_sha256"], max_bytes=_VERIFIER_LIMIT, enabled=True)
+                  if public else contextlib.nullcontext()):
+                return _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds, max_output_bytes,
+                            fixed=(control, plan_bytes, bundle_bytes))
 
 
 def run_synthetic_echo(*, powershell, bootstrap_path, expected_bootstrap_sha256,
@@ -911,7 +1098,7 @@ def _fixed_child_main(peer_code_sha256, name, parent_pid, parent_created):
         _peer(k, pipe, pid, created, client=False)
         raw = _fixed_child_protocol(lambda limit: _sync_frame(k, pipe, limit),
                                     lambda data: _sync_write(k, pipe, struct.pack(">I", len(data)) + data),
-                                    peer_code_sha256)
+                                    peer_code_sha256, peer_path=__file__)
         _check(len(raw) <= _MAX_OUTPUT)
         _sync_write(k, pipe, b"\1" + struct.pack(">I", len(raw)) + raw + struct.pack(">i", 0) + b"END!")
     except BaseException:

@@ -334,3 +334,198 @@ def test_fixed_peer_documents_limits():
     for phrase in ("not authentication", "runtime", "NOT verified", "synthetic", "before spawning",
                    "before any bundle", "bundle ACK", "real backend is unavailable"):
         assert phrase in doc
+
+
+# --- v4: default-off public-snapshot backend behind an externally pinned runtime manifest ---------------------
+# Synthetic runtime tree only: its snapshot module is a STUB that stands in for query_public_snapshot, so these
+# tests prove the loader order and the wiring, never a real model, index or Q4 result.
+
+VERIFIER = PEER.parents[1] / "sandbox" / "mind" / "step2" / "runtime_manifest.py"
+GENERATION, REVISION = "a" * 40, "b" * 40
+STUB = '''import hashlib
+import os
+
+
+def query_public_snapshot(*, pointer_bytes, expected_pointer_sha256, approved_tasks, policy_bytes, policy_sha256,
+                          roster_bytes, roster_sha256, expected_public_policy_sha256, active_artifact_bytes,
+                          cell_snapshots, history_bytes, public_policy_bytes, expected_source_sha256,
+                          expected_encoder_sha256, query_bytes, model_dir, expected_runtime_revision, enabled):
+    sha = lambda data: hashlib.sha256(data).hexdigest()
+    bound = (enabled is True and sha(pointer_bytes) == expected_pointer_sha256 and sha(policy_bytes) == policy_sha256
+             and sha(roster_bytes) == roster_sha256 and sha(public_policy_bytes) == expected_public_policy_sha256
+             and type(query_bytes) is bytes and len(query_bytes) > 0 and type(approved_tasks) is frozenset)
+    return {"status": "ANSWER" if bound else "ABSTAIN",
+            "results": [{"stub": "synthetic-runtime", "tasks": sorted(approved_tasks),
+                         "artifacts": sorted(active_artifact_bytes), "cells": sorted(cell_snapshots),
+                         "history": sorted(history_bytes), "model_dir": os.path.basename(model_dir),
+                         "revision": expected_runtime_revision, "source": expected_source_sha256,
+                         "encoder": expected_encoder_sha256}],
+            "source_authentication": "UNKNOWN", "freshness": "UNKNOWN"}
+'''
+PARTS = {"pointer_bytes": b"synthetic-pointer", "policy_bytes": b"synthetic-policy",
+         "roster_bytes": b"synthetic-roster", "public_policy_bytes": b"synthetic-public-policy",
+         "active_artifact_bytes": {"descriptor.json": b"d", "memory.json": b"m"},
+         "history_bytes": {"q4-pointer-" + "1" * 64 + ".json": b"h"},
+         "cell_snapshots": {"cell-a": {"pointer": b"p", "log": b"l", "artifacts": {"index": b"\x00\xff"}}}}
+
+
+def synthetic_runtime(base, stub=STUB):
+    from sandbox.mind.step2 import runtime_builder
+    root = base / "runtime"
+    step2 = root / "assets" / "code" / "sandbox" / "mind" / "step2"
+    step2.mkdir(parents=True)
+    for package in (step2.parents[1], step2.parent, step2):
+        (package / "__init__.py").write_bytes(b"")
+    (step2 / "shared_index_checkpoint.py").write_bytes(stub.encode("ascii"))
+    (root / "site").mkdir()
+    (root / "site" / "synthetic_site.txt").write_bytes(b"site")
+    (root / "model").mkdir()
+    (root / "model" / "synthetic_model.bin").write_bytes(b"not a model")
+    manifest = base / "runtime-manifest.json"
+    result = runtime_builder.build_runtime_manifest(root, manifest, generation=GENERATION, revision=REVISION)
+    return root, manifest, result["manifest_sha256"]
+
+
+def public_plan(root, manifest, manifest_sha, bundle, **changes):
+    value = {"schema": "wd.q4-fixed-plan.v2", "backend": "public-snapshot-v1",
+             "interpreter_sha256": interpreter_sha(), "peer_code_sha256": sha(PEER.read_bytes()),
+             "runtime_manifest_sha256": manifest_sha, "bundle_sha256": sha(bundle), "bundle_bytes": len(bundle),
+             "verifier_sha256": sha(VERIFIER.read_bytes()), "runtime_root": str(root),
+             "runtime_manifest_path": str(manifest), "runtime_generation": GENERATION, "runtime_revision": REVISION,
+             "approved_tasks": ["task-a", "task-b"], "expected_pointer_sha256": sha(PARTS["pointer_bytes"]),
+             "policy_sha256": sha(PARTS["policy_bytes"]), "roster_sha256": sha(PARTS["roster_bytes"]),
+             "expected_public_policy_sha256": sha(PARTS["public_policy_bytes"]),
+             "expected_source_sha256": "5" * 64, "expected_encoder_sha256": "6" * 64}
+    value.update(changes)
+    return canonical(value)
+
+
+def public_call(tmp_path, enabled=True, **changes):
+    root, manifest, manifest_sha = changes.pop("runtime", None) or synthetic_runtime(tmp_path)
+    bundle = changes.pop("bundle", None) or transport.fixed_snapshot_bundle(**PARTS)
+    plan_bytes = changes.pop("plan_bytes", None) or public_plan(root, manifest, manifest_sha, bundle)
+    kwargs = dict(executable=sys.executable, expected_interpreter_sha256=interpreter_sha(),
+                  interpreter_max_bytes=64 * 1024 * 1024, plan_bytes=plan_bytes, expected_plan_sha256=sha(plan_bytes),
+                  bundle_bytes=bundle, runtime_manifest_bytes=manifest.read_bytes(), query_bytes=QUERY,
+                  cwd=str(tmp_path), timeout_seconds=60, max_output_bytes=8192, public_snapshot_enabled=enabled)
+    kwargs.update(changes)
+    return transport.run_fixed_peer(**kwargs)
+
+
+def test_snapshot_bundle_codec_is_closed_and_roundtrips():
+    raw = transport.fixed_snapshot_bundle(**PARTS)
+    assert transport._fixed_bundle_decode(raw) == PARTS
+    document = json.loads(raw)
+    assert document["schema"] == "wd.q4-fixed-snapshot-bundle.v1" and canonical(document) == raw
+    for broken in (canonical({**document, "extra": "eA=="}), raw.replace(b'"schema"', b'"schemb"'),
+                   canonical({**document, "pointer": "not base64!"}), canonical({**document, "pointer": "eA"}),
+                   json.dumps(document, indent=1).encode(), b"[]"):
+        with pytest.raises(transport._Refused):
+            transport._fixed_bundle_decode(broken)
+
+
+def test_public_plan_is_closed_and_pins_absolute_runtime_paths(tmp_path):
+    root, manifest = tmp_path / "rt", tmp_path / "m.json"
+    good = public_plan(root, manifest, "7" * 64, b"x")
+    assert transport._fixed_plan(good)["backend"] == "public-snapshot-v1"
+    document = json.loads(good)
+    for change in ({"runtime_root": "relative/rt"}, {"runtime_manifest_path": "m.json"},
+                   {"runtime_generation": "A" * 40}, {"runtime_revision": "b" * 39}, {"verifier_sha256": "x"},
+                   {"approved_tasks": []}, {"approved_tasks": ["b", "a"]}, {"approved_tasks": ["a", "a"]},
+                   {"schema": "wd.q4-fixed-plan.v1"}, {"backend": "synthetic-v1"}, {"extra": 1}):
+        with pytest.raises(transport._Refused):
+            transport._fixed_plan(canonical({**document, **change}))
+    with pytest.raises(transport._Refused):
+        transport._fixed_plan(canonical({k: v for k, v in document.items() if k != "expected_encoder_sha256"}))
+    with pytest.raises(transport._Refused):  # the synthetic plan schema cannot name the public backend
+        transport._fixed_plan(plan(backend="public-snapshot-v1"))
+
+
+@pytest.mark.parametrize("change", ["disabled", "verifier_pin", "manifest_bytes", "not_bool"])
+def test_public_backend_is_default_off_and_pinned_before_any_spawn(tmp_path, monkeypatch, change):
+    monkeypatch.setattr(transport, "_run", lambda *a, **kw: pytest.fail("spawned before public pins were checked"))
+    runtime = synthetic_runtime(tmp_path)
+    bundle = transport.fixed_snapshot_bundle(**PARTS)
+    kwargs = {"runtime": runtime, "bundle": bundle}
+    if change == "disabled":
+        kwargs["enabled"] = False
+    elif change == "not_bool":
+        kwargs["enabled"] = 1
+    elif change == "verifier_pin":
+        kwargs["plan_bytes"] = public_plan(*runtime, bundle, verifier_sha256="8" * 64)
+    else:
+        kwargs["runtime_manifest_bytes"] = runtime[1].read_bytes() + b" "
+    with pytest.raises(transport._Refused):
+        public_call(tmp_path, **kwargs)
+
+
+def test_public_flag_must_be_a_bool_even_for_the_synthetic_backend(tmp_path, monkeypatch):
+    # The flag enables only the public backend; it never changes the synthetic plan path.
+    monkeypatch.setattr(transport, "_run", lambda *a, **kw: pytest.fail("spawned"))
+    with pytest.raises(transport._Refused):
+        call(tmp_path, public_snapshot_enabled="yes")
+
+
+def test_child_verifies_and_imports_the_runtime_before_ready_or_any_bundle(tmp_path, monkeypatch):
+    root, manifest, manifest_sha = synthetic_runtime(tmp_path)
+    bundle = transport.fixed_snapshot_bundle(**PARTS)
+    plan_bytes = public_plan(root, manifest, manifest_sha, bundle)
+    order = []
+    def prepare(plan, peer_path):
+        order.append(("prepare", plan["backend"], peer_path))
+        return lambda plan_, plan_bytes_, bundle_, query_: transport._canonical({"status": "SYNTHETIC-PREPARED"})
+    monkeypatch.setattr(transport, "_fixed_child_backend", prepare)
+    parent = _ScriptedParent([plan_bytes, canonical({"schema": "wd.q4-fixed-challenge.v1", "nonce": "c" * 32}),
+                              bundle, QUERY])
+    original_write = parent.write_frame
+    parent.write_frame = lambda data: (order.append(("write", json.loads(data)["status"])), original_write(data))
+    raw = transport._fixed_child_protocol(parent.read_frame, parent.write_frame, sha(PEER.read_bytes()),
+                                          peer_path=str(PEER))
+    assert raw == transport._canonical({"status": "SYNTHETIC-PREPARED"})
+    assert order == [("prepare", "public-snapshot-v1", str(PEER)), ("write", "READY"), ("write", "BUNDLE_VERIFIED")]
+
+
+def test_child_failed_runtime_preparation_writes_no_ready_and_reads_no_bundle(tmp_path, monkeypatch):
+    root, manifest, manifest_sha = synthetic_runtime(tmp_path)
+    bundle = transport.fixed_snapshot_bundle(**PARTS)
+    def prepare(plan, peer_path):
+        raise ValueError("runtime_verification_failed")
+    monkeypatch.setattr(transport, "_fixed_child_backend", prepare)
+    parent = _ScriptedParent([public_plan(root, manifest, manifest_sha, bundle)])
+    with pytest.raises(transport._Refused):
+        transport._fixed_child_protocol(parent.read_frame, parent.write_frame, sha(PEER.read_bytes()),
+                                        peer_path=str(PEER))
+    assert parent.events == [("read", transport._MAX_PLAN)]
+
+
+@windows
+def test_public_backend_roundtrip_over_a_synthetic_verified_runtime(tmp_path):
+    output, code = public_call(tmp_path)
+    answer = json.loads(output)
+    assert code == 0
+    assert answer["schema"] == "wd.q4-fixed-public-answer.v1" and answer["status"] == "ANSWER"
+    assert answer["source_authentication"] == "UNKNOWN" and answer["freshness"] == "UNKNOWN"
+    assert answer["runtime"] == "MANIFEST_VERIFIED_BEFORE_IMPORT_NOT_ISOLATED"
+    assert answer["results"] == [{"stub": "synthetic-runtime", "tasks": ["task-a", "task-b"],
+                                  "artifacts": ["descriptor.json", "memory.json"], "cells": ["cell-a"],
+                                  "history": ["q4-pointer-" + "1" * 64 + ".json"], "model_dir": "model",
+                                  "revision": REVISION, "source": "5" * 64, "encoder": "6" * 64}]
+    assert sha(QUERY) not in output.decode("ascii") and QUERY.decode() not in output.decode("ascii")
+
+
+@windows
+@pytest.mark.parametrize("tamper", ["changed_stub", "extra_file", "manifest_generation"])
+def test_public_backend_refuses_a_runtime_that_does_not_match_the_pinned_manifest(tmp_path, tamper):
+    root, manifest, manifest_sha = synthetic_runtime(tmp_path)
+    runtime = (root, manifest, manifest_sha)
+    bundle = transport.fixed_snapshot_bundle(**PARTS)
+    changes = {"runtime": runtime, "bundle": bundle}
+    stub = root / "assets" / "code" / "sandbox" / "mind" / "step2" / "shared_index_checkpoint.py"
+    if tamper == "changed_stub":
+        stub.write_bytes(stub.read_bytes().replace(b'"ANSWER" if bound', b'"ANSWER" if True'))
+    elif tamper == "extra_file":
+        (root / "site" / "planted.py").write_bytes(b"raise SystemExit(0)")
+    else:
+        changes["plan_bytes"] = public_plan(root, manifest, manifest_sha, bundle, runtime_generation="c" * 40)
+    with pytest.raises(transport._Refused):
+        public_call(tmp_path, **changes)

@@ -623,15 +623,15 @@ def test_bound_model_dir_reaches_identity_unchanged_and_as_the_pinned_string(tmp
     m = module()
     seen = {}
 
-    def identity(*, model_dir, revision):
-        seen["model_dir"], seen["revision"] = model_dir, revision
+    def identity(*, model_dir, revision, max_bytes):  # v5: the bounded read budget travels with the call
+        seen["model_dir"], seen["revision"], seen["max_bytes"] = model_dir, revision, max_bytes
         raise OSError(SENTINEL)
     monkeypatch.setattr(m.encode_mod, "model_identity", identity)
     monkeypatch.setattr(m.encode_mod, "E5", lambda **k: pytest.fail("backend loaded after a failed identity"))
     config, pins, start = synthetic_config(tmp_path)
     inside = model_tree(tmp_path / "trusted" / "model")  # a wider trusted root holding the model directory
     refused("encoder_refused", lambda: run(m, plan(inside, pins), config, start, *roots(tmp_path), trusted=tmp_path / "trusted"))
-    assert seen == {"model_dir": str(inside), "revision": REVISION}
+    assert seen == {"model_dir": str(inside), "revision": REVISION, "max_bytes": m.ASSET_BYTES_LIMIT}
     # the trusted root may equal the model directory itself
     seen.clear()
     refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path), trusted=model_dir))
@@ -1024,6 +1024,95 @@ def test_asset_read_is_bounded_even_when_the_file_grows_after_the_size_check(tmp
 
 
 # ---------------------------------------------------------------------------------------------------------------
+# v5: the identity read is bounded too; the adapter build and the builder import sit inside the fixed boundaries
+# ---------------------------------------------------------------------------------------------------------------
+
+
+def test_identity_read_receives_the_asset_budget(tmp_path, model_dir, monkeypatch):
+    m = module()
+    seen = {}
+
+    def identity(*, model_dir, revision, **kw):
+        seen.update(kw)
+        raise OSError(SENTINEL)
+    monkeypatch.setattr(m.encode_mod, "model_identity", identity)
+    monkeypatch.setattr(m.encode_mod, "E5", lambda **k: pytest.fail("backend loaded after a failed identity"))
+    config, pins, start = synthetic_config(tmp_path)
+    refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path)))
+    assert seen == {"max_bytes": m.ASSET_BYTES_LIMIT}
+
+
+def test_identity_read_is_bounded_even_after_the_manifest_passed(tmp_path, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    trusted = tmp_path / "trusted"
+    inside = model_tree(trusted / "model")
+    pinned = assets_of(inside)
+    (inside / "model.safetensors").write_bytes(b"x" * 4096)  # grew after the manifest was checked
+    monkeypatch.setattr(m, "ASSET_BYTES_LIMIT", 64)
+    monkeypatch.setattr(m, "_assets_bound", lambda *a, **k: True)  # the manifest phase saw the old file
+    monkeypatch.setattr(m.encode_mod, "E5", lambda **k: pytest.fail("backend loaded after an oversize identity read"))
+    read = []
+    real_open = open
+
+    class Counting:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def read(self, size=-1):
+            data = self._handle.read(size)
+            read.append(len(data))
+            return data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._handle.close()
+    import builtins
+    monkeypatch.setattr(builtins, "open", lambda *a, **k: Counting(real_open(*a, **k)))
+    config, _, start = synthetic_config(tmp_path)
+    refused("encoder_refused", lambda: run(m, plan(inside, pins, assets=pinned), config, start, *roots(tmp_path), trusted=trusted))
+    assert 0 < sum(read) <= m.ASSET_BYTES_LIMIT + 1
+
+
+def test_adapter_build_runs_inside_the_restoration_scope(tmp_path, model_dir, backend, monkeypatch):
+    pytest.importorskip("faiss", reason="the builder module needs FAISS")
+    from sandbox.mind.step2 import shared_index_builder as builder
+    m = module()
+    for name in offline_names():
+        os.environ.pop(name, None)
+    before = dict(os.environ)
+
+    def mutating_adapter(model):
+        os.environ["HF_HUB_OFFLINE"] = "mutated-by-adapter-build"  # lazy access while building the adapter
+        os.environ["SYNTHETIC_ADAPTER_VAR"] = "added"
+        return lambda texts: np.zeros((len(texts), encode_mod.DIM), dtype="<f4")
+    monkeypatch.setattr(builder, "e5_passage_encoder", mutating_adapter)
+    monkeypatch.setattr(m.producer, "publish_public_prefix", lambda **k: {
+        "status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
+        "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"})
+    config, pins, start = synthetic_config(tmp_path)
+    assert run(m, plan(model_dir, pins), config, start, *roots(tmp_path))["status"] == "PUBLISHED_GENESIS"
+    assert dict(os.environ) == before
+
+
+def test_missing_builder_or_faiss_refuses_fixed_without_traceback(tmp_path, model_dir, backend, monkeypatch):
+    m = module()
+    config, pins, start = synthetic_config(tmp_path)
+    package = importlib.import_module("sandbox.mind.step2")
+    # the package attribute is the first thing ``from package import name`` consults; drop it so the import runs
+    monkeypatch.delattr(package, "shared_index_builder", raising=False)
+    monkeypatch.setitem(sys.modules, "sandbox.mind.step2.shared_index_builder", None)  # import raises ImportError
+    refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path)))
+    assert not backend.calls  # the backend never loaded behind a missing builder
+    monkeypatch.delitem(sys.modules, "sandbox.mind.step2.shared_index_builder", raising=False)
+    monkeypatch.setitem(sys.modules, "core.faiss_store", None)  # a broken FAISS layer under a fresh builder import
+    refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path)))
+    assert not backend.calls
+
+
+# ---------------------------------------------------------------------------------------------------------------
 # real strict-prefix chain through the child (synthetic bridge log, fake backend, FAISS)
 # ---------------------------------------------------------------------------------------------------------------
 
@@ -1104,5 +1193,5 @@ def test_module_is_fixed_path_only():
     doc = module().__doc__ or ""
     for word in ("trusted_model_root", "UNC", "reparse", "preflight", "CAS", "locked", "OS isolation", "hard link",
                  "tokenizer", "manifest", "verify-then-use", "self-derive", "putenv", "concurrent", "sandbox",
-                 "inference"):
+                 "inference", "max_bytes", "FAISS", "numpy"):
         assert word in doc, word

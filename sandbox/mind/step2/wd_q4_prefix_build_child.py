@@ -40,10 +40,24 @@ of EVERY regular file under ``model_dir``, the weights file included; after the 
 derivation the child lists the plain tree, requires the file set to equal the manifest exactly (an unlisted extra
 file or a missing listed file refuses) and streams every file through sha256 against its pin
 (``asset_refused``). The per-file byte budget binds the bytes actually read, not only the size seen before the
-open: a file that grew in between is refused after at most ``ASSET_BYTES_LIMIT + 1`` bytes, never read to EOF. The child never self-derives a pin: every digest it compares against comes from the caller's
-plan. What remains open and is reported, not claimed: the verify-then-use window (the backend re-reads the files by
-path after they were hashed; only an immutable root closes it), the genuineness of the pinned revision (the caller's
+open: a file that grew in between is refused after at most ``ASSET_BYTES_LIMIT + 1`` bytes, never read to EOF. The
+identity reread (v5 finding) is bounded the same way: ``encode.model_identity`` is called with
+``max_bytes=ASSET_BYTES_LIMIT`` (an optional keyword; ``None`` keeps the historical unbounded read for the other
+consumers), so weights grown or swapped between the manifest pass and the identity pass are refused
+(``encoder_refused``) without an unbounded read. The child never self-derives a pin: every digest it compares
+against comes from the caller's plan. What remains open and is reported, not claimed: the verify-then-use window
+(the backend re-reads the files by path after they were hashed, and that backend reread through safetensors is not
+bounded by this module; only an immutable root closes it), the genuineness of the pinned revision (the caller's
 manifest is trust, not proof) and the backend running in this process.
+
+Fixed-refusal boundary of the encoder step (v5 supplement). The builder module ``shared_index_builder`` imports
+numpy and the FAISS layer at module level; the child imports it lazily inside the encoder step's exception boundary,
+so a missing or broken builder, numpy or FAISS import is the fixed ``encoder_refused`` with no chained cause and no
+traceback leaking a message. Building the passage adapter over the loaded model happens inside the same environment
+restoration scope as the load, since that lazy access may read or alter the environment. Stated separately and not
+closed here: this module's own module-level import chain (``encode`` imports numpy at module level, the producer
+modules follow) means a broken numpy fails at import time, before the default-off entrypoint is ever reached; that
+failure surfaces to the importing caller, not as a fixed refusal.
 
 Backend environment (v3 finding 1, v4 inspection). ``encode.E5`` writes the offline cache variables (``CACHE_ENV``,
 ``HF_HUB_OFFLINE``, ``TRANSFORMERS_OFFLINE``) into the process environment and does not restore them. The child
@@ -453,7 +467,9 @@ def _restored_environment():
 def _identity(encoder):
     """The three-key encoder identity derived from the pinned model directory; None when it cannot be bound."""
     try:
-        derived = encode_mod.model_identity(model_dir=encoder["model_dir"], revision=encoder["revision"])
+        # the identity reread is bounded like the manifest pass: a file grown since then refuses, never read to EOF
+        derived = encode_mod.model_identity(model_dir=encoder["model_dir"], revision=encoder["revision"],
+                                            max_bytes=ASSET_BYTES_LIMIT)
     except (OSError, ValueError, TypeError, KeyError):
         return None
     if (type(derived) is not dict or derived.get("model") != ENCODER_MODEL
@@ -464,14 +480,16 @@ def _identity(encoder):
 
 
 def _encoder(encoder, identity):
-    """The fixed E5 passage encoder over the pinned directory; None on any load failure."""
-    from sandbox.mind.step2 import shared_index_builder as builder
+    """The fixed E5 passage encoder over the pinned directory; None on any load or builder-import failure."""
     try:
+        # the builder transitively imports numpy and FAISS: a missing or broken layer is the same fixed refusal
+        from sandbox.mind.step2 import shared_index_builder as builder
         if builder.encoder_identity(identity) != identity:
             return None
         with _restored_environment():
             loaded = encode_mod.E5(model_dir=encoder["model_dir"], revision=encoder["revision"])
-        inner = builder.e5_passage_encoder(loaded.model)
+            # building the adapter touches the loaded model lazily; it stays inside the same restoration scope
+            inner = builder.e5_passage_encoder(loaded.model)
     except Exception:  # noqa: BLE001 - any backend failure is one fixed refusal without its message
         return None
 

@@ -264,6 +264,64 @@ def test_e5_rejects_a_relative_model_directory():
         encode.model_identity(model_dir=Path("relative-model"), revision="synthetic")
 
 
+def _weights_dir(tmp_path, body):
+    model_dir = tmp_path / "verified-model"
+    model_dir.mkdir()
+    (model_dir / "model.safetensors").write_bytes(body)
+    return model_dir
+
+
+def test_model_identity_default_read_is_unchanged_for_existing_consumers(tmp_path):
+    import hashlib
+    body = b"synthetic-weights" * 1000
+    identity = encode.model_identity(model_dir=_weights_dir(tmp_path, body), revision="synthetic")
+    assert identity == {"model": encode.MODEL, "revision": "synthetic",
+                        "weights_sha256": hashlib.sha256(body).hexdigest(), "weights_bytes": len(body)}
+
+
+@pytest.mark.parametrize("size", [0, 1, 63, 64])
+def test_model_identity_bounded_read_accepts_up_to_the_exact_budget(tmp_path, size):
+    import hashlib
+    body = b"x" * size
+    identity = encode.model_identity(model_dir=_weights_dir(tmp_path, body), revision="synthetic", max_bytes=64)
+    assert identity["weights_sha256"] == hashlib.sha256(body).hexdigest() and identity["weights_bytes"] == size
+
+
+def test_model_identity_bounded_read_refuses_growth_after_the_size_check_without_reading_to_eof(monkeypatch, tmp_path):
+    model_dir = _weights_dir(tmp_path, b"x" * 4096)  # larger than the budget: a file that grew or was swapped
+    calls = []
+    real_open = open
+
+    class Counting:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def read(self, size=-1):
+            calls.append(size)
+            return self._handle.read(size)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self._handle.close()
+    import builtins
+    monkeypatch.setattr(builtins, "open", lambda *a, **k: Counting(real_open(*a, **k)))
+    with pytest.raises(ValueError, match="^weights_over_budget$") as caught:
+        encode.model_identity(model_dir=model_dir, revision="synthetic", max_bytes=64)
+    assert calls and all(0 < size <= 65 for size in calls) and sum(calls) <= 65  # never an unbounded or EOF read
+    assert str(model_dir) not in str(caught.value)
+
+
+@pytest.mark.parametrize("bad", [0, -1, "64", 64.0, True, None.__class__])
+def test_model_identity_rejects_an_invalid_budget_before_opening(monkeypatch, tmp_path, bad):
+    model_dir = _weights_dir(tmp_path, b"x")
+    import builtins
+    monkeypatch.setattr(builtins, "open", lambda *a, **k: pytest.fail("weights opened with an invalid budget"))
+    with pytest.raises(ValueError, match="^max_bytes_invalid$"):
+        encode.model_identity(model_dir=model_dir, revision="synthetic", max_bytes=bad)
+
+
 def test_e5_refuses_a_preloaded_hub_with_uncontrolled_cache(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "huggingface_hub.constants", SimpleNamespace())
     with pytest.raises(ValueError, match="^encoder_runtime_preloaded$"):

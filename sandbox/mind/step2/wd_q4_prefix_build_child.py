@@ -53,8 +53,10 @@ manifest is trust, not proof) and the backend running in this process.
 Fixed-refusal boundary of the encoder step (v5 supplement). The builder module ``shared_index_builder`` imports
 numpy and the FAISS layer at module level; the child imports it lazily inside the encoder step's exception boundary,
 so a missing or broken builder, numpy or FAISS import is the fixed ``encoder_refused`` with no chained cause and no
-traceback leaking a message. Building the passage adapter over the loaded model happens inside the same environment
-restoration scope as the load, since that lazy access may read or alter the environment. Stated separately and not
+traceback leaking a message. The builder import, the ``encoder_identity`` check, the load and the passage adapter
+build all run inside ONE environment restoration scope (v6 finding: the import and the identity check used to run
+outside it), and the bounded ``model_identity`` reread runs inside its own; foreign code at any of these points that
+alters the environment, then succeeds or raises, leaves the process environment exactly as it was. Stated separately and not
 closed here: this module's own module-level import chain (``encode`` imports numpy at module level, the producer
 modules follow) means a broken numpy fails at import time, before the default-off entrypoint is ever reached; that
 failure surfaces to the importing caller, not as a fixed refusal.
@@ -467,9 +469,11 @@ def _restored_environment():
 def _identity(encoder):
     """The three-key encoder identity derived from the pinned model directory; None when it cannot be bound."""
     try:
-        # the identity reread is bounded like the manifest pass: a file grown since then refuses, never read to EOF
-        derived = encode_mod.model_identity(model_dir=encoder["model_dir"], revision=encoder["revision"],
-                                            max_bytes=ASSET_BYTES_LIMIT)
+        # the identity reread is bounded like the manifest pass: a file grown since then refuses, never read to EOF;
+        # it runs inside the same environment restoration as every other step that touches the encoder code
+        with _restored_environment():
+            derived = encode_mod.model_identity(model_dir=encoder["model_dir"], revision=encoder["revision"],
+                                                max_bytes=ASSET_BYTES_LIMIT)
     except (OSError, ValueError, TypeError, KeyError):
         return None
     if (type(derived) is not dict or derived.get("model") != ENCODER_MODEL
@@ -482,11 +486,13 @@ def _identity(encoder):
 def _encoder(encoder, identity):
     """The fixed E5 passage encoder over the pinned directory; None on any load or builder-import failure."""
     try:
-        # the builder transitively imports numpy and FAISS: a missing or broken layer is the same fixed refusal
-        from sandbox.mind.step2 import shared_index_builder as builder
-        if builder.encoder_identity(identity) != identity:
-            return None
+        # one restoration scope around everything that runs foreign code here: the builder import (module-level
+        # numpy and FAISS imports may read or alter the environment), the identity check, the load and the adapter
         with _restored_environment():
+            # the builder transitively imports numpy and FAISS: a missing or broken layer is the same fixed refusal
+            from sandbox.mind.step2 import shared_index_builder as builder
+            if builder.encoder_identity(identity) != identity:
+                return None
             loaded = encode_mod.E5(model_dir=encoder["model_dir"], revision=encoder["revision"])
             # building the adapter touches the loaded model lazily; it stays inside the same restoration scope
             inner = builder.e5_passage_encoder(loaded.model)

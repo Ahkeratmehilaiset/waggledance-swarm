@@ -30,6 +30,8 @@ pin of its own; the report names the remaining limits (verify-then-use window, i
 from dataclasses import replace
 import hashlib
 import importlib
+import importlib.abc
+import importlib.util
 import inspect
 import json
 import contextlib
@@ -1110,6 +1112,132 @@ def test_missing_builder_or_faiss_refuses_fixed_without_traceback(tmp_path, mode
     monkeypatch.setitem(sys.modules, "core.faiss_store", None)  # a broken FAISS layer under a fresh builder import
     refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path)))
     assert not backend.calls
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# v6: the builder import and the identity checks run inside the same restoration scope as the load and the adapter
+# ---------------------------------------------------------------------------------------------------------------
+
+
+class _MutatingBuilderFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """A synthetic ``shared_index_builder`` whose module-level code alters the environment, then imports or fails."""
+
+    NAME = "sandbox.mind.step2.shared_index_builder"
+
+    def __init__(self, *, fail):
+        self.fail = fail
+        self.executed = 0
+
+    def find_spec(self, fullname, path, target=None):
+        if fullname == self.NAME:
+            return importlib.util.spec_from_loader(fullname, self)
+        return None
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        self.executed += 1
+        os.environ["HF_HUB_OFFLINE"] = "mutated-by-builder-import"
+        os.environ["SYNTHETIC_IMPORT_VAR"] = "added"
+        if self.fail:
+            raise ImportError(SENTINEL)
+        module.encoder_identity = lambda identity: identity
+        module.e5_passage_encoder = lambda model: (lambda texts: np.zeros((len(texts), encode_mod.DIM), dtype="<f4"))
+
+
+def _fresh_builder_import(monkeypatch, finder):
+    package = importlib.import_module("sandbox.mind.step2")
+    monkeypatch.delattr(package, "shared_index_builder", raising=False)
+    monkeypatch.delitem(sys.modules, _MutatingBuilderFinder.NAME, raising=False)
+    monkeypatch.setattr(sys, "meta_path", [finder] + sys.meta_path)
+
+
+def _clean_environment():
+    for name in offline_names():
+        os.environ.pop(name, None)
+    os.environ.pop("SYNTHETIC_IMPORT_VAR", None)
+    os.environ.pop("SYNTHETIC_IDENTITY_VAR", None)
+    return dict(os.environ)
+
+
+def test_builder_import_that_mutates_the_environment_and_fails_is_restored_and_refused(tmp_path, model_dir, backend, monkeypatch):
+    m = module()
+    finder = _MutatingBuilderFinder(fail=True)
+    _fresh_builder_import(monkeypatch, finder)
+    before = _clean_environment()
+    config, pins, start = synthetic_config(tmp_path)
+    refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path)))
+    assert finder.executed == 1 and dict(os.environ) == before and not backend.calls
+    nothing_written(*roots(tmp_path))
+
+
+def test_builder_import_that_mutates_the_environment_and_succeeds_is_restored(tmp_path, model_dir, backend, monkeypatch):
+    m = module()
+    finder = _MutatingBuilderFinder(fail=False)
+    _fresh_builder_import(monkeypatch, finder)
+    before = _clean_environment()
+    monkeypatch.setattr(m.producer, "publish_public_prefix", lambda **k: {
+        "status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
+        "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"})
+    config, pins, start = synthetic_config(tmp_path)
+    assert run(m, plan(model_dir, pins), config, start, *roots(tmp_path))["status"] == "PUBLISHED_GENESIS"
+    assert finder.executed == 1 and dict(os.environ) == before
+    assert [call["env"].get("HF_HUB_OFFLINE") for call in backend.calls if "env" in call] == ["1"]  # the load saw the pin
+
+
+@pytest.mark.parametrize("outcome", ["succeeds", "raises"])
+def test_encoder_identity_check_that_mutates_the_environment_is_restored(tmp_path, model_dir, backend, monkeypatch, outcome):
+    pytest.importorskip("faiss", reason="the builder module needs FAISS")
+    from sandbox.mind.step2 import shared_index_builder as builder
+    m = module()
+    before = _clean_environment()
+
+    def mutating_identity(identity):
+        os.environ["HF_HUB_OFFLINE"] = "mutated-by-identity-check"
+        os.environ["SYNTHETIC_IDENTITY_VAR"] = "added"
+        if outcome == "raises":
+            raise RuntimeError(SENTINEL)
+        return identity
+    monkeypatch.setattr(builder, "encoder_identity", mutating_identity)
+    monkeypatch.setattr(m.producer, "publish_public_prefix", lambda **k: {
+        "status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
+        "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"})
+    config, pins, start = synthetic_config(tmp_path)
+    if outcome == "raises":
+        refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path)))
+        assert not backend.calls
+        nothing_written(*roots(tmp_path))
+    else:
+        assert run(m, plan(model_dir, pins), config, start, *roots(tmp_path))["status"] == "PUBLISHED_GENESIS"
+        assert len(backend.calls) == 1
+    assert dict(os.environ) == before
+
+
+@pytest.mark.parametrize("outcome", ["succeeds", "raises"])
+def test_model_identity_read_that_mutates_the_environment_is_restored(tmp_path, model_dir, backend, monkeypatch, outcome):
+    pytest.importorskip("faiss", reason="the builder module needs FAISS")
+    m = module()
+    before = _clean_environment()
+    real = m.encode_mod.model_identity
+
+    def mutating_read(**kwargs):
+        os.environ["HF_HUB_OFFLINE"] = "mutated-by-identity-read"
+        os.environ["SYNTHETIC_IDENTITY_VAR"] = "added"
+        if outcome == "raises":
+            raise OSError(SENTINEL)
+        return real(**kwargs)
+    monkeypatch.setattr(m.encode_mod, "model_identity", mutating_read)
+    monkeypatch.setattr(m.producer, "publish_public_prefix", lambda **k: {
+        "status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
+        "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"})
+    config, pins, start = synthetic_config(tmp_path)
+    if outcome == "raises":
+        refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path)))
+        assert not backend.calls
+    else:
+        assert run(m, plan(model_dir, pins), config, start, *roots(tmp_path))["status"] == "PUBLISHED_GENESIS"
+    assert dict(os.environ) == before
 
 
 # ---------------------------------------------------------------------------------------------------------------

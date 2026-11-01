@@ -188,6 +188,12 @@ def bind_memory(memory_dir, descriptor):
         unchanged = False
     if not unchanged:
         raise PrivateReadRefused("memory_descriptor_changed")
+    _validate_bound_memory(memory, descriptor)
+    return memory
+
+
+def _validate_bound_memory(memory, descriptor):
+    """Apply the legacy dimension, encoder and projected-event checks."""
     if memory.memory.get("dim") != descriptor["dim"]:
         raise PrivateReadRefused("memory_dim_mismatch")
     healthy = [view for view in memory.views.values() if view.healthy]
@@ -214,7 +220,6 @@ def bind_memory(memory_dir, descriptor):
                                                            provenance.get("ref_kind"),
                                                            provenance.get("canonical_event"))):
                 raise PrivateReadRefused("memory_scope_mismatch")
-    return memory
 
 
 def bind_runtime_encoder(descriptor, model_dir):
@@ -315,6 +320,59 @@ def _private_read_locked(memory_dir, descriptor_path, descriptor_sha256, situati
     except corpus_mod.ws.WorkspaceError:  # a guarded word anywhere in the result: nothing of it is written
         raise PrivateReadRefused("output_guarded") from None
     return out
+
+
+def _private_read_snapshot_impl(*, descriptor_bytes, descriptor_sha256, manifest_bytes,
+                                expected_memory_sha256, cell_snapshots, stream, model_dir,
+                                expected_runtime_revision, enabled):
+    if enabled is not True:
+        raise PrivateReadRefused("snapshot_disabled")
+    descriptor = read_descriptor_bytes(descriptor_bytes, descriptor_sha256)
+    if (not _hex64(expected_memory_sha256) or expected_memory_sha256 != descriptor["memory_sha256"]
+            or type(manifest_bytes) is not bytes):
+        raise PrivateReadRefused("memory_descriptor_mismatch")
+    if (not isinstance(expected_runtime_revision, str) or not expected_runtime_revision
+            or descriptor["encoder"]["revision"] != expected_runtime_revision):
+        raise PrivateReadRefused("runtime_revision_mismatch")
+    memory = memory_mod.Memory.from_snapshots(manifest_bytes=manifest_bytes,
+                                               expected_sha256=expected_memory_sha256,
+                                               cell_snapshots=cell_snapshots, enabled=True)
+    _validate_bound_memory(memory, descriptor)
+    bind_runtime_encoder(descriptor, model_dir)
+    situation, when = read_query(stream)
+    encoder = ENCODER_FACTORY(model_dir=model_dir, revision=descriptor["encoder"]["revision"])
+    result = Q4_FACTORY(memory, encoder).ask(situation, when)
+    out = dict(project_result(result), schema=SCHEMA, identity=IDENTITY,
+               binding={"descriptor_sha256": descriptor_sha256, "memory_sha256": descriptor["memory_sha256"],
+                        "dim": descriptor["dim"], "scope": descriptor["scope"],
+                        "encoder": dict(descriptor["encoder"])})
+    corpus_mod.ws.guard_object(out)
+    return out
+
+
+def private_read_snapshot(*, descriptor_bytes, descriptor_sha256, manifest_bytes,
+                          expected_memory_sha256, cell_snapshots, stream, model_dir,
+                          expected_runtime_revision, enabled=False):
+    """Opt-in in-memory snapshot reader, not connected to a transport or public policy.
+
+    Caller independently authenticates descriptor/manifest pins, source, runtime
+    revision, model location and snapshot collection. No freshness, publisher,
+    process isolation or model asset TOCTOU protection is established here.
+    The caller must provide any required shared-reader lock. This returns only
+    the legacy private projection, not a public-policy-approved response.
+    Snapshot loading may invoke native FAISS deserialization before the cell
+    encoder/scope checks and before the runtime encoder identity check.
+    """
+    try:
+        return _private_read_snapshot_impl(descriptor_bytes=descriptor_bytes, descriptor_sha256=descriptor_sha256,
+            manifest_bytes=manifest_bytes, expected_memory_sha256=expected_memory_sha256,
+            cell_snapshots=cell_snapshots, stream=stream, model_dir=model_dir,
+            expected_runtime_revision=expected_runtime_revision, enabled=enabled)
+    except Exception:
+        pass
+    del descriptor_bytes, descriptor_sha256, manifest_bytes, expected_memory_sha256, cell_snapshots
+    del stream, model_dir, expected_runtime_revision, enabled
+    raise PrivateReadRefused("snapshot_refused") from None
 
 
 def private_read(memory_dir, descriptor_path, descriptor_sha256, stream, *, model_dir, lock_file, lock_timeout,

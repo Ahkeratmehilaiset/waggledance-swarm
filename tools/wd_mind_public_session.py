@@ -25,6 +25,7 @@ publication by another writer is never taken as the authority for a retry and
 no digest is ever learned from the file. No freshness, anti-rollback or
 authenticity claim follows from any of this.
 """
+from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -338,6 +339,248 @@ def read_status(audit_root, *, lane, agent_uuid, as_of, max_age_seconds, enabled
         body, age = _publication(raw, pins, tasks, types, now, max_age_seconds)
         return _json({"schema": "wd.mind-public-session.v1", "authority": "none", "coverage": "last_delta_only", "lane": lane,
                       "identity_verification": "caller_declared_not_authenticated",
+                      "as_of_utc": now.isoformat(), "publication_age_seconds": age,
+                      "source_freshness": "UNKNOWN", "records": body["records"]})
+    except Exception:
+        raise PublicStatusRefused("public_status_refused") from None
+
+
+# Opt-in v3 is a separate publication and lock: existing v2 callers, schemas,
+# filenames and enable switches are unchanged. It is not a service, launcher,
+# identity authenticator or source-freshness proof. Callers must retain their
+# exact prior publication digest, previous window anchor and observed candidate.
+V3_SCHEMA = "wd.mind-public-status-publication.v3"
+V3_FILENAME = "public-status-v3.json"
+V3_LOCK_FILENAME = ".public-status-v3.lock"
+_V3_PINS = ("root_anchor_sha256", "policy_sha256", "roster_sha256", "public_policy_sha256")
+_V3_KEYS = frozenset({"schema", "revision", "authority", "coverage", "as_of_utc", *_V3_PINS,
+                      "window_anchor_sha256", "next_anchor_sha256", "body_sha256", "body"})
+
+
+def _v3_structure(raw):
+    doc = _object(raw)
+    if (set(doc) != _V3_KEYS or doc["schema"] != V3_SCHEMA or doc["authority"] != "none"
+            or doc["coverage"] != "last_delta_only" or type(doc["revision"]) is not int
+            or not 1 <= doc["revision"] <= _MAX_REVISION
+            or any(not _digest(doc[name]) for name in (*_V3_PINS, "window_anchor_sha256", "next_anchor_sha256"))
+            or type(doc["as_of_utc"]) is not str or len(doc["as_of_utc"]) > 40
+            or not _digest(doc["body_sha256"])):
+        raise ValueError()
+    _instant(datetime.fromisoformat(doc["as_of_utc"]))
+    _shape(doc["body"])
+    if hashlib.sha256(_json(doc["body"])).hexdigest() != doc["body_sha256"]:
+        raise ValueError()
+    return doc
+
+
+def _v3_attempt(audit_root, snapshot_result, *, as_of, enabled, expected_previous_sha256,
+                root_anchor_bytes, root_anchor_sha256, previous_anchor_bytes, previous_anchor_sha256,
+                expected_previous_candidate, pins):
+    from tools import wd_mind_public_series as series
+
+    if enabled is not True or expected_previous_sha256 is _UNSET or (
+            expected_previous_sha256 is not None and not _digest(expected_previous_sha256)):
+        raise ValueError()
+    root_pins = dict(pins, anchor_bytes=root_anchor_bytes, anchor_sha256=root_anchor_sha256)
+    _, tasks, types = _pins(**root_pins)
+    _pins(**pins)
+    series.check_continuation(enabled=True, root_anchor_bytes=root_anchor_bytes,
+        root_anchor_sha256=root_anchor_sha256, previous_anchor_bytes=previous_anchor_bytes,
+        previous_anchor_sha256=previous_anchor_sha256, next_anchor_bytes=pins["anchor_bytes"],
+        next_anchor_sha256=pins["anchor_sha256"], expected_candidate_cursor=expected_previous_candidate)
+    if expected_previous_sha256 is None and (
+            pins["anchor_sha256"] != root_anchor_sha256 or previous_anchor_sha256 != root_anchor_sha256):
+        raise ValueError()
+    now = _instant(as_of)
+    # This verifies the entire current snapshot projection against its own
+    # window anchor, policy and roster before metadata is made public.
+    body = _body(_object(producer.build_status(snapshot_result, enabled=True, **pins)), tasks, types)
+    anchor = _object(pins["anchor_bytes"])
+    candidate = asdict(snapshot_result["candidate_cursor"])
+    next_bytes = _json(dict(anchor, cursor_start=candidate))
+    next_sha = hashlib.sha256(next_bytes).hexdigest()
+    # Validate both the source identity and bounded cursor on the issued next
+    # anchor. Candidate was checked against the in-process projection above.
+    series.check_continuation(enabled=True, root_anchor_bytes=root_anchor_bytes,
+        root_anchor_sha256=root_anchor_sha256, previous_anchor_bytes=pins["anchor_bytes"],
+        previous_anchor_sha256=pins["anchor_sha256"], next_anchor_bytes=next_bytes,
+        next_anchor_sha256=next_sha, expected_candidate_cursor=candidate)
+    root = _directory(audit_root)
+    lock = root / V3_LOCK_FILENAME
+    if os.path.lexists(lock):
+        _regular(lock)
+    return root, lock, body, now, tasks, types, next_sha
+
+
+def _v3_intended(target, expected_previous_sha256, root_anchor_sha256, previous_anchor_sha256,
+                 body, now, tasks, types, next_sha, pins):
+    revision = 1
+    if os.path.lexists(target):
+        _regular(target)
+        with target.open("rb") as stream:
+            old = stream.read(MAX_BYTES + 1)
+        if expected_previous_sha256 is None or hashlib.sha256(old).hexdigest() != expected_previous_sha256:
+            raise ValueError()
+        doc = _v3_structure(old)
+        required = {"root_anchor_sha256": root_anchor_sha256,
+                    **{key: pins[key] for key in ("policy_sha256", "roster_sha256", "public_policy_sha256")}}
+        if (any(doc[key] != value for key, value in required.items())
+                or doc["window_anchor_sha256"] != previous_anchor_sha256
+                or doc["next_anchor_sha256"] != pins["anchor_sha256"] or doc["revision"] >= _MAX_REVISION):
+            raise ValueError()
+        _body(doc["body"], tasks, types)
+        revision = doc["revision"] + 1
+    elif expected_previous_sha256 is not None:
+        raise ValueError()
+    doc = {"schema": V3_SCHEMA, "revision": revision, "authority": "none", "coverage": "last_delta_only",
+           "as_of_utc": now.isoformat(), "root_anchor_sha256": root_anchor_sha256,
+           "policy_sha256": pins["policy_sha256"], "roster_sha256": pins["roster_sha256"],
+           "public_policy_sha256": pins["public_policy_sha256"], "window_anchor_sha256": pins["anchor_sha256"],
+           "next_anchor_sha256": next_sha, "body_sha256": hashlib.sha256(_json(body)).hexdigest(), "body": body}
+    payload = _json(doc)
+    if len(payload) > MAX_BYTES:
+        raise ValueError()
+    return payload
+
+
+def _v3_build(audit_root, snapshot_result, *, as_of, enabled, expected_previous_sha256,
+              root_anchor_bytes, root_anchor_sha256, previous_anchor_bytes, previous_anchor_sha256,
+              expected_previous_candidate, pins):
+    state = _v3_attempt(audit_root, snapshot_result, as_of=as_of, enabled=enabled,
+        expected_previous_sha256=expected_previous_sha256, root_anchor_bytes=root_anchor_bytes,
+        root_anchor_sha256=root_anchor_sha256, previous_anchor_bytes=previous_anchor_bytes,
+        previous_anchor_sha256=previous_anchor_sha256, expected_previous_candidate=expected_previous_candidate,
+        pins=pins)
+    root, lock, body, now, tasks, types, next_sha = state
+    payload = _v3_intended(root / V3_FILENAME, expected_previous_sha256, root_anchor_sha256,
+                           previous_anchor_sha256, body, now, tasks, types, next_sha, pins)
+    return root, lock, payload
+
+
+def prepare_status_attempt_v3(audit_root, snapshot_result, *, as_of, enabled=False,
+        expected_previous_sha256=_UNSET, root_anchor_bytes=None, root_anchor_sha256=None,
+        previous_anchor_bytes=None, previous_anchor_sha256=None, expected_previous_candidate=None,
+        timeout_seconds=0.2, **pins):
+    """Return the exact v3 attempt digest; lock slot may be created, no publication write."""
+    try:
+        if enabled is not True:
+            raise ValueError()
+        root = _directory(audit_root)
+        lock = root / V3_LOCK_FILENAME
+        if os.path.lexists(lock):
+            _regular(lock)
+        with reader_slot(lock, timeout_seconds=timeout_seconds):
+            _regular(lock)
+            _, _, payload = _v3_build(audit_root, snapshot_result, as_of=as_of, enabled=enabled,
+                expected_previous_sha256=expected_previous_sha256, root_anchor_bytes=root_anchor_bytes,
+                root_anchor_sha256=root_anchor_sha256, previous_anchor_bytes=previous_anchor_bytes,
+                previous_anchor_sha256=previous_anchor_sha256,
+                expected_previous_candidate=expected_previous_candidate, pins=pins)
+            return hashlib.sha256(payload).hexdigest()
+    except Exception:
+        raise PublicStatusRefused("public_status_refused") from None
+
+
+def publish_status_v3(audit_root, snapshot_result, *, as_of, attempt_sha256, enabled=False,
+        expected_previous_sha256=_UNSET, root_anchor_bytes=None, root_anchor_sha256=None,
+        previous_anchor_bytes=None, previous_anchor_sha256=None, expected_previous_candidate=None,
+        timeout_seconds=0.2, **pins):
+    """Publish only a prepared v3 attempt; an exception can mean the replace landed."""
+    stage = None
+    owned = False
+    try:
+        if enabled is not True or not _digest(attempt_sha256):
+            raise ValueError()
+        root = _directory(audit_root)
+        lock = root / V3_LOCK_FILENAME
+        if os.path.lexists(lock):
+            _regular(lock)
+        with reader_slot(lock, timeout_seconds=timeout_seconds):
+            _regular(lock)
+            _, _, payload = _v3_build(audit_root, snapshot_result, as_of=as_of, enabled=enabled,
+                expected_previous_sha256=expected_previous_sha256, root_anchor_bytes=root_anchor_bytes,
+                root_anchor_sha256=root_anchor_sha256, previous_anchor_bytes=previous_anchor_bytes,
+                previous_anchor_sha256=previous_anchor_sha256,
+                expected_previous_candidate=expected_previous_candidate, pins=pins)
+            if hashlib.sha256(payload).hexdigest() != attempt_sha256:
+                raise ValueError()
+            stage = root / (".public-status-v3-" + secrets.token_hex(16) + ".tmp")
+            with stage.open("xb") as stream:
+                owned = True
+                if stream.write(payload) != len(payload):
+                    raise OSError("short_write")
+                stream.flush()
+                os.fsync(stream.fileno())
+            target = root / V3_FILENAME
+            if os.path.lexists(target):
+                _regular(target)
+            os.replace(stage, target)
+            owned = False
+            return attempt_sha256
+    except Exception:
+        raise PublicStatusRefused("public_status_refused") from None
+    finally:
+        if owned:
+            try:
+                stage.unlink()
+            except OSError:
+                pass
+
+
+def recover_status_attempt_v3(audit_root, *, prior_sha256, attempt_sha256, enabled=False, timeout_seconds=0.2):
+    """Resolve only the caller's prepared attempt versus its exact prior; never retry or adopt another value."""
+    try:
+        if (enabled is not True or not _digest(attempt_sha256)
+                or (prior_sha256 is not None and not _digest(prior_sha256)) or prior_sha256 == attempt_sha256):
+            raise ValueError()
+        root = _directory(audit_root)
+        lock, target = root / V3_LOCK_FILENAME, root / V3_FILENAME
+        if os.path.lexists(lock):
+            _regular(lock)
+        with reader_slot(lock, timeout_seconds=timeout_seconds):
+            _regular(lock)
+            if not os.path.lexists(target):
+                if prior_sha256 is None:
+                    return "unchanged"
+                raise ValueError()
+            _regular(target)
+            with target.open("rb") as stream:
+                raw = stream.read(MAX_BYTES + 1)
+            if len(raw) > MAX_BYTES:
+                raise ValueError()
+            present = hashlib.sha256(raw).hexdigest()
+            if present == attempt_sha256:
+                return "landed"
+            if present == prior_sha256:
+                return "unchanged"
+            raise ValueError()
+    except Exception:
+        raise PublicStatusRefused("public_status_refused") from None
+
+
+def read_status_v3(audit_root, *, lane, agent_uuid, as_of, max_age_seconds, enabled=False, **pins):
+    """Read v3 against the original fixed root, not a changing window anchor."""
+    try:
+        if enabled is not True or type(max_age_seconds) is not int or not 1 <= max_age_seconds <= 900:
+            raise ValueError()
+        roster, tasks, types = _pins(**pins)
+        if (not isinstance(lane, str) or lane not in roster or not isinstance(agent_uuid, str)
+                or roster[lane].lower() != agent_uuid.lower()):
+            raise ValueError()
+        now = _instant(as_of)
+        path = _directory(audit_root) / V3_FILENAME
+        _regular(path)
+        with path.open("rb") as stream:
+            doc = _v3_structure(stream.read(MAX_BYTES + 1))
+        if (doc["root_anchor_sha256"] != pins["anchor_sha256"]
+                or any(doc[name] != pins[name] for name in ("policy_sha256", "roster_sha256", "public_policy_sha256"))):
+            raise ValueError()
+        age = (now - _instant(datetime.fromisoformat(doc["as_of_utc"]))).total_seconds()
+        if age < 0 or age > max_age_seconds:
+            raise ValueError()
+        body = _body(doc["body"], tasks, types)
+        return _json({"schema": "wd.mind-public-session.v1", "authority": "none", "coverage": "last_delta_only",
+                      "lane": lane, "identity_verification": "caller_declared_not_authenticated",
                       "as_of_utc": now.isoformat(), "publication_age_seconds": age,
                       "source_freshness": "UNKNOWN", "records": body["records"]})
     except Exception:

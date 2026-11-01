@@ -1,6 +1,8 @@
 """Synthetic-only continuation contract; no live source or filesystem reads."""
 
 import copy
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 
@@ -140,3 +142,106 @@ def test_duplicate_keys_unknown_fields_and_oversized_json_refused():
     changed = _anchor(20)
     changed["cursor_start"]["extra"] = "value"
     _refused(**_args(following=changed))
+
+
+def test_v3_two_real_synthetic_publishes_keep_five_fixed_root_readers(tmp_path):
+    """Only synthetic files: the root pin remains fixed as the window anchor advances."""
+    from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
+    from sandbox.mind.step2.test_status_public_filter import ROSTER, event, read_fixture
+    from tools import wd_mind_public_session as session
+
+    source = tmp_path / "source"
+    source.mkdir()
+    first, root_pins, log = read_fixture(source, [event(), event(to="fable-5", message="synthetic-private")])
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    now = datetime.now(timezone.utc)
+    root = root_pins["anchor_bytes"]
+    root_doc = json.loads(root)
+    root_sha = root_pins["anchor_sha256"]
+    first_candidate = asdict(first["candidate_cursor"])
+    first_args = dict(enabled=True, as_of=now, expected_previous_sha256=None,
+        root_anchor_bytes=root, root_anchor_sha256=root_sha,
+        previous_anchor_bytes=root, previous_anchor_sha256=root_sha,
+        expected_previous_candidate=root_doc["cursor_start"], **root_pins)
+    attempt1 = session.prepare_status_attempt_v3(audit, first, **first_args)
+    assert session.recover_status_attempt_v3(audit, prior_sha256=None, attempt_sha256=attempt1,
+                                              enabled=True) == "unchanged"
+    with pytest.raises(session.PublicStatusRefused):
+        session.publish_status_v3(audit, first, attempt_sha256="0" * 64, **first_args)
+    state1 = session.publish_status_v3(audit, first, attempt_sha256=attempt1, **first_args)
+    assert session.recover_status_attempt_v3(audit, prior_sha256=None, attempt_sha256=attempt1,
+                                              enabled=True) == "landed"
+    assert not (audit / session.FILENAME).exists()  # v2 is never used or migrated
+    v2_hash = session.publish_status(audit, first, as_of=now, enabled=True,
+                                     expected_previous_sha256=None, **root_pins)
+    v2_bytes = (audit / session.FILENAME).read_bytes()
+    assert hashlib.sha256(v2_bytes).hexdigest() == v2_hash
+
+    for lane, uuid in ROSTER.items():
+        view = json.loads(session.read_status_v3(audit, lane=lane, agent_uuid=uuid, as_of=now,
+                                                 max_age_seconds=900, enabled=True, **root_pins))
+        assert len(view["records"]) == 1 and "synthetic-private" not in repr(view)
+    with pytest.raises(session.PublicStatusRefused):
+        session.read_status_v3(audit, lane="fable-5", agent_uuid=ROSTER["fable-5"],
+                               as_of=now + timedelta(seconds=901), max_age_seconds=900, enabled=True, **root_pins)
+
+    with log.open("ab") as stream:
+        stream.write(_bytes(event(agent="fable-5", agent_uuid=ROSTER["fable-5"])) + b"\n")
+    anchor2 = _bytes(dict(root_doc, cursor_start=first_candidate))
+    pins2 = dict(root_pins, anchor_bytes=anchor2, anchor_sha256=_sha(anchor2))
+    tasks = frozenset({"public-task", "nonreview-private"})
+    second = snapshot.read_anchored_delta(log, first["candidate_cursor"], tasks,
+        generation_path=root_doc["generation_path"], max_bytes=65536, max_rows=100, **pins2)
+    second_args = dict(enabled=True, as_of=now, expected_previous_sha256=state1,
+        root_anchor_bytes=root, root_anchor_sha256=root_sha,
+        previous_anchor_bytes=root, previous_anchor_sha256=root_sha,
+        expected_previous_candidate=first_candidate, **pins2)
+    attempt2 = session.prepare_status_attempt_v3(audit, second, **second_args)
+    assert session.recover_status_attempt_v3(audit, prior_sha256=state1, attempt_sha256=attempt2,
+                                              enabled=True) == "unchanged"
+    state2 = session.publish_status_v3(audit, second, attempt_sha256=attempt2, **second_args)
+    assert session.recover_status_attempt_v3(audit, prior_sha256=state1, attempt_sha256=attempt2,
+                                              enabled=True) == "landed"
+    assert state2 != state1
+    assert (audit / session.FILENAME).read_bytes() == v2_bytes
+    with pytest.raises(session.PublicStatusRefused):
+        session.publish_status_v3(audit, first, attempt_sha256=attempt1, **first_args)
+    for lane, uuid in ROSTER.items():
+        view = json.loads(session.read_status_v3(audit, lane=lane, agent_uuid=uuid, as_of=now,
+                                                 max_age_seconds=900, enabled=True, **root_pins))
+        assert [item["agent"] for item in view["records"]] == ["fable-5"]
+        assert "synthetic-private" not in repr(view) and view["source_freshness"] == "UNKNOWN"
+
+    wrong_root = _bytes(dict(root_doc, cursor_start=dict(root_doc["cursor_start"], offset=1)))
+    wrong_pins = dict(root_pins, anchor_bytes=wrong_root, anchor_sha256=_sha(wrong_root))
+    with pytest.raises(session.PublicStatusRefused):
+        session.read_status_v3(audit, lane="fable-5", agent_uuid=ROSTER["fable-5"], as_of=now,
+                               max_age_seconds=900, enabled=True, **wrong_pins)
+    # Old, valid anchored snapshot is a replay, not the next cursor.
+    with pytest.raises(session.PublicStatusRefused):
+        session.prepare_status_attempt_v3(
+            audit, first, enabled=True, as_of=now, expected_previous_sha256=state2,
+            root_anchor_bytes=root, root_anchor_sha256=root_sha,
+            previous_anchor_bytes=anchor2, previous_anchor_sha256=_sha(anchor2),
+            expected_previous_candidate=asdict(second["candidate_cursor"]), **root_pins)
+
+
+def test_v3_default_off_has_no_filesystem_access(monkeypatch):
+    from tools import wd_mind_public_session as session
+    accessed = []
+
+    def forbidden(*args, **kwargs):
+        accessed.append(True)
+        raise AssertionError("disabled mode must not access the filesystem")
+
+    monkeypatch.setattr(session, "_directory", forbidden)
+    with pytest.raises(session.PublicStatusRefused):
+        session.prepare_status_attempt_v3("unused", None, as_of=None)
+    with pytest.raises(session.PublicStatusRefused):
+        session.publish_status_v3("unused", None, as_of=None, attempt_sha256="0" * 64)
+    with pytest.raises(session.PublicStatusRefused):
+        session.recover_status_attempt_v3("unused", prior_sha256=None, attempt_sha256="0" * 64)
+    with pytest.raises(session.PublicStatusRefused):
+        session.read_status_v3("unused", lane="fable-5", agent_uuid="unused", as_of=None, max_age_seconds=1)
+    assert accessed == []

@@ -681,3 +681,79 @@ def test_plan_refusals_carry_no_exception_chain(plan):
     error = _refused("binding_refused", module.query_public, enabled=True, lane=LANES[3], situation=SECRET, time=NOW,
                      transport=must_not_run, **arguments)
     assert error.__context__ is None and error.__cause__ is None
+
+
+@pytest.mark.parametrize("kind", ["timeout", "transport_cleanup", "attestation_cleanup"])
+def test_query_preserves_timeout_and_unconfirmed_cleanup(plan, monkeypatch, kind):
+    from tools import wd_q4_secure_transport
+    from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown
+    arguments, _ = plan
+    lease = object()
+    original = {"timeout": TimeoutError("synthetic-private-timeout"),
+                "transport_cleanup": wd_q4_secure_transport.TransportCleanupUnknown("synthetic-private-outcome"),
+                "attestation_cleanup": AttestationCleanupUnknown(lease)}[kind]
+    def fail(**_):
+        raise original
+    monkeypatch.setattr(_module().link, "invoke_public", fail)
+    with pytest.raises(type(original)) as caught:
+        _module().query_public(enabled=True, lane=LANES[0], situation="synthetic", time=NOW,
+                               transport=must_not_run, **arguments)
+    assert caught.value is not original
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert "synthetic-private" not in str(caught.value)
+    tb = caught.value.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_name == "query_public":
+            assert not {"situation", "query", "bundle_root", "public_plan_path", "projection_bytes"} & set(tb.tb_frame.f_locals)
+        tb = tb.tb_next
+    if kind == "timeout": assert str(caught.value) == "secure_transport_timeout"
+    if kind == "transport_cleanup": assert caught.value.prior_outcome == "other"
+    if kind == "attestation_cleanup": assert caught.value.lease is lease
+
+
+@pytest.mark.parametrize("stage", ["disabled", "invalid_lane", "missing_transport", "invalid_input", "pins",
+                                   "projection", "binding", "transport", "result", "timeout", "cleanup"])
+def test_query_traceback_does_not_expose_situation_in_its_own_frames(plan, monkeypatch, stage):
+    import traceback
+    from pathlib import Path
+    from tools.wd_q4_secure_transport import TransportCleanupUnknown
+
+    marker = "SYNTHETIC_TRACEBACK_MARKER"
+    arguments, _ = plan
+    kwargs = dict(enabled=True, lane=LANES[0], situation=marker, time=NOW,
+                  transport=must_not_run, **arguments)
+    if stage == "disabled": kwargs["enabled"] = False
+    if stage == "invalid_lane": kwargs["lane"] = "invalid"
+    if stage == "missing_transport": kwargs["transport"] = None
+    if stage == "invalid_input": kwargs["expected_commit"] = "bad"
+    if stage == "pins": kwargs["policy_bytes"] = b"synthetic-invalid"
+    if stage == "projection": kwargs["projection_bytes"] = b"synthetic-invalid"
+    if stage == "binding": kwargs["expected_public_plan_sha256"] = "0" * 64
+    if stage in {"transport", "timeout", "cleanup"}:
+        def fail(**_):
+            if stage == "timeout": raise TimeoutError(marker)
+            if stage == "cleanup": raise TransportCleanupUnknown(marker)
+            raise RuntimeError(marker)
+        monkeypatch.setattr(_module().link, "invoke_public", fail)
+    if stage == "result":
+        monkeypatch.setattr(_module().link, "invoke_public", lambda **_: {"status": "ANSWER"})
+    with pytest.raises(Exception) as caught:
+        _module().query_public(**kwargs)
+    captured = traceback.TracebackException.from_exception(caught.value, capture_locals=True)
+    own = [frame for frame in captured.stack if Path(frame.filename).name == "wd_q4_lane_query.py"]
+    assert own
+    assert all(marker not in repr(frame.locals) for frame in own)
+
+
+def test_traceback_probe_detects_unsanitized_private_implementation(plan):
+    import traceback
+    from pathlib import Path
+
+    marker = "SYNTHETIC_UNSANITIZED_CONTROL"
+    arguments, _ = plan
+    with pytest.raises(_module().LaneQueryRefused) as caught:
+        _module()._query_public_impl(enabled=False, lane=LANES[0], situation=marker, time=NOW,
+                                     transport=must_not_run, **arguments)
+    captured = traceback.TracebackException.from_exception(caught.value, capture_locals=True)
+    own = [frame for frame in captured.stack if Path(frame.filename).name == "wd_q4_lane_query.py"]
+    assert any(marker in repr(frame.locals) for frame in own)

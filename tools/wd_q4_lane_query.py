@@ -47,6 +47,8 @@ import re
 from sandbox.mind.step2 import shared_capture_adapter as adapter
 from sandbox.mind.step2 import shared_projection as sp
 from tools import wd_q4_lane_link as link
+from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown
+from tools.wd_q4_secure_transport import TransportCleanupUnknown
 
 SCHEMA = "wd.q4-lane-answer.v1"
 LANES = link._LANES
@@ -217,9 +219,9 @@ def _answer(lane, value, expected_binding, records, when):
             "trust": dict(_TRUST)}, None
 
 
-def query_public(*, lane, situation, time, bundle_root, expected_commit, expected_manifest_sha256,
-                 expected_wrapper_sha256, public_plan_path, expected_public_plan_sha256, expected_binding,
-                 projection_bytes=None, policy_bytes=None, roster_bytes=None, transport=None, enabled=False):
+def _query_public_impl(*, lane, situation, time, bundle_root, expected_commit, expected_manifest_sha256,
+                       expected_wrapper_sha256, public_plan_path, expected_public_plan_sha256, expected_binding,
+                       projection_bytes=None, policy_bytes=None, roster_bytes=None, transport=None, enabled=False):
     """One bounded public Q4 question for one declared lane over an injected transport; OFF by default.
 
     Order: switch, lane, transport presence, input syntax (nothing read yet), canonical query bytes in memory, the
@@ -229,8 +231,9 @@ def query_public(*, lane, situation, time, bundle_root, expected_commit, expecte
     ``wd_q4_lane_link.invoke_public`` (binds bundle, manifest, wrapper and plan, calls the transport once, validates
     the reply against the plan pins), then the caller's own ``expected_binding`` (eight digests) must equal the
     reply binding and every result must resolve to one visible record of the verified projection with identical
-    text (``result_refused``); the returned text is the record's. Any other outcome is a fixed refusal, raised
-    outside every exception handler.
+    text (``result_refused``); the returned text is the record's. Timeout and unconfirmed cleanup are reconstructed
+    without the originating exception or message; an attestation cleanup exception retains its lease. Caller-frame
+    locals and arbitrary objects held by a lease cannot be scrubbed by this function.
     """
     if enabled is not True:
         raise LaneQueryRefused("disabled")
@@ -273,7 +276,7 @@ def query_public(*, lane, situation, time, bundle_root, expected_commit, expecte
             or any(key not in expected_binding or type(plan_pins[key]) is not str
                    or not hmac.compare_digest(plan_pins[key], expected_binding[key]) for key in plan_pins)):
         raise LaneQueryRefused("binding_refused")
-    value, reason = None, None
+    value, reason, critical, lease, prior = None, None, None, None, None
     try:
         value = link.invoke_public(lane=lane, bundle_root=bundle_root, expected_commit=expected_commit,
                                    expected_manifest_sha256=expected_manifest_sha256,
@@ -283,8 +286,26 @@ def query_public(*, lane, situation, time, bundle_root, expected_commit, expecte
                                    query_bytes=query, transport=transport, enabled=True)
     except link.LaneLinkRefused as refusal:
         reason = refusal.args[0] if refusal.args and refusal.args[0] in _SEAM_REASONS else "transport_refused"
+    except AttestationCleanupUnknown as refusal:
+        critical, lease = "attestation", refusal.lease
+    except TransportCleanupUnknown as refusal:
+        critical = "transport"
+        allowed = {"timeout", "refused", "interrupt", "exit", "none", "other", "prior_unknown"}
+        prior = refusal.prior_outcome if type(refusal.prior_outcome) is str and refusal.prior_outcome in allowed else "other"
+    except TimeoutError:
+        critical = "timeout"
     except Exception:  # noqa: BLE001 - a transport or parser failure is one fixed refusal, never chained
         reason = "transport_refused"
+    if critical is not None:
+        # Do not leave the question, source bytes or private paths in this traceback frame.
+        del situation, query, transport, projection_bytes, policy_bytes, roster_bytes, records, bundle_root, public_plan_path
+        del expected_commit, expected_manifest_sha256, expected_wrapper_sha256, expected_public_plan_sha256
+        del expected_binding, prepared, pinned, tasks, roster, plan_pins, value, reason
+        if critical == "attestation":
+            raise AttestationCleanupUnknown(lease)
+        if critical == "transport":
+            raise TransportCleanupUnknown(prior)
+        raise TimeoutError("secure_transport_timeout")
     if reason is not None:
         raise LaneQueryRefused(reason)
     answer = None
@@ -295,3 +316,47 @@ def query_public(*, lane, situation, time, bundle_root, expected_commit, expecte
     if reason is not None or answer is None:
         raise LaneQueryRefused(reason or "result_refused")
     return answer
+
+
+def query_public(*, lane, situation, time, bundle_root, expected_commit, expected_manifest_sha256,
+                 expected_wrapper_sha256, public_plan_path, expected_public_plan_sha256, expected_binding,
+                 projection_bytes=None, policy_bytes=None, roster_bytes=None, transport=None, enabled=False):
+    """Public facade that removes its own sensitive inputs on refusal.
+
+    Refusals and critical transport exceptions are reconstructed outside their
+    handlers, so the implementation's traceback is not attached. Other caller
+    frames and arbitrary data contained in an attestation lease are outside
+    this function's control and must not be treated as scrubbed.
+    """
+    failure, reason, lease, prior = None, None, None, None
+    try:
+        return _query_public_impl(
+            lane=lane, situation=situation, time=time, bundle_root=bundle_root, expected_commit=expected_commit,
+            expected_manifest_sha256=expected_manifest_sha256, expected_wrapper_sha256=expected_wrapper_sha256,
+            public_plan_path=public_plan_path, expected_public_plan_sha256=expected_public_plan_sha256,
+            expected_binding=expected_binding, projection_bytes=projection_bytes, policy_bytes=policy_bytes,
+            roster_bytes=roster_bytes, transport=transport, enabled=enabled)
+    except AttestationCleanupUnknown as exc:
+        failure, lease = "attestation", exc.lease
+    except TransportCleanupUnknown as exc:
+        failure = "transport"
+        allowed = {"timeout", "refused", "interrupt", "exit", "none", "other", "prior_unknown"}
+        prior = exc.prior_outcome if type(exc.prior_outcome) is str and exc.prior_outcome in allowed else "other"
+    except TimeoutError:
+        failure = "timeout"
+    except LaneQueryRefused as exc:
+        failure = "refused"
+        allowed = _SEAM_REASONS | {"invalid_input", "pins_refused", "projection_refused", "result_refused"}
+        reason = exc.args[0] if exc.args and type(exc.args[0]) is str and exc.args[0] in allowed else "transport_refused"
+    except Exception:
+        failure, reason = "refused", "transport_refused"
+    del lane, situation, time, bundle_root, expected_commit, expected_manifest_sha256, expected_wrapper_sha256
+    del public_plan_path, expected_public_plan_sha256, expected_binding, projection_bytes, policy_bytes, roster_bytes
+    del transport, enabled
+    if failure == "attestation":
+        raise AttestationCleanupUnknown(lease)
+    if failure == "transport":
+        raise TransportCleanupUnknown(prior)
+    if failure == "timeout":
+        raise TimeoutError("secure_transport_timeout")
+    raise LaneQueryRefused(reason)

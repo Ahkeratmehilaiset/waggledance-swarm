@@ -7,6 +7,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import threading
+import time
 
 import pytest
 
@@ -673,3 +675,139 @@ def test_a_competing_artifact_is_never_overwritten(world, monkeypatch, capsys):
     assert publisher.main([]) == 2  # fail closed until a human resolves the foreign file; never overwritten
     refused(capsys)
     assert pending(audit) == foreign and publication(audit) is None
+
+
+# --- v5: the whole transaction is serialized; barrier-controlled interleavings ------------------------------------
+
+def _thread(name):
+    outcome = {}
+
+    def body():
+        try:
+            outcome["code"] = publisher.main([])
+        except BaseException as exc:  # recorded, never swallowed silently
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=body, name=name, daemon=True)
+    thread.start()
+    return thread, outcome
+
+
+def _until(condition, seconds=10.0):
+    deadline = time.monotonic() + seconds
+    while not condition() and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+
+def _in(name):
+    return threading.current_thread().name == name
+
+
+def test_a_concurrent_recover_cannot_drop_the_record_of_a_publication_that_then_lands(world, monkeypatch, capsys):
+    """Lead interleaving: A saves its artifact and pauses before publishing; B (recover) sees unchanged and pauses
+    before removing the artifact; A publishes and dies before the next anchor; B resumes."""
+    audit, _ = world([eligible()])
+    monkeypatch.setattr(publisher, "LOCK_TIMEOUT_SECONDS", 0.2, raising=False)
+    a_paused, a_go, b_paused, b_go = (threading.Event() for _ in range(4))
+    real_publish, real_recover, real_anchor = (session.publish_status, session.recover_status_attempt,
+                                               publisher._write_next_anchor)
+
+    def publish(*args, **kwargs):
+        if _in("A"):
+            a_paused.set()
+            assert a_go.wait(10)
+        return real_publish(*args, **kwargs)
+
+    def recover(*args, **kwargs):
+        state = real_recover(*args, **kwargs)
+        if _in("B"):
+            b_paused.set()
+            assert b_go.wait(10)
+        return state
+
+    def anchor(*args, **kwargs):
+        if _in("A"):
+            raise OSError("synthetic crash before the next anchor")
+        return real_anchor(*args, **kwargs)
+
+    monkeypatch.setattr(session, "publish_status", publish)
+    monkeypatch.setattr(session, "recover_status_attempt", recover)
+    monkeypatch.setattr(publisher, "_write_next_anchor", anchor)
+    a, a_out = _thread("A")
+    assert a_paused.wait(10) and pending(audit) is not None
+    monkeypatch.setenv("WD_MIND_PUBLIC_PUBLISH_MODE", "recover")  # A read its mode before pausing
+    b, b_out = _thread("B")
+    _until(lambda: b_paused.is_set() or not b.is_alive())
+    a_go.set()
+    a.join(10)
+    b_go.set()
+    b.join(10)
+    monkeypatch.delenv("WD_MIND_PUBLIC_PUBLISH_MODE")
+    capsys.readouterr()
+    assert not a.is_alive() and not b.is_alive() and a_out == {"code": 2} and "error" not in b_out
+    landed = publication(audit)
+    assert landed is not None  # A's publication landed ...
+    kept = pending(audit)  # ... so its recovery record must still exist
+    assert kept is not None and json.loads(kept)["attempt_sha256"] == hashlib.sha256(landed).hexdigest()
+    monkeypatch.setattr(publisher, "_write_next_anchor", real_anchor)
+    code, captured = _recover(monkeypatch, capsys)
+    assert code == 0 and json.loads(captured.out)["outcome"] == "landed_recovered"
+
+
+def test_two_concurrent_continuations_cannot_drop_a_landed_record(world, monkeypatch, capsys):
+    """C1 passes the continuation checks and pauses before consuming the artifact; C2 continues, publishes and
+    dies before its anchor; C1 resumes."""
+    audit, log = world([eligible()])
+    monkeypatch.setattr(publisher, "LOCK_TIMEOUT_SECONDS", 0.2, raising=False)
+    assert publisher.main([]) == 0
+    first, _ = published(capsys)
+    with open(log, "ab") as stream:
+        stream.write(enc(eligible("fable-5")) + b"\n")
+    follow(monkeypatch, audit, first["publication_sha256"])
+    c1_paused, c1_go = threading.Event(), threading.Event()
+    real_recover, real_anchor = session.recover_status_attempt, publisher._write_next_anchor
+
+    def recover(*args, **kwargs):
+        state = real_recover(*args, **kwargs)
+        if _in("C1"):
+            c1_paused.set()
+            assert c1_go.wait(10)
+        return state
+
+    def anchor(*args, **kwargs):
+        if _in("C2"):
+            raise OSError("synthetic crash before the next anchor")
+        return real_anchor(*args, **kwargs)
+
+    monkeypatch.setattr(session, "recover_status_attempt", recover)
+    monkeypatch.setattr(publisher, "_write_next_anchor", anchor)
+    c1, c1_out = _thread("C1")
+    assert c1_paused.wait(10)
+    c2, c2_out = _thread("C2")
+    c2.join(10)
+    c1_go.set()
+    c1.join(10)
+    capsys.readouterr()
+    assert not c1.is_alive() and not c2.is_alive() and "error" not in c1_out and "error" not in c2_out
+    landed = publication(audit)
+    kept = pending(audit)
+    assert json.loads(landed)["revision"] == 2
+    assert kept is not None and json.loads(kept)["attempt_sha256"] == hashlib.sha256(landed).hexdigest()
+
+
+def test_the_transaction_lock_is_bounded_and_refuses_when_busy(world, monkeypatch, capsys):
+    audit, _ = world([eligible()])
+    monkeypatch.setattr(publisher, "LOCK_TIMEOUT_SECONDS", 0.2, raising=False)
+    from sandbox.mind.step2.reader_slot import reader_slot
+
+    started = time.monotonic()
+    with reader_slot(audit / publisher.LOCK_FILENAME, timeout_seconds=0):
+        assert publisher.main([]) == 2
+        refused(capsys)
+        monkeypatch.setenv("WD_MIND_PUBLIC_PUBLISH_MODE", "recover")
+        assert publisher.main([]) == 2
+        refused(capsys)
+        monkeypatch.delenv("WD_MIND_PUBLIC_PUBLISH_MODE")
+    assert time.monotonic() - started < 5
+    assert publication(audit) is None and pending(audit) is None
+    assert publisher.main([]) == 0 and published(capsys)[0]["outcome"] == "published"

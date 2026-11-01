@@ -180,19 +180,24 @@ def _snapshot_mode_args(tasks, mode, public_policy_bytes, anchor_bytes):
             "expected_anchor_bytes": anchor_bytes}
 
 
-def _verify_generation(root, name, tasks, roster, policy_sha256, roster_sha256):
-    """Verify the reader-compatible builder artifacts and healthy cell receipts."""
-    from sandbox.mind.step2 import shared_projection as sp, wd_q4_private_read as reader
-    if not isinstance(name, str) or NAME.fullmatch(name) is None:
+def _validate_generation_bytes(contents, *, name, tasks, roster, policy_sha256, roster_sha256):
+    """Validate active control bytes only; no cells, I/O, or authentication."""
+    try:
+        return _validate_generation_bytes_inner(
+            contents, name=name, tasks=tasks, roster=roster,
+            policy_sha256=policy_sha256, roster_sha256=roster_sha256)
+    except Exception:
+        pass
+    del contents, name, tasks, roster, policy_sha256, roster_sha256
+    _refuse()
+
+
+def _validate_generation_bytes_inner(contents, *, name, tasks, roster, policy_sha256, roster_sha256):
+    from sandbox.mind.step2 import q4_descriptor as descriptor_parser, shared_projection as sp
+    if (not isinstance(name, str) or NAME.fullmatch(name) is None or type(contents) is not dict
+            or set(contents) != set(ARTIFACTS)
+            or any(type(data) is not bytes or len(data) > _MAX for data in contents.values())):
         _refuse()
-    directory = _secure(root / name)
-    if not directory.is_dir():
-        _refuse()
-    # Cell loaders follow paths: reject existing reparse points across the tree.
-    for base, dirs, files in os.walk(directory, followlinks=False):
-        for item in dirs + files:
-            _secure(Path(base) / item)
-    contents = {key: _read(directory / path) for key, path in ARTIFACTS.items()}
     hashes = {key: _sha(data) for key, data in contents.items()}
     projection = _parse(contents["projection_sha256"])
     if json.dumps(projection, sort_keys=True, indent=1).encode("utf-8") != contents["projection_sha256"]:
@@ -205,7 +210,9 @@ def _verify_generation(root, name, tasks, roster, policy_sha256, roster_sha256):
             _refuse()
     memory = _parse(contents["memory_sha256"])
     receipt = _parse(contents["receipt_sha256"])
-    descriptor = reader.read_descriptor(directory / "descriptor.json", hashes["descriptor_sha256"])
+    descriptor = descriptor_parser.read_descriptor_bytes(contents["descriptor_sha256"],
+                                                          hashes["descriptor_sha256"],
+                                                          error_type=CheckpointRefused)
     def strict_policy(value):
         return (type(value) is dict
                 and set(value) == {"authorship", "review_signal_excluded", "policy_sha256", "roster_sha256"}
@@ -214,18 +221,43 @@ def _verify_generation(root, name, tasks, roster, policy_sha256, roster_sha256):
                 and value["policy_sha256"] == policy_sha256
                 and value["roster_sha256"] == roster_sha256)
     if (descriptor["memory_sha256"] != hashes["memory_sha256"]
-            or memory.get("scope") != reader.SHARED_SCOPE or memory.get("projection_schema") != sp.SCHEMA
+            or memory.get("scope") != descriptor_parser.SHARED_SCOPE or memory.get("projection_schema") != sp.SCHEMA
             or not strict_policy(memory.get("policy")) or not strict_policy(receipt.get("policy"))
             or memory.get("projection_sha256") != hashes["projection_sha256"]
             or receipt.get("schema") != "wd.bridge-mind-shared-index-build-receipt.v1"
-            or receipt.get("scope") != reader.SHARED_SCOPE
-            or receipt.get("descriptor_schema") != reader.DESCRIPTOR_SCHEMA
+            or receipt.get("scope") != descriptor_parser.SHARED_SCOPE
+            or receipt.get("descriptor_schema") != descriptor_parser.DESCRIPTOR_SCHEMA
             or receipt.get("projection_schema") != sp.SCHEMA or receipt.get("projection_file") != "projection.json"
             or receipt.get("encoder") != descriptor["encoder"] or receipt.get("dim") != descriptor["dim"]
             or receipt.get("memory_sha256") != hashes["memory_sha256"]
             or receipt.get("descriptor_sha256") != hashes["descriptor_sha256"]
             or receipt.get("projection_sha256") != hashes["projection_sha256"]
             or receipt.get("memory_name") != name):
+        _refuse()
+    return {"hashes": hashes, "projection": projection, "memory": memory, "receipt": receipt,
+            "descriptor": descriptor}
+
+
+def _verify_generation(root, name, tasks, roster, policy_sha256, roster_sha256):
+    """Verify the reader-compatible builder artifacts and healthy cell receipts."""
+    from sandbox.mind.step2 import wd_q4_private_read as reader
+    if not isinstance(name, str) or NAME.fullmatch(name) is None:
+        _refuse()
+    directory = _secure(root / name)
+    if not directory.is_dir():
+        _refuse()
+    # Cell loaders follow paths: reject existing reparse points across the tree.
+    for base, dirs, files in os.walk(directory, followlinks=False):
+        for item in dirs + files:
+            _secure(Path(base) / item)
+    contents = {key: _read(directory / path) for key, path in ARTIFACTS.items()}
+    validated = _validate_generation_bytes(contents, name=name, tasks=tasks, roster=roster,
+                                           policy_sha256=policy_sha256, roster_sha256=roster_sha256)
+    hashes, projection = validated["hashes"], validated["projection"]
+    memory, receipt = validated["memory"], validated["receipt"]
+    # Preserve the legacy path's separate descriptor reread and hash check.
+    descriptor = reader.read_descriptor(directory / "descriptor.json", hashes["descriptor_sha256"])
+    if descriptor != validated["descriptor"]:
         _refuse()
     opened = reader.bind_memory(directory, descriptor)
     if (not opened.views or set(opened.views) != set(memory.get("cells", {}))
@@ -716,10 +748,9 @@ def _copy_snapshot_cells(cell_snapshots):
 def _preflight_public_snapshot(pointer, active, tasks, roster, *, public_policy_bytes,
                                public_policy_sha256, expected_source_sha256, expected_encoder_sha256):
     """Check caller-pinned public controls only; this does not approve disclosure."""
-    descriptor = projected = public_tasks = public_types = raw = record = meta = None
+    descriptor = projected = public_tasks = public_types = record = meta = validated = contents = mode = None
     try:
-        from sandbox.mind.step2 import shared_capture_adapter as adapter, shared_projection as sp
-        from sandbox.mind.step2 import wd_q4_private_read as reader
+        from sandbox.mind.step2 import shared_capture_adapter as adapter
         from tools import wd_q4_public_pointer_resolver as resolver
         from tools.wd_q4_public_query import _encoder_digest
         if (type(expected_source_sha256) is not str or not HEX.fullmatch(expected_source_sha256)
@@ -727,16 +758,19 @@ def _preflight_public_snapshot(pointer, active, tasks, roster, *, public_policy_
                 or pointer["anchor_sha256"] != expected_source_sha256):
             _refuse()
         public_tasks, public_types = adapter.public_status_policy(public_policy_bytes, public_policy_sha256, tasks)
-        descriptor = reader.read_descriptor_bytes(active.read(ARTIFACTS["descriptor_sha256"]),
-                                                   pointer["artifacts"]["descriptor_sha256"])
+        contents = {key: active.read(path) for key, path in ARTIFACTS.items()}
+        validated = _validate_generation_bytes(contents, name=pointer["generation"], tasks=tasks, roster=roster,
+                                               policy_sha256=pointer["policy_sha256"],
+                                               roster_sha256=pointer["roster_sha256"])
+        mode = _requested_source_mode("public-v1", public_policy_sha256)
+        _validate_active_pointer_binding(pointer, {**validated["hashes"],
+            "source_binding": validated["receipt"].get("source_binding"),
+            "source_mode": _source_mode(validated["memory"], validated["receipt"])},
+            pointer["policy_sha256"], pointer["roster_sha256"], mode)
+        descriptor = validated["descriptor"]
         if _encoder_digest(descriptor["encoder"]) != expected_encoder_sha256:
             _refuse()
-        raw = active.read(ARTIFACTS["projection_sha256"])
-        projected = _parse(raw)
-        if json.dumps(projected, sort_keys=True, indent=1).encode("utf-8") != raw:
-            _refuse()
-        sp.validate_projection(projected, approved_tasks=tasks, include_refs=False,
-                               roster=roster, exclude_review_signal=True)
+        projected = validated["projection"]
         for record in projected["records"]:
             meta = record["meta"]
             if (meta.get("task_id") not in public_tasks or meta.get("type") not in public_types
@@ -746,7 +780,7 @@ def _preflight_public_snapshot(pointer, active, tasks, roster, *, public_policy_
     except Exception:
         pass
     del pointer, active, tasks, roster, public_policy_bytes, descriptor, projected, public_tasks, public_types
-    del raw, record, meta, public_policy_sha256, expected_source_sha256, expected_encoder_sha256
+    del record, meta, public_policy_sha256, expected_source_sha256, expected_encoder_sha256, validated, contents, mode
     _refuse()
 
 

@@ -145,34 +145,13 @@ def read_descriptor_bytes(raw, expected_sha256):
     This verifies descriptor shape only; it does not authenticate a producer or
     verify the memory, cell data, runtime or model named by the descriptor.
     """
-    if not _hex64(expected_sha256):
-        raise PrivateReadRefused("descriptor_pin_invalid")
-    if type(raw) is not bytes:
-        raise PrivateReadRefused("descriptor_unreadable")
-    if len(raw) > DESCRIPTOR_BUDGET:
-        raise PrivateReadRefused("descriptor_over_budget")
-    if hashlib.sha256(raw).hexdigest() != expected_sha256:
-        raise PrivateReadRefused("descriptor_pin_mismatch")
-    parsed = False
+    from sandbox.mind.step2.q4_descriptor import read_descriptor_bytes as parse_descriptor
     try:
-        descriptor = json.loads(raw.decode("utf-8"))
-        parsed = True
-    except (ValueError, RecursionError):
-        pass
-    if not parsed:
-        del raw
-        raise PrivateReadRefused("descriptor_unreadable") from None
-    if isinstance(descriptor, dict) and descriptor.get("scope") != SHARED_SCOPE:
-        raise PrivateReadRefused("descriptor_scope_mismatch")
-    if (not isinstance(descriptor, dict) or set(descriptor) != {"schema", "scope", "memory_sha256", "dim", "encoder"}
-            or descriptor["schema"] != DESCRIPTOR_SCHEMA or not _hex64(descriptor["memory_sha256"])
-            or type(descriptor["dim"]) is not int or descriptor["dim"] < 1
-            or not isinstance(descriptor["encoder"], dict) or set(descriptor["encoder"]) != set(ENCODER_KEYS)
-            or not all(isinstance(descriptor["encoder"][key], str) and descriptor["encoder"][key]
-                       for key in ENCODER_KEYS)
-            or not _hex64(descriptor["encoder"]["weights_sha256"])):
-        raise PrivateReadRefused("descriptor_shape")
-    return descriptor
+        return parse_descriptor(raw, expected_sha256, error_type=PrivateReadRefused)
+    except PrivateReadRefused as exc:
+        reason = str(exc)
+    del raw
+    raise PrivateReadRefused(reason) from None
 
 
 def _identity_of(value):

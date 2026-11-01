@@ -15,6 +15,24 @@ MEMORY_PATH = "sandbox/mind/step2/test_memory_snapshot.py"
 MEMORY_REQUIRED = MEMORY_PATH + "::test_snapshot_memory_answers_nonempty_q4_without_path_io"
 VERIFIED_PATH = "sandbox/mind/step2/test_verified_snapshot_checkpoint.py"
 VERIFIED_REQUIRED = VERIFIED_PATH + "::test_public_preflight_no_io_but_checkpoint_stays_fail_closed"
+Q4_DESCRIPTOR_PATH = "sandbox/mind/step2/test_q4_descriptor.py"
+ACTIVE_BINDING_PATH = "sandbox/mind/step2/test_verified_snapshot_active_binding.py"
+
+
+@pytest.mark.parametrize("path,count", [(Q4_DESCRIPTOR_PATH, 13), (ACTIVE_BINDING_PATH, 15)])
+def test_runner_requires_all_new_witnesses(path, count):
+    runner = load_runner()
+    nodes = [node for node in runner.EXPECTED_NODEIDS if node.startswith(path + "::")]
+    assert len(nodes) == len(set(nodes)) == count
+    items = [SimpleNamespace(nodeid=node) for node in runner.EXPECTED_NODEIDS]
+    guard = runner._Guard()
+    session = SimpleNamespace(items=items, exitstatus=0)
+    guard.pytest_collection_finish(session)
+    for item in items:
+        if item.nodeid != nodes[0]:
+            guard.pytest_runtest_logreport(SimpleNamespace(skipped=False, when="call", nodeid=item.nodeid))
+    guard.pytest_sessionfinish(session, 0)
+    assert session.exitstatus != 0
 
 
 def load_runner():
@@ -292,7 +310,8 @@ def test_runner_propagates_pytest_failure_and_preserves_environment(monkeypatch)
     assert len(calls) == 1 and len(calls[0][1]) == 1
     assert calls[0][0] == [str(ROOT / "sandbox/mind/step2/test_cell_verified_bytes.py"),
                            str(ROOT / SNAPSHOT_PATH), str(ROOT / DESCRIPTOR_PATH), str(ROOT / MEMORY_PATH),
-                           str(ROOT / VERIFIED_PATH), "-q"]
+                           str(ROOT / VERIFIED_PATH), str(ROOT / Q4_DESCRIPTOR_PATH),
+                           str(ROOT / ACTIVE_BINDING_PATH), "-q"]
 
 
 def test_required_d15_hook_cannot_be_silently_omitted(monkeypatch):

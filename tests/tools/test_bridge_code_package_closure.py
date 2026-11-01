@@ -825,7 +825,8 @@ SHADOW_RELEASE_CLI = {
 Q4_READONLY_FILES = frozenset({
     "sandbox/mind/step2/cell.py", "sandbox/mind/step2/corpus.py",
     "sandbox/mind/step2/encode.py", "sandbox/mind/step2/memory.py",
-    "sandbox/mind/step2/q4.py", "sandbox/mind/step2/reader_slot.py", "sandbox/mind/step2/runtime_bootstrap.py",
+    "sandbox/mind/step2/q4.py", "sandbox/mind/step2/q4_descriptor.py",
+    "sandbox/mind/step2/reader_slot.py", "sandbox/mind/step2/runtime_bootstrap.py",
     "sandbox/mind/step2/interpreter_identity.py",
     "sandbox/mind/step2/runtime_launcher.py", "sandbox/mind/step2/runtime_manifest.py",
     "sandbox/mind/step2/shared_bridge_snapshot.py", "sandbox/mind/step2/shared_capture_adapter.py",
@@ -1174,7 +1175,7 @@ def _assert_shadow_release_delivery(definition):
     None, "shadow_file_drop", "shadow_smoke_drop", "shadow_entrypoint_drop",
     "shadow_library_published", "deferred_sandbox_file_published",
     "deferred_shadow_entrypoint", "deferred_shadow_smoke", "q4_file_drop", "q4_adapter_drop", "q4_slot_drop",
-    "q4_runtime_manifest_drop", "q4_runtime_bootstrap_drop", "q4_runtime_launcher_drop", "q4_projection_drop",
+    "q4_runtime_manifest_drop", "q4_runtime_bootstrap_drop", "q4_runtime_launcher_drop", "q4_projection_drop", "q4_descriptor_drop",
     "q4_agent_api_drop", "q4_agent_api_published", "q4_resolved_child_drop", "q4_resolved_child_published",
     "q4_resolver_drop", "q4_capture_drop", "q4_snapshot_drop", "q4_checkpoint_drop", "q4_builder_drop",
 ])
@@ -1194,6 +1195,8 @@ def test_shadow_release_delivery_contract_and_named_mutants(mutation):
         mutant["python_entrypoints"]["unreviewed_driver_cli"] = "sandbox/mind/mind_chain_driver.py"
     elif mutation == "q4_file_drop":
         mutant["python_files"].remove("sandbox/mind/step2/q4.py")
+    elif mutation == "q4_descriptor_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/q4_descriptor.py")
     elif mutation == "q4_adapter_drop":
         mutant["python_files"].remove("sandbox/mind/step2/wd_q4_private_read.py")
     elif mutation == "q4_slot_drop":
@@ -1233,7 +1236,7 @@ def test_shadow_release_delivery_contract_and_named_mutants(mutation):
     with pytest.raises(AssertionError, match="q4_file_drop" if mutation in {
             "q4_adapter_drop", "q4_slot_drop", "q4_runtime_manifest_drop", "q4_runtime_bootstrap_drop",
             "q4_runtime_launcher_drop", "q4_projection_drop", "q4_resolver_drop", "q4_capture_drop", "q4_snapshot_drop",
-            "q4_checkpoint_drop", "q4_builder_drop"} else mutation):
+            "q4_checkpoint_drop", "q4_builder_drop", "q4_descriptor_drop"} else mutation):
         _assert_shadow_release_delivery(mutant)
     _assert_shadow_release_delivery(definition)
 

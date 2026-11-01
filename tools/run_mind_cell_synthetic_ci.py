@@ -17,6 +17,8 @@ SNAPSHOT_TEST_PATH = "sandbox/mind/step2/test_cell_snapshot_bytes.py"
 DESCRIPTOR_TEST_PATH = "sandbox/mind/step2/test_wd_q4_private_read_bytes.py"
 MEMORY_TEST_PATH = "sandbox/mind/step2/test_memory_snapshot.py"
 VERIFIED_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_checkpoint.py"
+Q4_DESCRIPTOR_TEST_PATH = "sandbox/mind/step2/test_q4_descriptor.py"
+ACTIVE_BINDING_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_active_binding.py"
 _NAMES = (
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-meta]",
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-provenance]",
@@ -150,11 +152,32 @@ _VERIFIED_NAMES = (
     "test_snapshot_checkpoint_verifies_bound_prefix_history_without_disk[False]",
     "test_snapshot_checkpoint_verifies_bound_prefix_history_without_disk[True]",
 )
+_Q4_DESCRIPTOR_NAMES = (
+    *(f"test_descriptor_refusals_preserve_existing_reason_and_exception[{fault}-{reason}]"
+      for fault, reason in (("pin", "descriptor_pin_invalid"), ("bytes", "descriptor_unreadable"),
+                            ("budget", "descriptor_over_budget"), ("digest", "descriptor_pin_mismatch"),
+                            ("json", "descriptor_unreadable"), ("scope", "descriptor_scope_mismatch"),
+                            ("shape", "descriptor_shape"))),
+    "test_descriptor_valid_roundtrip_without_native",
+    *(f"test_refusal_does_not_retain_raw_payload_or_cause[{kind}]"
+      for kind in ("invalid_pin", "mismatch", "malformed", "shape")),
+    "test_unexpected_pin_error_is_scrubbed_and_fixed",
+)
+_ACTIVE_BINDING_NAMES = (
+    *(f"test_bytes_only_active_validation_preserves_semantics_without_io_or_native[{fault}]"
+      for fault in ("None", "receipt_dim", "projection_schema", "encoder", "memory_policy", "receipt_policy", "memory_name")),
+    *(f"test_public_preflight_checks_binding_without_native_or_disk[{fault}]"
+      for fault in ("None", "source_binding", "source_mode", "encoder_pin", "public_policy")),
+    *(f"test_legacy_verifier_keeps_separate_descriptor_reread[{changed}]" for changed in ("False", "True")),
+    "test_active_validation_refusal_does_not_retain_private_input",
+)
 EXPECTED_NODEIDS = (tuple(TEST_PATH + "::" + name for name in _NAMES) +
                     tuple(SNAPSHOT_TEST_PATH + "::" + name for name in _SNAPSHOT_NAMES) +
                     tuple(DESCRIPTOR_TEST_PATH + "::" + name for name in _DESCRIPTOR_NAMES) +
                     tuple(MEMORY_TEST_PATH + "::" + name for name in _MEMORY_NAMES) +
-                    tuple(VERIFIED_TEST_PATH + "::" + name for name in _VERIFIED_NAMES))
+                    tuple(VERIFIED_TEST_PATH + "::" + name for name in _VERIFIED_NAMES) +
+                    tuple(Q4_DESCRIPTOR_TEST_PATH + "::" + name for name in _Q4_DESCRIPTOR_NAMES) +
+                    tuple(ACTIVE_BINDING_TEST_PATH + "::" + name for name in _ACTIVE_BINDING_NAMES))
 
 
 def _unavailable(*_args, **_kwargs):
@@ -208,7 +231,8 @@ def _run_pytest(pytest):
     guard = _Guard()
     code = int(pytest.main([str(ROOT / TEST_PATH), str(ROOT / SNAPSHOT_TEST_PATH),
                             str(ROOT / DESCRIPTOR_TEST_PATH), str(ROOT / MEMORY_TEST_PATH),
-                            str(ROOT / VERIFIED_TEST_PATH),
+                            str(ROOT / VERIFIED_TEST_PATH), str(ROOT / Q4_DESCRIPTOR_TEST_PATH),
+                            str(ROOT / ACTIVE_BINDING_TEST_PATH),
                             "-q"], plugins=[guard]))
     return 1 if code == 0 and not guard.complete() else code
 

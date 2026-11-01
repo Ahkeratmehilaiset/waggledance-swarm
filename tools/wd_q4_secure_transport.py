@@ -1048,7 +1048,8 @@ def _fixed_child_backend(plan, peer_path):
     return answer
 
 
-def _fixed_child_protocol(read_frame, write_frame, peer_code_sha256, peer_path=None):
+def _fixed_child_protocol(read_frame, write_frame, peer_code_sha256, peer_path=None,
+                          _diagnostic_marker=None, _diagnostic_fault=False):
     """Child order: plan, backend preparation, challenge, READY; bundle (read limit = plan length), ACK; query.
 
     No bundle byte is read before READY is written, and the query is not read
@@ -1076,7 +1077,14 @@ def _fixed_child_protocol(read_frame, write_frame, peer_code_sha256, peer_path=N
     bundle_bytes = read_frame(plan["bundle_bytes"])
     _fixed_child_bundle(plan, bundle_bytes)
     write_frame(_fixed_ack(challenge["nonce"], _sha(bundle_bytes)))
+    if _diagnostic_marker is not None:
+        # Mark before the read: a partial/failed query read must never reveal
+        # a more specific phase than after_query.
+        _diagnostic_marker[0] = True
     query = read_frame(_MAX_INPUT)
+    if _diagnostic_fault:
+        _check(plan["backend"] == "synthetic-v1")
+        raise _Refused()
     return backend(plan, plan_bytes, bundle_bytes, query)
 
 
@@ -1111,6 +1119,9 @@ except BaseException:
 _FIXED_BOOTSTRAP = _BOOTSTRAP.replace("scope['_client_main'](*sys.argv[3:])",
                                       "scope['_fixed_child_main'](sys.argv[2],*sys.argv[3:])")
 _check(_FIXED_BOOTSTRAP != _BOOTSTRAP)
+_DIAGNOSTIC_BOOTSTRAP = _BOOTSTRAP.replace("scope['_client_main'](*sys.argv[3:])",
+    "scope['_fixed_diagnostic_main'](sys.argv[2],sys.argv[3],*sys.argv[4:])")
+_check(_DIAGNOSTIC_BOOTSTRAP != _BOOTSTRAP and _DIAGNOSTIC_BOOTSTRAP != _FIXED_BOOTSTRAP)
 
 
 def _validate(stdin_bytes, timeout_seconds, max_output_bytes):
@@ -1411,14 +1422,70 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
     raise _Refused() from None
 
 
+def run_fixed_peer_diagnostic(*, executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
+                              expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
+                              timeout_seconds, max_output_bytes, enabled=False, public_snapshot_enabled=False,
+                              synthetic_force_after_query=False):
+    """Opt-in synthetic-only phase probe in a separately pinned real child.
+
+    The synthetic backend does not authenticate caller bytes.
+    Caller MUST supply synthetic data and independently pin/authenticate this
+    module, interpreter, plan and runtime. The output has no inputs, hashes,
+    sizes, paths or exception detail. A successful diagnostic transport proves
+    neither child truth nor process-tree cleanup; the latter remains UNKNOWN.
+    Pre-query failures expose no diagnostic phase. after_query means the query read was attempted
+    or a later step failed; it does not prove query receipt or backend execution.
+    This is not a production route.
+    """
+    if enabled is False:
+        return {"status": "OFF"}
+    cleanup_type = cleanup_lease = failure = transport_cleanup = None
+    try:
+        _check(enabled is True and type(synthetic_force_after_query) is bool)
+        from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown as cleanup_type
+        mode = "synthetic-fault" if synthetic_force_after_query else "observe"
+        return _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
+                                    expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
+                                    timeout_seconds, max_output_bytes, public_snapshot_enabled, mode)
+    except BaseException as exc:
+        if cleanup_type is not None and isinstance(exc, cleanup_type):
+            cleanup_lease = exc.lease
+        elif isinstance(exc, TransportCleanupUnknown):
+            transport_cleanup = exc.prior_outcome
+        elif isinstance(exc, TimeoutError):
+            failure = "timeout"
+        elif isinstance(exc, KeyboardInterrupt):
+            failure = "interrupt"
+        elif isinstance(exc, SystemExit):
+            failure = "exit"
+        else:
+            failure = "refused"
+    del executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes, expected_plan_sha256
+    del bundle_bytes, runtime_manifest_bytes, query_bytes, cwd, timeout_seconds, max_output_bytes
+    del enabled, public_snapshot_enabled, synthetic_force_after_query
+    if cleanup_lease is not None:
+        raise cleanup_type(cleanup_lease) from None
+    if transport_cleanup is not None:
+        raise TransportCleanupUnknown(transport_cleanup) from None
+    if failure == "timeout":
+        raise TimeoutError("secure_transport_timeout") from None
+    if failure == "interrupt":
+        raise KeyboardInterrupt() from None
+    if failure == "exit":
+        raise SystemExit(1) from None
+    raise _Refused() from None
+
+
 def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
                          expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
-                         timeout_seconds, max_output_bytes, public_snapshot_enabled=False):
+                         timeout_seconds, max_output_bytes, public_snapshot_enabled=False, _diagnostic_mode=None):
     _validate(query_bytes, timeout_seconds, max_output_bytes)
     _check(len(query_bytes) > 0 and type(public_snapshot_enabled) is bool)
     plan = _fixed_plan(plan_bytes)
     public = plan["backend"] == "public-snapshot-v1"
     _check(public_snapshot_enabled or not public)
+    _check(_diagnostic_mode in (None, "observe", "synthetic-fault"))
+    _check(_diagnostic_mode is None or plan["backend"] == "synthetic-v1")
     _check(hmac.compare_digest(_sha(plan_bytes), _hex64(expected_plan_sha256)))
     _check(hmac.compare_digest(plan["interpreter_sha256"], _hex64(expected_interpreter_sha256)))
     _check(type(executable) is str and
@@ -1437,7 +1504,10 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
             source = stream.read(_VERIFIER_LIMIT + 1)
         _check(len(source) <= _VERIFIER_LIMIT and hmac.compare_digest(_sha(source), plan["verifier_sha256"]))
     control = {"schema": "wd.q4-fixed-control.v1", "nonce": os.urandom(16).hex(), "binding_sha256": _sha(plan_bytes)}
-    command = [executable, "-I", "-S", "-B", "-c", _FIXED_BOOTSTRAP, path, plan["peer_code_sha256"]]
+    bootstrap = _FIXED_BOOTSTRAP if _diagnostic_mode is None else _DIAGNOSTIC_BOOTSTRAP
+    command = [executable, "-I", "-S", "-B", "-c", bootstrap, path, plan["peer_code_sha256"]]
+    if _diagnostic_mode is not None:
+        command.append(_diagnostic_mode)
     from tools.wd_q4_fixed_parent_attestation import attest_file
     with attest_file(executable, expected_interpreter_sha256, max_bytes=interpreter_max_bytes, enabled=True):
         with attest_file(path, plan["peer_code_sha256"], max_bytes=_PEER_CODE_LIMIT, enabled=True):
@@ -1445,6 +1515,9 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
                   if public else contextlib.nullcontext()):
                 output, code = _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds, max_output_bytes,
                                     fixed=(control, plan_bytes, bundle_bytes))
+    if _diagnostic_mode is not None:
+        _check(code == 0 and output in (b"after_query", b"completed"))
+        return {"status": "DIAGNOSTIC", "phase": output.decode("ascii"), "cleanup": "UNKNOWN"}
     if not public:
         return output, code
     # Never return the child's public answer unvalidated: re-resolve it against the pinned bundle projection.
@@ -1614,5 +1687,43 @@ def _fixed_child_main(peer_code_sha256, name, parent_pid, parent_created):
         except BaseException:
             pass
         raise _Refused() from None
+    finally:
+        k.CloseHandle(pipe)
+
+
+def _fixed_diagnostic_main(peer_code_sha256, mode, name, parent_pid, parent_created):
+    """Separate pinned diagnostic child; never emits the backend's answer."""
+    _check(mode in ("observe", "synthetic-fault"))
+    k, _ = _api()
+    prefix = r"\\.\pipe\wd-q4-synthetic-"
+    _check(type(name) is str and name.startswith(prefix) and len(name) == len(prefix) + 32
+           and all(character in "0123456789abcdef" for character in name[len(prefix):]))
+    pid, created = int(parent_pid), int(parent_created)
+    _check(pid > 0 and created > 0)
+    pipe = _handle(k.CreateFileW(name, 0xC0000000, 0, None, 3, 0, None))
+    query_started = [False]
+    phase = None
+    try:
+        try:
+            _noninheritable(k, pipe)
+            _peer(k, pipe, pid, created, client=False)
+            raw = _fixed_child_protocol(lambda limit: _sync_frame(k, pipe, limit),
+                lambda data: _sync_write(k, pipe, struct.pack(">I", len(data)) + data),
+                peer_code_sha256, peer_path=__file__, _diagnostic_marker=query_started,
+                _diagnostic_fault=(mode == "synthetic-fault"))
+            _check(type(raw) is bytes and len(raw) <= _MAX_OUTPUT)
+            phase = b"completed"
+        except Exception:
+            if query_started[0] is True:
+                phase = b"after_query"
+        if phase is None:
+            try:
+                _sync_write(k, pipe, b"\0")
+            except BaseException:
+                pass
+            raise _Refused() from None
+        # The payload is only a constant; there is no exception, data, path,
+        # length, hash or backend answer in the diagnostic response.
+        _sync_write(k, pipe, b"\1" + struct.pack(">I", len(phase)) + phase + struct.pack(">i", 0) + b"END!")
     finally:
         k.CloseHandle(pipe)

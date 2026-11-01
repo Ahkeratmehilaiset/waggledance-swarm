@@ -40,6 +40,25 @@ def test_package_entrypoints_exist_and_include_release_helpers():
     assert "tools/agent_next_task.py" in definition["python_files"]
 
 
+SESSION_OUTER_FILES = (
+    "tools/wd_q4_session_outer_entry.py",
+    "tools/wd_q4_session_outer_synthetic.py",
+)
+
+
+def test_session_outer_files_are_packaged_without_new_entrypoint():
+    definition = json.loads((REBOOT / "bridge-code-files.json").read_text(encoding="utf-8"))
+    assert set(SESSION_OUTER_FILES) <= set(definition["python_files"])
+    assert not set(SESSION_OUTER_FILES) & set(definition["python_entrypoints"].values())
+    # These dynamically loaded files cannot be discovered from the entry's AST.
+    dynamic = {"sandbox/mind/step2/runtime_manifest.py", "tools/wd_q4_public_outer.py",
+               "tools/wd_q4_public_child.py", "tools/wd_q4_public_query.py",
+               "tools/wd_q4_lane_session_cli.py"}
+    assert dynamic <= set(definition["python_files"])
+    closure, _ = _intra_repo_closure(SESSION_OUTER_FILES)
+    assert closure <= set(definition["python_files"]), sorted(closure - set(definition["python_files"]))
+
+
 @pytest.mark.skipif(
     PS is None or sys.platform != "win32",
     reason="Exercises the Windows-only fleet launcher's native path checks",
@@ -575,6 +594,23 @@ $map | ConvertTo-Json -Depth 4 -Compress
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
     return bundle
+
+
+@pytest.mark.skipif(PWSH is None or not HAS_BRIDGE_PYTHON, reason="pinned bridge interpreter unavailable")
+def test_session_outer_staged_manifest_contains_exact_source_bytes(tmp_path):
+    # Bind this fixture to the real package definition before staging its two
+    # bytes; the fake wheel keeps this test offline and non-activating.
+    definition = json.loads((REBOOT / "bridge-code-files.json").read_text(encoding="utf-8"))
+    assert set(SESSION_OUTER_FILES) <= set(definition["python_files"])
+    bundle = _stage_fake_bundle(tmp_path, real_files=SESSION_OUTER_FILES)
+    manifest = json.loads((bundle / "deployment-manifest.json").read_text(encoding="utf-8"))
+    for relative in SESSION_OUTER_FILES:
+        source = (ROOT / relative).read_bytes()
+        staged = (bundle / "tools-bootstrap" / relative).read_bytes()
+        assert staged == source
+        assert manifest["files"]["tools-bootstrap/" + relative] == hashlib.sha256(source).hexdigest().upper()
+    staged_definition = json.loads((bundle / "bridge-code-files.json").read_text(encoding="utf-8"))
+    assert not set(SESSION_OUTER_FILES) & set(staged_definition["python_entrypoints"].values())
 
 
 @pytest.mark.skipif(

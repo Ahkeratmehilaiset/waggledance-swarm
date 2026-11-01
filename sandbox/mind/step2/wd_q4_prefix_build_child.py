@@ -13,6 +13,12 @@ float32, dim 384). The resulting ``PrefixPublicRequest`` goes to
 ``shared_prefix_public_producer.publish_public_prefix`` unchanged, so prior-pointer and start-prefix continuity, the
 private state lock and the pointer CAS stay the producer's; this module adds no publication logic.
 
+The optional, separately pinned ``wd.q4-prefix-build-plan.v2`` adds exactly one field, ``max_windows``. It selects
+the producer's bounded catch-up path; incomplete catch-up refuses without publication. Its coverage is only to the
+final observed snapshot, not proof of currentness or complete history, and source refusals are not aggregated.
+The v1 plan and its single-window route remain unchanged; the caller cannot change the bound without changing the
+plan bytes and their independently supplied SHA256.
+
 Model root binding (v2 finding 1). ``Path.is_absolute`` alone accepts UNC shares and paths through symbolic links
 or junctions, so an unbound ``model_dir`` would let ``model_identity`` read remote or escaped data before the
 backend's offline controls apply. The plan's ``model_dir`` is therefore bound to ``trusted_model_root`` before any
@@ -127,6 +133,7 @@ __all__ = ["BuildChildRefused", "build_prefix_generation", "PLAN_SCHEMA", "PLAN_
            "WEIGHTS_FILE", "MODEL_TREE_LIMIT", "ASSET_LIMIT", "ASSET_BYTES_LIMIT", "BACKEND_ISOLATION", "MODEL_ASSETS"]
 
 PLAN_SCHEMA = "wd.q4-prefix-build-plan.v1"
+PLAN_CATCHUP_SCHEMA = "wd.q4-prefix-build-plan.v2"
 PLAN_LIMIT = 1 << 16
 PLAN_KEYS = frozenset({"schema", "generation", "expected_pointer_sha256", "max_prefix_bytes", "timeout", "encoder",
                        "pins"})
@@ -144,9 +151,11 @@ MODEL_ASSETS = "caller_manifest_verified_before_load_reread_by_backend"
 REASONS = frozenset({"disabled", "plan_refused", "request_refused", "pins_refused", "preflight_refused",
                      "model_root_refused", "asset_refused", "encoder_refused", "publication_state_unknown"})
 PRODUCER_REASONS = frozenset({"request_invalid", "pins_mismatch", "private_state_refused", "prepare_refused",
-                              "empty_genesis", "build_refused", "publication_state_unknown"})
+                              "empty_genesis", "build_refused", "publication_state_unknown", "catchup_incomplete",
+                              "empty_catchup_unsupported"})
 _REPORT_KEYS = frozenset({"status", "pointer_sha256", "generation", "publisher_authentication", "source_authenticity",
                           "freshness"})
+_CATCHUP_REPORT_KEYS = _REPORT_KEYS | {"coverage", "source_refusals"}
 _PUBLISHED = frozenset({"PUBLISHED_GENESIS", "PUBLISHED_HISTORY", "EMPTY_ADVANCED", "EMPTY_NO_CHANGE"})
 _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -213,7 +222,17 @@ def _assets_shape(assets):
 
 
 def _plan_shape(plan):
-    if type(plan) is not dict or frozenset(plan) != PLAN_KEYS or plan["schema"] != PLAN_SCHEMA:
+    if type(plan) is not dict:
+        return False
+    schema = plan.get("schema")
+    if schema == PLAN_SCHEMA:
+        if frozenset(plan) != PLAN_KEYS:
+            return False
+    elif schema == PLAN_CATCHUP_SCHEMA:
+        if (frozenset(plan) != PLAN_KEYS | {"max_windows"} or type(plan["max_windows"]) is not int
+                or not 1 <= plan["max_windows"] <= snapshot.CATCHUP_MAX_WINDOWS):
+            return False
+    else:
         return False
     generation, pointer, budget, timeout = (plan["generation"], plan["expected_pointer_sha256"],
                                             plan["max_prefix_bytes"], plan["timeout"])
@@ -510,17 +529,38 @@ def _encoder(encoder, identity):
     return encode
 
 
-def _publish(request):
+def _publish(request, *, max_windows=None):
     """``(report, token)``: the producer's validated report, or the fixed token to raise."""
     try:
-        report = producer.publish_public_prefix(enabled=True, request=request)
+        if max_windows is None:
+            report = producer.publish_public_prefix(enabled=True, request=request)
+        else:
+            report = producer.publish_public_catchup(enabled=True, request=request, max_windows=max_windows)
     except producer.PrefixProducerRefused as refused:
-        token = refused.args[0] if len(refused.args) == 1 and refused.args[0] in PRODUCER_REASONS else None
+        token = (refused.args[0] if len(refused.args) == 1 and type(refused.args[0]) is str
+                 and refused.args[0] in PRODUCER_REASONS else None)
         return None, token or "publication_state_unknown"
     except Exception:  # noqa: BLE001 - the producer sanitises its own path; anything else is unknown state
         return None, "publication_state_unknown"
-    if (type(report) is not dict or frozenset(report) != _REPORT_KEYS or report["status"] not in _PUBLISHED
-            or not _hex64(report["pointer_sha256"])):
+    expected_keys = _REPORT_KEYS if max_windows is None else _CATCHUP_REPORT_KEYS
+    if (type(report) is not dict or frozenset(report) != expected_keys
+            or type(report["status"]) is not str or report["status"] not in _PUBLISHED
+            or not _hex64(report["pointer_sha256"])
+            or any(type(report[key]) is not str or report[key] != "UNKNOWN"
+                   for key in ("publisher_authentication", "source_authenticity", "freshness"))
+            or (report["status"] in ("PUBLISHED_GENESIS", "PUBLISHED_HISTORY")
+                and (type(report["generation"]) is not str or report["generation"] != request.generation))
+            or (report["status"] in ("EMPTY_ADVANCED", "EMPTY_NO_CHANGE") and report["generation"] is not None)
+            or (request.expected_pointer_sha256 is None and report["status"] != "PUBLISHED_GENESIS")
+            or (request.expected_pointer_sha256 is not None and report["status"] == "PUBLISHED_GENESIS")
+            or (report["status"] == "EMPTY_NO_CHANGE"
+                and report["pointer_sha256"] != request.expected_pointer_sha256)
+            or (report["status"] in ("EMPTY_ADVANCED", "PUBLISHED_HISTORY")
+                and report["pointer_sha256"] == request.expected_pointer_sha256)
+            or (max_windows is not None and
+                (report["status"] not in ("PUBLISHED_GENESIS", "PUBLISHED_HISTORY")
+                 or report["coverage"] != "caught_up_to_final_snapshot_not_history"
+                 or report["source_refusals"] != "NOT_AGGREGATED"))):
         return None, "publication_state_unknown"
     return report, None
 
@@ -562,7 +602,8 @@ def build_prefix_generation(*, enabled=False, plan_bytes=None, expected_plan_sha
         start_prefix=start_prefix, max_prefix_bytes=plan["max_prefix_bytes"], root=root,
         generation=plan["generation"], expected_pointer_sha256=plan["expected_pointer_sha256"], encode=encode,
         identity=identity, dim=ENCODER_DIM, timeout=plan["timeout"], private_state_root=private_state_root)
-    report, token = _publish(request)
+    max_windows = plan["max_windows"] if plan["schema"] == PLAN_CATCHUP_SCHEMA else None
+    report, token = _publish(request, max_windows=max_windows)
     if token is not None:
         raise BuildChildRefused(token)
     return {**report, "encoder_identity_source": IDENTITY_SOURCE, "plan_sha256": expected_plan_sha256,

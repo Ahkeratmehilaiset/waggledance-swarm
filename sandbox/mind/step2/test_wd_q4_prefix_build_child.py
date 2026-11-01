@@ -1373,3 +1373,201 @@ def test_module_is_fixed_path_only():
                  "tokenizer", "manifest", "verify-then-use", "self-derive", "putenv", "concurrent", "sandbox",
                  "inference", "max_bytes", "FAISS", "numpy"):
         assert word in doc, word
+
+
+def test_v2_pinned_plan_routes_only_to_bounded_catchup(tmp_path, model_dir, backend, monkeypatch):
+    m = module()
+    config, pins, start = synthetic_config(tmp_path)
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v2", max_windows=4)
+    seen = {}
+
+    def publish(*, enabled, request, max_windows):
+        seen.update(enabled=enabled, request=request, max_windows=max_windows)
+        return {"status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
+                "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN",
+                "coverage": "caught_up_to_final_snapshot_not_history", "source_refusals": "NOT_AGGREGATED"}
+
+    monkeypatch.setattr(m.producer, "publish_public_prefix", lambda **kw: pytest.fail("wrong route"))
+    monkeypatch.setattr(m.producer, "publish_public_catchup", publish)
+    report = run(m, doc, config, start, *roots(tmp_path))
+    assert seen["enabled"] is True and seen["max_windows"] == 4
+    assert seen["request"].config is config and seen["request"].pins == pub.CallerPins(**pins)
+    assert report["plan_sha256"] == sha(enc(doc))
+    assert report["coverage"] == "caught_up_to_final_snapshot_not_history"
+    assert report["source_refusals"] == "NOT_AGGREGATED" and report["freshness"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("catchup", [False, True])
+@pytest.mark.parametrize("field,value", [("status", []), ("generation", "wrong-generation"),
+                                          ("generation", []), ("publisher_authentication", "PASS"),
+                                          ("source_authenticity", "PASS"), ("freshness", "fresh")])
+def test_publish_bad_report_after_possible_write_is_unknown(monkeypatch, catchup, field, value):
+    m = module()
+    request = types.SimpleNamespace(generation="gen-a", expected_pointer_sha256=None)
+    report = {"status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
+              "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"}
+    if catchup:
+        report.update(coverage="caught_up_to_final_snapshot_not_history", source_refusals="NOT_AGGREGATED")
+    report[field] = value
+    method = "publish_public_catchup" if catchup else "publish_public_prefix"
+    monkeypatch.setattr(m.producer, method, lambda **kw: report)
+    assert m._publish(request, max_windows=4 if catchup else None) == (None, "publication_state_unknown")
+
+
+@pytest.mark.parametrize("catchup", [False, True])
+def test_publish_unhashable_refusal_token_after_possible_write_is_unknown(monkeypatch, catchup):
+    m = module()
+    request = types.SimpleNamespace(generation="gen-a", expected_pointer_sha256=None)
+    method = "publish_public_catchup" if catchup else "publish_public_prefix"
+    monkeypatch.setattr(m.producer, method,
+                        lambda **kw: (_ for _ in ()).throw(producer.PrefixProducerRefused([])))
+    assert m._publish(request, max_windows=4 if catchup else None) == (None, "publication_state_unknown")
+
+
+@pytest.mark.parametrize("status", ["EMPTY_ADVANCED", "EMPTY_NO_CHANGE"])
+@pytest.mark.parametrize("generation", [None, "gen-a"])
+def test_v1_empty_report_requires_no_generation(monkeypatch, status, generation):
+    m = module()
+    request = types.SimpleNamespace(generation="gen-a", expected_pointer_sha256="1" * 64)
+    pointer = "1" * 64 if status == "EMPTY_NO_CHANGE" else "2" * 64
+    report = {"status": status, "pointer_sha256": pointer, "generation": generation,
+              "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"}
+    monkeypatch.setattr(m.producer, "publish_public_prefix", lambda **kw: report)
+    result = m._publish(request)
+    assert result == ((report, None) if generation is None else (None, "publication_state_unknown"))
+
+
+@pytest.mark.parametrize("catchup", [False, True])
+@pytest.mark.parametrize("prior,status", [(None, "PUBLISHED_HISTORY"), ("1" * 64, "PUBLISHED_GENESIS"),
+                                           (None, "EMPTY_ADVANCED"), (None, "EMPTY_NO_CHANGE")])
+def test_publish_status_must_match_prior_state(monkeypatch, catchup, prior, status):
+    m = module()
+    request = types.SimpleNamespace(generation="gen-a", expected_pointer_sha256=prior)
+    report = {"status": status, "pointer_sha256": "1" * 64,
+              "generation": None if status.startswith("EMPTY_") else "gen-a",
+              "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"}
+    if catchup:
+        report.update(coverage="caught_up_to_final_snapshot_not_history", source_refusals="NOT_AGGREGATED")
+    method = "publish_public_catchup" if catchup else "publish_public_prefix"
+    monkeypatch.setattr(m.producer, method, lambda **kw: report)
+    assert m._publish(request, max_windows=4 if catchup else None) == (None, "publication_state_unknown")
+
+
+def test_publish_no_change_must_preserve_pinned_pointer(monkeypatch):
+    m = module()
+    request = types.SimpleNamespace(generation="gen-a", expected_pointer_sha256="1" * 64)
+    report = {"status": "EMPTY_NO_CHANGE", "pointer_sha256": "2" * 64, "generation": None,
+              "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"}
+    monkeypatch.setattr(m.producer, "publish_public_prefix", lambda **kw: report)
+    assert m._publish(request) == (None, "publication_state_unknown")
+
+
+@pytest.mark.parametrize("catchup,status", [(False, "EMPTY_ADVANCED"), (False, "PUBLISHED_HISTORY"),
+                                            (True, "PUBLISHED_HISTORY")])
+def test_publish_advanced_status_must_change_pinned_pointer(monkeypatch, catchup, status):
+    m = module()
+    request = types.SimpleNamespace(generation="gen-b", expected_pointer_sha256="1" * 64)
+    report = {"status": status, "pointer_sha256": "1" * 64,
+              "generation": None if status == "EMPTY_ADVANCED" else "gen-b",
+              "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"}
+    if catchup:
+        report.update(coverage="caught_up_to_final_snapshot_not_history", source_refusals="NOT_AGGREGATED")
+    method = "publish_public_catchup" if catchup else "publish_public_prefix"
+    monkeypatch.setattr(m.producer, method, lambda **kw: report)
+    assert m._publish(request, max_windows=4 if catchup else None) == (None, "publication_state_unknown")
+
+
+@pytest.mark.parametrize("field,value", [("coverage", "partial"), ("source_refusals", 0),
+                                          ("status", "EMPTY_ADVANCED")])
+def test_v2_rejects_unexpected_catchup_reports(tmp_path, model_dir, backend, monkeypatch, field, value):
+    m = module()
+    config, pins, start = synthetic_config(tmp_path)
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v2", max_windows=4)
+    response = {"status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
+                "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN",
+                "coverage": "caught_up_to_final_snapshot_not_history", "source_refusals": "NOT_AGGREGATED"}
+    response[field] = value
+    monkeypatch.setattr(m.producer, "publish_public_catchup", lambda **kw: response)
+    refused("publication_state_unknown", lambda: run(m, doc, config, start, *roots(tmp_path)))
+
+
+def test_v2_window_count_is_bound_to_caller_plan_digest(tmp_path, model_dir, monkeypatch):
+    m = module()
+    never_loads(m, monkeypatch)
+    config, pins, start = synthetic_config(tmp_path)
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v2", max_windows=4)
+    old_sha = sha(enc(doc))
+    doc["max_windows"] = 5
+    refused("plan_refused", lambda: run(m, doc, config, start, *roots(tmp_path), plan_sha=old_sha))
+
+
+@pytest.mark.parametrize("windows", [True, 0, -1, 1000000, "2", None])
+def test_v2_invalid_window_bound_refuses_before_model_access(tmp_path, model_dir, monkeypatch, windows):
+    m = module()
+    never_loads(m, monkeypatch)
+    config, pins, start = synthetic_config(tmp_path)
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v2", max_windows=windows)
+    refused("plan_refused", lambda: run(m, doc, config, start, *roots(tmp_path)))
+
+
+def test_v2_incomplete_catchup_refuses_and_does_not_publish(tmp_path, model_dir, backend):
+    pytest.importorskip("faiss")
+    from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
+    from sandbox.mind.step2.test_public_catchup_producer_integration_new import _request
+    from sandbox.mind.step2.test_shared_index_builder import PUBLIC_EVENTS
+
+    m = module()
+    request, _ = _request(tmp_path, PUBLIC_EVENTS)
+    pins = {key: getattr(request.pins, key) for key in PIN_KEYS}
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v2", max_windows=1)
+    refused("catchup_incomplete", lambda: run(m, doc, request.config, request.start_prefix,
+            request.root, request.private_state_root))
+    assert not (request.root / checkpoint.POINTER).exists()
+
+
+def test_v2_multiwindow_catchup_publishes_real_synthetic_data(tmp_path, model_dir, backend):
+    pytest.importorskip("faiss")
+    from sandbox.mind.step2.test_public_catchup_producer_integration_new import _request, _read_pointer
+    from sandbox.mind.step2.test_shared_index_builder import PUBLIC_EVENTS
+
+    m = module()
+    request, fixtures = _request(tmp_path, PUBLIC_EVENTS)
+    pins = {key: getattr(request.pins, key) for key in PIN_KEYS}
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v2", max_windows=8)
+    report = run(m, doc, request.config, request.start_prefix, request.root, request.private_state_root)
+    assert report["status"] == "PUBLISHED_GENESIS"
+    assert report["coverage"] == "caught_up_to_final_snapshot_not_history"
+    pointer, end = _read_pointer(request, fixtures, report["pointer_sha256"])
+    assert pointer["generation"] == "gen-a" and end.cursor.offset > request.start_prefix.cursor.offset
+
+
+def test_v2_empty_history_refuses_before_any_pointer_or_private_state_change(tmp_path, model_dir, backend):
+    pytest.importorskip("faiss")
+    from sandbox.mind.step2 import prefix_private_state, shared_index_checkpoint as checkpoint
+    from sandbox.mind.step2 import test_prefix_checkpoint_v1 as prefix_fixture
+    from sandbox.mind.step2.test_public_catchup_producer_integration_new import _request, _read_pointer
+    from sandbox.mind.step2.test_shared_index_builder import PUBLIC_EVENTS, PRIVATE_EVENTS
+
+    m = module()
+    request, fixtures = _request(tmp_path, PUBLIC_EVENTS)
+    pins = {key: getattr(request.pins, key) for key in PIN_KEYS}
+    first = run(m, plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v2", max_windows=8),
+                request.config, request.start_prefix, request.root, request.private_state_root)
+    _, prior = _read_pointer(request, fixtures, first["pointer_sha256"])
+    pointer_path = request.root / checkpoint.POINTER
+    before = pointer_path.read_bytes()
+    _, _, kwargs, start = prefix_fixture._delta(tmp_path / "log", PRIVATE_EVENTS, prior.cursor, prior)
+    source = replace(request.config.source, cursor=start.cursor,
+                     anchor_bytes=kwargs["expected_anchor_bytes"], anchor_sha256=kwargs["expected_anchor_sha256"])
+    config = replace(request.config, source=source)
+    pins["anchor_sha256"] = kwargs["expected_anchor_sha256"]
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v2", max_windows=8,
+               generation="gen-b", pointer=first["pointer_sha256"])
+    # The builder currently rejects an empty catch-up during preparation,
+    # before the producer reaches its explicit empty-catchup guard.
+    refused("prepare_refused", lambda: run(m, doc, config, start,
+            request.root, request.private_state_root))
+    assert pointer_path.read_bytes() == before
+    assert not (request.root / "gen-b").exists()
+    with prefix_private_state.locked_state(request.private_state_root, request.root, enabled=True) as state:
+        assert state.load(first["pointer_sha256"]) == prior

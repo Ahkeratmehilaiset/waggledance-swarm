@@ -108,6 +108,26 @@ def test_collection_covers_the_same_finite_scope_and_preserves_count_guards():
     _assert_collection(_workflow("ci.yml"))
 
 
+def _assert_synthetic_cell_runner(workflow, job):
+    step = _step(workflow, job, "Run synthetic Mind cell witnesses")
+    assert set(step) == {"name", "run"}
+    assert shlex.split(step["run"]) == ["python", "-B", "tools/run_mind_cell_synthetic_ci.py"]
+
+
+@pytest.mark.parametrize("filename,job", [("ci.yml", "test"), ("tests.yml", "unified")])
+def test_synthetic_cell_runner_is_unconditional_and_isolated(filename, job):
+    workflow = _workflow(filename)
+    _assert_synthetic_cell_runner(workflow, job)
+    mutant = deepcopy(workflow)
+    _step(mutant, job, "Run synthetic Mind cell witnesses")["if"] = "false"
+    with pytest.raises(AssertionError):
+        _assert_synthetic_cell_runner(mutant, job)
+    mutant = deepcopy(workflow)
+    _step(mutant, job, "Run synthetic Mind cell witnesses")["run"] = "python -m pytest tests/"
+    with pytest.raises(AssertionError):
+        _assert_synthetic_cell_runner(mutant, job)
+
+
 @pytest.mark.parametrize("filename,job,step,collection", [
     ("ci.yml", "test", "Run tests", False),
     ("tests.yml", "unified", "Run pytest", False),

@@ -1,5 +1,6 @@
 """Synthetic one-shot status publication, no live bridge or runtime."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from dataclasses import asdict
 import hashlib
 import importlib
 import json
@@ -48,6 +49,97 @@ def test_default_off_does_not_inspect_request():
         def __getattribute__(self, name):
             raise AssertionError("disabled must not inspect")
     assert module().publish_once(request=Poison()) == {"status": "OFF"}
+
+
+@pytest.fixture
+def caller_anchored(spec):
+    from waggledance.core.bridge_log_reader import read_bridge_log
+    source = spec["snapshot_root"] / "source.jsonl"
+    generation = spec["snapshot_root"] / "generation.json"
+    source.write_bytes(b"")
+    gen_bytes = enc({"generation": "synthetic-caller-generation"})
+    generation.write_bytes(gen_bytes)
+    cursor = read_bridge_log(source, generation_path=generation).candidate_cursor
+    source.write_bytes(spec["snapshot_bytes"])
+    anchor = enc({"schema": "wd.q4-source-anchor.v1", "source_path": str(source),
+                  "generation_path": str(generation), "cursor_start": asdict(cursor),
+                  "policy_sha256": spec["policy_sha256"], "roster_sha256": spec["roster_sha256"],
+                  "status_mode": "public-v1", "public_policy_sha256": spec["public_policy_sha256"]})
+    return dict(spec, as_of=datetime.now(timezone.utc), anchor_bytes=anchor,
+                expected_anchor_sha256=sha(anchor), expected_generation_sha256=sha(gen_bytes))
+
+
+@pytest.mark.parametrize("lane", sorted(ROSTER))
+def test_caller_anchor_publish_reaches_each_public_session_cli(caller_anchored, monkeypatch, capsys, lane):
+    from tools import wd_mind_public_session_cli as cli
+    request = caller_anchored
+    reply = module().publish_once(enabled=True, request=request)
+    assert reply.get("projection", {}).get("schema") == "wd.mind-status-projection.v3"
+    for name in ("anchor", "policy", "roster", "public_policy"):
+        path = request["private_audit_root"] / (name + ".json")
+        data = request[name + "_bytes"]
+        path.write_bytes(data)
+        monkeypatch.setenv("WD_MIND_PUBLIC_" + name.upper() + "_PATH", str(path))
+        digest = request["expected_anchor_sha256"] if name == "anchor" else request[name + "_sha256"]
+        monkeypatch.setenv("WD_MIND_PUBLIC_" + name.upper() + "_SHA256", digest)
+    monkeypatch.setenv("WD_MIND_PUBLIC_ENABLED", "1")
+    monkeypatch.setenv("WD_MIND_PUBLIC_AUDIT_ROOT", str(request["private_audit_root"]))
+    monkeypatch.setenv("WD_MIND_PUBLIC_MAX_AGE_SECONDS", "900")
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", lane)
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT_UUID", ROSTER[lane])
+    assert cli.main([]) == 0
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert not captured.err and result["lane"] == lane and result["coverage"] == "last_delta_only"
+    assert result["identity_verification"] == "caller_declared_not_authenticated"
+    assert result["source_freshness"] == "UNKNOWN"
+    for secret in (str(request["private_audit_root"]), *ROSTER.values(), "synthetic-private-cursor-payload"):
+        assert secret not in captured.out and secret not in json.dumps(reply)
+    (request["private_audit_root"] / "anchor.json").write_bytes(b"changed")
+    assert cli.main([]) == 2
+    refused = capsys.readouterr()
+    assert refused.out == "" and json.loads(refused.err)["error"] == "public_session_refused"
+    (request["private_audit_root"] / "anchor.json").write_bytes(request["anchor_bytes"])
+    class Later(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return request["as_of"] + timedelta(seconds=901)
+    monkeypatch.setattr(cli, "datetime", Later)
+    assert cli.main([]) == 2
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("fault", ["wrong_anchor", "wrong_generation", "wrong_snapshot", "missing_pin",
+                                   "changed_source", "changed_generation", "anchor_policy", "cursor_identity",
+                                   "nonzero_cursor", "outside_source"])
+def test_caller_anchor_refuses_changed_pins_before_publication(caller_anchored, fault):
+    request = dict(caller_anchored)
+    if fault == "wrong_anchor":
+        request["expected_anchor_sha256"] = "0" * 64
+    elif fault == "wrong_generation":
+        request["expected_generation_sha256"] = "0" * 64
+    elif fault == "wrong_snapshot":
+        request["expected_snapshot_sha256"] = "0" * 64
+    elif fault == "missing_pin":
+        del request["expected_anchor_sha256"]
+    elif fault == "changed_source":
+        (request["snapshot_root"] / "source.jsonl").write_bytes(b"changed\n")
+    elif fault == "changed_generation":
+        (request["snapshot_root"] / "generation.json").write_bytes(b"changed")
+    else:
+        anchor = json.loads(request["anchor_bytes"])
+        if fault == "anchor_policy":
+            anchor["policy_sha256"] = "0" * 64
+        elif fault == "cursor_identity":
+            anchor["cursor_start"]["file_identity"] = "windows-v1:00000000:0000000000000000"
+        elif fault == "nonzero_cursor":
+            anchor["cursor_start"]["offset"] = 1
+        else:
+            anchor["source_path"] = str(request["private_audit_root"] / "outside.jsonl")
+        request["anchor_bytes"] = enc(anchor)
+        request["expected_anchor_sha256"] = sha(request["anchor_bytes"])
+    assert module().publish_once(enabled=True, request=request)["status"] == "REFUSED"
+    assert not (request["private_audit_root"] / "public-status.json").exists()
 
 
 @pytest.mark.parametrize("enabled", [None, 0, 1, "true"])

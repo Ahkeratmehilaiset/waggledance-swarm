@@ -9,11 +9,15 @@ snapshot are private, never reader output. Exclusive creation prevents overwriti
 name; it does NOT make a file immutable. This prototype assumes the directory
 and snapshot stay unchanged through the call. Same-user replacement, ABA,
 source authenticity, live freshness, completeness and crash durability are not
-proved. No live bridge source is read by this module, but it does not prove that
-caller-supplied bytes are synthetic or safe to retain. No cursor is committed,
+proved. The caller is responsible for ensuring source separation from the live
+bridge; file paths do not establish origin or rule out hard links. Caller-supplied
+bytes are not proved synthetic or safe to retain. No cursor is committed,
 and nothing is scheduled, installed, activated, or retried. Raw snapshot and
 generation files may remain in the caller-controlled audit directory after
 success, refusal, exception, or crash. There is no automatic cleanup.
+The optional caller-anchored variant consumes a prepared private snapshot and
+caller-pinned anchor and generation. Pin matches do not authenticate a source;
+same-user replacement and races across the separate file reads remain possible.
 """
 from dataclasses import asdict
 import hashlib
@@ -37,6 +41,7 @@ _KEYS = frozenset({"private_audit_root", "private_storage_assumed", "snapshot_ro
                    "policy_bytes", "policy_sha256", "roster_bytes", "roster_sha256", "public_policy_bytes",
                    "public_policy_sha256", "approval_bytes", "expected_approval_sha256", "as_of",
                    "expected_previous_sha256"})
+_CALLER_ANCHOR_KEYS = frozenset({"anchor_bytes", "expected_anchor_sha256", "expected_generation_sha256"})
 
 
 def _json(value):
@@ -75,8 +80,9 @@ def _preflight_previous(audit, prior):
 
 
 def _prepare(request):
-    if type(request) is not dict or set(request) != _KEYS:
+    if type(request) is not dict or set(request) not in (_KEYS, _KEYS | _CALLER_ANCHOR_KEYS):
         raise ValueError()
+    caller_anchored = "anchor_bytes" in request
     projection.validate_public_approval(request["public_policy_bytes"], request["public_policy_sha256"],
                                         request["approval_bytes"], request["expected_approval_sha256"])
     data, expected = request["snapshot_bytes"], request["expected_snapshot_sha256"]
@@ -103,28 +109,57 @@ def _prepare(request):
     if not stat.S_ISDIR(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
         raise ValueError()
     _preflight_previous(audit, prior)
-    nonce = secrets.token_hex(16)
-    generation = "synthetic-" + nonce
-    source, gen = root / (nonce + ".jsonl"), root / (nonce + ".generation.json")
-    gen_data = _json({"generation": generation})
-    with gen.open("xb") as stream:
-        if stream.write(gen_data) != len(gen_data):
-            raise OSError()
-        stream.flush()
-        os.fsync(stream.fileno())
-    with source.open("x+b") as stream:
-        cursor = BridgeCursor(0, _file_identity(stream), generation)
-        if stream.write(data) != len(data):
-            raise OSError()
-        stream.flush()
-        os.fsync(stream.fileno())
+    if caller_anchored:
+        anchor = request["anchor_bytes"]
+        anchor_sha = request["expected_anchor_sha256"]
+        generation_sha = request["expected_generation_sha256"]
+        if type(generation_sha) is not str or _HEX.fullmatch(generation_sha) is None:
+            raise ValueError()
+        session._pins(anchor, anchor_sha, request["policy_bytes"], request["policy_sha256"],
+                      request["roster_bytes"], request["roster_sha256"],
+                      request["public_policy_bytes"], request["public_policy_sha256"])
+        parsed_anchor = session._object(anchor)
+        cursor_data = parsed_anchor["cursor_start"]
+        if (type(cursor_data) is not dict or set(cursor_data) != {"offset", "file_identity", "generation"}
+                or type(cursor_data["offset"]) is not int or cursor_data["offset"] != 0
+                or type(cursor_data["file_identity"]) is not str
+                or type(cursor_data["generation"]) is not str
+                or type(parsed_anchor["source_path"]) is not str
+                or type(parsed_anchor["generation_path"]) is not str):
+            raise ValueError()
+        source, gen = Path(parsed_anchor["source_path"]), Path(parsed_anchor["generation_path"])
+        if (not source.is_absolute() or not gen.is_absolute() or ".." in source.parts or ".." in gen.parts
+                or source == gen or not os.path.samefile(source.parent, root)
+                or not os.path.samefile(gen.parent, root) or os.path.samefile(source, gen)):
+            raise ValueError()
+        cursor = BridgeCursor(**cursor_data)
+        gen_data = _read_exact(gen, generation_sha, 16384)
+        if _read_exact(source, expected, snapshot.MAX_BYTES) != data:
+            raise ValueError()
+    else:
+        nonce = secrets.token_hex(16)
+        generation = "synthetic-" + nonce
+        source, gen = root / (nonce + ".jsonl"), root / (nonce + ".generation.json")
+        gen_data = _json({"generation": generation})
+        with gen.open("xb") as stream:
+            if stream.write(gen_data) != len(gen_data):
+                raise OSError()
+            stream.flush()
+            os.fsync(stream.fileno())
+        with source.open("x+b") as stream:
+            cursor = BridgeCursor(0, _file_identity(stream), generation)
+            if stream.write(data) != len(data):
+                raise OSError()
+            stream.flush()
+            os.fsync(stream.fileno())
+        anchor = _json({"schema": "wd.q4-source-anchor.v1", "source_path": str(source), "generation_path": str(gen),
+                        "cursor_start": asdict(cursor), "policy_sha256": request["policy_sha256"],
+                        "roster_sha256": request["roster_sha256"], "status_mode": "public-v1",
+                        "public_policy_sha256": request["public_policy_sha256"]})
+        anchor_sha = _sha(anchor)
     _read_exact(source, expected, snapshot.MAX_BYTES)
     _read_exact(gen, _sha(gen_data), 16384)
-    anchor = _json({"schema": "wd.q4-source-anchor.v1", "source_path": str(source), "generation_path": str(gen),
-                    "cursor_start": asdict(cursor), "policy_sha256": request["policy_sha256"],
-                    "roster_sha256": request["roster_sha256"], "status_mode": "public-v1",
-                    "public_policy_sha256": request["public_policy_sha256"]})
-    pins = {"anchor_bytes": anchor, "anchor_sha256": _sha(anchor),
+    pins = {"anchor_bytes": anchor, "anchor_sha256": anchor_sha,
             **{key: request[key] for key in ("policy_bytes", "policy_sha256", "roster_bytes", "roster_sha256",
                                                "public_policy_bytes", "public_policy_sha256")}}
     result = snapshot.read_anchored_delta(source, cursor, tasks, generation_path=gen,

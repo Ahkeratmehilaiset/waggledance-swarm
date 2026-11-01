@@ -41,7 +41,10 @@ def test_cell_consumer_uses_verified_data_bytes_after_path_swap(tmp_path, monkey
     (generation / "receipt.json").write_bytes(receipt)
 
     class FakeIndex:
-        ntotal, d = 1, 1
+        ntotal, d, metric_type = 1, 1, 0
+
+        def __init__(self, dimension=1):
+            pass
 
         def reconstruct(self, index):
             return vectors[index]
@@ -52,9 +55,10 @@ def test_cell_consumer_uses_verified_data_bytes_after_path_swap(tmp_path, monkey
             self._index, self.count = FakeIndex(), 1
             self._doc_ids, self._texts, self._metadata = parsed["doc_ids"], parsed["texts"], parsed["metadata"]
 
+    import core.faiss_store as store
+    monkeypatch.setattr(store.faiss, "IndexFlatIP", FakeIndex, raising=False)
+    monkeypatch.setattr(store.faiss, "METRIC_INNER_PRODUCT", 0, raising=False)
     if use_real_collection:
-        import core.faiss_store as store
-        monkeypatch.setattr(store.faiss, "IndexFlatIP", lambda dim: FakeIndex(), raising=False)
         monkeypatch.setattr(store.faiss, "read_index", lambda path: FakeIndex(), raising=False)
     else:
         monkeypatch.setattr(cell, "FaissCollection", FakeCollection)
@@ -107,38 +111,44 @@ def test_strict_collection_failure_is_quarantined_without_private_detail(tmp_pat
     assert view.status == "QUARANTINED" and view.reason == "index_unreadable"
 
 
-def _synthetic_vectors_case(tmp_path, monkeypatch, *, include_vectors=True):
+def _synthetic_vectors_case(tmp_path, monkeypatch, *, include_vectors=True, empty=False, generation_name="generation"):
     import core.faiss_store as store
 
-    generation = tmp_path / "generation"
+    generation = tmp_path / generation_name
     generation.mkdir()
     files = cell.paths(generation, "learning")
     files["index"].parent.mkdir(parents=True)
     files["index"].write_bytes(b"fake-index")
-    files["meta"].write_bytes(_encoded({"dim": 1, "doc_ids": ["synthetic-id"],
-                                       "texts": ["synthetic"], "metadata": [{}]}))
+    ids = [] if empty else ["synthetic-id"]
+    files["meta"].write_bytes(_encoded({"dim": 1, "doc_ids": ids,
+                                       "texts": [] if empty else ["synthetic"],
+                                       "metadata": [] if empty else [{}]}))
     row = {"record_id": "synthetic-id", "kind": "event", "time_utc": "2026-01-01T00:00:00Z",
            "cell_id": "learning", "provenance": {}}
-    files["provenance"].write_bytes(_encoded(row) + b"\n")
-    vectors = np.array([[1.0]], dtype="<f4")
+    files["provenance"].write_bytes(b"" if empty else _encoded(row) + b"\n")
+    vectors = np.zeros((0, 1), dtype="<f4") if empty else np.array([[1.0]], dtype="<f4")
     if include_vectors:
         files["vectors"].write_bytes(vectors.tobytes())
     names = ("index", "meta", "provenance", "vectors") if include_vectors else ("index", "meta", "provenance")
-    content = {"cell_id": "learning", "count": 1, "dim": 1, "cutoff_utc": "2027-01-01T00:00:00Z",
+    content = {"cell_id": "learning", "count": len(ids), "dim": 1, "cutoff_utc": "2027-01-01T00:00:00Z",
                "files": {name: cell.sha256(files[name].read_bytes()) for name in names},
-               "ids_sha256": cell.sha256(b"synthetic-id"),
-               "pairs_sha256": cell.pairs_sha256(["synthetic-id"], vectors)}
+               "ids_sha256": cell.sha256("\n".join(ids).encode()),
+               "pairs_sha256": cell.pairs_sha256(ids, vectors)}
     receipt = _encoded({"schema": cell.SCHEMA, "content": content,
                         "content_sha256": cell.sha256(cell.canonical(content).encode())})
     (generation / "receipt.json").write_bytes(receipt)
 
     class FakeIndex:
-        ntotal, d = 1, 1
+        ntotal, d, metric_type = len(ids), 1, 0
+
+        def __init__(self, dimension=1):
+            pass
 
         def reconstruct(self, index):
             return vectors[index]
 
-    monkeypatch.setattr(store.faiss, "IndexFlatIP", lambda dim: FakeIndex(), raising=False)
+    monkeypatch.setattr(store.faiss, "IndexFlatIP", FakeIndex, raising=False)
+    monkeypatch.setattr(store.faiss, "METRIC_INNER_PRODUCT", 0, raising=False)
     monkeypatch.setattr(store.faiss, "read_index", lambda path: FakeIndex(), raising=False)
     return generation, files, cell.sha256(receipt)
 
@@ -182,3 +192,66 @@ def test_missing_retained_vectors_remains_readable_without_rebuild(tmp_path, mon
     generation, _, receipt_sha = _synthetic_vectors_case(tmp_path, monkeypatch, include_vectors=False)
     _, _, _, rebuild_possible = cell.verify_generation(generation, "learning", receipt_sha)
     assert rebuild_possible is False
+
+
+@pytest.mark.parametrize("kind", ["l2", "wrong_metric", "missing_metric", "wrapper", "subclass"])
+def test_index_requires_exact_flat_inner_product_before_reconstruction(tmp_path, monkeypatch, kind):
+    import core.faiss_store as store
+
+    generation, _, receipt_sha = _synthetic_vectors_case(tmp_path, monkeypatch)
+    reconstructed = []
+
+    class IndexFlatIP:
+        ntotal, d = 1, 1
+
+        def __init__(self, dimension=1):
+            self.metric_type = 0
+
+        def reconstruct(self, index):
+            reconstructed.append(index)
+            return np.array([1.0], dtype="<f4")
+
+    class IndexFlatL2(IndexFlatIP):
+        pass
+
+    class Wrapper(IndexFlatIP):
+        pass
+
+    class FakeSubclass(IndexFlatIP):
+        pass
+
+    candidate = {"l2": IndexFlatL2, "wrapper": Wrapper, "subclass": FakeSubclass}.get(kind, IndexFlatIP)()
+    if kind in ("l2", "wrong_metric"):
+        candidate.metric_type = 1
+    if kind == "missing_metric":
+        del candidate.metric_type
+    monkeypatch.setattr(store.faiss, "IndexFlatIP", IndexFlatIP, raising=False)
+    monkeypatch.setattr(store.faiss, "METRIC_INNER_PRODUCT", 0, raising=False)
+    monkeypatch.setattr(store.faiss, "read_index", lambda path: candidate, raising=False)
+    with pytest.raises(cell.CellError, match="^index_semantics_invalid$"):
+        cell.verify_generation(generation, "learning", receipt_sha)
+    assert reconstructed == []
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_verified_flat_inner_product_index_is_accepted_including_empty(tmp_path, monkeypatch, empty):
+    generation, _, receipt_sha = _synthetic_vectors_case(tmp_path, monkeypatch, empty=empty)
+    _, rows, _, rebuild_possible = cell.verify_generation(generation, "learning", receipt_sha)
+    assert len(rows) == (0 if empty else 1) and rebuild_possible is True
+
+
+def test_wrong_index_semantics_are_quarantined(tmp_path, monkeypatch):
+    import core.faiss_store as store
+
+    cell_dir = tmp_path / "learning"
+    cell_dir.mkdir()
+    _, _, receipt_sha = _synthetic_vectors_case(cell_dir, monkeypatch, generation_name="gen-000001")
+    (cell_dir / "current.json").write_bytes(_encoded({"generation": 1, "seq": 1, "receipt_sha256": receipt_sha}))
+    monkeypatch.setattr(cell, "read_log", lambda _: [{"generation": 1, "seq": 1, "receipt_sha256": receipt_sha}])
+
+    class FakeL2(store.faiss.IndexFlatIP):
+        metric_type = 1
+
+    monkeypatch.setattr(store.faiss, "read_index", lambda path: FakeL2(), raising=False)
+    view = cell.load(cell_dir, "learning")
+    assert view.status == "QUARANTINED" and view.reason == "index_semantics_invalid"

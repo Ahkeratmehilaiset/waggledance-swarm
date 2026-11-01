@@ -1,6 +1,7 @@
 """Read-only verifier for frozen Q4 cell generations from 6cf81dbb."""
 import hashlib
 import json
+import faiss
 import numpy as np
 from core.faiss_store import FaissCollection
 
@@ -190,6 +191,16 @@ def verify_generation(gen_dir, cell_id, receipt_sha):
     except ValueError:
         raise CellError("index_unreadable") from None
     index = collection._index
+    try:
+        # Q4 ranks inner-product similarity. Matching vectors alone do not prove
+        # that a path-loaded index has those search semantics.
+        metric = index.metric_type
+        correct_semantics = (type(index) is faiss.IndexFlatIP and type(metric) is int
+                             and metric == faiss.METRIC_INNER_PRODUCT)
+    except Exception:
+        correct_semantics = False
+    if not correct_semantics:
+        raise CellError("index_semantics_invalid") from None
     if index.ntotal != count or index.d != dim or collection.count != count or collection._doc_ids != meta_ids:
         raise CellError("index_unreadable")
     stored = np.vstack([index.reconstruct(i) for i in range(count)]) if count else np.zeros((0, dim), dtype="<f4")

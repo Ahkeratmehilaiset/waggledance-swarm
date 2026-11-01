@@ -44,6 +44,7 @@ MIND_TESTS = (
     "sandbox/mind/step2/test_shared_bridge_snapshot.py",
     "sandbox/mind/step2/test_shared_index_checkpoint.py",
     "sandbox/mind/step2/test_shared_index_checkpoint_snapshot.py",
+    "sandbox/mind/step2/test_shared_index_checkpoint_active_snapshot.py",
     "sandbox/mind/step2/test_shared_index_builder.py",
     "sandbox/mind/step2/test_shared_source_anchor.py",
     "sandbox/mind/step2/test_shared_strict_chain.py",
@@ -146,6 +147,22 @@ def test_interpreter_identity_is_selected_once_for_each_mind_command(filename, j
     assert shlex.split(command).count("sandbox/mind/step2/test_interpreter_identity.py") == 1
 
 
+@pytest.mark.parametrize("filename,job,step,collection", [
+    ("ci.yml", "test", "Run tests", False),
+    ("tests.yml", "unified", "Run pytest", False),
+    ("ci.yml", "test", "Check test count", True),
+])
+def test_active_snapshot_is_selected_once_for_each_mind_command(filename, job, step, collection):
+    text = _step(_workflow(filename), job, step)["run"]
+    if collection:
+        match = re.search(r'if ! MIND_OUT=\$\((python -m pytest [^\n]+) 2>/dev/null\); then', text)
+        assert match
+        command = match.group(1)
+    else:
+        command = text.strip().splitlines()[1]
+    assert shlex.split(command).count("sandbox/mind/step2/test_shared_index_checkpoint_active_snapshot.py") == 1
+
+
 def _assert_mind_entrypoint(workflow, step_name):
     # CI ffa21 passed tests/ but the separate console pytest could not import tools.
     # Both execution and collection must keep the repository on sys.path without a global env override.
@@ -210,7 +227,7 @@ def test_mutant_whole_sandbox_collection_is_killed():
 
 
 def test_scope_contains_only_42_unique_explicit_python_test_files():
-    assert len(MIND_TESTS) == len(set(MIND_TESTS)) == 42
+    assert len(MIND_TESTS) == len(set(MIND_TESTS)) == 43
     assert all(p.startswith("sandbox/mind/") and Path(p).name.startswith("test_")
                and p.endswith(".py") and ".." not in Path(p).parts for p in MIND_TESTS)
     assert not any("remember" in p or "learn" in p or "run_" in Path(p).name for p in MIND_TESTS)

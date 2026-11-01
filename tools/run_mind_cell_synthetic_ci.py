@@ -12,6 +12,8 @@ import types
 ROOT = Path(__file__).resolve().parents[1]
 TEST_PATH = "sandbox/mind/step2/test_cell_verified_bytes.py"
 SNAPSHOT_TEST_PATH = "sandbox/mind/step2/test_cell_snapshot_bytes.py"
+DESCRIPTOR_TEST_PATH = "sandbox/mind/step2/test_wd_q4_private_read_bytes.py"
+MEMORY_TEST_PATH = "sandbox/mind/step2/test_memory_snapshot.py"
 _NAMES = (
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-meta]",
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-provenance]",
@@ -64,10 +66,60 @@ _SNAPSHOT_NAMES = (
     "test_snapshot_q4_reads_nonempty_pairs_without_io_and_reconstruct_is_defensive",
     "test_snapshot_reconstruct_budget_refuses_before_native_call",
     "test_snapshot_collection_rejects_mutable_text_values",
-    "test_snapshot_reconstruction_accepts_verified_numeric_string_metadata_dim",
+    "test_snapshot_refuses_numeric_string_receipt_dim",
+    "test_snapshot_still_accepts_numeric_string_meta_dim_when_receipt_dim_is_integer",
+)
+_DESCRIPTOR_NAMES = (
+    "test_descriptor_bytes_match_existing_path_without_path_io",
+    "test_descriptor_bytes_refusals_match_path_api[bad_pin-descriptor_pin_invalid]",
+    "test_descriptor_bytes_refusals_match_path_api[wrong_pin-descriptor_pin_mismatch]",
+    "test_descriptor_bytes_refusals_match_path_api[too_large-descriptor_over_budget]",
+    "test_descriptor_bytes_refusals_match_path_api[invalid_json-descriptor_unreadable]",
+    "test_descriptor_bytes_refusals_match_path_api[invalid_scope-descriptor_scope_mismatch]",
+    "test_descriptor_bytes_refusals_match_path_api[invalid_shape-descriptor_shape]",
+    "test_descriptor_bytes_refuse_mutable_input",
+    "test_descriptor_exact_budget_is_accepted_and_pin_precedes_read",
+    'test_malformed_descriptor_bytes_do_not_retain_json_exception[{"private-sentinel":"unterminated]',
+    r"test_malformed_descriptor_bytes_do_not_retain_json_exception[\xff]",
+)
+_MEMORY_NAMES = (
+    "test_snapshot_memory_answers_nonempty_q4_without_path_io",
+    "test_snapshot_memory_refuses_missing_extra_or_unbound_data[missing_cell]",
+    "test_snapshot_memory_refuses_missing_extra_or_unbound_data[extra_cell]",
+    "test_snapshot_memory_refuses_missing_extra_or_unbound_data[bad_log]",
+    "test_snapshot_memory_refuses_missing_extra_or_unbound_data[wrong_receipt]",
+    "test_snapshot_memory_refuses_missing_extra_or_unbound_data[wrong_generation]",
+    "test_snapshot_memory_refuses_missing_extra_or_unbound_data[wrong_dim]",
+    "test_snapshot_memory_refuses_missing_extra_or_unbound_data[wrong_pin]",
+    "test_snapshot_memory_refuses_missing_extra_or_unbound_data[unknown_manifest_cell]",
+    "test_snapshot_memory_refuses_missing_extra_or_unbound_data[extra_snapshot_field]",
+    "test_snapshot_memory_is_default_off",
+    "test_snapshot_memory_refuses_binding_and_budget_before_native_deserialization[wrong_receipt]",
+    "test_snapshot_memory_refuses_binding_and_budget_before_native_deserialization[wrong_generation]",
+    "test_snapshot_memory_refuses_binding_and_budget_before_native_deserialization[bad_log]",
+    "test_snapshot_memory_refuses_binding_and_budget_before_native_deserialization[aggregate_budget]",
+    "test_snapshot_control_and_artifact_limits_fail_closed[missing_log]",
+    "test_snapshot_control_and_artifact_limits_fail_closed[extra_artifact]",
+    "test_snapshot_control_and_artifact_limits_fail_closed[mutable_pointer]",
+    "test_snapshot_control_and_artifact_limits_fail_closed[wrong_sequence]",
+    "test_snapshot_control_and_artifact_limits_fail_closed[oversize_pointer]",
+    "test_snapshot_control_and_artifact_limits_fail_closed[oversize_log]",
+    "test_snapshot_memory_rejects_numeric_string_receipt_dim",
+    "test_snapshot_memory_checks_entire_two_entry_log_chain",
+    "test_snapshot_rejects_boolean_log_numbers_even_in_prior_lines[first-seq]",
+    "test_snapshot_rejects_boolean_log_numbers_even_in_prior_lines[first-generation]",
+    "test_snapshot_rejects_boolean_log_numbers_even_in_prior_lines[last-generation]",
+    "test_malformed_snapshot_refusal_does_not_chain_raw_input",
+    "test_snapshot_memory_aggregate_limit_covers_all_cells_before_native_call",
+    "test_all_cells_control_preflight_before_any_native_deserialization[pointer]",
+    "test_all_cells_control_preflight_before_any_native_deserialization[log]",
+    "test_all_cells_control_preflight_before_any_native_deserialization[receipt_hash]",
+    "test_all_cells_control_preflight_before_any_native_deserialization[receipt_dim]",
 )
 EXPECTED_NODEIDS = (tuple(TEST_PATH + "::" + name for name in _NAMES) +
-                    tuple(SNAPSHOT_TEST_PATH + "::" + name for name in _SNAPSHOT_NAMES))
+                    tuple(SNAPSHOT_TEST_PATH + "::" + name for name in _SNAPSHOT_NAMES) +
+                    tuple(DESCRIPTOR_TEST_PATH + "::" + name for name in _DESCRIPTOR_NAMES) +
+                    tuple(MEMORY_TEST_PATH + "::" + name for name in _MEMORY_NAMES))
 
 
 def _unavailable(*_args, **_kwargs):
@@ -104,18 +156,25 @@ class _Guard:
         self.collection_ok = len(actual) == len(EXPECTED_NODEIDS) and set(actual) == set(EXPECTED_NODEIDS)
 
     def pytest_runtest_logreport(self, report):
-        if report.skipped or hasattr(report, "wasxfail"):
+        if report.skipped or getattr(report, "failed", False) or hasattr(report, "wasxfail"):
             self.refused = True
         if report.when == "call":
             self.called.add(report.nodeid)
 
     def pytest_sessionfinish(self, session, exitstatus):
-        if (not self.collection_ok or self.refused or self.called != set(EXPECTED_NODEIDS)) and not exitstatus:
+        if not self.complete() and not exitstatus:
             session.exitstatus = 1
+
+    def complete(self):
+        return self.collection_ok and not self.refused and self.called == set(EXPECTED_NODEIDS)
 
 
 def _run_pytest(pytest):
-    return int(pytest.main([str(ROOT / TEST_PATH), str(ROOT / SNAPSHOT_TEST_PATH), "-q"], plugins=[_Guard()]))
+    guard = _Guard()
+    code = int(pytest.main([str(ROOT / TEST_PATH), str(ROOT / SNAPSHOT_TEST_PATH),
+                            str(ROOT / DESCRIPTOR_TEST_PATH), str(ROOT / MEMORY_TEST_PATH),
+                            "-q"], plugins=[guard]))
+    return 1 if code == 0 and not guard.complete() else code
 
 
 def main():

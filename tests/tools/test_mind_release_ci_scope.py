@@ -1,7 +1,7 @@
 """The bounded Mind release is executed AND collected, never all of sandbox.
 
 Only parse workflow text here: no Mind import, dataset discovery or CLI launch.
-The final composition supplies 40 explicitly admitted synthetic test files.
+The final composition supplies 42 explicitly admitted synthetic test files.
 """
 from copy import deepcopy
 import os
@@ -29,6 +29,7 @@ MIND_TESTS = (
     "sandbox/mind/capture/test_overlap_lens.py",
     "sandbox/mind/test_mind_chain_driver.py",
     "sandbox/mind/step2/test_q4_readonly_port.py",
+    "sandbox/mind/step2/test_encode_identity_budget.py",
     "sandbox/mind/step2/test_wd_q4_private_read.py",
     "sandbox/mind/step2/test_interpreter_identity.py",
     "sandbox/mind/step2/test_reader_slot.py",
@@ -42,6 +43,7 @@ MIND_TESTS = (
     "sandbox/mind/step2/test_shared_capture_adapter.py",
     "sandbox/mind/step2/test_shared_bridge_snapshot.py",
     "sandbox/mind/step2/test_shared_index_checkpoint.py",
+    "sandbox/mind/step2/test_shared_index_checkpoint_snapshot.py",
     "sandbox/mind/step2/test_shared_index_builder.py",
     "sandbox/mind/step2/test_shared_source_anchor.py",
     "sandbox/mind/step2/test_shared_strict_chain.py",
@@ -207,8 +209,8 @@ def test_mutant_whole_sandbox_collection_is_killed():
         _assert_collection(mutant)
 
 
-def test_scope_contains_only_40_unique_explicit_python_test_files():
-    assert len(MIND_TESTS) == len(set(MIND_TESTS)) == 40
+def test_scope_contains_only_42_unique_explicit_python_test_files():
+    assert len(MIND_TESTS) == len(set(MIND_TESTS)) == 42
     assert all(p.startswith("sandbox/mind/") and Path(p).name.startswith("test_")
                and p.endswith(".py") and ".." not in Path(p).parts for p in MIND_TESTS)
     assert not any("remember" in p or "learn" in p or "run_" in Path(p).name for p in MIND_TESTS)

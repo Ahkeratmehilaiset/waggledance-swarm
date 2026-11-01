@@ -20,17 +20,37 @@ def _model_directory(model_dir):
     return path
 
 
-def model_identity(*, model_dir, revision):
-    """Hash weights in the explicit directory; revision is a caller-pinned declaration."""
+def model_identity(*, model_dir, revision, max_bytes=None):
+    """Hash weights in the explicit directory; revision is a caller-pinned declaration.
+
+    ``max_bytes=None`` keeps the historical unbounded read for existing consumers. A positive ``int`` bounds the
+    bytes actually read: the loop never asks for more than ``max_bytes + 1`` in total and raises
+    ``ValueError("weights_over_budget")`` as soon as the file proves larger, so a weights file that grew or was
+    swapped after an earlier size check is never read to EOF. ``weights_bytes`` is then the byte count hashed.
+    """
     if not isinstance(revision, str) or not revision:
         raise ValueError("revision_invalid")
+    if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 1):
+        raise ValueError("max_bytes_invalid")
     weights = _model_directory(model_dir) / "model.safetensors"
     digest = hashlib.sha256()
+    if max_bytes is None:
+        with open(weights, "rb") as handle:
+            for block in iter(lambda: handle.read(1 << 22), b""):
+                digest.update(block)
+        return {"model": MODEL, "revision": revision, "weights_sha256": digest.hexdigest(),
+                "weights_bytes": weights.stat().st_size}
+    consumed = 0
     with open(weights, "rb") as handle:
-        for block in iter(lambda: handle.read(1 << 22), b""):
+        while True:
+            block = handle.read(min(1 << 22, max_bytes + 1 - consumed))
+            if not block:
+                break
+            consumed += len(block)
+            if consumed > max_bytes:
+                raise ValueError("weights_over_budget")
             digest.update(block)
-    return {"model": MODEL, "revision": revision, "weights_sha256": digest.hexdigest(),
-            "weights_bytes": weights.stat().st_size}
+    return {"model": MODEL, "revision": revision, "weights_sha256": digest.hexdigest(), "weights_bytes": consumed}
 
 
 class E5:

@@ -181,8 +181,12 @@ def _cursor(value):
     return parsed
 
 
-def _snapshot(value, ttl_seconds):
-    if not isinstance(value, dict) or set(value) != _SNAPSHOT_KEYS:
+def _snapshot(value, ttl_seconds, allow_partial=False):
+    """Terminal windows only, unless the caller opts into a nonterminal (partial) window.
+
+    A partial window reports its true unconsumed byte count; it is never coverage of the snapshot end.
+    """
+    if type(allow_partial) is not bool or not isinstance(value, dict) or set(value) != _SNAPSHOT_KEYS:
         raise ValueError()
     identity, generation = value["file_identity"], value["generation"]
     if not isinstance(identity, str) or not _IDENTITY.fullmatch(identity):
@@ -195,7 +199,9 @@ def _snapshot(value, ttl_seconds):
     if any(type(value[k]) is not int or value[k] < 0 for k in ("snapshot_length", "position", "unconsumed_bytes")):
         raise ValueError()
     if (start["offset"] > end["offset"] or end["offset"] != value["position"]
-            or value["position"] != value["snapshot_length"] or value["unconsumed_bytes"] != 0):
+            or value["position"] > value["snapshot_length"]
+            or value["unconsumed_bytes"] != value["snapshot_length"] - value["position"]
+            or (not allow_partial and value["unconsumed_bytes"] != 0)):
         raise ValueError()
     if (type(ttl_seconds) not in (int, float) or not math.isfinite(ttl_seconds)
             or not 0 < ttl_seconds <= MAX_TTL_SECONDS):
@@ -218,7 +224,7 @@ def _snapshot(value, ttl_seconds):
             "cursor_end_sha256": sha(value["cursor_end"]), "observed_utc": parsed.isoformat(),
             "age_seconds": age, "ttl_seconds": ttl_seconds,
             "snapshot_length": value["snapshot_length"], "position": value["position"],
-            "unconsumed_bytes": 0}
+            "unconsumed_bytes": value["unconsumed_bytes"]}
 
 
 def _unsafe_recipient(value):
@@ -299,10 +305,15 @@ def _event_budget(event):
 
 def adapt_rows(rows, snapshot, approved_non_review_tasks=None, *, ttl_seconds,
                policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
-               _public_tasks=None, _public_types=None):
-    """Validate rows; pins enable strict v6. The unpinned API is legacy only."""
+               _public_tasks=None, _public_types=None, _allow_partial=False):
+    """Validate rows; pins enable strict v6. The unpinned API is legacy only.
+
+    ``_allow_partial`` (bool, strict public mode only) admits a nonterminal window for chained catch-up.
+    """
     try:
-        source = _snapshot(snapshot, ttl_seconds)
+        if type(_allow_partial) is not bool or (_allow_partial and (_public_tasks is None or _public_types is None)):
+            raise ValueError()
+        source = _snapshot(snapshot, ttl_seconds, _allow_partial)
         pins = (policy_bytes, policy_sha256, roster_bytes, roster_sha256)
         strict = any(value is not None for value in pins) or approved_non_review_tasks is None
         roster = None

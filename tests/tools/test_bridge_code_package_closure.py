@@ -1511,6 +1511,7 @@ PREFIX_MIND_LIBRARY_FILES = (
     "tools/wd_mind_status_reader_v3_cli.py",
     "tools/wd_mind_status_publish_once.py",
     "tools/wd_q4_lane_binding.py",
+    "tools/wd_q4_agent_answer.py",
     "tools/wd_q4_attributed_session_tuple.py",
     "tools/wd_q4_lane_query.py",
     "tools/wd_q4_prefix_public_query.py",

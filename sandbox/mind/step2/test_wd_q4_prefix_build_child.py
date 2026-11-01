@@ -949,6 +949,40 @@ def test_report_names_the_remaining_limits_and_derives_no_pin(tmp_path, model_di
 # ---------------------------------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("fails", [False, True])
+def test_inference_uses_offline_environment_then_restores_real_environment(monkeypatch, fails):
+    m = module()
+    import sandbox.mind.step2 as package
+
+    names = tuple(encode_mod.CACHE_ENV) + ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    for name in names:
+        monkeypatch.setenv(name, "caller-value")
+    before = {name: os.environ.get(name) for name in names}
+    observed = {}
+
+    def inner(*args, **kwargs):
+        observed.update({name: os.environ.get(name) for name in names})
+        os.environ["HF_HUB_OFFLINE"] = "backend-changed"
+        if fails:
+            raise RuntimeError("synthetic")
+        return "synthetic-result"
+
+    builder = types.SimpleNamespace(encoder_identity=lambda value: value,
+                                    e5_passage_encoder=lambda model: inner)
+    monkeypatch.setattr(package, "shared_index_builder", builder, raising=False)
+    monkeypatch.setattr(m.encode_mod, "E5", lambda **kwargs: types.SimpleNamespace(model=object()))
+    encode = m._encoder({"model_dir": "synthetic", "revision": "synthetic"}, {"id": "synthetic"})
+    assert encode is not None
+    if fails:
+        with pytest.raises(RuntimeError, match="synthetic"):
+            encode(["synthetic"])
+    else:
+        assert encode(["synthetic"]) == "synthetic-result"
+    assert observed == {**{name: os.devnull for name in encode_mod.CACHE_ENV},
+                        "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
+    assert {name: os.environ.get(name) for name in names} == before
+
+
 def test_environment_restored_around_every_inference_call_on_success_and_error(tmp_path, model_dir, backend, monkeypatch):
     m = module()
     for name in offline_names():

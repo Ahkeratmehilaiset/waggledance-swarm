@@ -500,8 +500,12 @@ def _encoder(encoder, identity):
         return None
 
     def encode(*args, **kwargs):
-        # lazy inference may read or alter the environment too: every call is restored the same way
+        # Lazy inference also needs the loader's offline/cache policy; restore caller state afterwards.
         with _restored_environment():
+            for name in encode_mod.CACHE_ENV:
+                os.environ[name] = os.devnull
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
             return inner(*args, **kwargs)
     return encode
 

@@ -3,6 +3,7 @@ import pytest
 
 from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
 from sandbox.mind.step2.test_shared_bridge_catchup import catchup, digest, event, fixture, records
+from sandbox.mind.step2.test_status_public_filter import ROSTER
 
 
 def _large_excluded():
@@ -57,5 +58,40 @@ def test_large_excluded_row_with_bad_integrity_refuses(tmp_path, monkeypatch):
         return original(rows, *args, **kwargs)
 
     monkeypatch.setattr(snapshot.adapter, "adapt_rows", alter_ref)
+    with pytest.raises(snapshot.SnapshotRefused):
+        catchup(path, gen, start, digest(b""), max_bytes=snapshot.MAX_BYTES)
+
+
+@pytest.mark.parametrize("actor", ["claude-rco-1", "claude-rco-2"])
+def test_large_recognized_nonpublic_actors_remain_excluded(tmp_path, actor):
+    row = _large_excluded()
+    row.update(agent=actor, agent_uuid=ROSTER.get(actor, "11111111-1111-4111-8111-111111111111"))
+    path, gen, start = fixture(tmp_path, [event(0), row, event(1)])
+    result, _ = catchup(path, gen, start, digest(b""), max_bytes=snapshot.MAX_BYTES)
+    assert result["caught_up"] is True and records(result) == 2
+
+
+@pytest.mark.parametrize("actor", ["system", "grok-scout-1"])
+def test_large_unpinned_nonpublic_actor_refuses(tmp_path, actor):
+    row = _large_excluded()
+    row.update(agent=actor, agent_uuid="11111111-1111-4111-8111-111111111111")
+    path, gen, start = fixture(tmp_path, [event(0), row])
+    with pytest.raises(snapshot.SnapshotRefused):
+        catchup(path, gen, start, digest(b""), max_bytes=snapshot.MAX_BYTES)
+
+
+@pytest.mark.parametrize("kind", ["finding", "decision", "review"])
+def test_large_known_rco_review_type_is_excluded(tmp_path, kind):
+    row = _large_excluded()
+    row.update(agent="claude-rco-1", agent_uuid=ROSTER["claude-rco-1"], type=kind)
+    path, gen, start = fixture(tmp_path, [event(0), row, event(1)])
+    result, _ = catchup(path, gen, start, digest(b""), max_bytes=snapshot.MAX_BYTES)
+    assert result["caught_up"] is True and records(result) == 2
+
+
+def test_large_unrecognized_task_refuses(tmp_path):
+    row = _large_excluded()
+    row["task_id"] = "unrecognized-synthetic-task"
+    path, gen, start = fixture(tmp_path, [event(0), row])
     with pytest.raises(snapshot.SnapshotRefused):
         catchup(path, gen, start, digest(b""), max_bytes=snapshot.MAX_BYTES)

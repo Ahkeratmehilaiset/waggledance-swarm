@@ -221,6 +221,11 @@ _OVERSIZED_PUBLIC_NAMES = (
       ("eligible", "ambiguous", "invalid", "invalid_routing", "invalid_payload", "invalid_identity", "unknown_field")),
     "test_large_excluded_rows_still_enforce_aggregate_budget",
     "test_large_excluded_row_with_bad_integrity_refuses",
+    *(f"test_large_recognized_nonpublic_actors_remain_excluded[{actor}]" for actor in
+      ("claude-rco-1", "claude-rco-2")),
+    *(f"test_large_unpinned_nonpublic_actor_refuses[{actor}]" for actor in ("system", "grok-scout-1")),
+    *(f"test_large_known_rco_review_type_is_excluded[{kind}]" for kind in ("finding", "decision", "review")),
+    "test_large_unrecognized_task_refuses",
 )
 _CATCHUP_BINDING_NAMES = (
     "test_verified_multiple_windows_cannot_yet_be_published_with_one_start_anchor",

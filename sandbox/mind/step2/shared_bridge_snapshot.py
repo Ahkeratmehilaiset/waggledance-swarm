@@ -109,7 +109,7 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
             raise ValueError()
         rows, budget = [], 0
         for index, event in enumerate(result.rows):
-            budget += (adapter._public_event_budget(event, _public_tasks, checked_roster)
+            budget += (adapter._public_event_budget(event, _public_tasks, checked_roster, approved_non_review_tasks)
                        if _public_tasks is not None else adapter._event_budget(event))
             if budget > adapter._BATCH_LIMIT:
                 raise ValueError()

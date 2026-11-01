@@ -303,7 +303,7 @@ def _event_budget(event, *, limit=_EVENT_LIMIT):
     return total
 
 
-def _public_event_budget(event, public_tasks, roster):
+def _public_event_budget(event, public_tasks, roster, approved_tasks):
     """Budget oversized rows only when a validated task is outside public policy.
 
     The row is still integrity-checked and committed by the caller; no text is
@@ -314,8 +314,9 @@ def _public_event_budget(event, public_tasks, roster):
         return _event_budget(event)
     except ValueError:
         if (type(event) is not dict or type(public_tasks) is not frozenset or type(roster) is not dict
+                or type(approved_tasks) is not frozenset or not public_tasks <= approved_tasks
                 or not set(event) <= _PUBLIC_EVENT_KEYS or type(event.get("task_id")) is not str
-                or event["task_id"] in public_tasks
+                or event["task_id"] in public_tasks or event["task_id"] not in approved_tasks
                 or ("to" in event and type(event["to"]) is not str)
                 or ("message" in event and type(event["message"]) is not str)
                 or ("payload" in event and type(event["payload"]) is not dict)
@@ -329,8 +330,13 @@ def _public_event_budget(event, public_tasks, roster):
         size = _event_budget(event, limit=_BATCH_LIMIT)
         # Re-use the existing strict metadata/identity validation. This does
         # not make the task public or trust the event's declared author.
-        projection.approved_fields(event, frozenset({event["task_id"]}), roster=roster,
-                                   exclude_review_signal=True)
+        # Validation is not disclosure: roster-matching RCO rows are still
+        # suppressed before projection. RCO-specific known event types are
+        # validated with the generic type solely for envelope checking.
+        checked_event = event
+        if event.get("agent") in projection.REVIEW_LANES and event.get("type") in projection.EXCLUDED_TYPES:
+            checked_event = dict(event, type="message")
+        projection.approved_fields(checked_event, approved_tasks, roster=roster, exclude_review_signal=False)
         return size
 
 
@@ -372,7 +378,7 @@ def adapt_rows(rows, snapshot, approved_non_review_tasks=None, *, ttl_seconds,
                     or not isinstance(row["row_sha256"], str) or not _HEX.fullmatch(row["row_sha256"])):
                 raise ValueError()
             event = row["event"]
-            batch_bytes += (_public_event_budget(event, _public_tasks, roster)
+            batch_bytes += (_public_event_budget(event, _public_tasks, roster, approved_non_review_tasks)
                             if public_mode else _event_budget(event))
             if batch_bytes > _BATCH_LIMIT:
                 raise ValueError()

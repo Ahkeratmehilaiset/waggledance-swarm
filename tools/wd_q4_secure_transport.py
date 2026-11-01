@@ -403,11 +403,16 @@ def _fixed_child_verify(plan_bytes, bundle_bytes, peer_code_sha256):
 
 
 def _fixed_child_answer(plan, plan_bytes, bundle_bytes, query):
-    """Synthetic backend: a closed answer over verified bytes; never echoes the query."""
+    """Synthetic backend: a closed answer over verified bytes; carries no query-derived value.
+
+    Situations can be short and guessable, so a digest, length or prefix of the query would let a
+    reader confirm guesses. The answer is identical for every accepted query; only the constant
+    query RECEIVED says that a bounded query arrived after READY.
+    """
     _check(plan["backend"] == "synthetic-v1" and type(query) is bytes and 0 < len(query) <= _MAX_INPUT)
-    return _canonical({"schema": "wd.q4-fixed-synthetic-answer.v1", "status": "SYNTHETIC",
+    return _canonical({"schema": "wd.q4-fixed-synthetic-answer.v2", "status": "SYNTHETIC",
                        "plan_sha256": _sha(plan_bytes), "bundle_sha256": _sha(bundle_bytes),
-                       "query_sha256": _sha(query), "backend": plan["backend"],
+                       "query": "RECEIVED", "backend": plan["backend"],
                        "source_authentication": "UNKNOWN", "runtime": "NOT_VERIFIED"})
 
 

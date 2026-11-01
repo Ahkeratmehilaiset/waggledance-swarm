@@ -1,6 +1,7 @@
 """Synthetic session entry tests: no live data, lane process or deployment."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -39,6 +40,7 @@ def _validate_lane_answer(value, lane, binding):
 @pytest.fixture
 def plan(tmp_path):
     from sandbox.mind.step2 import runtime_builder
+    interpreter = str(Path(sys.executable).resolve(strict=True))
     runtime = tmp_path / "runtime"
     path = runtime / "assets/code/tools/wd_q4_session_outer_synthetic.py"
     path.parent.mkdir(parents=True)
@@ -65,8 +67,8 @@ def plan(tmp_path):
                "public-query-sha256": hashlib.sha256(files["tools/wd_q4_public_query.py"]).hexdigest(),
                "worker-sha256": hashlib.sha256(files["tools/wd_q4_lane_session_cli.py"]).hexdigest(),
                "lane": "codex-lead-1", "bundle-root": str(tmp_path / "bundle"),
-               "public-plan": str(tmp_path / "plan"), "interpreter": sys.executable,
-               "interpreter-sha256": hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
+               "public-plan": str(tmp_path / "plan"), "interpreter": interpreter,
+               "interpreter-sha256": hashlib.sha256(Path(interpreter).read_bytes()).hexdigest(),
                "interpreter-max-bytes": "10000000", "cwd": str(tmp_path),
                "timeout-seconds": "30", "max-output-bytes": "4096"}
     for name in ("fleet", "binding", "fixed-plan", "snapshot", "runtime-manifest"):
@@ -82,7 +84,26 @@ def run(options=(), *, input_=b"synthetic question", enabled=True):
     argv = [str(ENTRY)] + (["--enabled"] if enabled else [])
     for key, value in dict(options).items():
         argv.extend(("--" + key, value))
-    return subprocess.run([sys.executable, "-I", "-S", "-B", *argv], input=input_, capture_output=True, timeout=20)
+    return subprocess.run([str(Path(sys.executable).resolve(strict=True)), "-I", "-S", "-B", *argv],
+                          input=input_, capture_output=True, timeout=20)
+
+
+def test_fixture_uses_the_concrete_interpreter_when_parent_path_is_a_symlink(tmp_path, monkeypatch):
+    executable = Path(sys.executable).resolve(strict=True)
+    alias = tmp_path / executable.name
+    try:
+        alias.symlink_to(executable)
+    except OSError as exc:
+        if os.name == "nt" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows requires symlink creation privilege for this regression")
+        raise
+    monkeypatch.setattr(sys, "executable", str(alias))
+    options = plan.__wrapped__(tmp_path / "fixture")
+    assert options["interpreter"] == str(executable)
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kwargs: calls.append(argv))
+    run(options)
+    assert calls[0][0] == str(executable)
 
 
 def test_default_off_refuses_without_echo(plan):
@@ -111,7 +132,7 @@ def test_bad_options_refuse_before_input_can_leak(plan, tmp_path, mutation):
 
 def test_partial_tuple_refuses_without_waiting_for_stdin(plan):
     del plan["worker-sha256"]
-    argv = [sys.executable, "-I", "-S", "-B", str(ENTRY), "--enabled"]
+    argv = [str(Path(sys.executable).resolve(strict=True)), "-I", "-S", "-B", str(ENTRY), "--enabled"]
     for key, value in plan.items():
         argv.extend(("--" + key, value))
     child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -137,7 +158,7 @@ def test_tampered_runtime_is_refused_before_stdin_read(plan, target):
                 "worker": root / "assets/code/tools/wd_q4_lane_session_cli.py",
                 "verifier": root / "assets/code/sandbox/mind/step2/runtime_manifest.py"}[target]
         item.write_bytes(item.read_bytes() + b"tamper")
-    argv = [sys.executable, "-I", "-S", "-B", str(ENTRY), "--enabled"]
+    argv = [str(Path(sys.executable).resolve(strict=True)), "-I", "-S", "-B", str(ENTRY), "--enabled"]
     for key, value in plan.items():
         argv.extend(("--" + key, value))
     child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

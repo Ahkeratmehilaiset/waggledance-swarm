@@ -2,10 +2,11 @@
 
 import hashlib
 import json
+import struct
+from dataclasses import asdict
 
 import pytest
 
-from sandbox.mind.step2.test_verified_snapshot_checkpoint import make_case
 from tools import wd_q4_lane_link, wd_q4_secure_transport
 from tools import wd_q4_fixed_result_adapter as adapter
 
@@ -16,6 +17,90 @@ def canon(value):
 
 def sha(value):
     return hashlib.sha256(value).hexdigest()
+
+
+def make_case():
+    """Build the same synthetic snapshot graph without importing a FAISS backend."""
+    from sandbox.mind.step2 import shared_index_checkpoint as checkpoint, shared_projection as projection
+    from waggledance.core.bridge_log_reader import BridgeCursor
+
+    roster = {"codex-lead-1": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              "codex-tools-1": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+              "claude-rco-1": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+              "claude-rco-2": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+              "fable-5": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"}
+    tasks = frozenset({"public-task", "private-task"})
+    policy_bytes = canon({"schema": "wd.q4-non-review-policy.v1", "approved_tasks": sorted(tasks)})
+    roster_bytes = canon({"lanes": [{"agent": k, "agent_uuid": v} for k, v in roster.items()
+                                   if k != "codex-tools-1"],
+                         "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": roster["codex-tools-1"]}})
+    public_bytes = canon({"schema": "wd.mind-public-status-policy.v1", "public_tasks": ["public-task"],
+                          "public_types": ["message"]})
+    events = [{"ts_utc": f"2026-10-20T12:0{i}:00Z", "agent": "codex-lead-1",
+               "agent_uuid": roster["codex-lead-1"], "type": "message", "status": "done",
+               "task_id": "public-task"} for i in range(4)]
+    projected = projection.project_events(events, approved_tasks=tasks, roster=roster, exclude_review_signal=True)
+    projection_raw = json.dumps(projected, sort_keys=True, indent=1).encode()
+    records = projected["records"]
+    ids = [f"{record['record_id']}#{view}" for record in records for view in ("w", "d")]
+    rows = [{"record_id": f"{record['record_id']}#{view}", "kind": "event", "time_utc": record["time_utc"],
+             "cell_id": "learning", "provenance": dict(record["provenance"], record=record["record_id"], view=view)}
+            for record in records for view in ("w", "d")]
+    one = struct.pack("<f", 1.0)
+    data = {"index": b"fake-index", "vectors": one * len(ids),
+            "meta": canon({"dim": 1, "doc_ids": ids,
+                           "texts": [record["stored_text"] for record in records for _ in ("w", "d")],
+                           "metadata": [{} for _ in ids]}),
+            "provenance": b"\n".join(map(canon, rows)) + b"\n"}
+    encoder = {"model": "synthetic", "revision": "123", "weights_sha256": "b" * 64}
+    pairs = hashlib.sha256()
+    for item in ids:
+        pairs.update(item.encode("utf-8") + b"\x00" + one)
+    content = {"cell_id": "learning", "count": len(ids), "dim": 1, "encoder": encoder,
+               "cutoff_utc": "2027-01-01T00:00:00Z", "files": {k: sha(v) for k, v in data.items()},
+               "ids_sha256": sha("\n".join(ids).encode()), "pairs_sha256": pairs.hexdigest()}
+    data["receipt"] = canon({"schema": "wd.bridge-mind-hex-cell.v1", "content": content,
+                              "content_sha256": sha(canon(content))})
+    cell_sha = sha(data["receipt"])
+    cell_pointer = {"generation": 1, "seq": 1, "receipt_sha256": cell_sha}
+    cell_log = {"schema": "wd.bridge-mind-hex-cell-log.v1", "prev_line_sha256": "0" * 64, **cell_pointer}
+    cell_snapshots = {"learning": {"pointer": canon(cell_pointer), "log": canon(cell_log) + b"\n",
+                                   "artifacts": data}}
+    mode = {"status_mode": "public-v1", "public_policy_sha256": sha(public_bytes)}
+    policy = {"authorship": projection.AUTHORSHIP_ROSTER, "review_signal_excluded": True,
+              "policy_sha256": sha(policy_bytes), "roster_sha256": sha(roster_bytes)}
+    memory = {"schema": "wd.bridge-mind-hex-memory-step2.v1", "scope": "wd.q4-shared-projected-events.v1",
+              "dim": 1, "cells": {"learning": {"generation": 1, "receipt_sha256": cell_sha}},
+              "projection_schema": projection.SCHEMA, "projection_sha256": sha(projection_raw),
+              "policy": policy, "source_mode": mode}
+    memory_raw = canon(memory)
+    descriptor_raw = canon({"schema": "wd.bridge-mind-q4-memory-descriptor.v2", "scope": memory["scope"],
+                            "memory_sha256": sha(memory_raw), "dim": 1, "encoder": encoder})
+    cursor = BridgeCursor(offset=0, file_identity="posix-v1:1:2", generation=None)
+    anchor_sha = "e" * 64
+    binding = checkpoint._source_binding(cursor, cursor, anchor_sha, sha(projection_raw),
+                                         sha(policy_bytes), sha(roster_bytes))
+    build = {"schema": "wd.bridge-mind-shared-index-build-receipt.v1", "scope": memory["scope"],
+             "descriptor_schema": "wd.bridge-mind-q4-memory-descriptor.v2", "projection_schema": projection.SCHEMA,
+             "projection_file": "projection.json", "encoder": encoder, "dim": 1, "memory_name": "gen-a",
+             "memory_sha256": sha(memory_raw), "descriptor_sha256": sha(descriptor_raw),
+             "projection_sha256": sha(projection_raw), "policy": policy, "source_mode": mode,
+             "source_binding": binding}
+    active = {"descriptor.json": descriptor_raw, "memory.json": memory_raw,
+              "projection.json": projection_raw, "build_receipt.json": canon(build)}
+    pointer = {"schema": checkpoint.PREFIX_SCHEMA, "generation": "gen-a",
+               "artifacts": {k: sha(active[name]) for k, name in checkpoint.ARTIFACTS.items()},
+               "policy_sha256": sha(policy_bytes), "roster_sha256": sha(roster_bytes), "anchor_sha256": anchor_sha,
+               "cursor_start": asdict(cursor), "cursor_end": asdict(cursor), "watermark": asdict(cursor),
+               "prefix_start_sha256": "d" * 64, "prefix_watermark_sha256": "d" * 64,
+               "empty_advance": None, "previous": None, "previous_pointer_sha256": None}
+    pointer_raw = canon(pointer)
+    return {"pointer_bytes": pointer_raw, "expected_pointer_sha256": sha(pointer_raw), "approved_tasks": tasks,
+            "policy_bytes": policy_bytes, "policy_sha256": sha(policy_bytes), "roster_bytes": roster_bytes,
+            "roster_sha256": sha(roster_bytes), "expected_public_policy_sha256": sha(public_bytes),
+            "public_policy_bytes": public_bytes, "expected_source_sha256": anchor_sha,
+            "expected_encoder_sha256": sha(checkpoint._canonical(encoder)), "active_artifact_bytes": active,
+            "cell_snapshots": cell_snapshots, "history_bytes": {}, "enabled": True}
 
 
 def invoke(case, monkeypatch, tmp_path):
@@ -30,7 +115,7 @@ def invoke(case, monkeypatch, tmp_path):
 
 @pytest.fixture
 def case(monkeypatch, tmp_path):
-    synthetic = make_case(monkeypatch)
+    synthetic = make_case()
     bundle = wd_q4_secure_transport.fixed_snapshot_bundle(**{
         key: synthetic[key] for key in ("pointer_bytes", "policy_bytes", "roster_bytes", "public_policy_bytes",
                                         "active_artifact_bytes", "history_bytes", "cell_snapshots")
@@ -164,14 +249,31 @@ def test_public_entrypoint_calls_fixed_peer_itself(case, monkeypatch, tmp_path):
 
 def test_real_synthetic_fixed_peer_is_called_before_mapping(monkeypatch, tmp_path):
     import importlib.util
+    import os
     import sys
     from pathlib import Path
+    from sandbox.mind.step2 import shared_result_resolver as resolver
 
     spec = importlib.util.spec_from_file_location("fixed_snapshot_test_helpers",
         Path(__file__).with_name("test_wd_q4_fixed_snapshot_transport.py"))
     helpers = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helpers)
-    synthetic = helpers.snapshot_case(monkeypatch)
+    snapshot = make_case()
+    projection = json.loads(snapshot["active_artifact_bytes"]["projection.json"])
+    hits = [{"ref_sha256": sha(r["provenance"]["event_ref"].encode()),
+             "doc_id_sha256": sha(r["record_id"].encode()), "ref_kind": r["provenance"]["ref_kind"],
+             "canonical_event": False} for r in projection["records"]]
+    resolved = resolver.resolve_results(
+        memory_manifest=snapshot["active_artifact_bytes"]["memory.json"],
+        expected_memory_sha256=json.loads(snapshot["pointer_bytes"])["artifacts"]["memory_sha256"],
+        projection_bytes=snapshot["active_artifact_bytes"]["projection.json"], results=hits,
+        query_utc=helpers.QUERY_TIME, approved_tasks=snapshot["approved_tasks"],
+        policy_bytes=snapshot["policy_bytes"], policy_sha256=snapshot["policy_sha256"],
+        roster_bytes=snapshot["roster_bytes"], roster_sha256=snapshot["roster_sha256"])
+    assert resolved
+    synthetic = {"parts": {name: snapshot[name] for name in helpers.PARTS},
+                 "pins": {name: snapshot[name] for name in wd_q4_secure_transport._PUBLIC_PINS},
+                 "tasks": sorted(snapshot["approved_tasks"]), "resolved": resolved}
     runtime = helpers.synthetic_runtime(tmp_path, helpers.make_stub(synthetic["resolved"]))
     bundle = wd_q4_secure_transport.fixed_snapshot_bundle(**synthetic["parts"])
     plan = helpers.public_plan(*runtime, bundle, pins=synthetic["pins"], tasks=synthetic["tasks"])
@@ -180,7 +282,13 @@ def test_real_synthetic_fixed_peer_is_called_before_mapping(monkeypatch, tmp_pat
         interpreter_max_bytes=64 * 1024 * 1024, plan_bytes=plan, expected_plan_sha256=sha(plan),
         bundle_bytes=bundle, runtime_manifest_bytes=runtime[1].read_bytes(), query_bytes=helpers.QUERY,
         cwd=str(tmp_path), timeout_seconds=60, max_output_bytes=65536, enabled=True)
-    assert code == 0 and json.loads(raw)["results"] == synthetic["resolved"]
+    if os.name == "nt":
+        assert code == 0 and json.loads(raw)["results"] == synthetic["resolved"]
+    else:
+        # The fixed peer relies on Windows named pipes and Windows file leases;
+        # other platforms must execute and prove fail-closed, not skip the test.
+        assert code == 2 and json.loads(raw) == {"schema": "wd.q4-public-query.v2", "status": "REFUSED",
+                                                 "reason": "runtime_refused"}
 
 
 def test_peer_refusal_and_unconfirmed_cleanup_are_not_confused(case, monkeypatch, tmp_path):

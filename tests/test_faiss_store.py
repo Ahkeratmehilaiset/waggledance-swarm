@@ -6,10 +6,82 @@ import tempfile
 import shutil
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from core.faiss_store import FaissCollection, FaissRegistry, SearchResult
+
+
+def test_verified_meta_is_used_without_opening_metadata_path(tmp_path, monkeypatch):
+    import core.faiss_store as store
+    from pathlib import Path
+
+    (tmp_path / "index.faiss").write_bytes(b"synthetic-index")
+    (tmp_path / "meta.json").write_text('{"doc_ids": ["wrong"]}')
+    fake_index = type("FakeIndex", (), {"ntotal": 1, "d": 1})()
+    monkeypatch.setattr(store.faiss, "IndexFlatIP", lambda dim: fake_index, raising=False)
+    monkeypatch.setattr(store.faiss, "read_index", lambda path: fake_index, raising=False)
+    original_open = Path.open
+
+    def forbid_metadata(path, *args, **kwargs):
+        if path.name == "meta.json":
+            raise AssertionError("strict metadata must not be reopened")
+        return original_open(path, *args, **kwargs)
+
+    # The actual legacy loader uses builtins.open, so guard it too.
+    import builtins
+    original_builtin = builtins.open
+
+    def forbid_builtin(file, *args, **kwargs):
+        if isinstance(file, (str, os.PathLike)) and Path(file).name == "meta.json":
+            raise AssertionError("strict metadata must not be reopened")
+        return original_builtin(file, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", forbid_metadata)
+    monkeypatch.setattr(builtins, "open", forbid_builtin)
+    meta = {"dim": 1, "doc_ids": ["verified"], "texts": ["verified text"], "metadata": [{"ok": True}]}
+    collection = FaissCollection("synthetic", dim=1, persist_dir=str(tmp_path), verified_meta=meta)
+    assert (collection._doc_ids, collection._texts, collection._metadata) == (
+        meta["doc_ids"], meta["texts"], meta["metadata"])
+
+
+def test_verified_meta_invalid_fails_without_legacy_path_fallback(tmp_path, monkeypatch):
+    import core.faiss_store as store
+    (tmp_path / "index.faiss").write_bytes(b"synthetic-index")
+    (tmp_path / "meta.json").write_text('{"doc_ids": [], "texts": [], "metadata": []}')
+    fake_index = type("FakeIndex", (), {"ntotal": 0, "d": 1})()
+    monkeypatch.setattr(store.faiss, "IndexFlatIP", lambda dim: fake_index, raising=False)
+    monkeypatch.setattr(store.faiss, "read_index", lambda path: fake_index, raising=False)
+    with pytest.raises(ValueError, match="^verified_metadata_unavailable$"):
+        FaissCollection("synthetic", dim=1, persist_dir=str(tmp_path), verified_meta={})
+    with pytest.raises(ValueError, match="^verified_metadata_invalid$"):
+        FaissCollection("synthetic", dim=1, persist_dir=str(tmp_path), verified_meta=[])
+    with pytest.raises(ValueError, match="^verified_metadata_invalid$"):
+        FaissCollection("synthetic", dim=1, persist_dir=str(tmp_path), verified_meta=None)
+
+
+def test_default_legacy_meta_path_is_unchanged(tmp_path, monkeypatch):
+    import core.faiss_store as store
+    import json
+    (tmp_path / "index.faiss").write_bytes(b"synthetic-index")
+    (tmp_path / "meta.json").write_text(json.dumps({"dim": 1, "doc_ids": ["legacy"],
+                                                    "texts": ["legacy text"], "metadata": [{}]}))
+    fake_index = type("FakeIndex", (), {"ntotal": 1, "d": 1})()
+    monkeypatch.setattr(store.faiss, "IndexFlatIP", lambda dim: fake_index, raising=False)
+    monkeypatch.setattr(store.faiss, "read_index", lambda path: fake_index, raising=False)
+    collection = FaissCollection("synthetic", dim=1, persist_dir=str(tmp_path))
+    assert collection._doc_ids == ["legacy"] and collection._texts == ["legacy text"]
+
+
+def test_missing_index_refuses_in_strict_mode_but_legacy_stays_empty(tmp_path, monkeypatch):
+    import core.faiss_store as store
+    fake_index = type("FakeIndex", (), {"ntotal": 0, "d": 1})()
+    monkeypatch.setattr(store.faiss, "IndexFlatIP", lambda dim: fake_index, raising=False)
+    verified = {"dim": 1, "doc_ids": [], "texts": [], "metadata": []}
+    assert FaissCollection("synthetic", dim=1, persist_dir=str(tmp_path)).count == 0
+    with pytest.raises(ValueError, match="^verified_index_unavailable$"):
+        FaissCollection("synthetic", dim=1, persist_dir=str(tmp_path), verified_meta=verified)
 
 PASS = []
 FAIL = []

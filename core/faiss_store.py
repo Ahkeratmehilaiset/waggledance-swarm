@@ -24,6 +24,7 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 _DEFAULT_FAISS_DIR = Path(__file__).parent.parent / "data" / "faiss"
+_NO_VERIFIED_META = object()
 
 
 @dataclass
@@ -46,7 +47,13 @@ class FaissCollection:
         name: str,
         dim: int = 768,
         persist_dir: Optional[str] = None,
+        *,
+        verified_meta: object = _NO_VERIFIED_META,
     ):
+        # This parameter carries caller-verified metadata; it does not itself
+        # authenticate a publisher or verify the native FAISS index.
+        if verified_meta is not _NO_VERIFIED_META and type(verified_meta) is not dict:
+            raise ValueError("verified_metadata_invalid")
         self.name = name
         self.dim = dim
         self._dir = Path(persist_dir) if persist_dir else (_DEFAULT_FAISS_DIR / name)
@@ -57,7 +64,7 @@ class FaissCollection:
         self._metadata: List[Dict[str, Any]] = []
 
         # Try to restore from disk
-        self._try_load()
+        self._try_load(verified_meta=verified_meta)
 
     # ------------------------------------------------------------------
     # Write
@@ -161,15 +168,22 @@ class FaissCollection:
             json.dump(meta, f, ensure_ascii=False, indent=2)
         log.info("FaissCollection '%s' saved (%d vectors)", self.name, self.count)
 
-    def _try_load(self):
+    def _try_load(self, *, verified_meta=_NO_VERIFIED_META):
         index_path = self._dir / "index.faiss"
         meta_path = self._dir / "meta.json"
-        if not (index_path.exists() and meta_path.exists()):
+        if not index_path.exists():
+            if verified_meta is not _NO_VERIFIED_META:
+                raise ValueError("verified_index_unavailable") from None
+            return
+        if verified_meta is _NO_VERIFIED_META and not meta_path.exists():
             return
         try:
             self._index = faiss.read_index(str(index_path))
-            with open(meta_path, encoding="utf-8") as f:
-                data = json.load(f)
+            if verified_meta is _NO_VERIFIED_META:
+                with open(meta_path, encoding="utf-8") as f:
+                    data = json.load(f)
+            else:
+                data = verified_meta
             self.dim = data.get("dim", self.dim)
             self._doc_ids = data["doc_ids"]
             self._texts = data["texts"]
@@ -179,6 +193,8 @@ class FaissCollection:
                 self.name, self._index.ntotal,
             )
         except Exception as exc:
+            if verified_meta is not _NO_VERIFIED_META:
+                raise ValueError("verified_metadata_unavailable") from None
             log.warning("Could not load FaissCollection '%s': %s", self.name, exc)
 
     # ------------------------------------------------------------------

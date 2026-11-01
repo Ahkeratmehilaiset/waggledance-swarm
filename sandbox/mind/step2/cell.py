@@ -150,19 +150,26 @@ def verify_generation(gen_dir, cell_id, receipt_sha):
                 rebuild_possible = False
                 continue
             raise CellError(f"{name}_missing")
-        if file_sha256(files[name]) != content["files"][name]:
+        if name in ("meta", "provenance"):
+            # The parsed object must come from the very bytes that were hashed.
+            # Process one file at a time: legacy generations have no size bound.
+            raw = files[name].read_bytes()
+            if sha256(raw) != content["files"][name]:
+                raise CellError(f"{name}_checksum")
+            try:
+                if name == "meta":
+                    meta = json.loads(raw)
+                    meta_ids, meta_dim = list(meta["doc_ids"]), int(meta["dim"])
+                else:
+                    rows = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line]
+            except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+                raise CellError(f"{name}_unreadable") from None
+            finally:
+                del raw
+        elif file_sha256(files[name]) != content["files"][name]:
             raise CellError(f"{name}_checksum")
-    try:
-        meta = json.loads(files["meta"].read_bytes())
-        meta_ids, meta_dim = list(meta["doc_ids"]), int(meta["dim"])
-    except (ValueError, KeyError, TypeError):
-        raise CellError("meta_unreadable") from None
     if meta_dim != dim:
         raise CellError("dim_mismatch")
-    try:
-        rows = [json.loads(line) for line in files["provenance"].read_bytes().decode("utf-8").splitlines() if line]
-    except (ValueError, UnicodeDecodeError):
-        raise CellError("provenance_unreadable") from None
     ids = [row.get("record_id") for row in rows]
     if len(rows) != count or len(meta_ids) != count:
         raise CellError("count_mismatch")
@@ -177,7 +184,11 @@ def verify_generation(gen_dir, cell_id, receipt_sha):
             raise CellError("provenance_cell_mismatch")
         if not isinstance(row["time_utc"], str) or row["time_utc"] >= content["cutoff_utc"]:
             raise CellError("provenance_after_cutoff")
-    collection = FaissCollection(f"cell_{cell_id}", dim=dim, persist_dir=str(files["index"].parent))
+    try:
+        collection = FaissCollection(f"cell_{cell_id}", dim=dim, persist_dir=str(files["index"].parent),
+                                     verified_meta=meta)
+    except ValueError:
+        raise CellError("index_unreadable") from None
     index = collection._index
     if index.ntotal != count or index.d != dim or collection.count != count or collection._doc_ids != meta_ids:
         raise CellError("index_unreadable")

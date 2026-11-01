@@ -5,7 +5,10 @@ reader returns parsed objects rather than original JSONL row bytes: event IDs
 and row hashes are computed over the existing canonical serializations of
 those objects. A caller must independently authenticate the source path, start
 cursor and task policy. This is one bounded delta, not complete history or a
-proof of currentness after the snapshot; no pagination is implemented.
+proof of currentness after the snapshot. The only pagination is the opt-in,
+OFF-by-default ``read_public_catchup``: a bounded chain of public-status
+windows from one anchored start cursor with a re-pinned prefix per window;
+partial chains are reported as partial and rows are never skipped.
 """
 
 import base64
@@ -41,9 +44,23 @@ def _token(cursor):
 def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes, max_rows, generation_path=None,
                       policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
                       _commitment_anchor=None, _public_tasks=None, _public_types=None,
-                      expected_prefix_sha256=None, max_prefix_bytes=None, expected_snapshot_sha256=None):
-    """Return an uncommitted delta; unpinned positional-policy calls are legacy only."""
+                      expected_prefix_sha256=None, max_prefix_bytes=None, expected_snapshot_sha256=None,
+                      _allow_partial=False):
+    """Return an uncommitted delta; unpinned positional-policy calls are legacy only.
+
+    ``_allow_partial`` is the private chained catch-up mode: the window may end before the snapshot end,
+    and then requires an anchored public-mode read with a prefix pin and no whole-snapshot pin.
+    Ordinary refusals discard row-bearing exception frames; BaseException (including
+    KeyboardInterrupt) is not caught and requires isolation by the caller.
+    """
+    result = rows = event = snap = value = chain = prefix = None
+    pins = prefix_args = kwargs = tasks = candidate = observed = None
     try:
+        if type(_allow_partial) is not bool or (_allow_partial and (
+                _commitment_anchor is None or _public_tasks is None or _public_types is None
+                or expected_prefix_sha256 is None or max_prefix_bytes is None
+                or expected_snapshot_sha256 is not None)):
+            raise ValueError()
         pins = (policy_bytes, policy_sha256, roster_bytes, roster_sha256)
         strict = any(value is not None for value in pins) or approved_non_review_tasks is None
         if strict:
@@ -72,16 +89,20 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
                                  generation_path=generation_path, **prefix_args)
         observed = dt.datetime.now(dt.timezone.utc).isoformat()
         candidate = result.candidate_cursor
+        lead = 1 if cursor.offset else 0
         if (type(result.status) is not BridgeReadStatus or result.status not in (BridgeReadStatus.OK, BridgeReadStatus.IDLE)
                 or type(candidate) is not BridgeCursor or type(result.snapshot_length) is not int
                 or result.snapshot_length < 0 or type(result.requested_offset) is not int
                 or result.requested_offset != cursor.offset or not isinstance(result.rows, tuple)
                 or candidate.file_identity != cursor.file_identity or candidate.generation != cursor.generation
-                or type(candidate.offset) is not int or candidate.offset != result.snapshot_length
+                or type(candidate.offset) is not int
+                or (candidate.offset != result.snapshot_length if not _allow_partial
+                    else candidate.offset > result.snapshot_length)
                 or candidate.offset < cursor.offset or type(result.bytes_consumed) is not int
                 or result.bytes_consumed != candidate.offset - cursor.offset
                 or type(result.bytes_read) is not int
-                or result.bytes_read != result.bytes_consumed + (1 if cursor.offset else 0)
+                or (result.bytes_read != result.bytes_consumed + lead if not _allow_partial
+                    else not result.bytes_consumed + lead <= result.bytes_read <= max_bytes + lead)
                 or result.bytes_consumed > max_bytes or len(result.rows) > max_rows
                 or (result.status == BridgeReadStatus.IDLE and (result.rows or result.bytes_consumed != 0))
                 or (result.status == BridgeReadStatus.OK and (not result.rows or result.bytes_consumed == 0))):
@@ -106,8 +127,13 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
             if _commitment_anchor is None:
                 raise ValueError()
             kwargs.update(_public_tasks=_public_tasks, _public_types=_public_types)
+        if _allow_partial:
+            kwargs["_allow_partial"] = True
         value = adapter.adapt_rows(rows, snap, approved_non_review_tasks, ttl_seconds=900, **kwargs)
-        value["source"]["coverage"] = "delta_only_not_complete_history"
+        if value["source"]["unconsumed_bytes"] != snap["unconsumed_bytes"]:
+            raise ValueError()
+        value["source"]["coverage"] = ("delta_only_not_complete_history" if snap["unconsumed_bytes"] == 0
+                                       else "partial_window_not_complete")
         value["candidate_cursor"] = candidate
         if prefix_requested:
             prefix = getattr(result, "candidate_prefix", None)
@@ -119,7 +145,12 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
             value["_semantic_state"] = (chain, len(result.rows))
         return value
     except Exception:
-        raise SnapshotRefused("snapshot_refused") from None
+        pass
+    # Do not retain raw source rows in either a chained exception or this frame.
+    del result, rows, event, snap, value, chain, prefix, pins, prefix_args, kwargs, tasks, candidate, observed
+    del path, cursor, approved_non_review_tasks, generation_path, policy_bytes, roster_bytes
+    del expected_prefix_sha256, expected_snapshot_sha256, _commitment_anchor
+    raise SnapshotRefused("snapshot_refused") from None
 
 
 def _canonical(value):
@@ -204,58 +235,294 @@ def read_anchored_delta(path, cursor, tasks, *, anchor_bytes, anchor_sha256,
     it does not authenticate origin or defeat concurrent same-user ABA. Prefix
     hashes can reveal guesses about private source bytes and are not public.
     """
+    public_tasks = public_types = None
     try:
-        if (type(anchor_bytes) is not bytes or len(anchor_bytes) > _ANCHOR_MAX_BYTES
-                or not isinstance(anchor_sha256, str) or _SHA256.fullmatch(anchor_sha256) is None
-                or not hmac.compare_digest(hashlib.sha256(anchor_bytes).hexdigest(), anchor_sha256)
-                or type(cursor) is not BridgeCursor or cursor.generation is None
-                or type(tasks) is not frozenset or generation_path is None):
+        public_tasks, public_types = _checked_anchor(
+            path, cursor, tasks, anchor_bytes=anchor_bytes, anchor_sha256=anchor_sha256,
+            generation_path=generation_path, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+            roster_bytes=roster_bytes, roster_sha256=roster_sha256, public_policy_bytes=public_policy_bytes,
+            public_policy_sha256=public_policy_sha256)
+        return _anchored_window(path, cursor, tasks, anchor_sha256=anchor_sha256, generation_path=generation_path,
+                                max_bytes=max_bytes, max_rows=max_rows, policy_bytes=policy_bytes,
+                                policy_sha256=policy_sha256, roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+                                public_tasks=public_tasks, public_types=public_types,
+                                public_policy_sha256=public_policy_sha256,
+                                expected_prefix_sha256=expected_prefix_sha256, max_prefix_bytes=max_prefix_bytes,
+                                expected_snapshot_sha256=expected_snapshot_sha256, allow_partial=False)
+    except Exception:
+        pass
+    del path, cursor, tasks, anchor_bytes, generation_path, policy_bytes, roster_bytes, public_policy_bytes
+    del public_tasks, public_types
+    del anchor_sha256, expected_prefix_sha256, expected_snapshot_sha256
+    raise SnapshotRefused("snapshot_refused") from None
+
+
+def _checked_anchor(path, cursor, tasks, *, anchor_bytes, anchor_sha256, generation_path, policy_bytes,
+                    policy_sha256, roster_bytes, roster_sha256, public_policy_bytes, public_policy_sha256):
+    """Validate the caller-authenticated anchor against ``cursor``; returns the public policy sets or None."""
+    if (type(anchor_bytes) is not bytes or len(anchor_bytes) > _ANCHOR_MAX_BYTES
+            or not isinstance(anchor_sha256, str) or _SHA256.fullmatch(anchor_sha256) is None
+            or not hmac.compare_digest(hashlib.sha256(anchor_bytes).hexdigest(), anchor_sha256)
+            or type(cursor) is not BridgeCursor or cursor.generation is None
+            or type(tasks) is not frozenset or generation_path is None):
+        raise ValueError()
+    parsed_tasks, _ = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+    if tasks != parsed_tasks:
+        raise ValueError()
+    public_mode = public_policy_bytes is not None or public_policy_sha256 is not None
+    if public_mode:
+        public_tasks, public_types = adapter.public_status_policy(public_policy_bytes, public_policy_sha256, tasks)
+    else:
+        public_tasks = public_types = None
+    anchor = json.loads(anchor_bytes.decode("utf-8"), object_pairs_hook=_unique_pairs,
+                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+    expected_keys = {"schema", "source_path", "generation_path", "cursor_start", "policy_sha256", "roster_sha256"}
+    if public_mode:
+        expected_keys |= {"status_mode", "public_policy_sha256"}
+    if (type(anchor) is not dict
+            or set(anchor) != expected_keys
+            or anchor["schema"] != "wd.q4-source-anchor.v1"
+            or (public_mode and (anchor["status_mode"] != "public-v1"
+                                 or anchor["public_policy_sha256"] != public_policy_sha256))
+            or _absolute_path(anchor["source_path"]) != _absolute_path(path)
+            or _absolute_path(anchor["generation_path"]) != _absolute_path(generation_path)
+            or type(anchor["cursor_start"]) is not dict
+            or _canonical(anchor["cursor_start"]) != _canonical(asdict(cursor))
+            or not isinstance(anchor["policy_sha256"], str)
+            or not hmac.compare_digest(anchor["policy_sha256"], policy_sha256)
+            or not isinstance(anchor["roster_sha256"], str)
+            or not hmac.compare_digest(anchor["roster_sha256"], roster_sha256)):
+        raise ValueError()
+    return public_tasks, public_types
+
+
+def _anchored_window(path, cursor, tasks, *, anchor_sha256, generation_path, max_bytes, max_rows, policy_bytes,
+                     policy_sha256, roster_bytes, roster_sha256, public_tasks, public_types, public_policy_sha256,
+                     expected_prefix_sha256, max_prefix_bytes, expected_snapshot_sha256, allow_partial):
+    """One window read after the anchor was checked; returns the result with its in-process binding."""
+    public_mode = public_tasks is not None
+    snapshot_args = (dict(expected_snapshot_sha256=expected_snapshot_sha256)
+                     if expected_snapshot_sha256 is not None else {})
+    if allow_partial:
+        snapshot_args["_allow_partial"] = True
+    result = read_shared_delta(path, cursor, tasks, max_bytes=max_bytes, max_rows=max_rows,
+                               generation_path=generation_path, policy_bytes=policy_bytes,
+                               policy_sha256=policy_sha256, roster_bytes=roster_bytes,
+                               roster_sha256=roster_sha256, _commitment_anchor=anchor_sha256,
+                               _public_tasks=public_tasks, _public_types=public_types,
+                               expected_prefix_sha256=expected_prefix_sha256,
+                               max_prefix_bytes=max_prefix_bytes, **snapshot_args)
+    chain, count = result.pop("_semantic_state")
+    projection_data = _canonical(result["projection"])
+    commitment = _semantic_end(chain, count, result["candidate_cursor"], projection_data)
+    result["_projection_binding"] = _ProjectionBinding(
+        projection_data, _canonical(result["source"]), result["candidate_cursor"],
+        anchor_sha256, policy_sha256, roster_sha256, chain, count, commitment,
+        "public-v1" if public_mode else "legacy", public_policy_sha256 if public_mode else None,
+        result.get("candidate_prefix"), result.get("start_prefix"))
+    return result
+
+
+CATCHUP_SCHEMA = "wd.q4-public-catchup.v1"
+CATCHUP_MAX_WINDOWS = 64
+_CAUGHT_UP = "chained_delta_caught_up_to_final_snapshot_not_history"
+_PARTIAL = "chained_delta_partial_not_caught_up"
+_END_REASONS = frozenset({"snapshot_end", "max_windows", "partial_record"})
+
+
+@dataclass(frozen=True, slots=True)
+class _CatchupBinding:
+    """Accidental-splice guard for one chain, not a capability or an authenticity proof."""
+    anchor_sha256: str
+    policy_sha256: str
+    roster_sha256: str
+    public_policy_sha256: str
+    start_prefix: BridgePrefixPin = field(repr=False)
+    candidate_prefix: BridgePrefixPin = field(repr=False)
+    window_count: int
+    caught_up: bool
+    end_reason: str
+    chain_commitment: str = field(repr=False)
+
+
+def _catchup_start(anchor_sha256, policy_sha256, roster_sha256, public_policy_sha256, start_prefix):
+    fields = (bytes.fromhex(anchor_sha256), bytes.fromhex(policy_sha256), bytes.fromhex(roster_sha256),
+              bytes.fromhex(public_policy_sha256), _canonical(asdict(start_prefix.cursor)),
+              bytes.fromhex(start_prefix.sha256))
+    return hashlib.sha256(b"wd.q4.public-catchup.start.v1\x00" + b"".join(_frame(x) for x in fields)).digest()
+
+
+def _catchup_step(chain, index, binding, candidate_prefix):
+    fields = (chain, index.to_bytes(8, "big"), bytes.fromhex(binding.semantic_commitment),
+              hashlib.sha256(binding.source).digest(), _canonical(asdict(candidate_prefix.cursor)),
+              bytes.fromhex(candidate_prefix.sha256))
+    return hashlib.sha256(b"wd.q4.public-catchup.step.v1\x00" + b"".join(_frame(x) for x in fields)).digest()
+
+
+def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, generation_path, max_bytes, max_rows,
+                        max_windows, policy_bytes, policy_sha256, roster_bytes, roster_sha256,
+                        public_policy_bytes, public_policy_sha256, expected_prefix_sha256, max_prefix_bytes,
+                        enabled=False):
+    """Opt-in bounded chained public-status catch-up over successive nonterminal windows (OFF by default).
+
+    The caller-authenticated anchor binds the chain START cursor; it is checked once. Every window re-reads
+    the byte prefix from offset zero against the previous window's pin (the first against the caller's
+    independently pinned prefix), keeps the start file identity and generation, and goes through the
+    unchanged public admission policy and per-event/batch budgets. A window that would need to skip a row
+    (oversized, malformed, over a budget) refuses the whole call: rows are never skipped. At most
+    ``max_windows`` windows are read. ``caught_up`` is True only when the final window reached the end of
+    the snapshot observed by that window; this is still a delta from the start cursor, not complete history
+    and not currentness after the read. Otherwise the result is partial and resumable from
+    ``candidate_cursor`` with ``candidate_prefix`` and a new caller-authenticated anchor for that cursor.
+    Records are deduplicated per window only. Prefix digests may disclose guesses about private bytes and
+    must not be published. This does not authenticate the caller, the source or the filesystem.
+    Ordinary refusals discard exception frames; BaseException is caller-owned and may retain input data.
+    """
+    if enabled is not True:
+        del path, cursor, tasks, anchor_bytes, generation_path, policy_bytes, roster_bytes, public_policy_bytes
+        del expected_prefix_sha256, anchor_sha256, policy_sha256, roster_sha256, public_policy_sha256
+        raise SnapshotRefused("catchup_disabled")
+    public_tasks = public_types = start_prefix = chain = windows = current = end_reason = None
+    window = nxt = caught_up = last = result = None
+    try:
+        if (type(max_windows) is not int or not 1 <= max_windows <= CATCHUP_MAX_WINDOWS
+                or public_policy_bytes is None or public_policy_sha256 is None
+                or type(expected_prefix_sha256) is not str or _SHA256.fullmatch(expected_prefix_sha256) is None
+                or max_prefix_bytes is None):
             raise ValueError()
-        parsed_tasks, _ = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
-        if tasks != parsed_tasks:
+        public_tasks, public_types = _checked_anchor(
+            path, cursor, tasks, anchor_bytes=anchor_bytes, anchor_sha256=anchor_sha256,
+            generation_path=generation_path, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+            roster_bytes=roster_bytes, roster_sha256=roster_sha256, public_policy_bytes=public_policy_bytes,
+            public_policy_sha256=public_policy_sha256)
+        if public_tasks is None:
             raise ValueError()
-        public_mode = public_policy_bytes is not None or public_policy_sha256 is not None
-        if public_mode:
-            public_tasks, public_types = adapter.public_status_policy(public_policy_bytes, public_policy_sha256, tasks)
-        else:
-            public_tasks = public_types = None
-        anchor = json.loads(anchor_bytes.decode("utf-8"), object_pairs_hook=_unique_pairs,
-                            parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
-        expected_keys = {"schema", "source_path", "generation_path", "cursor_start", "policy_sha256", "roster_sha256"}
-        if public_mode:
-            expected_keys |= {"status_mode", "public_policy_sha256"}
-        if (type(anchor) is not dict
-                or set(anchor) != expected_keys
-                or anchor["schema"] != "wd.q4-source-anchor.v1"
-                or (public_mode and (anchor["status_mode"] != "public-v1"
-                                     or anchor["public_policy_sha256"] != public_policy_sha256))
-                or _absolute_path(anchor["source_path"]) != _absolute_path(path)
-                or _absolute_path(anchor["generation_path"]) != _absolute_path(generation_path)
-                or type(anchor["cursor_start"]) is not dict
-                or _canonical(anchor["cursor_start"]) != _canonical(asdict(cursor))
-                or not isinstance(anchor["policy_sha256"], str)
-                or not hmac.compare_digest(anchor["policy_sha256"], policy_sha256)
-                or not isinstance(anchor["roster_sha256"], str)
-                or not hmac.compare_digest(anchor["roster_sha256"], roster_sha256)):
-            raise ValueError()
-        snapshot_args = (dict(expected_snapshot_sha256=expected_snapshot_sha256)
-                         if expected_snapshot_sha256 is not None else {})
-        result = read_shared_delta(path, cursor, tasks, max_bytes=max_bytes, max_rows=max_rows,
-                                   generation_path=generation_path, policy_bytes=policy_bytes,
-                                   policy_sha256=policy_sha256, roster_bytes=roster_bytes,
-                                   roster_sha256=roster_sha256, _commitment_anchor=anchor_sha256,
-                                   _public_tasks=public_tasks, _public_types=public_types,
-                                   expected_prefix_sha256=expected_prefix_sha256,
-                                   max_prefix_bytes=max_prefix_bytes, **snapshot_args)
-        chain, count = result.pop("_semantic_state")
-        projection_data = _canonical(result["projection"])
-        commitment = _semantic_end(chain, count, result["candidate_cursor"], projection_data)
-        result["_projection_binding"] = _ProjectionBinding(
-            projection_data, _canonical(result["source"]), result["candidate_cursor"],
-            anchor_sha256, policy_sha256, roster_sha256, chain, count, commitment,
-            "public-v1" if public_mode else "legacy", public_policy_sha256 if public_mode else None,
-            result.get("candidate_prefix"), result.get("start_prefix"))
+        start_prefix = BridgePrefixPin(cursor, expected_prefix_sha256)
+        chain = _catchup_start(anchor_sha256, policy_sha256, roster_sha256, public_policy_sha256, start_prefix)
+        windows, current, end_reason = [], start_prefix, "max_windows"
+        for index in range(max_windows):
+            window = _anchored_window(path, current.cursor, tasks, anchor_sha256=anchor_sha256,
+                                      generation_path=generation_path, max_bytes=max_bytes, max_rows=max_rows,
+                                      policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+                                      roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+                                      public_tasks=public_tasks, public_types=public_types,
+                                      public_policy_sha256=public_policy_sha256,
+                                      expected_prefix_sha256=current.sha256, max_prefix_bytes=max_prefix_bytes,
+                                      expected_snapshot_sha256=None, allow_partial=True)
+            nxt = window["candidate_prefix"]
+            if (window["start_prefix"] != current or type(nxt) is not BridgePrefixPin
+                    or nxt.cursor != window["candidate_cursor"]
+                    or (nxt.cursor.file_identity, nxt.cursor.generation) != (cursor.file_identity, cursor.generation)):
+                raise ValueError()
+            chain = _catchup_step(chain, index, window["_projection_binding"], nxt)
+            windows.append(window)
+            if window["source"]["unconsumed_bytes"] == 0:
+                end_reason = "snapshot_end"
+                break
+            if nxt.cursor.offset == current.cursor.offset:
+                end_reason = "partial_record"
+                break
+            current = nxt
+        caught_up = end_reason == "snapshot_end"
+        last = windows[-1]
+        result = {"schema": CATCHUP_SCHEMA, "windows": tuple(windows), "window_count": len(windows),
+                  "caught_up": caught_up, "end_reason": end_reason, "coverage": _CAUGHT_UP if caught_up else _PARTIAL,
+                  "start_prefix": start_prefix, "candidate_cursor": last["candidate_cursor"],
+                  "candidate_prefix": last["candidate_prefix"]}
+        result["_catchup_binding"] = _CatchupBinding(
+            anchor_sha256, policy_sha256, roster_sha256, public_policy_sha256, start_prefix,
+            last["candidate_prefix"], len(windows), caught_up, end_reason, chain.hex())
         return result
+    except Exception:
+        pass
+    del path, cursor, tasks, anchor_bytes, generation_path, policy_bytes, roster_bytes, public_policy_bytes
+    del expected_prefix_sha256, anchor_sha256, policy_sha256, roster_sha256, public_policy_sha256
+    del public_tasks, public_types, start_prefix, chain, windows, current, end_reason, window, nxt, caught_up, last, result
+    raise SnapshotRefused("snapshot_refused") from None
+
+
+def verify_public_catchup(result, *, expected_anchor_bytes, expected_anchor_sha256, expected_policy_sha256,
+                          expected_roster_sha256, expected_public_policy_sha256, expected_start_prefix):
+    """Reject accidental window splicing, reordering or relabelling of one catch-up result in this process.
+
+    Recomputes every window's semantic commitment, the prefix/cursor linkage and the chain commitment.
+    Binding objects and their caller are not authenticated; this is not an origin proof.
+    """
+    try:
+        pins = (expected_anchor_sha256, expected_policy_sha256, expected_roster_sha256, expected_public_policy_sha256)
+        if (type(result) is not dict or any(not isinstance(v, str) or _SHA256.fullmatch(v) is None for v in pins)
+                or type(expected_anchor_bytes) is not bytes or len(expected_anchor_bytes) > _ANCHOR_MAX_BYTES
+                or not hmac.compare_digest(hashlib.sha256(expected_anchor_bytes).hexdigest(), expected_anchor_sha256)
+                or type(expected_start_prefix) is not BridgePrefixPin):
+            raise ValueError()
+        anchor = json.loads(expected_anchor_bytes.decode("utf-8"), object_pairs_hook=_unique_pairs,
+                            parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        binding = result.get("_catchup_binding")
+        windows = result.get("windows")
+        if (type(anchor) is not dict or anchor.get("schema") != "wd.q4-source-anchor.v1"
+                or anchor.get("status_mode") != "public-v1"
+                or anchor.get("policy_sha256") != expected_policy_sha256
+                or anchor.get("roster_sha256") != expected_roster_sha256
+                or anchor.get("public_policy_sha256") != expected_public_policy_sha256
+                or type(anchor.get("cursor_start")) is not dict
+                or _canonical(anchor["cursor_start"]) != _canonical(asdict(expected_start_prefix.cursor))
+                or type(binding) is not _CatchupBinding
+                or not hmac.compare_digest(binding.anchor_sha256, expected_anchor_sha256)
+                or not hmac.compare_digest(binding.policy_sha256, expected_policy_sha256)
+                or not hmac.compare_digest(binding.roster_sha256, expected_roster_sha256)
+                or not hmac.compare_digest(binding.public_policy_sha256, expected_public_policy_sha256)
+                or binding.start_prefix != expected_start_prefix or result.get("start_prefix") != expected_start_prefix
+                or result.get("schema") != CATCHUP_SCHEMA
+                or type(windows) is not tuple or not 1 <= len(windows) <= CATCHUP_MAX_WINDOWS
+                or result.get("window_count") != len(windows) or binding.window_count != len(windows)
+                or binding.end_reason not in _END_REASONS or result.get("end_reason") != binding.end_reason
+                or type(binding.caught_up) is not bool or result.get("caught_up") is not binding.caught_up
+                or binding.caught_up != (binding.end_reason == "snapshot_end")
+                or result.get("coverage") != (_CAUGHT_UP if binding.caught_up else _PARTIAL)):
+            raise ValueError()
+        chain = _catchup_start(expected_anchor_sha256, expected_policy_sha256, expected_roster_sha256,
+                               expected_public_policy_sha256, expected_start_prefix)
+        current = expected_start_prefix
+        for index, window in enumerate(windows):
+            last = index == len(windows) - 1
+            wb = window.get("_projection_binding") if type(window) is dict else None
+            nxt = window.get("candidate_prefix") if type(window) is dict else None
+            source = window.get("source") if type(window) is dict else None
+            if (type(wb) is not _ProjectionBinding or wb.status_mode != "public-v1"
+                    or wb.public_policy_sha256 != expected_public_policy_sha256
+                    or not hmac.compare_digest(wb.anchor_sha256, expected_anchor_sha256)
+                    or wb.policy_sha256 != expected_policy_sha256 or wb.roster_sha256 != expected_roster_sha256
+                    or window.get("start_prefix") != current or wb.start_prefix != current
+                    or type(nxt) is not BridgePrefixPin or wb.candidate_prefix != nxt
+                    or nxt.cursor != wb.candidate or window.get("candidate_cursor") != wb.candidate
+                    or (wb.candidate.file_identity, wb.candidate.generation)
+                    != (current.cursor.file_identity, current.cursor.generation)
+                    or wb.candidate.offset < current.cursor.offset
+                    or type(wb.row_commitment) is not bytes or len(wb.row_commitment) != 32
+                    or type(wb.row_count) is not int or not 0 <= wb.row_count <= MAX_ROWS
+                    or not hmac.compare_digest(wb.semantic_commitment, _semantic_end(
+                        wb.row_commitment, wb.row_count, wb.candidate, wb.projection))
+                    or _canonical(window.get("projection")) != wb.projection
+                    or _canonical(source) != wb.source or type(source) is not dict
+                    or source.get("cursor_start_sha256")
+                    != hashlib.sha256(_token(current.cursor).encode("utf-8")).hexdigest()
+                    or source.get("cursor_end_sha256") != hashlib.sha256(_token(wb.candidate).encode("utf-8")).hexdigest()
+                    or type(source.get("unconsumed_bytes")) is not int
+                    or source.get("coverage") != ("delta_only_not_complete_history" if source["unconsumed_bytes"] == 0
+                                                  else "partial_window_not_complete")
+                    or (not last and (source["unconsumed_bytes"] == 0 or nxt.cursor.offset == current.cursor.offset))
+                    or (last and binding.end_reason == "snapshot_end" and source["unconsumed_bytes"] != 0)
+                    or (last and binding.end_reason == "partial_record"
+                        and (source["unconsumed_bytes"] == 0 or nxt.cursor.offset != current.cursor.offset))
+                    or (last and binding.end_reason == "max_windows"
+                        and (source["unconsumed_bytes"] == 0 or nxt.cursor.offset == current.cursor.offset))):
+                raise ValueError()
+            chain = _catchup_step(chain, index, wb, nxt)
+            current = nxt
+        if (not hmac.compare_digest(chain.hex(), binding.chain_commitment) or binding.candidate_prefix != current
+                or result.get("candidate_prefix") != current or result.get("candidate_cursor") != current.cursor):
+            raise ValueError()
+        return True
     except Exception:
         raise SnapshotRefused("snapshot_refused") from None
 

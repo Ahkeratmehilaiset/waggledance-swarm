@@ -23,6 +23,7 @@ ACTIVE_BINDING_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_active_bin
 PROJECTION_BINDING_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_projection_binding.py"
 Q4_SNAPSHOT_TEST_PATH = "sandbox/mind/step2/test_wd_q4_private_read_snapshot.py"
 PUBLIC_QUERY_TEST_PATH = "sandbox/mind/step2/test_public_snapshot_query_stub.py"
+CATCHUP_TEST_PATH = "sandbox/mind/step2/test_shared_bridge_catchup.py"
 _NAMES = (
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-meta]",
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-provenance]",
@@ -194,6 +195,24 @@ _PUBLIC_QUERY_NAMES = (
     "test_public_snapshot_query_refuses_wrong_pointer_pin",
     "test_public_snapshot_query_refuses_inconsistent_projection",
 )
+_CATCHUP_NAMES = (
+    "test_disabled_by_default_refuses_before_reading",
+    "test_chain_reads_successive_nonterminal_windows_to_the_snapshot_end",
+    "test_window_budget_leaves_partial_coverage_resumable_never_caught_up",
+    "test_oversized_row_is_never_skipped_and_refuses_the_chain",
+    "test_oversized_private_row_refusal_drops_all_exception_context_and_raw_locals",
+    "test_catchup_keyboard_interrupt_is_not_a_sanitized_refusal",
+    "test_disabled_catchup_drops_private_arguments_from_refusal_frame",
+    "test_trailing_partial_record_ends_without_claiming_caught_up",
+    "test_admission_policy_is_unchanged_inside_windows",
+    "test_prefix_generation_and_identity_pins_are_enforced_on_resume",
+    "test_generation_change_between_calls_refuses",
+    *(f"test_configuration_refusals[over{i}]" for i in range(7)),
+    "test_anchor_must_bind_the_chain_start_cursor",
+    "test_verify_rejects_spliced_or_relabelled_chains",
+    "test_terminal_only_reader_is_unchanged_for_nonterminal_windows",
+    "test_adapter_refuses_nonterminal_snapshots_unless_opted_in",
+)
 _MEMORY_PREFLIGHT_NAMES = (
     *(f"test_second_cell_hash_mismatch_refused_before_first_cell_load[{name}]"
       for name in ("index", "meta", "provenance", "vectors")),
@@ -213,7 +232,8 @@ EXPECTED_NODEIDS = (tuple(TEST_PATH + "::" + name for name in _NAMES) +
                     tuple(ACTIVE_BINDING_TEST_PATH + "::" + name for name in _ACTIVE_BINDING_NAMES) +
                     tuple(PROJECTION_BINDING_TEST_PATH + "::" + name for name in _PROJECTION_BINDING_NAMES) +
                     tuple(Q4_SNAPSHOT_TEST_PATH + "::" + name for name in _Q4_SNAPSHOT_NAMES) +
-                    tuple(PUBLIC_QUERY_TEST_PATH + "::" + name for name in _PUBLIC_QUERY_NAMES))
+                    tuple(PUBLIC_QUERY_TEST_PATH + "::" + name for name in _PUBLIC_QUERY_NAMES) +
+                    tuple(CATCHUP_TEST_PATH + "::" + name for name in _CATCHUP_NAMES))
 
 
 def _unavailable(*_args, **_kwargs):
@@ -271,6 +291,7 @@ def _run_pytest(pytest):
                             str(ROOT / VERIFIED_TEST_PATH), str(ROOT / Q4_DESCRIPTOR_TEST_PATH),
                             str(ROOT / ACTIVE_BINDING_TEST_PATH), str(ROOT / PROJECTION_BINDING_TEST_PATH),
                             str(ROOT / Q4_SNAPSHOT_TEST_PATH), str(ROOT / PUBLIC_QUERY_TEST_PATH),
+                            str(ROOT / CATCHUP_TEST_PATH),
                             "-q"], plugins=[guard]))
     return 1 if code == 0 and not guard.complete() else code
 

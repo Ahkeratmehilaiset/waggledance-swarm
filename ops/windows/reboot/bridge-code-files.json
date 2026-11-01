@@ -88,6 +88,7 @@
     "tools/wd_q4_lane_session_cli.py",
     "tools/wd_q4_session_outer_entry.py",
     "tools/wd_q4_session_outer_synthetic.py",
+    "tools/wd_q4_session_tuple.py",
     "tools/wd_q4_session_worker.py",
     "tools/wd_q4_snapshot_candidate.py",
     "tools/agent_next_task.py",

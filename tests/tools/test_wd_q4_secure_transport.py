@@ -6,7 +6,11 @@ for production. The payload here is synthetic and is never a command argument.
 """
 
 import importlib
+import contextlib
+import hashlib
+import json
 import os
+from pathlib import Path
 import sys
 import time
 
@@ -20,6 +24,37 @@ pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows CreateProcess c
 def transport():
     # Import here so every test is RED when the implementation is absent.
     return importlib.import_module("tools.wd_q4_secure_transport")
+
+
+def test_fixed_peer_manifest_limit_matches_verifier_before_spawn(transport, tmp_path, monkeypatch):
+    from sandbox.mind.step2.runtime_manifest import MAX_MANIFEST_BYTES
+    from tools import wd_q4_fixed_parent_attestation as attestation
+
+    document = {"schema": "wd.q4-runtime-manifest.v1", "generation": "a" * 40,
+                "revision": "b" * 40,
+                "files": [{"path": f"site/file{i:06d}", "size": 0, "sha256": "0" * 64}
+                          for i in range(10000)]}
+    raw = (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    assert 1024 * 1024 < len(raw) < MAX_MANIFEST_BYTES
+    assert transport._MAX_RUNTIME_MANIFEST == MAX_MANIFEST_BYTES
+    sha = lambda value: hashlib.sha256(value).hexdigest()
+    plan_bytes, bundle, interpreter_pin = b"plan", b"synthetic", "a" * 64
+    plan = {"backend": "synthetic-v1", "interpreter_sha256": interpreter_pin,
+            "peer_code_sha256": sha(Path(transport.__file__).read_bytes()),
+            "runtime_manifest_sha256": sha(raw), "bundle_bytes": len(bundle), "bundle_sha256": sha(bundle)}
+    monkeypatch.setattr(transport, "_fixed_plan", lambda _: plan)
+    monkeypatch.setattr(attestation, "attest_file", lambda *a, **k: contextlib.nullcontext())
+    calls = []
+    monkeypatch.setattr(transport, "_run", lambda *a, **k: (calls.append(True) or (b"ok", 0)))
+    def invoke(value):
+        return transport._run_fixed_peer_impl(sys.executable, interpreter_pin, 1, plan_bytes, sha(plan_bytes),
+                                               bundle, value, b"query", str(tmp_path), 1, 1024)
+    assert invoke(raw) == (b"ok", 0)
+    too_large = raw + b" " * (MAX_MANIFEST_BYTES + 1 - len(raw))
+    plan["runtime_manifest_sha256"] = sha(too_large)
+    with pytest.raises(transport._Refused):
+        invoke(too_large)
+    assert calls == [True]
 
 
 def _run(transport, tmp_path, code, payload=b"", *, timeout=5, output_limit=1024):

@@ -34,14 +34,14 @@ import sys
 
 from tools import wd_q4_lane_session_client as session
 from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown
-from tools.wd_q4_secure_transport import TransportCleanupUnknown
+from tools.wd_q4_secure_transport import TransportCleanupUnknown, _MAX_RUNTIME_MANIFEST
 
 MAX_STDIN = 16000
 MAX_OUTPUT = 65536
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _FILES = {"fleet": 1024 * 1024, "binding": 65536, "fixed-plan": 4096,
-          "snapshot": 16 * 1024 * 1024, "runtime-manifest": 1024 * 1024}
+          "snapshot": 16 * 1024 * 1024, "runtime-manifest": _MAX_RUNTIME_MANIFEST}
 _OPTIONS = frozenset({"lane", "bundle-root", "public-plan", "interpreter", "interpreter-sha256",
                       "interpreter-max-bytes", "cwd", "timeout-seconds", "max-output-bytes"} |
                      set(_FILES) | {key + "-sha256" for key in _FILES})

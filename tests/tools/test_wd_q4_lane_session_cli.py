@@ -16,6 +16,24 @@ def sha(value):
     return hashlib.sha256(value).hexdigest()
 
 
+def test_runtime_manifest_limit_matches_verifier_and_accepts_large_json(tmp_path):
+    from sandbox.mind.step2.runtime_manifest import MAX_MANIFEST_BYTES
+
+    assert cli._FILES["runtime-manifest"] == MAX_MANIFEST_BYTES
+    document = {"schema": "wd.q4-runtime-manifest.v1", "generation": "a" * 40,
+                "revision": "b" * 40,
+                "files": [{"path": f"site/file{i:06d}", "size": 0, "sha256": "0" * 64}
+                          for i in range(10000)]}
+    raw = (json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    assert 1024 * 1024 < len(raw) < MAX_MANIFEST_BYTES
+    path = tmp_path / "manifest.json"
+    path.write_bytes(raw)
+    assert cli._file(str(path), sha(raw), cli._FILES["runtime-manifest"]) == raw
+    path.write_bytes(raw + b" " * (MAX_MANIFEST_BYTES + 1 - len(raw)))
+    with pytest.raises(ValueError):
+        cli._file(str(path), "0" * 64, cli._FILES["runtime-manifest"])
+
+
 @pytest.fixture
 def case(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_QUARANTINED", False, raising=False)

@@ -384,7 +384,10 @@ def _fixed_ready_exchange(k, pipe, expected_pid, expected_created, control, quer
 
 _MAX_PLAN = 4096
 _MAX_BUNDLE = 16 * 1024 * 1024
-_MAX_RUNTIME_MANIFEST = 1024 * 1024
+# Must match runtime_manifest.MAX_MANIFEST_BYTES. This module is also exec'd in
+# an isolated child before the pinned verifier is loaded; importing the verifier
+# here would break that boundary. A regression test checks the shared limit.
+_MAX_RUNTIME_MANIFEST = 8 * 1024 * 1024
 _PEER_CODE_LIMIT = 131072
 # synthetic-v1 needs no runtime. public-snapshot-v1 is default-off: the parent
 # refuses it unless explicitly enabled, and the child verifies the externally

@@ -6,13 +6,25 @@ the caller-owned source config, start prefix and roots; it never accepts an enco
 fixed ``encode.E5`` path with its identity DERIVED by ``encode.model_identity`` from the pinned model directory and
 checked against the plan's ``weights_sha256`` pin before the backend is loaded. Wrong or missing pins must refuse
 before any side effect; the strict-prefix producer keeps prior-pointer and prefix continuity unchanged.
+
+v2 (independent review findings): the plan's ``model_dir`` is bound to an explicitly caller-pinned
+``trusted_model_root`` that must be a fixed-local drive-letter directory with no UNC, symlink, junction or other
+reparse point anywhere from the root down through the model tree and no ``..`` escape, checked with metadata calls
+only before ``encode.model_identity`` reads anything (``model_root_refused``). The pure preflight checks the
+producer would otherwise make only after the backend loaded (start cursor equal to the source cursor and within
+the prefix budget, snapshot bounds, policy/roster/public-policy parse, checkpoint root distinct from and not nested
+with the private state root) run before identity derivation and backend load (``preflight_refused``); the
+producer's locked validation, prior-pointer CAS and private-state continuity stay where they are.
 """
 from dataclasses import replace
 import hashlib
 import importlib
 import inspect
 import json
+import contextlib
+import io
 import os
+from pathlib import Path
 import sys
 import types
 
@@ -20,6 +32,7 @@ import numpy as np
 import pytest
 
 from sandbox.mind.step2 import encode as encode_mod
+from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
 from sandbox.mind.step2 import shared_prefix_public_producer as producer
 from sandbox.mind.step2 import shared_producer as old
 from sandbox.mind.step2 import shared_public_producer as pub
@@ -30,6 +43,15 @@ REVISION = "c" * 40
 WEIGHTS = b"synthetic-weights-not-a-model"
 WEIGHTS_SHA = hashlib.sha256(WEIGHTS).hexdigest()
 PIN_KEYS = ("anchor_sha256", "policy_sha256", "roster_sha256", "public_policy_sha256")
+TASK = "lead-q4-prefix-build-child-synthetic-20261101-v1"
+LANES = ("codex-lead-1", "claude-rco-1", "claude-rco-2", "fable-5")
+POLICY_DOC = {"schema": "wd.q4-non-review-policy.v1", "approved_tasks": [TASK, "other-task-1"]}
+ROSTER_DOC = {"schema": "wd.q4-roster-snapshot.v1",
+              "lanes": [{"agent": agent, "agent_uuid": f"0000000{n}-abcd-4ef0-8abc-00000000000{n}"}
+                        for n, agent in enumerate(LANES, start=1)],
+              "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": "00000009-abcd-4ef0-8abc-000000000009"}}
+PUBLIC_POLICY_DOC = {"schema": "wd.mind-public-status-policy.v1", "public_tasks": [TASK], "public_types": ["message", "done"]}
+UNC_DIRS = ("\\\\synthetic-host\\share\\model", "//synthetic-host/share/model", "\\\\?\\C:\\synthetic\\model")
 
 
 def module():
@@ -110,14 +132,19 @@ def plan(model_dir, pins, *, generation="gen-a", pointer=None, **changes):
     return value
 
 
-def synthetic_config(tmp_path, pins_override=None):
-    """A structurally valid PublicSourceConfig over synthetic bytes (no real snapshot); pins derive from the bytes."""
-    anchor, policy, roster, public = (enc({"synthetic": name}) for name in ("anchor", "policy", "roster", "public"))
-    cursor = BridgeCursor(offset=0, file_identity="synthetic-file")
-    source = old.SourceConfig(source=str(tmp_path / "log.jsonl"), generation_path=str(tmp_path / "gen"), cursor=cursor,
-                              anchor_bytes=anchor, anchor_sha256=sha(anchor), policy_bytes=policy,
-                              policy_sha256=sha(policy), roster_bytes=roster, roster_sha256=sha(roster),
-                              max_bytes=1 << 20, max_rows=100)
+def synthetic_config(tmp_path, pins_override=None, *, cursor=None, policy=None, roster=None, public=None, **source_changes):
+    """A structurally valid PublicSourceConfig over synthetic bytes (no real snapshot) whose policy, roster and public
+    policy documents parse under the producer's adapter; pins derive from the bytes."""
+    anchor = enc({"synthetic": "anchor"})
+    policy = enc(POLICY_DOC) if policy is None else policy
+    roster = enc(ROSTER_DOC) if roster is None else roster
+    public = enc(PUBLIC_POLICY_DOC) if public is None else public
+    cursor = BridgeCursor(offset=0, file_identity="synthetic-file") if cursor is None else cursor
+    fields = dict(source=str(tmp_path / "log.jsonl"), generation_path=str(tmp_path / "gen"), cursor=cursor,
+                  anchor_bytes=anchor, anchor_sha256=sha(anchor), policy_bytes=policy, policy_sha256=sha(policy),
+                  roster_bytes=roster, roster_sha256=sha(roster), max_bytes=1 << 20, max_rows=100)
+    fields.update(source_changes)
+    source = old.SourceConfig(**fields)
     config = old.PublicSourceConfig(source=source, public_policy_bytes=public, public_policy_sha256=sha(public))
     pins = {"anchor_sha256": sha(anchor), "policy_sha256": sha(policy), "roster_sha256": sha(roster),
             "public_policy_sha256": sha(public)}
@@ -126,10 +153,50 @@ def synthetic_config(tmp_path, pins_override=None):
     return config, pins, BridgePrefixPin(cursor, sha(b""))
 
 
-def run(m, plan_doc, config, start, root, private_root, *, plan_bytes=None, plan_sha=None, enabled=True):
+def roots(tmp_path):
+    """Distinct, non-nested checkpoint and private state roots (the producer and the preflight require both)."""
+    root, private_root = tmp_path / "root", tmp_path / "private"
+    root.mkdir(exist_ok=True), private_root.mkdir(exist_ok=True)
+    return root, private_root
+
+
+def trusted_root_of(plan_doc):
+    """The caller-pinned trusted model root a test means unless it says otherwise: the pinned model_dir's parent."""
+    try:
+        return Path(plan_doc["encoder"]["model_dir"]).parent
+    except (TypeError, KeyError):
+        return Path("C:/")
+
+
+DERIVE = object()  # run() derives the trusted root from the plan unless a test passes one (None included)
+
+
+def run(m, plan_doc, config, start, root, private_root, *, plan_bytes=None, plan_sha=None, enabled=True, trusted=DERIVE):
     raw = enc(plan_doc) if plan_bytes is None else plan_bytes
+    if trusted is DERIVE:
+        trusted = trusted_root_of(plan_doc) if plan_doc is not None else None
     return m.build_prefix_generation(enabled=enabled, plan_bytes=raw, expected_plan_sha256=sha(raw) if plan_sha is None else plan_sha,
-                                     config=config, start_prefix=start, root=root, private_state_root=private_root)
+                                     config=config, start_prefix=start, root=root, private_state_root=private_root,
+                                     trusted_model_root=trusted)
+
+
+@contextlib.contextmanager
+def no_reads(monkeypatch):
+    """Inside this context every file open fails: model-root binding and preflight must use metadata calls only."""
+    import builtins
+    with monkeypatch.context() as patched:
+        patched.setattr(builtins, "open", lambda *a, **k: pytest.fail("a file was opened before the refusal"))
+        patched.setattr(io, "open", lambda *a, **k: pytest.fail("a file was opened before the refusal"))
+        yield
+
+
+def tree(path):
+    return sorted(str(p.relative_to(path)) for p in Path(path).rglob("*"))
+
+
+def never_loads(m, monkeypatch):
+    monkeypatch.setattr(m.encode_mod, "model_identity", lambda **k: pytest.fail("identity derived before the refusal"))
+    monkeypatch.setattr(m.encode_mod, "E5", lambda **k: pytest.fail("backend loaded before the refusal"))
 
 
 def refused(reason, fn):
@@ -157,7 +224,8 @@ def nothing_written(*roots):
 def test_default_off_inspects_nothing():
     m = module()
     assert m.build_prefix_generation(plan_bytes=Poison(), expected_plan_sha256=Poison(), config=Poison(),
-                                     start_prefix=Poison(), root=Poison(), private_state_root=Poison()) == {"status": "OFF"}
+                                     start_prefix=Poison(), root=Poison(), private_state_root=Poison(),
+                                     trusted_model_root=Poison()) == {"status": "OFF"}
 
 
 @pytest.mark.parametrize("literal", [1, 0, "true", None, [True], 1.0])
@@ -172,7 +240,7 @@ def test_no_encoder_callback_or_identity_can_be_supplied_by_the_caller():
     parameters = inspect.signature(m.build_prefix_generation).parameters
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in parameters.values())
     assert set(parameters) == {"enabled", "plan_bytes", "expected_plan_sha256", "config", "start_prefix", "root",
-                               "private_state_root"}
+                               "private_state_root", "trusted_model_root"}
     assert m.PLAN_SCHEMA == "wd.q4-prefix-build-plan.v1"
     assert m.ENCODER_MODEL == encode_mod.MODEL and m.ENCODER_DIM == encode_mod.DIM == 384
     assert m.IDENTITY_SOURCE == "encode.model_identity"
@@ -265,14 +333,18 @@ def test_plan_pin_not_matching_the_config_refuses_before_identity_or_backend(key
     nothing_written(root, private_root)
 
 
-@pytest.mark.parametrize("bad", ["config", "start", "root", "private"])
-def test_request_object_types_refuse_before_identity(bad, tmp_path, model_dir, monkeypatch):
+@pytest.mark.parametrize("bad", ["config", "start", "root", "private", "trusted"])
+@pytest.mark.parametrize("value", [SENTINEL, None, b"C:/synthetic", 5])
+def test_request_object_types_refuse_before_identity(bad, value, tmp_path, model_dir, monkeypatch):
     m = module()
-    monkeypatch.setattr(m.encode_mod, "model_identity", lambda **k: pytest.fail("identity derived for a bad request"))
+    never_loads(m, monkeypatch)
     config, pins, start = synthetic_config(tmp_path)
-    args = {"config": config, "start": start, "root": tmp_path, "private": tmp_path}
-    args[bad] = SENTINEL if bad != "start" else replace(start, sha256=SENTINEL)
-    refused("request_refused", lambda: run(m, plan(model_dir, pins), args["config"], args["start"], args["root"], args["private"]))
+    root, private_root = roots(tmp_path)
+    args = {"config": config, "start": start, "root": root, "private": private_root, "trusted": tmp_path}
+    args[bad] = value if bad != "start" else replace(start, sha256=value)
+    refused("request_refused", lambda: run(m, plan(model_dir, pins), args["config"], args["start"], args["root"],
+                                           args["private"], trusted=args["trusted"]))
+    nothing_written(root, private_root)
 
 
 def test_weights_digest_mismatch_refuses_before_the_backend_is_loaded(tmp_path, model_dir, monkeypatch):
@@ -281,17 +353,19 @@ def test_weights_digest_mismatch_refuses_before_the_backend_is_loaded(tmp_path, 
     config, pins, start = synthetic_config(tmp_path)
     doc = plan(model_dir, pins)
     doc["encoder"]["weights_sha256"] = sha(b"other-weights")
-    refused("encoder_refused", lambda: run(m, doc, config, start, tmp_path, tmp_path))
+    refused("encoder_refused", lambda: run(m, doc, config, start, *roots(tmp_path)))
 
 
-def test_missing_or_unreadable_model_directory_refuses_without_a_path(tmp_path, monkeypatch):
+def test_missing_model_directory_or_weights_refuses_before_identity_without_a_path(tmp_path, monkeypatch):
     m = module()
-    monkeypatch.setattr(m.encode_mod, "E5", lambda **k: pytest.fail("backend loaded without weights"))
+    never_loads(m, monkeypatch)
     config, pins, start = synthetic_config(tmp_path)
     missing = tmp_path / "no-model"
-    refused("encoder_refused", lambda: run(m, plan(missing, pins), config, start, tmp_path, tmp_path))
-    missing.mkdir()
-    refused("encoder_refused", lambda: run(m, plan(missing, pins), config, start, tmp_path, tmp_path))
+    refused("model_root_refused", lambda: run(m, plan(missing, pins), config, start, *roots(tmp_path)))
+    missing.mkdir()  # a model directory without the weights file the identity would read
+    refused("model_root_refused", lambda: run(m, plan(missing, pins), config, start, *roots(tmp_path)))
+    (missing / "model.safetensors").mkdir()  # the weights name present but not a regular file
+    refused("model_root_refused", lambda: run(m, plan(missing, pins), config, start, *roots(tmp_path)))
 
 
 def test_backend_failure_refuses_fixed_without_cause(tmp_path, model_dir, backend):
@@ -302,7 +376,7 @@ def test_backend_failure_refuses_fixed_without_cause(tmp_path, model_dir, backen
             raise RuntimeError(SENTINEL)
     sys.modules["sentence_transformers"].SentenceTransformer = Broken
     config, pins, start = synthetic_config(tmp_path)
-    refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, tmp_path, tmp_path))
+    refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path)))
 
 
 def test_producer_refusal_tokens_pass_through_without_chain(tmp_path, model_dir, backend, monkeypatch):
@@ -310,12 +384,12 @@ def test_producer_refusal_tokens_pass_through_without_chain(tmp_path, model_dir,
     config, pins, start = synthetic_config(tmp_path)
     monkeypatch.setattr(m.producer, "publish_public_prefix",
                         lambda **k: (_ for _ in ()).throw(producer.PrefixProducerRefused("prepare_refused")))
-    refused("prepare_refused", lambda: run(m, plan(model_dir, pins), config, start, tmp_path, tmp_path))
+    refused("prepare_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path)))
     monkeypatch.setattr(m.producer, "publish_public_prefix",
                         lambda **k: (_ for _ in ()).throw(producer.PrefixProducerRefused(SENTINEL)))
-    refused("publication_state_unknown", lambda: run(m, plan(model_dir, pins), config, start, tmp_path, tmp_path))
+    refused("publication_state_unknown", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path)))
     monkeypatch.setattr(m.producer, "publish_public_prefix", lambda **k: {"status": "OFF"})
-    refused("publication_state_unknown", lambda: run(m, plan(model_dir, pins), config, start, tmp_path, tmp_path))
+    refused("publication_state_unknown", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path)))
 
 
 def test_request_handed_to_the_producer_carries_the_fixed_encoder_and_derived_identity(tmp_path, model_dir, backend, monkeypatch):
@@ -328,7 +402,7 @@ def test_request_handed_to_the_producer_carries_the_fixed_encoder_and_derived_id
         return {"status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
                 "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"}
     monkeypatch.setattr(m.producer, "publish_public_prefix", fake_publish)
-    report = run(m, plan(model_dir, pins), config, start, tmp_path, tmp_path)
+    report = run(m, plan(model_dir, pins), config, start, *roots(tmp_path))
     request = seen["request"]
     assert seen["enabled"] is True and type(request) is producer.PrefixPublicRequest
     assert request.identity == {"model": encode_mod.MODEL, "revision": REVISION, "weights_sha256": WEIGHTS_SHA}
@@ -345,6 +419,276 @@ def test_request_handed_to_the_producer_carries_the_fixed_encoder_and_derived_id
                       "encoder_identity_source": "encode.model_identity", "plan_sha256": sha(enc(plan(model_dir, pins)))}
     text = json.dumps(report)
     assert WEIGHTS_SHA not in text and str(model_dir) not in text and start.sha256 not in text
+    assert str(tmp_path) not in text  # the trusted root never appears in the report either
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# v2 finding 1: model_dir bound to the caller-pinned trusted fixed-local non-reparse root before any read
+# ---------------------------------------------------------------------------------------------------------------
+
+
+def junction(target, link):
+    _winapi = pytest.importorskip("_winapi", reason="junctions need the Windows runtime")
+    if not hasattr(_winapi, "CreateJunction"):
+        pytest.skip("CreateJunction unavailable")
+    _winapi.CreateJunction(str(target), str(link))
+    return link
+
+
+def model_tree(path):
+    path.mkdir(parents=True)
+    (path / "model.safetensors").write_bytes(WEIGHTS)
+    return path
+
+
+def root_refused(m, monkeypatch, tmp_path, pins, model_dir, trusted, config=None, start=None):
+    never_loads(m, monkeypatch)
+    if config is None:
+        config, _, start = synthetic_config(tmp_path)
+    root, private_root = roots(tmp_path)
+    before = tree(tmp_path)
+    with no_reads(monkeypatch):
+        refused("model_root_refused", lambda: run(m, plan(model_dir, pins), config, start, root, private_root, trusted=trusted))
+    assert tree(tmp_path) == before
+    nothing_written(root, private_root)
+
+
+def test_model_dir_outside_the_trusted_root_refuses_before_any_read(tmp_path, model_dir, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    root_refused(m, monkeypatch, tmp_path, pins, model_dir, trusted)
+    # a sibling whose name merely starts with the trusted root's name is outside it
+    sibling = model_tree(tmp_path / "trusted-sibling" / "model")
+    root_refused(m, monkeypatch, tmp_path, pins, sibling, trusted)
+
+
+@pytest.mark.parametrize("escape", ["..", "trusted/../model", "./model"])
+def test_dot_components_in_the_pinned_model_dir_refuse_as_escape(escape, tmp_path, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    trusted = tmp_path / "trusted"
+    inside = model_tree(trusted / "model")
+    # plain string joins: pathlib would collapse "." and the test means the component as pinned
+    escaped = str(inside) + "/../../trusted/model" if escape == ".." else str(trusted) + "/" + escape
+    assert os.path.isdir(escaped)  # every escape resolves to the real model directory, so only the binding refuses
+    root_refused(m, monkeypatch, tmp_path, pins, escaped, trusted)
+
+
+@pytest.mark.parametrize("unc", UNC_DIRS)
+def test_unc_and_device_paths_refuse_as_model_dir_and_as_trusted_root(unc, tmp_path, model_dir, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    root_refused(m, monkeypatch, tmp_path, pins, unc, Path(unc).parent)
+    root_refused(m, monkeypatch, tmp_path, pins, unc, tmp_path)
+    root_refused(m, monkeypatch, tmp_path, pins, model_dir, Path(unc))
+
+
+def test_trusted_root_not_a_directory_or_missing_refuses(tmp_path, model_dir, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    root_refused(m, monkeypatch, tmp_path, pins, model_dir, tmp_path / "absent")
+    root_refused(m, monkeypatch, tmp_path, pins, model_dir, model_dir / "model.safetensors")
+
+
+def test_relative_trusted_root_refuses_as_request_shape(tmp_path, model_dir, monkeypatch):
+    m = module()
+    never_loads(m, monkeypatch)
+    config, pins, start = synthetic_config(tmp_path)
+    refused("request_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path), trusted="relative/root"))
+    refused("request_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path), trusted=""))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="junctions are a Windows reparse point")
+def test_junction_model_dir_inside_the_trusted_root_refuses_before_any_read(tmp_path, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    outside = model_tree(tmp_path / "outside" / "model")
+    link = junction(outside, trusted / "model")
+    assert (link / "model.safetensors").is_file()  # the escape is real: the weights resolve through the junction
+    root_refused(m, monkeypatch, tmp_path, pins, link, trusted)
+    root_refused(m, monkeypatch, tmp_path, pins, link / "nested", trusted)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="junctions are a Windows reparse point")
+def test_junction_anywhere_below_the_model_dir_refuses(tmp_path, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    trusted = tmp_path / "trusted"
+    inside = model_tree(trusted / "model")
+    (inside / "tokenizer").mkdir()
+    (tmp_path / "elsewhere").mkdir()
+    junction(tmp_path / "elsewhere", inside / "tokenizer" / "vocab")
+    root_refused(m, monkeypatch, tmp_path, pins, inside, trusted)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="junctions are a Windows reparse point")
+def test_trusted_root_that_is_itself_a_junction_refuses(tmp_path, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    real = tmp_path / "real"
+    model_tree(real / "model")
+    link = junction(real, tmp_path / "trusted")
+    root_refused(m, monkeypatch, tmp_path, pins, link / "model", link)
+    # and a reparse point above the trusted root refuses too: the whole chain from the drive down must be plain
+    root_refused(m, monkeypatch, tmp_path, pins, link / "model", link / "model")
+
+
+def test_symlinked_model_dir_or_weights_refuse_before_any_read(tmp_path, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    outside = model_tree(tmp_path / "outside" / "model")
+    try:
+        os.symlink(outside, trusted / "model", target_is_directory=True)
+        inside = model_tree(trusted / "plain")
+        (inside / "model.safetensors").unlink()
+        os.symlink(outside / "model.safetensors", inside / "model.safetensors")
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links are not permitted for this account")
+    root_refused(m, monkeypatch, tmp_path, pins, trusted / "model", trusted)
+    root_refused(m, monkeypatch, tmp_path, pins, inside, trusted)
+
+
+@pytest.mark.parametrize("drive_type", [0, 1, 2, 4, 5, 6])
+def test_non_fixed_drive_refuses_before_any_read(drive_type, tmp_path, model_dir, monkeypatch):
+    m = module()
+    seen = []
+
+    def fake_drive_type(anchor):
+        seen.append(anchor)
+        return drive_type
+    monkeypatch.setattr(m, "_drive_type", fake_drive_type)
+    _, pins, _ = synthetic_config(tmp_path)
+    root_refused(m, monkeypatch, tmp_path, pins, model_dir, tmp_path)
+    assert seen and all(anchor == Path(tmp_path).anchor for anchor in seen)
+
+
+def test_drive_type_probe_failure_refuses(tmp_path, model_dir, monkeypatch):
+    m = module()
+    monkeypatch.setattr(m, "_drive_type", lambda anchor: (_ for _ in ()).throw(OSError(SENTINEL)))
+    _, pins, _ = synthetic_config(tmp_path)
+    root_refused(m, monkeypatch, tmp_path, pins, model_dir, tmp_path)
+
+
+def test_bound_model_dir_reaches_identity_unchanged_and_as_the_pinned_string(tmp_path, model_dir, monkeypatch):
+    m = module()
+    seen = {}
+
+    def identity(*, model_dir, revision):
+        seen["model_dir"], seen["revision"] = model_dir, revision
+        raise OSError(SENTINEL)
+    monkeypatch.setattr(m.encode_mod, "model_identity", identity)
+    monkeypatch.setattr(m.encode_mod, "E5", lambda **k: pytest.fail("backend loaded after a failed identity"))
+    config, pins, start = synthetic_config(tmp_path)
+    refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path), trusted=tmp_path))
+    assert seen == {"model_dir": str(model_dir), "revision": REVISION}
+    # the trusted root may equal the model directory itself
+    seen.clear()
+    refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path), trusted=model_dir))
+    assert seen["model_dir"] == str(model_dir)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# v2 finding 2: pure preflight before identity derivation and backend load
+# ---------------------------------------------------------------------------------------------------------------
+
+
+def preflight_refused(m, monkeypatch, tmp_path, pins, config, start, root=None, private_root=None):
+    never_loads(m, monkeypatch)
+    monkeypatch.setattr(m, "_drive_type", lambda anchor: pytest.fail("model root bound before the preflight"))
+    default_root, default_private = roots(tmp_path)
+    root = default_root if root is None else root
+    private_root = default_private if private_root is None else private_root
+    model_dir = tmp_path / "model"
+    before = tree(tmp_path)
+    with no_reads(monkeypatch):
+        refused("preflight_refused", lambda: run(m, plan(model_dir, pins), config, start, root, private_root, trusted=tmp_path))
+    assert tree(tmp_path) == before
+
+
+def test_start_cursor_not_the_source_cursor_refuses_in_preflight(tmp_path, monkeypatch):
+    m = module()
+    config, pins, start = synthetic_config(tmp_path)
+    other = replace(start, cursor=BridgeCursor(offset=0, file_identity="other-synthetic-file"))
+    preflight_refused(m, monkeypatch, tmp_path, pins, config, other)
+    ahead = replace(start, cursor=BridgeCursor(offset=1, file_identity="synthetic-file"))
+    preflight_refused(m, monkeypatch, tmp_path, pins, config, ahead)
+
+
+def test_start_offset_beyond_the_plan_prefix_budget_refuses_in_preflight(tmp_path, monkeypatch):
+    m = module()
+    cursor = BridgeCursor(offset=(1 << 20) + 1, file_identity="synthetic-file")
+    config, pins, start = synthetic_config(tmp_path, cursor=cursor)
+    assert start.cursor == config.source.cursor
+    preflight_refused(m, monkeypatch, tmp_path, pins, config, start)
+
+
+@pytest.mark.parametrize("change", [{"max_bytes": 0}, {"max_bytes": snapshot.MAX_BYTES + 1}, {"max_bytes": "1"},
+                                    {"max_rows": 0}, {"max_rows": snapshot.MAX_ROWS + 1}, {"max_rows": 10.0}])
+def test_snapshot_bounds_refuse_in_preflight(change, tmp_path, monkeypatch):
+    m = module()
+    config, pins, start = synthetic_config(tmp_path, **change)
+    preflight_refused(m, monkeypatch, tmp_path, pins, config, start)
+
+
+@pytest.mark.parametrize("document", ["policy", "roster", "public"])
+def test_policy_roster_or_public_policy_that_does_not_parse_refuses_in_preflight(document, tmp_path, monkeypatch):
+    m = module()
+    config, pins, start = synthetic_config(tmp_path, **{document: enc({"synthetic": document})})
+    preflight_refused(m, monkeypatch, tmp_path, pins, config, start)  # pins match the bytes, the documents are invalid
+
+
+def test_public_policy_outside_the_approved_tasks_refuses_in_preflight(tmp_path, monkeypatch):
+    m = module()
+    public = enc({**PUBLIC_POLICY_DOC, "public_tasks": ["not-approved-task"]})
+    config, pins, start = synthetic_config(tmp_path, public=public)
+    preflight_refused(m, monkeypatch, tmp_path, pins, config, start)
+
+
+def test_review_task_in_the_policy_refuses_in_preflight(tmp_path, monkeypatch):
+    m = module()
+    policy = enc({**POLICY_DOC, "approved_tasks": [TASK, "lead-review-task-20261101"]})
+    config, pins, start = synthetic_config(tmp_path, policy=policy)
+    preflight_refused(m, monkeypatch, tmp_path, pins, config, start)
+
+
+@pytest.mark.parametrize("conflict", ["same", "private_inside_root", "root_inside_private", "root_missing",
+                                      "private_missing", "root_is_a_file"])
+def test_root_conflicts_refuse_in_preflight(conflict, tmp_path, monkeypatch):
+    m = module()
+    config, pins, start = synthetic_config(tmp_path)
+    root, private_root = roots(tmp_path)
+    if conflict == "same":
+        pair = (root, root)
+    elif conflict == "private_inside_root":
+        (root / "private").mkdir()
+        pair = (root, root / "private")
+    elif conflict == "root_inside_private":
+        (private_root / "deep" / "root").mkdir(parents=True)
+        pair = (private_root / "deep" / "root", private_root)
+    elif conflict == "root_missing":
+        pair = (tmp_path / "absent", private_root)
+    elif conflict == "private_missing":
+        pair = (root, tmp_path / "absent")
+    else:
+        (tmp_path / "file").write_bytes(b"")
+        pair = (tmp_path / "file", private_root)
+    preflight_refused(m, monkeypatch, tmp_path, pins, config, start, *pair)
+
+
+def test_pins_are_checked_before_the_preflight(tmp_path, monkeypatch):
+    m = module()
+    config, pins, start = synthetic_config(tmp_path)
+    pins["policy_sha256"] = sha(b"other")
+    never_loads(m, monkeypatch)
+    root, private_root = roots(tmp_path)
+    refused("pins_refused", lambda: run(m, plan(tmp_path / "model", pins), config,
+                                        replace(start, cursor=BridgeCursor(offset=0, file_identity="other")), root, root))
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -423,4 +767,8 @@ def test_module_is_fixed_path_only():
         assert token not in source, token
     assert "SentenceTransformer(" not in source  # loading goes through the fixed encode.E5 path only
     assert module().REASONS == frozenset({"disabled", "plan_refused", "request_refused", "pins_refused",
-                                          "encoder_refused", "publication_state_unknown"})
+                                          "preflight_refused", "model_root_refused", "encoder_refused",
+                                          "publication_state_unknown"})
+    doc = module().__doc__ or ""
+    for word in ("trusted_model_root", "UNC", "reparse", "preflight", "CAS", "locked"):
+        assert word in doc, word

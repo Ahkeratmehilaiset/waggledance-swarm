@@ -21,6 +21,7 @@ VERIFIED_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_checkpoint.py"
 Q4_DESCRIPTOR_TEST_PATH = "sandbox/mind/step2/test_q4_descriptor.py"
 ACTIVE_BINDING_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_active_binding.py"
 PROJECTION_BINDING_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_projection_binding.py"
+Q4_SNAPSHOT_TEST_PATH = "sandbox/mind/step2/test_wd_q4_private_read_snapshot.py"
 _NAMES = (
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-meta]",
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-provenance]",
@@ -178,6 +179,14 @@ _PROJECTION_BINDING_NAMES = (
       ("missing", "duplicate", "extra", "text_swap", "time", "available", "event_ref", "extra_text")),
     "test_projection_binding_accepts_exact_views_across_cells",
 )
+_Q4_SNAPSHOT_NAMES = (
+    "test_default_off_does_not_read_stream",
+    "test_real_snapshot_q4_projection_without_path_reopen",
+    *(f"test_binding_failures_refuse_before_query[{fault}]" for fault in
+      ("descriptor_pin", "memory_pin", "manifest_bytes", "mutable_manifest", "runtime_revision", "runtime_identity", "cell")),
+    "test_failure_does_not_retain_query_or_backend_exception",
+    *(f"test_snapshot_enforces_legacy_scope_and_cell_encoder_before_read[{fault}]" for fault in ("row", "encoder")),
+)
 _MEMORY_PREFLIGHT_NAMES = (
     *(f"test_second_cell_hash_mismatch_refused_before_first_cell_load[{name}]"
       for name in ("index", "meta", "provenance", "vectors")),
@@ -195,7 +204,8 @@ EXPECTED_NODEIDS = (tuple(TEST_PATH + "::" + name for name in _NAMES) +
                     tuple(VERIFIED_TEST_PATH + "::" + name for name in _VERIFIED_NAMES) +
                     tuple(Q4_DESCRIPTOR_TEST_PATH + "::" + name for name in _Q4_DESCRIPTOR_NAMES) +
                     tuple(ACTIVE_BINDING_TEST_PATH + "::" + name for name in _ACTIVE_BINDING_NAMES) +
-                    tuple(PROJECTION_BINDING_TEST_PATH + "::" + name for name in _PROJECTION_BINDING_NAMES))
+                    tuple(PROJECTION_BINDING_TEST_PATH + "::" + name for name in _PROJECTION_BINDING_NAMES) +
+                    tuple(Q4_SNAPSHOT_TEST_PATH + "::" + name for name in _Q4_SNAPSHOT_NAMES))
 
 
 def _unavailable(*_args, **_kwargs):
@@ -252,6 +262,7 @@ def _run_pytest(pytest):
                             str(ROOT / MEMORY_PREFLIGHT_TEST_PATH),
                             str(ROOT / VERIFIED_TEST_PATH), str(ROOT / Q4_DESCRIPTOR_TEST_PATH),
                             str(ROOT / ACTIVE_BINDING_TEST_PATH), str(ROOT / PROJECTION_BINDING_TEST_PATH),
+                            str(ROOT / Q4_SNAPSHOT_TEST_PATH),
                             "-q"], plugins=[guard]))
     return 1 if code == 0 and not guard.complete() else code
 

@@ -25,6 +25,7 @@ Q4_SNAPSHOT_TEST_PATH = "sandbox/mind/step2/test_wd_q4_private_read_snapshot.py"
 PUBLIC_QUERY_TEST_PATH = "sandbox/mind/step2/test_public_snapshot_query_stub.py"
 CATCHUP_TEST_PATH = "sandbox/mind/step2/test_shared_bridge_catchup.py"
 OVERSIZED_PUBLIC_TEST_PATH = "sandbox/mind/step2/test_oversized_public_events.py"
+CATCHUP_BINDING_TEST_PATH = "sandbox/mind/step2/test_public_catchup_publication_gap_new.py"
 _NAMES = (
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-meta]",
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-provenance]",
@@ -221,6 +222,13 @@ _OVERSIZED_PUBLIC_NAMES = (
     "test_large_excluded_rows_still_enforce_aggregate_budget",
     "test_large_excluded_row_with_bad_integrity_refuses",
 )
+_CATCHUP_BINDING_NAMES = (
+    "test_verified_multiple_windows_cannot_yet_be_published_with_one_start_anchor",
+    "test_builder_binds_complete_catchup_union_without_a_forged_window",
+    *(f"test_catchup_source_refuses_partial_or_tampered_chain[{fault}]" for fault in
+      ("partial", "reverse", "projection", "candidate", "anchor", "public_policy")),
+    "test_catchup_refuses_a_rejected_public_candidate_in_any_window",
+)
 _MEMORY_PREFLIGHT_NAMES = (
     *(f"test_second_cell_hash_mismatch_refused_before_first_cell_load[{name}]"
       for name in ("index", "meta", "provenance", "vectors")),
@@ -242,7 +250,8 @@ EXPECTED_NODEIDS = (tuple(TEST_PATH + "::" + name for name in _NAMES) +
                     tuple(Q4_SNAPSHOT_TEST_PATH + "::" + name for name in _Q4_SNAPSHOT_NAMES) +
                     tuple(PUBLIC_QUERY_TEST_PATH + "::" + name for name in _PUBLIC_QUERY_NAMES) +
                     tuple(CATCHUP_TEST_PATH + "::" + name for name in _CATCHUP_NAMES) +
-                    tuple(OVERSIZED_PUBLIC_TEST_PATH + "::" + name for name in _OVERSIZED_PUBLIC_NAMES))
+                    tuple(OVERSIZED_PUBLIC_TEST_PATH + "::" + name for name in _OVERSIZED_PUBLIC_NAMES) +
+                    tuple(CATCHUP_BINDING_TEST_PATH + "::" + name for name in _CATCHUP_BINDING_NAMES))
 
 
 def _unavailable(*_args, **_kwargs):
@@ -301,6 +310,7 @@ def _run_pytest(pytest):
                             str(ROOT / ACTIVE_BINDING_TEST_PATH), str(ROOT / PROJECTION_BINDING_TEST_PATH),
                             str(ROOT / Q4_SNAPSHOT_TEST_PATH), str(ROOT / PUBLIC_QUERY_TEST_PATH),
                             str(ROOT / CATCHUP_TEST_PATH), str(ROOT / OVERSIZED_PUBLIC_TEST_PATH),
+                            str(ROOT / CATCHUP_BINDING_TEST_PATH),
                             "-q"], plugins=[guard]))
     return 1 if code == 0 and not guard.complete() else code
 

@@ -1180,12 +1180,35 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
         _refuse()
 
 
+def _checked_catchup_delta(source, snapshot_result, start, end, *, policy_bytes, expected_policy_sha256,
+                           roster_bytes, expected_roster_sha256, expected_anchor_sha256,
+                           expected_public_policy_sha256, public_policy_bytes, expected_anchor_bytes,
+                           expected_start_prefix):
+    """Reverify one complete chain and return its bounded delta, never inventing an anchor."""
+    from sandbox.mind.step2 import shared_index_builder as builder
+    if (type(source) is not dict or source.get("catchup_result") != snapshot_result
+            or source.get("expected_anchor_sha256") != expected_anchor_sha256
+            or source.get("public_policy_sha256") != expected_public_policy_sha256
+            or source.get("public_policy_bytes") != public_policy_bytes
+            or source.get("anchor_bytes") != expected_anchor_bytes
+            or source.get("expected_start_prefix") != expected_start_prefix
+            or type(expected_start_prefix) is not BridgePrefixPin or expected_start_prefix.cursor != start):
+        _refuse()
+    delta, frozen = builder.verified_catchup_projection(source, policy_bytes=policy_bytes,
+        policy_sha256=expected_policy_sha256, roster_bytes=roster_bytes, roster_sha256=expected_roster_sha256)
+    if (frozen["candidate_cursor"] != end or type(frozen["candidate_prefix"]) is not BridgePrefixPin
+            or frozen["candidate_prefix"].cursor != end):
+        _refuse()
+    return delta, frozen
+
+
 def commit_generation(root, generation, start, end, approved_tasks, *, expected_pointer_sha256,
                       expected_artifacts, initial_cursor=None, timeout=0.2,
                       policy_bytes=None, expected_policy_sha256=None, roster_bytes=None,
                       expected_roster_sha256=None, expected_anchor_sha256=None, expected_mode="legacy",
                       expected_public_policy_sha256=None, public_policy_bytes=None, expected_anchor_bytes=None,
-                      snapshot_result=None, _prefix_required=False, _expected_start_prefix=None):
+                      snapshot_result=None, _prefix_required=False, _expected_start_prefix=None,
+                      _catchup_source=None):
     """Commit index + cursor together. CAS requires exact predecessor bytes.
 
     For a first publication expected_pointer_sha256 must be None and the
@@ -1221,9 +1244,20 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
             from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
             if type(snapshot_result) is not dict:
                 _refuse()
-            delta = snapshot_result.get("projection")
-            source = snapshot_result.get("source")
-            if (snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
+            if _catchup_source is not None:
+                if not _prefix_required:
+                    _refuse()
+                delta, frozen_catchup = _checked_catchup_delta(_catchup_source, snapshot_result, start, end,
+                    policy_bytes=policy_bytes, expected_policy_sha256=expected_policy_sha256, roster_bytes=roster_bytes,
+                    expected_roster_sha256=expected_roster_sha256, expected_anchor_sha256=expected_anchor_sha256,
+                    expected_public_policy_sha256=expected_public_policy_sha256, public_policy_bytes=public_policy_bytes,
+                    expected_anchor_bytes=expected_anchor_bytes, expected_start_prefix=_expected_start_prefix)
+                if _sha(json.dumps(delta, sort_keys=True, indent=1).encode("utf-8")) != expected_artifacts["projection_sha256"]:
+                    _refuse()
+            else:
+                delta = snapshot_result.get("projection")
+                source = snapshot_result.get("source")
+                if (snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
                     expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
                     **mode_args) is not True
                     or type(source) is not dict
@@ -1232,7 +1266,9 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
                     or _cursor(snapshot_result.get("candidate_cursor")) != finish
                     or _sha(json.dumps(delta, sort_keys=True, indent=1).encode("utf-8"))
                        != expected_artifacts["projection_sha256"]):
-                _refuse()
+                    _refuse()
+        elif _catchup_source is not None:
+            _refuse()
         policy_sha = expected_policy_sha256
         pointer, lock = root / POINTER, root / LOCK
         _secure(lock, missing_leaf=True)
@@ -1267,12 +1303,22 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
                      "previous": None if old is None else old["generation"],
                      "previous_pointer_sha256": None if old is None else expected_pointer_sha256}
             if _prefix_required:
-                candidate_prefix = snapshot_result.get("candidate_prefix")
+                candidate_prefix = (frozen_catchup if _catchup_source is not None else snapshot_result).get("candidate_prefix")
                 if type(candidate_prefix) is not BridgePrefixPin or candidate_prefix.cursor != end:
                     _refuse()
                 value.update(schema=PREFIX_SCHEMA, prefix_start_sha256=_expected_start_prefix.sha256,
                              prefix_watermark_sha256=candidate_prefix.sha256)
-            if (mode["status_mode"] == "public-v1" and
+            if _catchup_source is not None:
+                checked, checked_chain = _checked_catchup_delta(_catchup_source, snapshot_result, start, end,
+                    policy_bytes=policy_bytes, expected_policy_sha256=expected_policy_sha256, roster_bytes=roster_bytes,
+                    expected_roster_sha256=expected_roster_sha256, expected_anchor_sha256=expected_anchor_sha256,
+                    expected_public_policy_sha256=expected_public_policy_sha256, public_policy_bytes=public_policy_bytes,
+                    expected_anchor_bytes=expected_anchor_bytes, expected_start_prefix=_expected_start_prefix)
+                if (json.dumps(checked, sort_keys=True, indent=1).encode() !=
+                        json.dumps(delta, sort_keys=True, indent=1).encode()
+                        or checked_chain["candidate_prefix"] != candidate_prefix):
+                    _refuse()
+            elif (mode["status_mode"] == "public-v1" and
                     snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
                         expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
                         **mode_args) is not True):
@@ -1288,7 +1334,7 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
                               policy_bytes, expected_policy_sha256, roster_bytes, expected_roster_sha256,
                               expected_anchor_sha256, expected_mode="legacy", expected_public_policy_sha256=None,
                               public_policy_bytes=None, expected_anchor_bytes=None,
-                              _prefix_required=False, _expected_start_prefix=None):
+                              _prefix_required=False, _expected_start_prefix=None, _catchup_source=None):
     """Publish a union only after verifying the exact bound delta under the writer lock.
 
     The delta is retained in the private state directory to permit later union
@@ -1321,12 +1367,34 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
                     or _expected_start_prefix.cursor != start):
                 _refuse()
             mode_args["expected_start_prefix"] = _expected_start_prefix
-        delta = snapshot_result.get("projection")
-        source = snapshot_result.get("source")
-        if (type(source) is not dict or source.get("coverage") != "delta_only_not_complete_history"
-                or source.get("cursor_start_sha256") != _sha(snapshot._token(start).encode("utf-8"))
-                or source.get("cursor_end_sha256") != _sha(snapshot._token(end).encode("utf-8"))):
-            _refuse()
+        if _catchup_source is not None:
+            if not _prefix_required or mode["status_mode"] != "public-v1":
+                _refuse()
+            delta, frozen_catchup = _checked_catchup_delta(_catchup_source, snapshot_result, start, end,
+                policy_bytes=policy_bytes, expected_policy_sha256=expected_policy_sha256, roster_bytes=roster_bytes,
+                expected_roster_sha256=expected_roster_sha256, expected_anchor_sha256=expected_anchor_sha256,
+                expected_public_policy_sha256=expected_public_policy_sha256, public_policy_bytes=public_policy_bytes,
+                expected_anchor_bytes=expected_anchor_bytes, expected_start_prefix=_expected_start_prefix)
+        else:
+            delta = snapshot_result.get("projection")
+            source = snapshot_result.get("source")
+            if (type(source) is not dict or source.get("coverage") != "delta_only_not_complete_history"
+                    or source.get("cursor_start_sha256") != _sha(snapshot._token(start).encode("utf-8"))
+                    or source.get("cursor_end_sha256") != _sha(snapshot._token(end).encode("utf-8"))):
+                _refuse()
+        def reverify_delta():
+            if _catchup_source is None:
+                return snapshot.verify_anchored_projection(snapshot_result, delta,
+                    expected_anchor_sha256=expected_anchor_sha256, expected_policy_sha256=expected_policy_sha256,
+                    expected_roster_sha256=expected_roster_sha256, **mode_args) is True
+            checked, checked_chain = _checked_catchup_delta(_catchup_source, snapshot_result, start, end,
+                policy_bytes=policy_bytes, expected_policy_sha256=expected_policy_sha256, roster_bytes=roster_bytes,
+                expected_roster_sha256=expected_roster_sha256, expected_anchor_sha256=expected_anchor_sha256,
+                expected_public_policy_sha256=expected_public_policy_sha256, public_policy_bytes=public_policy_bytes,
+                expected_anchor_bytes=expected_anchor_bytes, expected_start_prefix=_expected_start_prefix)
+            return (json.dumps(checked, sort_keys=True, indent=1).encode("utf-8") ==
+                    json.dumps(delta, sort_keys=True, indent=1).encode("utf-8") and
+                    checked_chain["candidate_prefix"] == frozen_catchup["candidate_prefix"])
         pointer, lock = root / POINTER, root / LOCK
         _secure(lock, missing_leaf=True)
         with reader_slot(lock, timeout_seconds=timeout):
@@ -1349,9 +1417,7 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
                     _refuse()
             if old["watermark"] != begin or old["generation"] == generation:
                 _refuse()
-            if snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
-                    expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
-                    **mode_args) is not True:
+            if not reverify_delta():
                 _refuse()
             delta_bytes = json.dumps(delta, sort_keys=True, indent=1).encode("utf-8")
             if len(delta_bytes) > _MAX:
@@ -1367,7 +1433,7 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
                      "watermark": finish, "empty_advance": None, "previous": old["generation"],
                      "previous_pointer_sha256": expected_pointer_sha256, "delta_projection_sha256": digest}
             if _prefix_required:
-                candidate_prefix = snapshot_result.get("candidate_prefix")
+                candidate_prefix = (frozen_catchup if _catchup_source is not None else snapshot_result).get("candidate_prefix")
                 if type(candidate_prefix) is not BridgePrefixPin or candidate_prefix.cursor != end:
                     _refuse()
                 value.update(schema=PREFIX_HISTORY_SCHEMA, prefix_start_sha256=_expected_start_prefix.sha256,
@@ -1375,9 +1441,7 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
             _validate_history_transition(root, value, old, expected_pointer_sha256, tasks, roster,
                                          expected_policy_sha256, expected_roster_sha256,
                                          policy_bytes, roster_bytes, history_bytes, delta_bytes=delta_bytes)
-            if (snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
-                    expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
-                    **mode_args) is not True
+            if (not reverify_delta()
                     or json.dumps(delta, sort_keys=True, indent=1).encode("utf-8") != delta_bytes
                     or _read(pointer, max_bytes=_MAX_POINTER_BYTES) != raw):
                 _refuse()
@@ -1395,10 +1459,7 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
             stored_delta = _read(delta_path)
             if (stored_delta != delta_bytes or _sha(stored_delta) != digest
                     or _read(pointer, max_bytes=_MAX_POINTER_BYTES) != raw
-                    or snapshot.verify_anchored_projection(snapshot_result, delta,
-                        expected_anchor_sha256=expected_anchor_sha256,
-                        expected_policy_sha256=expected_policy_sha256,
-                        expected_roster_sha256=expected_roster_sha256, **mode_args) is not True
+                    or not reverify_delta()
                     or json.dumps(delta, sort_keys=True, indent=1).encode("utf-8") != delta_bytes):
                 _refuse()
             _publish_pointer(root, pointer, raw, expected_pointer_sha256, value)

@@ -157,6 +157,8 @@ SNAPSHOT_MODULE = "sandbox.mind.step2.shared_bridge_snapshot"  # Lead module; im
 # The policy and anchor BYTES are used in-process only and are never persisted by the builder.
 PUBLIC_SOURCE_KEYS = SOURCE_KEYS | {"mode", "public_policy_bytes", "public_policy_sha256", "anchor_bytes"}
 PREFIX_PUBLIC_SOURCE_KEYS = PUBLIC_SOURCE_KEYS | {"expected_start_prefix"}
+CATCHUP_PUBLIC_SOURCE_KEYS = frozenset({"catchup_result", "expected_anchor_sha256", "mode", "public_policy_bytes",
+                                       "public_policy_sha256", "anchor_bytes", "expected_start_prefix"})
 STATUS_MODES = frozenset({"legacy", "public-v1"})
 SOURCE_MODE_KEYS = frozenset({"status_mode", "public_policy_sha256"})
 LEGACY_SOURCE_MODE = {"status_mode": "legacy", "public_policy_sha256": None}
@@ -595,11 +597,18 @@ def validate_source_shape(source):
     ``public_policy_bytes`` (bytes within ``PUBLIC_POLICY_LIMIT``) hashing to ``public_policy_sha256`` and
     ``anchor_bytes`` (bytes within ``ANCHOR_LIMIT``) hashing to ``expected_anchor_sha256``. Anything else is
     ``source_invalid``. Checking the digests here is integrity checking of what the caller supplied, never authenticity."""
-    if (not isinstance(source, dict) or not isinstance(source.get("snapshot_result"), dict)
-            or not isinstance(source.get("expected_anchor_sha256"), str)
+    if (not isinstance(source, dict) or not isinstance(source.get("expected_anchor_sha256"), str)
             or HEX64.fullmatch(source["expected_anchor_sha256"]) is None):
         raise BuildRefused("source_invalid")
     keys = set(source)
+    if keys == CATCHUP_PUBLIC_SOURCE_KEYS:
+        if (source["mode"] != "public-catchup-v1" or type(source["catchup_result"]) is not dict
+                or not _pinned_bytes(source["public_policy_bytes"], source["public_policy_sha256"], PUBLIC_POLICY_LIMIT)
+                or not _pinned_bytes(source["anchor_bytes"], source["expected_anchor_sha256"], ANCHOR_LIMIT)):
+            raise BuildRefused("source_invalid")
+        return {"status_mode": "public-v1", "public_policy_sha256": source["public_policy_sha256"]}
+    if not isinstance(source.get("snapshot_result"), dict):
+        raise BuildRefused("source_invalid")
     if keys == SOURCE_KEYS:
         return dict(LEGACY_SOURCE_MODE)
     if (keys not in (PUBLIC_SOURCE_KEYS, PREFIX_PUBLIC_SOURCE_KEYS) or source["mode"] != "public-v1"
@@ -636,7 +645,65 @@ def check_public_records(source, projection, approved_tasks):
             raise BuildRefused("public_record_refused")
 
 
-def bind_source(source, projection, projection_sha256, policy_sha256, roster_sha256, approved_tasks=frozenset()):
+def verified_catchup_projection(source, *, policy_bytes, policy_sha256, roster_bytes, roster_sha256):
+    """Verify and merge a complete bounded public catch-up without inventing a window binding.
+
+    Caller owns and authenticates the pins. The returned projection is a
+    deterministic deduplicated delta, not proof of source origin or freshness.
+    A caught-up chain means only the last observed snapshot end, not complete
+    earlier history. Partial chains and empty deltas refuse without advancing.
+    Refusal/drop counters are not aggregated by the existing history merger.
+    """
+    frozen = combined = window = part = tasks = start = merger = None
+    try:
+        import copy
+        from sandbox.mind.step2 import shared_bridge_snapshot as snapshot, shared_capture_adapter as adapter
+        if set(source) != CATCHUP_PUBLIC_SOURCE_KEYS:
+            raise ValueError()
+        validate_source_shape(source)
+        tasks = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)[0]
+        frozen = copy.deepcopy(source["catchup_result"])
+        start = source["expected_start_prefix"]
+        if snapshot.verify_public_catchup(frozen, expected_anchor_bytes=source["anchor_bytes"],
+                expected_anchor_sha256=source["expected_anchor_sha256"], expected_policy_sha256=policy_sha256,
+                expected_roster_sha256=roster_sha256, expected_public_policy_sha256=source["public_policy_sha256"],
+                expected_start_prefix=start) is not True or frozen["caught_up"] is not True:
+            raise ValueError()
+        merger = _history_merger()
+        combined = None
+        for window in frozen["windows"]:
+            part = window["projection"]
+            # The history merger does not retain refusal counts. Never advance
+            # over a rejected public candidate as though it was accounted for.
+            # Excluded private rows are filtered upstream without such counts;
+            # dropped_fields also includes intended metadata redaction.
+            if type(part.get("refused")) is not dict or part["refused"]:
+                raise ValueError()
+            _check_bounds(part["records"])
+            check_public_records(source, part, tasks)
+            if combined is None:
+                combined = part
+            else:
+                combined = merger(combined, part, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+                                  roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+            _check_bounds(combined["records"])
+        if type(combined) is not dict or not combined["records"]:
+            raise ValueError()
+        check_public_records(source, combined, tasks)
+        if snapshot.verify_public_catchup(frozen, expected_anchor_bytes=source["anchor_bytes"],
+                expected_anchor_sha256=source["expected_anchor_sha256"], expected_policy_sha256=policy_sha256,
+                expected_roster_sha256=roster_sha256, expected_public_policy_sha256=source["public_policy_sha256"],
+                expected_start_prefix=start) is not True:
+            raise ValueError()
+        return combined, frozen
+    except Exception:
+        pass
+    del source, policy_bytes, roster_bytes, frozen, combined, window, part, tasks, start, merger
+    raise BuildRefused("source_binding_refused") from None
+
+
+def bind_source(source, projection, projection_sha256, policy_sha256, roster_sha256, approved_tasks=frozenset(),
+                *, policy_bytes=None, roster_bytes=None):
     """The closed receipt ``source_binding`` for a snapshot result the Lead verifier accepted for THIS projection and
     the pinned policy/roster digests, together with the closed ``source_mode`` record. Cursor digests are taken from
     the verified ``source`` (``cursor_start_sha256``, ``cursor_end_sha256``: sha256 of the snapshot token strings, the
@@ -648,6 +715,31 @@ def bind_source(source, projection, projection_sha256, policy_sha256, roster_sha
     verifier without the mode keywords on the public path) or ``source_binding_refused`` (any verifier or binding
     failure, no text). The binding shape itself is unchanged by the mode: the mode lives in ``source_mode``."""
     source_mode = validate_source_shape(source)
+    if set(source) == CATCHUP_PUBLIC_SOURCE_KEYS:
+        combined = frozen = actual = start = end = binding = tasks = None
+        try:
+            from sandbox.mind.step2 import shared_bridge_snapshot as snapshot, shared_capture_adapter as adapter
+            tasks = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)[0]
+            if type(approved_tasks) is not frozenset or approved_tasks != tasks:
+                raise ValueError()
+            combined, frozen = verified_catchup_projection(source, policy_bytes=policy_bytes,
+                policy_sha256=policy_sha256, roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+            actual = json.dumps(combined, sort_keys=True, indent=1).encode("utf-8")
+            if (actual != json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
+                    or not hmac.compare_digest(hashlib.sha256(actual).hexdigest(), projection_sha256)):
+                raise ValueError()
+            start = source["expected_start_prefix"].cursor
+            end = frozen["candidate_cursor"]
+            binding = {"schema": SOURCE_BINDING_SCHEMA, "anchor_sha256": source["expected_anchor_sha256"],
+                       "projection_sha256": projection_sha256,
+                       "cursor_start_sha256": hashlib.sha256(snapshot._token(start).encode()).hexdigest(),
+                       "cursor_end_sha256": hashlib.sha256(snapshot._token(end).encode()).hexdigest(),
+                       "policy_sha256": policy_sha256, "roster_sha256": roster_sha256}
+            return binding, source_mode
+        except Exception:
+            pass
+        del source, projection, policy_bytes, roster_bytes, combined, frozen, actual, start, end, binding, tasks
+        raise BuildRefused("source_binding_refused") from None
     public = source_mode["status_mode"] == "public-v1"
     if public:
         check_public_records(source, projection, approved_tasks)
@@ -989,7 +1081,8 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
         source_binding, source_mode = None, dict(LEGACY_SOURCE_MODE)  # the synthetic route is legacy by construction
     else:
         source_binding, source_mode = bind_source(source, projection, projection_sha256, resolved["policy_sha256"],
-                                                  resolved["roster_sha256"], approved_tasks)  # binds the DELTA only
+            resolved["roster_sha256"], approved_tasks, policy_bytes=pins["policy_bytes"],
+            roster_bytes=pins["roster_bytes"])  # binds the DELTA only
     delta_projection_sha256 = projection_sha256
     history, memory_history = None, None
     if predecessor is not None:

@@ -6,6 +6,13 @@ complete earlier history, hostile same-user mutation or process identity. The
 private checkpoint contains prefix digests and must be protected by the caller.
 This primitive never reads live data unless explicitly invoked with caller paths,
 never installs or deletes, and never includes a prefix digest in its report.
+request.fenced=True (opt-in, default off) publishes through the private intent and
+the checkpoint fence; only a resolved "landed" reports, any Exception reports
+publication_state_unknown (which can mean landed; after a failed begin or commit the
+possibly shared fence is never resolved here, and external reconciliation must first
+prove every writer on that binding finished). KeyboardInterrupt/SystemExit propagate unchanged: the
+caller quarantines both roots and never retries (states in _publish_fenced). It
+fences cooperating writers only.
 """
 from dataclasses import dataclass, field
 import hashlib
@@ -43,6 +50,7 @@ class PrefixPublicRequest:
     dim: int
     timeout: float = 0.2
     private_state_root: object = field(default=None, repr=False)
+    fenced: bool = False
 
 
 def _fail(reason):
@@ -70,7 +78,8 @@ def _validate(request):
             or not callable(request.encode) or type(request.identity) is not dict
             or type(request.dim) is not int or request.dim < 1
             or type(request.timeout) not in (int, float) or not math.isfinite(request.timeout)
-            or not 0 < request.timeout <= 30):
+            or not 0 < request.timeout <= 30
+            or type(request.fenced) is not bool):
         _fail("request_invalid")
     source = request.config.source
     if (type(source.max_bytes) is not int or not 1 <= source.max_bytes <= snapshot.MAX_BYTES
@@ -263,6 +272,24 @@ def _publish_prepared(request, state, result, projection, tasks, previous, *, ca
             _fail("empty_catchup_unsupported")
         if previous is None:
             _fail("empty_genesis")
+        if request.fenced:
+            try:
+                candidate = result["candidate_prefix"]
+                args = (root, result, tasks)
+                kwargs = dict(expected_pointer_sha256=request.expected_pointer_sha256, **common)
+                prepared = checkpoint.prepare_prefix_empty(*args, enabled=True, **kwargs)
+                if type(prepared) is not dict or set(prepared) != {"status", "attempt_sha256"}:
+                    raise ValueError()
+                if prepared["status"] == "no_change" and prepared["attempt_sha256"] == request.expected_pointer_sha256:
+                    return _report("EMPTY_NO_CHANGE", prepared["attempt_sha256"], None)  # nothing opened
+                if prepared["status"] != "prepared":
+                    raise ValueError()
+            except Exception:
+                pass
+            else:
+                return _publish_fenced(request, state, prepared["attempt_sha256"], candidate, "EMPTY_ADVANCED", None,
+                                       checkpoint.advance_prefix_empty, args, kwargs)
+            _fail("publication_state_unknown")
         try:
             candidate = result["candidate_prefix"]
             state.begin(request.expected_pointer_sha256)
@@ -306,7 +333,77 @@ def _publish_prepared(request, state, result, projection, tasks, previous, *, ca
     _fail("build_refused")
 
 
+def _publish_fenced(request, state, attempt, candidate, status, generation, commit, args, kwargs):
+    """Opt-in fenced route: durable intent + fence for exactly prior -> attempt, fenced commit, resolution.
+
+    Resolution runs only after the commit returned normally; it then decides under the checkpoint lock (the
+    commit result itself is not trusted). Only "landed" reports. A fence carries no owner, and another private
+    root may adopt the same binding and still be running, so exclusive ownership is never proven here and a
+    possibly shared fence is never resolved after a failure. Every Exception reports publication_state_unknown,
+    never retried here, and that token can mean landed:
+    - from begin_intent: nothing is cleaned up; the fence is left UNKNOWN (an open fence without an intent
+      refuses every cooperating writer); a slot begin_intent may have created stays pending;
+    - from the commit: nothing is resolved; fence and intent stay UNKNOWN (the pointer may or may not have
+      moved);
+    - from resolution after a returned commit: it can fail after mutating state (outcome record linked, fence
+      removed, private state replaced, slot not yet removed) with the pointer already at the attempt.
+    External reconciliation (resolve_intent, resolve_prefix_fence) is unsafe on a matching binding alone: first
+    prove that every writer that may hold that binding, in any private root, has finished, or prove exclusive
+    ownership; otherwise the state stays UNKNOWN. Resolving to not_landed removes the fence, keeps the intent
+    and leaves the pointer unfenced, so a later writer can move it and strand the intent (resolution refuses).
+    KeyboardInterrupt, SystemExit and every other non-Exception propagate unchanged with no cleanup. The caller
+    must quarantine both roots as publication unknown and never retry. Besides an open fence with no intent,
+    fence + intent, or a recorded outcome with the intent kept, an interrupt can end inside any filesystem
+    step (a staged file before its link, a record linked before the fence is removed, the private state
+    replaced before the slot is removed); those states are not enumerated exhaustively here.
+    Older unfenced writers are not fenced.
+    """
+    outcome = None
+    try:
+        if not _pin(attempt):
+            raise ValueError()
+        state.begin_intent(request.expected_pointer_sha256, request.start_prefix, attempt, candidate,
+                           enabled=True, fence=True)
+    except Exception:
+        pass  # never close a fence whose exclusive ownership cannot be proven
+    else:
+        try:
+            commit(*args, expected_attempt_sha256=attempt, fenced=True, **kwargs)
+        except Exception:
+            pass  # resolve nothing: another root may share this fence and still be running
+        else:
+            try:
+                outcome = state.resolve_intent(enabled=True)
+            except Exception:
+                pass
+        if outcome == "landed":
+            return _report(status, attempt, generation)
+    _fail("publication_state_unknown")
+
+
 def _commit_prepared(request, state, result, tasks, previous, common, artifacts, root, source, *, catchup_source=None):
+    if request.fenced:
+        try:
+            candidate = result["candidate_prefix"]
+            extra = {"_catchup_source": catchup_source} if catchup_source is not None else {}
+            args = (root, request.generation, source.cursor, result["candidate_cursor"], tasks)
+            if previous is None:
+                kwargs = dict(expected_pointer_sha256=None, expected_artifacts=artifacts, initial_cursor=source.cursor,
+                              snapshot_result=result, **common, **extra)
+                prepare, commit, status = checkpoint.prepare_prefix_genesis, checkpoint.commit_prefix_genesis, "PUBLISHED_GENESIS"
+            else:
+                kwargs = dict(snapshot_result=result, expected_pointer_sha256=request.expected_pointer_sha256,
+                              expected_artifacts=artifacts, **common, **extra)
+                prepare, commit, status = checkpoint.prepare_prefix_history, checkpoint.commit_prefix_history, "PUBLISHED_HISTORY"
+            prepared = prepare(*args, enabled=True, **kwargs)
+            if type(prepared) is not dict or set(prepared) != {"status", "attempt_sha256"} or prepared["status"] != "prepared":
+                raise ValueError()
+        except Exception:
+            pass
+        else:
+            return _publish_fenced(request, state, prepared["attempt_sha256"], candidate, status, request.generation,
+                                   commit, args, kwargs)
+        _fail("publication_state_unknown")
     try:
         candidate = result["candidate_prefix"]
         state.begin(request.expected_pointer_sha256)

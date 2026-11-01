@@ -1692,6 +1692,75 @@ def test_v2_multiwindow_catchup_publishes_real_synthetic_data(tmp_path, model_di
     assert pointer["generation"] == "gen-a" and end.cursor.offset > request.start_prefix.cursor.offset
 
 
+def test_v3_fenced_multiwindow_real_producer_advances_exact_candidate(tmp_path, model_dir, backend):
+    pytest.importorskip("faiss")
+    from sandbox.mind.step2 import prefix_private_state
+    from sandbox.mind.step2.test_public_catchup_producer_integration_new import _catchup, _request, _read_pointer
+    from sandbox.mind.step2.test_shared_index_builder import PUBLIC_EVENTS
+
+    m = module()
+    request, fixtures = _request(tmp_path, PUBLIC_EVENTS)
+    observed = _catchup(request, 8)
+    assert observed["caught_up"] is True and observed["window_count"] >= 2
+    pins = {key: getattr(request.pins, key) for key in PIN_KEYS}
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v3", max_windows=8, fenced=True)
+    report = run(m, doc, request.config, request.start_prefix, request.root, request.private_state_root)
+    assert report["status"] == "PUBLISHED_GENESIS"
+    assert report["coverage"] == "caught_up_to_final_snapshot_not_history"
+    pointer, end = _read_pointer(request, fixtures, report["pointer_sha256"])
+    assert pointer["generation"] == "gen-a" and end == observed["candidate_prefix"]
+    with prefix_private_state.locked_state(request.private_state_root, request.root, enabled=True) as state:
+        assert state.load(report["pointer_sha256"]) == end
+
+
+def test_v3_fenced_partial_catchup_never_publishes(tmp_path, model_dir, backend):
+    pytest.importorskip("faiss")
+    from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
+    from sandbox.mind.step2.test_public_catchup_producer_integration_new import _request
+    from sandbox.mind.step2.test_shared_index_builder import PUBLIC_EVENTS
+
+    m = module()
+    request, _ = _request(tmp_path, PUBLIC_EVENTS)
+    pins = {key: getattr(request.pins, key) for key in PIN_KEYS}
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v3", max_windows=1, fenced=True)
+    refused("catchup_incomplete", lambda: run(m, doc, request.config, request.start_prefix,
+            request.root, request.private_state_root))
+    assert not (request.root / checkpoint.POINTER).exists()
+
+
+def test_v3_fenced_history_tracks_the_real_catchup_candidate(tmp_path, model_dir, backend):
+    pytest.importorskip("faiss")
+    from sandbox.mind.step2 import prefix_private_state
+    from sandbox.mind.step2 import test_prefix_checkpoint_v1 as prefix_fixture
+    from sandbox.mind.step2.test_public_catchup_producer_integration_new import _catchup, _request, _read_pointer
+    from sandbox.mind.step2.test_shared_index_builder import PUBLIC_EVENTS, LATER_PUBLIC_EVENTS
+
+    m = module()
+    request, fixtures = _request(tmp_path, PUBLIC_EVENTS)
+    pins = {key: getattr(request.pins, key) for key in PIN_KEYS}
+    first = run(m, plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v3", max_windows=8, fenced=True),
+                request.config, request.start_prefix, request.root, request.private_state_root)
+    _, prior = _read_pointer(request, fixtures, first["pointer_sha256"])
+    _, _, kwargs, start = prefix_fixture._delta(
+        tmp_path / "log", LATER_PUBLIC_EVENTS + [PUBLIC_EVENTS[0]], prior.cursor, prior)
+    source = replace(request.config.source, cursor=start.cursor,
+                     anchor_bytes=kwargs["expected_anchor_bytes"], anchor_sha256=kwargs["expected_anchor_sha256"])
+    updated = replace(request, config=replace(request.config, source=source),
+                      pins=replace(request.pins, anchor_sha256=kwargs["expected_anchor_sha256"]),
+                      start_prefix=start, expected_pointer_sha256=first["pointer_sha256"], generation="gen-b")
+    observed = _catchup(updated, 8)
+    assert observed["caught_up"] is True and observed["window_count"] >= 2
+    pins["anchor_sha256"] = kwargs["expected_anchor_sha256"]
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v3", max_windows=8, fenced=True,
+               generation="gen-b", pointer=first["pointer_sha256"])
+    second = run(m, doc, updated.config, start, request.root, request.private_state_root)
+    assert second["status"] == "PUBLISHED_HISTORY"
+    pointer, end = _read_pointer(updated, fixtures, second["pointer_sha256"])
+    assert pointer["generation"] == "gen-b" and end == observed["candidate_prefix"]
+    with prefix_private_state.locked_state(request.private_state_root, request.root, enabled=True) as state:
+        assert state.load(second["pointer_sha256"]) == end
+
+
 def test_v2_empty_history_refuses_before_any_pointer_or_private_state_change(tmp_path, model_dir, backend):
     pytest.importorskip("faiss")
     from sandbox.mind.step2 import prefix_private_state, shared_index_checkpoint as checkpoint

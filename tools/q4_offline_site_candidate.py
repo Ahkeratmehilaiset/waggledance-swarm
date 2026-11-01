@@ -19,6 +19,13 @@ from sandbox.mind.step2 import runtime_builder, runtime_manifest
 _SHA = re.compile(r'[0-9a-f]{64}\Z')
 _LOCK = re.compile(r'([A-Za-z0-9_.-]+)==([A-Za-z0-9_.+]+)\s+--hash=sha256:([0-9a-f]{64})\Z')
 _WHEEL_FIELD = re.compile(r'[A-Za-z0-9_.+]+\Z')
+_WHEEL_DISTRIBUTION = re.compile(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*\Z')
+# Conservative normalized version subset used by the pinned wheel set; this
+# is deliberately not a complete PEP 440 implementation.
+_WHEEL_VERSION = re.compile(r'[0-9]+(?:\.[0-9]+)*(?:(?:a|b|rc)[0-9]+)?'
+                            r'(?:\.post[0-9]+)?(?:\.dev[0-9]+)?'
+                            r'(?:\+[A-Za-z0-9]+(?:[._][A-Za-z0-9]+)*)?\Z')
+_WHEEL_BUILD = re.compile(r'[0-9][A-Za-z0-9_]*\Z')
 _FLOOR = 3 * 1024**3
 
 
@@ -48,12 +55,15 @@ def _wheel_name(path, target_tag):
     if len(parts) not in (5, 6) or any(not _WHEEL_FIELD.fullmatch(part) for part in parts):
         raise ValueError('wheel_name_invalid')
     distribution, version = parts[:2]
+    if (not _WHEEL_DISTRIBUTION.fullmatch(distribution) or not _WHEEL_VERSION.fullmatch(version)
+            or (len(parts) == 6 and not _WHEEL_BUILD.fullmatch(parts[2]))):
+        raise ValueError('wheel_name_invalid')
     python_tag, abi_tag, platform_tag = parts[-3:]
     pythons, abis, platforms = python_tag.split('.'), abi_tag.split('.'), platform_tag.split('.')
     portable = 'py3' in pythons and 'none' in abis and 'any' in platforms
     direct = 'cp313' in pythons and 'cp313' in abis and 'win_amd64' in platforms
     stable = ('abi3' in abis and 'win_amd64' in platforms
-              and any(re.fullmatch(r'cp3(?:[0-9]|1[0-3])', tag) for tag in pythons))
+              and any(re.fullmatch(r'cp3(?:[2-9]|1[0-3])', tag) for tag in pythons))
     if not (portable or direct or stable):
         raise ValueError('wheel_target_invalid')
     return _name(distribution), version
@@ -141,7 +151,8 @@ def validate_plan(*, wheel_roots, wheels, target, python_executable, python_sha2
         raise ValueError('wheel_lock_mismatch')
     return {'wheel_count': len(seen), 'wheel_bytes': total, 'lock_sha256': lock_sha256,
             'target_tag': target_tag, 'disk_measurement': 'NOT_MEASURED',
-            'materialized': False, 'dependency_closure': 'NOT_VERIFIED'}
+            'materialized': False, 'dependency_closure': 'NOT_VERIFIED',
+            'interpreter_abi': 'NOT_VERIFIED', 'wheel_archive_metadata': 'NOT_VERIFIED'}
 
 
 def build_isolated_env(*, system_root, temp_dir):

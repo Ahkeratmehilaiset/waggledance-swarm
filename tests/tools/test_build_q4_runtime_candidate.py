@@ -214,3 +214,25 @@ def test_candidate_change_before_manifest_is_not_accepted(inputs, monkeypatch):
     with pytest.raises(ValueError):
         assemble(inputs)
     assert tree_snapshot(inputs[0]) == source_before
+
+
+@pytest.mark.parametrize("relative,data", [
+    ("site/example/unlisted.py", b"synthetic extra code"),
+    ("model/extra.json", b""),
+    ("assets/code/extra.py", b"synthetic nested code"),
+])
+def test_unpinned_candidate_file_before_manifest_is_not_accepted(inputs, monkeypatch, relative, data):
+    """A manifest of a changed tree is not the caller's pinned file set."""
+    from sandbox.mind.step2 import runtime_builder
+
+    original = runtime_builder.build_runtime_manifest
+
+    def add_unpinned_file_before_manifest(*args, **kwargs):
+        target = inputs[1].joinpath(*relative.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime_builder, "build_runtime_manifest", add_unpinned_file_before_manifest)
+    with pytest.raises(ValueError):
+        assemble(inputs)

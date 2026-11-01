@@ -72,7 +72,7 @@ def build_candidate(source_root, candidate_root, manifest_path, *, pins, generat
         if type(path) is not str or type(pin) is not dict or set(pin) != {'size', 'sha256'}:
             raise ValueError('pin_invalid')
         records.append({'path': path, 'size': pin['size'], 'sha256': pin['sha256']})
-    files, _ = runtime_manifest._validate_records(records)
+    files, directories = runtime_manifest._validate_records(records)
     total = sum(size for size, _ in files.values())
     if total > max_bytes:
         raise ValueError('budget_insufficient')
@@ -121,6 +121,8 @@ def build_candidate(source_root, candidate_root, manifest_path, *, pins, generat
                 raise ValueError('input_changed')
 
     result = runtime_builder.build_runtime_manifest(candidate, manifest, generation=generation, revision=revision)
+    if runtime_manifest._tree(candidate) != (set(files), directories):
+        raise ValueError('candidate_membership_mismatch')
     for relative, (size, digest) in files.items():
         copied_size, copied_digest, _ = _input_hash(candidate, relative)
         if (copied_size, copied_digest) != (size, digest):

@@ -70,7 +70,9 @@ def validate(plan):
 
 def test_valid_two_source_plan_only_checks_inputs_and_never_writes(plan, tmp_path):
     before = snapshot(tmp_path)
-    validate(plan)
+    result = validate(plan)
+    assert result["interpreter_abi"] == "NOT_VERIFIED"
+    assert result["wheel_archive_metadata"] == "NOT_VERIFIED"
     assert snapshot(tmp_path) == before
     assert not plan["target"].exists()
 
@@ -87,6 +89,41 @@ def test_local_version_wheel_matches_exact_lock_without_materialization(plan, tm
     plan["lock_sha256"] = sha(lock)
     before = snapshot(tmp_path)
     validate(plan)
+    assert snapshot(tmp_path) == before
+    assert not plan["target"].exists()
+
+
+@pytest.mark.parametrize("name", [
+    "alpha-1.0-notabuild-py3-none-any.whl",
+    "alpha+beta-1.0-py3-none-any.whl",
+    "alpha-+++-py3-none-any.whl",
+    "alpha-1.0-cp31-abi3-win_amd64.whl",
+    "alpha-1.___-py3-none-any.whl",
+])
+def test_invalid_wheel_filename_is_refused_independently_of_lock(name):
+    """A lock-parse or mismatch error must not hide an accepted invalid name."""
+    from tools.q4_offline_site_candidate import _wheel_name
+
+    with pytest.raises(ValueError):
+        _wheel_name(Path(name), "cp313-cp313-win_amd64")
+
+
+@pytest.mark.parametrize(("name", "distribution", "version"), [
+    ("alpha-1.0-notabuild-py3-none-any.whl", "alpha", "1.0"),
+    ("alpha-+++-py3-none-any.whl", "alpha", "+++"),
+    ("alpha-1.0-cp31-abi3-win_amd64.whl", "alpha", "1.0"),
+])
+def test_invalid_build_or_version_refused_even_when_lock_matches(plan, tmp_path, name, distribution, version):
+    data = b"synthetic-invalid-wheel"
+    wheel = plan["wheel_roots"][0] / name
+    wheel.write_bytes(data)
+    plan["wheels"][0] = {"path": wheel, "size": len(data), "sha256": sha(data)}
+    lock = (f"{distribution}=={version} --hash=sha256:{sha(data)}\n"
+            f"beta==1.0 --hash=sha256:{plan['wheels'][1]['sha256']}\n").encode("ascii")
+    plan["lock_bytes"], plan["lock_sha256"] = lock, sha(lock)
+    before = snapshot(tmp_path)
+    with pytest.raises(ValueError):
+        validate(plan)
     assert snapshot(tmp_path) == before
     assert not plan["target"].exists()
 

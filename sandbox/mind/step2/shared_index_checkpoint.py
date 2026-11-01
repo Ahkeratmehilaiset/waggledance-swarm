@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from types import MappingProxyType
 import re
 import secrets
 import stat
@@ -40,6 +41,8 @@ _MAX = 16 * 1024 * 1024
 _MAX_POINTER_HISTORY = 256
 _MAX_POINTER_BYTES = 16384
 _MAX_HISTORY_BYTES = 64 * 1024 * 1024
+_MAX_ACTIVE_ARTIFACT_BYTES = 16 * 1024 * 1024
+_MAX_ACTIVE_SNAPSHOT_BYTES = 64 * 1024 * 1024
 
 
 class CheckpointRefused(ValueError):
@@ -261,6 +264,57 @@ def _write_new(path, data):
 
 def _canonical(obj):
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")
+
+
+class _BoundActiveArtifactBytes:
+    """Private hash-bound bytes; this is not a verified checkpoint."""
+
+    __slots__ = ("__values",)
+
+    def __init__(self, values):
+        object.__setattr__(self, "_BoundActiveArtifactBytes__values", MappingProxyType(values))
+
+    def __setattr__(self, name, value):
+        raise AttributeError("bound_active_artifact_bytes_read_only")
+
+    def read(self, name):
+        if type(name) is not str or name not in self.__values:
+            _refuse()
+        return self.__values[name]
+
+    def __repr__(self):
+        return "<bound-active-artifact-bytes: private, checkpoint unverified>"
+
+
+def _bind_active_artifact_bytes(artifact_bytes, *, expected_hashes, enabled=False):
+    """Bind four in-memory bytes against independently supplied caller pins.
+
+    The caller must authenticate those pins. This checks only exact names, byte
+    budgets and hashes; it does not validate policy, projection, source, cells,
+    current pointer/log or history, and is not wired to a production reader.
+    """
+    captured = pins = None
+    try:
+        if (enabled is not True or type(artifact_bytes) is not dict or type(expected_hashes) is not dict
+                or len(artifact_bytes) != len(ARTIFACTS) or len(expected_hashes) != len(ARTIFACTS)):
+            _refuse()
+        captured, pins = dict(artifact_bytes), dict(expected_hashes)
+        if (set(captured) != set(ARTIFACTS.values()) or set(pins) != set(ARTIFACTS)
+                or any(type(key) is not str for key in captured)
+                or any(type(key) is not str for key in pins)
+                or any(type(value) is not bytes or len(value) > _MAX_ACTIVE_ARTIFACT_BYTES
+                       for value in captured.values())
+                or sum(map(len, captured.values())) > _MAX_ACTIVE_SNAPSHOT_BYTES
+                or any(type(value) is not str or HEX.fullmatch(value) is None for value in pins.values())):
+            _refuse()
+        for kind, filename in ARTIFACTS.items():
+            if _sha(captured[filename]) != pins[kind]:
+                _refuse()
+        return _BoundActiveArtifactBytes(captured)
+    except Exception:
+        pass
+    del captured, pins, artifact_bytes, expected_hashes
+    _refuse()
 
 
 def _freeze_history_snapshot(snapshot):

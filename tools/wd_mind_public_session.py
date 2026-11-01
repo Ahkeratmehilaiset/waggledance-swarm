@@ -176,6 +176,7 @@ def _attempt(audit_root, snapshot_result, enabled, expected_previous_sha256, as_
     now = _instant(as_of)
     data = producer.build_status(snapshot_result, enabled=True, **pins)
     body = _body(_object(data), tasks, types)
+    _require_public_availability(body, now)
     root = _directory(audit_root)
     lock = root / LOCK_FILENAME
     if os.path.lexists(lock):
@@ -319,7 +320,9 @@ def _publication(raw, pins, tasks, types, now, max_age_seconds):
     age = (now - _instant(datetime.fromisoformat(doc["as_of_utc"]))).total_seconds()
     if age < 0 or age > max_age_seconds:
         raise ValueError()
-    return _body(doc["body"], tasks, types), age
+    body = _body(doc["body"], tasks, types)
+    _require_public_availability(body, now)
+    return body, age
 
 
 def read_status(audit_root, *, lane, agent_uuid, as_of, max_age_seconds, enabled=False, **pins):
@@ -373,7 +376,7 @@ def _v3_structure(raw):
     return doc
 
 
-def _v3_require_available(body, now):
+def _require_public_availability(body, now):
     """Refuse a complete delta until every event passes the strict next-minute cutoff.
 
     Do not drop an early record: that would advance the source cursor past it
@@ -407,7 +410,7 @@ def _v3_attempt(audit_root, snapshot_result, *, as_of, enabled, expected_previou
     # This verifies the entire current snapshot projection against its own
     # window anchor, policy and roster before metadata is made public.
     body = _body(_object(producer.build_status(snapshot_result, enabled=True, **pins)), tasks, types)
-    _v3_require_available(body, now)
+    _require_public_availability(body, now)
     anchor = _object(pins["anchor_bytes"])
     candidate = asdict(snapshot_result["candidate_cursor"])
     next_bytes = _json(dict(anchor, cursor_start=candidate))
@@ -592,7 +595,7 @@ def read_status_v3(audit_root, *, lane, agent_uuid, as_of, max_age_seconds, enab
         if age < 0 or age > max_age_seconds:
             raise ValueError()
         body = _body(doc["body"], tasks, types)
-        _v3_require_available(body, now)
+        _require_public_availability(body, now)
         return _json({"schema": "wd.mind-public-session.v1", "authority": "none", "coverage": "last_delta_only",
                       "lane": lane, "identity_verification": "caller_declared_not_authenticated",
                       "as_of_utc": now.isoformat(), "publication_age_seconds": age,

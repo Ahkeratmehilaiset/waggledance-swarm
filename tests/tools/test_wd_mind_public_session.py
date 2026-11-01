@@ -63,6 +63,54 @@ def state(tmp_path):
     return audit, result, pins
 
 
+@pytest.mark.parametrize("instant,visible", [
+    ("2026-10-31T12:00:10+00:00", False),
+    ("2026-10-31T12:00:59+00:00", False),
+    ("2026-10-31T12:01:00+00:00", False),
+    ("2026-10-31T12:01:00.000001+00:00", True),
+])
+def test_v2_strict_next_minute_before_publish_or_read(tmp_path, instant, visible):
+    from tools import wd_mind_public_session as session
+
+    source = tmp_path / "source"
+    source.mkdir()
+    result, pins, _ = read_fixture(source, [event(ts_utc="2026-10-31T12:00:59Z")])
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    now = datetime.fromisoformat(instant)
+    if not visible:
+        with pytest.raises(session.PublicStatusRefused):
+            session.prepare_status_attempt(audit, result, as_of=now, enabled=True,
+                                           expected_previous_sha256=None, **pins)
+        assert not (audit / session.FILENAME).exists()
+        return
+    digest = session.publish_status(audit, result, as_of=now, enabled=True,
+                                    expected_previous_sha256=None, **pins)
+    assert digest == _prior_hash(audit)
+    view = json.loads(session.read_status(audit, lane="fable-5", agent_uuid=ROSTER["fable-5"],
+                                          as_of=now, max_age_seconds=900, enabled=True, **pins))
+    assert len(view["records"]) == 1
+
+
+def test_v2_reader_rejects_premature_tampered_publication(tmp_path):
+    from tools import wd_mind_public_session as session
+
+    source = tmp_path / "source"
+    source.mkdir()
+    result, pins, _ = read_fixture(source, [event(ts_utc="2026-10-31T12:00:59Z")])
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    now = datetime.fromisoformat("2026-10-31T12:01:01+00:00")
+    session.publish_status(audit, result, as_of=now, enabled=True, expected_previous_sha256=None, **pins)
+    target = audit / session.FILENAME
+    doc = json.loads(target.read_bytes())
+    doc["as_of_utc"] = "2026-10-31T12:00:10+00:00"
+    target.write_text(json.dumps(doc, sort_keys=True, separators=(",", ":")), encoding="ascii")
+    with pytest.raises(session.PublicStatusRefused):
+        session.read_status(audit, lane="fable-5", agent_uuid=ROSTER["fable-5"],
+            as_of=datetime.fromisoformat("2026-10-31T12:00:30+00:00"), max_age_seconds=900, enabled=True, **pins)
+
+
 def test_publication_requires_explicit_genesis_and_cas(state):
     from tools import wd_mind_public_session as session
     audit, result, pins = state
@@ -347,7 +395,8 @@ def test_self_hash_is_not_writer_authentication(state):
 def test_republication_does_not_claim_source_freshness(state):
     from tools import wd_mind_public_session as session
     audit, result, pins = state
-    now = datetime.now(timezone.utc)
+    # Both publication clocks follow the synthetic 2026-10-31 source event.
+    now = datetime(2026, 11, 3, tzinfo=timezone.utc)
     # The same old source snapshot can be republished with a later caller time.
     session.publish_status(audit, result, as_of=now - timedelta(days=2), enabled=True, expected_previous_sha256=_prior_hash(audit), **pins)
     session.publish_status(audit, result, as_of=now, enabled=True, expected_previous_sha256=_prior_hash(audit), **pins)
@@ -670,7 +719,8 @@ def _prior_variants(saved):
 def test_structurally_incomplete_prior_is_refused_with_its_exact_digest_but_a_stale_prior_is_not(state):
     from tools import wd_mind_public_session as session
     audit, result, pins = state
-    now = datetime.now(timezone.utc)
+    # Keep the stale publication after the synthetic source's next-minute cutoff.
+    now = datetime(2026, 11, 3, tzinfo=timezone.utc)
     target = audit / session.FILENAME
     first = session.publish_status(audit, result, **_attempt_kwargs(pins, now, None))
     saved = target.read_bytes()

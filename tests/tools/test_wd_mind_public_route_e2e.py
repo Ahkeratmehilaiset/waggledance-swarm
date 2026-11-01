@@ -3,7 +3,7 @@
 The new reader is NOT connected to either installed or source agent starters.
 """
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 
@@ -46,7 +46,7 @@ def test_public_snapshot_reaches_each_declared_synthetic_lane_without_raw_data(t
     anchor = enc({"schema": "wd.q4-source-anchor.v1", "source_path": str(log), "generation_path": str(generation),
                   "cursor_start": asdict(start), "policy_sha256": sha(policy), "roster_sha256": sha(roster),
                   "status_mode": "public-v1", "public_policy_sha256": sha(public)})
-    row = {"ts_utc": datetime.now(timezone.utc).isoformat(), "agent": "codex-lead-1",
+    row = {"ts_utc": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(), "agent": "codex-lead-1",
            "agent_uuid": ROSTER["codex-lead-1"], "type": "message", "task_id": "public-synthetic-task",
            "status": "done", "severity": "info", "to": "", "message": "", "paths": [], "write_scope": [],
            "run_id": "synthetic-run", "pid": 123, "cwd": "C:\\synthetic-only", "role": "lead",

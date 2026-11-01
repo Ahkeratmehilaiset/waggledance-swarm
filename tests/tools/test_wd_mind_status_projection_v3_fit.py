@@ -23,7 +23,7 @@ Limitations kept explicit, never claimed away:
   body exactly as the publisher digested it (pinned by ``test_private_helpers_relied_on_are_present``).
 """
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -210,7 +210,7 @@ def route(tmp_path):
     anchor = enc({"schema": "wd.q4-source-anchor.v1", "source_path": str(log), "generation_path": str(generation),
                   "cursor_start": asdict(start), "policy_sha256": sha(policy), "roster_sha256": sha(roster),
                   "status_mode": "public-v1", "public_policy_sha256": sha(public)})
-    row = {"ts_utc": datetime.now(timezone.utc).isoformat(), "agent": "codex-lead-1",
+    row = {"ts_utc": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat(), "agent": "codex-lead-1",
            "agent_uuid": ROSTER["codex-lead-1"], "type": "message", "task_id": TASK, "status": "done",
            "severity": "info", "to": "", "message": "", "paths": [], "write_scope": [], "run_id": "synthetic-run",
            "pid": 123, "cwd": SYNTHETIC_CWD, "role": "lead", "session_id": "synthetic-session",

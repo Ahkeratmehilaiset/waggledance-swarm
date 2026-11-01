@@ -100,6 +100,7 @@ def _assert_only_scrubs_before_child(source):
         r"(?:\[CmdletBinding\(\)\]|param\(|\)|\[Parameter\(Mandatory\)\]|"
         r"\[ValidatePattern\('\^\[a-z\]\[a-z0-9_-\]\{1,32\}\$'\)\]|"
         r"\[ValidatePattern\('\^\[0-9a-f\]\{40\}\$'\)\]|"
+        r"\[string\] \$(?:Q4SharedDescriptorPath|Q4SharedDescriptorSha256) = '',?|"
         r"\[(?:string|switch)\] \$[A-Za-z]+(?: = '')?,?|\$ErrorActionPreference = 'Stop')\Z"
     )
     assert all(allowed_prolog.fullmatch(line.strip()) for line in prolog.splitlines() if line.strip())

@@ -474,6 +474,8 @@ param(
     [string] $RunId = '',
     [string] $ExternalSessionsPath = '',
     [string] $ExternalSessionsHash = '',
+    [string] $Q4SharedDescriptorPath = '',
+    [string] $Q4SharedDescriptorSha256 = '',
     [ValidateRange(10, 300)]
     [int] $HandshakeTimeoutSeconds = 90,
     [switch] $SkipCliUpdate,
@@ -495,6 +497,8 @@ param(
     [string] $ExpectedManifestHash = '',
     [string] $ExternalSessionsPath = '',
     [string] $ExternalSessionsHash = '',
+    [string] $Q4SharedDescriptorPath = '',
+    [string] $Q4SharedDescriptorSha256 = '',
     [switch] $DryRun,
     [switch] $FreshSession,
     [string] $SupersededThreadId = '',
@@ -514,6 +518,8 @@ param(
     [string] $ExpectedManifestHash = '',
     [string] $ExternalSessionsPath = '',
     [string] $ExternalSessionsHash = '',
+    [string] $Q4SharedDescriptorPath = '',
+    [string] $Q4SharedDescriptorSha256 = '',
     [switch] $DryRun,
     [switch] $FreshSession,
     [string] $SupersededThreadId = '',
@@ -549,6 +555,11 @@ param(
 @'
 if ($Auto -and ($Apply -or $DryRun)) {
     throw 'Auto cannot be combined with Apply or DryRun'
+}
+if ([string]::IsNullOrWhiteSpace($Q4SharedDescriptorPath) -ne
+        [string]::IsNullOrWhiteSpace($Q4SharedDescriptorSha256) -or
+        ($Q4SharedDescriptorSha256 -and $Q4SharedDescriptorSha256 -cnotmatch '^[0-9a-f]{64}$')) {
+    throw 'q4_shared_descriptor_pair_refused'
 }
 $targetParameters = @{}
 foreach ($key in $PSBoundParameters.Keys) {
@@ -600,7 +611,8 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
     $commandParts = New-Object 'System.Collections.Generic.List[string]'
     [void]$commandParts.Add('&')
     [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value $PSCommandPath))
-    foreach ($name in @('ManifestPath', 'RunId', 'ExternalSessionsPath', 'ExternalSessionsHash')) {
+    foreach ($name in @('ManifestPath', 'RunId', 'ExternalSessionsPath', 'ExternalSessionsHash',
+            'Q4SharedDescriptorPath', 'Q4SharedDescriptorSha256')) {
         if ($targetParameters.ContainsKey($name)) {
             [void]$commandParts.Add("-$name")
             [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value ([string]$targetParameters[$name])))

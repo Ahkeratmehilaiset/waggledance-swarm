@@ -25,6 +25,8 @@ param(
   [string] $ExpectedManifestHash = '',
   [string] $ExternalSessionsPath = '',
   [string] $ExternalSessionsHash = '',
+  [string] $Q4SharedDescriptorPath = '',
+  [string] $Q4SharedDescriptorSha256 = '',
   [switch] $DryRun,
   [switch] $CheckManagedAdmission,
   [switch] $RecoverInteractive,
@@ -206,6 +208,50 @@ function Read-Utf8LaneSnapshot {
     $text = $text.Substring(1)
   }
   return [pscustomobject]@{ Hash = $hash; Text = $text }
+}
+
+function Get-WdLaneSharedQ4Reference {
+  # Configuration hint only: operator authentication, session ownership,
+  # data verification and the actual query remain outside this function.
+  param([string] $DescriptorPath, [string] $DescriptorSha256, [string] $FleetPath,
+    [string] $DeploymentManifestPath, [string] $ExpectedManifestSha256,
+    [string] $BundleRoot, [string] $TrustedRoot, [string] $Lane)
+  if ($DescriptorPath -ceq '' -and $DescriptorSha256 -ceq '') { return $null }
+  try {
+    if (-not $DescriptorPath -or $DescriptorSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $ExpectedManifestSha256 -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'invalid' }
+    [void](Assert-LanePathWithoutReparse -Path $DeploymentManifestPath -TrustedRoot $TrustedRoot -ExpectedType Leaf)
+    [void](Assert-LanePathWithoutReparse -Path $FleetPath -TrustedRoot $TrustedRoot -ExpectedType Leaf)
+    if (-not [IO.Path]::GetFullPath($FleetPath).Equals(
+      [IO.Path]::GetFullPath((Join-Path $BundleRoot 'wd-fleet.json')), [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'invalid'
+    }
+    $manifest = Read-Utf8LaneSnapshot -Path $DeploymentManifestPath
+    if ($manifest.Hash -cne $ExpectedManifestSha256.ToUpperInvariant()) { throw 'invalid' }
+    $deployment = $manifest.Text | ConvertFrom-Json -ErrorAction Stop
+    $fleetPin = $deployment.files.PSObject.Properties['wd-fleet.json']
+    $helperPin = $deployment.files.PSObject.Properties['Get-WdQ4SharedSessionConfig.ps1']
+    if ($null -eq $fleetPin -or $null -eq $helperPin -or
+        [string]$fleetPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+        [string]$helperPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'invalid' }
+    $fleet = Read-Utf8LaneSnapshot -Path $FleetPath
+    if ($fleet.Hash -cne ([string]$fleetPin.Value).ToUpperInvariant()) { throw 'invalid' }
+    $helper = Join-Path $BundleRoot 'Get-WdQ4SharedSessionConfig.ps1'
+    [void](Assert-LanePathWithoutReparse -Path $helper -TrustedRoot $TrustedRoot -ExpectedType Leaf)
+    $helperSnapshot = Read-Utf8LaneSnapshot -Path $helper
+    if ($helperSnapshot.Hash -cne ([string]$helperPin.Value).ToUpperInvariant() -or
+        (Get-FileHash -LiteralPath $DeploymentManifestPath -Algorithm SHA256).Hash -cne $ExpectedManifestSha256.ToUpperInvariant()) {
+      throw 'invalid'
+    }
+    . ([scriptblock]::Create([string]$helperSnapshot.Text))
+    $validated = Get-WdQ4SharedSessionConfig -FleetPath $FleetPath -FleetSha256 $fleet.Hash.ToLowerInvariant() `
+      -DescriptorPath $DescriptorPath -DescriptorSha256 $DescriptorSha256 -Lane $Lane -Enabled
+    if ($null -eq $validated -or [string]$validated.lane -cne $Lane) { throw 'invalid' }
+    return [pscustomobject]@{
+      WD_Q4_SHARED_DESCRIPTOR_PATH = $DescriptorPath
+      WD_Q4_SHARED_DESCRIPTOR_SHA256 = $DescriptorSha256
+    }
+  } catch { throw 'q4_shared_reference_refused' }
 }
 
 function Read-NonEmptyFile {
@@ -1935,6 +1981,11 @@ if ($null -ne $q4Property) {
   }
 }
 # Q4 configuration only: end
+$q4SharedValues = Get-WdLaneSharedQ4Reference -DescriptorPath $Q4SharedDescriptorPath `
+  -DescriptorSha256 $Q4SharedDescriptorSha256 -FleetPath $ManifestPath `
+  -DeploymentManifestPath $fixedDeploymentManifest -ExpectedManifestSha256 $script:LaneManifestAnchor `
+  -BundleRoot $PSScriptRoot -TrustedRoot $laneTrustedDrive -Lane $Agent
+if ($null -ne $q4Values -and $null -ne $q4SharedValues) { throw 'q4_config_conflict' }
 if ([int]$manifest.schema_version -ne 2) {
   throw "unsupported fleet manifest schema: $($manifest.schema_version)"
 }
@@ -2804,6 +2855,12 @@ if ($null -ne $q4Values) {
     }
     [Environment]::SetEnvironmentVariable($q4Value.Name, [string]$q4Value.Value, 'Process')
   }
+}
+if ($null -ne $q4SharedValues) {
+  # A validated reference is only a hint to a future separately pinned adapter.
+  # It does not authenticate an operator or attest a running Mind connection.
+  [Environment]::SetEnvironmentVariable('WD_Q4_SHARED_DESCRIPTOR_PATH', [string]$q4SharedValues.WD_Q4_SHARED_DESCRIPTOR_PATH, 'Process')
+  [Environment]::SetEnvironmentVariable('WD_Q4_SHARED_DESCRIPTOR_SHA256', [string]$q4SharedValues.WD_Q4_SHARED_DESCRIPTOR_SHA256, 'Process')
 }
 $env:WD_AGENT_PROMPT_FILE = [string]$lane.prompt
 $env:WD_AGENT_RESTART_HANDOFF = [string]$manifest.state_precedence.current_handoff

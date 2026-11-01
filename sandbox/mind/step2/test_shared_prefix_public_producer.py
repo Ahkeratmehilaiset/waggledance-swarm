@@ -331,11 +331,16 @@ def test_a_refused_fenced_commit_reports_unknown_and_keeps_the_intent(tmp_path, 
             mod.publish_public_prefix(enabled=True, request=request)
     assert error.value.__context__ is None and error.value.__cause__ is None
     assert not (root / "q4-latest.json").exists()
-    records = _fence_files(root)
-    assert len(records) == 1 and records[0].endswith(".not_landed.json")
+    # A failed commit resolves nothing (the fence may be shared): fence and intent both stay UNKNOWN.
+    assert _fence_files(root) == ["q4-prefix-fence.json"]
     assert (chain.private / ps._PENDING).exists()  # intent kept, never closed or retried
     with pytest.raises(mod.PrefixProducerRefused, match="^private_state_refused$"):
         mod.publish_public_prefix(enabled=True, request=request)  # the open intent blocks the next publication
+    # External reconciliation, with this single writer proven finished: not_landed, fence removed, intent kept.
+    with _private_state(chain) as state:
+        assert state.resolve_intent(enabled=True) == "not_landed"
+    records = _fence_files(root)
+    assert len(records) == 1 and records[0].endswith(".not_landed.json")
     # A contradictory extra record is refused, never resolved.
     (root / records[0].replace(".not_landed.", ".landed.")).write_bytes((root / records[0]).read_bytes())
     with _private_state(chain) as state:
@@ -382,6 +387,8 @@ def test_an_old_writer_landing_after_not_landed_is_refused_with_the_intent_kept(
             mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
     args, kwargs = captured[0]
     assert kwargs["fenced"] is True and kwargs["expected_attempt_sha256"]
+    with _private_state(chain) as state:  # external reconciliation, the single writer proven finished
+        assert state.resolve_intent(enabled=True) == "not_landed"
     kwargs = {key: value for key, value in kwargs.items() if key != "fenced"}
     with monkeypatch.context() as old_process:  # an already-running OLD writer ignores the gate
         old_process.setattr(mod.checkpoint, "_fence_gate", lambda *a: None)
@@ -590,6 +597,9 @@ def test_not_landed_unfences_the_pointer_and_a_later_writer_strands_the_kept_int
                       lambda *a, **k: (_ for _ in ()).throw(mod.checkpoint.CheckpointRefused("checkpoint_refused")))
         with pytest.raises(mod.PrefixProducerRefused, match="^publication_state_unknown$"):
             mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
+    assert _fence_files(root) == ["q4-prefix-fence.json"] and _pending(chain)  # nothing resolved by the producer
+    with _private_state(chain) as state:  # external reconciliation, the single writer proven finished
+        assert state.resolve_intent(enabled=True) == "not_landed"
     records = _fence_files(root)
     assert len(records) == 1 and records[0].endswith(".not_landed.json") and _pending(chain)  # no fence any more
     other = tmp_path / "other-private"
@@ -772,3 +782,77 @@ def test_a_begin_failure_before_opening_anything_leaves_a_foreign_live_fence(tmp
     assert seen["after_b"] == ["q4-prefix-fence.json"]  # never resolved by B
     assert sorted((p.name, p.read_bytes()) for p in other.iterdir() if p.is_file() and p.name in dict(b_files)) == b_files
     assert a["status"] == "PUBLISHED_GENESIS" and a["pointer_sha256"] == _sha_file(root / "q4-latest.json")
+
+
+# --- v5: a failed commit never resolves a fence that another root may share -----------------------------------------
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
+@pytest.mark.parametrize("path", ["genesis", "empty"])
+def test_b_adopts_creates_its_intent_and_fails_its_commit_while_a_still_lands(tmp_path, monkeypatch, path):
+    from sandbox.mind.step2 import prefix_private_state as ps
+    chain = _fenced_chain(tmp_path)
+    mod, root = chain.mod, chain.root
+    first, _, kw_a, start = chain.delta(chain.f.PUBLIC_EVENTS)
+    other = tmp_path / "other-private"
+    other.mkdir()
+    if path == "genesis":
+        name, prior, prior_prefix, kw, candidate = "commit_prefix_genesis", None, start, kw_a, first["candidate_prefix"]
+        status, generation = "PUBLISHED_GENESIS", "gen-a"
+    else:
+        a0 = mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
+        prior, prior_prefix = a0["pointer_sha256"], first["candidate_prefix"]
+        with ps.locked_state(other, root, enabled=True) as state_b:  # B preseeded on the identical prefix
+            state_b.begin(None)
+            state_b.commit(None, prior, prior_prefix)
+        empty, _, kw, _ = chain.delta([chain.f.event(agent="claude-rco-1")], prior_prefix.cursor, prior_prefix)
+        name, candidate, status, generation = "advance_prefix_empty", empty["candidate_prefix"], "EMPTY_ADVANCED", "unused"
+    real = getattr(mod.checkpoint, name)
+    seen = {}
+
+    def b_commit_fails(*args, **kwargs):
+        raise mod.checkpoint.CheckpointRefused("B commit refused before any pointer change")
+
+    def a_held(*args, **kwargs):  # A holds fence + intent after begin_intent, before its commit
+        attempt = kwargs["expected_attempt_sha256"]
+        request_b = chain.request(kw, prior_prefix, prior, generation, private=other)
+        with ps.locked_state(other, root, enabled=True) as state_b:
+            try:  # B adopts the SAME binding and creates its own intent for real, then its commit fails
+                mod._publish_fenced(request_b, state_b, attempt, candidate, status, None, b_commit_fails, (), {})
+            except mod.PrefixProducerRefused as refused:
+                seen["b_token"] = str(refused)
+        seen["after_b"] = [n for n in _fence_files(root) if not n.endswith(".landed.json")]
+        seen["b_pending"] = (other / ps._PENDING).exists()
+        return real(*args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(mod.checkpoint, name, a_held)
+        request_a = chain.request(kw, prior_prefix, prior, generation)
+        try:
+            a = mod.publish_public_prefix(enabled=True, request=request_a)
+        except mod.PrefixProducerRefused as refused:
+            a = {"status": str(refused)}
+    assert seen["b_token"] == "publication_state_unknown" and seen["b_pending"] is True
+    assert seen["after_b"] == ["q4-prefix-fence.json"]  # B resolved nothing: A's live fence survived
+    assert a["status"] == status and a["pointer_sha256"] == _sha_file(root / "q4-latest.json")
+    with _private_state(chain) as state:
+        assert state.load(a["pointer_sha256"]) == candidate
+    # External reconciliation of B, only after every writer on the binding finished: B's intent lands consistently.
+    with ps.locked_state(other, root, enabled=True) as state_b:
+        assert state_b.resolve_intent(enabled=True) == "landed"
+    with ps.locked_state(other, root, enabled=True) as state_b:
+        assert state_b.load(a["pointer_sha256"]) == candidate
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
+def test_a_commit_that_returns_without_landing_is_not_trusted(tmp_path, monkeypatch):
+    from sandbox.mind.step2 import prefix_private_state as ps
+    chain = _fenced_chain(tmp_path)
+    mod, root = chain.mod, chain.root
+    first, _, kw_a, start = chain.delta(chain.f.PUBLIC_EVENTS)
+    with monkeypatch.context() as patch:  # a faulty commit claims success but writes nothing
+        patch.setattr(mod.checkpoint, "commit_prefix_genesis",
+                      lambda *a, **k: {"status": "committed", "pointer_sha256": k["expected_attempt_sha256"]})
+        with pytest.raises(mod.PrefixProducerRefused, match="^publication_state_unknown$"):
+            mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
+    assert not (root / "q4-latest.json").exists() and _pending(chain)  # resolution said not_landed: never a report
+    records = _fence_files(root)
+    assert len(records) == 1 and records[0].endswith(".not_landed.json")

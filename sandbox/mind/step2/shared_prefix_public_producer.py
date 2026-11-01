@@ -8,8 +8,9 @@ This primitive never reads live data unless explicitly invoked with caller paths
 never installs or deletes, and never includes a prefix digest in its report.
 request.fenced=True (opt-in, default off) publishes through the private intent and
 the checkpoint fence; only a resolved "landed" reports, any Exception reports
-publication_state_unknown (which can mean landed; a fence left by a failed begin is
-never closed here). KeyboardInterrupt/SystemExit propagate unchanged: the
+publication_state_unknown (which can mean landed; after a failed begin or commit the
+possibly shared fence is never resolved here, and external reconciliation must first
+prove every writer on that binding finished). KeyboardInterrupt/SystemExit propagate unchanged: the
 caller quarantines both roots and never retries (states in _publish_fenced). It
 fences cooperating writers only.
 """
@@ -335,17 +336,21 @@ def _publish_prepared(request, state, result, projection, tasks, previous, *, ca
 def _publish_fenced(request, state, attempt, candidate, status, generation, commit, args, kwargs):
     """Opt-in fenced route: durable intent + fence for exactly prior -> attempt, fenced commit, resolution.
 
-    The commit result is not trusted: resolution under the checkpoint lock decides. Only "landed" reports.
-    Every Exception reports publication_state_unknown, never retried here, and that token can mean landed:
-    - from begin_intent: nothing is cleaned up. A fence carries no owner and another private root may have
-      adopted the same binding and still be running, so exclusive ownership cannot be proven; the fence is
-      left UNKNOWN for reconciliation (an open fence without an intent refuses every cooperating writer until
-      it is resolved by hand with its own binding); a slot begin_intent may have created stays pending;
-    - from the commit: resolution still runs; "not_landed" removes the fence, KEEPS the intent and leaves the
-      pointer unfenced, so a later writer can move it and strand the intent (resolution then refuses);
-    - from resolution: it can fail after mutating state (outcome record linked, fence removed, private state
-      replaced, slot not yet removed) with the pointer already at the attempt; a rerun of resolve_intent
-      decides, or refuses.
+    Resolution runs only after the commit returned normally; it then decides under the checkpoint lock (the
+    commit result itself is not trusted). Only "landed" reports. A fence carries no owner, and another private
+    root may adopt the same binding and still be running, so exclusive ownership is never proven here and a
+    possibly shared fence is never resolved after a failure. Every Exception reports publication_state_unknown,
+    never retried here, and that token can mean landed:
+    - from begin_intent: nothing is cleaned up; the fence is left UNKNOWN (an open fence without an intent
+      refuses every cooperating writer); a slot begin_intent may have created stays pending;
+    - from the commit: nothing is resolved; fence and intent stay UNKNOWN (the pointer may or may not have
+      moved);
+    - from resolution after a returned commit: it can fail after mutating state (outcome record linked, fence
+      removed, private state replaced, slot not yet removed) with the pointer already at the attempt.
+    External reconciliation (resolve_intent, resolve_prefix_fence) is unsafe on a matching binding alone: first
+    prove that every writer that may hold that binding, in any private root, has finished, or prove exclusive
+    ownership; otherwise the state stays UNKNOWN. Resolving to not_landed removes the fence, keeps the intent
+    and leaves the pointer unfenced, so a later writer can move it and strand the intent (resolution refuses).
     KeyboardInterrupt, SystemExit and every other non-Exception propagate unchanged with no cleanup. The caller
     must quarantine both roots as publication unknown and never retry. Besides an open fence with no intent,
     fence + intent, or a recorded outcome with the intent kept, an interrupt can end inside any filesystem
@@ -365,11 +370,12 @@ def _publish_fenced(request, state, attempt, candidate, status, generation, comm
         try:
             commit(*args, expected_attempt_sha256=attempt, fenced=True, **kwargs)
         except Exception:
-            pass  # landed or not is decided only by the resolution below
-        try:
-            outcome = state.resolve_intent(enabled=True)
-        except Exception:
-            pass
+            pass  # resolve nothing: another root may share this fence and still be running
+        else:
+            try:
+                outcome = state.resolve_intent(enabled=True)
+            except Exception:
+                pass
         if outcome == "landed":
             return _report(status, attempt, generation)
     _fail("publication_state_unknown")

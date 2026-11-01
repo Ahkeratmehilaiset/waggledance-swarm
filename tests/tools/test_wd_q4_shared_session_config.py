@@ -78,9 +78,20 @@ def test_pinned_complete_descriptor_yields_exact_lane_and_cli_inputs(tmp_path, l
     assert "query" not in result["value"]
 
 
+@pytest.mark.parametrize("lane", LANES)
+def test_one_lane_pilot_allows_only_the_selected_lane(tmp_path, lane):
+    change = lambda d: d.update(lanes=[lane])
+    other = "fable-5" if lane != "fable-5" else "codex-lead-1"
+    assert run(tmp_path, mutate=change, lane=lane)["ok"]
+    assert not run(tmp_path, mutate=change, lane=other)["ok"]
+
+
 @pytest.mark.parametrize("change", [lambda d: d.pop("binding_sha256"),
                                     lambda d: d.update(query="no"),
                                     lambda d: d.update(lanes=["fable-5"]),
+                                    lambda d: d.update(lanes=[]),
+                                    lambda d: d.update(lanes=["codex-lead-1", "codex-lead-1"]),
+                                    lambda d: d.update(lanes=["codex-lead-1", "unknown"]),
                                     lambda d: d.update(timeout_seconds=1801),
                                     lambda d: d.update(interpreter_sha256="x" * 64),
                                     lambda d: d.update(snapshot_path="relative"),

@@ -78,8 +78,9 @@ def _cli_arguments(options, cli):
     if type(document) is not dict or set(document) != _KEYS or document["schema"] != "wd.q4-shared-session-config.v1":
         raise ValueError()
     lanes = document["lanes"]
-    if (type(lanes) is not list or len(lanes) != 5 or any(type(x) is not str for x in lanes)
-            or frozenset(lanes) != _LANES):
+    if (type(lanes) is not list or not 1 <= len(lanes) <= len(_LANES)
+            or any(type(x) is not str for x in lanes) or len(set(lanes)) != len(lanes)
+            or not set(lanes).issubset(_LANES) or options["lane"] not in lanes):
         raise ValueError()
     for key in _HASHES:
         if type(document[key]) is not str or _HEX.fullmatch(document[key]) is None:

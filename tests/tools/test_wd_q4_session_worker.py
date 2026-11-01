@@ -54,8 +54,11 @@ def test_default_off_neither_reads_stdin_nor_runs_cli(monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
-def test_synthetic_chain_binds_pins_and_passes_one_bounded_input(case, monkeypatch, capsys):
+@pytest.mark.parametrize("single_lane", [False, True])
+def test_synthetic_chain_binds_pins_and_passes_one_bounded_input(case, monkeypatch, capsys, single_lane):
     doc, flags, old, args = case
+    if single_lane:
+        doc["lanes"] = [flags["lane"]]
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"synthetic situation\n"), encoding="utf-8"))
     assert worker.main(args()) == 0
     captured = capsys.readouterr()
@@ -65,9 +68,27 @@ def test_synthetic_chain_binds_pins_and_passes_one_bounded_input(case, monkeypat
     assert "synthetic situation" not in captured.out + captured.err
 
 
+@pytest.mark.parametrize("lane", ["codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"])
+def test_one_lane_pilot_allows_only_the_selected_lane(case, monkeypatch, capsys, lane):
+    from tools import wd_q4_lane_session_cli as cli
+    doc, _, _, args = case
+    doc["lanes"] = [lane]
+    monkeypatch.setattr(cli, "main", lambda argv: 7)
+    selected = args()
+    selected[selected.index("--lane") + 1] = lane
+    assert worker.main(selected) == 7
+    other = args()
+    other[other.index("--lane") + 1] = "fable-5" if lane != "fable-5" else "codex-lead-1"
+    assert worker.main(other) == 2
+    assert capsys.readouterr().out == ""
+
+
 @pytest.mark.parametrize("change", [lambda d: d.pop("binding_sha256"),
                                     lambda d: d.update(extra="bad"),
-                                    lambda d: d.update(lanes=["codex-lead-1"]),
+                                    lambda d: d.update(lanes=["fable-5"]),
+                                    lambda d: d.update(lanes=[]),
+                                    lambda d: d.update(lanes=["codex-lead-1", "codex-lead-1"]),
+                                    lambda d: d.update(lanes=["codex-lead-1", "unknown"]),
                                     lambda d: d.update(timeout_seconds=1801),
                                     lambda d: d.update(fleet_sha256="0" * 64)])
 def test_invalid_closed_descriptor_refuses_before_reading_query(case, monkeypatch, capsys, change):

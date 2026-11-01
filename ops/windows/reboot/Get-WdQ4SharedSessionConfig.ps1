@@ -91,9 +91,11 @@ function Get-WdQ4SharedSessionConfig {
         foreach ($p in $doc.PSObject.Properties) { if ($required -cnotcontains $p.Name) { throw 'shared_schema_refused' } }
         foreach ($key in $required) { if ($null -eq $doc.PSObject.Properties[$key]) { throw 'shared_schema_refused' } }
         if ($doc.schema -isnot [string] -or $doc.schema -cne 'wd.q4-shared-session-config.v1' -or
-            $doc.fleet_sha256 -cne $FleetSha256 -or $doc.lanes -isnot [Array] -or $doc.lanes.Count -ne 5) { throw 'shared_schema_refused' }
+            $doc.fleet_sha256 -cne $FleetSha256 -or $doc.lanes -isnot [Array] -or
+            $doc.lanes.Count -lt 1 -or $doc.lanes.Count -gt 5) { throw 'shared_schema_refused' }
         $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach ($entry in $doc.lanes) { if ($entry -isnot [string] -or $known -cnotcontains $entry -or -not $seen.Add($entry)) { throw 'shared_lane_refused' } }
+        if (-not $seen.Contains($Lane)) { throw 'shared_lane_refused' }
         if ($null -eq $fleet.PSObject.Properties['lanes'] -or $fleet.PSObject.Properties['lanes'].Name -cne 'lanes' -or
             $null -eq $fleet.PSObject.Properties['tools_supervisor'] -or $fleet.PSObject.Properties['tools_supervisor'].Name -cne 'tools_supervisor' -or
             $fleet.lanes -isnot [Array] -or $fleet.lanes.Count -ne 4 -or $fleet.tools_supervisor -isnot [pscustomobject]) { throw 'shared_lane_refused' }

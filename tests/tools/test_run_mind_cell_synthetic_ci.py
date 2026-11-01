@@ -20,6 +20,7 @@ ACTIVE_BINDING_PATH = "sandbox/mind/step2/test_verified_snapshot_active_binding.
 PROJECTION_BINDING_PATH = "sandbox/mind/step2/test_verified_snapshot_projection_binding.py"
 PREFLIGHT_PATH = "sandbox/mind/step2/test_memory_snapshot_preflight.py"
 Q4_SNAPSHOT_PATH = "sandbox/mind/step2/test_wd_q4_private_read_snapshot.py"
+PUBLIC_QUERY_PATH = "sandbox/mind/step2/test_public_snapshot_query_stub.py"
 
 
 def test_runner_requires_all_memory_preflight_witnesses():
@@ -51,7 +52,8 @@ def test_runner_requires_all_memory_preflight_witnesses():
 
 
 @pytest.mark.parametrize("path,count", [(Q4_DESCRIPTOR_PATH, 13), (ACTIVE_BINDING_PATH, 15),
-                                        (PROJECTION_BINDING_PATH, 9), (Q4_SNAPSHOT_PATH, 12)])
+                                        (PROJECTION_BINDING_PATH, 9), (Q4_SNAPSHOT_PATH, 12),
+                                        (PUBLIC_QUERY_PATH, 4)])
 def test_runner_requires_all_new_witnesses(path, count):
     runner = load_runner()
     nodes = [node for node in runner.EXPECTED_NODEIDS if node.startswith(path + "::")]
@@ -345,7 +347,7 @@ def test_runner_propagates_pytest_failure_and_preserves_environment(monkeypatch)
                            str(ROOT / PREFLIGHT_PATH),
                            str(ROOT / VERIFIED_PATH), str(ROOT / Q4_DESCRIPTOR_PATH),
                            str(ROOT / ACTIVE_BINDING_PATH), str(ROOT / PROJECTION_BINDING_PATH),
-                           str(ROOT / Q4_SNAPSHOT_PATH), "-q"]
+                           str(ROOT / Q4_SNAPSHOT_PATH), str(ROOT / PUBLIC_QUERY_PATH), "-q"]
 
 
 def test_required_d15_hook_cannot_be_silently_omitted(monkeypatch):

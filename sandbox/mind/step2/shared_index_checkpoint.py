@@ -847,6 +847,122 @@ def read_verified_snapshot_checkpoint(*, pointer_bytes, expected_pointer_sha256,
     _refuse()
 
 
+def query_public_snapshot(*, pointer_bytes=None, expected_pointer_sha256=None, approved_tasks=None,
+                          policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
+                          expected_public_policy_sha256=None, active_artifact_bytes=None,
+                          cell_snapshots=None, history_bytes=None, public_policy_bytes=None,
+                          expected_source_sha256=None, expected_encoder_sha256=None,
+                          query_bytes=None, model_dir=None, expected_runtime_revision=None, enabled=False):
+    """Query an opt-in pinned byte snapshot and return only approved projected metadata.
+
+    Experimental in-process primitive, not a production or transport boundary.
+    No filesystem checkpoint fallback, lane authentication, source or publisher
+    authentication, freshness, native-allocation bound, model-asset pinning,
+    backend stdout/stderr containment or same-user isolation is provided. The
+    caller independently authenticates the tuple and model, obtains a coherent
+    snapshot and holds any required lock. Cell/projection equality does not
+    establish that vectors were computed from those texts by the declared
+    encoder, nor establish recall or semantic relevance. The byte snapshots
+    are deserialized twice: once to validate the cells against the public
+    projection, once inside the existing Q4 reader. BaseException and process
+    isolation remain the responsibility of the containing runtime. The local
+    wall-clock future-time check is not an authenticated clock or a freshness
+    guarantee.
+    Projected references are noncanonical; they are not raw bridge event IDs.
+    """
+    if enabled is False:
+        return {"status": "OFF"}
+    pointer = active = frozen_history = frozen_cells = memory_doc = opened = descriptor = None
+    tasks = roster = mode = projection = private = clean = query_time = result = binding = query_instant = None
+    try:
+        import datetime as dt
+        import io
+        from sandbox.mind.step2 import memory, shared_capture_adapter as adapter
+        from sandbox.mind.step2 import shared_result_resolver as resolver, wd_q4_private_read as reader
+        if (enabled is not True or type(query_bytes) is not bytes or not query_bytes
+                or len(query_bytes) > reader.STDIN_BUDGET or type(model_dir) is not str or not model_dir
+                or type(expected_runtime_revision) is not str or not expected_runtime_revision):
+            _refuse()
+        tasks, roster = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+        if type(approved_tasks) is not frozenset or approved_tasks != tasks:
+            _refuse()
+        mode = _requested_source_mode("public-v1", expected_public_policy_sha256)
+        pointer = _parse_pointer_snapshot(pointer_bytes, expected_pointer_sha256=expected_pointer_sha256,
+                                          policy_sha=policy_sha256, roster_sha=roster_sha256,
+                                          prefix_required=True)
+        active = _bind_active_artifact_bytes(active_artifact_bytes, expected_hashes=pointer["artifacts"], enabled=True)
+        frozen_history = _freeze_history_snapshot(history_bytes)
+        frozen_cells, cell_size = _copy_snapshot_cells(cell_snapshots)
+        total = (len(pointer_bytes) + len(policy_bytes) + len(roster_bytes) + cell_size
+                 + sum(len(active.read(name)) for name in ARTIFACTS.values())
+                 + sum(map(len, frozen_history.values())))
+        if total > _MAX_VERIFIED_SNAPSHOT_BYTES:
+            _refuse()
+        _validate_pointer_history(None, pointer_bytes, pointer, tasks, roster, policy_sha256, roster_sha256,
+                                  policy_bytes=policy_bytes, roster_bytes=roster_bytes, expected_source_mode=mode,
+                                  prefix_required=True, snapshot_bytes=frozen_history)
+        _preflight_public_snapshot(pointer, active, tasks, roster, public_policy_bytes=public_policy_bytes,
+                                   public_policy_sha256=expected_public_policy_sha256,
+                                   expected_source_sha256=expected_source_sha256,
+                                   expected_encoder_sha256=expected_encoder_sha256)
+        descriptor = reader.read_descriptor_bytes(active.read(ARTIFACTS["descriptor_sha256"]),
+                                                   pointer["artifacts"]["descriptor_sha256"])
+        if descriptor["encoder"]["revision"] != expected_runtime_revision:
+            _refuse()
+        query_time = reader.read_query(io.BytesIO(query_bytes))[1]
+        if re.search(r"[.,]\d{7,}", query_time):
+            _refuse()
+        query_instant = reader.corpus_mod.parse_utc(query_time)
+        if query_instant is None or query_instant > dt.datetime.now(dt.timezone.utc):
+            _refuse()
+        memory_doc = active.read(ARTIFACTS["memory_sha256"])
+        projection = _parse(active.read(ARTIFACTS["projection_sha256"]))
+        # Deserialize only after controls/public policy are bound, then compare
+        # every cell row and text to the exact approved projection. The reader
+        # subsequently receives the same copied bytes, never a fresh path read.
+        opened = memory.Memory.from_snapshots(manifest_bytes=memory_doc,
+            expected_sha256=pointer["artifacts"]["memory_sha256"], cell_snapshots=frozen_cells, enabled=True)
+        reader._validate_bound_memory(opened, descriptor)
+        if not opened.views or set(opened.views) != set(opened.memory.get("cells", {})):
+            _refuse()
+        if any(not view.healthy for view in opened.views.values()):
+            _refuse()
+        _validate_projection_cell_views(projection, opened)
+        private = reader.private_read_snapshot(descriptor_bytes=active.read(ARTIFACTS["descriptor_sha256"]),
+            descriptor_sha256=pointer["artifacts"]["descriptor_sha256"], manifest_bytes=memory_doc,
+            expected_memory_sha256=pointer["artifacts"]["memory_sha256"], cell_snapshots=frozen_cells,
+            stream=io.BytesIO(query_bytes), model_dir=model_dir,
+            expected_runtime_revision=expected_runtime_revision, enabled=True)
+        binding = private.get("binding")
+        if (private.get("status") not in ("ANSWER", "ABSTAIN", "DEGRADED") or type(binding) is not dict
+                or binding.get("memory_sha256") != pointer["artifacts"]["memory_sha256"]
+                or binding.get("descriptor_sha256") != pointer["artifacts"]["descriptor_sha256"]
+                or binding.get("encoder") != descriptor["encoder"] or type(private.get("results")) is not list):
+            _refuse()
+        keys = ("ref_sha256", "doc_id_sha256", "ref_kind", "canonical_event")
+        clean = [{key: item[key] for key in keys} for item in private["results"]]
+        if (private["status"] == "ANSWER" and not clean) or (private["status"] == "ABSTAIN" and clean):
+            _refuse()
+        result = resolver.resolve_results(memory_manifest=memory_doc,
+            expected_memory_sha256=pointer["artifacts"]["memory_sha256"],
+            projection_bytes=active.read(ARTIFACTS["projection_sha256"]), results=clean, query_utc=query_time,
+            approved_tasks=tasks, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+            roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+        return {"status": private["status"], "results": result, "source_authentication": "UNKNOWN",
+                "freshness": "UNKNOWN"}
+    except Exception:
+        pass
+    finally:
+        # Clear this frame even on KeyboardInterrupt/SystemExit; a backend's
+        # own frames, OS logs and native stdout/stderr remain outside scope.
+        del pointer_bytes, policy_bytes, roster_bytes, active_artifact_bytes, cell_snapshots, history_bytes, query_bytes
+        del pointer, active, frozen_history, frozen_cells, memory_doc, opened, descriptor, tasks, roster, mode
+        del projection, private, clean, query_time, result, binding, query_instant, public_policy_bytes, model_dir
+        del approved_tasks, expected_pointer_sha256, policy_sha256, roster_sha256, expected_public_policy_sha256
+        del expected_source_sha256, expected_encoder_sha256, expected_runtime_revision, enabled
+    _refuse()
+
+
 def read_verified_pointer(root, approved_tasks, *, expected_pointer_sha256,
                           policy_bytes, policy_sha256, roster_bytes, roster_sha256,
                           expected_mode="legacy", expected_public_policy_sha256=None):

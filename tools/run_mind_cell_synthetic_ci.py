@@ -1,8 +1,8 @@
 """Run only synthetic cell witnesses with a process-local, fail-fast FAISS stub.
 
-This is not a native FAISS, deployment, model, or production test. The snapshot
-checkpoint API always refuses; its refusal tests do not demonstrate a working
-public API or prove each semantic mismatch was detected. Invoke as
+This is not a native FAISS, deployment, real-model, or production test. The
+checkpoint preflight refuses; the separate opt-in query uses synthetic inputs.
+Invoke as
 a separate Python process; inherited pytest hook settings and WD pins remain
 untouched. The expected node IDs are deliberately frozen against truncation.
 """
@@ -22,6 +22,7 @@ Q4_DESCRIPTOR_TEST_PATH = "sandbox/mind/step2/test_q4_descriptor.py"
 ACTIVE_BINDING_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_active_binding.py"
 PROJECTION_BINDING_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_projection_binding.py"
 Q4_SNAPSHOT_TEST_PATH = "sandbox/mind/step2/test_wd_q4_private_read_snapshot.py"
+PUBLIC_QUERY_TEST_PATH = "sandbox/mind/step2/test_public_snapshot_query_stub.py"
 _NAMES = (
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-meta]",
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-provenance]",
@@ -187,6 +188,12 @@ _Q4_SNAPSHOT_NAMES = (
     "test_failure_does_not_retain_query_or_backend_exception",
     *(f"test_snapshot_enforces_legacy_scope_and_cell_encoder_before_read[{fault}]" for fault in ("row", "encoder")),
 )
+_PUBLIC_QUERY_NAMES = (
+    "test_public_snapshot_query_is_off_by_default",
+    "test_public_snapshot_query_returns_only_approved_synthetic_projection",
+    "test_public_snapshot_query_refuses_wrong_pointer_pin",
+    "test_public_snapshot_query_refuses_inconsistent_projection",
+)
 _MEMORY_PREFLIGHT_NAMES = (
     *(f"test_second_cell_hash_mismatch_refused_before_first_cell_load[{name}]"
       for name in ("index", "meta", "provenance", "vectors")),
@@ -205,7 +212,8 @@ EXPECTED_NODEIDS = (tuple(TEST_PATH + "::" + name for name in _NAMES) +
                     tuple(Q4_DESCRIPTOR_TEST_PATH + "::" + name for name in _Q4_DESCRIPTOR_NAMES) +
                     tuple(ACTIVE_BINDING_TEST_PATH + "::" + name for name in _ACTIVE_BINDING_NAMES) +
                     tuple(PROJECTION_BINDING_TEST_PATH + "::" + name for name in _PROJECTION_BINDING_NAMES) +
-                    tuple(Q4_SNAPSHOT_TEST_PATH + "::" + name for name in _Q4_SNAPSHOT_NAMES))
+                    tuple(Q4_SNAPSHOT_TEST_PATH + "::" + name for name in _Q4_SNAPSHOT_NAMES) +
+                    tuple(PUBLIC_QUERY_TEST_PATH + "::" + name for name in _PUBLIC_QUERY_NAMES))
 
 
 def _unavailable(*_args, **_kwargs):
@@ -262,7 +270,7 @@ def _run_pytest(pytest):
                             str(ROOT / MEMORY_PREFLIGHT_TEST_PATH),
                             str(ROOT / VERIFIED_TEST_PATH), str(ROOT / Q4_DESCRIPTOR_TEST_PATH),
                             str(ROOT / ACTIVE_BINDING_TEST_PATH), str(ROOT / PROJECTION_BINDING_TEST_PATH),
-                            str(ROOT / Q4_SNAPSHOT_TEST_PATH),
+                            str(ROOT / Q4_SNAPSHOT_TEST_PATH), str(ROOT / PUBLIC_QUERY_TEST_PATH),
                             "-q"], plugins=[guard]))
     return 1 if code == 0 and not guard.complete() else code
 
@@ -272,7 +280,7 @@ def main():
         return 2
     sys.path.insert(0, str(ROOT))
     sys.modules["faiss"] = _fake_faiss()
-    print("Synthetic FAISS only; snapshot checkpoint always refuses: no public API or semantic-coverage proof.")
+    print("Synthetic FAISS and encoder only; no real model, source authentication, or production proof.")
     import pytest
     return _run_pytest(pytest)
 

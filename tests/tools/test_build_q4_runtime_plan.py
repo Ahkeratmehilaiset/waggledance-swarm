@@ -207,6 +207,41 @@ def test_model_weights_mismatch_refuses(case):
     refused({**kwargs, "expected_weights_sha256": sha(b"other")}, "model_weights_mismatch")
 
 
+@pytest.mark.parametrize("tree", ["site", "model"])
+def test_unexpected_tree_member_refuses_before_any_tree_file_is_opened(case, monkeypatch, tree):
+    kwargs, _, site, model = case
+    expected_site_pins = {
+        "pkg/__init__.py": {"size": 0, "sha256": sha(b"")},
+        "pkg/mod.py": {"size": 6, "sha256": sha(b"X = 2\n")},
+    }
+    kwargs["expected_site_pins"] = expected_site_pins
+    (site if tree == "site" else model).joinpath("unexpected.bin").write_bytes(b"synthetic")
+    monkeypatch.setattr(plan_mod, "_hash_bounded", lambda *a, **k: pytest.fail("tree file opened before membership check"))
+    refused(kwargs, "site_pin_mismatch" if tree == "site" else "model_membership_mismatch")
+
+
+def test_member_added_after_precheck_refuses_before_opening_it(case, monkeypatch):
+    kwargs, _, site, _ = case
+    kwargs["expected_site_pins"] = {
+        "pkg/__init__.py": {"size": 0, "sha256": sha(b"")},
+        "pkg/mod.py": {"size": 6, "sha256": sha(b"X = 2\n")},
+    }
+    tree = plan_mod.runtime_manifest._tree
+    calls = 0
+
+    def changing_tree(root):
+        nonlocal calls
+        if root == site:
+            calls += 1
+            if calls == 2:
+                (site / "unexpected.bin").write_bytes(b"synthetic")
+        return tree(root)
+
+    monkeypatch.setattr(plan_mod.runtime_manifest, "_tree", changing_tree)
+    monkeypatch.setattr(plan_mod, "_hash_bounded", lambda *a, **k: pytest.fail("tree file opened after membership changed"))
+    refused(kwargs, "site_pin_mismatch")
+
+
 @pytest.mark.parametrize("change", ["unexpected", "missing", "no_weights_listed"])
 def test_model_membership_must_match_exactly(case, change):
     kwargs, _, _, model = case

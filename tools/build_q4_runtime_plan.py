@@ -386,8 +386,10 @@ def _hash_bounded(path, limit):
     return initial.st_size, digest.hexdigest()
 
 
-def _tree_pins(root, budget, used):
+def _tree_pins(root, budget, used, expected_members=None, mismatch_token="tree_changed"):
     files, _ = runtime_manifest._tree(root)
+    if expected_members is not None and set(files) != expected_members:
+        _fail(mismatch_token)
     pins = {}
     for relative in sorted(files):
         path = root.joinpath(*relative.split("/"))
@@ -424,12 +426,25 @@ def plan_runtime_inputs(*, git_executable, repository, commit, code_roots, site_
         site, model = _root(site_root), _root(model_root)
         if _related(site, model) or _physically_related(site, model):
             _fail("roots_invalid")
+        # Reject unexpected members before opening any site or model file.  This is
+        # a membership guard, not proof that caller-selected roots are trustworthy.
+        wanted = set(expected_model_files)
+        if "model.safetensors" not in wanted or len(wanted) != len(expected_model_files):
+            _fail("model_membership_mismatch")
+        model_members, _ = runtime_manifest._tree(model)
+        if set(model_members) != wanted:
+            _fail("model_membership_mismatch")
+        if expected_site_pins is not None:
+            site_members, _ = runtime_manifest._tree(site)
+            if set(site_members) != set(expected_site_pins):
+                _fail("site_pin_mismatch")
         deadline = time.monotonic() + timeout_seconds  # one wall-time budget for every git call of this plan
         code, third, dynamic, used = _code_plan(git_executable, repository, commit, code_roots, extra_code_paths,
                                                 deadline, max_bytes)
-        site_pins, site_files, used = _tree_pins(site, max_bytes, used)
-        model_pins, model_files, used = _tree_pins(model, max_bytes, used)
-        wanted = set(expected_model_files)
+        site_pins, site_files, used = _tree_pins(
+            site, max_bytes, used, set(expected_site_pins) if expected_site_pins is not None else None,
+            "site_pin_mismatch")
+        model_pins, model_files, used = _tree_pins(model, max_bytes, used, wanted, "model_membership_mismatch")
         if "model.safetensors" not in wanted or set(model_pins) != wanted or len(wanted) != len(expected_model_files):
             _fail("model_membership_mismatch")
         if model_pins["model.safetensors"]["sha256"] != expected_weights_sha256:

@@ -86,11 +86,14 @@ function Get-WdQ4SharedSessionConfig {
         $paths=@('bundle_root','public_plan','interpreter','cwd','binding_path','fixed_plan_path','snapshot_path','runtime_manifest_path')
         $hashes=@('fleet_sha256','interpreter_sha256','binding_sha256','fixed_plan_sha256','snapshot_sha256','runtime_manifest_sha256')
         $numbers=@('interpreter_max_bytes','timeout_seconds','max_output_bytes')
+        $isV2=($doc.schema -is [string] -and $doc.schema -ceq 'wd.q4-shared-session-config.v2')
         $required=@('schema','lanes')+$paths+$hashes+$numbers
+        if ($isV2) { $required+=@('outer','expected_binding') }
         if (@($doc.PSObject.Properties).Count -ne $required.Count) { throw 'shared_schema_refused' }
         foreach ($p in $doc.PSObject.Properties) { if ($required -cnotcontains $p.Name) { throw 'shared_schema_refused' } }
         foreach ($key in $required) { if ($null -eq $doc.PSObject.Properties[$key]) { throw 'shared_schema_refused' } }
-        if ($doc.schema -isnot [string] -or $doc.schema -cne 'wd.q4-shared-session-config.v1' -or
+        if ($doc.schema -isnot [string] -or
+            ($doc.schema -cne 'wd.q4-shared-session-config.v1' -and -not $isV2) -or
             $doc.fleet_sha256 -cne $FleetSha256 -or $doc.lanes -isnot [Array] -or
             $doc.lanes.Count -lt 1 -or $doc.lanes.Count -gt 5) { throw 'shared_schema_refused' }
         $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
@@ -113,6 +116,76 @@ function Get-WdQ4SharedSessionConfig {
         }
         $result=[ordered]@{lane=$Lane;fleet_path=(Assert-WdSharedPath $FleetPath);fleet_sha256=$FleetSha256}
         foreach ($key in $paths+$hashes+$numbers) { if ($key -cne 'fleet_sha256') { $result[$key]=$doc.$key } }
+        if ($isV2) {
+            $outerKeys=@('outer-path','outer-sha256','runtime-root','runtime-generation','runtime-revision',
+                         'verifier-sha256','public-outer-sha256','public-child-sha256','public-query-sha256','worker-sha256')
+            $bindingKeys=@('pointer_sha256','source_anchor_sha256','encoder_sha256','policy_sha256',
+                           'roster_sha256','public_policy_sha256','descriptor_sha256','projection_sha256')
+            foreach ($section in @('outer','expected_binding')) {
+                $obj=$doc.$section;$keys=$outerKeys
+                if ($section -ceq 'expected_binding') { $keys=$bindingKeys }
+                if ($obj -isnot [pscustomobject] -or @($obj.PSObject.Properties).Count -ne $keys.Count) { throw 'shared_schema_refused' }
+                foreach ($prop in $obj.PSObject.Properties) {
+                    if ($keys -cnotcontains $prop.Name) { throw 'shared_schema_refused' }
+                    if ($prop.Value -isnot [string] -or -not $prop.Value -or
+                        $prop.Value.Length -gt 32767 -or $prop.Value -match '[\x00-\x1f]') { throw 'shared_schema_refused' }
+                }
+                foreach ($key in $keys) {
+                    if ($null -eq $obj.PSObject.Properties[$key]) { throw 'shared_schema_refused' }
+                }
+            }
+            $outer=$doc.outer
+            foreach ($key in $outerKeys) {
+                if ($key.EndsWith('sha256') -and $outer.$key -cnotmatch '^[0-9a-f]{64}$') { throw 'shared_pin_refused' }
+            }
+            foreach ($key in $bindingKeys) {
+                if ($doc.expected_binding.$key -cnotmatch '^[0-9a-f]{64}$') { throw 'shared_pin_refused' }
+            }
+            foreach ($key in @('runtime-generation','runtime-revision')) {
+                if ($outer.$key -cnotmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') { throw 'shared_pin_refused' }
+            }
+            $runtimeRoot=Assert-WdSharedPath $outer.'runtime-root'
+            $outerPath=Assert-WdSharedPath $outer.'outer-path'
+            $wanted=[IO.Path]::GetFullPath((Join-Path $runtimeRoot 'assets\code\tools\wd_q4_session_outer_synthetic.py'))
+            if (-not [string]::Equals($outerPath,$wanted,[StringComparison]::OrdinalIgnoreCase)) { throw 'shared_path_refused' }
+            $runtimeManifest=Assert-WdSharedPath $doc.runtime_manifest_path
+            if (-not [string]::Equals([IO.Path]::GetPathRoot($runtimeRoot),[IO.Path]::GetPathRoot($runtimeManifest),
+                                     [StringComparison]::OrdinalIgnoreCase) -or
+                [string]::Equals($runtimeRoot,$runtimeManifest,[StringComparison]::OrdinalIgnoreCase) -or
+                $runtimeManifest.StartsWith($runtimeRoot.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) {
+                throw 'shared_path_refused'
+            }
+            $pathPins=[Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+            foreach ($pair in @(@($outerPath,$outer.'outer-sha256'),@($doc.interpreter,$doc.interpreter_sha256),
+                                @($FleetPath,$FleetSha256),@($doc.binding_path,$doc.binding_sha256),
+                                @($doc.fixed_plan_path,$doc.fixed_plan_sha256),@($doc.snapshot_path,$doc.snapshot_sha256),
+                                @($runtimeManifest,$doc.runtime_manifest_sha256))) {
+                $full=[IO.Path]::GetFullPath([string]($pair[0]));$pin=[string]($pair[1])
+                if ($pathPins.ContainsKey($full) -and $pathPins[$full] -cne $pin) { throw 'shared_pin_refused' }
+                $pathPins[$full]=$pin
+            }
+            $worker=[ordered]@{lane=$Lane;fleet=$result['fleet_path'];'fleet-sha256'=$FleetSha256}
+            foreach ($pair in @(@('bundle-root','bundle_root'),@('public-plan','public_plan'),
+                                @('interpreter','interpreter'),@('interpreter-sha256','interpreter_sha256'),
+                                @('interpreter-max-bytes','interpreter_max_bytes'),@('cwd','cwd'),
+                                @('timeout-seconds','timeout_seconds'),@('max-output-bytes','max_output_bytes'),
+                                @('binding','binding_path'),@('binding-sha256','binding_sha256'),
+                                @('fixed-plan','fixed_plan_path'),@('fixed-plan-sha256','fixed_plan_sha256'),
+                                @('snapshot','snapshot_path'),@('snapshot-sha256','snapshot_sha256'),
+                                @('runtime-manifest','runtime_manifest_path'),@('runtime-manifest-sha256','runtime_manifest_sha256'))) {
+                $worker[$pair[0]]=[Convert]::ToString($doc.($pair[1]),[Globalization.CultureInfo]::InvariantCulture)
+            }
+            foreach ($value in $worker.Values) {
+                if (-not $value -or $value.Length -gt 32767 -or $value -match '[\x00-\x1f]') { throw 'shared_schema_refused' }
+            }
+            $outerResult=[ordered]@{};$bindingResult=[ordered]@{}
+            foreach ($key in $outerKeys) { $outerResult[$key]=$outer.$key }
+            foreach ($key in $bindingKeys) { $bindingResult[$key]=$doc.expected_binding.$key }
+            $result['worker']=[pscustomobject]$worker
+            $result['outer']=[pscustomobject]$outerResult
+            $result['expected_binding']=[pscustomobject]$bindingResult
+        }
+
         return [pscustomobject]$result
     } catch { throw 'q4_shared_session_config_refused' }
 }

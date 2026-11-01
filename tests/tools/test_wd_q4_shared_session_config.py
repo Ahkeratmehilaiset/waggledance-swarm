@@ -124,3 +124,123 @@ def test_helper_is_required_in_deployment_and_fleet():
     assert "'" + name + "'" in (reboot / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
     fleet = json.loads((reboot / "wd-fleet.json").read_text(encoding="utf-8"))
     assert name in fleet["deployment"]["required_bundle_files"]
+
+# v2 RED candidate: synthetic declared pins only, never a runtime authorization.
+_V2_OUTER_KEYS = (
+    "outer-path", "outer-sha256", "runtime-root", "runtime-generation", "runtime-revision",
+    "verifier-sha256", "public-outer-sha256", "public-child-sha256",
+    "public-query-sha256", "worker-sha256",
+)
+_V2_BINDING_KEYS = (
+    "pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256",
+    "roster_sha256", "public_policy_sha256", "descriptor_sha256", "projection_sha256",
+)
+
+
+def run_v2(tmp_path, mutate=None, **kwargs):
+    captured = {}
+
+    def descriptor(d):
+        d["schema"] = "wd.q4-shared-session-config.v2"
+        root = tmp_path / "runtime"
+        d["outer"] = {
+            "outer-path": str(root / "assets/code/tools/wd_q4_session_outer_synthetic.py"),
+            "outer-sha256": "c" * 64, "runtime-root": str(root),
+            "runtime-generation": "d" * 40, "runtime-revision": "e" * 40,
+            "verifier-sha256": "1" * 64, "public-outer-sha256": "2" * 64,
+            "public-child-sha256": "3" * 64, "public-query-sha256": "4" * 64,
+            "worker-sha256": "5" * 64,
+        }
+        d["expected_binding"] = {key: format(i + 1, "064x")
+                                 for i, key in enumerate(_V2_BINDING_KEYS)}
+        if mutate:
+            mutate(d)
+        captured.update(d)
+
+    return run(tmp_path, mutate=descriptor, **kwargs), captured
+
+
+def expected_v2_worker(tmp_path, d, lane):
+    out = {"lane": lane, "fleet": str(tmp_path / "fleet.json"),
+           "fleet-sha256": d["fleet_sha256"]}
+    for flag, key in (
+        ("bundle-root", "bundle_root"), ("public-plan", "public_plan"),
+        ("interpreter", "interpreter"), ("interpreter-sha256", "interpreter_sha256"),
+        ("interpreter-max-bytes", "interpreter_max_bytes"), ("cwd", "cwd"),
+        ("timeout-seconds", "timeout_seconds"), ("max-output-bytes", "max_output_bytes"),
+        ("binding", "binding_path"), ("binding-sha256", "binding_sha256"),
+        ("fixed-plan", "fixed_plan_path"), ("fixed-plan-sha256", "fixed_plan_sha256"),
+        ("snapshot", "snapshot_path"), ("snapshot-sha256", "snapshot_sha256"),
+        ("runtime-manifest", "runtime_manifest_path"),
+        ("runtime-manifest-sha256", "runtime_manifest_sha256"),
+    ):
+        out[flag] = str(d[key])
+    assert len(out) == 19
+    return out
+
+
+@pytest.mark.parametrize("lane", LANES)
+def test_v2_complete_tuple_exposes_exact_worker_outer_and_binding(tmp_path, lane):
+    result, doc = run_v2(tmp_path, lane=lane)
+    assert result["ok"], result
+    value = result["value"]
+    assert value["worker"] == expected_v2_worker(tmp_path, doc, lane)
+    assert value["outer"] == doc["outer"] and len(value["outer"]) == 10
+    assert value["expected_binding"] == doc["expected_binding"]
+    assert len(value["expected_binding"]) == 8
+    assert "query" not in value and "authenticated" not in value
+    assert all(isinstance(v, str) for v in value["worker"].values())
+
+
+@pytest.mark.parametrize("section, key",
+                         [("outer", key) for key in _V2_OUTER_KEYS]
+                         + [("expected_binding", key) for key in _V2_BINDING_KEYS])
+def test_v2_missing_tuple_field_refuses(tmp_path, section, key):
+    result, _ = run_v2(tmp_path, mutate=lambda d: d[section].pop(key))
+    assert result == {"ok": False, "reason": "q4_shared_session_config_refused"}
+
+
+@pytest.mark.parametrize("change", [
+    lambda d: d["outer"].update(extra="x"),
+    lambda d: d["expected_binding"].update(extra="a" * 64),
+    lambda d: d.update(outer=[]),
+    lambda d: d.update(expected_binding=None),
+    lambda d: d["outer"].update({"outer-sha256": "A" * 64}),
+    lambda d: d["outer"].update({"runtime-generation": "g" * 40}),
+    lambda d: d["outer"].update({"runtime-revision": "e" * 39}),
+    lambda d: d["outer"].update({"outer-path": d["interpreter"]}),
+    lambda d: d["outer"].update({"runtime-root": "relative"}),
+    lambda d: d["expected_binding"].update(policy_sha256=1),
+    lambda d: d.update(timeout_seconds=True),
+    lambda d: d.update(schema="wd.q4-shared-session-config.v999"),
+    lambda d: d.update(fleet_sha256="0" * 64),
+    lambda d: d.update(runtime_manifest_path=str(Path(d["outer"]["runtime-root"]) / "manifest.json")),
+    lambda d: d.update(binding_path=d["snapshot_path"], binding_sha256="f" * 64),
+])
+def test_v2_bad_shape_pin_path_or_crosswire_refuses(tmp_path, change):
+    result, _ = run_v2(tmp_path, mutate=change)
+    assert result == {"ok": False, "reason": "q4_shared_session_config_refused"}
+
+
+@pytest.mark.parametrize("spelling", ['"outer-sha256"', '"OUTER-SHA256"',
+                                    r'"outer-\u0073ha256"'])
+def test_v2_nested_duplicate_and_escaped_key_refuse(tmp_path, spelling):
+    def duplicate(doc):
+        text = json.dumps(doc)
+        needle = '"outer-sha256": "' + "c" * 64 + '"'
+        assert text.count(needle) == 1
+        return text.replace(needle, needle + ", " + spelling + ': "' + "f" * 64 + '"').encode()
+    result, _ = run_v2(tmp_path, raw=duplicate)
+    assert result == {"ok": False, "reason": "q4_shared_session_config_refused"}
+
+
+def test_v2_disabled_ignores_invalid_pins_and_new_fields(tmp_path):
+    result, _ = run_v2(tmp_path, mutate=lambda d: d.update(outer=None),
+                       enabled=False, fleet_pin="bad", descriptor_pin="bad")
+    assert result == {"ok": True, "value": None}
+
+
+@pytest.mark.parametrize("kwargs", [{"fleet_pin": "0" * 64}, {"descriptor_pin": "0" * 64}])
+def test_v2_external_fleet_or_descriptor_pin_mismatch_refuses(tmp_path, kwargs):
+    result, _ = run_v2(tmp_path, **kwargs)
+    assert result == {"ok": False, "reason": "q4_shared_session_config_refused"}

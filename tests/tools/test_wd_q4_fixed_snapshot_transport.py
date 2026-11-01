@@ -62,9 +62,18 @@ def test_synthetic_fixed_peer_roundtrip_after_anchored_checks(tmp_path):
     output, code = call(tmp_path, plan_bytes=plan_bytes)
     answer = json.loads(output)
     assert code == 0
-    assert answer == {"schema": "wd.q4-fixed-synthetic-answer.v1", "status": "SYNTHETIC",
-                      "plan_sha256": sha(plan_bytes), "bundle_sha256": sha(BUNDLE), "query_sha256": sha(QUERY),
+    assert answer == {"schema": "wd.q4-fixed-synthetic-answer.v2", "status": "SYNTHETIC",
+                      "plan_sha256": sha(plan_bytes), "bundle_sha256": sha(BUNDLE), "query": "RECEIVED",
                       "backend": "synthetic-v1", "source_authentication": "UNKNOWN", "runtime": "NOT_VERIFIED"}
+
+
+@windows
+def test_real_peer_output_is_identical_for_different_queries(tmp_path):
+    # RCO2 F1: no query digest or other query-derived value may leave the child.
+    first = call(tmp_path, query_bytes=QUERY)
+    second = call(tmp_path, query_bytes=canonical({"situation": "another synthetic situation"}))
+    assert first == second
+    assert sha(QUERY) not in first[0].decode("ascii")
 
 
 @windows
@@ -174,9 +183,23 @@ def test_child_verifies_plan_and_bundle_before_ready():
 def test_child_answer_is_closed_and_bound_to_verified_bytes():
     plan_bytes = plan()
     parsed = transport._fixed_child_verify(plan_bytes, BUNDLE, sha(PEER.read_bytes()))
-    answer = json.loads(transport._fixed_child_answer(parsed, plan_bytes, BUNDLE, QUERY))
-    assert answer["query_sha256"] == sha(QUERY) and answer["plan_sha256"] == sha(plan_bytes)
-    assert QUERY.decode() not in json.dumps(answer)
+    raw = transport._fixed_child_answer(parsed, plan_bytes, BUNDLE, QUERY)
+    answer = json.loads(raw)
+    assert answer["plan_sha256"] == sha(plan_bytes) and answer["bundle_sha256"] == sha(BUNDLE)
+    assert answer["query"] == "RECEIVED" and "query_sha256" not in answer
+    assert QUERY.decode() not in raw.decode("ascii")
+
+
+@pytest.mark.parametrize("other", [b"x", QUERY + b" ", b"q" * 65536, canonical({"situation": "s"})],
+                         ids=["one_byte", "one_more_byte", "max_size", "other_situation"])
+def test_child_answer_carries_no_query_derived_value(other):
+    # Guessable situations: a digest, length or prefix of the query would confirm guesses.
+    plan_bytes = plan()
+    parsed = transport._fixed_child_verify(plan_bytes, BUNDLE, sha(PEER.read_bytes()))
+    raw = transport._fixed_child_answer(parsed, plan_bytes, BUNDLE, QUERY)
+    assert transport._fixed_child_answer(parsed, plan_bytes, BUNDLE, other) == raw
+    for digest in (hashlib.sha256, hashlib.sha1, hashlib.md5, hashlib.blake2b):
+        assert digest(QUERY).hexdigest() not in raw.decode("ascii")
 
 
 @windows

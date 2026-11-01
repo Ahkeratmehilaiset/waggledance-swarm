@@ -3,6 +3,8 @@
 The caller supplies an independently trusted digest and must explicitly close
 the returned handle. No ACL, parent-directory, DLL, imports, mutable mappings,
 filesystem provenance, source authentication or process isolation is proved.
+Only direct HarddiskVolume DOS mappings are accepted. Final DOS path matching
+is exact and case-sensitive, so equivalent aliases or casing may refuse.
 """
 import ctypes as C
 from ctypes import wintypes as W
@@ -46,7 +48,27 @@ def _api():
     k.ReadFile.argtypes = (W.HANDLE, C.c_void_p, W.DWORD, C.POINTER(W.DWORD), C.c_void_p)
     k.ReadFile.restype = W.BOOL
     k.CloseHandle.argtypes, k.CloseHandle.restype = (W.HANDLE,), W.BOOL
+    k.GetDriveTypeW.argtypes, k.GetDriveTypeW.restype = (W.LPCWSTR,), W.UINT
+    k.QueryDosDeviceW.argtypes, k.QueryDosDeviceW.restype = (W.LPCWSTR, W.LPWSTR, W.DWORD), W.DWORD
+    k.GetFinalPathNameByHandleW.argtypes = (W.HANDLE, W.LPWSTR, W.DWORD, W.DWORD)
+    k.GetFinalPathNameByHandleW.restype = W.DWORD
     return k
+
+
+def _verify_fixed_drive(k, path):
+    if k.GetDriveTypeW(path[:3]) != 3:  # DRIVE_FIXED alone does not reject SUBST.
+        raise AttestationRefused("attestation_refused")
+    target = C.create_unicode_buffer(32768)
+    length = k.QueryDosDeviceW(path[:2], target, len(target))
+    if not length or length >= len(target) or re.fullmatch(r"\\Device\\HarddiskVolume[0-9]+", target.value) is None:
+        raise AttestationRefused("attestation_refused")
+
+
+def _verify_final_path(k, handle, path):
+    final = C.create_unicode_buffer(32768)
+    length = k.GetFinalPathNameByHandleW(handle, final, len(final), 0)  # VOLUME_NAME_DOS
+    if not length or length >= len(final) or final.value != "\\\\?\\" + path:
+        raise AttestationRefused("attestation_refused")
 
 
 class HeldFile:
@@ -106,12 +128,14 @@ def _open_and_hash(path, expected_sha256, max_bytes):
     if any(not part or part in (".", "..") or ":" in part or "/" in part for part in components):
         raise AttestationRefused("attestation_refused")
     k = _api()
+    _verify_fixed_drive(k, path)
     # GENERIC_READ, FILE_SHARE_READ only, OPEN_EXISTING, OPEN_REPARSE_POINT.
     handle = k.CreateFileW(path, 0x80000000, 0x1, None, 3, 0x00200000, None)
     if handle is None or handle == _INVALID:
         raise AttestationRefused("attestation_refused")
     transferred = False
     try:
+        _verify_final_path(k, handle, path)
         info = _Info()
         if (k.GetFileType(handle) != 1 or not k.GetFileInformationByHandle(handle, C.byref(info))
                 or info.attributes & (0x10 | 0x400)):

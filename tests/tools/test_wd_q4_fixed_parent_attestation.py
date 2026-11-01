@@ -10,6 +10,96 @@ import pytest
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows file-sharing semantics")
 
 
+@pytest.mark.parametrize("drive_type,target", [
+    (4, r"\Device\Mup\server\share"),
+    (3, r"\??\C:\mapped"),
+    (3, ""),
+])
+def test_nonlocal_or_subst_mapping_refuses(drive_type, target):
+    from tools import wd_q4_fixed_parent_attestation as parent
+    class FakeKernel:
+        def GetDriveTypeW(self, root):
+            assert root == "C:\\"
+            return drive_type
+        def QueryDosDeviceW(self, name, buffer, size):
+            assert name == "C:"
+            buffer.value = target
+            return len(target) + 1 if target else 0
+    with pytest.raises(parent.AttestationRefused):
+        parent._verify_fixed_drive(FakeKernel(), r"C:\synthetic\file.bin")
+
+
+def test_matching_fixed_drive_and_final_dos_path():
+    from tools import wd_q4_fixed_parent_attestation as parent
+    class FakeKernel:
+        def GetDriveTypeW(self, root):
+            return 3
+        def QueryDosDeviceW(self, name, buffer, size):
+            buffer.value = r"\Device\HarddiskVolume8"
+            return len(buffer.value) + 1
+        def GetFinalPathNameByHandleW(self, handle, buffer, size, flags):
+            assert handle == 123 and flags == 0
+            buffer.value = r"\\?\C:\synthetic\file.bin"
+            return len(buffer.value)
+    k = FakeKernel()
+    parent._verify_fixed_drive(k, r"C:\synthetic\file.bin")
+    parent._verify_final_path(k, 123, r"C:\synthetic\file.bin")
+
+
+@pytest.mark.parametrize("value", ["", r"\\?\D:\synthetic\file.bin", r"\\?\C:\synthetic\other.bin"])
+def test_mismatched_or_unavailable_final_path_refuses(value):
+    from tools import wd_q4_fixed_parent_attestation as parent
+    class FakeKernel:
+        def GetFinalPathNameByHandleW(self, handle, buffer, size, flags):
+            buffer.value = value
+            return len(value)
+    with pytest.raises(parent.AttestationRefused):
+        parent._verify_final_path(FakeKernel(), 123, r"C:\synthetic\file.bin")
+
+
+def test_final_path_refusal_closes_handle_before_hash(monkeypatch, tmp_path):
+    from tools import wd_q4_fixed_parent_attestation as parent
+    closes = []
+    class FakeKernel:
+        def CreateFileW(self, *args):
+            return 31415
+        def CloseHandle(self, handle):
+            closes.append(handle)
+            return True
+        def GetFileType(self, handle):
+            pytest.fail("hash/inspection must not start")
+    monkeypatch.setattr(parent, "_api", FakeKernel)
+    monkeypatch.setattr(parent, "_verify_fixed_drive", lambda *args: None)
+    def bad_final(*args):
+        raise parent.AttestationRefused("synthetic")
+    monkeypatch.setattr(parent, "_verify_final_path", bad_final)
+    with pytest.raises(parent.AttestationRefused):
+        parent.attest_file(str(tmp_path / "file.bin"), "a" * 64, max_bytes=4, enabled=True)
+    assert closes == [31415]
+
+
+def test_hardlink_writer_blocked_until_lease_closed(tmp_path):
+    from tools.wd_q4_fixed_parent_attestation import attest_file
+    path, alias = tmp_path / "synthetic.bin", tmp_path / "synthetic-hardlink.bin"
+    path.write_bytes(b"synthetic")
+    os.link(path, alias)
+    held = attest_file(str(path), hashlib.sha256(b"synthetic").hexdigest(), max_bytes=64, enabled=True)
+    k, invalid = _kernel(), ctypes.c_void_p(-1).value
+    try:
+        writer = _open(k, alias, 0x40000000, 7)
+        if writer != invalid:
+            k.CloseHandle(writer)
+        assert writer == invalid
+    finally:
+        held.close()
+    writer = _open(k, alias, 0x40000000, 7)
+    try:
+        assert writer != invalid
+    finally:
+        if writer != invalid:
+            k.CloseHandle(writer)
+
+
 def _kernel():
     k = ctypes.WinDLL("kernel32", use_last_error=True)
     k.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
@@ -128,6 +218,8 @@ def test_cleanup_failure_quarantines_handle_without_blind_retry(monkeypatch, tmp
             return len(self.closes) > 1
     fake = FakeKernel()
     monkeypatch.setattr(parent, "_api", lambda: fake)
+    monkeypatch.setattr(parent, "_verify_fixed_drive", lambda *args: None)
+    monkeypatch.setattr(parent, "_verify_final_path", lambda *args: None)
     quarantine = []
     monkeypatch.setattr(parent, "_QUARANTINED", quarantine)
     with pytest.raises(parent.AttestationRefused) as caught:
@@ -253,6 +345,8 @@ def test_failed_automatic_close_exception_keeps_handle_quarantined(monkeypatch, 
             raise OSError("synthetic")
     quarantine = []
     monkeypatch.setattr(parent, "_api", FakeKernel)
+    monkeypatch.setattr(parent, "_verify_fixed_drive", lambda *args: None)
+    monkeypatch.setattr(parent, "_verify_final_path", lambda *args: None)
     monkeypatch.setattr(parent, "_QUARANTINED", quarantine)
     with pytest.raises(parent.AttestationCleanupUnknown) as caught:
         parent.attest_file(str(tmp_path / "fake"), "a" * 64, max_bytes=4, enabled=True)

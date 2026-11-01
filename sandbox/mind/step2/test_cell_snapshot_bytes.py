@@ -192,7 +192,29 @@ def test_snapshot_collection_rejects_mutable_text_values():
         cell._ReadOnlySnapshotCollection(candidate, verified_dim=1)
 
 
-def test_snapshot_reconstruction_accepts_verified_numeric_string_metadata_dim(tmp_path, monkeypatch):
+def test_snapshot_refuses_numeric_string_receipt_dim(tmp_path, monkeypatch):
+    import json
+    import numpy as np
+    import core.faiss_store as store
+
+    _, snapshot, _ = _case(tmp_path, monkeypatch)
+    meta = json.loads(snapshot["meta"])
+    meta["dim"] = "1"
+    snapshot["meta"] = json.dumps(meta, sort_keys=True, separators=(",", ":")).encode()
+    receipt = json.loads(snapshot["receipt"])
+    receipt["content"]["files"]["meta"] = cell.sha256(snapshot["meta"])
+    receipt["content"]["dim"] = "1"
+    receipt["content_sha256"] = cell.sha256(cell.canonical(receipt["content"]).encode())
+    snapshot["receipt"] = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+    monkeypatch.setattr(store.faiss.IndexFlatIP, "reconstruct_n",
+                        lambda self, start, count: np.ones((count, 1), dtype=np.float32), raising=False)
+    monkeypatch.setattr(store.faiss, "deserialize_index", lambda *a: pytest.fail("native index reached"))
+    with pytest.raises(cell.CellError):
+        cell.verify_generation_snapshot("learning", cell.sha256(snapshot["receipt"]),
+                                        snapshot_bytes=snapshot, enabled=True)
+
+
+def test_snapshot_still_accepts_numeric_string_meta_dim_when_receipt_dim_is_integer(tmp_path, monkeypatch):
     import json
     import numpy as np
     import core.faiss_store as store

@@ -86,8 +86,12 @@ def read_log(cell_dir):
     log_path = cell_dir / "LOG.jsonl"
     if not log_path.exists():
         return []
+    return _parse_log_bytes(_read_control(log_path, MAX_LOG_BYTES, "log"))
+
+
+def _parse_log_bytes(data):
     lines, previous = [], ZERO
-    raw_lines = _read_control(log_path, MAX_LOG_BYTES, "log").split(b"\n")
+    raw_lines = data.split(b"\n")
     if raw_lines and raw_lines[-1] == b"":
         raw_lines.pop()
     for number, raw in enumerate(raw_lines, start=1):
@@ -202,7 +206,7 @@ def verify_generation_snapshot(cell_id, receipt_sha, *, snapshot_bytes, enabled=
     snapshot. This neither verifies a current pointer/log nor authenticates a
     caller, proves freshness, or bounds native FAISS allocations.
     """
-    snapshot = None
+    snapshot = receipt = rows = collection = None
     try:
         if (enabled is not True or type(snapshot_bytes) is not dict
                 or type(cell_id) is not str or cell_id not in ALL_CELLS or type(receipt_sha) is not str
@@ -223,8 +227,28 @@ def verify_generation_snapshot(cell_id, receipt_sha, *, snapshot_bytes, enabled=
         return receipt, rows, _ReadOnlySnapshotCollection(collection, verified_dim=int(receipt["content"]["dim"])), rebuild
     except Exception:
         pass
-    del snapshot, snapshot_bytes
+    del snapshot, snapshot_bytes, receipt, rows, collection
     raise CellError("snapshot_invalid") from None
+
+
+def _parse_generation_receipt(receipt_bytes, cell_id, receipt_sha, *, strict_snapshot=False):
+    if sha256(receipt_bytes) != receipt_sha:
+        raise CellError("receipt_mismatch")
+    try:
+        receipt = json.loads(receipt_bytes)
+        content = receipt["content"]
+        if receipt.get("schema") != SCHEMA or receipt["content_sha256"] != sha256(canonical(content).encode("utf-8")):
+            raise CellError("receipt_unverifiable")
+        if strict_snapshot and type(content["dim"]) is not int:
+            raise CellError("snapshot_invalid")
+        count, dim = int(content["count"]), int(content["dim"])
+    except CellError:
+        raise
+    except (ValueError, KeyError, TypeError):
+        raise CellError("receipt_unreadable") from None
+    if content.get("cell_id") != cell_id:
+        raise CellError("receipt_cell_mismatch")
+    return receipt, content, count, dim
 
 
 def _verify_generation(gen_dir, cell_id, receipt_sha, *, snapshot):
@@ -237,20 +261,8 @@ def _verify_generation(gen_dir, cell_id, receipt_sha, *, snapshot):
         receipt_bytes = _read_control(receipt_path, MAX_RECEIPT_BYTES, "receipt")
     else:
         receipt_bytes = snapshot["receipt"]
-    if sha256(receipt_bytes) != receipt_sha:
-        raise CellError("receipt_mismatch")
-    try:
-        receipt = json.loads(receipt_bytes)
-        content = receipt["content"]
-        if receipt.get("schema") != SCHEMA or receipt["content_sha256"] != sha256(canonical(content).encode("utf-8")):
-            raise CellError("receipt_unverifiable")
-        count, dim = int(content["count"]), int(content["dim"])
-    except CellError:
-        raise
-    except (ValueError, KeyError, TypeError):
-        raise CellError("receipt_unreadable") from None
-    if content.get("cell_id") != cell_id:
-        raise CellError("receipt_cell_mismatch")
+    receipt, content, count, dim = _parse_generation_receipt(
+        receipt_bytes, cell_id, receipt_sha, strict_snapshot=snapshot is not None)
     files = paths(gen_dir, cell_id)
     rebuild_possible = True
     for name in FILES:
@@ -352,6 +364,63 @@ def _normalized(vectors):
     return FaissCollection._normalize(np.asarray(vectors, dtype=np.float32))
 
 
+def _parse_pointer_bytes(raw):
+    try:
+        pointer = json.loads(raw)
+        generation, seq, receipt_sha = int(pointer["generation"]), int(pointer["seq"]), str(pointer["receipt_sha256"])
+    except (ValueError, KeyError, TypeError):
+        raise CellError("pointer_unreadable") from None
+    return pointer, generation, seq, receipt_sha
+
+
+def _preflight_snapshot_controls(cell_id, *, pointer_bytes, log_bytes, artifact_bytes,
+                                 expected_generation, expected_receipt_sha256):
+    """Validate pinned cell controls and receipt, without loading an index."""
+    if (type(cell_id) is not str or cell_id not in ALL_CELLS
+            or type(pointer_bytes) is not bytes or len(pointer_bytes) > MAX_POINTER_BYTES
+            or type(log_bytes) is not bytes or len(log_bytes) > MAX_LOG_BYTES
+            or type(artifact_bytes) is not dict or type(artifact_bytes.get("receipt")) is not bytes
+            or len(artifact_bytes["receipt"]) > MAX_RECEIPT_BYTES):
+        raise CellError("snapshot_invalid")
+    pointer, generation, seq, receipt_sha = _parse_pointer_bytes(pointer_bytes)
+    if (type(pointer.get("generation")) is not int or generation < 0
+            or type(pointer.get("seq")) is not int or seq < 1
+            or type(pointer.get("receipt_sha256")) is not str
+            or type(expected_generation) is not int or expected_generation != generation
+            or type(expected_receipt_sha256) is not str or expected_receipt_sha256 != receipt_sha):
+        raise CellError("snapshot_invalid")
+    log = _parse_log_bytes(log_bytes)
+    if not log:
+        raise CellError("log_missing")
+    if any(type(line.get("seq")) is not int or type(line.get("generation")) is not int for line in log):
+        raise CellError("snapshot_invalid")
+    last = log[-1]
+    if (last["seq"], last["generation"], last["receipt_sha256"]) != (seq, generation, receipt_sha):
+        raise CellError("pointer_log_mismatch")
+    receipt, _, _, _ = _parse_generation_receipt(artifact_bytes["receipt"], cell_id, receipt_sha,
+                                                  strict_snapshot=True)
+    return pointer, receipt
+
+
+def load_snapshot(cell_id, *, pointer_bytes, log_bytes, artifact_bytes,
+                  expected_generation, expected_receipt_sha256, enabled=False):
+    """Load caller-anchored snapshot bytes only; not freshness or caller authentication."""
+    pointer = receipt = rows = collection = None
+    try:
+        if enabled is not True:
+            raise CellError("snapshot_invalid")
+        pointer, receipt = _preflight_snapshot_controls(
+            cell_id, pointer_bytes=pointer_bytes, log_bytes=log_bytes, artifact_bytes=artifact_bytes,
+            expected_generation=expected_generation, expected_receipt_sha256=expected_receipt_sha256)
+        receipt, rows, collection, rebuild = verify_generation_snapshot(
+            cell_id, expected_receipt_sha256, snapshot_bytes=artifact_bytes, enabled=True)
+        return CellView(cell_id, "HEALTHY", None, collection, rows, receipt, pointer, rebuild)
+    except Exception:
+        pass
+    del pointer, receipt, rows, collection, pointer_bytes, log_bytes, artifact_bytes
+    raise CellError("snapshot_invalid") from None
+
+
 def load(cell_dir, cell_id):
     """A CellView: ABSENT when the cell was never built, else HEALTHY or QUARANTINED, never a silent empty."""
     if not cell_dir.exists():
@@ -360,11 +429,8 @@ def load(cell_dir, cell_id):
         pointer_path = cell_dir / "current.json"
         if not pointer_path.exists():
             raise CellError("pointer_missing")
-        try:
-            pointer = json.loads(_read_control(pointer_path, MAX_POINTER_BYTES, "pointer"))
-            generation, seq, receipt_sha = int(pointer["generation"]), int(pointer["seq"]), str(pointer["receipt_sha256"])
-        except (ValueError, KeyError, TypeError):
-            raise CellError("pointer_unreadable") from None
+        pointer, generation, seq, receipt_sha = _parse_pointer_bytes(
+            _read_control(pointer_path, MAX_POINTER_BYTES, "pointer"))
         log = read_log(cell_dir)
         if not log:
             raise CellError("log_missing")

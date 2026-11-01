@@ -22,7 +22,8 @@ def quote(value):
 
 
 def run(tmp_path, status="OK", *, enabled=True, wrong_hash=False, query=b"private-query-marker", repeat=False,
-        inject_query_option=False, reload_before_second=False, reset_mutant=False, expected_invocations=None):
+        inject_query_option=False, reload_before_second=False, reset_mutant=False, expected_invocations=None,
+        extra_entry_args=(), expected_host_utc=None, drop_entry_key=None):
     host = tmp_path / "synthetic-host.ps1"
     invocations = tmp_path / "synthetic-host-invocations"
     host.write_text(
@@ -31,6 +32,11 @@ def run(tmp_path, status="OK", *, enabled=True, wrong_hash=False, query=b"privat
         "$WorkingDirectory,$ScratchRoot,[byte[]]$InputBytes,$TimeoutSeconds,$MaxOutputBytes)\n"
         " [IO.File]::AppendAllText(" + quote(invocations) + ",'call' + [char]10)\n"
         " if ([Text.Encoding]::UTF8.GetString($InputBytes) -cne 'private-query-marker') { throw 'input' }\n"
+        " if (@($BootstrapArguments | Where-Object { $_ -match 'private-query-marker' }).Count -ne 0) { throw 'query in args' }\n"
+        + (" if (@($BootstrapArguments | Where-Object { $_ -ceq '--query-utc' }).Count -ne 1 -or "
+           "$BootstrapArguments[-2] -cne '--query-utc' -or $BootstrapArguments[-1] -cne "
+           + quote(expected_host_utc) + ") { throw 'query time missing' }\n" if expected_host_utc else "")
+        +
         " [pscustomobject]@{Status='" + ("OK" if status == "BAD_JSON" else status) + "';Output="
         + ("[Text.Encoding]::UTF8.GetBytes('not-json' + [char]10)" if status == "BAD_JSON" else
            "[Text.Encoding]::UTF8.GetBytes('{\"synthetic\":true}' + [char]10)" if status == "OK" else "$null")
@@ -44,9 +50,11 @@ def run(tmp_path, status="OK", *, enabled=True, wrong_hash=False, query=b"privat
                        ("JobHelperSha256", "InterpreterSha256", "BootstrapSha256"))
     entry_args = ["--enabled"]
     for key in sorted(entry._OPTIONS):
-        entry_args.extend(("--" + key, "synthetic-pin-value"))
+        if key != drop_entry_key:
+            entry_args.extend(("--" + key, "synthetic-pin-value"))
     if inject_query_option:
         entry_args[1] = "--query"
+    entry_args.extend(extra_entry_args)
     options += ";BootstrapArguments=@(" + ",".join(quote(value) for value in entry_args) + ")"
     options += ";TimeoutSeconds=5;MaxOutputBytes=4096"
     call = ("Invoke-WdQ4SessionCommand " + ("-Enabled " if enabled else "") + "-HostScript " + quote(host)
@@ -101,6 +109,28 @@ def test_oversized_stdin_refuses(tmp_path):
 
 def test_query_option_never_reaches_host(tmp_path):
     assert run(tmp_path, inject_query_option=True) == [{"status": "REFUSED", "output": None}]
+
+
+def test_optional_query_utc_reaches_pinned_host_without_query_in_arguments(tmp_path):
+    when = "2026-01-01T00:01:02.000000Z"
+    assert run(tmp_path, extra_entry_args=("--query-utc", when), expected_host_utc=when,
+               expected_invocations=1) == [{"status": "UNVALIDATED", "output": '{"synthetic":true}\n'}]
+
+
+@pytest.mark.parametrize("extra", [
+    ("--query-utc", "2026-01-01T00:01:02Z"),
+    ("--query-utc", "2026-01-01T00:01:02.000001Z"),
+    ("--query-utc", "private-query-marker"),
+    ("--query-utc", "2026-01-01T00:01:02.000000Z", "--query-utc", "2026-01-01T00:01:02.000000Z"),
+], ids=("seconds-only", "nonzero-fraction", "query-in-arg", "duplicate"))
+def test_invalid_or_duplicate_query_utc_never_reaches_host(tmp_path, extra):
+    assert run(tmp_path, extra_entry_args=extra, expected_invocations=0) == [{"status": "REFUSED", "output": None}]
+
+
+def test_query_utc_does_not_replace_a_required_binding(tmp_path):
+    when = "2026-01-01T00:01:02.000000Z"
+    assert run(tmp_path, extra_entry_args=("--query-utc", when), drop_entry_key="lane",
+               expected_invocations=0) == [{"status": "REFUSED", "output": None}]
 
 
 def test_malformed_host_ok_output_is_not_returned(tmp_path):

@@ -47,16 +47,19 @@ function Invoke-WdQ4SessionCommand {
             'expected-encoder-sha256','expected-policy-sha256','expected-roster-sha256',
             'expected-public-policy-sha256','expected-descriptor-sha256','expected-projection-sha256')
         $arguments = $HostArguments.BootstrapArguments
-        if ($arguments -isnot [array] -or $arguments.Count -ne (1 + 2 * $allowed.Count) -or
+        if ($arguments -isnot [array] -or $arguments.Count -notin @((1 + 2 * $allowed.Count), (3 + 2 * $allowed.Count)) -or
             $arguments[0] -cne '--enabled') { throw 'refused' }
         $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         for ($i = 1; $i -lt $arguments.Count; $i += 2) {
             $name = $arguments[$i]; $value = $arguments[$i + 1]
             if ($name -isnot [string] -or -not $name.StartsWith('--') -or
-                $allowed -cnotcontains $name.Substring(2) -or -not $seen.Add($name) -or
+                ($allowed -cnotcontains $name.Substring(2) -and $name -cne '--query-utc') -or -not $seen.Add($name) -or
                 $value -isnot [string] -or $value.Length -lt 1 -or $value.Length -gt 32767 -or
                 $value.Contains([char]0)) { throw 'refused' }
+            if ($name -ceq '--query-utc' -and
+                $value -cnotmatch '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.000000Z\z') { throw 'refused' }
         }
+        foreach ($name in $allowed) { if (-not $seen.Contains('--' + $name)) { throw 'refused' } }
         if (-not [IO.Path]::IsPathFullyQualified($HostScript) -or
             $HostSha256 -cnotmatch '^[a-f0-9]{64}$' -or
             ($null -ne $script:WdQ4SessionCommandHostPin -and

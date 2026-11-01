@@ -6,6 +6,9 @@ complete earlier history, hostile same-user mutation or process identity. The
 private checkpoint contains prefix digests and must be protected by the caller.
 This primitive never reads live data unless explicitly invoked with caller paths,
 never installs or deletes, and never includes a prefix digest in its report.
+request.fenced=True (opt-in, default off) publishes through the private intent and
+the checkpoint fence; only a resolved "landed" reports, everything else keeps the
+intent and reports publication_state_unknown. It fences cooperating writers only.
 """
 from dataclasses import dataclass, field
 import hashlib
@@ -43,6 +46,7 @@ class PrefixPublicRequest:
     dim: int
     timeout: float = 0.2
     private_state_root: object = field(default=None, repr=False)
+    fenced: bool = False
 
 
 def _fail(reason):
@@ -70,7 +74,8 @@ def _validate(request):
             or not callable(request.encode) or type(request.identity) is not dict
             or type(request.dim) is not int or request.dim < 1
             or type(request.timeout) not in (int, float) or not math.isfinite(request.timeout)
-            or not 0 < request.timeout <= 30):
+            or not 0 < request.timeout <= 30
+            or type(request.fenced) is not bool):
         _fail("request_invalid")
     source = request.config.source
     if (type(source.max_bytes) is not int or not 1 <= source.max_bytes <= snapshot.MAX_BYTES
@@ -263,6 +268,24 @@ def _publish_prepared(request, state, result, projection, tasks, previous, *, ca
             _fail("empty_catchup_unsupported")
         if previous is None:
             _fail("empty_genesis")
+        if request.fenced:
+            try:
+                candidate = result["candidate_prefix"]
+                args = (root, result, tasks)
+                kwargs = dict(expected_pointer_sha256=request.expected_pointer_sha256, **common)
+                prepared = checkpoint.prepare_prefix_empty(*args, enabled=True, **kwargs)
+                if type(prepared) is not dict or set(prepared) != {"status", "attempt_sha256"}:
+                    raise ValueError()
+                if prepared["status"] == "no_change" and prepared["attempt_sha256"] == request.expected_pointer_sha256:
+                    return _report("EMPTY_NO_CHANGE", prepared["attempt_sha256"], None)  # nothing opened
+                if prepared["status"] != "prepared":
+                    raise ValueError()
+            except Exception:
+                pass
+            else:
+                return _publish_fenced(request, state, prepared["attempt_sha256"], candidate, "EMPTY_ADVANCED", None,
+                                       checkpoint.advance_prefix_empty, args, kwargs)
+            _fail("publication_state_unknown")
         try:
             candidate = result["candidate_prefix"]
             state.begin(request.expected_pointer_sha256)
@@ -306,7 +329,58 @@ def _publish_prepared(request, state, result, projection, tasks, previous, *, ca
     _fail("build_refused")
 
 
+def _publish_fenced(request, state, attempt, candidate, status, generation, commit, args, kwargs):
+    """Opt-in fenced route: durable intent + fence for exactly prior -> attempt, fenced commit, resolution.
+
+    The commit result is not trusted: resolution under the checkpoint lock decides. Only "landed" reports;
+    "not_landed", "unknown", a refused resolution or an interruption report publication_state_unknown and
+    keep the intent open (never retried here). Older unfenced writers are not stopped by the fence.
+    """
+    outcome = None
+    try:
+        if not _pin(attempt):
+            raise ValueError()
+        state.begin_intent(request.expected_pointer_sha256, request.start_prefix, attempt, candidate,
+                           enabled=True, fence=True)
+    except Exception:
+        pass
+    else:
+        try:
+            commit(*args, expected_attempt_sha256=attempt, fenced=True, **kwargs)
+        except Exception:
+            pass  # landed or not is decided only by the resolution below
+        try:
+            outcome = state.resolve_intent(enabled=True)
+        except Exception:
+            pass
+        if outcome == "landed":
+            return _report(status, attempt, generation)
+    _fail("publication_state_unknown")
+
+
 def _commit_prepared(request, state, result, tasks, previous, common, artifacts, root, source, *, catchup_source=None):
+    if request.fenced:
+        try:
+            candidate = result["candidate_prefix"]
+            extra = {"_catchup_source": catchup_source} if catchup_source is not None else {}
+            args = (root, request.generation, source.cursor, result["candidate_cursor"], tasks)
+            if previous is None:
+                kwargs = dict(expected_pointer_sha256=None, expected_artifacts=artifacts, initial_cursor=source.cursor,
+                              snapshot_result=result, **common, **extra)
+                prepare, commit, status = checkpoint.prepare_prefix_genesis, checkpoint.commit_prefix_genesis, "PUBLISHED_GENESIS"
+            else:
+                kwargs = dict(snapshot_result=result, expected_pointer_sha256=request.expected_pointer_sha256,
+                              expected_artifacts=artifacts, **common, **extra)
+                prepare, commit, status = checkpoint.prepare_prefix_history, checkpoint.commit_prefix_history, "PUBLISHED_HISTORY"
+            prepared = prepare(*args, enabled=True, **kwargs)
+            if type(prepared) is not dict or set(prepared) != {"status", "attempt_sha256"} or prepared["status"] != "prepared":
+                raise ValueError()
+        except Exception:
+            pass
+        else:
+            return _publish_fenced(request, state, prepared["attempt_sha256"], candidate, status, request.generation,
+                                   commit, args, kwargs)
+        _fail("publication_state_unknown")
     try:
         candidate = result["candidate_prefix"]
         state.begin(request.expected_pointer_sha256)

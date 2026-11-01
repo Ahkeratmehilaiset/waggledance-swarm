@@ -5,9 +5,9 @@ programs using this interpreter, the separately pinned synthetic echo peer, or
 the fixed peer entrypoint of THIS file under a caller-pinned plan. Its public
 snapshot backend is explicitly enabled only and can load a pinned model; it
 has only been exercised with a synthetic runtime. There is no general
-executable/wrapper adapter, installer or CLI. Backend stdout and stderr are
-not contained by this transport and may reveal data; do not use it with
-sensitive queries or data.
+executable/wrapper adapter, installer or CLI. The public child redirects its
+standard streams before loading the backend, but other output sinks and
+same-user access remain uncontained; do not use it with sensitive data.
 The caller must independently pin/trust this module, interpreter and peer code.
 Self-hashing the child source is consistency, not authentication.
 
@@ -362,6 +362,14 @@ _PLAN_SCHEMAS = {"wd.q4-fixed-plan.v1": ("synthetic-v1", _PLAN_KEYS),
                  "wd.q4-fixed-plan.v2": ("public-snapshot-v1", _PUBLIC_PLAN_KEYS)}
 _VERIFIER_LIMIT = 131072
 _VERIFIER_PARTS = ("sandbox", "mind", "step2", "runtime_manifest.py")
+_PUBLIC_RUNTIME = "MANIFEST_VERIFIED_BEFORE_IMPORT_NOT_ISOLATED"
+_ANSWER_KEYS = frozenset({"schema", "status", "results", "plan_sha256", "bundle_sha256", "backend",
+                          "source_authentication", "freshness", "runtime"})
+_RESULT_KEYS = frozenset({"ref_sha256", "doc_id_sha256", "stored_text", "ref_kind", "canonical_event"})
+_REF_KIND = "sha256_of_projected_metadata"  # shared_result_resolver.REF_KIND
+_MAX_RESULTS = 100  # shared_result_resolver.MAX_RESULTS
+_PRELOAD_DENY = ("sandbox", "tools", "waggledance", "core")
+_CONTAINED = []  # NUL descriptors and sinks kept alive for the whole child process
 _BUNDLE_SCHEMA = "wd.q4-fixed-snapshot-bundle.v1"
 _BUNDLE_KEYS = frozenset({"schema", "pointer", "policy", "roster", "public_policy", "active_artifacts", "history",
                           "cells"})
@@ -544,6 +552,147 @@ def _fixed_bundle_decode(bundle_bytes):
     raise _Refused() from None
 
 
+def _contain_child_output():
+    """Point THIS process's standard streams at NUL and detach its console; child side, public route only.
+
+    One verified NUL handle (FILE_TYPE_CHAR) backs CRT descriptors 0-2
+    (Python os.write and C code sharing this UCRT), the Win32 standard handles
+    (SetStdHandle, checked with GetStdHandle) and Python's sys streams.
+    FreeConsole runs first, before the NUL handle exists; afterwards CONOUT$
+    must not open and descriptors 1 and 2 must accept a write. Everything stays open for
+    the process lifetime. NOT contained: native code with its own statically
+    linked CRT that cached handles before this call, direct writes to other
+    files, pipes or devices, OutputDebugString/ETW/event log, crash dumps and
+    Windows Error Reporting, and grandchildren started with explicit handles.
+    """
+    import msvcrt
+    k = C.WinDLL("kernel32", use_last_error=True)
+    k.CreateFileW.restype = W.HANDLE
+    k.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, C.c_void_p, W.DWORD, W.DWORD, W.HANDLE]
+    k.GetFileType.restype = W.DWORD
+    k.GetFileType.argtypes = [W.HANDLE]
+    k.SetStdHandle.restype = W.BOOL
+    k.SetStdHandle.argtypes = [W.DWORD, W.HANDLE]
+    k.GetStdHandle.restype = W.HANDLE
+    k.GetStdHandle.argtypes = [W.DWORD]
+    k.CloseHandle.argtypes = [W.HANDLE]
+    invalid = C.c_void_p(-1).value
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+    # Detach first: FreeConsole after the redirection invalidated the NUL
+    # handles behind descriptors 1 and 2 in a CREATE_NO_WINDOW child. The old
+    # descriptors are closed before any new handle exists, so no stale value
+    # can be reused and then closed by dup2.
+    k.FreeConsole()
+    for target in (0, 1, 2):
+        try:
+            os.close(target)
+        except OSError:
+            pass
+    handle = k.CreateFileW("\\\\.\\NUL", 0xC0000000, 3, None, 3, 0, None)
+    _check(handle not in (None, invalid) and k.GetFileType(handle) == 2)
+    fd = msvcrt.open_osfhandle(handle, os.O_RDWR | getattr(os, "O_NOINHERIT", 0))
+    _CONTAINED.append(fd)
+    for target in (0, 1, 2):
+        if target != fd:
+            os.dup2(fd, target, inheritable=False)
+    for std, target in ((-10, 0), (-11, 1), (-12, 2)):
+        native = msvcrt.get_osfhandle(target)
+        _check(k.SetStdHandle(std & 0xFFFFFFFF, native) and k.GetStdHandle(std & 0xFFFFFFFF) == native
+               and k.GetFileType(native) == 2)
+    sink = io.TextIOWrapper(io.FileIO(os.dup(fd), "w"), encoding="utf-8", errors="replace", write_through=True)
+    source = io.TextIOWrapper(io.FileIO(os.dup(fd), "r"), encoding="utf-8", errors="replace")
+    _CONTAINED.extend((sink, source))
+    sys.stdout = sys.stderr = sys.__stdout__ = sys.__stderr__ = sink
+    sys.stdin = sys.__stdin__ = source
+    console = k.CreateFileW("CONOUT$", 0x40000000, 3, None, 3, 0, None)
+    if console not in (None, invalid):
+        k.CloseHandle(console)
+        _check(False)
+    _check(all(os.write(target, b"") == 0 for target in (1, 2)))
+
+
+def _fixed_closed_results(results):
+    """Closed result items, both in the child answer and in the parent validation."""
+    _check(type(results) is list and len(results) <= _MAX_RESULTS)
+    for item in results:
+        _check(type(item) is dict and set(item) == _RESULT_KEYS and item["ref_kind"] == _REF_KIND
+               and item["canonical_event"] is False and type(item["stored_text"]) is str)
+        _hex64(item["ref_sha256"])
+        _hex64(item["doc_id_sha256"])
+    return results
+
+
+def _module_origins(before, roots):
+    """Every module added since ``before`` must come from a verified root or the interpreter's own base."""
+    for name, module in list(sys.modules.items()):
+        if name in before or module is None:
+            continue
+        origin = getattr(module, "__file__", None)
+        if origin is None:
+            spec = getattr(module, "__spec__", None)
+            _check(name in sys.builtin_module_names or getattr(spec, "origin", None) in ("built-in", "frozen"))
+            continue
+        path = os.path.normcase(os.path.realpath(origin))
+        _check(any(os.path.commonpath((path, root)) == root for root in roots))
+
+
+def _fixed_public_validate(plan_bytes, bundle_bytes, query_bytes, output):
+    """Parent side: closed child answer, then re-resolution against the pinned projection in the bundle.
+
+    The pointer is bound to the plan pin; memory and projection are bound by
+    the existing resolver through the pointer's memory digest. Every claimed
+    (ref, doc id) pair must resolve and the child's text must equal the
+    projection text exactly; the returned text always comes from the parent's
+    own resolution, never from the child. A child cannot echo the query or add
+    a pair. Freshness and source authentication remain UNKNOWN.
+    """
+    try:
+        plan = _fixed_plan(plan_bytes)
+        _check(plan["backend"] == "public-snapshot-v1" and type(output) is bytes and 0 < len(output) <= _MAX_OUTPUT)
+        _check(type(bundle_bytes) is bytes and hmac.compare_digest(_sha(bundle_bytes), plan["bundle_sha256"]))
+        answer = json.loads(output.decode("ascii", "strict"), object_pairs_hook=_unique_pairs,
+                            parse_constant=lambda _: _check(False))
+        _check(type(answer) is dict and set(answer) == _ANSWER_KEYS and _canonical(answer) == output)
+        _check(answer["schema"] == "wd.q4-fixed-public-answer.v1" and answer["backend"] == plan["backend"]
+               and answer["source_authentication"] == "UNKNOWN" and answer["freshness"] == "UNKNOWN"
+               and answer["runtime"] == _PUBLIC_RUNTIME and answer["plan_sha256"] == _sha(plan_bytes)
+               and answer["bundle_sha256"] == plan["bundle_sha256"])
+        status = answer["status"]
+        claimed = _fixed_closed_results(answer["results"])
+        _check(status in ("ANSWER", "ABSTAIN", "DEGRADED") and (status != "ANSWER" or claimed)
+               and (status != "ABSTAIN" or not claimed)
+               and len({(item["ref_sha256"], item["doc_id_sha256"]) for item in claimed}) == len(claimed))
+        query = json.loads(query_bytes.decode("utf-8", "strict"), object_pairs_hook=_unique_pairs)
+        _check(type(query) is dict and set(query) == {"situation", "time"} and type(query["time"]) is str)
+        parts = _fixed_bundle_decode(bundle_bytes)
+        from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
+        from sandbox.mind.step2 import shared_result_resolver as resolver
+        pointer = checkpoint._parse_pointer_snapshot(
+            parts["pointer_bytes"], expected_pointer_sha256=plan["expected_pointer_sha256"],
+            policy_sha=plan["policy_sha256"], roster_sha=plan["roster_sha256"], prefix_required=True)
+        active = parts["active_artifact_bytes"]
+        resolved = resolver.resolve_results(
+            memory_manifest=active.get("memory.json"), expected_memory_sha256=pointer["artifacts"]["memory_sha256"],
+            projection_bytes=active.get("projection.json"),
+            results=[{key: item[key] for key in ("ref_sha256", "doc_id_sha256", "ref_kind", "canonical_event")}
+                     for item in claimed],
+            query_utc=query["time"], approved_tasks=frozenset(plan["approved_tasks"]),
+            policy_bytes=parts["policy_bytes"], policy_sha256=plan["policy_sha256"],
+            roster_bytes=parts["roster_bytes"], roster_sha256=plan["roster_sha256"])
+        _check(type(resolved) is list and len(resolved) == len(claimed)
+               and all(mine == theirs for mine, theirs in zip(resolved, claimed)))
+        return _canonical({"schema": "wd.q4-fixed-public-result.v1", "status": status, "results": resolved,
+                           "source_authentication": "UNKNOWN", "freshness": "UNKNOWN", "runtime": _PUBLIC_RUNTIME,
+                           "validation": "PARENT_RERESOLVED_AGAINST_PINNED_PROJECTION"})
+    except Exception:
+        pass
+    raise _Refused() from None
+
+
 def _fixed_child_backend(plan, peer_path):
     """Child phase 1 backend preparation, run BEFORE READY; returns the answer function.
 
@@ -560,8 +709,10 @@ def _fixed_child_backend(plan, peer_path):
     if plan["backend"] == "synthetic-v1":
         return _fixed_child_answer
     _check(plan["backend"] == "public-snapshot-v1" and type(peer_path) is str)
+    # First step, before any verifier, runtime or backend code runs in this process.
+    _contain_child_output()
     _check(sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode)
-    _check(not any(name == "sandbox" or name.startswith("sandbox.") for name in sys.modules))
+    _check(not any(name == deny or name.startswith(deny + ".") for name in sys.modules for deny in _PRELOAD_DENY))
     verifier = Path(peer_path).absolute().parents[1].joinpath(*_VERIFIER_PARTS)
     with open(verifier, "rb") as stream:
         source = stream.read(_VERIFIER_LIMIT + 1)
@@ -574,11 +725,14 @@ def _fixed_child_backend(plan, peer_path):
     code, site, model = root / "assets" / "code", root / "site", root / "model"
     entry = code.joinpath("sandbox", "mind", "step2", "shared_index_checkpoint.py")
     _check(code.is_dir() and site.is_dir() and model.is_dir() and entry.is_file())
+    roots = [os.path.normcase(os.path.realpath(path)) for path in (code, site, sys.base_prefix)]
+    before = set(sys.modules)
     sys.path.insert(0, str(code))
     sys.path.append(str(site))
     import importlib
     module = importlib.import_module("sandbox.mind.step2.shared_index_checkpoint")
     _check(os.path.normcase(os.path.abspath(module.__file__)) == os.path.normcase(os.path.abspath(entry)))
+    _module_origins(before, roots)
     query_public_snapshot = module.query_public_snapshot
     _check(callable(query_public_snapshot))
 
@@ -589,13 +743,13 @@ def _fixed_child_backend(plan, peer_path):
                                        approved_tasks=frozenset(plan["approved_tasks"]), query_bytes=query,
                                        model_dir=str(model), expected_runtime_revision=plan["runtime_revision"],
                                        enabled=True)
-        _check(type(result) is dict and result.get("status") in ("ANSWER", "ABSTAIN", "DEGRADED")
-               and type(result.get("results")) is list)
+        # The real query imports lazily, so origins are checked again after the call.
+        _module_origins(before, roots)
+        _check(type(result) is dict and result.get("status") in ("ANSWER", "ABSTAIN", "DEGRADED"))
         return _canonical({"schema": "wd.q4-fixed-public-answer.v1", "status": result["status"],
-                           "results": result["results"], "plan_sha256": _sha(plan_bytes),
+                           "results": _fixed_closed_results(result.get("results")), "plan_sha256": _sha(plan_bytes),
                            "bundle_sha256": _sha(bundle_bytes), "backend": plan["backend"],
-                           "source_authentication": "UNKNOWN", "freshness": "UNKNOWN",
-                           "runtime": "MANIFEST_VERIFIED_BEFORE_IMPORT_NOT_ISOLATED"})
+                           "source_authentication": "UNKNOWN", "freshness": "UNKNOWN", "runtime": _PUBLIC_RUNTIME})
     return answer
 
 
@@ -878,6 +1032,17 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
     TOCTOU between verification and import (same-user writers), native DLL
     search and the interpreter's stdlib/DLLs are NOT verified, no sandbox or
     ACL proof; READY is self-reported and never independent authentication.
+    Before any verifier or runtime code the child points its Python, CRT and
+    Win32 standard streams at NUL and detaches its console (see
+    _contain_child_output for what stays uncontained), refuses preloaded
+    sandbox/tools/waggledance/core modules, and checks that every module added
+    by the import or the call comes from the verified code/site or the
+    interpreter base. The parent never returns the child answer as is: it
+    checks the closed answer and re-resolves every pair against the projection
+    bound by the plan's pointer pin, taking stored text only from there.
+    Runtime files stay mutable after verification (only the interpreter, this
+    file and the verifier are leased), and base64 makes the effective raw
+    snapshot size about 12 MiB under the 16 MiB bundle cap.
     No approved runtime tree or anchored pin exists yet, so in practice the
     real backend is unavailable; only a synthetic runtime exercises this path.
     Source authentication and freshness are UNKNOWN. Same limits as run_bounded.
@@ -945,8 +1110,13 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
         with attest_file(path, plan["peer_code_sha256"], max_bytes=_PEER_CODE_LIMIT, enabled=True):
             with (attest_file(verifier, plan["verifier_sha256"], max_bytes=_VERIFIER_LIMIT, enabled=True)
                   if public else contextlib.nullcontext()):
-                return _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds, max_output_bytes,
-                            fixed=(control, plan_bytes, bundle_bytes))
+                output, code = _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds, max_output_bytes,
+                                    fixed=(control, plan_bytes, bundle_bytes))
+    if not public:
+        return output, code
+    # Never return the child's public answer unvalidated: re-resolve it against the pinned bundle projection.
+    _check(code == 0)
+    return _fixed_public_validate(plan_bytes, bundle_bytes, query_bytes, output), 0
 
 
 def run_synthetic_echo(*, powershell, bootstrap_path, expected_bootstrap_sha256,

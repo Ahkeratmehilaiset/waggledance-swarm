@@ -76,6 +76,10 @@ def test_snapshot_candidate_is_in_bundle_python_files():
     assert "tools/wd_q4_snapshot_candidate.py" in _packaged_python()
 
 
+def test_snapshot_position_helper_and_reader_are_in_bundle_python_files():
+    assert {"tools/wd_q4_snapshot_lag.py", "waggledance/core/bridge_log_reader.py"} <= set(_packaged_python())
+
+
 def test_manual_capability_declares_only_the_two_existing_drivers_not_default_entrypoints():
     definition = _definition()
     capability = definition["manual_execution_capability"]

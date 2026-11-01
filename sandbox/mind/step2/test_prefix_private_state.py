@@ -500,9 +500,9 @@ def real(tmp_path, monkeypatch):
         return checkpoint.prepare_prefix_genesis(shared, name, start.cursor, first["candidate_cursor"], tasks,
                                                  enabled=True, **genesis)["attempt_sha256"]
 
-    def commit(name, attempt):
+    def commit(name, attempt, **extra):
         return checkpoint.commit_prefix_genesis(shared, name, start.cursor, first["candidate_cursor"], tasks,
-                                                expected_attempt_sha256=attempt, **genesis)["pointer_sha256"]
+                                                expected_attempt_sha256=attempt, **genesis, **extra)["pointer_sha256"]
 
     def pointer():
         target = shared / checkpoint.POINTER
@@ -604,3 +604,271 @@ def test_landed_resolution_with_the_actual_checkpoint_commit(real):
         assert real.commit("gen-a", attempt) == attempt  # the cooperating writer, inside the private lock
         assert state.resolve_intent(enabled=True) == "landed"
     settled(mod, real.private, real.shared, attempt, real.candidate)
+
+
+# --- fenced intent (opt-in fence=True) over the candidate checkpoint fence, real checkpoint API --------------------
+
+def fence_file(real):
+    return real.shared / real.checkpoint.FENCE
+
+
+def record(real, attempt, outcome):
+    return real.shared / ("q4-prefix-fence-" + attempt + "." + outcome + ".json")
+
+
+def fenced_intent(mod, real, attempt):
+    with mod.locked_state(real.private, real.shared, enabled=True) as state:
+        state.begin_intent(None, real.start, attempt, real.candidate, enabled=True, fence=True)
+
+
+def resolved(mod, real):
+    with mod.locked_state(real.private, real.shared, enabled=True) as state:
+        return state.resolve_intent(enabled=True)
+
+
+def refused_resolution(mod, real):
+    with mod.locked_state(real.private, real.shared, enabled=True) as state:
+        refusal(mod, lambda: state.resolve_intent(enabled=True))
+
+
+def injected(*args, **kwargs):
+    raise OSError("injected")
+
+
+@windows
+def test_fence_option_is_strict_and_default_route_opens_no_fence(real):
+    mod = module()
+    attempt = real.prepare("gen-a")
+    with mod.locked_state(real.private, real.shared, enabled=True) as state:
+        for flag in (1, "yes", None):
+            refusal(mod, lambda: state.begin_intent(None, real.start, attempt, real.candidate, enabled=True,
+                                                    fence=flag))
+        refusal(mod, lambda: state.begin_intent(None, real.start, attempt, real.candidate, fence=True))
+    assert not fence_file(real).exists() and not (real.private / mod._PENDING).exists()
+    with mod.locked_state(real.private, real.shared, enabled=True) as state:
+        state.begin_intent(None, real.start, attempt, real.candidate, enabled=True)  # legacy route
+    assert not fence_file(real).exists()
+    assert b"fenced" not in (real.private / mod._PENDING).read_bytes()
+
+
+@windows
+def test_fenced_intent_binds_prior_and_attempt_and_lands_only_through_the_fence(real):
+    mod = module()
+    attempt, other = real.prepare("gen-a"), real.prepare("gen-b")
+    fenced_intent(mod, real, attempt)
+    fence = real.checkpoint._canonical({"schema": real.checkpoint.FENCE_SCHEMA, "prior_pointer_sha256": None,
+                                        "attempt_sha256": attempt})
+    assert fence_file(real).read_bytes() == fence
+    for call in (lambda: real.commit("gen-a", attempt), lambda: real.commit("gen-b", other),
+                 lambda: real.commit("gen-b", other, fenced=True)):
+        with pytest.raises(real.checkpoint.CheckpointRefused):
+            call()  # every new-code writer except the fenced attempt is refused
+    assert real.pointer() is None
+    assert real.commit("gen-a", attempt, fenced=True) == attempt
+    assert resolved(mod, real) == "landed"
+    settled(mod, real.private, real.shared, attempt, real.candidate)
+    assert not fence_file(real).exists() and record(real, attempt, "landed").read_bytes() == fence
+
+
+@windows
+def test_not_landed_keeps_the_intent_and_a_later_old_writer_landing_is_still_caught(real, monkeypatch):
+    mod = module()
+    attempt = real.prepare("gen-a")
+    fenced_intent(mod, real, attempt)
+    kept = (real.private / mod._PENDING).read_bytes()
+    assert resolved(mod, real) == "not_landed"
+    assert resolved(mod, real) == "not_landed"  # repeatable, nothing changed
+    assert (real.private / mod._PENDING).read_bytes() == kept and not (real.private / mod._STATE).exists()
+    assert not fence_file(real).exists() and record(real, attempt, "not_landed").exists()
+    for extra in ({}, {"fenced": True}):
+        with pytest.raises(real.checkpoint.CheckpointRefused):
+            real.commit("gen-a", attempt, **extra)  # new code can never land it now
+    # An already-running OLD process bypasses the gate (review: not definitive for old writers).
+    with monkeypatch.context() as old:
+        old.setattr(real.checkpoint, "_fence_gate", lambda *args: None)
+        assert real.commit("gen-a", attempt) == attempt
+    assert resolved(mod, real) == "landed"  # the kept intent catches it; the not_landed record never wins
+    settled(mod, real.private, real.shared, attempt, real.candidate)
+
+
+@windows
+def test_a_crash_between_fence_and_slot_is_recovered_by_adopting_the_exact_fence(real, monkeypatch):
+    mod = module()
+    attempt, other = real.prepare("gen-a"), real.prepare("gen-b")
+    with monkeypatch.context() as crash:
+        crash.setattr(mod, "_create_slot", injected)
+        with mod.locked_state(real.private, real.shared, enabled=True) as state:
+            refusal(mod, lambda: state.begin_intent(None, real.start, attempt, real.candidate, enabled=True,
+                                                    fence=True))
+    assert fence_file(real).exists() and not (real.private / mod._PENDING).exists()
+    with mod.locked_state(real.private, real.shared, enabled=True) as state:
+        refusal(mod, lambda: state.begin_intent(None, real.start, other, real.candidate, enabled=True,
+                                                fence=True))  # a different attempt never adopts it
+    assert not (real.private / mod._PENDING).exists()
+    fenced_intent(mod, real, attempt)  # the same binding adopts the open fence
+    assert real.commit("gen-a", attempt, fenced=True) == attempt
+    assert resolved(mod, real) == "landed"
+    settled(mod, real.private, real.shared, attempt, real.candidate)
+
+
+@windows
+@pytest.mark.parametrize("stage", ["before_state_write", "before_slot_removal"])
+def test_a_crash_inside_landed_resolution_resolves_to_landed_on_retry(real, monkeypatch, stage):
+    mod = module()
+    attempt = real.prepare("gen-a")
+    fenced_intent(mod, real, attempt)
+    real.commit("gen-a", attempt, fenced=True)
+    with monkeypatch.context() as crash:
+        if stage == "before_state_write":
+            crash.setattr(mod, "_write_state", injected)
+        else:
+            original = os.unlink
+
+            def unlink(path, *args, **kwargs):
+                if os.path.basename(str(path)) == mod._PENDING:
+                    raise OSError("injected")
+                return original(path, *args, **kwargs)
+            crash.setattr(mod.os, "unlink", unlink)
+        refused_resolution(mod, real)
+    assert (real.private / mod._PENDING).exists() and record(real, attempt, "landed").exists()
+    assert resolved(mod, real) == "landed"
+    settled(mod, real.private, real.shared, attempt, real.candidate)
+
+
+@windows
+def test_landed_after_the_pointer_moved_on_needs_archive_evidence(real):
+    mod = module()
+    attempt = real.prepare("gen-a")
+    fenced_intent(mod, real, attempt)
+    landed = real.commit("gen-a", attempt, fenced=True)
+    real.checkpoint.resolve_prefix_fence(real.shared, expected_prior_pointer_sha256=None,
+                                         expected_attempt_sha256=attempt, enabled=True)
+    attempt_bytes = (real.shared / real.checkpoint.POINTER).read_bytes()
+    publish(real.shared, b'{"later":"writer"}')  # a later writer advanced past the landed attempt
+    refused_resolution(mod, real)  # no evidence that the attempt was ever the pointer: intent kept
+    archive = real.shared / ("q4-pointer-" + landed + ".json")
+    archive.write_bytes(attempt_bytes + b" ")  # wrong bytes are no evidence
+    refused_resolution(mod, real)
+    archive.write_bytes(attempt_bytes)  # the archive a real advance leaves behind
+    assert resolved(mod, real) == "landed"
+    settled(mod, real.private, real.shared, attempt, real.candidate)
+
+
+@windows
+def test_a_landed_record_contradicted_by_the_prior_pointer_is_refused(real):
+    mod = module()
+    attempt = real.prepare("gen-a")
+    fenced_intent(mod, real, attempt)
+    real.commit("gen-a", attempt, fenced=True)
+    real.checkpoint.resolve_prefix_fence(real.shared, expected_prior_pointer_sha256=None,
+                                         expected_attempt_sha256=attempt, enabled=True)
+    (real.shared / real.checkpoint.POINTER).unlink()  # power loss dropped the pointer replacement
+    kept = (real.private / mod._PENDING).read_bytes()
+    refused_resolution(mod, real)
+    assert (real.private / mod._PENDING).read_bytes() == kept and not (real.private / mod._STATE).exists()
+
+
+@windows
+def test_lost_fence_metadata_falls_back_to_unknown_with_the_intent_kept(real):
+    mod = module()
+    attempt = real.prepare("gen-a")
+    fenced_intent(mod, real, attempt)
+    fence_file(real).unlink()  # neither the fence nor a record survived (unproven power-loss durability)
+    kept = (real.private / mod._PENDING).read_bytes()
+    assert resolved(mod, real) == "unknown"
+    assert (real.private / mod._PENDING).read_bytes() == kept
+    assert real.commit("gen-a", attempt) == attempt  # nothing fences it any more; the intent still catches it
+    assert resolved(mod, real) == "landed"
+    settled(mod, real.private, real.shared, attempt, real.candidate)
+
+
+@windows
+def test_a_third_pointer_under_a_fenced_intent_is_refused_and_everything_kept(real):
+    mod = module()
+    attempt = real.prepare("gen-a")
+    fenced_intent(mod, real, attempt)
+    publish(real.shared, b'{"non":"cooperating"}')
+    kept, fence = (real.private / mod._PENDING).read_bytes(), fence_file(real).read_bytes()
+    refused_resolution(mod, real)
+    assert (real.private / mod._PENDING).read_bytes() == kept and fence_file(real).read_bytes() == fence
+
+
+@windows
+def test_a_competing_writer_racing_the_fenced_begin_before_the_slot_is_fenced(real, monkeypatch):
+    mod = module()
+    attempt, other = real.prepare("gen-a"), real.prepare("gen-b")
+    with monkeypatch.context() as racing:
+        raced = _race_before_slot(racing, mod, lambda: real.commit("gen-b", other))
+        fenced_intent(mod, real, attempt)
+    assert raced == ["fenced"] and real.pointer() is None
+    assert real.commit("gen-a", attempt, fenced=True) == attempt
+    assert resolved(mod, real) == "landed"
+
+
+@windows
+def test_fenced_calls_never_keep_the_checkpoint_lock_around_the_fence_functions(real, monkeypatch):
+    """Lock order: private lock, then the checkpoint lock taken only inside the fence functions (no re-entry)."""
+    mod = module()
+    attempt = real.prepare("gen-a")
+    calls = []
+    for name in ("open_prefix_fence", "resolve_prefix_fence"):
+        original = getattr(real.checkpoint, name)
+
+        def wrapped(*args, _original=original, _name=name, **kwargs):
+            lock = real.shared / real.checkpoint.LOCK
+            with real.checkpoint.reader_slot(lock, timeout_seconds=0.2):
+                calls.append(_name)  # free: the caller did not keep the checkpoint lock
+            return _original(*args, **kwargs)
+        monkeypatch.setattr(real.checkpoint, name, wrapped)
+    fenced_intent(mod, real, attempt)
+    real.commit("gen-a", attempt, fenced=True)
+    assert resolved(mod, real) == "landed"
+    assert calls == ["open_prefix_fence", "resolve_prefix_fence"]
+
+
+@windows
+def test_an_orphan_fence_whose_attempt_already_landed_is_adopted_and_resolves_landed(real, monkeypatch):
+    mod = module()
+    attempt = real.prepare("gen-a")
+    with monkeypatch.context() as crash:
+        crash.setattr(mod, "_create_slot", injected)
+        with mod.locked_state(real.private, real.shared, enabled=True) as state:
+            refusal(mod, lambda: state.begin_intent(None, real.start, attempt, real.candidate, enabled=True,
+                                                    fence=True))
+    assert real.commit("gen-a", attempt, fenced=True) == attempt  # landed before any intent existed
+    fenced_intent(mod, real, attempt)
+    assert resolved(mod, real) == "landed"
+    settled(mod, real.private, real.shared, attempt, real.candidate)
+    assert not fence_file(real).exists()
+
+
+@windows
+def test_an_orphan_fence_is_never_adopted_against_a_third_pointer(real, monkeypatch):
+    mod = module()
+    attempt = real.prepare("gen-a")
+    with monkeypatch.context() as crash:
+        crash.setattr(mod, "_create_slot", injected)
+        with mod.locked_state(real.private, real.shared, enabled=True) as state:
+            refusal(mod, lambda: state.begin_intent(None, real.start, attempt, real.candidate, enabled=True,
+                                                    fence=True))
+    publish(real.shared, b'{"non":"cooperating"}')
+    with mod.locked_state(real.private, real.shared, enabled=True) as state:
+        refusal(mod, lambda: state.begin_intent(None, real.start, attempt, real.candidate, enabled=True,
+                                                fence=True))
+    assert not (real.private / mod._PENDING).exists() and fence_file(real).exists()
+
+
+@windows
+def test_an_open_fence_the_checkpoint_did_not_decide_refuses_instead_of_falling_back(real, monkeypatch):
+    mod = module()
+    attempt = real.prepare("gen-a")
+    fenced_intent(mod, real, attempt)
+
+    def undecided(*args, **kwargs):
+        raise real.checkpoint.CheckpointRefused("checkpoint_refused")  # e.g. the writer lock was busy
+    kept, fence = (real.private / mod._PENDING).read_bytes(), fence_file(real).read_bytes()
+    with monkeypatch.context() as busy:
+        busy.setattr(real.checkpoint, "resolve_prefix_fence", undecided)
+        refused_resolution(mod, real)
+    assert (real.private / mod._PENDING).read_bytes() == kept and fence_file(real).read_bytes() == fence
+    assert resolved(mod, real) == "not_landed"

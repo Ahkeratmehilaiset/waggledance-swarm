@@ -342,9 +342,14 @@ def test_fixed_peer_documents_limits():
 
 VERIFIER = PEER.parents[1] / "sandbox" / "mind" / "step2" / "runtime_manifest.py"
 GENERATION, REVISION = "a" * 40, "b" * 40
-STUB = '''import hashlib
-import os
+STUB_TEMPLATE = '''import hashlib
+import json
+import sys
 
+MODE = "__MODE__"
+STATUS = "__STATUS__"
+RESULTS = json.loads(__RESULTS__)
+__NOISE__
 
 def query_public_snapshot(*, pointer_bytes, expected_pointer_sha256, approved_tasks, policy_bytes, policy_sha256,
                           roster_bytes, roster_sha256, expected_public_policy_sha256, active_artifact_bytes,
@@ -353,20 +358,76 @@ def query_public_snapshot(*, pointer_bytes, expected_pointer_sha256, approved_ta
     sha = lambda data: hashlib.sha256(data).hexdigest()
     bound = (enabled is True and sha(pointer_bytes) == expected_pointer_sha256 and sha(policy_bytes) == policy_sha256
              and sha(roster_bytes) == roster_sha256 and sha(public_policy_bytes) == expected_public_policy_sha256
-             and type(query_bytes) is bytes and len(query_bytes) > 0 and type(approved_tasks) is frozenset)
-    return {"status": "ANSWER" if bound else "ABSTAIN",
-            "results": [{"stub": "synthetic-runtime", "tasks": sorted(approved_tasks),
-                         "artifacts": sorted(active_artifact_bytes), "cells": sorted(cell_snapshots),
-                         "history": sorted(history_bytes), "model_dir": os.path.basename(model_dir),
-                         "revision": expected_runtime_revision, "source": expected_source_sha256,
-                         "encoder": expected_encoder_sha256}],
-            "source_authentication": "UNKNOWN", "freshness": "UNKNOWN"}
+             and type(query_bytes) is bytes and len(query_bytes) > 0 and type(approved_tasks) is frozenset
+             and NOISE_OK)
+    if not bound:
+        return {"status": "ABSTAIN", "results": [], "source_authentication": "UNKNOWN", "freshness": "UNKNOWN"}
+    results = [dict(item) for item in RESULTS]
+    if MODE == "echo":
+        results = [dict(item, stored_text=query_bytes.decode("utf-8")) for item in results]
+    elif MODE == "unknown":
+        results = [dict(results[0], ref_sha256="0" * 64)]
+    elif MODE == "extra":
+        results = [dict(item, situation="x") for item in results]
+    return {"status": STATUS, "results": results, "source_authentication": "UNKNOWN", "freshness": "UNKNOWN"}
 '''
+NOISE = '''import ctypes
+import os
+from ctypes import wintypes as W
+
+print("IMPORT-NOISE")
+os.write(2, b"IMPORT-NOISE-FD2")
+_k = ctypes.WinDLL("kernel32")
+_k.GetStdHandle.restype = W.HANDLE
+_k.GetStdHandle.argtypes = [W.DWORD]
+_k.GetFileType.argtypes = [W.HANDLE]
+_k.CreateFileW.restype = W.HANDLE
+_k.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, ctypes.c_void_p, W.DWORD, W.DWORD, W.HANDLE]
+_STREAMS = [_k.GetFileType(_k.GetStdHandle(s & 0xFFFFFFFF)) for s in (-10, -11, -12)]
+_CONSOLE = _k.CreateFileW("CONOUT$", 0x40000000, 3, None, 3, 0, None) not in (None, ctypes.c_void_p(-1).value)
+NOISE_OK = _STREAMS == [2, 2, 2] and not _CONSOLE and sys.stdout is sys.stderr
+'''
+
+
+def make_stub(results=(), mode="good", status="ANSWER", noisy=False, outside=None):
+    noise = NOISE if noisy else "NOISE_OK = True"
+    if outside is not None:  # a runtime module that reaches outside the verified tree at import time
+        noise += "\nsys.path.append(%r)\nimport planted_outside\n" % str(outside)
+    return (STUB_TEMPLATE.replace("__MODE__", mode).replace("__STATUS__", status)
+            .replace("__RESULTS__", repr(json.dumps(list(results)))).replace("__NOISE__", noise))
+
+
+STUB = make_stub()
 PARTS = {"pointer_bytes": b"synthetic-pointer", "policy_bytes": b"synthetic-policy",
          "roster_bytes": b"synthetic-roster", "public_policy_bytes": b"synthetic-public-policy",
          "active_artifact_bytes": {"descriptor.json": b"d", "memory.json": b"m"},
          "history_bytes": {"q4-pointer-" + "1" * 64 + ".json": b"h"},
          "cell_snapshots": {"cell-a": {"pointer": b"p", "log": b"l", "artifacts": {"index": b"\x00\xff"}}}}
+PART_PINS = {"expected_pointer_sha256": sha(PARTS["pointer_bytes"]), "policy_sha256": sha(PARTS["policy_bytes"]),
+             "roster_sha256": sha(PARTS["roster_bytes"]),
+             "expected_public_policy_sha256": sha(PARTS["public_policy_bytes"]),
+             "expected_source_sha256": "5" * 64, "expected_encoder_sha256": "6" * 64}
+QUERY_TIME = json.loads(QUERY)["time"]
+
+
+def snapshot_case(monkeypatch):
+    """A fully consistent synthetic pointer/memory/projection graph (existing make_case) and its resolved hits."""
+    pytest.importorskip("numpy")
+    from sandbox.mind.step2 import shared_result_resolver as resolver
+    from sandbox.mind.step2.test_verified_snapshot_checkpoint import make_case
+    args = make_case(monkeypatch)
+    projection = json.loads(args["active_artifact_bytes"]["projection.json"])
+    hits = [{"ref_sha256": sha(r["provenance"]["event_ref"].encode()), "doc_id_sha256": sha(r["record_id"].encode()),
+             "ref_kind": r["provenance"]["ref_kind"], "canonical_event": False} for r in projection["records"]]
+    resolved = resolver.resolve_results(
+        memory_manifest=args["active_artifact_bytes"]["memory.json"],
+        expected_memory_sha256=json.loads(args["pointer_bytes"])["artifacts"]["memory_sha256"],
+        projection_bytes=args["active_artifact_bytes"]["projection.json"], results=hits, query_utc=QUERY_TIME,
+        approved_tasks=args["approved_tasks"], policy_bytes=args["policy_bytes"], policy_sha256=args["policy_sha256"],
+        roster_bytes=args["roster_bytes"], roster_sha256=args["roster_sha256"])
+    assert resolved
+    return {"parts": {name: args[name] for name in PARTS}, "pins": {name: args[name] for name in transport._PUBLIC_PINS},
+            "tasks": sorted(args["approved_tasks"]), "resolved": resolved}
 
 
 def synthetic_runtime(base, stub=STUB):
@@ -386,28 +447,27 @@ def synthetic_runtime(base, stub=STUB):
     return root, manifest, result["manifest_sha256"]
 
 
-def public_plan(root, manifest, manifest_sha, bundle, **changes):
+def public_plan(root, manifest, manifest_sha, bundle, pins=None, tasks=None, **changes):
     value = {"schema": "wd.q4-fixed-plan.v2", "backend": "public-snapshot-v1",
              "interpreter_sha256": interpreter_sha(), "peer_code_sha256": sha(PEER.read_bytes()),
              "runtime_manifest_sha256": manifest_sha, "bundle_sha256": sha(bundle), "bundle_bytes": len(bundle),
              "verifier_sha256": sha(VERIFIER.read_bytes()), "runtime_root": str(root),
              "runtime_manifest_path": str(manifest), "runtime_generation": GENERATION, "runtime_revision": REVISION,
-             "approved_tasks": ["task-a", "task-b"], "expected_pointer_sha256": sha(PARTS["pointer_bytes"]),
-             "policy_sha256": sha(PARTS["policy_bytes"]), "roster_sha256": sha(PARTS["roster_bytes"]),
-             "expected_public_policy_sha256": sha(PARTS["public_policy_bytes"]),
-             "expected_source_sha256": "5" * 64, "expected_encoder_sha256": "6" * 64}
+             "approved_tasks": tasks or ["task-a", "task-b"], **(pins or PART_PINS)}
     value.update(changes)
     return canonical(value)
 
 
-def public_call(tmp_path, enabled=True, **changes):
+def public_call(tmp_path, enabled=True, case=None, **changes):
+    parts = case["parts"] if case else PARTS
     root, manifest, manifest_sha = changes.pop("runtime", None) or synthetic_runtime(tmp_path)
-    bundle = changes.pop("bundle", None) or transport.fixed_snapshot_bundle(**PARTS)
-    plan_bytes = changes.pop("plan_bytes", None) or public_plan(root, manifest, manifest_sha, bundle)
+    bundle = changes.pop("bundle", None) or transport.fixed_snapshot_bundle(**parts)
+    plan_bytes = changes.pop("plan_bytes", None) or public_plan(
+        root, manifest, manifest_sha, bundle, pins=case and case["pins"], tasks=case and case["tasks"])
     kwargs = dict(executable=sys.executable, expected_interpreter_sha256=interpreter_sha(),
                   interpreter_max_bytes=64 * 1024 * 1024, plan_bytes=plan_bytes, expected_plan_sha256=sha(plan_bytes),
                   bundle_bytes=bundle, runtime_manifest_bytes=manifest.read_bytes(), query_bytes=QUERY,
-                  cwd=str(tmp_path), timeout_seconds=60, max_output_bytes=8192, public_snapshot_enabled=enabled)
+                  cwd=str(tmp_path), timeout_seconds=60, max_output_bytes=65536, public_snapshot_enabled=enabled)
     kwargs.update(changes)
     return transport.run_fixed_peer(**kwargs)
 
@@ -460,7 +520,6 @@ def test_public_backend_is_default_off_and_pinned_before_any_spawn(tmp_path, mon
 
 
 def test_public_flag_must_be_a_bool_even_for_the_synthetic_backend(tmp_path, monkeypatch):
-    # The flag enables only the public backend; it never changes the synthetic plan path.
     monkeypatch.setattr(transport, "_run", lambda *a, **kw: pytest.fail("spawned"))
     with pytest.raises(transport._Refused):
         call(tmp_path, public_snapshot_enabled="yes")
@@ -499,33 +558,229 @@ def test_child_failed_runtime_preparation_writes_no_ready_and_reads_no_bundle(tm
 
 
 @windows
-def test_public_backend_roundtrip_over_a_synthetic_verified_runtime(tmp_path):
-    output, code = public_call(tmp_path)
-    answer = json.loads(output)
+def test_public_backend_roundtrip_returns_parent_reresolved_projection_text(tmp_path, monkeypatch):
+    case = snapshot_case(monkeypatch)
+    output, code = public_call(tmp_path, case=case, runtime=synthetic_runtime(tmp_path, make_stub(case["resolved"])))
     assert code == 0
-    assert answer["schema"] == "wd.q4-fixed-public-answer.v1" and answer["status"] == "ANSWER"
-    assert answer["source_authentication"] == "UNKNOWN" and answer["freshness"] == "UNKNOWN"
-    assert answer["runtime"] == "MANIFEST_VERIFIED_BEFORE_IMPORT_NOT_ISOLATED"
-    assert answer["results"] == [{"stub": "synthetic-runtime", "tasks": ["task-a", "task-b"],
-                                  "artifacts": ["descriptor.json", "memory.json"], "cells": ["cell-a"],
-                                  "history": ["q4-pointer-" + "1" * 64 + ".json"], "model_dir": "model",
-                                  "revision": REVISION, "source": "5" * 64, "encoder": "6" * 64}]
-    assert sha(QUERY) not in output.decode("ascii") and QUERY.decode() not in output.decode("ascii")
+    assert json.loads(output) == {"schema": "wd.q4-fixed-public-result.v1", "status": "ANSWER",
+                                  "results": case["resolved"], "source_authentication": "UNKNOWN",
+                                  "freshness": "UNKNOWN", "runtime": "MANIFEST_VERIFIED_BEFORE_IMPORT_NOT_ISOLATED",
+                                  "validation": "PARENT_RERESOLVED_AGAINST_PINNED_PROJECTION"}
+    assert sha(QUERY) not in output.decode("ascii") and json.loads(QUERY)["situation"] not in output.decode("ascii")
+
+
+@windows
+@pytest.mark.parametrize("mode", ["echo", "unknown", "extra"])
+def test_malicious_runtime_answers_are_refused_by_the_parent(tmp_path, monkeypatch, mode):
+    case = snapshot_case(monkeypatch)
+    with pytest.raises(transport._Refused):
+        public_call(tmp_path, case=case, runtime=synthetic_runtime(tmp_path, make_stub(case["resolved"], mode=mode)))
+
+
+@windows
+def test_runtime_module_imported_from_outside_the_verified_tree_is_refused(tmp_path, monkeypatch):
+    case = snapshot_case(monkeypatch)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "planted_outside.py").write_bytes(b"VALUE = 1\n")
+    stub = make_stub(case["resolved"], outside=outside)
+    with pytest.raises(transport._Refused):
+        public_call(tmp_path, case=case, runtime=synthetic_runtime(tmp_path, stub))
 
 
 @windows
 @pytest.mark.parametrize("tamper", ["changed_stub", "extra_file", "manifest_generation"])
-def test_public_backend_refuses_a_runtime_that_does_not_match_the_pinned_manifest(tmp_path, tamper):
-    root, manifest, manifest_sha = synthetic_runtime(tmp_path)
-    runtime = (root, manifest, manifest_sha)
-    bundle = transport.fixed_snapshot_bundle(**PARTS)
-    changes = {"runtime": runtime, "bundle": bundle}
+def test_public_backend_refuses_a_runtime_that_does_not_match_the_pinned_manifest(tmp_path, monkeypatch, tamper):
+    case = snapshot_case(monkeypatch)
+    runtime = synthetic_runtime(tmp_path, make_stub(case["resolved"]))
+    root, manifest, manifest_sha = runtime
+    changes = {"runtime": runtime, "case": case}
     stub = root / "assets" / "code" / "sandbox" / "mind" / "step2" / "shared_index_checkpoint.py"
     if tamper == "changed_stub":
-        stub.write_bytes(stub.read_bytes().replace(b'"ANSWER" if bound', b'"ANSWER" if True'))
+        stub.write_bytes(stub.read_bytes().replace(b'MODE = "good"', b'MODE = "echo"'))
     elif tamper == "extra_file":
         (root / "site" / "planted.py").write_bytes(b"raise SystemExit(0)")
     else:
-        changes["plan_bytes"] = public_plan(root, manifest, manifest_sha, bundle, runtime_generation="c" * 40)
+        bundle = transport.fixed_snapshot_bundle(**case["parts"])
+        changes.update(bundle=bundle, plan_bytes=public_plan(root, manifest, manifest_sha, bundle, pins=case["pins"],
+                                                             tasks=case["tasks"], runtime_generation="c" * 40))
     with pytest.raises(transport._Refused):
         public_call(tmp_path, **changes)
+
+
+# --- v5 parent validation: closed answer, re-resolution against the pinned projection in the bundle ------------
+
+def _validation(tmp_path, monkeypatch):
+    case = snapshot_case(monkeypatch)
+    bundle = transport.fixed_snapshot_bundle(**case["parts"])
+    plan_bytes = public_plan(tmp_path / "rt", tmp_path / "m.json", "7" * 64, bundle, pins=case["pins"],
+                             tasks=case["tasks"])
+    return case, plan_bytes, bundle
+
+
+def _child_answer(plan_bytes, bundle, results, status="ANSWER", **changes):
+    value = {"schema": "wd.q4-fixed-public-answer.v1", "status": status, "results": results,
+             "plan_sha256": sha(plan_bytes), "bundle_sha256": sha(bundle), "backend": "public-snapshot-v1",
+             "source_authentication": "UNKNOWN", "freshness": "UNKNOWN",
+             "runtime": "MANIFEST_VERIFIED_BEFORE_IMPORT_NOT_ISOLATED"}
+    value.update(changes)
+    return canonical(value)
+
+
+def test_parent_validation_returns_only_projection_text_for_known_pairs(tmp_path, monkeypatch):
+    case, plan_bytes, bundle = _validation(tmp_path, monkeypatch)
+    out = transport._fixed_public_validate(plan_bytes, bundle, QUERY, _child_answer(plan_bytes, bundle, case["resolved"]))
+    assert json.loads(out)["results"] == case["resolved"]
+    abstain = transport._fixed_public_validate(plan_bytes, bundle, QUERY,
+                                               _child_answer(plan_bytes, bundle, [], status="ABSTAIN"))
+    assert json.loads(abstain)["status"] == "ABSTAIN" and json.loads(abstain)["results"] == []
+
+
+def _bad_answers(case, plan_bytes, bundle):
+    good = case["resolved"]
+    first = good[0]
+    return {
+        "query_echo": _child_answer(plan_bytes, bundle, [dict(first, stored_text=QUERY.decode())]),
+        "changed_text": _child_answer(plan_bytes, bundle, [dict(first, stored_text=first["stored_text"] + " ")]),
+        "unknown_pair": _child_answer(plan_bytes, bundle, [dict(first, ref_sha256="0" * 64)]),
+        "swapped_pair": _child_answer(plan_bytes, bundle, [dict(first, doc_id_sha256=first["ref_sha256"])]),
+        "extra_key": _child_answer(plan_bytes, bundle, [dict(first, situation="x")]),
+        "missing_key": _child_answer(plan_bytes, bundle, [{k: v for k, v in first.items() if k != "stored_text"}]),
+        "canonical_true": _child_answer(plan_bytes, bundle, [dict(first, canonical_event=True)]),
+        "duplicate": _child_answer(plan_bytes, bundle, [first, first]),
+        "answer_empty": _child_answer(plan_bytes, bundle, []),
+        "abstain_with_hits": _child_answer(plan_bytes, bundle, good, status="ABSTAIN"),
+        "unknown_status": _child_answer(plan_bytes, bundle, good, status="OFF"),
+        "plan_digest": _child_answer(plan_bytes, bundle, good, plan_sha256="0" * 64),
+        "bundle_digest": _child_answer(plan_bytes, bundle, good, bundle_sha256="0" * 64),
+        "schema": _child_answer(plan_bytes, bundle, good, schema="wd.q4-fixed-public-answer.v0"),
+        "authenticated_claim": _child_answer(plan_bytes, bundle, good, source_authentication="VERIFIED"),
+        "extra_top_key": _child_answer(plan_bytes, bundle, good, query=QUERY.decode()),
+        "noncanonical": json.dumps(json.loads(_child_answer(plan_bytes, bundle, good)), indent=1).encode(),
+        "not_json": b"\xff",
+    }
+
+
+@pytest.mark.parametrize("name", ["query_echo", "changed_text", "unknown_pair", "swapped_pair", "extra_key",
+                                  "missing_key", "canonical_true", "duplicate", "answer_empty", "abstain_with_hits",
+                                  "unknown_status", "plan_digest", "bundle_digest", "schema", "authenticated_claim",
+                                  "extra_top_key", "noncanonical", "not_json"])
+def test_parent_validation_refuses_malicious_or_malformed_child_answers(tmp_path, monkeypatch, name):
+    case, plan_bytes, bundle = _validation(tmp_path, monkeypatch)
+    with pytest.raises(transport._Refused) as caught:
+        transport._fixed_public_validate(plan_bytes, bundle, QUERY, _bad_answers(case, plan_bytes, bundle)[name])
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+
+
+def test_parent_validation_refuses_a_bundle_whose_pointer_does_not_match_the_plan(tmp_path, monkeypatch):
+    case, plan_bytes, bundle = _validation(tmp_path, monkeypatch)
+    other = transport.fixed_snapshot_bundle(**dict(case["parts"], pointer_bytes=case["parts"]["pointer_bytes"] + b" "))
+    with pytest.raises(transport._Refused):
+        transport._fixed_public_validate(plan_bytes, other, QUERY, _child_answer(plan_bytes, other, case["resolved"]))
+
+
+def test_closed_result_items_are_checked_on_both_sides():
+    item = {"ref_sha256": "1" * 64, "doc_id_sha256": "2" * 64, "stored_text": "t",
+            "ref_kind": "sha256_of_projected_metadata", "canonical_event": False}
+    assert transport._fixed_closed_results([item]) == [item]
+    for bad in ([dict(item, extra=1)], [{k: v for k, v in item.items() if k != "ref_kind"}],
+                [dict(item, ref_sha256="X" * 64)], [dict(item, stored_text=1)], [dict(item, ref_kind="other")],
+                [dict(item, canonical_event=0)], "not a list", [item] * 101):
+        with pytest.raises(transport._Refused):
+            transport._fixed_closed_results(bad)
+
+
+# --- v5: process-scoped output containment before verifier/runtime/backend execution --------------------------
+
+CONTAIN_SCRIPT = r'''
+import ctypes, json, os, sys
+from ctypes import wintypes as W
+sys.path.insert(0, sys.argv[1])
+report_path = sys.argv[2]
+os.write(1, b"CONTROL-BEFORE\n")
+from tools import wd_q4_secure_transport as transport
+transport._contain_child_output()
+facts = {}
+print("LEAK-PY-PRINT")
+sys.stderr.write("LEAK-SYS-STDERR\n")
+sys.__stdout__.write("LEAK-DUNDER-STDOUT\n")
+facts["os_write"] = [os.write(1, b"LEAK-OSWRITE-1\n"), os.write(2, b"LEAK-OSWRITE-2\n")]
+ucrt = ctypes.CDLL("ucrtbase")
+facts["crt_write"] = [ucrt._write(1, b"LEAK-CRT-WRITE-1\n", 17), ucrt._write(2, b"LEAK-CRT-WRITE-2\n", 17)]
+ucrt.puts(b"LEAK-CRT-PUTS")
+ucrt.fflush(None)
+k = ctypes.WinDLL("kernel32", use_last_error=True)
+k.GetStdHandle.restype = W.HANDLE
+k.GetStdHandle.argtypes = [W.DWORD]
+k.WriteFile.argtypes = [W.HANDLE, ctypes.c_char_p, W.DWORD, ctypes.POINTER(W.DWORD), ctypes.c_void_p]
+k.GetFileType.argtypes = [W.HANDLE]
+written, ok = W.DWORD(), []
+for std in (-11 & 0xFFFFFFFF, -12 & 0xFFFFFFFF):
+    ok.append(bool(k.WriteFile(k.GetStdHandle(std), b"LEAK-WIN32\n", 11, ctypes.byref(written), None)))
+facts["win32_write_ok"] = ok
+facts["std_types"] = [k.GetFileType(k.GetStdHandle(s & 0xFFFFFFFF)) for s in (-10, -11, -12)]
+k.CreateFileW.restype = W.HANDLE
+k.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, ctypes.c_void_p, W.DWORD, W.DWORD, W.HANDLE]
+console = k.CreateFileW("CONOUT$", 0x40000000, 3, None, 3, 0, None)
+facts["conout_opened"] = console not in (None, ctypes.c_void_p(-1).value)
+with open(report_path, "w", encoding="ascii") as report:
+    json.dump(facts, report)
+'''
+
+
+@windows
+def test_containment_silences_python_crt_and_win32_standard_channels(tmp_path):
+    import subprocess
+    script, report = tmp_path / "contain.py", tmp_path / "report.json"
+    script.write_text(CONTAIN_SCRIPT, encoding="ascii")
+    done = subprocess.run([sys.executable, "-I", "-S", "-B", str(script), str(PEER.parents[1]), str(report)],
+                          capture_output=True, timeout=60, cwd=str(tmp_path))
+    assert done.returncode == 0
+    assert done.stdout == b"CONTROL-BEFORE\n"  # positive control: the channel was captured before containment
+    assert done.stderr == b""
+    facts = json.loads(report.read_text(encoding="ascii"))
+    assert facts["os_write"] == [15, 15] and facts["crt_write"] == [17, 17]  # writes succeed into NUL
+    assert facts["win32_write_ok"] == [True, True]
+    assert facts["std_types"] == [2, 2, 2]  # FILE_TYPE_CHAR (NUL) for stdin, stdout and stderr
+    assert facts["conout_opened"] is False  # console detached: CONOUT$ cannot be reopened
+
+
+def test_containment_is_the_first_step_of_the_public_preparation(tmp_path, monkeypatch):
+    root, manifest, manifest_sha = synthetic_runtime(tmp_path)
+    plan_value = transport._fixed_plan(public_plan(root, manifest, manifest_sha, b"x"))
+    calls = []
+    monkeypatch.setattr(transport, "_contain_child_output", lambda: calls.append("contain"))
+    monkeypatch.setattr(transport, "open", lambda *a, **kw: calls.append("open") or pytest.fail("read"), raising=False)
+    with pytest.raises(transport._Refused):  # pytest itself is not -I -S -B, so the flags check refuses next
+        transport._fixed_child_backend(plan_value, str(PEER))
+    assert calls == ["contain"]
+
+
+def test_failed_containment_is_a_fixed_refusal_before_any_verifier_read(tmp_path, monkeypatch):
+    root, manifest, manifest_sha = synthetic_runtime(tmp_path)
+    bundle = transport.fixed_snapshot_bundle(**PARTS)
+    def broken():
+        raise OSError("nul unavailable")
+    monkeypatch.setattr(transport, "_contain_child_output", broken)
+    parent = _ScriptedParent([public_plan(root, manifest, manifest_sha, bundle)])
+    with pytest.raises(transport._Refused) as caught:
+        transport._fixed_child_protocol(parent.read_frame, parent.write_frame, sha(PEER.read_bytes()),
+                                        peer_path=str(PEER))
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert parent.events == [("read", transport._MAX_PLAN)]
+
+
+def test_synthetic_backend_does_not_touch_process_streams(monkeypatch):
+    monkeypatch.setattr(transport, "_contain_child_output", lambda: pytest.fail("synthetic path contained"))
+    assert transport._fixed_child_backend(transport._fixed_plan(plan()), None) is transport._fixed_child_answer
+
+
+@windows
+def test_public_backend_runtime_code_runs_with_contained_streams(tmp_path, monkeypatch):
+    # The stub answers ABSTAIN unless, at import time, stdin/stdout/stderr are NUL, CONOUT$ cannot be opened and
+    # Python's streams are the shared NUL sink; the parent then refuses nothing and the status shows the facts.
+    case = snapshot_case(monkeypatch)
+    output, code = public_call(tmp_path, case=case,
+                               runtime=synthetic_runtime(tmp_path, make_stub(case["resolved"], noisy=True)))
+    assert code == 0 and json.loads(output)["status"] == "ANSWER"
+    assert b"IMPORT-NOISE" not in output

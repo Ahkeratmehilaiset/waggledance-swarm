@@ -19,8 +19,25 @@ def _ready(**changes):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
+def test_ready_primitive_documents_echo_order_not_authentication():
+    assert "echo/order only, not authentication" in transport._fixed_ready_exchange.__doc__
+
+
+def test_matching_echo_from_unauthenticated_peer_is_not_runtime_authentication(monkeypatch):
+    events = []
+    # Simulate a peer-identity check that is falsely treated as successful;
+    # the sender controls and can simply mirror both nonce and digest.
+    monkeypatch.setattr(transport, "_peer", lambda *a, **kw: None)
+    monkeypatch.setattr(transport, "_frame_write",
+                        lambda _k, _p, data, _d: events.append(data))
+    monkeypatch.setattr(transport, "_frame_read", lambda *a, **kw: _ready())
+    query = b"synthetic-query-only"
+    transport._fixed_ready_exchange(None, None, 123, 456, _request(), query, 1)
+    assert events[-1] == query
+
+
 @pytest.mark.parametrize("fault", ["pid", "creation", "nonce", "digest", "schema", "status", "extra", "timeout", "duplicate", "malformed"])
-def test_rejected_peer_never_receives_query(monkeypatch, fault):
+def test_mock_peer_or_echo_refusal_never_receives_query(monkeypatch, fault):
     assert callable(getattr(transport, "_fixed_ready_exchange", None))
     events = []
     query = b"synthetic-query-only"
@@ -45,12 +62,12 @@ def test_rejected_peer_never_receives_query(monkeypatch, fault):
     monkeypatch.setattr(transport, "_peer", peer)
     monkeypatch.setattr(transport, "_frame_write", write)
     monkeypatch.setattr(transport, "_frame_read", read)
-    with pytest.raises(Exception):
+    with pytest.raises(transport._Refused):
         transport._fixed_ready_exchange(None, None, 123, 456, _request(), query, 1)
     assert ("write", query) not in events
 
 
-def test_query_only_after_exact_peer_and_ready(monkeypatch):
+def test_query_only_after_mock_peer_and_matching_ready_echo(monkeypatch):
     events = []
     monkeypatch.setattr(transport, "_peer", lambda _k, _p, pid, created, *, client:
                         events.append(("peer", pid, created, client)))
@@ -181,5 +198,5 @@ def test_bad_control_refuses_before_any_peer_io(monkeypatch, change):
     else:
         control["binding_sha256"] = "BAD"
     monkeypatch.setattr(transport, "_peer", lambda *a, **kw: pytest.fail("unexpected peer I/O"))
-    with pytest.raises(Exception):
+    with pytest.raises(transport._Refused):
         transport._fixed_ready_exchange(None, None, 123, 456, control, b"synthetic", 1)

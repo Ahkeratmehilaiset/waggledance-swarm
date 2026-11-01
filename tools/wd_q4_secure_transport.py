@@ -297,10 +297,11 @@ def _fixed_control(control):
 
 
 def _fixed_ready_exchange(k, pipe, expected_pid, expected_created, control, query, deadline):
-    """Synthetic protocol primitive; it does not establish trusted Q4 readiness.
+    """Synthetic protocol primitive: echo/order only, not authentication.
 
     The fixed peer must establish its own code/runtime/data bindings before it
-    emits READY. This parent only checks the expected peer and the closed reply.
+    emits READY. The echo of the parent's digest does not authenticate those
+    bindings. The parent checks peer PID/creation and the closed reply only.
     No authorized production peer or trusted tuple is supplied by this module.
     """
     raw = ready = ready_raw = None

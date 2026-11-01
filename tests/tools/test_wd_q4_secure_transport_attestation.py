@@ -226,3 +226,125 @@ def test_real_synthetic_roundtrip_under_lease(tmp_path):
         cwd=str(tmp_path), stdin_bytes=b"synthetic-only", timeout_seconds=10, max_output_bytes=1024,
         expected_interpreter_sha256=digest, interpreter_max_bytes=1024 * 1024 * 1024)
     assert result == (b"synthetic-only", 0)
+
+
+def test_windows_synthetic_attested_stage_diagnostic(monkeypatch, tmp_path):
+    """One explicitly enabled synthetic call; emit fixed stage IDs, never values."""
+    if os.environ.get("WD_SYNTHETIC_DIAG_ENABLE") != "1":
+        pytest.skip("diagnostic not enabled")
+    digest = os.environ.get("WD_SYNTHETIC_INTERPRETER_SHA256")
+    if digest is None:
+        pytest.fail("synthetic diagnostic pin missing")
+    import _winapi
+    events = []
+    def mark(stage):
+        if len(events) < 100:
+            events.append(stage)
+    def wrap(stage, fn):
+        def observed(*args, **kwargs):
+            mark(stage + "_BEGIN")
+            try:
+                result = fn(*args, **kwargs)
+            except BaseException:
+                mark(stage + "_ERROR")
+                raise
+            mark(stage + "_OK")
+            return result
+        return observed
+    for module, name, stage in ((parent, "attest_file", "LEASE"),
+                                (transport, "_descriptor", "DESCRIPTOR"),
+                                (transport, "_io", "IO"),
+                                (transport, "_frame_write", "FRAME_WRITE"),
+                                (transport, "_frame_read", "FRAME_READ"),
+                                (_winapi, "CreateProcess", "PROCESS")):
+        monkeypatch.setattr(module, name, wrap(stage, getattr(module, name)))
+    monkeypatch.setattr(parent.HeldFile, "close", wrap("LEASE_CLOSE", parent.HeldFile.close))
+    real_peer = transport._peer
+    peer_source, peer_first = inspect.getsourcelines(real_peer)
+    peer_lines = {}
+    for offset, source_line in enumerate(peer_source):
+        for token, label in (("_check(function(pipe,", "GET_CLIENT_PID"),
+                             ("_check(actual.value == expected_pid)", "PID_MATCH"),
+                             ("process = _handle(k.OpenProcess(", "OPEN_PROCESS"),
+                             ("_noninheritable(k, process)", "NONINHERIT"),
+                             ("_active(k, process)", "ACTIVE"),
+                             ("_check(_created(k, process)", "CREATION_MATCH"),
+                             ("k.CloseHandle(process)", "PEER_HANDLE_CLOSE")):
+            if token in source_line:
+                peer_lines[peer_first + offset] = label
+    if len(peer_lines) != 7:
+        pytest.fail("synthetic peer diagnostic mapping unavailable")
+    def observed_peer(*args, **kwargs):
+        current = [None, False]
+        previous = sys.gettrace()
+        def tracer(frame, event, _arg):
+            if frame.f_code is real_peer.__code__:
+                if event == "line" and frame.f_lineno in peer_lines:
+                    stage = peer_lines[frame.f_lineno]
+                    if current[0] is not None and not current[1]:
+                        mark("PEER_SUB_" + current[0] + "_PASS")
+                    current[:] = [stage, False]
+                elif event == "exception" and current[0] is not None:
+                    mark("PEER_SUB_" + current[0] + "_FAIL")
+                    current[1] = True
+                elif event == "return" and current[0] is not None and not current[1]:
+                    mark("PEER_SUB_" + current[0] + "_PASS")
+            return tracer
+        try:
+            sys.settrace(tracer)
+            return real_peer(*args, **kwargs)
+        finally:
+            sys.settrace(previous)
+    monkeypatch.setattr(transport, "_peer", observed_peer)
+    real_api = transport._api
+    class KernelProxy:
+        def __init__(self, original):
+            self.original = original
+        def __getattr__(self, name):
+            fn = getattr(self.original, name)
+            labels = {"CreateNamedPipeW": "PIPE_CREATE", "CreateJobObjectW": "JOB_CREATE",
+                      "AssignProcessToJobObject": "JOB_ASSIGN", "ResumeThread": "RESUME",
+                      "TerminateJobObject": "JOB_TERMINATE", "TerminateProcess": "PROCESS_TERMINATE",
+                      "CloseHandle": "HANDLE_CLOSE"}
+            if name not in labels:
+                return fn
+            observed = wrap(labels[name], fn)
+            def checked(*args, **kwargs):
+                result = observed(*args, **kwargs)
+                if name in ("AssignProcessToJobObject", "TerminateJobObject", "TerminateProcess", "CloseHandle") and not result:
+                    mark(labels[name] + "_FALSE")
+                if name == "ResumeThread" and result == 0xFFFFFFFF:
+                    mark("RESUME_INVALID")
+                if name in ("CreateNamedPipeW", "CreateJobObjectW") and result in (None, 0, transport._INVALID):
+                    mark(labels[name] + "_INVALID")
+                return result
+            return checked
+    def observed_api():
+        mark("API_BEGIN")
+        try:
+            kernel, advapi = real_api()
+        except BaseException:
+            mark("API_ERROR")
+            raise
+        mark("API_OK")
+        return KernelProxy(kernel), advapi
+    monkeypatch.setattr(transport, "_api", observed_api)
+    success = False
+    try:
+        code = "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())"
+        outcome = transport.run_bounded(executable=sys.executable, arguments=("-I", "-B", "-c", code),
+            cwd=str(tmp_path), stdin_bytes=b"synthetic-only", timeout_seconds=10, max_output_bytes=1024,
+            expected_interpreter_sha256=digest, interpreter_max_bytes=1024 * 1024 * 1024)
+        success = outcome == (b"synthetic-only", 0)
+    except BaseException:
+        mark("ECHO_REFUSED")
+    if success:
+        mark("ECHO_OK")
+    subchecks = [stage for stage in events if stage.startswith("PEER_SUB_")]
+    for stage in subchecks:
+        print("Q4PEER|" + stage)
+    if not subchecks:
+        print("Q4PEER|NOT_REACHED")
+    print("Q4PEER|ECHO_PASS" if success else "Q4PEER|ECHO_FAIL")
+    if not success:
+        pytest.fail("synthetic diagnostic refused; see fixed stage IDs")

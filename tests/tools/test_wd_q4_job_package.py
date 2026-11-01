@@ -13,7 +13,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 REBOOT = ROOT / "ops/windows/reboot"
 NAME = "WdQ4ProcessJob.ps1"
-SIBLINGS = ("Get-WdQ4ReadConfig.ps1", "Invoke-WdQ4Query.ps1")
+SESSION_SCRIPTS = ("Invoke-WdQ4SessionCommand.ps1", "Invoke-WdQ4SessionHost.ps1")
+SIBLINGS = ("Get-WdQ4ReadConfig.ps1", "Invoke-WdQ4Query.ps1", *SESSION_SCRIPTS)
 DEPLOY = REBOOT / "Deploy-WdRebootBundle.ps1"
 FLEET = REBOOT / "wd-fleet.json"
 
@@ -25,6 +26,7 @@ def test_deployer_and_fleet_require_inactive_job_helper_with_siblings(source):
     assert match, "deployer required-file list missing"
     fleet = json.loads(FLEET.read_text(encoding="utf-8-sig"))
     for name in (NAME, *SIBLINGS):
+        assert (REBOOT / name).is_file()
         if source == "deployer":
             assert match.group(1).count(f"'{name}',") == 1
         else:
@@ -50,13 +52,14 @@ def test_fleet_start_checks_each_required_name_against_hashed_manifest_entries()
 
 
 @pytest.mark.skipif(os.name != "nt" or not shutil.which("powershell.exe"), reason="Windows PowerShell required")
-def test_actual_hash_map_pins_synthetic_helper_and_detects_change(tmp_path):
+@pytest.mark.parametrize("helper_name", (NAME, *SESSION_SCRIPTS))
+def test_actual_hash_map_pins_synthetic_helper_and_detects_change(tmp_path, helper_name):
     text = DEPLOY.read_text(encoding="utf-8-sig")
     match = re.search(r"(?ms)^function Get-RelativeFileHashMap \{.*?^\}", text)
     assert match
     original = b"# synthetic helper v1; never executed\n"
     changed = b"# synthetic helper v2; never executed\n"
-    helper = tmp_path / NAME
+    helper = tmp_path / helper_name
     helper.write_bytes(original)
     (tmp_path / SIBLINGS[0]).write_bytes(b"# synthetic sibling\n")
     (tmp_path / "deployment-manifest.json").write_bytes(b"{}")
@@ -73,8 +76,8 @@ def test_actual_hash_map_pins_synthetic_helper_and_detects_change(tmp_path):
         assert run.returncode == 0, run.stderr
         return json.loads(run.stdout)["files"]
     hashes = read_map()
-    assert hashes[NAME] == hashlib.sha256(original).hexdigest().upper()
+    assert hashes[helper_name] == hashlib.sha256(original).hexdigest().upper()
     assert SIBLINGS[0] in hashes and "deployment-manifest.json" not in hashes
     helper.write_bytes(changed)
-    assert read_map()[NAME] == hashlib.sha256(changed).hexdigest().upper()
-    assert read_map()[NAME] != hashes[NAME]
+    assert read_map()[helper_name] == hashlib.sha256(changed).hexdigest().upper()
+    assert read_map()[helper_name] != hashes[helper_name]

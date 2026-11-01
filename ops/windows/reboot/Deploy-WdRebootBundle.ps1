@@ -1148,6 +1148,8 @@ foreach ($required in @(
         'Get-WdQ4SharedSessionConfig.ps1',
         'Invoke-WdQ4Query.ps1',
         'WdQ4ProcessJob.ps1',
+        'Invoke-WdQ4SessionCommand.ps1',
+        'Invoke-WdQ4SessionHost.ps1',
         'Install-WdMindShadowRefresh.ps1',
         'Resolve-WdNativeWakeRejection.ps1',
         'WAKE_PROCEDURE_LEAD.md',

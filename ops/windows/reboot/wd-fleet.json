@@ -73,6 +73,8 @@
       "Get-WdQ4SharedSessionConfig.ps1",
       "Invoke-WdQ4Query.ps1",
       "WdQ4ProcessJob.ps1",
+      "Invoke-WdQ4SessionCommand.ps1",
+      "Invoke-WdQ4SessionHost.ps1",
       "Resolve-WdGrokModel.ps1",
       "Initialize-WdGrokRecovery.ps1",
       "Invoke-WdGrok.ps1",

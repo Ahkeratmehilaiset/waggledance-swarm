@@ -8,6 +8,10 @@ WD_MIND_PUBLIC_AUDIT_ROOT, WD_MIND_PUBLIC_MAX_AGE_SECONDS, and pairs
 WD_MIND_PUBLIC_{ANCHOR,POLICY,ROSTER,PUBLIC_POLICY}_{PATH,SHA256}, plus the
 AGENT_BRIDGE_AGENT and AGENT_BRIDGE_AGENT_UUID session values. Path checks do
 not defeat hostile replacement between verification and use.
+Without WD_MIND_PUBLIC_READ_VERSION the v2 publication is read unchanged. The
+explicit value v3 reads the v3 series publication instead, with the ANCHOR pin
+being the fixed root anchor of the series; any other value refuses before any
+pin is read. The opt-in never enables the reader by itself.
 """
 from datetime import datetime, timezone
 import os
@@ -58,6 +62,9 @@ def main(argv=None):
             argv = sys.argv[1:]
         if argv or os.environ.get("WD_MIND_PUBLIC_ENABLED") != "1":
             raise ValueError()
+        version = os.environ.get("WD_MIND_PUBLIC_READ_VERSION")
+        if version is not None and version != "v3":
+            raise ValueError()
         age_text = _required("WD_MIND_PUBLIC_MAX_AGE_SECONDS")
         if not _SECONDS.fullmatch(age_text) or int(age_text) > 900:
             raise ValueError()
@@ -69,10 +76,11 @@ def main(argv=None):
             data, digest = _bounded_pin(name, limit)
             pins[name.lower() + "_bytes"] = data
             pins[name.lower() + "_sha256"] = digest
-        from tools.wd_mind_public_session import read_status
+        from tools.wd_mind_public_session import read_status, read_status_v3
 
-        result = read_status(audit_root, lane=lane, agent_uuid=uuid, as_of=datetime.now(timezone.utc),
-                             max_age_seconds=int(age_text), enabled=True, **pins)
+        route = read_status if version is None else read_status_v3
+        result = route(audit_root, lane=lane, agent_uuid=uuid, as_of=datetime.now(timezone.utc),
+                       max_age_seconds=int(age_text), enabled=True, **pins)
         output = result.decode("ascii") + "\n"
         written = sys.stdout.write(output)
         if type(written) is not int or written != len(output):

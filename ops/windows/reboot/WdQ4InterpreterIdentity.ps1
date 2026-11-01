@@ -3,12 +3,36 @@ Default-off interpreter-tree verification primitive. The caller must supply
 independently trusted descriptor and executable pins and protect this script,
 PowerShell, and the verified files until launch. This does not authenticate the
 pins, verify PE/ABI or loaded DLLs, or prevent same-user check/use races.
+Fixed drive type refuses network, removable and other non-fixed roots, but does
+not distinguish SUBST or prove physical locality or trusted storage. The final
+path of the opened root must match its supplied DOS path, but behavior for SUBST
+and mapped shares has not been established by a real-device test.
 
 To avoid PowerShell 5.1's ambiguous duplicate JSON keys, this implementation
 accepts a strict JSON subset: ordinary ASCII names/paths, with descriptor and
 record keys in the order documented below. Other valid descriptor encodings are
 refused, not silently reinterpreted. No process or interpreter is launched.
 #>
+function Get-WdQ4DriveType {
+    param([string]$Path)
+    return ([IO.DriveInfo]::new([IO.Path]::GetPathRoot($Path))).DriveType
+}
+
+function Get-WdQ4FinalRoot {
+    param([string]$Path)
+    # Caller loads the known native helper before calling this function.
+    $handle = $script:WdQ4IdentityNativeType::CreateFileW($Path, 128, 7, [IntPtr]::Zero, 3, 0x02200000, [IntPtr]::Zero)
+    if ($null -eq $handle -or $handle.IsInvalid) { throw 'refused' }
+    try {
+        $buffer = New-Object Text.StringBuilder 32768
+        $length = $script:WdQ4IdentityNativeType::GetFinalPathNameByHandleW($handle, $buffer, [uint32]$buffer.Capacity, 0)
+        if ($length -eq 0 -or $length -ge $buffer.Capacity) { throw 'refused' }
+        $value = $buffer.ToString()
+        if (-not $value.StartsWith('\\?\', [StringComparison]::Ordinal)) { throw 'refused' }
+        return $value.Substring(4).TrimEnd('\')
+    } finally { $handle.Dispose() }
+}
+
 function Get-WdQ4BoundedHash {
     param([IO.Stream]$Stream, [long]$ExpectedSize)
     try {
@@ -59,6 +83,7 @@ function Test-WdQ4InterpreterIdentity {
         $pattern = '^\s*\{\s*"schema"\s*:\s*"wd\.q4-interpreter-identity\.v1"\s*,\s*"files"\s*:\s*\[\s*' + $entry + '(?:\s*,\s*' + $entry + ')*\s*\]\s*\}\s*$'
         if (-not [regex]::IsMatch($text, $pattern, [Text.RegularExpressions.RegexOptions]::CultureInvariant, [TimeSpan]::FromSeconds(2))) { throw 'refused' }
         $doc = ConvertFrom-Json -InputObject $text -ErrorAction Stop
+        if ($doc.schema -isnot [string] -or $doc.schema -cne 'wd.q4-interpreter-identity.v1') { throw 'refused' }
         $records = @($doc.files)
         if ($records.Count -lt 1 -or $records.Count -gt 1024) { throw 'refused' }
         foreach ($absolute in @($Root, $ExpectedInterpreter)) {
@@ -72,11 +97,16 @@ function Test-WdQ4InterpreterIdentity {
             }
         }
         $rootPath = $Root.TrimEnd('\')
+        $driveType = Get-WdQ4DriveType -Path $rootPath
+        if ($driveType -isnot [IO.DriveType] -or $driveType -ne [IO.DriveType]::Fixed) { throw 'refused' }
         $expectedFiles = [Collections.Generic.Dictionary[string,object]]::new([StringComparer]::OrdinalIgnoreCase)
         $expectedDirs = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
         [long]$total = 0
         $interpreter = $null; $roleSet = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach ($record in $records) {
+            if ($record.role -isnot [string] -or $record.path -isnot [string] -or
+                ($record.size -isnot [int] -and $record.size -isnot [long]) -or
+                $record.sha256 -isnot [string]) { throw 'refused' }
             $name = [string]$record.path
             $segments = $name.Split('/')
             if ($segments.Count -gt 63 -or $expectedFiles.ContainsKey($name) -or $expectedDirs.ContainsKey($name)) { throw 'refused' }
@@ -108,6 +138,7 @@ function Test-WdQ4InterpreterIdentity {
             if ($null -ne ('WdQ4IdentityNativeV1' -as [type])) { throw 'refused' }
             $types = @(Add-Type -PassThru -TypeDefinition @'
 using System;
+using System.Text;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 public static class WdQ4IdentityNativeV1 {
@@ -119,6 +150,8 @@ public static class WdQ4IdentityNativeV1 {
     public long Size; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=296)] public string Name;
   }
   [DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetFileInformationByHandle(SafeFileHandle h, out Info i);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern uint GetFinalPathNameByHandleW(SafeFileHandle h, StringBuilder path, uint length, uint flags);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr FindFirstStreamW(string p, int level, out StreamData d, uint flags);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool FindNextStreamW(IntPtr h, out StreamData d);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool FindClose(IntPtr h);
@@ -145,6 +178,8 @@ public static class WdQ4IdentityNativeV1 {
             $node = $parent
         }
         if (-not (Get-Item -LiteralPath $rootPath -Force).PSIsContainer) { throw 'refused' }
+        $finalRoot = Get-WdQ4FinalRoot -Path $rootPath
+        if ($finalRoot -isnot [string] -or $finalRoot -ine $rootPath) { throw 'refused' }
         # Re-enumerate the complete tree after the first verification pass.
         for ($pass = 0; $pass -lt 2; $pass++) {
           $seenFiles = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)

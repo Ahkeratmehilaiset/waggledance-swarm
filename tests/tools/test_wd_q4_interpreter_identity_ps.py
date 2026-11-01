@@ -44,7 +44,8 @@ def _fixture(tmp_path):
     return root, descriptor, files
 
 
-def _run(root, descriptor, digest=None, interpreter=None, interpreter_sha=None, enabled="$true"):
+def _run(root, descriptor, digest=None, interpreter=None, interpreter_sha=None, enabled="$true", drive_type=None,
+         guard_tree=False, final_root=None, parser_poison=None):
     env = _child_env()
     audit_root = SCRIPT.parents[3] / ".codex-audit"
     audit_root.mkdir(exist_ok=True)
@@ -55,12 +56,27 @@ def _run(root, descriptor, digest=None, interpreter=None, interpreter_sha=None, 
                 "Q4_ID_EXEC": str(interpreter or root / "python.exe"),
                 "Q4_ID_EXEC_PIN": _sha(b"synthetic exe") if interpreter_sha is None else interpreter_sha})
     switch = "" if enabled is None else "-Enabled " + enabled + " "
-    command = ("$ErrorActionPreference='Stop'; . '" + str(SCRIPT).replace("'", "''") + "'; "
+    drive_mock = ("" if drive_type is None else
+                  "function Get-WdQ4DriveType { param([string]$Path) return [IO.DriveType]" + str(drive_type) + " }; ")
+    final_mock = ("" if final_root is None else "function Get-WdQ4FinalRoot { param([string]$Path) return " +
+                  ("$Path" if final_root == "same" else "'C:\\synthetic-different'") + " }; ")
+    parser_mock = ""
+    if parser_poison is not None:
+        mutation = ("$v.files[0].size = [double]$v.files[0].size" if parser_poison == "size" else
+                    "$v.files[0].sha256 = [Text.StringBuilder]::new([string]$v.files[0].sha256)")
+        parser_mock = ("function ConvertFrom-Json { param($InputObject) "
+                       "$v=Microsoft.PowerShell.Utility\\ConvertFrom-Json -InputObject $InputObject; " +
+                       mutation + "; return $v }; ")
+    tree_guard = ("$script:treeTouched=$false; function Get-Item { $script:treeTouched=$true; throw 'synthetic' }; "
+                  if guard_tree else "$script:treeTouched=$false; ")
+    command = ("$ErrorActionPreference='Stop'; . '" + str(SCRIPT).replace("'", "''") + "'; " +
+               drive_mock + final_mock + parser_mock + tree_guard +
                "try { $r = Test-WdQ4InterpreterIdentity " + switch + "-Root $env:Q4_ID_ROOT "
                "-DescriptorBytes ([IO.File]::ReadAllBytes($env:Q4_ID_DOC)) "
                "-ExpectedSha256 $env:Q4_ID_PIN -ExpectedInterpreter $env:Q4_ID_EXEC "
                "-ExpectedInterpreterSha256 $env:Q4_ID_EXEC_PIN; [Console]::Out.Write($r.status) } "
-               "catch { [Console]::Error.Write('interpreter_identity_refused'); exit 2 }")
+               "catch { if ($script:treeTouched) { [Console]::Out.Write('TOUCHED') }; "
+               "[Console]::Error.Write('interpreter_identity_refused'); exit 2 }")
     return subprocess.run([str(Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"),
                            "-NoProfile", "-NonInteractive", "-Command", command], env=env,
                           capture_output=True, text=True, timeout=60)
@@ -151,6 +167,46 @@ def test_non_boolean_enabled_does_not_enable_verification(tmp_path):
     result = _run(root, descriptor, enabled="1")
     assert result.returncode != 0
     assert result.stdout != "VERIFIED"
+
+
+@pytest.mark.parametrize("drive_type", [0, 1, 2, 4, 5, 6])
+def test_non_fixed_drive_is_refused_before_tree_walk(tmp_path, drive_type):
+    root, descriptor, _ = _fixture(tmp_path)
+    result = _run(root, descriptor, drive_type=drive_type, guard_tree=True)
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == "interpreter_identity_refused"
+
+
+def test_mock_fixed_drive_can_verify_a_synthetic_tree(tmp_path):
+    root, descriptor, _ = _fixture(tmp_path)
+    result = _run(root, descriptor, drive_type=3)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "VERIFIED"
+
+
+def test_final_root_mismatch_refuses_even_when_drive_is_fixed(tmp_path):
+    root, descriptor, _ = _fixture(tmp_path)
+    result = _run(root, descriptor, drive_type=3, final_root="different")
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == "interpreter_identity_refused"
+
+
+def test_final_root_same_allows_synthetic_tree(tmp_path):
+    root, descriptor, _ = _fixture(tmp_path)
+    result = _run(root, descriptor, drive_type=3, final_root="same")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "VERIFIED"
+
+
+@pytest.mark.parametrize("parser_poison", ["size", "sha256"])
+def test_parser_must_return_exact_scalar_types(tmp_path, parser_poison):
+    root, descriptor, _ = _fixture(tmp_path)
+    result = _run(root, descriptor, parser_poison=parser_poison)
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == "interpreter_identity_refused"
 
 
 def test_ancestor_junction_refuses(tmp_path):

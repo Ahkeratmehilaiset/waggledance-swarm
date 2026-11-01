@@ -263,16 +263,51 @@ def _canonical(obj):
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")
 
 
-def _archived_generation_mode(root, pointer, budget):
+def _freeze_history_snapshot(snapshot):
+    """Copy a bounded logical-name-to-bytes map, without reading the filesystem.
+
+    Inputs and the caller's pins require independent authentication; this is
+    only a snapshot of metadata, not a verified active generation or cell.
+    """
+    if type(snapshot) is not dict or len(snapshot) > 2048:
+        _refuse()
+    frozen = {}
+    total = 0
+    for key, value in snapshot.items():
+        if type(key) is not str or type(value) is not bytes or len(value) > _MAX:
+            _refuse()
+        parts = key.split("/")
+        artifact = (len(parts) == 2 and NAME.fullmatch(parts[0]) is not None
+                    and parts[1] in ARTIFACTS.values())
+        archive = (len(parts) == 1 and re.fullmatch(r"q4-(?:pointer|delta)-[0-9a-f]{64}\.json", key))
+        if not artifact and not archive:
+            _refuse()
+        total += len(value)
+        if total > _MAX_HISTORY_BYTES:
+            _refuse()
+        frozen[key] = value
+    return frozen
+
+
+def _history_snapshot_read(snapshot, key):
+    try:
+        return snapshot[key]
+    except (KeyError, TypeError):
+        _refuse()
+
+
+def _archived_generation_mode(root, pointer, budget, *, snapshot_bytes=None):
     """Hash-check only the retained metadata needed for mode continuity.
 
     Historical FAISS cells are intentionally not opened here; the existing
     active-generation verifier still opens only the active index. The metadata
     bytes counted here share the bounded history-transition budget.
     """
+    snapshot = None if snapshot_bytes is None else _freeze_history_snapshot(snapshot_bytes)
     values = {}
     for kind in ("memory_sha256", "receipt_sha256"):
-        raw = _read(root / pointer["generation"] / ARTIFACTS[kind])
+        raw = (_read(root / pointer["generation"] / ARTIFACTS[kind]) if snapshot is None
+               else _history_snapshot_read(snapshot, pointer["generation"] + "/" + ARTIFACTS[kind]))
         budget[0] += len(raw)
         if budget[0] > _MAX_HISTORY_BYTES or _sha(raw) != pointer["artifacts"][kind]:
             _refuse()
@@ -281,7 +316,7 @@ def _archived_generation_mode(root, pointer, budget):
 
 
 def _validate_history_transition(root, current, previous, previous_hash, tasks, roster, policy_sha, roster_sha,
-                                 policy_bytes, roster_bytes, budget, *, delta_bytes=None):
+                                 policy_bytes, roster_bytes, budget, *, delta_bytes=None, snapshot_bytes=None):
     """Rebuild one union from retained metadata deltas; hashes are not authentication.
 
     Each v4 transition retains its delta. Historical v3 transitions predate
@@ -291,18 +326,19 @@ def _validate_history_transition(root, current, previous, previous_hash, tasks, 
     from sandbox.mind.step2 import shared_history, shared_projection as sp
     from sandbox.mind.step2.shared_bridge_snapshot import _token
 
-    if policy_bytes is None or roster_bytes is None:
+    if policy_bytes is None or roster_bytes is None or (snapshot_bytes is not None and delta_bytes is not None):
         _refuse()
+    snapshot = None if snapshot_bytes is None else _freeze_history_snapshot(snapshot_bytes)
 
-    def bounded(path):
-        data = _read(path)
+    def bounded(name):
+        data = (_read(root / name) if snapshot is None else _history_snapshot_read(snapshot, name))
         budget[0] += len(data)
         if budget[0] > _MAX_HISTORY_BYTES:
             _refuse()
         return data
 
     def artifact(pointer, kind):
-        data = bounded(root / pointer["generation"] / ARTIFACTS[kind])
+        data = bounded(pointer["generation"] + "/" + ARTIFACTS[kind])
         if _sha(data) != pointer["artifacts"][kind]:
             _refuse()
         return data
@@ -317,7 +353,7 @@ def _validate_history_transition(root, current, previous, previous_hash, tasks, 
         sp.validate_projection(obj, approved_tasks=tasks, include_refs=False, roster=roster,
                                exclude_review_signal=True)
     digest = current["delta_projection_sha256"]
-    raw_delta = bounded(root / ("q4-delta-" + digest + ".json")) if delta_bytes is None else delta_bytes
+    raw_delta = bounded("q4-delta-" + digest + ".json") if delta_bytes is None else delta_bytes
     if delta_bytes is not None:
         budget[0] += len(raw_delta)
         if budget[0] > _MAX_HISTORY_BYTES:

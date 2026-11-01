@@ -37,6 +37,14 @@ landed_recovered (rewrites the identical continuation anchor, keeps the artifact
 publishes nothing, repeatable), unchanged_recovered (removes the artifact) or the
 refusal (a third publication, no artifact, other pins).
 
+Every run (publish or recover) holds ONE transaction lock, LOCK_FILENAME in the audit
+root via the bounded cross-process reader_slot (LOCK_TIMEOUT_SECONDS; busy = refusal),
+across artifact check and create, continue or recover, prepare, the publish CAS, the
+anchor and artifact cleanup. Lock order: this lock first, the session's own lock only
+inside its calls (the session never takes this one), so the two cannot deadlock. stdout
+is written after release. Only cooperating publishers on the same lock file are
+serialized; a writer that bypasses it is not.
+
 stdout is one canonical JSON line with fixed keys: the publication digest (the
 caller keeps it as the next prior), the record count, lag_bytes_observed (size of
 the source file observed after the publish minus the window end; disclosure only, a
@@ -67,6 +75,8 @@ import sys
 
 MAX_WINDOW_BYTES = 1024 * 1024
 MAX_WINDOW_ROWS = 2000
+LOCK_FILENAME = ".public-publish.lock"
+LOCK_TIMEOUT_SECONDS = 2.0
 PENDING_FILENAME = ".public-publish-pending.json"
 NEXT_ANCHOR_FILENAME = "public-publish-next-anchor.json"
 _PENDING_SCHEMA = "wd.mind-public-publish-pending.v1"
@@ -230,13 +240,12 @@ def _recover(session, root, pins, anchor, source):
                                            attempt_sha256=saved["attempt_sha256"], enabled=True)
     if state == "unchanged":
         (root / PENDING_FILENAME).unlink()
-        _emit("unchanged_recovered", None, None, None, None)
-        return
+        return "unchanged_recovered", None, None, None, None
     if state != "landed":
         raise ValueError()
     next_sha = _write_next_anchor(root, anchor, saved["candidate_cursor"])
-    _emit("landed_recovered", saved["attempt_sha256"], saved["records"],
-          _lag(source, saved["candidate_cursor"]["offset"]), next_sha)
+    return ("landed_recovered", saved["attempt_sha256"], saved["records"],
+            _lag(source, saved["candidate_cursor"]["offset"]), next_sha)
 
 
 def _continue(session, root, previous, anchor):
@@ -260,6 +269,46 @@ def _continue(session, root, previous, anchor):
             raise ValueError()
 
 
+def _publish(session, snapshot, adapter, producer, root, previous, pins, anchor, source, generation, cursor):
+    """One window under the transaction lock; returns the emit fields."""
+    _continue(session, root, previous, anchor)
+    tasks, _ = adapter.strict_pins(pins["policy_bytes"], pins["policy_sha256"], pins["roster_bytes"],
+                                   pins["roster_sha256"])
+    result = snapshot.read_anchored_delta(
+        source, cursor, tasks, anchor_bytes=pins["anchor_bytes"], anchor_sha256=pins["anchor_sha256"],
+        generation_path=generation, max_bytes=MAX_WINDOW_BYTES, max_rows=MAX_WINDOW_ROWS,
+        policy_bytes=pins["policy_bytes"], policy_sha256=pins["policy_sha256"],
+        roster_bytes=pins["roster_bytes"], roster_sha256=pins["roster_sha256"],
+        public_policy_bytes=pins["public_policy_bytes"], public_policy_sha256=pins["public_policy_sha256"])
+    records = json.loads(producer.build_status(result, enabled=True, **pins))["records"]
+    candidate = asdict(result["candidate_cursor"])
+    as_of = datetime.now(timezone.utc)
+    attempt = session.prepare_status_attempt(root, result, as_of=as_of, enabled=True,
+                                             expected_previous_sha256=previous, **pins)
+    # Durable BEFORE any publication write; exclusive, so an unresolved attempt refuses here.
+    _create(root, PENDING_FILENAME, _canonical(
+        {"schema": _PENDING_SCHEMA, "prior_sha256": previous, "attempt_sha256": attempt,
+         **{name: pins[name] for name in _PIN_DIGESTS}, "cursor_start": asdict(cursor),
+         "candidate_cursor": candidate, "records": len(records)}))
+    try:
+        digest = session.publish_status(root, result, as_of=as_of, enabled=True,
+                                        expected_previous_sha256=previous, attempt_sha256=attempt, **pins)
+        outcome = "published"
+    except Exception:
+        # Bound to the caller's own prior and this attempt: never adopts a third publication.
+        state = session.recover_status_attempt(root, prior_sha256=previous, attempt_sha256=attempt,
+                                               enabled=True)
+        if state == "unchanged":
+            (root / PENDING_FILENAME).unlink()
+        if state != "landed":
+            raise
+        digest, outcome = attempt, "landed_after_ambiguous_failure"
+    if not _is_hex(digest) or not hmac.compare_digest(digest, attempt):
+        raise ValueError()
+    next_sha = _write_next_anchor(root, anchor, candidate)
+    return outcome, digest, len(records), _lag(source, candidate["offset"]), next_sha
+
+
 def main(argv=None):
     try:
         if argv is None:
@@ -273,6 +322,7 @@ def main(argv=None):
         from sandbox.mind.step2 import shared_capture_adapter as adapter
         from sandbox.mind.step2 import status_metadata_producer as producer
         from tools import wd_mind_public_session as session
+        from sandbox.mind.step2.reader_slot import reader_slot
         from tools import wd_mind_public_session_cli as reader
 
         previous = _previous() if mode is None else None
@@ -283,45 +333,20 @@ def main(argv=None):
             pins[name.lower() + "_bytes"] = data
             pins[name.lower() + "_sha256"] = digest
         anchor, source, generation, cursor = _anchor_source(pins["anchor_bytes"])
-        if mode == "recover":
-            _recover(session, root, pins, anchor, source)
-            return 0
-        _continue(session, root, previous, anchor)
-        tasks, _ = adapter.strict_pins(pins["policy_bytes"], pins["policy_sha256"], pins["roster_bytes"],
-                                       pins["roster_sha256"])
-        result = snapshot.read_anchored_delta(
-            source, cursor, tasks, anchor_bytes=pins["anchor_bytes"], anchor_sha256=pins["anchor_sha256"],
-            generation_path=generation, max_bytes=MAX_WINDOW_BYTES, max_rows=MAX_WINDOW_ROWS,
-            policy_bytes=pins["policy_bytes"], policy_sha256=pins["policy_sha256"],
-            roster_bytes=pins["roster_bytes"], roster_sha256=pins["roster_sha256"],
-            public_policy_bytes=pins["public_policy_bytes"], public_policy_sha256=pins["public_policy_sha256"])
-        records = json.loads(producer.build_status(result, enabled=True, **pins))["records"]
-        candidate = asdict(result["candidate_cursor"])
-        as_of = datetime.now(timezone.utc)
-        attempt = session.prepare_status_attempt(root, result, as_of=as_of, enabled=True,
-                                                 expected_previous_sha256=previous, **pins)
-        # Durable BEFORE any publication write; exclusive, so a concurrent or unresolved attempt refuses here.
-        _create(root, PENDING_FILENAME, _canonical(
-            {"schema": _PENDING_SCHEMA, "prior_sha256": previous, "attempt_sha256": attempt,
-             **{name: pins[name] for name in _PIN_DIGESTS}, "cursor_start": asdict(cursor),
-             "candidate_cursor": candidate, "records": len(records)}))
-        try:
-            digest = session.publish_status(root, result, as_of=as_of, enabled=True,
-                                            expected_previous_sha256=previous, attempt_sha256=attempt, **pins)
-            outcome = "published"
-        except Exception:
-            # Bound to the caller's own prior and this attempt: never adopts a third publication.
-            state = session.recover_status_attempt(root, prior_sha256=previous, attempt_sha256=attempt,
-                                                   enabled=True)
-            if state == "unchanged":
-                (root / PENDING_FILENAME).unlink()
-            if state != "landed":
-                raise
-            digest, outcome = attempt, "landed_after_ambiguous_failure"
-        if not _is_hex(digest) or not hmac.compare_digest(digest, attempt):
-            raise ValueError()
-        next_sha = _write_next_anchor(root, anchor, candidate)
-        _emit(outcome, digest, len(records), _lag(source, candidate["offset"]), next_sha)
+        lock = root / LOCK_FILENAME
+        if os.path.lexists(lock):
+            session._regular(lock)
+        # Lock order: this transaction lock FIRST, the session's own lock only inside its calls (the session never
+        # takes this one). Held across artifact check/create, continue/recover, prepare, publish CAS, anchor and
+        # artifact cleanup; released before stdout so a slow reader of the output never holds it.
+        with reader_slot(lock, timeout_seconds=LOCK_TIMEOUT_SECONDS):
+            session._regular(lock)
+            if mode == "recover":
+                emitted = _recover(session, root, pins, anchor, source)
+            else:
+                emitted = _publish(session, snapshot, adapter, producer, root, previous, pins, anchor, source,
+                                   generation, cursor)
+        _emit(*emitted)
         return 0
     except Exception:
         sys.stderr.write(_REFUSAL + "\n")

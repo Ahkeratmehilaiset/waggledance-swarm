@@ -367,17 +367,35 @@ def test_multi_rejects_bad_pins_roots_and_budget_before_output(multi_inputs, fau
     assert not candidate.exists() and not manifest.exists()
 
 
+def _multi_overlap_sources(multi_inputs):
+    roots, candidate, _, files, _ = multi_inputs
+    roots = dict(roots)
+    roots['site'] = candidate.parent / 'source_site'
+    module = roots['site'] / 'example' / '__init__.py'
+    module.parent.mkdir(parents=True)
+    module.write_bytes(files['site/example/__init__.py'])
+    return roots
+
+
+def test_multi_overlap_source_is_explicitly_audit_bound(multi_inputs):
+    roots = _multi_overlap_sources(multi_inputs)
+    assert roots['site'] == multi_inputs[1].parent / 'source_site'
+    assert roots['site'].parent.name == '.codex-audit'
+    assert (roots['site'] / 'example' / '__init__.py').read_bytes() == multi_inputs[3]['site/example/__init__.py']
+
+
 def test_multi_rejects_source_output_overlap_and_existing_target(multi_inputs):
     from tools.build_q4_runtime_candidate import build_candidate_from_sources
 
     roots, candidate, manifest, _, pins = multi_inputs
-    with pytest.raises(ValueError):
-        build_candidate_from_sources(roots, roots['site'] / 'nested-candidate', manifest,
+    overlap_roots = _multi_overlap_sources(multi_inputs)
+    with pytest.raises(ValueError, match='^output_overlap$'):
+        build_candidate_from_sources(overlap_roots, overlap_roots['site'] / 'nested-candidate', manifest,
             pins=pins, generation=GENERATION, revision=REVISION, max_bytes=4096)
     candidate.mkdir()
     marker = candidate / 'existing'
     marker.write_bytes(b'keep')
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match='^output_exists$'):
         assemble_multi(multi_inputs)
     assert marker.read_bytes() == b'keep' and not manifest.exists()
 

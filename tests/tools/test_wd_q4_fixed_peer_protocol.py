@@ -19,14 +19,29 @@ def _ready(**changes):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
-def test_ready_primitive_documents_echo_order_not_authentication():
-    assert "echo/order only, not authentication" in transport._fixed_ready_exchange.__doc__
+def test_reflected_challenge_cannot_supply_expected_binding_or_receive_query(monkeypatch):
+    sent = []
+    monkeypatch.setattr(transport, "_peer", lambda *a, **kw: None)
+    monkeypatch.setattr(transport, "_frame_write", lambda _k, _p, data, _d: sent.append(data))
+    def reflect(_k, _p, _limit, _deadline):
+        challenge = json.loads(sent[0])
+        return _ready(nonce=challenge["nonce"], binding_sha256=challenge.get("binding_sha256", "c" * 64))
+    monkeypatch.setattr(transport, "_frame_read", reflect)
+    query = b"synthetic-query-only"
+    with pytest.raises(transport._Refused):
+        transport._fixed_ready_exchange(None, None, 123, 456, _request(), query, 1)
+    assert len(sent) == 1 and query not in sent
+    assert set(json.loads(sent[0])) == {"schema", "nonce"}
 
 
-def test_matching_echo_from_unauthenticated_peer_is_not_runtime_authentication(monkeypatch):
+def test_ready_primitive_documents_challenge_order_not_authentication():
+    assert "challenge/order only, not authentication" in transport._fixed_ready_exchange.__doc__
+
+
+def test_known_binding_from_unauthenticated_peer_is_not_runtime_authentication(monkeypatch):
     events = []
     # Simulate a peer-identity check that is falsely treated as successful;
-    # the sender controls and can simply mirror both nonce and digest.
+    # a peer that already knows the expected digest can still assert it.
     monkeypatch.setattr(transport, "_peer", lambda *a, **kw: None)
     monkeypatch.setattr(transport, "_frame_write",
                         lambda _k, _p, data, _d: events.append(data))
@@ -67,7 +82,7 @@ def test_mock_peer_or_echo_refusal_never_receives_query(monkeypatch, fault):
     assert ("write", query) not in events
 
 
-def test_query_only_after_mock_peer_and_matching_ready_echo(monkeypatch):
+def test_query_only_after_mock_peer_and_matching_reported_binding(monkeypatch):
     events = []
     monkeypatch.setattr(transport, "_peer", lambda _k, _p, pid, created, *, client:
                         events.append(("peer", pid, created, client)))
@@ -79,6 +94,9 @@ def test_query_only_after_mock_peer_and_matching_ready_echo(monkeypatch):
     transport._fixed_ready_exchange(None, None, 123, 456, _request(), query, 1)
     assert events[0] == ("peer", 123, 456, True)
     assert events[1][0] == "write" and events[1][1] != query
+    challenge = json.loads(events[1][1])
+    assert challenge == {"schema": "wd.q4-fixed-challenge.v1", "nonce": _request()["nonce"]}
+    assert _request()["binding_sha256"].encode() not in events[1][1]
     assert events[2] == ("read",) and events[3] == ("write", query)
 
 
@@ -171,7 +189,7 @@ def test_ready_refusal_drops_direct_payload_locals(monkeypatch):
         transport._fixed_ready_exchange(None, None, 123, 456, control, query, 1)
     frame = _locals_for(error.value, "_fixed_ready_exchange")
     assert all(value is not query and value is not control for value in frame.values())
-    assert not {"control", "query", "raw", "ready", "ready_raw"} & set(frame)
+    assert not {"control", "query", "raw", "ready", "ready_raw", "challenge"} & set(frame)
 
 
 def test_fixed_peer_refusal_drops_direct_payload_locals():

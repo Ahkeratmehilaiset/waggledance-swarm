@@ -297,21 +297,23 @@ def _fixed_control(control):
 
 
 def _fixed_ready_exchange(k, pipe, expected_pid, expected_created, control, query, deadline):
-    """Synthetic protocol primitive: echo/order only, not authentication.
+    """Synthetic protocol primitive: challenge/order only, not authentication.
 
     The fixed peer must establish its own code/runtime/data bindings before it
-    emits READY. The echo of the parent's digest does not authenticate those
-    bindings. The parent checks peer PID/creation and the closed reply only.
+    emits READY. A matching peer declaration does not authenticate those
+    bindings. The parent checks peer PID/creation and the closed reply only;
+    it does not disclose its expected binding digest in the challenge.
     No authorized production peer or trusted tuple is supplied by this module.
     """
-    raw = ready = ready_raw = None
+    raw = ready = ready_raw = challenge = None
     try:
         control = _fixed_control(control)
         _check(type(expected_pid) is int and expected_pid > 0 and
                type(expected_created) is int and expected_created > 0)
         _check(type(query) is bytes and 0 < len(query) <= _MAX_INPUT)
         _peer(k, pipe, expected_pid, expected_created, client=True)
-        raw = json.dumps(control, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        challenge = {"schema": "wd.q4-fixed-challenge.v1", "nonce": control["nonce"]}
+        raw = json.dumps(challenge, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
         _frame_write(k, pipe, raw, deadline)
         ready_raw = _frame_read(k, pipe, 4096, deadline)
         _check(type(ready_raw) is bytes and 0 < len(ready_raw) <= 4096)
@@ -325,7 +327,7 @@ def _fixed_ready_exchange(k, pipe, expected_pid, expected_created, control, quer
         return
     except Exception:
         pass
-    del control, query, raw, ready, ready_raw
+    del control, query, raw, ready, ready_raw, challenge
     raise _Refused() from None
 
 

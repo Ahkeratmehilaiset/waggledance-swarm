@@ -56,6 +56,10 @@ def test_fixed_peer_result_adapter_is_in_bundle_python_files():
     assert "tools/wd_q4_fixed_result_adapter.py" in _packaged_python()
 
 
+def test_public_publisher_is_in_bundle_python_files():
+    assert "tools/wd_mind_public_publish_cli.py" in _packaged_python()
+
+
 def test_manual_capability_declares_only_the_two_existing_drivers_not_default_entrypoints():
     definition = _definition()
     capability = definition["manual_execution_capability"]

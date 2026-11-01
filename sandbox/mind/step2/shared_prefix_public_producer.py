@@ -8,7 +8,8 @@ This primitive never reads live data unless explicitly invoked with caller paths
 never installs or deletes, and never includes a prefix digest in its report.
 request.fenced=True (opt-in, default off) publishes through the private intent and
 the checkpoint fence; only a resolved "landed" reports, any Exception reports
-publication_state_unknown. KeyboardInterrupt/SystemExit propagate unchanged: the
+publication_state_unknown (which can mean landed; a fence left by a failed begin is
+never closed here). KeyboardInterrupt/SystemExit propagate unchanged: the
 caller quarantines both roots and never retries (states in _publish_fenced). It
 fences cooperating writers only.
 """
@@ -335,19 +336,22 @@ def _publish_fenced(request, state, attempt, candidate, status, generation, comm
     """Opt-in fenced route: durable intent + fence for exactly prior -> attempt, fenced commit, resolution.
 
     The commit result is not trusted: resolution under the checkpoint lock decides. Only "landed" reports.
-    An Exception reports publication_state_unknown, never retried here:
-    - from begin_intent: the fence it may have opened for exactly this binding is closed as not_landed (that
-      attempt can never land afterwards; a fence of another binding is never touched); a slot it may have
-      created keeps the private root pending;
+    Every Exception reports publication_state_unknown, never retried here, and that token can mean landed:
+    - from begin_intent: nothing is cleaned up. A fence carries no owner and another private root may have
+      adopted the same binding and still be running, so exclusive ownership cannot be proven; the fence is
+      left UNKNOWN for reconciliation (an open fence without an intent refuses every cooperating writer until
+      it is resolved by hand with its own binding); a slot begin_intent may have created stays pending;
     - from the commit: resolution still runs; "not_landed" removes the fence, KEEPS the intent and leaves the
       pointer unfenced, so a later writer can move it and strand the intent (resolution then refuses);
-      "unknown" or a refused resolution keeps what is there.
+    - from resolution: it can fail after mutating state (outcome record linked, fence removed, private state
+      replaced, slot not yet removed) with the pointer already at the attempt; a rerun of resolve_intent
+      decides, or refuses.
     KeyboardInterrupt, SystemExit and every other non-Exception propagate unchanged with no cleanup. The caller
-    must quarantine both roots as publication unknown and never retry; the persisted state is then one of: an
-    open fence with no intent (interrupted inside begin_intent: every cooperating writer refuses until it is
-    resolved with the fence's own binding), fence + intent (before or inside the commit: resolve_intent decides
-    later), or a recorded outcome with the intent kept (inside resolution: a rerun reaches the same outcome).
-    Older unfenced writers are not stopped by the fence.
+    must quarantine both roots as publication unknown and never retry. Besides an open fence with no intent,
+    fence + intent, or a recorded outcome with the intent kept, an interrupt can end inside any filesystem
+    step (a staged file before its link, a record linked before the fence is removed, the private state
+    replaced before the slot is removed); those states are not enumerated exhaustively here.
+    Older unfenced writers are not fenced.
     """
     outcome = None
     try:
@@ -356,11 +360,7 @@ def _publish_fenced(request, state, attempt, candidate, status, generation, comm
         state.begin_intent(request.expected_pointer_sha256, request.start_prefix, attempt, candidate,
                            enabled=True, fence=True)
     except Exception:
-        try:
-            checkpoint.resolve_prefix_fence(request.root, expected_prior_pointer_sha256=request.expected_pointer_sha256,
-                                            expected_attempt_sha256=attempt, enabled=True, timeout=request.timeout)
-        except Exception:
-            pass  # no fence of exactly this binding, or a refusal: nothing changed
+        pass  # never close a fence whose exclusive ownership cannot be proven
     else:
         try:
             commit(*args, expected_attempt_sha256=attempt, fenced=True, **kwargs)

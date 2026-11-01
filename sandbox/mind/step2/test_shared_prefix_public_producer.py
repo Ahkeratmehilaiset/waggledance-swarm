@@ -459,7 +459,7 @@ def _pending(chain):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
-def test_an_exception_after_the_fence_opens_closes_that_orphan_fence_as_not_landed(tmp_path, monkeypatch):
+def test_an_exception_after_the_fence_opens_leaves_the_fence_unknown_for_reconciliation(tmp_path, monkeypatch):
     from sandbox.mind.step2 import prefix_private_state as ps
     chain = _fenced_chain(tmp_path)
     mod, root = chain.mod, chain.root
@@ -472,12 +472,12 @@ def test_an_exception_after_the_fence_opens_closes_that_orphan_fence_as_not_land
         with pytest.raises(mod.PrefixProducerRefused, match="^publication_state_unknown$") as error:
             mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
     assert error.value.__context__ is None and error.value.__cause__ is None
-    records = _fence_files(root)
-    assert len(records) == 1 and records[0].endswith(".not_landed.json")  # no orphan fence, attempt refused for good
+    # Ownership of the fence cannot be proven (another root may have adopted it): it is left exactly as found.
+    assert _fence_files(root) == ["q4-prefix-fence.json"]
     assert not _pending(chain) and not (root / "q4-latest.json").exists()
-    # The shared pointer is not left fenced: a new publication of another generation lands.
-    b = mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-b"))
-    assert b["status"] == "PUBLISHED_GENESIS" and b["pointer_sha256"] == _sha_file(root / "q4-latest.json")
+    with pytest.raises(mod.PrefixProducerRefused, match="^publication_state_unknown$"):
+        mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-b"))  # no auto retry
+    assert _fence_files(root) == ["q4-prefix-fence.json"] and not (root / "q4-latest.json").exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
@@ -621,7 +621,7 @@ def test_keyboard_interrupt_in_a_fenced_catchup_commit_propagates_unchanged(tmp_
 
 
 @pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
-def test_a_history_orphan_fence_is_closed_against_its_real_prior(tmp_path, monkeypatch):
+def test_a_history_begin_failure_leaves_its_fence_for_reconciliation(tmp_path, monkeypatch):
     from sandbox.mind.step2 import prefix_private_state as ps
     chain = _fenced_chain(tmp_path)
     mod, root = chain.mod, chain.root
@@ -633,7 +633,100 @@ def test_a_history_orphan_fence_is_closed_against_its_real_prior(tmp_path, monke
         patch.setattr(ps, "_create_slot", lambda *a, **k: (_ for _ in ()).throw(OSError("slot failure")))
         with pytest.raises(mod.PrefixProducerRefused, match="^publication_state_unknown$"):
             mod.publish_public_prefix(enabled=True, request=chain.request(kw_b, end_a, a["pointer_sha256"], "gen-b"))
-    not_landed = [n for n in _fence_files(root) if n.endswith(".not_landed.json")]
-    assert "q4-prefix-fence.json" not in _fence_files(root) and len(not_landed) == 1
-    assert json.loads((root / not_landed[0]).read_bytes())["prior_pointer_sha256"] == a["pointer_sha256"]
+    assert not [n for n in _fence_files(root) if n.endswith(".not_landed.json")]
+    assert _fence_binding(root)[0] == a["pointer_sha256"]  # the open fence, untouched, bound to the real prior
     assert not _pending(chain) and _sha_file(root / "q4-latest.json") == a["pointer_sha256"]
+
+
+# --- v4: a begin failure never closes a fence whose exclusive ownership cannot be proven ---------------------------
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
+def test_a_begin_failure_in_another_root_never_closes_a_live_fence_of_the_same_binding(tmp_path, monkeypatch):
+    from sandbox.mind.step2 import prefix_private_state as ps
+    chain = _fenced_chain(tmp_path)
+    mod, root = chain.mod, chain.root
+    first, _, kw_a, start = chain.delta(chain.f.PUBLIC_EVENTS)
+    other = tmp_path / "other-private"
+    other.mkdir()
+    real_commit = mod.checkpoint.commit_prefix_genesis
+    seen = {}
+
+    def b_slot(*args, **kwargs):
+        raise OSError("B slot failure after adopting the same binding")
+
+    def a_commit(*args, **kwargs):
+        # A holds its fence + intent and is still running; B (another private root) races on the SAME binding.
+        attempt = kwargs["expected_attempt_sha256"]
+        seen["a_before_b"] = (_fence_binding(root) == (None, attempt), _pending(chain))
+        request_b = chain.request(kw_a, start, None, "gen-a", private=other)
+        with monkeypatch.context() as b_patch:
+            b_patch.setattr(ps, "_create_slot", b_slot)
+            with ps.locked_state(other, root, enabled=True) as state_b:
+                try:
+                    mod._publish_fenced(request_b, state_b, attempt, first["candidate_prefix"], "PUBLISHED_GENESIS",
+                                        "gen-a", lambda *a, **k: pytest.fail("B must never commit"), (), {})
+                except mod.PrefixProducerRefused as refused:
+                    seen["b_token"] = str(refused)
+        seen["after_b"] = _fence_files(root)
+        seen["b_pending"] = (other / ps._PENDING).exists()
+        return real_commit(*args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(mod.checkpoint, "commit_prefix_genesis", a_commit)
+        try:
+            a = mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
+        except mod.PrefixProducerRefused as refused:
+            a = {"status": str(refused)}
+    assert seen["a_before_b"] == (True, True)
+    assert seen["b_token"] == "publication_state_unknown" and seen["b_pending"] is False
+    assert seen["after_b"] == ["q4-prefix-fence.json"]  # A's live fence survived B's begin failure
+    assert a["status"] == "PUBLISHED_GENESIS" and a["pointer_sha256"] == _sha_file(root / "q4-latest.json")
+    assert _fence_files(root) == ["q4-prefix-fence-" + a["pointer_sha256"] + ".landed.json"] and not _pending(chain)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
+def test_two_preseeded_roots_race_on_an_empty_advance_and_the_live_fence_survives(tmp_path, monkeypatch):
+    from sandbox.mind.step2 import prefix_private_state as ps
+    chain = _fenced_chain(tmp_path)
+    mod, root = chain.mod, chain.root
+    first, _, kw_a, start = chain.delta(chain.f.PUBLIC_EVENTS)
+    a = mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
+    end_a = first["candidate_prefix"]
+    other = tmp_path / "other-private"
+    other.mkdir()
+    with ps.locked_state(other, root, enabled=True) as state_b:  # B preseeded on the identical genesis/prefix
+        state_b.begin(None)
+        state_b.commit(None, a["pointer_sha256"], end_a)
+    empty, _, kw_e, _ = chain.delta([chain.f.event(agent="claude-rco-1")], end_a.cursor, end_a)
+    real_advance = mod.checkpoint.advance_prefix_empty
+    seen = {}
+
+    def b_slot(*args, **kwargs):
+        raise OSError("B slot failure after adopting the same binding")
+
+    def a_advance(*args, **kwargs):  # A is held after begin + intent, before the advance
+        attempt = kwargs["expected_attempt_sha256"]
+        seen["a_before_b"] = (_fence_binding(root) == (a["pointer_sha256"], attempt), _pending(chain))
+        request_b = chain.request(kw_e, end_a, a["pointer_sha256"], "unused", private=other)
+        with monkeypatch.context() as b_patch:
+            b_patch.setattr(ps, "_create_slot", b_slot)
+            with ps.locked_state(other, root, enabled=True) as state_b:
+                try:
+                    mod._publish_fenced(request_b, state_b, attempt, empty["candidate_prefix"], "EMPTY_ADVANCED",
+                                        None, lambda *a, **k: pytest.fail("B must never advance"), (), {})
+                except mod.PrefixProducerRefused as refused:
+                    seen["b_token"] = str(refused)
+        seen["after_b"] = [n for n in _fence_files(root) if not n.endswith(".landed.json")]
+        seen["b_pending"] = (other / ps._PENDING).exists()
+        return real_advance(*args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(mod.checkpoint, "advance_prefix_empty", a_advance)
+        try:
+            b = mod.publish_public_prefix(enabled=True, request=chain.request(kw_e, end_a, a["pointer_sha256"], "unused"))
+        except mod.PrefixProducerRefused as refused:
+            b = {"status": str(refused)}
+    assert seen["a_before_b"] == (True, True)
+    assert seen["b_token"] == "publication_state_unknown" and seen["b_pending"] is False
+    assert seen["after_b"] == ["q4-prefix-fence.json"]  # B neither resolved nor removed A's fence
+    assert b["status"] == "EMPTY_ADVANCED" and b["pointer_sha256"] == _sha_file(root / "q4-latest.json")
+    with _private_state(chain) as state:
+        assert state.load(b["pointer_sha256"]) == empty["candidate_prefix"]

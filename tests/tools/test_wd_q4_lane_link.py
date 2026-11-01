@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import traceback
 
 import pytest
 
@@ -156,6 +157,92 @@ def test_transport_error_is_sanitized(plan):
     with pytest.raises(link.LaneLinkRefused, match="^transport_refused$") as exc:
         link.invoke(enabled=True, lane=LANES[0], query_bytes=b"synthetic-secret", transport=transport, **plan)
     assert "synthetic-private-path" not in repr(exc.value)
+
+
+@pytest.mark.parametrize("kind", ["transport_cleanup", "attestation_cleanup", "timeout", "ordinary"])
+@pytest.mark.parametrize("public", [False, True])
+def test_lane_preserves_critical_transport_errors_but_sanitizes_ordinary_errors(
+        plan, public_plan, kind, public):
+    from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown
+    from tools.wd_q4_secure_transport import TransportCleanupUnknown
+
+    secret = "synthetic-private-path-and-query"
+    exc = {"transport_cleanup": TransportCleanupUnknown("timeout"),
+           "attestation_cleanup": AttestationCleanupUnknown(object()),
+           "timeout": TimeoutError(secret),
+           "ordinary": RuntimeError("synthetic-private-path")}[kind]
+    def failed_transport(**_):
+        try:
+            raise RuntimeError(secret)
+        except RuntimeError:
+            raise exc
+    kwargs = public_plan[0] if public else plan
+    function = link.invoke_public if public else link.invoke
+    expected = link.LaneLinkRefused if kind == "ordinary" else type(exc)
+    with pytest.raises(expected) as caught:
+        function(enabled=True, lane=LANES[0], query_bytes=b"synthetic", transport=failed_transport, **kwargs)
+    if kind == "ordinary":
+        assert str(caught.value) == "transport_refused" and "synthetic-private-path" not in repr(caught.value)
+    else:
+        assert caught.value is not exc
+        assert caught.value.__context__ is None and caught.value.__cause__ is None
+        assert secret not in str(caught.value) and secret not in repr(caught.value.args)
+        lane_frames = [frame for frame, _ in traceback.walk_tb(caught.value.__traceback__)
+                       if frame.f_code.co_name in ("invoke", "invoke_public")]
+        assert len(lane_frames) == 1
+        assert all(key not in lane_frames[0].f_locals for key in
+                   ("query_bytes", "bundle_root", "public_plan_path", "root", "wrapper", "raw_plan", "raw"))
+        if kind == "timeout":
+            assert str(caught.value) == "secure_transport_timeout"
+        elif kind == "transport_cleanup":
+            assert caught.value.prior_outcome == "timeout"
+        else:
+            assert caught.value.lease is exc.lease
+
+
+def test_unknown_cleanup_metadata_is_replaced_with_fixed_value():
+    from tools.wd_q4_secure_transport import TransportCleanupUnknown
+    rebuilt = link._sanitized_critical_transport_exception(TransportCleanupUnknown("synthetic-private-path"))
+    assert rebuilt.prior_outcome == "other" and "synthetic-private-path" not in repr(rebuilt.__dict__)
+
+
+@pytest.mark.parametrize("missing", ["tools.wd_q4_secure_transport", "tools.wd_q4_fixed_parent_attestation"])
+def test_missing_other_optional_module_cannot_hide_known_cleanup_state(monkeypatch, missing):
+    import builtins
+    from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown
+    from tools.wd_q4_secure_transport import TransportCleanupUnknown
+
+    lease = object()
+    original_import = builtins.__import__
+    def simulate_missing(name, *args, **kwargs):
+        if name == missing:
+            raise ImportError("synthetic missing module")
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", simulate_missing)
+    original = AttestationCleanupUnknown(lease) if missing.endswith("secure_transport") else TransportCleanupUnknown("timeout")
+    rebuilt = link._sanitized_critical_transport_exception(original)
+    assert type(rebuilt) is type(original)
+    if isinstance(rebuilt, AttestationCleanupUnknown):
+        assert rebuilt.lease is lease
+    else:
+        assert rebuilt.prior_outcome == "timeout"
+
+
+@pytest.mark.parametrize("first", ["tools.wd_q4_lane_link", "tools.wd_q4_fixed_result_adapter"])
+def test_critical_exception_detection_has_no_import_cycle_or_eager_windows_api(first):
+    project = str(Path(__file__).resolve().parents[2])
+    code = ("import ctypes,importlib,sys;sys.path.insert(0,sys.argv[1]);"
+            "ctypes.WinDLL=lambda *a,**k:(_ for _ in ()).throw(AssertionError('eager WinDLL'));"
+            "importlib.import_module(sys.argv[2]);"
+            "link=importlib.import_module('tools.wd_q4_lane_link');"
+            "transport=importlib.import_module('tools.wd_q4_secure_transport');"
+            "parent=importlib.import_module('tools.wd_q4_fixed_parent_attestation');"
+            "assert link._sanitized_critical_transport_exception(transport.TransportCleanupUnknown('timeout'));"
+            "assert link._sanitized_critical_transport_exception(parent.AttestationCleanupUnknown(object()));"
+            "assert link._sanitized_critical_transport_exception(ValueError('synthetic')) is None")
+    done = subprocess.run([sys.executable, "-I", "-B", "-c", code, project, first],
+                          capture_output=True, timeout=30)
+    assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
 
 
 def test_resolved_reply_preserves_only_the_expected_wrapper_shape(plan):

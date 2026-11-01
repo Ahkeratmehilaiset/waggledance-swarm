@@ -26,6 +26,38 @@ class LaneLinkRefused(ValueError):
     """Fixed public refusal; no paths, query or backend details."""
 
 
+def _sanitized_critical_transport_exception(exc):
+    """Rebuild critical state without its potentially sensitive exception chain."""
+    if isinstance(exc, TimeoutError):
+        return TimeoutError("secure_transport_timeout")
+    modules = {base.__module__ for base in type(exc).__mro__}
+    if not modules.intersection({"tools.wd_q4_secure_transport", "tools.wd_q4_fixed_parent_attestation"}):
+        return None
+    # Imports are independent and lazy: a missing optional module must not
+    # conceal the other known cleanup state, or load platform APIs eagerly.
+    if "tools.wd_q4_secure_transport" in modules:
+        try:
+            from tools.wd_q4_secure_transport import TransportCleanupUnknown
+        except ImportError:
+            pass
+        else:
+            if isinstance(exc, TransportCleanupUnknown):
+                prior = exc.prior_outcome
+                if type(prior) is not str or prior not in {"timeout", "refused", "interrupt", "exit", "none", "other",
+                                                           "prior_unknown"}:
+                    prior = "other"
+                return TransportCleanupUnknown(prior)
+    if "tools.wd_q4_fixed_parent_attestation" in modules:
+        try:
+            from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown
+        except ImportError:
+            pass
+        else:
+            if isinstance(exc, AttestationCleanupUnknown):
+                return AttestationCleanupUnknown(exc.lease)
+    return None
+
+
 _LANES = frozenset({"codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"})
 _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -174,6 +206,7 @@ def invoke(*, lane, bundle_root, expected_commit, expected_manifest_sha256, expe
             raise ValueError()
     except Exception:
         raise LaneLinkRefused("binding_refused") from None
+    raw = code = None
     try:
         arguments = ("-BundleRoot", root, "-ExpectedBundleCommit", expected_commit,
                      "-ExpectedManifestSha256", expected_manifest_sha256)
@@ -181,8 +214,12 @@ def invoke(*, lane, bundle_root, expected_commit, expected_manifest_sha256, expe
             arguments += ("-Lane", lane)
         raw, code = transport(wrapper=wrapper, arguments=arguments, stdin_bytes=query_bytes)
         return _result(raw, code)
-    except Exception:
+    except Exception as exc:
+        critical = _sanitized_critical_transport_exception(exc)
+    if critical is None:
         raise LaneLinkRefused("transport_refused") from None
+    del query_bytes, bundle_root, transport, root, wrapper, arguments, raw, code
+    raise critical from None
 
 
 _PUBLIC_PLAN_KEYS = frozenset({"schema", "config", "root", "policy_path", "roster_path", "public_policy_path",
@@ -273,6 +310,7 @@ def invoke_public(*, lane, bundle_root, expected_commit, expected_manifest_sha25
             raise ValueError()
     except Exception:
         raise LaneLinkRefused("binding_refused") from None
+    raw = code = None
     try:
         raw, code = transport(wrapper=wrapper, arguments=("-BundleRoot", root, "-ExpectedBundleCommit", expected_commit,
             "-ExpectedManifestSha256", expected_manifest_sha256, "-Public", "-PublicPlanPath", path,
@@ -281,5 +319,9 @@ def invoke_public(*, lane, bundle_root, expected_commit, expected_manifest_sha25
                 or _public_plan(public_plan_path, expected_public_plan_sha256) != (path, raw_plan, pins)):
             raise ValueError()
         return _public_result(raw, code, pins)
-    except Exception:
+    except Exception as exc:
+        critical = _sanitized_critical_transport_exception(exc)
+    if critical is None:
         raise LaneLinkRefused("transport_refused") from None
+    del query_bytes, bundle_root, public_plan_path, transport, root, wrapper, raw_plan, path, raw, code
+    raise critical from None

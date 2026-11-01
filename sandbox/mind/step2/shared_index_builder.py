@@ -654,6 +654,32 @@ def verified_catchup_projection(source, *, policy_bytes, policy_sha256, roster_b
     earlier history. Partial chains and empty deltas refuse without advancing.
     Refusal/drop counters are not aggregated by the existing history merger.
     """
+    return _verified_catchup_projection(source, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+                                        roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+                                        partial_only=False)
+
+
+def verified_partial_catchup_projection(source, *, enabled=False, policy_bytes=None, policy_sha256=None,
+                                        roster_bytes=None, roster_sha256=None):
+    """Opt-in private proof only; this does not authorize publication or cursor advancement.
+
+    The caller must not treat a partial result as caught up. In particular,
+    interruption-safe checkpoint publication still needs durable writer fencing.
+    The snapshot and binding objects must come from a trusted producer in this
+    process. Their commitments are splice guards, not authentication against
+    malicious code in the same process, and do not prove snapshot-end against
+    an active forger able to construct new bindings.
+    """
+    if enabled is not True:
+        del source, policy_bytes, roster_bytes
+        raise BuildRefused("partial_projection_disabled") from None
+    return _verified_catchup_projection(source, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+                                        roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+                                        partial_only=True)
+
+
+def _verified_catchup_projection(source, *, policy_bytes, policy_sha256, roster_bytes, roster_sha256,
+                                 partial_only):
     frozen = combined = window = part = tasks = start = merger = None
     try:
         import copy
@@ -667,7 +693,13 @@ def verified_catchup_projection(source, *, policy_bytes, policy_sha256, roster_b
         if snapshot.verify_public_catchup(frozen, expected_anchor_bytes=source["anchor_bytes"],
                 expected_anchor_sha256=source["expected_anchor_sha256"], expected_policy_sha256=policy_sha256,
                 expected_roster_sha256=roster_sha256, expected_public_policy_sha256=source["public_policy_sha256"],
-                expected_start_prefix=start) is not True or frozen["caught_up"] is not True:
+                expected_start_prefix=start) is not True:
+            raise ValueError()
+        if partial_only:
+            if (frozen["caught_up"] is not False
+                    or frozen["candidate_cursor"].offset <= start.cursor.offset):
+                raise ValueError()
+        elif frozen["caught_up"] is not True:
             raise ValueError()
         merger = _history_merger()
         combined = None

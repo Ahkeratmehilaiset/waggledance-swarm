@@ -348,6 +348,56 @@ def test_source_and_encoder_pins_are_verified_before_the_resolver_and_any_backen
     assert seam["queries"] == []
 
 
+def _module_frames(exc, mod):
+    """(function name, live locals) for every traceback frame that belongs to the module under test."""
+    module_file = Path(mod.__file__).resolve()
+    frames, tb = [], exc.__traceback__
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        if Path(code.co_filename).resolve() == module_file:
+            frames.append((code.co_name, dict(tb.tb_frame.f_locals)))
+        tb = tb.tb_next
+    return frames
+
+
+@pytest.mark.parametrize("entry", ["production_disabled", "production_enabled", "seam_disabled", "seam_marker",
+                                   "seam_pin_refused", "seam_anchor_refused", "resolve_disabled", "resolve_refused"])
+def test_refusal_frames_retain_no_arguments_or_local_data(seam, entry):
+    """A caught refusal exposes its traceback frames; the module frames must hold NO locals: not stdin, config, root,
+    policy or roster bytes, pins, marker, flag or intermediate results."""
+    mod = seam["mod"]
+    stdin, config, args = NoRead(), q4_config(seam), dict(seam["args"])
+    backend = _unreached_backend(seam)
+    resolve_args = {key: value for key, value in args.items() if key not in ("expected_source_sha256", "expected_encoder_sha256")}
+    with pytest.raises(mod.PrefixPublicRefused) as info:
+        if entry == "production_disabled":
+            mod.query_public_prefix(config, stdin, **dict(args, enabled=False))
+        elif entry == "production_enabled":
+            mod.query_public_prefix(config, stdin, **args)
+        elif entry == "seam_disabled":
+            mod._synthetic_seam_query_public_prefix(config, stdin, synthetic_backend=backend, **dict(args, enabled=False))
+        elif entry == "seam_marker":
+            mod._synthetic_seam_query_public_prefix(config, stdin, synthetic_backend=True, **args)
+        elif entry == "seam_pin_refused":
+            mod._synthetic_seam_query_public_prefix(config, stdin, synthetic_backend=backend, **dict(args, policy_sha256="zz"))
+        elif entry == "seam_anchor_refused":
+            mod._synthetic_seam_query_public_prefix(config, stdin, synthetic_backend=backend,
+                                                    **dict(args, expected_source_sha256="f" * 64))
+        elif entry == "resolve_disabled":
+            mod.resolve_prefix_public_pointer(**dict(resolve_args, enabled=False))
+        else:
+            mod.resolve_prefix_public_pointer(**dict(resolve_args, expected_pointer_sha256="f" * 64))
+    frames = _module_frames(info.value, mod)
+    assert frames, "the module frame must be present to be inspected"
+    for name, live in frames:
+        assert live == {}, (entry, name, sorted(live))
+    # and nothing the caller handed over is reachable through the exception object itself
+    import gc
+    reachable = gc.get_referents(info.value) + gc.get_referents(info.value.__traceback__)
+    for secret in (stdin, config, args["policy_bytes"], args["roster_bytes"], args["public_policy_bytes"], args["root"], backend):
+        assert all(item is not secret for item in reachable), (entry, type(secret).__name__)
+
+
 def test_refusals_carry_no_cause_context_or_internal_frames(seam):
     """A fixed refusal is raised outside every handler: no chained cause, no implicit context, no inner frames."""
     import traceback
@@ -434,7 +484,12 @@ def test_query_module_stays_fixed_path_only():
     functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
     production = functions["query_public_prefix"]
     statements = [node for node in production.body if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant))]
-    assert statements and all(isinstance(node, (ast.If, ast.Raise)) for node in statements)
+    assert statements and all(isinstance(node, (ast.If, ast.Raise, ast.Delete)) for node in statements)
+    assert isinstance(statements[0], ast.Delete)  # arguments are scrubbed before any refusal is raised
+    parameters = {arg.arg for arg in production.args.args + production.args.kwonlyargs}
+    scrubbed = {target.id for node in ast.walk(production) if isinstance(node, ast.Delete)
+                for target in node.targets if isinstance(target, ast.Name)}
+    assert parameters <= scrubbed, parameters - scrubbed
     calls = [node for node in ast.walk(production) if isinstance(node, ast.Call)]
     assert calls and all(isinstance(call.func, ast.Name) and call.func.id == "PrefixPublicRefused" for call in calls)
     assert "_synthetic_seam_query_public_prefix" in functions and "SyntheticInProcessBackend" in source

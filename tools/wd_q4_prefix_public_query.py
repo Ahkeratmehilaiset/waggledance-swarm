@@ -77,10 +77,14 @@ class SyntheticInProcessBackend:
         self.run = run
 
 
-def _attempt(work):
-    """The module's only handler: the caller raises its fixed refusal AFTER this handler closed."""
+def _attempt(work, *args, **kwargs):
+    """The module's only handler: the caller raises its fixed refusal AFTER this handler closed.
+
+    Arguments travel explicitly (no closure cells in the caller's frame) and this frame is gone before the caller
+    raises, so the refusal's traceback reaches only frames the caller has scrubbed.
+    """
     try:
-        return True, work()
+        return True, work(*args, **kwargs)
     except Exception:
         return False, None
 
@@ -154,12 +158,17 @@ def resolve_prefix_public_pointer(root, *, expected_pointer_sha256, policy_bytes
                                   enabled=False):
     """Resolve a caller-anchored prefix checkpoint; no legacy fallback or public prefix."""
     if enabled is not True:
+        del root, expected_pointer_sha256, policy_bytes, policy_sha256, roster_bytes, roster_sha256, \
+            public_policy_bytes, public_policy_sha256, enabled
         raise PrefixPublicRefused("disabled")
-    ok, binding = _attempt(lambda: _resolve(
-        root, expected_pointer_sha256=expected_pointer_sha256, policy_bytes=policy_bytes,
-        policy_sha256=policy_sha256, roster_bytes=roster_bytes, roster_sha256=roster_sha256,
-        public_policy_bytes=public_policy_bytes, public_policy_sha256=public_policy_sha256))
+    ok, binding = _attempt(_resolve, root, expected_pointer_sha256=expected_pointer_sha256, policy_bytes=policy_bytes,
+                           policy_sha256=policy_sha256, roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+                           public_policy_bytes=public_policy_bytes, public_policy_sha256=public_policy_sha256)
+    # scrub every argument and local before raising: the traceback frame of this function is visible to the caller
+    del root, expected_pointer_sha256, policy_bytes, policy_sha256, roster_bytes, roster_sha256, \
+        public_policy_bytes, public_policy_sha256, enabled
     if not ok:
+        del ok, binding
         raise PrefixPublicRefused("resolution_refused")
     return binding
 
@@ -282,16 +291,27 @@ def _synthetic_seam_query_public_prefix(config, stdin, *, root, expected_pointer
     a flag, None or a bare callable refuses before anything is read.
     """
     if enabled is not True:
+        del config, stdin, root, expected_pointer_sha256, expected_source_sha256, expected_encoder_sha256, \
+            policy_bytes, policy_sha256, roster_bytes, roster_sha256, public_policy_bytes, public_policy_sha256, \
+            synthetic_backend, enabled
         raise PrefixPublicRefused("disabled")
     if type(synthetic_backend) is not SyntheticInProcessBackend:
+        del config, stdin, root, expected_pointer_sha256, expected_source_sha256, expected_encoder_sha256, \
+            policy_bytes, policy_sha256, roster_bytes, roster_sha256, public_policy_bytes, public_policy_sha256, \
+            synthetic_backend, enabled
         raise PrefixPublicRefused("synthetic_backend_required")
-    ok, output = _attempt(lambda: _verified_query(
-        config, stdin, root=root, expected_pointer_sha256=expected_pointer_sha256,
-        expected_source_sha256=expected_source_sha256, expected_encoder_sha256=expected_encoder_sha256,
-        policy_bytes=policy_bytes, policy_sha256=policy_sha256, roster_bytes=roster_bytes,
-        roster_sha256=roster_sha256, public_policy_bytes=public_policy_bytes,
-        public_policy_sha256=public_policy_sha256, backend=synthetic_backend.run))
+    ok, output = _attempt(_verified_query, config, stdin, root=root, expected_pointer_sha256=expected_pointer_sha256,
+                          expected_source_sha256=expected_source_sha256,
+                          expected_encoder_sha256=expected_encoder_sha256, policy_bytes=policy_bytes,
+                          policy_sha256=policy_sha256, roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+                          public_policy_bytes=public_policy_bytes, public_policy_sha256=public_policy_sha256,
+                          backend=synthetic_backend.run)
+    # scrub every argument and local before raising: the traceback frame of this function is visible to the caller
+    del config, stdin, root, expected_pointer_sha256, expected_source_sha256, expected_encoder_sha256, \
+        policy_bytes, policy_sha256, roster_bytes, roster_sha256, public_policy_bytes, public_policy_sha256, \
+        synthetic_backend, enabled
     if not ok:
+        del ok, output
         raise PrefixPublicRefused("prefix_query_refused")
     return output
 
@@ -304,7 +324,12 @@ def query_public_prefix(config, stdin, *, root, expected_pointer_sha256=None, ex
 
     No verified secure transport exists. When one does, it binds the fixed-peer READY state and the snapshot
     binding and lands here as reviewed code calling the verified order; no argument or flag opens this path.
+    Every argument is scrubbed first so the refusal's traceback frame retains no stdin, config, root or pin bytes.
     """
+    del config, stdin, root, expected_pointer_sha256, expected_source_sha256, expected_encoder_sha256, \
+        policy_bytes, policy_sha256, roster_bytes, roster_sha256, public_policy_bytes, public_policy_sha256
     if enabled is not True:
+        del enabled
         raise PrefixPublicRefused("disabled")
+    del enabled
     raise PrefixPublicRefused("secure_transport_unavailable")

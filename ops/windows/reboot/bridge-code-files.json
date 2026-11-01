@@ -86,6 +86,7 @@
     "tools/wd_q4_bound_lane_transport.py",
     "tools/wd_q4_lane_session_client.py",
     "tools/wd_q4_lane_session_cli.py",
+    "tools/wd_q4_snapshot_candidate.py",
     "tools/agent_next_task.py",
     "tools/bridge_accepted_queue_preflight.py",
     "tools/bridge_capacity_advisor.py",

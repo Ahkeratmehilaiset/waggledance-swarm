@@ -136,37 +136,158 @@ def test_every_pin_is_checked_before_any_spawn_or_query(tmp_path, monkeypatch, n
     assert caught.value.args == ("secure_transport_refused",)
 
 
-def _exchange(monkeypatch, ready_binding):
-    sent = []
+def _ready(nonce, binding):
+    return canonical({"schema": "wd.q4-fixed-ready.v1", "status": "READY", "nonce": nonce, "binding_sha256": binding})
+
+
+def _ack(nonce, bundle_digest, **changes):
+    value = {"schema": "wd.q4-fixed-bundle-ack.v1", "status": "BUNDLE_VERIFIED", "nonce": nonce,
+             "bundle_sha256": bundle_digest}
+    value.update(changes)
+    return canonical(value)
+
+
+def _exchange(monkeypatch, ready_binding, ack=None):
+    """Scripted peer: READY for the first read, then the ACK (default: correct) for the second."""
+    sent, reads = [], []
     monkeypatch.setattr(transport, "_peer", lambda *a, **kw: None)
     monkeypatch.setattr(transport, "_frame_write", lambda _k, _p, data, _d: sent.append(data))
-    def reply(_k, _p, _limit, _deadline):
-        challenge = json.loads(sent[-1])
-        return canonical({"schema": "wd.q4-fixed-ready.v1", "status": "READY", "nonce": challenge["nonce"],
-                          "binding_sha256": ready_binding})
+    def reply(_k, _p, limit, _deadline):
+        reads.append((len(sent), limit))
+        nonce = json.loads(sent[1])["nonce"]
+        if len(reads) == 1:
+            return _ready(nonce, ready_binding)
+        return ack(nonce) if ack is not None else _ack(nonce, sha(BUNDLE))
     monkeypatch.setattr(transport, "_frame_read", reply)
-    return sent
+    return sent, reads
 
 
-def test_query_is_sent_only_after_a_ready_matching_the_parent_plan_digest(monkeypatch):
+def _control(plan_bytes):
+    return {"schema": "wd.q4-fixed-control.v1", "nonce": "a" * 32, "binding_sha256": sha(plan_bytes)}
+
+
+def test_no_bundle_before_ready_and_no_query_before_bundle_ack(monkeypatch):
     plan_bytes = plan()
-    control = {"schema": "wd.q4-fixed-control.v1", "nonce": "a" * 32, "binding_sha256": sha(plan_bytes)}
-    sent = _exchange(monkeypatch, sha(plan_bytes))
-    transport._fixed_exchange(None, None, 11, 22, control, plan_bytes, BUNDLE, QUERY, 1)
-    assert sent[0] == plan_bytes and sent[1] == BUNDLE
-    assert set(json.loads(sent[2])) == {"schema", "nonce"}
-    assert sent[3] == QUERY and len(sent) == 4
+    sent, reads = _exchange(monkeypatch, sha(plan_bytes))
+    transport._fixed_exchange(None, None, 11, 22, _control(plan_bytes), plan_bytes, BUNDLE, QUERY, 1)
+    # phase 1: plan, nonce-only challenge, READY; phase 2: bundle, ACK, then the query
+    assert sent[0] == plan_bytes
+    assert json.loads(sent[1]) == {"schema": "wd.q4-fixed-challenge.v1", "nonce": "a" * 32}
+    assert sent[2] == BUNDLE and sent[3] == QUERY and len(sent) == 4
+    assert [count for count, _ in reads] == [2, 3]  # READY read after plan+challenge, ACK read after bundle
+    assert all(limit <= 4096 for _, limit in reads)
 
 
 @pytest.mark.parametrize("binding", ["0" * 64, "echo"])
-def test_mismatched_or_echoed_ready_never_receives_the_query(monkeypatch, binding):
+def test_mismatched_or_echoed_ready_never_receives_the_bundle_or_query(monkeypatch, binding):
     plan_bytes = plan()
-    control = {"schema": "wd.q4-fixed-control.v1", "nonce": "a" * 32, "binding_sha256": sha(plan_bytes)}
-    sent = _exchange(monkeypatch, sha(plan_bytes + b"x") if binding == "echo" else binding)
+    sent, _ = _exchange(monkeypatch, sha(plan_bytes + b"x") if binding == "echo" else binding)
     with pytest.raises(transport._Refused):
-        transport._fixed_exchange(None, None, 11, 22, control, plan_bytes, BUNDLE, QUERY, 1)
-    assert QUERY not in sent
-    assert all(sha(plan_bytes) not in item.decode("latin-1") for item in sent[2:])
+        transport._fixed_exchange(None, None, 11, 22, _control(plan_bytes), plan_bytes, BUNDLE, QUERY, 1)
+    assert BUNDLE not in sent and QUERY not in sent and len(sent) == 2
+    assert all(sha(plan_bytes) not in item.decode("latin-1") for item in sent[1:])
+
+
+def _bad_acks():
+    return [
+        ("wrong_digest", lambda n: _ack(n, sha(BUNDLE + b"x"))),
+        ("plan_digest", lambda n: _ack(n, sha(plan()))),
+        ("wrong_nonce", lambda n: _ack("b" * 32, sha(BUNDLE))),
+        ("wrong_status", lambda n: _ack(n, sha(BUNDLE), status="READY")),
+        ("wrong_schema", lambda n: _ack(n, sha(BUNDLE), schema="wd.q4-fixed-ready.v1")),
+        ("extra_key", lambda n: _ack(n, sha(BUNDLE), query="x")),
+        ("missing_key", lambda n: canonical({"schema": "wd.q4-fixed-bundle-ack.v1", "status": "BUNDLE_VERIFIED",
+                                             "nonce": n})),
+        ("duplicate_key", lambda n: _ack(n, sha(BUNDLE))[:-1] + b',"status":"BUNDLE_VERIFIED"}'),
+        ("second_ready", lambda n: _ready(n, sha(plan()))),
+        ("empty", lambda n: b""),
+    ]
+
+
+@pytest.mark.parametrize("name,ack", _bad_acks(), ids=[c[0] for c in _bad_acks()])
+def test_bad_bundle_ack_never_receives_the_query(monkeypatch, name, ack):
+    plan_bytes = plan()
+    sent, _ = _exchange(monkeypatch, sha(plan_bytes), ack=ack)
+    with pytest.raises(transport._Refused) as caught:
+        transport._fixed_exchange(None, None, 11, 22, _control(plan_bytes), plan_bytes, BUNDLE, QUERY, 1)
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    assert QUERY not in sent and sent[2] == BUNDLE and len(sent) == 3
+
+
+def test_parent_refuses_a_bundle_not_matching_the_plan_before_any_io(monkeypatch):
+    plan_bytes = plan()
+    monkeypatch.setattr(transport, "_peer", lambda *a, **kw: pytest.fail("peer I/O before the bundle check"))
+    with pytest.raises(transport._Refused):
+        transport._fixed_exchange(None, None, 11, 22, _control(plan_bytes), plan_bytes, BUNDLE[:-1] + b"\x01",
+                                  QUERY, 1)
+
+
+class _ScriptedParent:
+    """Feeds child frames in order and records every child read limit and write."""
+
+    def __init__(self, frames):
+        self.frames, self.events = list(frames), []
+
+    def read_frame(self, limit):
+        self.events.append(("read", limit))
+        frame = self.frames.pop(0)
+        if callable(frame):
+            frame = frame(self)
+        assert len(frame) <= limit, "child read limit smaller than the frame"
+        return frame
+
+    def write_frame(self, data):
+        self.events.append(("write", data))
+
+    def nonce_reply(self):
+        return [e[1] for e in self.events if e[0] == "write"]
+
+
+def _child_frames(plan_bytes=None, bundle=BUNDLE, query=QUERY):
+    challenge = canonical({"schema": "wd.q4-fixed-challenge.v1", "nonce": "c" * 32})
+    return [plan_bytes or plan(), challenge, bundle, query]
+
+
+def test_child_writes_ready_before_reading_the_bundle_and_ack_before_the_query():
+    plan_bytes = plan()
+    parent = _ScriptedParent(_child_frames(plan_bytes))
+    raw = transport._fixed_child_protocol(parent.read_frame, parent.write_frame, sha(PEER.read_bytes()))
+    assert parent.events == [
+        ("read", transport._MAX_PLAN), ("read", 4096), ("write", _ready("c" * 32, sha(plan_bytes))),
+        ("read", len(BUNDLE)), ("write", _ack("c" * 32, sha(BUNDLE))), ("read", transport._MAX_INPUT)]
+    assert json.loads(raw)["query"] == "RECEIVED"
+
+
+def test_child_bundle_read_limit_is_the_plan_length_not_the_global_cap():
+    parent = _ScriptedParent(_child_frames())
+    transport._fixed_child_protocol(parent.read_frame, parent.write_frame, sha(PEER.read_bytes()))
+    limits = [e[1] for e in parent.events if e[0] == "read"]
+    assert limits[2] == len(BUNDLE) < transport._MAX_BUNDLE
+
+
+@pytest.mark.parametrize("case", ["bad_plan", "peer_pin", "bad_challenge", "bundle_digest", "bundle_short"])
+def test_child_refuses_without_ready_or_ack_on_bad_input(case):
+    frames = _child_frames()
+    peer = sha(PEER.read_bytes())
+    if case == "bad_plan":
+        frames[0] = plan(backend="query_public_snapshot")
+    elif case == "peer_pin":
+        peer = "0" * 64
+    elif case == "bad_challenge":
+        frames[1] = canonical({"schema": "wd.q4-fixed-challenge.v1", "nonce": "c" * 32, "binding_sha256": "0" * 64})
+    elif case == "bundle_digest":
+        frames[2] = BUNDLE[:-1] + b"\x01"
+    else:
+        frames[2] = BUNDLE[:-1]
+    parent = _ScriptedParent(frames)
+    with pytest.raises(transport._Refused):
+        transport._fixed_child_protocol(parent.read_frame, parent.write_frame, peer)
+    writes = parent.nonce_reply()
+    if case in ("bad_plan", "peer_pin", "bad_challenge"):
+        assert writes == [] and ("read", len(BUNDLE)) not in parent.events
+    else:
+        assert writes == [_ready("c" * 32, sha(plan()))]
+    assert ("read", transport._MAX_INPUT) not in parent.events
 
 
 def test_child_verifies_plan_and_bundle_before_ready():
@@ -210,5 +331,6 @@ def test_output_bound_is_enforced_on_the_real_fixed_peer(tmp_path):
 
 def test_fixed_peer_documents_limits():
     doc = transport.run_fixed_peer.__doc__
-    for phrase in ("not authentication", "runtime", "NOT verified", "synthetic", "before spawning"):
+    for phrase in ("not authentication", "runtime", "NOT verified", "synthetic", "before spawning",
+                   "before any bundle", "bundle ACK", "real backend is unavailable"):
         assert phrase in doc

@@ -298,13 +298,15 @@ def _fixed_control(control):
     return control
 
 
-def _fixed_ready_exchange(k, pipe, expected_pid, expected_created, control, query, deadline):
+def _fixed_ready_exchange(k, pipe, expected_pid, expected_created, control, query, deadline, before_query=None):
     """Synthetic protocol primitive: challenge/order only, not authentication.
 
     The fixed peer must establish its own code/runtime/data bindings before it
     emits READY. A matching peer declaration does not authenticate those
     bindings. The parent checks peer PID/creation and the closed reply only;
     it does not disclose its expected binding digest in the challenge.
+    ``before_query`` runs only after a matching READY and before the query;
+    any failure in it is the same fixed refusal.
     No authorized production peer or trusted tuple is supplied by this module.
     """
     raw = ready = ready_raw = challenge = None
@@ -325,11 +327,13 @@ def _fixed_ready_exchange(k, pipe, expected_pid, expected_created, control, quer
         _check(type(ready["nonce"]) is str and type(ready["binding_sha256"]) is str and
                hmac.compare_digest(ready["nonce"], control["nonce"]) and
                hmac.compare_digest(ready["binding_sha256"], control["binding_sha256"]))
+        if before_query is not None:
+            before_query(control["nonce"])
         _frame_write(k, pipe, query, deadline)
         return
     except Exception:
         pass
-    del control, query, raw, ready, ready_raw, challenge
+    del control, query, raw, ready, ready_raw, challenge, before_query
     raise _Refused() from None
 
 
@@ -372,34 +376,89 @@ def _fixed_plan(plan_bytes):
     return plan
 
 
-def _fixed_exchange(k, pipe, expected_pid, expected_created, control, plan_bytes, bundle_bytes, query, deadline):
-    """Send plan and bundle, then the challenge; the query only after a matching READY.
+def _fixed_ack(nonce, bundle_sha256):
+    return _canonical({"schema": "wd.q4-fixed-bundle-ack.v1", "status": "BUNDLE_VERIFIED", "nonce": nonce,
+                       "bundle_sha256": bundle_sha256})
 
-    The expected binding is the parent-computed plan digest and is never sent to
-    the peer. A matching READY is consistency only, not authentication.
+
+def _fixed_exchange(k, pipe, expected_pid, expected_created, control, plan_bytes, bundle_bytes, query, deadline):
+    """Two phases: plan, challenge and READY before any bundle; bundle and ACK before the query.
+
+    Phase 1 sends only the plan and a nonce-only challenge; the bundle is sent
+    only after a READY equal to the parent-computed plan digest (never sent to
+    the peer). Phase 2 sends the bundle and sends the query only after a closed
+    bundle ACK naming the parent-computed bundle digest. Both replies are
+    consistency only, not authentication: a peer can echo pins from the plan.
     """
+    plan = bundle_sha256 = bundle_phase = None
     try:
         control = _fixed_control(control)
         _check(type(plan_bytes) is bytes and type(bundle_bytes) is bytes and 0 < len(bundle_bytes) <= _MAX_BUNDLE)
         _check(hmac.compare_digest(_sha(plan_bytes), control["binding_sha256"]))
+        plan = _fixed_plan(plan_bytes)
+        bundle_sha256 = _sha(bundle_bytes)
+        _check(len(bundle_bytes) == plan["bundle_bytes"] and hmac.compare_digest(bundle_sha256, plan["bundle_sha256"]))
         _peer(k, pipe, expected_pid, expected_created, client=True)
         _frame_write(k, pipe, plan_bytes, deadline)
-        _frame_write(k, pipe, bundle_bytes, deadline)
-        _fixed_ready_exchange(k, pipe, expected_pid, expected_created, control, query, deadline)
+
+        def bundle_phase(nonce):
+            _frame_write(k, pipe, bundle_bytes, deadline)
+            ack = _frame_read(k, pipe, 4096, deadline)
+            _check(type(ack) is bytes and 0 < len(ack) <= 4096)
+            parsed = json.loads(ack.decode("ascii", "strict"), object_pairs_hook=_unique_pairs)
+            _check(type(parsed) is dict and _canonical(parsed) == ack
+                   and hmac.compare_digest(ack, _fixed_ack(nonce, bundle_sha256)))
+
+        _fixed_ready_exchange(k, pipe, expected_pid, expected_created, control, query, deadline,
+                              before_query=bundle_phase)
         return
     except Exception:
         pass
-    del control, plan_bytes, bundle_bytes, query
+    del control, plan_bytes, bundle_bytes, query, plan, bundle_sha256, bundle_phase
     raise _Refused() from None
 
 
-def _fixed_child_verify(plan_bytes, bundle_bytes, peer_code_sha256):
-    """Child side, before READY: re-derive the plan and re-hash every received byte."""
+def _fixed_child_plan(plan_bytes, peer_code_sha256):
+    """Child phase 1, before READY: re-derive the closed plan and check the peer-code pin."""
     plan = _fixed_plan(plan_bytes)
     _check(type(peer_code_sha256) is str and hmac.compare_digest(plan["peer_code_sha256"], _hex64(peer_code_sha256)))
+    return plan
+
+
+def _fixed_child_bundle(plan, bundle_bytes):
+    """Child phase 2, before the ACK: re-hash every received bundle byte against the plan."""
     _check(type(bundle_bytes) is bytes and len(bundle_bytes) == plan["bundle_bytes"]
            and hmac.compare_digest(_sha(bundle_bytes), plan["bundle_sha256"]))
+
+
+def _fixed_child_verify(plan_bytes, bundle_bytes, peer_code_sha256):
+    """Both child checks together (plan, then bundle); used by the tests of each check."""
+    plan = _fixed_child_plan(plan_bytes, peer_code_sha256)
+    _fixed_child_bundle(plan, bundle_bytes)
     return plan
+
+
+def _fixed_child_protocol(read_frame, write_frame, peer_code_sha256):
+    """Child order: plan, challenge, READY; bundle (read limit = plan length), ACK; then query.
+
+    No bundle byte is read before READY is written, and the query is not read
+    before the bundle ACK. READY and ACK are derived from verified bytes but are
+    consistency only, not runtime or peer authentication.
+    """
+    plan_bytes = read_frame(_MAX_PLAN)
+    plan = _fixed_child_plan(plan_bytes, peer_code_sha256)
+    challenge = json.loads(read_frame(4096).decode("ascii", "strict"), object_pairs_hook=_unique_pairs)
+    _check(type(challenge) is dict and set(challenge) == {"schema", "nonce"}
+           and challenge["schema"] == "wd.q4-fixed-challenge.v1" and type(challenge["nonce"]) is str
+           and len(challenge["nonce"]) == 32 and all(c in "0123456789abcdef" for c in challenge["nonce"]))
+    # Derived from the verified plan bytes; the parent never sends its expected digest.
+    write_frame(_canonical({"schema": "wd.q4-fixed-ready.v1", "status": "READY", "nonce": challenge["nonce"],
+                            "binding_sha256": _sha(plan_bytes)}))
+    bundle_bytes = read_frame(plan["bundle_bytes"])
+    _fixed_child_bundle(plan, bundle_bytes)
+    write_frame(_fixed_ack(challenge["nonce"], _sha(bundle_bytes)))
+    query = read_frame(_MAX_INPUT)
+    return _fixed_child_answer(plan, plan_bytes, bundle_bytes, query)
 
 
 def _fixed_child_answer(plan, plan_bytes, bundle_bytes, query):
@@ -630,13 +689,17 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
     interpreter and peer-code pins against the caller's interpreter pin and this
     file's bytes, the runtime manifest bytes, and the snapshot bundle length and
     digest. Share-denying leases on the interpreter file and on this file are
-    held for the whole run; the bootstrap execs only bytes matching the pin and
-    the child re-hashes the plan and bundle before READY. The query is sent only
-    after a READY whose binding equals the parent-computed plan digest, which is
-    consistency, not authentication: a peer echoing a hash proves nothing.
+    held for the whole run; the bootstrap execs only bytes matching the pin.
+    Order: plan and a nonce-only challenge, then a READY whose binding equals
+    the parent-computed plan digest before any bundle byte is sent; then the
+    bundle, which the child re-hashes against the plan (its read limit is the
+    plan length), and a closed bundle ACK naming the parent-computed bundle
+    digest before the query is sent. READY and ACK are consistency,
+    not authentication: a peer echoing pins from the plan proves nothing.
     The runtime pin is a byte pin on the caller's manifest only; the runtime
     tree (stdlib, DLLs, site, model) is NOT verified on this path, and the only
-    wired backend is synthetic, so no query_public_snapshot result is produced.
+    wired backend is synthetic: the real backend is unavailable, so no
+    query_public_snapshot result is produced.
     Source authentication and freshness are UNKNOWN. Same limits as run_bounded.
     """
     cleanup_type = cleanup_lease = failure = None
@@ -846,19 +909,9 @@ def _fixed_child_main(peer_code_sha256, name, parent_pid, parent_created):
     try:
         _noninheritable(k, pipe)
         _peer(k, pipe, pid, created, client=False)
-        plan_bytes = _sync_frame(k, pipe, _MAX_PLAN)
-        bundle_bytes = _sync_frame(k, pipe, _MAX_BUNDLE)
-        plan = _fixed_child_verify(plan_bytes, bundle_bytes, peer_code_sha256)
-        challenge = json.loads(_sync_frame(k, pipe, 4096).decode("ascii", "strict"), object_pairs_hook=_unique_pairs)
-        _check(type(challenge) is dict and set(challenge) == {"schema", "nonce"}
-               and challenge["schema"] == "wd.q4-fixed-challenge.v1" and type(challenge["nonce"]) is str
-               and len(challenge["nonce"]) == 32 and all(c in "0123456789abcdef" for c in challenge["nonce"]))
-        # Derived from the verified plan bytes; the parent never sends its expected digest.
-        ready = _canonical({"schema": "wd.q4-fixed-ready.v1", "status": "READY", "nonce": challenge["nonce"],
-                            "binding_sha256": _sha(plan_bytes)})
-        _sync_write(k, pipe, struct.pack(">I", len(ready)) + ready)
-        query = _sync_frame(k, pipe, _MAX_INPUT)
-        raw = _fixed_child_answer(plan, plan_bytes, bundle_bytes, query)
+        raw = _fixed_child_protocol(lambda limit: _sync_frame(k, pipe, limit),
+                                    lambda data: _sync_write(k, pipe, struct.pack(">I", len(data)) + data),
+                                    peer_code_sha256)
         _check(len(raw) <= _MAX_OUTPUT)
         _sync_write(k, pipe, b"\1" + struct.pack(">I", len(raw)) + raw + struct.pack(">i", 0) + b"END!")
     except BaseException:

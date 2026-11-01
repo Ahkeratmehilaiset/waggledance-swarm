@@ -26,9 +26,14 @@ ids are recomputed from the bytes read. Git output is capped while it is read
 (stdout per call, stderr), an excess or the timeout ends the process and
 refuses, and each blob's listed size is checked before its bytes are read.
 timeout_seconds bounds the total git wall time of one plan (plus a short
-reader join grace). Code reads are checked against max_bytes before each blob
-and only sizes and digests are kept; site and model file sizes are checked
-against the remaining budget before hashing. Root and extra modules also pin
+reader join grace). max_bytes bounds the input bytes read for pins: each
+blob's listed size is checked against the remaining budget before cat-file
+and its stdout is capped at that size; each site and model file is checked
+before it is opened, then opened with the remaining budget as its size limit
+(the opened identity, size included, must equal the checked one) and read
+for at most its opened size plus a one-byte end probe. It bounds input,
+not process peak memory: one blob, the AST of one parsed file, the ls-tree
+listing (up to 64 MiB) and git stderr (up to 64 KiB) are held besides. Root and extra modules also pin
 their parent package __init__ files. Lazy fetching is disabled
 (GIT_NO_LAZY_FETCH, git 2.45 or newer) and the git, file, ssh, http, https
 and ext transports are denied on the command line, but the repository's own
@@ -57,7 +62,7 @@ import sys
 import threading
 import time
 
-from sandbox.mind.step2 import runtime_builder, runtime_manifest
+from sandbox.mind.step2 import runtime_manifest
 
 SCHEMA = "wd.q4-runtime-input-plan.v1"
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
@@ -354,15 +359,40 @@ def _physically_related(left, right):
     return False
 
 
+def _hash_bounded(path, limit):
+    """runtime_builder._hash_file with every read bound to ``limit`` bytes of the file actually opened."""
+    runtime_manifest._check_chain(path)
+    runtime_manifest._check_no_named_streams(path)
+    # _open_regular refuses an lstat size above the limit and an opened identity (size included) that differs.
+    stream, initial = runtime_manifest._open_regular(path, min(limit, runtime_manifest.MAX_FILE_BYTES))
+    try:
+        with stream:
+            if initial.st_size > limit:
+                _fail("budget_insufficient")
+            digest = hashlib.sha256()
+            remaining = initial.st_size
+            while remaining:
+                block = stream.read(min(1024 * 1024, remaining))
+                if not block:
+                    _fail("file_changed")
+                digest.update(block)
+                remaining -= len(block)
+            if stream.read(1) or not runtime_manifest._same_file(path, stream, initial):
+                _fail("file_changed")
+    except OSError:
+        _fail("file_read_unavailable")
+    return initial.st_size, digest.hexdigest()
+
+
 def _tree_pins(root, budget, used):
     files, _ = runtime_manifest._tree(root)
     pins = {}
     for relative in sorted(files):
         path = root.joinpath(*relative.split("/"))
-        used += os.lstat(path).st_size
-        if used > budget:
-            _fail("budget_insufficient")  # checked before the file is hashed
-        size, digest, _ = runtime_builder._hash_file(path)
+        if used + os.lstat(path).st_size > budget:
+            _fail("budget_insufficient")  # checked before the file is opened
+        size, digest = _hash_bounded(path, budget - used)  # and bound again to the opened file
+        used += size
         pins[relative] = {"size": size, "sha256": digest}
     return pins, files, used
 

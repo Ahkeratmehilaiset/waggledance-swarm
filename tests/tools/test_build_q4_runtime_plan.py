@@ -311,11 +311,11 @@ def test_budget_and_verifier_caps_are_enforced(case, monkeypatch):
 
 def test_tree_change_during_hashing_refuses(case, monkeypatch):
     kwargs, _, site, _ = case
-    original = plan_mod.runtime_builder._hash_file
-    def hash_and_add(path):
+    original = plan_mod._hash_bounded
+    def hash_and_add(path, limit):
         (site / "late.py").write_bytes(b"")
-        return original(path)
-    monkeypatch.setattr(plan_mod.runtime_builder, "_hash_file", hash_and_add)
+        return original(path, limit)
+    monkeypatch.setattr(plan_mod, "_hash_bounded", hash_and_add)
     refused(kwargs, "tree_changed")
 
 
@@ -338,6 +338,7 @@ def test_module_documents_limits_without_production_claims():
     assert "default-off" in doc and "not an installer" in doc and "dynamic" in doc
     assert "git executable" in doc and "dependency closure" in doc
     assert "cannot detect all dynamic execution" in doc and "while it is read" in doc
+    assert "max_bytes bounds the input bytes read" in doc and "not process peak memory" in doc
 
 
 def single_module(tmp_path, source):
@@ -448,14 +449,75 @@ def test_site_and_model_are_budgeted_before_hashing(case, monkeypatch):
     kwargs, _, site, _ = case
     plan = plan_mod.plan_runtime_inputs(**kwargs)
     code_total = sum(value["size"] for key, value in plan["pins"].items() if key.startswith("assets/code/"))
-    original = plan_mod.runtime_builder._hash_file
+    original = plan_mod._hash_bounded
     hashed = []
-    def record(path):
+    def record(path, limit):
         hashed.append(Path(path))
-        return original(path)
-    monkeypatch.setattr(plan_mod.runtime_builder, "_hash_file", record)
+        return original(path, limit)
+    monkeypatch.setattr(plan_mod, "_hash_bounded", record)
     refused({**kwargs, "max_bytes": code_total + 1}, "budget_insufficient")  # pkg/__init__.py fits, pkg/mod.py not
     assert site / "pkg" / "mod.py" not in hashed
+
+
+def test_a_file_growing_after_its_size_check_is_never_read_past_the_remaining_budget(case, monkeypatch):
+    kwargs, _, site, _ = case
+    plan = plan_mod.plan_runtime_inputs(**kwargs)
+    code_total = sum(value["size"] for key, value in plan["pins"].items() if key.startswith("assets/code/"))
+    target = site / "pkg" / "mod.py"
+    real_chain, real_fdopen = runtime_manifest._check_chain, os.fdopen
+    grown, read = [], []
+    def grow_then_check(path, *args, **kw):
+        if Path(path) == target and not grown:
+            grown.append(True)
+            with open(target, "ab") as handle:  # grows after the size check, before the open for hashing
+                handle.write(b"#" * (1024 * 1024))
+        return real_chain(path, *args, **kw)
+    class Counting:
+        def __init__(self, stream):
+            self.stream = stream
+        def read(self, size=-1):
+            block = self.stream.read(size)
+            if os.fstat(self.stream.fileno()).st_size > 1024 * 1024:
+                read.append(len(block))
+            return block
+        def fileno(self):
+            return self.stream.fileno()
+        def close(self):
+            self.stream.close()
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            self.stream.close()
+    monkeypatch.setattr(runtime_manifest, "_check_chain", grow_then_check)
+    monkeypatch.setattr(plan_mod.os, "fdopen", lambda fd, *a, **k: Counting(real_fdopen(fd, *a, **k)))
+    with pytest.raises(plan_mod.RuntimePlanRefused):
+        plan_mod.plan_runtime_inputs(**{**kwargs, "max_bytes": code_total + 6})  # mod.py had 6 bytes at the check
+    assert grown and sum(read) <= 6
+
+
+def test_a_file_growing_after_it_is_opened_refuses_as_changed(case, monkeypatch):
+    kwargs, _, site, _ = case
+    target = site / "pkg" / "mod.py"
+    real_fdopen = os.fdopen
+    grown = []
+    class GrowOnFirstRead:
+        def __init__(self, stream):
+            self.stream = stream
+        def read(self, size=-1):
+            if not grown and os.path.samefile(self.stream.fileno(), target):
+                grown.append(True)
+                with open(target, "ab") as handle:
+                    handle.write(b"#")
+            return self.stream.read(size)
+        def fileno(self):
+            return self.stream.fileno()
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            self.stream.close()
+    monkeypatch.setattr(plan_mod.os, "fdopen", lambda fd, *a, **k: GrowOnFirstRead(real_fdopen(fd, *a, **k)))
+    refused(kwargs, "file_changed")
+    assert grown
 
 
 def test_root_and_extra_modules_pin_their_parent_packages(tmp_path):

@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -275,3 +276,196 @@ def test_manifest_and_candidate_must_remain_bound_to_caller_pins(inputs, monkeyp
     with pytest.raises(ValueError):
         assemble(inputs)
     assert manifest_built
+
+
+@pytest.fixture
+def multi_inputs(tmp_path):
+    files = {
+        'site/example/__init__.py': b'# synthetic\n',
+        'model/config.json': b'{"model":"synthetic"}\n',
+        'assets/mind/reader.py': b'# synthetic reader\n',
+    }
+    roots = {kind: tmp_path / ('source_' + kind) for kind in ('site', 'model', 'assets')}
+    for relative, data in files.items():
+        kind, rest = relative.split('/', 1)
+        path = roots[kind].joinpath(*rest.split('/'))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    pins = {name: {'size': len(data), 'sha256': digest(data)} for name, data in files.items()}
+    audit_output = tmp_path / '.codex-audit'
+    audit_output.mkdir()
+    return roots, audit_output / 'multi-candidate', audit_output / 'multi-manifest.json', files, pins
+
+
+def assemble_multi(inputs, **kwargs):
+    from tools.build_q4_runtime_candidate import build_candidate_from_sources
+
+    roots, candidate, manifest, _, pins = inputs
+    args = {'pins': pins, 'generation': GENERATION, 'revision': REVISION, 'max_bytes': 4096}
+    args.update(kwargs)
+    return build_candidate_from_sources(roots, candidate, manifest, **args)
+
+
+def test_multi_fixture_has_explicit_audit_subdirectory(multi_inputs):
+    assert multi_inputs[1].parent.name == '.codex-audit'
+    assert multi_inputs[2].parent == multi_inputs[1].parent
+
+
+@pytest.mark.parametrize('inside_audit', [False, True])
+def test_multi_simulated_ci_temp_respects_explicit_audit_boundary(multi_inputs, monkeypatch, inside_audit):
+    """Use fake CI output paths; nothing is created outside the real audit folder."""
+    import shutil
+    from tools import build_q4_runtime_candidate as module
+
+    simulated = Path(multi_inputs[1].anchor) / 'ci-temp-synthetic' / 'job'
+    if inside_audit:
+        simulated /= '.codex-audit'
+    monkeypatch.setattr(module, '_new_path', lambda path: simulated / Path(path).name)
+    monkeypatch.setattr(shutil, 'disk_usage', lambda _: SimpleNamespace(free=3 * 1024**3))
+    with pytest.raises(ValueError, match='disk_floor' if inside_audit else 'audit_root_required'):
+        assemble_multi(multi_inputs)
+    assert not multi_inputs[1].exists() and not multi_inputs[2].exists()
+
+
+def test_multi_three_sources_make_one_exact_candidate(multi_inputs):
+    roots, candidate, manifest, files, _ = multi_inputs
+    original = {name: tree_snapshot(root) for name, root in roots.items()}
+    result = assemble_multi(multi_inputs)
+    assert tree_snapshot(candidate) == files
+    assert {name: tree_snapshot(root) for name, root in roots.items()} == original
+    assert result['file_count'] == 3
+    assert runtime_manifest.verify_runtime(candidate, manifest, result['manifest_sha256'],
+        expected_generation=GENERATION, expected_revision=REVISION)['file_count'] == 3
+
+
+@pytest.mark.parametrize('fault', ['same_root', 'nested_root', 'wrong_prefix', 'missing_root',
+                                   'wrong_pin', 'path_escape', 'case_collision', 'budget'])
+def test_multi_rejects_bad_pins_roots_and_budget_before_output(multi_inputs, fault):
+    roots, candidate, manifest, _, pins = multi_inputs
+    roots = dict(roots)
+    pins = {path: dict(pin) for path, pin in pins.items()}
+    args = {'pins': pins, 'generation': GENERATION, 'revision': REVISION, 'max_bytes': 4096}
+    if fault == 'same_root':
+        roots['model'] = roots['site']
+    elif fault == 'nested_root':
+        roots['model'] = roots['site'] / 'example'
+    elif fault == 'wrong_prefix':
+        pins['other/x'] = {'size': 1, 'sha256': digest(b'x')}
+    elif fault == 'missing_root':
+        del roots['assets']
+    elif fault == 'wrong_pin':
+        pins['model/config.json']['sha256'] = '0' * 64
+    elif fault == 'path_escape':
+        pins['model/../escape'] = {'size': 1, 'sha256': digest(b'x')}
+    elif fault == 'case_collision':
+        pins['model/Config.json'] = dict(pins['model/config.json'])
+    else:
+        args['max_bytes'] = 1
+    from tools.build_q4_runtime_candidate import build_candidate_from_sources
+    with pytest.raises(ValueError):
+        build_candidate_from_sources(roots, candidate, manifest, **args)
+    assert not candidate.exists() and not manifest.exists()
+
+
+def test_multi_rejects_source_output_overlap_and_existing_target(multi_inputs):
+    from tools.build_q4_runtime_candidate import build_candidate_from_sources
+
+    roots, candidate, manifest, _, pins = multi_inputs
+    with pytest.raises(ValueError):
+        build_candidate_from_sources(roots, roots['site'] / 'nested-candidate', manifest,
+            pins=pins, generation=GENERATION, revision=REVISION, max_bytes=4096)
+    candidate.mkdir()
+    marker = candidate / 'existing'
+    marker.write_bytes(b'keep')
+    with pytest.raises(ValueError):
+        assemble_multi(multi_inputs)
+    assert marker.read_bytes() == b'keep' and not manifest.exists()
+
+
+def test_multi_low_disk_refuses_before_output(multi_inputs, monkeypatch):
+    import shutil
+    monkeypatch.setattr(shutil, 'disk_usage', lambda _: SimpleNamespace(free=3 * 1024**3))
+    with pytest.raises(ValueError, match='disk_floor'):
+        assemble_multi(multi_inputs)
+    assert not multi_inputs[1].exists() and not multi_inputs[2].exists()
+
+
+def test_multi_source_changes_between_preflight_and_copy_refused(multi_inputs, monkeypatch):
+    original = runtime_manifest._open_regular
+    path = multi_inputs[0]['model'] / 'config.json'
+    count = 0
+    def alter_before_copy(filename, limit):
+        nonlocal count
+        if Path(filename) == path:
+            count += 1
+            if count == 2:
+                path.write_bytes(b'changed synthetic data')
+        return original(filename, limit)
+    monkeypatch.setattr(runtime_manifest, '_open_regular', alter_before_copy)
+    with pytest.raises(ValueError):
+        assemble_multi(multi_inputs)
+    assert count == 2
+    assert not multi_inputs[2].exists()
+
+
+def test_multi_source_changes_while_copy_reads_refused(multi_inputs, monkeypatch):
+    original = runtime_manifest._open_regular
+    path = multi_inputs[0]['model'] / 'config.json'
+    count = 0
+    changed = False
+
+    class ChangeDuringRead:
+        def __init__(self, handle):
+            self.handle = handle
+        def __enter__(self):
+            self.handle.__enter__()
+            return self
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+        def fileno(self):
+            return self.handle.fileno()
+        def read(self, size=-1):
+            nonlocal changed
+            block = self.handle.read(size)
+            if block and not changed:
+                info = path.stat()
+                os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 10_000_000_000))
+                changed = True
+            return block
+
+    def altered_stream(filename, limit):
+        nonlocal count
+        stream, identity = original(filename, limit)
+        if Path(filename) == path:
+            count += 1
+            if count == 2:
+                return ChangeDuringRead(stream), identity
+        return stream, identity
+
+    monkeypatch.setattr(runtime_manifest, '_open_regular', altered_stream)
+    with pytest.raises(ValueError, match='input_changed'):
+        assemble_multi(multi_inputs)
+    assert changed and not multi_inputs[2].exists()
+
+
+def test_multi_extra_file_before_manifest_refused(multi_inputs, monkeypatch):
+    from sandbox.mind.step2 import runtime_builder
+    original = runtime_builder.build_runtime_manifest
+    def add_extra(*args, **kwargs):
+        (multi_inputs[1] / 'assets' / 'extra.py').write_bytes(b'extra')
+        return original(*args, **kwargs)
+    monkeypatch.setattr(runtime_builder, 'build_runtime_manifest', add_extra)
+    with pytest.raises(ValueError):
+        assemble_multi(multi_inputs)
+
+
+def test_multi_manifest_replacement_refused(multi_inputs, monkeypatch):
+    from sandbox.mind.step2 import runtime_builder
+    original = runtime_builder.build_runtime_manifest
+    def change_manifest(*args, **kwargs):
+        result = original(*args, **kwargs)
+        multi_inputs[2].write_bytes(b'{}')
+        return result
+    monkeypatch.setattr(runtime_builder, 'build_runtime_manifest', change_manifest)
+    with pytest.raises(ValueError):
+        assemble_multi(multi_inputs)

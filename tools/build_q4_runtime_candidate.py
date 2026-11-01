@@ -160,3 +160,106 @@ def build_candidate(source_root, candidate_root, manifest_path, *, pins, generat
     runtime_manifest.verify_runtime(candidate, manifest, result['manifest_sha256'],
                                     expected_generation=generation, expected_revision=revision)
     return result
+
+
+def build_candidate_from_sources(source_roots, candidate_root, manifest_path, *, pins,
+                                 generation, revision, max_bytes):
+    """Copy pinned site/model/assets files once from three disjoint source roots.
+
+    A relative runtime path such as ``site/pkg/a.py`` selects the ``site``
+    root plus ``pkg/a.py``. This is an audit-only candidate, not an installer.
+    The disk reservation is a preflight check, not a guarantee against other
+    writers or filesystem overhead. Same-user races and pin provenance remain
+    outside the guarantees; output is preserved on failure and not activated.
+    """
+    if (not isinstance(generation, str) or not runtime_manifest.IDENTITY.fullmatch(generation)
+            or not isinstance(revision, str) or not runtime_manifest.IDENTITY.fullmatch(revision)
+            or type(max_bytes) is not int or max_bytes <= 0 or type(pins) is not dict
+            or type(source_roots) is not dict or set(source_roots) != {'site', 'model', 'assets'}):
+        raise ValueError('inputs_invalid')
+    roots = {name: runtime_manifest._check_chain(path) for name, path in source_roots.items()}
+    if any(not path.is_dir() or path == Path(path.anchor) for path in roots.values()):
+        raise ValueError('source_invalid')
+    paths = list(roots.values())
+    if any(_related(left, right) for index, left in enumerate(paths) for right in paths[index + 1:]):
+        raise ValueError('source_overlap')
+    candidate, manifest = _new_path(candidate_root), _new_path(manifest_path)
+    if ('.codex-audit' not in (part.casefold() for part in candidate.parts)
+            or '.codex-audit' not in (part.casefold() for part in manifest.parts)):
+        raise ValueError('audit_root_required')
+    if (_related(candidate, manifest)
+            or any(_related(source, output) for source in paths for output in (candidate, manifest))):
+        raise ValueError('output_overlap')
+    records = []
+    for relative, pin in pins.items():
+        if type(relative) is not str or type(pin) is not dict or set(pin) != {'size', 'sha256'}:
+            raise ValueError('pin_invalid')
+        records.append({'path': relative, 'size': pin['size'], 'sha256': pin['sha256']})
+    files, directories = runtime_manifest._validate_records(records)
+    if {relative.split('/')[0] for relative in files} != set(roots):
+        raise ValueError('source_membership_invalid')
+    total = sum(size for size, _ in files.values())
+    if total > max_bytes:
+        raise ValueError('budget_insufficient')
+    if shutil.disk_usage(candidate.parent).free < _FLOOR_BYTES + total + _MANIFEST_RESERVE:
+        raise ValueError('disk_floor')
+    if os.path.splitdrive(str(candidate))[0].casefold() != os.path.splitdrive(str(manifest))[0].casefold():
+        if shutil.disk_usage(manifest.parent).free < _FLOOR_BYTES + _MANIFEST_RESERVE:
+            raise ValueError('disk_floor')
+
+    def source_path(relative):
+        parts = runtime_manifest._path_parts(relative)
+        return roots[parts[0]].joinpath(*parts[1:])
+
+    # All exact caller pins are checked before creating any output.
+    identities = {}
+    for relative, (size, digest) in files.items():
+        actual_size, actual_digest, identity = runtime_builder._hash_file(source_path(relative))
+        if (actual_size, actual_digest) != (size, digest):
+            raise ValueError('input_pin_mismatch')
+        identities[relative] = identity
+
+    os.mkdir(candidate)
+    for relative, (size, digest) in files.items():
+        source = source_path(relative)
+        target = candidate.joinpath(*relative.split('/'))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        runtime_manifest._check_chain(target.parent)
+        runtime_manifest._check_chain(source)
+        runtime_manifest._check_no_named_streams(source)
+        stream, initial = runtime_manifest._open_regular(source, runtime_manifest.MAX_FILE_BYTES)
+        if runtime_manifest._stable_identity(initial) != identities[relative]:
+            stream.close()
+            raise ValueError('input_changed')
+        digest_copy = hashlib.sha256()
+        count = 0
+        with stream, target.open('xb') as output:
+            while True:
+                block = stream.read(1024 * 1024)
+                if not block:
+                    break
+                count += len(block)
+                if count > size:
+                    raise ValueError('input_changed')
+                output.write(block)
+                digest_copy.update(block)
+            output.flush()
+            os.fsync(output.fileno())
+            if (count != size or digest_copy.hexdigest() != digest
+                    or not runtime_manifest._same_file(source, stream, initial)):
+                raise ValueError('input_changed')
+
+    result = runtime_builder.build_runtime_manifest(candidate, manifest, generation=generation, revision=revision)
+    _manifest_matches_pins(manifest, result['manifest_sha256'], generation, revision, files)
+    if runtime_manifest._tree(candidate) != (set(files), directories):
+        raise ValueError('candidate_membership_mismatch')
+    for relative, (size, digest) in files.items():
+        copied_size, copied_digest, _ = runtime_builder._hash_file(candidate.joinpath(*relative.split('/')))
+        if (copied_size, copied_digest) != (size, digest):
+            raise ValueError('candidate_pin_mismatch')
+        final_size, final_digest, identity = runtime_builder._hash_file(source_path(relative))
+        if (final_size, final_digest, identity) != (size, digest, identities[relative]):
+            raise ValueError('input_changed')
+    runtime_manifest.verify_runtime(candidate, manifest, result['manifest_sha256'],
+                                    expected_generation=generation, expected_revision=revision)
+    return result

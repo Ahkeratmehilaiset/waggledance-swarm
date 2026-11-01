@@ -1931,7 +1931,7 @@ if ($null -ne $q4Property) {
       throw 'q4_config_helper_pin_mismatch'
     }
     . ([scriptblock]::Create([string]$q4HelperSnapshot.Text))
-    $q4Values = Get-WdQ4ReadConfig -FleetPath $ManifestPath -FleetSha256 ([string]$fleetHashProperty.Value)
+    $q4Values = Get-WdQ4ReadConfig -FleetPath $ManifestPath -FleetSha256 ([string]$fleetHashProperty.Value) -Lane $Agent
   }
 }
 # Q4 configuration only: end

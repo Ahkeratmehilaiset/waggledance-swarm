@@ -3487,7 +3487,7 @@ if ($isDeployedLauncher) {
                 throw 'q4_config_helper_pin_mismatch'
             }
             . ([scriptblock]::Create([string]$q4HelperSnapshot.Text))
-            $q4Values = Get-WdQ4ReadConfig -FleetPath $mindFleetPath -FleetSha256 ([string]$mindFleetPin.Value)
+            $q4Values = Get-WdQ4ReadConfig -FleetPath $mindFleetPath -FleetSha256 ([string]$mindFleetPin.Value) -Lane $agent
         }
     }
 }

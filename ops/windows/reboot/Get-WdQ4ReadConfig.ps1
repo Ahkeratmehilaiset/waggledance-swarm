@@ -58,7 +58,8 @@ function Get-WdQ4ReadConfig {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $FleetPath,
-        [Parameter(Mandatory)] [string] $FleetSha256
+        [Parameter(Mandatory)] [string] $FleetSha256,
+        [AllowEmptyString()] [string] $Lane
     )
 
     function Assert-Q4Path {
@@ -147,11 +148,31 @@ function Get-WdQ4ReadConfig {
     $digests = @('descriptor_sha256', 'python_sha256', 'runtime_manifest_sha256', 'code_manifest_sha256')
     $required = @('schema', 'enabled', 'code_commit', 'runtime_generation', 'runtime_revision', 'lock_timeout_seconds') + $paths + $digests
     foreach ($name in @($config.PSObject.Properties.Name)) {
-        if ($required -cnotcontains $name -and $name -cne 'resolved_inputs') { throw 'q4_config_unknown_field' }
+        if ($required -cnotcontains $name -and $name -cne 'resolved_inputs' -and $name -cne 'lanes') {
+            throw 'q4_config_unknown_field'
+        }
     }
     foreach ($name in $required) {
         if ($null -eq $config.PSObject.Properties[$name]) { throw 'q4_config_field_missing' }
     }
+    # Optional for legacy unscoped callers. Launchers supply their declared lane;
+    # this is configuration routing, not caller authentication or wrapper access control.
+    $laneProperty = $config.PSObject.Properties['lanes']
+    if ($null -ne $laneProperty) {
+        $knownLanes = @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')
+        if ($laneProperty.Name -cne 'lanes' -or $laneProperty.Value -isnot [Array] -or
+            $laneProperty.Value.Count -lt 1 -or $laneProperty.Value.Count -gt 5) {
+            throw 'q4_config_lanes_invalid'
+        }
+        $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($entry in $laneProperty.Value) {
+            if ($entry -isnot [string] -or $knownLanes -cnotcontains $entry -or -not $seen.Add($entry)) {
+                throw 'q4_config_lanes_invalid'
+            }
+        }
+    }
+    if ($PSBoundParameters.ContainsKey('Lane') -and
+        ($null -eq $laneProperty -or $laneProperty.Value -cnotcontains $Lane)) { return $null }
     if ($config.schema -isnot [string] -or $config.schema -cne 'wd.q4-read-config.v1' -or
         $config.code_commit -isnot [string] -or $config.code_commit -cnotmatch '^[0-9a-f]{40}$') {
         throw 'q4_config_identity_invalid'

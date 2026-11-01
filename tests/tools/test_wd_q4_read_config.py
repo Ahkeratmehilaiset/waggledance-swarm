@@ -55,17 +55,18 @@ def enabled(tmp_path):
     }
 
 
-def invoke(tmp_path, config=MISSING, digest=None):
+def invoke(tmp_path, config=MISSING, digest=None, lane=MISSING):
     fleet = {} if config is MISSING else {"q4_read": config}
     path = tmp_path / "synthetic-fleet.json"
     data = json.dumps(fleet).encode("utf-8")
     path.write_bytes(data)
     pin = hashlib.sha256(data).hexdigest() if digest is None else digest
+    lane_argument = "" if lane is MISSING else f" -Lane {quote(lane)}"
     return powershell(
         "$ErrorActionPreference='Stop'\n"
         "try {\n"
         f" . {quote(HELPER)}\n"
-        f" $v=Get-WdQ4ReadConfig -FleetPath {quote(path)} -FleetSha256 {quote(pin)}\n"
+        f" $v=Get-WdQ4ReadConfig -FleetPath {quote(path)} -FleetSha256 {quote(pin)}{lane_argument}\n"
         " [ordered]@{ok=$true;value=$v}|ConvertTo-Json -Depth 8 -Compress\n"
         "} catch { [ordered]@{ok=$false;reason=$_.Exception.Message}|ConvertTo-Json -Compress }\n"
     )
@@ -105,6 +106,83 @@ def test_enabled_returns_only_pinned_configuration_not_connection_proof(tmp_path
     assert out["WD_Q4_SCRATCH_ROOT"] == cfg["scratch_root"]
     assert len(out) == 19 and all(k.startswith("WD_Q4_") for k in out)
     assert not any("CONNECTED" in k or "QUERY" in k for k in out)
+
+
+Q4_LANES = ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
+
+
+@WINDOWS
+@pytest.mark.parametrize("lane", Q4_LANES)
+def test_q4_lane_allowlist_lead_only_and_all_five(tmp_path, lane):
+    cfg = enabled(tmp_path)
+    cfg["lanes"] = ["codex-lead-1"]
+    result = invoke(tmp_path, cfg, lane=lane)
+    assert result["ok"] is True
+    assert (result["value"] is not None) == (lane == "codex-lead-1")
+    cfg["lanes"] = list(Q4_LANES)
+    assert invoke(tmp_path, cfg, lane=lane)["value"]["WD_Q4_READ_ENABLED"] == "1"
+
+
+@WINDOWS
+def test_q4_lane_legacy_unscoped_is_preserved_but_launch_requires_list(tmp_path):
+    cfg = enabled(tmp_path)
+    assert invoke(tmp_path, cfg)["value"]["WD_Q4_READ_ENABLED"] == "1"
+    assert invoke(tmp_path, cfg, lane="codex-lead-1") == {"ok": True, "value": None}
+    assert invoke(tmp_path, MISSING, lane="codex-lead-1") == {"ok": True, "value": None}
+    assert invoke(tmp_path, {"enabled": False}, lane="codex-lead-1") == {"ok": True, "value": None}
+
+
+@WINDOWS
+@pytest.mark.parametrize("lanes", [[], None, "codex-lead-1", ["codex-lead-1", "codex-lead-1"],
+                                   ["CODEX-LEAD-1"], ["unknown"], [1], ["codex-lead-1", None]])
+def test_q4_lane_invalid_allowlist_refuses(tmp_path, lanes):
+    cfg = enabled(tmp_path)
+    cfg["lanes"] = lanes
+    assert invoke(tmp_path, cfg, lane="codex-lead-1")["ok"] is False
+
+
+@WINDOWS
+def test_q4_lane_allowlist_pins_and_unknown_caller_fail_closed(tmp_path):
+    cfg = enabled(tmp_path)
+    cfg["lanes"] = ["codex-lead-1"]
+    assert invoke(tmp_path, cfg, lane="unknown") == {"ok": True, "value": None}
+    assert invoke(tmp_path, cfg, digest="0" * 64, lane="codex-lead-1")["reason"] == "q4_config_fleet_refused"
+
+
+def test_q4_launchers_supply_their_own_lane_to_pinned_helper():
+    for path, expected in zip(LAUNCHERS, ("-Lane $Agent", "-Lane $agent")):
+        text = path.read_text(encoding="utf-8-sig")
+        block = text[text.index("# Q4 configuration only: begin"):text.index("# Q4 configuration only: end")]
+        match = re.search(r"(?m)^\s*\$q4Values\s*=\s*Get-WdQ4ReadConfig\b[^\r\n]*", block)
+        assert match and expected in match.group(0)
+
+
+@WINDOWS
+def test_tools_launcher_actual_assignment_routes_configured_agent(tmp_path):
+    source = LAUNCHERS[1].read_text(encoding="utf-8-sig")
+    block = source[source.index("# Q4 configuration only: begin"):source.index("# Q4 configuration only: end")]
+    match = re.search(r"(?m)^\s*\$q4Values\s*=\s*Get-WdQ4ReadConfig\b[^\r\n]*", block)
+    assert match
+    cfg = enabled(tmp_path)
+    cfg["lanes"] = ["codex-tools-1"]
+    raw = json.dumps({"q4_read": cfg}).encode("utf-8")
+    path = tmp_path / "synthetic-lane-fleet.json"
+    path.write_bytes(raw)
+    pin = hashlib.sha256(raw).hexdigest()
+
+    def actual_assignment(agent):
+        return powershell(
+            "$ErrorActionPreference='Stop'\n"
+            f". {quote(HELPER)}\n"
+            f"$mindFleetPath={quote(path)}\n"
+            f"$mindFleetPin=[pscustomobject]@{{Value={quote(pin)}}}\n"
+            f"$agent={quote(agent)}\n"
+            + match.group(0) + "\n"
+            "[ordered]@{enabled=($null -ne $q4Values)}|ConvertTo-Json -Compress\n"
+        )
+
+    assert actual_assignment("codex-tools-1") == {"enabled": True}
+    assert actual_assignment("fable-5") == {"enabled": False}
 
 
 REQUIRED = [

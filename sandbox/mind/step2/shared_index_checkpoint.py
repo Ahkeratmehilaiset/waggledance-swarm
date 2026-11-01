@@ -1,6 +1,9 @@
 """Inactive single-writer Q4 publication checkpoint; no scheduler or live wiring.
 
-Only cooperating writers using the same persistent lock are serialized. This
+Only cooperating writers using the same persistent lock are serialized. The
+opt-in prefix fence (open_prefix_fence / resolve_prefix_fence, default-off and
+not wired to any caller) further restricts those cooperating writers to one
+bound prior -> attempt transition; it cannot fence a noncooperating writer. This
 does not authenticate the caller, root, policy, generation or operating-system
 clock, and cannot defeat hostile same-user replacement or filesystem TOCTOU.
 The caller must externally anchor those inputs and the manifest/pointer it uses.
@@ -34,6 +37,10 @@ ARTIFACTS = {"descriptor_sha256": "descriptor.json", "memory_sha256": "memory.js
              "projection_sha256": "projection.json", "receipt_sha256": "build_receipt.json"}
 POINTER = "q4-latest.json"
 LOCK = "q4-checkpoint.lock"
+FENCE = "q4-prefix-fence.json"
+FENCE_SCHEMA = "wd.q4-prefix-fence.v1"
+_FENCE_OUTCOMES = ("landed", "not_landed")
+_MAX_FENCE_BYTES = 512
 _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _MAX = 16 * 1024 * 1024
 # Fail closed at a bounded history depth. Retention/compaction requires a
@@ -1006,7 +1013,8 @@ def read_verified_pointer(root, approved_tasks, *, expected_pointer_sha256,
         _refuse()
 
 
-def _publish_pointer(root, pointer, raw, old_hash, value):
+def _publish_pointer(root, pointer, raw, old_hash, value, fenced=False):
+    _fence_gate(root, None if raw is None else _sha(raw), _sha(_canonical(value)), fenced)
     if raw is not None:
         archive = root / ("q4-pointer-" + old_hash + ".json")
         if os.path.lexists(archive):
@@ -1060,6 +1068,157 @@ def read_verified_prefix_pointer(root, approved_tasks, *, expected_pointer_sha25
         _refuse()
 
 
+def _fence_bytes(prior, attempt):
+    """The only accepted fence encoding: canonical, binding the exact prior and attempt pointer digests."""
+    if ((prior is not None and (type(prior) is not str or HEX.fullmatch(prior) is None))
+            or type(attempt) is not str or HEX.fullmatch(attempt) is None or prior == attempt):
+        _refuse()
+    return _canonical({"schema": FENCE_SCHEMA, "prior_pointer_sha256": prior, "attempt_sha256": attempt})
+
+
+def _fence_record(root, attempt, outcome):
+    return _secure(root / ("q4-prefix-fence-" + attempt + "." + outcome + ".json"), missing_leaf=True)
+
+
+def _current_pointer(root):
+    """Digest of the pointer bytes (None when absent); the caller holds the writer lock."""
+    pointer = _secure(root / POINTER, missing_leaf=True)
+    if not os.path.lexists(pointer):
+        return None
+    return _sha(_read(pointer, max_bytes=_MAX_POINTER_BYTES))
+
+
+def _active_fence(root):
+    """The open fence as (prior, attempt, bytes), or None; any other content refuses every writer."""
+    path = _secure(root / FENCE, missing_leaf=True)
+    if not os.path.lexists(path):
+        return None
+    raw = _read(path, max_bytes=_MAX_FENCE_BYTES)
+    value = _parse(raw)
+    if set(value) != {"schema", "prior_pointer_sha256", "attempt_sha256"} or value["schema"] != FENCE_SCHEMA:
+        _refuse()
+    if _fence_bytes(value["prior_pointer_sha256"], value["attempt_sha256"]) != raw:
+        _refuse()
+    return value["prior_pointer_sha256"], value["attempt_sha256"], raw
+
+
+def _fence_gate(root, prior, attempt, fenced):
+    """Every pointer replacement passes here, under the cooperating writer lock.
+
+    No fence and no not-landed record: legacy behaviour, unchanged. An open
+    fence admits only a fenced publication of exactly its prior -> attempt
+    transition; a resolved not-landed attempt never lands afterwards.
+    """
+    if os.path.lexists(_fence_record(root, attempt, "not_landed")):
+        _refuse()
+    active = _active_fence(root)
+    if active is None:
+        if fenced:
+            _refuse()
+        return
+    if fenced is not True or active[:2] != (prior, attempt):
+        _refuse()
+
+
+def _fence_lock(root, timeout):
+    root = _secure(root)
+    if not root.is_dir():
+        _refuse()
+    lock = root / LOCK
+    _secure(lock, missing_leaf=True)
+    return root, reader_slot(lock, timeout_seconds=timeout)
+
+
+def open_prefix_fence(root, *, expected_prior_pointer_sha256, expected_attempt_sha256, enabled=False, timeout=0.2):
+    """Opt-in: fence the pointer for exactly one prior -> attempt transition.
+
+    Under the writer lock the pointer must still be the prior (None = no
+    pointer yet). While the fence is open every cooperating writer of this
+    module refuses unless it publishes exactly that attempt with fenced=True.
+    Created by an exclusive link from an fsynced stage: never overwrites. Waits
+    are bounded by the lock timeout. Synthetic/inactive: no caller is wired.
+    """
+    if enabled is not True:
+        _refuse()
+    try:
+        raw = _fence_bytes(expected_prior_pointer_sha256, expected_attempt_sha256)
+        root, slot = _fence_lock(root, timeout)
+        with slot:
+            _secure(root / LOCK)
+            if (_active_fence(root) is not None
+                    or any(os.path.lexists(_fence_record(root, expected_attempt_sha256, outcome))
+                           for outcome in _FENCE_OUTCOMES)
+                    or _current_pointer(root) != expected_prior_pointer_sha256):
+                _refuse()
+            target = _secure(root / FENCE, missing_leaf=True)
+            stage = root / (".q4-prefix-fence-" + secrets.token_hex(16) + ".staging")
+            _write_new(stage, raw)
+            try:
+                os.link(stage, target)
+            finally:
+                os.unlink(stage)
+            if _read(target, max_bytes=_MAX_FENCE_BYTES) != raw:
+                _refuse()
+            return {"status": "fenced"}
+    except Exception:
+        _refuse()
+
+
+def resolve_prefix_fence(root, *, expected_prior_pointer_sha256, expected_attempt_sha256, enabled=False,
+                         timeout=0.2):
+    """Opt-in: decide the fenced transition for cooperating current writers.
+
+    Under the writer lock: pointer == attempt is landed, pointer == prior is
+    not_landed (the fence still excludes every cooperating writer at that
+    moment, and the not-landed record refuses that attempt while retained). Any other
+    pointer is a non-cooperating write: refused, fence kept. The outcome is a
+    record (a hard link of the fence bytes) made before the fence is removed.
+    Repeated calls and process interruptions are covered only while the relevant
+    filesystem entries and the same lock persist. Power-loss metadata durability,
+    older already-running writers and non-cooperating writers are not established.
+    """
+    if enabled is not True:
+        _refuse()
+    try:
+        prior, attempt = expected_prior_pointer_sha256, expected_attempt_sha256
+        raw = _fence_bytes(prior, attempt)
+        root, slot = _fence_lock(root, timeout)
+        with slot:
+            _secure(root / LOCK)
+            records = {outcome: _fence_record(root, attempt, outcome) for outcome in _FENCE_OUTCOMES}
+            present = [outcome for outcome in _FENCE_OUTCOMES if os.path.lexists(records[outcome])]
+            if len(present) > 1 or any(_read(records[outcome], max_bytes=_MAX_FENCE_BYTES) != raw
+                                       for outcome in present):
+                _refuse()
+            active = _active_fence(root)
+            if active is None:
+                if not present:
+                    _refuse()
+                return {"status": present[0]}
+            if active[2] != raw:
+                _refuse()
+            current = _current_pointer(root)
+            if present:
+                outcome = present[0]  # recorded before an interruption; the fence kept everyone out since
+            elif current == attempt:
+                outcome = "landed"
+            elif current == prior:
+                outcome = "not_landed"
+            else:
+                _refuse()
+            if current != (attempt if outcome == "landed" else prior):
+                _refuse()
+            fence = _secure(root / FENCE)
+            if not present:
+                os.link(fence, records[outcome])
+            if _read(records[outcome], max_bytes=_MAX_FENCE_BYTES) != raw:
+                _refuse()
+            os.unlink(fence)
+            return {"status": outcome}
+    except Exception:
+        _refuse()
+
+
 def _attempt(value, expected):
     """Bind an opt-in intent to the exact bytes subsequently published."""
     digest = _sha(_canonical(value))
@@ -1068,21 +1227,21 @@ def _attempt(value, expected):
     return digest
 
 
-def commit_prefix_genesis(*args, expected_start_prefix, expected_attempt_sha256=None, **kwargs):
+def commit_prefix_genesis(*args, expected_start_prefix, expected_attempt_sha256=None, fenced=False, **kwargs):
     """Explicit new series only; never migrate an existing pointer."""
     value = commit_generation(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix,
-                              _expected_attempt_sha256=expected_attempt_sha256, **kwargs)
+                              _expected_attempt_sha256=expected_attempt_sha256, _fenced=fenced, **kwargs)
     return {"status": "committed", "pointer_sha256": _sha(_canonical(value))}
 
 
-def advance_prefix_empty(*args, expected_start_prefix, expected_attempt_sha256=None, **kwargs):
+def advance_prefix_empty(*args, expected_start_prefix, expected_attempt_sha256=None, fenced=False, **kwargs):
     return advance_empty_delta(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix,
-                               _expected_attempt_sha256=expected_attempt_sha256, **kwargs)
+                               _expected_attempt_sha256=expected_attempt_sha256, _fenced=fenced, **kwargs)
 
 
-def commit_prefix_history(*args, expected_start_prefix, expected_attempt_sha256=None, **kwargs):
+def commit_prefix_history(*args, expected_start_prefix, expected_attempt_sha256=None, fenced=False, **kwargs):
     value = commit_history_generation(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix,
-                                      _expected_attempt_sha256=expected_attempt_sha256, **kwargs)
+                                      _expected_attempt_sha256=expected_attempt_sha256, _fenced=fenced, **kwargs)
     return {"status": "committed", "pointer_sha256": _sha(_canonical(value))}
 
 
@@ -1127,7 +1286,7 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
                         expected_anchor_sha256, timeout=0.2, expected_mode="legacy",
                         expected_public_policy_sha256=None, public_policy_bytes=None, expected_anchor_bytes=None,
                         _prefix_required=False, _expected_start_prefix=None,
-                        _prepare_attempt=False, _expected_attempt_sha256=None):
+                        _prepare_attempt=False, _expected_attempt_sha256=None, _fenced=False):
     """Advance only a verified strict empty delta, without altering the indexed interval.
 
     Inactive primitive: the caller must protect source identity, cursor, policy,
@@ -1139,6 +1298,9 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
     try:
         if type(_prepare_attempt) is not bool or ((_prepare_attempt or _expected_attempt_sha256 is not None)
                 and not _prefix_required):
+            _refuse()
+        # A fenced publication is opt-in, prefix-only and bound to a prepared attempt digest.
+        if type(_fenced) is not bool or (_fenced and (_prepare_attempt or _expected_attempt_sha256 is None)):
             _refuse()
         from sandbox.mind.step2 import shared_bridge_snapshot as snapshot, shared_capture_adapter as adapter
         from sandbox.mind.step2 import shared_projection as projection
@@ -1197,7 +1359,7 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
                     **mode_args) is not True:
                 _refuse()
             if finish == begin:
-                if _expected_attempt_sha256 is not None and _expected_attempt_sha256 != expected_pointer_sha256:
+                if _fenced or (_expected_attempt_sha256 is not None and _expected_attempt_sha256 != expected_pointer_sha256):
                     _refuse()
                 if _prepare_attempt:
                     return {"status": "no_change", "attempt_sha256": expected_pointer_sha256}
@@ -1232,7 +1394,7 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
             attempt = _attempt(value, _expected_attempt_sha256)
             if _prepare_attempt:
                 return {"status": "prepared", "attempt_sha256": attempt}
-            _publish_pointer(root, pointer, raw, expected_pointer_sha256, value)
+            _publish_pointer(root, pointer, raw, expected_pointer_sha256, value, fenced=_fenced)
             return {"status": "advanced", "pointer_sha256": _sha(_canonical(value))}
     except Exception:
         _refuse()
@@ -1266,7 +1428,7 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
                       expected_roster_sha256=None, expected_anchor_sha256=None, expected_mode="legacy",
                       expected_public_policy_sha256=None, public_policy_bytes=None, expected_anchor_bytes=None,
                       snapshot_result=None, _prefix_required=False, _expected_start_prefix=None,
-                      _catchup_source=None, _prepare_attempt=False, _expected_attempt_sha256=None):
+                      _catchup_source=None, _prepare_attempt=False, _expected_attempt_sha256=None, _fenced=False):
     """Commit index + cursor together. CAS requires exact predecessor bytes.
 
     For a first publication expected_pointer_sha256 must be None and the
@@ -1278,6 +1440,9 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
     try:
         if type(_prepare_attempt) is not bool or ((_prepare_attempt or _expected_attempt_sha256 is not None)
                 and not _prefix_required):
+            _refuse()
+        # A fenced publication is opt-in, prefix-only and bound to a prepared attempt digest.
+        if type(_fenced) is not bool or (_fenced and (_prepare_attempt or _expected_attempt_sha256 is None)):
             _refuse()
         root = _secure(root)
         if (not root.is_dir() or not isinstance(generation, str) or NAME.fullmatch(generation) is None
@@ -1387,7 +1552,7 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
             _attempt(value, _expected_attempt_sha256)
             if _prepare_attempt:
                 return value
-            _publish_pointer(root, pointer, None if old is None else raw, expected_pointer_sha256, value)
+            _publish_pointer(root, pointer, None if old is None else raw, expected_pointer_sha256, value, fenced=_fenced)
             return value
     except Exception:
         _refuse()
@@ -1399,7 +1564,7 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
                               expected_anchor_sha256, expected_mode="legacy", expected_public_policy_sha256=None,
                               public_policy_bytes=None, expected_anchor_bytes=None,
                               _prefix_required=False, _expected_start_prefix=None, _catchup_source=None,
-                              _prepare_attempt=False, _expected_attempt_sha256=None):
+                              _prepare_attempt=False, _expected_attempt_sha256=None, _fenced=False):
     """Publish a union only after verifying the exact bound delta under the writer lock.
 
     The delta is retained in the private state directory to permit later union
@@ -1411,6 +1576,9 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
     try:
         if type(_prepare_attempt) is not bool or ((_prepare_attempt or _expected_attempt_sha256 is not None)
                 and not _prefix_required):
+            _refuse()
+        # A fenced publication is opt-in, prefix-only and bound to a prepared attempt digest.
+        if type(_fenced) is not bool or (_fenced and (_prepare_attempt or _expected_attempt_sha256 is None)):
             _refuse()
         from sandbox.mind.step2 import shared_bridge_snapshot as snapshot, shared_capture_adapter as adapter
         root = _secure(root)
@@ -1513,9 +1681,10 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
                     or json.dumps(delta, sort_keys=True, indent=1).encode("utf-8") != delta_bytes
                     or _read(pointer, max_bytes=_MAX_POINTER_BYTES) != raw):
                 _refuse()
-            _attempt(value, _expected_attempt_sha256)
+            attempt = _attempt(value, _expected_attempt_sha256)
             if _prepare_attempt:
                 return value
+            _fence_gate(root, expected_pointer_sha256, attempt, _fenced)  # before any delta file is written
             delta_path = root / ("q4-delta-" + digest + ".json")
             if os.path.lexists(delta_path):
                 if _read(delta_path) != delta_bytes:
@@ -1534,7 +1703,7 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
                     or json.dumps(delta, sort_keys=True, indent=1).encode("utf-8") != delta_bytes):
                 _refuse()
             _attempt(value, _expected_attempt_sha256)
-            _publish_pointer(root, pointer, raw, expected_pointer_sha256, value)
+            _publish_pointer(root, pointer, raw, expected_pointer_sha256, value, fenced=_fenced)
             return value
     except Exception:
         _refuse()

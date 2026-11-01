@@ -197,3 +197,20 @@ def test_source_change_during_manifest_creation_refuses_publication(inputs, monk
     monkeypatch.setattr(runtime_builder, "build_runtime_manifest", change_source_before_manifest)
     with pytest.raises(ValueError):
         assemble(inputs)
+
+
+def test_candidate_change_before_manifest_is_not_accepted(inputs, monkeypatch):
+    """The produced manifest cannot legitimize a tampered candidate."""
+    from sandbox.mind.step2 import runtime_builder
+
+    source_before = tree_snapshot(inputs[0])
+    original = runtime_builder.build_runtime_manifest
+
+    def change_candidate_before_manifest(*args, **kwargs):
+        (inputs[1] / "model" / "config.json").write_bytes(b"changed-synthetic-candidate")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(runtime_builder, "build_runtime_manifest", change_candidate_before_manifest)
+    with pytest.raises(ValueError):
+        assemble(inputs)
+    assert tree_snapshot(inputs[0]) == source_before

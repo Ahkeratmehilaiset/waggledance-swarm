@@ -122,6 +122,9 @@ def build_candidate(source_root, candidate_root, manifest_path, *, pins, generat
 
     result = runtime_builder.build_runtime_manifest(candidate, manifest, generation=generation, revision=revision)
     for relative, (size, digest) in files.items():
+        copied_size, copied_digest, _ = _input_hash(candidate, relative)
+        if (copied_size, copied_digest) != (size, digest):
+            raise ValueError('candidate_pin_mismatch')
         current_size, current_digest, identity = _input_hash(source, relative)
         if (current_size, current_digest, identity) != (size, digest, identities[relative]):
             raise ValueError('input_changed')

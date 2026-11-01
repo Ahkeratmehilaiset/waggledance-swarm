@@ -915,6 +915,10 @@ def query_public_snapshot(*, pointer_bytes=None, expected_pointer_sha256=None, a
         query_instant = reader.corpus_mod.parse_utc(query_time)
         if query_instant is None or query_instant > dt.datetime.now(dt.timezone.utc):
             _refuse()
+        # Reject a mismatched runtime encoder before any native cell index is
+        # loaded. The reader repeats this check closer to actual model use;
+        # neither check alone prevents replacement between check and use.
+        reader.bind_runtime_encoder(descriptor, model_dir)
         memory_doc = active.read(ARTIFACTS["memory_sha256"])
         projection = _parse(active.read(ARTIFACTS["projection_sha256"]))
         # Deserialize only after controls/public policy are bound, then compare

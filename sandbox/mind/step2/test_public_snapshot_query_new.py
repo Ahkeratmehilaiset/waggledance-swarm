@@ -141,6 +141,17 @@ def test_runtime_revision_mismatch_refuses_before_query(monkeypatch):
         checkpoint.query_public_snapshot(**args)
 
 
+def test_wrong_runtime_encoder_refuses_before_loading_any_index(monkeypatch):
+    from sandbox.mind.step2 import memory
+    args = _fixture(monkeypatch)
+    descriptor = json.loads(args["active_artifact_bytes"]["descriptor.json"])
+    wrong = dict(descriptor["encoder"], weights_sha256="0" * 64)
+    monkeypatch.setattr(reader, "RUNTIME_IDENTITY", lambda **kw: wrong)
+    monkeypatch.setattr(memory.Memory, "from_snapshots", lambda **kw: pytest.fail("native index loaded"))
+    with pytest.raises(checkpoint.CheckpointRefused):
+        checkpoint.query_public_snapshot(**args)
+
+
 @pytest.mark.parametrize("when", ["2999-01-01T00:00:00Z", "2026-10-20T13:00:00.0000001Z"])
 def test_future_or_submicrosecond_query_refuses_before_loading_cells(monkeypatch, when):
     from sandbox.mind.step2 import memory

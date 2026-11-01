@@ -19,7 +19,7 @@ def sha(value):
     return hashlib.sha256(value).hexdigest()
 
 
-def make_case():
+def make_case(*, canonical_roster=False):
     """Build the same synthetic snapshot graph without importing a FAISS backend."""
     from sandbox.mind.step2 import shared_index_checkpoint as checkpoint, shared_projection as projection
     from waggledance.core.bridge_log_reader import BridgeCursor
@@ -31,9 +31,14 @@ def make_case():
               "fable-5": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"}
     tasks = frozenset({"public-task", "private-task"})
     policy_bytes = canon({"schema": "wd.q4-non-review-policy.v1", "approved_tasks": sorted(tasks)})
-    roster_bytes = canon({"lanes": [{"agent": k, "agent_uuid": v} for k, v in roster.items()
-                                   if k != "codex-tools-1"],
-                         "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": roster["codex-tools-1"]}})
+    roster_doc = {"lanes": [{"agent": k, "agent_uuid": v} for k, v in roster.items()
+                            if k != "codex-tools-1"],
+                  "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": roster["codex-tools-1"]}}
+    if canonical_roster:
+        from tools import wd_q4_roster_from_fleet
+        roster_doc["schema"] = wd_q4_roster_from_fleet.SCHEMA
+        roster_doc["lanes"] = sorted(roster_doc["lanes"], key=lambda entry: entry["agent"])
+    roster_bytes = canon(roster_doc)
     public_bytes = canon({"schema": "wd.mind-public-status-policy.v1", "public_tasks": ["public-task"],
                           "public_types": ["message"]})
     events = [{"ts_utc": f"2026-10-20T12:0{i}:00Z", "agent": "codex-lead-1",
@@ -101,6 +106,17 @@ def make_case():
             "public_policy_bytes": public_bytes, "expected_source_sha256": anchor_sha,
             "expected_encoder_sha256": sha(checkpoint._canonical(encoder)), "active_artifact_bytes": active,
             "cell_snapshots": cell_snapshots, "history_bytes": {}, "enabled": True}
+
+
+def test_synthetic_canonical_roster_rebinds_snapshot_hashes():
+    from tools import wd_q4_roster_from_fleet
+
+    case = make_case(canonical_roster=True)
+    roster = json.loads(case["roster_bytes"])
+    fleet = canon({"lanes": roster["lanes"], "tools_supervisor": roster["tools_supervisor"]})
+    actual, digest = wd_q4_roster_from_fleet.build_roster_snapshot(fleet, sha(fleet), enabled=True)
+    assert actual == case["roster_bytes"]
+    assert digest == case["roster_sha256"] == json.loads(case["pointer_bytes"])["roster_sha256"]
 
 
 def invoke(case, monkeypatch, tmp_path):

@@ -1,6 +1,7 @@
 """Synthetic Tools descriptor propagation; no fleet, process or query launched."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import pytest
 
@@ -237,7 +238,9 @@ try {{ $value=Get-WdToolsSharedQ4Reference -DescriptorPath {_q(descriptor)} -Des
 """
     out = json.loads(_run_powershell(script, executable=ps).stdout)
     assert out["spoof"] is False
-    if case == "ok":
+    # Production accepts only fixed Windows paths. POSIX tmp_path is not a
+    # valid substitute; exercise its typed refusal instead of a false success.
+    if case == "ok" and os.name == "nt":
         assert out["ok"] and set(out["value"]) == {"WD_Q4_SHARED_DESCRIPTOR_PATH", "WD_Q4_SHARED_DESCRIPTOR_SHA256"}, out
     elif case == "off":
         assert out["ok"] and out["value"] is None

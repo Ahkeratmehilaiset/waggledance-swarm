@@ -22,14 +22,6 @@ def sha(value):
 
 @pytest.fixture
 def case(monkeypatch, tmp_path):
-    from sandbox.mind.step2 import test_verified_snapshot_checkpoint as snapshot_helper
-    original = snapshot_helper.enc
-    def encode_with_schema(value):
-        if type(value) is dict and set(value) == {"lanes", "tools_supervisor"}:
-            value = {"schema": wd_q4_roster_from_fleet.SCHEMA, "lanes": sorted(value["lanes"], key=lambda x: x["agent"]),
-                     "tools_supervisor": value["tools_supervisor"]}
-        return original(value)
-    monkeypatch.setattr(snapshot_helper, "enc", encode_with_schema)
     spec = importlib.util.spec_from_file_location("bound_lane_test_helpers_session",
         Path(__file__).with_name("test_wd_q4_bound_lane_transport.py"))
     helper = importlib.util.module_from_spec(spec)

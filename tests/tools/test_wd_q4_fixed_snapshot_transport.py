@@ -410,12 +410,35 @@ PART_PINS = {"expected_pointer_sha256": sha(PARTS["pointer_bytes"]), "policy_sha
 QUERY_TIME = json.loads(QUERY)["time"]
 
 
+def test_snapshot_fixture_does_not_import_native_checkpoint(monkeypatch):
+    """The metadata-only graph must work without loading a native backend."""
+    import builtins
+
+    original_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        blocked = (name == "faiss" or name.endswith(".faiss_store")
+                   or name.endswith(".test_verified_snapshot_checkpoint")
+                   or (name == "sandbox.mind.step2"
+                       and "test_verified_snapshot_checkpoint" in (fromlist or ())))
+        if blocked:
+            raise AssertionError("synthetic fixture imported native checkpoint")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    assert snapshot_case(monkeypatch)["resolved"]
+
+
 def snapshot_case(monkeypatch):
-    """A fully consistent synthetic pointer/memory/projection graph (existing make_case) and its resolved hits."""
-    pytest.importorskip("numpy")
+    """A pure synthetic pointer/memory/projection graph and its resolved hits."""
+    import importlib.util
+
     from sandbox.mind.step2 import shared_result_resolver as resolver
-    from sandbox.mind.step2.test_verified_snapshot_checkpoint import make_case
-    args = make_case(monkeypatch)
+    spec = importlib.util.spec_from_file_location(
+        "fixed_result_test_helpers_snapshot", Path(__file__).with_name("test_wd_q4_fixed_result_adapter.py"))
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    args = helper.make_case(canonical_roster=True)
     projection = json.loads(args["active_artifact_bytes"]["projection.json"])
     hits = [{"ref_sha256": sha(r["provenance"]["event_ref"].encode()), "doc_id_sha256": sha(r["record_id"].encode()),
              "ref_kind": r["provenance"]["ref_kind"], "canonical_event": False} for r in projection["records"]]

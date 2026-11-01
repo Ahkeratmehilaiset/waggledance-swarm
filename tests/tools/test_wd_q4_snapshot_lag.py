@@ -55,8 +55,12 @@ def test_truncate_rotate_and_same_size_rewrite_are_not_accepted(position):
     assert check(position) == {"status": "UNKNOWN"}
     path.write_bytes(b'x' * len(original))
     assert check(position) == {"status": "UNKNOWN"}
-    path.unlink()
+    # Retain the old file so filesystems cannot reuse its identity for the
+    # replacement (unlink followed by create may reuse the inode on Linux).
+    path.rename(path.with_name("events.rotated.jsonl"))
     path.write_bytes(original)
+    with path.open("rb") as stream:
+        assert log_reader._file_identity(stream) != position[2].cursor.file_identity
     assert check(position) == {"status": "UNKNOWN"}
 
 

@@ -1,6 +1,7 @@
 """Synthetic runtime input plan tests: tiny temporary trees, no real runtime, model or install."""
 
 import hashlib
+import io
 import os
 from pathlib import Path
 import shutil
@@ -480,6 +481,9 @@ def test_a_file_growing_after_its_size_check_is_never_read_past_the_remaining_bu
             if os.fstat(self.stream.fileno()).st_size > 1024 * 1024:
                 read.append(len(block))
             return block
+        @property
+        def raw(self):
+            return self
         def fileno(self):
             return self.stream.fileno()
         def close(self):
@@ -509,6 +513,9 @@ def test_a_file_growing_after_it_is_opened_refuses_as_changed(case, monkeypatch)
                 with open(target, "ab") as handle:
                     handle.write(b"#")
             return self.stream.read(size)
+        @property
+        def raw(self):
+            return self
         def fileno(self):
             return self.stream.fileno()
         def __enter__(self):
@@ -518,6 +525,42 @@ def test_a_file_growing_after_it_is_opened_refuses_as_changed(case, monkeypatch)
     monkeypatch.setattr(plan_mod.os, "fdopen", lambda fd, *a, **k: GrowOnFirstRead(real_fdopen(fd, *a, **k)))
     refused(kwargs, "file_changed")
     assert grown
+
+
+def test_raw_reads_of_a_file_growing_after_open_never_pass_its_opened_size(case, monkeypatch):
+    kwargs, _, site, _ = case
+    target = site / "pkg" / "mod.py"
+    raw_bytes, grown = [], []
+    class CountingRaw(io.RawIOBase):  # counts every byte the OS hands over, buffered prefetch included
+        def __init__(self, fd):
+            self.file = io.FileIO(fd, "rb")
+        def readable(self):
+            return True
+        def readinto(self, buffer):
+            mine = os.path.samefile(self.file.fileno(), target)
+            if mine and not grown:
+                grown.append(True)
+                with open(target, "ab") as handle:
+                    handle.write(b"#" * 65536)
+            count = self.file.readinto(buffer)
+            if mine:
+                raw_bytes.append(count)
+            return count
+        def fileno(self):
+            return self.file.fileno()
+        def close(self):
+            self.file.close()
+            super().close()
+    real_read = os.read
+    def counting_read(fd, size):
+        data = real_read(fd, size)
+        if os.path.samefile(fd, target):
+            raw_bytes.append(len(data))
+        return data
+    monkeypatch.setattr(plan_mod.os, "fdopen", lambda fd, *a, **k: io.BufferedReader(CountingRaw(fd)))
+    monkeypatch.setattr(plan_mod.os, "read", counting_read)
+    refused(kwargs, "file_changed")
+    assert grown and sum(raw_bytes) <= 6 + 1  # opened size plus the one-byte end probe
 
 
 def test_root_and_extra_modules_pin_their_parent_packages(tmp_path):

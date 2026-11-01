@@ -31,7 +31,8 @@ blob's listed size is checked against the remaining budget before cat-file
 and its stdout is capped at that size; each site and model file is checked
 before it is opened, then opened with the remaining budget as its size limit
 (the opened identity, size included, must equal the checked one) and read
-for at most its opened size plus a one-byte end probe. It bounds input,
+unbuffered for at most its opened size plus a one-byte end probe; git pipe
+reads may fetch up to one 64 KiB chunk past a cap before refusing. It bounds input,
 not process peak memory: one blob, the AST of one parsed file, the ls-tree
 listing (up to 64 MiB) and git stderr (up to 64 KiB) are held besides. Root and extra modules also pin
 their parent package __init__ files. Lazy fetching is disabled
@@ -369,15 +370,16 @@ def _hash_bounded(path, limit):
         with stream:
             if initial.st_size > limit:
                 _fail("budget_insufficient")
+            raw = stream.raw  # unbuffered: the buffered reader would prefetch past the opened size
             digest = hashlib.sha256()
             remaining = initial.st_size
             while remaining:
-                block = stream.read(min(1024 * 1024, remaining))
+                block = raw.read(min(1024 * 1024, remaining))
                 if not block:
                     _fail("file_changed")
                 digest.update(block)
                 remaining -= len(block)
-            if stream.read(1) or not runtime_manifest._same_file(path, stream, initial):
+            if raw.read(1) or not runtime_manifest._same_file(path, stream, initial):
                 _fail("file_changed")
     except OSError:
         _fail("file_read_unavailable")

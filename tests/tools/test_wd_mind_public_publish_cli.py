@@ -517,3 +517,159 @@ def test_after_an_unchanged_recovery_the_next_window_still_starts_at_the_issued_
     assert publisher.main([]) == 0
     result, _ = published(capsys)
     assert result["records"] == 1 and json.loads(publication(audit))["revision"] == 2
+
+
+# --- v4: no landed artifact consumed before its issued anchor exists; crash-safe artifact creation ---------------
+
+def _raise(error):
+    def fail(*args, **kwargs):
+        raise error
+    return fail
+
+
+def _pin_anchor(monkeypatch, audit, value, name):
+    raw = enc(value)
+    file = audit.parent / name
+    file.write_bytes(raw)
+    monkeypatch.setenv("WD_MIND_PUBLIC_ANCHOR_PATH", str(file))
+    monkeypatch.setenv("WD_MIND_PUBLIC_ANCHOR_SHA256", hashlib.sha256(raw).hexdigest())
+
+
+def test_a_landed_artifact_is_not_consumed_while_its_issued_anchor_is_missing(world, monkeypatch, capsys):
+    audit, log = world([eligible()])
+    original = {name: os.environ[name] for name in ("WD_MIND_PUBLIC_ANCHOR_PATH", "WD_MIND_PUBLIC_ANCHOR_SHA256")}
+    with monkeypatch.context() as broken:
+        broken.setattr(publisher, "_write_next_anchor", _raise(OSError("synthetic anchor failure")))
+        assert publisher.main([]) == 2
+    refused(capsys)
+    kept = pending(audit)
+    saved = json.loads(kept)
+    assert publication(audit) is not None and next_anchor(audit) is None  # landed, anchor never issued
+    # Lead reproduction: a caller-made anchor at the saved candidate cursor with the landed digest as prior, then
+    # a failure before any publish. The artifact must survive, otherwise nothing can ever recover the anchor.
+    crafted = json.loads(Path(original["WD_MIND_PUBLIC_ANCHOR_PATH"]).read_bytes())
+    crafted["cursor_start"] = saved["candidate_cursor"]
+    _pin_anchor(monkeypatch, audit, crafted, "crafted-anchor.json")
+    monkeypatch.setenv("WD_MIND_PUBLIC_PREVIOUS_SHA256", saved["attempt_sha256"])
+    with open(log, "ab") as stream:
+        stream.write(enc(eligible("fable-5")) + b"\n")
+    with monkeypatch.context() as broken:
+        broken.setattr(session, "prepare_status_attempt", _raise(OSError("synthetic pre-publish failure")))
+        assert publisher.main([]) == 2
+    refused(capsys)
+    assert pending(audit) == kept and next_anchor(audit) is None
+    # The crash-equivalent restart under the ORIGINAL pins issues the anchor; then the window continues.
+    for name, value in original.items():
+        monkeypatch.setenv(name, value)
+    code, captured = _recover(monkeypatch, capsys)
+    assert code == 0 and json.loads(captured.out)["outcome"] == "landed_recovered"
+    follow(monkeypatch, audit, saved["attempt_sha256"])
+    assert publisher.main([]) == 0
+    result, _ = published(capsys)
+    assert result["records"] == 1 and json.loads(publication(audit))["revision"] == 2
+    assert [r["agent"] for r in json.loads(publication(audit))["body"]["records"]] == ["fable-5"]
+
+
+def test_a_stale_issued_anchor_does_not_let_a_landed_artifact_be_consumed(world, monkeypatch, capsys):
+    audit, log = world([eligible()])
+    assert publisher.main([]) == 0
+    first, _ = published(capsys)
+    with open(log, "ab") as stream:
+        stream.write(enc(eligible("fable-5")) + b"\n")
+    follow(monkeypatch, audit, first["publication_sha256"])
+    stale = next_anchor(audit)
+    with monkeypatch.context() as broken:  # window 2 lands, its anchor is never issued: window 1's stays
+        broken.setattr(publisher, "_write_next_anchor", _raise(OSError("synthetic anchor failure")))
+        assert publisher.main([]) == 2
+    refused(capsys)
+    kept = pending(audit)
+    saved = json.loads(kept)
+    assert next_anchor(audit) == stale and json.loads(stale)["cursor_start"] != saved["candidate_cursor"]
+    crafted = json.loads(stale)
+    crafted["cursor_start"] = saved["candidate_cursor"]
+    _pin_anchor(monkeypatch, audit, crafted, "crafted-anchor.json")
+    monkeypatch.setenv("WD_MIND_PUBLIC_PREVIOUS_SHA256", saved["attempt_sha256"])
+    with monkeypatch.context() as broken:
+        broken.setattr(session, "prepare_status_attempt", _raise(OSError("synthetic pre-publish failure")))
+        assert publisher.main([]) == 2
+    refused(capsys)
+    assert pending(audit) == kept and next_anchor(audit) == stale
+
+
+def _torn_artifact_write(monkeypatch, how):
+    """The process dies (or the OS reports a short write) half-way through writing the recovery artifact."""
+    real = Path.open
+
+    class Torn:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.stream.close()
+            return False
+
+        def write(self, data):
+            self.stream.write(data[:len(data) // 2])
+            self.stream.flush()
+            if how == "crash":
+                raise KeyboardInterrupt
+            return len(data) // 2
+
+        def flush(self):
+            self.stream.flush()
+
+        def fileno(self):
+            return self.stream.fileno()
+
+    def open_(self, mode="r", *args, **kwargs):
+        stream = real(self, mode, *args, **kwargs)
+        if "x" in mode and self.name.startswith(".public-publish-pending"):
+            return Torn(stream)
+        return stream
+
+    monkeypatch.setattr(Path, "open", open_)
+
+
+@pytest.mark.parametrize("how", ["crash", "short"])
+def test_a_torn_artifact_write_never_leaves_a_partial_artifact_that_blocks_recovery(world, monkeypatch, capsys, how):
+    audit, _ = world([eligible()])
+    with monkeypatch.context() as broken:
+        _torn_artifact_write(broken, how)
+        if how == "crash":
+            with pytest.raises(KeyboardInterrupt):
+                publisher.main([])
+        else:
+            assert publisher.main([]) == 2
+    capsys.readouterr()
+    assert pending(audit) is None and publication(audit) is None  # the final artifact never appears torn
+    code, captured = _recover(monkeypatch, capsys)
+    assert code == 2 and captured.out == ""  # nothing attempted, nothing to recover
+    assert publisher.main([]) == 0  # and nothing blocks the same prior
+    assert published(capsys)[0]["outcome"] == "published" and pending(audit) is not None
+
+
+def test_a_competing_artifact_is_never_overwritten(world, monkeypatch, capsys):
+    audit, _ = world([eligible()])
+    real = Path.open
+    foreign = b"foreign-writer-artifact"
+
+    def open_(self, mode="r", *args, **kwargs):
+        if "x" in mode and self.name.startswith(".public-publish-pending"):
+            target = audit / publisher.PENDING_FILENAME
+            if not os.path.lexists(target):
+                target.write_bytes(foreign)  # another writer wins the race for the final name
+        return real(self, mode, *args, **kwargs)
+
+    with monkeypatch.context() as racing:
+        racing.setattr(Path, "open", open_)
+        assert publisher.main([]) == 2
+    refused(capsys)
+    assert pending(audit) == foreign and publication(audit) is None
+    code, captured = _recover(monkeypatch, capsys)
+    assert code == 2 and pending(audit) == foreign
+    assert publisher.main([]) == 2  # fail closed until a human resolves the foreign file; never overwritten
+    refused(capsys)
+    assert pending(audit) == foreign and publication(audit) is None

@@ -21,13 +21,18 @@ def memory_sha256(out_dir):
 
 
 class Memory:
-    """All cells of one memory directory; every cell HEALTHY or QUARANTINED, none silently empty."""
+    """Load cells; supplied manifest bytes must be authenticated by the caller."""
 
-    def __init__(self, out_dir):
+    def __init__(self, out_dir, *, manifest_bytes=None):
         self.out_dir = out_dir
         try:
-            with (out_dir / "memory.json").open("rb") as manifest_file:
-                manifest = manifest_file.read(MAX_MEMORY_MANIFEST_BYTES + 1)
+            if manifest_bytes is None:
+                with (out_dir / "memory.json").open("rb") as manifest_file:
+                    manifest = manifest_file.read(MAX_MEMORY_MANIFEST_BYTES + 1)
+            elif type(manifest_bytes) is bytes:
+                manifest = manifest_bytes
+            else:
+                raise MemoryError_("memory_unreadable")
             if len(manifest) > MAX_MEMORY_MANIFEST_BYTES:
                 raise MemoryError_("memory_over_budget")
             self.memory = json.loads(manifest)

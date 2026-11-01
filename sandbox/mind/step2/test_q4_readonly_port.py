@@ -15,6 +15,27 @@ pytest.importorskip("faiss")
 from sandbox.mind.step2 import cell, encode, memory, q4
 
 
+def test_memory_accepts_owned_manifest_without_reopening_path(tmp_path, monkeypatch):
+    owned = json.dumps({"schema": memory.SCHEMA, "dim": 2, "cells": {}}).encode()
+    (tmp_path / "memory.json").write_bytes(b"untrusted replacement")
+    original_open = Path.open
+
+    def reject_manifest_path(path, *args, **kwargs):
+        if path.name == "memory.json":
+            raise AssertionError("owned manifest must not be reopened")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", reject_manifest_path)
+    loaded = memory.Memory(tmp_path, manifest_bytes=owned)
+    assert loaded.memory["dim"] == 2
+
+
+def test_memory_owned_manifest_never_falls_back_to_path(tmp_path):
+    (tmp_path / "memory.json").write_text(json.dumps({"schema": memory.SCHEMA, "dim": 2, "cells": {}}))
+    with pytest.raises(memory.MemoryError_):
+        memory.Memory(tmp_path, manifest_bytes=b"not-json")
+
+
 class FakeEncoder:
     def query(self, text):
         return np.array([1.0, 0.0], dtype=np.float32)

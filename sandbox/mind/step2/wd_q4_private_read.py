@@ -39,11 +39,11 @@ build is performed. All callers must use the same trusted local lock path; this 
 only model execution is the one query encode after every check passed. Exit 0 with a Q4 status (ANSWER, ABSTAIN,
 DEGRADED, REFUSED) or exit 2 with a fixed adapter refusal reason; neither carries the query text.
 
-Residual TOCTOU: ``memory.json`` is digested before and again after ``memory.Memory`` opened and verified the cells,
-and the open itself binds every cell receipt to ``memory.json``; a directory swapped between those reads is refused
-(``memory_descriptor_changed``), but a swap landing between the second digest and the FAISS reads inside Q4 is not
-detected here. A read-only root and suitable ACLs can reduce exposure, but do not establish protection against
-changes by an authorized or same-user process. This module alone does not close that window.
+Residual TOCTOU: ``memory.Memory`` parses the exact ``memory.json`` bytes checked against the descriptor. A later
+digest refuses a persistent change (``memory_descriptor_changed``), but transient directory swaps and later cell
+or FAISS mutations are not generally detected. A read-only root and suitable ACLs can reduce exposure, but do not
+establish protection against changes by an authorized or same-user process. This module alone does not close that
+window.
 """
 
 import argparse
@@ -164,21 +164,27 @@ def _identity_of(value):
 
 
 def bind_memory(memory_dir, descriptor):
-    """The opened memory, after the digest, dimension and per-cell encoder identity checks; fails closed."""
+    """Bind the exact verified manifest bytes; cell and native I/O remain separate."""
     try:
-        if MEMORY_DIGEST(Path(memory_dir)) != descriptor["memory_sha256"]:
+        expected = descriptor["memory_sha256"]
+        if not _hex64(expected):
             raise PrivateReadRefused("memory_descriptor_mismatch")
-    except (OSError, ValueError) as exc:
+        with (Path(memory_dir) / "memory.json").open("rb") as manifest_file:
+            manifest_bytes = manifest_file.read(memory_mod.MAX_MEMORY_MANIFEST_BYTES + 1)
+        if (len(manifest_bytes) > memory_mod.MAX_MEMORY_MANIFEST_BYTES
+                or hashlib.sha256(manifest_bytes).hexdigest() != expected):
+            raise PrivateReadRefused("memory_descriptor_mismatch")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
         if isinstance(exc, PrivateReadRefused):
             raise
         raise PrivateReadRefused("memory_descriptor_unreadable") from None
     try:
-        memory = MEMORY_FACTORY(Path(memory_dir))
+        memory = MEMORY_FACTORY(Path(memory_dir), manifest_bytes=manifest_bytes)
     except memory_mod.MemoryError_:
         raise PrivateReadRefused("memory_unreadable") from None
     except Exception:  # Never leak a query, path, or backend exception to the caller.
         raise PrivateReadRefused("memory_unreadable") from None
-    try:  # the directory could be re-pointed between the descriptor check and the open: digest it again
+    try:  # Additional best-effort persistent-change detection; never supplies parsed bytes.
         unchanged = MEMORY_DIGEST(Path(memory_dir)) == descriptor["memory_sha256"]
     except (OSError, ValueError):
         unchanged = False

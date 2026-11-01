@@ -73,6 +73,79 @@ def write_memory(tmp_path, dim=384):
     return memory_dir, hashlib.sha256(body).hexdigest()
 
 
+def test_memory_manifest_aba_binds_the_verified_bytes(tmp_path, monkeypatch):
+    memory_dir, digest = write_memory(tmp_path)
+    path = memory_dir / "memory.json"
+    original = path.read_bytes()
+    changed = original.replace(b'"dim": 384', b'"dim": 385')
+    assert changed != original
+    observed = []
+
+    def swapped_factory(directory, **kwargs):
+        path.write_bytes(changed)
+        try:
+            # Legacy path-based factories read B while the hashes see A.
+            selected = kwargs.get("manifest_bytes")
+            if selected is None:
+                selected = (directory / "memory.json").read_bytes()
+            observed.append(selected)
+            return FakeMemory()
+        finally:
+            path.write_bytes(original)
+
+    monkeypatch.setattr(adapter, "MEMORY_FACTORY", swapped_factory)
+    descriptor = {"memory_sha256": digest, "dim": 384, "encoder": dict(ENCODER)}
+    adapter.bind_memory(memory_dir, descriptor)
+    assert observed == [original]
+
+
+def test_memory_manifest_aba_reaches_real_loader_with_verified_bytes(tmp_path, monkeypatch):
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    cell_id = next(iter(memory_mod.topology_mod.ALL_CELLS))
+    generation, receipt_sha = "synthetic", "a" * 64
+    original = json.dumps({"schema": memory_mod.SCHEMA, "dim": 384,
+                           "cells": {cell_id: {"generation": generation, "receipt_sha256": receipt_sha}}}).encode()
+    changed = original.replace(b'"dim": 384', b'"dim": 385')
+    path = memory_dir / "memory.json"
+    path.write_bytes(original)
+    view = FakeView()
+    view.pointer = {"generation": generation, "receipt_sha256": receipt_sha}
+    view.receipt["content"]["dim"] = 384
+    monkeypatch.setattr(memory_mod.cell_mod, "load", lambda *args: view)
+    reads = []
+    original_open = Path.open
+
+    def counted_open(item, *args, **kwargs):
+        if item == path and args and args[0] == "rb":
+            reads.append(True)
+        return original_open(item, *args, **kwargs)
+
+    def swapping_factory(directory, *, manifest_bytes):
+        path.write_bytes(changed)
+        try:
+            return memory_mod.Memory(directory, manifest_bytes=manifest_bytes)
+        finally:
+            path.write_bytes(original)
+
+    monkeypatch.setattr(Path, "open", counted_open)
+    monkeypatch.setattr(adapter, "MEMORY_FACTORY", swapping_factory)
+    descriptor = {"memory_sha256": hashlib.sha256(original).hexdigest(), "dim": 384, "encoder": dict(ENCODER)}
+    result = adapter.bind_memory(memory_dir, descriptor)
+    # Two reads: the first provides parsed bytes; the second only checks for a persistent change.
+    assert result.memory["dim"] == 384 and reads == [True, True]
+
+
+@pytest.mark.parametrize("pin", [None, "", "0" * 64])
+def test_memory_manifest_missing_or_wrong_pin_refuses_before_factory(tmp_path, monkeypatch, pin):
+    memory_dir, _ = write_memory(tmp_path)
+    calls = []
+    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda *args, **kwargs: calls.append(True))
+    with pytest.raises(adapter.PrivateReadRefused, match="^memory_descriptor_mismatch$"):
+        adapter.bind_memory(memory_dir, {"memory_sha256": pin})
+    assert calls == []
+
+
 def write_descriptor(tmp_path, memory_sha256, changes=None):
     descriptor = {"schema": adapter.DESCRIPTOR_SCHEMA, "scope": SHARED_SCOPE, "memory_sha256": memory_sha256, "dim": 384,
                   "encoder": dict(ENCODER)}
@@ -91,7 +164,7 @@ def fakes(monkeypatch):
     FakeQ4.calls = []
     loaded = {"memory": 0, "encoder": 0, "runtime": 0}
 
-    def memory_factory(path):
+    def memory_factory(path, *, manifest_bytes):
         loaded["memory"] += 1
         return FakeMemory()
 
@@ -214,7 +287,7 @@ def test_explicit_shared_scope_accepts_shared_rows(tmp_path, capsys, fakes, monk
     fake = FakeMemory()
     fake.views["learning"].rows = [{"kind": "event", "provenance": {
         "ref_kind": "sha256_of_projected_metadata", "canonical_event": False, "event_ref": EVENT_REF}}]
-    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path: fake)
+    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path, *, manifest_bytes: fake)
     code, out, _ = run(memory_dir, write_descriptor(tmp_path, digest, {"scope": SHARED_SCOPE}), query_bytes(), capsys)
     assert code == 0 and out["status"] == "ANSWER" and fakes["encoder"] == 1
 
@@ -235,7 +308,7 @@ def test_every_healthy_cell_row_is_shared_before_encoder_or_query(tmp_path, caps
     first, second = FakeView(), FakeView()
     first.rows = [good]
     second.rows = [good, dict(good, **change)]  # the final row of the final healthy cell must be inspected
-    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path: FakeMemory(views={"a": first, "b": second}))
+    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path, *, manifest_bytes: FakeMemory(views={"a": first, "b": second}))
     code, out, _ = run(memory_dir, write_descriptor(tmp_path, digest, {"scope": SHARED_SCOPE}), query_bytes(), capsys)
     assert (code, out["reason"]) == (2, "memory_scope_mismatch")
     assert fakes["runtime"] == fakes["encoder"] == 0 and FakeQ4.calls == []
@@ -245,7 +318,7 @@ def test_missing_healthy_cell_rows_is_not_assumed_shared(tmp_path, capsys, fakes
     memory_dir, digest = write_memory(tmp_path)
     view = FakeView()
     del view.rows
-    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path: FakeMemory(views={"a": view}))
+    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path, *, manifest_bytes: FakeMemory(views={"a": view}))
     code, out, _ = run(memory_dir, write_descriptor(tmp_path, digest), query_bytes(), capsys)
     assert (code, out["reason"]) == (2, "memory_scope_mismatch")
     assert fakes["runtime"] == fakes["encoder"] == 0 and FakeQ4.calls == []
@@ -336,17 +409,17 @@ def test_a_cell_receipt_with_another_encoder_identity_refuses_before_the_runtime
                                                                                             monkeypatch):
     memory_dir, digest = write_memory(tmp_path)
     other = FakeMemory(views={"learning": FakeView(), "safety": FakeView(encoder=dict(ENCODER, revision="def"))})
-    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path: other)
+    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path, *, manifest_bytes: other)
     code, out, _ = run(memory_dir, write_descriptor(tmp_path, digest), query_bytes(), capsys)
     assert (code, out["reason"]) == (2, "encoder_identity_mismatch") and fakes["runtime"] == 0 == fakes["encoder"]
 
 
 def test_a_quarantined_only_memory_or_a_dim_mismatch_refuses(tmp_path, capsys, fakes, monkeypatch):
     memory_dir, digest = write_memory(tmp_path)
-    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path: FakeMemory(views={"learning": FakeView(False)}))
+    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path, *, manifest_bytes: FakeMemory(views={"learning": FakeView(False)}))
     code, out, _ = run(memory_dir, write_descriptor(tmp_path, digest), query_bytes(), capsys)
     assert (code, out["reason"]) == (2, "memory_no_healthy_cell")
-    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path: FakeMemory(dim=768))
+    monkeypatch.setattr(adapter, "MEMORY_FACTORY", lambda path, *, manifest_bytes: FakeMemory(dim=768))
     code, out, _ = run(memory_dir, write_descriptor(tmp_path, digest), query_bytes(), capsys)
     assert (code, out["reason"]) == (2, "memory_dim_mismatch") and fakes["encoder"] == 0
 
@@ -354,7 +427,7 @@ def test_a_quarantined_only_memory_or_a_dim_mismatch_refuses(tmp_path, capsys, f
 def test_an_unverifiable_memory_is_refused_with_one_fixed_reason(tmp_path, capsys, fakes, monkeypatch):
     memory_dir, digest = write_memory(tmp_path)
 
-    def broken(path):
+    def broken(path, *, manifest_bytes):
         raise memory_mod.MemoryError_("memory_unreadable")
 
     monkeypatch.setattr(adapter, "MEMORY_FACTORY", broken)
@@ -488,7 +561,8 @@ def test_a_memory_that_changes_between_digest_and_open_is_refused(tmp_path, caps
     memory_dir, digest = write_memory(tmp_path)
     descriptor = write_descriptor(tmp_path, digest)
 
-    def swapping(path):  # the directory is re-pointed between the descriptor check and the open
+    def swapping(path, *, manifest_bytes):
+        assert hashlib.sha256(manifest_bytes).hexdigest() == digest
         (memory_dir / "memory.json").write_bytes(b'{"schema": "x", "dim": 384, "cells": {}}')
         return FakeMemory()
 
@@ -589,7 +663,7 @@ from pathlib import Path
 from sandbox.mind.step2 import wd_q4_private_read as adapter
 from sandbox.mind.step2.test_wd_q4_private_read import ENCODER, FakeMemory, FakeQ4
 memory, descriptor, digest, lock, ready, release = sys.argv[1:]
-adapter.MEMORY_FACTORY = lambda path: FakeMemory()
+adapter.MEMORY_FACTORY = lambda path, *, manifest_bytes: FakeMemory()
 adapter.RUNTIME_IDENTITY = lambda **kwargs: dict(ENCODER)
 adapter.Q4_FACTORY = FakeQ4
 def encoder(*, model_dir, revision):

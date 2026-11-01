@@ -57,6 +57,13 @@ class _Refused(ValueError):
         super().__init__("secure_transport_refused")
 
 
+class TransportCleanupUnknown(RuntimeError):
+    """Cleanup is not confirmed; this process must not start another transport."""
+    def __init__(self, prior_outcome):
+        self.prior_outcome = prior_outcome
+        super().__init__("secure_transport_cleanup_unknown")
+
+
 class _SA(C.Structure):
     _fields_ = [("length", W.DWORD), ("descriptor", C.c_void_p), ("inherit", W.BOOL)]
 
@@ -220,13 +227,21 @@ def _remaining(deadline):
     return max(1, min(0xFFFFFFFE, math.ceil(remaining * 1000)))
 
 
+def _prior_outcome(exc):
+    return (exc.prior_outcome if isinstance(exc, TransportCleanupUnknown) else
+            "timeout" if isinstance(exc, TimeoutError) else
+            "refused" if isinstance(exc, _Refused) else
+            "interrupt" if isinstance(exc, KeyboardInterrupt) else
+            "exit" if isinstance(exc, SystemExit) else
+            "none" if exc is None else "other")
+
+
 def _io(k, pipe, data, count, deadline, *, connect=False, write=False, eof=False):
     event = _handle(k.CreateEventW(None, True, False, None))
     ov = _OV(event=event)
     buffer = C.create_string_buffer(data if write else count)
     done = W.DWORD()
     outstanding = False
-    retained = False
     try:
         _noninheritable(k, event)
         _remaining(deadline)
@@ -258,16 +273,37 @@ def _io(k, pipe, data, count, deadline, *, connect=False, write=False, eof=False
             return b""
         return buffer.raw[:done.value]
     finally:
+        prior_outcome = _prior_outcome(sys.exc_info()[1])
+        retained = False
         if outstanding:
-            k.CancelIoEx(pipe, C.byref(ov))
-            # Cancellation is a request, not completion. Never release live memory.
-            if k.WaitForSingleObject(event, 1000) != 0:
-                _QUARANTINE.append((k, pipe, ov, buffer, event))
+            # A cancel request is not completion. If cancel, wait, or the final
+            # completion check fails unexpectedly, retain both the kernel handle
+            # and the exact backing Python objects; never retry an uncertain close.
+            try:
+                cancelled = bool(k.CancelIoEx(pipe, C.byref(ov)))
+                if cancelled and k.WaitForSingleObject(event, 1000) == 0:
+                    ok = k.GetOverlappedResult(pipe, C.byref(ov), C.byref(done), False)
+                    # ERROR_OPERATION_ABORTED explicitly reports completed
+                    # cancellation. Other failures do not prove completion.
+                    retained = not ok and C.get_last_error() != 995
+                else:
+                    retained = True
+            except BaseException:
                 retained = True
-            else:
-                k.GetOverlappedResult(pipe, C.byref(ov), C.byref(done), False)
+            if retained:
+                _QUARANTINE.append((k, pipe, ov, buffer, event))
         if not retained:
-            k.CloseHandle(event)
+            try:
+                closed = bool(k.CloseHandle(event))
+            except BaseException:
+                closed = False
+            if not closed:
+                # Completed I/O: the pipe need not be retained, but the event's
+                # close is uncertain and the same handle must not be retried.
+                _QUARANTINE.append((k, None, ov, buffer, event))
+                retained = True
+        if retained:
+            raise TransportCleanupUnknown(prior_outcome) from None
 
 
 def _read(k, pipe, size, deadline):
@@ -336,6 +372,10 @@ def _fixed_ready_exchange(k, pipe, expected_pid, expected_created, control, quer
             before_query(control["nonce"])
         _frame_write(k, pipe, query, deadline)
         return
+    except TransportCleanupUnknown:
+        raise
+    except TimeoutError:
+        raise TimeoutError("secure_transport_timeout") from None
     except Exception:
         pass
     del control, query, raw, ready, ready_raw, challenge, before_query
@@ -453,6 +493,10 @@ def _fixed_exchange(k, pipe, expected_pid, expected_created, control, plan_bytes
         _fixed_ready_exchange(k, pipe, expected_pid, expected_created, control, query, deadline,
                               before_query=bundle_phase)
         return
+    except TransportCleanupUnknown:
+        raise
+    except TimeoutError:
+        raise TimeoutError("secure_transport_timeout") from None
     except Exception:
         pass
     del control, plan_bytes, bundle_bytes, query, plan, bundle_sha256, bundle_phase
@@ -926,12 +970,14 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
     _validate(stdin_bytes, timeout_seconds, max_output_bytes)
     if not _RUN_LOCK.acquire(blocking=False):
         raise _Refused()
+    if _QUARANTINE:
+        _RUN_LOCK.release()
+        raise TransportCleanupUnknown("prior_unknown") from None
     k = a = None
     pipe = job = process = thread = None
     assigned = False
     deadline = time.monotonic() + timeout_seconds
     try:
-        _check(not _QUARANTINE)
         k, a = _api()
         _check(type(cwd) is str and os.path.isabs(cwd) and os.path.isdir(cwd))
         metadata = dict(metadata, max_output_bytes=max_output_bytes)
@@ -994,29 +1040,50 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
         _check(k.GetExitCodeProcess(int(process), C.byref(actual_exit)))
         _check(actual_exit.value == 0)
         return output, exit_code
+    except TransportCleanupUnknown:
+        raise
     except TimeoutError:
         raise TimeoutError("secure_transport_timeout") from None
     except Exception:
         raise _Refused() from None
     finally:
+        prior_outcome = _prior_outcome(sys.exc_info()[1])
         cleanup_ok = True
-        if k is not None:
-            if process is not None:
-                if assigned and job:
-                    cleanup_ok = bool(k.TerminateJobObject(job, 124)) and cleanup_ok
-                elif not assigned:
-                    cleanup_ok = bool(k.TerminateProcess(int(process), 125)) and cleanup_ok
-            if job:
-                cleanup_ok = bool(k.CloseHandle(job)) and cleanup_ok
-            if process is not None:
-                cleanup_ok = bool(k.CloseHandle(int(process))) and cleanup_ok
-            if thread is not None:
-                cleanup_ok = bool(k.CloseHandle(int(thread))) and cleanup_ok
-            if pipe and not any(entry[1] == pipe for entry in _QUARANTINE):
-                cleanup_ok = bool(k.CloseHandle(pipe)) and cleanup_ok
-        _RUN_LOCK.release()
+        failed_closes = []
+        def cleanup_call(operation):
+            try:
+                return bool(operation())
+            except BaseException:
+                return False
+        def close_call(handle):
+            closed = cleanup_call(lambda: k.CloseHandle(handle))
+            if not closed:
+                failed_closes.append(handle)
+            return closed
+        try:
+            if k is not None:
+                if process is not None:
+                    if assigned and job:
+                        cleanup_ok = cleanup_call(lambda: k.TerminateJobObject(job, 124)) and cleanup_ok
+                    elif not assigned:
+                        cleanup_ok = cleanup_call(lambda: k.TerminateProcess(int(process), 125)) and cleanup_ok
+                if job:
+                    cleanup_ok = close_call(job) and cleanup_ok
+                if process is not None:
+                    cleanup_ok = close_call(int(process)) and cleanup_ok
+                if thread is not None:
+                    cleanup_ok = close_call(int(thread)) and cleanup_ok
+                if pipe and not any(entry[1] == pipe for entry in _QUARANTINE):
+                    cleanup_ok = close_call(pipe) and cleanup_ok
+                elif pipe:
+                    cleanup_ok = False  # Pending overlapped I/O remains quarantined.
+            if not cleanup_ok and (failed_closes or not _QUARANTINE):
+                # Record only uncertain closes, never successfully closed values.
+                _QUARANTINE.append((k, None, tuple(failed_closes)))
+        finally:
+            _RUN_LOCK.release()
         if not cleanup_ok:
-            raise _Refused()
+            raise TransportCleanupUnknown(prior_outcome) from None
 
 
 def run_bounded(*, executable, arguments, cwd, stdin_bytes, timeout_seconds,
@@ -1031,7 +1098,7 @@ def run_bounded(*, executable, arguments, cwd, stdin_bytes, timeout_seconds,
     if expected_interpreter_sha256 is None and interpreter_max_bytes is None:
         return _run_bounded_impl(executable=executable, arguments=arguments, cwd=cwd,
             stdin_bytes=stdin_bytes, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes)
-    cleanup_type = cleanup_lease = failure = None
+    cleanup_type = cleanup_lease = failure = transport_cleanup = None
     try:
         from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown as cleanup_type
         return _run_bounded_impl(executable=executable, arguments=arguments, cwd=cwd,
@@ -1040,6 +1107,8 @@ def run_bounded(*, executable, arguments, cwd, stdin_bytes, timeout_seconds,
     except BaseException as exc:
         if cleanup_type is not None and isinstance(exc, cleanup_type):
             cleanup_lease = exc.lease
+        elif isinstance(exc, TransportCleanupUnknown):
+            transport_cleanup = exc.prior_outcome
         elif isinstance(exc, TimeoutError):
             failure = "timeout"
         elif isinstance(exc, KeyboardInterrupt):
@@ -1052,6 +1121,8 @@ def run_bounded(*, executable, arguments, cwd, stdin_bytes, timeout_seconds,
     del expected_interpreter_sha256, interpreter_max_bytes
     if cleanup_lease is not None:
         raise cleanup_type(cleanup_lease) from None
+    if transport_cleanup is not None:
+        raise TransportCleanupUnknown(transport_cleanup) from None
     if failure == "timeout":
         raise TimeoutError("secure_transport_timeout") from None
     if failure == "interrupt":
@@ -1137,7 +1208,7 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
     real backend is unavailable; only a synthetic runtime exercises this path.
     Source authentication and freshness are UNKNOWN. Same limits as run_bounded.
     """
-    cleanup_type = cleanup_lease = failure = None
+    cleanup_type = cleanup_lease = failure = transport_cleanup = None
     try:
         from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown as cleanup_type
         return _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
@@ -1146,6 +1217,8 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
     except BaseException as exc:
         if cleanup_type is not None and isinstance(exc, cleanup_type):
             cleanup_lease = exc.lease
+        elif isinstance(exc, TransportCleanupUnknown):
+            transport_cleanup = exc.prior_outcome
         elif isinstance(exc, TimeoutError):
             failure = "timeout"
         elif isinstance(exc, KeyboardInterrupt):
@@ -1159,6 +1232,8 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
     del public_snapshot_enabled
     if cleanup_lease is not None:
         raise cleanup_type(cleanup_lease) from None
+    if transport_cleanup is not None:
+        raise TransportCleanupUnknown(transport_cleanup) from None
     if failure == "timeout":
         raise TimeoutError("secure_transport_timeout") from None
     if failure == "interrupt":

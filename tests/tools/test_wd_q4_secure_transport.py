@@ -80,3 +80,189 @@ def test_whole_call_timeout_is_reported_within_a_bounded_interval(transport, tmp
     with pytest.raises(TimeoutError):
         _run(transport, tmp_path, "import time; time.sleep(30)", timeout=0.2)
     assert time.monotonic() - started < 10
+
+
+@pytest.mark.parametrize("failed_operation", ["job", "handle", "job_raises", "handle_raises"])
+@pytest.mark.parametrize("prior", ["timeout", "refused"])
+def test_run_timeout_with_uncertain_cleanup_reports_unknown_and_blocks_new_work(
+        transport, tmp_path, monkeypatch, failed_operation, prior):
+    import _winapi
+
+    class Kernel:
+        calls = []
+        def CreateNamedPipeW(self, *args): return 11
+        def CreateJobObjectW(self, *args): return 12
+        def SetInformationJobObject(self, *args): return 1
+        def GetCurrentProcess(self): return 99
+        def AssignProcessToJobObject(self, *args): return 1
+        def ResumeThread(self, *args): return 1
+        def LocalFree(self, *args): return 0
+        def TerminateJobObject(self, *args):
+            self.calls.append("terminate")
+            if failed_operation == "job_raises":
+                raise OSError("synthetic cleanup failure")
+            return failed_operation != "job"
+        def CloseHandle(self, handle):
+            self.calls.append(("close", handle))
+            if failed_operation == "handle_raises" and handle == 12:
+                raise OSError("synthetic close failure")
+            return not (failed_operation == "handle" and handle == 12)
+
+    kernel = Kernel()
+    monkeypatch.setattr(transport, "_QUARANTINE", [])
+    monkeypatch.setattr(transport, "_api", lambda: (kernel, None))
+    monkeypatch.setattr(transport, "_descriptor", lambda *args: 14)
+    monkeypatch.setattr(transport, "_noninheritable", lambda *args: None)
+    monkeypatch.setattr(transport, "_created", lambda *args: 1)
+    monkeypatch.setattr(_winapi, "CreateProcess", lambda *args: (15, 16, 17, 18))
+    def time_out(*args, **kwargs):
+        if prior == "timeout":
+            raise TimeoutError("synthetic timeout")
+        raise ValueError("synthetic sensitive text")
+    monkeypatch.setattr(transport, "_io", time_out)
+    with pytest.raises(Exception) as raised:
+        transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 10, 1024)
+    assert type(raised.value).__name__ == "TransportCleanupUnknown"
+    assert raised.value.prior_outcome == prior
+    assert transport._QUARANTINE
+    assert ("close", 15) in kernel.calls and ("close", 16) in kernel.calls and ("close", 11) in kernel.calls
+    calls_before = list(kernel.calls)
+    with pytest.raises(Exception) as retry:
+        transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 10, 1024)
+    assert type(retry.value).__name__ == "TransportCleanupUnknown"
+    assert kernel.calls == calls_before  # no second process or cleanup attempt
+
+
+def test_run_timeout_with_successful_cleanup_remains_timeout(transport, tmp_path, monkeypatch):
+    import _winapi
+
+    class Kernel:
+        def CreateNamedPipeW(self, *args): return 11
+        def CreateJobObjectW(self, *args): return 12
+        def SetInformationJobObject(self, *args): return 1
+        def GetCurrentProcess(self): return 99
+        def AssignProcessToJobObject(self, *args): return 1
+        def ResumeThread(self, *args): return 1
+        def LocalFree(self, *args): return 0
+        def TerminateJobObject(self, *args): return 1
+        def CloseHandle(self, *args): return 1
+
+    monkeypatch.setattr(transport, "_QUARANTINE", [])
+    monkeypatch.setattr(transport, "_api", lambda: (Kernel(), None))
+    monkeypatch.setattr(transport, "_descriptor", lambda *args: 14)
+    monkeypatch.setattr(transport, "_noninheritable", lambda *args: None)
+    monkeypatch.setattr(transport, "_created", lambda *args: 1)
+    monkeypatch.setattr(_winapi, "CreateProcess", lambda *args: (15, 16, 17, 18))
+    monkeypatch.setattr(transport, "_io", lambda *a, **kw: (_ for _ in ()).throw(TimeoutError()))
+    with pytest.raises(TimeoutError):
+        transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 10, 1024)
+    assert not transport._QUARANTINE
+
+
+def test_fixed_peer_propagates_sanitized_cleanup_unknown(transport, monkeypatch):
+    def impl(*args, **kwargs):
+        try:
+            raise TimeoutError("private synthetic text")
+        except TimeoutError:
+            raise transport.TransportCleanupUnknown("timeout")
+    monkeypatch.setattr(transport, "_run_fixed_peer_impl", impl)
+    with pytest.raises(transport.TransportCleanupUnknown) as caught:
+        transport.run_fixed_peer(executable="x", expected_interpreter_sha256="x", interpreter_max_bytes=1,
+                                 plan_bytes=b"", expected_plan_sha256="x", bundle_bytes=b"",
+                                 runtime_manifest_bytes=b"", query_bytes=b"", cwd="x", timeout_seconds=1,
+                                 max_output_bytes=1)
+    assert caught.value.prior_outcome == "timeout"
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert "private synthetic text" not in str(caught.value)
+
+
+def test_ready_exchange_preserves_timeout_without_payload(transport, monkeypatch):
+    monkeypatch.setattr(transport, "_peer", lambda *a, **kw: None)
+    monkeypatch.setattr(transport, "_frame_write",
+                        lambda *a, **kw: (_ for _ in ()).throw(TimeoutError("synthetic private")))
+    with pytest.raises(TimeoutError, match="^secure_transport_timeout$"):
+        transport._fixed_ready_exchange(None, None, 1, 1,
+            {"schema": "wd.q4-fixed-control.v1", "nonce": "a" * 32, "binding_sha256": "b" * 64}, b"x", 1)
+
+
+def test_fixed_exchange_preserves_timeout_without_payload(transport, monkeypatch):
+    monkeypatch.setattr(transport, "_peer", lambda *a, **kw: None)
+    monkeypatch.setattr(transport, "_frame_write", lambda *a, **kw: None)
+    monkeypatch.setattr(transport, "_sha", lambda *a: "b" * 64)
+    monkeypatch.setattr(transport, "_fixed_plan", lambda *a: {"bundle_bytes": 1, "bundle_sha256": "b" * 64})
+    monkeypatch.setattr(transport, "_fixed_ready_exchange",
+                        lambda *a, **kw: (_ for _ in ()).throw(TimeoutError("synthetic private")))
+    with pytest.raises(TimeoutError, match="^secure_transport_timeout$"):
+        transport._fixed_exchange(None, None, 1, 1,
+            {"schema": "wd.q4-fixed-control.v1", "nonce": "a" * 32, "binding_sha256": "b" * 64},
+            b"p", b"b", b"q", 1)
+
+
+@pytest.mark.parametrize("scenario", ["success_close_fail", "timeout_close_fail", "timeout_close_raises",
+                                     "timeout_cancel_raises", "timeout_cancel_false", "timeout_wait_raises",
+                                     "timeout_completion_incomplete", "timeout_completion_raises"])
+def test_io_cleanup_unknown_retains_unsafe_state_and_stops_new_runs(transport, tmp_path, monkeypatch, scenario):
+    import ctypes
+    import _winapi
+
+    class Kernel:
+        calls = []
+        waits = 0
+        def CreateNamedPipeW(self, *args): return 11
+        def CreateJobObjectW(self, *args): return 12
+        def SetInformationJobObject(self, *args): return 1
+        def GetCurrentProcess(self): return 99
+        def AssignProcessToJobObject(self, *args): return 1
+        def ResumeThread(self, *args): return 1
+        def LocalFree(self, *args): return 0
+        def TerminateJobObject(self, *args): return 1
+        def CreateEventW(self, *args): return 21
+        def ConnectNamedPipe(self, *args):
+            if scenario != "success_close_fail":
+                ctypes.set_last_error(997)
+                return 0
+            return 1
+        def WaitForSingleObject(self, *args):
+            self.waits += 1
+            if self.waits > 1 and scenario == "timeout_wait_raises":
+                raise OSError("synthetic wait failure")
+            return 258 if self.waits == 1 else 0
+        def CancelIoEx(self, *args):
+            if scenario == "timeout_cancel_raises":
+                raise OSError("synthetic cancel failure")
+            if scenario == "timeout_cancel_false":
+                return 0
+            return 1
+        def GetOverlappedResult(self, *args):
+            if scenario == "timeout_completion_raises":
+                raise OSError("synthetic completion failure")
+            if scenario != "success_close_fail":
+                ctypes.set_last_error(996 if scenario == "timeout_completion_incomplete" else 995)
+                return 0
+            return 1
+        def CloseHandle(self, handle):
+            self.calls.append(handle)
+            if handle == 21 and scenario == "timeout_close_raises":
+                raise OSError("synthetic close failure")
+            return handle != 21
+
+    kernel = Kernel()
+    monkeypatch.setattr(transport, "_QUARANTINE", [])
+    monkeypatch.setattr(transport, "_api", lambda: (kernel, None))
+    monkeypatch.setattr(transport, "_descriptor", lambda *args: 14)
+    monkeypatch.setattr(transport, "_noninheritable", lambda *args: None)
+    monkeypatch.setattr(transport, "_created", lambda *args: 1)
+    monkeypatch.setattr(_winapi, "CreateProcess", lambda *args: (15, 16, 17, 18))
+    with pytest.raises(transport.TransportCleanupUnknown) as caught:
+        transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 10, 1024)
+    assert caught.value.prior_outcome == ("none" if scenario == "success_close_fail" else "timeout")
+    assert transport._QUARANTINE
+    assert all(kernel.calls.count(h) <= 1 for h in (11, 12, 15, 16, 21))
+    if scenario in ("timeout_cancel_raises", "timeout_cancel_false", "timeout_wait_raises",
+                    "timeout_completion_incomplete", "timeout_completion_raises"):
+        assert 21 not in kernel.calls and 11 not in kernel.calls
+        assert any(entry[1] == 11 and entry[4] == 21 for entry in transport._QUARANTINE)
+    else:
+        assert kernel.calls.count(21) == 1 and kernel.calls.count(11) == 1
+    with pytest.raises(transport.TransportCleanupUnknown):
+        transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 10, 1024)

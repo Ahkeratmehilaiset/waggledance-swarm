@@ -77,7 +77,8 @@ def test_mock_peer_or_echo_refusal_never_receives_query(monkeypatch, fault):
     monkeypatch.setattr(transport, "_peer", peer)
     monkeypatch.setattr(transport, "_frame_write", write)
     monkeypatch.setattr(transport, "_frame_read", read)
-    with pytest.raises(transport._Refused):
+    expected = TimeoutError if fault == "timeout" else transport._Refused
+    with pytest.raises(expected):
         transport._fixed_ready_exchange(None, None, 123, 456, _request(), query, 1)
     assert ("write", query) not in events
 

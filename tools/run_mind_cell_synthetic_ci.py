@@ -11,6 +11,7 @@ import types
 
 ROOT = Path(__file__).resolve().parents[1]
 TEST_PATH = "sandbox/mind/step2/test_cell_verified_bytes.py"
+SNAPSHOT_TEST_PATH = "sandbox/mind/step2/test_cell_snapshot_bytes.py"
 _NAMES = (
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-meta]",
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-provenance]",
@@ -37,7 +38,36 @@ _NAMES = (
     "test_missing_index_deserializer_refuses_without_path_fallback",
     "test_missing_index_at_snapshot_quarantines",
 )
-EXPECTED_NODEIDS = tuple(TEST_PATH + "::" + name for name in _NAMES)
+_SNAPSHOT_NAMES = (
+    "test_snapshot_verified_bytes_are_consumed_without_reopening_paths",
+    "test_snapshot_tampered_bytes_refuse_before_use[receipt]",
+    "test_snapshot_tampered_bytes_refuse_before_use[index]",
+    "test_snapshot_tampered_bytes_refuse_before_use[meta]",
+    "test_snapshot_tampered_bytes_refuse_before_use[provenance]",
+    "test_snapshot_tampered_bytes_refuse_before_use[vectors]",
+    "test_snapshot_missing_required_bytes_never_falls_back[receipt]",
+    "test_snapshot_missing_required_bytes_never_falls_back[index]",
+    "test_snapshot_missing_required_bytes_never_falls_back[meta]",
+    "test_snapshot_missing_required_bytes_never_falls_back[provenance]",
+    "test_snapshot_missing_vectors_preserves_legacy_no_rebuild",
+    "test_snapshot_consumer_is_default_off_and_size_bounded",
+    "test_snapshot_map_mutated_during_deserialize_keeps_original_verified_bytes",
+    "test_snapshot_rejects_mutable_bytes_and_unexpected_keys",
+    "test_snapshot_refuses_non_topology_and_path_cell_ids_before_verification[../learning]",
+    "test_snapshot_refuses_non_topology_and_path_cell_ids_before_verification[learning/..]",
+    r"test_snapshot_refuses_non_topology_and_path_cell_ids_before_verification[C:\\private]",
+    "test_snapshot_refuses_non_topology_and_path_cell_ids_before_verification[/absolute]",
+    "test_snapshot_refuses_non_topology_and_path_cell_ids_before_verification[]",
+    "test_snapshot_refuses_non_topology_and_path_cell_ids_before_verification[.]",
+    "test_snapshot_refuses_non_topology_and_path_cell_ids_before_verification[unknown]",
+    "test_snapshot_collection_exposes_no_mutators_or_mutable_readback",
+    "test_snapshot_q4_reads_nonempty_pairs_without_io_and_reconstruct_is_defensive",
+    "test_snapshot_reconstruct_budget_refuses_before_native_call",
+    "test_snapshot_collection_rejects_mutable_text_values",
+    "test_snapshot_reconstruction_accepts_verified_numeric_string_metadata_dim",
+)
+EXPECTED_NODEIDS = (tuple(TEST_PATH + "::" + name for name in _NAMES) +
+                    tuple(SNAPSHOT_TEST_PATH + "::" + name for name in _SNAPSHOT_NAMES))
 
 
 def _unavailable(*_args, **_kwargs):
@@ -85,7 +115,7 @@ class _Guard:
 
 
 def _run_pytest(pytest):
-    return int(pytest.main([str(ROOT / TEST_PATH), "-q"], plugins=[_Guard()]))
+    return int(pytest.main([str(ROOT / TEST_PATH), str(ROOT / SNAPSHOT_TEST_PATH), "-q"], plugins=[_Guard()]))
 
 
 def main():

@@ -7,6 +7,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / "tools" / "run_mind_cell_synthetic_ci.py"
+SNAPSHOT_PATH = "sandbox/mind/step2/test_cell_snapshot_bytes.py"
+SNAPSHOT_REQUIRED = SNAPSHOT_PATH + "::test_snapshot_verified_bytes_are_consumed_without_reopening_paths"
 
 
 def load_runner():
@@ -56,6 +58,47 @@ def test_guard_requires_every_exact_test_to_execute():
     assert session.exitstatus == 0
 
 
+def test_runner_requires_snapshot_collection_and_each_snapshot_call():
+    runner = load_runner()
+    snapshot_nodes = [node for node in runner.EXPECTED_NODEIDS if node.startswith(SNAPSHOT_PATH + "::")]
+    assert len(snapshot_nodes) == len(set(snapshot_nodes)) == 26
+    assert SNAPSHOT_REQUIRED in runner.EXPECTED_NODEIDS
+    all_items = [SimpleNamespace(nodeid=node) for node in runner.EXPECTED_NODEIDS]
+    missing_snapshot = SimpleNamespace(items=[item for item in all_items if not item.nodeid.startswith(SNAPSHOT_PATH)],
+                                       exitstatus=0)
+    guard = runner._Guard()
+    guard.pytest_collection_finish(missing_snapshot)
+    for item in missing_snapshot.items:
+        guard.pytest_runtest_logreport(SimpleNamespace(skipped=False, when="call", nodeid=item.nodeid))
+    guard.pytest_sessionfinish(missing_snapshot, 0)
+    assert missing_snapshot.exitstatus != 0
+    session = SimpleNamespace(items=all_items, exitstatus=0)
+    guard = runner._Guard()
+    guard.pytest_collection_finish(session)
+    for item in all_items:
+        if item.nodeid != SNAPSHOT_REQUIRED:
+            guard.pytest_runtest_logreport(SimpleNamespace(skipped=False, when="call", nodeid=item.nodeid))
+    guard.pytest_sessionfinish(session, 0)
+    assert session.exitstatus != 0
+
+
+@pytest.mark.parametrize("status", ["skip", "xfail", "xpass"])
+def test_guard_refuses_incomplete_snapshot_witness(status):
+    runner = load_runner()
+    assert SNAPSHOT_REQUIRED in runner.EXPECTED_NODEIDS
+    guard = runner._Guard()
+    session = SimpleNamespace(items=[SimpleNamespace(nodeid=node) for node in runner.EXPECTED_NODEIDS], exitstatus=0)
+    guard.pytest_collection_finish(session)
+    for node in runner.EXPECTED_NODEIDS:
+        report = SimpleNamespace(skipped=(status in ("skip", "xfail") and node == SNAPSHOT_REQUIRED),
+                                 when="call", nodeid=node)
+        if status in ("xfail", "xpass") and node == SNAPSHOT_REQUIRED:
+            report.wasxfail = "synthetic expected failure"
+        guard.pytest_runtest_logreport(report)
+    guard.pytest_sessionfinish(session, 0)
+    assert session.exitstatus != 0
+
+
 @pytest.mark.parametrize("skipped", [True, False], ids=["xfail", "xpass"])
 def test_guard_refuses_xfail_and_xpass_even_when_all_tests_run(skipped):
     runner = load_runner()
@@ -88,7 +131,8 @@ def test_runner_propagates_pytest_failure_and_preserves_environment(monkeypatch)
     assert runner._run_pytest(FakePytest()) == 7
     assert dict(runner.os.environ) == before
     assert len(calls) == 1 and len(calls[0][1]) == 1
-    assert calls[0][0] == [str(ROOT / "sandbox/mind/step2/test_cell_verified_bytes.py"), "-q"]
+    assert calls[0][0] == [str(ROOT / "sandbox/mind/step2/test_cell_verified_bytes.py"),
+                           str(ROOT / SNAPSHOT_PATH), "-q"]
 
 
 def test_required_d15_hook_cannot_be_silently_omitted(monkeypatch):

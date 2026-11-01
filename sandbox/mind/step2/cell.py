@@ -1,9 +1,12 @@
 """Read-only verifier for frozen Q4 cell generations from 6cf81dbb."""
+import copy
 import hashlib
 import json
+from pathlib import Path
 import faiss
 import numpy as np
 from core.faiss_store import FaissCollection
+from waggledance.core.hex_cell_topology import ALL_CELLS
 
 SCHEMA = "wd.bridge-mind-hex-cell.v1"
 LOG_SCHEMA = "wd.bridge-mind-hex-cell-log.v1"
@@ -17,6 +20,9 @@ MAX_LOG_BYTES = 16 * 1024 * 1024
 # New Q4-reader availability limit: legacy indices above 256 MiB are refused.
 # It bounds serialized input only, not FAISS native-deserializer allocations.
 MAX_Q4_INDEX_BYTES = 256 * 1024 * 1024
+# Opt-in in-memory cell snapshots are limited to 512 MiB in total. This is an
+# availability limit, not a bound on FAISS native-deserializer allocations.
+MAX_Q4_CELL_SNAPSHOT_BYTES = 512 * 1024 * 1024
 
 
 class CellError(Exception):
@@ -124,14 +130,113 @@ class CellView:
         return [(result.doc_id, float(result.score)) for result in self.collection.search(vector, k)]
 
 
+class _ReadOnlySnapshotIndex:
+    """Only bounded reconstruction, with no writable native result exposed."""
+
+    __slots__ = ("__index", "__count", "__dim")
+
+    def __init__(self, index, count, dim):
+        object.__setattr__(self, "_ReadOnlySnapshotIndex__index", index)
+        object.__setattr__(self, "_ReadOnlySnapshotIndex__count", count)
+        object.__setattr__(self, "_ReadOnlySnapshotIndex__dim", dim)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("snapshot_index_read_only")
+
+    def reconstruct_n(self, start, count):
+        if (type(start) is not int or type(count) is not int or start < 0 or count < 0
+                or start + count > self.__count or count * self.__dim * 4 > MAX_Q4_INDEX_BYTES):
+            raise CellError("snapshot_reconstruct_invalid")
+        result = np.array(self.__index.reconstruct_n(start, count), dtype=np.float32, copy=True, order="C")
+        if result.shape != (count, self.__dim):
+            raise CellError("snapshot_reconstruct_invalid")
+        return result
+
+
+class _ReadOnlySnapshotCollection:
+    """Reader facade, not a security boundary against code in this process."""
+
+    __slots__ = ("__search", "__texts", "__doc_ids", "__count", "__index")
+
+    def __init__(self, collection, *, verified_dim):
+        object.__setattr__(self, "_ReadOnlySnapshotCollection__search", collection.search)
+        if any(type(text) is not str for text in collection._texts):
+            raise CellError("snapshot_text_invalid")
+        object.__setattr__(self, "_ReadOnlySnapshotCollection__texts", tuple(collection._texts))
+        object.__setattr__(self, "_ReadOnlySnapshotCollection__doc_ids", tuple(collection._doc_ids))
+        object.__setattr__(self, "_ReadOnlySnapshotCollection__count", collection.count)
+        object.__setattr__(self, "_ReadOnlySnapshotCollection__index",
+                           _ReadOnlySnapshotIndex(collection._index, collection.count, verified_dim))
+
+    def __setattr__(self, name, value):
+        raise AttributeError("snapshot_collection_read_only")
+
+    @property
+    def count(self):
+        return self.__count
+
+    @property
+    def _texts(self):
+        return self.__texts
+
+    @property
+    def _index(self):
+        return self.__index
+
+    def has_doc_id(self, doc_id):
+        return doc_id in self.__doc_ids
+
+    def search(self, vector, k=5):
+        return copy.deepcopy(self.__search(vector, k))
+
+
 def verify_generation(gen_dir, cell_id, receipt_sha):
     """Check one generation directory completely; return (receipt, rows, collection, rebuild_possible)."""
-    if not gen_dir.is_dir():
-        raise CellError("generation_missing")
-    receipt_path = gen_dir / "receipt.json"
-    if not receipt_path.exists():
-        raise CellError("receipt_missing")
-    receipt_bytes = _read_control(receipt_path, MAX_RECEIPT_BYTES, "receipt")
+    return _verify_generation(gen_dir, cell_id, receipt_sha, snapshot=None)
+
+
+def verify_generation_snapshot(cell_id, receipt_sha, *, snapshot_bytes, enabled=False):
+    """Opt-in cell verification over caller-pinned immutable input bytes only.
+
+    Caller must independently authenticate the receipt pin and safely obtain the
+    snapshot. This neither verifies a current pointer/log nor authenticates a
+    caller, proves freshness, or bounds native FAISS allocations.
+    """
+    snapshot = None
+    try:
+        if (enabled is not True or type(snapshot_bytes) is not dict
+                or type(cell_id) is not str or cell_id not in ALL_CELLS or type(receipt_sha) is not str
+                or len(receipt_sha) != 64 or any(c not in "0123456789abcdef" for c in receipt_sha)):
+            raise CellError("snapshot_invalid")
+        snapshot = dict(snapshot_bytes)
+        if (not {"receipt", "index", "meta", "provenance"} <= snapshot.keys()
+                or not snapshot.keys() <= {"receipt", "index", "meta", "provenance", "vectors"}
+                or any(type(key) is not str for key in snapshot)
+                or any(type(value) is not bytes for value in snapshot.values())
+                or sum(map(len, snapshot.values())) > MAX_Q4_CELL_SNAPSHOT_BYTES
+                or len(snapshot["receipt"]) > MAX_RECEIPT_BYTES):
+            raise CellError("snapshot_invalid")
+        # This is a synthetic label only. The verified metadata and index bytes
+        # force FaissCollection's strict path; it must never reopen this path.
+        receipt, rows, collection, rebuild = _verify_generation(
+            Path("__q4_snapshot_inert__"), cell_id, receipt_sha, snapshot=snapshot)
+        return receipt, rows, _ReadOnlySnapshotCollection(collection, verified_dim=int(receipt["content"]["dim"])), rebuild
+    except Exception:
+        pass
+    del snapshot, snapshot_bytes
+    raise CellError("snapshot_invalid") from None
+
+
+def _verify_generation(gen_dir, cell_id, receipt_sha, *, snapshot):
+    if snapshot is None:
+        if not gen_dir.is_dir():
+            raise CellError("generation_missing")
+        receipt_path = gen_dir / "receipt.json"
+        if not receipt_path.exists():
+            raise CellError("receipt_missing")
+        receipt_bytes = _read_control(receipt_path, MAX_RECEIPT_BYTES, "receipt")
+    else:
+        receipt_bytes = snapshot["receipt"]
     if sha256(receipt_bytes) != receipt_sha:
         raise CellError("receipt_mismatch")
     try:
@@ -149,7 +254,8 @@ def verify_generation(gen_dir, cell_id, receipt_sha):
     files = paths(gen_dir, cell_id)
     rebuild_possible = True
     for name in FILES:
-        if not files[name].exists():
+        missing = not files[name].exists() if snapshot is None else name not in snapshot
+        if missing:
             if name == "vectors":
                 rebuild_possible = False
                 continue
@@ -157,7 +263,7 @@ def verify_generation(gen_dir, cell_id, receipt_sha):
         if name in ("meta", "provenance"):
             # The parsed object must come from the very bytes that were hashed.
             # Process one file at a time: legacy generations have no size bound.
-            raw = files[name].read_bytes()
+            raw = files[name].read_bytes() if snapshot is None else snapshot[name]
             if sha256(raw) != content["files"][name]:
                 raise CellError(f"{name}_checksum")
             try:
@@ -174,7 +280,7 @@ def verify_generation(gen_dir, cell_id, receipt_sha):
             # The bounded snapshot below checks the exact bytes passed to FAISS.
             # Do not stream the same file without a size bound first.
             continue
-        elif file_sha256(files[name]) != content["files"][name]:
+        elif (file_sha256(files[name]) if snapshot is None else sha256(snapshot[name])) != content["files"][name]:
             raise CellError(f"{name}_checksum")
     if meta_dim != dim:
         raise CellError("dim_mismatch")
@@ -192,11 +298,14 @@ def verify_generation(gen_dir, cell_id, receipt_sha):
             raise CellError("provenance_cell_mismatch")
         if not isinstance(row["time_utc"], str) or row["time_utc"] >= content["cutoff_utc"]:
             raise CellError("provenance_after_cutoff")
-    try:
-        with files["index"].open("rb") as index_file:
-            index_bytes = index_file.read(MAX_Q4_INDEX_BYTES + 1)
-    except OSError:
-        raise CellError("index_unreadable") from None
+    if snapshot is None:
+        try:
+            with files["index"].open("rb") as index_file:
+                index_bytes = index_file.read(MAX_Q4_INDEX_BYTES + 1)
+        except OSError:
+            raise CellError("index_unreadable") from None
+    else:
+        index_bytes = snapshot["index"]
     if len(index_bytes) > MAX_Q4_INDEX_BYTES:
         raise CellError("index_over_budget")
     if sha256(index_bytes) != content["files"]["index"]:
@@ -227,7 +336,7 @@ def verify_generation(gen_dir, cell_id, receipt_sha):
     if pairs_sha256(meta_ids, stored) != content["pairs_sha256"]:
         raise CellError("pairs_mismatch")
     if rebuild_possible:
-        raw = files["vectors"].read_bytes()
+        raw = files["vectors"].read_bytes() if snapshot is None else snapshot["vectors"]
         # The earlier streaming check is retained; bind the bytes actually used too.
         if sha256(raw) != content["files"]["vectors"]:
             raise CellError("vectors_checksum")

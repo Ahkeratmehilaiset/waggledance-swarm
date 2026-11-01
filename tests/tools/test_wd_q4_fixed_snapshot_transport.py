@@ -719,6 +719,7 @@ for std in (-11 & 0xFFFFFFFF, -12 & 0xFFFFFFFF):
     ok.append(bool(k.WriteFile(k.GetStdHandle(std), b"LEAK-WIN32\n", 11, ctypes.byref(written), None)))
 facts["win32_write_ok"] = ok
 facts["std_types"] = [k.GetFileType(k.GetStdHandle(s & 0xFFFFFFFF)) for s in (-10, -11, -12)]
+facts["std_names"] = [transport._nt_object_name(k.GetStdHandle(s & 0xFFFFFFFF)) for s in (-10, -11, -12)]
 k.CreateFileW.restype = W.HANDLE
 k.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, ctypes.c_void_p, W.DWORD, W.DWORD, W.HANDLE]
 console = k.CreateFileW("CONOUT$", 0x40000000, 3, None, 3, 0, None)
@@ -742,6 +743,7 @@ def test_containment_silences_python_crt_and_win32_standard_channels(tmp_path):
     assert facts["os_write"] == [15, 15] and facts["crt_write"] == [17, 17]  # writes succeed into NUL
     assert facts["win32_write_ok"] == [True, True]
     assert facts["std_types"] == [2, 2, 2]  # FILE_TYPE_CHAR (NUL) for stdin, stdout and stderr
+    assert facts["std_names"] == ["\\Device\\Null"] * 3  # the exact NUL device, not just any character device
     assert facts["conout_opened"] is False  # console detached: CONOUT$ cannot be reopened
 
 
@@ -784,3 +786,109 @@ def test_public_backend_runtime_code_runs_with_contained_streams(tmp_path, monke
                                runtime=synthetic_runtime(tmp_path, make_stub(case["resolved"], noisy=True)))
     assert code == 0 and json.loads(output)["status"] == "ANSWER"
     assert b"IMPORT-NOISE" not in output
+
+
+# --- v6: the parent enforces the pinned public policy, source and encoder before re-resolution ---------------
+
+POLICY_SCHEMA = "wd.mind-public-status-policy.v1"
+# Each policy is valid and correctly pinned, and every projected record stays APPROVED (resolve_results accepts
+# the pairs, see snapshot_case); the records are simply outside the public boundary the plan pins.
+NONPUBLIC = {
+    "task_not_public": {"schema": POLICY_SCHEMA, "public_tasks": ["private-task"], "public_types": ["message"]},
+    "type_not_public": {"schema": POLICY_SCHEMA, "public_tasks": ["public-task"], "public_types": ["status"]},
+}
+
+
+def _narrowed(case, policy):
+    raw = canonical(policy)
+    return dict(case, parts=dict(case["parts"], public_policy_bytes=raw),
+                pins=dict(case["pins"], expected_public_policy_sha256=sha(raw)))
+
+
+def _validation_for(tmp_path, case):
+    bundle = transport.fixed_snapshot_bundle(**case["parts"])
+    plan_bytes = public_plan(tmp_path / "rt", tmp_path / "m.json", "7" * 64, bundle, pins=case["pins"],
+                             tasks=case["tasks"])
+    return plan_bytes, bundle
+
+
+def _refused_without_text(case, plan_bytes, bundle):
+    with pytest.raises(transport._Refused) as caught:
+        transport._fixed_public_validate(plan_bytes, bundle, QUERY,
+                                         _child_answer(plan_bytes, bundle, case["resolved"]))
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+    shown = str(caught.value) + repr(caught.value) + repr(caught.value.args)
+    assert all(item["stored_text"] not in shown for item in case["resolved"])
+
+
+@pytest.mark.parametrize("name", sorted(NONPUBLIC))
+def test_parent_refuses_approved_but_nonpublic_records_in_a_forged_answer(tmp_path, monkeypatch, name):
+    case = _narrowed(snapshot_case(monkeypatch), NONPUBLIC[name])
+    _refused_without_text(case, *_validation_for(tmp_path, case))
+
+
+@pytest.mark.parametrize("pin", ["expected_public_policy_sha256", "expected_source_sha256",
+                                 "expected_encoder_sha256"])
+def test_parent_binds_public_policy_source_and_encoder_pins(tmp_path, monkeypatch, pin):
+    case = snapshot_case(monkeypatch)
+    case = dict(case, pins=dict(case["pins"], **{pin: "0" * 64}))
+    _refused_without_text(case, *_validation_for(tmp_path, case))
+
+
+@windows
+def test_real_spawn_answer_over_nonpublic_records_is_refused_by_the_parent(tmp_path, monkeypatch):
+    # The stub's own bound check passes (its policy pin matches the narrowed bytes), so only the parent can refuse.
+    case = _narrowed(snapshot_case(monkeypatch), NONPUBLIC["task_not_public"])
+    with pytest.raises(transport._Refused) as caught:
+        public_call(tmp_path, case=case, runtime=synthetic_runtime(tmp_path, make_stub(case["resolved"])))
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+
+
+NAME_SCRIPT = r'''
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from tools import wd_q4_secure_transport as transport
+seen = []
+real = getattr(transport, "_nt_object_name", None)
+def lying(handle):
+    seen.append(real(handle) if real else None)
+    return "\\Device\\ConDrv"
+transport._nt_object_name = lying
+try:
+    transport._contain_child_output()
+    outcome = "contained"
+except transport._Refused as refused:
+    outcome = "refused" if refused.__cause__ is None and refused.__context__ is None else "chained"
+with open(sys.argv[2], "w", encoding="ascii") as report:
+    json.dump({"outcome": outcome, "seen": seen}, report)
+'''
+
+
+@windows
+def test_containment_refuses_a_character_device_that_is_not_exactly_device_null(tmp_path):
+    import subprocess
+    script, report = tmp_path / "name.py", tmp_path / "report.json"
+    script.write_text(NAME_SCRIPT, encoding="ascii")
+    done = subprocess.run([sys.executable, "-I", "-S", "-B", str(script), str(PEER.parents[1]), str(report)],
+                          capture_output=True, timeout=60, cwd=str(tmp_path))
+    assert done.returncode == 0
+    facts = json.loads(report.read_text(encoding="ascii"))
+    assert facts["outcome"] == "refused"
+    assert facts["seen"][:1] == ["\\Device\\Null"]  # the real name of the opened handle was queried first
+
+
+def test_module_origins_accept_only_the_interpreter_stdlib_and_dlls(monkeypatch):
+    import types
+    roots = transport._interpreter_roots()
+    base = Path(sys.base_prefix)
+    before = set(sys.modules)
+    module = types.ModuleType("wd_planted_origin")
+    monkeypatch.setitem(sys.modules, "wd_planted_origin", module)
+    for planted in (base / "Lib" / "site-packages" / "planted.py", base / "planted.py",
+                    base / "Scripts" / "planted.py", base / "Lib" / "site-packages" / "pkg" / "__init__.py"):
+        module.__file__ = str(planted)
+        with pytest.raises(transport._Refused):
+            transport._module_origins(before, roots)
+    for allowed in (base / "Lib" / "json" / "__init__.py", base / "DLLs" / "_ctypes.pyd"):
+        module.__file__ = str(allowed)
+        transport._module_origins(before, roots)

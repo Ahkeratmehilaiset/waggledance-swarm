@@ -1,6 +1,8 @@
 """Default-off one-shot status for caller-supplied snapshot bytes.
 
 The caller must independently authenticate the content hash, source, policies,
+approval from trusted config, and the policy/projection pairing; choosing all
+pins locally does not establish their origin. The caller must also authenticate
 and separately private audit directory. Its name and caller assertion are not
 an ACL or an isolation guarantee. The intermediate v2 publication and raw
 snapshot are private, never reader output. Exclusive creation prevents overwriting an existing
@@ -33,7 +35,8 @@ from waggledance.core.bridge_log_reader import BridgeCursor, _file_identity
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _KEYS = frozenset({"private_audit_root", "private_storage_assumed", "snapshot_root", "snapshot_bytes", "expected_snapshot_sha256",
                    "policy_bytes", "policy_sha256", "roster_bytes", "roster_sha256", "public_policy_bytes",
-                   "public_policy_sha256", "as_of", "expected_previous_sha256"})
+                   "public_policy_sha256", "approval_bytes", "expected_approval_sha256", "as_of",
+                   "expected_previous_sha256"})
 
 
 def _json(value):
@@ -74,6 +77,8 @@ def _preflight_previous(audit, prior):
 def _prepare(request):
     if type(request) is not dict or set(request) != _KEYS:
         raise ValueError()
+    projection.validate_public_approval(request["public_policy_bytes"], request["public_policy_sha256"],
+                                        request["approval_bytes"], request["expected_approval_sha256"])
     data, expected = request["snapshot_bytes"], request["expected_snapshot_sha256"]
     if (type(data) is not bytes or len(data) > snapshot.MAX_BYTES or (data and not data.endswith(b"\n"))
             or data.count(b"\n") > snapshot.MAX_ROWS or type(expected) is not str
@@ -127,7 +132,8 @@ def _prepare(request):
     body = metadata.build_status(result, enabled=True, **pins)
     body_sha = _sha(body)
     public = projection.project_status(enabled=True, body_bytes=body, body_sha256=body_sha,
-        descriptor_bytes=request["public_policy_bytes"], descriptor_sha256=request["public_policy_sha256"])
+        descriptor_bytes=request["public_policy_bytes"], descriptor_sha256=request["public_policy_sha256"],
+        approval_bytes=request["approval_bytes"], expected_approval_sha256=request["expected_approval_sha256"])
     _read_exact(source, expected, snapshot.MAX_BYTES)
     _read_exact(gen, _sha(gen_data), 16384)
     attempt = session.prepare_status_attempt(audit, result, enabled=True, as_of=request["as_of"],

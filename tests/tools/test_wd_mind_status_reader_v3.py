@@ -15,6 +15,11 @@ def digest(value):
     return hashlib.sha256(value).hexdigest()
 
 
+def approval_for(descriptor):
+    return encode({"schema": "wd.mind-public-approval.v1", "descriptor_sha256": digest(descriptor),
+                   "approved_tasks": ["public-task"], "approved_types": ["message"]})
+
+
 @pytest.fixture
 def reader_args(tmp_path):
     body = encode({"schema": "wd.mind-status-metadata.v1", "authority": "none",
@@ -26,8 +31,10 @@ def reader_args(tmp_path):
     body_path, descriptor_path = tmp_path / "body.json", tmp_path / "descriptor.json"
     body_path.write_bytes(body)
     descriptor_path.write_bytes(policy)
+    approval = approval_for(policy)
     return {"body_path": body_path, "expected_body_sha256": digest(body), "descriptor_path": descriptor_path,
-            "expected_descriptor_sha256": digest(policy)}
+            "expected_descriptor_sha256": digest(policy), "approval_bytes": approval,
+            "expected_approval_sha256": digest(approval)}
 
 
 def module():
@@ -101,13 +108,17 @@ def projection_args(reader_args, tmp_path):
     descriptor = reader_args["descriptor_path"].read_bytes()
     projected = v3.project_status(enabled=True, body_bytes=body, body_sha256=reader_args["expected_body_sha256"],
                                   descriptor_bytes=descriptor,
-                                  descriptor_sha256=reader_args["expected_descriptor_sha256"])
+                                  descriptor_sha256=reader_args["expected_descriptor_sha256"],
+                                  approval_bytes=reader_args["approval_bytes"],
+                                  expected_approval_sha256=reader_args["expected_approval_sha256"])
     raw = encode(projected)
     path = tmp_path / "projection.json"
     path.write_bytes(raw)
     return {"projection_path": path, "expected_projection_sha256": digest(raw),
             "descriptor_path": reader_args["descriptor_path"],
-            "expected_descriptor_sha256": reader_args["expected_descriptor_sha256"]}
+            "expected_descriptor_sha256": reader_args["expected_descriptor_sha256"],
+            "approval_bytes": reader_args["approval_bytes"],
+            "expected_approval_sha256": reader_args["expected_approval_sha256"]}
 
 
 def test_projection_api_default_off_does_not_read(projection_args, monkeypatch):
@@ -136,11 +147,13 @@ def test_synthetic_publisher_result_can_be_explicitly_serialized_for_reader(tmp_
                      "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": ROSTER["codex-tools-1"]}})
     descriptor = encode({"schema": "wd.mind-public-status-policy.v1", "public_tasks": ["public-task"],
                          "public_types": ["message"]})
+    approval = approval_for(descriptor)
     result = publisher.publish_once(enabled=True, request={"private_audit_root": audit,
         "private_storage_assumed": True, "snapshot_root": snapshots, "snapshot_bytes": data,
         "expected_snapshot_sha256": digest(data), "policy_bytes": policy, "policy_sha256": digest(policy),
         "roster_bytes": roster, "roster_sha256": digest(roster), "public_policy_bytes": descriptor,
-        "public_policy_sha256": digest(descriptor), "as_of": datetime(2026, 11, 1, tzinfo=timezone.utc),
+        "public_policy_sha256": digest(descriptor), "approval_bytes": approval,
+        "expected_approval_sha256": digest(approval), "as_of": datetime(2026, 11, 1, tzinfo=timezone.utc),
         "expected_previous_sha256": None})
     assert result["private_artifacts"] == "RETAINED"
     raw = encode(result["projection"])
@@ -149,7 +162,8 @@ def test_synthetic_publisher_result_can_be_explicitly_serialized_for_reader(tmp_
     descriptor_path.write_bytes(descriptor)
     assert module().read_projection(enabled=True, projection_path=public_path,
         expected_projection_sha256=digest(raw), descriptor_path=descriptor_path,
-        expected_descriptor_sha256=digest(descriptor)) == result["projection"]
+        expected_descriptor_sha256=digest(descriptor), approval_bytes=approval,
+        expected_approval_sha256=digest(approval)) == result["projection"]
     assert str(audit).encode() not in raw and b"agent_uuid" not in raw and b"cursor" not in raw
 
 
@@ -189,3 +203,28 @@ def test_projection_reader_refuses_invalid_or_unpinned_data(projection_args, mut
     assert exc.value.args == ("reader_refused",)
     assert exc.value.__cause__ is None and exc.value.__context__ is None
     assert "synthetic-private" not in repr(exc.value)
+
+
+@pytest.mark.parametrize("kind", ["body", "projection"])
+@pytest.mark.parametrize("bad", ["missing", "wrong_pin", "descriptor_changed"])
+def test_each_reader_requires_independent_approval_before_data_read(reader_args, projection_args, monkeypatch, kind, bad):
+    m = module()
+    args = dict(reader_args if kind == "body" else projection_args)
+    data_path = args["body_path" if kind == "body" else "projection_path"]
+    if bad == "missing":
+        args["approval_bytes"] = None
+    elif bad == "wrong_pin":
+        args["expected_approval_sha256"] = "0" * 64
+    else:
+        altered = encode({"schema": "wd.mind-public-status-policy.v1", "public_tasks": ["other-task"],
+                          "public_types": ["message"]})
+        args["descriptor_path"].write_bytes(altered)
+        args["expected_descriptor_sha256"] = digest(altered)
+    original = m._read
+    def guarded(path, *params):
+        if path == data_path:
+            pytest.fail("unapproved body/projection was read")
+        return original(path, *params)
+    monkeypatch.setattr(m, "_read", guarded)
+    with pytest.raises(m.ReaderRefused):
+        (m.read_public if kind == "body" else m.read_projection)(enabled=True, **args)

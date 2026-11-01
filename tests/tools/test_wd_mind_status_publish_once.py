@@ -33,10 +33,13 @@ def spec(tmp_path):
                   "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": ROSTER["codex-tools-1"]}})
     public = enc({"schema": "wd.mind-public-status-policy.v1", "public_tasks": ["public-task"],
                   "public_types": ["message"]})
+    approval = enc({"schema": "wd.mind-public-approval.v1", "descriptor_sha256": sha(public),
+                    "approved_tasks": ["public-task"], "approved_types": ["message"]})
     return {"private_audit_root": audit, "private_storage_assumed": True, "snapshot_root": snapshot_root, "snapshot_bytes": source,
             "expected_snapshot_sha256": sha(source), "policy_bytes": policy, "policy_sha256": sha(policy),
             "roster_bytes": roster, "roster_sha256": sha(roster), "public_policy_bytes": public,
-            "public_policy_sha256": sha(public), "as_of": datetime(2026, 11, 1, tzinfo=timezone.utc),
+             "public_policy_sha256": sha(public), "approval_bytes": approval,
+             "expected_approval_sha256": sha(approval), "as_of": datetime(2026, 11, 1, tzinfo=timezone.utc),
             "expected_previous_sha256": None}
 
 
@@ -196,6 +199,45 @@ def test_stale_prior_refuses_before_raw_snapshot_creation(spec):
         "status": "REFUSED", "private_artifacts": "MAY_REMAIN"}
     assert list(spec["snapshot_root"].iterdir()) == []
     assert (spec["private_audit_root"] / ".public-status.lock").is_file()
+
+
+@pytest.mark.parametrize("bad", ["missing", "wrong_pin", "descriptor_replaced"])
+def test_unapproved_descriptor_is_rejected_before_any_raw_write(spec, bad):
+    changed = dict(spec)
+    if bad == "missing":
+        changed["approval_bytes"] = None
+    elif bad == "wrong_pin":
+        changed["expected_approval_sha256"] = "0" * 64
+    else:
+        descriptor = enc({"schema": "wd.mind-public-status-policy.v1", "public_tasks": ["public-task"],
+                          "public_types": ["message", "milestone"]})
+        changed["public_policy_bytes"], changed["public_policy_sha256"] = descriptor, sha(descriptor)
+    assert module().publish_once(enabled=True, request=changed) == {
+        "status": "REFUSED", "private_artifacts": "MAY_REMAIN"}
+    assert list(spec["snapshot_root"].iterdir()) == []
+    assert not (spec["private_audit_root"] / "public-status.json").exists()
+    assert not (spec["private_audit_root"] / ".public-status.lock").exists()
+
+
+@pytest.mark.parametrize("bad", ["approval_hash", "descriptor_binding"])
+def test_bad_approval_pin_stops_before_other_input_parsing_and_writes(spec, monkeypatch, bad):
+    mod = module()
+    def must_not_parse(*args, **kwargs):
+        pytest.fail("other input was parsed before approval pin validation")
+    monkeypatch.setattr(mod.adapter, "strict_pins", must_not_parse)
+    monkeypatch.setattr(mod.adapter, "public_status_policy", must_not_parse)
+    changed = dict(spec)
+    if bad == "approval_hash":
+        changed["expected_approval_sha256"] = "0" * 64
+    else:
+        descriptor = enc({"schema": "wd.mind-public-status-policy.v1", "public_tasks": ["public-task"],
+                          "public_types": ["message", "milestone"]})
+        changed["public_policy_bytes"], changed["public_policy_sha256"] = descriptor, sha(descriptor)
+    assert mod.publish_once(enabled=True, request=changed) == {
+        "status": "REFUSED", "private_artifacts": "MAY_REMAIN"}
+    assert list(spec["snapshot_root"].iterdir()) == []
+    assert not (spec["private_audit_root"] / "public-status.json").exists()
+    assert not (spec["private_audit_root"] / ".public-status.lock").exists()
 
 
 def test_failed_prepare_reports_possible_retention_and_keeps_exact_raw_snapshot(spec, monkeypatch):

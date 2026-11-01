@@ -22,6 +22,12 @@ it); a third pointer, a legacy marker, a malformed intent or a private state mat
 neither side refuses and keeps the slot. Clearing an attempt that never lands needs
 external reconciliation, as with the legacy marker. Legacy methods refuse while an
 intent is open. A no_change empty advance (attempt == prior) cannot use an intent.
+
+Opt-in fenced intent (begin_intent(..., fence=True), candidate, unwired): the intent is
+bound to an open checkpoint fence (shared_index_checkpoint.open_prefix_fence) and resolved
+through resolve_prefix_fence; "not_landed" keeps the intent open (old writers are not
+fenced and power-loss durability of the fence metadata is unproven). The publishing
+caller must commit with fenced=True; the producer does not do that yet.
 """
 from contextlib import contextmanager
 import hashlib
@@ -75,6 +81,7 @@ def _load(path):
 
 
 _INTENT_SCHEMA = "wd.q4-private-prefix-intent.v1"
+_FENCED_INTENT_SCHEMA = "wd.q4-private-prefix-intent.fenced.v1"
 _INTENT_KEYS = frozenset({"schema", "prior_pointer_sha256", "attempt_pointer_sha256", "prior_prefix",
                           "candidate_prefix"})
 
@@ -83,10 +90,11 @@ def _hex(value):
     return type(value) is str and cp.HEX.fullmatch(value) is not None
 
 
-def _intent_value(prior, prior_prefix, attempt, candidate_prefix):
-    if (prior is not None and not _hex(prior)) or not _hex(attempt) or prior == attempt:
+def _intent_value(prior, prior_prefix, attempt, candidate_prefix, fenced=False):
+    if (prior is not None and not _hex(prior)) or not _hex(attempt) or prior == attempt or type(fenced) is not bool:
         _fail()
-    return {"schema": _INTENT_SCHEMA, "prior_pointer_sha256": prior, "attempt_pointer_sha256": attempt,
+    return {"schema": _FENCED_INTENT_SCHEMA if fenced else _INTENT_SCHEMA,
+            "prior_pointer_sha256": prior, "attempt_pointer_sha256": attempt,
             "prior_prefix": _pin(prior_prefix), "candidate_prefix": _pin(candidate_prefix)}
 
 
@@ -99,13 +107,14 @@ def _prefix_from(value):
 
 def _load_intent(raw):
     value = cp._parse(raw)
-    if set(value) != _INTENT_KEYS or value["schema"] != _INTENT_SCHEMA:
+    if set(value) != _INTENT_KEYS or value["schema"] not in (_INTENT_SCHEMA, _FENCED_INTENT_SCHEMA):
         _fail()
+    fenced = value["schema"] == _FENCED_INTENT_SCHEMA
     prior, attempt = value["prior_pointer_sha256"], value["attempt_pointer_sha256"]
     prior_prefix, candidate = _prefix_from(value["prior_prefix"]), _prefix_from(value["candidate_prefix"])
-    if cp._canonical(_intent_value(prior, prior_prefix, attempt, candidate)) != raw:
+    if cp._canonical(_intent_value(prior, prior_prefix, attempt, candidate, fenced)) != raw:
         _fail()
-    return prior, prior_prefix, attempt, candidate
+    return prior, prior_prefix, attempt, candidate, fenced
 
 
 def _stage(root, raw):
@@ -161,6 +170,25 @@ def _shared_pointer(shared):
     return cp._sha(cp._read(pointer, max_bytes=cp._MAX_POINTER_BYTES))
 
 
+def _was_pointer(shared, attempt):
+    """Evidence that the attempt was once the pointer: the immutable archive a later replacement leaves."""
+    archive = cp._secure(shared / ("q4-pointer-" + attempt + ".json"), missing_leaf=True)
+    return os.path.lexists(archive) and cp._sha(cp._read(archive, max_bytes=cp._MAX_POINTER_BYTES)) == attempt
+
+
+def _require_candidate_binding(shared, attempt, candidate, *, current):
+    """Bind to pointer bytes under the lock; this is not authentication of the publisher."""
+    name = cp.POINTER if current == attempt else "q4-pointer-" + attempt + ".json"
+    data = cp._read(cp._secure(shared / name), max_bytes=cp._MAX_POINTER_BYTES)
+    if cp._sha(data) != attempt:
+        _fail()
+    pointer = cp._parse(data)
+    if (pointer.get("schema") not in (cp.PREFIX_SCHEMA, cp.PREFIX_HISTORY_SCHEMA)
+            or pointer.get("watermark") != cp._cursor(candidate.cursor)
+            or pointer.get("prefix_watermark_sha256") != candidate.sha256):
+        _fail()
+
+
 def _root_disjoint(private, shared):
     """Compare root identities against the other's ancestors, including aliases."""
     return not (any(os.path.samefile(ancestor, shared) for ancestor in (private, *private.parents))
@@ -176,12 +204,21 @@ class _LockedState:
         self._shared = shared
         self._timeout = timeout
 
-    def begin_intent(self, prior_pointer, prior_prefix, attempt_pointer, candidate_prefix, *, enabled=False):
-        """Open one durable intent bound to the current private state AND the observed shared pointer."""
+    def begin_intent(self, prior_pointer, prior_prefix, attempt_pointer, candidate_prefix, *, enabled=False,
+                     fence=False):
+        """Open a durable intent for the private state and an observed shared pointer.
+
+        fence=True (opt-in, candidate): first open the checkpoint fence for exactly prior -> attempt, then the
+        slot. The fence call takes the checkpoint lock itself (private lock first, never re-entered). An open
+        fence for the same binding left by an interrupted begin is adopted only while the pointer is still the
+        prior (or already the attempt, subject to resolution's candidate-binding check). The checkpoint lock
+        is released before slot creation: the fence restricts cooperating new writers, but an older writer can
+        advance in that gap. Resolution must recheck; neither this observation nor the fence authenticates
+        the publisher or proves a result against noncooperating writers."""
         try:
-            if enabled is not True or self._shared is None:
+            if enabled is not True or self._shared is None or type(fence) is not bool:
                 _fail()
-            raw = cp._canonical(_intent_value(prior_pointer, prior_prefix, attempt_pointer, candidate_prefix))
+            raw = cp._canonical(_intent_value(prior_pointer, prior_prefix, attempt_pointer, candidate_prefix, fence))
             pending, target = self._root / _PENDING, self._root / _STATE
             cp._secure(pending, missing_leaf=True)
             cp._secure(target, missing_leaf=True)
@@ -192,6 +229,19 @@ class _LockedState:
                     _fail()
             elif not os.path.lexists(target) or _load(target) != _value(prior_pointer, prior_prefix):
                 _fail()
+            if fence:
+                try:
+                    cp.open_prefix_fence(self._shared, expected_prior_pointer_sha256=prior_pointer,
+                                         expected_attempt_sha256=attempt_pointer, enabled=True, timeout=self._timeout)
+                except cp.CheckpointRefused:
+                    with _checkpoint_lock(self._shared, self._timeout):
+                        active = cp._active_fence(self._shared)
+                        if (active is None or active[:2] != (prior_pointer, attempt_pointer)
+                                or _shared_pointer(self._shared) not in (prior_pointer, attempt_pointer)):
+                            _fail()
+                # New-code writers are fenced; older writers may move the pointer before the slot is created.
+                _create_slot(self._root, raw)
+                return
             # No cooperating checkpoint writer can move the pointer between this check and the slot.
             with _checkpoint_lock(self._shared, self._timeout):
                 if _shared_pointer(self._shared) != prior_pointer:
@@ -208,7 +258,16 @@ class _LockedState:
         The checkpoint lock is held from the pointer observation through the state move and the slot removal,
         so no cooperating checkpoint writer acts inside the decision. A pointer still equal to the prior is
         "unknown", never "unchanged": an ordinary checkpoint-only writer holding the prepared inputs could still
-        land the same attempt later and nothing here can fence it, so the intent stays open to catch that."""
+        land the same attempt later and nothing here can fence it, so the intent stays open to catch that.
+
+        A fenced intent first asks the checkpoint fence (outside the checkpoint lock, which the fence takes
+        itself), then rechecks under the checkpoint lock. "landed" needs the pointer to be the attempt, or a
+        landed record plus the attempt's pointer archive (the pointer moved on); a landed record against the
+        prior pointer refuses. "not_landed" changes nothing and KEEPS the intent: only new-code writers are
+        fenced and the fence metadata is not proven durable across power loss, so an old writer may still land
+        it; a later pointer contradicting the not-landed record refuses and keeps the intent. A checkpoint
+        refusal falls back to the unfenced rule only when the lock-protected fence and both records are absent;
+        ambiguous, invalid or contradictory fence evidence refuses and keeps everything."""
         try:
             if enabled is not True or self._shared is None:
                 _fail()
@@ -216,19 +275,47 @@ class _LockedState:
             raw = cp._read(pending, max_bytes=8192)
             if raw == _MARK:
                 _fail()  # a legacy marker stays unknown
-            prior, prior_prefix, attempt, candidate = _load_intent(raw)
+            prior, prior_prefix, attempt, candidate, fenced = _load_intent(raw)
             cp._secure(target, missing_leaf=True)
             state = _load(target) if os.path.lexists(target) else None
+            outcome = None
+            if fenced:
+                try:
+                    outcome = cp.resolve_prefix_fence(self._shared, expected_prior_pointer_sha256=prior,
+                                                      expected_attempt_sha256=attempt, enabled=True,
+                                                      timeout=self._timeout)["status"]
+                except cp.CheckpointRefused:
+                    outcome = None
             with _checkpoint_lock(self._shared, self._timeout):
                 current = _shared_pointer(self._shared)
+                if fenced:
+                    active = cp._active_fence(self._shared)
+                    records = {name: cp._fence_record(self._shared, attempt, name)
+                               for name in cp._FENCE_OUTCOMES}
+                    present = [name for name, path in records.items() if os.path.lexists(path)]
+                    if active is not None:
+                        _fail()
+                    if outcome is None:
+                        if present:
+                            _fail()
+                    elif (outcome not in cp._FENCE_OUTCOMES or present != [outcome]
+                          or cp._read(records[outcome], max_bytes=cp._MAX_FENCE_BYTES)
+                          != cp._fence_bytes(prior, attempt)):
+                        _fail()
+                    if outcome == "not_landed" and current != prior:
+                        _fail()
+                landed = current == attempt or (outcome == "landed" and current != prior
+                                                and _was_pointer(self._shared, attempt))
+                if landed:
+                    _require_candidate_binding(self._shared, attempt, candidate, current=current)
                 if state == _value(attempt, candidate):
-                    if current != attempt:
+                    if not landed:
                         _fail()  # the state move already happened before an interruption
                 elif (state is None and prior is None) or (prior is not None and state == _value(prior, prior_prefix)):
-                    if current == prior:
-                        return "unknown"
-                    if current != attempt:
-                        _fail()
+                    if not landed:
+                        if current != prior or outcome == "landed":
+                            _fail()
+                        return "not_landed" if outcome == "not_landed" else "unknown"
                     _write_state(self._root, attempt, candidate)
                 else:
                     _fail()

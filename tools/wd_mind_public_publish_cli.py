@@ -13,9 +13,12 @@ The source log, generation sidecar and start cursor come ONLY from the pinned
 anchor. The window (read_anchored_delta) must reach the end of the snapshot it
 observes within MAX_WINDOW_BYTES/MAX_WINDOW_ROWS, otherwise the run refuses rather
 than truncating or skipping. Then prepare_status_attempt and, BEFORE any publication
-write, an exclusive fsynced recovery artifact (PENDING_FILENAME in the private audit
-root: caller prior, attempt digest, the four pin digests, start and candidate cursor,
-record count; no rows, messages or paths). Then publish_status bound to that attempt
+write, an exclusive recovery artifact (PENDING_FILENAME in the private audit root:
+caller prior, attempt digest, the four pin digests, start and candidate cursor, record
+count; no rows, messages or paths), created crash-safe: a uniquely named stage is
+written and fsynced, then hard-linked to the final name, which fails if the name exists
+(a competing file is never overwritten) and never exposes a partial artifact; a torn
+write leaves only an orphan stage. Then publish_status bound to that attempt
 and, after a publish failure, recover_status_attempt with the caller's own prior:
 "landed" continues as landed_after_ambiguous_failure, "unchanged" removes the
 artifact and refuses, anything else refuses and KEEPS the artifact.
@@ -24,7 +27,8 @@ Only after landed is established, the continuation anchor (NEXT_ANCHOR_FILENAME:
 the pinned anchor with cursor_start = the window's candidate cursor) is written. A
 later run with an artifact present must pin that landed digest as its prior and an
 anchor starting exactly at the artifact's candidate cursor (a re-read or a skip is
-refused); the artifact is consumed only then. With no artifact and a non-genesis
+refused), and the issued continuation anchor for that cursor must exist; the artifact
+is consumed only then (a missing anchor is issued by recover). With no artifact and a non-genesis
 prior, the anchor must start at the issued continuation's cursor.
 
 WD_MIND_PUBLIC_PUBLISH_MODE=recover (same switch and pins, no prior needed) is the
@@ -44,8 +48,10 @@ NOT established here: source or publisher authenticity (same-user writers are
 indistinguishable; the publisher identity is caller declared), source freshness or
 currentness after the read, completeness (each publication replaces the previous
 one with the latest delta only), ACLs, or protection against same-user replacement
-and TOCTOU of any path, including the artifact and the continuation anchor (the
-anchor write is unlink-then-exclusive-create, not atomic; recover rewrites it).
+and TOCTOU of any path, including the artifact and the continuation anchor (replacing
+an anchor is unlink then staged create, not one atomic step; it only happens while the
+artifact that lets recover rewrite it exists), durability of directory entries (no
+directory fsync on Windows), or filesystems without hard links (creation refuses).
 Pins chosen by the caller prove no provenance.
 """
 from dataclasses import asdict
@@ -56,6 +62,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import sys
 
 MAX_WINDOW_BYTES = 1024 * 1024
@@ -130,12 +137,29 @@ def _read_state(root, name):
     return raw
 
 
-def _create(target, data):
-    with target.open("xb") as stream:
-        if stream.write(data) != len(data):
-            raise OSError("short_write")
-        stream.flush()
-        os.fsync(stream.fileno())
+def _discard(path):
+    try:
+        path.unlink()
+    except OSError:
+        pass  # An orphan stage is never interpreted as state.
+
+
+def _create(root, name, data):
+    """Exclusive crash-safe creation: write and fsync a uniquely named stage, then hard-link it to the final name
+    (one atomic step that fails if the name exists, so a competing file is never overwritten). A short write or a
+    crash leaves at most an orphan stage, never a partial file under the final name."""
+    stage = root / (name + "-" + secrets.token_hex(16) + ".tmp")
+    try:
+        with stage.open("xb") as stream:
+            if stream.write(data) != len(data):
+                raise OSError("short_write")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(stage, root / name)
+    except Exception:
+        _discard(stage)
+        raise
+    _discard(stage)
 
 
 def _pending(root):
@@ -163,14 +187,14 @@ def _same(left, right):
 
 def _write_next_anchor(root, anchor, candidate):
     """Continuation anchor = the pinned anchor with cursor_start moved to the landed window's candidate cursor.
-    Idempotent: identical bytes are left alone; other bytes are replaced by unlink + exclusive create."""
+    Idempotent: identical bytes are left alone; other bytes are replaced by unlink + staged exclusive create (the
+    artifact that can rewrite it still exists whenever this runs)."""
     data = _canonical(dict(anchor, cursor_start=_cursor(candidate)))
-    target = root / NEXT_ANCHOR_FILENAME
     present = _read_state(root, NEXT_ANCHOR_FILENAME)
     if present != data:
         if present is not None:
-            target.unlink()
-        _create(target, data)
+            (root / NEXT_ANCHOR_FILENAME).unlink()
+        _create(root, NEXT_ANCHOR_FILENAME, data)
     return hashlib.sha256(data).hexdigest()
 
 
@@ -216,11 +240,15 @@ def _recover(session, root, pins, anchor, source):
 
 
 def _continue(session, root, previous, anchor):
-    """A new window must continue the LANDED previous publication exactly: no re-read, no skip."""
+    """A new window must continue the LANDED previous publication exactly: no re-read, no skip. The artifact is
+    consumed only while the issued continuation anchor for its candidate cursor exists (durably created), so a
+    later failure can never leave neither; a missing anchor is issued by recover under the attempt's own pins."""
     saved = _pending(root)
     if saved is not None:
+        issued = _read_state(root, NEXT_ANCHOR_FILENAME)
         if (previous is None or not hmac.compare_digest(previous, saved["attempt_sha256"])
-                or not _same(anchor["cursor_start"], saved["candidate_cursor"])):
+                or not _same(anchor["cursor_start"], saved["candidate_cursor"])
+                or issued is None or not _same(_strict(issued)["cursor_start"], saved["candidate_cursor"])):
             raise ValueError()
         if session.recover_status_attempt(root, prior_sha256=saved["prior_sha256"],
                                           attempt_sha256=saved["attempt_sha256"], enabled=True) != "landed":
@@ -273,7 +301,7 @@ def main(argv=None):
         attempt = session.prepare_status_attempt(root, result, as_of=as_of, enabled=True,
                                                  expected_previous_sha256=previous, **pins)
         # Durable BEFORE any publication write; exclusive, so a concurrent or unresolved attempt refuses here.
-        _create(root / PENDING_FILENAME, _canonical(
+        _create(root, PENDING_FILENAME, _canonical(
             {"schema": _PENDING_SCHEMA, "prior_sha256": previous, "attempt_sha256": attempt,
              **{name: pins[name] for name in _PIN_DIGESTS}, "cursor_start": asdict(cursor),
              "candidate_cursor": candidate, "records": len(records)}))

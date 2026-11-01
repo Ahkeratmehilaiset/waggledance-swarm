@@ -201,6 +201,9 @@ def verify_generation(gen_dir, cell_id, receipt_sha):
         raise CellError("pairs_mismatch")
     if rebuild_possible:
         raw = files["vectors"].read_bytes()
+        # The earlier streaming check is retained; bind the bytes actually used too.
+        if sha256(raw) != content["files"]["vectors"]:
+            raise CellError("vectors_checksum")
         if len(raw) != count * dim * 4:
             raise CellError("vectors_size")
         retained = np.frombuffer(raw, dtype="<f4").reshape(count, dim) if count else stored

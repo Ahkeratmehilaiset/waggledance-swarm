@@ -105,3 +105,80 @@ def test_strict_collection_failure_is_quarantined_without_private_detail(tmp_pat
     monkeypatch.setattr(cell, "FaissCollection", refuse_collection)
     view = cell.load(cell_dir, "learning")
     assert view.status == "QUARANTINED" and view.reason == "index_unreadable"
+
+
+def _synthetic_vectors_case(tmp_path, monkeypatch, *, include_vectors=True):
+    import core.faiss_store as store
+
+    generation = tmp_path / "generation"
+    generation.mkdir()
+    files = cell.paths(generation, "learning")
+    files["index"].parent.mkdir(parents=True)
+    files["index"].write_bytes(b"fake-index")
+    files["meta"].write_bytes(_encoded({"dim": 1, "doc_ids": ["synthetic-id"],
+                                       "texts": ["synthetic"], "metadata": [{}]}))
+    row = {"record_id": "synthetic-id", "kind": "event", "time_utc": "2026-01-01T00:00:00Z",
+           "cell_id": "learning", "provenance": {}}
+    files["provenance"].write_bytes(_encoded(row) + b"\n")
+    vectors = np.array([[1.0]], dtype="<f4")
+    if include_vectors:
+        files["vectors"].write_bytes(vectors.tobytes())
+    names = ("index", "meta", "provenance", "vectors") if include_vectors else ("index", "meta", "provenance")
+    content = {"cell_id": "learning", "count": 1, "dim": 1, "cutoff_utc": "2027-01-01T00:00:00Z",
+               "files": {name: cell.sha256(files[name].read_bytes()) for name in names},
+               "ids_sha256": cell.sha256(b"synthetic-id"),
+               "pairs_sha256": cell.pairs_sha256(["synthetic-id"], vectors)}
+    receipt = _encoded({"schema": cell.SCHEMA, "content": content,
+                        "content_sha256": cell.sha256(cell.canonical(content).encode())})
+    (generation / "receipt.json").write_bytes(receipt)
+
+    class FakeIndex:
+        ntotal, d = 1, 1
+
+        def reconstruct(self, index):
+            return vectors[index]
+
+    monkeypatch.setattr(store.faiss, "IndexFlatIP", lambda dim: FakeIndex(), raising=False)
+    monkeypatch.setattr(store.faiss, "read_index", lambda path: FakeIndex(), raising=False)
+    return generation, files, cell.sha256(receipt)
+
+
+def test_retained_vectors_swapped_after_streaming_hash_are_refused(tmp_path, monkeypatch):
+    generation, files, receipt_sha = _synthetic_vectors_case(tmp_path, monkeypatch)
+    original_hash = cell.file_sha256
+    swaps = []
+
+    def hash_then_swap(path):
+        digest = original_hash(path)
+        if path == files["vectors"]:
+            path.write_bytes(np.array([[2.0]], dtype="<f4").tobytes())
+            swaps.append(True)
+        return digest
+
+    monkeypatch.setattr(cell, "file_sha256", hash_then_swap)
+    with pytest.raises(cell.CellError, match="^vectors_checksum$"):
+        cell.verify_generation(generation, "learning", receipt_sha)
+    assert swaps == [True]
+
+
+def test_retained_vectors_swapped_after_snapshot_use_verified_bytes(tmp_path, monkeypatch):
+    generation, files, receipt_sha = _synthetic_vectors_case(tmp_path, monkeypatch)
+    original_read = Path.read_bytes
+    swaps = []
+
+    def read_then_swap(path):
+        raw = original_read(path)
+        if path == files["vectors"]:
+            path.write_bytes(np.array([[2.0]], dtype="<f4").tobytes())
+            swaps.append(True)
+        return raw
+
+    monkeypatch.setattr(Path, "read_bytes", read_then_swap)
+    _, _, _, rebuild_possible = cell.verify_generation(generation, "learning", receipt_sha)
+    assert swaps == [True] and rebuild_possible is True
+
+
+def test_missing_retained_vectors_remains_readable_without_rebuild(tmp_path, monkeypatch):
+    generation, _, receipt_sha = _synthetic_vectors_case(tmp_path, monkeypatch, include_vectors=False)
+    _, _, _, rebuild_possible = cell.verify_generation(generation, "learning", receipt_sha)
+    assert rebuild_possible is False

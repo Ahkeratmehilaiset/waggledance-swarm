@@ -1,0 +1,130 @@
+"""Copy an explicitly pinned file inventory into a separate Q4 candidate.
+
+This is not an installer, package manager, dependency resolver, or trust
+anchor. It neither executes packages nor proves wheel provenance, dependency
+closure, or that a runtime is fit for use. Inputs must be separately pinned by
+the caller. Partial output is preserved on failure; nothing is overwritten,
+deleted, activated, or switched into service. Same-user races remain possible.
+"""
+
+import hashlib
+import os
+from pathlib import Path
+import shutil
+
+from sandbox.mind.step2 import runtime_builder, runtime_manifest
+
+
+_FLOOR_BYTES = 3 * 1024**3
+_MANIFEST_RESERVE = runtime_manifest.MAX_MANIFEST_BYTES
+
+
+def _related(left, right):
+    try:
+        common = os.path.commonpath((os.fspath(left), os.fspath(right)))
+    except ValueError:
+        return False
+    return os.path.normcase(common) in (os.path.normcase(os.fspath(left)), os.path.normcase(os.fspath(right)))
+
+
+def _new_path(value):
+    supplied = Path(value)
+    if not supplied.is_absolute() or '..' in supplied.parts or not supplied.name:
+        raise ValueError('output_invalid')
+    # Validate the leaf using the same restrictive policy as the verifier.
+    runtime_manifest._path_parts('assets/' + supplied.name)
+    parent = runtime_manifest._check_chain(supplied.parent)
+    output = parent / supplied.name
+    if os.path.lexists(output):
+        raise ValueError('output_exists')
+    return output
+
+
+def _input_hash(root, relative):
+    path = root.joinpath(*runtime_manifest._path_parts(relative))
+    runtime_manifest._check_chain(path)
+    return runtime_builder._hash_file(path)
+
+
+def build_candidate(source_root, candidate_root, manifest_path, *, pins, generation, revision, max_bytes):
+    """Build an unactivated candidate and an external manifest from pinned files.
+
+    ``pins`` maps POSIX relative runtime paths to exact ``size`` and ``sha256``.
+    ``max_bytes`` bounds the sum of the selected file sizes, not total build
+    peak. Disk free space must retain the separate 3 GiB floor plus room for
+    the candidate bytes and maximum manifest. The caller remains responsible
+    for pin provenance and a realistic end-to-end budget. Failure after output
+    creation can leave partial files, which must not be treated as a receipt.
+    """
+    if (not isinstance(generation, str) or not runtime_manifest.IDENTITY.fullmatch(generation)
+            or not isinstance(revision, str) or not runtime_manifest.IDENTITY.fullmatch(revision)):
+        raise ValueError('identity_invalid')
+    if type(max_bytes) is not int or max_bytes <= 0 or type(pins) is not dict:
+        raise ValueError('inputs_invalid')
+    source = runtime_manifest._check_chain(source_root)
+    if not source.is_dir() or source == Path(source.anchor):
+        raise ValueError('source_invalid')
+    candidate, manifest = _new_path(candidate_root), _new_path(manifest_path)
+    if _related(source, candidate) or _related(source, manifest) or _related(candidate, manifest):
+        raise ValueError('output_overlap')
+    records = []
+    for path, pin in pins.items():
+        if type(path) is not str or type(pin) is not dict or set(pin) != {'size', 'sha256'}:
+            raise ValueError('pin_invalid')
+        records.append({'path': path, 'size': pin['size'], 'sha256': pin['sha256']})
+    files, _ = runtime_manifest._validate_records(records)
+    total = sum(size for size, _ in files.values())
+    if total > max_bytes:
+        raise ValueError('budget_insufficient')
+    if shutil.disk_usage(candidate.parent).free < _FLOOR_BYTES + total + _MANIFEST_RESERVE:
+        raise ValueError('disk_floor')
+    if os.path.splitdrive(str(candidate))[0].casefold() != os.path.splitdrive(str(manifest))[0].casefold():
+        if shutil.disk_usage(manifest.parent).free < _FLOOR_BYTES + _MANIFEST_RESERVE:
+            raise ValueError('disk_floor')
+
+    # Validate every named input before making any output path.
+    identities = {}
+    for relative, (size, digest) in files.items():
+        observed_size, observed_digest, identity = _input_hash(source, relative)
+        if observed_size != size or observed_digest != digest:
+            raise ValueError('input_pin_mismatch')
+        identities[relative] = identity
+
+    os.mkdir(candidate)
+    for relative, (size, digest) in files.items():
+        source_path = source.joinpath(*relative.split('/'))
+        target = candidate.joinpath(*relative.split('/'))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        runtime_manifest._check_chain(target.parent)
+        runtime_manifest._check_chain(source_path)
+        runtime_manifest._check_no_named_streams(source_path)
+        stream, initial = runtime_manifest._open_regular(source_path, runtime_manifest.MAX_FILE_BYTES)
+        if runtime_manifest._stable_identity(initial) != identities[relative]:
+            stream.close()
+            raise ValueError('input_changed')
+        digest_copy = hashlib.sha256()
+        count = 0
+        with stream, target.open('xb') as output:
+            while True:
+                block = stream.read(1024 * 1024)
+                if not block:
+                    break
+                count += len(block)
+                if count > size:
+                    raise ValueError('input_changed')
+                output.write(block)
+                digest_copy.update(block)
+            output.flush()
+            os.fsync(output.fileno())
+            if (count != size or digest_copy.hexdigest() != digest
+                    or not runtime_manifest._same_file(source_path, stream, initial)):
+                raise ValueError('input_changed')
+
+    result = runtime_builder.build_runtime_manifest(candidate, manifest, generation=generation, revision=revision)
+    for relative, (size, digest) in files.items():
+        current_size, current_digest, identity = _input_hash(source, relative)
+        if (current_size, current_digest, identity) != (size, digest, identities[relative]):
+            raise ValueError('input_changed')
+    runtime_manifest.verify_runtime(candidate, manifest, result['manifest_sha256'],
+                                    expected_generation=generation, expected_revision=revision)
+    return result

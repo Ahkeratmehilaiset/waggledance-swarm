@@ -101,6 +101,27 @@ def _forbid_backend(monkeypatch):
     monkeypatch.setattr(q4_query, "_invoke_launcher", forbidden)
 
 
+def _forbid_native(monkeypatch):
+    """A None entry makes any import of the native stack fail loudly: a refusal path must never deserialize FAISS."""
+    import sys
+    for name in ("faiss", "numpy"):
+        monkeypatch.setitem(sys.modules, name, None)
+
+
+def _unreached_backend(seam):
+    """The explicit NON-PRODUCTION seam marker wrapping a backend that must never run."""
+    return seam["mod"].SyntheticInProcessBackend(lambda *a, **k: pytest.fail("a refused query must not reach the backend"))
+
+
+def _seam_query(seam, config, stdin, **args):
+    return seam["mod"]._synthetic_seam_query_public_prefix(config, stdin, synthetic_backend=_unreached_backend(seam), **args)
+
+
+PRODUCTION_PARAMETERS = {"config", "stdin", "root", "expected_pointer_sha256", "expected_source_sha256",
+                         "expected_encoder_sha256", "policy_bytes", "policy_sha256", "roster_bytes", "roster_sha256",
+                         "public_policy_bytes", "public_policy_sha256", "enabled"}
+
+
 def q4_config(seam, **changes):
     """A caller-asserted VerifiedQ4Config bound to the seam's generation (fake runtime pins, real tmp paths)."""
     from tools import wd_q4_agent_query as q4_query
@@ -119,10 +140,61 @@ def q4_config(seam, **changes):
 QUERY = b'{"situation":"SYNTHETIC_SITUATION_NEVER_OUTPUT","time":"2000-01-01T00:00:00Z"}'
 
 
+def test_production_query_has_no_backend_or_transport_parameter(seam):
+    import inspect
+    params = inspect.signature(seam["mod"].query_public_prefix).parameters
+    assert set(params) == PRODUCTION_PARAMETERS and params["enabled"].default is False
+    for extra in ({"synthetic_backend": _unreached_backend(seam)}, {"transport": object()}, {"backend": object()}):
+        with pytest.raises(TypeError):
+            seam["mod"].query_public_prefix(q4_config(seam), NoRead(), **dict(seam["args"], **extra))
+    assert not seam["calls"]
+
+
+@pytest.mark.parametrize("inputs", ["perfect", "bad_pin", "bad_bytes", "bare_config"])
+def test_enabled_production_query_refuses_before_pins_files_stdin_backend_or_native(seam, monkeypatch, inputs):
+    """No verified transport exists: the production boundary refuses first, whatever the caller supplies."""
+    _forbid_backend(monkeypatch)
+    _forbid_native(monkeypatch)
+    mod = seam["mod"]
+    monkeypatch.setattr(mod.resolver, "_read_matching", lambda *a, **k: pytest.fail("no file read before the transport exists"))
+    monkeypatch.setattr(mod.checkpoint, "read_verified_prefix_pointer", lambda *a, **k: pytest.fail("no pointer read"))
+    monkeypatch.setattr(mod, "resolve_prefix_public_pointer", lambda *a, **k: pytest.fail("no resolve before the transport"))
+    config, args = q4_config(seam), dict(seam["args"])
+    if inputs == "bad_pin":
+        args["expected_source_sha256"] = "zz"
+    elif inputs == "bad_bytes":
+        args["roster_bytes"] = "text"
+    elif inputs == "bare_config":
+        config = object()
+    with pytest.raises(mod.PrefixPublicRefused, match="^secure_transport_unavailable$"):
+        mod.query_public_prefix(config, NoRead(), **args)
+    assert not seam["calls"]
+
+
 def test_enabled_query_with_an_unvalidated_config_refuses_before_stdin_or_backend(seam, monkeypatch):
     _forbid_backend(monkeypatch)
     with pytest.raises(seam["mod"].PrefixPublicRefused, match="^prefix_query_refused$"):
-        seam["mod"].query_public_prefix(seam["config"], NoRead(), **seam["args"])  # seam config is a bare object
+        _seam_query(seam, seam["config"], NoRead(), **seam["args"])  # seam config is a bare object
+    assert not seam["calls"]
+
+
+@pytest.mark.parametrize("marker", [None, True, 1, "SyntheticInProcessBackend", object()])
+def test_seam_refuses_without_the_explicit_marker_object(seam, monkeypatch, marker):
+    """No bool-only trust: the seam runs only with the constructed marker, never with a flag or a bare callable."""
+    _forbid_backend(monkeypatch)
+    _forbid_native(monkeypatch)
+    mod = seam["mod"]
+    monkeypatch.setattr(mod.resolver, "_read_matching", lambda *a, **k: pytest.fail("no file read without the marker"))
+    with pytest.raises(mod.PrefixPublicRefused, match="^synthetic_backend_required$"):
+        mod._synthetic_seam_query_public_prefix(q4_config(seam), NoRead(), synthetic_backend=marker, **seam["args"])
+    with pytest.raises(mod.PrefixPublicRefused, match="^synthetic_backend_required$"):
+        mod._synthetic_seam_query_public_prefix(q4_config(seam), NoRead(),
+                                                synthetic_backend=lambda *a, **k: pytest.fail("bare callable ran"),
+                                                **seam["args"])
+    with pytest.raises(TypeError):
+        mod.SyntheticInProcessBackend(True)
+    with pytest.raises(TypeError):
+        mod.SyntheticInProcessBackend(None)
     assert not seam["calls"]
 
 
@@ -131,47 +203,53 @@ def test_enabled_query_with_an_unvalidated_config_refuses_before_stdin_or_backen
 @pytest.mark.parametrize("bad", [None, "0" * 63, "X" * 64, 0])
 def test_query_refuses_before_stdin_when_any_caller_pin_is_absent_or_malformed(seam, monkeypatch, field, bad):
     _forbid_backend(monkeypatch)
+    _forbid_native(monkeypatch)
     with pytest.raises(seam["mod"].PrefixPublicRefused, match="^prefix_query_refused$"):
-        seam["mod"].query_public_prefix(q4_config(seam), NoRead(), **dict(seam["args"], **{field: bad}))
+        _seam_query(seam, q4_config(seam), NoRead(), **dict(seam["args"], **{field: bad}))
     assert not seam["calls"]
 
 
 @pytest.mark.parametrize("field", ["policy_bytes", "roster_bytes", "public_policy_bytes"])
 def test_query_refuses_before_stdin_when_pinned_bytes_are_not_bytes(seam, monkeypatch, field):
     _forbid_backend(monkeypatch)
+    _forbid_native(monkeypatch)
     with pytest.raises(seam["mod"].PrefixPublicRefused, match="^prefix_query_refused$"):
-        seam["mod"].query_public_prefix(q4_config(seam), NoRead(), **dict(seam["args"], **{field: "text"}))
+        _seam_query(seam, q4_config(seam), NoRead(), **dict(seam["args"], **{field: "text"}))
     assert not seam["calls"]
 
 
 @pytest.mark.parametrize("enabled", [False, None, 0, 1, "1"])
 def test_query_default_off_touches_nothing(seam, monkeypatch, enabled):
     _forbid_backend(monkeypatch)
+    _forbid_native(monkeypatch)
     with pytest.raises(seam["mod"].PrefixPublicRefused, match="^disabled$"):
         seam["mod"].query_public_prefix(object(), NoRead(), **dict(seam["args"], enabled=enabled))
+    with pytest.raises(seam["mod"].PrefixPublicRefused, match="^disabled$"):
+        _seam_query(seam, object(), NoRead(), **dict(seam["args"], enabled=enabled))
     assert not seam["calls"]
 
 
 @pytest.fixture
 def answered(seam, monkeypatch):
-    """The seam plus a recording stand-in for wd_q4_agent_query.query_and_resolve (no launcher, no model)."""
-    from tools import wd_q4_agent_query as q4_query
+    """The seam plus a recording in-process backend injected through the NON-PRODUCTION marker (no launcher, no model);
+    the module's own route to wd_q4_agent_query.query_and_resolve and the launcher is forbidden."""
+    _forbid_backend(monkeypatch)
     seam["answer"] = {"status": "ANSWER", "results": [
-        {"ref_sha256": "a" * 64, "doc_id_sha256": "b" * 64, "stored_text": "SYNTHETIC_STORED_TEXT",
+        {"ref_sha256": "a" * 64, "doc_id_sha256": "d" * 64, "stored_text": "SYNTHETIC_STORED_TEXT",
          "ref_kind": "sha256_of_projected_metadata", "canonical_event": False}]}
     seam["queries"] = []
 
     def query(config, stream, memory_raw, projection_raw, tasks, **kwargs):
         seam["queries"].append((config, stream.read(), memory_raw, projection_raw, tasks, kwargs))
         return copy.deepcopy(seam["answer"])
-    monkeypatch.setattr(q4_query, "query_and_resolve", query)
-    monkeypatch.setattr(q4_query, "_invoke_launcher", lambda **k: pytest.fail("the seam never reaches the launcher"))
+    seam["backend"] = seam["mod"].SyntheticInProcessBackend(query)
     return seam
 
 
 def _query(seam, config=None, stdin=None, **changes):
-    return seam["mod"].query_public_prefix(q4_config(seam) if config is None else config,
-                                           io.BytesIO(QUERY) if stdin is None else stdin, **dict(seam["args"], **changes))
+    return seam["mod"]._synthetic_seam_query_public_prefix(
+        q4_config(seam) if config is None else config, io.BytesIO(QUERY) if stdin is None else stdin,
+        synthetic_backend=seam["backend"], **dict(seam["args"], **changes))
 
 
 @pytest.mark.skipif(os.name != "nt", reason="VerifiedQ4Config paths are Windows drive paths")
@@ -182,19 +260,24 @@ def test_enabled_prefix_query_binds_the_verified_generation_and_returns_only_pub
     assert out["results"] == seam["answer"]["results"]
     binding = out["binding"]
     assert binding["pointer_sha256"] == seam["args"]["expected_pointer_sha256"]
-    assert binding["source_anchor_sha256"] == seam["args"]["expected_source_sha256"] == seam["view"]["anchor_sha256"]
     assert binding["encoder_sha256"] == seam["args"]["expected_encoder_sha256"]
-    for key in ("policy_sha256", "roster_sha256", "public_policy_sha256"):
-        assert binding[key] == seam["args"][key]
+    assert binding["public_policy_sha256"] == seam["args"]["public_policy_sha256"]
     for key, value in seam["view"]["artifacts"].items():
         assert binding[key] == value
-    assert set(binding) == {"pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256", "roster_sha256",
-                            "public_policy_sha256", "descriptor_sha256", "memory_sha256", "projection_sha256", "receipt_sha256"}
+    assert set(binding) == {"pointer_sha256", "encoder_sha256", "public_policy_sha256",
+                            "descriptor_sha256", "memory_sha256", "projection_sha256", "receipt_sha256"}
+    # verified but withheld: the source anchor, policy and roster digests commit to private material
+    assert out["withheld"] == ["policy_sha256", "roster_sha256", "source_anchor_sha256"]
+    assert set(out) == {"schema", "status", "results", "binding", "withheld", "publisher_authentication",
+                        "source_filter_attestation", "freshness", "same_user_aba"}
     for field in ("publisher_authentication", "source_filter_attestation", "freshness", "same_user_aba"):
         assert out[field] == "UNKNOWN"
     text = json.dumps(out)
     assert "SYNTHETIC_SITUATION" not in text and seam["pin"].sha256 not in text
     assert str(seam["args"]["root"]) not in text and "gen-a" not in text and "C:" not in text
+    assert seam["args"]["expected_source_sha256"] not in text and seam["view"]["cursor_end_sha256"] not in text
+    assert seam["args"]["policy_sha256"] not in text and seam["args"]["roster_sha256"] not in text
+    assert "synthetic-policy" not in text and "synthetic-roster" not in text
     assert len(seam["queries"]) == 1
     config, raw, memory_raw, projection_raw, tasks, kwargs = seam["queries"][0]
     assert raw == QUERY and memory_raw == b"synthetic memory"
@@ -245,6 +328,60 @@ def test_binding_pin_or_config_mismatch_refuses_before_the_query_runs(answered, 
 
 
 @pytest.mark.skipif(os.name != "nt", reason="VerifiedQ4Config paths are Windows drive paths")
+@pytest.mark.parametrize("kind", ["anchor_pin", "encoder_pin", "config_revision", "config_memory"])
+def test_source_and_encoder_pins_are_verified_before_the_resolver_and_any_backend(answered, monkeypatch, kind):
+    """Caller pins bind the pointer view and the descriptor (JSON) before the resolver or anything native runs."""
+    seam = answered
+    monkeypatch.setattr(seam["mod"], "resolve_prefix_public_pointer",
+                        lambda *a, **k: pytest.fail("the resolver ran before the caller pins were verified"))
+    config, changes = q4_config(seam), {}
+    if kind == "anchor_pin":
+        changes["expected_source_sha256"] = "f" * 64
+    elif kind == "encoder_pin":
+        changes["expected_encoder_sha256"] = "f" * 64
+    elif kind == "config_revision":
+        config = q4_config(seam, runtime_revision="b" * 40)
+    elif kind == "config_memory":
+        config = q4_config(seam, memory=str(seam["args"]["root"] / "gen-b"))
+    with pytest.raises(seam["mod"].PrefixPublicRefused, match="^prefix_query_refused$"):
+        _query(seam, config=config, **changes)
+    assert seam["queries"] == []
+
+
+def test_refusals_carry_no_cause_context_or_internal_frames(seam):
+    """A fixed refusal is raised outside every handler: no chained cause, no implicit context, no inner frames."""
+    import traceback
+    mod = seam["mod"]
+    cases = []
+    resolve_args = {key: value for key, value in seam["args"].items()
+                    if key not in ("expected_source_sha256", "expected_encoder_sha256")}
+    with pytest.raises(mod.PrefixPublicRefused) as info:  # direct calls: a helper frame would hide the frame count
+        mod.resolve_prefix_public_pointer(**dict(resolve_args, expected_pointer_sha256="f" * 64))
+    cases.append((info.value, "resolution_refused"))
+    with pytest.raises(mod.PrefixPublicRefused) as info:
+        mod.query_public_prefix(object(), NoRead(), **seam["args"])
+    cases.append((info.value, "secure_transport_unavailable"))
+    with pytest.raises(mod.PrefixPublicRefused) as info:
+        mod.query_public_prefix(object(), NoRead(), **dict(seam["args"], enabled=False))
+    cases.append((info.value, "disabled"))
+    with pytest.raises(mod.PrefixPublicRefused) as info:
+        mod._synthetic_seam_query_public_prefix(q4_config(seam), NoRead(), synthetic_backend=_unreached_backend(seam),
+                                                **dict(seam["args"], expected_source_sha256="f" * 64))
+    cases.append((info.value, "prefix_query_refused"))
+    with pytest.raises(mod.PrefixPublicRefused) as info:
+        mod._synthetic_seam_query_public_prefix(q4_config(seam), NoRead(), synthetic_backend=True, **seam["args"])
+    cases.append((info.value, "synthetic_backend_required"))
+    for exc, code in cases:
+        assert exc.args == (code,) and str(exc) == code
+        assert exc.__cause__ is None and exc.__context__ is None
+        frames = traceback.extract_tb(exc.__traceback__)
+        assert len(frames) <= 2, [frame.name for frame in frames]  # the test line and the public function only
+        rendered = "".join(traceback.format_exception(exc))
+        for private in ("_view", "_read_matching", "strict_pins", "mismatch", "ValueError:", "Traceback (most recent call last):\n  File"):
+            assert rendered.count(private) <= (1 if private.startswith("Traceback") else 0), (code, private)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="VerifiedQ4Config paths are Windows drive paths")
 @pytest.mark.parametrize("change", ["status", "shape", "text_bytes", "ref_pin", "canonical", "answer_without_results",
                                     "abstain_with_results"])
 def test_invalid_or_oversize_backend_results_refuse_the_entire_response(answered, change):
@@ -271,12 +408,11 @@ def test_invalid_or_oversize_backend_results_refuse_the_entire_response(answered
 @pytest.mark.skipif(os.name != "nt", reason="VerifiedQ4Config paths are Windows drive paths")
 def test_pointer_replaced_during_the_query_refuses_the_response(answered, monkeypatch):
     seam = answered
-    from tools import wd_q4_agent_query as q4_query
 
     def query(config, stream, memory_raw, projection_raw, tasks, **kwargs):
         seam["pointer"].write_bytes(b"replaced while the backend ran")
         return copy.deepcopy(seam["answer"])
-    monkeypatch.setattr(q4_query, "query_and_resolve", query)
+    seam["backend"] = seam["mod"].SyntheticInProcessBackend(query)
     with pytest.raises(seam["mod"].PrefixPublicRefused, match="^prefix_query_refused$"):
         _query(seam)
 
@@ -291,8 +427,19 @@ def test_query_module_stays_fixed_path_only():
     assert "sandbox.mind.step2.wd_q4_private_read" not in imported and "runtime_launcher" not in source
     assert "WD_Q4_READ_ENABLED" not in source and "environ" not in source and "argv" not in source
     doc = ast.get_docstring(tree)
-    for word in ("stand-in", "in-process", "launcher", "UNKNOWN", "OFF", "never returned"):
+    for word in ("stand-in", "in-process", "launcher", "UNKNOWN", "OFF", "never returned", "secure transport",
+                 "fixed-peer", "snapshot binding", "NON-PRODUCTION", "withheld"):
         assert word in doc, word
+    assert "from None" not in source  # refusals are raised outside every handler, never chained
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    production = functions["query_public_prefix"]
+    statements = [node for node in production.body if not (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant))]
+    assert statements and all(isinstance(node, (ast.If, ast.Raise)) for node in statements)
+    calls = [node for node in ast.walk(production) if isinstance(node, ast.Call)]
+    assert calls and all(isinstance(call.func, ast.Name) and call.func.id == "PrefixPublicRefused" for call in calls)
+    assert "_synthetic_seam_query_public_prefix" in functions and "SyntheticInProcessBackend" in source
+    for raise_node in (node for node in ast.walk(tree) if isinstance(node, ast.Raise)):
+        assert raise_node.cause is None
 
 
 def test_prefix_resolver_returns_no_private_prefix(seam):
@@ -479,36 +626,44 @@ def test_child_publication_is_answered_by_one_synthetic_agent_query(tmp_path, mo
         lock_file=r"C:\synthetic\reader.lock", lock_timeout="1", timeout=5, scratch_root=r"C:\synthetic\scratch")
     launches = []
     monkeypatch.setattr(q4_query, "_invoke_launcher", _in_process_launcher_stand_in(launches, model_dir))
+    # the NON-PRODUCTION seam marker: the real agent-query resolver with its launcher replaced above
+    backend = mod.SyntheticInProcessBackend(lambda *a, **k: q4_query.query_and_resolve(*a, **k))
     situation, when = "what did codex-tools-1 finish done", "2026-10-31T13:00:00Z"
     stdin = io.BytesIO(json.dumps({"situation": situation, "time": when}).encode())
-    # 4. ONE agent query through the prefix adapter
-    out = mod.query_public_prefix(q4_config, stdin, root=root, expected_pointer_sha256=report["pointer_sha256"],
-                                  expected_source_sha256=anchor_pin, expected_encoder_sha256=encoder_pin, enabled=True, **read_pins)
+    query_args = dict(root=root, expected_pointer_sha256=report["pointer_sha256"], expected_source_sha256=anchor_pin,
+                      expected_encoder_sha256=encoder_pin, enabled=True, **read_pins)
+    # 4a. the PRODUCTION entry refuses before stdin, the launcher or FAISS: no verified transport exists
+    with pytest.raises(mod.PrefixPublicRefused, match="^secure_transport_unavailable$"):
+        mod.query_public_prefix(q4_config, NoRead(), **query_args)
+    assert launches == []
+    # 4b. ONE agent query through the internal seam
+    out = mod._synthetic_seam_query_public_prefix(q4_config, stdin, synthetic_backend=backend, **query_args)
     assert out["schema"] == "wd.q4-prefix-public-query.v1" and out["status"] == "ANSWER" and out["results"]
     projection = json.loads(Path(binding["projection_path"]).read_bytes())
     texts = {record["stored_text"] for record in projection["records"]}
     assert all(item["stored_text"] in texts and item["canonical_event"] is False
                and item["ref_kind"] == "sha256_of_projected_metadata" for item in out["results"])
     assert any("codex-tools-1" in item["stored_text"] for item in out["results"])
-    assert out["binding"] == {"pointer_sha256": report["pointer_sha256"], "source_anchor_sha256": anchor_pin,
-                              "encoder_sha256": encoder_pin, "policy_sha256": f.POLICY_SHA, "roster_sha256": f.ROSTER_SHA,
+    assert out["binding"] == {"pointer_sha256": report["pointer_sha256"], "encoder_sha256": encoder_pin,
                               "public_policy_sha256": f.PUBLIC_POLICY_SHA,
                               **{key: binding[key] for key in ("descriptor_sha256", "memory_sha256", "projection_sha256", "receipt_sha256")}}
+    assert out["withheld"] == ["policy_sha256", "roster_sha256", "source_anchor_sha256"]
     for field in ("publisher_authentication", "source_filter_attestation", "freshness", "same_user_aba"):
         assert out[field] == "UNKNOWN"
     text = json.dumps(out)
     assert f.SENTINEL not in text and situation not in text and str(tmp_path) not in text and str(model_dir) not in text
     assert start.sha256 not in text and first["candidate_prefix"].sha256 not in text and child_tests.WEIGHTS_SHA not in text
+    assert anchor_pin not in text and f.POLICY_SHA not in text and f.ROSTER_SHA not in text
+    assert kw_a["expected_anchor_bytes"].decode("utf-8", "replace")[:40] not in text
     assert len(launches) == 1 and launches[0]["tuple_args"]["memory"] == binding["memory_root"]
     assert json.loads(launches[0]["query"].decode()) == {"situation": situation, "time": when}
 
     # 5. negatives on the SAME publication: every wrong pin refuses before the stand-in runs again
     def refused(**changes):
-        args = dict(root=root, expected_pointer_sha256=report["pointer_sha256"], expected_source_sha256=anchor_pin,
-                    expected_encoder_sha256=encoder_pin, enabled=True, **read_pins)
+        args = dict(query_args)
         args.update(changes)
         with pytest.raises(mod.PrefixPublicRefused, match="^prefix_query_refused$"):
-            mod.query_public_prefix(args.pop("config", q4_config), NoRead(), **args)
+            mod._synthetic_seam_query_public_prefix(args.pop("config", q4_config), NoRead(), synthetic_backend=backend, **args)
     refused(expected_source_sha256="f" * 64)
     refused(expected_encoder_sha256="f" * 64)
     refused(expected_pointer_sha256="f" * 64)
@@ -521,11 +676,12 @@ def test_child_publication_is_answered_by_one_synthetic_agent_query(tmp_path, mo
     refused()
     pointer.write_bytes(kept)
     with pytest.raises(mod.PrefixPublicRefused, match="^disabled$"):
-        mod.query_public_prefix(q4_config, NoRead(), root=root, expected_pointer_sha256=report["pointer_sha256"],
-                                expected_source_sha256=anchor_pin, expected_encoder_sha256=encoder_pin, enabled=False, **read_pins)
+        mod._synthetic_seam_query_public_prefix(q4_config, NoRead(), synthetic_backend=backend,
+                                                **dict(query_args, enabled=False))
+    with pytest.raises(mod.PrefixPublicRefused, match="^synthetic_backend_required$"):
+        mod._synthetic_seam_query_public_prefix(q4_config, NoRead(), synthetic_backend=True, **query_args)
     assert len(launches) == 1
     # the restored pointer answers again: the refusals above left no state behind
     stdin = io.BytesIO(json.dumps({"situation": situation, "time": when}).encode())
-    again = mod.query_public_prefix(q4_config, stdin, root=root, expected_pointer_sha256=report["pointer_sha256"],
-                                    expected_source_sha256=anchor_pin, expected_encoder_sha256=encoder_pin, enabled=True, **read_pins)
+    again = mod._synthetic_seam_query_public_prefix(q4_config, stdin, synthetic_backend=backend, **query_args)
     assert again["results"] == out["results"] and len(launches) == 2

@@ -1,5 +1,6 @@
 """Synthetic-only CLI tests; no live source, launcher, installation or real session."""
 
+from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib.util
 import io
@@ -187,3 +188,138 @@ def test_system_exit_is_sanitized_and_preserves_only_safe_failure_code(case, mon
     assert cli.main(args) == expected
     captured = capsys.readouterr()
     assert captured.out == "" and "SYNTHETIC_PRIVATE_MARKER" not in captured.err
+
+
+EXACT_UTC = "2026-10-31T12:00:00.000000Z"
+
+
+def exact_query(situation="synthetic exact situation", time="2026-10-31T12:00:00Z"):
+    return json.dumps({"situation": situation, "time": time}, separators=(",", ":")).encode()
+
+
+class _NoClock(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        raise AssertionError("wall clock read in exact-time mode")
+
+
+def spy(monkeypatch):
+    calls = []
+    def query_session(**kw):
+        calls.append(kw)
+        return {"schema": "synthetic", "status": "ANSWER"}
+    monkeypatch.setattr(cli.session, "query_session", query_session)
+    return calls
+
+
+def test_exact_query_time_reaches_query_session_without_reading_the_clock(case, monkeypatch, capsys):
+    args, _, _ = case
+    calls = spy(monkeypatch)
+    monkeypatch.setattr(cli, "datetime", _NoClock)
+    input_(monkeypatch, exact_query() + b"\n")
+    assert cli.main(args + ["--query-utc", EXACT_UTC]) == 0
+    assert len(calls) == 1 and calls[0]["situation"] == "synthetic exact situation"
+    when = calls[0]["time"]
+    assert when == datetime(2026, 10, 31, 12, 0, 0, tzinfo=timezone.utc)
+    assert when.utcoffset() == timedelta(0) and when.microsecond == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["status"] == "ANSWER" and captured.err == ""
+    assert "synthetic exact situation" not in captured.out
+
+
+def test_exact_query_time_real_synthetic_session_roundtrip(case, monkeypatch, capsys):
+    args, _, old = case
+    when = old["time"].astimezone(timezone.utc)
+    assert when.microsecond == 0
+    input_(monkeypatch, exact_query(old["situation"], when.strftime("%Y-%m-%dT%H:%M:%SZ")))
+    assert cli.main(args + ["--query-utc", when.strftime("%Y-%m-%dT%H:%M:%S.000000Z")]) == 0
+    captured = capsys.readouterr()
+    answer = json.loads(captured.out)
+    assert answer["status"] == "ANSWER" and answer["result_count"] == len(old["_expected"])
+    assert answer["trust"]["freshness"] == "UNKNOWN" and captured.err == ""
+
+
+@pytest.mark.parametrize("kind", [
+    "second_later", "second_earlier", "fractional_document_time", "offset_document_time", "date_only",
+    "extra_key", "missing_time", "missing_situation", "duplicate_key", "nan_constant", "situation_number",
+    "time_number", "blank_situation", "control_character", "oversize_situation", "raw_text", "json_list",
+    "invalid_utf8"])
+def test_exact_query_mismatch_or_malformed_document_refuses_before_transport(case, monkeypatch, capsys, kind):
+    args, _, _ = case
+    calls = spy(monkeypatch)
+    marker = "SYNTHETIC_PRIVATE_SITUATION"
+    data = {
+        "second_later": exact_query(marker, "2026-10-31T12:00:01Z"),
+        "second_earlier": exact_query(marker, "2026-10-31T11:59:59Z"),
+        "fractional_document_time": exact_query(marker, "2026-10-31T12:00:00.000000Z"),
+        "offset_document_time": exact_query(marker, "2026-10-31T12:00:00+00:00"),
+        "date_only": exact_query(marker, "2026-10-31"),
+        "extra_key": json.dumps({"situation": marker, "time": "2026-10-31T12:00:00Z", "lane": "fable-5"}).encode(),
+        "missing_time": json.dumps({"situation": marker}).encode(),
+        "missing_situation": json.dumps({"time": "2026-10-31T12:00:00Z"}).encode(),
+        "duplicate_key": ('{"situation":"%s","time":"2026-10-31T12:00:00Z","time":"2026-10-31T12:00:00Z"}'
+                          % marker).encode(),
+        "nan_constant": ('{"situation":"%s","time":NaN}' % marker).encode(),
+        "situation_number": json.dumps({"situation": 7, "time": "2026-10-31T12:00:00Z"}).encode(),
+        "time_number": json.dumps({"situation": marker, "time": 1793448000}).encode(),
+        "blank_situation": exact_query("   "),
+        "control_character": exact_query(marker + "\u0007"),
+        "oversize_situation": exact_query(marker + "x" * 4000),
+        "raw_text": marker.encode(),
+        "json_list": json.dumps([marker, "2026-10-31T12:00:00Z"]).encode(),
+        "invalid_utf8": b'{"situation":"\xff","time":"2026-10-31T12:00:00Z"}',
+    }[kind]
+    input_(monkeypatch, data)
+    assert cli.main(args + ["--query-utc", EXACT_UTC]) == 2
+    assert calls == []  # rejected before query_session, so before any transport or peer process
+    captured = capsys.readouterr()
+    assert captured.out == "" and marker not in captured.err
+
+
+@pytest.mark.parametrize("value", [
+    "2026-10-31T12:00:00Z", "2026-10-31T12:00:00.000001Z", "2026-10-31T12:00:00.000000+00:00",
+    "2026-10-31 12:00:00.000000Z", "2026-02-30T12:00:00.000000Z", "2026-10-31T24:00:00.000000Z",
+    "2026-10-31t12:00:00.000000z", " 2026-10-31T12:00:00.000000Z", "２026-10-31T12:00:00.000000Z"])
+def test_malformed_query_utc_refuses_before_stdin_is_read(case, monkeypatch, capsys, value):
+    args, _, _ = case
+    class Unreadable:
+        @property
+        def buffer(self): pytest.fail("stdin read with a malformed query time")
+    monkeypatch.setattr(sys, "stdin", Unreadable())
+    calls = spy(monkeypatch)
+    assert cli.main(args + ["--query-utc", value]) == 2
+    assert calls == [] and capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("shape", ["duplicate", "missing_value", "empty_value"])
+def test_query_utc_option_shape_refuses(case, monkeypatch, capsys, shape):
+    args, _, _ = case
+    calls = spy(monkeypatch)
+    extra = {"duplicate": ["--query-utc", EXACT_UTC, "--query-utc", EXACT_UTC],
+             "missing_value": ["--query-utc"], "empty_value": ["--query-utc", ""]}[shape]
+    input_(monkeypatch, exact_query())
+    assert cli.main(args + extra) == 2
+    assert calls == [] and capsys.readouterr().out == ""
+
+
+def test_default_mode_keeps_raw_situation_and_its_own_wall_clock(case, monkeypatch, capsys):
+    args, _, _ = case
+    calls = spy(monkeypatch)
+    chosen = datetime(2031, 1, 2, 3, 4, 5, 678901, tzinfo=timezone.utc)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz is timezone.utc
+            return chosen
+    monkeypatch.setattr(cli, "datetime", Clock)
+    raw = exact_query()  # a JSON-shaped stdin stays one raw situation string without --query-utc
+    input_(monkeypatch, raw + b"\n")
+    assert cli.main(args) == 0
+    assert len(calls) == 1 and calls[0]["situation"] == raw.decode() and calls[0]["time"] is chosen
+    capsys.readouterr()
+
+
+def test_exact_time_mode_is_documented_without_freshness_or_authentication_claims():
+    doc = cli.__doc__
+    assert "--query-utc" in doc and "same whole second" in doc and "datetime.now" in doc
+    assert "not authentication" in doc and "freshness" in doc

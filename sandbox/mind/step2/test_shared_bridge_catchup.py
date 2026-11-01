@@ -142,25 +142,27 @@ def test_window_budget_leaves_partial_coverage_resumable_never_caught_up(tmp_pat
     assert verify(second, anchor2, resume)
 
 
-def test_oversized_row_is_never_skipped_and_refuses_the_chain(tmp_path):
+def test_excluded_oversized_row_is_accounted_and_never_projected(tmp_path):
     big = event(50, task_id="nonreview-private", payload={}, message="x" * (adapter._EVENT_LIMIT // 6 + 10))
     rows = [event(i) for i in range(6)] + [big] + [event(i) for i in range(6, 9)]
     path, gen, start = fixture(tmp_path, rows)
-    for max_bytes in (snapshot.MAX_BYTES, 4096):
-        with pytest.raises(snapshot.SnapshotRefused):
-            catchup(path, gen, start, digest(b""), max_bytes=max_bytes)
+    all_rows, _ = catchup(path, gen, start, digest(b""), max_bytes=snapshot.MAX_BYTES)
+    assert all_rows["caught_up"] is True and records(all_rows) == 9
+    # A line that cannot fit the bounded window still refuses; it is never skipped.
+    with pytest.raises(snapshot.SnapshotRefused):
+        catchup(path, gen, start, digest(b""), max_bytes=4096)
     before, anchor = catchup(path, gen, start, digest(b""), max_windows=2)
     assert before["caught_up"] is False and records(before) == 6
     resume = before["candidate_prefix"]
-    with pytest.raises(snapshot.SnapshotRefused):
-        catchup(path, gen, resume.cursor, resume.sha256)
+    after, _ = catchup(path, gen, resume.cursor, resume.sha256)
+    assert after["caught_up"] is True and records(after) == 3
 
 
 def test_oversized_private_row_refusal_drops_all_exception_context_and_raw_locals(tmp_path):
     import traceback
 
     sentinel = "synthetic-private-catchup-sentinel"
-    private = event(50, task_id="nonreview-private", payload={},
+    private = event(50, task_id="public-task", payload={"public_status": True},
                     message=sentinel + "x" * (adapter._EVENT_LIMIT // 6 + 10))
     path, gen, start = fixture(tmp_path, [event(0), private])
     with pytest.raises(snapshot.SnapshotRefused) as caught:

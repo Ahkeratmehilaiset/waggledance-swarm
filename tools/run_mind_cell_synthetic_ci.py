@@ -24,6 +24,7 @@ PROJECTION_BINDING_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_projec
 Q4_SNAPSHOT_TEST_PATH = "sandbox/mind/step2/test_wd_q4_private_read_snapshot.py"
 PUBLIC_QUERY_TEST_PATH = "sandbox/mind/step2/test_public_snapshot_query_stub.py"
 CATCHUP_TEST_PATH = "sandbox/mind/step2/test_shared_bridge_catchup.py"
+OVERSIZED_PUBLIC_TEST_PATH = "sandbox/mind/step2/test_oversized_public_events.py"
 _NAMES = (
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-meta]",
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-provenance]",
@@ -199,7 +200,7 @@ _CATCHUP_NAMES = (
     "test_disabled_by_default_refuses_before_reading",
     "test_chain_reads_successive_nonterminal_windows_to_the_snapshot_end",
     "test_window_budget_leaves_partial_coverage_resumable_never_caught_up",
-    "test_oversized_row_is_never_skipped_and_refuses_the_chain",
+    "test_excluded_oversized_row_is_accounted_and_never_projected",
     "test_oversized_private_row_refusal_drops_all_exception_context_and_raw_locals",
     "test_catchup_keyboard_interrupt_is_not_a_sanitized_refusal",
     "test_disabled_catchup_drops_private_arguments_from_refusal_frame",
@@ -212,6 +213,13 @@ _CATCHUP_NAMES = (
     "test_verify_rejects_spliced_or_relabelled_chains",
     "test_terminal_only_reader_is_unchanged_for_nonterminal_windows",
     "test_adapter_refuses_nonterminal_snapshots_unless_opted_in",
+)
+_OVERSIZED_PUBLIC_NAMES = (
+    "test_explicitly_excluded_large_valid_row_allows_public_catchup",
+    *(f"test_large_eligible_ambiguous_or_invalid_rows_refuse[{change}]" for change in
+      ("eligible", "ambiguous", "invalid", "invalid_routing", "invalid_payload", "invalid_identity", "unknown_field")),
+    "test_large_excluded_rows_still_enforce_aggregate_budget",
+    "test_large_excluded_row_with_bad_integrity_refuses",
 )
 _MEMORY_PREFLIGHT_NAMES = (
     *(f"test_second_cell_hash_mismatch_refused_before_first_cell_load[{name}]"
@@ -233,7 +241,8 @@ EXPECTED_NODEIDS = (tuple(TEST_PATH + "::" + name for name in _NAMES) +
                     tuple(PROJECTION_BINDING_TEST_PATH + "::" + name for name in _PROJECTION_BINDING_NAMES) +
                     tuple(Q4_SNAPSHOT_TEST_PATH + "::" + name for name in _Q4_SNAPSHOT_NAMES) +
                     tuple(PUBLIC_QUERY_TEST_PATH + "::" + name for name in _PUBLIC_QUERY_NAMES) +
-                    tuple(CATCHUP_TEST_PATH + "::" + name for name in _CATCHUP_NAMES))
+                    tuple(CATCHUP_TEST_PATH + "::" + name for name in _CATCHUP_NAMES) +
+                    tuple(OVERSIZED_PUBLIC_TEST_PATH + "::" + name for name in _OVERSIZED_PUBLIC_NAMES))
 
 
 def _unavailable(*_args, **_kwargs):
@@ -291,7 +300,7 @@ def _run_pytest(pytest):
                             str(ROOT / VERIFIED_TEST_PATH), str(ROOT / Q4_DESCRIPTOR_TEST_PATH),
                             str(ROOT / ACTIVE_BINDING_TEST_PATH), str(ROOT / PROJECTION_BINDING_TEST_PATH),
                             str(ROOT / Q4_SNAPSHOT_TEST_PATH), str(ROOT / PUBLIC_QUERY_TEST_PATH),
-                            str(ROOT / CATCHUP_TEST_PATH),
+                            str(ROOT / CATCHUP_TEST_PATH), str(ROOT / OVERSIZED_PUBLIC_TEST_PATH),
                             "-q"], plugins=[guard]))
     return 1 if code == 0 and not guard.complete() else code
 

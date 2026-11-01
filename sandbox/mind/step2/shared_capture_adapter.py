@@ -262,7 +262,7 @@ def _exclude_review_signal(event):
                for value in (kind, status))
 
 
-def _event_budget(event):
+def _event_budget(event, *, limit=_EVENT_LIMIT):
     """Bound JSON size/depth before either canonical serializer sees a row.
 
     Each string character is charged at its worst JSON escape size; this is a
@@ -298,9 +298,40 @@ def _event_budget(event):
             total += len(repr(value))
         else:
             raise ValueError()
-        if total > _EVENT_LIMIT:
+        if total > limit:
             raise ValueError()
     return total
+
+
+def _public_event_budget(event, public_tasks, roster):
+    """Budget oversized rows only when a validated task is outside public policy.
+
+    The row is still integrity-checked and committed by the caller; no text is
+    projected. Unknown fields, invalid structure/identity or an eligible task
+    refuse. The aggregate cap remains unchanged and bounds canonical hashing.
+    """
+    try:
+        return _event_budget(event)
+    except ValueError:
+        if (type(event) is not dict or type(public_tasks) is not frozenset or type(roster) is not dict
+                or not set(event) <= _PUBLIC_EVENT_KEYS or type(event.get("task_id")) is not str
+                or event["task_id"] in public_tasks
+                or ("to" in event and type(event["to"]) is not str)
+                or ("message" in event and type(event["message"]) is not str)
+                or ("payload" in event and type(event["payload"]) is not dict)
+                or any(key in event and (type(event[key]) is not list
+                       or any(type(item) is not str for item in event[key]))
+                       for key in ("paths", "write_scope", "capabilities"))
+                or any(key in event and type(event[key]) is not str
+                       for key in ("role", "run_id", "session_id", "cwd"))
+                or ("pid" in event and (type(event["pid"]) is not int or event["pid"] < 1))):
+            raise
+        size = _event_budget(event, limit=_BATCH_LIMIT)
+        # Re-use the existing strict metadata/identity validation. This does
+        # not make the task public or trust the event's declared author.
+        projection.approved_fields(event, frozenset({event["task_id"]}), roster=roster,
+                                   exclude_review_signal=True)
+        return size
 
 
 def adapt_rows(rows, snapshot, approved_non_review_tasks=None, *, ttl_seconds,
@@ -341,7 +372,8 @@ def adapt_rows(rows, snapshot, approved_non_review_tasks=None, *, ttl_seconds,
                     or not isinstance(row["row_sha256"], str) or not _HEX.fullmatch(row["row_sha256"])):
                 raise ValueError()
             event = row["event"]
-            batch_bytes += _event_budget(event)
+            batch_bytes += (_public_event_budget(event, _public_tasks, roster)
+                            if public_mode else _event_budget(event))
             if batch_bytes > _BATCH_LIMIT:
                 raise ValueError()
             if not hmac.compare_digest(event_id(event), row["ref"]) or not hmac.compare_digest(

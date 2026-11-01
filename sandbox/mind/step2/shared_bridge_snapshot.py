@@ -54,7 +54,7 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
     KeyboardInterrupt) is not caught and requires isolation by the caller.
     """
     result = rows = event = snap = value = chain = prefix = None
-    pins = prefix_args = kwargs = tasks = candidate = observed = None
+    pins = prefix_args = kwargs = tasks = candidate = observed = checked_roster = None
     try:
         if type(_allow_partial) is not bool or (_allow_partial and (
                 _commitment_anchor is None or _public_tasks is None or _public_types is None
@@ -64,7 +64,7 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
         pins = (policy_bytes, policy_sha256, roster_bytes, roster_sha256)
         strict = any(value is not None for value in pins) or approved_non_review_tasks is None
         if strict:
-            tasks, _ = adapter.strict_pins(*pins)
+            tasks, checked_roster = adapter.strict_pins(*pins)
             if approved_non_review_tasks is not None and approved_non_review_tasks != tasks:
                 raise ValueError()
             approved_non_review_tasks = tasks
@@ -109,7 +109,8 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
             raise ValueError()
         rows, budget = [], 0
         for index, event in enumerate(result.rows):
-            budget += adapter._event_budget(event)
+            budget += (adapter._public_event_budget(event, _public_tasks, checked_roster)
+                       if _public_tasks is not None else adapter._event_budget(event))
             if budget > adapter._BATCH_LIMIT:
                 raise ValueError()
             ref = event_id(event)
@@ -147,7 +148,7 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
     except Exception:
         pass
     # Do not retain raw source rows in either a chained exception or this frame.
-    del result, rows, event, snap, value, chain, prefix, pins, prefix_args, kwargs, tasks, candidate, observed
+    del result, rows, event, snap, value, chain, prefix, pins, prefix_args, kwargs, tasks, candidate, observed, checked_roster
     del path, cursor, approved_non_review_tasks, generation_path, policy_bytes, roster_bytes
     del expected_prefix_sha256, expected_snapshot_sha256, _commitment_anchor
     raise SnapshotRefused("snapshot_refused") from None
@@ -368,8 +369,10 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
     The caller-authenticated anchor binds the chain START cursor; it is checked once. Every window re-reads
     the byte prefix from offset zero against the previous window's pin (the first against the caller's
     independently pinned prefix), keeps the start file identity and generation, and goes through the
-    unchanged public admission policy and per-event/batch budgets. A window that would need to skip a row
-    (oversized, malformed, over a budget) refuses the whole call: rows are never skipped. At most
+    unchanged public admission policy and bounded per-event/batch budgets. A structurally valid row whose
+    task is outside public policy may exceed the normal event limit up to the aggregate budget; it remains
+    integrity-checked and committed, but is not projected. Eligible, ambiguous, malformed or over-budget
+    rows refuse the whole call: rows are never skipped. At most
     ``max_windows`` windows are read. ``caught_up`` is True only when the final window reached the end of
     the snapshot observed by that window; this is still a delta from the start cursor, not complete history
     and not currentness after the read. Otherwise the result is partial and resumable from

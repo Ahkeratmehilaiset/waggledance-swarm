@@ -3,7 +3,7 @@ fixed E5 encoder path; no caller-supplied encoder callback, identity or dimensio
 
 ``build_prefix_generation`` takes the plan bytes with their caller pin (schema ``wd.q4-prefix-build-plan.v1``:
 generation name, prior pointer digest or null, prefix budget, lock timeout, the encoder record {model, revision,
-model_dir, weights_sha256, dim} and the four source pins), plus the caller-owned ``PublicSourceConfig``, the
+model_dir, weights_sha256, dim, assets} and the four source pins), plus the caller-owned ``PublicSourceConfig``, the
 ``BridgePrefixPin`` the private state continues from, the checkpoint root, the private state root and the
 explicitly caller-pinned ``trusted_model_root``. The encoder is never a parameter: the child derives the identity
 with ``encode.model_identity`` over the pinned model directory, requires its ``weights_sha256`` to equal the plan
@@ -16,14 +16,41 @@ private state lock and the pointer CAS stay the producer's; this module adds no 
 Model root binding (v2 finding 1). ``Path.is_absolute`` alone accepts UNC shares and paths through symbolic links
 or junctions, so an unbound ``model_dir`` would let ``model_identity`` read remote or escaped data before the
 backend's offline controls apply. The plan's ``model_dir`` is therefore bound to ``trusted_model_root`` before any
-read: both must be drive-letter paths (no UNC, no ``\\\\?\\`` device form), with no ``.`` or ``..`` component, the
-drive must be a fixed local volume (``GetDriveTypeW == DRIVE_FIXED``), ``model_dir`` must be the root or below it
-(``os.path.commonpath`` on case-folded strings), and every path component from the drive root down to
-``model_dir``, every entry below ``model_dir`` (bounded walk, no link following) and the ``model.safetensors``
-weights file (a regular file) must be free of symbolic links and reparse points (``os.lstat``:
-``S_ISLNK`` or ``FILE_ATTRIBUTE_REPARSE_POINT``). Only metadata calls are made; a missing component refuses too.
-Any failure is ``model_root_refused``. The same policy as ``shared_index_checkpoint._secure`` applies to the roots
-inside the producer; this module does not weaken it and exposes ``_drive_type`` so the drive class is testable.
+read: both must be drive-letter paths (no UNC, no ``\\\\?\\`` device form), with no ``.`` or ``..`` component read
+from the raw string, not a bare drive root, the drive must be a fixed local volume (``GetDriveTypeW ==
+DRIVE_FIXED``), ``model_dir`` must be the root or below it (``os.path.commonpath`` on case-folded strings), and
+every path component from the drive root down to ``model_dir``, every entry below ``model_dir`` (bounded walk, no
+link following) and the ``model.safetensors`` weights file (a regular file) must be free of symbolic links and
+reparse points (``os.lstat``: ``S_ISLNK`` or ``FILE_ATTRIBUTE_REPARSE_POINT``). Every regular file in the tree must
+have exactly one hard link (``st_nlink == 1``; a link count the platform cannot report refuses, fail closed), so a
+file aliased from outside the tree cannot pass as a plain file (v3 supplement). Only metadata calls are made; a
+missing component refuses too. Any failure is ``model_root_refused``. The same policy as
+``shared_index_checkpoint._secure`` applies to the roots inside the producer; this module does not weaken it and
+exposes ``_drive_type`` and ``_link_count`` so the drive class and the link count are testable.
+
+Roots versus model root (v3 finding 2). The checkpoint root and the private state root must be disjoint from the
+trusted model root and from ``model_dir`` in both directions: equal, nested either way, or the same directory under
+another name (junction alias, ``os.path.samefile`` over every ancestor) refuses ``model_root_refused`` before the
+backend loads and before the producer writes anything.
+
+Asset manifest (v3 supplement, RCO findings P2). The weights digest alone does not authenticate a model: the
+tokenizer, sentencepiece, config, modules, pooling and sentence-bert files under ``model_dir`` also shape the
+vectors. The encoder record therefore carries ``assets``, a caller-pinned manifest (relative POSIX path -> sha256)
+of EVERY regular file under ``model_dir``, the weights file included; after the binding and before identity
+derivation the child lists the plain tree, requires the file set to equal the manifest exactly (an unlisted extra
+file or a missing listed file refuses) and streams every file through sha256 against its pin
+(``asset_refused``). The child never self-derives a pin: every digest it compares against comes from the caller's
+plan. What remains open and is reported, not claimed: the verify-then-use window (the backend re-reads the files by
+path after they were hashed; only an immutable root closes it), the genuineness of the pinned revision (the caller's
+manifest is trust, not proof) and the backend running in this process.
+
+Backend environment (v3 finding 1). ``encode.E5`` writes the offline cache variables (``CACHE_ENV``,
+``HF_HUB_OFFLINE``, ``TRANSFORMERS_OFFLINE``) into the process environment and does not restore them. The child
+snapshots the whole environment before the load and restores it exactly afterwards, on success and on failure
+(added names removed, overwritten values put back). This is scoped restoration, not OS isolation: the backend and
+its native libraries still load in this process, the imported modules stay imported and keep the offline settings
+they read at import time, and nothing here constrains what the loaded code can do. Reported as
+``backend_isolation``.
 
 Preflight (v2 finding 2). The checks the producer makes only under its lock that need no live access run here
 before identity derivation and backend load, so a mismatched request never loads a model: the start prefix cursor
@@ -38,22 +65,25 @@ continuity against the private state, the anchor verification against the real b
 the pointer publication. Preflight is a prefilter; the producer still validates everything itself.
 
 Order: switch (``enabled`` must be the bool ``True``; ``False`` returns ``{"status": "OFF"}`` inspecting nothing),
-plan bytes type, byte budget and pin (nothing parsed yet), closed plan shape, request object types including the
-trusted root argument (``request_refused``), plan pins against the config digests and bytes (``pins_refused``),
-preflight (``preflight_refused``), model root binding (``model_root_refused``), encoder identity derivation and
-weights pin (``encoder_refused``, before the backend loads), backend load, producer. Every refusal is
-``BuildChildRefused`` with a fixed token: this module's ``REASONS`` or one of the producer's own fixed tokens
-passed through; an unknown producer outcome is ``publication_state_unknown``. Refusals are raised outside every
-exception handler and never carry a path, digest, plan field or backend message. The report is the producer's
-report plus ``encoder_identity_source`` and the verified ``plan_sha256``; it never carries the weights digest, the
-model directory, the trusted root or any prefix digest.
+plan bytes type, byte budget and pin (nothing parsed yet), closed plan shape including the manifest keys, request
+object types including the trusted root argument (``request_refused``), plan pins against the config digests and
+bytes (``pins_refused``), preflight (``preflight_refused``), model root binding with the roots-disjoint relation
+(``model_root_refused``), asset manifest (``asset_refused``, the first reads), encoder identity derivation and
+weights pin (``encoder_refused``, before the backend loads), backend load under environment restoration, producer.
+Every refusal is ``BuildChildRefused`` with a fixed token: this module's ``REASONS`` or one of the producer's own
+fixed tokens passed through; an unknown producer outcome is ``publication_state_unknown``. Refusals are raised
+outside every exception handler and never carry a path, digest, plan field or backend message. The report is the
+producer's report plus ``encoder_identity_source``, the verified ``plan_sha256`` and the two fixed limit fields
+``backend_isolation`` and ``model_assets``; it never carries a weights or asset digest, the model directory, the
+trusted root or any prefix digest.
 
-Limits (stated, not solved here): the plan pin, the trusted root and the model directory are caller trust; the
-child cannot prove the model files are the genuine revision beyond the pinned weights digest, cannot authenticate
-the publisher or the source, and does nothing live: no scheduler, launcher, bundle, deployment or installed-runtime
-wiring exists for it. The fixed-drive test is Windows only (``os.name == "nt"``), as in the checkpoint module.
-Nothing here is operational.
+Limits (stated, not solved here): the plan pin, the trusted root, the model directory and the asset manifest are
+caller trust; the child cannot prove the model files are the genuine revision beyond the pinned digests, cannot
+authenticate the publisher or the source, and does nothing live: no scheduler, launcher, bundle, deployment or
+installed-runtime wiring exists for it. The fixed-drive and link-count checks are Windows only (``os.name ==
+"nt"``), as in the checkpoint module. Nothing here is operational.
 """
+import contextlib
 import ctypes
 import hashlib
 import hmac
@@ -75,21 +105,25 @@ from waggledance.core.bridge_log_reader import BridgeCursor, BridgePrefixPin, MA
 
 __all__ = ["BuildChildRefused", "build_prefix_generation", "PLAN_SCHEMA", "PLAN_LIMIT", "PLAN_KEYS", "ENCODER_KEYS",
            "PIN_KEYS", "ENCODER_MODEL", "ENCODER_DIM", "IDENTITY_SOURCE", "REASONS", "PRODUCER_REASONS",
-           "WEIGHTS_FILE", "MODEL_TREE_LIMIT"]
+           "WEIGHTS_FILE", "MODEL_TREE_LIMIT", "ASSET_LIMIT", "ASSET_BYTES_LIMIT", "BACKEND_ISOLATION", "MODEL_ASSETS"]
 
 PLAN_SCHEMA = "wd.q4-prefix-build-plan.v1"
 PLAN_LIMIT = 1 << 16
 PLAN_KEYS = frozenset({"schema", "generation", "expected_pointer_sha256", "max_prefix_bytes", "timeout", "encoder",
                        "pins"})
-ENCODER_KEYS = frozenset({"model", "revision", "model_dir", "weights_sha256", "dim"})
+ENCODER_KEYS = frozenset({"model", "revision", "model_dir", "weights_sha256", "dim", "assets"})
 PIN_KEYS = frozenset({"anchor_sha256", "policy_sha256", "roster_sha256", "public_policy_sha256"})
 ENCODER_MODEL = encode_mod.MODEL
 ENCODER_DIM = encode_mod.DIM
 IDENTITY_SOURCE = "encode.model_identity"
-WEIGHTS_FILE = "model.safetensors"  # the file encode.model_identity hashes; bound before it is read
+WEIGHTS_FILE = "model.safetensors"  # the file encode.model_identity hashes; bound and listed before it is read
 MODEL_TREE_LIMIT = 4096  # entries below model_dir the bounded reparse walk will inspect before refusing
+ASSET_LIMIT = 64  # manifest entries (regular files under model_dir); the e5-small tree has ten
+ASSET_BYTES_LIMIT = 1 << 30  # bytes per asset the child will stream through sha256
+BACKEND_ISOLATION = "in_process_environment_restored_no_os_isolation"
+MODEL_ASSETS = "caller_manifest_verified_before_load_reread_by_backend"
 REASONS = frozenset({"disabled", "plan_refused", "request_refused", "pins_refused", "preflight_refused",
-                     "model_root_refused", "encoder_refused", "publication_state_unknown"})
+                     "model_root_refused", "asset_refused", "encoder_refused", "publication_state_unknown"})
 PRODUCER_REASONS = frozenset({"request_invalid", "pins_mismatch", "private_state_refused", "prepare_refused",
                               "empty_genesis", "build_refused", "publication_state_unknown"})
 _REPORT_KEYS = frozenset({"status", "pointer_sha256", "generation", "publisher_authentication", "source_authenticity",
@@ -100,6 +134,7 @@ _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _DRIVE = re.compile(r"[A-Za-z]:\Z")
 _DRIVE_FIXED = 3
 _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_CHUNK = 1 << 20
 
 
 class BuildChildRefused(ValueError):
@@ -141,6 +176,23 @@ def _number(value, low, high):
     return (type(value) in (int, float) and math.isfinite(value) and low < value <= high)
 
 
+def _asset_key(key):
+    """A relative POSIX path below model_dir: no drive, no leading slash, no backslash, no empty or dot component."""
+    if type(key) is not str or not key or len(key) > 255 or "\\" in key or "\x00" in key or key.startswith("/"):
+        return False
+    if os.path.splitdrive(key)[0]:
+        return False
+    return all(part and part not in (".", "..") and not part.endswith((" ", ".")) for part in key.split("/"))
+
+
+def _assets_shape(assets):
+    if type(assets) is not dict or not 1 <= len(assets) <= ASSET_LIMIT or WEIGHTS_FILE not in assets:
+        return False
+    if not all(map(_asset_key, assets)) or len({key.lower() for key in assets}) != len(assets):
+        return False  # case-colliding names cannot both exist on the fixed volume
+    return all(map(_hex64, assets.values()))
+
+
 def _plan_shape(plan):
     if type(plan) is not dict or frozenset(plan) != PLAN_KEYS or plan["schema"] != PLAN_SCHEMA:
         return False
@@ -159,7 +211,7 @@ def _plan_shape(plan):
             or _HEX40.fullmatch(encoder["revision"]) is None or not _hex64(encoder["weights_sha256"])
             or type(encoder["dim"]) is not int or encoder["dim"] != ENCODER_DIM
             or type(encoder["model_dir"]) is not str or not encoder["model_dir"]
-            or not Path(encoder["model_dir"]).is_absolute()):
+            or not Path(encoder["model_dir"]).is_absolute() or not _assets_shape(encoder["assets"])):
         return False
     pins = plan["pins"]
     return type(pins) is dict and frozenset(pins) == PIN_KEYS and all(map(_hex64, pins.values()))
@@ -195,10 +247,11 @@ def _pins_bound(plan_pins, config):
 # ---------------------------------------------------------------------------------------------------------------
 
 
-def _roots_distinct(root, private_state_root):
-    """Both existing directories, neither equal to nor nested in the other; a failed probe counts as a conflict."""
+def _disjoint_dirs(left, right):
+    """Both existing directories, neither equal to nor nested in the other, not the same directory under two
+    names (``samefile`` over every ancestor); a failed probe counts as an overlap."""
     try:
-        left, right = Path(root), Path(private_state_root)
+        left, right = Path(left), Path(right)
         if not left.is_dir() or not right.is_dir():
             return False
         folded = (os.path.normcase(os.path.abspath(str(left))), os.path.normcase(os.path.abspath(str(right))))
@@ -229,7 +282,7 @@ def _preflight_holds(plan, config, start_prefix, root, private_state_root):
         adapter.public_status_policy(config.public_policy_bytes, plan["pins"]["public_policy_sha256"], tasks)
     except Exception:  # noqa: BLE001 - the parsers refuse with ValueError or their own refusal types; all one token
         return False
-    return _roots_distinct(root, private_state_root)
+    return _disjoint_dirs(root, private_state_root)
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -243,6 +296,11 @@ def _drive_type(anchor):
     probe.argtypes = (ctypes.c_wchar_p,)
     probe.restype = ctypes.c_uint
     return probe(anchor)
+
+
+def _link_count(path):
+    """Hard-link count of a path without following links; 0 where the platform cannot report it (refuses)."""
+    return os.lstat(path).st_nlink
 
 
 def _plain_local(text):
@@ -261,11 +319,13 @@ def _plain_local(text):
 
 
 def _no_reparse(path, *, want_dir):
-    """lstat metadata only: the entry exists, is a plain directory or regular file, and is no link or reparse point."""
+    """lstat metadata only: the entry exists, is a plain directory or a single-link regular file, no reparse point."""
     info = os.lstat(path)
     if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & _REPARSE:
         return False
-    return stat.S_ISDIR(info.st_mode) if want_dir else stat.S_ISREG(info.st_mode)
+    if want_dir:
+        return stat.S_ISDIR(info.st_mode)
+    return stat.S_ISREG(info.st_mode) and _link_count(path) == 1
 
 
 def _chain_plain(path):
@@ -278,9 +338,11 @@ def _chain_plain(path):
     return True
 
 
-def _tree_plain(model_dir):
-    """Bounded no-follow walk below ``model_dir``: no link or reparse point anywhere, and the weights file is plain."""
+def _tree_files(model_dir):
+    """Relative POSIX paths of the regular files below ``model_dir`` after a bounded no-follow walk that refuses
+    any link, reparse point or multi-link file; None when the tree is not plain or the weights file is not."""
     seen = 0
+    files = []
     pending = [model_dir]
     while pending:
         folder = pending.pop()
@@ -288,32 +350,87 @@ def _tree_plain(model_dir):
             for entry in entries:
                 seen += 1
                 if seen > MODEL_TREE_LIMIT:
-                    return False
-                info = entry.stat(follow_symlinks=False)
-                if entry.is_symlink() or getattr(info, "st_file_attributes", 0) & _REPARSE:
-                    return False
-                if entry.is_dir(follow_symlinks=False):
-                    pending.append(Path(entry.path))
-    return _no_reparse(model_dir / WEIGHTS_FILE, want_dir=False)
+                    return None
+                path = Path(entry.path)
+                is_dir = entry.is_dir(follow_symlinks=False)
+                if not _no_reparse(path, want_dir=is_dir):
+                    return None
+                if is_dir:
+                    pending.append(path)
+                else:
+                    files.append(path.relative_to(model_dir).as_posix())
+    if WEIGHTS_FILE not in files:
+        return None
+    return files
 
 
-def _model_root_bound(model_dir_text, trusted_model_root):
-    """True when ``model_dir`` is bound to the trusted fixed-local non-reparse root; metadata calls only."""
+def _model_root_bound(model_dir_text, trusted_model_root, root, private_state_root):
+    """The plain file list of ``model_dir`` when it is bound to the trusted fixed-local non-reparse root and the
+    checkpoint and private roots are disjoint from both; None otherwise. Metadata calls only."""
     try:
         if os.name != "nt":
-            return False
+            return None
         trusted = _plain_local(str(trusted_model_root))
         model_dir = _plain_local(model_dir_text)
         if trusted is None or model_dir is None or model_dir.anchor.lower() != trusted.anchor.lower():
-            return False
+            return None
         if _drive_type(trusted.anchor) != _DRIVE_FIXED:
-            return False
+            return None
         folded = (os.path.normcase(str(trusted)), os.path.normcase(str(model_dir)))
         if os.path.commonpath(folded) != folded[0]:
-            return False
-        return _chain_plain(trusted) and _chain_plain(model_dir) and _tree_plain(model_dir)
+            return None
+        if not (_chain_plain(trusted) and _chain_plain(model_dir)):
+            return None
+        files = _tree_files(model_dir)
+        if files is None:
+            return None
+        for shared in (root, private_state_root):
+            if not (_disjoint_dirs(shared, trusted) and _disjoint_dirs(shared, model_dir)):
+                return None
+        return files
     except Exception:  # noqa: BLE001 - a failed probe (missing path, access error, drive probe) is one refusal
+        return None
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# asset manifest: the first reads, every regular file against the caller's pin
+# ---------------------------------------------------------------------------------------------------------------
+
+
+def _assets_bound(model_dir_text, assets, files):
+    """Every regular file under model_dir is listed, every listed file exists, and each hashes to its pin."""
+    try:
+        if set(files) != set(assets) or len(files) != len(assets):
+            return False
+        model_dir = Path(model_dir_text)
+        for relative, expected in assets.items():
+            path = model_dir.joinpath(*relative.split("/"))
+            if os.lstat(path).st_size > ASSET_BYTES_LIMIT:
+                return False
+            digest = hashlib.sha256()
+            with open(path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(_CHUNK), b""):
+                    digest.update(chunk)
+            if not hmac.compare_digest(digest.hexdigest(), expected):
+                return False
+    except Exception:  # noqa: BLE001 - any read failure is one refusal without its message
         return False
+    return True
+
+
+@contextlib.contextmanager
+def _restored_environment():
+    """Restore the exact process environment afterwards: added names removed, overwritten values put back."""
+    before = dict(os.environ)
+    try:
+        yield
+    finally:
+        environment = os.environ
+        for key in [key for key in environment if key not in before]:
+            del environment[key]
+        for key, value in before.items():
+            if environment.get(key) != value:
+                environment[key] = value
 
 
 def _identity(encoder):
@@ -335,7 +452,8 @@ def _encoder(encoder, identity):
     try:
         if builder.encoder_identity(identity) != identity:
             return None
-        loaded = encode_mod.E5(model_dir=encoder["model_dir"], revision=encoder["revision"])
+        with _restored_environment():
+            loaded = encode_mod.E5(model_dir=encoder["model_dir"], revision=encoder["revision"])
         return builder.e5_passage_encoder(loaded.model)
     except Exception:  # noqa: BLE001 - any backend failure is one fixed refusal without its message
         return None
@@ -376,12 +494,16 @@ def build_prefix_generation(*, enabled=False, plan_bytes=None, expected_plan_sha
         raise BuildChildRefused("pins_refused")
     if not _preflight_holds(plan, config, start_prefix, root, private_state_root):
         raise BuildChildRefused("preflight_refused")
-    if not _model_root_bound(plan["encoder"]["model_dir"], trusted_model_root):
+    encoder = plan["encoder"]
+    files = _model_root_bound(encoder["model_dir"], trusted_model_root, root, private_state_root)
+    if files is None:
         raise BuildChildRefused("model_root_refused")
-    identity = _identity(plan["encoder"])
+    if not _assets_bound(encoder["model_dir"], encoder["assets"], files):
+        raise BuildChildRefused("asset_refused")
+    identity = _identity(encoder)
     if identity is None:
         raise BuildChildRefused("encoder_refused")
-    encode = _encoder(plan["encoder"], identity)
+    encode = _encoder(encoder, identity)
     if encode is None:
         raise BuildChildRefused("encoder_refused")
     request = producer.PrefixPublicRequest(
@@ -392,4 +514,5 @@ def build_prefix_generation(*, enabled=False, plan_bytes=None, expected_plan_sha
     report, token = _publish(request)
     if token is not None:
         raise BuildChildRefused(token)
-    return {**report, "encoder_identity_source": IDENTITY_SOURCE, "plan_sha256": expected_plan_sha256}
+    return {**report, "encoder_identity_source": IDENTITY_SOURCE, "plan_sha256": expected_plan_sha256,
+            "backend_isolation": BACKEND_ISOLATION, "model_assets": MODEL_ASSETS}

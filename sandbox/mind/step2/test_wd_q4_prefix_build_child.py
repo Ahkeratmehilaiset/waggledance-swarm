@@ -15,6 +15,17 @@ producer would otherwise make only after the backend loaded (start cursor equal 
 the prefix budget, snapshot bounds, policy/roster/public-policy parse, checkpoint root distinct from and not nested
 with the private state root) run before identity derivation and backend load (``preflight_refused``); the
 producer's locked validation, prior-pointer CAS and private-state continuity stay where they are.
+
+v3 (independent review of v2): the fixed ``encode.E5`` loader writes offline cache variables into the process
+environment and never restores them, so the child restores the exact environment after the load on success and on
+failure (no OS isolation: the backend still runs in this process and its modules stay imported). The checkpoint
+root and the private state root must be disjoint from the trusted model root and the model directory in both
+directions including junction aliases (``samefile``), before the backend loads and before any write. Every regular
+file in the model tree must have a single hard link (``st_nlink == 1``; an unavailable link count refuses). The
+model tree is bound to a caller-pinned asset manifest in the plan (relative path -> sha256 for EVERY regular file
+under ``model_dir``, the weights included): a swapped tokenizer, pooling or config file, an unlisted extra file or
+a missing listed file refuses ``asset_refused`` before identity derivation and backend load. The child derives no
+pin of its own; the report names the remaining limits (verify-then-use window, in-process backend).
 """
 from dataclasses import replace
 import hashlib
@@ -25,6 +36,7 @@ import contextlib
 import io
 import os
 from pathlib import Path
+import re
 import sys
 import types
 
@@ -80,7 +92,8 @@ class FakeModel:
     calls = []
 
     def __init__(self, path, device=None, local_files_only=None):
-        FakeModel.calls.append({"path": path, "device": device, "local_files_only": local_files_only})
+        FakeModel.calls.append({"path": path, "device": device, "local_files_only": local_files_only,
+                                "env": dict(os.environ)})
 
     def encode(self, inputs, **kw):
         FakeModel.calls.append({"inputs": list(inputs), "kw": dict(kw)})
@@ -122,11 +135,22 @@ def model_dir(tmp_path):
 # ---------------------------------------------------------------------------------------------------------------
 
 
-def plan(model_dir, pins, *, generation="gen-a", pointer=None, **changes):
+def assets_of(model_dir):
+    """The caller's asset manifest: relative POSIX path -> sha256 of every regular file under the model directory
+    (the test is the independent caller here; a model directory that does not exist pins the weights alone)."""
+    model_dir = Path(model_dir)
+    if not re.match(r"[A-Za-z]:", str(model_dir)) or not model_dir.is_dir():  # never stat a UNC or device path here
+        return {"model.safetensors": WEIGHTS_SHA}
+    found = {p.relative_to(model_dir).as_posix(): sha(p.read_bytes()) for p in sorted(model_dir.rglob("*")) if p.is_file()}
+    return found or {"model.safetensors": WEIGHTS_SHA}  # an empty tree still pins the weights the plan requires
+
+
+def plan(model_dir, pins, *, generation="gen-a", pointer=None, assets=None, **changes):
     value = {"schema": "wd.q4-prefix-build-plan.v1", "generation": generation, "expected_pointer_sha256": pointer,
              "max_prefix_bytes": 1 << 20, "timeout": 0.2,
              "encoder": {"model": encode_mod.MODEL, "revision": REVISION, "model_dir": str(model_dir),
-                         "weights_sha256": WEIGHTS_SHA, "dim": encode_mod.DIM},
+                         "weights_sha256": WEIGHTS_SHA, "dim": encode_mod.DIM,
+                         "assets": assets_of(model_dir) if assets is None else assets},
              "pins": dict(pins)}
     value.update(changes)
     return value
@@ -161,9 +185,10 @@ def roots(tmp_path):
 
 
 def trusted_root_of(plan_doc):
-    """The caller-pinned trusted model root a test means unless it says otherwise: the pinned model_dir's parent."""
+    """The caller-pinned trusted model root a test means unless it says otherwise: the pinned model_dir itself (the
+    narrowest root; the checkpoint and private roots beside it must stay outside any wider root)."""
     try:
-        return Path(plan_doc["encoder"]["model_dir"]).parent
+        return Path(plan_doc["encoder"]["model_dir"])
     except (TypeError, KeyError):
         return Path("C:/")
 
@@ -300,6 +325,19 @@ def shape_changes():
     yield {"encoder": {"model": encode_mod.MODEL, "revision": REVISION, "model_dir": "C:/synthetic", "weights_sha256": WEIGHTS_SHA, "dim": 16}}
     yield {"encoder": {"model": encode_mod.MODEL, "revision": REVISION, "model_dir": "C:/synthetic", "weights_sha256": WEIGHTS_SHA, "dim": 384, "callback": SENTINEL}}
     yield {"encoder": {"model": encode_mod.MODEL, "revision": REVISION, "model_dir": "C:/synthetic", "dim": 384}}
+    base = {"model": encode_mod.MODEL, "revision": REVISION, "model_dir": "C:/synthetic", "weights_sha256": WEIGHTS_SHA, "dim": 384}
+    yield {"encoder": {**base, "assets": {}}}
+    yield {"encoder": {**base, "assets": []}}
+    yield {"encoder": {**base, "assets": {"tokenizer.json": "0" * 64}}}  # the weights file must be listed
+    yield {"encoder": {**base, "assets": {"model.safetensors": WEIGHTS_SHA, "C:/synthetic/tokenizer.json": "0" * 64}}}
+    yield {"encoder": {**base, "assets": {"model.safetensors": WEIGHTS_SHA, "../tokenizer.json": "0" * 64}}}
+    yield {"encoder": {**base, "assets": {"model.safetensors": WEIGHTS_SHA, "./tokenizer.json": "0" * 64}}}
+    yield {"encoder": {**base, "assets": {"model.safetensors": WEIGHTS_SHA, "a//tokenizer.json": "0" * 64}}}
+    yield {"encoder": {**base, "assets": {"model.safetensors": WEIGHTS_SHA, "": "0" * 64}}}
+    yield {"encoder": {**base, "assets": {"model.safetensors": WEIGHTS_SHA, "tokenizer.json": "0" * 63}}}
+    yield {"encoder": {**base, "assets": {"model.safetensors": WEIGHTS_SHA, "tokenizer.json": WEIGHTS_SHA.upper()}}}
+    yield {"encoder": {**base, "assets": {"model.safetensors": WEIGHTS_SHA, "Tokenizer.json": "0" * 64, "tokenizer.json": "1" * 64}}}
+    yield {"encoder": {**base, "assets": {"model.safetensors": WEIGHTS_SHA, **{f"f{n}.bin": "0" * 64 for n in range(64)}}}}
 
 
 @pytest.mark.parametrize("change", list(shape_changes()))
@@ -416,7 +454,9 @@ def test_request_handed_to_the_producer_carries_the_fixed_encoder_and_derived_id
     assert backend.calls[-1]["kw"]["normalize_embeddings"] is True and backend.calls[-1]["kw"]["batch_size"] == 32
     assert report == {"status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
                       "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN",
-                      "encoder_identity_source": "encode.model_identity", "plan_sha256": sha(enc(plan(model_dir, pins)))}
+                      "encoder_identity_source": "encode.model_identity", "plan_sha256": sha(enc(plan(model_dir, pins))),
+                      "backend_isolation": "in_process_environment_restored_no_os_isolation",
+                      "model_assets": "caller_manifest_verified_before_load_reread_by_backend"}
     text = json.dumps(report)
     assert WEIGHTS_SHA not in text and str(model_dir) not in text and start.sha256 not in text
     assert str(tmp_path) not in text  # the trusted root never appears in the report either
@@ -435,9 +475,12 @@ def junction(target, link):
     return link
 
 
-def model_tree(path):
+def model_tree(path, *, extra=()):
     path.mkdir(parents=True)
     (path / "model.safetensors").write_bytes(WEIGHTS)
+    for name in extra:
+        (path / name).parent.mkdir(parents=True, exist_ok=True)
+        (path / name).write_bytes(b"synthetic-" + name.encode())
     return path
 
 
@@ -446,9 +489,10 @@ def root_refused(m, monkeypatch, tmp_path, pins, model_dir, trusted, config=None
     if config is None:
         config, _, start = synthetic_config(tmp_path)
     root, private_root = roots(tmp_path)
+    doc = plan(model_dir, pins)  # the test-side manifest hashes the tree; build it before every open is refused
     before = tree(tmp_path)
     with no_reads(monkeypatch):
-        refused("model_root_refused", lambda: run(m, plan(model_dir, pins), config, start, root, private_root, trusted=trusted))
+        refused("model_root_refused", lambda: run(m, doc, config, start, root, private_root, trusted=trusted))
     assert tree(tmp_path) == before
     nothing_written(root, private_root)
 
@@ -585,8 +629,9 @@ def test_bound_model_dir_reaches_identity_unchanged_and_as_the_pinned_string(tmp
     monkeypatch.setattr(m.encode_mod, "model_identity", identity)
     monkeypatch.setattr(m.encode_mod, "E5", lambda **k: pytest.fail("backend loaded after a failed identity"))
     config, pins, start = synthetic_config(tmp_path)
-    refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path), trusted=tmp_path))
-    assert seen == {"model_dir": str(model_dir), "revision": REVISION}
+    inside = model_tree(tmp_path / "trusted" / "model")  # a wider trusted root holding the model directory
+    refused("encoder_refused", lambda: run(m, plan(inside, pins), config, start, *roots(tmp_path), trusted=tmp_path / "trusted"))
+    assert seen == {"model_dir": str(inside), "revision": REVISION}
     # the trusted root may equal the model directory itself
     seen.clear()
     refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path), trusted=model_dir))
@@ -604,10 +649,10 @@ def preflight_refused(m, monkeypatch, tmp_path, pins, config, start, root=None, 
     default_root, default_private = roots(tmp_path)
     root = default_root if root is None else root
     private_root = default_private if private_root is None else private_root
-    model_dir = tmp_path / "model"
+    doc = plan(tmp_path / "model", pins)
     before = tree(tmp_path)
     with no_reads(monkeypatch):
-        refused("preflight_refused", lambda: run(m, plan(model_dir, pins), config, start, root, private_root, trusted=tmp_path))
+        refused("preflight_refused", lambda: run(m, doc, config, start, root, private_root, trusted=tmp_path))
     assert tree(tmp_path) == before
 
 
@@ -692,6 +737,212 @@ def test_pins_are_checked_before_the_preflight(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------------------------------------------
+# v3 finding 1: the environment is restored after the fixed loader, on success and on failure
+# ---------------------------------------------------------------------------------------------------------------
+
+
+def offline_names():
+    return tuple(encode_mod.CACHE_ENV) + ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+
+
+def test_environment_restored_after_a_successful_backend_load(tmp_path, model_dir, backend, monkeypatch):
+    m = module()
+    for name in offline_names():
+        os.environ.pop(name, None)
+    os.environ["HF_HUB_OFFLINE"] = "0"  # a caller value the loader overwrites must come back
+    os.environ["SYNTHETIC_CALLER_MARKER"] = "kept"
+    before = dict(os.environ)
+    config, pins, start = synthetic_config(tmp_path)
+    monkeypatch.setattr(m.producer, "publish_public_prefix", lambda **k: {
+        "status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
+        "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"})
+    report = run(m, plan(model_dir, pins), config, start, *roots(tmp_path))
+    assert report["status"] == "PUBLISHED_GENESIS"
+    assert dict(os.environ) == before  # exact restoration: overwritten values back, added names removed
+    loaded = backend.calls[0]["env"]
+    assert loaded["HF_HUB_OFFLINE"] == "1" and loaded["TRANSFORMERS_OFFLINE"] == "1"
+    assert all(loaded[name] == os.devnull for name in encode_mod.CACHE_ENV)  # the loader DID apply its policy
+
+
+def test_environment_restored_after_a_backend_failure(tmp_path, model_dir, backend):
+    m = module()
+    for name in offline_names():
+        os.environ.pop(name, None)
+    before = dict(os.environ)
+
+    class Broken(backend):
+        def __init__(self, *a, **k):
+            raise RuntimeError(SENTINEL)
+    sys.modules["sentence_transformers"].SentenceTransformer = Broken
+    config, pins, start = synthetic_config(tmp_path)
+    refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path)))
+    assert dict(os.environ) == before and not any(name in os.environ for name in offline_names())
+
+
+def test_environment_restored_when_the_loader_itself_refuses(tmp_path, model_dir, backend, monkeypatch):
+    m = module()
+    before = dict(os.environ)
+    config, pins, start = synthetic_config(tmp_path)
+    monkeypatch.setattr(m.encode_mod, "E5", lambda **k: (os.environ.__setitem__("HF_HUB_OFFLINE", "1"),
+                                                         (_ for _ in ()).throw(ValueError(SENTINEL)))[1])
+    refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path)))
+    assert dict(os.environ) == before
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# v3 finding 2: checkpoint and private roots disjoint from the trusted model root and the model directory
+# ---------------------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("conflict", ["root_in_trusted", "trusted_in_root", "private_in_model_dir", "model_dir_in_private",
+                                      "root_is_trusted", "private_is_model_dir", "root_alias_of_trusted", "private_alias_in_model_dir"])
+def test_roots_overlapping_the_model_root_refuse_before_backend_and_writes(conflict, tmp_path, monkeypatch):
+    m = module()
+    config, pins, start = synthetic_config(tmp_path)
+    trusted = tmp_path / "trusted"
+    model_dir = model_tree(trusted / "model")
+    root, private_root = roots(tmp_path)
+    if conflict == "root_in_trusted":
+        (trusted / "root").mkdir(); root = trusted / "root"
+    elif conflict == "trusted_in_root":
+        trusted = root / "trusted"; model_dir = model_tree(trusted / "model")
+    elif conflict == "private_in_model_dir":
+        (model_dir / "private").mkdir(); private_root = model_dir / "private"
+    elif conflict == "model_dir_in_private":
+        trusted = private_root; model_dir = model_tree(private_root / "model")
+    elif conflict == "root_is_trusted":
+        root = trusted
+    elif conflict == "private_is_model_dir":
+        private_root = model_dir
+    elif conflict == "root_alias_of_trusted":
+        (trusted / "root").mkdir()
+        junction(trusted, tmp_path / "alias")  # same directory under another name: string checks cannot see it
+        root = tmp_path / "alias" / "root"
+    else:
+        (model_dir / "private").mkdir()
+        junction(model_dir, tmp_path / "alias")
+        private_root = tmp_path / "alias" / "private"
+    never_loads(m, monkeypatch)
+    doc = plan(model_dir, pins)
+    before = tree(tmp_path)
+    with no_reads(monkeypatch):
+        refused("model_root_refused", lambda: run(m, doc, config, start, root, private_root, trusted=trusted))
+    assert tree(tmp_path) == before
+
+
+def test_disjoint_roots_beside_the_model_root_are_accepted(tmp_path, model_dir, backend, monkeypatch):
+    m = module()
+    config, pins, start = synthetic_config(tmp_path)
+    monkeypatch.setattr(m.producer, "publish_public_prefix", lambda **k: {
+        "status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
+        "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"})
+    root, private_root = roots(tmp_path)
+    assert run(m, plan(model_dir, pins), config, start, root, private_root, trusted=model_dir)["status"] == "PUBLISHED_GENESIS"
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# v3 supplement: hard links and the caller-pinned asset manifest
+# ---------------------------------------------------------------------------------------------------------------
+
+
+def test_hard_linked_model_files_refuse_in_the_binding(tmp_path, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    trusted = tmp_path / "trusted"
+    inside = model_tree(trusted / "model", extra=("tokenizer.json",))
+    try:
+        os.link(inside / "model.safetensors", tmp_path / "weights-alias")
+    except (OSError, NotImplementedError):
+        pytest.skip("hard links unsupported here")
+    assert os.lstat(inside / "model.safetensors").st_nlink == 2
+    root_refused(m, monkeypatch, tmp_path, pins, inside, trusted)
+    os.unlink(tmp_path / "weights-alias")
+    os.link(inside / "tokenizer.json", tmp_path / "tokenizer-alias")  # any file of the tree, not only the weights
+    root_refused(m, monkeypatch, tmp_path, pins, inside, trusted)
+
+
+def test_unavailable_link_count_refuses_fail_closed(tmp_path, model_dir, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    monkeypatch.setattr(m, "_link_count", lambda path: 0)
+    root_refused(m, monkeypatch, tmp_path, pins, model_dir, tmp_path)
+
+
+def asset_refused(m, monkeypatch, tmp_path, pins, model_dir, trusted, assets=None):
+    never_loads(m, monkeypatch)
+    config, _, start = synthetic_config(tmp_path)
+    root, private_root = roots(tmp_path)
+    before = tree(tmp_path)
+    refused("asset_refused", lambda: run(m, plan(model_dir, pins, assets=assets), config, start, root, private_root, trusted=trusted))
+    assert tree(tmp_path) == before
+
+
+def test_swapped_tokenizer_or_pooling_asset_refuses_before_identity_and_backend(tmp_path, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    trusted = tmp_path / "trusted"
+    inside = model_tree(trusted / "model", extra=("tokenizer.json", "config.json", "1_Pooling/config.json"))
+    pinned = assets_of(inside)  # the caller pins the tree as shipped
+    (inside / "tokenizer.json").write_bytes(b"swapped-tokenizer")
+    asset_refused(m, monkeypatch, tmp_path, pins, inside, trusted, assets=pinned)
+    (inside / "tokenizer.json").write_bytes(b"synthetic-tokenizer.json")
+    (inside / "1_Pooling" / "config.json").write_bytes(b"swapped-pooling")
+    asset_refused(m, monkeypatch, tmp_path, pins, inside, trusted, assets=pinned)
+
+
+def test_unlisted_extra_or_missing_listed_asset_refuses(tmp_path, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    trusted = tmp_path / "trusted"
+    inside = model_tree(trusted / "model", extra=("tokenizer.json",))
+    pinned = assets_of(inside)
+    (inside / "added_adapter.bin").write_bytes(b"unlisted")
+    asset_refused(m, monkeypatch, tmp_path, pins, inside, trusted, assets=pinned)
+    (inside / "added_adapter.bin").unlink()
+    (inside / "tokenizer.json").unlink()
+    asset_refused(m, monkeypatch, tmp_path, pins, inside, trusted, assets=pinned)
+    (inside / "nested").mkdir()  # an empty directory is not an asset and does not refuse
+    config, _, start = synthetic_config(tmp_path)
+    monkeypatch.setattr(m.encode_mod, "model_identity", lambda **k: (_ for _ in ()).throw(OSError(SENTINEL)))
+    pinned.pop("tokenizer.json")
+    refused("encoder_refused", lambda: run(m, plan(inside, pins, assets=pinned), config, start, *roots(tmp_path), trusted=trusted))
+
+
+def test_manifest_weights_entry_disagreeing_with_the_file_refuses_as_asset(tmp_path, model_dir, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    asset_refused(m, monkeypatch, tmp_path, pins, model_dir, model_dir, assets={"model.safetensors": sha(b"other-weights")})
+
+
+def test_assets_are_verified_after_the_binding_and_before_identity(tmp_path, model_dir, monkeypatch):
+    m = module()
+    order = []
+    monkeypatch.setattr(m, "_drive_type", lambda anchor: order.append("binding") or 3)
+    monkeypatch.setattr(m.encode_mod, "model_identity", lambda **k: order.append("identity") or (_ for _ in ()).throw(OSError(SENTINEL)))
+    config, pins, start = synthetic_config(tmp_path)
+    refused("encoder_refused", lambda: run(m, plan(model_dir, pins), config, start, *roots(tmp_path), trusted=model_dir))
+    assert order == ["binding", "identity"]
+    order.clear()
+    asset_refused(m, monkeypatch, tmp_path, pins, model_dir, model_dir, assets={"model.safetensors": sha(b"other")})
+    assert order == ["binding"]
+
+
+def test_report_names_the_remaining_limits_and_derives_no_pin(tmp_path, model_dir, backend, monkeypatch):
+    m = module()
+    assert m.BACKEND_ISOLATION == "in_process_environment_restored_no_os_isolation"
+    assert m.MODEL_ASSETS == "caller_manifest_verified_before_load_reread_by_backend"
+    assert m.ASSET_LIMIT == 64 and m.ASSET_BYTES_LIMIT == 1 << 30
+    config, pins, start = synthetic_config(tmp_path)
+    monkeypatch.setattr(m.producer, "publish_public_prefix", lambda **k: {
+        "status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
+        "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"})
+    report = run(m, plan(model_dir, pins), config, start, *roots(tmp_path))
+    assert report["backend_isolation"] == m.BACKEND_ISOLATION and report["model_assets"] == m.MODEL_ASSETS
+    text = json.dumps(report)
+    assert WEIGHTS_SHA not in text and "tokenizer" not in text and str(tmp_path) not in text
+
+
+# ---------------------------------------------------------------------------------------------------------------
 # real strict-prefix chain through the child (synthetic bridge log, fake backend, FAISS)
 # ---------------------------------------------------------------------------------------------------------------
 
@@ -767,8 +1018,9 @@ def test_module_is_fixed_path_only():
         assert token not in source, token
     assert "SentenceTransformer(" not in source  # loading goes through the fixed encode.E5 path only
     assert module().REASONS == frozenset({"disabled", "plan_refused", "request_refused", "pins_refused",
-                                          "preflight_refused", "model_root_refused", "encoder_refused",
-                                          "publication_state_unknown"})
+                                          "preflight_refused", "model_root_refused", "asset_refused",
+                                          "encoder_refused", "publication_state_unknown"})
     doc = module().__doc__ or ""
-    for word in ("trusted_model_root", "UNC", "reparse", "preflight", "CAS", "locked"):
+    for word in ("trusted_model_root", "UNC", "reparse", "preflight", "CAS", "locked", "OS isolation", "hard link",
+                 "tokenizer", "manifest", "verify-then-use", "self-derive"):
         assert word in doc, word

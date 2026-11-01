@@ -7,6 +7,9 @@ tuple builder and parent Job/cleanup protocol are not implemented here. The
 query is read only from stdin and can block; there is no whole-call watchdog.
 Same-user races, native output and caller/interpreter/stdlib trust remain open.
 On nonzero exit the parent must discard stdout, including partial writes.
+The opt-in ``--query-utc`` option is checked syntactically here and forwarded
+unchanged as the last worker argument pair; the worker then requires stdin to
+be the matching JSON query document. Its value is not a trusted clock.
 """
 
 import hashlib
@@ -20,6 +23,7 @@ import sys
 
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _IDENTITY = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+_QUERY_UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.000000Z\Z")
 _LANES = frozenset({"codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"})
 _BINDING_KEYS = ("pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256", "roster_sha256",
                  "public_policy_sha256", "descriptor_sha256", "projection_sha256")
@@ -45,16 +49,18 @@ def _parse(argv):
         raise ValueError()
     if not (sys.flags.isolated and sys.flags.no_site and sys.flags.dont_write_bytecode):
         raise ValueError()
-    if len(argv) != 1 + 2 * len(_OPTIONS):
+    if len(argv) not in (1 + 2 * len(_OPTIONS), 3 + 2 * len(_OPTIONS)):
         raise ValueError()
     options = {}
     for i in range(1, len(argv), 2):
         key, value = argv[i:i + 2]
-        if (type(key) is not str or not key.startswith("--") or key[2:] not in _OPTIONS
+        if (type(key) is not str or not key.startswith("--") or key[2:] not in _OPTIONS | {"query-utc"}
                 or key[2:] in options or type(value) is not str or not value or len(value) > 32767 or "\x00" in value):
             raise ValueError()
         options[key[2:]] = value
-    if set(options) != _OPTIONS or options["lane"] not in _LANES:
+    if set(options) - {"query-utc"} != _OPTIONS or options["lane"] not in _LANES:
+        raise ValueError()
+    if "query-utc" in options and not _QUERY_UTC.fullmatch(options["query-utc"]):
         raise ValueError()
     for key in _OPTIONS:
         if (key.endswith("sha256") or key.startswith("expected-")) and not _HEX64.fullmatch(options[key]):
@@ -187,6 +193,8 @@ def main(argv=None):
         worker_argv = ["--enabled"]
         for key in _WORKER_KEYS:
             worker_argv.extend(("--" + key, options[key]))
+        if "query-utc" in options:
+            worker_argv.extend(("--query-utc", options["query-utc"]))
         answer = namespace["run_session"](
             enabled=True, runtime_root=options["runtime-root"], runtime_manifest=options["runtime-manifest"],
             runtime_manifest_sha256=options["runtime-manifest-sha256"], runtime_generation=options["runtime-generation"],

@@ -228,3 +228,104 @@ def test_entry_runs_actual_manifest_pinned_outer_with_only_synthetic_worker(plan
     result = run(plan)
     assert result.returncode == 0 and result.stderr == b""
     assert json.loads(result.stdout) == helper.ANSWER
+
+
+QUERY_UTC = "2026-10-31T12:00:00.000000Z"
+EXACT_DOCUMENT = b'{"situation":"synthetic exact situation","time":"2026-10-31T12:00:00Z"}'
+FORWARD_CHECK = (b"    assert kw['argv'].count('--query-utc') == (1 if kw['query'].startswith(b'{') else 0)\n"
+                 b"    if kw['query'].startswith(b'{'):\n"
+                 b"        assert kw['argv'][-2:] == ['--query-utc', " + repr(QUERY_UTC).encode() + b"]\n"
+                 b"        assert kw['query'] == " + repr(EXACT_DOCUMENT).encode() + b"\n")
+
+
+def _use_outer(plan, tmp_path, raw):
+    from sandbox.mind.step2 import runtime_builder
+    Path(plan["outer-path"]).write_bytes(raw)
+    plan["outer-sha256"] = hashlib.sha256(raw).hexdigest()
+    manifest = tmp_path / "forward-check-manifest.json"
+    built = runtime_builder.build_runtime_manifest(Path(plan["runtime-root"]), manifest,
+                                                   generation=plan["runtime-generation"],
+                                                   revision=plan["runtime-revision"])
+    plan["runtime-manifest"] = str(manifest)
+    plan["runtime-manifest-sha256"] = built["manifest_sha256"]
+
+
+def test_opt_in_query_utc_is_forwarded_as_the_last_worker_pair_with_stdin_unchanged(plan, tmp_path):
+    anchor = b"    assert kw['worker_sha256'] == "
+    assert FAKE_OUTER.count(anchor) == 1
+    _use_outer(plan, tmp_path, FAKE_OUTER.replace(anchor, FORWARD_CHECK + anchor))
+    result = run({**plan, "query-utc": QUERY_UTC}, input_=EXACT_DOCUMENT)
+    assert result.returncode == 0 and result.stderr == b""
+    assert json.loads(result.stdout) == {"schema": "wd.q4-lane-answer.v1", "lane": "codex-lead-1", "status": "ABSTAIN"}
+    default = run(plan, input_=b"synthetic question")  # no option: no --query-utc reaches the worker
+    assert default.returncode == 0 and default.stderr == b""
+
+
+@pytest.mark.parametrize("value", ["2026-10-31T12:00:00Z", "2026-10-31T12:00:00.000001Z",
+                                   "2026-10-31T12:00:00.000000+00:00", "2026-10-31T12:00:00.000000z", "now"])
+def test_malformed_query_utc_refuses_before_stdin_is_read(plan, value):
+    argv = [str(Path(sys.executable).resolve(strict=True)), "-I", "-S", "-B", str(ENTRY), "--enabled"]
+    for key, item in {**plan, "query-utc": value}.items():
+        argv.extend(("--" + key, item))
+    child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        assert child.wait(timeout=8) == 2
+        assert child.stdout.read() == b""
+    finally:
+        if child.poll() is None:
+            child.kill()  # Only the synthetic test-owned child.
+            child.wait(timeout=5)
+        for stream in (child.stdin, child.stdout, child.stderr):
+            if stream:
+                stream.close()
+
+
+def test_duplicate_query_utc_refuses(plan):
+    argv = [str(Path(sys.executable).resolve(strict=True)), "-I", "-S", "-B", str(ENTRY), "--enabled"]
+    for key, item in plan.items():
+        argv.extend(("--" + key, item))
+    argv += ["--query-utc", QUERY_UTC, "--query-utc", QUERY_UTC]
+    result = subprocess.run(argv, input=EXACT_DOCUMENT, capture_output=True, timeout=20)
+    assert result.returncode == 2 and result.stdout == b""
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="public outer requires Windows paths")
+def test_real_chain_carries_one_exact_query_time_and_refuses_mismatch_before_the_session(tmp_path):
+    import importlib.util
+    from sandbox.mind.step2 import runtime_builder
+
+    spec = importlib.util.spec_from_file_location("q4_host_e2e_fixture", Path(__file__).with_name(
+        "test_wd_q4_session_host_e2e.py"))
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    options, _, _, answer = helper.plan.__wrapped__(tmp_path / "chain")
+    reached = tmp_path / "session-reached"
+    seam = ("from datetime import datetime, timezone\n"
+            "def query_session(**kw):\n"
+            f"    open({str(reached)!r}, 'ab').close()\n"
+            "    t = kw['time']\n"
+            "    assert kw['lane'] == 'codex-lead-1' and kw['enabled'] is True\n"
+            "    if kw['situation'] == 'synthetic exact situation':\n"
+            "        assert type(t) is datetime and t == datetime(2026, 10, 31, 12, 0, 0, tzinfo=timezone.utc)\n"
+            "        assert t.utcoffset().total_seconds() == 0 and t.microsecond == 0\n"
+            "    else:\n"
+            "        assert kw['situation'] == 'synthetic default situation'\n"
+            "        assert abs((datetime.now(timezone.utc) - t).total_seconds()) < 300\n"
+            f"    return {answer!r}\n").encode("utf-8")
+    root = Path(options["runtime-root"])
+    (root / "assets/code/tools/wd_q4_lane_session_client.py").write_bytes(seam)
+    manifest = tmp_path / "chain-manifest.json"
+    built = runtime_builder.build_runtime_manifest(root, manifest, generation=options["runtime-generation"],
+                                                   revision=options["runtime-revision"])
+    interpreter = str(Path(sys.executable).resolve(strict=True))
+    options.update({"runtime-manifest": str(manifest), "runtime-manifest-sha256": built["manifest_sha256"],
+                    "interpreter": interpreter,
+                    "interpreter-sha256": hashlib.sha256(Path(interpreter).read_bytes()).hexdigest()})
+    mismatch = run({**options, "query-utc": QUERY_UTC},
+                   input_=b'{"situation":"synthetic exact situation","time":"2026-10-31T12:00:01Z"}')
+    assert mismatch.returncode == 2 and mismatch.stdout == b"" and not reached.exists()
+    exact = run({**options, "query-utc": QUERY_UTC}, input_=EXACT_DOCUMENT)
+    assert exact.returncode == 0 and exact.stderr == b"" and reached.exists()
+    assert json.loads(exact.stdout) == answer
+    default = run(options, input_=b"synthetic default situation")
+    assert default.returncode == 0 and json.loads(default.stdout) == answer

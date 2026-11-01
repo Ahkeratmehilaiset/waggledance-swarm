@@ -19,6 +19,9 @@ remote clients. This is NOT a sandbox against malicious same-user code capable
 of opening another process with PROCESS_DUP_HANDLE.
 
 No security test, production readiness or whole-OS hard deadline is claimed.
+The exchange timeout is followed by a separate, fixed five-second cleanup
+wait budget; callers requiring a whole-call deadline must allow for it and
+independently bound potentially blocking kernel/attestation operations.
 Abrupt parent death before job assignment may leave a suspended child; no
 payload is sent before assignment. Cancellation with uncompleted kernel I/O
 quarantines its memory/handles and disables further calls, rather than freeing
@@ -47,6 +50,7 @@ import uuid
 _MAX_INPUT = 65536
 _MAX_OUTPUT = 262144
 _MAX_META = 65536
+_CLEANUP_WAIT_SECONDS = 5.0
 _INVALID = C.c_void_p(-1).value
 _QUARANTINE = []  # At most one invocation; any entry disables new work.
 _RUN_LOCK = threading.Lock()
@@ -1151,7 +1155,13 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
     k = a = None
     pipe = job = process = thread = None
     assigned = False
-    deadline = time.monotonic() + timeout_seconds
+    try:
+        deadline = time.monotonic() + timeout_seconds
+    except BaseException:
+        # No OS resources have been acquired; release the dispatch lock while
+        # preserving the original failure or interruption.
+        _RUN_LOCK.release()
+        raise
     try:
         k, a = _api()
         _check(type(cwd) is str and os.path.isabs(cwd) and os.path.isdir(cwd))
@@ -1240,12 +1250,24 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
         try:
             if k is not None:
                 if process is not None:
+                    cleanup_deadline = None
+                    try:
+                        cleanup_deadline = time.monotonic() + _CLEANUP_WAIT_SECONDS
+                    except BaseException as exc:
+                        # Still request termination and close owned handles. Without
+                        # a clock bound there is no safe exit/zero wait; quarantine.
+                        reason = _prior_outcome(exc)
+                        if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                            prior_outcome = reason
+                        cleanup_ok = False
                     if assigned and job:
                         cleanup_ok = cleanup_call(lambda: k.TerminateJobObject(job, 124)) and cleanup_ok
-                        cleanup_ok = cleanup_call(lambda: _wait_job_empty(k, job, deadline)) and cleanup_ok
+                        if cleanup_deadline is not None:
+                            cleanup_ok = cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline)) and cleanup_ok
                     elif not assigned:
                         cleanup_ok = cleanup_call(lambda: k.TerminateProcess(int(process), 125)) and cleanup_ok
-                        cleanup_ok = cleanup_call(lambda: _wait_child_exit(k, process, deadline)) and cleanup_ok
+                        if cleanup_deadline is not None:
+                            cleanup_ok = cleanup_call(lambda: _wait_child_exit(k, process, cleanup_deadline)) and cleanup_ok
                 if job:
                     cleanup_ok = close_call(job) and cleanup_ok
                 if process is not None:

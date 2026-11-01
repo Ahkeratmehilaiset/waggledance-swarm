@@ -167,8 +167,9 @@ def test_missing_extra_code_path_refuses(case):
     refused({**kwargs, "extra_code_paths": ["configs/missing.json"]}, "code_roots_invalid")
 
 
-def test_unresolved_local_import_refuses_as_incomplete_closure(tmp_path):
-    repo, commit = make_repo(tmp_path, {"tools/__init__.py": b"", "tools/a.py": b"from tools.ghost import value\n"})
+@pytest.mark.parametrize("source", [b"from tools.ghost import value\n", b"import tools.ghost\n"])
+def test_unresolved_local_import_refuses_as_incomplete_closure(tmp_path, source):
+    repo, commit = make_repo(tmp_path, {"tools/__init__.py": b"", "tools/a.py": source})
     site = make_tree(tmp_path / "site", {"x.py": b""})
     model = make_tree(tmp_path / "model", {"model.safetensors": WEIGHTS})
     refused(dict(git_executable=GIT, repository=str(repo), commit=commit, code_roots=["tools/a.py"],

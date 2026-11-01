@@ -10,13 +10,18 @@ intent binding the exact prior pointer digest (None = genesis), the prepared att
 pointer digest (e.g. a prepare_prefix_* attempt_sha256 later passed as
 expected_attempt_sha256), the prior and the candidate prefix pin. It is created
 crash-safe (fsynced unique stage, then a hard link that fails if the slot exists), so a
-torn write never leaves a partial intent. Resolution reads the shared pointer digest
-itself under the cooperating checkpoint lock (lock order: private-state lock, then
-checkpoint lock, as in publication) and answers only "landed" (pointer == attempt; the
-private state is moved to the candidate) or "unchanged" (pointer == prior); a third
-pointer, a legacy marker, a malformed intent or a private state matching neither side
-refuses and keeps the slot. Legacy methods refuse while an intent is open. A
-no_change empty advance (attempt == prior) cannot use an intent.
+torn write never leaves a partial intent. begin_intent and resolve_intent hold the
+cooperating checkpoint lock (lock order: private-state lock, then checkpoint lock, as
+in publication) from the shared pointer observation through every decision mutation
+(slot creation; state move and slot removal). Resolution answers "landed" (pointer ==
+attempt; the private state is moved to the candidate and the intent closed) or
+"unknown" (pointer == prior; NOTHING changes and the intent stays open, because an
+ordinary checkpoint-only writer that never takes the private lock could still land the
+same attempt later and cannot be fenced from here; the open intent then still catches
+it); a third pointer, a legacy marker, a malformed intent or a private state matching
+neither side refuses and keeps the slot. Clearing an attempt that never lands needs
+external reconciliation, as with the legacy marker. Legacy methods refuse while an
+intent is open. A no_change empty advance (attempt == prior) cannot use an intent.
 """
 from contextlib import contextmanager
 import hashlib
@@ -139,15 +144,21 @@ def _write_state(root, pointer, prefix):
         _fail()
 
 
-def _shared_pointer(shared, timeout):
-    """Digest of the shared pointer bytes (None when absent) under the cooperating checkpoint lock."""
+@contextmanager
+def _checkpoint_lock(shared, timeout):
+    """The cooperating checkpoint writer lock, always taken INSIDE the private-state lock (publication order)."""
     lock = cp._secure(shared / cp.LOCK, missing_leaf=True)
     with reader_slot(lock, timeout_seconds=timeout):
         cp._secure(lock)
-        pointer = cp._secure(shared / cp.POINTER, missing_leaf=True)
-        if not os.path.lexists(pointer):
-            return None
-        return cp._sha(cp._read(pointer, max_bytes=cp._MAX_POINTER_BYTES))
+        yield
+
+
+def _shared_pointer(shared):
+    """Digest of the shared pointer bytes (None when absent); the caller holds the checkpoint lock."""
+    pointer = cp._secure(shared / cp.POINTER, missing_leaf=True)
+    if not os.path.lexists(pointer):
+        return None
+    return cp._sha(cp._read(pointer, max_bytes=cp._MAX_POINTER_BYTES))
 
 
 def _root_disjoint(private, shared):
@@ -181,16 +192,23 @@ class _LockedState:
                     _fail()
             elif not os.path.lexists(target) or _load(target) != _value(prior_pointer, prior_prefix):
                 _fail()
-            if _shared_pointer(self._shared, self._timeout) != prior_pointer:
-                _fail()
-            _create_slot(self._root, raw)
+            # No cooperating checkpoint writer can move the pointer between this check and the slot.
+            with _checkpoint_lock(self._shared, self._timeout):
+                if _shared_pointer(self._shared) != prior_pointer:
+                    _fail()
+                _create_slot(self._root, raw)
             return
         except Exception:
             pass
         _fail()
 
     def resolve_intent(self, *, enabled=False):
-        """Close the open intent: "landed" or "unchanged" from the observed shared pointer, else refuse."""
+        """Close the open intent only when it LANDED; "unknown" keeps it open; anything else refuses.
+
+        The checkpoint lock is held from the pointer observation through the state move and the slot removal,
+        so no cooperating checkpoint writer acts inside the decision. A pointer still equal to the prior is
+        "unknown", never "unchanged": an ordinary checkpoint-only writer holding the prepared inputs could still
+        land the same attempt later and nothing here can fence it, so the intent stays open to catch that."""
         try:
             if enabled is not True or self._shared is None:
                 _fail()
@@ -201,25 +219,23 @@ class _LockedState:
             prior, prior_prefix, attempt, candidate = _load_intent(raw)
             cp._secure(target, missing_leaf=True)
             state = _load(target) if os.path.lexists(target) else None
-            current = _shared_pointer(self._shared, self._timeout)
-            if state == _value(attempt, candidate):
-                if current != attempt:
-                    _fail()
-                outcome = "landed"  # the state move already happened before an interruption
-            elif (state is None and prior is None) or (prior is not None and state == _value(prior, prior_prefix)):
-                if current == attempt:
+            with _checkpoint_lock(self._shared, self._timeout):
+                current = _shared_pointer(self._shared)
+                if state == _value(attempt, candidate):
+                    if current != attempt:
+                        _fail()  # the state move already happened before an interruption
+                elif (state is None and prior is None) or (prior is not None and state == _value(prior, prior_prefix)):
+                    if current == prior:
+                        return "unknown"
+                    if current != attempt:
+                        _fail()
                     _write_state(self._root, attempt, candidate)
-                    outcome = "landed"
-                elif current == prior:
-                    outcome = "unchanged"
                 else:
                     _fail()
-            else:
-                _fail()
-            if cp._read(pending, max_bytes=8192) != raw:
-                _fail()
-            os.unlink(pending)
-            return outcome
+                if cp._read(pending, max_bytes=8192) != raw:
+                    _fail()
+                os.unlink(pending)
+            return "landed"
         except Exception:
             pass
         _fail()

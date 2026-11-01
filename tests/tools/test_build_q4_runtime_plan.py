@@ -83,6 +83,34 @@ def refused(kwargs, token):
     return caught.value
 
 
+@pytest.mark.parametrize("error", [
+    UnicodeDecodeError("secretcodec", b"\xff", 0, 1, "secret_bytes"),
+    RuntimeError("secret_runtime_content"),
+    ValueError("secret_value"),
+])
+def test_unexpected_errors_refuse_with_fixed_token_without_detail(case, monkeypatch, error):
+    kwargs, _, _, _ = case
+
+    def fail(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(plan_mod, "_code_plan", fail)
+    caught = refused(kwargs, "runtime_plan_refused")
+    assert caught.__context__ is None and caught.__cause__ is None
+    assert "secret" not in str(caught)
+
+
+def test_known_manifest_refusal_keeps_its_fixed_token(case, monkeypatch):
+    kwargs, _, _, _ = case
+
+    def fail(*_args, **_kwargs):
+        raise ValueError("tree_nonregular")
+
+    monkeypatch.setattr(plan_mod, "_code_plan", fail)
+    caught = refused(kwargs, "tree_nonregular")
+    assert caught.__context__ is None and caught.__cause__ is None
+
+
 def test_default_off_reads_nothing(monkeypatch):
     monkeypatch.setattr(plan_mod.subprocess, "run", lambda *a, **k: pytest.fail("git ran while disabled"))
     monkeypatch.setattr(plan_mod.subprocess, "Popen", lambda *a, **k: pytest.fail("git ran while disabled"))

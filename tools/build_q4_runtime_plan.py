@@ -87,6 +87,17 @@ _GIT_CONFIG = tuple(item for name in ("protocol.allow", "protocol.git.allow", "p
 _TRUST = {"site_provenance": "UNKNOWN", "dependency_closure": "NOT_VERIFIED",
           "dynamic_imports": "HEURISTIC_FLAGS_CALLER_LISTED", "git_executable": "CALLER_TRUSTED",
           "code_closure": "STATIC_UNVERIFIED", "native_dll_closure": "NOT_VERIFIED"}
+# Fixed runtime_manifest refusal vocabulary; never echo arbitrary exception text.
+_MANIFEST_REFUSALS = frozenset({
+    "case_collision", "digest_invalid", "duplicate_json_key", "duplicate_path", "expected_identity_invalid",
+    "file_changed", "file_digest_mismatch", "file_directory_collision", "file_invalid", "file_read_unavailable",
+    "file_size_mismatch", "file_unavailable", "files_invalid", "json_constant_invalid", "manifest_changed",
+    "manifest_identity_mismatch", "manifest_inside_tree", "manifest_invalid", "manifest_pin_invalid",
+    "manifest_pin_mismatch", "manifest_read_unavailable", "named_stream", "path_invalid", "path_reparse",
+    "path_unavailable", "record_invalid", "root_invalid", "runtime_over_budget", "size_invalid",
+    "stream_unavailable", "tree_changed", "tree_mismatch", "tree_nonregular", "tree_over_budget", "tree_reparse",
+    "tree_unavailable",
+})
 
 
 class RuntimePlanRefused(ValueError):
@@ -468,8 +479,8 @@ def plan_runtime_inputs(*, git_executable, repository, commit, code_roots, site_
     except RuntimePlanRefused as exc:
         token = exc.args[0]
     except ValueError as exc:
-        reason = exc.args[0] if exc.args else ""
-        token = reason if type(reason) is str and re.fullmatch(r"[a-z_]{1,64}", reason) else "runtime_plan_refused"
-    except (OSError, UnicodeError, RecursionError, MemoryError):
+        reason = exc.args[0] if type(exc) is ValueError and exc.args else None
+        token = reason if type(reason) is str and reason in _MANIFEST_REFUSALS else "runtime_plan_refused"
+    except Exception:
         token = "runtime_plan_refused"
     raise RuntimePlanRefused(token)

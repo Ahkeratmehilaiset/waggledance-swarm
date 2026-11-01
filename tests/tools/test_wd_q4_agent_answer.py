@@ -1,7 +1,9 @@
 """Synthetic in-memory agent answer seam: never a live agent or snapshot."""
 import copy
+import asyncio
 import hashlib
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -40,7 +42,8 @@ def data():
             "stored_text": record["stored_text"]}
     answer = {"schema": "wd.q4-lane-answer.v1", "lane": lane, "status": "ANSWER", "reason": "",
               "result_count": 1, "results": [item], "binding": binding, "trust": dict(lane_query._TRUST)}
-    values = {"lane": lane, "query_bytes": b"synthetic-private-query", "projection_bytes": raw,
+    query = b'{"situation":"synthetic-private-query","time":"2026-01-01T00:01:02Z"}'
+    values = {"lane": lane, "query_bytes": query, "projection_bytes": raw,
               "policy_bytes": policy, "roster_bytes": roster_raw, "expected_binding": binding,
               "query_utc": "2026-01-01T00:01:02.000000Z", "current_utc": "2026-01-01T00:01:10.000000Z",
               "max_age_seconds": 8}
@@ -72,6 +75,75 @@ def test_exact_answer_and_time_are_bound_and_transport_is_called_once(data):
     assert result == {"status": "OK", "answer": answer, "absence_proven": False,
                       "freshness": "UNKNOWN", "caller_authentication": "UNKNOWN"}
     assert b"synthetic-private-query" not in json.dumps(result).encode()
+
+
+@pytest.mark.parametrize("query", (
+    b'{"situation":"synthetic-private-query","time":"2026-01-01T00:00:00Z"}',
+    b'{"situation":"synthetic-private-query","time":"2026-01-01T00:01:02Z","time":"2026-01-01T00:01:02Z"}',
+    b'{"situation":"synthetic-private-query","time":"2026-01-01T00:01:02Z","extra":1}',
+    b'{"situation":"synthetic-private-query","time":',
+    b'{"situation":" ","time":"2026-01-01T00:01:02Z"}',
+    b'{"situation":42,"time":"2026-01-01T00:01:02Z"}',
+), ids=("time-mismatch", "duplicate", "extra", "malformed", "empty-situation", "nonstring-situation"))
+def test_query_document_must_match_bound_time_before_transport(data, query):
+    values, _ = data
+    values["query_bytes"] = query
+    calls = []
+    with pytest.raises(ValueError, match="^agent_answer_refused$") as caught:
+        invoke(**values, transport=lambda **kw: calls.append(kw), enabled=True)
+    assert not calls
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert "synthetic-private-query" not in repr(caught.value)
+
+
+@pytest.mark.parametrize("codepoint", [*range(32), 127], ids=lambda value: f"control-{value:02x}")
+def test_all_c0_and_del_controls_refused_before_transport(data, codepoint):
+    values, _ = data
+    values["query_bytes"] = json.dumps({"situation": "synthetic" + chr(codepoint) + "query",
+        "time": "2026-01-01T00:01:02Z"}).encode("ascii")
+    calls = []
+    with pytest.raises(ValueError, match="^agent_answer_refused$"):
+        invoke(**values, transport=lambda **kw: calls.append(kw), enabled=True)
+    assert not calls
+
+
+def test_lane_inputs_seconds_query_matches_canonical_microsecond_binding(data):
+    values, answer = data
+    query, when = lane_query._inputs("synthetic-private-query", datetime(2026, 1, 1, 0, 1, 2, tzinfo=timezone.utc),
+        "a" * 40, "a" * 64, "a" * 64, "a" * 64, values["expected_binding"], "synthetic-root",
+        "synthetic-plan", values["projection_bytes"], values["policy_bytes"], values["roster_bytes"])
+    assert when == "2026-01-01T00:01:02Z"
+    values["query_bytes"] = query
+    calls = []
+    def transport(**kwargs):
+        calls.append(kwargs)
+        return {"status": "OK", "query_utc": kwargs["query_utc"], "output": answer_bytes(answer)}
+    assert invoke(**values, transport=transport, enabled=True)["status"] == "OK"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("inner_time,outer_time", [
+    ("2026-01-01T00:01:03Z", "2026-01-01T00:01:02.000000Z"),
+    ("2026-01-01T00:01:02Z", "2026-01-01T00:01:02.000001Z"),
+    ("2026-01-01T00:01:02.000000Z", "2026-01-01T00:01:02.000000Z"),
+], ids=("different-second", "nonzero-microseconds", "inner-not-seconds"))
+def test_lane_inputs_time_binding_rejects_nonidentical_instants_or_format(data, inner_time, outer_time):
+    values, _ = data
+    values["query_utc"] = outer_time
+    values["query_bytes"] = json.dumps({"situation": "synthetic", "time": inner_time}).encode()
+    calls = []
+    with pytest.raises(ValueError, match="^agent_answer_refused$"):
+        invoke(**values, transport=lambda **kw: calls.append(kw), enabled=True)
+    assert not calls
+
+
+def test_asyncio_cancellation_preserves_type_without_query_details(data):
+    values, _ = data
+    def transport(**kwargs):
+        raise asyncio.CancelledError("synthetic-private-query")
+    with pytest.raises(asyncio.CancelledError, match="^agent_answer_unknown$") as caught:
+        invoke(**values, transport=transport, enabled=True)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
 
 
 def test_abstain_does_not_prove_absence(data):

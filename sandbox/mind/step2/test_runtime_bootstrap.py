@@ -68,6 +68,26 @@ def test_anchored_runtime_runs_reader_via_stdin(runtime):
     assert payload["args"][payload["args"].index("--expected-runtime-revision") + 1] == REVISION
 
 
+def test_runtime_site_does_not_shadow_standard_library(runtime):
+    root, manifest, _, _ = runtime
+    reader = root / READER
+    reader.write_bytes(b"import fractions\n" + reader.read_bytes())
+    shadow = root / "site" / "fractions.py"
+    shadow.write_bytes(b"raise RuntimeError('synthetic stdlib shadow')\n")
+    document = json.loads(manifest.read_bytes())
+    for item in document["files"]:
+        if item["path"] == READER:
+            content = reader.read_bytes()
+            item.update(size=len(content), sha256=hashlib.sha256(content).hexdigest())
+    content = shadow.read_bytes()
+    document["files"].append({"path": "site/fractions.py", "size": len(content),
+                              "sha256": hashlib.sha256(content).hexdigest()})
+    raw = json.dumps(document, sort_keys=True).encode()
+    manifest.write_bytes(raw)
+    result = invoke(runtime, pin=hashlib.sha256(raw).hexdigest())
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 @pytest.mark.parametrize("kind", ["manifest_pin", "generation", "revision", "site", "reader"])
 def test_bad_pin_or_runtime_tamper_refuses_before_reader_import(runtime, kind):
     kwargs = {}

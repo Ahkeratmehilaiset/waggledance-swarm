@@ -72,7 +72,11 @@ def main(argv=None):
     # No PYTHONPATH, ambient cwd or user-site participates; these two paths
     # belong to the exact tree verified immediately above. The trusted caller
     # must still control concurrent writes and the Windows native DLL search.
-    sys.path[:0] = [str(code), str(site)]
+    # Keep the pinned application code first, but do not let a package-site
+    # backport shadow the interpreter's standard library (for example typing).
+    # The isolated interpreter's own paths remain ahead of the pinned site.
+    sys.path.insert(0, str(code))
+    sys.path.append(str(site))
     sys.argv = ["sandbox.mind.step2.wd_q4_private_read", "--memory", args.memory,
                 "--descriptor", args.descriptor, "--descriptor-sha256", args.descriptor_sha256,
                 "--lock-file", args.lock_file, "--lock-timeout", args.lock_timeout,

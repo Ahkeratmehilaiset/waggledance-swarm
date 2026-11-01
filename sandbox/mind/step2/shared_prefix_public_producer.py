@@ -7,8 +7,10 @@ private checkpoint contains prefix digests and must be protected by the caller.
 This primitive never reads live data unless explicitly invoked with caller paths,
 never installs or deletes, and never includes a prefix digest in its report.
 request.fenced=True (opt-in, default off) publishes through the private intent and
-the checkpoint fence; only a resolved "landed" reports, everything else keeps the
-intent and reports publication_state_unknown. It fences cooperating writers only.
+the checkpoint fence; only a resolved "landed" reports, any Exception reports
+publication_state_unknown. KeyboardInterrupt/SystemExit propagate unchanged: the
+caller quarantines both roots and never retries (states in _publish_fenced). It
+fences cooperating writers only.
 """
 from dataclasses import dataclass, field
 import hashlib
@@ -332,9 +334,20 @@ def _publish_prepared(request, state, result, projection, tasks, previous, *, ca
 def _publish_fenced(request, state, attempt, candidate, status, generation, commit, args, kwargs):
     """Opt-in fenced route: durable intent + fence for exactly prior -> attempt, fenced commit, resolution.
 
-    The commit result is not trusted: resolution under the checkpoint lock decides. Only "landed" reports;
-    "not_landed", "unknown", a refused resolution or an interruption report publication_state_unknown and
-    keep the intent open (never retried here). Older unfenced writers are not stopped by the fence.
+    The commit result is not trusted: resolution under the checkpoint lock decides. Only "landed" reports.
+    An Exception reports publication_state_unknown, never retried here:
+    - from begin_intent: the fence it may have opened for exactly this binding is closed as not_landed (that
+      attempt can never land afterwards; a fence of another binding is never touched); a slot it may have
+      created keeps the private root pending;
+    - from the commit: resolution still runs; "not_landed" removes the fence, KEEPS the intent and leaves the
+      pointer unfenced, so a later writer can move it and strand the intent (resolution then refuses);
+      "unknown" or a refused resolution keeps what is there.
+    KeyboardInterrupt, SystemExit and every other non-Exception propagate unchanged with no cleanup. The caller
+    must quarantine both roots as publication unknown and never retry; the persisted state is then one of: an
+    open fence with no intent (interrupted inside begin_intent: every cooperating writer refuses until it is
+    resolved with the fence's own binding), fence + intent (before or inside the commit: resolve_intent decides
+    later), or a recorded outcome with the intent kept (inside resolution: a rerun reaches the same outcome).
+    Older unfenced writers are not stopped by the fence.
     """
     outcome = None
     try:
@@ -343,7 +356,11 @@ def _publish_fenced(request, state, attempt, candidate, status, generation, comm
         state.begin_intent(request.expected_pointer_sha256, request.start_prefix, attempt, candidate,
                            enabled=True, fence=True)
     except Exception:
-        pass
+        try:
+            checkpoint.resolve_prefix_fence(request.root, expected_prior_pointer_sha256=request.expected_pointer_sha256,
+                                            expected_attempt_sha256=attempt, enabled=True, timeout=request.timeout)
+        except Exception:
+            pass  # no fence of exactly this binding, or a refusal: nothing changed
     else:
         try:
             commit(*args, expected_attempt_sha256=attempt, fenced=True, **kwargs)

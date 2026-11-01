@@ -444,3 +444,196 @@ def test_fenced_multiwindow_catchup_genesis_and_history_land_through_the_fence(t
     assert "q4-prefix-fence.json" not in _fence_files(root)
     for report in (a, b):
         assert start.sha256 not in json.dumps(report) and end_a.sha256 not in json.dumps(report)
+
+
+# --- v3: real interruptions (BaseException), orphan fence and not_landed states of the fenced route ------------------
+
+def _fence_binding(root):
+    value = json.loads((root / "q4-prefix-fence.json").read_bytes())
+    return value["prior_pointer_sha256"], value["attempt_sha256"]
+
+
+def _pending(chain):
+    from sandbox.mind.step2 import prefix_private_state as ps
+    return (chain.private / ps._PENDING).exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
+def test_an_exception_after_the_fence_opens_closes_that_orphan_fence_as_not_landed(tmp_path, monkeypatch):
+    from sandbox.mind.step2 import prefix_private_state as ps
+    chain = _fenced_chain(tmp_path)
+    mod, root = chain.mod, chain.root
+    first, _, kw_a, start = chain.delta(chain.f.PUBLIC_EVENTS)
+
+    def slot_failure(*args, **kwargs):
+        raise OSError("slot failure after the fence opened")
+    with monkeypatch.context() as patch:
+        patch.setattr(ps, "_create_slot", slot_failure)
+        with pytest.raises(mod.PrefixProducerRefused, match="^publication_state_unknown$") as error:
+            mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
+    assert error.value.__context__ is None and error.value.__cause__ is None
+    records = _fence_files(root)
+    assert len(records) == 1 and records[0].endswith(".not_landed.json")  # no orphan fence, attempt refused for good
+    assert not _pending(chain) and not (root / "q4-latest.json").exists()
+    # The shared pointer is not left fenced: a new publication of another generation lands.
+    b = mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-b"))
+    assert b["status"] == "PUBLISHED_GENESIS" and b["pointer_sha256"] == _sha_file(root / "q4-latest.json")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
+def test_an_exception_never_closes_a_fence_of_another_binding(tmp_path, monkeypatch):
+    from sandbox.mind.step2 import prefix_private_state as ps
+    chain = _fenced_chain(tmp_path)
+    mod, root = chain.mod, chain.root
+    first, _, kw_a, start = chain.delta(chain.f.PUBLIC_EVENTS)
+    with monkeypatch.context() as patch:  # a real interruption leaves gen-a's fence without an intent
+        patch.setattr(ps, "_create_slot", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+        with pytest.raises(KeyboardInterrupt):
+            mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
+    binding = _fence_binding(root)
+    with pytest.raises(mod.PrefixProducerRefused, match="^publication_state_unknown$"):
+        mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-b"))
+    assert _fence_binding(root) == binding and _fence_files(root) == ["q4-prefix-fence.json"]
+    assert not _pending(chain) and not (root / "q4-latest.json").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
+def test_keyboard_interrupt_after_the_fence_opens_propagates_and_leaves_an_orphan_fence(tmp_path, monkeypatch):
+    from sandbox.mind.step2 import prefix_private_state as ps
+    chain = _fenced_chain(tmp_path)
+    mod, root = chain.mod, chain.root
+    first, _, kw_a, start = chain.delta(chain.f.PUBLIC_EVENTS)
+    with monkeypatch.context() as patch:
+        patch.setattr(ps, "_create_slot", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+        with pytest.raises(KeyboardInterrupt):  # never converted into a report or a refusal token
+            mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
+    # Actual state: the fence is open with NO intent; every cooperating writer is refused until it is resolved.
+    assert _fence_files(root) == ["q4-prefix-fence.json"] and not _pending(chain)
+    other = tmp_path / "other-private"
+    other.mkdir()
+    with pytest.raises(mod.PrefixProducerRefused, match="^publication_state_unknown$"):
+        mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-b", fenced=False,
+                                                                      private=other))
+    assert not (root / "q4-latest.json").exists()
+    # Manual quarantine resolution with the fence's own binding: not_landed, the fence is removed.
+    prior, attempt = _fence_binding(root)
+    assert mod.checkpoint.resolve_prefix_fence(root, expected_prior_pointer_sha256=prior, expected_attempt_sha256=attempt,
+                                               enabled=True)["status"] == "not_landed"
+    assert _fence_files(root) == ["q4-prefix-fence-" + attempt + ".not_landed.json"]
+    c = mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-c"))
+    assert c["status"] == "PUBLISHED_GENESIS" and c["pointer_sha256"] != attempt
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
+@pytest.mark.parametrize("landed", [False, True])
+def test_keyboard_interrupt_in_the_fenced_commit_propagates_and_resolves_later(tmp_path, monkeypatch, landed):
+    from sandbox.mind.step2 import prefix_private_state as ps
+    chain = _fenced_chain(tmp_path)
+    mod, root = chain.mod, chain.root
+    first, _, kw_a, start = chain.delta(chain.f.PUBLIC_EVENTS)
+    real = mod.checkpoint.commit_prefix_genesis
+
+    def interrupted(*args, **kwargs):
+        if landed:
+            real(*args, **kwargs)
+        raise KeyboardInterrupt()
+    with monkeypatch.context() as patch:
+        patch.setattr(mod.checkpoint, "commit_prefix_genesis", interrupted)
+        with pytest.raises(KeyboardInterrupt):
+            mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
+    prior, attempt = _fence_binding(root)  # fence AND intent both persisted; no resolution ran
+    assert _pending(chain) and (root / "q4-latest.json").exists() is landed
+    with _private_state(chain) as state:
+        assert state.resolve_intent(enabled=True) == ("landed" if landed else "not_landed")
+    if landed:
+        assert not _pending(chain) and _sha_file(root / "q4-latest.json") == attempt
+        with _private_state(chain) as state:
+            assert state.load(attempt) == first["candidate_prefix"]
+    else:  # not_landed removes the fence but KEEPS the intent
+        assert _pending(chain) and _fence_files(root) == ["q4-prefix-fence-" + attempt + ".not_landed.json"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
+@pytest.mark.parametrize("point", ["after_fence_resolution", "after_state_move"])
+def test_system_exit_inside_resolution_propagates_and_a_rerun_resolves_landed(tmp_path, monkeypatch, point):
+    from sandbox.mind.step2 import prefix_private_state as ps
+    chain = _fenced_chain(tmp_path)
+    mod, root = chain.mod, chain.root
+    first, _, kw_a, start = chain.delta(chain.f.PUBLIC_EVENTS)
+    target, name = (mod.checkpoint, "resolve_prefix_fence") if point == "after_fence_resolution" else (ps, "_write_state")
+    real = getattr(target, name)
+
+    def exits(*args, **kwargs):
+        real(*args, **kwargs)
+        raise SystemExit(3)
+    with monkeypatch.context() as patch:
+        patch.setattr(target, name, exits)
+        with pytest.raises(SystemExit):
+            mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
+    landed = _sha_file(root / "q4-latest.json")
+    assert _pending(chain) and _fence_files(root) == ["q4-prefix-fence-" + landed + ".landed.json"]
+    with _private_state(chain) as state:
+        assert state.resolve_intent(enabled=True) == "landed"
+    assert not _pending(chain)
+    with _private_state(chain) as state:
+        assert state.load(landed) == first["candidate_prefix"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
+def test_not_landed_unfences_the_pointer_and_a_later_writer_strands_the_kept_intent(tmp_path, monkeypatch):
+    from sandbox.mind.step2 import prefix_private_state as ps
+    chain = _fenced_chain(tmp_path)
+    mod, root = chain.mod, chain.root
+    first, _, kw_a, start = chain.delta(chain.f.PUBLIC_EVENTS)
+    with monkeypatch.context() as patch:
+        patch.setattr(mod.checkpoint, "commit_prefix_genesis",
+                      lambda *a, **k: (_ for _ in ()).throw(mod.checkpoint.CheckpointRefused("checkpoint_refused")))
+        with pytest.raises(mod.PrefixProducerRefused, match="^publication_state_unknown$"):
+            mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
+    records = _fence_files(root)
+    assert len(records) == 1 and records[0].endswith(".not_landed.json") and _pending(chain)  # no fence any more
+    other = tmp_path / "other-private"
+    other.mkdir()
+    moved = mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-b", fenced=False,
+                                                                          private=other))
+    assert moved["status"] == "PUBLISHED_GENESIS"  # the shared pointer was NOT fenced after not_landed
+    kept = (chain.private / ps._PENDING).read_bytes()
+    with _private_state(chain) as state:
+        with pytest.raises(ps.StateRefused):
+            state.resolve_intent(enabled=True)  # stranded: quarantine by hand, never landed, never retried
+    assert (chain.private / ps._PENDING).read_bytes() == kept
+    with pytest.raises(mod.PrefixProducerRefused, match="^private_state_refused$"):
+        mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-c"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
+def test_keyboard_interrupt_in_a_fenced_catchup_commit_propagates_unchanged(tmp_path, monkeypatch):
+    chain = _fenced_chain(tmp_path)
+    mod, root = chain.mod, chain.root
+    first, _, kw_a, start = chain.delta(chain.f.PUBLIC_EVENTS)
+    request = chain.request(kw_a, start, None, "gen-a")
+    request = replace(request, config=replace(request.config, source=replace(request.config.source, max_rows=1)))
+    with monkeypatch.context() as patch:
+        patch.setattr(mod.checkpoint, "commit_prefix_genesis", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+        with pytest.raises(KeyboardInterrupt):
+            mod.publish_public_catchup(enabled=True, request=request, max_windows=8)
+    assert _fence_files(root) == ["q4-prefix-fence.json"] and _pending(chain)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
+def test_a_history_orphan_fence_is_closed_against_its_real_prior(tmp_path, monkeypatch):
+    from sandbox.mind.step2 import prefix_private_state as ps
+    chain = _fenced_chain(tmp_path)
+    mod, root = chain.mod, chain.root
+    first, _, kw_a, start = chain.delta(chain.f.PUBLIC_EVENTS)
+    a = mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
+    end_a = first["candidate_prefix"]
+    later, _, kw_b, _ = chain.delta(chain.f.LATER_PUBLIC_EVENTS, end_a.cursor, end_a)
+    with monkeypatch.context() as patch:
+        patch.setattr(ps, "_create_slot", lambda *a, **k: (_ for _ in ()).throw(OSError("slot failure")))
+        with pytest.raises(mod.PrefixProducerRefused, match="^publication_state_unknown$"):
+            mod.publish_public_prefix(enabled=True, request=chain.request(kw_b, end_a, a["pointer_sha256"], "gen-b"))
+    not_landed = [n for n in _fence_files(root) if n.endswith(".not_landed.json")]
+    assert "q4-prefix-fence.json" not in _fence_files(root) and len(not_landed) == 1
+    assert json.loads((root / not_landed[0]).read_bytes())["prior_pointer_sha256"] == a["pointer_sha256"]
+    assert not _pending(chain) and _sha_file(root / "q4-latest.json") == a["pointer_sha256"]

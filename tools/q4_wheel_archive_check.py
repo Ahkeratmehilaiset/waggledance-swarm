@@ -4,6 +4,8 @@ This conservative check validates selected ZIP paths, WHEEL tags and RECORD
 SHA-256/size entries. It does not establish publisher identity, package safety,
 dependency closure, interpreter ABI, OS isolation, or installation suitability.
 Same-user races after the final check remain outside its guarantees.
+The ZIP library parses the central directory before our entry-count check, so
+the entry limit is not a hard bound on parser memory or CPU use.
 """
 
 import base64
@@ -57,6 +59,13 @@ def _inspect_archive(archive, wheel_path, target_tag, max_uncompressed_bytes):
         if total > max_uncompressed_bytes:
             raise ValueError('budget_exceeded')
         files[name] = entry
+
+    # Windows cannot represent one case-insensitive path as both a file and
+    # a parent directory, even when each complete member name is distinct.
+    for name in folded:
+        parts = name.split('/')
+        if any('/'.join(parts[:index]) in folded for index in range(1, len(parts))):
+            raise ValueError('file_directory_collision')
 
     info_roots = {name.split('/')[0] for name in files if '.dist-info/' in name}
     if len(info_roots) != 1:

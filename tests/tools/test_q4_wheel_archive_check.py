@@ -34,10 +34,11 @@ def record_hash(data):
 
 
 def make_archive(*, extra=(), missing_wheel=False, wheel_text=None, record_change=None,
-                 duplicate=None, symlink=False, reparse=False, omit_record=False):
+                 duplicate=None, symlink=False, reparse=False, omit_record=False,
+                 module_path=MODULE):
     if wheel_text is None:
         wheel_text = b"Wheel-Version: 1.0\nGenerator: synthetic\nRoot-Is-Purelib: true\nTag: py3-none-any\n\n"
-    entries = [(MODULE, b"# synthetic, never execute\n")]
+    entries = [(module_path, b"# synthetic, never execute\n")]
     if not missing_wheel:
         entries.append((WHEEL, wheel_text))
     entries.extend(extra)
@@ -129,6 +130,16 @@ def test_duplicate_or_case_collision_rejected(wheel_file, collision):
     path = wheel_file(data)
     with pytest.raises(ValueError):
         inspect(path, data)
+
+
+def test_windows_casefold_file_directory_prefix_collision_rejected(wheel_file, tmp_path):
+    """Distinct ZIP names with correct RECORD collide when materialized on Windows."""
+    data = make_archive(module_path="ALPHA/__init__.py", extra=[("alpha", b"plain file")])
+    path = wheel_file(data)
+    with pytest.raises(ValueError):
+        inspect(path, data)
+    assert list(tmp_path.iterdir()) == [path]
+    assert path.read_bytes() == data
 
 
 def test_symlink_entry_rejected(wheel_file):

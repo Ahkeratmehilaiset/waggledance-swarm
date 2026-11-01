@@ -430,13 +430,14 @@ def snapshot_case(monkeypatch):
             "tasks": sorted(args["approved_tasks"]), "resolved": resolved}
 
 
-def synthetic_runtime(base, stub=STUB):
+def synthetic_runtime(base, stub=STUB, namespace=False):
     from sandbox.mind.step2 import runtime_builder
     root = base / "runtime"
     step2 = root / "assets" / "code" / "sandbox" / "mind" / "step2"
     step2.mkdir(parents=True)
-    for package in (step2.parents[1], step2.parent, step2):
-        (package / "__init__.py").write_bytes(b"")
+    if not namespace:
+        for package in (step2.parents[1], step2.parent, step2):
+            (package / "__init__.py").write_bytes(b"")
     (step2 / "shared_index_checkpoint.py").write_bytes(stub.encode("ascii"))
     (root / "site").mkdir()
     (root / "site" / "synthetic_site.txt").write_bytes(b"site")
@@ -567,6 +568,15 @@ def test_public_backend_roundtrip_returns_parent_reresolved_projection_text(tmp_
                                   "freshness": "UNKNOWN", "runtime": "MANIFEST_VERIFIED_BEFORE_IMPORT_NOT_ISOLATED",
                                   "validation": "PARENT_RERESOLVED_AGAINST_PINNED_PROJECTION"}
     assert sha(QUERY) not in output.decode("ascii") and json.loads(QUERY)["situation"] not in output.decode("ascii")
+
+
+@windows
+def test_public_backend_roundtrip_with_real_tree_namespace_layout(tmp_path, monkeypatch):
+    # Production has no __init__.py in sandbox, sandbox/mind, or sandbox/mind/step2.
+    case = snapshot_case(monkeypatch)
+    runtime = synthetic_runtime(tmp_path, make_stub(case["resolved"]), namespace=True)
+    output, code = public_call(tmp_path, case=case, runtime=runtime)
+    assert code == 0 and json.loads(output)["results"] == case["resolved"]
 
 
 @windows
@@ -892,3 +902,71 @@ def test_module_origins_accept_only_the_interpreter_stdlib_and_dlls(monkeypatch)
     for allowed in (base / "Lib" / "json" / "__init__.py", base / "DLLs" / "_ctypes.pyd"):
         module.__file__ = str(allowed)
         transport._module_origins(before, roots)
+
+
+@pytest.mark.parametrize("name", ["sandbox", "sandbox.mind", "sandbox.mind.step2"])
+@pytest.mark.parametrize("variant", ["good", "foreign", "extra", "parent", "forged_loader", "forged_path",
+                                     "forged_name", "forged_origin", "forged_file", "missing", "regular_package"])
+def test_namespace_origins_accept_only_the_exact_verified_code_directories(tmp_path, monkeypatch, name, variant):
+    import importlib.machinery
+    import types
+
+    root = tmp_path / "code"
+    expected = root.joinpath(*name.split("."))
+    expected.mkdir(parents=True)
+    before = set(sys.modules) - {name}
+    locations = [str(expected)]
+    loader = importlib.machinery.NamespaceLoader(name, locations, None)
+    spec = importlib.machinery.ModuleSpec(name, loader, is_package=True)
+    spec.submodule_search_locations = locations
+    module = types.ModuleType(name)
+    module.__file__ = None
+    module.__spec__ = spec
+    module.__loader__ = loader
+    module.__path__ = locations
+    if variant == "foreign":
+        foreign = tmp_path / "foreign"
+        foreign.mkdir()
+        locations[:] = [str(foreign)]
+    elif variant == "extra":
+        locations.append(str(tmp_path))
+    elif variant == "parent":
+        locations[:] = [str(expected.parent)]
+    elif variant == "forged_loader":
+        spec.loader = object()
+        module.__loader__ = spec.loader
+    elif variant == "forged_path":
+        module.__path__ = list(locations)
+    elif variant == "forged_name":
+        spec.name = "another"
+    elif variant == "forged_origin":
+        spec.origin = "built-in"
+    elif variant == "forged_file":
+        module.__file__ = str(expected / "forged.py")
+    elif variant == "missing":
+        locations[:] = [str(expected / "missing")]
+    elif variant == "regular_package":
+        (expected / "__init__.py").write_bytes(b"")
+    monkeypatch.setitem(sys.modules, name, module)
+    if variant == "good":
+        transport._module_origins(before, [str(root)], root)
+    else:
+        with pytest.raises(transport._Refused):
+            transport._module_origins(before, [str(root)], root)
+
+
+def test_unknown_namespace_remains_refused(tmp_path, monkeypatch):
+    import importlib.machinery
+    import types
+
+    name = "unexpected_namespace"
+    before = set(sys.modules) - {name}
+    paths = [str(tmp_path)]
+    loader = importlib.machinery.NamespaceLoader(name, paths, None)
+    spec = importlib.machinery.ModuleSpec(name, loader, is_package=True)
+    spec.submodule_search_locations = paths
+    module = types.ModuleType(name)
+    module.__spec__, module.__loader__, module.__path__ = spec, loader, paths
+    monkeypatch.setitem(sys.modules, name, module)
+    with pytest.raises(transport._Refused):
+        transport._module_origins(before, [str(tmp_path)], tmp_path)

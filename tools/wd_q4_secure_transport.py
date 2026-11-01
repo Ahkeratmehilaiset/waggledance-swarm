@@ -658,15 +658,44 @@ def _interpreter_roots():
     return [os.path.normcase(os.path.realpath(path)) for path in (base / "Lib", base / "DLLs")]
 
 
-def _module_origins(before, roots):
-    """Every module added since ``before`` must come from a verified root or the interpreter's Lib/DLLs."""
+def _module_origins(before, roots, namespace_root=None):
+    """Check newly imported origins, including only the three known code-root namespaces.
+
+    Namespace inspection is not an authenticity proof; the runtime tree and
+    module state can still change after verification (same-user TOCTOU).
+    """
+    from importlib.machinery import NamespaceLoader
+
+    namespaces = {"sandbox": ("sandbox",), "sandbox.mind": ("sandbox", "mind"),
+                  "sandbox.mind.step2": ("sandbox", "mind", "step2")}
     excluded = os.path.normcase(os.path.realpath(Path(sys.base_prefix) / "Lib" / "site-packages"))
     for name, module in list(sys.modules.items()):
         if name in before or module is None:
             continue
         origin = getattr(module, "__file__", None)
+        spec = getattr(module, "__spec__", None)
+        if name in namespaces and origin is not None:
+            # A namespace cannot claim a regular file to bypass location checks.
+            _check(not isinstance(getattr(spec, "loader", None), NamespaceLoader))
         if origin is None:
-            spec = getattr(module, "__spec__", None)
+            if name in namespaces:
+                _check(namespace_root is not None)
+                root = os.path.normcase(os.path.abspath(namespace_root))
+                _check(root == os.path.normcase(os.path.realpath(root)) and
+                       any(root == os.path.normcase(os.path.abspath(item)) for item in roots))
+                expected = os.path.join(root, *namespaces[name])
+                paths = getattr(spec, "submodule_search_locations", None)
+                _check(getattr(spec, "name", None) == name and getattr(spec, "origin", None) is None and
+                       isinstance(getattr(spec, "loader", None), NamespaceLoader) and
+                       getattr(module, "__loader__", None) is spec.loader and paths is not None and
+                       getattr(module, "__path__", None) is paths)
+                locations = list(paths)
+                _check(len(locations) == 1 and type(locations[0]) is str and os.path.isabs(locations[0]))
+                path = os.path.normcase(os.path.abspath(locations[0]))
+                _check(path == expected and _under(path, root) and os.path.isdir(path) and
+                       os.path.normcase(os.path.realpath(path)) == expected and
+                       not os.path.exists(os.path.join(path, "__init__.py")))
+                continue
             _check(name in sys.builtin_module_names or getattr(spec, "origin", None) in ("built-in", "frozen"))
             continue
         path = os.path.normcase(os.path.realpath(origin))
@@ -789,7 +818,7 @@ def _fixed_child_backend(plan, peer_path):
     import importlib
     module = importlib.import_module("sandbox.mind.step2.shared_index_checkpoint")
     _check(os.path.normcase(os.path.abspath(module.__file__)) == os.path.normcase(os.path.abspath(entry)))
-    _module_origins(before, roots)
+    _module_origins(before, roots, code)
     query_public_snapshot = module.query_public_snapshot
     _check(callable(query_public_snapshot))
 
@@ -801,7 +830,7 @@ def _fixed_child_backend(plan, peer_path):
                                        model_dir=str(model), expected_runtime_revision=plan["runtime_revision"],
                                        enabled=True)
         # The real query imports lazily, so origins are checked again after the call.
-        _module_origins(before, roots)
+        _module_origins(before, roots, code)
         _check(type(result) is dict and result.get("status") in ("ANSWER", "ABSTAIN", "DEGRADED"))
         return _canonical({"schema": "wd.q4-fixed-public-answer.v1", "status": result["status"],
                            "results": _fixed_closed_results(result.get("results")), "plan_sha256": _sha(plan_bytes),

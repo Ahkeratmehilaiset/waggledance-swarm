@@ -92,6 +92,13 @@ class _Limits(C.Structure):
                 ("peak_process", C.c_size_t), ("peak_job", C.c_size_t)]
 
 
+class _JobAccounting(C.Structure):
+    _fields_ = [("total_user", C.c_longlong), ("total_kernel", C.c_longlong),
+                ("period_user", C.c_longlong), ("period_kernel", C.c_longlong),
+                ("page_faults", W.DWORD), ("total_processes", W.DWORD),
+                ("active_processes", W.DWORD), ("terminated_processes", W.DWORD)]
+
+
 class _SidAttributes(C.Structure):
     _fields_ = [("sid", C.c_void_p), ("attributes", W.DWORD)]
 
@@ -130,6 +137,7 @@ def _api():
         "WaitForSingleObject": (W.DWORD, [W.HANDLE, W.DWORD]),
         "CreateJobObjectW": (W.HANDLE, [C.c_void_p, W.LPCWSTR]),
         "SetInformationJobObject": (W.BOOL, [W.HANDLE, C.c_int, C.c_void_p, W.DWORD]),
+        "QueryInformationJobObject": (W.BOOL, [W.HANDLE, C.c_int, C.c_void_p, W.DWORD, C.POINTER(W.DWORD)]),
         "AssignProcessToJobObject": (W.BOOL, [W.HANDLE, W.HANDLE]),
         "TerminateJobObject": (W.BOOL, [W.HANDLE, W.UINT]),
         "TerminateProcess": (W.BOOL, [W.HANDLE, W.UINT]),
@@ -175,10 +183,45 @@ def _created(k, handle):
     return (fields[0].dwHighDateTime << 32) | fields[0].dwLowDateTime
 
 
+def _wait_job_empty(k, job, deadline):
+    """Confirm zero active processes on this job; unknown/error returns False.
+
+    A zero-time probe remains possible after the original deadline. The bound
+    does not preempt a blocking kernel call or protect against same-user races.
+    """
+    while True:
+        info = _JobAccounting()
+        if not k.QueryInformationJobObject(job, 1, C.byref(info), C.sizeof(info), None):
+            return False
+        if info.active_processes == 0:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.01, remaining))
+
+
+def _wait_child_exit(k, process, deadline):
+    remaining = max(0.0, deadline - time.monotonic())
+    timeout_ms = min(0xFFFFFFFE, int(remaining * 1000))
+    return k.WaitForSingleObject(int(process), timeout_ms) == 0
+
+
 def _active(k, handle):
     code = W.DWORD()
     _check(k.GetExitCodeProcess(handle, C.byref(code)))
     _check(code.value == 259)
+
+
+def _release_once(k, handle, *, local=False):
+    """Record uncertain ownership; never retry a failed close/free."""
+    try:
+        released = not bool(k.LocalFree(handle)) if local else bool(k.CloseHandle(handle))
+    except BaseException:
+        released = False
+    if not released:
+        _QUARANTINE.append((k, None, ('local' if local else 'handle', handle)))
+    return released
 
 
 def _peer(k, pipe, expected_pid, expected_created, *, client):
@@ -192,7 +235,9 @@ def _peer(k, pipe, expected_pid, expected_created, *, client):
         _active(k, process)
         _check(_created(k, process) == expected_created)
     finally:
-        k.CloseHandle(process)
+        prior = _prior_outcome(sys.exc_info()[1])
+        if not _release_once(k, process):
+            raise TransportCleanupUnknown(prior) from None
 
 
 def _descriptor(k, a):
@@ -215,9 +260,17 @@ def _descriptor(k, a):
             sddl, 1, C.byref(descriptor), None))
         return descriptor
     finally:
+        prior = _prior_outcome(sys.exc_info()[1])
+        cleanup_ok = True
         if text.value:
-            k.LocalFree(text)
-        k.CloseHandle(token)
+            cleanup_ok = _release_once(k, text, local=True) and cleanup_ok
+        cleanup_ok = _release_once(k, token) and cleanup_ok
+        # A descriptor produced during a failed operation is not returned to
+        # the caller, so this scope still owns its allocation.
+        if descriptor.value and (prior != 'none' or not cleanup_ok):
+            cleanup_ok = _release_once(k, descriptor, local=True) and cleanup_ok
+        if not cleanup_ok:
+            raise TransportCleanupUnknown(prior) from None
 
 
 def _remaining(deadline):
@@ -237,24 +290,39 @@ def _prior_outcome(exc):
 
 
 def _io(k, pipe, data, count, deadline, *, connect=False, write=False, eof=False):
-    event = _handle(k.CreateEventW(None, True, False, None))
-    ov = _OV(event=event)
-    buffer = C.create_string_buffer(data if write else count)
-    done = W.DWORD()
+    ov = buffer = done = None
     outstanding = False
+    signaled = False
+    event = _handle(k.CreateEventW(None, True, False, None))
     try:
+        ov = _OV(event=event)
+        buffer = C.create_string_buffer(data if write else count)
+        done = W.DWORD()
         _noninheritable(k, event)
         _remaining(deadline)
+        # The call may have reached the kernel even if Python is interrupted
+        # before it observes a return value. Preserve every backing object until
+        # synchronous completion, a documented terminal result, or quarantine.
+        outstanding = True
         if connect:
             ok = k.ConnectNamedPipe(pipe, C.byref(ov))
         else:
             function = k.WriteFile if write else k.ReadFile
             ok = function(pipe, buffer, count, C.byref(done), C.byref(ov))
         error = C.get_last_error() if not ok else 0
+        # A returned FALSE with an error other than IO_PENDING is an immediate
+        # operation failure, not a queued request. An interruption before this
+        # point keeps outstanding=True because no result was observed.
+        if not ok and error != 997:
+            outstanding = False
         if connect and error == 535:  # Client connected before ConnectNamedPipe.
+            outstanding = False
             return b""
         if eof and error == 109:
+            outstanding = False
             return b""
+        if ok:
+            outstanding = False
         _check(ok or error == 997)
         outstanding = not ok
         if outstanding:
@@ -262,10 +330,20 @@ def _io(k, pipe, data, count, deadline, *, connect=False, write=False, eof=False
             if state == 258:
                 raise TimeoutError("secure_transport_timeout")
             _check(state == 0)
+            signaled = True
         ok = k.GetOverlappedResult(pipe, C.byref(ov), C.byref(done), False)
         error = C.get_last_error() if not ok else 0
-        outstanding = not ok and error == 996
+        # Failure is not generally proof that the kernel has finished with
+        # OVERLAPPED/buffer. Only completed cancellation and the explicitly
+        # handled broken-pipe EOF are treated as terminal here.
+        outstanding = not ok and error != 995
+        # For a pending pipe read, a signaled event plus BROKEN_PIPE means the
+        # read completed unsuccessfully; a required frame still refuses below.
+        # This is deliberately not generalized to writes or connect calls.
+        if signaled and not connect and not write and error == 109:
+            outstanding = False
         if eof and error == 109:
+            outstanding = False
             return b""
         _check(ok and done.value <= count)
         if write:
@@ -291,7 +369,7 @@ def _io(k, pipe, data, count, deadline, *, connect=False, write=False, eof=False
             except BaseException:
                 retained = True
             if retained:
-                _QUARANTINE.append((k, pipe, ov, buffer, event))
+                _QUARANTINE.append((k, pipe, ov, buffer, event, done))
         if not retained:
             try:
                 closed = bool(k.CloseHandle(event))
@@ -300,7 +378,7 @@ def _io(k, pipe, data, count, deadline, *, connect=False, write=False, eof=False
             if not closed:
                 # Completed I/O: the pipe need not be retained, but the event's
                 # close is uncertain and the same handle must not be retried.
-                _QUARANTINE.append((k, None, ov, buffer, event))
+                _QUARANTINE.append((k, None, ov, buffer, event, done))
                 retained = True
         if retained:
             raise TransportCleanupUnknown(prior_outcome) from None
@@ -1077,7 +1155,9 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
                 name, 3 | 0x40000000 | 0x00080000, 8, 1, 65536, 65536, 0,
                 C.byref(security)))
         finally:
-            k.LocalFree(descriptor)
+            prior = _prior_outcome(sys.exc_info()[1])
+            if not _release_once(k, descriptor, local=True):
+                raise TransportCleanupUnknown(prior) from None
         _noninheritable(k, pipe)
         job = _handle(k.CreateJobObjectW(None, None))
         _noninheritable(k, job)
@@ -1151,8 +1231,10 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
                 if process is not None:
                     if assigned and job:
                         cleanup_ok = cleanup_call(lambda: k.TerminateJobObject(job, 124)) and cleanup_ok
+                        cleanup_ok = cleanup_call(lambda: _wait_job_empty(k, job, deadline)) and cleanup_ok
                     elif not assigned:
                         cleanup_ok = cleanup_call(lambda: k.TerminateProcess(int(process), 125)) and cleanup_ok
+                        cleanup_ok = cleanup_call(lambda: _wait_child_exit(k, process, deadline)) and cleanup_ok
                 if job:
                     cleanup_ok = close_call(job) and cleanup_ok
                 if process is not None:

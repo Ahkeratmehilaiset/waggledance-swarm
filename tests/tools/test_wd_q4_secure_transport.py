@@ -168,6 +168,42 @@ def test_run_timeout_with_uncertain_cleanup_reports_unknown_and_blocks_new_work(
     assert kernel.calls == calls_before  # no second process or cleanup attempt
 
 
+@pytest.mark.parametrize('scenario', ['active', 'query_failure', 'query_raises', 'unassigned_alive'])
+def test_child_cleanup_without_confirmed_exit_is_unknown(transport, tmp_path, monkeypatch, scenario):
+    """A successful termination request alone cannot prove that children exited."""
+    import _winapi
+    class Kernel:
+        def CreateNamedPipeW(self, *args): return 11
+        def CreateJobObjectW(self, *args): return 12
+        def SetInformationJobObject(self, *args): return 1
+        def GetCurrentProcess(self): return 99
+        def AssignProcessToJobObject(self, *args): return scenario != 'unassigned_alive'
+        def ResumeThread(self, *args): return 1
+        def LocalFree(self, *args): return 0
+        def TerminateJobObject(self, *args): return 1
+        def TerminateProcess(self, *args): return 1
+        def QueryInformationJobObject(self, job, cls, out, size, returned):
+            if scenario == 'query_raises':
+                raise OSError('synthetic query failure')
+            if scenario == 'query_failure':
+                return 0
+            import ctypes
+            ctypes.cast(out, ctypes.POINTER(transport._JobAccounting)).contents.active_processes = 1
+            return 1
+        def WaitForSingleObject(self, *args): return 258
+        def CloseHandle(self, *args): return 1
+    monkeypatch.setattr(transport, '_QUARANTINE', [])
+    monkeypatch.setattr(transport, '_api', lambda: (Kernel(), None))
+    monkeypatch.setattr(transport, '_descriptor', lambda *args: 14)
+    monkeypatch.setattr(transport, '_noninheritable', lambda *args: None)
+    monkeypatch.setattr(transport, '_created', lambda *args: 1)
+    monkeypatch.setattr(_winapi, 'CreateProcess', lambda *args: (15, 16, 17, 18))
+    monkeypatch.setattr(transport, '_io', lambda *a, **kw: (_ for _ in ()).throw(ValueError()))
+    with pytest.raises(transport.TransportCleanupUnknown):
+        transport._run([sys.executable], str(tmp_path), {'mode': 'python-c'}, b'', 0.01, 1024)
+    assert transport._QUARANTINE
+
+
 def test_run_timeout_with_successful_cleanup_remains_timeout(transport, tmp_path, monkeypatch):
     import _winapi
 
@@ -180,6 +216,7 @@ def test_run_timeout_with_successful_cleanup_remains_timeout(transport, tmp_path
         def ResumeThread(self, *args): return 1
         def LocalFree(self, *args): return 0
         def TerminateJobObject(self, *args): return 1
+        def QueryInformationJobObject(self, *args): return 1  # zero-initialized accounting
         def CloseHandle(self, *args): return 1
 
     monkeypatch.setattr(transport, "_QUARANTINE", [])
@@ -191,6 +228,323 @@ def test_run_timeout_with_successful_cleanup_remains_timeout(transport, tmp_path
     monkeypatch.setattr(transport, "_io", lambda *a, **kw: (_ for _ in ()).throw(TimeoutError()))
     with pytest.raises(TimeoutError):
         transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 10, 1024)
+    assert not transport._QUARANTINE
+
+
+@pytest.mark.parametrize('assigned,prior', [(True,'timeout'),(True,'refused'),(False,'refused')])
+def test_confirmed_child_cleanup_precedes_close(transport, tmp_path, monkeypatch, assigned, prior):
+    """Only this invocation's job-zero or unassigned child exit preserves the original outcome."""
+    import _winapi
+    calls=[]
+    class Kernel:
+        def CreateNamedPipeW(self, *args): return 11
+        def CreateJobObjectW(self, *args): return 12
+        def SetInformationJobObject(self, *args): return 1
+        def GetCurrentProcess(self): return 99
+        def AssignProcessToJobObject(self, *args): return assigned
+        def ResumeThread(self, *args): return 1
+        def LocalFree(self, *args): return 0
+        def TerminateJobObject(self, h, *args): calls.append(('terminate_job',h)); return 1
+        def TerminateProcess(self, h, *args): calls.append(('terminate_child',h)); return 1
+        def QueryInformationJobObject(self, h, *args): calls.append(('query_job',h)); return 1
+        def WaitForSingleObject(self, h, *args): calls.append(('wait_child',h)); return 0
+        def CloseHandle(self, h): calls.append(('close',h)); return 1
+    monkeypatch.setattr(transport, '_QUARANTINE', [])
+    monkeypatch.setattr(transport, '_api', lambda: (Kernel(), None))
+    monkeypatch.setattr(transport, '_descriptor', lambda *args: 14)
+    monkeypatch.setattr(transport, '_noninheritable', lambda *args: None)
+    monkeypatch.setattr(transport, '_created', lambda *args: 1)
+    monkeypatch.setattr(_winapi, 'CreateProcess', lambda *args: (15,16,17,18))
+    def fail(*args,**kwargs):
+        if prior == 'timeout':
+            raise TimeoutError()
+        raise ValueError()
+    monkeypatch.setattr(transport, '_io', fail)
+    with pytest.raises(TimeoutError if prior == 'timeout' else ValueError):
+        transport._run([sys.executable], str(tmp_path), {'mode':'python-c'}, b'', 10, 1024)
+    assert not transport._QUARANTINE
+    if assigned:
+        assert calls.index(('terminate_job',12)) < calls.index(('query_job',12)) < calls.index(('close',12))
+        assert not any(item[0] == 'wait_child' for item in calls)
+    else:
+        assert calls.index(('terminate_child',15)) < calls.index(('wait_child',15)) < calls.index(('close',15))
+        assert not any(item[0] == 'query_job' for item in calls)
+
+
+def test_job_accounting_polls_same_handle_until_confirmed_zero(transport, monkeypatch):
+    import ctypes
+    counts = iter((2, 1, 0))
+    calls = []
+    class Kernel:
+        def QueryInformationJobObject(self, handle, info_class, out, size, returned):
+            calls.append((handle, info_class, size, returned))
+            ctypes.cast(out, ctypes.POINTER(transport._JobAccounting)).contents.active_processes = next(counts)
+            return 1
+    clock = iter((10.0, 10.5))
+    monkeypatch.setattr(transport.time, 'monotonic', lambda: next(clock))
+    monkeypatch.setattr(transport.time, 'sleep', lambda delay: None)
+    assert transport._wait_job_empty(Kernel(), 37, 11.0)
+    assert calls == [(37, 1, ctypes.sizeof(transport._JobAccounting), None)] * 3
+
+
+def test_job_accounting_deadline_still_allows_one_immediate_zero_probe(transport, monkeypatch):
+    class Kernel:
+        def QueryInformationJobObject(self, *args): return 1
+    monkeypatch.setattr(transport.time, 'monotonic', lambda: 11.0)
+    assert transport._wait_job_empty(Kernel(), 37, 10.0)
+
+
+@pytest.mark.parametrize('allocation', ['overlapped', 'buffer', 'counter'])
+@pytest.mark.parametrize('close_ok', [True, False])
+def test_io_event_owned_when_early_allocation_fails(transport, monkeypatch, allocation, close_ok):
+    calls=[]
+    class Kernel:
+        def CreateEventW(self, *args): return 21
+        def CloseHandle(self, handle): calls.append(handle); return close_ok
+    monkeypatch.setattr(transport, '_QUARANTINE', [])
+    def fail(*args, **kwargs): raise MemoryError('synthetic allocation')
+    if allocation == 'overlapped':
+        monkeypatch.setattr(transport, '_OV', fail)
+    elif allocation == 'buffer':
+        monkeypatch.setattr(transport.C, 'create_string_buffer', fail)
+    else:
+        monkeypatch.setattr(transport.W, 'DWORD', fail)
+    expected = MemoryError if close_ok else transport.TransportCleanupUnknown
+    with pytest.raises(expected):
+        transport._io(Kernel(), 11, None, 1, transport.time.monotonic() + 10)
+    assert calls == [21]
+    assert bool(transport._QUARANTINE) is not close_ok
+
+
+@pytest.mark.parametrize('operation', ['connect', 'read', 'write'])
+def test_io_interrupted_during_syscall_preserves_possible_pending_state(transport, monkeypatch, operation):
+    calls=[]
+    class Kernel:
+        def CreateEventW(self, *args): return 21
+        def ConnectNamedPipe(self, *args): raise KeyboardInterrupt('synthetic')
+        def ReadFile(self, *args): raise KeyboardInterrupt('synthetic')
+        def WriteFile(self, *args): raise KeyboardInterrupt('synthetic')
+        def CancelIoEx(self, *args): calls.append('cancel'); return 0
+        def CloseHandle(self, *args): calls.append('close'); return 1
+    monkeypatch.setattr(transport, '_QUARANTINE', [])
+    monkeypatch.setattr(transport, '_noninheritable', lambda *args: None)
+    caught = None
+    try:
+        transport._io(Kernel(), 11, b'x' if operation == 'write' else None, 1,
+                      transport.time.monotonic() + 10, connect=operation == 'connect', write=operation == 'write')
+    except BaseException as exc:
+        caught = exc
+    assert isinstance(caught, transport.TransportCleanupUnknown)
+    assert calls == ['cancel']
+    assert any(item[1] == 11 and item[4] == 21 and isinstance(item[5], transport.W.DWORD)
+               for item in transport._QUARANTINE)
+
+
+@pytest.mark.parametrize('operation', ['connect', 'read', 'write'])
+@pytest.mark.parametrize('error', [5, 6, 109])
+def test_io_immediate_documented_failure_does_not_claim_pending(transport, monkeypatch, operation, error):
+    import ctypes
+    calls=[]
+    class Kernel:
+        def CreateEventW(self, *args): return 21
+        def ConnectNamedPipe(self, *args): ctypes.set_last_error(error); return 0
+        def ReadFile(self, *args): ctypes.set_last_error(error); return 0
+        def WriteFile(self, *args): ctypes.set_last_error(error); return 0
+        def CancelIoEx(self, *args): calls.append('cancel'); return 0
+        def CloseHandle(self, *args): calls.append('close'); return 1
+    monkeypatch.setattr(transport, '_QUARANTINE', [])
+    monkeypatch.setattr(transport, '_noninheritable', lambda *args: None)
+    with pytest.raises(ValueError):
+        transport._io(Kernel(), 11, b'x' if operation == 'write' else None, 1,
+                      transport.time.monotonic() + 10, connect=operation == 'connect', write=operation == 'write')
+    assert calls == ['close']
+    assert not transport._QUARANTINE
+
+
+def test_signaled_pending_read_broken_pipe_refuses_frame_without_quarantine(transport, monkeypatch):
+    import ctypes
+    calls=[]
+    class Kernel:
+        def CreateEventW(self, *args): return 21
+        def ReadFile(self, *args): ctypes.set_last_error(997); return 0
+        def WaitForSingleObject(self, *args): calls.append('wait'); return 0
+        def GetOverlappedResult(self, *args): ctypes.set_last_error(109); return 0
+        def CancelIoEx(self, *args): calls.append('cancel'); return 0
+        def CloseHandle(self, *args): calls.append('close'); return 1
+    monkeypatch.setattr(transport, '_QUARANTINE', [])
+    monkeypatch.setattr(transport, '_noninheritable', lambda *args: None)
+    with pytest.raises(ValueError):
+        transport._io(Kernel(), 11, None, 1, transport.time.monotonic() + 10)
+    assert calls == ['wait','close']
+    assert not transport._QUARANTINE
+
+
+@pytest.mark.parametrize('failed', ['return_false', 'raise'])
+def test_peer_process_close_uncertainty_is_quarantined(transport, monkeypatch, failed):
+    import ctypes
+    calls=[]
+    class Kernel:
+        def GetNamedPipeClientProcessId(self, pipe, out):
+            ctypes.cast(out, ctypes.POINTER(transport.W.DWORD)).contents.value=17
+            return 1
+        def OpenProcess(self, *args): return 15
+        def CloseHandle(self, h):
+            calls.append(h)
+            if failed == 'raise': raise OSError('synthetic close failure')
+            return 0
+    monkeypatch.setattr(transport, '_QUARANTINE', [])
+    monkeypatch.setattr(transport, '_noninheritable', lambda *a: None)
+    monkeypatch.setattr(transport, '_active', lambda *a: None)
+    monkeypatch.setattr(transport, '_created', lambda *a: 1)
+    with pytest.raises(transport.TransportCleanupUnknown):
+        transport._peer(Kernel(), 11, 17, 1, client=True)
+    assert calls == [15]
+    assert transport._QUARANTINE
+
+
+def test_descriptor_token_close_uncertainty_overrides_refusal(transport, monkeypatch):
+    import ctypes
+    calls=[]
+    class Kernel:
+        def GetCurrentProcess(self): return 99
+        def CloseHandle(self, h): calls.append('close'); return 0
+    class Advapi:
+        def OpenProcessToken(self, current, access, out):
+            ctypes.cast(out, ctypes.POINTER(transport.W.HANDLE)).contents.value = 15
+            return 1
+    monkeypatch.setattr(transport, '_QUARANTINE', [])
+    monkeypatch.setattr(transport, '_noninheritable', lambda *a: (_ for _ in ()).throw(ValueError()))
+    with pytest.raises(transport.TransportCleanupUnknown):
+        transport._descriptor(Kernel(), Advapi())
+    assert calls == ['close'] and transport._QUARANTINE
+
+
+def test_descriptor_localfree_uncertainty_blocks_dispatch(transport, tmp_path, monkeypatch):
+    calls=[]
+    class Kernel:
+        def CreateNamedPipeW(self, *args): calls.append('pipe'); return 11
+        def LocalFree(self, ptr): calls.append('localfree'); return ptr
+        def CloseHandle(self, h): calls.append('close'); return 1
+    monkeypatch.setattr(transport, '_QUARANTINE', [])
+    monkeypatch.setattr(transport, '_api', lambda: (Kernel(), None))
+    monkeypatch.setattr(transport, '_descriptor', lambda *a: 14)
+    with pytest.raises(transport.TransportCleanupUnknown):
+        transport._run([sys.executable], str(tmp_path), {'mode':'python-c'}, b'', 10, 1024)
+    assert calls.count('localfree') == 1 and 'pipe' in calls and transport._QUARANTINE
+
+
+@pytest.mark.parametrize('scenario', ['success', 'text_free', 'token_close', 'descriptor_free'])
+def test_descriptor_releases_owned_allocations_once(transport, monkeypatch, scenario):
+    import ctypes
+    calls=[]
+    sid=ctypes.create_unicode_buffer('S-1-5-5-1-2')
+    sid_address=ctypes.addressof(sid)
+    class Kernel:
+        def GetCurrentProcess(self): return 99
+        def LocalFree(self, value):
+            address=value.value if hasattr(value, 'value') else value
+            calls.append(('free', address))
+            return address if (scenario == 'text_free' and address == sid_address) or (
+                scenario == 'descriptor_free' and address == 44) else 0
+        def CloseHandle(self, value):
+            calls.append(('close', value.value if hasattr(value, 'value') else value))
+            return scenario not in ('token_close', 'descriptor_free')
+    class Advapi:
+        def OpenProcessToken(self, current, access, out):
+            ctypes.cast(out, ctypes.POINTER(transport.W.HANDLE)).contents.value=15
+            return 1
+        def GetTokenInformation(self, token, kind, buffer, size, out):
+            ctypes.cast(out, ctypes.POINTER(transport.W.DWORD)).contents.value=ctypes.sizeof(transport._Groups)
+            if buffer is None: return 0
+            groups=ctypes.cast(buffer, ctypes.POINTER(transport._Groups)).contents
+            groups.count=1
+            groups.groups[0].attributes=0xC0000000
+            groups.groups[0].sid=55
+            return 1
+        def ConvertSidToStringSidW(self, value, out):
+            ctypes.cast(out, ctypes.POINTER(ctypes.c_void_p)).contents.value=sid_address
+            return 1
+        def ConvertStringSecurityDescriptorToSecurityDescriptorW(self, *args):
+            ctypes.cast(args[2], ctypes.POINTER(ctypes.c_void_p)).contents.value=44
+            return 1
+    monkeypatch.setattr(transport, '_QUARANTINE', [])
+    monkeypatch.setattr(transport, '_noninheritable', lambda *a: None)
+    if scenario == 'success':
+        assert transport._descriptor(Kernel(), Advapi()).value == 44
+        assert calls == [('free',sid_address),('close',15)]
+        assert not transport._QUARANTINE
+    else:
+        with pytest.raises(transport.TransportCleanupUnknown):
+            transport._descriptor(Kernel(), Advapi())
+        assert calls == [('free',sid_address),('close',15),('free',44)]
+        assert transport._QUARANTINE
+
+
+@pytest.mark.parametrize('error', [6, 5, 109, 996, 1234])
+def test_pending_overlapped_unknown_error_is_cancelled_or_quarantined(transport, monkeypatch, error):
+    import ctypes
+    calls = []
+    class Kernel:
+        def CreateEventW(self, *args): return 21
+        def ConnectNamedPipe(self, *args): ctypes.set_last_error(997); return 0
+        def WaitForSingleObject(self, *args): return 0
+        def GetOverlappedResult(self, *args): ctypes.set_last_error(error); return 0
+        def CancelIoEx(self, *args): calls.append('cancel'); return 0
+        def CloseHandle(self, *args): calls.append('close'); return 1
+    monkeypatch.setattr(transport, '_QUARANTINE', [])
+    monkeypatch.setattr(transport, '_noninheritable', lambda *a: None)
+    with pytest.raises(transport.TransportCleanupUnknown):
+        transport._io(Kernel(), 11, None, 0, transport.time.monotonic() + 10, connect=True)
+    assert calls == ['cancel']
+    assert any(item[1] == 11 and item[4] == 21 for item in transport._QUARANTINE)
+
+
+@pytest.mark.parametrize('cancel_completion', ['success', 'aborted'])
+def test_pending_unknown_error_may_release_only_after_cancel_completion(transport, monkeypatch, cancel_completion):
+    import ctypes
+    calls=[]
+    class Kernel:
+        def CreateEventW(self, *args): return 21
+        def ConnectNamedPipe(self, *args): ctypes.set_last_error(997); return 0
+        def WaitForSingleObject(self, *args): calls.append('wait'); return 0
+        def GetOverlappedResult(self, *args):
+            calls.append('result')
+            if calls.count('result') == 1:
+                ctypes.set_last_error(6)
+                return 0
+            if cancel_completion == 'aborted':
+                ctypes.set_last_error(995)
+                return 0
+            return 1
+        def CancelIoEx(self, *args): calls.append('cancel'); return 1
+        def CloseHandle(self, *args): calls.append('close'); return 1
+    monkeypatch.setattr(transport, '_QUARANTINE', [])
+    monkeypatch.setattr(transport, '_noninheritable', lambda *a: None)
+    with pytest.raises(ValueError):
+        transport._io(Kernel(), 11, None, 0, transport.time.monotonic() + 10, connect=True)
+    assert calls == ['wait', 'result', 'cancel', 'wait', 'result', 'close']
+    assert not transport._QUARANTINE
+
+
+@pytest.mark.parametrize('error,eof', [(995, False), (109, True)])
+def test_pending_overlapped_documented_terminal_error_does_not_quarantine(transport, monkeypatch, error, eof):
+    import ctypes
+    calls = []
+    class Kernel:
+        def CreateEventW(self, *args): return 21
+        def ReadFile(self, *args): ctypes.set_last_error(997); return 0
+        def WaitForSingleObject(self, *args): return 0
+        def GetOverlappedResult(self, *args): ctypes.set_last_error(error); return 0
+        def CancelIoEx(self, *args): calls.append('cancel'); return 0
+        def CloseHandle(self, *args): calls.append('close'); return 1
+    monkeypatch.setattr(transport, '_QUARANTINE', [])
+    monkeypatch.setattr(transport, '_noninheritable', lambda *a: None)
+    if eof:
+        assert transport._io(Kernel(), 11, None, 1, transport.time.monotonic() + 10, eof=True) == b''
+    else:
+        with pytest.raises(ValueError):
+            transport._io(Kernel(), 11, None, 1, transport.time.monotonic() + 10)
+    assert calls == ['close']
     assert not transport._QUARANTINE
 
 

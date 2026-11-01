@@ -13,6 +13,8 @@ DESCRIPTOR_PATH = "sandbox/mind/step2/test_wd_q4_private_read_bytes.py"
 DESCRIPTOR_REQUIRED = DESCRIPTOR_PATH + "::test_descriptor_bytes_match_existing_path_without_path_io"
 MEMORY_PATH = "sandbox/mind/step2/test_memory_snapshot.py"
 MEMORY_REQUIRED = MEMORY_PATH + "::test_snapshot_memory_answers_nonempty_q4_without_path_io"
+VERIFIED_PATH = "sandbox/mind/step2/test_verified_snapshot_checkpoint.py"
+VERIFIED_REQUIRED = VERIFIED_PATH + "::test_public_preflight_no_io_but_checkpoint_stays_fail_closed"
 
 
 def load_runner():
@@ -107,6 +109,45 @@ def test_runner_requires_descriptor_collection_and_each_descriptor_call():
             guard.pytest_runtest_logreport(SimpleNamespace(skipped=False, when="call", nodeid=item.nodeid))
     guard.pytest_sessionfinish(complete, 0)
     assert complete.exitstatus != 0
+
+
+def test_runner_requires_verified_checkpoint_collection_and_call():
+    runner = load_runner()
+    nodes = [node for node in runner.EXPECTED_NODEIDS if node.startswith(VERIFIED_PATH + "::")]
+    assert VERIFIED_REQUIRED in nodes
+    assert len(nodes) == len(set(nodes)) == 54
+    items = [SimpleNamespace(nodeid=node) for node in runner.EXPECTED_NODEIDS]
+    partial = SimpleNamespace(items=[item for item in items if not item.nodeid.startswith(VERIFIED_PATH)], exitstatus=0)
+    guard = runner._Guard()
+    guard.pytest_collection_finish(partial)
+    for item in partial.items:
+        guard.pytest_runtest_logreport(SimpleNamespace(skipped=False, when="call", nodeid=item.nodeid))
+    guard.pytest_sessionfinish(partial, 0)
+    assert partial.exitstatus != 0
+    complete = SimpleNamespace(items=items, exitstatus=0)
+    guard = runner._Guard()
+    guard.pytest_collection_finish(complete)
+    for item in items:
+        if item.nodeid != VERIFIED_REQUIRED:
+            guard.pytest_runtest_logreport(SimpleNamespace(skipped=False, when="call", nodeid=item.nodeid))
+    guard.pytest_sessionfinish(complete, 0)
+    assert complete.exitstatus != 0
+
+
+@pytest.mark.parametrize("status", ["skip", "xfail", "xpass"])
+def test_guard_refuses_incomplete_verified_checkpoint_witness(status):
+    runner = load_runner()
+    guard = runner._Guard()
+    session = SimpleNamespace(items=[SimpleNamespace(nodeid=node) for node in runner.EXPECTED_NODEIDS], exitstatus=0)
+    guard.pytest_collection_finish(session)
+    for node in runner.EXPECTED_NODEIDS:
+        report = SimpleNamespace(skipped=(status in ("skip", "xfail") and node == VERIFIED_REQUIRED),
+                                 when="call", nodeid=node)
+        if status in ("xfail", "xpass") and node == VERIFIED_REQUIRED:
+            report.wasxfail = "synthetic expected failure"
+        guard.pytest_runtest_logreport(report)
+    guard.pytest_sessionfinish(session, 0)
+    assert session.exitstatus != 0
 
 
 def test_runner_requires_memory_collection_and_each_memory_call():
@@ -250,7 +291,8 @@ def test_runner_propagates_pytest_failure_and_preserves_environment(monkeypatch)
     assert dict(runner.os.environ) == before
     assert len(calls) == 1 and len(calls[0][1]) == 1
     assert calls[0][0] == [str(ROOT / "sandbox/mind/step2/test_cell_verified_bytes.py"),
-                           str(ROOT / SNAPSHOT_PATH), str(ROOT / DESCRIPTOR_PATH), str(ROOT / MEMORY_PATH), "-q"]
+                           str(ROOT / SNAPSHOT_PATH), str(ROOT / DESCRIPTOR_PATH), str(ROOT / MEMORY_PATH),
+                           str(ROOT / VERIFIED_PATH), "-q"]
 
 
 def test_required_d15_hook_cannot_be_silently_omitted(monkeypatch):

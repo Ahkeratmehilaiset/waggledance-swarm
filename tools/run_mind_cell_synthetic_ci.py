@@ -1,6 +1,8 @@
 """Run only synthetic cell witnesses with a process-local, fail-fast FAISS stub.
 
-This is not a native FAISS, deployment, model, or production test. Invoke as
+This is not a native FAISS, deployment, model, or production test. The snapshot
+checkpoint API always refuses; its refusal tests do not demonstrate a working
+public API or prove each semantic mismatch was detected. Invoke as
 a separate Python process; inherited pytest hook settings and WD pins remain
 untouched. The expected node IDs are deliberately frozen against truncation.
 """
@@ -14,6 +16,7 @@ TEST_PATH = "sandbox/mind/step2/test_cell_verified_bytes.py"
 SNAPSHOT_TEST_PATH = "sandbox/mind/step2/test_cell_snapshot_bytes.py"
 DESCRIPTOR_TEST_PATH = "sandbox/mind/step2/test_wd_q4_private_read_bytes.py"
 MEMORY_TEST_PATH = "sandbox/mind/step2/test_memory_snapshot.py"
+VERIFIED_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_checkpoint.py"
 _NAMES = (
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-meta]",
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-provenance]",
@@ -116,10 +119,42 @@ _MEMORY_NAMES = (
     "test_all_cells_control_preflight_before_any_native_deserialization[receipt_hash]",
     "test_all_cells_control_preflight_before_any_native_deserialization[receipt_dim]",
 )
+_VERIFIED_NAMES = (
+    "test_public_preflight_no_io_but_checkpoint_stays_fail_closed",
+    *(f"test_snapshot_rejects_general_nonreview_data_not_approved_for_public[{v}]" for v in
+      ("private_task", "private_type")),
+    *(f"test_public_preflight_rejects_untrusted_pins_and_policy[{v}]" for v in
+      ("missing_source", "wrong_source", "mutable_source", "missing_encoder", "wrong_encoder",
+       "mutable_encoder", "wrong_policy_hash", "malformed_policy", "missing_policy", "mutable_policy")),
+    "test_public_preflight_honors_narrowed_agent_allowlist",
+    "test_even_valid_public_input_refuses_before_any_native_call",
+    *(f"test_refusal_frame_locals_do_not_retain_invalid_private_inputs[{target}-{field}]"
+      for target, field in (
+          ("read_verified_snapshot_checkpoint", "expected_source_sha256"),
+          ("read_verified_snapshot_checkpoint", "expected_encoder_sha256"),
+          ("read_verified_snapshot_checkpoint", "enabled"),
+          ("_preflight_public_snapshot", "expected_source_sha256"),
+          ("_preflight_public_snapshot", "expected_encoder_sha256"),
+          ("_preflight_public_snapshot", "expected_public_policy_sha256"))),
+    *(f"test_snapshot_never_returns_memory_with_private_unchecked_fields[{v}]" for v in
+      ("row_extra_private", "metadata_extra_private", "receipt_extra_private")),
+    *(f"test_snapshot_checkpoint_refuses_rehashed_semantic_mismatch[{v}]" for v in
+      ("policy", "encoder", "row_kind", "text", "wrong_event_ref", "duplicate_view", "missing_view",
+       "source_binding", "source_mode", "receipt_dim", "review_projection", "projection_schema")),
+    *(f"test_snapshot_checkpoint_refuses_tamper_or_missing_pin[{v}]" for v in
+      ("pointer", "artifact", "cell_log", "policy", "roster", "history", "archive_missing", "disabled")),
+    *(f"test_invalid_active_controls_refuse_before_faiss[{v}]" for v in
+      ("policy", "source_binding", "source_mode", "receipt_dim", "review_projection", "projection_schema")),
+    "test_snapshot_checkpoint_respects_aggregate_budget_before_faiss",
+    "test_malformed_snapshot_pointer_refusal_has_no_raw_exception_context",
+    "test_snapshot_checkpoint_verifies_bound_prefix_history_without_disk[False]",
+    "test_snapshot_checkpoint_verifies_bound_prefix_history_without_disk[True]",
+)
 EXPECTED_NODEIDS = (tuple(TEST_PATH + "::" + name for name in _NAMES) +
                     tuple(SNAPSHOT_TEST_PATH + "::" + name for name in _SNAPSHOT_NAMES) +
                     tuple(DESCRIPTOR_TEST_PATH + "::" + name for name in _DESCRIPTOR_NAMES) +
-                    tuple(MEMORY_TEST_PATH + "::" + name for name in _MEMORY_NAMES))
+                    tuple(MEMORY_TEST_PATH + "::" + name for name in _MEMORY_NAMES) +
+                    tuple(VERIFIED_TEST_PATH + "::" + name for name in _VERIFIED_NAMES))
 
 
 def _unavailable(*_args, **_kwargs):
@@ -173,6 +208,7 @@ def _run_pytest(pytest):
     guard = _Guard()
     code = int(pytest.main([str(ROOT / TEST_PATH), str(ROOT / SNAPSHOT_TEST_PATH),
                             str(ROOT / DESCRIPTOR_TEST_PATH), str(ROOT / MEMORY_TEST_PATH),
+                            str(ROOT / VERIFIED_TEST_PATH),
                             "-q"], plugins=[guard]))
     return 1 if code == 0 and not guard.complete() else code
 
@@ -182,6 +218,7 @@ def main():
         return 2
     sys.path.insert(0, str(ROOT))
     sys.modules["faiss"] = _fake_faiss()
+    print("Synthetic FAISS only; snapshot checkpoint always refuses: no public API or semantic-coverage proof.")
     import pytest
     return _run_pytest(pytest)
 

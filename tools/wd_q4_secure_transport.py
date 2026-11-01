@@ -23,6 +23,7 @@ an in-use OVERLAPPED or claiming complete cleanup. Lead owns conformance tests.
 import ctypes as C
 from ctypes import wintypes as W
 import hashlib
+import hmac
 import io
 import json
 import math
@@ -283,6 +284,50 @@ def _frame_write(k, pipe, data, deadline):
             _io(k, pipe, part, len(part), deadline, write=True)
 
 
+def _fixed_control(control):
+    """Validate fixed-protocol labels only; caller must authenticate the tuple."""
+    _check(type(control) is dict and set(control) == {"schema", "nonce", "binding_sha256"})
+    control = dict(control)
+    _check(control["schema"] == "wd.q4-fixed-control.v1")
+    for name, size in (("nonce", 32), ("binding_sha256", 64)):
+        value = control[name]
+        _check(type(value) is str and len(value) == size and
+               all(char in "0123456789abcdef" for char in value))
+    return control
+
+
+def _fixed_ready_exchange(k, pipe, expected_pid, expected_created, control, query, deadline):
+    """Synthetic protocol primitive; it does not establish trusted Q4 readiness.
+
+    The fixed peer must establish its own code/runtime/data bindings before it
+    emits READY. This parent only checks the expected peer and the closed reply.
+    No authorized production peer or trusted tuple is supplied by this module.
+    """
+    raw = ready = ready_raw = None
+    try:
+        control = _fixed_control(control)
+        _check(type(expected_pid) is int and expected_pid > 0 and
+               type(expected_created) is int and expected_created > 0)
+        _check(type(query) is bytes and 0 < len(query) <= _MAX_INPUT)
+        _peer(k, pipe, expected_pid, expected_created, client=True)
+        raw = json.dumps(control, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        _frame_write(k, pipe, raw, deadline)
+        ready_raw = _frame_read(k, pipe, 4096, deadline)
+        _check(type(ready_raw) is bytes and 0 < len(ready_raw) <= 4096)
+        ready = json.loads(ready_raw.decode("utf-8", "strict"), object_pairs_hook=_unique_pairs)
+        _check(type(ready) is dict and set(ready) == {"schema", "status", "nonce", "binding_sha256"})
+        _check(ready["schema"] == "wd.q4-fixed-ready.v1" and ready["status"] == "READY")
+        _check(type(ready["nonce"]) is str and type(ready["binding_sha256"]) is str and
+               hmac.compare_digest(ready["nonce"], control["nonce"]) and
+               hmac.compare_digest(ready["binding_sha256"], control["binding_sha256"]))
+        _frame_write(k, pipe, query, deadline)
+        return
+    except Exception:
+        pass
+    del control, query, raw, ready, ready_raw
+    raise _Refused() from None
+
+
 _BOOTSTRAP = """
 import hashlib,sys
 try:
@@ -306,6 +351,14 @@ def _validate(stdin_bytes, timeout_seconds, max_output_bytes):
 
 
 def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes):
+    # No fixed-Q4 process may start until a trusted peer binder exists.
+    # Reject non-dicts without invoking arbitrary caller-supplied mapping code.
+    # The READY primitive above is intentionally disconnected from _run.
+    if not (type(metadata) is dict and all(type(key) is str for key in metadata)
+            and type(metadata.get("mode")) is str
+            and metadata["mode"] in ("python-c", "echo")):
+        del metadata, stdin_bytes
+        raise _Refused()
     _validate(stdin_bytes, timeout_seconds, max_output_bytes)
     if not _RUN_LOCK.acquire(blocking=False):
         raise _Refused()

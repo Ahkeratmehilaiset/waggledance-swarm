@@ -19,6 +19,13 @@ final observed snapshot, not proof of currentness or complete history, and sourc
 The v1 plan and its single-window route remain unchanged; the caller cannot change the bound without changing the
 plan bytes and their independently supplied SHA256.
 
+The separately pinned ``wd.q4-prefix-build-plan.v3`` adds ``max_windows`` and literal ``fenced: true`` and requests
+the producer's opt-in fenced API. A missing compatible producer API refuses before model access; there is no fallback.
+The API shape check is not proof that the producer implements the promised semantics: caller trust and independent
+producer-code pinning remain necessary. Version 1 and 2 do not opt in. V2 deliberately becomes stricter: v2 and v3
+both refuse before model access if ``max_windows * (2 * max_prefix_bytes + source.max_bytes)`` exceeds 4 GiB.
+This is a static bound on prefix-hash plus window reads, not a wall-clock deadline or a bound on all I/O.
+
 Model root binding (v2 finding 1). ``Path.is_absolute`` alone accepts UNC shares and paths through symbolic links
 or junctions, so an unbound ``model_dir`` would let ``model_identity`` read remote or escaped data before the
 backend's offline controls apply. The plan's ``model_dir`` is therefore bound to ``trusted_model_root`` before any
@@ -110,6 +117,7 @@ installed-runtime wiring exists for it. The fixed-drive and link-count checks ar
 """
 import contextlib
 import ctypes
+from dataclasses import fields
 import hashlib
 import hmac
 import json
@@ -134,6 +142,8 @@ __all__ = ["BuildChildRefused", "build_prefix_generation", "PLAN_SCHEMA", "PLAN_
 
 PLAN_SCHEMA = "wd.q4-prefix-build-plan.v1"
 PLAN_CATCHUP_SCHEMA = "wd.q4-prefix-build-plan.v2"
+PLAN_FENCED_CATCHUP_SCHEMA = "wd.q4-prefix-build-plan.v3"
+CATCHUP_READ_BUDGET = 4 * 1024 * 1024 * 1024
 PLAN_LIMIT = 1 << 16
 PLAN_KEYS = frozenset({"schema", "generation", "expected_pointer_sha256", "max_prefix_bytes", "timeout", "encoder",
                        "pins"})
@@ -149,7 +159,8 @@ ASSET_BYTES_LIMIT = 1 << 30  # bytes per asset the child will stream through sha
 BACKEND_ISOLATION = "in_process_environment_restored_no_os_isolation"
 MODEL_ASSETS = "caller_manifest_verified_before_load_reread_by_backend"
 REASONS = frozenset({"disabled", "plan_refused", "request_refused", "pins_refused", "preflight_refused",
-                     "model_root_refused", "asset_refused", "encoder_refused", "publication_state_unknown"})
+                     "model_root_refused", "asset_refused", "encoder_refused", "publication_state_unknown",
+                     "catchup_budget_refused", "fenced_api_unavailable"})
 PRODUCER_REASONS = frozenset({"request_invalid", "pins_mismatch", "private_state_refused", "prepare_refused",
                               "empty_genesis", "build_refused", "publication_state_unknown", "catchup_incomplete",
                               "empty_catchup_unsupported"})
@@ -228,9 +239,12 @@ def _plan_shape(plan):
     if schema == PLAN_SCHEMA:
         if frozenset(plan) != PLAN_KEYS:
             return False
-    elif schema == PLAN_CATCHUP_SCHEMA:
-        if (frozenset(plan) != PLAN_KEYS | {"max_windows"} or type(plan["max_windows"]) is not int
+    elif schema in (PLAN_CATCHUP_SCHEMA, PLAN_FENCED_CATCHUP_SCHEMA):
+        extra = {"max_windows"} if schema == PLAN_CATCHUP_SCHEMA else {"max_windows", "fenced"}
+        if (frozenset(plan) != PLAN_KEYS | extra or type(plan["max_windows"]) is not int
                 or not 1 <= plan["max_windows"] <= snapshot.CATCHUP_MAX_WINDOWS):
+            return False
+        if schema == PLAN_FENCED_CATCHUP_SCHEMA and plan["fenced"] is not True:
             return False
     else:
         return False
@@ -278,6 +292,25 @@ def _pins_bound(plan_pins, config):
                 or not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected)):
             return False
     return True
+
+
+def _catchup_budget_valid(max_windows, max_prefix_bytes, max_bytes):
+    """A static worst-case prefix+delta byte bound; not a wall-clock or total-I/O bound."""
+    return (type(max_windows) is int and 1 <= max_windows <= snapshot.CATCHUP_MAX_WINDOWS
+            and type(max_prefix_bytes) is int and 0 <= max_prefix_bytes <= MAX_PREFIX_BYTES
+            and type(max_bytes) is int and 1 <= max_bytes <= snapshot.MAX_BYTES
+            and max_windows * (2 * max_prefix_bytes + max_bytes) <= CATCHUP_READ_BUDGET)
+
+
+def _fenced_api_available():
+    """Only check the opt-in API shape; code provenance and semantics are caller-owned."""
+    try:
+        if not callable(producer.publish_public_catchup):
+            return False
+        fence = next((item for item in fields(producer.PrefixPublicRequest) if item.name == "fenced"), None)
+        return fence is not None and fence.init and fence.type is bool and fence.default is False
+    except (TypeError, AttributeError):
+        return False
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -583,8 +616,14 @@ def build_prefix_generation(*, enabled=False, plan_bytes=None, expected_plan_sha
         raise BuildChildRefused("request_refused")
     if not _pins_bound(plan["pins"], config):
         raise BuildChildRefused("pins_refused")
+    catchup = plan["schema"] in (PLAN_CATCHUP_SCHEMA, PLAN_FENCED_CATCHUP_SCHEMA)
+    if catchup and not _catchup_budget_valid(plan["max_windows"], plan["max_prefix_bytes"], config.source.max_bytes):
+        raise BuildChildRefused("catchup_budget_refused")
     if not _preflight_holds(plan, config, start_prefix, root, private_state_root):
         raise BuildChildRefused("preflight_refused")
+    fenced = plan["schema"] == PLAN_FENCED_CATCHUP_SCHEMA
+    if fenced and not _fenced_api_available():
+        raise BuildChildRefused("fenced_api_unavailable")
     encoder = plan["encoder"]
     files = _model_root_bound(encoder["model_dir"], trusted_model_root, root, private_state_root)
     if files is None:
@@ -601,8 +640,9 @@ def build_prefix_generation(*, enabled=False, plan_bytes=None, expected_plan_sha
         config=config, pins=pub.CallerPins(**{key: plan["pins"][key] for key in sorted(PIN_KEYS)}),
         start_prefix=start_prefix, max_prefix_bytes=plan["max_prefix_bytes"], root=root,
         generation=plan["generation"], expected_pointer_sha256=plan["expected_pointer_sha256"], encode=encode,
-        identity=identity, dim=ENCODER_DIM, timeout=plan["timeout"], private_state_root=private_state_root)
-    max_windows = plan["max_windows"] if plan["schema"] == PLAN_CATCHUP_SCHEMA else None
+        identity=identity, dim=ENCODER_DIM, timeout=plan["timeout"], private_state_root=private_state_root,
+        **({"fenced": True} if fenced else {}))
+    max_windows = plan["max_windows"] if catchup else None
     report, token = _publish(request, max_windows=max_windows)
     if token is not None:
         raise BuildChildRefused(token)

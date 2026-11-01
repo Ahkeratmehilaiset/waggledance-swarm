@@ -27,7 +27,7 @@ under ``model_dir``, the weights included): a swapped tokenizer, pooling or conf
 a missing listed file refuses ``asset_refused`` before identity derivation and backend load. The child derives no
 pin of its own; the report names the remaining limits (verify-then-use window, in-process backend).
 """
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import hashlib
 import importlib
 import importlib.abc
@@ -1367,7 +1367,8 @@ def test_module_is_fixed_path_only():
     assert "SentenceTransformer(" not in source  # loading goes through the fixed encode.E5 path only
     assert module().REASONS == frozenset({"disabled", "plan_refused", "request_refused", "pins_refused",
                                           "preflight_refused", "model_root_refused", "asset_refused",
-                                          "encoder_refused", "publication_state_unknown"})
+                                          "encoder_refused", "publication_state_unknown", "catchup_budget_refused",
+                                          "fenced_api_unavailable"})
     doc = module().__doc__ or ""
     for word in ("trusted_model_root", "UNC", "reparse", "preflight", "CAS", "locked", "OS isolation", "hard link",
                  "tokenizer", "manifest", "verify-then-use", "self-derive", "putenv", "concurrent", "sandbox",
@@ -1392,9 +1393,159 @@ def test_v2_pinned_plan_routes_only_to_bounded_catchup(tmp_path, model_dir, back
     report = run(m, doc, config, start, *roots(tmp_path))
     assert seen["enabled"] is True and seen["max_windows"] == 4
     assert seen["request"].config is config and seen["request"].pins == pub.CallerPins(**pins)
+    assert getattr(seen["request"], "fenced", False) is False
     assert report["plan_sha256"] == sha(enc(doc))
     assert report["coverage"] == "caught_up_to_final_snapshot_not_history"
     assert report["source_refusals"] == "NOT_AGGREGATED" and report["freshness"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("fenced", [False, 1, 0, "true", None, [], {}])
+def test_v3_fence_must_be_literal_true_before_model_or_producer(tmp_path, model_dir, monkeypatch, fenced):
+    m = module()
+    never_loads(m, monkeypatch)
+    monkeypatch.setattr(m.producer, "publish_public_catchup", lambda **kw: pytest.fail("producer entered"))
+    config, pins, start = synthetic_config(tmp_path)
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v3", max_windows=4, fenced=fenced)
+    root, private_root = roots(tmp_path)
+    refused("plan_refused", lambda: run(m, doc, config, start, root, private_root))
+    nothing_written(root, private_root)
+
+
+def test_v3_fence_is_required_and_bound_to_exact_plan_bytes(tmp_path, model_dir, monkeypatch):
+    m = module()
+    never_loads(m, monkeypatch)
+    monkeypatch.setattr(m.producer, "publish_public_catchup", lambda **kw: pytest.fail("producer entered"))
+    config, pins, start = synthetic_config(tmp_path)
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v3", max_windows=4, fenced=True)
+    prior_sha = sha(enc(doc))
+    doc.pop("fenced")
+    root, private_root = roots(tmp_path)
+    refused("plan_refused", lambda: run(m, doc, config, start, root, private_root))
+    doc["fenced"] = False
+    refused("plan_refused", lambda: run(m, doc, config, start, root, private_root, plan_sha=prior_sha))
+    nothing_written(root, private_root)
+
+
+@pytest.mark.parametrize("windows", [True, 0, -1, 65, "2", None])
+def test_v3_invalid_window_count_refuses_before_model(tmp_path, model_dir, monkeypatch, windows):
+    m = module()
+    never_loads(m, monkeypatch)
+    config, pins, start = synthetic_config(tmp_path)
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v3", max_windows=windows, fenced=True)
+    root, private_root = roots(tmp_path)
+    refused("plan_refused", lambda: run(m, doc, config, start, root, private_root))
+    nothing_written(root, private_root)
+
+
+@pytest.mark.parametrize("schema,changes", [
+    ("wd.q4-prefix-build-plan.v1", {"fenced": True}),
+    ("wd.q4-prefix-build-plan.v2", {"max_windows": 4, "fenced": True}),
+])
+def test_older_schemas_reject_unpinned_fence_field(tmp_path, model_dir, monkeypatch, schema, changes):
+    m = module()
+    never_loads(m, monkeypatch)
+    config, pins, start = synthetic_config(tmp_path)
+    doc = plan(model_dir, pins, schema=schema, **changes)
+    root, private_root = roots(tmp_path)
+    refused("plan_refused", lambda: run(m, doc, config, start, root, private_root))
+    nothing_written(root, private_root)
+
+
+def test_v3_missing_producer_fence_api_refuses_before_model_or_publication(tmp_path, model_dir, monkeypatch):
+    m = module()
+    never_loads(m, monkeypatch)
+    config, pins, start = synthetic_config(tmp_path)
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v3", max_windows=4, fenced=True)
+
+    @dataclass(frozen=True, slots=True)
+    class OldRequest:
+        pass
+
+    monkeypatch.setattr(m.producer, "PrefixPublicRequest", OldRequest)
+    monkeypatch.setattr(m.producer, "publish_public_catchup", lambda **kw: pytest.fail("producer entered"))
+    root, private_root = roots(tmp_path)
+    refused("fenced_api_unavailable", lambda: run(m, doc, config, start, root, private_root))
+    nothing_written(root, private_root)
+
+
+def test_v3_explicit_true_reaches_catchup_only_in_synthetic_producer(tmp_path, model_dir, backend, monkeypatch):
+    m = module()
+    config, pins, start = synthetic_config(tmp_path)
+    doc = plan(model_dir, pins, schema="wd.q4-prefix-build-plan.v3", max_windows=4, fenced=True)
+
+    @dataclass(frozen=True, slots=True)
+    class FakeFencedRequest(producer.PrefixPublicRequest):
+        fenced: bool = False
+
+    seen = {}
+    monkeypatch.setattr(m.producer, "PrefixPublicRequest", FakeFencedRequest)
+    monkeypatch.setattr(m.producer, "publish_public_prefix", lambda **kw: pytest.fail("wrong route"))
+
+    def publish(*, enabled, request, max_windows):
+        seen.update(enabled=enabled, fenced=request.fenced, max_windows=max_windows)
+        return {"status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
+                "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN",
+                "coverage": "caught_up_to_final_snapshot_not_history", "source_refusals": "NOT_AGGREGATED"}
+
+    monkeypatch.setattr(m.producer, "publish_public_catchup", publish)
+    report = run(m, doc, config, start, *roots(tmp_path))
+    assert seen == {"enabled": True, "fenced": True, "max_windows": 4}
+    assert report["plan_sha256"] == sha(enc(doc))
+
+
+@pytest.mark.parametrize("windows,prefix,window_bytes,expected", [
+    (2, 1073741568, 512, True),  # exactly 4 GiB
+    (2, 1073741568, 513, False),  # two bytes over
+    (True, 1, 1, False), (1, True, 1, False), (1, 1, True, False),
+    (0, 1, 1, False), (65, 1, 1, False), (1, -1, 1, False),
+    (1, 1, 0, False), (1, 1, snapshot.MAX_BYTES + 1, False),
+])
+def test_catchup_static_read_budget_boundary_and_exact_types(windows, prefix, window_bytes, expected):
+    m = module()
+    assert m._catchup_budget_valid(windows, prefix, window_bytes) is expected
+
+
+@pytest.mark.parametrize("schema,extra", [
+    ("wd.q4-prefix-build-plan.v2", {}),
+    ("wd.q4-prefix-build-plan.v3", {"fenced": True}),
+])
+def test_catchup_over_budget_refuses_before_model_and_producer(tmp_path, model_dir, monkeypatch, schema, extra):
+    m = module()
+    never_loads(m, monkeypatch)
+    monkeypatch.setattr(m.producer, "publish_public_catchup", lambda **kw: pytest.fail("producer entered"))
+    config, pins, start = synthetic_config(tmp_path, max_bytes=513)
+    doc = plan(model_dir, pins, schema=schema, max_windows=2, max_prefix_bytes=1073741568, **extra)
+    root, private_root = roots(tmp_path)
+    refused("catchup_budget_refused", lambda: run(m, doc, config, start, root, private_root))
+    nothing_written(root, private_root)
+
+
+@pytest.mark.parametrize("schema,extra", [
+    ("wd.q4-prefix-build-plan.v2", {}),
+    ("wd.q4-prefix-build-plan.v3", {"fenced": True}),
+])
+def test_catchup_exact_budget_reaches_synthetic_producer(tmp_path, model_dir, backend, monkeypatch, schema, extra):
+    m = module()
+    config, pins, start = synthetic_config(tmp_path, max_bytes=512)
+    doc = plan(model_dir, pins, schema=schema, max_windows=2, max_prefix_bytes=1073741568, **extra)
+
+    @dataclass(frozen=True, slots=True)
+    class FakeFencedRequest(producer.PrefixPublicRequest):
+        fenced: bool = False
+
+    seen = {}
+    monkeypatch.setattr(m.producer, "PrefixPublicRequest", FakeFencedRequest)
+
+    def publish(*, enabled, request, max_windows):
+        seen.update(fenced=request.fenced, max_windows=max_windows)
+        return {"status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
+                "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN",
+                "coverage": "caught_up_to_final_snapshot_not_history", "source_refusals": "NOT_AGGREGATED"}
+
+    monkeypatch.setattr(m.producer, "publish_public_catchup", publish)
+    report = run(m, doc, config, start, *roots(tmp_path))
+    assert seen == {"fenced": schema.endswith(".v3"), "max_windows": 2}
+    assert report["plan_sha256"] == sha(enc(doc))
 
 
 @pytest.mark.parametrize("catchup", [False, True])

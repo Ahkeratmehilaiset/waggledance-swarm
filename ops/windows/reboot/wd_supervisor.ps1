@@ -18,11 +18,17 @@ param(
     [switch] $Apply,
     [switch] $BridgeWorkersOnly,
     [string] $ConfigPath = '',
+    [string] $Q4SharedDescriptorPath = '',
+    [string] $Q4SharedDescriptorSha256 = '',
     [string] $LogPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if (($Q4SharedDescriptorPath -or $Q4SharedDescriptorSha256) -and
+    (-not $Q4SharedDescriptorPath -or $Q4SharedDescriptorSha256 -cnotmatch '^[0-9a-f]{64}$')) {
+    throw 'q4_shared_reference_refused'
+}
 if (-not $ConfigPath) {
     $ConfigPath = Join-Path $PSScriptRoot 'wd_supervisor_loop.json'
 }
@@ -2972,10 +2978,16 @@ if ($toolsEnabled) {
     Assert-MachineToolsConfigExact -MachineConfigPath $toolsConfig
     Assert-SupervisorBundleFileIntegrity `
         -RelativePath 'start-wd-tools-consumer.ps1'
+    $toolsSharedParameters = @{}
+    if ($Q4SharedDescriptorPath) {
+        $toolsSharedParameters.Q4SharedDescriptorPath = $Q4SharedDescriptorPath
+        $toolsSharedParameters.Q4SharedDescriptorSha256 = $Q4SharedDescriptorSha256
+    }
     $toolsValidationOutput = @(
         & $toolsLauncher `
             -ConfigPath $toolsConfig `
             -Generation $toolsGeneration `
+            @toolsSharedParameters `
             -ValidateOnly
     )
     $toolsValidation = @(
@@ -3728,6 +3740,10 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         '-ConfigPath', $toolsConfig,
         '-Generation', $toolsGeneration
     )
+    if ($Q4SharedDescriptorPath) {
+        $toolsArguments += @('-Q4SharedDescriptorPath', $Q4SharedDescriptorPath,
+            '-Q4SharedDescriptorSha256', $Q4SharedDescriptorSha256)
+    }
 
     # Elevated shells are unreadable from this Limited task, so on an operator
     # desktop that runs elevated terminals several opaque hosts are normal. An
@@ -3788,6 +3804,9 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         $wrapperProcesses.Count -eq 1 -and
         $legacyConsumers.Count -eq 0) {
         # Healthy: readiness is bound to this PID, start time, and generation.
+        if ($Q4SharedDescriptorPath) {
+            $actions.Add('WARN Tools shared descriptor is not attested by existing readiness')
+        }
     }
     elseif ($graceWrapperProcesses.Count -eq 1 -and
         $exactWrapperProcesses.Count -eq 1 -and

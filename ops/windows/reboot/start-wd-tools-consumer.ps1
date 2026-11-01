@@ -19,6 +19,8 @@ param(
     [Parameter(Mandatory)]
     [ValidatePattern('^[0-9a-f]{40}$')]
     [string] $Generation,
+    [string] $Q4SharedDescriptorPath = '',
+    [string] $Q4SharedDescriptorSha256 = '',
     [switch] $ValidateOnly
 )
 
@@ -302,6 +304,52 @@ function Read-Utf8FileSnapshot {
         Hash = $hash
         Text = $text
     }
+}
+
+function Get-WdToolsSharedQ4Reference {
+    # Hint only: it does not authenticate the operator or execute a query.
+    param([string] $DescriptorPath, [string] $DescriptorSha256, [string] $FleetPath,
+        [string] $DeploymentManifestPath, [string] $ExpectedManifestSha256,
+        [string] $BundleRoot, [string] $TrustedRoot, [string] $Lane,
+        [string] $AgentUuid, [string] $RuntimeRoot)
+    if ($DescriptorPath -ceq '' -and $DescriptorSha256 -ceq '') { return $null }
+    try {
+        if (-not $DescriptorPath -or $DescriptorSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            $ExpectedManifestSha256 -cnotmatch '^[0-9A-Fa-f]{64}$' -or $Lane -cne 'codex-tools-1') { throw 'invalid' }
+        Assert-FilePathWithoutReparse -Candidate $DeploymentManifestPath -Root $TrustedRoot
+        Assert-FilePathWithoutReparse -Candidate $FleetPath -Root $TrustedRoot
+        if (-not [IO.Path]::GetFullPath($FleetPath).Equals(
+            [IO.Path]::GetFullPath((Join-Path $BundleRoot 'wd-fleet.json')), [StringComparison]::OrdinalIgnoreCase)) { throw 'invalid' }
+        $manifest = Read-Utf8FileSnapshot -Path $DeploymentManifestPath
+        if ($manifest.Hash -cne $ExpectedManifestSha256.ToUpperInvariant()) { throw 'invalid' }
+        $deployment = $manifest.Text | ConvertFrom-Json -ErrorAction Stop
+        $fleetPin = $deployment.files.PSObject.Properties['wd-fleet.json']
+        $helperPin = $deployment.files.PSObject.Properties['Get-WdQ4SharedSessionConfig.ps1']
+        if ($null -eq $fleetPin -or $null -eq $helperPin -or
+            [string]$fleetPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+            [string]$helperPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'invalid' }
+        $fleet = Read-Utf8FileSnapshot -Path $FleetPath
+        if ($fleet.Hash -cne ([string]$fleetPin.Value).ToUpperInvariant()) { throw 'invalid' }
+        $fleetObject = $fleet.Text | ConvertFrom-Json -ErrorAction Stop
+        if ([string]$fleetObject.tools_supervisor.agent -cne $Lane -or
+            ([string]$fleetObject.tools_supervisor.agent_uuid).ToLowerInvariant() -cne $AgentUuid -or
+            -not ([IO.Path]::GetFullPath([string]$fleetObject.runtime_root).TrimEnd('\')).Equals(
+                [IO.Path]::GetFullPath($RuntimeRoot).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'invalid' }
+        $oldQ4 = $fleetObject.PSObject.Properties['q4_read']
+        if ($null -ne $oldQ4 -and $null -ne $oldQ4.Value -and
+            $oldQ4.Value.PSObject.Properties['enabled'] -and $oldQ4.Value.enabled -eq $true) { throw 'invalid' }
+        $helper = Join-Path $BundleRoot 'Get-WdQ4SharedSessionConfig.ps1'
+        Assert-FilePathWithoutReparse -Candidate $helper -Root $TrustedRoot
+        $helperSnapshot = Read-Utf8FileSnapshot -Path $helper
+        if ($helperSnapshot.Hash -cne ([string]$helperPin.Value).ToUpperInvariant() -or
+            (Get-FileHash -LiteralPath $DeploymentManifestPath -Algorithm SHA256).Hash -cne $ExpectedManifestSha256.ToUpperInvariant()) { throw 'invalid' }
+        . ([scriptblock]::Create([string]$helperSnapshot.Text))
+        $validated = Get-WdQ4SharedSessionConfig -FleetPath $FleetPath -FleetSha256 $fleet.Hash.ToLowerInvariant() `
+            -DescriptorPath $DescriptorPath -DescriptorSha256 $DescriptorSha256 -Lane $Lane -Enabled
+        if ($null -eq $validated -or [string]$validated.lane -cne $Lane) { throw 'invalid' }
+        return [pscustomobject]@{ WD_Q4_SHARED_DESCRIPTOR_PATH = $DescriptorPath;
+            WD_Q4_SHARED_DESCRIPTOR_SHA256 = $DescriptorSha256 }
+    } catch { throw 'q4_shared_reference_refused' }
 }
 
 function Assert-WdToolsColdStart {
@@ -3212,6 +3260,14 @@ if ($conversationSurface -cin @('local_window','native_terminal')) {
         -TurnLoopCode ([string]$verifiedConversationCode['Invoke-WdLaneTurnLoop.ps1'])
 }
 
+$toolsSharedQ4Values = $null
+if ($Q4SharedDescriptorPath -or $Q4SharedDescriptorSha256) {
+    if (-not $isDeployedLauncher) { throw 'q4_shared_reference_refused' }
+    $toolsSharedQ4Values = Get-WdToolsSharedQ4Reference -DescriptorPath $Q4SharedDescriptorPath `
+        -DescriptorSha256 $Q4SharedDescriptorSha256 -FleetPath (Join-Path $PSScriptRoot 'wd-fleet.json') `
+        -DeploymentManifestPath $toolsDeploymentManifestPath -ExpectedManifestSha256 $toolsExpectedManifestHash `
+        -BundleRoot $PSScriptRoot -TrustedRoot $toolsTrustedDrive -Lane $agent -AgentUuid $agentUuid -RuntimeRoot $runtimeRoot
+}
 $nativeToolsSaved = $null
 if ($conversationSurface -ceq 'native_terminal') { $nativeToolsSaved = Get-WdNativeToolsResumeState -Worktree $worktree }
 
@@ -3499,6 +3555,12 @@ if ($null -ne $q4Values) {
         }
         [Environment]::SetEnvironmentVariable($q4Value.Name, [string]$q4Value.Value, 'Process')
     }
+}
+if ($null -ne $toolsSharedQ4Values) {
+    if ($null -ne $q4Values) { throw 'q4_config_conflict' }
+    # These are untrusted hints for a separately pinned future adapter, not a connection proof.
+    [Environment]::SetEnvironmentVariable('WD_Q4_SHARED_DESCRIPTOR_PATH', [string]$toolsSharedQ4Values.WD_Q4_SHARED_DESCRIPTOR_PATH, 'Process')
+    [Environment]::SetEnvironmentVariable('WD_Q4_SHARED_DESCRIPTOR_SHA256', [string]$toolsSharedQ4Values.WD_Q4_SHARED_DESCRIPTOR_SHA256, 'Process')
 }
 
 $writer = Join-Path $bootstrapRoot 'Write-AgentEvent.ps1'

@@ -24,21 +24,24 @@ $node=$ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefin
 if ($null -eq $node) {{ throw 'generator missing' }}
 . ([scriptblock]::Create($node.Extent.Text))
 $out=[ordered]@{{}}
-foreach ($kind in @('fleet','agent')) {{
+foreach ($kind in @('fleet','agent','supervisor','tools')) {{
   $text=New-ForwardingWrapper -Target 'C:\synthetic\target.ps1' -ExpectedHash ('A'*64) -ExpectedManifestHash ('B'*64) -WrapperKind $kind
   $t=$null; $e=$null; $wrapper=[Management.Automation.Language.Parser]::ParseInput($text,[ref]$t,[ref]$e)
   if ($e.Count) {{ throw 'generated wrapper parse error' }}
   $names=@($wrapper.ParamBlock.Parameters | ForEach-Object {{ $_.Name.VariablePath.UserPath }})
   $out[$kind]=[ordered]@{{params=$names; pair_guard=$text.Contains('q4_shared_descriptor_pair_refused');
     forwarding=$text.Contains('Q4SharedDescriptorPath'',''Q4SharedDescriptorSha256') -or
-      ($text.Contains("'Q4SharedDescriptorPath',") -and $text.Contains("'Q4SharedDescriptorSha256'"))}}
+      ($text.Contains("'Q4SharedDescriptorPath',") -and $text.Contains("'Q4SharedDescriptorSha256'"));
+    bootstrap=$text.Contains('-Q4SharedDescriptorPath $Q4SharedDescriptorPath') -and
+      $text.Contains('-Q4SharedDescriptorSha256 $Q4SharedDescriptorSha256')}}
 }}
 $out | ConvertTo-Json -Depth 5 -Compress
 """
     done = subprocess.run([SHELL, "-NoProfile", "-NonInteractive", "-Command", code],
                           capture_output=True, timeout=30, check=True)
     value = json.loads(done.stdout.decode("utf-8-sig"))
-    for kind in ("fleet", "agent"):
+    for kind in ("fleet", "agent", "supervisor", "tools"):
         assert {"Q4SharedDescriptorPath", "Q4SharedDescriptorSha256"} <= set(value[kind]["params"])
     assert value["fleet"]["pair_guard"]
     assert value["fleet"]["forwarding"]
+    assert value["fleet"]["bootstrap"]

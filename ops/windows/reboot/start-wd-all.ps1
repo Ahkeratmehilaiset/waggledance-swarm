@@ -3436,7 +3436,7 @@ $toolsValidationOutput = @(
   & $toolsValidationLauncher `
     -ConfigPath $toolsValidationConfig `
     -Generation $bundleGeneration `
-    -ValidateOnly
+    -ValidateOnly @q4SharedDirect
 )
 $toolsValidation = @(
   $toolsValidationOutput |

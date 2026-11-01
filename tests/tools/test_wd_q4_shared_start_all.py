@@ -62,7 +62,9 @@ def test_actual_launcher_guards_and_routes_both_preflights_and_launch():
     text = SCRIPT.read_text(encoding="utf-8")
     guard = text.index("$q4SharedForward = Get-WdQ4SharedForwardingArguments")
     assert guard < text.index("Set-WdFleetWindowsPowerShellModulePath\n")
-    assert text.count("@q4SharedDirect") == 2
+    assert text.count("@q4SharedDirect") == 3
+    tools_preflight = text[text.index("$toolsValidationOutput = @("):text.index("$toolsValidation = @(")]
+    assert "-ValidateOnly @q4SharedDirect" in tools_preflight
     assert "$wtArguments += $q4SharedForward.native" in text
 
 

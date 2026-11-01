@@ -140,7 +140,10 @@ function Get-WdBridgeReconcileVerdict {
         }
         else {
             foreach ($action in @($text.Substring($at + 4) -split '; ')) {
-                if ($action -cmatch '^CONFLICT\s') { $reasons.Add('conflict: ' + $action) }
+                if ($action -ceq 'WARN Tools shared descriptor is not attested by existing readiness') {
+                    $reasons.Add('shared_descriptor_unattested')
+                }
+                elseif ($action -cmatch '^CONFLICT\s') { $reasons.Add('conflict: ' + $action) }
                 elseif ($action -cmatch '^(DISABLED|STOPPED)\s') { $reasons.Add('a scheduled task was mutated: ' + $action) }
                 elseif ($Mode -ceq 'dry-run' -and $action -cmatch '^WOULD-') { $reasons.Add('still to reconcile: ' + $action) }
                 elseif ($action -cmatch '^(WARN|ALERT)\s') { $notes.Add($action) }
@@ -418,7 +421,9 @@ function Get-WdBridgeSupervisorArguments {
     param(
         [Parameter(Mandatory)] [string] $SupervisorScript,
         [Parameter(Mandatory)] [string] $ConfigPath,
-        [Parameter(Mandatory)] [bool] $Apply
+        [Parameter(Mandatory)] [bool] $Apply,
+        [string] $Q4SharedDescriptorPath = '',
+        [string] $Q4SharedDescriptorSha256 = ''
     )
 
     # -BridgeWorkersOnly on BOTH runs: the supervisor then only verifies the merge-driver HOLD and
@@ -427,6 +432,13 @@ function Get-WdBridgeSupervisorArguments {
     $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $SupervisorScript)
     if ($Apply) { $arguments += '-Apply' }
     $arguments += @('-BridgeWorkersOnly', '-ConfigPath', $ConfigPath)
+    if ($Q4SharedDescriptorPath -or $Q4SharedDescriptorSha256) {
+        if (-not $Q4SharedDescriptorPath -or $Q4SharedDescriptorSha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'q4_shared_reference_refused'
+        }
+        $arguments += @('-Q4SharedDescriptorPath', $Q4SharedDescriptorPath,
+            '-Q4SharedDescriptorSha256', $Q4SharedDescriptorSha256)
+    }
     foreach ($argument in $arguments) {
         if ($argument.Length -eq 0 -or $argument.IndexOf('"') -ge 0 -or
             $argument.EndsWith([string][IO.Path]::DirectorySeparatorChar)) {
@@ -442,13 +454,16 @@ function Invoke-WdBridgeSupervisorOnce {
         [Parameter(Mandatory)] [string] $SupervisorScript,
         [Parameter(Mandatory)] [string] $ConfigPath,
         [Parameter(Mandatory)] [bool] $Apply,
+        [string] $Q4SharedDescriptorPath = '',
+        [string] $Q4SharedDescriptorSha256 = '',
         # The reconcile's bound. Past it the outcome is UNKNOWN: the run is reported as timed_out and
         # its process is left running, because its partial launches are unknown and stopping it could
         # strand a half-started worker.
         [ValidateRange(1, 3600)] [int] $TimeoutSeconds = 900
     )
 
-    $arguments = @(Get-WdBridgeSupervisorArguments -SupervisorScript $SupervisorScript -ConfigPath $ConfigPath -Apply $Apply)
+    $arguments = @(Get-WdBridgeSupervisorArguments -SupervisorScript $SupervisorScript -ConfigPath $ConfigPath -Apply $Apply `
+        -Q4SharedDescriptorPath $Q4SharedDescriptorPath -Q4SharedDescriptorSha256 $Q4SharedDescriptorSha256)
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $HostPath
     $info.Arguments = (@($arguments | ForEach-Object { '"' + $_ + '"' }) -join ' ')
@@ -490,7 +505,9 @@ function Invoke-WdBridgeWrapperBootstrap {
         [Parameter(Mandatory)] [string] $BundleRoot,
         [Parameter(Mandatory)] [string] $FleetManifestPath,
         [Parameter(Mandatory)] [string] $SupervisorScript,
-        [Parameter(Mandatory)] [string] $HostPath
+        [Parameter(Mandatory)] [string] $HostPath,
+        [string] $Q4SharedDescriptorPath = '',
+        [string] $Q4SharedDescriptorSha256 = ''
     )
 
     # The fleet wrapper's real ports. SupervisorScript is the installed wd_supervisor.ps1 launcher
@@ -511,7 +528,8 @@ function Invoke-WdBridgeWrapperBootstrap {
         -RunSupervisorOnce {
             param([bool] $ApplyRun)
             Invoke-WdBridgeSupervisorOnce -HostPath $HostPath -SupervisorScript $SupervisorScript `
-                -ConfigPath $wdbConfigPath -Apply $ApplyRun
+                -ConfigPath $wdbConfigPath -Apply $ApplyRun -Q4SharedDescriptorPath $Q4SharedDescriptorPath `
+                -Q4SharedDescriptorSha256 $Q4SharedDescriptorSha256
         } `
         -ReadToolsReadiness { Read-WdBridgeToolsReadiness -Path ([string]$wdbTools.readiness_path) } `
         -GetProcess { param([int] $ProcessId) Get-WdBridgeProcessFacts -ProcessId $ProcessId } `

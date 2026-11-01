@@ -838,6 +838,7 @@ Q4_READONLY_FILES = frozenset({
     "sandbox/mind/step2/shared_result_resolver.py",
     "sandbox/mind/step2/status_metadata_producer.py",
     "sandbox/mind/step2/wd_q4_private_read.py",
+    "sandbox/mind/step2/wd_q4_prefix_build_child.py",
 })
 Q4_AGENT_API = "tools/wd_q4_agent_query.py"
 Q4_RESOLVED_CHILD = "tools/wd_q4_resolved_child.py"
@@ -1476,6 +1477,7 @@ M0_MEASUREMENT_TOOL_FILES = (
 PREFIX_MIND_LIBRARY_FILES = (
     "sandbox/mind/step2/prefix_private_state.py",
     "sandbox/mind/step2/shared_prefix_public_producer.py",
+    "sandbox/mind/step2/wd_q4_prefix_build_child.py",
     "tools/wd_mind_status_projection_v3.py",
     "tools/wd_mind_status_approval_issuer.py",
     "tools/wd_mind_status_reader_v3.py",
@@ -1520,6 +1522,44 @@ def test_prefix_candidate_libraries_reject_delivery_mutants(relative, mutation):
         definition["import_smoke"]["package_modules"].append(relative[:-3].replace("/", "."))
     with pytest.raises(AssertionError):
         _assert_prefix_mind_library_only(definition, relative)
+
+
+PREFIX_BUILD_CHILD = "sandbox/mind/step2/wd_q4_prefix_build_child.py"
+PREFIX_BUILD_DEPENDENCIES = frozenset({
+    "sandbox/mind/step2/encode.py",
+    "sandbox/mind/step2/shared_bridge_snapshot.py",
+    "sandbox/mind/step2/shared_capture_adapter.py",
+    "sandbox/mind/step2/shared_index_builder.py",
+    "sandbox/mind/step2/shared_index_checkpoint.py",
+    "sandbox/mind/step2/shared_prefix_public_producer.py",
+    "sandbox/mind/step2/shared_producer.py",
+    "sandbox/mind/step2/shared_public_producer.py",
+    "waggledance/core/bridge_log_reader.py",
+})
+
+
+def _assert_prefix_build_child_delivery(definition):
+    _assert_prefix_mind_library_only(definition, PREFIX_BUILD_CHILD)
+    source = (REPO_ROOT / PREFIX_BUILD_CHILD).read_text(encoding="utf-8")
+    modules = {_module_path(name) for name in _internal_imports(source, "sandbox.mind.step2")}
+    assert PREFIX_BUILD_DEPENDENCIES <= modules, "prefix_build_dependency_source_changed"
+    for dependency in modules - {None}:
+        assert definition["python_files"].count(dependency) == 1, "prefix_build_dependency_drop_or_duplicate"
+
+
+def test_prefix_build_child_is_inert_and_has_internal_imports():
+    _assert_prefix_build_child_delivery(_definition())
+
+
+@pytest.mark.parametrize("dependency", sorted(PREFIX_BUILD_DEPENDENCIES))
+def test_prefix_build_child_rejects_missing_internal_dependency(dependency):
+    definition = deepcopy(_definition())
+    definition["python_files"] = [p for p in definition["python_files"] if p != PREFIX_BUILD_CHILD]
+    definition["python_files"].append(PREFIX_BUILD_CHILD)
+    _assert_prefix_build_child_delivery(definition)
+    definition["python_files"].remove(dependency)
+    with pytest.raises(AssertionError, match="prefix_build_dependency_drop_or_duplicate"):
+        _assert_prefix_build_child_delivery(definition)
 
 
 INTERPRETER_IDENTITY = "sandbox/mind/step2/interpreter_identity.py"

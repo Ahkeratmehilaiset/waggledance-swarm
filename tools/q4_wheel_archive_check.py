@@ -90,16 +90,22 @@ def _inspect_archive(archive, wheel_path, target_tag, max_uncompressed_bytes):
     info_dist, info_version = info[:-10].rsplit('-', 1)
     if _name(info_dist) != distribution or info_version != version:
         raise ValueError('dist_info_invalid')
-    wheel_name, record_name = info + '/WHEEL', info + '/RECORD'
-    if (wheel_name not in files or record_name not in files
-            or files[wheel_name].file_size > _MAX_METADATA or files[record_name].file_size > _MAX_METADATA):
+    wheel_name, record_name, metadata_name = info + '/WHEEL', info + '/RECORD', info + '/METADATA'
+    if (wheel_name not in files or record_name not in files or metadata_name not in files
+            or any(files[name].file_size > _MAX_METADATA for name in (wheel_name, record_name, metadata_name))):
         raise ValueError('metadata_missing')
 
     message = BytesParser(policy=policy.default).parsebytes(archive.read(files[wheel_name]))
     tags = message.get_all('Tag', [])
     if (message.defects or message.get_all('Wheel-Version', []) != ['1.0']
+            or message.get_all('Root-Is-Purelib', []) not in (['true'], ['false'])
             or not tags or len(tags) != len(set(tags))):
         raise ValueError('wheel_metadata_invalid')
+    package = BytesParser(policy=policy.default).parsebytes(archive.read(files[metadata_name]))
+    package_names, package_versions = package.get_all('Name', []), package.get_all('Version', [])
+    if (package.defects or len(package_names) != 1 or len(package_versions) != 1
+            or _name(package_names[0]) != distribution or package_versions[0] != version):
+        raise ValueError('package_metadata_invalid')
     filename_parts = wheel_path.name[:-4].split('-')
     py_tags, abi_tags, platforms = [set(part.split('.')) for part in filename_parts[-3:]]
     compatible = False

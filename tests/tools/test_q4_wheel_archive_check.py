@@ -19,6 +19,7 @@ import pytest
 
 DIST = "alpha-1.0.dist-info"
 WHEEL = f"{DIST}/WHEEL"
+METADATA = f"{DIST}/METADATA"
 RECORD = f"{DIST}/RECORD"
 MODULE = "alpha/__init__.py"
 TARGET = "cp313-cp313-win_amd64"
@@ -35,12 +36,17 @@ def record_hash(data):
 
 def make_archive(*, extra=(), missing_wheel=False, wheel_text=None, record_change=None,
                  duplicate=None, symlink=False, reparse=False, omit_record=False,
-                 module_path=MODULE, directories=(), symlink_directory=None):
+                 module_path=MODULE, directories=(), symlink_directory=None,
+                 missing_metadata=False, metadata_text=None):
     if wheel_text is None:
         wheel_text = b"Wheel-Version: 1.0\nGenerator: synthetic\nRoot-Is-Purelib: true\nTag: py3-none-any\n\n"
     entries = [(module_path, b"# synthetic, never execute\n")]
     if not missing_wheel:
         entries.append((WHEEL, wheel_text))
+    if not missing_metadata:
+        if metadata_text is None:
+            metadata_text = b"Metadata-Version: 2.1\nName: alpha\nVersion: 1.0\n\n"
+        entries.append((METADATA, metadata_text))
     entries.extend(extra)
     record_rows = [[name, record_hash(data), str(len(data))] for name, data in entries]
     if record_change is not None:
@@ -139,6 +145,40 @@ def test_nested_vendored_dist_info_is_ordinary_recorded_data(wheel_file, tmp_pat
 
 def test_symlink_directory_rejected_without_extraction(wheel_file, tmp_path):
     data = make_archive(symlink_directory="alpha/vendor/")
+    path = wheel_file(data)
+    with pytest.raises(ValueError):
+        inspect(path, data)
+    assert list(tmp_path.iterdir()) == [path]
+    assert path.read_bytes() == data
+
+
+@pytest.mark.parametrize("case", [
+    "missing_file", "missing_name", "missing_version", "wrong_name", "wrong_version",
+    "duplicate_name", "duplicate_version", "duplicate_top_metadata",
+])
+def test_top_level_metadata_must_bind_name_and_version_once(wheel_file, tmp_path, case):
+    fields = {
+        "missing_name": b"Metadata-Version: 2.1\nVersion: 1.0\n\n",
+        "missing_version": b"Metadata-Version: 2.1\nName: alpha\n\n",
+        "wrong_name": b"Metadata-Version: 2.1\nName: beta\nVersion: 1.0\n\n",
+        "wrong_version": b"Metadata-Version: 2.1\nName: alpha\nVersion: 2.0\n\n",
+        "duplicate_name": b"Metadata-Version: 2.1\nName: alpha\nName: alpha\nVersion: 1.0\n\n",
+        "duplicate_version": b"Metadata-Version: 2.1\nName: alpha\nVersion: 1.0\nVersion: 1.0\n\n",
+    }
+    extra = [("beta-2.0.dist-info/METADATA", b"Name: beta\nVersion: 2.0\n\n")] if case == "duplicate_top_metadata" else []
+    data = make_archive(missing_metadata=case == "missing_file", metadata_text=fields.get(case), extra=extra)
+    path = wheel_file(data)
+    with pytest.raises(ValueError):
+        inspect(path, data)
+    assert list(tmp_path.iterdir()) == [path]
+    assert path.read_bytes() == data
+
+
+@pytest.mark.parametrize("value", [None, "TRUE", "yes", "", "true\nRoot-Is-Purelib: true"])
+def test_wheel_root_is_purelib_is_exactly_one_boolean(wheel_file, tmp_path, value):
+    field = "" if value is None else f"Root-Is-Purelib: {value}\n"
+    wheel_text = (f"Wheel-Version: 1.0\n{field}Tag: py3-none-any\n\n").encode("ascii")
+    data = make_archive(wheel_text=wheel_text)
     path = wheel_file(data)
     with pytest.raises(ValueError):
         inspect(path, data)

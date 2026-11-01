@@ -41,6 +41,7 @@ def test_package_entrypoints_exist_and_include_release_helpers():
 
 
 SESSION_OUTER_FILES = (
+    "tools/wd_q4_allowed_records.py",
     "tools/wd_q4_answer_validate.py",
     "tools/wd_q4_session_outer_entry.py",
     "tools/wd_q4_session_outer_synthetic.py",
@@ -600,7 +601,7 @@ $map | ConvertTo-Json -Depth 4 -Compress
 
 @pytest.mark.skipif(PWSH is None or not HAS_BRIDGE_PYTHON, reason="pinned bridge interpreter unavailable")
 def test_session_outer_staged_manifest_contains_exact_source_bytes(tmp_path):
-    # Bind this fixture to the real package definition before staging its four
+    # Bind this fixture to the real package definition before staging its five
     # bytes; the fake wheel keeps this test offline and non-activating.
     definition = json.loads((REBOOT / "bridge-code-files.json").read_text(encoding="utf-8"))
     assert set(SESSION_OUTER_FILES) <= set(definition["python_files"])

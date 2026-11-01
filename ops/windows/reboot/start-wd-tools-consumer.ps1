@@ -3765,6 +3765,15 @@ if ($conversationSurface -cin @('local_window','native_terminal')) {
         bridge_python_wrapper = [string]$bridgeCodeContext.python_wrapper
         bridge_code_package_sha256 = [string]$bridgeCodeContext.definition_sha256
     }
+    if ($null -ne $toolsSharedQ4Values) {
+        # This attests only the validated launch-time configuration reference,
+        # not a successful query or an authenticated caller.
+        if ([string]$env:WD_Q4_SHARED_DESCRIPTOR_PATH -cne [string]$toolsSharedQ4Values.WD_Q4_SHARED_DESCRIPTOR_PATH -or
+            [string]$env:WD_Q4_SHARED_DESCRIPTOR_SHA256 -cne [string]$toolsSharedQ4Values.WD_Q4_SHARED_DESCRIPTOR_SHA256) {
+            throw 'q4_shared_reference_refused'
+        }
+        $conversationReadinessBase['q4_shared_descriptor_sha256'] = [string]$toolsSharedQ4Values.WD_Q4_SHARED_DESCRIPTOR_SHA256
+    }
     if ($conversationSurface -ceq 'native_terminal') {
         $nativeToolsArguments = Get-WdNativeToolsArguments -Saved $nativeToolsSaved -Worktree $worktree `
             -Model $model -Effort $reasoningEffort -Prompt $prompt -ImagePath $targetImagePath `

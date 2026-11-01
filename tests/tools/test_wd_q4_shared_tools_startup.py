@@ -89,6 +89,87 @@ $result=Invoke-WdBridgeLimitedBootstrap -Observe $observe -RunSupervisorOnce $re
     assert out["calls"] == (["True"] if phase == "existing" else ["True", "False"])
 
 
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("case", ["match", "missing", "wrong_digest", "wrong_pid", "wrong_start", "wrong_generation", "wrong_start_subsecond", "wrong_native_start_subsecond", "old_off"])
+def test_shared_readiness_requires_the_live_exact_descriptor_binding(ps, case):
+    from test_wd_bridge_limited_bootstrap import run, READY, CONSUMER, NATIVE, THREAD, GEN
+    record = READY
+    if case not in ("missing", "old_off"):
+        record = record[:-1] + ";q4_shared_descriptor_sha256='" + ("b" * 64 if case == "wrong_digest" else HASH) + "'}"
+    if case == "wrong_pid":
+        record = record.replace(";pid=41;", ";pid=43;")
+    if case == "wrong_start":
+        record = record.replace("process_start_utc='2026-09-30T10:00:01Z'", "process_start_utc='2026-09-30T10:00:08Z'")
+    if case == "wrong_generation":
+        record = record.replace("generation='" + GEN + "'", "generation='" + "b" * 40 + "'")
+    consumer = CONSUMER if case in ("old_off", "wrong_start_subsecond") else CONSUMER.replace("10:00:01.4Z", "10:00:01Z")
+    native = NATIVE if case in ("old_off", "wrong_native_start_subsecond") else NATIVE.replace("10:00:02.3Z", "10:00:02Z")
+    expected = "" if case == "old_off" else HASH
+    body = f"""
+$procs={{ param($ProcessId) if([int]$ProcessId -eq 41){{ return {consumer} }}; if([int]$ProcessId -eq 42){{ return {native} }}; return $null }}
+$ok=Test-WdBridgeToolsReadinessPinned -Record ({record}) -Generation '{GEN}' -ThreadId '{THREAD}' `
+ -ExpectedSharedDescriptorSha256 '{expected}' -GetProcess $procs
+@{{ok=$ok}} | ConvertTo-Json -Compress
+"""
+    out = run(ps, body)
+    assert out["ok"] is (case in ("match", "old_off"))
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("case", ["same_microsecond", "different_owner_microsecond", "different_native_microsecond"])
+def test_shared_readiness_normalizes_to_common_microseconds(ps, case):
+    from test_wd_bridge_limited_bootstrap import run, READY, CONSUMER, NATIVE, THREAD, GEN
+    record = READY.replace("10:00:01Z", "10:00:01.4938046Z").replace("10:00:02Z", "10:00:02.4938046Z")
+    record = record[:-1] + ";q4_shared_descriptor_sha256='" + HASH + "'}"
+    consumer = CONSUMER.replace("10:00:01.4Z", "10:00:01." + ("4938050Z" if case == "different_owner_microsecond" else "4938040Z"))
+    native = NATIVE.replace("10:00:02.3Z", "10:00:02." + ("4938050Z" if case == "different_native_microsecond" else "4938040Z"))
+    body = f"""
+$procs={{ param($ProcessId) if([int]$ProcessId -eq 41){{ return {consumer} }}; if([int]$ProcessId -eq 42){{ return {native} }}; return $null }}
+$ok=Test-WdBridgeToolsReadinessPinned -Record ({record}) -Generation '{GEN}' -ThreadId '{THREAD}' `
+ -ExpectedSharedDescriptorSha256 '{HASH}' -GetProcess $procs
+@{{ok=$ok}} | ConvertTo-Json -Compress
+"""
+    assert run(ps, body)["ok"] is (case == "same_microsecond")
+
+
+def test_readiness_hash_is_opt_in_and_checked_without_replacing_process():
+    tool = TOOLS.read_text(encoding="utf-8-sig")
+    supervisor = SUPERVISOR.read_text(encoding="utf-8-sig")
+    assert "q4_shared_descriptor_sha256" in tool
+    assert "-ExpectedSharedDescriptorSha256 $Q4SharedDescriptorSha256" in supervisor
+    assert "shared_descriptor_unattested" in BOOT.read_text(encoding="utf-8-sig")
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("case", ["match", "missing", "wrong_digest", "old_off"])
+def test_bootstrap_binds_requested_descriptor_before_success(ps, case):
+    from test_wd_bridge_limited_bootstrap import run, observation, READY, CONSUMER, NATIVE, APPLY, VERIFY
+    record = READY
+    if case not in ("missing", "old_off"):
+        record = record[:-1] + ";q4_shared_descriptor_sha256='" + ("b" * 64 if case == "wrong_digest" else HASH) + "'}"
+    consumer = CONSUMER if case == "old_off" else CONSUMER.replace("10:00:01.4Z", "10:00:01Z")
+    native = NATIVE if case == "old_off" else NATIVE.replace("10:00:02.3Z", "10:00:02Z")
+    expected = "" if case == "old_off" else HASH
+    body = f"""
+$observe={{ return {observation()} }}
+$reconcile={{ param($Apply) $line=if($Apply){{'{APPLY}'}}else{{'{VERIFY}'}}; return [pscustomobject]@{{exit_code=0;lines=@($line)}} }}
+$read={{ return {record} }}
+$procs={{ param($ProcessId) if([int]$ProcessId -eq 41){{ return {consumer} }}; if([int]$ProcessId -eq 42){{ return {native} }}; return $null }}
+$result=Invoke-WdBridgeLimitedBootstrap -Observe $observe -RunSupervisorOnce $reconcile -ReadToolsReadiness $read `
+ -GetProcess $procs -Sleep {{ param($Seconds) }} -ToolsWaitSeconds 1 -ExpectedSharedDescriptorSha256 '{expected}'
+$result | ConvertTo-Json -Depth 6 -Compress
+"""
+    out = run(ps, body)
+    assert out["ok"] is (case in ("match", "old_off"))
+    if case in ("missing", "wrong_digest"):
+        assert out["stage"] == "tools"
+        assert "shared_descriptor_unattested" in out["reasons"]
+    if case == "match":
+        assert out["tools_binding"]["q4_shared_descriptor_sha256"] == HASH
+    if case == "old_off":
+        assert "q4_shared_descriptor_sha256" not in out["tools_binding"]
+
+
 def _q(value):
     return "'" + str(value).replace("'", "''") + "'"
 

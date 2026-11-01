@@ -1661,7 +1661,8 @@ function Test-ToolsWrapperReadiness {
         [Parameter(Mandatory)] $Validation,
         [Parameter(Mandatory)] [string] $Generation,
         [Parameter(Mandatory)] [string] $ConfigPath,
-        [Parameter(Mandatory)] [string] $ReadinessPath
+        [Parameter(Mandatory)] [string] $ReadinessPath,
+        [string] $ExpectedSharedDescriptorSha256 = ''
     )
 
     try {
@@ -1670,6 +1671,12 @@ function Test-ToolsWrapperReadiness {
         }
         $record = Get-Content -LiteralPath $ReadinessPath -Raw -Encoding UTF8 |
             ConvertFrom-Json -ErrorAction Stop
+        if ($ExpectedSharedDescriptorSha256) {
+            $sharedDigest = $record.PSObject.Properties['q4_shared_descriptor_sha256']
+            if ($ExpectedSharedDescriptorSha256 -cnotmatch '^[0-9a-f]{64}$' -or $null -eq $sharedDigest -or
+                $sharedDigest.Name -cne 'q4_shared_descriptor_sha256' -or $sharedDigest.Value -isnot [string] -or
+                [string]$sharedDigest.Value -cne $ExpectedSharedDescriptorSha256) { return $false }
+        }
         $surfaceProperty = $Tools.PSObject.Properties['conversation_surface']
         $conversationSurface = if ($null -eq $surfaceProperty) {
             'none'
@@ -3805,7 +3812,12 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         $legacyConsumers.Count -eq 0) {
         # Healthy: readiness is bound to this PID, start time, and generation.
         if ($Q4SharedDescriptorPath) {
-            $actions.Add('WARN Tools shared descriptor is not attested by existing readiness')
+            $sharedReady = Test-ToolsWrapperReadiness -Process $readyWrapperProcesses[0] -Tools $tools `
+                -Validation $toolsValidation -Generation $toolsGeneration -ConfigPath $toolsConfig `
+                -ReadinessPath $readinessPath -ExpectedSharedDescriptorSha256 $Q4SharedDescriptorSha256
+            if (-not $sharedReady) {
+                $actions.Add('WARN Tools shared descriptor is not attested by existing readiness')
+            }
         }
     }
     elseif ($graceWrapperProcesses.Count -eq 1 -and

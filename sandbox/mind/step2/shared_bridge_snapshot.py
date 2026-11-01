@@ -41,7 +41,7 @@ def _token(cursor):
 def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes, max_rows, generation_path=None,
                       policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
                       _commitment_anchor=None, _public_tasks=None, _public_types=None,
-                      expected_prefix_sha256=None, max_prefix_bytes=None):
+                      expected_prefix_sha256=None, max_prefix_bytes=None, expected_snapshot_sha256=None):
     """Return an uncommitted delta; unpinned positional-policy calls are legacy only."""
     try:
         pins = (policy_bytes, policy_sha256, roster_bytes, roster_sha256)
@@ -66,6 +66,8 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
         prefix_requested = expected_prefix_sha256 is not None or max_prefix_bytes is not None
         prefix_args = (dict(expected_prefix_sha256=expected_prefix_sha256, max_prefix_bytes=max_prefix_bytes)
                        if prefix_requested else {})
+        if expected_snapshot_sha256 is not None:
+            prefix_args["expected_snapshot_sha256"] = expected_snapshot_sha256
         result = read_bridge_log(path, cursor=cursor, max_bytes=max_bytes, max_rows=max_rows,
                                  generation_path=generation_path, **prefix_args)
         observed = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -186,7 +188,7 @@ def read_anchored_delta(path, cursor, tasks, *, anchor_bytes, anchor_sha256,
                         generation_path, max_bytes, max_rows,
                         policy_bytes, policy_sha256, roster_bytes, roster_sha256,
                         public_policy_bytes=None, public_policy_sha256=None,
-                        expected_prefix_sha256=None, max_prefix_bytes=None):
+                        expected_prefix_sha256=None, max_prefix_bytes=None, expected_snapshot_sha256=None):
     """Read using an externally authenticated anchor and retain a delta binding.
 
     The caller must independently authenticate anchor_bytes and its expected
@@ -236,13 +238,15 @@ def read_anchored_delta(path, cursor, tasks, *, anchor_bytes, anchor_sha256,
                 or not isinstance(anchor["roster_sha256"], str)
                 or not hmac.compare_digest(anchor["roster_sha256"], roster_sha256)):
             raise ValueError()
+        snapshot_args = (dict(expected_snapshot_sha256=expected_snapshot_sha256)
+                         if expected_snapshot_sha256 is not None else {})
         result = read_shared_delta(path, cursor, tasks, max_bytes=max_bytes, max_rows=max_rows,
                                    generation_path=generation_path, policy_bytes=policy_bytes,
                                    policy_sha256=policy_sha256, roster_bytes=roster_bytes,
                                    roster_sha256=roster_sha256, _commitment_anchor=anchor_sha256,
                                    _public_tasks=public_tasks, _public_types=public_types,
                                    expected_prefix_sha256=expected_prefix_sha256,
-                                   max_prefix_bytes=max_prefix_bytes)
+                                   max_prefix_bytes=max_prefix_bytes, **snapshot_args)
         chain, count = result.pop("_semantic_state")
         projection_data = _canonical(result["projection"])
         commitment = _semantic_end(chain, count, result["candidate_cursor"], projection_data)

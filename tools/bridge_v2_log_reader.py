@@ -468,6 +468,7 @@ def read_bridge_log(
     generation_path: str | os.PathLike[str] | None = None,
     expected_prefix_sha256: str | None = None,
     max_prefix_bytes: int | None = None,
+    expected_snapshot_sha256: str | None = None,
 ) -> BridgeReadResult:
     """Read a stable, bounded JSONL snapshot or delta.
 
@@ -481,12 +482,19 @@ def read_bridge_log(
     and may read about twice the prefix budget in addition to delta reads.
     The resulting digest can disclose guesses about private bytes; do not
     publish it. Cursor and digest must be stored together by the caller.
+    An optional caller-pinned whole-snapshot digest checks the same immutable
+    bytes later parsed, from offset zero. It is not source authentication or a
+    guarantee against changes after this read; digest values may be private.
     """
 
     cursor_error = _validate_cursor(cursor)
     offset = cursor.offset if isinstance(cursor, BridgeCursor) else 0
     if cursor_error:
         return _result(BridgeReadStatus.BLOCKED, cursor_error, offset=offset)
+    snapshot_enabled = expected_snapshot_sha256 is not None
+    if snapshot_enabled and (type(expected_snapshot_sha256) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", expected_snapshot_sha256) is None or offset != 0):
+        return _result(BridgeReadStatus.BLOCKED, "snapshot_configuration_invalid", offset=offset)
     prefix_enabled = expected_prefix_sha256 is not None or max_prefix_bytes is not None
     if prefix_enabled and (not isinstance(cursor, BridgeCursor)
             or not isinstance(expected_prefix_sha256, str)
@@ -631,6 +639,13 @@ def read_bridge_log(
                 )
 
         consumed = _complete_prefix_length(data, max_rows=max_rows)
+        if snapshot_enabled:
+            if len(data) != snapshot_length or (data and consumed != len(data)):
+                return _result(BridgeReadStatus.BLOCKED, "snapshot_incomplete", offset=offset,
+                               snapshot_length=snapshot_length)
+            if not hmac.compare_digest(hashlib.sha256(data).hexdigest(), expected_snapshot_sha256):
+                return _result(BridgeReadStatus.BLOCKED, "snapshot_sha256_mismatch", offset=offset,
+                               snapshot_length=snapshot_length)
         if consumed == 0:
             status = (
                 BridgeReadStatus.BLOCKED

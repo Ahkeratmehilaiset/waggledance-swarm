@@ -69,6 +69,28 @@ def caller_anchored(spec):
                 expected_anchor_sha256=sha(anchor), expected_generation_sha256=sha(gen_bytes))
 
 
+def test_caller_anchor_refuses_aba_source_replacement(caller_anchored, monkeypatch):
+    from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
+
+    source = caller_anchored["snapshot_root"] / "source.jsonl"
+    original = source.read_bytes()
+    replacement = original.replace(b"public-task", b"other--task")
+    assert len(replacement) == len(original) and replacement != original
+    original_reader = snapshot.read_shared_delta
+
+    def swap_during_read(*args, **kwargs):
+        source.write_bytes(replacement)
+        try:
+            return original_reader(*args, **kwargs)
+        finally:
+            source.write_bytes(original)
+
+    monkeypatch.setattr(snapshot, "read_shared_delta", swap_during_read)
+    reply = module().publish_once(enabled=True, request=caller_anchored)
+    assert reply["status"] == "REFUSED"
+    assert not (caller_anchored["private_audit_root"] / "public-status.json").exists()
+
+
 @pytest.mark.parametrize("lane", sorted(ROSTER))
 def test_caller_anchor_publish_reaches_each_public_session_cli(caller_anchored, monkeypatch, capsys, lane):
     from tools import wd_mind_public_session_cli as cli

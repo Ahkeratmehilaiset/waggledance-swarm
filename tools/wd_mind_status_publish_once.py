@@ -163,7 +163,8 @@ def _prepare(request):
             **{key: request[key] for key in ("policy_bytes", "policy_sha256", "roster_bytes", "roster_sha256",
                                                "public_policy_bytes", "public_policy_sha256")}}
     result = snapshot.read_anchored_delta(source, cursor, tasks, generation_path=gen,
-        max_bytes=max(1, len(data)), max_rows=max(1, data.count(b"\n")), **pins)
+        max_bytes=max(1, len(data)), max_rows=max(1, data.count(b"\n")),
+        expected_snapshot_sha256=expected, **pins)
     body = metadata.build_status(result, enabled=True, **pins)
     body_sha = _sha(body)
     public = projection.project_status(enabled=True, body_bytes=body, body_sha256=body_sha,

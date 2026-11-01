@@ -18,6 +18,12 @@ def sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+def test_session_worker_is_listed_for_manifest_pinned_bundle():
+    root = Path(__file__).resolve().parents[2]
+    definition = json.loads((root / "ops/windows/reboot/bridge-code-files.json").read_text(encoding="utf-8"))
+    assert "tools/wd_q4_session_worker.py" in definition["python_files"]
+
+
 @pytest.fixture
 def case(monkeypatch, tmp_path):
     source = Path(__file__).with_name("test_wd_q4_lane_session_cli.py")

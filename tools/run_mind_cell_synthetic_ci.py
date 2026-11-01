@@ -16,6 +16,7 @@ TEST_PATH = "sandbox/mind/step2/test_cell_verified_bytes.py"
 SNAPSHOT_TEST_PATH = "sandbox/mind/step2/test_cell_snapshot_bytes.py"
 DESCRIPTOR_TEST_PATH = "sandbox/mind/step2/test_wd_q4_private_read_bytes.py"
 MEMORY_TEST_PATH = "sandbox/mind/step2/test_memory_snapshot.py"
+MEMORY_PREFLIGHT_TEST_PATH = "sandbox/mind/step2/test_memory_snapshot_preflight.py"
 VERIFIED_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_checkpoint.py"
 Q4_DESCRIPTOR_TEST_PATH = "sandbox/mind/step2/test_q4_descriptor.py"
 ACTIVE_BINDING_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_active_binding.py"
@@ -177,10 +178,20 @@ _PROJECTION_BINDING_NAMES = (
       ("missing", "duplicate", "extra", "text_swap", "time", "available", "event_ref", "extra_text")),
     "test_projection_binding_accepts_exact_views_across_cells",
 )
+_MEMORY_PREFLIGHT_NAMES = (
+    *(f"test_second_cell_hash_mismatch_refused_before_first_cell_load[{name}]"
+      for name in ("index", "meta", "provenance", "vectors")),
+    "test_valid_two_cell_snapshot_loads_after_preflight",
+    "test_missing_optional_vectors_remains_supported",
+    "test_second_cell_index_budget_refused_before_first_load",
+    *(f"test_missing_required_second_cell_artifact_refused_before_load[{name}]"
+      for name in ("index", "meta", "provenance")),
+)
 EXPECTED_NODEIDS = (tuple(TEST_PATH + "::" + name for name in _NAMES) +
                     tuple(SNAPSHOT_TEST_PATH + "::" + name for name in _SNAPSHOT_NAMES) +
                     tuple(DESCRIPTOR_TEST_PATH + "::" + name for name in _DESCRIPTOR_NAMES) +
                     tuple(MEMORY_TEST_PATH + "::" + name for name in _MEMORY_NAMES) +
+                    tuple(MEMORY_PREFLIGHT_TEST_PATH + "::" + name for name in _MEMORY_PREFLIGHT_NAMES) +
                     tuple(VERIFIED_TEST_PATH + "::" + name for name in _VERIFIED_NAMES) +
                     tuple(Q4_DESCRIPTOR_TEST_PATH + "::" + name for name in _Q4_DESCRIPTOR_NAMES) +
                     tuple(ACTIVE_BINDING_TEST_PATH + "::" + name for name in _ACTIVE_BINDING_NAMES) +
@@ -238,6 +249,7 @@ def _run_pytest(pytest):
     guard = _Guard()
     code = int(pytest.main([str(ROOT / TEST_PATH), str(ROOT / SNAPSHOT_TEST_PATH),
                             str(ROOT / DESCRIPTOR_TEST_PATH), str(ROOT / MEMORY_TEST_PATH),
+                            str(ROOT / MEMORY_PREFLIGHT_TEST_PATH),
                             str(ROOT / VERIFIED_TEST_PATH), str(ROOT / Q4_DESCRIPTOR_TEST_PATH),
                             str(ROOT / ACTIVE_BINDING_TEST_PATH), str(ROOT / PROJECTION_BINDING_TEST_PATH),
                             "-q"], plugins=[guard]))

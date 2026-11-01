@@ -18,6 +18,35 @@ VERIFIED_REQUIRED = VERIFIED_PATH + "::test_public_preflight_no_io_but_checkpoin
 Q4_DESCRIPTOR_PATH = "sandbox/mind/step2/test_q4_descriptor.py"
 ACTIVE_BINDING_PATH = "sandbox/mind/step2/test_verified_snapshot_active_binding.py"
 PROJECTION_BINDING_PATH = "sandbox/mind/step2/test_verified_snapshot_projection_binding.py"
+PREFLIGHT_PATH = "sandbox/mind/step2/test_memory_snapshot_preflight.py"
+
+
+def test_runner_requires_all_memory_preflight_witnesses():
+    runner = load_runner()
+    expected = {
+        *(f"test_second_cell_hash_mismatch_refused_before_first_cell_load[{name}]"
+          for name in ("index", "meta", "provenance", "vectors")),
+        "test_valid_two_cell_snapshot_loads_after_preflight",
+        "test_missing_optional_vectors_remains_supported",
+        "test_second_cell_index_budget_refused_before_first_load",
+        *(f"test_missing_required_second_cell_artifact_refused_before_load[{name}]"
+          for name in ("index", "meta", "provenance")),
+    }
+    nodes = {node.removeprefix(PREFLIGHT_PATH + "::") for node in runner.EXPECTED_NODEIDS
+             if node.startswith(PREFLIGHT_PATH + "::")}
+    assert nodes == expected
+    items = [SimpleNamespace(nodeid=node) for node in runner.EXPECTED_NODEIDS]
+    for omit_collection in (False, True):
+        session = SimpleNamespace(items=[item for item in items if not omit_collection or
+                                         not item.nodeid.startswith(PREFLIGHT_PATH + "::")], exitstatus=0)
+        guard = runner._Guard()
+        guard.pytest_collection_finish(session)
+        skipped_node = PREFLIGHT_PATH + "::test_second_cell_hash_mismatch_refused_before_first_cell_load[index]"
+        for item in session.items:
+            if item.nodeid != skipped_node:
+                guard.pytest_runtest_logreport(SimpleNamespace(skipped=False, when="call", nodeid=item.nodeid))
+        guard.pytest_sessionfinish(session, 0)
+        assert session.exitstatus != 0
 
 
 @pytest.mark.parametrize("path,count", [(Q4_DESCRIPTOR_PATH, 13), (ACTIVE_BINDING_PATH, 15),
@@ -312,6 +341,7 @@ def test_runner_propagates_pytest_failure_and_preserves_environment(monkeypatch)
     assert len(calls) == 1 and len(calls[0][1]) == 1
     assert calls[0][0] == [str(ROOT / "sandbox/mind/step2/test_cell_verified_bytes.py"),
                            str(ROOT / SNAPSHOT_PATH), str(ROOT / DESCRIPTOR_PATH), str(ROOT / MEMORY_PATH),
+                           str(ROOT / PREFLIGHT_PATH),
                            str(ROOT / VERIFIED_PATH), str(ROOT / Q4_DESCRIPTOR_PATH),
                            str(ROOT / ACTIVE_BINDING_PATH), str(ROOT / PROJECTION_BINDING_PATH), "-q"]
 

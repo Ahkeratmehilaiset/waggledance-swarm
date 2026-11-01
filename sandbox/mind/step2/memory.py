@@ -114,8 +114,8 @@ class Memory:
             loaded.cell_ids = [cell_id for cell_id in topology_mod.ALL_CELLS if cell_id in parsed["cells"]]
             loaded.topology = topology_mod.HexCellTopology()
             loaded.views = {}
-            # Reject any cell's pointer/log/receipt control mismatch before the
-            # first cell reaches the native index deserializer.
+            # Check every captured cell's controls and artifact hashes before
+            # any cell reaches load_snapshot or its native index deserializer.
             for cell_id in loaded.cell_ids:
                 item, bound = captured[cell_id], parsed["cells"][cell_id]
                 _, control_receipt = cell_mod._preflight_snapshot_controls(
@@ -124,6 +124,13 @@ class Memory:
                     expected_receipt_sha256=bound["receipt_sha256"])
                 if control_receipt["content"]["dim"] != parsed["dim"]:
                     raise MemoryError_("snapshot_refused")
+                if len(item["artifacts"]["index"]) > cell_mod.MAX_Q4_INDEX_BYTES:
+                    raise MemoryError_("snapshot_refused")
+                for artifact_name in ("index", "meta", "provenance", "vectors"):
+                    if artifact_name in item["artifacts"] and (
+                            hashlib.sha256(item["artifacts"][artifact_name]).hexdigest()
+                            != control_receipt["content"]["files"][artifact_name]):
+                        raise MemoryError_("snapshot_refused")
             for cell_id in loaded.cell_ids:
                 item, bound = captured[cell_id], parsed["cells"][cell_id]
                 view = cell_mod.load_snapshot(cell_id, pointer_bytes=item["pointer"], log_bytes=item["log"],

@@ -238,6 +238,28 @@ def _validate_generation_bytes_inner(contents, *, name, tasks, roster, policy_sh
             "descriptor": descriptor}
 
 
+def _validate_projection_cell_views(projection, opened):
+    """Compare the existing paired cell rows and texts to the verified projection."""
+    approved = {record["record_id"]: record for record in projection["records"]}
+    expected = {(record_id, view) for record_id in approved for view in ("w", "d")}
+    observed = set()
+    for view in opened.views.values():
+        if len(view.rows) != len(view.collection._texts):
+            _refuse()
+        for row, text in zip(view.rows, view.collection._texts):
+            provenance = row["provenance"]
+            key = (provenance["record"], provenance["view"])
+            record = approved.get(key[0])
+            if (key not in expected or key in observed or record is None or text != record["stored_text"]
+                    or row["time_utc"] != record["time_utc"]
+                    or provenance["available_utc"] != record["provenance"]["available_utc"]
+                    or provenance["event_ref"] != record["provenance"]["event_ref"]):
+                _refuse()
+            observed.add(key)
+    if observed != expected:
+        _refuse()
+
+
 def _verify_generation(root, name, tasks, roster, policy_sha256, roster_sha256):
     """Verify the reader-compatible builder artifacts and healthy cell receipts."""
     from sandbox.mind.step2 import wd_q4_private_read as reader
@@ -265,24 +287,7 @@ def _verify_generation(root, name, tasks, roster, policy_sha256, roster_sha256):
         _refuse()
     # Bind both stored views back to the approved projection, not merely its
     # declared digest. No extra or missing record/view may be published.
-    approved = {record["record_id"]: record for record in projection["records"]}
-    expected = {(record_id, view) for record_id in approved for view in ("w", "d")}
-    observed = set()
-    for view in opened.views.values():
-        if len(view.rows) != len(view.collection._texts):
-            _refuse()
-        for row, text in zip(view.rows, view.collection._texts):
-            provenance = row["provenance"]
-            key = (provenance["record"], provenance["view"])
-            record = approved.get(key[0])
-            if (key not in expected or key in observed or record is None or text != record["stored_text"]
-                    or row["time_utc"] != record["time_utc"]
-                    or provenance["available_utc"] != record["provenance"]["available_utc"]
-                    or provenance["event_ref"] != record["provenance"]["event_ref"]):
-                _refuse()
-            observed.add(key)
-    if observed != expected:
-        _refuse()
+    _validate_projection_cell_views(projection, opened)
     result = {"generation": name, **hashes, "source_binding": receipt.get("source_binding"),
               "source_mode": _source_mode(memory, receipt)}
     return result

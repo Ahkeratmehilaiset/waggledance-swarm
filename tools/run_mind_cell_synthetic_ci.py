@@ -19,6 +19,7 @@ MEMORY_TEST_PATH = "sandbox/mind/step2/test_memory_snapshot.py"
 VERIFIED_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_checkpoint.py"
 Q4_DESCRIPTOR_TEST_PATH = "sandbox/mind/step2/test_q4_descriptor.py"
 ACTIVE_BINDING_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_active_binding.py"
+PROJECTION_BINDING_TEST_PATH = "sandbox/mind/step2/test_verified_snapshot_projection_binding.py"
 _NAMES = (
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-meta]",
     "test_cell_consumer_uses_verified_data_bytes_after_path_swap[False-provenance]",
@@ -171,13 +172,19 @@ _ACTIVE_BINDING_NAMES = (
     *(f"test_legacy_verifier_keeps_separate_descriptor_reread[{changed}]" for changed in ("False", "True")),
     "test_active_validation_refusal_does_not_retain_private_input",
 )
+_PROJECTION_BINDING_NAMES = (
+    *(f"test_projection_binding_rejects_mismatch[{change}]" for change in
+      ("missing", "duplicate", "extra", "text_swap", "time", "available", "event_ref", "extra_text")),
+    "test_projection_binding_accepts_exact_views_across_cells",
+)
 EXPECTED_NODEIDS = (tuple(TEST_PATH + "::" + name for name in _NAMES) +
                     tuple(SNAPSHOT_TEST_PATH + "::" + name for name in _SNAPSHOT_NAMES) +
                     tuple(DESCRIPTOR_TEST_PATH + "::" + name for name in _DESCRIPTOR_NAMES) +
                     tuple(MEMORY_TEST_PATH + "::" + name for name in _MEMORY_NAMES) +
                     tuple(VERIFIED_TEST_PATH + "::" + name for name in _VERIFIED_NAMES) +
                     tuple(Q4_DESCRIPTOR_TEST_PATH + "::" + name for name in _Q4_DESCRIPTOR_NAMES) +
-                    tuple(ACTIVE_BINDING_TEST_PATH + "::" + name for name in _ACTIVE_BINDING_NAMES))
+                    tuple(ACTIVE_BINDING_TEST_PATH + "::" + name for name in _ACTIVE_BINDING_NAMES) +
+                    tuple(PROJECTION_BINDING_TEST_PATH + "::" + name for name in _PROJECTION_BINDING_NAMES))
 
 
 def _unavailable(*_args, **_kwargs):
@@ -232,7 +239,7 @@ def _run_pytest(pytest):
     code = int(pytest.main([str(ROOT / TEST_PATH), str(ROOT / SNAPSHOT_TEST_PATH),
                             str(ROOT / DESCRIPTOR_TEST_PATH), str(ROOT / MEMORY_TEST_PATH),
                             str(ROOT / VERIFIED_TEST_PATH), str(ROOT / Q4_DESCRIPTOR_TEST_PATH),
-                            str(ROOT / ACTIVE_BINDING_TEST_PATH),
+                            str(ROOT / ACTIVE_BINDING_TEST_PATH), str(ROOT / PROJECTION_BINDING_TEST_PATH),
                             "-q"], plugins=[guard]))
     return 1 if code == 0 and not guard.complete() else code
 

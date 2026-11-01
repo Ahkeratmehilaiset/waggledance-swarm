@@ -19,6 +19,95 @@ def quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+@pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("mode", ["completed", "timeout", "output_limit"])
+def test_detailed_job_reports_outcome_only_after_owned_tree_cleanup(host, tmp_path, mode):
+    scratch = tmp_path / "s"
+    scratch.mkdir()
+    work = tmp_path / "w"
+    work.mkdir()
+    codes = {"completed": "print('ok')", "timeout": "import time;time.sleep(10)",
+             "output_limit": "import sys;sys.stdout.write('X'*100000);sys.stdout.flush()"}
+    body = ("$r=Invoke-WdQ4ProcessJob -DetailedOutcome -Executable " + quote(sys.executable)
+            + " -Arguments @('-I','-S','-B','-c'," + quote(codes[mode]) + ")"
+            + " -WorkingDirectory " + quote(work) + " -ScratchRoot " + quote(scratch)
+            + " -InputBytes ([byte[]]@()) -TimeoutSeconds 2 -MaxOutputBytes 1024\n"
+            + "@{outcome=$r.Outcome;cleanup=$r.Cleanup;exit=$r.ExitCode;"
+              "bytes=$(if($null -eq $r.Stdout){0}else{$r.Stdout.Length})}|ConvertTo-Json -Compress")
+    result = run_ps(host, body)
+    assert result["outcome"] == {"completed": "completed", "timeout": "timeout", "output_limit": "refused"}[mode]
+    assert result["cleanup"] == "confirmed"
+    assert result["exit"] == (0 if mode == "completed" else None)
+    assert (result["bytes"] > 0) == (mode == "completed")
+
+
+def test_cleanup_contract_includes_confirmed_zero_and_checks_owned_handle_close():
+    text = HELPER.read_text(encoding="utf-8-sig")
+    assert "QueryInformationJobObject" in text
+    assert "activeProcesses" in text
+    assert "cleanup_unknown" in text
+
+
+@pytest.mark.parametrize("host", HOSTS)
+def test_detailed_preflight_refused_not_started_never_exposes_input_or_stdout(host, tmp_path):
+    work = tmp_path / "w"
+    work.mkdir()
+    body = ("$q=[Text.Encoding]::UTF8.GetBytes('synthetic-query-sentinel')\n"
+            "$r=Invoke-WdQ4ProcessJob -DetailedOutcome -Executable " + quote(sys.executable)
+            + " -Arguments @('-c','pass') -WorkingDirectory " + quote(work)
+            + " -ScratchRoot " + quote(work) + " -InputBytes $q -TimeoutSeconds 5 -MaxOutputBytes 4096\n"
+            "@{outcome=$r.Outcome;cleanup=$r.Cleanup;exit=$r.ExitCode;stdout=$r.Stdout}|ConvertTo-Json -Compress")
+    assert run_ps(host, body) == {"outcome": "refused", "cleanup": "not_started", "exit": None, "stdout": None}
+
+
+@pytest.mark.parametrize("host", HOSTS)
+def test_detailed_success_confirms_zero_after_killing_silent_descendant(host, tmp_path):
+    scratch = tmp_path / "s"
+    scratch.mkdir()
+    work = tmp_path / "w"
+    work.mkdir()
+    marker = tmp_path / "descendant.txt"
+    descendant = "import time,pathlib;time.sleep(2);pathlib.Path(" + repr(str(marker)) + ").write_text('escaped')"
+    code = ("import subprocess,sys;subprocess.Popen([sys.executable,'-c'," + repr(descendant)
+            + "],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);print('ok')")
+    body = ("$r=Invoke-WdQ4ProcessJob -DetailedOutcome -Executable " + quote(sys.executable)
+            + " -Arguments @('-I','-S','-B','-c'," + quote(code) + ")"
+            + " -WorkingDirectory " + quote(work) + " -ScratchRoot " + quote(scratch)
+            + " -InputBytes ([byte[]]@()) -TimeoutSeconds 5 -MaxOutputBytes 4096\n"
+            + "Start-Sleep -Milliseconds 2500\n"
+            + "@{outcome=$r.Outcome;cleanup=$r.Cleanup;survived=[IO.File]::Exists(" + quote(marker) + ")}|ConvertTo-Json -Compress")
+    assert run_ps(host, body) == {"outcome": "completed", "cleanup": "confirmed", "survived": False}
+
+
+@pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("fault", ["query", "terminate"])
+def test_injected_cleanup_unknown_discards_output_and_quarantines(host, tmp_path, fault):
+    """Inject failure into an in-memory copy only; real OS teardown still runs."""
+    scratch = tmp_path / "s"
+    scratch.mkdir()
+    work = tmp_path / "w"
+    work.mkdir()
+    if fault == "query":
+        old = "if(!QueryInformationJobObject(job,1,ref accounting,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero)) break;"
+        new = "if(DateTime.UtcNow.Year>=1 || !QueryInformationJobObject(job,1,ref accounting,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero)) break;"
+    else:
+        old = "if(job!=IntPtr.Zero && !TerminateJobObject(job,124)) cleanupOk=false;"
+        new = "if(job!=IntPtr.Zero && (!TerminateJobObject(job,124) || DateTime.UtcNow.Year>=1)) cleanupOk=false;"
+    invocation = ("Invoke-WdQ4ProcessJob -DetailedOutcome -Executable " + quote(sys.executable)
+                  + " -Arguments @('-I','-S','-B','-c','print(42)') -WorkingDirectory " + quote(work)
+                  + " -ScratchRoot " + quote(scratch)
+                  + " -InputBytes ([byte[]]@()) -TimeoutSeconds 5 -MaxOutputBytes 4096")
+    body = ("$text=[IO.File]::ReadAllText(" + quote(HELPER) + ")\n"
+            + "$old=" + quote(old) + ";$new=" + quote(new) + "\n"
+            + "if(-not $text.Contains($old)){throw 'injection_missing'}\n"
+            + ". ([scriptblock]::Create($text.Replace($old,$new)))\n"
+            + "$a=" + invocation + "\n$b=" + invocation + "\n"
+            + "@{first=$a.Outcome;cleanup=$a.Cleanup;stdout=$a.Stdout;second=$b.Outcome;"
+              "children=@(Get-ChildItem -LiteralPath " + quote(scratch) + ").Count}|ConvertTo-Json -Compress")
+    assert run_ps(host, body) == {"first": "cleanup_unknown", "cleanup": "unknown", "stdout": None,
+                                  "second": "cleanup_unknown", "children": 1}
+
+
 def run_ps(host, body, *, prelude=""):
     if os.name != "nt" or not host:
         pytest.skip("Windows PowerShell required")

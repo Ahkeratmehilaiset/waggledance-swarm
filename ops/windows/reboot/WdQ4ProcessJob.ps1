@@ -7,7 +7,11 @@
 # Scratch children are fresh and intentionally retained; no cleanup is attempted.
 # The helper accepts only the native type it loaded in this script scope. A
 # pre-existing same-named type, or re-dot-sourcing after load, fails closed.
+# DetailedOutcome is opt-in; callers must still independently control the host,
+# inheritable-handle race and whole-call deadline. Cleanup confirmation applies
+# only to this owned Job and its handles, not escaped processes or host identity.
 $script:WdQ4ProcessJobOwnedTypeV1 = $null
+$script:WdQ4ProcessJobQuarantinedV1 = $false
 function Invoke-WdQ4ProcessJob {
     [CmdletBinding()]
     param(
@@ -17,9 +21,12 @@ function Invoke-WdQ4ProcessJob {
         [Parameter(Mandatory)][string] $ScratchRoot,
         [Parameter(Mandatory)][AllowEmptyCollection()][byte[]] $InputBytes,
         [Parameter(Mandatory)][int] $TimeoutSeconds,
-        [Parameter(Mandatory)][int] $MaxOutputBytes
+        [Parameter(Mandatory)][int] $MaxOutputBytes,
+        [switch] $DetailedOutcome
     )
+    $nativeEntered=$false
     try {
+        if ($script:WdQ4ProcessJobQuarantinedV1) { throw 'invalid' }
         if ($TimeoutSeconds -lt 1 -or $TimeoutSeconds -gt 1800 -or
             $MaxOutputBytes -lt 1 -or $MaxOutputBytes -gt 262144 -or
             $InputBytes.Length -gt 35000000 -or
@@ -67,8 +74,10 @@ using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 
 public sealed class WdQ4ProcessJobResultV1 {
-    public int ExitCode { get; set; }
+    public int? ExitCode { get; set; }
     public byte[] Stdout { get; set; }
+    public string Outcome { get; set; }
+    public string Cleanup { get; set; }
 }
 
 public static class WdQ4ProcessJobNativeV1 {
@@ -90,6 +99,10 @@ public static class WdQ4ProcessJobNativeV1 {
     [StructLayout(LayoutKind.Sequential)] struct EL {
         public BL basic; public IO io; public UIntPtr processMemory,jobMemory,peakProcess,peakJob;
     }
+    [StructLayout(LayoutKind.Sequential)] struct Accounting {
+        public long totalUser,totalKernel,periodUser,periodKernel;
+        public uint pageFaults,totalProcesses,activeProcesses,terminatedProcesses;
+    }
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool CreatePipe(out IntPtr r,out IntPtr w,ref SA a,int size);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetHandleInformation(IntPtr h,uint mask,uint flags);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool InitializeProcThreadAttributeList(IntPtr list,int count,int flags,ref IntPtr size);
@@ -100,6 +113,7 @@ public static class WdQ4ProcessJobNativeV1 {
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job,IntPtr process);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool TerminateJobObject(IntPtr job,uint code);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool TerminateProcess(IntPtr process,uint code);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr job,int kind,ref Accounting info,int size,IntPtr returned);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateProcessW(string app,StringBuilder cmd,IntPtr pa,IntPtr ta,bool inherit,uint flags,IntPtr env,string cwd,ref SIX si,out PI pi);
     [DllImport("kernel32.dll",SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForSingleObject(IntPtr handle,uint ms);
@@ -107,7 +121,7 @@ public static class WdQ4ProcessJobNativeV1 {
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateDirectoryW(string path,IntPtr attributes);
     static void Check(bool value) { if (!value) throw new Win32Exception(Marshal.GetLastWin32Error()); }
-    static void Close(ref IntPtr h) { if (h!=IntPtr.Zero) { CloseHandle(h); h=IntPtr.Zero; } }
+    static bool Close(ref IntPtr h) { if (h==IntPtr.Zero) return true; bool ok=CloseHandle(h); h=IntPtr.Zero; return ok; }
     static string Quote(string text) {
         var b=new StringBuilder("\""); int slashes=0;
         foreach(char c in text) {
@@ -134,7 +148,9 @@ public static class WdQ4ProcessJobNativeV1 {
     public static WdQ4ProcessJobResultV1 Run(string executable,string[] args,string cwd,string scratchRoot,byte[] input,int timeout,int cap) {
         IntPtr job=IntPtr.Zero,process=IntPtr.Zero,thread=IntPtr.Zero,attr=IntPtr.Zero,handles=IntPtr.Zero,env=IntPtr.Zero;
         IntPtr childIn=IntPtr.Zero,parentIn=IntPtr.Zero,parentOut=IntPtr.Zero,childOut=IntPtr.Zero,parentErr=IntPtr.Zero,childErr=IntPtr.Zero;
-        FileStream writer=null,reader=null,errors=null; bool attrInitialized=false,assigned=false;
+        FileStream writer=null,reader=null,errors=null; Task write=null,read=null,readErr=null;
+        bool attrInitialized=false,assigned=false,cleanupOk=true,timedOut=false;
+        WdQ4ProcessJobResultV1 result=null; string outcome="refused";
         var clock=Stopwatch.StartNew(); var output=new MemoryStream(); int total=0;
         try {
             string scratch=Path.Combine(scratchRoot,"wd-q4-"+Guid.NewGuid().ToString("N"));
@@ -161,19 +177,21 @@ public static class WdQ4ProcessJobNativeV1 {
             process=pi.process; thread=pi.thread;
             Check(AssignProcessToJobObject(job,process)); assigned=true;
             if(ResumeThread(thread)==UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error());
-            Close(ref childIn); Close(ref childOut); Close(ref childErr); Close(ref thread);
+            if(!Close(ref childIn) | !Close(ref childOut) | !Close(ref childErr) | !Close(ref thread)) {
+                cleanupOk=false; throw new InvalidOperationException();
+            }
             writer=new FileStream(new SafeFileHandle(parentIn,true),FileAccess.Write,4096,false); parentIn=IntPtr.Zero;
             reader=new FileStream(new SafeFileHandle(parentOut,true),FileAccess.Read,4096,false); parentOut=IntPtr.Zero;
             errors=new FileStream(new SafeFileHandle(parentErr,true),FileAccess.Read,4096,false); parentErr=IntPtr.Zero;
             var w=writer; var r=reader; var e=errors;
-            var write=Task.Run(() => { try { w.Write(input,0,input.Length); } finally { w.Dispose(); } });
-            var read=Task.Run(() => { byte[] b=new byte[8192]; int n; while((n=r.Read(b,0,b.Length))!=0) {
+            write=Task.Run(() => { try { w.Write(input,0,input.Length); } finally { w.Dispose(); } });
+            read=Task.Run(() => { byte[] b=new byte[8192]; int n; while((n=r.Read(b,0,b.Length))!=0) {
                 if(Interlocked.Add(ref total,n)>cap) throw new InvalidDataException(); output.Write(b,0,n); } });
-            var readErr=Task.Run(() => { byte[] b=new byte[8192]; int n; while((n=e.Read(b,0,b.Length))!=0)
+            readErr=Task.Run(() => { byte[] b=new byte[8192]; int n; while((n=e.Read(b,0,b.Length))!=0)
                 if(Interlocked.Add(ref total,n)>cap) throw new InvalidDataException(); });
             for(;;) {
-                if(clock.ElapsedMilliseconds >= timeout*1000L || write.IsFaulted || read.IsFaulted || readErr.IsFaulted)
-                    throw new InvalidOperationException();
+                if(clock.ElapsedMilliseconds >= timeout*1000L) { timedOut=true; throw new InvalidOperationException(); }
+                if(write.IsFaulted || read.IsFaulted || readErr.IsFaulted) throw new InvalidOperationException();
                 uint state=WaitForSingleObject(process,20);
                 if(state==0xffffffff) throw new Win32Exception(Marshal.GetLastWin32Error());
                 if(state==0 && write.IsCompleted && read.IsCompleted && readErr.IsCompleted) break;
@@ -181,19 +199,41 @@ public static class WdQ4ProcessJobNativeV1 {
             Task.WhenAll(write,read,readErr).GetAwaiter().GetResult();
             uint code; Check(GetExitCodeProcess(process,out code));
             if(code>Int32.MaxValue) throw new InvalidOperationException();
-            return new WdQ4ProcessJobResultV1 {ExitCode=(int)code,Stdout=output.ToArray()};
+            result=new WdQ4ProcessJobResultV1 {ExitCode=(int)code,Stdout=output.ToArray()}; outcome="completed";
+        } catch(Exception) {
+            outcome=timedOut ? "timeout" : "refused";
         } finally {
-            bool cleanupOk=true;
-            if(job!=IntPtr.Zero && !TerminateJobObject(job,124)) cleanupOk=false;
-            if(process!=IntPtr.Zero && !assigned && !TerminateProcess(process,125)) cleanupOk=false;
-            Close(ref job); Close(ref process); Close(ref thread);
-            if(writer!=null) writer.Dispose(); if(reader!=null) reader.Dispose(); if(errors!=null) errors.Dispose();
-            Close(ref childIn); Close(ref parentIn); Close(ref parentOut); Close(ref childOut); Close(ref parentErr); Close(ref childErr);
-            if(attrInitialized) DeleteProcThreadAttributeList(attr);
-            if(attr!=IntPtr.Zero) Marshal.FreeHGlobal(attr); if(handles!=IntPtr.Zero) Marshal.FreeHGlobal(handles);
-            if(env!=IntPtr.Zero) Marshal.FreeHGlobal(env); output.Dispose();
-            if(!cleanupOk) throw new InvalidOperationException();
+            try {
+                if(job!=IntPtr.Zero && !TerminateJobObject(job,124)) cleanupOk=false;
+                if(process!=IntPtr.Zero && !assigned &&
+                   (!TerminateProcess(process,125) || WaitForSingleObject(process,2000)!=0)) cleanupOk=false;
+                if(assigned) {
+                    var cleanupClock=Stopwatch.StartNew(); bool drained=false;
+                    do {
+                        var accounting=new Accounting();
+                        if(!QueryInformationJobObject(job,1,ref accounting,Marshal.SizeOf(typeof(Accounting)),IntPtr.Zero)) break;
+                        if(accounting.activeProcesses==0) { drained=true; break; }
+                        Thread.Sleep(10);
+                    } while(cleanupClock.ElapsedMilliseconds<2000);
+                    if(!drained) cleanupOk=false;
+                }
+            } catch(Exception) { cleanupOk=false; }
+            if(!Close(ref job) | !Close(ref process) | !Close(ref thread)) cleanupOk=false;
+            try { if(writer!=null) writer.Dispose(); } catch(Exception) { cleanupOk=false; }
+            try { if(reader!=null) reader.Dispose(); } catch(Exception) { cleanupOk=false; }
+            try { if(errors!=null) errors.Dispose(); } catch(Exception) { cleanupOk=false; }
+            var tasks=new List<Task>(); if(write!=null) tasks.Add(write); if(read!=null) tasks.Add(read); if(readErr!=null) tasks.Add(readErr);
+            try { if(tasks.Count>0) Task.WaitAll(tasks.ToArray(),2000); } catch(AggregateException) { }
+            catch(Exception) { cleanupOk=false; }
+            foreach(var task in tasks) if(!task.IsCompleted) cleanupOk=false;
+            if(!Close(ref childIn) | !Close(ref parentIn) | !Close(ref parentOut) | !Close(ref childOut) | !Close(ref parentErr) | !Close(ref childErr)) cleanupOk=false;
+            try { if(attrInitialized) DeleteProcThreadAttributeList(attr); } catch(Exception) { cleanupOk=false; }
+            try { if(attr!=IntPtr.Zero) Marshal.FreeHGlobal(attr); if(handles!=IntPtr.Zero) Marshal.FreeHGlobal(handles);
+                  if(env!=IntPtr.Zero) Marshal.FreeHGlobal(env); output.Dispose(); } catch(Exception) { cleanupOk=false; }
         }
+        if(!cleanupOk) return new WdQ4ProcessJobResultV1 {Outcome="cleanup_unknown",Cleanup="unknown"};
+        if(result==null) result=new WdQ4ProcessJobResultV1();
+        result.Outcome=outcome; result.Cleanup="confirmed"; return result;
     }
 }
 '@ -PassThru -ErrorAction Stop)
@@ -203,7 +243,22 @@ public static class WdQ4ProcessJobNativeV1 {
             if (-not [object]::ReferenceEquals($nativeType,$matches[0])) { throw 'invalid' }
             $script:WdQ4ProcessJobOwnedTypeV1=$nativeType
         }
-        return $nativeType::Run($Executable, $Arguments, $WorkingDirectory, $scratch, $InputBytes,
-                                $TimeoutSeconds, $MaxOutputBytes)
-    } catch { throw 'q4_job_refused' }
+        $nativeEntered=$true
+        $result=$nativeType::Run($Executable, $Arguments, $WorkingDirectory, $scratch, $InputBytes,
+                                 $TimeoutSeconds, $MaxOutputBytes)
+        $nativeEntered=$false
+        if ($result.Outcome -ceq 'cleanup_unknown') { $script:WdQ4ProcessJobQuarantinedV1=$true }
+        if ($DetailedOutcome) { return $result }
+        if ($result.Outcome -cne 'completed') { throw 'q4_job_refused' }
+        return $result
+    } catch {
+        if ($nativeEntered) { $script:WdQ4ProcessJobQuarantinedV1=$true }
+        if ($DetailedOutcome) {
+            if ($script:WdQ4ProcessJobQuarantinedV1) {
+                return [pscustomobject]@{Outcome='cleanup_unknown';Cleanup='unknown';ExitCode=$null;Stdout=$null}
+            }
+            return [pscustomobject]@{Outcome='refused';Cleanup='not_started';ExitCode=$null;Stdout=$null}
+        }
+        throw 'q4_job_refused'
+    }
 }

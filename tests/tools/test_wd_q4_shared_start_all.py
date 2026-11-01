@@ -53,6 +53,8 @@ def test_valid_pair_is_forwarded_as_separate_arguments_including_spaces():
 @pytest.mark.parametrize("path,digest", [(r"C:\p\d.json", ""), ("", "a" * 64),
                                          (r"C:\p\d.json", "x" * 64),
                                          ('C:\\p\\bad".json', "a" * 64),
+                                         (r"C:\p\bad;new-tab.json", "a" * 64),
+                                         (r"C:\p;new-tab\descriptor.json", "a" * 64),
                                          (r"C:\p\..\d.json", "a" * 64)])
 def test_invalid_pairs_refuse_before_fake_process(path, digest):
     assert invoke_helper(path, digest) == {"ok": False, "launched": False}
@@ -72,6 +74,14 @@ def test_actual_launcher_guards_and_routes_both_preflights_and_launch():
                                        ["-Q4SharedDescriptorSha256", "a" * 64]])
 def test_real_script_rejects_partial_pair_at_entry_before_launcher_work(arguments):
     result = subprocess.run([SHELL, "-NoProfile", "-NonInteractive", "-File", str(SCRIPT), *arguments],
+                            text=True, capture_output=True, timeout=15)
+    assert result.returncode != 0 and "q4_shared_descriptor_pair_refused" in result.stderr
+
+
+def test_real_script_rejects_terminal_separator_at_entry():
+    result = subprocess.run([SHELL, "-NoProfile", "-NonInteractive", "-File", str(SCRIPT),
+                             "-Q4SharedDescriptorPath", r"C:\p\d;new-tab.json",
+                             "-Q4SharedDescriptorSha256", "a" * 64],
                             text=True, capture_output=True, timeout=15)
     assert result.returncode != 0 and "q4_shared_descriptor_pair_refused" in result.stderr
 

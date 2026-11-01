@@ -47,7 +47,7 @@ function Get-WdQ4SharedForwardingArguments {
   if (-not $hasPath) { return [pscustomobject]@{ direct = @{}; native = @() } }
   if ($Path.Length -gt 4096 -or $Path -cnotmatch '^[A-Za-z]:\\' -or
       $Path.Substring(2).Contains(':') -or $Path.Contains('/') -or
-      $Path -match '[\x00-\x1f"*?<>|]' -or $Sha256 -cnotmatch '^[0-9a-f]{64}$') {
+      $Path -match '[\x00-\x1f"*?<>|;]' -or $Sha256 -cnotmatch '^[0-9a-f]{64}$') {
     throw 'q4_shared_descriptor_pair_refused'
   }
   foreach ($part in $Path.Substring(3).Split('\')) {

@@ -238,13 +238,14 @@ $result | ConvertTo-Json -Depth 8 -Compress
 
 
 @pytest.mark.parametrize("kind", ["preflight", "disabled"])
-def test_public_preflight_refusal_always_uses_public_schema(kind):
+@pytest.mark.parametrize("lane_arg", ["", " -Lane ''", " -Lane 'fable-5'"])
+def test_public_preflight_refusal_always_uses_public_schema(kind, lane_arg):
     wrapper = str(WRAPPER).replace("'", "''")
     behavior = "throw 'external_anchor_unavailable'" if kind == "preflight" else "return @{Enabled=$false}"
     script = f"""
 . '{wrapper}'
 function Get-WdQ4QueryPlan {{{behavior}}}
-$result=Invoke-WdQ4Query -Public
+$result=Invoke-WdQ4Query -Public{lane_arg}
 $result|ConvertTo-Json -Depth 8 -Compress
 """
     run = subprocess.run([WINDOWS_POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", script],

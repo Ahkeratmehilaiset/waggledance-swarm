@@ -209,6 +209,61 @@ def test_disabled_anchored_fleet_never_reads_query_or_launches(bundle, host):
 
 
 @pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("lane,expected", [(None, False), ("", False),
+                                           ("fable-5", False), ("codex-lead-1", True)])
+def test_scoped_lane_is_enforced_before_read_or_transport(bundle, host, lane, expected):
+    bundle["config"]["lanes"] = ["codex-lead-1"]
+    bundle["put"]("wd-fleet.json", json.dumps({"q4_read": bundle["config"]}).encode())
+    bundle["seal"]()
+    lane_arg = "" if lane is None else " -Lane " + quote(lane)
+    script = "$script:readCalled=$false;$script:transportCalled=$false\nfunction Read-WdQ4QueryBytes { $script:readCalled=$true; return ,([byte[]](1,2)) }\n"
+    script += "function Invoke-WdQ4QueryTransport { $script:transportCalled=$true; throw 'synthetic' }\n"
+    script += "$v=Invoke-WdQ4Query -BundleRoot " + quote(bundle["root"])
+    script += " -ExpectedBundleCommit " + quote(COMMIT) + " -ExpectedManifestSha256 " + quote(bundle["pin"]) + lane_arg
+    script += "\n@{status=$v.status;reason=$v.reason;read=$script:readCalled;transport=$script:transportCalled}|ConvertTo-Json -Compress"
+    result = run_ps(host, script)
+    assert result["status"] == "REFUSED"
+    assert result["read"] is expected
+    assert result["transport"] is expected
+    if not expected:
+        assert result["reason"] == "disabled"
+
+
+@pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("lane,reason", [(None, "disabled"), ("", "disabled"),
+                                         ("fable-5", "disabled")])
+def test_scoped_lane_is_forwarded_by_script_entry(bundle, host, lane, reason):
+    if os.name != "nt" or not host:
+        pytest.skip("this Windows shell is not installed")
+    bundle["config"]["lanes"] = ["codex-lead-1"]
+    bundle["put"]("wd-fleet.json", json.dumps({"q4_read": bundle["config"]}).encode())
+    bundle["seal"]()
+    lane_arg = "" if lane is None else " -Lane " + quote(lane)
+    script = "& " + quote(WRAPPER) + " -BundleRoot " + quote(bundle["root"])
+    script += " -ExpectedBundleCommit " + quote(COMMIT) + " -ExpectedManifestSha256 " + quote(bundle["pin"]) + lane_arg
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode()
+    run = subprocess.run([host, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                         input=b"", capture_output=True, timeout=30)
+    # -EncodedCommand maps a nested script's nonzero exit to shell exit 1.
+    assert run.returncode != 0, (run.returncode, run.stdout, run.stderr)
+    assert json.loads(run.stdout)["reason"] == reason
+
+
+@pytest.mark.parametrize("host", HOSTS)
+@pytest.mark.parametrize("lane,expected", [(None, True), ("", False), ("codex-lead-1", False)])
+def test_legacy_no_lane_list_preserves_unscoped_but_refuses_scoped_call(bundle, host, lane, expected):
+    lane_arg = "" if lane is None else " -Lane " + quote(lane)
+    script = "$script:readCalled=$false\nfunction Read-WdQ4QueryBytes { $script:readCalled=$true; throw 'synthetic' }\n"
+    script += "function Invoke-WdQ4QueryTransport { throw 'launch_called' }\n"
+    script += "$v=Invoke-WdQ4Query -BundleRoot " + quote(bundle["root"])
+    script += " -ExpectedBundleCommit " + quote(COMMIT) + " -ExpectedManifestSha256 " + quote(bundle["pin"]) + lane_arg
+    script += "\n@{reason=$v.reason;read=$script:readCalled}|ConvertTo-Json -Compress"
+    result = run_ps(host, script)
+    assert result["read"] is expected
+    assert result["reason"] == ("invalid_query" if expected else "disabled")
+
+
+@pytest.mark.parametrize("host", HOSTS)
 def test_unlisted_code_file_is_not_accepted(bundle, host):
     (bundle["root"] / "tools-bootstrap/tools/unlisted.py").write_bytes(b"# foreign\n")
     result = run_ps(host, "$v=try{$p=" + plan_call(bundle) +

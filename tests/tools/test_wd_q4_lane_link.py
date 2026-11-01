@@ -69,6 +69,22 @@ def test_five_declared_lanes_send_query_only_through_stdin_seam(plan, lane):
     assert "synthetic-secret" not in json.dumps(value)
 
 
+@pytest.mark.parametrize("lane", LANES)
+def test_scoped_lane_is_forwarded_in_argv(plan, lane):
+    calls = []
+    result = link.invoke(enabled=True, scoped=True, lane=lane, query_bytes=b"synthetic",
+                         transport=lambda **kw: (calls.append(kw) or _reply(), 0), **plan)
+    assert result["status"] == "ABSTAIN"
+    assert calls[0]["arguments"][-2:] == ("-Lane", lane)
+
+
+@pytest.mark.parametrize("scoped", [None, 0, 1, "true"])
+def test_scoped_flag_requires_an_actual_bool(plan, scoped):
+    with pytest.raises(link.LaneLinkRefused):
+        link.invoke(enabled=True, scoped=scoped, lane=LANES[0], query_bytes=b"synthetic",
+                    transport=lambda **_: pytest.fail("transport called"), **plan)
+
+
 @pytest.mark.parametrize("field", ["expected_commit", "expected_manifest_sha256", "expected_wrapper_sha256"])
 def test_mismatched_or_missing_caller_pins_fail_before_query(plan, field):
     plan[field] = "0" * len(plan[field])

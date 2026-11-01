@@ -153,12 +153,14 @@ def _result(raw, code):
 
 
 def invoke(*, lane, bundle_root, expected_commit, expected_manifest_sha256, expected_wrapper_sha256,
-           query_bytes, transport=None, enabled=False):
-    """Call an injected trusted transport; ``lane`` is a declaration, not identity proof."""
+           query_bytes, transport=None, enabled=False, scoped: bool = False):
+    """Call trusted transport; scoped lane routing is not caller authentication."""
     if enabled is not True:
         raise LaneLinkRefused("disabled")
     if not isinstance(lane, str) or lane not in _LANES:
         raise LaneLinkRefused("invalid_lane")
+    if type(scoped) is not bool:
+        raise LaneLinkRefused("invalid_scope")
     if not callable(transport):
         raise LaneLinkRefused("transport_unavailable")
     try:
@@ -173,8 +175,11 @@ def invoke(*, lane, bundle_root, expected_commit, expected_manifest_sha256, expe
     except Exception:
         raise LaneLinkRefused("binding_refused") from None
     try:
-        raw, code = transport(wrapper=wrapper, arguments=("-BundleRoot", root, "-ExpectedBundleCommit", expected_commit,
-            "-ExpectedManifestSha256", expected_manifest_sha256), stdin_bytes=query_bytes)
+        arguments = ("-BundleRoot", root, "-ExpectedBundleCommit", expected_commit,
+                     "-ExpectedManifestSha256", expected_manifest_sha256)
+        if scoped:
+            arguments += ("-Lane", lane)
+        raw, code = transport(wrapper=wrapper, arguments=arguments, stdin_bytes=query_bytes)
         return _result(raw, code)
     except Exception:
         raise LaneLinkRefused("transport_refused") from None

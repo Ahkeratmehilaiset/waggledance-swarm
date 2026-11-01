@@ -16,6 +16,7 @@ param(
     [string] $BundleRoot = '',
     [string] $ExpectedBundleCommit = '',
     [string] $ExpectedManifestSha256 = '',
+    [AllowEmptyString()] [string] $Lane,
     [switch] $Public,
     [string] $PublicPlanPath = '',
     [string] $ExpectedPublicPlanSha256 = '',
@@ -159,7 +160,8 @@ function Get-WdQ4RosterPairs {
 function Get-WdQ4QueryPlan {
     param([string] $BundleRoot, [string] $ExpectedBundleCommit,
           [string] $ExpectedManifestSha256, [double] $TimeoutSeconds = 30,
-          [switch] $Public, [string] $PublicPlanPath='', [string] $ExpectedPublicPlanSha256='')
+          [switch] $Public, [string] $PublicPlanPath='', [string] $ExpectedPublicPlanSha256='',
+          [AllowEmptyString()] [string] $Lane)
     if (-not $BundleRoot -or $ExpectedBundleCommit -cnotmatch '^[0-9a-f]{40}$' -or
         $ExpectedManifestSha256 -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'external_anchor_unavailable' }
     if ([double]::IsNaN($TimeoutSeconds) -or [double]::IsInfinity($TimeoutSeconds) -or
@@ -197,7 +199,9 @@ function Get-WdQ4QueryPlan {
         $cfg | Add-Member -NotePropertyName WD_Q4_CODE_MANIFEST_SHA256 -NotePropertyValue $snapshots['bridge-code-files.json'].Hash.ToLowerInvariant()
         $cfg | Add-Member -NotePropertyName WD_Q4_CODE_COMMIT -NotePropertyValue $ExpectedBundleCommit
     } else {
-        $cfg = Get-WdQ4ReadConfig -FleetPath $snapshots['wd-fleet.json'].Path -FleetSha256 $snapshots['wd-fleet.json'].Hash
+        $configArgs = @{ FleetPath=$snapshots['wd-fleet.json'].Path; FleetSha256=$snapshots['wd-fleet.json'].Hash }
+        if ($PSBoundParameters.ContainsKey('Lane')) { $configArgs.Lane = $Lane }
+        $cfg = Get-WdQ4ReadConfig @configArgs
     }
     if ($null -eq $cfg) { return [pscustomobject]@{Enabled=$false} }
     # No process is started unless the job helper is itself in the externally
@@ -724,13 +728,15 @@ function Invoke-WdQ4Query {
     param([string] $BundleRoot='', [string] $ExpectedBundleCommit='',
           [string] $ExpectedManifestSha256='', [double] $TimeoutSeconds=30,
           [switch] $Public, [string] $PublicPlanPath='', [string] $ExpectedPublicPlanSha256='',
-          [IO.Stream] $InputStream)
+          [IO.Stream] $InputStream, [AllowEmptyString()] [string] $Lane)
     try {
         try {
             if ($Public) {
                 $plan=Get-WdQ4QueryPlan -BundleRoot $BundleRoot -ExpectedBundleCommit $ExpectedBundleCommit -ExpectedManifestSha256 $ExpectedManifestSha256 -TimeoutSeconds $TimeoutSeconds -Public -PublicPlanPath $PublicPlanPath -ExpectedPublicPlanSha256 $ExpectedPublicPlanSha256
             } else {
-                $plan=Get-WdQ4QueryPlan -BundleRoot $BundleRoot -ExpectedBundleCommit $ExpectedBundleCommit -ExpectedManifestSha256 $ExpectedManifestSha256 -TimeoutSeconds $TimeoutSeconds
+                $planArgs=@{BundleRoot=$BundleRoot;ExpectedBundleCommit=$ExpectedBundleCommit;ExpectedManifestSha256=$ExpectedManifestSha256;TimeoutSeconds=$TimeoutSeconds}
+                if ($PSBoundParameters.ContainsKey('Lane')) { $planArgs.Lane=$Lane }
+                $plan=Get-WdQ4QueryPlan @planArgs
             }
         } catch {
             if ($Public) {return [pscustomobject]@{schema='wd.q4-public-query.v2';status='REFUSED';reason='binding_refused'}}
@@ -759,7 +765,9 @@ function Invoke-WdQ4Query {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    $answer=Invoke-WdQ4Query -BundleRoot $BundleRoot -ExpectedBundleCommit $ExpectedBundleCommit -ExpectedManifestSha256 $ExpectedManifestSha256 -TimeoutSeconds $TimeoutSeconds -Public:$Public -PublicPlanPath $PublicPlanPath -ExpectedPublicPlanSha256 $ExpectedPublicPlanSha256
+    $invokeArgs=@{BundleRoot=$BundleRoot;ExpectedBundleCommit=$ExpectedBundleCommit;ExpectedManifestSha256=$ExpectedManifestSha256;TimeoutSeconds=$TimeoutSeconds;Public=$Public;PublicPlanPath=$PublicPlanPath;ExpectedPublicPlanSha256=$ExpectedPublicPlanSha256}
+    if ($PSBoundParameters.ContainsKey('Lane')) { $invokeArgs.Lane=$Lane }
+    $answer=Invoke-WdQ4Query @invokeArgs
     $answer|ConvertTo-Json -Depth 8 -Compress
     if ($answer.status -ceq 'REFUSED') { exit 2 }
     exit 0

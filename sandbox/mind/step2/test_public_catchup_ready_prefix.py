@@ -19,13 +19,13 @@ def _sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def _call(path, pins, cutoff):
+def _call(path, pins, cutoff, *, max_windows=64):
     anchor = json.loads(pins["anchor_bytes"])
     cursor = BridgeCursor(**anchor["cursor_start"])
     start = BridgePrefixPin(cursor, _sha(path.read_bytes()[:cursor.offset]))
     result = snapshot.read_public_catchup(
         path, cursor, frozenset({"public-task", "nonreview-private"}), enabled=True,
-        generation_path=anchor["generation_path"], max_bytes=65536, max_rows=100, max_windows=64,
+        generation_path=anchor["generation_path"], max_bytes=65536, max_rows=100, max_windows=max_windows,
         expected_prefix_sha256=start.sha256, max_prefix_bytes=65536, cutoff_utc=cutoff, **pins)
     assert snapshot.verify_public_catchup(
         result, expected_anchor_bytes=pins["anchor_bytes"], expected_anchor_sha256=pins["anchor_sha256"],
@@ -120,3 +120,52 @@ def test_existing_prefix_rewrite_is_not_accepted_on_resume(tmp_path):
             generation_path=anchor["generation_path"], max_bytes=65536, max_rows=100, max_windows=64,
             expected_prefix_sha256=current.sha256, max_prefix_bytes=65536,
             cutoff_utc=datetime.fromisoformat("2026-10-31T12:02:01+00:00"), **new_pins)
+
+
+def test_crlf_utf8_private_row_and_young_row_preserve_exact_byte_prefix(tmp_path):
+    rows = [event(ts_utc="2026-10-31T11:58:00Z"),
+            event(ts_utc="2026-10-31T11:59:00Z", to="fable-5", message="yksityinen ä🐝"),
+            event(ts_utc="2026-10-31T11:58:30Z", task_id="nonreview-private", message="synthetic-secret"),
+            event(ts_utc="2026-10-31T12:01:10Z"),
+            event(ts_utc="2026-10-31T11:57:00Z")]
+    _, pins, path = read_fixture(tmp_path, [])  # fixture encoder would turn the emoji into forbidden surrogate escapes
+    encoded = [json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+               + b"\r\n" for row in rows]
+    path.write_bytes(b"".join(encoded))
+    result = _call(path, pins, datetime.fromisoformat("2026-10-31T12:01:30+00:00"))
+    prefix = b"".join(encoded[:3])
+    assert b"\xc3\xa4" in prefix and b"\xf0\x9f\x90\x9d" in prefix
+    assert result["end_reason"] == "deferred" and len(_records(result)) == 1
+    assert result["candidate_cursor"].offset == len(prefix)
+    assert result["candidate_prefix"].sha256 == _sha(prefix)
+    assert "yksityinen" not in repr(result)
+    assert "synthetic-secret" not in repr(result)
+    resumed = _call(path, _repin(pins, result["candidate_cursor"]),
+                    datetime.fromisoformat("2026-10-31T12:02:01+00:00"))
+    assert len(_records(resumed)) == 2 and resumed["candidate_cursor"].offset == len(b"".join(encoded))
+
+
+def test_max_windows_returns_verified_resumable_prefix_not_caught_up(tmp_path):
+    _, pins, path = read_fixture(tmp_path, [event(ts_utc="2026-10-31T11:56:00Z"),
+        event(ts_utc="2026-10-31T11:57:00Z"), event(ts_utc="2026-10-31T11:58:00Z")])
+    cutoff = datetime.fromisoformat("2026-10-31T12:01:00+00:00")
+    result = _call(path, pins, cutoff, max_windows=2)
+    raw = path.read_bytes()
+    end = raw.index(b"\n", raw.index(b"\n") + 1) + 1
+    assert result["end_reason"] == "max_windows" and result["caught_up"] is False
+    assert len(_records(result)) == 2 and result["candidate_cursor"].offset == end
+    assert result["candidate_prefix"].sha256 == _sha(raw[:end])
+    resumed = _call(path, _repin(pins, result["candidate_cursor"]), cutoff, max_windows=2)
+    assert resumed["caught_up"] is True and len(_records(resumed)) == 1
+    assert resumed["candidate_cursor"].offset == len(raw)
+
+
+def test_young_first_blocks_following_ready_rows_until_it_matures(tmp_path):
+    _, pins, path = read_fixture(tmp_path, [event(ts_utc="2026-10-31T12:00:59Z"),
+        event(ts_utc="2026-10-31T11:58:00Z"), event(ts_utc="2026-10-31T11:59:00Z")])
+    result = _call(path, pins, datetime.fromisoformat("2026-10-31T12:00:59+00:00"))
+    assert result["end_reason"] == "deferred" and result["candidate_cursor"].offset == 0
+    assert result["windows"] == () and result["candidate_prefix"].sha256 == _sha(b"")
+    resumed = _call(path, pins, datetime.fromisoformat("2026-10-31T12:01:01+00:00"))
+    assert resumed["caught_up"] is True and len(_records(resumed)) == 3
+    assert resumed["candidate_cursor"].offset == path.stat().st_size

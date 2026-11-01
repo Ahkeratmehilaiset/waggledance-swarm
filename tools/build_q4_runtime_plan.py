@@ -25,7 +25,17 @@ environment, global/system config and replace objects are excluded and blob
 ids are recomputed from the bytes read. Git output is capped while it is read
 (stdout per call, stderr), an excess or the timeout ends the process and
 refuses, and each blob's listed size is checked before its bytes are read.
-Site and model trees reuse the
+timeout_seconds bounds the total git wall time of one plan (plus a short
+reader join grace). Code reads are checked against max_bytes before each blob
+and only sizes and digests are kept; site and model file sizes are checked
+against the remaining budget before hashing. Root and extra modules also pin
+their parent package __init__ files. Lazy fetching is disabled
+(GIT_NO_LAZY_FETCH, git 2.45 or newer) and the git, file, ssh, http, https
+and ext transports are denied on the command line, but the repository's own
+local config is still read, so network-free behaviour is NOT claimed for
+arbitrary local config or remote helpers. Only the git process itself is
+ended on excess or timeout; processes it starts are not tracked, so no
+process-tree cleanup is claimed. Site and model trees reuse the
 runtime verifier's own walk and record policy: reparse points, alternate data
 streams, hard-link aliases, short-name or otherwise invalid segments, case
 collisions and its file/byte caps refuse. The model directory must match the
@@ -45,6 +55,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 
 from sandbox.mind.step2 import runtime_builder, runtime_manifest
 
@@ -62,6 +73,11 @@ _MAX_SMALL = 4096
 _MAX_LISTING = 64 * 1024 * 1024
 _MAX_STDERR = 64 * 1024
 _CHUNK = 65536
+_JOIN_GRACE = 1.0
+_GIT_CONFIG = tuple(item for name in ("protocol.allow", "protocol.git.allow", "protocol.file.allow",
+                                      "protocol.ssh.allow", "protocol.http.allow", "protocol.https.allow",
+                                      "protocol.ext.allow")
+                    for item in ("-c", name + "=never")) + ("-c", "core.fsmonitor=false")
 _TRUST = {"site_provenance": "UNKNOWN", "dependency_closure": "NOT_VERIFIED",
           "dynamic_imports": "HEURISTIC_FLAGS_CALLER_LISTED", "git_executable": "CALLER_TRUSTED",
           "code_closure": "STATIC_UNVERIFIED", "native_dll_closure": "NOT_VERIFIED"}
@@ -87,7 +103,7 @@ def _drain(stream, limit, sink, flags, process):
             if total > limit:
                 flags.add("too_large")
                 break
-            sink.append(chunk)
+            sink.extend(chunk)
     except (OSError, ValueError):
         flags.add("error")
     try:
@@ -96,29 +112,33 @@ def _drain(stream, limit, sink, flags, process):
         pass
 
 
-def _git(git_executable, repository, args, timeout, limit):
-    """Return git stdout (at most ``limit`` bytes) or None on a non-zero exit; excess or timeout refuses."""
+def _git(git_executable, repository, args, deadline, limit):
+    """Return git stdout (at most ``limit`` bytes) or None on a non-zero exit; excess or the deadline refuses."""
+    if deadline - time.monotonic() <= 0:
+        _fail("git_timeout")
     env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
-    env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0"})
+    env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0",
+                "GIT_NO_LAZY_FETCH": "1"})
     try:
-        process = subprocess.Popen([git_executable, "--no-replace-objects", "-C", repository, *args], env=env,
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   bufsize=0, shell=False)
+        process = subprocess.Popen([git_executable, "--no-replace-objects", *_GIT_CONFIG, "-C", repository, *args],
+                                   env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, bufsize=0, shell=False)
     except (OSError, ValueError, subprocess.SubprocessError):
         _fail("git_unavailable")
-    out, flags = [], set()
+    out, flags = bytearray(), set()
     readers = [threading.Thread(target=_drain, args=(process.stdout, limit, out, flags, process), daemon=True),
-               threading.Thread(target=_drain, args=(process.stderr, _MAX_STDERR, [], flags, process), daemon=True)]
+               threading.Thread(target=_drain, args=(process.stderr, _MAX_STDERR, bytearray(), flags, process),
+                                daemon=True)]
     for reader in readers:
         reader.start()
     try:
-        process.wait(timeout=timeout)
+        process.wait(timeout=max(deadline - time.monotonic(), 0.001))
     except subprocess.TimeoutExpired:
         flags.add("timeout")
         process.kill()
         process.wait()
     for reader in readers:
-        reader.join(timeout)
+        reader.join(max(deadline - time.monotonic(), _JOIN_GRACE))
     if "timeout" in flags or any(reader.is_alive() for reader in readers):
         _fail("git_timeout")
     process.stdout.close()
@@ -129,15 +149,15 @@ def _git(git_executable, repository, args, timeout, limit):
         _fail("git_unavailable")
     if process.returncode != 0:
         return None
-    return b"".join(out)
+    return out
 
 
-def _listing(git_executable, repository, commit, timeout):
+def _listing(git_executable, repository, commit, deadline):
     resolved = _git(git_executable, repository, ["rev-parse", "--verify", "--end-of-options", commit + "^{commit}"],
-                    timeout, _MAX_SMALL)
+                    deadline, _MAX_SMALL)
     if resolved is None or resolved.decode("ascii", "replace").strip() != commit:
         _fail("commit_invalid")
-    raw = _git(git_executable, repository, ["ls-tree", "-r", "-z", "-l", "--full-tree", commit], timeout,
+    raw = _git(git_executable, repository, ["ls-tree", "-r", "-z", "-l", "--full-tree", commit], deadline,
                _MAX_LISTING)
     if raw is None:
         _fail("commit_invalid")
@@ -151,15 +171,16 @@ def _listing(git_executable, repository, commit, timeout):
     return entries
 
 
-def _blob(git_executable, repository, oid, size, timeout):
+def _blob(git_executable, repository, oid, size, deadline):
     if size is None or size > runtime_manifest.MAX_FILE_BYTES:
         _fail("code_entry_invalid")  # refused from the listed size, before any byte is read
-    data = _git(git_executable, repository, ["cat-file", "blob", oid], timeout, size)
+    data = _git(git_executable, repository, ["cat-file", "blob", oid], deadline, size)
     if data is None or len(data) != size:
         _fail("code_entry_invalid")
-    header = b"blob %d\0" % len(data)
-    recomputed = (hashlib.sha1(header + data) if len(oid) == 40 else hashlib.sha256(header + data)).hexdigest()
-    if recomputed != oid:
+    recomputed = hashlib.sha1() if len(oid) == 40 else hashlib.sha256()
+    recomputed.update(b"blob %d\0" % len(data))
+    recomputed.update(data)  # no header-plus-data copy
+    if recomputed.hexdigest() != oid:
         _fail("code_entry_invalid")
     return data
 
@@ -246,7 +267,14 @@ def _imports(tree, path, closure):
     return found, third, dynamic
 
 
-def _code_plan(git_executable, repository, commit, roots, extras, timeout):
+def _parents(path, entries):
+    """Package __init__ files that importing ``path`` as a module also executes."""
+    parts = path.split("/")[:-1]
+    candidates = ("/".join(parts[:count]) + "/__init__.py" for count in range(1, len(parts) + 1))
+    return {item for item in candidates if item in entries}
+
+
+def _code_plan(git_executable, repository, commit, roots, extras, deadline, budget):
     if (type(roots) not in (list, tuple) or not roots or len(set(roots)) != len(roots)
             or type(extras) not in (list, tuple) or len(set(extras)) != len(extras)):
         _fail("code_roots_invalid")
@@ -254,31 +282,36 @@ def _code_plan(git_executable, repository, commit, roots, extras, timeout):
     extras = [_code_path(item) for item in extras]
     if any(not item.endswith(".py") for item in roots):
         _fail("code_roots_invalid")
-    entries = _listing(git_executable, repository, commit, timeout)
+    entries = _listing(git_executable, repository, commit, deadline)
     if any(item not in entries for item in roots + extras):
         _fail("code_roots_invalid")
     closure = _Closure(entries)
-    data, third, dynamic = {}, set(), set()
+    records, third, dynamic, used = {}, set(), set(), 0
     pending = list(roots) + list(extras)
     while pending:
         path = pending.pop()
-        if path in data:
+        if path in records:
             continue
         mode, kind, oid, size = entries[path]
         if kind != "blob" or mode not in ("100644", "100755"):
             _fail("code_entry_invalid")
-        data[path] = _blob(git_executable, repository, oid, size, timeout)
+        if size is not None and used + size > budget:
+            _fail("budget_insufficient")  # checked from the listed size, before the blob is read
+        raw = _blob(git_executable, repository, oid, size, deadline)
+        used += len(raw)
+        records[path] = {"size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
         if path.endswith(".py"):
             try:
-                tree = ast.parse(data[path].decode("utf-8", "strict"), filename=path)
+                tree = ast.parse(raw.decode("utf-8", "strict"), filename=path)
             except (SyntaxError, UnicodeError, ValueError):
                 _fail("code_closure_incomplete")
             found, names, uses = _imports(tree, path, closure)
             third |= names
             if uses:
                 dynamic.add(path)
-            pending.extend(sorted(found - set(data)))
-    return data, sorted(third), sorted(dynamic)
+            pending.extend(sorted((found | _parents(path, entries)) - set(records)))
+        del raw  # only sizes and digests are kept, so at most one blob is in memory
+    return records, sorted(third), sorted(dynamic), used
 
 
 def _root(value):
@@ -321,13 +354,17 @@ def _physically_related(left, right):
     return False
 
 
-def _tree_pins(root):
+def _tree_pins(root, budget, used):
     files, _ = runtime_manifest._tree(root)
     pins = {}
     for relative in sorted(files):
-        size, digest, _ = runtime_builder._hash_file(root.joinpath(*relative.split("/")))
+        path = root.joinpath(*relative.split("/"))
+        used += os.lstat(path).st_size
+        if used > budget:
+            _fail("budget_insufficient")  # checked before the file is hashed
+        size, digest, _ = runtime_builder._hash_file(path)
         pins[relative] = {"size": size, "sha256": digest}
-    return pins, files
+    return pins, files, used
 
 
 def plan_runtime_inputs(*, git_executable, repository, commit, code_roots, site_root, model_root,
@@ -355,10 +392,11 @@ def plan_runtime_inputs(*, git_executable, repository, commit, code_roots, site_
         site, model = _root(site_root), _root(model_root)
         if _related(site, model) or _physically_related(site, model):
             _fail("roots_invalid")
-        code, third, dynamic = _code_plan(git_executable, repository, commit, code_roots, extra_code_paths,
-                                          timeout_seconds)
-        site_pins, site_files = _tree_pins(site)
-        model_pins, model_files = _tree_pins(model)
+        deadline = time.monotonic() + timeout_seconds  # one wall-time budget for every git call of this plan
+        code, third, dynamic, used = _code_plan(git_executable, repository, commit, code_roots, extra_code_paths,
+                                                deadline, max_bytes)
+        site_pins, site_files, used = _tree_pins(site, max_bytes, used)
+        model_pins, model_files, used = _tree_pins(model, max_bytes, used)
         wanted = set(expected_model_files)
         if "model.safetensors" not in wanted or set(model_pins) != wanted or len(wanted) != len(expected_model_files):
             _fail("model_membership_mismatch")
@@ -369,8 +407,7 @@ def plan_runtime_inputs(*, git_executable, repository, commit, code_roots, site_
         # The trees must still have exactly the hashed membership after every read.
         if runtime_manifest._tree(site)[0] != site_files or runtime_manifest._tree(model)[0] != model_files:
             _fail("tree_changed")
-        pins = {"assets/code/" + path: {"size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
-                for path, raw in sorted(code.items())}
+        pins = {"assets/code/" + path: value for path, value in sorted(code.items())}
         pins.update({"site/" + path: value for path, value in site_pins.items()})
         pins.update({"model/" + path: value for path, value in model_pins.items()})
         files, _ = runtime_manifest._validate_records([{"path": key, **value} for key, value in pins.items()])

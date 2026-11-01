@@ -407,7 +407,7 @@ def test_git_timeout_refuses_and_ends_the_process(case, monkeypatch):
     started = substitute_git(monkeypatch, "import time\ntime.sleep(60)\n")
     begun = time.monotonic()
     refused({**kwargs, "timeout_seconds": 1}, "git_timeout")
-    assert time.monotonic() - begun < 30 and started and all(item.poll() is not None for item in started)
+    assert time.monotonic() - begun < 5 and started and all(item.poll() is not None for item in started)
 
 
 def test_oversize_blob_is_refused_before_its_bytes_are_read(case, monkeypatch):
@@ -422,3 +422,72 @@ def test_oversize_blob_is_refused_before_its_bytes_are_read(case, monkeypatch):
     monkeypatch.setattr(runtime_manifest, "MAX_FILE_BYTES", len(CODE["tools/a.py"]) - 1)
     refused(kwargs, "code_entry_invalid")
     assert commands and not any("cat-file" in command and oid in command for command in commands)
+
+
+def record_git(monkeypatch, delay=0.0):
+    real = subprocess.Popen
+    commands = []
+    def record(command, *args, **kw):
+        commands.append([str(item) for item in command])
+        time.sleep(delay)
+        return real(command, *args, **kw)
+    monkeypatch.setattr(plan_mod.subprocess, "Popen", record)
+    return commands
+
+
+def test_code_reads_are_budgeted_before_each_blob(case, monkeypatch):
+    kwargs, repo, _, _ = case
+    oid = git(repo, "rev-parse", kwargs["commit"] + ":tools/a.py")
+    commands = record_git(monkeypatch)
+    budget = len(CODE["configs/data.json"]) + len(CODE["tools/a.py"]) - 1  # data.json is read first, a.py exceeds
+    refused({**kwargs, "max_bytes": budget}, "budget_insufficient")
+    assert not any("cat-file" in command and oid in command for command in commands)
+
+
+def test_site_and_model_are_budgeted_before_hashing(case, monkeypatch):
+    kwargs, _, site, _ = case
+    plan = plan_mod.plan_runtime_inputs(**kwargs)
+    code_total = sum(value["size"] for key, value in plan["pins"].items() if key.startswith("assets/code/"))
+    original = plan_mod.runtime_builder._hash_file
+    hashed = []
+    def record(path):
+        hashed.append(Path(path))
+        return original(path)
+    monkeypatch.setattr(plan_mod.runtime_builder, "_hash_file", record)
+    refused({**kwargs, "max_bytes": code_total + 1}, "budget_insufficient")  # pkg/__init__.py fits, pkg/mod.py not
+    assert site / "pkg" / "mod.py" not in hashed
+
+
+def test_root_and_extra_modules_pin_their_parent_packages(tmp_path):
+    files = {"sandbox/__init__.py": b"", "sandbox/mind/__init__.py": b"X = 1\n", "sandbox/mind/x.py": b"VALUE = 1\n",
+             "tools/__init__.py": b"", "tools/extra.py": b"", "tools/unused.py": b""}
+    repo, commit = make_repo(tmp_path, files)
+    site = make_tree(tmp_path / "site", {"x.py": b""})
+    model = make_tree(tmp_path / "model", {"model.safetensors": WEIGHTS})
+    plan = plan_mod.plan_runtime_inputs(
+        git_executable=GIT, repository=str(repo), commit=commit, code_roots=["sandbox/mind/x.py"],
+        extra_code_paths=["tools/extra.py"], site_root=str(site), model_root=str(model),
+        expected_model_files=["model.safetensors"], expected_weights_sha256=sha(WEIGHTS), generation=GENERATION,
+        revision=REVISION, max_bytes=4096, enabled=True)
+    assert plan["code_paths"] == ["sandbox/__init__.py", "sandbox/mind/__init__.py", "sandbox/mind/x.py",
+                                  "tools/__init__.py", "tools/extra.py"]
+
+
+def test_partial_clone_blobs_are_never_lazily_fetched(case, tmp_path):
+    kwargs, repo, _, _ = case
+    git(repo, "config", "uploadpack.allowFilter", "true")
+    clone = tmp_path / "partial"
+    subprocess.run([GIT, "-c", "protocol.file.allow=always", "clone", "-q", "--no-checkout", "--filter=blob:none",
+                    repo.as_uri(), str(clone)], capture_output=True, check=True)
+    before = git(clone, "count-objects", "-v")
+    with pytest.raises(plan_mod.RuntimePlanRefused):
+        plan_mod.plan_runtime_inputs(**{**kwargs, "repository": str(clone)})
+    assert git(clone, "count-objects", "-v") == before  # nothing was fetched from the promisor remote
+
+
+def test_git_wall_time_is_bounded_across_calls(case, monkeypatch):
+    kwargs, _, _, _ = case
+    record_git(monkeypatch, delay=0.7)  # each call alone is far below the timeout, three calls are not
+    begun = time.monotonic()
+    refused({**kwargs, "timeout_seconds": 1}, "git_timeout")
+    assert time.monotonic() - begun < 10

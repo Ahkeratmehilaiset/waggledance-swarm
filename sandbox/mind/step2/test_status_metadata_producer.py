@@ -3,11 +3,12 @@ from dataclasses import asdict, replace
 import copy
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
 from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
-from waggledance.core.bridge_log_reader import read_bridge_log
+from waggledance.core.bridge_log_reader import BridgeCursor, BridgePrefixPin, read_bridge_log
 
 ROSTER = {"codex-lead-1": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           "codex-tools-1": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -110,3 +111,56 @@ def test_bound_metadata_refuses_splicing_unpinned_roster_and_non_boolean_enable(
         enabled = 1
     with pytest.raises(producer.StatusRefused, match="^status_refused$"):
         producer.build_status(result, enabled=enabled, **pins)
+
+
+def test_first_catchup_window_requires_the_caller_prefix_and_emits_only_window_metadata(bound):
+    from sandbox.mind.step2 import status_metadata_producer as producer
+    _original, pins = bound
+    anchor = json.loads(pins["anchor_bytes"])
+    path, generation = Path(anchor["source_path"]), Path(anchor["generation_path"])
+    raw = path.read_bytes()
+    path.write_bytes(raw + raw.splitlines()[-1] + b"\n")  # synthetic fourth record forces a partial window
+    cursor = BridgeCursor(**anchor["cursor_start"])
+    start = BridgePrefixPin(cursor, sha(b""))
+    chain = snapshot.read_public_catchup(path, cursor, TASKS, generation_path=generation,
+        max_bytes=4096, max_rows=3, max_windows=1, expected_prefix_sha256=start.sha256,
+        max_prefix_bytes=4096, enabled=True, **pins)
+    assert chain["caught_up"] is False and len(chain["windows"]) == 1
+    window = chain["windows"][0]
+    assert snapshot.verify_public_catchup(chain, expected_anchor_bytes=pins["anchor_bytes"],
+        expected_anchor_sha256=pins["anchor_sha256"], expected_policy_sha256=pins["policy_sha256"],
+        expected_roster_sha256=pins["roster_sha256"], expected_public_policy_sha256=pins["public_policy_sha256"],
+        expected_start_prefix=start)
+    with pytest.raises(producer.StatusRefused):
+        producer.build_status(window, enabled=True, **pins)
+    output = producer.build_status(window, enabled=True, expected_start_prefix=start, **pins)
+    assert len(json.loads(output)["records"]) == 1
+    assert start.sha256.encode() not in output and PRIVATE.encode() not in output and PRIVATE_PATH.encode() not in output
+    assert b'"cursor"' not in output and b'"sha256"' not in output
+    for wrong in (BridgePrefixPin(cursor, "0" * 64),
+                  BridgePrefixPin(replace(cursor, offset=cursor.offset + 1), start.sha256),
+                  "not-a-prefix"):
+        with pytest.raises(producer.StatusRefused, match="^status_refused$"):
+            producer.build_status(window, enabled=True, expected_start_prefix=wrong, **pins)
+
+
+def test_caller_prefix_does_not_turn_an_unpinned_snapshot_into_a_prefix_bound_one(bound):
+    from sandbox.mind.step2 import status_metadata_producer as producer
+    result, pins = bound
+    cursor = BridgeCursor(**json.loads(pins["anchor_bytes"])["cursor_start"])
+    with pytest.raises(producer.StatusRefused, match="^status_refused$"):
+        producer.build_status(result, enabled=True, expected_start_prefix=BridgePrefixPin(cursor, sha(b"")), **pins)
+
+
+def test_later_catchup_window_cannot_reuse_the_original_start_anchor(bound):
+    from sandbox.mind.step2 import status_metadata_producer as producer
+    _original, pins = bound
+    anchor = json.loads(pins["anchor_bytes"])
+    cursor = BridgeCursor(**anchor["cursor_start"])
+    chain = snapshot.read_public_catchup(Path(anchor["source_path"]), cursor, TASKS,
+        generation_path=Path(anchor["generation_path"]), max_bytes=4096, max_rows=2, max_windows=2,
+        expected_prefix_sha256=sha(b""), max_prefix_bytes=4096, enabled=True, **pins)
+    assert len(chain["windows"]) == 2
+    second = chain["windows"][1]
+    with pytest.raises(producer.StatusRefused, match="^status_refused$"):
+        producer.build_status(second, enabled=True, expected_start_prefix=second["start_prefix"], **pins)

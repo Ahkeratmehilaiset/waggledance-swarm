@@ -22,11 +22,16 @@ class StatusRefused(ValueError):
 
 
 def build_status(snapshot_result, *, enabled=False, anchor_sha256, policy_bytes, policy_sha256,
-                 roster_bytes, roster_sha256, public_policy_bytes=None, public_policy_sha256=None, anchor_bytes=None):
+                 roster_bytes, roster_sha256, public_policy_bytes=None, public_policy_sha256=None, anchor_bytes=None,
+                 expected_start_prefix=None):
     """Return metadata only after matching explicit anchor, policy and roster.
 
     This is neither a durable producer nor a checkpoint; the caller must own
     the trusted pins and separately establish capture freshness and continuity.
+    For a prefix-bound window the caller must independently supply its trusted
+    start prefix; it is checked but never included in output. The anchor must
+    still match the window's start. Output covers only this window: it does not
+    retain complete history or build a cumulative index.
     """
     try:
         if enabled is not True or type(snapshot_result) is not dict:
@@ -40,7 +45,7 @@ def build_status(snapshot_result, *, enabled=False, anchor_sha256, policy_bytes,
         if snapshot.verify_anchored_projection(snapshot_result, data, expected_anchor_sha256=anchor_sha256,
                 expected_policy_sha256=policy_sha256, expected_roster_sha256=roster_sha256,
                 expected_mode="public-v1", expected_public_policy_sha256=public_policy_sha256,
-                expected_anchor_bytes=anchor_bytes) is not True:
+                expected_anchor_bytes=anchor_bytes, expected_start_prefix=expected_start_prefix) is not True:
             raise ValueError()
         projection.validate_projection(data, approved_tasks=tasks, include_refs=False, roster=roster,
                                        exclude_review_signal=True)

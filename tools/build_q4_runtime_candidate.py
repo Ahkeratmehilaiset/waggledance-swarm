@@ -8,6 +8,7 @@ deleted, activated, or switched into service. Same-user races remain possible.
 """
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -44,6 +45,31 @@ def _input_hash(root, relative):
     path = root.joinpath(*runtime_manifest._path_parts(relative))
     runtime_manifest._check_chain(path)
     return runtime_builder._hash_file(path)
+
+
+def _manifest_matches_pins(path, expected_sha256, generation, revision, files):
+    """Bind the actual manifest bytes to the caller's inventory, not just the tree."""
+    runtime_manifest._check_chain(path)
+    runtime_manifest._check_no_named_streams(path)
+    stream, initial = runtime_manifest._open_regular(path, runtime_manifest.MAX_MANIFEST_BYTES)
+    with stream:
+        raw = stream.read(runtime_manifest.MAX_MANIFEST_BYTES + 1)
+        if (len(raw) != initial.st_size or len(raw) > runtime_manifest.MAX_MANIFEST_BYTES
+                or not runtime_manifest._same_file(path, stream, initial)
+                or hashlib.sha256(raw).hexdigest() != expected_sha256):
+            raise ValueError('manifest_changed')
+    try:
+        document = json.loads(raw.decode('utf-8'), object_pairs_hook=runtime_manifest._unique_object,
+                              parse_constant=lambda _: runtime_manifest._refuse('json_constant_invalid'))
+        if (type(document) is not dict or set(document) != {'schema', 'generation', 'revision', 'files'}
+                or document['schema'] != runtime_manifest.SCHEMA or document['generation'] != generation
+                or document['revision'] != revision):
+            raise ValueError('manifest_identity_mismatch')
+        manifest_files, _ = runtime_manifest._validate_records(document['files'])
+    except (UnicodeError, ValueError, RecursionError, TypeError):
+        raise ValueError('manifest_invalid') from None
+    if manifest_files != files:
+        raise ValueError('manifest_pin_mismatch')
 
 
 def build_candidate(source_root, candidate_root, manifest_path, *, pins, generation, revision, max_bytes):
@@ -121,6 +147,7 @@ def build_candidate(source_root, candidate_root, manifest_path, *, pins, generat
                 raise ValueError('input_changed')
 
     result = runtime_builder.build_runtime_manifest(candidate, manifest, generation=generation, revision=revision)
+    _manifest_matches_pins(manifest, result['manifest_sha256'], generation, revision, files)
     if runtime_manifest._tree(candidate) != (set(files), directories):
         raise ValueError('candidate_membership_mismatch')
     for relative, (size, digest) in files.items():

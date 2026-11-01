@@ -99,6 +99,7 @@ def test_local_version_wheel_matches_exact_lock_without_materialization(plan, tm
     "alpha-+++-py3-none-any.whl",
     "alpha-1.0-cp31-abi3-win_amd64.whl",
     "alpha-1.___-py3-none-any.whl",
+    "alpha-1.0-py3-none-any.WHL",
 ])
 def test_invalid_wheel_filename_is_refused_independently_of_lock(name):
     """A lock-parse or mismatch error must not hide an accepted invalid name."""

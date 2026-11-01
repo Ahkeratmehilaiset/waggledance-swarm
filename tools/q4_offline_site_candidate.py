@@ -49,7 +49,7 @@ def _directory(value):
 
 
 def _wheel_name(path, target_tag):
-    if target_tag != 'cp313-cp313-win_amd64' or path.suffix.lower() != '.whl':
+    if target_tag != 'cp313-cp313-win_amd64' or path.suffix != '.whl':
         raise ValueError('wheel_target_invalid')
     parts = path.name[:-4].split('-')
     if len(parts) not in (5, 6) or any(not _WHEEL_FIELD.fullmatch(part) for part in parts):

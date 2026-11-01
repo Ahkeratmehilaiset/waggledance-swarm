@@ -236,3 +236,42 @@ def test_unpinned_candidate_file_before_manifest_is_not_accepted(inputs, monkeyp
     monkeypatch.setattr(runtime_builder, "build_runtime_manifest", add_unpinned_file_before_manifest)
     with pytest.raises(ValueError):
         assemble(inputs)
+
+
+def test_manifest_and_candidate_must_remain_bound_to_caller_pins(inputs, monkeypatch):
+    """Matching manifest and candidate are insufficient if both differ from pins."""
+    from sandbox.mind.step2 import runtime_builder
+    from tools import build_q4_runtime_candidate as module
+
+    source, candidate, _, files, _ = inputs
+    target = candidate / "model" / "config.json"
+    pinned = files["model/config.json"]
+    alternate = b"x" * len(pinned)
+    assert alternate != pinned
+    original_build = runtime_builder.build_runtime_manifest
+    original_hash = module._input_hash
+    source_final_count = 0
+    manifest_built = False
+
+    def build_alternate_manifest(*args, **kwargs):
+        nonlocal manifest_built
+        target.write_bytes(alternate)
+        result = original_build(*args, **kwargs)
+        manifest_built = True
+        target.write_bytes(pinned)
+        return result
+
+    def restore_alternate_after_final_source_hash(root, relative):
+        nonlocal source_final_count
+        result = original_hash(root, relative)
+        if root == source and relative == "assets/policy.json":
+            source_final_count += 1
+            if source_final_count == 2:
+                target.write_bytes(alternate)
+        return result
+
+    monkeypatch.setattr(runtime_builder, "build_runtime_manifest", build_alternate_manifest)
+    monkeypatch.setattr(module, "_input_hash", restore_alternate_after_final_source_hash)
+    with pytest.raises(ValueError):
+        assemble(inputs)
+    assert manifest_built

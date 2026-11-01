@@ -5,6 +5,8 @@ anchor. It neither executes packages nor proves wheel provenance, dependency
 closure, or that a runtime is fit for use. Inputs must be separately pinned by
 the caller. Partial output is preserved on failure; nothing is overwritten,
 deleted, activated, or switched into service. Same-user races remain possible.
+Free space is sampled before each copied block; competing writes and filesystem
+overhead can still cross the floor between the check and the write.
 """
 
 import hashlib
@@ -138,6 +140,8 @@ def build_candidate(source_root, candidate_root, manifest_path, *, pins, generat
                 count += len(block)
                 if count > size:
                     raise ValueError('input_changed')
+                if shutil.disk_usage(target.parent).free < _FLOOR_BYTES + len(block):
+                    raise ValueError('disk_floor')
                 output.write(block)
                 digest_copy.update(block)
             output.flush()
@@ -241,6 +245,8 @@ def build_candidate_from_sources(source_roots, candidate_root, manifest_path, *,
                 count += len(block)
                 if count > size:
                     raise ValueError('input_changed')
+                if shutil.disk_usage(target.parent).free < _FLOOR_BYTES + len(block):
+                    raise ValueError('disk_floor')
                 output.write(block)
                 digest_copy.update(block)
             output.flush()

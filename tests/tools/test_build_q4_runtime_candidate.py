@@ -408,6 +408,33 @@ def test_multi_low_disk_refuses_before_output(multi_inputs, monkeypatch):
     assert not multi_inputs[1].exists() and not multi_inputs[2].exists()
 
 
+@pytest.mark.parametrize('route', ['single', 'multi'])
+def test_copy_stops_before_next_block_would_cross_disk_floor(route, request, monkeypatch):
+    import shutil
+
+    values = request.getfixturevalue('inputs' if route == 'single' else 'multi_inputs')
+    source, candidate, manifest, files, pins = values
+    data = b'x' * (1024 * 1024 + 9)
+    source_file = ((source / 'site' / 'large.bin') if route == 'single'
+                   else (source['site'] / 'large.bin'))
+    source_file.write_bytes(data)
+    pins['site/large.bin'] = {'size': len(data), 'sha256': digest(data)}
+    partial = candidate / 'site' / 'large.bin'
+    def sample(_):
+        # Preflight and first chunk pass. Once the first chunk reaches the
+        # synthetic file, only eight bytes remain above the 3 GiB floor.
+        free = (3 * 1024**3 + 8 if partial.exists() and partial.stat().st_size >= 1024 * 1024
+                else 20 * 1024**3)
+        return SimpleNamespace(free=free)
+    monkeypatch.setattr(shutil, 'disk_usage', sample)
+    with pytest.raises(ValueError, match='disk_floor'):
+        (assemble(values, max_bytes=len(data) + 4096) if route == 'single'
+         else assemble_multi(values, max_bytes=len(data) + 4096))
+    assert candidate.is_dir() and not manifest.exists()
+    assert partial.read_bytes() == b'x' * (1024 * 1024)
+    assert (candidate / 'site' / 'example' / '__init__.py').read_bytes() == files['site/example/__init__.py']
+
+
 def test_multi_source_changes_between_preflight_and_copy_refused(multi_inputs, monkeypatch):
     original = runtime_manifest._open_regular
     path = multi_inputs[0]['model'] / 'config.json'

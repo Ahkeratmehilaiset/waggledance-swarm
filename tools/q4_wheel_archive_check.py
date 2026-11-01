@@ -46,28 +46,42 @@ def _inspect_archive(archive, wheel_path, target_tag, max_uncompressed_bytes):
     entries = archive.infolist()
     if not entries or len(entries) > _MAX_ENTRIES:
         raise ValueError('entry_count_invalid')
-    files, folded, total = {}, set(), 0
+    files, folded, explicit_directories, total = {}, set(), set(), 0
     for entry in entries:
-        name = _safe_name(entry.filename)
+        directory = entry.is_dir()
+        name = _safe_name(entry.filename[:-1] if directory else entry.filename)
         mode = entry.external_attr >> 16
         kind = stat.S_IFMT(mode)
-        if (entry.is_dir() or kind not in (0, stat.S_IFREG) or entry.external_attr & 0x400
-                or entry.flag_bits & 1 or name.casefold() in folded or entry.file_size < 0):
+        allowed_kinds = (0, stat.S_IFDIR) if directory else (0, stat.S_IFREG)
+        if (kind not in allowed_kinds or entry.external_attr & 0x400 or entry.flag_bits & 1
+                or entry.file_size < 0 or (directory and entry.file_size != 0)):
             raise ValueError('entry_invalid')
-        folded.add(name.casefold())
+        folded_name = name.casefold()
+        if directory:
+            if folded_name in explicit_directories:
+                raise ValueError('entry_invalid')
+            explicit_directories.add(folded_name)
+        else:
+            if folded_name in folded:
+                raise ValueError('entry_invalid')
+            folded.add(folded_name)
         total += entry.file_size
         if total > max_uncompressed_bytes:
             raise ValueError('budget_exceeded')
-        files[name] = entry
+        if not directory:
+            files[name] = entry
 
     # Windows cannot represent one case-insensitive path as both a file and
     # a parent directory, even when each complete member name is distinct.
-    for name in folded:
+    if folded & explicit_directories:
+        raise ValueError('file_directory_collision')
+    for name in folded | explicit_directories:
         parts = name.split('/')
         if any('/'.join(parts[:index]) in folded for index in range(1, len(parts))):
             raise ValueError('file_directory_collision')
 
-    info_roots = {name.split('/')[0] for name in files if '.dist-info/' in name}
+    info_roots = {name.split('/')[0] for name in files
+                  if name.split('/')[0].endswith('.dist-info')}
     if len(info_roots) != 1:
         raise ValueError('dist_info_invalid')
     info = next(iter(info_roots))

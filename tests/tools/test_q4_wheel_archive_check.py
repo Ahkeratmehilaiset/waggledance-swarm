@@ -35,7 +35,7 @@ def record_hash(data):
 
 def make_archive(*, extra=(), missing_wheel=False, wheel_text=None, record_change=None,
                  duplicate=None, symlink=False, reparse=False, omit_record=False,
-                 module_path=MODULE):
+                 module_path=MODULE, directories=(), symlink_directory=None):
     if wheel_text is None:
         wheel_text = b"Wheel-Version: 1.0\nGenerator: synthetic\nRoot-Is-Purelib: true\nTag: py3-none-any\n\n"
     entries = [(module_path, b"# synthetic, never execute\n")]
@@ -52,6 +52,13 @@ def make_archive(*, extra=(), missing_wheel=False, wheel_text=None, record_chang
         entries.append((RECORD, output.getvalue().encode("utf-8")))
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+        for directory in directories:
+            archive.writestr(directory, b"")
+        if symlink_directory is not None:
+            info = zipfile.ZipInfo(symlink_directory)
+            info.create_system = 3
+            info.external_attr = 0o120777 << 16
+            archive.writestr(info, b"")
         for name, data in entries:
             if symlink and name == MODULE:
                 info = zipfile.ZipInfo(name)
@@ -106,6 +113,35 @@ def test_valid_wheel_inspected_without_installation_or_output(wheel_file, tmp_pa
         expected = sum(item.file_size for item in archive.infolist())
     assert result["uncompressed_bytes"] == expected
     assert result["installation"] == "NOT_INSTALLED"
+    assert list(tmp_path.iterdir()) == [path]
+    assert path.read_bytes() == data
+
+
+def test_explicit_directory_entries_need_no_record_rows(wheel_file, tmp_path):
+    """Wheel RECORD covers files; explicit zero-byte ZIP directory entries need no row."""
+    data = make_archive(directories=["alpha/", f"{DIST}/"])
+    path = wheel_file(data)
+    result = inspect(path, data)
+    assert result["installation"] == "NOT_INSTALLED"
+    assert list(tmp_path.iterdir()) == [path]
+    assert path.read_bytes() == data
+
+
+def test_nested_vendored_dist_info_is_ordinary_recorded_data(wheel_file, tmp_path):
+    """A nested vendored dist-info is not the wheel's own root dist-info."""
+    data = make_archive(extra=[("alpha/vendor/beta-2.0.dist-info/METADATA", b"Name: beta\nVersion: 2.0\n")])
+    path = wheel_file(data)
+    result = inspect(path, data)
+    assert result["installation"] == "NOT_INSTALLED"
+    assert list(tmp_path.iterdir()) == [path]
+    assert path.read_bytes() == data
+
+
+def test_symlink_directory_rejected_without_extraction(wheel_file, tmp_path):
+    data = make_archive(symlink_directory="alpha/vendor/")
+    path = wheel_file(data)
+    with pytest.raises(ValueError):
+        inspect(path, data)
     assert list(tmp_path.iterdir()) == [path]
     assert path.read_bytes() == data
 

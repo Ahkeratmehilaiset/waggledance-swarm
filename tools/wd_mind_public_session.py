@@ -373,6 +373,18 @@ def _v3_structure(raw):
     return doc
 
 
+def _v3_require_available(body, now):
+    """Refuse a complete delta until every event passes the strict next-minute cutoff.
+
+    Do not drop an early record: that would advance the source cursor past it
+    and silently lose it. The caller-supplied clock remains an assertion.
+    """
+    for record in body["records"]:
+        available = projection._available(record["time_utc"])
+        if not projection.visible_at({"provenance": {"available_utc": available}}, now.isoformat()):
+            raise ValueError()
+
+
 def _v3_attempt(audit_root, snapshot_result, *, as_of, enabled, expected_previous_sha256,
                 root_anchor_bytes, root_anchor_sha256, previous_anchor_bytes, previous_anchor_sha256,
                 expected_previous_candidate, pins):
@@ -395,6 +407,7 @@ def _v3_attempt(audit_root, snapshot_result, *, as_of, enabled, expected_previou
     # This verifies the entire current snapshot projection against its own
     # window anchor, policy and roster before metadata is made public.
     body = _body(_object(producer.build_status(snapshot_result, enabled=True, **pins)), tasks, types)
+    _v3_require_available(body, now)
     anchor = _object(pins["anchor_bytes"])
     candidate = asdict(snapshot_result["candidate_cursor"])
     next_bytes = _json(dict(anchor, cursor_start=candidate))
@@ -579,6 +592,7 @@ def read_status_v3(audit_root, *, lane, agent_uuid, as_of, max_age_seconds, enab
         if age < 0 or age > max_age_seconds:
             raise ValueError()
         body = _body(doc["body"], tasks, types)
+        _v3_require_available(body, now)
         return _json({"schema": "wd.mind-public-session.v1", "authority": "none", "coverage": "last_delta_only",
                       "lane": lane, "identity_verification": "caller_declared_not_authenticated",
                       "as_of_utc": now.isoformat(), "publication_age_seconds": age,

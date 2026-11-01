@@ -227,6 +227,87 @@ def test_v3_two_real_synthetic_publishes_keep_five_fixed_root_readers(tmp_path):
             expected_previous_candidate=asdict(second["candidate_cursor"]), **root_pins)
 
 
+@pytest.mark.parametrize("instant,visible", [
+    ("2026-10-31T12:00:10+00:00", False),
+    ("2026-10-31T12:00:59+00:00", False),
+    ("2026-10-31T12:01:00+00:00", False),
+    ("2026-10-31T12:01:01+00:00", True),
+])
+def test_v3_reader_never_exposes_event_before_next_minute(tmp_path, instant, visible):
+    from sandbox.mind.step2.test_status_public_filter import ROSTER, event, read_fixture
+    from tools import wd_mind_public_session as session
+
+    source = tmp_path / "source"
+    source.mkdir()
+    snapshot, pins, _ = read_fixture(source, [event(ts_utc="2026-10-31T12:00:59Z")])
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    now = datetime.fromisoformat(instant)
+    root = pins["anchor_bytes"]
+    root_sha = pins["anchor_sha256"]
+    args = dict(enabled=True, as_of=now, expected_previous_sha256=None,
+                root_anchor_bytes=root, root_anchor_sha256=root_sha,
+                previous_anchor_bytes=root, previous_anchor_sha256=root_sha,
+                expected_previous_candidate=json.loads(root)["cursor_start"], **pins)
+    try:
+        attempt = session.prepare_status_attempt_v3(audit, snapshot, **args)
+        session.publish_status_v3(audit, snapshot, attempt_sha256=attempt, **args)
+        result = json.loads(session.read_status_v3(audit, lane="fable-5", agent_uuid=ROSTER["fable-5"],
+                                                   as_of=now, max_age_seconds=900, enabled=True, **pins))
+    except session.PublicStatusRefused:
+        if visible:
+            raise
+        return  # refusing the premature attempt is also safe
+    assert bool(result["records"]) is visible
+
+
+def test_v3_premature_delta_does_not_publish_or_advance_cursor(tmp_path):
+    from sandbox.mind.step2.test_status_public_filter import event, read_fixture
+    from tools import wd_mind_public_session as session
+
+    source = tmp_path / "source"
+    source.mkdir()
+    snapshot, pins, _ = read_fixture(source, [event(ts_utc="2026-10-31T12:00:59Z")])
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    root = pins["anchor_bytes"]
+    args = dict(enabled=True, as_of=datetime.fromisoformat("2026-10-31T12:01:00+00:00"),
+                expected_previous_sha256=None, root_anchor_bytes=root, root_anchor_sha256=pins["anchor_sha256"],
+                previous_anchor_bytes=root, previous_anchor_sha256=pins["anchor_sha256"],
+                expected_previous_candidate=json.loads(root)["cursor_start"], **pins)
+    with pytest.raises(session.PublicStatusRefused):
+        session.prepare_status_attempt_v3(audit, snapshot, **args)
+    assert not (audit / session.V3_FILENAME).exists()
+    args["as_of"] = datetime.fromisoformat("2026-10-31T12:01:00.000001+00:00")
+    attempt = session.prepare_status_attempt_v3(audit, snapshot, **args)
+    assert session.publish_status_v3(audit, snapshot, attempt_sha256=attempt, **args) == attempt
+
+
+def test_v3_reader_rejects_premature_record_in_tampered_publication(tmp_path):
+    from sandbox.mind.step2.test_status_public_filter import ROSTER, event, read_fixture
+    from tools import wd_mind_public_session as session
+
+    source = tmp_path / "source"
+    source.mkdir()
+    snapshot, pins, _ = read_fixture(source, [event(ts_utc="2026-10-31T12:00:59Z")])
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    root = pins["anchor_bytes"]
+    args = dict(enabled=True, as_of=datetime.fromisoformat("2026-10-31T12:01:01+00:00"),
+                expected_previous_sha256=None, root_anchor_bytes=root, root_anchor_sha256=pins["anchor_sha256"],
+                previous_anchor_bytes=root, previous_anchor_sha256=pins["anchor_sha256"],
+                expected_previous_candidate=json.loads(root)["cursor_start"], **pins)
+    attempt = session.prepare_status_attempt_v3(audit, snapshot, **args)
+    session.publish_status_v3(audit, snapshot, attempt_sha256=attempt, **args)
+    target = audit / session.V3_FILENAME
+    doc = json.loads(target.read_bytes())
+    doc["as_of_utc"] = "2026-10-31T12:00:10+00:00"
+    target.write_bytes(_bytes(doc))
+    with pytest.raises(session.PublicStatusRefused):
+        session.read_status_v3(audit, lane="fable-5", agent_uuid=ROSTER["fable-5"],
+            as_of=datetime.fromisoformat("2026-10-31T12:00:30+00:00"), max_age_seconds=900, enabled=True, **pins)
+
+
 def test_v3_default_off_has_no_filesystem_access(monkeypatch):
     from tools import wd_mind_public_session as session
     accessed = []

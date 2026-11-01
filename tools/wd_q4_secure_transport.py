@@ -674,9 +674,10 @@ def _module_origins(before, roots, namespace_root=None):
             continue
         origin = getattr(module, "__file__", None)
         spec = getattr(module, "__spec__", None)
-        if name in namespaces and origin is not None:
-            # A namespace cannot claim a regular file to bypass location checks.
-            _check(not isinstance(getattr(spec, "loader", None), NamespaceLoader))
+        if name in namespaces:
+            # These names are namespace packages in the verified code tree;
+            # a same-named regular module from another trusted root is not one.
+            _check(origin is None)
         if origin is None:
             if name in namespaces:
                 _check(namespace_root is not None)

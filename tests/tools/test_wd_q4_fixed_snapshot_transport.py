@@ -430,7 +430,7 @@ def snapshot_case(monkeypatch):
             "tasks": sorted(args["approved_tasks"]), "resolved": resolved}
 
 
-def synthetic_runtime(base, stub=STUB, namespace=False):
+def synthetic_runtime(base, stub=STUB, namespace=True):
     from sandbox.mind.step2 import runtime_builder
     root = base / "runtime"
     step2 = root / "assets" / "code" / "sandbox" / "mind" / "step2"
@@ -970,3 +970,29 @@ def test_unknown_namespace_remains_refused(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, name, module)
     with pytest.raises(transport._Refused):
         transport._module_origins(before, [str(tmp_path)], tmp_path)
+
+
+@pytest.mark.parametrize("name", ["sandbox", "sandbox.mind", "sandbox.mind.step2"])
+@pytest.mark.parametrize("form", ["module", "package"])
+def test_named_packages_refuse_real_regular_modules_from_another_allowed_root(tmp_path, monkeypatch, name, form):
+    import importlib.util
+
+    code = tmp_path / "code"
+    code.joinpath(*name.split(".")).mkdir(parents=True)
+    site = tmp_path / "site"
+    target = site.joinpath(*name.split("."))
+    if form == "module":
+        target.parent.mkdir(parents=True)
+        source = target.with_suffix(".py")
+    else:
+        target.mkdir(parents=True)
+        source = target / "__init__.py"
+    source.write_text("MARKER = 'synthetic'\n", encoding="ascii")
+    spec = importlib.util.spec_from_file_location(name, source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    before = set(sys.modules) - {name}
+    monkeypatch.setitem(sys.modules, name, module)
+    roots = [os.path.normcase(os.path.realpath(path)) for path in (code, site)]
+    with pytest.raises(transport._Refused):
+        transport._module_origins(before, roots, code)

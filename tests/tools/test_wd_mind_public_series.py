@@ -308,6 +308,48 @@ def test_v3_reader_rejects_premature_record_in_tampered_publication(tmp_path):
             as_of=datetime.fromisoformat("2026-10-31T12:00:30+00:00"), max_age_seconds=900, enabled=True, **pins)
 
 
+@pytest.mark.parametrize("replace_mode,expected", [
+    ("landed", "landed"),
+    ("unchanged", "unchanged"),
+    ("third", None),
+])
+def test_v3_ambiguous_replace_recovery_is_bound_to_prior_or_attempt(tmp_path, monkeypatch, replace_mode, expected):
+    from sandbox.mind.step2.test_status_public_filter import event, read_fixture
+    from tools import wd_mind_public_session as session
+
+    source = tmp_path / "source"
+    source.mkdir()
+    snapshot, pins, _ = read_fixture(source, [event()])
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    now = datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
+    root = pins["anchor_bytes"]
+    root_sha = pins["anchor_sha256"]
+    args = dict(enabled=True, as_of=now, expected_previous_sha256=None,
+                root_anchor_bytes=root, root_anchor_sha256=root_sha,
+                previous_anchor_bytes=root, previous_anchor_sha256=root_sha,
+                expected_previous_candidate=json.loads(root)["cursor_start"], **pins)
+    attempt = session.prepare_status_attempt_v3(audit, snapshot, **args)
+    original_replace = session.os.replace
+
+    def ambiguous_replace(stage, target):
+        if replace_mode != "unchanged":
+            original_replace(stage, target)
+            if replace_mode == "third":
+                target.write_bytes(b"synthetic third publication")
+        raise OSError("synthetic ambiguous replace")
+
+    monkeypatch.setattr(session.os, "replace", ambiguous_replace)
+    with pytest.raises(session.PublicStatusRefused):
+        session.publish_status_v3(audit, snapshot, attempt_sha256=attempt, **args)
+    if expected is None:
+        with pytest.raises(session.PublicStatusRefused):
+            session.recover_status_attempt_v3(audit, prior_sha256=None, attempt_sha256=attempt, enabled=True)
+    else:
+        assert session.recover_status_attempt_v3(audit, prior_sha256=None, attempt_sha256=attempt,
+                                                 enabled=True) == expected
+
+
 def test_v3_default_off_has_no_filesystem_access(monkeypatch):
     from tools import wd_mind_public_session as session
     accessed = []

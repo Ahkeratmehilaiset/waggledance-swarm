@@ -352,3 +352,99 @@ def test_failed_automatic_close_exception_keeps_handle_quarantined(monkeypatch, 
         parent.attest_file(str(tmp_path / "fake"), "a" * 64, max_bytes=4, enabled=True)
     assert len(quarantine) == 1 and quarantine[0] is caught.value.lease
     assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("where", ["lease", "cleanup"])
+@pytest.mark.parametrize("phase", ["before", "after"])
+def test_close_interrupt_quarantines_without_retry(monkeypatch, tmp_path, where, phase):
+    from tools import wd_q4_fixed_parent_attestation as parent
+    class FakeKernel:
+        def __init__(self):
+            self.calls = 0
+            self.possibly_closed = False
+        def CreateFileW(self, *args):
+            return 31415
+        def GetFileType(self, handle):
+            return 0
+        def CloseHandle(self, handle):
+            self.calls += 1
+            self.possibly_closed = phase == "after"
+            raise KeyboardInterrupt("synthetic-interrupt")
+    fake, quarantine = FakeKernel(), []
+    monkeypatch.setattr(parent, "_QUARANTINED", quarantine)
+    monkeypatch.setattr(parent, "_api", lambda: fake)
+    monkeypatch.setattr(parent, "_verify_fixed_drive", lambda *args: None)
+    monkeypatch.setattr(parent, "_verify_final_path", lambda *args: None)
+    caught = None
+    try:
+        if where == "lease":
+            parent.HeldFile(fake, 31415, "a" * 64, 1).close()
+        else:
+            parent.attest_file(str(tmp_path / "fake"), "a" * 64, max_bytes=4, enabled=True)
+    except BaseException as exc:
+        caught = exc
+    assert isinstance(caught, parent.AttestationCleanupUnknown)
+    assert len(quarantine) == 1 and quarantine[0] is caught.lease
+    assert fake.calls == 1 and fake.possibly_closed is (phase == "after")
+    with pytest.raises(parent.AttestationCleanupUnknown):
+        caught.lease.close()
+    assert fake.calls == 1
+
+
+def test_interrupted_close_quarantines_before_concurrent_admission(monkeypatch, tmp_path):
+    from tools import wd_q4_fixed_parent_attestation as parent
+    entered, admission_started, release = (threading.Event() for _ in range(3))
+    class FakeKernel:
+        def CloseHandle(self, handle):
+            entered.set()
+            assert release.wait(2)
+            raise KeyboardInterrupt("synthetic-interrupt")
+    quarantine, opened, errors = [], [], []
+    monkeypatch.setattr(parent, "_QUARANTINED", quarantine)
+    monkeypatch.setattr(parent, "_open_and_hash", lambda *a: opened.append(True))
+    lease = parent.HeldFile(FakeKernel(), 123, "a" * 64, 1)
+    def close():
+        try:
+            lease.close()
+        except BaseException as exc:
+            errors.append(exc)
+    def admission():
+        admission_started.set()
+        try:
+            parent.attest_file(str(tmp_path / "fake"), "a" * 64, max_bytes=4, enabled=True)
+        except BaseException as exc:
+            errors.append(exc)
+    t1, t2 = threading.Thread(target=close), threading.Thread(target=admission)
+    t1.start()
+    assert entered.wait(2)
+    t2.start()
+    assert admission_started.wait(2)
+    release.set()
+    t1.join(3)
+    t2.join(3)
+    assert not t1.is_alive() and not t2.is_alive()
+    assert quarantine == [lease] and not opened
+    assert any(isinstance(exc, parent.AttestationCleanupUnknown) for exc in errors)
+    assert len(errors) == 2
+
+
+def test_interrupt_before_cleanup_propagates_if_close_is_confirmed(monkeypatch, tmp_path):
+    from tools import wd_q4_fixed_parent_attestation as parent
+    class FakeKernel:
+        def CreateFileW(self, *args):
+            return 31415
+        def GetFileType(self, handle):
+            raise KeyboardInterrupt("synthetic-interrupt")
+        def CloseHandle(self, handle):
+            return True
+    quarantine = []
+    monkeypatch.setattr(parent, "_QUARANTINED", quarantine)
+    monkeypatch.setattr(parent, "_api", FakeKernel)
+    monkeypatch.setattr(parent, "_verify_fixed_drive", lambda *args: None)
+    monkeypatch.setattr(parent, "_verify_final_path", lambda *args: None)
+    caught = None
+    try:
+        parent.attest_file(str(tmp_path / "fake"), "a" * 64, max_bytes=4, enabled=True)
+    except BaseException as exc:
+        caught = exc
+    assert isinstance(caught, KeyboardInterrupt) and quarantine == []

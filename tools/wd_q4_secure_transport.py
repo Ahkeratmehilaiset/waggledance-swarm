@@ -456,8 +456,49 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes)
 
 
 def run_bounded(*, executable, arguments, cwd, stdin_bytes, timeout_seconds,
-                max_output_bytes):
-    """Explicit synthetic-only same-interpreter -c invocation; not shell execution."""
+                max_output_bytes, expected_interpreter_sha256=None, interpreter_max_bytes=None):
+    """Synthetic-only same-interpreter -c; optional caller-pinned file lease.
+
+    The lease checks only the executable file. It does not authenticate the
+    interpreter's imports, parent directories, DLLs, runtime, or loaded image.
+    Arbitrary asynchronous interruptions around context entry are not proven
+    to preserve the lease; this route is not a production identity boundary.
+    """
+    if expected_interpreter_sha256 is None and interpreter_max_bytes is None:
+        return _run_bounded_impl(executable=executable, arguments=arguments, cwd=cwd,
+            stdin_bytes=stdin_bytes, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes)
+    cleanup_type = cleanup_lease = failure = None
+    try:
+        from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown as cleanup_type
+        return _run_bounded_impl(executable=executable, arguments=arguments, cwd=cwd,
+            stdin_bytes=stdin_bytes, timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes,
+            expected_interpreter_sha256=expected_interpreter_sha256, interpreter_max_bytes=interpreter_max_bytes)
+    except BaseException as exc:
+        if cleanup_type is not None and isinstance(exc, cleanup_type):
+            cleanup_lease = exc.lease
+        elif isinstance(exc, TimeoutError):
+            failure = "timeout"
+        elif isinstance(exc, KeyboardInterrupt):
+            failure = "interrupt"
+        elif isinstance(exc, SystemExit):
+            failure = "exit"
+        else:
+            failure = "refused"
+    del executable, arguments, cwd, stdin_bytes, timeout_seconds, max_output_bytes
+    del expected_interpreter_sha256, interpreter_max_bytes
+    if cleanup_lease is not None:
+        raise cleanup_type(cleanup_lease) from None
+    if failure == "timeout":
+        raise TimeoutError("secure_transport_timeout") from None
+    if failure == "interrupt":
+        raise KeyboardInterrupt() from None
+    if failure == "exit":
+        raise SystemExit(1) from None
+    raise _Refused() from None
+
+
+def _run_bounded_impl(*, executable, arguments, cwd, stdin_bytes, timeout_seconds,
+                      max_output_bytes, expected_interpreter_sha256=None, interpreter_max_bytes=None):
     _validate(stdin_bytes, timeout_seconds, max_output_bytes)
     _check(type(executable) is str and
            os.path.normcase(os.path.abspath(executable)) ==
@@ -468,14 +509,22 @@ def run_bounded(*, executable, arguments, cwd, stdin_bytes, timeout_seconds,
     _check(len(args) in (4, 5) and args[-2] == "-c" and
            args[:-2] in (["-I", "-B"], ["-I", "-S", "-B"]))
     _check(len(args[-1].encode("utf-8")) <= 32768)
+    _check((expected_interpreter_sha256 is None) == (interpreter_max_bytes is None))
     path = str(Path(__file__).absolute())
     with open(path, "rb") as stream:
         raw = stream.read(131073)
     _check(len(raw) <= 131072)
     command = [executable, "-I", "-S", "-B", "-c", _BOOTSTRAP,
                path, hashlib.sha256(raw).hexdigest()]
-    return _run(command, cwd, {"mode": "python-c", "code": args[-1]}, stdin_bytes,
-                timeout_seconds, max_output_bytes)
+    if expected_interpreter_sha256 is None:
+        return _run(command, cwd, {"mode": "python-c", "code": args[-1]}, stdin_bytes,
+                    timeout_seconds, max_output_bytes)
+    from tools.wd_q4_fixed_parent_attestation import attest_file
+    # The context owns the lease during _run, including its exceptional exit.
+    # The outer public wrapper scrubs both run and cleanup exception chains.
+    with attest_file(executable, expected_interpreter_sha256, max_bytes=interpreter_max_bytes, enabled=True):
+        return _run(command, cwd, {"mode": "python-c", "code": args[-1]}, stdin_bytes,
+                    timeout_seconds, max_output_bytes)
 
 
 def run_synthetic_echo(*, powershell, bootstrap_path, expected_bootstrap_sha256,

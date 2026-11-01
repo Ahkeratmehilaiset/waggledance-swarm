@@ -1490,6 +1490,7 @@ PREFIX_MIND_LIBRARY_FILES = (
     "tools/wd_q4_lane_query.py",
     "tools/wd_q4_prefix_public_query.py",
     "tools/wd_q4_secure_transport.py",
+    "tools/wd_q4_fixed_parent_attestation.py",
     "tools/wd_mind_live_reader.py",
     "tools/wd_q4_roster_from_fleet.py",
 )
@@ -1500,6 +1501,12 @@ def _assert_prefix_mind_library_only(definition, relative):
     assert relative not in definition["python_entrypoints"].values(), "prefix_entrypoint_not_authorized"
     assert relative not in definition["manual_execution_capability"]["entrypoints"].values(), "prefix_manual_not_authorized"
     assert relative[:-3].replace("/", ".") not in definition["import_smoke"]["package_modules"], "prefix_smoke_not_authorized"
+
+
+def test_fixed_transport_attestation_import_is_packaged():
+    source = (REPO_ROOT / "tools/wd_q4_secure_transport.py").read_text(encoding="utf-8")
+    assert "tools.wd_q4_fixed_parent_attestation" in _internal_imports(source, "tools")
+    _assert_prefix_mind_library_only(_definition(), "tools/wd_q4_fixed_parent_attestation.py")
 
 
 @pytest.mark.parametrize("relative", PREFIX_MIND_LIBRARY_FILES)

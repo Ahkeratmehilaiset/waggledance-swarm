@@ -5,6 +5,11 @@ the returned handle. No ACL, parent-directory, DLL, imports, mutable mappings,
 filesystem provenance, source authentication or process isolation is proved.
 Only direct HarddiskVolume DOS mappings are accepted. Final DOS path matching
 is exact and case-sensitive, so equivalent aliases or casing may refuse.
+A BaseException during CloseHandle makes cleanup unknown and is replaced by
+AttestationCleanupUnknown after quarantine; no OS-close success is claimed.
+A KeyboardInterrupt elsewhere propagates if cleanup is confirmed successful.
+Arbitrary asynchronous interruption between Python bytecode instructions is
+not guaranteed to leave handle state or quarantine bookkeeping consistent.
 """
 import ctypes as C
 from ctypes import wintypes as W
@@ -97,7 +102,7 @@ class HeldFile:
                 closed = False
                 try:
                     closed = bool(self._kernel.CloseHandle(self._handle))
-                except Exception:
+                except BaseException:
                     pass
                 if not closed:
                     self._quarantine()
@@ -168,7 +173,7 @@ def _open_and_hash(path, expected_sha256, max_bytes):
             closed = False
             try:
                 closed = bool(k.CloseHandle(handle))
-            except Exception:
+            except BaseException:
                 pass
             if not closed:
                 # Do not lose ownership of an OS handle whose closure is unknown.

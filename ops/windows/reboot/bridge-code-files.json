@@ -78,6 +78,7 @@
     "tools/wd_q4_resolved_child.py",
     "tools/wd_q4_roster_from_fleet.py",
     "tools/wd_q4_secure_transport.py",
+    "tools/wd_q4_fixed_parent_attestation.py",
     "tools/agent_next_task.py",
     "tools/bridge_accepted_queue_preflight.py",
     "tools/bridge_capacity_advisor.py",

@@ -155,8 +155,8 @@ function Get-WdQ4ReadConfig {
     foreach ($name in $required) {
         if ($null -eq $config.PSObject.Properties[$name]) { throw 'q4_config_field_missing' }
     }
-    # Optional for legacy unscoped callers. Launchers supply their declared lane;
-    # this is configuration routing, not caller authentication or wrapper access control.
+    # No list and no lane preserves legacy. A scoped list requires a listed lane;
+    # this is configuration routing, not caller authentication or Public-wrapper control.
     $laneProperty = $config.PSObject.Properties['lanes']
     if ($null -ne $laneProperty) {
         $knownLanes = @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')
@@ -171,8 +171,10 @@ function Get-WdQ4ReadConfig {
             }
         }
     }
-    if ($PSBoundParameters.ContainsKey('Lane') -and
-        ($null -eq $laneProperty -or $laneProperty.Value -cnotcontains $Lane)) { return $null }
+    if ($null -eq $laneProperty) {
+        if ($PSBoundParameters.ContainsKey('Lane')) { return $null }
+    } elseif (-not $PSBoundParameters.ContainsKey('Lane') -or
+              $laneProperty.Value -cnotcontains $Lane) { return $null }
     if ($config.schema -isnot [string] -or $config.schema -cne 'wd.q4-read-config.v1' -or
         $config.code_commit -isnot [string] -or $config.code_commit -cnotmatch '^[0-9a-f]{40}$') {
         throw 'q4_config_identity_invalid'

@@ -149,6 +149,14 @@ def test_q4_lane_allowlist_pins_and_unknown_caller_fail_closed(tmp_path):
     assert invoke(tmp_path, cfg, digest="0" * 64, lane="codex-lead-1")["reason"] == "q4_config_fleet_refused"
 
 
+@WINDOWS
+@pytest.mark.parametrize("lane", [MISSING, "", "fable-5"])
+def test_scoped_q4_config_needs_a_listed_lane_even_for_direct_helper(tmp_path, lane):
+    cfg = enabled(tmp_path)
+    cfg["lanes"] = ["codex-lead-1"]
+    assert invoke(tmp_path, cfg, lane=lane) == {"ok": True, "value": None}
+
+
 def test_q4_launchers_supply_their_own_lane_to_pinned_helper():
     for path, expected in zip(LAUNCHERS, ("-Lane $Agent", "-Lane $agent")):
         text = path.read_text(encoding="utf-8-sig")

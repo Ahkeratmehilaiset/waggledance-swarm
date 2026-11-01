@@ -290,7 +290,7 @@ def _validate_output(raw, exit_code, expected_descriptor):
 
 
 def launch(*, interpreter, interpreter_sha256, bootstrap, bootstrap_sha256, verifier_sha256,
-           tuple_args, query, timeout, scratch_root=None):
+           tuple_args, query, timeout, scratch_root=None, interpreter_identity=None):
     """Return only validated, reduced Q4 JSON; emit no raw stderr or traceback."""
     if scratch_root is None:
         raise LaunchRefused("scratch_required")
@@ -317,8 +317,33 @@ def launch(*, interpreter, interpreter_sha256, bootstrap, bootstrap_sha256, veri
     if not (_matches(interpreter, interpreter_sha256) and _matches(bootstrap, bootstrap_sha256)
             and _matches(bootstrap.with_name("runtime_manifest.py"), verifier_sha256)):
         raise LaunchRefused("trust_pin_mismatch")
-    scratch = _scratch_dir(scratch_root, [bootstrap.parent, interpreter.parent] +
-                           [_path(tuple_args[key]) for key in _PATHS])
+    if interpreter_identity is not None:
+        # An opt-in pinned tree check, not caller authentication or a proof
+        # about files loaded after this check. Legacy calls stay unchanged.
+        verified = False
+        try:
+            if (type(interpreter_identity) is not dict
+                    or set(interpreter_identity) != {"root", "descriptor_bytes", "expected_sha256"}
+                    or not isinstance(interpreter_identity["root"], (str, Path))
+                    or type(interpreter_identity["descriptor_bytes"]) is not bytes
+                    or type(interpreter_identity["expected_sha256"]) is not str
+                    or _HEX.fullmatch(interpreter_identity["expected_sha256"]) is None):
+                raise ValueError()
+            from sandbox.mind.step2.interpreter_identity import verify_interpreter_identity
+            result = verify_interpreter_identity(
+                enabled=True, root=interpreter_identity["root"],
+                descriptor_bytes=interpreter_identity["descriptor_bytes"],
+                expected_sha256=interpreter_identity["expected_sha256"],
+                expected_interpreter=interpreter, expected_interpreter_sha256=interpreter_sha256)
+            verified = type(result) is dict and result.get("status") == "VERIFIED"
+        except Exception:
+            pass
+        if not verified:
+            raise LaunchRefused("interpreter_identity_refused") from None
+    protected = [bootstrap.parent, interpreter.parent] + [_path(tuple_args[key]) for key in _PATHS]
+    if interpreter_identity is not None:
+        protected.append(_path(interpreter_identity["root"]))
+    scratch = _scratch_dir(scratch_root, protected)
     args = [str(interpreter), "-I", "-S", "-B", "-c", _TRAMPOLINE, str(bootstrap)]
     for key in _KEYS:
         args.extend(("--" + key, tuple_args[key]))

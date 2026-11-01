@@ -54,6 +54,53 @@ def test_matching_synthetic_tree_returns_metadata_only(synthetic):
     assert str(root) not in repr(result)
 
 
+def test_explicit_interpreter_path_and_hash_bind_to_the_interpreter_role(synthetic):
+    root, document = synthetic
+    raw = encoded(document)
+    record = document["files"][0]
+    result = subject.verify_interpreter_identity(
+        enabled=True, root=root, descriptor_bytes=raw, expected_sha256=digest(raw),
+        expected_interpreter=root / record["path"], expected_interpreter_sha256=record["sha256"])
+    assert result["status"] == "VERIFIED"
+
+
+@pytest.mark.parametrize("mutation", ["missing_path", "missing_hash", "other_role", "other_same_bytes",
+                                      "outside", "wrong_hash", "invalid_hash"])
+def test_explicit_interpreter_binding_refuses_mismatched_pair(synthetic, tmp_path, mutation):
+    root, document = synthetic
+    record = document["files"][0]
+    expected_path, expected_hash = root / record["path"], record["sha256"]
+    if mutation == "missing_path":
+        expected_path = None
+    elif mutation == "missing_hash":
+        expected_hash = None
+    elif mutation == "other_role":
+        expected_path = root / document["files"][1]["path"]
+    elif mutation in ("other_same_bytes", "outside"):
+        expected_path = (root / "bin" / "other.exe") if mutation == "other_same_bytes" else tmp_path / "outside.exe"
+        expected_path.write_bytes((root / record["path"]).read_bytes())
+        if mutation == "other_same_bytes":
+            document["files"].append({"role": "dll", "path": "bin/other.exe",
+                                      "size": record["size"], "sha256": record["sha256"]})
+    elif mutation == "wrong_hash":
+        expected_hash = "0" * 64
+    else:
+        expected_hash = "not-a-sha256"
+    raw = encoded(document)
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        subject.verify_interpreter_identity(
+            enabled=True, root=root, descriptor_bytes=raw, expected_sha256=digest(raw),
+            expected_interpreter=expected_path, expected_interpreter_sha256=expected_hash)
+
+
+def test_disabled_does_not_touch_explicit_interpreter_binding():
+    class Poison:
+        def __getattribute__(self, name):
+            pytest.fail("OFF touched binding")
+    assert subject.verify_interpreter_identity(expected_interpreter=Poison(),
+                                               expected_interpreter_sha256=Poison()) == {"status": "OFF"}
+
+
 def test_wrong_pin_refuses_before_json_or_filesystem(synthetic, monkeypatch):
     root, document = synthetic
     monkeypatch.setattr(subject.json, "loads", lambda *_a, **_k: pytest.fail("parsed before pin"))

@@ -35,6 +35,7 @@ def _records(document):
     if type(records) is not list or not 1 <= len(records) <= MAX_FILES:
         raise ValueError()
     files, directories, cases, roles = {}, set(), {}, []
+    interpreter_name = None
     total = 0
     for record in records:
         if type(record) is not dict or set(record) != {"role", "path", "size", "sha256"}:
@@ -62,9 +63,11 @@ def _records(document):
             raise ValueError()
         files[path] = (size, digest)
         roles.append(role)
+        if role == "interpreter":
+            interpreter_name = path
     if set(files) & directories or roles.count("interpreter") != 1 or not {"stdlib", "dll"} <= set(roles):
         raise ValueError()
-    return files, directories, total
+    return files, directories, total, interpreter_name
 
 
 def _check_tree(root, files, directories):
@@ -97,8 +100,13 @@ def _check_tree(root, files, directories):
         raise ValueError()
 
 
-def verify_interpreter_identity(*, enabled=False, root=None, descriptor_bytes=None, expected_sha256=None):
-    """Check the caller-pinned descriptor and exact tree; return metadata only."""
+def verify_interpreter_identity(*, enabled=False, root=None, descriptor_bytes=None, expected_sha256=None,
+                                expected_interpreter=None, expected_interpreter_sha256=None):
+    """Check the pinned tree and optional independently selected executable binding.
+
+    The optional path and SHA must be supplied together. They bind the sole
+    interpreter record, not the running process; same-user races remain.
+    """
     if enabled is False:
         return {"status": "OFF"}
     try:
@@ -106,16 +114,27 @@ def verify_interpreter_identity(*, enabled=False, root=None, descriptor_bytes=No
                 or len(descriptor_bytes) > MAX_DESCRIPTOR_BYTES or type(expected_sha256) is not str
                 or _HEX.fullmatch(expected_sha256) is None):
             raise ValueError()
+        if (expected_interpreter is None) != (expected_interpreter_sha256 is None):
+            raise ValueError()
+        if (expected_interpreter is not None and (type(expected_interpreter_sha256) is not str
+                or _HEX.fullmatch(expected_interpreter_sha256) is None)):
+            raise ValueError()
         digest = hashlib.sha256(descriptor_bytes).hexdigest()
         if not hmac.compare_digest(digest, expected_sha256):
             raise ValueError()
         document = json.loads(descriptor_bytes.decode("utf-8", "strict"), object_pairs_hook=runtime._unique_object,
                               parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
-        files, directories, total = _records(document)
+        files, directories, total, interpreter_name = _records(document)
         checked_root = runtime._check_chain(root)
         root_info = os.lstat(checked_root)
         if runtime._is_reparse(root_info) or not stat.S_ISDIR(root_info.st_mode):
             raise ValueError()
+        if expected_interpreter is not None:
+            selected = runtime._check_chain(expected_interpreter)
+            declared = checked_root.joinpath(*interpreter_name.split("/"))
+            if selected != declared or not hmac.compare_digest(files[interpreter_name][1],
+                                                               expected_interpreter_sha256):
+                raise ValueError()
         runtime._check_no_named_streams(checked_root)
         _check_tree(checked_root, files, directories)
         for relative, (size, expected) in files.items():

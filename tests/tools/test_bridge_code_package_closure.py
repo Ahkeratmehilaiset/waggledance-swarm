@@ -1521,6 +1521,43 @@ def test_prefix_candidate_libraries_reject_delivery_mutants(relative, mutation):
         _assert_prefix_mind_library_only(definition, relative)
 
 
+INTERPRETER_IDENTITY = "sandbox/mind/step2/interpreter_identity.py"
+INTERPRETER_RUNTIME_DEPENDENCY = "sandbox/mind/step2/runtime_manifest.py"
+
+
+def _assert_interpreter_identity_delivery(definition):
+    _assert_prefix_mind_library_only(definition, INTERPRETER_IDENTITY)
+    assert definition["python_files"].count(INTERPRETER_RUNTIME_DEPENDENCY) == 1
+    source = (REPO_ROOT / INTERPRETER_IDENTITY).read_text(encoding="utf-8")
+    assert "sandbox.mind.step2.runtime_manifest" in _internal_imports(source, "sandbox.mind.step2")
+
+
+def test_interpreter_identity_is_delivered_inertly_with_runtime_manifest():
+    _assert_interpreter_identity_delivery(_definition())
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "dependency", "entrypoint", "manual", "smoke"])
+def test_interpreter_identity_delivery_rejects_missing_duplicate_or_activation(mutation):
+    definition = deepcopy(_definition())
+    definition["python_files"] = [p for p in definition["python_files"] if p != INTERPRETER_IDENTITY]
+    definition["python_files"].append(INTERPRETER_IDENTITY)
+    _assert_interpreter_identity_delivery(definition)
+    if mutation == "missing":
+        definition["python_files"].remove(INTERPRETER_IDENTITY)
+    elif mutation == "duplicate":
+        definition["python_files"].append(INTERPRETER_IDENTITY)
+    elif mutation == "dependency":
+        definition["python_files"].remove(INTERPRETER_RUNTIME_DEPENDENCY)
+    elif mutation == "entrypoint":
+        definition["python_entrypoints"]["not_approved"] = INTERPRETER_IDENTITY
+    elif mutation == "manual":
+        definition["manual_execution_capability"]["entrypoints"]["not_approved"] = INTERPRETER_IDENTITY
+    else:
+        definition["import_smoke"]["package_modules"].append(INTERPRETER_IDENTITY[:-3].replace("/", "."))
+    with pytest.raises(AssertionError):
+        _assert_interpreter_identity_delivery(definition)
+
+
 def _assert_m0_measurement_tool_delivery(definition, relative):
     assert definition["python_files"].count(relative) == 1, "m0_frozen_file_not_packaged_once"
     assert relative not in definition["python_entrypoints"].values(), "m0_entrypoint_not_authorized"

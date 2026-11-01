@@ -1,6 +1,7 @@
 """Synthetic launcher checks; no real memory, network, installation or model."""
 
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -139,6 +140,171 @@ def test_scratch_must_be_explicit(candidate):
     del candidate["scratch_root"]
     with pytest.raises(launcher.LaunchRefused, match="^scratch_required$"):
         launcher.launch(**candidate)
+
+
+@pytest.fixture
+def identity_candidate(tmp_path):
+    """A private fixture with synthetic executable bytes; no host Python reads."""
+    code = tmp_path / "code"
+    code.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    interpreter = tmp_path / "synthetic-python.exe"
+    interpreter.write_bytes(b"synthetic-interpreter-never-executed")
+    bootstrap = code / "runtime_bootstrap.py"
+    bootstrap.write_bytes(b"synthetic-bootstrap-never-executed")
+    verifier = code / "runtime_manifest.py"
+    verifier.write_bytes(b"synthetic-verifier-never-executed")
+    return dict(interpreter=interpreter, interpreter_sha256=digest(interpreter),
+                bootstrap=bootstrap, bootstrap_sha256=digest(bootstrap), verifier_sha256=digest(verifier),
+                scratch_root=scratch, tuple_args={"runtime-root": str(tmp_path / "runtime"),
+                "runtime-manifest": str(tmp_path / "manifest.json"), "runtime-manifest-sha256": "a" * 64,
+                "runtime-generation": "generation", "runtime-revision": "revision",
+                "memory": str(tmp_path / "memory"), "descriptor": str(tmp_path / "descriptor.json"),
+                "descriptor-sha256": "b" * 64, "lock-file": str(tmp_path / "read.lock"),
+                "lock-timeout": "1"}, query=b"synthetic-query", timeout=5)
+
+
+@pytest.mark.parametrize("identity", [{}, {"root": "synthetic-private"},
+    {"root": "synthetic-private", "descriptor_bytes": b"sensitive", "expected_sha256": "a" * 64, "extra": 1},
+    {"root": "synthetic-private", "descriptor_bytes": "not-bytes", "expected_sha256": "a" * 64}])
+def test_interpreter_identity_invalid_before_scratch_or_process(identity_candidate, monkeypatch, identity):
+    candidate = identity_candidate
+    monkeypatch.setattr(launcher, "_scratch_dir", lambda *_: pytest.fail("scratch created"))
+    monkeypatch.setattr(launcher.subprocess, "Popen", lambda *_a, **_k: pytest.fail("process created"))
+    with pytest.raises(launcher.LaunchRefused, match="^interpreter_identity_refused$") as caught:
+        launcher.launch(**candidate, interpreter_identity=identity)
+    assert caught.value.__context__ is None
+    assert "synthetic-private" not in repr(caught.value)
+
+
+@pytest.mark.parametrize("verdict", ["raise", "mismatch", "off"])
+def test_interpreter_identity_verifier_refusal_is_fixed_and_precedes_side_effects(identity_candidate, monkeypatch, verdict):
+    candidate = identity_candidate
+    from sandbox.mind.step2 import interpreter_identity as identity_module
+
+    def verify(**kwargs):
+        assert kwargs["expected_interpreter"] == candidate["interpreter"]
+        assert kwargs["expected_interpreter_sha256"] == candidate["interpreter_sha256"]
+        if verdict in ("raise", "mismatch"):
+            raise ValueError("synthetic-private verifier detail")
+        return {"status": "OFF"}
+
+    monkeypatch.setattr(identity_module, "verify_interpreter_identity", verify)
+    monkeypatch.setattr(launcher, "_scratch_dir", lambda *_: pytest.fail("scratch created"))
+    monkeypatch.setattr(launcher.subprocess, "Popen", lambda *_a, **_k: pytest.fail("process created"))
+    identity = {"root": "synthetic-private", "descriptor_bytes": b"sensitive", "expected_sha256": "a" * 64}
+    with pytest.raises(launcher.LaunchRefused, match="^interpreter_identity_refused$") as caught:
+        launcher.launch(**candidate, interpreter_identity=identity)
+    assert caught.value.__context__ is None
+    assert "synthetic-private" not in repr(caught.value)
+
+
+@pytest.mark.parametrize("mode", ["omitted", "none"])
+def test_legacy_without_interpreter_identity_does_not_invoke_verifier(identity_candidate, monkeypatch, mode):
+    from sandbox.mind.step2 import interpreter_identity as identity_module
+    monkeypatch.setattr(identity_module, "verify_interpreter_identity", lambda **_: pytest.fail("unexpected verifier"))
+    monkeypatch.setattr(launcher, "_scratch_dir", lambda *_: (_ for _ in ()).throw(launcher.LaunchRefused("synthetic_ready")))
+    monkeypatch.setattr(launcher.subprocess, "Popen", lambda *_a, **_k: pytest.fail("process created"))
+    kwargs = {} if mode == "omitted" else {"interpreter_identity": None}
+    with pytest.raises(launcher.LaunchRefused, match="^synthetic_ready$"):
+        launcher.launch(**identity_candidate, **kwargs)
+
+
+def test_interpreter_identity_root_cannot_contain_scratch(identity_candidate, tmp_path, monkeypatch):
+    from sandbox.mind.step2 import interpreter_identity as identity_module
+    candidate = identity_candidate
+    tree = tmp_path / "identity-tree"
+    interpreter_dir = tree / "bin"
+    interpreter_dir.mkdir(parents=True)
+    interpreter = interpreter_dir / "python.exe"
+    interpreter.write_bytes(b"synthetic-interpreter-never-executed")
+    scratch = tree / "scratch"
+    scratch.mkdir()
+    candidate.update(interpreter=interpreter, interpreter_sha256=digest(interpreter), scratch_root=scratch)
+    monkeypatch.setattr(identity_module, "verify_interpreter_identity", lambda **_: {"status": "VERIFIED"})
+    monkeypatch.setattr(launcher.tempfile, "mkdtemp", lambda **_: pytest.fail("scratch child created"))
+    monkeypatch.setattr(launcher.subprocess, "Popen", lambda *_a, **_k: pytest.fail("process created"))
+    identity = {"root": tree, "descriptor_bytes": b"synthetic", "expected_sha256": "a" * 64}
+    with pytest.raises(launcher.LaunchRefused, match="^scratch_refused$"):
+        launcher.launch(**candidate, interpreter_identity=identity)
+    assert not list(scratch.iterdir())
+
+
+def test_matching_interpreter_identity_reaches_only_spied_transport_without_private_argv(identity_candidate, monkeypatch):
+    candidate = identity_candidate
+    from sandbox.mind.step2 import interpreter_identity as identity_module
+    calls = []
+    private_root = str(candidate["scratch_root"].parent / "synthetic-private-identity-root")
+    private_bytes = b"synthetic-private-descriptor"
+    identity = {"root": private_root, "descriptor_bytes": private_bytes, "expected_sha256": "a" * 64}
+
+    def verify(**kwargs):
+        calls.append(("verify", kwargs))
+        assert kwargs == {**identity, "enabled": True, "expected_interpreter": candidate["interpreter"],
+                          "expected_interpreter_sha256": candidate["interpreter_sha256"]}
+        return {"status": "VERIFIED"}
+
+    class Job:
+        def attach(self, process): calls.append(("attach", process))
+        def terminate(self): pass
+        def close(self): pass
+
+    class Stream(io.BytesIO):
+        def close(self): pass
+
+    class Process:
+        def __init__(self):
+            self.stdin, self.stdout, self.returncode = Stream(), Stream(b"synthetic"), 2
+        def wait(self, timeout): return self.returncode
+        def poll(self): return self.returncode
+
+    def popen(args, **kwargs):
+        calls.append(("popen", args, kwargs))
+        assert private_root not in repr((args, kwargs))
+        assert private_bytes.decode() not in repr((args, kwargs))
+        return Process()
+
+    monkeypatch.setattr(identity_module, "verify_interpreter_identity", verify)
+    monkeypatch.setattr(launcher, "_scratch_dir", lambda *_: candidate["scratch_root"])
+    monkeypatch.setattr(launcher, "_Job", Job)
+    monkeypatch.setattr(launcher.subprocess, "Popen", popen)
+    monkeypatch.setattr(launcher, "_validate_output", lambda *_: {"status": "REFUSED"})
+    assert launcher.launch(**candidate, interpreter_identity=identity) == {"status": "REFUSED"}
+    assert [call[0] for call in calls] == ["verify", "popen", "attach"]
+
+
+@pytest.mark.parametrize("change,expected", [("none", "synthetic_ready"),
+    ("descriptor_pin", "interpreter_identity_refused"), ("interpreter", "interpreter_identity_refused"),
+    ("stdlib_contents", "interpreter_identity_refused")])
+def test_real_interpreter_verifier_is_bound_before_scratch(identity_candidate, tmp_path, monkeypatch, change, expected):
+    candidate = identity_candidate
+    root = tmp_path / "synthetic-interpreter-tree"
+    root.mkdir()
+    contents = {"python.exe": ("interpreter", b"not-an-executable"),
+                "stdlib.zip": ("stdlib", b"not-a-zip"), "library.dll": ("dll", b"not-a-dll")}
+    records = []
+    for name, (role, data) in contents.items():
+        (root / name).write_bytes(data)
+        records.append({"role": role, "path": name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()})
+    candidate["interpreter"] = root / "python.exe"
+    candidate["interpreter_sha256"] = digest(candidate["interpreter"])
+    raw = json.dumps({"schema": "wd.q4-interpreter-identity.v1", "files": records}).encode()
+    pin = hashlib.sha256(raw).hexdigest()
+    if change == "descriptor_pin": pin = "0" * 64
+    elif change == "interpreter":
+        candidate["interpreter"] = tmp_path / "synthetic-python.exe"
+        candidate["interpreter_sha256"] = digest(candidate["interpreter"])
+    elif change == "stdlib_contents": (root / "stdlib.zip").write_bytes(b"mutated!!")
+    reached = []
+    def scratch(*_):
+        reached.append(True)
+        raise launcher.LaunchRefused("synthetic_ready")
+    monkeypatch.setattr(launcher, "_scratch_dir", scratch)
+    monkeypatch.setattr(launcher.subprocess, "Popen", lambda *_a, **_k: pytest.fail("process created"))
+    with pytest.raises(launcher.LaunchRefused, match="^" + expected + "$"):
+        launcher.launch(**candidate, interpreter_identity={"root": root, "descriptor_bytes": raw, "expected_sha256": pin})
+    assert bool(reached) is (change == "none")
 
 
 def test_fresh_temp_and_tmp_inside_explicit_scratch(candidate, monkeypatch):

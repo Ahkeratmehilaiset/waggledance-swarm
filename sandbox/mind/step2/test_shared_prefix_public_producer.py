@@ -730,3 +730,45 @@ def test_two_preseeded_roots_race_on_an_empty_advance_and_the_live_fence_survive
     assert b["status"] == "EMPTY_ADVANCED" and b["pointer_sha256"] == _sha_file(root / "q4-latest.json")
     with _private_state(chain) as state:
         assert state.load(b["pointer_sha256"]) == empty["candidate_prefix"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
+@pytest.mark.parametrize("b_failure", ["slot_exists", "state_mismatch"])
+def test_a_begin_failure_before_opening_anything_leaves_a_foreign_live_fence(tmp_path, monkeypatch, b_failure):
+    from sandbox.mind.step2 import prefix_private_state as ps
+    chain = _fenced_chain(tmp_path)
+    mod, root = chain.mod, chain.root
+    first, _, kw_a, start = chain.delta(chain.f.PUBLIC_EVENTS)
+    other = tmp_path / "other-private"
+    other.mkdir()
+    if b_failure == "slot_exists":  # B's own slot already exists: begin_intent refuses before touching the fence
+        (other / ps._PENDING).write_bytes(b"pre-existing slot")
+    else:  # B's private state does not match the genesis prior: refused before touching the fence
+        with ps.locked_state(other, root, enabled=True) as state_b:
+            state_b.begin(None)
+            state_b.commit(None, "e" * 64, start)
+    b_files = sorted((p.name, p.read_bytes()) for p in other.iterdir() if p.is_file())
+    real_commit = mod.checkpoint.commit_prefix_genesis
+    seen = {}
+
+    def a_commit(*args, **kwargs):  # A owns fence + intent; B fails early on the SAME binding
+        attempt = kwargs["expected_attempt_sha256"]
+        request_b = chain.request(kw_a, start, None, "gen-a", private=other)
+        with ps.locked_state(other, root, enabled=True) as state_b:
+            try:
+                mod._publish_fenced(request_b, state_b, attempt, first["candidate_prefix"], "PUBLISHED_GENESIS",
+                                    "gen-a", lambda *a, **k: pytest.fail("B must never commit"), (), {})
+            except mod.PrefixProducerRefused as refused:
+                seen["b_token"] = str(refused)
+        seen["after_b"] = _fence_files(root)
+        return real_commit(*args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(mod.checkpoint, "commit_prefix_genesis", a_commit)
+        try:
+            a = mod.publish_public_prefix(enabled=True, request=chain.request(kw_a, start, None, "gen-a"))
+        except mod.PrefixProducerRefused as refused:
+            a = {"status": str(refused)}
+    assert seen["b_token"] == "publication_state_unknown"
+    assert seen["after_b"] == ["q4-prefix-fence.json"]  # never resolved by B
+    assert sorted((p.name, p.read_bytes()) for p in other.iterdir() if p.is_file() and p.name in dict(b_files)) == b_files
+    assert a["status"] == "PUBLISHED_GENESIS" and a["pointer_sha256"] == _sha_file(root / "q4-latest.json")

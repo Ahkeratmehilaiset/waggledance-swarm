@@ -548,16 +548,99 @@ def _unb64_map(mapping):
     return {key: _unb64(value) for key, value in mapping.items()}
 
 
+def _bounded_fixed_snapshot(pointer_bytes, policy_bytes, roster_bytes, public_policy_bytes,
+                            active_artifact_bytes, history_bytes, cell_snapshots):
+    """Freeze inputs and count exact canonical JSON bytes before any base64 copy.
+
+    Each map is copied entry by entry (at most 4096 entries); the total
+    serialized size never exceeds the existing bundle cap. This is not a large
+    snapshot transport and the original byte values are already caller-owned.
+    The caller must provide a coherent input snapshot, without concurrent edits.
+    """
+    size = 0
+
+    def add(n):
+        nonlocal size
+        size += n
+        _check(size <= _MAX_BUNDLE)
+
+    def string(value):
+        _check(type(value) is str and len(value) <= _MAX_BUNDLE)
+        add(2)
+        for char in value:
+            point = ord(char)
+            if char in ('"', "\\", "\b", "\f", "\n", "\r", "\t"):
+                add(2)
+            elif point < 0x20 or 0x7f <= point <= 0xffff:
+                add(6)
+            elif point > 0xffff:
+                add(12)
+            else:
+                add(1)
+
+    def field(key):
+        string(key)
+        add(1)  # colon
+
+    def blob(value):
+        _check(type(value) is bytes)
+        add(2 + 4 * ((len(value) + 2) // 3))  # JSON quotes + padded base64
+        return value
+
+    def mapping(value):
+        _check(type(value) is dict and len(value) <= 4096)
+        add(2)  # braces
+        out = {}; count = 0
+        for key, item in value.items():
+            _check(count < 4096)
+            if count: add(1)
+            count += 1
+            field(key)
+            out[key] = blob(item)
+        return out
+
+    add(2 + 7)  # root braces + seven commas
+    field("schema"); string(_BUNDLE_SCHEMA)
+    field("pointer"); pointer = blob(pointer_bytes)
+    field("policy"); policy = blob(policy_bytes)
+    field("roster"); roster = blob(roster_bytes)
+    field("public_policy"); public_policy = blob(public_policy_bytes)
+    field("active_artifacts"); active = mapping(active_artifact_bytes)
+    field("history"); history = mapping(history_bytes)
+    field("cells")
+    _check(type(cell_snapshots) is dict and len(cell_snapshots) <= 4096)
+    add(2)
+    cells = {}; count = 0
+    for cell_id, item in cell_snapshots.items():
+        _check(count < 4096)
+        if count: add(1)
+        count += 1
+        field(cell_id)
+        _check(type(item) is dict and len(item) == 3 and all(type(key) is str for key in item)
+               and set(item) == {"pointer", "log", "artifacts"})
+        # Capture the three values once; all payload bytes are immutable.
+        pointer_value, log_value, artifacts_value = item["pointer"], item["log"], item["artifacts"]
+        add(4)  # braces + two commas
+        field("pointer"); cell_pointer = blob(pointer_value)
+        field("log"); cell_log = blob(log_value)
+        field("artifacts"); artifacts = mapping(artifacts_value)
+        cells[cell_id] = {"pointer": cell_pointer, "log": cell_log, "artifacts": artifacts}
+    return pointer, policy, roster, public_policy, active, history, cells, size
+
+
 def fixed_snapshot_bundle(*, pointer_bytes, policy_bytes, roster_bytes, public_policy_bytes,
                           active_artifact_bytes, history_bytes, cell_snapshots):
     """Closed canonical container for the byte inputs of query_public_snapshot.
 
     Packaging only: contents are validated by query_public_snapshot itself
-    against the plan's pins in the child. Bounded by the 16 MiB bundle cap.
+    against the plan's pins in the child. Bounded by the 16 MiB bundle cap;
+    rejects oversized canonical inputs before creating base64 copies.
     """
     try:
-        _check(all(type(value) is bytes for value in (pointer_bytes, policy_bytes, roster_bytes, public_policy_bytes)))
-        _check(type(cell_snapshots) is dict and len(cell_snapshots) <= 4096)
+        (pointer_bytes, policy_bytes, roster_bytes, public_policy_bytes, active_artifact_bytes,
+         history_bytes, cell_snapshots, expected_size) = _bounded_fixed_snapshot(
+             pointer_bytes, policy_bytes, roster_bytes, public_policy_bytes,
+             active_artifact_bytes, history_bytes, cell_snapshots)
         cells = {}
         for cell_id, item in cell_snapshots.items():
             _check(type(cell_id) is str and type(item) is dict and set(item) == {"pointer", "log", "artifacts"}
@@ -568,7 +651,7 @@ def fixed_snapshot_bundle(*, pointer_bytes, policy_bytes, roster_bytes, public_p
                           "roster": _b64(roster_bytes), "public_policy": _b64(public_policy_bytes),
                           "active_artifacts": _b64_map(active_artifact_bytes), "history": _b64_map(history_bytes),
                           "cells": cells})
-        _check(len(raw) <= _MAX_BUNDLE)
+        _check(len(raw) == expected_size and len(raw) <= _MAX_BUNDLE)
         return raw
     except Exception:
         pass

@@ -39,18 +39,21 @@ vectors. The encoder record therefore carries ``assets``, a caller-pinned manife
 of EVERY regular file under ``model_dir``, the weights file included; after the binding and before identity
 derivation the child lists the plain tree, requires the file set to equal the manifest exactly (an unlisted extra
 file or a missing listed file refuses) and streams every file through sha256 against its pin
-(``asset_refused``). The child never self-derives a pin: every digest it compares against comes from the caller's
+(``asset_refused``). The per-file byte budget binds the bytes actually read, not only the size seen before the
+open: a file that grew in between is refused after at most ``ASSET_BYTES_LIMIT + 1`` bytes, never read to EOF. The child never self-derives a pin: every digest it compares against comes from the caller's
 plan. What remains open and is reported, not claimed: the verify-then-use window (the backend re-reads the files by
 path after they were hashed; only an immutable root closes it), the genuineness of the pinned revision (the caller's
 manifest is trust, not proof) and the backend running in this process.
 
-Backend environment (v3 finding 1). ``encode.E5`` writes the offline cache variables (``CACHE_ENV``,
+Backend environment (v3 finding 1, v4 inspection). ``encode.E5`` writes the offline cache variables (``CACHE_ENV``,
 ``HF_HUB_OFFLINE``, ``TRANSFORMERS_OFFLINE``) into the process environment and does not restore them. The child
 snapshots the whole environment before the load and restores it exactly afterwards, on success and on failure
-(added names removed, overwritten values put back). This is scoped restoration, not OS isolation: the backend and
-its native libraries still load in this process, the imported modules stay imported and keep the offline settings
-they read at import time, and nothing here constrains what the loaded code can do. Reported as
-``backend_isolation``.
+(added names removed, overwritten values put back), and wraps every later inference call of the returned encoder
+the same way, since a lazy ``model.encode`` may read or alter the environment long after the load. This is scoped
+restoration, not OS isolation and not a sandbox: it covers ``os.environ`` only (a direct ``putenv`` or WinAPI
+write, or a concurrent writer in another thread, is neither seen nor undone); the backend and its native libraries
+still load in this process, the imported modules stay imported and keep the offline settings they read at import
+time, and nothing here constrains what the loaded code can do. Reported as ``backend_isolation``.
 
 Preflight (v2 finding 2). The checks the producer makes only under its lock that need no live access run here
 before identity derivation and backend load, so a mismatched request never loads a model: the start prefix cursor
@@ -303,6 +306,11 @@ def _link_count(path):
     return os.lstat(path).st_nlink
 
 
+def _asset_size(path):
+    """Size of an asset before it is opened; the read loop re-enforces the budget on the bytes actually read."""
+    return os.lstat(path).st_size
+
+
 def _plain_local(text):
     """``Path`` of a drive-letter path with no UNC/device prefix and no dot components, else None."""
     if type(text) is not str or not text or "\x00" in text:
@@ -405,11 +413,20 @@ def _assets_bound(model_dir_text, assets, files):
         model_dir = Path(model_dir_text)
         for relative, expected in assets.items():
             path = model_dir.joinpath(*relative.split("/"))
-            if os.lstat(path).st_size > ASSET_BYTES_LIMIT:
+            if _asset_size(path) > ASSET_BYTES_LIMIT:
                 return False
             digest = hashlib.sha256()
+            consumed = 0
             with open(path, "rb") as handle:
-                for chunk in iter(lambda: handle.read(_CHUNK), b""):
+                while True:
+                    # the budget binds the bytes actually read, not the size seen before the open: a file that
+                    # grew in between is refused after at most limit + 1 bytes, never read to EOF
+                    chunk = handle.read(min(_CHUNK, ASSET_BYTES_LIMIT + 1 - consumed))
+                    if not chunk:
+                        break
+                    consumed += len(chunk)
+                    if consumed > ASSET_BYTES_LIMIT:
+                        return False
                     digest.update(chunk)
             if not hmac.compare_digest(digest.hexdigest(), expected):
                 return False
@@ -454,9 +471,15 @@ def _encoder(encoder, identity):
             return None
         with _restored_environment():
             loaded = encode_mod.E5(model_dir=encoder["model_dir"], revision=encoder["revision"])
-        return builder.e5_passage_encoder(loaded.model)
+        inner = builder.e5_passage_encoder(loaded.model)
     except Exception:  # noqa: BLE001 - any backend failure is one fixed refusal without its message
         return None
+
+    def encode(*args, **kwargs):
+        # lazy inference may read or alter the environment too: every call is restored the same way
+        with _restored_environment():
+            return inner(*args, **kwargs)
+    return encode
 
 
 def _publish(request):

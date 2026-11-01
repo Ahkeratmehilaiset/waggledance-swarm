@@ -943,6 +943,87 @@ def test_report_names_the_remaining_limits_and_derives_no_pin(tmp_path, model_di
 
 
 # ---------------------------------------------------------------------------------------------------------------
+# v4 inspections: restoration around every inference call; the asset read budget is enforced on bytes read
+# ---------------------------------------------------------------------------------------------------------------
+
+
+def test_environment_restored_around_every_inference_call_on_success_and_error(tmp_path, model_dir, backend, monkeypatch):
+    m = module()
+    for name in offline_names():
+        os.environ.pop(name, None)
+    before = dict(os.environ)
+
+    class Mutating(backend):
+        fail = False
+
+        def encode(self, inputs, **kw):
+            os.environ["HF_HUB_OFFLINE"] = "mutated-by-inference"  # a lazy backend touching the environment
+            os.environ["SYNTHETIC_INFERENCE_VAR"] = "added"
+            if Mutating.fail:
+                raise RuntimeError(SENTINEL)
+            return super().encode(inputs, **kw)
+    sys.modules["sentence_transformers"].SentenceTransformer = Mutating
+    seen = {}
+
+    def fake_publish(*, enabled, request):
+        seen["request"] = request
+        return {"status": "PUBLISHED_GENESIS", "pointer_sha256": "1" * 64, "generation": "gen-a",
+                "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"}
+    monkeypatch.setattr(m.producer, "publish_public_prefix", fake_publish)
+    config, pins, start = synthetic_config(tmp_path)
+    run(m, plan(model_dir, pins), config, start, *roots(tmp_path))
+    assert dict(os.environ) == before
+    vectors = seen["request"].encode(["alpha beta"])  # inference after the load: restored around the call too
+    assert vectors.shape == (1, 384) and dict(os.environ) == before
+    Mutating.fail = True
+    with pytest.raises(Exception):
+        seen["request"].encode(["gamma"])
+    assert dict(os.environ) == before
+
+
+def test_asset_over_the_byte_limit_refuses_before_it_is_opened(tmp_path, model_dir, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    monkeypatch.setattr(m, "ASSET_BYTES_LIMIT", len(WEIGHTS) - 1)
+    pinned = assets_of(model_dir)  # the caller's manifest is computed before every open is refused
+    with no_reads(monkeypatch):
+        asset_refused(m, monkeypatch, tmp_path, pins, model_dir, model_dir, assets=pinned)
+
+
+def test_asset_read_is_bounded_even_when_the_file_grows_after_the_size_check(tmp_path, monkeypatch):
+    m = module()
+    _, pins, _ = synthetic_config(tmp_path)
+    trusted = tmp_path / "trusted"
+    inside = model_tree(trusted / "model")
+    (inside / "tokenizer.json").write_bytes(b"x" * 64)
+    pinned = assets_of(inside)
+    monkeypatch.setattr(m, "ASSET_BYTES_LIMIT", 8)
+    monkeypatch.setattr(m, "_asset_size", lambda path: 1)  # stale metadata: the file grew after the size check
+    monkeypatch.setattr(m, "_CHUNK", 4)
+    read = []
+    real_open = open
+
+    class Counting:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def read(self, size=-1):
+            data = self._handle.read(size)
+            read.append(len(data))
+            return data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._handle.close()
+    import builtins
+    monkeypatch.setattr(builtins, "open", lambda *a, **k: Counting(real_open(*a, **k)))
+    asset_refused(m, monkeypatch, tmp_path, pins, inside, trusted, assets=pinned)
+    assert 0 < sum(read) <= m.ASSET_BYTES_LIMIT + 1  # never read to EOF past the budget
+
+
+# ---------------------------------------------------------------------------------------------------------------
 # real strict-prefix chain through the child (synthetic bridge log, fake backend, FAISS)
 # ---------------------------------------------------------------------------------------------------------------
 
@@ -1022,5 +1103,6 @@ def test_module_is_fixed_path_only():
                                           "encoder_refused", "publication_state_unknown"})
     doc = module().__doc__ or ""
     for word in ("trusted_model_root", "UNC", "reparse", "preflight", "CAS", "locked", "OS isolation", "hard link",
-                 "tokenizer", "manifest", "verify-then-use", "self-derive"):
+                 "tokenizer", "manifest", "verify-then-use", "self-derive", "putenv", "concurrent", "sandbox",
+                 "inference"):
         assert word in doc, word

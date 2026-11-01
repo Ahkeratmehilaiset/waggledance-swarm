@@ -384,6 +384,56 @@ def _validate_history_transition(root, current, previous, previous_hash, tasks, 
         _refuse()
 
 
+def _parse_bound_pointer(data, *, policy_sha, roster_sha, prefix_required):
+    """Parse pointer bytes; does not verify the generation or its history."""
+    fields = {"schema", "generation", "artifacts", "policy_sha256", "roster_sha256", "anchor_sha256",
+              "cursor_start", "cursor_end", "watermark", "empty_advance", "previous", "previous_pointer_sha256"}
+    if not isinstance(data, bytes) or len(data) > _MAX_POINTER_BYTES:
+        _refuse()
+    value = _parse(data)
+    schema = value.get("schema")
+    genesis_schema = PREFIX_SCHEMA if prefix_required else SCHEMA
+    history_schema = PREFIX_HISTORY_SCHEMA if prefix_required else HISTORY_SCHEMA
+    expected_fields = fields | ({"prefix_start_sha256", "prefix_watermark_sha256"} if prefix_required else set())
+    if (schema not in (genesis_schema, history_schema)
+            or set(value) != (expected_fields if schema == genesis_schema else expected_fields | {"delta_projection_sha256"})
+            or (prefix_required and any(not isinstance(value[k], str) or HEX.fullmatch(value[k]) is None
+                                        for k in ("prefix_start_sha256", "prefix_watermark_sha256")))
+            or (schema == history_schema and (not isinstance(value["delta_projection_sha256"], str)
+                or HEX.fullmatch(value["delta_projection_sha256"]) is None))
+            or value["policy_sha256"] != policy_sha or value["roster_sha256"] != roster_sha
+            or not isinstance(value["anchor_sha256"], str) or HEX.fullmatch(value["anchor_sha256"]) is None
+            or not isinstance(value["generation"], str) or NAME.fullmatch(value["generation"]) is None
+            or type(value["artifacts"]) is not dict or set(value["artifacts"]) != set(ARTIFACTS)
+            or any(not isinstance(v, str) or HEX.fullmatch(v) is None for v in value["artifacts"].values())):
+        _refuse()
+    begin, finish, mark = (_cursor(BridgeCursor(**value[key]))
+                           for key in ("cursor_start", "cursor_end", "watermark"))
+    if (begin["file_identity"] != finish["file_identity"] or begin["generation"] != finish["generation"]
+            or mark["file_identity"] != finish["file_identity"] or mark["generation"] != finish["generation"]
+            or finish["offset"] < begin["offset"] or mark["offset"] < finish["offset"]):
+        _refuse()
+    return value
+
+
+def _parse_pointer_snapshot(data, *, expected_pointer_sha256, policy_sha, roster_sha, prefix_required):
+    """Parse independently pinned bytes, without validating artifacts or history.
+
+    The caller must authenticate the pin independently. This private helper's
+    result includes private pointer fields and must never be exposed as output.
+    """
+    try:
+        if (type(data) is not bytes or len(data) > _MAX_POINTER_BYTES
+                or not isinstance(expected_pointer_sha256, str)
+                or HEX.fullmatch(expected_pointer_sha256) is None
+                or _sha(data) != expected_pointer_sha256):
+            _refuse()
+        return _parse_bound_pointer(data, policy_sha=policy_sha, roster_sha=roster_sha,
+                                    prefix_required=prefix_required)
+    except Exception:
+        _refuse()
+
+
 def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, reserve=0,
                         policy_bytes=None, roster_bytes=None, history_budget=None, expected_source_mode=None,
                         prefix_required=False):
@@ -395,37 +445,11 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
     from sandbox.mind.step2 import shared_projection as sp
     from sandbox.mind.step2.shared_bridge_snapshot import _token
 
-    fields = {"schema", "generation", "artifacts", "policy_sha256", "roster_sha256", "anchor_sha256",
-              "cursor_start", "cursor_end", "watermark", "empty_advance", "previous", "previous_pointer_sha256"}
     empty_hash = _sha(_canonical(sp._projection([], {}, 0, roster, True)))
 
     def parse_pointer(data):
-        if not isinstance(data, bytes) or len(data) > _MAX_POINTER_BYTES:
-            _refuse()
-        value = _parse(data)
-        schema = value.get("schema")
-        genesis_schema = PREFIX_SCHEMA if prefix_required else SCHEMA
-        history_schema = PREFIX_HISTORY_SCHEMA if prefix_required else HISTORY_SCHEMA
-        expected_fields = fields | ({"prefix_start_sha256", "prefix_watermark_sha256"} if prefix_required else set())
-        if (schema not in (genesis_schema, history_schema)
-                or set(value) != (expected_fields if schema == genesis_schema else expected_fields | {"delta_projection_sha256"})
-                or (prefix_required and any(not isinstance(value[k], str) or HEX.fullmatch(value[k]) is None
-                                            for k in ("prefix_start_sha256", "prefix_watermark_sha256")))
-                or (schema == history_schema and (not isinstance(value["delta_projection_sha256"], str)
-                    or HEX.fullmatch(value["delta_projection_sha256"]) is None))
-                or value["policy_sha256"] != policy_sha or value["roster_sha256"] != roster_sha
-                or not isinstance(value["anchor_sha256"], str) or HEX.fullmatch(value["anchor_sha256"]) is None
-                or not isinstance(value["generation"], str) or NAME.fullmatch(value["generation"]) is None
-                or type(value["artifacts"]) is not dict or set(value["artifacts"]) != set(ARTIFACTS)
-                or any(not isinstance(v, str) or HEX.fullmatch(v) is None for v in value["artifacts"].values())):
-            _refuse()
-        begin, finish, mark = (_cursor(BridgeCursor(**value[key]))
-                               for key in ("cursor_start", "cursor_end", "watermark"))
-        if (begin["file_identity"] != finish["file_identity"] or begin["generation"] != finish["generation"]
-                or mark["file_identity"] != finish["file_identity"] or mark["generation"] != finish["generation"]
-                or finish["offset"] < begin["offset"] or mark["offset"] < finish["offset"]):
-            _refuse()
-        return value
+        return _parse_bound_pointer(data, policy_sha=policy_sha, roster_sha=roster_sha,
+                                    prefix_required=prefix_required)
 
     old = parse_pointer(raw)
     actual = _verify_generation(root, old["generation"], tasks, roster, policy_sha, roster_sha)

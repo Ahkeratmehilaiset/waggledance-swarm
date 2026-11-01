@@ -549,10 +549,30 @@ def _fixed_bundle_decode(bundle_bytes):
     raise _Refused() from None
 
 
+_NUL_DEVICE = "\\Device\\Null"
+
+
+class _UnicodeString(C.Structure):
+    _fields_ = [("Length", W.USHORT), ("MaximumLength", W.USHORT), ("Buffer", C.c_void_p)]
+
+
+def _nt_object_name(handle):
+    """Kernel object name of ``handle`` (NtQueryObject ObjectNameInformation), e.g. \\Device\\Null."""
+    ntdll = C.WinDLL("ntdll")
+    ntdll.NtQueryObject.restype = C.c_long
+    ntdll.NtQueryObject.argtypes = [W.HANDLE, C.c_int, C.c_void_p, W.ULONG, C.POINTER(W.ULONG)]
+    buffer, needed = C.create_string_buffer(4096), W.ULONG()
+    _check(ntdll.NtQueryObject(handle, 1, buffer, len(buffer), C.byref(needed)) == 0)
+    name = _UnicodeString.from_buffer(buffer)
+    _check(name.Buffer and name.Length % 2 == 0 and name.Length <= len(buffer))
+    return C.wstring_at(name.Buffer, name.Length // 2)
+
+
 def _contain_child_output():
     """Point THIS process's standard streams at NUL and detach its console; child side, public route only.
 
-    One verified NUL handle (FILE_TYPE_CHAR) backs CRT descriptors 0-2
+    One verified NUL handle (FILE_TYPE_CHAR and kernel object name exactly
+    \\Device\\Null, also checked on each standard handle) backs CRT descriptors 0-2
     (Python os.write and C code sharing this UCRT), the Win32 standard handles
     (SetStdHandle, checked with GetStdHandle) and Python's sys streams.
     FreeConsole runs first, before the NUL handle exists; afterwards CONOUT$
@@ -590,7 +610,8 @@ def _contain_child_output():
         except OSError:
             pass
     handle = k.CreateFileW("\\\\.\\NUL", 0xC0000000, 3, None, 3, 0, None)
-    _check(handle not in (None, invalid) and k.GetFileType(handle) == 2)
+    _check(handle not in (None, invalid) and k.GetFileType(handle) == 2
+           and _nt_object_name(handle) == _NUL_DEVICE)
     fd = msvcrt.open_osfhandle(handle, os.O_RDWR | getattr(os, "O_NOINHERIT", 0))
     _CONTAINED.append(fd)
     for target in (0, 1, 2):
@@ -599,7 +620,7 @@ def _contain_child_output():
     for std, target in ((-10, 0), (-11, 1), (-12, 2)):
         native = msvcrt.get_osfhandle(target)
         _check(k.SetStdHandle(std & 0xFFFFFFFF, native) and k.GetStdHandle(std & 0xFFFFFFFF) == native
-               and k.GetFileType(native) == 2)
+               and k.GetFileType(native) == 2 and _nt_object_name(native) == _NUL_DEVICE)
     sink = io.TextIOWrapper(io.FileIO(os.dup(fd), "w"), encoding="utf-8", errors="replace", write_through=True)
     source = io.TextIOWrapper(io.FileIO(os.dup(fd), "r"), encoding="utf-8", errors="replace")
     _CONTAINED.extend((sink, source))
@@ -623,8 +644,20 @@ def _fixed_closed_results(results):
     return results
 
 
+def _interpreter_roots():
+    """The base interpreter's stdlib (Lib) and extension (DLLs) directories only.
+
+    Not the whole base prefix: Scripts, the prefix root and Lib/site-packages
+    are refused by _module_origins. Limit: these files are NOT manifested; they
+    are trusted only as the pinned interpreter's own installation.
+    """
+    base = Path(sys.base_prefix)
+    return [os.path.normcase(os.path.realpath(path)) for path in (base / "Lib", base / "DLLs")]
+
+
 def _module_origins(before, roots):
-    """Every module added since ``before`` must come from a verified root or the interpreter's own base."""
+    """Every module added since ``before`` must come from a verified root or the interpreter's Lib/DLLs."""
+    excluded = os.path.normcase(os.path.realpath(Path(sys.base_prefix) / "Lib" / "site-packages"))
     for name, module in list(sys.modules.items()):
         if name in before or module is None:
             continue
@@ -634,14 +667,24 @@ def _module_origins(before, roots):
             _check(name in sys.builtin_module_names or getattr(spec, "origin", None) in ("built-in", "frozen"))
             continue
         path = os.path.normcase(os.path.realpath(origin))
-        _check(any(os.path.commonpath((path, root)) == root for root in roots))
+        _check(any(_under(path, root) for root in roots) and not _under(path, excluded))
+
+
+def _under(path, root):
+    try:
+        return os.path.commonpath((path, root)) == root
+    except ValueError:  # different drives
+        return False
 
 
 def _fixed_public_validate(plan_bytes, bundle_bytes, query_bytes, output):
     """Parent side: closed child answer, then re-resolution against the pinned projection in the bundle.
 
     The pointer is bound to the plan pin; memory and projection are bound by
-    the existing resolver through the pointer's memory digest. Every claimed
+    the existing resolver through the pointer's memory digest. Before that the
+    parent runs the snapshot module's own public preflight over its own bytes:
+    source pin (pointer anchor), encoder pin (descriptor), pinned public policy
+    bytes, and the public boundary of every projected record. Every claimed
     (ref, doc id) pair must resolve and the child's text must equal the
     projection text exactly; the returned text always comes from the parent's
     own resolution, never from the child. A child cannot echo the query or add
@@ -666,18 +709,32 @@ def _fixed_public_validate(plan_bytes, bundle_bytes, query_bytes, output):
         query = json.loads(query_bytes.decode("utf-8", "strict"), object_pairs_hook=_unique_pairs)
         _check(type(query) is dict and set(query) == {"situation", "time"} and type(query["time"]) is str)
         parts = _fixed_bundle_decode(bundle_bytes)
+        from sandbox.mind.step2 import shared_capture_adapter as adapter
         from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
         from sandbox.mind.step2 import shared_result_resolver as resolver
+        tasks, roster = adapter.strict_pins(parts["policy_bytes"], plan["policy_sha256"], parts["roster_bytes"],
+                                            plan["roster_sha256"])
+        _check(tasks == frozenset(plan["approved_tasks"]))
         pointer = checkpoint._parse_pointer_snapshot(
             parts["pointer_bytes"], expected_pointer_sha256=plan["expected_pointer_sha256"],
             policy_sha=plan["policy_sha256"], roster_sha=plan["roster_sha256"], prefix_required=True)
-        active = parts["active_artifact_bytes"]
+        active = checkpoint._bind_active_artifact_bytes(parts["active_artifact_bytes"],
+                                                        expected_hashes=pointer["artifacts"], enabled=True)
+        # The same public preflight the child's query runs, now in the parent over the parent's own bytes:
+        # pointer anchor == source pin, descriptor encoder == encoder pin, public policy bytes == policy pin,
+        # and EVERY projected record (so every returned one) inside public_tasks/public_types/public agents.
+        checkpoint._preflight_public_snapshot(
+            pointer, active, tasks, roster, public_policy_bytes=parts["public_policy_bytes"],
+            public_policy_sha256=plan["expected_public_policy_sha256"],
+            expected_source_sha256=plan["expected_source_sha256"],
+            expected_encoder_sha256=plan["expected_encoder_sha256"])
         resolved = resolver.resolve_results(
-            memory_manifest=active.get("memory.json"), expected_memory_sha256=pointer["artifacts"]["memory_sha256"],
-            projection_bytes=active.get("projection.json"),
+            memory_manifest=active.read(checkpoint.ARTIFACTS["memory_sha256"]),
+            expected_memory_sha256=pointer["artifacts"]["memory_sha256"],
+            projection_bytes=active.read(checkpoint.ARTIFACTS["projection_sha256"]),
             results=[{key: item[key] for key in ("ref_sha256", "doc_id_sha256", "ref_kind", "canonical_event")}
                      for item in claimed],
-            query_utc=query["time"], approved_tasks=frozenset(plan["approved_tasks"]),
+            query_utc=query["time"], approved_tasks=tasks,
             policy_bytes=parts["policy_bytes"], policy_sha256=plan["policy_sha256"],
             roster_bytes=parts["roster_bytes"], roster_sha256=plan["roster_sha256"])
         _check(type(resolved) is list and len(resolved) == len(claimed)
@@ -722,7 +779,7 @@ def _fixed_child_backend(plan, peer_path):
     code, site, model = root / "assets" / "code", root / "site", root / "model"
     entry = code.joinpath("sandbox", "mind", "step2", "shared_index_checkpoint.py")
     _check(code.is_dir() and site.is_dir() and model.is_dir() and entry.is_file())
-    roots = [os.path.normcase(os.path.realpath(path)) for path in (code, site, sys.base_prefix)]
+    roots = [os.path.normcase(os.path.realpath(path)) for path in (code, site)] + _interpreter_roots()
     before = set(sys.modules)
     sys.path.insert(0, str(code))
     sys.path.append(str(site))
@@ -1030,13 +1087,16 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
     search and the interpreter's stdlib/DLLs are NOT verified, no sandbox or
     ACL proof; READY is self-reported and never independent authentication.
     Before any verifier or runtime code the child points its Python, CRT and
-    Win32 standard streams at NUL and detaches its console (see
-    _contain_child_output for what stays uncontained), refuses preloaded
-    sandbox/tools/waggledance/core modules, and checks that every module added
-    by the import or the call comes from the verified code/site or the
-    interpreter base. The parent never returns the child answer as is: it
-    checks the closed answer and re-resolves every pair against the projection
-    bound by the plan's pointer pin, taking stored text only from there.
+    Win32 standard streams at the exact \\Device\\Null object and detaches its
+    console (see _contain_child_output for what stays uncontained), refuses
+    preloaded sandbox/tools/waggledance/core modules, and checks that every
+    module added by the import or the call comes from the verified code/site or
+    the interpreter's Lib/DLLs (never its site-packages; those stdlib files are
+    not manifested). The parent never returns the child answer as is: it
+    checks the closed answer, runs the snapshot module's public preflight over
+    its own bytes (source, encoder and public policy pins, every projected
+    record inside the public boundary), and re-resolves every pair against the
+    projection bound by the plan's pointer pin, taking stored text only from there.
     Runtime files stay mutable after verification (only the interpreter, this
     file and the verifier are leased), and base64 makes the effective raw
     snapshot size about 12 MiB under the 16 MiB bundle cap.

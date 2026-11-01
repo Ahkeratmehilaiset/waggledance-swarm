@@ -328,7 +328,7 @@ CATCHUP_SCHEMA = "wd.q4-public-catchup.v1"
 CATCHUP_MAX_WINDOWS = 64
 _CAUGHT_UP = "chained_delta_caught_up_to_final_snapshot_not_history"
 _PARTIAL = "chained_delta_partial_not_caught_up"
-_END_REASONS = frozenset({"snapshot_end", "max_windows", "partial_record"})
+_END_REASONS = frozenset({"snapshot_end", "max_windows", "partial_record", "deferred"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,6 +344,33 @@ class _CatchupBinding:
     caught_up: bool
     end_reason: str
     chain_commitment: str = field(repr=False)
+    cutoff_utc: str | None = None
+    deferred: bool = False
+
+
+def _cutoff(value):
+    """Normalize an explicitly supplied aware clock; None leaves legacy behavior unchanged."""
+    if value is None:
+        return None
+    if not isinstance(value, dt.datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError()
+    return value.astimezone(dt.timezone.utc).isoformat()
+
+
+def _ready_projection(value, cutoff):
+    """A public event is ready only strictly after its conservative availability boundary."""
+    if type(value) is not dict or type(value.get("records")) is not list:
+        raise ValueError()
+    instant = dt.datetime.fromisoformat(cutoff)
+    for record in value["records"]:
+        if type(record) is not dict or type(record.get("available_utc")) is not str:
+            raise ValueError()
+        available = dt.datetime.fromisoformat(record["available_utc"].replace("Z", "+00:00"))
+        if available.tzinfo is None or available.utcoffset() is None:
+            raise ValueError()
+        if available >= instant:
+            return False
+    return True
 
 
 def _catchup_start(anchor_sha256, policy_sha256, roster_sha256, public_policy_sha256, start_prefix):
@@ -363,7 +390,7 @@ def _catchup_step(chain, index, binding, candidate_prefix):
 def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, generation_path, max_bytes, max_rows,
                         max_windows, policy_bytes, policy_sha256, roster_bytes, roster_sha256,
                         public_policy_bytes, public_policy_sha256, expected_prefix_sha256, max_prefix_bytes,
-                        enabled=False):
+                        enabled=False, cutoff_utc=None):
     """Opt-in bounded chained public-status catch-up over successive nonterminal windows (OFF by default).
 
     The caller-authenticated anchor binds the chain START cursor; it is checked once. Every window re-reads
@@ -379,6 +406,14 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
     ``candidate_cursor`` with ``candidate_prefix`` and a new caller-authenticated anchor for that cursor.
     Records are deduplicated per window only. Prefix digests may disclose guesses about private bytes and
     must not be published. This does not authenticate the caller, the source or the filesystem.
+    With the optional aware ``cutoff_utc``, every window contains at most one source row. A projected
+    public row is held until its next-minute availability is strictly before that fixed cutoff. The
+    held row and everything after it are not committed; an initial hold returns zero windows and the
+    original prefix. Non-public rows remain excluded by the unchanged public policy. The cutoff and
+    cutoff must also be supplied/checked by ``verify_public_catchup``; the deferred status itself is
+    an in-process assertion, not an independent proof about the unread row. The slower
+    per-row prefix hashing is bounded by the existing window and prefix budgets. This does not prove
+    source freshness, authenticate the clock, or make this catch-up object a single-window publication.
     Ordinary refusals discard exception frames; BaseException is caller-owned and may retain input data.
     """
     if enabled is not True:
@@ -386,13 +421,17 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
         del expected_prefix_sha256, anchor_sha256, policy_sha256, roster_sha256, public_policy_sha256
         raise SnapshotRefused("catchup_disabled")
     public_tasks = public_types = start_prefix = chain = windows = current = end_reason = None
+    cutoff = None
+    deferred = False
     window = nxt = caught_up = last = result = None
     try:
         if (type(max_windows) is not int or not 1 <= max_windows <= CATCHUP_MAX_WINDOWS
+                or type(max_rows) is not int or not 1 <= max_rows <= MAX_ROWS
                 or public_policy_bytes is None or public_policy_sha256 is None
                 or type(expected_prefix_sha256) is not str or _SHA256.fullmatch(expected_prefix_sha256) is None
                 or max_prefix_bytes is None):
             raise ValueError()
+        cutoff = _cutoff(cutoff_utc)
         public_tasks, public_types = _checked_anchor(
             path, cursor, tasks, anchor_bytes=anchor_bytes, anchor_sha256=anchor_sha256,
             generation_path=generation_path, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
@@ -405,7 +444,8 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
         windows, current, end_reason = [], start_prefix, "max_windows"
         for index in range(max_windows):
             window = _anchored_window(path, current.cursor, tasks, anchor_sha256=anchor_sha256,
-                                      generation_path=generation_path, max_bytes=max_bytes, max_rows=max_rows,
+                                      generation_path=generation_path, max_bytes=max_bytes,
+                                      max_rows=1 if cutoff is not None else max_rows,
                                       policy_bytes=policy_bytes, policy_sha256=policy_sha256,
                                       roster_bytes=roster_bytes, roster_sha256=roster_sha256,
                                       public_tasks=public_tasks, public_types=public_types,
@@ -417,6 +457,10 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
                     or nxt.cursor != window["candidate_cursor"]
                     or (nxt.cursor.file_identity, nxt.cursor.generation) != (cursor.file_identity, cursor.generation)):
                 raise ValueError()
+            if cutoff is not None and not _ready_projection(window["projection"], cutoff):
+                deferred = True
+                end_reason = "deferred"
+                break
             chain = _catchup_step(chain, index, window["_projection_binding"], nxt)
             windows.append(window)
             if window["source"]["unconsumed_bytes"] == 0:
@@ -427,14 +471,17 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
                 break
             current = nxt
         caught_up = end_reason == "snapshot_end"
-        last = windows[-1]
+        last = windows[-1] if windows else None
+        candidate_prefix = last["candidate_prefix"] if last is not None else start_prefix
         result = {"schema": CATCHUP_SCHEMA, "windows": tuple(windows), "window_count": len(windows),
                   "caught_up": caught_up, "end_reason": end_reason, "coverage": _CAUGHT_UP if caught_up else _PARTIAL,
-                  "start_prefix": start_prefix, "candidate_cursor": last["candidate_cursor"],
-                  "candidate_prefix": last["candidate_prefix"]}
+                  "start_prefix": start_prefix, "candidate_cursor": candidate_prefix.cursor,
+                  "candidate_prefix": candidate_prefix}
+        if cutoff is not None:
+            result["cutoff_utc"] = cutoff
         result["_catchup_binding"] = _CatchupBinding(
             anchor_sha256, policy_sha256, roster_sha256, public_policy_sha256, start_prefix,
-            last["candidate_prefix"], len(windows), caught_up, end_reason, chain.hex())
+            candidate_prefix, len(windows), caught_up, end_reason, chain.hex(), cutoff, deferred)
         return result
     except Exception:
         pass
@@ -445,13 +492,15 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
 
 
 def verify_public_catchup(result, *, expected_anchor_bytes, expected_anchor_sha256, expected_policy_sha256,
-                          expected_roster_sha256, expected_public_policy_sha256, expected_start_prefix):
+                          expected_roster_sha256, expected_public_policy_sha256, expected_start_prefix,
+                          expected_cutoff_utc=None):
     """Reject accidental window splicing, reordering or relabelling of one catch-up result in this process.
 
     Recomputes every window's semantic commitment, the prefix/cursor linkage and the chain commitment.
     Binding objects and their caller are not authenticated; this is not an origin proof.
     """
     try:
+        cutoff = _cutoff(expected_cutoff_utc)
         pins = (expected_anchor_sha256, expected_policy_sha256, expected_roster_sha256, expected_public_policy_sha256)
         if (type(result) is not dict or any(not isinstance(v, str) or _SHA256.fullmatch(v) is None for v in pins)
                 or type(expected_anchor_bytes) is not bytes or len(expected_anchor_bytes) > _ANCHOR_MAX_BYTES
@@ -476,9 +525,16 @@ def verify_public_catchup(result, *, expected_anchor_bytes, expected_anchor_sha2
                 or not hmac.compare_digest(binding.public_policy_sha256, expected_public_policy_sha256)
                 or binding.start_prefix != expected_start_prefix or result.get("start_prefix") != expected_start_prefix
                 or result.get("schema") != CATCHUP_SCHEMA
-                or type(windows) is not tuple or not 1 <= len(windows) <= CATCHUP_MAX_WINDOWS
+                or type(windows) is not tuple or not 0 <= len(windows) <= CATCHUP_MAX_WINDOWS
+                or (not windows and binding.end_reason != "deferred")
                 or result.get("window_count") != len(windows) or binding.window_count != len(windows)
                 or binding.end_reason not in _END_REASONS or result.get("end_reason") != binding.end_reason
+                or binding.cutoff_utc != cutoff
+                or (cutoff is None and "cutoff_utc" in result)
+                or (cutoff is not None and result.get("cutoff_utc") != cutoff)
+                or type(binding.deferred) is not bool
+                or (binding.end_reason == "deferred") != binding.deferred
+                or (binding.end_reason == "deferred" and cutoff is None)
                 or type(binding.caught_up) is not bool or result.get("caught_up") is not binding.caught_up
                 or binding.caught_up != (binding.end_reason == "snapshot_end")
                 or result.get("coverage") != (_CAUGHT_UP if binding.caught_up else _PARTIAL)):
@@ -503,6 +559,8 @@ def verify_public_catchup(result, *, expected_anchor_bytes, expected_anchor_sha2
                     or wb.candidate.offset < current.cursor.offset
                     or type(wb.row_commitment) is not bytes or len(wb.row_commitment) != 32
                     or type(wb.row_count) is not int or not 0 <= wb.row_count <= MAX_ROWS
+                    or (cutoff is not None and (wb.row_count > 1
+                        or not _ready_projection(window.get("projection"), cutoff)))
                     or not hmac.compare_digest(wb.semantic_commitment, _semantic_end(
                         wb.row_commitment, wb.row_count, wb.candidate, wb.projection))
                     or _canonical(window.get("projection")) != wb.projection
@@ -518,6 +576,8 @@ def verify_public_catchup(result, *, expected_anchor_bytes, expected_anchor_sha2
                     or (last and binding.end_reason == "partial_record"
                         and (source["unconsumed_bytes"] == 0 or nxt.cursor.offset != current.cursor.offset))
                     or (last and binding.end_reason == "max_windows"
+                        and (source["unconsumed_bytes"] == 0 or nxt.cursor.offset == current.cursor.offset))
+                    or (last and binding.end_reason == "deferred"
                         and (source["unconsumed_bytes"] == 0 or nxt.cursor.offset == current.cursor.offset))):
                 raise ValueError()
             chain = _catchup_step(chain, index, wb, nxt)

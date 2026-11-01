@@ -1480,6 +1480,7 @@ PREFIX_MIND_LIBRARY_FILES = (
     "tools/wd_mind_status_reader_v3.py",
     "tools/wd_mind_status_reader_v3_cli.py",
     "tools/wd_mind_status_publish_once.py",
+    "tools/wd_q4_lane_binding.py",
     "tools/wd_q4_lane_query.py",
     "tools/wd_q4_prefix_public_query.py",
     "tools/wd_q4_secure_transport.py",

@@ -15,9 +15,11 @@ binding document. That is not lane authentication; nothing in this module proves
 
 Order: switch (``enabled`` must be the bool ``True``; ``False`` returns ``{"status": "OFF"}`` and reads nothing),
 binding bytes type, byte budget and pin (nothing parsed yet), fleet pin and roster membership through the producer,
-binding document parse and closed shape, consumer contract (signature and ``BINDING_KEYS`` of the real
-``query_public``), lane. Every refusal is ``LaneBindingRefused`` with one fixed token from ``REASONS``, raised
-outside every exception handler so no parser detail, digest, path or document content travels with it.
+binding document parse and closed shape, roster consistency (``binding.roster_sha256`` must equal the snapshot
+digest the producer derives from the pinned fleet, else ``roster_refused``), consumer contract (signature and
+``BINDING_KEYS`` of the real ``query_public``), lane. Every refusal is ``LaneBindingRefused`` with one fixed token
+from ``REASONS``, raised outside every exception handler so no parser detail, digest, path or document content
+travels with it.
 """
 import hashlib
 import hmac
@@ -38,7 +40,8 @@ BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sha
                           "roster_sha256", "public_policy_sha256", "descriptor_sha256", "projection_sha256"})
 OUTPUT_KEYS = frozenset({"lane", "expected_commit", "expected_manifest_sha256", "expected_wrapper_sha256",
                          "expected_public_plan_sha256", "expected_binding"})
-REASONS = frozenset({"disabled", "fleet_refused", "binding_refused", "lane_refused", "contract_refused"})
+REASONS = frozenset({"disabled", "fleet_refused", "binding_refused", "roster_refused", "lane_refused",
+                     "contract_refused"})
 
 _DOCUMENT_KEYS = frozenset({"schema", "bundle_commit", "manifest_sha256", "wrapper_sha256", "public_plan_sha256",
                             "binding", "lanes"})
@@ -85,10 +88,11 @@ def _parse(binding_bytes):
     return document
 
 
-def _roster_lanes(fleet_bytes, expected_fleet_sha256):
-    snapshot = None
+def _roster(fleet_bytes, expected_fleet_sha256):
+    """``(lane set, snapshot digest)`` from the pinned producer; any producer refusal is one ``fleet_refused``."""
+    snapshot = digest = None
     try:
-        snapshot, _digest = roster_mod.build_roster_snapshot(fleet_bytes, expected_fleet_sha256, enabled=True)
+        snapshot, digest = roster_mod.build_roster_snapshot(fleet_bytes, expected_fleet_sha256, enabled=True)
     except roster_mod.RosterProducerRefused:
         snapshot = None
     if snapshot is None:
@@ -96,7 +100,7 @@ def _roster_lanes(fleet_bytes, expected_fleet_sha256):
     roster = json.loads(snapshot.decode("ascii"))
     lanes = {entry["agent"] for entry in roster["lanes"]}
     lanes.add(roster["tools_supervisor"]["agent"])
-    return frozenset(lanes)
+    return frozenset(lanes), digest
 
 
 def _shape(document, roster_lanes):
@@ -113,9 +117,10 @@ def _shape(document, roster_lanes):
     if type(binding) is not dict or frozenset(binding) != BINDING_KEYS or not all(map(_hex64, binding.values())):
         return False
     lanes = document["lanes"]
-    if type(lanes) is not list or not lanes or len(set(lanes)) != len(lanes):
+    # element types first: an unhashable element must be a refusal, never a TypeError out of set()
+    if type(lanes) is not list or not lanes or not all(type(lane) is str for lane in lanes):
         return False
-    return all(type(lane) is str and lane in roster_lanes for lane in lanes)
+    return len(set(lanes)) == len(lanes) and all(lane in roster_lanes for lane in lanes)
 
 
 def _contract_holds():
@@ -144,10 +149,14 @@ def resolve_lane_binding(fleet_bytes, expected_fleet_sha256, binding_bytes, expe
         raise LaneBindingRefused("binding_refused")
     if not hmac.compare_digest(hashlib.sha256(binding_bytes).hexdigest(), expected_binding_sha256):
         raise LaneBindingRefused("binding_refused")
-    roster_lanes = _roster_lanes(fleet_bytes, expected_fleet_sha256)
+    roster_lanes, roster_digest = _roster(fleet_bytes, expected_fleet_sha256)
     document = _parse(binding_bytes)
     if not _shape(document, roster_lanes):
         raise LaneBindingRefused("binding_refused")
+    # fleet/roster consistency: the document's roster pin must be the digest the pinned producer derives from
+    # the pinned fleet, so the lane list and the roster pin handed to query_public describe the same roster
+    if not hmac.compare_digest(document["binding"]["roster_sha256"], roster_digest):
+        raise LaneBindingRefused("roster_refused")
     if not _contract_holds():
         raise LaneBindingRefused("contract_refused")
     if type(lane) is not str or lane not in roster_lanes or lane not in document["lanes"]:

@@ -7,6 +7,7 @@ authenticates nothing and never touches the live fleet: the committed ``ops/wind
 no binding document, so without a separately pinned one the carrier refuses and the live configuration stays OFF.
 Lane membership here is a DECLARATION checked against the roster snapshot, not lane authentication.
 """
+import ast
 import hashlib
 import importlib
 import inspect
@@ -61,10 +62,23 @@ def fleet(**changes):
     return enc(value)
 
 
+def roster_digest(fleet_bytes):
+    """The trusted roster snapshot digest the pinned producer derives from ``fleet_bytes``."""
+    snapshot, digest = roster_mod.build_roster_snapshot(fleet_bytes, sha(fleet_bytes), enabled=True)
+    assert digest == sha(snapshot)
+    return digest
+
+
+def pins(fleet_bytes=None):
+    binding = {key: hex64(key) for key in PIN_KEYS}
+    binding["roster_sha256"] = roster_digest(fleet() if fleet_bytes is None else fleet_bytes)
+    return binding
+
+
 def binding_document(**changes):
     value = {"schema": "wd.q4-lane-binding.v1", "bundle_commit": "a" * 40, "manifest_sha256": hex64("manifest"),
              "wrapper_sha256": hex64("wrapper"), "public_plan_sha256": hex64("plan"),
-             "binding": {key: hex64(key) for key in PIN_KEYS}, "lanes": list(LANES)}
+             "binding": pins(), "lanes": list(LANES)}
     value.update(changes)
     return value
 
@@ -182,8 +196,9 @@ def test_roster_lane_not_listed_in_the_binding_document_refuses():
 
 def test_fleet_pin_mismatch_refuses_before_anything_else(monkeypatch):
     m = module()
+    raw = enc(binding_document())  # built before the patch: the test helper itself runs the roster producer
     monkeypatch.setattr(m.json, "loads", lambda *a, **k: pytest.fail("binding document parsed before fleet pin"))
-    refused("fleet_refused", fleet_sha256="0" * 64)
+    refused("fleet_refused", binding_bytes=raw, fleet_sha256="0" * 64)
 
 
 @pytest.mark.parametrize("bad", [
@@ -245,9 +260,48 @@ def test_missing_document_key_refuses(key):
     {"lanes": ["fable-5", "synthetic-lane"]},
     {"lanes": ["fable-5", 5]},
     {"lanes": ["fable-5", SENTINEL]},
+    {"lanes": ["fable-5", {"agent": "fable-5"}]},
+    {"lanes": [["fable-5"]]},
+    {"lanes": [{"agent": SENTINEL}, {"agent": SENTINEL}]},
+    {"lanes": ["fable-5", None]},
 ])
 def test_document_shape_negatives_refuse_without_echo(change):
     refused("binding_refused", document=binding_document(**change))
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# roster consistency: binding.roster_sha256 must be the digest the pinned producer derives from the pinned fleet
+# ---------------------------------------------------------------------------------------------------------------
+
+
+def other_fleet():
+    return fleet(lanes=[{"agent": lane, "agent_uuid": uuid_for(i + 11), "role": "synthetic"}
+                        for i, lane in enumerate(LANES) if lane != "codex-tools-1"],
+                 tools_supervisor={"agent": "codex-tools-1", "agent_uuid": uuid_for(19)})
+
+
+def test_two_valid_rosters_with_different_uuids_bind_only_their_own_produced_digest():
+    fleet_a, fleet_b = fleet(), other_fleet()
+    digest_a, digest_b = roster_digest(fleet_a), roster_digest(fleet_b)
+    assert digest_a != digest_b
+    doc_a, doc_b = binding_document(binding=pins(fleet_a)), binding_document(binding=pins(fleet_b))
+    assert resolve(fleet_bytes=fleet_a, document=doc_a)["expected_binding"]["roster_sha256"] == digest_a
+    assert resolve(fleet_bytes=fleet_b, document=doc_b)["expected_binding"]["roster_sha256"] == digest_b
+    refused("roster_refused", fleet_bytes=fleet_b, document=doc_a)
+    refused("roster_refused", fleet_bytes=fleet_a, document=doc_b)
+
+
+def test_roster_digest_not_derived_from_the_pinned_fleet_refuses_for_every_lane():
+    foreign = binding_document(binding={**pins(), "roster_sha256": hex64("roster_sha256")})
+    for lane in LANES:
+        refused("roster_refused", lane=lane, document=foreign)
+
+
+def test_roster_mismatch_is_checked_after_the_document_shape_and_before_the_lane():
+    doc = binding_document(binding=pins(other_fleet()))
+    refused("binding_refused", document={**doc, "extra": SENTINEL})
+    refused("roster_refused", lane="synthetic-lane", document=doc)
+    refused("roster_refused", lane="fable-5", document={**doc, "lanes": ["codex-lead-1"]})
 
 
 @pytest.mark.parametrize("change", [
@@ -257,7 +311,7 @@ def test_document_shape_negatives_refuse_without_echo(change):
 ])
 def test_binding_pin_set_must_be_exact_lowercase_hex64(change):
     kind, key = change
-    binding = {k: hex64(k) for k in PIN_KEYS}
+    binding = pins()
     if kind == "drop":
         del binding[key]
     elif kind == "extra":
@@ -322,7 +376,12 @@ def test_module_is_pure_stdlib_with_fixed_refusals():
     assert "from None" not in source and "from exc" not in source
     for token in ("subprocess", "socket", "urllib", "open(", "Path(", "os.", "environ", "print("):
         assert token not in source, token
-    imports = {line.split()[1] for line in source.splitlines() if line.startswith(("import ", "from "))}
-    assert imports <= {"hashlib", "hmac", "inspect", "json", "re", "tools"}
-    assert module().REASONS == frozenset({"disabled", "fleet_refused", "binding_refused", "lane_refused",
-                                          "contract_refused"})
+    imports = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            imports.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imports.add((node.module or "").split(".")[0])
+    assert imports == {"hashlib", "hmac", "inspect", "json", "re", "tools"}
+    assert module().REASONS == frozenset({"disabled", "fleet_refused", "binding_refused", "roster_refused",
+                                          "lane_refused", "contract_refused"})

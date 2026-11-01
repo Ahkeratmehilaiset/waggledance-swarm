@@ -43,6 +43,7 @@ _MAX_POINTER_BYTES = 16384
 _MAX_HISTORY_BYTES = 64 * 1024 * 1024
 _MAX_ACTIVE_ARTIFACT_BYTES = 16 * 1024 * 1024
 _MAX_ACTIVE_SNAPSHOT_BYTES = 64 * 1024 * 1024
+_MAX_VERIFIED_SNAPSHOT_BYTES = 642 * 1024 * 1024
 
 
 class CheckpointRefused(ValueError):
@@ -250,8 +251,9 @@ def _verify_generation(root, name, tasks, roster, policy_sha256, roster_sha256):
             observed.add(key)
     if observed != expected:
         _refuse()
-    return {"generation": name, **hashes, "source_binding": receipt.get("source_binding"),
-            "source_mode": _source_mode(memory, receipt)}
+    result = {"generation": name, **hashes, "source_binding": receipt.get("source_binding"),
+              "source_mode": _source_mode(memory, receipt)}
+    return result
 
 
 def _write_new(path, data):
@@ -539,6 +541,14 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
     actual = _verify_generation(root, old["generation"], tasks, roster, policy_sha, roster_sha)
     expected_source_mode = (expected_source_mode if expected_source_mode is not None
                             else _requested_source_mode("legacy", None))
+    _validate_active_pointer_binding(old, actual, policy_sha, roster_sha, expected_source_mode)
+    return _validate_pointer_history(root, raw, old, tasks, roster, policy_sha, roster_sha,
+                                     reserve=reserve, policy_bytes=policy_bytes, roster_bytes=roster_bytes,
+                                     history_budget=history_budget, expected_source_mode=expected_source_mode,
+                                     prefix_required=prefix_required)
+
+
+def _validate_active_pointer_binding(old, actual, policy_sha, roster_sha, expected_source_mode):
     if ({key: actual[key] for key in ARTIFACTS} != old["artifacts"]
             or actual.get("source_mode", _requested_source_mode("legacy", None)) != expected_source_mode
             or actual.get("source_binding") != _source_binding(
@@ -546,11 +556,6 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
                 old["anchor_sha256"], old["artifacts"]["projection_sha256"] if old["schema"] in (SCHEMA, PREFIX_SCHEMA)
                 else old["delta_projection_sha256"], policy_sha, roster_sha)):
         _refuse()
-
-    return _validate_pointer_history(root, raw, old, tasks, roster, policy_sha, roster_sha,
-                                     reserve=reserve, policy_bytes=policy_bytes, roster_bytes=roster_bytes,
-                                     history_budget=history_budget, expected_source_mode=expected_source_mode,
-                                     prefix_required=prefix_required)
 
 
 def _validate_pointer_history(root, raw, old, tasks, roster, policy_sha, roster_sha, *, reserve=0,
@@ -675,6 +680,131 @@ def _read_snapshot_checkpoint(raw, *, expected_pointer_sha256, tasks, roster, po
     except Exception:
         pass
     del raw, pointer, snapshot_bytes, policy_bytes, roster_bytes
+    _refuse()
+
+
+def _copy_snapshot_cells(cell_snapshots):
+    """Freeze bounded cell inputs; this is not validation of their contents."""
+    from sandbox.mind.step2 import cell, memory
+    from waggledance.core.hex_cell_topology import ALL_CELLS
+    if type(cell_snapshots) is not dict or len(cell_snapshots) > len(ALL_CELLS):
+        _refuse()
+    outer = dict(cell_snapshots)
+    copied, total = {}, 0
+    for cell_id, original in outer.items():
+        if type(cell_id) is not str or cell_id not in ALL_CELLS or type(original) is not dict or len(original) != 3:
+            _refuse()
+        item = dict(original)
+        if (set(item) != {"pointer", "log", "artifacts"} or type(item["pointer"]) is not bytes
+                or len(item["pointer"]) > cell.MAX_POINTER_BYTES or type(item["log"]) is not bytes
+                or len(item["log"]) > cell.MAX_LOG_BYTES or type(item["artifacts"]) is not dict
+                or len(item["artifacts"]) not in (4, 5)):
+            _refuse()
+        artifacts = dict(item["artifacts"])
+        if (not {"receipt", "index", "meta", "provenance"} <= artifacts.keys()
+                or not artifacts.keys() <= {"receipt", "index", "meta", "provenance", "vectors"}
+                or any(type(key) is not str for key in artifacts)
+                or any(type(value) is not bytes for value in artifacts.values())):
+            _refuse()
+        total += len(item["pointer"]) + len(item["log"]) + sum(map(len, artifacts.values()))
+        if total > memory.MAX_MEMORY_SNAPSHOT_BYTES:
+            _refuse()
+        copied[cell_id] = {"pointer": item["pointer"], "log": item["log"], "artifacts": artifacts}
+    return copied, total
+
+
+def _preflight_public_snapshot(pointer, active, tasks, roster, *, public_policy_bytes,
+                               public_policy_sha256, expected_source_sha256, expected_encoder_sha256):
+    """Check caller-pinned public controls only; this does not approve disclosure."""
+    descriptor = projected = public_tasks = public_types = raw = record = meta = None
+    try:
+        from sandbox.mind.step2 import shared_capture_adapter as adapter, shared_projection as sp
+        from sandbox.mind.step2 import wd_q4_private_read as reader
+        from tools import wd_q4_public_pointer_resolver as resolver
+        from tools.wd_q4_public_query import _encoder_digest
+        if (type(expected_source_sha256) is not str or not HEX.fullmatch(expected_source_sha256)
+                or type(expected_encoder_sha256) is not str or not HEX.fullmatch(expected_encoder_sha256)
+                or pointer["anchor_sha256"] != expected_source_sha256):
+            _refuse()
+        public_tasks, public_types = adapter.public_status_policy(public_policy_bytes, public_policy_sha256, tasks)
+        descriptor = reader.read_descriptor_bytes(active.read(ARTIFACTS["descriptor_sha256"]),
+                                                   pointer["artifacts"]["descriptor_sha256"])
+        if _encoder_digest(descriptor["encoder"]) != expected_encoder_sha256:
+            _refuse()
+        raw = active.read(ARTIFACTS["projection_sha256"])
+        projected = _parse(raw)
+        if json.dumps(projected, sort_keys=True, indent=1).encode("utf-8") != raw:
+            _refuse()
+        sp.validate_projection(projected, approved_tasks=tasks, include_refs=False,
+                               roster=roster, exclude_review_signal=True)
+        for record in projected["records"]:
+            meta = record["meta"]
+            if (meta.get("task_id") not in public_tasks or meta.get("type") not in public_types
+                    or type(meta.get("agent")) is not str or meta["agent"] not in resolver._PUBLIC_AGENTS):
+                _refuse()
+        return None
+    except Exception:
+        pass
+    del pointer, active, tasks, roster, public_policy_bytes, descriptor, projected, public_tasks, public_types
+    del raw, record, meta, public_policy_sha256, expected_source_sha256, expected_encoder_sha256
+    _refuse()
+
+
+def read_verified_snapshot_checkpoint(*, pointer_bytes, expected_pointer_sha256, approved_tasks,
+                                      policy_bytes, policy_sha256, roster_bytes, roster_sha256,
+                                      expected_public_policy_sha256, active_artifact_bytes,
+                                      cell_snapshots, history_bytes, public_policy_bytes=None,
+                                      expected_source_sha256=None, expected_encoder_sha256=None, enabled=False):
+    """Experimental preflight only: always refuses until safe result projection exists.
+
+    The caller authenticates all pins and obtains a coherent snapshot. This is
+    not publisher authentication, freshness, process isolation, a native memory
+    bound, or a production route. Raw memory is never returned.
+    """
+    pointer = active = frozen_history = frozen_cells = None
+    preflight_memory = preflight_receipt = tasks = roster = mode = None
+    try:
+        if enabled is not True:
+            _refuse()
+        from sandbox.mind.step2.shared_capture_adapter import strict_pins
+        tasks, roster = strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+        if type(approved_tasks) is not frozenset or approved_tasks != tasks:
+            _refuse()
+        mode = _requested_source_mode("public-v1", expected_public_policy_sha256)
+        pointer = _parse_pointer_snapshot(pointer_bytes, expected_pointer_sha256=expected_pointer_sha256,
+                                          policy_sha=policy_sha256, roster_sha=roster_sha256,
+                                          prefix_required=True)
+        active = _bind_active_artifact_bytes(active_artifact_bytes, expected_hashes=pointer["artifacts"], enabled=True)
+        frozen_history = _freeze_history_snapshot(history_bytes)
+        frozen_cells, cells_size = _copy_snapshot_cells(cell_snapshots)
+        total = (len(pointer_bytes) + len(policy_bytes) + len(roster_bytes) + cells_size
+                 + sum(len(active.read(name)) for name in ARTIFACTS.values())
+                 + sum(map(len, frozen_history.values())))
+        if total > _MAX_VERIFIED_SNAPSHOT_BYTES:
+            _refuse()
+        _validate_pointer_history(None, pointer_bytes, pointer, tasks, roster, policy_sha256, roster_sha256,
+                                  policy_bytes=policy_bytes, roster_bytes=roster_bytes, expected_source_mode=mode,
+                                  prefix_required=True, snapshot_bytes=frozen_history)
+        _preflight_public_snapshot(pointer, active, tasks, roster, public_policy_bytes=public_policy_bytes,
+                                   public_policy_sha256=expected_public_policy_sha256,
+                                   expected_source_sha256=expected_source_sha256,
+                                   expected_encoder_sha256=expected_encoder_sha256)
+        # Source mode and the pointer's build-receipt commitment are cheap to
+        # reject before any cell index reaches the native deserializer.
+        preflight_memory = _parse(active.read(ARTIFACTS["memory_sha256"]))
+        preflight_receipt = _parse(active.read(ARTIFACTS["receipt_sha256"]))
+        _validate_active_pointer_binding(pointer, {**pointer["artifacts"],
+            "source_binding": preflight_receipt.get("source_binding"),
+            "source_mode": _source_mode(preflight_memory, preflight_receipt)}, policy_sha256, roster_sha256, mode)
+        # Disclosure requires a separately reviewed narrow result projection.
+        # Never hand a raw Memory (which exposes extra fields) to a caller.
+        _refuse()
+    except Exception:
+        pass
+    del pointer_bytes, policy_bytes, roster_bytes, active_artifact_bytes, cell_snapshots, history_bytes
+    del pointer, active, frozen_history, frozen_cells, preflight_memory, preflight_receipt, public_policy_bytes
+    del tasks, roster, mode, approved_tasks, expected_pointer_sha256, policy_sha256, roster_sha256
+    del expected_public_policy_sha256, expected_source_sha256, expected_encoder_sha256, enabled
     _refuse()
 
 

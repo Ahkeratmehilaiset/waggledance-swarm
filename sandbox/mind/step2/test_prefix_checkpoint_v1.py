@@ -56,10 +56,49 @@ def test_synthetic_protocol_genesis_and_empty_cas_with_mock_artifact_verifier(tm
         roster_bytes=pins["roster_bytes"], expected_roster_sha256=pins["roster_sha256"],
         expected_mode="public-v1", expected_public_policy_sha256=pins["public_policy_sha256"],
         public_policy_bytes=pins["public_policy_bytes"])
-    checkpoint.commit_prefix_genesis(root, "gen-a", start.cursor, first["candidate_cursor"], tasks,
-        expected_pointer_sha256=None, expected_artifacts=artifacts, initial_cursor=start.cursor,
+    genesis_args = dict(expected_pointer_sha256=None, expected_artifacts=artifacts, initial_cursor=start.cursor,
         snapshot_result=first, expected_start_prefix=start, expected_anchor_sha256=digest(anchor_raw),
         expected_anchor_bytes=anchor_raw, **common)
+    with pytest.raises(checkpoint.CheckpointRefused):
+        checkpoint.prepare_prefix_genesis(root, "gen-a", start.cursor, first["candidate_cursor"], tasks, **genesis_args)
+    prepared = checkpoint.prepare_prefix_genesis(root, "gen-a", start.cursor, first["candidate_cursor"], tasks,
+                                                enabled=True, **genesis_args)
+    assert not (root / checkpoint.POINTER).exists()
+    with pytest.raises(checkpoint.CheckpointRefused):
+        checkpoint.commit_prefix_genesis(root, "gen-a", start.cursor, first["candidate_cursor"], tasks,
+                                         expected_attempt_sha256="0" * 64, **genesis_args)
+    assert not (root / checkpoint.POINTER).exists()
+    committed = checkpoint.commit_prefix_genesis(root, "gen-a", start.cursor, first["candidate_cursor"], tasks,
+                                                  expected_attempt_sha256=prepared["attempt_sha256"], **genesis_args)
+    assert committed["pointer_sha256"] == prepared["attempt_sha256"]
+    # Two cooperating writers prepare against the same missing predecessor.
+    # Exactly one may publish, and the stale intent must not overwrite it.
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    race_root = tmp_path / "race"
+    race_root.mkdir()
+    intents = {name: checkpoint.prepare_prefix_genesis(race_root, name, start.cursor,
+                first["candidate_cursor"], tasks, enabled=True, **genesis_args)["attempt_sha256"]
+               for name in ("gen-a", "gen-b")}
+    assert intents["gen-a"] != intents["gen-b"]
+    barrier = Barrier(2)
+    def compete(name):
+        barrier.wait()
+        try:
+            return checkpoint.commit_prefix_genesis(race_root, name, start.cursor, first["candidate_cursor"],
+                tasks, expected_attempt_sha256=intents[name], **genesis_args)["pointer_sha256"]
+        except checkpoint.CheckpointRefused:
+            return None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(compete, ("gen-a", "gen-b")))
+    assert sum(result is not None for result in results) == 1
+    winner = digest((race_root / checkpoint.POINTER).read_bytes())
+    assert winner in results
+    losing = "gen-a" if results[0] is None else "gen-b"
+    with pytest.raises(checkpoint.CheckpointRefused):
+        checkpoint.commit_prefix_genesis(race_root, losing, start.cursor, first["candidate_cursor"], tasks,
+            expected_attempt_sha256=intents[losing], **genesis_args)
+    assert digest((race_root / checkpoint.POINTER).read_bytes()) == winner
     pointer0 = digest((root / checkpoint.POINTER).read_bytes())
     current = first["candidate_prefix"]
     with path.open("ab") as writer:
@@ -72,13 +111,44 @@ def test_synthetic_protocol_genesis_and_empty_cas_with_mock_artifact_verifier(tm
         checkpoint.advance_prefix_empty(root, empty, tasks,
             expected_start_prefix=replace(current, sha256="0" * 64), **args)
     assert digest((root / checkpoint.POINTER).read_bytes()) == pointer0
-    advanced = checkpoint.advance_prefix_empty(root, empty, tasks, expected_start_prefix=current, **args)
+    prepared_empty = checkpoint.prepare_prefix_empty(root, empty, tasks, expected_start_prefix=current,
+                                                     enabled=True, **args)
+    with pytest.raises(checkpoint.CheckpointRefused):
+        checkpoint.advance_prefix_empty(root, empty, tasks, expected_start_prefix=current,
+                                        expected_attempt_sha256="0" * 64, **args)
+    assert digest((root / checkpoint.POINTER).read_bytes()) == pointer0
+    advanced = checkpoint.advance_prefix_empty(root, empty, tasks, expected_start_prefix=current,
+                                               expected_attempt_sha256=prepared_empty["attempt_sha256"], **args)
+    assert advanced["pointer_sha256"] == prepared_empty["attempt_sha256"]
     assert advanced["status"] == "advanced"
     view, next_pin = checkpoint.read_verified_prefix_pointer(root, tasks,
         expected_pointer_sha256=advanced["pointer_sha256"], policy_bytes=pins["policy_bytes"],
         policy_sha256=pins["policy_sha256"], roster_bytes=pins["roster_bytes"],
         roster_sha256=pins["roster_sha256"], expected_public_policy_sha256=pins["public_policy_sha256"])
     assert next_pin == empty["candidate_prefix"] and view["generation"] == "gen-a"
+    anchor["cursor_start"] = asdict(next_pin.cursor)
+    no_change, no_change_anchor = read(next_pin.cursor, next_pin, anchor)
+    no_change_args = dict(expected_pointer_sha256=advanced["pointer_sha256"],
+                          expected_anchor_sha256=digest(no_change_anchor),
+                          expected_anchor_bytes=no_change_anchor, **common)
+    existing = (root / checkpoint.POINTER).read_bytes()
+    before = {p.name for p in root.iterdir()}
+    prepared_no_change = checkpoint.prepare_prefix_empty(root, no_change, tasks,
+        expected_start_prefix=next_pin, enabled=True, **no_change_args)
+    assert prepared_no_change == {"status": "no_change", "attempt_sha256": digest(existing)}
+    with pytest.raises(checkpoint.CheckpointRefused):
+        checkpoint.advance_prefix_empty(root, no_change, tasks, expected_start_prefix=next_pin,
+                                        expected_attempt_sha256="0" * 64, **no_change_args)
+    assert (root / checkpoint.POINTER).read_bytes() == existing
+    assert {p.name for p in root.iterdir()} == before
+    committed_no_change = checkpoint.advance_prefix_empty(root, no_change, tasks, expected_start_prefix=next_pin,
+        expected_attempt_sha256=prepared_no_change["attempt_sha256"], **no_change_args)
+    assert committed_no_change == {"status": "no_change", "pointer_sha256": digest(existing)}
+    # The unpinned form remains supported solely for backwards compatibility.
+    assert checkpoint.advance_prefix_empty(root, no_change, tasks, expected_start_prefix=next_pin,
+        **no_change_args) == committed_no_change
+    assert (root / checkpoint.POINTER).read_bytes() == existing
+    assert {p.name for p in root.iterdir()} == before
 
 
 def _delta(root, events, start=None, prior=None):
@@ -159,9 +229,24 @@ def test_prefix_genesis_empty_history_cas_no_legacy_downgrade(tmp_path):
             snapshot_result=b, expected_pointer_sha256=pointer0, expected_artifacts=_artifacts_of(second),
             expected_start_prefix=empty_pin, **kw_b)
     assert sha((root / checkpoint.POINTER).read_bytes()) == pointer1
+    history_args = dict(snapshot_result=b, expected_pointer_sha256=pointer1, expected_artifacts=_artifacts_of(second),
+                        expected_start_prefix=empty_pin, **kw_b)
+    before_prepare = {p.name for p in root.iterdir()}
+    prepared = checkpoint.prepare_prefix_history(root, "gen-b", empty_pin.cursor, b["candidate_cursor"], APPROVED,
+                                                  enabled=True, **history_args)
+    assert {p.name for p in root.iterdir()} == before_prepare
+    with pytest.raises(checkpoint.CheckpointRefused):
+        checkpoint.commit_prefix_history(root, "gen-b", empty_pin.cursor, b["candidate_cursor"], APPROVED,
+                                         expected_attempt_sha256="0" * 64, **history_args)
+    assert {p.name for p in root.iterdir()} == before_prepare
     history_receipt = checkpoint.commit_prefix_history(root, "gen-b", empty_pin.cursor, b["candidate_cursor"], APPROVED,
-        snapshot_result=b, expected_pointer_sha256=pointer1, expected_artifacts=_artifacts_of(second),
-        expected_start_prefix=empty_pin, **kw_b)
+        expected_attempt_sha256=prepared["attempt_sha256"], **history_args)
+    assert history_receipt["pointer_sha256"] == prepared["attempt_sha256"]
+    # A recovered but stale pre-commit intent cannot replace the landed pointer.
+    with pytest.raises(checkpoint.CheckpointRefused):
+        checkpoint.commit_prefix_history(root, "gen-b", empty_pin.cursor, b["candidate_cursor"], APPROVED,
+            expected_attempt_sha256=prepared["attempt_sha256"], **history_args)
+    assert sha((root / checkpoint.POINTER).read_bytes()) == history_receipt["pointer_sha256"]
     assert empty_pin.sha256 not in json.dumps(history_receipt)
     assert b["candidate_prefix"].sha256 not in json.dumps(history_receipt)
     pointer2 = sha((root / checkpoint.POINTER).read_bytes())

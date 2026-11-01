@@ -1060,26 +1060,74 @@ def read_verified_prefix_pointer(root, approved_tasks, *, expected_pointer_sha25
         _refuse()
 
 
-def commit_prefix_genesis(*args, expected_start_prefix, **kwargs):
+def _attempt(value, expected):
+    """Bind an opt-in intent to the exact bytes subsequently published."""
+    digest = _sha(_canonical(value))
+    if expected is not None and (type(expected) is not str or HEX.fullmatch(expected) is None or expected != digest):
+        _refuse()
+    return digest
+
+
+def commit_prefix_genesis(*args, expected_start_prefix, expected_attempt_sha256=None, **kwargs):
     """Explicit new series only; never migrate an existing pointer."""
-    value = commit_generation(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix, **kwargs)
+    value = commit_generation(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix,
+                              _expected_attempt_sha256=expected_attempt_sha256, **kwargs)
     return {"status": "committed", "pointer_sha256": _sha(_canonical(value))}
 
 
-def advance_prefix_empty(*args, expected_start_prefix, **kwargs):
-    return advance_empty_delta(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix, **kwargs)
+def advance_prefix_empty(*args, expected_start_prefix, expected_attempt_sha256=None, **kwargs):
+    return advance_empty_delta(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix,
+                               _expected_attempt_sha256=expected_attempt_sha256, **kwargs)
 
 
-def commit_prefix_history(*args, expected_start_prefix, **kwargs):
-    value = commit_history_generation(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix, **kwargs)
+def commit_prefix_history(*args, expected_start_prefix, expected_attempt_sha256=None, **kwargs):
+    value = commit_history_generation(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix,
+                                      _expected_attempt_sha256=expected_attempt_sha256, **kwargs)
     return {"status": "committed", "pointer_sha256": _sha(_canonical(value))}
+
+
+def prepare_prefix_genesis(*args, expected_start_prefix, enabled=False, **kwargs):
+    """Compute a candidate without publishing; retain the CAS inputs privately.
+
+    Preparation can create the persistent slot file, but no pointer or history.
+    The digest is not a reservation: commit rechecks the predecessor under the
+    cooperating-writer lock. The caller must persist its own intent and resolve
+    ambiguous OS failures; this function implements neither crash recovery nor
+    authentication against a noncooperating writer.
+    """
+    if enabled is not True:
+        _refuse()
+    value = commit_generation(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix,
+                              _prepare_attempt=True, **kwargs)
+    return {"status": "prepared", "attempt_sha256": _attempt(value, None)}
+
+
+def prepare_prefix_history(*args, expected_start_prefix, enabled=False, **kwargs):
+    """Prepare without publishing or reserving; may create the persistent slot file."""
+    if enabled is not True:
+        _refuse()
+    value = commit_history_generation(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix,
+                                      _prepare_attempt=True, **kwargs)
+    return {"status": "prepared", "attempt_sha256": _attempt(value, None)}
+
+
+def prepare_prefix_empty(*args, expected_start_prefix, enabled=False, **kwargs):
+    """Prepare without publishing; may create the persistent slot file.
+
+    For no_change, attempt_sha256 identifies the existing pointer, not a new one.
+    """
+    if enabled is not True:
+        _refuse()
+    return advance_empty_delta(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix,
+                               _prepare_attempt=True, **kwargs)
 
 
 def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_pointer_sha256,
                         policy_bytes, expected_policy_sha256, roster_bytes, expected_roster_sha256,
                         expected_anchor_sha256, timeout=0.2, expected_mode="legacy",
                         expected_public_policy_sha256=None, public_policy_bytes=None, expected_anchor_bytes=None,
-                        _prefix_required=False, _expected_start_prefix=None):
+                        _prefix_required=False, _expected_start_prefix=None,
+                        _prepare_attempt=False, _expected_attempt_sha256=None):
     """Advance only a verified strict empty delta, without altering the indexed interval.
 
     Inactive primitive: the caller must protect source identity, cursor, policy,
@@ -1089,6 +1137,9 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
     requires re-reading the current pointer, never a blind retry.
     """
     try:
+        if type(_prepare_attempt) is not bool or ((_prepare_attempt or _expected_attempt_sha256 is not None)
+                and not _prefix_required):
+            _refuse()
         from sandbox.mind.step2 import shared_bridge_snapshot as snapshot, shared_capture_adapter as adapter
         from sandbox.mind.step2 import shared_projection as projection
         root = _secure(root)
@@ -1146,6 +1197,10 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
                     **mode_args) is not True:
                 _refuse()
             if finish == begin:
+                if _expected_attempt_sha256 is not None and _expected_attempt_sha256 != expected_pointer_sha256:
+                    _refuse()
+                if _prepare_attempt:
+                    return {"status": "no_change", "attempt_sha256": expected_pointer_sha256}
                 return {"status": "no_change", "pointer_sha256": expected_pointer_sha256}
             # Only a real advance needs room for another pointer. Revalidate
             # under the same writer lock before publishing that pointer.
@@ -1174,6 +1229,9 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
                     _refuse()
                 value["prefix_start_sha256"] = _expected_start_prefix.sha256
                 value["prefix_watermark_sha256"] = candidate_prefix.sha256
+            attempt = _attempt(value, _expected_attempt_sha256)
+            if _prepare_attempt:
+                return {"status": "prepared", "attempt_sha256": attempt}
             _publish_pointer(root, pointer, raw, expected_pointer_sha256, value)
             return {"status": "advanced", "pointer_sha256": _sha(_canonical(value))}
     except Exception:
@@ -1208,7 +1266,7 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
                       expected_roster_sha256=None, expected_anchor_sha256=None, expected_mode="legacy",
                       expected_public_policy_sha256=None, public_policy_bytes=None, expected_anchor_bytes=None,
                       snapshot_result=None, _prefix_required=False, _expected_start_prefix=None,
-                      _catchup_source=None):
+                      _catchup_source=None, _prepare_attempt=False, _expected_attempt_sha256=None):
     """Commit index + cursor together. CAS requires exact predecessor bytes.
 
     For a first publication expected_pointer_sha256 must be None and the
@@ -1218,6 +1276,9 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
     must reread and verify the pointer before deciding what happened.
     """
     try:
+        if type(_prepare_attempt) is not bool or ((_prepare_attempt or _expected_attempt_sha256 is not None)
+                and not _prefix_required):
+            _refuse()
         root = _secure(root)
         if (not root.is_dir() or not isinstance(generation, str) or NAME.fullmatch(generation) is None
                 or not isinstance(expected_artifacts, dict) or set(expected_artifacts) != set(ARTIFACTS)
@@ -1323,6 +1384,9 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
                         expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
                         **mode_args) is not True):
                 _refuse()
+            _attempt(value, _expected_attempt_sha256)
+            if _prepare_attempt:
+                return value
             _publish_pointer(root, pointer, None if old is None else raw, expected_pointer_sha256, value)
             return value
     except Exception:
@@ -1334,7 +1398,8 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
                               policy_bytes, expected_policy_sha256, roster_bytes, expected_roster_sha256,
                               expected_anchor_sha256, expected_mode="legacy", expected_public_policy_sha256=None,
                               public_policy_bytes=None, expected_anchor_bytes=None,
-                              _prefix_required=False, _expected_start_prefix=None, _catchup_source=None):
+                              _prefix_required=False, _expected_start_prefix=None, _catchup_source=None,
+                              _prepare_attempt=False, _expected_attempt_sha256=None):
     """Publish a union only after verifying the exact bound delta under the writer lock.
 
     The delta is retained in the private state directory to permit later union
@@ -1344,6 +1409,9 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
     This primitive has no scheduler, live wiring, or production authorization.
     """
     try:
+        if type(_prepare_attempt) is not bool or ((_prepare_attempt or _expected_attempt_sha256 is not None)
+                and not _prefix_required):
+            _refuse()
         from sandbox.mind.step2 import shared_bridge_snapshot as snapshot, shared_capture_adapter as adapter
         root = _secure(root)
         if (not root.is_dir() or not isinstance(generation, str) or NAME.fullmatch(generation) is None
@@ -1445,6 +1513,9 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
                     or json.dumps(delta, sort_keys=True, indent=1).encode("utf-8") != delta_bytes
                     or _read(pointer, max_bytes=_MAX_POINTER_BYTES) != raw):
                 _refuse()
+            _attempt(value, _expected_attempt_sha256)
+            if _prepare_attempt:
+                return value
             delta_path = root / ("q4-delta-" + digest + ".json")
             if os.path.lexists(delta_path):
                 if _read(delta_path) != delta_bytes:
@@ -1462,6 +1533,7 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
                     or not reverify_delta()
                     or json.dumps(delta, sort_keys=True, indent=1).encode("utf-8") != delta_bytes):
                 _refuse()
+            _attempt(value, _expected_attempt_sha256)
             _publish_pointer(root, pointer, raw, expected_pointer_sha256, value)
             return value
     except Exception:

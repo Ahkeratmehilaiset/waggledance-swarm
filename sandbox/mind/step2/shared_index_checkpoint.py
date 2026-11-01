@@ -467,7 +467,9 @@ def _parse_pointer_snapshot(data, *, expected_pointer_sha256, policy_sha, roster
         return _parse_bound_pointer(data, policy_sha=policy_sha, roster_sha=roster_sha,
                                     prefix_required=prefix_required)
     except Exception:
-        _refuse()
+        pass
+    del data
+    _refuse()
 
 
 def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, reserve=0,
@@ -478,16 +480,8 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
     The current pointer still needs an independent caller-provided anchor;
     historical index files are not re-opened or claimed to be retrievable.
     """
-    from sandbox.mind.step2 import shared_projection as sp
-    from sandbox.mind.step2.shared_bridge_snapshot import _token
-
-    empty_hash = _sha(_canonical(sp._projection([], {}, 0, roster, True)))
-
-    def parse_pointer(data):
-        return _parse_bound_pointer(data, policy_sha=policy_sha, roster_sha=roster_sha,
-                                    prefix_required=prefix_required)
-
-    old = parse_pointer(raw)
+    old = _parse_bound_pointer(raw, policy_sha=policy_sha, roster_sha=roster_sha,
+                               prefix_required=prefix_required)
     actual = _verify_generation(root, old["generation"], tasks, roster, policy_sha, roster_sha)
     expected_source_mode = (expected_source_mode if expected_source_mode is not None
                             else _requested_source_mode("legacy", None))
@@ -499,6 +493,23 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
                 else old["delta_projection_sha256"], policy_sha, roster_sha)):
         _refuse()
 
+    return _validate_pointer_history(root, raw, old, tasks, roster, policy_sha, roster_sha,
+                                     reserve=reserve, policy_bytes=policy_bytes, roster_bytes=roster_bytes,
+                                     history_budget=history_budget, expected_source_mode=expected_source_mode,
+                                     prefix_required=prefix_required)
+
+
+def _validate_pointer_history(root, raw, old, tasks, roster, policy_sha, roster_sha, *, reserve=0,
+                              policy_bytes=None, roster_bytes=None, history_budget=None,
+                              expected_source_mode=None, prefix_required=False, snapshot_bytes=None):
+    """Validate only the history of an already-parsed pointer, not active cells."""
+    from sandbox.mind.step2 import shared_projection as sp
+    from sandbox.mind.step2.shared_bridge_snapshot import _token
+
+    snapshot = None if snapshot_bytes is None else _freeze_history_snapshot(snapshot_bytes)
+    expected_source_mode = (expected_source_mode if expected_source_mode is not None
+                            else _requested_source_mode("legacy", None))
+    empty_hash = _sha(_canonical(sp._projection([], {}, 0, roster, True)))
     checked = {(old["generation"], _canonical(old["artifacts"]))}
     current = old
     seen = {_sha(raw)}
@@ -518,10 +529,15 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
                 or previous_hash in seen):
             _refuse()
         seen.add(previous_hash)
-        previous_raw = _read(root / ("q4-pointer-" + previous_hash + ".json"), max_bytes=_MAX_POINTER_BYTES)
+        archive_name = "q4-pointer-" + previous_hash + ".json"
+        previous_raw = (_read(root / archive_name, max_bytes=_MAX_POINTER_BYTES) if snapshot is None
+                        else _history_snapshot_read(snapshot, archive_name))
+        if len(previous_raw) > _MAX_POINTER_BYTES:
+            _refuse()
         if _sha(previous_raw) != previous_hash:
             _refuse()
-        previous = parse_pointer(previous_raw)
+        previous = _parse_bound_pointer(previous_raw, policy_sha=policy_sha, roster_sha=roster_sha,
+                                        prefix_required=prefix_required)
         if prefix_required and current["prefix_start_sha256"] != previous["prefix_watermark_sha256"]:
             _refuse()
         generation_key = (previous["generation"], _canonical(previous["artifacts"]))
@@ -530,7 +546,9 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
         # Public histories instead require each retained generation to carry
         # the same independently pinned public-mode artifact binding.
         if expected_source_mode["status_mode"] == "public-v1" and generation_key not in checked:
-            if _archived_generation_mode(root, previous, history_bytes) != expected_source_mode:
+            archive_mode = (_archived_generation_mode(root, previous, history_bytes) if snapshot is None
+                            else _archived_generation_mode(root, previous, history_bytes, snapshot_bytes=snapshot))
+            if archive_mode != expected_source_mode:
                 _refuse()
             checked.add(generation_key)
         if current["previous"] != previous["generation"]:
@@ -543,8 +561,12 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
             if current["generation"] == previous["generation"] or current["cursor_start"] != previous["watermark"]:
                 _refuse()
             if current["schema"] in (HISTORY_SCHEMA, PREFIX_HISTORY_SCHEMA):
-                _validate_history_transition(root, current, previous, previous_hash, tasks, roster,
-                                             policy_sha, roster_sha, policy_bytes, roster_bytes, history_bytes)
+                args = (root, current, previous, previous_hash, tasks, roster,
+                        policy_sha, roster_sha, policy_bytes, roster_bytes, history_bytes)
+                if snapshot is None:
+                    _validate_history_transition(*args)
+                else:
+                    _validate_history_transition(*args, snapshot_bytes=snapshot)
         else:
             advance_fields = {"schema", "anchor_sha256", "projection_sha256", "cursor_start_sha256",
                               "cursor_end_sha256", "policy_sha256", "roster_sha256"}
@@ -574,6 +596,31 @@ def _validated_previous(root, raw, tasks, roster, policy_sha, roster_sha, *, res
                     or advance["cursor_end_sha256"] != _sha(_token(end).encode("utf-8"))):
                 _refuse()
         current = previous
+    _refuse()
+
+
+def _read_snapshot_checkpoint(raw, *, expected_pointer_sha256, tasks, roster, policy_sha, roster_sha,
+                              snapshot_bytes, prefix_required=False, expected_source_mode=None,
+                              policy_bytes=None, roster_bytes=None):
+    """Inspect pinned snapshot history but refuse: active cell bytes are not verified.
+
+    This private experimental entry never returns a verified checkpoint. It
+    does not authenticate caller pins or connect to the production read path.
+    """
+    pointer = None
+    try:
+        if type(snapshot_bytes) is not dict:
+            _refuse()
+        pointer = _parse_pointer_snapshot(raw, expected_pointer_sha256=expected_pointer_sha256,
+                                          policy_sha=policy_sha, roster_sha=roster_sha,
+                                          prefix_required=prefix_required)
+        _validate_pointer_history(None, raw, pointer, tasks, roster, policy_sha, roster_sha,
+                                  policy_bytes=policy_bytes, roster_bytes=roster_bytes,
+                                  expected_source_mode=expected_source_mode,
+                                  prefix_required=prefix_required, snapshot_bytes=snapshot_bytes)
+    except Exception:
+        pass
+    del raw, pointer, snapshot_bytes, policy_bytes, roster_bytes
     _refuse()
 
 

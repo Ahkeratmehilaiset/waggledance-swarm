@@ -193,3 +193,87 @@ def test_history_transition_snapshot_uses_frozen_map_and_existing_receipt_checks
     monkeypatch.setattr(shared_history, "merge_projections", merge)
     checkpoint._validate_history_transition(None, new, old, "f" * 64, frozenset(), {}, "d" * 64,
                                             "e" * 64, b'{}', b'{}', [0], snapshot_bytes=snapshot)
+
+
+def _two_pointer_history():
+    previous = json.loads(_pointer())
+    previous["generation"] = "gen-a"
+    previous_raw = checkpoint._canonical(previous)
+    previous_hash = hashlib.sha256(previous_raw).hexdigest()
+    current = dict(previous, generation="gen-b", previous="gen-a", previous_pointer_sha256=previous_hash)
+    raw = checkpoint._canonical(current)
+    return raw, current, {"q4-pointer-" + previous_hash + ".json": previous_raw}
+
+
+def test_snapshot_history_traversal_uses_existing_rules_without_disk(monkeypatch):
+    raw, current, snapshot = _two_pointer_history()
+    monkeypatch.setattr(checkpoint, "_read", lambda *a, **kw: pytest.fail("disk fallback"))
+    result = checkpoint._validate_pointer_history(
+        None, raw, current, frozenset(), {}, "b" * 64, "c" * 64, snapshot_bytes=snapshot,
+    )
+    assert result == current
+
+
+@pytest.mark.parametrize("mode", ["missing", "tampered"])
+def test_snapshot_history_refuses_missing_or_tampered_archive(monkeypatch, mode):
+    raw, current, snapshot = _two_pointer_history()
+    key = next(iter(snapshot))
+    if mode == "missing":
+        del snapshot[key]
+    else:
+        snapshot[key] += b" "
+    monkeypatch.setattr(checkpoint, "_read", lambda *a, **kw: pytest.fail("disk fallback"))
+    with pytest.raises(checkpoint.CheckpointRefused):
+        checkpoint._validate_pointer_history(
+            None, raw, current, frozenset(), {}, "b" * 64, "c" * 64, snapshot_bytes=snapshot,
+        )
+
+
+def test_snapshot_checkpoint_refuses_when_active_cell_has_no_bytes_verifier(monkeypatch):
+    raw, _, snapshot = _two_pointer_history()
+    monkeypatch.setattr(checkpoint, "_read", lambda *a, **kw: pytest.fail("disk fallback"))
+    with pytest.raises(checkpoint.CheckpointRefused):
+        checkpoint._read_snapshot_checkpoint(
+            raw, expected_pointer_sha256=hashlib.sha256(raw).hexdigest(),
+            tasks=frozenset(), roster={}, policy_sha="b" * 64, roster_sha="c" * 64,
+            snapshot_bytes=snapshot,
+        )
+
+
+def test_snapshot_history_routes_bound_map_to_existing_delta_validator(monkeypatch):
+    raw, current, snapshot = _two_pointer_history()
+    delta = b'{"records": []}'
+    digest = hashlib.sha256(delta).hexdigest()
+    current.update(schema=checkpoint.HISTORY_SCHEMA, delta_projection_sha256=digest)
+    raw = checkpoint._canonical(current)
+    snapshot["q4-delta-" + digest + ".json"] = delta
+    seen = []
+    monkeypatch.setattr(checkpoint, "_read", lambda *a, **kw: pytest.fail("disk fallback"))
+    monkeypatch.setattr(checkpoint, "_validate_history_transition",
+                        lambda *args, **kw: seen.append(kw["snapshot_bytes"]["q4-delta-" + digest + ".json"]))
+    checkpoint._validate_pointer_history(None, raw, current, frozenset(), {}, "b" * 64, "c" * 64,
+                                          snapshot_bytes=snapshot)
+    assert seen == [delta]
+
+
+@pytest.mark.parametrize("entry", ["parse", "checkpoint"])
+def test_malformed_snapshot_refusal_does_not_retain_private_json_context(entry):
+    private_sentinel = "PRIVATE-SYNTHETIC-SENTINEL-4ef2"
+    raw = ('{"unclosed":"' + private_sentinel).encode()
+    digest = hashlib.sha256(raw).hexdigest()
+    with pytest.raises(checkpoint.CheckpointRefused) as captured:
+        if entry == "parse":
+            checkpoint._parse_pointer_snapshot(raw, expected_pointer_sha256=digest,
+                policy_sha="b" * 64, roster_sha="c" * 64, prefix_required=False)
+        else:
+            checkpoint._read_snapshot_checkpoint(raw, expected_pointer_sha256=digest,
+                tasks=frozenset(), roster={}, policy_sha="b" * 64, roster_sha="c" * 64,
+                snapshot_bytes={})
+    assert captured.value.__context__ is None
+    assert captured.value.__cause__ is None
+    assert private_sentinel not in str(captured.value)
+    tb = captured.value.__traceback__
+    while tb:
+        if tb.tb_frame.f_code.co_name in {"_parse_pointer_snapshot", "_read_snapshot_checkpoint"}:
+            assert raw not in tb.tb_frame.f_locals.values()
+        tb = tb.tb_next

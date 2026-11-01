@@ -1,7 +1,9 @@
 """Unwired Windows synthetic pipe candidate. NOT a production transport.
 
 No work happens on import. Explicit calls accept only synthetic Python -c
-programs using this interpreter, or the separately pinned synthetic echo peer.
+programs using this interpreter, the separately pinned synthetic echo peer, or
+the fixed peer entrypoint of THIS file under a caller-pinned plan whose only
+wired backend is synthetic (run_fixed_peer; no query_public_snapshot backend).
 There is no general executable/wrapper adapter, model access, installer or CLI.
 The caller must independently pin/trust this module, interpreter and peer code.
 Self-hashing the child source is consistency, not authentication.
@@ -331,6 +333,84 @@ def _fixed_ready_exchange(k, pipe, expected_pid, expected_created, control, quer
     raise _Refused() from None
 
 
+_MAX_PLAN = 4096
+_MAX_BUNDLE = 16 * 1024 * 1024
+_MAX_RUNTIME_MANIFEST = 1024 * 1024
+_PEER_CODE_LIMIT = 131072
+# Only the synthetic backend is wired. A query_public_snapshot backend needs a
+# verified runtime loader in the child (manifest-pinned code/site/model on
+# sys.path) that does not exist on this path; it is refused, never faked.
+_FIXED_BACKENDS = frozenset({"synthetic-v1"})
+_PLAN_KEYS = frozenset({"schema", "backend", "interpreter_sha256", "peer_code_sha256",
+                        "runtime_manifest_sha256", "bundle_sha256", "bundle_bytes"})
+
+
+def _sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def _hex64(value):
+    _check(type(value) is str and len(value) == 64 and all(char in "0123456789abcdef" for char in value))
+    return value
+
+
+def _canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+
+
+def _fixed_plan(plan_bytes):
+    """Closed canonical plan; its digest is the binding both peers derive. Caller pins its digest."""
+    _check(type(plan_bytes) is bytes and 0 < len(plan_bytes) <= _MAX_PLAN)
+    plan = json.loads(plan_bytes.decode("ascii", "strict"), object_pairs_hook=_unique_pairs,
+                      parse_constant=lambda _: _check(False))
+    _check(type(plan) is dict and set(plan) == _PLAN_KEYS and plan["schema"] == "wd.q4-fixed-plan.v1"
+           and type(plan["backend"]) is str and plan["backend"] in _FIXED_BACKENDS)
+    for name in ("interpreter_sha256", "peer_code_sha256", "runtime_manifest_sha256", "bundle_sha256"):
+        _hex64(plan[name])
+    _check(type(plan["bundle_bytes"]) is int and 0 < plan["bundle_bytes"] <= _MAX_BUNDLE)
+    _check(_canonical(plan) == plan_bytes)
+    return plan
+
+
+def _fixed_exchange(k, pipe, expected_pid, expected_created, control, plan_bytes, bundle_bytes, query, deadline):
+    """Send plan and bundle, then the challenge; the query only after a matching READY.
+
+    The expected binding is the parent-computed plan digest and is never sent to
+    the peer. A matching READY is consistency only, not authentication.
+    """
+    try:
+        control = _fixed_control(control)
+        _check(type(plan_bytes) is bytes and type(bundle_bytes) is bytes and 0 < len(bundle_bytes) <= _MAX_BUNDLE)
+        _check(hmac.compare_digest(_sha(plan_bytes), control["binding_sha256"]))
+        _peer(k, pipe, expected_pid, expected_created, client=True)
+        _frame_write(k, pipe, plan_bytes, deadline)
+        _frame_write(k, pipe, bundle_bytes, deadline)
+        _fixed_ready_exchange(k, pipe, expected_pid, expected_created, control, query, deadline)
+        return
+    except Exception:
+        pass
+    del control, plan_bytes, bundle_bytes, query
+    raise _Refused() from None
+
+
+def _fixed_child_verify(plan_bytes, bundle_bytes, peer_code_sha256):
+    """Child side, before READY: re-derive the plan and re-hash every received byte."""
+    plan = _fixed_plan(plan_bytes)
+    _check(type(peer_code_sha256) is str and hmac.compare_digest(plan["peer_code_sha256"], _hex64(peer_code_sha256)))
+    _check(type(bundle_bytes) is bytes and len(bundle_bytes) == plan["bundle_bytes"]
+           and hmac.compare_digest(_sha(bundle_bytes), plan["bundle_sha256"]))
+    return plan
+
+
+def _fixed_child_answer(plan, plan_bytes, bundle_bytes, query):
+    """Synthetic backend: a closed answer over verified bytes; never echoes the query."""
+    _check(plan["backend"] == "synthetic-v1" and type(query) is bytes and 0 < len(query) <= _MAX_INPUT)
+    return _canonical({"schema": "wd.q4-fixed-synthetic-answer.v1", "status": "SYNTHETIC",
+                       "plan_sha256": _sha(plan_bytes), "bundle_sha256": _sha(bundle_bytes),
+                       "query_sha256": _sha(query), "backend": plan["backend"],
+                       "source_authentication": "UNKNOWN", "runtime": "NOT_VERIFIED"})
+
+
 _BOOTSTRAP = """
 import hashlib,sys
 try:
@@ -344,6 +424,10 @@ try:
 except BaseException:
  sys.exit(2)
 """
+# Same verified-source bootstrap; fixed entrypoint receives the digest it verified.
+_FIXED_BOOTSTRAP = _BOOTSTRAP.replace("scope['_client_main'](*sys.argv[3:])",
+                                      "scope['_fixed_child_main'](sys.argv[2],*sys.argv[3:])")
+_check(_FIXED_BOOTSTRAP != _BOOTSTRAP)
 
 
 def _validate(stdin_bytes, timeout_seconds, max_output_bytes):
@@ -353,14 +437,16 @@ def _validate(stdin_bytes, timeout_seconds, max_output_bytes):
     _check(type(max_output_bytes) is int and 0 < max_output_bytes <= _MAX_OUTPUT)
 
 
-def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes):
-    # No fixed-Q4 process may start until a trusted peer binder exists.
+def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes, fixed=None):
     # Reject non-dicts without invoking arbitrary caller-supplied mapping code.
-    # The READY primitive above is intentionally disconnected from _run.
+    # The READY primitive is reachable only through run_fixed_peer (mode
+    # "fixed"), after every caller pin was checked and both leases are held.
     if not (type(metadata) is dict and all(type(key) is str for key in metadata)
             and type(metadata.get("mode")) is str
-            and metadata["mode"] in ("python-c", "echo")):
-        del metadata, stdin_bytes
+            and metadata["mode"] in ("python-c", "echo", "fixed")
+            and (metadata["mode"] == "fixed") == (fixed is not None)
+            and (fixed is None or (type(fixed) is tuple and len(fixed) == 3))):
+        del metadata, stdin_bytes, fixed
         raise _Refused()
     _validate(stdin_bytes, timeout_seconds, max_output_bytes)
     if not _RUN_LOCK.acquire(blocking=False):
@@ -413,8 +499,11 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes)
         _check(k.ResumeThread(int(thread)) != 0xFFFFFFFF)
         _io(k, pipe, None, 0, deadline, connect=True)
         _peer(k, pipe, pid, child_created, client=True)
-        _frame_write(k, pipe, raw_meta, deadline)
-        _frame_write(k, pipe, stdin_bytes, deadline)
+        if fixed is not None:
+            _fixed_exchange(k, pipe, pid, child_created, fixed[0], fixed[1], fixed[2], stdin_bytes, deadline)
+        else:
+            _frame_write(k, pipe, raw_meta, deadline)
+            _frame_write(k, pipe, stdin_bytes, deadline)
         status = _read(k, pipe, 1, deadline)
         if status != b"\1":
             raise _Refused()
@@ -525,6 +614,81 @@ def _run_bounded_impl(*, executable, arguments, cwd, stdin_bytes, timeout_second
     with attest_file(executable, expected_interpreter_sha256, max_bytes=interpreter_max_bytes, enabled=True):
         return _run(command, cwd, {"mode": "python-c", "code": args[-1]}, stdin_bytes,
                     timeout_seconds, max_output_bytes)
+
+
+def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
+                   expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
+                   timeout_seconds, max_output_bytes):
+    """Fixed peer of THIS file over the bounded pipe; synthetic backend only.
+
+    Every caller pin is checked before spawning: the plan digest, the plan's
+    interpreter and peer-code pins against the caller's interpreter pin and this
+    file's bytes, the runtime manifest bytes, and the snapshot bundle length and
+    digest. Share-denying leases on the interpreter file and on this file are
+    held for the whole run; the bootstrap execs only bytes matching the pin and
+    the child re-hashes the plan and bundle before READY. The query is sent only
+    after a READY whose binding equals the parent-computed plan digest, which is
+    consistency, not authentication: a peer echoing a hash proves nothing.
+    The runtime pin is a byte pin on the caller's manifest only; the runtime
+    tree (stdlib, DLLs, site, model) is NOT verified on this path, and the only
+    wired backend is synthetic, so no query_public_snapshot result is produced.
+    Source authentication and freshness are UNKNOWN. Same limits as run_bounded.
+    """
+    cleanup_type = cleanup_lease = failure = None
+    try:
+        from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown as cleanup_type
+        return _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
+                                    expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
+                                    timeout_seconds, max_output_bytes)
+    except BaseException as exc:
+        if cleanup_type is not None and isinstance(exc, cleanup_type):
+            cleanup_lease = exc.lease
+        elif isinstance(exc, TimeoutError):
+            failure = "timeout"
+        elif isinstance(exc, KeyboardInterrupt):
+            failure = "interrupt"
+        elif isinstance(exc, SystemExit):
+            failure = "exit"
+        else:
+            failure = "refused"
+    del executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes, expected_plan_sha256
+    del bundle_bytes, runtime_manifest_bytes, query_bytes, cwd, timeout_seconds, max_output_bytes
+    if cleanup_lease is not None:
+        raise cleanup_type(cleanup_lease) from None
+    if failure == "timeout":
+        raise TimeoutError("secure_transport_timeout") from None
+    if failure == "interrupt":
+        raise KeyboardInterrupt() from None
+    if failure == "exit":
+        raise SystemExit(1) from None
+    raise _Refused() from None
+
+
+def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
+                         expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
+                         timeout_seconds, max_output_bytes):
+    _validate(query_bytes, timeout_seconds, max_output_bytes)
+    _check(len(query_bytes) > 0)
+    plan = _fixed_plan(plan_bytes)
+    _check(hmac.compare_digest(_sha(plan_bytes), _hex64(expected_plan_sha256)))
+    _check(hmac.compare_digest(plan["interpreter_sha256"], _hex64(expected_interpreter_sha256)))
+    _check(type(executable) is str and
+           os.path.normcase(os.path.abspath(executable)) == os.path.normcase(os.path.abspath(sys.executable)))
+    path = str(Path(__file__).absolute())
+    with open(path, "rb") as stream:
+        raw = stream.read(_PEER_CODE_LIMIT + 1)
+    _check(len(raw) <= _PEER_CODE_LIMIT and hmac.compare_digest(_sha(raw), plan["peer_code_sha256"]))
+    _check(type(runtime_manifest_bytes) is bytes and len(runtime_manifest_bytes) <= _MAX_RUNTIME_MANIFEST
+           and hmac.compare_digest(_sha(runtime_manifest_bytes), plan["runtime_manifest_sha256"]))
+    _check(type(bundle_bytes) is bytes and len(bundle_bytes) == plan["bundle_bytes"]
+           and hmac.compare_digest(_sha(bundle_bytes), plan["bundle_sha256"]))
+    control = {"schema": "wd.q4-fixed-control.v1", "nonce": os.urandom(16).hex(), "binding_sha256": _sha(plan_bytes)}
+    command = [executable, "-I", "-S", "-B", "-c", _FIXED_BOOTSTRAP, path, plan["peer_code_sha256"]]
+    from tools.wd_q4_fixed_parent_attestation import attest_file
+    with attest_file(executable, expected_interpreter_sha256, max_bytes=interpreter_max_bytes, enabled=True):
+        with attest_file(path, plan["peer_code_sha256"], max_bytes=_PEER_CODE_LIMIT, enabled=True):
+            return _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds, max_output_bytes,
+                        fixed=(control, plan_bytes, bundle_bytes))
 
 
 def run_synthetic_echo(*, powershell, bootstrap_path, expected_bootstrap_sha256,
@@ -649,6 +813,51 @@ def _client_main(name, parent_pid, parent_created):
                     struct.pack(">i", code) + b"END!")
     except BaseException:
         # Fixed refusal only; do not serialize the exception, query or stderr.
+        try:
+            _sync_write(k, pipe, b"\0")
+        except BaseException:
+            pass
+        raise _Refused() from None
+    finally:
+        k.CloseHandle(pipe)
+
+
+def _sync_frame(k, pipe, limit):
+    size = struct.unpack(">I", _sync_read(k, pipe, 4))[0]
+    _check(size <= limit)
+    return _sync_read(k, pipe, size) if size else b""
+
+
+def _fixed_child_main(peer_code_sha256, name, parent_pid, parent_created):
+    """Private fixed child endpoint; reached only through the verified-source bootstrap."""
+    k, _ = _api()
+    prefix = r"\\.\pipe\wd-q4-synthetic-"
+    _check(type(name) is str and name.startswith(prefix) and
+           len(name) == len(prefix) + 32 and
+           all(character in "0123456789abcdef" for character in name[len(prefix):]))
+    pid, created = int(parent_pid), int(parent_created)
+    _check(pid > 0 and created > 0)
+    pipe = _handle(k.CreateFileW(name, 0xC0000000, 0, None, 3, 0, None))
+    try:
+        _noninheritable(k, pipe)
+        _peer(k, pipe, pid, created, client=False)
+        plan_bytes = _sync_frame(k, pipe, _MAX_PLAN)
+        bundle_bytes = _sync_frame(k, pipe, _MAX_BUNDLE)
+        plan = _fixed_child_verify(plan_bytes, bundle_bytes, peer_code_sha256)
+        challenge = json.loads(_sync_frame(k, pipe, 4096).decode("ascii", "strict"), object_pairs_hook=_unique_pairs)
+        _check(type(challenge) is dict and set(challenge) == {"schema", "nonce"}
+               and challenge["schema"] == "wd.q4-fixed-challenge.v1" and type(challenge["nonce"]) is str
+               and len(challenge["nonce"]) == 32 and all(c in "0123456789abcdef" for c in challenge["nonce"]))
+        # Derived from the verified plan bytes; the parent never sends its expected digest.
+        ready = _canonical({"schema": "wd.q4-fixed-ready.v1", "status": "READY", "nonce": challenge["nonce"],
+                            "binding_sha256": _sha(plan_bytes)})
+        _sync_write(k, pipe, struct.pack(">I", len(ready)) + ready)
+        query = _sync_frame(k, pipe, _MAX_INPUT)
+        raw = _fixed_child_answer(plan, plan_bytes, bundle_bytes, query)
+        _check(len(raw) <= _MAX_OUTPUT)
+        _sync_write(k, pipe, b"\1" + struct.pack(">I", len(raw)) + raw + struct.pack(">i", 0) + b"END!")
+    except BaseException:
+        # Fixed refusal only; never serialize the exception, plan, bundle or query.
         try:
             _sync_write(k, pipe, b"\0")
         except BaseException:

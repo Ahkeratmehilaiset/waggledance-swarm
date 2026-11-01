@@ -134,14 +134,33 @@ def read_descriptor(path, expected_sha256):
     try:
         with Path(path).open("rb") as descriptor_file:
             raw = descriptor_file.read(DESCRIPTOR_BUDGET + 1)
-        if len(raw) > DESCRIPTOR_BUDGET:
-            raise PrivateReadRefused("descriptor_over_budget")
-        if hashlib.sha256(raw).hexdigest() != expected_sha256:
-            raise PrivateReadRefused("descriptor_pin_mismatch")
-        descriptor = json.loads(raw.decode("utf-8"))
-    except PrivateReadRefused:
-        raise
     except (OSError, ValueError, RecursionError):
+        raise PrivateReadRefused("descriptor_unreadable") from None
+    return read_descriptor_bytes(raw, expected_sha256)
+
+
+def read_descriptor_bytes(raw, expected_sha256):
+    """Parse caller-pinned immutable bytes; the caller must authenticate the pin.
+
+    This verifies descriptor shape only; it does not authenticate a producer or
+    verify the memory, cell data, runtime or model named by the descriptor.
+    """
+    if not _hex64(expected_sha256):
+        raise PrivateReadRefused("descriptor_pin_invalid")
+    if type(raw) is not bytes:
+        raise PrivateReadRefused("descriptor_unreadable")
+    if len(raw) > DESCRIPTOR_BUDGET:
+        raise PrivateReadRefused("descriptor_over_budget")
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise PrivateReadRefused("descriptor_pin_mismatch")
+    parsed = False
+    try:
+        descriptor = json.loads(raw.decode("utf-8"))
+        parsed = True
+    except (ValueError, RecursionError):
+        pass
+    if not parsed:
+        del raw
         raise PrivateReadRefused("descriptor_unreadable") from None
     if isinstance(descriptor, dict) and descriptor.get("scope") != SHARED_SCOPE:
         raise PrivateReadRefused("descriptor_scope_mismatch")

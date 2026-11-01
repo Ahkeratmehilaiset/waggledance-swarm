@@ -86,6 +86,7 @@
     "tools/wd_q4_bound_lane_transport.py",
     "tools/wd_q4_lane_session_client.py",
     "tools/wd_q4_lane_session_cli.py",
+    "tools/wd_q4_answer_validate.py",
     "tools/wd_q4_session_outer_entry.py",
     "tools/wd_q4_session_outer_synthetic.py",
     "tools/wd_q4_session_tuple.py",

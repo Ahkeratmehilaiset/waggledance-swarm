@@ -49,11 +49,16 @@ class FaissCollection:
         persist_dir: Optional[str] = None,
         *,
         verified_meta: object = _NO_VERIFIED_META,
+        verified_index_bytes: object = _NO_VERIFIED_META,
     ):
-        # This parameter carries caller-verified metadata; it does not itself
-        # authenticate a publisher or verify the native FAISS index.
+        # These parameters carry caller-verified snapshots; neither authenticates
+        # a publisher or bounds native deserializer memory consumption.
         if verified_meta is not _NO_VERIFIED_META and type(verified_meta) is not dict:
             raise ValueError("verified_metadata_invalid")
+        if (verified_index_bytes is not _NO_VERIFIED_META and
+                (type(verified_index_bytes) is not bytes or not verified_index_bytes
+                 or verified_meta is _NO_VERIFIED_META)):
+            raise ValueError("verified_index_invalid")
         self.name = name
         self.dim = dim
         self._dir = Path(persist_dir) if persist_dir else (_DEFAULT_FAISS_DIR / name)
@@ -64,7 +69,7 @@ class FaissCollection:
         self._metadata: List[Dict[str, Any]] = []
 
         # Try to restore from disk
-        self._try_load(verified_meta=verified_meta)
+        self._try_load(verified_meta=verified_meta, verified_index_bytes=verified_index_bytes)
 
     # ------------------------------------------------------------------
     # Write
@@ -168,17 +173,20 @@ class FaissCollection:
             json.dump(meta, f, ensure_ascii=False, indent=2)
         log.info("FaissCollection '%s' saved (%d vectors)", self.name, self.count)
 
-    def _try_load(self, *, verified_meta=_NO_VERIFIED_META):
+    def _try_load(self, *, verified_meta=_NO_VERIFIED_META, verified_index_bytes=_NO_VERIFIED_META):
         index_path = self._dir / "index.faiss"
         meta_path = self._dir / "meta.json"
-        if not index_path.exists():
+        if verified_index_bytes is _NO_VERIFIED_META and not index_path.exists():
             if verified_meta is not _NO_VERIFIED_META:
                 raise ValueError("verified_index_unavailable") from None
             return
         if verified_meta is _NO_VERIFIED_META and not meta_path.exists():
             return
         try:
-            self._index = faiss.read_index(str(index_path))
+            if verified_index_bytes is _NO_VERIFIED_META:
+                self._index = faiss.read_index(str(index_path))
+            else:
+                self._index = faiss.deserialize_index(np.frombuffer(verified_index_bytes, dtype=np.uint8))
             if verified_meta is _NO_VERIFIED_META:
                 with open(meta_path, encoding="utf-8") as f:
                     data = json.load(f)

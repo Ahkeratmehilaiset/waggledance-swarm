@@ -14,6 +14,9 @@ PROVENANCE_KEYS = ("record_id", "kind", "time_utc", "cell_id", "provenance")
 MAX_POINTER_BYTES = 64 * 1024
 MAX_RECEIPT_BYTES = 1024 * 1024
 MAX_LOG_BYTES = 16 * 1024 * 1024
+# New Q4-reader availability limit: legacy indices above 256 MiB are refused.
+# It bounds serialized input only, not FAISS native-deserializer allocations.
+MAX_Q4_INDEX_BYTES = 256 * 1024 * 1024
 
 
 class CellError(Exception):
@@ -167,6 +170,10 @@ def verify_generation(gen_dir, cell_id, receipt_sha):
                 raise CellError(f"{name}_unreadable") from None
             finally:
                 del raw
+        elif name == "index":
+            # The bounded snapshot below checks the exact bytes passed to FAISS.
+            # Do not stream the same file without a size bound first.
+            continue
         elif file_sha256(files[name]) != content["files"][name]:
             raise CellError(f"{name}_checksum")
     if meta_dim != dim:
@@ -186,8 +193,17 @@ def verify_generation(gen_dir, cell_id, receipt_sha):
         if not isinstance(row["time_utc"], str) or row["time_utc"] >= content["cutoff_utc"]:
             raise CellError("provenance_after_cutoff")
     try:
+        with files["index"].open("rb") as index_file:
+            index_bytes = index_file.read(MAX_Q4_INDEX_BYTES + 1)
+    except OSError:
+        raise CellError("index_unreadable") from None
+    if len(index_bytes) > MAX_Q4_INDEX_BYTES:
+        raise CellError("index_over_budget")
+    if sha256(index_bytes) != content["files"]["index"]:
+        raise CellError("index_checksum")
+    try:
         collection = FaissCollection(f"cell_{cell_id}", dim=dim, persist_dir=str(files["index"].parent),
-                                     verified_meta=meta)
+                                     verified_meta=meta, verified_index_bytes=index_bytes)
     except ValueError:
         raise CellError("index_unreadable") from None
     index = collection._index

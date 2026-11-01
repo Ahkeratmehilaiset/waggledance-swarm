@@ -50,7 +50,8 @@ def test_cell_consumer_uses_verified_data_bytes_after_path_swap(tmp_path, monkey
             return vectors[index]
 
     class FakeCollection:
-        def __init__(self, name, dim, persist_dir, *, verified_meta):
+        def __init__(self, name, dim, persist_dir, *, verified_meta, verified_index_bytes):
+            assert verified_index_bytes == b"fake-index"
             parsed = verified_meta
             self._index, self.count = FakeIndex(), 1
             self._doc_ids, self._texts, self._metadata = parsed["doc_ids"], parsed["texts"], parsed["metadata"]
@@ -60,6 +61,7 @@ def test_cell_consumer_uses_verified_data_bytes_after_path_swap(tmp_path, monkey
     monkeypatch.setattr(store.faiss, "METRIC_INNER_PRODUCT", 0, raising=False)
     if use_real_collection:
         monkeypatch.setattr(store.faiss, "read_index", lambda path: FakeIndex(), raising=False)
+        monkeypatch.setattr(store.faiss, "deserialize_index", lambda data: FakeIndex(), raising=False)
     else:
         monkeypatch.setattr(cell, "FaissCollection", FakeCollection)
     original_read = Path.read_bytes
@@ -150,6 +152,7 @@ def _synthetic_vectors_case(tmp_path, monkeypatch, *, include_vectors=True, empt
     monkeypatch.setattr(store.faiss, "IndexFlatIP", FakeIndex, raising=False)
     monkeypatch.setattr(store.faiss, "METRIC_INNER_PRODUCT", 0, raising=False)
     monkeypatch.setattr(store.faiss, "read_index", lambda path: FakeIndex(), raising=False)
+    monkeypatch.setattr(store.faiss, "deserialize_index", lambda data: FakeIndex(), raising=False)
     return generation, files, cell.sha256(receipt)
 
 
@@ -228,6 +231,7 @@ def test_index_requires_exact_flat_inner_product_before_reconstruction(tmp_path,
     monkeypatch.setattr(store.faiss, "IndexFlatIP", IndexFlatIP, raising=False)
     monkeypatch.setattr(store.faiss, "METRIC_INNER_PRODUCT", 0, raising=False)
     monkeypatch.setattr(store.faiss, "read_index", lambda path: candidate, raising=False)
+    monkeypatch.setattr(store.faiss, "deserialize_index", lambda data: candidate, raising=False)
     with pytest.raises(cell.CellError, match="^index_semantics_invalid$"):
         cell.verify_generation(generation, "learning", receipt_sha)
     assert reconstructed == []
@@ -253,5 +257,160 @@ def test_wrong_index_semantics_are_quarantined(tmp_path, monkeypatch):
         metric_type = 1
 
     monkeypatch.setattr(store.faiss, "read_index", lambda path: FakeL2(), raising=False)
+    monkeypatch.setattr(store.faiss, "deserialize_index", lambda data: FakeL2(), raising=False)
     view = cell.load(cell_dir, "learning")
     assert view.status == "QUARANTINED" and view.reason == "index_semantics_invalid"
+
+
+def test_index_is_never_streamed_without_the_snapshot_budget(tmp_path, monkeypatch):
+    import builtins
+
+    generation, files, receipt_sha = _synthetic_vectors_case(tmp_path, monkeypatch)
+    original_open = builtins.open
+    streamed = []
+
+    def spy_open(path, *args, **kwargs):
+        if path == files["index"]:
+            streamed.append(path)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", spy_open)
+    assert cell.verify_generation(generation, "learning", receipt_sha)[3] is True
+    assert streamed == []
+
+
+def test_index_swap_before_snapshot_is_refused_before_deserialize(tmp_path, monkeypatch):
+    import core.faiss_store as store
+
+    generation, files, receipt_sha = _synthetic_vectors_case(tmp_path, monkeypatch)
+    original_open = Path.open
+    calls = []
+
+    def open_after_swap(path, *args, **kwargs):
+        if path == files["index"] and args and args[0] == "rb":
+            path.write_bytes(b"fake-indeX")
+            calls.append("swapped")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_after_swap)
+    monkeypatch.setattr(store.faiss, "deserialize_index", lambda value: calls.append("deserialize"), raising=False)
+    with pytest.raises(cell.CellError, match="^index_checksum$"):
+        cell.verify_generation(generation, "learning", receipt_sha)
+    assert calls == ["swapped"]
+
+
+def test_index_swap_after_snapshot_deserializes_verified_bytes_and_meta(tmp_path, monkeypatch):
+    import core.faiss_store as store
+
+    generation, files, receipt_sha = _synthetic_vectors_case(tmp_path, monkeypatch)
+    original_open = Path.open
+    calls = []
+    index_type = store.faiss.IndexFlatIP
+    original_collection = cell.FaissCollection
+
+    class SpyCollection(original_collection):
+        def __init__(self, *args, **kwargs):
+            assert kwargs["verified_meta"]["doc_ids"] == ["synthetic-id"]
+            assert kwargs["verified_index_bytes"] == b"fake-index"
+            calls.append("meta")
+            super().__init__(*args, **kwargs)
+
+    class SwapAfterRead:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def read(self, size):
+            raw = self.stream.read(size)
+            files["index"].write_bytes(b"fake-indeX")
+            calls.append("swapped")
+            return raw
+
+    def open_snapshot(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        if path == files["index"] and args and args[0] == "rb":
+            return SwapAfterRead(stream)
+        return stream
+
+    def deserialize(array):
+        assert array.dtype == np.uint8 and array.tobytes() == b"fake-index"
+        calls.append("deserialize")
+        return index_type()
+
+    monkeypatch.setattr(Path, "open", open_snapshot)
+    monkeypatch.setattr(cell, "FaissCollection", SpyCollection)
+    monkeypatch.setattr(store.faiss, "read_index", lambda *_: pytest.fail("index path reopened"), raising=False)
+    monkeypatch.setattr(store.faiss, "deserialize_index", deserialize, raising=False)
+    _, _, _, rebuild_possible = cell.verify_generation(generation, "learning", receipt_sha)
+    assert rebuild_possible is True and calls == ["swapped", "meta", "deserialize"]
+
+
+@pytest.mark.parametrize("limit,accepted", [(0, False), (9, False), (10, True)])
+def test_index_snapshot_limit_is_bounded_and_exact(tmp_path, monkeypatch, limit, accepted):
+    generation, _, receipt_sha = _synthetic_vectors_case(tmp_path, monkeypatch)
+    monkeypatch.setattr(cell, "MAX_Q4_INDEX_BYTES", limit)
+    original_open = Path.open
+    reads = []
+
+    class ReadSizeSpy:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def read(self, size):
+            reads.append(size)
+            return self.stream.read(size)
+
+    def open_spy(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        if path.name == "index.faiss" and args and args[0] == "rb":
+            return ReadSizeSpy(stream)
+        return stream
+
+    monkeypatch.setattr(Path, "open", open_spy)
+    if accepted:
+        assert cell.verify_generation(generation, "learning", receipt_sha)[3] is True
+    else:
+        with pytest.raises(cell.CellError, match="^index_over_budget$"):
+            cell.verify_generation(generation, "learning", receipt_sha)
+    assert reads == [limit + 1]
+
+
+def test_missing_index_deserializer_refuses_without_path_fallback(tmp_path, monkeypatch):
+    import core.faiss_store as store
+
+    generation, _, receipt_sha = _synthetic_vectors_case(tmp_path, monkeypatch)
+    monkeypatch.delattr(store.faiss, "deserialize_index")
+    monkeypatch.setattr(store.faiss, "read_index", lambda *_: pytest.fail("index path reopened"), raising=False)
+    with pytest.raises(cell.CellError, match="^index_unreadable$"):
+        cell.verify_generation(generation, "learning", receipt_sha)
+
+
+def test_missing_index_at_snapshot_quarantines(tmp_path, monkeypatch):
+    cell_dir = tmp_path / "learning"
+    cell_dir.mkdir()
+    _, files, receipt_sha = _synthetic_vectors_case(cell_dir, monkeypatch, generation_name="gen-000001")
+    (cell_dir / "current.json").write_bytes(_encoded({"generation": 1, "seq": 1, "receipt_sha256": receipt_sha}))
+    monkeypatch.setattr(cell, "read_log", lambda _: [{"generation": 1, "seq": 1, "receipt_sha256": receipt_sha}])
+    original_open = Path.open
+
+    def missing_snapshot(path, *args, **kwargs):
+        if path == files["index"] and args and args[0] == "rb":
+            raise FileNotFoundError("synthetic private detail")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", missing_snapshot)
+    view = cell.load(cell_dir, "learning")
+    assert view.status == "QUARANTINED" and view.reason == "index_unreadable"

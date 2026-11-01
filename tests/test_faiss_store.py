@@ -83,6 +83,42 @@ def test_missing_index_refuses_in_strict_mode_but_legacy_stays_empty(tmp_path, m
     with pytest.raises(ValueError, match="^verified_index_unavailable$"):
         FaissCollection("synthetic", dim=1, persist_dir=str(tmp_path), verified_meta=verified)
 
+
+def test_verified_index_bytes_never_open_index_path(tmp_path, monkeypatch):
+    import core.faiss_store as store
+    fake_index = type("FakeIndex", (), {"ntotal": 0, "d": 1})()
+    calls = []
+    monkeypatch.setattr(store.faiss, "IndexFlatIP", lambda dim: fake_index, raising=False)
+    monkeypatch.setattr(store.faiss, "read_index", lambda *args: pytest.fail("path reopened"), raising=False)
+
+    def deserialize(data):
+        assert data.dtype == np.uint8
+        calls.append(data.tobytes())
+        return fake_index
+
+    monkeypatch.setattr(store.faiss, "deserialize_index", deserialize, raising=False)
+    meta = {"dim": 1, "doc_ids": [], "texts": [], "metadata": []}
+    result = FaissCollection("synthetic", dim=1, persist_dir=str(tmp_path), verified_meta=meta,
+                             verified_index_bytes=b"verified-index")
+    assert result.count == 0 and calls == [b"verified-index"]
+
+
+@pytest.mark.parametrize("invalid", [None, "bytes", b"", bytearray(b"fake")])
+def test_verified_index_bytes_invalid_has_no_path_fallback(tmp_path, monkeypatch, invalid):
+    import core.faiss_store as store
+    monkeypatch.setattr(store.faiss, "read_index", lambda *args: pytest.fail("index path reopened"), raising=False)
+    meta = {"dim": 1, "doc_ids": [], "texts": [], "metadata": []}
+    with pytest.raises(ValueError, match="^verified_index_invalid$"):
+        FaissCollection("synthetic", dim=1, persist_dir=str(tmp_path), verified_meta=meta,
+                        verified_index_bytes=invalid)
+
+
+def test_verified_index_requires_verified_metadata(tmp_path, monkeypatch):
+    import core.faiss_store as store
+    monkeypatch.setattr(store.faiss, "read_index", lambda *args: pytest.fail("index path reopened"), raising=False)
+    with pytest.raises(ValueError, match="^verified_index_invalid$"):
+        FaissCollection("synthetic", dim=1, persist_dir=str(tmp_path), verified_index_bytes=b"fake")
+
 PASS = []
 FAIL = []
 

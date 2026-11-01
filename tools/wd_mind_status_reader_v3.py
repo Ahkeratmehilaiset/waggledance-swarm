@@ -4,6 +4,9 @@ The caller independently authenticates all expected hashes and their pairing,
 including the approval from a trusted config; a caller choosing all pins proves
 nothing about provenance. The caller approves task-label disclosure,
 and protects paths against hostile replacement / TOCTOU for the whole call.
+On Windows, rejecting UNC/device syntax does not prove a drive is local or
+prevent a junction from redirecting an initial filesystem operation; the caller
+must establish and protect a trusted local root independently.
 This module does not authenticate any lane, publisher or source and does not
 prove source freshness or coverage. Hashes verify bytes, not provenance. The
 caller also owns the body/descriptor pairing and safe handling of traceback
@@ -24,6 +27,7 @@ MAX_BODY_BYTES = 1024 * 1024
 MAX_DESCRIPTOR_BYTES = 65536
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_WIN_DEVICE = re.compile(r"(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])(?:[. ]|$)", re.I)
 
 
 class ReaderRefused(ValueError):
@@ -40,6 +44,12 @@ def _read(path, expected, limit):
     path = Path(path)
     if not path.is_absolute() or ".." in path.parts:
         raise ValueError()
+    if os.name == "nt":
+        if (re.fullmatch(r"[A-Za-z]:", path.drive) is None
+                or any(part.endswith((".", " ")) or _WIN_DEVICE.match(part)
+                       or any(ord(char) < 32 or char in '<>:"|?*' for char in part)
+                       for part in path.parts[1:])):
+            raise ValueError()
     for item in (path, *path.parents):
         info = os.lstat(item)
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & _REPARSE:

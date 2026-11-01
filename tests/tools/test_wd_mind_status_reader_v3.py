@@ -2,6 +2,7 @@
 import hashlib
 import importlib
 import json
+import os
 from datetime import datetime, timezone
 
 import pytest
@@ -39,6 +40,31 @@ def reader_args(tmp_path):
 
 def module():
     return importlib.import_module("tools.wd_mind_status_reader_v3")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows remote and device path boundary")
+@pytest.mark.parametrize("path", [
+    r"\\server\share\data.json",
+    r"\\?\C:\data\file.json",
+    r"\\.\pipe\synthetic",
+    r"C:\data\file.json:alternate",
+    r"C:\data\CON",
+    r"C:\data\NUL\file.json",
+    r"C:\data\COM¹.txt",
+    r"C:\data\LPT²\file.json",
+    "C:\\data\\trailing.\\file.json",
+    "C:\\data\\bad?name.json",
+    "C:\\data\\bad\x01name.json",
+])
+def test_remote_and_device_paths_refused_before_filesystem_access(monkeypatch, path):
+    calls = []
+    def unexpected_io(*args, **kwargs):
+        calls.append(args)
+        raise OSError("unexpected I/O")
+    monkeypatch.setattr(module().os, "lstat", unexpected_io)
+    with pytest.raises(ValueError):
+        module()._read(path, "0" * 64, 1024)
+    assert calls == []
 
 
 def test_default_off_does_not_touch_poison():

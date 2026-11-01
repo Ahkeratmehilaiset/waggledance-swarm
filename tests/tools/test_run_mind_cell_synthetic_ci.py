@@ -348,7 +348,9 @@ def test_runner_propagates_pytest_failure_and_preserves_environment(monkeypatch)
                            str(ROOT / PREFLIGHT_PATH),
                            str(ROOT / VERIFIED_PATH), str(ROOT / Q4_DESCRIPTOR_PATH),
                            str(ROOT / ACTIVE_BINDING_PATH), str(ROOT / PROJECTION_BINDING_PATH),
-                           str(ROOT / Q4_SNAPSHOT_PATH), str(ROOT / PUBLIC_QUERY_PATH), str(ROOT / CATCHUP_PATH), "-q"]
+                           str(ROOT / Q4_SNAPSHOT_PATH), str(ROOT / PUBLIC_QUERY_PATH), str(ROOT / CATCHUP_PATH),
+                           str(ROOT / "sandbox/mind/step2/test_oversized_public_events.py"),
+                           str(ROOT / "sandbox/mind/step2/test_public_catchup_publication_gap_new.py"), "-q"]
 
 
 def test_required_d15_hook_cannot_be_silently_omitted(monkeypatch):

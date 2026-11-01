@@ -8,15 +8,24 @@ trees (``site`` and ``model``). It returns the ``pins`` map that
 ``tools.build_q4_runtime_candidate.build_candidate_from_sources`` consumes,
 keyed ``assets/code/...``, ``site/...`` and ``model/...``, with exact size and
 SHA256 values. The code set is the static import closure of caller-named roots
-plus caller-listed extra paths. Imports made through dynamic loaders
-(importlib, exec, runpy, file specs) cannot be followed statically; the files
-using them are reported and the caller must list what they load. The pins are
-the committed blob bytes, so the builder's assets source must hold those exact
-bytes (an autocrlf checkout will not match).
+plus caller-listed extra paths, labelled unverified. Imports made through
+dynamic loaders (importlib, exec, runpy, file specs) cannot be followed
+statically. A conservative AST heuristic flags files that import importlib,
+runpy or builtins under any alias, or name a known loader, eval, exec,
+compile or __builtins__, also through assignment aliases or getattr-style
+string names; the caller must list what they load. This heuristic
+cannot detect all dynamic execution, so no result claims a complete dynamic
+or native closure. Methods merely named eval, exec or compile on other
+objects are not flagged. The pins are the committed blob bytes, so the
+builder's assets source must hold those exact bytes (an autocrlf checkout
+will not match).
 
 The git executable is caller-trusted, not hash-pinned here; the GIT_*
 environment, global/system config and replace objects are excluded and blob
-ids are recomputed from the bytes read. Site and model trees reuse the
+ids are recomputed from the bytes read. Git output is capped while it is read
+(stdout per call, stderr), an excess or the timeout ends the process and
+refuses, and each blob's listed size is checked before its bytes are read.
+Site and model trees reuse the
 runtime verifier's own walk and record policy: reparse points, alternate data
 streams, hard-link aliases, short-name or otherwise invalid segments, case
 collisions and its file/byte caps refuse. The model directory must match the
@@ -35,6 +44,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
 
 from sandbox.mind.step2 import runtime_builder, runtime_manifest
 
@@ -43,11 +53,18 @@ _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _ALIAS = re.compile(r"~[0-9]+(?:\.[^.]*)?\Z")
 _LOCAL = frozenset({"tools", "sandbox", "core", "waggledance"})
-_DYNAMIC = frozenset({"import_module", "__import__", "exec", "run_path", "run_module", "spec_from_file_location"})
+_DYNAMIC_MODULES = frozenset({"importlib", "runpy", "builtins"})
+_DYNAMIC_NAMES = frozenset({"__import__", "exec", "eval", "compile", "__builtins__"})
+_DYNAMIC_ATTRS = frozenset({"import_module", "__import__", "run_path", "run_module", "spec_from_file_location",
+                            "spec_from_loader", "module_from_spec", "exec_module", "load_module", "__builtins__"})
+_DYNAMIC_STRINGS = _DYNAMIC_MODULES | _DYNAMIC_NAMES | _DYNAMIC_ATTRS
+_MAX_SMALL = 4096
 _MAX_LISTING = 64 * 1024 * 1024
+_MAX_STDERR = 64 * 1024
+_CHUNK = 65536
 _TRUST = {"site_provenance": "UNKNOWN", "dependency_closure": "NOT_VERIFIED",
-          "dynamic_imports": "CALLER_LISTED", "git_executable": "CALLER_TRUSTED",
-          "code_closure": "STATIC_CANDIDATE", "native_dll_closure": "NOT_VERIFIED"}
+          "dynamic_imports": "HEURISTIC_FLAGS_CALLER_LISTED", "git_executable": "CALLER_TRUSTED",
+          "code_closure": "STATIC_UNVERIFIED", "native_dll_closure": "NOT_VERIFIED"}
 
 
 class RuntimePlanRefused(ValueError):
@@ -58,25 +75,70 @@ def _fail(token):
     raise RuntimePlanRefused(token)
 
 
-def _git(git_executable, repository, args, timeout):
+def _drain(stream, limit, sink, flags, process):
+    """Read one pipe in chunks; past ``limit`` bytes, flag it and end the process instead of reading on."""
+    total = 0
+    try:
+        while True:
+            chunk = stream.read(_CHUNK)
+            if not chunk:
+                return
+            total += len(chunk)
+            if total > limit:
+                flags.add("too_large")
+                break
+            sink.append(chunk)
+    except (OSError, ValueError):
+        flags.add("error")
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
+def _git(git_executable, repository, args, timeout, limit):
+    """Return git stdout (at most ``limit`` bytes) or None on a non-zero exit; excess or timeout refuses."""
     env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
     env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull, "GIT_TERMINAL_PROMPT": "0"})
     try:
-        result = subprocess.run([git_executable, "--no-replace-objects", "-C", repository, *args], env=env,
-                                stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, shell=False)
-    except (OSError, subprocess.SubprocessError):
+        process = subprocess.Popen([git_executable, "--no-replace-objects", "-C", repository, *args], env=env,
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   bufsize=0, shell=False)
+    except (OSError, ValueError, subprocess.SubprocessError):
         _fail("git_unavailable")
-    if result.returncode != 0 or len(result.stdout) > _MAX_LISTING:
+    out, flags = [], set()
+    readers = [threading.Thread(target=_drain, args=(process.stdout, limit, out, flags, process), daemon=True),
+               threading.Thread(target=_drain, args=(process.stderr, _MAX_STDERR, [], flags, process), daemon=True)]
+    for reader in readers:
+        reader.start()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        flags.add("timeout")
+        process.kill()
+        process.wait()
+    for reader in readers:
+        reader.join(timeout)
+    if "timeout" in flags or any(reader.is_alive() for reader in readers):
+        _fail("git_timeout")
+    process.stdout.close()
+    process.stderr.close()
+    if "too_large" in flags:
+        _fail("git_output_too_large")
+    if "error" in flags:
+        _fail("git_unavailable")
+    if process.returncode != 0:
         return None
-    return result.stdout
+    return b"".join(out)
 
 
 def _listing(git_executable, repository, commit, timeout):
     resolved = _git(git_executable, repository, ["rev-parse", "--verify", "--end-of-options", commit + "^{commit}"],
-                    timeout)
+                    timeout, _MAX_SMALL)
     if resolved is None or resolved.decode("ascii", "replace").strip() != commit:
         _fail("commit_invalid")
-    raw = _git(git_executable, repository, ["ls-tree", "-r", "-z", "--full-tree", commit], timeout)
+    raw = _git(git_executable, repository, ["ls-tree", "-r", "-z", "-l", "--full-tree", commit], timeout,
+               _MAX_LISTING)
     if raw is None:
         _fail("commit_invalid")
     entries = {}
@@ -84,14 +146,16 @@ def _listing(git_executable, repository, commit, timeout):
         if not record:
             continue
         meta, _, name = record.partition(b"\t")
-        mode, kind, oid = meta.decode("ascii").split(" ")
-        entries[name.decode("utf-8", "strict")] = (mode, kind, oid)
+        mode, kind, oid, size = meta.decode("ascii").split()
+        entries[name.decode("utf-8", "strict")] = (mode, kind, oid, int(size) if size.isdigit() else None)
     return entries
 
 
-def _blob(git_executable, repository, oid, timeout):
-    data = _git(git_executable, repository, ["cat-file", "blob", oid], timeout)
-    if data is None or len(data) > runtime_manifest.MAX_FILE_BYTES:
+def _blob(git_executable, repository, oid, size, timeout):
+    if size is None or size > runtime_manifest.MAX_FILE_BYTES:
+        _fail("code_entry_invalid")  # refused from the listed size, before any byte is read
+    data = _git(git_executable, repository, ["cat-file", "blob", oid], timeout, size)
+    if data is None or len(data) != size:
         _fail("code_entry_invalid")
     header = b"blob %d\0" % len(data)
     recomputed = (hashlib.sha1(header + data) if len(oid) == 40 else hashlib.sha256(header + data)).hexdigest()
@@ -141,9 +205,16 @@ def _imports(tree, path, closure):
             _fail("code_closure_incomplete")
 
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
+        if isinstance(node, ast.Name):
+            dynamic = dynamic or node.id in _DYNAMIC_NAMES
+        elif isinstance(node, ast.Attribute):
+            dynamic = dynamic or node.attr in _DYNAMIC_ATTRS
+        elif isinstance(node, ast.Constant):
+            dynamic = dynamic or (type(node.value) is str and node.value in _DYNAMIC_STRINGS)
+        elif isinstance(node, ast.Import):
             for alias in node.names:
                 top = alias.name.split(".")[0]
+                dynamic = dynamic or top in _DYNAMIC_MODULES
                 if top in _LOCAL:
                     need(alias.name)
                 elif top not in sys.stdlib_module_names:
@@ -158,6 +229,8 @@ def _imports(tree, path, closure):
             else:
                 module = node.module or ""
             top = module.split(".")[0]
+            dynamic = (dynamic or (not node.level and top in _DYNAMIC_MODULES)
+                       or any(alias.name in _DYNAMIC_STRINGS for alias in node.names))
             if top not in _LOCAL:
                 if top and top not in sys.stdlib_module_names:
                     third.add(top)
@@ -170,9 +243,6 @@ def _imports(tree, path, closure):
                     need(child)
                 elif closure.module(module) is None and not closure.namespace(child):
                     _fail("code_closure_incomplete")  # a namespace package has no attributes to import
-        elif isinstance(node, ast.Call):
-            name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-            dynamic = dynamic or name in _DYNAMIC
     return found, third, dynamic
 
 
@@ -194,10 +264,10 @@ def _code_plan(git_executable, repository, commit, roots, extras, timeout):
         path = pending.pop()
         if path in data:
             continue
-        mode, kind, oid = entries[path]
+        mode, kind, oid, size = entries[path]
         if kind != "blob" or mode not in ("100644", "100755"):
             _fail("code_entry_invalid")
-        data[path] = _blob(git_executable, repository, oid, timeout)
+        data[path] = _blob(git_executable, repository, oid, size, timeout)
         if path.endswith(".py"):
             try:
                 tree = ast.parse(data[path].decode("utf-8", "strict"), filename=path)

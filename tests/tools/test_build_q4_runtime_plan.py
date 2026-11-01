@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+import time
 
 import pytest
 
@@ -82,6 +84,7 @@ def refused(kwargs, token):
 
 def test_default_off_reads_nothing(monkeypatch):
     monkeypatch.setattr(plan_mod.subprocess, "run", lambda *a, **k: pytest.fail("git ran while disabled"))
+    monkeypatch.setattr(plan_mod.subprocess, "Popen", lambda *a, **k: pytest.fail("git ran while disabled"))
     assert plan_mod.plan_runtime_inputs(git_executable="unused", repository="unused", commit="unused",
                                         code_roots=[], site_root="unused", model_root="unused",
                                         expected_model_files=[], expected_weights_sha256="unused",
@@ -106,8 +109,8 @@ def test_plan_pins_the_static_closure_from_committed_blobs_and_hashes_site_and_m
     assert plan["file_count"] == len(pins) and plan["total_bytes"] == sum(p["size"] for p in pins.values())
     assert plan["weights_sha256"] == sha(WEIGHTS)
     assert plan["trust"] == {"site_provenance": "UNKNOWN", "dependency_closure": "NOT_VERIFIED",
-                             "dynamic_imports": "CALLER_LISTED", "git_executable": "CALLER_TRUSTED",
-                             "code_closure": "STATIC_CANDIDATE", "native_dll_closure": "NOT_VERIFIED"}
+                             "dynamic_imports": "HEURISTIC_FLAGS_CALLER_LISTED", "git_executable": "CALLER_TRUSTED",
+                             "code_closure": "STATIC_UNVERIFIED", "native_dll_closure": "NOT_VERIFIED"}
     records = [{"path": key, **value} for key, value in plan["pins"].items()]
     files, _ = runtime_manifest._validate_records(records)  # the candidate builder's own record policy
     assert set(files) == set(pins)
@@ -334,3 +337,88 @@ def test_module_documents_limits_without_production_claims():
     doc = plan_mod.__doc__
     assert "default-off" in doc and "not an installer" in doc and "dynamic" in doc
     assert "git executable" in doc and "dependency closure" in doc
+    assert "cannot detect all dynamic execution" in doc and "while it is read" in doc
+
+
+def single_module(tmp_path, source):
+    repo, commit = make_repo(tmp_path, {"tools/__init__.py": b"", "tools/m.py": source})
+    site = make_tree(tmp_path / "site", {"x.py": b""})
+    model = make_tree(tmp_path / "model", {"model.safetensors": WEIGHTS})
+    return dict(git_executable=GIT, repository=str(repo), commit=commit, code_roots=["tools/m.py"],
+                site_root=str(site), model_root=str(model), expected_model_files=["model.safetensors"],
+                expected_weights_sha256=sha(WEIGHTS), generation=GENERATION, revision=REVISION,
+                max_bytes=1024 * 1024, enabled=True)
+
+
+@pytest.mark.parametrize("source", [
+    b"from importlib import import_module as load\nload('tools.d')\n",
+    b"import importlib as il\n",
+    b"import importlib.util\n",
+    b"from runpy import run_path as r\n",
+    b"from importlib import machinery as m\n",
+    b"import runpy\n",
+    b"import builtins as b\n",
+    b"loader = __import__\nloader('json')\n",
+    b"import json\nhook = json.import_module\n",
+    b"import sys\nfn = getattr(sys.modules['builtins'], '__import__')\n",
+    b"import sys\nmod = sys.modules['importlib']\n",
+    b"run = eval\n",
+    b"code = compile('1', 'x', 'single')\n",
+    b"import json\nname = 'exec'\nfn = getattr(json, name)\n",
+    b"table = __builtins__\n",
+])
+def test_aliased_or_indirect_dynamic_loading_is_conservatively_flagged(tmp_path, source):
+    plan = plan_mod.plan_runtime_inputs(**single_module(tmp_path, source))
+    assert plan["dynamic_loaders"] == ["tools/m.py"]
+    assert plan["trust"]["code_closure"] == "STATIC_UNVERIFIED"
+
+
+def test_ordinary_eval_and_compile_methods_are_not_flagged(tmp_path):
+    source = (b"import json\nimport re\nPATTERN = re.compile('x')\nVALUE = json.dumps({'evaluate': 1})\n"
+              b"class Model:\n    def eval(self):\n        return self\nModel().eval()\n")
+    assert plan_mod.plan_runtime_inputs(**single_module(tmp_path, source))["dynamic_loaders"] == []
+
+
+def substitute_git(monkeypatch, script):
+    real = subprocess.Popen
+    started = []
+    def fake(command, *args, **kwargs):
+        process = real([sys.executable, "-I", "-c", script], *args, **kwargs)
+        started.append(process)
+        return process
+    monkeypatch.setattr(plan_mod.subprocess, "Popen", fake)
+    return started
+
+
+FLOOD = "import sys, time\nchunk = b'x' * 65536\nwhile True:\n    sys.{0}.buffer.write(chunk)\n    sys.{0}.flush()\n    time.sleep(0.01)\n"
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_unbounded_git_output_is_refused_while_it_is_read(case, monkeypatch, stream):
+    kwargs, _, _, _ = case
+    started = substitute_git(monkeypatch, FLOOD.format(stream))
+    begun = time.monotonic()
+    refused({**kwargs, "timeout_seconds": 2}, "git_output_too_large")
+    assert time.monotonic() - begun < 30 and started and all(item.poll() is not None for item in started)
+
+
+def test_git_timeout_refuses_and_ends_the_process(case, monkeypatch):
+    kwargs, _, _, _ = case
+    started = substitute_git(monkeypatch, "import time\ntime.sleep(60)\n")
+    begun = time.monotonic()
+    refused({**kwargs, "timeout_seconds": 1}, "git_timeout")
+    assert time.monotonic() - begun < 30 and started and all(item.poll() is not None for item in started)
+
+
+def test_oversize_blob_is_refused_before_its_bytes_are_read(case, monkeypatch):
+    kwargs, repo, _, _ = case
+    oid = git(repo, "rev-parse", kwargs["commit"] + ":tools/a.py")
+    real = subprocess.Popen
+    commands = []
+    def record(command, *args, **kw):
+        commands.append([str(item) for item in command])
+        return real(command, *args, **kw)
+    monkeypatch.setattr(plan_mod.subprocess, "Popen", record)
+    monkeypatch.setattr(runtime_manifest, "MAX_FILE_BYTES", len(CODE["tools/a.py"]) - 1)
+    refused(kwargs, "code_entry_invalid")
+    assert commands and not any("cat-file" in command and oid in command for command in commands)

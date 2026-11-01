@@ -54,6 +54,78 @@ def test_matching_synthetic_tree_returns_metadata_only(synthetic):
     assert str(root) not in repr(result)
 
 
+def test_pinned_descriptor_parser_validates_without_tree_io(synthetic, monkeypatch):
+    _, document = synthetic
+    raw = encoded(document)
+    monkeypatch.setattr(subject.runtime, "_check_chain", lambda *_: pytest.fail("tree accessed"))
+    parsed = subject.parse_pinned_interpreter_descriptor(raw, digest(raw))
+    assert parsed is not None
+
+
+def test_pinned_descriptor_parser_checks_pin_before_parsing(synthetic, monkeypatch):
+    _, document = synthetic
+    raw = encoded(document)
+    monkeypatch.setattr(subject.json, "loads", lambda *_a, **_k: pytest.fail("parsed before pin"))
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        subject.parse_pinned_interpreter_descriptor(raw, "0" * 64)
+
+
+def test_verifier_reuses_the_same_pinned_parser(synthetic, monkeypatch):
+    root, document = synthetic
+    original = subject.parse_pinned_interpreter_descriptor
+    called = []
+    def tracked(*args):
+        called.append(True)
+        return original(*args)
+    monkeypatch.setattr(subject, "parse_pinned_interpreter_descriptor", tracked)
+    assert verify(root, document)["status"] == "VERIFIED"
+    assert called == [True]
+
+
+def test_pure_binding_validator_checks_selected_interpreter_without_tree_io(synthetic, monkeypatch):
+    root, document = synthetic
+    raw = encoded(document)
+    parsed = subject.parse_pinned_interpreter_descriptor(raw, digest(raw))
+    record = document["files"][0]
+    monkeypatch.setattr(subject.runtime, "_check_chain", lambda *_: pytest.fail("interpreter tree accessed"))
+    subject.validate_interpreter_descriptor_binding(root, root / record["path"], record["sha256"], parsed)
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        subject.validate_interpreter_descriptor_binding(root, root / record["path"], "0" * 64, parsed)
+
+
+@pytest.mark.parametrize("bad", ["CON", "nul.txt", "has:colon", "trailing.", "trailing ", "x" * 256])
+def test_pure_binding_segment_rules_are_platform_independent(bad):
+    with pytest.raises(ValueError):
+        subject._binding_segment(bad)
+    subject._binding_segment("x" * 255)
+    subject._binding_segment("valid-segment_1")
+
+
+def _windows_binding_path_of_length(length):
+    parts = ["a" * 255] * 128
+    parts[-1] = "a" * (255 - (32770 - length))
+    result = "C:\\" + "\\".join(parts)
+    assert len(result) == length
+    return result
+
+
+def test_pure_windows_binding_path_total_length_policy_boundary():
+    assert subject._binding_path(_windows_binding_path_of_length(32767))[0] == "windows"
+    with pytest.raises(ValueError):
+        subject._binding_path(_windows_binding_path_of_length(32768))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX path syntax requires a POSIX host")
+@pytest.mark.parametrize("bad", ["CON", "nul.txt", "has:colon", "trailing.", "trailing ", "x" * 256])
+def test_posix_verifier_refuses_invalid_root_before_tree_access(synthetic, tmp_path, monkeypatch, bad):
+    _, document = synthetic
+    raw = encoded(document)
+    monkeypatch.setattr(subject.runtime, "_check_chain", lambda *_: pytest.fail("interpreter tree accessed"))
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        subject.verify_interpreter_identity(enabled=True, root=tmp_path / bad, descriptor_bytes=raw,
+                                            expected_sha256=digest(raw))
+
+
 def test_explicit_interpreter_path_and_hash_bind_to_the_interpreter_role(synthetic):
     root, document = synthetic
     raw = encoded(document)

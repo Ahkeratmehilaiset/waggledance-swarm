@@ -4,7 +4,7 @@ import io
 import json
 import hashlib
 import datetime as dt
-from dataclasses import replace
+from dataclasses import asdict, fields, replace
 
 import pytest
 
@@ -82,6 +82,13 @@ def _answer():
                          "ref_kind": "sha256_of_projected_metadata", "canonical_event": False}]}
 
 
+def _identity_document():
+    return {"schema": "wd.q4-interpreter-identity.v1", "files": [
+        {"role": "interpreter", "path": "python.exe", "size": 1, "sha256": "1" * 64},
+        {"role": "stdlib", "path": "lib/synthetic-private.zip", "size": 1, "sha256": "2" * 64},
+        {"role": "dll", "path": "dll/lib.dll", "size": 1, "sha256": "3" * 64}]}
+
+
 def test_typed_binding_invokes_launcher_with_query_on_stdin_only(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
     seen = {}
@@ -97,6 +104,146 @@ def test_typed_binding_invokes_launcher_with_query_on_stdin_only(monkeypatch, ca
     assert result["results"][0]["ref_sha256"] == "9" * 64
     assert "synthetic-query-sensitive" not in repr(result)
     assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("identity", [{}, {"root": r"C:\private-identity"},
+    {"root": r"C:\private-identity", "descriptor_bytes": b"synthetic-private", "expected_sha256": "0" * 64},
+    {"root": r"C:\private-identity", "descriptor_bytes": "not-bytes", "expected_sha256": "a" * 64},
+    {"root": r"C:\private-identity", "descriptor_bytes": b"synthetic-private", "expected_sha256": "a" * 64, "extra": 1}])
+def test_bad_interpreter_identity_refused_before_query(monkeypatch, identity):
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: pytest.fail("unexpected launcher"))
+    with pytest.raises(cli.QueryRefused, match="^invalid_binding$") as caught:
+        config = replace(_config(), interpreter_identity=identity)
+        cli.query_with_verified_config(config, Unreadable())
+    assert "synthetic-private" not in repr(caught.value)
+
+
+def test_identity_is_snapshotted_before_query_and_only_forwarded_to_launcher(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
+    descriptor = json.dumps(_identity_document()).encode()
+    identity = {"root": r"C:\synthetic", "descriptor_bytes": descriptor,
+                "expected_sha256": hashlib.sha256(descriptor).hexdigest()}
+    expected = identity.copy()
+    config = replace(_config(), interpreter_identity=identity)
+    identity["root"] = r"C:\mutated-before-query"
+    class MutatingInput(io.BytesIO):
+        def read(self, *args):
+            identity["expected_sha256"] = "0" * 64
+            return super().read(*args)
+    seen = {}
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **kwargs: seen.update(kwargs) or _answer())
+    result = cli.query_with_verified_config(config, MutatingInput(b'{"situation":"s","time":"2026-10-31T12:00:00Z"}'))
+    assert seen["interpreter_identity"] == expected
+    assert "synthetic-private" not in repr(config) + repr(result)
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("malformation", ["utf8", "json", "duplicate", "role", "path", "extra", "nonfinite"])
+def test_correctly_hashed_malformed_descriptor_refuses_before_query_or_tree(monkeypatch, malformation):
+    from sandbox.mind.step2 import interpreter_identity as module
+    document = _identity_document()
+    if malformation == "role": document["files"][2]["role"] = "stdlib"
+    if malformation == "path": document["files"][0]["path"] = "bin/../escape"
+    if malformation == "extra": document["extra"] = True
+    raw = json.dumps(document).encode()
+    if malformation == "utf8": raw = b"\xff"
+    if malformation == "json": raw = b"{"
+    if malformation == "duplicate": raw = raw.replace(b'"schema":', b'"schema":"duplicate", "schema":', 1)
+    if malformation == "nonfinite": raw = raw.replace(b'"size": 1', b'"size": NaN', 1)
+    monkeypatch.setattr(module.runtime, "_check_chain", lambda *_: pytest.fail("interpreter tree accessed"))
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: pytest.fail("launcher called"))
+    identity = {"root": r"C:\private-identity", "descriptor_bytes": raw,
+                "expected_sha256": hashlib.sha256(raw).hexdigest()}
+    with pytest.raises(cli.QueryRefused, match="^invalid_binding$"):
+        cli.query_with_verified_config(replace(_config(), interpreter_identity=identity), Unreadable())
+
+
+@pytest.mark.parametrize("bad_root", [r"C:\CON", r"C:\synthetic.", "C:\\synthetic\x01",
+                                       r"C:\synthetic\NUL.txt", r"C:\synthetic\trail "])
+def test_interpreter_identity_root_syntax_refuses_before_query_or_tree(monkeypatch, bad_root):
+    from sandbox.mind.step2 import interpreter_identity as module
+    raw = json.dumps(_identity_document()).encode()
+    identity = {"root": bad_root, "descriptor_bytes": raw, "expected_sha256": hashlib.sha256(raw).hexdigest()}
+    monkeypatch.setattr(module.runtime, "_check_chain", lambda *_: pytest.fail("interpreter tree accessed"))
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: pytest.fail("launcher called"))
+    with pytest.raises(cli.QueryRefused, match="^invalid_binding$"):
+        cli.query_with_verified_config(replace(_config(), interpreter_identity=identity), Unreadable())
+
+
+@pytest.mark.parametrize("change", ["interpreter_path", "interpreter_sha"])
+def test_interpreter_descriptor_binding_mismatch_refuses_before_query_or_tree(monkeypatch, change):
+    from sandbox.mind.step2 import interpreter_identity as module
+    document = _identity_document()
+    if change == "interpreter_path": document["files"][0]["path"] = "other.exe"
+    else: document["files"][0]["sha256"] = "9" * 64
+    raw = json.dumps(document).encode()
+    identity = {"root": r"C:\synthetic", "descriptor_bytes": raw, "expected_sha256": hashlib.sha256(raw).hexdigest()}
+    monkeypatch.setattr(module.runtime, "_check_chain", lambda *_: pytest.fail("interpreter tree accessed"))
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: pytest.fail("launcher called"))
+    with pytest.raises(cli.QueryRefused, match="^invalid_binding$"):
+        cli.query_with_verified_config(replace(_config(), interpreter_identity=identity), Unreadable())
+
+
+def test_interpreter_identity_overlong_windows_component_refuses_before_query(monkeypatch):
+    from sandbox.mind.step2 import interpreter_identity as module
+    root = "C:\\" + "a" * 256
+    raw = json.dumps(_identity_document()).encode()
+    identity = {"root": root, "descriptor_bytes": raw, "expected_sha256": hashlib.sha256(raw).hexdigest()}
+    config = replace(_config(), interpreter=root + r"\python.exe", interpreter_identity=identity)
+    monkeypatch.setattr(module.runtime, "_check_chain", lambda *_: pytest.fail("interpreter tree accessed"))
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: pytest.fail("launcher called"))
+    with pytest.raises(cli.QueryRefused, match="^invalid_binding$"):
+        cli.query_with_verified_config(config, Unreadable())
+
+
+def test_interpreter_identity_255_character_windows_component_is_valid(monkeypatch):
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
+    root = "C:\\" + "a" * 255
+    raw = json.dumps(_identity_document()).encode()
+    identity = {"root": root, "descriptor_bytes": raw, "expected_sha256": hashlib.sha256(raw).hexdigest()}
+    config = replace(_config(), interpreter=root + r"\python.exe", interpreter_identity=identity)
+    seen = []
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **kwargs: seen.append(kwargs) or _answer())
+    result = cli.query_with_verified_config(config, io.BytesIO(b'{"situation":"s","time":"2026-10-31T12:00:00Z"}'))
+    assert result["status"] == "ANSWER" and seen[0]["interpreter_identity"] == identity
+
+
+def test_interpreter_identity_overlong_total_path_refuses_before_query(monkeypatch):
+    from sandbox.mind.step2 import interpreter_identity as module
+    parts = ["a" * 255] * 128
+    parts[-1] = "a" * 253
+    root = "C:\\" + "\\".join(parts)
+    assert len(root) == 32768
+    raw = json.dumps(_identity_document()).encode()
+    identity = {"root": root, "descriptor_bytes": raw, "expected_sha256": hashlib.sha256(raw).hexdigest()}
+    config = replace(_config(), interpreter=root + r"\python.exe", interpreter_identity=identity)
+    monkeypatch.setattr(module.runtime, "_check_chain", lambda *_: pytest.fail("interpreter tree accessed"))
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **_: pytest.fail("launcher called"))
+    with pytest.raises(cli.QueryRefused, match="^invalid_binding$"):
+        cli.query_with_verified_config(config, Unreadable())
+
+
+def test_legacy_never_supplies_interpreter_identity_kwarg(monkeypatch):
+    monkeypatch.setattr(cli, "_utc_now", lambda: dt.datetime(2026, 10, 31, 13, tzinfo=dt.timezone.utc))
+    seen = {}
+    monkeypatch.setattr(cli, "_invoke_launcher", lambda **kwargs: seen.update(kwargs) or _answer())
+    cli.query_with_verified_config(_config(), io.BytesIO(b'{"situation":"s","time":"2026-10-31T12:00:00Z"}'))
+    assert "interpreter_identity" not in seen
+
+
+def test_identity_snapshot_survives_dataclass_replace_and_asdict():
+    raw = b"synthetic-private-interpreter-descriptor"
+    original = {"root": r"C:\private-identity", "descriptor_bytes": raw,
+                "expected_sha256": hashlib.sha256(raw).hexdigest()}
+    config = replace(_config(), interpreter_identity=original)
+    assert "interpreter_identity" in {f.name for f in fields(config)}
+    assert asdict(_config())["interpreter_identity"] is None
+    copied = asdict(config)["interpreter_identity"]
+    assert copied.descriptor_bytes == raw
+    assert replace(config, timeout=31).interpreter_identity == config.interpreter_identity
+    original["descriptor_bytes"] = b"different"
+    assert config.interpreter_identity.descriptor_bytes == raw
+    assert "synthetic-private" not in repr(config)
 
 
 def test_explicit_scratch_root_is_forwarded_and_missing_refuses_before_input(monkeypatch):

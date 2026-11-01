@@ -9,7 +9,9 @@ replacement. Native and interpreter execution remain outside this primitive.
 import hashlib
 import hmac
 import json
+import ntpath
 import os
+from pathlib import Path
 import re
 import stat
 
@@ -20,6 +22,8 @@ MAX_DESCRIPTOR_BYTES = 1024 * 1024
 MAX_FILES = 1024
 MAX_ITEM_BYTES = 512 * 1024 * 1024
 MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024
+# Syntactic policy budget in Python characters, not an OS path-validity guarantee.
+MAX_BINDING_PATH_CHARS = 32767
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _ROLES = frozenset({"interpreter", "stdlib", "dll"})
 
@@ -100,6 +104,82 @@ def _check_tree(root, files, directories):
         raise ValueError()
 
 
+def parse_pinned_interpreter_descriptor(descriptor_bytes, expected_sha256):
+    """Parse pinned descriptor bytes only; this does not inspect or trust a tree."""
+    try:
+        if (type(descriptor_bytes) is not bytes or len(descriptor_bytes) > MAX_DESCRIPTOR_BYTES
+                or type(expected_sha256) is not str or _HEX.fullmatch(expected_sha256) is None):
+            raise ValueError()
+        digest = hashlib.sha256(descriptor_bytes).hexdigest()
+        if not hmac.compare_digest(digest, expected_sha256):
+            raise ValueError()
+        document = json.loads(descriptor_bytes.decode("utf-8", "strict"), object_pairs_hook=runtime._unique_object,
+                              parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        files, directories, total, interpreter_name = _records(document)
+        return digest, files, directories, total, interpreter_name
+    except Exception:
+        pass
+    raise IdentityRefused("interpreter_identity_refused") from None
+
+
+def _binding_segment(part):
+    """Apply filesystem-independent subset of runtime path component rules."""
+    if (not part or len(part) > 255 or part in (".", "..") or ":" in part
+            or part.endswith((".", " ")) or runtime.DEVICE.fullmatch(part)
+            or any(ord(ch) < 32 for ch in part)):
+        raise ValueError()
+
+
+def _binding_path(value):
+    """Normalize syntax only; do not probe the named path or its ancestors."""
+    text = os.fspath(value)
+    if (type(text) is not str or not text or len(text) > MAX_BINDING_PATH_CHARS
+            or any(ord(ch) < 32 for ch in text)):
+        raise ValueError()
+    if re.match(r"^[A-Za-z]:\\", text):
+        drive, tail = ntpath.splitdrive(text)
+        if (len(drive) != 2 or not tail.startswith("\\") or "/" in text
+                or ":" in tail or ntpath.normpath(text) != text):
+            raise ValueError()
+        for part in tail.split("\\"):
+            if part:
+                _binding_segment(part)
+                if any(ch in '<>"|?*' for ch in part):
+                    raise ValueError()
+        return "windows", ntpath.normcase(text)
+    if os.name == "nt":
+        raise ValueError()
+    path = Path(text)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError()
+    for part in path.parts[1:]:
+        _binding_segment(part)
+    return "posix", str(path)
+
+
+def validate_interpreter_descriptor_binding(root, expected_interpreter, expected_interpreter_sha256, parsed):
+    """Check only path syntax and descriptor binding; do not inspect a tree."""
+    try:
+        kind, root_text = _binding_path(root)
+        if (expected_interpreter is None) != (expected_interpreter_sha256 is None):
+            raise ValueError()
+        if expected_interpreter is not None:
+            if type(expected_interpreter_sha256) is not str or _HEX.fullmatch(expected_interpreter_sha256) is None:
+                raise ValueError()
+            _, files, _, _, interpreter_name = parsed
+            selected_kind, selected = _binding_path(expected_interpreter)
+            parts = interpreter_name.split("/")
+            declared = (ntpath.normcase(ntpath.join(root_text, *parts)) if kind == "windows"
+                        else str(Path(root_text).joinpath(*parts)))
+            if (selected_kind != kind or selected != declared
+                    or not hmac.compare_digest(files[interpreter_name][1], expected_interpreter_sha256)):
+                raise ValueError()
+        return None
+    except Exception:
+        pass
+    raise IdentityRefused("interpreter_identity_refused") from None
+
+
 def verify_interpreter_identity(*, enabled=False, root=None, descriptor_bytes=None, expected_sha256=None,
                                 expected_interpreter=None, expected_interpreter_sha256=None):
     """Check the pinned tree and optional independently selected executable binding.
@@ -110,21 +190,16 @@ def verify_interpreter_identity(*, enabled=False, root=None, descriptor_bytes=No
     if enabled is False:
         return {"status": "OFF"}
     try:
-        if (enabled is not True or type(descriptor_bytes) is not bytes
-                or len(descriptor_bytes) > MAX_DESCRIPTOR_BYTES or type(expected_sha256) is not str
-                or _HEX.fullmatch(expected_sha256) is None):
+        if enabled is not True:
             raise ValueError()
         if (expected_interpreter is None) != (expected_interpreter_sha256 is None):
             raise ValueError()
         if (expected_interpreter is not None and (type(expected_interpreter_sha256) is not str
                 or _HEX.fullmatch(expected_interpreter_sha256) is None)):
             raise ValueError()
-        digest = hashlib.sha256(descriptor_bytes).hexdigest()
-        if not hmac.compare_digest(digest, expected_sha256):
-            raise ValueError()
-        document = json.loads(descriptor_bytes.decode("utf-8", "strict"), object_pairs_hook=runtime._unique_object,
-                              parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
-        files, directories, total, interpreter_name = _records(document)
+        parsed = parse_pinned_interpreter_descriptor(descriptor_bytes, expected_sha256)
+        validate_interpreter_descriptor_binding(root, expected_interpreter, expected_interpreter_sha256, parsed)
+        digest, files, directories, total, interpreter_name = parsed
         checked_root = runtime._check_chain(root)
         root_info = os.lstat(checked_root)
         if runtime._is_reparse(root_info) or not stat.S_ISDIR(root_info.st_mode):

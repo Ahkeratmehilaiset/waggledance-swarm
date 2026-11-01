@@ -9,7 +9,7 @@ module does not establish OS-level stdin/log privacy, complete containment,
 same-user race resistance, model asset provenance, or a whole-call deadline.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import datetime as dt
 import io
 import json
@@ -18,6 +18,7 @@ import ntpath
 import os
 import re
 import sys
+from typing import NamedTuple
 
 MAX_QUERY = 65536
 MAX_SITUATION = 4000
@@ -87,6 +88,13 @@ def _validated_query_time(raw):
         raise QueryRefused("invalid_query_time") from None
 
 
+class _IdentitySnapshot(NamedTuple):
+    root: object
+    descriptor_bytes: object
+    expected_sha256: object
+    valid_keys: bool
+
+
 @dataclass(frozen=True)
 class VerifiedQ4Config:
     """Caller-asserted binding; this type itself authenticates nothing."""
@@ -107,6 +115,14 @@ class VerifiedQ4Config:
     lock_timeout: str
     timeout: float
     scratch_root: str
+    interpreter_identity: object = field(default=None, repr=False)
+
+    def __post_init__(self):
+        if type(self.interpreter_identity) is dict:
+            value = self.interpreter_identity.copy()
+            snapshot = _IdentitySnapshot(value.get("root"), value.get("descriptor_bytes"),
+                value.get("expected_sha256"), set(value) == {"root", "descriptor_bytes", "expected_sha256"})
+            object.__setattr__(self, "interpreter_identity", snapshot)
 
 
 def _invoke_launcher(**kwargs):
@@ -139,6 +155,31 @@ def _validate_config(config):
             raise ValueError()
     except (ValueError, TypeError, OverflowError):
         raise QueryRefused("invalid_binding") from None
+    identity = config.interpreter_identity
+    if identity is not None:
+        if (type(identity) is not _IdentitySnapshot or identity.valid_keys is not True
+                or type(identity.root) is not str or not re.match(r"^[A-Za-z]:\\", identity.root)
+                or ":" in identity.root[2:] or "\x00" in identity.root
+                or ntpath.normpath(identity.root) != identity.root
+                or type(identity.descriptor_bytes) is not bytes
+                or type(identity.expected_sha256) is not str or _HEX.fullmatch(identity.expected_sha256) is None):
+            raise QueryRefused("invalid_binding")
+        parsed = False
+        try:
+            # Shared parser authenticates no pin: caller remains the trust anchor.
+            # No interpreter-tree I/O takes place before the query is read.
+            from sandbox.mind.step2.interpreter_identity import (
+                parse_pinned_interpreter_descriptor, validate_interpreter_descriptor_binding)
+            descriptor = parse_pinned_interpreter_descriptor(identity.descriptor_bytes, identity.expected_sha256)
+            validate_interpreter_descriptor_binding(identity.root, config.interpreter, config.interpreter_sha256,
+                                                    descriptor)
+            parsed = True
+        except Exception:
+            pass
+        if not parsed:
+            raise QueryRefused("invalid_binding") from None
+        return {"root": identity.root, "descriptor_bytes": identity.descriptor_bytes,
+                "expected_sha256": identity.expected_sha256}
 
 
 def _safe_refusal(reason):
@@ -184,7 +225,7 @@ def query_with_verified_config(config, stdin):
     containment; the launcher checks selected pins and the bootstrap checks the
     runtime manifest. Hashes are data channels, not complete privacy protection.
     """
-    _validate_config(config)
+    identity = _validate_config(config)
     query = read_query(stdin)
     _validated_query_time(query)
     args = {"runtime-root": config.runtime_root, "runtime-manifest": config.runtime_manifest,
@@ -194,10 +235,13 @@ def query_with_verified_config(config, stdin):
             "descriptor-sha256": config.descriptor_sha256, "lock-file": config.lock_file,
             "lock-timeout": config.lock_timeout}
     try:
-        result = _invoke_launcher(interpreter=config.interpreter, interpreter_sha256=config.interpreter_sha256,
-                                  bootstrap=config.bootstrap, bootstrap_sha256=config.bootstrap_sha256,
-                                  verifier_sha256=config.verifier_sha256, tuple_args=args, query=query,
-                                  timeout=config.timeout, scratch_root=config.scratch_root)
+        launcher_args = dict(interpreter=config.interpreter, interpreter_sha256=config.interpreter_sha256,
+                             bootstrap=config.bootstrap, bootstrap_sha256=config.bootstrap_sha256,
+                             verifier_sha256=config.verifier_sha256, tuple_args=args, query=query,
+                             timeout=config.timeout, scratch_root=config.scratch_root)
+        if identity is not None:
+            launcher_args["interpreter_identity"] = identity
+        result = _invoke_launcher(**launcher_args)
     except Exception:
         raise QueryRefused("launcher_refused") from None
     return _project_result(result, config.descriptor_sha256)

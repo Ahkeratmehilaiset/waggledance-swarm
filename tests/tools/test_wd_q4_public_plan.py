@@ -71,6 +71,15 @@ def test_exact_bound_plan_returns_immutable_data_and_explicit_unknown(valid_plan
         value.expected_pointer_sha256 = "f" * 64
 
 
+def test_identity_tuple_is_not_silently_dropped_on_public_route(valid_plan):
+    raw = b"synthetic-private-interpreter-descriptor"
+    identity = {"root": r"C:\private-identity", "descriptor_bytes": raw,
+                "expected_sha256": hashlib.sha256(raw).hexdigest()}
+    valid_plan["config"] = dataclasses.replace(valid_plan["config"], interpreter_identity=identity)
+    with pytest.raises(module().PublicPlanRefused, match="^public_plan_refused$"):
+        module().validate_public_plan(valid_plan, enabled=True)
+
+
 @pytest.mark.parametrize("field", ["schema", "config", "root", "expected_pointer_sha256",
     "expected_source_sha256", "expected_encoder_sha256", "policy_bytes", "policy_sha256",
     "roster_bytes", "roster_sha256", "public_policy_bytes", "public_policy_sha256"])

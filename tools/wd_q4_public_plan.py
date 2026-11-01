@@ -88,8 +88,11 @@ def validate_public_plan(plan=None, *, enabled=False):
         config = plan["config"]
         if type(config) is not VerifiedQ4Config:
             raise ValueError()
+        # No public transport contract exists for this tuple yet: never drop it.
+        if config.interpreter_identity is not None:
+            raise ValueError()
         for f in fields(config):
-            if f.name != "timeout" and type(getattr(config, f.name)) is not str:
+            if f.name not in ("timeout", "interpreter_identity") and type(getattr(config, f.name)) is not str:
                 raise ValueError()
         _validate_config(config)
         root = plan["root"]

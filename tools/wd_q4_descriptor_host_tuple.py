@@ -2,7 +2,11 @@
 
 The descriptor argument is the already parsed v2 shared-session helper output.
 This function does not read or verify the original
-descriptor, deployment manifest, runtime, host scripts, or actual session.
+descriptor, runtime, host scripts, or actual session. When opted in, it checks
+fixed path/pins against externally anchored deployment-manifest bytes only.
+The opt-in result adds ``manifest_binding`` and ``manifest_additional_pins``;
+the latter contains only manifest-derived command and runtime-bootstrap pins,
+not evidence that those files have been read or verified.
 The caller must independently authenticate every byte and pin, the extraction,
 lane identity and clock; hash equality is not authentication or freshness.
 
@@ -21,6 +25,7 @@ from pathlib import Path
 import re
 
 from tools.wd_q4_attributed_session_tuple import resolve_attributed_session_tuple
+from tools.wd_q4_manifest_host_binding import resolve_manifest_host_binding
 
 
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
@@ -38,6 +43,7 @@ _HOST = frozenset({"HostScript", "HostSha256", "JobHelper", "JobHelperSha256", "
                    "InterpreterSha256", "Bootstrap", "BootstrapSha256", "WorkingDirectory",
                    "ScratchRoot", "TimeoutSeconds", "MaxOutputBytes"})
 _PATHS = ("HostScript", "JobHelper", "Interpreter", "Bootstrap", "WorkingDirectory", "ScratchRoot")
+_UNSET = object()
 
 
 def _path(value):
@@ -52,7 +58,9 @@ def _path(value):
 
 def resolve_descriptor_host_tuple(*, fleet_bytes=None, expected_fleet_sha256=None, binding_bytes=None,
                                   expected_binding_sha256=None, lane=None, descriptor=None,
-                                  runtime_identity=None, host=None, enabled=False):
+                                  runtime_identity=None, host=None, enabled=False,
+                                  manifest_bytes=_UNSET, expected_manifest_sha256=_UNSET,
+                                  expected_manifest_commit=_UNSET):
     """Return a host-argument candidate, without file reads or execution."""
     if enabled is False:
         return {"status": "OFF"}
@@ -96,6 +104,24 @@ def resolve_descriptor_host_tuple(*, fleet_bytes=None, expected_fleet_sha256=Non
                 or host["TimeoutSeconds"] <= int(worker["timeout-seconds"])
                 or str(host["MaxOutputBytes"]) != worker["max-output-bytes"]):
             raise ValueError()
+        manifest_opt_in = any(value is not _UNSET for value in
+                              (manifest_bytes, expected_manifest_sha256, expected_manifest_commit))
+        if manifest_opt_in:
+            if (any(value is _UNSET for value in (manifest_bytes, expected_manifest_sha256,
+                                                 expected_manifest_commit))
+                    or expected_manifest_sha256 != runtime_identity["manifest_sha256"]
+                    or expected_manifest_commit != runtime_identity["bundle_commit"]):
+                raise ValueError()
+            pins = resolve_manifest_host_binding(manifest_bytes,
+                expected_manifest_sha256=expected_manifest_sha256,
+                expected_commit=expected_manifest_commit, enabled=True)
+            for path_key, hash_key, relative in (
+                ("HostScript", "HostSha256", "Invoke-WdQ4SessionHost.ps1"),
+                ("JobHelper", "JobHelperSha256", "WdQ4ProcessJob.ps1"),
+                ("Bootstrap", "BootstrapSha256", "tools-bootstrap/tools/wd_q4_session_outer_entry.py")):
+                expected_path = os.path.join(descriptor["bundle_root"], *relative.split('/'))
+                if paths[path_key] != _path(expected_path) or host[hash_key] != pins[relative]:
+                    raise ValueError()
         runtime = {key: dict(descriptor[key]) for key in _PARTS}
         runtime.update(runtime_identity)
         attributed = resolve_attributed_session_tuple(fleet_bytes=fleet_bytes,
@@ -106,6 +132,11 @@ def resolve_descriptor_host_tuple(*, fleet_bytes=None, expected_fleet_sha256=Non
         result = {"status": "TUPLE_CONSISTENT", "attribution": "DECLARED_NOT_AUTHENTICATED",
                   "freshness": "FRESHNESS_UNKNOWN", "host_script": host["HostScript"],
                   "host_sha256": host["HostSha256"], "host_arguments": arguments}
+        if manifest_opt_in:
+            result["manifest_binding"] = "MANIFEST_PINS_ONLY"
+            result["manifest_additional_pins"] = {
+                name: pins[name] for name in ("Invoke-WdQ4SessionCommand.ps1",
+                    "tools-bootstrap/sandbox/mind/step2/runtime_bootstrap.py")}
     except Exception:
         pass
     if result is not None:
@@ -113,4 +144,6 @@ def resolve_descriptor_host_tuple(*, fleet_bytes=None, expected_fleet_sha256=Non
     fleet_bytes = expected_fleet_sha256 = binding_bytes = expected_binding_sha256 = lane = None
     descriptor = runtime_identity = host = enabled = runtime = attributed = paths = arguments = None
     worker = checked = key = name = pin = source_key = worker_key = value = None
+    manifest_bytes = expected_manifest_sha256 = expected_manifest_commit = pins = None
+    manifest_opt_in = expected_path = path_key = hash_key = relative = None
     raise ValueError("descriptor_host_tuple_refused") from None

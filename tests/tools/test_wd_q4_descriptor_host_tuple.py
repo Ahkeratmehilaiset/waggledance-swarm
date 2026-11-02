@@ -18,6 +18,9 @@ def test_descriptor_host_resolver_is_packaged_as_a_library():
     resolver = "tools/wd_q4_descriptor_host_tuple.py"
     assert definition["python_files"].count(resolver) == 1
     assert resolver not in definition["python_entrypoints"].values()
+    dependency = "tools/wd_q4_manifest_host_binding.py"
+    assert definition["python_files"].count(dependency) == 1
+    assert dependency not in definition["python_entrypoints"].values()
 
 
 def _sha(value):
@@ -79,16 +82,103 @@ def _resolve(**kwargs):
     return resolve_descriptor_host_tuple(**kwargs)
 
 
+def _with_manifest(candidate):
+    host = candidate['host']
+    root = Path(candidate['descriptor']['bundle_root'])
+    host['HostScript'] = str(root / 'Invoke-WdQ4SessionHost.ps1')
+    host['JobHelper'] = str(root / 'WdQ4ProcessJob.ps1')
+    host['Bootstrap'] = str(root / 'tools-bootstrap/tools/wd_q4_session_outer_entry.py')
+    files = {'Invoke-WdQ4SessionCommand.ps1': '4' * 64,
+             'Invoke-WdQ4SessionHost.ps1': host['HostSha256'],
+             'WdQ4ProcessJob.ps1': host['JobHelperSha256'],
+             'tools-bootstrap/sandbox/mind/step2/runtime_bootstrap.py': '5' * 64,
+             'tools-bootstrap/tools/wd_q4_session_outer_entry.py': host['BootstrapSha256']}
+    raw = _bytes({'schema_version': 1, 'source_commit': 'a' * 40, 'files': files})
+    return _rebind_manifest(candidate, raw)
+
+
+def _rebind_manifest(candidate, raw):
+    sha = _sha(raw)
+    candidate['runtime_identity']['manifest_sha256'] = sha
+    binding = json.loads(candidate['binding_bytes'])
+    binding['manifest_sha256'] = sha
+    candidate['binding_bytes'] = _bytes(binding)
+    candidate['expected_binding_sha256'] = _sha(candidate['binding_bytes'])
+    candidate['descriptor']['binding_sha256'] = candidate['expected_binding_sha256']
+    candidate['descriptor']['worker']['binding-sha256'] = candidate['expected_binding_sha256']
+    return {'manifest_bytes': raw, 'expected_manifest_sha256': sha, 'expected_manifest_commit': 'a' * 40}
+
+
+def test_manifest_opt_in_checks_bound_pins(candidate):
+    anchor = _with_manifest(candidate)
+    result = _resolve(**candidate, **anchor, enabled=True)
+    assert result['manifest_binding'] == 'MANIFEST_PINS_ONLY'
+    assert result['manifest_additional_pins'] == {
+        'Invoke-WdQ4SessionCommand.ps1': '4' * 64,
+        'tools-bootstrap/sandbox/mind/step2/runtime_bootstrap.py': '5' * 64,
+    }
+
+
+@pytest.mark.parametrize('path', ['Invoke-WdQ4SessionCommand.ps1',
+                                 'tools-bootstrap/sandbox/mind/step2/runtime_bootstrap.py'])
+@pytest.mark.parametrize('fault', ['missing', 'invalid', 'changed_without_anchor'])
+def test_extra_pins_fail_closed_on_bad_or_unanchored_entries(candidate, path, fault):
+    anchor = _with_manifest(candidate)
+    doc = json.loads(anchor['manifest_bytes'])
+    if fault == 'missing':
+        del doc['files'][path]
+    else:
+        doc['files'][path] = 'wrong' if fault == 'invalid' else '9' * 64
+    raw = _bytes(doc)
+    if fault == 'changed_without_anchor':
+        anchor['manifest_bytes'] = raw
+    else:
+        anchor = _rebind_manifest(candidate, raw)
+    with pytest.raises(ValueError, match='^descriptor_host_tuple_refused$'):
+        _resolve(**candidate, **anchor, enabled=True)
+
+
+def test_legacy_result_contract_unchanged(candidate):
+    result = _resolve(**candidate, enabled=True)
+    assert set(result) == {'status', 'attribution', 'freshness', 'host_script', 'host_sha256', 'host_arguments'}
+
+
+@pytest.mark.parametrize('fault', ['host_pin', 'job_pin', 'bootstrap_pin', 'host_path', 'job_path',
+                                     'bootstrap_path', 'manifest_sha', 'manifest_commit', 'partial_anchor',
+                                     'old_manifest', 'identity_sha', 'identity_commit'])
+def test_manifest_opt_in_refuses_mixed_pins_and_old_bundle(candidate, fault):
+    anchor = _with_manifest(candidate)
+    if fault in ('host_pin', 'job_pin', 'bootstrap_pin'):
+        field = {'host_pin': 'HostSha256', 'job_pin': 'JobHelperSha256', 'bootstrap_pin': 'BootstrapSha256'}[fault]
+        candidate['host'][field] = '9' * 64
+    if fault in ('host_path', 'job_path', 'bootstrap_path'):
+        field = {'host_path': 'HostScript', 'job_path': 'JobHelper', 'bootstrap_path': 'Bootstrap'}[fault]
+        candidate['host'][field] = str(Path(candidate['host'][field]).parent / 'elsewhere' / Path(candidate['host'][field]).name)
+    if fault == 'manifest_sha': anchor['expected_manifest_sha256'] = '9' * 64
+    if fault == 'manifest_commit': anchor['expected_manifest_commit'] = '9' * 40
+    if fault == 'partial_anchor': del anchor['expected_manifest_commit']
+    if fault == 'identity_sha': candidate['runtime_identity']['manifest_sha256'] = '9' * 64
+    if fault == 'identity_commit': candidate['runtime_identity']['bundle_commit'] = '9' * 40
+    if fault == 'old_manifest':
+        doc = json.loads(anchor['manifest_bytes'])
+        del doc['files']['Invoke-WdQ4SessionHost.ps1']
+        anchor = _rebind_manifest(candidate, _bytes(doc))
+    with pytest.raises(ValueError, match='^descriptor_host_tuple_refused$'):
+        _resolve(**candidate, **anchor, enabled=True)
+
+
 def test_off_does_not_inspect_or_call_inputs(monkeypatch):
     import tools.wd_q4_descriptor_host_tuple as module
     monkeypatch.setattr(module, "resolve_attributed_session_tuple", lambda **_: pytest.fail("called"))
+    monkeypatch.setattr(module, "resolve_manifest_host_binding", lambda *_, **__: pytest.fail("called"))
     monkeypatch.setattr("builtins.open", lambda *_, **__: pytest.fail("file I/O"))
     class Trap:
         def __getattribute__(self, name):
             raise AssertionError("input inspected")
     assert _resolve(fleet_bytes=Trap(), expected_fleet_sha256=Trap(), binding_bytes=Trap(),
                     expected_binding_sha256=Trap(), lane=Trap(), descriptor=Trap(),
-                    runtime_identity=Trap(), host=Trap()) == {"status": "OFF"}
+                    runtime_identity=Trap(), host=Trap(), manifest_bytes=Trap(),
+                    expected_manifest_sha256=Trap(), expected_manifest_commit=Trap()) == {"status": "OFF"}
 
 
 @pytest.mark.parametrize("lane", ["codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"])

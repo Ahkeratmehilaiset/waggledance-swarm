@@ -6,8 +6,9 @@ provenance, dynamic imports and native DLL closure remain the caller's duty.
 An error after output creation may leave partial data: reconcile manually;
 never automatically retry, delete, or activate. Free-space checks are sampled,
 not a reservation against other writers or filesystem overhead. Preflight
-exceptions and interruptions become a fixed refusal; after output creation is
-attempted they become output-state unknown. Caller frames are not sanitized.
+exceptions become a fixed refusal; interruptions retain their category with a
+fixed message. After output creation is attempted they become output-state
+unknown. Caller frames are not sanitized.
 """
 import hashlib
 import os
@@ -57,16 +58,25 @@ def stage(*, enabled=False, roots=None, root_pins=None, mapping=None, output=Non
         return {"status": "OFF"}
     state = [False]
     result = None
+    interruption = None
     try:
         result = _stage(enabled=enabled, roots=roots, root_pins=root_pins, mapping=mapping,
                         output=output, max_bytes=max_bytes, _state=state)
-    except BaseException:
-        pass
+    except BaseException as exc:
+        if not state[0] and not isinstance(exc, Exception):
+            if isinstance(exc, KeyboardInterrupt):
+                interruption = KeyboardInterrupt
+            elif isinstance(exc, SystemExit):
+                interruption = SystemExit
+            else:
+                interruption = BaseException
     if result is not None:
         return result
     enabled = roots = root_pins = mapping = output = max_bytes = None
     if state[0]:
         raise OverlayOutputStateUnknown("site_overlay_output_state_unknown") from None
+    if interruption is not None:
+        raise interruption("site_overlay_interrupted") from None
     raise OverlayRefused("site_overlay_refused") from None
 
 

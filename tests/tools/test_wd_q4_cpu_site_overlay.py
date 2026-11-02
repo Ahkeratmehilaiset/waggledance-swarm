@@ -178,8 +178,8 @@ def test_preflight_interrupt_is_sanitized_and_scrubs_own_frames(tmp_path, monkey
         overlay.stage(enabled=True, roots=roots, root_pins=pins, mapping=mapping,
                       output=str(target), max_bytes=100)
     except BaseException as exc:
-        assert type(exc) is overlay.OverlayRefused
-        assert str(exc) == "site_overlay_refused"
+        assert type(exc) is failure
+        assert str(exc) == "site_overlay_interrupted"
         assert exc.__context__ is None and exc.__cause__ is None
         tb = exc.__traceback__
         names = []

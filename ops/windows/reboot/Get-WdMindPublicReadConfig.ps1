@@ -152,10 +152,17 @@ function Get-WdMindPublicReadConfig {
     $required = @('enabled','lanes','audit_root','max_age_seconds')
     foreach ($name in $names) { $required += @(($name+'_path'),($name+'_sha256')) }
     foreach ($name in @($config.PSObject.Properties.Name)) {
-        if ($required -cnotcontains $name) { throw 'mind_public_config_unknown_field' }
+        if ($required -cnotcontains $name -and $name -cne 'version') { throw 'mind_public_config_unknown_field' }
     }
     foreach ($name in $required) {
         if ($null -eq $config.PSObject.Properties[$name]) { throw 'mind_public_config_field_missing' }
+    }
+    # Optional reader selection: absent keeps the v2 publication; exactly v3
+    # selects the v3 series publication, and anchor_path/anchor_sha256 then
+    # name the immutable series ROOT anchor, never a moving window anchor.
+    $version = $config.PSObject.Properties['version']
+    if ($null -ne $version -and ($version.Value -isnot [string] -or $version.Value -cne 'v3')) {
+        throw 'mind_public_config_version_invalid'
     }
     # Configuration scopes which launcher may export the route; the Agent
     # string is not an authentication boundary or proof of a live session.
@@ -192,5 +199,6 @@ function Get-WdMindPublicReadConfig {
         $out['WD_MIND_PUBLIC_'+$name.ToUpperInvariant()+'_PATH']=$path
         $out['WD_MIND_PUBLIC_'+$name.ToUpperInvariant()+'_SHA256']=$config.$hashKey.ToLowerInvariant()
     }
+    if ($null -ne $version) { $out['WD_MIND_PUBLIC_READ_VERSION']='v3' }
     return [pscustomobject]$out
 }

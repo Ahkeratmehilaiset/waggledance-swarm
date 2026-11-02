@@ -13,6 +13,13 @@ import pytest
 from tools import wd_q4_session_outer_entry as entry, wd_q4_roster_from_fleet as roster
 
 
+def test_descriptor_host_resolver_is_packaged_as_a_library():
+    definition = json.loads((Path(__file__).resolve().parents[2] / "ops/windows/reboot/bridge-code-files.json").read_bytes())
+    resolver = "tools/wd_q4_descriptor_host_tuple.py"
+    assert definition["python_files"].count(resolver) == 1
+    assert resolver not in definition["python_entrypoints"].values()
+
+
 def _sha(value):
     return hashlib.sha256(value).hexdigest()
 

@@ -1182,7 +1182,8 @@ def _assert_shadow_release_delivery(definition):
     assert PUBLIC_STATUS_API in definition["python_files"], "public_status_api_drop"
     assert PUBLIC_STATUS_API not in published, "public_status_api_published"
     assert PUBLIC_STATUS_CLI in definition["python_files"], "public_status_cli_drop"
-    assert PUBLIC_STATUS_CLI not in published, "public_status_cli_published"
+    assert definition["python_entrypoints"].get("mind_public_reader") == PUBLIC_STATUS_CLI, "public_status_cli_drop"
+    assert definition["python_entrypoints"].get("mind_public_publisher_v3") == "tools/wd_mind_public_publish_v3_cli.py", "public_status_v3_publisher_drop"
     assert not (required - set(SHADOW_RELEASE_CLI.values())) & published, "shadow_library_published"
     sandbox_files = {path for path in definition["python_files"] if path.startswith("sandbox/")}
     # Q4 files are delivery-only too: the existing CLI and smoke boundaries remain unchanged.

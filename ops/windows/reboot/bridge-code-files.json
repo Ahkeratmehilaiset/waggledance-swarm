@@ -75,6 +75,7 @@
     "tools/wd_q4_lane_binding.py",
     "tools/wd_q4_agent_answer.py",
     "tools/wd_q4_attributed_session_tuple.py",
+    "tools/wd_q4_descriptor_host_tuple.py",
     "tools/wd_q4_prefix_public_query.py",
     "tools/wd_q4_lane_query.py",
     "tools/wd_q4_public_child.py",
@@ -214,6 +215,8 @@
     "mind_session": "tools/wd_bridge_mind_session.py",
     "mind_shadow_producer": "sandbox/mind/mind_capture_producer.py",
     "mind_join_turn": "sandbox/mind/join_turn.py",
+    "mind_public_reader": "tools/wd_mind_public_session_cli.py",
+    "mind_public_publisher_v3": "tools/wd_mind_public_publish_v3_cli.py",
     "rco_changes_requested": "tools/check_bridge_changes_requested.py",
     "rco_pass_present": "tools/check_rco_pass_present.py"
   },

@@ -1250,9 +1250,11 @@ def commit_prefix_genesis(*args, expected_start_prefix, expected_attempt_sha256=
     return {"status": "committed", "pointer_sha256": _sha(_canonical(value))}
 
 
-def advance_prefix_empty(*args, expected_start_prefix, expected_attempt_sha256=None, fenced=False, **kwargs):
+def advance_prefix_empty(*args, expected_start_prefix, expected_attempt_sha256=None, fenced=False,
+                         allow_partial_window=False, **kwargs):
     return advance_empty_delta(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix,
-                               _expected_attempt_sha256=expected_attempt_sha256, _fenced=fenced, **kwargs)
+                               _expected_attempt_sha256=expected_attempt_sha256, _fenced=fenced,
+                               _allow_partial_window=allow_partial_window, **kwargs)
 
 
 def commit_prefix_history(*args, expected_start_prefix, expected_attempt_sha256=None, fenced=False, **kwargs):
@@ -1286,7 +1288,7 @@ def prepare_prefix_history(*args, expected_start_prefix, enabled=False, **kwargs
     return {"status": "prepared", "attempt_sha256": _attempt(value, None)}
 
 
-def prepare_prefix_empty(*args, expected_start_prefix, enabled=False, **kwargs):
+def prepare_prefix_empty(*args, expected_start_prefix, enabled=False, allow_partial_window=False, **kwargs):
     """Prepare without publishing; may create the persistent slot file.
 
     For no_change, attempt_sha256 identifies the existing pointer, not a new one.
@@ -1294,7 +1296,7 @@ def prepare_prefix_empty(*args, expected_start_prefix, enabled=False, **kwargs):
     if enabled is not True:
         _refuse()
     return advance_empty_delta(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix,
-                               _prepare_attempt=True, **kwargs)
+                               _prepare_attempt=True, _allow_partial_window=allow_partial_window, **kwargs)
 
 
 def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_pointer_sha256,
@@ -1302,7 +1304,8 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
                         expected_anchor_sha256, timeout=0.2, expected_mode="legacy",
                         expected_public_policy_sha256=None, public_policy_bytes=None, expected_anchor_bytes=None,
                         _prefix_required=False, _expected_start_prefix=None,
-                        _prepare_attempt=False, _expected_attempt_sha256=None, _fenced=False):
+                        _prepare_attempt=False, _expected_attempt_sha256=None, _fenced=False,
+                        _allow_partial_window=False):
     """Advance only a verified strict empty delta, without altering the indexed interval.
 
     Inactive primitive: the caller must protect source identity, cursor, policy,
@@ -1317,6 +1320,9 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
             _refuse()
         # A fenced publication is opt-in, prefix-only and bound to a prepared attempt digest.
         if type(_fenced) is not bool or (_fenced and (_prepare_attempt or _expected_attempt_sha256 is None)):
+            _refuse()
+        if (type(_allow_partial_window) is not bool or (_allow_partial_window and
+                (not _prefix_required or not (_prepare_attempt or _fenced)))):
             _refuse()
         from sandbox.mind.step2 import shared_bridge_snapshot as snapshot, shared_capture_adapter as adapter
         from sandbox.mind.step2 import shared_projection as projection
@@ -1348,7 +1354,8 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
         finish = _cursor(end)
         source = snapshot_result.get("source")
         if (type(source) is not dict or source.get("cursor_end_sha256") != _sha(snapshot._token(end).encode("utf-8"))
-                or source.get("coverage") != "delta_only_not_complete_history"):
+                or (source.get("coverage") != "delta_only_not_complete_history" and
+                    not (_allow_partial_window and source.get("coverage") == "partial_window_not_complete"))):
             _refuse()
         pointer, lock = root / POINTER, root / LOCK
         _secure(lock, missing_leaf=True)

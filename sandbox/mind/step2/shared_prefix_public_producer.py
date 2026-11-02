@@ -210,6 +210,27 @@ def _publish_locked_catchup(request, state, max_windows, cutoff_utc=None):
             public_policy_bytes=config.public_policy_bytes, public_policy_sha256=pins.public_policy_sha256,
             expected_prefix_sha256=request.start_prefix.sha256, max_prefix_bytes=request.max_prefix_bytes, enabled=True,
             **cutoff_args)
+        # Advance only the first verified empty window, never the rest of the
+        # chain, and only through the existing fenced prefix/CAS protocol.
+        if cutoff_utc is not None and request.fenced and previous is not None and chain.get("windows"):
+            window = chain["windows"][0]
+            part, candidate = window.get("projection"), window.get("candidate_prefix")
+            if (type(part) is dict and part.get("records") == [] and part.get("refused") == {}
+                    and type(candidate) is BridgePrefixPin
+                    and candidate.cursor.offset > request.start_prefix.cursor.offset):
+                if snapshot.verify_public_catchup(chain, expected_anchor_bytes=source.anchor_bytes,
+                        expected_anchor_sha256=pins.anchor_sha256, expected_policy_sha256=pins.policy_sha256,
+                        expected_roster_sha256=pins.roster_sha256,
+                        expected_public_policy_sha256=pins.public_policy_sha256,
+                        expected_start_prefix=request.start_prefix, expected_cutoff_utc=cutoff_utc) is not True:
+                    raise ValueError()
+                try:
+                    advanced = _publish_prepared(request, state, window, part, tasks, previous,
+                                                 allow_partial_window=True)
+                    return {**advanced, "coverage": "partial_ready_prefix", "source_refusals": "NOT_AGGREGATED"}
+                except Exception:
+                    # Publication may already have moved the pointer or opened an intent.
+                    _fail("publication_state_unknown")
         partial = cutoff_utc is not None and chain.get("end_reason") in ("deferred", "max_windows", "partial_record")
         if chain.get("caught_up") is not True and not partial:
             _fail("catchup_incomplete")
@@ -280,7 +301,8 @@ def _publish_locked(request, state):
     _fail("prepare_refused")
 
 
-def _publish_prepared(request, state, result, projection, tasks, previous, *, catchup_source=None):
+def _publish_prepared(request, state, result, projection, tasks, previous, *, catchup_source=None,
+                      allow_partial_window=False):
     config, source, pins = request.config, request.config.source, request.pins
     root = Path(request.root)
     common = dict(policy_bytes=source.policy_bytes, expected_policy_sha256=pins.policy_sha256,
@@ -299,6 +321,8 @@ def _publish_prepared(request, state, result, projection, tasks, previous, *, ca
                 candidate = result["candidate_prefix"]
                 args = (root, result, tasks)
                 kwargs = dict(expected_pointer_sha256=request.expected_pointer_sha256, **common)
+                if allow_partial_window:
+                    kwargs["allow_partial_window"] = True
                 prepared = checkpoint.prepare_prefix_empty(*args, enabled=True, **kwargs)
                 if type(prepared) is not dict or set(prepared) != {"status", "attempt_sha256"}:
                     raise ValueError()

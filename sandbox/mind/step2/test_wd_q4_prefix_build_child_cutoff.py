@@ -143,6 +143,14 @@ def test_an_open_or_widened_report_under_a_cutoff_is_unknown_state(tmp_path, mod
     assert SENTINEL not in repr(error)
 
 
+@pytest.mark.parametrize("status,pointer", [("EMPTY_NO_CHANGE", PRIOR), ("EMPTY_ADVANCED", "3" * 64)])
+def test_an_empty_advance_claiming_full_coverage_under_a_cutoff_is_unknown_state(tmp_path, model_dir, backend,
+                                                                                 monkeypatch, status, pointer):
+    m, doc, config, start = fenced_world(tmp_path, model_dir, monkeypatch, pointer=PRIOR)
+    catchup_fake(monkeypatch, m, report(status, pointer, None, CAUGHT_UP), {})
+    refused("publication_state_unknown", lambda: call(m, doc, config, start, tmp_path, cutoff_utc=CUTOFF))
+
+
 def test_without_a_cutoff_a_partial_report_stays_unknown_state(tmp_path, model_dir, backend, monkeypatch):
     m, doc, config, start = fenced_world(tmp_path, model_dir, monkeypatch)
     monkeypatch.setattr(m.producer, "publish_public_catchup",

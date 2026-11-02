@@ -267,7 +267,7 @@ def test_no_encoder_callback_or_identity_can_be_supplied_by_the_caller():
     parameters = inspect.signature(m.build_prefix_generation).parameters
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in parameters.values())
     assert set(parameters) == {"enabled", "plan_bytes", "expected_plan_sha256", "config", "start_prefix", "root",
-                               "private_state_root", "trusted_model_root"}
+                               "private_state_root", "trusted_model_root", "cutoff_utc"}
     assert m.PLAN_SCHEMA == "wd.q4-prefix-build-plan.v1"
     assert m.ENCODER_MODEL == encode_mod.MODEL and m.ENCODER_DIM == encode_mod.DIM == 384
     assert m.IDENTITY_SOURCE == "encode.model_identity"

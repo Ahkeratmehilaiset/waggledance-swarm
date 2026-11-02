@@ -494,7 +494,9 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
                     or nxt.cursor != window["candidate_cursor"]
                     or (nxt.cursor.file_identity, nxt.cursor.generation) != (cursor.file_identity, cursor.generation)):
                 raise ValueError()
-            if (cutoff is not None and not batch_rows and not _ready_projection(window["projection"], cutoff)):
+            # Recheck the full projected window in both modes. A broken row
+            # prefilter must not expose a record the verifier would reject.
+            if cutoff is not None and not _ready_projection(window["projection"], cutoff):
                 deferred = True
                 end_reason = "deferred"
                 break
@@ -515,6 +517,11 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
                 end_reason = "partial_record"
                 break
             current = nxt
+        # A later fully deferred window is omitted from the chain. Do not
+        # return earlier windows as if their own binding proved that deferral.
+        if (batch_rows and end_reason == "deferred" and windows
+                and windows[-1]["source"].get("cutoff_deferred") is not True):
+            raise ValueError()
         caught_up = end_reason == "snapshot_end"
         last = windows[-1] if windows else None
         candidate_prefix = last["candidate_prefix"] if last is not None else start_prefix

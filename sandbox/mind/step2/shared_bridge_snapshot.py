@@ -45,7 +45,7 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
                       policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
                       _commitment_anchor=None, _public_tasks=None, _public_types=None,
                       expected_prefix_sha256=None, max_prefix_bytes=None, expected_snapshot_sha256=None,
-                      _allow_partial=False):
+                      _allow_partial=False, _ready_cutoff=None):
     """Return an uncommitted delta; unpinned positional-policy calls are legacy only.
 
     ``_allow_partial`` is the private chained catch-up mode: the window may end before the snapshot end,
@@ -85,6 +85,31 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
                        if prefix_requested else {})
         if expected_snapshot_sha256 is not None:
             prefix_args["expected_snapshot_sha256"] = expected_snapshot_sha256
+        if _ready_cutoff is not None:
+            if not _allow_partial or not strict or _public_tasks is None or _public_types is None:
+                raise ValueError()
+            filter_budget = 0
+
+            def row_ready(row):
+                nonlocal filter_budget
+                filter_budget += adapter._public_event_budget(row, _public_tasks, checked_roster,
+                                                               approved_non_review_tasks)
+                if filter_budget > adapter._BATCH_LIMIT:
+                    raise ValueError()
+                event_id(row)
+                producer.row_digest(row)
+                if not adapter._public_status_event(row, _public_tasks, _public_types):
+                    return True
+                agent = row.get("agent")
+                if not isinstance(agent, str) or agent not in checked_roster or row.get("agent_uuid") != checked_roster[agent]:
+                    raise ValueError()
+                if adapter._exclude_rco_event(row) or adapter._exclude_review_signal(row):
+                    return True
+                record, _ = adapter.projection.project_event(row, approved_tasks=approved_non_review_tasks,
+                    include_refs=False, roster=checked_roster, exclude_review_signal=True)
+                return _ready_projection({"records": [record]}, _ready_cutoff)
+
+            prefix_args["_row_ready"] = row_ready
         result = read_bridge_log(path, cursor=cursor, max_bytes=max_bytes, max_rows=max_rows,
                                  generation_path=generation_path, **prefix_args)
         observed = dt.datetime.now(dt.timezone.utc).isoformat()
@@ -135,6 +160,8 @@ def read_shared_delta(path, cursor, approved_non_review_tasks=None, *, max_bytes
             raise ValueError()
         value["source"]["coverage"] = ("delta_only_not_complete_history" if snap["unconsumed_bytes"] == 0
                                        else "partial_window_not_complete")
+        if _ready_cutoff is not None:
+            value["source"]["cutoff_deferred"] = result.reason == "cutoff_deferred"
         value["candidate_cursor"] = candidate
         if prefix_requested:
             prefix = getattr(result, "candidate_prefix", None)
@@ -299,13 +326,16 @@ def _checked_anchor(path, cursor, tasks, *, anchor_bytes, anchor_sha256, generat
 
 def _anchored_window(path, cursor, tasks, *, anchor_sha256, generation_path, max_bytes, max_rows, policy_bytes,
                      policy_sha256, roster_bytes, roster_sha256, public_tasks, public_types, public_policy_sha256,
-                     expected_prefix_sha256, max_prefix_bytes, expected_snapshot_sha256, allow_partial):
+                     expected_prefix_sha256, max_prefix_bytes, expected_snapshot_sha256, allow_partial,
+                     ready_cutoff=None):
     """One window read after the anchor was checked; returns the result with its in-process binding."""
     public_mode = public_tasks is not None
     snapshot_args = (dict(expected_snapshot_sha256=expected_snapshot_sha256)
                      if expected_snapshot_sha256 is not None else {})
     if allow_partial:
         snapshot_args["_allow_partial"] = True
+    if ready_cutoff is not None:
+        snapshot_args["_ready_cutoff"] = ready_cutoff
     result = read_shared_delta(path, cursor, tasks, max_bytes=max_bytes, max_rows=max_rows,
                                generation_path=generation_path, policy_bytes=policy_bytes,
                                policy_sha256=policy_sha256, roster_bytes=roster_bytes,
@@ -346,6 +376,7 @@ class _CatchupBinding:
     chain_commitment: str = field(repr=False)
     cutoff_utc: str | None = None
     deferred: bool = False
+    batch_rows: bool = False
 
 
 def _cutoff(value):
@@ -390,7 +421,7 @@ def _catchup_step(chain, index, binding, candidate_prefix):
 def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, generation_path, max_bytes, max_rows,
                         max_windows, policy_bytes, policy_sha256, roster_bytes, roster_sha256,
                         public_policy_bytes, public_policy_sha256, expected_prefix_sha256, max_prefix_bytes,
-                        enabled=False, cutoff_utc=None):
+                        enabled=False, cutoff_utc=None, batch_rows=False):
     """Opt-in bounded chained public-status catch-up over successive nonterminal windows (OFF by default).
 
     The caller-authenticated anchor binds the chain START cursor; it is checked once. Every window re-reads
@@ -406,7 +437,7 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
     ``candidate_cursor`` with ``candidate_prefix`` and a new caller-authenticated anchor for that cursor.
     Records are deduplicated per window only. Prefix digests may disclose guesses about private bytes and
     must not be published. This does not authenticate the caller, the source or the filesystem.
-    With the optional aware ``cutoff_utc``, every window contains at most one source row. A projected
+    With the optional aware ``cutoff_utc``, every window normally contains at most one source row. A projected
     public row is held until its next-minute availability is strictly before that fixed cutoff. The
     held row and everything after it are not committed; an initial hold returns zero windows and the
     original prefix. Non-public rows remain excluded by the unchanged public policy. The cutoff and
@@ -414,6 +445,9 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
     an in-process assertion, not an independent proof about the unread row. The slower
     per-row prefix hashing is bounded by the existing window and prefix budgets. This does not prove
     source freshness, authenticate the clock, or make this catch-up object a single-window publication.
+    Separately opting in with ``batch_rows=True`` reads up to ``max_rows`` in each window and stops at
+    the first immature public row on its exact source byte boundary; the verifier must independently
+    expect batching. Prefix hashing stays bounded per window, not per row. This is not source authentication.
     Ordinary refusals discard exception frames; BaseException is caller-owned and may retain input data.
     """
     if enabled is not True:
@@ -432,6 +466,8 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
                 or max_prefix_bytes is None):
             raise ValueError()
         cutoff = _cutoff(cutoff_utc)
+        if type(batch_rows) is not bool or (batch_rows and cutoff is None):
+            raise ValueError()
         public_tasks, public_types = _checked_anchor(
             path, cursor, tasks, anchor_bytes=anchor_bytes, anchor_sha256=anchor_sha256,
             generation_path=generation_path, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
@@ -445,24 +481,33 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
         for index in range(max_windows):
             window = _anchored_window(path, current.cursor, tasks, anchor_sha256=anchor_sha256,
                                       generation_path=generation_path, max_bytes=max_bytes,
-                                      max_rows=1 if cutoff is not None else max_rows,
+                                      max_rows=1 if cutoff is not None and not batch_rows else max_rows,
                                       policy_bytes=policy_bytes, policy_sha256=policy_sha256,
                                       roster_bytes=roster_bytes, roster_sha256=roster_sha256,
                                       public_tasks=public_tasks, public_types=public_types,
                                       public_policy_sha256=public_policy_sha256,
                                       expected_prefix_sha256=current.sha256, max_prefix_bytes=max_prefix_bytes,
-                                      expected_snapshot_sha256=None, allow_partial=True)
+                                      expected_snapshot_sha256=None, allow_partial=True,
+                                      ready_cutoff=cutoff if batch_rows else None)
             nxt = window["candidate_prefix"]
             if (window["start_prefix"] != current or type(nxt) is not BridgePrefixPin
                     or nxt.cursor != window["candidate_cursor"]
                     or (nxt.cursor.file_identity, nxt.cursor.generation) != (cursor.file_identity, cursor.generation)):
                 raise ValueError()
-            if cutoff is not None and not _ready_projection(window["projection"], cutoff):
+            if (cutoff is not None and not batch_rows and not _ready_projection(window["projection"], cutoff)):
+                deferred = True
+                end_reason = "deferred"
+                break
+            if batch_rows and window["source"]["cutoff_deferred"] and nxt.cursor.offset == current.cursor.offset:
                 deferred = True
                 end_reason = "deferred"
                 break
             chain = _catchup_step(chain, index, window["_projection_binding"], nxt)
             windows.append(window)
+            if batch_rows and window["source"]["cutoff_deferred"]:
+                deferred = True
+                end_reason = "deferred"
+                break
             if window["source"]["unconsumed_bytes"] == 0:
                 end_reason = "snapshot_end"
                 break
@@ -479,9 +524,11 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
                   "candidate_prefix": candidate_prefix}
         if cutoff is not None:
             result["cutoff_utc"] = cutoff
+        if batch_rows:
+            result["batch_rows"] = True
         result["_catchup_binding"] = _CatchupBinding(
             anchor_sha256, policy_sha256, roster_sha256, public_policy_sha256, start_prefix,
-            candidate_prefix, len(windows), caught_up, end_reason, chain.hex(), cutoff, deferred)
+            candidate_prefix, len(windows), caught_up, end_reason, chain.hex(), cutoff, deferred, batch_rows)
         return result
     except Exception:
         pass
@@ -493,7 +540,7 @@ def read_public_catchup(path, cursor, tasks, *, anchor_bytes, anchor_sha256, gen
 
 def verify_public_catchup(result, *, expected_anchor_bytes, expected_anchor_sha256, expected_policy_sha256,
                           expected_roster_sha256, expected_public_policy_sha256, expected_start_prefix,
-                          expected_cutoff_utc=None):
+                          expected_cutoff_utc=None, expected_batch_rows=False):
     """Reject accidental window splicing, reordering or relabelling of one catch-up result in this process.
 
     Recomputes every window's semantic commitment, the prefix/cursor linkage and the chain commitment.
@@ -502,7 +549,8 @@ def verify_public_catchup(result, *, expected_anchor_bytes, expected_anchor_sha2
     try:
         cutoff = _cutoff(expected_cutoff_utc)
         pins = (expected_anchor_sha256, expected_policy_sha256, expected_roster_sha256, expected_public_policy_sha256)
-        if (type(result) is not dict or any(not isinstance(v, str) or _SHA256.fullmatch(v) is None for v in pins)
+        if (type(expected_batch_rows) is not bool or (expected_batch_rows and cutoff is None)
+                or type(result) is not dict or any(not isinstance(v, str) or _SHA256.fullmatch(v) is None for v in pins)
                 or type(expected_anchor_bytes) is not bytes or len(expected_anchor_bytes) > _ANCHOR_MAX_BYTES
                 or not hmac.compare_digest(hashlib.sha256(expected_anchor_bytes).hexdigest(), expected_anchor_sha256)
                 or type(expected_start_prefix) is not BridgePrefixPin):
@@ -530,6 +578,9 @@ def verify_public_catchup(result, *, expected_anchor_bytes, expected_anchor_sha2
                 or result.get("window_count") != len(windows) or binding.window_count != len(windows)
                 or binding.end_reason not in _END_REASONS or result.get("end_reason") != binding.end_reason
                 or binding.cutoff_utc != cutoff
+                or type(binding.batch_rows) is not bool or binding.batch_rows != expected_batch_rows
+                or (not expected_batch_rows and "batch_rows" in result)
+                or (expected_batch_rows and result.get("batch_rows") is not True)
                 or (cutoff is None and "cutoff_utc" in result)
                 or (cutoff is not None and result.get("cutoff_utc") != cutoff)
                 or type(binding.deferred) is not bool
@@ -559,12 +610,14 @@ def verify_public_catchup(result, *, expected_anchor_bytes, expected_anchor_sha2
                     or wb.candidate.offset < current.cursor.offset
                     or type(wb.row_commitment) is not bytes or len(wb.row_commitment) != 32
                     or type(wb.row_count) is not int or not 0 <= wb.row_count <= MAX_ROWS
-                    or (cutoff is not None and (wb.row_count > 1
+                    or (cutoff is not None and ((not expected_batch_rows and wb.row_count > 1)
                         or not _ready_projection(window.get("projection"), cutoff)))
                     or not hmac.compare_digest(wb.semantic_commitment, _semantic_end(
                         wb.row_commitment, wb.row_count, wb.candidate, wb.projection))
                     or _canonical(window.get("projection")) != wb.projection
                     or _canonical(source) != wb.source or type(source) is not dict
+                    or (expected_batch_rows and (type(source.get("cutoff_deferred")) is not bool
+                        or source["cutoff_deferred"] != (last and binding.end_reason == "deferred")))
                     or source.get("cursor_start_sha256")
                     != hashlib.sha256(_token(current.cursor).encode("utf-8")).hexdigest()
                     or source.get("cursor_end_sha256") != hashlib.sha256(_token(wb.candidate).encode("utf-8")).hexdigest()

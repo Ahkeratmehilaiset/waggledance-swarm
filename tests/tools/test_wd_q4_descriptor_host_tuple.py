@@ -68,7 +68,7 @@ def candidate(tmp_path):
         "Interpreter": worker["interpreter"], "InterpreterSha256": worker["interpreter-sha256"],
         "Bootstrap": str(tmp_path / "wd_q4_session_outer_entry.py"), "BootstrapSha256": "3" * 64,
         "WorkingDirectory": worker["cwd"], "ScratchRoot": str(tmp_path / "scratch"),
-        "TimeoutSeconds": 30, "MaxOutputBytes": 4096}
+        "TimeoutSeconds": 60, "MaxOutputBytes": 4096}
     return {"fleet_bytes": fleet, "expected_fleet_sha256": _sha(fleet), "binding_bytes": binding,
         "expected_binding_sha256": _sha(binding), "lane": lanes[0], "descriptor": descriptor,
         "runtime_identity": identity, "host": host}
@@ -131,6 +131,24 @@ def test_real_v2_helper_output_composes_into_host_arguments(candidate, tmp_path)
     assert result["status"] == "TUPLE_CONSISTENT"
 
 
+@pytest.mark.parametrize("inner,outer,accepted", [(30, 31, True), (30, 30, False), (30, 29, False),
+                                                  (1799, 1800, True), (1800, 1800, False),
+                                                  (1799, 1801, False)])
+def test_host_job_timeout_must_exceed_worker_budget(candidate, inner, outer, accepted):
+    descriptor = candidate["descriptor"]
+    descriptor["timeout_seconds"] = inner
+    descriptor["worker"]["timeout-seconds"] = str(inner)
+    candidate["host"]["TimeoutSeconds"] = outer
+    if accepted:
+        result = _resolve(**candidate, enabled=True)
+        assert result["host_arguments"]["TimeoutSeconds"] == outer
+        assert result["host_arguments"]["BootstrapArguments"][
+            result["host_arguments"]["BootstrapArguments"].index("--timeout-seconds") + 1] == str(inner)
+    else:
+        with pytest.raises(ValueError, match="^descriptor_host_tuple_refused$"):
+            _resolve(**candidate, enabled=True)
+
+
 @pytest.mark.parametrize("fault", ["missing_host", "extra_host", "missing_descriptor", "extra_descriptor",
     "extra_identity", "missing_identity", "mixed_lane", "mixed_binding", "mixed_roster", "mixed_interpreter",
     "mixed_interpreter_pin", "mixed_cwd", "mixed_timeout", "mixed_output", "path_collision", "query_field",
@@ -149,7 +167,7 @@ def test_refuses_mixed_or_unexpected_input_without_dispatch(candidate, fault):
     if fault == "mixed_interpreter": value["host"]["Interpreter"] += "-other"
     if fault == "mixed_interpreter_pin": value["host"]["InterpreterSha256"] = "0" * 64
     if fault == "mixed_cwd": value["host"]["WorkingDirectory"] += "-other"
-    if fault == "mixed_timeout": value["host"]["TimeoutSeconds"] = 31
+    if fault == "mixed_timeout": value["host"]["TimeoutSeconds"] = 30
     if fault == "mixed_output": value["host"]["MaxOutputBytes"] = 4097
     if fault == "path_collision": value["host"]["JobHelper"] = value["host"]["HostScript"]
     if fault == "query_field": value["descriptor"]["worker"]["query"] = "synthetic-query-marker"

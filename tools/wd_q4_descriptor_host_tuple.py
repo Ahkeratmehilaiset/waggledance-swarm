@@ -9,6 +9,11 @@ lane identity and clock; hash equality is not authentication or freshness.
 No query argument exists. The caller must ensure that configuration fields do
 not themselves contain query text or secrets, and must never shell-interpolate
 the returned argv. The candidate is not a connection or authorization to run.
+
+The caller supplies the host Job timeout independently and strictly above the
+inner fixed-peer timeout. The difference is a caller-chosen margin, not a
+proven sufficient budget: preflight and I/O can block outside that Job clock.
+An independently bounded whole-call watchdog is still required.
 """
 
 import os
@@ -88,7 +93,7 @@ def resolve_descriptor_host_tuple(*, fleet_bytes=None, expected_fleet_sha256=Non
         if (paths["Interpreter"] != _path(worker["interpreter"])
                 or host["InterpreterSha256"] != worker["interpreter-sha256"]
                 or paths["WorkingDirectory"] != _path(worker["cwd"])
-                or str(host["TimeoutSeconds"]) != worker["timeout-seconds"]
+                or host["TimeoutSeconds"] <= int(worker["timeout-seconds"])
                 or str(host["MaxOutputBytes"]) != worker["max-output-bytes"]):
             raise ValueError()
         runtime = {key: dict(descriptor[key]) for key in _PARTS}

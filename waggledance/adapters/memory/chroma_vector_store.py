@@ -193,9 +193,9 @@ class ChromaVectorStore:
             # Timeouts during startup/load are expected — log at warning, not error
             exc_str = str(exc)
             if "timed out" in exc_str.lower() or "timeout" in exc_str.lower():
-                log.warning("Ollama embed timeout (model=%s): %s", self._embedding_model, exc)
+                log.warning("Ollama embed timeout (model=%s, error_type=%s)", self._embedding_model, type(exc).__name__)
             else:
-                log.error("Ollama embed error: %s", exc)
+                log.error("Ollama embed error (error_type=%s)", type(exc).__name__)
             return None
 
     async def upsert(
@@ -247,7 +247,7 @@ class ChromaVectorStore:
 
         embedding = await asyncio.to_thread(self._embed_text, text, "search_query: ")
         if embedding is None:
-            log.warning("Query embedding failed for text: %s", text[:80])
+            log.warning("Query embedding failed")
             return []
 
         coll = self._get_collection(collection)
@@ -269,7 +269,7 @@ class ChromaVectorStore:
             results = await asyncio.to_thread(coll.query, **kwargs)
             self._breaker.record_success()
         except Exception as exc:
-            log.error("ChromaDB query error (collection=%s): %s", collection, exc)
+            log.error("ChromaDB query error (collection=%s, error_type=%s)", collection, type(exc).__name__)
             self._breaker.record_failure()
             return []
 

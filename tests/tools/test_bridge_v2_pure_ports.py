@@ -19,7 +19,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 PORTS = ("bridge_v2_request_contract", "bridge_v2_identity_registry", "bridge_v2_log_reader", "bridge_v2_workflow")
-STDLIB = {"__future__", "copy", "ctypes", "dataclasses", "datetime", "enum", "json", "math", "msvcrt", "os",
+STDLIB = {"__future__", "copy", "ctypes", "dataclasses", "datetime", "enum", "hashlib", "hmac", "json", "math", "msvcrt", "os",
           "pathlib", "re", "typing", "uuid"}
 
 

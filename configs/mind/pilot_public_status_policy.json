@@ -1,0 +1,9 @@
+{
+  "public_tasks": [
+    "lead-mind-production-20261031"
+  ],
+  "public_types": [
+    "status"
+  ],
+  "schema": "wd.mind-public-status-policy.v1"
+}

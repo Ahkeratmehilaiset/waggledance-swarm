@@ -69,10 +69,52 @@ def test_preflight_clock_exception_clears_runner_frame(failure):
         runner.run(enabled=True, caller_cutoff_utc=value,
                    plan_bytes=b"sensitive-synthetic-plan-marker", root="sensitive-synthetic-root-marker")
     except BaseException as error:
-        assert type(error) is runner.IndexRunnerRefused
+        expected = runner.IndexRunnerRefused if failure is RuntimeError else failure
+        assert type(error) is expected
+        assert "synthetic clock secret" not in str(error)
+        if failure is SystemExit:
+            assert error.code == 1
         _assert_runner_frame_sanitized(error)
     else:
         pytest.fail("preflight did not refuse")
+
+
+@pytest.mark.parametrize("code,expected", [(None, None), (0, 0), (37, 37), ("synthetic secret", 1), (True, 1)])
+def test_preflight_exit_code_keeps_only_safe_integer_or_none(code, expected):
+    runner = importlib.import_module("tools.wd_q4_index_clock_runner")
+    class ExitClock(tzinfo):
+        def utcoffset(self, dt):
+            raise SystemExit(code)
+    with pytest.raises(SystemExit) as caught:
+        runner.run(enabled=True, caller_cutoff_utc=datetime(2026, 10, 31, 12, 1, tzinfo=ExitClock()),
+                   plan_bytes=b"sensitive-synthetic-plan-marker", root="sensitive-synthetic-root-marker")
+    assert caught.value.code == expected and type(caught.value.code) is type(expected)
+    _assert_runner_frame_sanitized(caught.value)
+
+
+def test_preflight_systemexit_subclass_cannot_execute_code_property(monkeypatch):
+    runner = importlib.import_module("tools.wd_q4_index_clock_runner")
+    from sandbox.mind.step2 import wd_q4_prefix_build_child as child
+    entered = []
+    monkeypatch.setattr(child, "build_prefix_generation", lambda **kw: entered.append(True))
+
+    class HostileExit(SystemExit):
+        def __getattribute__(self, name):
+            if name == "code":
+                raise RuntimeError("sensitive-synthetic-plan-marker")
+            return super().__getattribute__(name)
+
+    class ExitClock(tzinfo):
+        def utcoffset(self, dt):
+            raise HostileExit("secret")
+
+    with pytest.raises(SystemExit) as caught:
+        runner.run(enabled=True, caller_cutoff_utc=datetime(2026, 10, 31, 12, 1, tzinfo=ExitClock()),
+                   plan_bytes=b"sensitive-synthetic-plan-marker", root="sensitive-synthetic-root-marker")
+    assert type(caught.value) is SystemExit
+    assert caught.value.code == 1
+    assert not entered
+    _assert_runner_frame_sanitized(caught.value)
 
 
 @pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt, SystemExit])

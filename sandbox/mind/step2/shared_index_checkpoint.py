@@ -12,6 +12,7 @@ The source_binding is a caller-supplied build-receipt commitment, not proof
 that an independently authenticated source actually produced the delta.
 """
 from dataclasses import asdict
+from datetime import datetime
 import hashlib
 import json
 import os
@@ -295,8 +296,23 @@ def _verify_generation(root, name, tasks, roster, policy_sha256, roster_sha256):
     # Bind both stored views back to the approved projection, not merely its
     # declared digest. No extra or missing record/view may be published.
     _validate_projection_cell_views(projection, opened)
+    coverage = receipt.get("source_coverage")
+    if coverage is not None:
+        from sandbox.mind.step2.shared_bridge_snapshot import _cutoff, _ready_projection
+        if (type(coverage) is not dict or set(coverage) != {"kind", "end_reason", "cutoff_utc"}
+                or (coverage["kind"], coverage["end_reason"]) not in
+                   (("partial_ready_prefix", "deferred"), ("partial_ready_prefix", "max_windows"),
+                    ("partial_ready_prefix", "partial_record"), ("ready_caught_up", "snapshot_end"))
+                or type(coverage["cutoff_utc"]) is not str
+                or _cutoff(datetime.fromisoformat(coverage["cutoff_utc"])) != coverage["cutoff_utc"]):
+            _refuse()
+        try:
+            if not _ready_projection(projection, coverage["cutoff_utc"]):
+                _refuse()
+        except Exception:  # noqa: BLE001 - invalid or early history must fail closed
+            _refuse()
     result = {"generation": name, **hashes, "source_binding": receipt.get("source_binding"),
-              "source_mode": _source_mode(memory, receipt)}
+              "source_mode": _source_mode(memory, receipt), "source_coverage": coverage}
     return result
 
 
@@ -1400,6 +1416,19 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
         _refuse()
 
 
+def _catchup_coverage(source):
+    if source is None or source.get("mode") not in ("public-catchup-partial-v1", "public-catchup-ready-v1"):
+        return None
+    from sandbox.mind.step2.shared_bridge_snapshot import _cutoff
+    partial = source["mode"] == "public-catchup-partial-v1"
+    reason = source["catchup_result"]["end_reason"] if partial else "snapshot_end"
+    if partial and reason not in ("deferred", "max_windows", "partial_record"):
+        _refuse()
+    return {"kind": "partial_ready_prefix" if partial else "ready_caught_up",
+            "end_reason": reason,
+            "cutoff_utc": _cutoff(source["expected_cutoff_utc"])}
+
+
 def _checked_catchup_delta(source, snapshot_result, start, end, *, policy_bytes, expected_policy_sha256,
                            roster_bytes, expected_roster_sha256, expected_anchor_sha256,
                            expected_public_policy_sha256, public_policy_bytes, expected_anchor_bytes,
@@ -1414,8 +1443,12 @@ def _checked_catchup_delta(source, snapshot_result, start, end, *, policy_bytes,
             or source.get("expected_start_prefix") != expected_start_prefix
             or type(expected_start_prefix) is not BridgePrefixPin or expected_start_prefix.cursor != start):
         _refuse()
-    delta, frozen = builder.verified_catchup_projection(source, policy_bytes=policy_bytes,
-        policy_sha256=expected_policy_sha256, roster_bytes=roster_bytes, roster_sha256=expected_roster_sha256)
+    if source.get("mode") == "public-catchup-partial-v1":
+        delta, frozen = builder.verified_partial_catchup_projection(source, enabled=True, policy_bytes=policy_bytes,
+            policy_sha256=expected_policy_sha256, roster_bytes=roster_bytes, roster_sha256=expected_roster_sha256)
+    else:
+        delta, frozen = builder.verified_catchup_projection(source, policy_bytes=policy_bytes,
+            policy_sha256=expected_policy_sha256, roster_bytes=roster_bytes, roster_sha256=expected_roster_sha256)
     if (frozen["candidate_cursor"] != end or type(frozen["candidate_prefix"]) is not BridgePrefixPin
             or frozen["candidate_prefix"].cursor != end):
         _refuse()
@@ -1518,6 +1551,7 @@ def commit_generation(root, generation, start, end, approved_tasks, *, expected_
             actual = _verify_generation(root, generation, tasks, roster, policy_sha, expected_roster_sha256)
             if ({key: actual[key] for key in ARTIFACTS} != expected_artifacts
                     or actual.get("source_mode", _requested_source_mode("legacy", None)) != mode
+                    or actual.get("source_coverage") != _catchup_coverage(_catchup_source)
                     or actual.get("source_binding") != _source_binding(
                         start, end, expected_anchor_sha256, expected_artifacts["projection_sha256"],
                         policy_sha, expected_roster_sha256)):
@@ -1661,7 +1695,8 @@ def commit_history_generation(root, generation, start, end, approved_tasks, *, s
             digest = _sha(delta_bytes)
             actual = _verify_generation(root, generation, tasks, roster, expected_policy_sha256, expected_roster_sha256)
             if ({key: actual[key] for key in ARTIFACTS} != expected_artifacts
-                    or actual.get("source_mode", _requested_source_mode("legacy", None)) != mode):
+                    or actual.get("source_mode", _requested_source_mode("legacy", None)) != mode
+                    or actual.get("source_coverage") != _catchup_coverage(_catchup_source)):
                 _refuse()
             value = {"schema": HISTORY_SCHEMA, "generation": generation, "artifacts": dict(expected_artifacts),
                      "policy_sha256": expected_policy_sha256, "roster_sha256": expected_roster_sha256,

@@ -159,6 +159,7 @@ PUBLIC_SOURCE_KEYS = SOURCE_KEYS | {"mode", "public_policy_bytes", "public_polic
 PREFIX_PUBLIC_SOURCE_KEYS = PUBLIC_SOURCE_KEYS | {"expected_start_prefix"}
 CATCHUP_PUBLIC_SOURCE_KEYS = frozenset({"catchup_result", "expected_anchor_sha256", "mode", "public_policy_bytes",
                                        "public_policy_sha256", "anchor_bytes", "expected_start_prefix"})
+CATCHUP_PARTIAL_SOURCE_KEYS = CATCHUP_PUBLIC_SOURCE_KEYS | {"expected_cutoff_utc"}
 STATUS_MODES = frozenset({"legacy", "public-v1"})
 SOURCE_MODE_KEYS = frozenset({"status_mode", "public_policy_sha256"})
 LEGACY_SOURCE_MODE = {"status_mode": "legacy", "public_policy_sha256": None}
@@ -607,6 +608,19 @@ def validate_source_shape(source):
                 or not _pinned_bytes(source["anchor_bytes"], source["expected_anchor_sha256"], ANCHOR_LIMIT)):
             raise BuildRefused("source_invalid")
         return {"status_mode": "public-v1", "public_policy_sha256": source["public_policy_sha256"]}
+    if keys == CATCHUP_PARTIAL_SOURCE_KEYS:
+        if (source["mode"] not in ("public-catchup-partial-v1", "public-catchup-ready-v1")
+                or type(source["catchup_result"]) is not dict
+                or not _pinned_bytes(source["public_policy_bytes"], source["public_policy_sha256"], PUBLIC_POLICY_LIMIT)
+                or not _pinned_bytes(source["anchor_bytes"], source["expected_anchor_sha256"], ANCHOR_LIMIT)):
+            raise BuildRefused("source_invalid")
+        try:
+            from sandbox.mind.step2.shared_bridge_snapshot import _cutoff
+            if _cutoff(source["expected_cutoff_utc"]) is None:
+                raise ValueError()
+        except Exception:
+            raise BuildRefused("source_invalid") from None
+        return {"status_mode": "public-v1", "public_policy_sha256": source["public_policy_sha256"]}
     if not isinstance(source.get("snapshot_result"), dict):
         raise BuildRefused("source_invalid")
     if keys == SOURCE_KEYS:
@@ -684,19 +698,24 @@ def _verified_catchup_projection(source, *, policy_bytes, policy_sha256, roster_
     try:
         import copy
         from sandbox.mind.step2 import shared_bridge_snapshot as snapshot, shared_capture_adapter as adapter
-        if set(source) != CATCHUP_PUBLIC_SOURCE_KEYS:
+        timed_source = set(source) == CATCHUP_PARTIAL_SOURCE_KEYS
+        partial_source = timed_source and source.get("mode") == "public-catchup-partial-v1"
+        if (set(source) not in (CATCHUP_PUBLIC_SOURCE_KEYS, CATCHUP_PARTIAL_SOURCE_KEYS)
+                or (timed_source and partial_source is not partial_only)):
             raise ValueError()
         validate_source_shape(source)
         tasks = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)[0]
         frozen = copy.deepcopy(source["catchup_result"])
         start = source["expected_start_prefix"]
+        cutoff_args = {"expected_cutoff_utc": source["expected_cutoff_utc"]} if timed_source else {}
         if snapshot.verify_public_catchup(frozen, expected_anchor_bytes=source["anchor_bytes"],
                 expected_anchor_sha256=source["expected_anchor_sha256"], expected_policy_sha256=policy_sha256,
                 expected_roster_sha256=roster_sha256, expected_public_policy_sha256=source["public_policy_sha256"],
-                expected_start_prefix=start) is not True:
+                expected_start_prefix=start, **cutoff_args) is not True:
             raise ValueError()
         if partial_only:
-            if (frozen["caught_up"] is not False
+            if (frozen["caught_up"] is not False or (partial_source and frozen["end_reason"] not in
+                    ("deferred", "max_windows", "partial_record"))
                     or frozen["candidate_cursor"].offset <= start.cursor.offset):
                 raise ValueError()
         elif frozen["caught_up"] is not True:
@@ -725,7 +744,7 @@ def _verified_catchup_projection(source, *, policy_bytes, policy_sha256, roster_
         if snapshot.verify_public_catchup(frozen, expected_anchor_bytes=source["anchor_bytes"],
                 expected_anchor_sha256=source["expected_anchor_sha256"], expected_policy_sha256=policy_sha256,
                 expected_roster_sha256=roster_sha256, expected_public_policy_sha256=source["public_policy_sha256"],
-                expected_start_prefix=start) is not True:
+                expected_start_prefix=start, **cutoff_args) is not True:
             raise ValueError()
         return combined, frozen
     except Exception:
@@ -747,15 +766,19 @@ def bind_source(source, projection, projection_sha256, policy_sha256, roster_sha
     verifier without the mode keywords on the public path) or ``source_binding_refused`` (any verifier or binding
     failure, no text). The binding shape itself is unchanged by the mode: the mode lives in ``source_mode``."""
     source_mode = validate_source_shape(source)
-    if set(source) == CATCHUP_PUBLIC_SOURCE_KEYS:
+    if set(source) in (CATCHUP_PUBLIC_SOURCE_KEYS, CATCHUP_PARTIAL_SOURCE_KEYS):
         combined = frozen = actual = start = end = binding = tasks = None
         try:
             from sandbox.mind.step2 import shared_bridge_snapshot as snapshot, shared_capture_adapter as adapter
             tasks = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)[0]
             if type(approved_tasks) is not frozenset or approved_tasks != tasks:
                 raise ValueError()
-            combined, frozen = verified_catchup_projection(source, policy_bytes=policy_bytes,
-                policy_sha256=policy_sha256, roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+            if set(source) == CATCHUP_PARTIAL_SOURCE_KEYS and source["mode"] == "public-catchup-partial-v1":
+                combined, frozen = verified_partial_catchup_projection(source, enabled=True, policy_bytes=policy_bytes,
+                    policy_sha256=policy_sha256, roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+            else:
+                combined, frozen = verified_catchup_projection(source, policy_bytes=policy_bytes,
+                    policy_sha256=policy_sha256, roster_bytes=roster_bytes, roster_sha256=roster_sha256)
             actual = json.dumps(combined, sort_keys=True, indent=1).encode("utf-8")
             if (actual != json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
                     or not hmac.compare_digest(hashlib.sha256(actual).hexdigest(), projection_sha256)):
@@ -1154,6 +1177,15 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
         memory_history = {"predecessor_memory_sha256": summary["memory_sha256"],
                           "predecessor_projection_sha256": summary["projection_sha256"],
                           "delta_projection_sha256": delta_projection_sha256}
+    # A timed generation must not re-expose an earlier generation's records
+    # before their availability boundary if the caller supplies an older clock.
+    if source is not None and source.get("mode") in ("public-catchup-partial-v1", "public-catchup-ready-v1"):
+        try:
+            from sandbox.mind.step2.shared_bridge_snapshot import _cutoff, _ready_projection
+            if not _ready_projection(projection, _cutoff(source["expected_cutoff_utc"])):
+                raise ValueError("historical record not ready")
+        except Exception:  # noqa: BLE001 - malformed or unready history fails closed
+            raise BuildRefused("source_binding_refused") from None
     runtime_record = {"identity_source": "caller_asserted"}
     if runtime is not None:
         derived = runtime_identity(runtime)
@@ -1244,6 +1276,12 @@ def build_memory(projection, encode, identity, dim, root, name, *, approved_task
                          "bounds": {"max_records": MAX_RECORDS, "max_input_bytes": MAX_INPUT_BYTES,
                                     "encode_batch": ENCODE_BATCH},
                          "watchdog": WATCHDOG_RULE, "built_utc": _utc_now()}
+        if source is not None and set(source) == CATCHUP_PARTIAL_SOURCE_KEYS:
+            from sandbox.mind.step2.shared_bridge_snapshot import _cutoff
+            partial = source["mode"] == "public-catchup-partial-v1"
+            build_receipt["source_coverage"] = {"kind": "partial_ready_prefix" if partial else "ready_caught_up",
+                "end_reason": source["catchup_result"]["end_reason"] if partial else "snapshot_end",
+                "cutoff_utc": _cutoff(source["expected_cutoff_utc"])}
         sp.corpus_mod.ws.guard_object(build_receipt)
         receipt_bytes = cell_mod.canonical(build_receipt).encode("utf-8")
         stage = "build_receipt"

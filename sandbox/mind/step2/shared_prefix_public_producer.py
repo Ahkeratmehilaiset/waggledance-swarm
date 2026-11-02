@@ -133,10 +133,13 @@ def publish_public_prefix(*, enabled=False, request=None):
     _fail("private_state_refused")
 
 
-def publish_public_catchup(*, enabled=False, request=None, max_windows=None):
+def publish_public_catchup(*, enabled=False, request=None, max_windows=None, cutoff_utc=None):
     """Publish a complete bounded catch-up as one deduplicated public delta.
 
-    OFF by default. A partial chain or empty genesis refuses without advancing.
+    OFF by default. Without a cutoff, a partial chain or empty genesis refuses.
+    An explicit cutoff requires the fenced route; a nonempty ready prefix may
+    publish as partial on defer, window budget or partial trailing record.
+    No young row is skipped.
     Caught up means the last observed snapshot end, not complete prior history
     or currentness after reading. Source/refusal counts are not aggregated.
     Caller owns source, pins, model and private prefix state; this is not live
@@ -153,6 +156,12 @@ def publish_public_catchup(*, enabled=False, request=None, max_windows=None):
         _bind(request)
         if type(max_windows) is not int or not 1 <= max_windows <= snapshot.CATCHUP_MAX_WINDOWS:
             _fail("request_invalid")
+        if cutoff_utc is not None:
+            try:
+                if snapshot._cutoff(cutoff_utc) is None or request.fenced is not True:
+                    raise ValueError()
+            except Exception:
+                _fail("request_invalid")
         with private_state.locked_state(request.private_state_root, request.root,
                                         enabled=True, timeout=request.timeout) as state:
             state.require(request.expected_pointer_sha256, request.start_prefix)
@@ -160,7 +169,7 @@ def publish_public_catchup(*, enabled=False, request=None, max_windows=None):
                 pointer = checkpoint._secure(Path(request.root) / checkpoint.POINTER, missing_leaf=True)
                 if pointer.exists():
                     raise private_state.StateRefused("private_state_refused")
-            return _publish_locked_catchup(request, state, max_windows)
+            return _publish_locked_catchup(request, state, max_windows, cutoff_utc)
     except PrefixProducerRefused as refused:
         token = str(refused)
         if token in {"request_invalid", "pins_mismatch", "catchup_incomplete", "prepare_refused",
@@ -172,11 +181,11 @@ def publish_public_catchup(*, enabled=False, request=None, max_windows=None):
     finally:
         # Erase this API boundary's inputs even on KeyboardInterrupt. Nested
         # backend frames and native stdout/stderr are not covered by this.
-        del request, enabled, max_windows, state, pointer, token
+        del request, enabled, max_windows, cutoff_utc, state, pointer, token
     _fail(reason)
 
 
-def _publish_locked_catchup(request, state, max_windows):
+def _publish_locked_catchup(request, state, max_windows, cutoff_utc=None):
     config = source = pins = tasks = previous = previous_prefix = chain = None
     catchup_source = projection = frozen = response = None
     try:
@@ -192,21 +201,33 @@ def _publish_locked_catchup(request, state, max_windows):
                 roster_sha256=pins.roster_sha256, expected_public_policy_sha256=pins.public_policy_sha256)
             if previous_prefix != request.start_prefix:
                 raise ValueError()
+        cutoff_args = {"cutoff_utc": cutoff_utc} if cutoff_utc is not None else {}
         chain = snapshot.read_public_catchup(source.source, source.cursor, tasks, anchor_bytes=source.anchor_bytes,
             anchor_sha256=pins.anchor_sha256, generation_path=source.generation_path,
             max_bytes=source.max_bytes, max_rows=source.max_rows, max_windows=max_windows,
             policy_bytes=source.policy_bytes, policy_sha256=pins.policy_sha256,
             roster_bytes=source.roster_bytes, roster_sha256=pins.roster_sha256,
             public_policy_bytes=config.public_policy_bytes, public_policy_sha256=pins.public_policy_sha256,
-            expected_prefix_sha256=request.start_prefix.sha256, max_prefix_bytes=request.max_prefix_bytes, enabled=True)
-        if chain.get("caught_up") is not True:
+            expected_prefix_sha256=request.start_prefix.sha256, max_prefix_bytes=request.max_prefix_bytes, enabled=True,
+            **cutoff_args)
+        partial = cutoff_utc is not None and chain.get("end_reason") in ("deferred", "max_windows", "partial_record")
+        if chain.get("caught_up") is not True and not partial:
             _fail("catchup_incomplete")
         catchup_source = {"catchup_result": chain, "expected_anchor_sha256": pins.anchor_sha256,
-            "mode": "public-catchup-v1", "public_policy_bytes": config.public_policy_bytes,
+            "mode": ("public-catchup-partial-v1" if partial else
+                     "public-catchup-ready-v1" if cutoff_utc is not None else "public-catchup-v1"),
+            "public_policy_bytes": config.public_policy_bytes,
             "public_policy_sha256": pins.public_policy_sha256, "anchor_bytes": source.anchor_bytes,
             "expected_start_prefix": request.start_prefix}
-        projection, frozen = builder.verified_catchup_projection(catchup_source, policy_bytes=source.policy_bytes,
-            policy_sha256=pins.policy_sha256, roster_bytes=source.roster_bytes, roster_sha256=pins.roster_sha256)
+        if cutoff_utc is not None:
+            catchup_source["expected_cutoff_utc"] = cutoff_utc
+        if partial:
+            projection, frozen = builder.verified_partial_catchup_projection(catchup_source, enabled=True,
+                policy_bytes=source.policy_bytes, policy_sha256=pins.policy_sha256,
+                roster_bytes=source.roster_bytes, roster_sha256=pins.roster_sha256)
+        else:
+            projection, frozen = builder.verified_catchup_projection(catchup_source, policy_bytes=source.policy_bytes,
+                policy_sha256=pins.policy_sha256, roster_bytes=source.roster_bytes, roster_sha256=pins.roster_sha256)
         # Own a frozen copy so an external mutable result cannot be swapped
         # between the builder and the repeated lock-held checkpoint checks.
         catchup_source["catchup_result"] = frozen
@@ -216,9 +237,10 @@ def _publish_locked_catchup(request, state, max_windows):
         pass
     else:
         response = _publish_prepared(request, state, frozen, projection, tasks, previous, catchup_source=catchup_source)
-        return {**response, "coverage": "caught_up_to_final_snapshot_not_history", "source_refusals": "NOT_AGGREGATED"}
+        return {**response, "coverage": "partial_ready_prefix" if partial else "caught_up_to_final_snapshot_not_history",
+                "source_refusals": "NOT_AGGREGATED"}
     finally:
-        del request, state, max_windows, config, source, pins, tasks, previous, previous_prefix, chain
+        del request, state, max_windows, cutoff_utc, config, source, pins, tasks, previous, previous_prefix, chain
         del catchup_source, projection, frozen, response
     _fail("prepare_refused")
 

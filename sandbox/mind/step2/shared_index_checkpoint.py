@@ -1251,10 +1251,11 @@ def commit_prefix_genesis(*args, expected_start_prefix, expected_attempt_sha256=
 
 
 def advance_prefix_empty(*args, expected_start_prefix, expected_attempt_sha256=None, fenced=False,
-                         allow_partial_window=False, **kwargs):
+                         allow_partial_window=False, batch_empty_context=None, **kwargs):
     return advance_empty_delta(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix,
                                _expected_attempt_sha256=expected_attempt_sha256, _fenced=fenced,
-                               _allow_partial_window=allow_partial_window, **kwargs)
+                               _allow_partial_window=allow_partial_window, _batch_empty_context=batch_empty_context,
+                               **kwargs)
 
 
 def commit_prefix_history(*args, expected_start_prefix, expected_attempt_sha256=None, fenced=False, **kwargs):
@@ -1288,15 +1289,19 @@ def prepare_prefix_history(*args, expected_start_prefix, enabled=False, **kwargs
     return {"status": "prepared", "attempt_sha256": _attempt(value, None)}
 
 
-def prepare_prefix_empty(*args, expected_start_prefix, enabled=False, allow_partial_window=False, **kwargs):
+def prepare_prefix_empty(*args, expected_start_prefix, enabled=False, allow_partial_window=False,
+                         batch_empty_context=None, **kwargs):
     """Prepare without publishing; may create the persistent slot file.
 
     For no_change, attempt_sha256 identifies the existing pointer, not a new one.
+    Batch context is verified again under the writer lock at prepare and commit;
+    it does not authenticate the caller or persist a cutoff/batch claim in the pointer.
     """
     if enabled is not True:
         _refuse()
     return advance_empty_delta(*args, _prefix_required=True, _expected_start_prefix=expected_start_prefix,
-                               _prepare_attempt=True, _allow_partial_window=allow_partial_window, **kwargs)
+                               _prepare_attempt=True, _allow_partial_window=allow_partial_window,
+                               _batch_empty_context=batch_empty_context, **kwargs)
 
 
 def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_pointer_sha256,
@@ -1305,7 +1310,7 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
                         expected_public_policy_sha256=None, public_policy_bytes=None, expected_anchor_bytes=None,
                         _prefix_required=False, _expected_start_prefix=None,
                         _prepare_attempt=False, _expected_attempt_sha256=None, _fenced=False,
-                        _allow_partial_window=False):
+                        _allow_partial_window=False, _batch_empty_context=None):
     """Advance only a verified strict empty delta, without altering the indexed interval.
 
     Inactive primitive: the caller must protect source identity, cursor, policy,
@@ -1324,6 +1329,9 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
         if (type(_allow_partial_window) is not bool or (_allow_partial_window and
                 (not _prefix_required or not (_prepare_attempt or _fenced)))):
             _refuse()
+        if _batch_empty_context is not None and (not _allow_partial_window or not _prefix_required
+                or not (_prepare_attempt or _fenced)):
+            _refuse()
         from sandbox.mind.step2 import shared_bridge_snapshot as snapshot, shared_capture_adapter as adapter
         from sandbox.mind.step2 import shared_projection as projection
         root = _secure(root)
@@ -1340,6 +1348,28 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
             if mode["status_mode"] != "public-v1" or type(_expected_start_prefix) is not BridgePrefixPin:
                 _refuse()
             mode_args["expected_start_prefix"] = _expected_start_prefix
+
+        def check_batch_empty():
+            """Bind this empty window to its caller-pinned batch chain, not a public provenance claim."""
+            if _batch_empty_context is None:
+                return
+            if (type(_batch_empty_context) is not dict
+                    or set(_batch_empty_context) != {"chain", "cutoff_utc", "batch_rows"}
+                    or _batch_empty_context["batch_rows"] is not True
+                    or mode["status_mode"] != "public-v1"):
+                _refuse()
+            chain = _batch_empty_context["chain"]
+            if (type(chain) is not dict or type(chain.get("windows")) is not tuple
+                    or not chain["windows"] or chain["windows"][0] != snapshot_result
+                    or snapshot.verify_public_catchup(chain, expected_anchor_bytes=expected_anchor_bytes,
+                        expected_anchor_sha256=expected_anchor_sha256, expected_policy_sha256=expected_policy_sha256,
+                        expected_roster_sha256=expected_roster_sha256,
+                        expected_public_policy_sha256=expected_public_policy_sha256,
+                        expected_start_prefix=_expected_start_prefix,
+                        expected_cutoff_utc=_batch_empty_context["cutoff_utc"], expected_batch_rows=True) is not True):
+                _refuse()
+
+        check_batch_empty()
         delta = snapshot_result.get("projection")
         if snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
                 expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
@@ -1353,6 +1383,10 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
         end = snapshot_result.get("candidate_cursor")
         finish = _cursor(end)
         source = snapshot_result.get("source")
+        # An opt-in batched window is never accepted as an ordinary empty
+        # window: its cutoff and full chain must be checked under the lock.
+        if type(source) is dict and ("cutoff_deferred" in source) != (_batch_empty_context is not None):
+            _refuse()
         if (type(source) is not dict or source.get("cursor_end_sha256") != _sha(snapshot._token(end).encode("utf-8"))
                 or (source.get("coverage") != "delta_only_not_complete_history" and
                     not (_allow_partial_window and source.get("coverage") == "partial_window_not_complete"))):
@@ -1377,6 +1411,7 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
                     or finish["offset"] < begin["offset"]):
                 _refuse()
             # Recheck the in-process binding immediately before any write.
+            check_batch_empty()
             if snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
                     expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
                     **mode_args) is not True:
@@ -1394,6 +1429,7 @@ def advance_empty_delta(root, snapshot_result, approved_tasks, *, expected_point
                                 expected_source_mode=mode, prefix_required=_prefix_required)
             # The caller owns this mutable object; the writer lock does not.
             # Never publish a hash computed from a changed empty projection.
+            check_batch_empty()
             if (snapshot.verify_anchored_projection(snapshot_result, delta, expected_anchor_sha256=expected_anchor_sha256,
                     expected_policy_sha256=expected_policy_sha256, expected_roster_sha256=expected_roster_sha256,
                     **mode_args) is not True or _canonical(delta) != empty_delta_bytes):

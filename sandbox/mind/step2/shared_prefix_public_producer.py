@@ -133,12 +133,14 @@ def publish_public_prefix(*, enabled=False, request=None):
     _fail("private_state_refused")
 
 
-def publish_public_catchup(*, enabled=False, request=None, max_windows=None, cutoff_utc=None):
+def publish_public_catchup(*, enabled=False, request=None, max_windows=None, cutoff_utc=None, batch_rows=False):
     """Publish a complete bounded catch-up as one deduplicated public delta.
 
     OFF by default. Without a cutoff, a partial chain or empty genesis refuses.
     An explicit cutoff requires the fenced route; a nonempty ready prefix may
     publish as partial on defer, window budget or partial trailing record.
+    ``batch_rows=True`` is separately opt-in, requires that cutoff/fence, and
+    is verified independently together with the cutoff by the builder and checkpoint.
     No young row is skipped.
     Caught up means the last observed snapshot end, not complete prior history
     or currentness after reading. Source/refusal counts are not aggregated.
@@ -154,7 +156,8 @@ def publish_public_catchup(*, enabled=False, request=None, max_windows=None, cut
             return {"status": "OFF"}
         _validate(request)
         _bind(request)
-        if type(max_windows) is not int or not 1 <= max_windows <= snapshot.CATCHUP_MAX_WINDOWS:
+        if (type(max_windows) is not int or not 1 <= max_windows <= snapshot.CATCHUP_MAX_WINDOWS
+                or type(batch_rows) is not bool or (batch_rows and cutoff_utc is None)):
             _fail("request_invalid")
         if cutoff_utc is not None:
             try:
@@ -169,7 +172,7 @@ def publish_public_catchup(*, enabled=False, request=None, max_windows=None, cut
                 pointer = checkpoint._secure(Path(request.root) / checkpoint.POINTER, missing_leaf=True)
                 if pointer.exists():
                     raise private_state.StateRefused("private_state_refused")
-            return _publish_locked_catchup(request, state, max_windows, cutoff_utc)
+            return _publish_locked_catchup(request, state, max_windows, cutoff_utc, batch_rows)
     except PrefixProducerRefused as refused:
         token = str(refused)
         if token in {"request_invalid", "pins_mismatch", "catchup_incomplete", "prepare_refused",
@@ -181,11 +184,11 @@ def publish_public_catchup(*, enabled=False, request=None, max_windows=None, cut
     finally:
         # Erase this API boundary's inputs even on KeyboardInterrupt. Nested
         # backend frames and native stdout/stderr are not covered by this.
-        del request, enabled, max_windows, cutoff_utc, state, pointer, token
+        del request, enabled, max_windows, cutoff_utc, batch_rows, state, pointer, token
     _fail(reason)
 
 
-def _publish_locked_catchup(request, state, max_windows, cutoff_utc=None):
+def _publish_locked_catchup(request, state, max_windows, cutoff_utc=None, batch_rows=False):
     config = source = pins = tasks = previous = previous_prefix = chain = None
     catchup_source = projection = frozen = response = None
     try:
@@ -202,6 +205,8 @@ def _publish_locked_catchup(request, state, max_windows, cutoff_utc=None):
             if previous_prefix != request.start_prefix:
                 raise ValueError()
         cutoff_args = {"cutoff_utc": cutoff_utc} if cutoff_utc is not None else {}
+        if batch_rows:
+            cutoff_args["batch_rows"] = True
         chain = snapshot.read_public_catchup(source.source, source.cursor, tasks, anchor_bytes=source.anchor_bytes,
             anchor_sha256=pins.anchor_sha256, generation_path=source.generation_path,
             max_bytes=source.max_bytes, max_rows=source.max_rows, max_windows=max_windows,
@@ -222,11 +227,14 @@ def _publish_locked_catchup(request, state, max_windows, cutoff_utc=None):
                         expected_anchor_sha256=pins.anchor_sha256, expected_policy_sha256=pins.policy_sha256,
                         expected_roster_sha256=pins.roster_sha256,
                         expected_public_policy_sha256=pins.public_policy_sha256,
-                        expected_start_prefix=request.start_prefix, expected_cutoff_utc=cutoff_utc) is not True:
+                        expected_start_prefix=request.start_prefix, expected_cutoff_utc=cutoff_utc,
+                        expected_batch_rows=batch_rows) is not True:
                     raise ValueError()
                 try:
+                    empty_context = ({"chain": chain, "cutoff_utc": cutoff_utc, "batch_rows": True}
+                                     if batch_rows else None)
                     advanced = _publish_prepared(request, state, window, part, tasks, previous,
-                                                 allow_partial_window=True)
+                                                 allow_partial_window=True, batch_empty_context=empty_context)
                     return {**advanced, "coverage": "partial_ready_prefix", "source_refusals": "NOT_AGGREGATED"}
                 except Exception:
                     # Publication may already have moved the pointer or opened an intent.
@@ -242,6 +250,8 @@ def _publish_locked_catchup(request, state, max_windows, cutoff_utc=None):
             "expected_start_prefix": request.start_prefix}
         if cutoff_utc is not None:
             catchup_source["expected_cutoff_utc"] = cutoff_utc
+        if batch_rows:
+            catchup_source["expected_batch_rows"] = True
         if partial:
             projection, frozen = builder.verified_partial_catchup_projection(catchup_source, enabled=True,
                 policy_bytes=source.policy_bytes, policy_sha256=pins.policy_sha256,
@@ -261,7 +271,7 @@ def _publish_locked_catchup(request, state, max_windows, cutoff_utc=None):
         return {**response, "coverage": "partial_ready_prefix" if partial else "caught_up_to_final_snapshot_not_history",
                 "source_refusals": "NOT_AGGREGATED"}
     finally:
-        del request, state, max_windows, cutoff_utc, config, source, pins, tasks, previous, previous_prefix, chain
+        del request, state, max_windows, cutoff_utc, batch_rows, config, source, pins, tasks, previous, previous_prefix, chain
         del catchup_source, projection, frozen, response
     _fail("prepare_refused")
 
@@ -302,7 +312,7 @@ def _publish_locked(request, state):
 
 
 def _publish_prepared(request, state, result, projection, tasks, previous, *, catchup_source=None,
-                      allow_partial_window=False):
+                      allow_partial_window=False, batch_empty_context=None):
     config, source, pins = request.config, request.config.source, request.pins
     root = Path(request.root)
     common = dict(policy_bytes=source.policy_bytes, expected_policy_sha256=pins.policy_sha256,
@@ -323,6 +333,8 @@ def _publish_prepared(request, state, result, projection, tasks, previous, *, ca
                 kwargs = dict(expected_pointer_sha256=request.expected_pointer_sha256, **common)
                 if allow_partial_window:
                     kwargs["allow_partial_window"] = True
+                if batch_empty_context is not None:
+                    kwargs["batch_empty_context"] = batch_empty_context
                 prepared = checkpoint.prepare_prefix_empty(*args, enabled=True, **kwargs)
                 if type(prepared) is not dict or set(prepared) != {"status", "attempt_sha256"}:
                     raise ValueError()

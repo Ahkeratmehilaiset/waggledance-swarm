@@ -613,6 +613,18 @@ def _publish(request, *, max_windows=None, cutoff_utc=None):
     return report, None
 
 
+def _cutoff_valid(value, schema):
+    """Validate the untrusted timezone without propagating its exception."""
+    if value is None:
+        return True
+    if type(value) is not _dt.datetime or schema != PLAN_FENCED_CATCHUP_SCHEMA:
+        return False
+    try:
+        return value.utcoffset() is not None
+    except Exception:
+        return False
+
+
 def build_prefix_generation(*, enabled=False, plan_bytes=None, expected_plan_sha256=None, config=None,
                             start_prefix=None, root=None, private_state_root=None, trusted_model_root=None,
                             cutoff_utc=None):
@@ -630,8 +642,9 @@ def build_prefix_generation(*, enabled=False, plan_bytes=None, expected_plan_sha
         raise BuildChildRefused("plan_refused")
     if not _request_shape(config, start_prefix, root, private_state_root, trusted_model_root):
         raise BuildChildRefused("request_refused")
-    if cutoff_utc is not None and (type(cutoff_utc) is not _dt.datetime or cutoff_utc.utcoffset() is None
-                                   or plan["schema"] != PLAN_FENCED_CATCHUP_SCHEMA):
+    if not _cutoff_valid(cutoff_utc, plan["schema"]):
+        plan_bytes = expected_plan_sha256 = config = start_prefix = None
+        root = private_state_root = trusted_model_root = cutoff_utc = plan = None
         raise BuildChildRefused("request_refused")
     if not _pins_bound(plan["pins"], config):
         raise BuildChildRefused("pins_refused")

@@ -284,3 +284,236 @@ def test_real_preflight_refuses_changed_or_unbound_inputs(tmp_path, monkeypatch,
     if case == 'model_changed': (dirs['model'] / 'model.safetensors').write_bytes(b'changed')
     with pytest.raises(Exception): cli._prepare(str(path), pin)
     assert not list(dirs['checkpoint'].iterdir()) and not list(dirs['private'].iterdir())
+
+
+# Late public (lead-mind-genesis-skip-cli-20261106-v1): explicit opt-in resume_genesis_skip; progress is reported as
+# GENESIS_SKIP_PROGRESS (exit 4) without claiming publication and the same pinned config resumes.
+def _stub_config(**extra):
+    config = {'source_path': 'private', 'source_sha256': 'a' * 64, 'source_bytes': 17,
+              'source_file_identity': 'windows-v1:00000001:0000000000000001', 'generation_path': 'private',
+              'generation': 'synthetic', 'checkpoint_root': 'private', 'private_state_root': 'private',
+              'trusted_model_root': 'private', 'policy_sha256': 'b' * 64, 'public_policy_sha256': 'c' * 64,
+              'fleet_sha256': 'd' * 64, 'max_prefix_bytes': 1024, 'max_bytes': 32, 'max_rows': 1,
+              'plan_template': {}, 'renewable': True, 'cutoff_utc': '2026-01-01T00:00:00Z', 'batch_rows': True,
+              'min_headroom_bytes': 128, 'allow_partial_genesis': True}
+    config.update(extra)
+    return config
+
+
+def test_default_config_without_the_key_calls_bootstrap_exactly_as_before(monkeypatch, capsys):
+    from tools import wd_q4_genesis_cli as cli, wd_q4_genesis_bootstrap as genesis
+    config = _stub_config()
+    monkeypatch.setattr(cli, '_prepare', lambda *_: (config, b'p', b'u', b'f', genesis))
+    calls = []
+
+    def bootstrap(**kwargs):
+        calls.append(kwargs)
+        raise genesis.GenesisRefused('genesis_skip_progress')
+
+    monkeypatch.setattr(genesis, 'bootstrap', bootstrap)
+    monkeypatch.setattr(cli, '_verify_skip_progress', lambda *_: pytest.fail('progress needs the opt-in'),
+                        raising=False)
+    assert cli.main(['--enable', '--config', 'private', '--sha256', 'a' * 64]) == 2
+    assert json.loads(capsys.readouterr().out) == {'status': 'REFUSED'}
+    assert len(calls) == 1 and 'resume_genesis_skip' not in calls[0]
+
+
+@pytest.mark.parametrize('outcome,code,expected', [
+    ('progress', 4, {'status': 'GENESIS_SKIP_PROGRESS', 'skip_receipt_sha256': 'e' * 64}),
+    ('progress_unverified', 3, {'status': 'UNKNOWN'}),
+    ('progress_interrupted', 3, {'status': 'UNKNOWN'}),
+    ('other_refusal', 2, {'status': 'REFUSED'})])
+def test_opt_in_reports_progress_only_after_verification(monkeypatch, capsys, outcome, code, expected):
+    from tools import wd_q4_genesis_cli as cli, wd_q4_genesis_bootstrap as genesis
+    config = _stub_config(resume_genesis_skip=True)
+    monkeypatch.setattr(cli, '_prepare', lambda *_: (config, b'p', b'u', b'f', genesis))
+    calls = []
+
+    def bootstrap(**kwargs):
+        calls.append(kwargs)
+        raise genesis.GenesisRefused('genesis_no_public_row' if outcome == 'other_refusal' else 'genesis_skip_progress')
+
+    def verify(*_):
+        if outcome == 'progress_unverified':
+            raise ValueError('synthetic-private-canary')
+        if outcome == 'progress_interrupted':
+            raise KeyboardInterrupt()
+        return {'skip_receipt_sha256': 'e' * 64}
+
+    monkeypatch.setattr(genesis, 'bootstrap', bootstrap)
+    monkeypatch.setattr(cli, '_verify_skip_progress', verify, raising=False)
+    assert cli.main(['--enable', '--config', 'private', '--sha256', 'a' * 64]) == code
+    output = capsys.readouterr()
+    assert json.loads(output.out) == expected and 'synthetic-private-canary' not in output.out + output.err
+    assert len(calls) == 1 and calls[0]['resume_genesis_skip'] is True
+
+
+@pytest.mark.parametrize('case', ['not_boolean', 'without_partial', 'runner_changed', 'runner_unlisted'])
+def test_real_preflight_refuses_an_unbound_skip_opt_in(tmp_path, monkeypatch, case):
+    cli, dirs, config, path, write = _fixture(tmp_path, monkeypatch)
+    _pin_runner(dirs, monkeypatch, config)
+    config.update(cutoff_utc='2026-01-01T00:00:00Z', batch_rows=True, allow_partial_genesis=True,
+                  resume_genesis_skip=True)
+    if case == 'not_boolean': config['resume_genesis_skip'] = 1
+    if case == 'without_partial': config['allow_partial_genesis'] = False
+    if case == 'runner_changed':
+        (dirs['bundle'] / 'tools-bootstrap/tools/wd_q4_status_prefix_runner.py').write_bytes(b'# changed')
+    if case == 'runner_unlisted':
+        manifest = json.loads((dirs['bundle'] / 'deployment-manifest.json').read_bytes())
+        del manifest['files']['tools-bootstrap/tools/wd_q4_status_prefix_runner.py']
+        raw = json.dumps(manifest).encode()
+        (dirs['bundle'] / 'deployment-manifest.json').write_bytes(raw)
+        monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', _sha(raw).upper())
+        config['manifest_sha256'] = _sha(raw)
+    pin = write()
+    with pytest.raises(Exception): cli._prepare(str(path), pin)
+    assert not list(dirs['checkpoint'].iterdir()) and not list(dirs['private'].iterdir())
+
+
+def test_real_preflight_accepts_the_bound_skip_opt_in_without_writes(tmp_path, monkeypatch):
+    cli, dirs, config, path, write = _fixture(tmp_path, monkeypatch)
+    _pin_runner(dirs, monkeypatch, config)
+    config.update(cutoff_utc='2026-01-01T00:00:00Z', batch_rows=True, allow_partial_genesis=True,
+                  resume_genesis_skip=True)
+    pin = write()
+    assert cli._prepare(str(path), pin)[0] == config
+    assert not list(dirs['checkpoint'].iterdir()) and not list(dirs['private'].iterdir())
+
+
+def _pin_runner(dirs, monkeypatch, config):
+    """List the status runner in the fixture manifest, as a deployed bundle does."""
+    from tools import wd_q4_status_prefix_runner as runner
+    code = dirs['bundle'] / 'tools-bootstrap' / 'tools' / 'wd_q4_status_prefix_runner.py'
+    code.write_bytes(Path(runner.__file__).read_bytes())
+    monkeypatch.setattr(runner, '__file__', str(code))
+    manifest_path = dirs['bundle'] / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest['files']['tools-bootstrap/tools/wd_q4_status_prefix_runner.py'] = _sha(code.read_bytes()).upper()
+    raw = json.dumps(manifest).encode()
+    manifest_path.write_bytes(raw)
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', _sha(raw).upper())
+    config['manifest_sha256'] = _sha(raw)
+
+
+def _late_public_cli(tmp_path, monkeypatch, kinds, max_windows=2):
+    """Actual CLI, bootstrap, pre-scan, skip receipts and runner on a synthetic multi-window source; synthetic
+    child and checkpoint accessor from the bootstrap tests."""
+    from tools import wd_q4_genesis_cli as cli, wd_q4_genesis_bootstrap as genesis
+    from waggledance.core.bridge_log_reader import _file_identity
+    path = Path(__file__).with_name('test_wd_q4_genesis_bootstrap.py')
+    spec = importlib.util.spec_from_file_location('q4_cli_genesis_fixture_late', path)
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    args, calls = helper.synthetic.__wrapped__(tmp_path, monkeypatch)
+    monkeypatch.setattr(genesis, '_prescan_public_rows', helper.REAL_PRESCAN)
+    rows = helper.f2_rows(args, kinds)
+    run = helper.f2_args(args, rows, max_windows=max_windows)
+    source = Path(run['source_path'])
+    data = source.read_bytes()
+    with source.open('rb') as stream: source_id = _file_identity(stream)
+    config = {'source_path': run['source_path'], 'source_sha256': _sha(data), 'source_bytes': len(data),
+        'source_file_identity': source_id, 'generation_path': run['generation_path'], 'generation': run['generation'],
+        'checkpoint_root': run['checkpoint_root'], 'private_state_root': run['private_state_root'],
+        'trusted_model_root': run['trusted_model_root'], 'policy_sha256': run['policy_sha256'],
+        'public_policy_sha256': run['public_policy_sha256'], 'fleet_sha256': run['expected_fleet_sha256'],
+        'max_prefix_bytes': run['max_prefix_bytes'], 'max_bytes': run['max_bytes'], 'max_rows': run['max_rows'],
+        'plan_template': run['plan_template'], 'renewable': False, 'cutoff_utc': run['cutoff_utc'],
+        'batch_rows': True, 'min_headroom_bytes': 1, 'allow_partial_genesis': True, 'resume_genesis_skip': True}
+    monkeypatch.setattr(cli, '_prepare', lambda *_: (config, run['policy_bytes'], run['public_policy_bytes'],
+                                                     run['fleet_bytes'], genesis))
+    return cli, config, rows, calls
+
+
+def _run(cli, capsys):
+    code = cli.main(['--enable', '--config', 'private', '--sha256', 'a' * 64])
+    return code, json.loads(capsys.readouterr().out)
+
+
+def test_real_cli_skips_empty_windows_resumes_and_publishes_from_the_receipt(tmp_path, monkeypatch, capsys):
+    cli, config, rows, calls = _late_public_cli(tmp_path, monkeypatch, ['other_task', 'private'] * 4 + ['public'])
+    receipt = Path(config['private_state_root']) / 'q4-genesis-skip-v1.json'
+    seen = []
+    for expected_runs in (1, 2):
+        code, output = _run(cli, capsys)
+        assert code == 4 and set(output) == {'status', 'skip_receipt_sha256'}
+        assert output['status'] == 'GENESIS_SKIP_PROGRESS' and output['skip_receipt_sha256'] == _sha(receipt.read_bytes())
+        assert json.loads(receipt.read_bytes())['runs'] == expected_runs and calls == []
+        assert not Path(config['generation_path']).exists()
+        seen.append(output['skip_receipt_sha256'])
+    assert seen[0] != seen[1] and json.loads(receipt.read_bytes())['offset'] == len(b''.join(rows[:8]))
+    code, output = _run(cli, capsys)
+    assert code == 0 and output['status'] in ('PUBLISHED_GENESIS', 'PUBLISHED_GENESIS_PARTIAL')
+    assert set(output) <= {'status', 'pointer_sha256', 'runner_receipt_sha256'} and len(calls) == 1
+    assert calls[0]['config'].source.cursor.offset == len(b''.join(rows[:8]))
+    text = json.dumps(output)
+    assert str(len(b''.join(rows[:8]))) not in text and json.loads(receipt.read_bytes())['prefix_sha256'] not in text
+
+
+def test_real_cli_progress_never_moves_past_a_changed_or_replaced_source(tmp_path, monkeypatch, capsys):
+    cli, config, rows, calls = _late_public_cli(tmp_path, monkeypatch, ['other_task', 'private'] * 4 + ['public'])
+    receipt = Path(config['private_state_root']) / 'q4-genesis-skip-v1.json'
+    assert _run(cli, capsys)[0] == 4
+    before = receipt.read_bytes()
+    source = Path(config['source_path'])
+    copy = source.with_name('copy.jsonl')
+    copy.write_bytes(source.read_bytes())
+    copy.replace(source)
+    assert _run(cli, capsys) == (2, {'status': 'REFUSED'})
+    assert receipt.read_bytes() == before and calls == [] and not Path(config['generation_path']).exists()
+
+
+def test_real_cli_unverifiable_progress_is_unknown(tmp_path, monkeypatch, capsys):
+    from tools import wd_q4_status_prefix_runner as runner
+    cli, config, rows, calls = _late_public_cli(tmp_path, monkeypatch, ['other_task', 'private'] * 4 + ['public'])
+    original = runner._genesis_skip
+
+    def tampered(raw):
+        value = dict(original(raw))
+        value['generation'] = 'another-generation'
+        return value
+
+    monkeypatch.setattr(runner, '_genesis_skip', tampered)
+    assert _run(cli, capsys) == (3, {'status': 'UNKNOWN'})
+    assert calls == [] and not Path(config['generation_path']).exists()
+
+
+def test_real_cli_publication_must_bind_the_current_receipt(tmp_path, monkeypatch, capsys):
+    from tools import wd_q4_genesis_bootstrap as genesis
+    cli, config, rows, calls = _late_public_cli(tmp_path, monkeypatch, ['other_task', 'private'] * 2 + ['public'])
+    assert _run(cli, capsys)[0] == 4
+    receipt = Path(config['private_state_root']) / 'q4-genesis-skip-v1.json'
+    real = genesis.bootstrap
+
+    def swap_after(**kwargs):
+        result = real(**kwargs)
+        value = json.loads(receipt.read_bytes())
+        value['runs'] += 7
+        receipt.write_bytes(json.dumps(value, sort_keys=True, separators=(',', ':')).encode())
+        return result
+
+    monkeypatch.setattr(genesis, 'bootstrap', swap_after)
+    assert _run(cli, capsys) == (3, {'status': 'UNKNOWN'})
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('fault', ['none', 'sidecar_exists', 'tuple_exists', 'receipt_policy', 'receipt_public_policy',
+                                   'source_pin', 'receipt_prefix', 'receipt_missing'])
+def test_skip_progress_verification_checks_state_receipt_and_source(tmp_path, monkeypatch, capsys, fault):
+    from tools import wd_q4_genesis_bootstrap as genesis
+    cli, config, rows, calls = _late_public_cli(tmp_path, monkeypatch, ['other_task', 'private'] * 4 + ['public'])
+    assert _run(cli, capsys)[0] == 4
+    receipt = Path(config['private_state_root']) / 'q4-genesis-skip-v1.json'
+    value = json.loads(receipt.read_bytes())
+    if fault == 'sidecar_exists': Path(config['generation_path']).write_bytes(b'{}')
+    if fault == 'tuple_exists': (Path(config['private_state_root']) / 'q4-genesis-tuple-v1.json').write_bytes(b'{}')
+    if fault in ('receipt_policy', 'receipt_public_policy', 'receipt_prefix'):
+        key = {'receipt_policy': 'policy_sha256', 'receipt_public_policy': 'public_policy_sha256',
+               'receipt_prefix': 'prefix_sha256'}[fault]
+        value[key] = 'e' * 64
+        receipt.write_bytes(json.dumps(value, sort_keys=True, separators=(',', ':')).encode())
+    if fault == 'source_pin': config['source_sha256'] = 'e' * 64
+    if fault == 'receipt_missing': receipt.unlink()
+    if fault == 'none':
+        assert cli._verify_skip_progress(config, genesis) == {'skip_receipt_sha256': _sha(receipt.read_bytes())}
+    else:
+        with pytest.raises(Exception): cli._verify_skip_progress(config, genesis)

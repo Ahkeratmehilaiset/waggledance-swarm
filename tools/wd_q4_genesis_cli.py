@@ -3,6 +3,18 @@
 The source prefix pin is checked before and after bootstrap; it is not an
 atomic admission pin inside bootstrap. A post-admission mismatch is UNKNOWN.
 This module never prints source content or paths and cannot authenticate pins.
+
+Late public (optional config key resume_genesis_skip, default absent = off and
+the call is unchanged): it requires allow_partial_genesis and also pins the
+running status runner to the manifest. A bootstrap refusal
+genesis_skip_progress is verified here (no sidecar or private tuple exists, the
+config source pin still holds, and the private skip receipt names this source
+identity, generation and pins and re-hashes from the source) and reported as
+GENESIS_SKIP_PROGRESS with exit code 4: nothing is published and the one-shot
+is not spent, so the same pinned config is run again to resume. Only the
+receipt sha256 is printed, never its offset or prefix digest. After a
+publication the private route must bind the current receipt exactly when
+genesis started past offset zero.
 """
 import hashlib
 import hmac
@@ -20,6 +32,7 @@ _KEYS = frozenset({'schema', 'bundle_root', 'manifest_sha256', 'source_path',
     'public_policy_path', 'public_policy_sha256', 'fleet_sha256', 'max_prefix_bytes',
     'max_bytes', 'max_rows', 'plan_template', 'renewable', 'cutoff_utc', 'batch_rows',
     'min_headroom_bytes', 'allow_partial_genesis'})
+_OPTIONAL = frozenset({'resume_genesis_skip'})
 
 
 def _sha(raw):
@@ -61,7 +74,9 @@ def _prepare(path, digest):
     from tools import wd_q4_status_prefix_runner as runner
     from waggledance.core.bridge_log_reader import _file_identity
     config = _read_config(_c_path(path), digest)
-    if set(config) != _KEYS or config['schema'] != 'wd.q4-genesis-cli.v1':
+    if (frozenset(config) not in (_KEYS, _KEYS | _OPTIONAL) or config['schema'] != 'wd.q4-genesis-cli.v1'
+            or type(config.get('resume_genesis_skip', False)) is not bool
+            or (config.get('resume_genesis_skip') is True and config['allow_partial_genesis'] is not True)):
         raise ValueError()
     for key in ('manifest_sha256', 'source_sha256', 'policy_sha256', 'public_policy_sha256', 'fleet_sha256'):
         if type(config[key]) is not str or not _HEX.fullmatch(config[key]):
@@ -127,8 +142,11 @@ def _prepare(path, digest):
     runner._pinned(fleet, fleet_hash, runner._FLEET_SHA, limit=1024 * 1024)
     # The running modules themselves must be the exact manifest-listed files.
     from tools import wd_q4_genesis_bootstrap as genesis
-    for relative, actual in (('tools/wd_q4_genesis_cli.py', __file__),
-                             ('tools/wd_q4_genesis_bootstrap.py', genesis.__file__)):
+    pinned_code = [('tools/wd_q4_genesis_cli.py', __file__), ('tools/wd_q4_genesis_bootstrap.py', genesis.__file__)]
+    if config.get('resume_genesis_skip') is True:
+        # The runner decides whether a genesis past offset zero is admitted.
+        pinned_code.append(('tools/wd_q4_status_prefix_runner.py', runner.__file__))
+    for relative, actual in pinned_code:
         code = bundle / 'tools-bootstrap' / relative
         pin = files.get('tools-bootstrap/' + relative, '').lower()
         if not _HEX.fullmatch(pin) or not os.path.samefile(code, actual):
@@ -166,6 +184,8 @@ def _verify_result(config, genesis, result, policy, fleet):
                                      1024 * 1024, tuple_hash, 'tuple_refused'))
     if private_tuple.get('schema') != 'wd.q4-genesis-private-tuple.v1':
         raise ValueError()
+    if config.get('resume_genesis_skip') is True:
+        _verify_skip_binding(config, private_tuple)
     roster, roster_hash = roster_producer.build_roster_snapshot(fleet, config['fleet_sha256'], enabled=True)
     tasks, _ = capture.strict_pins(policy, config['policy_sha256'], roster, roster_hash)
     _, end_pin = checkpoint.read_verified_prefix_pointer(config['checkpoint_root'], tasks,
@@ -192,6 +212,63 @@ def _verify_result(config, genesis, result, policy, fleet):
                 not hmac.compare_digest(genesis._snapshot(stream, end), end_hash)):
             raise ValueError()
     return fully_covered
+
+
+def _skip_receipt(config, genesis):
+    """The current skip receipt bytes after verifying them against this config and the source; ValueError otherwise."""
+    from tools import wd_q4_status_prefix_runner as runner
+    from waggledance.core.bridge_log_reader import _file_identity
+    raw = runner._read_genesis_skip(Path(config['private_state_root']))
+    value = runner._genesis_skip(raw)
+    if (value['file_identity'] != config['source_file_identity'] or value['generation'] != config['generation']
+            or value['policy_sha256'] != config['policy_sha256']
+            or value['public_policy_sha256'] != config['public_policy_sha256']
+            or value['offset'] > config['max_prefix_bytes']):
+        raise ValueError()
+    source = runner._plain_file(config['source_path'])
+    with source.open('rb') as stream:
+        if (os.fstat(stream.fileno()).st_size < max(value['offset'], config['source_bytes'])
+                or _file_identity(stream) != config['source_file_identity']
+                or not hmac.compare_digest(genesis._snapshot(stream, config['source_bytes']), config['source_sha256'])
+                or not hmac.compare_digest(genesis._snapshot(stream, value['offset']), value['prefix_sha256'])):
+            raise ValueError()
+    return raw
+
+
+def _verify_skip_progress(config, genesis):
+    """genesis_skip_progress spent nothing: no sidecar or tuple, and a receipt that matches this config."""
+    from tools import wd_q4_status_prefix_runner as runner
+    if (not runner._absent(Path(config['generation_path']))
+            or not runner._absent(Path(config['private_state_root']) / 'q4-genesis-tuple-v1.json')):
+        raise ValueError()
+    return {'skip_receipt_sha256': _sha(_skip_receipt(config, genesis))}
+
+
+def _verify_skip_binding(config, private_tuple):
+    """A genesis past offset zero binds the current receipt exactly; one at offset zero binds none."""
+    import base64
+    from tools import wd_q4_status_prefix_runner as runner
+    entry = private_tuple.get('route')
+    if type(entry) is not dict or type(entry.get('bytes_b64')) is not str or type(entry.get('sha256')) is not str:
+        raise ValueError()
+    route_raw = base64.b64decode(entry['bytes_b64'], validate=True)
+    if not hmac.compare_digest(_sha(route_raw), entry['sha256']):
+        raise ValueError()
+    route = _doc(route_raw)
+    cursor = route.get('cursor')
+    if type(cursor) is not dict or type(cursor.get('offset')) is not int:
+        raise ValueError()
+    bound = route.get('genesis_skip_sha256')
+    if cursor['offset'] == 0:
+        if bound is not None:
+            raise ValueError()
+        return
+    raw = runner._read_genesis_skip(Path(config['private_state_root']))
+    value = runner._genesis_skip(raw)
+    if (type(bound) is not str or not hmac.compare_digest(_sha(raw), bound) or value['offset'] != cursor['offset']
+            or value['prefix_sha256'] != route.get('prefix_sha256')
+            or value['file_identity'] != config['source_file_identity'] or value['generation'] != config['generation']):
+        raise ValueError()
 
 
 def _emit(status, hashes=None):
@@ -229,12 +306,21 @@ def main(argv=None):
             allow_partial_genesis=config['allow_partial_genesis'],
             expected_source_identity=config['source_file_identity'],
             expected_source_prefix_bytes=config['source_bytes'],
-            expected_source_prefix_sha256=config['source_sha256'])
+            expected_source_prefix_sha256=config['source_sha256'],
+            **({'resume_genesis_skip': True} if config.get('resume_genesis_skip') is True else {}))
         fully_covered = _verify_result(config, genesis, result, policy, fleet)
         hashes = {key: result[key] for key in ('pointer_sha256', 'runner_receipt_sha256') if key in result}
         if any(type(value) is not str or _HEX.fullmatch(value) is None for value in hashes.values()):
             raise ValueError()
-    except genesis.GenesisRefused:
+    except genesis.GenesisRefused as refused:
+        if config.get('resume_genesis_skip') is True and str(refused) == 'genesis_skip_progress':
+            try:
+                progress = _verify_skip_progress(config, genesis)
+            except BaseException:
+                _emit('UNKNOWN')
+                return 3
+            _emit('GENESIS_SKIP_PROGRESS', progress)
+            return 4
         _emit('REFUSED')
         return 2
     except BaseException:

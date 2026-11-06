@@ -265,6 +265,43 @@ def test_source_parent_replaced_during_child_is_unknown_and_quarantined(case, mo
     assert (checkpoint / runner._PENDING).is_file() and (private / runner._PENDING).is_file()
 
 
+def test_sidecar_parent_replaced_during_child_is_unknown_and_quarantined(case, monkeypatch):
+    runner, args, route, checkpoint, private, _ = case
+    sidecar_dir = Path(route["source"]).parent.parent / "independent-sidecar"
+    sidecar_dir.mkdir()
+    (sidecar_dir / "generation.json").write_bytes(b"synthetic-sidecar")
+    route = dict(route, generation_path=str(sidecar_dir / "generation.json"))
+    report = child_report()
+    report["plan_sha256"] = route["plan_sha256"]
+    def child(**kwargs):
+        sidecar_dir.rename(sidecar_dir.with_name("displaced-synthetic-sidecar"))
+        sidecar_dir.mkdir()
+        return report
+    fake_child(monkeypatch, child)
+    with pytest.raises(runner.StatusRunnerOutcomeUnknown):
+        runner.run_once(**args(route))
+    assert (checkpoint / runner._PENDING).is_file() and (private / runner._PENDING).is_file()
+
+
+def test_sidecar_parent_replaced_before_reservation_is_refused_without_child(case, monkeypatch):
+    runner, args, route, checkpoint, private, _ = case
+    sidecar_dir = Path(route["source"]).parent.parent / "independent-sidecar"
+    sidecar_dir.mkdir()
+    (sidecar_dir / "generation.json").write_bytes(b"synthetic-sidecar")
+    route = dict(route, generation_path=str(sidecar_dir / "generation.json"))
+    calls = []
+    fake_child(monkeypatch, lambda **kwargs: calls.append(kwargs))
+    def token(_):
+        sidecar_dir.rename(sidecar_dir.with_name("displaced-synthetic-sidecar"))
+        sidecar_dir.mkdir()
+        return "a" * 64
+    monkeypatch.setattr(runner.secrets, "token_hex", token)
+    with pytest.raises(runner.StatusRunnerOutcomeUnknown):
+        runner.run_once(**args(route))
+    assert calls == []
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
+
+
 @pytest.mark.parametrize("field", ["checkpoint_root", "private_state_root", "trusted_model_root"])
 @pytest.mark.parametrize("relation", ["source_inside_root", "root_inside_source", "same_directory"])
 def test_source_parent_and_all_roots_must_be_disjoint(case, monkeypatch, field, relation):
@@ -281,6 +318,35 @@ def test_source_parent_and_all_roots_must_be_disjoint(case, monkeypatch, field, 
         changed[field] = str(nested)
     else:
         changed[field] = str(Path(route["source"]).parent)
+    calls = []
+    fake_child(monkeypatch, lambda **kwargs: calls.append(kwargs))
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**args(changed))
+    assert calls == []
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
+
+
+@pytest.mark.parametrize("field", ["checkpoint_root", "private_state_root", "trusted_model_root"])
+@pytest.mark.parametrize("relation", ["sidecar_inside_root", "root_inside_sidecar", "same_directory"])
+def test_sidecar_parent_and_all_roots_must_be_disjoint(case, monkeypatch, field, relation):
+    runner, args, route, checkpoint, private, _ = case
+    changed = dict(route)
+    if relation == "sidecar_inside_root":
+        sidecar_dir = Path(route[field]) / "nested-sidecar"
+        sidecar_dir.mkdir()
+        (sidecar_dir / "generation.json").write_bytes(b"synthetic")
+        changed["generation_path"] = str(sidecar_dir / "generation.json")
+    else:
+        sidecar_dir = Path(route["source"]).parent.parent / "separate-sidecar"
+        sidecar_dir.mkdir()
+        (sidecar_dir / "generation.json").write_bytes(b"synthetic")
+        changed["generation_path"] = str(sidecar_dir / "generation.json")
+        if relation == "root_inside_sidecar":
+            nested = sidecar_dir / "nested-root"
+            nested.mkdir()
+            changed[field] = str(nested)
+        else:
+            changed[field] = str(sidecar_dir)
     calls = []
     fake_child(monkeypatch, lambda **kwargs: calls.append(kwargs))
     with pytest.raises(runner.StatusRunnerRefused):

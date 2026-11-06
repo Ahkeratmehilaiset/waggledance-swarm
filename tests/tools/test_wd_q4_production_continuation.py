@@ -7,6 +7,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from tests.tools.test_wd_q4_genesis_bootstrap import synthetic as genesis_synthetic
 
 
 def raw(value):
@@ -245,3 +246,97 @@ def test_unbatched_route_preserves_absence_of_batch_option(synthetic):
     update_document(args, document)
     mod.continue_once(**args)
     assert "batch_rows" not in json.loads(state["calls"][0]["route_bytes"])
+
+
+def test_explicit_cutoff_defers_then_publishes_with_private_route_evidence(synthetic, monkeypatch):
+    from pathlib import Path
+    mod, args, state, _, route, *_ = synthetic
+    monkeypatch.setattr(mod, "_checkpoint_cutoff", lambda *_: "2026-10-31T13:00:00Z", raising=False)
+    state["status"] = "EMPTY_NO_CHANGE"
+    first = mod.continue_once(**args, cutoff_utc="2026-10-31T13:00:00Z",
+                              previous_cutoff_utc="2026-10-31T13:00:00Z")
+    assert first["status"] == "DEFERRED" and first["cutoff_utc"] == "2026-10-31T13:00:00Z"
+    assert first["cutoff_monotonicity"] == "CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN"
+    state["status"] = "PUBLISHED_HISTORY"
+    second = mod.continue_once(**args, cutoff_utc="2026-10-31T13:02:00Z",
+                               previous_cutoff_utc=first["cutoff_utc"])
+    assert second["status"] == "partial_ready_prefix" and second["cutoff_utc"] == "2026-10-31T13:02:00Z"
+    assert len(state["calls"]) == 2
+    for result, call in zip((first, second), state["calls"]):
+        route_bytes = call["route_bytes"]
+        assert json.loads(route_bytes)["cutoff_utc"] == result["cutoff_utc"]
+        assert result["route_sha256"] == sha(route_bytes) == call["expected_route_sha256"]
+        saved = Path(route["private_state_root"]) / ("q4-continuation-route-" + result["route_sha256"] + ".json")
+        assert saved.read_bytes() == route_bytes
+
+
+@pytest.mark.parametrize("requested,previous,checkpoint", [
+    ("2026-10-31T12:59:59Z", "2026-10-31T12:59:59Z", "2026-10-31T12:59:59Z"),
+    ("2026-10-31T13:01:00Z", "2026-10-31T13:02:00Z", "2026-10-31T13:00:00Z"),
+    ("2026-10-31T13:01:00Z", "2026-10-31T13:00:00Z", "2026-10-31T13:02:00Z"),
+    ("2026-10-31T13:03:00Z", "2026-10-31T13:00:00Z", "2026-10-31T13:02:00Z"),
+    ("not-a-time", "2026-10-31T13:00:00Z", "2026-10-31T13:00:00Z"),
+])
+def test_explicit_cutoff_cannot_go_below_any_pinned_floor(synthetic, monkeypatch, requested, previous, checkpoint):
+    mod, args, state, *_ = synthetic
+    monkeypatch.setattr(mod, "_checkpoint_cutoff", lambda *_: checkpoint, raising=False)
+    with pytest.raises(mod.ContinuationRefused):
+        mod.continue_once(**args, cutoff_utc=requested, previous_cutoff_utc=previous)
+    assert state["calls"] == []
+
+
+def test_real_late_genesis_deferred_row_then_later_cutoff(genesis_synthetic, monkeypatch):
+    """Real skip/runner/producer/checkpoint; synthetic encoder, no model call."""
+    from pathlib import Path
+    from tests.tools import test_wd_q4_genesis_bootstrap as base
+    from tools import wd_q4_production_continuation as mod
+    args, _ = genesis_synthetic
+    base.test_late_skip_real_producer_publishes_every_public_row_after_the_skip(genesis_synthetic, monkeypatch)
+    source = Path(args["source_path"])
+    row = json.loads(base.f2_rows(args, ["public"])[0])
+    row["ts_utc"] = "2026-10-31T13:00:30Z"
+    row["status"] = "done"
+    late = base.raw(row) + b"\n"
+    with source.open("ab") as stream:
+        stream.write(late)
+    raw_tuple = (Path(args["private_state_root"]) / "q4-genesis-tuple-v1.json").read_bytes()
+    pointer_path = Path(args["checkpoint_root"]) / "q4-latest.json"
+    common = {"enabled": True, "tuple_bytes": raw_tuple, "expected_tuple_sha256": sha(raw_tuple),
+              "expected_pointer_sha256": sha(pointer_path.read_bytes()), "policy_bytes": args["policy_bytes"],
+              "public_policy_bytes": args["public_policy_bytes"], "fleet_bytes": args["fleet_bytes"],
+              "expected_fleet_sha256": args["expected_fleet_sha256"]}
+    first = mod.continue_once(**common, cutoff_utc="2026-10-31T13:00:00Z",
+                              previous_cutoff_utc="2026-10-31T13:00:00Z")
+    assert first["status"] == "DEFERRED" and first["pointer_sha256"] == common["expected_pointer_sha256"]
+    common["expected_pointer_sha256"] = first["pointer_sha256"]
+    second = mod.continue_once(**common, cutoff_utc="2026-10-31T13:02:00Z",
+                               previous_cutoff_utc=first["cutoff_utc"])
+    assert second["status"] == "caught_up_to_cutoff" and second["pointer_sha256"] != first["pointer_sha256"]
+    pointer = json.loads(pointer_path.read_bytes())
+    projection = json.loads((Path(args["checkpoint_root"]) / pointer["generation"] / "projection.json").read_bytes())
+    assert any(record["meta"].get("status") == "done" for record in projection["records"])
+    private = Path(args["private_state_root"])
+    for report in (first, second):
+        route_bytes = (private / ("q4-continuation-route-" + report["route_sha256"] + ".json")).read_bytes()
+        assert sha(route_bytes) == report["route_sha256"]
+        assert json.loads(route_bytes)["cutoff_utc"] == report["cutoff_utc"]
+        receipts = [p.read_bytes() for p in private.glob("q4-status-result-*.json")]
+        receipt, = [raw for raw in receipts if sha(raw) == report["runner_receipt_sha256"]]
+        assert json.loads(receipt)["route_sha256"] == report["route_sha256"]
+    # A changed skip receipt must not authorize another continuation.
+    skip = private / mod.runner.GENESIS_SKIP_NAME
+    original_skip = skip.read_bytes()
+    skip.write_bytes(original_skip + b" ")
+    before = pointer_path.read_bytes()
+    common["expected_pointer_sha256"] = sha(before)
+    with pytest.raises(mod.ContinuationRefused):
+        mod.continue_once(**common, cutoff_utc="2026-10-31T13:03:00Z",
+                          previous_cutoff_utc="2026-10-31T13:02:00Z")
+    assert pointer_path.read_bytes() == before
+    skip.write_bytes(original_skip)
+    original_source = source.read_bytes()
+    source.write_bytes(b"X" + original_source[1:])
+    with pytest.raises(mod.ContinuationRefused):
+        mod.continue_once(**common, cutoff_utc="2026-10-31T13:03:00Z",
+                          previous_cutoff_utc="2026-10-31T13:02:00Z")
+    assert pointer_path.read_bytes() == before

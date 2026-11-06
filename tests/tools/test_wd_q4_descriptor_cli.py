@@ -18,6 +18,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import types
 
 import pytest
 
@@ -480,3 +481,168 @@ def test_the_docstring_states_the_boundaries():
                    "repin", "wd_q4_fixed_plan_producer", "wd_q4_shared_descriptor_producer",
                    "wd_q4_descriptor_materializer", "WD_Q4_SHARED_DESCRIPTOR_PATH", "operator"):
         assert phrase in doc, phrase
+
+
+# 7 advisory claims (consultation 5f095c06) reproduced or rejected with RED-first negative tests --------------------
+def _mixed(path):
+    head, tail = str(path).rsplit("\\", 1)
+    return head + "/" + tail
+
+
+def _dotdot(path):
+    head, tail = str(path).rsplit("\\", 1)
+    return head + "\..\\" + head.rsplit("\\", 1)[1] + "\\" + tail
+
+
+def _double(path):
+    return str(path).replace("\\", "\\\\", 1)
+
+
+def _stream(path):
+    with open(str(path) + ":alt", "wb") as handle:
+        handle.write(Path(path).read_bytes())
+    return str(path) + ":alt"
+
+
+def _nul(path):
+    return str(path)[:-5] + "\u0000.json"
+
+
+def _trailing(path):
+    return str(path) + "\\"
+
+
+@needs_windows
+@pytest.mark.parametrize("shape", [_mixed, _dotdot, _double, _stream, _nul, _trailing],
+                         ids=["mixed", "dotdot", "double", "stream", "nul", "trailing"])
+def test_a_request_path_outside_the_single_separator_discipline_refuses_before_any_read(tmp_path, capsys, shape):
+    request, sources, target = synthetic(tmp_path)
+    nest = tmp_path / "req"
+    nest.mkdir()
+    path = shape(write_request(nest, request))
+    code, out, err = run(["--request", path, "--enable"], capsys)
+    refusal(out, err, code, "request_refused")
+    assert tree(target) == []
+
+
+@needs_windows
+def test_a_request_path_whose_mixed_separator_hides_a_reparse_parent_refuses(tmp_path, capsys):
+    request, sources, target = synthetic(tmp_path)
+    real = tmp_path / "req"
+    real.mkdir()
+    link = tmp_path / "linked-req"
+    try:
+        os.symlink(str(real), str(link), target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted")
+    write_request(real, request)
+    code, out, err = run(["--request", str(link) + "/request.json", "--enable"], capsys)
+    refusal(out, err, code, "request_refused")
+    assert tree(target) == []
+
+
+@needs_windows
+@pytest.mark.parametrize("shape", [_dotdot, _stream], ids=["dotdot", "stream"])
+def test_a_source_path_with_a_dot_dot_component_or_a_stream_refuses(tmp_path, capsys, shape):
+    request, sources, target = synthetic(tmp_path)
+    request["snapshot_path"] = shape(Path(request["snapshot_path"]))
+    code, out, err = run(["--request", str(write_request(tmp_path, request)), "--enable"], capsys)
+    refusal(out, err, code, "source_refused")
+    assert tree(target) == []
+
+
+@needs_windows
+@pytest.mark.parametrize("change", [
+    lambda d: d.__setitem__("target_dir", d["target_dir"] + "\u0000x"),
+    lambda d: d.__setitem__("generation", d["generation"][:-1] + "\u0000"),
+    lambda d: d["fixed_plan"].__setitem__("runtime_root", "C:\\" + "\u0000root"),
+    lambda d: d["descriptor"].__setitem__("cwd", "C:\code\t"),
+    lambda d: d["lanes"].append("fable-5\u0000"),
+    lambda d: d["fixed_plan"].__setitem__("approved_tasks", ["task-a", "\u007f"]),
+    lambda d: d.__setitem__("snapshot_path", d["snapshot_path"][:-5] + "\u0000.json"),
+], ids=["target", "generation", "fixed_plan", "descriptor", "lanes", "nested_list", "source_path"])
+def test_a_control_character_anywhere_in_the_request_is_a_request_refusal(tmp_path, capsys, change):
+    request, sources, target = synthetic(tmp_path)
+    change(request)
+    code, out, err = run(["--request", str(write_request(tmp_path, request)), "--enable"], capsys)
+    refusal(out, err, code, "request_refused")
+    assert tree(target) == []
+
+
+@needs_windows
+@pytest.mark.parametrize("field, literal", [
+    (b'"bundle_bytes":102400', b'"bundle_bytes":102400.0'),
+    (b'"bundle_bytes":102400', b'"bundle_bytes":1e400'),
+    (b'"timeout_seconds":30', b'"timeout_seconds":30.0'),
+    (b'"interpreter_max_bytes":10000', b'"interpreter_max_bytes":1e4'),
+], ids=["float", "overflow", "descriptor_float", "exponent"])
+def test_a_number_that_is_not_an_integer_literal_is_a_request_refusal(tmp_path, capsys, field, literal):
+    request, sources, target = synthetic(tmp_path)
+    raw = canonical(request)
+    assert raw.count(field) == 1
+    path = tmp_path / "request.json"
+    path.write_bytes(raw.replace(field, literal))
+    code, out, err = run(["--request", str(path), "--enable"], capsys)
+    refusal(out, err, code, "request_refused")
+    assert tree(target) == []
+
+
+@needs_windows
+def test_a_fixed_plan_pin_that_does_not_match_the_plan_bytes_is_refused_before_the_descriptor(tmp_path, capsys, monkeypatch):
+    request, sources, target = synthetic(tmp_path)
+    from tools import wd_q4_fixed_plan_producer
+    real = wd_q4_fixed_plan_producer.build_fixed_plan
+
+    def lying(**kwargs):
+        out = real(**kwargs)
+        return {"plan_bytes": out["plan_bytes"], "plan_sha256": "0" * 64}
+    monkeypatch.setattr(wd_q4_fixed_plan_producer, "build_fixed_plan", lying)
+    code, out, err = run(["--request", str(write_request(tmp_path, request)), "--enable"], capsys)
+    refusal(out, err, code, "fixed_plan_refused")
+    assert tree(target) == []
+
+
+@needs_windows
+@pytest.mark.parametrize("victim, reason", [("request.json", "request_refused"), ("snapshot.json", "source_refused")])
+def test_an_opened_file_whose_identity_differs_from_the_checked_path_is_refused(tmp_path, capsys, monkeypatch, victim, reason):
+    request, sources, target = synthetic(tmp_path)
+    path = write_request(tmp_path, request)
+    module()
+    real = os.fstat
+    swapped = {"count": 0}
+
+    def fake(fd):
+        info = real(fd)
+        if info.st_size == (path if victim == "request.json" else tmp_path / "sources" / "snapshot.json").stat().st_size:
+            swapped["count"] += 1
+            return types.SimpleNamespace(st_mode=info.st_mode, st_ino=info.st_ino + 1, st_dev=info.st_dev,
+                                         st_size=info.st_size, st_file_attributes=getattr(info, "st_file_attributes", 0))
+        return info
+    monkeypatch.setattr(os, "fstat", fake)
+    code, out, err = run(["--request", str(path), "--enable"], capsys)
+    refusal(out, err, code, reason)
+    assert swapped["count"] >= 1
+    assert tree(target) == []
+
+
+class _ClosedStdout:
+    def write(self, _text):
+        raise BrokenPipeError(32, "closed")
+
+    def flush(self):
+        raise BrokenPipeError(32, "closed")
+
+
+@needs_windows
+@pytest.mark.parametrize("enabled", [False, True], ids=["off", "enabled"])
+def test_a_closed_stdout_ends_with_exit_one_and_nothing_on_stderr(tmp_path, capsys, monkeypatch, enabled):
+    request, sources, target = synthetic(tmp_path)
+    path = write_request(tmp_path, request)
+    module()
+    monkeypatch.setattr(sys, "stdout", _ClosedStdout())
+    argv = ["--request", str(path)] + (["--enable"] if enabled else [])
+    code = module().main(argv)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err == ""
+    assert (tree(target) != []) is enabled

@@ -4,7 +4,8 @@ descriptor path and sha256.
 
 Usage: ``python -m tools.wd_q4_descriptor_cli [--request <file> [--enable]]``. With no arguments, or without
 ``--enable``, it prints ``{"status":"OFF"}`` and opens nothing, not even the request file. With ``--enable`` it reads
-ONE strict canonical JSON request (exact key set, 64 KiB cap, regular file, no reparse point on its chain) naming
+ONE strict JSON request (ASCII, no duplicate keys, exact key set, integers only, printable characters only, 64 KiB
+cap, regular file on a single-backslash drive-absolute path with no reparse point on its chain) naming
 the target directory and generation, the fleet, lane-binding and metadata-only public snapshot source files each
 with an explicit sha256 pin, the lanes, the fixed-plan arguments and the remaining descriptor arguments. Every value
 is explicit: the CLI reads no environment, discovers nothing and defaults nothing. It composes, in order,
@@ -14,12 +15,17 @@ plan_generation_paths`` (the deterministic file paths), ``wd_q4_shared_descripto
 exclusive write, descriptor last), then prints exactly one compact ASCII JSON line with ``descriptor path`` and
 ``descriptor sha256``: the pair an operator hands to the launcher as ``-Q4SharedDescriptorPath`` /
 ``-Q4SharedDescriptorSha256`` (exported as WD_Q4_SHARED_DESCRIPTOR_PATH + WD_Q4_SHARED_DESCRIPTOR_SHA256 after the
-launcher's own validation). The output carries no secret, pin, source path or plan content; stderr is never
-written.
+launcher's own validation). The output carries no secret, source pin, source path or plan content; this module writes nothing to stderr, and a
+stdout that cannot be written (closed pipe) ends the run with exit 1 and no output at all.
 
 Refusals print ``{"error":"descriptor_cli_refused","reason":<closed reason>}`` and exit 1; the reason names the
 stage (argv, request, source, fixed_plan, descriptor, materialize, unexpected) and never a caller value, a path, a
-byte or exception text. Default-off behaviour is preserved at every layer: each producer is called with
+byte or exception text. Every file (request and sources) is opened only after its path passed the single-separator
+discipline (no forward slash, no doubled backslash, no colon after the drive, no empty, dot or dot-dot component),
+its chain was walked for reparse points and the opened handle was compared with the checked path (same device and
+file identity, regular, no reparse attribute, same size); the drive root itself is not inspected. The fixed-plan pin
+is recomputed from the plan bytes before it is pinned into the descriptor. Default-off behaviour is preserved at
+every layer: each producer is called with
 ``enabled=True`` only inside the enabled branch, and the launcher still validates the pair itself. Boundaries:
 no install, no activation of a lane, no repin of a bundle and no read of sealed data; the operator decides
 whether and when a materialized generation is used. A matching hash is not authentication, not freshness and
@@ -52,6 +58,8 @@ _SOURCES = (("fleet", "fleet_path", "fleet_sha256"), ("binding", "binding_path",
             ("snapshot", "snapshot_path", "snapshot_sha256"))
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _DRIVE = re.compile(r"[A-Za-z]:\\")
+_UNPRINTABLE = re.compile(r"[^\x20-\x7E]")
+_BAD_PARTS = frozenset({"", ".", ".."})
 _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _READ_FLAGS = os.O_RDONLY | getattr(os, "O_BINARY", 0)
 
@@ -81,12 +89,18 @@ def _constant(_value):
     raise ValueError()
 
 
-def _read_pinned(path, limit, expected, reason):
-    """The caller-reader discipline: drive-absolute, regular file, no reparse point on the chain, size cap, pin."""
+def _check_path(path, reason):
+    """Single-separator discipline: drive-absolute, backslashes only, no colon after the drive, printable ASCII,
+    no empty, dot or dot-dot component (the walk below could otherwise skip an ancestor)."""
     if type(path) is not str or not _DRIVE.match(path) or "\\\\" in path or "/" in path or ":" in path[2:]:
         _refuse(reason)
-    if type(expected) is not str or not _HEX64.match(expected):
+    if _UNPRINTABLE.search(path) or any(part in _BAD_PARTS for part in path[3:].split("\\")):
         _refuse(reason)
+
+
+def _read_regular(path, limit, reason):
+    """Walk the chain for reparse points, open, compare the handle with the checked path, read within the cap."""
+    _check_path(path, reason)
     try:
         current = path
         while True:
@@ -102,6 +116,10 @@ def _read_pinned(path, limit, expected, reason):
             _refuse(reason)
         handle = os.open(path, _READ_FLAGS)
         try:
+            opened = os.fstat(handle)
+            if (not stat.S_ISREG(opened.st_mode) or getattr(opened, "st_file_attributes", 0) & _REPARSE
+                    or (opened.st_dev, opened.st_ino, opened.st_size) != (info.st_dev, info.st_ino, info.st_size)):
+                _refuse(reason)
             chunks, remaining = [], limit + 1
             while remaining > 0:
                 chunk = os.read(handle, remaining)
@@ -114,28 +132,45 @@ def _read_pinned(path, limit, expected, reason):
     except OSError:
         _refuse(reason)
     raw = b"".join(chunks)
-    if not 0 < len(raw) <= limit or _sha256(raw) != expected:
+    if not 0 < len(raw) <= limit:
         _refuse(reason)
     return raw
+
+
+def _read_pinned(path, limit, expected, reason):
+    """The caller-reader discipline plus the explicit pin."""
+    if type(expected) is not str or not _HEX64.match(expected):
+        _refuse(reason)
+    raw = _read_regular(path, limit, reason)
+    if _sha256(raw) != expected:
+        _refuse(reason)
+    return raw
+
+
+def _printable(value):
+    """Every string printable ASCII, every number an integer (bool excluded), containers recursively."""
+    if type(value) is str:
+        return not _UNPRINTABLE.search(value)
+    if type(value) is float:
+        return False
+    if type(value) is dict:
+        return all(type(k) is str and _printable(k) and _printable(v) for k, v in value.items())
+    if type(value) is list:
+        return all(_printable(item) for item in value)
+    return True
 
 
 def _request(path):
     if type(path) is not str or not path:
         _refuse("request_refused")
-    try:
-        if not _DRIVE.match(path):
-            _refuse("request_refused")
-        info = os.lstat(path)
-        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= LIMITS["request"]:
-            _refuse("request_refused")
-    except OSError:
-        _refuse("request_refused")
-    raw = _read_pinned_without_pin(path)
+    raw = _read_regular(path, LIMITS["request"], "request_refused")
     try:
         document = json.loads(raw.decode("ascii"), object_pairs_hook=_pairs, parse_constant=_constant)
     except Exception:  # noqa: BLE001 - any decode or shape failure is the same closed reason
         _refuse("request_refused")
     if type(document) is not dict or set(document) != _REQUEST_KEYS or document["schema"] != REQUEST_SCHEMA:
+        _refuse("request_refused")
+    if not _printable(document):
         _refuse("request_refused")
     for _name, path_key, pin_key in _SOURCES:
         if type(document[path_key]) is not str or type(document[pin_key]) is not str or not _HEX64.match(document[pin_key]):
@@ -151,37 +186,6 @@ def _request(path):
     return document
 
 
-def _read_pinned_without_pin(path):
-    """The request file itself has no pin yet; same chain, size and regular-file discipline, then the bytes."""
-    try:
-        current = path
-        while True:
-            info = os.lstat(current)
-            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & _REPARSE:
-                _refuse("request_refused")
-            parent = current.rsplit("\\", 1)[0]
-            if parent == current or len(parent) <= 2:
-                break
-            current = parent
-        handle = os.open(path, _READ_FLAGS)
-        try:
-            chunks, remaining = [], LIMITS["request"] + 1
-            while remaining > 0:
-                chunk = os.read(handle, remaining)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-        finally:
-            os.close(handle)
-    except OSError:
-        _refuse("request_refused")
-    raw = b"".join(chunks)
-    if not 0 < len(raw) <= LIMITS["request"]:
-        _refuse("request_refused")
-    return raw
-
-
 def _compose(document):
     from tools import wd_q4_descriptor_materializer as materializer
     from tools import wd_q4_fixed_plan_producer as fixed_plan_producer
@@ -192,7 +196,8 @@ def _compose(document):
         sources[name] = _read_pinned(document[path_key], LIMITS[name], document[pin_key], "source_refused")
     try:
         fixed = fixed_plan_producer.build_fixed_plan(enabled=True, **document["fixed_plan"])
-        if type(fixed) is not dict or set(fixed) != {"plan_bytes", "plan_sha256"}:
+        if (type(fixed) is not dict or set(fixed) != {"plan_bytes", "plan_sha256"} or type(fixed["plan_bytes"]) is not bytes
+                or _sha256(fixed["plan_bytes"]) != fixed["plan_sha256"]):
             raise ValueError()
     except Exception:  # noqa: BLE001 - FixedPlanRefused or any shape failure: one closed reason
         _refuse("fixed_plan_refused")
@@ -226,8 +231,18 @@ def _compose(document):
 
 
 def _write(text):
-    sys.stdout.write(text)
-    sys.stdout.flush()
+    """True when the line reached stdout. A stdout that cannot be written is pointed at the null device so the
+    interpreter's exit flush stays silent; nothing is ever written to stderr."""
+    try:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        return True
+    except (OSError, ValueError, AttributeError):
+        try:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        except Exception:  # noqa: BLE001 - best effort only
+            pass
+        return False
 
 
 def main(argv=None):
@@ -236,18 +251,15 @@ def main(argv=None):
             argv = sys.argv[1:]
         argv = list(argv)
         if argv == []:
-            _write('{"status":"OFF"}\n')
-            return 0
+            return 0 if _write('{"status":"OFF"}\n') else 1
         if len(argv) not in (2, 3) or argv[0] != "--request" or type(argv[1]) is not str or not argv[1]:
             _refuse("argv_refused")
         if len(argv) == 2:
-            _write('{"status":"OFF"}\n')
-            return 0
+            return 0 if _write('{"status":"OFF"}\n') else 1
         if argv[2] != "--enable":
             _refuse("argv_refused")
         pair = _compose(_request(argv[1]))
-        _write(json.dumps(pair, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n")
-        return 0
+        return 0 if _write(json.dumps(pair, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n") else 1
     except _Refused as refused:
         reason = refused.args[0] if refused.args and refused.args[0] in REASONS else "unexpected_refused"
         _write(REFUSAL_PREFIX + reason + '"}\n')

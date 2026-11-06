@@ -453,3 +453,109 @@ def test_an_interrupt_while_reading_the_config_exits_130_without_a_traceback(tmp
 
     monkeypatch.setattr(module, "_read_pinned", interrupted)
     assert run_main(_argv(path, digest)) == (130, "", "index_cli_interrupted\n")
+
+
+# 4 the 11-04 mutant sweep survivors (mg1): each case below failed to be refused by at least one mutant -------------
+
+def _stub_runner(monkeypatch):
+    """Record every runner entry and refuse at once; the real runner never sees a synthetic root."""
+    runner = importlib.import_module("tools.wd_q4_index_clock_runner")
+    calls = []
+
+    def refuse(**kwargs):
+        calls.append(kwargs)
+        raise runner.IndexRunnerRefused("index_request_refused")
+
+    monkeypatch.setattr(runner, "run", refuse)
+    return calls
+
+
+def _dotdot_pin(name):
+    def change(d, tmp_path):
+        real = Path(d[name]["path"])
+        d[name]["path"] = str(real.parent / ".." / real.parent.name / real.name)
+    return change
+
+
+MUTANT_CASES = {
+    "dotdot-root": lambda d, tmp_path: d.__setitem__("root", str(tmp_path / "state" / ".." / "state")),
+    "dotdot-pin-path": _dotdot_pin("plan"),
+    "unc-root-backslash": _set("root", "\\\\server\\share\\state"),
+    "unc-root-slash": _set("root", "//server/share/state"),
+    "unc-pin-path": _nested("roster", "path", "//server/share/roster.bin"),
+    "int-generation": _nested("source_cursor", "generation", 7),
+    "empty-generation": _nested("start_prefix", "generation", ""),
+    "max-rows-over-cap": _set("max_rows", 10001),
+    "max-bytes-over-cap": _set("max_bytes", (4 << 20) + 1),
+}
+
+
+@pytest.mark.parametrize("change", list(MUTANT_CASES.values()), ids=list(MUTANT_CASES))
+def test_a_syntactically_absolute_but_forbidden_or_oversized_value_never_reaches_the_runner(tmp_path, monkeypatch,
+                                                                                            change):
+    document = _synthetic_document(tmp_path)
+    change(document, tmp_path)
+    path, digest = _write(tmp_path, document)
+    calls = _stub_runner(monkeypatch)
+    assert run_main(_argv(path, digest)) == (2, "", "index_cli_refused\n")
+    assert calls == []
+
+
+def test_a_duplicate_key_whose_last_value_is_valid_still_refuses(tmp_path, monkeypatch):
+    dumped = json.dumps(_synthetic_document(tmp_path), sort_keys=True).encode("ascii")
+    assert dumped.startswith(b"{")
+    path, digest = _write(tmp_path, None, raw=b'{"schema":"x",' + dumped[1:])
+    calls = _stub_runner(monkeypatch)
+    assert run_main(_argv(path, digest)) == (2, "", "index_cli_refused\n")
+    assert calls == []
+
+
+def test_a_symlinked_pin_is_refused_even_when_its_target_matches(tmp_path, monkeypatch):
+    document = _synthetic_document(tmp_path)
+    target, link = Path(document["plan"]["path"]), tmp_path / "pins" / "plan-link.bin"
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links cannot be created here")
+    document["plan"]["path"] = str(link)
+    path, digest = _write(tmp_path, document)
+    calls = _stub_runner(monkeypatch)
+    assert run_main(_argv(path, digest)) == (2, "", "index_cli_refused\n")
+    assert calls == []
+
+
+def test_invoke_binds_the_config_bytes_to_the_expected_pin(tmp_path, monkeypatch):
+    module = cli()
+    runner = importlib.import_module("tools.wd_q4_index_clock_runner")
+    data = json.dumps(_synthetic_document(tmp_path), sort_keys=True).encode("ascii")
+    calls = _stub_runner(monkeypatch)
+    with pytest.raises(module.CliRefused):
+        module.invoke(enabled=True, config_bytes=data, expected_config_sha256=sha(data + b"x"),
+                      cutoff_utc="2026-10-31T12:01:00Z")
+    assert calls == []
+    with pytest.raises(runner.IndexRunnerRefused):
+        module.invoke(enabled=True, config_bytes=data, expected_config_sha256=sha(data),
+                      cutoff_utc="2026-10-31T12:01:00Z")
+    assert len(calls) == 1 and calls[0]["plan_bytes"] == b"plan-synthetic"
+
+
+@pytest.mark.parametrize("answer", [{**COMPLETE, "clock": "SYSTEM_CLOCK"}, {**COMPLETE, "clock": "caller_unverified"},
+                                    {**COMPLETE, "status": "INDEX_RUN_PARTIAL"}, {**COMPLETE, "extra": SENTINEL}],
+                         ids=["foreign-clock", "clock-case", "foreign-status", "extra-key"])
+def test_a_runner_result_with_a_foreign_clock_status_or_key_is_unknown(tmp_path, monkeypatch, answer):
+    path, digest = _write(tmp_path, _synthetic_document(tmp_path))
+    runner = importlib.import_module("tools.wd_q4_index_clock_runner")
+    monkeypatch.setattr(runner, "run", lambda **kwargs: answer)
+    code, out, err = run_main(_argv(path, digest))
+    assert (code, out, err) == (3, "", "index_outcome_unknown\n") and SENTINEL not in out
+
+
+def test_json_constants_and_dashed_flag_values_are_refused_by_the_parsers():
+    module = cli()
+    for text in ("NaN", "[Infinity]", '{"a": -Infinity}'):
+        with pytest.raises(ValueError):
+            json.loads(text, parse_constant=module._refuse_constant)
+    with pytest.raises(module.CliRefused):
+        module._parse_argv(["--enabled", "--config", "--cutoff-utc", "--config-sha256", "0" * 64,
+                            "--cutoff-utc", "2026-10-31T12:01:00Z"])
+    assert module._parse_argv(["--config", "x"]) is None

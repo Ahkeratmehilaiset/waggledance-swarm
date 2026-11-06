@@ -80,7 +80,7 @@ def test_once_cli_forwards_the_host_attempt_without_replacing_it(monkeypatch, ca
     assert received[0]["host_attempt"] == "b" * 64
 
 
-@pytest.mark.parametrize("damage", ["none", "missing", "wrong_attempt", "cleanup_unknown", "helper_mismatch"])
+@pytest.mark.parametrize("damage", ["none", "missing", "wrong_attempt", "cleanup_unknown", "helper_mismatch", "exit_success"])
 def test_job_attestation_requires_exact_attempt_and_confirmed_cleanup(tmp_path, damage):
     from tools import wd_q4_live_update_recovery as recovery
     from tools import wd_q4_live_update_once as update
@@ -99,6 +99,7 @@ def test_job_attestation_requires_exact_attempt_and_confirmed_cleanup(tmp_path, 
     if damage == "wrong_attempt": record["attempt"] = "e" * 64
     if damage == "cleanup_unknown": record["cleanup"] = "unknown"
     if damage == "helper_mismatch": record["job_helper_sha256"] = "f" * 64
+    if damage == "exit_success": record["exit_code"] = 0
     raw = update._encode(record)
     if damage != "missing":
         (tmp_path / ("q4-live-job-result-" + attempt + ".json")).write_bytes(raw)

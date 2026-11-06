@@ -38,7 +38,7 @@ def test_write_roots_cannot_overlap_bundle_or_generation(tmp_path):
 
 
 @pytest.mark.skipif(__import__('os').name != 'nt', reason='real guarded peer requires Windows')
-@pytest.mark.parametrize('fault_stage', ['capture', 'materialize', 'publish', 'after_selector', 'interrupt', 'empty_bad_fence', 'before_progress', 'before_progress_no_change'])
+@pytest.mark.parametrize('fault_stage', ['capture', 'materialize', 'publish', 'after_selector', 'interrupt', 'empty_bad_fence', 'before_progress', 'before_progress_no_change', 'before_runner_receipt'])
 def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypatch, capsys, fault_stage):
     """Actual producer, capture, binding, selector and caller; synthetic model/peer."""
     import importlib.util
@@ -55,6 +55,14 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
     spec.loader.exec_module(e2e)
     real_helper = e2e.helper
     real_publish = update.live.publish
+    real_enc = e2e.enc
+    synthetic_job = b'synthetic pinned Job helper, never executed'
+    def encode_with_synthetic_job(value):
+        if isinstance(value, dict) and value.get('schema_version') == 1 and 'files' in value:
+            (tmp_path / 'installed-bundle' / 'WdQ4ProcessJob.ps1').write_bytes(synthetic_job)
+            value = {**value, 'files': {**value['files'], 'WdQ4ProcessJob.ps1': update._sha(synthetic_job)}}
+        return real_enc(value)
+    monkeypatch.setattr(e2e, 'enc', encode_with_synthetic_job)
     state = {'runs': [], 'publications': []}
 
     def helper(name, path):
@@ -272,6 +280,9 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
                     raise OSError('synthetic interruption before progress')
                 return create(path, data)
             scoped.setattr(state['runner'], '_create', fail_progress)
+        elif fault_stage == 'before_runner_receipt':
+            from tools import wd_q4_status_prefix_recovery as prefix_recovery
+            scoped.setattr(prefix_recovery, '_write_receipt', fail)
         else:
             scoped.setattr(update.live, 'publish', fail_after_selector if fault_stage == 'after_selector' else fail)
         assert update.main(['--once', '--config', str(config_path), '--sha256', update._sha(raw)]) == (130 if fault_stage == 'interrupt' else 3)
@@ -280,6 +291,61 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
     assert not output.out and json.loads(output.err)['status'] == 'UNKNOWN'
     assert (private_root / 'q4-live-update.pending.json').is_file()
     progress_files = list(private_root.glob('q4-live-update-progress-*.json'))
+    if fault_stage == 'before_runner_receipt':
+        from tools import wd_q4_live_update_recovery as recovery
+        from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
+        marker_path = private_root / 'q4-live-update.pending.json'
+        marker_raw = marker_path.read_bytes()
+        marker = json.loads(marker_raw)
+        attempt = marker['attempt']
+        reservation_path = private_root / ('q4-live-runner-reservation-' + attempt + '.json')
+        reservation_raw = reservation_path.read_bytes()
+        target = update._sha((Path(route['checkpoint_root']) / checkpoint.POINTER).read_bytes())
+        assert target != marker['previous_pointer_sha256'] and not reports
+        job_receipt = update._encode({'schema': 'wd.q4-live-job-result.v1', 'attempt': attempt,
+            'config_sha256': update._sha(raw), 'intent_sha256': marker['intent_sha256'],
+            'marker_sha256': update._sha(marker_raw), 'reservation_sha256': update._sha(reservation_raw),
+            'job_helper_sha256': update._sha(synthetic_job), 'cleanup': 'confirmed', 'child_outcome': 'completed', 'exit_code': 3})
+        job_path = private_root / ('q4-live-job-result-' + attempt + '.json')
+        kwargs = {'enabled': True, 'config_path': str(config_path), 'expected_config_sha256': update._sha(raw),
+                  'expected_attempt': attempt, 'expected_pointer_sha256': target,
+                  'expected_job_receipt_sha256': update._sha(job_receipt)}
+        with pytest.raises(recovery.RecoveryOutcomeUnknown):
+            recovery.recover(**kwargs)  # Missing host receipt never authorizes cleanup.
+        assert marker_path.read_bytes() == marker_raw
+        job_path.write_bytes(job_receipt)  # Synthetic Job-host observation; no actual host or live bridge.
+        with pytest.raises(recovery.RecoveryOutcomeUnknown):
+            recovery.recover(**{**kwargs, 'expected_job_receipt_sha256': '0' * 64})
+        runner_mark = Path(route['checkpoint_root']) / state['runner']._PENDING
+        original_mark = runner_mark.read_bytes()
+        runner_mark.write_bytes(b'synthetic-foreign-reservation')
+        with pytest.raises(recovery.RecoveryOutcomeUnknown):
+            recovery.recover(**kwargs)
+        assert marker_path.read_bytes() == marker_raw
+        runner_mark.write_bytes(original_mark)
+        landed = checkpoint._fence_record(Path(route['checkpoint_root']), target, 'landed')
+        original_landed = landed.read_bytes()
+        landed.write_bytes(b'synthetic-bad-fence')
+        with pytest.raises(recovery.RecoveryOutcomeUnknown):
+            recovery.recover(**kwargs)
+        assert marker_path.read_bytes() == marker_raw
+        landed.write_bytes(original_landed)
+        open_fence = Path(route['checkpoint_root']) / checkpoint.FENCE
+        open_fence.write_bytes(checkpoint._fence_bytes(marker['previous_pointer_sha256'], target))
+        with pytest.raises(recovery.RecoveryOutcomeUnknown):
+            recovery.recover(**kwargs)
+        assert marker_path.read_bytes() == marker_raw
+        open_fence.unlink()  # Only the synthetic fault introduced by this test.
+        result = recovery.recover(**kwargs)
+        assert result['status'] == 'PUBLISHED' and result['pointer_sha256'] == target
+        assert not marker_path.exists()
+        for root in (Path(route['checkpoint_root']), private_root):
+            assert not (root / state['runner']._PENDING).exists()
+        monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(query), encoding='utf-8'))
+        assert update.caller.main(['--enabled']) == 0
+        answer = json.loads(capsys.readouterr().out)
+        assert answer['answer']['binding']['pointer_sha256'] == target
+        return
     if fault_stage in ('before_progress', 'before_progress_no_change'):
         from tools import wd_q4_live_update_recovery as recovery
         expected_status = 'EMPTY_NO_CHANGE' if fault_stage == 'before_progress_no_change' else 'PUBLISHED_HISTORY'

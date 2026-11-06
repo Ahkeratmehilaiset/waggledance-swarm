@@ -63,6 +63,7 @@ def test_public_publisher_is_in_bundle_python_files():
 @pytest.mark.parametrize("path", [
     "tools/wd_q4_descriptor_cli.py",
     "tools/wd_q4_descriptor_materializer.py",
+    "tools/wd_q4_descriptor_pointer.py",
     "tools/wd_q4_shared_descriptor_producer.py",
 ])
 def test_shared_descriptor_builder_is_packaged_with_internal_dependencies(path, monkeypatch):

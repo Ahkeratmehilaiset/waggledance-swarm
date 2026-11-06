@@ -80,6 +80,7 @@
     "tools/wd_q4_descriptor_cli.py",
     "tools/wd_q4_descriptor_host_tuple.py",
     "tools/wd_q4_descriptor_materializer.py",
+    "tools/wd_q4_descriptor_pointer.py",
     "tools/wd_q4_shared_descriptor_producer.py",
     "tools/wd_q4_manifest_host_binding.py",
     "tools/wd_q4_bound_session_plan.py",

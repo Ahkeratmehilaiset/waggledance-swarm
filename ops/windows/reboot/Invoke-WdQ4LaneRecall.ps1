@@ -257,7 +257,7 @@ public static class $typeName {
         if ($document -is [array] -or $names.Count -ne 2 -or $names -cnotcontains 'situation' -or $names -cnotcontains 'time' -or
             $document.situation -isnot [string] -or [string]::IsNullOrWhiteSpace($document.situation) -or
             ($document.time -isnot [string] -and $document.time -isnot [datetime]) -or
-            ($document.time -is [string] -and $document.time -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')) { throw 'refused' }
+            ($document.time -is [string] -and $document.time -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$')) { throw 'refused' }
         $liveEnvironment = if ($Live) { '$env:WD_Q4_LIVE_MODE=''1''; ' } else { 'Remove-Item Env:WD_Q4_LIVE_MODE -ErrorAction SilentlyContinue; ' }
         $bootstrap = $liveEnvironment + 'if ([Console]::OpenStandardInput().ReadByte() -ne 71) { exit 2 }; try { & $env:WD_BRIDGE_PYTHON_WRAPPER tools/wd_q4_lane_caller_cli.py --enabled; exit $LASTEXITCODE } catch { exit 2 }'
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap))

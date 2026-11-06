@@ -53,6 +53,16 @@ def test_redirected_stdin_reaches_nested_python_exactly(bundle, shell):
     assert b'synthetic' not in result.stderr
 
 
+@pytest.mark.parametrize('shell', SHELLS)
+@pytest.mark.parametrize('fraction', ['.1', '.123456'])
+def test_supported_fractional_utc_reaches_nested_python_unchanged(bundle, shell, fraction):
+    env, _ = bundle
+    raw = ('{"situation":"synthetic","time":"2026-11-06T00:00:00' + fraction + 'Z"}').encode('ascii')
+    result = invoke(shell, env, raw, '-Live')
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().decode() == hashlib.sha256(raw).hexdigest()
+
+
 @pytest.mark.parametrize('live,inherited,expected', [(False, '', ''), (False, '1', ''), (True, '', '1')])
 def test_live_mode_is_explicit_and_reaches_only_the_query_child(bundle, live, inherited, expected):
     env, root = bundle

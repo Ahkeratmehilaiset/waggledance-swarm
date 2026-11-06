@@ -39,14 +39,19 @@ for none), one that is not the observer's object, and one with a list, row or ti
 failed provider that is not a string; a time that is not an ISO time string, or one the lens shows that has no UTC
 time). An absent or null list, collection or time is one the observer did not give; the status time is required.
 Every time the lens shows is in UTC. A status run that times out, raises an OSError or exits nonzero is refused the
-same way.
+same way. The status runs under the exact Windows PowerShell host in the system directory the OS reports
+(GetSystemDirectoryW), never a powershell.exe searched for in the current directory or PATH, where a planted file
+of that name could run; without that host the status is refused (status_host_missing).
 
 No thread identifier, alert id, account, plan, token count or provider payload reaches a written or published
 byte. Every observer string the lens copies is a known provider (claude, codex) or a short safe label (lowercase
 words of up to 16 letters joined by underscores, at most six words); anything else, an e-mail, a path, a token or
-an unknown provider, reads UNKNOWN, so labels that differ only there are merged. The header gives the age of the
-whole status against the lens's own UTC clock: FRESH up to 120 s (the status comes from the call the lens just
-made, with a 60 s deadline), STALE beyond, and FUTURE (invalid) when the status time is after the clock.
+an unknown provider, reads UNKNOWN, so labels that differ only there are merged; observations and collection rows
+of an unrecognized provider are only counted (LIMITS UNKNOWN and COLLECTION UNKNOWN count lines, no figures), so
+figures of different unrecognized providers are never shown as one. The header gives the age of the whole status
+against the lens's own UTC clock: FRESH up to 120 s (the status comes from the call the lens just made, with a 60 s
+deadline) and STALE beyond, when every figure line also says STALE; a status time after the clock (FUTURE) is
+refused whole (status_time_future).
 A lane name appears only when ``--declared`` gives one for an observation's thread (by its first 8 hex
 digits), labelled "declared" (the observer binds no thread to a lane); the thread id itself is never written.
 Never writes a bridge event, never runs gate code.
@@ -59,6 +64,7 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -106,12 +112,41 @@ class LensRefused(RuntimeError):
     """Fixed reasons only, safe to print: a status is shown whole or refused whole, never in part."""
 
 
-def read_status(script):
-    """The status script's raw output and its status document, else LensRefused: status_timed_out after 60 s;
-    status_not_started for an OSError out of subprocess.run (as when powershell.exe is missing or may not run; the
-    name does not prove that no process started); status_failed for a nonzero exit."""
+def system_directory():
+    """The system directory as the OS reports it (GetSystemDirectoryW), never an environment value; AttributeError
+    off Windows (no windll), OSError when the call fails."""
+    import ctypes
+
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))
+    if length <= 0 or length >= len(buffer):
+        raise OSError("GetSystemDirectoryW failed")
+    return Path(buffer.value)
+
+
+def powershell_host():
+    """CR1: the exact Windows PowerShell host in the system directory, an absolute path to a regular file that is no
+    link or other reparse point, else LensRefused status_host_missing. A bare powershell.exe is searched for in the
+    current directory and PATH, where a planted file of that name could run."""
     try:
-        done = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+        host = system_directory() / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        info = os.lstat(host)
+    except (AttributeError, ImportError, OSError):
+        raise LensRefused("status_host_missing") from None
+    reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if not host.is_absolute() or not stat.S_ISREG(info.st_mode) or reparse:
+        raise LensRefused("status_host_missing")
+    return host
+
+
+def read_status(script):
+    """The status script's raw output and its status document, else LensRefused: status_host_missing without the
+    System32 host (nothing runs); status_timed_out after 60 s; status_not_started for an OSError out of
+    subprocess.run (as when the host may not run; the error does not prove that no process started); status_failed
+    for a nonzero exit."""
+    host = powershell_host()
+    try:
+        done = subprocess.run([str(host), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
                                "-Json"], capture_output=True, timeout=60)
     except subprocess.TimeoutExpired:
         raise LensRefused("status_timed_out") from None
@@ -202,14 +237,18 @@ def reset_time(value):
 def project(status, declared):
     now = parse_time(status["observed_at"]).astimezone(dt.timezone.utc)  # one with no UTC time stops here
     limits = {}
+    # An unrecognized provider is counted, never shown: one UNKNOWN row would hide which of several it was.
+    unrecognized = {"observations": 0, "collection_rows": 0, "failed_providers": 0}
     for observation in rows(status.get("observations")):
         provider = provider_label(observation.get("provider"))
+        unrecognized["observations"] += provider == ws.UNKNOWN
+        kept = {} if provider == ws.UNKNOWN else limits  # its figures are still shape-checked, never kept
         # The observer's own labels for this observation's figures, as it gave them (None when it gave none).
         labels = {key: given_label(observation.get(key)) for key in ("freshness", "quota_state")}
         age = observation.get("observation_age_seconds")
         for window in windows(observation):
             used, reset_at = window.get("used_percent"), reset_time(window.get("resets_at"))
-            limits.setdefault((provider, given_text(window["name"])), []).append({
+            kept.setdefault((provider, given_text(window["name"])), []).append({
                 "lane": declared.get(str(observation.get("native_thread_id") or "")[:8]),
                 "used_percent": used if number(used) else None,
                 "reset_utc": None if reset_at is None else utc(reset_at),
@@ -219,8 +258,7 @@ def project(status, declared):
     failed = given(status.get("failed_providers"), list)
     if not all(isinstance(provider, str) for provider in failed):
         raise TypeError("a failed provider is not a string")
-    # An unrecognized provider is counted, never shown: one UNKNOWN row would hide which of several it was.
-    unrecognized = {"collection_rows": 0, "failed_providers": sum(provider_label(p) == ws.UNKNOWN for p in failed)}
+    unrecognized["failed_providers"] = sum(provider_label(p) == ws.UNKNOWN for p in failed)
     failed = {provider_label(provider) for provider in failed} - {ws.UNKNOWN}
     collection = {}
     for provider, row in given(status.get("collection"), dict).items():
@@ -375,6 +413,9 @@ def text_lines(now, limits, health, activity, alerts, age, unrecognized=None):
         top = max((row["used_percent"] for row in rows if row["used_percent"] is not None), default=None)
         risk = " RISK" if top is not None and top >= 80 else ""
         lines.append(f"LIMITS {provider} {window}:{risk} {used}; {when}; {observer_text(rows)}")
+    if unrecognized and unrecognized["observations"]:
+        lines.append(f"LIMITS UNKNOWN: {unrecognized['observations']} unrecognized provider observations, "
+                     "figures not shown")
     for provider, row in sorted(health.items()):
         if row["last_success_utc"] is None:
             lines.append(f"LIMITS {provider}: UNKNOWN (observer has no successful collection; state "

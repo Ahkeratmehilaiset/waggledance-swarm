@@ -47,14 +47,36 @@ def run(tmp_path, monkeypatch, capsys):
     script = tmp_path / "Get-WdCapacityStatus.ps1"
     script.write_text("# synthetic locator, never run\n", encoding="ascii")
     monkeypatch.setattr(route, "STATUS_SCRIPT", script)
+    # CR2: the installed integrity record, here synthetic, carries the installer's pin of the locator (upper hex).
+    integrity = tmp_path / "integrity.json"
+    monkeypatch.setattr(route, "INTEGRITY", integrity)
+
+    def record(value):
+        """Write the synthetic integrity record (a function of the locator's pin), or remove it for None."""
+        if value is None:
+            integrity.unlink()
+            return
+        pin = hashlib.sha256(script.read_bytes()).hexdigest().upper()
+        value = value(pin) if callable(value) else value
+        integrity.write_bytes(value if isinstance(value, bytes) else json.dumps(value).encode("ascii"))
+
+    record(lambda pin: {"schema_version": 1, "files": {"Get-WdCapacityStatus.ps1": pin, "other.ps1": "0" * 64}})
+    # CR1: the status host is the synthetic System32 Windows PowerShell, never run.
+    system = tmp_path / "System32"
+    host = system / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    host.parent.mkdir(parents=True)
+    host.write_bytes(b"synthetic host, never run")
+    monkeypatch.setattr(lens, "system_directory", lambda: system)
     monkeypatch.chdir(tmp_path)
 
-    def go(raw, argv=(), checked="2026-10-13T11:00:30+00:00", returncode=0):
+    def go(raw, argv=(), checked="2026-10-13T11:00:30+00:00", returncode=0, during=None):
         runs = []
 
         def fake_run(args, **kwargs):
             runs.append(args)
             assert kwargs == {"capture_output": True, "timeout": 60}
+            if during is not None:
+                during()
             return types.SimpleNamespace(returncode=returncode, stdout=raw)
 
         monkeypatch.setattr(lens, "subprocess", types.SimpleNamespace(run=fake_run,
@@ -69,7 +91,7 @@ def run(tmp_path, monkeypatch, capsys):
         assert sorted(path.name for path in tmp_path.rglob("*")) == before  # the route writes nothing
         return code, captured.out, captured.err, runs
 
-    go.script = script
+    go.script, go.host, go.record = script, host, record
     return go
 
 
@@ -81,7 +103,7 @@ def test_the_route_prints_the_guarded_lens_text_and_writes_nothing(run):
     raw = json.dumps(synthetic_status()).encode("utf-8")
     code, out, err, runs = run(raw)
     assert (code, err) == (0, "")
-    assert runs == [["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(run.script), "-Json"]]
+    assert runs == [[str(run.host), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(run.script), "-Json"]]
     lines = out.splitlines()
     assert lines[0].startswith("capacity (installed observer, read-only) observed 2026-10-13T11:00:00Z "
                                "(status age under 1 min, FRESH); ")
@@ -159,3 +181,67 @@ def test_the_view_and_the_text_are_guarded_before_anything_is_printed(run, monke
     monkeypatch.setattr(route.ws, "guard_object", lambda value: guarded.append(type(value).__name__))
     code, out, err, runs = run(json.dumps(synthetic_status()).encode("utf-8"))
     assert code == 0 and guarded == ["dict", "list"]
+
+
+# CR2 (RCO2 on PR 2044): the fixed locator is bound to the installer's own pin, read from the installed integrity
+# record; the route never derives or invents one.
+def test_a_locator_whose_bytes_differ_from_the_installed_pin_is_refused_before_any_run(run):
+    run.script.write_text("# a different locator\n", encoding="ascii")
+    code, out, err, runs = run(json.dumps(synthetic_status()).encode("utf-8"))
+    assert (code, out, runs) == ("refused: status_locator_pin_mismatch", "", [])
+
+
+UNPINNED = {
+    "missing": None, "not_json": b"{", "not_utf8": b"\xff\xfe{", "not_an_object": b"[]",
+    "schema_2": lambda pin: {"schema_version": 2, "files": {"Get-WdCapacityStatus.ps1": pin}},
+    "schema_true": lambda pin: {"schema_version": True, "files": {"Get-WdCapacityStatus.ps1": pin}},
+    "schema_text": lambda pin: {"schema_version": "1", "files": {"Get-WdCapacityStatus.ps1": pin}},
+    "no_files": {"schema_version": 1},
+    "files_a_list": lambda pin: {"schema_version": 1, "files": [pin]},
+    "no_entry": lambda pin: {"schema_version": 1, "files": {"other.ps1": pin}},
+    "short_pin": lambda pin: {"schema_version": 1, "files": {"Get-WdCapacityStatus.ps1": pin[:63]}},
+    "long_pin": lambda pin: {"schema_version": 1, "files": {"Get-WdCapacityStatus.ps1": pin + "0"}},
+    "not_hex": {"schema_version": 1, "files": {"Get-WdCapacityStatus.ps1": "g" * 64}},
+    "a_number": {"schema_version": 1, "files": {"Get-WdCapacityStatus.ps1": 5}}}
+
+
+@pytest.mark.parametrize("case", sorted(UNPINNED))
+def test_a_missing_or_unusable_installed_pin_is_refused_before_any_run(run, case):
+    run.record(UNPINNED[case])
+    code, out, err, runs = run(json.dumps(synthetic_status()).encode("utf-8"))
+    assert (code, out, err, runs) == ("refused: status_locator_unpinned", "", "", [])
+
+
+def test_an_integrity_record_that_is_a_link_is_refused_before_any_run(run, tmp_path):
+    target = tmp_path / "elsewhere.json"
+    target.write_bytes(route.INTEGRITY.read_bytes())
+    route.INTEGRITY.unlink()
+    try:
+        route.INTEGRITY.symlink_to(target)
+    except OSError:
+        pytest.skip("this account may not create symbolic links")
+    code, out, err, runs = run(json.dumps(synthetic_status()).encode("utf-8"))
+    assert (code, out, runs) == ("refused: status_locator_unpinned", "", [])
+
+
+@pytest.mark.parametrize("change", ["rewritten", "removed"])
+def test_a_locator_that_changes_during_the_run_is_refused_and_nothing_is_printed(run, change):
+    def during():
+        if change == "removed":
+            run.script.unlink()
+            run.script.mkdir()  # the name stays, so the route's no-file-written check still holds
+        else:
+            run.script.write_text("# swapped while running\n", encoding="ascii")
+
+    code, out, err, runs = run(json.dumps(synthetic_status()).encode("utf-8"), during=during)
+    assert (code, out, err) == ("refused: status_locator_changed", "", "") and len(runs) == 1
+
+
+def test_a_planted_powershell_in_the_current_directory_is_never_run(run, tmp_path):
+    (tmp_path / "powershell.exe").write_bytes(b"planted, must never run")
+    code, out, err, runs = run(json.dumps(synthetic_status()).encode("utf-8"))
+    assert code == 0 and [args[0] for args in runs] == [str(run.host)]
+
+
+def test_the_route_reads_the_pin_from_the_installed_integrity_record():
+    assert str(route.INTEGRITY) == "C:" + chr(92) + "Python" + chr(92) + "WD_REBOOT_INTEGRITY_CURRENT.json"

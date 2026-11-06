@@ -226,7 +226,10 @@ def main(argv=None):
             max_bytes=config['max_bytes'], max_rows=config['max_rows'],
             plan_template=config['plan_template'], renewable=config['renewable'], cutoff_utc=config['cutoff_utc'],
             batch_rows=config['batch_rows'], min_headroom_bytes=config['min_headroom_bytes'],
-            allow_partial_genesis=config['allow_partial_genesis'])
+            allow_partial_genesis=config['allow_partial_genesis'],
+            expected_source_identity=config['source_file_identity'],
+            expected_source_prefix_bytes=config['source_bytes'],
+            expected_source_prefix_sha256=config['source_sha256'])
         fully_covered = _verify_result(config, genesis, result, policy, fleet)
     except genesis.GenesisRefused:
         _emit('REFUSED')

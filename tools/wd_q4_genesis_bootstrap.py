@@ -122,7 +122,8 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
               policy_bytes=None, policy_sha256=None, public_policy_bytes=None, public_policy_sha256=None,
               fleet_bytes=None, expected_fleet_sha256=None, max_prefix_bytes=None,
               max_bytes=None, max_rows=None, plan_template=None, renewable=False,
-              cutoff_utc=None, batch_rows=False, min_headroom_bytes=65536, allow_partial_genesis=False):
+              cutoff_utc=None, batch_rows=False, min_headroom_bytes=65536, allow_partial_genesis=False,
+              expected_source_identity=None, expected_source_prefix_bytes=None, expected_source_prefix_sha256=None):
     if enabled is False:
         return {"status": "OFF"}
     created = False
@@ -135,6 +136,14 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
         if batch_rows and cutoff_utc is None:
             raise ValueError()
         if allow_partial_genesis and (not batch_rows or cutoff_utc is None):
+            raise ValueError()
+        independent_pin = (expected_source_identity, expected_source_prefix_bytes, expected_source_prefix_sha256)
+        has_pin = independent_pin != (None, None, None)
+        if has_pin and (type(expected_source_identity) is not str
+                or runner._IDENTITY.fullmatch(expected_source_identity) is None
+                or type(expected_source_prefix_bytes) is not int or expected_source_prefix_bytes <= 0
+                or type(expected_source_prefix_sha256) is not str
+                or runner._HEX.fullmatch(expected_source_prefix_sha256) is None):
             raise ValueError()
         runner._pinned(policy_bytes, policy_sha256, runner._POLICY_SHA)
         runner._pinned(public_policy_bytes, public_policy_sha256, runner._PUBLIC_SHA)
@@ -181,6 +190,10 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
             size = _complete_prefix_size(stream, observed_size)
             if cutoff_utc is None and size != observed_size:
                 raise ValueError()
+            if has_pin:
+                if identity != expected_source_identity or expected_source_prefix_bytes > size:
+                    raise ValueError()
+                _same_source(source, stream, identity, expected_source_prefix_bytes, expected_source_prefix_sha256)
             _scan_budget(stream, size, max_bytes=max_bytes, max_rows=max_rows if batch_rows or cutoff_utc is None else 1,
                          max_windows=plan_template["max_windows"], allow_partial=allow_partial_genesis)
             digest = _snapshot(stream, size)
@@ -214,8 +227,13 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
             # UNKNOWN even if the separate runner later returns successfully.
             tuple_bytes = _canonical({"schema": "wd.q4-genesis-private-tuple.v1", "publication": "UNKNOWN",
                 "allow_partial_genesis": allow_partial_genesis,
+                "independent_source_pin": ({"identity": expected_source_identity,
+                    "prefix_bytes": expected_source_prefix_bytes, "prefix_sha256": expected_source_prefix_sha256}
+                    if has_pin else None),
                 **{name: {"bytes_b64": base64.b64encode(value).decode("ascii"), "sha256": _digest(value)}
                    for name, value in (("anchor", anchor), ("route", route), ("plan", plan))}})
+            if has_pin:
+                _same_source(source, stream, identity, expected_source_prefix_bytes, expected_source_prefix_sha256)
             # O_EXCL is the admission point: any failure from here requires reconciliation.
             created = True
             info = runner._create(sidecar, side_bytes)
@@ -246,6 +264,8 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
             runner._verify_own(sidecar, side_bytes, info)
             runner._verify_own(tuple_file, tuple_bytes, tuple_info)
             _same_source(source, stream, identity, size, digest)
+            if has_pin:
+                _same_source(source, stream, identity, expected_source_prefix_bytes, expected_source_prefix_sha256)
             _same_source(source, stream, identity, end_pin.cursor.offset, end_pin.sha256)
             runner._verify_own(sidecar, side_bytes, info)
             if roots._observe(source.parent) != source_ids or roots._observe(sidecar.parent) != side_ids:

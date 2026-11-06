@@ -228,6 +228,65 @@ def test_default_headroom_refuses_before_sidecar(synthetic):
     assert calls == []
 
 
+@pytest.mark.parametrize("fault", ["identity", "length", "hash", "incomplete"])
+def test_independent_source_pin_mismatch_refuses_before_sidecar(synthetic, fault):
+    from waggledance.core.bridge_log_reader import _file_identity, _open_log
+    args, calls = synthetic
+    path = Path(args["source_path"])
+    data = path.read_bytes()
+    with _open_log(path) as stream:
+        identity = _file_identity(stream)
+    pin = dict(expected_source_identity=identity, expected_source_prefix_bytes=len(data),
+               expected_source_prefix_sha256=sha(data))
+    if fault == "identity":
+        pin["expected_source_identity"] = "windows-v1:00000000:0000000000000000"
+    elif fault == "length":
+        pin["expected_source_prefix_bytes"] = len(data) + 100
+    elif fault == "hash":
+        pin["expected_source_prefix_sha256"] = "0" * 64
+    else:
+        del pin["expected_source_prefix_sha256"]
+    with pytest.raises(genesis.GenesisRefused):
+        genesis.bootstrap(**args, **pin)
+    assert calls == [] and not Path(args["generation_path"]).exists()
+
+
+def test_independent_source_pin_allows_append_after_frozen_prefix(synthetic):
+    from waggledance.core.bridge_log_reader import _file_identity, _open_log
+    args, calls = synthetic
+    path = Path(args["source_path"])
+    data = path.read_bytes()
+    with _open_log(path) as stream:
+        identity = _file_identity(stream)
+    with path.open("ab") as stream:
+        stream.write(b"later synthetic row\n")
+    result = genesis.bootstrap(**args, expected_source_identity=identity, expected_source_prefix_bytes=len(data),
+                               expected_source_prefix_sha256=sha(data))
+    assert result["status"] == "PUBLISHED_GENESIS" and len(calls) == 1
+
+
+def test_source_pin_rechecked_after_pre_admission_rewrite(synthetic, monkeypatch):
+    from waggledance.core.bridge_log_reader import _file_identity, _open_log
+    args, calls = synthetic
+    path = Path(args["source_path"])
+    data = path.read_bytes()
+    with _open_log(path) as stream:
+        identity = _file_identity(stream)
+    original = genesis._same_source
+    checked = []
+    def rewrite_after_first_check(*pos, **kwargs):
+        result = original(*pos, **kwargs)
+        checked.append(True)
+        if len(checked) == 1:
+            path.write_bytes(b"x" * (len(data) - 1) + b"\n")
+        return result
+    monkeypatch.setattr(genesis, "_same_source", rewrite_after_first_check)
+    with pytest.raises(genesis.GenesisRefused):
+        genesis.bootstrap(**args, expected_source_identity=identity, expected_source_prefix_bytes=len(data),
+                          expected_source_prefix_sha256=sha(data))
+    assert len(checked) >= 2 and calls == [] and not Path(args["generation_path"]).exists()
+
+
 def test_opt_in_renewable_requires_real_recovery_proof(synthetic, monkeypatch):
     from tools import wd_q4_status_prefix_recovery as recovery
     args, calls = synthetic
@@ -493,8 +552,12 @@ def test_real_batched_genesis_and_fenced_continuations_cover_every_row(synthetic
                         "message": "synthetic-private-must-not-be-returned"}) + b"\n")
     log = Path(args["source_path"])
     log.write_bytes(b"".join(records))
+    from waggledance.core.bridge_log_reader import _file_identity, _open_log
+    with _open_log(log) as source:
+        source_identity = _file_identity(source)
     result = genesis.bootstrap(**args, cutoff_utc="2026-10-31T13:00:00Z", batch_rows=True,
-                               allow_partial_genesis=True, renewable=True)
+        allow_partial_genesis=True, renewable=True, expected_source_identity=source_identity,
+        expected_source_prefix_bytes=sum(map(len, records)), expected_source_prefix_sha256=sha(b"".join(records)))
     assert result["coverage"] == "partial_ready_prefix" and not result["genesis_initial_prefix_fully_covered"]
     roster_bytes, roster_sha = build_roster_snapshot(args["fleet_bytes"], args["expected_fleet_sha256"], enabled=True)
     def verified(report):

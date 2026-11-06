@@ -2777,13 +2777,17 @@ $prompt += (
   ' Q4 on-demand recall: only when memory is needed and WD_Q4_SHARED_DESCRIPTOR_PATH, ' +
   'WD_Q4_SHARED_DESCRIPTOR_SHA256 and the externally verified WD_REBOOT_EXPECTED_MANIFEST_HASH are present, ' +
   'and a manifest-verified Invoke-WdQ4LaneRecall.ps1 is packaged, use that helper from this lane worktree ' +
-  'with the inherited lane identity and pins. It invokes the pinned $env:WD_BRIDGE_PYTHON_WRAPPER ' +
+  'with the inherited lane identity and pins. Verify the helper file SHA256 against the externally anchored ' +
+  'bundle manifest before executing it. It invokes the pinned $env:WD_BRIDGE_PYTHON_WRAPPER ' +
   'tools/wd_q4_lane_caller_cli.py --enabled. Supply UTF-8 JSON ' +
-  'with exactly "situation" and "time" on stdin; time is UTC YYYY-MM-DDTHH:MM:SSZ (optionally 1-6 fractional digits). ' +
-  'through the helper by its verified interface; it delivers stdin through an OS pipe, not a PowerShell ' +
-  'object pipeline to the wrapper. Use only exit code 0 output; if pins or helper are missing or the call ' +
+  'with exactly "situation" and "time"; time is UTC YYYY-MM-DDTHH:MM:SSZ (optionally 1-6 fractional digits). ' +
+  'Pipe the JSON string to & (Join-Path $env:WD_BRIDGE_BUNDLE_ROOT "Invoke-WdQ4LaneRecall.ps1"). ' +
+  'The helper forwards stdin through an OS pipe; do not pipe directly to the wrapper. Its successful output ' +
+  'is direct stdout, not a PowerShell object; check $LASTEXITCODE and use only exit code 0 output. If pins ' +
+  'or helper are missing or the call ' +
   'refuses, errors or times out, read the bridge. ' +
   'There is no automatic retry after a nonzero result; exit 3 means cleanup UNKNOWN and requires reconciliation. ' +
+  'Do not use the helper internal worker switch. A stopped or incompletely exited call is UNKNOWN. ' +
   'Use no secrets or private paths in the query; do not put raw queries or raw answers in bridge events. ' +
   'Check referenced evidence independently; freshness and lane authentication remain UNKNOWN. This instruction ' +
   'is not proof of an installed or used Mind and is not a vote or gate input.'

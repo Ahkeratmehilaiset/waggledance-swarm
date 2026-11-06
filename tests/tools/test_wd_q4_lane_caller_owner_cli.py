@@ -20,8 +20,31 @@ def setup_cli(tmp_path, monkeypatch):
     state.mkdir(parents=True)
     fleet = json.dumps({"runtime_root": str(runtime), "lanes": [{"agent": lane}]},
                        sort_keys=True).encode("ascii")
-    inputs = {"expected_fleet_sha256": hashlib.sha256(fleet).hexdigest(), "max_output_bytes": 1024}
-    monkeypatch.setattr(cli, "_configuration", lambda: ({}, b"synthetic-descriptor", "b" * 64, fleet, {}, inputs))
+    index_root = tmp_path / "synthetic-index"
+    index_root.mkdir()
+    pointer = index_root / "q4-latest.json"
+    pointer.write_bytes(b"synthetic-owner-index")
+    pointer_pin = hashlib.sha256(pointer.read_bytes()).hexdigest()
+    binding = {name: "2" * 64 for name in ("source_anchor_sha256", "encoder_sha256", "policy_sha256",
+               "roster_sha256", "public_policy_sha256", "descriptor_sha256", "projection_sha256")}
+    binding["pointer_sha256"] = pointer_pin
+    public_plan = {"schema": "wd.q4-public-wrapper-plan.v1", "root": str(index_root),
+                   "policy_path": str(index_root / "policy"), "roster_path": str(index_root / "roster"),
+                   "public_policy_path": str(index_root / "public-policy"),
+                   "config": {"descriptor_sha256": binding["descriptor_sha256"]},
+                   **{name: binding[name] for name in ("pointer_sha256", "source_anchor_sha256", "encoder_sha256",
+                                                       "policy_sha256", "roster_sha256", "public_policy_sha256")}}
+    public_raw = json.dumps(public_plan, sort_keys=True, separators=(",", ":")).encode("ascii")
+    public_path = tmp_path / "public-plan.json"
+    public_path.write_bytes(public_raw)
+    binding_bytes = json.dumps({"schema": "wd.q4-lane-binding.v1", "binding": binding,
+                                "public_plan_sha256": hashlib.sha256(public_raw).hexdigest()},
+                               sort_keys=True, separators=(",", ":")).encode("ascii")
+    inputs = {"expected_fleet_sha256": hashlib.sha256(fleet).hexdigest(), "max_output_bytes": 1024,
+              "binding_bytes": binding_bytes}
+    descriptor = {"public_plan": str(public_path)}
+    monkeypatch.setattr(cli, "_configuration", lambda: (descriptor, b"synthetic-descriptor", "b" * 64,
+                                                       fleet, binding, inputs))
     monkeypatch.setattr(cli, "_identity", lambda *args: (lane, b"synthetic-identity", "synthetic-token"))
     monkeypatch.setattr(cli, "_refuse", lambda code: code)
     writes = []
@@ -33,7 +56,16 @@ def setup_cli(tmp_path, monkeypatch):
         acquired.append(item)
         return item
     monkeypatch.setattr(guard_module, "acquire_guard", acquire)
-    return {"marker": state / (lane + ".pending.json"), "acquired": acquired, "writes": writes}
+    return {"marker": state / (lane + ".pending.json"), "acquired": acquired, "writes": writes,
+            "pointer": pointer}
+
+
+def test_owner_fixture_uses_real_stale_check_before_guard(setup_cli, monkeypatch):
+    setup_cli["pointer"].write_bytes(b"synthetic-new-index")
+    monkeypatch.setattr(cli, "_query", lambda: pytest.fail("stale snapshot dispatched"))
+    assert cli.main(["--enabled"]) != 0
+    assert setup_cli["acquired"] == [] and not setup_cli["marker"].exists()
+    assert setup_cli["writes"] == []
 
 
 def test_enabled_cli_requires_anchored_guard_before_reading_query(setup_cli, monkeypatch):

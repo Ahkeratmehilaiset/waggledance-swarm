@@ -113,6 +113,66 @@ def test_published_candidate_selects_same_real_binding_and_fixed_plan(case):
     live.recheck(chosen['publication_path'], chosen['publication_sha256'])
 
 
+def _external_baseline_plan(case, tmp_path):
+    """Model the existing staged composer's externally pinned baseline plan."""
+    original = case['base']
+    descriptor = dict(original[0])
+    external = tmp_path / 'anchored-baseline-public-plan.json'
+    external.write_bytes(Path(descriptor['public_plan']).read_bytes())
+    descriptor['public_plan'] = str(external)
+    descriptor_raw = enc(descriptor)
+    Path(case['base_path']).write_bytes(descriptor_raw)
+    case['base'] = (descriptor, descriptor_raw, sha(descriptor_raw), *original[3:])
+    case['config'][Path(case['base_path']).parent.name] = case['base']
+    return external
+
+
+def test_external_baseline_plan_can_publish_and_select_pinned_candidate(case, tmp_path):
+    _external_baseline_plan(case, tmp_path)
+    assert do_publish(case)['status'] == 'PUBLISHED'
+    assert do_select(case)['configuration'][2] == case['candidate'][2]
+
+
+def test_external_baseline_plan_tamper_is_not_accepted(case, tmp_path):
+    external = _external_baseline_plan(case, tmp_path)
+    assert do_publish(case)['status'] == 'PUBLISHED'
+    external.write_bytes(b'{"modified":true}')
+    with pytest.raises(live.LiveSnapshotRefused): do_select(case)
+
+
+def test_candidate_plan_must_remain_in_candidate_generation(case, tmp_path):
+    original = case['candidate']
+    descriptor = dict(original[0])
+    external = tmp_path / 'unanchored-candidate-public-plan.json'
+    external.write_bytes(Path(descriptor['public_plan']).read_bytes())
+    descriptor['public_plan'] = str(external)
+    descriptor_raw = enc(descriptor)
+    Path(case['candidate_path']).write_bytes(descriptor_raw)
+    case['candidate'] = (descriptor, descriptor_raw, sha(descriptor_raw), *original[3:])
+    case['config'][Path(case['candidate_path']).parent.name] = case['candidate']
+    with pytest.raises(live.LiveSnapshotRefused): do_publish(case)
+    assert not (case['root'] / 'q4-live-current.json').exists()
+
+
+def test_real_staged_composer_baseline_reaches_live_pointer_lookup(tmp_path, monkeypatch):
+    from tests.tools.test_wd_q4_staged_composer import setup_case
+    from tools import wd_q4_staged_composer as composer
+    kw, _, _ = setup_case(tmp_path)
+    built = composer.compose(**kw)
+    path = Path(built['descriptor_path'])
+    descriptor = json.loads(path.read_bytes())
+    attempted = []
+    def read_spy(path, limit, pin=None):
+        attempted.append(Path(path).name)
+        raise ValueError('synthetic stop')
+    monkeypatch.setattr(live, '_read', read_spy)
+    with pytest.raises(live.LiveSnapshotRefused):
+        live.select(enabled=True, baseline_path=str(path), baseline_sha256=built['descriptor_sha256'],
+                    baseline=(descriptor,), manifest_sha256=kw['expected_manifest_sha256'],
+                    load_configuration=lambda *_: None)
+    assert attempted == ['q4-live-current.json']
+
+
 def test_stale_index_cannot_be_published(case):
     (case['index'] / 'q4-latest.json').write_bytes(b'different')
     with pytest.raises(live.LiveSnapshotRefused):

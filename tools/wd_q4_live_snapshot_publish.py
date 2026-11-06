@@ -31,6 +31,10 @@ _STABLE_PINS = frozenset({'encoder_sha256', 'policy_sha256', 'roster_sha256', 'p
 _PLAN_DYNAMIC = frozenset({'bundle_sha256', 'bundle_bytes', 'expected_pointer_sha256', 'expected_source_sha256'})
 _GENERATION_PATHS = (('binding_path', 'lane-binding.v1.json'), ('fixed_plan_path', 'fixed-plan.v2.json'),
                      ('snapshot_path', 'public-snapshot.v1.json'), ('public_plan', 'public-plan.json'))
+# The staged baseline composer pins its separately supplied public plan by
+# digest in the lane binding; it materializes the other three files in the
+# baseline generation. Refreshed candidates materialize all four locally.
+_BASELINE_GENERATION_PATHS = tuple(item for item in _GENERATION_PATHS if item[0] != 'public_plan')
 _FIXED_BINDING_PINS = (('expected_pointer_sha256', 'pointer_sha256'),
                        ('expected_source_sha256', 'source_anchor_sha256'),
                        ('expected_encoder_sha256', 'encoder_sha256'), ('policy_sha256', 'policy_sha256'),
@@ -172,7 +176,7 @@ def select(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline=
         root = base_path.parent.parent
         if not _GEN.fullmatch(base_path.parent.name):
             raise ValueError()
-        if any(Path(baseline[0][key]) != base_path.parent / name for key, name in _GENERATION_PATHS):
+        if any(Path(baseline[0][key]) != base_path.parent / name for key, name in _BASELINE_GENERATION_PATHS):
             raise ValueError()
         publication_path = root / _POINTER
         raw = _read(publication_path, 4096)
@@ -238,7 +242,7 @@ def publish(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline
                 or not _GEN.fullmatch(cp.parent.name)):
             raise ValueError()
         if (any(Path(candidate[0][key]) != cp.parent / name for key, name in _GENERATION_PATHS)
-                or any(Path(baseline[0][key]) != bp.parent / name for key, name in _GENERATION_PATHS)):
+                or any(Path(baseline[0][key]) != bp.parent / name for key, name in _BASELINE_GENERATION_PATHS)):
             raise ValueError()
         baseline_raw = _read(bp, 65536, baseline_sha256)
         candidate_raw = _read(cp, 65536, candidate_sha256)

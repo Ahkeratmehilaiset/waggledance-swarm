@@ -140,6 +140,16 @@ def verify(*, enabled=False, record=None, policy_bytes=None, policy_sha256=None,
             raise ValueError()
     except Exception:
         return _unknown()
+    try:
+        result = _scan_prefix(source_path, generation_path, cursor, final_cursor,
+                              expected_snapshot_sha256, minute, end, ref, tasks, roster, public_tasks, public_types)
+    finally:
+        record = receipt = coverage_receipt_bytes = policy_bytes = public_policy_bytes = roster_bytes = source_path = None
+    return result
+
+
+def _scan_prefix(source_path, generation_path, cursor, final_cursor, expected_snapshot_sha256,
+                 minute, end, ref, tasks, roster, public_tasks, public_types):
     overflow = False
     invalid = False
     refs = []
@@ -206,10 +216,69 @@ def verify(*, enabled=False, record=None, policy_bytes=None, policy_sha256=None,
     except Exception:
         invalid = True
     finally:
-        event = read = receipt = coverage_receipt_bytes = policy_bytes = public_policy_bytes = roster_bytes = record = None
+        event = read = source_path = generation_path = None
     if overflow:
         raise VerifierRefused('window_too_large')
     if invalid:
         return _unknown()
     return {'status': 'NONE' if not refs else 'MATCH' if len(refs) == 1 else 'AMBIGUOUS',
             'canonical_event_refs': refs, 'count': len(refs)}
+
+
+def verify_within_prefix(*, enabled=False, record=None, policy_bytes=None, policy_sha256=None,
+                         public_policy_bytes=None, public_policy_sha256=None, roster_bytes=None, roster_sha256=None,
+                         source_path=None, generation_path=None, end_cursor=None, expected_prefix_sha256=None):
+    """Show that a public projected match exists within one caller-pinned prefix.
+
+    This does not use or create an interval-coverage receipt, prove which source
+    produced an answer, authenticate a writer, or assert uniqueness or absence
+    outside the pinned prefix. No match or unavailable evidence returns UNKNOWN;
+    every enabled result explicitly marks completeness UNKNOWN. The caller must
+    independently protect the cursor, prefix digest and policy pins.
+    """
+    if enabled is False:
+        return {'status': 'OFF'}
+    if enabled is not True:
+        raise VerifierRefused('input_refused')
+    bad_input = False
+    try:
+        tasks, roster = capture.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+        public_tasks, public_types = capture.public_status_policy(public_policy_bytes, public_policy_sha256, tasks)
+        if type(record) is not dict or type(record.get('provenance')) is not dict:
+            raise ValueError()
+        provenance = record['provenance']
+        ref = provenance.get('event_ref')
+        if (provenance.get('source_kind') != 'projected_bridge_metadata'
+                or provenance.get('ref_kind') != 'sha256_of_projected_metadata'
+                or provenance.get('canonical_event') is not False
+                or type(ref) is not str or _HEX.fullmatch(ref) is None):
+            raise ValueError()
+        minute = _timestamp(record.get('time_utc'))
+        if (minute.second != 0 or minute.microsecond != 0
+                or projection.corpus_mod.utc_text(minute) != record['time_utc']):
+            raise ValueError()
+        end = minute + dt.timedelta(seconds=60)
+    except Exception:
+        bad_input = True
+    if bad_input:
+        record = policy_bytes = public_policy_bytes = roster_bytes = source_path = None
+        raise VerifierRefused('input_refused')
+    unknown = {'status': 'UNKNOWN', 'canonical_event_refs': [], 'count': 0, 'completeness': 'UNKNOWN'}
+    if (type(source_path) is not str or not os.path.isabs(source_path)
+            or type(generation_path) is not str or not os.path.isabs(generation_path)
+            or type(expected_prefix_sha256) is not str or _HEX.fullmatch(expected_prefix_sha256) is None
+            or type(end_cursor) is not bridge.BridgeCursor or bridge._validate_cursor(end_cursor)
+            or type(end_cursor.generation) is not str or not end_cursor.generation
+            or not 0 < end_cursor.offset <= _MAX_SOURCE_BYTES):
+        return unknown
+    start = bridge.BridgeCursor(0, end_cursor.file_identity, end_cursor.generation)
+    try:
+        result = _scan_prefix(source_path, generation_path, start, end_cursor, expected_prefix_sha256,
+                              minute, end, ref, tasks, roster, public_tasks, public_types)
+    finally:
+        record = policy_bytes = public_policy_bytes = roster_bytes = source_path = None
+    if result['status'] not in ('MATCH', 'AMBIGUOUS'):
+        return unknown
+    return {'status': 'MATCH_WITHIN_PREFIX' if result['status'] == 'MATCH' else 'AMBIGUOUS_WITHIN_PREFIX',
+            'canonical_event_refs': result['canonical_event_refs'], 'count': result['count'],
+            'completeness': 'UNKNOWN'}

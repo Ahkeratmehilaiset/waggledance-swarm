@@ -312,3 +312,113 @@ def test_missing_generation_sidecar_is_unknown(case):
     event, setup = case
     args = setup([event]); Path(args['generation_path']).unlink()
     assert v.verify(**args)['status'] == 'UNKNOWN'
+
+
+def _prefix_args(args):
+    receipt = json.loads(args['coverage_receipt_bytes'])
+    names = ('record', 'policy_bytes', 'policy_sha256', 'public_policy_bytes', 'public_policy_sha256',
+             'roster_bytes', 'roster_sha256', 'source_path', 'generation_path')
+    return {**{name: args[name] for name in names}, 'enabled': True,
+            'end_cursor': bridge.BridgeCursor(**receipt['cursor_end']),
+            'expected_prefix_sha256': receipt['prefix_sha256']}
+
+
+def test_prefix_match_does_not_require_coverage_receipt(case):
+    from tools import wd_q4_canonical_ref_verifier as v
+    event, setup = case
+    args = _prefix_args(setup([event]))
+    result = v.verify_within_prefix(**args)
+    assert result == {'status': 'MATCH_WITHIN_PREFIX', 'canonical_event_refs': [event_id(event)],
+                      'count': 1, 'completeness': 'UNKNOWN'}
+
+
+def test_prefix_absence_never_claims_global_or_minute_none(case):
+    from tools import wd_q4_canonical_ref_verifier as v
+    event, setup = case
+    result = v.verify_within_prefix(**_prefix_args(setup([dict(event, status='done')])))
+    assert result == {'status': 'UNKNOWN', 'canonical_event_refs': [], 'count': 0, 'completeness': 'UNKNOWN'}
+
+
+def test_prefix_multiple_hits_never_claims_global_uniqueness(case):
+    from tools import wd_q4_canonical_ref_verifier as v
+    event, setup = case
+    other = dict(event, ts_utc='2026-11-06T18:05:43Z')
+    result = v.verify_within_prefix(**_prefix_args(setup([event, other])))
+    assert result['status'] == 'AMBIGUOUS_WITHIN_PREFIX' and result['completeness'] == 'UNKNOWN'
+    assert result['count'] == 2 and set(result['canonical_event_refs']) == {event_id(event), event_id(other)}
+
+
+def test_prefix_bad_digest_unknown_and_no_data_leak(case):
+    from tools import wd_q4_canonical_ref_verifier as v
+    event, setup = case
+    args = _prefix_args(setup([event])); args['expected_prefix_sha256'] = 'f'*64
+    result = v.verify_within_prefix(**args)
+    assert result['status'] == 'UNKNOWN' and result['completeness'] == 'UNKNOWN'
+    assert result['canonical_event_refs'] == []
+    assert 'private-canary' not in json.dumps(result)
+
+
+def test_prefix_append_is_outside_fixed_end_and_completeness_unknown(case):
+    from tools import wd_q4_canonical_ref_verifier as v
+    event, setup = case
+    args = _prefix_args(setup([event]))
+    later = dict(event, ts_utc='2026-11-06T18:05:45Z')
+    with open(args['source_path'], 'ab') as stream:
+        stream.write(raw(later) + b'\n')
+    result = v.verify_within_prefix(**args)
+    assert result['status'] == 'MATCH_WITHIN_PREFIX' and result['completeness'] == 'UNKNOWN'
+    assert result['canonical_event_refs'] == [event_id(event)]
+
+
+def test_prefix_wrong_policy_refuses_before_reader(case, monkeypatch):
+    from tools import wd_q4_canonical_ref_verifier as v
+    event, setup = case
+    args = _prefix_args(setup([event])); args['policy_sha256'] = 'f'*64
+    monkeypatch.setattr(v.bridge, 'read_bridge_log', lambda *a, **k: pytest.fail('reader called'))
+    with pytest.raises(v.VerifierRefused): v.verify_within_prefix(**args)
+
+
+def test_prefix_default_off_never_reads(monkeypatch):
+    from tools import wd_q4_canonical_ref_verifier as v
+    monkeypatch.setattr(v.bridge, 'read_bridge_log', lambda *a, **k: pytest.fail('reader called'))
+    assert v.verify_within_prefix() == {'status': 'OFF'}
+
+
+def test_prefix_missing_or_rotated_source_is_unknown(case):
+    from tools import wd_q4_canonical_ref_verifier as v
+    event, setup = case
+    args = _prefix_args(setup([event])); Path(args['generation_path']).write_bytes(raw({'generation': 'other'}))
+    assert v.verify_within_prefix(**args)['status'] == 'UNKNOWN'
+
+
+def test_prefix_changed_identity_is_unknown(case):
+    from tools import wd_q4_canonical_ref_verifier as v
+    event, setup = case
+    args = _prefix_args(setup([event])); c = args['end_cursor']
+    args['end_cursor'] = bridge.BridgeCursor(c.offset, 'windows-v1:00000000:0000000000000001', c.generation)
+    assert v.verify_within_prefix(**args)['status'] == 'UNKNOWN'
+
+
+def test_prefix_unavailable_source_is_unknown(case):
+    from tools import wd_q4_canonical_ref_verifier as v
+    event, setup = case
+    args = _prefix_args(setup([event])); Path(args['source_path']).unlink()
+    out = v.verify_within_prefix(**args)
+    assert out['status'] == 'UNKNOWN' and out['completeness'] == 'UNKNOWN'
+
+
+def test_prefix_public_identity_mismatch_does_not_emit_hit(case):
+    from tools import wd_q4_canonical_ref_verifier as v
+    event, setup = case
+    bad = dict(event, agent_uuid='ffffffff-ffff-4fff-8fff-ffffffffffff')
+    out = v.verify_within_prefix(**_prefix_args(setup([event, bad])))
+    assert out['status'] == 'UNKNOWN' and out['canonical_event_refs'] == []
+
+
+def test_prefix_malformed_record_cannot_claim_canonical(case):
+    from tools import wd_q4_canonical_ref_verifier as v
+    event, setup = case
+    args = _prefix_args(setup([event])); record = dict(args['record'])
+    record['provenance'] = dict(record['provenance'], canonical_event=True)
+    args['record'] = record
+    with pytest.raises(v.VerifierRefused): v.verify_within_prefix(**args)

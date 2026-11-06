@@ -186,7 +186,7 @@ def main(argv):
                 raise ValueError()
             if len(argv) == 11 and argv[9] == '--progress-sha256' and _HEX.fullmatch(argv[10]):
                 evidence = argv[9:11]
-            elif (len(argv) == 13 and argv[9] == '--runner-receipt-sha256' and _HEX.fullmatch(argv[10])
+            elif (len(argv) == 13 and argv[9] in ('--runner-receipt-sha256', '--job-receipt-sha256') and _HEX.fullmatch(argv[10])
                   and argv[11] == '--pointer-sha256' and _HEX.fullmatch(argv[12])):
                 evidence = argv[9:13]
             else:

@@ -467,16 +467,34 @@ def main(argv=None):
     parser.add_argument('--attempt')
     parser.add_argument('--progress-sha256')
     parser.add_argument('--runner-receipt-sha256')
+    parser.add_argument('--job-receipt-sha256')
     parser.add_argument('--pointer-sha256')
-    args = parser.parse_args(argv)
+    supplied = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(supplied)
     if not args.recover:
         print('{"status":"OFF"}')
         return 0
+    pins = (args.sha256, args.attempt)
+    evidence = (args.progress_sha256, args.runner_receipt_sha256, args.job_receipt_sha256)
+    flags = ('--recover', '--config', '--sha256', '--attempt', '--progress-sha256',
+             '--runner-receipt-sha256', '--job-receipt-sha256', '--pointer-sha256')
+    valid = (type(args.config) is str and bool(args.config)
+             and all(type(pin) is str and update._HEX.fullmatch(pin) for pin in pins)
+             and all(supplied.count(flag) <= 1 for flag in flags)
+             and sum(value is not None for value in evidence) == 1
+             and all(value is None or update._HEX.fullmatch(value) for value in evidence)
+             and ((args.progress_sha256 is not None and args.pointer_sha256 is None)
+                  or (args.progress_sha256 is None and type(args.pointer_sha256) is str
+                      and update._HEX.fullmatch(args.pointer_sha256))))
+    if not valid:
+        print('{"status":"REFUSED"}', file=sys.stderr)
+        return 2
     try:
         result = recover(enabled=True, config_path=args.config, expected_config_sha256=args.sha256,
                          expected_attempt=args.attempt, expected_progress_sha256=args.progress_sha256,
                          expected_runner_receipt_sha256=args.runner_receipt_sha256,
-                         expected_pointer_sha256=args.pointer_sha256)
+                         expected_pointer_sha256=args.pointer_sha256,
+                         expected_job_receipt_sha256=args.job_receipt_sha256)
     except RecoveryOutcomeUnknown:
         print('{"status":"UNKNOWN"}', file=sys.stderr)
         return 3

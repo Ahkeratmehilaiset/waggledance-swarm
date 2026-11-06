@@ -258,6 +258,14 @@ def test_stale_snapshot_refuses_before_query_and_adapter(case, monkeypatch, caps
     assert case["calls"] == []
 
 
+def test_live_mode_refuses_if_no_live_publication_before_query(case, monkeypatch, capsys):
+    """Opt-in dynamic mode must not silently fall back to an old static descriptor."""
+    monkeypatch.setenv("WD_Q4_LIVE_MODE", "1")
+    case["outcome"]["validated"] = True
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert case["calls"] == []
+
+
 def test_snapshot_changed_during_query_is_never_published(case, monkeypatch, capsys):
     pointer = case["latest"]
     case["outcome"]["validated"] = True

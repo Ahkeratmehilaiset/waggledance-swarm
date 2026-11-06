@@ -475,6 +475,7 @@ Describe 'Assert-WdLaneLaunchAvailable recheck budget and configuration' {
       $message = ''
       try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
       $message | Should Match 'has no verified launcher ancestry'
+      $message | Should Not Match 'someone'
       $record = (Read-DiagnosticRecords -Path $log)[0].unattributed[0]
       $record.executable_path | Should Be ('<userprofile>\tools\claude.exe')
       (Get-Content -LiteralPath $log -Raw) | Should Not Match 'someone'

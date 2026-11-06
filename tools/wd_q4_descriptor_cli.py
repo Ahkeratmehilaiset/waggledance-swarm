@@ -32,10 +32,13 @@ is recomputed from the plan bytes before it is pinned into the descriptor. The v
 descriptor both describe (interpreter sha256, runtime manifest path and sha256, runtime root, generation and
 revision in the descriptor's outer block, each key present) must be equal in the request, otherwise the request is
 refused before any source is read: a generation whose two documents disagree would only fail at run time. A
-KeyboardInterrupt ends the run with exit 130 and a SystemExit with its own non-zero integer code (a zero, None or
-non-integer code becomes 1, so exit 0 always means the pair was printed); neither writes a line of its own, also
-when raised while the line is written, but an interrupt that lands while a refusal or success line is being
-written may leave that line whole or as a partial line on stdout, so a caller accepts output only with exit 0. An
+KeyboardInterrupt ends the run with exit 130 and a SystemExit with its own code only when that code is an
+exact integer from 1 to 125; any other code (zero, negative, above 125, None, a message or an integer subclass)
+becomes 1, so a Windows caller testing errorlevel 1 never reads a failure as success. Exit 0 means one complete
+line reached stdout: the OFF line when ``--enable`` is absent, the descriptor pair only when it is present and the
+composition succeeded. Neither an interrupt nor an exit writes a line of its own, also when raised
+while the line is written, but an interrupt that lands while the OFF, refusal or success line is being written
+may leave that line whole or as a partial line on stdout, so a caller accepts output only with exit 0. An
 interrupt during the write phase may leave a partial generation directory, which the next run refuses as existing.
 Default-off behaviour is
 preserved at every layer: each producer is called with
@@ -298,7 +301,7 @@ def _run(argv):
     except KeyboardInterrupt:
         return 130
     except SystemExit as exit_:
-        return exit_.code if type(exit_.code) is int and exit_.code != 0 else 1
+        return exit_.code if type(exit_.code) is int and 1 <= exit_.code <= 125 else 1
     except BaseException:  # noqa: BLE001 - no detail of any kind leaves the process
         _write(REFUSAL_PREFIX + 'unexpected_refused"}\n')
         return 1
@@ -307,7 +310,7 @@ def _run(argv):
 def main(argv=None):
     """The guard around the guard: an interrupt or exit raised while a refusal line is written inside a handler of
     ``_run`` would otherwise escape the process with a diagnostic on the error stream; here it still ends with 130,
-    its own non-zero integer code or 1, and the guard itself writes nothing."""
+    its own code when that is an exact integer from 1 to 125, else 1, and the guard itself writes nothing."""
     try:
         if argv is None:
             argv = sys.argv[1:]
@@ -315,7 +318,7 @@ def main(argv=None):
     except KeyboardInterrupt:
         return 130
     except SystemExit as exit_:
-        return exit_.code if type(exit_.code) is int and exit_.code != 0 else 1
+        return exit_.code if type(exit_.code) is int and 1 <= exit_.code <= 125 else 1
     except BaseException:  # noqa: BLE001 - nothing is written here, the write itself may be what failed
         return 1
 

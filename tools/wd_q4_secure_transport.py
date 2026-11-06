@@ -194,8 +194,12 @@ def _create_process_in_job(k, job, executable, line, environment, cwd, info):
     _check(size.value > 0)
     storage = C.create_string_buffer(size.value)
     attributes = C.cast(storage, C.c_void_p)
-    _check(k.InitializeProcThreadAttributeList(attributes, 1, 0, C.byref(size)))
+    # None covers interruption before Python stores the native result. In that
+    # state DeleteProcThreadAttributeList is not safe to call blindly.
+    initialized = None
     try:
+        initialized = bool(k.InitializeProcThreadAttributeList(attributes, 1, 0, C.byref(size)))
+        _check(initialized)
         handles = (W.HANDLE * 1)(job)
         # PROC_THREAD_ATTRIBUTE_JOB_LIST; the buffer must outlive the list.
         _check(k.UpdateProcThreadAttribute(attributes, 0, 0x0002000D,
@@ -215,7 +219,12 @@ def _create_process_in_job(k, job, executable, line, environment, cwd, info):
                                 C.byref(startup), C.byref(info)))
         return info.process, info.thread, info.pid, info.tid
     finally:
-        k.DeleteProcThreadAttributeList(attributes)
+        if initialized is None:
+            # Retain the caller-owned buffer and fail closed on future calls.
+            # This does not establish whether native initialization completed.
+            _QUARANTINE.append((k, None, ("attribute_init_unknown", storage, attributes)))
+        elif initialized:
+            k.DeleteProcThreadAttributeList(attributes)
 
 
 def _check(ok):

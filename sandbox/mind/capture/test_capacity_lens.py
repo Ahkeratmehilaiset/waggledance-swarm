@@ -13,6 +13,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import capacity_lens as lens  # noqa: E402
 
 NOW = "2026-10-13T11:00:00+00:00"
+REAL_CLOCK = getattr(lens, "clock", None)
+
+
+@pytest.fixture(autouse=True)
+def fixed_clock(monkeypatch):
+    """K2: every case runs on an injected lens clock 30 s after NOW unless it injects its own."""
+    monkeypatch.setattr(lens, "clock", lambda: lens.parse_time("2026-10-13T11:00:30+00:00"), raising=False)
 DIGIT_LIMIT = sys.get_int_max_str_digits()  # 4300 unless -X int_max_str_digits or PYTHONINTMAXSTRDIGITS set it; 0 none
 
 
@@ -215,6 +222,7 @@ def test_a_readable_status_runs_the_hook_and_writes_its_files(tmp_path, monkeypa
     assert result == 0 and sorted(path.name for path in out.iterdir()) == ["capacity-lens.json"]
     view = json.loads((out / "capacity-lens.json").read_text(encoding="ascii"))
     assert view["status_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert view["status_age"] == {"checked_utc": "2026-10-13T11:00:30Z", "age_s": 30.0, "state": "FRESH"}
     assert sorted(path.name for path in published.iterdir()) == ["capacity-lens.json", "lens-limits.txt"]
 
 
@@ -596,3 +604,86 @@ def test_no_written_or_published_byte_names_a_thread_and_provider_signals_stay(t
     lines = (published / "lens-limits.txt").read_text(encoding="ascii").splitlines()
     assert "LIMITS claude seven_day: 31%, 33%; resets 2026-10-14T18:00Z (in 1860 min); observer " \
            "provider_timestamp_unknown, quota unknown, under 1 min old" in lines
+
+
+# PR 2041 review K1 (Lead 11-06 19:42Z): every observer string the lens copies is a known provider or a short safe
+# label (lowercase words joined by underscores); anything else, e-mail-, path- or token-like, reads UNKNOWN.
+UNSAFE = ("ops.user" + chr(64) + "example.com", "C:/Users/someone/secret.txt",
+          "C:" + chr(92) + "Users" + chr(92) + "vault", "ghp_A1b2C3d4E5f6G7h8I9j0kLmN",
+          "deadbeefcafebabe0123456789abcdef", "qwertyuiopasdfghjklzxcvbnmqwertyuiop",
+          "Bearer abcdef", "../../etc/passwd", "seven_day ", "a1b2c3d4e5f6")
+
+
+def unsafe_status(label):
+    value = status([observation("11111111-a", {"name": label, "used_percent": 12, "resets_at": 1792000800},
+                                provider=label, freshness=label, quota=label)],
+                   [{"provider": label, "native_thread_id": "22222222-b", "activity_state": label,
+                     "availability_state": label, "last_successful_turn_at": "2026-10-13T10:00:00+00:00",
+                     "error_type": label, "first_error_at": "2026-10-13T09:00:00+00:00"}],
+                   collection={label: {"last_success": "2026-10-13T10:59:00+00:00", "collection_state": label,
+                                       "freshness_ttl_seconds": 300}})
+    value.update(failed_providers=[label], alerts=[{"alert_id": "c" * 32, "provider": label,
+                                                    "native_thread_id": "33333333-c", "state": label}])
+    return value
+
+
+@pytest.mark.parametrize("label", UNSAFE)
+def test_an_unsafe_observer_label_never_reaches_an_output_byte_and_reads_unknown(tmp_path, monkeypatch, label):
+    result, out, published = run_hook(tmp_path, monkeypatch, encoded(unsafe_status(label)))
+    assert result == 0
+    for path in sorted(out.iterdir()) + sorted(published.iterdir()):
+        body = path.read_bytes()
+        assert label.encode() not in body and json.dumps(label)[1:-1].encode() not in body, path.name
+    lines = (published / "lens-limits.txt").read_text(encoding="ascii").splitlines()
+    assert lines[1:] == [
+        "LIMITS UNKNOWN UNKNOWN: 12%; resets 2026-10-14T18:00Z (in 1860 min); observer UNKNOWN, quota UNKNOWN, "
+        "under 1 min old",
+        "COLLECTION UNKNOWN: FAILED; state UNKNOWN; last success 2026-10-13T10:59Z (1 min ago); no attempt recorded; "
+        "observer TTL 300 s; failed provider",
+        "ALERTS: 1 (UNKNOWN UNKNOWN x1)",
+        "ACTIVITY UNKNOWN: threads 1; UNKNOWN x1; latest success 2026-10-13T10:00Z (60 min ago); error UNKNOWN x1 "
+        "since 2026-10-13T09:00"]
+
+
+def test_known_providers_and_short_safe_labels_pass_and_an_unknown_provider_does_not():
+    value = status([observation("11111111-a", {"name": "seven_day_opus", "used_percent": 3}, provider="codex",
+                                freshness="unknown_or_stale", quota="observed_headroom"),
+                    observation("22222222-b", {"name": "five_hour", "used_percent": 4}, provider="gemini")],
+                   collection={"claude": {"last_success": None, "collection_state": "pending_or_interrupted"}})
+    lines = render(value)
+    assert [line[:line.index(";")] for line in lines if line.startswith(("LIMITS", "COLLECTION"))] == [
+        "LIMITS UNKNOWN five_hour: 4%", "LIMITS codex seven_day_opus: 3%",
+        "LIMITS claude: UNKNOWN (observer has no successful collection", "COLLECTION claude: NO_SUCCESS"]
+    assert "observer unknown_or_stale, quota observed_headroom" in lines[2]
+
+
+# PR 2041 review K2: the age of the whole status against the lens's own UTC clock (injected here).
+CLOCK_CASES = {
+    "same_second": ("2026-10-13T11:00:00+00:00", 0.0, "FRESH", "status age under 1 min, FRESH"),
+    "fresh": ("2026-10-13T11:00:30+00:00", 30.0, "FRESH", "status age under 1 min, FRESH"),
+    "at_the_limit": ("2026-10-13T11:02:00+00:00", 120.0, "FRESH", "status age 2 min, FRESH"),
+    "just_over": ("2026-10-13T11:02:01+00:00", 121.0, "STALE", "status age 2 min, STALE"),
+    "hours_old": ("2026-10-13T14:00:00+00:00", 10800.0, "STALE", "status age 180 min, STALE"),
+    "one_second_ahead": ("2026-10-13T10:59:59+00:00", -1.0, "FUTURE",
+                         "status time under 1 min ahead of the lens clock, FUTURE (invalid)"),
+    "ten_min_ahead": ("2026-10-13T10:50:00+00:00", -600.0, "FUTURE",
+                      "status time 10 min ahead of the lens clock, FUTURE (invalid)"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(CLOCK_CASES))
+def test_the_whole_status_age_is_measured_against_the_lens_clock(monkeypatch, case):
+    checked, age, state, shown = CLOCK_CASES[case]
+    monkeypatch.setattr(lens, "clock", lambda: lens.parse_time(checked))
+    assert lens.project(status(), {})[5] == {"checked_utc": lens.utc(lens.parse_time(checked)), "age_s": age,
+                                             "state": state}
+    assert render(status())[0].startswith(
+        f"capacity (installed observer, read-only) observed 2026-10-13T11:00:00Z ({shown}); ")
+
+
+def test_the_lens_clock_is_the_real_utc_clock():
+    import datetime as dt
+    assert REAL_CLOCK is not None
+    checked = REAL_CLOCK()
+    assert checked.utcoffset() == dt.timedelta(0)
+    assert abs((checked - dt.datetime.now(dt.timezone.utc)).total_seconds()) < 5

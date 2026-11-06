@@ -86,6 +86,7 @@ def test_disabled_does_not_read_stdin_or_config(monkeypatch, capsys):
     assert captured.out == "" and "disabled" in captured.err
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows fixed-peer transport is required")
 def test_real_synthetic_session_roundtrip(case, monkeypatch, capsys):
     args, _, old = case
     input_(monkeypatch, b"synthetic situation\n")
@@ -227,6 +228,7 @@ def test_exact_query_time_reaches_query_session_without_reading_the_clock(case, 
     assert "synthetic exact situation" not in captured.out
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows fixed-peer transport is required")
 def test_exact_query_time_real_synthetic_session_roundtrip(case, monkeypatch, capsys):
     args, _, old = case
     when = old["time"].astimezone(timezone.utc)
@@ -323,3 +325,34 @@ def test_exact_time_mode_is_documented_without_freshness_or_authentication_claim
     doc = cli.__doc__
     assert "--query-utc" in doc and "same whole second" in doc and "datetime.now" in doc
     assert "not authentication" in doc and "freshness" in doc
+
+
+@pytest.fixture
+def unsupported_fixed_peer(monkeypatch):
+    # Model the unsupported OS branch without changing the process-wide os module.
+    from tools import wd_q4_secure_transport as fixed
+    real_os = fixed.os
+    class UnsupportedOS:
+        name = "posix"
+        def __getattr__(self, name):
+            return getattr(real_os, name)
+    monkeypatch.setattr(fixed, "os", UnsupportedOS())
+
+
+def test_unsupported_peer_refuses_session_roundtrip(case, unsupported_fixed_peer, monkeypatch, capsys):
+    args, _, _ = case
+    input_(monkeypatch, b"synthetic situation\n")
+    assert cli.main(args) == 2
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["status"] == "REFUSED"
+    assert "synthetic situation" not in captured.out + captured.err
+
+
+def test_unsupported_peer_refuses_exact_time_roundtrip(case, unsupported_fixed_peer, monkeypatch, capsys):
+    args, _, old = case
+    when = old["time"].astimezone(timezone.utc)
+    input_(monkeypatch, exact_query(old["situation"], when.strftime("%Y-%m-%dT%H:%M:%SZ")))
+    assert cli.main(args + ["--query-utc", when.strftime("%Y-%m-%dT%H:%M:%S.000000Z")]) == 2
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["status"] == "REFUSED"
+    assert old["situation"] not in captured.out + captured.err

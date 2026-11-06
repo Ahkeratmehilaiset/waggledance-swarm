@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -51,6 +52,7 @@ def call(case):
 
 
 @pytest.mark.parametrize("lane", sorted(wd_q4_lane_link._LANES))
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows fixed-peer transport is required")
 def test_real_synthetic_fixed_peer_is_available_to_each_declared_lane(case, lane):
     case["lane"] = lane
     answer = call(case)
@@ -192,3 +194,22 @@ def test_system_exit_code_never_exposes_noninteger_payload(case, monkeypatch, ki
     frames = [frame for frame, _ in traceback.walk_tb(error.__traceback__)
               if Path(frame.f_code.co_filename).name == 'wd_q4_lane_session_client.py']
     assert len(frames) == 1 and marker not in repr(frames[0].f_locals)
+
+
+@pytest.fixture
+def unsupported_fixed_peer(monkeypatch):
+    # Model the unsupported OS branch without changing the process-wide os module.
+    from tools import wd_q4_secure_transport as fixed
+    real_os = fixed.os
+    class UnsupportedOS:
+        name = "posix"
+        def __getattr__(self, name):
+            return getattr(real_os, name)
+    monkeypatch.setattr(fixed, "os", UnsupportedOS())
+
+
+@pytest.mark.parametrize("lane", sorted(wd_q4_lane_link._LANES))
+def test_unsupported_peer_refuses_each_declared_lane(case, unsupported_fixed_peer, lane):
+    case["lane"] = lane
+    result = call(case)
+    assert result["status"] == "REFUSED" and result["result_count"] == 0

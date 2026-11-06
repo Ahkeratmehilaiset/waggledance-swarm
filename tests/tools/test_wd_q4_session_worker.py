@@ -61,6 +61,7 @@ def test_default_off_neither_reads_stdin_nor_runs_cli(monkeypatch, capsys):
 
 
 @pytest.mark.parametrize("single_lane", [False, True])
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows fixed-peer transport is required")
 def test_synthetic_chain_binds_pins_and_passes_one_bounded_input(case, monkeypatch, capsys, single_lane):
     doc, flags, old, args = case
     if single_lane:
@@ -199,3 +200,27 @@ def test_unrelated_baseexception_is_not_silently_swallowed(case, monkeypatch):
     monkeypatch.setattr(cli, "_file", leave)
     with pytest.raises(OtherInterrupt):
         worker.main(args())
+
+
+@pytest.fixture
+def unsupported_fixed_peer(monkeypatch):
+    # Model the unsupported OS branch without changing the process-wide os module.
+    from tools import wd_q4_secure_transport as fixed
+    real_os = fixed.os
+    class UnsupportedOS:
+        name = "posix"
+        def __getattr__(self, name):
+            return getattr(real_os, name)
+    monkeypatch.setattr(fixed, "os", UnsupportedOS())
+
+
+@pytest.mark.parametrize("single_lane", [False, True])
+def test_unsupported_peer_refuses_synthetic_worker(case, unsupported_fixed_peer, monkeypatch, capsys, single_lane):
+    doc, flags, _, args = case
+    if single_lane:
+        doc["lanes"] = [flags["lane"]]
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"synthetic situation\n"), encoding="utf-8"))
+    assert worker.main(args()) == 2
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["status"] == "REFUSED"
+    assert "synthetic situation" not in captured.out + captured.err

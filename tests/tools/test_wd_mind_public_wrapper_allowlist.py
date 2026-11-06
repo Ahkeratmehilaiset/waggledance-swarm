@@ -7,6 +7,9 @@ this tests admission/isolation, not either publisher's runtime behavior.
 import hashlib
 import importlib.util
 import json
+import sys
+
+import pytest
 from pathlib import Path
 
 
@@ -15,6 +18,14 @@ MANIFEST = ROOT / "ops/windows/reboot/bridge-code-files.json"
 PUBLIC = ("tools/wd_mind_public_session_cli.py", "tools/wd_mind_public_publish_v3_cli.py")
 
 
+def test_packaged_public_entrypoints_are_declared_portably():
+    definition = json.loads(MANIFEST.read_bytes())
+    assert all(definition["python_files"].count(tool) == 1 for tool in PUBLIC)
+    assert definition["python_entrypoints"]["mind_public_reader"] == PUBLIC[0]
+    assert definition["python_entrypoints"]["mind_public_publisher_v3"] == PUBLIC[1]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows staging wrapper is required")
 def test_real_wrapper_admits_only_packaged_public_entrypoints(tmp_path):
     path = ROOT / "tests/tools/test_wd_bridge_code_context.py"
     spec = importlib.util.spec_from_file_location("synthetic_wd_bridge_context_fixture", path)

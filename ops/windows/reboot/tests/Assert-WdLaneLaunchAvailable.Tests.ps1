@@ -461,6 +461,28 @@ Describe 'Assert-WdLaneLaunchAvailable recheck budget and configuration' {
     (Get-Content -LiteralPath $log -Raw) | Should Not Match ([regex]::Escape($env:USERPROFILE))
   }
 
+  It 'redacts a relocated profile root written with mixed separators' {
+    # Lead static finding 2026-11-06 06:35Z: StartsWith compared raw separators,
+    # so a relocated profile (not under <drive>:\Users) spelled with mixed
+    # separators was recorded whole.
+    $savedProfile = $env:USERPROFILE
+    try {
+      $env:USERPROFILE = 'D:\Profiles\someone\'
+      $profileExe = 'D:/Profiles/someone\tools\claude.exe'
+      $stray = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe --resume old' -Seconds 5 -Executable $profileExe
+      Mock Get-CimInstance { @((New-Baseline) + @($stray)) }
+      $log = Join-Path $TestDrive 'mixed.jsonl'
+      $message = ''
+      try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+      $message | Should Match 'has no verified launcher ancestry'
+      $record = (Read-DiagnosticRecords -Path $log)[0].unattributed[0]
+      $record.executable_path | Should Be ('<userprofile>\tools\claude.exe')
+      (Get-Content -LiteralPath $log -Raw) | Should Not Match 'someone'
+    } finally {
+      $env:USERPROFILE = $savedProfile
+    }
+  }
+
   It 'reports a failed diagnostics write with safe content only: no path, no exception text, verdict unchanged' {
     # Lead finding 2026-11-06 06:19Z: the write-failure warning interpolated the
     # raw diagnostics path and the exception message.

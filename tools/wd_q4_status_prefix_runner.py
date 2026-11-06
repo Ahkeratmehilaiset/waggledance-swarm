@@ -1,7 +1,8 @@
 """Explicit one-shot status-only prefix build; no scheduler or live wiring.
 
 The caller supplies route bytes and their externally established pin, the build
-plan, anchor and exact pinned policy/roster bytes. This module authenticates
+plan, anchor, policies and an independently pinned allowed fleet. The roster is
+derived canonically from that fleet, as in the lane-binding consumer. This module authenticates
 none of them. It never reads a source row or logs inputs; the existing child
 reads raw rows in-process for prefix verification and filtering, including rows
 which are not public. Caller must restrict access to that process and private
@@ -37,6 +38,7 @@ import stat
 from sandbox.mind.step2 import shared_capture_adapter as adapter
 from sandbox.mind.step2 import shared_producer as producer
 from tools import wd_q4_guard_state_binding as roots
+from tools import wd_q4_roster_from_fleet as roster_producer
 from waggledance.core.bridge_log_reader import BridgeCursor, BridgePrefixPin
 
 _TASK = "lead-mind-production-20261031"
@@ -44,7 +46,7 @@ _POLICY_SHA = frozenset({"0a9b1f67bc7015924ef595a17f7b092274c0fd568691f9d1ef07bf
                          "95e21913155ebc941ab031761343381b407954dd97f65b9482237961f7a312c7"})
 _PUBLIC_SHA = frozenset({"a5c5f0d91fc27c799678d1d97a28f48c540997ac91385ae097921388e2a4cdb5",
                          "29382d02a3adcf8dc5c3f3a078f9a1dc5565fdcf1a0f14f9c8c49fc1bb793268"})
-_ROSTER_SHA = frozenset({"b60bbfd5cfa28bb93053c9b7492378d19c0abb184bd2569398109c50ef24adcb",
+_FLEET_SHA = frozenset({"b60bbfd5cfa28bb93053c9b7492378d19c0abb184bd2569398109c50ef24adcb",
                          "bded859e8ae0ffc42c5a56007883d30e0eb4fafd028da7ff8261ae3bbbf9aaf7"})
 _HEX = re.compile(r"[a-f0-9]{64}\Z")
 _GENERATION = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
@@ -175,7 +177,8 @@ def _result_valid(result, route, plan):
 
 
 def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, plan_bytes=None,
-             policy_bytes=None, public_policy_bytes=None, roster_bytes=None, anchor_bytes=None, renewable=False):
+             policy_bytes=None, public_policy_bytes=None, fleet_bytes=None, expected_fleet_sha256=None,
+             roster_bytes=None, anchor_bytes=None, renewable=False):
     """Call the fixed child at most once for an independently pinned route.
 
     Renewable is opt-in, v3/fenced only, and returns a private receipt digest in
@@ -196,7 +199,14 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
         _pinned(anchor_bytes, route["anchor_sha256"], limit=16384)
         _pinned(policy_bytes, route["policy_sha256"], _POLICY_SHA)
         _pinned(public_policy_bytes, route["public_policy_sha256"], _PUBLIC_SHA)
-        _pinned(roster_bytes, route["roster_sha256"], _ROSTER_SHA, limit=1024 * 1024)
+        _pinned(fleet_bytes, expected_fleet_sha256, _FLEET_SHA, limit=1024 * 1024)
+        canonical_roster, roster_pin = roster_producer.build_roster_snapshot(
+            fleet_bytes, expected_fleet_sha256, enabled=True)
+        if (roster_pin != route["roster_sha256"] or
+                (roster_bytes is not None and (type(roster_bytes) is not bytes or
+                                                not hmac.compare_digest(roster_bytes, canonical_roster)))):
+            raise ValueError()
+        roster_bytes = canonical_roster
         tasks, _ = adapter.strict_pins(policy_bytes, route["policy_sha256"], roster_bytes, route["roster_sha256"])
         public_tasks, public_types = adapter.public_status_policy(public_policy_bytes, route["public_policy_sha256"], tasks)
         if tasks != frozenset({_TASK}) or public_tasks != frozenset({_TASK}) or public_types != frozenset({"status"}):
@@ -248,6 +258,7 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
         pass
     if not prepared:
         route_bytes = expected_route_sha256 = plan_bytes = policy_bytes = public_policy_bytes = roster_bytes = None
+        fleet_bytes = expected_fleet_sha256 = canonical_roster = None
         anchor_bytes = route = plan = source = sidecar = checkpoint = private = model = config = None
         raise StatusRunnerRefused("status_runner_refused")
 
@@ -291,6 +302,7 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
     if uncertain:
         report = config = prefix = route_bytes = expected_route_sha256 = route = plan = plan_bytes = None
         policy_bytes = public_policy_bytes = roster_bytes = anchor_bytes = source = sidecar = checkpoint = private = model = None
+        fleet_bytes = expected_fleet_sha256 = canonical_roster = None
         if interrupted:
             raise StatusRunnerInterrupted("publication_state_unknown")
         raise StatusRunnerOutcomeUnknown("publication_state_unknown")

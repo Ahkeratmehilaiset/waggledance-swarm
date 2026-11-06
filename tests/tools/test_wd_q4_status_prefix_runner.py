@@ -37,10 +37,13 @@ def case(tmp_path, monkeypatch, runner):
     policy = encode({"schema": "wd.q4-non-review-policy.v1", "approved_tasks": [TASK]})
     public = encode({"schema": "wd.mind-public-status-policy.v1", "public_tasks": [TASK], "public_types": ["status"]})
     uuids = {name: f"{i:08d}-1111-4111-8111-111111111111" for i, name in enumerate(LANES, 1)}
-    roster = encode({"schema": "wd.q4-roster-snapshot.v1", "lanes": [
+    fleet = encode({"lanes": [
         {"agent": name, "agent_uuid": uuids[name]} for name in LANES if name != "codex-tools-1"],
-        "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": uuids["codex-tools-1"]}})
-    for key, value in (("_POLICY_SHA", policy), ("_PUBLIC_SHA", public), ("_ROSTER_SHA", roster)):
+        "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": uuids["codex-tools-1"]},
+        "synthetic_metadata": "not-in-canonical-roster"})
+    from tools.wd_q4_roster_from_fleet import build_roster_snapshot
+    roster, _ = build_roster_snapshot(fleet, sha(fleet), enabled=True)
+    for key, value in (("_POLICY_SHA", policy), ("_PUBLIC_SHA", public), ("_FLEET_SHA", fleet)):
         monkeypatch.setattr(runner, key, frozenset({sha(value), sha(value + b"\r\n")}))
     anchor = b"synthetic anchor"
     source_dir = tmp_path / "source"
@@ -63,7 +66,8 @@ def case(tmp_path, monkeypatch, runner):
     def args(route_value=route):
         raw = encode(route_value)
         return dict(enabled=True, route_bytes=raw, expected_route_sha256=sha(raw), plan_bytes=plan,
-                    policy_bytes=policy, public_policy_bytes=public, roster_bytes=roster, anchor_bytes=anchor)
+                    policy_bytes=policy, public_policy_bytes=public, fleet_bytes=fleet,
+                    expected_fleet_sha256=sha(fleet), roster_bytes=roster, anchor_bytes=anchor)
     return runner, args, route, checkpoint, private, monkeypatch
 
 
@@ -90,6 +94,52 @@ def test_off_does_not_inspect_inputs(runner):
     assert runner.run_once(route_bytes=NoTouch()) == {"status": "OFF"}
 
 
+def test_verified_fleet_is_converted_to_the_binding_roster(case, monkeypatch):
+    from tools import wd_q4_roster_from_fleet as roster_producer
+    from tools import wd_q4_lane_binding as consumer
+    runner, args, route, _, _, _ = case
+    kw = args()
+    old_roster = json.loads(kw.pop("roster_bytes"))
+    fleet = encode({"lanes": old_roster["lanes"], "tools_supervisor": old_roster["tools_supervisor"],
+                    "extra_non_roster_metadata": "synthetic"})
+    canonical_roster, roster_sha = roster_producer.build_roster_snapshot(fleet, sha(fleet), enabled=True)
+    monkeypatch.setattr(runner, "_FLEET_SHA", frozenset({sha(fleet)}), raising=False)
+    plan = json.loads(kw["plan_bytes"])
+    plan["pins"]["roster_sha256"] = roster_sha
+    plan_raw = encode(plan)
+    route = dict(route, roster_sha256=roster_sha, plan_sha256=sha(plan_raw))
+    route_raw = encode(route)
+    kw.update(fleet_bytes=fleet, expected_fleet_sha256=sha(fleet), plan_bytes=plan_raw,
+              route_bytes=route_raw, expected_route_sha256=sha(route_raw))
+    seen = []
+    def child(**kwargs):
+        seen.append(kwargs["config"].source.roster_bytes)
+        return dict(child_report(), plan_sha256=sha(plan_raw))
+    fake_child(monkeypatch, child)
+    result = runner.run_once(**kw)
+    assert result["status"] == "PUBLISHED_GENESIS"
+    assert seen == [canonical_roster] and sha(fleet) != roster_sha
+    assert consumer._roster(fleet, sha(fleet))[1] == roster_sha
+
+
+@pytest.mark.parametrize("failure", ["missing_fleet", "wrong_fleet_pin", "forged_roster", "fleet_as_roster"])
+def test_fleet_and_canonical_roster_must_both_bind_before_child(case, monkeypatch, failure):
+    runner, args, _, checkpoint, private, _ = case
+    kw = args()
+    if failure == "missing_fleet":
+        kw["fleet_bytes"] = None
+    elif failure == "wrong_fleet_pin":
+        kw["expected_fleet_sha256"] = "f" * 64
+    elif failure == "forged_roster":
+        kw["roster_bytes"] += b" "
+    else:
+        kw["roster_bytes"] = kw["fleet_bytes"]
+    fake_child(monkeypatch, lambda **_: pytest.fail("invalid fleet reached child"))
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**kw)
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
+
+
 @pytest.mark.parametrize("change", ["v1", "unfenced", "not_boolean"])
 def test_renewable_requires_explicit_fenced_v3_before_reservation(case, change):
     runner, args, route, checkpoint, private, _ = case
@@ -114,7 +164,7 @@ def test_known_git_lf_and_windows_crlf_policy_pins(runner):
     assert git is not None, "git is required to verify committed configuration bytes"
     for path, allowed in (("configs/mind/pilot_non_review_policy.json", runner._POLICY_SHA),
                           ("configs/mind/pilot_public_status_policy.json", runner._PUBLIC_SHA),
-                          ("ops/windows/reboot/wd-fleet.json", runner._ROSTER_SHA)):
+                          ("ops/windows/reboot/wd-fleet.json", runner._FLEET_SHA)):
         blob = subprocess.run([git, "show", "HEAD:" + path], cwd=ROOT, capture_output=True, check=True).stdout
         assert b"\r\n" not in blob
         assert {sha(blob), sha(blob.replace(b"\n", b"\r\n"))} == allowed
@@ -605,6 +655,45 @@ def test_real_fenced_child_two_renewable_updates(case, monkeypatch, fault):
     assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
     from sandbox.mind.step2 import shared_index_checkpoint as cp
     from sandbox.mind.step2 import prefix_private_state as ps
+    from sandbox.mind.step2 import shared_index_preflight as preflight
+    from tools import wd_q4_lane_binding_producer as binding_producer
+    from tools import wd_q4_lane_binding as binding_consumer
+    from tools import wd_q4_secure_transport as transport
+    def validate_actual_binding(published, source_anchor):
+        pointer_raw = (checkpoint / cp.POINTER).read_bytes()
+        pointer = json.loads(pointer_raw)
+        assert sha(pointer_raw) == published["pointer_sha256"]
+        active = {name: (checkpoint / pointer["generation"] / name).read_bytes() for name in cp.ARTIFACTS.values()}
+        public_snapshot = transport.fixed_snapshot_bundle(pointer_bytes=pointer_raw,
+            policy_bytes=kw["policy_bytes"], roster_bytes=kw["roster_bytes"],
+            public_policy_bytes=kw["public_policy_bytes"], active_artifact_bytes=active,
+            history_bytes={}, cell_snapshots={})
+        wrapper = b"synthetic-wrapper"
+        manifest = encode({"schema_version": 1, "source_commit": "a" * 40,
+                           "files": {"wd-fleet.json": sha(kw["fleet_bytes"]),
+                                     "Invoke-WdQ4Query.ps1": sha(wrapper)}})
+        descriptor = json.loads(active["descriptor.json"])
+        plan_doc = {"schema": "wd.q4-public-wrapper-plan.v1",
+                    "config": {"descriptor_sha256": sha(active["descriptor.json"])},
+                    "root": "synthetic", "policy_path": "synthetic", "roster_path": "synthetic",
+                    "public_policy_path": "synthetic", "pointer_sha256": sha(pointer_raw),
+                    "source_anchor_sha256": sha(source_anchor),
+                    "encoder_sha256": preflight._encoder_digest(descriptor["encoder"]),
+                    "policy_sha256": route["policy_sha256"], "roster_sha256": route["roster_sha256"],
+                    "public_policy_sha256": route["public_policy_sha256"]}
+        public_plan = encode(plan_doc)
+        produced = binding_producer.build_lane_binding(enabled=True, expected_commit="a" * 40,
+            manifest_bytes=manifest, expected_manifest_sha256=sha(manifest),
+            fleet_bytes=kw["fleet_bytes"], expected_fleet_sha256=sha(kw["fleet_bytes"]),
+            wrapper_bytes=wrapper, expected_wrapper_sha256=sha(wrapper),
+            public_plan_bytes=public_plan, expected_public_plan_sha256=sha(public_plan),
+            snapshot_bytes=public_snapshot, expected_snapshot_sha256=sha(public_snapshot))
+        for lane in LANES:
+            pinned = binding_consumer.resolve_lane_binding(kw["fleet_bytes"], sha(kw["fleet_bytes"]),
+                produced["binding_bytes"], produced["binding_sha256"], lane=lane, enabled=True)
+            assert pinned["expected_binding"]["roster_sha256"] == route["roster_sha256"]
+            assert pinned["expected_binding"]["pointer_sha256"] == sha(pointer_raw)
+    validate_actual_binding(result, anchor)
     tasks, _ = runner.adapter.strict_pins(kw["policy_bytes"], route["policy_sha256"], kw["roster_bytes"], route["roster_sha256"])
     view, prefix = cp.read_verified_prefix_pointer(checkpoint, tasks, expected_pointer_sha256=result["pointer_sha256"],
         policy_bytes=kw["policy_bytes"], policy_sha256=route["policy_sha256"], roster_bytes=kw["roster_bytes"],
@@ -628,6 +717,7 @@ def test_real_fenced_child_two_renewable_updates(case, monkeypatch, fault):
     result2 = runner.run_once(**kw)
     assert result2["status"] == "PUBLISHED_HISTORY"
     assert result2["pointer_sha256"] != result["pointer_sha256"]
+    validate_actual_binding(result2, anchor2)
     assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
     view2, prefix2 = cp.read_verified_prefix_pointer(checkpoint, tasks, expected_pointer_sha256=result2["pointer_sha256"],
         policy_bytes=kw["policy_bytes"], policy_sha256=route["policy_sha256"], roster_bytes=kw["roster_bytes"],

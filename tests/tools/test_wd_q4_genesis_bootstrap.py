@@ -467,8 +467,15 @@ def test_real_batched_genesis_and_fenced_continuations_cover_every_row(synthetic
         pytest.skip("batch-capable child commit not yet integrated")
     monkeypatch.setitem(sys.modules, fake.__name__, child)
     monkeypatch.setattr(checkpoint_module, "read_verified_prefix_pointer", fake._real_accessor)
+    statuses = ("requested", "answered", "milestone", "info", "handoff", "done", "delivered")
+    def vector(text):
+        value = np.zeros(384, dtype=np.float32)
+        for index, status in enumerate(statuses):
+            if status in text.split():
+                value[index] = 1
+        return value
     monkeypatch.setattr(child, "_encoder", lambda encoder, identity:
-                        lambda texts: np.ones((len(texts), 384), dtype=np.float32) / np.sqrt(384))
+                        lambda texts: np.stack([vector(text) for text in texts]))
     model = Path(args["trusted_model_root"])
     weights = b"synthetic-weights-not-a-model"
     (model / "model.safetensors").write_bytes(weights)
@@ -480,7 +487,10 @@ def test_real_batched_genesis_and_fenced_continuations_cover_every_row(synthetic
     event = {"ts_utc": "2026-10-31T12:00:00Z", "agent": "codex-lead-1", "agent_uuid": uuid,
              "type": "status", "status": "info", "task_id": "lead-mind-production-20261031",
              "to": "", "message": "", "paths": [], "payload": {"public_status": True}}
-    records = [raw({**event, "ts_utc": f"2026-10-31T12:00:{i:02d}Z"}) + b"\n" for i in range(7)]
+    records = [raw({**event, "status": status, "ts_utc": f"2026-10-31T12:{i:02d}:00Z"}) + b"\n"
+               for i, status in enumerate(statuses)]
+    records.append(raw({**event, "ts_utc": "2026-10-31T12:07:00Z", "to": "fable-5",
+                        "message": "synthetic-private-must-not-be-returned"}) + b"\n")
     log = Path(args["source_path"])
     log.write_bytes(b"".join(records))
     result = genesis.bootstrap(**args, cutoff_utc="2026-10-31T13:00:00Z", batch_rows=True,
@@ -519,7 +529,79 @@ def test_real_batched_genesis_and_fenced_continuations_cover_every_row(synthetic
         if index < 4:
             assert result["coverage"] == "partial_ready_prefix"
     assert result["coverage"] == "caught_up_to_final_snapshot_not_history"
-    assert offsets == [len(b"".join(records[:n])) for n in (2, 4, 6, 7)]
+    assert offsets == [len(b"".join(records[:n])) for n in (2, 4, 6, 8)]
     projection = json.loads((Path(args["checkpoint_root"]) / "synthetic-generation-4" / "projection.json").read_bytes())
     assert len(projection["records"]) == 7
     assert len({record["record_id"] for record in projection["records"]}) == 7
+    # The real in-process Q4 query/resolve boundary sees all four windows; only
+    # the E5 encoder is replaced by this deterministic synthetic encoder.
+    from sandbox.mind.step2 import wd_q4_private_read as reader
+    root = Path(args["checkpoint_root"])
+    active = root / "synthetic-generation-4"
+    active_bytes = {name: (active / name).read_bytes() for name in checkpoint_module.ARTIFACTS.values()}
+    pointer_bytes = (root / checkpoint_module.POINTER).read_bytes()
+    pointer = json.loads(pointer_bytes)
+    history = {p.name: p.read_bytes() for pattern in ("q4-pointer-*.json", "q4-delta-*.json")
+               for p in root.glob(pattern)}
+    for name in ("synthetic-generation", "synthetic-generation-2", "synthetic-generation-3", "synthetic-generation-4"):
+        for artifact in checkpoint_module.ARTIFACTS.values():
+            history[f"{name}/{artifact}"] = (root / name / artifact).read_bytes()
+    memory = json.loads(active_bytes["memory.json"])
+    cells = {}
+    for name, info in memory["cells"].items():
+        cell = active / "cells" / name
+        cell_gen = cell / f"gen-{info['generation']:06d}"
+        cells[name] = {"pointer": (cell / "current.json").read_bytes(), "log": (cell / "LOG.jsonl").read_bytes(),
+            "artifacts": {"index": (cell_gen / "faiss" / f"cell_{name}" / "index.faiss").read_bytes(),
+                          "meta": (cell_gen / "faiss" / f"cell_{name}" / "meta.json").read_bytes(),
+                          "vectors": (cell_gen / "vectors.f32").read_bytes(),
+                          "provenance": (cell_gen / "provenance.jsonl").read_bytes(),
+                          "receipt": (cell_gen / "receipt.json").read_bytes()}}
+    descriptor = json.loads(active_bytes["descriptor.json"])
+    monkeypatch.setattr(reader, "RUNTIME_IDENTITY", lambda **kwargs: dict(descriptor["encoder"]))
+    class Encoder:
+        def query(self, text):
+            return vector(text)
+    monkeypatch.setattr(reader, "ENCODER_FACTORY", lambda **kwargs: Encoder())
+    query_args = dict(pointer_bytes=pointer_bytes, expected_pointer_sha256=sha(pointer_bytes),
+        approved_tasks=frozenset({"lead-mind-production-20261031"}), policy_bytes=args["policy_bytes"],
+        policy_sha256=args["policy_sha256"], roster_bytes=roster_bytes, roster_sha256=roster_sha,
+        expected_public_policy_sha256=args["public_policy_sha256"], public_policy_bytes=args["public_policy_bytes"],
+        expected_source_sha256=pointer["anchor_sha256"], expected_encoder_sha256=sha(raw(descriptor["encoder"])),
+        active_artifact_bytes=active_bytes, cell_snapshots=cells, history_bytes=history, model_dir=str(model),
+        expected_runtime_revision=descriptor["encoder"]["revision"], enabled=True)
+    visited = []
+    for module, names in ((checkpoint_module, ("_parse_pointer_snapshot", "_bind_active_artifact_bytes",
+                           "_freeze_history_snapshot", "_copy_snapshot_cells", "_validate_pointer_history",
+                           "_preflight_public_snapshot", "_validate_projection_cell_views")),
+                          (reader, ("read_descriptor_bytes", "read_query", "bind_runtime_encoder",
+                                    "_validate_bound_memory", "private_read_snapshot"))):
+        for name in names:
+            original = getattr(module, name)
+            def watch(*pos, _fn=original, _name=name, **kw):
+                visited.append(_name)
+                return _fn(*pos, **kw)
+            monkeypatch.setattr(module, name, watch)
+    for status in statuses:
+        try:
+            reply = checkpoint_module.query_public_snapshot(**query_args,
+                query_bytes=raw({"situation": f"locate {status} event", "time": "2026-10-31T13:00:00Z"}))
+        except checkpoint_module.CheckpointRefused:
+            pytest.fail(f"synthetic query refused after {visited}")
+        assert reply["status"] == "ANSWER"
+        assert any(item["stored_text"].split()[1] == status for item in reply["results"])
+        assert all(not item["canonical_event"] for item in reply["results"])
+        assert "synthetic-private-must-not-be-returned" not in json.dumps(reply)
+    absent = checkpoint_module.query_public_snapshot(**query_args,
+        query_bytes=raw({"situation": "unfindableunique", "time": "2026-10-31T13:00:00Z"}))
+    assert absent["status"] == "ABSTAIN" and absent["results"] == []
+    from sandbox.mind.step2 import shared_projection, q4
+    # Distinct timestamps within different minutes can produce distinct refs
+    # while their searchable text remains identical; answers show at most 3.
+    left = projection["records"][0]
+    fields = {"ts_utc": "2026-10-31T12:40:00Z", **left["meta"]}
+    one = shared_projection._record(fields)
+    fields["ts_utc"] = "2026-10-31T12:41:00Z"
+    two = shared_projection._record(fields)
+    assert one["stored_text"] == two["stored_text"] and one["record_id"] != two["record_id"]
+    assert q4.RULE["shown_max"] == 3 and q4.RULE["agree_depth"] == 3

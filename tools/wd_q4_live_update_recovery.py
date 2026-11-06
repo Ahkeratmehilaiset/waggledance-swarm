@@ -152,7 +152,7 @@ def _recover_closed_job(*, private, root, config, baseline, descriptor, binding,
     """
     manifest = caller._json(update._read(str(Path(descriptor['bundle_root']) / 'deployment-manifest.json'),
                                          caller.MAX_MANIFEST, config['manifest_sha256']))
-    helper_sha = manifest['files']['WdQ4ProcessJob.ps1']
+    helper_sha = caller._hex(manifest['files']['WdQ4ProcessJob.ps1'])
     update._read(str(Path(descriptor['bundle_root']) / 'WdQ4ProcessJob.ps1'), 1024 * 1024, helper_sha)
     reservation = _verify_job_attestation(private, attempt, config_sha, marker['intent_sha256'],
                                           marker_raw, job_sha, helper_sha)

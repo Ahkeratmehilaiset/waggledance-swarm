@@ -60,7 +60,7 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
     def encode_with_synthetic_job(value):
         if isinstance(value, dict) and value.get('schema_version') == 1 and 'files' in value:
             (tmp_path / 'installed-bundle' / 'WdQ4ProcessJob.ps1').write_bytes(synthetic_job)
-            value = {**value, 'files': {**value['files'], 'WdQ4ProcessJob.ps1': update._sha(synthetic_job)}}
+            value = {**value, 'files': {**value['files'], 'WdQ4ProcessJob.ps1': update._sha(synthetic_job).upper()}}
         return real_enc(value)
     monkeypatch.setattr(e2e, 'enc', encode_with_synthetic_job)
     state = {'runs': [], 'publications': []}

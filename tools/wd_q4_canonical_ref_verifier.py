@@ -1,11 +1,13 @@
 """Default-off, read-only mapping from public projected refs to bridge event IDs.
 
-This verifies one minute against one *caller-anchored complete snapshot*. The
-caller independently supplies/authenticates the source hash, policy/roster pins,
-and a coverage interval established outside this module. A matching hash is not
-source authenticity, proof of an unrotated bridge, a clock guarantee, or proof
-that late events cannot arrive. Results are scoped to the pinned snapshot and
-must not be represented as global uniqueness or a review/consensus vote.
+This verifies one minute against a *caller-anchored frozen source prefix*. The
+caller independently supplies the source-prefix hash, policy/roster pins, and a
+coverage receipt established outside this module. The historical argument name
+``expected_snapshot_sha256`` means the hash of bytes through the fixed end cursor,
+not a hash of any subsequently appended bytes. A matching hash does not prove
+source authenticity, an unrotated bridge, a clock guarantee, or that late events
+cannot arrive. Results are scoped to the pinned prefix and must not be represented
+as global uniqueness or a review/consensus vote.
 
 The existing bridge reader is paged with a verified prefix hash per page; the
 last complete prefix must match the caller's pinned snapshot. It is not a time

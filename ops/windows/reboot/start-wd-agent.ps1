@@ -787,11 +787,18 @@ function Assert-WdLaneLaunchAvailable {
   }
 
   function Write-WdLaneAvailabilityRecord {
-    # Structured per-pass diagnostics (JSON lines). Never the full command line:
-    # it can carry tokens. A failed log write is reported but never changes the
-    # availability verdict.
+    # Structured per-pass diagnostics (JSON lines). Never any part of a command
+    # line: it can carry tokens. Without a path (DryRun is byte-inert) the record
+    # goes to the verbose stream only. A failed log write is reported but never
+    # changes the availability verdict.
     param([Parameter(Mandatory)] [object] $Record)
-    if (-not $DiagnosticsPath) { return }
+    if (-not $DiagnosticsPath) {
+      # The caller's verbose preference reaches this nested function (covered by
+      # a Pester regression); a serialization failure is reported, never hidden.
+      try { Write-Verbose ($Record | ConvertTo-Json -Depth 8 -Compress) }
+      catch { Write-Warning ('lane availability diagnostics could not be serialized: ' + $_.Exception.Message) }
+      return
+    }
     try {
       $directory = Split-Path -Parent $DiagnosticsPath
       if ($directory -and -not (Test-Path -LiteralPath $directory -PathType Container)) {
@@ -954,7 +961,7 @@ function Assert-WdLaneLaunchAvailable {
       }
       if ($parentAttributed) { continue }
       # Diagnostic record: everything an operator needs to attribute the process,
-      # without its full command line. Properties absent from a snapshot row are
+      # without any of its command line. Properties absent from a snapshot row are
       # reported as null, never guessed.
       $creation = Get-WdLaneProcessProperty -Process $native -Name 'CreationDate'
       $ageSeconds = $null
@@ -969,13 +976,14 @@ function Assert-WdLaneLaunchAvailable {
       $parentAlive = ($null -ne $parentPidValue -and $byPid.ContainsKey([int]$parentPidValue))
       $parentRow = $null
       if ($parentAlive) { $parentRow = $byPid[[int]$parentPidValue] }
+      # No byte of the command line is ever recorded (a token can sit at its very
+      # start, so a prefix leaks too); only its length is reported.
       $commandText = [string](Get-WdLaneProcessProperty -Process $native -Name 'CommandLine')
-      if ($commandText.Length -gt 120) { $commandText = $commandText.Substring(0, 120) }
       $unattributed += [pscustomobject][ordered]@{
         name = [string]$native.Name
         pid = [int]$native.ProcessId
         executable_path = [string](Get-WdLaneProcessProperty -Process $native -Name 'ExecutablePath')
-        command_line_prefix = $commandText
+        command_line_length = $commandText.Length
         creation_utc = (ConvertTo-WdLaneUtcText -Value $creation)
         age_seconds = $ageSeconds
         parent_pid = $(if ($null -ne $parentPidValue) { [int]$parentPidValue } else { $null })
@@ -2047,7 +2055,10 @@ $worktree = Resolve-NormalizedPath -Path ([string]$lane.worktree)
 $primaryRepo = Resolve-NormalizedPath -Path ([string]$manifest.primary_repo_root)
 $expectedCommonGit = Resolve-NormalizedPath -Path ([string]$manifest.repo_common_git_dir)
 $runtimeRoot = Resolve-NormalizedPath -Path ([string]$manifest.runtime_root)
-$script:WdLaneAvailabilityDiagnosticsPath = Join-Path (Join-Path $runtimeRoot 'lane_availability') ('{0}.jsonl' -f $Agent)
+# DryRun is byte-inert: the availability diagnostics file is written only by a
+# live launch; a DryRun (fleet preflight, -CheckLaunchAvailability) reports the
+# records on the verbose stream and in the refusal message instead.
+$script:WdLaneAvailabilityDiagnosticsPath = if ($DryRun) { '' } else { Join-Path (Join-Path $runtimeRoot 'lane_availability') ('{0}.jsonl' -f $Agent) }
 $conversationConfigBaseline = $null
 $codexUserConfigPath = ''
 if ($conversationSurface -ceq 'local_window' -and

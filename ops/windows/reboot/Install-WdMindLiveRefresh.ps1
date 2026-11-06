@@ -142,10 +142,53 @@ if ([string]$state.source_commit -cne %COMMIT% -or [string]$state.final_commit -
     (Get-FileHash -LiteralPath %JOB% -Algorithm SHA256).Hash -cne %JOB_HASH% -or
     (Test-Path -LiteralPath %MARKER%)) { exit 3 }
 . %JOB%
+$random = [Security.Cryptography.RandomNumberGenerator]::Create()
+try { $bytes = New-Object byte[] 32; $random.GetBytes($bytes) } finally { $random.Dispose() }
+$attempt = ([BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
 $job = Invoke-WdQ4ProcessJob -Executable %PYTHON% -WorkingDirectory %BUNDLE% -ScratchRoot %SCRATCH% `
     -Arguments @('-I','-S','-B',%BOOTSTRAP%,'--config',%CONFIG%,'--sha256',%CONFIG_HASH_LOWER%,
-                 '--manifest-sha256',%MANIFEST_HASH_LOWER%) -InputBytes ([byte[]]@()) `
+                 '--manifest-sha256',%MANIFEST_HASH_LOWER%,'--host-attempt',$attempt) -InputBytes ([byte[]]@()) `
     -TimeoutSeconds 1700 -MaxOutputBytes 65536 -DetailedOutcome
+if ($null -ne $job -and $job.Cleanup -ceq 'confirmed' -and (Test-Path -LiteralPath %MARKER%)) {
+    try {
+        # A completed owned Job is necessary but not sufficient to recover. This
+        # receipt records only this host's observation, not writer identity or
+        # power-loss durability. A crash before the flushed receipt is UNKNOWN.
+        $private = %PRIVATE%
+        $intentPath = Join-Path $private ('q4-live-update-intent-' + $attempt + '.json')
+        $reservationPath = Join-Path $private ('q4-live-runner-reservation-' + $attempt + '.json')
+        foreach ($file in @(%MARKER%, $intentPath, $reservationPath)) {
+            $item = Get-Item -LiteralPath $file -Force -ErrorAction Stop
+            if ($item.PSIsContainer -or $item.Length -le 0 -or $item.Length -gt 262144 -or
+                ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'binding' }
+        }
+        $pending = Get-Content -LiteralPath %MARKER% -Raw -Encoding UTF8 | ConvertFrom-Json
+        $intent = Get-Content -LiteralPath $intentPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $reservation = Get-Content -LiteralPath $reservationPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $intentHash = (Get-FileHash -LiteralPath $intentPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ([string]$pending.schema -cne 'wd.q4-live-update-pending.v1' -or
+            [string]$intent.schema -cne 'wd.q4-live-update-intent.v1' -or
+            [string]$reservation.schema -cne 'wd.q4-live-runner-reservation.v1' -or
+            [string]$pending.attempt -cne $attempt -or [string]$intent.attempt -cne $attempt -or
+            [string]$reservation.attempt -cne $attempt -or
+            [string]$pending.config_sha256 -cne %CONFIG_HASH_LOWER% -or
+            [string]$intent.config_sha256 -cne %CONFIG_HASH_LOWER% -or
+            [string]$pending.previous_pointer_sha256 -cne [string]$intent.previous_pointer_sha256 -or
+            [string]$pending.intent_sha256 -cne $intentHash -or
+            [string]$reservation.intent_sha256 -cne $intentHash -or
+            [string]$reservation.token -cnotmatch '^[0-9a-f]{64}$') { throw 'binding' }
+        $jobReceipt = [ordered]@{schema='wd.q4-live-job-result.v1'; attempt=$attempt;
+            config_sha256=%CONFIG_HASH_LOWER%; intent_sha256=$intentHash;
+            marker_sha256=(Get-FileHash -LiteralPath %MARKER% -Algorithm SHA256).Hash.ToLowerInvariant();
+            reservation_sha256=(Get-FileHash -LiteralPath $reservationPath -Algorithm SHA256).Hash.ToLowerInvariant();
+            job_helper_sha256=%JOB_HASH_LOWER%; cleanup='confirmed'; child_outcome=[string]$job.Outcome;
+            exit_code=if ($job.Outcome -ceq 'completed') { [int]$job.ExitCode } else { $null }}
+        $receiptPath = Join-Path $private ('q4-live-job-result-' + $attempt + '.json')
+        $encodedReceipt = [Text.Encoding]::UTF8.GetBytes(($jobReceipt | ConvertTo-Json -Compress))
+        $stream = [IO.File]::Open($receiptPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.Write($encodedReceipt, 0, $encodedReceipt.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    } catch { exit 3 }
+}
 if ($null -eq $job -or $job.Cleanup -cne 'confirmed' -or $job.Outcome -cne 'completed' -or $job.ExitCode -ne 0) { exit 3 }
 try {
     $text = [Text.UTF8Encoding]::new($false, $true).GetString($job.Stdout)
@@ -166,7 +209,8 @@ $values = [ordered]@{'%STATE%'=$stateFile; '%COMMIT%'=$ExpectedCommit; '%BUNDLE%
     '%PYTHON%'=$interpreter; '%PYTHON_HASH%'=$interpreterHash; '%BOOTSTRAP%'=$bootstrapFile;
     '%BOOTSTRAP_HASH%'=(Get-FileHash -LiteralPath $bootstrapFile -Algorithm SHA256).Hash;
     '%JOB%'=$jobHelper; '%JOB_HASH%'=(Get-FileHash -LiteralPath $jobHelper -Algorithm SHA256).Hash;
-    '%SCRATCH%'=$scratch; '%MARKER%'=$marker}
+    '%JOB_HASH_LOWER%'=(Get-FileHash -LiteralPath $jobHelper -Algorithm SHA256).Hash.ToLowerInvariant();
+    '%SCRATCH%'=$scratch; '%MARKER%'=$marker; '%PRIVATE%'=$privateRoot}
 foreach ($key in $values.Keys) { $bootstrap = $bootstrap.Replace($key, (Literal $values[$key])) }
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap))
 $taskName = 'WD-MindLiveUpdate'

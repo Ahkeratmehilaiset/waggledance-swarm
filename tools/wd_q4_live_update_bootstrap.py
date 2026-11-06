@@ -170,10 +170,15 @@ def main(argv):
     try:
         if not sys.flags.isolated or not sys.flags.no_site or not sys.dont_write_bytecode:
             raise ValueError()
-        if len(argv) == 6 and argv[0] == '--config' and argv[2] == '--sha256' and argv[4] == '--manifest-sha256':
+        if (len(argv) in (6, 8) and argv[0] == '--config' and argv[2] == '--sha256'
+                and argv[4] == '--manifest-sha256'):
             config_path, config_pin, manifest_pin = argv[1], argv[3], argv[5]
             module_name = 'wd_q4_live_update_once'
             module_args = ['--once', '--config', config_path, '--sha256', config_pin]
+            if len(argv) == 8:
+                if argv[6] != '--host-attempt' or not _HEX.fullmatch(argv[7]):
+                    raise ValueError()
+                module_args += argv[6:8]
         elif (len(argv) in (11, 13) and argv[0] == '--recover' and argv[1] == '--config'
               and argv[3] == '--sha256' and argv[5] == '--manifest-sha256' and argv[7] == '--attempt'):
             config_path, config_pin, manifest_pin = argv[2], argv[4], argv[6]

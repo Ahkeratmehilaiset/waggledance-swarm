@@ -285,7 +285,7 @@ def _publish(config, baseline, index_root, public, result, *, generation=None):
             'freshness': 'UNKNOWN', 'source_authenticity': 'UNKNOWN', 'publisher_authentication': 'UNKNOWN'}
 
 
-def run_once(*, enabled=False, config_path=None, expected_config_sha256=None):
+def run_once(*, enabled=False, config_path=None, expected_config_sha256=None, host_attempt=None):
     """Verify explicit config and execute at most one fenced update/publication."""
     if enabled is False:
         return {'status': 'OFF'}
@@ -294,7 +294,8 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None):
     slot = None
     slot_acquired = False
     try:
-        if enabled is not True or type(expected_config_sha256) is not str or not _HEX.fullmatch(expected_config_sha256):
+        if (enabled is not True or type(expected_config_sha256) is not str or not _HEX.fullmatch(expected_config_sha256)
+                or (host_attempt is not None and (type(host_attempt) is not str or not _HEX.fullmatch(host_attempt)))):
             raise ValueError()
         config = caller._json(_read(config_path, 65536, expected_config_sha256), _CONFIG_KEYS)
         if config['schema'] != 'wd.q4-live-update-once.v1' or any(
@@ -357,7 +358,7 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None):
         route.update(cursor=asdict(prefix.cursor), prefix_sha256=prefix.sha256,
                      anchor_sha256=_sha(anchor_raw), plan_sha256=_sha(plan_raw))
         route_raw = _encode(route)
-        nonce = secrets.token_hex(32)
+        nonce = host_attempt if host_attempt is not None else secrets.token_hex(32)
         intent = _encode({'schema': 'wd.q4-live-update-intent.v1', 'attempt': nonce,
             'config_sha256': expected_config_sha256, 'previous_pointer_sha256': current_pin,
             'route': route, 'plan': plan, 'anchor': anchor})
@@ -440,12 +441,14 @@ def main(argv=None):
     parser.add_argument('--once', action='store_true')
     parser.add_argument('--config')
     parser.add_argument('--sha256')
+    parser.add_argument('--host-attempt')
     args = parser.parse_args(argv)
     if not args.once:
         print('{"status":"OFF"}')
         return 0
     try:
-        result = run_once(enabled=True, config_path=args.config, expected_config_sha256=args.sha256)
+        result = run_once(enabled=True, config_path=args.config, expected_config_sha256=args.sha256,
+                          host_attempt=args.host_attempt)
     except UpdateOutcomeUnknown:
         print('{"status":"UNKNOWN"}', file=sys.stderr)
         return 3

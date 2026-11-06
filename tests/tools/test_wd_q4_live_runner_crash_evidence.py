@@ -65,3 +65,16 @@ def test_outer_owner_persists_binding_before_runner_can_receive_it(tmp_path, mon
     assert record == {"schema": "wd.q4-live-runner-reservation.v1", **reservation, "intent_sha256": intent_sha}
     with pytest.raises(FileExistsError):
         update._create_recovery_reservation(tmp_path, attempt, intent_sha)
+
+
+def test_once_cli_forwards_the_host_attempt_without_replacing_it(monkeypatch, capsys):
+    from tools import wd_q4_live_update_once as update
+
+    received = []
+    def run(**kwargs):
+        received.append(kwargs)
+        return {"status": "synthetic"}
+    monkeypatch.setattr(update, "run_once", run)
+    assert update.main(["--once", "--config", "synthetic", "--sha256", "a" * 64,
+                        "--host-attempt", "b" * 64]) == 0
+    assert received[0]["host_attempt"] == "b" * 64

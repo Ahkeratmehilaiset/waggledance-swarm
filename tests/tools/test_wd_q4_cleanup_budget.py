@@ -1,5 +1,6 @@
 """Synthetic kernel only: no live child, service, or production data."""
 import ctypes
+import dis
 import inspect
 import sys
 import threading
@@ -9,6 +10,65 @@ import pytest
 pytest.importorskip("_winapi")
 
 from tools import wd_q4_secure_transport as transport
+
+
+@pytest.mark.parametrize("missing", ["both", "thread"])
+@pytest.mark.parametrize("error_kind", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_spawn_return_interruption_is_quarantined(tmp_path, monkeypatch, missing, error_kind):
+    """Synthetic trace interruption after CreateProcess, before storing handles."""
+    import _winapi
+
+    created, quarantine, calls = [], [], []
+    class Kernel:
+        def CreateNamedPipeW(self, *args): return 11
+        def CreateJobObjectW(self, *args): return 12
+        def SetInformationJobObject(self, *args): return 1
+        def GetCurrentProcess(self): return 99
+        def LocalFree(self, *args): return 0
+        def TerminateProcess(self, *args): calls.append(("terminate", args)); return 1
+        def WaitForSingleObject(self, *args): return 0
+        def CloseHandle(self, handle): calls.append(("close", handle)); return 1
+    kernel = Kernel()
+    monkeypatch.setattr(transport, "_QUARANTINE", quarantine)
+    monkeypatch.setattr(transport, "_api", lambda: (kernel, None))
+    monkeypatch.setattr(transport, "_descriptor", lambda *args: 14)
+    monkeypatch.setattr(transport, "_noninheritable", lambda *args: None)
+    monkeypatch.setattr(transport, "_created", lambda *args: 1)
+    def create_process(*args):
+        created.append(True)  # synthetic child and its two native handles exist
+        return (15, 16, 17, 18)
+    monkeypatch.setattr(_winapi, "CreateProcess", create_process)
+
+    instructions = list(dis.get_instructions(transport._run))
+    start = next(i for i, inst in enumerate(instructions) if inst.argval == "CreateProcess")
+    operation = "UNPACK_SEQUENCE" if missing == "both" else "STORE_FAST"
+    target = next(inst.offset for inst in instructions[start:]
+                  if inst.opname == operation and (missing == "both" or inst.argval == "thread"))
+    injected = []
+    previous_trace = sys.gettrace()
+    def trace(frame, event, arg):
+        if frame.f_code is transport._run.__code__:
+            frame.f_trace_opcodes = True
+            if event == "opcode" and frame.f_lasti == target and created:
+                injected.append(True)
+                sys.settrace(None)
+                raise error_kind("synthetic spawn gap")
+        return trace
+    try:
+        sys.settrace(trace)
+        with pytest.raises(transport.TransportCleanupUnknown):
+            transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 1, 1024)
+    finally:
+        sys.settrace(previous_trace)
+    assert created == [True] and injected == [True]
+    assert quarantine and not transport._RUN_LOCK.locked()
+    # Missing handles cannot be closed or used to prove child termination.
+    assert ("close", 16) not in calls
+    assert bool([call for call in calls if call[0] == "terminate"]) == (missing == "thread")
+    with pytest.raises(transport.TransportCleanupUnknown) as refused_again:
+        transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 1, 1024)
+    assert refused_again.value.prior_outcome == "prior_unknown"
+    assert created == [True]
 
 
 @pytest.mark.parametrize("clock_error", (RuntimeError, KeyboardInterrupt, SystemExit, GeneratorExit))

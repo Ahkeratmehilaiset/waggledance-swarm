@@ -38,7 +38,8 @@ def test_write_roots_cannot_overlap_bundle_or_generation(tmp_path):
 
 
 @pytest.mark.skipif(__import__('os').name != 'nt', reason='real guarded peer requires Windows')
-def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize('fault_stage', ['capture', 'materialize', 'publish', 'after_selector', 'interrupt'])
+def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypatch, capsys, fault_stage):
     """Actual producer, capture, binding, selector and caller; synthetic model/peer."""
     import importlib.util
     import io
@@ -137,8 +138,19 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
         calls.append(1)
         return state['raw_run'](**kwargs)
     monkeypatch.setattr(state['runner'], 'run_once', counted_run)
-    monkeypatch.setattr(update, '_publish', lambda *_: (_ for _ in ()).throw(ValueError('synthetic failure')))
-    assert update.main(['--once', '--config', str(config_path), '--sha256', update._sha(raw)]) == 3
+    def fail(*_args, **_kwargs):
+        raise KeyboardInterrupt() if fault_stage == 'interrupt' else ValueError('synthetic failure')
+    def fail_after_selector(**kwargs):
+        real_publish(**kwargs)
+        raise ValueError('synthetic post-selector failure')
+    with monkeypatch.context() as scoped:
+        if fault_stage in ('capture', 'interrupt'):
+            scoped.setattr(update, '_snapshot', fail)
+        elif fault_stage == 'materialize':
+            scoped.setattr(update.materializer, 'materialize_descriptor', fail)
+        else:
+            scoped.setattr(update.live, 'publish', fail_after_selector if fault_stage == 'after_selector' else fail)
+        assert update.main(['--once', '--config', str(config_path), '--sha256', update._sha(raw)]) == (130 if fault_stage == 'interrupt' else 3)
     assert calls == [1]
     output = capsys.readouterr()
     assert not output.out and json.loads(output.err)['status'] == 'UNKNOWN'
@@ -154,5 +166,41 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
     assert json.loads(capsys.readouterr().err)['status'] == 'REFUSED' and calls == [1]
     query = update._encode({'situation': 'synthetic recall', 'time': '2026-11-01T12:00:00Z'})
     monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(query), encoding='utf-8'))
-    assert update.caller.main(['--enabled']) == 2
-    assert not capsys.readouterr().out
+    assert update.caller.main(['--enabled']) == (0 if fault_stage == 'after_selector' else 2)
+    observed = capsys.readouterr().out
+    assert bool(observed) == (fault_stage == 'after_selector')
+    from tools import wd_q4_live_update_recovery as recovery
+    progress_path = private_root / ('q4-live-update-progress-' + attempt + '.json')
+    kwargs = {'enabled': True, 'config_path': str(config_path), 'expected_config_sha256': update._sha(raw),
+              'expected_attempt': attempt, 'expected_progress_sha256': update._sha(progress_path.read_bytes())}
+    partial_generation = Path(config['baseline_path']).parent.parent / progress['pointer_sha256']
+    if fault_stage in ('publish', 'after_selector'):
+        assert partial_generation.is_dir()
+    with pytest.raises(recovery.RecoveryRefused):
+        recovery.recover(**{**kwargs, 'expected_progress_sha256': '0' * 64})
+    with pytest.raises(recovery.RecoveryRefused):
+        recovery.recover(**{**kwargs, 'expected_attempt': '0' * 64})
+    if fault_stage == 'capture':
+        import subprocess
+        lock_code = ('import os,msvcrt,sys; f=os.open(sys.argv[1],os.O_RDWR|os.O_BINARY); '
+                     'msvcrt.locking(f,msvcrt.LK_NBLCK,1); print("locked",flush=True); '
+                     'sys.stdin.readline(); msvcrt.locking(f,msvcrt.LK_UNLCK,1); os.close(f)')
+        peer = subprocess.Popen([sys.executable, '-I', '-S', '-c', lock_code, str(private_root / 'q4-live-update.lock')],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            assert peer.stdout.readline().strip() == 'locked'
+            with pytest.raises(recovery.RecoveryRefused):
+                recovery.recover(**kwargs)
+        finally:
+            peer.communicate(input='done\n', timeout=10)
+        assert peer.returncode == 0
+    result = recovery.recover(**kwargs)
+    assert result['status'] == 'PUBLISHED' and result['pointer_sha256'] == progress['pointer_sha256']
+    assert (private_root / result['receipt_file']).is_file()
+    assert not (private_root / 'q4-live-update.pending.json').exists()
+    if fault_stage in ('publish', 'after_selector'):
+        assert partial_generation.is_dir()
+    monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(query), encoding='utf-8'))
+    assert update.caller.main(['--enabled']) == 0
+    recovered = json.loads(capsys.readouterr().out)
+    assert recovered['answer']['binding']['pointer_sha256'] == result['pointer_sha256']

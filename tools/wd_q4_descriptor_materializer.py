@@ -9,8 +9,9 @@ is that missing writer and nothing more; it is default-off and every value is an
 
 What it does. ``plan_generation_paths`` is pure (no I/O) and returns the deterministic file paths of one
 generation under the caller's target directory. ``materialize_descriptor`` checks that the descriptor bytes are one
-strict canonical ASCII JSON object of the v2 schema whose ``*_path`` values are exactly the planned paths and whose
-``*_sha256`` pins are exactly the sha256 of the supplied artifact bytes, that the target directory exists with no
+strict canonical ASCII JSON object of the v2 schema whose artifact paths (binding, fixed plan, snapshot) are exactly
+the planned paths and whose artifact pins are exactly the sha256 of the supplied artifact bytes (the runtime manifest
+path and pin are operator arguments checked by the launcher validator, not here), that the target directory exists with no
 reparse point anywhere on its chain, and that the generation directory does not exist yet. It then creates the
 directory, records the (device, file id) identity of the target directory and of the new generation directory, and
 publishes each file with no part file and no os.replace: the final file itself is opened with O_EXCL (an existing
@@ -21,12 +22,16 @@ with the recorded ones; any difference (a swapped parent, a junction or symlink 
 directory, another directory under the same name) is a conservative refusal that writes nothing more.
 Nothing may exist at a final path before its create (a dangling link included, because the C runtime would follow
 it), the created handle must be the file found at that path afterwards, and the descriptor is created only after
-every artifact has been re-read byte for byte at that moment; the returned digests and sizes come from the re-read
-bytes. A volume that reports no file identity (file id 0) is refused.
+every artifact has been re-read byte for byte at the last re-read immediately before the descriptor create; the
+returned digests and sizes come from the re-read bytes. A volume that reports no file identity (file id 0) is
+refused; a volume clone remounted under the same letter with the same serial and file ids, or a share that reuses
+file ids, defeats the identity compare and is outside this module.
 It never overwrites and never deletes (a failed generation directory is left for inspection), never logs and never
-reads the environment. Residual, stated plainly: the single system call between a recheck and its write; a writer
-inside the target directory who swaps the generation directory between mkdir and the identity sample, or who plants
-the caller's own descriptor bytes after a refusal, is outside this module: the target directory's access control is
+reads the environment. Residual, stated plainly: the system calls between a recheck and its write, and between the last
+artifact re-read and the descriptor create (a writer inside the generation directory can replace artifact bytes
+there and the descriptor would still name the verified digests); a writer inside the target directory who swaps the
+generation directory between mkdir and the identity sample, or who plants the caller's own descriptor bytes after a
+refusal, is outside this module: the target directory's access control is
 that boundary and stays the launcher validator's and the operator's job. The launcher validator re-checks the chain
 again when it reads.
 Every refusal is one closed reason and never a caller value, path or byte.

@@ -211,16 +211,80 @@ def case(tmp_path, monkeypatch):
     import tools
     monkeypatch.setattr(tools, "wd_q4_lane_caller_adapter", adapter, raising=False)
     query = canon({"situation": QUERY_CANARY, "time": "2026-01-01T00:00:00Z"})
-    return {"files": files, "descriptor": descriptor, "manifest": manifest, "env": environment,
+    values = {"files": files, "descriptor": descriptor, "manifest": manifest, "env": environment,
             "calls": calls, "outcome": outcome, "query": query,
             "worktree": worktree, "worktrees": worktrees, "cli": load_cli(), "adapter": adapter,
             "real_adapter": real_adapter}
+    values["latest"] = prepare_synthetic_latest(values, monkeypatch)
+    return values
 
 
 def invoke(case, monkeypatch, raw=None, argv=None):
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(
         case["query"] if raw is None else raw), encoding="utf-8"))
     return case["cli"].main(["--enabled"] if argv is None else argv)
+
+
+def prepare_synthetic_latest(case, monkeypatch):
+    root = case["files"]["descriptor.json"].parent / "synthetic-index"
+    root.mkdir()
+    pointer = root / "q4-latest.json"
+    pointer.write_bytes(b"synthetic-index-generation-one")
+    binding = case["descriptor"]["expected_binding"]
+    binding["pointer_sha256"] = sha(pointer.read_bytes())
+    plan = {"schema": "wd.q4-public-wrapper-plan.v1", "config": {"descriptor_sha256": binding["descriptor_sha256"]},
+            "root": str(root), "policy_path": str(root / "policy"), "roster_path": str(root / "roster"),
+            "public_policy_path": str(root / "public-policy"),
+            **{key: binding[key] for key in ("pointer_sha256", "source_anchor_sha256", "encoder_sha256",
+                                              "policy_sha256", "roster_sha256", "public_policy_sha256")}}
+    plan_raw = canon(plan)
+    case["files"]["public-plan.json"].write_bytes(plan_raw)
+    binding_raw = canon({"schema": "wd.q4-lane-binding.v1", "public_plan_sha256": sha(plan_raw), "binding": binding})
+    case["files"]["binding.json"].write_bytes(binding_raw)
+    case["descriptor"]["binding_sha256"] = sha(binding_raw)
+    descriptor_raw = canon(case["descriptor"])
+    case["files"]["descriptor.json"].write_bytes(descriptor_raw)
+    monkeypatch.setenv("WD_Q4_SHARED_DESCRIPTOR_SHA256", sha(descriptor_raw))
+    return pointer
+
+
+def test_stale_snapshot_refuses_before_query_and_adapter(case, monkeypatch, capsys):
+    pointer = case["latest"]
+    case["outcome"]["validated"] = True
+    pointer.write_bytes(b"synthetic-index-generation-two")
+    assert invoke(case, monkeypatch) == 2
+    out = capsys.readouterr()
+    assert out.out == "" and out.err == REFUSAL
+    assert case["calls"] == []
+
+
+def test_snapshot_changed_during_query_is_never_published(case, monkeypatch, capsys):
+    pointer = case["latest"]
+    case["outcome"]["validated"] = True
+    original = case["adapter"].call_lane_session
+    def update_pointer(**kwargs):
+        result = original(**kwargs)
+        pointer.write_bytes(b"synthetic-index-generation-two")
+        return result
+    monkeypatch.setattr(case["adapter"], "call_lane_session", update_pointer)
+    assert invoke(case, monkeypatch) == 2
+    out = capsys.readouterr()
+    assert out.out == "" and out.err == REFUSAL
+    assert len(case["calls"]) == 1
+    state = case["files"]["descriptor.json"].parent / "synthetic-bridge-runtime" / "shared" / ".codex-audit" / LANE / "q4-caller-state"
+    assert not (state / (LANE + ".pending.json")).exists()
+
+
+def test_missing_current_pointer_refuses_before_query(case, monkeypatch, capsys):
+    case["latest"].unlink()
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert case["calls"] == []
+
+
+def test_unpinned_public_plan_refuses_before_query(case, monkeypatch, capsys):
+    case["files"]["public-plan.json"].write_bytes(b'{}')
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert case["calls"] == []
 
 
 def assert_refused(code, capsys, expected_code=2):

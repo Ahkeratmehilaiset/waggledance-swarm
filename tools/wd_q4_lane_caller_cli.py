@@ -14,6 +14,12 @@ worktree. Its identity digest is SELF-COMPUTED. Same-user declarations and pins
 are not authentication: lane_authentication must remain UNKNOWN. Ancestor/path
 checks do not defeat hostile replacement after checking or same-user writers.
 
+Before entering a query and again before publishing its result, the public plan
+bound by the pinned lane binding identifies an index root whose q4-latest.json
+must still match the pointer pinned by this descriptor. A changed/missing pointer
+refuses output. This is an equality check at two instants, not authenticated time,
+source freshness, anti-ABA protection, or an automatic descriptor refresh.
+
 The enabled route must acquire an independently fleet-pinned guard and its
 call-bound owner context before reading the query. Configuration and identity
 reads still happen before guard acquisition and are not protected by it. The
@@ -202,6 +208,20 @@ def _configuration():
     return descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs
 
 
+def _require_current_snapshot(descriptor, binding, inputs):
+    """Refuse unless this exact pinned public plan still names the current index."""
+    from tools import wd_q4_lane_link as link
+    binding_doc = _json(inputs["binding_bytes"])
+    _check(binding_doc.get("schema") == "wd.q4-lane-binding.v1"
+           and binding_doc.get("binding") == binding)
+    public_hash = _hex(binding_doc.get("public_plan_sha256"))
+    _, public_bytes, public_pins = link._public_plan(descriptor["public_plan"], public_hash)
+    _check(all(public_pins[key] == binding[key] for key in public_pins))
+    public = _json(public_bytes)
+    root = _path(public["root"])
+    _read(str(root / "q4-latest.json"), 16384, binding["pointer_sha256"])
+
+
 def _identity(fleet_raw, descriptor, descriptor_pin):
     lane = _env("AGENT_BRIDGE_AGENT", 32)
     agent_uuid = _env("AGENT_BRIDGE_AGENT_UUID", 36)
@@ -297,6 +317,7 @@ def main(argv=None):
             return 0
         _check(argv == ["--enabled"])
         descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs = _configuration()
+        _require_current_snapshot(descriptor, binding, inputs)
         lane, identity_raw, token = _identity(fleet_raw, descriptor, descriptor_pin)
         identity_pin = _sha(identity_raw)
         # The fleet hash has already been checked against the independently
@@ -348,6 +369,7 @@ def main(argv=None):
         witness = guard._registry._issue()
         guard.release(witness)
         guard_released = True
+        _require_current_snapshot(descriptor, binding, inputs)
         _write(rendered)
         return 0
     except (KeyboardInterrupt, SystemExit):

@@ -84,6 +84,7 @@ def transport_args(case):
             "stdin_bytes": case["_query"]}
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows fixed-peer transport is required")
 def test_real_synthetic_fixed_peer_to_lane_link(case):
     result = invoke(case, create(case))
     assert result["status"] == "ANSWER" and result["results"] == case["_expected"]
@@ -106,6 +107,7 @@ def invoke_query(case, declared_lane):
 
 
 @pytest.mark.parametrize("declared_lane", sorted(wd_q4_lane_link._LANES))
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows fixed-peer transport is required")
 def test_real_synthetic_fixed_peer_to_full_lane_query(case, declared_lane):
     result = invoke_query(case, declared_lane)
     assert result["status"] == "ANSWER" and result["result_count"] == len(case["_expected"])
@@ -218,3 +220,26 @@ def test_transport_binding_refusal_drops_context_and_sensitive_frame_locals(case
     assert len(frames) == 1
     assert not {'stdin_bytes', 'arguments', 'wrapper', 'fixed_plan_bytes', 'fixed_bundle_bytes',
                 'runtime_manifest_bytes', 'bundle_root', 'public_plan_path'} & set(frames[0].f_locals)
+
+
+@pytest.fixture
+def unsupported_fixed_peer(monkeypatch):
+    # Model the unsupported OS branch without changing the process-wide os module.
+    from tools import wd_q4_secure_transport as fixed
+    real_os = fixed.os
+    class UnsupportedOS:
+        name = "posix"
+        def __getattr__(self, name):
+            return getattr(real_os, name)
+    monkeypatch.setattr(fixed, "os", UnsupportedOS())
+
+
+def test_unsupported_peer_refuses_lane_link(case, unsupported_fixed_peer):
+    result = invoke(case, create(case))
+    assert result == {"schema": "wd.q4-public-query.v2", "status": "REFUSED", "reason": "runtime_refused"}
+
+
+@pytest.mark.parametrize("declared_lane", sorted(wd_q4_lane_link._LANES))
+def test_unsupported_peer_refuses_full_lane_query(case, unsupported_fixed_peer, declared_lane):
+    result = invoke_query(case, declared_lane)
+    assert result["status"] == "REFUSED" and result["result_count"] == 0

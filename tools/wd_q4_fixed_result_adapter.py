@@ -61,8 +61,6 @@ def invoke_fixed_public(*, executable, expected_interpreter_sha256, interpreter_
         pointer = checkpoint._parse_pointer_snapshot(parts["pointer_bytes"],
             expected_pointer_sha256=plan["expected_pointer_sha256"], policy_sha=plan["policy_sha256"],
             roster_sha=plan["roster_sha256"], prefix_required=True)
-        if owner_options and not hmac.compare_digest(_owner_guard._binding[3], pointer["artifacts"]["descriptor_sha256"]):
-            raise ValueError()
         if not hmac.compare_digest(pointer["anchor_sha256"], plan["expected_source_sha256"]):
             raise ValueError()
         try:

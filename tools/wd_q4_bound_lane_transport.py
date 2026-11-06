@@ -58,8 +58,6 @@ def make_bound_transport(*, bundle_root, expected_commit, expected_manifest_sha2
         pointer = checkpoint._parse_pointer_snapshot(parts["pointer_bytes"],
             expected_pointer_sha256=plan["expected_pointer_sha256"], policy_sha=plan["policy_sha256"],
             roster_sha=plan["roster_sha256"], prefix_required=True)
-        if owner_options and not hmac.compare_digest(_owner_guard._binding[3], pointer["artifacts"]["descriptor_sha256"]):
-            raise ValueError()
         if not hmac.compare_digest(pointer["anchor_sha256"], plan["expected_source_sha256"]):
             raise ValueError()
         fixed_pins = {"pointer_sha256": plan["expected_pointer_sha256"],

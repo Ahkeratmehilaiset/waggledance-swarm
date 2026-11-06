@@ -126,7 +126,9 @@ def test_normal_public_route_is_still_available(tmp_path, monkeypatch):
         events.append("attest")
         yield
     monkeypatch.setattr(attestation, "attest_file", fake_attest)
-    monkeypatch.setattr(transport, "_run", lambda *args, **kwargs: (b"synthetic-result", 0))
+    # v5 binding: the child output is a frame bound to the control nonce and the exact query the parent sent
+    monkeypatch.setattr(transport, "_run", lambda *args, **kwargs: (
+        transport._fixed_wrap(kwargs["fixed"][0]["nonce"], args[3], b"synthetic-result"), 0))
     monkeypatch.setattr(transport, "_fixed_public_validate", lambda *args: b"synthetic-validated")
     assert transport.run_fixed_peer(**public_fixture(tmp_path), public_snapshot_enabled=True) == (b"synthetic-validated", 0)
     assert events == ["attest", "attest", "attest"]

@@ -104,6 +104,23 @@ def _pinned_helpers() -> tuple[Path, Path]:
     if len(raw) > 16 * 1024 * 1024 or _digest(raw).lower() != anchor.lower():
         raise ValueError()
     files = json.loads(raw)["files"]
+    # The two entry helpers load sibling scripts with dot-sourcing. Verify all
+    # packaged PowerShell helpers in this pinned active manifest, not just the
+    # entry scripts, before either subprocess can run.
+    prefix = "tools-bootstrap/.agent-bridge/bin/"
+    helper_entries = [name for name in files if name.startswith(prefix) and name.lower().endswith(".ps1")]
+    if not helper_entries:
+        raise ValueError()
+    for relative in helper_entries:
+        leaf = relative[len(prefix):]
+        if not leaf or "/" in leaf or "\\" in leaf or leaf in (".", ".."):
+            raise ValueError()
+        path = bin_dir / leaf
+        expected = files[relative]
+        if (not isinstance(expected, str) or not _HEX.fullmatch(expected)
+                or path.resolve(strict=True).parent != bin_dir
+                or _digest(path.read_bytes()).lower() != expected.lower()):
+            raise ValueError()
     result = []
     for name in ("Get-BridgeExecutionEvidence.ps1", "Write-AgentEvent.ps1"):
         path = bin_dir / name

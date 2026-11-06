@@ -209,7 +209,7 @@ def test_writer_command_contains_only_fixed_public_fields(monkeypatch):
     assert kwargs["env"]["WD_REBOOT_EXPECTED_MANIFEST_HASH"] == "b" * 64
 
 
-@pytest.mark.parametrize("tamper", ["none", "anchor", "evidence", "writer", "bin"])
+@pytest.mark.parametrize("tamper", ["none", "anchor", "evidence", "writer", "dependency", "bin"])
 def test_helper_bytes_are_checked_against_inherited_manifest(tmp_path, monkeypatch, tamper):
     bundle = tmp_path / "bundle"
     binary = bundle / "tools-bootstrap" / ".agent-bridge" / "bin"
@@ -220,6 +220,9 @@ def test_helper_bytes_are_checked_against_inherited_manifest(tmp_path, monkeypat
         data = ("synthetic-" + name).encode()
         (binary / name).write_bytes(data)
         files["tools-bootstrap/.agent-bridge/bin/" + name] = hashlib.sha256(data).hexdigest().upper()
+    dependency = binary / "BridgeEventClassifier.ps1"
+    dependency.write_bytes(b"synthetic-dependency")
+    files["tools-bootstrap/.agent-bridge/bin/BridgeEventClassifier.ps1"] = hashlib.sha256(b"synthetic-dependency").hexdigest().upper()
     raw = json.dumps({"files": files}, sort_keys=True).encode()
     (bundle / "deployment-manifest.json").write_bytes(raw)
     anchor = hashlib.sha256(raw).hexdigest()
@@ -227,6 +230,8 @@ def test_helper_bytes_are_checked_against_inherited_manifest(tmp_path, monkeypat
         (binary / names[0]).write_bytes(b"tampered")
     elif tamper == "writer":
         (binary / names[1]).write_bytes(b"tampered")
+    elif tamper == "dependency":
+        dependency.write_bytes(b"tampered")
     elif tamper == "anchor":
         anchor = "0" * 64
     elif tamper == "bin":

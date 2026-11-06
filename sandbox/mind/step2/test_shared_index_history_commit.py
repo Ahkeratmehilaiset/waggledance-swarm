@@ -10,6 +10,11 @@ import os
 
 import pytest
 
+# Module-level skip must precede Windows-only imports: pytestmark is applied
+# after collection imports, which can fail before the skip is considered.
+if os.name != "nt":
+    pytest.skip("checkpoint requires fixed Windows volume", allow_module_level=True)
+
 from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
 from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
 from sandbox.mind.step2 import wd_q4_private_read as reader
@@ -17,8 +22,6 @@ from sandbox.mind.step2.test_shared_index_builder import (
     APPROVED, EVENTS, LATER_EVENTS, POLICY_BYTES, POLICY_SHA, ROSTER_BYTES,
     ROSTER_SHA, _real_snapshot, build, event, predecessor_of, sha,
 )
-
-pytestmark = pytest.mark.skipif(os.name != "nt", reason="checkpoint requires fixed Windows volume")
 
 
 def _pins(anchor):

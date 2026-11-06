@@ -118,6 +118,35 @@ def test_machine_receipt_has_only_valid_public_hashes(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out) == {'status': 'UNKNOWN'}
 
 
+def test_cli_calls_actual_bootstrap_and_runner_with_synthetic_child(tmp_path, monkeypatch, capsys):
+    """Actual CLI/bootstrap/runner; isolated files, synthetic child and checkpoint accessor."""
+    from tools import wd_q4_genesis_cli as cli, wd_q4_genesis_bootstrap as genesis
+    from waggledance.core.bridge_log_reader import _file_identity
+    path = Path(__file__).with_name('test_wd_q4_genesis_bootstrap.py')
+    spec = importlib.util.spec_from_file_location('q4_cli_genesis_fixture', path)
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    args, calls = helper.synthetic.__wrapped__(tmp_path, monkeypatch)
+    source = Path(args['source_path'])
+    with source.open('rb') as stream: source_id = _file_identity(stream)
+    config = {'source_path': args['source_path'], 'source_sha256': _sha(source.read_bytes()),
+        'source_bytes': source.stat().st_size, 'source_file_identity': source_id,
+        'generation_path': args['generation_path'], 'generation': args['generation'],
+        'checkpoint_root': args['checkpoint_root'], 'private_state_root': args['private_state_root'],
+        'trusted_model_root': args['trusted_model_root'], 'policy_sha256': args['policy_sha256'],
+        'public_policy_sha256': args['public_policy_sha256'], 'fleet_sha256': args['expected_fleet_sha256'],
+        'max_prefix_bytes': args['max_prefix_bytes'], 'max_bytes': args['max_bytes'], 'max_rows': args['max_rows'],
+        'plan_template': args['plan_template'], 'renewable': False, 'cutoff_utc': '2026-01-01T00:00:00Z',
+        'batch_rows': True, 'min_headroom_bytes': 1, 'allow_partial_genesis': True}
+    monkeypatch.setattr(cli, '_prepare', lambda *_: (config, args['policy_bytes'], args['public_policy_bytes'],
+                                                     args['fleet_bytes'], genesis))
+    assert cli.main(['--enable', '--config', 'private', '--sha256', 'a' * 64]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output == {'status': 'PUBLISHED_GENESIS', 'pointer_sha256': 'a' * 64}
+    assert len(calls) == 1 and Path(args['generation_path']).exists()
+    assert calls[0]['cutoff_utc'].isoformat() == '2026-01-01T00:00:00+00:00'
+
+
 @pytest.mark.parametrize('path', ['C:\\a\\..\\b', 'F:\\thing', '\\\\server\\share', 'relative'])
 def test_non_c_or_noncanonical_path_refused(path):
     from tools import wd_q4_genesis_cli as cli

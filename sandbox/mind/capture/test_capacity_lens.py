@@ -638,8 +638,7 @@ def test_an_unsafe_observer_label_never_reaches_an_output_byte_and_reads_unknown
     assert lines[1:] == [
         "LIMITS UNKNOWN UNKNOWN: 12%; resets 2026-10-14T18:00Z (in 1860 min); observer UNKNOWN, quota UNKNOWN, "
         "under 1 min old",
-        "COLLECTION UNKNOWN: FAILED; state UNKNOWN; last success 2026-10-13T10:59Z (1 min ago); no attempt recorded; "
-        "observer TTL 300 s; failed provider",
+        "COLLECTION UNKNOWN: 1 unrecognized provider rows and 1 unrecognized failed providers, figures not shown",
         "ALERTS: 1 (UNKNOWN UNKNOWN x1)",
         "ACTIVITY UNKNOWN: threads 1; UNKNOWN x1; latest success 2026-10-13T10:00Z (60 min ago); error UNKNOWN x1 "
         "since 2026-10-13T09:00"]
@@ -687,3 +686,47 @@ def test_the_lens_clock_is_the_real_utc_clock():
     checked = REAL_CLOCK()
     assert checked.utcoffset() == dt.timedelta(0)
     assert abs((checked - dt.datetime.now(dt.timezone.utc)).total_seconds()) < 5
+
+
+# RCO2 residuals (Lead 11-06 20:17Z): no last-wins row for unrecognized providers, no future status, stale lines say so.
+def test_unrecognized_provider_rows_are_counted_never_shown_as_one_provider():
+    value = dict(status(collection={"gemini": {"last_success": "2026-10-13T10:59:00+00:00",
+                                               "collection_state": "observed", "freshness_ttl_seconds": 300},
+                                    "mistral": {"last_success": None, "collection_state": "failed"},
+                                    "codex": {"last_success": "2026-10-13T10:59:00+00:00",
+                                              "collection_state": "observed", "freshness_ttl_seconds": 300}}),
+                 failed_providers=["gemini", "llama"])
+    lines = [line for line in render(value) if line.startswith(("COLLECTION", "LIMITS"))]
+    assert lines == [
+        "COLLECTION codex: OK; state observed; last success 2026-10-13T10:59Z (1 min ago); no attempt recorded; "
+        "observer TTL 300 s",
+        "COLLECTION UNKNOWN: 2 unrecognized provider rows and 2 unrecognized failed providers, figures not shown"]
+    kept = lens.project(value, {})
+    assert sorted(kept[2]) == ["codex"] and kept[6] == {"collection_rows": 2, "failed_providers": 2}
+    view = lens.view_of(b"{}", lens.readable(value, {}))
+    assert view["unrecognized_providers"] == {"collection_rows": 2, "failed_providers": 2}
+    malformed = dict(value, collection={"gemini": {"last_success": "soon"}})
+    with pytest.raises(lens.LensRefused):
+        lens.readable(malformed, {})
+
+
+def test_a_future_status_is_refused_whole_and_nothing_is_written(tmp_path, monkeypatch):
+    monkeypatch.setattr(lens, "clock", lambda: lens.parse_time("2026-10-13T10:59:59+00:00"))
+    result, out, published = run_hook(tmp_path, monkeypatch, encoded(good_status()))
+    assert result == "refused: status_time_future" and not out.exists() and not published.exists()
+
+
+def test_every_figure_line_of_a_stale_status_says_so():
+    monkeypatch_clock = lens.clock
+    try:
+        lens.clock = lambda: lens.parse_time("2026-10-13T14:00:00+00:00")
+        value = dict(good_status(), collection={"codex": {"last_success": "2026-10-13T10:59:00+00:00",
+                                                          "collection_state": "observed",
+                                                          "freshness_ttl_seconds": 300}})
+        lines = lens.readable(value, {})[-1]
+        view = lens.view_of(b"{}", lens.readable(value, {}))
+    finally:
+        lens.clock = monkeypatch_clock
+    assert "(status age 180 min, STALE)" in lines[0] and not lines[0].endswith(" (status STALE)")
+    assert len(lines) == 4 and all(line.endswith(" (status STALE)") for line in lines[1:])
+    assert [row["status_state"] for row in view["limits"]] == ["STALE"]

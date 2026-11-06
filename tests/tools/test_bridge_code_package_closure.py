@@ -68,6 +68,18 @@ def test_lane_session_client_is_in_bundle_python_files():
     assert "tools/wd_q4_lane_session_client.py" in _packaged_python()
 
 
+def test_lane_caller_and_its_transitive_internal_imports_are_packaged(monkeypatch):
+    caller = "tools/wd_q4_lane_caller_adapter.py"
+    packaged = _packaged_python()
+    assert packaged.count(caller) == 1
+    # The caller's Mind chain also imports core.faiss_store; include that root
+    # in this focused check without changing the existing suite-wide policy.
+    monkeypatch.setitem(globals(), "INTERNAL_ROOTS", (*INTERNAL_ROOTS, "core"))
+    reached, unresolved = _closure([caller])
+    assert not unresolved, unresolved
+    assert set(reached) <= set(packaged), sorted(set(reached) - set(packaged))
+
+
 def test_lane_session_cli_is_in_bundle_python_files():
     assert "tools/wd_q4_lane_session_cli.py" in _packaged_python()
 

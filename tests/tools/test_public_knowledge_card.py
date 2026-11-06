@@ -174,3 +174,60 @@ def test_refusal_does_not_retain_input_in_its_exception_chain(case):
             frame=frame.tb_next
     else:
         pytest.fail('expected refusal')
+
+
+def make_prior(event, timestamp, subject=None, supersedes=None):
+    prior=deepcopy(event)
+    prior['ts_utc']=timestamp
+    data=prior['payload']['public_knowledge']
+    data.pop('supersedes',None)
+    if subject is not None: data['subject']=subject
+    if supersedes is not None: data['supersedes']=supersedes
+    return prior
+
+
+def test_chained_supersession_validates_all_prior_events(case):
+    first=make_prior(case['event'],'2026-11-06T10:00:00Z')
+    second=make_prior(case['event'],'2026-11-06T11:00:00Z',supersedes=event_id(first))
+    case['event']['payload']['public_knowledge']['supersedes']=event_id(second)
+    case.update(source_ref=event_id(case['event']),previous_event=second,earlier_events=[first])
+    assert validate(case)['status']=='CURRENT'
+
+
+def test_supersession_accepts_sixteen_verified_predecessors(case):
+    chain=[make_prior(case['event'],'2026-11-06T00:00:00Z')]
+    for minute in range(1,16):
+        chain.append(make_prior(case['event'],f'2026-11-06T00:{minute:02}:00Z',
+                                supersedes=event_id(chain[-1])))
+    case['event']['payload']['public_knowledge']['supersedes']=event_id(chain[-1])
+    case.update(source_ref=event_id(case['event']),previous_event=chain[-1],
+                earlier_events=list(reversed(chain[:-1])))
+    assert validate(case)['status']=='CURRENT'
+
+
+def test_supersession_refuses_different_subject_even_same_lane(case):
+    from sandbox.mind.step2 import public_knowledge_card as card
+    prior=make_prior(case['event'],'2026-11-06T11:00:00Z',subject={'pr':1563})
+    case['event']['payload']['public_knowledge']['supersedes']=event_id(prior)
+    case.update(source_ref=event_id(case['event']),previous_event=prior)
+    with pytest.raises(card.CardRefused): validate(case)
+
+
+@pytest.mark.parametrize('fault',['missing_ancestor','altered_ancestor','cross_subject','cross_lane',
+                                   'extra_ancestor','cycle','non_list','too_long'])
+def test_supersession_chain_fails_closed(case,fault):
+    from sandbox.mind.step2 import public_knowledge_card as card
+    first=make_prior(case['event'],'2026-11-06T10:00:00Z')
+    if fault=='cross_subject': first['payload']['public_knowledge']['subject']={'pr':42}
+    if fault=='cross_lane': first['agent']='fable-5'
+    second=make_prior(case['event'],'2026-11-06T11:00:00Z',supersedes=event_id(first))
+    case['event']['payload']['public_knowledge']['supersedes']=event_id(second)
+    chain=[first]
+    if fault=='missing_ancestor': chain=[]
+    elif fault=='altered_ancestor': first['payload']['public_knowledge']['outcome']='red'
+    elif fault=='extra_ancestor': chain=[first,deepcopy(first)]
+    elif fault=='cycle': second['ts_utc']='2026-11-06T09:00:00Z'; case['event']['payload']['public_knowledge']['supersedes']=event_id(second)
+    elif fault=='non_list': chain=(first,)
+    elif fault=='too_long': chain=[deepcopy(first) for _ in range(16)]
+    case.update(source_ref=event_id(case['event']),previous_event=second,earlier_events=chain)
+    with pytest.raises(card.CardRefused): validate(case)

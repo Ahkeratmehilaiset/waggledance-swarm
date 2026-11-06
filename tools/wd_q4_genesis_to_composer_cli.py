@@ -30,12 +30,15 @@ from tools import wd_q4_genesis_request_prepare as request_prep
 from tools import wd_q4_genesis_snapshot_prepare as snapshot_prep
 from tools import wd_q4_live_snapshot_publish as live
 from tools import wd_q4_live_update_recovery as recovery
+from tools import wd_q4_production_continuation as continuation
 from tools import wd_q4_roster_from_fleet as roster_producer
 from tools import wd_q4_staged_composer as composer
 from tools import wd_q4_status_prefix_runner as runner
 from waggledance.core.bridge_log_reader import _file_identity
 
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
+_RECEIPT_V1 = {'status','pointer_sha256','runner_receipt_sha256'}
+_RECEIPT_V2 = _RECEIPT_V1 | {'cutoff_utc','previous_cutoff_utc','route_sha256','cutoff_monotonicity'}
 _KEYS = {'schema','genesis_config_path','genesis_config_sha256','receipt_path','receipt_sha256',
          'genesis_tuple_sha256','request_template_path','request_template_sha256',
          'public_plan_template_path','public_plan_template_sha256','expected_commit','stage_dir','output_dir',
@@ -56,6 +59,42 @@ def _tuple_part(doc, name):
     return genesis_cli._doc(raw)
 
 
+def _verify_v2(receipt, runner_receipt, genesis_route, private, root, view, pointer_doc):
+    """Bind cutoff evidence to the exact completed runner and verified predecessor."""
+    if (receipt['status']!='caught_up_to_cutoff'
+            or receipt['cutoff_monotonicity']!='CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN'
+            or type(receipt['route_sha256']) is not str or not _HEX.fullmatch(receipt['route_sha256'])):
+        raise ValueError()
+    cutoff=runner._cutoff_datetime(receipt['cutoff_utc'])
+    previous=runner._cutoff_datetime(receipt['previous_cutoff_utc'])
+    floor=runner._cutoff_datetime(genesis_route['cutoff_utc'])
+    route_pin=receipt['route_sha256']
+    if runner_receipt.get('route_sha256')!=route_pin:
+        raise ValueError()
+    route_raw=_read(str(private/('q4-continuation-route-'+route_pin+'.json')),route_pin)
+    route=genesis_cli._doc(route_raw)
+    expected_keys=set(genesis_route)-{'genesis_skip_sha256'}
+    dynamic={'cursor','prefix_sha256','plan_sha256','anchor_sha256','cutoff_utc'}
+    if (set(route)!=expected_keys or route.get('cutoff_utc')!=receipt['cutoff_utc']
+            or any(route[k]!=genesis_route[k] for k in expected_keys-dynamic)
+            or route.get('anchor_sha256')!=view['anchor_sha256']
+            or runner_receipt.get('plan_sha256')!=route.get('plan_sha256')):
+        raise ValueError()
+    prior_pin=pointer_doc['previous_pointer_sha256']
+    if (type(prior_pin) is not str or not _HEX.fullmatch(prior_pin)
+            or runner_receipt.get('prior_pointer_sha256')!=prior_pin): raise ValueError()
+    previous_raw=checkpoint._read(root/('q4-pointer-'+prior_pin+'.json'),max_bytes=checkpoint._MAX_POINTER_BYTES)
+    if snapshot_prep._sha(previous_raw)!=prior_pin: raise ValueError()
+    previous_pointer=genesis_cli._doc(previous_raw)
+    if (route.get('cursor')!=previous_pointer.get('watermark')
+            or route.get('prefix_sha256')!=previous_pointer.get('prefix_watermark_sha256')):
+        raise ValueError()
+    previous_checkpoint=continuation._utc(continuation._checkpoint_cutoff(previous_pointer,genesis_route))
+    current_checkpoint=continuation._utc(continuation._checkpoint_cutoff(view,genesis_route))
+    if previous < max(floor,previous_checkpoint) or cutoff < previous or current_checkpoint!=cutoff:
+        raise ValueError()
+
+
 def _preflight(path, pin):
     config=genesis_cli._doc(_read(path,pin))
     if set(config)!=_KEYS or config['schema']!='wd.q4-genesis-to-composer.v1': raise ValueError()
@@ -66,9 +105,11 @@ def _preflight(path, pin):
     gc=genesis_cli._doc(_read(config['genesis_config_path'],config['genesis_config_sha256']))
     if set(gc)!=genesis_cli._KEYS or gc['schema']!='wd.q4-genesis-cli.v1': raise ValueError()
     receipt=genesis_cli._doc(_read(config['receipt_path'],config['receipt_sha256']))
-    if (set(receipt)!={'status','pointer_sha256','runner_receipt_sha256'}
+    receipt_keys=set(receipt)
+    if (receipt_keys not in (_RECEIPT_V1,_RECEIPT_V2)
             or receipt['status'] not in ('PUBLISHED_GENESIS','caught_up_to_cutoff')
-            or any(type(receipt[k]) is not str or not _HEX.fullmatch(receipt[k]) for k in set(receipt)-{'status'})):
+            or any(type(receipt[k]) is not str or not _HEX.fullmatch(receipt[k])
+                   for k in ('pointer_sha256','runner_receipt_sha256'))):
         raise ValueError()
     pointer_pin=receipt['pointer_sha256']
     bundle=Path(gc['bundle_root']); root=Path(gc['checkpoint_root']); private=Path(gc['private_state_root'])
@@ -84,7 +125,24 @@ def _preflight(path, pin):
                 'prefix_bytes':gc['source_bytes'],'prefix_sha256':gc['source_sha256']}):
         raise ValueError()
     route, plan, anchor=(_tuple_part(gt,name) for name in ('route','plan','anchor'))
-    expected_cursor={'offset':0,'file_identity':gc['source_file_identity'],'generation':gc['generation']}
+    expected_cursor=route.get('cursor')
+    if (type(expected_cursor) is not dict or set(expected_cursor)!={'offset','file_identity','generation'}
+            or type(expected_cursor['offset']) is not int or expected_cursor['offset']<0
+            or expected_cursor['file_identity']!=gc['source_file_identity']
+            or expected_cursor['generation']!=gc['generation']): raise ValueError()
+    skip_pin=route.get('genesis_skip_sha256')
+    if expected_cursor['offset']==0:
+        if skip_pin is not None or route.get('prefix_sha256')!=snapshot_prep._sha(b''): raise ValueError()
+    else:
+        if type(skip_pin) is not str or not _HEX.fullmatch(skip_pin): raise ValueError()
+        skip_raw=runner._read_genesis_skip(private)
+        skip=runner._genesis_skip(skip_raw)
+        if (snapshot_prep._sha(skip_raw)!=skip_pin or skip['offset']!=expected_cursor['offset']
+                or skip['file_identity']!=expected_cursor['file_identity']
+                or skip['generation']!=expected_cursor['generation']
+                or skip['prefix_sha256']!=route.get('prefix_sha256')
+                or any(skip[k]!=route.get(k) for k in ('policy_sha256','roster_sha256','public_policy_sha256'))):
+            raise ValueError()
     expected_anchor={'schema':'wd.q4-source-anchor.v1','source_path':gc['source_path'],
         'generation_path':gc['generation_path'],'cursor_start':expected_cursor,'policy_sha256':gc['policy_sha256'],
         'roster_sha256':route.get('roster_sha256'),'status_mode':'public-v1',
@@ -93,7 +151,6 @@ def _preflight(path, pin):
             or route.get('checkpoint_root')!=gc['checkpoint_root'] or route.get('private_state_root')!=gc['private_state_root']
             or route.get('trusted_model_root')!=gc['trusted_model_root'] or route.get('policy_sha256')!=gc['policy_sha256']
             or route.get('public_policy_sha256')!=gc['public_policy_sha256']
-            or route.get('cursor')!=expected_cursor or route.get('prefix_sha256')!=snapshot_prep._sha(b'')
             or route.get('max_bytes')!=gc['max_bytes'] or route.get('max_rows')!=gc['max_rows']
             or route.get('cutoff_utc')!=gc['cutoff_utc'] or route.get('batch_rows',False)!=gc['batch_rows']
             or route.get('plan_sha256')!=gt['plan']['sha256'] or route.get('anchor_sha256')!=gt['anchor']['sha256']
@@ -127,9 +184,11 @@ def _preflight(path, pin):
                 (runner_receipt.get('status') not in ('PUBLISHED_HISTORY','EMPTY_ADVANCED')
                  or pointer_doc.get('previous_pointer_sha256') is None
                  or runner_receipt.get('prior_pointer_sha256')!=pointer_doc['previous_pointer_sha256']))
-            or prefix.cursor.offset<gc['source_bytes']
+            or prefix.cursor.offset<max(gc['source_bytes'],expected_cursor['offset'])
             or prefix.cursor.file_identity!=gc['source_file_identity'] or prefix.cursor.generation!=gc['generation']):
         raise ValueError()
+    if receipt_keys==_RECEIPT_V2:
+        _verify_v2(receipt,runner_receipt,route,private,root,view,pointer_doc)
     source=runner._plain_file(gc['source_path'])
     with source.open('rb') as stream:
         size=os.fstat(stream.fileno()).st_size
@@ -137,6 +196,7 @@ def _preflight(path, pin):
                 or _file_identity(stream)!=gc['source_file_identity']
                 or genesis._snapshot(stream,gc['source_bytes'])!=gc['source_sha256']
                 or genesis._snapshot(stream,prefix.cursor.offset)!=prefix.sha256
+                or genesis._snapshot(stream,expected_cursor['offset'])!=route['prefix_sha256']
                 or (receipt['status']=='PUBLISHED_GENESIS'
                     and genesis._complete_prefix_size(stream,size)>prefix.cursor.offset)): raise ValueError()
     private_lock=private/private_state._LOCK

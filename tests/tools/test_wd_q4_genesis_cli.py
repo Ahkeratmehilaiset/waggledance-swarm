@@ -37,6 +37,7 @@ def test_one_call_and_post_admission_outcome(monkeypatch, capsys, outcome, code,
     from tools import wd_q4_genesis_cli as cli
     from tools import wd_q4_genesis_bootstrap as genesis
     config = {'source_path': 'private', 'source_sha256': 'a' * 64, 'source_bytes': 17,
+              'source_file_identity': 'windows-v1:00000001:0000000000000001',
               'generation_path': 'private', 'generation': 'synthetic', 'checkpoint_root': 'private',
               'private_state_root': 'private', 'trusted_model_root': 'private',
               'policy_sha256': 'b' * 64, 'public_policy_sha256': 'c' * 64, 'fleet_sha256': 'd' * 64,
@@ -70,6 +71,7 @@ def test_duplicate_config_keys_are_refused():
 def test_config_pins_cutoff_batch_headroom_and_partial_and_reports_partial(monkeypatch, capsys):
     from tools import wd_q4_genesis_cli as cli, wd_q4_genesis_bootstrap as genesis
     config = {'source_path': 'private', 'source_sha256': 'a' * 64, 'source_bytes': 17,
+              'source_file_identity': 'windows-v1:00000001:0000000000000001',
               'generation_path': 'private', 'generation': 'synthetic', 'checkpoint_root': 'private',
               'private_state_root': 'private', 'trusted_model_root': 'private', 'policy_sha256': 'b' * 64,
               'public_policy_sha256': 'c' * 64, 'fleet_sha256': 'd' * 64, 'max_prefix_bytes': 1024,
@@ -89,6 +91,9 @@ def test_config_pins_cutoff_batch_headroom_and_partial_and_reports_partial(monke
     assert len(calls) == 1
     assert {k: calls[0][k] for k in ('cutoff_utc', 'batch_rows', 'min_headroom_bytes', 'allow_partial_genesis')} == {
         k: config[k] for k in ('cutoff_utc', 'batch_rows', 'min_headroom_bytes', 'allow_partial_genesis')}
+    assert calls[0]['expected_source_identity'] == config['source_file_identity']
+    assert calls[0]['expected_source_prefix_bytes'] == config['source_bytes']
+    assert calls[0]['expected_source_prefix_sha256'] == config['source_sha256']
 
 
 @pytest.mark.parametrize('path', ['C:\\a\\..\\b', 'F:\\thing', '\\\\server\\share', 'relative'])

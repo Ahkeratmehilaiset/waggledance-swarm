@@ -149,6 +149,112 @@ def test_started_cli_uncertainty_is_sanitized_and_unknown(candidate, mode):
     assert 'synthetic-private-canary' not in result.stdout + result.stderr
 
 
+
+SKIP = 'd' * 64
+SKIP_LINE = '{"status":"GENESIS_SKIP_PROGRESS","skip_receipt_sha256":"' + SKIP + '"}'
+
+
+def fake_cli(candidate, line, code):
+    candidate['cli'].write_text('def main(args):\n print(' + repr(line) + ')\n return ' + str(code) + '\n',
+                                encoding='ascii')
+    repin_bundle(candidate)
+
+
+def test_cli_skip_progress_is_propagated_with_exit_4(candidate):
+    fake_cli(candidate, SKIP_LINE, 4)
+    result = execute(candidate)
+    assert result.returncode == 4, result.stderr
+    assert json.loads(result.stdout) == {'status': 'GENESIS_SKIP_PROGRESS', 'skip_receipt_sha256': SKIP}
+    assert result.stdout.count('\n') == 1 and 'pointer' not in result.stdout
+
+
+# Every malformed or inconsistent skip progress answer is an uncertain outcome, never progress or publication.
+MALFORMED_SKIP = {
+    'skip_exit_0': (SKIP_LINE, 0),
+    'skip_exit_2': (SKIP_LINE, 2),
+    'skip_exit_3': (SKIP_LINE, 3),
+    'skip_without_sha': ('{"status":"GENESIS_SKIP_PROGRESS"}', 4),
+    'skip_upper_sha': ('{"status":"GENESIS_SKIP_PROGRESS","skip_receipt_sha256":"' + 'D' * 64 + '"}', 4),
+    'skip_short_sha': ('{"status":"GENESIS_SKIP_PROGRESS","skip_receipt_sha256":"' + 'd' * 63 + '"}', 4),
+    'skip_int_sha': ('{"status":"GENESIS_SKIP_PROGRESS","skip_receipt_sha256":1}', 4),
+    'skip_with_pointer': ('{"status":"GENESIS_SKIP_PROGRESS","skip_receipt_sha256":"' + SKIP +
+                          '","pointer_sha256":"' + 'e' * 64 + '"}', 4),
+    'skip_with_extra_key': ('{"offset":5,"status":"GENESIS_SKIP_PROGRESS","skip_receipt_sha256":"' + SKIP + '"}', 4),
+    'refused_exit_4': ('{"status":"REFUSED"}', 4),
+    'unknown_exit_4': ('{"status":"UNKNOWN"}', 4),
+    'published_exit_4': ('{"status":"PUBLISHED_GENESIS","pointer_sha256":"' + 'e' * 64 + '"}', 4),
+    'published_with_skip_sha': ('{"status":"PUBLISHED_GENESIS","pointer_sha256":"' + 'e' * 64 +
+                                '","skip_receipt_sha256":"' + SKIP + '"}', 0),
+    'refused_with_skip_sha': ('{"status":"REFUSED","skip_receipt_sha256":"' + SKIP + '"}', 2),
+    'lower_case_status': ('{"status":"genesis_skip_progress","skip_receipt_sha256":"' + SKIP + '"}', 4),
+}
+
+
+@pytest.mark.parametrize('case', sorted(MALFORMED_SKIP))
+def test_malformed_or_inconsistent_skip_progress_is_unknown(candidate, case):
+    fake_cli(candidate, *MALFORMED_SKIP[case])
+    result = execute(candidate)
+    assert result.returncode == 3 and json.loads(result.stdout) == {'status': 'UNKNOWN'}
+
+
+@pytest.mark.parametrize('line,code', [('{"status":"REFUSED"}', 2), ('{"status":"UNKNOWN"}', 3),
+    ('{"status":"PUBLISHED_GENESIS_PARTIAL","pointer_sha256":"' + 'e' * 64 + '","runner_receipt_sha256":"' + 'f' * 64 + '"}', 0)])
+def test_v1_statuses_are_unchanged(candidate, line, code):
+    fake_cli(candidate, line, code)
+    result = execute(candidate)
+    assert result.returncode == code and json.loads(result.stdout) == json.loads(line)
+
+
+def launcher_command(candidate):
+    scratch = candidate['bundle'].parent / 'scratch'
+    scratch.mkdir(exist_ok=True)
+    host = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    return ['powershell', '-NoProfile', '-NonInteractive', '-File', str(LAUNCH), '-Run',
+        '-BundleRoot', str(candidate['bundle']), '-ExpectedCommit', 'c' * 40,
+        '-ExpectedManifestSha256', candidate['manifest_pin'], '-ConfigPath', str(candidate['config']),
+        '-ExpectedConfigSha256', candidate['config_pin'], '-RuntimePath', str(candidate['spec']),
+        '-ExpectedRuntimeSha256', candidate['spec_pin'], '-ScratchRoot', str(scratch),
+        '-ExpectedHostSha256', sha(host.read_bytes()), '-TimeoutSeconds', '30']
+
+
+def test_powershell_launcher_propagates_skip_progress_through_real_bootstrap(candidate):
+    fake_cli(candidate, SKIP_LINE, 4)
+    result = subprocess.run(launcher_command(candidate), text=True, capture_output=True, timeout=40)
+    assert result.returncode == 4, result.stderr
+    assert json.loads(result.stdout) == {'status': 'GENESIS_SKIP_PROGRESS', 'skip_receipt_sha256': SKIP}
+
+
+# The launcher checks the worker answer itself: a fake bootstrap prints exactly this line and exit code.
+LAUNCHER_CASES = {
+    'skip_exit_4': (SKIP_LINE, 4, 4),
+    'skip_exit_0': (SKIP_LINE, 0, 3),
+    'skip_exit_2': (SKIP_LINE, 2, 3),
+    'skip_without_sha': ('{"status":"GENESIS_SKIP_PROGRESS"}', 4, 3),
+    'skip_upper_sha': ('{"status":"GENESIS_SKIP_PROGRESS","skip_receipt_sha256":"' + 'D' * 64 + '"}', 4, 3),
+    'skip_with_pointer': ('{"status":"GENESIS_SKIP_PROGRESS","skip_receipt_sha256":"' + SKIP +
+                          '","pointer_sha256":"' + 'e' * 64 + '"}', 4, 3),
+    'refused_exit_4': ('{"status":"REFUSED"}', 4, 3),
+    'published_with_skip_sha': ('{"status":"PUBLISHED_GENESIS","pointer_sha256":"' + 'e' * 64 +
+                                '","skip_receipt_sha256":"' + SKIP + '"}', 0, 3),
+    'lower_case_status': ('{"status":"genesis_skip_progress","skip_receipt_sha256":"' + SKIP + '"}', 4, 3),
+    'skip_sha_newline': ('{"status":"GENESIS_SKIP_PROGRESS","skip_receipt_sha256":"' + SKIP + '\\n"}', 4, 3),
+    'refused_exit_2': ('{"status":"REFUSED"}', 2, 2),
+}
+
+
+@pytest.mark.parametrize('case', sorted(LAUNCHER_CASES))
+def test_powershell_launcher_checks_skip_progress_answer(candidate, case):
+    line, code, expected = LAUNCHER_CASES[case]
+    candidate['bootstrap'].write_text('import sys\nprint(' + repr(line) + ')\nsys.exit(' + str(code) + ')\n',
+                                      encoding='ascii')
+    repin_bundle(candidate)
+    result = subprocess.run(launcher_command(candidate), text=True, capture_output=True, timeout=40)
+    assert result.returncode == expected, result.stderr
+    if expected == 3:
+        assert json.loads(result.stdout) == {'status': 'UNKNOWN'}
+    else:
+        assert json.loads(result.stdout) == json.loads(line)
+
 def test_powershell_fixed_launcher_checks_pins_then_runs_only_bootstrap(candidate):
     scratch = candidate['bundle'].parent / 'scratch'
     scratch.mkdir()

@@ -489,6 +489,7 @@ def test_exact_diagnostic_does_not_claim_available_for_id_collisions(tmp_path: P
         "case_variant_id": collision in ("case_variant", "both"),
         "own_case_variant_any_session": collision in ("case_variant", "both"),
         "foreign_requester_case_variant": False,
+        "foreign_requester_invalid_binding": False,
     }
 
 
@@ -557,3 +558,48 @@ def test_exact_diagnostic_does_not_confuse_unrelated_ids(tmp_path: Path, shell: 
     assert result["requests"][0]["request"] == target
     assert result["requests"][0]["id_also_used_by_other_requester"] is False
     assert result["requests"][0]["case_variant_id"] is False
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("case", ("top_equal", "payload_equal", "top_variant", "payload_variant", "unrelated"))
+def test_exact_diagnostic_handles_foreign_conflicting_id_bindings(tmp_path: Path, shell: str, case: str) -> None:
+    target, _ = _bound("target-v1")
+    values = {
+        "top_equal": ("target-v1", "other-v1"),
+        "payload_equal": ("other-v1", "target-v1"),
+        "top_variant": ("TARGET-v1", "other-v1"),
+        "payload_variant": ("other-v1", "TARGET-v1"),
+        "unrelated": ("other-v1", "another-v1"),
+    }
+    direct, nested = values[case]
+    foreign, _ = _bound(direct, agent="codex-tools-1", to="codex-lead-1")
+    foreign["payload"]["request_id"] = nested
+    _write(tmp_path, [target, foreign])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    if case == "unrelated":
+        assert result["exact_request_state"] == "available_not_validated"
+        assert result["requests"][0]["request"] == target
+    else:
+        assert result["exact_request_state"] == "not_available" and result["requests"] == []
+        assert result["exact_request_ambiguity"]["foreign_requester_invalid_binding"] is True
+        assert result["returned_count"] == 0
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("foreign_id", ("target-v1", "TARGET-v1"))
+def test_exact_diagnostic_detects_foreign_payload_only_valid_id(tmp_path: Path, shell: str, foreign_id: str) -> None:
+    target, _ = _bound("target-v1")
+    foreign, _ = _bound(foreign_id, agent="codex-tools-1", to="codex-lead-1")
+    del foreign["request_id"]
+    foreign["payload"]["request_id"] = foreign_id
+    _write(tmp_path, [target, foreign])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    assert result["exact_request_state"] == "not_available" and result["requests"] == []
+    assert result["returned_count"] == 0
+    reasons = result["exact_request_ambiguity"]
+    assert reasons["id_also_used_by_other_requester"] is (foreign_id == "target-v1")
+    assert reasons["foreign_requester_case_variant"] is (foreign_id == "TARGET-v1")

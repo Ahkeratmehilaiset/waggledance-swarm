@@ -78,6 +78,7 @@ $rows=@($snapshot.rows)
 $byId=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 $order=[Collections.Generic.List[string]]::new()
 $foreignIds=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$foreignInvalidBindingCouldNameRequest=$false
 # -DiagnosticPartial only: every invalid OWN request-like row the reply index kept is counted and
 # listed, never silently dropped here (a falsy-id row is never listed: see the -DiagnosticPartial LIMIT).
 # The list is bounded (at most 50 entries AND 30000 JSON characters, always a prefix in indexed
@@ -100,6 +101,19 @@ function Test-InventoryCouldNameRequest {
         $property=$container.PSObject.Properties['request_id']
         if ($null -eq $property -or $null -eq $property.Value) { continue }
         if ($property.Value -isnot [string] -or [StringComparer]::OrdinalIgnoreCase.Equals($property.Value, $RequestedId)) { return $true }
+    }
+    return $false
+}
+function Test-InventoryStringCouldNameRequest {
+    # A foreign conflicting binding is relevant only if a raw string side can name this ID.
+    param($Event, [string] $RequestedId)
+    $containers=@($Event)
+    $payloadProperty=$Event.PSObject.Properties['payload']
+    if ($null -ne $payloadProperty -and $null -ne $payloadProperty.Value) { $containers+=@($payloadProperty.Value) }
+    foreach ($container in $containers) {
+        $property=$container.PSObject.Properties['request_id']
+        if ($null -ne $property -and $property.Value -is [string] -and
+            [StringComparer]::OrdinalIgnoreCase.Equals($property.Value, $RequestedId)) { return $true }
     }
     return $false
 }
@@ -177,6 +191,10 @@ for ($position=0; $position -lt $rows.Count; $position++) {
     }
     if ($author -cne $Agent) {
         if ($id -is [string]) { [void]$foreignIds.Add($id) }
+        elseif ($ExactRequestDiagnostic -and (Test-BridgeContractFieldConflict $event 'request_id') -and
+            (Test-InventoryStringCouldNameRequest $event $RequestId)) {
+            $foreignInvalidBindingCouldNameRequest=$true
+        }
         continue
     }
     if ($id -isnot [string] -or $id -cnotmatch '^[A-Za-z0-9._:-]{1,128}$') {
@@ -345,13 +363,15 @@ if ($DiagnosticPartial) {
             }
         }
         $ambiguous=($requests.Count -eq 1 -and ($requests[0].id_also_used_by_other_requester -or
-            $requests[0].case_variant_id -or $ownCaseVariantAnySession -or $foreignRequesterCaseVariant))
+            $requests[0].case_variant_id -or $ownCaseVariantAnySession -or $foreignRequesterCaseVariant -or
+            $foreignInvalidBindingCouldNameRequest))
         if ($ambiguous) {
             $diagnostic['exact_request_ambiguity']=[ordered]@{
                 id_also_used_by_other_requester=[bool]$requests[0].id_also_used_by_other_requester
                 case_variant_id=[bool]$requests[0].case_variant_id
                 own_case_variant_any_session=[bool]$ownCaseVariantAnySession
                 foreign_requester_case_variant=[bool]$foreignRequesterCaseVariant
+                foreign_requester_invalid_binding=[bool]$foreignInvalidBindingCouldNameRequest
             }
             $diagnostic['requests']=@()
             $diagnostic['returned_count']=0

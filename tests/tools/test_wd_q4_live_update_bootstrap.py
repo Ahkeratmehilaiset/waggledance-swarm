@@ -35,7 +35,7 @@ def candidate(tmp_path):
     update = code / 'tools' / 'wd_q4_live_update_once.py'
     update.write_text("def main(args):\n import synthetic_runtime_dependency\n print(synthetic_runtime_dependency.VALUE)\n if '--host-attempt' in args: print(args[args.index('--host-attempt')+1])\n return 0\n", encoding='ascii')
     recovery = code / 'tools' / 'wd_q4_live_update_recovery.py'
-    recovery.write_text("def main(args):\n assert args[0]=='--recover' and '--attempt' in args\n print('fixed-recovery-loaded')\n return 0\n", encoding='ascii')
+    recovery.write_text("def main(args):\n assert args[0]=='--recover' and '--attempt' in args\n print('fixed-recovery-loaded')\n if '--job-receipt-sha256' in args: print(args[args.index('--job-receipt-sha256')+1], args[args.index('--pointer-sha256')+1])\n return 0\n", encoding='ascii')
     runtime = tmp_path / 'runtime'
     (runtime / 'assets' / 'code').mkdir(parents=True)
     (runtime / 'site').mkdir()
@@ -199,6 +199,31 @@ def test_fixed_recovery_route_accepts_pinned_runner_receipt_and_pointer(candidat
         '--runner-receipt-sha256', 'b' * 64, '--pointer-sha256', 'c' * 64],
         capture_output=True, text=True, timeout=30, env=env)
     assert result.returncode == 0 and result.stdout.strip() == 'fixed-recovery-loaded'
+
+
+def test_fixed_recovery_route_forwards_pinned_job_receipt_and_pointer(candidate):
+    env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha'])
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
+        '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
+        '--manifest-sha256', candidate['manifest_sha'], '--attempt', 'a' * 64,
+        '--job-receipt-sha256', 'b' * 64, '--pointer-sha256', 'c' * 64],
+        capture_output=True, text=True, timeout=30, env=env)
+    assert result.returncode == 0 and result.stdout.splitlines() == ['fixed-recovery-loaded', 'b' * 64 + ' ' + 'c' * 64]
+
+
+@pytest.mark.parametrize('evidence', [
+    ['--job-receipt-sha256', '', '--pointer-sha256', 'c' * 64],
+    ['--job-receipt-sha256', 'b' * 64],
+    ['--progress-sha256', 'b' * 64, '--job-receipt-sha256', 'c' * 64, '--pointer-sha256', 'd' * 64],
+    ['--job-receipt-sha256', 'b' * 64, '--pointer-sha256', 'c' * 64, '--module', 'os'],
+])
+def test_bootstrap_refuses_invalid_or_mixed_job_evidence(candidate, evidence):
+    env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha'])
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
+        '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
+        '--manifest-sha256', candidate['manifest_sha'], '--attempt', 'a' * 64, *evidence],
+        capture_output=True, text=True, timeout=30, env=env)
+    assert result.returncode != 0 and not result.stdout
 
 
 def test_recovery_route_rejects_extra_command(candidate):

@@ -191,12 +191,14 @@ def _result_valid(result, route, plan):
 
 def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, plan_bytes=None,
              policy_bytes=None, public_policy_bytes=None, fleet_bytes=None, expected_fleet_sha256=None,
-             roster_bytes=None, anchor_bytes=None, renewable=False):
+             roster_bytes=None, anchor_bytes=None, renewable=False, recovery_reservation=None):
     """Call the fixed child at most once for an independently pinned route.
 
     Renewable is opt-in, v3/fenced only, and returns a private receipt digest in
     addition to the normal report. It is not proof of source authenticity,
     currentness, operating-system isolation, or other writers' cooperation.
+    An optional already-persisted attempt/token binds both markers to the outer
+    owner. It is not evidence of process termination or recovery authority.
     """
     if enabled is False:
         return {"status": "OFF"}
@@ -204,6 +206,18 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
     try:
         if enabled is not True or type(renewable) is not bool:
             raise ValueError()
+        if recovery_reservation is not None:
+            if (not renewable or type(recovery_reservation) is not dict
+                    or set(recovery_reservation) != {"attempt", "token"}
+                    or any(type(recovery_reservation[key]) is not str
+                           or _HEX.fullmatch(recovery_reservation[key]) is None
+                           for key in ("attempt", "token"))):
+                raise ValueError()
+            reservation_bytes = json.dumps(
+                {"schema": "wd.q4-runner-reservation.v1", **recovery_reservation},
+                sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+        else:
+            reservation_bytes = None
         _pinned(route_bytes, expected_route_sha256)
         route = _json(route_bytes, 65536)
         if (frozenset(route) not in (_ROUTE_KEYS, _ROUTE_KEYS | {"cutoff_utc"},
@@ -294,7 +308,7 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
     interrupted = False
     report = None
     try:
-        token = secrets.token_hex(32).encode("ascii") + b"\n"
+        token = reservation_bytes if reservation_bytes is not None else secrets.token_hex(32).encode("ascii") + b"\n"
         if (roots._observe(checkpoint) != checkpoint_ids or roots._observe(private) != private_ids
                 or roots._observe(model) != model_ids or roots._observe(source.parent) != source_parent_ids
                 or roots._observe(sidecar.parent) != sidecar_parent_ids):

@@ -13,9 +13,18 @@ def _case():
 
 
 def test_active_bytes_are_pinned_copied_and_never_read_from_disk(monkeypatch):
+    import builtins
+    import os
+    from pathlib import Path
+
     contents, pins = _case()
     old = contents["memory.json"]
-    monkeypatch.setattr(checkpoint, "_read", lambda *args, **kw: pytest.fail("unexpected disk read"))
+    def unexpected_open(*args, **kwargs):
+        pytest.fail("unexpected filesystem open")
+
+    monkeypatch.setattr(builtins, "open", unexpected_open)
+    monkeypatch.setattr(Path, "open", unexpected_open)
+    monkeypatch.setattr(os, "open", unexpected_open)
     result = checkpoint._bind_active_artifact_bytes(contents, expected_hashes=pins, enabled=True)
     contents["memory.json"] = b"replaced"
     assert result.read("memory.json") == old
@@ -57,7 +66,7 @@ def test_active_snapshot_default_off_and_individual_and_combined_budget(monkeypa
     contents, pins = _case()
     with pytest.raises(checkpoint.CheckpointRefused):
         checkpoint._bind_active_artifact_bytes(contents, expected_hashes=pins)
-    monkeypatch.setattr(checkpoint._preflight_contract, "_MAX_ACTIVE_ARTIFACT_BYTES", 1, raising=False)
+    monkeypatch.setattr(checkpoint._preflight_contract, "_MAX_ACTIVE_ARTIFACT_BYTES", 1)
     with pytest.raises(checkpoint.CheckpointRefused):
         checkpoint._bind_active_artifact_bytes(contents, expected_hashes=pins, enabled=True)
 
@@ -66,13 +75,17 @@ def test_active_snapshot_uses_frozen_copy_during_hashing(monkeypatch):
     contents, pins = _case()
     original = contents["memory.json"]
     real_sha = checkpoint._sha
+    hashed = []
 
     def hash_with_swap(data):
+        hashed.append(data)
         contents["memory.json"] = b"changed-after-copy"
         return real_sha(data)
 
     monkeypatch.setattr(checkpoint._preflight_contract, "_sha", hash_with_swap)
     result = checkpoint._bind_active_artifact_bytes(contents, expected_hashes=pins, enabled=True)
+    assert len(hashed) == len(checkpoint.ARTIFACTS)
+    assert contents["memory.json"] == b"changed-after-copy"
     assert result.read("memory.json") == original
 
 
@@ -82,7 +95,7 @@ def test_active_snapshot_accepts_exact_budgets(monkeypatch):
     monkeypatch.setattr(checkpoint._preflight_contract, "_MAX_ACTIVE_SNAPSHOT_BYTES", sum(map(len, contents.values())))
     assert checkpoint._bind_active_artifact_bytes(contents, expected_hashes=pins, enabled=True).read("memory.json")
     monkeypatch.setattr(checkpoint._preflight_contract, "_MAX_ACTIVE_ARTIFACT_BYTES", 1024)
-    monkeypatch.setattr(checkpoint._preflight_contract, "_MAX_ACTIVE_SNAPSHOT_BYTES", sum(map(len, contents.values())) - 1, raising=False)
+    monkeypatch.setattr(checkpoint._preflight_contract, "_MAX_ACTIVE_SNAPSHOT_BYTES", sum(map(len, contents.values())) - 1)
     with pytest.raises(checkpoint.CheckpointRefused):
         checkpoint._bind_active_artifact_bytes(contents, expected_hashes=pins, enabled=True)
 

@@ -17,6 +17,7 @@ import json
 
 from tools import wd_q4_lane_link as lane_link
 from tools import wd_q4_secure_transport as fixed
+from tools import wd_q4_guard_completion as guard_completion
 from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown
 
 
@@ -30,11 +31,18 @@ _UNKNOWN = ("freshness", "publisher_authentication", "source_filter_attestation"
 
 def invoke_fixed_public(*, executable, expected_interpreter_sha256, interpreter_max_bytes,
                         plan_bytes, expected_plan_sha256, bundle_bytes, runtime_manifest_bytes,
-                        query_bytes, cwd, timeout_seconds, max_output_bytes, enabled=False):
+                        query_bytes, cwd, timeout_seconds, max_output_bytes, enabled=False,
+                        _owner_guard=None, _owner_context=None):
     """Call fixed peer and return the v2 result; no detached result is accepted."""
     try:
         if enabled is not True:
             raise ValueError()
+        owner_options = {}
+        if _owner_guard is not None or _owner_context is not None:
+            if (type(_owner_guard) is not guard_completion._Guard
+                    or _owner_guard._accept_owner_context(_owner_context) is not _owner_context):
+                raise ValueError()
+            owner_options = {"_owner_guard": _owner_guard, "_owner_context": _owner_context}
         if (type(plan_bytes) is not bytes or type(expected_plan_sha256) is not str
                 or lane_link._HEX64.fullmatch(expected_plan_sha256) is None
                 or not hmac.compare_digest(hashlib.sha256(plan_bytes).hexdigest(), expected_plan_sha256)):
@@ -53,6 +61,8 @@ def invoke_fixed_public(*, executable, expected_interpreter_sha256, interpreter_
         pointer = checkpoint._parse_pointer_snapshot(parts["pointer_bytes"],
             expected_pointer_sha256=plan["expected_pointer_sha256"], policy_sha=plan["policy_sha256"],
             roster_sha=plan["roster_sha256"], prefix_required=True)
+        if owner_options and not hmac.compare_digest(_owner_guard._binding[3], pointer["artifacts"]["descriptor_sha256"]):
+            raise ValueError()
         if not hmac.compare_digest(pointer["anchor_sha256"], plan["expected_source_sha256"]):
             raise ValueError()
         try:
@@ -61,7 +71,8 @@ def invoke_fixed_public(*, executable, expected_interpreter_sha256, interpreter_
                 interpreter_max_bytes=interpreter_max_bytes, plan_bytes=plan_bytes,
                 expected_plan_sha256=expected_plan_sha256, bundle_bytes=bundle_bytes,
                 runtime_manifest_bytes=runtime_manifest_bytes, query_bytes=query_bytes, cwd=cwd,
-                timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes, public_snapshot_enabled=True)
+                timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes, public_snapshot_enabled=True,
+                **owner_options)
         except fixed._Refused:
             return fixed._canonical({"schema": "wd.q4-public-query.v2", "status": "REFUSED",
                                      "reason": "runtime_refused"}), 2
@@ -101,4 +112,7 @@ def invoke_fixed_public(*, executable, expected_interpreter_sha256, interpreter_
         raise
     except Exception:
         pass
+    finally:
+        # Exceptions can retain this frame; never retain the caller's query in it.
+        del query_bytes
     raise FixedResultAdapterRefused("fixed_result_refused") from None

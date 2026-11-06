@@ -14,6 +14,11 @@ worktree. Its identity digest is SELF-COMPUTED. Same-user declarations and pins
 are not authentication: lane_authentication must remain UNKNOWN. Ancestor/path
 checks do not defeat hostile replacement after checking or same-user writers.
 
+The enabled route must acquire an independently fleet-pinned guard and its
+call-bound owner context before reading the query. Configuration and identity
+reads still happen before guard acquisition and are not protected by it. The
+adapter and native owners must each contribute actual cleanup to that context;
+without all contributions, no result is published and the marker remains.
 The existing adapter owns its native call and cleanup. This CLI adds no native
 implementation, timeout watchdog, packaging, installed config or activation.
 It requires the existing trusted bootstrap to expose the packaged tools module;
@@ -282,6 +287,8 @@ def _refuse(code):
 
 def main(argv=None):
     token = situation = identity_raw = inputs = result = None
+    guard = owner_context = rendered = None
+    guard_released = False
     try:
         if argv is None:
             argv = sys.argv[1:]
@@ -291,15 +298,30 @@ def main(argv=None):
         _check(argv == ["--enabled"])
         descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs = _configuration()
         lane, identity_raw, token = _identity(fleet_raw, descriptor, descriptor_pin)
+        identity_pin = _sha(identity_raw)
+        # The fleet hash has already been checked against the independently
+        # anchored deployment manifest by _configuration, before this call.
+        from tools import wd_q4_guard_completion as guard_completion
+        try:
+            guard = guard_completion.acquire_guard(
+                fleet_bytes=fleet_raw, expected_fleet_sha256=inputs["expected_fleet_sha256"],
+                lane=lane, identity_sha256=identity_pin, descriptor_sha256=descriptor_pin)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException:
+            # A failed acquisition may have left a pending marker; do not retry.
+            return _refuse(3)
+        owner_context = guard._owner_context()
+        _check(guard._accept_owner_context(owner_context) is owner_context)
         situation, when = _query()
         # The trusted bootstrap supplies the existing package; never fall back.
         from tools import wd_q4_lane_caller_adapter as adapter
 
-        identity_pin = _sha(identity_raw)
         try:
             result = adapter.call_lane_session(enabled=True, identity_bytes=identity_raw,
                 expected_identity_sha256=identity_pin, descriptor_bytes=descriptor_raw,
-                expected_descriptor_sha256=descriptor_pin, situation=situation, time=when, inputs=inputs)
+                expected_descriptor_sha256=descriptor_pin, situation=situation, time=when, inputs=inputs,
+                _owner_guard=guard, _owner_context=owner_context)
         except adapter.CallerCleanupUnknown:
             return _refuse(3)
         # Unknown/unrecognized cleanup takes precedence over any status, including
@@ -309,8 +331,13 @@ def main(argv=None):
             return _refuse(3)
         if result.get("status") == "TIMEOUT":
             return _refuse(4)
-        _write(_output(result, lane, identity_pin, descriptor_pin, binding,
-                       inputs["max_output_bytes"], token))
+        rendered = _output(result, lane, identity_pin, descriptor_pin, binding,
+                           inputs["max_output_bytes"], token)
+        owner_context._finish()
+        witness = guard._registry._issue()
+        guard.release(witness)
+        guard_released = True
+        _write(rendered)
         return 0
     except (KeyboardInterrupt, SystemExit):
         return _refuse(130)
@@ -320,7 +347,16 @@ def main(argv=None):
         # No exception detail, query, token, path or retry on any failure.
         return _refuse(2)
     finally:
+        # Do not abort an already released context: that would turn a successful
+        # release into a spurious failure. The outer marker remains pending on
+        # any unresolved path; this is not an atomic power-loss guarantee.
+        if guard is not None and not guard_released:
+            try:
+                guard.mark_unknown()
+            except BaseException:
+                pass
         token = situation = identity_raw = inputs = result = None
+        owner_context = rendered = None
 
 
 if __name__ == "__main__":

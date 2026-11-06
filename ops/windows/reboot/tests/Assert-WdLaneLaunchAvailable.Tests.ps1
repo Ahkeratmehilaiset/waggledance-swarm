@@ -434,15 +434,53 @@ Describe 'Assert-WdLaneLaunchAvailable recheck budget and configuration' {
     $message | Should Not Match 'someone'
     $message | Should Match ([regex]::Escape('C:\Users\<redacted>\AppData\Roaming\npm\claude.exe'))
     if ($log.StartsWith($env:USERPROFILE, [StringComparison]::OrdinalIgnoreCase)) {
-      # The diagnostics path named in the refusal is redacted the same way.
+      # The diagnostics path named in the refusal is redacted too (own profile root).
       $message | Should Not Match ([regex]::Escape($env:USERPROFILE))
-      $message | Should Match ('diagnostics [A-Za-z]:' + [regex]::Escape('\Users\<redacted>\'))
+      $message | Should Match 'diagnostics <userprofile>'
     }
     $text = Get-Content -LiteralPath $log -Raw
     $text | Should Not Match 'someone'
     $records = @((Read-DiagnosticRecords -Path $log)[0].unattributed)
     @($records | Where-Object { $_.pid -eq 16300 })[0].executable_path | Should Be 'C:\Users\<redacted>\AppData\Roaming\npm\claude.exe'
     @($records | Where-Object { $_.pid -eq 16301 })[0].executable_path | Should Be 'D:\tools\codex\codex.exe'
+  }
+
+  It 'redacts the actual user profile root even when it is not under <drive>:\Users' {
+    # A relocated profile (ProfilesDirectory elsewhere) is covered through the
+    # launcher's own USERPROFILE, which is the same account that runs the lanes.
+    $profileExe = Join-Path $env:USERPROFILE 'tools\claude.exe'
+    $stray = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe --resume old' -Seconds 5 -Executable $profileExe
+    Mock Get-CimInstance { @((New-Baseline) + @($stray)) }
+    $log = Join-Path $TestDrive 'profile.jsonl'
+    $message = ''
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+    $message | Should Match 'has no verified launcher ancestry'
+    $message | Should Not Match ([regex]::Escape($env:USERPROFILE))
+    $record = (Read-DiagnosticRecords -Path $log)[0].unattributed[0]
+    $record.executable_path | Should Be ('<userprofile>' + [IO.Path]::DirectorySeparatorChar + 'tools' + [IO.Path]::DirectorySeparatorChar + 'claude.exe')
+    (Get-Content -LiteralPath $log -Raw) | Should Not Match ([regex]::Escape($env:USERPROFILE))
+  }
+
+  It 'reports a failed diagnostics write with safe content only: no path, no exception text, verdict unchanged' {
+    # Lead finding 2026-11-06 06:19Z: the write-failure warning interpolated the
+    # raw diagnostics path and the exception message.
+    $stray = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe --resume old' -Seconds 5
+    Mock Get-CimInstance { @((New-Baseline) + @($stray)) }
+    $script:warnings = @()
+    Mock Write-Warning { $script:warnings += [string]$Message }
+    $blocker = Join-Path $TestDrive 'blocker.txt'
+    Set-Content -LiteralPath $blocker -Value 'a file where a directory is needed'
+    $log = Join-Path (Join-Path $blocker 'SECRETMARKER') 'diag.jsonl'
+    $message = ''
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+    $message | Should Match 'has no verified launcher ancestry'
+    Test-Path -LiteralPath $log | Should Be $false
+    $failed = @($script:warnings | Where-Object { $_ -match 'diagnostics could not be written' })
+    $failed.Count | Should Be 1
+    $failed[0] | Should Not Match 'SECRETMARKER'
+    $failed[0] | Should Not Match 'blocker'
+    $failed[0] | Should Not Match ([regex]::Escape($env:USERPROFILE))
+    $failed[0] | Should Match 'Exception'
   }
 
   It 'writes no file when no diagnostics path is given (the DryRun contract) and still refuses with the full reason' {

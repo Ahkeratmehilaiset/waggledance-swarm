@@ -421,3 +421,50 @@ Describe 'fleet preflight and launcher wiring (static)' {
     $agentText | Should Match 'LaneAvailabilityRecheckAttempts x LaneAvailabilityRecheckDelaySeconds must not exceed 30 seconds'
   }
 }
+
+Describe 'Assert-WdLaneLaunchAvailable host identity change, depth limit and renamed executables' {
+  Mock Start-Sleep { }
+  Mock Write-Warning { }
+
+  It 'refuses a PowerShell host whose identity changed between the snapshot and the fresh read, without recheck' {
+    # A host row without a readable command line is re-read once by PID; a
+    # different CreationDate on the fresh row is an identity change and must
+    # throw immediately (never rechecked, never waived).
+    $blank = New-Row -Id 700 -Parent 10 -Name 'powershell.exe' -Command '' -Seconds 3
+    $recycled = New-Row -Id 700 -Parent 10 -Name 'powershell.exe' -Command 'powershell.exe -NoProfile' -Seconds 4
+    $script:snapshots = [Collections.Generic.Queue[object]]::new()
+    $script:snapshots.Enqueue(@((New-Baseline) + @($blank)))
+    $script:snapshots.Enqueue(@($recycled))
+    Mock Get-CimInstance { $script:snapshots.Dequeue() }
+    { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 3 -RecheckDelaySeconds 5 } | Should Throw 'PowerShell command line is unavailable or its identity changed'
+    Assert-MockCalled -Scope It Get-CimInstance -Exactly 2
+    Assert-MockCalled -Scope It Start-Sleep -Exactly 0
+  }
+
+  It 'reports depth_limit when a launcher sits beyond 64 ancestors' {
+    $rows = @(New-Baseline)
+    # native 9000 -> 9001 -> ... -> 9070 -> launcher 300 (claude-rco-1); each
+    # ancestor is older than its child, so only the depth limit stops the walk.
+    for ($i = 0; $i -le 70; $i++) {
+      $parent = if ($i -eq 70) { 300 } else { 9001 + $i }
+      $name = if ($i -eq 0) { 'claude.exe' } else { 'conhost.exe' }
+      $rows += New-Row -Id (9000 + $i) -Parent $parent -Name $name -Command ($name + ' x') -Seconds (200 - $i)
+    }
+    $script:snapshots = [Collections.Generic.Queue[object]]::new()
+    $script:snapshots.Enqueue($rows)
+    Mock Get-CimInstance { $script:snapshots.Dequeue() }
+    $message = ''
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 } catch { $message = $_.Exception.Message }
+    $message | Should Match 'unmarked native claude\.exe PID 9000 '
+    $message | Should Match 'reason=depth_limit'
+    $message | Should Match 'ancestry 9000:claude\.exe -> 9001:conhost\.exe -> '
+  }
+
+  It 'reports a renamed native executable (old-file suffix) like the installed name' {
+    $stray = New-Row -Id 16500 -Parent 999 -Name 'codex.exe.old.3' -Command 'codex.exe.old.3 exec' -Seconds 5
+    $script:snapshots = [Collections.Generic.Queue[object]]::new()
+    $script:snapshots.Enqueue(@((New-Baseline) + @($stray)))
+    Mock Get-CimInstance { $script:snapshots.Dequeue() }
+    { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 } | Should Throw 'unmarked native codex.exe.old.3 PID 16500 has no verified launcher ancestry; leave it running (reason=parent_missing'
+  }
+}

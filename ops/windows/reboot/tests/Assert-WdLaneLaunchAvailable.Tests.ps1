@@ -146,7 +146,7 @@ Describe 'Assert-WdLaneLaunchAvailable bounded recheck' {
     $message | Should Match 'ancestry 16300:claude\.exe'
     $message | Should Match 'executable C:\\npm\\claude\.exe'
     $message | Should Match '1 unattributed after 4 pass\(es\) with recheck 3 x 5 s'
-    $message | Should Match ([regex]::Escape($log))
+    $message | Should Match ('diagnostics .*' + [regex]::Escape((Split-Path -Leaf $log)))
     Assert-MockCalled -Scope It Get-CimInstance -Exactly 4
     Assert-MockCalled -Scope It Start-Sleep -Exactly 3 -ParameterFilter { $Seconds -eq 5 }
     $records = @(Read-DiagnosticRecords -Path $log)
@@ -158,7 +158,8 @@ Describe 'Assert-WdLaneLaunchAvailable bounded recheck' {
     $last.parent_alive | Should Be $false
     $last.ancestry | Should Be '16300:claude.exe'
     $last.executable_path | Should Be 'C:\npm\claude.exe'
-    $last.creation_utc | Should Be ([DateTimeOffset]$stray.CreationDate).ToUniversalTime().ToString('o')
+    # pwsh 7 ConvertFrom-Json turns the ISO text into a local DateTime; compare the instant.
+    ([DateTimeOffset]$last.creation_utc).ToUniversalTime().ToString('o') | Should Be ([DateTimeOffset]$stray.CreationDate).ToUniversalTime().ToString('o')
     $last.age_seconds | Should BeGreaterThan 0
   }
 
@@ -418,6 +419,30 @@ Describe 'Assert-WdLaneLaunchAvailable recheck budget and configuration' {
     @($lines | Where-Object { $_ -match '"schema":"wd\.lane-availability-check\.v1"' }).Count | Should Be 1
     ($lines -join "`n") | Should Not Match 'SECRETVALUE'
     ($lines -join "`n") | Should Match '"command_line_length":30'
+  }
+
+  It 'redacts the user name of a profile-rooted executable path in the record and the refusal, and keeps other paths whole' {
+    # Lead pre-review of 5524038b: a native CLI usually lives under the user
+    # profile, so the full executable path names the Windows user.
+    $stray = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe --resume old' -Seconds 5 -Executable 'C:\Users\someone\AppData\Roaming\npm\claude.exe'
+    $other = New-Row -Id 16301 -Parent 999 -Name 'codex.exe' -Command 'codex.exe' -Seconds 6 -Executable 'D:\tools\codex\codex.exe'
+    Mock Get-CimInstance { @((New-Baseline) + @($stray, $other)) }
+    $log = Join-Path $TestDrive 'redact.jsonl'
+    $message = ''
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+    $message | Should Match 'has no verified launcher ancestry'
+    $message | Should Not Match 'someone'
+    $message | Should Match ([regex]::Escape('C:\Users\<redacted>\AppData\Roaming\npm\claude.exe'))
+    if ($log.StartsWith($env:USERPROFILE, [StringComparison]::OrdinalIgnoreCase)) {
+      # The diagnostics path named in the refusal is redacted the same way.
+      $message | Should Not Match ([regex]::Escape($env:USERPROFILE))
+      $message | Should Match ('diagnostics [A-Za-z]:' + [regex]::Escape('\Users\<redacted>\'))
+    }
+    $text = Get-Content -LiteralPath $log -Raw
+    $text | Should Not Match 'someone'
+    $records = @((Read-DiagnosticRecords -Path $log)[0].unattributed)
+    @($records | Where-Object { $_.pid -eq 16300 })[0].executable_path | Should Be 'C:\Users\<redacted>\AppData\Roaming\npm\claude.exe'
+    @($records | Where-Object { $_.pid -eq 16301 })[0].executable_path | Should Be 'D:\tools\codex\codex.exe'
   }
 
   It 'writes no file when no diagnostics path is given (the DryRun contract) and still refuses with the full reason' {

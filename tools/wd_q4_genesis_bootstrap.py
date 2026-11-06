@@ -5,6 +5,15 @@ origin, an atomic filesystem snapshot or continuity across bridge rotation.
 The caller must independently authorize the paths, policy/fleet pins and
 runtime and protect the source, sidecar and output roots. No retry or cleanup
 is performed after sidecar creation: unknown outcomes require reconciliation.
+
+F2: before admission the exact first-run catch-up (same reader, pins, budgets,
+cutoff and batching from offset zero) is read through a probe sidecar and
+anchor of its own and projected the way the producer does. A run whose
+coverable windows hold no ready public row refuses genesis_no_public_row, and
+one that cannot finish without a cutoff refuses genesis_catchup_incomplete,
+before any one-shot state exists, so the run is not spent. This cannot reach a
+public row beyond the run's own windows: genesis starts at offset zero, so the
+caller raises max_windows within its budget or moves the cutoff later.
 """
 import base64
 import hashlib
@@ -13,6 +22,7 @@ import importlib
 import inspect
 import json
 import os
+import secrets
 from dataclasses import asdict
 from pathlib import Path
 
@@ -117,6 +127,68 @@ def _complete_prefix_size(stream, length):
     return last
 
 
+def _prescan_public_rows(source, identity, generation, private_root, *, policy_bytes, policy_sha256,
+                         roster_bytes, roster_sha256, public_policy_bytes, public_policy_sha256, max_bytes,
+                         max_rows, max_windows, max_prefix_bytes, cutoff_utc, batch_rows):
+    """F2: None when the first run's catch-up holds at least one ready public record, else GenesisRefused.
+
+    Reads exactly what the run will read and verifies it with the producer's own builder check, through a probe
+    sidecar under a fresh random directory in the private root and an anchor bound to that probe; neither is
+    the one-shot state, and both are removed before this returns. A reader or builder refusal propagates.
+    """
+    from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
+    from sandbox.mind.step2 import shared_index_builder as builder
+    probe = private_root / ("q4-genesis-prescan-" + secrets.token_hex(8))
+    probe.mkdir()
+    side = probe / "mind-generation.json"
+    try:
+        runner._create(side, _canonical({"generation": generation}))
+        cursor = BridgeCursor(offset=0, file_identity=identity, generation=generation)
+        anchor, anchor_sha = issuer.issue_anchor(enabled=True, source_path=str(source), generation_path=str(side),
+            cursor=cursor, policy_bytes=policy_bytes, policy_sha256=policy_sha256, roster_bytes=roster_bytes,
+            roster_sha256=roster_sha256, public_policy_bytes=public_policy_bytes,
+            public_policy_sha256=public_policy_sha256)
+        tasks, _ = capture.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+        cutoff = None if cutoff_utc is None else runner._cutoff_datetime(cutoff_utc)
+        options = {} if cutoff is None else {"cutoff_utc": cutoff}
+        if batch_rows:
+            options["batch_rows"] = True
+        start = BridgePrefixPin(cursor, _digest(b""))
+        chain = snapshot.read_public_catchup(str(source), cursor, tasks, anchor_bytes=anchor, anchor_sha256=anchor_sha,
+            generation_path=str(side), max_bytes=max_bytes, max_rows=max_rows, max_windows=max_windows,
+            policy_bytes=policy_bytes, policy_sha256=policy_sha256, roster_bytes=roster_bytes,
+            roster_sha256=roster_sha256, public_policy_bytes=public_policy_bytes,
+            public_policy_sha256=public_policy_sha256, expected_prefix_sha256=start.sha256,
+            max_prefix_bytes=max_prefix_bytes, enabled=True, **options)
+        # The producer's own decision (publish_public_catchup): partial only with a cutoff, else caught up.
+        partial = cutoff is not None and chain["end_reason"] in ("deferred", "max_windows", "partial_record")
+        if chain["caught_up"] is not True and not partial:
+            raise GenesisRefused("genesis_catchup_incomplete")
+        if not any(window["projection"]["records"] for window in chain["windows"]):
+            raise GenesisRefused("genesis_no_public_row")
+        catchup_source = {"catchup_result": chain, "expected_anchor_sha256": anchor_sha,
+            "mode": ("public-catchup-partial-v1" if partial else
+                     "public-catchup-ready-v1" if cutoff is not None else "public-catchup-v1"),
+            "public_policy_bytes": public_policy_bytes, "public_policy_sha256": public_policy_sha256,
+            "anchor_bytes": anchor, "expected_start_prefix": start}
+        if cutoff is not None:
+            catchup_source["expected_cutoff_utc"] = cutoff
+        if batch_rows:
+            catchup_source["expected_batch_rows"] = True
+        pins = dict(policy_bytes=policy_bytes, policy_sha256=policy_sha256, roster_bytes=roster_bytes,
+                    roster_sha256=roster_sha256)
+        if partial:
+            projection, _ = builder.verified_partial_catchup_projection(catchup_source, enabled=True, **pins)
+        else:
+            projection, _ = builder.verified_catchup_projection(catchup_source, **pins)
+        if type(projection) is not dict or type(projection.get("records")) is not list or not projection["records"]:
+            raise GenesisRefused("genesis_no_public_row")
+        return None
+    finally:
+        side.unlink(missing_ok=True)
+        probe.rmdir()
+
+
 def bootstrap(*, enabled=False, source_path=None, generation_path=None, generation=None,
               checkpoint_root=None, private_state_root=None, trusted_model_root=None,
               policy_bytes=None, policy_sha256=None, public_policy_bytes=None, public_policy_sha256=None,
@@ -214,6 +286,12 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
                 if parameter is None or parameter.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
                                                                inspect.Parameter.KEYWORD_ONLY):
                     raise ValueError()
+            # F2: never spend the one-shot on a first run whose coverable windows hold no ready public row.
+            _prescan_public_rows(source, identity, generation, output_roots[1], policy_bytes=policy_bytes,
+                policy_sha256=policy_sha256, roster_bytes=roster_bytes, roster_sha256=roster_sha,
+                public_policy_bytes=public_policy_bytes, public_policy_sha256=public_policy_sha256,
+                max_bytes=max_bytes, max_rows=max_rows, max_windows=plan_template["max_windows"],
+                max_prefix_bytes=max_prefix_bytes, cutoff_utc=cutoff_utc, batch_rows=batch_rows)
             route_options = {} if cutoff_utc is None else {"cutoff_utc": cutoff_utc}
             if batch_rows:
                 route_options["batch_rows"] = True
@@ -275,6 +353,10 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
                     "genesis_tuple_sha256": _digest(tuple_bytes)}
     except GenesisUnknown:
         raise
+    except GenesisRefused as refused:
+        if created:
+            raise GenesisUnknown("genesis_state_unknown") from None
+        raise GenesisRefused(str(refused)) from None
     except BaseException:
         if created:
             raise GenesisUnknown("genesis_state_unknown") from None

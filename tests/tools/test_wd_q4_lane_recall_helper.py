@@ -135,3 +135,76 @@ def test_outer_watchdog_bounds_worker_preflight(bundle, tmp_path):
     assert marker.exists(), 'synthetic worker did not enter preflight'
     assert time.monotonic() - before < 10
     assert result.returncode == 3 and result.stdout == b''
+
+
+def test_pipeline_stop_terminates_own_internal_worker(bundle):
+    """Stop a real PowerShell runspace; observe the exact owned worker handle."""
+    import ctypes
+    from ctypes import wintypes
+    env, root = bundle
+    env['RECALL_TEST_MODE'] = 'slow'
+    env['RECALL_STARTED'] = str(root / 'started-pid')
+    env['RECALL_SENTINEL'] = str(root / 'finished')
+    helper = str(HELPER).replace("'", "''")
+    marker = env['RECALL_STARTED'].replace("'", "''")
+    script = (
+        "$q=[Console]::In.ReadLine(); $p=[powershell]::Create(); "
+        "$null=$p.AddCommand('" + helper + "').AddParameter('QueryJson',$q).AddParameter('TimeoutSeconds',30); "
+        "$async=$p.BeginInvoke(); $clock=[Diagnostics.Stopwatch]::StartNew(); "
+        "while (-not [IO.File]::Exists('" + marker + "') -and $clock.ElapsedMilliseconds -lt 15000) { Start-Sleep -Milliseconds 25 }; "
+        "if (-not [IO.File]::Exists('" + marker + "')) { exit 8 }; "
+        "[Console]::Out.WriteLine('READY'); $null=[Console]::In.ReadLine(); "
+        "$p.Stop(); [Console]::Out.WriteLine('STOPPED'); $p.Dispose()"
+    )
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    nt = ctypes.WinDLL('ntdll', use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.WaitForSingleObject.restype = wintypes.DWORD
+    class PBI(ctypes.Structure):
+        _fields_ = [('reserved', ctypes.c_void_p), ('peb', ctypes.c_void_p),
+                    ('reserved2', ctypes.c_void_p * 2), ('pid', ctypes.c_void_p), ('parent', ctypes.c_void_p)]
+    def parent_pid(pid):
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        assert handle
+        try:
+            pbi = PBI()
+            assert nt.NtQueryInformationProcess(handle, 0, ctypes.byref(pbi), ctypes.sizeof(pbi), None) == 0
+            return int(pbi.parent)
+        finally:
+            kernel.CloseHandle(handle)
+    query = '{"situation":"synthetic-stop","time":"2026-11-06T00:00:00Z"}'
+    proc = subprocess.Popen([SHELLS[0], '-NoProfile', '-NonInteractive', '-Command', script],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True)
+    worker_handle = child_handle = None
+    try:
+        proc.stdin.write(query + '\n'); proc.stdin.flush()
+        deadline = time.monotonic() + 18
+        while not Path(env['RECALL_STARTED']).exists() and proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(.05)
+        assert Path(env['RECALL_STARTED']).exists(), 'synthetic child did not start'
+        python_pid = int(Path(env['RECALL_STARTED']).read_text())
+        child_handle = kernel.OpenProcess(0x100000 | 0x1000, False, python_pid)
+        assert child_handle
+        wrapper_pid = parent_pid(python_pid)
+        worker_pid = parent_pid(wrapper_pid)
+        assert parent_pid(worker_pid) == proc.pid
+        worker_handle = kernel.OpenProcess(0x100000 | 0x1000, False, worker_pid)
+        assert worker_handle
+        assert not (root / 'finished').exists()
+        stop_started = time.monotonic()
+        proc.stdin.write('stop\n'); proc.stdin.flush()
+        proc.wait(timeout=12)
+        assert time.monotonic() - stop_started < 4, 'pipeline stop waited for the synthetic child to finish'
+        assert kernel.WaitForSingleObject(worker_handle, 1500) == 0, 'owned worker remained alive after pipeline stop'
+        assert kernel.WaitForSingleObject(child_handle, 1500) == 0, 'owned synthetic child remained alive after pipeline stop'
+        assert not (root / 'finished').exists()
+    finally:
+        if proc.poll() is None:
+            proc.kill(); proc.wait(timeout=5)
+        if worker_handle:
+            kernel.CloseHandle(worker_handle)
+        if child_handle:
+            kernel.CloseHandle(child_handle)

@@ -1,7 +1,14 @@
 #requires -Version 5.1
 <# One bounded, on-demand stdin relay. A failed or uncertain entered call is never retried.
    Query bytes are never put in argv, environment, a file, or diagnostics.
-   Job containment is cooperative with Windows and is not hostile-user isolation. #>
+   Job containment is cooperative with Windows and is not hostile-user isolation.
+   A stopped runspace can suppress the status: without a complete exit-zero reply,
+   treat the outcome as UNKNOWN and do not retry until separately reconciled.
+   The worker writes a single gate byte only after assigning its wrapper host to
+   a Job. This assumes the trusted no-profile PowerShell host waits for that byte
+   before starting the wrapper; conhost/host-internal processes are not proven
+   Job members. -InternalWorker is a private implementation path and bypasses
+   the outer deadline if invoked directly. A hard kill may bypass finally. #>
 [CmdletBinding()]
 param(
     [Parameter(ValueFromPipeline=$true)][AllowEmptyString()][string]$QueryJson,
@@ -113,6 +120,14 @@ end {
             }
             exit 2
         } finally {
+            # Pipeline Stop normally runs this block even if catch is bypassed.
+            # Kill only the exact Process object started above. A killed host is
+            # not, by itself, evidence of whole-tree cleanup.
+            if ($null -ne $worker) {
+                try {
+                    if (-not $worker.HasExited) { $worker.Kill(); [void]$worker.WaitForExit(2000) }
+                } catch { }
+            }
             if ($null -ne $stdout) { $stdout.Dispose() }
             if ($null -ne $stderr) { $stderr.Dispose() }
             if ($null -ne $worker) { $worker.Dispose() }

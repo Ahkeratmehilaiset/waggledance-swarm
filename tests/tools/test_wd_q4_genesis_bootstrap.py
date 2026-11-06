@@ -1,5 +1,6 @@
 """Genesis admission and one-shot runner binding using synthetic files only."""
 import hashlib
+import base64
 import json
 import sys
 import types
@@ -96,7 +97,7 @@ def test_invalid_inputs_do_not_call_runner(synthetic, change):
     assert calls == []
 
 
-@pytest.mark.parametrize("change", ["append", "truncate", "rewrite", "replace", "sidecar", "interrupt"])
+@pytest.mark.parametrize("change", ["append", "truncate", "rewrite", "replace", "sidecar", "tuple", "interrupt"])
 def test_changes_after_runner_entry_are_unknown_and_not_retried(synthetic, monkeypatch, change):
     args, calls = synthetic
     module = sys.modules["sandbox.mind.step2.wd_q4_prefix_build_child"]
@@ -117,6 +118,8 @@ def test_changes_after_runner_entry_are_unknown_and_not_retried(synthetic, monke
             replacement.replace(log)
         elif change == "sidecar":
             Path(args["generation_path"]).write_bytes(b'{"generation":"other"}')
+        elif change == "tuple":
+            (Path(args["private_state_root"]) / "q4-genesis-tuple-v1.json").write_bytes(b"tampered")
         else:
             raise KeyboardInterrupt()
         return result
@@ -125,6 +128,7 @@ def test_changes_after_runner_entry_are_unknown_and_not_retried(synthetic, monke
         genesis.bootstrap(**args)
     assert len(calls) == 1
     assert Path(args["generation_path"]).exists()
+    assert (Path(args["private_state_root"]) / "q4-genesis-tuple-v1.json").exists()
     with pytest.raises(genesis.GenesisUnknown):
         genesis.bootstrap(**args)
     assert len(calls) == 1
@@ -142,3 +146,34 @@ def test_concurrent_initializations_admit_at_most_one(synthetic):
     assert outcomes.count("PUBLISHED_GENESIS") == 1
     assert outcomes.count("UNKNOWN") == 1
     assert len(calls) == 1
+
+
+def test_private_tuple_is_bound_and_exists_before_real_runner(synthetic, monkeypatch):
+    args, calls = synthetic
+    module = sys.modules["sandbox.mind.step2.wd_q4_prefix_build_child"]
+    original = module.build_prefix_generation
+    private_file = Path(args["private_state_root"]) / "q4-genesis-tuple-v1.json"
+    def inspect(**kwargs):
+        doc = json.loads(private_file.read_bytes())
+        assert doc["publication"] == "UNKNOWN"
+        for name in ("anchor", "route", "plan"):
+            content = base64.b64decode(doc[name]["bytes_b64"], validate=True)
+            assert sha(content) == doc[name]["sha256"]
+        assert base64.b64decode(doc["plan"]["bytes_b64"]) == kwargs["plan_bytes"]
+        assert base64.b64decode(doc["anchor"]["bytes_b64"]) == kwargs["config"].source.anchor_bytes
+        return original(**kwargs)
+    monkeypatch.setattr(module, "build_prefix_generation", inspect)
+    result = genesis.bootstrap(**args)
+    assert result["genesis_tuple_sha256"] == sha(private_file.read_bytes())
+    assert len(calls) == 1
+
+
+def test_existing_private_tuple_is_never_overwritten(synthetic):
+    args, calls = synthetic
+    private_file = Path(args["private_state_root"]) / "q4-genesis-tuple-v1.json"
+    private_file.write_bytes(b"previous")
+    with pytest.raises(genesis.GenesisUnknown):
+        genesis.bootstrap(**args)
+    assert private_file.read_bytes() == b"previous"
+    assert not Path(args["generation_path"]).exists()
+    assert calls == []

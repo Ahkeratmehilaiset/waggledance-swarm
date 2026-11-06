@@ -6,6 +6,7 @@ The caller must independently authorize the paths, policy/fleet pins and
 runtime and protect the source, sidecar and output roots. No retry or cleanup
 is performed after sidecar creation: unknown outcomes require reconciliation.
 """
+import base64
 import hashlib
 import hmac
 import json
@@ -103,7 +104,8 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
                 raise ValueError()
         if any(not runner._separate(a, b) for i, a in enumerate(output_roots) for b in output_roots[i + 1:]):
             raise ValueError()
-        if not runner._absent(sidecar):
+        tuple_file = output_roots[1] / "q4-genesis-tuple-v1.json"
+        if not runner._absent(sidecar) or not runner._absent(tuple_file):
             raise GenesisUnknown("generation_state_unknown")
         with _open_log(source) as stream:
             identity = _file_identity(stream)
@@ -125,10 +127,17 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
                 "cursor": asdict(cursor), "prefix_sha256": _digest(b""), "max_bytes": max_bytes,
                 "max_rows": max_rows, "plan_sha256": _digest(plan), **pins})
             side_bytes = _canonical({"generation": generation})
+            # This private record is never a publication receipt; its state remains
+            # UNKNOWN even if the separate runner later returns successfully.
+            tuple_bytes = _canonical({"schema": "wd.q4-genesis-private-tuple.v1", "publication": "UNKNOWN",
+                **{name: {"bytes_b64": base64.b64encode(value).decode("ascii"), "sha256": _digest(value)}
+                   for name, value in (("anchor", anchor), ("route", route), ("plan", plan))}})
             # O_EXCL is the admission point: any failure from here requires reconciliation.
             created = True
             info = runner._create(sidecar, side_bytes)
             runner._verify_own(sidecar, side_bytes, info)
+            tuple_info = runner._create(tuple_file, tuple_bytes)
+            runner._verify_own(tuple_file, tuple_bytes, tuple_info)
             _same_source(source, stream, identity, size, digest)
             if roots._observe(source.parent) != source_ids or roots._observe(sidecar.parent) != side_ids:
                 raise ValueError()
@@ -137,10 +146,12 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
                 fleet_bytes=fleet_bytes, expected_fleet_sha256=expected_fleet_sha256,
                 roster_bytes=roster_bytes, anchor_bytes=anchor)
             runner._verify_own(sidecar, side_bytes, info)
+            runner._verify_own(tuple_file, tuple_bytes, tuple_info)
             _same_source(source, stream, identity, size, digest)
             if roots._observe(source.parent) != source_ids or roots._observe(sidecar.parent) != side_ids:
                 raise ValueError()
-            return {**report, "genesis_snapshot_bytes": size, "genesis_snapshot_sha256": digest}
+            return {**report, "genesis_snapshot_bytes": size, "genesis_snapshot_sha256": digest,
+                    "genesis_tuple_sha256": _digest(tuple_bytes)}
     except GenesisUnknown:
         raise
     except BaseException:

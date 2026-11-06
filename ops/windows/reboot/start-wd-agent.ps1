@@ -780,6 +780,17 @@ function Assert-WdLaneLaunchAvailable {
     return $property.Value
   }
 
+  function ConvertTo-WdLaneRedactedPath {
+    # A native CLI usually lives under the user profile; the path is kept for
+    # attribution but the Windows user name is never recorded.
+    param([AllowNull()] [string] $Path)
+    if ([string]::IsNullOrEmpty($Path)) { return $Path }
+    # Regex class of backslash or slash, built without backslash literals.
+    $slashClass = '[' + [char]92 + [char]92 + '/]'
+    $pattern = '^([A-Za-z]:' + $slashClass + 'Users' + $slashClass + ')[^' + [char]92 + [char]92 + '/]+'
+    return [regex]::Replace($Path, $pattern, '${1}<redacted>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+  }
+
   function ConvertTo-WdLaneUtcText {
     param([AllowNull()] [object] $Value)
     if ($null -eq $Value) { return $null }
@@ -982,7 +993,7 @@ function Assert-WdLaneLaunchAvailable {
       $unattributed += [pscustomobject][ordered]@{
         name = [string]$native.Name
         pid = [int]$native.ProcessId
-        executable_path = [string](Get-WdLaneProcessProperty -Process $native -Name 'ExecutablePath')
+        executable_path = (ConvertTo-WdLaneRedactedPath -Path ([string](Get-WdLaneProcessProperty -Process $native -Name 'ExecutablePath')))
         command_line_length = $commandText.Length
         creation_utc = (ConvertTo-WdLaneUtcText -Value $creation)
         age_seconds = $ageSeconds
@@ -1032,7 +1043,7 @@ function Assert-WdLaneLaunchAvailable {
     elseif ($first.parent_alive) { 'parent PID {0} {1} alive' -f $first.parent_pid, $first.parent_name }
     else { 'parent PID {0} missing' -f $first.parent_pid }
   $ageText = if ($null -eq $first.age_seconds) { 'age unknown' } else { 'age {0} s' -f $first.age_seconds }
-  $diagnosticsText = if ($DiagnosticsPath) { '; diagnostics ' + $DiagnosticsPath } else { '' }
+  $diagnosticsText = if ($DiagnosticsPath) { '; diagnostics ' + (ConvertTo-WdLaneRedactedPath -Path $DiagnosticsPath) } else { '' }
   throw (("cannot prove lane availability: unmarked native {0} PID {1} has no verified launcher ancestry; leave it running " +
     "(reason={2}; {3}; ancestry {4}; {5}; executable {6}; {7} unattributed after {8} pass(es) with recheck {9} x {10} s{11})") -f
     $first.name, $first.pid, $first.break_reason, $parentText, $first.ancestry, $ageText, $first.executable_path,

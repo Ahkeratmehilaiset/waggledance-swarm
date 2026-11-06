@@ -1,6 +1,7 @@
 """Synthetic pins only: the v2 shared-session descriptor producer against the existing PS validator.
 
-No launcher, query, live data or runtime. Paths point into pytest's tmp_path and need not exist.
+No launcher, query, live data or runtime. Pure tests use synthetic Windows paths;
+Windows validator tests use pytest's actual tmp_path and paths need not exist.
 """
 import base64
 import builtins
@@ -9,7 +10,7 @@ import hashlib
 import inspect
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import subprocess
 
@@ -48,8 +49,9 @@ def fleet_bytes():
                        "tools_supervisor": {"agent": "codex-tools-1"}, "other": {"kept": True}}).encode()
 
 
-def kwargs(tmp_path):
+def kwargs(tmp_path, *, real_paths=False):
     fleet = fleet_bytes()
+    tmp_path = tmp_path if real_paths else PureWindowsPath(r"C:\synthetic\q4-descriptor")
     root = tmp_path / "runtime"
     out = {"fleet_bytes": fleet, "expected_fleet_sha256": sha(fleet), "lanes": list(LANES),
            "bundle_root": str(tmp_path / "bundle"), "public_plan": str(tmp_path / "public.json"),
@@ -138,7 +140,7 @@ def test_the_surface_is_explicit_keyword_only_pins_and_has_no_query():
 @needs_shell
 @pytest.mark.parametrize("lane", LANES)
 def test_the_existing_validator_accepts_the_produced_descriptor_for_every_lane(tmp_path, lane):
-    kw = kwargs(tmp_path)
+    kw = kwargs(tmp_path, real_paths=True)
     result = build(kw)
     assert set(result) == {"descriptor_bytes", "descriptor_sha256"}
     checked = validate(tmp_path, result["descriptor_bytes"], kw, lane=lane,
@@ -154,7 +156,7 @@ def test_the_existing_validator_accepts_the_produced_descriptor_for_every_lane(t
 
 @needs_shell
 def test_a_one_lane_pilot_descriptor_admits_only_that_lane(tmp_path):
-    kw = kwargs(tmp_path)
+    kw = kwargs(tmp_path, real_paths=True)
     kw["lanes"] = ["fable-5"]
     raw = build(kw)["descriptor_bytes"]
     assert validate(tmp_path, raw, kw, lane="fable-5")["ok"]
@@ -163,7 +165,7 @@ def test_a_one_lane_pilot_descriptor_admits_only_that_lane(tmp_path):
 
 @needs_shell
 def test_a_changed_byte_no_longer_matches_the_returned_pin(tmp_path):
-    kw = kwargs(tmp_path)
+    kw = kwargs(tmp_path, real_paths=True)
     result = build(kw)
     raw = result["descriptor_bytes"].replace(b'"timeout_seconds":30', b'"timeout_seconds":31')
     assert raw != result["descriptor_bytes"]
@@ -206,11 +208,57 @@ def test_no_file_is_opened_or_stat_called(tmp_path, monkeypatch):
     def blocked(*args, **kwargs):
         raise AssertionError("filesystem access")
 
-    for owner, name in ((builtins, "open"), (os, "open"), (os, "stat"), (os, "lstat"), (os, "scandir")):
-        monkeypatch.setattr(owner, name, blocked)
-    result = build(kw)
-    monkeypatch.undo()
+    with monkeypatch.context() as scoped:
+        for owner, name in ((builtins, "open"), (os, "open"), (os, "stat"), (os, "lstat"), (os, "scandir")):
+            scoped.setattr(owner, name, blocked)
+        result = build(kw)
     assert result["descriptor_sha256"] == sha(result["descriptor_bytes"])
+
+
+NO_IO_APIS = ((builtins, "open"), (os, "open"), (os, "stat"), (os, "lstat"), (os, "scandir"))
+
+
+def _refused_input(kw, producer, scoped):
+    kw["lanes"] = []  # the producer refuses with a closed reason before any document exists
+
+
+def _blocked_api_reached_inside_build(kw, producer, scoped):
+    scoped.setattr(producer, "_fold", lambda text: os.stat(text))  # a producer helper hits the guard itself
+
+
+def _helper_raises(exc):
+    def arm(kw, producer, scoped):
+        def helper(text):
+            raise exc("synthetic failure")
+        scoped.setattr(producer, "_fold", helper)
+    return arm
+
+
+@pytest.mark.parametrize("arm, exc, match", [
+    (_refused_input, lambda producer: producer.DescriptorRefused, "^lanes_refused$"),
+    (_blocked_api_reached_inside_build, lambda producer: AssertionError, "^filesystem access$"),
+    (_helper_raises(KeyboardInterrupt), lambda producer: KeyboardInterrupt, "^synthetic failure$"),
+    (_helper_raises(SystemExit), lambda producer: SystemExit, "^synthetic failure$"),
+], ids=["producer-refuses", "blocked-api-reached-inside-build", "KeyboardInterrupt", "SystemExit"])
+def test_the_no_io_guard_is_restored_when_build_raises_inside_it(tmp_path, monkeypatch, arm, exc, match):
+    """RCO1 G1: build runs under all five blocked patches and raises through them (a closed refusal, the
+    guard's own AssertionError reached from a producer helper, and two BaseException paths). Every original
+    must be back before pytest formats anything, so one failure cannot abort the rest of the session."""
+    kw = kwargs(tmp_path)
+    producer = module()
+    originals = [getattr(owner, name) for owner, name in NO_IO_APIS]
+
+    def blocked(*args, **kwargs):
+        raise AssertionError("filesystem access")
+
+    with pytest.raises(exc(producer), match=match):
+        with monkeypatch.context() as scoped:
+            for owner, name in NO_IO_APIS:
+                scoped.setattr(owner, name, blocked)
+            arm(kw, producer, scoped)
+            assert all(getattr(owner, name) is blocked for owner, name in NO_IO_APIS)
+            build(kw)
+    assert all(getattr(owner, name) is original for (owner, name), original in zip(NO_IO_APIS, originals))
 
 
 # 4 refusals: producer refuses, and the validator refuses the same raw document ---------------------------------
@@ -282,7 +330,7 @@ def test_an_invalid_pin_path_lane_limit_or_shape_refuses_with_a_closed_reason(tm
 @needs_shell
 @pytest.mark.parametrize("reason, change", DOCUMENT_CASES, ids=CASE_IDS)
 def test_the_validator_also_refuses_each_refused_document(tmp_path, reason, change):
-    kw = kwargs(tmp_path)
+    kw = kwargs(tmp_path, real_paths=True)
     change(kw)
     raw = json.dumps(document(kw), sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     assert validate(tmp_path, raw, kw) == {"ok": False, "reason": "q4_shared_session_config_refused"}
@@ -316,7 +364,7 @@ def _fleet(lanes, tools="codex-tools-1", extra=""):
     _fleet(["codex-lead-1", "claude-rco-1", "claude-rco-2", "codex-tools-1"], tools="fable-5"),
 ], ids=["three-lanes", "wrong-tools", "duplicate-agent", "case-colliding-key", "five-lanes", "swapped-tools"])
 def test_a_fleet_the_validator_refuses_is_refused_before_any_descriptor(tmp_path, raw):
-    kw = kwargs(tmp_path)
+    kw = kwargs(tmp_path, real_paths=True)
     kw.update(fleet_bytes=raw, expected_fleet_sha256=sha(raw))
     refused("fleet_refused", lambda: build(kw))
     doc = json.dumps(document(kw), sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()

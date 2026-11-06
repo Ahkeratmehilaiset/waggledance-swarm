@@ -207,3 +207,168 @@ def test_abort_racing_admission_always_blocks_completion(tmp_path):
     with pytest.raises(completion.GuardCompletionUnavailable):
         guard._registry._issue()
     assert marker.exists()
+
+
+def test_cancel_unstarted_releases_only_its_own_distinct_witness(tmp_path):
+    guard, marker = new_guard(tmp_path / "one")
+    other, other_marker = new_guard(tmp_path / "two")
+    ctx = guard._owner_context()
+    witness = guard._cancel_unstarted(ctx)
+    assert type(witness) is completion._CancelUnstartedWitness
+    assert guard._registry._done == set()
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        guard._registry._issue()
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        other.release(witness)
+    guard.release(witness)
+    assert not marker.exists() and other_marker.exists()
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        guard.release(witness)
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        ctx._ticket("transport")
+
+
+@pytest.mark.parametrize("stage", ["handoff", "adapter", "attestation", "transport", "unknown"])
+def test_cancel_after_handoff_entry_or_unknown_is_fail_closed(tmp_path, stage):
+    guard, marker = new_guard(tmp_path)
+    ctx = guard._owner_context()
+    if stage == "handoff":
+        ctx._handoff()
+    elif stage == "unknown":
+        ctx._abort()
+    else:
+        ctx._ticket(stage)._begin()
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        guard._cancel_unstarted(ctx)
+    assert guard._registry._uncertain
+    assert marker.exists()
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        guard._registry._issue()
+
+
+def test_cancel_rejects_foreign_context_and_unregistered_witness(tmp_path):
+    first, marker = new_guard(tmp_path / "one")
+    second, other_marker = new_guard(tmp_path / "two")
+    first_ctx, second_ctx = first._owner_context(), second._owner_context()
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        first._cancel_unstarted(second_ctx)
+    assert marker.exists() and other_marker.exists()
+    witness = second._cancel_unstarted(second_ctx)
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        second.release(completion._CancelUnstartedWitness())
+    second.release(witness)
+    assert not other_marker.exists()
+
+
+def test_handoff_and_cancel_race_has_at_most_one_winner(tmp_path):
+    guard, marker = new_guard(tmp_path)
+    ctx = guard._owner_context()
+    barrier = threading.Barrier(3)
+    outcomes = []
+    def handoff():
+        barrier.wait()
+        try: ctx._handoff()
+        except completion.GuardCompletionUnavailable: outcomes.append(("handoff", False))
+        else: outcomes.append(("handoff", True))
+    def cancel():
+        barrier.wait()
+        try: witness = guard._cancel_unstarted(ctx)
+        except completion.GuardCompletionUnavailable: outcomes.append(("cancel", False))
+        else: outcomes.append(("cancel", witness))
+    threads = [threading.Thread(target=handoff), threading.Thread(target=cancel)]
+    for thread in threads: thread.start()
+    barrier.wait()
+    for thread in threads: thread.join(timeout=5)
+    assert all(not thread.is_alive() for thread in threads)
+    assert sum(bool(value) for _, value in outcomes) == 1
+    assert marker.exists()
+    assert guard._registry._uncertain
+    for kind, value in outcomes:
+        if kind == "cancel" and value:
+            with pytest.raises(completion.GuardCompletionUnavailable):
+                guard.release(value)
+            assert marker.exists()
+
+
+def test_begin_after_cancel_invalidates_pending_cancellation(tmp_path):
+    guard, marker = new_guard(tmp_path)
+    ctx = guard._owner_context()
+    ticket = ctx._ticket("transport")
+    witness = guard._cancel_unstarted(ctx)
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        ticket._begin()
+    assert guard._registry._uncertain
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        guard.release(witness)
+    assert marker.exists()
+
+
+def test_cancel_after_owner_completion_does_not_fake_cleanup(tmp_path):
+    guard, marker = new_guard(tmp_path)
+    ctx = guard._owner_context()
+    ticket = ctx._ticket("adapter")
+    ticket._begin()
+    ticket._complete()
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        guard._cancel_unstarted(ctx)
+    assert guard._registry._done == {"adapter"}
+    assert guard._registry._uncertain and marker.exists()
+
+
+def test_cancel_cannot_be_reissued_or_used_as_normal_witness(tmp_path):
+    guard, marker = new_guard(tmp_path)
+    ctx = guard._owner_context()
+    witness = guard._cancel_unstarted(ctx)
+    assert not isinstance(witness, completion._Witness)
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        guard._cancel_unstarted(ctx)
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        guard.release(witness)
+    assert guard._registry._uncertain and marker.exists()
+
+
+def test_begin_and_cancel_race_fails_closed(tmp_path):
+    guard, marker = new_guard(tmp_path)
+    ctx = guard._owner_context()
+    ticket = ctx._ticket("adapter")
+    barrier = threading.Barrier(3)
+    results = []
+    def begin():
+        barrier.wait()
+        try: ticket._begin()
+        except completion.GuardCompletionUnavailable: results.append(("begin", False))
+        else: results.append(("begin", True))
+    def cancel():
+        barrier.wait()
+        try: witness = guard._cancel_unstarted(ctx)
+        except completion.GuardCompletionUnavailable: results.append(("cancel", False))
+        else: results.append(("cancel", witness))
+    threads = [threading.Thread(target=begin), threading.Thread(target=cancel)]
+    for thread in threads: thread.start()
+    barrier.wait()
+    for thread in threads: thread.join(timeout=5)
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(results) == 2 and sum(bool(value) for _, value in results) == 1
+    assert guard._registry._uncertain and marker.exists()
+    for name, value in results:
+        if name == "cancel" and value:
+            with pytest.raises(completion.GuardCompletionUnavailable):
+                guard.release(value)
+
+
+@pytest.mark.parametrize("access", ["ticket", "accept_ticket", "accept_context", "require_done", "finish"])
+def test_late_context_access_invalidates_pending_cancel(tmp_path, access):
+    guard, marker = new_guard(tmp_path)
+    ctx = guard._owner_context()
+    ticket = ctx._ticket("adapter")
+    witness = guard._cancel_unstarted(ctx)
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        if access == "ticket": ctx._ticket("adapter")
+        elif access == "accept_ticket": ctx._accept_ticket("adapter", ticket)
+        elif access == "accept_context": guard._accept_owner_context(ctx)
+        elif access == "require_done": ctx._require_done(("adapter",))
+        else: ctx._finish()
+    assert guard._registry._uncertain
+    with pytest.raises(completion.GuardCompletionUnavailable):
+        guard.release(witness)
+    assert marker.exists()

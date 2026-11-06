@@ -7,10 +7,13 @@ max_output_bytes)`` checks every caller pin BEFORE spawning, holds share-denying
 and the fixed peer code for the whole run. It sends the plan and checks READY before sending the bundle,
 then checks the bundle ACK before sending the query. These checks are consistency, not authentication.
 """
+import contextlib
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
+import struct
 import sys
 
 import pytest
@@ -255,7 +258,7 @@ def test_child_writes_ready_before_reading_the_bundle_and_ack_before_the_query()
     assert parent.events == [
         ("read", transport._MAX_PLAN), ("read", 4096), ("write", _ready("c" * 32, sha(plan_bytes))),
         ("read", len(BUNDLE)), ("write", _ack("c" * 32, sha(BUNDLE))), ("read", transport._MAX_INPUT)]
-    assert json.loads(raw)["query"] == "RECEIVED"
+    assert json.loads(transport._fixed_unwrap("c" * 32, QUERY, raw, 4096))["query"] == "RECEIVED"
 
 
 def test_child_bundle_read_limit_is_the_plan_length_not_the_global_cap():
@@ -333,6 +336,211 @@ def test_fixed_peer_documents_limits():
     doc = transport.run_fixed_peer.__doc__
     for phrase in ("not authentication", "runtime", "NOT verified", "synthetic", "before spawning",
                    "before any bundle", "bundle ACK", "real backend is unavailable"):
+        assert phrase in doc
+
+
+# --- v5: query-plus-answer binding (RCO2 design 2026-11-06 09:24:09Z) -----------------------------------------
+# The child binds its inner answer to the exact query under the per-call control nonce, the parent verifies the
+# binding before any use of the answer. The nonce travels in the challenge, so this binds three byte strings
+# only: it is NOT lane authentication, NOT freshness and NOT proof that a model used the query.
+NONCE = "d" * 32
+MAGIC = b"WDQ4BND2"
+DOMAIN = b"wd.q4-query-bind.v2"
+INNER = canonical({"schema": "wd.q4-fixed-synthetic-answer.v2", "status": "SYNTHETIC", "query": "RECEIVED"})
+OTHER_QUERY = canonical({"situation": "another situation", "time": "2026-10-20T13:00:00Z"})
+
+
+def mac(nonce, query, inner):
+    message = DOMAIN + b"\x00" + struct.pack(">I", len(query)) + query + struct.pack(">I", len(inner)) + inner
+    return hmac.new(bytes.fromhex(nonce), message, hashlib.sha256).hexdigest().encode("ascii")
+
+
+def frame(nonce, query, inner):
+    return MAGIC + mac(nonce, query, inner) + inner
+
+
+def test_bound_frame_is_magic_mac_inner_over_the_nonce_the_exact_query_and_the_exact_inner():
+    wrapped = transport._fixed_wrap(NONCE, QUERY, INNER)
+    assert wrapped == frame(NONCE, QUERY, INNER)
+    assert len(wrapped) == len(INNER) + transport._BIND_OVERHEAD == len(INNER) + 72
+    assert transport._fixed_unwrap(NONCE, QUERY, wrapped, len(INNER)) == INNER
+    # the nonce is the key, not part of the frame; the MAC is domain separated
+    assert bytes.fromhex(NONCE) not in wrapped and NONCE.encode() not in wrapped
+    assert hmac.new(bytes.fromhex(NONCE), QUERY + INNER, hashlib.sha256).hexdigest().encode() not in wrapped
+
+
+@pytest.mark.parametrize("position", ["first", "middle", "last"])
+def test_same_query_and_nonce_with_one_inner_byte_altered_after_the_mac_is_refused(position):
+    wrapped = transport._fixed_wrap(NONCE, QUERY, INNER)
+    index = {"first": 0, "middle": len(INNER) // 2, "last": len(INNER) - 1}[position] + transport._BIND_OVERHEAD
+    altered = wrapped[:index] + bytes([wrapped[index] ^ 0x01]) + wrapped[index + 1:]
+    assert len(altered) == len(wrapped)
+    with pytest.raises(transport._Refused) as caught:
+        transport._fixed_unwrap(NONCE, QUERY, altered, 4096)
+    assert caught.value.__context__ is None and caught.value.__cause__ is None
+
+
+@pytest.mark.parametrize("case", ["query_swap", "frame_for_another_query", "nonce_replay", "mac_edited",
+                                  "mac_uppercase", "mac_not_hex"])
+def test_query_swap_nonce_replay_and_mac_edits_are_refused(case):
+    wrapped = transport._fixed_wrap(NONCE, QUERY, INNER)
+    nonce, query, candidate = NONCE, QUERY, wrapped
+    digest = wrapped[8:72]
+    if case == "query_swap":
+        query = OTHER_QUERY
+    elif case == "frame_for_another_query":
+        candidate = transport._fixed_wrap(NONCE, OTHER_QUERY, INNER)
+    elif case == "nonce_replay":
+        nonce = "e" * 32  # a frame bound under one call's nonce presented to another call
+    elif case == "mac_edited":
+        candidate = MAGIC + (b"0" if digest[:1] != b"0" else b"1") + digest[1:] + INNER
+    elif case == "mac_uppercase":
+        if digest.upper() == digest:
+            pytest.skip("digest has no letters")
+        candidate = MAGIC + digest.upper() + INNER
+    else:
+        candidate = MAGIC + b"z" * 64 + INNER
+    with pytest.raises(transport._Refused) as caught:
+        transport._fixed_unwrap(nonce, query, candidate, 4096)
+    text = repr(caught.value) + repr(caught.value.args)
+    assert caught.value.__context__ is None and NONCE not in text and digest.decode() not in text
+    assert "synthetic situation" not in text and "another situation" not in text
+
+
+@pytest.mark.parametrize("name", ["empty", "magic_only", "one_short", "wrong_magic", "older_magic", "no_inner",
+                                  "not_bytes"])
+def test_malformed_prefix_is_refused(name):
+    wrapped = transport._fixed_wrap(NONCE, QUERY, INNER)
+    candidates = {"empty": b"", "magic_only": MAGIC, "one_short": wrapped[:transport._BIND_OVERHEAD - 1],
+                  "wrong_magic": b"XXXXXXXX" + wrapped[8:], "older_magic": b"WDQ4BND1" + wrapped[8:],
+                  "no_inner": wrapped[:transport._BIND_OVERHEAD], "not_bytes": wrapped.decode("latin-1")}
+    with pytest.raises(transport._Refused):
+        transport._fixed_unwrap(NONCE, QUERY, candidates[name], 4096)
+
+
+def test_inner_cap_is_the_caller_cap_and_the_frame_cap_adds_only_the_framing_overhead():
+    inner = b"x" * 100
+    wrapped = transport._fixed_wrap(NONCE, QUERY, inner)
+    assert transport._fixed_unwrap(NONCE, QUERY, wrapped, 100) == inner
+    with pytest.raises(transport._Refused):
+        transport._fixed_unwrap(NONCE, QUERY, wrapped, 99)
+    assert transport._BIND_OVERHEAD == len(MAGIC) + 64 == 72
+    # the global inner cap is retained on the child side; the frame may exceed it by the overhead only
+    assert len(transport._fixed_wrap(NONCE, QUERY, b"x" * transport._MAX_OUTPUT)) == transport._MAX_OUTPUT + 72
+    with pytest.raises(transport._Refused):
+        transport._fixed_wrap(NONCE, QUERY, b"x" * (transport._MAX_OUTPUT + 1))
+    for bad in (b"", 1, None):
+        with pytest.raises(transport._Refused):
+            transport._fixed_wrap(NONCE, QUERY, bad)
+    for bad_nonce in ("d" * 31, "d" * 33, "D" * 32, "g" * 32, 7):
+        with pytest.raises(transport._Refused):
+            transport._fixed_wrap(bad_nonce, QUERY, INNER)
+    with pytest.raises(transport._Refused):
+        transport._fixed_unwrap(NONCE, QUERY, wrapped, transport._MAX_OUTPUT + 1)
+
+
+def test_child_protocol_returns_the_frame_bound_to_the_challenge_nonce_and_the_exact_query_it_read():
+    plan_bytes = plan()
+    peer = sha(PEER.read_bytes())
+    parent = _ScriptedParent(_child_frames(plan_bytes))
+    raw = transport._fixed_child_protocol(parent.read_frame, parent.write_frame, peer)
+    inner = transport._fixed_child_answer(transport._fixed_child_verify(plan_bytes, BUNDLE, peer), plan_bytes,
+                                          BUNDLE, QUERY)
+    assert raw == frame("c" * 32, QUERY, inner)
+    assert transport._fixed_unwrap("c" * 32, QUERY, raw, 4096) == inner
+    for nonce, query in (("c" * 32, QUERY + b" "), ("c" * 32, OTHER_QUERY), ("e" * 32, QUERY)):
+        with pytest.raises(transport._Refused):
+            transport._fixed_unwrap(nonce, query, raw, 4096)
+
+
+def _parent_with_fake_child(monkeypatch, reply):
+    """run_fixed_peer with the leases stubbed and the pipe replaced: reply(nonce, query) is the child output."""
+    from tools import wd_q4_fixed_parent_attestation as attestation
+    seen = []
+
+    @contextlib.contextmanager
+    def fake_attest(*args, **kwargs):
+        yield
+
+    def fake_run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes, fixed=None):
+        control = fixed[0]
+        seen.append((control["nonce"], stdin_bytes, max_output_bytes))
+        return reply(control["nonce"], stdin_bytes), 0
+    monkeypatch.setattr(attestation, "attest_file", fake_attest)
+    monkeypatch.setattr(transport, "_run", fake_run)
+    return seen
+
+
+def test_parent_accepts_only_the_frame_bound_to_its_own_nonce_and_query(tmp_path, monkeypatch):
+    seen = _parent_with_fake_child(monkeypatch, lambda nonce, query: transport._fixed_wrap(nonce, query, INNER))
+    assert call(tmp_path) == (INNER, 0)
+    nonce, query, cap = seen[0]
+    assert len(nonce) == 32 and query == QUERY and cap == 4096
+
+
+@pytest.mark.parametrize("case", ["unbound_inner", "other_nonce", "other_query", "altered_inner", "inner_over_cap"])
+def test_parent_refuses_unbound_or_misbound_child_output_after_the_run(tmp_path, monkeypatch, case):
+    def reply(nonce, query):
+        if case == "unbound_inner":
+            return INNER
+        if case == "other_nonce":
+            return transport._fixed_wrap("e" * 32, query, INNER)
+        if case == "other_query":
+            return transport._fixed_wrap(nonce, OTHER_QUERY, INNER)
+        if case == "altered_inner":
+            wrapped = transport._fixed_wrap(nonce, query, INNER)
+            return wrapped[:-1] + bytes([wrapped[-1] ^ 0x01])
+        return transport._fixed_wrap(nonce, query, b"x" * 4097)
+    seen = _parent_with_fake_child(monkeypatch, reply)
+    with pytest.raises(transport._Refused) as caught:
+        call(tmp_path)
+    text = repr(caught.value) + repr(caught.value.args)
+    assert len(seen) == 1 and caught.value.__context__ is None
+    assert seen[0][0] not in text and "synthetic situation" not in text and transport._QUARANTINE == []
+
+
+def test_unwrap_failure_is_a_plain_refusal_and_cleanup_uncertainty_passes_through_unchanged(tmp_path, monkeypatch):
+    _parent_with_fake_child(monkeypatch, lambda nonce, query: INNER)
+    with pytest.raises(transport._Refused):
+        call(tmp_path)
+    assert transport._QUARANTINE == []
+
+    def uncertain(*args, **kwargs):
+        raise transport.TransportCleanupUnknown("timeout")
+    monkeypatch.setattr(transport, "_run", uncertain)
+    with pytest.raises(transport.TransportCleanupUnknown) as caught:
+        call(tmp_path)
+    assert caught.value.prior_outcome == "timeout"
+
+    def timed_out(*args, **kwargs):
+        raise TimeoutError("synthetic private")
+    monkeypatch.setattr(transport, "_run", timed_out)
+    with pytest.raises(TimeoutError, match="^secure_transport_timeout$"):
+        call(tmp_path)
+
+
+def test_diagnostic_output_is_not_wrapped_and_its_contract_is_unchanged(tmp_path, monkeypatch):
+    _parent_with_fake_child(monkeypatch, lambda nonce, query: b"after_query")
+    plan_bytes = plan()
+    result = transport._run_fixed_peer_impl(sys.executable, interpreter_sha(), 64 * 1024 * 1024, plan_bytes,
+                                            sha(plan_bytes), BUNDLE, RUNTIME, QUERY, str(tmp_path), 60, 4096,
+                                            False, "observe")
+    assert result == {"status": "DIAGNOSTIC", "phase": "after_query", "cleanup": "UNKNOWN"}
+
+
+@windows
+def test_real_fixed_peer_roundtrip_is_bound_and_the_inner_cap_is_exact(tmp_path):
+    output, code = call(tmp_path)
+    assert code == 0 and json.loads(output)["query"] == "RECEIVED" and not output.startswith(MAGIC)
+    assert call(tmp_path, max_output_bytes=len(output)) == (output, 0)
+    with pytest.raises(transport._Refused):
+        call(tmp_path, max_output_bytes=len(output) - 1)
+
+
+def test_fixed_peer_documents_what_the_binding_is_not():
+    doc = transport.run_fixed_peer.__doc__
+    for phrase in ("not lane authentication", "not freshness", "used the query", "control nonce",
+                   "wd.q4-query-bind.v2"):
         assert phrase in doc
 
 
@@ -564,7 +772,8 @@ def test_child_verifies_and_imports_the_runtime_before_ready_or_any_bundle(tmp_p
     parent.write_frame = lambda data: (order.append(("write", json.loads(data)["status"])), original_write(data))
     raw = transport._fixed_child_protocol(parent.read_frame, parent.write_frame, sha(PEER.read_bytes()),
                                           peer_path=str(PEER))
-    assert raw == transport._canonical({"status": "SYNTHETIC-PREPARED"})
+    # v5: the child output is bound to the challenge nonce and the exact query it read
+    assert transport._fixed_unwrap("c" * 32, QUERY, raw, 4096) == transport._canonical({"status": "SYNTHETIC-PREPARED"})
     assert order == [("prepare", "public-snapshot-v1", str(PEER)), ("write", "READY"), ("write", "BUNDLE_VERIFIED")]
 
 

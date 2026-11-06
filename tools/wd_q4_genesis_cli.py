@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import os
+import datetime as dt
 from pathlib import Path
 import re
 import sys
@@ -17,7 +18,8 @@ _KEYS = frozenset({'schema', 'bundle_root', 'manifest_sha256', 'source_path',
     'source_sha256', 'source_bytes', 'source_file_identity', 'generation_path', 'generation', 'checkpoint_root',
     'private_state_root', 'trusted_model_root', 'policy_path', 'policy_sha256',
     'public_policy_path', 'public_policy_sha256', 'fleet_sha256', 'max_prefix_bytes',
-    'max_bytes', 'max_rows', 'plan_template', 'renewable'})
+    'max_bytes', 'max_rows', 'plan_template', 'renewable', 'cutoff_utc', 'batch_rows',
+    'min_headroom_bytes', 'allow_partial_genesis'})
 
 
 def _sha(raw):
@@ -67,7 +69,17 @@ def _prepare(path, digest):
     if (type(config['source_bytes']) is not int or not 0 < config['source_bytes'] <= config['max_prefix_bytes']
             or type(config['source_file_identity']) is not str
             or not runner._IDENTITY.fullmatch(config['source_file_identity'])
-            or type(config['renewable']) is not bool or type(config['plan_template']) is not dict):
+            or type(config['renewable']) is not bool or type(config['plan_template']) is not dict
+            or type(config['batch_rows']) is not bool or type(config['allow_partial_genesis']) is not bool
+            or type(config['min_headroom_bytes']) is not int or config['min_headroom_bytes'] < 1):
+        raise ValueError()
+    cutoff = config['cutoff_utc']
+    if cutoff is not None:
+        if (type(cutoff) is not str or re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', cutoff) is None
+                or dt.datetime.strptime(cutoff, '%Y-%m-%dT%H:%M:%SZ').strftime('%Y-%m-%dT%H:%M:%SZ') != cutoff):
+            raise ValueError()
+    if ((config['batch_rows'] and cutoff is None) or
+            (config['allow_partial_genesis'] and (not config['batch_rows'] or cutoff is None))):
         raise ValueError()
     for key in ('bundle_root', 'source_path', 'generation_path', 'checkpoint_root',
                 'private_state_root', 'trusted_model_root', 'policy_path', 'public_policy_path'):
@@ -165,6 +177,13 @@ def _verify_result(config, genesis, result, policy, fleet):
             end_pin.cursor.generation != config['generation'] or
             type(end_hash) is not str or not _HEX.fullmatch(end_hash)):
         raise ValueError()
+    snapshot_bytes = result.get('genesis_snapshot_bytes')
+    fully_covered = result.get('genesis_initial_prefix_fully_covered')
+    if (type(snapshot_bytes) is not int or not config['source_bytes'] <= snapshot_bytes <= config['max_prefix_bytes']
+            or type(fully_covered) is not bool or fully_covered != (end >= snapshot_bytes)
+            or (not fully_covered and (not config['allow_partial_genesis'] or
+                                       result.get('coverage') != 'partial_ready_prefix'))):
+        raise ValueError()
     source = runner._plain_file(config['source_path'])
     with source.open('rb') as stream:
         if (os.fstat(stream.fileno()).st_size < max(end, config['source_bytes']) or
@@ -172,6 +191,7 @@ def _verify_result(config, genesis, result, policy, fleet):
                 not hmac.compare_digest(genesis._snapshot(stream, config['source_bytes']), config['source_sha256']) or
                 not hmac.compare_digest(genesis._snapshot(stream, end), end_hash)):
             raise ValueError()
+    return fully_covered
 
 
 def _emit(status):
@@ -204,15 +224,17 @@ def main(argv=None):
             public_policy_sha256=config['public_policy_sha256'], fleet_bytes=fleet,
             expected_fleet_sha256=config['fleet_sha256'], max_prefix_bytes=config['max_prefix_bytes'],
             max_bytes=config['max_bytes'], max_rows=config['max_rows'],
-            plan_template=config['plan_template'], renewable=config['renewable'])
-        _verify_result(config, genesis, result, policy, fleet)
+            plan_template=config['plan_template'], renewable=config['renewable'], cutoff_utc=config['cutoff_utc'],
+            batch_rows=config['batch_rows'], min_headroom_bytes=config['min_headroom_bytes'],
+            allow_partial_genesis=config['allow_partial_genesis'])
+        fully_covered = _verify_result(config, genesis, result, policy, fleet)
     except genesis.GenesisRefused:
         _emit('REFUSED')
         return 2
     except BaseException:
         _emit('UNKNOWN')
         return 3
-    _emit('PUBLISHED_GENESIS')
+    _emit('PUBLISHED_GENESIS' if fully_covered else 'PUBLISHED_GENESIS_PARTIAL')
     return 0
 
 

@@ -826,3 +826,367 @@ def test_f2_real_producer_empty_first_windows_no_longer_spend_the_one_shot(synth
     projection = json.loads((Path(args["checkpoint_root"]) / args["generation"] / "projection.json").read_bytes())
     assert len(projection["records"]) == 1
     assert b"synthetic-private-must-not-be-returned" not in json.dumps(projection).encode()
+
+
+# Late public (lead-mind-genesis-late-public-20261106-v1): with the opt-in resume_genesis_skip, a bounded pre-scan that
+# finds no public row records a private resumable skip receipt instead of only refusing; a later run resumes from it
+# and genesis is admitted at the receipt offset, which the runner accepts only when bound to that receipt.
+SKIP = "q4-genesis-skip-v1.json"
+
+
+def skip_receipt(args):
+    path = Path(args["private_state_root"]) / SKIP
+    return path.read_bytes() if path.exists() else None
+
+
+def only_skip_receipt(args):
+    """No one-shot state exists, and the private root holds nothing but the skip receipt."""
+    return (not Path(args["generation_path"]).exists()
+            and sorted(p.name for p in Path(args["private_state_root"]).iterdir()) == [SKIP]
+            and sorted(Path(args["checkpoint_root"]).iterdir()) == [])
+
+
+def identity_of(path):
+    from waggledance.core.bridge_log_reader import _file_identity, _open_log
+    with _open_log(Path(path)) as stream:
+        return _file_identity(stream)
+
+
+def test_late_skip_records_a_private_resumable_receipt_and_spends_nothing(synthetic, monkeypatch):
+    args, calls = synthetic
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    rows = f2_rows(args, EMPTY_EARLY + ["public"])
+    run = dict(f2_args(args, rows, max_windows=2), resume_genesis_skip=True)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_skip_progress$"):
+        genesis.bootstrap(**run)
+    assert calls == [] and only_skip_receipt(args)
+    raw_receipt = skip_receipt(args)
+    receipt = json.loads(raw_receipt)
+    k = len(b"".join(rows[:4]))
+    assert raw_receipt == raw(receipt)
+    assert receipt == {"schema": "wd.q4-genesis-skip.v1", "file_identity": identity_of(args["source_path"]),
+                       "generation": "synthetic-generation", "policy_sha256": args["policy_sha256"],
+                       "roster_sha256": receipt["roster_sha256"], "public_policy_sha256": args["public_policy_sha256"],
+                       "offset": k, "prefix_sha256": sha(b"".join(rows[:4])), "previous_sha256": None, "runs": 1}
+    assert len(receipt["roster_sha256"]) == 64
+    assert b"synthetic-private-must-not-be-returned" not in raw_receipt
+
+
+def test_late_skip_resumes_and_binds_genesis_to_the_receipt_offset(synthetic, monkeypatch):
+    args, calls = synthetic
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    rows = f2_rows(args, EMPTY_EARLY + EMPTY_EARLY + ["public", "private"])
+    run = dict(f2_args(args, rows, max_windows=2), resume_genesis_skip=True)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_skip_progress$"):
+        genesis.bootstrap(**run)
+    first = skip_receipt(args)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_skip_progress$"):
+        genesis.bootstrap(**run)
+    second = skip_receipt(args)
+    assert json.loads(second)["offset"] == len(b"".join(rows[:8])) and json.loads(second)["runs"] == 2
+    assert json.loads(second)["previous_sha256"] == sha(first) and only_skip_receipt(args)
+    seen = []
+    original = runner.run_once
+
+    def watch(**kwargs):
+        seen.append(json.loads(kwargs["route_bytes"]))
+        return original(**kwargs)
+
+    monkeypatch.setattr(runner, "run_once", watch)
+    assert genesis.bootstrap(**run)["status"] == "PUBLISHED_GENESIS" and len(calls) == 1
+    k = len(b"".join(rows[:8]))
+    assert seen[0]["cursor"]["offset"] == k and seen[0]["prefix_sha256"] == sha(b"".join(rows[:8]))
+    assert seen[0]["genesis_skip_sha256"] == sha(second) and skip_receipt(args) == second
+    assert calls[0]["config"].source.cursor.offset == k
+
+
+def test_late_skip_off_by_default_keeps_the_f2_refusal_and_writes_no_receipt(synthetic, monkeypatch):
+    args, calls = synthetic
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    run = f2_args(args, f2_rows(args, EMPTY_EARLY + ["public"]), max_windows=2)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_no_public_row$"):
+        genesis.bootstrap(**run)
+    assert calls == [] and no_one_shot_state(args)
+
+
+def test_late_skip_requires_explicit_partial_genesis(synthetic, monkeypatch):
+    args, calls = synthetic
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    run = dict(f2_args(args, f2_rows(args, EMPTY_EARLY), max_windows=2), resume_genesis_skip=True,
+               allow_partial_genesis=False)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_refused$"):
+        genesis.bootstrap(**run)
+    assert calls == [] and no_one_shot_state(args)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_refused$"):
+        genesis.bootstrap(**dict(run, allow_partial_genesis=True, resume_genesis_skip=1))
+    assert calls == [] and no_one_shot_state(args)
+
+
+def test_late_skip_never_passes_a_young_public_row(synthetic, monkeypatch):
+    args, calls = synthetic
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    # The young row sits inside the second window, so that window ends deferred on its exact byte boundary.
+    rows = f2_rows(args, ["other_task", "private", "other_task", "young", "other_task"])
+    run = dict(f2_args(args, rows, max_windows=4), resume_genesis_skip=True)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_skip_progress$"):
+        genesis.bootstrap(**run)
+    receipt = skip_receipt(args)
+    assert json.loads(receipt)["offset"] == len(b"".join(rows[:3]))
+    # The next run starts at the young row: no ready row and no progress, so the receipt stays as it was.
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_no_public_row$"):
+        genesis.bootstrap(**run)
+    assert skip_receipt(args) == receipt and calls == [] and only_skip_receipt(args)
+
+
+def test_late_skip_after_source_end_resumes_when_a_public_row_is_appended(synthetic, monkeypatch):
+    args, calls = synthetic
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    rows = f2_rows(args, EMPTY_EARLY + ["public"])
+    run = dict(f2_args(args, rows[:4], max_windows=4), resume_genesis_skip=True)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_skip_progress$"):
+        genesis.bootstrap(**run)
+    assert json.loads(skip_receipt(args))["offset"] == len(b"".join(rows[:4]))
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_no_public_row$"):
+        genesis.bootstrap(**run)
+    with open(args["source_path"], "ab") as stream:
+        stream.write(rows[4])
+    assert genesis.bootstrap(**run)["status"] == "PUBLISHED_GENESIS" and len(calls) == 1
+    assert calls[0]["config"].source.cursor.offset == len(b"".join(rows[:4]))
+
+
+@pytest.mark.parametrize("fault", ["rewrite_skipped_byte", "replace_source", "generation", "fleet", "tamper_offset",
+                                   "tamper_prefix", "noncanonical", "midline_offset", "beyond_source",
+                                   "tamper_policy", "tamper_roster", "tamper_public_policy"])
+def test_late_skip_receipt_is_bound_to_source_identity_bytes_and_pins(synthetic, monkeypatch, fault):
+    args, calls = synthetic
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    rows = f2_rows(args, EMPTY_EARLY + ["public"])
+    run = dict(f2_args(args, rows, max_windows=2), resume_genesis_skip=True)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_skip_progress$"):
+        genesis.bootstrap(**run)
+    path = Path(args["private_state_root"]) / SKIP
+    source = Path(args["source_path"])
+    value = json.loads(path.read_bytes())
+    if fault == "rewrite_skipped_byte":
+        data = bytearray(source.read_bytes())
+        data[data.index(b"lead-unrelated")] = ord("L")
+        with open(source, "r+b") as stream:
+            stream.write(bytes(data))
+    elif fault == "replace_source":
+        copy = source.with_name("copy.jsonl")
+        copy.write_bytes(source.read_bytes())
+        copy.replace(source)
+    elif fault == "generation":
+        run = dict(run, generation="other-generation", plan_template={**run["plan_template"],
+                                                                      "generation": "other-generation"})
+    elif fault == "fleet":
+        fleet = json.loads(args["fleet_bytes"])
+        fleet["lanes"][0]["agent_uuid"] = "99999999-1111-4111-8111-111111111111"
+        fleet_bytes = raw(fleet)
+        monkeypatch.setattr(runner, "_FLEET_SHA", frozenset({sha(fleet_bytes)}))
+        run = dict(run, fleet_bytes=fleet_bytes, expected_fleet_sha256=sha(fleet_bytes))
+    elif fault in ("tamper_offset", "tamper_prefix", "midline_offset", "beyond_source"):
+        value.update({"tamper_offset": {"offset": len(b"".join(rows[:2]))},
+                      "tamper_prefix": {"prefix_sha256": "e" * 64},
+                      "midline_offset": {"offset": value["offset"] - 3,
+                                         "prefix_sha256": sha(b"".join(rows)[:value["offset"] - 3])},
+                      "beyond_source": {"offset": 60000, "prefix_sha256": "e" * 64}}[fault])
+        path.write_bytes(raw(value))
+    elif fault == "noncanonical":
+        path.write_bytes(json.dumps(value, sort_keys=True, indent=1).encode("ascii"))
+    elif fault.startswith("tamper_") and fault[len("tamper_"):] + "_sha256" in value:
+        value[fault[len("tamper_"):] + "_sha256"] = "e" * 64
+        path.write_bytes(raw(value))
+    before = path.read_bytes()
+    with pytest.raises(genesis.GenesisRefused, match="^(genesis_skip_receipt_invalid|genesis_refused)$"):
+        genesis.bootstrap(**run)
+    assert calls == [] and path.read_bytes() == before and only_skip_receipt(args)
+
+
+def test_late_skip_honours_the_independent_source_pin(synthetic, monkeypatch):
+    args, calls = synthetic
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    rows = f2_rows(args, EMPTY_EARLY + ["public"])
+    run = dict(f2_args(args, rows, max_windows=2), resume_genesis_skip=True)
+    data = b"".join(rows)
+    pinned = dict(run, expected_source_identity=identity_of(args["source_path"]),
+                  expected_source_prefix_bytes=len(data), expected_source_prefix_sha256=sha(data))
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_skip_progress$"):
+        genesis.bootstrap(**pinned)
+    receipt = skip_receipt(args)
+    assert json.loads(receipt)["file_identity"] == pinned["expected_source_identity"]
+    wrong = dict(pinned, expected_source_identity="windows-v1:00000000:0000000000000000")
+    with pytest.raises(genesis.GenesisRefused):
+        genesis.bootstrap(**wrong)
+    assert skip_receipt(args) == receipt and calls == []
+    assert genesis.bootstrap(**pinned)["status"] == "PUBLISHED_GENESIS" and len(calls) == 1
+
+
+def test_late_skip_receipt_raced_by_another_writer_is_not_overwritten(synthetic, monkeypatch):
+    args, calls = synthetic
+    rows = f2_rows(args, EMPTY_EARLY + EMPTY_EARLY + ["public"])
+    run = dict(f2_args(args, rows, max_windows=2), resume_genesis_skip=True)
+    path = Path(args["private_state_root"]) / SKIP
+
+    def racing(*positional, **keywords):
+        result = REAL_PRESCAN(*positional, **keywords)
+        path.write_bytes(b"another writer")
+        return result
+
+    monkeypatch.setattr(genesis, "_prescan_public_rows", racing)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_refused$"):
+        genesis.bootstrap(**run)
+    assert path.read_bytes() == b"another writer" and calls == []
+    assert sorted(p.name for p in Path(args["private_state_root"]).iterdir()) == [SKIP]
+
+
+# RCO2 follow-ups on the F2 pre-scan (relayed by Lead 11-06 21:27Z).
+def test_prescan_cleanup_failure_keeps_the_actual_refusal(synthetic, monkeypatch):
+    args, calls = synthetic
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    run = f2_args(args, f2_rows(args, EMPTY_EARLY + ["public"]), max_windows=2)
+
+    def failing_rmdir(self):
+        raise OSError("synthetic cleanup failure")
+
+    monkeypatch.setattr(Path, "rmdir", failing_rmdir)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_no_public_row$"):
+        genesis.bootstrap(**run)
+    assert calls == [] and not Path(args["generation_path"]).exists()
+
+
+def test_prescan_mkdir_failure_removes_nothing_it_did_not_create(synthetic, monkeypatch):
+    args, calls = synthetic
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    run = f2_args(args, f2_rows(args, ["public"]), max_windows=2)
+    removed = []
+
+    def failing_mkdir(self, *positional, **keywords):
+        raise FileExistsError()
+
+    monkeypatch.setattr(Path, "mkdir", failing_mkdir)
+    monkeypatch.setattr(Path, "rmdir", lambda self: removed.append(self))
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_refused$"):
+        genesis.bootstrap(**run)
+    assert removed == [] and calls == []
+
+
+@pytest.mark.parametrize("signal", [KeyboardInterrupt, SystemExit])
+def test_interrupt_before_admission_is_not_converted_into_a_refusal(synthetic, monkeypatch, signal):
+    args, calls = synthetic
+    from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    run = f2_args(args, f2_rows(args, ["public"]), max_windows=2)
+
+    def interrupted(*positional, **keywords):
+        raise signal()
+
+    monkeypatch.setattr(snapshot, "read_public_catchup", interrupted)
+    with pytest.raises(signal):
+        genesis.bootstrap(**run)
+    assert calls == [] and no_one_shot_state(args)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="real private checkpoint requires Windows fixed volume")
+def test_late_skip_real_producer_publishes_every_public_row_after_the_skip(synthetic, monkeypatch):
+    """Real pre-scan, skip receipts, runner, child, producer and checkpoint; only the encoder is synthetic. Every
+    public row of the source is published once; no public row lies in the skipped prefix."""
+    import inspect
+    np = pytest.importorskip("numpy")
+    from sandbox.mind.step2 import shared_index_checkpoint as checkpoint_module
+    args, _ = synthetic
+    fake = sys.modules["sandbox.mind.step2.wd_q4_prefix_build_child"]
+    child = fake._actual
+    if "batch_rows" not in inspect.signature(child.build_prefix_generation).parameters:
+        pytest.skip("batch-capable child commit not yet integrated")
+    monkeypatch.setitem(sys.modules, fake.__name__, child)
+    monkeypatch.setattr(checkpoint_module, "read_verified_prefix_pointer", fake._real_accessor)
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    monkeypatch.setattr(child, "_encoder", lambda encoder, identity:
+                        lambda texts: np.ones((len(texts), 384), dtype=np.float32) / np.sqrt(384))
+    model = Path(args["trusted_model_root"])
+    weights = b"synthetic-weights-not-a-model"
+    (model / "model.safetensors").write_bytes(weights)
+    args["plan_template"]["encoder"].update(weights_sha256=sha(weights), assets={"model.safetensors": sha(weights)})
+    args["plan_template"].update(timeout=10)
+    kinds = EMPTY_EARLY + EMPTY_EARLY + ["public", "private", "public", "other_task"]
+    rows = f2_rows(args, kinds)
+    data = b"".join(rows)
+    run = dict(f2_args(args, rows, max_windows=2), resume_genesis_skip=True, renewable=True,
+               expected_source_identity=identity_of(args["source_path"]),
+               expected_source_prefix_bytes=len(data), expected_source_prefix_sha256=sha(data))
+    for _ in range(2):
+        with pytest.raises(genesis.GenesisRefused, match="^genesis_skip_progress$"):
+            genesis.bootstrap(**run)
+    assert json.loads(skip_receipt(args))["offset"] == len(b"".join(rows[:8]))
+    result = genesis.bootstrap(**run)
+    assert result["status"] == "PUBLISHED_GENESIS" and result["genesis_initial_prefix_fully_covered"] is True
+    projection = json.loads((Path(args["checkpoint_root"]) / args["generation"] / "projection.json").read_bytes())
+    assert len(projection["records"]) == kinds.count("public") == 2
+    assert b"synthetic-private-must-not-be-returned" not in json.dumps(projection).encode()
+    assert b"lead-unrelated-20261031" not in json.dumps(projection).encode()
+    # Continuation (Lead 21:44Z): a route with a prior pointer that still carries the genesis-only key is refused,
+    # never silently ignored; built explicitly without it, the continuation advances from the published pointer.
+    from dataclasses import asdict
+    from tools import wd_mind_anchor_issuer as anchor_issuer
+    from tools.wd_q4_roster_from_fleet import build_roster_snapshot
+    roster_bytes, roster_sha = build_roster_snapshot(args["fleet_bytes"], args["expected_fleet_sha256"], enabled=True)
+
+    def verified(report):
+        return checkpoint_module.read_verified_prefix_pointer(Path(args["checkpoint_root"]),
+            frozenset({"lead-mind-production-20261031"}), expected_pointer_sha256=report["pointer_sha256"],
+            policy_bytes=args["policy_bytes"], policy_sha256=args["policy_sha256"], roster_bytes=roster_bytes,
+            roster_sha256=roster_sha, expected_public_policy_sha256=args["public_policy_sha256"])[1]
+
+    prefix = verified(result)
+    assert prefix.cursor.offset == len(data) and prefix.sha256 == sha(data)
+    appended = f2_rows(args, ["public"])[0]
+    with open(args["source_path"], "ab") as stream:
+        stream.write(appended)
+    private_tuple = json.loads((Path(args["private_state_root"]) / "q4-genesis-tuple-v1.json").read_bytes())
+    route = json.loads(base64.b64decode(private_tuple["route"]["bytes_b64"]))
+    plan = json.loads(base64.b64decode(private_tuple["plan"]["bytes_b64"]))
+    assert route["genesis_skip_sha256"] == sha(skip_receipt(args))
+    anchor, anchor_sha = anchor_issuer.issue_anchor(enabled=True, source_path=args["source_path"],
+        generation_path=args["generation_path"], cursor=prefix.cursor, policy_bytes=args["policy_bytes"],
+        policy_sha256=args["policy_sha256"], roster_bytes=roster_bytes, roster_sha256=roster_sha,
+        public_policy_bytes=args["public_policy_bytes"], public_policy_sha256=args["public_policy_sha256"])
+    plan.update(generation="synthetic-generation-2", expected_pointer_sha256=result["pointer_sha256"])
+    plan["pins"]["anchor_sha256"] = anchor_sha
+    plan_bytes = raw(plan)
+    route.update(cursor=asdict(prefix.cursor), prefix_sha256=prefix.sha256, anchor_sha256=anchor_sha,
+                 plan_sha256=sha(plan_bytes))
+
+    def attempt(value):
+        route_bytes = raw(value)
+        return runner.run_once(enabled=True, route_bytes=route_bytes, expected_route_sha256=sha(route_bytes),
+            plan_bytes=plan_bytes, policy_bytes=args["policy_bytes"], public_policy_bytes=args["public_policy_bytes"],
+            fleet_bytes=args["fleet_bytes"], expected_fleet_sha256=args["expected_fleet_sha256"],
+            roster_bytes=roster_bytes, anchor_bytes=anchor, renewable=True)
+
+    with pytest.raises(runner.StatusRunnerRefused):
+        attempt(route)
+    continued = attempt({key: value for key, value in route.items() if key != "genesis_skip_sha256"})
+    end = verified(continued)
+    assert end.cursor.offset == len(data) + len(appended) and end.sha256 == sha(data + appended)
+
+
+def test_late_skip_receipt_changed_before_admission_spends_nothing(synthetic, monkeypatch):
+    args, calls = synthetic
+    rows = f2_rows(args, EMPTY_EARLY + ["public"])
+    run = dict(f2_args(args, rows, max_windows=2), resume_genesis_skip=True)
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_skip_progress$"):
+        genesis.bootstrap(**run)
+    path = Path(args["private_state_root"]) / SKIP
+    value = json.loads(path.read_bytes())
+
+    def racing(*positional, **keywords):
+        result = REAL_PRESCAN(*positional, **keywords)
+        path.write_bytes(raw(dict(value, runs=value["runs"] + 5)))
+        return result
+
+    monkeypatch.setattr(genesis, "_prescan_public_rows", racing)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_refused$"):
+        genesis.bootstrap(**run)
+    assert calls == [] and only_skip_receipt(args)

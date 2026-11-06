@@ -12,6 +12,22 @@ pytest.importorskip("_winapi")
 from tools import wd_q4_secure_transport as transport
 
 
+def _mock_spawn_from_winapi(k, job, executable, line, environment, cwd, info):
+    import _winapi
+    return _winapi.CreateProcess(executable, line, None, None, False, 0x08000404, environment, cwd, None)
+
+
+def test_native_output_allocation_failure_does_not_acquire_dispatch_lock(tmp_path, monkeypatch):
+    lock = threading.Lock()
+    monkeypatch.setattr(transport, "_RUN_LOCK", lock)
+    def fail_allocation():
+        raise MemoryError("synthetic native output allocation failure")
+    monkeypatch.setattr(transport, "_ProcessInfo", fail_allocation)
+    with pytest.raises(MemoryError):
+        transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 1, 1024)
+    assert not lock.locked()
+
+
 @pytest.mark.parametrize("missing", ["both", "thread"])
 @pytest.mark.parametrize("error_kind", [RuntimeError, KeyboardInterrupt, SystemExit])
 def test_spawn_return_interruption_is_quarantined(tmp_path, monkeypatch, missing, error_kind):
@@ -26,6 +42,10 @@ def test_spawn_return_interruption_is_quarantined(tmp_path, monkeypatch, missing
         def GetCurrentProcess(self): return 99
         def LocalFree(self, *args): return 0
         def TerminateProcess(self, *args): calls.append(("terminate", args)); return 1
+        def TerminateJobObject(self, *args): calls.append(("terminate_job", args)); return 1
+        def QueryInformationJobObject(self, job, cls, out, size, returned):
+            ctypes.cast(out, ctypes.POINTER(transport._JobAccounting)).contents.active_processes = 0
+            return 1
         def WaitForSingleObject(self, *args): return 0
         def CloseHandle(self, handle): calls.append(("close", handle)); return 1
     kernel = Kernel()
@@ -38,12 +58,18 @@ def test_spawn_return_interruption_is_quarantined(tmp_path, monkeypatch, missing
         created.append(True)  # synthetic child and its two native handles exist
         return (15, 16, 17, 18)
     monkeypatch.setattr(_winapi, "CreateProcess", create_process)
+    monkeypatch.setattr(transport, "_create_process_in_job", _mock_spawn_from_winapi)
 
     instructions = list(dis.get_instructions(transport._run))
-    start = next(i for i, inst in enumerate(instructions) if inst.argval == "CreateProcess")
-    operation = "UNPACK_SEQUENCE" if missing == "both" else "STORE_FAST"
-    target = next(inst.offset for inst in instructions[start:]
-                  if inst.opname == operation and (missing == "both" or inst.argval == "thread"))
+    start = next(i for i, inst in enumerate(instructions) if inst.argval == "_create_process_in_job")
+    if missing == "both":
+        target = next(inst.offset for inst in instructions[start:] if inst.opname == "UNPACK_SEQUENCE")
+    else:
+        # CPython 3.13 can combine both assignments into one opcode; 3.11
+        # and 3.12 store thread separately after process.
+        target = next(inst.offset for inst in instructions[start:]
+                      if (inst.opname == "STORE_FAST" and inst.argval == "thread") or
+                      (inst.opname == "STORE_FAST_STORE_FAST" and inst.argval == ("process", "thread")))
     injected = []
     previous_trace = sys.gettrace()
     def trace(frame, event, arg):
@@ -62,9 +88,10 @@ def test_spawn_return_interruption_is_quarantined(tmp_path, monkeypatch, missing
         sys.settrace(previous_trace)
     assert created == [True] and injected == [True]
     assert quarantine and not transport._RUN_LOCK.locked()
+    assert any(call[0] == "terminate_job" for call in calls)
     # Missing handles cannot be closed or used to prove child termination.
     assert ("close", 16) not in calls
-    assert bool([call for call in calls if call[0] == "terminate"]) == (missing == "thread")
+    assert not [call for call in calls if call[0] == "terminate"]
     with pytest.raises(transport.TransportCleanupUnknown) as refused_again:
         transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 1, 1024)
     assert refused_again.value.prior_outcome == "prior_unknown"
@@ -99,7 +126,7 @@ def test_initial_deadline_exception_releases_lock_without_spawning(tmp_path, mon
     assert calls == ["api"] and not lock.locked()
 
 
-@pytest.mark.parametrize("scenario", ("job-delayed", "job-never-empty", "interrupt", "cleanup-interrupt", "unassigned"))
+@pytest.mark.parametrize("scenario", ("job-delayed", "job-never-empty", "interrupt", "cleanup-interrupt", "spawn-failed"))
 def test_expired_exchange_gets_a_separate_bounded_cleanup_budget(tmp_path, monkeypatch, scenario):
     import _winapi
 
@@ -111,7 +138,6 @@ def test_expired_exchange_gets_a_separate_bounded_cleanup_budget(tmp_path, monke
         def CreateJobObjectW(self, *args): return 12
         def SetInformationJobObject(self, *args): return 1
         def GetCurrentProcess(self): return 99
-        def AssignProcessToJobObject(self, *args): return scenario != "unassigned"
         def ResumeThread(self, *args): return 1
         def LocalFree(self, *args): return 0
         def TerminateJobObject(self, *args): calls.append("terminate-job"); return 1
@@ -135,6 +161,7 @@ def test_expired_exchange_gets_a_separate_bounded_cleanup_budget(tmp_path, monke
     monkeypatch.setattr(transport, "_noninheritable", lambda *args: None)
     monkeypatch.setattr(transport, "_created", lambda *args: 1)
     monkeypatch.setattr(_winapi, "CreateProcess", lambda *args: (15, 16, 17, 18))
+    monkeypatch.setattr(transport, "_create_process_in_job", _mock_spawn_from_winapi)
     monkeypatch.setattr(transport.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(transport.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
     def fail_exchange(*args, **kwargs):
@@ -143,32 +170,33 @@ def test_expired_exchange_gets_a_separate_bounded_cleanup_budget(tmp_path, monke
             raise KeyboardInterrupt()
         raise TimeoutError()
     monkeypatch.setattr(transport, "_io", fail_exchange)
-    if scenario == "unassigned":
-        # Assignment fails before exchange; expire the call deadline there too.
-        def fail_assignment(*args):
+    if scenario == "spawn-failed":
+        # Failure of creation-time job assignment has an uncertain outcome.
+        def fail_spawn(*args):
             clock[0] = 102.0
-            return 0
-        monkeypatch.setattr(kernel, "AssignProcessToJobObject", fail_assignment)
+            raise transport._Refused()
+        monkeypatch.setattr(transport, "_create_process_in_job", fail_spawn)
 
     expected = {"job-delayed": TimeoutError, "job-never-empty": transport.TransportCleanupUnknown,
                 "cleanup-interrupt": transport.TransportCleanupUnknown,
-                "interrupt": KeyboardInterrupt, "unassigned": transport._Refused}[scenario]
+                "interrupt": KeyboardInterrupt, "spawn-failed": transport.TransportCleanupUnknown}[scenario]
     with pytest.raises(expected):
         transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 1, 1024)
-    assert bool(quarantine) == (scenario in ("job-never-empty", "cleanup-interrupt"))
+    assert bool(quarantine) == (scenario in ("job-never-empty", "cleanup-interrupt", "spawn-failed"))
     if scenario == "job-never-empty":
         assert 106.99 <= clock[0] <= 107.01
     elif scenario in ("job-delayed", "interrupt"):
         assert calls.count("probe") >= 2
         assert clock[0] >= 102.02
-    elif scenario == "unassigned":
-        assert any(item[0] == "wait" and 0 < item[1] <= 5000 for item in calls if isinstance(item, tuple))
-    assert ("close", 15) in calls and ("close", 16) in calls
+    elif scenario == "spawn-failed":
+        assert "terminate-job" in calls and calls.count("probe") >= 2
+    if scenario != "spawn-failed":
+        assert ("close", 15) in calls and ("close", 16) in calls
 
 
 @pytest.mark.parametrize("interruption,classification", [(KeyboardInterrupt, "interrupt"),
     (SystemExit, "exit"), (RuntimeError, "timeout")])
-@pytest.mark.parametrize("assigned", [True, False], ids=("assigned-job", "unassigned-child"))
+@pytest.mark.parametrize("assigned", [True, False], ids=("after-spawn", "during-spawn"))
 def test_cleanup_deadline_exception_still_terminates_and_quarantines(
         tmp_path, monkeypatch, interruption, classification, assigned):
     import _winapi
@@ -179,11 +207,6 @@ def test_cleanup_deadline_exception_still_terminates_and_quarantines(
         def CreateJobObjectW(self, *args): return 12
         def SetInformationJobObject(self, *args): return 1
         def GetCurrentProcess(self): return 99
-        def AssignProcessToJobObject(self, *args):
-            if not assigned:
-                fail_clock[0] = True
-                raise TimeoutError()
-            return 1
         def ResumeThread(self, *args): return 1
         def LocalFree(self, *args): return 0
         def TerminateJobObject(self, *args): calls.append("terminate-job"); return 1
@@ -208,6 +231,12 @@ def test_cleanup_deadline_exception_still_terminates_and_quarantines(
     monkeypatch.setattr(transport, "_noninheritable", lambda *args: None)
     monkeypatch.setattr(transport, "_created", lambda *args: 1)
     monkeypatch.setattr(_winapi, "CreateProcess", lambda *args: (15, 16, 17, 18))
+    monkeypatch.setattr(transport, "_create_process_in_job", _mock_spawn_from_winapi)
+    if not assigned:
+        def expire_spawn(*args):
+            fail_clock[0] = True
+            raise TimeoutError()
+        monkeypatch.setattr(transport, "_create_process_in_job", expire_spawn)
     monkeypatch.setattr(transport.time, "monotonic", monotonic)
     monkeypatch.setattr(transport, "_io", expire)
     try:
@@ -217,16 +246,17 @@ def test_cleanup_deadline_exception_still_terminates_and_quarantines(
         assert caught.prior_outcome == classification
     else:
         pytest.fail("uncertain cleanup must raise")
-    assert ("terminate-job" if assigned else "terminate-child") in calls
+    assert "terminate-job" in calls
     assert quarantine
-    assert ("close", 15) in calls and ("close", 16) in calls
+    if assigned:
+        assert ("close", 15) in calls and ("close", 16) in calls
     before = list(calls)
     with pytest.raises(transport.TransportCleanupUnknown):
         transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 1, 1024)
     assert calls == before
 
 
-@pytest.mark.parametrize("fault", ["job_truth", "process_int", "pipe_truth", "pipe_tracking", "trace_cleanup", "trace_prologue"])
+@pytest.mark.parametrize("fault", ["job_conversion", "process_int", "pipe_truth", "pipe_tracking", "trace_cleanup", "trace_prologue"])
 @pytest.mark.parametrize("error_kind", [RuntimeError, KeyboardInterrupt, SystemExit, transport.TransportCleanupUnknown],
                          ids=["runtime-error", "interrupt", "exit", "cleanup-unknown"])
 @pytest.mark.parametrize("route", ["direct", "fixed_wrapper", "bounded_wrapper"])
@@ -238,11 +268,11 @@ def test_cleanup_decision_or_conversion_exception_keeps_cleaning_and_quarantines
     phase = {"cleanup": False, "injected": False}
 
     class Job(int):
-        def __bool__(self):
-            if fault == "job_truth" and phase["cleanup"] and not phase["injected"]:
+        def __int__(self):
+            if fault == "job_conversion" and phase["cleanup"] and not phase["injected"]:
                 phase["injected"] = True
-                raise error_kind("synthetic job truth error")
-            return True
+                raise error_kind("synthetic job conversion error")
+            return super().__int__()
 
     class Process(int):
         def __int__(self):
@@ -272,7 +302,9 @@ def test_cleanup_decision_or_conversion_exception_keeps_cleaning_and_quarantines
         def ResumeThread(self, *args): return 1
         def LocalFree(self, *args): return 0
         def TerminateJobObject(self, *args): calls.append("terminate-job"); return 1
-        def CloseHandle(self, handle): calls.append(("close", handle)); return 1
+        def CloseHandle(self, handle):
+            if isinstance(handle, Job): int(handle)
+            calls.append(("close", handle)); return 1
 
     kernel = Kernel()
     # An unprotected prologue interruption can leave its dispatch lock held;
@@ -288,6 +320,7 @@ def test_cleanup_decision_or_conversion_exception_keeps_cleaning_and_quarantines
         return True
     monkeypatch.setattr(transport, "_wait_job_empty", wait_job)
     monkeypatch.setattr(_winapi, "CreateProcess", lambda *args: (Process(15), 16, 17, 18))
+    monkeypatch.setattr(transport, "_create_process_in_job", _mock_spawn_from_winapi)
 
     def fail_exchange(*args, **kwargs):
         phase["cleanup"] = True

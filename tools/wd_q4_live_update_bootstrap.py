@@ -8,6 +8,9 @@ ACL isolation, a native-DLL/stdlib verifier or protection from same-user races.
 """
 import hashlib
 import hmac
+import io
+import importlib.abc
+import importlib.machinery
 import json
 import os
 from pathlib import Path
@@ -17,6 +20,18 @@ import sys
 
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
 _MAX = 8 * 1024 * 1024
+_PROJECT = ('tools', 'sandbox', 'core', 'waggledance')
+
+
+class _PackageMembershipRefused(ValueError):
+    pass
+
+
+class _BoundedOutput(io.StringIO):
+    def write(self, value):
+        if self.tell() + len(value) > 65536:
+            raise ValueError()
+        return super().write(value)
 
 
 def _sha(raw):
@@ -86,17 +101,69 @@ def _verify_package(bundle, manifest):
             info = item.lstat()
             if (name == '__pycache__' or stat.S_ISLNK(info.st_mode)
                     or getattr(info, 'st_file_attributes', 0) & 0x400):
-                raise ValueError()
+                raise _PackageMembershipRefused()
         for name in names:
             path = directory / name
             relative = path.relative_to(code).as_posix()
             if relative not in entries or relative in seen or len(seen) >= 50000:
-                raise ValueError()
+                raise _PackageMembershipRefused()
             _read(path, entries[relative], 1024 * 1024 * 1024)
             seen.add(relative)
     if seen != set(entries):
-        raise ValueError()
+        raise _PackageMembershipRefused()
     return code
+
+
+def _inside_code(path, code):
+    actual = os.path.normcase(os.path.abspath(os.fspath(path)))
+    root = os.path.normcase(os.path.abspath(os.fspath(code)))
+    try:
+        if os.path.commonpath((actual, root)) != root:
+            return False
+        for part in (Path(path), *Path(path).parents):
+            info = part.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                return False
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _project_name(name):
+    return any(name == root or name.startswith(root + '.') for root in _PROJECT)
+
+
+def _check_spec(spec, code):
+    origin = spec.origin
+    locations = spec.submodule_search_locations
+    if origin is None and locations is None:
+        raise ImportError('project_origin_refused')
+    if origin is not None and not _inside_code(origin, code):
+        raise ImportError('project_origin_refused')
+    if locations is not None and (not locations or any(not _inside_code(path, code) for path in locations)):
+        raise ImportError('project_origin_refused')
+
+
+class _ProjectOriginGuard(importlib.abc.MetaPathFinder):
+    def __init__(self, code):
+        self.code = code
+
+    def find_spec(self, fullname, path=None, target=None):
+        if not _project_name(fullname):
+            return None
+        spec = importlib.machinery.PathFinder.find_spec(fullname, path, target)
+        if spec is not None:
+            _check_spec(spec, self.code)
+        return spec
+
+
+def _check_project_origins(code):
+    for name, module in tuple(sys.modules.items()):
+        if _project_name(name) and module is not None:
+            spec = getattr(module, '__spec__', None)
+            if spec is None:
+                raise ImportError('project_origin_refused')
+            _check_spec(spec, code)
 
 
 def main(argv):
@@ -135,13 +202,26 @@ def main(argv):
         if not all(path.is_dir() for path in (code, runtime_code, runtime_site, runtime_model)):
             raise ValueError()
         sys.path.insert(0, str(code))
-        sys.path.append(str(runtime_code))
         sys.path.append(str(runtime_site))
+        sys.meta_path.insert(0, _ProjectOriginGuard(code))
         import importlib
         module = importlib.import_module('tools.wd_q4_live_update_once')
         if not os.path.samefile(module.__file__, code / 'tools' / 'wd_q4_live_update_once.py'):
             raise ValueError()
-        return module.main(['--once', '--config', config_path, '--sha256', config_pin])
+        _check_project_origins(code)
+        output = _BoundedOutput()
+        prior_stdout = sys.stdout
+        try:
+            sys.stdout = output
+            result = module.main(['--once', '--config', config_path, '--sha256', config_pin])
+            _check_project_origins(code)
+        finally:
+            sys.stdout = prior_stdout
+        sys.stdout.write(output.getvalue())
+        return result
+    except _PackageMembershipRefused:
+        sys.stderr.write('{"status":"BOOTSTRAP_REFUSED","reason":"package_membership"}\n')
+        return 2
     except Exception:
         pass
     sys.stderr.write('{"status":"BOOTSTRAP_REFUSED"}\n')

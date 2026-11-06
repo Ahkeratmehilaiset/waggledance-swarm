@@ -1,5 +1,6 @@
 """Offline cases for the capacity lens: synthetic observer status only, no observer, no process."""
 
+import hashlib
 import json
 import subprocess  # only its TimeoutExpired class: every status run here is the fake one
 import sys
@@ -12,6 +13,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import capacity_lens as lens  # noqa: E402
 
 NOW = "2026-10-13T11:00:00+00:00"
+REAL_CLOCK = getattr(lens, "clock", None)
+
+
+@pytest.fixture(autouse=True)
+def fixed_clock(monkeypatch):
+    """K2: every case runs on an injected lens clock 30 s after NOW unless it injects its own."""
+    monkeypatch.setattr(lens, "clock", lambda: lens.parse_time("2026-10-13T11:00:30+00:00"), raising=False)
 DIGIT_LIMIT = sys.get_int_max_str_digits()  # 4300 unless -X int_max_str_digits or PYTHONINTMAXSTRDIGITS set it; 0 none
 
 
@@ -31,21 +39,21 @@ def render(value, declared=None):
     return lens.text_lines(*lens.project(value, declared or {}))
 
 
-def test_windows_list_each_thread_never_sum_and_flag_risk_at_80():
+def test_windows_list_each_observation_never_sum_and_flag_risk_at_80():
     reset = 1792000800  # 2026-10-14T18:00:00Z
     lines = render(status([
         observation("9f375967-aaaa", {"name": "seven_day", "used_percent": 80, "resets_at": reset}),
         observation("8abcb653-bbbb", {"name": "seven_day", "used_percent": 79, "resets_at": reset})]),
         {"9f375967": "fable-5"})
     row = [line for line in lines if line.startswith("LIMITS claude seven_day")]
-    assert row == ["LIMITS claude seven_day: RISK 9f375967 (fable-5, declared) 80%, 8abcb653 79%; "
+    assert row == ["LIMITS claude seven_day: RISK fable-5 (declared) 80%, 79%; "
                    "resets 2026-10-14T18:00Z (in 1860 min); "
                    "observer provider_timestamp_unknown, quota unknown, under 1 min old"]
 
 
 def test_a_window_without_an_observed_reset_says_unknown_and_no_risk_below_80():
     lines = render(status([observation("9f375967-aaaa", {"name": "five_hour", "used_percent": 7})]))
-    assert ("LIMITS claude five_hour: 9f375967 7%; reset UNKNOWN (no readable reset observed); "
+    assert ("LIMITS claude five_hour: 7%; reset UNKNOWN (no readable reset observed); "
             "observer provider_timestamp_unknown, quota unknown, under 1 min old") in lines
 
 
@@ -62,18 +70,18 @@ def test_each_line_keeps_the_observer_labels_and_the_age_of_its_oldest_figure():
         observation("33334444-eeee", {"name": "primary", "used_percent": 70, "resets_at": reset}, provider="codex",
                     freshness="unknown_or_stale", quota="unknown", age=1807.2)])
     assert [line for line in render(value) if line.startswith("LIMITS")] == [
-        "LIMITS claude five_hour: 7cdef012 5%; resets 2026-10-14T18:00Z (in 1860 min); "
+        "LIMITS claude five_hour: 5%; resets 2026-10-14T18:00Z (in 1860 min); "
         "observer UNKNOWN, quota UNKNOWN, oldest age UNKNOWN",
-        "LIMITS claude seven_day: RISK 9f375967 85%; resets 2026-10-14T18:00Z (in 1860 min); "
+        "LIMITS claude seven_day: RISK 85%; resets 2026-10-14T18:00Z (in 1860 min); "
         "observer provider_timestamp_unknown, quota unknown, up to 7 min old",
-        "LIMITS codex primary: 11112222 40%, 33334444 70%; resets 2026-10-14T18:00Z (in 1860 min); "
+        "LIMITS codex primary: 40%, 70%; resets 2026-10-14T18:00Z (in 1860 min); "
         "observer fresh, unknown_or_stale, quota observed_headroom, unknown, up to 30 min old"]
     rows = lens.project(value, {})[1][("codex", "primary")]
     assert [(row["freshness"], row["quota_state"], row["observation_age_s"]) for row in rows] == [
         ("fresh", "observed_headroom", 20.0), ("unknown_or_stale", "unknown", 1807.2)]
 
 
-def test_a_passed_reset_says_passed_and_differing_resets_are_given_per_thread():
+def test_a_passed_reset_says_passed_and_differing_resets_are_given_per_observation():
     now = int(lens.parse_time(NOW).timestamp())
     lines = render(status([
         observation("9f375967-aaaa", {"name": "five_hour", "used_percent": 90, "resets_at": now},
@@ -83,10 +91,10 @@ def test_a_passed_reset_says_passed_and_differing_resets_are_given_per_thread():
                     {"name": "seven_day", "used_percent": 60})]))
     tail = "; observer provider_timestamp_unknown, quota unknown, under 1 min old"
     assert [line for line in lines if line.startswith("LIMITS")] == [
-        "LIMITS claude five_hour: RISK 9f375967 90%, 8abcb653 91%; reset 2026-10-13T11:00Z passed 0 min ago" + tail,
-        "LIMITS claude seven_day: 9f375967 50%, 8abcb653 60%; resets differ by thread: "
-        "9f375967 2026-10-13T13:00Z (in 120 min), 8abcb653 UNKNOWN" + tail,
-        "LIMITS claude seven_day_opus: 9f375967 10%; reset 2026-10-13T10:00Z passed 60 min ago" + tail]
+        "LIMITS claude five_hour: RISK 90%, 91%; reset 2026-10-13T11:00Z passed 0 min ago" + tail,
+        "LIMITS claude seven_day: 50%, 60%; resets differ by observation: "
+        "50% 2026-10-13T13:00Z (in 120 min), 60% UNKNOWN" + tail,
+        "LIMITS claude seven_day_opus: 10%; reset 2026-10-13T10:00Z passed 60 min ago" + tail]
 
 
 def test_an_unreadable_figure_is_unknown_and_never_a_crash():
@@ -99,9 +107,9 @@ def test_an_unreadable_figure_is_unknown_and_never_a_crash():
     tail = ("; reset UNKNOWN (no readable reset observed); "
             "observer provider_timestamp_unknown, quota unknown, oldest age UNKNOWN")
     assert [line for line in render(value) if line.startswith("LIMITS")] == [
-        "LIMITS claude a: 9f375967 UNKNOWN" + tail, "LIMITS claude b: 9f375967 UNKNOWN" + tail,
-        "LIMITS claude c: RISK 9f375967 81%" + tail, "LIMITS claude d: 9f375967 UNKNOWN" + tail,
-        "LIMITS claude e: 8abcb653 1%" + tail]
+        "LIMITS claude a: UNKNOWN" + tail, "LIMITS claude b: UNKNOWN" + tail,
+        "LIMITS claude c: RISK 81%" + tail, "LIMITS claude d: UNKNOWN" + tail,
+        "LIMITS claude e: 1%" + tail]
     rows = [row for _, group in sorted(lens.project(value, {})[1].items()) for row in group]
     assert [(row["used_percent"], row["reset_utc"], row["observation_age_s"]) for row in rows] == [
         (None, None, None), (None, None, None), (81, None, None), (None, None, None), (1, None, None)]
@@ -115,7 +123,7 @@ def test_an_integer_too_large_for_a_float_is_unknown_and_never_a_crash():
     huge = json.loads("1" + "0" * 400)
     value = status([observation("9f375967-aaaa", {"name": "a", "used_percent": huge, "resets_at": huge}, age=huge)])
     assert [line for line in render(value) if line.startswith("LIMITS")] == [
-        "LIMITS claude a: 9f375967 UNKNOWN; reset UNKNOWN (no readable reset observed); "
+        "LIMITS claude a: UNKNOWN; reset UNKNOWN (no readable reset observed); "
         "observer provider_timestamp_unknown, quota unknown, oldest age UNKNOWN"]
     [row] = lens.project(value, {})[1][("claude", "a")]
     assert (row["used_percent"], row["reset_utc"], row["observation_age_s"]) == (None, None, None)
@@ -129,18 +137,37 @@ def test_a_provider_never_collected_is_unknown_with_the_observer_state():
             "last attempt 2026-09-29T20:24)") in lines
 
 
-def test_old_idle_threads_fold_but_errors_and_current_work_stay():
-    def act(thread, state, last, error=None):
-        return {"provider": "claude", "native_thread_id": thread, "activity_state": state,
+def test_activity_is_counted_per_provider_and_names_no_thread():
+    # Lead v2 (11-06): per-thread ACTIVITY rows exposed session-specific data; the lens now keeps per provider the
+    # thread count, the activity states counted, the latest successful turn and the errors by type with the earliest
+    # first error. The 12 h idle fold is gone with the per-thread rows.
+    def act(thread, state, last, error=None, first=None, provider="claude"):
+        return {"provider": provider, "native_thread_id": thread, "activity_state": state,
                 "availability_state": "x", "last_successful_turn_at": last, "error_type": error,
-                "first_error_at": "2026-10-10T08:00:00+00:00" if error else None}
-    lines = render(status(activity=[act("11111111-x", "idle_observed", "2026-10-11T10:00:00+00:00"),
-                                    act("22222222-x", "idle_observed", "2026-10-10T10:00:00+00:00", "rate_limited"),
-                                    act("33333333-x", "work_requested", "2026-10-13T10:50:00+00:00")]))
-    assert "ACTIVITY claude thread 33333333: work_requested; last success 10:50Z (10 min ago)" in lines
-    assert any(line.startswith("ACTIVITY claude thread 22222222: idle_observed") and "error rate_limited" in line
-               for line in lines)
-    assert lines[-1] == "ACTIVITY: 1 more threads idle with no error, last success over 12 h ago (oldest 49 h)"
+                "first_error_at": first}
+    value = status(activity=[act("11111111-x", "idle_observed", "2026-10-11T10:00:00+00:00"),
+                             act("22222222-x", "idle_observed", "2026-10-10T10:00:00+00:00", "rate_limited",
+                                 "2026-10-10T08:00:00+00:00"),
+                             act("33333333-x", "work_requested", "2026-10-13T10:50:00+00:00"),
+                             act("44444444-x", "idle_observed", None, "rate_limited", "2026-10-09T08:00:00+00:00"),
+                             act("55555555-x", "idle_observed", None, "auth_required", None, provider="codex"),
+                             act("66666666-x", 5, None, "", None, provider=None),
+                             act("77777777-x", "", None, provider="codex")])  # empty text is no label
+    lines = [line for line in render(value) if line.startswith("ACTIVITY")]
+    assert lines == [
+        "ACTIVITY UNKNOWN: threads 1; UNKNOWN x1; no successful turn observed",
+        "ACTIVITY claude: threads 4; idle_observed x3, work_requested x1; latest success 2026-10-13T10:50Z "
+        "(10 min ago); error rate_limited x2 since 2026-10-09T08:00",
+        "ACTIVITY codex: threads 2; UNKNOWN x1, idle_observed x1; no successful turn observed; error auth_required x1"]
+    kept = lens.project(value, {})[3]
+    assert kept[1] == {"provider": "claude", "threads": 4,
+                       "activity_states": [{"state": "idle_observed", "count": 3},
+                                           {"state": "work_requested", "count": 1}],
+                       "availability_states": [{"state": "x", "count": 4}],
+                       "latest_success_utc": "2026-10-13T10:50:00Z", "minutes_since_latest_success": 10,
+                       "errors": [{"error_type": "rate_limited", "count": 2,
+                                   "first_error_utc": "2026-10-09T08:00:00Z"}]}
+    assert not [line for line in render(value) if any(str(n) * 8 in line for n in range(1, 8))]
 
 
 def test_publish_replaces_the_file_whole_and_leaves_no_temporary_file(tmp_path):
@@ -190,8 +217,12 @@ def good_status():
 def test_a_readable_status_runs_the_hook_and_writes_its_files(tmp_path, monkeypatch):
     raw = encoded(good_status())
     result, out, published = run_hook(tmp_path, monkeypatch, raw)
-    assert result == 0 and (out / "capacity-status.json").read_bytes() == raw
-    assert sorted(path.name for path in out.iterdir()) == ["capacity-lens.json", "capacity-status.json"]
+    # The raw status is no longer kept in the cycle dir (it carries account, plan, token-count, payload and catalog
+    # fields); the view keeps the sha256 of the raw bytes as its source digest.
+    assert result == 0 and sorted(path.name for path in out.iterdir()) == ["capacity-lens.json"]
+    view = json.loads((out / "capacity-lens.json").read_text(encoding="ascii"))
+    assert view["status_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert view["status_age"] == {"checked_utc": "2026-10-13T11:00:30Z", "age_s": 30.0, "state": "FRESH"}
     assert sorted(path.name for path in published.iterdir()) == ["capacity-lens.json", "lens-limits.txt"]
 
 
@@ -249,7 +280,7 @@ def test_an_int_literal_at_the_digit_limit_is_read_and_its_figure_is_unknown(tmp
     result, out, published = run_hook(tmp_path, monkeypatch, with_used_percent_digits(DIGIT_LIMIT))
     assert result == 0
     [row] = json.loads((out / "capacity-lens.json").read_text(encoding="ascii"))["limits"]
-    assert [thread["used_percent"] for thread in row["threads"]] == [None]
+    assert [item["used_percent"] for item in row["observations"]] == [None]
 
 
 @pytest.mark.parametrize("case", sorted(NOT_THE_OBSERVER))
@@ -308,6 +339,14 @@ def malformed(case):
         value["collection"] = {"codex": {"last_success": "soon"}}
     elif case == "collection_attempt_a_number":
         value["collection"] = {"codex": {"last_success": None, "last_attempt": 5}}
+    elif case == "failed_providers_a_string":
+        value["failed_providers"] = "codex"
+    elif case == "failed_provider_not_a_string":
+        value["failed_providers"] = [None]
+    elif case == "alerts_one_object":
+        value["alerts"] = {"provider": "codex", "state": "auth_required"}
+    elif case == "alert_row_not_an_object":
+        value["alerts"] = ["auth_required"]
     return value
 
 
@@ -317,7 +356,8 @@ MALFORMED = ("observation_not_an_object", "observations_not_a_list", "quota_wind
              "quota_windows_one_object", "window_not_an_object", "window_name_not_a_string", "collection_an_empty_list",
              "collection_row_not_an_object", "activity_a_string", "activity_row_not_an_object", "observed_at_a_number",
              "last_success_false", "last_success_empty_text", "first_error_not_a_time", "collection_success_not_a_time",
-             "collection_attempt_a_number", "observed_at_before_year_1_in_utc")
+             "collection_attempt_a_number", "observed_at_before_year_1_in_utc", "failed_providers_a_string",
+             "failed_provider_not_a_string", "alerts_one_object", "alert_row_not_an_object")
 
 
 @pytest.mark.parametrize("case", MALFORMED)
@@ -368,9 +408,282 @@ def test_every_time_the_lens_shows_is_in_utc():
     value = status(activity=[error], collection={"codex": {"last_success": None, "collection_state": "pending",
                                                            "last_attempt": "2026-09-29T23:24:17+03:00"}})
     lines = render(value)
-    assert ("ACTIVITY claude thread 22222222: idle_observed; last success 10:00Z (60 min ago); "
-            "error rate_limited since 2026-10-10T08:00") in lines
+    assert ("ACTIVITY claude: threads 1; idle_observed x1; latest success 2026-10-13T10:00Z (60 min ago); "
+            "error rate_limited x1 since 2026-10-10T08:00") in lines
     assert "LIMITS codex: UNKNOWN (observer has no successful collection; state pending, last attempt " \
            "2026-09-29T20:24)" in lines
+    assert ("COLLECTION codex: NO_SUCCESS; state pending; no successful collection; last attempt 2026-09-29T20:24Z; "
+            "no observer TTL (staleness not judged)") in lines
     [row] = lens.project(value, {})[3]
-    assert row["first_error_utc"] == "2026-10-10T08:00:00Z"
+    assert row["errors"][0]["first_error_utc"] == "2026-10-10T08:00:00Z"
+
+
+# Capacity-lens fix v1 (Lead 11-06, from fable-5's inventory): no raw status persisted, collector health explicit.
+SENTINELS = ("sentinel-pool-1d7", "sentinelauthctx5e2", "sentinel-account-type", "sentinel-plan-type", "918273645",
+             "546372819", "sentinel-rate-payload", "sentinel-model-catalog", "sentinel-install-dir",
+             "sentinel-auth-state", "sentinelalertid9c", "sentinel-limitation")
+
+
+def identity_status():
+    """A status whose identity, plan, token-count, payload, catalog, installation, auth and alert-id fields carry
+    sentinel values the lens must never write or publish."""
+    value = good_status()
+    value["observations"][0].update(
+        account_pool=SENTINELS[0], auth_context_id=SENTINELS[1], account_type=SENTINELS[2], plan_type=SENTINELS[3],
+        usage={"total_input_tokens": int(SENTINELS[4]), "total_output_tokens": int(SENTINELS[5])},
+        payload={"rate_limits": {"primary": SENTINELS[6]}}, catalog={"models": [SENTINELS[7]]})
+    value.update(installation={"root": SENTINELS[8]}, limitations=[SENTINELS[11]],
+                 collection={"claude": {"last_success": "2026-10-13T10:59:00+00:00", "collection_state": "observed",
+                                        "auth_state": SENTINELS[9], "freshness_ttl_seconds": None}},
+                 alerts=[{"alert_id": SENTINELS[10], "provider": "claude", "native_thread_id": "11111111-x",
+                          "state": "rate_limited", "first_observed_at": "2026-10-13T10:00:00+00:00"}],
+                 failed_providers=[])
+    return value
+
+
+def test_no_written_or_published_byte_holds_an_identity_plan_token_payload_or_catalog_value(tmp_path, monkeypatch):
+    raw = encoded(identity_status())
+    assert all(sentinel.encode() in raw for sentinel in SENTINELS)
+    result, out, published = run_hook(tmp_path, monkeypatch, raw)
+    assert result == 0
+    files = sorted(out.iterdir()) + sorted(published.iterdir())
+    assert sorted(path.name for path in files) == ["capacity-lens.json", "capacity-lens.json", "lens-limits.txt"]
+    for path in files:
+        body = path.read_bytes()
+        assert [sentinel for sentinel in SENTINELS if sentinel.encode() in body] == [], path.name
+    view = json.loads((published / "capacity-lens.json").read_text(encoding="ascii"))
+    assert view["status_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert view["alerts"] == [{"provider": "claude", "state": "rate_limited", "count": 1}]
+
+
+HEALTH_NOW = "2026-11-06T18:00:00+00:00"
+# (collection row, failed providers, expected health, expected text after "COLLECTION codex: ")
+HEALTH = {
+    "ok": ({"last_success": "2026-11-06T17:58:00+00:00", "last_attempt": "2026-11-06T17:57:58+00:00",
+            "collection_state": "observed", "freshness_ttl_seconds": 300}, [], "OK",
+           "OK; state observed; last success 2026-11-06T17:58Z (2 min ago); last attempt 2026-11-06T17:57Z; "
+           "observer TTL 300 s"),
+    "ttl_exactly_reached": ({"last_success": "2026-11-06T17:55:00+00:00", "collection_state": "observed",
+                             "freshness_ttl_seconds": 300}, [], "OK",
+                            "OK; state observed; last success 2026-11-06T17:55Z (5 min ago); no attempt recorded; "
+                            "observer TTL 300 s"),
+    "ttl_exceeded": ({"last_success": "2026-11-06T17:54:59+00:00", "collection_state": "observed",
+                      "freshness_ttl_seconds": 300}, [], "STALE",
+                     "STALE; state observed; last success 2026-11-06T17:54Z (5 min ago); no attempt recorded; "
+                     "observer TTL 300 s"),
+    "old_success_failing_attempts": ({"last_success": "2026-11-06T15:00:00+00:00",
+                                      "last_attempt": "2026-11-06T17:59:00+00:00",
+                                      "collection_state": "pending_or_interrupted", "freshness_ttl_seconds": 300},
+                                     [], "STALE",
+                                     "STALE; state pending_or_interrupted; last success 2026-11-06T15:00Z "
+                                     "(180 min ago); last attempt 2026-11-06T17:59Z (after the last success); "
+                                     "observer TTL 300 s"),
+    "attempt_after_a_fresh_success": ({"last_success": "2026-11-06T17:58:00+00:00",
+                                       "last_attempt": "2026-11-06T17:59:00+00:00", "collection_state": "observed",
+                                       "freshness_ttl_seconds": 300}, [], "STALE",
+                                      "STALE; state observed; last success 2026-11-06T17:58Z (2 min ago); last attempt "
+                                      "2026-11-06T17:59Z (after the last success); observer TTL 300 s"),
+    "failed_state": ({"last_success": "2026-11-06T17:58:00+00:00", "collection_state": "failed",
+                      "freshness_ttl_seconds": 300}, [], "FAILED",
+                     "FAILED; state failed; last success 2026-11-06T17:58Z (2 min ago); no attempt recorded; "
+                     "observer TTL 300 s"),
+    "failed_provider": ({"last_success": "2026-11-06T17:58:00+00:00", "collection_state": "observed",
+                         "freshness_ttl_seconds": 300}, ["codex"], "FAILED",
+                        "FAILED; state observed; last success 2026-11-06T17:58Z (2 min ago); no attempt recorded; "
+                        "observer TTL 300 s; failed provider"),
+    "never_succeeded": ({"last_success": None, "collection_state": "pending_or_interrupted",
+                         "freshness_ttl_seconds": 300}, [], "NO_SUCCESS",
+                        "NO_SUCCESS; state pending_or_interrupted; no successful collection; no attempt recorded; "
+                        "observer TTL 300 s"),
+    "no_ttl": ({"last_success": "2026-11-06T16:00:00+00:00", "collection_state": "observed",
+                "freshness_ttl_seconds": None}, [], "UNKNOWN",
+               "UNKNOWN; state observed; last success 2026-11-06T16:00Z (120 min ago); no attempt recorded; "
+               "no observer TTL (staleness not judged)"),
+    "ttl_text": ({"last_success": "2026-11-06T16:00:00+00:00", "freshness_ttl_seconds": "300"}, [], "UNKNOWN",
+                 "UNKNOWN; state UNKNOWN; last success 2026-11-06T16:00Z (120 min ago); no attempt recorded; "
+                 "no observer TTL (staleness not judged)"),
+    "ttl_true": ({"last_success": "2026-11-06T16:00:00+00:00", "freshness_ttl_seconds": True}, [], "UNKNOWN",
+                 "UNKNOWN; state UNKNOWN; last success 2026-11-06T16:00Z (120 min ago); no attempt recorded; "
+                 "no observer TTL (staleness not judged)"),
+    "ttl_zero": ({"last_success": "2026-11-06T16:00:00+00:00", "freshness_ttl_seconds": 0}, [], "UNKNOWN",
+                 "UNKNOWN; state UNKNOWN; last success 2026-11-06T16:00Z (120 min ago); no attempt recorded; "
+                 "no observer TTL (staleness not judged)"),
+    # Mutant survivors of the first run: an attempt at the very time of the success is not after it, and a state
+    # that is not text is shown as UNKNOWN (null in the view), never as given.
+    "attempt_at_the_success_time": ({"last_success": "2026-11-06T17:58:00+00:00",
+                                     "last_attempt": "2026-11-06T17:58:00+00:00", "collection_state": "observed",
+                                     "freshness_ttl_seconds": 300}, [], "OK",
+                                    "OK; state observed; last success 2026-11-06T17:58Z (2 min ago); last attempt "
+                                    "2026-11-06T17:58Z; observer TTL 300 s"),
+    "state_not_text": ({"last_success": "2026-11-06T17:58:00+00:00", "collection_state": 5,
+                        "freshness_ttl_seconds": 300}, [], "OK",
+                       "OK; state UNKNOWN; last success 2026-11-06T17:58Z (2 min ago); no attempt recorded; "
+                       "observer TTL 300 s"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(HEALTH))
+def test_every_collector_has_a_health_line_and_row_from_the_observer_own_figures(case):
+    # Inventory gap 2: only a provider that never succeeded was shown; a 3 h old success with failing attempts
+    # printed nothing but "observer stale". Health is FAILED (observer state failed or a failed provider), NO_SUCCESS,
+    # STALE (an attempt after the last success, or a success older than the observer's own TTL), UNKNOWN (no usable
+    # TTL: the age is shown, staleness is not judged) or OK.
+    row, failed, health, text = HEALTH[case]
+    value = dict(status(collection={"codex": row}), observed_at=HEALTH_NOW, failed_providers=failed)
+    lines = render(value)
+    assert [line for line in lines if line.startswith("COLLECTION")] == ["COLLECTION codex: " + text]
+    kept = lens.project(value, {})[2]["codex"]
+    assert kept["health"] == health and kept["failed_provider"] == (failed == ["codex"])
+    assert kept["freshness_ttl_s"] == (300 if row["freshness_ttl_seconds"] == 300 else None)
+    assert set(kept) == {"health", "collection_state", "last_success_utc", "minutes_since_success",
+                         "last_attempt_utc", "attempt_after_success", "freshness_ttl_s", "failed_provider"}
+
+
+def test_a_failed_provider_without_a_collection_row_is_still_shown_failed():
+    value = dict(status(), observed_at=HEALTH_NOW, failed_providers=["claude"])
+    assert [line for line in render(value) if line.startswith("COLLECTION")] == [
+        "COLLECTION claude: FAILED; state UNKNOWN; no successful collection; no attempt recorded; "
+        "no observer TTL (staleness not judged); failed provider"]
+
+
+def test_alerts_are_counted_by_provider_and_state_and_nothing_else_of_them_is_kept():
+    def alert(provider, state):
+        return {"alert_id": "a" * 32, "provider": provider, "native_thread_id": "33333333-x", "state": state,
+                "first_observed_at": "2026-11-06T17:00:00+00:00"}
+    value = dict(status(), observed_at=HEALTH_NOW,
+                 alerts=[alert("codex", "auth_required"), alert("claude", "rate_limited"),
+                         alert("claude", "rate_limited"), alert("claude", 7)])
+    kept = lens.project(value, {})[4]
+    assert kept == [{"provider": "claude", "state": "UNKNOWN", "count": 1},
+                    {"provider": "claude", "state": "rate_limited", "count": 2},
+                    {"provider": "codex", "state": "auth_required", "count": 1}]
+    assert "ALERTS: 4 (claude UNKNOWN x1, claude rate_limited x2, codex auth_required x1)" in render(value)
+    assert not [line for line in render(dict(value, alerts=[])) if line.startswith("ALERTS")]
+
+
+# Capacity-lens fix v2 (Lead 11-06): no thread identifier in any written or published byte.
+CANARY_THREADS = ("c0ffee11-aaaa-4bbb-8ccc-000000000001", "deadbe22-aaaa-4bbb-8ccc-000000000002",
+                  "faded033-aaaa-4bbb-8ccc-000000000003", "beaded44-aaaa-4bbb-8ccc-000000000004")
+
+
+def keys_of(value):
+    if isinstance(value, dict):
+        return set(value) | {key for item in value.values() for key in keys_of(item)}
+    if isinstance(value, list):
+        return {key for item in value for key in keys_of(item)}
+    return set()
+
+
+def test_no_written_or_published_byte_names_a_thread_and_provider_signals_stay(tmp_path, monkeypatch):
+    reset = 1792000800  # 2026-10-14T18:00:00Z
+    value = status([observation(CANARY_THREADS[0], {"name": "seven_day", "used_percent": 31, "resets_at": reset}),
+                    observation(CANARY_THREADS[1], {"name": "seven_day", "used_percent": 33, "resets_at": reset})],
+                   [{"provider": "claude", "native_thread_id": CANARY_THREADS[2], "activity_state": "idle_observed",
+                     "last_successful_turn_at": "2026-10-13T10:00:00+00:00", "error_type": "rate_limited",
+                     "first_error_at": "2026-10-13T09:00:00+00:00"}])
+    value["alerts"] = [{"alert_id": "b" * 32, "provider": "claude", "native_thread_id": CANARY_THREADS[3],
+                        "state": "rate_limited", "first_observed_at": "2026-10-13T09:00:00+00:00"}]
+    raw = encoded(value)
+    result, out, published = run_hook(tmp_path, monkeypatch, raw)
+    assert result == 0
+    for path in sorted(out.iterdir()) + sorted(published.iterdir()):
+        body = path.read_bytes()
+        assert [thread for thread in CANARY_THREADS if thread[:8].encode() in body] == [], path.name
+    view = json.loads((published / "capacity-lens.json").read_text(encoding="ascii"))
+    assert not keys_of(view) & {"thread", "threads_by_id", "native_thread_id", "alert_id", "first_observed_at"}
+    [row] = view["limits"]
+    assert (row["provider"], row["window"]) == ("claude", "seven_day")
+    assert [(item["used_percent"], item["reset_utc"], item["lane"]) for item in row["observations"]] == [
+        (31, "2026-10-14T18:00:00Z", None), (33, "2026-10-14T18:00:00Z", None)]
+    assert view["activity"] == [{"provider": "claude", "threads": 1,
+                                 "activity_states": [{"state": "idle_observed", "count": 1}],
+                                 "availability_states": [{"state": "UNKNOWN", "count": 1}],
+                                 "latest_success_utc": "2026-10-13T10:00:00Z", "minutes_since_latest_success": 60,
+                                 "errors": [{"error_type": "rate_limited", "count": 1,
+                                             "first_error_utc": "2026-10-13T09:00:00Z"}]}]
+    lines = (published / "lens-limits.txt").read_text(encoding="ascii").splitlines()
+    assert "LIMITS claude seven_day: 31%, 33%; resets 2026-10-14T18:00Z (in 1860 min); observer " \
+           "provider_timestamp_unknown, quota unknown, under 1 min old" in lines
+
+
+# PR 2041 review K1 (Lead 11-06 19:42Z): every observer string the lens copies is a known provider or a short safe
+# label (lowercase words joined by underscores); anything else, e-mail-, path- or token-like, reads UNKNOWN.
+UNSAFE = ("ops.user" + chr(64) + "example.com", "C:/Users/someone/secret.txt",
+          "C:" + chr(92) + "Users" + chr(92) + "vault", "ghp_A1b2C3d4E5f6G7h8I9j0kLmN",
+          "deadbeefcafebabe0123456789abcdef", "qwertyuiopasdfghjklzxcvbnmqwertyuiop",
+          "Bearer abcdef", "../../etc/passwd", "seven_day ", "a1b2c3d4e5f6")
+
+
+def unsafe_status(label):
+    value = status([observation("11111111-a", {"name": label, "used_percent": 12, "resets_at": 1792000800},
+                                provider=label, freshness=label, quota=label)],
+                   [{"provider": label, "native_thread_id": "22222222-b", "activity_state": label,
+                     "availability_state": label, "last_successful_turn_at": "2026-10-13T10:00:00+00:00",
+                     "error_type": label, "first_error_at": "2026-10-13T09:00:00+00:00"}],
+                   collection={label: {"last_success": "2026-10-13T10:59:00+00:00", "collection_state": label,
+                                       "freshness_ttl_seconds": 300}})
+    value.update(failed_providers=[label], alerts=[{"alert_id": "c" * 32, "provider": label,
+                                                    "native_thread_id": "33333333-c", "state": label}])
+    return value
+
+
+@pytest.mark.parametrize("label", UNSAFE)
+def test_an_unsafe_observer_label_never_reaches_an_output_byte_and_reads_unknown(tmp_path, monkeypatch, label):
+    result, out, published = run_hook(tmp_path, monkeypatch, encoded(unsafe_status(label)))
+    assert result == 0
+    for path in sorted(out.iterdir()) + sorted(published.iterdir()):
+        body = path.read_bytes()
+        assert label.encode() not in body and json.dumps(label)[1:-1].encode() not in body, path.name
+    lines = (published / "lens-limits.txt").read_text(encoding="ascii").splitlines()
+    assert lines[1:] == [
+        "LIMITS UNKNOWN UNKNOWN: 12%; resets 2026-10-14T18:00Z (in 1860 min); observer UNKNOWN, quota UNKNOWN, "
+        "under 1 min old",
+        "COLLECTION UNKNOWN: FAILED; state UNKNOWN; last success 2026-10-13T10:59Z (1 min ago); no attempt recorded; "
+        "observer TTL 300 s; failed provider",
+        "ALERTS: 1 (UNKNOWN UNKNOWN x1)",
+        "ACTIVITY UNKNOWN: threads 1; UNKNOWN x1; latest success 2026-10-13T10:00Z (60 min ago); error UNKNOWN x1 "
+        "since 2026-10-13T09:00"]
+
+
+def test_known_providers_and_short_safe_labels_pass_and_an_unknown_provider_does_not():
+    value = status([observation("11111111-a", {"name": "seven_day_opus", "used_percent": 3}, provider="codex",
+                                freshness="unknown_or_stale", quota="observed_headroom"),
+                    observation("22222222-b", {"name": "five_hour", "used_percent": 4}, provider="gemini")],
+                   collection={"claude": {"last_success": None, "collection_state": "pending_or_interrupted"}})
+    lines = render(value)
+    assert [line[:line.index(";")] for line in lines if line.startswith(("LIMITS", "COLLECTION"))] == [
+        "LIMITS UNKNOWN five_hour: 4%", "LIMITS codex seven_day_opus: 3%",
+        "LIMITS claude: UNKNOWN (observer has no successful collection", "COLLECTION claude: NO_SUCCESS"]
+    assert "observer unknown_or_stale, quota observed_headroom" in lines[2]
+
+
+# PR 2041 review K2: the age of the whole status against the lens's own UTC clock (injected here).
+CLOCK_CASES = {
+    "same_second": ("2026-10-13T11:00:00+00:00", 0.0, "FRESH", "status age under 1 min, FRESH"),
+    "fresh": ("2026-10-13T11:00:30+00:00", 30.0, "FRESH", "status age under 1 min, FRESH"),
+    "at_the_limit": ("2026-10-13T11:02:00+00:00", 120.0, "FRESH", "status age 2 min, FRESH"),
+    "just_over": ("2026-10-13T11:02:01+00:00", 121.0, "STALE", "status age 2 min, STALE"),
+    "hours_old": ("2026-10-13T14:00:00+00:00", 10800.0, "STALE", "status age 180 min, STALE"),
+    "one_second_ahead": ("2026-10-13T10:59:59+00:00", -1.0, "FUTURE",
+                         "status time under 1 min ahead of the lens clock, FUTURE (invalid)"),
+    "ten_min_ahead": ("2026-10-13T10:50:00+00:00", -600.0, "FUTURE",
+                      "status time 10 min ahead of the lens clock, FUTURE (invalid)"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(CLOCK_CASES))
+def test_the_whole_status_age_is_measured_against_the_lens_clock(monkeypatch, case):
+    checked, age, state, shown = CLOCK_CASES[case]
+    monkeypatch.setattr(lens, "clock", lambda: lens.parse_time(checked))
+    assert lens.project(status(), {})[5] == {"checked_utc": lens.utc(lens.parse_time(checked)), "age_s": age,
+                                             "state": state}
+    assert render(status())[0].startswith(
+        f"capacity (installed observer, read-only) observed 2026-10-13T11:00:00Z ({shown}); ")
+
+
+def test_the_lens_clock_is_the_real_utc_clock():
+    import datetime as dt
+    assert REAL_CLOCK is not None
+    checked = REAL_CLOCK()
+    assert checked.utcoffset() == dt.timedelta(0)
+    assert abs((checked - dt.datetime.now(dt.timezone.utc)).total_seconds()) < 5

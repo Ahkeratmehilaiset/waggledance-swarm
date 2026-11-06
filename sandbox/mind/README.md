@@ -57,7 +57,8 @@ cover. Everything stays under the sandbox data root, where the callers place it.
 
 * **No content guard:** the capture round's `capture.json`, `detail-manifest.txt`, `gh-pr-list.json`, files cache
   and `context.json`; the producer's `detail-manifest.txt` (a ref, a row sha256 and a source word per row, built
-  from the guarded capture's verified rows); the capacity lens's raw `capacity-status.json`.
+  from the guarded capture's verified rows). The capacity lens keeps no raw observer status: it writes only its
+  guarded view and text (below), which carry no thread id, alert id, account, plan, token count or provider payload.
 * **Only a derived object:** the capture round writes `gh-open-status.json` after the guard of the status object
   derived from it, which does not cover the response's unprojected fields.
 * **Copies without a guard of their own:** the capture round's `--reuse-context` copies `gh-pr-list.json`,

@@ -168,11 +168,28 @@ def _check_project_origins(code):
 
 def main(argv):
     try:
-        if (not sys.flags.isolated or not sys.flags.no_site or not sys.dont_write_bytecode
-                or len(argv) != 6 or argv[0] != '--config' or argv[2] != '--sha256'
-                or argv[4] != '--manifest-sha256'):
+        if not sys.flags.isolated or not sys.flags.no_site or not sys.dont_write_bytecode:
             raise ValueError()
-        config_path, config_pin, manifest_pin = argv[1], argv[3], argv[5]
+        if len(argv) == 6 and argv[0] == '--config' and argv[2] == '--sha256' and argv[4] == '--manifest-sha256':
+            config_path, config_pin, manifest_pin = argv[1], argv[3], argv[5]
+            module_name = 'wd_q4_live_update_once'
+            module_args = ['--once', '--config', config_path, '--sha256', config_pin]
+        elif (len(argv) in (11, 13) and argv[0] == '--recover' and argv[1] == '--config'
+              and argv[3] == '--sha256' and argv[5] == '--manifest-sha256' and argv[7] == '--attempt'):
+            config_path, config_pin, manifest_pin = argv[2], argv[4], argv[6]
+            if not _HEX.fullmatch(argv[8]):
+                raise ValueError()
+            if len(argv) == 11 and argv[9] == '--progress-sha256' and _HEX.fullmatch(argv[10]):
+                evidence = argv[9:11]
+            elif (len(argv) == 13 and argv[9] == '--runner-receipt-sha256' and _HEX.fullmatch(argv[10])
+                  and argv[11] == '--pointer-sha256' and _HEX.fullmatch(argv[12])):
+                evidence = argv[9:13]
+            else:
+                raise ValueError()
+            module_name = 'wd_q4_live_update_recovery'
+            module_args = ['--recover', '--config', config_path, '--sha256', config_pin, '--attempt', argv[8], *evidence]
+        else:
+            raise ValueError()
         config = _document(_read(config_path, config_pin, 65536))
         if config.get('schema') != 'wd.q4-live-update-once.v1' or config.get('manifest_sha256') != manifest_pin:
             raise ValueError()
@@ -205,15 +222,15 @@ def main(argv):
         sys.path.append(str(runtime_site))
         sys.meta_path.insert(0, _ProjectOriginGuard(code))
         import importlib
-        module = importlib.import_module('tools.wd_q4_live_update_once')
-        if not os.path.samefile(module.__file__, code / 'tools' / 'wd_q4_live_update_once.py'):
+        module = importlib.import_module('tools.' + module_name)
+        if not os.path.samefile(module.__file__, code / 'tools' / (module_name + '.py')):
             raise ValueError()
         _check_project_origins(code)
         output = _BoundedOutput()
         prior_stdout = sys.stdout
         try:
             sys.stdout = output
-            result = module.main(['--once', '--config', config_path, '--sha256', config_pin])
+            result = module.main(module_args)
             _check_project_origins(code)
         finally:
             sys.stdout = prior_stdout

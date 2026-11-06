@@ -177,6 +177,14 @@ function Read-Utf8DeploymentSnapshot {
     return [pscustomobject]@{ Hash = $hash; Text = $text }
 }
 
+function Get-WdQ4PointerIntegrityLine {
+    param([Parameter(Mandatory)] [string] $Path, [Parameter(Mandatory)] [string] $ExpectedSha256)
+    if ($ExpectedSha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'q4_pointer_integrity_refused' }
+    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
+    if ($actual -cne $ExpectedSha256.ToUpperInvariant()) { throw 'q4_pointer_integrity_refused' }
+    return ('{0} *{1}' -f $actual, $Path)
+}
+
 function Get-WdPinnedQ4InstallDefault {
     # A post-deploy pair is separately supplied: computing a digest here is
     # verification of that input, not authority to trust arbitrary bytes.
@@ -648,49 +656,6 @@ if ([string]::IsNullOrWhiteSpace($Q4SharedDescriptorPath) -ne
         ($Q4SharedDescriptorSha256 -and $Q4SharedDescriptorSha256 -cnotmatch '^[0-9a-f]{64}$')) {
     throw 'q4_shared_descriptor_pair_refused'
 }
-$q4PointerPin = '__WD_Q4_POINTER_PIN__'
-if ($q4PointerPin) {
-    $q4State = 'UNAVAILABLE'
-    try {
-        $q4Bundle = Split-Path -Parent $target
-        $q4Manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        foreach ($q4Leaf in @('Get-WdQ4DefaultDescriptor.ps1','Invoke-WdQ4LaneRecall.ps1')) {
-            $q4File = Join-Path $q4Bundle $q4Leaf
-            $q4Pin = [string]$q4Manifest.files.PSObject.Properties[$q4Leaf].Value
-            if ($q4Pin -cnotmatch '^[0-9A-Fa-f]{64}$' -or
-                (Get-FileHash -LiteralPath $q4File -Algorithm SHA256).Hash -cne $q4Pin.ToUpperInvariant()) {
-                throw 'q4_helper_pin_refused'
-            }
-        }
-        $q4Resolver = Join-Path $q4Bundle 'Get-WdQ4DefaultDescriptor.ps1'
-        $q4ResolverBytes = [IO.File]::ReadAllBytes($q4Resolver)
-        $q4Hash = [Security.Cryptography.SHA256]::Create()
-        try { $q4Actual = [BitConverter]::ToString($q4Hash.ComputeHash($q4ResolverBytes)).Replace('-', '') }
-        finally { $q4Hash.Dispose() }
-        if ($q4Actual -cne ([string]$q4Manifest.files.PSObject.Properties['Get-WdQ4DefaultDescriptor.ps1'].Value).ToUpperInvariant()) {
-            throw 'q4_helper_pin_refused'
-        }
-        . ([scriptblock]::Create([Text.UTF8Encoding]::new($false,$true).GetString($q4ResolverBytes)))
-        $q4Resolved = Get-WdQ4DefaultDescriptor `
-            -PointerPath (Join-Path (Split-Path -Parent $PSCommandPath) 'WD_Q4_DESCRIPTOR_CURRENT.json') `
-            -ExpectedPointerSha256 $q4PointerPin -ActiveBundle $q4Bundle `
-            -ExpectedManifestHash $env:WD_REBOOT_EXPECTED_MANIFEST_HASH -ExpectedCommit '__WD_Q4_COMMIT__' `
-            -ExplicitPath $Q4SharedDescriptorPath -ExplicitSha256 $Q4SharedDescriptorSha256
-        $q4State = [string]$q4Resolved.State
-        if ($q4State -ceq 'READY') {
-            $Q4SharedDescriptorPath = [string]$q4Resolved.DescriptorPath
-            $Q4SharedDescriptorSha256 = [string]$q4Resolved.DescriptorSha256
-        }
-    } catch { $q4State = 'UNAVAILABLE' }
-    if ($q4State -cne 'READY') {
-        [Console]::Error.WriteLine('Q4 default unavailable: pointer, helper or active bundle validation failed; fleet continues without Q4.')
-        $Q4SharedDescriptorPath = ''; $Q4SharedDescriptorSha256 = ''
-        [void]$PSBoundParameters.Remove('Q4SharedDescriptorPath')
-        [void]$PSBoundParameters.Remove('Q4SharedDescriptorSha256')
-    } else { [Console]::Error.WriteLine('Q4 default descriptor validated for the active bundle.') }
-} elseif (-not $Q4SharedDescriptorPath) {
-    [Console]::Error.WriteLine('Q4 default OFF: no independently pinned post-deploy pointer.')
-}
 $targetParameters = @{}
 foreach ($key in $PSBoundParameters.Keys) {
     if ($key -notin @('Auto', 'Apply', 'DryRun')) {
@@ -932,13 +897,67 @@ foreach (`$key in `$PSBoundParameters.Keys) {
     } else {
         '& $target @PSBoundParameters'
     }
-    if ($WrapperKind -ceq 'fleet') {
-        if ($ExpectedQ4PointerSha256 -and $ExpectedQ4PointerSha256 -cnotmatch '^[0-9a-f]{64}$') {
-            throw 'q4_pointer_pin_refused'
+    $wrapperQ4Resolve = if ($WrapperKind -cin @('fleet', 'agent', 'tools', 'supervisor')) {
+@'
+if ([string]::IsNullOrWhiteSpace($Q4SharedDescriptorPath) -ne
+        [string]::IsNullOrWhiteSpace($Q4SharedDescriptorSha256) -or
+        ($Q4SharedDescriptorSha256 -and $Q4SharedDescriptorSha256 -cnotmatch '^[0-9a-f]{64}$')) {
+    throw 'q4_shared_descriptor_pair_refused'
+}
+$q4PointerPin = '__WD_Q4_POINTER_PIN__'
+if ($q4PointerPin) {
+    $q4State = 'UNAVAILABLE'
+    try {
+        $q4Bundle = Split-Path -Parent $target
+        $q4Manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($q4Leaf in @('Get-WdQ4DefaultDescriptor.ps1','Invoke-WdQ4LaneRecall.ps1')) {
+            $q4File = Join-Path $q4Bundle $q4Leaf
+            $q4Pin = [string]$q4Manifest.files.PSObject.Properties[$q4Leaf].Value
+            if ($q4Pin -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+                (Get-FileHash -LiteralPath $q4File -Algorithm SHA256).Hash -cne $q4Pin.ToUpperInvariant()) {
+                throw 'q4_helper_pin_refused'
+            }
         }
-        $targetInvocation = $targetInvocation.Replace('__WD_Q4_POINTER_PIN__', $ExpectedQ4PointerSha256)
-        $targetInvocation = $targetInvocation.Replace('__WD_Q4_COMMIT__', $ExpectedFinalCommit)
+        $q4Resolver = Join-Path $q4Bundle 'Get-WdQ4DefaultDescriptor.ps1'
+        $q4ResolverBytes = [IO.File]::ReadAllBytes($q4Resolver)
+        $q4Hash = [Security.Cryptography.SHA256]::Create()
+        try { $q4Actual = [BitConverter]::ToString($q4Hash.ComputeHash($q4ResolverBytes)).Replace('-', '') }
+        finally { $q4Hash.Dispose() }
+        if ($q4Actual -cne ([string]$q4Manifest.files.PSObject.Properties['Get-WdQ4DefaultDescriptor.ps1'].Value).ToUpperInvariant()) {
+            throw 'q4_helper_pin_refused'
+        }
+        . ([scriptblock]::Create([Text.UTF8Encoding]::new($false,$true).GetString($q4ResolverBytes)))
+        $q4Resolved = Get-WdQ4DefaultDescriptor `
+            -PointerPath (Join-Path (Split-Path -Parent $PSCommandPath) 'WD_Q4_DESCRIPTOR_CURRENT.json') `
+            -ExpectedPointerSha256 $q4PointerPin -ActiveBundle $q4Bundle `
+            -ExpectedManifestHash $env:WD_REBOOT_EXPECTED_MANIFEST_HASH -ExpectedCommit '__WD_Q4_COMMIT__' `
+            -ExplicitPath $Q4SharedDescriptorPath -ExplicitSha256 $Q4SharedDescriptorSha256
+        $q4State = [string]$q4Resolved.State
+        if ($q4State -ceq 'READY') {
+            $Q4SharedDescriptorPath = [string]$q4Resolved.DescriptorPath
+            $Q4SharedDescriptorSha256 = [string]$q4Resolved.DescriptorSha256
+        }
+    } catch { $q4State = 'UNAVAILABLE' }
+    if ($q4State -cne 'READY') {
+        [Console]::Error.WriteLine('Q4 default unavailable: pointer, helper or active bundle validation failed; fleet continues without Q4.')
+        $Q4SharedDescriptorPath = ''; $Q4SharedDescriptorSha256 = ''
+        [void]$PSBoundParameters.Remove('Q4SharedDescriptorPath')
+        [void]$PSBoundParameters.Remove('Q4SharedDescriptorSha256')
+    } else { [Console]::Error.WriteLine('Q4 default descriptor validated for the active bundle.') }
+} elseif (-not $Q4SharedDescriptorPath) {
+    [Console]::Error.WriteLine('Q4 default OFF: no independently pinned post-deploy pointer.')
+}
+if ($Q4SharedDescriptorPath) {
+    $PSBoundParameters['Q4SharedDescriptorPath'] = $Q4SharedDescriptorPath
+    $PSBoundParameters['Q4SharedDescriptorSha256'] = $Q4SharedDescriptorSha256
+}
+'@
+    } else { '' }
+    if ($ExpectedQ4PointerSha256 -and $ExpectedQ4PointerSha256 -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'q4_pointer_pin_refused'
     }
+    $wrapperQ4Resolve = $wrapperQ4Resolve.Replace('__WD_Q4_POINTER_PIN__', $ExpectedQ4PointerSha256)
+    $wrapperQ4Resolve = $wrapperQ4Resolve.Replace('__WD_Q4_COMMIT__', $ExpectedFinalCommit)
     $escapedTarget = $Target.Replace("'", "''")
     # A grok launcher reports 1 unless the bundle publishes a code: a check that refuses before
     # the bundle runs must not leave an in-process caller's earlier 0 in $LASTEXITCODE.
@@ -1003,7 +1022,8 @@ if ('$WrapperKind' -cne 'library') {
     ) {
         throw "WD reboot state pointer `$statePath does not match this launcher's pinned final package (commit $ExpectedFinalCommit); refusing to start, and no older bundle is tried"
     }
-}
+ }
+$wrapperQ4Resolve
 $targetInvocation
 "@
 }
@@ -1414,6 +1434,9 @@ if (-not $SkipTaskRegistration -and -not $StageOnly) {
 
 if ($DryRun) {
     Write-Host 'DRY RUN: no files, tasks, caches, or processes will be changed.'
+    if ($Q4DefaultPointerPath) {
+        Write-Host '  Q4 default NOT_CHECKED: pointer and binding are verified only during final staged install.'
+    }
     foreach ($name in $sourceHashes.Keys) {
         Write-Host ("  {0}  {1}" -f $sourceHashes[$name], $name)
     }
@@ -1777,6 +1800,10 @@ foreach ($spec in $dataSpecs) {
         ).Hash.ToUpperInvariant(),
         $machinePath
     ))
+}
+if ($Q4DefaultPointerPath) {
+    $integrityLines.Add((Get-WdQ4PointerIntegrityLine `
+        -Path (Join-Path $machineFull 'WD_Q4_DESCRIPTOR_CURRENT.json') -ExpectedSha256 $Q4DefaultPointerSha256))
 }
 foreach ($property in $installedManifest.files.PSObject.Properties) {
     $integrityLines.Add((

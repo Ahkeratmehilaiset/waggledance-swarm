@@ -43,7 +43,8 @@ def staged(tmp_path):
         "$global:capturedQ4=@{path=$Q4SharedDescriptorPath;hash=$Q4SharedDescriptorSha256}\n"
         "return [pscustomobject]@{ok=$true;stage='done';reasons=@()}\n}\n", encoding="utf-8")
     target = bundle / "start-wd-all.ps1"
-    target.write_text("param([string]$Q4SharedDescriptorPath='', [string]$Q4SharedDescriptorSha256='', [switch]$DryRun)\n"
+    target.write_text("param([string]$Q4SharedDescriptorPath='', [string]$Q4SharedDescriptorSha256='', "
+                      "[string]$Agent='', [string]$Generation='', [switch]$DryRun, [switch]$ValidateOnly)\n"
                       "@{path=$Q4SharedDescriptorPath;hash=$Q4SharedDescriptorSha256}|ConvertTo-Json -Compress\n",
                       encoding="utf-8")
     fleet = {"lanes": [{"agent": lane} for lane in LANES if lane != "codex-tools-1"],
@@ -237,3 +238,77 @@ $command=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([string]
     else:
         assert observed["bootstrap"] == {"path": "", "hash": ""}
         assert "-Q4SharedDescriptorPath" not in observed["command"]
+
+
+def test_installer_dryrun_explicitly_reports_q4_pointer_not_checked():
+    source = INSTALLER.read_text(encoding="utf-8")
+    start = source.index("if ($DryRun) {", source.index("Running mutation-free deployment preflight"))
+    stop = source.index("\n    return\n}", start)
+    block = source[start:stop]
+    assert "$Q4DefaultPointerPath" in block and "Q4 default NOT_CHECKED" in block
+
+
+def test_both_q4_helpers_are_required_bundle_files():
+    source = INSTALLER.read_text(encoding="utf-8")
+    start = source.index("foreach ($required in @(")
+    stop = source.index("if (-not $sourceHashes.Contains($required))", start)
+    block = source[start:stop]
+    assert "'Get-WdQ4DefaultDescriptor.ps1'" in block
+    assert "'Invoke-WdQ4LaneRecall.ps1'" in block
+
+
+@pytest.mark.parametrize("case", ["ok", "tampered"])
+def test_installed_pointer_integrity_line_rechecks_exact_bytes(tmp_path, case):
+    pointer = tmp_path / "WD_Q4_DESCRIPTOR_CURRENT.json"
+    original = b'{"synthetic":true}\n'
+    pointer.write_bytes(original if case == "ok" else original + b" ")
+    script = load(INSTALLER, "Get-WdQ4PointerIntegrityLine") + f'''
+try {{
+ $line=Get-WdQ4PointerIntegrityLine -Path {q(pointer)} -ExpectedSha256 {q(sha(original))}
+ @{{ok=$true;line=$line}}|ConvertTo-Json -Compress
+}} catch {{ @{{ok=$false}}|ConvertTo-Json -Compress }}
+'''
+    completed = subprocess.run([SHELL, "-NoProfile", "-NonInteractive", "-Command", script],
+                               capture_output=True, text=True, timeout=20, check=False)
+    assert completed.returncode == 0, completed.stderr
+    observed = json.loads(completed.stdout)
+    if case == "ok":
+        assert observed == {"ok": True, "line": sha(original).upper() + " *" + str(pointer)}
+    else:
+        assert observed == {"ok": False}
+
+
+@pytest.mark.parametrize("kind", ["fleet", "agent", "agent-fixed", "tools"])
+def test_individual_generated_wrapper_uses_same_anchored_default(staged, kind):
+    """Three synthetic wrappers, no actual lane process or installation."""
+    item = staged
+    machine = item["bundle"].parent
+    state = {"source_commit": "b" * 40, "final_commit": "b" * 40,
+             "manifest_sha256": item["manifest_sha"].upper(),
+             "final_manifest_sha256": item["manifest_sha"].upper(), "active_bundle": str(item["bundle"])}
+    (machine / "WD_REBOOT_STATE_CURRENT.json").write_bytes(canon(state))
+    pointer = {"schema": "wd.q4-descriptor-pointer.v1", "active_bundle": str(item["bundle"]),
+        "manifest_sha256": item["manifest_sha"].upper(), "bundle_commit": "b" * 40,
+        "descriptor_path": str(item["descriptor"]), "descriptor_sha256": item["descriptor_sha"],
+        "generation": "b" * 40}
+    raw = canon(pointer)
+    (machine / "WD_Q4_DESCRIPTOR_CURRENT.json").write_bytes(raw)
+    wrapper = machine / ("synthetic-" + kind + ".ps1")
+    wrapper_kind = "agent" if kind == "agent-fixed" else kind
+    fixed_agent = "fable-5" if kind == "agent-fixed" else ""
+    generator = load(INSTALLER, "New-ForwardingWrapper") + f'''
+$script=New-ForwardingWrapper -Target {q(item["target"])} -ExpectedHash {q(sha(item["target"].read_bytes()).upper())} `
+ -ExpectedManifestHash {q(item["manifest_sha"].upper())} -WrapperKind {q(wrapper_kind)} -FixedAgent {q(fixed_agent)} -ExpectedFinalCommit {'b' * 40} `
+ -ExpectedFinalManifestHash {q(item["manifest_sha"].upper())} -ExpectedQ4PointerSha256 {q(sha(raw))}
+[IO.File]::WriteAllText({q(wrapper)},$script,[Text.UTF8Encoding]::new($false))
+'''
+    built = subprocess.run([SHELL, "-NoProfile", "-NonInteractive", "-Command", generator],
+                           capture_output=True, text=True, timeout=20, check=False)
+    assert built.returncode == 0 and wrapper.exists(), built.stderr
+    args = {"fleet": ["-DryRun"], "agent": ["-Agent", "codex-lead-1", "-DryRun"], "agent-fixed": ["-DryRun"],
+            "tools": ["-Generation", "b" * 40, "-ValidateOnly"]}[kind]
+    result = subprocess.run([SHELL, "-NoProfile", "-NonInteractive", "-File", str(wrapper), *args],
+                            capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout.strip().splitlines()[-1]) == {
+        "path": str(item["descriptor"]), "hash": item["descriptor_sha"]}

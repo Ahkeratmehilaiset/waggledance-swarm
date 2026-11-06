@@ -47,7 +47,7 @@ $bundle = Assert-LivePath $BundleRoot -Directory
 $stateFile = Assert-LivePath $StatePath
 $configFile = Assert-LivePath $ConfigPath
 $manifestFile = Assert-LivePath (Join-Path $bundle 'deployment-manifest.json')
-$wrapper = Assert-LivePath (Join-Path $bundle 'Invoke-WdBridgePython.ps1')
+$bootstrapFile = Assert-LivePath (Join-Path $bundle 'tools-bootstrap\tools\wd_q4_live_update_bootstrap.py')
 $module = Assert-LivePath (Join-Path $bundle 'tools-bootstrap\tools\wd_q4_live_update_once.py')
 $manifestHash = $ExpectedManifestSha256.ToUpperInvariant()
 $configHash = $ExpectedConfigSha256.ToUpperInvariant()
@@ -64,12 +64,34 @@ if ([int]$manifest.schema_version -ne 1 -or [string]$manifest.source_commit -cne
     -not [string]::Equals([string]$state.active_bundle, $bundle, [StringComparison]::OrdinalIgnoreCase) -or
     [string]$config.schema -cne 'wd.q4-live-update-once.v1' -or
     ([string]$config.manifest_sha256).ToUpperInvariant() -cne $manifestHash) { throw 'State, commit or config does not bind the approved bundle.' }
-foreach ($entry in @(@('Invoke-WdBridgePython.ps1', $wrapper), @('tools-bootstrap/tools/wd_q4_live_update_once.py', $module))) {
+foreach ($entry in @(@('tools-bootstrap/tools/wd_q4_live_update_bootstrap.py', $bootstrapFile),
+                       @('tools-bootstrap/tools/wd_q4_live_update_once.py', $module))) {
     $pin = $manifest.files.PSObject.Properties[$entry[0]]
     if ($null -eq $pin -or (Get-FileHash -LiteralPath $entry[1] -Algorithm SHA256).Hash -cne ([string]$pin.Value).ToUpperInvariant()) {
         throw 'Packaged tool hash does not match the manifest.'
     }
 }
+$baselineFile = Assert-LivePath ([string]$config.baseline_path)
+if ((Get-FileHash -LiteralPath $baselineFile -Algorithm SHA256).Hash -cne ([string]$config.baseline_sha256).ToUpperInvariant()) {
+    throw 'Baseline descriptor pin mismatch.'
+}
+$baseline = Get-Content -LiteralPath $baselineFile -Raw -Encoding UTF8 | ConvertFrom-Json
+$interpreter = Assert-LivePath ([string]$baseline.interpreter)
+$fixedFile = Assert-LivePath ([string]$baseline.fixed_plan_path)
+$runtimeManifest = Assert-LivePath ([string]$baseline.runtime_manifest_path)
+$interpreterHash = ([string]$baseline.interpreter_sha256).ToUpperInvariant()
+$fixedHash = ([string]$baseline.fixed_plan_sha256).ToUpperInvariant()
+$runtimeHash = ([string]$baseline.runtime_manifest_sha256).ToUpperInvariant()
+if ((Get-FileHash -LiteralPath $interpreter -Algorithm SHA256).Hash -cne $interpreterHash -or
+    (Get-FileHash -LiteralPath $fixedFile -Algorithm SHA256).Hash -cne $fixedHash -or
+    (Get-FileHash -LiteralPath $runtimeManifest -Algorithm SHA256).Hash -cne $runtimeHash) { throw 'Runtime tuple pin mismatch.' }
+$fixed = Get-Content -LiteralPath $fixedFile -Raw -Encoding UTF8 | ConvertFrom-Json
+if (([string]$fixed.interpreter_sha256).ToUpperInvariant() -cne $interpreterHash -or
+    ([string]$fixed.runtime_manifest_sha256).ToUpperInvariant() -cne $runtimeHash -or
+    -not [string]::Equals([string]$fixed.runtime_manifest_path, $runtimeManifest, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Runtime tuple is inconsistent.'
+}
+[void](Assert-LivePath ([string]$fixed.runtime_root) -Directory)
 $routeFile = Assert-LivePath ([string]$config.route_path)
 if ((Get-FileHash -LiteralPath $routeFile -Algorithm SHA256).Hash -cne ([string]$config.route_sha256).ToUpperInvariant()) {
     throw 'Route pin mismatch.'
@@ -90,16 +112,23 @@ if ([string]$state.source_commit -cne %COMMIT% -or [string]$state.final_commit -
     -not [string]::Equals([string]$state.active_bundle, %BUNDLE%, [StringComparison]::OrdinalIgnoreCase) -or
     (Get-FileHash -LiteralPath %MANIFEST% -Algorithm SHA256).Hash -cne %MANIFEST_HASH% -or
     (Get-FileHash -LiteralPath %CONFIG% -Algorithm SHA256).Hash -cne %CONFIG_HASH% -or
-    (Get-FileHash -LiteralPath %WRAPPER% -Algorithm SHA256).Hash -cne %WRAPPER_HASH% -or
+    (Get-FileHash -LiteralPath %BASELINE% -Algorithm SHA256).Hash -cne %BASELINE_HASH% -or
+    (Get-FileHash -LiteralPath %FIXED% -Algorithm SHA256).Hash -cne %FIXED_HASH% -or
+    (Get-FileHash -LiteralPath %RUNTIME_MANIFEST% -Algorithm SHA256).Hash -cne %RUNTIME_HASH% -or
+    (Get-FileHash -LiteralPath %PYTHON% -Algorithm SHA256).Hash -cne %PYTHON_HASH% -or
+    (Get-FileHash -LiteralPath %BOOTSTRAP% -Algorithm SHA256).Hash -cne %BOOTSTRAP_HASH% -or
     (Test-Path -LiteralPath %MARKER%)) { exit 3 }
 $env:WD_REBOOT_EXPECTED_MANIFEST_HASH = %MANIFEST_HASH%
-& %WRAPPER% -Tool 'tools/wd_q4_live_update_once.py' -VerifyPackage -ToolArguments @('--once','--config',%CONFIG%,'--sha256',%CONFIG_HASH_LOWER%)
+& %PYTHON% -I -S -B %BOOTSTRAP% '--config' %CONFIG% '--sha256' %CONFIG_HASH_LOWER% '--manifest-sha256' %MANIFEST_HASH_LOWER%
 exit $LASTEXITCODE
 '@
 $values = [ordered]@{'%STATE%'=$stateFile; '%COMMIT%'=$ExpectedCommit; '%BUNDLE%'=$bundle;
     '%MANIFEST%'=$manifestFile; '%MANIFEST_HASH%'=$manifestHash; '%CONFIG%'=$configFile; '%CONFIG_HASH%'=$configHash;
-    '%CONFIG_HASH_LOWER%'=$configHash.ToLowerInvariant(); '%WRAPPER%'=$wrapper;
-    '%WRAPPER_HASH%'=(Get-FileHash -LiteralPath $wrapper -Algorithm SHA256).Hash; '%MARKER%'=$marker}
+    '%CONFIG_HASH_LOWER%'=$configHash.ToLowerInvariant(); '%MANIFEST_HASH_LOWER%'=$manifestHash.ToLowerInvariant();
+    '%BASELINE%'=$baselineFile; '%BASELINE_HASH%'=([string]$config.baseline_sha256).ToUpperInvariant();
+    '%FIXED%'=$fixedFile; '%FIXED_HASH%'=$fixedHash; '%RUNTIME_MANIFEST%'=$runtimeManifest; '%RUNTIME_HASH%'=$runtimeHash;
+    '%PYTHON%'=$interpreter; '%PYTHON_HASH%'=$interpreterHash; '%BOOTSTRAP%'=$bootstrapFile;
+    '%BOOTSTRAP_HASH%'=(Get-FileHash -LiteralPath $bootstrapFile -Algorithm SHA256).Hash; '%MARKER%'=$marker}
 foreach ($key in $values.Keys) { $bootstrap = $bootstrap.Replace($key, (Literal $values[$key])) }
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap))
 $taskName = 'WD-MindLiveUpdate'

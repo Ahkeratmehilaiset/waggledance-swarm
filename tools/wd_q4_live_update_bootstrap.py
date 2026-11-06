@@ -193,7 +193,8 @@ def main(argv):
         config = _document(_read(config_path, config_pin, 65536))
         if config.get('schema') != 'wd.q4-live-update-once.v1' or config.get('manifest_sha256') != manifest_pin:
             raise ValueError()
-        if os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower() != manifest_pin:
+        inherited_manifest = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
+        if inherited_manifest and inherited_manifest != manifest_pin:
             raise ValueError()
         bundle = Path(__file__).absolute().parents[2]
         manifest = _document(_read(bundle / 'deployment-manifest.json', manifest_pin, 4 * 1024 * 1024))
@@ -218,6 +219,10 @@ def main(argv):
         runtime_code, runtime_site, runtime_model = root / 'assets' / 'code', root / 'site', root / 'model'
         if not all(path.is_dir() for path in (code, runtime_code, runtime_site, runtime_model)):
             raise ValueError()
+        # A constrained Job intentionally inherits no WD_* variables. The
+        # independently supplied manifest pin was just checked; expose only
+        # that pin to this child after successful package/runtime validation.
+        os.environ['WD_REBOOT_EXPECTED_MANIFEST_HASH'] = manifest_pin
         sys.path.insert(0, str(code))
         sys.path.append(str(runtime_site))
         sys.meta_path.insert(0, _ProjectOriginGuard(code))

@@ -144,9 +144,10 @@ Describe 'Assert-WdLaneLaunchAvailable bounded recheck' {
     $message | Should Match 'reason=parent_missing'
     $message | Should Match 'parent PID 999 missing'
     $message | Should Match 'ancestry 16300:claude\.exe'
-    $message | Should Match 'executable C:\\npm\\claude\.exe'
+    $message | Should Match ([regex]::Escape('executable <redacted-path>\claude.exe'))
     $message | Should Match '1 unattributed after 4 pass\(es\) with recheck 3 x 5 s'
-    $message | Should Match ('diagnostics .*' + [regex]::Escape((Split-Path -Leaf $log)))
+    $message | Should Match ([regex]::Escape('diagnostics <redacted-path>)'))
+    $message | Should Not Match ([regex]::Escape((Split-Path -Leaf $log)))
     Assert-MockCalled -Scope It Get-CimInstance -Exactly 4
     Assert-MockCalled -Scope It Start-Sleep -Exactly 3 -ParameterFilter { $Seconds -eq 5 }
     $records = @(Read-DiagnosticRecords -Path $log)
@@ -157,7 +158,7 @@ Describe 'Assert-WdLaneLaunchAvailable bounded recheck' {
     $last.parent_pid | Should Be 999
     $last.parent_alive | Should Be $false
     $last.ancestry | Should Be '16300:claude.exe'
-    $last.executable_path | Should Be 'C:\npm\claude.exe'
+    $last.executable_path | Should Be '<redacted-path>\claude.exe'
     # pwsh 7 ConvertFrom-Json turns the ISO text into a local DateTime; compare the instant.
     ([DateTimeOffset]$last.creation_utc).ToUniversalTime().ToString('o') | Should Be ([DateTimeOffset]$stray.CreationDate).ToUniversalTime().ToString('o')
     $last.age_seconds | Should BeGreaterThan 0
@@ -421,9 +422,10 @@ Describe 'Assert-WdLaneLaunchAvailable recheck budget and configuration' {
     ($lines -join "`n") | Should Match '"command_line_length":30'
   }
 
-  It 'redacts the user name of a profile-rooted executable path in the record and the refusal, and keeps other paths whole' {
+  It 'records only the whitelisted basename of a profile-rooted executable path in the record and the refusal, and the same for another drive' {
     # Lead pre-review of 5524038b: a native CLI usually lives under the user
-    # profile, so the full executable path names the Windows user.
+    # profile, so the full executable path names the Windows user. Since the
+    # 2026-11-06 v2 revision no directory segment is recorded at all.
     $stray = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe --resume old' -Seconds 5 -Executable 'C:\Users\someone\AppData\Roaming\npm\claude.exe'
     $other = New-Row -Id 16301 -Parent 999 -Name 'codex.exe' -Command 'codex.exe' -Seconds 6 -Executable 'D:\tools\codex\codex.exe'
     Mock Get-CimInstance { @((New-Baseline) + @($stray, $other)) }
@@ -432,20 +434,20 @@ Describe 'Assert-WdLaneLaunchAvailable recheck budget and configuration' {
     try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
     $message | Should Match 'has no verified launcher ancestry'
     $message | Should Not Match 'someone'
-    $message | Should Match ([regex]::Escape('C:\Users\<redacted>\AppData\Roaming\npm\claude.exe'))
-    if ($log.StartsWith($env:USERPROFILE, [StringComparison]::OrdinalIgnoreCase)) {
-      # The diagnostics path named in the refusal is redacted too (own profile root).
-      $message | Should Not Match ([regex]::Escape($env:USERPROFILE))
-      $message | Should Match 'diagnostics <userprofile>'
-    }
+    $message | Should Match ([regex]::Escape('executable <redacted-path>\claude.exe'))
+    # The diagnostics path named in the refusal is path-free too; this leaf is
+    # not the lane name, so only the marker remains.
+    $message | Should Not Match ([regex]::Escape($env:USERPROFILE))
+    $message | Should Not Match ([regex]::Escape($TestDrive))
+    $message | Should Match ([regex]::Escape('diagnostics <redacted-path>)'))
     $text = Get-Content -LiteralPath $log -Raw
     $text | Should Not Match 'someone'
     $records = @((Read-DiagnosticRecords -Path $log)[0].unattributed)
-    @($records | Where-Object { $_.pid -eq 16300 })[0].executable_path | Should Be 'C:\Users\<redacted>\AppData\Roaming\npm\claude.exe'
-    @($records | Where-Object { $_.pid -eq 16301 })[0].executable_path | Should Be 'D:\tools\codex\codex.exe'
+    @($records | Where-Object { $_.pid -eq 16300 })[0].executable_path | Should Be '<redacted-path>\claude.exe'
+    @($records | Where-Object { $_.pid -eq 16301 })[0].executable_path | Should Be '<redacted-path>\codex.exe'
   }
 
-  It 'redacts the actual user profile root even when it is not under <drive>:\Users' {
+  It 'records only the basename for an executable under the actual user profile root' {
     # A relocated profile (ProfilesDirectory elsewhere) is covered through the
     # launcher's own USERPROFILE, which is the same account that runs the lanes.
     $profileExe = Join-Path $env:USERPROFILE 'tools\claude.exe'
@@ -457,11 +459,11 @@ Describe 'Assert-WdLaneLaunchAvailable recheck budget and configuration' {
     $message | Should Match 'has no verified launcher ancestry'
     $message | Should Not Match ([regex]::Escape($env:USERPROFILE))
     $record = (Read-DiagnosticRecords -Path $log)[0].unattributed[0]
-    $record.executable_path | Should Be ('<userprofile>' + [IO.Path]::DirectorySeparatorChar + 'tools' + [IO.Path]::DirectorySeparatorChar + 'claude.exe')
+    $record.executable_path | Should Be '<redacted-path>\claude.exe'
     (Get-Content -LiteralPath $log -Raw) | Should Not Match ([regex]::Escape($env:USERPROFILE))
   }
 
-  It 'redacts a relocated profile root written with mixed separators' {
+  It 'records only the basename for a relocated profile root written with mixed separators' {
     # Lead static finding 2026-11-06 06:35Z: StartsWith compared raw separators,
     # so a relocated profile (not under <drive>:\Users) spelled with mixed
     # separators was recorded whole.
@@ -477,7 +479,7 @@ Describe 'Assert-WdLaneLaunchAvailable recheck budget and configuration' {
       $message | Should Match 'has no verified launcher ancestry'
       $message | Should Not Match 'someone'
       $record = (Read-DiagnosticRecords -Path $log)[0].unattributed[0]
-      $record.executable_path | Should Be ('<userprofile>\tools\claude.exe')
+      $record.executable_path | Should Be '<redacted-path>\claude.exe'
       (Get-Content -LiteralPath $log -Raw) | Should Not Match 'someone'
     } finally {
       $env:USERPROFILE = $savedProfile
@@ -516,6 +518,185 @@ Describe 'Assert-WdLaneLaunchAvailable recheck budget and configuration' {
     $message | Should Not Match 'diagnostics '
     $message | Should Not Match 'SECRETVALUE'
     @(Get-ChildItem -LiteralPath $TestDrive -Recurse -Force).Count | Should Be $before
+  }
+}
+
+Describe 'Assert-WdLaneLaunchAvailable every path form is reduced to a whitelisted basename or the opaque marker' {
+  # RCO1/RCO2 static trace 2026-11-06 (follow-up to PR 1974): extended-length,
+  # UNC, device and volume-GUID paths matched neither the <drive>:\Users rule
+  # nor the own-profile rule, so a synthetic user or server name could reach the
+  # local diagnostics and the refusal text. Grok (report 9d5e01c7) then showed
+  # plain drive paths, repeated separators, dot segments and leaf-only output
+  # leak as well. Lead revision v2: every path of every form is reduced to
+  # '<redacted-path>\<basename>' when the basename is in the caller's fixed safe
+  # set (native CLI names; the lane's own diagnostics file), else to the marker.
+  $cases = @(
+    @{ form = 'extended-length'; path = '\\?\C:\Users\someone\AppData\Roaming\npm\claude.exe'; secrets = @('someone') },
+    @{ form = 'UNC'; path = '\\fileserver01\homes\someone\tools\claude.exe'; secrets = @('fileserver01', 'someone') },
+    @{ form = 'extended UNC'; path = '\\?\UNC\fileserver01\homes\someone\tools\claude.exe'; secrets = @('fileserver01', 'someone') },
+    @{ form = 'device'; path = '\\.\C:\Users\someone\tools\claude.exe'; secrets = @('someone') },
+    @{ form = 'volume GUID'; path = '\\?\Volume{0f1e2d3c-4b5a-4c6d-8e7f-a0b1c2d3e4f5}\Users\someone\tools\claude.exe'; secrets = @('0f1e2d3c', 'someone') },
+    @{ form = 'forward-slash UNC'; path = '//fileserver01/homes/someone/tools/claude.exe'; secrets = @('fileserver01', 'someone') },
+    @{ form = 'drive-relative'; path = 'C:someone\tools\claude.exe'; secrets = @('someone') },
+    @{ form = 'rootless'; path = 'someone\tools\claude.exe'; secrets = @('someone') }
+  )
+  foreach ($case in $cases) {
+    It ('records only <redacted-path>\claude.exe for a {0} executable path' -f $case.form) {
+      $stray = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe --resume old' -Seconds 5 -Executable $case.path
+      Mock Get-CimInstance { @((New-Baseline) + @($stray)) }
+      $log = Join-Path $TestDrive ('unfamiliar-{0}.jsonl' -f ($case.form -replace '[^a-z]', '-'))
+      $message = ''
+      try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+      $message | Should Match 'has no verified launcher ancestry'
+      $message | Should Match ([regex]::Escape('executable <redacted-path>\claude.exe'))
+      $text = Get-Content -LiteralPath $log -Raw
+      foreach ($secret in $case.secrets) {
+        $message | Should Not Match $secret
+        $text | Should Not Match $secret
+      }
+      $record = (Read-DiagnosticRecords -Path $log)[0].unattributed[0]
+      $record.executable_path | Should Be '<redacted-path>\claude.exe'
+    }
+  }
+
+  It 'records <redacted-path> alone when a path ends in a separator' {
+    $stray = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe --resume old' -Seconds 5 -Executable '\\fileserver01\homes\someone\'
+    Mock Get-CimInstance { @((New-Baseline) + @($stray)) }
+    $log = Join-Path $TestDrive 'unfamiliar-no-leaf.jsonl'
+    $message = ''
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+    $message | Should Match 'has no verified launcher ancestry'
+    $message | Should Not Match 'someone'
+    $message | Should Not Match 'fileserver01'
+    $record = (Read-DiagnosticRecords -Path $log)[0].unattributed[0]
+    $record.executable_path | Should Be '<redacted-path>'
+    (Get-Content -LiteralPath $log -Raw) | Should Not Match 'someone'
+  }
+
+  It 'names an extended-length diagnostics path in the refusal by the marker only' {
+    # The diagnostics path is configured by the launcher from the runtime root;
+    # in extended-length form it would carry the profile path past the own-profile rule.
+    $stray = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe --resume old' -Seconds 5
+    Mock Get-CimInstance { @((New-Baseline) + @($stray)) }
+    Mock Write-Warning { }
+    $log = '\\?\' + (Join-Path $TestDrive 'extended-diag.jsonl')
+    $message = ''
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+    $message | Should Match 'has no verified launcher ancestry'
+    $message | Should Match ([regex]::Escape('diagnostics <redacted-path>)'))
+    $message | Should Not Match 'extended-diag'
+    $message | Should Not Match ([regex]::Escape($env:USERPROFILE))
+    $message | Should Not Match ([regex]::Escape($TestDrive))
+  }
+
+  It 'records only the basename for a <drive>:\Users\<name> path written with doubled separators' {
+    # Grok self-challenge 2026-11-06 (report 9d5e01c7): the name class could not
+    # start on a second separator, so the segment after a doubled separator stayed.
+    $back = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe' -Seconds 5 -Executable 'C:\Users\\someone\tools\claude.exe'
+    $slash = New-Row -Id 16301 -Parent 999 -Name 'claude.exe' -Command 'claude.exe' -Seconds 6 -Executable 'C:/Users//someone/tools/claude.exe'
+    Mock Get-CimInstance { @((New-Baseline) + @($back, $slash)) }
+    $log = Join-Path $TestDrive 'doubled-separators.jsonl'
+    $message = ''
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+    $message | Should Not Match 'someone'
+    $records = @((Read-DiagnosticRecords -Path $log)[0].unattributed)
+    @($records | Where-Object { $_.pid -eq 16300 })[0].executable_path | Should Be '<redacted-path>\claude.exe'
+    @($records | Where-Object { $_.pid -eq 16301 })[0].executable_path | Should Be '<redacted-path>\claude.exe'
+    (Get-Content -LiteralPath $log -Raw) | Should Not Match 'someone'
+  }
+
+  It 'reduces a plain drive path with a dot segment to the basename' {
+    # A . or .. segment re-roots the remainder, so the <drive>:\Users rule would
+    # redact the dot and keep the name that follows it.
+    $parent = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe' -Seconds 5 -Executable 'C:\Users\..\someone\tools\claude.exe'
+    $self = New-Row -Id 16301 -Parent 999 -Name 'claude.exe' -Command 'claude.exe' -Seconds 6 -Executable 'C:\Users\.\someone\claude.exe'
+    $deep = New-Row -Id 16302 -Parent 999 -Name 'claude.exe' -Command 'claude.exe' -Seconds 7 -Executable 'D:/tools/../Users/someone/claude.exe'
+    Mock Get-CimInstance { @((New-Baseline) + @($parent, $self, $deep)) }
+    $log = Join-Path $TestDrive 'dot-segments.jsonl'
+    $message = ''
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+    $message | Should Not Match 'someone'
+    $records = @((Read-DiagnosticRecords -Path $log)[0].unattributed)
+    foreach ($id in 16300, 16301, 16302) {
+      @($records | Where-Object { $_.pid -eq $id })[0].executable_path | Should Be '<redacted-path>\claude.exe'
+    }
+    (Get-Content -LiteralPath $log -Raw) | Should Not Match 'someone'
+  }
+
+  It 'records <redacted-path> alone when the leaf is not a whitelisted basename' {
+    # A profile or home directory as the whole path has the user name as its
+    # leaf; only a whitelisted basename is ever returned.
+    $extended = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe' -Seconds 5 -Executable '\\?\C:\Users\someone'
+    $unc = New-Row -Id 16301 -Parent 999 -Name 'claude.exe' -Command 'claude.exe' -Seconds 6 -Executable '\\fileserver01\homes\someone'
+    Mock Get-CimInstance { @((New-Baseline) + @($extended, $unc)) }
+    $log = Join-Path $TestDrive 'no-extension.jsonl'
+    $message = ''
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+    $message | Should Not Match 'someone'
+    $message | Should Not Match 'fileserver01'
+    $records = @((Read-DiagnosticRecords -Path $log)[0].unattributed)
+    foreach ($id in 16300, 16301) {
+      @($records | Where-Object { $_.pid -eq $id })[0].executable_path | Should Be '<redacted-path>'
+    }
+    (Get-Content -LiteralPath $log -Raw) | Should Not Match 'someone'
+  }
+
+  It 'spells a whitelisted basename from the safe set, never from the input' {
+    $stray = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe' -Seconds 5 -Executable 'C:\Users\someone\CLAUDE.EXE'
+    Mock Get-CimInstance { @((New-Baseline) + @($stray)) }
+    $log = Join-Path $TestDrive 'spelling.jsonl'
+    $message = ''
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+    $message | Should Match ([regex]::Escape('executable <redacted-path>\claude.exe'))
+    ($message -cmatch 'CLAUDE\.EXE') | Should Be $false
+    $record = (Read-DiagnosticRecords -Path $log)[0].unattributed[0]
+    $record.executable_path | Should Be '<redacted-path>\claude.exe'
+    ((Get-Content -LiteralPath $log -Raw) -cmatch 'CLAUDE\.EXE') | Should Be $false
+  }
+
+  It 'names the diagnostics file in the refusal only when its basename is the lane name' {
+    $stray = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe' -Seconds 5
+    Mock Get-CimInstance { @((New-Baseline) + @($stray)) }
+    $log = Join-Path $TestDrive 'claude-rco-2.jsonl'
+    $message = ''
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+    $message | Should Match ([regex]::Escape('diagnostics <redacted-path>\claude-rco-2.jsonl)'))
+    $message | Should Not Match ([regex]::Escape($TestDrive))
+    Test-Path -LiteralPath $log | Should Be $true
+  }
+
+  It 'lets no directory segment of any path reach the record or the refusal' {
+    $stray = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe --resume old' -Seconds 5 -Executable 'C:\Users\someone\AppData\Roaming\npm\claude.exe'
+    $other = New-Row -Id 16301 -Parent 999 -Name 'codex.exe' -Command 'codex.exe' -Seconds 6 -Executable 'D:\tools\codex\codex.exe'
+    Mock Get-CimInstance { @((New-Baseline) + @($stray, $other)) }
+    $log = Join-Path $TestDrive 'path-free.jsonl'
+    $message = ''
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+    $message | Should Match 'has no verified launcher ancestry'
+    $text = Get-Content -LiteralPath $log -Raw
+    foreach ($segment in 'someone', 'AppData', 'Roaming', 'npm', 'tools') {
+      $message | Should Not Match $segment
+      $text | Should Not Match $segment
+    }
+    # No drive-rooted spelling survives anywhere (JSON doubles the backslash).
+    $text | Should Not Match '[A-Za-z]:(\\\\|/)'
+    $message | Should Not Match '[A-Za-z]:(\\|/)'
+    $records = @((Read-DiagnosticRecords -Path $log)[0].unattributed)
+    ($records | ForEach-Object { $_.executable_path }) -join ',' | Should Be '<redacted-path>\claude.exe,<redacted-path>\codex.exe'
+  }
+
+  It 'plain drive paths are path-free too: another drive, <drive>:\Users and the own profile' {
+    $plain = New-Row -Id 16300 -Parent 999 -Name 'codex.exe' -Command 'codex.exe' -Seconds 5 -Executable 'D:\tools\codex\codex.exe'
+    $users = New-Row -Id 16301 -Parent 999 -Name 'claude.exe' -Command 'claude.exe' -Seconds 6 -Executable 'E:/Users/someone/npm/claude.exe'
+    $own = New-Row -Id 16302 -Parent 999 -Name 'claude.exe' -Command 'claude.exe' -Seconds 7 -Executable (Join-Path $env:USERPROFILE 'tools\claude.exe')
+    Mock Get-CimInstance { @((New-Baseline) + @($plain, $users, $own)) }
+    $log = Join-Path $TestDrive 'plain-forms.jsonl'
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { }
+    $records = @((Read-DiagnosticRecords -Path $log)[0].unattributed)
+    @($records | Where-Object { $_.pid -eq 16300 })[0].executable_path | Should Be '<redacted-path>\codex.exe'
+    @($records | Where-Object { $_.pid -eq 16301 })[0].executable_path | Should Be '<redacted-path>\claude.exe'
+    @($records | Where-Object { $_.pid -eq 16302 })[0].executable_path | Should Be '<redacted-path>\claude.exe'
+    (Get-Content -LiteralPath $log -Raw) | Should Not Match 'someone'
   }
 }
 

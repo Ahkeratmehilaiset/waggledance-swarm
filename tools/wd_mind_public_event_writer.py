@@ -104,6 +104,12 @@ def _pinned_helpers() -> tuple[Path, Path]:
     if len(raw) > 16 * 1024 * 1024 or _digest(raw).lower() != anchor.lower():
         raise ValueError()
     files = json.loads(raw)["files"]
+    registry_name = "tools-bootstrap/configs/bridge_identity_registry.json"
+    registry = bundle / registry_name
+    registry_pin = files[registry_name]
+    if (not isinstance(registry_pin, str) or not _HEX.fullmatch(registry_pin)
+            or _digest(registry.read_bytes()).lower() != registry_pin.lower()):
+        raise ValueError()
     # The two entry helpers load sibling scripts with dot-sourcing. Verify all
     # packaged PowerShell helpers in this pinned active manifest, not just the
     # entry scripts, before either subprocess can run.

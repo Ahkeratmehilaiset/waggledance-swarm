@@ -209,7 +209,7 @@ def test_writer_command_contains_only_fixed_public_fields(monkeypatch):
     assert kwargs["env"]["WD_REBOOT_EXPECTED_MANIFEST_HASH"] == "b" * 64
 
 
-@pytest.mark.parametrize("tamper", ["none", "anchor", "evidence", "writer", "dependency", "bin"])
+@pytest.mark.parametrize("tamper", ["none", "anchor", "evidence", "writer", "dependency", "registry", "bin"])
 def test_helper_bytes_are_checked_against_inherited_manifest(tmp_path, monkeypatch, tamper):
     bundle = tmp_path / "bundle"
     binary = bundle / "tools-bootstrap" / ".agent-bridge" / "bin"
@@ -223,6 +223,10 @@ def test_helper_bytes_are_checked_against_inherited_manifest(tmp_path, monkeypat
     dependency = binary / "BridgeEventClassifier.ps1"
     dependency.write_bytes(b"synthetic-dependency")
     files["tools-bootstrap/.agent-bridge/bin/BridgeEventClassifier.ps1"] = hashlib.sha256(b"synthetic-dependency").hexdigest().upper()
+    registry = bundle / "tools-bootstrap/configs/bridge_identity_registry.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_bytes(b"synthetic-registry")
+    files["tools-bootstrap/configs/bridge_identity_registry.json"] = hashlib.sha256(b"synthetic-registry").hexdigest().upper()
     raw = json.dumps({"files": files}, sort_keys=True).encode()
     (bundle / "deployment-manifest.json").write_bytes(raw)
     anchor = hashlib.sha256(raw).hexdigest()
@@ -232,6 +236,8 @@ def test_helper_bytes_are_checked_against_inherited_manifest(tmp_path, monkeypat
         (binary / names[1]).write_bytes(b"tampered")
     elif tamper == "dependency":
         dependency.write_bytes(b"tampered")
+    elif tamper == "registry":
+        registry.write_bytes(b"tampered")
     elif tamper == "anchor":
         anchor = "0" * 64
     elif tamper == "bin":
@@ -307,6 +313,10 @@ def test_active_helper_manifest_can_differ_from_candidate_manifest(tmp_path, mon
         blob = ("synthetic-" + name).encode()
         (binary / name).write_bytes(blob)
         files["tools-bootstrap/.agent-bridge/bin/" + name] = hashlib.sha256(blob).hexdigest()
+    registry = bundle / "tools-bootstrap/configs/bridge_identity_registry.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_bytes(b"synthetic-registry")
+    files["tools-bootstrap/configs/bridge_identity_registry.json"] = hashlib.sha256(b"synthetic-registry").hexdigest()
     raw = json.dumps({"files": files}).encode()
     (bundle / "deployment-manifest.json").write_bytes(raw)
     monkeypatch.setenv("WD_BRIDGE_BIN", str(binary))

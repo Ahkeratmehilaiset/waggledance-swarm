@@ -170,6 +170,10 @@ def test_real_bridge_wrapper_with_synthetic_active_helpers_and_two_manifest_pins
     for name, data in (("Get-BridgeExecutionEvidence.ps1", evidence), ("Write-AgentEvent.ps1", fake_writer)):
         (binary / name).write_bytes(data)
         active_files["tools-bootstrap/.agent-bridge/bin/" + name] = sha(data)
+    registry = active / "tools-bootstrap/configs/bridge_identity_registry.json"
+    registry.parent.mkdir(parents=True)
+    registry.write_bytes(b"synthetic-registry")
+    active_files["tools-bootstrap/configs/bridge_identity_registry.json"] = sha(registry.read_bytes())
     active_raw = json.dumps({"files": active_files}).encode()
     (active / "deployment-manifest.json").write_bytes(active_raw)
     fleet = json.loads(fleet_raw)

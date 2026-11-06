@@ -545,8 +545,10 @@ Describe 'fleet preflight and launcher wiring (static)' {
   }
 
   It 'keeps DryRun byte-inert: the diagnostics file path is set only for a live launch' {
-    $agentText | Should Match "\`$script:WdLaneAvailabilityDiagnosticsPath = if \(\`$DryRun\) \{ '' \} else \{ Join-Path \(Join-Path \`$runtimeRoot 'lane_availability'\) \('\{0\}\.jsonl' -f \`$Agent\) \}"
-    $agentText | Should Not Match "\`$script:WdLaneAvailabilityDiagnosticsPath = Join-Path"
+    $agentText | Should Match "\`$script:WdLaneAvailabilityDiagnosticsPath = ''\s*if \(-not \`$DryRun\) \{\s*\`$script:WdLaneAvailabilityDiagnosticsPath = Join-Path \(Join-Path \`$runtimeRoot 'lane_availability'\) \('\{0\}\.jsonl' -f \`$Agent\)\s*\}"
+    # The reboot bundle tests locate the DryRun branch as the first `if ($DryRun) {`
+    # of the script (by text and by AST); this check must not add another one.
+    ([regex]::Matches($agentText, [regex]::Escape('if ($DryRun) {'))).Count | Should Be 1
   }
 
   It 'defaults the recheck budget to 3 x 5 s and bounds it to 30 s' {

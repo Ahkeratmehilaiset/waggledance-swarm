@@ -93,3 +93,74 @@ def test_replaced_log_identity_is_retried_without_a_cursor(tmp_path, reader, mon
     assert result.status is reader.BridgeReadStatus.RETRY
     assert result.reason == "file_identity_changed_during_read"
     assert result.candidate_cursor is None and result.rows == ()
+
+
+@pytest.mark.parametrize("configuration", ["not_callable", "missing_prefix", "snapshot"])
+def test_invalid_selector_configuration_blocks_without_cursor(tmp_path, reader, configuration):
+    path, _, _, start = _source(tmp_path, reader)
+    if configuration == "not_callable":
+        result = _read(reader, path, start, 1)
+    elif configuration == "missing_prefix":
+        result = reader.read_bridge_log(path, cursor=start, max_bytes=65536, max_rows=100, _row_ready=lambda row: True)
+    else:
+        result = reader.read_bridge_log(
+            path, cursor=start, max_bytes=65536, max_rows=100,
+            expected_prefix_sha256=hashlib.sha256(b"").hexdigest(), max_prefix_bytes=65536,
+            expected_snapshot_sha256=hashlib.sha256(path.read_bytes()).hexdigest(), _row_ready=lambda row: True,
+        )
+    assert result.status is reader.BridgeReadStatus.BLOCKED
+    assert result.reason == "row_selection_configuration_invalid"
+    assert result.candidate_cursor is None and result.rows == ()
+
+
+@pytest.mark.parametrize("selection", ["integer", "none", "string", "exception"])
+def test_invalid_selector_result_blocks_without_cursor(tmp_path, reader, selection):
+    path, _, _, start = _source(tmp_path, reader)
+
+    def select(row):
+        if selection == "exception":
+            raise RuntimeError("synthetic selector failure")
+        return {"integer": 1, "none": None, "string": "true"}[selection]
+
+    result = _read(reader, path, start, select)
+    assert result.status is reader.BridgeReadStatus.BLOCKED
+    assert result.reason == "row_selection_invalid"
+    assert result.candidate_cursor is None and result.rows == ()
+
+
+def test_first_row_not_ready_keeps_original_cursor(tmp_path, reader):
+    path, rows, _, start = _source(tmp_path, reader)
+    seen = []
+
+    def not_ready(row):
+        seen.append(row)
+        return False
+
+    result = _read(reader, path, start, not_ready)
+    assert result.status is reader.BridgeReadStatus.IDLE
+    assert result.reason == "cutoff_deferred"
+    assert result.rows == ()
+    assert result.candidate_cursor == start
+    assert result.bytes_consumed == 0
+    assert result.candidate_prefix.sha256 == hashlib.sha256(b"").hexdigest()
+    assert seen == [rows[0]]
+
+
+@pytest.mark.parametrize("failure", ["non_bool", "exception"])
+def test_later_selector_failure_does_not_expose_selected_prefix(tmp_path, reader, failure):
+    path, rows, _, start = _source(tmp_path, reader)
+    seen = []
+
+    def select(row):
+        seen.append(row)
+        if len(seen) == 1:
+            return True
+        if failure == "exception":
+            raise RuntimeError("synthetic selector failure")
+        return 1
+
+    result = _read(reader, path, start, select)
+    assert seen == rows[:2]
+    assert result.status is reader.BridgeReadStatus.BLOCKED
+    assert result.reason == "row_selection_invalid"
+    assert result.candidate_cursor is None and result.rows == ()

@@ -62,7 +62,8 @@ def test_distinct_status_same_minute_resolves_only_target(case):
     event, setup = case
     other = dict(event, status='done')
     out = v.verify(**setup([event, other]))
-    assert out == {'status':'MATCH', 'canonical_event_refs':[event_id(event)], 'count':1}
+    assert out == {'status':'MATCH_WITHIN_RECEIPT_PREFIX', 'canonical_event_refs':[event_id(event)],
+                   'count':1, 'completeness':'RECEIPT_CLAIMED'}
 
 
 def test_identical_projection_from_two_events_is_ambiguous(case):
@@ -70,7 +71,8 @@ def test_identical_projection_from_two_events_is_ambiguous(case):
     event, setup = case
     other = dict(event, ts_utc='2026-11-06T18:05:43Z')
     out = v.verify(**setup([event, other]))
-    assert out['status'] == 'AMBIGUOUS' and out['count'] == 2
+    assert out['status'] == 'AMBIGUOUS_WITHIN_RECEIPT_PREFIX' and out['count'] == 2
+    assert out['completeness'] == 'RECEIPT_CLAIMED'
     assert set(out['canonical_event_refs']) == {event_id(event), event_id(other)}
 
 
@@ -78,7 +80,8 @@ def test_next_minute_does_not_match(case):
     from tools import wd_q4_canonical_ref_verifier as v
     event, setup = case
     other = dict(event, ts_utc='2026-11-06T18:06:00Z')
-    assert v.verify(**setup([other])) == {'status':'NONE', 'canonical_event_refs':[], 'count':0}
+    assert v.verify(**setup([other])) == {'status':'NONE_WITHIN_RECEIPT_PREFIX', 'canonical_event_refs':[],
+                                          'count':0, 'completeness':'RECEIPT_CLAIMED'}
 
 
 @pytest.mark.parametrize('pin', ['policy_sha256', 'public_policy_sha256', 'roster_sha256'])
@@ -95,7 +98,7 @@ def test_no_content_leak_and_private_rows_are_excluded(case):
     event, setup = case
     private = dict(event, message='private-message-canary', paths=['C:\\secret-canary'])
     out = v.verify(**setup([private, event]))
-    assert out['status'] == 'MATCH' and out['canonical_event_refs'] == [event_id(event)]
+    assert out['status'] == 'MATCH_WITHIN_RECEIPT_PREFIX' and out['canonical_event_refs'] == [event_id(event)]
     assert all(x not in json.dumps(out) for x in ('private-message-canary', 'secret-canary', 'private-canary', 'public_status'))
 
 
@@ -154,7 +157,7 @@ def test_over_100000_rows_are_scanned_in_pinned_pages(case, monkeypatch):
         return actual(*a, **k)
     monkeypatch.setattr(v.bridge, 'read_bridge_log', observe)
     out = v.verify(**args)
-    assert out['status'] == 'AMBIGUOUS' and out['count'] == 2
+    assert out['status'] == 'AMBIGUOUS_WITHIN_RECEIPT_PREFIX' and out['count'] == 2
     assert set(out['canonical_event_refs']) == {event_id(event), event_id(later)}
     assert len(calls) >= 2
     assert all(c['max_rows'] <= 100000 for c in calls)
@@ -174,7 +177,7 @@ def test_append_beyond_pinned_end_does_not_change_result(case, monkeypatch):
     monkeypatch.setattr(v, '_MAX_PAGE_ROWS', 1)
     monkeypatch.setattr(v.bridge, 'read_bridge_log', mutate)
     out = v.verify(**args)
-    assert out['status'] == 'AMBIGUOUS' and out['count'] == 2
+    assert out['status'] == 'AMBIGUOUS_WITHIN_RECEIPT_PREFIX' and out['count'] == 2
 
 
 def test_caller_pin_refusal_has_no_exception_chain_or_source_locals(case):
@@ -200,7 +203,7 @@ def test_byte_bounded_paging_finds_matches_across_pages(case, monkeypatch):
     args = setup([event] + [filler] * 30 + [later])
     monkeypatch.setattr(v, '_MAX_PAGE_BYTES', 1024)
     out = v.verify(**args)
-    assert out['status'] == 'AMBIGUOUS'
+    assert out['status'] == 'AMBIGUOUS_WITHIN_RECEIPT_PREFIX'
     assert set(out['canonical_event_refs']) == {event_id(event), event_id(later)}
 
 
@@ -422,3 +425,38 @@ def test_prefix_malformed_record_cannot_claim_canonical(case):
     record['provenance'] = dict(record['provenance'], canonical_event=True)
     args['record'] = record
     with pytest.raises(v.VerifierRefused): v.verify_within_prefix(**args)
+
+
+def test_receipt_none_only_claims_absence_inside_pinned_prefix(case):
+    from tools import wd_q4_canonical_ref_verifier as v
+    event, setup = case
+    other = dict(event, status='done')
+    args = setup([other])
+    with open(args['source_path'], 'ab') as stream:
+        stream.write(raw(event) + b'\n')
+    out = v.verify(**args)
+    assert out == {'status':'NONE_WITHIN_RECEIPT_PREFIX', 'canonical_event_refs':[],
+                   'count':0, 'completeness':'RECEIPT_CLAIMED'}
+
+
+def test_duplicate_canonical_rows_count_one_id_in_both_modes(case):
+    from tools import wd_q4_canonical_ref_verifier as v
+    event, setup = case
+    args = setup([event, event])
+    expected = [event_id(event)]
+    interval = v.verify(**args)
+    assert interval['status'] == 'MATCH_WITHIN_RECEIPT_PREFIX' and interval['canonical_event_refs'] == expected
+    assert interval['count'] == 1 and interval['completeness'] == 'RECEIPT_CLAIMED'
+    within = v.verify_within_prefix(**_prefix_args(args))
+    assert within['status'] == 'MATCH_WITHIN_PREFIX' and within['canonical_event_refs'] == expected
+    assert within['count'] == 1 and within['completeness'] == 'UNKNOWN'
+
+
+def test_unparseable_row_cannot_be_assumed_outside_window(case):
+    from tools import wd_q4_canonical_ref_verifier as v
+    event, setup = case
+    args = setup([event, {'ts_utc': 'not-a-time', 'message':'private-canary'}])
+    assert v.verify(**args)['status'] == 'UNKNOWN'
+    result = v.verify_within_prefix(**_prefix_args(args))
+    assert result['status'] == 'UNKNOWN' and result['canonical_event_refs'] == []
+    assert 'private-canary' not in json.dumps(result)

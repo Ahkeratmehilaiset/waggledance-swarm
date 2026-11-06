@@ -490,6 +490,7 @@ def test_exact_diagnostic_does_not_claim_available_for_id_collisions(tmp_path: P
         "own_case_variant_any_session": collision in ("case_variant", "both"),
         "foreign_requester_case_variant": False,
         "foreign_requester_invalid_binding": False,
+        "foreign_requester_invalid_author_binding": False,
     }
 
 
@@ -603,3 +604,28 @@ def test_exact_diagnostic_detects_foreign_payload_only_valid_id(tmp_path: Path, 
     reasons = result["exact_request_ambiguity"]
     assert reasons["id_also_used_by_other_requester"] is (foreign_id == "target-v1")
     assert reasons["foreign_requester_case_variant"] is (foreign_id == "TARGET-v1")
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("case", ("matching_id", "case_variant_id", "payload_only_id", "dual_binding", "unrelated_id", "unrelated_author"))
+def test_exact_diagnostic_handles_foreign_conflicting_author_binding(tmp_path: Path, shell: str, case: str) -> None:
+    target, _ = _bound("target-v1")
+    foreign_id = "other-v1" if case in ("unrelated_id", "dual_binding") else "TARGET-v1" if case == "case_variant_id" else "target-v1"
+    foreign, _ = _bound(foreign_id, agent="codex-tools-1", to="codex-lead-1")
+    foreign["payload"]["agent"] = "fable-5" if case == "unrelated_author" else "codex-lead-1"
+    if case == "payload_only_id":
+        del foreign["request_id"]
+        foreign["payload"]["request_id"] = foreign_id
+    elif case == "dual_binding":
+        foreign["payload"]["request_id"] = "TARGET-v1"
+    _write(tmp_path, [target, foreign])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    if case in ("unrelated_id", "unrelated_author"):
+        assert result["exact_request_state"] == "available_not_validated"
+        assert result["requests"][0]["request"] == target
+    else:
+        assert result["exact_request_state"] == "not_available" and result["requests"] == []
+        assert result["returned_count"] == 0
+        assert result["exact_request_ambiguity"]["foreign_requester_invalid_author_binding"] is True

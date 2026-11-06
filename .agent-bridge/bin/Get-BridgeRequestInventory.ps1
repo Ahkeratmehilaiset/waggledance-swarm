@@ -79,6 +79,7 @@ $byId=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ord
 $order=[Collections.Generic.List[string]]::new()
 $foreignIds=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 $foreignInvalidBindingCouldNameRequest=$false
+$foreignInvalidAuthorBindingCouldNameRequest=$false
 # -DiagnosticPartial only: every invalid OWN request-like row the reply index kept is counted and
 # listed, never silently dropped here (a falsy-id row is never listed: see the -DiagnosticPartial LIMIT).
 # The list is bounded (at most 50 entries AND 30000 JSON characters, always a prefix in indexed
@@ -116,6 +117,16 @@ function Test-InventoryStringCouldNameRequest {
             [StringComparer]::OrdinalIgnoreCase.Equals($property.Value, $RequestedId)) { return $true }
     }
     return $false
+}
+function Test-InventoryForeignAuthorCouldNameRequester {
+    # The top-level author names another requester but its conflicting payload names this one.
+    param($Event, [string] $RequestedAgent)
+    $direct=$Event.PSObject.Properties['agent']
+    $payload=$Event.PSObject.Properties['payload']
+    if ($null -eq $direct -or $direct.Value -isnot [string] -or $direct.Value -ceq $RequestedAgent -or
+        $null -eq $payload -or $null -eq $payload.Value) { return $false }
+    $nested=$payload.Value.PSObject.Properties['agent']
+    return ($null -ne $nested -and $nested.Value -is [string] -and $nested.Value -ceq $RequestedAgent)
 }
 function Get-InventoryFieldText {
     # The raw text of one field (top-level or payload), at most 160 UTF-16 units and never
@@ -176,6 +187,11 @@ for ($position=0; $position -lt $rows.Count; $position++) {
     if ($null -eq $id -or -not (Test-BridgeRequestLikeEvent $event)) { continue }
     $author=Get-BridgeContractField $event 'agent'
     if ($author -isnot [string]) {
+        if ($ExactRequestDiagnostic -and (Test-BridgeContractFieldConflict $event 'agent') -and
+            (Test-InventoryForeignAuthorCouldNameRequester $event $Agent) -and
+            (Test-InventoryStringCouldNameRequest $event $RequestId)) {
+            $foreignInvalidAuthorBindingCouldNameRequest=$true
+        }
         # Pre-existing, both modes: under StrictMode, ANY indexed request-like row (of any requester) with no
         # top-level agent and an absent or non-string payload agent throws here on $event.agent (fail-closed,
         # generic). Skipping such an unattributable row instead is an unresolved policy choice.
@@ -364,7 +380,7 @@ if ($DiagnosticPartial) {
         }
         $ambiguous=($requests.Count -eq 1 -and ($requests[0].id_also_used_by_other_requester -or
             $requests[0].case_variant_id -or $ownCaseVariantAnySession -or $foreignRequesterCaseVariant -or
-            $foreignInvalidBindingCouldNameRequest))
+            $foreignInvalidBindingCouldNameRequest -or $foreignInvalidAuthorBindingCouldNameRequest))
         if ($ambiguous) {
             $diagnostic['exact_request_ambiguity']=[ordered]@{
                 id_also_used_by_other_requester=[bool]$requests[0].id_also_used_by_other_requester
@@ -372,6 +388,7 @@ if ($DiagnosticPartial) {
                 own_case_variant_any_session=[bool]$ownCaseVariantAnySession
                 foreign_requester_case_variant=[bool]$foreignRequesterCaseVariant
                 foreign_requester_invalid_binding=[bool]$foreignInvalidBindingCouldNameRequest
+                foreign_requester_invalid_author_binding=[bool]$foreignInvalidAuthorBindingCouldNameRequest
             }
             $diagnostic['requests']=@()
             $diagnostic['returned_count']=0

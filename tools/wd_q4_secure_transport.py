@@ -1238,12 +1238,18 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
         cleanup_ok = True
         failed_closes = []
         def cleanup_call(operation):
+            nonlocal prior_outcome
             try:
                 return bool(operation())
-            except BaseException:
+            except BaseException as exc:
+                reason = _prior_outcome(exc)
+                if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                    prior_outcome = reason
                 return False
-        def close_call(handle):
-            closed = cleanup_call(lambda: k.CloseHandle(handle))
+        def close_call(handle, *, convert=False):
+            # Conversion can fail or be interrupted too; keep it inside the
+            # same boundary as CloseHandle so later handles are still tried.
+            closed = cleanup_call(lambda: k.CloseHandle(int(handle) if convert else handle))
             if not closed:
                 failed_closes.append(handle)
             return closed
@@ -1260,27 +1266,66 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
                         if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
                             prior_outcome = reason
                         cleanup_ok = False
-                    if assigned and job:
-                        cleanup_ok = cleanup_call(lambda: k.TerminateJobObject(job, 124)) and cleanup_ok
-                        if cleanup_deadline is not None:
-                            cleanup_ok = cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline)) and cleanup_ok
-                    elif not assigned:
-                        cleanup_ok = cleanup_call(lambda: k.TerminateProcess(int(process), 125)) and cleanup_ok
-                        if cleanup_deadline is not None:
-                            cleanup_ok = cleanup_call(lambda: _wait_child_exit(k, process, cleanup_deadline)) and cleanup_ok
-                if job:
+                    try:
+                        if assigned and job:
+                            cleanup_ok = cleanup_call(lambda: k.TerminateJobObject(job, 124)) and cleanup_ok
+                            if cleanup_deadline is not None:
+                                cleanup_ok = cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline)) and cleanup_ok
+                        elif not assigned:
+                            cleanup_ok = cleanup_call(lambda: k.TerminateProcess(int(process), 125)) and cleanup_ok
+                            if cleanup_deadline is not None:
+                                cleanup_ok = cleanup_call(lambda: _wait_child_exit(k, process, cleanup_deadline)) and cleanup_ok
+                    except BaseException as exc:
+                        # A failure in a decision outside the individual kernel
+                        # calls cannot certify cleanup. Still try termination and
+                        # all owned closes; do not claim the retry confirmed it.
+                        reason = _prior_outcome(exc)
+                        if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                            prior_outcome = reason
+                        cleanup_ok = False
+                        if assigned and job is not None:
+                            cleanup_call(lambda: k.TerminateJobObject(job, 124))
+                            if cleanup_deadline is not None:
+                                cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline))
+                        elif not assigned:
+                            cleanup_call(lambda: k.TerminateProcess(int(process), 125))
+                            if cleanup_deadline is not None:
+                                cleanup_call(lambda: _wait_child_exit(k, process, cleanup_deadline))
+                if job is not None:
                     cleanup_ok = close_call(job) and cleanup_ok
                 if process is not None:
-                    cleanup_ok = close_call(int(process)) and cleanup_ok
+                    cleanup_ok = close_call(process, convert=True) and cleanup_ok
                 if thread is not None:
-                    cleanup_ok = close_call(int(thread)) and cleanup_ok
-                if pipe and not any(entry[1] == pipe for entry in _QUARANTINE):
-                    cleanup_ok = close_call(pipe) and cleanup_ok
-                elif pipe:
-                    cleanup_ok = False  # Pending overlapped I/O remains quarantined.
+                    cleanup_ok = close_call(thread, convert=True) and cleanup_ok
+                try:
+                    if pipe is not None and not any(entry[1] == pipe for entry in _QUARANTINE):
+                        cleanup_ok = close_call(pipe) and cleanup_ok
+                    elif pipe is not None:
+                        cleanup_ok = False  # Pending overlapped I/O remains quarantined.
+                except BaseException as exc:
+                    # When pending-I/O ownership cannot be checked, retaining
+                    # the handle is safer than closing a possibly active pipe.
+                    reason = _prior_outcome(exc)
+                    if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                        prior_outcome = reason
+                    cleanup_ok = False
+                    if pipe is not None:
+                        failed_closes.append(pipe)
             if not cleanup_ok and (failed_closes or not _QUARANTINE):
                 # Record only uncertain closes, never successfully closed values.
                 _QUARANTINE.append((k, None, tuple(failed_closes)))
+        except BaseException as exc:
+            # An interruption between guarded cleanup operations leaves their
+            # progress uncertain. Retain all handle objects and fail closed;
+            # do not retry a handle that may already have been closed/reused.
+            # Without acquired resources, keep the preflight failure unchanged.
+            if not any(value is not None for value in (pipe, job, process, thread)):
+                raise
+            reason = _prior_outcome(exc)
+            if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                prior_outcome = reason
+            _QUARANTINE.append((k, pipe, (job, process, thread)))
+            cleanup_ok = False
         finally:
             _RUN_LOCK.release()
         if not cleanup_ok:

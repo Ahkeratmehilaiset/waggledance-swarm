@@ -71,20 +71,43 @@ def test_refusal_does_not_retain_attestation_exception_or_frames(monkeypatch):
     assert "_validated_event" not in frames and "fail_with_private_diagnostic" not in frames
 
 
-@pytest.mark.parametrize("failure", [TimeoutError, KeyboardInterrupt, SystemExit])
-def test_writer_failure_is_uncertain_and_never_retried(monkeypatch, failure):
+def test_writer_failure_is_uncertain_and_never_retried(monkeypatch):
     lead = _frame(monkeypatch)
     monkeypatch.setattr(subject, "_attest", lambda: {"pin_status": "manifest_and_launcher_verified",
         "observed_agent": lead["agent"], "native_conversation_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"})
     calls = []
     def uncertain(event):
         calls.append(event)
-        raise failure("private detail must not escape")
+        raise TimeoutError("private detail must not escape")
     monkeypatch.setattr(subject, "_write", uncertain)
     with pytest.raises(subject.PublicStatusWriteUncertain, match="^public_status_write_uncertain$") as error:
         subject.publish(enabled=True)
     assert len(calls) == 1 and error.value.__cause__ is None and error.value.__context__ is None
     assert "private detail" not in str(error.value)
+
+
+@pytest.mark.parametrize("failure", [KeyboardInterrupt, SystemExit])
+def test_interrupted_write_is_never_caught_by_ordinary_exception(monkeypatch, failure):
+    lead = _frame(monkeypatch)
+    monkeypatch.setattr(subject, "_attest", lambda: {"pin_status": "manifest_and_launcher_verified",
+        "observed_agent": lead["agent"], "native_conversation_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"})
+    calls = []
+    def interrupted(event):
+        calls.append(event)
+        raise failure("private detail must not escape")
+    monkeypatch.setattr(subject, "_write", interrupted)
+    caught_by_ordinary = []
+    with pytest.raises(BaseException) as error:
+        try:
+            subject.publish(enabled=True)
+        except Exception:
+            caught_by_ordinary.append(True)
+            raise
+    assert not caught_by_ordinary
+    assert type(error.value).__name__ == "PublicStatusInterrupted"
+    assert str(error.value) == "public_status_write_uncertain"
+    assert error.value.__cause__ is None and error.value.__context__ is None
+    assert len(calls) == 1
 
 
 def test_git_lookup_is_portable_and_missing_git_is_explicit(monkeypatch):

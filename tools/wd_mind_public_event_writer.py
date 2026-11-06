@@ -39,6 +39,10 @@ class PublicStatusWriteUncertain(RuntimeError):
     """The writer was invoked; a failed receipt cannot prove no append occurred."""
 
 
+class PublicStatusInterrupted(BaseException):
+    """A write was interrupted and its append outcome is unknown; never retry automatically."""
+
+
 def _digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -158,13 +162,20 @@ def publish(*, enabled: bool = False) -> dict:
     if event is None:
         raise PublicStatusRefused("public_status_refused")
     result = None
+    interrupted = False
     try:
         result = _write(event)
-    except BaseException:
+    except Exception:
         pass
+    except BaseException:
+        interrupted = True
     # Any failure or interruption during _write may follow an append. Never
-    # auto-retry, including on KeyboardInterrupt and SystemExit.
+    # auto-retry. Preserve stop semantics on KeyboardInterrupt and SystemExit:
+    # an ordinary "except Exception" caller must not continue as if they were
+    # a routine write failure. The original exception detail is not retained.
     # Raise outside the handler so an invalid receipt cannot leak via __context__.
+    if interrupted:
+        raise PublicStatusInterrupted("public_status_write_uncertain")
     if result is None:
         raise PublicStatusWriteUncertain("public_status_write_uncertain")
     return result

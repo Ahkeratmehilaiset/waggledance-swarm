@@ -27,9 +27,24 @@ Describe 'Mind live refresh installer' {
         $module = Join-Path $moduleDir 'wd_q4_live_update_once.py'
         $bootstrap = Join-Path $moduleDir 'wd_q4_live_update_bootstrap.py'
         $bootstrapText = @'
-import pathlib, sys
+import hashlib, json, pathlib, sys
 assert sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode
-assert len(sys.argv) == 7 and sys.argv[1] == '--config' and sys.argv[3] == '--sha256' and sys.argv[5] == '--manifest-sha256'
+assert len(sys.argv) == 9 and sys.argv[1] == '--config' and sys.argv[3] == '--sha256' and sys.argv[5] == '--manifest-sha256' and sys.argv[7] == '--host-attempt'
+bundle = pathlib.Path(__file__).parents[2]
+if bundle.joinpath('synthetic-crash').exists():
+    attempt = sys.argv[8]
+    if bundle.joinpath('synthetic-crash').read_text() == 'foreign': attempt = 'f' * 64
+    config = json.loads(pathlib.Path(sys.argv[2]).read_bytes())
+    route = json.loads(pathlib.Path(config['route_path']).read_bytes())
+    private = pathlib.Path(route['private_state_root'])
+    encode = lambda x: json.dumps(x, sort_keys=True, separators=(',', ':')).encode('ascii')
+    intent = encode({'schema':'wd.q4-live-update-intent.v1','attempt':attempt,'config_sha256':sys.argv[4], 'previous_pointer_sha256':'a'*64, 'route':{}, 'plan':{}, 'anchor':{}})
+    intent_sha = hashlib.sha256(intent).hexdigest()
+    private.joinpath('q4-live-update-intent-' + attempt + '.json').write_bytes(intent)
+    reservation = encode({'schema':'wd.q4-live-runner-reservation.v1','attempt':attempt,'token':'b'*64,'intent_sha256':intent_sha})
+    private.joinpath('q4-live-runner-reservation-' + attempt + '.json').write_bytes(reservation)
+    private.joinpath('q4-live-update.pending.json').write_bytes(encode({'schema':'wd.q4-live-update-pending.v1','attempt':attempt,'config_sha256':sys.argv[4],'previous_pointer_sha256':'a'*64,'intent_sha256':intent_sha}))
+    sys.exit(3)
 pathlib.Path(__file__).parents[2].joinpath('synthetic-invoked.txt').write_text('called')
 print('{"status":"PUBLISHED","pointer_sha256":"' + 'a'*64 + '","receipt_sha256":"' + 'b'*64 + '","receipt_file":"q4-live-update-result-' + 'c'*64 + '.json"}')
 '@
@@ -160,6 +175,43 @@ print('{"status":"PUBLISHED","pointer_sha256":"' + 'a'*64 + '","receipt_sha256":
         try { & $installer @invokeParams -Apply | Out-Null } catch { $threw = $true }
         $threw | Should Be $true
         Assert-MockCalled Register-ScheduledTask -Times 0 -Exactly -Scope It
+    }
+    It 'records a bound Job cleanup receipt after a synthetic child failure' {
+        Mock Get-ScheduledTask { if ($TaskName -eq 'WD-MindLiveUpdate') { $global:wdSyntheticRegisteredTask } else { @() } }
+        Mock Register-ScheduledTask {
+            $global:wdSyntheticTaskAction = $Action
+            $global:wdSyntheticRegisteredTask = New-ScheduledTask -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal
+            [pscustomobject]@{ Stub = 'registered' }
+        }
+        & $installer @invokeParams -Apply | Out-Null
+        [IO.File]::WriteAllText((Join-Path $bundle 'synthetic-crash'), '')
+        $encoded = [string]$global:wdSyntheticTaskAction.Arguments -replace '^.*-EncodedCommand ', ''
+        $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+        & $powershell -NoProfile -NonInteractive -EncodedCommand $encoded
+        $LASTEXITCODE | Should Be 3
+        $pending = Get-Content -LiteralPath (Join-Path $private 'q4-live-update.pending.json') -Raw | ConvertFrom-Json
+        $jobReceipt = Get-Content -LiteralPath (Join-Path $private ('q4-live-job-result-' + $pending.attempt + '.json')) -Raw | ConvertFrom-Json
+        $jobReceipt.attempt | Should Be $pending.attempt
+        $jobReceipt.intent_sha256 | Should Be $pending.intent_sha256
+        $jobReceipt.cleanup | Should Be 'confirmed'
+        $jobReceipt.child_outcome | Should Be 'completed'
+        $jobReceipt.exit_code | Should Be 3
+    }
+    It 'does not attest a foreign attempt after a synthetic child failure' {
+        Mock Get-ScheduledTask { if ($TaskName -eq 'WD-MindLiveUpdate') { $global:wdSyntheticRegisteredTask } else { @() } }
+        Mock Register-ScheduledTask {
+            $global:wdSyntheticTaskAction = $Action
+            $global:wdSyntheticRegisteredTask = New-ScheduledTask -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal
+            [pscustomobject]@{ Stub = 'registered' }
+        }
+        & $installer @invokeParams -Apply | Out-Null
+        [IO.File]::WriteAllText((Join-Path $bundle 'synthetic-crash'), 'foreign')
+        $encoded = [string]$global:wdSyntheticTaskAction.Arguments -replace '^.*-EncodedCommand ', ''
+        $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+        & $powershell -NoProfile -NonInteractive -EncodedCommand $encoded
+        $LASTEXITCODE | Should Be 3
+        @(Get-ChildItem -LiteralPath $private -Filter 'q4-live-job-result-*.json').Count | Should Be 0
+        Test-Path -LiteralPath (Join-Path $private 'q4-live-update.pending.json') | Should Be $true
     }
     It 'terminates an owned synthetic descendant on a job timeout' {
         . $jobHelper

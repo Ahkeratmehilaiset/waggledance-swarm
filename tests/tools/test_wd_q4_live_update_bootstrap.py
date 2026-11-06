@@ -33,7 +33,7 @@ def candidate(tmp_path):
     shutil.copyfile(repo / 'sandbox' / 'mind' / 'step2' / 'runtime_manifest.py', verifier)
     (code / 'tools' / '__init__.py').write_text('', encoding='ascii')
     update = code / 'tools' / 'wd_q4_live_update_once.py'
-    update.write_text("def main(args):\n import synthetic_runtime_dependency\n print(synthetic_runtime_dependency.VALUE)\n return 0\n", encoding='ascii')
+    update.write_text("def main(args):\n import synthetic_runtime_dependency\n print(synthetic_runtime_dependency.VALUE)\n if '--host-attempt' in args: print(args[args.index('--host-attempt')+1])\n return 0\n", encoding='ascii')
     recovery = code / 'tools' / 'wd_q4_live_update_recovery.py'
     recovery.write_text("def main(args):\n assert args[0]=='--recover' and '--attempt' in args\n print('fixed-recovery-loaded')\n return 0\n", encoding='ascii')
     runtime = tmp_path / 'runtime'
@@ -80,6 +80,15 @@ def execute(candidate):
 def test_isolated_process_imports_only_verified_runtime_site(candidate):
     result = execute(candidate)
     assert result.returncode == 0 and result.stdout.strip() == 'pinned-site-loaded'
+
+
+def test_isolated_bootstrap_forwards_exact_host_attempt(candidate):
+    env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha'])
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']),
+        '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
+        '--manifest-sha256', candidate['manifest_sha'], '--host-attempt', 'b' * 64],
+        capture_output=True, text=True, timeout=30, env=env)
+    assert result.returncode == 0 and result.stdout.splitlines() == ['pinned-site-loaded', 'b' * 64]
 
 
 def test_explicit_manifest_pin_works_without_inherited_wd_environment(candidate):

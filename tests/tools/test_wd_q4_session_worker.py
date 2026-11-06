@@ -1,4 +1,8 @@
-"""Historical worker diagnostics with a test-only legacy CLI snapshot."""
+"""Historical worker diagnostics with test-only legacy worker and CLI snapshots.
+
+These assertions document pre-retirement behavior, not a production entrypoint.
+The actual worker's refusal is exercised in test_wd_q4_legacy_worker_refusal.py.
+"""
 import hashlib
 import importlib.util
 import io
@@ -9,10 +13,7 @@ import sys
 import pytest
 from q4_legacy_session_fixtures import load_legacy
 
-try:
-    from tools import wd_q4_session_worker as worker
-except ImportError:
-    worker = None
+worker = load_legacy("session_worker")
 
 
 @pytest.fixture(autouse=True)

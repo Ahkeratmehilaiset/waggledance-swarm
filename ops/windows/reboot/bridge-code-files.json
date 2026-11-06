@@ -75,6 +75,7 @@
     "tools/wd_q4_agent_query.py",
     "tools/wd_q4_lane_link.py",
     "tools/wd_q4_lane_binding.py",
+    "tools/wd_q4_lane_binding_producer.py",
     "tools/wd_q4_agent_answer.py",
     "tools/wd_q4_attributed_session_tuple.py",
     "tools/wd_q4_descriptor_cli.py",

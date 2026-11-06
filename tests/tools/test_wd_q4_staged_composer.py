@@ -15,15 +15,21 @@ def sha(raw):
 
 def setup_case(tmp_path):
     source = binding_case.__wrapped__()
-    bundle = tmp_path / ('a' * 40)
+    store = tmp_path / 'reboot-bundles'
+    store.mkdir()
+    bundle = store / ('a' * 40)
     bundle.mkdir()
+    active = store / ('f' * 40)
+    active.mkdir()
     (bundle / 'deployment-manifest.json').write_bytes(source['manifest_bytes'])
     (bundle / 'wd-fleet.json').write_bytes(source['fleet_bytes'])
     (bundle / 'Invoke-WdQ4Query.ps1').write_bytes(source['wrapper_bytes'])
     fixture_dir = tmp_path / 'fixture'
     fixture_dir.mkdir()
     request, _, _ = synthetic(fixture_dir)
-    stage = tmp_path / 'stage'
+    root = tmp_path / 'permanent-generations'
+    root.mkdir()
+    stage = root / 'stage'
     stage.mkdir()
     public_plan = tmp_path / 'public-plan.json'
     public_plan.write_bytes(source['public_plan_bytes'])
@@ -43,6 +49,7 @@ def setup_case(tmp_path):
     request_path = write_request(fixture_dir, request)
     return dict(enabled=True, request_path=str(request_path), stage_dir=str(stage), expected_bundle=str(bundle),
         expected_commit='a'*40, expected_manifest_sha256=source['expected_manifest_sha256'].upper(),
+        generation_root=str(root), bundle_store_root=str(store), active_bundle_root=str(active),
         expected_public_plan_sha256=source['expected_public_plan_sha256']), source, stage
 
 
@@ -159,3 +166,62 @@ def test_copied_generation_cannot_be_activated_under_different_root(tmp_path):
         pointer.prepare_staged_descriptor_pointer(enabled=True, expected_bundle=kw['expected_bundle'],
             expected_commit=kw['expected_commit'], expected_manifest_sha256=kw['expected_manifest_sha256'],
             generations_root=str(copied), generation=generation, descriptor_sha256=result['descriptor_sha256'])
+
+
+@pytest.mark.parametrize('missing', ['generation_root', 'bundle_store_root', 'active_bundle_root'])
+def test_missing_external_root_is_refused_before_any_write(tmp_path, missing):
+    from tools import wd_q4_staged_composer as s
+    kw, _, stage = setup_case(tmp_path)
+    del kw[missing]
+    with pytest.raises(s.ComposeRefused): s.compose(**kw)
+    assert not list(stage.iterdir())
+
+
+@pytest.mark.parametrize('inside', ['active', 'other_bundle'])
+def test_refuses_stage_in_any_bundle_store_before_write(tmp_path, inside):
+    from tools import wd_q4_staged_composer as s
+    kw, _, _ = setup_case(tmp_path)
+    outer = Path(kw['active_bundle_root']) if inside == 'active' else Path(kw['bundle_store_root']) / 'third-bundle'
+    root = outer / 'generation-root'
+    stage = root / 'stage'
+    stage.mkdir(parents=True)
+    kw.update(generation_root=str(root), stage_dir=str(stage))
+    path = Path(kw['request_path'])
+    request = json.loads(path.read_text())
+    request.update(target_dir=str(stage), binding_path=str(stage / 'binding-source.json'))
+    path.write_text(json.dumps(request), encoding='ascii')
+    with pytest.raises(s.ComposeRefused): s.compose(**kw)
+    assert not list(stage.iterdir())
+
+
+def test_refuses_generation_root_that_contains_bundle_store(tmp_path):
+    from tools import wd_q4_staged_composer as s
+    kw, _, stage = setup_case(tmp_path)
+    kw['generation_root'] = str(tmp_path)
+    with pytest.raises(s.ComposeRefused): s.compose(**kw)
+    assert not list(stage.iterdir())
+
+
+def test_refuses_stage_outside_authorized_generation_root(tmp_path):
+    from tools import wd_q4_staged_composer as s
+    kw, _, _ = setup_case(tmp_path)
+    stage = tmp_path / 'elsewhere'
+    stage.mkdir()
+    kw['stage_dir'] = str(stage)
+    with pytest.raises(s.ComposeRefused): s.compose(**kw)
+    assert not list(stage.iterdir())
+
+
+def test_refuses_stage_inside_active_bundle_outside_bundle_store(tmp_path):
+    from tools import wd_q4_staged_composer as s
+    kw, _, _ = setup_case(tmp_path)
+    active = tmp_path / 'other-volume-active-bundle'
+    stage = active / 'root' / 'stage'
+    stage.mkdir(parents=True)
+    kw.update(active_bundle_root=str(active), generation_root=str(stage.parent), stage_dir=str(stage))
+    path = Path(kw['request_path'])
+    request = json.loads(path.read_text())
+    request.update(target_dir=str(stage), binding_path=str(stage / 'binding-source.json'))
+    path.write_text(json.dumps(request), encoding='ascii')
+    with pytest.raises(s.ComposeRefused): s.compose(**kw)
+    assert not list(stage.iterdir())

@@ -49,13 +49,19 @@ def _exclusive(path, raw):
 
 
 def compose(*, enabled=False, request_path=None, stage_dir=None, expected_bundle=None,
-            expected_commit=None, expected_manifest_sha256=None, expected_public_plan_sha256=None):
+            expected_commit=None, expected_manifest_sha256=None, expected_public_plan_sha256=None,
+            generation_root=None, bundle_store_root=None, active_bundle_root=None):
     """Return OFF or PREPARED with exact candidate paths/pins; never update CURRENT.
 
     The strict request uses stage_dir as target_dir and stage_dir/binding-source.json
     as binding_path; the binding hash placeholder is replaced by the computed pin.
     The stage directory must pre-exist, be empty, be disjoint from the bundle,
     and remain at that exact path as the permanent generations root.
+    generation_root, bundle_store_root and active_bundle_root are explicit,
+    independently preflighted paths; the stage must remain in generation_root,
+    which must not overlap the bundle store, active bundle or candidate bundle.
+    The caller must establish which active bundle is current; these supplied
+    paths alone do not authenticate machine state and are not an atomic lock.
     Inputs must be independently authenticated by the caller, not inferred here.
     Process termination or KeyboardInterrupt gives no successful receipt; the caller
     must inspect the staging folder before another attempt. Path checking and an
@@ -73,9 +79,14 @@ def compose(*, enabled=False, request_path=None, stage_dir=None, expected_bundle
     try:
         stage = pointer._absolute(stage_dir)
         bundle = pointer._absolute(expected_bundle)
-        pointer._chain(stage)
-        pointer._chain(bundle)
-        if (not stage.is_dir() or not bundle.is_dir() or _contains(stage, bundle) or _contains(bundle, stage)
+        root = pointer._absolute(generation_root)
+        store = pointer._absolute(bundle_store_root)
+        active = pointer._absolute(active_bundle_root)
+        for path in (stage, bundle, root, store, active):
+            pointer._chain(path)
+        if (not all(path.is_dir() for path in (stage, bundle, root, store, active))
+                or not _contains(root, stage)
+                or any(_contains(root, item) or _contains(item, root) for item in (bundle, store, active))
                 or any(stage.iterdir())):
             raise ValueError()
         request = cli._request(request_path)

@@ -27,13 +27,7 @@ class PublicQueryRefused(ValueError):
     """Fixed reason only: no queries, paths or backend messages."""
 
 
-def _encoder_digest(value):
-    if (type(value) is not dict or set(value) != _ENCODER_KEYS
-            or any(type(value[key]) is not str or not value[key] for key in _ENCODER_KEYS)
-            or not pointer_resolver._pin(value["weights_sha256"])):
-        raise ValueError()
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
-                                     ensure_ascii=True).encode("utf-8")).hexdigest()
+from sandbox.mind.step2.shared_index_preflight import _encoder_digest
 
 
 def query_public(config, stdin, *, root, expected_pointer_sha256=None,

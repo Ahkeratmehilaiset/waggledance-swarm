@@ -76,6 +76,30 @@ def test_current_validator_uses_the_same_pointer_parser(monkeypatch):
                            "prefix_required": False})]
 
 
+@pytest.mark.parametrize("invalid_generation", [False, True])
+def test_pinned_snapshot_calls_shared_pointer_parser(monkeypatch, invalid_generation):
+    raw = _pointer()
+    if invalid_generation:
+        raw = raw.replace(b'"generation-1"', b'"../outside"')
+    parser = checkpoint._pointer_contract._parse_bound_pointer
+    seen = []
+
+    def record_call(data, **kwargs):
+        seen.append((data, kwargs))
+        return parser(data, **kwargs)
+
+    monkeypatch.setattr(checkpoint._pointer_contract, "_parse_bound_pointer", record_call)
+    args = {"expected_pointer_sha256": hashlib.sha256(raw).hexdigest(),
+            "policy_sha": "b" * 64, "roster_sha": "c" * 64, "prefix_required": False}
+    if invalid_generation:
+        with pytest.raises(checkpoint.CheckpointRefused):
+            checkpoint._parse_pointer_snapshot(raw, **args)
+    else:
+        assert checkpoint._parse_pointer_snapshot(raw, **args)["generation"] == "generation-1"
+    assert seen == [(raw, {"policy_sha": "b" * 64, "roster_sha": "c" * 64,
+                           "prefix_required": False})]
+
+
 def test_snapshot_requires_expected_prefix_schema():
     raw = _pointer()
     with pytest.raises(checkpoint.CheckpointRefused):

@@ -1060,7 +1060,7 @@ def _fixed_public_validate(plan_bytes, bundle_bytes, query_bytes, output):
         _check(type(query) is dict and set(query) == {"situation", "time"} and type(query["time"]) is str)
         parts = _fixed_bundle_decode(bundle_bytes)
         from sandbox.mind.step2 import shared_capture_adapter as adapter
-        from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
+        from sandbox.mind.step2 import shared_index_preflight as checkpoint
         from sandbox.mind.step2 import shared_result_resolver as resolver
         tasks, roster = adapter.strict_pins(parts["policy_bytes"], plan["policy_sha256"], parts["roster_bytes"],
                                             plan["roster_sha256"])

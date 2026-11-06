@@ -135,3 +135,18 @@ def test_runtime_planner_tracks_the_new_pointer_dependency_and_refuses_missing()
     entries.pop(pointer)
     with pytest.raises(planner.RuntimePlanRefused, match="^code_closure_incomplete$"):
         planner._imports(tree, checkpoint, planner._Closure(entries))
+
+
+def test_runtime_planner_tracks_new_preflight_and_refuses_missing():
+    import ast
+    from tools import build_q4_runtime_plan as planner
+    definition = json.loads((ROOT / "ops/windows/reboot/bridge-code-files.json").read_bytes())
+    entries = {name: ("100644", "blob", "0" * 40, 0) for name in definition["python_files"]}
+    checkpoint = "sandbox/mind/step2/shared_index_checkpoint.py"
+    preflight = "sandbox/mind/step2/shared_index_preflight.py"
+    tree = ast.parse((ROOT / checkpoint).read_text(encoding="utf-8"))
+    reached, _, _ = planner._imports(tree, checkpoint, planner._Closure(entries))
+    assert preflight in reached
+    entries.pop(preflight)
+    with pytest.raises(planner.RuntimePlanRefused, match="^code_closure_incomplete$"):
+        planner._imports(tree, checkpoint, planner._Closure(entries))

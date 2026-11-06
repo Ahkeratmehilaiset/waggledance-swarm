@@ -48,6 +48,7 @@
     "sandbox/mind/step2/shared_history.py",
     "sandbox/mind/step2/shared_index_checkpoint.py",
     "sandbox/mind/step2/shared_index_pointer.py",
+    "sandbox/mind/step2/shared_index_preflight.py",
     "sandbox/mind/step2/prefix_private_state.py",
     "sandbox/mind/step2/shared_prefix_public_producer.py",
     "sandbox/mind/step2/shared_producer.py",

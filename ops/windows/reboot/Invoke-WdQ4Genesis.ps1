@@ -6,7 +6,9 @@ param(
     [switch] $Run,
     [string] $BundleRoot='', [string] $ExpectedCommit='', [string] $ExpectedManifestSha256='',
     [string] $ConfigPath='', [string] $ExpectedConfigSha256='',
-    [string] $RuntimePath='', [string] $ExpectedRuntimeSha256=''
+    [string] $RuntimePath='', [string] $ExpectedRuntimeSha256='',
+    [string] $ScratchRoot='', [string] $ExpectedHostSha256='',
+    [ValidateRange(1,1800)] [int] $TimeoutSeconds=1800
 )
 $ErrorActionPreference='Stop'
 if (-not $Run) { [Console]::Out.WriteLine('{"status":"OFF"}'); return }
@@ -15,7 +17,7 @@ try {
     if ($PSVersionTable.PSEdition -ceq 'Desktop') {
         Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
     }
-    foreach ($pin in @($ExpectedManifestSha256,$ExpectedConfigSha256,$ExpectedRuntimeSha256)) {
+    foreach ($pin in @($ExpectedManifestSha256,$ExpectedConfigSha256,$ExpectedRuntimeSha256,$ExpectedHostSha256)) {
         if ($pin -cnotmatch '^[0-9a-f]{64}$') { throw 'pin' }
     }
     if ($ExpectedCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'commit' }
@@ -47,6 +49,8 @@ try {
     $bootstrap=CheckedPath (Join-Path $bundle 'tools-bootstrap\tools\wd_q4_genesis_runtime_bootstrap.py')
     $cli=CheckedPath (Join-Path $bundle 'tools-bootstrap\tools\wd_q4_genesis_cli.py')
     $helper=CheckedPath (Join-Path $bundle 'tools-bootstrap\tools\wd_q4_live_update_bootstrap.py')
+    $jobHelper=CheckedPath (Join-Path $bundle 'WdQ4ProcessJob.ps1')
+    $worker=CheckedPath (Join-Path $bundle 'Invoke-WdQ4GenesisWorker.ps1')
     if (-not (HashMatches $manifest $ExpectedManifestSha256) -or -not (HashMatches $config $ExpectedConfigSha256) -or
         -not (HashMatches $runtime $ExpectedRuntimeSha256)) { throw 'pin' }
     $manifestData=Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
@@ -61,21 +65,62 @@ try {
         -not [IO.Path]::GetFullPath([string]$configData.bundle_root).Equals($bundle,[StringComparison]::OrdinalIgnoreCase)) { throw 'binding' }
     foreach ($entry in @(@('tools-bootstrap/tools/wd_q4_genesis_runtime_bootstrap.py',$bootstrap),
                           @('tools-bootstrap/tools/wd_q4_genesis_cli.py',$cli),
-                          @('tools-bootstrap/tools/wd_q4_live_update_bootstrap.py',$helper))) {
+                          @('tools-bootstrap/tools/wd_q4_live_update_bootstrap.py',$helper),
+                          @('WdQ4ProcessJob.ps1',$jobHelper), @('Invoke-WdQ4GenesisWorker.ps1',$worker))) {
         $pin=[string]$manifestData.files.PSObject.Properties[$entry[0]].Value
         if ($pin -cnotmatch '^[0-9A-Fa-f]{64}$' -or -not (HashMatches $entry[1] $pin)) { throw 'code' }
     }
     $python=CheckedPath ([string]$runtimeData.interpreter_path)
     $pythonPin=[string]$runtimeData.interpreter_sha256
     if ($pythonPin -cnotmatch '^[0-9a-f]{64}$' -or -not (HashMatches $python $pythonPin)) { throw 'python' }
-    $old=$env:WD_REBOOT_EXPECTED_MANIFEST_HASH
-    try {
-        $env:WD_REBOOT_EXPECTED_MANIFEST_HASH=$ExpectedManifestSha256
-        $started=$true
-        $lines=@(& $python -I -S -B $bootstrap --enable --config $config --sha256 $ExpectedConfigSha256 `
-            --manifest-sha256 $ExpectedManifestSha256 --runtime $runtime --runtime-sha256 $ExpectedRuntimeSha256 2>$null)
-        $code=$LASTEXITCODE
-    } finally { $env:WD_REBOOT_EXPECTED_MANIFEST_HASH=$old }
+    $hostPath=CheckedPath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
+    if (-not (HashMatches $hostPath $ExpectedHostSha256)) { throw 'host' }
+    $scratch=CheckedPath $ScratchRoot $true
+    # Final-name identity defeats 8.3 aliases in addition to the reparse walk.
+    if ($null -ne ('WdQ4GenesisDirectoryV1' -as [type])) { throw 'type' }
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+public static class WdQ4GenesisDirectoryV1 {
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern SafeFileHandle CreateFile(string n,uint a,uint s,IntPtr p,uint d,uint f,IntPtr t);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern uint GetFinalPathNameByHandle(SafeFileHandle h,StringBuilder p,uint n,uint flags);
+  public static string Final(string path) { using(var h=CreateFile(path,0,7,IntPtr.Zero,3,0x02000000,IntPtr.Zero)) {
+    if(h.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+    var b=new StringBuilder(32768); uint n=GetFinalPathNameByHandle(h,b,(uint)b.Capacity,0);
+    if(n==0 || n>=b.Capacity) throw new Win32Exception(Marshal.GetLastWin32Error()); return b.ToString().TrimEnd('\\'); } }
+}
+'@ -ErrorAction Stop
+    $scratchFinal=[WdQ4GenesisDirectoryV1]::Final($scratch)
+    $protected=@($bundle,(Split-Path -Parent $python),(Split-Path -Parent $hostPath),
+        (Split-Path -Parent $config),(Split-Path -Parent $runtime),
+        (Split-Path -Parent ([string]$configData.source_path)),
+        (Split-Path -Parent ([string]$configData.generation_path)),
+        [string]$configData.checkpoint_root,[string]$configData.private_state_root,
+        [string]$configData.trusted_model_root,[string]$runtimeData.runtime_root)
+    foreach ($root in $protected) {
+        $full=CheckedPath $root $true
+        $other=[WdQ4GenesisDirectoryV1]::Final($full)
+        if ($scratchFinal.Equals($other,[StringComparison]::OrdinalIgnoreCase) -or
+            $scratchFinal.StartsWith($other+'\',[StringComparison]::OrdinalIgnoreCase) -or
+            $other.StartsWith($scratchFinal+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'scratch' }
+    }
+    . $jobHelper
+    $args=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$worker,
+        '-Manifest',$manifest,'-ManifestSha256',$ExpectedManifestSha256,'-Bootstrap',$bootstrap,
+        '-BootstrapSha256',([string]$manifestData.files.'tools-bootstrap/tools/wd_q4_genesis_runtime_bootstrap.py').ToLowerInvariant(),
+        '-Python',$python,'-PythonSha256',$pythonPin,'-Config',$config,'-ConfigSha256',$ExpectedConfigSha256,
+        '-Runtime',$runtime,'-RuntimeSha256',$ExpectedRuntimeSha256)
+    $started=$true
+    $job=Invoke-WdQ4ProcessJob -Executable $hostPath -Arguments $args -WorkingDirectory $bundle `
+        -ScratchRoot $scratch -InputBytes ([byte[]]@()) -TimeoutSeconds $TimeoutSeconds -MaxOutputBytes 4096 -DetailedOutcome
+    if ([string]$job.Outcome -cne 'completed' -or [string]$job.Cleanup -cne 'confirmed' -or
+        $null -eq $job.ExitCode -or $null -eq $job.Stdout) { throw 'job' }
+    $code=[int]$job.ExitCode
+    $text=[Text.UTF8Encoding]::new($false,$true).GetString([byte[]]$job.Stdout)
+    $lines=@($text.TrimEnd("`r","`n"))
     if ($lines.Count -ne 1 -or ([string]$lines[0]).Length -gt 512) { throw 'output' }
     $answer=[string]$lines[0] | ConvertFrom-Json -ErrorAction Stop
     $keys=@($answer.PSObject.Properties.Name)

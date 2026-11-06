@@ -3,6 +3,7 @@ import importlib
 import hashlib
 import json
 import os
+import ctypes
 from pathlib import Path
 import shutil
 import subprocess
@@ -45,6 +46,8 @@ def candidate(tmp_path):
     (code / 'sandbox/mind/step2').mkdir(parents=True)
     for name in ('wd_q4_genesis_runtime_bootstrap.py', 'wd_q4_live_update_bootstrap.py'):
         shutil.copyfile(ROOT / 'tools' / name, code / 'tools' / name)
+    for name in ('WdQ4ProcessJob.ps1', 'Invoke-WdQ4GenesisWorker.ps1'):
+        shutil.copyfile(ROOT / 'ops/windows/reboot' / name, bundle / name)
     (code / 'tools/__init__.py').write_text('', encoding='ascii')
     cli = code / 'tools/wd_q4_genesis_cli.py'
     cli.write_text("def main(args):\n import synthetic_runtime_dependency\n assert synthetic_runtime_dependency.VALUE==42\n print('{\"status\":\"PUBLISHED_GENESIS\",\"pointer_sha256\":\"'+'e'*64+'\"}')\n return 0\n", encoding='ascii')
@@ -61,13 +64,21 @@ def candidate(tmp_path):
     built = runtime_builder.build_runtime_manifest(runtime, runtime_manifest, generation='a' * 40, revision='b' * 40)
     files = {'tools-bootstrap/' + p.relative_to(code).as_posix(): sha(p.read_bytes()).upper()
              for p in code.rglob('*') if p.is_file()}
+    files.update({name: sha((bundle / name).read_bytes()).upper()
+                  for name in ('WdQ4ProcessJob.ps1', 'Invoke-WdQ4GenesisWorker.ps1')})
     manifest = bundle / 'deployment-manifest.json'
     manifest.write_bytes(encode({'schema_version': 1, 'source_commit': 'c' * 40, 'files': files}))
     manifest_pin = sha(manifest.read_bytes())
-    config = tmp_path / 'config.json'
+    inputs = tmp_path / 'inputs'
+    inputs.mkdir()
+    for name in ('source', 'sidecar', 'checkpoint', 'private'):
+        (tmp_path / name).mkdir()
+    config = inputs / 'config.json'
     config.write_bytes(encode({'schema': 'wd.q4-genesis-cli.v1', 'manifest_sha256': manifest_pin,
-        'bundle_root': str(bundle), 'trusted_model_root': str(runtime / 'model')}))
-    spec = tmp_path / 'runtime.json'
+        'bundle_root': str(bundle), 'trusted_model_root': str(runtime / 'model'),
+        'source_path': str(tmp_path / 'source/events.jsonl'), 'generation_path': str(tmp_path / 'sidecar/gen.json'),
+        'checkpoint_root': str(tmp_path / 'checkpoint'), 'private_state_root': str(tmp_path / 'private')}))
+    spec = inputs / 'runtime.json'
     spec.write_bytes(encode({'schema': 'wd.q4-genesis-runtime.v1', 'bundle_root': str(bundle),
         'manifest_sha256': manifest_pin, 'interpreter_path': sys.executable,
         'interpreter_sha256': sha(Path(sys.executable).read_bytes()), 'runtime_root': str(runtime),
@@ -91,6 +102,8 @@ def repin_bundle(candidate):
     manifest = json.loads(candidate['manifest'].read_bytes())
     manifest['files'] = {'tools-bootstrap/' + p.relative_to(code).as_posix(): sha(p.read_bytes()).upper()
                          for p in code.rglob('*') if p.is_file()}
+    manifest['files'].update({name: sha((candidate['bundle'] / name).read_bytes()).upper()
+        for name in ('WdQ4ProcessJob.ps1', 'Invoke-WdQ4GenesisWorker.ps1')})
     candidate['manifest'].write_bytes(encode(manifest))
     candidate['manifest_pin'] = sha(candidate['manifest'].read_bytes())
     for name, pin_name in (('config', 'config_pin'), ('spec', 'spec_pin')):
@@ -137,11 +150,15 @@ def test_started_cli_uncertainty_is_sanitized_and_unknown(candidate, mode):
 
 
 def test_powershell_fixed_launcher_checks_pins_then_runs_only_bootstrap(candidate):
+    scratch = candidate['bundle'].parent / 'scratch'
+    scratch.mkdir()
+    host = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
     command = ['powershell', '-NoProfile', '-NonInteractive', '-File', str(LAUNCH), '-Run',
         '-BundleRoot', str(candidate['bundle']), '-ExpectedCommit', 'c' * 40,
         '-ExpectedManifestSha256', candidate['manifest_pin'], '-ConfigPath', str(candidate['config']),
         '-ExpectedConfigSha256', candidate['config_pin'], '-RuntimePath', str(candidate['spec']),
-        '-ExpectedRuntimeSha256', candidate['spec_pin']]
+        '-ExpectedRuntimeSha256', candidate['spec_pin'], '-ScratchRoot', str(scratch),
+        '-ExpectedHostSha256', sha(host.read_bytes()), '-TimeoutSeconds', '30']
     result = subprocess.run(command, text=True, capture_output=True, timeout=40)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {'status': 'PUBLISHED_GENESIS', 'pointer_sha256': 'e' * 64}
@@ -158,11 +175,82 @@ def test_powershell_interpreter_mismatch_never_starts_bootstrap(candidate):
     spec['interpreter_sha256'] = '0' * 64
     candidate['spec'].write_bytes(encode(spec))
     candidate['spec_pin'] = sha(candidate['spec'].read_bytes())
+    scratch = candidate['bundle'].parent / 'scratch'
+    scratch.mkdir()
+    host = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
     command = ['powershell', '-NoProfile', '-NonInteractive', '-File', str(LAUNCH), '-Run',
         '-BundleRoot', str(candidate['bundle']), '-ExpectedCommit', 'c' * 40,
         '-ExpectedManifestSha256', candidate['manifest_pin'], '-ConfigPath', str(candidate['config']),
         '-ExpectedConfigSha256', candidate['config_pin'], '-RuntimePath', str(candidate['spec']),
-        '-ExpectedRuntimeSha256', candidate['spec_pin']]
+        '-ExpectedRuntimeSha256', candidate['spec_pin'], '-ScratchRoot', str(scratch),
+        '-ExpectedHostSha256', sha(host.read_bytes()), '-TimeoutSeconds', '30']
     result = subprocess.run(command, text=True, capture_output=True, timeout=40)
     assert result.returncode == 2 and json.loads(result.stdout) == {'status': 'REFUSED'}
     assert not marker.exists()
+
+
+@pytest.mark.parametrize('fault', ['scratch_overlap', 'worker_tamper'])
+def test_powershell_preflight_rejects_unsafe_scratch_and_worker(candidate, fault):
+    scratch = candidate['bundle'].parent / 'scratch'
+    scratch.mkdir()
+    if fault == 'scratch_overlap':
+        scratch = candidate['bundle']
+    else:
+        worker = candidate['bundle'] / 'Invoke-WdQ4GenesisWorker.ps1'
+        worker.write_bytes(worker.read_bytes() + b'\n# tampered\n')
+    host = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    command = ['powershell', '-NoProfile', '-NonInteractive', '-File', str(LAUNCH), '-Run',
+        '-BundleRoot', str(candidate['bundle']), '-ExpectedCommit', 'c' * 40,
+        '-ExpectedManifestSha256', candidate['manifest_pin'], '-ConfigPath', str(candidate['config']),
+        '-ExpectedConfigSha256', candidate['config_pin'], '-RuntimePath', str(candidate['spec']),
+        '-ExpectedRuntimeSha256', candidate['spec_pin'], '-ScratchRoot', str(scratch),
+        '-ExpectedHostSha256', sha(host.read_bytes()), '-TimeoutSeconds', '30']
+    result = subprocess.run(command, text=True, capture_output=True, timeout=40)
+    assert result.returncode == 2 and json.loads(result.stdout) == {'status': 'REFUSED'}
+    assert not list(scratch.glob('wd-q4-job-*'))
+
+
+def test_timed_out_real_synthetic_python_child_is_gone(candidate):
+    from ctypes import wintypes
+    marker = candidate['bundle'].parent / 'synthetic-child.json'
+    candidate['bootstrap'].write_text('''import ctypes,json,os,time
+from ctypes import wintypes
+k=ctypes.WinDLL('kernel32',use_last_error=True)
+k.GetCurrentProcess.restype=wintypes.HANDLE
+k.GetProcessTimes.argtypes=[wintypes.HANDLE]+[ctypes.POINTER(wintypes.FILETIME)]*4
+creation=wintypes.FILETIME(); exit_time=wintypes.FILETIME(); kernel=wintypes.FILETIME(); user=wintypes.FILETIME()
+assert k.GetProcessTimes(k.GetCurrentProcess(),ctypes.byref(creation),ctypes.byref(exit_time),ctypes.byref(kernel),ctypes.byref(user))
+identity=(creation.dwHighDateTime<<32)|creation.dwLowDateTime
+open(%r,'w').write(json.dumps({'pid':os.getpid(),'creation':identity}))
+time.sleep(15)
+''' % str(marker), encoding='ascii')
+    repin_bundle(candidate)
+    scratch = candidate['bundle'].parent / 'scratch'
+    scratch.mkdir()
+    host = Path(os.environ['SystemRoot']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    command = ['powershell', '-NoProfile', '-NonInteractive', '-File', str(LAUNCH), '-Run',
+        '-BundleRoot', str(candidate['bundle']), '-ExpectedCommit', 'c' * 40,
+        '-ExpectedManifestSha256', candidate['manifest_pin'], '-ConfigPath', str(candidate['config']),
+        '-ExpectedConfigSha256', candidate['config_pin'], '-RuntimePath', str(candidate['spec']),
+        '-ExpectedRuntimeSha256', candidate['spec_pin'], '-ScratchRoot', str(scratch),
+        '-ExpectedHostSha256', sha(host.read_bytes()), '-TimeoutSeconds', '4']
+    result = subprocess.run(command, text=True, capture_output=True, timeout=25)
+    assert result.returncode == 3 and json.loads(result.stdout) == {'status': 'UNKNOWN'}
+    assert marker.exists(), 'synthetic child did not start; cleanup is unproven'
+    child = json.loads(marker.read_text())
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    handle = kernel.OpenProcess(0x1000 | 0x100000, False, child['pid'])
+    if handle:
+        try:
+            creation=wintypes.FILETIME(); exit_time=wintypes.FILETIME(); kernel_time=wintypes.FILETIME(); user=wintypes.FILETIME()
+            kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+            assert kernel.GetProcessTimes(handle, ctypes.byref(creation), ctypes.byref(exit_time),
+                                          ctypes.byref(kernel_time), ctypes.byref(user))
+            observed=(creation.dwHighDateTime<<32)|creation.dwLowDateTime
+            kernel.WaitForSingleObject.argtypes=[wintypes.HANDLE,wintypes.DWORD]
+            assert observed != child['creation'] or kernel.WaitForSingleObject(handle,0) == 0
+        finally:
+            kernel.CloseHandle.argtypes=[wintypes.HANDLE]
+            kernel.CloseHandle(handle)

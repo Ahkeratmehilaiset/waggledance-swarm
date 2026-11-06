@@ -80,6 +80,7 @@ def test_on_demand_capacity_reader_is_packaged_as_an_explicit_entrypoint():
     "tools/wd_q4_live_update_bootstrap.py",
     "tools/wd_q4_genesis_bootstrap.py",
     "tools/wd_q4_genesis_cli.py",
+    "tools/wd_q4_production_continuation.py",
     "tools/wd_q4_canonical_ref_verifier.py",
     "tools/wd_q4_shared_descriptor_producer.py",
 ])
@@ -99,6 +100,7 @@ def test_packaging_alone_does_not_activate_descriptor_or_provision_writers():
     assert _definition()["python_entrypoints"]["q4_guard_provision"] == "tools/wd_q4_guard_state_provision_cli.py"
     deployer = (REPO_ROOT / "ops/windows/reboot/Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
     assert "'Invoke-WdQ4ProvisionGuard.ps1'," in deployer
+    assert "'Invoke-WdQ4GenesisWorker.ps1'," in deployer
 
 
 def test_staged_composer_command_is_packaged_and_explicitly_published():

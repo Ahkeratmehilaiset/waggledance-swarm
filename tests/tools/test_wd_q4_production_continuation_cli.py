@@ -221,3 +221,43 @@ def test_v2_receipt_discloses_only_cutoff_and_proof_hashes(monkeypatch, capsys):
     assert cli.main(["--enable", "--config", "fixture", "--sha256", "f" * 64]) == 0
     assert response(capsys) == {key: result[key] for key in ("status", "pointer_sha256", "runner_receipt_sha256",
         "cutoff_utc", "previous_cutoff_utc", "route_sha256", "cutoff_monotonicity")}
+
+
+def test_v3_receipt_binds_watermark_without_disclosing_private_inputs(monkeypatch, capsys):
+    inputs = {"enabled": True, "watermark_enabled": True, "cutoff_utc": "2026-10-31T13:02:00Z",
+              "previous_cutoff_utc": "2026-10-31T13:00:00Z", "expected_watermark_record_sha256": None}
+    monkeypatch.setattr(cli, "_prepare", lambda *_: inputs)
+    result = {"status": "DEFERRED", "runner_calls": 1, "pointer_sha256": "a" * 64,
+              "runner_receipt_sha256": "b" * 64, "coverage": "partial_ready_prefix",
+              "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN",
+              "cutoff_utc": inputs["cutoff_utc"], "previous_cutoff_utc": inputs["previous_cutoff_utc"],
+              "route_sha256": "c" * 64, "watermark_record_sha256": "d" * 64,
+              "cutoff_monotonicity": "COOPERATIVE_LEASE_PERSISTED_CRASH_UNKNOWN"}
+    monkeypatch.setattr(cli.continuation, "continue_once", lambda **_: result)
+    assert cli.main(["--enable", "--config", "fixture", "--sha256", "f" * 64]) == 0
+    assert response(capsys) == {key: result[key] for key in ("status", "pointer_sha256", "runner_receipt_sha256",
+        "cutoff_utc", "previous_cutoff_utc", "route_sha256", "cutoff_monotonicity", "watermark_record_sha256")}
+
+
+def test_v3_config_requires_manifest_pinned_watermark(synthetic_config, monkeypatch):
+    from tools import wd_q4_cutoff_watermark as watermark
+    config, write, tmp = synthetic_config
+    code = Path(config["bundle_root"]) / "tools-bootstrap/tools/wd_q4_cutoff_watermark.py"
+    code.write_bytes(Path(watermark.__file__).read_bytes())
+    monkeypatch.setattr(watermark, "__file__", str(code))
+    manifest_path = Path(config["bundle_root"]) / "deployment-manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["files"]["tools-bootstrap/tools/wd_q4_cutoff_watermark.py"] = digest(code.read_bytes())
+    manifest_bytes = json.dumps(manifest).encode()
+    manifest_path.write_bytes(manifest_bytes)
+    config.update(schema="wd.q4-continuation-cli.v3", manifest_sha256=digest(manifest_bytes),
+                  cutoff_utc="2026-10-31T13:02:00Z", previous_cutoff_utc="2026-10-31T13:00:00Z",
+                  watermark_previous_record_sha256=None)
+    monkeypatch.setenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", digest(manifest_bytes))
+    path, pin = write()
+    prepared = cli._prepare(path, pin)
+    assert prepared["watermark_enabled"] is True
+    assert prepared["expected_watermark_record_sha256"] is None
+    code.write_bytes(code.read_bytes() + b"# tampered\n")
+    with pytest.raises(Exception):
+        cli._prepare(path, pin)

@@ -6,6 +6,7 @@ source. Output contains only closed status values and result hashes; there is
 no scheduling, retry, installation, activation or recovery of unknown work.
 """
 import hmac
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -27,10 +28,16 @@ _STATUSES = frozenset({"partial_ready_prefix", "caught_up_to_cutoff", "DEFERRED"
 def _prepare(path, digest):
     config = _doc(_read_pinned(_c_path(path), 65536, digest, "config_refused"))
     legacy = config.get("schema") == "wd.q4-continuation-cli.v1" and set(config) == _KEYS
-    explicit = (config.get("schema") == "wd.q4-continuation-cli.v2"
+    watermarked = (config.get("schema") == "wd.q4-continuation-cli.v3"
+                   and set(config) == _KEYS | {"cutoff_utc", "previous_cutoff_utc", "watermark_previous_record_sha256"})
+    explicit = watermarked or (config.get("schema") == "wd.q4-continuation-cli.v2"
                 and set(config) == _KEYS | {"cutoff_utc", "previous_cutoff_utc"})
     if not (legacy or explicit):
         raise ValueError()
+    if watermarked and config["watermark_previous_record_sha256"] is not None:
+        prior = config["watermark_previous_record_sha256"]
+        if type(prior) is not str or _HEX.fullmatch(prior) is None:
+            raise ValueError()
     if explicit and (continuation.runner._cutoff_datetime(config["cutoff_utc"])
                      < continuation.runner._cutoff_datetime(config["previous_cutoff_utc"])):
         raise ValueError()
@@ -60,6 +67,16 @@ def _prepare(path, digest):
         if not _HEX.fullmatch(pin) or not os.path.samefile(code, actual):
             raise ValueError()
         _read_pinned(str(code), 1024 * 1024, pin, "code_refused")
+    if watermarked:
+        name = "tools.wd_q4_cutoff_watermark"
+        loaded = sys.modules.get(name)
+        spec = importlib.util.find_spec(name)
+        actual = getattr(loaded, "__file__", None) if loaded is not None else getattr(spec, "origin", None)
+        code = root / "tools-bootstrap/tools/wd_q4_cutoff_watermark.py"
+        pin = str(files.get("tools-bootstrap/tools/wd_q4_cutoff_watermark.py", "")).lower()
+        if not _HEX.fullmatch(pin) or not actual or not os.path.samefile(code, actual):
+            raise ValueError()
+        _read_pinned(str(code), 1024 * 1024, pin, "code_refused")
     tuple_path = _c_path(config["tuple_path"])
     tuple_bytes = _read_pinned(tuple_path, 65536, config["tuple_sha256"], "tuple_refused")
     document = _doc(tuple_bytes)
@@ -86,6 +103,8 @@ def _prepare(path, digest):
             "public_policy_bytes": public, "fleet_bytes": fleet, "expected_fleet_sha256": config["fleet_sha256"]}
     if explicit:
         result.update(cutoff_utc=config["cutoff_utc"], previous_cutoff_utc=config["previous_cutoff_utc"])
+    if watermarked:
+        result.update(watermark_enabled=True, expected_watermark_record_sha256=config["watermark_previous_record_sha256"])
     return result
 
 
@@ -94,6 +113,9 @@ def _result(value, inputs):
             "source_authenticity", "freshness"}
     explicit = "cutoff_utc" in inputs or "previous_cutoff_utc" in inputs
     added = {"cutoff_utc", "previous_cutoff_utc", "route_sha256", "cutoff_monotonicity"}
+    watermarked = inputs.get("watermark_enabled") is True
+    if watermarked:
+        added.add("watermark_record_sha256")
     if (type(value) is not dict or set(value) != (keys | added if explicit else keys) or value["status"] not in _STATUSES
             or type(value["runner_calls"]) is not int or value["runner_calls"] != 1
             or value["source_authenticity"] != "UNKNOWN" or value["freshness"] != "UNKNOWN"
@@ -105,7 +127,10 @@ def _result(value, inputs):
     if explicit:
         if (value["cutoff_utc"] != inputs.get("cutoff_utc")
                 or value["previous_cutoff_utc"] != inputs.get("previous_cutoff_utc")
-                or value["cutoff_monotonicity"] != "CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN"
+                or value["cutoff_monotonicity"] != ("COOPERATIVE_LEASE_PERSISTED_CRASH_UNKNOWN" if watermarked
+                                                     else "CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN")
+                or (watermarked and (type(value["watermark_record_sha256"]) is not str
+                    or _HEX.fullmatch(value["watermark_record_sha256"]) is None))
                 or type(value["route_sha256"]) is not str or _HEX.fullmatch(value["route_sha256"]) is None):
             raise ValueError()
         output.update({key: value[key] for key in added})

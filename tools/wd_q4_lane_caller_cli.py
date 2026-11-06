@@ -2,8 +2,11 @@
 
 No arguments emits OFF without reading environment, stdin, configuration or the
 adapter. --enabled reads one JSON situation/time query exclusively from stdin.
-WD_Q4_CALLER_{DESCRIPTOR,FLEET}_{PATH,SHA256} supply the existing v2 descriptor
-and fleet. All referenced input bytes are bounded and checked against pins.
+WD_Q4_SHARED_DESCRIPTOR_PATH/SHA256 select the existing v2 descriptor. Its
+bundle_root contains deployment-manifest.json, whose bytes must match the
+externally supplied WD_REBOOT_EXPECTED_MANIFEST_HASH. The manifest's wd-fleet.json
+pin must agree with the descriptor and actual fleet bytes. CALLER aliases are
+not read. All referenced input bytes are bounded and checked against pins.
 
 Identity is constructed in this process from AGENT_BRIDGE_AGENT, _AGENT_UUID,
 _RUN_ID, the in-process hash of _OWNER_TOKEN, actual cwd and the pinned fleet
@@ -15,6 +18,13 @@ The existing adapter owns its native call and cleanup. This CLI adds no native
 implementation, timeout watchdog, packaging, installed config or activation.
 It requires the existing trusted bootstrap to expose the packaged tools module;
 it never changes sys.path or guesses a dependency root. A missing chain refuses.
+
+The caller must not automatically retry a nonzero exit: reconcile the failed
+call first. Exit 3 means cleanup is UNKNOWN, 4 means timeout, 130 interruption,
+and 2 another refusal. In particular, exit 3 requires an external no-retry hold
+until cleanup is independently reconciled. These codes are signals, not cleanup
+proof or a persistent cross-process guard. A separate caller-owned watchdog is
+required to bound the entire invocation, including a stalled stdin read.
 """
 from datetime import datetime
 import hashlib
@@ -30,6 +40,7 @@ import sys
 MAX_STDIN = 16000  # Same envelope as the existing lane-session CLI.
 MAX_OUTPUT = 65536
 MAX_DOCUMENT = 65536
+MAX_MANIFEST = 1024 * 1024
 MAX_FLEET = 1024 * 1024
 MAX_SNAPSHOT = 16 * 1024 * 1024
 MAX_RUNTIME = 8 * 1024 * 1024
@@ -146,13 +157,19 @@ def _binding(value):
 
 
 def _configuration():
-    descriptor_pin = _hex(_env("WD_Q4_CALLER_DESCRIPTOR_SHA256"))
-    fleet_pin = _hex(_env("WD_Q4_CALLER_FLEET_SHA256"))
-    descriptor_raw = _read(_env("WD_Q4_CALLER_DESCRIPTOR_PATH"), MAX_DOCUMENT, descriptor_pin)
-    fleet_raw = _read(_env("WD_Q4_CALLER_FLEET_PATH"), MAX_FLEET, fleet_pin)
+    descriptor_pin = _hex(_env("WD_Q4_SHARED_DESCRIPTOR_SHA256"))
+    descriptor_raw = _read(_env("WD_Q4_SHARED_DESCRIPTOR_PATH"), MAX_DOCUMENT, descriptor_pin)
     descriptor = _json(descriptor_raw, _DESCRIPTOR_KEYS)
+    bundle_root = _path(descriptor["bundle_root"])
+    manifest_raw = _read(str(bundle_root / "deployment-manifest.json"), MAX_MANIFEST,
+                         _env("WD_REBOOT_EXPECTED_MANIFEST_HASH"))
+    manifest = _json(manifest_raw)
+    _check(type(manifest.get("schema_version")) is int and manifest["schema_version"] == 1
+           and type(manifest.get("files")) is dict)
+    fleet_pin = _hex(manifest["files"].get("wd-fleet.json"))
     _check(descriptor["schema"] == "wd.q4-shared-session-config.v2"
            and _hex(descriptor["fleet_sha256"]) == fleet_pin)
+    fleet_raw = _read(str(bundle_root / "wd-fleet.json"), MAX_FLEET, fleet_pin)
     _check(type(descriptor["lanes"]) is list and descriptor["lanes"]
            and all(type(lane) is str and lane in _LANES for lane in descriptor["lanes"])
            and len(set(descriptor["lanes"])) == len(descriptor["lanes"])
@@ -214,7 +231,7 @@ def _query():
     return situation, datetime.fromisoformat(when[:-1] + "+00:00")
 
 
-def _output(result, lane, identity_pin, descriptor_pin, expected_binding, limit, situation, token):
+def _output(result, lane, identity_pin, descriptor_pin, expected_binding, limit, token):
     _check(type(result) is dict and frozenset(result) == _RESULT_KEYS
            and result["schema"] == "wd.q4-lane-caller-result.v1" and result["status"] == "VALIDATED"
            and result["lane"] == lane and result["lane_binding"] == "DECLARED_CONSISTENT"
@@ -241,9 +258,9 @@ def _output(result, lane, identity_pin, descriptor_pin, expected_binding, limit,
     _check(result["answer_sha256"] == _sha(_canon(answer)))
     raw = _canon(result) + b"\n"
     _check(len(raw) <= limit)
-    # Reject an exact secret/query collision even if it came from a public record.
-    for secret in (situation, token):
-        _check(secret.encode("utf-8", "strict") not in raw and _canon(secret)[1:-1] not in raw)
+    # The closed schema and adapter's parent-resolved records exclude query
+    # fields. Public record/metadata text may coincide with a query; tokens may not.
+    _check(token.encode("utf-8", "strict") not in raw and _canon(token)[1:-1] not in raw)
     return raw.decode("ascii")
 
 
@@ -251,6 +268,16 @@ def _write(text):
     count = sys.stdout.write(text)
     _check(type(count) is int and count == len(text))
     sys.stdout.flush()
+
+
+def _refuse(code):
+    # Preserve the nonzero outcome even when the diagnostic stream is unavailable.
+    try:
+        sys.stderr.write(_REFUSAL)
+        sys.stderr.flush()
+    except BaseException:
+        pass
+    return code
 
 
 def main(argv=None):
@@ -272,17 +299,23 @@ def main(argv=None):
         result = adapter.call_lane_session(enabled=True, identity_bytes=identity_raw,
             expected_identity_sha256=identity_pin, descriptor_bytes=descriptor_raw,
             expected_descriptor_sha256=descriptor_pin, situation=situation, time=when, inputs=inputs)
+        # Unknown/unrecognized cleanup takes precedence over any status, including
+        # a claimed answer or timeout. It never publishes validated stdout.
+        if (type(result) is not dict or result.get("cleanup") != "chain_confirmed"
+                or result.get("status") == "UNKNOWN"):
+            return _refuse(3)
+        if result.get("status") == "TIMEOUT":
+            return _refuse(4)
         _write(_output(result, lane, identity_pin, descriptor_pin, binding,
-                       inputs["max_output_bytes"], situation, token))
+                       inputs["max_output_bytes"], token))
         return 0
+    except (KeyboardInterrupt, SystemExit):
+        return _refuse(130)
+    except TimeoutError:
+        return _refuse(4)
     except BaseException:
         # No exception detail, query, token, path or retry on any failure.
-        try:
-            sys.stderr.write(_REFUSAL)
-            sys.stderr.flush()
-        except BaseException:
-            return 2
-        return 2
+        return _refuse(2)
     finally:
         token = situation = identity_raw = inputs = result = None
 

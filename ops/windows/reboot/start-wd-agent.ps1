@@ -854,13 +854,13 @@ function Assert-WdLaneLaunchAvailable {
     # Regex class of backslash or slash, built without backslash literals.
     # The launcher's own profile first (every lane runs as this account), so a
     # relocated profile root is covered too; then any <drive>:/Users/<name>/.
-    $profileRoot = [string]$env:USERPROFILE
+    # Separator direction is normalized for the comparison only (Replace keeps
+    # the length, so the original suffix is returned unchanged).
+    $profileRoot = ([string]$env:USERPROFILE).Replace('/', [string][char]92).TrimEnd([char]92)
     if ($profileRoot) {
-      $profileRoot = $profileRoot.TrimEnd([char]92, '/')
-      foreach ($end in @([string][char]92, '/')) {
-        if ($Path.StartsWith($profileRoot + $end, [StringComparison]::OrdinalIgnoreCase)) {
-          return '<userprofile>' + $Path.Substring($profileRoot.Length)
-        }
+      $comparablePath = $Path.Replace('/', [string][char]92)
+      if ($comparablePath.StartsWith($profileRoot + [char]92, [StringComparison]::OrdinalIgnoreCase)) {
+        return '<userprofile>' + $Path.Substring($profileRoot.Length)
       }
     }
     $slashClass = '[' + [char]92 + [char]92 + '/]'

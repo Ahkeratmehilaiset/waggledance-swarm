@@ -64,7 +64,7 @@ def _mock_spawn_from_winapi(k, job, executable, line, environment, cwd, info):
     return _winapi.CreateProcess(executable, line, None, None, False, 0x08000404, environment, cwd, None)
 
 
-@pytest.mark.parametrize("failure", [None, "attribute", "create"])
+@pytest.mark.parametrize("failure", [None, "init", "attribute", "create"])
 def test_native_spawn_contract_preserves_job_environment_and_no_inheritance(transport, failure):
     import ctypes
     from ctypes import wintypes
@@ -75,7 +75,7 @@ def test_native_spawn_contract_preserves_job_environment_and_no_inheritance(tran
             if attrs is None:
                 ctypes.cast(size, ctypes.POINTER(ctypes.c_size_t)).contents.value = 128
             calls.append("init")
-            return attrs is not None
+            return attrs is not None and failure != "init"
         def UpdateProcThreadAttribute(self, attrs, flags, attribute, values, size, prior, result):
             assert attribute == 0x0002000D and flags == 0 and size == ctypes.sizeof(wintypes.HANDLE)
             assert ctypes.cast(values, ctypes.POINTER(wintypes.HANDLE)).contents.value == 12
@@ -85,6 +85,9 @@ def test_native_spawn_contract_preserves_job_environment_and_no_inheritance(tran
             assert exe == "synthetic.exe" and command.value == '"synthetic.exe" -I'
             assert proc_sa is None and thread_sa is None and inherit is False and flags == 0x08080404
             assert cwd == "synthetic-cwd"
+            assert env and env.value
+            child = ctypes.cast(info, ctypes.POINTER(transport._ProcessInfo)).contents
+            assert not child.process and not child.thread and not child.pid and not child.tid
             assert ctypes.cast(startup, ctypes.POINTER(transport._StartupInfoEx)).contents.startup.cb == ctypes.sizeof(transport._StartupInfoEx)
             values = []
             cursor = env.value
@@ -96,7 +99,6 @@ def test_native_spawn_contract_preserves_job_environment_and_no_inheritance(tran
             assert values == ["SYSTEMROOT=synthetic-root", "TEMP=synthetic-temp"]
             calls.append("create")
             if failure == "create": return 0
-            child = ctypes.cast(info, ctypes.POINTER(transport._ProcessInfo)).contents
             child.process, child.thread, child.pid, child.tid = 15, 16, 17, 18
             return 1
         def DeleteProcThreadAttributeList(self, attrs):
@@ -109,8 +111,8 @@ def test_native_spawn_contract_preserves_job_environment_and_no_inheritance(tran
         assert not info.process and not info.thread
     else:
         assert transport._create_process_in_job(*args) == (15, 16, 17, 18)
-    assert calls[-1] == "delete"
-    assert ("create" in calls) is (failure != "attribute")
+    assert ("delete" in calls) is (failure != "init")
+    assert ("create" in calls) is (failure not in ("init", "attribute"))
 
 
 def _run(transport, tmp_path, code, payload=b"", *, timeout=5, output_limit=1024):

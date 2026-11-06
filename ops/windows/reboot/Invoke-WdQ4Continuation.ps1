@@ -58,12 +58,16 @@ try {
     $configData=Get-Content -LiteralPath $config -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
     if ([int]$manifestData.schema_version -ne 1 -or [string]$manifestData.source_commit -cne $ExpectedCommit -or
         [string]$runtimeData.schema -cne 'wd.q4-genesis-runtime.v1' -or
-        [string]$configData.schema -cnotin @('wd.q4-continuation-cli.v1','wd.q4-continuation-cli.v2') -or
+        [string]$configData.schema -cnotin @('wd.q4-continuation-cli.v1','wd.q4-continuation-cli.v2','wd.q4-continuation-cli.v3') -or
         [string]$runtimeData.manifest_sha256 -cne $ExpectedManifestSha256 -or
         [string]$configData.manifest_sha256 -cne $ExpectedManifestSha256 -or
         -not [IO.Path]::GetFullPath([string]$runtimeData.bundle_root).Equals($bundle,[StringComparison]::OrdinalIgnoreCase) -or
         -not [IO.Path]::GetFullPath([string]$configData.bundle_root).Equals($bundle,[StringComparison]::OrdinalIgnoreCase)) { throw 'binding' }
-    $v2=[string]$configData.schema -ceq 'wd.q4-continuation-cli.v2'
+    $v3=[string]$configData.schema -ceq 'wd.q4-continuation-cli.v3'
+    $v2=[string]$configData.schema -ceq 'wd.q4-continuation-cli.v2' -or $v3
+    if ($v3 -and ($null -eq $configData.PSObject.Properties['watermark_previous_record_sha256'] -or
+        ($null -ne $configData.watermark_previous_record_sha256 -and
+         [string]$configData.watermark_previous_record_sha256 -cnotmatch '^[0-9a-f]{64}$'))) { throw 'pin' }
     if ($v2) {
         foreach ($value in @($configData.cutoff_utc,$configData.previous_cutoff_utc)) {
             if ($value -isnot [string] -or $value -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$') { throw 'cutoff' }
@@ -155,11 +159,13 @@ public static class WdQ4ContinuationDirectoryV1 {
     $code=[int]$job.ExitCode
     $text=[Text.UTF8Encoding]::new($false,$true).GetString([byte[]]$job.Stdout)
     $lines=@($text.TrimEnd("`r","`n"))
-    if ($lines.Count -ne 1 -or ([string]$lines[0]).Length -gt 512) { throw 'output' }
+    $outputLimit=if ($v3) { 1024 } else { 512 }
+    if ($lines.Count -ne 1 -or ([string]$lines[0]).Length -gt $outputLimit) { throw 'output' }
     $answer=[string]$lines[0] | ConvertFrom-Json -ErrorAction Stop
     $keys=@($answer.PSObject.Properties.Name)
     $allowed=@('status','pointer_sha256','runner_receipt_sha256')
     if ($v2) { $allowed+=@('cutoff_utc','previous_cutoff_utc','route_sha256','cutoff_monotonicity') }
+    if ($v3) { $allowed+='watermark_record_sha256' }
     if ($keys.Count -lt 1 -or $keys.Count -gt $allowed.Count -or
         @($keys | Where-Object { $_ -cnotin $allowed }).Count -ne 0 -or
         [string]$answer.status -cnotin @('partial_ready_prefix','caught_up_to_cutoff','DEFERRED','REFUSED','UNKNOWN')) { throw 'output' }
@@ -169,6 +175,7 @@ public static class WdQ4ContinuationDirectoryV1 {
     $success=[string]$answer.status -cin @('partial_ready_prefix','caught_up_to_cutoff','DEFERRED')
     $expectedKeys=3
     if ($v2) { $expectedKeys=7 }
+    if ($v3) { $expectedKeys=8 }
     if (($success -and ($code -ne 0 -or $keys.Count -ne $expectedKeys -or
             $keys -cnotcontains 'pointer_sha256' -or $keys -cnotcontains 'runner_receipt_sha256')) -or
         (-not $success -and ($keys.Count -ne 1 -or
@@ -180,7 +187,40 @@ public static class WdQ4ContinuationDirectoryV1 {
             [string]$answer.cutoff_utc -cne [string]$configData.cutoff_utc -or
             [string]$answer.previous_cutoff_utc -cne [string]$configData.previous_cutoff_utc -or
             [string]$answer.route_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-            [string]$answer.cutoff_monotonicity -cne 'CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN') { throw 'output' }
+            [string]$answer.cutoff_monotonicity -cne $(if ($v3) { 'COOPERATIVE_LEASE_PERSISTED_CRASH_UNKNOWN' } else { 'CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN' })) { throw 'output' }
+    }
+    if ($success -and $v3) {
+        $recordPin=[string]$answer.watermark_record_sha256
+        if ($recordPin -cnotmatch '^[0-9a-f]{64}$') { throw 'record' }
+        $private=CheckedPath ([string]$routeData.private_state_root) $true
+        $head=CheckedPath (Join-Path $private 'q4-cutoff-current.json')
+        $record=CheckedPath (Join-Path $private ('q4-cutoff-record-'+$recordPin+'.json'))
+        $activePointer=CheckedPath (Join-Path $checkpoint 'q4-latest.json')
+        $expectedHead='{"record_sha256":"'+$recordPin+'","schema":"wd.q4-cutoff-head.v1"}'
+        $headHasher=[Security.Cryptography.SHA256]::Create()
+        try { $headPin=[BitConverter]::ToString($headHasher.ComputeHash([Text.Encoding]::ASCII.GetBytes($expectedHead))).Replace('-','').ToLowerInvariant() }
+        finally { $headHasher.Dispose() }
+        if ((Get-Item -LiteralPath $head).Length -gt 4096 -or (Get-Item -LiteralPath $record).Length -gt 8192 -or
+            (Get-Item -LiteralPath $activePointer).Length -gt 16384 -or
+            -not (HashMatches $head $headPin) -or -not (HashMatches $record $recordPin) -or
+            -not (HashMatches $activePointer ([string]$answer.pointer_sha256)) -or
+            (Test-Path -LiteralPath (Join-Path $private 'q4-cutoff.pending.json'))) { throw 'record' }
+        $headData=Get-Content -LiteralPath $head -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+        $recordData=Get-Content -LiteralPath $record -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+        $recordKeys=@($recordData.PSObject.Properties.Name)
+        $expectedRecordKeys=@('schema','previous_record_sha256','cutoff_utc','attempt','route_sha256','runner_receipt_sha256','pointer_sha256')
+        if (@($headData.PSObject.Properties.Name).Count -ne 2 -or [string]$headData.schema -cne 'wd.q4-cutoff-head.v1' -or
+            [string]$headData.record_sha256 -cne $recordPin -or $recordKeys.Count -ne 7 -or
+            @($recordKeys | Where-Object { $_ -cnotin $expectedRecordKeys }).Count -ne 0 -or
+            [string]$recordData.schema -cne 'wd.q4-cutoff-record.v1' -or
+            $recordData.previous_record_sha256 -cne $configData.watermark_previous_record_sha256 -or
+            [string]$recordData.cutoff_utc -cne [string]$configData.cutoff_utc -or
+            [string]$recordData.attempt -cnotmatch '^[0-9a-f]{64}$' -or
+            [string]$recordData.route_sha256 -cne [string]$answer.route_sha256 -or
+            [string]$recordData.runner_receipt_sha256 -cne [string]$answer.runner_receipt_sha256 -or
+            [string]$recordData.pointer_sha256 -cne [string]$answer.pointer_sha256 -or
+            -not (HashMatches $head $headPin) -or -not (HashMatches $record $recordPin) -or
+            -not (HashMatches $activePointer ([string]$answer.pointer_sha256))) { throw 'record' }
     }
     [Console]::Out.WriteLine(($answer | ConvertTo-Json -Compress))
     exit $code

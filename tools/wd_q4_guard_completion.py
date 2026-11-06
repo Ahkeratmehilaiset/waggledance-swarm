@@ -215,6 +215,22 @@ class _OwnerContext:
                                         "adapter": _AdapterOwner}[name])
             return ticket
 
+    def _require_done(self, names):
+        """Check exact inner-owner tickets without completing the outer call."""
+        with self._registry._lock:
+            _check(self._registry._context is self and self._state == "active"
+                   and self._guard._registry is self._registry and self._binding == self._registry._binding
+                   and not self._registry._uncertain and not self._registry._used
+                   and type(names) is tuple and 0 < len(names) <= len(_OWNERS)
+                   and all(type(name) is str and name in _OWNERS for name in names)
+                   and len(set(names)) == len(names))
+            types = {"transport": _TransportOwner, "attestation": _AttestationOwner, "adapter": _AdapterOwner}
+            for name in names:
+                ticket = self._tickets[name]
+                _check(type(ticket) is types[name] and ticket._registry is self._registry
+                       and ticket._capability is self._registry._owners[name]
+                       and ticket._state == "done" and name in self._registry._done)
+
     def _finish(self):
         with self._registry._lock:
             _check(self._registry._context is self and self._state == "active"

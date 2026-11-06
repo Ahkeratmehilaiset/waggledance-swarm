@@ -8,6 +8,7 @@ import inspect
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -352,17 +353,10 @@ def test_partial_owner_pair_is_rejected_before_session_dispatch(tmp_path, monkey
         item._registry._issue()
 
 
-@pytest.mark.parametrize("change", ["lane", "descriptor"])
-def test_context_binding_mismatch_refuses_before_bound_factory(tmp_path, monkeypatch, change):
+def test_context_lane_mismatch_refuses_before_bound_factory(tmp_path, monkeypatch):
     case, item, marker = _session_case_and_guard(tmp_path, monkeypatch)
     context = item._owner_context()
-    if change == "lane":
-        case["lane"] = "fable-5"
-    else:
-        document = json.loads(case["binding_bytes"])
-        document["binding"]["descriptor_sha256"] = "f" * 64
-        case["binding_bytes"] = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("ascii")
-        case["expected_binding_sha256"] = hashlib.sha256(case["binding_bytes"]).hexdigest()
+    case["lane"] = "fable-5"
     def unexpected(*args, **kwargs):
         pytest.fail("wrong owner binding reached bound factory")
     monkeypatch.setattr(bound, "make_bound_transport", unexpected)
@@ -374,14 +368,97 @@ def test_context_binding_mismatch_refuses_before_bound_factory(tmp_path, monkeyp
         item._registry._issue()
 
 
-def test_real_unwired_fixed_peer_refuses_without_attesting_or_spawning(tmp_path, monkeypatch):
-    from tools import wd_q4_fixed_parent_attestation as attestation
+def test_real_guarded_synthetic_session_runs_both_inner_owners(tmp_path, monkeypatch):
+    """Synthetic fixture, real fixed-peer and Windows cleanup; adapter not entered."""
     case, item, marker = _session_case_and_guard(tmp_path, monkeypatch)
     context = item._owner_context()
-    def unexpected(*args, **kwargs):
-        pytest.fail("unwired guarded route reached native admission")
-    monkeypatch.setattr(attestation, "attest_file", unexpected)
-    monkeypatch.setattr(result.fixed, "_run", unexpected)
+    answer = session.query_session(**{key: value for key, value in case.items() if not key.startswith("_")},
+                                   _owner_guard=item, _owner_context=context)
+    assert answer["status"] == "ANSWER"
+    assert item._registry._done == {"attestation", "transport"}
+    assert not item._registry._uncertain
+    assert marker.is_file()
+    with pytest.raises(guard.GuardCompletionUnavailable):
+        item._registry._issue()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="real synthetic fixed peer uses Windows transport")
+@pytest.mark.parametrize("wrong_caller_descriptor", [False, True])
+def test_guarded_adapter_real_synthetic_chain_releases_after_all_owners(tmp_path, monkeypatch, wrong_caller_descriptor):
+    """Real guarded adapter/session/peer cleanup, synthetic data and runtime only."""
+    from tools import wd_q4_lane_caller_adapter as adapter
+    helper_path = Path(__file__).with_name("test_wd_q4_lane_caller_adapter.py")
+    spec = importlib.util.spec_from_file_location("synthetic_owner_adapter_helpers", helper_path)
+    helpers = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helpers)
+    case, unused_guard, unused_marker = _session_case_and_guard(tmp_path, monkeypatch)
+    # This guard belongs to the session-only fixture; it must not be consumed as proof.
+    assert unused_marker.is_file()
+    inputs = {key: value for key, value in case.items()
+              if key not in ("lane", "situation", "time", "enabled") and not key.startswith("_")}
+    roster = json.loads(inputs["fleet_bytes"])
+    worktree = os.getcwd()
+    uuid = next(entry["agent_uuid"] for entry in roster["lanes"] if entry["agent"] == helpers.LANE)
+    for entry in roster["lanes"]:
+        entry["worktree"] = worktree if entry["agent"] == helpers.LANE else str(tmp_path / entry["agent"])
+    inputs["fleet_bytes"] = helpers.canon(roster)
+    inputs["expected_fleet_sha256"] = helpers.sha(inputs["fleet_bytes"])
+    binding = json.loads(case["binding_bytes"])
+    document = json.loads(helpers.descriptor_for(inputs, lanes=binding["lanes"],
+                                                 expected_binding=binding["binding"]))
+    document["cwd"] = inputs["cwd"]
+    descriptor = helpers.canon(document)
+    identity = helpers.identity_for(descriptor, agent=helpers.LANE, agent_uuid=uuid,
+                                    worktree=worktree, cwd=worktree)
+    # Use a separate synthetic runtime marker for the adapter's real guard.
+    runtime = tmp_path / "adapter-runtime"
+    state = runtime / "shared" / ".codex-audit" / helpers.LANE / "q4-caller-state"
+    state.mkdir(parents=True)
+    roster["runtime_root"] = str(runtime)
+    inputs["fleet_bytes"] = helpers.canon(roster)
+    inputs["expected_fleet_sha256"] = helpers.sha(inputs["fleet_bytes"])
+    document["fleet_sha256"] = inputs["expected_fleet_sha256"]
+    descriptor = helpers.canon(document)
+    identity = helpers.identity_for(descriptor, agent=helpers.LANE, agent_uuid=uuid,
+                                    worktree=worktree, cwd=worktree)
+    assert helpers.sha(descriptor) != binding["binding"]["descriptor_sha256"]
+    item = guard.acquire_guard(fleet_bytes=inputs["fleet_bytes"],
+        expected_fleet_sha256=inputs["expected_fleet_sha256"], lane=helpers.LANE,
+        identity_sha256=helpers.sha(identity),
+        descriptor_sha256="f" * 64 if wrong_caller_descriptor else helpers.sha(descriptor))
+    context = item._owner_context()
+    monkeypatch.setattr(adapter, "_QUARANTINED", False)
+    if wrong_caller_descriptor:
+        monkeypatch.setattr(session, "query_session", lambda *args, **kwargs: pytest.fail("wrong caller pin dispatched"))
+        with pytest.raises(adapter.CallerRefused):
+            adapter.call_lane_session(enabled=True, identity_bytes=identity,
+                expected_identity_sha256=helpers.sha(identity), descriptor_bytes=descriptor,
+                expected_descriptor_sha256=helpers.sha(descriptor), situation=case["situation"],
+                time=case["time"], inputs=inputs, _owner_guard=item, _owner_context=context)
+        assert item._registry._uncertain and (state / (helpers.LANE + ".pending.json")).exists()
+        return
+    answer = adapter.call_lane_session(enabled=True, identity_bytes=identity,
+        expected_identity_sha256=helpers.sha(identity), descriptor_bytes=descriptor,
+        expected_descriptor_sha256=helpers.sha(descriptor), situation=case["situation"],
+        time=case["time"], inputs=inputs, _owner_guard=item, _owner_context=context)
+    assert answer["status"] == "VALIDATED" and answer["inner_status"] == "ANSWER"
+    assert item._registry._done == {"adapter", "attestation", "transport"}
+    assert not item._registry._uncertain
+    marker = state / (helpers.LANE + ".pending.json")
+    assert marker.is_file()
+    context._finish()
+    item.release(item._registry._issue())
+    assert not marker.exists() and unused_marker.is_file()
+
+
+def test_wrong_index_descriptor_pin_never_launches_peer(tmp_path, monkeypatch):
+    case, item, marker = _session_case_and_guard(tmp_path, monkeypatch)
+    context = item._owner_context()
+    binding = json.loads(case["binding_bytes"])
+    binding["binding"]["descriptor_sha256"] = "f" * 64
+    case["binding_bytes"] = json.dumps(binding, sort_keys=True, separators=(",", ":")).encode("ascii")
+    case["expected_binding_sha256"] = hashlib.sha256(case["binding_bytes"]).hexdigest()
+    monkeypatch.setattr(result.fixed, "_run", lambda *args, **kwargs: pytest.fail("wrong index pin launched peer"))
     with pytest.raises(session.LaneSessionRefused):
         session.query_session(**{key: value for key, value in case.items() if not key.startswith("_")},
                               _owner_guard=item, _owner_context=context)

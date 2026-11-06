@@ -51,8 +51,7 @@ def query_session(*, lane, situation, time, fleet_bytes, expected_fleet_sha256, 
                 owner_options = {"_owner_guard": _owner_guard, "_owner_context": _owner_context}
             pins = lane_binding.resolve_lane_binding(fleet_bytes, expected_fleet_sha256, binding_bytes,
                 expected_binding_sha256, lane=lane, enabled=True)
-            if owner_options and (_owner_guard._binding[1] != lane
-                    or not hmac.compare_digest(_owner_guard._binding[3], pins["expected_binding"]["descriptor_sha256"])):
+            if owner_options and _owner_guard._binding[1] != lane:
                 raise ValueError()
             if (type(fixed_plan_bytes) is not bytes or not 0 < len(fixed_plan_bytes) <= fixed._MAX_PLAN
                     or type(expected_fixed_plan_sha256) is not str

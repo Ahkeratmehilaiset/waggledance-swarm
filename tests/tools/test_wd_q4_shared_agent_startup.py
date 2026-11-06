@@ -30,6 +30,15 @@ def invoke(tmp_path, case="ok", lane="codex-lead-1"):
     launch.mkdir()
     helper = launch / HELPER.name
     helper.write_bytes(HELPER.read_bytes())
+    extras = {}
+    for name in ("Invoke-WdQ4LaneRecall.ps1", "Get-WdQ4DefaultDescriptor.ps1"):
+        path = launch / name
+        path.write_text("# synthetic helper\n", encoding="utf-8")
+        extras[name] = sha(path.read_bytes()).upper()
+    if case == "missing_pin":
+        extras.pop("Invoke-WdQ4LaneRecall.ps1")
+    if case == "invalid_pin":
+        extras["Invoke-WdQ4LaneRecall.ps1"] = "bad"
     fleet = launch / "wd-fleet.json"
     fleet_raw = json.dumps({"lanes": [{"agent": x} for x in LANES if x != "codex-tools-1"],
                             "tools_supervisor": {"agent": "codex-tools-1"}}).encode()
@@ -47,10 +56,15 @@ def invoke(tmp_path, case="ok", lane="codex-lead-1"):
     desc.write_bytes(raw)
     manifest = launch / "deployment-manifest.json"
     manifest.write_bytes(json.dumps({"files": {"wd-fleet.json": sha(fleet_raw).upper(),
-        HELPER.name: sha(helper.read_bytes()).upper()}}).encode())
+        HELPER.name: sha(helper.read_bytes()).upper(), **extras}}).encode())
     manifest_pin, desc_pin = sha(manifest.read_bytes()), sha(raw)
     if case == "bad_helper":
         helper.write_bytes(helper.read_bytes() + b"\n# changed")
+    if case in ("missing_recall", "tampered_recall"):
+        path = launch / "Invoke-WdQ4LaneRecall.ps1"
+        path.unlink() if case == "missing_recall" else path.write_bytes(b"changed")
+    if case == "missing_resolver":
+        (launch / "Get-WdQ4DefaultDescriptor.ps1").unlink()
     if case == "bad_fleet":
         fleet.write_bytes(fleet_raw + b" ")
     if case == "bad_manifest":
@@ -63,6 +77,8 @@ def invoke(tmp_path, case="ok", lane="codex-lead-1"):
         desc = ""
     if case == "off":
         desc, desc_pin = "", ""
+        for name in extras:
+            (launch / name).unlink()
     script = f"""
 $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
 if($PSVersionTable.PSEdition -eq 'Desktop'){{$env:PSModulePath=Join-Path $PSHOME 'Modules'}}
@@ -101,7 +117,7 @@ def test_four_agent_lanes_receive_only_pinned_reference(tmp_path, lane):
     assert "query" not in json.dumps(out).lower() and "inherited_spoof_secret" not in json.dumps(out)
 
 
-@pytest.mark.parametrize("case", ["half_path", "half_hash", "bad_helper", "bad_fleet", "bad_manifest", "bad_descriptor"])
+@pytest.mark.parametrize("case", ["half_path", "half_hash", "bad_helper", "bad_fleet", "bad_manifest", "bad_descriptor", "missing_recall", "tampered_recall", "missing_resolver", "missing_pin", "invalid_pin"])
 def test_unanchored_or_incomplete_input_refuses(tmp_path, case):
     assert invoke(tmp_path, case=case)["ok"] is False
 

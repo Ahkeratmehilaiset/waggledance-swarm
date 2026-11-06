@@ -255,6 +255,14 @@ function Get-WdLaneSharedQ4Reference {
     $helper = Join-Path $BundleRoot 'Get-WdQ4SharedSessionConfig.ps1'
     [void](Assert-LanePathWithoutReparse -Path $helper -TrustedRoot $TrustedRoot -ExpectedType Leaf)
     $helperSnapshot = Read-Utf8LaneSnapshot -Path $helper
+    foreach ($name in @('Invoke-WdQ4LaneRecall.ps1', 'Get-WdQ4DefaultDescriptor.ps1')) {
+      $pin = $deployment.files.PSObject.Properties[$name]
+      if ($null -eq $pin -or [string]$pin.Value -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'invalid' }
+      $path = Join-Path $BundleRoot $name
+      [void](Assert-LanePathWithoutReparse -Path $path -TrustedRoot $TrustedRoot -ExpectedType Leaf)
+      $snapshot = Read-Utf8LaneSnapshot -Path $path
+      if ($snapshot.Hash -cne ([string]$pin.Value).ToUpperInvariant()) { throw 'invalid' }
+    }
     if ($helperSnapshot.Hash -cne ([string]$helperPin.Value).ToUpperInvariant() -or
         (Get-FileHash -LiteralPath $DeploymentManifestPath -Algorithm SHA256).Hash -cne $ExpectedManifestSha256.ToUpperInvariant()) {
       throw 'invalid'

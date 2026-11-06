@@ -395,11 +395,16 @@ def launcher_reference(tmp_path, descriptor_path, descriptor_pin, fleet_raw, lan
     bundle.mkdir(exist_ok=True)
     helper = bundle / HELPER.name
     helper.write_bytes(HELPER.read_bytes())
+    extras = {}
+    for name in ("Invoke-WdQ4LaneRecall.ps1", "Get-WdQ4DefaultDescriptor.ps1"):
+        path = bundle / name
+        path.write_text("# synthetic helper\n", encoding="utf-8")
+        extras[name] = sha(path.read_bytes()).upper()
     fleet = bundle / "wd-fleet.json"
     fleet.write_bytes(fleet_raw)
     manifest = bundle / "deployment-manifest.json"
     manifest.write_bytes(json.dumps({"files": {"wd-fleet.json": sha(fleet_raw).upper(),
-                                               HELPER.name: sha(helper.read_bytes()).upper()}}).encode())
+                                               HELPER.name: sha(helper.read_bytes()).upper(), **extras}}).encode())
     script = f"""
 $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
 if($PSVersionTable.PSEdition -eq 'Desktop'){{$env:PSModulePath=Join-Path $PSHOME 'Modules'}}

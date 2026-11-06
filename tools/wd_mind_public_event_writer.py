@@ -20,9 +20,12 @@ from sandbox.mind.step2 import shared_capture_adapter as adapter
 
 ROOT = Path(__file__).resolve().parents[1]
 TASK = "lead-mind-production-20261031"
-_NON_REVIEW_SHA = "95e21913155ebc941ab031761343381b407954dd97f65b9482237961f7a312c7"
-_PUBLIC_SHA = "29382d02a3adcf8dc5c3f3a078f9a1dc5565fdcf1a0f14f9c8c49fc1bb793268"
-_ROSTER_SHA = "bded859e8ae0ffc42c5a56007883d30e0eb4fafd028da7ff8261ae3bbbf9aaf7"
+_NON_REVIEW_SHA = frozenset({"0a9b1f67bc7015924ef595a17f7b092274c0fd568691f9d1ef07bf6a7b9decd2",
+                             "95e21913155ebc941ab031761343381b407954dd97f65b9482237961f7a312c7"})
+_PUBLIC_SHA = frozenset({"a5c5f0d91fc27c799678d1d97a28f48c540997ac91385ae097921388e2a4cdb5",
+                         "29382d02a3adcf8dc5c3f3a078f9a1dc5565fdcf1a0f14f9c8c49fc1bb793268"})
+_ROSTER_SHA = frozenset({"b60bbfd5cfa28bb93053c9b7492378d19c0abb184bd2569398109c50ef24adcb",
+                         "bded859e8ae0ffc42c5a56007883d30e0eb4fafd028da7ff8261ae3bbbf9aaf7"})
 _ALLOWED_LANES = frozenset({"codex-lead-1", "codex-tools-1", "fable-5"})
 _FRAME = re.compile(r"wd-reboot-[A-Za-z0-9._:-]{1,110}\Z")
 _HEX = re.compile(r"[a-fA-F0-9]{64}\Z")
@@ -95,6 +98,8 @@ def _write(event: dict) -> dict:
             raise ValueError()
     if written.get("paths") != [] or written.get("write_scope") != []:
         raise ValueError()
+    if not adapter._public_status_event(written, frozenset({TASK}), frozenset({"status"})):
+        raise ValueError()
     if (delivery.get("schema") != "waggledance.bridge.delivery-receipt.v1"
             or delivery.get("accepted") is not True
             or delivery.get("delivery_status") not in {"canonical", "queued"}
@@ -110,37 +115,55 @@ def _write(event: dict) -> dict:
     return result
 
 
+def _validated_event() -> dict:
+    policy = (ROOT / "configs/mind/pilot_non_review_policy.json").read_bytes()
+    public = (ROOT / "configs/mind/pilot_public_status_policy.json").read_bytes()
+    roster = (ROOT / "ops/windows/reboot/wd-fleet.json").read_bytes()
+    policy_sha, public_sha, roster_sha = _digest(policy), _digest(public), _digest(roster)
+    # The two digests per file pin the exact Git LF blob and its known CRLF
+    # checkout. No byte normalization or caller-supplied trust anchor occurs.
+    if policy_sha not in _NON_REVIEW_SHA or public_sha not in _PUBLIC_SHA or roster_sha not in _ROSTER_SHA:
+        raise ValueError()
+    tasks, lanes = adapter.strict_pins(policy, policy_sha, roster, roster_sha)
+    public_tasks, public_types = adapter.public_status_policy(public, public_sha, tasks)
+    if public_tasks != frozenset({TASK}) or public_types != frozenset({"status"}):
+        raise ValueError()
+    agent = os.environ.get("AGENT_BRIDGE_AGENT", "")
+    if agent not in _ALLOWED_LANES or os.environ.get("AGENT_BRIDGE_AGENT_UUID") != lanes[agent]:
+        raise ValueError()
+    for key in ("AGENT_BRIDGE_SESSION_ID", "AGENT_BRIDGE_RUN_ID"):
+        if not _FRAME.fullmatch(os.environ.get(key, "")):
+            raise ValueError()
+    evidence = _attest()
+    if (evidence.get("pin_status") != "manifest_and_launcher_verified"
+            or evidence.get("observed_agent") != agent
+            or not evidence.get("native_conversation_id")):
+        raise ValueError()
+    return {"agent": agent, "agent_uuid": lanes[agent], "type": "status", "task_id": TASK, "status": "info",
+            "to": "", "message": "", "payload": {"public_status": True}}
+
+
 def publish(*, enabled: bool = False) -> dict:
     """Explicit opt-in; emit only the fixed policy-approved empty broadcast."""
     if enabled is False:
         return {"status": "disabled"}
+    event = None
     try:
         if enabled is not True:
             raise ValueError()
-        policy = (ROOT / "configs/mind/pilot_non_review_policy.json").read_bytes()
-        public = (ROOT / "configs/mind/pilot_public_status_policy.json").read_bytes()
-        roster = (ROOT / "ops/windows/reboot/wd-fleet.json").read_bytes()
-        tasks, lanes = adapter.strict_pins(policy, _NON_REVIEW_SHA, roster, _ROSTER_SHA)
-        public_tasks, public_types = adapter.public_status_policy(public, _PUBLIC_SHA, tasks)
-        if public_tasks != frozenset({TASK}) or public_types != frozenset({"status"}):
-            raise ValueError()
-        agent = os.environ.get("AGENT_BRIDGE_AGENT", "")
-        if agent not in _ALLOWED_LANES or os.environ.get("AGENT_BRIDGE_AGENT_UUID") != lanes[agent]:
-            raise ValueError()
-        for key in ("AGENT_BRIDGE_SESSION_ID", "AGENT_BRIDGE_RUN_ID"):
-            if not _FRAME.fullmatch(os.environ.get(key, "")):
-                raise ValueError()
-        evidence = _attest()
-        if (evidence.get("pin_status") != "manifest_and_launcher_verified"
-                or evidence.get("observed_agent") != agent
-                or not evidence.get("native_conversation_id")):
-            raise ValueError()
-        event = {"agent": agent, "agent_uuid": lanes[agent], "type": "status", "task_id": TASK, "status": "info",
-                 "to": "", "message": "", "payload": {"public_status": True}}
+        event = _validated_event()
     except Exception:
-        raise PublicStatusRefused("public_status_refused") from None
+        pass
+    # Raise outside the handler: __context__ cannot retain raw policy bytes.
+    if event is None:
+        raise PublicStatusRefused("public_status_refused")
+    result = None
     try:
-        return _write(event)
+        result = _write(event)
     except Exception:
-        # Never auto-retry: the writer may have appended before the receipt was lost.
-        raise PublicStatusWriteUncertain("public_status_write_uncertain") from None
+        pass
+    # Never auto-retry: the writer may have appended before the receipt was lost.
+    # Raise outside the handler so an invalid receipt cannot leak via __context__.
+    if result is None:
+        raise PublicStatusWriteUncertain("public_status_write_uncertain")
+    return result

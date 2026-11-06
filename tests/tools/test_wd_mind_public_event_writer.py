@@ -2,6 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -46,6 +47,22 @@ def test_unverified_or_mismatched_launcher_never_publishes(monkeypatch):
         subject.publish(enabled=True)
 
 
+def test_refusal_does_not_retain_attestation_exception_or_frames(monkeypatch):
+    _frame(monkeypatch)
+    def fail_with_private_diagnostic():
+        raise ValueError("private diagnostic must not escape")
+    monkeypatch.setattr(subject, "_attest", fail_with_private_diagnostic)
+    with pytest.raises(subject.PublicStatusRefused, match="^public_status_refused$") as error:
+        subject.publish(enabled=True)
+    assert error.value.__cause__ is None and error.value.__context__ is None
+    frames = []
+    tb = error.value.__traceback__
+    while tb:
+        frames.append(tb.tb_frame.f_code.co_name)
+        tb = tb.tb_next
+    assert "_validated_event" not in frames and "fail_with_private_diagnostic" not in frames
+
+
 def test_writer_failure_is_uncertain_and_never_retried(monkeypatch):
     lead = _frame(monkeypatch)
     monkeypatch.setattr(subject, "_attest", lambda: {"pin_status": "manifest_and_launcher_verified",
@@ -57,8 +74,39 @@ def test_writer_failure_is_uncertain_and_never_retried(monkeypatch):
     monkeypatch.setattr(subject, "_write", uncertain)
     with pytest.raises(subject.PublicStatusWriteUncertain, match="^public_status_write_uncertain$") as error:
         subject.publish(enabled=True)
-    assert len(calls) == 1 and error.value.__cause__ is None
+    assert len(calls) == 1 and error.value.__cause__ is None and error.value.__context__ is None
     assert "private detail" not in str(error.value)
+
+
+@pytest.mark.parametrize("style", ["committed-lf", "checkout-crlf"])
+@pytest.mark.parametrize("tamper", [None, "nonreview", "public", "roster"])
+def test_exact_git_blobs_and_crlf_checkouts_only(tmp_path, monkeypatch, style, tamper):
+    lead = _frame(monkeypatch)
+    names = {"nonreview": "configs/mind/pilot_non_review_policy.json",
+             "public": "configs/mind/pilot_public_status_policy.json",
+             "roster": "ops/windows/reboot/wd-fleet.json"}
+    git = r"C:\Program Files\Git\cmd\git.exe"
+    for key, name in names.items():
+        raw = subprocess.check_output([git, "show", "HEAD:" + name], cwd=ROOT)
+        if style == "checkout-crlf":
+            raw = raw.replace(b"\n", b"\r\n")
+        if tamper == key:
+            raw += b" "  # JSON-equivalent bytes are still untrusted.
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+    monkeypatch.setattr(subject, "ROOT", tmp_path)
+    monkeypatch.setattr(subject, "_attest", lambda: {"pin_status": "manifest_and_launcher_verified",
+        "observed_agent": lead["agent"], "native_conversation_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"})
+    emitted = []
+    monkeypatch.setattr(subject, "_write", lambda event: emitted.append(event) or {"delivery_status": "canonical"})
+    if tamper:
+        with pytest.raises(subject.PublicStatusRefused, match="^public_status_refused$"):
+            subject.publish(enabled=True)
+        assert emitted == []
+    else:
+        assert subject.publish(enabled=True)["delivery_status"] == "canonical"
+        assert len(emitted) == 1
 
 
 @pytest.mark.parametrize("changed", ["agent", "agent_uuid", "task_id", "to", "message", "payload", "paths", "write_scope"])
@@ -69,6 +117,21 @@ def test_writer_receipt_must_match_fixed_public_envelope(monkeypatch, changed):
     written = dict(event, paths=[], write_scope=[])
     written[changed] = {"payload": {"public_status": True, "secret": "x"}, "paths": ["x"],
                         "write_scope": ["x"]}.get(changed, "wrong")
+    written["_bridge_delivery"] = {"schema": "waggledance.bridge.delivery-receipt.v1", "accepted": True,
+                                   "delivery_status": "canonical", "canonical_durable": True}
+    monkeypatch.setattr(subject, "_pinned_helpers", lambda: (Path("synthetic-evidence"), Path("synthetic-writer")))
+    monkeypatch.setattr(subject, "_powershell", lambda: "synthetic-powershell")
+    monkeypatch.setattr(subject.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout=json.dumps(written)))
+    with pytest.raises(ValueError):
+        subject._write(event)
+
+
+@pytest.mark.parametrize("extra", [{"recipient": "fable-5"}, {"unknown": "private"}, {"paths": ["private"]}])
+def test_writer_receipt_with_extra_routing_or_private_fields_is_rejected(monkeypatch, extra):
+    lead = _frame(monkeypatch)
+    event = {"agent": lead["agent"], "agent_uuid": lead["agent_uuid"], "type": "status",
+             "task_id": subject.TASK, "status": "info", "to": "", "message": "", "payload": {"public_status": True}}
+    written = dict(event, paths=[], write_scope=[], **extra) if "paths" not in extra else dict(event, paths=extra["paths"], write_scope=[])
     written["_bridge_delivery"] = {"schema": "waggledance.bridge.delivery-receipt.v1", "accepted": True,
                                    "delivery_status": "canonical", "canonical_durable": True}
     monkeypatch.setattr(subject, "_pinned_helpers", lambda: (Path("synthetic-evidence"), Path("synthetic-writer")))

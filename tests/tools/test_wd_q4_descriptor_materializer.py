@@ -452,36 +452,33 @@ def test_a_descriptor_planned_for_another_generation_or_target_refuses(tmp_path)
 
 # 6 write discipline: exclusive, verified, nothing deleted ----------------------------------------------------------
 @needs_windows
-def test_every_file_is_created_exclusively_and_moved_into_place(tmp_path, monkeypatch):
-    opened, replaced = [], []
-    real_open, real_replace = os.open, os.replace
+def test_every_file_is_created_exclusively_at_its_final_path(tmp_path, monkeypatch):
+    opened = []
+    real_open = os.open
 
     def spy_open(path, flags, *args, **kwargs):
         opened.append((str(path), flags))
         return real_open(path, flags, *args, **kwargs)
-
-    def spy_replace(src, dst, *args, **kwargs):
-        replaced.append((str(src), str(dst)))
-        return real_replace(src, dst, *args, **kwargs)
     monkeypatch.setattr(os, "open", spy_open)
-    monkeypatch.setattr(os, "replace", spy_replace)
     plan, kw, files, result, out = materialize(tmp_path)
     creates = [(p, f) for p, f in opened if f & os.O_CREAT]
     assert len(creates) == 4 and all(f & os.O_EXCL and f & os.O_WRONLY for _, f in creates)
     assert all(p.startswith(plan["generation_dir"] + "\\") for p, _ in creates)
-    assert [dst for _, dst in replaced] == [plan[n + "_path"] for n in ARTIFACTS] + [plan["descriptor_path"]]
-    assert all(src != dst and src.startswith(plan["generation_dir"] + "\\") for src, dst in replaced)
+    assert [p for p, _ in creates] == [plan[n + "_path"] for n in ARTIFACTS] + [plan["descriptor_path"]]
+    reads = [p for p, f in opened if not f & os.O_CREAT]
+    assert reads == [p for p, _ in creates]  # each final file is re-read right after it is created
 
 
 @needs_windows
 def test_the_descriptor_is_written_last_after_the_artifacts_it_pins(tmp_path, monkeypatch):
     order = []
-    real_replace = os.replace
+    real_open = os.open
 
-    def spy_replace(src, dst, *args, **kwargs):
-        order.append(str(dst))
-        return real_replace(src, dst, *args, **kwargs)
-    monkeypatch.setattr(os, "replace", spy_replace)
+    def spy_open(path, flags, *args, **kwargs):
+        if flags & os.O_CREAT:
+            order.append(str(path))
+        return real_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "open", spy_open)
     plan, kw, files, result, out = materialize(tmp_path)
     assert order[-1] == plan["descriptor_path"] and len(order) == 4
 
@@ -489,15 +486,16 @@ def test_the_descriptor_is_written_last_after_the_artifacts_it_pins(tmp_path, mo
 @needs_windows
 def test_a_failed_write_leaves_no_descriptor_and_deletes_nothing(tmp_path, monkeypatch):
     plan, kw, files, result = produced(tmp_path)
-    real_replace = os.replace
+    real_open = os.open
     calls = {"n": 0}
 
-    def failing_replace(src, dst, *args, **kwargs):
-        calls["n"] += 1
-        if calls["n"] == 2:
-            raise OSError(5, "injected " + SENTINEL)
-        return real_replace(src, dst, *args, **kwargs)
-    monkeypatch.setattr(os, "replace", failing_replace)
+    def failing_open(path, flags, *args, **kwargs):
+        if flags & os.O_CREAT:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError(5, "injected " + SENTINEL)
+        return real_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "open", failing_open)
     refused("write_refused", lambda: module().materialize_descriptor(
         enabled=True, target_dir=str(tmp_path / "generations"), generation=GENERATION, artifacts=files,
         descriptor_bytes=result["descriptor_bytes"], expected_descriptor_sha256=result["descriptor_sha256"]))
@@ -512,15 +510,15 @@ def test_a_failed_write_leaves_no_descriptor_and_deletes_nothing(tmp_path, monke
 @needs_windows
 def test_bytes_that_read_back_differently_refuse_instead_of_reporting_success(tmp_path, monkeypatch):
     plan, kw, files, result = produced(tmp_path)
-    real_replace = os.replace
+    real_fsync = os.fsync
 
-    def corrupt_replace(src, dst, *args, **kwargs):
-        if str(dst) == plan["snapshot_path"]:
-            with open(src, "r+b") as handle:
-                handle.seek(0)
-                handle.write(b" ")
-        return real_replace(src, dst, *args, **kwargs)
-    monkeypatch.setattr(os, "replace", corrupt_replace)
+    def corrupt_fsync(handle):
+        real_fsync(handle)
+        if os.fstat(handle).st_size == len(files["snapshot"]):
+            with open(plan["snapshot_path"], "r+b") as other:
+                other.seek(0)
+                other.write(b" ")
+    monkeypatch.setattr(os, "fsync", corrupt_fsync)
     refused("write_refused", lambda: module().materialize_descriptor(
         enabled=True, target_dir=str(tmp_path / "generations"), generation=GENERATION, artifacts=files,
         descriptor_bytes=result["descriptor_bytes"], expected_descriptor_sha256=result["descriptor_sha256"]))
@@ -633,9 +631,137 @@ def test_the_caller_reader_accepts_every_materialized_file_with_its_pin(tmp_path
 # 8 documentation: what this is and is not ---------------------------------------------------------------------------
 def test_the_docstring_states_the_boundaries():
     doc = module().__doc__
-    for phrase in ("default-off", "never overwrites", "never deletes", "O_EXCL", "os.replace", "re-read",
+    for phrase in ("default-off", "never overwrites", "never deletes", "O_EXCL", "no os.replace", "re-read", "identity",
+                   "before every write",
                    "not authentication", "not freshness", "not a runtime proof", "metadata-only",
                    "snapshot producer", "closed reason", "never a caller value", "reparse",
                    "wd_q4_shared_descriptor_producer.py", "Get-WdQ4SharedSessionConfig.ps1",
                    "WD_Q4_SHARED_DESCRIPTOR_PATH", "runtime manifest", "no scheduler", "no activation"):
         assert phrase in doc, phrase
+
+
+# 9 RCO2 M1/M2: foreign final files and directory swaps after the checks ---------------------------------------------
+FOREIGN = b'{"foreign": "' + SENTINEL + b'"}' if False else ('{"foreign": "' + SENTINEL + '"}').encode()
+
+
+def _after_mkdir(monkeypatch, hook):
+    real_mkdir = os.mkdir
+
+    def planted_mkdir(path, *args, **kwargs):
+        real_mkdir(path, *args, **kwargs)
+        hook(str(path))
+    monkeypatch.setattr(os, "mkdir", planted_mkdir)
+
+
+def _call(tmp_path, files, result, generation=GENERATION):
+    return lambda: module().materialize_descriptor(
+        enabled=True, target_dir=str(tmp_path / "generations"), generation=generation, artifacts=files,
+        descriptor_bytes=result["descriptor_bytes"], expected_descriptor_sha256=result["descriptor_sha256"])
+
+
+@needs_windows
+@pytest.mark.parametrize("victim", ["binding", "snapshot", "descriptor"])
+def test_a_foreign_final_file_planted_after_mkdir_keeps_its_bytes_and_no_descriptor_is_accepted(tmp_path, monkeypatch, victim):
+    plan, kw, files, result = produced(tmp_path)
+    _after_mkdir(monkeypatch, lambda _gen: Path(plan[victim + "_path"]).write_bytes(FOREIGN))
+    refused("write_refused", _call(tmp_path, files, result))
+    assert Path(plan[victim + "_path"]).read_bytes() == FOREIGN
+    if victim != "descriptor":
+        assert not Path(plan["descriptor_path"]).exists()
+    assert not any(p.endswith(".part") for p in tree(tmp_path / "generations"))
+
+
+@needs_windows
+def test_the_generation_directory_swapped_for_a_reparse_point_after_mkdir_refuses_and_writes_nothing(tmp_path, monkeypatch):
+    plan, kw, files, result = produced(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    def swap(generation_dir):
+        os.rename(generation_dir, generation_dir + "-moved")
+        try:
+            os.symlink(str(elsewhere), generation_dir, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation not permitted")
+    _after_mkdir(monkeypatch, swap)
+    refused("path_refused", _call(tmp_path, files, result))
+    assert tree(elsewhere) == []
+    assert tree(Path(plan["generation_dir"] + "-moved")) == []
+
+
+@needs_windows
+def test_the_target_directory_swapped_for_a_reparse_point_after_the_check_refuses_and_writes_nothing(tmp_path, monkeypatch):
+    plan, kw, files, result = produced(tmp_path)
+    target = tmp_path / "generations"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    real_mkdir = os.mkdir
+
+    def swapping_mkdir(path, *args, **kwargs):
+        os.rename(str(target), str(target) + "-moved")
+        try:
+            os.symlink(str(elsewhere), str(target), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation not permitted")
+        real_mkdir(path, *args, **kwargs)
+    monkeypatch.setattr(os, "mkdir", swapping_mkdir)
+    refused("path_refused", _call(tmp_path, files, result))
+    assert tree(elsewhere) in ([], [GENERATION])
+    assert tree(Path(str(target) + "-moved")) == []
+
+
+@needs_windows
+def test_a_generation_directory_replaced_by_another_plain_directory_between_writes_refuses(tmp_path, monkeypatch):
+    plan, kw, files, result = produced(tmp_path)
+    real_close = os.close
+    closes = []
+
+    def swapping_close(handle):
+        real_close(handle)
+        closes.append(handle)
+        if len(closes) == 2:  # the first artifact is written and re-read: move the directory away, plant a plain twin
+            os.rename(plan["generation_dir"], plan["generation_dir"] + "-moved")
+            os.mkdir(plan["generation_dir"])
+    monkeypatch.setattr(os, "close", swapping_close)
+    refused("path_refused", _call(tmp_path, files, result))
+    assert tree(Path(plan["generation_dir"])) == []  # the twin never receives a file
+    assert tree(Path(plan["generation_dir"] + "-moved")) == [module().FILE_NAMES["binding"]]
+
+
+@needs_windows
+def test_publication_uses_no_part_file_and_no_replace(tmp_path, monkeypatch):
+    opened = []
+    real_open = os.open
+
+    def spy_open(path, flags, *args, **kwargs):
+        opened.append((str(path), flags))
+        return real_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "open", spy_open)
+    monkeypatch.setattr(os, "replace", lambda *a, **k: pytest.fail("os.replace must not be used"))
+    monkeypatch.setattr(os, "rename", lambda *a, **k: pytest.fail("os.rename must not be used"))
+    plan, kw, files, result, out = materialize(tmp_path)
+    creates = [(p, f) for p, f in opened if f & os.O_CREAT]
+    assert [p for p, _ in creates] == [plan[n + "_path"] for n in ARTIFACTS] + [plan["descriptor_path"]]
+    assert all(f & os.O_EXCL and f & os.O_WRONLY for _, f in creates)
+    assert not any(p.endswith(".part") for p, _ in opened)
+
+
+@needs_windows
+def test_the_generation_directory_swapped_for_a_junction_after_mkdir_refuses_and_writes_nothing(tmp_path, monkeypatch):
+    """A junction is a directory under lstat (S_ISDIR holds), so only the reparse attribute distinguishes it."""
+    plan, kw, files, result = produced(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    def swap(generation_dir):
+        os.rename(generation_dir, generation_dir + "-moved")
+        done = subprocess.run(["cmd.exe", "/d", "/c", "mklink", "/J", generation_dir, str(elsewhere)],
+                              capture_output=True, text=True, timeout=60)
+        if done.returncode != 0:
+            pytest.skip("junction creation not permitted")
+        info = os.lstat(generation_dir)
+        assert stat.S_ISDIR(info.st_mode) and info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    _after_mkdir(monkeypatch, swap)
+    refused("path_refused", _call(tmp_path, files, result))
+    assert tree(elsewhere) == []
+    assert tree(Path(plan["generation_dir"] + "-moved")) == []

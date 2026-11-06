@@ -267,7 +267,7 @@ def test_no_encoder_callback_or_identity_can_be_supplied_by_the_caller():
     parameters = inspect.signature(m.build_prefix_generation).parameters
     assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in parameters.values())
     assert set(parameters) == {"enabled", "plan_bytes", "expected_plan_sha256", "config", "start_prefix", "root",
-                               "private_state_root", "trusted_model_root", "cutoff_utc"}
+                               "private_state_root", "trusted_model_root", "cutoff_utc", "batch_rows"}
     assert m.PLAN_SCHEMA == "wd.q4-prefix-build-plan.v1"
     assert m.ENCODER_MODEL == encode_mod.MODEL and m.ENCODER_DIM == encode_mod.DIM == 384
     assert m.IDENTITY_SOURCE == "encode.model_identity"
@@ -1611,6 +1611,71 @@ def test_publish_no_change_must_preserve_pinned_pointer(monkeypatch):
               "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN"}
     monkeypatch.setattr(m.producer, "publish_public_prefix", lambda **kw: report)
     assert m._publish(request) == (None, "publication_state_unknown")
+
+
+@pytest.mark.parametrize('status', ['EMPTY_NO_CHANGE', 'EMPTY_ADVANCED'])
+@pytest.mark.parametrize('fenced', [False, True])
+def test_caught_up_empty_report_requires_explicit_fenced_route(monkeypatch, status, fenced):
+    m = module()
+    request = types.SimpleNamespace(generation='gen-a', expected_pointer_sha256='1' * 64, fenced=fenced)
+    report = {'status': status, 'pointer_sha256': '1' * 64 if status == 'EMPTY_NO_CHANGE' else '2' * 64,
+              'generation': None, 'publisher_authentication': 'UNKNOWN', 'source_authenticity': 'UNKNOWN',
+              'freshness': 'UNKNOWN', 'coverage': 'caught_up_to_final_snapshot_not_history',
+              'source_refusals': 'NOT_AGGREGATED'}
+    monkeypatch.setattr(m.producer, 'publish_public_catchup', lambda **_kw: report)
+    assert m._publish(request, max_windows=4) == ((report, None) if fenced else (None, 'publication_state_unknown'))
+
+
+def test_explicit_fenced_cutoff_batch_is_forwarded_unchanged(monkeypatch):
+    import datetime
+    m = module()
+    request = types.SimpleNamespace(generation='gen-a', expected_pointer_sha256='1' * 64, fenced=True)
+    cutoff = datetime.datetime(2026, 10, 31, tzinfo=datetime.timezone.utc)
+    seen = []
+    report = {'status': 'EMPTY_ADVANCED', 'pointer_sha256': '2' * 64, 'generation': None,
+              'publisher_authentication': 'UNKNOWN', 'source_authenticity': 'UNKNOWN', 'freshness': 'UNKNOWN',
+              'coverage': 'partial_ready_prefix', 'source_refusals': 'NOT_AGGREGATED'}
+    def publish(**kwargs):
+        seen.append(kwargs)
+        return report
+    monkeypatch.setattr(m.producer, 'publish_public_catchup', publish)
+    assert m._publish(request, max_windows=4, cutoff_utc=cutoff, batch_rows=True) == (report, None)
+    assert seen[0]['batch_rows'] is True and seen[0]['cutoff_utc'] == cutoff
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='model-root checks require a Windows fixed volume')
+def test_build_forwards_opt_in_batch_without_changing_default(tmp_path, model_dir, backend, monkeypatch):
+    import datetime
+    m = module()
+    config, pins, start = synthetic_config(tmp_path)
+    doc = plan(model_dir, pins, schema='wd.q4-prefix-build-plan.v3', max_windows=2, fenced=True)
+    root, private = roots(tmp_path)
+    monkeypatch.setattr(m, '_preflight_holds', lambda *_args: True)
+    seen = []
+    def publish(**kwargs):
+        seen.append(kwargs)
+        return {'status': 'PUBLISHED_GENESIS', 'pointer_sha256': '1' * 64, 'generation': 'gen-a',
+                'publisher_authentication': 'UNKNOWN', 'source_authenticity': 'UNKNOWN', 'freshness': 'UNKNOWN',
+                'coverage': 'caught_up_to_final_snapshot_not_history', 'source_refusals': 'NOT_AGGREGATED'}
+    monkeypatch.setattr(m.producer, 'publish_public_catchup', publish)
+    raw = enc(doc)
+    cutoff = datetime.datetime(2026, 10, 31, tzinfo=datetime.timezone.utc)
+    for batch in (False, True):
+        result = m.build_prefix_generation(enabled=True, plan_bytes=raw, expected_plan_sha256=sha(raw),
+            config=config, start_prefix=start, root=root, private_state_root=private, trusted_model_root=model_dir,
+            cutoff_utc=cutoff, batch_rows=batch)
+        assert result['status'] == 'PUBLISHED_GENESIS'
+    assert 'batch_rows' not in seen[0] and seen[1]['batch_rows'] is True
+
+
+@pytest.mark.parametrize('schema,cutoff,batch', [
+    ('wd.q4-prefix-build-plan.v2', True, True), ('wd.q4-prefix-build-plan.v3', False, True),
+    ('wd.q4-prefix-build-plan.v3', True, 1)])
+def test_batch_option_requires_bool_and_fenced_cutoff(schema, cutoff, batch):
+    import datetime
+    m = module()
+    value = datetime.datetime(2026, 10, 31, tzinfo=datetime.timezone.utc) if cutoff else None
+    assert m._batch_valid(batch, value, schema) is False
 
 
 @pytest.mark.parametrize("catchup,status", [(False, "EMPTY_ADVANCED"), (False, "PUBLISHED_HISTORY"),

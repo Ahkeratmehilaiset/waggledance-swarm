@@ -231,6 +231,29 @@ def test_the_manifest_must_share_the_runtime_root_drive(manifest):
     refused("path_refused", runtime_manifest_path=manifest)
 
 
+def test_a_manifest_at_the_drive_root_is_outside_a_deeper_runtime_root():
+    parsed = transport._fixed_plan(build(runtime_manifest_path="C:\\")["plan_bytes"])
+    assert parsed["runtime_manifest_path"] == "C:\\"
+    refused("path_refused", runtime_root="C:\\", runtime_manifest_path="C:\\manifest.json")
+
+
+@pytest.mark.parametrize("name", PATHS)
+@pytest.mark.parametrize("value", ["C:\\work..\\m.json", "C:\\work.\\m.json", "C:\\work \\m.json", "C:\\work\\m.json ",
+                                   "C:\\work\\m.json.", "C:\\work:secret", "C:\\work\\m:stream", "C:\\a\\..\\m.json",
+                                   "C:\\a\\.\\m.json", "C:\\a\\\\m.json", "C:\\CON\\m.json", "C:\\a\\nul.txt",
+                                   "C:\\a\\COM1", "C:/synthetic/m.json", "C:\\synthetic/m.json"])
+def test_parts_the_verifier_chain_check_or_the_descriptor_validator_refuse_are_refused_before_emit(name, value):
+    """runtime_manifest._check_chain refuses a part with ':' or a trailing '.'/' ' or a device name (Win32 would
+    strip the trailing character and open a different path); dot parts and forward slashes are refused as the
+    shared descriptor validator refuses them."""
+    refused("path_refused", **{name: value})
+
+
+def test_inner_dots_and_spaces_in_a_part_are_fine():
+    parsed = transport._fixed_plan(build(runtime_manifest_path="C:\\synthetic\\q4 .v2\\runtime-manifest.json")["plan_bytes"])
+    assert parsed["runtime_manifest_path"] == "C:\\synthetic\\q4 .v2\\runtime-manifest.json"
+
+
 def test_a_sibling_whose_name_merely_extends_the_root_is_outside_it():
     parsed = transport._fixed_plan(build(runtime_manifest_path=ROOT + "-manifest.json")["plan_bytes"])
     assert parsed["runtime_manifest_path"] == ROOT + "-manifest.json"
@@ -306,5 +329,5 @@ def test_documentation_states_the_boundaries():
     for phrase in ("default-off", "no I/O", "explicit caller argument", "not authentication", "not freshness",
                    "not a runtime proof", "sys.executable", "wd_q4_secure_transport.py", "runtime_manifest.py",
                    "approved_tasks", "outside the runtime root", "generation", "revision", "closed reason",
-                   "never a caller value", "canonical ASCII JSON", "4096"):
+                   "never a caller value", "canonical ASCII JSON", "4096", "forward slash", "8.3", "frame locals"):
         assert phrase in doc, phrase

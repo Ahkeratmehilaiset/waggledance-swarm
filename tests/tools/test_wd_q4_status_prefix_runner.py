@@ -37,10 +37,13 @@ def case(tmp_path, monkeypatch, runner):
     policy = encode({"schema": "wd.q4-non-review-policy.v1", "approved_tasks": [TASK]})
     public = encode({"schema": "wd.mind-public-status-policy.v1", "public_tasks": [TASK], "public_types": ["status"]})
     uuids = {name: f"{i:08d}-1111-4111-8111-111111111111" for i, name in enumerate(LANES, 1)}
-    roster = encode({"schema": "wd.q4-roster-snapshot.v1", "lanes": [
+    fleet = encode({"lanes": [
         {"agent": name, "agent_uuid": uuids[name]} for name in LANES if name != "codex-tools-1"],
-        "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": uuids["codex-tools-1"]}})
-    for key, value in (("_POLICY_SHA", policy), ("_PUBLIC_SHA", public), ("_ROSTER_SHA", roster)):
+        "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": uuids["codex-tools-1"]},
+        "synthetic_metadata": "not-in-canonical-roster"})
+    from tools.wd_q4_roster_from_fleet import build_roster_snapshot
+    roster, _ = build_roster_snapshot(fleet, sha(fleet), enabled=True)
+    for key, value in (("_POLICY_SHA", policy), ("_PUBLIC_SHA", public), ("_FLEET_SHA", fleet)):
         monkeypatch.setattr(runner, key, frozenset({sha(value), sha(value + b"\r\n")}))
     anchor = b"synthetic anchor"
     source_dir = tmp_path / "source"
@@ -63,7 +66,8 @@ def case(tmp_path, monkeypatch, runner):
     def args(route_value=route):
         raw = encode(route_value)
         return dict(enabled=True, route_bytes=raw, expected_route_sha256=sha(raw), plan_bytes=plan,
-                    policy_bytes=policy, public_policy_bytes=public, roster_bytes=roster, anchor_bytes=anchor)
+                    policy_bytes=policy, public_policy_bytes=public, fleet_bytes=fleet,
+                    expected_fleet_sha256=sha(fleet), roster_bytes=roster, anchor_bytes=anchor)
     return runner, args, route, checkpoint, private, monkeypatch
 
 
@@ -90,12 +94,77 @@ def test_off_does_not_inspect_inputs(runner):
     assert runner.run_once(route_bytes=NoTouch()) == {"status": "OFF"}
 
 
+def test_verified_fleet_is_converted_to_the_binding_roster(case, monkeypatch):
+    from tools import wd_q4_roster_from_fleet as roster_producer
+    from tools import wd_q4_lane_binding as consumer
+    runner, args, route, _, _, _ = case
+    kw = args()
+    old_roster = json.loads(kw.pop("roster_bytes"))
+    fleet = encode({"lanes": old_roster["lanes"], "tools_supervisor": old_roster["tools_supervisor"],
+                    "extra_non_roster_metadata": "synthetic"})
+    canonical_roster, roster_sha = roster_producer.build_roster_snapshot(fleet, sha(fleet), enabled=True)
+    monkeypatch.setattr(runner, "_FLEET_SHA", frozenset({sha(fleet)}), raising=False)
+    plan = json.loads(kw["plan_bytes"])
+    plan["pins"]["roster_sha256"] = roster_sha
+    plan_raw = encode(plan)
+    route = dict(route, roster_sha256=roster_sha, plan_sha256=sha(plan_raw))
+    route_raw = encode(route)
+    kw.update(fleet_bytes=fleet, expected_fleet_sha256=sha(fleet), plan_bytes=plan_raw,
+              route_bytes=route_raw, expected_route_sha256=sha(route_raw))
+    seen = []
+    def child(**kwargs):
+        seen.append(kwargs["config"].source.roster_bytes)
+        return dict(child_report(), plan_sha256=sha(plan_raw))
+    fake_child(monkeypatch, child)
+    result = runner.run_once(**kw)
+    assert result["status"] == "PUBLISHED_GENESIS"
+    assert seen == [canonical_roster] and sha(fleet) != roster_sha
+    assert consumer._roster(fleet, sha(fleet))[1] == roster_sha
+
+
+@pytest.mark.parametrize("failure", ["missing_fleet", "wrong_fleet_pin", "forged_roster", "fleet_as_roster"])
+def test_fleet_and_canonical_roster_must_both_bind_before_child(case, monkeypatch, failure):
+    runner, args, _, checkpoint, private, _ = case
+    kw = args()
+    if failure == "missing_fleet":
+        kw["fleet_bytes"] = None
+    elif failure == "wrong_fleet_pin":
+        kw["expected_fleet_sha256"] = "f" * 64
+    elif failure == "forged_roster":
+        kw["roster_bytes"] += b" "
+    else:
+        kw["roster_bytes"] = kw["fleet_bytes"]
+    fake_child(monkeypatch, lambda **_: pytest.fail("invalid fleet reached child"))
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**kw)
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
+
+
+@pytest.mark.parametrize("change", ["v1", "unfenced", "not_boolean"])
+def test_renewable_requires_explicit_fenced_v3_before_reservation(case, change):
+    runner, args, route, checkpoint, private, _ = case
+    kw = args()
+    plan = json.loads(kw["plan_bytes"])
+    if change == "v1":
+        plan["schema"] = "wd.q4-prefix-build-plan.v1"
+    elif change == "unfenced":
+        plan["fenced"] = False
+    plan_raw = encode(plan)
+    route = dict(route, plan_sha256=sha(plan_raw))
+    route_raw = encode(route)
+    kw.update(plan_bytes=plan_raw, route_bytes=route_raw, expected_route_sha256=sha(route_raw),
+              renewable="yes" if change == "not_boolean" else True)
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**kw)
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
+
+
 def test_known_git_lf_and_windows_crlf_policy_pins(runner):
     git = shutil.which("git")
     assert git is not None, "git is required to verify committed configuration bytes"
     for path, allowed in (("configs/mind/pilot_non_review_policy.json", runner._POLICY_SHA),
                           ("configs/mind/pilot_public_status_policy.json", runner._PUBLIC_SHA),
-                          ("ops/windows/reboot/wd-fleet.json", runner._ROSTER_SHA)):
+                          ("ops/windows/reboot/wd-fleet.json", runner._FLEET_SHA)):
         blob = subprocess.run([git, "show", "HEAD:" + path], cwd=ROOT, capture_output=True, check=True).stdout
         assert b"\r\n" not in blob
         assert {sha(blob), sha(blob.replace(b"\n", b"\r\n"))} == allowed
@@ -456,3 +525,203 @@ def test_real_child_synthetic_status_only_genesis(case, monkeypatch):
     assert b"synthetic-private-body" not in projection
     assert b"unapproved-task" not in projection and b"claude-rco-1" not in projection
     assert (checkpoint / runner._PENDING).is_file() and (private / runner._PENDING).is_file()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="synthetic producer uses Windows fixed-volume checks")
+@pytest.mark.parametrize("fault", ["none", "before_receipt", "after_receipt", "after_first_unlink", "interrupt",
+                                   "wrong_marker", "open_fence", "wrong_pointer", "wrong_private", "bad_landed"])
+def test_real_fenced_child_two_renewable_updates(case, monkeypatch, fault):
+    pytest.importorskip("faiss", reason="synthetic builder requires FAISS")
+    from sandbox.mind.step2 import encode as encoder
+    from sandbox.mind.step2.test_wd_q4_prefix_build_child import FakeModel
+    from waggledance.core.bridge_log_reader import BridgeCursor, read_bridge_log
+
+    runner, args, route, checkpoint, private, _ = case
+    kw = args()
+    kw["renewable"] = True
+    roster = json.loads(kw["roster_bytes"])
+    uuids = {item["agent"]: item["agent_uuid"] for item in roster["lanes"] + [roster["tools_supervisor"]]}
+    base = {"ts_utc": "2026-10-31T12:00:30Z", "agent": "codex-lead-1", "agent_uuid": uuids["codex-lead-1"],
+            "type": "status", "status": "info", "task_id": TASK, "to": "", "message": "", "paths": [],
+            "write_scope": [], "payload": {"public_status": True}}
+    events = [base, dict(base, message="synthetic-private-body"),
+              dict(base, agent="claude-rco-1", agent_uuid=uuids["claude-rco-1"]),
+              dict(base, task_id="unapproved-task")]
+    source, sidecar = Path(route["source"]), Path(route["generation_path"])
+    source.write_bytes(b"".join(encode(event) + b"\n" for event in events))
+    sidecar.write_bytes(encode({"generation": "gen-1"}))
+    probe = read_bridge_log(source, generation_path=sidecar, max_bytes=4096, max_rows=20)
+    assert probe.candidate_cursor is not None
+    cursor = BridgeCursor(offset=0, file_identity=probe.candidate_cursor.file_identity, generation="gen-1")
+    anchor = encode({"schema": "wd.q4-source-anchor.v1", "source_path": str(source),
+                     "generation_path": str(sidecar), "cursor_start": asdict(cursor),
+                     "policy_sha256": route["policy_sha256"], "roster_sha256": route["roster_sha256"],
+                     "status_mode": "public-v1", "public_policy_sha256": route["public_policy_sha256"]})
+    model = Path(route["trusted_model_root"])
+    weights = b"synthetic-weights-not-a-model"
+    (model / "model.safetensors").write_bytes(weights)
+    plan = json.loads(kw["plan_bytes"])
+    plan["max_prefix_bytes"] = 8192
+    plan["pins"]["anchor_sha256"] = sha(anchor)
+    plan["encoder"] = {"model": encoder.MODEL, "revision": "c" * 40, "model_dir": str(model),
+                       "weights_sha256": sha(weights), "dim": encoder.DIM,
+                       "assets": {"model.safetensors": sha(weights)}}
+    kw["plan_bytes"] = encode(plan)
+    route.update(cursor=asdict(cursor), max_bytes=4096, max_rows=20, anchor_sha256=sha(anchor),
+                 plan_sha256=sha(kw["plan_bytes"]))
+    kw.update(anchor_bytes=anchor, route_bytes=encode(route))
+    kw["expected_route_sha256"] = sha(kw["route_bytes"])
+    from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
+    public_tasks, public_types = snapshot._checked_anchor(source, cursor, frozenset({TASK}), anchor_bytes=anchor,
+        anchor_sha256=sha(anchor), generation_path=sidecar, policy_bytes=kw["policy_bytes"],
+        policy_sha256=route["policy_sha256"], roster_bytes=kw["roster_bytes"], roster_sha256=route["roster_sha256"],
+        public_policy_bytes=kw["public_policy_bytes"], public_policy_sha256=route["public_policy_sha256"])
+    check = read_bridge_log(source, cursor=cursor, generation_path=sidecar, max_bytes=4096, max_rows=20,
+                            expected_prefix_sha256=sha(b""), max_prefix_bytes=8192)
+    assert check.status.value == "OK", (check.status, check.reason)
+    snapshot.read_anchored_delta(source, cursor, frozenset({TASK}), anchor_bytes=anchor, anchor_sha256=sha(anchor),
+        generation_path=sidecar, max_bytes=4096, max_rows=20, policy_bytes=kw["policy_bytes"],
+        policy_sha256=route["policy_sha256"], roster_bytes=kw["roster_bytes"], roster_sha256=route["roster_sha256"],
+        public_policy_bytes=kw["public_policy_bytes"], public_policy_sha256=route["public_policy_sha256"],
+        expected_prefix_sha256=sha(b""), max_prefix_bytes=8192)
+    sentence = types.ModuleType("sentence_transformers")
+    sentence.__version__, sentence.SentenceTransformer = "0.0-synthetic", FakeModel
+    torch = types.ModuleType("torch")
+    torch.__version__, torch.get_num_threads = "0.0-synthetic", lambda: 1
+    monkeypatch.setitem(sys.modules, "sentence_transformers", sentence)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    from sandbox.mind.step2 import wd_q4_prefix_build_child as actual_child
+    original_child = actual_child.build_prefix_generation
+    observations = []
+    def observe_child(**kwargs):
+        try:
+            result = original_child(**kwargs)
+        except Exception as exc:
+            observations.append((type(exc).__name__, str(exc)))
+            raise
+        observations.append(("result", result))
+        if fault != "none":
+            from tools import wd_q4_status_prefix_recovery as recovery
+            if fault == "before_receipt":
+                monkeypatch.setattr(recovery, "_write_receipt", lambda *_: (_ for _ in ()).throw(OSError("synthetic")))
+            elif fault in ("after_receipt", "interrupt"):
+                original_write = recovery._write_receipt
+                def write_then_fail(*values):
+                    original_write(*values)
+                    raise (KeyboardInterrupt() if fault == "interrupt" else OSError("synthetic"))
+                monkeypatch.setattr(recovery, "_write_receipt", write_then_fail)
+            elif fault == "after_first_unlink":
+                unlink = recovery.os.unlink
+                def unlink_then_fail(path):
+                    unlink(path)
+                    raise OSError("synthetic")
+                monkeypatch.setattr(recovery.os, "unlink", unlink_then_fail)
+            elif fault == "wrong_marker":
+                (checkpoint / runner._PENDING).write_bytes(b"foreign-token")
+            elif fault == "open_fence":
+                monkeypatch.setattr(recovery.checkpoint_mod, "_active_fence", lambda *_: ("synthetic",))
+            elif fault == "wrong_pointer":
+                result = {**result, "pointer_sha256": "e" * 64}
+            elif fault == "wrong_private":
+                (private / "prefix-private-state.json").write_bytes(b"synthetic-corruption")
+            elif fault == "bad_landed":
+                path = recovery.checkpoint_mod._fence_record(checkpoint, result["pointer_sha256"], "landed")
+                path.write_bytes(b"synthetic-corruption")
+        return result
+    monkeypatch.setattr(actual_child, "build_prefix_generation", observe_child)
+    if fault != "none":
+        expected = runner.StatusRunnerInterrupted if fault == "interrupt" else runner.StatusRunnerOutcomeUnknown
+        with pytest.raises(expected):
+            runner.run_once(**kw)
+        assert observations and observations[0][0] == "result"
+        assert (private / runner._PENDING).exists()
+        assert (checkpoint / runner._PENDING).exists() == (fault != "after_first_unlink")
+        receipts = list(private.glob("q4-status-result-*.json"))
+        assert bool(receipts) == (fault in ("after_receipt", "after_first_unlink", "interrupt"))
+        return
+    try:
+        result = runner.run_once(**kw)
+    except runner.StatusRunnerOutcomeUnknown:
+        pytest.fail(f"synthetic child observation: {observations!r}")
+    assert result["status"] == "PUBLISHED_GENESIS"
+    receipts = list(private.glob("q4-status-result-*.json"))
+    assert len(receipts) == 1 and sha(receipts[0].read_bytes()) == result["runner_receipt_sha256"]
+    assert result["freshness"] == result["source_authenticity"] == "UNKNOWN"
+    projection = (checkpoint / plan["generation"] / "projection.json").read_bytes()
+    records = json.loads(projection)["records"]
+    assert len(records) == 1 and records[0]["stored_text"] == f"status info codex-lead-1 {TASK}"
+    assert b"synthetic-private-body" not in projection
+    assert b"unapproved-task" not in projection and b"claude-rco-1" not in projection
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
+    from sandbox.mind.step2 import shared_index_checkpoint as cp
+    from sandbox.mind.step2 import prefix_private_state as ps
+    from sandbox.mind.step2 import shared_index_preflight as preflight
+    from tools import wd_q4_lane_binding_producer as binding_producer
+    from tools import wd_q4_lane_binding as binding_consumer
+    from tools import wd_q4_secure_transport as transport
+    def validate_actual_binding(published, source_anchor):
+        pointer_raw = (checkpoint / cp.POINTER).read_bytes()
+        pointer = json.loads(pointer_raw)
+        assert sha(pointer_raw) == published["pointer_sha256"]
+        active = {name: (checkpoint / pointer["generation"] / name).read_bytes() for name in cp.ARTIFACTS.values()}
+        public_snapshot = transport.fixed_snapshot_bundle(pointer_bytes=pointer_raw,
+            policy_bytes=kw["policy_bytes"], roster_bytes=kw["roster_bytes"],
+            public_policy_bytes=kw["public_policy_bytes"], active_artifact_bytes=active,
+            history_bytes={}, cell_snapshots={})
+        wrapper = b"synthetic-wrapper"
+        manifest = encode({"schema_version": 1, "source_commit": "a" * 40,
+                           "files": {"wd-fleet.json": sha(kw["fleet_bytes"]),
+                                     "Invoke-WdQ4Query.ps1": sha(wrapper)}})
+        descriptor = json.loads(active["descriptor.json"])
+        plan_doc = {"schema": "wd.q4-public-wrapper-plan.v1",
+                    "config": {"descriptor_sha256": sha(active["descriptor.json"])},
+                    "root": "synthetic", "policy_path": "synthetic", "roster_path": "synthetic",
+                    "public_policy_path": "synthetic", "pointer_sha256": sha(pointer_raw),
+                    "source_anchor_sha256": sha(source_anchor),
+                    "encoder_sha256": preflight._encoder_digest(descriptor["encoder"]),
+                    "policy_sha256": route["policy_sha256"], "roster_sha256": route["roster_sha256"],
+                    "public_policy_sha256": route["public_policy_sha256"]}
+        public_plan = encode(plan_doc)
+        produced = binding_producer.build_lane_binding(enabled=True, expected_commit="a" * 40,
+            manifest_bytes=manifest, expected_manifest_sha256=sha(manifest),
+            fleet_bytes=kw["fleet_bytes"], expected_fleet_sha256=sha(kw["fleet_bytes"]),
+            wrapper_bytes=wrapper, expected_wrapper_sha256=sha(wrapper),
+            public_plan_bytes=public_plan, expected_public_plan_sha256=sha(public_plan),
+            snapshot_bytes=public_snapshot, expected_snapshot_sha256=sha(public_snapshot))
+        for lane in LANES:
+            pinned = binding_consumer.resolve_lane_binding(kw["fleet_bytes"], sha(kw["fleet_bytes"]),
+                produced["binding_bytes"], produced["binding_sha256"], lane=lane, enabled=True)
+            assert pinned["expected_binding"]["roster_sha256"] == route["roster_sha256"]
+            assert pinned["expected_binding"]["pointer_sha256"] == sha(pointer_raw)
+    validate_actual_binding(result, anchor)
+    tasks, _ = runner.adapter.strict_pins(kw["policy_bytes"], route["policy_sha256"], kw["roster_bytes"], route["roster_sha256"])
+    view, prefix = cp.read_verified_prefix_pointer(checkpoint, tasks, expected_pointer_sha256=result["pointer_sha256"],
+        policy_bytes=kw["policy_bytes"], policy_sha256=route["policy_sha256"], roster_bytes=kw["roster_bytes"],
+        roster_sha256=route["roster_sha256"], expected_public_policy_sha256=route["public_policy_sha256"])
+    with ps.locked_state(private, checkpoint, enabled=True) as locked:
+        locked.require(result["pointer_sha256"], prefix)
+    assert not (private / ps._PENDING).exists() and not (checkpoint / cp.FENCE).exists()
+    with source.open("ab") as out:
+        out.write(encode(dict(base, ts_utc="2026-10-31T12:01:00Z")) + b"\n")
+    anchor_doc = json.loads(anchor)
+    anchor_doc["cursor_start"] = asdict(prefix.cursor)
+    anchor2 = encode(anchor_doc)
+    plan["generation"] = "synthetic-generation-2"
+    plan["expected_pointer_sha256"] = result["pointer_sha256"]
+    plan["pins"]["anchor_sha256"] = sha(anchor2)
+    plan2 = encode(plan)
+    route.update(cursor=asdict(prefix.cursor), prefix_sha256=prefix.sha256,
+                 anchor_sha256=sha(anchor2), plan_sha256=sha(plan2))
+    route2 = encode(route)
+    kw.update(plan_bytes=plan2, anchor_bytes=anchor2, route_bytes=route2, expected_route_sha256=sha(route2))
+    result2 = runner.run_once(**kw)
+    assert result2["status"] == "PUBLISHED_HISTORY"
+    assert result2["pointer_sha256"] != result["pointer_sha256"]
+    validate_actual_binding(result2, anchor2)
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
+    view2, prefix2 = cp.read_verified_prefix_pointer(checkpoint, tasks, expected_pointer_sha256=result2["pointer_sha256"],
+        policy_bytes=kw["policy_bytes"], policy_sha256=route["policy_sha256"], roster_bytes=kw["roster_bytes"],
+        roster_sha256=route["roster_sha256"], expected_public_policy_sha256=route["public_policy_sha256"])
+    with ps.locked_state(private, checkpoint, enabled=True) as locked:
+        locked.require(result2["pointer_sha256"], prefix2)
+    assert not (private / ps._PENDING).exists() and not (checkpoint / cp.FENCE).exists()

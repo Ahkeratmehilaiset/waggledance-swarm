@@ -1,7 +1,8 @@
 """Explicit one-shot status-only prefix build; no scheduler or live wiring.
 
 The caller supplies route bytes and their externally established pin, the build
-plan, anchor and exact pinned policy/roster bytes. This module authenticates
+plan, anchor, policies and an independently pinned allowed fleet. The roster is
+derived canonically from that fleet, as in the lane-binding consumer. This module authenticates
 none of them. It never reads a source row or logs inputs; the existing child
 reads raw rows in-process for prefix verification and filtering, including rows
 which are not public. Caller must restrict access to that process and private
@@ -10,8 +11,13 @@ state. A hash is not source authentication, freshness or complete history.
 Two exclusive per-root pending markers serialize cooperating invocations of
 this runner. An exception or interruption after reservation leaves any markers
 in place: both roots require external reconciliation and no automatic retry is
-performed. The markers also remain after a successful return: this is a single
-bounded run, not an automatic continuation or continuous indexer. Other writers
+performed. By default the markers also remain after a successful return. The
+explicit renewable=True v3/fenced route releases only this call's markers after
+the current pointer, private prefix, completed fence and an exclusive fsynced
+private receipt have been checked while both producer locks are held. Any failure
+even during marker release stays UNKNOWN, possibly with only one marker left.
+This is still a single bounded run, not a scheduler or automatic next-tuple builder.
+Empty v3 windows remain unsupported. Other writers
 which do not honor these markers are not fenced by this wrapper; use the child's
 fenced plan and independent coordination. Path/identity checks do not defeat
 hostile same-user TOCTOU replacement or prove ACL, power-loss or isolation.
@@ -32,6 +38,7 @@ import stat
 from sandbox.mind.step2 import shared_capture_adapter as adapter
 from sandbox.mind.step2 import shared_producer as producer
 from tools import wd_q4_guard_state_binding as roots
+from tools import wd_q4_roster_from_fleet as roster_producer
 from waggledance.core.bridge_log_reader import BridgeCursor, BridgePrefixPin
 
 _TASK = "lead-mind-production-20261031"
@@ -39,7 +46,7 @@ _POLICY_SHA = frozenset({"0a9b1f67bc7015924ef595a17f7b092274c0fd568691f9d1ef07bf
                          "95e21913155ebc941ab031761343381b407954dd97f65b9482237961f7a312c7"})
 _PUBLIC_SHA = frozenset({"a5c5f0d91fc27c799678d1d97a28f48c540997ac91385ae097921388e2a4cdb5",
                          "29382d02a3adcf8dc5c3f3a078f9a1dc5565fdcf1a0f14f9c8c49fc1bb793268"})
-_ROSTER_SHA = frozenset({"b60bbfd5cfa28bb93053c9b7492378d19c0abb184bd2569398109c50ef24adcb",
+_FLEET_SHA = frozenset({"b60bbfd5cfa28bb93053c9b7492378d19c0abb184bd2569398109c50ef24adcb",
                          "bded859e8ae0ffc42c5a56007883d30e0eb4fafd028da7ff8261ae3bbbf9aaf7"})
 _HEX = re.compile(r"[a-f0-9]{64}\Z")
 _GENERATION = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
@@ -170,13 +177,19 @@ def _result_valid(result, route, plan):
 
 
 def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, plan_bytes=None,
-             policy_bytes=None, public_policy_bytes=None, roster_bytes=None, anchor_bytes=None):
-    """Call the fixed child at most once for an independently pinned route."""
+             policy_bytes=None, public_policy_bytes=None, fleet_bytes=None, expected_fleet_sha256=None,
+             roster_bytes=None, anchor_bytes=None, renewable=False):
+    """Call the fixed child at most once for an independently pinned route.
+
+    Renewable is opt-in, v3/fenced only, and returns a private receipt digest in
+    addition to the normal report. It is not proof of source authenticity,
+    currentness, operating-system isolation, or other writers' cooperation.
+    """
     if enabled is False:
         return {"status": "OFF"}
     prepared = False
     try:
-        if enabled is not True:
+        if enabled is not True or type(renewable) is not bool:
             raise ValueError()
         _pinned(route_bytes, expected_route_sha256)
         route = _json(route_bytes, 65536)
@@ -186,12 +199,21 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
         _pinned(anchor_bytes, route["anchor_sha256"], limit=16384)
         _pinned(policy_bytes, route["policy_sha256"], _POLICY_SHA)
         _pinned(public_policy_bytes, route["public_policy_sha256"], _PUBLIC_SHA)
-        _pinned(roster_bytes, route["roster_sha256"], _ROSTER_SHA, limit=1024 * 1024)
+        _pinned(fleet_bytes, expected_fleet_sha256, _FLEET_SHA, limit=1024 * 1024)
+        canonical_roster, roster_pin = roster_producer.build_roster_snapshot(
+            fleet_bytes, expected_fleet_sha256, enabled=True)
+        if (roster_pin != route["roster_sha256"] or
+                (roster_bytes is not None and (type(roster_bytes) is not bytes or
+                                                not hmac.compare_digest(roster_bytes, canonical_roster)))):
+            raise ValueError()
+        roster_bytes = canonical_roster
         tasks, _ = adapter.strict_pins(policy_bytes, route["policy_sha256"], roster_bytes, route["roster_sha256"])
         public_tasks, public_types = adapter.public_status_policy(public_policy_bytes, route["public_policy_sha256"], tasks)
         if tasks != frozenset({_TASK}) or public_tasks != frozenset({_TASK}) or public_types != frozenset({"status"}):
             raise ValueError()
         plan = _json(plan_bytes, 65536)
+        if renewable and (plan.get("schema") != "wd.q4-prefix-build-plan.v3" or plan.get("fenced") is not True):
+            raise ValueError()
         if (plan.get("schema") not in ("wd.q4-prefix-build-plan.v1", "wd.q4-prefix-build-plan.v3")
                 or (plan["schema"].endswith(".v3") and plan.get("fenced") is not True)
                 or type(plan.get("max_prefix_bytes")) is not int or not 0 <= plan["max_prefix_bytes"] <= 1024**3
@@ -236,6 +258,7 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
         pass
     if not prepared:
         route_bytes = expected_route_sha256 = plan_bytes = policy_bytes = public_policy_bytes = roster_bytes = None
+        fleet_bytes = expected_fleet_sha256 = canonical_roster = None
         anchor_bytes = route = plan = source = sidecar = checkpoint = private = model = config = None
         raise StatusRunnerRefused("status_runner_refused")
 
@@ -261,6 +284,14 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
             raise ValueError()
         _verify_own(marks[0], token, first)
         _verify_own(marks[1], token, second)
+        if renewable:
+            from tools.wd_q4_status_prefix_recovery import complete_owned_publication
+            receipt_sha = complete_owned_publication(checkpoint=checkpoint, private=private, model=model,
+                source_parent=source.parent, sidecar_parent=sidecar.parent,
+                expected_ids=(checkpoint_ids, private_ids, model_ids, source_parent_ids, sidecar_parent_ids),
+                marks=marks, marker_infos=(first, second), token=token, report=report, plan=plan, route=route,
+                expected_route_sha256=expected_route_sha256, policy_bytes=policy_bytes, roster_bytes=roster_bytes)
+            report = {**report, "runner_receipt_sha256": receipt_sha}
         uncertain = False
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         interrupted = True
@@ -271,6 +302,7 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
     if uncertain:
         report = config = prefix = route_bytes = expected_route_sha256 = route = plan = plan_bytes = None
         policy_bytes = public_policy_bytes = roster_bytes = anchor_bytes = source = sidecar = checkpoint = private = model = None
+        fleet_bytes = expected_fleet_sha256 = canonical_roster = None
         if interrupted:
             raise StatusRunnerInterrupted("publication_state_unknown")
         raise StatusRunnerOutcomeUnknown("publication_state_unknown")

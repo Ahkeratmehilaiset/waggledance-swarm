@@ -18,7 +18,9 @@ from tools import wd_mind_anchor_issuer as issuer
 from tools import wd_q4_guard_state_binding as roots
 from tools import wd_q4_roster_from_fleet as roster
 from tools import wd_q4_status_prefix_runner as runner
-from waggledance.core.bridge_log_reader import BridgeCursor, _file_identity, _open_log
+from sandbox.mind.step2 import shared_capture_adapter as capture
+from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
+from waggledance.core.bridge_log_reader import BridgeCursor, BridgePrefixPin, _file_identity, _open_log
 
 
 class GenesisRefused(ValueError):
@@ -53,13 +55,13 @@ def _snapshot(stream, size):
 
 
 def _same_source(path, stream, identity, size, digest):
-    if _file_identity(stream) != identity or os.fstat(stream.fileno()).st_size != size:
+    if _file_identity(stream) != identity or os.fstat(stream.fileno()).st_size < size:
         raise ValueError()
     if not hmac.compare_digest(_snapshot(stream, size), digest):
         raise ValueError()
     runner._plain_file(str(path))
     with _open_log(path) as current:
-        if _file_identity(current) != identity or os.fstat(current.fileno()).st_size != size:
+        if _file_identity(current) != identity or os.fstat(current.fileno()).st_size < size:
             raise ValueError()
         if not hmac.compare_digest(_snapshot(current, size), digest):
             raise ValueError()
@@ -185,9 +187,22 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
                 plan_bytes=plan, policy_bytes=policy_bytes, public_policy_bytes=public_policy_bytes,
                 fleet_bytes=fleet_bytes, expected_fleet_sha256=expected_fleet_sha256,
                 roster_bytes=roster_bytes, anchor_bytes=anchor, renewable=renewable)
+            tasks, _ = capture.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha)
+            view, end_pin = checkpoint.read_verified_prefix_pointer(output_roots[0], tasks,
+                expected_pointer_sha256=report["pointer_sha256"], policy_bytes=policy_bytes,
+                policy_sha256=policy_sha256, roster_bytes=roster_bytes, roster_sha256=roster_sha,
+                expected_public_policy_sha256=public_policy_sha256)
+            if (view.get("anchor_sha256") != anchor_sha or type(end_pin) is not BridgePrefixPin
+                    or type(end_pin.cursor) is not BridgeCursor or end_pin.cursor.file_identity != identity
+                    or end_pin.cursor.generation != generation or type(end_pin.cursor.offset) is not int
+                    or not size <= end_pin.cursor.offset <= max_prefix_bytes
+                    or type(end_pin.sha256) is not str or runner._HEX.fullmatch(end_pin.sha256) is None):
+                raise ValueError()
             runner._verify_own(sidecar, side_bytes, info)
             runner._verify_own(tuple_file, tuple_bytes, tuple_info)
             _same_source(source, stream, identity, size, digest)
+            _same_source(source, stream, identity, end_pin.cursor.offset, end_pin.sha256)
+            runner._verify_own(sidecar, side_bytes, info)
             if roots._observe(source.parent) != source_ids or roots._observe(sidecar.parent) != side_ids:
                 raise ValueError()
             return {**report, "genesis_snapshot_bytes": size, "genesis_snapshot_sha256": digest,

@@ -1,4 +1,4 @@
-"""Synthetic session-outer checks; no real worker, deployment or live data."""
+"""Historical test-only legacy outer checks; no production entry or live data."""
 import hashlib
 import json
 import os
@@ -9,7 +9,9 @@ import sys
 import pytest
 
 from sandbox.mind.step2 import runtime_builder
-from tools import wd_q4_session_outer_synthetic as outer
+from q4_legacy_session_fixtures import legacy_bytes, load_legacy
+
+outer = load_legacy("outer_synthetic")
 
 ROOT = Path(__file__).resolve().parents[2]
 GENERATION, REVISION = "a" * 40, "b" * 40
@@ -75,8 +77,9 @@ def run_outer(synthetic, *, enabled=True, query="ok", tamper=None, foreign_path=
     plan = dict(synthetic)
     if tamper:
         plan.update(tamper)
-    bootstrap = ROOT / "tools/wd_q4_session_outer_synthetic.py"
-    source = bootstrap.read_bytes()
+    bootstrap = Path(synthetic["runtime_root"]).parent / "test-only-legacy-outer.py"
+    source = legacy_bytes("outer_synthetic")
+    bootstrap.write_bytes(source)
     program = ("import hashlib,json,sys\n"
                f"data=open({str(bootstrap)!r},'rb').read()\n"
                f"assert hashlib.sha256(data).hexdigest()=={sha(source)!r}\n"
@@ -237,7 +240,8 @@ def test_worker_critical_states_are_distinct_without_returning_stdout(synthetic,
 
 def test_real_session_cli_output_matches_closed_lane_validator(tmp_path, monkeypatch, capsys):
     import io
-    from tools import wd_q4_lane_query, wd_q4_lane_session_cli as cli
+    from tools import wd_q4_lane_query
+    cli = load_legacy("session_cli")
 
     value, error = wd_q4_lane_query._answer("codex-lead-1", {"status": "ABSTAIN", "binding": BINDING,
                                                              "results": []}, BINDING, {}, None)

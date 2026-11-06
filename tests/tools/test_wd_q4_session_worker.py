@@ -1,4 +1,4 @@
-"""Synthetic descriptor + session only; never launches a live lane or installer."""
+"""Historical worker diagnostics with a test-only legacy CLI snapshot."""
 import hashlib
 import importlib.util
 import io
@@ -7,11 +7,20 @@ from pathlib import Path
 import sys
 
 import pytest
+from q4_legacy_session_fixtures import load_legacy
 
 try:
     from tools import wd_q4_session_worker as worker
 except ImportError:
     worker = None
+
+
+@pytest.fixture(autouse=True)
+def legacy_session_cli(monkeypatch):
+    import tools
+    legacy = load_legacy("session_cli")
+    monkeypatch.setitem(sys.modules, "tools.wd_q4_lane_session_cli", legacy)
+    monkeypatch.setattr(tools, "wd_q4_lane_session_cli", legacy, raising=False)
 
 
 def sha(raw):

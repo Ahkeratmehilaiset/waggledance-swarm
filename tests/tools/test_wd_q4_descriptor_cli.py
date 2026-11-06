@@ -92,13 +92,13 @@ def synthetic(tmp_path):
                        "runtime_root": str(runtime), "runtime_manifest_path": str(tmp_path / "runtime_manifest.json"),
                        "bundle_bytes": 102400, "approved_tasks": ["task-a", "task-b"]},
         "descriptor": {"bundle_root": str(tmp_path / "bundle"), "public_plan": str(tmp_path / "public.json"),
-                       "interpreter": str(tmp_path / "python.exe"), "interpreter_sha256": "a" * 64,
+                       "interpreter": str(tmp_path / "python.exe"), "interpreter_sha256": "1" * 64,
                        "interpreter_max_bytes": 10000, "cwd": str(tmp_path / "code"), "timeout_seconds": 30,
                        "max_output_bytes": 32000, "runtime_manifest_path": str(tmp_path / "runtime_manifest.json"),
-                       "runtime_manifest_sha256": "9" * 64,
+                       "runtime_manifest_sha256": "4" * 64,
                        "outer": {"outer-path": str(runtime / "assets" / "code" / "tools" / "wd_q4_session_outer_synthetic.py"),
                                  "outer-sha256": "c" * 64, "runtime-root": str(runtime),
-                                 "runtime-generation": GENERATION, "runtime-revision": "e" * 64,
+                                 "runtime-generation": GENERATION, "runtime-revision": "b" * 64,
                                  "verifier-sha256": "1" * 64, "public-outer-sha256": "2" * 64,
                                  "public-child-sha256": "3" * 64, "public-query-sha256": "4" * 64,
                                  "worker-sha256": "5" * 64},
@@ -491,7 +491,7 @@ def _mixed(path):
 
 def _dotdot(path):
     head, tail = str(path).rsplit("\\", 1)
-    return head + "\..\\" + head.rsplit("\\", 1)[1] + "\\" + tail
+    return head + "\\..\\" + head.rsplit("\\", 1)[1] + "\\" + tail
 
 
 def _double(path):
@@ -556,7 +556,7 @@ def test_a_source_path_with_a_dot_dot_component_or_a_stream_refuses(tmp_path, ca
     lambda d: d.__setitem__("target_dir", d["target_dir"] + "\u0000x"),
     lambda d: d.__setitem__("generation", d["generation"][:-1] + "\u0000"),
     lambda d: d["fixed_plan"].__setitem__("runtime_root", "C:\\" + "\u0000root"),
-    lambda d: d["descriptor"].__setitem__("cwd", "C:\code\t"),
+    lambda d: d["descriptor"].__setitem__("cwd", "C:\\code\t"),
     lambda d: d["lanes"].append("fable-5\u0000"),
     lambda d: d["fixed_plan"].__setitem__("approved_tasks", ["task-a", "\u007f"]),
     lambda d: d.__setitem__("snapshot_path", d["snapshot_path"][:-5] + "\u0000.json"),
@@ -646,3 +646,113 @@ def test_a_closed_stdout_ends_with_exit_one_and_nothing_on_stderr(tmp_path, caps
     assert code == 1
     assert captured.err == ""
     assert (tree(target) != []) is enabled
+
+
+# 8 RCO2 review (16:45:43Z, head 284ce4b7): X1 cross-pin equality, X2 trailing dot/space, X3 booleans, X4 interrupts
+X1_PAIRS = [
+    ("interpreter_sha256", lambda d: d["descriptor"].__setitem__("interpreter_sha256", "f" * 64)),
+    ("runtime_manifest_sha256", lambda d: d["descriptor"].__setitem__("runtime_manifest_sha256", "f" * 64)),
+    ("runtime_manifest_path", lambda d: d["descriptor"].__setitem__(
+        "runtime_manifest_path", d["descriptor"]["runtime_manifest_path"][:-5] + "-other.json")),
+    ("runtime_root", lambda d: d["descriptor"]["outer"].__setitem__("runtime-root", d["fixed_plan"]["runtime_root"] + "-other")),
+    ("runtime_generation", lambda d: d["descriptor"]["outer"].__setitem__("runtime-generation", "e" * 40)),
+    ("runtime_revision", lambda d: d["descriptor"]["outer"].__setitem__("runtime-revision", "f" * 64)),
+]
+
+
+def test_the_fixture_uses_one_value_per_pin_shared_by_the_fixed_plan_and_the_descriptor(tmp_path):
+    request, sources, target = synthetic(tmp_path)
+    fixed, descriptor = request["fixed_plan"], request["descriptor"]
+    assert fixed["interpreter_sha256"] == descriptor["interpreter_sha256"]
+    assert fixed["runtime_manifest_sha256"] == descriptor["runtime_manifest_sha256"]
+    assert fixed["runtime_manifest_path"] == descriptor["runtime_manifest_path"]
+    assert fixed["runtime_root"] == descriptor["outer"]["runtime-root"]
+    assert fixed["runtime_generation"] == descriptor["outer"]["runtime-generation"]
+    assert fixed["runtime_revision"] == descriptor["outer"]["runtime-revision"]
+
+
+@needs_windows
+@pytest.mark.parametrize("pair, change", X1_PAIRS, ids=[p for p, _ in X1_PAIRS])
+def test_a_pin_that_differs_between_the_fixed_plan_and_the_descriptor_is_refused_before_any_source_is_read(
+        tmp_path, capsys, monkeypatch, pair, change):
+    request, sources, target = synthetic(tmp_path)
+    change(request)
+    path = write_request(tmp_path, request)
+    module()
+    real_open = os.open
+    opened = []
+
+    def spy_open(p, flags, *args, **kwargs):
+        opened.append(str(p))
+        return real_open(p, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "open", spy_open)
+    code, out, err = run(["--request", str(path), "--enable"], capsys)
+    refusal(out, err, code, "request_refused")
+    assert opened == [str(path)]  # the request itself, no source
+    assert tree(target) == []
+
+
+def _trailing_dot(path):
+    head, tail = str(path).rsplit("\\", 1)
+    return head + ".\\" + tail
+
+
+def _trailing_space(path):
+    head, tail = str(path).rsplit("\\", 1)
+    return head + " \\" + tail
+
+
+@needs_windows
+@pytest.mark.parametrize("shape", [_trailing_dot, _trailing_space], ids=["dot", "space"])
+def test_a_request_path_component_ending_in_a_dot_or_space_is_refused(tmp_path, capsys, shape):
+    request, sources, target = synthetic(tmp_path)
+    nest = tmp_path / "req"
+    nest.mkdir()
+    path = shape(write_request(nest, request))
+    if shape is _trailing_dot:
+        assert Path(path).read_bytes() == canonical(request)  # Windows aliases a trailing dot; the CLI must not
+    code, out, err = run(["--request", path, "--enable"], capsys)
+    refusal(out, err, code, "request_refused")
+    assert tree(target) == []
+
+
+@needs_windows
+@pytest.mark.parametrize("shape", [_trailing_dot, _trailing_space], ids=["dot", "space"])
+def test_a_source_path_component_ending_in_a_dot_or_space_is_refused(tmp_path, capsys, shape):
+    request, sources, target = synthetic(tmp_path)
+    request["snapshot_path"] = shape(Path(request["snapshot_path"]))
+    code, out, err = run(["--request", str(write_request(tmp_path, request)), "--enable"], capsys)
+    refusal(out, err, code, "source_refused")
+    assert tree(target) == []
+
+
+@needs_windows
+@pytest.mark.parametrize("change", [
+    lambda d: d["fixed_plan"].__setitem__("bundle_bytes", True),
+    lambda d: d["descriptor"].__setitem__("timeout_seconds", False),
+    lambda d: d["lanes"].append(True),
+    lambda d: d["descriptor"]["outer"].__setitem__("worker-sha256", True),
+], ids=["fixed_plan", "descriptor", "lanes", "outer"])
+def test_a_boolean_anywhere_in_the_request_is_a_request_refusal(tmp_path, capsys, change):
+    request, sources, target = synthetic(tmp_path)
+    change(request)
+    code, out, err = run(["--request", str(write_request(tmp_path, request)), "--enable"], capsys)
+    refusal(out, err, code, "request_refused")
+    assert tree(target) == []
+
+
+@needs_windows
+@pytest.mark.parametrize("raised, expected", [(KeyboardInterrupt(), 130), (SystemExit(3), 3), (SystemExit("x"), 1)],
+                         ids=["interrupt", "exit_code", "exit_message"])
+def test_an_interrupt_or_exit_inside_the_composition_leaves_no_output_and_a_distinct_exit_code(
+        tmp_path, capsys, monkeypatch, raised, expected):
+    request, sources, target = synthetic(tmp_path)
+    module()
+    from tools import wd_q4_fixed_plan_producer
+
+    def interrupted(**kwargs):
+        raise raised
+    monkeypatch.setattr(wd_q4_fixed_plan_producer, "build_fixed_plan", interrupted)
+    code, out, err = run(["--request", str(write_request(tmp_path, request)), "--enable"], capsys)
+    assert code == expected and out == "" and err == ""
+    assert tree(target) == []

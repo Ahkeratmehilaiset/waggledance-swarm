@@ -15,11 +15,13 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
 import sys
 
 from sandbox.mind.step2 import prefix_private_state as private_state
 from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
 from sandbox.mind.step2 import shared_capture_adapter as capture_adapter
+from sandbox.mind.step2.reader_slot import reader_slot
 from tools import wd_q4_descriptor_materializer as materializer
 from tools import wd_q4_lane_binding_producer as binding_producer
 from tools import wd_q4_lane_caller_cli as caller
@@ -121,6 +123,41 @@ def _exclusive(path, raw):
         os.fsync(stream.fileno())
 
 
+def _finish_open_marker(fd, raw):
+    """Finish only a marker whose O_EXCL open was already successful."""
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError()
+        with os.fdopen(fd, 'wb', closefd=False) as stream:
+            if stream.write(raw) != len(raw):
+                raise OSError()
+            stream.flush()
+        os.fsync(fd)
+        return info
+    finally:
+        os.close(fd)
+
+
+def _runner_receipt(private_root, previous_files, report, previous_pin, route_pin, plan_pin):
+    candidates = {p.name for p in private_root.glob('q4-status-result-*.json')}
+    if len(candidates) > 50000:
+        raise ValueError()
+    new = candidates - previous_files
+    if len(new) != 1:
+        raise ValueError()
+    name = next(iter(new))
+    if re.fullmatch(r'q4-status-result-[0-9a-f]{64}\.json', name) is None:
+        raise ValueError()
+    raw = live._read(private_root / name, 65536, report['runner_receipt_sha256'])
+    receipt = caller._json(raw)
+    if (receipt.get('schema') != 'wd.q4-status-result.v1' or receipt.get('pointer_sha256') != report['pointer_sha256']
+            or receipt.get('prior_pointer_sha256') != previous_pin or receipt.get('route_sha256') != route_pin
+            or receipt.get('plan_sha256') != plan_pin or receipt.get('status') != report['status']):
+        raise ValueError()
+    return name
+
+
 def _require_write_roots(baseline_path, bundle_root, checkpoint_root, private_root):
     generations = Path(baseline_path).parent.parent
     live._validate_roots(generations, Path(bundle_root), Path(checkpoint_root))
@@ -185,6 +222,8 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None):
         return {'status': 'OFF'}
     entered = False
     failure = None
+    slot = None
+    slot_acquired = False
     try:
         if enabled is not True or type(expected_config_sha256) is not str or not _HEX.fullmatch(expected_config_sha256):
             raise ValueError()
@@ -217,6 +256,12 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None):
         _require_write_roots(config['baseline_path'], descriptor['bundle_root'], root, route['private_state_root'])
         private_root = Path(route['private_state_root'])
         private_info = private_root.stat()
+        lock_path = private_root / 'q4-live-update.lock'
+        if os.path.lexists(lock_path):
+            live.pointer_io._chain(lock_path)
+        slot = reader_slot(lock_path, timeout_seconds=0.2)
+        slot.__enter__()
+        slot_acquired = True
         marker = private_root / 'q4-live-update.pending.json'
         if not runner._absent(marker):
             raise ValueError()
@@ -244,14 +289,41 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None):
                      anchor_sha256=_sha(anchor_raw), plan_sha256=_sha(plan_raw))
         route_raw = _encode(route)
         nonce = secrets.token_hex(32)
+        intent = _encode({'schema': 'wd.q4-live-update-intent.v1', 'attempt': nonce,
+            'config_sha256': expected_config_sha256, 'previous_pointer_sha256': current_pin,
+            'route': route, 'plan': plan, 'anchor': anchor})
         marker_raw = _encode({'schema': 'wd.q4-live-update-pending.v1', 'attempt': nonce,
-                              'config_sha256': expected_config_sha256, 'previous_pointer_sha256': current_pin})
+                              'config_sha256': expected_config_sha256, 'previous_pointer_sha256': current_pin,
+                              'intent_sha256': _sha(intent)})
+        old_receipts = {p.name for p in private_root.glob('q4-status-result-*.json')}
+        if len(old_receipts) > 50000:
+            raise ValueError()
         entered = True
-        marker_info = runner._create(marker, marker_raw)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOINHERIT', 0)
+        flags |= getattr(os, 'O_NOFOLLOW', 0)
+        try:
+            marker_fd = os.open(marker, flags, 0o600)
+        except FileExistsError:
+            entered = False
+            raise
+        marker_info = _finish_open_marker(marker_fd, marker_raw)
+        intent_path = private_root / ('q4-live-update-intent-' + nonce + '.json')
+        intent_info = runner._create(intent_path, intent)
+        runner._verify_own(intent_path, intent, intent_info)
         report = runner.run_once(enabled=True, route_bytes=route_raw, expected_route_sha256=_sha(route_raw),
             plan_bytes=plan_raw, policy_bytes=policy, public_policy_bytes=public_policy, fleet_bytes=fleet,
             expected_fleet_sha256=descriptor['fleet_sha256'], roster_bytes=roster, anchor_bytes=anchor_raw,
             renewable=True)
+        receipt_name = _runner_receipt(private_root, old_receipts, report, current_pin, _sha(route_raw), _sha(plan_raw))
+        progress = _encode({'schema': 'wd.q4-live-update-progress.v1', 'attempt': nonce,
+            'marker_sha256': _sha(marker_raw), 'config_sha256': expected_config_sha256,
+            'intent_sha256': _sha(intent),
+            'previous_pointer_sha256': current_pin, 'pointer_sha256': report['pointer_sha256'],
+            'runner_receipt_sha256': report['runner_receipt_sha256'], 'runner_receipt_file': receipt_name,
+            'route_sha256': _sha(route_raw), 'plan_sha256': _sha(plan_raw), 'status': report['status']})
+        progress_path = private_root / ('q4-live-update-progress-' + nonce + '.json')
+        progress_info = runner._create(progress_path, progress)
+        runner._verify_own(progress_path, progress, progress_info)
         if report['status'] == 'EMPTY_NO_CHANGE':
             live._read(root / checkpoint.POINTER, 16384, current_pin)
             result = {'status': 'NO_CHANGE', 'pointer_sha256': current_pin, 'freshness': 'UNKNOWN'}
@@ -268,13 +340,22 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None):
             raise ValueError()
         runner._verify_own(marker, marker_raw, marker_info)
         marker.unlink()
+        slot.__exit__(None, None, None)
+        slot_acquired = False
         return {**result, 'receipt_sha256': _sha(receipt), 'receipt_file': receipt_path.name}
     except Exception:
         failure = 'unknown' if entered else 'refused'
     except BaseException:
         if not entered:
+            if slot_acquired:
+                slot.__exit__(None, None, None)
             raise
         failure = 'interrupt'
+    if slot_acquired:
+        try:
+            slot.__exit__(None, None, None)
+        except Exception:
+            failure = 'unknown' if entered else 'refused'
     config_path = expected_config_sha256 = config = baseline = route_raw = route = plan = anchor = None
     policy = public_policy = roster = inputs = prefix = report = receipt = marker_raw = None
     if failure == 'unknown':

@@ -100,6 +100,15 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
     config_path.write_bytes(raw)
     bridge = Path(route['source'])
     event = json.loads(bridge.read_bytes().splitlines()[0])
+    real_open = update.os.open
+    def marker_race(path, flags, *args, **kwargs):
+        if str(path).endswith('q4-live-update.pending.json'):
+            raise FileExistsError('synthetic competing owner')
+        return real_open(path, flags, *args, **kwargs)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(update.os, 'open', marker_race)
+        assert update.main(['--once', '--config', str(config_path), '--sha256', update._sha(raw)]) == 2
+        assert json.loads(capsys.readouterr().err)['status'] == 'REFUSED'
     answer_pins = []
     for minute in (2, 3):
         event['ts_utc'] = f'2026-10-31T12:0{minute}:00Z'
@@ -134,6 +143,13 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
     output = capsys.readouterr()
     assert not output.out and json.loads(output.err)['status'] == 'UNKNOWN'
     assert (private_root / 'q4-live-update.pending.json').is_file()
+    progress_files = list(private_root.glob('q4-live-update-progress-*.json'))
+    assert len(progress_files) == 3
+    attempt = json.loads((private_root / 'q4-live-update.pending.json').read_bytes())['attempt']
+    progress = json.loads((private_root / ('q4-live-update-progress-' + attempt + '.json')).read_bytes())
+    assert progress['schema'] == 'wd.q4-live-update-progress.v1'
+    assert progress['config_sha256'] == update._sha(raw)
+    assert progress['pointer_sha256'] != answer_pins[-1]
     assert update.main(['--once', '--config', str(config_path), '--sha256', update._sha(raw)]) == 2
     assert json.loads(capsys.readouterr().err)['status'] == 'REFUSED' and calls == [1]
     query = update._encode({'situation': 'synthetic recall', 'time': '2026-11-01T12:00:00Z'})

@@ -45,7 +45,9 @@ def test_fixed_peer_manifest_limit_matches_verifier_before_spawn(transport, tmp_
     monkeypatch.setattr(transport, "_fixed_plan", lambda _: plan)
     monkeypatch.setattr(attestation, "attest_file", lambda *a, **k: contextlib.nullcontext())
     calls = []
-    monkeypatch.setattr(transport, "_run", lambda *a, **k: (calls.append(True) or (b"ok", 0)))
+    # v5: the parent unwraps the child output, so the fake child returns a frame bound to the nonce and query
+    monkeypatch.setattr(transport, "_run", lambda *a, **k: (
+        calls.append(True) or (transport._fixed_wrap(k["fixed"][0]["nonce"], a[3], b"ok"), 0)))
     def invoke(value):
         return transport._run_fixed_peer_impl(sys.executable, interpreter_pin, 1, plan_bytes, sha(plan_bytes),
                                                bundle, value, b"query", str(tmp_path), 1, 1024)

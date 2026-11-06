@@ -894,3 +894,91 @@ def test_the_docstring_states_the_null_device_name_and_write_phase_rules():
     for phrase in ("no null", "reserved device name", "CON", "NUL", "COM0-9", "LPT0-9", "while the line is written",
                    "outer block is checked on its three shared keys"):
         assert phrase in doc, phrase
+
+
+# 10 RCO2 final-head review (18:07:17Z, head f4702259): Y1 zero exit, Y2 console device aliases, Y3 partial stdout ---
+@needs_windows
+@pytest.mark.parametrize("raised", [SystemExit(0), SystemExit(None), SystemExit(False), SystemExit("x")],
+                         ids=["zero", "none", "false", "message"])
+@pytest.mark.parametrize("producer", ["fixed_plan", "descriptor", "materializer"])
+def test_a_zero_or_non_integer_exit_raised_by_a_producer_is_never_reported_as_success(
+        tmp_path, capsys, monkeypatch, raised, producer):
+    request, sources, target = synthetic(tmp_path)
+    module()
+    from tools import wd_q4_descriptor_materializer, wd_q4_fixed_plan_producer, wd_q4_shared_descriptor_producer
+    owner, name = {"fixed_plan": (wd_q4_fixed_plan_producer, "build_fixed_plan"),
+                   "descriptor": (wd_q4_shared_descriptor_producer, "build_shared_descriptor"),
+                   "materializer": (wd_q4_descriptor_materializer, "materialize_descriptor")}[producer]
+
+    def interrupted(*args, **kwargs):
+        raise raised
+    monkeypatch.setattr(owner, name, interrupted)
+    code, out, err = run(["--request", str(write_request(tmp_path, request)), "--enable"], capsys)
+    assert code == 1 and out == "" and err == ""
+
+
+@needs_windows
+@pytest.mark.parametrize("raised", [SystemExit(0), SystemExit(None)], ids=["zero", "none"])
+@pytest.mark.parametrize("stage", ["refusal", "unexpected", "off", "success"])
+def test_a_zero_exit_raised_while_the_output_line_is_written_is_never_reported_as_success(
+        tmp_path, capsys, monkeypatch, raised, stage):
+    cli = module()
+    request, sources, target = synthetic(tmp_path)
+    calls = []
+
+    def interrupted(text):
+        calls.append(text)
+        raise raised
+    monkeypatch.setattr(cli, "_write", interrupted)
+    if stage == "unexpected":
+        def broken(_path):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(cli, "_request", broken)
+    argv = {"off": [], "refusal": ["--request", "relative.json", "--enable"],
+            "unexpected": ["--request", "C:\\x\\request.json", "--enable"],
+            "success": ["--request", str(write_request(tmp_path, request)), "--enable"]}[stage]
+    code, out, err = run(argv, capsys)
+    assert code == 1 and out == "" and err == ""
+    assert len(calls) == 1  # the raise came from the one real write attempt of that stage
+    if stage == "refusal":
+        assert calls[0].startswith('{"error":"descriptor_cli_refused"')
+    if stage == "success":
+        assert '"descriptor_sha256"' in calls[0]
+
+
+def test_a_non_zero_integer_exit_code_is_still_propagated(tmp_path, capsys, monkeypatch):
+    cli = module()
+
+    def interrupted(_text):
+        raise SystemExit(7)
+    monkeypatch.setattr(cli, "_write", interrupted)
+    code, out, err = run([], capsys)
+    assert code == 7 and out == "" and err == ""
+
+
+@needs_windows
+@pytest.mark.parametrize("name", ["CONIN$", "conout$", "CONIN$.json", "CONOUT$ .txt"])
+def test_a_console_device_alias_as_the_request_file_is_refused_without_any_file_system_call(
+        tmp_path, capsys, monkeypatch, name):
+    request, sources, target = synthetic(tmp_path)
+    path = str(tmp_path / name)
+    module()
+    opened, seen = _spy_open(monkeypatch), _spy_lstat(monkeypatch)
+    code, out, err = run(["--request", path, "--enable"], capsys)
+    refusal(out, err, code, "request_refused")
+    assert opened == [] and seen == []
+    assert tree(target) == []
+
+
+@needs_windows
+@pytest.mark.parametrize("name", ["CONINx.json", "CONOUT.json", "conin$x", "data$.json"])
+def test_names_that_only_resemble_a_console_device_are_not_refused_by_the_device_rule(tmp_path, name):
+    cli = module()
+    cli._check_path(str(tmp_path / name), "request_refused")  # no _Refused raised
+
+
+def test_the_docstring_states_the_exit_and_partial_line_rules():
+    doc = module().__doc__
+    for phrase in ("non-zero integer code", "exit 0 always means the pair was printed", "partial line on stdout",
+                   "accepts output only with exit 0", "CONIN$", "CONOUT$"):
+        assert phrase in doc, phrase

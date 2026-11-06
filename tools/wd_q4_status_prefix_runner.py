@@ -28,6 +28,8 @@ individual model files remained unchanged during the child's operation.
 """
 import hashlib
 import hmac
+import datetime
+import inspect
 import json
 import os
 from pathlib import Path
@@ -74,6 +76,12 @@ class StatusRunnerInterrupted(BaseException):
 
 def _digest(value):
     return hashlib.sha256(value).hexdigest()
+
+
+def _cutoff_datetime(text):
+    if type(text) is not str or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", text) is None:
+        raise ValueError()
+    return datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
 
 
 def _json(raw, limit):
@@ -172,7 +180,10 @@ def _result_valid(result, route, plan):
             or (status in ("PUBLISHED_HISTORY", "EMPTY_ADVANCED") and result["pointer_sha256"] == previous)):
         return False
     return (plan["schema"].endswith(".v1") or
-            (result["coverage"] == "caught_up_to_final_snapshot_not_history"
+            (result["coverage"] in (("caught_up_to_final_snapshot_not_history", "partial_ready_prefix")
+                                    if "cutoff_utc" in route else ("caught_up_to_final_snapshot_not_history",))
+             and (status in ("PUBLISHED_GENESIS", "PUBLISHED_HISTORY")
+                  or ("cutoff_utc" in route and result["coverage"] == "partial_ready_prefix"))
              and result["source_refusals"] == "NOT_AGGREGATED"))
 
 
@@ -193,7 +204,15 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
             raise ValueError()
         _pinned(route_bytes, expected_route_sha256)
         route = _json(route_bytes, 65536)
-        if frozenset(route) != _ROUTE_KEYS or route["schema"] != "wd.q4-status-prefix-route.v1":
+        if (frozenset(route) not in (_ROUTE_KEYS, _ROUTE_KEYS | {"cutoff_utc"},
+                                     _ROUTE_KEYS | {"cutoff_utc", "batch_rows"})
+                or route["schema"] != "wd.q4-status-prefix-route.v1"):
+            raise ValueError()
+        cutoff = None
+        if "cutoff_utc" in route:
+            cutoff = _cutoff_datetime(route["cutoff_utc"])
+        batch_rows = route.get("batch_rows", False)
+        if "batch_rows" in route and (batch_rows is not True or cutoff is None):
             raise ValueError()
         _pinned(plan_bytes, route["plan_sha256"])
         _pinned(anchor_bytes, route["anchor_sha256"], limit=16384)
@@ -212,6 +231,8 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
         if tasks != frozenset({_TASK}) or public_tasks != frozenset({_TASK}) or public_types != frozenset({"status"}):
             raise ValueError()
         plan = _json(plan_bytes, 65536)
+        if cutoff is not None and (plan.get("schema") != "wd.q4-prefix-build-plan.v3" or plan.get("fenced") is not True):
+            raise ValueError()
         if renewable and (plan.get("schema") != "wd.q4-prefix-build-plan.v3" or plan.get("fenced") is not True):
             raise ValueError()
         if (plan.get("schema") not in ("wd.q4-prefix-build-plan.v1", "wd.q4-prefix-build-plan.v3")
@@ -253,6 +274,11 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
             max_rows=route["max_rows"]), public_policy_bytes=public_policy_bytes,
             public_policy_sha256=route["public_policy_sha256"])
         from sandbox.mind.step2.wd_q4_prefix_build_child import build_prefix_generation
+        if batch_rows:
+            parameter = inspect.signature(build_prefix_generation).parameters.get("batch_rows")
+            if parameter is None or parameter.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                                           inspect.Parameter.KEYWORD_ONLY):
+                raise ValueError()
         prepared = True
     except Exception:
         pass
@@ -273,9 +299,12 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
             raise ValueError()
         first = _create(marks[0], token)
         second = _create(marks[1], token)
+        extra = {} if cutoff is None else {"cutoff_utc": cutoff}
+        if batch_rows:
+            extra["batch_rows"] = True
         report = build_prefix_generation(enabled=True, plan_bytes=plan_bytes, expected_plan_sha256=route["plan_sha256"],
                                          config=config, start_prefix=prefix, root=checkpoint, private_state_root=private,
-                                         trusted_model_root=model)
+                                         trusted_model_root=model, **extra)
         if not _result_valid(report, route, plan):
             raise ValueError()
         if (roots._observe(private) != private_ids or roots._observe(checkpoint) != checkpoint_ids

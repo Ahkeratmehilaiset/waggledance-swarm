@@ -1,5 +1,6 @@
 """One-shot public-status runner: synthetic bytes and directories only."""
 import hashlib
+import datetime
 import importlib.util
 import json
 from pathlib import Path
@@ -187,6 +188,75 @@ def test_exact_pins_and_one_child_call_return_unchanged(case):
     with pytest.raises(runner.StatusRunnerRefused):
         runner.run_once(**args())
     assert len(calls) == 1  # Both reservations remain until explicit reconciliation.
+
+
+def test_pinned_utc_cutoff_reaches_child_and_allows_partial_coverage(case):
+    runner, args, route, _, _, monkeypatch = case
+    route = dict(route, cutoff_utc="2026-10-31T13:00:00Z")
+    kw = args(route)
+    seen = []
+    def child(**kwargs):
+        seen.append(kwargs)
+        return dict(child_report(), plan_sha256=route["plan_sha256"], coverage="partial_ready_prefix")
+    fake_child(monkeypatch, child)
+    assert runner.run_once(**kw)["coverage"] == "partial_ready_prefix"
+    assert seen[0]["cutoff_utc"] == datetime.datetime(2026, 10, 31, 13, tzinfo=datetime.timezone.utc)
+
+
+@pytest.mark.parametrize("cutoff", [None, "2026-10-31", "2026-10-31T13:00:00+00:00", "garbage"])
+def test_invalid_explicit_cutoff_refuses_before_reservation(case, cutoff):
+    runner, args, route, checkpoint, private, _ = case
+    route = dict(route, cutoff_utc=cutoff)
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**args(route))
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
+
+
+def test_cutoff_must_be_covered_by_route_pin(case):
+    runner, args, route, _, _, _ = case
+    kw = args()
+    kw["route_bytes"] = encode(dict(route, cutoff_utc="2026-10-31T13:00:00Z"))
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**kw)
+
+
+def test_batched_cutoff_is_explicitly_bound_and_forwarded(case):
+    runner, args, route, _, _, monkeypatch = case
+    base = args()
+    plan = json.loads(base["plan_bytes"])
+    plan["max_windows"] = 64
+    plan_bytes = encode(plan)
+    route = dict(route, cutoff_utc="2026-10-31T13:00:00Z", batch_rows=True, plan_sha256=sha(plan_bytes))
+    kw = args(route)
+    kw["plan_bytes"] = plan_bytes
+    seen = []
+    def child(*, batch_rows=False, **kwargs):
+        seen.append((batch_rows, kwargs))
+        return dict(child_report(), plan_sha256=route["plan_sha256"], coverage="partial_ready_prefix")
+    fake_child(monkeypatch, child)
+    assert runner.run_once(**kw)["status"] == "PUBLISHED_GENESIS"
+    assert seen[0][0] is True and seen[0][1]["config"].source.max_rows == 10
+    assert json.loads(seen[0][1]["plan_bytes"])["max_windows"] == 64
+
+
+@pytest.mark.parametrize("extras", [{"batch_rows": True}, {"batch_rows": False},
+                                   {"batch_rows": True, "cutoff_utc": None}])
+def test_batch_without_exact_cutoff_contract_refused(case, extras):
+    runner, args, route, checkpoint, private, _ = case
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**args(dict(route, **extras)))
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
+
+
+def test_batch_requires_child_that_explicitly_accepts_it(case):
+    runner, args, route, checkpoint, private, monkeypatch = case
+    route = dict(route, cutoff_utc="2026-10-31T13:00:00Z", batch_rows=True)
+    def old_child(*, enabled):
+        pytest.fail("legacy child must not be entered")
+    fake_child(monkeypatch, old_child)
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**args(route))
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
 
 
 @pytest.mark.parametrize("schema", ["wd.q4-prefix-build-plan.v1", "wd.q4-prefix-build-plan.v3"])

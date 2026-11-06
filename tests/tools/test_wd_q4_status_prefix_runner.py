@@ -43,7 +43,9 @@ def case(tmp_path, monkeypatch, runner):
     for key, value in (("_POLICY_SHA", policy), ("_PUBLIC_SHA", public), ("_ROSTER_SHA", roster)):
         monkeypatch.setattr(runner, key, frozenset({sha(value), sha(value + b"\r\n")}))
     anchor = b"synthetic anchor"
-    source, sidecar = tmp_path / "events.jsonl", tmp_path / "generation.json"
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source, sidecar = source_dir / "events.jsonl", source_dir / "generation.json"
     source.write_bytes(b"synthetic-only\n")
     sidecar.write_bytes(b"synthetic-sidecar")
     checkpoint, private, model = (tmp_path / name for name in ("checkpoint", "private", "model"))
@@ -231,6 +233,60 @@ def test_changed_marker_is_never_removed(case, monkeypatch):
         runner.run_once(**args())
     assert (checkpoint / runner._PENDING).read_bytes() == b"changed-synthetic-marker"
     assert (private / runner._PENDING).is_file()
+
+
+def test_model_root_replaced_during_child_is_unknown_and_quarantined(case, monkeypatch):
+    runner, args, route, checkpoint, private, _ = case
+    model = Path(route["trusted_model_root"])
+    report = child_report()
+    report["plan_sha256"] = route["plan_sha256"]
+    def child(**kwargs):
+        model.rename(model.with_name("displaced-synthetic-model"))
+        model.mkdir()
+        return report
+    fake_child(monkeypatch, child)
+    with pytest.raises(runner.StatusRunnerOutcomeUnknown):
+        runner.run_once(**args())
+    assert (checkpoint / runner._PENDING).is_file() and (private / runner._PENDING).is_file()
+
+
+def test_source_parent_replaced_during_child_is_unknown_and_quarantined(case, monkeypatch):
+    runner, args, route, checkpoint, private, _ = case
+    source_dir = Path(route["source"]).parent
+    report = child_report()
+    report["plan_sha256"] = route["plan_sha256"]
+    def child(**kwargs):
+        source_dir.rename(source_dir.with_name("displaced-synthetic-source"))
+        source_dir.mkdir()
+        return report
+    fake_child(monkeypatch, child)
+    with pytest.raises(runner.StatusRunnerOutcomeUnknown):
+        runner.run_once(**args())
+    assert (checkpoint / runner._PENDING).is_file() and (private / runner._PENDING).is_file()
+
+
+@pytest.mark.parametrize("field", ["checkpoint_root", "private_state_root", "trusted_model_root"])
+@pytest.mark.parametrize("relation", ["source_inside_root", "root_inside_source", "same_directory"])
+def test_source_parent_and_all_roots_must_be_disjoint(case, monkeypatch, field, relation):
+    runner, args, route, checkpoint, private, _ = case
+    changed = dict(route)
+    if relation == "source_inside_root":
+        source_dir = Path(route[field]) / "nested-source"
+        source_dir.mkdir()
+        (source_dir / "events.jsonl").write_bytes(b"synthetic\n")
+        changed["source"] = str(source_dir / "events.jsonl")
+    elif relation == "root_inside_source":
+        nested = Path(route["source"]).parent / "nested-root"
+        nested.mkdir()
+        changed[field] = str(nested)
+    else:
+        changed[field] = str(Path(route["source"]).parent)
+    calls = []
+    fake_child(monkeypatch, lambda **kwargs: calls.append(kwargs))
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**args(changed))
+    assert calls == []
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
 
 
 def test_other_baseexception_is_not_swallowed_by_except_exception(case, monkeypatch):

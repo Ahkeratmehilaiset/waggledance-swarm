@@ -104,13 +104,17 @@ def test_the_json_view_carries_the_digest_and_age_and_nothing_raw(run):
     assert leaks(out) == []
 
 
-@pytest.mark.parametrize("checked, shown", [
-    ("2026-10-13T14:00:00+00:00", "(status age 180 min, STALE)"),
-    ("2026-10-13T10:50:00+00:00", "(status time 10 min ahead of the lens clock, FUTURE (invalid))")])
-def test_a_stale_or_future_status_is_printed_with_its_age_state(run, checked, shown):
-    code, out, err, runs = run(json.dumps(synthetic_status()).encode("utf-8"), checked=checked)
-    assert code == 0 and out.splitlines()[0].startswith(
-        f"capacity (installed observer, read-only) observed 2026-10-13T11:00:00Z {shown}; ")
+def test_a_stale_status_is_printed_with_every_figure_line_labelled(run):
+    code, out, err, runs = run(json.dumps(synthetic_status()).encode("utf-8"), checked="2026-10-13T14:00:00+00:00")
+    lines = out.splitlines()
+    assert code == 0 and lines[0].startswith(
+        "capacity (installed observer, read-only) observed 2026-10-13T11:00:00Z (status age 180 min, STALE); ")
+    assert len(lines) > 1 and all(line.endswith(" (status STALE)") for line in lines[1:])
+
+
+def test_a_future_status_is_refused_and_nothing_is_printed(run):
+    code, out, err, runs = run(json.dumps(synthetic_status()).encode("utf-8"), checked="2026-10-13T10:50:00+00:00")
+    assert (code, out) == ("refused: status_time_future", "")
 
 
 @pytest.mark.parametrize("raw, returncode, reason", [

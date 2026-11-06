@@ -219,8 +219,18 @@ def project(status, declared):
     failed = given(status.get("failed_providers"), list)
     if not all(isinstance(provider, str) for provider in failed):
         raise TypeError("a failed provider is not a string")
-    failed = {provider_label(provider) for provider in failed}
-    collection = {provider_label(provider): row for provider, row in given(status.get("collection"), dict).items()}
+    # An unrecognized provider is counted, never shown: one UNKNOWN row would hide which of several it was.
+    unrecognized = {"collection_rows": 0, "failed_providers": sum(provider_label(p) == ws.UNKNOWN for p in failed)}
+    failed = {provider_label(provider) for provider in failed} - {ws.UNKNOWN}
+    collection = {}
+    for provider, row in given(status.get("collection"), dict).items():
+        if not isinstance(row, dict):
+            raise TypeError("a collection row is not an object")
+        if provider_label(provider) == ws.UNKNOWN:
+            given_time(row.get("last_success")), given_time(row.get("last_attempt"))  # its shape is still checked
+            unrecognized["collection_rows"] += 1
+        else:
+            collection[provider] = row
     health = {}
     for provider in sorted(set(collection) | set(failed)):
         row = collection.get(provider, {})
@@ -282,7 +292,7 @@ def project(status, declared):
     age_s = (checked - now).total_seconds()
     age = {"checked_utc": utc(checked), "age_s": age_s,
            "state": "FUTURE" if age_s < 0 else "STALE" if age_s > STATUS_MAX_AGE_S else "FRESH"}
-    return now, limits, health, activity, alerts, age
+    return now, limits, health, activity, alerts, age, unrecognized
 
 
 def readable(status, declared):
@@ -291,10 +301,12 @@ def readable(status, declared):
     what project() kept, so the catch covers project() alone: an error in the lens's own text is never shown as a
     status of the wrong shape."""
     try:
-        now, limits, health, activity, alerts, age = project(status, declared)
+        projected = project(status, declared)
     except (KeyError, OverflowError, TypeError, ValueError):  # each one a test case reaches
         raise LensRefused("status_shape_unexpected") from None
-    return now, limits, health, activity, alerts, age, text_lines(now, limits, health, activity, alerts, age)
+    if projected[5]["state"] == "FUTURE":  # a status time after the lens clock is invalid: no figure of it is shown
+        raise LensRefused("status_time_future")
+    return projected + (text_lines(*projected),)
 
 
 def percent(value):
@@ -350,7 +362,7 @@ def age_text(age):
     return f"status age {minutes(age['age_s'])}, {age['state']}"
 
 
-def text_lines(now, limits, health, activity, alerts, age):
+def text_lines(now, limits, health, activity, alerts, age, unrecognized=None):
     lines = [f"capacity (installed observer, read-only) observed {utc(now)} ({age_text(age)}); {NOTE}"]
     for (provider, window), rows in sorted(limits.items()):
         used = ", ".join(figure(row) for row in rows)
@@ -368,6 +380,9 @@ def text_lines(now, limits, health, activity, alerts, age):
             lines.append(f"LIMITS {provider}: UNKNOWN (observer has no successful collection; state "
                          f"{row['collection_state']}, last attempt {str(row['last_attempt_utc'])[:16]})")
     lines.extend(collection_text(provider, row) for provider, row in sorted(health.items()))
+    if unrecognized and (unrecognized["collection_rows"] or unrecognized["failed_providers"]):
+        lines.append(f"COLLECTION UNKNOWN: {unrecognized['collection_rows']} unrecognized provider rows and "
+                     f"{unrecognized['failed_providers']} unrecognized failed providers, figures not shown")
     if alerts:
         lines.append(f"ALERTS: {sum(row['count'] for row in alerts)} ("
                      + ", ".join(f"{row['provider']} {row['state']} x{row['count']}" for row in alerts) + ")")
@@ -379,6 +394,8 @@ def text_lines(now, limits, health, activity, alerts, age):
                          + (f" since {item['first_error_utc'][:16]}" if item["first_error_utc"] else "")
                          for item in row["errors"])
         lines.append(f"ACTIVITY {row['provider']}: threads {row['threads']}; {states}; {since}{errors}")
+    if age["state"] == "STALE":  # every figure line says so, never only the header
+        lines[1:] = [line + " (status STALE)" for line in lines[1:]]
     return lines
 
 
@@ -392,10 +409,11 @@ def publish(directory, name, data):
 def view_of(raw, readable_result):
     """The lens view of one readable() result: what the lens keeps of the status, with the sha256 of its raw bytes;
     the hook writes it and the read route (capacity_read.py) prints it."""
-    now, limits, health, activity, alerts, age, _ = readable_result
+    now, limits, health, activity, alerts, age, unrecognized, _ = readable_result
     return {"schema": LENS_SCHEMA, "authority": "none", "scope": "shadow_observation_not_gate",
             "observed_utc": utc(now), "status_age": age, "status_sha256": hashlib.sha256(raw).hexdigest(),
-            "limits": [{"provider": provider, "window": window, "observations": rows}
+            "unrecognized_providers": unrecognized,
+            "limits": [{"provider": provider, "window": window, "status_state": age["state"], "observations": rows}
                        for (provider, window), rows in sorted(limits.items())],
             "collection_silent": sorted(provider for provider, row in health.items()
                                         if row["last_success_utc"] is None),
@@ -419,10 +437,10 @@ def main():
         declared[thread] = lane
     try:
         raw, status = read_status(args.status_script)
-        now, limits, health, activity, alerts, age, lines = readable(status, declared)
+        now, limits, health, activity, alerts, age, unrecognized, lines = readable(status, declared)
     except LensRefused as exc:
         raise SystemExit(f"refused: {exc}") from None
-    view = view_of(raw, (now, limits, health, activity, alerts, age, lines))
+    view = view_of(raw, (now, limits, health, activity, alerts, age, unrecognized, lines))
     ws.guard_object(view)
     ws.guard_object(lines)
     args.out_dir.mkdir(parents=True, exist_ok=True)

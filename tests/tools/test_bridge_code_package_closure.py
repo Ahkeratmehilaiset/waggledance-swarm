@@ -68,6 +68,8 @@ def test_public_publisher_is_in_bundle_python_files():
     "tools/wd_q4_staged_composer.py",
     "tools/wd_q4_staged_composer_cli.py",
     "tools/wd_q4_status_prefix_recovery.py",
+    "tools/wd_q4_live_snapshot_publish.py",
+    "tools/wd_q4_canonical_ref_verifier.py",
     "tools/wd_q4_shared_descriptor_producer.py",
 ])
 def test_shared_descriptor_builder_is_packaged_with_internal_dependencies(path, monkeypatch):

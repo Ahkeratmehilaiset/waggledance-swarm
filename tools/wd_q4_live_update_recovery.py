@@ -191,13 +191,23 @@ def _recover_closed_job(*, private, root, config, baseline, descriptor, binding,
     selected = _prior_selector(config, baseline, marker['previous_pointer_sha256'], target,
                                attempt, private, config_sha, job_sha)
     if selected is None:
-        generation = _recovery_generation(attempt, target, secrets.token_hex(32))
+        nonce = secrets.token_hex(32)
+        generation = _recovery_generation(attempt, target, nonce)
+        intent = update._encode({'schema': 'wd.q4-live-recovery-intent.v1', 'attempt': attempt,
+            'nonce': nonce, 'config_sha256': config_sha, 'progress_sha256': job_sha,
+            'pointer_sha256': target, 'generation': generation})
+        intent_path = private / ('q4-live-recovery-intent-' + attempt + '-' + nonce + '.json')
+        intent_info = update.runner._create(intent_path, intent)
+        update.runner._verify_own(intent_path, intent, intent_info)
         selected = update._publish(config, baseline, root, public, {'pointer_sha256': target}, generation=generation)
     record = update._encode({'schema': 'wd.q4-live-job-reconciled.v1', 'attempt': attempt,
                              'config_sha256': config_sha, 'job_receipt_sha256': job_sha,
                              'intent_sha256': marker['intent_sha256'], 'pointer_sha256': target, 'result': selected})
     record_path = private / ('q4-live-job-reconciled-' + attempt + '.json')
-    record_info = update.runner._create(record_path, record)
+    try:
+        record_info = update.runner._create(record_path, record)
+    except FileExistsError:
+        record_info = record_path.lstat()
     update.runner._verify_own(record_path, record, record_info)
     verify(remove=True)
     return {**selected, 'recovery_receipt_sha256': update._sha(record), 'receipt_file': record_path.name}

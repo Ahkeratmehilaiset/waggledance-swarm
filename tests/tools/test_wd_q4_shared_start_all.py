@@ -97,10 +97,12 @@ $q4SharedForward=Get-WdQ4SharedForwardingArguments -Path 'C:\Python\audit folder
 $q4SharedDirect=$q4SharedForward.direct
 $script:calls=[Collections.Generic.List[object]]::new()
 function Fake-Lane {
- param([string]$Agent,[switch]$DryRun,[switch]$CheckManagedAdmission,[string]$ExpectedManifestHash,
- [string]$ExternalSessionsPath,[string]$ExternalSessionsHash,[string]$Q4SharedDescriptorPath,
- [string]$Q4SharedDescriptorSha256)
- $script:calls.Add([pscustomobject]@{agent=$Agent;path=$Q4SharedDescriptorPath;hash=$Q4SharedDescriptorSha256})
+ [CmdletBinding()]
+ param([string]$Agent,[switch]$DryRun,[switch]$CheckManagedAdmission,[switch]$CheckLaunchAvailability,
+ [string]$ExpectedManifestHash,[string]$ExternalSessionsPath,[string]$ExternalSessionsHash,
+ [string]$Q4SharedDescriptorPath,[string]$Q4SharedDescriptorSha256)
+ $script:calls.Add([pscustomobject]@{agent=$Agent;path=$Q4SharedDescriptorPath;hash=$Q4SharedDescriptorSha256;
+  dry=[bool]$DryRun;admission=[bool]$CheckManagedAdmission;availability=[bool]$CheckLaunchAvailability})
  return [pscustomobject]@{dry_run=$true}
 }
 $agentLauncherTarget=${function:Fake-Lane}; $bundleManifestAnchor='manifest'
@@ -135,6 +137,13 @@ if($init.Count -ne 1 -or $append.Count -ne 1 -or $start.Count -ne 1){throw 'laun
     assert len(output["calls"]) == 8
     assert {call["agent"] for call in output["calls"]} == {"codex-lead-1", "claude-rco-1", "claude-rco-2", "fable-5"}
     assert all(call["path"] == r"C:\Python\audit folder\descriptor.json" and call["hash"] == "a" * 64
-               for call in output["calls"])
+               and call["dry"] for call in output["calls"])
+    # Per lane: the managed-admission call first, then the resume plan; only the resume plan carries the
+    # lane-availability check (PR 1974), never the admission call. The fake binds strictly (CmdletBinding), so an
+    # unknown switch on either call would fail the script instead of being swallowed.
+    for admission, resume in zip(output["calls"][0::2], output["calls"][1::2]):
+        assert admission["agent"] == resume["agent"]
+        assert admission["admission"] and not admission["availability"]
+        assert resume["availability"] and not resume["admission"]
     assert output["native"][-4:] == ["-Q4SharedDescriptorPath", '"C:\\Python\\audit folder\\descriptor.json"',
                                      "-Q4SharedDescriptorSha256", "a" * 64]

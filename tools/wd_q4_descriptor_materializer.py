@@ -19,9 +19,16 @@ and re-hashed; the descriptor is written last so a descriptor on disk always nam
 The target chain is walked again before every write for reparse points and both directory identities are compared
 with the recorded ones; any difference (a swapped parent, a junction or symlink in place of the generation
 directory, another directory under the same name) is a conservative refusal that writes nothing more.
+Nothing may exist at a final path before its create (a dangling link included, because the C runtime would follow
+it), the created handle must be the file found at that path afterwards, and the descriptor is created only after
+every artifact has been re-read byte for byte at that moment; the returned digests and sizes come from the re-read
+bytes. A volume that reports no file identity (file id 0) is refused.
 It never overwrites and never deletes (a failed generation directory is left for inspection), never logs and never
-reads the environment. The remaining window is the single system call between a recheck and its write; the
-launcher validator re-checks the chain again when it reads.
+reads the environment. Residual, stated plainly: the single system call between a recheck and its write; a writer
+inside the target directory who swaps the generation directory between mkdir and the identity sample, or who plants
+the caller's own descriptor bytes after a refusal, is outside this module: the target directory's access control is
+that boundary and stays the launcher validator's and the operator's job. The launcher validator re-checks the chain
+again when it reads.
 Every refusal is one closed reason and never a caller value, path or byte.
 
 What it is not. A matching hash is not authentication, not freshness and not a runtime proof. Metadata-only content
@@ -155,7 +162,7 @@ def _directory_identity(path):
         info = os.lstat(path)
     except OSError:
         _refuse("path_refused")
-    if not stat.S_ISDIR(info.st_mode) or _is_reparse(info):
+    if not stat.S_ISDIR(info.st_mode) or _is_reparse(info) or not info.st_ino:
         _refuse("path_refused")
     return (info.st_dev, info.st_ino)
 
@@ -183,20 +190,14 @@ def _still_the_same(target_dir, target_identity, generation_dir, generation_iden
         _refuse("path_refused")
 
 
-def _write_exclusively(final, payload):
-    """Create the final file itself exclusively (RCO2 M1: no part file, no replace), fsync, re-read, compare."""
+def _read_back(final, size):
+    """The bytes at ``final`` (at most ``size`` + 1, so a longer file is detected), regular file only."""
     try:
-        handle = os.open(final, _CREATE_FLAGS, 0o600)
-        try:
-            view = memoryview(payload)
-            while view:
-                view = view[os.write(handle, view):]
-            os.fsync(handle)
-        finally:
-            os.close(handle)
         handle = os.open(final, _READ_FLAGS)
         try:
-            chunks, remaining = [], len(payload) + 1
+            if not stat.S_ISREG(os.fstat(handle).st_mode):
+                _refuse("write_refused")
+            chunks, remaining = [], size + 1
             while remaining > 0:
                 chunk = os.read(handle, remaining)
                 if not chunk:
@@ -207,7 +208,38 @@ def _write_exclusively(final, payload):
             os.close(handle)
     except OSError:
         _refuse("write_refused")
-    if b"".join(chunks) != payload:
+    return b"".join(chunks)
+
+
+def _write_exclusively(final, payload):
+    """Create the final file itself exclusively (RCO2 M1: no part file, no replace), fsync, bind, re-read, compare.
+
+    Nothing may exist at ``final`` first (a dangling link would be followed by the C runtime's exclusive create);
+    after the write the file found at ``final`` must be the one that was created.
+    """
+    try:
+        try:
+            os.lstat(final)
+        except FileNotFoundError:
+            pass
+        else:
+            _refuse("write_refused")
+        handle = os.open(final, _CREATE_FLAGS, 0o600)
+        try:
+            created = os.fstat(handle)
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(handle, view):]
+            os.fsync(handle)
+        finally:
+            os.close(handle)
+        placed = os.lstat(final)
+    except OSError:
+        _refuse("write_refused")
+    if (not stat.S_ISREG(created.st_mode) or not stat.S_ISREG(placed.st_mode) or _is_reparse(placed) or not placed.st_ino
+            or (placed.st_dev, placed.st_ino) != (created.st_dev, created.st_ino)):
+        _refuse("write_refused")
+    if _read_back(final, len(payload)) != payload:
         _refuse("write_refused")
 
 
@@ -254,11 +286,21 @@ def materialize_descriptor(*, enabled=False, target_dir, generation, artifacts, 
         _refuse("write_refused")
     generation_identity = _directory_identity(generation_dir)
     payloads = {**files, "descriptor": descriptor_bytes}
-    written = {}
-    for name in (*ARTIFACTS, "descriptor"):
+    for name in ARTIFACTS:
         _still_the_same(target_dir, target_identity, generation_dir, generation_identity)
-        final = plan[name + "_path"]
-        _write_exclusively(final, payloads[name])
-        written[name] = {"path": final, "sha256": _sha256(payloads[name]), "bytes": len(payloads[name])}
+        _write_exclusively(plan[name + "_path"], payloads[name])
+    written = {}
+    _still_the_same(target_dir, target_identity, generation_dir, generation_identity)
+    for name in ARTIFACTS:  # every artifact must still be in place, byte for byte, right before the descriptor
+        again = _read_back(plan[name + "_path"], len(payloads[name]))
+        if again != payloads[name]:
+            _refuse("write_refused")
+        written[name] = {"path": plan[name + "_path"], "sha256": _sha256(again), "bytes": len(again)}
+    _still_the_same(target_dir, target_identity, generation_dir, generation_identity)
+    _write_exclusively(plan["descriptor_path"], descriptor_bytes)
+    again = _read_back(plan["descriptor_path"], len(descriptor_bytes))
+    if again != descriptor_bytes:
+        _refuse("write_refused")
+    written["descriptor"] = {"path": plan["descriptor_path"], "sha256": _sha256(again), "bytes": len(again)}
     return {"status": "MATERIALIZED", "generation_dir": generation_dir, "descriptor_path": plan["descriptor_path"],
             "descriptor_sha256": expected_descriptor_sha256, "files": written}

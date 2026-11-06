@@ -86,7 +86,9 @@ def _subject(value,components,paths):
 
 
 def _validate(event,source_ref,vocabulary_bytes,expected_vocabulary_sha256,
-              path_allowlist_bytes,expected_path_allowlist_sha256,now_utc,previous_event):
+              path_allowlist_bytes,expected_path_allowlist_sha256,now_utc,previous_event,earlier_events):
+    if type(earlier_events) is not list or len(earlier_events)>15 or any(type(row) is not dict for row in earlier_events):
+        raise ValueError()
     vocab=_document(vocabulary_bytes,expected_vocabulary_sha256,'wd.mind-public-vocabulary.v1',
                     {'schema','components','tags'})
     allowed=_document(path_allowlist_bytes,expected_path_allowlist_sha256,'wd.mind-public-paths.v1',
@@ -132,8 +134,11 @@ def _validate(event,source_ref,vocabulary_bytes,expected_vocabulary_sha256,
                 or previous_event.get('agent')!=event['agent']
                 or _time(previous_event.get('ts_utc'))>=created): raise ValueError()
         _validate(previous_event,prior,vocabulary_bytes,expected_vocabulary_sha256,
-                  path_allowlist_bytes,expected_path_allowlist_sha256,event['ts_utc'],None)
-    elif previous_event is not None:
+                  path_allowlist_bytes,expected_path_allowlist_sha256,event['ts_utc'],
+                  earlier_events[0] if earlier_events else None,earlier_events[1:])
+        if previous_event['payload']['public_knowledge']['subject']!=data['subject']:
+            raise ValueError()
+    elif previous_event is not None or earlier_events:
         raise ValueError()
     line=data['kind']+' '+data['outcome']+' '+event['agent']+' '+subject
     if 'head' in data: line+=' head:'+data['head']
@@ -147,19 +152,21 @@ def _validate(event,source_ref,vocabulary_bytes,expected_vocabulary_sha256,
 
 
 def validate(*, enabled=False,event=None,source_ref=None,vocabulary_bytes=None,expected_vocabulary_sha256=None,
-             path_allowlist_bytes=None,expected_path_allowlist_sha256=None,now_utc=None,previous_event=None):
+             path_allowlist_bytes=None,expected_path_allowlist_sha256=None,now_utc=None,previous_event=None,
+             earlier_events=None):
     if enabled is False:
         return {'status':'OFF'}
     result=None
     try:
         if enabled is not True: raise ValueError()
         result=_validate(event,source_ref,vocabulary_bytes,expected_vocabulary_sha256,
-                         path_allowlist_bytes,expected_path_allowlist_sha256,now_utc,previous_event)
+                         path_allowlist_bytes,expected_path_allowlist_sha256,now_utc,previous_event,
+                         [] if earlier_events is None else earlier_events)
     except Exception:
         pass
     finally:
         del event,source_ref,vocabulary_bytes,expected_vocabulary_sha256
-        del path_allowlist_bytes,expected_path_allowlist_sha256,now_utc,previous_event
+        del path_allowlist_bytes,expected_path_allowlist_sha256,now_utc,previous_event,earlier_events
     if result is None:
         raise CardRefused('card_refused')
     return result

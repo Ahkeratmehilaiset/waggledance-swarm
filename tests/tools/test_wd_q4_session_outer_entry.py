@@ -1,4 +1,4 @@
-"""Synthetic session entry tests: no live data, lane process or deployment."""
+"""Historical test-only legacy entry assertions, no production invocation."""
 import hashlib
 import json
 import os
@@ -7,9 +7,18 @@ import subprocess
 import sys
 
 import pytest
+from q4_legacy_session_fixtures import legacy_bytes
 
 ROOT = Path(__file__).resolve().parents[2]
 ENTRY = ROOT / "tools/wd_q4_session_outer_entry.py"
+
+
+@pytest.fixture(autouse=True)
+def legacy_entry_path(monkeypatch, tmp_path):
+    entry = tmp_path / "test-only-legacy-entry.py"
+    entry.write_bytes(legacy_bytes("outer_entry"))
+    monkeypatch.setitem(globals(), "ENTRY", entry)
+
 KEYS = ("pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256", "roster_sha256",
         "public_policy_sha256", "descriptor_sha256", "projection_sha256")
 FAKE_OUTER = b'''\
@@ -215,7 +224,7 @@ def test_entry_runs_actual_manifest_pinned_outer_with_only_synthetic_worker(plan
     inputs = helper.synthetic.__wrapped__(tmp_path / "actual")
     root = Path(inputs["runtime_root"])
     outer_path = root / "assets/code/tools/wd_q4_session_outer_synthetic.py"
-    raw = (ROOT / "tools/wd_q4_session_outer_synthetic.py").read_bytes()
+    raw = legacy_bytes("outer_synthetic")
     outer_path.write_bytes(raw)
     manifest = tmp_path / "actual-manifest.json"
     built = runtime_builder.build_runtime_manifest(root, manifest, generation=helper.GENERATION, revision=helper.REVISION)

@@ -313,11 +313,20 @@ def main(argv=None):
             return _refuse(3)
         owner_context = guard._owner_context()
         _check(guard._accept_owner_context(owner_context) is owner_context)
-        situation, when = _query()
+        try:
+            situation, when = _query()
+        except Exception:
+            # Nothing has been handed off and no owner has entered. This is a
+            # distinct cancellation witness, never a cleanup witness.
+            witness = guard._cancel_unstarted(owner_context)
+            guard.release(witness)
+            guard_released = True
+            raise
         # The trusted bootstrap supplies the existing package; never fall back.
         from tools import wd_q4_lane_caller_adapter as adapter
 
         try:
+            owner_context._handoff()
             result = adapter.call_lane_session(enabled=True, identity_bytes=identity_raw,
                 expected_identity_sha256=identity_pin, descriptor_bytes=descriptor_raw,
                 expected_descriptor_sha256=descriptor_pin, situation=situation, time=when, inputs=inputs,

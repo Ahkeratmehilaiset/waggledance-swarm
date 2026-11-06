@@ -50,14 +50,64 @@ def test_disabled_cli_does_not_acquire_guard_or_read_query(setup_cli, monkeypatc
     assert setup_cli["acquired"] == [] and setup_cli["writes"] == ['{"status":"OFF"}\n']
 
 
-def test_query_failure_marks_guard_unknown_and_retains_marker(setup_cli, monkeypatch):
+def test_query_failure_cancels_unstarted_guard_and_releases_marker(setup_cli, monkeypatch):
     def fail():
         assert setup_cli["marker"].is_file()
         raise ValueError("synthetic query failure")
     monkeypatch.setattr(cli, "_query", fail)
     assert cli.main(["--enabled"]) != 0
-    assert len(setup_cli["acquired"]) == 1 and setup_cli["marker"].is_file()
+    assert len(setup_cli["acquired"]) == 1 and not setup_cli["marker"].exists()
+    assert setup_cli["acquired"][-1]._registry._uncertain is False
+    assert setup_cli["writes"] == []
+
+
+def test_owner_context_handoff_precedes_adapter_dispatch(setup_cli, monkeypatch):
+    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", None))
+    events = []
+    original = guard_module._OwnerContext._handoff
+    def handoff(context):
+        events.append("handoff")
+        return original(context)
+    def adapter_call(**kwargs):
+        events.append("adapter")
+        assert events == ["handoff", "adapter"]
+        raise adapter.CallerCleanupUnknown()
+    monkeypatch.setattr(guard_module._OwnerContext, "_handoff", handoff)
+    monkeypatch.setattr(adapter, "call_lane_session", adapter_call)
+    assert cli.main(["--enabled"]) != 0
+    assert events == ["handoff", "adapter"] and setup_cli["marker"].is_file()
     assert setup_cli["acquired"][-1]._registry._uncertain is True
+
+
+def test_failed_unstarted_cancellation_retains_marker_and_marks_unknown(setup_cli, monkeypatch):
+    def fail_query():
+        raise ValueError("invalid synthetic query")
+    def fail_cancel(*args):
+        raise guard_module.GuardCompletionUnavailable()
+    monkeypatch.setattr(cli, "_query", fail_query)
+    monkeypatch.setattr(guard_module._Guard, "_cancel_unstarted", fail_cancel)
+    assert cli.main(["--enabled"]) != 0
+    assert setup_cli["marker"].is_file() and setup_cli["acquired"][-1]._registry._uncertain
+    assert setup_cli["writes"] == []
+
+
+def test_query_interrupt_preserves_unknown_instead_of_cancelling(setup_cli, monkeypatch):
+    def interrupted():
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(cli, "_query", interrupted)
+    assert cli.main(["--enabled"]) == 130
+    assert setup_cli["marker"].is_file() and setup_cli["acquired"][-1]._registry._uncertain
+    assert setup_cli["writes"] == []
+
+
+def test_failed_handoff_does_not_dispatch_or_cancel(setup_cli, monkeypatch):
+    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", None))
+    def fail_handoff(*args):
+        raise guard_module.GuardCompletionUnavailable()
+    monkeypatch.setattr(guard_module._OwnerContext, "_handoff", fail_handoff)
+    monkeypatch.setattr(adapter, "call_lane_session", lambda **kwargs: pytest.fail("failed handoff dispatched"))
+    assert cli.main(["--enabled"]) != 0
+    assert setup_cli["marker"].is_file() and setup_cli["acquired"][-1]._registry._uncertain
     assert setup_cli["writes"] == []
 
 
@@ -130,12 +180,12 @@ def test_same_lane_pending_marker_blocks_second_query(setup_cli, monkeypatch):
     try:
         assert entered.wait(5)
         assert cli.main(["--enabled"]) != 0
-        assert reads == ["read"]
+        assert reads == ["read"] and setup_cli["marker"].is_file()
     finally:
         release.set()
         thread.join(timeout=5)
     assert not thread.is_alive() and not errors
-    assert setup_cli["marker"].is_file() and setup_cli["writes"] == []
+    assert not setup_cli["marker"].exists() and setup_cli["writes"] == []
 
 
 def test_interrupt_after_adapter_before_finish_marks_unknown(setup_cli, monkeypatch):

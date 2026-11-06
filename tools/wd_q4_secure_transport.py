@@ -1704,9 +1704,24 @@ def _run_bounded_impl(*, executable, arguments, cwd, stdin_bytes, timeout_second
                     timeout_seconds, max_output_bytes)
 
 
+def _fixed_owner_pair(guard, context):
+    """Validate one anchored guard/context pair; None/None is unguarded legacy."""
+    if guard is None and context is None:
+        return False
+    from tools.wd_q4_guard_completion import _Guard, _OwnerContext
+    if type(guard) is not _Guard or type(context) is not _OwnerContext:
+        raise _Refused()
+    try:
+        guard._accept_owner_context(context)
+    except Exception:
+        raise _Refused() from None
+    return True
+
+
 def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
                    expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
-                   timeout_seconds, max_output_bytes, public_snapshot_enabled=False):
+                   timeout_seconds, max_output_bytes, public_snapshot_enabled=False,
+                   _owner_guard=None, _owner_context=None):
     """Fixed peer of THIS file over the bounded pipe; synthetic by default.
 
     Every caller pin is checked before spawning: the plan digest, the plan's
@@ -1764,12 +1779,38 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
     Source authentication and freshness are UNKNOWN. Same limits as run_bounded.
     """
     cleanup_type = cleanup_lease = failure = transport_cleanup = None
+    guarded = abort_failed = False
+    exit_code = None
     try:
+        guarded = _fixed_owner_pair(_owner_guard, _owner_context)
         from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown as cleanup_type
+        if guarded:
+            result = _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
+                                          expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
+                                          timeout_seconds, max_output_bytes, public_snapshot_enabled,
+                                          _owner_guard=_owner_guard, _owner_context=_owner_context)
+            try:
+                _owner_guard._accept_owner_context(_owner_context)
+                _owner_context._require_done(("attestation", "transport"))
+            except Exception:
+                raise TransportCleanupUnknown("other") from None
+            return result
         return _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
                                     expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
                                     timeout_seconds, max_output_bytes, public_snapshot_enabled)
     except BaseException as exc:
+        result = None  # Never retain a rejected guarded result in traceback locals.
+        if guarded:
+            try:
+                _owner_context._abort()
+            except BaseException:
+                abort_failed = True
+                try:
+                    _owner_guard.mark_unknown()
+                except BaseException:
+                    # The unknown outcome is reported below; no cleanup or
+                    # successful guard release is inferred from this failure.
+                    pass
         if cleanup_type is not None and isinstance(exc, cleanup_type):
             cleanup_lease = exc.lease
         elif isinstance(exc, TransportCleanupUnknown):
@@ -1780,11 +1821,31 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
             failure = "interrupt"
         elif isinstance(exc, SystemExit):
             failure = "exit"
+            exit_code = exc.code if exc.code is None or type(exc.code) is int else 1
+        elif isinstance(exc, BaseExceptionGroup) and not isinstance(exc, ExceptionGroup) and guarded:
+            failure = "base_group"
         else:
             failure = "refused"
+    if abort_failed:
+        transport_cleanup = "other"
     del executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes, expected_plan_sha256
     del bundle_bytes, runtime_manifest_bytes, query_bytes, cwd, timeout_seconds, max_output_bytes
-    del public_snapshot_enabled
+    del public_snapshot_enabled, _owner_guard, _owner_context
+    if guarded:
+        if cleanup_lease is not None:
+            _raise_context_free(cleanup_type(cleanup_lease))
+        if transport_cleanup is not None:
+            _raise_context_free(TransportCleanupUnknown(transport_cleanup))
+        if failure == "timeout":
+            _raise_context_free(TimeoutError("secure_transport_timeout"))
+        if failure == "interrupt":
+            _raise_context_free(KeyboardInterrupt())
+        if failure == "exit":
+            _raise_context_free(SystemExit(exit_code))
+        if failure == "base_group":
+            _raise_context_free(BaseExceptionGroup("fixed_peer_exception_graph_unavailable",
+                                                  [BaseException("fixed_peer_unmanaged")]))
+        _raise_context_free(_Refused())
     if cleanup_lease is not None:
         raise cleanup_type(cleanup_lease) from None
     if transport_cleanup is not None:
@@ -1854,55 +1915,104 @@ def run_fixed_peer_diagnostic(*, executable, expected_interpreter_sha256, interp
 
 def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
                          expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
-                         timeout_seconds, max_output_bytes, public_snapshot_enabled=False, _diagnostic_mode=None):
-    _validate(query_bytes, timeout_seconds, max_output_bytes)
-    _check(len(query_bytes) > 0 and type(public_snapshot_enabled) is bool)
-    plan = _fixed_plan(plan_bytes)
-    public = plan["backend"] == "public-snapshot-v1"
-    _check(public_snapshot_enabled or not public)
-    _check(_diagnostic_mode in (None, "observe", "synthetic-fault"))
-    _check(_diagnostic_mode is None or plan["backend"] == "synthetic-v1")
-    _check(hmac.compare_digest(_sha(plan_bytes), _hex64(expected_plan_sha256)))
-    _check(hmac.compare_digest(plan["interpreter_sha256"], _hex64(expected_interpreter_sha256)))
-    _check(type(executable) is str and
-           os.path.normcase(os.path.abspath(executable)) == os.path.normcase(os.path.abspath(sys.executable)))
-    path = str(Path(__file__).absolute())
-    with open(path, "rb") as stream:
-        raw = stream.read(_PEER_CODE_LIMIT + 1)
-    _check(len(raw) <= _PEER_CODE_LIMIT and hmac.compare_digest(_sha(raw), plan["peer_code_sha256"]))
-    _check(type(runtime_manifest_bytes) is bytes and len(runtime_manifest_bytes) <= _MAX_RUNTIME_MANIFEST
-           and hmac.compare_digest(_sha(runtime_manifest_bytes), plan["runtime_manifest_sha256"]))
-    _check(type(bundle_bytes) is bytes and len(bundle_bytes) == plan["bundle_bytes"]
-           and hmac.compare_digest(_sha(bundle_bytes), plan["bundle_sha256"]))
-    verifier = str(Path(path).parents[1].joinpath(*_VERIFIER_PARTS))
-    if public:
-        with open(verifier, "rb") as stream:
-            source = stream.read(_VERIFIER_LIMIT + 1)
-        _check(len(source) <= _VERIFIER_LIMIT and hmac.compare_digest(_sha(source), plan["verifier_sha256"]))
-    control = {"schema": "wd.q4-fixed-control.v1", "nonce": os.urandom(16).hex(), "binding_sha256": _sha(plan_bytes)}
-    bootstrap = _FIXED_BOOTSTRAP if _diagnostic_mode is None else _DIAGNOSTIC_BOOTSTRAP
-    command = [executable, "-I", "-S", "-B", "-c", bootstrap, path, plan["peer_code_sha256"]]
-    if _diagnostic_mode is not None:
-        command.append(_diagnostic_mode)
-    from tools.wd_q4_fixed_parent_attestation import attest_file
-    with attest_file(executable, expected_interpreter_sha256, max_bytes=interpreter_max_bytes, enabled=True):
-        with attest_file(path, plan["peer_code_sha256"], max_bytes=_PEER_CODE_LIMIT, enabled=True):
-            with (attest_file(verifier, plan["verifier_sha256"], max_bytes=_VERIFIER_LIMIT, enabled=True)
-                  if public else contextlib.nullcontext()):
-                output, code = _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds, max_output_bytes,
-                                    fixed=(control, plan_bytes, bundle_bytes))
-    if _diagnostic_mode is not None:
-        _check(code == 0 and output in (b"after_query", b"completed"))
-        return {"status": "DIAGNOSTIC", "phase": output.decode("ascii"), "cleanup": "UNKNOWN"}
-    # Unwrap after the diagnostic return and after _run's cleanup completed: the inner answer is used only if
-    # it is bound to this call's nonce and the parent's own query bytes.
-    output = _fixed_unwrap(control["nonce"], query_bytes, output, max_output_bytes)
-    if not public:
-        return output, code
-    # Never return the child's public answer unvalidated: re-resolve it against the pinned bundle projection.
-    _check(code == 0)
-    return _fixed_public_validate(plan_bytes, bundle_bytes, query_bytes, output), 0
+                         timeout_seconds, max_output_bytes, public_snapshot_enabled=False, _diagnostic_mode=None,
+                         *, _owner_guard=None, _owner_context=None):
+    guarded = completed = False
+    attestation_owner = None
+    try:
+        guarded = _fixed_owner_pair(_owner_guard, _owner_context)
+        _validate(query_bytes, timeout_seconds, max_output_bytes)
+        _check(len(query_bytes) > 0 and type(public_snapshot_enabled) is bool)
+        plan = _fixed_plan(plan_bytes)
+        public = plan["backend"] == "public-snapshot-v1"
+        _check(public_snapshot_enabled or not public)
+        _check(_diagnostic_mode in (None, "observe", "synthetic-fault"))
+        _check(_diagnostic_mode is None or plan["backend"] == "synthetic-v1")
+        _check(hmac.compare_digest(_sha(plan_bytes), _hex64(expected_plan_sha256)))
+        _check(hmac.compare_digest(plan["interpreter_sha256"], _hex64(expected_interpreter_sha256)))
+        _check(type(executable) is str and
+               os.path.normcase(os.path.abspath(executable)) == os.path.normcase(os.path.abspath(sys.executable)))
+        path = str(Path(__file__).absolute())
+        with open(path, "rb") as stream:
+            raw = stream.read(_PEER_CODE_LIMIT + 1)
+        _check(len(raw) <= _PEER_CODE_LIMIT and hmac.compare_digest(_sha(raw), plan["peer_code_sha256"]))
+        _check(type(runtime_manifest_bytes) is bytes and len(runtime_manifest_bytes) <= _MAX_RUNTIME_MANIFEST
+               and hmac.compare_digest(_sha(runtime_manifest_bytes), plan["runtime_manifest_sha256"]))
+        _check(type(bundle_bytes) is bytes and len(bundle_bytes) == plan["bundle_bytes"]
+               and hmac.compare_digest(_sha(bundle_bytes), plan["bundle_sha256"]))
+        verifier = str(Path(path).parents[1].joinpath(*_VERIFIER_PARTS))
+        if public:
+            with open(verifier, "rb") as stream:
+                source = stream.read(_VERIFIER_LIMIT + 1)
+            _check(len(source) <= _VERIFIER_LIMIT and hmac.compare_digest(_sha(source), plan["verifier_sha256"]))
+        control = {"schema": "wd.q4-fixed-control.v1", "nonce": os.urandom(16).hex(), "binding_sha256": _sha(plan_bytes)}
+        bootstrap = _FIXED_BOOTSTRAP if _diagnostic_mode is None else _DIAGNOSTIC_BOOTSTRAP
+        command = [executable, "-I", "-S", "-B", "-c", bootstrap, path, plan["peer_code_sha256"]]
+        if _diagnostic_mode is not None:
+            command.append(_diagnostic_mode)
+        from tools.wd_q4_fixed_parent_attestation import attest_file, _AttestationOwner
+        if guarded:
+            attestation_ticket = _owner_context._ticket("attestation")
+            _owner_context._accept_ticket("attestation", attestation_ticket)
+            transport_ticket = _owner_context._ticket("transport")
+            _owner_context._accept_ticket("transport", transport_ticket)
+            attestation_ticket._begin()
+            attestation_owner = _AttestationOwner(on_complete=attestation_ticket._complete,
+                                                  on_unknown=attestation_ticket._unknown)
+            attest = attestation_owner.attest
+        else:
+            attest = attest_file
+        with attest(executable, expected_interpreter_sha256, max_bytes=interpreter_max_bytes, enabled=True):
+            with attest(path, plan["peer_code_sha256"], max_bytes=_PEER_CODE_LIMIT, enabled=True):
+                with (attest(verifier, plan["verifier_sha256"], max_bytes=_VERIFIER_LIMIT, enabled=True)
+                      if public else contextlib.nullcontext()):
+                    if guarded:
+                        output, code = _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds,
+                                            max_output_bytes, fixed=(control, plan_bytes, bundle_bytes),
+                                            transport_owner=transport_ticket)
+                    else:
+                        output, code = _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds,
+                                            max_output_bytes, fixed=(control, plan_bytes, bundle_bytes))
+        if guarded:
+            attestation_owner.finish()
+        if _diagnostic_mode is not None:
+            _check(code == 0 and output in (b"after_query", b"completed"))
+            completed = True
+            return {"status": "DIAGNOSTIC", "phase": output.decode("ascii"), "cleanup": "UNKNOWN"}
+        # Unwrap after the diagnostic return and after _run's cleanup completed: the inner answer is used only if
+        # it is bound to this call's nonce and the parent's own query bytes.
+        output = _fixed_unwrap(control["nonce"], query_bytes, output, max_output_bytes)
+        if not public:
+            completed = True
+            return output, code
+        # Never return the child's public answer unvalidated: re-resolve it against the pinned bundle projection.
+        _check(code == 0)
+        result = _fixed_public_validate(plan_bytes, bundle_bytes, query_bytes, output), 0
+        completed = True
+        return result
 
+
+    finally:
+        try:
+            if guarded and not completed:
+                try:
+                    if attestation_owner is not None:
+                        attestation_owner.abort()
+                finally:
+                    _owner_context._abort()
+        finally:
+            if "plan_bytes" in locals():
+                del plan_bytes
+            if "bundle_bytes" in locals():
+                del bundle_bytes
+            if "runtime_manifest_bytes" in locals():
+                del runtime_manifest_bytes
+            if "query_bytes" in locals():
+                del query_bytes
+            if "control" in locals():
+                del control
+            if "result" in locals():
+                del result
 
 def run_synthetic_echo(*, powershell, bootstrap_path, expected_bootstrap_sha256,
                        cwd, stdin_bytes, timeout_seconds, max_output_bytes):

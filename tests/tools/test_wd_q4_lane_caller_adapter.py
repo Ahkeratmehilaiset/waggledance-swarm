@@ -47,20 +47,32 @@ def sha(value):
     return hashlib.sha256(value).hexdigest()
 
 
-WORKTREES = {agent: r"C:\synthetic\lanes" + "\\" + agent for agent in LANES}
+TOOLS = "codex-tools-1"  # the fifth lane: it lives in the fleet document's tools_supervisor entry, not in lanes
+ALL_LANES = LANES + (TOOLS,)
+WORKTREES = {agent: r"C:\synthetic\lanes" + "\\" + agent for agent in ALL_LANES}
 PROCESS_CWD = r"C:\synthetic\lanes\codex-lead-1\work"
+TOOLS_CWD = r"C:\synthetic\lanes\codex-tools-1\work"
 
 
-def fleet_bytes(worktrees=None, drop_worktree=False):
-    """The pinned fleet document: lanes carry the per-lane worktree as the real manifest does."""
+def fleet_entry(agent, worktrees, drop_worktree=False):
+    """A real-shaped synthetic lane entry: the extra manifest fields are dropped by the roster builder."""
+    entry = {"agent": agent, "agent_uuid": UUIDS[agent], "branch": "synthetic/" + agent,
+             "prompt": "synthetic prompt for " + agent}
+    if not drop_worktree:
+        entry["worktree"] = worktrees[agent]
+    return entry
+
+
+def fleet_bytes(worktrees=None, drop_worktree=False, tools=None):
+    """The pinned fleet document in the real manifest shape: four projection lanes under ``lanes`` and the
+    tools lane under ``tools_supervisor``, every entry carrying its worktree. ``tools`` replaces the supervisor
+    entry (a dict, or None to drop the key); ``drop_worktree`` drops the worktree from every entry."""
     worktrees = dict(WORKTREES if worktrees is None else worktrees)
-    lanes = []
-    for agent in LANES:
-        entry = {"agent": agent, "agent_uuid": UUIDS[agent]}
-        if not drop_worktree:
-            entry["worktree"] = worktrees[agent]
-        lanes.append(entry)
-    return canon({"lanes": lanes, "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": UUIDS["codex-tools-1"]}})
+    document = {"lanes": [fleet_entry(agent, worktrees, drop_worktree) for agent in LANES]}
+    supervisor = fleet_entry(TOOLS, worktrees, drop_worktree) if tools is None else tools
+    if supervisor is not False:
+        document["tools_supervisor"] = supervisor
+    return canon(document)
 
 
 def synthetic_inputs():
@@ -573,18 +585,135 @@ def test_a_concurrent_call_in_this_process_refuses_busy_before_reading_inputs(da
 
 
 @pytest.mark.parametrize("kind", ["transport", "attestation"])
-def test_cleanup_unknown_raised_during_the_pre_check_quarantines(data, chain, monkeypatch, kind):
+def test_cleanup_unknown_raised_during_the_pre_check_quarantines_and_is_a_distinct_sanitized_signal(
+        data, chain, monkeypatch, kind):
+    # Lead 11:43Z (RCO2): the pre-check used to raise the generic CallerRefused for a cleanup-unknown error, so a
+    # CLI exited 2 (refused) instead of 3 (cleanup unknown). It now raises CallerCleanupUnknown.
     calls, _ = chain
-    exc = TransportCleanupUnknown("other") if kind == "transport" else AttestationCleanupUnknown(object())
+    lease = object()
+    exc = TransportCleanupUnknown(CANARY) if kind == "transport" else AttestationCleanupUnknown(lease)
 
     def raising(*args, **kwargs):
         raise exc
     monkeypatch.setattr(adapter().roster, "build_roster_snapshot", raising)
-    with pytest.raises(ValueError, match="^caller_refused$"):
+    with pytest.raises(adapter().CallerCleanupUnknown, match="^caller_cleanup_unknown$") as caught:
         call(data)
+    signal = caught.value
+    assert not isinstance(signal, ValueError) and isinstance(signal, RuntimeError)
+    assert signal.args == ("caller_cleanup_unknown",) and vars(signal) == {}
+    assert signal.__cause__ is None and signal.__context__ is None and CANARY not in repr(signal)
     assert calls == [] and adapter()._QUARANTINED is True
+    assert adapter()._HOLD == ([lease] if kind == "attestation" else [])
     with pytest.raises(ValueError, match="^caller_quarantined$"):
         call(data)
+
+
+def test_the_pre_check_cleanup_signal_is_distinct_from_refusal_and_documented():
+    signal = adapter().CallerCleanupUnknown
+    assert issubclass(signal, RuntimeError) and not issubclass(signal, adapter().CallerRefused)
+    assert not issubclass(adapter().CallerRefused, signal)
+    text = adapter().__doc__
+    assert "CallerCleanupUnknown" in text and "caller_cleanup_unknown" in text and "tools_supervisor" in text
+
+
+# --- caller v4 (Lead 11:40Z): the tools lane is the fleet tools_supervisor entry ------------------------------
+
+def tools_lane(data, **fleet_changes):
+    """Inputs, descriptor and identity for the tools lane: the descriptor lists all five lanes as the real one does."""
+    inputs = dict(data["inputs"])
+    fleet = fleet_bytes(**fleet_changes)
+    inputs["fleet_bytes"], inputs["expected_fleet_sha256"] = fleet, sha(fleet)
+    descriptor = descriptor_for(inputs, lanes=ALL_LANES)
+    identity = identity_for(descriptor, agent=TOOLS, worktree=WORKTREES[TOOLS], cwd=TOOLS_CWD)
+    return dict(inputs=inputs, descriptor_bytes=descriptor, expected_descriptor_sha256=sha(descriptor),
+                identity_bytes=identity, expected_identity_sha256=sha(identity))
+
+
+def test_the_tools_lane_is_declared_consistent_from_the_fleet_tools_supervisor_entry(data, chain, monkeypatch):
+    calls, state = chain
+    kw = tools_lane(data)
+    monkeypatch.setattr(adapter(), "_process_cwd", lambda: TOOLS_CWD, raising=False)
+    state["outcome"] = answer_for(TOOLS, kw["descriptor_bytes"])
+    result = call(data, **kw)
+    assert result["status"] == "VALIDATED" and result["lane"] == TOOLS and len(calls) == 1
+    assert result["lane_binding"] == "DECLARED_CONSISTENT" and result["lane_authentication"] == "UNKNOWN"
+    assert calls[0]["lane"] == TOOLS and calls[0]["fleet_bytes"] == kw["inputs"]["fleet_bytes"]
+
+
+@pytest.mark.parametrize("fault", ["tools-entry-missing", "tools-entry-not-a-dict", "tools-worktree-missing",
+                                   "tools-worktree-not-a-string", "tools-worktree-empty", "tools-worktree-conflicts",
+                                   "tools-entry-names-another-agent", "tools-agent-duplicated-in-lanes",
+                                   "tools-worktree-is-a-parent", "actual-cwd-outside-the-tools-worktree"])
+def test_a_missing_malformed_duplicate_or_conflicting_tools_entry_fails_closed(data, chain, monkeypatch, fault):
+    calls, _ = chain
+    actual_cwd = TOOLS_CWD
+    supervisor = fleet_entry(TOOLS, WORKTREES)
+    if fault == "tools-entry-missing":
+        kw = tools_lane(data, tools=False)
+    elif fault == "tools-entry-not-a-dict":
+        kw = tools_lane(data, tools=[supervisor])
+    elif fault == "tools-worktree-missing":
+        kw = tools_lane(data, tools={key: value for key, value in supervisor.items() if key != "worktree"})
+    elif fault == "tools-worktree-not-a-string":
+        kw = tools_lane(data, tools={**supervisor, "worktree": ["C:", "synthetic"]})
+    elif fault == "tools-worktree-empty":
+        kw = tools_lane(data, tools={**supervisor, "worktree": ""})
+    elif fault == "tools-worktree-conflicts":
+        kw = tools_lane(data, tools={**supervisor, "worktree": r"C:\synthetic\lanes\other-tools"})
+    elif fault == "tools-entry-names-another-agent":
+        kw = tools_lane(data, tools={**supervisor, "agent": "codex-tools-2"})
+    elif fault == "tools-agent-duplicated-in-lanes":
+        document = json.loads(fleet_bytes())
+        document["lanes"].append(supervisor)
+        kw = tools_lane(data)
+        fleet = canon(document)
+        kw["inputs"]["fleet_bytes"], kw["inputs"]["expected_fleet_sha256"] = fleet, sha(fleet)
+        descriptor = descriptor_for(kw["inputs"], lanes=ALL_LANES)
+        identity = identity_for(descriptor, agent=TOOLS, worktree=WORKTREES[TOOLS], cwd=TOOLS_CWD)
+        kw.update(descriptor_bytes=descriptor, expected_descriptor_sha256=sha(descriptor), identity_bytes=identity,
+                  expected_identity_sha256=sha(identity))
+    elif fault == "tools-worktree-is-a-parent":
+        kw = tools_lane(data, tools={**supervisor, "worktree": r"C:\synthetic\lanes"})
+    else:
+        kw = tools_lane(data)
+        actual_cwd = r"C:\synthetic\lanes\codex-lead-1\work"
+    monkeypatch.setattr(adapter(), "_process_cwd", lambda: actual_cwd, raising=False)
+    with pytest.raises(ValueError, match="^caller_refused$") as caught:
+        call(data, **kw)
+    assert calls == [] and caught.value.__context__ is None and "synthetic" not in repr(caught.value)
+
+
+def test_the_fleet_worktree_lookup_itself_refuses_duplicates_and_missing_entries_without_the_roster():
+    # defence in depth: the roster builder refuses these fleets first, the lookup must refuse them on its own too
+    lookup = adapter()._fleet_worktree
+    assert lookup(fleet_bytes(), TOOLS) == adapter()._parts(WORKTREES[TOOLS])
+    assert lookup(fleet_bytes(), LANE) == adapter()._parts(WORKTREES[LANE])
+    document = json.loads(fleet_bytes())
+    duplicated = dict(document)
+    duplicated["lanes"] = document["lanes"] + [dict(document["tools_supervisor"])]
+    twice_in_lanes = dict(document)
+    twice_in_lanes["lanes"] = document["lanes"] + [dict(document["lanes"][0])]
+    no_supervisor = {"lanes": document["lanes"]}
+    supervisor_list = {"lanes": document["lanes"], "tools_supervisor": [document["tools_supervisor"]]}
+    no_worktree = {"lanes": document["lanes"],
+                   "tools_supervisor": {k: v for k, v in document["tools_supervisor"].items() if k != "worktree"}}
+    for fleet, agent in ((duplicated, TOOLS), (twice_in_lanes, LANE), (no_supervisor, TOOLS), (no_supervisor, LANE),
+                         (supervisor_list, TOOLS), (no_worktree, TOOLS), (document, "codex-tools-2"), ([], TOOLS)):
+        with pytest.raises(ValueError):
+            lookup(canon(fleet), agent)
+
+
+def test_a_projection_lane_cannot_borrow_the_tools_worktree(data, chain, monkeypatch):
+    # the lookup is by agent across lanes and tools_supervisor: another entry's worktree never admits a lane
+    calls, _ = chain
+    inputs = dict(data["inputs"])
+    descriptor = descriptor_for(inputs, lanes=ALL_LANES)
+    identity = identity_for(descriptor, worktree=WORKTREES[TOOLS], cwd=TOOLS_CWD)
+    monkeypatch.setattr(adapter(), "_process_cwd", lambda: TOOLS_CWD, raising=False)
+    with pytest.raises(ValueError, match="^caller_refused$"):
+        call(data, inputs=inputs, descriptor_bytes=descriptor, expected_descriptor_sha256=sha(descriptor),
+             identity_bytes=identity, expected_identity_sha256=sha(identity))
+    assert calls == []
 
 
 def test_any_other_base_exception_from_the_chain_leaves_the_quarantine_set(data, chain):

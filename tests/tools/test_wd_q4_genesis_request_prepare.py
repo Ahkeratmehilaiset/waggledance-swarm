@@ -62,7 +62,9 @@ def test_actual_genesis_to_composer_request_and_five_lane_binding(synthetic, mon
                 with pytest.raises(prep.RequestUnknown):
                     prep.prepare(**{**inputs,'output_dir':str(broken_output)})
             assert len(list(broken_output.iterdir())) == 1
-            ready=prep.prepare(**inputs)
+            with monkeypatch.context() as scoped:
+                scoped.setattr(prep.cli,'_request',lambda path: (_ for _ in ()).throw(AssertionError('reopened request')))
+                ready=prep.prepare(**inputs)
             with pytest.raises(prep.RequestRefused):
                 prep.prepare(**inputs)
             args['request_path']=ready['request_path']; args['expected_public_plan_sha256']=ready['public_plan_sha256']

@@ -194,8 +194,8 @@ def _verify_result(config, genesis, result, policy, fleet):
     return fully_covered
 
 
-def _emit(status):
-    print(json.dumps({'status': status}, separators=(',', ':')))
+def _emit(status, hashes=None):
+    print(json.dumps({'status': status, **(hashes or {})}, separators=(',', ':')))
 
 
 def main(argv=None):
@@ -231,13 +231,16 @@ def main(argv=None):
             expected_source_prefix_bytes=config['source_bytes'],
             expected_source_prefix_sha256=config['source_sha256'])
         fully_covered = _verify_result(config, genesis, result, policy, fleet)
+        hashes = {key: result[key] for key in ('pointer_sha256', 'runner_receipt_sha256') if key in result}
+        if any(type(value) is not str or _HEX.fullmatch(value) is None for value in hashes.values()):
+            raise ValueError()
     except genesis.GenesisRefused:
         _emit('REFUSED')
         return 2
     except BaseException:
         _emit('UNKNOWN')
         return 3
-    _emit('PUBLISHED_GENESIS' if fully_covered else 'PUBLISHED_GENESIS_PARTIAL')
+    _emit('PUBLISHED_GENESIS' if fully_covered else 'PUBLISHED_GENESIS_PARTIAL', hashes)
     return 0
 
 

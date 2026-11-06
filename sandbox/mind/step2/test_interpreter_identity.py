@@ -1,0 +1,323 @@
+"""Synthetic interpreter-tree identities; never execute files or inspect the host runtime."""
+import hashlib
+import json
+import os
+
+import pytest
+
+from sandbox.mind.step2 import interpreter_identity as subject
+
+
+def encoded(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def digest(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+@pytest.fixture
+def synthetic(tmp_path):
+    root = tmp_path / "synthetic-runtime"
+    root.mkdir()
+    contents = {"bin/interpreter.exe": ("interpreter", b"not-an-executable"),
+                "lib/stdlib.zip": ("stdlib", b"not-a-zip"),
+                "dlls/example.dll": ("dll", b"not-a-dll")}
+    records = []
+    for name, (role, data) in contents.items():
+        target = root.joinpath(*name.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        records.append({"role": role, "path": name, "size": len(data), "sha256": digest(data)})
+    return root, {"schema": subject.SCHEMA, "files": records}
+
+
+def verify(root, document, *, pin=None):
+    raw = encoded(document)
+    return subject.verify_interpreter_identity(enabled=True, root=root, descriptor_bytes=raw,
+                                                expected_sha256=digest(raw) if pin is None else pin)
+
+
+def test_default_off_does_not_touch_inputs():
+    class Poison:
+        def __getattribute__(self, name):
+            pytest.fail("OFF touched input")
+    assert subject.verify_interpreter_identity(root=Poison(), descriptor_bytes=Poison(),
+                                               expected_sha256=Poison()) == {"status": "OFF"}
+
+
+def test_matching_synthetic_tree_returns_metadata_only(synthetic):
+    root, document = synthetic
+    result = verify(root, document)
+    assert result == {"status": "VERIFIED", "descriptor_sha256": digest(encoded(document)),
+                      "file_count": 3, "total_bytes": sum(record["size"] for record in document["files"])}
+    assert str(root) not in repr(result)
+
+
+def test_pinned_descriptor_parser_validates_without_tree_io(synthetic, monkeypatch):
+    _, document = synthetic
+    raw = encoded(document)
+    monkeypatch.setattr(subject.runtime, "_check_chain", lambda *_: pytest.fail("tree accessed"))
+    parsed = subject.parse_pinned_interpreter_descriptor(raw, digest(raw))
+    assert parsed is not None
+
+
+def test_pinned_descriptor_parser_checks_pin_before_parsing(synthetic, monkeypatch):
+    _, document = synthetic
+    raw = encoded(document)
+    monkeypatch.setattr(subject.json, "loads", lambda *_a, **_k: pytest.fail("parsed before pin"))
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        subject.parse_pinned_interpreter_descriptor(raw, "0" * 64)
+
+
+def test_verifier_reuses_the_same_pinned_parser(synthetic, monkeypatch):
+    root, document = synthetic
+    original = subject.parse_pinned_interpreter_descriptor
+    called = []
+    def tracked(*args):
+        called.append(True)
+        return original(*args)
+    monkeypatch.setattr(subject, "parse_pinned_interpreter_descriptor", tracked)
+    assert verify(root, document)["status"] == "VERIFIED"
+    assert called == [True]
+
+
+def test_pure_binding_validator_checks_selected_interpreter_without_tree_io(synthetic, monkeypatch):
+    root, document = synthetic
+    raw = encoded(document)
+    parsed = subject.parse_pinned_interpreter_descriptor(raw, digest(raw))
+    record = document["files"][0]
+    monkeypatch.setattr(subject.runtime, "_check_chain", lambda *_: pytest.fail("interpreter tree accessed"))
+    subject.validate_interpreter_descriptor_binding(root, root / record["path"], record["sha256"], parsed)
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        subject.validate_interpreter_descriptor_binding(root, root / record["path"], "0" * 64, parsed)
+
+
+@pytest.mark.parametrize("bad", ["CON", "nul.txt", "has:colon", "trailing.", "trailing ", "x" * 256])
+def test_pure_binding_segment_rules_are_platform_independent(bad):
+    with pytest.raises(ValueError):
+        subject._binding_segment(bad)
+    subject._binding_segment("x" * 255)
+    subject._binding_segment("valid-segment_1")
+
+
+def _windows_binding_path_of_length(length):
+    parts = ["a" * 255] * 128
+    parts[-1] = "a" * (255 - (32770 - length))
+    result = "C:\\" + "\\".join(parts)
+    assert len(result) == length
+    return result
+
+
+def test_pure_windows_binding_path_total_length_policy_boundary():
+    assert subject._binding_path(_windows_binding_path_of_length(32767))[0] == "windows"
+    with pytest.raises(ValueError):
+        subject._binding_path(_windows_binding_path_of_length(32768))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX path syntax requires a POSIX host")
+@pytest.mark.parametrize("bad", ["CON", "nul.txt", "has:colon", "trailing.", "trailing ", "x" * 256])
+def test_posix_verifier_refuses_invalid_root_before_tree_access(synthetic, tmp_path, monkeypatch, bad):
+    _, document = synthetic
+    raw = encoded(document)
+    monkeypatch.setattr(subject.runtime, "_check_chain", lambda *_: pytest.fail("interpreter tree accessed"))
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        subject.verify_interpreter_identity(enabled=True, root=tmp_path / bad, descriptor_bytes=raw,
+                                            expected_sha256=digest(raw))
+
+
+def test_explicit_interpreter_path_and_hash_bind_to_the_interpreter_role(synthetic):
+    root, document = synthetic
+    raw = encoded(document)
+    record = document["files"][0]
+    result = subject.verify_interpreter_identity(
+        enabled=True, root=root, descriptor_bytes=raw, expected_sha256=digest(raw),
+        expected_interpreter=root / record["path"], expected_interpreter_sha256=record["sha256"])
+    assert result["status"] == "VERIFIED"
+
+
+@pytest.mark.parametrize("mutation", ["missing_path", "missing_hash", "other_role", "other_same_bytes",
+                                      "outside", "wrong_hash", "invalid_hash"])
+def test_explicit_interpreter_binding_refuses_mismatched_pair(synthetic, tmp_path, mutation):
+    root, document = synthetic
+    record = document["files"][0]
+    expected_path, expected_hash = root / record["path"], record["sha256"]
+    if mutation == "missing_path":
+        expected_path = None
+    elif mutation == "missing_hash":
+        expected_hash = None
+    elif mutation == "other_role":
+        expected_path = root / document["files"][1]["path"]
+    elif mutation in ("other_same_bytes", "outside"):
+        expected_path = (root / "bin" / "other.exe") if mutation == "other_same_bytes" else tmp_path / "outside.exe"
+        expected_path.write_bytes((root / record["path"]).read_bytes())
+        if mutation == "other_same_bytes":
+            document["files"].append({"role": "dll", "path": "bin/other.exe",
+                                      "size": record["size"], "sha256": record["sha256"]})
+    elif mutation == "wrong_hash":
+        expected_hash = "0" * 64
+    else:
+        expected_hash = "not-a-sha256"
+    raw = encoded(document)
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        subject.verify_interpreter_identity(
+            enabled=True, root=root, descriptor_bytes=raw, expected_sha256=digest(raw),
+            expected_interpreter=expected_path, expected_interpreter_sha256=expected_hash)
+
+
+def test_disabled_does_not_touch_explicit_interpreter_binding():
+    class Poison:
+        def __getattribute__(self, name):
+            pytest.fail("OFF touched binding")
+    assert subject.verify_interpreter_identity(expected_interpreter=Poison(),
+                                               expected_interpreter_sha256=Poison()) == {"status": "OFF"}
+
+
+def test_wrong_pin_refuses_before_json_or_filesystem(synthetic, monkeypatch):
+    root, document = synthetic
+    monkeypatch.setattr(subject.json, "loads", lambda *_a, **_k: pytest.fail("parsed before pin"))
+    monkeypatch.setattr(subject.runtime, "_check_chain", lambda *_a: pytest.fail("opened before pin"))
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        verify(root, document, pin="0" * 64)
+
+
+@pytest.mark.parametrize("enabled", [None, 0, 1, "true"])
+def test_enabled_requires_exact_true(synthetic, enabled):
+    root, document = synthetic
+    raw = encoded(document)
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        subject.verify_interpreter_identity(enabled=enabled, root=root, descriptor_bytes=raw,
+                                            expected_sha256=digest(raw))
+
+
+def test_duplicate_json_and_oversized_descriptor_refuse_without_chained_data(synthetic):
+    root, _ = synthetic
+    for raw in (b'{"schema":"x","schema":"y","files":[]}', b" " * (subject.MAX_DESCRIPTOR_BYTES + 1)):
+        with pytest.raises(subject.IdentityRefused) as caught:
+            subject.verify_interpreter_identity(enabled=True, root=root, descriptor_bytes=raw,
+                                                expected_sha256=digest(raw))
+        assert caught.value.args == ("interpreter_identity_refused",)
+        assert caught.value.__cause__ is None and caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "case", "escape", "absolute", "missing_role",
+                                      "extra_role", "wrong_size", "wrong_hash", "unknown_key"])
+def test_bad_descriptor_refuses(synthetic, mutation):
+    root, document = synthetic
+    records = document["files"]
+    if mutation == "duplicate": records.append(dict(records[0]))
+    elif mutation == "case": records.append(dict(records[0], path="BIN/interpreter.exe"))
+    elif mutation == "escape": records[0]["path"] = "bin/../escape"
+    elif mutation == "absolute": records[0]["path"] = "/outside"
+    elif mutation == "missing_role": records[0]["role"] = "dll"
+    elif mutation == "extra_role": records[0]["role"] = "unknown"
+    elif mutation == "wrong_size": records[0]["size"] += 1
+    elif mutation == "wrong_hash": records[0]["sha256"] = "0" * 64
+    else: document["extra"] = "not-allowed"
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        verify(root, document)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "extra_directory", "changed"])
+def test_changed_tree_refuses(synthetic, mutation):
+    root, document = synthetic
+    path = root / "bin" / "interpreter.exe"
+    if mutation == "missing": path.unlink()
+    elif mutation == "extra": (root / "unexpected.txt").write_bytes(b"x")
+    elif mutation == "extra_directory": (root / "unexpected").mkdir()
+    else: path.write_bytes(b"x" * path.stat().st_size)
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        verify(root, document)
+
+
+def test_unknown_directory_is_not_walked(synthetic, monkeypatch):
+    root, document = synthetic
+    unknown = root / "unknown-subtree"
+    unknown.mkdir()
+    (unknown / "extra").write_bytes(b"synthetic")
+    original_scandir = os.scandir
+    scanned = []
+
+    def tracked_scandir(path):
+        scanned.append(os.fspath(path))
+        return original_scandir(path)
+
+    monkeypatch.setattr(subject.runtime.os, "scandir", tracked_scandir)
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        verify(root, document)
+    assert os.fspath(unknown) not in scanned
+
+
+@pytest.mark.parametrize("mutation", ["directory_to_file", "file_to_directory"])
+def test_known_path_with_wrong_type_refuses(synthetic, mutation):
+    root, document = synthetic
+    target = root / "bin" / "interpreter.exe"
+    target.unlink()
+    if mutation == "directory_to_file":
+        target.parent.rmdir()
+        target.parent.write_bytes(b"synthetic")
+    else:
+        target.mkdir()
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        verify(root, document)
+
+
+def test_extra_entry_appearing_after_hash_is_refused(synthetic, monkeypatch):
+    root, document = synthetic
+    original = subject.runtime._same_file
+    calls = []
+
+    def add_extra_after_hash(*args):
+        valid = original(*args)
+        calls.append(1)
+        if len(calls) == len(document["files"]):
+            (root / "late-extra").write_bytes(b"synthetic")
+        return valid
+
+    monkeypatch.setattr(subject.runtime, "_same_file", add_extra_after_hash)
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        verify(root, document)
+    assert len(calls) == len(document["files"])
+
+
+def test_scandir_failure_is_fixed_refusal_without_context(synthetic, monkeypatch):
+    root, document = synthetic
+
+    def refuse(_path):
+        raise PermissionError("synthetic private detail")
+
+    monkeypatch.setattr(subject.os, "scandir", refuse)
+    with pytest.raises(subject.IdentityRefused) as caught:
+        verify(root, document)
+    assert caught.value.args == ("interpreter_identity_refused",)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+
+
+def test_observed_opened_identity_change_refuses(synthetic, monkeypatch):
+    root, document = synthetic
+    monkeypatch.setattr(subject.runtime, "_same_file", lambda *_: False)
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        verify(root, document)
+
+
+def test_named_stream_refusal_is_not_suppressed(synthetic, monkeypatch):
+    root, document = synthetic
+    def refuse(_path):
+        raise ValueError("private synthetic detail")
+    monkeypatch.setattr(subject.runtime, "_check_no_named_streams", refuse)
+    with pytest.raises(subject.IdentityRefused) as caught:
+        verify(root, document)
+    assert caught.value.args == ("interpreter_identity_refused",)
+    assert caught.value.__context__ is None
+
+
+def test_symlink_or_reparse_is_refused(synthetic, tmp_path):
+    root, document = synthetic
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"outside")
+    try:
+        os.symlink(outside, root / "unexpected-link")
+    except (OSError, NotImplementedError):
+        pytest.skip("synthetic symlink creation unavailable")
+    with pytest.raises(subject.IdentityRefused, match="^interpreter_identity_refused$"):
+        verify(root, document)

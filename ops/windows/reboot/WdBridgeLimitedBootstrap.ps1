@@ -140,7 +140,10 @@ function Get-WdBridgeReconcileVerdict {
         }
         else {
             foreach ($action in @($text.Substring($at + 4) -split '; ')) {
-                if ($action -cmatch '^CONFLICT\s') { $reasons.Add('conflict: ' + $action) }
+                if ($action -ceq 'WARN Tools shared descriptor is not attested by existing readiness') {
+                    $reasons.Add('shared_descriptor_unattested')
+                }
+                elseif ($action -cmatch '^CONFLICT\s') { $reasons.Add('conflict: ' + $action) }
                 elseif ($action -cmatch '^(DISABLED|STOPPED)\s') { $reasons.Add('a scheduled task was mutated: ' + $action) }
                 elseif ($Mode -ceq 'dry-run' -and $action -cmatch '^WOULD-') { $reasons.Add('still to reconcile: ' + $action) }
                 elseif ($action -cmatch '^(WARN|ALERT)\s') { $notes.Add($action) }
@@ -180,6 +183,7 @@ function Test-WdBridgeToolsReadinessPinned {
         [AllowNull()] [object] $Record,
         [AllowEmptyString()] [string] $Generation = '',
         [AllowEmptyString()] [string] $ThreadId = '',
+        [AllowEmptyString()] [string] $ExpectedSharedDescriptorSha256 = '',
         [Parameter(Mandatory)] [scriptblock] $GetProcess
     )
 
@@ -189,7 +193,7 @@ function Test-WdBridgeToolsReadinessPinned {
     foreach ($property in @($Record.PSObject.Properties)) {
         if ($property.Name -cin @('schema', 'status', 'readiness_scope', 'conversation_surface', 'agent', 'generation',
                 'thread_id', 'pid', 'process_start_utc', 'native_pid', 'native_parent_pid', 'native_process_start_utc',
-                'ready_at_utc', 'task_completion_verified')) {
+                'ready_at_utc', 'task_completion_verified', 'q4_shared_descriptor_sha256')) {
             $field[$property.Name] = $property.Value
         }
     }
@@ -201,6 +205,10 @@ function Test-WdBridgeToolsReadinessPinned {
     foreach ($name in @($expected.get_Keys())) {
         if ($field[$name] -isnot [string] -or $field[$name].Length -eq 0 -or $field[$name] -cne $expected[$name]) { return $false }
     }
+    if ($ExpectedSharedDescriptorSha256 -and
+        ($ExpectedSharedDescriptorSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+         $field['q4_shared_descriptor_sha256'] -isnot [string] -or
+         $field['q4_shared_descriptor_sha256'] -cne $ExpectedSharedDescriptorSha256)) { return $false }
     if ($field['task_completion_verified'] -isnot [bool] -or $field['task_completion_verified']) { return $false }
     foreach ($name in @('pid', 'native_pid', 'native_parent_pid')) {
         if (($field[$name] -isnot [int] -and $field[$name] -isnot [long]) -or $field[$name] -lt 1 -or $field[$name] -gt [int]::MaxValue) {
@@ -222,6 +230,18 @@ function Test-WdBridgeToolsReadinessPinned {
         $consumer['created_utc'] -isnot [DateTimeOffset] -or $native['created_utc'] -isnot [DateTimeOffset]) {
         return $false
     }
+    # CIM CreationDate exposes microseconds; Process.StartTime retains 100 ns
+    # ticks. Compare UTC ticks truncated to their common microsecond precision.
+    # A timestamp, even with PID and generation, is not strong authentication.
+    # The legacy OFF route retains its existing one-second tolerance.
+    if ($ExpectedSharedDescriptorSha256) {
+        $consumerTicks = $consumer['created_utc'].UtcDateTime.Ticks
+        $recordConsumerTicks = $consumerAt.UtcDateTime.Ticks
+        $nativeTicks = $native['created_utc'].UtcDateTime.Ticks
+        $recordNativeTicks = $nativeAt.UtcDateTime.Ticks
+        if (($consumerTicks - ($consumerTicks % 10)) -ne ($recordConsumerTicks - ($recordConsumerTicks % 10)) -or
+            ($nativeTicks - ($nativeTicks % 10)) -ne ($recordNativeTicks - ($recordNativeTicks % 10))) { return $false }
+    }
     return (
         [int]$consumer['process_id'] -eq [int]$field['pid'] -and
         [Math]::Abs(($consumer['created_utc'] - $consumerAt).TotalSeconds) -le 1 -and
@@ -239,6 +259,7 @@ function Invoke-WdBridgeLimitedBootstrap {
         [Parameter(Mandatory)] [scriptblock] $ReadToolsReadiness,
         [Parameter(Mandatory)] [scriptblock] $GetProcess,
         [Parameter(Mandatory)] [scriptblock] $Sleep,
+        [AllowEmptyString()] [string] $ExpectedSharedDescriptorSha256 = '',
         [ValidateRange(1, 900)] [int] $ToolsWaitSeconds = 180
     )
 
@@ -285,19 +306,23 @@ function Invoke-WdBridgeLimitedBootstrap {
     for ($second = 0; $second -le $ToolsWaitSeconds; $second++) {
         $record = & $ReadToolsReadiness
         if (Test-WdBridgeToolsReadinessPinned -Record $record -Generation ([string]$inputs['ExpectedGeneration']) `
-                -ThreadId ([string]$inputs['ToolsThreadId']) -GetProcess $GetProcess) {
+                -ThreadId ([string]$inputs['ToolsThreadId']) -GetProcess $GetProcess `
+                -ExpectedSharedDescriptorSha256 $ExpectedSharedDescriptorSha256) {
             $pinned = $true
             break
         }
         if ($second -lt $ToolsWaitSeconds) { & $Sleep 1 }
     }
     if (-not $pinned) {
-        $result['reasons'] = @('no Tools readiness record bound the pinned generation and thread to the live consumer and native codex.exe')
+        $result['reasons'] = if ($ExpectedSharedDescriptorSha256) { @('shared_descriptor_unattested') } else {
+            @('no Tools readiness record bound the pinned generation and thread to the live consumer and native codex.exe')
+        }
         return [pscustomobject]$result
     }
     $binding = [ordered]@{}
     foreach ($property in @($record.PSObject.Properties)) {
         if ($property.Name -cin @('schema', 'generation', 'thread_id', 'pid', 'native_pid')) { $binding[$property.Name] = $property.Value }
+        elseif ($property.Name -ceq 'q4_shared_descriptor_sha256' -and $ExpectedSharedDescriptorSha256) { $binding[$property.Name] = $property.Value }
         elseif ($property.Name -cin @('process_start_utc', 'native_process_start_utc', 'ready_at_utc')) {
             $binding[$property.Name] = (ConvertTo-WdBridgeUtc $property.Value).ToString('o', [Globalization.CultureInfo]::InvariantCulture)
         }
@@ -418,7 +443,9 @@ function Get-WdBridgeSupervisorArguments {
     param(
         [Parameter(Mandatory)] [string] $SupervisorScript,
         [Parameter(Mandatory)] [string] $ConfigPath,
-        [Parameter(Mandatory)] [bool] $Apply
+        [Parameter(Mandatory)] [bool] $Apply,
+        [string] $Q4SharedDescriptorPath = '',
+        [string] $Q4SharedDescriptorSha256 = ''
     )
 
     # -BridgeWorkersOnly on BOTH runs: the supervisor then only verifies the merge-driver HOLD and
@@ -427,6 +454,13 @@ function Get-WdBridgeSupervisorArguments {
     $arguments = @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $SupervisorScript)
     if ($Apply) { $arguments += '-Apply' }
     $arguments += @('-BridgeWorkersOnly', '-ConfigPath', $ConfigPath)
+    if ($Q4SharedDescriptorPath -or $Q4SharedDescriptorSha256) {
+        if (-not $Q4SharedDescriptorPath -or $Q4SharedDescriptorSha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'q4_shared_reference_refused'
+        }
+        $arguments += @('-Q4SharedDescriptorPath', $Q4SharedDescriptorPath,
+            '-Q4SharedDescriptorSha256', $Q4SharedDescriptorSha256)
+    }
     foreach ($argument in $arguments) {
         if ($argument.Length -eq 0 -or $argument.IndexOf('"') -ge 0 -or
             $argument.EndsWith([string][IO.Path]::DirectorySeparatorChar)) {
@@ -442,13 +476,16 @@ function Invoke-WdBridgeSupervisorOnce {
         [Parameter(Mandatory)] [string] $SupervisorScript,
         [Parameter(Mandatory)] [string] $ConfigPath,
         [Parameter(Mandatory)] [bool] $Apply,
+        [string] $Q4SharedDescriptorPath = '',
+        [string] $Q4SharedDescriptorSha256 = '',
         # The reconcile's bound. Past it the outcome is UNKNOWN: the run is reported as timed_out and
         # its process is left running, because its partial launches are unknown and stopping it could
         # strand a half-started worker.
         [ValidateRange(1, 3600)] [int] $TimeoutSeconds = 900
     )
 
-    $arguments = @(Get-WdBridgeSupervisorArguments -SupervisorScript $SupervisorScript -ConfigPath $ConfigPath -Apply $Apply)
+    $arguments = @(Get-WdBridgeSupervisorArguments -SupervisorScript $SupervisorScript -ConfigPath $ConfigPath -Apply $Apply `
+        -Q4SharedDescriptorPath $Q4SharedDescriptorPath -Q4SharedDescriptorSha256 $Q4SharedDescriptorSha256)
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $HostPath
     $info.Arguments = (@($arguments | ForEach-Object { '"' + $_ + '"' }) -join ' ')
@@ -490,7 +527,9 @@ function Invoke-WdBridgeWrapperBootstrap {
         [Parameter(Mandatory)] [string] $BundleRoot,
         [Parameter(Mandatory)] [string] $FleetManifestPath,
         [Parameter(Mandatory)] [string] $SupervisorScript,
-        [Parameter(Mandatory)] [string] $HostPath
+        [Parameter(Mandatory)] [string] $HostPath,
+        [string] $Q4SharedDescriptorPath = '',
+        [string] $Q4SharedDescriptorSha256 = ''
     )
 
     # The fleet wrapper's real ports. SupervisorScript is the installed wd_supervisor.ps1 launcher
@@ -511,10 +550,12 @@ function Invoke-WdBridgeWrapperBootstrap {
         -RunSupervisorOnce {
             param([bool] $ApplyRun)
             Invoke-WdBridgeSupervisorOnce -HostPath $HostPath -SupervisorScript $SupervisorScript `
-                -ConfigPath $wdbConfigPath -Apply $ApplyRun
+                -ConfigPath $wdbConfigPath -Apply $ApplyRun -Q4SharedDescriptorPath $Q4SharedDescriptorPath `
+                -Q4SharedDescriptorSha256 $Q4SharedDescriptorSha256
         } `
         -ReadToolsReadiness { Read-WdBridgeToolsReadiness -Path ([string]$wdbTools.readiness_path) } `
         -GetProcess { param([int] $ProcessId) Get-WdBridgeProcessFacts -ProcessId $ProcessId } `
         -Sleep { param([int] $Seconds) Start-Sleep -Seconds $Seconds } `
+        -ExpectedSharedDescriptorSha256 $Q4SharedDescriptorSha256 `
         -ToolsWaitSeconds ([int]$wdbTools.wait_seconds)
 }

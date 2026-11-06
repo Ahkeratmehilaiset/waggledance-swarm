@@ -28,7 +28,7 @@ class RecoveryRefused(ValueError):
 
 
 class RecoveryOutcomeUnknown(RuntimeError):
-    """A recovery write began; do not automatically retry."""
+    """Evidence or recovery outcome is uncertain; do not automatically retry."""
 
 
 class RecoveryInterrupted(BaseException):
@@ -55,7 +55,8 @@ def _verify_job_attestation(private, attempt, config_sha, intent_sha, marker_raw
                 or receipt['intent_sha256'] != intent_sha or receipt['marker_sha256'] != update._sha(marker_raw)
                 or receipt['job_helper_sha256'] != helper_sha or receipt['cleanup'] != 'confirmed'
                 or receipt['child_outcome'] not in ('completed', 'timeout', 'refused')
-                or (receipt['child_outcome'] == 'completed' and type(receipt['exit_code']) is not int)
+                or (receipt['child_outcome'] == 'completed'
+                    and (type(receipt['exit_code']) is not int or receipt['exit_code'] == 0))
                 or (receipt['child_outcome'] != 'completed' and receipt['exit_code'] is not None)):
             raise ValueError()
         raw_reservation = live._read(private / ('q4-live-runner-reservation-' + attempt + '.json'),
@@ -142,9 +143,66 @@ def _prior_selector(config, baseline, previous, current, attempt, private, confi
     return None
 
 
+def _recover_closed_job(*, private, root, config, baseline, descriptor, binding, inputs, public,
+                        marker_path, marker_info, marker_raw, marker, route, plan, policy, roster, tasks,
+                        attempt, config_sha, job_sha, target):
+    """Recover only a completed, closed fence; a host receipt is not writer authentication.
+
+    Partial publication or marker release remains UNKNOWN and is never auto-retried.
+    """
+    manifest = caller._json(update._read(str(Path(descriptor['bundle_root']) / 'deployment-manifest.json'),
+                                         caller.MAX_MANIFEST, config['manifest_sha256']))
+    helper_sha = manifest['files']['WdQ4ProcessJob.ps1']
+    update._read(str(Path(descriptor['bundle_root']) / 'WdQ4ProcessJob.ps1'), 1024 * 1024, helper_sha)
+    reservation = _verify_job_attestation(private, attempt, config_sha, marker['intent_sha256'],
+                                          marker_raw, job_sha, helper_sha)
+    marker_bytes = update._encode({'schema': 'wd.q4-runner-reservation.v1',
+                                   'attempt': attempt, 'token': reservation['token']})
+    markers = (root / update.runner._PENDING, private / update.runner._PENDING)
+    infos = tuple(path.lstat() for path in markers)
+    def verify(*, remove=False):
+        for path, info in zip(markers, infos):
+            update.runner._verify_own(path, marker_bytes, info)
+        update.runner._verify_own(marker_path, marker_raw, marker_info)
+        with private_state.locked_state(private, root, enabled=True) as state:
+            with private_state._checkpoint_lock(root, 0.2):
+                if (checkpoint._active_fence(root) is not None
+                        or os.path.lexists(checkpoint._fence_record(root, target, 'not_landed'))
+                        or checkpoint._read(checkpoint._fence_record(root, target, 'landed'),
+                                            max_bytes=checkpoint._MAX_FENCE_BYTES)
+                           != checkpoint._fence_bytes(marker['previous_pointer_sha256'], target)):
+                    raise ValueError()
+                pointer, prefix = checkpoint.read_verified_prefix_pointer(root, tasks, expected_pointer_sha256=target,
+                    policy_bytes=policy, policy_sha256=route['policy_sha256'], roster_bytes=roster,
+                    roster_sha256=route['roster_sha256'], expected_public_policy_sha256=route['public_policy_sha256'])
+                if pointer['generation'] != plan['generation']:
+                    raise ValueError()
+                state.require(target, prefix)
+                if remove:
+                    for path, info in zip(markers, infos):
+                        update.runner._verify_own(path, marker_bytes, info)
+                        os.unlink(path)
+                    update.runner._verify_own(marker_path, marker_raw, marker_info)
+                    os.unlink(marker_path)
+    verify()
+    selected = _prior_selector(config, baseline, marker['previous_pointer_sha256'], target,
+                               attempt, private, config_sha, job_sha)
+    if selected is None:
+        generation = _recovery_generation(attempt, target, secrets.token_hex(32))
+        selected = update._publish(config, baseline, root, public, {'pointer_sha256': target}, generation=generation)
+    record = update._encode({'schema': 'wd.q4-live-job-reconciled.v1', 'attempt': attempt,
+                             'config_sha256': config_sha, 'job_receipt_sha256': job_sha,
+                             'intent_sha256': marker['intent_sha256'], 'pointer_sha256': target, 'result': selected})
+    record_path = private / ('q4-live-job-reconciled-' + attempt + '.json')
+    record_info = update.runner._create(record_path, record)
+    update.runner._verify_own(record_path, record, record_info)
+    verify(remove=True)
+    return {**selected, 'recovery_receipt_sha256': update._sha(record), 'receipt_file': record_path.name}
+
+
 def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
             expected_attempt=None, expected_progress_sha256=None,
-            expected_runner_receipt_sha256=None, expected_pointer_sha256=None):
+            expected_runner_receipt_sha256=None, expected_pointer_sha256=None, expected_job_receipt_sha256=None):
     if enabled is False:
         return {'status': 'OFF'}
     entered = False
@@ -153,7 +211,14 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
         if (enabled is not True or any(type(item) is not str or not update._HEX.fullmatch(item)
                 for item in (expected_config_sha256, expected_attempt))):
             raise ValueError()
-        if expected_progress_sha256 is None:
+        job_mode = expected_job_receipt_sha256 is not None
+        if job_mode:
+            if (expected_progress_sha256 is not None or expected_runner_receipt_sha256 is not None
+                    or any(type(x) is not str or not update._HEX.fullmatch(x)
+                           for x in (expected_job_receipt_sha256, expected_pointer_sha256))):
+                raise RecoveryOutcomeUnknown('recovery_outcome_unknown')
+            reconstruct = False
+        elif expected_progress_sha256 is None:
             if any(type(item) is not str or not update._HEX.fullmatch(item)
                    for item in (expected_runner_receipt_sha256, expected_pointer_sha256)):
                 raise ValueError()
@@ -216,6 +281,15 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
                     or route['anchor_sha256'] != update._sha(update._encode(anchor))
                     or plan['pins']['anchor_sha256'] != route['anchor_sha256']):
                 raise ValueError()
+            if job_mode:
+                entered = True  # all E2 uncertainty is reported UNKNOWN, including missing evidence
+                if expected_pointer_sha256 == marker['previous_pointer_sha256']:
+                    raise ValueError()
+                return _recover_closed_job(private=private, root=root, config=config, baseline=baseline,
+                    descriptor=descriptor, binding=binding, inputs=inputs, public=public,
+                    marker_path=marker_path, marker_info=marker_info, marker_raw=marker_raw, marker=marker,
+                    route=route, plan=plan, policy=policy, roster=roster, tasks=tasks, attempt=expected_attempt,
+                    config_sha=expected_config_sha256, job_sha=expected_job_receipt_sha256, target=expected_pointer_sha256)
             progress_path = private / ('q4-live-update-progress-' + expected_attempt + '.json')
             if reconstruct:
                 if os.path.lexists(progress_path):

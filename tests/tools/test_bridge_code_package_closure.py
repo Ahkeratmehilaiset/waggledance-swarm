@@ -60,6 +60,12 @@ def test_public_publisher_is_in_bundle_python_files():
     assert "tools/wd_mind_public_publish_cli.py" in _packaged_python()
 
 
+def test_on_demand_capacity_reader_is_packaged_as_an_explicit_entrypoint():
+    definition = _definition()
+    assert "sandbox/mind/capture/capacity_read.py" in _packaged_python()
+    assert definition["python_entrypoints"]["mind_capacity_read"] == "sandbox/mind/capture/capacity_read.py"
+
+
 @pytest.mark.parametrize("path", [
     "tools/wd_q4_descriptor_cli.py",
     "tools/wd_q4_descriptor_materializer.py",
@@ -1237,12 +1243,13 @@ def _assert_shadow_release_delivery(definition):
     # Q4 files are delivery-only too: the existing CLI and smoke boundaries remain unchanged.
     assert Q4_READONLY_FILES <= sandbox_files, "q4_file_drop"
     assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES) | Q4_READONLY_FILES | {
+        "sandbox/mind/capture/capacity_read.py",
         "sandbox/mind/step2/prefix_private_state.py",
         "sandbox/mind/step2/shared_prefix_public_producer.py",
         "sandbox/mind/step2/shared_index_preflight.py",
     }, "deferred_sandbox_file_published"
     sandbox_entrypoints = {path for path in published if path.startswith("sandbox/")}
-    assert sandbox_entrypoints <= set(SHADOW_RELEASE_CLI.values()), "deferred_shadow_entrypoint"
+    assert sandbox_entrypoints <= set(SHADOW_RELEASE_CLI.values()) | {"sandbox/mind/capture/capacity_read.py"}, "deferred_shadow_entrypoint"
     sandbox_smoke = {name for name in definition["import_smoke"]["package_modules"]
                      if name.startswith("sandbox.")}
     assert sandbox_smoke <= set(SHADOW_RELEASE_MODULES), "deferred_shadow_smoke"

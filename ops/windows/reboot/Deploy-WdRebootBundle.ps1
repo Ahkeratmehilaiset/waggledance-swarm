@@ -1309,6 +1309,7 @@ foreach ($required in @(
         'Invoke-WdQ4GenesisWorker.ps1',
         'Invoke-WdQ4Continuation.ps1',
         'Invoke-WdQ4ContinuationWorker.ps1',
+        'Invoke-WdQ4ContinuationOrchestrator.ps1',
         'Invoke-WdQ4ProvisionGuard.ps1',
         'Invoke-WdMindPublicStatus.ps1',
         'Invoke-WdQ4Query.ps1',

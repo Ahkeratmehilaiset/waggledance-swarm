@@ -153,7 +153,14 @@ def case(tmp_path, monkeypatch):
         monkeypatch.delenv(key, raising=False)
     for key, value in environment.items():
         monkeypatch.setenv(key, value)
+    # Use the real adapter exception types even though the call is synthetic.
+    spec = importlib.util.spec_from_file_location(
+        "synthetic_real_caller_exceptions", ROOT / "tools/wd_q4_lane_caller_adapter.py")
+    real_adapter = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(real_adapter)
     adapter = types.ModuleType("tools.wd_q4_lane_caller_adapter")
+    adapter.CallerCleanupUnknown = real_adapter.CallerCleanupUnknown
+    adapter.CallerRefused = real_adapter.CallerRefused
     calls = []
     outcome = {}
 
@@ -193,7 +200,7 @@ def case(tmp_path, monkeypatch):
     query = canon({"situation": QUERY_CANARY, "time": "2026-01-01T00:00:00Z"})
     return {"files": files, "descriptor": descriptor, "manifest": manifest, "env": environment,
             "calls": calls, "outcome": outcome, "query": query,
-            "worktree": worktree, "worktrees": worktrees, "cli": load_cli()}
+            "worktree": worktree, "worktrees": worktrees, "cli": load_cli(), "adapter": adapter}
 
 
 def invoke(case, monkeypatch, raw=None, argv=None):
@@ -479,4 +486,20 @@ def test_token_secrecy_remains_required_even_for_validated_public_output(case, m
     legacy_baseline(case, monkeypatch)
     case["outcome"].update(validated=True, stored_text=TOKEN_CANARY)
     assert_refused(invoke(case, monkeypatch), capsys)
+    assert len(case["calls"]) == 1
+
+
+@pytest.mark.parametrize("lane", LANES, ids=LANES)
+@pytest.mark.parametrize("exception_name,expected", [
+    ("CallerCleanupUnknown", 3), ("CallerRefused", 2),
+], ids=["cleanup-unknown", "ordinary-refusal"])
+def test_adapter_precheck_exception_maps_to_cleanup_or_refusal_without_leaks(
+        case, monkeypatch, capsys, lane, exception_name, expected):
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", lane)
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT_UUID", UUIDS[lane])
+    monkeypatch.chdir(case["worktrees"][lane])
+    # This synthetic detail must never be rendered, including on stderr.
+    case["outcome"]["exception"] = getattr(case["adapter"], exception_name)(
+        "synthetic-exception-detail " + QUERY_CANARY + " " + TOKEN_CANARY)
+    assert_refused(invoke(case, monkeypatch), capsys, expected)
     assert len(case["calls"]) == 1

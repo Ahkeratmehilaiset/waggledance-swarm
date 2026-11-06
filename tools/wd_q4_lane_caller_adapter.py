@@ -10,26 +10,49 @@ What this module proves and what it does not:
 
 * ``lane_binding = "DECLARED_CONSISTENT"`` means only that the identity document hashes to the
   separately supplied pin, names this process id, names a lane that is in the pinned roster with
-  the roster's uuid, places its cwd under its declared worktree (string prefix on path parts with
-  ``.`` and ``..`` parts refused, no filesystem resolution: junctions and reparse points are NOT
-  resolved here), carries a
-  64-hex owner-token digest (presence and shape only: no independently published digest exists
-  today to compare it with), and pins the same descriptor whose pins equal the chain inputs.
+  the roster's uuid, declares the worktree that the pinned fleet document records for that lane
+  (string equality on path parts, ``.`` and ``..`` parts refused, no filesystem resolution:
+  junctions and reparse points are NOT resolved here; a fleet lane without a string worktree
+  fails closed), declares the cwd that ``os.getcwd()`` reports for this process (path-part
+  equality) under that worktree, carries a 64-hex owner-token digest (presence and shape only: no
+  independently published digest exists today to compare it with), and pins the same descriptor
+  whose pins equal the chain inputs.
+* Anchors are caller-provided: the fleet document, the shared descriptor and every pin arrive as
+  bytes plus a sha256 from the caller. The module checks their mutual consistency only; it cannot
+  verify that they are the installed deployment artifacts, and it never reads them from disk.
 * ``lane_authentication`` is always ``"UNKNOWN"``. All lanes run as one Windows user; a malicious
   same-user process can present a consistent identity document. Nothing here protects against it.
 * The answer is the existing chain's validated document, re-checked here for the declared lane,
   the descriptor's expected binding and a closed shape; any other output is discarded as REFUSED.
-* ``cleanup = "chain_confirmed"`` repeats the existing chain's own confirmation (the fixed transport
-  drains its Job within its cleanup budget or raises a cleanup-unknown error). There is no outer
-  whole-call watchdog here. The process quarantine is pessimistic: it is set before every chain
-  call and cleared only after a confirmed outcome (validated, refused, timeout or a plain refusal),
-  so an interruption anywhere in the call, a cleanup-unknown error from any stage or any other
+* ``cleanup = "chain_confirmed"`` is reported only when the chain returned a document (validated or
+  refused by content): the fixed transport returns only after its cleanup block drained the Job within
+  its budget, otherwise it raises a cleanup-unknown error. A plain ``TimeoutError`` or a generic
+  refusal (``inner_status = "timeout"`` / ``"session_refused"``) carries no positive cleanup signal:
+  it may originate before any launch, after the transport returned, or from a statement of the lower
+  layers that lies outside their protected cleanup operations (review 2026-11-06: such a statement
+  can skip termination and the cleanup-unknown mapping, and unexpected exceptions are mapped to an
+  ordinary refusal). This caller cannot tell those origins apart, so both are reported
+  ``status = "UNKNOWN"``, ``cleanup = "unknown"`` and leave the process quarantine set, exactly like
+  an explicit cleanup-unknown error. There is no outer whole-call watchdog here. The process
+  quarantine is pessimistic: it is set before every chain call and cleared only after a chain
+  document was returned (validated or refused by content), so a timeout, a generic refusal, an
+  interruption anywhere in the call, a cleanup-unknown error from any stage or any other
   BaseException leaves it set; calls are serialized by a process lock (a concurrent call refuses
   ``caller_busy``). There is no persistent cross-process marker.
+* Path comparison folds ASCII letters only and refuses empty path parts; see ``_parts``. The fleet worktree
+  lookup covers ``lanes`` and the ``tools_supervisor`` entry (the tools lane lives there in the real manifest).
+* A cleanup-unknown error raised before the chain call (roster or descriptor stage) is reported as
+  ``CallerCleanupUnknown("caller_cleanup_unknown")`` (a ``RuntimeError``, never a ``CallerRefused``), with the
+  quarantine set and an attestation lease retained in ``_HOLD``; a CLI maps it to its cleanup-unknown exit code.
+  No persistent cross-process proof is claimed for either.
 * Default off reads no argument. Enabled, it reads no file, no environment and no clock, starts no
   process by itself and writes nothing; the chain below starts the pinned fixed peer.
 * No query text, token, path or exception detail is placed in the result or in any exception.
-  Traceback frame locals of the chain are outside this boundary.
+  Pre-check exceptions are swallowed and released before the fixed ``CallerRefused`` is raised
+  (no ``__cause__`` / ``__context__``), so their frame locals (identity and descriptor bytes) do
+  not travel with it; while a pre-check exception is in flight its traceback frame locals are
+  visible to the interpreter as usual, and traceback frame locals of the chain are outside this
+  boundary.
 """
 
 import hashlib
@@ -76,12 +99,20 @@ _RESULT_KEYS = ("schema", "status", "lane", "lane_binding", "lane_authentication
                 "result_count", "answer", "answer_sha256", "identity_sha256", "descriptor_sha256", "call_id")
 
 _QUARANTINED = False  # Pessimistic: set before every chain call, cleared only after a confirmed outcome.
+_process_cwd = os.getcwd  # The actual process cwd the identity document must declare (seam for tests only).
 _LOCK = threading.Lock()  # One chain call at a time in this process; a concurrent call refuses caller_busy.
 _HOLD = []  # Attestation leases retained after an unconfirmed close, for explicit handling only.
 
 
 class CallerRefused(ValueError):
     """Fixed refusal: ``caller_refused``, ``caller_quarantined`` or ``caller_busy``; no input, path or detail inside."""
+
+
+class CallerCleanupUnknown(RuntimeError):
+    """Pre-check cleanup UNKNOWN: an attestation or transport cleanup-unknown error was raised before the chain
+    call (roster or descriptor stage). Fixed message ``caller_cleanup_unknown``, no attributes, no handle, lease,
+    query or token inside; the process quarantine is set and an attestation lease, if any, is retained in
+    ``_HOLD``. Deliberately not a ``CallerRefused`` so a CLI can map it to its cleanup-unknown exit code."""
 
 
 def _refuse():
@@ -112,17 +143,42 @@ def _parse(raw, expected_sha256, keys, schema):
     return document
 
 
+_ASCII_FOLD = {ord(letter): ord(letter.lower()) for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"}
+
+
 def _parts(text):
+    # Only ASCII letters fold: str.casefold maps KELVIN SIGN, LONG S or SHARP S onto ASCII letters and
+    # would equate distinct NTFS directories. Empty parts (UNC prefix, doubled separator, drive-less
+    # root) are refused rather than dropped; one trailing separator is tolerated.
     if type(text) is not str or not text or any(ord(c) < 32 or ord(c) == 127 for c in text):
         _refuse()
-    parts = tuple(part.casefold() for part in text.replace("/", "\\").rstrip("\\").split("\\") if part != "")
-    if any(part in (".", "..") for part in parts):
+    parts = tuple(part.translate(_ASCII_FOLD) for part in text.replace("/", "\\").rstrip("\\").split("\\"))
+    if any(part in ("", ".", "..") for part in parts):
         _refuse()
     return parts
 
 
+def _fleet_worktree(fleet_bytes, agent):
+    """The worktree the pinned fleet document records for ``agent`` (path parts); fails closed when absent.
+
+    The lookup covers the four projection lanes under ``lanes`` and the tools lane under ``tools_supervisor``
+    (where the real manifest keeps ``codex-tools-1`` with its worktree). Exactly one entry across both may name
+    the agent, and it must carry a string worktree; a missing or non-dict ``tools_supervisor``, a missing,
+    non-string or empty worktree, or an agent listed twice is a refusal.
+    """
+    document = json.loads(fleet_bytes.decode("utf-8", "strict"), object_pairs_hook=_unique, parse_constant=_constant)
+    lanes = document.get("lanes") if type(document) is dict else None
+    supervisor = document.get("tools_supervisor") if type(document) is dict else None
+    if type(lanes) is not list or type(supervisor) is not dict:
+        _refuse()
+    entries = [entry for entry in [*lanes, supervisor] if type(entry) is dict and entry.get("agent") == agent]
+    if len(entries) != 1 or type(entries[0].get("worktree")) is not str:
+        _refuse()
+    return _parts(entries[0]["worktree"])
+
+
 def _consistent_identity(identity, descriptor_sha256, fleet_bytes, expected_fleet_sha256):
-    """Declared consistency of the identity document with this process, the roster and the descriptor pin."""
+    """Declared consistency of the identity document with this process, the pinned fleet and the descriptor pin."""
     if (identity["agent_uuid"] is None or type(identity["agent_uuid"]) is not str
             or _UUID.fullmatch(identity["agent_uuid"]) is None
             or type(identity["caller_pid"]) is not int or identity["caller_pid"] != os.getpid()
@@ -133,13 +189,15 @@ def _consistent_identity(identity, descriptor_sha256, fleet_bytes, expected_flee
             or type(identity["agent"]) is not str):
         _refuse()
     worktree, cwd = _parts(identity["worktree"]), _parts(identity["cwd"])
-    if not worktree or cwd[:len(worktree)] != worktree:
+    if not worktree or cwd[:len(worktree)] != worktree or cwd != _parts(_process_cwd()):
         _refuse()
     snapshot, _digest = roster.build_roster_snapshot(fleet_bytes, expected_fleet_sha256, enabled=True)
     members = json.loads(snapshot.decode("ascii"))
     entries = [*members["lanes"], members["tools_supervisor"]]
     expected = [entry["agent_uuid"] for entry in entries if entry["agent"] == identity["agent"]]
     if len(expected) != 1 or not hmac.compare_digest(expected[0], identity["agent_uuid"]):
+        _refuse()
+    if worktree != _fleet_worktree(fleet_bytes, identity["agent"]):
         _refuse()
     return identity["agent"]
 
@@ -244,7 +302,10 @@ def _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_b
                                      inputs["expected_fleet_sha256"])
         binding = _consistent_descriptor(descriptor, agent, inputs)
         chain_inputs = dict(inputs)
-    except (AttestationCleanupUnknown, TransportCleanupUnknown):
+    except AttestationCleanupUnknown as exc:
+        agent, unknown_cleanup = None, True
+        _HOLD.append(exc.lease)
+    except TransportCleanupUnknown:
         agent, unknown_cleanup = None, True
     except Exception:
         agent = None
@@ -254,6 +315,7 @@ def _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_b
         del identity_bytes, descriptor_bytes, situation, time, inputs, chain_inputs
         if unknown_cleanup:
             _QUARANTINED = True
+            raise CallerCleanupUnknown("caller_cleanup_unknown") from None
         raise CallerRefused("caller_refused")
     result = {"schema": SCHEMA, "status": "REFUSED", "lane": agent, "lane_binding": "DECLARED_CONSISTENT",
               "lane_authentication": "UNKNOWN", "cleanup": "chain_confirmed", "inner_status": "session_refused",
@@ -278,15 +340,13 @@ def _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_b
     except TransportCleanupUnknown:
         result["status"], result["cleanup"], result["inner_status"] = "UNKNOWN", "unknown", "transport_cleanup_unknown"
     except TimeoutError:
-        result["status"], result["inner_status"] = "TIMEOUT", "timeout"
-        confirmed = True
+        result["status"], result["cleanup"], result["inner_status"] = "UNKNOWN", "unknown", "timeout"
     except KeyboardInterrupt:
         signal = KeyboardInterrupt()
     except SystemExit as exc:
         signal = SystemExit(exc.code if exc.code is None or type(exc.code) is int else 1)
     except Exception:
-        result["inner_status"] = "session_refused"
-        confirmed = True
+        result["status"], result["cleanup"], result["inner_status"] = "UNKNOWN", "unknown", "session_refused"
     finally:
         answer = validated = None
         del situation, time, inputs, chain_inputs, identity_bytes, descriptor_bytes

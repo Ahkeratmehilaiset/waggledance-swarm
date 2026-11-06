@@ -498,6 +498,13 @@ _CONTAINED = []  # NUL descriptors and sinks kept alive for the whole child proc
 _BUNDLE_SCHEMA = "wd.q4-fixed-snapshot-bundle.v1"
 _BUNDLE_KEYS = frozenset({"schema", "pointer", "policy", "roster", "public_policy", "active_artifacts", "history",
                           "cells"})
+# Query-plus-answer binding (v5, RCO2 design 2026-11-06): the child binds its inner answer to the exact query
+# it read under the per-call control nonce and the parent verifies that binding before any use. The nonce is
+# sent to the child in the challenge, so this binds three byte strings only: it is NOT lane authentication,
+# NOT freshness and NOT proof that a model used the query.
+_BIND_DOMAIN = b"wd.q4-query-bind.v2"
+_BIND_MAGIC = b"WDQ4BND2"
+_BIND_OVERHEAD = len(_BIND_MAGIC) + 64  # 8-byte magic + 64 hex MAC characters before the inner answer
 
 
 def _sha(data):
@@ -545,6 +552,41 @@ def _fixed_plan(plan_bytes):
 def _fixed_ack(nonce, bundle_sha256):
     return _canonical({"schema": "wd.q4-fixed-bundle-ack.v1", "status": "BUNDLE_VERIFIED", "nonce": nonce,
                        "bundle_sha256": bundle_sha256})
+
+
+def _fixed_bind(nonce, query, inner):
+    """HMAC-SHA256 keyed by the per-call control nonce over the domain, NUL, the length-framed exact query and
+    the length-framed exact inner answer, as 64 lowercase hex bytes. A pure function of its three inputs."""
+    _check(type(nonce) is str and len(nonce) == 32 and all(c in "0123456789abcdef" for c in nonce))
+    _check(type(query) is bytes and 0 < len(query) <= _MAX_INPUT)
+    _check(type(inner) is bytes and 0 < len(inner) <= _MAX_OUTPUT)
+    message = _BIND_DOMAIN + b"\0" + struct.pack(">I", len(query)) + query + struct.pack(">I", len(inner)) + inner
+    return hmac.new(bytes.fromhex(nonce), message, hashlib.sha256).hexdigest().encode("ascii")
+
+
+def _fixed_wrap(nonce, query, inner):
+    """Child side: magic + MAC + inner. The inner cap stays _MAX_OUTPUT; the frame grows by _BIND_OVERHEAD only."""
+    return _BIND_MAGIC + _fixed_bind(nonce, query, inner) + inner
+
+
+def _fixed_unwrap(nonce, query, frame, inner_limit):
+    """Parent side: the inner answer of a frame bound to this call's nonce and exact query, else a fixed refusal.
+
+    Checked before any use of the answer: the magic, the inner length within the caller's cap (the pipe frame
+    cap is that cap plus the overhead), then compare_digest against the MAC recomputed over the parent's own
+    query bytes. No query, nonce, MAC or frame byte is placed in the refusal.
+    """
+    mac = inner = None
+    try:
+        _check(type(frame) is bytes and len(frame) > _BIND_OVERHEAD and frame[:len(_BIND_MAGIC)] == _BIND_MAGIC)
+        _check(type(inner_limit) is int and 0 < inner_limit <= _MAX_OUTPUT)
+        mac, inner = frame[len(_BIND_MAGIC):_BIND_OVERHEAD], frame[_BIND_OVERHEAD:]
+        _check(len(inner) <= inner_limit and hmac.compare_digest(mac, _fixed_bind(nonce, query, inner)))
+        return inner
+    except Exception:
+        pass
+    del nonce, query, frame, mac, inner
+    raise _Refused() from None
 
 
 def _fixed_exchange(k, pipe, expected_pid, expected_created, control, plan_bytes, bundle_bytes, query, deadline):
@@ -1059,7 +1101,8 @@ def _fixed_child_protocol(read_frame, write_frame, peer_code_sha256, peer_path=N
     No bundle byte is read before READY is written, and the query is not read
     before the bundle ACK. For public-snapshot-v1 the runtime is verified and
     imported before READY. READY and ACK are derived from verified bytes but are
-    consistency only, not runtime or peer authentication.
+    consistency only, not runtime or peer authentication. The answer is returned
+    bound (magic, MAC, inner) to the challenge nonce and the exact query bytes read.
     """
     plan_bytes = read_frame(_MAX_PLAN)
     plan = _fixed_child_plan(plan_bytes, peer_code_sha256)
@@ -1089,7 +1132,7 @@ def _fixed_child_protocol(read_frame, write_frame, peer_code_sha256, peer_path=N
     if _diagnostic_fault:
         _check(plan["backend"] == "synthetic-v1")
         raise _Refused()
-    return backend(plan, plan_bytes, bundle_bytes, query)
+    return _fixed_wrap(challenge["nonce"], query, backend(plan, plan_bytes, bundle_bytes, query))
 
 
 def _fixed_child_answer(plan, plan_bytes, bundle_bytes, query):
@@ -1215,7 +1258,8 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
         status = _read(k, pipe, 1, deadline)
         if status != b"\1":
             raise _Refused()
-        output = _frame_read(k, pipe, max_output_bytes, deadline)
+        # Fixed mode: the caller's cap bounds the inner answer; the frame carries the binding overhead only.
+        output = _frame_read(k, pipe, max_output_bytes + (_BIND_OVERHEAD if fixed is not None else 0), deadline)
         exit_code = struct.unpack(">i", _read(k, pipe, 4, deadline))[0]
         _check(_read(k, pipe, 4, deadline) == b"END!")
         _check(_io(k, pipe, None, 1, deadline, eof=True) == b"")
@@ -1238,12 +1282,18 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
         cleanup_ok = True
         failed_closes = []
         def cleanup_call(operation):
+            nonlocal prior_outcome
             try:
                 return bool(operation())
-            except BaseException:
+            except BaseException as exc:
+                reason = _prior_outcome(exc)
+                if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                    prior_outcome = reason
                 return False
-        def close_call(handle):
-            closed = cleanup_call(lambda: k.CloseHandle(handle))
+        def close_call(handle, *, convert=False):
+            # Conversion can fail or be interrupted too; keep it inside the
+            # same boundary as CloseHandle so later handles are still tried.
+            closed = cleanup_call(lambda: k.CloseHandle(int(handle) if convert else handle))
             if not closed:
                 failed_closes.append(handle)
             return closed
@@ -1260,27 +1310,66 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
                         if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
                             prior_outcome = reason
                         cleanup_ok = False
-                    if assigned and job:
-                        cleanup_ok = cleanup_call(lambda: k.TerminateJobObject(job, 124)) and cleanup_ok
-                        if cleanup_deadline is not None:
-                            cleanup_ok = cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline)) and cleanup_ok
-                    elif not assigned:
-                        cleanup_ok = cleanup_call(lambda: k.TerminateProcess(int(process), 125)) and cleanup_ok
-                        if cleanup_deadline is not None:
-                            cleanup_ok = cleanup_call(lambda: _wait_child_exit(k, process, cleanup_deadline)) and cleanup_ok
-                if job:
+                    try:
+                        if assigned and job:
+                            cleanup_ok = cleanup_call(lambda: k.TerminateJobObject(job, 124)) and cleanup_ok
+                            if cleanup_deadline is not None:
+                                cleanup_ok = cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline)) and cleanup_ok
+                        elif not assigned:
+                            cleanup_ok = cleanup_call(lambda: k.TerminateProcess(int(process), 125)) and cleanup_ok
+                            if cleanup_deadline is not None:
+                                cleanup_ok = cleanup_call(lambda: _wait_child_exit(k, process, cleanup_deadline)) and cleanup_ok
+                    except BaseException as exc:
+                        # A failure in a decision outside the individual kernel
+                        # calls cannot certify cleanup. Still try termination and
+                        # all owned closes; do not claim the retry confirmed it.
+                        reason = _prior_outcome(exc)
+                        if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                            prior_outcome = reason
+                        cleanup_ok = False
+                        if assigned and job is not None:
+                            cleanup_call(lambda: k.TerminateJobObject(job, 124))
+                            if cleanup_deadline is not None:
+                                cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline))
+                        elif not assigned:
+                            cleanup_call(lambda: k.TerminateProcess(int(process), 125))
+                            if cleanup_deadline is not None:
+                                cleanup_call(lambda: _wait_child_exit(k, process, cleanup_deadline))
+                if job is not None:
                     cleanup_ok = close_call(job) and cleanup_ok
                 if process is not None:
-                    cleanup_ok = close_call(int(process)) and cleanup_ok
+                    cleanup_ok = close_call(process, convert=True) and cleanup_ok
                 if thread is not None:
-                    cleanup_ok = close_call(int(thread)) and cleanup_ok
-                if pipe and not any(entry[1] == pipe for entry in _QUARANTINE):
-                    cleanup_ok = close_call(pipe) and cleanup_ok
-                elif pipe:
-                    cleanup_ok = False  # Pending overlapped I/O remains quarantined.
+                    cleanup_ok = close_call(thread, convert=True) and cleanup_ok
+                try:
+                    if pipe is not None and not any(entry[1] == pipe for entry in _QUARANTINE):
+                        cleanup_ok = close_call(pipe) and cleanup_ok
+                    elif pipe is not None:
+                        cleanup_ok = False  # Pending overlapped I/O remains quarantined.
+                except BaseException as exc:
+                    # When pending-I/O ownership cannot be checked, retaining
+                    # the handle is safer than closing a possibly active pipe.
+                    reason = _prior_outcome(exc)
+                    if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                        prior_outcome = reason
+                    cleanup_ok = False
+                    if pipe is not None:
+                        failed_closes.append(pipe)
             if not cleanup_ok and (failed_closes or not _QUARANTINE):
                 # Record only uncertain closes, never successfully closed values.
                 _QUARANTINE.append((k, None, tuple(failed_closes)))
+        except BaseException as exc:
+            # An interruption between guarded cleanup operations leaves their
+            # progress uncertain. Retain all handle objects and fail closed;
+            # do not retry a handle that may already have been closed/reused.
+            # Without acquired resources, keep the preflight failure unchanged.
+            if not any(value is not None for value in (pipe, job, process, thread)):
+                raise
+            reason = _prior_outcome(exc)
+            if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                prior_outcome = reason
+            _QUARANTINE.append((k, pipe, (job, process, thread)))
+            cleanup_ok = False
         finally:
             _RUN_LOCK.release()
         if not cleanup_ok:
@@ -1405,6 +1494,19 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
     Runtime files stay mutable after verification (only the interpreter, this
     file and the verifier are leased), and base64 makes the effective raw
     snapshot size about 12 MiB under the 16 MiB bundle cap.
+    Query-plus-answer binding (RCO2 design 2026-11-06): after the query the
+    child returns magic + HMAC-SHA256 + inner, keyed by the per-call control nonce
+    over wd.q4-query-bind.v2, NUL, the length-framed exact query and the
+    length-framed exact inner answer; the parent recomputes it over its own
+    query bytes and checks it with compare_digest before any use, so an inner
+    byte altered after the MAC, a frame for another query or a frame bound
+    under another call's nonce is a fixed refusal. The nonce is sent to the
+    child in the challenge, so this binds the three byte strings only: it is
+    not lane authentication, not freshness and not proof that a model
+    used the query; a same-user peer that read the challenge can bind any
+    answer. The inner cap stays max_output_bytes; the pipe frame cap grows by
+    the 72-byte framing overhead only; diagnostic output is not wrapped. An
+    unwrap failure is a plain refusal raised after the child cleanup completed.
     No approved runtime tree or anchored pin exists yet, so in practice the
     real backend is unavailable; only a synthetic runtime exercises this path.
     Source authentication and freshness are UNKNOWN. Same limits as run_bounded.
@@ -1540,6 +1642,9 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
     if _diagnostic_mode is not None:
         _check(code == 0 and output in (b"after_query", b"completed"))
         return {"status": "DIAGNOSTIC", "phase": output.decode("ascii"), "cleanup": "UNKNOWN"}
+    # Unwrap after the diagnostic return and after _run's cleanup completed: the inner answer is used only if
+    # it is bound to this call's nonce and the parent's own query bytes.
+    output = _fixed_unwrap(control["nonce"], query_bytes, output, max_output_bytes)
     if not public:
         return output, code
     # Never return the child's public answer unvalidated: re-resolve it against the pinned bundle projection.
@@ -1700,7 +1805,7 @@ def _fixed_child_main(peer_code_sha256, name, parent_pid, parent_created):
         raw = _fixed_child_protocol(lambda limit: _sync_frame(k, pipe, limit),
                                     lambda data: _sync_write(k, pipe, struct.pack(">I", len(data)) + data),
                                     peer_code_sha256, peer_path=__file__)
-        _check(len(raw) <= _MAX_OUTPUT)
+        _check(len(raw) <= _MAX_OUTPUT + _BIND_OVERHEAD)
         _sync_write(k, pipe, b"\1" + struct.pack(">I", len(raw)) + raw + struct.pack(">i", 0) + b"END!")
     except BaseException:
         # Fixed refusal only; never serialize the exception, plan, bundle or query.
@@ -1733,7 +1838,7 @@ def _fixed_diagnostic_main(peer_code_sha256, mode, name, parent_pid, parent_crea
                 lambda data: _sync_write(k, pipe, struct.pack(">I", len(data)) + data),
                 peer_code_sha256, peer_path=__file__, _diagnostic_marker=query_started,
                 _diagnostic_fault=(mode == "synthetic-fault"))
-            _check(type(raw) is bytes and len(raw) <= _MAX_OUTPUT)
+            _check(type(raw) is bytes and len(raw) <= _MAX_OUTPUT + _BIND_OVERHEAD)
             phase = b"completed"
         except Exception:
             if query_started[0] is True:

@@ -1,5 +1,6 @@
 """Synthetic kernel only: no live child, service, or production data."""
 import ctypes
+import inspect
 import sys
 import threading
 
@@ -163,3 +164,159 @@ def test_cleanup_deadline_exception_still_terminates_and_quarantines(
     with pytest.raises(transport.TransportCleanupUnknown):
         transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 1, 1024)
     assert calls == before
+
+
+@pytest.mark.parametrize("fault", ["job_truth", "process_int", "pipe_truth", "pipe_tracking", "trace_cleanup"])
+@pytest.mark.parametrize("error_kind", [RuntimeError, KeyboardInterrupt, SystemExit],
+                         ids=["runtime-error", "interrupt", "exit"])
+@pytest.mark.parametrize("route", ["direct", "fixed_wrapper", "bounded_wrapper"])
+def test_cleanup_decision_or_conversion_exception_keeps_cleaning_and_quarantines(tmp_path, monkeypatch, fault, error_kind, route):
+    """Synthetic handles/kernel only: no OS child or live job is created."""
+    import _winapi
+
+    calls, quarantine = [], []
+    phase = {"cleanup": False, "injected": False}
+
+    class Job(int):
+        def __bool__(self):
+            if fault == "job_truth" and phase["cleanup"] and not phase["injected"]:
+                phase["injected"] = True
+                raise error_kind("synthetic job truth error")
+            return True
+
+    class Process(int):
+        def __int__(self):
+            if fault == "process_int" and phase["cleanup"] and not phase["injected"]:
+                phase["injected"] = True
+                raise error_kind("synthetic process conversion error")
+            return super().__int__()
+
+    class Pipe(int):
+        def __bool__(self):
+            if fault == "pipe_truth" and phase["cleanup"] and not phase["injected"]:
+                phase["injected"] = True
+                raise error_kind("synthetic pipe truth error")
+            return True
+
+    class BadQuarantineEntry:
+        def __getitem__(self, key):
+            phase["injected"] = True
+            raise error_kind("synthetic pending-I/O tracking error")
+
+    class Kernel:
+        def CreateNamedPipeW(self, *args): return Pipe(11)
+        def CreateJobObjectW(self, *args): return Job(12)
+        def SetInformationJobObject(self, *args): return 1
+        def GetCurrentProcess(self): return 99
+        def AssignProcessToJobObject(self, *args): return 1
+        def ResumeThread(self, *args): return 1
+        def LocalFree(self, *args): return 0
+        def TerminateJobObject(self, *args): calls.append("terminate-job"); return 1
+        def CloseHandle(self, handle): calls.append(("close", handle)); return 1
+
+    kernel = Kernel()
+    monkeypatch.setattr(transport, "_QUARANTINE", quarantine)
+    monkeypatch.setattr(transport, "_api", lambda: (kernel, None))
+    monkeypatch.setattr(transport, "_descriptor", lambda *args: 14)
+    monkeypatch.setattr(transport, "_noninheritable", lambda *args: None)
+    monkeypatch.setattr(transport, "_created", lambda *args: 1)
+    def wait_job(*args):
+        calls.append("wait-job")
+        return True
+    monkeypatch.setattr(transport, "_wait_job_empty", wait_job)
+    monkeypatch.setattr(_winapi, "CreateProcess", lambda *args: (Process(15), 16, 17, 18))
+
+    def fail_exchange(*args, **kwargs):
+        phase["cleanup"] = True
+        if fault == "pipe_tracking":
+            quarantine.append(BadQuarantineEntry())
+        if fault == "trace_cleanup":
+            lines, first = inspect.getsourcelines(transport._run)
+            target = next(first + index for index, line in enumerate(lines) if line.strip() == "if k is not None:")
+            def trace(frame, event, arg):
+                if frame.f_code is transport._run.__code__ and event == "line" and frame.f_lineno == target:
+                    phase["injected"] = True
+                    sys.settrace(None)
+                    raise error_kind("synthetic cleanup line interruption")
+                return trace
+            sys._getframe(1).f_trace = trace
+            sys.settrace(trace)
+        raise TimeoutError("synthetic exchange timeout")
+
+    monkeypatch.setattr(transport, "_io", fail_exchange)
+    def direct():
+        return transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 1, 1024)
+    monkeypatch.setattr(transport, "_run_fixed_peer_impl", lambda *args, **kwargs: direct())
+    monkeypatch.setattr(transport, "_run_bounded_impl", lambda **kwargs: direct())
+    def invoke():
+        if route == "direct":
+            return direct()
+        if route == "bounded_wrapper":
+            return transport.run_bounded(executable="x", arguments=[], cwd="x", stdin_bytes=b"", timeout_seconds=1,
+                max_output_bytes=1024, expected_interpreter_sha256="x", interpreter_max_bytes=1)
+        return transport.run_fixed_peer(executable="x", expected_interpreter_sha256="x", interpreter_max_bytes=1,
+            plan_bytes=b"", expected_plan_sha256="x", bundle_bytes=b"", runtime_manifest_bytes=b"",
+            query_bytes=b"", cwd="x", timeout_seconds=1, max_output_bytes=1024)
+    expected = TimeoutError if fault == "pipe_truth" else transport.TransportCleanupUnknown
+    previous_trace = sys.gettrace()
+    try:
+        with pytest.raises(expected) as caught:
+            invoke()
+    finally:
+        sys.settrace(previous_trace)
+    if fault != "pipe_truth":
+        assert caught.value.prior_outcome == {RuntimeError: "timeout", KeyboardInterrupt: "interrupt",
+                                             SystemExit: "exit"}[error_kind]
+    assert phase["injected"] is (fault != "pipe_truth")
+    assert bool(quarantine) is (fault != "pipe_truth")
+    if fault != "trace_cleanup":
+        assert "terminate-job" in calls
+        assert "wait-job" in calls
+        assert ("close", 16) in calls
+        assert (("close", 11) in calls) is (fault != "pipe_tracking")
+    else:
+        assert quarantine[-1] == (kernel, 11, (12, 15, 16))
+        before = list(calls)
+        with pytest.raises(transport.TransportCleanupUnknown) as retry:
+            direct()
+        assert retry.value.prior_outcome == "prior_unknown" and calls == before
+    assert not transport._RUN_LOCK.locked()
+
+
+@pytest.mark.parametrize("route", ["direct", "fixed_wrapper", "bounded_wrapper"])
+def test_outer_cleanup_interruption_without_owned_resources_preserves_preflight_refusal(tmp_path, monkeypatch, route):
+    quarantine, injected = [], []
+    monkeypatch.setattr(transport, "_QUARANTINE", quarantine)
+    lines, first = inspect.getsourcelines(transport._run)
+    target = next(first + index for index, line in enumerate(lines) if line.strip() == "if k is not None:")
+    def trace(frame, event, arg):
+        if frame.f_code is transport._run.__code__ and event == "line" and frame.f_lineno == target:
+            injected.append(True)
+            sys.settrace(None)
+            raise RuntimeError("synthetic preflight cleanup interruption")
+        return trace
+    def refuse_api():
+        sys._getframe(1).f_trace = trace
+        sys.settrace(trace)
+        raise transport._Refused()
+    monkeypatch.setattr(transport, "_api", refuse_api)
+    def direct():
+        return transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 1, 1024)
+    monkeypatch.setattr(transport, "_run_fixed_peer_impl", lambda *args, **kwargs: direct())
+    monkeypatch.setattr(transport, "_run_bounded_impl", lambda **kwargs: direct())
+    def invoke():
+        if route == "direct":
+            return direct()
+        if route == "bounded_wrapper":
+            return transport.run_bounded(executable="x", arguments=[], cwd="x", stdin_bytes=b"", timeout_seconds=1,
+                max_output_bytes=1024, expected_interpreter_sha256="x", interpreter_max_bytes=1)
+        return transport.run_fixed_peer(executable="x", expected_interpreter_sha256="x", interpreter_max_bytes=1,
+            plan_bytes=b"", expected_plan_sha256="x", bundle_bytes=b"", runtime_manifest_bytes=b"",
+            query_bytes=b"", cwd="x", timeout_seconds=1, max_output_bytes=1024)
+    previous_trace = sys.gettrace()
+    try:
+        with pytest.raises(RuntimeError if route == "direct" else transport._Refused):
+            invoke()
+    finally:
+        sys.settrace(previous_trace)
+    assert injected == [True] and quarantine == [] and not transport._RUN_LOCK.locked()

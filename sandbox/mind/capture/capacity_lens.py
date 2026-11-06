@@ -389,6 +389,21 @@ def publish(directory, name, data):
     core._sharing_retry(lambda: os.replace(tmp, directory / name))
 
 
+def view_of(raw, readable_result):
+    """The lens view of one readable() result: what the lens keeps of the status, with the sha256 of its raw bytes;
+    the hook writes it and the read route (capacity_read.py) prints it."""
+    now, limits, health, activity, alerts, age, _ = readable_result
+    return {"schema": LENS_SCHEMA, "authority": "none", "scope": "shadow_observation_not_gate",
+            "observed_utc": utc(now), "status_age": age, "status_sha256": hashlib.sha256(raw).hexdigest(),
+            "limits": [{"provider": provider, "window": window, "observations": rows}
+                       for (provider, window), rows in sorted(limits.items())],
+            "collection_silent": sorted(provider for provider, row in health.items()
+                                        if row["last_success_utc"] is None),
+            "collection": [dict(row, provider=provider) for provider, row in sorted(health.items())],
+            "failed_providers": sorted(provider for provider, row in health.items() if row["failed_provider"]),
+            "alerts": alerts, "activity": activity, "note": NOTE}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--status-script", type=Path, required=True)
@@ -407,15 +422,7 @@ def main():
         now, limits, health, activity, alerts, age, lines = readable(status, declared)
     except LensRefused as exc:
         raise SystemExit(f"refused: {exc}") from None
-    view = {"schema": LENS_SCHEMA, "authority": "none", "scope": "shadow_observation_not_gate",
-            "observed_utc": utc(now), "status_age": age, "status_sha256": hashlib.sha256(raw).hexdigest(),
-            "limits": [{"provider": provider, "window": window, "observations": rows}
-                       for (provider, window), rows in sorted(limits.items())],
-            "collection_silent": sorted(provider for provider, row in health.items()
-                                        if row["last_success_utc"] is None),
-            "collection": [dict(row, provider=provider) for provider, row in sorted(health.items())],
-            "failed_providers": sorted(provider for provider, row in health.items() if row["failed_provider"]),
-            "alerts": alerts, "activity": activity, "note": NOTE}
+    view = view_of(raw, (now, limits, health, activity, alerts, age, lines))
     ws.guard_object(view)
     ws.guard_object(lines)
     args.out_dir.mkdir(parents=True, exist_ok=True)

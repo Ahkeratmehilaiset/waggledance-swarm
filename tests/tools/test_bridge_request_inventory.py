@@ -9,6 +9,7 @@ the exact request, and Get-BridgeReplySnapshot must still resolve the answer.
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -179,6 +180,105 @@ def test_identical_duplicate_counts_once_and_conflict_fails_closed(tmp_path: Pat
     assert process.returncode != 0
     assert "Conflicting content for immutable request ID retry-v1" in process.stderr
     assert process.stdout.strip() == ""
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_exact_diagnostic_exposes_historical_conflict_without_claiming_coverage(tmp_path: Path, shell: str) -> None:
+    old, _ = _bound("historical-v1")
+    conflict = deepcopy(old)
+    conflict["message"] = "synthetic immutable request conflict"
+    target, _ = _bound("target-v1")
+    _write(tmp_path, [old, conflict, target])
+
+    default = _run(shell, INVENTORY, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache")
+    assert default.returncode != 0
+    assert "Conflicting content for immutable request ID historical-v1" in default.stderr
+
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["schema"] == "wd.request-inventory-diagnostic.v1"
+    assert result["complete"] is False and result["status"] == "partial_unknown"
+    assert result["inventory_coverage"] == "incomplete_or_unknown"
+    assert result["veto_coverage"] == "not_evaluated"
+    assert result["conflict_count"] == 1
+    assert result["conflicts"][0]["kind"] == "immutable_id_content_conflict"
+    assert result["conflicts"][0]["top_level_request_id"] == "historical-v1"
+    assert result["exact_request_state"] == "available_not_validated"
+    [record] = result["requests"]
+    assert record["request_id"] == "target-v1" and record["request"] == target
+    assert record["answer_state"] == "not_evaluated"
+
+    unavailable = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "historical-v1", "-NoCache",
+                             "-ExactRequestDiagnostic")
+    assert unavailable["complete"] is False and unavailable["veto_coverage"] == "not_evaluated"
+    assert unavailable["conflict_count"] == 1 and unavailable["exact_request_state"] == "not_available"
+    assert unavailable["requests"] == []
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_exact_diagnostic_requires_id_and_never_proves_veto_or_absence(tmp_path: Path, shell: str) -> None:
+    target, _ = _bound("target-v1")
+    _write(tmp_path, [target])
+    missing_id = _run(shell, INVENTORY, tmp_path, "-Agent", "codex-lead-1", "-NoCache", "-ExactRequestDiagnostic")
+    assert missing_id.returncode != 0 and missing_id.stdout.strip() == ""
+    assert "requires -RequestId" in missing_id.stderr
+
+    clean = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                       "-ExactRequestDiagnostic")
+    assert clean["status"] == "no_conflict_observed" and clean["conflict_count"] == 0
+    assert clean["complete"] is False and clean["inventory_coverage"] == "incomplete_or_unknown"
+    assert clean["veto_coverage"] == "not_evaluated" and clean["exact_request_state"] == "available_not_validated"
+
+    missing = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "absent-v1", "-NoCache",
+                         "-ExactRequestDiagnostic")
+    assert missing["complete"] is False and missing["exact_request_state"] == "not_available"
+    assert missing["veto_coverage"] == "not_evaluated" and missing["requests"] == []
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("invalid_field", ["request_id", "agent"])
+def test_exact_diagnostic_suppresses_target_with_invalid_binding_and_rejects_bad_cursor(
+    tmp_path: Path, shell: str, invalid_field: str
+) -> None:
+    target, _ = _bound("target-v1")
+    bad = deepcopy(target)
+    if invalid_field == "request_id":
+        bad["payload"]["request_id"] = "different-v1"
+    else:
+        bad["payload"]["agent"] = "different-agent"
+    _write(tmp_path, [target, bad])
+
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["status"] == "partial_unknown"
+    assert result["conflict_count"] == 1 and result["exact_request_state"] == "not_available"
+    assert result["requests"] == [] and result["veto_coverage"] == "not_evaluated"
+    assert result["conflicts"][0]["kind"] == f"{invalid_field if invalid_field == 'request_id' else 'author'}_binding_conflict"
+
+    cursor = _run(shell, INVENTORY, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                  "-ExactRequestDiagnostic", "-Cursor", "1:1:0000000000000000")
+    assert cursor.returncode != 0 and cursor.stdout.strip() == ""
+    assert "Inventory cursor does not match" in cursor.stderr
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_exact_diagnostic_never_claims_available_when_cursor_excludes_the_only_match(tmp_path: Path, shell: str) -> None:
+    target, _ = _bound("target-v1")
+    _write(tmp_path, [target])
+    args = ("-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache", "-ExactRequestDiagnostic")
+    first = _inventory(shell, tmp_path, *args)
+    seed = {
+        "snapshot": first["snapshot_cursor"], "prefix_sha256": first["snapshot_identity"]["prefix_sha256"],
+        "agent": "codex-lead-1", "session_id": "", "request_id": "target-v1", "task_id": "", "ts_utc": "",
+        "order": "first_indexed_position_desc", "page_size": 50, "include_request": True,
+        "diagnostic_partial": True, "exact_request_diagnostic": True,
+    }
+    digest = hashlib.sha256(json.dumps(seed, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()[:16].upper()
+    cursor = f'{first["snapshot_bytes"]}:0:{digest}'
+    page = _inventory(shell, tmp_path, *args, "-Cursor", cursor)
+    assert page["matched_count"] == 1 and page["requests"] == []
+    assert page["exact_request_state"] == "not_available"
+    assert page["complete"] is False and page["veto_coverage"] == "not_evaluated"
 
 
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)

@@ -138,7 +138,11 @@ def _preflight(path, pin):
     for key in (k for k in _KEYS if k.endswith('sha256')):
         if type(config[key]) is not str or not _HEX.fullmatch(config[key]): raise ValueError()
     gc=genesis_cli._doc(_read(config['genesis_config_path'],config['genesis_config_sha256']))
-    if set(gc)!=genesis_cli._KEYS or gc['schema']!='wd.q4-genesis-cli.v1': raise ValueError()
+    if (frozenset(gc) not in (genesis_cli._KEYS, genesis_cli._KEYS | genesis_cli._OPTIONAL)
+            or gc['schema']!='wd.q4-genesis-cli.v1'
+            or type(gc.get('resume_genesis_skip',False)) is not bool
+            or (gc.get('resume_genesis_skip') is True and gc['allow_partial_genesis'] is not True)):
+        raise ValueError()
     receipt=genesis_cli._doc(_read(config['receipt_path'],config['receipt_sha256']))
     receipt_keys=set(receipt)
     if (receipt_keys not in (_RECEIPT_V1,_RECEIPT_V2,_RECEIPT_V3)

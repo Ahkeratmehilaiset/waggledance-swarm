@@ -635,7 +635,8 @@ def test_the_caller_reader_accepts_every_materialized_file_with_its_pin(tmp_path
 def test_the_docstring_states_the_boundaries():
     doc = module().__doc__
     for phrase in ("default-off", "never overwrites", "never deletes", "O_EXCL", "no os.replace", "re-read", "identity",
-                   "before every write",
+                   "before every write", "last re-read immediately before the descriptor create", "same serial",
+                   "replace artifact bytes", "operator arguments checked by the launcher validator",
                    "not authentication", "not freshness", "not a runtime proof", "metadata-only",
                    "snapshot producer", "closed reason", "never a caller value", "reparse",
                    "wd_q4_shared_descriptor_producer.py", "Get-WdQ4SharedSessionConfig.ps1",

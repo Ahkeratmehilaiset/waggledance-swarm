@@ -37,10 +37,16 @@ def synthetic(tmp_path, monkeypatch):
     for key, data in (("_FLEET_SHA", fleet), ("_POLICY_SHA", policy), ("_PUBLIC_SHA", public)):
         monkeypatch.setattr(runner, key, frozenset({sha(data)}))
     calls = []
+    published = []
     from sandbox.mind.step2 import wd_q4_prefix_build_child as actual_child
     child = types.ModuleType("sandbox.mind.step2.wd_q4_prefix_build_child")
     child._plan_shape = actual_child._plan_shape
     def run_child(**kwargs):
+        from waggledance.core.bridge_log_reader import BridgeCursor, BridgePrefixPin, _file_identity, _open_log
+        with _open_log(log) as opened:
+            data = opened.read()
+            cursor = BridgeCursor(offset=len(data), file_identity=_file_identity(opened), generation="synthetic-generation")
+        published.append(BridgePrefixPin(cursor, sha(data)))
         calls.append(kwargs)
         return {"status": "PUBLISHED_GENESIS", "pointer_sha256": "a" * 64, "generation": "synthetic-generation",
                 "publisher_authentication": "UNKNOWN", "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN",
@@ -50,6 +56,9 @@ def synthetic(tmp_path, monkeypatch):
                 "model_assets": "caller_manifest_verified_before_load_reread_by_backend"}
     child.build_prefix_generation = run_child
     monkeypatch.setitem(sys.modules, child.__name__, child)
+    from sandbox.mind.step2 import shared_index_checkpoint as checkpoint_module
+    monkeypatch.setattr(checkpoint_module, "read_verified_prefix_pointer",
+                        lambda *a, **k: ({"anchor_sha256": sha(calls[-1]["config"].source.anchor_bytes)}, published[-1]))
     args = dict(enabled=True, source_path=str(log), generation_path=str(side / "mind-generation.json"),
                 generation="synthetic-generation", checkpoint_root=str(checkpoint), private_state_root=str(private),
                 trusted_model_root=str(model), policy_bytes=policy, policy_sha256=sha(policy),
@@ -118,7 +127,7 @@ def test_invalid_inputs_do_not_call_runner(synthetic, change):
         assert not Path(args["generation_path"]).exists()
 
 
-@pytest.mark.parametrize("change", ["append", "truncate", "rewrite", "replace", "sidecar", "tuple", "interrupt"])
+@pytest.mark.parametrize("change", ["truncate", "rewrite", "replace", "sidecar", "tuple", "interrupt"])
 def test_changes_after_runner_entry_are_unknown_and_not_retried(synthetic, monkeypatch, change):
     args, calls = synthetic
     module = sys.modules["sandbox.mind.step2.wd_q4_prefix_build_child"]
@@ -212,3 +221,84 @@ def test_opt_in_renewable_requires_real_recovery_proof(synthetic, monkeypatch):
         genesis.bootstrap(**args, renewable=True)
     assert len(calls) == len(recovery_calls) == 1
     assert (Path(args["private_state_root"]) / runner._PENDING).exists()
+
+
+def test_append_after_verified_published_snapshot_is_allowed(synthetic, monkeypatch):
+    args, calls = synthetic
+    module = sys.modules["sandbox.mind.step2.wd_q4_prefix_build_child"]
+    original = module.build_prefix_generation
+    def append_after_publication(**kwargs):
+        result = original(**kwargs)
+        with open(args["source_path"], "ab") as stream:
+            stream.write(b"later synthetic record\n")
+        return result
+    monkeypatch.setattr(module, "build_prefix_generation", append_after_publication)
+    result = genesis.bootstrap(**args)
+    assert result["status"] == "PUBLISHED_GENESIS"
+    assert "end_pin" not in result and "cursor" not in result
+    assert len(calls) == 1
+
+
+def test_append_before_publication_is_bound_by_published_end_pin(synthetic, monkeypatch):
+    args, calls = synthetic
+    module = sys.modules["sandbox.mind.step2.wd_q4_prefix_build_child"]
+    original = module.build_prefix_generation
+    def append_before(**kwargs):
+        with open(args["source_path"], "ab") as stream:
+            stream.write(b"new synthetic record\n")
+        return original(**kwargs)
+    monkeypatch.setattr(module, "build_prefix_generation", append_before)
+    assert genesis.bootstrap(**args)["status"] == "PUBLISHED_GENESIS"
+    assert len(calls) == 1
+
+
+def test_rewriting_appended_published_portion_is_unknown(synthetic, monkeypatch):
+    args, calls = synthetic
+    module = sys.modules["sandbox.mind.step2.wd_q4_prefix_build_child"]
+    original = module.build_prefix_generation
+    def rewrite_new_portion(**kwargs):
+        path = Path(args["source_path"])
+        with path.open("ab") as stream:
+            stream.write(b"new synthetic record\n")
+        result = original(**kwargs)
+        with path.open("r+b") as stream:
+            stream.seek(-2, 2)
+            stream.write(b"X")
+        return result
+    monkeypatch.setattr(module, "build_prefix_generation", rewrite_new_portion)
+    with pytest.raises(genesis.GenesisUnknown):
+        genesis.bootstrap(**args)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("fault", ["identity", "generation", "early", "over_budget", "digest", "midline", "anchor"])
+def test_unbound_published_end_is_unknown(synthetic, monkeypatch, fault):
+    from dataclasses import replace
+    from sandbox.mind.step2 import shared_index_checkpoint as checkpoint_module
+    args, calls = synthetic
+    original = checkpoint_module.read_verified_prefix_pointer
+    def bad_end(*positional, **keywords):
+        view, pin = original(*positional, **keywords)
+        if fault == "identity":
+            pin = replace(pin, cursor=replace(pin.cursor, file_identity="windows-v1:00000000:0000000000000000"))
+        elif fault == "generation":
+            pin = replace(pin, cursor=replace(pin.cursor, generation="other"))
+        elif fault == "early":
+            pin = replace(pin, cursor=replace(pin.cursor, offset=pin.cursor.offset - 1))
+        elif fault == "over_budget":
+            pin = replace(pin, cursor=replace(pin.cursor, offset=args["max_prefix_bytes"] + 1))
+        elif fault == "digest":
+            pin = replace(pin, sha256="0" * 64)
+        elif fault == "midline":
+            path = Path(args["source_path"])
+            with path.open("ab") as stream:
+                stream.write(b"x\n")
+            data = path.read_bytes()[:-1]
+            pin = replace(pin, cursor=replace(pin.cursor, offset=len(data)), sha256=sha(data))
+        else:
+            view = {**view, "anchor_sha256": "0" * 64}
+        return view, pin
+    monkeypatch.setattr(checkpoint_module, "read_verified_prefix_pointer", bad_end)
+    with pytest.raises(genesis.GenesisUnknown):
+        genesis.bootstrap(**args)
+    assert len(calls) == 1

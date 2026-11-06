@@ -65,16 +65,47 @@ def _same_source(path, stream, identity, size, digest):
             raise ValueError()
 
 
+def _scan_budget(stream, size, *, max_bytes, max_rows, max_windows):
+    """Bound complete records in greedy byte/row windows; never retain a record."""
+    if size <= 0:
+        raise ValueError()
+    stream.seek(0)
+    remaining, line_bytes, window_bytes, window_rows, windows = size, 0, 0, 0, 1
+    while remaining:
+        chunk = stream.read(min(remaining, 1024 * 1024))
+        if not chunk:
+            raise ValueError()
+        remaining -= len(chunk)
+        parts = chunk.split(b"\n")
+        for part in parts[:-1]:
+            line_bytes += len(part) + 1
+            if line_bytes > max_bytes:
+                raise ValueError()
+            if window_rows == max_rows or window_bytes + line_bytes > max_bytes:
+                windows += 1
+                window_bytes = window_rows = 0
+            if windows > max_windows:
+                raise ValueError()
+            window_bytes += line_bytes
+            window_rows += 1
+            line_bytes = 0
+        line_bytes += len(parts[-1])
+        if line_bytes > max_bytes:
+            raise ValueError()
+    if line_bytes:
+        raise ValueError()
+
+
 def bootstrap(*, enabled=False, source_path=None, generation_path=None, generation=None,
               checkpoint_root=None, private_state_root=None, trusted_model_root=None,
               policy_bytes=None, policy_sha256=None, public_policy_bytes=None, public_policy_sha256=None,
               fleet_bytes=None, expected_fleet_sha256=None, max_prefix_bytes=None,
-              max_bytes=None, max_rows=None, plan_template=None):
+              max_bytes=None, max_rows=None, plan_template=None, renewable=False):
     if enabled is False:
         return {"status": "OFF"}
     created = False
     try:
-        if enabled is not True:
+        if enabled is not True or type(renewable) is not bool:
             raise ValueError()
         runner._pinned(policy_bytes, policy_sha256, runner._POLICY_SHA)
         runner._pinned(public_policy_bytes, public_policy_sha256, runner._PUBLIC_SHA)
@@ -105,13 +136,18 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
         if any(not runner._separate(a, b) for i, a in enumerate(output_roots) for b in output_roots[i + 1:]):
             raise ValueError()
         tuple_file = output_roots[1] / "q4-genesis-tuple-v1.json"
-        if not runner._absent(sidecar) or not runner._absent(tuple_file):
+        if (not runner._absent(sidecar) or not runner._absent(tuple_file)
+                or not runner._absent(output_roots[0] / runner._PENDING)
+                or not runner._absent(output_roots[1] / runner._PENDING)
+                or not runner._absent(output_roots[0] / "q4-latest.json")):
             raise GenesisUnknown("generation_state_unknown")
         with _open_log(source) as stream:
             identity = _file_identity(stream)
             size = os.fstat(stream.fileno()).st_size
             if size > max_prefix_bytes:
                 raise ValueError()
+            _scan_budget(stream, size, max_bytes=max_bytes, max_rows=max_rows,
+                         max_windows=plan_template["max_windows"])
             digest = _snapshot(stream, size)
             _same_source(source, stream, identity, size, digest)
             cursor = BridgeCursor(offset=0, file_identity=identity, generation=generation)
@@ -121,6 +157,10 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
             pins = {"anchor_sha256": anchor_sha, "policy_sha256": policy_sha256, "roster_sha256": roster_sha,
                     "public_policy_sha256": public_policy_sha256}
             plan = _canonical({**plan_template, "pins": pins})
+            # Import and validate the exact child's plan before consuming the one-shot sidecar.
+            from sandbox.mind.step2 import wd_q4_prefix_build_child as child
+            if not child._plan_shape(json.loads(plan)):
+                raise ValueError()
             route = _canonical({"schema": "wd.q4-status-prefix-route.v1", "source": str(source),
                 "generation_path": str(sidecar), "checkpoint_root": str(output_roots[0]),
                 "private_state_root": str(output_roots[1]), "trusted_model_root": str(output_roots[2]),
@@ -144,7 +184,7 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
             report = runner.run_once(enabled=True, route_bytes=route, expected_route_sha256=_digest(route),
                 plan_bytes=plan, policy_bytes=policy_bytes, public_policy_bytes=public_policy_bytes,
                 fleet_bytes=fleet_bytes, expected_fleet_sha256=expected_fleet_sha256,
-                roster_bytes=roster_bytes, anchor_bytes=anchor)
+                roster_bytes=roster_bytes, anchor_bytes=anchor, renewable=renewable)
             runner._verify_own(sidecar, side_bytes, info)
             runner._verify_own(tuple_file, tuple_bytes, tuple_info)
             _same_source(source, stream, identity, size, digest)

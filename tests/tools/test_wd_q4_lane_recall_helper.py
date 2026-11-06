@@ -24,6 +24,7 @@ def bundle(tmp_path):
     source = ("param([Parameter(Position=0)][string]$Tool,[Parameter(ValueFromRemainingArguments)][string[]]$Rest)\n"
               "if ($Tool -cne 'tools/wd_q4_lane_caller_cli.py' -or @($Rest).Count -ne 1 -or $Rest[0] -cne '--enabled') { exit 9 }\n"
               "if ($env:RECALL_INVOKED) { [IO.File]::WriteAllText($env:RECALL_INVOKED,'started') }\n"
+              "if ($env:RECALL_MODE_FILE) { [IO.File]::WriteAllText($env:RECALL_MODE_FILE,[string]$env:WD_Q4_LIVE_MODE) }\n"
               "$code=if ($env:RECALL_TEST_MODE -eq 'slow') {'import sys,time,pathlib,os; sys.stdin.buffer.read(); pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(8); pathlib.Path(sys.argv[2]).touch()'} "
               "elseif ($env:RECALL_TEST_MODE -eq 'exit4') {'import sys; sys.stdin.buffer.read(); sys.exit(4)'} "
               "else {'import sys,os,hashlib; raw=sys.stdin.buffer.read(); assert raw not in str(sys.argv).encode(); assert raw not in str(dict(os.environ)).encode(); print(hashlib.sha256(raw).hexdigest())'}\n"
@@ -50,6 +51,19 @@ def test_redirected_stdin_reaches_nested_python_exactly(bundle, shell):
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().decode() == hashlib.sha256(raw).hexdigest()
     assert b'synthetic' not in result.stderr
+
+
+@pytest.mark.parametrize('live,inherited,expected', [(False, '', ''), (False, '1', ''), (True, '', '1')])
+def test_live_mode_is_explicit_and_reaches_only_the_query_child(bundle, live, inherited, expected):
+    env, root = bundle
+    marker = root / 'child-mode'
+    env['RECALL_MODE_FILE'] = str(marker)
+    env['WD_Q4_LIVE_MODE'] = inherited
+    args = ('-Live',) if live else ()
+    result = invoke(SHELLS[0], env, b'{"situation":"x","time":"2026-11-06T00:00:00Z"}', *args)
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text() == expected
+    assert env['WD_Q4_LIVE_MODE'] == inherited
 
 @pytest.mark.parametrize('raw', [b'', b'not-json', b'[]', b'{"situation":', b'{}'])
 def test_invalid_input_refused_without_starting_wrapper(bundle, raw):

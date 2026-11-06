@@ -1,6 +1,8 @@
 #requires -Version 5.1
 <# One bounded, on-demand stdin relay. A failed or uncertain entered call is never retried.
    Query bytes are never put in argv, environment, a file, or diagnostics.
+   -Live selects the separately provisioned live pointer only in the query child;
+   without it any inherited live-mode value is removed from that child.
    Job containment is cooperative with Windows and is not hostile-user isolation.
    A stopped runspace can suppress the status: without a complete exit-zero reply,
    treat the outcome as UNKNOWN and do not retry until separately reconciled.
@@ -13,6 +15,7 @@
 param(
     [Parameter(ValueFromPipeline=$true)][AllowEmptyString()][string]$QueryJson,
     [ValidateRange(1,300)][int]$TimeoutSeconds = 120,
+    [switch]$Live,
     [switch]$InternalWorker
 )
 begin {
@@ -67,6 +70,7 @@ end {
             $start = [Diagnostics.ProcessStartInfo]::new()
             $start.FileName = $shell
             $start.Arguments = '-NoProfile -NonInteractive -File "' + $scriptPath + '" -InternalWorker -TimeoutSeconds ' + $remainingSeconds
+            if ($Live) { $start.Arguments += ' -Live' }
             $start.UseShellExecute = $false; $start.CreateNoWindow = $true
             $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
             $worker = [Diagnostics.Process]::Start($start)
@@ -254,7 +258,8 @@ public static class $typeName {
             $document.situation -isnot [string] -or [string]::IsNullOrWhiteSpace($document.situation) -or
             ($document.time -isnot [string] -and $document.time -isnot [datetime]) -or
             ($document.time -is [string] -and $document.time -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')) { throw 'refused' }
-        $bootstrap = 'if ([Console]::OpenStandardInput().ReadByte() -ne 71) { exit 2 }; try { & $env:WD_BRIDGE_PYTHON_WRAPPER tools/wd_q4_lane_caller_cli.py --enabled; exit $LASTEXITCODE } catch { exit 2 }'
+        $liveEnvironment = if ($Live) { '$env:WD_Q4_LIVE_MODE=''1''; ' } else { 'Remove-Item Env:WD_Q4_LIVE_MODE -ErrorAction SilentlyContinue; ' }
+        $bootstrap = $liveEnvironment + 'if ([Console]::OpenStandardInput().ReadByte() -ne 71) { exit 2 }; try { & $env:WD_BRIDGE_PYTHON_WRAPPER tools/wd_q4_lane_caller_cli.py --enabled; exit $LASTEXITCODE } catch { exit 2 }'
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap))
         $shellName = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
         $shell = [IO.Path]::Combine($PSHOME,$shellName)

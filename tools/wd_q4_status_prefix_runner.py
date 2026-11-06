@@ -10,8 +10,13 @@ state. A hash is not source authentication, freshness or complete history.
 Two exclusive per-root pending markers serialize cooperating invocations of
 this runner. An exception or interruption after reservation leaves any markers
 in place: both roots require external reconciliation and no automatic retry is
-performed. The markers also remain after a successful return: this is a single
-bounded run, not an automatic continuation or continuous indexer. Other writers
+performed. By default the markers also remain after a successful return. The
+explicit renewable=True v3/fenced route releases only this call's markers after
+the current pointer, private prefix, completed fence and an exclusive fsynced
+private receipt have been checked while both producer locks are held. Any failure
+even during marker release stays UNKNOWN, possibly with only one marker left.
+This is still a single bounded run, not a scheduler or automatic next-tuple builder.
+Empty v3 windows remain unsupported. Other writers
 which do not honor these markers are not fenced by this wrapper; use the child's
 fenced plan and independent coordination. Path/identity checks do not defeat
 hostile same-user TOCTOU replacement or prove ACL, power-loss or isolation.
@@ -170,13 +175,18 @@ def _result_valid(result, route, plan):
 
 
 def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, plan_bytes=None,
-             policy_bytes=None, public_policy_bytes=None, roster_bytes=None, anchor_bytes=None):
-    """Call the fixed child at most once for an independently pinned route."""
+             policy_bytes=None, public_policy_bytes=None, roster_bytes=None, anchor_bytes=None, renewable=False):
+    """Call the fixed child at most once for an independently pinned route.
+
+    Renewable is opt-in, v3/fenced only, and returns a private receipt digest in
+    addition to the normal report. It is not proof of source authenticity,
+    currentness, operating-system isolation, or other writers' cooperation.
+    """
     if enabled is False:
         return {"status": "OFF"}
     prepared = False
     try:
-        if enabled is not True:
+        if enabled is not True or type(renewable) is not bool:
             raise ValueError()
         _pinned(route_bytes, expected_route_sha256)
         route = _json(route_bytes, 65536)
@@ -192,6 +202,8 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
         if tasks != frozenset({_TASK}) or public_tasks != frozenset({_TASK}) or public_types != frozenset({"status"}):
             raise ValueError()
         plan = _json(plan_bytes, 65536)
+        if renewable and (plan.get("schema") != "wd.q4-prefix-build-plan.v3" or plan.get("fenced") is not True):
+            raise ValueError()
         if (plan.get("schema") not in ("wd.q4-prefix-build-plan.v1", "wd.q4-prefix-build-plan.v3")
                 or (plan["schema"].endswith(".v3") and plan.get("fenced") is not True)
                 or type(plan.get("max_prefix_bytes")) is not int or not 0 <= plan["max_prefix_bytes"] <= 1024**3
@@ -261,6 +273,14 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
             raise ValueError()
         _verify_own(marks[0], token, first)
         _verify_own(marks[1], token, second)
+        if renewable:
+            from tools.wd_q4_status_prefix_recovery import complete_owned_publication
+            receipt_sha = complete_owned_publication(checkpoint=checkpoint, private=private, model=model,
+                source_parent=source.parent, sidecar_parent=sidecar.parent,
+                expected_ids=(checkpoint_ids, private_ids, model_ids, source_parent_ids, sidecar_parent_ids),
+                marks=marks, marker_infos=(first, second), token=token, report=report, plan=plan, route=route,
+                expected_route_sha256=expected_route_sha256, policy_bytes=policy_bytes, roster_bytes=roster_bytes)
+            report = {**report, "runner_receipt_sha256": receipt_sha}
         uncertain = False
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         interrupted = True

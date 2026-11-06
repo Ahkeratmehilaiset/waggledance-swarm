@@ -1,0 +1,162 @@
+"""Explicit staged lane-binding producer; synthetic bytes only, no live paths."""
+import hashlib
+import importlib
+import json
+
+import pytest
+from tools import wd_q4_lane_binding as consumer, wd_q4_secure_transport as transport
+from tests.tools.test_wd_q4_fixed_result_adapter import make_case
+
+
+def raw(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
+
+
+def sha(value):
+    return hashlib.sha256(value).hexdigest()
+
+
+def module():
+    return importlib.import_module('tools.wd_q4_lane_binding_producer')
+
+
+@pytest.fixture
+def case():
+    synth = make_case(canonical_roster=True)
+    roster = json.loads(synth['roster_bytes'])
+    fleet = raw({'lanes': roster['lanes'], 'tools_supervisor': roster['tools_supervisor']})
+    wrapper = b'# synthetic-only wrapper; never executed'
+    manifest = raw({'schema_version': 1, 'source_commit': 'a' * 40,
+                    'files': {'wd-fleet.json': sha(fleet), 'Invoke-WdQ4Query.ps1': sha(wrapper)}})
+    active = synth['active_artifact_bytes']
+    plan = {'schema': 'wd.q4-public-wrapper-plan.v1',
+            'config': {'descriptor_sha256': sha(active['descriptor.json'])},
+            'root': 'synthetic-root', 'policy_path': 'synthetic-policy',
+            'roster_path': 'synthetic-roster', 'public_policy_path': 'synthetic-public-policy',
+            'pointer_sha256': synth['expected_pointer_sha256'],
+            'source_anchor_sha256': synth['expected_source_sha256'],
+            'encoder_sha256': synth['expected_encoder_sha256'],
+            'policy_sha256': synth['policy_sha256'], 'roster_sha256': synth['roster_sha256'],
+            'public_policy_sha256': synth['expected_public_policy_sha256']}
+    snapshot = transport.fixed_snapshot_bundle(**{k: synth[k] for k in (
+        'pointer_bytes', 'policy_bytes', 'roster_bytes', 'public_policy_bytes', 'active_artifact_bytes',
+        'history_bytes', 'cell_snapshots')})
+    plan_raw = raw(plan)
+    return dict(enabled=True, expected_commit='a' * 40, manifest_bytes=manifest,
+                expected_manifest_sha256=sha(manifest), fleet_bytes=fleet, expected_fleet_sha256=sha(fleet),
+                wrapper_bytes=wrapper, expected_wrapper_sha256=sha(wrapper), public_plan_bytes=plan_raw,
+                expected_public_plan_sha256=sha(plan_raw), snapshot_bytes=snapshot,
+                expected_snapshot_sha256=sha(snapshot))
+
+
+def test_valid_pinned_snapshot_produces_binding_for_each_real_consumer(case):
+    result = module().build_lane_binding(**case)
+    assert set(result) == {'binding_bytes', 'binding_sha256'}
+    assert result['binding_sha256'] == sha(result['binding_bytes'])
+    document = json.loads(result['binding_bytes'])
+    assert document['bundle_commit'] == case['expected_commit']
+    assert document['manifest_sha256'] == case['expected_manifest_sha256']
+    assert document['wrapper_sha256'] == case['expected_wrapper_sha256']
+    assert document['public_plan_sha256'] == case['expected_public_plan_sha256']
+    assert len(document['binding']) == 8 and len(document['lanes']) == 5
+    for lane in document['lanes']:
+        pins = consumer.resolve_lane_binding(case['fleet_bytes'], case['expected_fleet_sha256'],
+            result['binding_bytes'], result['binding_sha256'], lane=lane, enabled=True)
+        assert pins['expected_binding'] == document['binding']
+
+
+def test_default_off_never_inspects_inputs():
+    class NoTouch:
+        def __getattribute__(self, name):
+            raise AssertionError('disabled path inspected input')
+    assert module().build_lane_binding(manifest_bytes=NoTouch()) == {'status': 'OFF'}
+
+
+@pytest.mark.parametrize('field', ['expected_commit', 'expected_manifest_sha256', 'expected_fleet_sha256',
+    'expected_wrapper_sha256', 'expected_public_plan_sha256', 'expected_snapshot_sha256'])
+def test_mismatched_explicit_pins_are_refused(case, field):
+    case[field] = ('f' * 40) if field == 'expected_commit' else ('f' * 64)
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_lane_binding(**case)
+
+
+@pytest.mark.parametrize('field', ['pointer_sha256', 'source_anchor_sha256', 'encoder_sha256',
+    'policy_sha256', 'roster_sha256', 'public_policy_sha256', 'descriptor_sha256'])
+def test_plan_changed_and_rehashed_still_refuses_snapshot_mismatch(case, field):
+    plan = json.loads(case['public_plan_bytes'])
+    if field == 'descriptor_sha256': plan['config'][field] = 'f' * 64
+    else: plan[field] = 'f' * 64
+    case['public_plan_bytes'] = raw(plan)
+    case['expected_public_plan_sha256'] = sha(case['public_plan_bytes'])
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_lane_binding(**case)
+
+
+def test_binding_output_is_deterministic_and_contains_no_snapshot_content(case):
+    first = module().build_lane_binding(**case)
+    second = module().build_lane_binding(**case)
+    assert first == second
+    assert b'public-task' not in first['binding_bytes']
+    assert b'fake-index' not in first['binding_bytes']
+
+
+@pytest.mark.parametrize('flag', [None, 0, 1, 'true', [], {}])
+def test_only_bool_true_enables(flag, case):
+    case['enabled'] = flag
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_lane_binding(**case)
+
+
+@pytest.mark.parametrize('mutation', ['schema', 'commit', 'fleet_entry', 'wrapper_entry', 'duplicate'])
+def test_rehashed_manifest_must_still_bind_exact_candidate(case, mutation):
+    doc = json.loads(case['manifest_bytes'])
+    if mutation == 'schema': doc['schema_version'] = True
+    elif mutation == 'commit': doc['source_commit'] = 'f' * 40
+    elif mutation == 'fleet_entry': doc['files']['wd-fleet.json'] = 'f' * 64
+    elif mutation == 'wrapper_entry': doc['files']['Invoke-WdQ4Query.ps1'] = 'f' * 64
+    if mutation == 'duplicate':
+        case['manifest_bytes'] = b'{"schema_version":1,"schema_version":1}'
+    else:
+        case['manifest_bytes'] = raw(doc)
+    case['expected_manifest_sha256'] = sha(case['manifest_bytes'])
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_lane_binding(**case)
+
+
+@pytest.mark.parametrize('target', ['descriptor.json', 'projection.json', 'memory.json', 'build_receipt.json'])
+def test_rehashed_snapshot_rejects_changed_active_artifact(case, target):
+    parts = transport._fixed_bundle_decode(case['snapshot_bytes'])
+    parts['active_artifact_bytes'][target] += b' '
+    case['snapshot_bytes'] = transport.fixed_snapshot_bundle(**parts)
+    case['expected_snapshot_sha256'] = sha(case['snapshot_bytes'])
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_lane_binding(**case)
+
+
+def test_rehashed_different_fleet_cannot_reuse_old_snapshot_roster(case):
+    fleet = json.loads(case['fleet_bytes'])
+    fleet['lanes'][0]['agent_uuid'] = '99999999-9999-4999-8999-999999999999'
+    case['fleet_bytes'] = raw(fleet)
+    case['expected_fleet_sha256'] = sha(case['fleet_bytes'])
+    manifest = json.loads(case['manifest_bytes'])
+    manifest['files']['wd-fleet.json'] = case['expected_fleet_sha256']
+    case['manifest_bytes'] = raw(manifest)
+    case['expected_manifest_sha256'] = sha(case['manifest_bytes'])
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_lane_binding(**case)
+
+
+def test_refusal_has_no_exception_chain_or_snapshot_in_outer_frame(case):
+    secret = b'synthetic-private-binding-input-sentinel'
+    case['snapshot_bytes'] += secret
+    case['expected_snapshot_sha256'] = sha(case['snapshot_bytes'])
+    with pytest.raises(module().BindingProducerRefused) as caught:
+        module().build_lane_binding(**case)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    tb = caught.value.__traceback__
+    own = []
+    while tb:
+        if tb.tb_frame.f_code.co_name == 'build_lane_binding':
+            own.append(repr(tb.tb_frame.f_locals))
+        tb = tb.tb_next
+    assert own and all(secret.decode() not in frame for frame in own)

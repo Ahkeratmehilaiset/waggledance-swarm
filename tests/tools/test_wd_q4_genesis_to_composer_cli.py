@@ -10,7 +10,7 @@ from tools import wd_q4_staged_composer as staged
 from waggledance.core.bridge_log_reader import _file_identity
 
 
-@pytest.mark.parametrize('fault', ['none', 'request_after_snapshot', 'continuation', 'continuation_v2', 'continuation_v3', 'v3_pending_after_snapshot', 'v3_pending_after_composer', 'partial_forged', 'late_skip'])
+@pytest.mark.parametrize('fault', ['none', 'optional_false', 'request_after_snapshot', 'continuation', 'continuation_v2', 'continuation_v3', 'v3_pending_after_snapshot', 'v3_pending_after_composer', 'partial_forged', 'late_skip'])
 def test_actual_genesis_receipt_to_five_lane_descriptor(synthetic, monkeypatch, tmp_path, capsys, fault):
     from tools import wd_q4_genesis_to_composer_cli as program
     original=genesis.bootstrap
@@ -87,6 +87,8 @@ def test_actual_genesis_receipt_to_five_lane_descriptor(synthetic, monkeypatch, 
                 'max_bytes':kw['max_bytes'],'max_rows':kw['max_rows'],'plan_template':kw['plan_template'],
                 'renewable':True,'cutoff_utc':'2026-10-31T13:00:00Z','batch_rows':kw.get('batch_rows',False),
                 'min_headroom_bytes':kw['min_headroom_bytes'],'allow_partial_genesis':kw.get('allow_partial_genesis',False)}
+            if fault=='late_skip': cfg['resume_genesis_skip']=True
+            if fault=='optional_false': cfg['resume_genesis_skip']=False
             genesis_cfg=compose_dir/'genesis-config.json'; genesis_cfg.write_bytes(helpers.update._encode(cfg))
             receipt=compose_dir/'receipt.json'; receipt.write_bytes(helpers.update._encode(selected))
             template=Path(args['request_path']); request=json.loads(template.read_bytes()); plan=Path(request['descriptor']['public_plan'])
@@ -110,6 +112,19 @@ def test_actual_genesis_receipt_to_five_lane_descriptor(synthetic, monkeypatch, 
             assert program.main(['--enable','--config',str(config_path),'--sha256','0'*64])==2
             assert json.loads(capsys.readouterr().out)=={'status':'REFUSED'}
             assert not list(output.iterdir()) and not list(stage.iterdir())
+            if fault=='late_skip':
+                original_gc=genesis_cfg.read_bytes()
+                for value,partial in ((1,True),('true',True),(None,True),(True,False)):
+                    invalid={**cfg,'resume_genesis_skip':value,'allow_partial_genesis':partial}
+                    genesis_cfg.write_bytes(helpers.update._encode(invalid))
+                    bad={**config,'genesis_config_sha256':helpers._sha(genesis_cfg.read_bytes())}
+                    config_path.write_bytes(helpers.update._encode(bad))
+                    assert program.main(['--enable','--config',str(config_path),
+                                         '--sha256',helpers._sha(config_path.read_bytes())])==2
+                    assert json.loads(capsys.readouterr().out)=={'status':'REFUSED'}
+                    assert not list(output.iterdir()) and not list(stage.iterdir())
+                genesis_cfg.write_bytes(original_gc)
+                config_path.write_bytes(helpers.update._encode(config))
             if fault=='partial_forged':
                 assert program.main(call)==2
                 assert json.loads(capsys.readouterr().out)=={'status':'REFUSED'}

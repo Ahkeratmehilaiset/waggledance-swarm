@@ -39,7 +39,12 @@ What this module proves and what it does not:
   interruption anywhere in the call, a cleanup-unknown error from any stage or any other
   BaseException leaves it set; calls are serialized by a process lock (a concurrent call refuses
   ``caller_busy``). There is no persistent cross-process marker.
-* Path comparison folds ASCII letters only and refuses empty path parts; see ``_parts``.
+* Path comparison folds ASCII letters only and refuses empty path parts; see ``_parts``. The fleet worktree
+  lookup covers ``lanes`` and the ``tools_supervisor`` entry (the tools lane lives there in the real manifest).
+* A cleanup-unknown error raised before the chain call (roster or descriptor stage) is reported as
+  ``CallerCleanupUnknown("caller_cleanup_unknown")`` (a ``RuntimeError``, never a ``CallerRefused``), with the
+  quarantine set and an attestation lease retained in ``_HOLD``; a CLI maps it to its cleanup-unknown exit code.
+  No persistent cross-process proof is claimed for either.
 * Default off reads no argument. Enabled, it reads no file, no environment and no clock, starts no
   process by itself and writes nothing; the chain below starts the pinned fixed peer.
 * No query text, token, path or exception detail is placed in the result or in any exception.
@@ -103,6 +108,13 @@ class CallerRefused(ValueError):
     """Fixed refusal: ``caller_refused``, ``caller_quarantined`` or ``caller_busy``; no input, path or detail inside."""
 
 
+class CallerCleanupUnknown(RuntimeError):
+    """Pre-check cleanup UNKNOWN: an attestation or transport cleanup-unknown error was raised before the chain
+    call (roster or descriptor stage). Fixed message ``caller_cleanup_unknown``, no attributes, no handle, lease,
+    query or token inside; the process quarantine is set and an attestation lease, if any, is retained in
+    ``_HOLD``. Deliberately not a ``CallerRefused`` so a CLI can map it to its cleanup-unknown exit code."""
+
+
 def _refuse():
     raise ValueError()
 
@@ -147,12 +159,19 @@ def _parts(text):
 
 
 def _fleet_worktree(fleet_bytes, agent):
-    """The worktree the pinned fleet document records for ``agent`` (path parts); fails closed when absent."""
+    """The worktree the pinned fleet document records for ``agent`` (path parts); fails closed when absent.
+
+    The lookup covers the four projection lanes under ``lanes`` and the tools lane under ``tools_supervisor``
+    (where the real manifest keeps ``codex-tools-1`` with its worktree). Exactly one entry across both may name
+    the agent, and it must carry a string worktree; a missing or non-dict ``tools_supervisor``, a missing,
+    non-string or empty worktree, or an agent listed twice is a refusal.
+    """
     document = json.loads(fleet_bytes.decode("utf-8", "strict"), object_pairs_hook=_unique, parse_constant=_constant)
-    lanes = document["lanes"] if type(document) is dict else None
-    if type(lanes) is not list:
+    lanes = document.get("lanes") if type(document) is dict else None
+    supervisor = document.get("tools_supervisor") if type(document) is dict else None
+    if type(lanes) is not list or type(supervisor) is not dict:
         _refuse()
-    entries = [entry for entry in lanes if type(entry) is dict and entry.get("agent") == agent]
+    entries = [entry for entry in [*lanes, supervisor] if type(entry) is dict and entry.get("agent") == agent]
     if len(entries) != 1 or type(entries[0].get("worktree")) is not str:
         _refuse()
     return _parts(entries[0]["worktree"])
@@ -283,7 +302,10 @@ def _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_b
                                      inputs["expected_fleet_sha256"])
         binding = _consistent_descriptor(descriptor, agent, inputs)
         chain_inputs = dict(inputs)
-    except (AttestationCleanupUnknown, TransportCleanupUnknown):
+    except AttestationCleanupUnknown as exc:
+        agent, unknown_cleanup = None, True
+        _HOLD.append(exc.lease)
+    except TransportCleanupUnknown:
         agent, unknown_cleanup = None, True
     except Exception:
         agent = None
@@ -293,6 +315,7 @@ def _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_b
         del identity_bytes, descriptor_bytes, situation, time, inputs, chain_inputs
         if unknown_cleanup:
             _QUARANTINED = True
+            raise CallerCleanupUnknown("caller_cleanup_unknown") from None
         raise CallerRefused("caller_refused")
     result = {"schema": SCHEMA, "status": "REFUSED", "lane": agent, "lane_binding": "DECLARED_CONSISTENT",
               "lane_authentication": "UNKNOWN", "cleanup": "chain_confirmed", "inner_status": "session_refused",

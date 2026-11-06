@@ -296,9 +296,12 @@ def main(argv=None):
         from tools import wd_q4_lane_caller_adapter as adapter
 
         identity_pin = _sha(identity_raw)
-        result = adapter.call_lane_session(enabled=True, identity_bytes=identity_raw,
-            expected_identity_sha256=identity_pin, descriptor_bytes=descriptor_raw,
-            expected_descriptor_sha256=descriptor_pin, situation=situation, time=when, inputs=inputs)
+        try:
+            result = adapter.call_lane_session(enabled=True, identity_bytes=identity_raw,
+                expected_identity_sha256=identity_pin, descriptor_bytes=descriptor_raw,
+                expected_descriptor_sha256=descriptor_pin, situation=situation, time=when, inputs=inputs)
+        except adapter.CallerCleanupUnknown:
+            return _refuse(3)
         # Unknown/unrecognized cleanup takes precedence over any status, including
         # a claimed answer or timeout. It never publishes validated stdout.
         if (type(result) is not dict or result.get("cleanup") != "chain_confirmed"

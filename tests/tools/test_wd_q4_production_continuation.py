@@ -376,6 +376,9 @@ def test_watermarked_real_deferred_advances_floor_and_interruption_stays_unknown
                                expected_watermark_record_sha256=record)
     assert second['status'] == 'caught_up_to_cutoff'
     assert second['pointer_sha256'] != first['pointer_sha256']
+    published = json.loads(pointer.read_bytes())
+    projection = json.loads((Path(args['checkpoint_root']) / published['generation'] / 'projection.json').read_bytes())
+    assert any(record['meta'].get('status') == 'done' for record in projection['records'])
     common['expected_pointer_sha256'] = second['pointer_sha256']
     monkeypatch.setattr(mod.runner, 'run_once', lambda **_: (_ for _ in ()).throw(RuntimeError('interrupted')))
     for _ in range(2):

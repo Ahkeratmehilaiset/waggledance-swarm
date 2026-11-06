@@ -79,6 +79,7 @@ def test_on_demand_capacity_reader_is_packaged_as_an_explicit_entrypoint():
     "tools/wd_q4_live_update_recovery.py",
     "tools/wd_q4_live_update_bootstrap.py",
     "tools/wd_q4_genesis_bootstrap.py",
+    "tools/wd_q4_genesis_cli.py",
     "tools/wd_q4_canonical_ref_verifier.py",
     "tools/wd_q4_shared_descriptor_producer.py",
 ])

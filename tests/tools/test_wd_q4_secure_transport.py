@@ -418,6 +418,7 @@ def test_run_timeout_with_successful_cleanup_remains_timeout(transport, tmp_path
         def LocalFree(self, *args): return 0
         def TerminateJobObject(self, *args): return 1
         def QueryInformationJobObject(self, *args): return 1  # zero-initialized accounting
+        def WaitForSingleObject(self, *args): return 0  # process handle signaled
         def CloseHandle(self, *args): return 1
 
     monkeypatch.setattr(transport, "_QUARANTINE", [])
@@ -470,7 +471,10 @@ def test_confirmed_child_cleanup_precedes_close(transport, tmp_path, monkeypatch
         transport._run([sys.executable], str(tmp_path), {'mode':'python-c'}, b'', 10, 1024)
     assert bool(transport._QUARANTINE) is spawn_failed
     assert calls.index(('terminate_job',12)) < calls.index(('query_job',12)) < calls.index(('close',12))
-    assert not any(item[0] == 'wait_child' for item in calls)
+    if spawn_failed:
+        assert not any(item[0] == 'wait_child' for item in calls)
+    else:
+        assert calls.index(('query_job',12)) < calls.index(('wait_child',15)) < calls.index(('close',12))
 
 
 def test_job_accounting_polls_same_handle_until_confirmed_zero(transport, monkeypatch):

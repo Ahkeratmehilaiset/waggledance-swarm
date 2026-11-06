@@ -6,6 +6,8 @@ module has no environment discovery and never activates or installs anything.
 A PREPARED result is byte consistency, not a runtime, freshness or identity proof.
 A failure after the first write is INCOMPLETE: inspect the isolated staging
 folder before any retry; partial generation content is never silently removed.
+The stage directory is also the permanent generations root: the descriptor pins
+absolute artifact paths under it. Do not move, rename or delete it after staging.
 """
 import hashlib
 import hmac
@@ -52,7 +54,8 @@ def compose(*, enabled=False, request_path=None, stage_dir=None, expected_bundle
 
     The strict request uses stage_dir as target_dir and stage_dir/binding-source.json
     as binding_path; the binding hash placeholder is replaced by the computed pin.
-    The stage directory must pre-exist, be empty, and be disjoint from the bundle.
+    The stage directory must pre-exist, be empty, be disjoint from the bundle,
+    and remain at that exact path as the permanent generations root.
     Inputs must be independently authenticated by the caller, not inferred here.
     Process termination or KeyboardInterrupt gives no successful receipt; the caller
     must inspect the staging folder before another attempt. Path checking and an

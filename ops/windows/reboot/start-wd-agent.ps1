@@ -847,25 +847,23 @@ function Assert-WdLaneLaunchAvailable {
   }
 
   function ConvertTo-WdLaneRedactedPath {
-    # A native CLI usually lives under the user profile; the path is kept for
-    # attribution but the Windows user name is never recorded.
-    param([AllowNull()] [string] $Path)
+    # Diagnostics and refusals are path-free (Lead revision v2 of the 2026-11-06
+    # redaction task, Grok report 9d5e01c7): no directory segment of any form is
+    # ever recorded, because a plain drive path, a profile root, a repeated
+    # separator, a dot segment or an unfamiliar leaf can all carry a user or
+    # server name. Only a basename from the caller's fixed safe set is returned,
+    # spelled as the set spells it (no input byte is echoed); anything else is
+    # the opaque marker. The segment split covers both separator directions.
+    param([AllowNull()] [string] $Path, [AllowEmptyCollection()] [string[]] $SafeBasenames = @())
     if ([string]::IsNullOrEmpty($Path)) { return $Path }
-    # Regex class of backslash or slash, built without backslash literals.
-    # The launcher's own profile first (every lane runs as this account), so a
-    # relocated profile root is covered too; then any <drive>:/Users/<name>/.
-    # Separator direction is normalized for the comparison only (Replace keeps
-    # the length, so the original suffix is returned unchanged).
-    $profileRoot = ([string]$env:USERPROFILE).Replace('/', [string][char]92).TrimEnd([char]92)
-    if ($profileRoot) {
-      $comparablePath = $Path.Replace('/', [string][char]92)
-      if ($comparablePath.StartsWith($profileRoot + [char]92, [StringComparison]::OrdinalIgnoreCase)) {
-        return '<userprofile>' + $Path.Substring($profileRoot.Length)
+    $marker = '<redacted-path>'
+    $leaf = ($Path -split ('[/' + [regex]::Escape([string][char]92) + ']'))[-1]
+    foreach ($safe in $SafeBasenames) {
+      if (-not [string]::IsNullOrEmpty($safe) -and [string]::Equals($leaf, $safe, [StringComparison]::OrdinalIgnoreCase)) {
+        return $marker + [string][char]92 + $safe
       }
     }
-    $slashClass = '[' + [char]92 + [char]92 + '/]'
-    $pattern = '^([A-Za-z]:' + $slashClass + 'Users' + $slashClass + ')[^' + [char]92 + [char]92 + '/]+'
-    return [regex]::Replace($Path, $pattern, '${1}<redacted>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    return $marker
   }
 
   function ConvertTo-WdLaneUtcText {
@@ -1072,7 +1070,7 @@ function Assert-WdLaneLaunchAvailable {
       $unattributed += [pscustomobject][ordered]@{
         name = [string]$native.Name
         pid = [int]$native.ProcessId
-        executable_path = (ConvertTo-WdLaneRedactedPath -Path ([string](Get-WdLaneProcessProperty -Process $native -Name 'ExecutablePath')))
+        executable_path = (ConvertTo-WdLaneRedactedPath -Path ([string](Get-WdLaneProcessProperty -Process $native -Name 'ExecutablePath')) -SafeBasenames @('codex.exe', 'claude.exe'))
         command_line_length = $commandText.Length
         creation_utc = (ConvertTo-WdLaneUtcText -Value $creation)
         age_seconds = $ageSeconds
@@ -1122,7 +1120,7 @@ function Assert-WdLaneLaunchAvailable {
     elseif ($first.parent_alive) { 'parent PID {0} {1} alive' -f $first.parent_pid, $first.parent_name }
     else { 'parent PID {0} missing' -f $first.parent_pid }
   $ageText = if ($null -eq $first.age_seconds) { 'age unknown' } else { 'age {0} s' -f $first.age_seconds }
-  $diagnosticsText = if ($DiagnosticsPath) { '; diagnostics ' + (ConvertTo-WdLaneRedactedPath -Path $DiagnosticsPath) } else { '' }
+  $diagnosticsText = if ($DiagnosticsPath) { '; diagnostics ' + (ConvertTo-WdLaneRedactedPath -Path $DiagnosticsPath -SafeBasenames @([string]$Lane.agent + '.jsonl')) } else { '' }
   throw (("cannot prove lane availability: unmarked native {0} PID {1} has no verified launcher ancestry; leave it running " +
     "(reason={2}; {3}; ancestry {4}; {5}; executable {6}; {7} unattributed after {8} pass(es) with recheck {9} x {10} s{11})") -f
     $first.name, $first.pid, $first.break_reason, $parentText, $first.ancestry, $ageText, $first.executable_path,

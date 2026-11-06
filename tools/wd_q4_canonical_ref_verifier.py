@@ -16,6 +16,10 @@ records, missing files, changed bytes, malformed rows, and unproven coverage
 return UNKNOWN; a window with more than 2000 rows is refused. Only
 public status events admitted by the pinned policy and roster are compared.
 Outputs contain no message, payload, paths, projected text or policy contents.
+Prefix hashes, cursors and coverage receipts may reveal guesses about private
+source bytes: callers must keep them private and not publish them to the bridge.
+Returned canonical IDs hash the entire eligible event, including unprojected
+metadata such as cwd or pid, and can likewise confirm guesses about that event.
 """
 import datetime as dt
 import hashlib
@@ -63,12 +67,13 @@ def verify(*, enabled=False, record=None, policy_bytes=None, policy_sha256=None,
            public_policy_bytes=None, public_policy_sha256=None, roster_bytes=None, roster_sha256=None,
            source_path=None, expected_snapshot_sha256=None, generation_path=None,
            coverage_receipt_bytes=None, coverage_receipt_sha256=None):
-    """Resolve public projection within an independently anchored complete source.
+    """Resolve a public projection within an independently pinned source prefix.
 
     The pinned coverage receipt is an external half-open coverage claim, not
     inferred or authenticated here. Its exact file identity, sidecar generation,
     cursor end, prefix pin, projected record and policy pins must all agree.
-    Return MATCH/AMBIGUOUS/NONE only within that pinned prefix; UNKNOWN means no
+    Results are explicitly suffixed WITHIN_RECEIPT_PREFIX and completeness is
+    RECEIPT_CLAIMED, not established by this verifier; UNKNOWN means no
     conclusion. Bad policy,
     malformed input or a window above the row cap raises a fixed VerifierRefused.
     """
@@ -145,6 +150,10 @@ def verify(*, enabled=False, record=None, policy_bytes=None, policy_sha256=None,
                               expected_snapshot_sha256, minute, end, ref, tasks, roster, public_tasks, public_types)
     finally:
         record = receipt = coverage_receipt_bytes = policy_bytes = public_policy_bytes = roster_bytes = source_path = None
+    if result['status'] == 'UNKNOWN':
+        return result
+    result['status'] += '_WITHIN_RECEIPT_PREFIX'
+    result['completeness'] = 'RECEIPT_CLAIMED'
     return result
 
 
@@ -221,6 +230,9 @@ def _scan_prefix(source_path, generation_path, cursor, final_cursor, expected_sn
         raise VerifierRefused('window_too_large')
     if invalid:
         return _unknown()
+    # An identical event serialized twice has the same canonical event ID.
+    # The raw-row window limit above is still checked before deduplication.
+    refs = sorted(set(refs))
     return {'status': 'NONE' if not refs else 'MATCH' if len(refs) == 1 else 'AMBIGUOUS',
             'canonical_event_refs': refs, 'count': len(refs)}
 

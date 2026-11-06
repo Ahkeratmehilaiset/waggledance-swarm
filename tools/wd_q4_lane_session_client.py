@@ -23,6 +23,7 @@ from tools import wd_q4_lane_binding as lane_binding
 from tools import wd_q4_lane_query as lane_query
 from tools import wd_q4_roster_from_fleet as roster
 from tools import wd_q4_secure_transport as fixed
+from tools import wd_q4_guard_completion as guard_completion
 from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown
 
 
@@ -33,7 +34,8 @@ class LaneSessionRefused(ValueError):
 def query_session(*, lane, situation, time, fleet_bytes, expected_fleet_sha256, binding_bytes,
                   expected_binding_sha256, bundle_root, public_plan_path, executable, expected_interpreter_sha256,
                   interpreter_max_bytes, fixed_plan_bytes, expected_fixed_plan_sha256, fixed_bundle_bytes,
-                  runtime_manifest_bytes, cwd, timeout_seconds, max_output_bytes, enabled=False):
+                  runtime_manifest_bytes, cwd, timeout_seconds, max_output_bytes, enabled=False,
+                  _owner_guard=None, _owner_context=None):
     """Call the bound peer with one explicit snapshot, never a discovered one."""
     failure = reason = lease = prior = pins = plan = parts = transport = roster_bytes = roster_sha = None
     exit_code = None
@@ -41,8 +43,17 @@ def query_session(*, lane, situation, time, fleet_bytes, expected_fleet_sha256, 
         if enabled is not True:
             failure, reason = "refused", "disabled"
         else:
+            owner_options = {}
+            if _owner_guard is not None or _owner_context is not None:
+                if (type(_owner_guard) is not guard_completion._Guard
+                        or _owner_guard._accept_owner_context(_owner_context) is not _owner_context):
+                    raise ValueError()
+                owner_options = {"_owner_guard": _owner_guard, "_owner_context": _owner_context}
             pins = lane_binding.resolve_lane_binding(fleet_bytes, expected_fleet_sha256, binding_bytes,
                 expected_binding_sha256, lane=lane, enabled=True)
+            if owner_options and (_owner_guard._binding[1] != lane
+                    or not hmac.compare_digest(_owner_guard._binding[3], pins["expected_binding"]["descriptor_sha256"])):
+                raise ValueError()
             if (type(fixed_plan_bytes) is not bytes or not 0 < len(fixed_plan_bytes) <= fixed._MAX_PLAN
                     or type(expected_fixed_plan_sha256) is not str
                     or len(expected_fixed_plan_sha256) != 64
@@ -71,7 +82,7 @@ def query_session(*, lane, situation, time, fleet_bytes, expected_fleet_sha256, 
                 expected_interpreter_sha256=expected_interpreter_sha256, interpreter_max_bytes=interpreter_max_bytes,
                 fixed_plan_bytes=fixed_plan_bytes, expected_fixed_plan_sha256=expected_fixed_plan_sha256,
                 fixed_bundle_bytes=fixed_bundle_bytes, runtime_manifest_bytes=runtime_manifest_bytes, cwd=cwd,
-                timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes, enabled=True)
+                timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes, enabled=True, **owner_options)
             return lane_query.query_public(
                 **pins, situation=situation, time=time, bundle_root=bundle_root, public_plan_path=public_plan_path,
                 projection_bytes=parts["active_artifact_bytes"]["projection.json"], policy_bytes=parts["policy_bytes"],
@@ -95,6 +106,7 @@ def query_session(*, lane, situation, time, fleet_bytes, expected_fleet_sha256, 
     del bundle_root, public_plan_path, executable, expected_interpreter_sha256, interpreter_max_bytes
     del fixed_plan_bytes, expected_fixed_plan_sha256, fixed_bundle_bytes, runtime_manifest_bytes
     del cwd, timeout_seconds, max_output_bytes, enabled, pins, plan, parts, transport, roster_bytes, roster_sha
+    del _owner_guard, _owner_context
     if failure == "attestation":
         raise AttestationCleanupUnknown(lease)
     if failure == "transport":

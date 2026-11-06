@@ -108,7 +108,11 @@ def case(tmp_path, monkeypatch):
     monkeypatch.chdir(worktree)
     members = {lane: {"agent": lane, "agent_uuid": UUIDS[lane], "worktree": str(worktrees[lane])}
                for lane in LANES}
-    fleet = canon({"lanes": [members[lane] for lane in LANES if lane != LANE],
+    runtime_root = tmp_path / "synthetic-bridge-runtime"
+    for lane in LANES:
+        (runtime_root / "shared" / ".codex-audit" / lane / "q4-caller-state").mkdir(parents=True)
+    fleet = canon({"runtime_root": str(runtime_root),
+                   "lanes": [members[lane] for lane in LANES if lane != LANE],
                    "tools_supervisor": members[LANE]})
     put("wd-fleet.json", fleet)
     manifest = {"schema_version": 1, "source_commit": "a" * 40,
@@ -166,6 +170,10 @@ def case(tmp_path, monkeypatch):
 
     def record(**kwargs):
         calls.append(kwargs)
+        # The recorder tests CLI formatting only. Synthetic owner transitions
+        # exercise guard sequencing; they do not prove real native cleanup.
+        item, context = kwargs["_owner_guard"], kwargs["_owner_context"]
+        assert item._accept_owner_context(context) is context
         if "exception" in outcome:
             raise outcome["exception"]
         selected_lane = json.loads(kwargs["identity_bytes"])["agent"]
@@ -178,6 +186,11 @@ def case(tmp_path, monkeypatch):
                   "descriptor_sha256": kwargs["expected_descriptor_sha256"],
                   "call_id": "1" * 32}
         if outcome.get("validated"):
+            for name in ("adapter", "attestation", "transport"):
+                ticket = context._ticket(name)
+                assert context._accept_ticket(name, ticket) is ticket
+                ticket._begin()
+                ticket._complete()
             items = [] if "stored_text" not in outcome else [{
                 "ref_sha256": sha(b"synthetic-public-ref"),
                 "doc_id_sha256": sha(b"synthetic-public-doc"), "stored_text": outcome["stored_text"]}]
@@ -523,6 +536,15 @@ def test_enabled_cli_and_real_adapter_parent_path_needs_no_model_import(case, mo
     calls = []
     def fake_session(**kwargs):
         calls.append(kwargs["lane"])
+        # Synthetic stand-ins preserve this test's parent-import scope only;
+        # they are not native transport or attestation cleanup evidence.
+        item, context = kwargs["_owner_guard"], kwargs["_owner_context"]
+        assert item._accept_owner_context(context) is context
+        for name in ("transport", "attestation"):
+            ticket = context._ticket(name)
+            assert context._accept_ticket(name, ticket) is ticket
+            ticket._begin()
+            ticket._complete()
         return {"schema": "wd.q4-lane-answer.v1", "lane": lane, "status": "ABSTAIN",
                 "reason": "", "result_count": 0, "results": [],
                 "binding": dict(case["descriptor"]["expected_binding"]), "trust": {

@@ -271,24 +271,128 @@ def _validated(answer, agent, expected_binding):
     return answer["status"], answer, answer["result_count"], hashlib.sha256(canonical).hexdigest()
 
 
+class _AdapterOwner:
+    """Unwired per-call cleanup callback adapter, not a guard or native witness.
+
+    The trusted integrator must supply callbacks for the distinct call-bound
+    adapter ticket, never a transport or attestation ticket. Completion is
+    offered only after the adapter's own clean path and its lock release;
+    it proves neither native child cleanup nor identity. UNKNOWN is monotonic
+    at the registry, and any callback failure or interruption must prevent
+    witness use. The enclosing caller must abort in a finally block if this
+    helper is interrupted, and must not consume a witness until the entire
+    chain and every owner's callbacks finish. Private Python objects are a
+    cooperative convention, not protection from same-user tampering.
+    """
+
+    def __init__(self, *, on_begin, on_complete, on_unknown):
+        if not all(callable(value) for value in (on_begin, on_complete, on_unknown)):
+            raise CallerRefused("caller_refused")
+        self._on_begin, self._on_complete, self._on_unknown = on_begin, on_complete, on_unknown
+        self._started = self._ready = self._done = self._uncertain = False
+
+    def _begin(self):
+        if self._started or self._done or self._uncertain:
+            raise CallerRefused("caller_refused")
+        self._started = True
+        try:
+            self._on_begin()
+            if self._uncertain:
+                raise CallerCleanupUnknown("caller_cleanup_unknown")
+        except BaseException:
+            self._unknown()
+            raise
+
+    def _body_clean(self):
+        if not self._started or self._ready or self._done or self._uncertain:
+            raise CallerRefused("caller_refused")
+        self._ready = True
+
+    def _after_release(self):
+        if not self._started or not self._ready or self._done or self._uncertain:
+            self._unknown()
+            return
+        try:
+            self._on_complete()
+            if self._uncertain:
+                raise CallerCleanupUnknown("caller_cleanup_unknown")
+            self._done = True
+        except BaseException:
+            self._unknown()
+            raise
+
+    def _unknown(self):
+        if not self._uncertain:
+            self._uncertain = True
+            self._on_unknown()
+
+
 def call_lane_session(*, enabled=False, identity_bytes=None, expected_identity_sha256=None, descriptor_bytes=None,
-                      expected_descriptor_sha256=None, situation=None, time=None, inputs=None):
+                      expected_descriptor_sha256=None, situation=None, time=None, inputs=None, _owner=None):
     """One declared-consistent call of the existing chain; ``{"status": "OFF"}`` when ``enabled`` is ``False``."""
+    if _owner is None:
+        if enabled is False:
+            return {"status": "OFF"}
+        if not _LOCK.acquire(blocking=False):
+            raise CallerRefused("caller_busy")
+        try:
+            if _QUARANTINED:
+                raise CallerRefused("caller_quarantined")
+            return _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_bytes,
+                                expected_descriptor_sha256, situation, time, inputs)
+        finally:
+            _LOCK.release()
+    if type(_owner) is not _AdapterOwner:
+        del identity_bytes, descriptor_bytes, situation, time, inputs
+        raise CallerRefused("caller_refused")
+    try:
+        _owner._begin()
+    except BaseException:
+        del identity_bytes, descriptor_bytes, situation, time, inputs
+        _owner._unknown()
+        raise
     if enabled is False:
+        del identity_bytes, descriptor_bytes, situation, time, inputs
+        _owner._unknown()
         return {"status": "OFF"}
-    if not _LOCK.acquire(blocking=False):
+    try:
+        acquired = _LOCK.acquire(blocking=False)
+    except BaseException:
+        del identity_bytes, descriptor_bytes, situation, time, inputs
+        _owner._unknown()
+        raise
+    if not acquired:
+        del identity_bytes, descriptor_bytes, situation, time, inputs
+        _owner._unknown()
         raise CallerRefused("caller_busy")
+    returned = False
     try:
         if _QUARANTINED:
             raise CallerRefused("caller_quarantined")
-        return _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_bytes,
-                            expected_descriptor_sha256, situation, time, inputs)
+        result = _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_bytes,
+                              expected_descriptor_sha256, situation, time, inputs, _owner=_owner)
+        returned = True
     finally:
-        _LOCK.release()
+        try:
+            _LOCK.release()
+        except BaseException:
+            del identity_bytes, descriptor_bytes, situation, time, inputs
+            _owner._unknown()
+            raise
+        del identity_bytes, descriptor_bytes, situation, time, inputs
+        if returned:
+            try:
+                _owner._after_release()
+            except BaseException:
+                result = None
+                raise
+        else:
+            _owner._unknown()
+    return result
 
 
 def _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_bytes, expected_descriptor_sha256,
-                 situation, time, inputs):
+                 situation, time, inputs, _owner=None):
     global _QUARANTINED
     agent = binding = identity = descriptor = chain_inputs = None
     unknown_cleanup = False
@@ -323,6 +427,7 @@ def _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_b
               "descriptor_sha256": expected_descriptor_sha256, "call_id": secrets.token_hex(16)}
     signal = None
     confirmed = False
+    owner_eligible = False
     _QUARANTINED = True  # pessimistic: only a confirmed outcome below clears it
     try:
         answer = session.query_session(lane=agent, situation=situation, time=time, **chain_inputs, enabled=True)
@@ -333,6 +438,7 @@ def _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_b
             result["inner_status"], result["answer"], result["result_count"], result["answer_sha256"] = validated
             if result["answer"] is not None:
                 result["status"] = "VALIDATED"
+                owner_eligible = True
         confirmed = True
     except AttestationCleanupUnknown as exc:
         _HOLD.append(exc.lease)
@@ -354,4 +460,6 @@ def _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_b
         raise signal
     if confirmed:
         _QUARANTINED = False
+    if owner_eligible and _owner is not None:
+        _owner._body_clean()
     return {key: result[key] for key in _RESULT_KEYS}

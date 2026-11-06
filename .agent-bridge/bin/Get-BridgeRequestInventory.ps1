@@ -118,15 +118,15 @@ function Test-InventoryStringCouldNameRequest {
     }
     return $false
 }
-function Test-InventoryForeignAuthorCouldNameRequester {
-    # The top-level author names another requester but its conflicting payload names this one.
+function Test-InventoryForeignAuthorBindingConflict {
+    # An indexed request has two conflicting string authors, with a foreign top-level author.
     param($Event, [string] $RequestedAgent)
     $direct=$Event.PSObject.Properties['agent']
     $payload=$Event.PSObject.Properties['payload']
     if ($null -eq $direct -or $direct.Value -isnot [string] -or $direct.Value -ceq $RequestedAgent -or
         $null -eq $payload -or $null -eq $payload.Value) { return $false }
     $nested=$payload.Value.PSObject.Properties['agent']
-    return ($null -ne $nested -and $nested.Value -is [string] -and $nested.Value -ceq $RequestedAgent)
+    return ($null -ne $nested -and $nested.Value -is [string] -and $nested.Value -cne $direct.Value)
 }
 function Get-InventoryFieldText {
     # The raw text of one field (top-level or payload), at most 160 UTF-16 units and never
@@ -188,7 +188,7 @@ for ($position=0; $position -lt $rows.Count; $position++) {
     $author=Get-BridgeContractField $event 'agent'
     if ($author -isnot [string]) {
         if ($ExactRequestDiagnostic -and (Test-BridgeContractFieldConflict $event 'agent') -and
-            (Test-InventoryForeignAuthorCouldNameRequester $event $Agent) -and
+            (Test-InventoryForeignAuthorBindingConflict $event $Agent) -and
             (Test-InventoryStringCouldNameRequest $event $RequestId)) {
             $foreignInvalidAuthorBindingCouldNameRequest=$true
         }

@@ -607,12 +607,12 @@ def test_exact_diagnostic_detects_foreign_payload_only_valid_id(tmp_path: Path, 
 
 
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
-@pytest.mark.parametrize("case", ("matching_id", "case_variant_id", "payload_only_id", "dual_binding", "unrelated_id", "unrelated_author"))
+@pytest.mark.parametrize("case", ("matching_id", "case_variant_id", "payload_only_id", "dual_binding", "unrelated_id", "foreign_authors", "foreign_authors_variant", "foreign_authors_unrelated_id"))
 def test_exact_diagnostic_handles_foreign_conflicting_author_binding(tmp_path: Path, shell: str, case: str) -> None:
     target, _ = _bound("target-v1")
-    foreign_id = "other-v1" if case in ("unrelated_id", "dual_binding") else "TARGET-v1" if case == "case_variant_id" else "target-v1"
+    foreign_id = "other-v1" if case in ("unrelated_id", "dual_binding", "foreign_authors_unrelated_id") else "TARGET-v1" if case in ("case_variant_id", "foreign_authors_variant") else "target-v1"
     foreign, _ = _bound(foreign_id, agent="codex-tools-1", to="codex-lead-1")
-    foreign["payload"]["agent"] = "fable-5" if case == "unrelated_author" else "codex-lead-1"
+    foreign["payload"]["agent"] = "fable-5" if case.startswith("foreign_authors") else "codex-lead-1"
     if case == "payload_only_id":
         del foreign["request_id"]
         foreign["payload"]["request_id"] = foreign_id
@@ -622,7 +622,7 @@ def test_exact_diagnostic_handles_foreign_conflicting_author_binding(tmp_path: P
     result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
                         "-ExactRequestDiagnostic")
     assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
-    if case in ("unrelated_id", "unrelated_author"):
+    if case in ("unrelated_id", "foreign_authors_unrelated_id"):
         assert result["exact_request_state"] == "available_not_validated"
         assert result["requests"][0]["request"] == target
     else:

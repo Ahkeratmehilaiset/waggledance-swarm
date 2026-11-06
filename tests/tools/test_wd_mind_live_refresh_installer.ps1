@@ -1,4 +1,17 @@
 $installer = Join-Path $PSScriptRoot '..\..\ops\windows\reboot\Install-WdMindLiveRefresh.ps1'
+function Resolve-SyntheticTestPython([string[]] $Candidates) {
+    foreach ($candidate in $Candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        try {
+            $item = Get-Item -LiteralPath $candidate -Force -ErrorAction Stop
+            if ($item.PSIsContainer -or $item.Length -le 0 -or
+                ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+            [void](Get-FileHash -LiteralPath $candidate -Algorithm SHA256 -ErrorAction Stop)
+            return $item.FullName
+        } catch { continue }
+    }
+    throw 'No readable non-alias Python executable is available for the synthetic test.'
+}
 Describe 'Mind live refresh installer' {
     BeforeEach {
         $root = Join-Path $TestDrive ("synthetic's space " + [guid]::NewGuid().ToString('N'))
@@ -16,7 +29,14 @@ pathlib.Path(__file__).parents[2].joinpath('synthetic-invoked.txt').write_text('
 '@
         [IO.File]::WriteAllText($bootstrap, $bootstrapText)
         [IO.File]::WriteAllText($module, '# synthetic module')
-        $python = if ($env:WD_TEST_Q4_PYTHON) { $env:WD_TEST_Q4_PYTHON } else { (Get-Command python -ErrorAction Stop).Source }
+        $pythonCandidates = @($env:WD_TEST_Q4_PYTHON, $env:WD_BRIDGE_PYTHON)
+        $pythonCandidates += @(Get-Command python -All -ErrorAction SilentlyContinue | ForEach-Object { $_.Source })
+        $pythonHome = Join-Path $env:LOCALAPPDATA 'Programs\Python'
+        if (Test-Path -LiteralPath $pythonHome -PathType Container) {
+            $pythonCandidates += @(Get-ChildItem -LiteralPath $pythonHome -Directory | Sort-Object Name -Descending |
+                ForEach-Object { Join-Path $_.FullName 'python.exe' })
+        }
+        $python = Resolve-SyntheticTestPython $pythonCandidates
         $pythonHash = (Get-FileHash $python -Algorithm SHA256).Hash.ToLowerInvariant()
         $runtime = Join-Path $root 'runtime'
         New-Item -ItemType Directory -Path $runtime | Out-Null
@@ -58,6 +78,10 @@ pathlib.Path(__file__).parents[2].joinpath('synthetic-invoked.txt').write_text('
         $plan.enabled | Should Be $false
         $plan.multiple_instances | Should Be 'IgnoreNew'
         Assert-MockCalled Register-ScheduledTask -Times 0 -Exactly -Scope It
+    }
+    It 'skips an unreadable Python alias and chooses a readable executable' {
+        $missingAlias = Join-Path $root 'missing-alias.exe'
+        (Resolve-SyntheticTestPython @($missingAlias, $python)) | Should Be $python
     }
     It 'refuses a modified config before registration' {
         [IO.File]::AppendAllText($configPath, ' ')

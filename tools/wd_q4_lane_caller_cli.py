@@ -18,7 +18,14 @@ Before entering a query and again before publishing its result, the public plan
 bound by the pinned lane binding identifies an index root whose q4-latest.json
 must still match the pointer pinned by this descriptor. A changed/missing pointer
 refuses output. This is an equality check at two instants, not authenticated time,
-source freshness, anti-ABA protection, or an automatic descriptor refresh.
+source freshness, anti-ABA protection, or a default descriptor refresh.
+
+An explicitly selected WD_Q4_LIVE_MODE=1 opts into a separate, mutable local
+selector under the baseline descriptor's generation root. Each query rechecks
+the candidate against the baseline bundle, fleet, runtime and policy bindings,
+and refuses if the selector or index pointer changes before output. It does not
+authenticate the selector's same-user publisher or lane and does not prove
+wall-clock or source freshness. Missing or malformed live selectors refuse.
 
 The enabled route must acquire an independently fleet-pinned guard and its
 call-bound owner context before reading the query. Configuration and identity
@@ -167,9 +174,12 @@ def _binding(value):
     return {key: _hex(value[key]) for key in sorted(_BINDING_KEYS)}
 
 
-def _configuration():
-    descriptor_pin = _hex(_env("WD_Q4_SHARED_DESCRIPTOR_SHA256"))
-    descriptor_raw = _read(_env("WD_Q4_SHARED_DESCRIPTOR_PATH"), MAX_DOCUMENT, descriptor_pin)
+def _configuration(descriptor_path=None, descriptor_sha256=None):
+    if descriptor_path is None and descriptor_sha256 is None:
+        descriptor_path = _env("WD_Q4_SHARED_DESCRIPTOR_PATH")
+        descriptor_sha256 = _env("WD_Q4_SHARED_DESCRIPTOR_SHA256")
+    descriptor_pin = _hex(descriptor_sha256)
+    descriptor_raw = _read(descriptor_path, MAX_DOCUMENT, descriptor_pin)
     descriptor = _json(descriptor_raw, _DESCRIPTOR_KEYS)
     bundle_root = _path(descriptor["bundle_root"])
     manifest_raw = _read(str(bundle_root / "deployment-manifest.json"), MAX_MANIFEST,
@@ -309,6 +319,7 @@ def main(argv=None):
     token = situation = identity_raw = inputs = result = None
     guard = owner_context = rendered = None
     guard_released = False
+    live_publication = None
     try:
         if argv is None:
             argv = sys.argv[1:]
@@ -317,6 +328,15 @@ def main(argv=None):
             return 0
         _check(argv == ["--enabled"])
         descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs = _configuration()
+        live_mode = os.environ.get("WD_Q4_LIVE_MODE", "")
+        _check(live_mode in ("", "1"))
+        if live_mode == "1":
+            from tools import wd_q4_live_snapshot_publish as live
+            live_publication = live.select(enabled=True, baseline_path=_env("WD_Q4_SHARED_DESCRIPTOR_PATH"),
+                baseline_sha256=descriptor_pin,
+                baseline=(descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs),
+                manifest_sha256=_hex(_env("WD_REBOOT_EXPECTED_MANIFEST_HASH")), load_configuration=_configuration)
+            descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs = live_publication["configuration"]
         _require_current_snapshot(descriptor, binding, inputs)
         lane, identity_raw, token = _identity(fleet_raw, descriptor, descriptor_pin)
         identity_pin = _sha(identity_raw)
@@ -370,6 +390,8 @@ def main(argv=None):
         guard.release(witness)
         guard_released = True
         _require_current_snapshot(descriptor, binding, inputs)
+        if live_publication is not None:
+            live.recheck(live_publication["publication_path"], live_publication["publication_sha256"])
         _write(rendered)
         return 0
     except (KeyboardInterrupt, SystemExit):

@@ -191,6 +191,22 @@ def _finish_open_marker(fd, raw):
         os.close(fd)
 
 
+def _create_recovery_reservation(private_root, attempt, intent_sha256):
+    """Persist this owner's runner binding before entering the child.
+
+    The binding is not a cleanup receipt and does not authorize recovery.
+    """
+    if any(type(value) is not str or not _HEX.fullmatch(value) for value in (attempt, intent_sha256)):
+        raise ValueError()
+    reservation = {'attempt': attempt, 'token': secrets.token_hex(32)}
+    record = _encode({'schema': 'wd.q4-live-runner-reservation.v1', **reservation,
+                      'intent_sha256': intent_sha256})
+    path = private_root / ('q4-live-runner-reservation-' + attempt + '.json')
+    info = runner._create(path, record)
+    runner._verify_own(path, record, info)
+    return reservation
+
+
 def _runner_receipt(private_root, previous_files, report, previous_pin, route_pin, plan_pin):
     candidates = {p.name for p in private_root.glob('q4-status-result-*.json')}
     if len(candidates) > 50000:
@@ -363,10 +379,11 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None):
         intent_path = private_root / ('q4-live-update-intent-' + nonce + '.json')
         intent_info = runner._create(intent_path, intent)
         runner._verify_own(intent_path, intent, intent_info)
+        reservation = _create_recovery_reservation(private_root, nonce, _sha(intent))
         report = runner.run_once(enabled=True, route_bytes=route_raw, expected_route_sha256=_sha(route_raw),
             plan_bytes=plan_raw, policy_bytes=policy, public_policy_bytes=public_policy, fleet_bytes=fleet,
             expected_fleet_sha256=descriptor['fleet_sha256'], roster_bytes=roster, anchor_bytes=anchor_raw,
-            renewable=True)
+            renewable=True, recovery_reservation=reservation)
         receipt_name = _runner_receipt(private_root, old_receipts, report, current_pin, _sha(route_raw), _sha(plan_raw))
         progress = _encode({'schema': 'wd.q4-live-update-progress.v1', 'attempt': nonce,
             'marker_sha256': _sha(marker_raw), 'config_sha256': expected_config_sha256,

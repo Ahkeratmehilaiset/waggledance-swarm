@@ -66,6 +66,15 @@ def test_on_demand_capacity_reader_is_packaged_as_an_explicit_entrypoint():
     assert definition["python_entrypoints"]["mind_capacity_read"] == "sandbox/mind/capture/capacity_read.py"
 
 
+def test_opt_in_public_status_writer_ships_with_its_fixed_wrapper():
+    definition = _definition()
+    assert "tools/wd_mind_public_event_writer.py" in _packaged_python()
+    assert definition["python_entrypoints"]["mind_public_status"] == "tools/wd_mind_public_event_writer_cli.py"
+    assert "tools/wd_mind_public_event_writer_cli.py" in _packaged_python()
+    deployer = (OPS_ROOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+    assert "'Invoke-WdMindPublicStatus.ps1'," in deployer
+
+
 @pytest.mark.parametrize("path", [
     "tools/wd_q4_descriptor_cli.py",
     "tools/wd_q4_descriptor_materializer.py",

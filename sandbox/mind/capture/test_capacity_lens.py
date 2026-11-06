@@ -180,10 +180,21 @@ def test_publish_replaces_the_file_whole_and_leaves_no_temporary_file(tmp_path):
     assert [path.name for path in target.iterdir()] == ["lens-limits.txt"]
 
 
+def synthetic_host(tmp_path, monkeypatch):
+    """A synthetic system directory with a Windows PowerShell host file (never run); the lens resolves it."""
+    system = tmp_path / "System32"
+    host = system / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    host.parent.mkdir(parents=True, exist_ok=True)
+    host.write_bytes(b"synthetic host, never run")
+    monkeypatch.setattr(lens, "system_directory", lambda: system)
+    return host
+
+
 def run_hook(tmp_path, monkeypatch, raw, returncode=0, error=None):
     """lens.main() over a fake status run (nothing starts) that prints raw and exits with returncode, or raises error:
     its result or refusal, and the two dirs. The one status run must have the lens's exact argv."""
     out, published, runs = tmp_path / "cycle" / "hook-capacity", tmp_path / "live" / "capacity", []
+    host = synthetic_host(tmp_path, monkeypatch)
 
     def fake_run(argv, **kwargs):
         runs.append(argv)
@@ -200,7 +211,7 @@ def run_hook(tmp_path, monkeypatch, raw, returncode=0, error=None):
         result = lens.main()
     except SystemExit as exc:
         result = str(exc)
-    assert runs == [["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "status.ps1", "-Json"]]
+    assert runs == [[str(host), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "status.ps1", "-Json"]]
     return result, out, published
 
 
@@ -636,8 +647,7 @@ def test_an_unsafe_observer_label_never_reaches_an_output_byte_and_reads_unknown
         assert label.encode() not in body and json.dumps(label)[1:-1].encode() not in body, path.name
     lines = (published / "lens-limits.txt").read_text(encoding="ascii").splitlines()
     assert lines[1:] == [
-        "LIMITS UNKNOWN UNKNOWN: 12%; resets 2026-10-14T18:00Z (in 1860 min); observer UNKNOWN, quota UNKNOWN, "
-        "under 1 min old",
+        "LIMITS UNKNOWN: 1 unrecognized provider observations, figures not shown",
         "COLLECTION UNKNOWN: 1 unrecognized provider rows and 1 unrecognized failed providers, figures not shown",
         "ALERTS: 1 (UNKNOWN UNKNOWN x1)",
         "ACTIVITY UNKNOWN: threads 1; UNKNOWN x1; latest success 2026-10-13T10:00Z (60 min ago); error UNKNOWN x1 "
@@ -650,10 +660,11 @@ def test_known_providers_and_short_safe_labels_pass_and_an_unknown_provider_does
                     observation("22222222-b", {"name": "five_hour", "used_percent": 4}, provider="gemini")],
                    collection={"claude": {"last_success": None, "collection_state": "pending_or_interrupted"}})
     lines = render(value)
-    assert [line[:line.index(";")] for line in lines if line.startswith(("LIMITS", "COLLECTION"))] == [
-        "LIMITS UNKNOWN five_hour: 4%", "LIMITS codex seven_day_opus: 3%",
+    assert [line.split(";")[0] for line in lines if line.startswith(("LIMITS", "COLLECTION"))] == [
+        "LIMITS codex seven_day_opus: 3%",
+        "LIMITS UNKNOWN: 1 unrecognized provider observations, figures not shown",
         "LIMITS claude: UNKNOWN (observer has no successful collection", "COLLECTION claude: NO_SUCCESS"]
-    assert "observer unknown_or_stale, quota observed_headroom" in lines[2]
+    assert "observer unknown_or_stale, quota observed_headroom" in lines[1]
 
 
 # PR 2041 review K2: the age of the whole status against the lens's own UTC clock (injected here).
@@ -702,9 +713,10 @@ def test_unrecognized_provider_rows_are_counted_never_shown_as_one_provider():
         "observer TTL 300 s",
         "COLLECTION UNKNOWN: 2 unrecognized provider rows and 2 unrecognized failed providers, figures not shown"]
     kept = lens.project(value, {})
-    assert sorted(kept[2]) == ["codex"] and kept[6] == {"collection_rows": 2, "failed_providers": 2}
+    assert sorted(kept[2]) == ["codex"]
+    assert kept[6] == {"observations": 0, "collection_rows": 2, "failed_providers": 2}
     view = lens.view_of(b"{}", lens.readable(value, {}))
-    assert view["unrecognized_providers"] == {"collection_rows": 2, "failed_providers": 2}
+    assert view["unrecognized_providers"] == {"observations": 0, "collection_rows": 2, "failed_providers": 2}
     malformed = dict(value, collection={"gemini": {"last_success": "soon"}})
     with pytest.raises(lens.LensRefused):
         lens.readable(malformed, {})
@@ -730,3 +742,104 @@ def test_every_figure_line_of_a_stale_status_says_so():
     assert "(status age 180 min, STALE)" in lines[0] and not lines[0].endswith(" (status STALE)")
     assert len(lines) == 4 and all(line.endswith(" (status STALE)") for line in lines[1:])
     assert [row["status_state"] for row in view["limits"]] == ["STALE"]
+
+
+# CR1 (RCO2 on PR 2044): the status host is the exact System32 Windows PowerShell, never a name the OS searches for
+# in the current directory or PATH, where a planted file of that name could run.
+def test_a_planted_powershell_in_the_current_directory_or_path_is_never_the_status_host(tmp_path, monkeypatch):
+    planted = tmp_path / "planted"
+    planted.mkdir()
+    for name in ("powershell.exe", "powershell", "powershell.bat", "powershell.cmd"):
+        (planted / name).write_bytes(b"planted, must never run")
+    monkeypatch.chdir(planted)
+    monkeypatch.setenv("PATH", str(planted))
+    monkeypatch.setenv("SystemRoot", str(planted))
+    monkeypatch.setenv("WINDIR", str(planted))
+    result, out, published = run_hook(tmp_path, monkeypatch, encoded(good_status()))
+    assert result == 0  # run_hook asserted that the one run used the synthetic System32 host by its full path
+
+
+@pytest.mark.parametrize("case", ["missing", "directory", "link", "relative", "no_system_directory", "no_windll"])
+def test_a_missing_or_irregular_status_host_is_refused_before_any_run(tmp_path, monkeypatch, case):
+    system = tmp_path / "System32"
+    host = system / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    host.parent.mkdir(parents=True)
+    if case == "directory":
+        host.mkdir()
+    elif case == "link":
+        target = tmp_path / "elsewhere.exe"
+        target.write_bytes(b"synthetic")
+        try:
+            host.symlink_to(target)
+        except OSError:
+            pytest.skip("this account may not create symbolic links")
+    elif case == "relative":
+        host.write_bytes(b"synthetic host")
+        monkeypatch.chdir(tmp_path)
+        system = Path("System32")
+
+    def directory():
+        if case == "no_system_directory":
+            raise OSError("GetSystemDirectoryW failed")
+        if case == "no_windll":
+            raise AttributeError("module 'ctypes' has no attribute 'windll'")
+        return system
+
+    runs = []
+    monkeypatch.setattr(lens, "system_directory", directory)
+    monkeypatch.setattr(lens, "subprocess", types.SimpleNamespace(run=lambda *args, **kwargs: runs.append(args),
+                                                                  TimeoutExpired=subprocess.TimeoutExpired))
+    with pytest.raises(lens.LensRefused, match="^status_host_missing$"):
+        lens.read_status(Path("status.ps1"))
+    assert runs == []
+
+
+def test_a_status_host_that_is_a_reparse_point_is_refused_even_when_it_reads_as_a_regular_file(tmp_path,
+                                                                                                 monkeypatch):
+    # An app execution alias or another reparse point can read as a regular file; only its attribute shows it.
+    host, real, runs = synthetic_host(tmp_path, monkeypatch), lens.os.lstat, []
+
+    def lstat(path, *args, **kwargs):
+        info = real(path, *args, **kwargs)
+        return types.SimpleNamespace(st_mode=info.st_mode, st_file_attributes=0x400) if Path(path) == host else info
+
+    monkeypatch.setattr(lens.os, "lstat", lstat)
+    monkeypatch.setattr(lens, "subprocess", types.SimpleNamespace(run=lambda *args, **kwargs: runs.append(args),
+                                                                  TimeoutExpired=subprocess.TimeoutExpired))
+    with pytest.raises(lens.LensRefused, match="^status_host_missing$"):
+        lens.read_status(Path("status.ps1"))
+    assert runs == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the System32 Windows PowerShell host exists only on Windows")
+def test_the_real_status_host_is_the_system32_windows_powershell_whatever_the_environment_says(tmp_path, monkeypatch):
+    monkeypatch.setenv("SystemRoot", str(tmp_path))
+    monkeypatch.setenv("WINDIR", str(tmp_path))
+    monkeypatch.setenv("PATH", str(tmp_path))
+    host = lens.powershell_host()
+    assert host.is_absolute() and host.is_file() and not host.is_relative_to(tmp_path)
+    assert [part.lower() for part in host.parts[-4:]] == ["system32", "windowspowershell", "v1.0", "powershell.exe"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="off Windows only")
+def test_off_windows_there_is_no_status_host():
+    with pytest.raises(lens.LensRefused, match="^status_host_missing$"):
+        lens.powershell_host()
+
+
+# CR3: observations of different unrecognized providers are counted, never shown as one provider's figures.
+def test_observations_of_different_unrecognized_providers_are_counted_never_combined():
+    value = status([observation("11111111-a", {"name": "five_hour", "used_percent": 4}, provider="gemini"),
+                    observation("22222222-b", {"name": "five_hour", "used_percent": 97}, provider="mistral"),
+                    observation("33333333-c", {"name": "five_hour", "used_percent": 5}, provider="codex")])
+    lines = [line for line in render(value) if line.startswith("LIMITS")]
+    assert [line.split(";")[0] for line in lines] == [
+        "LIMITS codex five_hour: 5%", "LIMITS UNKNOWN: 2 unrecognized provider observations, figures not shown"]
+    kept = lens.project(value, {})
+    assert list(kept[1]) == [("codex", "five_hour")] and kept[6]["observations"] == 2
+    view = lens.view_of(b"{}", lens.readable(value, {}))
+    assert [row["provider"] for row in view["limits"]] == ["codex"]
+    assert view["unrecognized_providers"]["observations"] == 2
+    unnamed = dict(value, observations=value["observations"] + [{"provider": "llama", "quota_windows": [{}]}])
+    with pytest.raises(lens.LensRefused):  # an unrecognized provider's figures are still shape-checked
+        lens.readable(unnamed, {})

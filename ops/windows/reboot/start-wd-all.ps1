@@ -3054,7 +3054,10 @@ foreach ($lane in @($manifest.lanes)) {
   if ($bundleMode -ceq 'deployed' -and $laneTurnMode -ceq 'interactive' -and $live.Count -eq 0) {
     # Resolve saved provider conversations before updates, scheduler changes or
     # opening any terminals. Broken history must not become a partial restore.
-    $resumePlan = & $agentLauncherTarget -Agent ([string]$lane.agent) -DryRun `
+    # -CheckLaunchAvailability runs the lane launcher's native-process ancestry
+    # check (with its bounded recheck) here, so an unattributed claude/codex
+    # process fails the whole-fleet preflight once instead of every lane tab.
+    $resumePlan = & $agentLauncherTarget -Agent ([string]$lane.agent) -DryRun -CheckLaunchAvailability `
       -ExpectedManifestHash $bundleManifestAnchor `
       -ExternalSessionsPath $ExternalSessionsPath -ExternalSessionsHash $ExternalSessionsHash @q4SharedDirect
     if ($null -eq $resumePlan -or -not [bool]$resumePlan.dry_run -or

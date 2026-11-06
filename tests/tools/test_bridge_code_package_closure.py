@@ -71,6 +71,7 @@ def test_public_publisher_is_in_bundle_python_files():
     "tools/wd_q4_live_snapshot_publish.py",
     "tools/wd_q4_live_update_once.py",
     "tools/wd_q4_live_update_bootstrap.py",
+    "tools/wd_q4_genesis_bootstrap.py",
     "tools/wd_q4_canonical_ref_verifier.py",
     "tools/wd_q4_shared_descriptor_producer.py",
 ])

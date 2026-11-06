@@ -3,6 +3,12 @@
 Caller must verify this file and the interpreter before execution. This checks
 bytes and import origins again but does not authenticate their owner or defend
 against same-user races, unpinned native DLLs, or an unbounded process tree.
+
+Besides the v1 statuses (checked unchanged) it passes through exactly one bounded progress answer:
+GENESIS_SKIP_PROGRESS with exit code 4 and only a lowercase 64-hex
+skip_receipt_sha256 (late-public skip receipt advanced, nothing published).
+Exit code 4 with any other answer is UNKNOWN, and so is that status or key with
+any other exit code, because the v1 check admits neither.
 """
 import hashlib
 import hmac
@@ -124,7 +130,11 @@ def _bootstrap(args):
         if not 0 < len(raw) <= 512 or raw.count(b'\n') != 1 or not raw.endswith(b'\n'):
             raise ValueError()
         answer = _doc(raw)
-        if (not set(answer) <= {'status', 'pointer_sha256', 'runner_receipt_sha256'} or
+        if result == 4:
+            if (answer.get('status') != 'GENESIS_SKIP_PROGRESS' or set(answer) != {'status', 'skip_receipt_sha256'} or
+                    type(answer['skip_receipt_sha256']) is not str or _HEX.fullmatch(answer['skip_receipt_sha256']) is None):
+                raise ValueError()
+        elif (not set(answer) <= {'status', 'pointer_sha256', 'runner_receipt_sha256'} or
                 answer.get('status') not in ('PUBLISHED_GENESIS', 'PUBLISHED_GENESIS_PARTIAL', 'REFUSED', 'UNKNOWN') or
                 (result == 0) != (answer['status'] in ('PUBLISHED_GENESIS', 'PUBLISHED_GENESIS_PARTIAL')) or
                 any(type(answer[k]) is not str or _HEX.fullmatch(answer[k]) is None

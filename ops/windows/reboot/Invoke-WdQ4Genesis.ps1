@@ -1,5 +1,8 @@
 #requires -Version 5.1
 <# Fixed on-demand genesis entry. Default OFF. No arbitrary executable or module selector.
+Besides the v1 statuses only GENESIS_SKIP_PROGRESS with exit code 4 and exactly a lowercase 64-hex
+skip_receipt_sha256 passes (skip receipt advanced, nothing published); exit code 4 with any other
+answer is UNKNOWN, and the unchanged v1 check admits neither that status nor that key.
 Pins are caller-supplied, not authentication. Process-tree exit and same-user races are not proven. #>
 [CmdletBinding(PositionalBinding=$false)]
 param(
@@ -124,6 +127,13 @@ public static class WdQ4GenesisDirectoryV1 {
     if ($lines.Count -ne 1 -or ([string]$lines[0]).Length -gt 512) { throw 'output' }
     $answer=[string]$lines[0] | ConvertFrom-Json -ErrorAction Stop
     $keys=@($answer.PSObject.Properties.Name)
+    if ($code -eq 4) {
+        if ($keys.Count -ne 2 -or [string]$answer.status -cne 'GENESIS_SKIP_PROGRESS' -or
+            $keys -cnotcontains 'skip_receipt_sha256' -or $answer.skip_receipt_sha256 -isnot [string] -or
+            [string]$answer.skip_receipt_sha256 -cnotmatch '\A[0-9a-f]{64}\z') { throw 'output' }
+        [Console]::Out.WriteLine(($answer | ConvertTo-Json -Compress))
+        exit 4
+    }
     if ($keys.Count -lt 1 -or $keys.Count -gt 3 -or
         @($keys | Where-Object { $_ -cnotin @('status','pointer_sha256','runner_receipt_sha256') }).Count -ne 0 -or
         [string]$answer.status -cnotin @('PUBLISHED_GENESIS','PUBLISHED_GENESIS_PARTIAL','REFUSED','UNKNOWN')) { throw 'output' }

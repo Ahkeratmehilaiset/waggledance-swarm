@@ -12,21 +12,24 @@ to the cycle dir and publishes two short lens files. The raw status is never wri
 plan, token-count, rate-limit payload and model catalog fields); the view keeps the sha256 of its raw bytes as the
 source digest, and nothing of the status reaches a file but the figures and labels named here.
 
-* ``LIMITS``: per provider and window, each thread's used percent and the observed reset time (UTC and minutes
-  left). Same-provider threads may share one pool, so they are listed, never summed. A window with no observed
-  reset says UNKNOWN; nothing estimates a reset or a run-out time it did not observe. Threads whose resets differ
-  get each their own; a reset at or before the status time says it passed (the figure may predate it); a missing,
-  non-finite or unrepresentable percent, reset or age is UNKNOWN (null in the view), never a crash. Each line
-  ends with the observer's own labels for its figures, never dropped: freshness, quota state and the oldest
-  observation's age (the installed observer labels every Claude figure provider_timestamp_unknown, so its quota
-  state is unknown). A provider whose collection never succeeded says so with the observer's own state.
+* ``LIMITS``: per provider and window, each observation's used percent and the observed reset time (UTC and
+  minutes left), with no thread identifier. Same-provider observations may share one pool, so they are listed,
+  never summed. A window with no observed reset says UNKNOWN; nothing estimates a reset or a run-out time it did not
+  observe. Observations whose resets differ get each their own; a reset at or before the status time says it
+  passed (the figure may predate it); a missing, non-finite or unrepresentable percent, reset or age is UNKNOWN
+  (null in the view), never a crash. Each line ends with the observer's own labels for its figures, never
+  dropped: freshness, quota state and the oldest observation's age (the installed observer labels every Claude
+  figure provider_timestamp_unknown, so its quota state is unknown). A provider whose collection never succeeded
+  says so with the observer's own state.
 * ``COLLECTION``: per provider the observer collects (and per failed provider), one health word from the observer's
   own figures: FAILED (collection state failed, or a failed provider), NO_SUCCESS (no successful collection), STALE
   (an attempt after the last success, or a last success older than the observer's own freshness TTL), UNKNOWN (no
   usable TTL: the age is shown, staleness is not judged) or OK; then the state, the last success and its age, the
   last attempt and the TTL. ``ALERTS``: the observer's alerts counted by provider and state; no alert id, thread or
   time is kept.
-* ``ACTIVITY``: per native thread, the observer's activity state, the last successful turn and the first error.
+* ``ACTIVITY``: per provider, never per thread: the number of native threads, their activity and availability
+  states counted, the latest successful turn and its age, and the errors counted by type with the earliest first
+  error.
 
 A status the lens cannot read whole is refused whole with a fixed reason (``refused: status_...``) and nothing is
 written: one that json.loads refuses (not UTF-8 JSON, nested too deep, or an int literal longer than the
@@ -38,8 +41,10 @@ time). An absent or null list, collection or time is one the observer did not gi
 Every time the lens shows is in UTC. A status run that times out, raises an OSError or exits nonzero is refused the
 same way.
 
-Threads are named by their first 8 hex digits. A lane name appears only when ``--declared`` gives one, labelled
-"declared" (the observer binds no thread to a lane). Never writes a bridge event, never runs gate code.
+No thread identifier, alert id, account, plan, token count or provider payload reaches a written or published
+byte. A lane name appears only when ``--declared`` gives one for an observation's thread (by its first 8 hex
+digits), labelled "declared" (the observer binds no thread to a lane); the thread id itself is never written.
+Never writes a bridge event, never runs gate code.
 """
 
 import argparse
@@ -59,7 +64,6 @@ from tools import wd_bridge_mind as core  # noqa: E402
 
 STATUS_SCHEMA = "wd.capacity-status.v1"
 LENS_SCHEMA = "wd.bridge-mind-capacity-lens.v1"
-OLD_IDLE_MIN = 12 * 60  # idle, error-free threads older than this fold into one ACTIVITY line
 NOTE = ("reset times are recheck times, not readiness promises; same-provider threads may share one pool and are "
         "never summed; thread to lane binding unverified unless declared; each line keeps the observer's own "
         "freshness and quota labels and the age of its oldest figure")
@@ -156,6 +160,11 @@ def number(value):
         return False
 
 
+def given_text(value):
+    """A label the observer gave as non-empty text, else UNKNOWN: a label is shown as given or not at all."""
+    return value if isinstance(value, str) and value else ws.UNKNOWN
+
+
 def reset_time(value):
     """An observed reset as a UTC time; None when it is absent, not a number or not a representable epoch second."""
     if not number(value):
@@ -168,12 +177,6 @@ def reset_time(value):
 
 def project(status, declared):
     now = parse_time(status["observed_at"]).astimezone(dt.timezone.utc)  # one with no UTC time stops here
-    name = {thread: f"thread {thread} ({lane}, declared)" for thread, lane in declared.items()}
-
-    def label(thread):
-        short = str(thread or "")[:8]
-        return name.get(short, f"thread {short or ws.UNKNOWN}")
-
     limits = {}
     for observation in rows(status.get("observations")):
         provider = str(observation.get("provider"))
@@ -184,7 +187,7 @@ def project(status, declared):
         for window in windows(observation):
             used, reset_at = window.get("used_percent"), reset_time(window.get("resets_at"))
             limits.setdefault((provider, window["name"]), []).append({
-                "thread": label(observation.get("native_thread_id")),
+                "lane": declared.get(str(observation.get("native_thread_id") or "")[:8]),
                 "used_percent": used if number(used) else None,
                 "reset_utc": None if reset_at is None else utc(reset_at),
                 "minutes_left": None if reset_at is None else round((reset_at - now).total_seconds() / 60),
@@ -225,16 +228,33 @@ def project(status, declared):
         counted[key] = counted.get(key, 0) + 1
     alerts = [{"provider": provider, "state": state, "count": count}
               for (provider, state), count in sorted(counted.items())]
-    activity = []
+    groups = {}
     for row in rows(status.get("native_activity")):
         last, first_error = given_time(row.get("last_successful_turn_at")), given_time(row.get("first_error_at"))
-        activity.append({"thread": label(row.get("native_thread_id")), "provider": row.get("provider"),
-                         "activity_state": row.get("activity_state"),
-                         "availability_state": row.get("availability_state"),
-                         "last_successful_turn_utc": None if last is None else utc(last),
-                         "minutes_since_success": None if last is None else round((now - last).total_seconds() / 60),
-                         "error_type": row.get("error_type"),
-                         "first_error_utc": None if first_error is None else utc(first_error)})
+        group = groups.setdefault(given_text(row.get("provider")), {"threads": 0, "activity_states": {},
+                                                                    "availability_states": {}, "latest": None,
+                                                                    "errors": {}})
+        group["threads"] += 1
+        for key, field in (("activity_states", "activity_state"), ("availability_states", "availability_state")):
+            state = given_text(row.get(field))
+            group[key][state] = group[key].get(state, 0) + 1
+        if last is not None and (group["latest"] is None or last > group["latest"]):
+            group["latest"] = last
+        if row.get("error_type") not in (None, ""):
+            count, first = group["errors"].get(given_text(row.get("error_type")), (0, None))
+            if first_error is not None and (first is None or first_error < first):
+                first = first_error
+            group["errors"][given_text(row.get("error_type"))] = (count + 1, first)
+    activity = [{"provider": provider, "threads": group["threads"],
+                 **{key: [{"state": state, "count": count} for state, count in sorted(group[key].items())]
+                    for key in ("activity_states", "availability_states")},
+                 "latest_success_utc": None if group["latest"] is None else utc(group["latest"]),
+                 "minutes_since_latest_success": (None if group["latest"] is None
+                                                  else round((now - group["latest"]).total_seconds() / 60)),
+                 "errors": [{"error_type": kind, "count": count,
+                             "first_error_utc": None if first is None else utc(first)}
+                            for kind, (count, first) in sorted(group["errors"].items())]}
+                for provider, group in sorted(groups.items())]
     return now, limits, health, activity, alerts
 
 
@@ -288,13 +308,17 @@ def collection_text(provider, row):
             f"{attempt}; {ttl}{failed}")
 
 
+def figure(row):
+    """One observation's percent, after its declared lane when one was given; never a thread id."""
+    return (f"{row['lane']} (declared) " if row["lane"] else "") + percent(row["used_percent"])
+
+
 def text_lines(now, limits, health, activity, alerts):
     lines = [f"capacity (installed observer, read-only) observed {utc(now)}; {NOTE}"]
     for (provider, window), rows in sorted(limits.items()):
-        used = ", ".join(f"{row['thread'][len('thread '):]} {percent(row['used_percent'])}" for row in rows)
-        if len({row["reset_utc"] for row in rows}) > 1:  # one thread's reset is never implied for another
-            when = "resets differ by thread: " + ", ".join(
-                f"{row['thread'][len('thread '):]} {reset_text(row)}" for row in rows)
+        used = ", ".join(figure(row) for row in rows)
+        if len({row["reset_utc"] for row in rows}) > 1:  # one observation's reset is never implied for another
+            when = "resets differ by observation: " + ", ".join(f"{figure(row)} {reset_text(row)}" for row in rows)
         elif rows[0]["reset_utc"] is None:
             when = "reset UNKNOWN (no readable reset observed)"
         else:
@@ -310,16 +334,14 @@ def text_lines(now, limits, health, activity, alerts):
     if alerts:
         lines.append(f"ALERTS: {sum(row['count'] for row in alerts)} ("
                      + ", ".join(f"{row['provider']} {row['state']} x{row['count']}" for row in alerts) + ")")
-    old = [row for row in activity if row["error_type"] is None and row["activity_state"] == "idle_observed"
-           and isinstance(row["minutes_since_success"], int) and row["minutes_since_success"] > OLD_IDLE_MIN]
-    for row in sorted((row for row in activity if row not in old), key=lambda item: item["thread"]):
-        since = (f"last success {row['last_successful_turn_utc'][11:16]}Z ({row['minutes_since_success']} min ago)"
-                 if row["last_successful_turn_utc"] else "no successful turn observed")
-        error = f"; error {row['error_type']} since {str(row['first_error_utc'])[:16]}" if row["error_type"] else ""
-        lines.append(f"ACTIVITY {row['provider']} {row['thread']}: {row['activity_state']}; {since}{error}")
-    if old:
-        lines.append(f"ACTIVITY: {len(old)} more threads idle with no error, last success over "
-                     f"{OLD_IDLE_MIN // 60} h ago (oldest {max(row['minutes_since_success'] for row in old) // 60} h)")
+    for row in activity:
+        states = ", ".join(f"{item['state']} x{item['count']}" for item in row["activity_states"])
+        since = (f"latest success {row['latest_success_utc'][:16]}Z ({row['minutes_since_latest_success']} min ago)"
+                 if row["latest_success_utc"] else "no successful turn observed")
+        errors = "".join(f"; error {item['error_type']} x{item['count']}"
+                         + (f" since {item['first_error_utc'][:16]}" if item["first_error_utc"] else "")
+                         for item in row["errors"])
+        lines.append(f"ACTIVITY {row['provider']}: threads {row['threads']}; {states}; {since}{errors}")
     return lines
 
 
@@ -350,7 +372,7 @@ def main():
         raise SystemExit(f"refused: {exc}") from None
     view = {"schema": LENS_SCHEMA, "authority": "none", "scope": "shadow_observation_not_gate",
             "observed_utc": utc(now), "status_sha256": hashlib.sha256(raw).hexdigest(),
-            "limits": [{"provider": provider, "window": window, "threads": rows}
+            "limits": [{"provider": provider, "window": window, "observations": rows}
                        for (provider, window), rows in sorted(limits.items())],
             "collection_silent": sorted(provider for provider, row in health.items()
                                         if row["last_success_utc"] is None),

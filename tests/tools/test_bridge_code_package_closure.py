@@ -65,6 +65,9 @@ def test_public_publisher_is_in_bundle_python_files():
     "tools/wd_q4_descriptor_materializer.py",
     "tools/wd_q4_descriptor_pointer.py",
     "tools/wd_q4_lane_binding_producer.py",
+    "tools/wd_q4_staged_composer.py",
+    "tools/wd_q4_staged_composer_cli.py",
+    "tools/wd_q4_status_prefix_recovery.py",
     "tools/wd_q4_shared_descriptor_producer.py",
 ])
 def test_shared_descriptor_builder_is_packaged_with_internal_dependencies(path, monkeypatch):
@@ -80,6 +83,12 @@ def test_packaging_alone_does_not_activate_descriptor_or_provision_writers():
     entries = _definition()["python_entrypoints"].values()
     assert "tools/wd_q4_descriptor_cli.py" not in entries
     assert "tools/wd_q4_guard_state_provision_cli.py" not in entries
+
+
+def test_staged_composer_command_is_packaged_and_explicitly_published():
+    definition = _definition()
+    assert definition['python_entrypoints']['q4_staged_composer'] == 'tools/wd_q4_staged_composer_cli.py'
+    assert 'tools.wd_q4_staged_composer_cli' in definition['import_smoke']['package_modules']
 
 
 def test_bound_lane_transport_is_in_bundle_python_files():

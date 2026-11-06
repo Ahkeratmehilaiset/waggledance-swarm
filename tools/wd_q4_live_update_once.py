@@ -168,7 +168,7 @@ def _require_write_roots(baseline_path, bundle_root, checkpoint_root, private_ro
             raise ValueError()
 
 
-def _publish(config, baseline, index_root, public, result):
+def _publish(config, baseline, index_root, public, result, *, generation=None):
     pointer, snapshot = _snapshot(index_root, result['pointer_sha256'], public['policy_path'],
                                   public['roster_path'], public['public_policy_path'])
     bd, _, _, fleet, binding, inputs = baseline
@@ -196,14 +196,15 @@ def _publish(config, baseline, index_root, public, result):
                  expected_pointer_sha256=pins['pointer_sha256'], expected_source_sha256=pins['source_anchor_sha256'])
     fixed_raw = _encode(fixed)
     root = Path(config['baseline_path']).parent.parent
-    paths = materializer.plan_generation_paths(str(root), result['pointer_sha256'])
+    generation = result['pointer_sha256'] if generation is None else generation
+    paths = materializer.plan_generation_paths(str(root), generation)
     descriptor = dict(bd)
     descriptor.update(public_plan=str(Path(paths['generation_dir']) / 'public-plan.json'),
         binding_path=paths['binding_path'], binding_sha256=produced['binding_sha256'],
         fixed_plan_path=paths['fixed_plan_path'], fixed_plan_sha256=_sha(fixed_raw),
         snapshot_path=paths['snapshot_path'], snapshot_sha256=_sha(snapshot), expected_binding=pins)
     descriptor_raw = _encode(descriptor)
-    materializer.materialize_descriptor(enabled=True, target_dir=str(root), generation=result['pointer_sha256'],
+    materializer.materialize_descriptor(enabled=True, target_dir=str(root), generation=generation,
         artifacts={'binding': produced['binding_bytes'], 'fixed_plan': fixed_raw, 'snapshot': snapshot},
         descriptor_bytes=descriptor_raw, expected_descriptor_sha256=_sha(descriptor_raw))
     _exclusive(Path(descriptor['public_plan']), plan_raw)

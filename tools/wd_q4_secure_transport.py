@@ -356,6 +356,53 @@ def _prior_outcome(exc):
             "none" if exc is None else "other")
 
 
+_MAX_EXCEPTION_NODES = 128
+_MAX_EXCEPTION_FRAMES = 4096
+
+
+def _clear_exception_frames(exc):
+    """Drop unwound-frame locals across the complete exception graph.
+
+    Active frames cannot be cleared here; the _run frame clears its own input
+    locals in its outer finally. This does not authenticate a same-user caller.
+    """
+    seen, pending, frame_count = set(), [exc], 0
+    while pending:
+        item = pending.pop()
+        if item is None or id(item) in seen:
+            continue
+        seen.add(id(item))
+        if len(seen) > _MAX_EXCEPTION_NODES:
+            return False
+        pending.extend((item.__context__, item.__cause__))
+        if isinstance(item, BaseExceptionGroup):
+            if len(item.exceptions) + len(pending) > _MAX_EXCEPTION_NODES:
+                return False
+            pending.extend(item.exceptions)
+        tb = item.__traceback__
+        while tb is not None:
+            frame_count += 1
+            if frame_count > _MAX_EXCEPTION_FRAMES:
+                return False
+            try:
+                tb.tb_frame.clear()
+            except RuntimeError:
+                if tb.tb_frame.f_code is not _run.__code__:
+                    return False
+            tb = tb.tb_next
+    return True
+
+
+def _raise_context_free(exc):
+    """Raise a fresh, sanitized signal without an active caller's context."""
+    try:
+        raise exc from None
+    except BaseException as sanitized:
+        sanitized.__context__ = None
+        sanitized.__cause__ = None
+        raise
+
+
 def _io(k, pipe, data, count, deadline, *, connect=False, write=False, eof=False):
     ov = buffer = done = None
     outstanding = False
@@ -1235,219 +1282,351 @@ _check(_DIAGNOSTIC_BOOTSTRAP != _BOOTSTRAP and _DIAGNOSTIC_BOOTSTRAP != _FIXED_B
 
 
 def _validate(stdin_bytes, timeout_seconds, max_output_bytes):
-    _check(type(stdin_bytes) is bytes and len(stdin_bytes) <= _MAX_INPUT)
-    _check(type(timeout_seconds) in (int, float) and math.isfinite(timeout_seconds)
-           and 0 < timeout_seconds <= 1800)
-    _check(type(max_output_bytes) is int and 0 < max_output_bytes <= _MAX_OUTPUT)
-
-
-def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes, fixed=None):
-    # Reject non-dicts without invoking arbitrary caller-supplied mapping code.
-    # The READY primitive is reachable only through run_fixed_peer (mode
-    # "fixed"), after every caller pin was checked and both leases are held.
-    if not (type(metadata) is dict and all(type(key) is str for key in metadata)
-            and type(metadata.get("mode")) is str
-            and metadata["mode"] in ("python-c", "echo", "fixed")
-            and (metadata["mode"] == "fixed") == (fixed is not None)
-            and (fixed is None or (type(fixed) is tuple and len(fixed) == 3))):
-        del metadata, stdin_bytes, fixed
-        raise _Refused()
-    _validate(stdin_bytes, timeout_seconds, max_output_bytes)
-    # Allocate the caller-owned native output before acquiring the dispatch
-    # lock, so allocation failure cannot strand the lock.
-    child_info = _ProcessInfo()
-    if not _RUN_LOCK.acquire(blocking=False):
-        raise _Refused()
-    if _QUARANTINE:
-        _RUN_LOCK.release()
-        raise TransportCleanupUnknown("prior_unknown") from None
-    k = a = None
-    pipe = job = process = thread = None
-    spawn_attempted = False
     try:
-        deadline = time.monotonic() + timeout_seconds
-    except BaseException:
-        # No OS resources have been acquired; release the dispatch lock while
-        # preserving the original failure or interruption.
-        _RUN_LOCK.release()
-        raise
-    try:
-        k, a = _api()
-        _check(type(cwd) is str and os.path.isabs(cwd) and os.path.isdir(cwd))
-        metadata = dict(metadata, max_output_bytes=max_output_bytes)
-        raw_meta = json.dumps(metadata, separators=(",", ":"), ensure_ascii=True).encode("ascii")
-        _check(len(raw_meta) <= _MAX_META)
-        name = r"\\.\pipe\wd-q4-synthetic-" + uuid.uuid4().hex
-        descriptor = _descriptor(k, a)
-        try:
-            security = _SA(C.sizeof(_SA), descriptor, False)
-            pipe = _handle(k.CreateNamedPipeW(
-                name, 3 | 0x40000000 | 0x00080000, 8, 1, 65536, 65536, 0,
-                C.byref(security)))
-        finally:
-            prior = _prior_outcome(sys.exc_info()[1])
-            if not _release_once(k, descriptor, local=True):
-                raise TransportCleanupUnknown(prior) from None
-        _noninheritable(k, pipe)
-        job = _handle(k.CreateJobObjectW(None, None))
-        _noninheritable(k, job)
-        limits = _Limits()
-        limits.basic.flags = 0x2000  # KILL_ON_JOB_CLOSE, no breakaway flags.
-        _check(k.SetInformationJobObject(job, 9, C.byref(limits), C.sizeof(limits)))
-        parent_created = _created(k, k.GetCurrentProcess())
-        argv = command + [name, str(os.getpid()), str(parent_created)]
-        _check(all(type(value) is str and "\0" not in value for value in argv))
-        line = subprocess.list2cmdline(argv)
-        _check(len(line) < 32767)
-        _remaining(deadline)
-        environment = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR")
-                       if key in os.environ}
-        environment.update(TEMP=cwd, TMP=cwd)  # Caller-owned, budgeted synthetic scratch.
-        # No STARTF_USESTDHANDLES, HANDLE_LIST, anonymous pipes or inheritable gap.
-        spawn_attempted = True
-        process, thread, pid, _ = _create_process_in_job(
-            k, job, command[0], line, environment, cwd, child_info)
-        _noninheritable(k, int(process))
-        _noninheritable(k, int(thread))
-        child_created = _created(k, int(process))
-        _check(k.ResumeThread(int(thread)) != 0xFFFFFFFF)
-        _io(k, pipe, None, 0, deadline, connect=True)
-        _peer(k, pipe, pid, child_created, client=True)
-        if fixed is not None:
-            _fixed_exchange(k, pipe, pid, child_created, fixed[0], fixed[1], fixed[2], stdin_bytes, deadline)
-        else:
-            _frame_write(k, pipe, raw_meta, deadline)
-            _frame_write(k, pipe, stdin_bytes, deadline)
-        status = _read(k, pipe, 1, deadline)
-        if status != b"\1":
-            raise _Refused()
-        # Fixed mode: the caller's cap bounds the inner answer; the frame carries the binding overhead only.
-        output = _frame_read(k, pipe, max_output_bytes + (_BIND_OVERHEAD if fixed is not None else 0), deadline)
-        exit_code = struct.unpack(">i", _read(k, pipe, 4, deadline))[0]
-        _check(_read(k, pipe, 4, deadline) == b"END!")
-        _check(_io(k, pipe, None, 1, deadline, eof=True) == b"")
-        state = k.WaitForSingleObject(int(process), _remaining(deadline))
-        if state == 258:
-            raise TimeoutError("secure_transport_timeout")
-        _check(state == 0)
-        actual_exit = W.DWORD()
-        _check(k.GetExitCodeProcess(int(process), C.byref(actual_exit)))
-        _check(actual_exit.value == 0)
-        return output, exit_code
-    except TransportCleanupUnknown:
-        raise
-    except TimeoutError:
-        raise TimeoutError("secure_transport_timeout") from None
-    except Exception:
-        raise _Refused() from None
+        _check(type(stdin_bytes) is bytes and len(stdin_bytes) <= _MAX_INPUT)
+        _check(type(timeout_seconds) in (int, float) and math.isfinite(timeout_seconds)
+               and 0 < timeout_seconds <= 1800)
+        _check(type(max_output_bytes) is int and 0 < max_output_bytes <= _MAX_OUTPUT)
     finally:
-        # Cover the cleanup prologue as well as its operations. Once any
-        # native handle was acquired, an unexpected interruption leaves
-        # the outcome uncertain and must block a later call.
-        try:
-            prior_outcome = _prior_outcome(sys.exc_info()[1])
-            # A suspended child may exist even when an exception prevented one
-            # or both returned handles from reaching the local variables. We
-            # cannot recover or terminate an unreferenced child/handle here.
-            # Conservatively block subsequent work; this also treats ordinary
-            # CreateProcess errors as uncertain rather than claiming cleanup.
-            cleanup_ok = not (spawn_attempted and (process is None or thread is None))
-            # The native call writes to caller-owned memory even if Python
-            # cannot unpack the returned values after the call.
-            if process is None:
-                process = child_info.process
-            if thread is None:
-                thread = child_info.thread
-            failed_closes = []
-            def cleanup_call(operation):
-                nonlocal prior_outcome
-                try:
-                    return bool(operation())
-                except BaseException as exc:
-                    reason = _prior_outcome(exc)
-                    if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
-                        prior_outcome = reason
-                    return False
-            def close_call(handle, *, convert=False):
-                # Conversion can fail or be interrupted too; keep it inside the
-                # same boundary as CloseHandle so later handles are still tried.
-                closed = cleanup_call(lambda: k.CloseHandle(int(handle) if convert else handle))
-                if not closed:
-                    failed_closes.append(handle)
-                return closed
+        del stdin_bytes
+
+
+def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes, fixed=None, *, transport_owner=None):
+    try:
+        # The optional private ticket is a cooperative contribution, never a result
+        # dictionary or a claim that the rest of the caller chain is cleaned up.
+        if transport_owner is not None:
+            from tools.wd_q4_guard_completion import _TransportOwner
+            if type(transport_owner) is not _TransportOwner:
+                del metadata, stdin_bytes, fixed
+                raise _Refused()
             try:
-                if k is not None:
-                    if spawn_attempted and job is not None:
-                        cleanup_deadline = None
-                        try:
-                            cleanup_deadline = time.monotonic() + _CLEANUP_WAIT_SECONDS
-                        except BaseException as exc:
-                            # Still request termination and close owned handles. Without
-                            # a clock bound there is no safe exit/zero wait; quarantine.
-                            reason = _prior_outcome(exc)
-                            if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
-                                prior_outcome = reason
-                            cleanup_ok = False
-                        try:
-                            cleanup_ok = cleanup_call(lambda: k.TerminateJobObject(job, 124)) and cleanup_ok
-                            if cleanup_deadline is not None:
-                                cleanup_ok = cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline)) and cleanup_ok
-                        except BaseException as exc:
-                            # A failure in a decision outside the individual kernel
-                            # calls cannot certify cleanup. Still try termination and
-                            # all owned closes; do not claim the retry confirmed it.
-                            reason = _prior_outcome(exc)
-                            if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
-                                prior_outcome = reason
-                            cleanup_ok = False
-                            cleanup_call(lambda: k.TerminateJobObject(job, 124))
-                            if cleanup_deadline is not None:
-                                cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline))
-                    if job is not None:
-                        cleanup_ok = close_call(job) and cleanup_ok
-                    if process is not None:
-                        cleanup_ok = close_call(process, convert=True) and cleanup_ok
-                    if thread is not None:
-                        cleanup_ok = close_call(thread, convert=True) and cleanup_ok
+                transport_owner._begin()
+            except BaseException:
+                del metadata, stdin_bytes, fixed
+                raise
+        # Reject non-dicts without invoking arbitrary caller-supplied mapping code.
+        # The READY primitive is reachable only through run_fixed_peer (mode
+        # "fixed"), after every caller pin was checked and both leases are held.
+        if not (type(metadata) is dict and all(type(key) is str for key in metadata)
+                and type(metadata.get("mode")) is str
+                and metadata["mode"] in ("python-c", "echo", "fixed")
+                and (metadata["mode"] == "fixed") == (fixed is not None)
+                and (fixed is None or (type(fixed) is tuple and len(fixed) == 3))):
+            if transport_owner is not None:
+                transport_owner._unknown()
+            del metadata, stdin_bytes, fixed
+            raise _Refused()
+        try:
+            _validate(stdin_bytes, timeout_seconds, max_output_bytes)
+            # Allocate before acquiring the dispatch lock.
+            child_info = _ProcessInfo()
+            if not _RUN_LOCK.acquire(blocking=False):
+                raise _Refused()
+        except BaseException:
+            if transport_owner is not None:
+                transport_owner._unknown()
+            del metadata, stdin_bytes, fixed
+            raise
+        if _QUARANTINE:
+            try:
+                _RUN_LOCK.release()
+                if transport_owner is not None:
+                    transport_owner._unknown()
+            finally:
+                del metadata, stdin_bytes, fixed
+            raise TransportCleanupUnknown("prior_unknown") from None
+        k = a = None
+        pipe = job = process = thread = None
+        spawn_attempted = False
+        unexpected_exception = False
+        unmanaged_exception = False
+        scrub_failed = False
+        deferred_interrupt = None
+        deferred_exit_code = None
+        raw_meta = None
+        try:
+            deadline = time.monotonic() + timeout_seconds
+        except BaseException:
+            # No OS resources have been acquired; release the dispatch lock while
+            # preserving the original failure or interruption.
+            try:
+                _RUN_LOCK.release()
+                if transport_owner is not None:
+                    transport_owner._unknown()
+            finally:
+                del metadata, stdin_bytes, fixed, raw_meta
+            raise
+        try:
+            k, a = _api()
+            _check(type(cwd) is str and os.path.isabs(cwd) and os.path.isdir(cwd))
+            metadata = dict(metadata, max_output_bytes=max_output_bytes)
+            raw_meta = json.dumps(metadata, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+            _check(len(raw_meta) <= _MAX_META)
+            name = r"\\.\pipe\wd-q4-synthetic-" + uuid.uuid4().hex
+            descriptor = _descriptor(k, a)
+            try:
+                security = _SA(C.sizeof(_SA), descriptor, False)
+                pipe = _handle(k.CreateNamedPipeW(
+                    name, 3 | 0x40000000 | 0x00080000, 8, 1, 65536, 65536, 0,
+                    C.byref(security)))
+            finally:
+                prior = _prior_outcome(sys.exc_info()[1])
+                if not _release_once(k, descriptor, local=True):
+                    raise TransportCleanupUnknown(prior) from None
+            _noninheritable(k, pipe)
+            job = _handle(k.CreateJobObjectW(None, None))
+            _noninheritable(k, job)
+            limits = _Limits()
+            limits.basic.flags = 0x2000  # KILL_ON_JOB_CLOSE, no breakaway flags.
+            _check(k.SetInformationJobObject(job, 9, C.byref(limits), C.sizeof(limits)))
+            parent_created = _created(k, k.GetCurrentProcess())
+            argv = command + [name, str(os.getpid()), str(parent_created)]
+            _check(all(type(value) is str and "\0" not in value for value in argv))
+            line = subprocess.list2cmdline(argv)
+            _check(len(line) < 32767)
+            _remaining(deadline)
+            environment = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR")
+                           if key in os.environ}
+            environment.update(TEMP=cwd, TMP=cwd)  # Caller-owned, budgeted synthetic scratch.
+            # No STARTF_USESTDHANDLES, HANDLE_LIST, anonymous pipes or inheritable gap.
+            spawn_attempted = True
+            process, thread, pid, _ = _create_process_in_job(
+                k, job, command[0], line, environment, cwd, child_info)
+            _noninheritable(k, int(process))
+            _noninheritable(k, int(thread))
+            child_created = _created(k, int(process))
+            _check(k.ResumeThread(int(thread)) != 0xFFFFFFFF)
+            _io(k, pipe, None, 0, deadline, connect=True)
+            _peer(k, pipe, pid, child_created, client=True)
+            if fixed is not None:
+                _fixed_exchange(k, pipe, pid, child_created, fixed[0], fixed[1], fixed[2], stdin_bytes, deadline)
+            else:
+                _frame_write(k, pipe, raw_meta, deadline)
+                _frame_write(k, pipe, stdin_bytes, deadline)
+            status = _read(k, pipe, 1, deadline)
+            if status != b"\1":
+                raise _Refused()
+            # Fixed mode: the caller's cap bounds the inner answer; the frame carries the binding overhead only.
+            output = _frame_read(k, pipe, max_output_bytes + (_BIND_OVERHEAD if fixed is not None else 0), deadline)
+            exit_code = struct.unpack(">i", _read(k, pipe, 4, deadline))[0]
+            _check(_read(k, pipe, 4, deadline) == b"END!")
+            _check(_io(k, pipe, None, 1, deadline, eof=True) == b"")
+            state = k.WaitForSingleObject(int(process), _remaining(deadline))
+            if state == 258:
+                raise TimeoutError("secure_transport_timeout")
+            _check(state == 0)
+            actual_exit = W.DWORD()
+            _check(k.GetExitCodeProcess(int(process), C.byref(actual_exit)))
+            _check(actual_exit.value == 0)
+            return output, exit_code
+        except TransportCleanupUnknown as exc:
+            if _clear_exception_frames(exc):
+                raise
+            scrub_failed = True
+        except TimeoutError as exc:
+            if _clear_exception_frames(exc):
+                raise TimeoutError("secure_transport_timeout") from None
+            scrub_failed = True
+        except (KeyboardInterrupt, SystemExit) as exc:
+            unmanaged_exception = True
+            if transport_owner is not None:
+                transport_owner._unknown()
+            if _clear_exception_frames(exc):
+                raise
+            deferred_interrupt = "interrupt" if isinstance(exc, KeyboardInterrupt) else "exit"
+            if deferred_interrupt == "exit":
+                deferred_exit_code = exc.code if exc.code is None or type(exc.code) is int else 1
+            scrub_failed = True
+        except Exception as exc:
+            unexpected_exception = not isinstance(exc, _Refused)
+            if _clear_exception_frames(exc):
+                raise _Refused() from None
+            scrub_failed = True
+        except BaseException as exc:
+            # Groups containing interrupts and all other unmanaged base errors
+            # must never register successful owner cleanup.
+            unmanaged_exception = True
+            if transport_owner is not None:
+                transport_owner._unknown()
+            if _clear_exception_frames(exc):
+                raise
+            if isinstance(exc, BaseExceptionGroup):
+                # Its unseen members cannot be classified within the budget.
+                # Preserve a base-exception group signal without inventing a
+                # particular interrupt or retaining the original graph.
+                deferred_interrupt = "base_group"
+            scrub_failed = True
+        finally:
+            # Cover the cleanup prologue as well as its operations. Once any
+            # native handle was acquired, an unexpected interruption leaves
+            # the outcome uncertain and must block a later call.
+            try:
+                prior_cleanup_unknown = isinstance(sys.exc_info()[1], TransportCleanupUnknown)
+                prior_outcome = _prior_outcome(sys.exc_info()[1])
+                # A suspended child may exist even when an exception prevented one
+                # or both returned handles from reaching the local variables. We
+                # cannot recover or terminate an unreferenced child/handle here.
+                # Conservatively block subsequent work; this also treats ordinary
+                # CreateProcess errors as uncertain rather than claiming cleanup.
+                cleanup_ok = not (spawn_attempted and (process is None or thread is None))
+                # The native call writes to caller-owned memory even if Python
+                # cannot unpack the returned values after the call.
+                if process is None:
+                    process = child_info.process
+                if thread is None:
+                    thread = child_info.thread
+                failed_closes = []
+                def cleanup_call(operation):
+                    nonlocal prior_outcome
                     try:
-                        if pipe is not None and not any(entry[1] == pipe for entry in _QUARANTINE):
-                            cleanup_ok = close_call(pipe) and cleanup_ok
-                        elif pipe is not None:
-                            cleanup_ok = False  # Pending overlapped I/O remains quarantined.
+                        return bool(operation())
                     except BaseException as exc:
-                        # When pending-I/O ownership cannot be checked, retaining
-                        # the handle is safer than closing a possibly active pipe.
                         reason = _prior_outcome(exc)
                         if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
                             prior_outcome = reason
-                        cleanup_ok = False
-                        if pipe is not None:
-                            failed_closes.append(pipe)
-                if not cleanup_ok and (failed_closes or not _QUARANTINE):
-                    # Record only uncertain closes, never successfully closed values.
-                    _QUARANTINE.append((k, None, tuple(failed_closes)))
+                        return False
+                def close_call(handle, *, convert=False):
+                    # Conversion can fail or be interrupted too; keep it inside the
+                    # same boundary as CloseHandle so later handles are still tried.
+                    closed = cleanup_call(lambda: k.CloseHandle(int(handle) if convert else handle))
+                    if not closed:
+                        failed_closes.append(handle)
+                    return closed
+                try:
+                    if k is not None:
+                        if spawn_attempted and job is not None:
+                            cleanup_deadline = None
+                            try:
+                                cleanup_deadline = time.monotonic() + _CLEANUP_WAIT_SECONDS
+                            except BaseException as exc:
+                                # Still request termination and close owned handles. Without
+                                # a clock bound there is no safe exit/zero wait; quarantine.
+                                reason = _prior_outcome(exc)
+                                if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                                    prior_outcome = reason
+                                cleanup_ok = False
+                            try:
+                                cleanup_ok = cleanup_call(lambda: k.TerminateJobObject(job, 124)) and cleanup_ok
+                                if cleanup_deadline is not None:
+                                    cleanup_ok = cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline)) and cleanup_ok
+                            except BaseException as exc:
+                                # A failure in a decision outside the individual kernel
+                                # calls cannot certify cleanup. Still try termination and
+                                # all owned closes; do not claim the retry confirmed it.
+                                reason = _prior_outcome(exc)
+                                if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                                    prior_outcome = reason
+                                cleanup_ok = False
+                                cleanup_call(lambda: k.TerminateJobObject(job, 124))
+                                if cleanup_deadline is not None:
+                                    cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline))
+                            # A job reporting zero active processes can precede
+                            # its child process handle becoming signaled. Both
+                            # observations are required for confirmed cleanup.
+                            if process is not None:
+                                if cleanup_deadline is None:
+                                    cleanup_ok = False
+                                else:
+                                    cleanup_ok = cleanup_call(
+                                        lambda: _wait_child_exit(k, process, cleanup_deadline)) and cleanup_ok
+                        if job is not None:
+                            cleanup_ok = close_call(job) and cleanup_ok
+                        if process is not None:
+                            cleanup_ok = close_call(process, convert=True) and cleanup_ok
+                        if thread is not None:
+                            cleanup_ok = close_call(thread, convert=True) and cleanup_ok
+                        try:
+                            if pipe is not None and not any(entry[1] == pipe for entry in _QUARANTINE):
+                                cleanup_ok = close_call(pipe) and cleanup_ok
+                            elif pipe is not None:
+                                cleanup_ok = False  # Pending overlapped I/O remains quarantined.
+                        except BaseException as exc:
+                            # When pending-I/O ownership cannot be checked, retaining
+                            # the handle is safer than closing a possibly active pipe.
+                            reason = _prior_outcome(exc)
+                            if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                                prior_outcome = reason
+                            cleanup_ok = False
+                            if pipe is not None:
+                                failed_closes.append(pipe)
+                    if not cleanup_ok and (failed_closes or not _QUARANTINE):
+                        # Record only uncertain closes, never successfully closed values.
+                        _QUARANTINE.append((k, None, tuple(failed_closes)))
+                except BaseException as exc:
+                    # An interruption between guarded cleanup operations leaves their
+                    # progress uncertain. Retain all handle objects and fail closed;
+                    # do not retry a handle that may already have been closed/reused.
+                    # Without acquired resources, keep the preflight failure unchanged.
+                    if not any(value is not None for value in (pipe, job, process, thread)):
+                        raise
+                    reason = _prior_outcome(exc)
+                    if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                        prior_outcome = reason
+                    _QUARANTINE.append((k, pipe, (job, process, thread)))
+                    cleanup_ok = False
             except BaseException as exc:
-                # An interruption between guarded cleanup operations leaves their
-                # progress uncertain. Retain all handle objects and fail closed;
-                # do not retry a handle that may already have been closed/reused.
-                # Without acquired resources, keep the preflight failure unchanged.
+                if transport_owner is not None:
+                    transport_owner._unknown()
                 if not any(value is not None for value in (pipe, job, process, thread)):
                     raise
-                reason = _prior_outcome(exc)
-                if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
-                    prior_outcome = reason
                 _QUARANTINE.append((k, pipe, (job, process, thread)))
-                cleanup_ok = False
-        except BaseException as exc:
-            if not any(value is not None for value in (pipe, job, process, thread)):
-                raise
-            _QUARANTINE.append((k, pipe, (job, process, thread)))
-            raise TransportCleanupUnknown(_prior_outcome(exc)) from None
-        finally:
-            _RUN_LOCK.release()
-        if not cleanup_ok:
-            raise TransportCleanupUnknown(prior_outcome) from None
+                raise TransportCleanupUnknown(_prior_outcome(exc)) from None
+            finally:
+                try:
+                    _RUN_LOCK.release()
+                except BaseException:
+                    if transport_owner is not None:
+                        transport_owner._unknown()
+                    raise
+                finally:
+                    # These inputs are no longer needed after cleanup; traceback
+                    # frames must not keep their references on return or error.
+                    del metadata, stdin_bytes, fixed, raw_meta
+            if not cleanup_ok:
+                if transport_owner is not None:
+                    transport_owner._unknown()
+                raise TransportCleanupUnknown(prior_outcome) from None
+            if transport_owner is not None and unexpected_exception and not scrub_failed:
+                transport_owner._unknown()
+                raise TransportCleanupUnknown(prior_outcome) from None
+            # A no-spawn path, earlier uncertainty or interruption does not count.
+            if transport_owner is not None:
+                if (spawn_attempted and job is not None and not prior_cleanup_unknown
+                        and not unmanaged_exception and not scrub_failed
+                        and prior_outcome not in ("interrupt", "exit")):
+                    try:
+                        transport_owner._complete()
+                    except (KeyboardInterrupt, SystemExit):
+                        transport_owner._unknown()
+                        raise
+                    except BaseException:
+                        transport_owner._unknown()
+                        raise TransportCleanupUnknown(prior_outcome) from None
+                else:
+                    transport_owner._unknown()
+        if scrub_failed:
+            # Raise only after leaving the original except block so an oversized
+            # exception graph cannot survive as this error's implicit context.
+            if deferred_interrupt == "interrupt":
+                _raise_context_free(KeyboardInterrupt())
+            if deferred_interrupt == "exit":
+                _raise_context_free(SystemExit(deferred_exit_code))
+            if deferred_interrupt == "base_group":
+                _raise_context_free(BaseExceptionGroup("transport_exception_graph_unavailable",
+                                                      [BaseException("transport_unmanaged")]))
+            _raise_context_free(TransportCleanupUnknown("other"))
 
+
+    finally:
+        if "metadata" in locals():
+            del metadata
+        if "stdin_bytes" in locals():
+            del stdin_bytes
+        if "fixed" in locals():
+            del fixed
+        if "raw_meta" in locals():
+            del raw_meta
 
 def run_bounded(*, executable, arguments, cwd, stdin_bytes, timeout_seconds,
                 max_output_bytes, expected_interpreter_sha256=None, interpreter_max_bytes=None):

@@ -166,9 +166,9 @@ def test_cleanup_deadline_exception_still_terminates_and_quarantines(
     assert calls == before
 
 
-@pytest.mark.parametrize("fault", ["job_truth", "process_int", "pipe_truth", "pipe_tracking", "trace_cleanup"])
-@pytest.mark.parametrize("error_kind", [RuntimeError, KeyboardInterrupt, SystemExit],
-                         ids=["runtime-error", "interrupt", "exit"])
+@pytest.mark.parametrize("fault", ["job_truth", "process_int", "pipe_truth", "pipe_tracking", "trace_cleanup", "trace_prologue"])
+@pytest.mark.parametrize("error_kind", [RuntimeError, KeyboardInterrupt, SystemExit, transport.TransportCleanupUnknown],
+                         ids=["runtime-error", "interrupt", "exit", "cleanup-unknown"])
 @pytest.mark.parametrize("route", ["direct", "fixed_wrapper", "bounded_wrapper"])
 def test_cleanup_decision_or_conversion_exception_keeps_cleaning_and_quarantines(tmp_path, monkeypatch, fault, error_kind, route):
     """Synthetic handles/kernel only: no OS child or live job is created."""
@@ -215,6 +215,9 @@ def test_cleanup_decision_or_conversion_exception_keeps_cleaning_and_quarantines
         def CloseHandle(self, handle): calls.append(("close", handle)); return 1
 
     kernel = Kernel()
+    # An unprotected prologue interruption can leave its dispatch lock held;
+    # isolate the synthetic lock so a RED cannot contaminate later tests.
+    monkeypatch.setattr(transport, "_RUN_LOCK", threading.Lock())
     monkeypatch.setattr(transport, "_QUARANTINE", quarantine)
     monkeypatch.setattr(transport, "_api", lambda: (kernel, None))
     monkeypatch.setattr(transport, "_descriptor", lambda *args: 14)
@@ -230,14 +233,15 @@ def test_cleanup_decision_or_conversion_exception_keeps_cleaning_and_quarantines
         phase["cleanup"] = True
         if fault == "pipe_tracking":
             quarantine.append(BadQuarantineEntry())
-        if fault == "trace_cleanup":
+        if fault in ("trace_cleanup", "trace_prologue"):
             lines, first = inspect.getsourcelines(transport._run)
-            target = next(first + index for index, line in enumerate(lines) if line.strip() == "if k is not None:")
+            marker = "prior_outcome = _prior_outcome(sys.exc_info()[1])" if fault == "trace_prologue" else "if k is not None:"
+            target = next(first + index for index, line in enumerate(lines) if line.strip() == marker)
             def trace(frame, event, arg):
                 if frame.f_code is transport._run.__code__ and event == "line" and frame.f_lineno == target:
                     phase["injected"] = True
                     sys.settrace(None)
-                    raise error_kind("synthetic cleanup line interruption")
+                    raise error_kind("other" if error_kind is transport.TransportCleanupUnknown else "synthetic cleanup line interruption")
                 return trace
             sys._getframe(1).f_trace = trace
             sys.settrace(trace)
@@ -265,11 +269,11 @@ def test_cleanup_decision_or_conversion_exception_keeps_cleaning_and_quarantines
     finally:
         sys.settrace(previous_trace)
     if fault != "pipe_truth":
-        assert caught.value.prior_outcome == {RuntimeError: "timeout", KeyboardInterrupt: "interrupt",
-                                             SystemExit: "exit"}[error_kind]
+        expected_outcome = {RuntimeError: "other", KeyboardInterrupt: "interrupt", SystemExit: "exit", transport.TransportCleanupUnknown: "other"}[error_kind] if fault == "trace_prologue" else {RuntimeError: "timeout", KeyboardInterrupt: "interrupt", SystemExit: "exit", transport.TransportCleanupUnknown: "timeout"}[error_kind]
+        assert caught.value.prior_outcome == expected_outcome
     assert phase["injected"] is (fault != "pipe_truth")
     assert bool(quarantine) is (fault != "pipe_truth")
-    if fault != "trace_cleanup":
+    if fault not in ("trace_cleanup", "trace_prologue"):
         assert "terminate-job" in calls
         assert "wait-job" in calls
         assert ("close", 16) in calls
@@ -284,11 +288,13 @@ def test_cleanup_decision_or_conversion_exception_keeps_cleaning_and_quarantines
 
 
 @pytest.mark.parametrize("route", ["direct", "fixed_wrapper", "bounded_wrapper"])
-def test_outer_cleanup_interruption_without_owned_resources_preserves_preflight_refusal(tmp_path, monkeypatch, route):
+@pytest.mark.parametrize("fault", ["trace_cleanup", "trace_prologue"])
+def test_outer_cleanup_interruption_without_owned_resources_preserves_preflight_refusal(tmp_path, monkeypatch, route, fault):
     quarantine, injected = [], []
     monkeypatch.setattr(transport, "_QUARANTINE", quarantine)
     lines, first = inspect.getsourcelines(transport._run)
-    target = next(first + index for index, line in enumerate(lines) if line.strip() == "if k is not None:")
+    marker = "prior_outcome = _prior_outcome(sys.exc_info()[1])" if fault == "trace_prologue" else "if k is not None:"
+    target = next(first + index for index, line in enumerate(lines) if line.strip() == marker)
     def trace(frame, event, arg):
         if frame.f_code is transport._run.__code__ and event == "line" and frame.f_lineno == target:
             injected.append(True)

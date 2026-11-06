@@ -1,5 +1,6 @@
 """Offline cases for the capacity lens: synthetic observer status only, no observer, no process."""
 
+import hashlib
 import json
 import subprocess  # only its TimeoutExpired class: every status run here is the fake one
 import sys
@@ -190,8 +191,11 @@ def good_status():
 def test_a_readable_status_runs_the_hook_and_writes_its_files(tmp_path, monkeypatch):
     raw = encoded(good_status())
     result, out, published = run_hook(tmp_path, monkeypatch, raw)
-    assert result == 0 and (out / "capacity-status.json").read_bytes() == raw
-    assert sorted(path.name for path in out.iterdir()) == ["capacity-lens.json", "capacity-status.json"]
+    # The raw status is no longer kept in the cycle dir (it carries account, plan, token-count, payload and catalog
+    # fields); the view keeps the sha256 of the raw bytes as its source digest.
+    assert result == 0 and sorted(path.name for path in out.iterdir()) == ["capacity-lens.json"]
+    view = json.loads((out / "capacity-lens.json").read_text(encoding="ascii"))
+    assert view["status_sha256"] == hashlib.sha256(raw).hexdigest()
     assert sorted(path.name for path in published.iterdir()) == ["capacity-lens.json", "lens-limits.txt"]
 
 
@@ -308,6 +312,14 @@ def malformed(case):
         value["collection"] = {"codex": {"last_success": "soon"}}
     elif case == "collection_attempt_a_number":
         value["collection"] = {"codex": {"last_success": None, "last_attempt": 5}}
+    elif case == "failed_providers_a_string":
+        value["failed_providers"] = "codex"
+    elif case == "failed_provider_not_a_string":
+        value["failed_providers"] = [None]
+    elif case == "alerts_one_object":
+        value["alerts"] = {"provider": "codex", "state": "auth_required"}
+    elif case == "alert_row_not_an_object":
+        value["alerts"] = ["auth_required"]
     return value
 
 
@@ -317,7 +329,8 @@ MALFORMED = ("observation_not_an_object", "observations_not_a_list", "quota_wind
              "quota_windows_one_object", "window_not_an_object", "window_name_not_a_string", "collection_an_empty_list",
              "collection_row_not_an_object", "activity_a_string", "activity_row_not_an_object", "observed_at_a_number",
              "last_success_false", "last_success_empty_text", "first_error_not_a_time", "collection_success_not_a_time",
-             "collection_attempt_a_number", "observed_at_before_year_1_in_utc")
+             "collection_attempt_a_number", "observed_at_before_year_1_in_utc", "failed_providers_a_string",
+             "failed_provider_not_a_string", "alerts_one_object", "alert_row_not_an_object")
 
 
 @pytest.mark.parametrize("case", MALFORMED)
@@ -372,5 +385,150 @@ def test_every_time_the_lens_shows_is_in_utc():
             "error rate_limited since 2026-10-10T08:00") in lines
     assert "LIMITS codex: UNKNOWN (observer has no successful collection; state pending, last attempt " \
            "2026-09-29T20:24)" in lines
+    assert ("COLLECTION codex: NO_SUCCESS; state pending; no successful collection; last attempt 2026-09-29T20:24Z; "
+            "no observer TTL (staleness not judged)") in lines
     [row] = lens.project(value, {})[3]
     assert row["first_error_utc"] == "2026-10-10T08:00:00Z"
+
+
+# Capacity-lens fix v1 (Lead 11-06, from fable-5's inventory): no raw status persisted, collector health explicit.
+SENTINELS = ("sentinel-pool-1d7", "sentinelauthctx5e2", "sentinel-account-type", "sentinel-plan-type", "918273645",
+             "546372819", "sentinel-rate-payload", "sentinel-model-catalog", "sentinel-install-dir",
+             "sentinel-auth-state", "sentinelalertid9c", "sentinel-limitation")
+
+
+def identity_status():
+    """A status whose identity, plan, token-count, payload, catalog, installation, auth and alert-id fields carry
+    sentinel values the lens must never write or publish."""
+    value = good_status()
+    value["observations"][0].update(
+        account_pool=SENTINELS[0], auth_context_id=SENTINELS[1], account_type=SENTINELS[2], plan_type=SENTINELS[3],
+        usage={"total_input_tokens": int(SENTINELS[4]), "total_output_tokens": int(SENTINELS[5])},
+        payload={"rate_limits": {"primary": SENTINELS[6]}}, catalog={"models": [SENTINELS[7]]})
+    value.update(installation={"root": SENTINELS[8]}, limitations=[SENTINELS[11]],
+                 collection={"claude": {"last_success": "2026-10-13T10:59:00+00:00", "collection_state": "observed",
+                                        "auth_state": SENTINELS[9], "freshness_ttl_seconds": None}},
+                 alerts=[{"alert_id": SENTINELS[10], "provider": "claude", "native_thread_id": "11111111-x",
+                          "state": "rate_limited", "first_observed_at": "2026-10-13T10:00:00+00:00"}],
+                 failed_providers=[])
+    return value
+
+
+def test_no_written_or_published_byte_holds_an_identity_plan_token_payload_or_catalog_value(tmp_path, monkeypatch):
+    raw = encoded(identity_status())
+    assert all(sentinel.encode() in raw for sentinel in SENTINELS)
+    result, out, published = run_hook(tmp_path, monkeypatch, raw)
+    assert result == 0
+    files = sorted(out.iterdir()) + sorted(published.iterdir())
+    assert sorted(path.name for path in files) == ["capacity-lens.json", "capacity-lens.json", "lens-limits.txt"]
+    for path in files:
+        body = path.read_bytes()
+        assert [sentinel for sentinel in SENTINELS if sentinel.encode() in body] == [], path.name
+    view = json.loads((published / "capacity-lens.json").read_text(encoding="ascii"))
+    assert view["status_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert view["alerts"] == [{"provider": "claude", "state": "rate_limited", "count": 1}]
+
+
+HEALTH_NOW = "2026-11-06T18:00:00+00:00"
+# (collection row, failed providers, expected health, expected text after "COLLECTION codex: ")
+HEALTH = {
+    "ok": ({"last_success": "2026-11-06T17:58:00+00:00", "last_attempt": "2026-11-06T17:57:58+00:00",
+            "collection_state": "observed", "freshness_ttl_seconds": 300}, [], "OK",
+           "OK; state observed; last success 2026-11-06T17:58Z (2 min ago); last attempt 2026-11-06T17:57Z; "
+           "observer TTL 300 s"),
+    "ttl_exactly_reached": ({"last_success": "2026-11-06T17:55:00+00:00", "collection_state": "observed",
+                             "freshness_ttl_seconds": 300}, [], "OK",
+                            "OK; state observed; last success 2026-11-06T17:55Z (5 min ago); no attempt recorded; "
+                            "observer TTL 300 s"),
+    "ttl_exceeded": ({"last_success": "2026-11-06T17:54:59+00:00", "collection_state": "observed",
+                      "freshness_ttl_seconds": 300}, [], "STALE",
+                     "STALE; state observed; last success 2026-11-06T17:54Z (5 min ago); no attempt recorded; "
+                     "observer TTL 300 s"),
+    "old_success_failing_attempts": ({"last_success": "2026-11-06T15:00:00+00:00",
+                                      "last_attempt": "2026-11-06T17:59:00+00:00",
+                                      "collection_state": "pending_or_interrupted", "freshness_ttl_seconds": 300},
+                                     [], "STALE",
+                                     "STALE; state pending_or_interrupted; last success 2026-11-06T15:00Z "
+                                     "(180 min ago); last attempt 2026-11-06T17:59Z (after the last success); "
+                                     "observer TTL 300 s"),
+    "attempt_after_a_fresh_success": ({"last_success": "2026-11-06T17:58:00+00:00",
+                                       "last_attempt": "2026-11-06T17:59:00+00:00", "collection_state": "observed",
+                                       "freshness_ttl_seconds": 300}, [], "STALE",
+                                      "STALE; state observed; last success 2026-11-06T17:58Z (2 min ago); last attempt "
+                                      "2026-11-06T17:59Z (after the last success); observer TTL 300 s"),
+    "failed_state": ({"last_success": "2026-11-06T17:58:00+00:00", "collection_state": "failed",
+                      "freshness_ttl_seconds": 300}, [], "FAILED",
+                     "FAILED; state failed; last success 2026-11-06T17:58Z (2 min ago); no attempt recorded; "
+                     "observer TTL 300 s"),
+    "failed_provider": ({"last_success": "2026-11-06T17:58:00+00:00", "collection_state": "observed",
+                         "freshness_ttl_seconds": 300}, ["codex"], "FAILED",
+                        "FAILED; state observed; last success 2026-11-06T17:58Z (2 min ago); no attempt recorded; "
+                        "observer TTL 300 s; failed provider"),
+    "never_succeeded": ({"last_success": None, "collection_state": "pending_or_interrupted",
+                         "freshness_ttl_seconds": 300}, [], "NO_SUCCESS",
+                        "NO_SUCCESS; state pending_or_interrupted; no successful collection; no attempt recorded; "
+                        "observer TTL 300 s"),
+    "no_ttl": ({"last_success": "2026-11-06T16:00:00+00:00", "collection_state": "observed",
+                "freshness_ttl_seconds": None}, [], "UNKNOWN",
+               "UNKNOWN; state observed; last success 2026-11-06T16:00Z (120 min ago); no attempt recorded; "
+               "no observer TTL (staleness not judged)"),
+    "ttl_text": ({"last_success": "2026-11-06T16:00:00+00:00", "freshness_ttl_seconds": "300"}, [], "UNKNOWN",
+                 "UNKNOWN; state UNKNOWN; last success 2026-11-06T16:00Z (120 min ago); no attempt recorded; "
+                 "no observer TTL (staleness not judged)"),
+    "ttl_true": ({"last_success": "2026-11-06T16:00:00+00:00", "freshness_ttl_seconds": True}, [], "UNKNOWN",
+                 "UNKNOWN; state UNKNOWN; last success 2026-11-06T16:00Z (120 min ago); no attempt recorded; "
+                 "no observer TTL (staleness not judged)"),
+    "ttl_zero": ({"last_success": "2026-11-06T16:00:00+00:00", "freshness_ttl_seconds": 0}, [], "UNKNOWN",
+                 "UNKNOWN; state UNKNOWN; last success 2026-11-06T16:00Z (120 min ago); no attempt recorded; "
+                 "no observer TTL (staleness not judged)"),
+    # Mutant survivors of the first run: an attempt at the very time of the success is not after it, and a state
+    # that is not text is shown as UNKNOWN (null in the view), never as given.
+    "attempt_at_the_success_time": ({"last_success": "2026-11-06T17:58:00+00:00",
+                                     "last_attempt": "2026-11-06T17:58:00+00:00", "collection_state": "observed",
+                                     "freshness_ttl_seconds": 300}, [], "OK",
+                                    "OK; state observed; last success 2026-11-06T17:58Z (2 min ago); last attempt "
+                                    "2026-11-06T17:58Z; observer TTL 300 s"),
+    "state_not_text": ({"last_success": "2026-11-06T17:58:00+00:00", "collection_state": 5,
+                        "freshness_ttl_seconds": 300}, [], "OK",
+                       "OK; state UNKNOWN; last success 2026-11-06T17:58Z (2 min ago); no attempt recorded; "
+                       "observer TTL 300 s"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(HEALTH))
+def test_every_collector_has_a_health_line_and_row_from_the_observer_own_figures(case):
+    # Inventory gap 2: only a provider that never succeeded was shown; a 3 h old success with failing attempts
+    # printed nothing but "observer stale". Health is FAILED (observer state failed or a failed provider), NO_SUCCESS,
+    # STALE (an attempt after the last success, or a success older than the observer's own TTL), UNKNOWN (no usable
+    # TTL: the age is shown, staleness is not judged) or OK.
+    row, failed, health, text = HEALTH[case]
+    value = dict(status(collection={"codex": row}), observed_at=HEALTH_NOW, failed_providers=failed)
+    lines = render(value)
+    assert [line for line in lines if line.startswith("COLLECTION")] == ["COLLECTION codex: " + text]
+    kept = lens.project(value, {})[2]["codex"]
+    assert kept["health"] == health and kept["failed_provider"] == (failed == ["codex"])
+    assert kept["freshness_ttl_s"] == (300 if row["freshness_ttl_seconds"] == 300 else None)
+    assert set(kept) == {"health", "collection_state", "last_success_utc", "minutes_since_success",
+                         "last_attempt_utc", "attempt_after_success", "freshness_ttl_s", "failed_provider"}
+
+
+def test_a_failed_provider_without_a_collection_row_is_still_shown_failed():
+    value = dict(status(), observed_at=HEALTH_NOW, failed_providers=["claude"])
+    assert [line for line in render(value) if line.startswith("COLLECTION")] == [
+        "COLLECTION claude: FAILED; state UNKNOWN; no successful collection; no attempt recorded; "
+        "no observer TTL (staleness not judged); failed provider"]
+
+
+def test_alerts_are_counted_by_provider_and_state_and_nothing_else_of_them_is_kept():
+    def alert(provider, state):
+        return {"alert_id": "a" * 32, "provider": provider, "native_thread_id": "33333333-x", "state": state,
+                "first_observed_at": "2026-11-06T17:00:00+00:00"}
+    value = dict(status(), observed_at=HEALTH_NOW,
+                 alerts=[alert("codex", "auth_required"), alert("claude", "rate_limited"),
+                         alert("claude", "rate_limited"), alert("claude", 7)])
+    kept = lens.project(value, {})[4]
+    assert kept == [{"provider": "claude", "state": "UNKNOWN", "count": 1},
+                    {"provider": "claude", "state": "rate_limited", "count": 2},
+                    {"provider": "codex", "state": "auth_required", "count": 1}]
+    assert "ALERTS: 4 (claude UNKNOWN x1, claude rate_limited x2, codex auth_required x1)" in render(value)
+    assert not [line for line in render(dict(value, alerts=[])) if line.startswith("ALERTS")]

@@ -215,6 +215,26 @@ def _publish_locked_catchup(request, state, max_windows, cutoff_utc=None, batch_
             public_policy_bytes=config.public_policy_bytes, public_policy_sha256=pins.public_policy_sha256,
             expected_prefix_sha256=request.start_prefix.sha256, max_prefix_bytes=request.max_prefix_bytes, enabled=True,
             **cutoff_args)
+        # A wholly deferred first window has no publishable rows and does not
+        # prove catch-up. Preserve the existing pointer and cursor only after
+        # verifying the exact bounded chain and the cooperative checkpoint.
+        if (cutoff_utc is not None and request.fenced and previous is not None
+                and chain.get('end_reason') == 'deferred' and chain.get('windows') == ()
+                and chain.get('candidate_prefix') == request.start_prefix):
+            if snapshot.verify_public_catchup(chain, expected_anchor_bytes=source.anchor_bytes,
+                    expected_anchor_sha256=pins.anchor_sha256, expected_policy_sha256=pins.policy_sha256,
+                    expected_roster_sha256=pins.roster_sha256,
+                    expected_public_policy_sha256=pins.public_policy_sha256,
+                    expected_start_prefix=request.start_prefix, expected_cutoff_utc=cutoff_utc,
+                    expected_batch_rows=batch_rows) is not True:
+                raise ValueError()
+            with private_state._checkpoint_lock(Path(request.root), request.timeout):
+                if (checkpoint._active_fence(Path(request.root)) is not None
+                        or checkpoint._current_pointer(Path(request.root)) != request.expected_pointer_sha256):
+                    raise ValueError()
+                state.require(request.expected_pointer_sha256, request.start_prefix)
+                return {**_report('EMPTY_NO_CHANGE', request.expected_pointer_sha256, None),
+                        'coverage': 'partial_ready_prefix', 'source_refusals': 'NOT_AGGREGATED'}
         # A single fully caught-up empty window is already the exact bounded
         # snapshot accepted by the existing strict empty/CAS primitive. Do not
         # collapse multi-window chains or advance across a refused projection.

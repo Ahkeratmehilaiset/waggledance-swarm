@@ -29,6 +29,8 @@ def _frame(monkeypatch):
     monkeypatch.setenv("AGENT_BRIDGE_AGENT_UUID", lead["agent_uuid"])
     monkeypatch.setenv("AGENT_BRIDGE_SESSION_ID", "wd-reboot-synthetic")
     monkeypatch.setenv("AGENT_BRIDGE_RUN_ID", "wd-reboot-synthetic")
+    monkeypatch.setenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", "a" * 64)
+    monkeypatch.delenv("WD_MIND_PUBLIC_ACTIVE_MANIFEST_SHA256", raising=False)
     return lead
 
 
@@ -185,6 +187,7 @@ def test_writer_receipt_with_extra_routing_or_private_fields_is_rejected(monkeyp
 
 def test_writer_command_contains_only_fixed_public_fields(monkeypatch):
     lead = _frame(monkeypatch)
+    monkeypatch.setenv("WD_MIND_PUBLIC_ACTIVE_MANIFEST_SHA256", "b" * 64)
     monkeypatch.setenv("AGENT_BRIDGE_ROLE", "must-not-leave-process")
     monkeypatch.setenv("AGENT_BRIDGE_CAPABILITIES", "must-not-leave-process")
     event = {"agent": lead["agent"], "agent_uuid": lead["agent_uuid"], "type": "status",
@@ -203,6 +206,7 @@ def test_writer_command_contains_only_fixed_public_fields(monkeypatch):
     assert command[command.index("-PayloadJson") + 1] == '{"public_status":true}'
     assert all(flag not in command for flag in ("-To", "-Message", "-Paths", "-WriteScope", "-RequestId"))
     assert "AGENT_BRIDGE_ROLE" not in kwargs["env"] and "AGENT_BRIDGE_CAPABILITIES" not in kwargs["env"]
+    assert kwargs["env"]["WD_REBOOT_EXPECTED_MANIFEST_HASH"] == "b" * 64
 
 
 @pytest.mark.parametrize("tamper", ["none", "anchor", "evidence", "writer", "bin"])
@@ -287,3 +291,66 @@ def test_synthetic_public_broadcast_projects_and_private_variants_exclude(monkey
                    {"write_scope": ["private"]}, {"recipient": "fable-5"},
                    {"payload": {"public_status": True, "path": "private"}}):
         assert not adapter._public_status_event(dict(event, **change), public_tasks, public_types)
+
+
+def test_active_helper_manifest_can_differ_from_candidate_manifest(tmp_path, monkeypatch):
+    bundle = tmp_path / "active"
+    binary = bundle / "tools-bootstrap/.agent-bridge/bin"
+    binary.mkdir(parents=True)
+    files = {}
+    for name in ("Get-BridgeExecutionEvidence.ps1", "Write-AgentEvent.ps1"):
+        blob = ("synthetic-" + name).encode()
+        (binary / name).write_bytes(blob)
+        files["tools-bootstrap/.agent-bridge/bin/" + name] = hashlib.sha256(blob).hexdigest()
+    raw = json.dumps({"files": files}).encode()
+    (bundle / "deployment-manifest.json").write_bytes(raw)
+    monkeypatch.setenv("WD_BRIDGE_BIN", str(binary))
+    monkeypatch.setenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", "a" * 64)
+    monkeypatch.setenv("WD_MIND_PUBLIC_ACTIVE_MANIFEST_SHA256", hashlib.sha256(raw).hexdigest())
+    assert subject._pinned_helpers() == (binary / "Get-BridgeExecutionEvidence.ps1", binary / "Write-AgentEvent.ps1")
+
+
+def test_active_anchor_is_passed_to_attestation_subprocess(monkeypatch):
+    seen = []
+    monkeypatch.setenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", "a" * 64)
+    monkeypatch.setenv("WD_MIND_PUBLIC_ACTIVE_MANIFEST_SHA256", "b" * 64)
+    monkeypatch.setattr(subject, "_pinned_helpers", lambda: (Path("synthetic-evidence"), Path("synthetic-writer")))
+    monkeypatch.setattr(subject, "_powershell", lambda: "synthetic-powershell")
+    def fake_run(command, **kwargs):
+        seen.append(kwargs["env"]["WD_REBOOT_EXPECTED_MANIFEST_HASH"])
+        return SimpleNamespace(stdout="{}")
+    monkeypatch.setattr(subject.subprocess, "run", fake_run)
+    subject._attest()
+    assert seen == ["b" * 64]
+
+
+@pytest.mark.parametrize("fault", ["none", "candidate_pin", "manifest", "writer", "policy", "public", "fleet"])
+def test_candidate_inputs_are_checked_against_candidate_manifest(tmp_path, monkeypatch, fault):
+    bundle = tmp_path / "candidate"
+    code = bundle / "tools-bootstrap"
+    values = {
+        "tools-bootstrap/tools/wd_mind_public_event_writer.py": b"synthetic-writer",
+        "tools-bootstrap/configs/mind/pilot_non_review_policy.json": b"synthetic-policy",
+        "tools-bootstrap/configs/mind/pilot_public_status_policy.json": b"synthetic-public",
+        "wd-fleet.json": b"synthetic-fleet",
+    }
+    for name, raw in values.items():
+        target = bundle / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+    manifest = json.dumps({"files": {name: hashlib.sha256(raw).hexdigest() for name, raw in values.items()}}).encode()
+    (bundle / "deployment-manifest.json").write_bytes(manifest)
+    monkeypatch.setattr(subject, "ROOT", code)
+    monkeypatch.setenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", "0" * 64 if fault == "candidate_pin" else hashlib.sha256(manifest).hexdigest())
+    targets = {"manifest": bundle / "deployment-manifest.json",
+               "writer": bundle / "tools-bootstrap/tools/wd_mind_public_event_writer.py",
+               "policy": bundle / "tools-bootstrap/configs/mind/pilot_non_review_policy.json",
+               "public": bundle / "tools-bootstrap/configs/mind/pilot_public_status_policy.json",
+               "fleet": bundle / "wd-fleet.json"}
+    if fault in targets:
+        targets[fault].write_bytes(targets[fault].read_bytes() + b"!")
+    if fault == "none":
+        assert subject._policy_fleet_bytes() == (b"synthetic-policy", b"synthetic-public", b"synthetic-fleet")
+    else:
+        with pytest.raises((ValueError, OSError)):
+            subject._policy_fleet_bytes()

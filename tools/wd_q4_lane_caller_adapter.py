@@ -10,8 +10,9 @@ What this module proves and what it does not:
 
 * ``lane_binding = "DECLARED_CONSISTENT"`` means only that the identity document hashes to the
   separately supplied pin, names this process id, names a lane that is in the pinned roster with
-  the roster's uuid, places its cwd under its declared worktree (string prefix on path parts, no
-  filesystem resolution: junctions and reparse points are NOT resolved here), carries a
+  the roster's uuid, places its cwd under its declared worktree (string prefix on path parts with
+  ``.`` and ``..`` parts refused, no filesystem resolution: junctions and reparse points are NOT
+  resolved here), carries a
   64-hex owner-token digest (presence and shape only: no independently published digest exists
   today to compare it with), and pins the same descriptor whose pins equal the chain inputs.
 * ``lane_authentication`` is always ``"UNKNOWN"``. All lanes run as one Windows user; a malicious
@@ -20,7 +21,11 @@ What this module proves and what it does not:
   the descriptor's expected binding and a closed shape; any other output is discarded as REFUSED.
 * ``cleanup = "chain_confirmed"`` repeats the existing chain's own confirmation (the fixed transport
   drains its Job within its cleanup budget or raises a cleanup-unknown error). There is no outer
-  whole-call watchdog here; an UNKNOWN cleanup quarantines this process only (no persistent marker).
+  whole-call watchdog here. The process quarantine is pessimistic: it is set before every chain
+  call and cleared only after a confirmed outcome (validated, refused, timeout or a plain refusal),
+  so an interruption anywhere in the call, a cleanup-unknown error from any stage or any other
+  BaseException leaves it set; calls are serialized by a process lock (a concurrent call refuses
+  ``caller_busy``). There is no persistent cross-process marker.
 * Default off reads no argument. Enabled, it reads no file, no environment and no clock, starts no
   process by itself and writes nothing; the chain below starts the pinned fixed peer.
 * No query text, token, path or exception detail is placed in the result or in any exception.
@@ -33,6 +38,7 @@ import json
 import os
 import re
 import secrets
+import threading
 
 from tools import wd_q4_lane_session_client as session
 from tools import wd_q4_roster_from_fleet as roster
@@ -60,16 +66,22 @@ _DESCRIPTOR_KEYS = frozenset({"schema", "fleet_sha256", "lanes", "bundle_root", 
 _BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256",
                            "roster_sha256", "public_policy_sha256", "descriptor_sha256", "projection_sha256"})
 _ANSWER_KEYS = frozenset({"schema", "lane", "status", "reason", "result_count", "results", "binding", "trust"})
+_ANSWER_SCHEMA = "wd.q4-lane-answer.v1"
+_ITEM_KEYS = frozenset({"ref_sha256", "doc_id_sha256", "stored_text"})
+_TRUST = {"lane_authentication": "UNKNOWN", "freshness": "UNKNOWN", "publisher_authentication": "UNKNOWN",
+          "projection_public_attestation": "UNKNOWN", "transport": "caller_injected", "projection": "caller_pinned"}
+_MAX_RESULTS = 100
 _VALIDATED = frozenset({"ANSWER", "ABSTAIN", "DEGRADED"})
 _RESULT_KEYS = ("schema", "status", "lane", "lane_binding", "lane_authentication", "cleanup", "inner_status",
                 "result_count", "answer", "answer_sha256", "identity_sha256", "descriptor_sha256", "call_id")
 
-_QUARANTINED = False  # An unconfirmed cleanup or an interrupted call: never start another chain call here.
+_QUARANTINED = False  # Pessimistic: set before every chain call, cleared only after a confirmed outcome.
+_LOCK = threading.Lock()  # One chain call at a time in this process; a concurrent call refuses caller_busy.
 _HOLD = []  # Attestation leases retained after an unconfirmed close, for explicit handling only.
 
 
 class CallerRefused(ValueError):
-    """Fixed refusal: ``caller_refused`` or ``caller_quarantined``; no input, path or detail inside."""
+    """Fixed refusal: ``caller_refused``, ``caller_quarantined`` or ``caller_busy``; no input, path or detail inside."""
 
 
 def _refuse():
@@ -103,7 +115,10 @@ def _parse(raw, expected_sha256, keys, schema):
 def _parts(text):
     if type(text) is not str or not text or any(ord(c) < 32 or ord(c) == 127 for c in text):
         _refuse()
-    return tuple(part.casefold() for part in text.replace("/", "\\").rstrip("\\").split("\\") if part != "")
+    parts = tuple(part.casefold() for part in text.replace("/", "\\").rstrip("\\").split("\\") if part != "")
+    if any(part in (".", "..") for part in parts):
+        _refuse()
+    return parts
 
 
 def _consistent_identity(identity, descriptor_sha256, fleet_bytes, expected_fleet_sha256):
@@ -162,33 +177,63 @@ def _consistent_descriptor(descriptor, agent, inputs):
 
 
 def _validated(answer, agent, expected_binding):
-    """``(inner_status, answer, result_count)`` for a closed chain answer of the declared lane; else ``None``."""
-    if (type(answer) is not dict or frozenset(answer) != _ANSWER_KEYS or type(answer["status"]) is not str
-            or type(answer["lane"]) is not str or answer["lane"] != agent or type(answer["trust"]) is not dict
-            or answer["trust"].get("lane_authentication") != "UNKNOWN" or type(answer["results"]) is not list
+    """``(inner_status, answer, result_count, answer_sha256)`` for a closed chain answer of the declared lane; else ``None``.
+
+    Every field is re-checked against the closed shape the existing chain produces (schema, fixed reason, the three
+    UNKNOWN trust fields, resolved items of exactly three string fields); the canonical bytes are computed here so
+    that nothing is accepted that cannot be hashed.
+    """
+    if (type(answer) is not dict or frozenset(answer) != _ANSWER_KEYS or answer["schema"] != _ANSWER_SCHEMA
+            or type(answer["status"]) is not str or type(answer["lane"]) is not str or answer["lane"] != agent
+            or type(answer["reason"]) is not str or type(answer["trust"]) is not dict or answer["trust"] != _TRUST
+            or any(type(value) is not str for value in answer["trust"].values())
+            or type(answer["results"]) is not list or len(answer["results"]) > _MAX_RESULTS
             or type(answer["result_count"]) is not int or answer["result_count"] != len(answer["results"])):
         return None
     if answer["status"] == "REFUSED":
-        if answer["results"] or answer["binding"] is not None:
+        if answer["results"] or answer["binding"] is not None or answer["reason"] != "runtime_refused":
             return None
-        return "REFUSED", None, 0
+        return "REFUSED", None, 0, None
     binding = answer["binding"]
-    if (answer["status"] not in _VALIDATED or type(binding) is not dict or frozenset(binding) != _BINDING_KEYS
+    if (answer["status"] not in _VALIDATED or answer["reason"] != "" or type(binding) is not dict
+            or frozenset(binding) != _BINDING_KEYS
             or any(type(binding[key]) is not str or not hmac.compare_digest(binding[key], expected_binding[key])
                    for key in _BINDING_KEYS)):
         return None
-    return answer["status"], answer, answer["result_count"]
+    for item in answer["results"]:
+        if (type(item) is not dict or frozenset(item) != _ITEM_KEYS
+                or any(type(value) is not str for value in item.values())
+                or _HEX64.fullmatch(item["ref_sha256"]) is None or _HEX64.fullmatch(item["doc_id_sha256"]) is None):
+            return None
+    try:
+        canonical = json.dumps(answer, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                               allow_nan=False).encode("ascii")
+    except (TypeError, ValueError):
+        return None
+    return answer["status"], answer, answer["result_count"], hashlib.sha256(canonical).hexdigest()
 
 
 def call_lane_session(*, enabled=False, identity_bytes=None, expected_identity_sha256=None, descriptor_bytes=None,
                       expected_descriptor_sha256=None, situation=None, time=None, inputs=None):
     """One declared-consistent call of the existing chain; ``{"status": "OFF"}`` when ``enabled`` is ``False``."""
-    global _QUARANTINED
     if enabled is False:
         return {"status": "OFF"}
-    if _QUARANTINED:
-        raise CallerRefused("caller_quarantined")
+    if not _LOCK.acquire(blocking=False):
+        raise CallerRefused("caller_busy")
+    try:
+        if _QUARANTINED:
+            raise CallerRefused("caller_quarantined")
+        return _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_bytes,
+                            expected_descriptor_sha256, situation, time, inputs)
+    finally:
+        _LOCK.release()
+
+
+def _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_bytes, expected_descriptor_sha256,
+                 situation, time, inputs):
+    global _QUARANTINED
     agent = binding = identity = descriptor = chain_inputs = None
+    unknown_cleanup = False
     try:
         if (enabled is not True or type(inputs) is not dict or frozenset(inputs) != _INPUT_KEYS
                 or type(inputs["fixed_bundle_bytes"]) is not bytes or type(inputs["runtime_manifest_bytes"]) is not bytes):
@@ -199,50 +244,54 @@ def call_lane_session(*, enabled=False, identity_bytes=None, expected_identity_s
                                      inputs["expected_fleet_sha256"])
         binding = _consistent_descriptor(descriptor, agent, inputs)
         chain_inputs = dict(inputs)
+    except (AttestationCleanupUnknown, TransportCleanupUnknown):
+        agent, unknown_cleanup = None, True
     except Exception:
         agent = None
     finally:
         identity = descriptor = None
     if agent is None:
         del identity_bytes, descriptor_bytes, situation, time, inputs, chain_inputs
+        if unknown_cleanup:
+            _QUARANTINED = True
         raise CallerRefused("caller_refused")
     result = {"schema": SCHEMA, "status": "REFUSED", "lane": agent, "lane_binding": "DECLARED_CONSISTENT",
               "lane_authentication": "UNKNOWN", "cleanup": "chain_confirmed", "inner_status": "session_refused",
               "result_count": 0, "answer": None, "answer_sha256": None, "identity_sha256": expected_identity_sha256,
               "descriptor_sha256": expected_descriptor_sha256, "call_id": secrets.token_hex(16)}
     signal = None
+    confirmed = False
+    _QUARANTINED = True  # pessimistic: only a confirmed outcome below clears it
     try:
         answer = session.query_session(lane=agent, situation=situation, time=time, **chain_inputs, enabled=True)
         validated = _validated(answer, agent, binding)
         if validated is None:
             result["inner_status"] = "output_refused"
         else:
-            result["inner_status"], result["answer"], result["result_count"] = validated
+            result["inner_status"], result["answer"], result["result_count"], result["answer_sha256"] = validated
             if result["answer"] is not None:
                 result["status"] = "VALIDATED"
-                canonical = json.dumps(result["answer"], sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-                                       allow_nan=False).encode("ascii")
-                result["answer_sha256"] = hashlib.sha256(canonical).hexdigest()
+        confirmed = True
     except AttestationCleanupUnknown as exc:
-        _QUARANTINED = True
         _HOLD.append(exc.lease)
         result["status"], result["cleanup"], result["inner_status"] = "UNKNOWN", "unknown", "attestation_cleanup_unknown"
     except TransportCleanupUnknown:
-        _QUARANTINED = True
         result["status"], result["cleanup"], result["inner_status"] = "UNKNOWN", "unknown", "transport_cleanup_unknown"
     except TimeoutError:
         result["status"], result["inner_status"] = "TIMEOUT", "timeout"
+        confirmed = True
     except KeyboardInterrupt:
-        _QUARANTINED = True
         signal = KeyboardInterrupt()
     except SystemExit as exc:
-        _QUARANTINED = True
         signal = SystemExit(exc.code if exc.code is None or type(exc.code) is int else 1)
     except Exception:
         result["inner_status"] = "session_refused"
+        confirmed = True
     finally:
-        answer = validated = canonical = None
+        answer = validated = None
         del situation, time, inputs, chain_inputs, identity_bytes, descriptor_bytes
     if signal is not None:
         raise signal
+    if confirmed:
+        _QUARANTINED = False
     return {key: result[key] for key in _RESULT_KEYS}

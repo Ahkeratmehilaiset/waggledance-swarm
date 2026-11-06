@@ -25,7 +25,14 @@ UUIDS = {agent: "0000000%d-0000-4000-8000-000000000000" % (index + 1) for index,
 UUIDS["codex-tools-1"] = "00000009-0000-4000-8000-000000000000"
 BINDING_KEYS = ("pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256", "roster_sha256",
                 "public_policy_sha256", "descriptor_sha256", "projection_sha256")
+TRUST = {"lane_authentication": "UNKNOWN", "freshness": "UNKNOWN", "publisher_authentication": "UNKNOWN",
+         "projection_public_attestation": "UNKNOWN", "transport": "caller_injected", "projection": "caller_pinned"}
 windows = pytest.mark.skipif(os.name != "nt", reason="the real synthetic fixed peer needs the Windows transport")
+
+
+def test_the_trust_shape_the_adapter_requires_is_the_chain_constant():
+    from tools import wd_q4_lane_query
+    assert adapter()._TRUST == wd_q4_lane_query._TRUST == TRUST
 
 
 def adapter():
@@ -98,8 +105,7 @@ def answer_for(lane, descriptor, status="ANSWER"):
     binding = json.loads(descriptor)["expected_binding"]
     return {"schema": "wd.q4-lane-answer.v1", "lane": lane, "status": status, "reason": "", "result_count": 1,
             "results": [{"ref": "synthetic-ref", "doc_id": "synthetic-doc", "stored_text": "synthetic record"}],
-            "binding": dict(binding), "trust": {"lane_authentication": "UNKNOWN", "freshness": "UNKNOWN",
-                                               "publisher_authentication": "UNKNOWN"}}
+            "binding": dict(binding), "trust": dict(TRUST)}
 
 
 @pytest.fixture
@@ -332,9 +338,7 @@ def test_abstain_and_degraded_are_validated_outcomes_not_answers_of_record(data,
 def test_chain_refusal_is_returned_without_an_answer(data, chain):
     _, state = chain
     state["outcome"] = {"schema": "wd.q4-lane-answer.v1", "lane": LANE, "status": "REFUSED", "reason": "runtime_refused",
-                        "result_count": 0, "results": [], "binding": None,
-                        "trust": {"lane_authentication": "UNKNOWN", "freshness": "UNKNOWN",
-                                  "publisher_authentication": "UNKNOWN"}}
+                        "result_count": 0, "results": [], "binding": None, "trust": dict(TRUST)}
     result = call(data)
     assert result["status"] == "REFUSED" and result["inner_status"] == "REFUSED"
     assert result["answer"] is None and result["answer_sha256"] is None and result["result_count"] == 0
@@ -450,6 +454,137 @@ def test_other_chain_exceptions_are_one_fixed_refusal_without_quarantine(data, c
     assert CANARY not in json.dumps(result, sort_keys=True)
     state["outcome"] = answer_for(LANE, data["descriptor"])
     assert call(data)["status"] == "VALIDATED" and len(calls) == 2
+
+
+# --- Grok challenge cases (report b537ba1b): open answer fields, dot parts, races ----------
+
+@pytest.mark.parametrize("fault", [
+    "trust-extra-key", "trust-value-not-unknown", "reason-nonempty", "schema-differs", "item-extra-key",
+    "item-missing-key", "item-nonhex-ref", "item-nested-value", "item-inf-value", "item-not-dict", "too-many-results",
+    "refused-with-foreign-reason",
+])
+def test_open_fields_of_a_chain_answer_are_refused_before_storage(data, chain, fault):
+    _, state = chain
+    answer = answer_for(LANE, data["descriptor"])
+    if fault == "trust-extra-key":
+        answer["trust"]["query"] = CANARY
+    elif fault == "trust-value-not-unknown":
+        answer["trust"]["freshness"] = CANARY
+    elif fault == "reason-nonempty":
+        answer["reason"] = "c" * 64
+    elif fault == "schema-differs":
+        answer["schema"] = "wd.q4-lane-answer.v2"
+    elif fault == "item-extra-key":
+        answer["results"][0]["cwd"] = CANARY
+    elif fault == "item-missing-key":
+        del answer["results"][0]["stored_text"]
+    elif fault == "item-nonhex-ref":
+        answer["results"][0]["ref_sha256"] = CANARY
+    elif fault == "item-nested-value":
+        answer["results"][0]["stored_text"] = {"text": CANARY}
+    elif fault == "item-inf-value":
+        answer["results"][0]["stored_text"] = float("inf")
+    elif fault == "item-not-dict":
+        answer["results"][0] = [CANARY]
+    elif fault == "too-many-results":
+        answer["results"] = [dict(answer["results"][0]) for _ in range(101)]
+        answer["result_count"] = 101
+    elif fault == "refused-with-foreign-reason":
+        answer.update(status="REFUSED", reason=CANARY, results=[], result_count=0, binding=None)
+    state["outcome"] = answer
+    result = call(data)
+    assert result["status"] == "REFUSED" and result["inner_status"] == "output_refused"
+    assert result["answer"] is None and result["answer_sha256"] is None
+    assert CANARY not in json.dumps(result, sort_keys=True, default=repr)
+    assert adapter()._QUARANTINED is False
+
+
+def test_validated_answer_items_are_the_closed_resolved_records(data, chain):
+    _, state = chain
+    answer = answer_for(LANE, data["descriptor"])
+    answer["results"] = [{"ref_sha256": "a" * 64, "doc_id_sha256": "b" * 64, "stored_text": "synthetic record"}]
+    state["outcome"] = answer
+    result = call(data)
+    assert result["status"] == "VALIDATED" and result["answer"]["results"] == answer["results"]
+
+
+def answer_for(lane, descriptor, status="ANSWER"):  # noqa: F811 - closed resolved item shape from here on
+    binding = json.loads(descriptor)["expected_binding"]
+    return {"schema": "wd.q4-lane-answer.v1", "lane": lane, "status": status, "reason": "", "result_count": 1,
+            "results": [{"ref_sha256": "a" * 64, "doc_id_sha256": "b" * 64, "stored_text": "synthetic record"}],
+            "binding": dict(binding), "trust": dict(TRUST)}
+
+
+@pytest.mark.parametrize("field, value", [
+    ("cwd", r"C:\synthetic\lanes\codex-lead-1\..\fable-5\work"),
+    ("cwd", r"C:\synthetic\lanes\codex-lead-1\.\work"),
+    ("worktree", r"C:\synthetic\lanes\..\lanes\codex-lead-1"),
+    ("worktree", ""),
+])
+def test_dot_parts_in_cwd_or_worktree_refuse_before_the_chain(data, chain, field, value):
+    calls, _ = chain
+    identity = identity_for(data["descriptor"], **{field: value})
+    with pytest.raises(ValueError, match="^caller_refused$"):
+        call(data, identity_bytes=identity, expected_identity_sha256=sha(identity))
+    assert calls == []
+
+
+def test_a_concurrent_call_in_this_process_refuses_busy_before_reading_inputs(data, chain):
+    class Opaque:
+        def __getattribute__(self, key):
+            raise AssertionError("inspected")
+    calls, _ = chain
+    assert adapter()._LOCK.acquire(blocking=False)
+    try:
+        with pytest.raises(ValueError, match="^caller_busy$"):
+            adapter().call_lane_session(enabled=True, identity_bytes=Opaque(), expected_identity_sha256=Opaque(),
+                                        descriptor_bytes=Opaque(), expected_descriptor_sha256=Opaque(),
+                                        situation=Opaque(), time=Opaque(), inputs=Opaque())
+    finally:
+        adapter()._LOCK.release()
+    assert calls == []
+    assert adapter().call_lane_session(enabled=False, identity_bytes=Opaque(), expected_identity_sha256=Opaque(),
+                                       descriptor_bytes=Opaque(), expected_descriptor_sha256=Opaque(),
+                                       situation=Opaque(), time=Opaque(), inputs=Opaque()) == {"status": "OFF"}
+
+
+@pytest.mark.parametrize("kind", ["transport", "attestation"])
+def test_cleanup_unknown_raised_during_the_pre_check_quarantines(data, chain, monkeypatch, kind):
+    calls, _ = chain
+    exc = TransportCleanupUnknown("other") if kind == "transport" else AttestationCleanupUnknown(object())
+
+    def raising(*args, **kwargs):
+        raise exc
+    monkeypatch.setattr(adapter().roster, "build_roster_snapshot", raising)
+    with pytest.raises(ValueError, match="^caller_refused$"):
+        call(data)
+    assert calls == [] and adapter()._QUARANTINED is True
+    with pytest.raises(ValueError, match="^caller_quarantined$"):
+        call(data)
+
+
+def test_any_other_base_exception_from_the_chain_leaves_the_quarantine_set(data, chain):
+    calls, state = chain
+    state["outcome"] = GeneratorExit()
+    with pytest.raises(GeneratorExit):
+        call(data)
+    assert adapter()._QUARANTINED is True and len(calls) == 1
+    with pytest.raises(ValueError, match="^caller_quarantined$"):
+        call(data)
+
+
+def test_quarantine_is_set_during_the_chain_call_and_cleared_only_after_a_confirmed_outcome(data, chain):
+    calls, state = chain
+    seen = []
+
+    def fake(**kwargs):
+        calls.append(kwargs)
+        seen.append(adapter()._QUARANTINED)
+        return answer_for(LANE, data["descriptor"])
+    import tools.wd_q4_lane_session_client as client
+    client.query_session = fake
+    assert call(data)["status"] == "VALIDATED"
+    assert seen == [True] and adapter()._QUARANTINED is False
 
 
 # --- the real synthetic chain (Windows named-pipe transport) --------------------------

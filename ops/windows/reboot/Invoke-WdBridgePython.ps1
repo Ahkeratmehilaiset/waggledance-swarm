@@ -19,10 +19,12 @@
 
 .NOTES
     The tool's output stays on the pipeline and its exit code is published as
-    $LASTEXITCODE. The wrapper deliberately does not call `exit`: a script-level
+    $LASTEXITCODE. By default the wrapper does not call `exit`: a script-level
     exit abandons the caller's assignment and would discard the tool's output.
     From a separate process, call it through -Command and forward the code:
     pwsh -NoProfile -Command "& '<wrapper>' <tool> <args>; exit $LASTEXITCODE".
+    Alternatively, -ExitProcess explicitly forwards the code from a -File
+    process. Do not use that switch for an in-process assignment or dot-source.
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -30,6 +32,7 @@ param(
     [ValidatePattern('^[A-Za-z0-9_./\\-]+\.py$')]
     [string] $Tool,
     [switch] $VerifyPackage,
+    [switch] $ExitProcess,
     [Parameter(ValueFromRemainingArguments)]
     [string[]] $ToolArguments = @()
 )
@@ -80,3 +83,4 @@ Invoke-WdBridgePythonTool `
     -ToolArguments @($ToolArguments) `
     -VerifyPackage:$VerifyPackage
 $global:LASTEXITCODE = Get-WdBridgeCodeLastExitCode
+if ($ExitProcess) { exit $global:LASTEXITCODE }

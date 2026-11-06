@@ -2753,6 +2753,21 @@ $startupPrompt += (' The authoritative lane checkpoint is ' + $laneCurrentStateP
   '. Reconcile it at startup and write it after each bounded slice using the pinned writer with -Worktree ' +
   $worktree + '; task-specific worktree copies do not replace this lane checkpoint. Record a concrete next action and bounded next wake when work remains.')
 $startupPrompt += (
+  ' Q4 on-demand recall: only when memory is needed and WD_Q4_SHARED_DESCRIPTOR_PATH, ' +
+  'WD_Q4_SHARED_DESCRIPTOR_SHA256 and the externally verified WD_REBOOT_EXPECTED_MANIFEST_HASH are present, ' +
+  'and a manifest-verified Invoke-WdQ4LaneRecall.ps1 is packaged, use that helper from this lane worktree ' +
+  'with the inherited lane identity and pins. It invokes the pinned $env:WD_BRIDGE_PYTHON_WRAPPER ' +
+  'tools/wd_q4_lane_caller_cli.py --enabled. Supply UTF-8 JSON ' +
+  'with exactly "situation" and "time" on stdin; time is UTC YYYY-MM-DDTHH:MM:SSZ (optionally 1-6 fractional digits). ' +
+  'through the helper by its verified interface; it delivers stdin through an OS pipe, not a PowerShell ' +
+  'object pipeline to the wrapper. Use only exit code 0 output; if pins or helper are missing or the call ' +
+  'refuses, errors or times out, read the bridge. ' +
+  'There is no automatic retry after a nonzero result; exit 3 means cleanup UNKNOWN and requires reconciliation. ' +
+  'Use no secrets or private paths in the query; do not put raw queries or raw answers in bridge events. ' +
+  'Check referenced evidence independently; freshness and lane authentication remain UNKNOWN. This instruction ' +
+  'is not proof of an installed or used Mind and is not a vote or gate input.'
+)
+$startupPrompt += (
     ' Public status is a separate opt-in: only when WD_MIND_PUBLIC_ENABLED is 1, use the pinned ' +
     'WD_BRIDGE_PYTHON_WRAPPER to run tools/wd_mind_public_session_cli.py with no CLI arguments, using only ' +
     'the verified session tuple. Missing configuration or refusal means unavailable; never fall back to the ' +

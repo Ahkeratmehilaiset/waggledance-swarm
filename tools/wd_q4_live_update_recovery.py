@@ -159,13 +159,30 @@ def _recover_closed_job(*, private, root, config, baseline, descriptor, binding,
     marker_bytes = update._encode({'schema': 'wd.q4-runner-reservation.v1',
                                    'attempt': attempt, 'token': reservation['token']})
     markers = (root / update.runner._PENDING, private / update.runner._PENDING)
-    infos = tuple(path.lstat() for path in markers)
+    infos = tuple(None if update.runner._absent(path) else path.lstat() for path in markers)
+    selected = _prior_selector(config, baseline, marker['previous_pointer_sha256'], target,
+                               attempt, private, config_sha, job_sha)
+    record_path = private / ('q4-live-job-reconciled-' + attempt + '.json')
+    if any(info is None for info in infos):
+        # An absent runner marker is tolerable only after the exact result was
+        # durably recorded and the selector was independently revalidated.
+        if selected is None:
+            raise ValueError()
+        expected_record = update._encode({'schema': 'wd.q4-live-job-reconciled.v1', 'attempt': attempt,
+            'config_sha256': config_sha, 'job_receipt_sha256': job_sha,
+            'intent_sha256': marker['intent_sha256'], 'pointer_sha256': target, 'result': selected})
+        if live._read(record_path, 65536) != expected_record:
+            raise ValueError()
     def verify(*, remove=False):
         if _verify_job_attestation(private, attempt, config_sha, marker['intent_sha256'],
                                    marker_raw, job_sha, helper_sha) != reservation:
             raise ValueError()
         for path, info in zip(markers, infos):
-            update.runner._verify_own(path, marker_bytes, info)
+            if info is None:
+                if not update.runner._absent(path):
+                    raise ValueError()
+            else:
+                update.runner._verify_own(path, marker_bytes, info)
         update.runner._verify_own(marker_path, marker_raw, marker_info)
         with private_state.locked_state(private, root, enabled=True) as state:
             with private_state._checkpoint_lock(root, 0.2):
@@ -182,14 +199,20 @@ def _recover_closed_job(*, private, root, config, baseline, descriptor, binding,
                     raise ValueError()
                 state.require(target, prefix)
                 if remove:
+                    if (_prior_selector(config, baseline, marker['previous_pointer_sha256'], target,
+                                        attempt, private, config_sha, job_sha) != selected
+                            or live._read(record_path, 65536) != record):
+                        raise ValueError()
                     for path, info in zip(markers, infos):
-                        update.runner._verify_own(path, marker_bytes, info)
-                        os.unlink(path)
+                        if info is None:
+                            if not update.runner._absent(path):
+                                raise ValueError()
+                        else:
+                            update.runner._verify_own(path, marker_bytes, info)
+                            os.unlink(path)
                     update.runner._verify_own(marker_path, marker_raw, marker_info)
                     os.unlink(marker_path)
     verify()
-    selected = _prior_selector(config, baseline, marker['previous_pointer_sha256'], target,
-                               attempt, private, config_sha, job_sha)
     if selected is None:
         nonce = secrets.token_hex(32)
         generation = _recovery_generation(attempt, target, nonce)
@@ -203,7 +226,6 @@ def _recover_closed_job(*, private, root, config, baseline, descriptor, binding,
     record = update._encode({'schema': 'wd.q4-live-job-reconciled.v1', 'attempt': attempt,
                              'config_sha256': config_sha, 'job_receipt_sha256': job_sha,
                              'intent_sha256': marker['intent_sha256'], 'pointer_sha256': target, 'result': selected})
-    record_path = private / ('q4-live-job-reconciled-' + attempt + '.json')
     try:
         record_info = update.runner._create(record_path, record)
     except FileExistsError:

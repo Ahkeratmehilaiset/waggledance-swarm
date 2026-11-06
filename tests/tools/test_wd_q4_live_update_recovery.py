@@ -31,6 +31,7 @@ def test_job_recovery_cli_forwards_exact_pins(monkeypatch, capsys):
     ['--job-receipt-sha256', '', '--pointer-sha256', 'd' * 64],
     ['--job-receipt-sha256', 'c' * 64],
     ['--job-receipt-sha256', 'c' * 64, '--job-receipt-sha256', 'd' * 64, '--pointer-sha256', 'e' * 64],
+    ['--job-receipt-sha256', 'c' * 64, '--job-receipt-sha256=' + 'd' * 64, '--pointer-sha256', 'e' * 64],
 ])
 def test_recovery_cli_refuses_mixed_or_incomplete_evidence_before_call(monkeypatch, capsys, extra):
     monkeypatch.setattr(recovery, 'recover', lambda **kw: pytest.fail('invalid evidence reached recovery'))

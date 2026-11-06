@@ -480,7 +480,7 @@ def main(argv=None):
              '--runner-receipt-sha256', '--job-receipt-sha256', '--pointer-sha256')
     valid = (type(args.config) is str and bool(args.config)
              and all(type(pin) is str and update._HEX.fullmatch(pin) for pin in pins)
-             and all(supplied.count(flag) <= 1 for flag in flags)
+             and all(sum(token == flag or token.startswith(flag + '=') for token in supplied) <= 1 for flag in flags)
              and sum(value is not None for value in evidence) == 1
              and all(value is None or update._HEX.fullmatch(value) for value in evidence)
              and ((args.progress_sha256 is not None and args.pointer_sha256 is None)

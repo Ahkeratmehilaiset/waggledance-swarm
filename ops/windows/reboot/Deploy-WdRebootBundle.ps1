@@ -1307,6 +1307,8 @@ foreach ($required in @(
         'Invoke-WdQ4LaneRecall.ps1',
         'Invoke-WdQ4Genesis.ps1',
         'Invoke-WdQ4GenesisWorker.ps1',
+        'Invoke-WdQ4Continuation.ps1',
+        'Invoke-WdQ4ContinuationWorker.ps1',
         'Invoke-WdQ4ProvisionGuard.ps1',
         'Invoke-WdQ4Query.ps1',
         'WdQ4ProcessJob.ps1',

@@ -10,7 +10,7 @@ from tools import wd_q4_staged_composer as staged
 from waggledance.core.bridge_log_reader import _file_identity
 
 
-@pytest.mark.parametrize('fault', ['none', 'request_after_snapshot', 'continuation', 'partial_forged'])
+@pytest.mark.parametrize('fault', ['none', 'request_after_snapshot', 'continuation', 'continuation_v2', 'partial_forged', 'late_skip'])
 def test_actual_genesis_receipt_to_five_lane_descriptor(synthetic, monkeypatch, tmp_path, capsys, fault):
     from tools import wd_q4_genesis_to_composer_cli as program
     original=genesis.bootstrap
@@ -20,7 +20,12 @@ def test_actual_genesis_receipt_to_five_lane_descriptor(synthetic, monkeypatch, 
     def probe(**kw):
         path=Path(kw['source_path'])
         complete=path.read_bytes().splitlines(keepends=True)[0]
-        if fault in ('continuation','partial_forged'):
+        if fault=='late_skip':
+            rows=base.f2_rows(kw,base.EMPTY_EARLY+base.EMPTY_EARLY+['public','private','public','other_task'])
+            kw.update(base.f2_args(kw,rows,max_windows=2))
+            kw.update(resume_genesis_skip=True,renewable=True)
+            complete=path.read_bytes()
+        if fault in ('continuation','continuation_v2','partial_forged'):
             first=json.loads(complete)
             second=base.raw({**first,'ts_utc':'2026-10-31T12:01:00Z'})+b'\n'
             path.write_bytes(complete+second)
@@ -32,19 +37,28 @@ def test_actual_genesis_receipt_to_five_lane_descriptor(synthetic, monkeypatch, 
             source_identity=_file_identity(stream)
         kw.update(expected_source_identity=source_identity, expected_source_prefix_bytes=len(complete),
                   expected_source_prefix_sha256=helpers._sha(complete))
+        if fault=='late_skip':
+            for _ in range(2):
+                with pytest.raises(genesis.GenesisRefused,match='^genesis_skip_progress$'):
+                    original(**kw)
         result=original(**kw)
-        assert result['genesis_initial_prefix_fully_covered'] is (fault not in ('continuation','partial_forged'))
+        assert result['genesis_initial_prefix_fully_covered'] is (fault not in ('continuation','continuation_v2','partial_forged'))
         selected={'status':'PUBLISHED_GENESIS','pointer_sha256':result['pointer_sha256'],
                   'runner_receipt_sha256':result['runner_receipt_sha256']}
-        if fault=='continuation':
+        if fault in ('continuation','continuation_v2'):
             from tools import wd_q4_production_continuation as continuation
             raw_tuple=(Path(kw['private_state_root'])/'q4-genesis-tuple-v1.json').read_bytes()
+            cutoffs=({'cutoff_utc':'2026-10-31T13:10:00Z','previous_cutoff_utc':'2026-10-31T13:00:00Z'}
+                     if fault=='continuation_v2' else {})
             continued=continuation.continue_once(enabled=True,tuple_bytes=raw_tuple,
                 expected_tuple_sha256=result['genesis_tuple_sha256'],expected_pointer_sha256=result['pointer_sha256'],
                 policy_bytes=kw['policy_bytes'],public_policy_bytes=kw['public_policy_bytes'],
-                fleet_bytes=kw['fleet_bytes'],expected_fleet_sha256=kw['expected_fleet_sha256'])
+                fleet_bytes=kw['fleet_bytes'],expected_fleet_sha256=kw['expected_fleet_sha256'],**cutoffs)
             assert continued['status']=='caught_up_to_cutoff'
             selected={k:continued[k] for k in ('status','pointer_sha256','runner_receipt_sha256')}
+            if cutoffs:
+                selected.update({k:continued[k] for k in ('cutoff_utc','previous_cutoff_utc',
+                                                            'route_sha256','cutoff_monotonicity')})
         compose_dir=tmp_path/'compose-case'; compose_dir.mkdir()
         previous=staged._STATE_POINTER
         try:
@@ -54,7 +68,8 @@ def test_actual_genesis_receipt_to_five_lane_descriptor(synthetic, monkeypatch, 
             manifest=helpers.update._encode({'schema_version':1,'source_commit':'a'*40,
                 'files':{'wd-fleet.json':helpers._sha(fleet),'Invoke-WdQ4Query.ps1':helpers._sha(wrapper)}})
             (bundle/'deployment-manifest.json').write_bytes(manifest)
-            source_path=Path(kw['source_path']); complete=source_path.read_bytes().splitlines(keepends=True)[0]
+            source_path=Path(kw['source_path']); complete=(source_path.read_bytes() if fault=='late_skip'
+                else source_path.read_bytes().splitlines(keepends=True)[0])
             with source_path.open('rb') as stream: identity=_file_identity(stream)
             policy=compose_dir/'policy'; policy.write_bytes(kw['policy_bytes'])
             public=compose_dir/'public-policy'; public.write_bytes(kw['public_policy_bytes'])
@@ -110,6 +125,46 @@ def test_actual_genesis_receipt_to_five_lane_descriptor(synthetic, monkeypatch, 
             assert json.loads(capsys.readouterr().out)=={'status':'REFUSED'}
             config_path.write_bytes(helpers.update._encode(config))
             receipt_original=receipt.read_bytes()
+            if fault=='continuation_v2':
+                for key, value in (('route_sha256','0'*64), ('cutoff_utc','2026-10-31T12:59:00Z'),
+                                   ('previous_cutoff_utc','2026-10-31T13:11:00Z'),
+                                   ('previous_cutoff_utc','2026-10-31T12:59:00Z'),
+                                   ('cutoff_monotonicity','VERIFIED'), ('status','PUBLISHED_GENESIS')):
+                    receipt.write_bytes(helpers.update._encode({**selected,key:value}))
+                    bad={**config,'receipt_sha256':helpers._sha(receipt.read_bytes())}
+                    config_path.write_bytes(helpers.update._encode(bad))
+                    assert program.main(['--enable','--config',str(config_path),
+                                         '--sha256',helpers._sha(config_path.read_bytes())])==2
+                    assert json.loads(capsys.readouterr().out)=={'status':'REFUSED'}
+                    assert not list(output.iterdir()) and not list(stage.iterdir())
+                missing=dict(selected); missing.pop('previous_cutoff_utc')
+                receipt.write_bytes(helpers.update._encode(missing))
+                bad={**config,'receipt_sha256':helpers._sha(receipt.read_bytes())}
+                config_path.write_bytes(helpers.update._encode(bad))
+                assert program.main(['--enable','--config',str(config_path),
+                                     '--sha256',helpers._sha(config_path.read_bytes())])==2
+                assert json.loads(capsys.readouterr().out)=={'status':'REFUSED'}
+                route_path=Path(kw['private_state_root'])/('q4-continuation-route-'+selected['route_sha256']+'.json')
+                route=json.loads(route_path.read_bytes())
+                route['cutoff_utc']='2026-10-31T13:11:00Z'
+                forged=helpers.update._encode(route); forged_sha=helpers._sha(forged)
+                forged_path=route_path.with_name('q4-continuation-route-'+forged_sha+'.json')
+                forged_path.write_bytes(forged)
+                receipt.write_bytes(helpers.update._encode({**selected,'route_sha256':forged_sha,
+                                                            'cutoff_utc':'2026-10-31T13:11:00Z'}))
+                bad={**config,'receipt_sha256':helpers._sha(receipt.read_bytes())}
+                config_path.write_bytes(helpers.update._encode(bad))
+                assert program.main(['--enable','--config',str(config_path),
+                                     '--sha256',helpers._sha(config_path.read_bytes())])==2
+                assert json.loads(capsys.readouterr().out)=={'status':'REFUSED'}
+                forged_path.unlink()
+            if fault=='late_skip':
+                skip=Path(kw['private_state_root'])/base.SKIP
+                original_skip=skip.read_bytes()
+                skip.write_bytes(original_skip+b' ')
+                assert program.main(call)==2
+                assert json.loads(capsys.readouterr().out)=={'status':'REFUSED'}
+                skip.write_bytes(original_skip)
             receipt.write_bytes(helpers.update._encode({'status':'PUBLISHED_GENESIS_PARTIAL',
                                                         'pointer_sha256':result['pointer_sha256']}))
             partial={**config,'receipt_sha256':helpers._sha(receipt.read_bytes())}
@@ -118,7 +173,7 @@ def test_actual_genesis_receipt_to_five_lane_descriptor(synthetic, monkeypatch, 
                                  '--sha256',helpers._sha(config_path.read_bytes())])==2
             assert json.loads(capsys.readouterr().out)=={'status':'REFUSED'}
             assert not list(output.iterdir()) and not list(stage.iterdir())
-            if fault!='continuation':
+            if fault not in ('continuation','continuation_v2'):
                 # A genesis runner receipt is not a continuation completion proof.
                 receipt.write_bytes(helpers.update._encode({**selected,'status':'caught_up_to_cutoff'}))
                 claimed={**config,'receipt_sha256':helpers._sha(receipt.read_bytes())}
@@ -146,11 +201,11 @@ def test_actual_genesis_receipt_to_five_lane_descriptor(synthetic, monkeypatch, 
             observed.append(True)
         finally:
             staged._STATE_POINTER=previous
-        if fault=='continuation':
+        if fault in ('continuation','continuation_v2','late_skip'):
             raise FinishedContinuation()
         return result
     monkeypatch.setattr(genesis,'bootstrap',probe)
-    if fault in ('continuation','partial_forged'):
+    if fault in ('continuation','continuation_v2','partial_forged','late_skip'):
         with pytest.raises(FinishedContinuation):
             base.test_actual_producer_checkpoint_and_partial_continuation(synthetic,monkeypatch)
     else:

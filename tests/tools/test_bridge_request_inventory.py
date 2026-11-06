@@ -465,3 +465,55 @@ def test_other_requesters_malformed_row_does_not_blind_the_inventory(tmp_path: P
     _write(tmp_path, [theirs, mine])
     result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-NoCache")
     assert [entry["request_id"] for entry in result["requests"]] == ["mine-v1"]
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("collision", ("foreign_requester", "case_variant", "both"))
+def test_exact_diagnostic_does_not_claim_available_for_id_collisions(tmp_path: Path, shell: str, collision: str) -> None:
+    target, _ = _bound("target-v1")
+    rows = [target]
+    if collision in ("foreign_requester", "both"):
+        other, _ = _bound("target-v1", agent="codex-tools-1", to="codex-lead-1")
+        rows.append(other)
+    if collision in ("case_variant", "both"):
+        other, _ = _bound("TARGET-v1")
+        rows.append(other)
+    _write(tmp_path, rows)
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    assert result["exact_request_state"] == "not_available" and result["requests"] == []
+    assert result["matched_count"] == 1 and result["returned_count"] == 0
+    assert result["exact_request_ambiguity"] == {
+        "id_also_used_by_other_requester": collision in ("foreign_requester", "both"),
+        "case_variant_id": collision in ("case_variant", "both"),
+    }
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("variant_side", ("top", "payload"))
+def test_exact_diagnostic_suppresses_case_variant_invalid_id_binding(tmp_path: Path, shell: str, variant_side: str) -> None:
+    target, _ = _bound("target-v1")
+    bad, _ = _bound("TARGET-v1" if variant_side == "top" else "other-v1")
+    bad["payload"]["request_id"] = "other-v1" if variant_side == "top" else "TARGET-v1"
+    _write(tmp_path, [target, bad])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    assert result["conflict_count"] == 1
+    assert result["conflicts"][0]["kind"] == "request_id_binding_conflict"
+    assert result["exact_request_state"] == "not_available" and result["requests"] == []
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_exact_diagnostic_suppresses_target_for_non_string_request_id(tmp_path: Path, shell: str) -> None:
+    target, _ = _bound("target-v1")
+    bad, _ = _bound("bad-v1")
+    bad["request_id"] = 123
+    _write(tmp_path, [target, bad])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    assert result["conflict_count"] == 1
+    assert result["conflicts"][0]["kind"] == "malformed_request_id"
+    assert result["exact_request_state"] == "not_available" and result["requests"] == []

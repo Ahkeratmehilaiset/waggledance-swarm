@@ -99,7 +99,7 @@ function Test-InventoryCouldNameRequest {
     foreach ($container in $containers) {
         $property=$container.PSObject.Properties['request_id']
         if ($null -eq $property -or $null -eq $property.Value) { continue }
-        if ($property.Value -isnot [string] -or $property.Value -ceq $RequestedId) { return $true }
+        if ($property.Value -isnot [string] -or [StringComparer]::OrdinalIgnoreCase.Equals($property.Value, $RequestedId)) { return $true }
     }
     return $false
 }
@@ -330,7 +330,17 @@ if ($DiagnosticPartial) {
     if ($ExactRequestDiagnostic) {
         $diagnostic['inventory_coverage']='incomplete_or_unknown'
         $diagnostic['veto_coverage']='not_evaluated'
-        $diagnostic['exact_request_state']=if ($requests.Count -eq 1) { 'available_not_validated' } else { 'not_available' }
+        $ambiguous=($requests.Count -eq 1 -and ($requests[0].id_also_used_by_other_requester -or $requests[0].case_variant_id))
+        if ($ambiguous) {
+            $diagnostic['exact_request_ambiguity']=[ordered]@{
+                id_also_used_by_other_requester=[bool]$requests[0].id_also_used_by_other_requester
+                case_variant_id=[bool]$requests[0].case_variant_id
+            }
+            $diagnostic['requests']=@()
+            $diagnostic['returned_count']=0
+        }
+        $diagnostic['exact_request_state']=if ($requests.Count -eq 1 -and -not $ambiguous) { 'available_not_validated' } else { 'not_available' }
+        $diagnostic['note']+=' no_conflict_observed only describes invalid own-row conflicts; it does not rule out ID ambiguity.'
     }
     $output=[pscustomobject]$diagnostic
 }

@@ -374,19 +374,62 @@ Describe 'Assert-WdLaneLaunchAvailable recheck budget and configuration' {
     }
   }
 
-  It 'keeps the full command line out of the diagnostics' {
-    $secret = 'claude.exe --resume old ' + ('x' * 150) + ' --token SECRETVALUE'
+  It 'keeps every byte of the command line out of the diagnostics, the warning and the refusal (secret at the start)' {
+    # Lead finding 2026-11-06: a 120-character prefix still leaks a token that
+    # sits near the beginning of the command line. Only the length is recorded.
+    $secret = 'claude.exe --token SECRETVALUE --resume old ' + ('x' * 150)
     $stray = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command $secret -Seconds 5
     Mock Get-CimInstance { @((New-Baseline) + @($stray)) }
+    $script:warnings = @()
+    Mock Write-Warning { $script:warnings += [string]$Message }
     $log = Join-Path $TestDrive 'prefix.jsonl'
     $message = ''
-    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 1 -DiagnosticsPath $log } catch { $message = $_.Exception.Message }
+    $message | Should Match 'has no verified launcher ancestry'
     $message | Should Not Match 'SECRETVALUE'
+    $message | Should Not Match '--resume'
+    ($script:warnings -join "`n") | Should Not Match 'SECRETVALUE'
     $text = Get-Content -LiteralPath $log -Raw
     $text | Should Not Match 'SECRETVALUE'
-    $record = (Read-DiagnosticRecords -Path $log)[0].unattributed[0]
-    $record.command_line_prefix.Length | Should Be 120
-    $record.command_line_prefix | Should Be $secret.Substring(0, 120)
+    $text | Should Not Match '--resume'
+    $text | Should Not Match 'claude\.exe --'
+    $passes = @(Read-DiagnosticRecords -Path $log)
+    $passes.Count | Should Be 2
+    foreach ($pass in $passes) {
+      @($pass.unattributed).Count | Should Be 1
+      foreach ($record in @($pass.unattributed)) {
+        @($record.PSObject.Properties | Where-Object { $_.Name -imatch 'command' }).Name | Should Be @('command_line_length')
+        $record.command_line_length | Should Be $secret.Length
+      }
+    }
+  }
+
+  It 'reports the per-pass record on the verbose stream when no diagnostics path is given and -Verbose is set' {
+    $stray = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe --token SECRETVALUE' -Seconds 5
+    Mock Get-CimInstance { @((New-Baseline) + @($stray)) }
+    # The refusal throws after the record is written, so collect the stream as it
+    # flows instead of assigning the whole pipeline result.
+    $script:verboseLines = @()
+    try {
+      Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 -Verbose 4>&1 |
+        ForEach-Object { if ($_ -is [Management.Automation.VerboseRecord]) { $script:verboseLines += [string]$_.Message } }
+    } catch { }
+    $lines = @($script:verboseLines)
+    @($lines | Where-Object { $_ -match '"schema":"wd\.lane-availability-check\.v1"' }).Count | Should Be 1
+    ($lines -join "`n") | Should Not Match 'SECRETVALUE'
+    ($lines -join "`n") | Should Match '"command_line_length":30'
+  }
+
+  It 'writes no file when no diagnostics path is given (the DryRun contract) and still refuses with the full reason' {
+    $stray = New-Row -Id 16300 -Parent 999 -Name 'claude.exe' -Command 'claude.exe --token SECRETVALUE' -Seconds 5
+    Mock Get-CimInstance { @((New-Baseline) + @($stray)) }
+    $before = @(Get-ChildItem -LiteralPath $TestDrive -Recurse -Force).Count
+    $message = ''
+    try { Assert-WdLaneLaunchAvailable -Lane $rco2 -KnownLanes $allLanes -CurrentPid $currentPid -RecheckAttempts 0 } catch { $message = $_.Exception.Message }
+    $message | Should Match 'has no verified launcher ancestry'
+    $message | Should Not Match 'diagnostics '
+    $message | Should Not Match 'SECRETVALUE'
+    @(Get-ChildItem -LiteralPath $TestDrive -Recurse -Force).Count | Should Be $before
   }
 }
 
@@ -413,6 +456,11 @@ Describe 'fleet preflight and launcher wiring (static)' {
   It 'asks for the availability check from the whole-fleet preflight before any lane is started' {
     $fleetText | Should Match '\$resumePlan = & \$agentLauncherTarget -Agent \(\[string\]\$lane\.agent\) -DryRun -CheckLaunchAvailability'
     $fleetText.IndexOf('-DryRun -CheckLaunchAvailability') | Should BeLessThan $fleetText.IndexOf("Write-Host '=== whole-fleet preflight passed ==='")
+  }
+
+  It 'keeps DryRun byte-inert: the diagnostics file path is set only for a live launch' {
+    $agentText | Should Match "\`$script:WdLaneAvailabilityDiagnosticsPath = if \(\`$DryRun\) \{ '' \} else \{ Join-Path \(Join-Path \`$runtimeRoot 'lane_availability'\) \('\{0\}\.jsonl' -f \`$Agent\) \}"
+    $agentText | Should Not Match "\`$script:WdLaneAvailabilityDiagnosticsPath = Join-Path"
   }
 
   It 'defaults the recheck budget to 3 x 5 s and bounds it to 30 s' {

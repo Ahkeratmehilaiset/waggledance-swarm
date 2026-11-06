@@ -1198,6 +1198,7 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
     k = a = None
     pipe = job = process = thread = None
     assigned = False
+    spawn_attempted = False
     try:
         deadline = time.monotonic() + timeout_seconds
     except BaseException:
@@ -1239,6 +1240,7 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
                        if key in os.environ}
         environment.update(TEMP=cwd, TMP=cwd)  # Caller-owned, budgeted synthetic scratch.
         # No STARTF_USESTDHANDLES, HANDLE_LIST, anonymous pipes or inheritable gap.
+        spawn_attempted = True
         process, thread, pid, _ = _winapi.CreateProcess(
             command[0], line, None, None, False, 0x08000404, environment,
             cwd, subprocess.STARTUPINFO())
@@ -1283,7 +1285,12 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
         # the outcome uncertain and must block a later call.
         try:
             prior_outcome = _prior_outcome(sys.exc_info()[1])
-            cleanup_ok = True
+            # A suspended child may exist even when an exception prevented one
+            # or both returned handles from reaching the local variables. We
+            # cannot recover or terminate an unreferenced child/handle here.
+            # Conservatively block subsequent work; this also treats ordinary
+            # CreateProcess errors as uncertain rather than claiming cleanup.
+            cleanup_ok = not (spawn_attempted and (process is None or thread is None))
             failed_closes = []
             def cleanup_call(operation):
                 nonlocal prior_outcome

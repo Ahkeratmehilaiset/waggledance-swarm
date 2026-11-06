@@ -31,7 +31,9 @@ reads no clock and the value is an untrusted assertion, not authenticated time. 
 as the same object, to ``publish_public_catchup``; any other value, or a cutoff with a v1/v2 plan, refuses
 ``request_refused`` before identity, backend or producer. With a cutoff the closed report also admits
 ``partial_ready_prefix`` coverage for a published window and a closed empty advance (``EMPTY_ADVANCED`` /
-``EMPTY_NO_CHANGE``, never at genesis). Without a cutoff every route calls the producer exactly as before.
+``EMPTY_NO_CHANGE``, never at genesis). An explicitly supplied ``batch_rows=True`` is accepted only on
+the fenced v3 cutoff route; the default keeps the producer's unbatched behavior. Without a cutoff a
+single fully caught-up fenced empty window may also return the two closed empty statuses.
 
 Model root binding (v2 finding 1). ``Path.is_absolute`` alone accepts UNC shares and paths through symbolic links
 or junctions, so an unbound ``model_dir`` would let ``model_identity`` read remote or escaped data before the
@@ -572,16 +574,20 @@ def _encoder(encoder, identity):
     return encode
 
 
-def _publish(request, *, max_windows=None, cutoff_utc=None):
+def _publish(request, *, max_windows=None, cutoff_utc=None, batch_rows=False):
     """``(report, token)``: the producer's validated report, or the fixed token to raise."""
     try:
+        if (type(batch_rows) is not bool or (batch_rows and
+                (max_windows is None or cutoff_utc is None or getattr(request, 'fenced', False) is not True))):
+            return None, "publication_state_unknown"
         if max_windows is None:
             report = producer.publish_public_prefix(enabled=True, request=request)
         elif cutoff_utc is None:
             report = producer.publish_public_catchup(enabled=True, request=request, max_windows=max_windows)
         else:
+            options = {"batch_rows": True} if batch_rows else {}
             report = producer.publish_public_catchup(enabled=True, request=request, max_windows=max_windows,
-                                                     cutoff_utc=cutoff_utc)
+                                                     cutoff_utc=cutoff_utc, **options)
     except producer.PrefixProducerRefused as refused:
         token = (refused.args[0] if len(refused.args) == 1 and type(refused.args[0]) is str
                  and refused.args[0] in PRODUCER_REASONS else None)
@@ -605,9 +611,13 @@ def _publish(request, *, max_windows=None, cutoff_utc=None):
                 and report["pointer_sha256"] == request.expected_pointer_sha256)
             or (max_windows is not None and
                 (report["coverage"] not in (_COVERAGE_WITH_CUTOFF if cutoff_utc is not None else _COVERAGE)
-                 # An empty advance exists only on the cutoff route, and only as a partial ready prefix.
+                 # A cutoff empty result is a partial ready prefix. Without a
+                 # cutoff, only the explicitly fenced, fully caught-up single
+                 # empty window is accepted by the producer's narrow route.
                  or (report["status"] not in ("PUBLISHED_GENESIS", "PUBLISHED_HISTORY")
-                     and (cutoff_utc is None or report["coverage"] != "partial_ready_prefix"))
+                     and ((cutoff_utc is None and (getattr(request, "fenced", False) is not True
+                           or report["coverage"] != "caught_up_to_final_snapshot_not_history"))
+                          or (cutoff_utc is not None and report["coverage"] != "partial_ready_prefix")))
                  or report["source_refusals"] != "NOT_AGGREGATED"))):
         return None, "publication_state_unknown"
     return report, None
@@ -625,9 +635,14 @@ def _cutoff_valid(value, schema):
         return False
 
 
+def _batch_valid(value, cutoff, schema):
+    return (type(value) is bool and (not value or
+            (cutoff is not None and schema == PLAN_FENCED_CATCHUP_SCHEMA and _cutoff_valid(cutoff, schema))))
+
+
 def build_prefix_generation(*, enabled=False, plan_bytes=None, expected_plan_sha256=None, config=None,
                             start_prefix=None, root=None, private_state_root=None, trusted_model_root=None,
-                            cutoff_utc=None):
+                            cutoff_utc=None, batch_rows=False):
     """One prefix-bound publication through the fixed encoder path; see the module doc for the order and limits."""
     if enabled is False:
         return {"status": "OFF"}
@@ -642,7 +657,7 @@ def build_prefix_generation(*, enabled=False, plan_bytes=None, expected_plan_sha
         raise BuildChildRefused("plan_refused")
     if not _request_shape(config, start_prefix, root, private_state_root, trusted_model_root):
         raise BuildChildRefused("request_refused")
-    if not _cutoff_valid(cutoff_utc, plan["schema"]):
+    if not _cutoff_valid(cutoff_utc, plan["schema"]) or not _batch_valid(batch_rows, cutoff_utc, plan["schema"]):
         plan_bytes = expected_plan_sha256 = config = start_prefix = None
         root = private_state_root = trusted_model_root = cutoff_utc = plan = None
         raise BuildChildRefused("request_refused")
@@ -675,7 +690,7 @@ def build_prefix_generation(*, enabled=False, plan_bytes=None, expected_plan_sha
         identity=identity, dim=ENCODER_DIM, timeout=plan["timeout"], private_state_root=private_state_root,
         **({"fenced": True} if fenced else {}))
     max_windows = plan["max_windows"] if catchup else None
-    report, token = _publish(request, max_windows=max_windows, cutoff_utc=cutoff_utc)
+    report, token = _publish(request, max_windows=max_windows, cutoff_utc=cutoff_utc, batch_rows=batch_rows)
     if token is not None:
         raise BuildChildRefused(token)
     return {**report, "encoder_identity_source": IDENTITY_SOURCE, "plan_sha256": expected_plan_sha256,

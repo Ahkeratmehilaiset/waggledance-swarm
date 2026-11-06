@@ -243,7 +243,7 @@ HAS_BRIDGE_PYTHON = Path(BRIDGE_PYTHON).is_file()
 
 
 def _is_repo_module(module: str) -> bool:
-    return (module.split(".")[0] in {"tools", "waggledance"}
+    return (module.split(".")[0] in {"core", "tools", "waggledance"}
             or module == "sandbox.mind" or module.startswith("sandbox.mind."))
 
 
@@ -1369,3 +1369,22 @@ def test_wrapper_fixture_queue_shape_never_reaches_the_live_publication_mutex(
         bridge_root=absent_root, drain_script=missing_helper)
     assert twin["decision"] == "accepted_queue_absent", twin
     assert calls == ["queue_publication_mutex"], calls
+
+
+def test_package_closure_tracks_bundled_core_as_internal(tmp_path, monkeypatch):
+    sources = {
+        "tools/seed.py": "from core import faiss_store\n",
+        "core/__init__.py": "",
+        "core/faiss_store.py": "import numpy\nfrom core import runtime_helper\n",
+        "core/runtime_helper.py": "import json\n",
+    }
+    for relative, source in sources.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    closure, third_party = _intra_repo_closure(["tools/seed.py"])
+    assert closure == set(sources)
+    assert third_party == {"numpy"}
+    packaged = set(sources) - {"core/runtime_helper.py"}
+    assert closure - packaged == {"core/runtime_helper.py"}

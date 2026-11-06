@@ -12,7 +12,7 @@ each caller; the runtime's full cleanup remains the caller's responsibility.
 import hashlib
 import hmac
 
-from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
+from sandbox.mind.step2 import shared_index_pointer as checkpoint
 from tools import wd_q4_fixed_result_adapter as adapter
 from tools import wd_q4_lane_link as lane
 from tools import wd_q4_secure_transport as fixed

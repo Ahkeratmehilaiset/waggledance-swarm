@@ -200,7 +200,8 @@ def case(tmp_path, monkeypatch):
     query = canon({"situation": QUERY_CANARY, "time": "2026-01-01T00:00:00Z"})
     return {"files": files, "descriptor": descriptor, "manifest": manifest, "env": environment,
             "calls": calls, "outcome": outcome, "query": query,
-            "worktree": worktree, "worktrees": worktrees, "cli": load_cli(), "adapter": adapter}
+            "worktree": worktree, "worktrees": worktrees, "cli": load_cli(), "adapter": adapter,
+            "real_adapter": real_adapter}
 
 
 def invoke(case, monkeypatch, raw=None, argv=None):
@@ -503,3 +504,51 @@ def test_adapter_precheck_exception_maps_to_cleanup_or_refusal_without_leaks(
         "synthetic-exception-detail " + QUERY_CANARY + " " + TOKEN_CANARY)
     assert_refused(invoke(case, monkeypatch), capsys, expected)
     assert len(case["calls"]) == 1
+
+
+@pytest.mark.parametrize("lane", LANES, ids=LANES)
+def test_enabled_cli_and_real_adapter_parent_path_needs_no_model_import(case, monkeypatch, capsys, lane):
+    """The session is synthetic; this is not a live peer or installed-bundle test."""
+    import importlib
+    import tools
+
+    real = case["real_adapter"]
+    monkeypatch.setitem(sys.modules, "tools.wd_q4_lane_caller_adapter", real)
+    monkeypatch.setattr(tools, "wd_q4_lane_caller_adapter", real, raising=False)
+    monkeypatch.setattr(real, "_QUARANTINED", False)
+    monkeypatch.setattr(real, "_HOLD", [])
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", lane)
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT_UUID", UUIDS[lane])
+    monkeypatch.chdir(case["worktrees"][lane])
+    calls = []
+    def fake_session(**kwargs):
+        calls.append(kwargs["lane"])
+        return {"schema": "wd.q4-lane-answer.v1", "lane": lane, "status": "ABSTAIN",
+                "reason": "", "result_count": 0, "results": [],
+                "binding": dict(case["descriptor"]["expected_binding"]), "trust": {
+                    "lane_authentication": "UNKNOWN", "freshness": "UNKNOWN",
+                    "publisher_authentication": "UNKNOWN", "projection_public_attestation": "UNKNOWN",
+                    "transport": "caller_injected", "projection": "caller_pinned"}}
+    monkeypatch.setattr(real.session, "query_session", fake_session)
+    blocked = {"numpy", "faiss", "torch", "sentence_transformers", "transformers"}
+    attempted = []
+    old_import, old_module = builtins.__import__, importlib.import_module
+    def reject(name):
+        if name.split(".")[0] in blocked:
+            attempted.append(name.split(".")[0])
+            raise ImportError("synthetic parent dependency blocked")
+    def guarded(name, globals=None, locals=None, fromlist=(), level=0):
+        reject(name)
+        return old_import(name, globals, locals, fromlist, level)
+    def guarded_module(name, package=None):
+        reject(name)
+        return old_module(name, package)
+    monkeypatch.setattr(builtins, "__import__", guarded)
+    monkeypatch.setattr(importlib, "import_module", guarded_module)
+    code = invoke(case, monkeypatch)
+    observed = capsys.readouterr()
+    assert code == 0 and observed.err == ""
+    result = json.loads(observed.out)
+    assert result["lane"] == lane and result["inner_status"] == "ABSTAIN"
+    assert result["lane_authentication"] == "UNKNOWN" and calls == [lane]
+    assert not attempted and QUERY_CANARY not in observed.out and TOKEN_CANARY not in observed.out

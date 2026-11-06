@@ -1,6 +1,8 @@
 """Lifecycle tests; only one explicitly marked case uses real Windows handles."""
 import hashlib
+import inspect
 import os
+import sys
 import threading
 import pytest
 
@@ -349,6 +351,85 @@ def test_unknown_wins_against_late_registry_completion(monkeypatch):
     assert registry._uncertain is True
     with pytest.raises(guard.GuardCompletionUnavailable):
         registry._issue()
+
+
+def _inject_interrupt_at_line(function, source_line, invoke):
+    lines, first = inspect.getsourcelines(function)
+    matches = [first + offset for offset, line in enumerate(lines) if line.strip() == source_line]
+    assert len(matches) == 1
+    hit = []
+    def trace(frame, event, arg):
+        if event == "line" and frame.f_code is function.__code__ and frame.f_lineno == matches[0]:
+            hit.append(True)
+            raise KeyboardInterrupt()
+        return trace
+    previous = sys.gettrace()
+    try:
+        sys.settrace(trace)
+        with pytest.raises(KeyboardInterrupt):
+            invoke()
+    finally:
+        sys.settrace(previous)
+    assert hit == [True]
+
+
+def _registry_owner(monkeypatch):
+    from tools import wd_q4_guard_completion as guard
+    owner, kernel, _ = make_owner(monkeypatch)
+    registry = guard._Registry(("synthetic",))
+    registry._complete_owner(registry._owners["transport"])
+    registry._complete_owner(registry._owners["adapter"])
+    owner._on_complete = lambda: registry._complete_owner(registry._owners["attestation"])
+    owner._on_unknown = registry._unknown
+    return owner, kernel, registry, guard
+
+
+@pytest.mark.parametrize("path", ["finish", "last_close"])
+def test_interrupt_between_reservation_and_delivery_marks_registry_unknown(monkeypatch, path):
+    owner, kernel, registry, guard = _registry_owner(monkeypatch)
+    lease = acquire(owner)
+    if path == "finish":
+        lease.close()
+        function, invoke = attestation._AttestationOwner.finish, owner.finish
+    else:
+        owner.finish()
+        function, invoke = attestation._OwnedAttestationLease.close, lease.close
+    _inject_interrupt_at_line(function, "if complete:", invoke)
+    assert kernel.closed == [101]
+    assert registry._uncertain is True
+    with pytest.raises(guard.GuardCompletionUnavailable):
+        registry._issue()
+
+
+def test_interrupt_after_callback_before_local_state_marks_registry_unknown(monkeypatch):
+    owner, kernel, registry, guard = _registry_owner(monkeypatch)
+    lease = acquire(owner)
+    lease.close()
+    _inject_interrupt_at_line(attestation._AttestationOwner._deliver_completion,
+                              "with _STATE_LOCK:", owner.finish)
+    assert kernel.closed == [101]
+    assert "attestation" in registry._done
+    assert registry._uncertain is True
+    with pytest.raises(guard.GuardCompletionUnavailable):
+        registry._issue()
+
+
+def test_outer_finally_revokes_if_owner_unknown_callback_is_interrupted(monkeypatch):
+    owner, _, registry, guard = _registry_owner(monkeypatch)
+    lease = acquire(owner)
+    lease.close()
+    owner.finish()
+    witness = registry._issue()  # all three synthetic capabilities completed
+    try:
+        _inject_interrupt_at_line(attestation._AttestationOwner.abort, "if notify:", owner.abort)
+    finally:
+        # Real integration must do this independently of the owner's own flag.
+        registry._unknown()
+    assert registry._uncertain is True
+    with pytest.raises(guard.GuardCompletionUnavailable):
+        registry._issue()
+    with pytest.raises(guard.GuardCompletionUnavailable):
+        registry._consume(witness, ("synthetic",), lambda: pytest.fail("unexpected release"))
 
 
 @pytest.mark.skipif(os.name != "nt", reason="real Windows handle admission")

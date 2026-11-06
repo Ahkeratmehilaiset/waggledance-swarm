@@ -1,6 +1,7 @@
 """Synthetic only: stage binding, session descriptor and pointer without activation."""
 import hashlib
 import json
+import shutil
 from pathlib import Path
 import pytest
 from tools import wd_q4_lane_binding_producer as bp
@@ -144,3 +145,17 @@ def test_rejects_target_directory_mismatch_before_write(tmp_path):
     path.write_text(json.dumps(req), encoding='ascii')
     with pytest.raises(s.ComposeRefused): s.compose(**kw)
     assert not list(stage.iterdir())
+
+
+def test_copied_generation_cannot_be_activated_under_different_root(tmp_path):
+    from tools import wd_q4_staged_composer as s
+    from tools import wd_q4_descriptor_pointer as pointer
+    kw, _, stage = setup_case(tmp_path)
+    result = s.compose(**kw)
+    copied = tmp_path / 'different-permanent-root'
+    shutil.copytree(stage, copied)
+    generation = Path(result['descriptor_path']).parent.name
+    with pytest.raises(pointer.PointerRefused):
+        pointer.prepare_staged_descriptor_pointer(enabled=True, expected_bundle=kw['expected_bundle'],
+            expected_commit=kw['expected_commit'], expected_manifest_sha256=kw['expected_manifest_sha256'],
+            generations_root=str(copied), generation=generation, descriptor_sha256=result['descriptor_sha256'])

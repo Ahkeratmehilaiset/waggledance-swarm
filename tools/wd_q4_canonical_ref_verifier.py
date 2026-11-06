@@ -18,6 +18,9 @@ Outputs contain no message, payload, paths, projected text or policy contents.
 import datetime as dt
 import hashlib
 import hmac
+import json
+import os
+from pathlib import Path
 import re
 
 from sandbox.mind.step2 import shared_capture_adapter as capture
@@ -32,6 +35,9 @@ _MAX_PAGE_BYTES = 16 * 1024 * 1024
 _MAX_PAGE_ROWS = 100000
 _MAX_PAGES = 128
 _MAX_HASH_BUDGET = 6 * 1024 * 1024 * 1024
+_COVERAGE_KEYS = frozenset({'schema', 'source_path', 'generation_path', 'cursor_start', 'cursor_end',
+    'prefix_sha256', 'coverage_start_utc', 'coverage_end_utc', 'record_ref', 'record_minute_utc',
+    'policy_sha256', 'public_policy_sha256', 'roster_sha256'})
 
 
 class VerifierRefused(ValueError):
@@ -53,12 +59,15 @@ def _timestamp(text):
 
 def verify(*, enabled=False, record=None, policy_bytes=None, policy_sha256=None,
            public_policy_bytes=None, public_policy_sha256=None, roster_bytes=None, roster_sha256=None,
-           source_path=None, expected_snapshot_sha256=None, coverage_start_utc=None, coverage_end_utc=None):
+           source_path=None, expected_snapshot_sha256=None, generation_path=None,
+           coverage_receipt_bytes=None, coverage_receipt_sha256=None):
     """Resolve public projection within an independently anchored complete source.
 
-    coverage_start_utc/coverage_end_utc are external half-open coverage claims,
-    not inferred or authenticated here. Return MATCH/AMBIGUOUS/NONE only within
-    that supplied, hash-pinned snapshot; UNKNOWN means no conclusion. Bad policy,
+    The pinned coverage receipt is an external half-open coverage claim, not
+    inferred or authenticated here. Its exact file identity, sidecar generation,
+    cursor end, prefix pin, projected record and policy pins must all agree.
+    Return MATCH/AMBIGUOUS/NONE only within that pinned prefix; UNKNOWN means no
+    conclusion. Bad policy,
     malformed input or a window above the row cap raises a fixed VerifierRefused.
     """
     if enabled is False:
@@ -84,93 +93,118 @@ def verify(*, enabled=False, record=None, policy_bytes=None, policy_sha256=None,
             raise ValueError()
         end = minute + dt.timedelta(seconds=60)
         source_missing = (source_path is None or source_path == '' or expected_snapshot_sha256 is None
-                          or expected_snapshot_sha256 == '')
+                          or expected_snapshot_sha256 == '' or generation_path is None or generation_path == ''
+                          or coverage_receipt_bytes is None or coverage_receipt_sha256 is None)
         if not source_missing and (type(source_path) is not str or type(expected_snapshot_sha256) is not str
                                    or _HEX.fullmatch(expected_snapshot_sha256) is None):
             raise ValueError()
-        try:
-            covered = _timestamp(coverage_start_utc) <= minute and _timestamp(coverage_end_utc) >= end
-        except (ValueError, OverflowError):
-            covered = False
     except Exception:
         bad_input = True
     if bad_input:
         record = policy_bytes = public_policy_bytes = roster_bytes = source_path = None
         raise VerifierRefused('input_refused')
-    if source_missing or not covered:
+    if source_missing:
+        return _unknown()
+    try:
+        if (type(generation_path) is not str or type(coverage_receipt_bytes) is not bytes
+                or not 0 < len(coverage_receipt_bytes) <= 65536 or type(coverage_receipt_sha256) is not str
+                or _HEX.fullmatch(coverage_receipt_sha256) is None
+                or not hmac.compare_digest(hashlib.sha256(coverage_receipt_bytes).hexdigest(), coverage_receipt_sha256)):
+            raise ValueError()
+        receipt = json.loads(coverage_receipt_bytes.decode('utf-8'), object_pairs_hook=capture._strict_pairs,
+                             parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        if (type(receipt) is not dict or set(receipt) != _COVERAGE_KEYS
+                or receipt['schema'] != 'wd.q4-canonical-coverage.v1'
+                or type(receipt['source_path']) is not str or type(receipt['generation_path']) is not str
+                or os.path.normcase(os.path.abspath(receipt['source_path'])) != os.path.normcase(os.path.abspath(source_path))
+                or os.path.normcase(os.path.abspath(receipt['generation_path'])) != os.path.normcase(os.path.abspath(generation_path))
+                or receipt['record_ref'] != ref or receipt['record_minute_utc'] != record['time_utc']
+                or receipt['policy_sha256'] != policy_sha256 or receipt['roster_sha256'] != roster_sha256
+                or receipt['public_policy_sha256'] != public_policy_sha256
+                or receipt['prefix_sha256'] != expected_snapshot_sha256
+                or _timestamp(receipt['coverage_start_utc']) > minute or _timestamp(receipt['coverage_end_utc']) < end):
+            raise ValueError()
+        start, finish = receipt['cursor_start'], receipt['cursor_end']
+        if (type(start) is not dict or type(finish) is not dict
+                or set(start) != {'offset', 'file_identity', 'generation'} or set(finish) != set(start)
+                or type(start['offset']) is not int or start['offset'] != 0
+                or type(finish['offset']) is not int or not 0 < finish['offset'] <= _MAX_SOURCE_BYTES
+                or type(start['generation']) is not str or not start['generation']
+                or start['generation'] != finish['generation'] or start['file_identity'] != finish['file_identity']):
+            raise ValueError()
+        cursor = bridge.BridgeCursor(**start)
+        final_cursor = bridge.BridgeCursor(**finish)
+        if bridge._validate_cursor(cursor) or bridge._validate_cursor(final_cursor):
+            raise ValueError()
+    except Exception:
         return _unknown()
     overflow = False
     invalid = False
     refs = []
-    event = read = probe = None
+    event = read = None
     try:
-        # First bounded read discovers the file identity and a fixed snapshot
-        # length, but its rows are discarded: the page is reread below under a
-        # prefix check starting from SHA256(empty).
-        probe = bridge.read_bridge_log(source_path, max_bytes=_MAX_PAGE_BYTES, max_rows=_MAX_PAGE_ROWS)
-        if (probe.status not in (bridge.BridgeReadStatus.OK, bridge.BridgeReadStatus.IDLE)
-                or probe.snapshot_length is None or probe.candidate_cursor is None
-                or probe.snapshot_length > _MAX_SOURCE_BYTES):
-            invalid = True
-        else:
-            fixed_length = probe.snapshot_length
-            first = probe.candidate_cursor
-            cursor = bridge.BridgeCursor(0, first.file_identity, first.generation)
-            prefix_sha = hashlib.sha256(b'').hexdigest()
-            probe = first = None
-            window_count = 0
-            pages = hash_budget = 0
-            while True:
-                pages += 1
-                # Initial prefix hash, page hash extension and final prefix hash.
-                hash_budget += 2 * min(fixed_length, cursor.offset + _MAX_PAGE_BYTES)
-                if pages > _MAX_PAGES or hash_budget > _MAX_HASH_BUDGET:
+        fixed_length = final_cursor.offset
+        prefix_sha = hashlib.sha256(b'').hexdigest()
+        window_count = 0
+        pages = hash_budget = 0
+        while True:
+            pages += 1
+            # Initial prefix hash, page hash extension and final prefix hash.
+            hash_budget += 2 * min(fixed_length, cursor.offset + _MAX_PAGE_BYTES)
+            if pages > _MAX_PAGES or hash_budget > _MAX_HASH_BUDGET:
+                invalid = True
+                break
+            read = bridge.read_bridge_log(source_path, cursor=cursor,
+                max_bytes=min(_MAX_PAGE_BYTES, fixed_length - cursor.offset), max_rows=_MAX_PAGE_ROWS,
+                generation_path=generation_path, expected_prefix_sha256=prefix_sha, max_prefix_bytes=_MAX_SOURCE_BYTES)
+            if (read.status not in (bridge.BridgeReadStatus.OK, bridge.BridgeReadStatus.IDLE)
+                    or read.snapshot_length is None or read.snapshot_length < fixed_length or read.candidate_cursor is None
+                    or not isinstance(read, bridge.BridgePrefixReadResult) or read.candidate_prefix is None):
+                invalid = True
+                break
+            for event in read.rows:
+                when = _timestamp(event.get('ts_utc'))
+                if not minute <= when < end:
+                    continue
+                window_count += 1
+                if window_count > _MAX_WINDOW_ROWS:
+                    overflow = True
+                    break
+                capture._event_budget(event)
+                if not capture._public_status_event(event, public_tasks, public_types):
+                    continue
+                agent = event.get('agent')
+                if type(agent) is not str or agent not in roster or event.get('agent_uuid') != roster[agent]:
                     invalid = True
                     break
-                read = bridge.read_bridge_log(source_path, cursor=cursor, max_bytes=_MAX_PAGE_BYTES,
-                    max_rows=_MAX_PAGE_ROWS, expected_prefix_sha256=prefix_sha, max_prefix_bytes=_MAX_SOURCE_BYTES)
-                if (read.status not in (bridge.BridgeReadStatus.OK, bridge.BridgeReadStatus.IDLE)
-                        or read.snapshot_length != fixed_length or read.candidate_cursor is None
-                        or not isinstance(read, bridge.BridgePrefixReadResult) or read.candidate_prefix is None):
+                if capture._exclude_rco_event(event) or capture._exclude_review_signal(event):
+                    continue
+                fields, _ = projection.approved_fields(event, tasks, include_refs=False, roster=roster,
+                                                        exclude_review_signal=True)
+                if projection.projected_ref(fields) == ref:
+                    refs.append(event_id(event))
+            if overflow or invalid:
+                break
+            next_cursor = read.candidate_cursor
+            next_sha = read.candidate_prefix.sha256
+            if next_cursor.offset == fixed_length:
+                if (next_cursor != final_cursor or not hmac.compare_digest(next_sha, expected_snapshot_sha256)):
                     invalid = True
-                    break
-                for event in read.rows:
-                    when = _timestamp(event.get('ts_utc'))
-                    if not minute <= when < end:
-                        continue
-                    window_count += 1
-                    if window_count > _MAX_WINDOW_ROWS:
-                        overflow = True
-                        break
-                    capture._event_budget(event)
-                    if not capture._public_status_event(event, public_tasks, public_types):
-                        continue
-                    agent = event.get('agent')
-                    if type(agent) is not str or agent not in roster or event.get('agent_uuid') != roster[agent]:
+                with bridge._open_log(Path(source_path)) as stream:
+                    if (bridge._file_identity(stream) != final_cursor.file_identity
+                            or os.fstat(stream.fileno()).st_size < fixed_length):
                         invalid = True
-                        break
-                    if capture._exclude_rco_event(event) or capture._exclude_review_signal(event):
-                        continue
-                    fields, _ = projection.approved_fields(event, tasks, include_refs=False, roster=roster,
-                                                            exclude_review_signal=True)
-                    if projection.projected_ref(fields) == ref:
-                        refs.append(event_id(event))
-                if overflow or invalid:
-                    break
-                next_cursor = read.candidate_cursor
-                next_sha = read.candidate_prefix.sha256
-                if next_cursor.offset == fixed_length:
-                    if not hmac.compare_digest(next_sha, expected_snapshot_sha256):
-                        invalid = True
-                    break
-                if next_cursor.offset <= cursor.offset:
+                if bridge._read_generation(Path(generation_path)) != final_cursor.generation:
                     invalid = True
-                    break
-                cursor, prefix_sha = next_cursor, next_sha
+                break
+            if next_cursor.offset <= cursor.offset:
+                invalid = True
+                break
+            cursor, prefix_sha = next_cursor, next_sha
     except Exception:
         invalid = True
     finally:
-        event = read = probe = policy_bytes = public_policy_bytes = roster_bytes = record = None
+        event = read = receipt = coverage_receipt_bytes = policy_bytes = public_policy_bytes = roster_bytes = record = None
     if overflow:
         raise VerifierRefused('window_too_large')
     if invalid:

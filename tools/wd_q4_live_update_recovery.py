@@ -7,9 +7,11 @@ unknown write. Source authenticity, protected ACLs, freshness and native
 process-tree termination remain outside this protocol.
 """
 import argparse
+from dataclasses import asdict
 import os
 from pathlib import Path
 import re
+import secrets
 import sys
 
 from sandbox.mind.step2 import prefix_private_state as private_state
@@ -38,7 +40,44 @@ def _same_except(left, right, keys):
             and all(left[key] == right[key] for key in set(left) - set(keys)))
 
 
-def _prior_selector(config, baseline, previous, current, attempt):
+def _recovery_generation(attempt, current, nonce):
+    return update._sha(('wd-q4-recovery:' + attempt + ':' + current + ':' + nonce).encode('ascii'))
+
+
+def _find_runner_receipt(private, expected_pin):
+    candidates = list(private.glob('q4-status-result-*.json'))
+    if len(candidates) > 50000:
+        raise ValueError()
+    matches = []
+    for path in candidates:
+        if re.fullmatch(r'q4-status-result-[0-9a-f]{64}\.json', path.name) is None:
+            raise ValueError()
+        raw = live._read(path, 65536)
+        if update._sha(raw) == expected_pin:
+            matches.append((path.name, caller._json(raw)))
+    if len(matches) != 1:
+        raise ValueError()
+    return matches[0]
+
+
+def _recorded_recovery_generation(private, config_sha, progress_sha, attempt, current, generation):
+    paths = list(private.glob('q4-live-recovery-intent-' + attempt + '-*.json'))
+    if len(paths) > 128:
+        raise ValueError()
+    for path in paths:
+        match = re.fullmatch(r'q4-live-recovery-intent-' + attempt + r'-([0-9a-f]{64})\.json', path.name)
+        if match is None:
+            raise ValueError()
+        nonce = match.group(1)
+        value = caller._json(live._read(path, 65536))
+        if value == {'schema': 'wd.q4-live-recovery-intent.v1', 'attempt': attempt, 'nonce': nonce,
+                     'config_sha256': config_sha, 'progress_sha256': progress_sha, 'pointer_sha256': current,
+                     'generation': _recovery_generation(attempt, current, nonce)} and value['generation'] == generation:
+            return True
+    return False
+
+
+def _prior_selector(config, baseline, previous, current, attempt, private, config_sha, progress_sha):
     path = Path(config['baseline_path']).parent.parent / 'q4-live-current.json'
     if not os.path.lexists(path):
         if baseline[4]['pointer_sha256'] != previous:
@@ -58,8 +97,8 @@ def _prior_selector(config, baseline, previous, current, attempt):
     if candidate[4]['pointer_sha256'] != item['index_pointer_sha256']:
         raise ValueError()
     if item['index_pointer_sha256'] == current:
-        recovery_gen = update._sha(('wd-q4-recovery:' + attempt + ':' + current).encode('ascii'))
-        if item['generation'] not in (current, recovery_gen):
+        if (item['generation'] != current and not _recorded_recovery_generation(
+                private, config_sha, progress_sha, attempt, current, item['generation'])):
             raise ValueError()
         selected = live.select(enabled=True, baseline_path=config['baseline_path'],
             baseline_sha256=config['baseline_sha256'], baseline=baseline,
@@ -73,15 +112,26 @@ def _prior_selector(config, baseline, previous, current, attempt):
 
 
 def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
-            expected_attempt=None, expected_progress_sha256=None):
+            expected_attempt=None, expected_progress_sha256=None,
+            expected_runner_receipt_sha256=None, expected_pointer_sha256=None):
     if enabled is False:
         return {'status': 'OFF'}
     entered = False
     failure = None
     try:
         if (enabled is not True or any(type(item) is not str or not update._HEX.fullmatch(item)
-                for item in (expected_config_sha256, expected_attempt, expected_progress_sha256))):
+                for item in (expected_config_sha256, expected_attempt))):
             raise ValueError()
+        if expected_progress_sha256 is None:
+            if any(type(item) is not str or not update._HEX.fullmatch(item)
+                   for item in (expected_runner_receipt_sha256, expected_pointer_sha256)):
+                raise ValueError()
+            reconstruct = True
+        elif (type(expected_progress_sha256) is not str or not update._HEX.fullmatch(expected_progress_sha256)
+              or expected_runner_receipt_sha256 is not None or expected_pointer_sha256 is not None):
+            raise ValueError()
+        else:
+            reconstruct = False
         config = caller._json(update._read(config_path, 65536, expected_config_sha256), update._CONFIG_KEYS)
         if (config['schema'] != 'wd.q4-live-update-once.v1'
                 or os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower() != config['manifest_sha256']):
@@ -136,8 +186,21 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
                     or plan['pins']['anchor_sha256'] != route['anchor_sha256']):
                 raise ValueError()
             progress_path = private / ('q4-live-update-progress-' + expected_attempt + '.json')
-            progress_raw = live._read(progress_path, 65536, expected_progress_sha256)
-            progress = caller._json(progress_raw)
+            if reconstruct:
+                if os.path.lexists(progress_path):
+                    raise ValueError()
+                found_name, found_receipt = _find_runner_receipt(private, expected_runner_receipt_sha256)
+                progress = {'schema': 'wd.q4-live-update-progress.v1', 'attempt': expected_attempt,
+                    'marker_sha256': update._sha(marker_raw), 'config_sha256': expected_config_sha256,
+                    'intent_sha256': marker['intent_sha256'], 'previous_pointer_sha256': marker['previous_pointer_sha256'],
+                    'pointer_sha256': expected_pointer_sha256, 'runner_receipt_sha256': expected_runner_receipt_sha256,
+                    'runner_receipt_file': found_name, 'route_sha256': update._sha(update._encode(route)),
+                    'plan_sha256': update._sha(update._encode(plan)), 'status': found_receipt.get('status')}
+                progress_raw = update._encode(progress)
+                expected_progress_sha256 = update._sha(progress_raw)
+            else:
+                progress_raw = live._read(progress_path, 65536, expected_progress_sha256)
+                progress = caller._json(progress_raw)
             if (set(progress) != {'schema', 'attempt', 'marker_sha256', 'config_sha256', 'intent_sha256',
                     'previous_pointer_sha256', 'pointer_sha256', 'runner_receipt_sha256', 'runner_receipt_file',
                     'route_sha256', 'plan_sha256', 'status'} or progress['schema'] != 'wd.q4-live-update-progress.v1'
@@ -146,9 +209,10 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
                     or progress['previous_pointer_sha256'] != marker['previous_pointer_sha256']
                     or progress['route_sha256'] != update._sha(update._encode(route))
                     or progress['plan_sha256'] != update._sha(update._encode(plan))
-                    or progress['status'] not in ('PUBLISHED_HISTORY', 'EMPTY_ADVANCED')
+                    or progress['status'] not in ('PUBLISHED_HISTORY', 'EMPTY_ADVANCED', 'EMPTY_NO_CHANGE')
                     or type(progress['pointer_sha256']) is not str or not update._HEX.fullmatch(progress['pointer_sha256'])
-                    or progress['pointer_sha256'] == marker['previous_pointer_sha256']
+                    or ((progress['pointer_sha256'] == marker['previous_pointer_sha256'])
+                        != (progress['status'] == 'EMPTY_NO_CHANGE'))
                     or type(progress['runner_receipt_file']) is not str
                     or re.fullmatch(r'q4-status-result-[0-9a-f]{64}\.json', progress['runner_receipt_file']) is None):
                 raise ValueError()
@@ -162,20 +226,52 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
             target, previous = progress['pointer_sha256'], progress['previous_pointer_sha256']
             with private_state.locked_state(private, root, enabled=True) as state:
                 with private_state._checkpoint_lock(root, 0.2):
-                    if (checkpoint._active_fence(root) is not None
-                            or os.path.lexists(checkpoint._fence_record(root, target, 'not_landed'))
+                    if checkpoint._active_fence(root) is not None:
+                        raise ValueError()
+                    if progress['status'] != 'EMPTY_NO_CHANGE' and (
+                            os.path.lexists(checkpoint._fence_record(root, target, 'not_landed'))
                             or checkpoint._read(checkpoint._fence_record(root, target, 'landed'),
-                                                max_bytes=checkpoint._MAX_FENCE_BYTES)
-                               != checkpoint._fence_bytes(previous, target)):
+                                               max_bytes=checkpoint._MAX_FENCE_BYTES)
+                            != checkpoint._fence_bytes(previous, target)):
                         raise ValueError()
                     _, prefix = checkpoint.read_verified_prefix_pointer(root, tasks, expected_pointer_sha256=target,
                         policy_bytes=policy, policy_sha256=route['policy_sha256'], roster_bytes=roster,
                         roster_sha256=route['roster_sha256'], expected_public_policy_sha256=route['public_policy_sha256'])
                     state.require(target, prefix)
-            selected = _prior_selector(config, baseline, previous, target, expected_attempt)
-            generation = update._sha(('wd-q4-recovery:' + expected_attempt + ':' + target).encode('ascii'))
+                    if progress['status'] == 'EMPTY_NO_CHANGE' and (
+                            asdict(prefix.cursor) != route['cursor'] or prefix.sha256 != route['prefix_sha256']):
+                        raise ValueError()
+            if progress['status'] == 'EMPTY_NO_CHANGE':
+                selector_path = Path(config['baseline_path']).parent.parent / 'q4-live-current.json'
+                if os.path.lexists(selector_path):
+                    current = live.select(enabled=True, baseline_path=config['baseline_path'],
+                        baseline_sha256=config['baseline_sha256'], baseline=baseline,
+                        manifest_sha256=config['manifest_sha256'], load_configuration=caller._configuration)
+                    if current['configuration'][4]['pointer_sha256'] != target:
+                        raise ValueError()
+                else:
+                    caller._require_current_snapshot(descriptor, binding, inputs)
+                    if binding['pointer_sha256'] != target:
+                        raise ValueError()
+                selected = {'status': 'NO_CHANGE', 'pointer_sha256': target, 'freshness': 'UNKNOWN',
+                            'source_authenticity': 'UNKNOWN', 'publisher_authentication': 'UNKNOWN'}
+            else:
+                selected = _prior_selector(config, baseline, previous, target, expected_attempt, private,
+                                           expected_config_sha256, expected_progress_sha256)
+            if reconstruct:
+                entered = True
+                progress_info = update.runner._create(progress_path, progress_raw)
+                update.runner._verify_own(progress_path, progress_raw, progress_info)
             if selected is None:
                 entered = True
+                recovery_nonce = secrets.token_hex(32)
+                generation = _recovery_generation(expected_attempt, target, recovery_nonce)
+                recovery_intent = update._encode({'schema': 'wd.q4-live-recovery-intent.v1',
+                    'attempt': expected_attempt, 'nonce': recovery_nonce, 'config_sha256': expected_config_sha256,
+                    'progress_sha256': expected_progress_sha256, 'pointer_sha256': target, 'generation': generation})
+                recovery_intent_path = private / ('q4-live-recovery-intent-' + expected_attempt + '-' + recovery_nonce + '.json')
+                intent_info = update.runner._create(recovery_intent_path, recovery_intent)
+                update.runner._verify_own(recovery_intent_path, recovery_intent, intent_info)
                 selected = update._publish(config, baseline, root, public, {'pointer_sha256': target}, generation=generation)
             recovery_receipt = update._encode({'schema': 'wd.q4-live-update-recovery-result.v1',
                 'attempt': expected_attempt, 'config_sha256': expected_config_sha256,
@@ -196,6 +292,7 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
             raise
         failure = 'interrupt'
     config_path = expected_config_sha256 = expected_attempt = expected_progress_sha256 = None
+    expected_runner_receipt_sha256 = expected_pointer_sha256 = None
     config = baseline = policy = public_policy = roster = intent = progress = receipt = marker_raw = None
     if failure == 'unknown':
         raise RecoveryOutcomeUnknown('recovery_outcome_unknown') from None
@@ -211,13 +308,17 @@ def main(argv=None):
     parser.add_argument('--sha256')
     parser.add_argument('--attempt')
     parser.add_argument('--progress-sha256')
+    parser.add_argument('--runner-receipt-sha256')
+    parser.add_argument('--pointer-sha256')
     args = parser.parse_args(argv)
     if not args.recover:
         print('{"status":"OFF"}')
         return 0
     try:
         result = recover(enabled=True, config_path=args.config, expected_config_sha256=args.sha256,
-                         expected_attempt=args.attempt, expected_progress_sha256=args.progress_sha256)
+                         expected_attempt=args.attempt, expected_progress_sha256=args.progress_sha256,
+                         expected_runner_receipt_sha256=args.runner_receipt_sha256,
+                         expected_pointer_sha256=args.pointer_sha256)
     except RecoveryOutcomeUnknown:
         print('{"status":"UNKNOWN"}', file=sys.stderr)
         return 3

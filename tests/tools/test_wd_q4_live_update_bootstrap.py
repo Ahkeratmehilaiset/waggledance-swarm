@@ -34,6 +34,8 @@ def candidate(tmp_path):
     (code / 'tools' / '__init__.py').write_text('', encoding='ascii')
     update = code / 'tools' / 'wd_q4_live_update_once.py'
     update.write_text("def main(args):\n import synthetic_runtime_dependency\n print(synthetic_runtime_dependency.VALUE)\n return 0\n", encoding='ascii')
+    recovery = code / 'tools' / 'wd_q4_live_update_recovery.py'
+    recovery.write_text("def main(args):\n assert args[0]=='--recover' and '--attempt' in args\n print('fixed-recovery-loaded')\n return 0\n", encoding='ascii')
     runtime = tmp_path / 'runtime'
     (runtime / 'assets' / 'code').mkdir(parents=True)
     (runtime / 'site').mkdir()
@@ -56,6 +58,7 @@ def candidate(tmp_path):
     files = {'tools-bootstrap/tools/wd_q4_live_update_bootstrap.py': sha(bootstrap.read_bytes()),
         'tools-bootstrap/tools/__init__.py': sha((code / 'tools' / '__init__.py').read_bytes()),
         'tools-bootstrap/tools/wd_q4_live_update_once.py': sha(update.read_bytes()),
+        'tools-bootstrap/tools/wd_q4_live_update_recovery.py': sha(recovery.read_bytes()),
         'tools-bootstrap/sandbox/mind/step2/runtime_manifest.py': sha(verifier.read_bytes())}
     manifest = bundle / 'deployment-manifest.json'
     manifest.write_bytes(encode({'schema_version': 1, 'source_commit': 'c' * 40, 'files': files}))
@@ -151,6 +154,34 @@ def test_interpreter_pin_mismatch_refuses(candidate):
 def test_no_arbitrary_module_or_command_argument(candidate):
     result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']), '--module', 'os'],
                             capture_output=True, text=True, timeout=30)
+    assert result.returncode != 0 and not result.stdout
+
+
+def test_fixed_recovery_route_runs_only_with_pinned_attempt_and_progress(candidate):
+    env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha'])
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
+        '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
+        '--manifest-sha256', candidate['manifest_sha'], '--attempt', 'a' * 64, '--progress-sha256', 'b' * 64],
+        capture_output=True, text=True, timeout=30, env=env)
+    assert result.returncode == 0 and result.stdout.strip() == 'fixed-recovery-loaded'
+
+
+def test_fixed_recovery_route_accepts_pinned_runner_receipt_and_pointer(candidate):
+    env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha'])
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
+        '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
+        '--manifest-sha256', candidate['manifest_sha'], '--attempt', 'a' * 64,
+        '--runner-receipt-sha256', 'b' * 64, '--pointer-sha256', 'c' * 64],
+        capture_output=True, text=True, timeout=30, env=env)
+    assert result.returncode == 0 and result.stdout.strip() == 'fixed-recovery-loaded'
+
+
+def test_recovery_route_rejects_extra_command(candidate):
+    env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha'])
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
+        '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
+        '--manifest-sha256', candidate['manifest_sha'], '--attempt', 'a' * 64, '--progress-sha256', 'b' * 64,
+        '--module', 'os'], capture_output=True, text=True, timeout=30, env=env)
     assert result.returncode != 0 and not result.stdout
 
 

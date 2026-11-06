@@ -90,6 +90,25 @@ def test_off_does_not_inspect_inputs(runner):
     assert runner.run_once(route_bytes=NoTouch()) == {"status": "OFF"}
 
 
+@pytest.mark.parametrize("change", ["v1", "unfenced", "not_boolean"])
+def test_renewable_requires_explicit_fenced_v3_before_reservation(case, change):
+    runner, args, route, checkpoint, private, _ = case
+    kw = args()
+    plan = json.loads(kw["plan_bytes"])
+    if change == "v1":
+        plan["schema"] = "wd.q4-prefix-build-plan.v1"
+    elif change == "unfenced":
+        plan["fenced"] = False
+    plan_raw = encode(plan)
+    route = dict(route, plan_sha256=sha(plan_raw))
+    route_raw = encode(route)
+    kw.update(plan_bytes=plan_raw, route_bytes=route_raw, expected_route_sha256=sha(route_raw),
+              renewable="yes" if change == "not_boolean" else True)
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**kw)
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
+
+
 def test_known_git_lf_and_windows_crlf_policy_pins(runner):
     git = shutil.which("git")
     assert git is not None, "git is required to verify committed configuration bytes"
@@ -456,3 +475,163 @@ def test_real_child_synthetic_status_only_genesis(case, monkeypatch):
     assert b"synthetic-private-body" not in projection
     assert b"unapproved-task" not in projection and b"claude-rco-1" not in projection
     assert (checkpoint / runner._PENDING).is_file() and (private / runner._PENDING).is_file()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="synthetic producer uses Windows fixed-volume checks")
+@pytest.mark.parametrize("fault", ["none", "before_receipt", "after_receipt", "after_first_unlink", "interrupt",
+                                   "wrong_marker", "open_fence", "wrong_pointer", "wrong_private", "bad_landed"])
+def test_real_fenced_child_two_renewable_updates(case, monkeypatch, fault):
+    pytest.importorskip("faiss", reason="synthetic builder requires FAISS")
+    from sandbox.mind.step2 import encode as encoder
+    from sandbox.mind.step2.test_wd_q4_prefix_build_child import FakeModel
+    from waggledance.core.bridge_log_reader import BridgeCursor, read_bridge_log
+
+    runner, args, route, checkpoint, private, _ = case
+    kw = args()
+    kw["renewable"] = True
+    roster = json.loads(kw["roster_bytes"])
+    uuids = {item["agent"]: item["agent_uuid"] for item in roster["lanes"] + [roster["tools_supervisor"]]}
+    base = {"ts_utc": "2026-10-31T12:00:30Z", "agent": "codex-lead-1", "agent_uuid": uuids["codex-lead-1"],
+            "type": "status", "status": "info", "task_id": TASK, "to": "", "message": "", "paths": [],
+            "write_scope": [], "payload": {"public_status": True}}
+    events = [base, dict(base, message="synthetic-private-body"),
+              dict(base, agent="claude-rco-1", agent_uuid=uuids["claude-rco-1"]),
+              dict(base, task_id="unapproved-task")]
+    source, sidecar = Path(route["source"]), Path(route["generation_path"])
+    source.write_bytes(b"".join(encode(event) + b"\n" for event in events))
+    sidecar.write_bytes(encode({"generation": "gen-1"}))
+    probe = read_bridge_log(source, generation_path=sidecar, max_bytes=4096, max_rows=20)
+    assert probe.candidate_cursor is not None
+    cursor = BridgeCursor(offset=0, file_identity=probe.candidate_cursor.file_identity, generation="gen-1")
+    anchor = encode({"schema": "wd.q4-source-anchor.v1", "source_path": str(source),
+                     "generation_path": str(sidecar), "cursor_start": asdict(cursor),
+                     "policy_sha256": route["policy_sha256"], "roster_sha256": route["roster_sha256"],
+                     "status_mode": "public-v1", "public_policy_sha256": route["public_policy_sha256"]})
+    model = Path(route["trusted_model_root"])
+    weights = b"synthetic-weights-not-a-model"
+    (model / "model.safetensors").write_bytes(weights)
+    plan = json.loads(kw["plan_bytes"])
+    plan["max_prefix_bytes"] = 8192
+    plan["pins"]["anchor_sha256"] = sha(anchor)
+    plan["encoder"] = {"model": encoder.MODEL, "revision": "c" * 40, "model_dir": str(model),
+                       "weights_sha256": sha(weights), "dim": encoder.DIM,
+                       "assets": {"model.safetensors": sha(weights)}}
+    kw["plan_bytes"] = encode(plan)
+    route.update(cursor=asdict(cursor), max_bytes=4096, max_rows=20, anchor_sha256=sha(anchor),
+                 plan_sha256=sha(kw["plan_bytes"]))
+    kw.update(anchor_bytes=anchor, route_bytes=encode(route))
+    kw["expected_route_sha256"] = sha(kw["route_bytes"])
+    from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
+    public_tasks, public_types = snapshot._checked_anchor(source, cursor, frozenset({TASK}), anchor_bytes=anchor,
+        anchor_sha256=sha(anchor), generation_path=sidecar, policy_bytes=kw["policy_bytes"],
+        policy_sha256=route["policy_sha256"], roster_bytes=kw["roster_bytes"], roster_sha256=route["roster_sha256"],
+        public_policy_bytes=kw["public_policy_bytes"], public_policy_sha256=route["public_policy_sha256"])
+    check = read_bridge_log(source, cursor=cursor, generation_path=sidecar, max_bytes=4096, max_rows=20,
+                            expected_prefix_sha256=sha(b""), max_prefix_bytes=8192)
+    assert check.status.value == "OK", (check.status, check.reason)
+    snapshot.read_anchored_delta(source, cursor, frozenset({TASK}), anchor_bytes=anchor, anchor_sha256=sha(anchor),
+        generation_path=sidecar, max_bytes=4096, max_rows=20, policy_bytes=kw["policy_bytes"],
+        policy_sha256=route["policy_sha256"], roster_bytes=kw["roster_bytes"], roster_sha256=route["roster_sha256"],
+        public_policy_bytes=kw["public_policy_bytes"], public_policy_sha256=route["public_policy_sha256"],
+        expected_prefix_sha256=sha(b""), max_prefix_bytes=8192)
+    sentence = types.ModuleType("sentence_transformers")
+    sentence.__version__, sentence.SentenceTransformer = "0.0-synthetic", FakeModel
+    torch = types.ModuleType("torch")
+    torch.__version__, torch.get_num_threads = "0.0-synthetic", lambda: 1
+    monkeypatch.setitem(sys.modules, "sentence_transformers", sentence)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    from sandbox.mind.step2 import wd_q4_prefix_build_child as actual_child
+    original_child = actual_child.build_prefix_generation
+    observations = []
+    def observe_child(**kwargs):
+        try:
+            result = original_child(**kwargs)
+        except Exception as exc:
+            observations.append((type(exc).__name__, str(exc)))
+            raise
+        observations.append(("result", result))
+        if fault != "none":
+            from tools import wd_q4_status_prefix_recovery as recovery
+            if fault == "before_receipt":
+                monkeypatch.setattr(recovery, "_write_receipt", lambda *_: (_ for _ in ()).throw(OSError("synthetic")))
+            elif fault in ("after_receipt", "interrupt"):
+                original_write = recovery._write_receipt
+                def write_then_fail(*values):
+                    original_write(*values)
+                    raise (KeyboardInterrupt() if fault == "interrupt" else OSError("synthetic"))
+                monkeypatch.setattr(recovery, "_write_receipt", write_then_fail)
+            elif fault == "after_first_unlink":
+                unlink = recovery.os.unlink
+                def unlink_then_fail(path):
+                    unlink(path)
+                    raise OSError("synthetic")
+                monkeypatch.setattr(recovery.os, "unlink", unlink_then_fail)
+            elif fault == "wrong_marker":
+                (checkpoint / runner._PENDING).write_bytes(b"foreign-token")
+            elif fault == "open_fence":
+                monkeypatch.setattr(recovery.checkpoint_mod, "_active_fence", lambda *_: ("synthetic",))
+            elif fault == "wrong_pointer":
+                result = {**result, "pointer_sha256": "e" * 64}
+            elif fault == "wrong_private":
+                (private / "prefix-private-state.json").write_bytes(b"synthetic-corruption")
+            elif fault == "bad_landed":
+                path = recovery.checkpoint_mod._fence_record(checkpoint, result["pointer_sha256"], "landed")
+                path.write_bytes(b"synthetic-corruption")
+        return result
+    monkeypatch.setattr(actual_child, "build_prefix_generation", observe_child)
+    if fault != "none":
+        expected = runner.StatusRunnerInterrupted if fault == "interrupt" else runner.StatusRunnerOutcomeUnknown
+        with pytest.raises(expected):
+            runner.run_once(**kw)
+        assert observations and observations[0][0] == "result"
+        assert (private / runner._PENDING).exists()
+        assert (checkpoint / runner._PENDING).exists() == (fault != "after_first_unlink")
+        receipts = list(private.glob("q4-status-result-*.json"))
+        assert bool(receipts) == (fault in ("after_receipt", "after_first_unlink", "interrupt"))
+        return
+    try:
+        result = runner.run_once(**kw)
+    except runner.StatusRunnerOutcomeUnknown:
+        pytest.fail(f"synthetic child observation: {observations!r}")
+    assert result["status"] == "PUBLISHED_GENESIS"
+    receipts = list(private.glob("q4-status-result-*.json"))
+    assert len(receipts) == 1 and sha(receipts[0].read_bytes()) == result["runner_receipt_sha256"]
+    assert result["freshness"] == result["source_authenticity"] == "UNKNOWN"
+    projection = (checkpoint / plan["generation"] / "projection.json").read_bytes()
+    records = json.loads(projection)["records"]
+    assert len(records) == 1 and records[0]["stored_text"] == f"status info codex-lead-1 {TASK}"
+    assert b"synthetic-private-body" not in projection
+    assert b"unapproved-task" not in projection and b"claude-rco-1" not in projection
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
+    from sandbox.mind.step2 import shared_index_checkpoint as cp
+    from sandbox.mind.step2 import prefix_private_state as ps
+    tasks, _ = runner.adapter.strict_pins(kw["policy_bytes"], route["policy_sha256"], kw["roster_bytes"], route["roster_sha256"])
+    view, prefix = cp.read_verified_prefix_pointer(checkpoint, tasks, expected_pointer_sha256=result["pointer_sha256"],
+        policy_bytes=kw["policy_bytes"], policy_sha256=route["policy_sha256"], roster_bytes=kw["roster_bytes"],
+        roster_sha256=route["roster_sha256"], expected_public_policy_sha256=route["public_policy_sha256"])
+    with ps.locked_state(private, checkpoint, enabled=True) as locked:
+        locked.require(result["pointer_sha256"], prefix)
+    assert not (private / ps._PENDING).exists() and not (checkpoint / cp.FENCE).exists()
+    with source.open("ab") as out:
+        out.write(encode(dict(base, ts_utc="2026-10-31T12:01:00Z")) + b"\n")
+    anchor_doc = json.loads(anchor)
+    anchor_doc["cursor_start"] = asdict(prefix.cursor)
+    anchor2 = encode(anchor_doc)
+    plan["generation"] = "synthetic-generation-2"
+    plan["expected_pointer_sha256"] = result["pointer_sha256"]
+    plan["pins"]["anchor_sha256"] = sha(anchor2)
+    plan2 = encode(plan)
+    route.update(cursor=asdict(prefix.cursor), prefix_sha256=prefix.sha256,
+                 anchor_sha256=sha(anchor2), plan_sha256=sha(plan2))
+    route2 = encode(route)
+    kw.update(plan_bytes=plan2, anchor_bytes=anchor2, route_bytes=route2, expected_route_sha256=sha(route2))
+    result2 = runner.run_once(**kw)
+    assert result2["status"] == "PUBLISHED_HISTORY"
+    assert result2["pointer_sha256"] != result["pointer_sha256"]
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
+    view2, prefix2 = cp.read_verified_prefix_pointer(checkpoint, tasks, expected_pointer_sha256=result2["pointer_sha256"],
+        policy_bytes=kw["policy_bytes"], policy_sha256=route["policy_sha256"], roster_bytes=kw["roster_bytes"],
+        roster_sha256=route["roster_sha256"], expected_public_policy_sha256=route["public_policy_sha256"])
+    with ps.locked_state(private, checkpoint, enabled=True) as locked:
+        locked.require(result2["pointer_sha256"], prefix2)
+    assert not (private / ps._PENDING).exists() and not (checkpoint / cp.FENCE).exists()

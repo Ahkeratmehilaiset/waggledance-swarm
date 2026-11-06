@@ -15,8 +15,10 @@ reparse point anywhere on its chain, and that the generation directory does not 
 directory, writes each artifact into a sibling part file opened with O_EXCL, fsyncs, moves it with os.replace,
 re-reads and re-hashes the final file, and writes the descriptor last so a descriptor on disk always names files
 that are already complete. It never overwrites and never deletes (a failed generation directory is left for
-inspection), never logs, never reads the environment and never follows a reparse point. Every refusal is one
-closed reason and never a caller value, path or byte.
+inspection), never logs and never reads the environment. A reparse point found anywhere on the target chain at
+check time is refused; the check and the writes are separate system calls, so a junction planted on that chain
+after the check is outside this module's guarantee and is caught only by the launcher validator, which re-checks
+the chain when it reads. Every refusal is one closed reason and never a caller value, path or byte.
 
 What it is not. A matching hash is not authentication, not freshness and not a runtime proof. Metadata-only content
 is the snapshot producer's responsibility (``sandbox/mind/step2/shared_public_producer.py`` and its public policy

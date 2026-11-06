@@ -1,13 +1,10 @@
 """Strict cooperative consumer of one call's private cleanup witness.
 
-This unconnected protocol candidate neither launches a caller nor observes
-native cleanup. There is no public proof factory. The private registry gives
-each fixed resource owner a distinct in-process capability; future trusted
-owner code must complete ONLY its own capability AFTER its actual cleanup.
-Synthetic completions prove this protocol only, never resource cleanup.
+This protocol candidate does not launch a caller. The transport owner can now
+contribute after its own cleanup; attestation and adapter owners remain unwired.
+There is no public proof factory. Synthetic tests do not prove native cleanup.
 
-The existing real chain has no such owner contributions. It therefore cannot
-release through this consumer until separately wired and tested. Result dicts,
+The real chain cannot release until all owners are separately wired and tested. Result dicts,
 hashes, process disappearance and same-field objects do not supply a witness.
 Private Python objects are cooperative consistency, not same-user isolation or
 authentication. Introspection/monkeypatching can defeat private boundaries.
@@ -67,6 +64,7 @@ class _Registry:
         self._used = False
         self._uncertain = False
         self._lock = threading.Lock()
+        self._transport_issued = False
 
     def _complete_owner(self, capability):
         # Only a retained capability object contributes, never an owner-name,
@@ -89,6 +87,13 @@ class _Registry:
             self._uncertain = True
             self._issued = None
 
+    def _transport_owner(self):
+        with self._lock:
+            _check(not self._uncertain and not self._used and not self._transport_issued
+                   and "transport" not in self._done)
+            self._transport_issued = True
+            return _TransportOwner(self, self._owners["transport"])
+
     def _consume(self, witness, binding, release):
         # Hold the registry lock across verification/delete: simultaneous
         # consumers cannot both consume a token. File bytes/id still fence a
@@ -107,6 +112,32 @@ class _Registry:
             self._issued = None
 
 
+class _TransportOwner:
+    """One call-bound transport contribution; not an authentication boundary."""
+
+    __slots__ = ("_registry", "_capability", "_state")
+
+    def __init__(self, registry, capability):
+        self._registry, self._capability, self._state = registry, capability, "new"
+
+    def _begin(self):
+        # Linearize admission against all registry uncertainty and completion
+        # transitions. An already-unknown call must not enter the native chain.
+        with self._registry._lock:
+            _check(self._state == "new" and not self._registry._uncertain
+                   and not self._registry._used and "transport" not in self._registry._done)
+            self._state = "started"
+
+    def _complete(self):
+        _check(self._state == "started")
+        self._registry._complete_owner(self._capability)
+        self._state = "done"
+
+    def _unknown(self):
+        self._registry._unknown()
+        self._state = "unknown"
+
+
 class _Guard:
     def __init__(self, root, marker, raw, info, binding):
         self._root, self._marker, self._expected = root, marker, raw
@@ -116,6 +147,11 @@ class _Guard:
 
     def mark_unknown(self):
         self._registry._unknown()
+
+    def _transport_owner(self):
+        _check(not self._closed)
+        self._root.revalidate()
+        return self._registry._transport_owner()
 
     def _clear_own_marker(self):
         self._root.revalidate()

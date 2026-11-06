@@ -302,6 +302,7 @@ def test_cleanup_decision_or_conversion_exception_keeps_cleaning_and_quarantines
         def ResumeThread(self, *args): return 1
         def LocalFree(self, *args): return 0
         def TerminateJobObject(self, *args): calls.append("terminate-job"); return 1
+        def WaitForSingleObject(self, handle, timeout): calls.append(("wait-child", handle)); return 0
         def CloseHandle(self, handle):
             if isinstance(handle, Job): int(handle)
             calls.append(("close", handle)); return 1
@@ -369,6 +370,8 @@ def test_cleanup_decision_or_conversion_exception_keeps_cleaning_and_quarantines
     if fault not in ("trace_cleanup", "trace_prologue"):
         assert "terminate-job" in calls
         assert "wait-job" in calls
+        if fault in ("pipe_truth", "pipe_tracking"):
+            assert calls.index("wait-job") < calls.index(("wait-child", 15)) < calls.index(("close", 12))
         assert ("close", 16) in calls
         assert (("close", 11) in calls) is (fault != "pipe_tracking")
     else:

@@ -368,7 +368,7 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
                     raise OSError('synthetic interruption immediately after owned marker removal')
             with monkeypatch.context() as scoped:
                 scoped.setattr(recovery.os, 'unlink', unlink_then_interrupt)
-                scoped.setattr(update, '_publish', lambda **_kwargs: pytest.fail('retry republished'))
+                scoped.setattr(update, '_publish', lambda *_args, **_kwargs: pytest.fail('retry republished'))
                 with pytest.raises(recovery.RecoveryOutcomeUnknown):
                     recovery.recover(**kwargs)
             assert not removed.exists() and marker_path.read_bytes() == marker_raw
@@ -381,7 +381,7 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
                 assert marker_path.read_bytes() == marker_raw
                 reconciled.write_bytes(original_reconciled)
         with monkeypatch.context() as scoped:
-            scoped.setattr(update, '_publish', lambda **_kwargs: pytest.fail('retry republished'))
+            scoped.setattr(update, '_publish', lambda *_args, **_kwargs: pytest.fail('retry republished'))
             result = recovery.recover(**kwargs)
         assert result['status'] == 'PUBLISHED' and result['pointer_sha256'] == target
         assert not marker_path.exists()

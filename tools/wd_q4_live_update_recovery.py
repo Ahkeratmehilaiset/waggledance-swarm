@@ -482,7 +482,7 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument('--recover', action='store_true')
     parser.add_argument('--config')
     parser.add_argument('--sha256')
@@ -492,7 +492,10 @@ def main(argv=None):
     parser.add_argument('--job-receipt-sha256')
     parser.add_argument('--pointer-sha256')
     supplied = list(sys.argv[1:] if argv is None else argv)
-    args = parser.parse_args(supplied)
+    try:
+        args = parser.parse_args(supplied)
+    except SystemExit as exc:
+        return int(exc.code) if type(exc.code) is int else 2
     if not args.recover:
         print('{"status":"OFF"}')
         return 0

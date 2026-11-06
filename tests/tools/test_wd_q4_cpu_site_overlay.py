@@ -9,7 +9,9 @@ import pytest
 
 
 def _inputs(tmp_path):
-    base, cpu = tmp_path / "base", tmp_path / "cpu"
+    audit = tmp_path / ".codex-audit"
+    audit.mkdir()
+    base, cpu = audit / "base", audit / "cpu"
     base.mkdir()
     cpu.mkdir()
     (base / "a.py").write_bytes(b"base")
@@ -23,7 +25,7 @@ def _inputs(tmp_path):
         {"root": "cpu", "source": "b.py", "target": "pkg/b.py", "size": 3,
          "sha256": hashlib.sha256(b"cpu").hexdigest()},
     ]
-    return roots, pins, mapping, tmp_path / "overlay"
+    return roots, pins, mapping, audit / "overlay"
 
 
 def test_off_no_io(monkeypatch):
@@ -233,3 +235,12 @@ def test_mid_copy_disk_floor_is_unknown_and_keeps_partial(tmp_path, monkeypatch)
     assert len(calls) == 2
     assert (target / "pkg" / "a.py").exists()
     assert (target / "pkg" / "a.py").read_bytes() == b""
+
+
+
+def test_inputs_create_own_audit_root_under_tmp_path(tmp_path):
+    roots, _, _, target = _inputs(tmp_path)
+    audit = tmp_path / ".codex-audit"
+    assert audit.is_dir()
+    assert target.parent == audit
+    assert all(Path(root).parent == audit for root in roots.values())

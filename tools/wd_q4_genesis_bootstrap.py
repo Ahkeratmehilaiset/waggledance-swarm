@@ -9,6 +9,8 @@ is performed after sidecar creation: unknown outcomes require reconciliation.
 import base64
 import hashlib
 import hmac
+import importlib
+import inspect
 import json
 import os
 from dataclasses import asdict
@@ -67,7 +69,7 @@ def _same_source(path, stream, identity, size, digest):
             raise ValueError()
 
 
-def _scan_budget(stream, size, *, max_bytes, max_rows, max_windows):
+def _scan_budget(stream, size, *, max_bytes, max_rows, max_windows, allow_partial=False):
     """Bound complete records in greedy byte/row windows; never retain a record."""
     if size <= 0:
         raise ValueError()
@@ -87,6 +89,8 @@ def _scan_budget(stream, size, *, max_bytes, max_rows, max_windows):
                 windows += 1
                 window_bytes = window_rows = 0
             if windows > max_windows:
+                if allow_partial:
+                    return False
                 raise ValueError()
             window_bytes += line_bytes
             window_rows += 1
@@ -96,18 +100,41 @@ def _scan_budget(stream, size, *, max_bytes, max_rows, max_windows):
             raise ValueError()
     if line_bytes:
         raise ValueError()
+    return True
+
+
+def _complete_prefix_size(stream, length):
+    stream.seek(0)
+    seen = last = 0
+    while seen < length:
+        chunk = stream.read(min(length - seen, 1024 * 1024))
+        if not chunk:
+            raise ValueError()
+        idx = chunk.rfind(b"\n")
+        if idx >= 0:
+            last = seen + idx + 1
+        seen += len(chunk)
+    return last
 
 
 def bootstrap(*, enabled=False, source_path=None, generation_path=None, generation=None,
               checkpoint_root=None, private_state_root=None, trusted_model_root=None,
               policy_bytes=None, policy_sha256=None, public_policy_bytes=None, public_policy_sha256=None,
               fleet_bytes=None, expected_fleet_sha256=None, max_prefix_bytes=None,
-              max_bytes=None, max_rows=None, plan_template=None, renewable=False):
+              max_bytes=None, max_rows=None, plan_template=None, renewable=False,
+              cutoff_utc=None, batch_rows=False, min_headroom_bytes=65536, allow_partial_genesis=False):
     if enabled is False:
         return {"status": "OFF"}
     created = False
     try:
-        if enabled is not True or type(renewable) is not bool:
+        if (enabled is not True or type(renewable) is not bool or type(batch_rows) is not bool
+                or type(allow_partial_genesis) is not bool):
+            raise ValueError()
+        if cutoff_utc is not None:
+            runner._cutoff_datetime(cutoff_utc)
+        if batch_rows and cutoff_utc is None:
+            raise ValueError()
+        if allow_partial_genesis and (not batch_rows or cutoff_utc is None):
             raise ValueError()
         runner._pinned(policy_bytes, policy_sha256, runner._POLICY_SHA)
         runner._pinned(public_policy_bytes, public_policy_sha256, runner._PUBLIC_SHA)
@@ -115,6 +142,7 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
         roster_bytes, roster_sha = roster.build_roster_snapshot(fleet_bytes, expected_fleet_sha256, enabled=True)
         if (type(generation) is not str or runner._GENERATION.fullmatch(generation) is None
                 or type(max_prefix_bytes) is not int or not 0 < max_prefix_bytes <= 1024**3
+                or type(min_headroom_bytes) is not int or min_headroom_bytes < 1
                 or type(max_bytes) is not int or not 1 <= max_bytes <= 4 * 1024 * 1024
                 or type(max_rows) is not int or not 1 <= max_rows <= 10000
                 or type(plan_template) is not dict or set(plan_template) !=
@@ -141,15 +169,20 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
         if (not runner._absent(sidecar) or not runner._absent(tuple_file)
                 or not runner._absent(output_roots[0] / runner._PENDING)
                 or not runner._absent(output_roots[1] / runner._PENDING)
+                or not runner._absent(output_roots[1] / "prefix-private-state.json")
+                or not runner._absent(output_roots[1] / "prefix-private-state.pending")
                 or not runner._absent(output_roots[0] / "q4-latest.json")):
             raise GenesisUnknown("generation_state_unknown")
         with _open_log(source) as stream:
             identity = _file_identity(stream)
-            size = os.fstat(stream.fileno()).st_size
-            if size > max_prefix_bytes:
+            observed_size = os.fstat(stream.fileno()).st_size
+            if observed_size + min_headroom_bytes > max_prefix_bytes:
                 raise ValueError()
-            _scan_budget(stream, size, max_bytes=max_bytes, max_rows=max_rows,
-                         max_windows=plan_template["max_windows"])
+            size = _complete_prefix_size(stream, observed_size)
+            if cutoff_utc is None and size != observed_size:
+                raise ValueError()
+            _scan_budget(stream, size, max_bytes=max_bytes, max_rows=max_rows if batch_rows or cutoff_utc is None else 1,
+                         max_windows=plan_template["max_windows"], allow_partial=allow_partial_genesis)
             digest = _snapshot(stream, size)
             _same_source(source, stream, identity, size, digest)
             cursor = BridgeCursor(offset=0, file_identity=identity, generation=generation)
@@ -160,18 +193,27 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
                     "public_policy_sha256": public_policy_sha256}
             plan = _canonical({**plan_template, "pins": pins})
             # Import and validate the exact child's plan before consuming the one-shot sidecar.
-            from sandbox.mind.step2 import wd_q4_prefix_build_child as child
+            child = importlib.import_module("sandbox.mind.step2.wd_q4_prefix_build_child")
             if not child._plan_shape(json.loads(plan)):
                 raise ValueError()
+            if batch_rows:
+                parameter = inspect.signature(child.build_prefix_generation).parameters.get("batch_rows")
+                if parameter is None or parameter.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                                               inspect.Parameter.KEYWORD_ONLY):
+                    raise ValueError()
+            route_options = {} if cutoff_utc is None else {"cutoff_utc": cutoff_utc}
+            if batch_rows:
+                route_options["batch_rows"] = True
             route = _canonical({"schema": "wd.q4-status-prefix-route.v1", "source": str(source),
                 "generation_path": str(sidecar), "checkpoint_root": str(output_roots[0]),
                 "private_state_root": str(output_roots[1]), "trusted_model_root": str(output_roots[2]),
                 "cursor": asdict(cursor), "prefix_sha256": _digest(b""), "max_bytes": max_bytes,
-                "max_rows": max_rows, "plan_sha256": _digest(plan), **pins})
+                "max_rows": max_rows, "plan_sha256": _digest(plan), **pins, **route_options})
             side_bytes = _canonical({"generation": generation})
             # This private record is never a publication receipt; its state remains
             # UNKNOWN even if the separate runner later returns successfully.
             tuple_bytes = _canonical({"schema": "wd.q4-genesis-private-tuple.v1", "publication": "UNKNOWN",
+                "allow_partial_genesis": allow_partial_genesis,
                 **{name: {"bytes_b64": base64.b64encode(value).decode("ascii"), "sha256": _digest(value)}
                    for name, value in (("anchor", anchor), ("route", route), ("plan", plan))}})
             # O_EXCL is the admission point: any failure from here requires reconciliation.
@@ -195,8 +237,11 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
             if (view.get("anchor_sha256") != anchor_sha or type(end_pin) is not BridgePrefixPin
                     or type(end_pin.cursor) is not BridgeCursor or end_pin.cursor.file_identity != identity
                     or end_pin.cursor.generation != generation or type(end_pin.cursor.offset) is not int
-                    or not size <= end_pin.cursor.offset <= max_prefix_bytes
+                    or not 0 < end_pin.cursor.offset <= max_prefix_bytes
                     or type(end_pin.sha256) is not str or runner._HEX.fullmatch(end_pin.sha256) is None):
+                raise ValueError()
+            fully_covered = end_pin.cursor.offset >= size
+            if not fully_covered and (not allow_partial_genesis or report.get("coverage") != "partial_ready_prefix"):
                 raise ValueError()
             runner._verify_own(sidecar, side_bytes, info)
             runner._verify_own(tuple_file, tuple_bytes, tuple_info)
@@ -205,7 +250,8 @@ def bootstrap(*, enabled=False, source_path=None, generation_path=None, generati
             runner._verify_own(sidecar, side_bytes, info)
             if roots._observe(source.parent) != source_ids or roots._observe(sidecar.parent) != side_ids:
                 raise ValueError()
-            return {**report, "genesis_snapshot_bytes": size, "genesis_snapshot_sha256": digest,
+            return {**report, "genesis_snapshot_bytes": size,
+                    "genesis_initial_prefix_fully_covered": fully_covered,
                     "genesis_tuple_sha256": _digest(tuple_bytes)}
     except GenesisUnknown:
         raise

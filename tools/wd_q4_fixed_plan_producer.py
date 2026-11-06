@@ -8,7 +8,12 @@ absolute ASCII printable paths of at most 512 characters, a positive bundle leng
 16 MiB, a sorted unique list of 1..64 ASCII tasks and canonical bytes of at most 4096) so that a
 refused plan is never emitted, plus the rule of the verifier ``sandbox/mind/step2/runtime_manifest.py``
 that the manifest lives outside the runtime root, on the same drive, and that neither path is a UNC
-path. Caller values are never normalised: an unsorted or duplicated task list is refused, not sorted.
+path. Path parts the verifier's chain check refuses lexically (a part with a colon, a trailing dot or
+space, which Win32 would strip to open a different path, a dot or dot-dot part, a device name) and
+the forward slash the shared descriptor validator refuses are refused here too, so a plan is never
+emitted for a path a consumer refuses before reading it; facts only the filesystem knows (8.3 short
+names, reparse points, alternate data streams on existing files) stay the verifier's job. Caller
+values are never normalised: an unsorted or duplicated task list is refused, not sorted.
 
 A matching pin is not authentication, not freshness and not a runtime proof. The equalities this
 module cannot check are checked by the consumers at run time, which refuse on any mismatch: the
@@ -24,7 +29,9 @@ caller enables it explicitly.
 Output is canonical ASCII JSON (sorted keys, no whitespace, no BOM) plus its sha256, which is the
 binding the parent derives and checks against the caller's pin; the caller writes the bytes and
 pins the digest independently (for example as fixed_plan_sha256 of the shared descriptor).
-Refusals carry one closed reason and never a caller value.
+Refusals carry one closed reason and never a caller value in their arguments or repr; as in the
+sibling producers, the traceback frame locals of this call still hold the caller's arguments until
+the frames are released, so a caller that formats tracebacks with locals must not do so for secrets.
 """
 import hashlib
 import json
@@ -44,6 +51,7 @@ REASONS = frozenset({"disabled", "pin_refused", "path_refused", "limit_refused",
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _IDENTITY = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _DRIVE = re.compile(r"[A-Za-z]:\\")
+_DEVICE = re.compile(r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?\Z", re.IGNORECASE | re.DOTALL)
 
 
 class FixedPlanRefused(Exception):
@@ -61,15 +69,20 @@ def _pin(value, pattern=_HEX64):
 
 
 def _path(value):
-    """Parser rule (absolute, ASCII, printable, at most 512) narrowed to a drive path, never UNC."""
+    """Parser rule (absolute, ASCII, printable, at most 512) narrowed to a backslash drive path, never UNC,
+    whose parts the verifier chain check and the shared descriptor validator accept lexically."""
     if (type(value) is not str or not 0 < len(value) <= MAX_PATH_CHARS or not value.isascii()
-            or not value.isprintable() or _DRIVE.match(value) is None):
+            or not value.isprintable() or _DRIVE.match(value) is None or "/" in value):
         _refuse("path_refused")
+    for part in value[3:].split("\\") if len(value) > 3 else ():
+        if (not part or part in (".", "..") or ":" in part or part.endswith((".", " "))
+                or _DEVICE.match(part) is not None):
+            _refuse("path_refused")
     return value
 
 
 def _fold(value):
-    return value.replace("/", "\\").rstrip("\\").casefold()
+    return value.rstrip("\\").casefold()
 
 
 def _task_ok(task):
@@ -97,7 +110,7 @@ def build_fixed_plan(*, enabled=False, interpreter_sha256, peer_code_sha256, ver
     document["runtime_revision"] = _pin(runtime_revision, _IDENTITY)
     root, manifest = _path(runtime_root), _path(runtime_manifest_path)
     root_folded, manifest_folded = _fold(root), _fold(manifest)
-    if (root_folded[:3] != manifest_folded[:3] or manifest_folded == root_folded
+    if (root_folded[0] != manifest_folded[0] or manifest_folded == root_folded
             or manifest_folded.startswith(root_folded + "\\")):
         _refuse("path_refused")
     document["runtime_root"], document["runtime_manifest_path"] = root, manifest

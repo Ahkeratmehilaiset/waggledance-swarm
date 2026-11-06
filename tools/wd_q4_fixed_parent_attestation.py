@@ -197,3 +197,168 @@ def attest_file(path, expected_sha256, *, max_bytes, enabled=False):
     if lease is not None:
         raise AttestationCleanupUnknown(lease) from None
     raise AttestationRefused("attestation_refused") from None
+
+
+class _AttestationOwner:
+    """Unwired, cooperative lifecycle for leases opened solely through this owner.
+
+    The integration must supply call-bound owner callbacks, use this instance
+    for *every* attestation in the call, seal admission with finish(), and call
+    abort() on interruption or abandoned work. Ordinary AttestationRefused is
+    conservatively UNKNOWN too: admission did not return a lease that this
+    owner can account for. A completed callback says only that this owner's
+    exact HeldFile objects reported successful close; it does
+    not discover bypassed attest_file calls, authenticate a caller, or prove
+    safety against monkeypatching, same-user tampering, or asynchronous Python
+    interruption between bytecode instructions. Callbacks run without the
+    global attestation lock; integration MUST use a call-bound registry whose
+    unknown state is monotonic and refuses a racing completion, and must treat
+    any callback failure as UNKNOWN. Do not consume a witness until the entire
+    enclosing call, all owner lifecycles and all failure paths have finished;
+    late abort cannot restore a guard already released. This class does not wire
+    the guard or turn an unwitnessed real call into a successful one.
+    """
+
+    def __init__(self, *, on_complete, on_unknown):
+        if not callable(on_complete) or not callable(on_unknown):
+            raise AttestationRefused("attestation_refused")
+        self._on_complete, self._on_unknown = on_complete, on_unknown
+        self._open = set()
+        self._opened = 0
+        self._sealed = self._uncertain = self._completed = False
+        self._completion_pending = False
+
+    def _mark_unknown_locked(self):
+        if not self._uncertain:
+            self._uncertain = True
+            return True
+        return False
+
+    def _reserve_completion_locked(self):
+        if (self._sealed and not self._open and not self._uncertain
+                and not self._completed and not self._completion_pending):
+            self._completion_pending = True
+            return True
+        return False
+
+    def _deliver_completion(self):
+        try:
+            self._on_complete()
+        except BaseException:
+            self.abort()
+            raise
+        with _STATE_LOCK:
+            self._completion_pending = False
+            if self._uncertain:
+                raise AttestationRefused("attestation_refused")
+            self._completed = True
+
+    def attest(self, path, expected_sha256, *, max_bytes, enabled=False):
+        notify = False
+        lease = None
+        try:
+            with _STATE_LOCK:
+                if self._sealed or self._uncertain or self._completed:
+                    raise AttestationRefused("attestation_refused")
+                try:
+                    lease = attest_file(path, expected_sha256, max_bytes=max_bytes, enabled=enabled)
+                    if type(lease) is not HeldFile or lease._unknown or lease._handle is None:
+                        raise AttestationRefused("attestation_refused")
+                    wrapped = _OwnedAttestationLease(self, lease)
+                    self._open.add(wrapped)
+                    self._opened += 1
+                    return wrapped
+                except BaseException:
+                    notify = self._mark_unknown_locked()
+                    if type(lease) is HeldFile and lease._handle is not None and not lease._unknown:
+                        lease.close()
+                    raise
+        except BaseException:
+            if notify:
+                self._on_unknown()
+            raise
+
+    def finish(self):
+        with _STATE_LOCK:
+            if self._sealed or self._uncertain or self._completed:
+                raise AttestationRefused("attestation_refused")
+            self._sealed = True
+            if not self._opened:
+                notify = self._mark_unknown_locked()
+                complete = False
+            else:
+                notify = False
+                complete = self._reserve_completion_locked()
+        if notify:
+            self._on_unknown()
+            raise AttestationRefused("attestation_refused")
+        if complete:
+            self._deliver_completion()
+
+    def abort(self):
+        with _STATE_LOCK:
+            notify = self._mark_unknown_locked()
+        if notify:
+            self._on_unknown()
+
+
+class _OwnedAttestationLease:
+    """The only lease object returned by an owner; raw handles stay private."""
+
+    __slots__ = ("_owner", "_lease", "_closed")
+
+    def __init__(self, owner, lease):
+        self._owner, self._lease, self._closed = owner, lease, False
+
+    @property
+    def sha256(self):
+        return self._lease.sha256
+
+    @property
+    def size(self):
+        return self._lease.size
+
+    def close(self):
+        notify = False
+        try:
+            with _STATE_LOCK:
+                if self._closed:
+                    return
+                try:
+                    if self not in self._owner._open or self._lease._handle is None or self._lease._unknown:
+                        raise AttestationRefused("attestation_refused")
+                    self._lease.close()
+                    if self._lease._handle is not None or self._lease._unknown:
+                        raise AttestationRefused("attestation_refused")
+                    self._closed = True
+                    self._owner._open.remove(self)
+                    complete = self._owner._reserve_completion_locked()
+                except BaseException:
+                    notify = self._owner._mark_unknown_locked()
+                    raise
+        except BaseException:
+            if notify:
+                self._owner._on_unknown()
+            raise
+        if complete:
+            self._owner._deliver_completion()
+
+    def __enter__(self):
+        with _STATE_LOCK:
+            if self._closed or self._lease._unknown or self._lease._handle is None:
+                notify = self._owner._mark_unknown_locked()
+                refused = True
+            else:
+                notify = refused = False
+        if notify:
+            self._owner._on_unknown()
+        if refused:
+            raise AttestationRefused("attestation_refused")
+        return self
+
+    def __exit__(self, error_type, error, traceback):
+        try:
+            if error_type is not None:
+                self._owner.abort()
+        finally:
+            self.close()

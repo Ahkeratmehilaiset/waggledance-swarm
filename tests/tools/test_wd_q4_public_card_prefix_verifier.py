@@ -60,6 +60,61 @@ def test_original_envelope_is_verified_within_pinned_prefix(case):
                     'predecessor_refs':[],'completeness':'UNKNOWN'}
 
 
+def writer_envelope(event):
+    """Synthetic shape from pinned Write-AgentEvent.ps1 lines 560-579."""
+    event.update(ts_utc='2026-11-06T12:00:30.1234567Z',severity='',run_id='synthetic-run',
+                 pid=1234,cwd='C:\\Users\\PRIVATE-CANARY\\project',role='lead-impl',
+                 session_id='synthetic-run',capabilities=['implementation','tests','bridge_event'])
+    return event
+
+
+def test_writer_envelope_7_digit_timestamp_returns_original_ref_only(case):
+    from tools import wd_q4_public_card_prefix_verifier as v
+    event,make=case
+    writer_envelope(event)
+    args=make([event]); args['now_utc']='2026-11-06T13:00:00.0000000Z'
+    out=v.verify(**args)
+    assert out=={'status':'MATCH_WITHIN_PREFIX','canonical_event_ref':event_id(event),
+                 'predecessor_refs':[],'completeness':'UNKNOWN'}
+    assert 'PRIVATE-CANARY' not in repr(out)
+
+
+def test_seventh_timestamp_digit_cannot_make_future_event_current(case):
+    from tools import wd_q4_public_card_prefix_verifier as v
+    event,make=case
+    writer_envelope(event)
+    args=make([event]); args['now_utc']='2026-11-06T12:00:30.1234566Z'
+    assert v.verify(**args)=={'status':'UNKNOWN','completeness':'UNKNOWN'}
+    args['now_utc']='2026-11-06T12:00:30.1234567Z'
+    assert v.verify(**args)['status']=='MATCH_WITHIN_PREFIX'
+
+
+def test_source_digest_covers_discarded_writer_metadata(case):
+    from tools import wd_q4_public_card_prefix_verifier as v
+    event,make=case
+    writer_envelope(event)
+    args=make([event]); original_ref=event_id(event)
+    event['cwd']='C:\\Users\\DIFFERENT-PRIVATE\\project'
+    args=make([event]); args['target_event_ref']=original_ref
+    assert v.verify(**args)=={'status':'UNKNOWN','completeness':'UNKNOWN'}
+
+
+@pytest.mark.parametrize('fault',['unknown','wrong_pid','wrong_cwd','role','capability','severity','message','run_id'])
+def test_writer_envelope_refuses_unknown_or_disallowed_content(case,fault):
+    from tools import wd_q4_public_card_prefix_verifier as v
+    event,make=case
+    writer_envelope(event)
+    if fault=='unknown': event['mystery']='secret'
+    if fault=='wrong_pid': event['pid']=True
+    if fault=='wrong_cwd': event['cwd']='relative/private'
+    if fault=='role': event['role']='rco-security'
+    if fault=='capability': event['capabilities']=['vote']
+    if fault=='severity': event['severity']='private arbitrary text'
+    if fault=='message': event['message']='PRIVATE-CANARY'
+    if fault=='run_id': event['run_id']='secret\ntext'
+    assert v.verify(**make([event]))=={'status':'UNKNOWN','completeness':'UNKNOWN'}
+
+
 def test_chain_uses_original_not_derived_refs(case):
     from tools import wd_q4_public_card_prefix_verifier as v
     event,make=case

@@ -10,6 +10,7 @@ import datetime as dt
 import hashlib
 import hmac
 import json
+import ntpath
 import os
 import re
 from pathlib import Path
@@ -20,7 +21,9 @@ from tools.bridge_compact_view import event_id
 from waggledance.core import bridge_log_reader as bridge
 
 _HEX=re.compile(r'[0-9a-f]{64}\Z')
-_TIMESTAMP=re.compile(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z\Z')
+_TIMESTAMP=re.compile(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?Z\Z')
+_SESSION=re.compile(r'[A-Za-z0-9._:-]{0,128}\Z')
+_ROLES={'codex-lead-1':'lead-impl','codex-tools-1':'tools-tests','fable-5':'fable-producer'}
 _TASK='mind-public-knowledge-v1'
 _MAX_SOURCE=512*1024*1024
 _PAGE=16*1024*1024
@@ -35,11 +38,37 @@ def _unknown():
 def _utc(value):
     if type(value) is not str or _TIMESTAMP.fullmatch(value) is None:
         raise ValueError()
-    return dt.datetime.fromisoformat(value[:-1]+'+00:00')
+    fraction=value[:-1].partition('.')[2]
+    # datetime truncates the seventh digit: retain it for 100 ns comparisons.
+    return (dt.datetime.fromisoformat(value[:-1]+'+00:00'),int(fraction[6]) if len(fraction)==7 else 0)
 
 
 def _minute(value):
-    return value.replace(second=0,microsecond=0).strftime('%Y-%m-%dT%H:%M:00Z')
+    return value[0].replace(second=0,microsecond=0).strftime('%Y-%m-%dT%H:%M:00Z')
+
+
+def _envelope(event):
+    """Accept the synthetic prototype or a closed writer envelope, then strip metadata."""
+    base=card._EVENT|{'agent_uuid'}
+    keys=set(event)
+    if keys==base:
+        return
+    required=base|{'severity','run_id','pid','cwd'}
+    optional={'role','session_id','capabilities'}
+    if not required<=keys or not keys<=required|optional: raise ValueError()
+    cwd=event['cwd']; run=event['run_id']; pid=event['pid']
+    if (event['severity'] not in ('','info') or type(cwd) is not str or not 1<=len(cwd)<=1024
+            or not ntpath.isabs(cwd) or any(x in cwd for x in ('\x00','\r','\n'))
+            or type(run) is not str or _SESSION.fullmatch(run) is None
+            or type(pid) is not int or not 1<=pid<=2147483647): raise ValueError()
+    if 'role' in event and event['role']!=_ROLES.get(event['agent']): raise ValueError()
+    if 'session_id' in event and (type(event['session_id']) is not str
+            or not event['session_id'] or _SESSION.fullmatch(event['session_id']) is None): raise ValueError()
+    if 'capabilities' in event:
+        caps=event['capabilities']
+        if (type(caps) is not list or not caps or len(caps)>64
+                or any(type(x) is not str or x not in capture._PUBLIC_WRITER_CAPABILITIES for x in caps)
+                or len(set(caps))!=len(caps)): raise ValueError()
 
 
 def _policy(raw, pin, tasks):
@@ -105,9 +134,9 @@ def _check(target,rows,writers,roster,now,vocab,vocab_sha,paths,paths_sha):
     while True:
         if ref in seen or len(chain)>=16 or ref not in rows: raise ValueError()
         seen.add(ref); event=rows[ref]
-        if (type(event) is not dict or set(event)!=card._EVENT|{'agent_uuid'}
-                or event_id(event)!=ref or event.get('agent') not in writers
+        if (type(event) is not dict or event_id(event)!=ref or event.get('agent') not in writers
                 or event.get('agent_uuid')!=roster.get(event.get('agent'))): raise ValueError()
+        _envelope(event)
         created=_utc(event['ts_utc'])
         if created>now: raise ValueError()
         if chain and (created>=chain[-1][2] or _minute(created)==_minute(chain[-1][2])): raise ValueError()
@@ -123,7 +152,7 @@ def _check(target,rows,writers,roster,now,vocab,vocab_sha,paths,paths_sha):
     # exist only inside this validation step and are never returned.
     normalized=[]
     for _,event,created in reversed(chain):
-        obj=copy.deepcopy(event); del obj['agent_uuid']; obj['ts_utc']=_minute(created)
+        obj={key:copy.deepcopy(event[key]) for key in card._EVENT}; obj['ts_utc']=_minute(created)
         data=obj['payload']['public_knowledge']
         if normalized: data['supersedes']=event_id(normalized[-1])
         normalized.append(obj)

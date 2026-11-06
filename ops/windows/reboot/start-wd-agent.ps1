@@ -29,6 +29,9 @@ param(
   [string] $Q4SharedDescriptorSha256 = '',
   [switch] $DryRun,
   [switch] $CheckManagedAdmission,
+  [switch] $CheckLaunchAvailability,
+  [ValidateRange(0, 30)] [int] $LaneAvailabilityRecheckAttempts = 3,
+  [ValidateRange(1, 30)] [int] $LaneAvailabilityRecheckDelaySeconds = 5,
   [switch] $RecoverInteractive,
   [switch] $RetireManagedAttempt,
   [string] $ReviewedJournalDigest = '',
@@ -86,6 +89,19 @@ Clear-WdInheritedQ4ReadSettings
 if ($CheckManagedAdmission -and -not $DryRun) {
   throw 'CheckManagedAdmission requires -DryRun'
 }
+if ($CheckLaunchAvailability -and -not $DryRun) {
+  throw 'CheckLaunchAvailability requires -DryRun'
+}
+# Lane availability recheck budget (Assert-WdLaneLaunchAvailable): a transient
+# native CLI process gets this many fresh re-checks before a launch is refused.
+# Total wait is bounded to 30 s; the diagnostics path is set once the runtime
+# root is known.
+if (($LaneAvailabilityRecheckAttempts * $LaneAvailabilityRecheckDelaySeconds) -gt 30) {
+  throw 'LaneAvailabilityRecheckAttempts x LaneAvailabilityRecheckDelaySeconds must not exceed 30 seconds'
+}
+$script:WdLaneAvailabilityRecheckAttempts = $LaneAvailabilityRecheckAttempts
+$script:WdLaneAvailabilityRecheckDelaySeconds = $LaneAvailabilityRecheckDelaySeconds
+$script:WdLaneAvailabilityDiagnosticsPath = ''
 if ($RecoverInteractive -and $RetireManagedAttempt) {
   throw 'RecoverInteractive and RetireManagedAttempt are mutually exclusive'
 }
@@ -762,7 +778,10 @@ function Assert-WdLaneLaunchAvailable {
     [int] $CurrentPid = $PID,
     [object[]] $ExternalSessions = @(),
     [string] $ParserSourcePath = (Join-Path $PSScriptRoot 'wd_supervisor.ps1'),
-    [switch] $AllowUnpinnedParser
+    [switch] $AllowUnpinnedParser,
+    [AllowNull()] [object] $RecheckAttempts = $null,
+    [AllowNull()] [object] $RecheckDelaySeconds = $null,
+    [string] $DiagnosticsPath = ''
   )
 
   # Match fleet discovery: only real host/script argv establishes ownership.
@@ -800,106 +819,170 @@ function Assert-WdLaneLaunchAvailable {
     if ($definitions.Count -ne 1) { throw "lane process parser missing or ambiguous: $name" }
     . ([scriptblock]::Create($definitions[0].Extent.Text))
   }
-  $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
-  $byPid = @{}
-  $launcherOwners = @{}
-  $knownAgents = @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','claude-rco-3','fable-5')
-  foreach ($process in $processes) {
-    $processIdValue = [int]$process.ProcessId
-    if ($byPid.ContainsKey($processIdValue)) { throw 'cannot prove lane ownership: duplicate PID in process snapshot' }
-    $byPid[$processIdValue] = $process
+  # Recheck configuration. Explicit parameters win; otherwise the launcher's
+  # top-level configuration ($script:WdLaneAvailabilityRecheck*) applies. A copy
+  # of this function extracted without that configuration never rechecks, so
+  # the historical single-pass tests keep their timing and their verdicts.
+  $attemptBudget = 0
+  $delayBudget = 5
+  $configuredAttempts = Get-Variable -Name WdLaneAvailabilityRecheckAttempts -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+  $configuredDelay = Get-Variable -Name WdLaneAvailabilityRecheckDelaySeconds -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+  if ($null -ne $RecheckAttempts) { $attemptBudget = [int]$RecheckAttempts }
+  elseif ($null -ne $configuredAttempts) { $attemptBudget = [int]$configuredAttempts }
+  if ($null -ne $RecheckDelaySeconds) { $delayBudget = [int]$RecheckDelaySeconds }
+  elseif ($null -ne $configuredDelay) { $delayBudget = [int]$configuredDelay }
+  if ($attemptBudget -lt 0 -or $delayBudget -lt 1 -or ($attemptBudget * $delayBudget) -gt 30) {
+    throw 'lane availability recheck configuration is invalid: attempts >= 0, delay >= 1 s and attempts x delay <= 30 s are required'
   }
-  foreach ($process in $processes) {
-    if ([int]$process.ProcessId -eq $CurrentPid) { continue }
-    if ([string]$process.Name -notmatch '^(powershell|pwsh)\.exe$') { continue }
-    if ([string]::IsNullOrWhiteSpace([string]$process.CommandLine)) {
-      # A short-lived test/helper may exit during the CIM enumeration. Recheck
-      # that exact lifetime once; never waive an unreadable live process or a
-      # recycled PID, and never infer a launcher from missing metadata.
-      $observedStart = $process.PSObject.Properties['CreationDate']
-      $observedTicks = if ($null -ne $observedStart -and $null -ne $observedStart.Value) {
-        ([DateTimeOffset]$observedStart.Value).UtcTicks
-      } else { $null }
-      $fresh = @(Get-CimInstance Win32_Process -Filter ("ProcessId=$($process.ProcessId)") -ErrorAction Stop)
-      if ($fresh.Count -eq 0) { continue }
-      if ($fresh.Count -ne 1 -or $null -eq $observedTicks -or
-          [int]$fresh[0].ProcessId -ne [int]$process.ProcessId -or
-          [string]$fresh[0].Name -cne [string]$process.Name -or
-          $null -eq $fresh[0].PSObject.Properties['CreationDate'] -or
-          $null -eq $fresh[0].CreationDate -or
-          ([DateTimeOffset]$fresh[0].CreationDate).UtcTicks -ne $observedTicks -or
-          [string]::IsNullOrWhiteSpace([string]$fresh[0].CommandLine)) {
-        throw 'cannot prove lane ownership: PowerShell command line is unavailable or its identity changed'
+  if (-not $DiagnosticsPath) {
+    $configuredDiagnostics = Get-Variable -Name WdLaneAvailabilityDiagnosticsPath -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if ($null -ne $configuredDiagnostics) { $DiagnosticsPath = [string]$configuredDiagnostics }
+  }
+
+  function Get-WdLaneProcessProperty {
+    param([Parameter(Mandatory)] [object] $Process, [Parameter(Mandatory)] [string] $Name)
+    $property = $Process.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+  }
+
+  function ConvertTo-WdLaneUtcText {
+    param([AllowNull()] [object] $Value)
+    if ($null -eq $Value) { return $null }
+    try { return ([DateTimeOffset]$Value).ToUniversalTime().ToString('o') } catch { return $null }
+  }
+
+  function Write-WdLaneAvailabilityRecord {
+    # Structured per-pass diagnostics (JSON lines). Never the full command line:
+    # it can carry tokens. A failed log write is reported but never changes the
+    # availability verdict.
+    param([Parameter(Mandatory)] [object] $Record)
+    if (-not $DiagnosticsPath) { return }
+    try {
+      $directory = Split-Path -Parent $DiagnosticsPath
+      if ($directory -and -not (Test-Path -LiteralPath $directory -PathType Container)) {
+        [void](New-Item -ItemType Directory -Path $directory -Force)
       }
-      $process = $fresh[0]
+      $line = $Record | ConvertTo-Json -Depth 8 -Compress
+      [IO.File]::AppendAllText($DiagnosticsPath, $line + "`n", (New-Object Text.UTF8Encoding $false))
+    } catch {
+      Write-Warning ("lane availability diagnostics could not be written to {0}: {1}" -f $DiagnosticsPath, $_.Exception.Message)
     }
-    $hostKind = if ([string]$process.Name -ieq 'powershell.exe') { 'WindowsPowerShell' } else { 'Pwsh' }
-    $invocation = Get-WdPowerShellFileInvocation -CommandLine ([string]$process.CommandLine) -HostKind $hostKind
-    if ($null -eq $invocation) { continue }
-    $leaf = ([string]$invocation.script_path -split '[\\/]')[-1]
-    $agentArguments = @(
-      for ($index = [int]$invocation.file_index + 2;
-           $index + 1 -lt $invocation.arguments.Count; $index++) {
-        if ([string]$invocation.arguments[$index] -ieq '-Agent') {
-          [string]$invocation.arguments[$index + 1]
+  }
+
+  function Invoke-WdLaneAvailabilityPass {
+    # One complete check over a fresh process snapshot. A live same-lane
+    # launcher, a same-lane native CLI, a duplicate PID and an unreadable
+    # PowerShell identity throw at once (no recheck). Every native CLI process
+    # without verified launcher ancestry is returned as a diagnostic record.
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    $byPid = @{}
+    $launcherOwners = @{}
+    $knownAgents = @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','claude-rco-3','fable-5')
+    foreach ($process in $processes) {
+      $processIdValue = [int]$process.ProcessId
+      if ($byPid.ContainsKey($processIdValue)) { throw 'cannot prove lane ownership: duplicate PID in process snapshot' }
+      $byPid[$processIdValue] = $process
+    }
+    foreach ($process in $processes) {
+      if ([int]$process.ProcessId -eq $CurrentPid) { continue }
+      if ([string]$process.Name -notmatch '^(powershell|pwsh)\.exe$') { continue }
+      if ([string]::IsNullOrWhiteSpace([string]$process.CommandLine)) {
+        # A short-lived test/helper may exit during the CIM enumeration. Recheck
+        # that exact lifetime once; never waive an unreadable live process or a
+        # recycled PID, and never infer a launcher from missing metadata.
+        $observedStart = $process.PSObject.Properties['CreationDate']
+        $observedTicks = if ($null -ne $observedStart -and $null -ne $observedStart.Value) {
+          ([DateTimeOffset]$observedStart.Value).UtcTicks
+        } else { $null }
+        $fresh = @(Get-CimInstance Win32_Process -Filter ("ProcessId=$($process.ProcessId)") -ErrorAction Stop)
+        if ($fresh.Count -eq 0) { continue }
+        if ($fresh.Count -ne 1 -or $null -eq $observedTicks -or
+            [int]$fresh[0].ProcessId -ne [int]$process.ProcessId -or
+            [string]$fresh[0].Name -cne [string]$process.Name -or
+            $null -eq $fresh[0].PSObject.Properties['CreationDate'] -or
+            $null -eq $fresh[0].CreationDate -or
+            ([DateTimeOffset]$fresh[0].CreationDate).UtcTicks -ne $observedTicks -or
+            [string]::IsNullOrWhiteSpace([string]$fresh[0].CommandLine)) {
+          throw 'cannot prove lane ownership: PowerShell command line is unavailable or its identity changed'
+        }
+        $process = $fresh[0]
+      }
+      $hostKind = if ([string]$process.Name -ieq 'powershell.exe') { 'WindowsPowerShell' } else { 'Pwsh' }
+      $invocation = Get-WdPowerShellFileInvocation -CommandLine ([string]$process.CommandLine) -HostKind $hostKind
+      if ($null -eq $invocation) { continue }
+      $leaf = ([string]$invocation.script_path -split '[\\/]')[-1]
+      $agentArguments = @(
+        for ($index = [int]$invocation.file_index + 2;
+             $index + 1 -lt $invocation.arguments.Count; $index++) {
+          if ([string]$invocation.arguments[$index] -ieq '-Agent') {
+            [string]$invocation.arguments[$index + 1]
+          }
+        }
+      )
+      $sameLane = (
+        $leaf -ieq 'start-wd-agent.ps1' -and
+        $agentArguments -icontains [string]$Lane.agent
+      ) -or @($Lane.legacy_process_markers) -icontains $leaf
+      if ($sameLane) {
+        throw "lane '$($Lane.agent)' already has a live launcher (PID $($process.ProcessId)); leave its session running"
+      }
+      $ownerAgent = ''
+      if ($leaf -ieq 'start-wd-agent.ps1' -and $agentArguments.Count -eq 1) {
+        $candidateAgent = $agentArguments[0].ToLowerInvariant()
+        if ($candidateAgent -cin $knownAgents) { $ownerAgent = $candidateAgent }
+      }
+      foreach ($knownLane in @($KnownLanes) + @($Lane)) {
+        if (@($knownLane.legacy_process_markers) -icontains $leaf) {
+          if ($ownerAgent -and $ownerAgent -cne [string]$knownLane.agent) { throw 'ambiguous legacy launcher identity' }
+          $ownerAgent = [string]$knownLane.agent
         }
       }
-    )
-    $sameLane = (
-      $leaf -ieq 'start-wd-agent.ps1' -and
-      $agentArguments -icontains [string]$Lane.agent
-    ) -or @($Lane.legacy_process_markers) -icontains $leaf
-    if ($sameLane) {
-      throw "lane '$($Lane.agent)' already has a live launcher (PID $($process.ProcessId)); leave its session running"
-    }
-    $ownerAgent = ''
-    if ($leaf -ieq 'start-wd-agent.ps1' -and $agentArguments.Count -eq 1) {
-      $candidateAgent = $agentArguments[0].ToLowerInvariant()
-      if ($candidateAgent -cin $knownAgents) { $ownerAgent = $candidateAgent }
-    }
-    foreach ($knownLane in @($KnownLanes) + @($Lane)) {
-      if (@($knownLane.legacy_process_markers) -icontains $leaf) {
-        if ($ownerAgent -and $ownerAgent -cne [string]$knownLane.agent) { throw 'ambiguous legacy launcher identity' }
-        $ownerAgent = [string]$knownLane.agent
+      if ($leaf -iin @('start-wd-tools-consumer.ps1','Invoke-WdToolsCodex.ps1')) {
+        $ownerAgent = 'codex-tools-1'
+      } elseif ($leaf -ieq 'Start-AgentBridgeConsumerLoop.ps1' -and $agentArguments.Count -eq 1 -and
+        $agentArguments[0] -ceq 'codex-tools-1') {
+        $ownerAgent = 'codex-tools-1'
       }
+      if ($ownerAgent) { $launcherOwners[[int]$process.ProcessId] = $ownerAgent }
     }
-    if ($leaf -iin @('start-wd-tools-consumer.ps1','Invoke-WdToolsCodex.ps1')) {
-      $ownerAgent = 'codex-tools-1'
-    } elseif ($leaf -ieq 'Start-AgentBridgeConsumerLoop.ps1' -and $agentArguments.Count -eq 1 -and
-      $agentArguments[0] -ceq 'codex-tools-1') {
-      $ownerAgent = 'codex-tools-1'
-    }
-    if ($ownerAgent) { $launcherOwners[[int]$process.ProcessId] = $ownerAgent }
-  }
-  # Updaters can rename an executable while its existing native process lives.
-  # Recognize only the installed CLI names and their numeric old-file suffix.
-  foreach ($native in @($processes | Where-Object { [string]$_.Name -imatch '^(codex|claude)\.exe(?:\.old\.[0-9]+)?$' })) {
-    $node = $native
-    $visited = @{}
-    $attributed = $false
-    for ($depth = 0; $depth -lt 64; $depth++) {
-      $nodePid = [int]$node.ProcessId
-      if ($visited.ContainsKey($nodePid)) { break }
-      $visited[$nodePid] = $true
-      $parentProperty = $node.PSObject.Properties['ParentProcessId']
-      if ($null -eq $parentProperty -or -not $byPid.ContainsKey([int]$parentProperty.Value)) { break }
-      $parent = $byPid[[int]$parentProperty.Value]
-      $childStart = $node.PSObject.Properties['CreationDate']
-      $parentStart = $parent.PSObject.Properties['CreationDate']
-      if ($null -eq $childStart -or $null -eq $parentStart -or $null -eq $childStart.Value -or $null -eq $parentStart.Value) { break }
-      try {
-        if ([DateTimeOffset]$parentStart.Value -gt [DateTimeOffset]$childStart.Value) { break }
-      } catch { break }
-      if ($launcherOwners.ContainsKey([int]$parent.ProcessId)) {
-        if ([string]$launcherOwners[[int]$parent.ProcessId] -ceq [string]$Lane.agent) {
-          throw "lane '$($Lane.agent)' already owns native CLI PID $($native.ProcessId); leave its session running"
+    $unattributed = @()
+    # Updaters can rename an executable while its existing native process lives.
+    # Recognize only the installed CLI names and their numeric old-file suffix.
+    foreach ($native in @($processes | Where-Object { [string]$_.Name -imatch '^(codex|claude)\.exe(?:\.old\.[0-9]+)?$' })) {
+      $node = $native
+      $visited = @{}
+      $attributed = $false
+      $breakReason = 'depth_limit'
+      $chain = @()
+      for ($depth = 0; $depth -lt 64; $depth++) {
+        $nodePid = [int]$node.ProcessId
+        if ($visited.ContainsKey($nodePid)) { $breakReason = 'cycle'; break }
+        $visited[$nodePid] = $true
+        $chain += ('{0}:{1}' -f $nodePid, [string]$node.Name)
+        $parentProperty = $node.PSObject.Properties['ParentProcessId']
+        if ($null -eq $parentProperty -or $null -eq $parentProperty.Value) { $breakReason = 'parent_missing'; break }
+        if ([int]$parentProperty.Value -eq 0) { $breakReason = 'no_launcher_in_chain'; break }
+        if (-not $byPid.ContainsKey([int]$parentProperty.Value)) { $breakReason = 'parent_missing'; break }
+        $parent = $byPid[[int]$parentProperty.Value]
+        $childStart = $node.PSObject.Properties['CreationDate']
+        $parentStart = $parent.PSObject.Properties['CreationDate']
+        if ($null -eq $childStart -or $null -eq $parentStart -or $null -eq $childStart.Value -or $null -eq $parentStart.Value) {
+          $breakReason = 'missing_creation_date'; break
         }
-        $attributed = $true
-        break
+        try {
+          if ([DateTimeOffset]$parentStart.Value -gt [DateTimeOffset]$childStart.Value) { $breakReason = 'parent_newer_than_child'; break }
+        } catch { $breakReason = 'missing_creation_date'; break }
+        if ($launcherOwners.ContainsKey([int]$parent.ProcessId)) {
+          if ([string]$launcherOwners[[int]$parent.ProcessId] -ceq [string]$Lane.agent) {
+            throw "lane '$($Lane.agent)' already owns native CLI PID $($native.ProcessId); leave its session running"
+          }
+          $attributed = $true
+          break
+        }
+        $node = $parent
       }
-      $node = $parent
-    }
-    if (-not $attributed) {
+      if ($attributed) { continue }
       # Explicit operator attribution is scoped to this exact process lifetime.
       # A PID alone, another executable, or a known same-lane ancestor never
       # qualifies. The snapshot is hash-pinned by the fleet invocation.
@@ -936,9 +1019,82 @@ function Assert-WdLaneLaunchAvailable {
         )
       }
       if ($parentAttributed) { continue }
-      throw "cannot prove lane availability: unmarked native $($native.Name) PID $($native.ProcessId) has no verified launcher ancestry; leave it running"
+      # Diagnostic record: everything an operator needs to attribute the process,
+      # without its full command line. Properties absent from a snapshot row are
+      # reported as null, never guessed.
+      $creation = Get-WdLaneProcessProperty -Process $native -Name 'CreationDate'
+      $ageSeconds = $null
+      $creationTicks = 'unknown'
+      if ($null -ne $creation) {
+        try {
+          $creationTicks = ([DateTimeOffset]$creation).UtcTicks
+          $ageSeconds = [int][math]::Round(([DateTimeOffset]::UtcNow - [DateTimeOffset]$creation).TotalSeconds)
+        } catch { $ageSeconds = $null; $creationTicks = 'unknown' }
+      }
+      $parentPidValue = Get-WdLaneProcessProperty -Process $native -Name 'ParentProcessId'
+      $parentAlive = ($null -ne $parentPidValue -and $byPid.ContainsKey([int]$parentPidValue))
+      $parentRow = $null
+      if ($parentAlive) { $parentRow = $byPid[[int]$parentPidValue] }
+      $commandText = [string](Get-WdLaneProcessProperty -Process $native -Name 'CommandLine')
+      if ($commandText.Length -gt 120) { $commandText = $commandText.Substring(0, 120) }
+      $unattributed += [pscustomobject][ordered]@{
+        name = [string]$native.Name
+        pid = [int]$native.ProcessId
+        executable_path = [string](Get-WdLaneProcessProperty -Process $native -Name 'ExecutablePath')
+        command_line_prefix = $commandText
+        creation_utc = (ConvertTo-WdLaneUtcText -Value $creation)
+        age_seconds = $ageSeconds
+        parent_pid = $(if ($null -ne $parentPidValue) { [int]$parentPidValue } else { $null })
+        parent_alive = $parentAlive
+        parent_name = $(if ($parentAlive) { [string](Get-WdLaneProcessProperty -Process $parentRow -Name 'Name') } else { $null })
+        parent_creation_utc = $(if ($parentAlive) { ConvertTo-WdLaneUtcText -Value (Get-WdLaneProcessProperty -Process $parentRow -Name 'CreationDate') } else { $null })
+        ancestry = ($chain -join ' -> ')
+        break_reason = $breakReason
+        identity = ('{0}|{1}|{2}' -f [int]$native.ProcessId, [string]$native.Name, $creationTicks)
+      }
     }
+    foreach ($record in $unattributed) { $record }
   }
+
+  # A transient native process (a closing session, a helper that exits during
+  # enumeration) must not refuse a whole fleet launch. Re-run the COMPLETE check
+  # over a fresh snapshot a bounded number of times; refuse only when a native
+  # process is still unattributed after the last pass. A process that appears
+  # during the budget is treated the same way inside the same budget. Never
+  # kill, never adopt.
+  $pass = 0
+  $unattributed = @()
+  while ($true) {
+    $pass++
+    $unattributed = @(Invoke-WdLaneAvailabilityPass)
+    $outcome = if ($unattributed.Count -eq 0) { 'available' } elseif ($pass -le $attemptBudget) { 'recheck_scheduled' } else { 'refused' }
+    Write-WdLaneAvailabilityRecord -Record ([ordered]@{
+      schema = 'wd.lane-availability-check.v1'
+      agent = [string]$Lane.agent
+      observed_utc = [DateTimeOffset]::UtcNow.ToString('o')
+      pass = $pass
+      max_passes = 1 + $attemptBudget
+      recheck_delay_seconds = $delayBudget
+      outcome = $outcome
+      unattributed = @($unattributed)
+    })
+    if ($unattributed.Count -eq 0) { return }
+    if ($pass -gt $attemptBudget) { break }
+    Write-Warning ("lane availability: {0} unattributed native process(es) ({1}); recheck {2} of {3} in {4} s" -f
+      $unattributed.Count, (@($unattributed | ForEach-Object { '{0} PID {1} {2}' -f $_.name, $_.pid, $_.break_reason }) -join ', '),
+      $pass, $attemptBudget, $delayBudget)
+    Start-Sleep -Seconds $delayBudget
+  }
+  $first = $unattributed[0]
+  $parentText = if ($null -eq $first.parent_pid) { 'parent unknown' }
+    elseif ($first.parent_alive) { 'parent PID {0} {1} alive' -f $first.parent_pid, $first.parent_name }
+    else { 'parent PID {0} missing' -f $first.parent_pid }
+  $ageText = if ($null -eq $first.age_seconds) { 'age unknown' } else { 'age {0} s' -f $first.age_seconds }
+  $diagnosticsText = if ($DiagnosticsPath) { '; diagnostics ' + $DiagnosticsPath } else { '' }
+  throw (("cannot prove lane availability: unmarked native {0} PID {1} has no verified launcher ancestry; leave it running " +
+    "(reason={2}; {3}; ancestry {4}; {5}; executable {6}; {7} unattributed after {8} pass(es) with recheck {9} x {10} s{11})") -f
+    $first.name, $first.pid, $first.break_reason, $parentText, $first.ancestry, $ageText, $first.executable_path,
+    $unattributed.Count, $pass, $attemptBudget, $delayBudget, $diagnosticsText)
 }
 
 function Get-WdApprovedExternalRunners {
@@ -2036,6 +2192,7 @@ $worktree = Resolve-NormalizedPath -Path ([string]$lane.worktree)
 $primaryRepo = Resolve-NormalizedPath -Path ([string]$manifest.primary_repo_root)
 $expectedCommonGit = Resolve-NormalizedPath -Path ([string]$manifest.repo_common_git_dir)
 $runtimeRoot = Resolve-NormalizedPath -Path ([string]$manifest.runtime_root)
+$script:WdLaneAvailabilityDiagnosticsPath = Join-Path (Join-Path $runtimeRoot 'lane_availability') ('{0}.jsonl' -f $Agent)
 $conversationConfigBaseline = $null
 $codexUserConfigPath = ''
 if ($conversationSurface -ceq 'local_window' -and
@@ -2751,7 +2908,11 @@ if ($RecoverInteractive) {
 }
 
 if ($DryRun) {
-  if ($CheckManagedAdmission -and $turnMode -ceq 'managed') {
+  # The fleet preflight asks for the native-process availability check on every
+  # lane (-CheckLaunchAvailability); managed admission implies it.
+  $checkLaunchAvailabilityNow = [bool]$CheckLaunchAvailability
+  if ($CheckManagedAdmission -and $turnMode -ceq 'managed') { $checkLaunchAvailabilityNow = $true }
+  if ($checkLaunchAvailabilityNow) {
     Assert-WdLaneLaunchAvailable -Lane $lane -KnownLanes @($manifest.lanes) -ExternalSessions $externalSessions -AllowUnpinnedParser:($sourceTreeMode -and $DryRun)
   }
   Write-Host '  DRY RUN: bridge bootstrap, handshake write, and CLI launch suppressed.'

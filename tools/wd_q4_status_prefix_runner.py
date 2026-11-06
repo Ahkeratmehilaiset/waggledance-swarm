@@ -15,6 +15,9 @@ bounded run, not an automatic continuation or continuous indexer. Other writers
 which do not honor these markers are not fenced by this wrapper; use the child's
 fenced plan and independent coordination. Path/identity checks do not defeat
 hostile same-user TOCTOU replacement or prove ACL, power-loss or isolation.
+The source directory and the three output/model roots must be disjoint. Their
+directory identities are rechecked after the child; this does not prove that
+individual model files remained unchanged during the child's operation.
 """
 import hashlib
 import hmac
@@ -210,7 +213,9 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
         private = roots._root(route["private_state_root"])
         model = roots._root(route["trusted_model_root"])
         checkpoint_ids, private_ids, model_ids = roots._observe(checkpoint), roots._observe(private), roots._observe(model)
-        if not all((_separate(checkpoint, private), _separate(checkpoint, model), _separate(private, model))):
+        source_parent_ids = roots._observe(source.parent)
+        if not all((_separate(checkpoint, private), _separate(checkpoint, model), _separate(private, model),
+                    *(_separate(source.parent, root) for root in (checkpoint, private, model)))):
             raise ValueError()
         marks = (checkpoint / _PENDING, private / _PENDING)
         if not all(_absent(path) for path in marks):
@@ -238,7 +243,7 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
     try:
         token = secrets.token_hex(32).encode("ascii") + b"\n"
         if (roots._observe(checkpoint) != checkpoint_ids or roots._observe(private) != private_ids
-                or roots._observe(model) != model_ids):
+                or roots._observe(model) != model_ids or roots._observe(source.parent) != source_parent_ids):
             raise ValueError()
         first = _create(marks[0], token)
         second = _create(marks[1], token)
@@ -247,7 +252,8 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
                                          trusted_model_root=model)
         if not _result_valid(report, route, plan):
             raise ValueError()
-        if roots._observe(private) != private_ids or roots._observe(checkpoint) != checkpoint_ids:
+        if (roots._observe(private) != private_ids or roots._observe(checkpoint) != checkpoint_ids
+                or roots._observe(model) != model_ids or roots._observe(source.parent) != source_parent_ids):
             raise ValueError()
         _verify_own(marks[0], token, first)
         _verify_own(marks[1], token, second)

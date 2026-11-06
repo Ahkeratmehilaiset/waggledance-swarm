@@ -318,6 +318,11 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
             recovery.recover(**{**kwargs, 'expected_job_receipt_sha256': '0' * 64})
         runner_mark = Path(route['checkpoint_root']) / state['runner']._PENDING
         original_mark = runner_mark.read_bytes()
+        runner_mark.unlink()  # Synthetic fault: no completed reconciliation receipt exists yet.
+        with pytest.raises(recovery.RecoveryOutcomeUnknown):
+            recovery.recover(**kwargs)
+        assert marker_path.read_bytes() == marker_raw
+        runner_mark.write_bytes(original_mark)
         runner_mark.write_bytes(b'synthetic-foreign-reservation')
         with pytest.raises(recovery.RecoveryOutcomeUnknown):
             recovery.recover(**kwargs)
@@ -355,7 +360,29 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
             with pytest.raises(recovery.RecoveryOutcomeUnknown):
                 recovery.recover(**kwargs)
         assert marker_path.read_bytes() == marker_raw
-        result = recovery.recover(**kwargs)
+        unlink = recovery.os.unlink
+        for removed in (runner_mark, private_root / state['runner']._PENDING):
+            def unlink_then_interrupt(path, *, fault=removed):
+                unlink(path)
+                if Path(path) == fault:
+                    raise OSError('synthetic interruption immediately after owned marker removal')
+            with monkeypatch.context() as scoped:
+                scoped.setattr(recovery.os, 'unlink', unlink_then_interrupt)
+                scoped.setattr(update, '_publish', lambda **_kwargs: pytest.fail('retry republished'))
+                with pytest.raises(recovery.RecoveryOutcomeUnknown):
+                    recovery.recover(**kwargs)
+            assert not removed.exists() and marker_path.read_bytes() == marker_raw
+            if removed == runner_mark:
+                reconciled = private_root / ('q4-live-job-reconciled-' + attempt + '.json')
+                original_reconciled = reconciled.read_bytes()
+                reconciled.write_bytes(b'synthetic-modified-reconciliation')
+                with pytest.raises(recovery.RecoveryOutcomeUnknown):
+                    recovery.recover(**kwargs)
+                assert marker_path.read_bytes() == marker_raw
+                reconciled.write_bytes(original_reconciled)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(update, '_publish', lambda **_kwargs: pytest.fail('retry republished'))
+            result = recovery.recover(**kwargs)
         assert result['status'] == 'PUBLISHED' and result['pointer_sha256'] == target
         assert not marker_path.exists()
         for root in (Path(route['checkpoint_root']), private_root):

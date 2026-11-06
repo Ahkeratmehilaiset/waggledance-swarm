@@ -96,6 +96,28 @@ def test_config_pins_cutoff_batch_headroom_and_partial_and_reports_partial(monke
     assert calls[0]['expected_source_prefix_sha256'] == config['source_sha256']
 
 
+def test_machine_receipt_has_only_valid_public_hashes(monkeypatch, capsys):
+    from tools import wd_q4_genesis_cli as cli, wd_q4_genesis_bootstrap as genesis
+    config = {'source_path': 'private', 'source_sha256': 'a' * 64, 'source_bytes': 17,
+              'source_file_identity': 'windows-v1:00000001:0000000000000001', 'generation_path': 'private',
+              'generation': 'synthetic', 'checkpoint_root': 'private', 'private_state_root': 'private',
+              'trusted_model_root': 'private', 'policy_sha256': 'b' * 64, 'public_policy_sha256': 'c' * 64,
+              'fleet_sha256': 'd' * 64, 'max_prefix_bytes': 1024, 'max_bytes': 32, 'max_rows': 1,
+              'plan_template': {}, 'renewable': True, 'cutoff_utc': None, 'batch_rows': False,
+              'min_headroom_bytes': 128, 'allow_partial_genesis': False}
+    monkeypatch.setattr(cli, '_prepare', lambda *_: (config, b'p', b'u', b'f', genesis))
+    monkeypatch.setattr(genesis, 'bootstrap', lambda **_: {'status': 'PUBLISHED_GENESIS',
+        'pointer_sha256': 'e' * 64, 'runner_receipt_sha256': 'f' * 64, 'private': 'must-not-emit'})
+    monkeypatch.setattr(cli, '_verify_result', lambda *args: True)
+    assert cli.main(['--enable', '--config', 'private', '--sha256', 'a' * 64]) == 0
+    assert json.loads(capsys.readouterr().out) == {'status': 'PUBLISHED_GENESIS',
+        'pointer_sha256': 'e' * 64, 'runner_receipt_sha256': 'f' * 64}
+    monkeypatch.setattr(genesis, 'bootstrap', lambda **_: {'status': 'PUBLISHED_GENESIS',
+        'pointer_sha256': 'e' * 64, 'runner_receipt_sha256': 'invalid'})
+    assert cli.main(['--enable', '--config', 'private', '--sha256', 'a' * 64]) == 3
+    assert json.loads(capsys.readouterr().out) == {'status': 'UNKNOWN'}
+
+
 @pytest.mark.parametrize('path', ['C:\\a\\..\\b', 'F:\\thing', '\\\\server\\share', 'relative'])
 def test_non_c_or_noncanonical_path_refused(path):
     from tools import wd_q4_genesis_cli as cli

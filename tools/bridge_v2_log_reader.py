@@ -7,6 +7,7 @@ returned candidate cursor only after they have accepted the returned rows.
 
 from __future__ import annotations
 
+import copy
 import ctypes
 import hashlib
 import hmac
@@ -469,6 +470,7 @@ def read_bridge_log(
     expected_prefix_sha256: str | None = None,
     max_prefix_bytes: int | None = None,
     expected_snapshot_sha256: str | None = None,
+    _row_ready=None,
 ) -> BridgeReadResult:
     """Read a stable, bounded JSONL snapshot or delta.
 
@@ -502,6 +504,8 @@ def read_bridge_log(
             or type(max_prefix_bytes) is not int or not 0 <= max_prefix_bytes <= MAX_PREFIX_BYTES
             or offset > max_prefix_bytes):
         return _result(BridgeReadStatus.BLOCKED, "prefix_configuration_invalid", offset=offset)
+    if _row_ready is not None and (not callable(_row_ready) or not prefix_enabled or snapshot_enabled):
+        return _result(BridgeReadStatus.BLOCKED, "row_selection_configuration_invalid", offset=offset)
     if (
         isinstance(max_bytes, bool)
         or not isinstance(max_bytes, int)
@@ -646,13 +650,41 @@ def read_bridge_log(
             if not hmac.compare_digest(hashlib.sha256(data).hexdigest(), expected_snapshot_sha256):
                 return _result(BridgeReadStatus.BLOCKED, "snapshot_sha256_mismatch", offset=offset,
                                snapshot_length=snapshot_length)
+        selected_rows = None
+        deferred = False
+        if _row_ready is not None and consumed:
+            try:
+                selected_rows = []
+                position = 0
+                while position < consumed:
+                    end = data.index(b"\n", position, consumed) + 1
+                    row = _parse_rows(data[position:end], starts_at_zero=(offset == 0 and position == 0))[0]
+                    # The selector cannot edit the parsed row that is bound to the
+                    # hashed source bytes, including nested mutable JSON values.
+                    selector_row = copy.deepcopy(row)
+                    before = json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+                    ready = _row_ready(selector_row)
+                    after = json.dumps(selector_row, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                                       allow_nan=False)
+                    if type(ready) is not bool or before != after:
+                        raise ValueError()
+                    if not ready:
+                        deferred = True
+                        break
+                    selected_rows.append(row)
+                    position = end
+                consumed = position
+            except Exception:
+                return _result(BridgeReadStatus.BLOCKED, "row_selection_invalid", offset=offset,
+                               snapshot_length=snapshot_length)
         if consumed == 0:
             status = (
                 BridgeReadStatus.BLOCKED
-                if len(data) >= max_bytes
+                if len(data) >= max_bytes and not deferred
                 else BridgeReadStatus.IDLE
             )
-            reason = "record_exceeds_max_bytes" if status is BridgeReadStatus.BLOCKED else "partial_record"
+            reason = ("cutoff_deferred" if deferred else
+                      "record_exceeds_max_bytes" if status is BridgeReadStatus.BLOCKED else "partial_record")
             candidate = None
             if status is BridgeReadStatus.IDLE:
                 candidate = BridgeCursor(offset, identity, generation_before)
@@ -667,7 +699,8 @@ def read_bridge_log(
             )
         else:
             try:
-                rows = _parse_rows(data[:consumed], starts_at_zero=(offset == 0))
+                rows = tuple(selected_rows) if selected_rows is not None else _parse_rows(
+                    data[:consumed], starts_at_zero=(offset == 0))
             except ValueError as exc:
                 result = _result(
                     BridgeReadStatus.BLOCKED,
@@ -681,7 +714,7 @@ def read_bridge_log(
                 next_offset = offset + consumed
                 result = _result(
                     BridgeReadStatus.OK,
-                    "rows_available",
+                    "cutoff_deferred" if deferred else "rows_available",
                     offset=offset,
                     rows=rows,
                     candidate=BridgeCursor(next_offset, identity, generation_before),
@@ -774,6 +807,18 @@ def read_bridge_log(
                     return _result(exc.status, exc.reason, offset=offset, snapshot_length=snapshot_length)
                 if final_generation != generation_before:
                     return _result(BridgeReadStatus.RETRY, "generation_changed_during_read", offset=offset,
+                                   snapshot_length=snapshot_length)
+            if _row_ready is not None:
+                # The original handle can remain valid after a path rename/replacement.
+                # Reopen the selected path and compare identity before returning a
+                # batch cursor; this is not protection from a later same-user race.
+                try:
+                    with _open_log(log_path) as current:
+                        if _file_identity(current) != identity:
+                            return _result(BridgeReadStatus.RETRY, "file_identity_changed_during_read", offset=offset,
+                                           snapshot_length=snapshot_length)
+                except OSError:
+                    return _result(BridgeReadStatus.RETRY, "log_unavailable", offset=offset,
                                    snapshot_length=snapshot_length)
             return BridgePrefixReadResult(
                 result.status, result.reason, result.rows, result.candidate_cursor,

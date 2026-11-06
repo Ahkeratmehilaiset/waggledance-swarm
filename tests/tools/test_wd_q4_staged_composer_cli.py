@@ -11,6 +11,7 @@ def argv(kw):
     return ['--request', kw['request_path'], '--stage', kw['stage_dir'], '--bundle', kw['expected_bundle'],
             '--generation-root', kw['generation_root'], '--bundle-store-root', kw['bundle_store_root'],
             '--active-bundle-root', kw['active_bundle_root'],
+            '--state-sha256', kw['expected_state_sha256'],
             '--commit', kw['expected_commit'], '--manifest-sha256', kw['expected_manifest_sha256'],
             '--public-plan-sha256', kw['expected_public_plan_sha256'], '--enable']
 
@@ -101,12 +102,23 @@ def test_interrupt_is_nonzero_and_does_not_claim_success(tmp_path, capsys, monke
 
 def test_actual_module_process_runs_same_synthetic_chain(tmp_path):
     kw, _, stage = setup_case(tmp_path)
-    run = subprocess.run([sys.executable, '-B', '-m', 'tools.wd_q4_staged_composer_cli', *argv(kw)],
+    bootstrap = ('import pathlib,sys; from tools import wd_q4_staged_composer as s; '
+                 's._STATE_POINTER=pathlib.Path(sys.argv[1]); '
+                 'from tools.wd_q4_staged_composer_cli import main; sys.exit(main(sys.argv[2:]))')
+    run = subprocess.run([sys.executable, '-B', '-c', bootstrap,
+                          str(tmp_path / 'WD_REBOOT_STATE_CURRENT.json'), *argv(kw)],
                          cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True, timeout=60)
     assert run.returncode == 0 and run.stderr == ''
     result = json.loads(run.stdout)
     assert result['status'] == 'PREPARED' and Path(result['pointer_path']).parent == stage
     assert not list(tmp_path.rglob('WD_Q4_DESCRIPTOR_CURRENT.json'))
+
+
+def test_actual_module_process_is_off_without_arguments():
+    run = subprocess.run([sys.executable, '-B', '-m', 'tools.wd_q4_staged_composer_cli'],
+                         cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0 and run.stderr == ''
+    assert json.loads(run.stdout) == {'status': 'OFF'}
 
 
 def test_unexpected_result_cannot_claim_success(tmp_path, capsys, monkeypatch):
@@ -124,7 +136,7 @@ def test_success_output_failure_never_returns_zero(tmp_path, monkeypatch):
     assert cli.main(argv(kw)) != 0
 
 
-@pytest.mark.parametrize('flag', ['--generation-root', '--bundle-store-root', '--active-bundle-root'])
+@pytest.mark.parametrize('flag', ['--generation-root', '--bundle-store-root', '--active-bundle-root', '--state-sha256'])
 def test_enabled_command_requires_each_external_root_before_dispatch(tmp_path, capsys, monkeypatch, flag):
     from tools import wd_q4_staged_composer_cli as cli
     kw, _, stage = setup_case(tmp_path)

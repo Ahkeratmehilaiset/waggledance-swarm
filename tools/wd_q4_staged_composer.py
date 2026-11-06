@@ -13,12 +13,18 @@ import hashlib
 import hmac
 import json
 import os
+from pathlib import Path
+import re
 
 from sandbox.mind.step2 import shared_capture_adapter as capture
 from tools import wd_q4_descriptor_cli as cli
 from tools import wd_q4_descriptor_pointer as pointer
 from tools import wd_q4_lane_binding_producer as binding_producer
 from tools import wd_q4_secure_transport as transport
+
+_STATE_POINTER = Path(r'C:\Python\WD_REBOOT_STATE_CURRENT.json')
+_HEX40 = re.compile(r'[0-9a-f]{40}\Z')
+_HEX64 = re.compile(r'[0-9a-fA-F]{64}\Z')
 
 
 class ComposeRefused(ValueError):
@@ -40,6 +46,51 @@ def _contains(parent, child):
         return False
 
 
+def _identity_contains(parent, child):
+    """Point-in-time ancestor identity test, including Windows 8.3 aliases."""
+    identity = os.stat(parent)
+    return any(os.path.samestat(identity, os.stat(node)) for node in (child, *child.parents))
+
+
+def _state_pairs(pairs):
+    result, seen = {}, set()
+    for key, value in pairs:
+        if not key.isascii() or key.lower() in seen:
+            raise ValueError()
+        seen.add(key.lower())
+        result[key] = value
+    return result
+
+
+def _anchored_active(expected_state_sha256, active, store):
+    """Check the fixed CURRENT pointer against an independent caller pin."""
+    state_raw = cli._read_pinned(str(_STATE_POINTER), 65536, expected_state_sha256, 'source_refused')
+    state = json.loads(state_raw.decode('utf-8'), object_pairs_hook=_state_pairs, parse_constant=cli._constant)
+    if (type(state) is not dict or type(state.get('schema_version')) is not int or state['schema_version'] != 1
+            or type(state.get('source_commit')) is not str or _HEX40.fullmatch(state['source_commit']) is None
+            or state.get('final_commit') != state['source_commit']
+            or type(state.get('manifest_sha256')) is not str or _HEX64.fullmatch(state['manifest_sha256']) is None
+            or type(state.get('final_manifest_sha256')) is not str
+            or state['manifest_sha256'].upper() != state['final_manifest_sha256'].upper()):
+        raise ValueError()
+    current = pointer._absolute(state.get('active_bundle'))
+    pointer._chain(current)
+    if not current.is_dir() or not os.path.samefile(current, active) or not os.path.samefile(current.parent, store):
+        raise ValueError()
+
+
+def _check_roots(stage, bundle, root, store, active):
+    for path in (stage, bundle, root, store, active):
+        pointer._chain(path)
+    if (not all(path.is_dir() for path in (stage, bundle, root, store, active))
+            or not _contains(root, stage) or not _identity_contains(root, stage)
+            or any(_contains(root, item) or _contains(item, root)
+                   or _identity_contains(root, item) or _identity_contains(item, root)
+                   for item in (bundle, store, active))
+            or any(stage.iterdir())):
+        raise ValueError()
+
+
 def _exclusive(path, raw):
     fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0), 0o600)
     with os.fdopen(fd, 'wb') as stream:
@@ -50,7 +101,7 @@ def _exclusive(path, raw):
 
 def compose(*, enabled=False, request_path=None, stage_dir=None, expected_bundle=None,
             expected_commit=None, expected_manifest_sha256=None, expected_public_plan_sha256=None,
-            generation_root=None, bundle_store_root=None, active_bundle_root=None):
+            generation_root=None, bundle_store_root=None, active_bundle_root=None, expected_state_sha256=None):
     """Return OFF or PREPARED with exact candidate paths/pins; never update CURRENT.
 
     The strict request uses stage_dir as target_dir and stage_dir/binding-source.json
@@ -60,8 +111,9 @@ def compose(*, enabled=False, request_path=None, stage_dir=None, expected_bundle
     generation_root, bundle_store_root and active_bundle_root are explicit,
     independently preflighted paths; the stage must remain in generation_root,
     which must not overlap the bundle store, active bundle or candidate bundle.
-    The caller must establish which active bundle is current; these supplied
-    paths alone do not authenticate machine state and are not an atomic lock.
+    The fixed CURRENT state pointer must match an independent expected_state_sha256
+    and the active and store directory identities. The caller independently pins
+    the state bytes; these checks are point-in-time and are not an atomic lock.
     Inputs must be independently authenticated by the caller, not inferred here.
     Process termination or KeyboardInterrupt gives no successful receipt; the caller
     must inspect the staging folder before another attempt. Path checking and an
@@ -82,13 +134,8 @@ def compose(*, enabled=False, request_path=None, stage_dir=None, expected_bundle
         root = pointer._absolute(generation_root)
         store = pointer._absolute(bundle_store_root)
         active = pointer._absolute(active_bundle_root)
-        for path in (stage, bundle, root, store, active):
-            pointer._chain(path)
-        if (not all(path.is_dir() for path in (stage, bundle, root, store, active))
-                or not _contains(root, stage)
-                or any(_contains(root, item) or _contains(item, root) for item in (bundle, store, active))
-                or any(stage.iterdir())):
-            raise ValueError()
+        _check_roots(stage, bundle, root, store, active)
+        _anchored_active(expected_state_sha256, active, store)
         request = cli._request(request_path)
         if (not _same(request['target_dir'], stage) or not _same(request['descriptor']['bundle_root'], bundle)
                 or not _same(request['fleet_path'], bundle / 'wd-fleet.json')
@@ -124,6 +171,8 @@ def compose(*, enabled=False, request_path=None, stage_dir=None, expected_bundle
                     ('roster_sha256', 'roster_sha256'), ('expected_public_policy_sha256', 'public_policy_sha256'),
                     ('expected_source_sha256', 'source_anchor_sha256'), ('expected_encoder_sha256', 'encoder_sha256')))):
             raise ValueError()
+        _anchored_active(expected_state_sha256, active, store)
+        _check_roots(stage, bundle, root, store, active)
         attempted = True
         _exclusive(stage / 'binding-source.json', binding_bytes)
         request['binding_sha256'] = built['binding_sha256']

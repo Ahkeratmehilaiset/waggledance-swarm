@@ -92,6 +92,7 @@
     "tools/wd_q4_fixed_parent_attestation.py",
     "tools/wd_q4_fixed_result_adapter.py",
     "tools/wd_q4_bound_lane_transport.py",
+    "tools/wd_q4_lane_caller_adapter.py",
     "tools/wd_q4_lane_session_client.py",
     "tools/wd_q4_lane_session_cli.py",
     "tools/wd_q4_allowed_records.py",

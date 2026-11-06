@@ -183,7 +183,9 @@ def _result_valid(result, route, plan):
             (result["coverage"] in (("caught_up_to_final_snapshot_not_history", "partial_ready_prefix")
                                     if "cutoff_utc" in route else ("caught_up_to_final_snapshot_not_history",))
              and (status in ("PUBLISHED_GENESIS", "PUBLISHED_HISTORY")
-                  or ("cutoff_utc" in route and result["coverage"] == "partial_ready_prefix"))
+                  or ("cutoff_utc" in route and result["coverage"] == "partial_ready_prefix")
+                  or ("cutoff_utc" not in route and plan.get("fenced") is True
+                      and result["coverage"] == "caught_up_to_final_snapshot_not_history"))
              and result["source_refusals"] == "NOT_AGGREGATED"))
 
 

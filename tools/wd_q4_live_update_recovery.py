@@ -161,6 +161,9 @@ def _recover_closed_job(*, private, root, config, baseline, descriptor, binding,
     markers = (root / update.runner._PENDING, private / update.runner._PENDING)
     infos = tuple(path.lstat() for path in markers)
     def verify(*, remove=False):
+        if _verify_job_attestation(private, attempt, config_sha, marker['intent_sha256'],
+                                   marker_raw, job_sha, helper_sha) != reservation:
+            raise ValueError()
         for path, info in zip(markers, infos):
             update.runner._verify_own(path, marker_bytes, info)
         update.runner._verify_own(marker_path, marker_raw, marker_info)

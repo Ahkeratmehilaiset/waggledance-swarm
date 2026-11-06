@@ -198,7 +198,8 @@ def _utc(value):
 def continue_once(*, enabled=False, tuple_bytes=None, expected_tuple_sha256=None,
                   expected_pointer_sha256=None, policy_bytes=None, public_policy_bytes=None,
                   fleet_bytes=None, expected_fleet_sha256=None, cutoff_utc=None,
-                  previous_cutoff_utc=None):
+                  previous_cutoff_utc=None, watermark_enabled=False,
+                  expected_watermark_record_sha256=None):
     """Derive and execute at most one fresh fenced continuation, never retry it.
 
     A new invocation needs an explicit independently supplied current pointer
@@ -212,7 +213,9 @@ def continue_once(*, enabled=False, tuple_bytes=None, expected_tuple_sha256=None
         return {"status": "OFF"}
     prepared = False
     try:
-        if enabled is not True:
+        if (enabled is not True or type(watermark_enabled) is not bool
+                or (not watermark_enabled and expected_watermark_record_sha256 is not None)
+                or (watermark_enabled and (cutoff_utc is None or previous_cutoff_utc is None))):
             raise ValueError()
         route, plan, pin, roster_bytes, tasks = _inputs(tuple_bytes, expected_tuple_sha256,
             expected_pointer_sha256, policy_bytes, public_policy_bytes, fleet_bytes, expected_fleet_sha256)
@@ -245,12 +248,35 @@ def continue_once(*, enabled=False, tuple_bytes=None, expected_tuple_sha256=None
     if not prepared:
         raise ContinuationRefused("continuation_refused") from None
 
+    if not watermark_enabled:
+        return _execute(route, plan, pin, roster_bytes, tasks, policy_bytes, public_policy_bytes,
+                        fleet_bytes, expected_fleet_sha256, anchor_bytes, anchor_pin, plan_bytes,
+                        route_bytes, before, explicit_cutoff, cutoff_utc, previous_cutoff_utc, None)
+    from tools import wd_q4_cutoff_watermark as watermark
+    try:
+        with watermark.reserve(enabled=True, private_root=route["private_state_root"],
+                shared_root=route["checkpoint_root"], route_bytes=route_bytes,
+                expected_route_sha256=_sha(route_bytes), expected_pointer_sha256=expected_pointer_sha256,
+                expected_previous_record_sha256=expected_watermark_record_sha256) as lease:
+            return _execute(route, plan, pin, roster_bytes, tasks, policy_bytes, public_policy_bytes,
+                            fleet_bytes, expected_fleet_sha256, anchor_bytes, anchor_pin, plan_bytes,
+                            route_bytes, before, explicit_cutoff, cutoff_utc, previous_cutoff_utc, lease)
+    except watermark.WatermarkRefused:
+        raise ContinuationRefused("continuation_refused") from None
+    except BaseException:
+        raise ContinuationUnknown("continuation_state_unknown") from None
+
+
+def _execute(route, plan, pin, roster_bytes, tasks, policy_bytes, public_policy_bytes,
+             fleet_bytes, expected_fleet_sha256, anchor_bytes, anchor_pin, plan_bytes,
+             route_bytes, before, explicit_cutoff, cutoff_utc, previous_cutoff_utc, lease):
     failure = None
     try:
         report = runner.run_once(enabled=True, route_bytes=route_bytes, expected_route_sha256=_sha(route_bytes),
             plan_bytes=plan_bytes, policy_bytes=policy_bytes, public_policy_bytes=public_policy_bytes,
             fleet_bytes=fleet_bytes, expected_fleet_sha256=expected_fleet_sha256,
-            roster_bytes=roster_bytes, anchor_bytes=anchor_bytes, renewable=True)
+            roster_bytes=roster_bytes, anchor_bytes=anchor_bytes, renewable=True,
+            **({"recovery_reservation": lease.reservation} if lease is not None else {}))
     except runner.StatusRunnerRefused:
         failure = "refused"
     except BaseException:
@@ -296,6 +322,12 @@ def continue_once(*, enabled=False, tuple_bytes=None, expected_tuple_sha256=None
                 raise ValueError()
             result.update(cutoff_utc=cutoff_utc, previous_cutoff_utc=previous_cutoff_utc,
                           route_sha256=route_pin, cutoff_monotonicity="CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN")
+        if lease is not None:
+            marker = _raw({"schema": "wd.q4-runner-reservation.v1", **lease.reservation})
+            receipt_path = private / ("q4-status-result-" + _sha(marker) + ".json")
+            result["watermark_record_sha256"] = lease.complete(
+                receipt_path=str(receipt_path), expected_receipt_sha256=report["runner_receipt_sha256"])
+            result["cutoff_monotonicity"] = "COOPERATIVE_LEASE_PERSISTED_CRASH_UNKNOWN"
         checked = True
     except BaseException:
         pass

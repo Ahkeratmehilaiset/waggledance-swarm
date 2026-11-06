@@ -11,6 +11,7 @@ import builtins
 import hashlib
 import inspect
 import json
+import types
 import os
 from pathlib import Path
 import shutil
@@ -466,7 +467,9 @@ def test_every_file_is_created_exclusively_at_its_final_path(tmp_path, monkeypat
     assert all(p.startswith(plan["generation_dir"] + "\\") for p, _ in creates)
     assert [p for p, _ in creates] == [plan[n + "_path"] for n in ARTIFACTS] + [plan["descriptor_path"]]
     reads = [p for p, f in opened if not f & os.O_CREAT]
-    assert reads == [p for p, _ in creates]  # each final file is re-read right after it is created
+    artifacts, descriptor = [p for p, _ in creates[:3]], creates[3][0]
+    # each artifact re-read after its create, all artifacts re-read right before the descriptor, descriptor twice
+    assert reads == artifacts + artifacts + [descriptor, descriptor]
 
 
 @needs_windows
@@ -765,3 +768,111 @@ def test_the_generation_directory_swapped_for_a_junction_after_mkdir_refuses_and
     refused("path_refused", _call(tmp_path, files, result))
     assert tree(elsewhere) == []
     assert tree(Path(plan["generation_dir"] + "-moved")) == []
+
+
+# 10 advisory consultation d3bba9ef on b9f28981: identity zero, dangling link at a final path, swap-back, re-read return
+@needs_windows
+def test_a_volume_that_reports_no_file_identity_is_refused(tmp_path, monkeypatch):
+    plan, kw, files, result = produced(tmp_path)
+    real_lstat = os.lstat
+
+    def zero_identity(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if str(path) == str(tmp_path / "generations"):
+            return types.SimpleNamespace(st_mode=info.st_mode, st_ino=0, st_dev=info.st_dev,
+                                         st_file_attributes=getattr(info, "st_file_attributes", 0))
+        return info
+    monkeypatch.setattr(os, "lstat", zero_identity)
+    refused("path_refused", _call(tmp_path, files, result))
+    assert tree(tmp_path / "generations") == []
+
+
+@needs_windows
+def test_a_dangling_symlink_planted_at_a_final_path_is_refused_and_its_target_is_never_created(tmp_path, monkeypatch):
+    plan, kw, files, result = produced(tmp_path)
+    outside = tmp_path / "outside" / "planted.json"
+    outside.parent.mkdir()
+
+    def plant(_generation_dir):
+        try:
+            os.symlink(str(outside), plan["snapshot_path"])
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation not permitted")
+    _after_mkdir(monkeypatch, plant)
+    refused("write_refused", _call(tmp_path, files, result))
+    assert not outside.exists() and tree(tmp_path / "outside") == []
+    assert not Path(plan["descriptor_path"]).exists()
+
+
+@needs_windows
+def test_a_twin_swapped_in_for_one_write_and_swapped_back_is_detected_before_the_descriptor_is_accepted(tmp_path, monkeypatch):
+    plan, kw, files, result = produced(tmp_path)
+    gen, twin = plan["generation_dir"], plan["generation_dir"] + "-twin"
+    real_open, real_close = os.open, os.close
+    state = {"creates": 0, "closes": 0}
+
+    def swapping_open(path, flags, *args, **kwargs):
+        if flags & os.O_CREAT:
+            state["creates"] += 1
+            if state["creates"] == 2:  # the fixed plan goes into a twin that is swapped in for this write only
+                os.rename(gen, gen + "-aside")
+                os.mkdir(gen)
+        return real_open(path, flags, *args, **kwargs)
+
+    def swapping_close(handle):
+        real_close(handle)
+        state["closes"] += 1
+        if state["closes"] == 4:  # the second file is written and re-read inside the twin: swap the original back
+            os.rename(gen, twin)
+            os.rename(gen + "-aside", gen)
+    monkeypatch.setattr(os, "open", swapping_open)
+    monkeypatch.setattr(os, "close", swapping_close)
+    refused("write_refused", _call(tmp_path, files, result))
+    assert not Path(plan["descriptor_path"]).exists()
+    assert tree(Path(twin)) == [module().FILE_NAMES["fixed_plan"]]
+
+
+@needs_windows
+def test_the_returned_digests_and_sizes_come_from_the_re_read_bytes(tmp_path, monkeypatch):
+    plan, kw, files, result, out = materialize(tmp_path)
+    for name, entry in out["files"].items():
+        on_disk = Path(entry["path"]).read_bytes()
+        assert entry["sha256"] == hashlib.sha256(on_disk).hexdigest() and entry["bytes"] == len(on_disk)
+    source = inspect.getsource(module().materialize_descriptor)
+    assert "_sha256(payloads[name])" not in source and '"sha256": _sha256(again)' in source
+
+
+@needs_windows
+def test_a_file_replaced_by_an_identical_twin_between_the_write_and_the_read_back_is_refused(tmp_path, monkeypatch):
+    plan, kw, files, result = produced(tmp_path)
+    real_close = os.close
+    closes = []
+
+    def replacing_close(handle):
+        real_close(handle)
+        closes.append(handle)
+        if len(closes) == 5:  # the snapshot write handle is closed: replace the file by a twin with identical bytes
+            os.rename(plan["snapshot_path"], plan["snapshot_path"] + "-aside")
+            Path(plan["snapshot_path"]).write_bytes(files["snapshot"])
+    monkeypatch.setattr(os, "close", replacing_close)
+    refused("write_refused", _call(tmp_path, files, result))
+    assert not Path(plan["descriptor_path"]).exists()
+
+
+@needs_windows
+def test_the_generation_directory_swapped_after_the_artifact_verification_refuses_before_the_descriptor(tmp_path, monkeypatch):
+    plan, kw, files, result = produced(tmp_path)
+    gen = plan["generation_dir"]
+    real_close = os.close
+    closes = []
+
+    def swapping_close(handle):
+        real_close(handle)
+        closes.append(handle)
+        if len(closes) == 9:  # three writes + three read-backs + the three verification reads are done
+            os.rename(gen, gen + "-aside")
+            os.mkdir(gen)
+    monkeypatch.setattr(os, "close", swapping_close)
+    refused("path_refused", _call(tmp_path, files, result))
+    assert tree(Path(gen)) == []  # the twin never receives the descriptor
+    assert not Path(gen + "-aside", module().FILE_NAMES["descriptor"]).exists()

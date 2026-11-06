@@ -1,6 +1,8 @@
 """Synthetic CLI orchestration tests; no native chain or production proof."""
 import hashlib
 import json
+import subprocess
+import sys
 import threading
 
 import pytest
@@ -59,6 +61,30 @@ def test_query_failure_cancels_unstarted_guard_and_releases_marker(setup_cli, mo
     assert len(setup_cli["acquired"]) == 1 and not setup_cli["marker"].exists()
     assert setup_cli["acquired"][-1]._registry._uncertain is False
     assert setup_cli["writes"] == []
+
+
+def test_invalid_query_allows_a_new_process_to_acquire_the_same_lane(setup_cli, monkeypatch):
+    """Synthetic inputs only: a fresh process sees the released marker."""
+    def fail_query():
+        raise ValueError("invalid synthetic query")
+    monkeypatch.setattr(cli, "_query", fail_query)
+    assert cli.main(["--enabled"]) != 0 and not setup_cli["marker"].exists()
+    fleet = json.dumps({"runtime_root": str(setup_cli["marker"].parents[4]),
+                        "lanes": [{"agent": "codex-lead-1"}]}, sort_keys=True)
+    child_code = """
+import hashlib, sys
+from tools import wd_q4_guard_completion as guard
+fleet = sys.stdin.buffer.read()
+g = guard.acquire_guard(fleet_bytes=fleet, expected_fleet_sha256=hashlib.sha256(fleet).hexdigest(),
+                        lane='codex-lead-1', identity_sha256='a'*64, descriptor_sha256='b'*64)
+ctx = g._owner_context()
+g.release(g._cancel_unstarted(ctx))
+print('acquired-and-cancelled')
+"""
+    completed = subprocess.run([sys.executable, "-c", child_code], input=fleet,
+                               capture_output=True, text=True, timeout=15, check=False)
+    assert completed.returncode == 0 and completed.stdout.strip() == "acquired-and-cancelled"
+    assert not setup_cli["marker"].exists()
 
 
 def test_owner_context_handoff_precedes_adapter_dispatch(setup_cli, monkeypatch):

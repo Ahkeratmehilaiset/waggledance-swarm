@@ -4,8 +4,9 @@ descriptor path and sha256.
 
 Usage: ``python -m tools.wd_q4_descriptor_cli [--request <file> [--enable]]``. With no arguments, or without
 ``--enable``, it prints ``{"status":"OFF"}`` and opens nothing, not even the request file. With ``--enable`` it reads
-ONE strict JSON request (ASCII, no duplicate keys, exact key set, integers only, printable characters only, 64 KiB
-cap, regular file on a single-backslash drive-absolute path with no reparse point on its chain) naming
+ONE strict JSON request (ASCII, no duplicate keys, exact key set, integers only and no booleans, printable
+characters only, 64 KiB cap, regular file on a single-backslash drive-absolute path with no reparse point on its
+chain) naming
 the target directory and generation, the fleet, lane-binding and metadata-only public snapshot source files each
 with an explicit sha256 pin, the lanes, the fixed-plan arguments and the remaining descriptor arguments. Every value
 is explicit: the CLI reads no environment, discovers nothing and defaults nothing. It composes, in order,
@@ -21,11 +22,17 @@ stdout that cannot be written (closed pipe) ends the run with exit 1 and no outp
 Refusals print ``{"error":"descriptor_cli_refused","reason":<closed reason>}`` and exit 1; the reason names the
 stage (argv, request, source, fixed_plan, descriptor, materialize, unexpected) and never a caller value, a path, a
 byte or exception text. Every file (request and sources) is opened only after its path passed the single-separator
-discipline (no forward slash, no doubled backslash, no colon after the drive, no empty, dot or dot-dot component),
+discipline (no forward slash, no doubled backslash, no colon after the drive, no empty, dot or dot-dot component, no
+component ending in a dot or a space, which Windows would silently alias),
 its chain was walked for reparse points and the opened handle was compared with the checked path (same device and
 file identity, regular, no reparse attribute, same size); the drive root itself is not inspected. The fixed-plan pin
-is recomputed from the plan bytes before it is pinned into the descriptor. Default-off behaviour is preserved at
-every layer: each producer is called with
+is recomputed from the plan bytes before it is pinned into the descriptor. The values that the fixed plan and the
+descriptor both describe (interpreter sha256, runtime manifest path and sha256, runtime root, generation and
+revision in the descriptor's outer block) must be equal in the request, otherwise the request is refused before any
+source is read: a generation whose two documents disagree would only fail at run time. A KeyboardInterrupt ends the
+run with exit 130 and a SystemExit with its own code, both without any output line; an interrupt during the write
+phase may leave a partial generation directory, which the next run refuses as existing. Default-off behaviour is
+preserved at every layer: each producer is called with
 ``enabled=True`` only inside the enabled branch, and the launcher still validates the pair itself. Boundaries:
 no install, no activation of a lane, no repin of a bundle and no read of sealed data; the operator decides
 whether and when a materialized generation is used. A matching hash is not authentication, not freshness and
@@ -56,6 +63,10 @@ _DESCRIPTOR_KEYS = frozenset({
     "expected_binding"})
 _SOURCES = (("fleet", "fleet_path", "fleet_sha256"), ("binding", "binding_path", "binding_sha256"),
             ("snapshot", "snapshot_path", "snapshot_sha256"))
+_SHARED_PINS = (("interpreter_sha256", "interpreter_sha256"), ("runtime_manifest_sha256", "runtime_manifest_sha256"),
+                ("runtime_manifest_path", "runtime_manifest_path"))
+_SHARED_OUTER_PINS = (("runtime_root", "runtime-root"), ("runtime_generation", "runtime-generation"),
+                      ("runtime_revision", "runtime-revision"))
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _DRIVE = re.compile(r"[A-Za-z]:\\")
 _UNPRINTABLE = re.compile(r"[^\x20-\x7E]")
@@ -94,7 +105,7 @@ def _check_path(path, reason):
     no empty, dot or dot-dot component (the walk below could otherwise skip an ancestor)."""
     if type(path) is not str or not _DRIVE.match(path) or "\\\\" in path or "/" in path or ":" in path[2:]:
         _refuse(reason)
-    if _UNPRINTABLE.search(path) or any(part in _BAD_PARTS for part in path[3:].split("\\")):
+    if _UNPRINTABLE.search(path) or any(part in _BAD_PARTS or part[-1] in ". " for part in path[3:].split("\\")):
         _refuse(reason)
 
 
@@ -148,10 +159,10 @@ def _read_pinned(path, limit, expected, reason):
 
 
 def _printable(value):
-    """Every string printable ASCII, every number an integer (bool excluded), containers recursively."""
+    """Every string printable ASCII, every number an integer (no float, no bool), containers recursively."""
     if type(value) is str:
         return not _UNPRINTABLE.search(value)
-    if type(value) is float:
+    if type(value) is float or type(value) is bool:
         return False
     if type(value) is dict:
         return all(type(k) is str and _printable(k) and _printable(v) for k, v in value.items())
@@ -183,6 +194,15 @@ def _request(path):
         _refuse("request_refused")
     if type(descriptor) is not dict or set(descriptor) != _DESCRIPTOR_KEYS:
         _refuse("request_refused")
+    outer = descriptor["outer"]
+    if type(outer) is not dict:
+        _refuse("request_refused")
+    for fixed_key, descriptor_key in _SHARED_PINS:
+        if fixed[fixed_key] != descriptor[descriptor_key]:
+            _refuse("request_refused")
+    for fixed_key, outer_key in _SHARED_OUTER_PINS:
+        if fixed[fixed_key] != outer.get(outer_key):
+            _refuse("request_refused")
     return document
 
 
@@ -264,6 +284,10 @@ def main(argv=None):
         reason = refused.args[0] if refused.args and refused.args[0] in REASONS else "unexpected_refused"
         _write(REFUSAL_PREFIX + reason + '"}\n')
         return 1
+    except KeyboardInterrupt:
+        return 130
+    except SystemExit as exit_:
+        return exit_.code if type(exit_.code) is int else 1
     except BaseException:  # noqa: BLE001 - no detail of any kind leaves the process
         _write(REFUSAL_PREFIX + 'unexpected_refused"}\n')
         return 1

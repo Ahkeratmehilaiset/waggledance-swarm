@@ -31,6 +31,7 @@ from tools import wd_q4_genesis_snapshot_prepare as snapshot_prep
 from tools import wd_q4_live_snapshot_publish as live
 from tools import wd_q4_live_update_recovery as recovery
 from tools import wd_q4_production_continuation as continuation
+from tools import wd_q4_cutoff_watermark as watermark
 from tools import wd_q4_roster_from_fleet as roster_producer
 from tools import wd_q4_staged_composer as composer
 from tools import wd_q4_status_prefix_runner as runner
@@ -39,6 +40,7 @@ from waggledance.core.bridge_log_reader import _file_identity
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
 _RECEIPT_V1 = {'status','pointer_sha256','runner_receipt_sha256'}
 _RECEIPT_V2 = _RECEIPT_V1 | {'cutoff_utc','previous_cutoff_utc','route_sha256','cutoff_monotonicity'}
+_RECEIPT_V3 = _RECEIPT_V2 | {'watermark_record_sha256'}
 _KEYS = {'schema','genesis_config_path','genesis_config_sha256','receipt_path','receipt_sha256',
          'genesis_tuple_sha256','request_template_path','request_template_sha256',
          'public_plan_template_path','public_plan_template_sha256','expected_commit','stage_dir','output_dir',
@@ -61,8 +63,10 @@ def _tuple_part(doc, name):
 
 def _verify_v2(receipt, runner_receipt, genesis_route, private, root, view, pointer_doc):
     """Bind cutoff evidence to the exact completed runner and verified predecessor."""
+    expected_monotonicity=('COOPERATIVE_LEASE_PERSISTED_CRASH_UNKNOWN'
+                           if set(receipt)==_RECEIPT_V3 else 'CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN')
     if (receipt['status']!='caught_up_to_cutoff'
-            or receipt['cutoff_monotonicity']!='CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN'
+            or receipt['cutoff_monotonicity']!=expected_monotonicity
             or type(receipt['route_sha256']) is not str or not _HEX.fullmatch(receipt['route_sha256'])):
         raise ValueError()
     cutoff=runner._cutoff_datetime(receipt['cutoff_utc'])
@@ -95,6 +99,37 @@ def _verify_v2(receipt, runner_receipt, genesis_route, private, root, view, poin
         raise ValueError()
 
 
+class _WatermarkIncomplete(Exception):
+    """A pending cooperative attempt cannot be classified as a refusal."""
+
+
+def _verify_v3(receipt, runner_receipt, private, root, pointer_pin, prefix):
+    """Recheck cooperative watermark and actual current state under both locks."""
+    pin=receipt['watermark_record_sha256']
+    if type(pin) is not str or not _HEX.fullmatch(pin): raise ValueError()
+    private_lock=private/private_state._LOCK
+    checkpoint_lock=root/checkpoint.LOCK
+    if not private_lock.is_file() or not checkpoint_lock.is_file(): raise _WatermarkIncomplete()
+    composer.pointer._chain(private_lock)
+    composer.pointer._chain(checkpoint_lock)
+    with private_state.locked_state(private,root,enabled=True) as state:
+        with private_state._checkpoint_lock(root,0.2):
+            if (os.path.lexists(private/'q4-cutoff.pending.json')
+                    or any(os.path.lexists(path/runner._PENDING) for path in (private,root))
+                    or checkpoint._active_fence(root) is not None):
+                raise _WatermarkIncomplete()
+            if checkpoint._current_pointer(root)!=pointer_pin: raise ValueError()
+            state.require(pointer_pin,prefix)
+            record=watermark._load_head(private,pin)
+            if (record is None or record['pointer_sha256']!=pointer_pin
+                    or record['route_sha256']!=receipt['route_sha256']
+                    or record['runner_receipt_sha256']!=receipt['runner_receipt_sha256']
+                    or record['cutoff_utc']!=receipt['cutoff_utc']
+                    or runner_receipt.get('route_sha256')!=record['route_sha256']):
+                raise ValueError()
+            if watermark._load_head(private,pin)!=record: raise ValueError()
+
+
 def _preflight(path, pin):
     config=genesis_cli._doc(_read(path,pin))
     if set(config)!=_KEYS or config['schema']!='wd.q4-genesis-to-composer.v1': raise ValueError()
@@ -106,7 +141,7 @@ def _preflight(path, pin):
     if set(gc)!=genesis_cli._KEYS or gc['schema']!='wd.q4-genesis-cli.v1': raise ValueError()
     receipt=genesis_cli._doc(_read(config['receipt_path'],config['receipt_sha256']))
     receipt_keys=set(receipt)
-    if (receipt_keys not in (_RECEIPT_V1,_RECEIPT_V2)
+    if (receipt_keys not in (_RECEIPT_V1,_RECEIPT_V2,_RECEIPT_V3)
             or receipt['status'] not in ('PUBLISHED_GENESIS','caught_up_to_cutoff')
             or any(type(receipt[k]) is not str or not _HEX.fullmatch(receipt[k])
                    for k in ('pointer_sha256','runner_receipt_sha256'))):
@@ -187,7 +222,7 @@ def _preflight(path, pin):
             or prefix.cursor.offset<max(gc['source_bytes'],expected_cursor['offset'])
             or prefix.cursor.file_identity!=gc['source_file_identity'] or prefix.cursor.generation!=gc['generation']):
         raise ValueError()
-    if receipt_keys==_RECEIPT_V2:
+    if receipt_keys in (_RECEIPT_V2,_RECEIPT_V3):
         _verify_v2(receipt,runner_receipt,route,private,root,view,pointer_doc)
     source=runner._plain_file(gc['source_path'])
     with source.open('rb') as stream:
@@ -204,6 +239,8 @@ def _preflight(path, pin):
     composer.pointer._chain(private_lock)
     with private_state.locked_state(private,root,enabled=True) as state:
         state.require(pointer_pin,prefix)
+    if receipt_keys==_RECEIPT_V3:
+        _verify_v3(receipt,runner_receipt,private,root,pointer_pin,prefix)
     stage=composer.pointer._absolute(config['stage_dir']); rootgen=composer.pointer._absolute(config['generation_root'])
     store=composer.pointer._absolute(config['bundle_store_root']); active=composer.pointer._absolute(config['active_bundle_root'])
     output=composer.pointer._absolute(config['output_dir'])
@@ -225,7 +262,8 @@ def _preflight(path, pin):
             any(not live._disjoint(output,item) for item in (bundle,root,stage,private))): raise ValueError()
     _read(config['request_template_path'],config['request_template_sha256'])
     _read(config['public_plan_template_path'],config['public_plan_template_sha256'])
-    return config,gc,pointer_pin,policy,roster,roster_sha,public
+    v3=(receipt,runner_receipt,private,root,pointer_pin,prefix) if receipt_keys==_RECEIPT_V3 else None
+    return config,gc,pointer_pin,policy,roster,roster_sha,public,v3
 
 
 def _emit(result):
@@ -240,7 +278,9 @@ def main(argv=None):
             or not _HEX.fullmatch(args[4])):
         _emit({'status':'REFUSED'}); return 2
     try:
-        c,g,pin,policy,roster,roster_sha,public=_preflight(args[2],args[4])
+        c,g,pin,policy,roster,roster_sha,public,v3=_preflight(args[2],args[4])
+    except _WatermarkIncomplete:
+        _emit({'status':'UNKNOWN'}); return 3
     except Exception:
         _emit({'status':'REFUSED'}); return 2
     except BaseException:
@@ -249,6 +289,8 @@ def main(argv=None):
         snap=snapshot_prep.prepare_snapshot(enabled=True,checkpoint_root=g['checkpoint_root'],expected_pointer_sha256=pin,
             policy_bytes=policy,expected_policy_sha256=g['policy_sha256'],roster_bytes=roster,expected_roster_sha256=roster_sha,
             public_policy_bytes=public,expected_public_policy_sha256=g['public_policy_sha256'])
+        if v3 is not None:
+            _verify_v3(*v3)
         ready=request_prep.prepare(enabled=True,request_template_path=c['request_template_path'],
             expected_request_sha256=c['request_template_sha256'],public_plan_template_path=c['public_plan_template_path'],
             expected_public_plan_template_sha256=c['public_plan_template_sha256'],bundle_root=g['bundle_root'],
@@ -261,6 +303,8 @@ def main(argv=None):
             expected_manifest_sha256=g['manifest_sha256'].upper(),expected_public_plan_sha256=ready['public_plan_sha256'],
             generation_root=c['generation_root'],bundle_store_root=c['bundle_store_root'],
             active_bundle_root=c['active_bundle_root'],expected_state_sha256=c['state_sha256'])
+        if v3 is not None:
+            _verify_v3(*v3)
         if out.get('status')!='PREPARED': raise ValueError()
         _emit({'status':'PREPARED','pointer_path':out['pointer_path'],'pointer_sha256':out['pointer_sha256'],
                'descriptor_path':out['descriptor_path'],'descriptor_sha256':out['descriptor_sha256']})

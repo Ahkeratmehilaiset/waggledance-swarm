@@ -165,6 +165,8 @@ def _verify(*, state_path, expected_bundle, expected_commit, expected_manifest_s
             or desc.get('schema') != 'wd.q4-shared-session-config.v2'
             or not _same(desc.get('bundle_root', ''), bundle)
             or not _same(desc.get('binding_path', ''), binding_path)
+            or not _same(desc.get('fixed_plan_path', ''), root / generation / 'fixed-plan.v2.json')
+            or not _same(desc.get('snapshot_path', ''), root / generation / 'public-snapshot.v1.json')
             or desc.get('fleet_sha256') != _sha(fleet_raw)):
         raise PointerRefused('descriptor_refused')
     binding_raw = _read(binding_path, 65536)

@@ -43,8 +43,8 @@ def setup(tmp_path):
     descriptor = {'schema': 'wd.q4-shared-session-config.v2', 'fleet_sha256': sha(fleet_bytes),
                   'lanes': sorted(lanes), 'bundle_root': str(bundle), 'public_plan': str(gen / 'plan'),
                   'interpreter': str(gen / 'interpreter'), 'cwd': str(gen),
-                  'binding_path': str(gen / 'lane-binding.v1.json'), 'fixed_plan_path': str(gen / 'fixed'),
-                  'snapshot_path': str(gen / 'snapshot'), 'runtime_manifest_path': str(gen / 'runtime'),
+                  'binding_path': str(gen / 'lane-binding.v1.json'), 'fixed_plan_path': str(gen / 'fixed-plan.v2.json'),
+                  'snapshot_path': str(gen / 'public-snapshot.v1.json'), 'runtime_manifest_path': str(gen / 'runtime'),
                   'interpreter_sha256': '1' * 64, 'binding_sha256': sha(binding_bytes),
                   'fixed_plan_sha256': '2' * 64, 'snapshot_sha256': '3' * 64,
                   'runtime_manifest_sha256': '4' * 64, 'interpreter_max_bytes': 1, 'timeout_seconds': 1,
@@ -112,6 +112,15 @@ def test_binding_manifest_mismatch_refused(setup):
     setup['descriptor_path'].write_bytes(raw(setup['descriptor']))
     with pytest.raises(subject.PointerRefused):
         call(setup)
+    assert setup['pointer'].read_bytes() == b'previous'
+
+
+@pytest.mark.parametrize('field', ['fixed_plan_path', 'snapshot_path'])
+def test_generation_artifact_path_outside_generation_is_refused(setup, field):
+    setup['descriptor'][field] = str(setup['genroot'] / 'foreign')
+    setup['descriptor_path'].write_bytes(raw(setup['descriptor']))
+    with pytest.raises(subject.PointerRefused):
+        prepare(setup)
     assert setup['pointer'].read_bytes() == b'previous'
 
 

@@ -8,7 +8,7 @@ verifies their runtime before imports, uses the existing fixed bundle serializer
 binding producer, staged composer and actual caller CLI. The caller's real native
 owners must supply same-call cleanup; no witness is manufactured here.
 
-Only the three-row P10 genesis/learning-cell shape is supported. Unknown shapes,
+Only three-row P10 genesis with one runtime-known cell is supported. Unknown shapes,
 extra files and history refuse. Failed/partial output is retained without retry.
 The invoking custodian must independently bound the WHOLE worker with a watchdog;
 the inner transport's Job/cleanup does not prove an outer hard deadline. Python
@@ -29,6 +29,9 @@ import sys
 MAX_CAPTURE = 16 * 1024 * 1024
 MAX_RAW = 8 * 1024 * 1024
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
+# Closed vocabulary from the pinned runtime topology. Keep this pure byte mapper
+# independent of runtime imports; the regression checks topology drift explicitly.
+_P10_CELLS = frozenset({"general", "thermal", "energy", "safety", "seasonal", "math", "system", "learning"})
 _ACTIVE = {"descriptor_sha256": "descriptor.json", "memory_sha256": "memory.json",
            "projection_sha256": "projection.json", "receipt_sha256": "build_receipt.json"}
 _CAPTURE = {"schema", "status", "generation", "pointer_base64", "pointer_sha256", "files",
@@ -120,12 +123,16 @@ def _capture_parts(capture_bytes, expected_capture_sha256, policy_bytes, public_
     active = {name: files[name] for name in _ACTIVE.values()}
     _check(all(_sha(active[name]) == pointer["artifacts"][pin] for pin, name in _ACTIVE.items()))
     memory = _json(active["memory.json"])
-    _check(type(memory["cells"]) is dict and set(memory["cells"]) == {"learning"})
+    _check(type(memory["cells"]) is dict and len(memory["cells"]) == 1
+           and set(memory["cells"]).issubset(_P10_CELLS))
     used, cells = set(active), {}
     for cell, bound in memory["cells"].items():
-        _check(type(bound) is dict and set(bound) == {"generation", "receipt_sha256"}
+        _check(type(bound) is dict and set(bound) in ({"generation", "receipt_sha256"},
+                                                     {"generation", "receipt_sha256", "count", "seq"})
                and type(bound["generation"]) is int and 0 <= bound["generation"] <= 999999
                and type(bound["receipt_sha256"]) is str and _HEX.fullmatch(bound["receipt_sha256"]))
+        if "count" in bound:
+            _check(all(type(bound[key]) is int and bound[key] >= 0 for key in ("count", "seq")))
         prefix = "cells/" + cell + "/"
         gen = prefix + "gen-" + format(bound["generation"], "06d") + "/"
         paths = {"index": gen + "faiss/cell_" + cell + "/index.faiss",
@@ -134,9 +141,17 @@ def _capture_parts(capture_bytes, expected_capture_sha256, policy_bytes, public_
                  "receipt": gen + "receipt.json"}
         artifacts = {key: files[name] for key, name in paths.items()}
         control = _json(files[prefix + "current.json"])
-        _check(type(control["generation"]) is int and control["generation"] == bound["generation"]
+        _check(type(control) is dict and set(control) in ({"generation", "receipt_sha256"},
+                                                         {"generation", "receipt_sha256", "seq"})
+               and type(control["generation"]) is int and control["generation"] == bound["generation"]
                and control["receipt_sha256"] == bound["receipt_sha256"] == _sha(artifacts["receipt"]))
+        if "seq" in control:
+            _check(type(control["seq"]) is int and control["seq"] >= 0)
+        if "seq" in bound:
+            _check(control.get("seq") == bound["seq"])
         receipt = _json(artifacts["receipt"])
+        if "count" in bound:
+            _check(type(receipt["content"]["count"]) is int and receipt["content"]["count"] == bound["count"])
         _check(receipt["content"]["files"] == {key: _sha(value) for key, value in artifacts.items()
                                                if key != "receipt"})
         cells[cell] = {"pointer": files[prefix + "current.json"], "log": files[prefix + "LOG.jsonl"],

@@ -227,3 +227,145 @@ def test_probe_spec_has_no_shared_mutable_query_state():
     changed["query"]["situation"] = "synthetic mutation"
     changed["target_text"] = "synthetic mutation"
     assert m.synthetic_probe_spec() == expected
+
+
+# Cell-class regression: the real status publisher produces system, while the
+# original synthetic test covered learning only. All bytes remain synthetic.
+def case_with_cells(names, native_metadata=False):
+    capture, policy, public, roster, pointer, _, cell_data = case()
+    if native_metadata:
+        receipt = json.loads(cell_data["receipt"])
+        receipt["content"]["count"] = 1
+        cell_data["receipt"] = raw(receipt)
+        set_capture_file(capture, "cells/learning/gen-000001/receipt.json", cell_data["receipt"])
+    original_files = copy.deepcopy(capture["files"])
+    capture["files"] = {name: item for name, item in original_files.items()
+                        if not name.startswith("cells/")}
+    memory = {"cells": {name: {"generation": 1, "receipt_sha256": sha(cell_data["receipt"]),
+                               **({"count": 1, "seq": 1} if native_metadata else {})} for name in names}}
+    for cell in names:
+        for name, item in original_files.items():
+            if name.startswith("cells/learning/"):
+                updated = name.replace("cells/learning/", "cells/" + cell + "/").replace(
+                    "cell_learning/", "cell_" + cell + "/")
+                capture["files"][updated] = copy.deepcopy(item)
+        if native_metadata:
+            set_capture_file(capture, "cells/" + cell + "/current.json",
+                             raw({"generation": 1, "seq": 1, "receipt_sha256": sha(cell_data["receipt"])}))
+    rebind_cell_memory(capture, memory)
+    return capture, policy, public, roster, cell_data
+
+
+def rebind_cell_memory(capture, memory):
+    memory_bytes = raw(memory)
+    capture["files"]["memory.json"] = {"bytes": len(memory_bytes), "sha256": sha(memory_bytes),
+                                        "base64": base64.b64encode(memory_bytes).decode("ascii")}
+    pointer = json.loads(base64.b64decode(capture["pointer_base64"]))
+    pointer["artifacts"]["memory_sha256"] = sha(memory_bytes)
+    pointer_bytes = raw(pointer)
+    capture.update(pointer_base64=base64.b64encode(pointer_bytes).decode("ascii"),
+                   pointer_sha256=sha(pointer_bytes))
+
+
+def set_capture_file(capture, name, data):
+    capture["files"][name] = {"bytes": len(data), "sha256": sha(data),
+                              "base64": base64.b64encode(data).decode("ascii")}
+
+
+@pytest.mark.parametrize("cell", ["general", "thermal", "energy", "safety", "seasonal", "math", "system", "learning"])
+@pytest.mark.parametrize("native_metadata", [False, True], ids=["minimal-binding", "native-count-seq"])
+def test_runtime_supported_single_cell_preserves_exact_bytes_without_native_validation(cell, native_metadata, tmp_path):
+    capture, policy, public, roster, cell_data = case_with_cells([cell], native_metadata=native_metadata)
+    result = module().capture_parts(raw(capture), expected_capture_sha256=sha(raw(capture)), policy_bytes=policy,
+                                    public_policy_bytes=public, roster_bytes=roster)
+    assert set(result["cell_snapshots"]) == {cell}
+    assert result["cell_snapshots"][cell]["artifacts"] == cell_data
+    assert result["cell_snapshots"][cell]["log"] == b"synthetic-log"
+    assert result["pointer_bytes"] == base64.b64decode(capture["pointer_base64"])
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("shape", ["empty", "multiple", "unknown", "uppercase", "nonmapping"])
+def test_non_single_or_unrecognized_cell_shape_still_fails_closed(shape):
+    names = {"empty": [], "multiple": ["learning", "system"], "unknown": ["new-cell"],
+             "uppercase": ["SYSTEM"], "nonmapping": ["learning"]}[shape]
+    capture, policy, public, roster, _ = case_with_cells(names)
+    if shape == "nonmapping":
+        rebind_cell_memory(capture, {"cells": []})
+    m = module()
+    with pytest.raises(m.ConnectorRefused, match="^p10_connector_refused$"):
+        m.capture_parts(raw(capture), expected_capture_sha256=sha(raw(capture)), policy_bytes=policy,
+                        public_policy_bytes=public, roster_bytes=roster)
+
+
+def test_runtime_cell_registry_matches_the_pinned_topology_contract():
+    from waggledance.core.hex_cell_topology import ALL_CELLS
+    assert module()._P10_CELLS == frozenset(ALL_CELLS)
+
+
+@pytest.mark.parametrize("shape", ["count_bool", "count_negative", "seq_bool", "seq_negative", "partial_count",
+    "partial_seq", "extra_bound", "control_seq_bool", "control_seq_mismatch", "control_missing_seq", "control_extra",
+    "count_mismatch", "receipt_count_bool", "receipt_count_missing", "receipt_count_negative"])
+def test_native_cell_metadata_unknown_types_or_pointer_mismatch_fail_closed(shape):
+    capture, policy, public, roster, _ = case_with_cells(["system"], native_metadata=True)
+    memory = json.loads(base64.b64decode(capture["files"]["memory.json"]["base64"]))
+    bound = memory["cells"]["system"]
+    if shape == "count_bool": bound["count"] = True
+    elif shape == "count_negative": bound["count"] = -1
+    elif shape == "seq_bool": bound["seq"] = True
+    elif shape == "seq_negative": bound["seq"] = -1
+    elif shape == "partial_count": del bound["seq"]
+    elif shape == "partial_seq": del bound["count"]
+    elif shape == "extra_bound": bound["unrecognized"] = 1
+    elif shape == "count_mismatch": bound["count"] = 2
+    elif shape.startswith("receipt_count_"):
+        name = "cells/system/gen-000001/receipt.json"
+        receipt = json.loads(base64.b64decode(capture["files"][name]["base64"]))
+        if shape == "receipt_count_bool": receipt["content"]["count"] = True
+        elif shape == "receipt_count_missing": del receipt["content"]["count"]
+        else: receipt["content"]["count"] = -1
+        receipt_bytes = raw(receipt)
+        set_capture_file(capture, name, receipt_bytes)
+        bound["receipt_sha256"] = sha(receipt_bytes)
+        set_capture_file(capture, "cells/system/current.json",
+                         raw({"generation": 1, "seq": 1, "receipt_sha256": sha(receipt_bytes)}))
+    else:
+        name = "cells/system/current.json"
+        pointer = json.loads(base64.b64decode(capture["files"][name]["base64"]))
+        if shape == "control_seq_bool": pointer["seq"] = True
+        elif shape == "control_seq_mismatch": pointer["seq"] = 2
+        elif shape == "control_missing_seq": del pointer["seq"]
+        else: pointer["unrecognized"] = 1
+        set_capture_file(capture, name, raw(pointer))
+    rebind_cell_memory(capture, memory)
+    m = module()
+    with pytest.raises(m.ConnectorRefused, match="^p10_connector_refused$"):
+        m.capture_parts(raw(capture), expected_capture_sha256=sha(raw(capture)), policy_bytes=policy,
+                        public_policy_bytes=public, roster_bytes=roster)
+
+
+@pytest.mark.parametrize("shape", ["extra", "seq_bool", "seq_negative"])
+def test_minimal_cell_pointer_unknown_metadata_fails_closed(shape):
+    capture, policy, public, roster, _ = case_with_cells(["learning"])
+    name = "cells/learning/current.json"
+    pointer = json.loads(base64.b64decode(capture["files"][name]["base64"]))
+    if shape == "extra": pointer["unrecognized"] = 1
+    elif shape == "seq_bool": pointer["seq"] = True
+    else: pointer["seq"] = -1
+    set_capture_file(capture, name, raw(pointer))
+    m = module()
+    with pytest.raises(m.ConnectorRefused, match="^p10_connector_refused$"):
+        m.capture_parts(raw(capture), expected_capture_sha256=sha(raw(capture)), policy_bytes=policy,
+                        public_policy_bytes=public, roster_bytes=roster)
+
+
+def test_minimal_binding_accepts_known_typed_pointer_sequence_without_changing_bytes():
+    capture, policy, public, roster, _ = case_with_cells(["learning"])
+    name = "cells/learning/current.json"
+    pointer = json.loads(base64.b64decode(capture["files"][name]["base64"]))
+    pointer["seq"] = 0
+    pointer_bytes = raw(pointer)
+    set_capture_file(capture, name, pointer_bytes)
+    result = module().capture_parts(raw(capture), expected_capture_sha256=sha(raw(capture)), policy_bytes=policy,
+                                    public_policy_bytes=public, roster_bytes=roster)
+    assert result["cell_snapshots"]["learning"]["pointer"] == pointer_bytes

@@ -221,6 +221,86 @@ def v2_job(item, *, schema="wd.q4-continuation-cli.v2", changes=None):
     return result
 
 
+def v3_job(item):
+    config = json.loads(item['config'].read_bytes())
+    config.update(schema='wd.q4-continuation-cli.v3', cutoff_utc='2026-10-31T13:02:00Z',
+                  previous_cutoff_utc='2026-10-31T13:00:00Z', watermark_previous_record_sha256=None)
+    item['config'].write_bytes(encode(config))
+    private = item['bundle'].parent / 'private'
+    private.mkdir(exist_ok=True)
+    pointer = item['bundle'].parent / 'checkpoint/q4-latest.json'
+    pointer.write_bytes(encode({'schema': 'synthetic-pointer'}))
+    pointer_pin = sha(pointer.read_bytes())
+    record = {'schema': 'wd.q4-cutoff-record.v1', 'previous_record_sha256': None,
+              'cutoff_utc': config['cutoff_utc'], 'attempt': 'd' * 64, 'route_sha256': 'a' * 64,
+              'runner_receipt_sha256': 'f' * 64, 'pointer_sha256': pointer_pin}
+    raw = encode(record)
+    record_hash = sha(raw)
+    record_path = private / ('q4-cutoff-record-' + record_hash + '.json')
+    record_path.write_bytes(raw)
+    (private / 'q4-cutoff-current.json').write_bytes(encode({'schema': 'wd.q4-cutoff-head.v1',
+                                                            'record_sha256': record_hash}))
+    result = {'status': 'DEFERRED', 'pointer_sha256': pointer_pin, 'runner_receipt_sha256': 'f' * 64,
+              'cutoff_utc': config['cutoff_utc'], 'previous_cutoff_utc': config['previous_cutoff_utc'],
+              'route_sha256': 'a' * 64, 'watermark_record_sha256': record_hash,
+              'cutoff_monotonicity': 'COOPERATIVE_LEASE_PERSISTED_CRASH_UNKNOWN'}
+    item['cli'].write_text('def main(args):\n print(' + repr(json.dumps(result)) + ')\n return 0\n', encoding='ascii')
+    repin(item)
+    return result, record_path
+
+
+def test_v3_job_binds_persisted_record(job):
+    expected, _ = v3_job(job)
+    scratch = job['bundle'].parent / 'scratch'
+    scratch.mkdir()
+    result = run_job(job, scratch)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == expected
+
+
+def test_v3_job_rejects_tampered_persisted_record(job):
+    _, record = v3_job(job)
+    record.write_bytes(record.read_bytes() + b' ')
+    scratch = job['bundle'].parent / 'scratch'
+    scratch.mkdir()
+    result = run_job(job, scratch)
+    assert result.returncode == 3
+    assert json.loads(result.stdout) == {'status': 'UNKNOWN'}
+
+
+@pytest.mark.parametrize('fault', ['record', 'head', 'pending', 'pointer', 'wrong_cutoff', 'wrong_previous'])
+def test_v3_outer_powershell_independently_rejects_bad_record(job, fault):
+    expected, record = v3_job(job)
+    private = record.parent
+    if fault == 'record':
+        record.write_bytes(record.read_bytes() + b' ')
+    if fault == 'head':
+        (private / 'q4-cutoff-current.json').write_bytes(encode({'schema': 'wd.q4-cutoff-head.v1',
+                                                                 'record_sha256': '9' * 64}))
+    if fault == 'pending':
+        (private / 'q4-cutoff.pending.json').write_bytes(b'{}')
+    if fault == 'pointer':
+        (job['bundle'].parent / 'checkpoint/q4-latest.json').write_bytes(b'changed')
+    if fault in ('wrong_cutoff', 'wrong_previous'):
+        document = json.loads(record.read_bytes())
+        if fault == 'wrong_cutoff': document['cutoff_utc'] = '2026-10-31T13:00:00Z'
+        if fault == 'wrong_previous': document['previous_record_sha256'] = '9' * 64
+        raw = encode(document)
+        new_pin = sha(raw)
+        (private / ('q4-cutoff-record-' + new_pin + '.json')).write_bytes(raw)
+        (private / 'q4-cutoff-current.json').write_bytes(encode({'schema': 'wd.q4-cutoff-head.v1',
+                                                                 'record_sha256': new_pin}))
+        expected['watermark_record_sha256'] = new_pin
+    # Bypass only the synthetic bootstrap so the outer PS must validate itself.
+    job['bootstrap'].write_text('print(' + repr(json.dumps(expected)) + ')\n', encoding='ascii')
+    repin(job)
+    scratch = job['bundle'].parent / 'scratch'
+    scratch.mkdir()
+    result = run_job(job, scratch)
+    assert result.returncode == 3
+    assert json.loads(result.stdout) == {'status': 'UNKNOWN'}
+
+
 def test_fixed_job_accepts_only_config_bound_v2_receipt(job):
     expected = v2_job(job)
     scratch = job["bundle"].parent / "scratch"

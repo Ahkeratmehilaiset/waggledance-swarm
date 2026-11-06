@@ -80,12 +80,17 @@ def _bootstrap(args):
     runtime = _doc(_read(runtime_path, runtime_pin, 65536))
     version = config.get('schema')
     if (set(runtime) != _KEYS or runtime['schema'] != 'wd.q4-genesis-runtime.v1'
-            or version not in ('wd.q4-continuation-cli.v1', 'wd.q4-continuation-cli.v2')
+            or version not in ('wd.q4-continuation-cli.v1', 'wd.q4-continuation-cli.v2', 'wd.q4-continuation-cli.v3')
             or runtime['manifest_sha256'] != manifest_pin or config.get('manifest_sha256') != manifest_pin
             or os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower() != manifest_pin):
         raise ValueError()
-    if version == 'wd.q4-continuation-cli.v2':
+    if version in ('wd.q4-continuation-cli.v2', 'wd.q4-continuation-cli.v3'):
         if _cutoff(config['cutoff_utc']) < _cutoff(config['previous_cutoff_utc']):
+            raise ValueError()
+    if version == 'wd.q4-continuation-cli.v3':
+        prior = config.get('watermark_previous_record_sha256')
+        if 'watermark_previous_record_sha256' not in config or (prior is not None and
+                (type(prior) is not str or not _HEX.fullmatch(prior))):
             raise ValueError()
     bundle = Path(__file__).absolute().parents[2]
     if not os.path.samefile(bundle, runtime['bundle_root']) or not os.path.samefile(bundle, config['bundle_root']):
@@ -151,24 +156,49 @@ def _bootstrap(args):
         sys.stdout = previous
     try:
         raw = output.getvalue().encode('ascii')
-        if not 0 < len(raw) <= 512 or raw.count(b'\n') != 1 or not raw.endswith(b'\n'):
+        limit = 1024 if version == 'wd.q4-continuation-cli.v3' else 512
+        if not 0 < len(raw) <= limit or raw.count(b'\n') != 1 or not raw.endswith(b'\n'):
             raise ValueError()
         answer = _doc(raw)
         success = answer.get('status') in ('partial_ready_prefix', 'caught_up_to_cutoff', 'DEFERRED')
         success_keys = {'status', 'pointer_sha256', 'runner_receipt_sha256'}
-        if version == 'wd.q4-continuation-cli.v2':
+        if version in ('wd.q4-continuation-cli.v2', 'wd.q4-continuation-cli.v3'):
             success_keys |= {'cutoff_utc', 'previous_cutoff_utc', 'route_sha256', 'cutoff_monotonicity'}
+        if version == 'wd.q4-continuation-cli.v3':
+            success_keys.add('watermark_record_sha256')
         if ((success and (result != 0 or set(answer) != success_keys)) or
                 (not success and (set(answer) != {'status'} or
                     (result, answer.get('status')) not in ((2, 'REFUSED'), (3, 'UNKNOWN')))) or
                 any(type(answer[k]) is not str or _HEX.fullmatch(answer[k]) is None
                     for k in ('pointer_sha256', 'runner_receipt_sha256') if k in answer)):
             raise ValueError()
-        if success and version == 'wd.q4-continuation-cli.v2':
+        if success and version in ('wd.q4-continuation-cli.v2', 'wd.q4-continuation-cli.v3'):
             if (answer['cutoff_utc'] != config['cutoff_utc']
                     or answer['previous_cutoff_utc'] != config['previous_cutoff_utc']
-                    or answer['cutoff_monotonicity'] != 'CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN'
+                    or answer['cutoff_monotonicity'] != ('COOPERATIVE_LEASE_PERSISTED_CRASH_UNKNOWN'
+                        if version == 'wd.q4-continuation-cli.v3' else 'CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN')
                     or type(answer['route_sha256']) is not str or _HEX.fullmatch(answer['route_sha256']) is None):
+                raise ValueError()
+        if success and version == 'wd.q4-continuation-cli.v3':
+            record_pin = answer['watermark_record_sha256']
+            if type(record_pin) is not str or _HEX.fullmatch(record_pin) is None:
+                raise ValueError()
+            private = Path(route['private_state_root'])
+            head_path = private / 'q4-cutoff-current.json'
+            expected_head = json.dumps({'schema': 'wd.q4-cutoff-head.v1', 'record_sha256': record_pin},
+                                       sort_keys=True, separators=(',', ':')).encode('ascii')
+            if _read(head_path, hashlib.sha256(expected_head).hexdigest(), 4096) != expected_head:
+                raise ValueError()
+            record = _doc(_read(private / ('q4-cutoff-record-' + record_pin + '.json'), record_pin, 8192))
+            _read(Path(route['checkpoint_root']) / 'q4-latest.json', answer['pointer_sha256'], 16384)
+            if (set(record) != {'schema', 'previous_record_sha256', 'cutoff_utc', 'attempt', 'route_sha256',
+                                'runner_receipt_sha256', 'pointer_sha256'}
+                    or record['schema'] != 'wd.q4-cutoff-record.v1'
+                    or record['previous_record_sha256'] != config['watermark_previous_record_sha256']
+                    or record['cutoff_utc'] != config['cutoff_utc']
+                    or any(record[k] != answer[k] for k in ('route_sha256', 'runner_receipt_sha256', 'pointer_sha256'))
+                    or type(record['attempt']) is not str or _HEX.fullmatch(record['attempt']) is None
+                    or os.path.lexists(private / 'q4-cutoff.pending.json')):
                 raise ValueError()
     except Exception:
         raise _OutcomeUnknown() from None

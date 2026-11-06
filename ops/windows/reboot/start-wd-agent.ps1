@@ -852,6 +852,17 @@ function Assert-WdLaneLaunchAvailable {
     param([AllowNull()] [string] $Path)
     if ([string]::IsNullOrEmpty($Path)) { return $Path }
     # Regex class of backslash or slash, built without backslash literals.
+    # The launcher's own profile first (every lane runs as this account), so a
+    # relocated profile root is covered too; then any <drive>:/Users/<name>/.
+    $profileRoot = [string]$env:USERPROFILE
+    if ($profileRoot) {
+      $profileRoot = $profileRoot.TrimEnd([char]92, '/')
+      foreach ($end in @([string][char]92, '/')) {
+        if ($Path.StartsWith($profileRoot + $end, [StringComparison]::OrdinalIgnoreCase)) {
+          return '<userprofile>' + $Path.Substring($profileRoot.Length)
+        }
+      }
+    }
     $slashClass = '[' + [char]92 + [char]92 + '/]'
     $pattern = '^([A-Za-z]:' + $slashClass + 'Users' + $slashClass + ')[^' + [char]92 + [char]92 + '/]+'
     return [regex]::Replace($Path, $pattern, '${1}<redacted>', [Text.RegularExpressions.RegexOptions]::IgnoreCase)
@@ -866,8 +877,8 @@ function Assert-WdLaneLaunchAvailable {
   function Write-WdLaneAvailabilityRecord {
     # Structured per-pass diagnostics (JSON lines). Never any part of a command
     # line: it can carry tokens. Without a path (DryRun is byte-inert) the record
-    # goes to the verbose stream only. A failed log write is reported but never
-    # changes the availability verdict.
+    # goes to the verbose stream only. A failed log write is reported without the
+    # path or the exception text and never changes the availability verdict.
     param([Parameter(Mandatory)] [object] $Record)
     if (-not $DiagnosticsPath) {
       # The caller's verbose preference reaches this nested function (covered by
@@ -884,7 +895,9 @@ function Assert-WdLaneLaunchAvailable {
       $line = $Record | ConvertTo-Json -Depth 8 -Compress
       [IO.File]::AppendAllText($DiagnosticsPath, $line + "`n", (New-Object Text.UTF8Encoding $false))
     } catch {
-      Write-Warning ("lane availability diagnostics could not be written to {0}: {1}" -f $DiagnosticsPath, $_.Exception.Message)
+      # Safe content only: no path (it can be profile-rooted) and no exception
+      # text (it usually repeats the path); the exception type is enough to act on.
+      Write-Warning ("lane availability diagnostics could not be written to the lane_availability log ({0}); the availability verdict is unchanged" -f $_.Exception.GetType().Name)
     }
   }
 

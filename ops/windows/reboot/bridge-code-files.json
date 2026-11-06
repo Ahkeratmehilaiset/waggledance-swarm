@@ -354,6 +354,8 @@
       "tools.wd_composer_select",
       "tools.wd_profile_qualification",
       "tools.wd_pr_missing_slot_board",
+      "tools.wd_q4_lane_caller_adapter",
+      "tools.wd_q4_lane_caller_cli",
       "tools.wd_routing_capacity",
       "tools.wd_routing_inputs",
       "tools.wd_routing_load",

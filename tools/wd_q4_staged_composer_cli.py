@@ -1,7 +1,7 @@
 """Explicit, default-off command line for preparing a staged Q4 descriptor.
 
 With no --enable flag this command reports OFF and opens no request, bundle or
-stage files. --enable requires all six named inputs. PREPARED means byte-bound
+stage files. --enable requires all nine named inputs. PREPARED means byte-bound
 staging only, never installation, activation, freshness or runtime evidence.
 INCOMPLETE and UNKNOWN require inspection before retry; no cleanup is inferred.
 """
@@ -14,7 +14,8 @@ from tools import wd_q4_staged_composer as composer
 
 _FLAGS = {'--request': 'request_path', '--stage': 'stage_dir', '--bundle': 'expected_bundle',
           '--commit': 'expected_commit', '--manifest-sha256': 'expected_manifest_sha256',
-          '--public-plan-sha256': 'expected_public_plan_sha256'}
+          '--public-plan-sha256': 'expected_public_plan_sha256', '--generation-root': 'generation_root',
+          '--bundle-store-root': 'bundle_store_root', '--active-bundle-root': 'active_bundle_root'}
 _RESULT = {'status', 'bundle_commit', 'manifest_sha256', 'binding_sha256', 'descriptor_path',
            'descriptor_sha256', 'pointer_path', 'pointer_sha256'}
 _HEX = re.compile(r'[0-9a-f]{64}\Z')

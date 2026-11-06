@@ -9,6 +9,8 @@ from tests.tools.test_wd_q4_staged_composer import setup_case
 
 def argv(kw):
     return ['--request', kw['request_path'], '--stage', kw['stage_dir'], '--bundle', kw['expected_bundle'],
+            '--generation-root', kw['generation_root'], '--bundle-store-root', kw['bundle_store_root'],
+            '--active-bundle-root', kw['active_bundle_root'],
             '--commit', kw['expected_commit'], '--manifest-sha256', kw['expected_manifest_sha256'],
             '--public-plan-sha256', kw['expected_public_plan_sha256'], '--enable']
 
@@ -120,3 +122,16 @@ def test_success_output_failure_never_returns_zero(tmp_path, monkeypatch):
     kw, _, _ = setup_case(tmp_path)
     monkeypatch.setattr(cli, '_emit', lambda _: False)
     assert cli.main(argv(kw)) != 0
+
+
+@pytest.mark.parametrize('flag', ['--generation-root', '--bundle-store-root', '--active-bundle-root'])
+def test_enabled_command_requires_each_external_root_before_dispatch(tmp_path, capsys, monkeypatch, flag):
+    from tools import wd_q4_staged_composer_cli as cli
+    kw, _, stage = setup_case(tmp_path)
+    args = argv(kw)
+    i = args.index(flag)
+    del args[i:i+2]
+    monkeypatch.setattr(cli.composer, 'compose', lambda **_: pytest.fail('called'))
+    assert cli.main(args) == 2
+    assert json.loads(capsys.readouterr().out) == {'status': 'REFUSED'}
+    assert not list(stage.iterdir())

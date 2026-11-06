@@ -77,6 +77,11 @@ def test_no_change_commits_cutoff_without_changing_pointer_and_rejects_older(fix
     with mod.reserve(enabled=True, private_root=private, shared_root=shared, route_bytes=data,
                      expected_route_sha256=sha(data), expected_pointer_sha256=pointer,
                      expected_previous_record_sha256=None) as lease:
+        original_reservation = lease.reservation
+        lease.reservation['token'] = 'f' * 64
+        assert lease.reservation == original_reservation
+        with pytest.raises(AttributeError):
+            lease.route_sha256 = 'f' * 64
         path, pin = receipt(lease, private, pointer, prefix)
         record_pin = lease.complete(receipt_path=path, expected_receipt_sha256=pin)
     assert (shared / 'q4-latest.json').read_bytes() == pointer_raw

@@ -129,6 +129,7 @@
     "tools/wd_q4_live_update_bootstrap.py",
     "tools/wd_q4_genesis_bootstrap.py",
     "tools/wd_q4_genesis_cli.py",
+    "tools/wd_q4_genesis_runtime_bootstrap.py",
     "tools/agent_next_task.py",
     "tools/bridge_accepted_queue_preflight.py",
     "tools/bridge_capacity_advisor.py",
@@ -249,6 +250,7 @@
     "mind_public_reader": "tools/wd_mind_public_session_cli.py",
     "mind_public_publisher_v3": "tools/wd_mind_public_publish_v3_cli.py",
     "q4_lane_caller": "tools/wd_q4_lane_caller_cli.py",
+    "q4_guard_provision": "tools/wd_q4_guard_state_provision_cli.py",
     "q4_staged_composer": "tools/wd_q4_staged_composer_cli.py",
     "rco_changes_requested": "tools/check_bridge_changes_requested.py",
     "rco_pass_present": "tools/check_rco_pass_present.py"
@@ -390,6 +392,7 @@
       "tools.wd_q4_live_update_recovery",
       "tools.wd_q4_genesis_bootstrap",
       "tools.wd_q4_genesis_cli",
+      "tools.wd_q4_genesis_runtime_bootstrap",
       "tools.wd_routing_capacity",
       "tools.wd_routing_inputs",
       "tools.wd_routing_load",

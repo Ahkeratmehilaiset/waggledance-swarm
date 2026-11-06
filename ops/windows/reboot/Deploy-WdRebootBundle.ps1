@@ -1305,6 +1305,8 @@ foreach ($required in @(
         'Get-WdQ4SharedSessionConfig.ps1',
         'Get-WdQ4DefaultDescriptor.ps1',
         'Invoke-WdQ4LaneRecall.ps1',
+        'Invoke-WdQ4Genesis.ps1',
+        'Invoke-WdQ4ProvisionGuard.ps1',
         'Invoke-WdQ4Query.ps1',
         'WdQ4ProcessJob.ps1',
         'Invoke-WdQ4SessionCommand.ps1',

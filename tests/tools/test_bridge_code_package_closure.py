@@ -95,7 +95,10 @@ def test_shared_descriptor_builder_is_packaged_with_internal_dependencies(path, 
 def test_packaging_alone_does_not_activate_descriptor_or_provision_writers():
     entries = _definition()["python_entrypoints"].values()
     assert "tools/wd_q4_descriptor_cli.py" not in entries
-    assert "tools/wd_q4_guard_state_provision_cli.py" not in entries
+    # The fixed provision CLI is opt-in and remains OFF without --enable.
+    assert _definition()["python_entrypoints"]["q4_guard_provision"] == "tools/wd_q4_guard_state_provision_cli.py"
+    deployer = (REPO_ROOT / "ops/windows/reboot/Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+    assert "'Invoke-WdQ4ProvisionGuard.ps1'," in deployer
 
 
 def test_staged_composer_command_is_packaged_and_explicitly_published():
@@ -1761,7 +1764,15 @@ Q4_PROVISION_RUNNER_DEPENDENCIES = {
 
 
 def _assert_q4_provision_runner_delivery(definition, relative):
-    _assert_prefix_mind_library_only(definition, relative)
+    if relative == "tools/wd_q4_guard_state_provision_cli.py":
+        assert definition["python_files"].count(relative) == 1, "prefix_library_not_packaged_once"
+        entries = definition["python_entrypoints"]
+        assert entries.get("q4_guard_provision") == relative, "guard_entrypoint_missing"
+        assert list(entries.values()).count(relative) == 1, "guard_entrypoint_duplicate"
+        assert relative not in definition["manual_execution_capability"]["entrypoints"].values(), "prefix_manual_not_authorized"
+        assert relative[:-3].replace("/", ".") not in definition["import_smoke"]["package_modules"], "prefix_smoke_not_authorized"
+    else:
+        _assert_prefix_mind_library_only(definition, relative)
     source = (REPO_ROOT / relative).read_text(encoding="utf-8")
     imports = {_module_path(name) for name in _internal_imports(source, "tools")}
     assert Q4_PROVISION_RUNNER_DEPENDENCIES[relative] <= imports, "q4_runtime_import_contract_changed"

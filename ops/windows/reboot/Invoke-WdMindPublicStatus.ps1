@@ -52,7 +52,12 @@ try {
     $manifest=CheckPath (Join-Path $candidate 'deployment-manifest.json')
     if (-not (HashMatches $manifest $ExpectedCandidateManifestSha256)) { throw 'candidate' }
     $doc=Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-    $required=@('Invoke-WdBridgePython.ps1','BridgeCodeContext.ps1','bridge-code-files.json','wd-fleet.json',
+    # This catches changed bytes, but the caller must pin the launcher before
+    # executing it; already-running code cannot authenticate itself.
+    $self=CheckPath $PSCommandPath
+    if (-not $self.Equals((Join-Path $candidate 'Invoke-WdMindPublicStatus.ps1'),
+                          [StringComparison]::OrdinalIgnoreCase)) { throw 'launcher' }
+    $required=@('Invoke-WdMindPublicStatus.ps1','Invoke-WdBridgePython.ps1','BridgeCodeContext.ps1','bridge-code-files.json','wd-fleet.json',
         'tools-bootstrap/tools/wd_mind_public_event_writer.py',
         'tools-bootstrap/tools/wd_mind_public_event_writer_cli.py',
         'tools-bootstrap/configs/mind/pilot_non_review_policy.json',

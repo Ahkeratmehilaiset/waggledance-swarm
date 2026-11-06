@@ -35,7 +35,8 @@ def bundles(tmp_path):
         f"$env:WD_MIND_PUBLIC_ACTIVE_MANIFEST_SHA256 -cne '{active_pin}') {{ throw 'mismatch' }}; "
         f"[IO.File]::AppendAllText('{str(marker).replace(chr(39), chr(39)*2)}','x'); "
         "$global:LASTEXITCODE=0; '{\"status\":\"WRITTEN\",\"delivery\":\"canonical\"}'\n").encode()
-    files = {"Invoke-WdBridgePython.ps1": wrapper, "BridgeCodeContext.ps1": b"synthetic-context",
+    files = {"Invoke-WdMindPublicStatus.ps1": SCRIPT.read_bytes(),
+        "Invoke-WdBridgePython.ps1": wrapper, "BridgeCodeContext.ps1": b"synthetic-context",
         "bridge-code-files.json": b"{}", "wd-fleet.json": b"{}",
         "tools-bootstrap/tools/wd_mind_public_event_writer.py": b"synthetic-writer",
         "tools-bootstrap/tools/wd_mind_public_event_writer_cli.py": b"synthetic-cli",
@@ -55,7 +56,7 @@ def invoke(item, *, candidate_pin=None, active_pin=None):
     env = dict(os.environ, WD_BRIDGE_BIN=str(item["bin"]),
                WD_REBOOT_EXPECTED_MANIFEST_HASH=active_pin or item["active_pin"])
     env.pop("WD_MIND_PUBLIC_ACTIVE_MANIFEST_SHA256", None)
-    return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-File", str(SCRIPT), "-Run",
+    return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-File", str(item["candidate"] / SCRIPT.name), "-Run",
         "-CandidateBundle", str(item["candidate"]), "-ExpectedCandidateManifestSha256", candidate_pin or item["candidate_pin"]],
         capture_output=True, text=True, timeout=30, env=env)
 
@@ -75,7 +76,19 @@ def test_separate_candidate_and_active_anchors_reach_fixed_entrypoint(bundles):
     assert bundles["marker"].read_text() == "x"
 
 
-@pytest.mark.parametrize("fault", ["active_pin", "candidate_pin", "active_helper", "candidate_wrapper", "candidate_code", "candidate_fleet"])
+def test_launcher_copy_outside_candidate_refuses_before_entrypoint(bundles, tmp_path):
+    copied = tmp_path / "unbound-launcher.ps1"
+    copied.write_bytes(SCRIPT.read_bytes())
+    env = dict(os.environ, WD_BRIDGE_BIN=str(bundles["bin"]),
+               WD_REBOOT_EXPECTED_MANIFEST_HASH=bundles["active_pin"])
+    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-File", str(copied), "-Run",
+        "-CandidateBundle", str(bundles["candidate"]), "-ExpectedCandidateManifestSha256", bundles["candidate_pin"]],
+        capture_output=True, text=True, timeout=30, env=env)
+    assert result.returncode == 2 and json.loads(result.stdout) == {"status": "REFUSED"}
+    assert not bundles["marker"].exists()
+
+
+@pytest.mark.parametrize("fault", ["active_pin", "candidate_pin", "active_helper", "candidate_wrapper", "candidate_launcher", "candidate_code", "candidate_fleet"])
 def test_wrong_or_changed_anchor_refuses_before_entrypoint(bundles, fault):
     kwargs = {}
     if fault == "active_pin": kwargs["active_pin"] = "0" * 64
@@ -83,9 +96,10 @@ def test_wrong_or_changed_anchor_refuses_before_entrypoint(bundles, fault):
     else:
         target = {"active_helper": bundles["bin"] / "Write-AgentEvent.ps1",
                   "candidate_wrapper": bundles["candidate"] / "Invoke-WdBridgePython.ps1",
+                  "candidate_launcher": bundles["candidate"] / SCRIPT.name,
                   "candidate_code": bundles["candidate"] / "tools-bootstrap/tools/wd_mind_public_event_writer.py",
                   "candidate_fleet": bundles["candidate"] / "wd-fleet.json"}[fault]
-        target.write_bytes(target.read_bytes() + b"tamper")
+        target.write_bytes(target.read_bytes() + (b"\n#tamper\n" if fault == "candidate_launcher" else b"tamper"))
     result = invoke(bundles, **kwargs)
     assert result.returncode == 2 and json.loads(result.stdout) == {"status": "REFUSED"}
     assert not bundles["marker"].exists()
@@ -133,6 +147,8 @@ def test_real_bridge_wrapper_with_synthetic_active_helpers_and_two_manifest_pins
     manifest_path = candidate / "deployment-manifest.json"
     manifest = json.loads(manifest_path.read_bytes())
     manifest["files"]["wd-fleet.json"] = sha(fleet_raw).upper()
+    (candidate / SCRIPT.name).write_bytes(SCRIPT.read_bytes())
+    manifest["files"][SCRIPT.name] = sha((candidate / SCRIPT.name).read_bytes()).upper()
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     candidate_pin = sha(manifest_path.read_bytes())
     active = tmp_path / "active"
@@ -163,7 +179,7 @@ def test_real_bridge_wrapper_with_synthetic_active_helpers_and_two_manifest_pins
         AGENT_BRIDGE_AGENT_UUID=lead["agent_uuid"], AGENT_BRIDGE_SESSION_ID="wd-reboot-synthetic",
         AGENT_BRIDGE_RUN_ID="wd-reboot-synthetic")
     env.pop("WD_MIND_PUBLIC_ACTIVE_MANIFEST_SHA256", None)
-    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-File", str(SCRIPT), "-Run",
+    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-File", str(candidate / SCRIPT.name), "-Run",
         "-CandidateBundle", str(candidate), "-ExpectedCandidateManifestSha256", candidate_pin],
         capture_output=True, text=True, timeout=60, env=env)
     assert result.returncode == 0, result.stdout + result.stderr

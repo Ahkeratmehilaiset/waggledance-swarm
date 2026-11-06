@@ -29,6 +29,29 @@ class RequestUnknown(RuntimeError):
     """An output write was attempted; inspect before retry."""
 
 
+def _parse_request(raw):
+    """Apply the descriptor CLI's closed request shape to the pinned bytes."""
+    document=json.loads(raw.decode('ascii'),object_pairs_hook=cli._pairs,parse_constant=cli._constant)
+    if (type(document) is not dict or set(document)!=cli._REQUEST_KEYS
+            or document['schema']!=cli.REQUEST_SCHEMA or not cli._printable(document)):
+        raise ValueError()
+    for _,path_key,pin_key in cli._SOURCES:
+        if (type(document[path_key]) is not str or type(document[pin_key]) is not str
+                or not cli._HEX64.fullmatch(document[pin_key])): raise ValueError()
+        cli._check_path(document[path_key],'source_refused')
+    if (type(document['target_dir']) is not str or type(document['generation']) is not str
+            or type(document['lanes']) is not list): raise ValueError()
+    fixed,descriptor=document['fixed_plan'],document['descriptor']
+    if (type(fixed) is not dict or set(fixed)!=cli._FIXED_PLAN_KEYS or
+            type(descriptor) is not dict or set(descriptor)!=cli._DESCRIPTOR_KEYS
+            or type(descriptor['outer']) is not dict): raise ValueError()
+    for fixed_key,descriptor_key in cli._SHARED_PINS:
+        if fixed[fixed_key]!=descriptor[descriptor_key]: raise ValueError()
+    for fixed_key,outer_key in cli._SHARED_OUTER_PINS:
+        if outer_key not in descriptor['outer'] or fixed[fixed_key]!=descriptor['outer'][outer_key]: raise ValueError()
+    return document
+
+
 def prepare(*, enabled=False, request_template_path=None, expected_request_sha256=None,
         public_plan_template_path=None, expected_public_plan_template_sha256=None,
         bundle_root=None, expected_commit=None, expected_manifest_sha256=None,
@@ -55,9 +78,7 @@ def prepare(*, enabled=False, request_template_path=None, expected_request_sha25
                 or any(output.iterdir()) or any(stage.iterdir())):
             raise ValueError()
         req_raw = cli._read_pinned(request_template_path, cli.LIMITS['request'], expected_request_sha256, 'request_refused')
-        request = cli._request(request_template_path)
-        if cli._read_pinned(request_template_path, cli.LIMITS['request'], expected_request_sha256, 'request_refused') != req_raw:
-            raise ValueError()
+        request = _parse_request(req_raw)
         template = cli._read_pinned(public_plan_template_path, 65536, expected_public_plan_template_sha256, 'source_refused')
         plan = live._parse(template)
         parts = transport._fixed_bundle_decode(snapshot_bytes)
@@ -108,7 +129,8 @@ def prepare(*, enabled=False, request_template_path=None, expected_request_sha25
         for path, raw in ((plan_path,plan_raw),(snapshot_path,snapshot_bytes),(request_path,request_raw)):
             attempted = True
             update._exclusive(path,raw)
-        if cli._request(str(request_path)) != request: raise ValueError()
+        written = cli._read_pinned(str(request_path), cli.LIMITS['request'], update._sha(request_raw), 'request_refused')
+        if _parse_request(written) != request: raise ValueError()
         return {'status':'PREPARED', 'request_path':str(request_path), 'request_sha256':update._sha(request_raw),
                 'public_plan_path':str(plan_path), 'public_plan_sha256':update._sha(plan_raw),
                 'snapshot_path':str(snapshot_path), 'snapshot_sha256':expected_snapshot_sha256}

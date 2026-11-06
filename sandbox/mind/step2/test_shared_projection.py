@@ -14,6 +14,7 @@ import pytest
 
 from sandbox.mind.step2 import shared_projection as sp
 
+_HOST_PLATFORM = os.name
 TS = "2026-10-31T12:00:00Z"
 TS_OUT = "2026-10-31T12:00:00.000000Z"
 HEAD = "a" * 40
@@ -270,15 +271,31 @@ def _racing(publish, out):
     return race
 
 
+def _emulate_windows_rename_without_replacement(src, dst):
+    # On POSIX, rename replaces an existing destination; Windows rename does not.
+    os.link(src, dst)
+    os.unlink(src)
+
+
 @pytest.mark.parametrize("platform,binding", [("nt", "_rename"), ("posix", "_link")])
 def test_v3_a_concurrent_destination_is_never_overwritten_or_deleted(tmp_path, monkeypatch, platform, binding):
     out = tmp_path / "out" / "projection.json"
     monkeypatch.setattr(sp, "_PLATFORM", platform)
-    monkeypatch.setattr(sp, binding, _racing(getattr(sp, binding), out))
+    publisher = getattr(sp, binding)
+    if platform == "nt" and _HOST_PLATFORM != "nt":
+        publisher = _emulate_windows_rename_without_replacement
+    monkeypatch.setattr(sp, binding, _racing(publisher, out))
     with pytest.raises(sp.ProjectionRefused, match="output_exists"):
         write(out, project(event()), approved_tasks=APPROVED)
     assert out.read_bytes() == b"foreign publication, never ours"
     assert sorted(p.name for p in out.parent.iterdir()) == ["projection.json"]  # own staging cleaned, theirs kept
+
+
+def test_windows_race_case_does_not_assume_windows_rename_on_posix(tmp_path, monkeypatch):
+    # POSIX rename replaces an existing destination, unlike the Windows API.
+    monkeypatch.setitem(globals(), "_HOST_PLATFORM", "posix")
+    monkeypatch.setattr(sp, "_rename", os.replace)
+    test_v3_a_concurrent_destination_is_never_overwritten_or_deleted(tmp_path, monkeypatch, "nt", "_rename")
 
 
 def test_v3_the_posix_strategy_publishes_by_link_then_unlinks_only_its_staging(tmp_path, monkeypatch):

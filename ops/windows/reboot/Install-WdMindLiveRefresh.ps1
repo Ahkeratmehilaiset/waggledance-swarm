@@ -15,6 +15,7 @@ param(
     [Parameter(Mandatory)] [string] $BundleRoot,
     [Parameter(Mandatory)] [string] $StatePath,
     [Parameter(Mandatory)] [string] $ConfigPath,
+    [Parameter(Mandatory)] [string] $ScratchRoot,
     [Parameter(Mandatory)] [ValidatePattern('^[0-9a-f]{40}$')] [string] $ExpectedCommit,
     [Parameter(Mandatory)] [ValidatePattern('^[0-9A-Fa-f]{64}$')] [string] $ExpectedManifestSha256,
     [Parameter(Mandatory)] [ValidatePattern('^[0-9A-Fa-f]{64}$')] [string] $ExpectedConfigSha256,
@@ -42,13 +43,22 @@ function Assert-LivePath {
     return $full
 }
 function Literal([string] $Value) { return "'" + $Value.Replace("'", "''") + "'" }
+function Assert-LiveDisjoint([string] $Left, [string] $Right) {
+    $a = [IO.Path]::GetFullPath($Left).TrimEnd('\')
+    $b = [IO.Path]::GetFullPath($Right).TrimEnd('\')
+    if ($a.Equals($b, [StringComparison]::OrdinalIgnoreCase) -or
+        $a.StartsWith($b + '\', [StringComparison]::OrdinalIgnoreCase) -or
+        $b.StartsWith($a + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Scratch overlaps a protected path.' }
+}
 
 $bundle = Assert-LivePath $BundleRoot -Directory
 $stateFile = Assert-LivePath $StatePath
 $configFile = Assert-LivePath $ConfigPath
+$scratch = Assert-LivePath $ScratchRoot -Directory
 $manifestFile = Assert-LivePath (Join-Path $bundle 'deployment-manifest.json')
 $bootstrapFile = Assert-LivePath (Join-Path $bundle 'tools-bootstrap\tools\wd_q4_live_update_bootstrap.py')
 $module = Assert-LivePath (Join-Path $bundle 'tools-bootstrap\tools\wd_q4_live_update_once.py')
+$jobHelper = Assert-LivePath (Join-Path $bundle 'WdQ4ProcessJob.ps1')
 $manifestHash = $ExpectedManifestSha256.ToUpperInvariant()
 $configHash = $ExpectedConfigSha256.ToUpperInvariant()
 if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -cne $ApprovedUserSid) { throw 'User SID mismatch.' }
@@ -65,7 +75,8 @@ if ([int]$manifest.schema_version -ne 1 -or [string]$manifest.source_commit -cne
     [string]$config.schema -cne 'wd.q4-live-update-once.v1' -or
     ([string]$config.manifest_sha256).ToUpperInvariant() -cne $manifestHash) { throw 'State, commit or config does not bind the approved bundle.' }
 foreach ($entry in @(@('tools-bootstrap/tools/wd_q4_live_update_bootstrap.py', $bootstrapFile),
-                       @('tools-bootstrap/tools/wd_q4_live_update_once.py', $module))) {
+                       @('tools-bootstrap/tools/wd_q4_live_update_once.py', $module),
+                       @('WdQ4ProcessJob.ps1', $jobHelper))) {
     $pin = $manifest.files.PSObject.Properties[$entry[0]]
     if ($null -eq $pin -or (Get-FileHash -LiteralPath $entry[1] -Algorithm SHA256).Hash -cne ([string]$pin.Value).ToUpperInvariant()) {
         throw 'Packaged tool hash does not match the manifest.'
@@ -91,13 +102,24 @@ if (([string]$fixed.interpreter_sha256).ToUpperInvariant() -cne $interpreterHash
     -not [string]::Equals([string]$fixed.runtime_manifest_path, $runtimeManifest, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Runtime tuple is inconsistent.'
 }
-[void](Assert-LivePath ([string]$fixed.runtime_root) -Directory)
+$runtimeRoot = Assert-LivePath ([string]$fixed.runtime_root) -Directory
 $routeFile = Assert-LivePath ([string]$config.route_path)
 if ((Get-FileHash -LiteralPath $routeFile -Algorithm SHA256).Hash -cne ([string]$config.route_sha256).ToUpperInvariant()) {
     throw 'Route pin mismatch.'
 }
 $route = Get-Content -LiteralPath $routeFile -Raw -Encoding UTF8 | ConvertFrom-Json
 $privateRoot = Assert-LivePath ([string]$route.private_state_root) -Directory
+$checkpointRoot = Assert-LivePath ([string]$route.checkpoint_root) -Directory
+$modelRoot = Assert-LivePath ([string]$route.trusted_model_root) -Directory
+$sourceFile = Assert-LivePath ([string]$route.source)
+$sidecarFile = Assert-LivePath ([string]$route.generation_path)
+foreach ($protected in @($bundle, $runtimeRoot, $privateRoot, $checkpointRoot, $modelRoot,
+        [IO.Path]::GetDirectoryName($interpreter), [IO.Path]::GetDirectoryName($sourceFile),
+        [IO.Path]::GetDirectoryName($sidecarFile), [IO.Path]::GetDirectoryName($configFile),
+        [IO.Path]::GetDirectoryName($baselineFile), [IO.Path]::GetDirectoryName($fixedFile),
+        [IO.Path]::GetDirectoryName($runtimeManifest), [IO.Path]::GetDirectoryName($routeFile))) {
+    Assert-LiveDisjoint $scratch $protected
+}
 $marker = Join-Path $privateRoot 'q4-live-update.pending.json'
 if (Test-Path -LiteralPath $marker) { throw 'An uncertain attempt requires reconciliation.' }
 
@@ -117,10 +139,24 @@ if ([string]$state.source_commit -cne %COMMIT% -or [string]$state.final_commit -
     (Get-FileHash -LiteralPath %RUNTIME_MANIFEST% -Algorithm SHA256).Hash -cne %RUNTIME_HASH% -or
     (Get-FileHash -LiteralPath %PYTHON% -Algorithm SHA256).Hash -cne %PYTHON_HASH% -or
     (Get-FileHash -LiteralPath %BOOTSTRAP% -Algorithm SHA256).Hash -cne %BOOTSTRAP_HASH% -or
+    (Get-FileHash -LiteralPath %JOB% -Algorithm SHA256).Hash -cne %JOB_HASH% -or
     (Test-Path -LiteralPath %MARKER%)) { exit 3 }
-$env:WD_REBOOT_EXPECTED_MANIFEST_HASH = %MANIFEST_HASH%
-& %PYTHON% -I -S -B %BOOTSTRAP% '--config' %CONFIG% '--sha256' %CONFIG_HASH_LOWER% '--manifest-sha256' %MANIFEST_HASH_LOWER%
-exit $LASTEXITCODE
+. %JOB%
+$job = Invoke-WdQ4ProcessJob -Executable %PYTHON% -WorkingDirectory %BUNDLE% -ScratchRoot %SCRATCH% `
+    -Arguments @('-I','-S','-B',%BOOTSTRAP%,'--config',%CONFIG%,'--sha256',%CONFIG_HASH_LOWER%,
+                 '--manifest-sha256',%MANIFEST_HASH_LOWER%) -InputBytes ([byte[]]@()) `
+    -TimeoutSeconds 1700 -MaxOutputBytes 65536 -DetailedOutcome
+if ($null -eq $job -or $job.Cleanup -cne 'confirmed' -or $job.Outcome -cne 'completed' -or $job.ExitCode -ne 0) { exit 3 }
+try {
+    $text = [Text.UTF8Encoding]::new($false, $true).GetString($job.Stdout)
+    $receipt = $text | ConvertFrom-Json -ErrorAction Stop
+    if ([string]$receipt.status -cnotin @('PUBLISHED','NO_CHANGE') -or
+        [string]$receipt.pointer_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$receipt.receipt_sha256 -cnotmatch '^[0-9a-f]{64}$') { exit 3 }
+    @{status=[string]$receipt.status; pointer_sha256=[string]$receipt.pointer_sha256;
+      receipt_sha256=[string]$receipt.receipt_sha256; job_cleanup='confirmed'} | ConvertTo-Json -Compress
+} catch { exit 3 }
+exit 0
 '@
 $values = [ordered]@{'%STATE%'=$stateFile; '%COMMIT%'=$ExpectedCommit; '%BUNDLE%'=$bundle;
     '%MANIFEST%'=$manifestFile; '%MANIFEST_HASH%'=$manifestHash; '%CONFIG%'=$configFile; '%CONFIG_HASH%'=$configHash;
@@ -128,7 +164,9 @@ $values = [ordered]@{'%STATE%'=$stateFile; '%COMMIT%'=$ExpectedCommit; '%BUNDLE%
     '%BASELINE%'=$baselineFile; '%BASELINE_HASH%'=([string]$config.baseline_sha256).ToUpperInvariant();
     '%FIXED%'=$fixedFile; '%FIXED_HASH%'=$fixedHash; '%RUNTIME_MANIFEST%'=$runtimeManifest; '%RUNTIME_HASH%'=$runtimeHash;
     '%PYTHON%'=$interpreter; '%PYTHON_HASH%'=$interpreterHash; '%BOOTSTRAP%'=$bootstrapFile;
-    '%BOOTSTRAP_HASH%'=(Get-FileHash -LiteralPath $bootstrapFile -Algorithm SHA256).Hash; '%MARKER%'=$marker}
+    '%BOOTSTRAP_HASH%'=(Get-FileHash -LiteralPath $bootstrapFile -Algorithm SHA256).Hash;
+    '%JOB%'=$jobHelper; '%JOB_HASH%'=(Get-FileHash -LiteralPath $jobHelper -Algorithm SHA256).Hash;
+    '%SCRATCH%'=$scratch; '%MARKER%'=$marker}
 foreach ($key in $values.Keys) { $bootstrap = $bootstrap.Replace($key, (Literal $values[$key])) }
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap))
 $taskName = 'WD-MindLiveUpdate'
@@ -136,6 +174,7 @@ $plan = [ordered]@{schema='wd.mind-live-refresh-plan.v1'; task=$taskName; regist
     source_commit=$ExpectedCommit; manifest_sha256=$manifestHash; config_sha256=$configHash; user_sid=$ApprovedUserSid;
     interval_minutes=$IntervalMinutes; multiple_instances='IgnoreNew'; logon='Interactive'; run_level='Limited';
     pending='blocks_attempt_until_reconciled'; execution_limit='30 minutes'; process_tree_exit='NOT_PROVEN';
+    job_containment='kill-on-close; owned Job only';
     python_pin_scope='python.exe only; stdlib and native DLLs not independently verified';
     supervisor='unchanged'; execution='NOT_RUN'}
 if (-not $Apply) { $plan | ConvertTo-Json -Compress; return }

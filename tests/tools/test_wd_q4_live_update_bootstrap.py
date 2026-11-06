@@ -82,6 +82,22 @@ def test_isolated_process_imports_only_verified_runtime_site(candidate):
     assert result.returncode == 0 and result.stdout.strip() == 'pinned-site-loaded'
 
 
+def test_explicit_manifest_pin_works_without_inherited_wd_environment(candidate):
+    env = {key: value for key, value in os.environ.items() if not key.startswith('WD_')}
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']),
+        '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
+        '--manifest-sha256', candidate['manifest_sha']], capture_output=True, text=True, timeout=30, env=env)
+    assert result.returncode == 0 and result.stdout.strip() == 'pinned-site-loaded'
+
+
+def test_mismatching_inherited_manifest_still_refuses(candidate):
+    env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH='0' * 64)
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']),
+        '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
+        '--manifest-sha256', candidate['manifest_sha']], capture_output=True, text=True, timeout=30, env=env)
+    assert result.returncode != 0 and not result.stdout
+
+
 def test_modified_site_refuses_before_update_import(candidate):
     (candidate['runtime'] / 'site' / 'synthetic_runtime_dependency.py').write_text("raise RuntimeError('must not import')", encoding='ascii')
     result = execute(candidate)
@@ -209,7 +225,7 @@ def test_explicit_audit_runtime_loads_actual_pinned_dependencies(candidate):
     config['baseline_sha256'] = sha(baseline_path.read_bytes())
     bundle = candidate['bundle']
     update_path = bundle / 'tools-bootstrap' / 'tools' / 'wd_q4_live_update_once.py'
-    update_path.write_text("def main(args):\n import torch, numpy, faiss, sentence_transformers\n print('pinned-dependencies-loaded')\n return 0\n", encoding='ascii')
+    update_path.write_text("def main(args):\n import os\n os.environ['HF_HUB_OFFLINE']='1'\n os.environ['TRANSFORMERS_OFFLINE']='1'\n import torch, numpy, faiss, sentence_transformers\n print('pinned-dependencies-loaded')\n return 0\n", encoding='ascii')
     manifest_path = bundle / 'deployment-manifest.json'
     manifest = json.loads(manifest_path.read_bytes())
     manifest['files']['tools-bootstrap/tools/wd_q4_live_update_once.py'] = sha(update_path.read_bytes())
@@ -218,8 +234,7 @@ def test_explicit_audit_runtime_loads_actual_pinned_dependencies(candidate):
     config['manifest_sha256'] = candidate['manifest_sha']
     config_path.write_bytes(encode(config))
     candidate['config_sha'] = sha(config_path.read_bytes())
-    env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha'], HF_HUB_OFFLINE='1',
-               TRANSFORMERS_OFFLINE='1', HF_DATASETS_OFFLINE='1')
+    env = {key: os.environ[key] for key in ('SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP') if key in os.environ}
     result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']),
         '--config', str(config_path), '--sha256', candidate['config_sha'], '--manifest-sha256', candidate['manifest_sha']],
         capture_output=True, text=True, timeout=600, env=env)

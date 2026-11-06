@@ -65,6 +65,8 @@ class _Registry:
         self._uncertain = False
         self._lock = threading.Lock()
         self._transport_issued = False
+        self._context = None
+        self._outer_done = False
 
     def _complete_owner(self, capability):
         # Only a retained capability object contributes, never an owner-name,
@@ -77,7 +79,8 @@ class _Registry:
 
     def _issue(self):
         with self._lock:
-            _check(not self._uncertain and not self._used and self._done == set(_OWNERS))
+            _check(not self._uncertain and not self._used and self._done == set(_OWNERS)
+                   and (self._context is None or self._outer_done))
             if self._issued is None:
                 self._issued = _Witness()
             return self._issued
@@ -89,7 +92,7 @@ class _Registry:
 
     def _transport_owner(self):
         with self._lock:
-            _check(not self._uncertain and not self._used and not self._transport_issued
+            _check(not self._uncertain and not self._used and self._context is None and not self._transport_issued
                    and "transport" not in self._done)
             self._transport_issued = True
             return _TransportOwner(self, self._owners["transport"])
@@ -100,6 +103,7 @@ class _Registry:
         # newer process's marker; this does not supply OS-user authentication.
         with self._lock:
             _check(not self._uncertain and not self._used
+                   and (self._context is None or self._outer_done)
                    and self._done == set(_OWNERS) and binding == self._binding
                    and type(witness) is _Witness and witness is self._issued)
             try:
@@ -125,7 +129,10 @@ class _TransportOwner:
         # transitions. An already-unknown call must not enter the native chain.
         with self._registry._lock:
             _check(self._state == "new" and not self._registry._uncertain
-                   and not self._registry._used and "transport" not in self._registry._done)
+                   and not self._registry._used and "transport" not in self._registry._done
+                   and (self._registry._context is None or
+                        (self._registry._context._state == "active" and
+                         self._registry._context._tickets["transport"] is self)))
             self._state = "started"
 
     def _complete(self):
@@ -136,6 +143,93 @@ class _TransportOwner:
     def _unknown(self):
         self._registry._unknown()
         self._state = "unknown"
+
+
+class _NamedOwner:
+    """Private, per-context cooperative owner; not a native cleanup proof."""
+
+    __slots__ = ("_registry", "_capability", "_state")
+    _name = None
+
+    def __init__(self, registry, capability):
+        self._registry, self._capability, self._state = registry, capability, "new"
+
+    def _begin(self):
+        with self._registry._lock:
+            ctx = self._registry._context
+            _check(self._state == "new" and ctx is not None and ctx._state == "active"
+                   and ctx._tickets[self._name] is self and not self._registry._uncertain
+                   and not self._registry._used and self._name not in self._registry._done)
+            self._state = "started"
+
+    def _complete(self):
+        _check(self._state == "started")
+        self._registry._complete_owner(self._capability)
+        self._state = "done"
+
+    def _unknown(self):
+        self._registry._unknown()
+        self._state = "unknown"
+
+
+class _AttestationOwner(_NamedOwner):
+    _name = "attestation"
+
+
+class _AdapterOwner(_NamedOwner):
+    _name = "adapter"
+
+
+class _OwnerContext:
+    """One guard's outer-call barrier and three distinct private tickets.
+
+    The outer owner must call _finish only after its real operation and all
+    cleanup have ended, and _abort for uncertain completion. This class cannot
+    observe native cleanup or authenticate a same-user caller.
+    """
+
+    __slots__ = ("_guard", "_registry", "_binding", "_tickets", "_state")
+
+    def __init__(self, guard, registry, binding):
+        self._guard, self._registry, self._binding, self._state = guard, registry, binding, "active"
+        self._tickets = {
+            "transport": _TransportOwner(registry, registry._owners["transport"]),
+            "attestation": _AttestationOwner(registry, registry._owners["attestation"]),
+            "adapter": _AdapterOwner(registry, registry._owners["adapter"]),
+        }
+
+    def _ticket(self, name):
+        with self._registry._lock:
+            _check(self._registry._context is self and self._state == "active"
+                   and not self._registry._uncertain and not self._registry._used
+                   and type(name) is str and name in self._tickets)
+            return self._tickets[name]
+
+    def _accept_ticket(self, name, ticket):
+        with self._registry._lock:
+            _check(self._registry._context is self and self._state == "active"
+                   and not self._registry._uncertain and not self._registry._used
+                   and type(name) is str and name in self._tickets
+                   and ticket is self._tickets[name]
+                   and type(ticket) is {"transport": _TransportOwner, "attestation": _AttestationOwner,
+                                        "adapter": _AdapterOwner}[name])
+            return ticket
+
+    def _finish(self):
+        with self._registry._lock:
+            _check(self._registry._context is self and self._state == "active"
+                   and not self._registry._uncertain and not self._registry._used
+                   and self._registry._done == set(_OWNERS)
+                   and all(ticket._state == "done" for ticket in self._tickets.values()))
+            self._registry._outer_done = True
+            self._state = "finished"
+
+    def _abort(self):
+        with self._registry._lock:
+            _check(self._registry._context is self and not self._registry._used)
+            self._registry._uncertain = True
+            self._registry._issued = None
+            self._state = "unknown"
 
 
 class _Guard:
@@ -152,6 +246,27 @@ class _Guard:
         _check(not self._closed)
         self._root.revalidate()
         return self._registry._transport_owner()
+
+    def _owner_context(self):
+        _check(not self._closed)
+        self._root.revalidate()
+        with self._registry._lock:
+            _check(not self._registry._uncertain and not self._registry._used
+                   and self._registry._context is None and not self._registry._transport_issued
+                   and not self._registry._done and self._registry._issued is None)
+            ctx = _OwnerContext(self, self._registry, self._binding)
+            self._registry._context = ctx
+            self._registry._transport_issued = True
+            return ctx
+
+    def _accept_owner_context(self, ctx):
+        _check(type(ctx) is _OwnerContext)
+        with self._registry._lock:
+            _check(self._registry._context is ctx and ctx._guard is self
+                   and ctx._registry is self._registry and ctx._binding == self._binding
+                   and ctx._state == "active" and not self._registry._uncertain
+                   and not self._registry._used and not self._closed)
+            return ctx
 
     def _clear_own_marker(self):
         self._root.revalidate()

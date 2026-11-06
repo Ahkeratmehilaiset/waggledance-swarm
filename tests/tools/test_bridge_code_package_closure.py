@@ -60,6 +60,26 @@ def test_public_publisher_is_in_bundle_python_files():
     assert "tools/wd_mind_public_publish_cli.py" in _packaged_python()
 
 
+@pytest.mark.parametrize("path", [
+    "tools/wd_q4_descriptor_cli.py",
+    "tools/wd_q4_descriptor_materializer.py",
+    "tools/wd_q4_shared_descriptor_producer.py",
+])
+def test_shared_descriptor_builder_is_packaged_with_internal_dependencies(path, monkeypatch):
+    packaged = _packaged_python()
+    assert packaged.count(path) == 1
+    monkeypatch.setitem(globals(), "INTERNAL_ROOTS", (*INTERNAL_ROOTS, "core"))
+    reached, unresolved = _closure([path])
+    assert not unresolved, unresolved
+    assert set(reached) <= set(packaged), sorted(set(reached) - set(packaged))
+
+
+def test_packaging_alone_does_not_activate_descriptor_or_provision_writers():
+    entries = _definition()["python_entrypoints"].values()
+    assert "tools/wd_q4_descriptor_cli.py" not in entries
+    assert "tools/wd_q4_guard_state_provision_cli.py" not in entries
+
+
 def test_bound_lane_transport_is_in_bundle_python_files():
     assert "tools/wd_q4_bound_lane_transport.py" in _packaged_python()
 

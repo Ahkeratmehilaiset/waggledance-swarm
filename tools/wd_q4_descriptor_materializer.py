@@ -12,13 +12,17 @@ generation under the caller's target directory. ``materialize_descriptor`` check
 strict canonical ASCII JSON object of the v2 schema whose ``*_path`` values are exactly the planned paths and whose
 ``*_sha256`` pins are exactly the sha256 of the supplied artifact bytes, that the target directory exists with no
 reparse point anywhere on its chain, and that the generation directory does not exist yet. It then creates the
-directory, writes each artifact into a sibling part file opened with O_EXCL, fsyncs, moves it with os.replace,
-re-reads and re-hashes the final file, and writes the descriptor last so a descriptor on disk always names files
-that are already complete. It never overwrites and never deletes (a failed generation directory is left for
-inspection), never logs and never reads the environment. A reparse point found anywhere on the target chain at
-check time is refused; the check and the writes are separate system calls, so a junction planted on that chain
-after the check is outside this module's guarantee and is caught only by the launcher validator, which re-checks
-the chain when it reads. Every refusal is one closed reason and never a caller value, path or byte.
+directory, records the (device, file id) identity of the target directory and of the new generation directory, and
+publishes each file with no part file and no os.replace: the final file itself is opened with O_EXCL (an existing
+file at that path, however it got there, is a refusal and its bytes are never touched), written, fsynced, re-read
+and re-hashed; the descriptor is written last so a descriptor on disk always names files that are already complete.
+The target chain is walked again before every write for reparse points and both directory identities are compared
+with the recorded ones; any difference (a swapped parent, a junction or symlink in place of the generation
+directory, another directory under the same name) is a conservative refusal that writes nothing more.
+It never overwrites and never deletes (a failed generation directory is left for inspection), never logs and never
+reads the environment. The remaining window is the single system call between a recheck and its write; the
+launcher validator re-checks the chain again when it reads.
+Every refusal is one closed reason and never a caller value, path or byte.
 
 What it is not. A matching hash is not authentication, not freshness and not a runtime proof. Metadata-only content
 is the snapshot producer's responsibility (``sandbox/mind/step2/shared_public_producer.py`` and its public policy
@@ -55,7 +59,7 @@ _DRIVE = re.compile(r"[A-Za-z]:\\")
 _DEVICE = re.compile(r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?\Z", re.IGNORECASE | re.DOTALL)
 _BAD_CHARS = re.compile(r'[\x00-\x1f<>|"*?/]')
 _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-_PART_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+_CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
 _READ_FLAGS = os.O_RDONLY | getattr(os, "O_BINARY", 0)
 
 
@@ -145,12 +149,22 @@ def _is_reparse(info):
     return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & _REPARSE)
 
 
+def _directory_identity(path):
+    """(device, file id) of a plain directory with no reparse attribute; anything else is a path refusal."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        _refuse("path_refused")
+    if not stat.S_ISDIR(info.st_mode) or _is_reparse(info):
+        _refuse("path_refused")
+    return (info.st_dev, info.st_ino)
+
+
 def _chain_ok(target_dir):
+    """Target is a plain directory and no ancestor is a reparse point; returns the target identity."""
+    identity = _directory_identity(target_dir)
     current = target_dir
     try:
-        info = os.lstat(current)
-        if not stat.S_ISDIR(info.st_mode) or _is_reparse(info):
-            _refuse("path_refused")
         while True:
             parent = current.rsplit("\\", 1)[0]
             if parent == current or len(parent) <= 2:
@@ -160,11 +174,19 @@ def _chain_ok(target_dir):
                 _refuse("path_refused")
     except OSError:
         _refuse("path_refused")
+    return identity
 
 
-def _write_exclusively(part, final, payload):
+def _still_the_same(target_dir, target_identity, generation_dir, generation_identity):
+    """Re-identify the target chain and the generation directory before every write (RCO2 M2)."""
+    if _chain_ok(target_dir) != target_identity or _directory_identity(generation_dir) != generation_identity:
+        _refuse("path_refused")
+
+
+def _write_exclusively(final, payload):
+    """Create the final file itself exclusively (RCO2 M1: no part file, no replace), fsync, re-read, compare."""
     try:
-        handle = os.open(part, _PART_FLAGS, 0o600)
+        handle = os.open(final, _CREATE_FLAGS, 0o600)
         try:
             view = memoryview(payload)
             while view:
@@ -172,7 +194,6 @@ def _write_exclusively(part, final, payload):
             os.fsync(handle)
         finally:
             os.close(handle)
-        os.replace(part, final)
         handle = os.open(final, _READ_FLAGS)
         try:
             chunks, remaining = [], len(payload) + 1
@@ -215,7 +236,7 @@ def materialize_descriptor(*, enabled=False, target_dir, generation, artifacts, 
     for name in ARTIFACTS:
         if document[name + "_sha256"] != _sha256(files[name]):
             _refuse("pin_refused")
-    _chain_ok(target_dir)
+    target_identity = _chain_ok(target_dir)
     generation_dir = plan["generation_dir"]
     try:
         os.lstat(generation_dir)
@@ -231,11 +252,13 @@ def materialize_descriptor(*, enabled=False, target_dir, generation, artifacts, 
         _refuse("exists_refused")
     except OSError:
         _refuse("write_refused")
+    generation_identity = _directory_identity(generation_dir)
     payloads = {**files, "descriptor": descriptor_bytes}
     written = {}
     for name in (*ARTIFACTS, "descriptor"):
+        _still_the_same(target_dir, target_identity, generation_dir, generation_identity)
         final = plan[name + "_path"]
-        _write_exclusively(final + ".part", final, payloads[name])
+        _write_exclusively(final, payloads[name])
         written[name] = {"path": final, "sha256": _sha256(payloads[name]), "bytes": len(payloads[name])}
     return {"status": "MATERIALIZED", "generation_dir": generation_dir, "descriptor_path": plan["descriptor_path"],
             "descriptor_sha256": expected_descriptor_sha256, "files": written}

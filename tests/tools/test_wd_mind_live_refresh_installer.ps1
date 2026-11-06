@@ -6,18 +6,32 @@ Describe 'Mind live refresh installer' {
         $private = Join-Path $root 'private'
         $moduleDir = Join-Path $bundle 'tools-bootstrap\tools'
         New-Item -ItemType Directory -Path $moduleDir, $private -Force | Out-Null
-        $wrapper = Join-Path $bundle 'Invoke-WdBridgePython.ps1'
         $module = Join-Path $moduleDir 'wd_q4_live_update_once.py'
-        $wrapperText = @'
-param([string]$Tool, [switch]$VerifyPackage, [string[]]$ToolArguments)
-if ($Tool -cne 'tools/wd_q4_live_update_once.py' -or -not $VerifyPackage -or $ToolArguments[0] -cne '--once') { throw 'bad invocation' }
-[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'synthetic-invoked.txt'), 'called')
-$global:LASTEXITCODE = 0
+        $bootstrap = Join-Path $moduleDir 'wd_q4_live_update_bootstrap.py'
+        $bootstrapText = @'
+import pathlib, sys
+assert sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode
+assert len(sys.argv) == 7 and sys.argv[1] == '--config' and sys.argv[3] == '--sha256' and sys.argv[5] == '--manifest-sha256'
+pathlib.Path(__file__).parents[2].joinpath('synthetic-invoked.txt').write_text('called')
 '@
-        [IO.File]::WriteAllText($wrapper, $wrapperText)
+        [IO.File]::WriteAllText($bootstrap, $bootstrapText)
         [IO.File]::WriteAllText($module, '# synthetic module')
+        $python = if ($env:WD_TEST_Q4_PYTHON) { $env:WD_TEST_Q4_PYTHON } else { (Get-Command python -ErrorAction Stop).Source }
+        $pythonHash = (Get-FileHash $python -Algorithm SHA256).Hash.ToLowerInvariant()
+        $runtime = Join-Path $root 'runtime'
+        New-Item -ItemType Directory -Path $runtime | Out-Null
+        $runtimeManifest = Join-Path $root 'runtime-manifest.json'
+        [IO.File]::WriteAllText($runtimeManifest, '{"synthetic":true}')
+        $runtimeHash = (Get-FileHash $runtimeManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+        $fixedPath = Join-Path $root 'fixed-plan.json'
+        [IO.File]::WriteAllText($fixedPath, (@{runtime_root=$runtime; interpreter_sha256=$pythonHash;
+            runtime_manifest_path=$runtimeManifest; runtime_manifest_sha256=$runtimeHash} | ConvertTo-Json -Compress))
+        $baselinePath = Join-Path $root 'baseline.json'
+        [IO.File]::WriteAllText($baselinePath, (@{interpreter=$python; interpreter_sha256=$pythonHash;
+            runtime_manifest_path=$runtimeManifest; runtime_manifest_sha256=$runtimeHash;
+            fixed_plan_path=$fixedPath; fixed_plan_sha256=(Get-FileHash $fixedPath -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json -Compress))
         $commit = 'a' * 40
-        $files = @{'Invoke-WdBridgePython.ps1' = (Get-FileHash $wrapper -Algorithm SHA256).Hash.ToLowerInvariant();
+        $files = @{'tools-bootstrap/tools/wd_q4_live_update_bootstrap.py' = (Get-FileHash $bootstrap -Algorithm SHA256).Hash.ToLowerInvariant();
             'tools-bootstrap/tools/wd_q4_live_update_once.py' = (Get-FileHash $module -Algorithm SHA256).Hash.ToLowerInvariant()}
         $manifestPath = Join-Path $bundle 'deployment-manifest.json'
         [IO.File]::WriteAllText($manifestPath, (@{schema_version=1; source_commit=$commit; files=$files} | ConvertTo-Json -Compress))
@@ -30,7 +44,8 @@ $global:LASTEXITCODE = 0
         $routeHash = (Get-FileHash $routePath -Algorithm SHA256).Hash.ToLowerInvariant()
         $configPath = Join-Path $root 'config.json'
         [IO.File]::WriteAllText($configPath, (@{schema='wd.q4-live-update-once.v1'; route_path=$routePath;
-            route_sha256=$routeHash; manifest_sha256=$manifestHash.ToLowerInvariant()} | ConvertTo-Json -Compress))
+            route_sha256=$routeHash; manifest_sha256=$manifestHash.ToLowerInvariant(); baseline_path=$baselinePath;
+            baseline_sha256=(Get-FileHash $baselinePath -Algorithm SHA256).Hash.ToLowerInvariant()} | ConvertTo-Json -Compress))
         $configHash = (Get-FileHash $configPath -Algorithm SHA256).Hash
         $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         $invokeParams = @{BundleRoot=$bundle; StatePath=$statePath; ConfigPath=$configPath; ExpectedCommit=$commit;

@@ -2,7 +2,9 @@
 import importlib
 import hashlib
 import importlib.util
+import base64
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -90,7 +92,11 @@ def synthetic_config(tmp_path, monkeypatch):
     (tmp_path / "policy.json").write_bytes(policy)
     (tmp_path / "public.json").write_bytes(public)
     source_pin = {"identity": "synthetic-id", "prefix_bytes": 4, "prefix_sha256": digest(b"row\n")}
-    tuple_raw = json.dumps({"independent_source_pin": source_pin}).encode()
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    route = json.dumps({"checkpoint_root": str(checkpoint)}).encode()
+    tuple_raw = json.dumps({"independent_source_pin": source_pin,
+        "route": {"bytes_b64": base64.b64encode(route).decode(), "sha256": digest(route)}}).encode()
     (tmp_path / "tuple.json").write_bytes(tuple_raw)
     config = {"schema": "wd.q4-continuation-cli.v1", "bundle_root": str(bundle),
               "manifest_sha256": digest(manifest), "tuple_path": str(tmp_path / "tuple.json"),
@@ -157,3 +163,26 @@ def test_cli_reaches_real_continuation_once_with_synthetic_runner(synthetic, syn
     assert cli.main(["--enable", "--config", path, "--sha256", pin]) == 0
     assert response(capsys)["status"] == "partial_ready_prefix"
     assert len(state["calls"]) == 1
+
+
+@pytest.mark.parametrize("variant", ["direct", "nested", "short_alias"])
+def test_direct_cli_refuses_private_tuple_in_checkpoint(synthetic_config, variant, monkeypatch, capsys):
+    config, write, tmp = synthetic_config
+    parent = tmp / "checkpoint" / "nested" if variant == "nested" else tmp / "checkpoint"
+    parent.mkdir(exist_ok=True)
+    target = parent / "private-tuple.json"
+    target.write_bytes((tmp / "tuple.json").read_bytes())
+    target_path = str(target)
+    if variant == "short_alias":
+        import ctypes
+        buffer = ctypes.create_unicode_buffer(32768)
+        if not ctypes.windll.kernel32.GetShortPathNameW(target_path, buffer, len(buffer)):
+            pytest.skip("Windows short path unavailable")
+        if os.path.normcase(buffer.value) == os.path.normcase(target_path):
+            pytest.skip("Windows did not create a distinct short path")
+        target_path = buffer.value
+    config["tuple_path"] = target_path
+    path, pin = write()
+    monkeypatch.setattr(cli.continuation, "continue_once", lambda **_: pytest.fail("unsafe continuation"))
+    assert cli.main(["--enable", "--config", path, "--sha256", pin]) == 2
+    assert response(capsys) == {"status": "REFUSED"}

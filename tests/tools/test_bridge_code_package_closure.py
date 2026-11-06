@@ -86,6 +86,7 @@ def test_on_demand_capacity_reader_is_packaged_as_an_explicit_entrypoint():
     "tools/wd_q4_genesis_snapshot_prepare.py",
     "tools/wd_q4_genesis_request_prepare.py",
     "tools/wd_q4_genesis_to_composer_cli.py",
+    "tools/wd_q4_live_update_config_prepare.py",
     "tools/wd_q4_canonical_ref_verifier.py",
     "tools/wd_q4_shared_descriptor_producer.py",
 ])
@@ -104,6 +105,7 @@ def test_packaging_alone_does_not_activate_descriptor_or_provision_writers():
     # The fixed provision CLI is opt-in and remains OFF without --enable.
     assert _definition()["python_entrypoints"]["q4_guard_provision"] == "tools/wd_q4_guard_state_provision_cli.py"
     assert _definition()["python_entrypoints"]["q4_genesis_composer"] == "tools/wd_q4_genesis_to_composer_cli.py"
+    assert _definition()["python_entrypoints"]["q4_update_config_prepare"] == "tools/wd_q4_live_update_config_prepare.py"
     deployer = (REPO_ROOT / "ops/windows/reboot/Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
     assert "'Invoke-WdQ4ProvisionGuard.ps1'," in deployer
     assert "'Invoke-WdQ4GenesisWorker.ps1'," in deployer

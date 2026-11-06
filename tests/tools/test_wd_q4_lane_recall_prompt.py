@@ -25,6 +25,7 @@ def test_lane_startup_gives_bounded_q4_recall_and_bridge_fallback(relative, vari
         "Invoke-WdQ4LaneRecall.ps1", "manifest-verified", "tools/wd_q4_lane_caller_cli.py --enabled",
         "UTF-8 JSON", '"situation"', '"time"', "YYYY-MM-DDTHH:MM:SSZ", "stdin", "OS pipe", "$LASTEXITCODE",
         "$env:WD_BRIDGE_BUNDLE_ROOT", "helper file SHA256", "direct stdout",
+        "-Live", "no fallback to an old snapshot",
         "exit code 0", "bridge", "exit 3", "no automatic retry", "no secrets", "raw answers",
     ):
         assert required.lower() in block.lower(), required

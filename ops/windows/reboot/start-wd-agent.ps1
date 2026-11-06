@@ -2760,7 +2760,9 @@ $startupPrompt += (
   'bundle manifest before executing it. It invokes the pinned $env:WD_BRIDGE_PYTHON_WRAPPER ' +
   'tools/wd_q4_lane_caller_cli.py --enabled. Supply UTF-8 JSON ' +
   'with exactly "situation" and "time"; time is UTC YYYY-MM-DDTHH:MM:SSZ (optionally 1-6 fractional digits). ' +
-  'Pipe the JSON string to & (Join-Path $env:WD_BRIDGE_BUNDLE_ROOT "Invoke-WdQ4LaneRecall.ps1"). ' +
+  'When the live selector is provisioned for this bundle, pipe the JSON string to ' +
+  '& (Join-Path $env:WD_BRIDGE_BUNDLE_ROOT "Invoke-WdQ4LaneRecall.ps1") -Live. ' +
+  'If it is unavailable, read the bridge; there is no fallback to an old snapshot. ' +
   'The helper forwards stdin through an OS pipe; do not pipe directly to the wrapper. Its successful output ' +
   'is direct stdout, not a PowerShell object; check $LASTEXITCODE and use only exit code 0 output. If pins ' +
   'or helper are missing or the call ' +

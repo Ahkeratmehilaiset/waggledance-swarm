@@ -1,0 +1,168 @@
+"""Synthetic genesis runtime launch checks, never a live bundle or source."""
+import importlib
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+LAUNCH = ROOT / 'ops/windows/reboot/Invoke-WdQ4Genesis.ps1'
+
+
+def test_runtime_bootstrap_default_off_does_no_io(monkeypatch, capsys):
+    mod = importlib.import_module('tools.wd_q4_genesis_runtime_bootstrap')
+    monkeypatch.setattr(mod, '_read', lambda *_args, **_kw: pytest.fail('OFF read'))
+    assert mod.main([]) == 0
+    assert json.loads(capsys.readouterr().out) == {'status': 'OFF'}
+
+
+def test_powershell_launcher_default_off_without_reading_inputs():
+    run = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-File', str(LAUNCH)],
+                         text=True, capture_output=True, timeout=20)
+    assert run.returncode == 0
+    assert json.loads(run.stdout) == {'status': 'OFF'}
+
+
+def sha(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def encode(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':')).encode('ascii')
+
+
+@pytest.fixture
+def candidate(tmp_path):
+    from sandbox.mind.step2 import runtime_builder
+    bundle = tmp_path / 'bundle'
+    code = bundle / 'tools-bootstrap'
+    (code / 'tools').mkdir(parents=True)
+    (code / 'sandbox/mind/step2').mkdir(parents=True)
+    for name in ('wd_q4_genesis_runtime_bootstrap.py', 'wd_q4_live_update_bootstrap.py'):
+        shutil.copyfile(ROOT / 'tools' / name, code / 'tools' / name)
+    (code / 'tools/__init__.py').write_text('', encoding='ascii')
+    cli = code / 'tools/wd_q4_genesis_cli.py'
+    cli.write_text("def main(args):\n import synthetic_runtime_dependency\n assert synthetic_runtime_dependency.VALUE==42\n print('{\"status\":\"PUBLISHED_GENESIS\",\"pointer_sha256\":\"'+'e'*64+'\"}')\n return 0\n", encoding='ascii')
+    verifier = code / 'sandbox/mind/step2/runtime_manifest.py'
+    shutil.copyfile(ROOT / 'sandbox/mind/step2/runtime_manifest.py', verifier)
+    runtime = tmp_path / 'runtime'
+    (runtime / 'assets/code').mkdir(parents=True)
+    (runtime / 'site').mkdir()
+    (runtime / 'model').mkdir()
+    (runtime / 'assets/code/stub.txt').write_text('synthetic code', encoding='ascii')
+    (runtime / 'site/synthetic_runtime_dependency.py').write_text('VALUE=42\n', encoding='ascii')
+    (runtime / 'model/model.txt').write_text('synthetic model', encoding='ascii')
+    runtime_manifest = tmp_path / 'runtime-manifest.json'
+    built = runtime_builder.build_runtime_manifest(runtime, runtime_manifest, generation='a' * 40, revision='b' * 40)
+    files = {'tools-bootstrap/' + p.relative_to(code).as_posix(): sha(p.read_bytes()).upper()
+             for p in code.rglob('*') if p.is_file()}
+    manifest = bundle / 'deployment-manifest.json'
+    manifest.write_bytes(encode({'schema_version': 1, 'source_commit': 'c' * 40, 'files': files}))
+    manifest_pin = sha(manifest.read_bytes())
+    config = tmp_path / 'config.json'
+    config.write_bytes(encode({'schema': 'wd.q4-genesis-cli.v1', 'manifest_sha256': manifest_pin,
+        'bundle_root': str(bundle), 'trusted_model_root': str(runtime / 'model')}))
+    spec = tmp_path / 'runtime.json'
+    spec.write_bytes(encode({'schema': 'wd.q4-genesis-runtime.v1', 'bundle_root': str(bundle),
+        'manifest_sha256': manifest_pin, 'interpreter_path': sys.executable,
+        'interpreter_sha256': sha(Path(sys.executable).read_bytes()), 'runtime_root': str(runtime),
+        'runtime_manifest_path': str(runtime_manifest), 'runtime_manifest_sha256': built['manifest_sha256'],
+        'runtime_generation': 'a' * 40, 'runtime_revision': 'b' * 40, 'verifier_sha256': sha(verifier.read_bytes())}))
+    return {'bundle': bundle, 'bootstrap': code / 'tools/wd_q4_genesis_runtime_bootstrap.py', 'cli': cli,
+        'runtime': runtime, 'manifest': manifest, 'manifest_pin': manifest_pin, 'config': config,
+        'config_pin': sha(config.read_bytes()), 'spec': spec, 'spec_pin': sha(spec.read_bytes())}
+
+
+def execute(candidate):
+    env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_pin'])
+    return subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']),
+        '--enable', '--config', str(candidate['config']), '--sha256', candidate['config_pin'],
+        '--manifest-sha256', candidate['manifest_pin'], '--runtime', str(candidate['spec']),
+        '--runtime-sha256', candidate['spec_pin']], capture_output=True, text=True, timeout=30, env=env)
+
+
+def repin_bundle(candidate):
+    code = candidate['bundle'] / 'tools-bootstrap'
+    manifest = json.loads(candidate['manifest'].read_bytes())
+    manifest['files'] = {'tools-bootstrap/' + p.relative_to(code).as_posix(): sha(p.read_bytes()).upper()
+                         for p in code.rglob('*') if p.is_file()}
+    candidate['manifest'].write_bytes(encode(manifest))
+    candidate['manifest_pin'] = sha(candidate['manifest'].read_bytes())
+    for name, pin_name in (('config', 'config_pin'), ('spec', 'spec_pin')):
+        value = json.loads(candidate[name].read_bytes())
+        value['manifest_sha256'] = candidate['manifest_pin']
+        candidate[name].write_bytes(encode(value))
+        candidate[pin_name] = sha(candidate[name].read_bytes())
+
+
+def test_isolated_bootstrap_uses_verified_runtime_site(candidate):
+    result = execute(candidate)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {'status': 'PUBLISHED_GENESIS', 'pointer_sha256': 'e' * 64}
+
+
+@pytest.mark.parametrize('fault', ['site', 'model', 'config', 'bootstrap', 'unlisted', 'interpreter', 'model_root'])
+def test_refuses_modified_or_unbound_inputs_without_output_leak(candidate, fault):
+    if fault == 'site': (candidate['runtime'] / 'site/synthetic_runtime_dependency.py').write_text('VALUE=1')
+    if fault == 'model': (candidate['runtime'] / 'model/model.txt').write_text('tampered')
+    if fault == 'config': candidate['config'].write_bytes(b'{}')
+    if fault == 'bootstrap': candidate['bootstrap'].write_bytes(candidate['bootstrap'].read_bytes() + b'\n')
+    if fault == 'unlisted': (candidate['bundle'] / 'tools-bootstrap/tools/extra.py').write_text('pass')
+    if fault in ('interpreter', 'model_root'):
+        spec = json.loads(candidate['spec'].read_bytes())
+        if fault == 'interpreter': spec['interpreter_sha256'] = '0' * 64
+        else: spec['runtime_root'] = str(candidate['bundle'])
+        candidate['spec'].write_bytes(encode(spec))
+        candidate['spec_pin'] = sha(candidate['spec'].read_bytes())
+    result = execute(candidate)
+    assert result.returncode == 2 and json.loads(result.stdout) == {'status': 'REFUSED'}
+    assert 'synthetic' not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize('mode', ['bad_output', 'exception', 'interrupt'])
+def test_started_cli_uncertainty_is_sanitized_and_unknown(candidate, mode):
+    expressions = {'bad_output': "print('synthetic-private-canary'); return 0",
+                   'exception': "raise ValueError('synthetic-private-canary')",
+                   'interrupt': "raise KeyboardInterrupt('synthetic-private-canary')"}
+    candidate['cli'].write_text('def main(args):\n ' + expressions[mode] + '\n', encoding='ascii')
+    repin_bundle(candidate)
+    result = execute(candidate)
+    assert result.returncode == 3 and json.loads(result.stdout) == {'status': 'UNKNOWN'}
+    assert 'synthetic-private-canary' not in result.stdout + result.stderr
+
+
+def test_powershell_fixed_launcher_checks_pins_then_runs_only_bootstrap(candidate):
+    command = ['powershell', '-NoProfile', '-NonInteractive', '-File', str(LAUNCH), '-Run',
+        '-BundleRoot', str(candidate['bundle']), '-ExpectedCommit', 'c' * 40,
+        '-ExpectedManifestSha256', candidate['manifest_pin'], '-ConfigPath', str(candidate['config']),
+        '-ExpectedConfigSha256', candidate['config_pin'], '-RuntimePath', str(candidate['spec']),
+        '-ExpectedRuntimeSha256', candidate['spec_pin']]
+    result = subprocess.run(command, text=True, capture_output=True, timeout=40)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {'status': 'PUBLISHED_GENESIS', 'pointer_sha256': 'e' * 64}
+    command[command.index('-ExpectedConfigSha256') + 1] = '0' * 64
+    result = subprocess.run(command, text=True, capture_output=True, timeout=40)
+    assert result.returncode == 2 and json.loads(result.stdout) == {'status': 'REFUSED'}
+
+
+def test_powershell_interpreter_mismatch_never_starts_bootstrap(candidate):
+    marker = candidate['config'].parent / 'synthetic-started'
+    candidate['bootstrap'].write_text('from pathlib import Path\nPath(' + repr(str(marker)) + ').write_text("x")\n')
+    repin_bundle(candidate)
+    spec = json.loads(candidate['spec'].read_bytes())
+    spec['interpreter_sha256'] = '0' * 64
+    candidate['spec'].write_bytes(encode(spec))
+    candidate['spec_pin'] = sha(candidate['spec'].read_bytes())
+    command = ['powershell', '-NoProfile', '-NonInteractive', '-File', str(LAUNCH), '-Run',
+        '-BundleRoot', str(candidate['bundle']), '-ExpectedCommit', 'c' * 40,
+        '-ExpectedManifestSha256', candidate['manifest_pin'], '-ConfigPath', str(candidate['config']),
+        '-ExpectedConfigSha256', candidate['config_pin'], '-RuntimePath', str(candidate['spec']),
+        '-ExpectedRuntimeSha256', candidate['spec_pin']]
+    result = subprocess.run(command, text=True, capture_output=True, timeout=40)
+    assert result.returncode == 2 and json.loads(result.stdout) == {'status': 'REFUSED'}
+    assert not marker.exists()

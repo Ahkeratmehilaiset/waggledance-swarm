@@ -67,6 +67,57 @@ def _spec(root, path):
     return {'path': str(relative), 'sha256': _sha(raw)}
 
 
+def _history_specs(root, pointer, pointer_pin):
+    """Collect only hash-linked pointer history; the reader verifies semantics."""
+    history, current, seen = {}, pointer, {pointer_pin}
+
+    def add(path, expected):
+        if type(expected) is not str or not _HEX.fullmatch(expected):
+            raise ValueError()
+        spec = _spec(root, path)
+        if spec['sha256'] != expected:
+            raise ValueError()
+        key = path.relative_to(root).as_posix()
+        if key in history and history[key] != spec:
+            raise ValueError()
+        history[key] = spec
+        if len(history) > 2048:
+            raise ValueError()
+
+    def artifact(item, kind):
+        generation = item['generation']
+        if type(generation) is not str or checkpoint.NAME.fullmatch(generation) is None:
+            raise ValueError()
+        add(root / generation / checkpoint.ARTIFACTS[kind], item['artifacts'][kind])
+
+    for _ in range(checkpoint._MAX_POINTER_HISTORY):
+        previous_pin = current['previous_pointer_sha256']
+        if previous_pin is None:
+            return history
+        if type(previous_pin) is not str or not _HEX.fullmatch(previous_pin) or previous_pin in seen:
+            raise ValueError()
+        seen.add(previous_pin)
+        archive = root / ('q4-pointer-' + previous_pin + '.json')
+        add(archive, previous_pin)
+        previous_raw = checkpoint._read(archive, max_bytes=checkpoint._MAX_POINTER_BYTES)
+        if _sha(previous_raw) != previous_pin:
+            raise ValueError()
+        previous = caller._json(previous_raw)
+        # Public-mode continuity needs these metadata bytes for each retained
+        # generation, including the predecessor of an empty-watermark step.
+        for kind in ('memory_sha256', 'receipt_sha256'):
+            artifact(previous, kind)
+        if current['empty_advance'] is None and current['schema'] in (checkpoint.HISTORY_SCHEMA,
+                                                                       checkpoint.PREFIX_HISTORY_SCHEMA):
+            for kind in ('projection_sha256', 'memory_sha256', 'receipt_sha256'):
+                artifact(current, kind)
+            artifact(previous, 'projection_sha256')
+            delta_pin = current['delta_projection_sha256']
+            add(root / ('q4-delta-' + delta_pin + '.json'), delta_pin)
+        current = previous
+    raise ValueError()
+
+
 def _snapshot(root, pointer_pin, policy_path, roster_path, public_policy_path):
     """Discover a bounded local candidate; capture rechecks bytes under lock."""
     root = checkpoint._secure(root)
@@ -79,17 +130,7 @@ def _snapshot(root, pointer_pin, policy_path, roster_path, public_policy_path):
     if checkpoint.NAME.fullmatch(generation) is None:
         raise ValueError()
     active = {name: _spec(root, root / generation / name) for name in checkpoint.ARTIFACTS.values()}
-    history = {}
-    for path in root.iterdir():
-        if path.is_file() and (path.name.startswith('q4-pointer-') or path.name.startswith('q4-delta-')):
-            history[path.name] = _spec(root, path)
-        elif path.is_dir() and path.name != generation and checkpoint.NAME.fullmatch(path.name):
-            for name in checkpoint.ARTIFACTS.values():
-                item = path / name
-                if item.is_file():
-                    history[f'{path.name}/{name}'] = _spec(root, item)
-        if len(history) > 2048:
-            raise ValueError()
+    history = _history_specs(root, pointer, pointer_pin)
     memory = caller._json(checkpoint._read(root / generation / 'memory.json', max_bytes=8 * 1024 * 1024))
     from waggledance.core.hex_cell_topology import ALL_CELLS
     cells = {}
@@ -111,6 +152,17 @@ def _snapshot(root, pointer_pin, policy_path, roster_path, public_policy_path):
     result = capture.capture(root=root, descriptors=descriptors, enabled=True)
     if result['status'] != 'CANDIDATE_UNVERIFIED':
         raise ValueError()
+    # Capture only proves the supplied byte pins. Independently validate the
+    # actual linked history over the frozen bytes before publishing a selector.
+    parts = transport._fixed_bundle_decode(result['bundle_bytes'])
+    policy_pin, roster_pin = _sha(parts['policy_bytes']), _sha(parts['roster_bytes'])
+    tasks, roster = capture_adapter.strict_pins(parts['policy_bytes'], policy_pin, parts['roster_bytes'], roster_pin)
+    checked_pointer = checkpoint._parse_pointer_snapshot(parts['pointer_bytes'], expected_pointer_sha256=pointer_pin,
+        policy_sha=policy_pin, roster_sha=roster_pin, prefix_required=True)
+    checkpoint._validate_pointer_history(None, parts['pointer_bytes'], checked_pointer, tasks, roster,
+        policy_pin, roster_pin, policy_bytes=parts['policy_bytes'], roster_bytes=parts['roster_bytes'],
+        expected_source_mode=checkpoint._requested_source_mode('public-v1', _sha(parts['public_policy_bytes'])),
+        prefix_required=True, snapshot_bytes=parts['history_bytes'])
     return pointer, result['bundle_bytes']
 
 

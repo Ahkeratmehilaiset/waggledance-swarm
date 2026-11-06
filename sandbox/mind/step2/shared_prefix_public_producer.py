@@ -215,6 +215,27 @@ def _publish_locked_catchup(request, state, max_windows, cutoff_utc=None, batch_
             public_policy_bytes=config.public_policy_bytes, public_policy_sha256=pins.public_policy_sha256,
             expected_prefix_sha256=request.start_prefix.sha256, max_prefix_bytes=request.max_prefix_bytes, enabled=True,
             **cutoff_args)
+        # A single fully caught-up empty window is already the exact bounded
+        # snapshot accepted by the existing strict empty/CAS primitive. Do not
+        # collapse multi-window chains or advance across a refused projection.
+        if (cutoff_utc is None and request.fenced and previous is not None
+                and chain.get("caught_up") is True and len(chain.get("windows", ())) == 1):
+            window = chain["windows"][0]
+            part = window.get("projection")
+            if (type(part) is dict and part.get("records") == [] and part.get("refused") == {}
+                    and part.get("accepted") == 0 and part.get("dropped_fields") == 0):
+                if snapshot.verify_public_catchup(chain, expected_anchor_bytes=source.anchor_bytes,
+                        expected_anchor_sha256=pins.anchor_sha256, expected_policy_sha256=pins.policy_sha256,
+                        expected_roster_sha256=pins.roster_sha256,
+                        expected_public_policy_sha256=pins.public_policy_sha256,
+                        expected_start_prefix=request.start_prefix) is not True:
+                    raise ValueError()
+                try:
+                    empty = _publish_prepared(request, state, window, part, tasks, previous)
+                    return {**empty, "coverage": "caught_up_to_final_snapshot_not_history",
+                            "source_refusals": "NOT_AGGREGATED"}
+                except Exception:
+                    _fail("publication_state_unknown")
         # Advance only the first verified empty window, never the rest of the
         # chain, and only through the existing fenced prefix/CAS protocol.
         if cutoff_utc is not None and request.fenced and previous is not None and chain.get("windows"):

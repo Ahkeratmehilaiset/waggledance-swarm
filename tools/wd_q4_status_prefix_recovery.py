@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import stat
+from dataclasses import asdict
 
 from sandbox.mind.step2 import prefix_private_state as private_state
 from sandbox.mind.step2 import shared_index_checkpoint as checkpoint_mod
@@ -61,8 +62,10 @@ def complete_owned_publication(*, checkpoint, private, model, source_parent, sid
 
     Only the original in-process call passes its marker identities. Any exception
     leaves outcome unknown; no blind retry, rollback or interrupted-run cleanup.
+    A no-change window opens no fence: it must preserve the verified pointer and
+    prefix and have no open private intent or active checkpoint fence.
     """
-    if (report['status'] not in ('PUBLISHED_GENESIS', 'PUBLISHED_HISTORY')
+    if (report['status'] not in ('PUBLISHED_GENESIS', 'PUBLISHED_HISTORY', 'EMPTY_ADVANCED', 'EMPTY_NO_CHANGE')
             or plan.get('schema') != 'wd.q4-prefix-build-plan.v3' or plan.get('fenced') is not True):
         raise ValueError('unsupported_result')
     tasks, _ = adapter.strict_pins(policy_bytes, route['policy_sha256'], roster_bytes, route['roster_sha256'])
@@ -76,16 +79,25 @@ def complete_owned_publication(*, checkpoint, private, model, source_parent, sid
                 _verify_marker(path, token, info)
             if checkpoint_mod._active_fence(checkpoint) is not None:
                 raise ValueError('fence_refused')
-            landed = checkpoint_mod._fence_record(checkpoint, pointer, 'landed')
-            other = checkpoint_mod._fence_record(checkpoint, pointer, 'not_landed')
-            if (os.path.lexists(other) or checkpoint_mod._read(landed, max_bytes=checkpoint_mod._MAX_FENCE_BYTES)
-                    != checkpoint_mod._fence_bytes(plan['expected_pointer_sha256'], pointer)):
-                raise ValueError('fence_refused')
+            if report['status'] == 'EMPTY_NO_CHANGE':
+                if plan['expected_pointer_sha256'] is None or pointer != plan['expected_pointer_sha256']:
+                    raise ValueError('fence_refused')
+            else:
+                landed = checkpoint_mod._fence_record(checkpoint, pointer, 'landed')
+                other = checkpoint_mod._fence_record(checkpoint, pointer, 'not_landed')
+                if (os.path.lexists(other) or checkpoint_mod._read(landed, max_bytes=checkpoint_mod._MAX_FENCE_BYTES)
+                        != checkpoint_mod._fence_bytes(plan['expected_pointer_sha256'], pointer)):
+                    raise ValueError('fence_refused')
             view, prefix = checkpoint_mod.read_verified_prefix_pointer(checkpoint, tasks,
                 expected_pointer_sha256=pointer, policy_bytes=policy_bytes, policy_sha256=route['policy_sha256'],
                 roster_bytes=roster_bytes, roster_sha256=route['roster_sha256'],
                 expected_public_policy_sha256=route['public_policy_sha256'])
             state.require(pointer, prefix)
+            if report['status'] == 'EMPTY_NO_CHANGE' and (asdict(prefix.cursor) != route['cursor']
+                                                          or prefix.sha256 != route['prefix_sha256']):
+                raise ValueError('cursor_refused')
+            if report['status'] == 'EMPTY_ADVANCED' and asdict(prefix.cursor) == route['cursor']:
+                raise ValueError('cursor_refused')
             receipt = {'schema': 'wd.q4-status-result.v1', 'marker_token_sha256': _digest(token),
                        'marker_identities': [(info.st_dev, info.st_ino) for info in marker_infos],
                        'root_identities': current_ids, 'route_sha256': expected_route_sha256,

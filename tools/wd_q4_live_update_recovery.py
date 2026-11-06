@@ -146,7 +146,7 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
                     or progress['previous_pointer_sha256'] != marker['previous_pointer_sha256']
                     or progress['route_sha256'] != update._sha(update._encode(route))
                     or progress['plan_sha256'] != update._sha(update._encode(plan))
-                    or progress['status'] != 'PUBLISHED_HISTORY'
+                    or progress['status'] not in ('PUBLISHED_HISTORY', 'EMPTY_ADVANCED')
                     or type(progress['pointer_sha256']) is not str or not update._HEX.fullmatch(progress['pointer_sha256'])
                     or progress['pointer_sha256'] == marker['previous_pointer_sha256']
                     or type(progress['runner_receipt_file']) is not str

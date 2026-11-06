@@ -453,6 +453,34 @@ def test_fenced_multiwindow_catchup_genesis_and_history_land_through_the_fence(t
         assert start.sha256 not in json.dumps(report) and end_a.sha256 not in json.dumps(report)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="checkpoint requires Windows fixed volumes")
+def test_fenced_catchup_empty_no_change_and_empty_advance_keep_proven_state(tmp_path, monkeypatch):
+    chain = _fenced_chain(tmp_path)
+    mod, root = chain.mod, chain.root
+    first, _, kw, start = chain.delta(chain.f.PUBLIC_EVENTS)
+    initial = mod.publish_public_catchup(enabled=True, request=chain.request(kw, start, None, 'gen-a'), max_windows=8)
+    end = first['candidate_prefix']
+    _, _, no_kw, _ = chain.delta([], end.cursor, end)
+    before = _fence_files(root)
+    no_change = mod.publish_public_catchup(enabled=True,
+        request=chain.request(no_kw, end, initial['pointer_sha256'], 'unused'), max_windows=8)
+    assert no_change['status'] == 'EMPTY_NO_CHANGE' and no_change['pointer_sha256'] == initial['pointer_sha256']
+    assert _fence_files(root) == before
+    empty, _, advance_kw, _ = chain.delta([chain.f.event(agent='claude-rco-1')], end.cursor, end)
+    with monkeypatch.context() as patch:
+        patch.setattr(mod.snapshot, 'verify_public_catchup', lambda *_args, **_kwargs: False)
+        with pytest.raises(mod.PrefixProducerRefused):
+            mod.publish_public_catchup(enabled=True,
+                request=chain.request(advance_kw, end, initial['pointer_sha256'], 'unused'), max_windows=8)
+    assert _fence_files(root) == before and _sha_file(root / 'q4-latest.json') == initial['pointer_sha256']
+    advanced = mod.publish_public_catchup(enabled=True,
+        request=chain.request(advance_kw, end, initial['pointer_sha256'], 'unused'), max_windows=8)
+    assert advanced['status'] == 'EMPTY_ADVANCED' and advanced['pointer_sha256'] != initial['pointer_sha256']
+    assert 'q4-prefix-fence-' + advanced['pointer_sha256'] + '.landed.json' in _fence_files(root)
+    with _private_state(chain) as state:
+        assert state.load(advanced['pointer_sha256']) == empty['candidate_prefix']
+
+
 # --- v3: real interruptions (BaseException), orphan fence and not_landed states of the fenced route ------------------
 
 def _fence_binding(root):

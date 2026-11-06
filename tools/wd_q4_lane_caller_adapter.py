@@ -331,7 +331,7 @@ class _AdapterOwner:
 def call_lane_session(*, enabled=False, identity_bytes=None, expected_identity_sha256=None, descriptor_bytes=None,
                       expected_descriptor_sha256=None, situation=None, time=None, inputs=None, _owner=None,
                       _owner_guard=None, _owner_context=None):
-    """One declared-consistent call of the existing chain; ``{"status": "OFF"}`` when ``enabled`` is ``False``."""
+    """Call the existing chain; the outer caller must abort any unconsumed context."""
     if enabled is False and _owner is None:
         return {"status": "OFF"}
     if _owner_guard is not None or _owner_context is not None:
@@ -345,8 +345,10 @@ def call_lane_session(*, enabled=False, identity_bytes=None, expected_identity_s
                 _refuse()
             _owner = _AdapterOwner(on_begin=ticket._begin, on_complete=ticket._complete, on_unknown=ticket._unknown)
             accepted = True
-        except Exception:
-            pass
+        except BaseException as error:
+            if not isinstance(error, Exception):
+                del identity_bytes, descriptor_bytes, situation, time, inputs
+                raise
         if not accepted:
             del identity_bytes, descriptor_bytes, situation, time, inputs
             raise CallerRefused("caller_refused")

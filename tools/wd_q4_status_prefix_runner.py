@@ -57,6 +57,10 @@ _PENDING = ".wd-q4-status-prefix-runner.pending"
 _ROUTE_KEYS = frozenset({"schema", "source", "generation_path", "checkpoint_root", "private_state_root",
                          "trusted_model_root", "cursor", "prefix_sha256", "max_bytes", "max_rows", "plan_sha256",
                          "anchor_sha256", "policy_sha256", "roster_sha256", "public_policy_sha256"})
+# Late public genesis: the private receipt the genesis bootstrap writes after verified empty bounded windows.
+GENESIS_SKIP_NAME = "q4-genesis-skip-v1.json"
+_GENESIS_SKIP_KEYS = frozenset({"schema", "file_identity", "generation", "policy_sha256", "roster_sha256",
+                                "public_policy_sha256", "offset", "prefix_sha256", "previous_sha256", "runs"})
 _REPORT_KEYS = frozenset({"status", "pointer_sha256", "generation", "publisher_authentication",
                           "source_authenticity", "freshness", "encoder_identity_source", "plan_sha256",
                           "backend_isolation", "model_assets"})
@@ -97,6 +101,47 @@ def _pinned(raw, expected, allowed=None, limit=65536):
     if (type(raw) is not bytes or len(raw) > limit or type(expected) is not str or not _HEX.fullmatch(expected)
             or not hmac.compare_digest(_digest(raw), expected) or (allowed is not None and expected not in allowed)):
         raise ValueError()
+
+
+def _genesis_skip(raw):
+    """Strictly parse one canonical private genesis skip receipt (wd.q4-genesis-skip.v1); ValueError otherwise.
+
+    The receipt records that the genesis bootstrap read bytes [0, offset) of one source file identity through the
+    unchanged public reader under these pins and found no public row; it is same-account private state, not a
+    signature, and this parser checks only its shape.
+    """
+    if type(raw) is not bytes or not 0 < len(raw) <= 4096:
+        raise ValueError()
+    value = json.loads(raw.decode("ascii"))
+    if (type(value) is not dict or frozenset(value) != _GENESIS_SKIP_KEYS
+            or json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii") != raw
+            or value["schema"] != "wd.q4-genesis-skip.v1"
+            or type(value["file_identity"]) is not str or _IDENTITY.fullmatch(value["file_identity"]) is None
+            or type(value["generation"]) is not str or _GENERATION.fullmatch(value["generation"]) is None
+            or any(type(value[key]) is not str or _HEX.fullmatch(value[key]) is None
+                   for key in ("policy_sha256", "roster_sha256", "public_policy_sha256", "prefix_sha256"))
+            or type(value["offset"]) is not int or not 0 < value["offset"] <= 1024**3
+            or (value["previous_sha256"] is not None and (type(value["previous_sha256"]) is not str
+                                                         or _HEX.fullmatch(value["previous_sha256"]) is None))
+            or type(value["runs"]) is not int or not 1 <= value["runs"] <= 1024**3):
+        raise ValueError()
+    return value
+
+
+def _read_genesis_skip(private):
+    """Bytes of the skip receipt in the private root: a regular file, no link or reparse point, at most 4096 bytes."""
+    path = _plain_file(str(private / GENESIS_SKIP_NAME))
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError()
+        raw = os.read(fd, 4097)
+    finally:
+        os.close(fd)
+    if len(raw) > 4096:
+        raise ValueError()
+    return raw
 
 
 def _plain_file(text):
@@ -221,8 +266,12 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
         _pinned(route_bytes, expected_route_sha256)
         route = _json(route_bytes, 65536)
         if (frozenset(route) not in (_ROUTE_KEYS, _ROUTE_KEYS | {"cutoff_utc"},
-                                     _ROUTE_KEYS | {"cutoff_utc", "batch_rows"})
+                                     _ROUTE_KEYS | {"cutoff_utc", "batch_rows"},
+                                     _ROUTE_KEYS | {"cutoff_utc", "batch_rows", "genesis_skip_sha256"})
                 or route["schema"] != "wd.q4-status-prefix-route.v1"):
+            raise ValueError()
+        skip_sha = route.get("genesis_skip_sha256")
+        if "genesis_skip_sha256" in route and (type(skip_sha) is not str or _HEX.fullmatch(skip_sha) is None):
             raise ValueError()
         cutoff = None
         if "cutoff_utc" in route:
@@ -265,8 +314,10 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
                 or type(route["prefix_sha256"]) is not str or _HEX.fullmatch(route["prefix_sha256"]) is None
                 or type(route["max_bytes"]) is not int or not 1 <= route["max_bytes"] <= 4 * 1024 * 1024
                 or type(route["max_rows"]) is not int or not 1 <= route["max_rows"] <= 10000
-                or (plan.get("expected_pointer_sha256") is None and
-                    (cursor["offset"] != 0 or route["prefix_sha256"] != _digest(b"")))):
+                or (plan.get("expected_pointer_sha256") is None and skip_sha is None and
+                    (cursor["offset"] != 0 or route["prefix_sha256"] != _digest(b"")))
+                or (skip_sha is not None and (plan.get("expected_pointer_sha256") is not None
+                                              or cursor["offset"] == 0))):
             raise ValueError()
         source, sidecar = _plain_file(route["source"]), _plain_file(route["generation_path"])
         checkpoint = roots._root(route["checkpoint_root"])
@@ -281,6 +332,17 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
         marks = (checkpoint / _PENDING, private / _PENDING)
         if not all(_absent(path) for path in marks):
             raise ValueError()
+        if skip_sha is not None:
+            # A genesis past offset zero starts only where the bootstrap's verified skip receipt ends; the
+            # producer's reader still re-hashes [0, offset) against prefix_sha256 before reading on.
+            skip_raw = _read_genesis_skip(private)
+            skip = _genesis_skip(skip_raw)
+            if (not hmac.compare_digest(_digest(skip_raw), skip_sha)
+                    or skip["file_identity"] != cursor["file_identity"] or skip["generation"] != cursor["generation"]
+                    or skip["offset"] != cursor["offset"] or skip["prefix_sha256"] != route["prefix_sha256"]
+                    or any(skip[key] != route[key] for key in ("policy_sha256", "roster_sha256",
+                                                                "public_policy_sha256"))):
+                raise ValueError()
         cursor = BridgeCursor(**cursor)
         prefix = BridgePrefixPin(cursor=cursor, sha256=route["prefix_sha256"])
         config = producer.PublicSourceConfig(source=producer.SourceConfig(

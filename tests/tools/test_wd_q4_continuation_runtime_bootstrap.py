@@ -167,3 +167,40 @@ def test_job_timeout_is_unknown_and_synthetic_child_does_not_complete(job):
     assert ready.exists(), "synthetic descendant did not actually start"
     time.sleep(8.5)
     assert not marker.exists()
+
+
+@pytest.mark.parametrize("variant", ["direct", "nested", "short_alias"])
+def test_private_tuple_under_checkpoint_root_is_refused(job, variant):
+    checkpoint = job["bundle"].parent / "checkpoint"
+    parent = checkpoint / "nested" if variant == "nested" else checkpoint
+    parent.mkdir(exist_ok=True)
+    target = parent / "private-tuple.json"
+    target.write_bytes(job["tuple"].read_bytes())
+    config = json.loads(job["config"].read_bytes())
+    target_path = str(target)
+    if variant == "short_alias":
+        import ctypes
+        buffer = ctypes.create_unicode_buffer(32768)
+        if not ctypes.windll.kernel32.GetShortPathNameW(target_path, buffer, len(buffer)):
+            pytest.skip("Windows short path unavailable")
+        if os.path.normcase(buffer.value) == os.path.normcase(target_path):
+            pytest.skip("Windows did not create a distinct short path")
+        target_path = buffer.value
+    config["tuple_path"] = target_path
+    job["config"].write_bytes(encode(config))
+    job["config_pin"] = sha(job["config"].read_bytes())
+    scratch = job["bundle"].parent / "scratch"
+    scratch.mkdir()
+    result = run_job(job, scratch)
+    assert result.returncode == 2
+    assert json.loads(result.stdout) == {"status": "REFUSED"}
+    # The pinned bootstrap independently enforces the same boundary even if
+    # a caller omits the PowerShell launcher.
+    direct = _fixture.execute(job)
+    assert direct.returncode == 2
+    assert json.loads(direct.stdout) == {"status": "REFUSED"}
+
+
+def test_launcher_does_not_use_powershell_automatic_args_variable():
+    import re
+    assert re.search(r"\$args\b", LAUNCH.read_text(encoding="utf-8"), re.IGNORECASE) is None

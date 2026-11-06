@@ -108,6 +108,13 @@ public static class WdQ4ContinuationDirectoryV1 {
     if ($routePin -cne [string]$tupleData.route.sha256) { throw 'route' }
     $routeText=[Text.UTF8Encoding]::new($false,$true).GetString($routeBytes)
     $routeData=$routeText | ConvertFrom-Json -ErrorAction Stop
+    # Resolve actual Windows names so 8.3 aliases cannot put private inputs
+    # inside the checkpoint tree that is published to readers.
+    $checkpoint=CheckedPath ([string]$routeData.checkpoint_root) $true
+    $tupleFinal=[WdQ4ContinuationDirectoryV1]::Final($tuple)
+    $checkpointFinal=[WdQ4ContinuationDirectoryV1]::Final($checkpoint)
+    if ($tupleFinal.Equals($checkpointFinal,[StringComparison]::OrdinalIgnoreCase) -or
+        $tupleFinal.StartsWith($checkpointFinal+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'private tuple in published tree' }
     $scratchFinal=[WdQ4ContinuationDirectoryV1]::Final($scratch)
     $protected=@($bundle,(Split-Path -Parent $python),(Split-Path -Parent $hostPath),
         (Split-Path -Parent $config),(Split-Path -Parent $runtime),
@@ -125,13 +132,13 @@ public static class WdQ4ContinuationDirectoryV1 {
             $other.StartsWith($scratchFinal+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'scratch' }
     }
     . $jobHelper
-    $args=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$worker,
+    $jobArgs=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$worker,
         '-Manifest',$manifest,'-ManifestSha256',$ExpectedManifestSha256,'-Bootstrap',$bootstrap,
         '-BootstrapSha256',([string]$manifestData.files.'tools-bootstrap/tools/wd_q4_continuation_runtime_bootstrap.py').ToLowerInvariant(),
         '-Python',$python,'-PythonSha256',$pythonPin,'-Config',$config,'-ConfigSha256',$ExpectedConfigSha256,
         '-Runtime',$runtime,'-RuntimeSha256',$ExpectedRuntimeSha256)
     $started=$true
-    $job=Invoke-WdQ4ProcessJob -Executable $hostPath -Arguments $args -WorkingDirectory $bundle `
+    $job=Invoke-WdQ4ProcessJob -Executable $hostPath -Arguments $jobArgs -WorkingDirectory $bundle `
         -ScratchRoot $scratch -InputBytes ([byte[]]@()) -TimeoutSeconds $TimeoutSeconds -MaxOutputBytes 4096 -DetailedOutcome
     if ([string]$job.Outcome -cne 'completed' -or [string]$job.Cleanup -cne 'confirmed' -or
         $null -eq $job.ExitCode -or $null -eq $job.Stdout) { throw 'job' }

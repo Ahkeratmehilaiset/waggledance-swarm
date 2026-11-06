@@ -110,6 +110,12 @@ def _bootstrap(args):
             not hmac.compare_digest(hashlib.sha256(route_raw).hexdigest(), route_part['sha256'])):
         raise ValueError()
     route = _doc(route_raw)
+    # realpath(strict=True) resolves Windows final names, including 8.3 aliases.
+    # A private tuple must never be placed in the published checkpoint tree.
+    tuple_final = os.path.normcase(os.path.realpath(config['tuple_path'], strict=True))
+    checkpoint_final = os.path.normcase(os.path.realpath(route['checkpoint_root'], strict=True))
+    if os.path.commonpath((tuple_final, checkpoint_final)) == checkpoint_final:
+        raise ValueError()
     model, site = root / 'model', root / 'site'
     if not (site.is_dir() and model.is_dir() and os.path.samefile(model, route['trusted_model_root'])):
         raise ValueError()

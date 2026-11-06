@@ -330,11 +330,28 @@ if ($DiagnosticPartial) {
     if ($ExactRequestDiagnostic) {
         $diagnostic['inventory_coverage']='incomplete_or_unknown'
         $diagnostic['veto_coverage']='not_evaluated'
-        $ambiguous=($requests.Count -eq 1 -and ($requests[0].id_also_used_by_other_requester -or $requests[0].case_variant_id))
+        # Exact diagnostics must consider own IDs before -SessionId filtering and
+        # case variants owned by another requester. Preserve the existing record flags.
+        $ownCaseVariantAnySession=$false
+        foreach ($candidateId in $order) {
+            if ($candidateId -cne $RequestId -and [StringComparer]::OrdinalIgnoreCase.Equals($candidateId, $RequestId)) {
+                $ownCaseVariantAnySession=$true; break
+            }
+        }
+        $foreignRequesterCaseVariant=$false
+        foreach ($candidateId in $foreignIds) {
+            if ($candidateId -cne $RequestId -and [StringComparer]::OrdinalIgnoreCase.Equals($candidateId, $RequestId)) {
+                $foreignRequesterCaseVariant=$true; break
+            }
+        }
+        $ambiguous=($requests.Count -eq 1 -and ($requests[0].id_also_used_by_other_requester -or
+            $requests[0].case_variant_id -or $ownCaseVariantAnySession -or $foreignRequesterCaseVariant))
         if ($ambiguous) {
             $diagnostic['exact_request_ambiguity']=[ordered]@{
                 id_also_used_by_other_requester=[bool]$requests[0].id_also_used_by_other_requester
                 case_variant_id=[bool]$requests[0].case_variant_id
+                own_case_variant_any_session=[bool]$ownCaseVariantAnySession
+                foreign_requester_case_variant=[bool]$foreignRequesterCaseVariant
             }
             $diagnostic['requests']=@()
             $diagnostic['returned_count']=0

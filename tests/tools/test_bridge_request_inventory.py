@@ -487,6 +487,8 @@ def test_exact_diagnostic_does_not_claim_available_for_id_collisions(tmp_path: P
     assert result["exact_request_ambiguity"] == {
         "id_also_used_by_other_requester": collision in ("foreign_requester", "both"),
         "case_variant_id": collision in ("case_variant", "both"),
+        "own_case_variant_any_session": collision in ("case_variant", "both"),
+        "foreign_requester_case_variant": False,
     }
 
 
@@ -517,3 +519,41 @@ def test_exact_diagnostic_suppresses_target_for_non_string_request_id(tmp_path: 
     assert result["conflict_count"] == 1
     assert result["conflicts"][0]["kind"] == "malformed_request_id"
     assert result["exact_request_state"] == "not_available" and result["requests"] == []
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("case", ("foreign_case_variant", "other_session_case_variant"))
+def test_exact_diagnostic_suppresses_case_variants_outside_session_scope(tmp_path: Path, shell: str, case: str) -> None:
+    target, _ = _bound("target-v1")
+    if case == "foreign_case_variant":
+        other, _ = _bound("TARGET-v1", agent="codex-tools-1", to="codex-lead-1")
+    else:
+        other, _ = _bound("TARGET-v1", session_id="other-session")
+    _write(tmp_path, [target, other])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-SessionId", "lead-session",
+                        "-RequestId", "target-v1", "-NoCache", "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    assert result["exact_request_state"] == "not_available" and result["requests"] == []
+    assert result["matched_count"] == 1 and result["returned_count"] == 0
+    reasons = result["exact_request_ambiguity"]
+    assert reasons["id_also_used_by_other_requester"] is False and reasons["case_variant_id"] is False
+    assert reasons["foreign_requester_case_variant"] is (case == "foreign_case_variant")
+    assert reasons["own_case_variant_any_session"] is (case == "other_session_case_variant")
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("case", ("foreign_unrelated", "other_session_unrelated"))
+def test_exact_diagnostic_does_not_confuse_unrelated_ids(tmp_path: Path, shell: str, case: str) -> None:
+    target, _ = _bound("target-v1")
+    if case == "foreign_unrelated":
+        other, _ = _bound("TARGET-v10", agent="codex-tools-1", to="codex-lead-1")
+    else:
+        other, _ = _bound("TARGET-v10", session_id="other-session")
+    _write(tmp_path, [target, other])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-SessionId", "lead-session",
+                        "-RequestId", "target-v1", "-NoCache", "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    assert result["exact_request_state"] == "available_not_validated"
+    assert result["requests"][0]["request"] == target
+    assert result["requests"][0]["id_also_used_by_other_requester"] is False
+    assert result["requests"][0]["case_variant_id"] is False

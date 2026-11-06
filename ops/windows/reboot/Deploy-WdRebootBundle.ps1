@@ -1310,6 +1310,7 @@ foreach ($required in @(
         'Invoke-WdQ4SessionCommand.ps1',
         'Invoke-WdQ4SessionHost.ps1',
         'Install-WdMindShadowRefresh.ps1',
+        'Install-WdMindLiveRefresh.ps1',
         'Resolve-WdNativeWakeRejection.ps1',
         'WAKE_PROCEDURE_LEAD.md',
         'WAKE_PROCEDURE_TOOLS.md',

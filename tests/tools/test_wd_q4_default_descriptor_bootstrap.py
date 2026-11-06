@@ -255,6 +255,7 @@ def test_both_q4_helpers_are_required_bundle_files():
     block = source[start:stop]
     assert "'Get-WdQ4DefaultDescriptor.ps1'" in block
     assert "'Invoke-WdQ4LaneRecall.ps1'" in block
+    assert "'Install-WdMindLiveRefresh.ps1'" in block
 
 
 @pytest.mark.parametrize("case", ["ok", "tampered"])

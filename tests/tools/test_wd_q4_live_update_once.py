@@ -38,7 +38,7 @@ def test_write_roots_cannot_overlap_bundle_or_generation(tmp_path):
 
 
 @pytest.mark.skipif(__import__('os').name != 'nt', reason='real guarded peer requires Windows')
-@pytest.mark.parametrize('fault_stage', ['capture', 'materialize', 'publish', 'after_selector', 'interrupt'])
+@pytest.mark.parametrize('fault_stage', ['capture', 'materialize', 'publish', 'after_selector', 'interrupt', 'empty_bad_fence'])
 def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypatch, capsys, fault_stage):
     """Actual producer, capture, binding, selector and caller; synthetic model/peer."""
     import importlib.util
@@ -130,6 +130,119 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
     private_root = Path(route['private_state_root'])
     assert not (private_root / 'q4-live-update.pending.json').exists()
     assert len(list(private_root.glob('q4-live-update-result-*.json'))) == 2
+    if fault_stage in ('capture', 'empty_bad_fence'):
+        from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
+        checkpoint_root = Path(route['checkpoint_root'])
+        orphan = checkpoint_root / ('q4-delta-' + 'f' * 64 + '.json')
+        orphan.write_bytes(b'x' * (8 * 1024 * 1024))
+        original_history_check = checkpoint._validate_pointer_history
+        history_checks = []
+        def observed_history(*args, **kwargs):
+            history_checks.append(kwargs.get('snapshot_bytes') is not None)
+            return original_history_check(*args, **kwargs)
+        with monkeypatch.context() as scoped:
+            scoped.setattr(checkpoint, '_validate_pointer_history', observed_history)
+            pointer, frozen_snapshot = update._snapshot(checkpoint_root, answer_pins[-1], public['policy_path'],
+                                                        public['roster_path'], public['public_policy_path'])
+        assert True in history_checks
+        parts = update.transport._fixed_bundle_decode(frozen_snapshot)
+        tasks, roster = update.capture_adapter.strict_pins(parts['policy_bytes'], route['policy_sha256'],
+                                                          parts['roster_bytes'], route['roster_sha256'])
+        checkpoint._validate_pointer_history(None, parts['pointer_bytes'], pointer, tasks, roster,
+            route['policy_sha256'], route['roster_sha256'], policy_bytes=parts['policy_bytes'],
+            roster_bytes=parts['roster_bytes'], expected_source_mode=checkpoint._requested_source_mode(
+                'public-v1', route['public_policy_sha256']), prefix_required=True, snapshot_bytes=parts['history_bytes'])
+        assert orphan.name not in parts['history_bytes']
+        delta = checkpoint_root / ('q4-delta-' + pointer['delta_projection_sha256'] + '.json')
+        original_delta = delta.read_bytes()
+        try:
+            delta.write_bytes(b'synthetic-tamper')
+            with pytest.raises(Exception):
+                update._snapshot(checkpoint_root, answer_pins[-1], public['policy_path'],
+                                 public['roster_path'], public['public_policy_path'])
+        finally:
+            delta.write_bytes(original_delta)
+        backup = delta.with_name(delta.name + '.synthetic-backup')
+        try:
+            delta.rename(backup)
+            with pytest.raises(Exception):
+                update._snapshot(checkpoint_root, answer_pins[-1], public['policy_path'],
+                                 public['roster_path'], public['public_policy_path'])
+        finally:
+            backup.rename(delta)
+        with pytest.raises(ValueError):
+            update._history_specs(checkpoint_root, {**pointer, 'previous_pointer_sha256': answer_pins[-1]}, answer_pins[-1])
+        from tools import wd_q4_status_prefix_recovery as prefix_recovery
+        from sandbox.mind.step2 import wd_q4_prefix_build_child as child_module
+        from sandbox.mind.step2 import shared_bridge_snapshot as bridge_snapshot
+        from sandbox.mind.step2 import shared_prefix_public_producer as prefix_producer
+        prior_complete = prefix_recovery.complete_owned_publication
+        prior_child = child_module.build_prefix_generation
+        prior_catchup = bridge_snapshot.read_public_catchup
+        prior_prepared = prefix_producer._publish_prepared
+        errors = []
+        def record_complete(**kwargs):
+            try:
+                return prior_complete(**kwargs)
+            except Exception as exc:
+                errors.append((type(exc).__name__, str(exc)))
+                raise
+        def record_child(**kwargs):
+            try:
+                return prior_child(**kwargs)
+            except Exception as exc:
+                errors.append((type(exc).__name__, str(exc)))
+                raise
+        def record_catchup(*args, **kwargs):
+            try:
+                value = prior_catchup(*args, **kwargs)
+                errors.append(('catchup', value['end_reason'], len(value['windows']),
+                               [(len(w['projection']['records']), w['projection']['refused']) for w in value['windows']]))
+                return value
+            except Exception as exc:
+                errors.append((type(exc).__name__, str(exc)))
+                raise
+        def record_prepared(*args, **kwargs):
+            try:
+                return prior_prepared(*args, **kwargs)
+            except Exception as exc:
+                errors.append(('prepared', type(exc).__name__, str(exc)))
+                raise
+        with monkeypatch.context() as scoped:
+            scoped.setattr(prefix_recovery, 'complete_owned_publication', record_complete)
+            scoped.setattr(child_module, 'build_prefix_generation', record_child)
+            scoped.setattr(bridge_snapshot, 'read_public_catchup', record_catchup)
+            scoped.setattr(prefix_producer, '_publish_prepared', record_prepared)
+            exit_code = update.main(['--once', '--config', str(config_path), '--sha256', update._sha(raw)])
+        assert exit_code == 0, errors
+        empty_no_change = json.loads(capsys.readouterr().out)
+        assert empty_no_change['status'] == 'NO_CHANGE' and empty_no_change['pointer_sha256'] == answer_pins[-1]
+        assert not (private_root / 'q4-live-update.pending.json').exists()
+        event['ts_utc'] = '2026-10-31T12:03:30Z'
+        event['message'] = 'synthetic-private-body'
+        with bridge.open('ab') as stream:
+            stream.write(update._encode(event) + b'\n')
+        if fault_stage == 'empty_bad_fence':
+            def corrupt_landed(**kwargs):
+                report, root = kwargs['report'], kwargs['checkpoint']
+                assert report['status'] == 'EMPTY_ADVANCED'
+                from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
+                checkpoint._fence_record(root, report['pointer_sha256'], 'landed').write_bytes(b'synthetic-bad-fence')
+                return prior_complete(**kwargs)
+            with monkeypatch.context() as scoped:
+                scoped.setattr(prefix_recovery, 'complete_owned_publication', corrupt_landed)
+                assert update.main(['--once', '--config', str(config_path), '--sha256', update._sha(raw)]) == 3
+            assert json.loads(capsys.readouterr().err)['status'] == 'UNKNOWN'
+            assert (private_root / 'q4-live-update.pending.json').is_file()
+            return
+        assert update.main(['--once', '--config', str(config_path), '--sha256', update._sha(raw)]) == 0
+        empty_advanced = json.loads(capsys.readouterr().out)
+        assert empty_advanced['status'] == 'PUBLISHED' and empty_advanced['pointer_sha256'] != answer_pins[-1]
+        assert not (private_root / 'q4-live-update.pending.json').exists()
+        monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(query), encoding='utf-8'))
+        assert update.caller.main(['--enabled']) == 0
+        assert json.loads(capsys.readouterr().out)['answer']['binding']['pointer_sha256'] == empty_advanced['pointer_sha256']
+        answer_pins.append(empty_advanced['pointer_sha256'])
     event['ts_utc'] = '2026-10-31T12:04:00Z'
     with bridge.open('ab') as stream:
         stream.write(update._encode(event) + b'\n')
@@ -156,12 +269,13 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
     assert not output.out and json.loads(output.err)['status'] == 'UNKNOWN'
     assert (private_root / 'q4-live-update.pending.json').is_file()
     progress_files = list(private_root.glob('q4-live-update-progress-*.json'))
-    assert len(progress_files) == 3
+    assert len(progress_files) == (5 if fault_stage == 'capture' else 3)
     attempt = json.loads((private_root / 'q4-live-update.pending.json').read_bytes())['attempt']
     progress = json.loads((private_root / ('q4-live-update-progress-' + attempt + '.json')).read_bytes())
     assert progress['schema'] == 'wd.q4-live-update-progress.v1'
     assert progress['config_sha256'] == update._sha(raw)
     assert progress['pointer_sha256'] != answer_pins[-1]
+    assert progress['status'] == ('EMPTY_ADVANCED' if fault_stage == 'capture' else 'PUBLISHED_HISTORY')
     assert update.main(['--once', '--config', str(config_path), '--sha256', update._sha(raw)]) == 2
     assert json.loads(capsys.readouterr().err)['status'] == 'REFUSED' and calls == [1]
     query = update._encode({'situation': 'synthetic recall', 'time': '2026-11-01T12:00:00Z'})

@@ -2227,7 +2227,13 @@ $runtimeRoot = Resolve-NormalizedPath -Path ([string]$manifest.runtime_root)
 # DryRun is byte-inert: the availability diagnostics file is written only by a
 # live launch; a DryRun (fleet preflight, -CheckLaunchAvailability) reports the
 # records on the verbose stream and in the refusal message instead.
-$script:WdLaneAvailabilityDiagnosticsPath = if ($DryRun) { '' } else { Join-Path (Join-Path $runtimeRoot 'lane_availability') ('{0}.jsonl' -f $Agent) }
+# (Written as a guarded assignment, not an if/else expression: the DryRun branch
+# below must stay the first if-statement on the bare DryRun switch, which the
+# reboot bundle tests locate by text and by AST.)
+$script:WdLaneAvailabilityDiagnosticsPath = ''
+if (-not $DryRun) {
+  $script:WdLaneAvailabilityDiagnosticsPath = Join-Path (Join-Path $runtimeRoot 'lane_availability') ('{0}.jsonl' -f $Agent)
+}
 $conversationConfigBaseline = $null
 $codexUserConfigPath = ''
 if ($conversationSurface -ceq 'local_window' -and

@@ -979,6 +979,89 @@ def test_names_that_only_resemble_a_console_device_are_not_refused_by_the_device
 
 def test_the_docstring_states_the_exit_and_partial_line_rules():
     doc = module().__doc__
-    for phrase in ("non-zero integer code", "exit 0 always means the pair was printed", "partial line on stdout",
-                   "accepts output only with exit 0", "CONIN$", "CONOUT$"):
+    for phrase in ("partial line on stdout", "accepts output only with exit 0", "CONIN$", "CONOUT$"):
+        # v4: the exit-range and OFF/pair phrases moved to the section 11 docstring test (the v3 wording was wrong)
         assert phrase in doc, phrase
+
+
+# 11 v4 (advisory 936432ca reproduced): only an exact int 1..125 is propagated; OFF output vs descriptor output --------
+OUT_OF_RANGE = [-1, -130, 126, 130, 255, 256, 259, 2 ** 31, -2 ** 31]
+
+
+@needs_windows
+@pytest.mark.parametrize("code_in", OUT_OF_RANGE)
+def test_a_negative_or_out_of_range_exit_raised_by_a_producer_exits_one(tmp_path, capsys, monkeypatch, code_in):
+    request, sources, target = synthetic(tmp_path)
+    module()
+    from tools import wd_q4_fixed_plan_producer
+
+    def interrupted(**kwargs):
+        raise SystemExit(code_in)
+    monkeypatch.setattr(wd_q4_fixed_plan_producer, "build_fixed_plan", interrupted)
+    code, out, err = run(["--request", str(write_request(tmp_path, request)), "--enable"], capsys)
+    assert code == 1 and out == "" and err == ""
+
+
+@pytest.mark.parametrize("code_in", [-1, 126, 259])
+@pytest.mark.parametrize("stage", ["refusal", "off"])
+def test_a_negative_or_out_of_range_exit_raised_by_the_real_write_exits_one(capsys, monkeypatch, code_in, stage):
+    cli = module()
+    calls = []
+
+    def interrupted(text):
+        calls.append(text)
+        raise SystemExit(code_in)
+    monkeypatch.setattr(cli, "_write", interrupted)
+    code, out, err = run([] if stage == "off" else ["--request", "relative.json", "--enable"], capsys)
+    assert code == 1 and out == "" and err == "" and len(calls) == 1
+
+
+@needs_windows
+@pytest.mark.parametrize("code_in", [1, 2, 64, 125])
+def test_a_conventional_exit_code_from_one_to_125_is_still_propagated(tmp_path, capsys, monkeypatch, code_in):
+    request, sources, target = synthetic(tmp_path)
+    module()
+    from tools import wd_q4_fixed_plan_producer
+
+    def interrupted(**kwargs):
+        raise SystemExit(code_in)
+    monkeypatch.setattr(wd_q4_fixed_plan_producer, "build_fixed_plan", interrupted)
+    code, out, err = run(["--request", str(write_request(tmp_path, request)), "--enable"], capsys)
+    assert code == code_in and out == "" and err == ""
+
+
+CHILD = '''import sys
+sys.path.insert(0, sys.argv[2])
+from tools import wd_q4_descriptor_cli as cli
+code = int(sys.argv[1])
+
+
+def interrupted(_document):
+    raise SystemExit(code)
+
+
+cli._request = lambda _path: {}
+cli._compose = interrupted
+sys.exit(cli.main(["--request", "C:\\\\x\\\\request.json", "--enable"]))
+'''
+
+
+@needs_windows
+@pytest.mark.parametrize("code_in", [-1, -130, 0])
+def test_a_windows_batch_caller_testing_errorlevel_one_sees_the_failure(tmp_path, code_in):
+    child = tmp_path / "child.py"
+    child.write_text(CHILD, encoding="ascii")
+    batch = tmp_path / "caller.cmd"
+    batch.write_text('@echo off\r\n"' + sys.executable + '" -I "' + str(child) + '" %1 "' + str(ROOT) + '"\r\n'
+                     'if errorlevel 1 (echo failure-seen) else (echo looks-successful)\r\n', encoding="ascii")
+    proc = subprocess.run(["cmd.exe", "/d", "/c", str(batch), str(code_in)], capture_output=True, text=True,
+                          timeout=120, cwd=str(tmp_path))
+    assert proc.stdout.strip().splitlines()[-1] == "failure-seen", proc.stdout + proc.stderr
+
+
+def test_the_docstring_separates_the_off_line_from_the_descriptor_pair_and_states_the_exit_range():
+    doc = module().__doc__
+    for phrase in ("exact integer from 1 to 125", "errorlevel 1", "the OFF line when", "the descriptor pair only when",
+                   "partial line on stdout", "accepts output only with exit 0"):
+        assert phrase in doc, phrase
+    assert "exit 0 always means the pair was printed" not in doc

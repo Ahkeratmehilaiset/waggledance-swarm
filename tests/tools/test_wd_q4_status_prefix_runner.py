@@ -795,3 +795,125 @@ def test_real_fenced_child_two_renewable_updates(case, monkeypatch, fault):
     with ps.locked_state(private, checkpoint, enabled=True) as locked:
         locked.require(result2["pointer_sha256"], prefix2)
     assert not (private / ps._PENDING).exists() and not (checkpoint / cp.FENCE).exists()
+
+
+# Late-public genesis (lead-mind-genesis-late-public-20261106-v1): a genesis cursor past offset zero is admitted only
+# when it is bound to the private skip receipt the genesis bootstrap writes after verified empty bounded windows.
+def skip_route(case, *, offset=7, prefix="d" * 64, receipt=None, write=True, extra=None):
+    runner, _, route, _, private, _ = case
+    value = {"schema": "wd.q4-genesis-skip.v1", "file_identity": route["cursor"]["file_identity"],
+             "generation": route["cursor"]["generation"], "policy_sha256": route["policy_sha256"],
+             "roster_sha256": route["roster_sha256"], "public_policy_sha256": route["public_policy_sha256"],
+             "offset": offset, "prefix_sha256": prefix, "previous_sha256": None, "runs": 1, **(receipt or {})}
+    raw = encode(value)
+    if write:
+        (private / "q4-genesis-skip-v1.json").write_bytes(raw)
+    skipped = dict(route, cursor={**route["cursor"], "offset": offset}, prefix_sha256=prefix,
+                   cutoff_utc="2026-10-31T13:00:00Z", batch_rows=True, genesis_skip_sha256=sha(raw))
+    skipped.update(extra or {})
+    return skipped, raw
+
+
+def test_genesis_skip_receipt_admits_a_nonzero_genesis_cursor(case):
+    runner, args, _, checkpoint, private, monkeypatch = case
+    route, raw = skip_route(case)
+    calls = []
+    def child(*, batch_rows=False, **kwargs):
+        calls.append(kwargs)
+        return dict(child_report(), plan_sha256=route["plan_sha256"], coverage="partial_ready_prefix")
+    fake_child(monkeypatch, child)
+    assert runner.run_once(**args(route))["status"] == "PUBLISHED_GENESIS"
+    assert len(calls) == 1 and calls[0]["start_prefix"].cursor.offset == 7
+    assert calls[0]["start_prefix"].sha256 == "d" * 64
+    assert calls[0]["config"].source.cursor == calls[0]["start_prefix"].cursor
+    assert json.loads(calls[0]["plan_bytes"])["expected_pointer_sha256"] is None
+    assert (private / "q4-genesis-skip-v1.json").read_bytes() == raw
+
+
+def test_nonzero_genesis_cursor_without_a_skip_receipt_binding_is_still_refused(case):
+    runner, args, route, checkpoint, private, monkeypatch = case
+    # The child accepts batch_rows, so only the missing receipt binding can refuse this route.
+    def child(*, batch_rows=False, **kwargs):
+        pytest.fail("child must not be entered")
+    fake_child(monkeypatch, child)
+    bare = dict(route, cursor={**route["cursor"], "offset": 7}, prefix_sha256="d" * 64,
+                cutoff_utc="2026-10-31T13:00:00Z", batch_rows=True)
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**args(bare))
+    assert list(checkpoint.iterdir()) == [] and list(private.iterdir()) == []
+
+
+@pytest.mark.parametrize("fault", ["missing", "directory", "receipt_pin", "offset", "prefix", "identity", "generation",
+                                   "policy", "roster", "public_policy", "zero_offset", "noncanonical", "extra_field",
+                                   "previous", "runs", "bool_offset", "oversize", "continuation", "no_batch",
+                                   "in_checkpoint_root"])
+def test_genesis_skip_binding_faults_refuse_before_child_or_marker(case, fault):
+    runner, args, base, checkpoint, private, monkeypatch = case
+    # The child accepts batch_rows, so each fault is refused by the receipt binding itself, not by the child check.
+    def child(*, batch_rows=False, **kwargs):
+        pytest.fail("child must not be entered")
+    fake_child(monkeypatch, child)
+    receipt_path = private / "q4-genesis-skip-v1.json"
+    kw = None
+    if fault == "missing":
+        route, _ = skip_route(case, write=False)
+    elif fault == "directory":
+        route, _ = skip_route(case, write=False)
+        receipt_path.mkdir()
+    elif fault == "receipt_pin":
+        route, _ = skip_route(case, extra={"genesis_skip_sha256": "e" * 64})
+    elif fault in ("offset", "prefix", "identity", "generation", "policy", "roster", "public_policy"):
+        changed = {"offset": {"offset": 8}, "prefix": {"prefix_sha256": "e" * 64},
+                   "identity": {"file_identity": "windows-v1:12345678:fedcba9876543210"},
+                   "generation": {"generation": "gen-2"}, "policy": {"policy_sha256": "e" * 64},
+                   "roster": {"roster_sha256": "e" * 64}, "public_policy": {"public_policy_sha256": "e" * 64}}[fault]
+        route, _ = skip_route(case, receipt=changed)
+    elif fault == "zero_offset":
+        route, _ = skip_route(case, offset=0, prefix=sha(b""))
+    elif fault in ("noncanonical", "extra_field", "previous", "runs", "bool_offset", "oversize"):
+        route, raw = skip_route(case)
+        value = json.loads(raw)
+        if fault == "noncanonical":
+            raw = json.dumps(value, sort_keys=True, indent=1).encode("ascii")
+        else:
+            value.update({"extra_field": {"extra": 1}, "previous": {"previous_sha256": "x"}, "runs": {"runs": 0},
+                          "bool_offset": {"offset": True},
+                          "oversize": {"previous_sha256": None, "pad": "p" * 5000}}[fault])
+            raw = encode(value)
+        receipt_path.write_bytes(raw)
+        route = dict(route, genesis_skip_sha256=sha(raw))
+    elif fault == "continuation":
+        route, _ = skip_route(case)
+        kw = args(route)
+        plan = json.loads(kw["plan_bytes"])
+        plan["expected_pointer_sha256"] = "c" * 64
+        kw["plan_bytes"] = encode(plan)
+        route = dict(route, plan_sha256=sha(kw["plan_bytes"]))
+        kw.update(route_bytes=encode(route), expected_route_sha256=sha(encode(route)))
+    elif fault == "no_batch":
+        route, _ = skip_route(case)
+        del route["batch_rows"]
+    elif fault == "in_checkpoint_root":
+        route, raw = skip_route(case, write=False)
+        (checkpoint / "q4-genesis-skip-v1.json").write_bytes(raw)
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**(kw or args(route)))
+    assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
+
+
+def test_genesis_skip_receipt_parser_is_strict_and_canonical(runner):
+    value = {"schema": "wd.q4-genesis-skip.v1", "file_identity": "windows-v1:12345678:0123456789abcdef",
+             "generation": "gen-1", "policy_sha256": "a" * 64, "roster_sha256": "b" * 64,
+             "public_policy_sha256": "c" * 64, "offset": 7, "prefix_sha256": "d" * 64, "previous_sha256": None,
+             "runs": 1}
+    raw = encode(value)
+    assert runner._genesis_skip(raw) == value
+    for bad in (raw + b"\n", raw.replace(b'"runs":1', b'"runs":1,"runs":2'), b"", b"[]",
+                encode(dict(value, schema="wd.q4-genesis-skip.v2")), encode(dict(value, offset=2**31 * 2**30)),
+                encode(dict(value, extra=1)), encode(dict(value, previous_sha256="x")),
+                encode(dict(value, previous_sha256=7)), encode(dict(value, runs=0)), encode(dict(value, runs=True)),
+                encode(dict(value, offset=True)), encode(dict(value, offset=0)),
+                encode(dict(value, file_identity="windows-v1:short")), encode(dict(value, generation="")),
+                encode(dict(value, prefix_sha256="D" * 64)), b"{" + b" " * 4100 + b"}"):
+        with pytest.raises(ValueError):
+            runner._genesis_skip(bad)

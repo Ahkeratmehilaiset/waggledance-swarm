@@ -57,7 +57,7 @@ def test_active_snapshot_default_off_and_individual_and_combined_budget(monkeypa
     contents, pins = _case()
     with pytest.raises(checkpoint.CheckpointRefused):
         checkpoint._bind_active_artifact_bytes(contents, expected_hashes=pins)
-    monkeypatch.setattr(checkpoint, "_MAX_ACTIVE_ARTIFACT_BYTES", 1, raising=False)
+    monkeypatch.setattr(checkpoint._preflight_contract, "_MAX_ACTIVE_ARTIFACT_BYTES", 1, raising=False)
     with pytest.raises(checkpoint.CheckpointRefused):
         checkpoint._bind_active_artifact_bytes(contents, expected_hashes=pins, enabled=True)
 
@@ -71,18 +71,18 @@ def test_active_snapshot_uses_frozen_copy_during_hashing(monkeypatch):
         contents["memory.json"] = b"changed-after-copy"
         return real_sha(data)
 
-    monkeypatch.setattr(checkpoint, "_sha", hash_with_swap)
+    monkeypatch.setattr(checkpoint._preflight_contract, "_sha", hash_with_swap)
     result = checkpoint._bind_active_artifact_bytes(contents, expected_hashes=pins, enabled=True)
     assert result.read("memory.json") == original
 
 
 def test_active_snapshot_accepts_exact_budgets(monkeypatch):
     contents, pins = _case()
-    monkeypatch.setattr(checkpoint, "_MAX_ACTIVE_ARTIFACT_BYTES", max(map(len, contents.values())))
-    monkeypatch.setattr(checkpoint, "_MAX_ACTIVE_SNAPSHOT_BYTES", sum(map(len, contents.values())))
+    monkeypatch.setattr(checkpoint._preflight_contract, "_MAX_ACTIVE_ARTIFACT_BYTES", max(map(len, contents.values())))
+    monkeypatch.setattr(checkpoint._preflight_contract, "_MAX_ACTIVE_SNAPSHOT_BYTES", sum(map(len, contents.values())))
     assert checkpoint._bind_active_artifact_bytes(contents, expected_hashes=pins, enabled=True).read("memory.json")
-    monkeypatch.setattr(checkpoint, "_MAX_ACTIVE_ARTIFACT_BYTES", 1024)
-    monkeypatch.setattr(checkpoint, "_MAX_ACTIVE_SNAPSHOT_BYTES", sum(map(len, contents.values())) - 1, raising=False)
+    monkeypatch.setattr(checkpoint._preflight_contract, "_MAX_ACTIVE_ARTIFACT_BYTES", 1024)
+    monkeypatch.setattr(checkpoint._preflight_contract, "_MAX_ACTIVE_SNAPSHOT_BYTES", sum(map(len, contents.values())) - 1, raising=False)
     with pytest.raises(checkpoint.CheckpointRefused):
         checkpoint._bind_active_artifact_bytes(contents, expected_hashes=pins, enabled=True)
 

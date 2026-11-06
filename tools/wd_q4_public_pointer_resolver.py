@@ -27,7 +27,7 @@ _NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
 _ARTIFACT_KEYS = frozenset({"descriptor_sha256", "memory_sha256", "projection_sha256", "receipt_sha256"})
 _VIEW_KEYS = frozenset({"pointer_sha256", "generation", "artifacts", "anchor_sha256",
                         "cursor_end_sha256", "watermark_sha256"})
-_PUBLIC_AGENTS = frozenset({"codex-lead-1", "codex-tools-1", "fable-5"})
+_PUBLIC_AGENTS = checkpoint._preflight_contract.PUBLIC_AGENTS
 
 
 def _pin(value):

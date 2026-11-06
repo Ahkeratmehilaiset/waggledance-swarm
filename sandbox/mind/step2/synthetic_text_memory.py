@@ -24,8 +24,16 @@ pieces, and it is restricted to SYNTHETIC input:
 * an answer cites each result by its record reference and returns the record's stored text from the projection
   that ``memory.json`` binds (cited retrieval); the situation text is never stored or returned.
 
-A reference is the sha256 of the record's projected fields and stored text, not a canonical bridge event id; it
-proves which synthetic record answered, not who wrote it. The refusal rules are a review surface, not a proof that
+A reference is the sha256 of the record's projected fields, stored text and source event ref; it proves which
+synthetic record answered, not who wrote it. Canonical provenance (v2): every record also carries
+``source_event_ref``, the existing canonical event id (``tools.bridge_compact_view.event_id``) of the whole source
+event, and every answer returns it. ``verify_synthetic_sources`` reads one frozen synthetic source prefix with the
+existing pinned prefix reader (``bridge_log_reader.read_bridge_log``, chained prefix pins from offset 0 to the end
+cursor, final prefix sha256, file identity and generation rechecked), refuses the whole call when any row in it is
+not synthetic, and proves for every record that a row with that canonical id exists in the prefix and re-projects to
+exactly that record. ``ask_synthetic_text(..., source=...)`` runs that check before answering. A match proves that
+the exact rows occur in that pinned prefix; it does not prove who wrote them, later supersession or complete
+history (completeness UNKNOWN); no row content is returned. The refusal rules are a review surface, not a proof that
 free text is safe. No policy, live data, launcher, installer or production path is touched.
 """
 import hashlib
@@ -36,6 +44,7 @@ from pathlib import Path
 
 from sandbox.mind.step2 import corpus as corpus_mod
 from sandbox.mind.step2 import shared_projection as sp
+from tools.bridge_compact_view import event_id
 
 SCHEMA = "wd.mind-synthetic-text-projection.v1"
 SCOPE = "wd.mind-synthetic-text-events.v1"
@@ -48,6 +57,9 @@ RECORD_KEYS = frozenset({"record_id", "kind", "time_utc", "available_utc", "stor
                          "provenance"})
 META_KEYS = frozenset({"type", "status", "agent", "task_id", "text_cut"})
 MAX_EVENTS = 4096
+MAX_SOURCE_BYTES = 64 * 1024 * 1024
+SOURCE_PAGE = 16 * 1024 * 1024
+SOURCE_KEYS = frozenset({"source_path", "generation_path", "end_cursor", "expected_prefix_sha256"})
 REFUSE_LINE = (
     re.compile(r"(?i)(?<![a-z0-9])[a-z]:[\\/]"),  # a drive path
     re.compile(r"\\\\"),  # a UNC path or an escaped backslash pair
@@ -104,26 +116,30 @@ def _head_fields(meta, time_utc):
 
 
 def record_ref(record):
-    """sha256 of the record's projected fields and its stored text (canonical JSON)."""
+    """sha256 of the record's projected fields, stored text and canonical source event ref (canonical JSON)."""
     fields = _head_fields(record["meta"], record["time_utc"])
-    raw = json.dumps({"fields": fields, "text": record["stored_text"]}, sort_keys=True, separators=(",", ":"),
-                     ensure_ascii=False).encode("utf-8")
+    raw = json.dumps({"fields": fields, "text": record["stored_text"],
+                      "source": record["provenance"]["source_event_ref"]},
+                     sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
 
-def _record(fields, body, cut):
+def _record(fields, body, cut, source_ref):
+    if not isinstance(source_ref, str) or sp.HEX64.fullmatch(source_ref) is None:
+        raise ValueError()
     text = sp.head_line(fields) + "\n" + body
     available = sp._available(fields["ts_utc"])
     record = {"record_id": None, "kind": "event", "time_utc": fields["ts_utc"], "available_utc": available,
               "stored_text": text, "summary": text,
               "meta": {"type": fields["type"], "status": fields["status"], "agent": fields["agent"],
                        "task_id": fields["task_id"], "text_cut": cut},
-              "provenance": None}
+              "provenance": {"source_event_ref": source_ref}}
     ref = record_ref(record)
     record["record_id"] = "text:" + ref
     record["provenance"] = {"source_kind": "synthetic_projected_text", "event_ref": ref,
                             "ref_kind": "sha256_of_projected_metadata", "canonical_event": False,
-                            "tier": {"source_type": "bridge_event"}, "available_utc": available}
+                            "tier": {"source_type": "bridge_event"}, "available_utc": available,
+                            "source_event_ref": source_ref}
     return record
 
 
@@ -163,7 +179,7 @@ def project_synthetic_text(events, *, enabled=False):
         if not body.strip():
             refuse("text_guarded")
             continue
-        records.append(_record(fields, body, cut))
+        records.append(_record(fields, body, cut, event_id(event)))
     out = {"schema": SCHEMA, "authority": "none", "scope": SCOPE, "synthetic": True, "accepted": len(records),
            "refused": dict(sorted(refused.items())), "records": records}
     corpus_mod.ws.guard_object(out)
@@ -189,7 +205,7 @@ def validate_projection(projection):
             fields = _head_fields(meta, record["time_utc"])
             head = sp.head_line(fields) + "\n"
             body = record["stored_text"][len(head):]
-            expected = _record(fields, body, meta["text_cut"])
+            expected = _record(fields, body, meta["text_cut"], record["provenance"]["source_event_ref"])
             if (record != expected or not record["stored_text"].startswith(head) or not body.strip()
                     or kept_text(body)[0] != body):
                 raise ValueError()
@@ -281,6 +297,81 @@ def build_synthetic_text_memory(projection, encode, identity, dim, root, name, *
             "descriptor": descriptor, "records": len(records)}
 
 
+def _read_prefix(source_path, generation_path, end_cursor, expected_prefix_sha256):
+    """canonical event id -> row for every row of the pinned prefix 0..end_cursor; the existing reader pins it."""
+    import hmac
+    from waggledance.core import bridge_log_reader as bridge
+    if (type(source_path) is not str or not os.path.isabs(source_path)
+            or type(generation_path) is not str or not os.path.isabs(generation_path)
+            or type(end_cursor) is not bridge.BridgeCursor or bridge._validate_cursor(end_cursor)
+            or type(end_cursor.offset) is not int or not 0 < end_cursor.offset <= MAX_SOURCE_BYTES
+            or type(expected_prefix_sha256) is not str or sp.HEX64.fullmatch(expected_prefix_sha256) is None):
+        raise ValueError()
+    cursor = bridge.BridgeCursor(0, end_cursor.file_identity, end_cursor.generation)
+    prefix_sha = hashlib.sha256(b"").hexdigest()
+    rows, pages = {}, 0
+    while True:
+        pages += 1
+        if pages > MAX_SOURCE_BYTES // SOURCE_PAGE + 1:
+            raise ValueError()
+        read = bridge.read_bridge_log(source_path, cursor=cursor, max_bytes=min(SOURCE_PAGE, end_cursor.offset -
+                                      cursor.offset), max_rows=MAX_EVENTS, generation_path=generation_path,
+                                      expected_prefix_sha256=prefix_sha, max_prefix_bytes=MAX_SOURCE_BYTES)
+        if (not isinstance(read, bridge.BridgePrefixReadResult)
+                or read.status not in (bridge.BridgeReadStatus.OK, bridge.BridgeReadStatus.IDLE)
+                or read.snapshot_length is None or read.snapshot_length < end_cursor.offset
+                or read.candidate_cursor is None or read.candidate_prefix is None):
+            raise ValueError()
+        for row in read.rows:
+            if (not isinstance(row, dict) or not isinstance(row.get("task_id"), str)
+                    or SYNTHETIC_TASK.fullmatch(row["task_id"]) is None):
+                raise TextRefused("live_input_refused")
+            if len(rows) >= MAX_EVENTS:
+                raise ValueError()
+            rows[event_id(row)] = row
+        nxt = read.candidate_cursor
+        if nxt.offset == end_cursor.offset:
+            if nxt != end_cursor or not hmac.compare_digest(read.candidate_prefix.sha256, expected_prefix_sha256):
+                raise ValueError()
+            with bridge._open_log(Path(source_path)) as stream:
+                if (bridge._file_identity(stream) != end_cursor.file_identity
+                        or os.fstat(stream.fileno()).st_size < end_cursor.offset):
+                    raise ValueError()
+            if bridge._read_generation(Path(generation_path)) != end_cursor.generation:
+                raise ValueError()
+            return rows
+        if nxt.offset <= cursor.offset or nxt.offset > end_cursor.offset:
+            raise ValueError()
+        cursor, prefix_sha = nxt, read.candidate_prefix.sha256
+
+
+def verify_synthetic_sources(projection, *, enabled=False, source_path=None, generation_path=None, end_cursor=None,
+                             expected_prefix_sha256=None):
+    """Every record's canonical source event occurs in the pinned synthetic prefix and re-projects to it."""
+    if not _enabled(enabled):
+        return {"status": "OFF"}
+    validate_projection(projection)
+    rows = row = None
+    try:
+        try:
+            rows = _read_prefix(source_path, generation_path, end_cursor, expected_prefix_sha256)
+        except TextRefused:
+            raise
+        except Exception:  # noqa: BLE001 - any reader refusal, OSError or shape error is one fixed token
+            raise TextRefused("source_refused") from None
+        refs = []
+        for record in projection["records"]:
+            ref = record["provenance"]["source_event_ref"]
+            row = rows.get(ref)
+            if row is None or project_synthetic_text([row], enabled=True)["records"] != [record]:
+                raise TextRefused("source_unbound")
+            refs.append(ref)
+        return {"status": "VERIFIED_WITHIN_PREFIX", "records": len(refs), "completeness": "UNKNOWN",
+                "source_event_refs": sorted(set(refs))}
+    finally:
+        del rows, row
+
+
 def _read_bounded(path, limit):
     with open(path, "rb") as handle:
         raw = handle.read(limit + 1)
@@ -289,7 +380,8 @@ def _read_bounded(path, limit):
     return raw
 
 
-def ask_synthetic_text(memory_dir, expected_memory_sha256, encoder, situation, situation_time_utc, *, enabled=False):
+def ask_synthetic_text(memory_dir, expected_memory_sha256, encoder, situation, situation_time_utc, *, enabled=False,
+                       source=None):
     """Q4 over a pinned synthetic text memory; every result cites its record and carries the stored text."""
     if not _enabled(enabled):
         return {"status": "OFF"}
@@ -316,6 +408,10 @@ def ask_synthetic_text(memory_dir, expected_memory_sha256, encoder, situation, s
         projection = validate_projection(json.loads(projection_raw))
     except ValueError:
         raise TextRefused("projection_invalid") from None
+    if source is not None:
+        if not isinstance(source, dict) or set(source) != SOURCE_KEYS:
+            raise TextRefused("source_refused")
+        verify_synthetic_sources(projection, enabled=True, **source)
     by_ref = {record["provenance"]["event_ref"]: record for record in projection["records"]}
     try:
         memory = memory_mod.Memory(memory_dir, manifest_bytes=raw)
@@ -328,7 +424,9 @@ def ask_synthetic_text(memory_dir, expected_memory_sha256, encoder, situation, s
         if record is None or record["record_id"] != result["doc_id"]:
             raise TextRefused("result_unresolved")
         results.append({"ref": result["ref"], "text": record["stored_text"], "time_utc": record["time_utc"],
-                        "cell": result["cell"], "kind": record["kind"]})
-    answer = {"status": out["status"], "reason": out["reason"], "results": results}
+                        "cell": result["cell"], "kind": record["kind"],
+                        "source_event_ref": record["provenance"]["source_event_ref"]})
+    answer = {"status": out["status"], "reason": out["reason"], "results": results,
+              "source_verified": source is not None}
     corpus_mod.ws.guard_object(answer)
     return answer

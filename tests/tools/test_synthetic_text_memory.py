@@ -164,7 +164,9 @@ def test_end_to_end_cited_retrieval(built):
     first = answer['results'][0]
     assert first['ref'] == disk['provenance']['event_ref'] and first['text'] == disk['stored_text']
     assert 'backup shadow storage' in first['text']
-    assert set(first) == {'ref', 'text', 'time_utc', 'cell', 'kind'}
+    assert set(first) == {'ref', 'text', 'time_utc', 'cell', 'kind', 'source_event_ref'}
+    assert first['source_event_ref'] == disk['provenance']['source_event_ref']
+    assert answer['source_verified'] is False
     before = stm.ask_synthetic_text(built['dir'], built['memory_sha256'], Encoder(),
                                     'where do the disk space dips on C come from', '2026-11-01T09:00:00Z',
                                     enabled=True)
@@ -215,7 +217,7 @@ def test_build_refuses_foreign_or_altered_projection(tmp_path):
 def consistent(agent=FABLE, kind='message', status='info', task='synthetic-a', body='consistent body text'):
     fields = {'ts_utc': '2026-11-01T10:00:00.000000Z', 'agent': agent, 'type': kind, 'status': status,
               'task_id': task, 'pr': None, 'head': None, 'ci': None}
-    return stm._record(fields, body, False)
+    return stm._record(fields, body, False, 'e' * 64)
 
 
 @pytest.mark.parametrize('change', ['live_task', 'review_lane', 'review_type', 'bookkeeping', 'body', 'provenance',
@@ -253,3 +255,149 @@ def test_ask_refuses_a_memory_outside_the_synthetic_scope(built):
     with pytest.raises(stm.TextRefused, match='memory_invalid'):
         stm.ask_synthetic_text(built['dir'], hashlib.sha256(raw).hexdigest(), Encoder(), 'disk space',
                                '2026-11-02T00:00:00Z', enabled=True)
+
+
+def test_records_bind_the_canonical_source_event_ref():
+    from tools.bridge_compact_view import event_id
+    events = corpus()
+    projection = stm.project_synthetic_text(events, enabled=True)
+    assert [r['provenance']['source_event_ref'] for r in projection['records']] == [event_id(e) for e in events]
+    twin = [event(FABLE, 'message', 'info', 'synthetic-a', 'same text', payload={'n': 1}),
+            event(FABLE, 'message', 'info', 'synthetic-a', 'same text', payload={'n': 2})]
+    one, two = stm.project_synthetic_text(twin, enabled=True)['records']
+    assert one['stored_text'] == two['stored_text']
+    assert one['provenance']['source_event_ref'] != two['provenance']['source_event_ref']
+    assert one['record_id'] != two['record_id']
+    bad = json.loads(json.dumps(projection))
+    bad['records'][0]['provenance']['source_event_ref'] = 'E' * 64
+    with pytest.raises(stm.TextRefused, match='projection_invalid'):
+        stm.validate_projection(bad)
+
+
+@pytest.fixture
+def source(tmp_path):
+    from waggledance.core import bridge_log_reader as bridge
+    events = corpus() + [event(LEAD, 'claim', 'active', 'synthetic-x', 'claim row', minute=40),
+                         event('claude-rco-1', 'message', 'info', 'synthetic-x', 'review row', minute=41)]
+    path, generation = tmp_path / 'events.jsonl', tmp_path / 'generation.json'
+    generation.write_bytes(json.dumps({'generation': 'synthetic-g1'}).encode())
+
+    def write(rows):
+        content = b''.join(json.dumps(row, sort_keys=True, separators=(',', ':')).encode() + b'\n' for row in rows)
+        path.write_bytes(content)
+        cursor = bridge.read_bridge_log(str(path), generation_path=str(generation)).candidate_cursor
+        return {'source_path': str(path), 'generation_path': str(generation), 'end_cursor': cursor,
+                'expected_prefix_sha256': hashlib.sha256(content).hexdigest()}
+
+    return {'events': events, 'write': write, 'path': path, 'generation': generation}
+
+
+def test_verify_is_off_by_default():
+    assert stm.verify_synthetic_sources(None) == {'status': 'OFF'}
+
+
+def test_every_record_is_verified_within_the_frozen_synthetic_prefix(source):
+    from tools.bridge_compact_view import event_id
+    pins = source['write'](source['events'])
+    projection = stm.project_synthetic_text(source['events'], enabled=True)
+    result = stm.verify_synthetic_sources(projection, enabled=True, **pins)
+    assert result == {'status': 'VERIFIED_WITHIN_PREFIX', 'records': 8, 'completeness': 'UNKNOWN',
+                      'source_event_refs': sorted(event_id(e) for e in corpus())}
+    with source['path'].open('ab') as handle:  # rows after the pinned end are not part of the frozen prefix
+        handle.write(json.dumps(event(LEAD, 'message', 'info', 'lead-live-task', 'later'), sort_keys=True).encode()
+                     + b'\n')
+    assert stm.verify_synthetic_sources(projection, enabled=True, **pins)['status'] == 'VERIFIED_WITHIN_PREFIX'
+
+
+@pytest.mark.parametrize('fault', ['missing_row', 'changed_row'])
+def test_unbound_records_refuse(source, fault):
+    events = source['events']
+    projection = stm.project_synthetic_text(events, enabled=True)
+    rows = [dict(e) for e in events]
+    if fault == 'missing_row':
+        del rows[1]
+    elif fault == 'changed_row':
+        rows[1]['message'] += ' changed'
+    pins = source['write'](rows)
+    with pytest.raises(stm.TextRefused, match='source_unbound'):
+        stm.verify_synthetic_sources(projection, enabled=True, **pins)
+
+
+def test_a_non_synthetic_row_in_the_prefix_refuses_the_whole_call(source):
+    rows = source['events'] + [event(LEAD, 'message', 'info', 'lead-live-task', 'live looking text', minute=50)]
+    pins = source['write'](rows)
+    projection = stm.project_synthetic_text(source['events'], enabled=True)
+    with pytest.raises(stm.TextRefused, match='live_input_refused'):
+        stm.verify_synthetic_sources(projection, enabled=True, **pins)
+
+
+@pytest.mark.parametrize('fault', ['prefix_pin', 'generation', 'cursor_past_end', 'relative_path', 'cursor_type'])
+def test_unpinned_source_refuses(source, fault):
+    from waggledance.core import bridge_log_reader as bridge
+    pins = source['write'](source['events'])
+    projection = stm.project_synthetic_text(source['events'], enabled=True)
+    if fault == 'prefix_pin':
+        pins['expected_prefix_sha256'] = '0' * 64
+    elif fault == 'generation':
+        source['generation'].write_bytes(json.dumps({'generation': 'synthetic-g2'}).encode())
+    elif fault == 'cursor_past_end':
+        cursor = pins['end_cursor']
+        pins['end_cursor'] = bridge.BridgeCursor(cursor.offset + 10, cursor.file_identity, cursor.generation)
+    elif fault == 'relative_path':
+        pins['source_path'] = 'events.jsonl'
+    else:
+        cursor = pins['end_cursor']
+        pins['end_cursor'] = (cursor.offset, cursor.file_identity, cursor.generation)
+    with pytest.raises(stm.TextRefused, match='source_refused'):
+        stm.verify_synthetic_sources(projection, enabled=True, **pins)
+
+
+def test_ask_can_verify_its_source_before_answering(built, source):
+    pins = source['write'](source['events'])
+    answer = stm.ask_synthetic_text(built['dir'], built['memory_sha256'], Encoder(),
+                                    'where do the disk space dips on C come from', '2026-11-02T00:00:00Z',
+                                    enabled=True, source=pins)
+    assert answer['status'] == 'ANSWER' and answer['source_verified'] is True
+    verified = stm.verify_synthetic_sources(built['projection'], enabled=True, **pins)['source_event_refs']
+    assert all(result['source_event_ref'] in verified for result in answer['results'])
+    pins['expected_prefix_sha256'] = '0' * 64
+    with pytest.raises(stm.TextRefused, match='source_refused'):
+        stm.ask_synthetic_text(built['dir'], built['memory_sha256'], Encoder(), 'disk space', '2026-11-02T00:00:00Z',
+                               enabled=True, source=pins)
+
+
+def test_a_record_claiming_a_real_source_row_with_other_text_refuses(source):
+    from tools.bridge_compact_view import event_id
+    events = source['events']
+    pins = source['write'](events)
+    projection = stm.project_synthetic_text(events, enabled=True)
+    real = projection['records'][1]
+    fields = {'ts_utc': real['time_utc'], 'agent': real['meta']['agent'], 'type': real['meta']['type'],
+              'status': real['meta']['status'], 'task_id': real['meta']['task_id'], 'pr': None, 'head': None,
+              'ci': None}
+    forged = stm._record(fields, 'a different consistent body', False, event_id(events[1]))
+    stm.validate_projection(dict(projection, records=[forged], accepted=1))
+    with pytest.raises(stm.TextRefused, match='source_unbound'):
+        stm.verify_synthetic_sources(dict(projection, records=[forged], accepted=1), enabled=True, **pins)
+
+
+@pytest.mark.parametrize('bad', ['E' * 64, 'e' * 63, None, 7])
+def test_record_refuses_a_malformed_source_ref(bad):
+    fields = {'ts_utc': '2026-11-01T10:00:00.000000Z', 'agent': FABLE, 'type': 'message', 'status': 'info',
+              'task_id': 'synthetic-a', 'pr': None, 'head': None, 'ci': None}
+    with pytest.raises(ValueError):
+        stm._record(fields, 'body', False, bad)
+
+
+@pytest.mark.parametrize('change', ['extra', 'missing', 'not_dict'])
+def test_ask_refuses_a_malformed_source_binding(built, source, change):
+    pins = source['write'](source['events'])
+    if change == 'extra':
+        pins['max_prefix_bytes'] = 1
+    elif change == 'missing':
+        del pins['generation_path']
+    else:
+        pins = list(pins.items())
+    with pytest.raises(stm.TextRefused, match='source_refused'):
+        stm.ask_synthetic_text(built['dir'], built['memory_sha256'], Encoder(), 'disk space', '2026-11-02T00:00:00Z',
+                               enabled=True, source=pins)

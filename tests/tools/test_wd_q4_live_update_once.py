@@ -336,6 +336,25 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
             recovery.recover(**kwargs)
         assert marker_path.read_bytes() == marker_raw
         open_fence.unlink()  # Only the synthetic fault introduced by this test.
+        publish = update._publish
+        def publish_then_interrupt(*args, **kwargs):
+            publish(*args, **kwargs)
+            raise OSError('synthetic interruption after selector')
+        with monkeypatch.context() as scoped:
+            scoped.setattr(update, '_publish', publish_then_interrupt)
+            with pytest.raises(recovery.RecoveryOutcomeUnknown):
+                recovery.recover(**kwargs)
+        assert marker_path.read_bytes() == marker_raw
+        verify_own = state['runner']._verify_own
+        def receipt_then_interrupt(path, data, info):
+            verify_own(path, data, info)
+            if Path(path).name.startswith('q4-live-job-reconciled-'):
+                raise OSError('synthetic interruption after reconciliation receipt')
+        with monkeypatch.context() as scoped:
+            scoped.setattr(state['runner'], '_verify_own', receipt_then_interrupt)
+            with pytest.raises(recovery.RecoveryOutcomeUnknown):
+                recovery.recover(**kwargs)
+        assert marker_path.read_bytes() == marker_raw
         result = recovery.recover(**kwargs)
         assert result['status'] == 'PUBLISHED' and result['pointer_sha256'] == target
         assert not marker_path.exists()

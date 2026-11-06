@@ -68,6 +68,12 @@ def call(s):
         descriptor_sha256=sha(s['descriptor_path'].read_bytes()), enabled=True)
 
 
+def prepare(s):
+    return subject.prepare_staged_descriptor_pointer(expected_bundle=str(s['bundle']), expected_commit='a' * 40,
+        expected_manifest_sha256=sha(s['manifest']).upper(), generations_root=str(s['genroot']),
+        generation='b' * 40, descriptor_sha256=sha(s['descriptor_path'].read_bytes()), enabled=True)
+
+
 def test_off_without_access():
     assert subject.write_descriptor_pointer() == {'status': 'OFF'}
 
@@ -187,3 +193,82 @@ def test_state_changed_after_temp_write_is_unknown(setup, monkeypatch):
     with pytest.raises(subject.PointerOutcomeUnknown):
         call(setup)
     assert setup['pointer'].read_bytes() == b'previous'
+
+
+def test_staged_is_default_off():
+    assert subject.prepare_staged_descriptor_pointer() == {'status': 'OFF'}
+
+
+def test_staged_ignores_old_active_state_and_never_writes(setup, monkeypatch):
+    setup['state']['final_commit'] = 'e' * 40
+    setup['state_path'].write_bytes(raw(setup['state']))
+    paths = [p for root in (setup['machine'], setup['bundle'], setup['gen']) for p in root.iterdir() if p.is_file()]
+    before = {p: p.read_bytes() for p in paths}
+    read = subject._read
+    def no_current_access(path, limit):
+        assert path not in (setup['state_path'], setup['pointer'])
+        return read(path, limit)
+    monkeypatch.setattr(subject, '_read', no_current_access)
+    result = prepare(setup)
+    assert result['status'] == 'PREPARED'
+    assert result['pointer_sha256'] == sha(result['pointer_bytes'])
+    assert json.loads(result['pointer_bytes'])['bundle_commit'] == 'a' * 40
+    assert all(p.read_bytes() == contents for p, contents in before.items())
+    assert sorted(p.name for p in setup['machine'].iterdir()) == ['WD_Q4_DESCRIPTOR_CURRENT.json',
+                                                                  'WD_REBOOT_STATE_CURRENT.json']
+
+
+def test_staged_bytes_equal_active_pointer_for_same_tuple(setup):
+    prepared = prepare(setup)
+    written = call(setup)
+    assert setup['pointer'].read_bytes() == prepared['pointer_bytes']
+    assert written['pointer_sha256'] == prepared['pointer_sha256']
+
+
+@pytest.mark.parametrize('field,value', [('bundle_root', 'C:\\foreign'), ('fleet_sha256', 'f' * 64),
+                                           ('binding_sha256', 'f' * 64)])
+def test_staged_rejects_foreign_or_invalid_descriptor(setup, field, value):
+    setup['descriptor'][field] = value
+    setup['descriptor_path'].write_bytes(raw(setup['descriptor']))
+    with pytest.raises(subject.PointerRefused):
+        prepare(setup)
+    assert setup['pointer'].read_bytes() == b'previous'
+
+
+def test_staged_rejects_binding_manifest_mismatch(setup):
+    setup['binding']['manifest_sha256'] = 'e' * 64
+    blob = raw(setup['binding'])
+    (setup['gen'] / 'lane-binding.v1.json').write_bytes(blob)
+    setup['descriptor']['binding_sha256'] = sha(blob)
+    setup['descriptor_path'].write_bytes(raw(setup['descriptor']))
+    with pytest.raises(subject.PointerRefused):
+        prepare(setup)
+    assert setup['pointer'].read_bytes() == b'previous'
+
+
+def test_staged_rejects_unpinned_manifest(setup):
+    setup['manifest'] = b'different expected manifest'
+    with pytest.raises(subject.PointerRefused):
+        prepare(setup)
+
+
+def test_staged_rejects_changed_input_between_checks(setup, monkeypatch):
+    verify = subject._verify
+    count = 0
+    def changed(**kwargs):
+        nonlocal count
+        count += 1
+        if count == 2:
+            setup['descriptor_path'].write_bytes(b'changed')
+        return verify(**kwargs)
+    monkeypatch.setattr(subject, '_verify', changed)
+    with pytest.raises(subject.PointerRefused):
+        prepare(setup)
+    assert setup['pointer'].read_bytes() == b'previous'
+
+
+def test_staged_reparse_is_refused(setup, monkeypatch):
+    orig = subject._is_reparse
+    monkeypatch.setattr(subject, '_is_reparse', lambda path, info: path == setup['gen'] or orig(path, info))
+    with pytest.raises(subject.PointerRefused):
+        prepare(setup)

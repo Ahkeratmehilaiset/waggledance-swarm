@@ -8,6 +8,12 @@ Path checks and replacement are separate calls: a concurrent same-user adversary
 swap files or junctions in between. This is not an ACL or TOCTOU security boundary.
 An interrupted publish has UNKNOWN outcome; inspect before any retry. No files are
 removed on failure. The installer must separately pin the resulting pointer digest.
+
+The separate staged-target preparation reads independently pinned candidate bytes,
+returns the exact pointer bytes and their digest, and does not read or write either
+CURRENT pointer. A digest is not installation authority or proof of activation. Its
+caller may save these bytes in its audit staging; an installer must validate the
+tuple and authorization again at installation time.
 """
 import ctypes
 import hashlib
@@ -113,29 +119,33 @@ def _atomic_replace(source, destination):
 
 
 def _verify(*, state_path, expected_bundle, expected_commit, expected_manifest_sha256,
-            generations_root, generation, descriptor_sha256):
-    state_path, bundle, root = map(_absolute, (state_path, expected_bundle, generations_root))
-    if (state_path.name != 'WD_REBOOT_STATE_CURRENT.json' or not _HEX40.fullmatch(expected_commit or '')
+            generations_root, generation, descriptor_sha256, staged=False):
+    bundle, root = map(_absolute, (expected_bundle, generations_root))
+    state_path = None if staged else _absolute(state_path)
+    if ((not staged and state_path.name != 'WD_REBOOT_STATE_CURRENT.json') or not _HEX40.fullmatch(expected_commit or '')
             or not _HEX_UPPER.fullmatch(expected_manifest_sha256 or '') or not _GEN.fullmatch(generation or '')
             or not _HEX64.fullmatch(descriptor_sha256 or '')):
         raise PointerRefused('input_refused')
-    target = state_path.parent / 'WD_Q4_DESCRIPTOR_CURRENT.json'
-    for parent in (bundle, root):
-        if os.path.commonpath((str(target), str(parent))) == str(parent):
-            raise PointerRefused('path_refused')
+    target = None if staged else state_path.parent / 'WD_Q4_DESCRIPTOR_CURRENT.json'
+    if target is not None:
+        for parent in (bundle, root):
+            if os.path.commonpath((str(target), str(parent))) == str(parent):
+                raise PointerRefused('path_refused')
     _chain(bundle)
     _chain(root)
     if not bundle.is_dir() or not root.is_dir():
         raise PointerRefused('path_refused')
-    state_raw = _read(state_path, 65536)
-    state = _json(state_raw)
     manifest_path, fleet_path = bundle / 'deployment-manifest.json', bundle / 'wd-fleet.json'
-    if (state.get('schema_version') != 1 or state.get('source_commit') != expected_commit
-            or state.get('final_commit') != expected_commit or not _same(state.get('active_bundle', ''), bundle)
-            or not _same(state.get('fleet_manifest', ''), fleet_path)
-            or state.get('manifest_sha256') != expected_manifest_sha256
-            or state.get('final_manifest_sha256') != expected_manifest_sha256):
-        raise PointerRefused('state_refused')
+    state_raw = None
+    if not staged:
+        state_raw = _read(state_path, 65536)
+        state = _json(state_raw)
+        if (state.get('schema_version') != 1 or state.get('source_commit') != expected_commit
+                or state.get('final_commit') != expected_commit or not _same(state.get('active_bundle', ''), bundle)
+                or not _same(state.get('fleet_manifest', ''), fleet_path)
+                or state.get('manifest_sha256') != expected_manifest_sha256
+                or state.get('final_manifest_sha256') != expected_manifest_sha256):
+            raise PointerRefused('state_refused')
     manifest_raw = _read(manifest_path, 4 * 1024 * 1024)
     manifest = _json(manifest_raw)
     if (_sha(manifest_raw).upper() != expected_manifest_sha256 or manifest.get('source_commit') != expected_commit
@@ -170,7 +180,7 @@ def _verify(*, state_path, expected_bundle, expected_commit, expected_manifest_s
             or binding['manifest_sha256'] != expected_manifest_sha256.lower()
             or binding['wrapper_sha256'] != _sha(wrapper_raw)):
         raise PointerRefused('binding_refused')
-    if os.path.lexists(target):
+    if target is not None and os.path.lexists(target):
         _chain(target)
         if not target.is_file():
             raise PointerRefused('path_refused')
@@ -181,6 +191,27 @@ def _verify(*, state_path, expected_bundle, expected_commit, expected_manifest_s
     if len(blob) > 4096:
         raise PointerRefused('size_refused')
     return target, blob, state_raw
+
+
+def prepare_staged_descriptor_pointer(*, enabled=False, expected_bundle=None, expected_commit=None,
+                                      expected_manifest_sha256=None, generations_root=None, generation=None,
+                                      descriptor_sha256=None):
+    """Prepare pinned bytes only; no active-state access, authority, publication or writes."""
+    if enabled is False:
+        return {'status': 'OFF'}
+    if enabled is not True:
+        raise PointerRefused('input_refused')
+    try:
+        kwargs = dict(state_path=None, expected_bundle=expected_bundle, expected_commit=expected_commit,
+                      expected_manifest_sha256=expected_manifest_sha256, generations_root=generations_root,
+                      generation=generation, descriptor_sha256=descriptor_sha256, staged=True)
+        _, blob, _ = _verify(**kwargs)
+        _, rechecked, _ = _verify(**kwargs)
+        if blob != rechecked:
+            raise PointerRefused('verification_refused')
+    except Exception:
+        raise PointerRefused('verification_refused') from None
+    return {'status': 'PREPARED', 'pointer_bytes': blob, 'pointer_sha256': _sha(blob)}
 
 
 def write_descriptor_pointer(*, enabled=False, state_path=None, expected_bundle=None, expected_commit=None,

@@ -78,3 +78,33 @@ def test_once_cli_forwards_the_host_attempt_without_replacing_it(monkeypatch, ca
     assert update.main(["--once", "--config", "synthetic", "--sha256", "a" * 64,
                         "--host-attempt", "b" * 64]) == 0
     assert received[0]["host_attempt"] == "b" * 64
+
+
+@pytest.mark.parametrize("damage", ["none", "missing", "wrong_attempt", "cleanup_unknown", "helper_mismatch"])
+def test_job_attestation_requires_exact_attempt_and_confirmed_cleanup(tmp_path, damage):
+    from tools import wd_q4_live_update_recovery as recovery
+    from tools import wd_q4_live_update_once as update
+
+    attempt, config, helper = "a" * 64, "b" * 64, "c" * 64
+    intent = update._encode({"schema": "wd.q4-live-update-intent.v1", "attempt": attempt})
+    intent_sha = update._sha(intent)
+    marker = update._encode({"attempt": attempt, "intent_sha256": intent_sha, "config_sha256": config})
+    reservation = update._encode({"schema": "wd.q4-live-runner-reservation.v1", "attempt": attempt,
+                                  "token": "d" * 64, "intent_sha256": intent_sha})
+    (tmp_path / ("q4-live-runner-reservation-" + attempt + ".json")).write_bytes(reservation)
+    record = {"schema": "wd.q4-live-job-result.v1", "attempt": attempt, "config_sha256": config,
+              "intent_sha256": intent_sha, "marker_sha256": update._sha(marker),
+              "reservation_sha256": update._sha(reservation), "job_helper_sha256": helper,
+              "cleanup": "confirmed", "child_outcome": "completed", "exit_code": 3}
+    if damage == "wrong_attempt": record["attempt"] = "e" * 64
+    if damage == "cleanup_unknown": record["cleanup"] = "unknown"
+    if damage == "helper_mismatch": record["job_helper_sha256"] = "f" * 64
+    raw = update._encode(record)
+    if damage != "missing":
+        (tmp_path / ("q4-live-job-result-" + attempt + ".json")).write_bytes(raw)
+    args = (tmp_path, attempt, config, intent_sha, marker, update._sha(raw), helper)
+    if damage == "none":
+        assert recovery._verify_job_attestation(*args) == json.loads(reservation)
+    else:
+        with pytest.raises(recovery.RecoveryOutcomeUnknown):
+            recovery._verify_job_attestation(*args)

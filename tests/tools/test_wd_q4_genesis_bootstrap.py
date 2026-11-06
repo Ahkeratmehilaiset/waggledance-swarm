@@ -13,6 +13,9 @@ from tools import wd_q4_genesis_bootstrap as genesis
 from tools import wd_q4_status_prefix_runner as runner
 
 
+REAL_PRESCAN = getattr(genesis, "_prescan_public_rows", None)
+
+
 def raw(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
@@ -62,6 +65,8 @@ def synthetic(tmp_path, monkeypatch):
     child._real_accessor = checkpoint_module.read_verified_prefix_pointer
     monkeypatch.setattr(checkpoint_module, "read_verified_prefix_pointer",
                         lambda *a, **k: ({"anchor_sha256": sha(calls[-1]["config"].source.anchor_bytes)}, published[-1]))
+    # The fixture's one-line log is no bridge event; F2 tests and the real-producer tests use the real pre-scan.
+    monkeypatch.setattr(genesis, "_prescan_public_rows", lambda *args, **kwargs: None, raising=False)
     args = dict(enabled=True, source_path=str(log), generation_path=str(side / "mind-generation.json"),
                 generation="synthetic-generation", checkpoint_root=str(checkpoint), private_state_root=str(private),
                 trusted_model_root=str(model), policy_bytes=policy, policy_sha256=sha(policy),
@@ -441,6 +446,7 @@ def test_actual_producer_checkpoint_and_partial_continuation(synthetic, monkeypa
     child = fake._actual
     monkeypatch.setitem(sys.modules, fake.__name__, child)
     monkeypatch.setattr(checkpoint_module, "read_verified_prefix_pointer", fake._real_accessor)
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
     monkeypatch.setattr(child, "_encoder", lambda encoder, identity:
                         lambda texts: np.ones((len(texts), 384), dtype=np.float32) / np.sqrt(384))
     model = Path(args["trusted_model_root"])
@@ -526,6 +532,7 @@ def test_real_batched_genesis_and_fenced_continuations_cover_every_row(synthetic
         pytest.skip("batch-capable child commit not yet integrated")
     monkeypatch.setitem(sys.modules, fake.__name__, child)
     monkeypatch.setattr(checkpoint_module, "read_verified_prefix_pointer", fake._real_accessor)
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
     statuses = ("requested", "answered", "milestone", "info", "handoff", "done", "delivered")
     def vector(text):
         value = np.zeros(384, dtype=np.float32)
@@ -668,3 +675,154 @@ def test_real_batched_genesis_and_fenced_continuations_cover_every_row(synthetic
     two = shared_projection._record(fields)
     assert one["stored_text"] == two["stored_text"] and one["record_id"] != two["record_id"]
     assert q4.RULE["shown_max"] == 3 and q4.RULE["agree_depth"] == 3
+
+
+# F2 (RCO1 genesis source-pin review 11-06 21:01Z): when the coverable windows of the first run hold no public row
+# of an approved task, the producer refuses after the sidecar, tuple and runner state exist, so the one-shot is
+# spent. Genesis now pre-scans those exact windows before admission and refuses without any one-shot state.
+def f2_rows(args, kinds):
+    """Synthetic bridge rows: "public" is a public status of the approved task; "other_task" and "private" are
+    structurally valid rows the public projection excludes."""
+    fleet = json.loads(args["fleet_bytes"])
+    uuid = next(row["agent_uuid"] for row in fleet["lanes"] if row["agent"] == "codex-lead-1")
+    base = {"ts_utc": "2026-10-31T12:00:00Z", "agent": "codex-lead-1", "agent_uuid": uuid, "type": "status",
+            "status": "info", "task_id": "lead-mind-production-20261031", "to": "", "message": "", "paths": [],
+            "payload": {"public_status": True}}
+    rows = []
+    for index, kind in enumerate(kinds):
+        event = {**base, "ts_utc": f"2026-10-31T12:{index:02d}:00Z"}
+        if kind == "other_task":
+            event["task_id"] = "lead-unrelated-20261031"
+        elif kind == "private":
+            event.update(to="fable-5", message="synthetic-private-must-not-be-returned")
+        elif kind == "young":
+            event["ts_utc"] = "2026-10-31T12:59:30Z"
+        rows.append(raw(event) + b"\n")
+    return rows
+
+
+def f2_args(args, rows, max_windows):
+    pytest.importorskip("numpy")
+    pytest.importorskip("faiss")
+    Path(args["source_path"]).write_bytes(b"".join(rows))
+    args["plan_template"].update(max_prefix_bytes=65536, max_windows=max_windows)
+    args.update(max_prefix_bytes=65536, max_bytes=4096, max_rows=2)
+    return dict(args, cutoff_utc="2026-10-31T13:00:00Z", batch_rows=True, allow_partial_genesis=True)
+
+
+def no_one_shot_state(args):
+    """Nothing of the one-shot exists and the pre-scan probe left nothing behind."""
+    return (not Path(args["generation_path"]).exists()
+            and sorted(Path(args["private_state_root"]).iterdir()) == []
+            and sorted(Path(args["checkpoint_root"]).iterdir()) == [])
+
+
+EMPTY_EARLY = ["other_task", "private", "other_task", "private"]
+
+
+def test_f2_no_public_row_in_the_coverable_windows_refuses_before_any_one_shot_state(synthetic, monkeypatch):
+    args, calls = synthetic
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    run = f2_args(args, f2_rows(args, EMPTY_EARLY + ["public"]), max_windows=2)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_no_public_row$"):
+        genesis.bootstrap(**run)
+    assert calls == [] and no_one_shot_state(args)
+    # The run was not spent: the same genesis with windows that reach the public row is admitted once.
+    run["plan_template"]["max_windows"] = 3
+    assert genesis.bootstrap(**run)["status"] == "PUBLISHED_GENESIS" and len(calls) == 1
+
+
+def test_f2_a_public_row_in_a_later_coverable_window_is_reached(synthetic, monkeypatch):
+    args, calls = synthetic
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    run = f2_args(args, f2_rows(args, ["other_task", "private", "public"]), max_windows=2)
+    assert genesis.bootstrap(**run)["status"] == "PUBLISHED_GENESIS" and len(calls) == 1
+
+
+def test_f2_only_a_young_public_row_is_no_ready_row_and_refuses_before_admission(synthetic, monkeypatch):
+    args, calls = synthetic
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    run = f2_args(args, f2_rows(args, ["other_task", "young"]), max_windows=4)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_no_public_row$"):
+        genesis.bootstrap(**run)
+    assert calls == [] and no_one_shot_state(args)
+
+
+def test_f2_a_row_the_reader_refuses_is_refused_before_admission(synthetic, monkeypatch):
+    args, calls = synthetic
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    run = f2_args(args, [b'{"synthetic": not json\n'] + f2_rows(args, ["public"]), max_windows=2)
+    with pytest.raises(genesis.GenesisRefused):
+        genesis.bootstrap(**run)
+    assert calls == [] and no_one_shot_state(args)
+
+
+def test_f2_an_incomplete_catchup_without_a_cutoff_refuses_and_leaves_no_probe(synthetic, monkeypatch):
+    # Without a cutoff the static budget already refuses most such sources; the pre-scan mirrors the producer's
+    # catchup_incomplete decision for any chain that still ends short of the snapshot.
+    args, calls = synthetic
+    from sandbox.mind.step2 import shared_bridge_snapshot as snapshot
+    monkeypatch.setattr(snapshot, "read_public_catchup", lambda *positional, **keywords: {
+        "caught_up": False, "end_reason": "max_windows", "windows": ()})
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    run = f2_args(args, f2_rows(args, ["public"]), max_windows=1)
+    for key in ("cutoff_utc", "batch_rows", "allow_partial_genesis"):
+        run.pop(key)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_catchup_incomplete$"):
+        genesis.bootstrap(**run)
+    assert calls == [] and no_one_shot_state(args)
+
+
+def test_f2_the_probe_never_uses_the_real_sidecar_path_or_anchor(synthetic, monkeypatch):
+    args, calls = synthetic
+    seen = []
+    from tools import wd_mind_anchor_issuer as anchor_issuer
+    original = anchor_issuer.issue_anchor
+
+    def watch(**kwargs):
+        seen.append((kwargs["generation_path"], Path(kwargs["generation_path"]).exists()))
+        return original(**kwargs)
+
+    monkeypatch.setattr(anchor_issuer, "issue_anchor", watch)
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    run = f2_args(args, f2_rows(args, ["private", "public"]), max_windows=1)
+    assert genesis.bootstrap(**run)["status"] == "PUBLISHED_GENESIS"
+    probe, real = [path for path, _ in seen if path != args["generation_path"]], [
+        path for path, _ in seen if path == args["generation_path"]]
+    assert len(probe) == 1 and len(real) == 1
+    assert Path(probe[0]).parent.parent == Path(args["private_state_root"]) and not Path(probe[0]).exists()
+    assert not Path(probe[0]).parent.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="real private checkpoint requires Windows fixed volume")
+def test_f2_real_producer_empty_first_windows_no_longer_spend_the_one_shot(synthetic, monkeypatch):
+    """Real pre-scan, runner, child, producer and checkpoint; only the encoder is synthetic."""
+    import inspect
+    np = pytest.importorskip("numpy")
+    from sandbox.mind.step2 import shared_index_checkpoint as checkpoint_module
+    args, _ = synthetic
+    fake = sys.modules["sandbox.mind.step2.wd_q4_prefix_build_child"]
+    child = fake._actual
+    if "batch_rows" not in inspect.signature(child.build_prefix_generation).parameters:
+        pytest.skip("batch-capable child commit not yet integrated")
+    monkeypatch.setitem(sys.modules, fake.__name__, child)
+    monkeypatch.setattr(checkpoint_module, "read_verified_prefix_pointer", fake._real_accessor)
+    monkeypatch.setattr(genesis, "_prescan_public_rows", REAL_PRESCAN)
+    monkeypatch.setattr(child, "_encoder", lambda encoder, identity:
+                        lambda texts: np.ones((len(texts), 384), dtype=np.float32) / np.sqrt(384))
+    model = Path(args["trusted_model_root"])
+    weights = b"synthetic-weights-not-a-model"
+    (model / "model.safetensors").write_bytes(weights)
+    args["plan_template"]["encoder"].update(weights_sha256=sha(weights), assets={"model.safetensors": sha(weights)})
+    args["plan_template"].update(timeout=10)
+    rows = f2_rows(args, EMPTY_EARLY + ["public", "private", "private", "private"])
+    run = f2_args(args, rows, max_windows=2)
+    with pytest.raises(genesis.GenesisRefused, match="^genesis_no_public_row$"):
+        genesis.bootstrap(**run)
+    assert no_one_shot_state(args)
+    run["plan_template"]["max_windows"] = 3
+    result = genesis.bootstrap(**run)
+    assert result["status"] == "PUBLISHED_GENESIS" and result["coverage"] == "partial_ready_prefix"
+    projection = json.loads((Path(args["checkpoint_root"]) / args["generation"] / "projection.json").read_bytes())
+    assert len(projection["records"]) == 1
+    assert b"synthetic-private-must-not-be-returned" not in json.dumps(projection).encode()

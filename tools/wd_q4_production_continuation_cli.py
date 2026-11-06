@@ -54,11 +54,22 @@ def _prepare(path, digest):
         if not _HEX.fullmatch(pin) or not os.path.samefile(code, actual):
             raise ValueError()
         _read_pinned(str(code), 1024 * 1024, pin, "code_refused")
-    tuple_bytes = _read_pinned(_c_path(config["tuple_path"]), 65536, config["tuple_sha256"], "tuple_refused")
+    tuple_path = _c_path(config["tuple_path"])
+    tuple_bytes = _read_pinned(tuple_path, 65536, config["tuple_sha256"], "tuple_refused")
     document = _doc(tuple_bytes)
     expected = {"identity": config["source_identity"], "prefix_bytes": config["source_prefix_bytes"],
                 "prefix_sha256": config["source_prefix_sha256"]}
     if document.get("independent_source_pin") != expected:
+        raise ValueError()
+    # Check the hash-bound route before publishing: a private tuple cannot
+    # reside in the checkpoint tree. Resolve Windows final names so 8.3 aliases
+    # do not defeat containment. The continuation repeats its full validation.
+    route = _doc(continuation._part(document["route"], 65536))
+    checkpoint = continuation.genesis.roots._root(_c_path(route["checkpoint_root"]))
+    continuation.genesis.roots._observe(checkpoint)
+    tuple_final = os.path.normcase(os.path.realpath(tuple_path, strict=True))
+    checkpoint_final = os.path.normcase(os.path.realpath(str(checkpoint), strict=True))
+    if os.path.commonpath((tuple_final, checkpoint_final)) == checkpoint_final:
         raise ValueError()
     policy = _read_pinned(_c_path(config["policy_path"]), 65536, config["policy_sha256"], "policy_refused")
     public = _read_pinned(_c_path(config["public_policy_path"]), 65536,

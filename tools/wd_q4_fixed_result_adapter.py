@@ -49,7 +49,7 @@ def invoke_fixed_public(*, executable, expected_interpreter_sha256, interpreter_
                           ("public_policy_bytes", "expected_public_policy_sha256")):
             if not hmac.compare_digest(hashlib.sha256(parts[part]).hexdigest(), plan[pin]):
                 raise ValueError()
-        from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
+        from sandbox.mind.step2 import shared_index_pointer as checkpoint
         pointer = checkpoint._parse_pointer_snapshot(parts["pointer_bytes"],
             expected_pointer_sha256=plan["expected_pointer_sha256"], policy_sha=plan["policy_sha256"],
             roster_sha=plan["roster_sha256"], prefix_required=True)

@@ -204,3 +204,76 @@ def test_private_tuple_under_checkpoint_root_is_refused(job, variant):
 def test_launcher_does_not_use_powershell_automatic_args_variable():
     import re
     assert re.search(r"\$args\b", LAUNCH.read_text(encoding="utf-8"), re.IGNORECASE) is None
+
+
+def v2_job(item, *, schema="wd.q4-continuation-cli.v2", changes=None):
+    config = json.loads(item["config"].read_bytes())
+    config.update(schema=schema, cutoff_utc="2026-10-31T13:02:00Z", previous_cutoff_utc="2026-10-31T13:00:00Z")
+    item["config"].write_bytes(encode(config))
+    result = {"status": "caught_up_to_cutoff", "pointer_sha256": "e" * 64,
+              "runner_receipt_sha256": "f" * 64, "cutoff_utc": config["cutoff_utc"],
+              "previous_cutoff_utc": config["previous_cutoff_utc"], "route_sha256": "a" * 64,
+              "cutoff_monotonicity": "CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN"}
+    if changes:
+        changes(result)
+    item["cli"].write_text("def main(args):\n print(" + repr(json.dumps(result)) + ")\n return 0\n", encoding="ascii")
+    repin(item)
+    return result
+
+
+def test_fixed_job_accepts_only_config_bound_v2_receipt(job):
+    expected = v2_job(job)
+    scratch = job["bundle"].parent / "scratch"
+    scratch.mkdir()
+    result = run_job(job, scratch)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == expected
+
+
+@pytest.mark.parametrize("fault", ["current_cutoff", "previous_cutoff", "route_hash", "monotonicity", "missing", "v1"])
+def test_job_rejects_v2_receipt_inconsistent_with_config(job, fault):
+    def change(value):
+        if fault == "current_cutoff": value["cutoff_utc"] = "2026-10-31T13:03:00Z"
+        if fault == "previous_cutoff": value["previous_cutoff_utc"] = "2026-10-31T12:00:00Z"
+        if fault == "route_hash": value["route_sha256"] = "not-a-hash"
+        if fault == "monotonicity": value["cutoff_monotonicity"] = "PROVEN"
+        if fault == "missing": value.pop("route_sha256")
+    v2_job(job, schema="wd.q4-continuation-cli.v1" if fault == "v1" else "wd.q4-continuation-cli.v2", changes=change)
+    scratch = job["bundle"].parent / "scratch"
+    scratch.mkdir()
+    result = run_job(job, scratch)
+    assert result.returncode == 3 and json.loads(result.stdout) == {"status": "UNKNOWN"}
+
+
+@pytest.mark.parametrize("fault", ["current_cutoff", "previous_cutoff", "route_hash", "monotonicity", "missing"])
+def test_outer_powershell_independently_rejects_bad_v2_receipt(job, fault):
+    result = v2_job(job)
+    if fault == "current_cutoff": result["cutoff_utc"] = "2026-10-31T13:03:00Z"
+    if fault == "previous_cutoff": result["previous_cutoff_utc"] = "2026-10-31T12:00:00Z"
+    if fault == "route_hash": result["route_sha256"] = "not-a-hash"
+    if fault == "monotonicity": result["cutoff_monotonicity"] = "PROVEN"
+    if fault == "missing": result.pop("route_sha256")
+    # Exercise the outer PS validator independently: a synthetic manifest-pinned
+    # bootstrap emits a forged receipt without the inner bootstrap validator.
+    job["bootstrap"].write_text("print(" + repr(json.dumps(result)) + ")\n", encoding="ascii")
+    repin(job)
+    scratch = job["bundle"].parent / "scratch"
+    scratch.mkdir()
+    actual = run_job(job, scratch)
+    assert actual.returncode == 3 and json.loads(actual.stdout) == {"status": "UNKNOWN"}
+
+
+@pytest.mark.parametrize("fault", ["malformed", "backwards"])
+def test_v2_invalid_cutoff_fails_before_job(job, fault):
+    v2_job(job)
+    config = json.loads(job["config"].read_bytes())
+    config["cutoff_utc"] = "invalid" if fault == "malformed" else "2026-10-31T12:00:00Z"
+    job["config"].write_bytes(encode(config))
+    job["config_pin"] = sha(job["config"].read_bytes())
+    scratch = job["bundle"].parent / "scratch"
+    scratch.mkdir()
+    result = run_job(job, scratch)
+    assert result.returncode == 2 and json.loads(result.stdout) == {"status": "REFUSED"}
+    assert not list(scratch.glob("wd-q4-job-*"))
+    direct = _fixture.execute(job)
+    assert direct.returncode == 2 and json.loads(direct.stdout) == {"status": "REFUSED"}

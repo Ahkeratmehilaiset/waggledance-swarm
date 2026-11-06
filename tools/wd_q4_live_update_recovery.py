@@ -40,6 +40,37 @@ def _same_except(left, right, keys):
             and all(left[key] == right[key] for key in set(left) - set(keys)))
 
 
+def _verify_job_attestation(private, attempt, config_sha, intent_sha, marker_raw, receipt_sha, helper_sha):
+    """Verify a host observation; same-user bytes do not authenticate the writer."""
+    try:
+        if any(type(x) is not str or not update._HEX.fullmatch(x)
+               for x in (attempt, config_sha, intent_sha, receipt_sha, helper_sha)):
+            raise ValueError()
+        raw = live._read(private / ('q4-live-job-result-' + attempt + '.json'), 65536, receipt_sha)
+        receipt = caller._json(raw)
+        keys = {'schema', 'attempt', 'config_sha256', 'intent_sha256', 'marker_sha256',
+                'reservation_sha256', 'job_helper_sha256', 'cleanup', 'child_outcome', 'exit_code'}
+        if (set(receipt) != keys or receipt['schema'] != 'wd.q4-live-job-result.v1'
+                or receipt['attempt'] != attempt or receipt['config_sha256'] != config_sha
+                or receipt['intent_sha256'] != intent_sha or receipt['marker_sha256'] != update._sha(marker_raw)
+                or receipt['job_helper_sha256'] != helper_sha or receipt['cleanup'] != 'confirmed'
+                or receipt['child_outcome'] not in ('completed', 'timeout', 'refused')
+                or (receipt['child_outcome'] == 'completed' and type(receipt['exit_code']) is not int)
+                or (receipt['child_outcome'] != 'completed' and receipt['exit_code'] is not None)):
+            raise ValueError()
+        raw_reservation = live._read(private / ('q4-live-runner-reservation-' + attempt + '.json'),
+                                     65536, receipt['reservation_sha256'])
+        reservation = caller._json(raw_reservation)
+        if (set(reservation) != {'schema', 'attempt', 'token', 'intent_sha256'}
+                or reservation['schema'] != 'wd.q4-live-runner-reservation.v1'
+                or reservation['attempt'] != attempt or reservation['intent_sha256'] != intent_sha
+                or type(reservation['token']) is not str or not update._HEX.fullmatch(reservation['token'])):
+            raise ValueError()
+        return reservation
+    except Exception:
+        raise RecoveryOutcomeUnknown('recovery_outcome_unknown') from None
+
+
 def _recovery_generation(attempt, current, nonce):
     return update._sha(('wd-q4-recovery:' + attempt + ':' + current + ':' + nonce).encode('ascii'))
 

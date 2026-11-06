@@ -115,6 +115,97 @@ def test_native_spawn_contract_preserves_job_environment_and_no_inheritance(tran
     assert ("create" in calls) is (failure not in ("init", "attribute"))
 
 
+@pytest.mark.parametrize("error_kind", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_attribute_list_cleanup_after_confirmed_initialization_is_interruption_safe(transport, error_kind):
+    """Fake kernel only; native-call-internal interruptions remain unproven."""
+    import ctypes
+    import dis
+
+    calls, injected = [], []
+    class Kernel:
+        def InitializeProcThreadAttributeList(self, attrs, count, flags, size):
+            ctypes.cast(size, ctypes.POINTER(ctypes.c_size_t)).contents.value = 128
+            calls.append("initialized" if attrs is not None else "size")
+            return attrs is not None
+        def DeleteProcThreadAttributeList(self, attrs):
+            calls.append("delete")
+        def UpdateProcThreadAttribute(self, *args):
+            calls.append("update")
+            return True
+        def CreateProcessW(self, *args):
+            calls.append("spawn")
+            return True
+
+    target = transport._create_process_in_job.__code__
+    previous = sys.gettrace()
+    def trace(frame, event, arg):
+        if frame.f_code is target:
+            frame.f_trace_opcodes = True
+            if event == "opcode" and calls == ["size", "initialized"]:
+                operation = dis.opname[frame.f_code.co_code[frame.f_lasti]]
+                # Old code reaches a NOP before its try; fixed code first stores
+                # the known successful result inside the protected region.
+                if frame.f_locals.get("initialized") is True or operation == "NOP":
+                    injected.append(True)
+                    raise error_kind("synthetic interruption")
+        return trace
+    try:
+        sys.settrace(trace)
+        with pytest.raises(error_kind):
+            transport._create_process_in_job(Kernel(), 12, "fake.exe", "fake.exe", {}, "fake-cwd",
+                                             transport._ProcessInfo())
+    finally:
+        sys.settrace(previous)
+    assert injected == [True]
+    assert calls == ["size", "initialized", "delete"]
+
+
+@pytest.mark.parametrize("error_kind", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_unknown_attribute_initialization_retains_storage_and_blocks_retry(
+        transport, tmp_path, monkeypatch, error_kind):
+    """Interrupt before storing the native return; no real kernel call or child."""
+    import ctypes
+    import dis
+    import threading
+
+    quarantine, calls, injected = [], [], []
+    monkeypatch.setattr(transport, "_QUARANTINE", quarantine)
+    monkeypatch.setattr(transport, "_RUN_LOCK", threading.Lock())
+    class Kernel:
+        def InitializeProcThreadAttributeList(self, attrs, count, flags, size):
+            ctypes.cast(size, ctypes.POINTER(ctypes.c_size_t)).contents.value = 128
+            calls.append("initialized" if attrs is not None else "size")
+            return attrs is not None
+        def DeleteProcThreadAttributeList(self, attrs): calls.append("delete")
+        def UpdateProcThreadAttribute(self, *args): calls.append("update"); return True
+        def CreateProcessW(self, *args): calls.append("spawn"); return True
+    target = transport._create_process_in_job.__code__
+    stores = {i.offset for i in dis.get_instructions(target)
+              if i.opname == "STORE_FAST" and i.argval == "initialized"}
+    assert stores
+    previous = sys.gettrace()
+    def trace(frame, event, arg):
+        if frame.f_code is target:
+            frame.f_trace_opcodes = True
+            if event == "opcode" and frame.f_lasti in stores and calls == ["size", "initialized"]:
+                injected.append(True)
+                raise error_kind("synthetic return-to-store interruption")
+        return trace
+    try:
+        sys.settrace(trace)
+        with pytest.raises(error_kind):
+            transport._create_process_in_job(Kernel(), 12, "fake.exe", "fake.exe", {}, "fake-cwd",
+                                             transport._ProcessInfo())
+    finally:
+        sys.settrace(previous)
+    assert injected == [True] and calls == ["size", "initialized"]
+    assert len(quarantine) == 1 and quarantine[0][2][0] == "attribute_init_unknown"
+    assert quarantine[0][2][1] is not None  # Keep the caller-owned buffer alive.
+    with pytest.raises(transport.TransportCleanupUnknown, match="^secure_transport_cleanup_unknown$") as refused:
+        transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 1, 1024)
+    assert refused.value.prior_outcome == "prior_unknown"
+
+
 def _run(transport, tmp_path, code, payload=b"", *, timeout=5, output_limit=1024):
     return transport.run_bounded(
         executable=sys.executable,

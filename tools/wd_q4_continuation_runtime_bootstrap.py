@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import io
 import json
+from datetime import datetime
 import os
 from pathlib import Path
 import re
@@ -19,6 +20,7 @@ _HEX = re.compile(r'[0-9a-f]{64}\Z')
 _KEYS = frozenset({'schema', 'bundle_root', 'manifest_sha256', 'interpreter_path', 'interpreter_sha256',
                    'runtime_root', 'runtime_manifest_path', 'runtime_manifest_sha256', 'runtime_generation',
                    'runtime_revision', 'verifier_sha256'})
+_CUTOFF = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z')
 
 
 class _OutcomeUnknown(RuntimeError):
@@ -38,6 +40,12 @@ def _doc(raw):
                      parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
     if type(obj) is not dict: raise ValueError()
     return obj
+
+
+def _cutoff(value):
+    if type(value) is not str or _CUTOFF.fullmatch(value) is None:
+        raise ValueError()
+    return datetime.strptime(value, '%Y-%m-%dT%H:%M:%SZ')
 
 
 def _read(value, pin, limit):
@@ -70,11 +78,15 @@ def _bootstrap(args):
     config_path, config_pin, manifest_pin, runtime_path, runtime_pin = args[2], args[4], args[6], args[8], args[10]
     config = _doc(_read(config_path, config_pin, 65536))
     runtime = _doc(_read(runtime_path, runtime_pin, 65536))
+    version = config.get('schema')
     if (set(runtime) != _KEYS or runtime['schema'] != 'wd.q4-genesis-runtime.v1'
-            or config.get('schema') != 'wd.q4-continuation-cli.v1'
+            or version not in ('wd.q4-continuation-cli.v1', 'wd.q4-continuation-cli.v2')
             or runtime['manifest_sha256'] != manifest_pin or config.get('manifest_sha256') != manifest_pin
             or os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower() != manifest_pin):
         raise ValueError()
+    if version == 'wd.q4-continuation-cli.v2':
+        if _cutoff(config['cutoff_utc']) < _cutoff(config['previous_cutoff_utc']):
+            raise ValueError()
     bundle = Path(__file__).absolute().parents[2]
     if not os.path.samefile(bundle, runtime['bundle_root']) or not os.path.samefile(bundle, config['bundle_root']):
         raise ValueError()
@@ -143,12 +155,21 @@ def _bootstrap(args):
             raise ValueError()
         answer = _doc(raw)
         success = answer.get('status') in ('partial_ready_prefix', 'caught_up_to_cutoff', 'DEFERRED')
-        if ((success and (result != 0 or set(answer) != {'status', 'pointer_sha256', 'runner_receipt_sha256'})) or
+        success_keys = {'status', 'pointer_sha256', 'runner_receipt_sha256'}
+        if version == 'wd.q4-continuation-cli.v2':
+            success_keys |= {'cutoff_utc', 'previous_cutoff_utc', 'route_sha256', 'cutoff_monotonicity'}
+        if ((success and (result != 0 or set(answer) != success_keys)) or
                 (not success and (set(answer) != {'status'} or
                     (result, answer.get('status')) not in ((2, 'REFUSED'), (3, 'UNKNOWN')))) or
                 any(type(answer[k]) is not str or _HEX.fullmatch(answer[k]) is None
                     for k in ('pointer_sha256', 'runner_receipt_sha256') if k in answer)):
             raise ValueError()
+        if success and version == 'wd.q4-continuation-cli.v2':
+            if (answer['cutoff_utc'] != config['cutoff_utc']
+                    or answer['previous_cutoff_utc'] != config['previous_cutoff_utc']
+                    or answer['cutoff_monotonicity'] != 'CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN'
+                    or type(answer['route_sha256']) is not str or _HEX.fullmatch(answer['route_sha256']) is None):
+                raise ValueError()
     except Exception:
         raise _OutcomeUnknown() from None
     print(json.dumps(answer, sort_keys=True, separators=(',', ':')))

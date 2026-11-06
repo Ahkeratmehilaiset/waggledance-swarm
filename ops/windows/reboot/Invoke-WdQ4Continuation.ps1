@@ -58,11 +58,21 @@ try {
     $configData=Get-Content -LiteralPath $config -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
     if ([int]$manifestData.schema_version -ne 1 -or [string]$manifestData.source_commit -cne $ExpectedCommit -or
         [string]$runtimeData.schema -cne 'wd.q4-genesis-runtime.v1' -or
-        [string]$configData.schema -cne 'wd.q4-continuation-cli.v1' -or
+        [string]$configData.schema -cnotin @('wd.q4-continuation-cli.v1','wd.q4-continuation-cli.v2') -or
         [string]$runtimeData.manifest_sha256 -cne $ExpectedManifestSha256 -or
         [string]$configData.manifest_sha256 -cne $ExpectedManifestSha256 -or
         -not [IO.Path]::GetFullPath([string]$runtimeData.bundle_root).Equals($bundle,[StringComparison]::OrdinalIgnoreCase) -or
         -not [IO.Path]::GetFullPath([string]$configData.bundle_root).Equals($bundle,[StringComparison]::OrdinalIgnoreCase)) { throw 'binding' }
+    $v2=[string]$configData.schema -ceq 'wd.q4-continuation-cli.v2'
+    if ($v2) {
+        foreach ($value in @($configData.cutoff_utc,$configData.previous_cutoff_utc)) {
+            if ($value -isnot [string] -or $value -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$') { throw 'cutoff' }
+        }
+        $format="yyyy-MM-dd'T'HH:mm:ss'Z'"
+        $newCutoff=[DateTime]::ParseExact($configData.cutoff_utc,$format,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::AssumeUniversal)
+        $previousCutoff=[DateTime]::ParseExact($configData.previous_cutoff_utc,$format,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::AssumeUniversal)
+        if ($newCutoff -lt $previousCutoff) { throw 'cutoff' }
+    }
     foreach ($entry in @(@('tools-bootstrap/tools/wd_q4_continuation_runtime_bootstrap.py',$bootstrap),
                           @('tools-bootstrap/tools/wd_q4_production_continuation_cli.py',$cli),
                           @('tools-bootstrap/tools/wd_q4_live_update_bootstrap.py',$helper),
@@ -148,18 +158,30 @@ public static class WdQ4ContinuationDirectoryV1 {
     if ($lines.Count -ne 1 -or ([string]$lines[0]).Length -gt 512) { throw 'output' }
     $answer=[string]$lines[0] | ConvertFrom-Json -ErrorAction Stop
     $keys=@($answer.PSObject.Properties.Name)
-    if ($keys.Count -lt 1 -or $keys.Count -gt 3 -or
-        @($keys | Where-Object { $_ -cnotin @('status','pointer_sha256','runner_receipt_sha256') }).Count -ne 0 -or
+    $allowed=@('status','pointer_sha256','runner_receipt_sha256')
+    if ($v2) { $allowed+=@('cutoff_utc','previous_cutoff_utc','route_sha256','cutoff_monotonicity') }
+    if ($keys.Count -lt 1 -or $keys.Count -gt $allowed.Count -or
+        @($keys | Where-Object { $_ -cnotin $allowed }).Count -ne 0 -or
         [string]$answer.status -cnotin @('partial_ready_prefix','caught_up_to_cutoff','DEFERRED','REFUSED','UNKNOWN')) { throw 'output' }
     foreach ($name in @('pointer_sha256','runner_receipt_sha256')) {
         if ($keys -ccontains $name -and [string]$answer.$name -cnotmatch '^[0-9a-f]{64}$') { throw 'output' }
     }
     $success=[string]$answer.status -cin @('partial_ready_prefix','caught_up_to_cutoff','DEFERRED')
-    if (($success -and ($code -ne 0 -or $keys.Count -ne 3 -or
+    $expectedKeys=3
+    if ($v2) { $expectedKeys=7 }
+    if (($success -and ($code -ne 0 -or $keys.Count -ne $expectedKeys -or
             $keys -cnotcontains 'pointer_sha256' -or $keys -cnotcontains 'runner_receipt_sha256')) -or
         (-not $success -and ($keys.Count -ne 1 -or
             -not (($code -eq 2 -and [string]$answer.status -ceq 'REFUSED') -or
                   ($code -eq 3 -and [string]$answer.status -ceq 'UNKNOWN'))))) { throw 'output' }
+    if ($success -and $v2) {
+        if ($keys -cnotcontains 'cutoff_utc' -or $keys -cnotcontains 'previous_cutoff_utc' -or
+            $keys -cnotcontains 'route_sha256' -or $keys -cnotcontains 'cutoff_monotonicity' -or
+            [string]$answer.cutoff_utc -cne [string]$configData.cutoff_utc -or
+            [string]$answer.previous_cutoff_utc -cne [string]$configData.previous_cutoff_utc -or
+            [string]$answer.route_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [string]$answer.cutoff_monotonicity -cne 'CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN') { throw 'output' }
+    }
     [Console]::Out.WriteLine(($answer | ConvertTo-Json -Compress))
     exit $code
 } catch {

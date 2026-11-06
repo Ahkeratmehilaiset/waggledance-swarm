@@ -326,6 +326,8 @@ def main(argv=None):
         from tools import wd_q4_lane_caller_adapter as adapter
 
         try:
+            # Cooperative contract: mark handoff before exposing the context;
+            # every downstream owner must begin its own ticket before work.
             owner_context._handoff()
             result = adapter.call_lane_session(enabled=True, identity_bytes=identity_raw,
                 expected_identity_sha256=identity_pin, descriptor_bytes=descriptor_raw,

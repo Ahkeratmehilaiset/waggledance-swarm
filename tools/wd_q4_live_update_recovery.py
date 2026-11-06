@@ -278,12 +278,52 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
                 'progress_sha256': expected_progress_sha256, 'result': selected})
             path = private / ('q4-live-update-recovery-result-' + expected_attempt + '.json')
             entered = True
-            receipt_info = update.runner._create(path, recovery_receipt)
+            try:
+                receipt_info = update.runner._create(path, recovery_receipt)
+            except FileExistsError:
+                # A prior attempt can have finished this exact receipt before
+                # stopping at the pending marker.  Never accept partial or
+                # different bytes, links, or a changed file identity.
+                receipt_info = path.lstat()
             update.runner._verify_own(path, recovery_receipt, receipt_info)
-            if not os.path.samestat(private.stat(), private_info):
-                raise ValueError()
-            update.runner._verify_own(marker_path, marker_raw, marker_info)
-            marker_path.unlink()
+            # Re-establish fence, checkpoint, private cursor and selector
+            # together before clearing the owned marker, including on reuse.
+            with private_state.locked_state(private, root, enabled=True) as state:
+                with private_state._checkpoint_lock(root, 0.2):
+                    if checkpoint._active_fence(root) is not None:
+                        raise ValueError()
+                    if progress['status'] != 'EMPTY_NO_CHANGE' and (
+                            os.path.lexists(checkpoint._fence_record(root, target, 'not_landed'))
+                            or checkpoint._read(checkpoint._fence_record(root, target, 'landed'),
+                                               max_bytes=checkpoint._MAX_FENCE_BYTES)
+                            != checkpoint._fence_bytes(previous, target)):
+                        raise ValueError()
+                    _, prefix = checkpoint.read_verified_prefix_pointer(root, tasks, expected_pointer_sha256=target,
+                        policy_bytes=policy, policy_sha256=route['policy_sha256'], roster_bytes=roster,
+                        roster_sha256=route['roster_sha256'], expected_public_policy_sha256=route['public_policy_sha256'])
+                    state.require(target, prefix)
+                    if progress['status'] == 'EMPTY_NO_CHANGE':
+                        if asdict(prefix.cursor) != route['cursor'] or prefix.sha256 != route['prefix_sha256']:
+                            raise ValueError()
+                        selector_path = Path(config['baseline_path']).parent.parent / 'q4-live-current.json'
+                        if os.path.lexists(selector_path):
+                            check = live.select(enabled=True, baseline_path=config['baseline_path'],
+                                baseline_sha256=config['baseline_sha256'], baseline=baseline,
+                                manifest_sha256=config['manifest_sha256'], load_configuration=caller._configuration)
+                            if check['configuration'][4]['pointer_sha256'] != target:
+                                raise ValueError()
+                        else:
+                            caller._require_current_snapshot(descriptor, binding, inputs)
+                            if binding['pointer_sha256'] != target:
+                                raise ValueError()
+                    elif _prior_selector(config, baseline, previous, target, expected_attempt, private,
+                                         expected_config_sha256, expected_progress_sha256) != selected:
+                        raise ValueError()
+                    if not os.path.samestat(private.stat(), private_info):
+                        raise ValueError()
+                    update.runner._verify_own(path, recovery_receipt, receipt_info)
+                    update.runner._verify_own(marker_path, marker_raw, marker_info)
+                    marker_path.unlink()
             return {**selected, 'recovery_receipt_sha256': update._sha(recovery_receipt), 'receipt_file': path.name}
     except Exception:
         failure = 'unknown' if entered else 'refused'

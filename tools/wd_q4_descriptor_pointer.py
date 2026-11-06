@@ -31,6 +31,7 @@ _HEX40 = re.compile(r'[0-9a-f]{40}\Z')
 _HEX64 = re.compile(r'[0-9a-f]{64}\Z')
 _HEX_UPPER = re.compile(r'[0-9A-F]{64}\Z')
 _GEN = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
+_DEVICE = re.compile(r'(?i)(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9]|CONIN\$|CONOUT\$) *(?:\.|\Z)')
 _DESC_KEYS = frozenset({'schema', 'fleet_sha256', 'lanes', 'bundle_root', 'public_plan', 'interpreter', 'cwd',
     'binding_path', 'fixed_plan_path', 'snapshot_path', 'runtime_manifest_path', 'interpreter_sha256',
     'binding_sha256', 'fixed_plan_sha256', 'snapshot_sha256', 'runtime_manifest_sha256', 'interpreter_max_bytes',
@@ -67,6 +68,11 @@ def _absolute(value):
         raise PointerRefused('path_refused')
     if os.name == 'nt' and (not re.match(r'^[A-Za-z]:\\', value) or ':' in value[2:]):
         raise PointerRefused('path_refused')
+    if os.name == 'nt':
+        if (not value.isascii() or not value.isprintable() or '/' in value or '\\\\' in value
+                or any(not part or part in ('.', '..') or part.endswith(('.', ' ')) or _DEVICE.match(part)
+                       for part in value[3:].split('\\'))):
+            raise PointerRefused('path_refused')
     return Path(value)
 
 

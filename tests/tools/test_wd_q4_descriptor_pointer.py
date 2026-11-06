@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 
 import pytest
 
@@ -122,6 +123,26 @@ def test_generation_artifact_path_outside_generation_is_refused(setup, field):
     with pytest.raises(subject.PointerRefused):
         prepare(setup)
     assert setup['pointer'].read_bytes() == b'previous'
+
+
+@pytest.mark.parametrize('field', ['fixed_plan_path', 'snapshot_path'])
+def test_active_writer_rejects_foreign_generation_before_creating_temp(setup, field):
+    setup['descriptor'][field] = str(setup['genroot'] / 'foreign')
+    setup['descriptor_path'].write_bytes(raw(setup['descriptor']))
+    with pytest.raises(subject.PointerRefused):
+        call(setup)
+    assert setup['pointer'].read_bytes() == b'previous'
+    assert not list(setup['machine'].glob('.WD_Q4_DESCRIPTOR_CURRENT.*.tmp'))
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Win32 path aliasing')
+@pytest.mark.parametrize('component', ['trailing.', 'trailing ', 'CON', 'NUL.txt', 'COM1', 'CONOUT$'])
+def test_windows_aliased_path_component_is_refused_before_io(component, monkeypatch):
+    def no_io(*args, **kwargs):
+        raise AssertionError('path must be refused before filesystem access')
+    monkeypatch.setattr(subject.os, 'lstat', no_io)
+    with pytest.raises(subject.PointerRefused):
+        subject._absolute('C:\\Python\\' + component + '\\item')
 
 
 def test_reparse_point_refused(setup, monkeypatch):

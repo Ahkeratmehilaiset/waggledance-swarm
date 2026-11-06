@@ -160,9 +160,10 @@ def publish(*, enabled: bool = False) -> dict:
     result = None
     try:
         result = _write(event)
-    except Exception:
+    except BaseException:
         pass
-    # Never auto-retry: the writer may have appended before the receipt was lost.
+    # Any failure or interruption during _write may follow an append. Never
+    # auto-retry, including on KeyboardInterrupt and SystemExit.
     # Raise outside the handler so an invalid receipt cannot leak via __context__.
     if result is None:
         raise PublicStatusWriteUncertain("public_status_write_uncertain")

@@ -2,6 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 from types import SimpleNamespace
 
@@ -12,6 +13,13 @@ from tools import wd_mind_public_event_writer as subject
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _committed_blob(name):
+    git = shutil.which("git")
+    if git is None:
+        pytest.fail("git is required to verify committed blob bytes")
+    return subprocess.check_output([git, "show", "HEAD:" + name], cwd=ROOT)
 
 
 def _frame(monkeypatch):
@@ -63,19 +71,31 @@ def test_refusal_does_not_retain_attestation_exception_or_frames(monkeypatch):
     assert "_validated_event" not in frames and "fail_with_private_diagnostic" not in frames
 
 
-def test_writer_failure_is_uncertain_and_never_retried(monkeypatch):
+@pytest.mark.parametrize("failure", [TimeoutError, KeyboardInterrupt, SystemExit])
+def test_writer_failure_is_uncertain_and_never_retried(monkeypatch, failure):
     lead = _frame(monkeypatch)
     monkeypatch.setattr(subject, "_attest", lambda: {"pin_status": "manifest_and_launcher_verified",
         "observed_agent": lead["agent"], "native_conversation_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"})
     calls = []
     def uncertain(event):
         calls.append(event)
-        raise TimeoutError("private detail must not escape")
+        raise failure("private detail must not escape")
     monkeypatch.setattr(subject, "_write", uncertain)
     with pytest.raises(subject.PublicStatusWriteUncertain, match="^public_status_write_uncertain$") as error:
         subject.publish(enabled=True)
     assert len(calls) == 1 and error.value.__cause__ is None and error.value.__context__ is None
     assert "private detail" not in str(error.value)
+
+
+def test_git_lookup_is_portable_and_missing_git_is_explicit(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: "synthetic-git" if name == "git" else None)
+    calls = []
+    monkeypatch.setattr(subprocess, "check_output", lambda command, **kw: calls.append(command) or b"blob")
+    assert _committed_blob("synthetic.json") == b"blob"
+    assert calls == [["synthetic-git", "show", "HEAD:synthetic.json"]]
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    with pytest.raises(pytest.fail.Exception, match="git is required to verify committed blob bytes"):
+        _committed_blob("synthetic.json")
 
 
 @pytest.mark.parametrize("style", ["committed-lf", "checkout-crlf"])
@@ -85,9 +105,8 @@ def test_exact_git_blobs_and_crlf_checkouts_only(tmp_path, monkeypatch, style, t
     names = {"nonreview": "configs/mind/pilot_non_review_policy.json",
              "public": "configs/mind/pilot_public_status_policy.json",
              "roster": "ops/windows/reboot/wd-fleet.json"}
-    git = r"C:\Program Files\Git\cmd\git.exe"
     for key, name in names.items():
-        raw = subprocess.check_output([git, "show", "HEAD:" + name], cwd=ROOT)
+        raw = _committed_blob(name)
         if style == "checkout-crlf":
             raw = raw.replace(b"\n", b"\r\n")
         if tamper == key:

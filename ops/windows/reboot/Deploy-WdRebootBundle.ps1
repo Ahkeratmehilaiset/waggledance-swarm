@@ -474,6 +474,8 @@ param(
     [string] $RunId = '',
     [string] $ExternalSessionsPath = '',
     [string] $ExternalSessionsHash = '',
+    [string] $Q4SharedDescriptorPath = '',
+    [string] $Q4SharedDescriptorSha256 = '',
     [ValidateRange(10, 300)]
     [int] $HandshakeTimeoutSeconds = 90,
     [switch] $SkipCliUpdate,
@@ -495,6 +497,8 @@ param(
     [string] $ExpectedManifestHash = '',
     [string] $ExternalSessionsPath = '',
     [string] $ExternalSessionsHash = '',
+    [string] $Q4SharedDescriptorPath = '',
+    [string] $Q4SharedDescriptorSha256 = '',
     [switch] $DryRun,
     [switch] $FreshSession,
     [string] $SupersededThreadId = '',
@@ -514,6 +518,8 @@ param(
     [string] $ExpectedManifestHash = '',
     [string] $ExternalSessionsPath = '',
     [string] $ExternalSessionsHash = '',
+    [string] $Q4SharedDescriptorPath = '',
+    [string] $Q4SharedDescriptorSha256 = '',
     [switch] $DryRun,
     [switch] $FreshSession,
     [string] $SupersededThreadId = '',
@@ -529,6 +535,8 @@ param(
     [Parameter(Mandatory)]
     [ValidatePattern('^[0-9a-f]{40}$')]
     [string] $Generation,
+    [string] $Q4SharedDescriptorPath = '',
+    [string] $Q4SharedDescriptorSha256 = '',
     [switch] $ValidateOnly
 )
 '@
@@ -539,7 +547,9 @@ param(
     [switch] $Apply,
     [switch] $BridgeWorkersOnly,
     [string] $ConfigPath = '',
-    [string] $LogPath = ''
+    [string] $LogPath = '',
+    [string] $Q4SharedDescriptorPath = '',
+    [string] $Q4SharedDescriptorSha256 = ''
 )
 '@
         }
@@ -549,6 +559,11 @@ param(
 @'
 if ($Auto -and ($Apply -or $DryRun)) {
     throw 'Auto cannot be combined with Apply or DryRun'
+}
+if ([string]::IsNullOrWhiteSpace($Q4SharedDescriptorPath) -ne
+        [string]::IsNullOrWhiteSpace($Q4SharedDescriptorSha256) -or
+        ($Q4SharedDescriptorSha256 -and $Q4SharedDescriptorSha256 -cnotmatch '^[0-9a-f]{64}$')) {
+    throw 'q4_shared_descriptor_pair_refused'
 }
 $targetParameters = @{}
 foreach ($key in $PSBoundParameters.Keys) {
@@ -600,7 +615,8 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
     $commandParts = New-Object 'System.Collections.Generic.List[string]'
     [void]$commandParts.Add('&')
     [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value $PSCommandPath))
-    foreach ($name in @('ManifestPath', 'RunId', 'ExternalSessionsPath', 'ExternalSessionsHash')) {
+    foreach ($name in @('ManifestPath', 'RunId', 'ExternalSessionsPath', 'ExternalSessionsHash',
+            'Q4SharedDescriptorPath', 'Q4SharedDescriptorSha256')) {
         if ($targetParameters.ContainsKey($name)) {
             [void]$commandParts.Add("-$name")
             [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value ([string]$targetParameters[$name])))
@@ -724,6 +740,8 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
         -BundleRoot $wdBridgeBundleRoot `
         -FleetManifestPath $wdBridgeFleetManifest `
         -SupervisorScript (Join-Path (Split-Path -Parent $PSCommandPath) 'wd_supervisor.ps1') `
+        -Q4SharedDescriptorPath $Q4SharedDescriptorPath `
+        -Q4SharedDescriptorSha256 $Q4SharedDescriptorSha256 `
         -HostPath $elevationHost
     Write-Host ($wdBridgeResult | ConvertTo-Json -Depth 6 -Compress)
     if (-not [bool]$wdBridgeResult.ok) {
@@ -1124,6 +1142,15 @@ foreach ($required in @(
         'Watch-CodexPrompts.ps1',
         'start-wd-tools-consumer.ps1',
         'Get-WdNativeWakePrompt.ps1',
+        'Get-WdMindReadConfig.ps1',
+        'Get-WdMindPublicReadConfig.ps1',
+        'Get-WdQ4ReadConfig.ps1',
+        'Get-WdQ4SharedSessionConfig.ps1',
+        'Invoke-WdQ4Query.ps1',
+        'WdQ4ProcessJob.ps1',
+        'Invoke-WdQ4SessionCommand.ps1',
+        'Invoke-WdQ4SessionHost.ps1',
+        'Install-WdMindShadowRefresh.ps1',
         'Resolve-WdNativeWakeRejection.ps1',
         'WAKE_PROCEDURE_LEAD.md',
         'WAKE_PROCEDURE_TOOLS.md',

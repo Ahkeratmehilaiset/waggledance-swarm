@@ -24,6 +24,8 @@ param(
   [string] $RunId = '',
   [string] $ExternalSessionsPath = '',
   [string] $ExternalSessionsHash = '',
+  [string] $Q4SharedDescriptorPath = '',
+  [string] $Q4SharedDescriptorSha256 = '',
   [ValidateRange(10, 300)]
   [int] $HandshakeTimeoutSeconds = 90,
   [switch] $SkipCliUpdate,
@@ -36,6 +38,32 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $script:WdGitExecutable = ''
+
+function Get-WdQ4SharedForwardingArguments {
+  param([string] $Path, [string] $Sha256)
+  $hasPath = -not [string]::IsNullOrEmpty($Path)
+  $hasHash = -not [string]::IsNullOrEmpty($Sha256)
+  if ($hasPath -ne $hasHash) { throw 'q4_shared_descriptor_pair_refused' }
+  if (-not $hasPath) { return [pscustomobject]@{ direct = @{}; native = @() } }
+  if ($Path.Length -gt 4096 -or $Path -cnotmatch '^[A-Za-z]:\\' -or
+      $Path.Substring(2).Contains(':') -or $Path.Contains('/') -or
+      $Path -match '[\x00-\x1f"*?<>|;]' -or $Sha256 -cnotmatch '^[0-9a-f]{64}$') {
+    throw 'q4_shared_descriptor_pair_refused'
+  }
+  foreach ($part in $Path.Substring(3).Split('\')) {
+    if (-not $part -or $part -in @('.', '..') -or $part.Length -gt 255 -or
+        $part.StartsWith(' ') -or $part.EndsWith(' ') -or $part.EndsWith('.') -or
+        $part -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$') {
+      throw 'q4_shared_descriptor_pair_refused'
+    }
+  }
+  return [pscustomobject]@{
+    direct = @{ Q4SharedDescriptorPath = $Path; Q4SharedDescriptorSha256 = $Sha256 }
+    native = @('-Q4SharedDescriptorPath', ('"{0}"' -f $Path), '-Q4SharedDescriptorSha256', $Sha256)
+  }
+}
+$q4SharedForward = Get-WdQ4SharedForwardingArguments -Path $Q4SharedDescriptorPath -Sha256 $Q4SharedDescriptorSha256
+$q4SharedDirect = $q4SharedForward.direct
 
 function Start-WdBridgeConversationWindow {
   param(
@@ -3017,7 +3045,7 @@ foreach ($lane in @($manifest.lanes)) {
     # reservation or proof of a completed model turn.
     $admission = & $agentLauncherTarget -Agent ([string]$lane.agent) `
       -DryRun -CheckManagedAdmission -ExpectedManifestHash $bundleManifestAnchor `
-      -ExternalSessionsPath $ExternalSessionsPath -ExternalSessionsHash $ExternalSessionsHash
+      -ExternalSessionsPath $ExternalSessionsPath -ExternalSessionsHash $ExternalSessionsHash @q4SharedDirect
     if ($null -eq $admission -or -not [bool]$admission.dry_run -or
         [string]$admission.turn_mode -cne 'managed') {
       throw "managed admission preflight did not return a valid result for $($lane.agent)"
@@ -3031,7 +3059,7 @@ foreach ($lane in @($manifest.lanes)) {
     # process fails the whole-fleet preflight once instead of every lane tab.
     $resumePlan = & $agentLauncherTarget -Agent ([string]$lane.agent) -DryRun -CheckLaunchAvailability `
       -ExpectedManifestHash $bundleManifestAnchor `
-      -ExternalSessionsPath $ExternalSessionsPath -ExternalSessionsHash $ExternalSessionsHash
+      -ExternalSessionsPath $ExternalSessionsPath -ExternalSessionsHash $ExternalSessionsHash @q4SharedDirect
     if ($null -eq $resumePlan -or -not [bool]$resumePlan.dry_run -or
         [string]$resumePlan.agent -cne [string]$lane.agent) {
       throw "conversation resume preflight did not return a valid result for $($lane.agent)"
@@ -3411,7 +3439,7 @@ $toolsValidationOutput = @(
   & $toolsValidationLauncher `
     -ConfigPath $toolsValidationConfig `
     -Generation $bundleGeneration `
-    -ValidateOnly
+    -ValidateOnly @q4SharedDirect
 )
 $toolsValidation = @(
   $toolsValidationOutput |
@@ -3962,6 +3990,7 @@ try {
       '-HandshakeDirectory', $handshakeDirectory,
       '-ExpectedManifestHash', $bundleManifestAnchor
     )
+    $wtArguments += $q4SharedForward.native
     Write-Host ("Launching {0}..." -f $state.lane.agent) -ForegroundColor Cyan
     if ($ExternalSessionsPath) {
       $wtArguments += @('-ExternalSessionsPath', ('"{0}"' -f $ExternalSessionsPath),

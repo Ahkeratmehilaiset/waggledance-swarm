@@ -8,11 +8,13 @@ returned candidate cursor only after they have accepted the returned rows.
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import hmac
 import json
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -22,6 +24,7 @@ DEFAULT_MAX_BYTES = 4 * 1024 * 1024
 MAX_MAX_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_ROWS = 10_000
 MAX_MAX_ROWS = 100_000
+MAX_PREFIX_BYTES = 1024 * 1024 * 1024
 _MAX_GENERATION_BYTES = 512
 _MAX_JSON_NESTING_DEPTH = 32
 _MAX_SAFE_JSON_INTEGER = 9_007_199_254_740_991
@@ -60,6 +63,35 @@ class BridgeReadResult:
     snapshot_length: int | None = None
     read_calls: int = 0
     requested_offset: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class BridgePrefixPin:
+    """Candidate cursor and hash of bytes before it; caller must protect both."""
+
+    cursor: BridgeCursor
+    sha256: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class BridgePrefixReadResult(BridgeReadResult):
+    """Opt-in result; prefix hashing is not included in legacy I/O counters."""
+
+    candidate_prefix: BridgePrefixPin | None = None
+
+
+def _hash_prefix(stream: BinaryIO, length: int):
+    """Hash exactly length bytes from an already open stream in bounded chunks."""
+    digest = hashlib.sha256()
+    stream.seek(0, os.SEEK_SET)
+    remaining = length
+    while remaining:
+        chunk = stream.read(min(65536, remaining))
+        if not chunk:
+            raise OSError("prefix_short_read")
+        digest.update(chunk)
+        remaining -= len(chunk)
+    return digest
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,19 +466,42 @@ def read_bridge_log(
     max_bytes: int = DEFAULT_MAX_BYTES,
     max_rows: int = DEFAULT_MAX_ROWS,
     generation_path: str | os.PathLike[str] | None = None,
+    expected_prefix_sha256: str | None = None,
+    max_prefix_bytes: int | None = None,
+    expected_snapshot_sha256: str | None = None,
 ) -> BridgeReadResult:
     """Read a stable, bounded JSONL snapshot or delta.
 
     With no cursor, reading starts at byte zero (snapshot).  With a cursor,
     only bytes at and after its offset are read (delta).  A generation path is
     optional, but when configured it is checked before and after the read and
-    must match the cursor on delta reads.
+    must match the cursor on delta reads. Optional prefix checks use the same
+    open stream as the delta and check before and after; caller independently
+    protects its pin. They do not authenticate the source, prevent hostile ABA,
+    or provide an atomic snapshot. Hashing reads are outside legacy counters
+    and may read about twice the prefix budget in addition to delta reads.
+    The resulting digest can disclose guesses about private bytes; do not
+    publish it. Cursor and digest must be stored together by the caller.
+    An optional caller-pinned whole-snapshot digest checks the same immutable
+    bytes later parsed, from offset zero. It is not source authentication or a
+    guarantee against changes after this read; digest values may be private.
     """
 
     cursor_error = _validate_cursor(cursor)
     offset = cursor.offset if isinstance(cursor, BridgeCursor) else 0
     if cursor_error:
         return _result(BridgeReadStatus.BLOCKED, cursor_error, offset=offset)
+    snapshot_enabled = expected_snapshot_sha256 is not None
+    if snapshot_enabled and (type(expected_snapshot_sha256) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", expected_snapshot_sha256) is None or offset != 0):
+        return _result(BridgeReadStatus.BLOCKED, "snapshot_configuration_invalid", offset=offset)
+    prefix_enabled = expected_prefix_sha256 is not None or max_prefix_bytes is not None
+    if prefix_enabled and (not isinstance(cursor, BridgeCursor)
+            or not isinstance(expected_prefix_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected_prefix_sha256) is None
+            or type(max_prefix_bytes) is not int or not 0 <= max_prefix_bytes <= MAX_PREFIX_BYTES
+            or offset > max_prefix_bytes):
+        return _result(BridgeReadStatus.BLOCKED, "prefix_configuration_invalid", offset=offset)
     if (
         isinstance(max_bytes, bool)
         or not isinstance(max_bytes, int)
@@ -509,6 +564,17 @@ def read_bridge_log(
                 offset=offset,
                 snapshot_length=snapshot_length,
             )
+
+        prefix_state = None
+        if prefix_enabled:
+            try:
+                prefix_state = _hash_prefix(stream, offset)
+                if not hmac.compare_digest(prefix_state.hexdigest(), expected_prefix_sha256):
+                    return _result(BridgeReadStatus.BLOCKED, "prefix_mismatch", offset=offset,
+                                   snapshot_length=snapshot_length)
+            except OSError:
+                return _result(BridgeReadStatus.RETRY, "prefix_unavailable", offset=offset,
+                               snapshot_length=snapshot_length)
 
         validation_bytes_read = 0
         read_calls = 0
@@ -573,6 +639,13 @@ def read_bridge_log(
                 )
 
         consumed = _complete_prefix_length(data, max_rows=max_rows)
+        if snapshot_enabled:
+            if len(data) != snapshot_length or (data and consumed != len(data)):
+                return _result(BridgeReadStatus.BLOCKED, "snapshot_incomplete", offset=offset,
+                               snapshot_length=snapshot_length)
+            if not hmac.compare_digest(hashlib.sha256(data).hexdigest(), expected_snapshot_sha256):
+                return _result(BridgeReadStatus.BLOCKED, "snapshot_sha256_mismatch", offset=offset,
+                               snapshot_length=snapshot_length)
         if consumed == 0:
             status = (
                 BridgeReadStatus.BLOCKED
@@ -670,6 +743,43 @@ def read_bridge_log(
                     snapshot_length=snapshot_length,
                     read_calls=result.read_calls,
                 )
+        if prefix_enabled and result.status in (BridgeReadStatus.OK, BridgeReadStatus.IDLE):
+            candidate = result.candidate_cursor
+            if candidate is None or candidate.offset > max_prefix_bytes:
+                return _result(BridgeReadStatus.BLOCKED, "prefix_budget_exceeded", offset=offset,
+                               snapshot_length=snapshot_length)
+            try:
+                candidate_hash = prefix_state.copy()
+                candidate_hash.update(data[:result.bytes_consumed])
+                after_prefix = _hash_prefix(stream, candidate.offset)
+                if not hmac.compare_digest(after_prefix.hexdigest(), candidate_hash.hexdigest()):
+                    return _result(BridgeReadStatus.RETRY, "prefix_changed_during_read", offset=offset,
+                                   snapshot_length=snapshot_length)
+            except OSError:
+                return _result(BridgeReadStatus.RETRY, "prefix_unavailable", offset=offset,
+                               snapshot_length=snapshot_length)
+            try:
+                final_identity = _file_identity(stream)
+                final_length = os.fstat(stream.fileno()).st_size
+            except OSError:
+                return _result(BridgeReadStatus.RETRY, "snapshot_changed", offset=offset,
+                               snapshot_length=snapshot_length)
+            if final_identity != identity or final_length < snapshot_length:
+                return _result(BridgeReadStatus.RETRY, "snapshot_changed", offset=offset,
+                               snapshot_length=snapshot_length)
+            if generation_file is not None:
+                try:
+                    final_generation = _read_generation(generation_file)
+                except _GenerationError as exc:
+                    return _result(exc.status, exc.reason, offset=offset, snapshot_length=snapshot_length)
+                if final_generation != generation_before:
+                    return _result(BridgeReadStatus.RETRY, "generation_changed_during_read", offset=offset,
+                                   snapshot_length=snapshot_length)
+            return BridgePrefixReadResult(
+                result.status, result.reason, result.rows, result.candidate_cursor,
+                result.bytes_read, result.bytes_consumed, result.snapshot_length,
+                result.read_calls, result.requested_offset,
+                BridgePrefixPin(candidate, candidate_hash.hexdigest()))
         return result
     finally:
         if stream is not None:

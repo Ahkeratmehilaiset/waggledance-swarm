@@ -25,6 +25,8 @@ param(
   [string] $ExpectedManifestHash = '',
   [string] $ExternalSessionsPath = '',
   [string] $ExternalSessionsHash = '',
+  [string] $Q4SharedDescriptorPath = '',
+  [string] $Q4SharedDescriptorSha256 = '',
   [switch] $DryRun,
   [switch] $CheckManagedAdmission,
   [switch] $CheckLaunchAvailability,
@@ -41,6 +43,17 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+# Inherited shell values are not an authorization or a deployment descriptor.
+# A future verified configuration source must set these after this scrub.
+function Clear-WdInheritedMindReadSettings {
+  foreach ($mindName in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
+    if (([string]$mindName).StartsWith('WD_MIND_', [StringComparison]::OrdinalIgnoreCase)) {
+      if (Test-Path -LiteralPath "Env:$mindName") { Remove-Item -LiteralPath "Env:$mindName" }
+    }
+  }
+}
+Clear-WdInheritedMindReadSettings
 
 # A lane must never inherit another Claude Code session's identity. Started from an
 # agent's tool shell, these markers make Claude Code treat an interactive lane as a
@@ -64,6 +77,15 @@ function Clear-WdInheritedClaudeSessionMarkers {
   return $removed
 }
 $script:WdScrubbedClaudeMarkers = @(Clear-WdInheritedClaudeSessionMarkers)
+# Clear the whole namespace, including unknown/stale Q4 settings. Values are never logged.
+function Clear-WdInheritedQ4ReadSettings {
+  foreach ($q4Name in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
+    if (([string]$q4Name).StartsWith('WD_Q4_', [StringComparison]::OrdinalIgnoreCase)) {
+      if (Test-Path -LiteralPath "Env:$q4Name") { Remove-Item -LiteralPath "Env:$q4Name" }
+    }
+  }
+}
+Clear-WdInheritedQ4ReadSettings
 if ($CheckManagedAdmission -and -not $DryRun) {
   throw 'CheckManagedAdmission requires -DryRun'
 }
@@ -202,6 +224,50 @@ function Read-Utf8LaneSnapshot {
     $text = $text.Substring(1)
   }
   return [pscustomobject]@{ Hash = $hash; Text = $text }
+}
+
+function Get-WdLaneSharedQ4Reference {
+  # Configuration hint only: operator authentication, session ownership,
+  # data verification and the actual query remain outside this function.
+  param([string] $DescriptorPath, [string] $DescriptorSha256, [string] $FleetPath,
+    [string] $DeploymentManifestPath, [string] $ExpectedManifestSha256,
+    [string] $BundleRoot, [string] $TrustedRoot, [string] $Lane)
+  if ($DescriptorPath -ceq '' -and $DescriptorSha256 -ceq '') { return $null }
+  try {
+    if (-not $DescriptorPath -or $DescriptorSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $ExpectedManifestSha256 -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'invalid' }
+    [void](Assert-LanePathWithoutReparse -Path $DeploymentManifestPath -TrustedRoot $TrustedRoot -ExpectedType Leaf)
+    [void](Assert-LanePathWithoutReparse -Path $FleetPath -TrustedRoot $TrustedRoot -ExpectedType Leaf)
+    if (-not [IO.Path]::GetFullPath($FleetPath).Equals(
+      [IO.Path]::GetFullPath((Join-Path $BundleRoot 'wd-fleet.json')), [StringComparison]::OrdinalIgnoreCase)) {
+      throw 'invalid'
+    }
+    $manifest = Read-Utf8LaneSnapshot -Path $DeploymentManifestPath
+    if ($manifest.Hash -cne $ExpectedManifestSha256.ToUpperInvariant()) { throw 'invalid' }
+    $deployment = $manifest.Text | ConvertFrom-Json -ErrorAction Stop
+    $fleetPin = $deployment.files.PSObject.Properties['wd-fleet.json']
+    $helperPin = $deployment.files.PSObject.Properties['Get-WdQ4SharedSessionConfig.ps1']
+    if ($null -eq $fleetPin -or $null -eq $helperPin -or
+        [string]$fleetPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+        [string]$helperPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'invalid' }
+    $fleet = Read-Utf8LaneSnapshot -Path $FleetPath
+    if ($fleet.Hash -cne ([string]$fleetPin.Value).ToUpperInvariant()) { throw 'invalid' }
+    $helper = Join-Path $BundleRoot 'Get-WdQ4SharedSessionConfig.ps1'
+    [void](Assert-LanePathWithoutReparse -Path $helper -TrustedRoot $TrustedRoot -ExpectedType Leaf)
+    $helperSnapshot = Read-Utf8LaneSnapshot -Path $helper
+    if ($helperSnapshot.Hash -cne ([string]$helperPin.Value).ToUpperInvariant() -or
+        (Get-FileHash -LiteralPath $DeploymentManifestPath -Algorithm SHA256).Hash -cne $ExpectedManifestSha256.ToUpperInvariant()) {
+      throw 'invalid'
+    }
+    . ([scriptblock]::Create([string]$helperSnapshot.Text))
+    $validated = Get-WdQ4SharedSessionConfig -FleetPath $FleetPath -FleetSha256 $fleet.Hash.ToLowerInvariant() `
+      -DescriptorPath $DescriptorPath -DescriptorSha256 $DescriptorSha256 -Lane $Lane -Enabled
+    if ($null -eq $validated -or [string]$validated.lane -cne $Lane) { throw 'invalid' }
+    return [pscustomobject]@{
+      WD_Q4_SHARED_DESCRIPTOR_PATH = $DescriptorPath
+      WD_Q4_SHARED_DESCRIPTOR_SHA256 = $DescriptorSha256
+    }
+  } catch { throw 'q4_shared_reference_refused' }
 }
 
 function Read-NonEmptyFile {
@@ -2027,6 +2093,85 @@ if (Test-Path -LiteralPath $fixedDeploymentManifest -PathType Leaf) {
 }
 $manifest = [string]$manifestSnapshot.Text |
   ConvertFrom-Json -ErrorAction Stop
+$mindValues = $null
+# Public Mind configuration only: begin
+$publicMindValues = $null
+if ($null -ne $manifest.PSObject.Properties['mind_public_read']) {
+  if ($null -eq $deploymentAnchor) { throw 'mind_public_config_requires_anchored_bundle' }
+  $publicMindHelper = Join-Path $PSScriptRoot 'Get-WdMindPublicReadConfig.ps1'
+  [void](Assert-LanePathWithoutReparse -Path $publicMindHelper -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+  $publicMindPin = $deploymentAnchor.files.PSObject.Properties['Get-WdMindPublicReadConfig.ps1']
+  $publicMindSnapshot = Read-Utf8LaneSnapshot -Path $publicMindHelper
+  if ($null -eq $publicMindPin -or [string]$publicMindPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+      [string]$publicMindSnapshot.Hash -cne ([string]$publicMindPin.Value).ToUpperInvariant() -or
+      (Get-FileHash -LiteralPath $fixedDeploymentManifest -Algorithm SHA256).Hash -cne $script:LaneManifestAnchor.ToUpperInvariant()) {
+    throw 'mind_public_config_helper_pin_mismatch'
+  }
+  . ([scriptblock]::Create([string]$publicMindSnapshot.Text))
+  $publicMindValues = Get-WdMindPublicReadConfig -FleetPath $ManifestPath -FleetSha256 ([string]$fleetHashProperty.Value) -Agent $Agent
+  if ($null -ne $publicMindValues) {
+    $publicMindCli = Join-Path $PSScriptRoot 'tools-bootstrap/tools/wd_mind_public_session_cli.py'
+    [void](Assert-LanePathWithoutReparse -Path $publicMindCli -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+    $publicMindCliPin = $deploymentAnchor.files.PSObject.Properties['tools-bootstrap/tools/wd_mind_public_session_cli.py']
+    $publicMindCliSnapshot = Read-Utf8LaneSnapshot -Path $publicMindCli
+    if ($null -eq $publicMindCliPin -or [string]$publicMindCliPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+        [string]$publicMindCliSnapshot.Hash -cne ([string]$publicMindCliPin.Value).ToUpperInvariant() -or
+        (Get-FileHash -LiteralPath $fixedDeploymentManifest -Algorithm SHA256).Hash -cne $script:LaneManifestAnchor.ToUpperInvariant()) {
+      throw 'mind_public_config_cli_pin_mismatch'
+    }
+  }
+}
+# Public Mind configuration only: end
+if ($null -ne $manifest.PSObject.Properties['mind_read']) {
+  if ($null -eq $deploymentAnchor) { throw 'mind_config_requires_anchored_bundle' }
+  $mindHelper = Join-Path $PSScriptRoot 'Get-WdMindReadConfig.ps1'
+  [void](Assert-LanePathWithoutReparse -Path $mindHelper -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+  $mindHelperPin = $deploymentAnchor.files.PSObject.Properties['Get-WdMindReadConfig.ps1']
+  $mindHelperSnapshot = Read-Utf8LaneSnapshot -Path $mindHelper
+  if ($null -eq $mindHelperPin -or [string]$mindHelperPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+      [string]$mindHelperSnapshot.Hash -cne ([string]$mindHelperPin.Value).ToUpperInvariant() -or
+      (Get-FileHash -LiteralPath $fixedDeploymentManifest -Algorithm SHA256).Hash -cne $script:LaneManifestAnchor.ToUpperInvariant()) {
+    throw 'mind_config_helper_pin_mismatch'
+  }
+  # Execute the same bytes whose snapshot hash was checked, not a later file read.
+  . ([scriptblock]::Create([string]$mindHelperSnapshot.Text))
+  $mindValues = Get-WdMindReadConfig -FleetPath $ManifestPath -FleetSha256 ([string]$fleetHashProperty.Value)
+}
+# Q4 configuration only: begin
+$q4Values = $null
+$q4Property = $manifest.PSObject.Properties['q4_read']
+if ($null -ne $q4Property) {
+  $q4Config = $q4Property.Value
+  if ($q4Property.Name -cne 'q4_read' -or $null -eq $q4Config -or $q4Config -isnot [pscustomobject]) {
+    throw 'q4_config_invalid'
+  }
+  $q4Enabled = $q4Config.PSObject.Properties['enabled']
+  if ($null -eq $q4Enabled -or $q4Enabled.Name -cne 'enabled' -or $q4Enabled.Value -isnot [bool]) {
+    throw 'q4_config_invalid'
+  }
+  if ($q4Enabled.Value) {
+    if ($null -eq $deploymentAnchor) { throw 'q4_config_requires_anchored_bundle' }
+    $q4Helper = Join-Path $PSScriptRoot 'Get-WdQ4ReadConfig.ps1'
+    $q4HelperPin = $deploymentAnchor.files.PSObject.Properties['Get-WdQ4ReadConfig.ps1']
+    if ($null -eq $q4HelperPin -or [string]$q4HelperPin.Value -cnotmatch '^[0-9A-Fa-f]{64}$') {
+      throw 'q4_config_helper_pin_mismatch'
+    }
+    [void](Assert-LanePathWithoutReparse -Path $q4Helper -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+    $q4HelperSnapshot = Read-Utf8LaneSnapshot -Path $q4Helper
+    if ([string]$q4HelperSnapshot.Hash -cne ([string]$q4HelperPin.Value).ToUpperInvariant() -or
+        (Get-FileHash -LiteralPath $fixedDeploymentManifest -Algorithm SHA256).Hash -cne $script:LaneManifestAnchor.ToUpperInvariant()) {
+      throw 'q4_config_helper_pin_mismatch'
+    }
+    . ([scriptblock]::Create([string]$q4HelperSnapshot.Text))
+    $q4Values = Get-WdQ4ReadConfig -FleetPath $ManifestPath -FleetSha256 ([string]$fleetHashProperty.Value) -Lane $Agent
+  }
+}
+# Q4 configuration only: end
+$q4SharedValues = Get-WdLaneSharedQ4Reference -DescriptorPath $Q4SharedDescriptorPath `
+  -DescriptorSha256 $Q4SharedDescriptorSha256 -FleetPath $ManifestPath `
+  -DeploymentManifestPath $fixedDeploymentManifest -ExpectedManifestSha256 $script:LaneManifestAnchor `
+  -BundleRoot $PSScriptRoot -TrustedRoot $laneTrustedDrive -Lane $Agent
+if ($null -ne $q4Values -and $null -ne $q4SharedValues) { throw 'q4_config_conflict' }
 if ([int]$manifest.schema_version -ne 2) {
   throw "unsupported fleet manifest schema: $($manifest.schema_version)"
 }
@@ -2607,6 +2752,22 @@ $startupPrompt = (
 $startupPrompt += (' The authoritative lane checkpoint is ' + $laneCurrentStatePath +
   '. Reconcile it at startup and write it after each bounded slice using the pinned writer with -Worktree ' +
   $worktree + '; task-specific worktree copies do not replace this lane checkpoint. Record a concrete next action and bounded next wake when work remains.')
+$startupPrompt += (
+    ' Public status is a separate opt-in: only when WD_MIND_PUBLIC_ENABLED is 1, use the pinned ' +
+    'WD_BRIDGE_PYTHON_WRAPPER to run tools/wd_mind_public_session_cli.py with no CLI arguments, using only ' +
+    'the verified session tuple. Missing configuration or refusal means unavailable; never fall back to the ' +
+    'legacy Mind reader. It does not authenticate a same-user publisher or prove source freshness. Do not ' +
+    'forward raw output. Public status is not Q4 memory, a vote, a gate input or proof of real lane usage.'
+)
+$startupPrompt += (
+  ' Optional bounded bridge-event status projection, not Q4 semantic memory; it is off unless explicitly enabled. ' +
+  ' Only when WD_MIND_READ_ENABLED is 1 and the session has an explicitly configured ' +
+  'WD_MIND_LATEST, WD_MIND_AUDIT_ROOT, WD_MIND_FLEET and WD_MIND_FLEET_SHA256, use the pinned ' +
+  'WD_BRIDGE_PYTHON_WRAPPER to run tools/wd_bridge_mind_session.py with --latest, --audit-root, --fleet ' +
+  'and --fleet-sha256 from those values in this agent session. Read its result locally; do not forward ' +
+  'raw projections or private fields. A refusal, missing configuration or stale result means unavailable, ' +
+  'not a successful connection. The result is observational and is never a vote or gate input.'
+)
 if ($cliName -ieq 'claude.cmd' -and $turnMode -ceq 'interactive') {
   $startupPrompt += (
     ' These startup instructions supersede only legacy self-pacing requirements in external role, lane prompt, and handoff files; ' +
@@ -2867,11 +3028,40 @@ if ($launchTurnMode -ceq 'interactive' -and [Console]::IsInputRedirected) {
   throw "lane '$Agent' must run in an interactive Windows Terminal tab"
 }
 
+Clear-WdInheritedQ4ReadSettings
+Clear-WdInheritedMindReadSettings
 $env:AGENT_BRIDGE_AGENT = [string]$lane.agent
 $env:AGENT_BRIDGE_AGENT_UUID = ([string]$lane.agent_uuid).ToLowerInvariant()
 $env:AGENT_BRIDGE_RUN_ID = $RunId
 $env:AGENT_BRIDGE_SESSION_ID = $RunId
 $env:AGENT_BRIDGE_RUNTIME_ROOT = $runtimeRoot
+if ($null -ne $publicMindValues) {
+  foreach ($publicMindValue in $publicMindValues.PSObject.Properties) {
+    if (-not $publicMindValue.Name.StartsWith('WD_MIND_PUBLIC_', [StringComparison]::Ordinal)) {
+      throw 'mind_public_config_export_invalid'
+    }
+    [Environment]::SetEnvironmentVariable($publicMindValue.Name, [string]$publicMindValue.Value, 'Process')
+  }
+}
+if ($null -ne $mindValues) {
+  foreach ($mindName in @('WD_MIND_READ_ENABLED', 'WD_MIND_LATEST', 'WD_MIND_AUDIT_ROOT', 'WD_MIND_FLEET', 'WD_MIND_FLEET_SHA256')) {
+    [Environment]::SetEnvironmentVariable($mindName, [string]$mindValues.$mindName, 'Process')
+  }
+}
+if ($null -ne $q4Values) {
+  foreach ($q4Value in $q4Values.PSObject.Properties) {
+    if (-not $q4Value.Name.StartsWith('WD_Q4_', [StringComparison]::Ordinal)) {
+      throw 'q4_config_export_invalid'
+    }
+    [Environment]::SetEnvironmentVariable($q4Value.Name, [string]$q4Value.Value, 'Process')
+  }
+}
+if ($null -ne $q4SharedValues) {
+  # A validated reference is only a hint to a future separately pinned adapter.
+  # It does not authenticate an operator or attest a running Mind connection.
+  [Environment]::SetEnvironmentVariable('WD_Q4_SHARED_DESCRIPTOR_PATH', [string]$q4SharedValues.WD_Q4_SHARED_DESCRIPTOR_PATH, 'Process')
+  [Environment]::SetEnvironmentVariable('WD_Q4_SHARED_DESCRIPTOR_SHA256', [string]$q4SharedValues.WD_Q4_SHARED_DESCRIPTOR_SHA256, 'Process')
+}
 $env:WD_AGENT_PROMPT_FILE = [string]$lane.prompt
 $env:WD_AGENT_RESTART_HANDOFF = [string]$manifest.state_precedence.current_handoff
 $env:WD_AGENT_3PACK_ROLES = [string]$manifest.state_precedence.roles

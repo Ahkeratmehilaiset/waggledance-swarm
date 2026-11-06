@@ -185,6 +185,16 @@ LANE = re.compile(r"[a-z][a-z0-9-]{1,40}")
 DETAIL_TAIL = 600
 LATEST_SCHEMA = "wd.bridge-mind-shadow-latest.v2"
 STATE_SCHEMA = "wd.bridge-mind-producer-state.v1"
+# The compact binding of a committed state (RCO2 B2 on the Mind end-to-end review): state.json carries every window
+# row and grows with --window, far past a reader's 64 KiB pointer budget, while a reader needs only the cursor, the
+# generation, the source identity and the digests. state.head.json repeats exactly those fields of the same state and
+# names the sha256 of the full state.json bytes, the digest last_ok pins: a head is bound to its published cycle by
+# that digest and can never be mistaken for another cycle's. The file is written once beside state.json and last_ok
+# pins it too (state_head_file, state_head_sha256), so a reader binds the cursor from the head under its pointer budget
+# and never has to load the rows. A last_ok without the pair (a cycle committed before this change) is still accepted;
+# a last_ok with one of the pair, a wrong name or a malformed digest is not. The head never carries a row. Its schema
+# marker is wd.bridge-mind-producer-state-head.v1 and its name state.head.json, literal in state_head, candidate_cycle
+# and committed_last_ok.
 STATE_KEYS = frozenset({"schema", "generation", "cursor", "source", "window_sha256", "window"})
 ROW_KEYS = frozenset({"event", "ref", "row_sha256", "source"})
 VIEW_SCHEMA = "wd.bridge-mind-pr-view.v1"
@@ -453,6 +463,11 @@ def committed_last_ok(last_ok):
     named = {"capture_file": base + "capture.json", "state_file": base + "state.json",
              "publication_file": base + "run/reflected.publication.json", "board_file": base + "run/board.txt",
              "receipt_file": base + "run/receipt.json"}
+    if "state_head_file" in last_ok or "state_head_sha256" in last_ok:  # the pinned compact head: both or neither
+        if last_ok.get("state_head_file") != base + "state.head.json" \
+                or type(last_ok.get("state_head_sha256")) is not str \
+                or EVENT_REF.fullmatch(last_ok["state_head_sha256"]) is None:
+            return False
     return (all(last_ok.get(key) == value for key, value in named.items())
             and type(last_ok.get("generation")) is int and last_ok["generation"] >= 1
             and all(type(last_ok.get(key)) is str and EVENT_REF.fullmatch(last_ok[key]) is not None
@@ -565,6 +580,15 @@ def state_envelope(generation, cursor, source, rows):
             "window_sha256": sha(window_bytes(rows)), "window": rows}
 
 
+def state_head(state, state_sha256):
+    """The compact head of a committed state: its schema marker, generation, cursor, source and window digest as the
+    state carries them, plus the sha256 of the full ``state.json`` bytes (``state_sha256`` of last_ok) and that
+    file's name. No row, no path, nothing derived: every value is copied from the state or is its digest."""
+    return {"schema": "wd.bridge-mind-producer-state-head.v1", "generation": state["generation"], "cursor": state["cursor"],
+            "source": state["source"], "window_sha256": state["window_sha256"], "state_file": "state.json",
+            "state_sha256": state_sha256}
+
+
 def verify_state(state, generation):
     """True for a state envelope of STATE_SCHEMA with exactly STATE_KEYS whose generation is ``generation``, whose
     cursor names the source it holds, whose window rows are each one this producer wrote ({event, ref, row_sha256,
@@ -639,6 +663,14 @@ def advance(state, seeded=None):
     return rows[-args.window:], cursor, source, {
         "mode": mode, "new_rows": len(fresh), "stats": stats,
         "detail_calls": sum(1 for row in fetched if row["source"] == "detail")}
+
+
+def provenance_object(cursor, source):
+    """The capture's provenance: the compact position cursor the cycle commits in its state and the bridge log
+    identity and generation that cursor names (``cursor_source``), as the shadow re-decodes and compares them. A
+    null log generation is carried as null: the shadow reports it UNKNOWN and nothing here invents one."""
+    return {"reader_cursor": cursor, "file_identity": source["file_identity"],
+            "log_generation": source["log_generation"]}
 
 
 def capture_object(rows):
@@ -1094,8 +1126,10 @@ def prewrite(capture, manifest, context, state):
     if context is not None:
         payloads["context.json"] = canonical(context)
     try:
-        shadow.read_capture(parse_bridge_json_object(payloads["capture.json"].decode("utf-8")))
+        read_back = shadow.read_capture(parse_bridge_json_object(payloads["capture.json"].decode("utf-8")))
         ok = verify_state(parse_bridge_json_object(payloads["state.json"].decode("ascii")), state["generation"])
+        # the capture's provenance must be the very cursor and bridge log identity the state commits
+        ok = ok and read_back.get("provenance") == provenance_object(state["cursor"], state["source"])
         if context is not None:
             ok = ok and ws.read_context(parse_bridge_json_object(payloads["context.json"].decode("ascii")),
                                         ws.parse_time(context["observed_utc"]))[1] is None
@@ -1251,11 +1285,17 @@ def candidate_cycle(rec, last_ok, seeded):
     rows, cursor, source, rec["read"] = advance(state, seeded)
     next_state = state_envelope(1 if state is None else state["generation"] + 1, cursor, source, rows)
     capture, manifest = capture_object(rows)
+    capture["provenance"] = provenance_object(cursor, source)
     capture_ms = round((time.perf_counter() - started) * 1000)
     context, rec["context"] = pr_context(live / "files-cache", snapshot_prs(capture))
     payloads = prewrite(capture, manifest, context, next_state)
     try:
         digests = {name: write_new(cycle_dir / name, data) for name, data in payloads.items()}
+        # the compact head beside the full state: guarded whole like every other output, written once, bound to this
+        # cycle by the full state's digest and pinned by last_ok below
+        head = state_head(next_state, digests["state.json"])
+        ws.guard_object(head)
+        digests["state.head.json"] = write_new(cycle_dir / "state.head.json", compact(head))
     except OSError:
         raise CycleRefused("candidate_unwritable") from None
     rec["capture"] = {"ms": capture_ms, "events": len(rows), "capture_bytes": len(payloads["capture.json"])}
@@ -1275,6 +1315,7 @@ def candidate_cycle(rec, last_ok, seeded):
         "context_file": None if context is None else f"cycles/{name}/context.json",
         "context_sha256": digests.get("context.json"),
         "state_file": f"cycles/{name}/state.json", "state_sha256": digests["state.json"],
+        "state_head_file": f"cycles/{name}/state.head.json", "state_head_sha256": digests["state.head.json"],
         "publication_file": f"cycles/{name}/run/reflected.publication.json",
         "board_file": f"cycles/{name}/run/board.txt", "receipt_file": f"cycles/{name}/run/receipt.json",
         "reader": READER, "snapshot_sha256": receipt["publication"]["snapshot_sha256"],

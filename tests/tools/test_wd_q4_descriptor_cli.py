@@ -704,25 +704,32 @@ def _trailing_space(path):
 
 @needs_windows
 @pytest.mark.parametrize("shape", [_trailing_dot, _trailing_space], ids=["dot", "space"])
-def test_a_request_path_component_ending_in_a_dot_or_space_is_refused(tmp_path, capsys, shape):
+def test_a_request_path_component_ending_in_a_dot_or_space_is_refused(tmp_path, capsys, monkeypatch, shape):
     request, sources, target = synthetic(tmp_path)
     nest = tmp_path / "req"
     nest.mkdir()
     path = shape(write_request(nest, request))
     if shape is _trailing_dot:
         assert Path(path).read_bytes() == canonical(request)  # Windows aliases a trailing dot; the CLI must not
+    module()
+    opened = _spy_open(monkeypatch)
     code, out, err = run(["--request", path, "--enable"], capsys)
     refusal(out, err, code, "request_refused")
+    assert opened == []  # refused by the path rule, not by a missing file
     assert tree(target) == []
 
 
 @needs_windows
 @pytest.mark.parametrize("shape", [_trailing_dot, _trailing_space], ids=["dot", "space"])
-def test_a_source_path_component_ending_in_a_dot_or_space_is_refused(tmp_path, capsys, shape):
+def test_a_source_path_component_ending_in_a_dot_or_space_is_refused(tmp_path, capsys, monkeypatch, shape):
     request, sources, target = synthetic(tmp_path)
     request["snapshot_path"] = shape(Path(request["snapshot_path"]))
-    code, out, err = run(["--request", str(write_request(tmp_path, request)), "--enable"], capsys)
+    path = write_request(tmp_path, request)
+    module()
+    opened = _spy_open(monkeypatch)
+    code, out, err = run(["--request", str(path), "--enable"], capsys)
     refusal(out, err, code, "source_refused")
+    assert opened == [str(path)]  # refused by the path rule before the source is opened
     assert tree(target) == []
 
 
@@ -756,3 +763,134 @@ def test_an_interrupt_or_exit_inside_the_composition_leaves_no_output_and_a_dist
     code, out, err = run(["--request", str(write_request(tmp_path, request)), "--enable"], capsys)
     assert code == expected and out == "" and err == ""
     assert tree(target) == []
+
+
+# 9 advisory claims (consultation 8dcc574c) reproduced or rejected with RED-first negative tests --------------------
+def _spy_open(monkeypatch):
+    real_open = os.open
+    opened = []
+
+    def spy(p, flags, *args, **kwargs):
+        opened.append(str(p))
+        return real_open(p, flags, *args, **kwargs)
+    monkeypatch.setattr(os, "open", spy)
+    return opened
+
+
+def _spy_lstat(monkeypatch):
+    real_lstat = os.lstat
+    seen = []
+
+    def spy(p, *args, **kwargs):
+        seen.append(str(p))
+        return real_lstat(p, *args, **kwargs)
+    monkeypatch.setattr(os, "lstat", spy)
+    return seen
+
+
+@needs_windows
+@pytest.mark.parametrize("pair", ["runtime_root", "runtime_generation", "runtime_revision"])
+def test_a_null_fixed_plan_value_facing_a_missing_outer_key_is_refused_before_any_source_is_read(
+        tmp_path, capsys, monkeypatch, pair):
+    request, sources, target = synthetic(tmp_path)
+    request["fixed_plan"][pair] = None
+    del request["descriptor"]["outer"][pair.replace("_", "-")]
+    path = write_request(tmp_path, request)
+    module()
+    opened = _spy_open(monkeypatch)
+    code, out, err = run(["--request", str(path), "--enable"], capsys)
+    refusal(out, err, code, "request_refused")
+    assert opened == [str(path)]  # the request itself, no source
+    assert tree(target) == []
+
+
+@needs_windows
+@pytest.mark.parametrize("change", [
+    lambda d: d["fixed_plan"].__setitem__("bundle_bytes", None),
+    lambda d: d["descriptor"].__setitem__("timeout_seconds", None),
+    lambda d: d["lanes"].append(None),
+    lambda d: d["descriptor"]["outer"].__setitem__("worker-sha256", None),
+    lambda d: d["descriptor"]["expected_binding"].__setitem__("policy_sha256", None),
+], ids=["fixed_plan", "descriptor", "lanes", "outer", "expected_binding"])
+def test_a_null_anywhere_in_the_request_is_a_request_refusal_before_any_source_is_read(tmp_path, capsys, monkeypatch, change):
+    request, sources, target = synthetic(tmp_path)
+    change(request)
+    path = write_request(tmp_path, request)
+    module()
+    opened = _spy_open(monkeypatch)
+    code, out, err = run(["--request", str(path), "--enable"], capsys)
+    refusal(out, err, code, "request_refused")
+    assert opened == [str(path)]
+    assert tree(target) == []
+
+
+@needs_windows
+@pytest.mark.parametrize("name", ["NUL", "con", "COM1.json", "LPT9", "AUX.request.json", "Prn.tar.gz", "com0"])
+def test_a_reserved_device_name_as_the_request_file_is_refused_without_any_file_system_call(
+        tmp_path, capsys, monkeypatch, name):
+    request, sources, target = synthetic(tmp_path)
+    path = str(tmp_path / name)
+    module()
+    opened, seen = _spy_open(monkeypatch), _spy_lstat(monkeypatch)
+    code, out, err = run(["--request", path, "--enable"], capsys)
+    refusal(out, err, code, "request_refused")
+    assert opened == [] and seen == []
+    assert tree(target) == []
+
+
+@needs_windows
+@pytest.mark.parametrize("shape", [lambda p: str(p.parent / "COM2" / p.name), lambda p: str(p.parent / "NUL.json")],
+                         ids=["directory_component", "file_component"])
+def test_a_reserved_device_name_on_a_source_path_is_refused_after_the_request_alone_was_read(
+        tmp_path, capsys, monkeypatch, shape):
+    request, sources, target = synthetic(tmp_path)
+    request["snapshot_path"] = shape(Path(request["snapshot_path"]))
+    path = write_request(tmp_path, request)
+    module()
+    opened = _spy_open(monkeypatch)
+    code, out, err = run(["--request", str(path), "--enable"], capsys)
+    refusal(out, err, code, "source_refused")
+    assert opened == [str(path)]
+    assert tree(target) == []
+
+
+@needs_windows
+@pytest.mark.parametrize("raised, expected", [(KeyboardInterrupt(), 130), (SystemExit(4), 4), (SystemExit(None), 1),
+                                              (GeneratorExit(), 1)],
+                         ids=["interrupt", "exit_code", "exit_none", "other_base_exception"])
+@pytest.mark.parametrize("stage", ["refusal", "unexpected", "off"])
+def test_an_interrupt_or_exit_while_the_output_line_is_written_still_exits_quietly_with_its_code(
+        tmp_path, capsys, monkeypatch, raised, expected, stage):
+    cli = module()
+
+    def interrupted(_text):
+        raise raised
+    monkeypatch.setattr(cli, "_write", interrupted)
+    if stage == "unexpected":
+        def broken(_path):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(cli, "_request", broken)
+    argv = [] if stage == "off" else ["--request", "relative.json" if stage == "refusal" else "C:\\x\\request.json", "--enable"]
+    code, out, err = run(argv, capsys)
+    assert code == expected and out == "" and err == ""
+
+
+def test_a_missing_outer_key_is_refused_even_without_the_null_rule(tmp_path, monkeypatch):
+    """The key-presence check stands on its own: with the null rule disabled, null against a missing key is still refused."""
+    cli = module()
+    request, sources, target = synthetic(tmp_path)
+    request["fixed_plan"]["runtime_root"] = None
+    del request["descriptor"]["outer"]["runtime-root"]
+    path = write_request(tmp_path, request)
+    monkeypatch.setattr(cli, "_printable", lambda value: True)
+    with pytest.raises(cli._Refused) as info:
+        cli._request(str(path))
+    assert info.value.args == ("request_refused",)
+    assert tree(target) == []
+
+
+def test_the_docstring_states_the_null_device_name_and_write_phase_rules():
+    doc = module().__doc__
+    for phrase in ("no null", "reserved device name", "CON", "NUL", "COM0-9", "LPT0-9", "while the line is written",
+                   "outer block is checked on its three shared keys"):
+        assert phrase in doc, phrase

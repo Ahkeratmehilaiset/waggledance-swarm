@@ -4,9 +4,10 @@ descriptor path and sha256.
 
 Usage: ``python -m tools.wd_q4_descriptor_cli [--request <file> [--enable]]``. With no arguments, or without
 ``--enable``, it prints ``{"status":"OFF"}`` and opens nothing, not even the request file. With ``--enable`` it reads
-ONE strict JSON request (ASCII, no duplicate keys, exact key set, integers only and no booleans, printable
-characters only, 64 KiB cap, regular file on a single-backslash drive-absolute path with no reparse point on its
-chain) naming
+ONE strict JSON request (ASCII, no duplicate keys, exact key set for the request, the fixed-plan block and the
+descriptor block while the outer block is checked on its three shared keys and otherwise by the descriptor producer,
+integers only, no booleans and no null, printable characters only, 64 KiB cap, regular file on a single-backslash
+drive-absolute path with no reparse point on its chain) naming
 the target directory and generation, the fleet, lane-binding and metadata-only public snapshot source files each
 with an explicit sha256 pin, the lanes, the fixed-plan arguments and the remaining descriptor arguments. Every value
 is explicit: the CLI reads no environment, discovers nothing and defaults nothing. It composes, in order,
@@ -23,15 +24,17 @@ Refusals print ``{"error":"descriptor_cli_refused","reason":<closed reason>}`` a
 stage (argv, request, source, fixed_plan, descriptor, materialize, unexpected) and never a caller value, a path, a
 byte or exception text. Every file (request and sources) is opened only after its path passed the single-separator
 discipline (no forward slash, no doubled backslash, no colon after the drive, no empty, dot or dot-dot component, no
-component ending in a dot or a space, which Windows would silently alias),
+component ending in a dot or a space and no component whose stem is a reserved device name such as CON, PRN, AUX,
+NUL, COM0-9 or LPT0-9, which Windows would silently alias or open as a device),
 its chain was walked for reparse points and the opened handle was compared with the checked path (same device and
 file identity, regular, no reparse attribute, same size); the drive root itself is not inspected. The fixed-plan pin
 is recomputed from the plan bytes before it is pinned into the descriptor. The values that the fixed plan and the
 descriptor both describe (interpreter sha256, runtime manifest path and sha256, runtime root, generation and
-revision in the descriptor's outer block) must be equal in the request, otherwise the request is refused before any
-source is read: a generation whose two documents disagree would only fail at run time. A KeyboardInterrupt ends the
-run with exit 130 and a SystemExit with its own code, both without any output line; an interrupt during the write
-phase may leave a partial generation directory, which the next run refuses as existing. Default-off behaviour is
+revision in the descriptor's outer block, each key present) must be equal in the request, otherwise the request is
+refused before any source is read: a generation whose two documents disagree would only fail at run time. A
+KeyboardInterrupt ends the run with exit 130 and a SystemExit with its own code, both without any output line and
+also when raised while the line is written; an interrupt during the write phase may leave a partial generation
+directory, which the next run refuses as existing. Default-off behaviour is
 preserved at every layer: each producer is called with
 ``enabled=True`` only inside the enabled branch, and the launcher still validates the pair itself. Boundaries:
 no install, no activation of a lane, no repin of a bundle and no read of sealed data; the operator decides
@@ -71,6 +74,7 @@ _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _DRIVE = re.compile(r"[A-Za-z]:\\")
 _UNPRINTABLE = re.compile(r"[^\x20-\x7E]")
 _BAD_PARTS = frozenset({"", ".", ".."})
+_DEVICE = re.compile(r"(?i)(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9]) *(?:\.|\Z)")
 _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _READ_FLAGS = os.O_RDONLY | getattr(os, "O_BINARY", 0)
 
@@ -102,11 +106,16 @@ def _constant(_value):
 
 def _check_path(path, reason):
     """Single-separator discipline: drive-absolute, backslashes only, no colon after the drive, printable ASCII,
-    no empty, dot or dot-dot component (the walk below could otherwise skip an ancestor)."""
+    no empty, dot or dot-dot component (the walk below could otherwise skip an ancestor), no component ending in a dot
+    or a space and no component whose stem is a reserved device name (Windows would alias the first two and open the
+    third as a device, so none of them is ever handed to a file system call)."""
     if type(path) is not str or not _DRIVE.match(path) or "\\\\" in path or "/" in path or ":" in path[2:]:
         _refuse(reason)
-    if _UNPRINTABLE.search(path) or any(part in _BAD_PARTS or part[-1] in ". " for part in path[3:].split("\\")):
+    if _UNPRINTABLE.search(path):
         _refuse(reason)
+    for part in path[3:].split("\\"):
+        if part in _BAD_PARTS or part[-1] in ". " or _DEVICE.match(part):
+            _refuse(reason)
 
 
 def _read_regular(path, limit, reason):
@@ -159,10 +168,10 @@ def _read_pinned(path, limit, expected, reason):
 
 
 def _printable(value):
-    """Every string printable ASCII, every number an integer (no float, no bool), containers recursively."""
+    """Every string printable ASCII, every number an integer (no float, no bool), no null, containers recursively."""
     if type(value) is str:
         return not _UNPRINTABLE.search(value)
-    if type(value) is float or type(value) is bool:
+    if value is None or type(value) is float or type(value) is bool:
         return False
     if type(value) is dict:
         return all(type(k) is str and _printable(k) and _printable(v) for k, v in value.items())
@@ -186,6 +195,7 @@ def _request(path):
     for _name, path_key, pin_key in _SOURCES:
         if type(document[path_key]) is not str or type(document[pin_key]) is not str or not _HEX64.match(document[pin_key]):
             _refuse("request_refused")
+        _check_path(document[path_key], "source_refused")  # every source path passes the discipline before any is opened
     if (type(document["target_dir"]) is not str or type(document["generation"]) is not str
             or type(document["lanes"]) is not list):
         _refuse("request_refused")
@@ -201,7 +211,7 @@ def _request(path):
         if fixed[fixed_key] != descriptor[descriptor_key]:
             _refuse("request_refused")
     for fixed_key, outer_key in _SHARED_OUTER_PINS:
-        if fixed[fixed_key] != outer.get(outer_key):
+        if outer_key not in outer or fixed[fixed_key] != outer[outer_key]:
             _refuse("request_refused")
     return document
 
@@ -265,10 +275,8 @@ def _write(text):
         return False
 
 
-def main(argv=None):
+def _run(argv):
     try:
-        if argv is None:
-            argv = sys.argv[1:]
         argv = list(argv)
         if argv == []:
             return 0 if _write('{"status":"OFF"}\n') else 1
@@ -290,6 +298,22 @@ def main(argv=None):
         return exit_.code if type(exit_.code) is int else 1
     except BaseException:  # noqa: BLE001 - no detail of any kind leaves the process
         _write(REFUSAL_PREFIX + 'unexpected_refused"}\n')
+        return 1
+
+
+def main(argv=None):
+    """The guard around the guard: an interrupt or exit raised while a refusal line is written inside a handler of
+    ``_run`` would otherwise escape the process with a diagnostic on the error stream; here it still ends with 130,
+    its own code or 1, and nothing is written."""
+    try:
+        if argv is None:
+            argv = sys.argv[1:]
+        return _run(argv)
+    except KeyboardInterrupt:
+        return 130
+    except SystemExit as exit_:
+        return exit_.code if type(exit_.code) is int else 1
+    except BaseException:  # noqa: BLE001 - nothing is written here, the write itself may be what failed
         return 1
 
 

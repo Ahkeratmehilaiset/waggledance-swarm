@@ -80,9 +80,18 @@ def _current(state, shared, pointer, route=None):
 class _Lease:
     def __init__(self, private, shared, route, route_sha, pointer, previous, reservation, pending, pending_info):
         self._private, self._shared, self._route = private, shared, route
-        self.route_sha256, self._pointer, self._previous = route_sha, pointer, previous
-        self.reservation, self._pending, self._pending_info = reservation, pending, pending_info
+        self._route_sha256, self._pointer, self._previous = route_sha, pointer, previous
+        self._reservation, self._pending, self._pending_info = dict(reservation), pending, pending_info
         self._active = True
+
+    @property
+    def reservation(self):
+        """The runner gets a copy; mutating it cannot retarget this lease."""
+        return dict(self._reservation)
+
+    @property
+    def route_sha256(self):
+        return self._route_sha256
 
     def complete(self, *, receipt_path, expected_receipt_sha256):
         if not self._active:
@@ -90,7 +99,7 @@ class _Lease:
         try:
             if not _pin(expected_receipt_sha256):
                 raise ValueError()
-            marker = _raw({'schema': 'wd.q4-runner-reservation.v1', **self.reservation})
+            marker = _raw({'schema': 'wd.q4-runner-reservation.v1', **self._reservation})
             marker_sha = _sha(marker)
             path = self._private / ('q4-status-result-' + marker_sha + '.json')
             if Path(receipt_path) != path:
@@ -129,7 +138,7 @@ class _Lease:
                     if checkpoint._read(checkpoint._secure(path), max_bytes=65536) != data:
                         raise ValueError()
                     record = _raw({'schema': 'wd.q4-cutoff-record.v1', 'previous_record_sha256': self._previous,
-                                   'cutoff_utc': self._route['cutoff_utc'], 'attempt': self.reservation['attempt'],
+                                   'cutoff_utc': self._route['cutoff_utc'], 'attempt': self._reservation['attempt'],
                                    'route_sha256': self.route_sha256, 'runner_receipt_sha256': expected_receipt_sha256,
                                    'pointer_sha256': receipt['pointer_sha256']})
                     pin = _sha(record)

@@ -100,3 +100,60 @@ def test_real_e5_prefix_build_and_frozen_capture():
     assert receipt["guarded_query"] == "NOT_RUN_FINAL_TUPLE_REQUIRED"
     assert receipt["cleanup"] == "DIRECT_PROCESS_EXIT_ONLY_NOT_GUARDED_JOB_PROOF"
 
+
+class DescriptorBoundaryReached(RuntimeError):
+    pass
+
+
+def worker_validation_shell(monkeypatch, tmp_path, addopts):
+    """Stop before manifest/native I/O; this is only worker preflight coverage."""
+    from types import SimpleNamespace
+    output = tmp_path / ".codex-audit" / "one-attempt"
+    config = {key: None for key in fixture._CONFIG_KEYS}
+    config.update(schema="wd.q4-p10-real-fixture-config.v1", approved_to_execute=True,
+                  runtime_root=str(tmp_path / "runtime"), output_root=str(output),
+                  runtime_generation="a" * 64, runtime_revision="b" * 40)
+    environment = {} if addopts is None else {"PYTEST_ADDOPTS": addopts}
+    worker_os = SimpleNamespace(name="nt", environ=environment)
+    worker_sys = SimpleNamespace(flags=SimpleNamespace(isolated=1, no_site=1),
+                                 dont_write_bytecode=True, modules={})
+    monkeypatch.setattr(fixture, "os", worker_os)
+    monkeypatch.setattr(fixture, "sys", worker_sys)
+    monkeypatch.setattr(fixture, "__file__", str(tmp_path / "tools" / "fixture.py"))
+    reads = []
+    def boundary(*args):
+        reads.append(args)
+        raise DescriptorBoundaryReached("before_manifest_io")
+    monkeypatch.setattr(fixture, "_read_descriptor", boundary)
+    return config, output, worker_os, worker_sys, reads
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the fixture requires an actual Windows C-drive path")
+@pytest.mark.parametrize("addopts", [None, "", " ", "-p nonexistent_hook"])
+def test_worker_pytest_env_is_not_an_isolation_or_hook_witness(monkeypatch, tmp_path, addopts):
+    config, output, _, _, reads = worker_validation_shell(monkeypatch, tmp_path, addopts)
+    with pytest.raises(DescriptorBoundaryReached, match="^before_manifest_io$"):
+        fixture._validate(config, output)
+    assert len(reads) == 1
+    assert not output.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the fixture requires an actual Windows C-drive path")
+@pytest.mark.parametrize("invalid", ["platform", "isolated", "no_site", "bytecode",
+                                    "tools", "sandbox", "core", "faiss", "torch", "sentence_transformers"])
+def test_worker_real_isolation_still_refuses_before_manifest_io(monkeypatch, tmp_path, invalid):
+    config, output, worker_os, worker_sys, reads = worker_validation_shell(
+        monkeypatch, tmp_path, "-p nonexistent_hook")
+    if invalid == "platform":
+        worker_os.name = "posix"
+    elif invalid in ("isolated", "no_site"):
+        setattr(worker_sys.flags, invalid, 0)
+    elif invalid == "bytecode":
+        worker_sys.dont_write_bytecode = False
+    else:
+        worker_sys.modules[invalid] = object()
+    with pytest.raises(fixture.SyntheticFixtureRefused):
+        fixture._validate(config, output)
+    assert reads == []
+    assert not output.exists()
+

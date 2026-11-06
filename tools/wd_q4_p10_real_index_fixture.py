@@ -158,8 +158,7 @@ def _validate(config, output):
             or config["schema"] != "wd.q4-p10-real-fixture-config.v1"
             or config["approved_to_execute"] is not True):
         _refuse()
-    if (os.name != "nt" or not (sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode)
-            or not os.environ.get("PYTEST_ADDOPTS", "").strip()):
+    if os.name != "nt" or not (sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode):
         _refuse()
     root, output = Path(config["runtime_root"]), Path(output)
     audit = Path(__file__).resolve().parents[1] / ".codex-audit"

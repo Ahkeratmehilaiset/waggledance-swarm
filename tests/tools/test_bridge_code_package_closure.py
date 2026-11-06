@@ -82,6 +82,7 @@ def test_on_demand_capacity_reader_is_packaged_as_an_explicit_entrypoint():
     "tools/wd_q4_genesis_cli.py",
     "tools/wd_q4_production_continuation.py",
     "tools/wd_q4_production_continuation_cli.py",
+    "tools/wd_q4_cutoff_watermark.py",
     "tools/wd_q4_continuation_runtime_bootstrap.py",
     "tools/wd_q4_genesis_snapshot_prepare.py",
     "tools/wd_q4_genesis_request_prepare.py",

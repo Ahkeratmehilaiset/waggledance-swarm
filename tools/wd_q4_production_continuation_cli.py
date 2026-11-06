@@ -26,7 +26,13 @@ _STATUSES = frozenset({"partial_ready_prefix", "caught_up_to_cutoff", "DEFERRED"
 
 def _prepare(path, digest):
     config = _doc(_read_pinned(_c_path(path), 65536, digest, "config_refused"))
-    if set(config) != _KEYS or config["schema"] != "wd.q4-continuation-cli.v1":
+    legacy = config.get("schema") == "wd.q4-continuation-cli.v1" and set(config) == _KEYS
+    explicit = (config.get("schema") == "wd.q4-continuation-cli.v2"
+                and set(config) == _KEYS | {"cutoff_utc", "previous_cutoff_utc"})
+    if not (legacy or explicit):
+        raise ValueError()
+    if explicit and (continuation.runner._cutoff_datetime(config["cutoff_utc"])
+                     < continuation.runner._cutoff_datetime(config["previous_cutoff_utc"])):
         raise ValueError()
     for key in ("manifest_sha256", "tuple_sha256", "policy_sha256", "public_policy_sha256",
                 "fleet_sha256", "pointer_sha256", "source_prefix_sha256"):
@@ -75,22 +81,35 @@ def _prepare(path, digest):
     public = _read_pinned(_c_path(config["public_policy_path"]), 65536,
                           config["public_policy_sha256"], "policy_refused")
     fleet = _read_pinned(str(root / "wd-fleet.json"), 1024 * 1024, config["fleet_sha256"], "fleet_refused")
-    return {"enabled": True, "tuple_bytes": tuple_bytes, "expected_tuple_sha256": config["tuple_sha256"],
+    result = {"enabled": True, "tuple_bytes": tuple_bytes, "expected_tuple_sha256": config["tuple_sha256"],
             "expected_pointer_sha256": config["pointer_sha256"], "policy_bytes": policy,
             "public_policy_bytes": public, "fleet_bytes": fleet, "expected_fleet_sha256": config["fleet_sha256"]}
+    if explicit:
+        result.update(cutoff_utc=config["cutoff_utc"], previous_cutoff_utc=config["previous_cutoff_utc"])
+    return result
 
 
-def _result(value):
+def _result(value, inputs):
     keys = {"status", "runner_calls", "pointer_sha256", "runner_receipt_sha256", "coverage",
             "source_authenticity", "freshness"}
-    if (type(value) is not dict or set(value) != keys or value["status"] not in _STATUSES
+    explicit = "cutoff_utc" in inputs or "previous_cutoff_utc" in inputs
+    added = {"cutoff_utc", "previous_cutoff_utc", "route_sha256", "cutoff_monotonicity"}
+    if (type(value) is not dict or set(value) != (keys | added if explicit else keys) or value["status"] not in _STATUSES
             or type(value["runner_calls"]) is not int or value["runner_calls"] != 1
             or value["source_authenticity"] != "UNKNOWN" or value["freshness"] != "UNKNOWN"
             or type(value["coverage"]) is not str
             or any(type(value[key]) is not str or _HEX.fullmatch(value[key]) is None
                    for key in ("pointer_sha256", "runner_receipt_sha256"))):
         raise ValueError()
-    return {key: value[key] for key in ("status", "pointer_sha256", "runner_receipt_sha256")}
+    output = {key: value[key] for key in ("status", "pointer_sha256", "runner_receipt_sha256")}
+    if explicit:
+        if (value["cutoff_utc"] != inputs.get("cutoff_utc")
+                or value["previous_cutoff_utc"] != inputs.get("previous_cutoff_utc")
+                or value["cutoff_monotonicity"] != "CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN"
+                or type(value["route_sha256"]) is not str or _HEX.fullmatch(value["route_sha256"]) is None):
+            raise ValueError()
+        output.update({key: value[key] for key in added})
+    return output
 
 
 def _emit(value):
@@ -115,7 +134,7 @@ def main(argv=None):
         _emit({"status": "UNKNOWN"})
         return 3
     try:
-        result = _result(continuation.continue_once(**inputs))
+        result = _result(continuation.continue_once(**inputs), inputs)
     except continuation.ContinuationRefused:
         _emit({"status": "REFUSED"})
         return 2

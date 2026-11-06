@@ -186,3 +186,38 @@ def test_direct_cli_refuses_private_tuple_in_checkpoint(synthetic_config, varian
     monkeypatch.setattr(cli.continuation, "continue_once", lambda **_: pytest.fail("unsafe continuation"))
     assert cli.main(["--enable", "--config", path, "--sha256", pin]) == 2
     assert response(capsys) == {"status": "REFUSED"}
+
+
+def test_explicit_v2_config_binds_cutoff_and_previous_cutoff(synthetic_config):
+    config, write, _ = synthetic_config
+    config.update(schema="wd.q4-continuation-cli.v2", cutoff_utc="2026-10-31T13:02:00Z",
+                  previous_cutoff_utc="2026-10-31T13:00:00Z")
+    path, pin = write()
+    result = cli._prepare(path, pin)
+    assert result["cutoff_utc"] == config["cutoff_utc"]
+    assert result["previous_cutoff_utc"] == config["previous_cutoff_utc"]
+
+
+@pytest.mark.parametrize("cutoff,previous", [("bad", "2026-10-31T13:00:00Z"),
+                                             ("2026-10-31T12:59:00Z", "2026-10-31T13:00:00Z")])
+def test_invalid_v2_cutoff_is_refused(synthetic_config, cutoff, previous, monkeypatch, capsys):
+    config, write, _ = synthetic_config
+    config.update(schema="wd.q4-continuation-cli.v2", cutoff_utc=cutoff, previous_cutoff_utc=previous)
+    path, pin = write()
+    monkeypatch.setattr(cli.continuation, "continue_once", lambda **_: pytest.fail("called"))
+    assert cli.main(["--enable", "--config", path, "--sha256", pin]) == 2
+    assert response(capsys) == {"status": "REFUSED"}
+
+
+def test_v2_receipt_discloses_only_cutoff_and_proof_hashes(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_prepare", lambda *_: {"enabled": True, "cutoff_utc": "2026-10-31T13:02:00Z",
+                                                      "previous_cutoff_utc": "2026-10-31T13:00:00Z"})
+    result = {"status": "DEFERRED", "runner_calls": 1, "pointer_sha256": "a" * 64,
+              "runner_receipt_sha256": "b" * 64, "coverage": "partial_ready_prefix",
+              "source_authenticity": "UNKNOWN", "freshness": "UNKNOWN",
+              "cutoff_utc": "2026-10-31T13:02:00Z", "previous_cutoff_utc": "2026-10-31T13:00:00Z",
+              "route_sha256": "c" * 64, "cutoff_monotonicity": "CALLER_ASSERTED_REPLAY_CRASH_UNPROVEN"}
+    monkeypatch.setattr(cli.continuation, "continue_once", lambda **_: result)
+    assert cli.main(["--enable", "--config", "fixture", "--sha256", "f" * 64]) == 0
+    assert response(capsys) == {key: result[key] for key in ("status", "pointer_sha256", "runner_receipt_sha256",
+        "cutoff_utc", "previous_cutoff_utc", "route_sha256", "cutoff_monotonicity")}

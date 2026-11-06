@@ -37,7 +37,9 @@ def synthetic(tmp_path, monkeypatch):
     for key, data in (("_FLEET_SHA", fleet), ("_POLICY_SHA", policy), ("_PUBLIC_SHA", public)):
         monkeypatch.setattr(runner, key, frozenset({sha(data)}))
     calls = []
+    from sandbox.mind.step2 import wd_q4_prefix_build_child as actual_child
     child = types.ModuleType("sandbox.mind.step2.wd_q4_prefix_build_child")
+    child._plan_shape = actual_child._plan_shape
     def run_child(**kwargs):
         calls.append(kwargs)
         return {"status": "PUBLISHED_GENESIS", "pointer_sha256": "a" * 64, "generation": "synthetic-generation",
@@ -55,7 +57,9 @@ def synthetic(tmp_path, monkeypatch):
                 expected_fleet_sha256=sha(fleet), max_prefix_bytes=1024, max_bytes=1024, max_rows=10,
                 plan_template={"schema": "wd.q4-prefix-build-plan.v3", "generation": "synthetic-generation",
                                "expected_pointer_sha256": None, "max_prefix_bytes": 1024, "max_windows": 1,
-                               "timeout": 1, "encoder": {}, "fenced": True})
+                               "timeout": 1, "encoder": {"model": "intfloat/multilingual-e5-small",
+                               "revision": "a" * 40, "model_dir": str(model), "weights_sha256": "b" * 64,
+                               "dim": 384, "assets": {"model.safetensors": "b" * 64}}, "fenced": True})
     return args, calls
 
 
@@ -76,7 +80,8 @@ def test_real_runner_gets_bound_cursor_and_exclusive_sidecar(synthetic):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("change", ["oversize", "partial", "existing", "bad_pin", "windows", "budget"])
+@pytest.mark.parametrize("change", ["oversize", "partial", "existing", "bad_pin", "windows", "budget",
+                                    "empty", "pending", "old_pointer", "encoder", "timeout", "row_budget", "byte_budget"])
 def test_invalid_inputs_do_not_call_runner(synthetic, change):
     args, calls = synthetic
     if change == "oversize":
@@ -90,11 +95,27 @@ def test_invalid_inputs_do_not_call_runner(synthetic, change):
     elif change == "budget":
         args["max_prefix_bytes"] = 1024**3
         args["plan_template"].update(max_prefix_bytes=1024**3, max_windows=3)
+    elif change == "empty":
+        Path(args["source_path"]).write_bytes(b"")
+    elif change == "pending":
+        (Path(args["private_state_root"]) / runner._PENDING).write_bytes(b"existing")
+    elif change == "old_pointer":
+        (Path(args["checkpoint_root"]) / "q4-latest.json").write_bytes(b"existing")
+    elif change == "encoder":
+        args["plan_template"]["encoder"] = {}
+    elif change == "timeout":
+        args["plan_template"]["timeout"] = 31
+    elif change == "row_budget":
+        Path(args["source_path"]).write_bytes(b"x\n" * 11)
+    elif change == "byte_budget":
+        args["max_bytes"] = 2
     else:
         args["policy_sha256"] = "0" * 64
     with pytest.raises((genesis.GenesisRefused, genesis.GenesisUnknown)):
         genesis.bootstrap(**args)
     assert calls == []
+    if change != "existing":
+        assert not Path(args["generation_path"]).exists()
 
 
 @pytest.mark.parametrize("change", ["append", "truncate", "rewrite", "replace", "sidecar", "tuple", "interrupt"])
@@ -177,3 +198,17 @@ def test_existing_private_tuple_is_never_overwritten(synthetic):
     assert private_file.read_bytes() == b"previous"
     assert not Path(args["generation_path"]).exists()
     assert calls == []
+
+
+def test_opt_in_renewable_requires_real_recovery_proof(synthetic, monkeypatch):
+    from tools import wd_q4_status_prefix_recovery as recovery
+    args, calls = synthetic
+    recovery_calls = []
+    def refuse_without_real_pointer(**kwargs):
+        recovery_calls.append(kwargs)
+        raise ValueError("no real publication")
+    monkeypatch.setattr(recovery, "complete_owned_publication", refuse_without_real_pointer)
+    with pytest.raises(genesis.GenesisUnknown):
+        genesis.bootstrap(**args, renewable=True)
+    assert len(calls) == len(recovery_calls) == 1
+    assert (Path(args["private_state_root"]) / runner._PENDING).exists()

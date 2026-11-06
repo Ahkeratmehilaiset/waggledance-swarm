@@ -42,7 +42,12 @@ Every time the lens shows is in UTC. A status run that times out, raises an OSEr
 same way.
 
 No thread identifier, alert id, account, plan, token count or provider payload reaches a written or published
-byte. A lane name appears only when ``--declared`` gives one for an observation's thread (by its first 8 hex
+byte. Every observer string the lens copies is a known provider (claude, codex) or a short safe label (lowercase
+words of up to 16 letters joined by underscores, at most six words); anything else, an e-mail, a path, a token or
+an unknown provider, reads UNKNOWN, so labels that differ only there are merged. The header gives the age of the
+whole status against the lens's own UTC clock: FRESH up to 120 s (the status comes from the call the lens just
+made, with a 60 s deadline), STALE beyond, and FUTURE (invalid) when the status time is after the clock.
+A lane name appears only when ``--declared`` gives one for an observation's thread (by its first 8 hex
 digits), labelled "declared" (the observer binds no thread to a lane); the thread id itself is never written.
 Never writes a bridge event, never runs gate code.
 """
@@ -53,6 +58,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -64,9 +70,17 @@ from tools import wd_bridge_mind as core  # noqa: E402
 
 STATUS_SCHEMA = "wd.capacity-status.v1"
 LENS_SCHEMA = "wd.bridge-mind-capacity-lens.v1"
+PROVIDERS = frozenset({"claude", "codex"})
+SAFE_LABEL = re.compile(r"[a-z]{1,16}(?:_[a-z]{1,16}){0,5}")
+STATUS_MAX_AGE_S = 120  # the status comes from the call the lens just made (60 s deadline)
 NOTE = ("reset times are recheck times, not readiness promises; same-provider threads may share one pool and are "
         "never summed; thread to lane binding unverified unless declared; each line keeps the observer's own "
         "freshness and quota labels and the age of its oldest figure")
+
+
+def clock():
+    """The lens's own UTC clock; the status age is measured against it (tests inject a fixed one)."""
+    return dt.datetime.now(dt.timezone.utc)
 
 
 def utc(value):
@@ -161,8 +175,18 @@ def number(value):
 
 
 def given_text(value):
-    """A label the observer gave as non-empty text, else UNKNOWN: a label is shown as given or not at all."""
-    return value if isinstance(value, str) and value else ws.UNKNOWN
+    """A label the observer gave as a short safe label, else UNKNOWN: never an e-mail, a path or a token."""
+    return value if isinstance(value, str) and SAFE_LABEL.fullmatch(value) else ws.UNKNOWN
+
+
+def provider_label(value):
+    """A provider the lens knows, else UNKNOWN."""
+    return value if isinstance(value, str) and value in PROVIDERS else ws.UNKNOWN
+
+
+def given_label(value):
+    """given_text() of a label the observer gave, None when it gave none (absent or null)."""
+    return None if value is None else given_text(value)
 
 
 def reset_time(value):
@@ -179,14 +203,13 @@ def project(status, declared):
     now = parse_time(status["observed_at"]).astimezone(dt.timezone.utc)  # one with no UTC time stops here
     limits = {}
     for observation in rows(status.get("observations")):
-        provider = str(observation.get("provider"))
+        provider = provider_label(observation.get("provider"))
         # The observer's own labels for this observation's figures, as it gave them (None when it gave none).
-        labels = {key: observation.get(key) if isinstance(observation.get(key), str) else None
-                  for key in ("freshness", "quota_state")}
+        labels = {key: given_label(observation.get(key)) for key in ("freshness", "quota_state")}
         age = observation.get("observation_age_seconds")
         for window in windows(observation):
             used, reset_at = window.get("used_percent"), reset_time(window.get("resets_at"))
-            limits.setdefault((provider, window["name"]), []).append({
+            limits.setdefault((provider, given_text(window["name"])), []).append({
                 "lane": declared.get(str(observation.get("native_thread_id") or "")[:8]),
                 "used_percent": used if number(used) else None,
                 "reset_utc": None if reset_at is None else utc(reset_at),
@@ -196,14 +219,15 @@ def project(status, declared):
     failed = given(status.get("failed_providers"), list)
     if not all(isinstance(provider, str) for provider in failed):
         raise TypeError("a failed provider is not a string")
-    collection = given(status.get("collection"), dict)
+    failed = {provider_label(provider) for provider in failed}
+    collection = {provider_label(provider): row for provider, row in given(status.get("collection"), dict).items()}
     health = {}
     for provider in sorted(set(collection) | set(failed)):
         row = collection.get(provider, {})
         if not isinstance(row, dict):
             raise TypeError("a collection row is not an object")
         success, attempt = given_time(row.get("last_success")), given_time(row.get("last_attempt"))
-        state = row.get("collection_state") if isinstance(row.get("collection_state"), str) else None
+        state = given_label(row.get("collection_state"))
         ttl = row.get("freshness_ttl_seconds")
         ttl = ttl if number(ttl) and ttl > 0 else None
         after = None if attempt is None or success is None else attempt > success
@@ -223,15 +247,14 @@ def project(status, declared):
                             "attempt_after_success": after, "failed_provider": provider in failed}
     counted = {}
     for alert in rows(status.get("alerts")):
-        key = tuple(alert.get(field) if isinstance(alert.get(field), str) else ws.UNKNOWN
-                    for field in ("provider", "state"))
+        key = (provider_label(alert.get("provider")), given_text(alert.get("state")))
         counted[key] = counted.get(key, 0) + 1
     alerts = [{"provider": provider, "state": state, "count": count}
               for (provider, state), count in sorted(counted.items())]
     groups = {}
     for row in rows(status.get("native_activity")):
         last, first_error = given_time(row.get("last_successful_turn_at")), given_time(row.get("first_error_at"))
-        group = groups.setdefault(given_text(row.get("provider")), {"threads": 0, "activity_states": {},
+        group = groups.setdefault(provider_label(row.get("provider")), {"threads": 0, "activity_states": {},
                                                                     "availability_states": {}, "latest": None,
                                                                     "errors": {}})
         group["threads"] += 1
@@ -255,7 +278,11 @@ def project(status, declared):
                              "first_error_utc": None if first is None else utc(first)}
                             for kind, (count, first) in sorted(group["errors"].items())]}
                 for provider, group in sorted(groups.items())]
-    return now, limits, health, activity, alerts
+    checked = clock()
+    age_s = (checked - now).total_seconds()
+    age = {"checked_utc": utc(checked), "age_s": age_s,
+           "state": "FUTURE" if age_s < 0 else "STALE" if age_s > STATUS_MAX_AGE_S else "FRESH"}
+    return now, limits, health, activity, alerts, age
 
 
 def readable(status, declared):
@@ -264,10 +291,10 @@ def readable(status, declared):
     what project() kept, so the catch covers project() alone: an error in the lens's own text is never shown as a
     status of the wrong shape."""
     try:
-        now, limits, health, activity, alerts = project(status, declared)
+        now, limits, health, activity, alerts, age = project(status, declared)
     except (KeyError, OverflowError, TypeError, ValueError):  # each one a test case reaches
         raise LensRefused("status_shape_unexpected") from None
-    return now, limits, health, activity, alerts, text_lines(now, limits, health, activity, alerts)
+    return now, limits, health, activity, alerts, age, text_lines(now, limits, health, activity, alerts, age)
 
 
 def percent(value):
@@ -313,8 +340,18 @@ def figure(row):
     return (f"{row['lane']} (declared) " if row["lane"] else "") + percent(row["used_percent"])
 
 
-def text_lines(now, limits, health, activity, alerts):
-    lines = [f"capacity (installed observer, read-only) observed {utc(now)}; {NOTE}"]
+def minutes(seconds):
+    return "under 1 min" if seconds < 60 else f"{round(seconds / 60)} min"
+
+
+def age_text(age):
+    if age["state"] == "FUTURE":
+        return f"status time {minutes(-age['age_s'])} ahead of the lens clock, FUTURE (invalid)"
+    return f"status age {minutes(age['age_s'])}, {age['state']}"
+
+
+def text_lines(now, limits, health, activity, alerts, age):
+    lines = [f"capacity (installed observer, read-only) observed {utc(now)} ({age_text(age)}); {NOTE}"]
     for (provider, window), rows in sorted(limits.items()):
         used = ", ".join(figure(row) for row in rows)
         if len({row["reset_utc"] for row in rows}) > 1:  # one observation's reset is never implied for another
@@ -367,11 +404,11 @@ def main():
         declared[thread] = lane
     try:
         raw, status = read_status(args.status_script)
-        now, limits, health, activity, alerts, lines = readable(status, declared)
+        now, limits, health, activity, alerts, age, lines = readable(status, declared)
     except LensRefused as exc:
         raise SystemExit(f"refused: {exc}") from None
     view = {"schema": LENS_SCHEMA, "authority": "none", "scope": "shadow_observation_not_gate",
-            "observed_utc": utc(now), "status_sha256": hashlib.sha256(raw).hexdigest(),
+            "observed_utc": utc(now), "status_age": age, "status_sha256": hashlib.sha256(raw).hexdigest(),
             "limits": [{"provider": provider, "window": window, "observations": rows}
                        for (provider, window), rows in sorted(limits.items())],
             "collection_silent": sorted(provider for provider, row in health.items()

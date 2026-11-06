@@ -1228,3 +1228,47 @@ def test_named_packages_refuse_real_regular_modules_from_another_allowed_root(tm
     roots = [os.path.normcase(os.path.realpath(path)) for path in (code, site)]
     with pytest.raises(transport._Refused):
         transport._module_origins(before, roots, code)
+
+
+@windows
+@pytest.mark.parametrize("failure", ["complete", "locked-file-missing", "dependency-before-ready", "dependency-after-query"])
+def test_synthetic_locked_child_runtime_missing_dependency_fails_closed(tmp_path, monkeypatch, failure):
+    """Real synthetic peer; no real model, installed bundle, or live query."""
+    case = snapshot_case(monkeypatch)
+    stub = make_stub(case["resolved"])
+    missing = "wd_q4_nonexistent_synthetic_dependency_37ff"
+    if failure == "dependency-before-ready":
+        stub = "import " + missing + "\n" + stub
+    elif failure == "dependency-after-query":
+        marker = "    sha = lambda data: hashlib.sha256(data).hexdigest()"
+        assert marker in stub
+        stub = stub.replace(marker, "    import " + missing + "\n" + marker, 1)
+    runtime = synthetic_runtime(tmp_path, stub)
+    root, manifest, manifest_sha = runtime
+    if failure == "locked-file-missing":
+        # This file belongs to the new synthetic test runtime and is pinned by its manifest.
+        (root / "site" / "synthetic_site.txt").unlink()
+    bundle = transport.fixed_snapshot_bundle(**case["parts"])
+    written = []
+    original = transport._frame_write
+    def observe(k, pipe, data, deadline):
+        if data == bundle:
+            written.append("bundle")
+        if data == QUERY:
+            written.append("query")
+        return original(k, pipe, data, deadline)
+    monkeypatch.setattr(transport, "_frame_write", observe)
+    if failure == "complete":
+        output, code = public_call(tmp_path, case=case, runtime=runtime, bundle=bundle)
+        assert code == 0 and json.loads(output)["results"] == case["resolved"]
+        assert written == ["bundle", "query"]
+        return
+    with pytest.raises(transport._Refused) as caught:
+        public_call(tmp_path, case=case, runtime=runtime, bundle=bundle)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert missing not in str(caught.value) and QUERY.decode() not in str(caught.value)
+    if failure in ("locked-file-missing", "dependency-before-ready"):
+        assert written == []
+    else:
+        # A lazily missing dependency is discovered only after the query was sent.
+        assert written == ["bundle", "query"]

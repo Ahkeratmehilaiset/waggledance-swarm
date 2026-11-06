@@ -59,6 +59,60 @@ def test_fixed_peer_manifest_limit_matches_verifier_before_spawn(transport, tmp_
     assert calls == [True]
 
 
+def _mock_spawn_from_winapi(k, job, executable, line, environment, cwd, info):
+    import _winapi
+    return _winapi.CreateProcess(executable, line, None, None, False, 0x08000404, environment, cwd, None)
+
+
+@pytest.mark.parametrize("failure", [None, "attribute", "create"])
+def test_native_spawn_contract_preserves_job_environment_and_no_inheritance(transport, failure):
+    import ctypes
+    from ctypes import wintypes
+    calls = []
+    class Kernel:
+        def InitializeProcThreadAttributeList(self, attrs, count, flags, size):
+            assert count == 1 and flags == 0
+            if attrs is None:
+                ctypes.cast(size, ctypes.POINTER(ctypes.c_size_t)).contents.value = 128
+            calls.append("init")
+            return attrs is not None
+        def UpdateProcThreadAttribute(self, attrs, flags, attribute, values, size, prior, result):
+            assert attribute == 0x0002000D and flags == 0 and size == ctypes.sizeof(wintypes.HANDLE)
+            assert ctypes.cast(values, ctypes.POINTER(wintypes.HANDLE)).contents.value == 12
+            calls.append("attribute")
+            return failure != "attribute"
+        def CreateProcessW(self, exe, command, proc_sa, thread_sa, inherit, flags, env, cwd, startup, info):
+            assert exe == "synthetic.exe" and command.value == '"synthetic.exe" -I'
+            assert proc_sa is None and thread_sa is None and inherit is False and flags == 0x08080404
+            assert cwd == "synthetic-cwd"
+            assert ctypes.cast(startup, ctypes.POINTER(transport._StartupInfoEx)).contents.startup.cb == ctypes.sizeof(transport._StartupInfoEx)
+            values = []
+            cursor = env.value
+            while True:
+                value = ctypes.wstring_at(cursor)
+                if not value: break
+                values.append(value)
+                cursor += (len(value) + 1) * ctypes.sizeof(ctypes.c_wchar)
+            assert values == ["SYSTEMROOT=synthetic-root", "TEMP=synthetic-temp"]
+            calls.append("create")
+            if failure == "create": return 0
+            child = ctypes.cast(info, ctypes.POINTER(transport._ProcessInfo)).contents
+            child.process, child.thread, child.pid, child.tid = 15, 16, 17, 18
+            return 1
+        def DeleteProcThreadAttributeList(self, attrs):
+            calls.append("delete")
+    info = transport._ProcessInfo()
+    args = (Kernel(), 12, "synthetic.exe", '"synthetic.exe" -I',
+            {"TEMP": "synthetic-temp", "SYSTEMROOT": "synthetic-root"}, "synthetic-cwd", info)
+    if failure:
+        with pytest.raises(transport._Refused): transport._create_process_in_job(*args)
+        assert not info.process and not info.thread
+    else:
+        assert transport._create_process_in_job(*args) == (15, 16, 17, 18)
+    assert calls[-1] == "delete"
+    assert ("create" in calls) is (failure != "attribute")
+
+
 def _run(transport, tmp_path, code, payload=b"", *, timeout=5, output_limit=1024):
     return transport.run_bounded(
         executable=sys.executable,
@@ -71,39 +125,89 @@ def _run(transport, tmp_path, code, payload=b"", *, timeout=5, output_limit=1024
 
 
 def test_synthetic_roundtrip_launches_with_noninheritable_handles(transport, tmp_path, monkeypatch):
-    import _winapi
-
     marker = b"WD_SYNTHETIC_STDIN_ONLY_15d8db0ad52f4b38"
     observations = []
-    original = _winapi.CreateProcess
+    inherited = []
+    original = transport._create_process_in_job
+    original_api = transport._api
+
+    def traced_api():
+        kernel, advapi = original_api()
+        original_create = kernel.CreateProcessW
+        def traced_native(*args):
+            inherited.append(args[4])
+            return original_create(*args)
+        kernel.CreateProcessW = traced_native
+        return kernel, advapi
 
     def traced(*args, **kwargs):
-        # CPython's CreateProcess binding uses positional parameters here.
-        command_line = args[1]
-        inherit_handles = args[4]
-        child_env = args[6] if args[6] is not None else os.environ
+        command_line = args[3]
+        child_env = args[4]
         marker_text = marker.decode("ascii")
         payload_in_command = marker_text in str(command_line)
         payload_in_environment = any(
             marker_text in str(key) or marker_text in str(value)
             for key, value in child_env.items()
         )
-        observations.append((inherit_handles, payload_in_command, payload_in_environment))
+        observations.append((payload_in_command, payload_in_environment))
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(_winapi, "CreateProcess", traced)
+    monkeypatch.setattr(transport, "_create_process_in_job", traced)
+    monkeypatch.setattr(transport, "_api", traced_api)
     result = _run(transport, tmp_path,
                   "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())", marker)
     assert result == (marker, 0)
-    assert observations, "root CreateProcess was not observed in this process"
-    assert all(inherit is False or inherit == 0 for inherit, _, _ in observations)
-    assert not any(in_args or in_env for _, in_args, in_env in observations)
+    assert observations, "root process creation was not observed in this process"
+    assert inherited == [False]
+    assert not any(in_args or in_env for in_args, in_env in observations)
 
 
 def test_nonzero_exit_is_returned_with_synthetic_stdout(transport, tmp_path):
     result = _run(transport, tmp_path,
                   "import sys; sys.stdout.buffer.write(b'ok'); sys.exit(7)")
     assert result == (b"ok", 7)
+
+
+def test_native_spawn_return_interrupt_terminates_own_synthetic_child(transport, tmp_path, monkeypatch):
+    """Observe the child through a test-owned duplicate across the injected interruption."""
+    import ctypes
+    from ctypes import wintypes
+    monkeypatch.setattr(transport, "_QUARANTINE", [])
+    duplicated = wintypes.HANDLE()
+    original_api = transport._api
+    kernel_for_cleanup = []
+    def traced_api():
+        kernel, advapi = original_api()
+        kernel_for_cleanup.append(kernel)
+        kernel.DuplicateHandle.argtypes = [wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE,
+                                           ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD,
+                                           wintypes.BOOL, wintypes.DWORD]
+        kernel.DuplicateHandle.restype = wintypes.BOOL
+        create = kernel.CreateProcessW
+        def interrupt_after_create(*args):
+            result = create(*args)
+            assert result
+            info = ctypes.cast(args[-1], ctypes.POINTER(transport._ProcessInfo)).contents
+            assert info.process and info.thread
+            current = kernel.GetCurrentProcess()
+            assert kernel.DuplicateHandle(current, info.process, current, ctypes.byref(duplicated), 0, False, 2)
+            raise KeyboardInterrupt("synthetic interruption after native creation")
+        kernel.CreateProcessW = interrupt_after_create
+        return kernel, advapi
+    monkeypatch.setattr(transport, "_api", traced_api)
+    try:
+        with pytest.raises(transport.TransportCleanupUnknown):
+            _run(transport, tmp_path, "print('synthetic')")
+        assert duplicated.value
+        assert kernel_for_cleanup[0].WaitForSingleObject(duplicated, 5000) == 0
+        assert transport._QUARANTINE
+    finally:
+        if duplicated.value:
+            kernel = kernel_for_cleanup[0]
+            if kernel.WaitForSingleObject(duplicated, 0) != 0:
+                kernel.TerminateProcess(duplicated, 126)
+                assert kernel.WaitForSingleObject(duplicated, 5000) == 0
+            kernel.CloseHandle(duplicated)
 
 
 def test_output_above_the_declared_limit_is_refused(transport, tmp_path):
@@ -152,6 +256,7 @@ def test_run_timeout_with_uncertain_cleanup_reports_unknown_and_blocks_new_work(
     monkeypatch.setattr(transport, "_noninheritable", lambda *args: None)
     monkeypatch.setattr(transport, "_created", lambda *args: 1)
     monkeypatch.setattr(_winapi, "CreateProcess", lambda *args: (15, 16, 17, 18))
+    monkeypatch.setattr(transport, "_create_process_in_job", _mock_spawn_from_winapi)
     def time_out(*args, **kwargs):
         if prior == "timeout":
             raise TimeoutError("synthetic timeout")
@@ -200,6 +305,7 @@ def test_child_cleanup_without_confirmed_exit_is_unknown(transport, tmp_path, mo
     monkeypatch.setattr(transport, '_noninheritable', lambda *args: None)
     monkeypatch.setattr(transport, '_created', lambda *args: 1)
     monkeypatch.setattr(_winapi, 'CreateProcess', lambda *args: (15, 16, 17, 18))
+    monkeypatch.setattr(transport, "_create_process_in_job", _mock_spawn_from_winapi)
     monkeypatch.setattr(transport, '_io', lambda *a, **kw: (_ for _ in ()).throw(ValueError()))
     with pytest.raises(transport.TransportCleanupUnknown):
         transport._run([sys.executable], str(tmp_path), {'mode': 'python-c'}, b'', 0.01, 1024)
@@ -227,15 +333,16 @@ def test_run_timeout_with_successful_cleanup_remains_timeout(transport, tmp_path
     monkeypatch.setattr(transport, "_noninheritable", lambda *args: None)
     monkeypatch.setattr(transport, "_created", lambda *args: 1)
     monkeypatch.setattr(_winapi, "CreateProcess", lambda *args: (15, 16, 17, 18))
+    monkeypatch.setattr(transport, "_create_process_in_job", _mock_spawn_from_winapi)
     monkeypatch.setattr(transport, "_io", lambda *a, **kw: (_ for _ in ()).throw(TimeoutError()))
     with pytest.raises(TimeoutError):
         transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 10, 1024)
     assert not transport._QUARANTINE
 
 
-@pytest.mark.parametrize('assigned,prior', [(True,'timeout'),(True,'refused'),(False,'refused')])
-def test_confirmed_child_cleanup_precedes_close(transport, tmp_path, monkeypatch, assigned, prior):
-    """Only this invocation's job-zero or unassigned child exit preserves the original outcome."""
+@pytest.mark.parametrize('spawn_failed,prior', [(False,'timeout'),(False,'refused'),(True,'refused')])
+def test_confirmed_child_cleanup_precedes_close(transport, tmp_path, monkeypatch, spawn_failed, prior):
+    """An uncertain spawn is quarantined even if this invocation's job empties."""
     import _winapi
     calls=[]
     class Kernel:
@@ -243,7 +350,6 @@ def test_confirmed_child_cleanup_precedes_close(transport, tmp_path, monkeypatch
         def CreateJobObjectW(self, *args): return 12
         def SetInformationJobObject(self, *args): return 1
         def GetCurrentProcess(self): return 99
-        def AssignProcessToJobObject(self, *args): return assigned
         def ResumeThread(self, *args): return 1
         def LocalFree(self, *args): return 0
         def TerminateJobObject(self, h, *args): calls.append(('terminate_job',h)); return 1
@@ -257,20 +363,21 @@ def test_confirmed_child_cleanup_precedes_close(transport, tmp_path, monkeypatch
     monkeypatch.setattr(transport, '_noninheritable', lambda *args: None)
     monkeypatch.setattr(transport, '_created', lambda *args: 1)
     monkeypatch.setattr(_winapi, 'CreateProcess', lambda *args: (15,16,17,18))
+    monkeypatch.setattr(transport, "_create_process_in_job", _mock_spawn_from_winapi)
+    if spawn_failed:
+        def fail_spawn(*args):
+            raise transport._Refused()
+        monkeypatch.setattr(transport, '_create_process_in_job', fail_spawn)
     def fail(*args,**kwargs):
         if prior == 'timeout':
             raise TimeoutError()
         raise ValueError()
     monkeypatch.setattr(transport, '_io', fail)
-    with pytest.raises(TimeoutError if prior == 'timeout' else ValueError):
+    with pytest.raises(transport.TransportCleanupUnknown if spawn_failed else (TimeoutError if prior == 'timeout' else ValueError)):
         transport._run([sys.executable], str(tmp_path), {'mode':'python-c'}, b'', 10, 1024)
-    assert not transport._QUARANTINE
-    if assigned:
-        assert calls.index(('terminate_job',12)) < calls.index(('query_job',12)) < calls.index(('close',12))
-        assert not any(item[0] == 'wait_child' for item in calls)
-    else:
-        assert calls.index(('terminate_child',15)) < calls.index(('wait_child',15)) < calls.index(('close',15))
-        assert not any(item[0] == 'query_job' for item in calls)
+    assert bool(transport._QUARANTINE) is spawn_failed
+    assert calls.index(('terminate_job',12)) < calls.index(('query_job',12)) < calls.index(('close',12))
+    assert not any(item[0] == 'wait_child' for item in calls)
 
 
 def test_job_accounting_polls_same_handle_until_confirmed_zero(transport, monkeypatch):
@@ -644,6 +751,7 @@ def test_io_cleanup_unknown_retains_unsafe_state_and_stops_new_runs(transport, t
     monkeypatch.setattr(transport, "_noninheritable", lambda *args: None)
     monkeypatch.setattr(transport, "_created", lambda *args: 1)
     monkeypatch.setattr(_winapi, "CreateProcess", lambda *args: (15, 16, 17, 18))
+    monkeypatch.setattr(transport, "_create_process_in_job", _mock_spawn_from_winapi)
     with pytest.raises(transport.TransportCleanupUnknown) as caught:
         transport._run([sys.executable], str(tmp_path), {"mode": "python-c"}, b"", 10, 1024)
     assert caught.value.prior_outcome == ("none" if scenario == "success_close_fail" else "timeout")

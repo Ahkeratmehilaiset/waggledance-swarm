@@ -103,6 +103,24 @@ class _JobAccounting(C.Structure):
                 ("active_processes", W.DWORD), ("terminated_processes", W.DWORD)]
 
 
+class _StartupInfo(C.Structure):
+    _fields_ = [("cb", W.DWORD), ("reserved", W.LPWSTR), ("desktop", W.LPWSTR),
+                ("title", W.LPWSTR), ("x", W.DWORD), ("y", W.DWORD),
+                ("xsize", W.DWORD), ("ysize", W.DWORD), ("xcount", W.DWORD),
+                ("ycount", W.DWORD), ("fill", W.DWORD), ("flags", W.DWORD),
+                ("show", W.WORD), ("reserved2size", W.WORD), ("reserved2", C.c_void_p),
+                ("std_in", W.HANDLE), ("std_out", W.HANDLE), ("std_err", W.HANDLE)]
+
+
+class _StartupInfoEx(C.Structure):
+    _fields_ = [("startup", _StartupInfo), ("attributes", C.c_void_p)]
+
+
+class _ProcessInfo(C.Structure):
+    _fields_ = [("process", W.HANDLE), ("thread", W.HANDLE),
+                ("pid", W.DWORD), ("tid", W.DWORD)]
+
+
 class _SidAttributes(C.Structure):
     _fields_ = [("sid", C.c_void_p), ("attributes", W.DWORD)]
 
@@ -146,6 +164,11 @@ def _api():
         "TerminateJobObject": (W.BOOL, [W.HANDLE, W.UINT]),
         "TerminateProcess": (W.BOOL, [W.HANDLE, W.UINT]),
         "ResumeThread": (W.DWORD, [W.HANDLE]),
+        "InitializeProcThreadAttributeList": (W.BOOL, [C.c_void_p, W.DWORD, W.DWORD, C.POINTER(C.c_size_t)]),
+        "UpdateProcThreadAttribute": (W.BOOL, [C.c_void_p, W.DWORD, C.c_size_t, C.c_void_p, C.c_size_t, C.c_void_p, C.c_void_p]),
+        "DeleteProcThreadAttributeList": (None, [C.c_void_p]),
+        "CreateProcessW": (W.BOOL, [W.LPCWSTR, W.LPWSTR, C.c_void_p, C.c_void_p, W.BOOL,
+                                     W.DWORD, C.c_void_p, W.LPCWSTR, C.POINTER(_StartupInfoEx), C.POINTER(_ProcessInfo)]),
         "LocalFree": (C.c_void_p, [C.c_void_p]),
     }
     for name, (restype, argtypes) in signatures.items():
@@ -162,6 +185,37 @@ def _api():
         function = getattr(a, name)
         function.restype, function.argtypes = restype, argtypes
     return k, a
+
+
+def _create_process_in_job(k, job, executable, line, environment, cwd, info):
+    """Create the suspended child already in job; info is owned by the caller."""
+    size = C.c_size_t()
+    k.InitializeProcThreadAttributeList(None, 1, 0, C.byref(size))
+    _check(size.value > 0)
+    storage = C.create_string_buffer(size.value)
+    attributes = C.cast(storage, C.c_void_p)
+    _check(k.InitializeProcThreadAttributeList(attributes, 1, 0, C.byref(size)))
+    try:
+        handles = (W.HANDLE * 1)(job)
+        # PROC_THREAD_ATTRIBUTE_JOB_LIST; the buffer must outlive the list.
+        _check(k.UpdateProcThreadAttribute(attributes, 0, 0x0002000D,
+                                           C.cast(handles, C.c_void_p), C.sizeof(handles), None, None))
+        startup = _StartupInfoEx()
+        startup.startup.cb = C.sizeof(startup)
+        startup.attributes = attributes.value
+        command_line = C.create_unicode_buffer(line)
+        _check(all(type(key) is str and type(value) is str and "\0" not in key and
+                   "\0" not in value and "=" not in key for key, value in environment.items()))
+        environment_block = C.create_unicode_buffer(
+            "\0".join(f"{key}={value}" for key, value in sorted(environment.items(), key=lambda pair: pair[0].upper())) + "\0\0")
+        # CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED |
+        # EXTENDED_STARTUPINFO_PRESENT; no inherited handles.
+        _check(k.CreateProcessW(executable, command_line, None, None, False, 0x08080404,
+                                C.cast(environment_block, C.c_void_p), cwd,
+                                C.byref(startup), C.byref(info)))
+        return info.process, info.thread, info.pid, info.tid
+    finally:
+        k.DeleteProcThreadAttributeList(attributes)
 
 
 def _check(ok):
@@ -1190,6 +1244,9 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
         del metadata, stdin_bytes, fixed
         raise _Refused()
     _validate(stdin_bytes, timeout_seconds, max_output_bytes)
+    # Allocate the caller-owned native output before acquiring the dispatch
+    # lock, so allocation failure cannot strand the lock.
+    child_info = _ProcessInfo()
     if not _RUN_LOCK.acquire(blocking=False):
         raise _Refused()
     if _QUARANTINE:
@@ -1197,7 +1254,6 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
         raise TransportCleanupUnknown("prior_unknown") from None
     k = a = None
     pipe = job = process = thread = None
-    assigned = False
     spawn_attempted = False
     try:
         deadline = time.monotonic() + timeout_seconds
@@ -1235,19 +1291,15 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
         line = subprocess.list2cmdline(argv)
         _check(len(line) < 32767)
         _remaining(deadline)
-        import _winapi
         environment = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR")
                        if key in os.environ}
         environment.update(TEMP=cwd, TMP=cwd)  # Caller-owned, budgeted synthetic scratch.
         # No STARTF_USESTDHANDLES, HANDLE_LIST, anonymous pipes or inheritable gap.
         spawn_attempted = True
-        process, thread, pid, _ = _winapi.CreateProcess(
-            command[0], line, None, None, False, 0x08000404, environment,
-            cwd, subprocess.STARTUPINFO())
+        process, thread, pid, _ = _create_process_in_job(
+            k, job, command[0], line, environment, cwd, child_info)
         _noninheritable(k, int(process))
         _noninheritable(k, int(thread))
-        _check(k.AssignProcessToJobObject(job, int(process)))
-        assigned = True
         child_created = _created(k, int(process))
         _check(k.ResumeThread(int(thread)) != 0xFFFFFFFF)
         _io(k, pipe, None, 0, deadline, connect=True)
@@ -1291,6 +1343,12 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
             # Conservatively block subsequent work; this also treats ordinary
             # CreateProcess errors as uncertain rather than claiming cleanup.
             cleanup_ok = not (spawn_attempted and (process is None or thread is None))
+            # The native call writes to caller-owned memory even if Python
+            # cannot unpack the returned values after the call.
+            if process is None:
+                process = child_info.process
+            if thread is None:
+                thread = child_info.thread
             failed_closes = []
             def cleanup_call(operation):
                 nonlocal prior_outcome
@@ -1310,7 +1368,7 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
                 return closed
             try:
                 if k is not None:
-                    if process is not None:
+                    if spawn_attempted and job is not None:
                         cleanup_deadline = None
                         try:
                             cleanup_deadline = time.monotonic() + _CLEANUP_WAIT_SECONDS
@@ -1322,14 +1380,9 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
                                 prior_outcome = reason
                             cleanup_ok = False
                         try:
-                            if assigned and job:
-                                cleanup_ok = cleanup_call(lambda: k.TerminateJobObject(job, 124)) and cleanup_ok
-                                if cleanup_deadline is not None:
-                                    cleanup_ok = cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline)) and cleanup_ok
-                            elif not assigned:
-                                cleanup_ok = cleanup_call(lambda: k.TerminateProcess(int(process), 125)) and cleanup_ok
-                                if cleanup_deadline is not None:
-                                    cleanup_ok = cleanup_call(lambda: _wait_child_exit(k, process, cleanup_deadline)) and cleanup_ok
+                            cleanup_ok = cleanup_call(lambda: k.TerminateJobObject(job, 124)) and cleanup_ok
+                            if cleanup_deadline is not None:
+                                cleanup_ok = cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline)) and cleanup_ok
                         except BaseException as exc:
                             # A failure in a decision outside the individual kernel
                             # calls cannot certify cleanup. Still try termination and
@@ -1338,14 +1391,9 @@ def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes,
                             if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
                                 prior_outcome = reason
                             cleanup_ok = False
-                            if assigned and job is not None:
-                                cleanup_call(lambda: k.TerminateJobObject(job, 124))
-                                if cleanup_deadline is not None:
-                                    cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline))
-                            elif not assigned:
-                                cleanup_call(lambda: k.TerminateProcess(int(process), 125))
-                                if cleanup_deadline is not None:
-                                    cleanup_call(lambda: _wait_child_exit(k, process, cleanup_deadline))
+                            cleanup_call(lambda: k.TerminateJobObject(job, 124))
+                            if cleanup_deadline is not None:
+                                cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline))
                     if job is not None:
                         cleanup_ok = close_call(job) and cleanup_ok
                     if process is not None:

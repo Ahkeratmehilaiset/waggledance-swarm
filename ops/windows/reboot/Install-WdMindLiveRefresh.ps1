@@ -135,7 +135,9 @@ $taskName = 'WD-MindLiveUpdate'
 $plan = [ordered]@{schema='wd.mind-live-refresh-plan.v1'; task=$taskName; registered=[bool]$Apply; enabled=$false;
     source_commit=$ExpectedCommit; manifest_sha256=$manifestHash; config_sha256=$configHash; user_sid=$ApprovedUserSid;
     interval_minutes=$IntervalMinutes; multiple_instances='IgnoreNew'; logon='Interactive'; run_level='Limited';
-    pending='blocks_attempt_until_reconciled'; execution_limit='unlimited'; supervisor='unchanged'; execution='NOT_RUN'}
+    pending='blocks_attempt_until_reconciled'; execution_limit='30 minutes'; process_tree_exit='NOT_PROVEN';
+    python_pin_scope='python.exe only; stdlib and native DLLs not independently verified';
+    supervisor='unchanged'; execution='NOT_RUN'}
 if (-not $Apply) { $plan | ConvertTo-Json -Compress; return }
 if (@(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object { $_.TaskName -eq $taskName }).Count) {
     throw 'Task already exists; refusing replacement.'
@@ -144,7 +146,7 @@ if (Test-Path -LiteralPath $marker) { throw 'An uncertain attempt requires recon
 $hostPath = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
 $action = New-ScheduledTaskAction -Execute $hostPath -Argument ('-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand ' + $encoded) -WorkingDirectory $bundle
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes($IntervalMinutes) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
-$settings = New-ScheduledTaskSettingsSet -Disable -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)
+$settings = New-ScheduledTaskSettingsSet -Disable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
 $principal = New-ScheduledTaskPrincipal -UserId $ApprovedUserSid -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal | Out-Null
 $verified = @(Get-ScheduledTask -TaskPath '\' -TaskName $taskName -ErrorAction Stop)
@@ -158,6 +160,7 @@ if ($verified.Count -eq 1) {
 }
 if ($verified.Count -ne 1 -or $verified[0].Settings.Enabled -or
     [string]$verified[0].Settings.MultipleInstances -cne 'IgnoreNew' -or
+    [string]$verified[0].Settings.ExecutionTimeLimit -cne 'PT30M' -or
     $verifiedSid -cne $ApprovedUserSid -or
     [string]$verified[0].Principal.LogonType -cne 'Interactive' -or
     [string]$verified[0].Principal.RunLevel -cne 'Limited' -or

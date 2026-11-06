@@ -77,6 +77,9 @@ pathlib.Path(__file__).parents[2].joinpath('synthetic-invoked.txt').write_text('
         $plan.registered | Should Be $false
         $plan.enabled | Should Be $false
         $plan.multiple_instances | Should Be 'IgnoreNew'
+        $plan.execution_limit | Should Be '30 minutes'
+        $plan.process_tree_exit | Should Be 'NOT_PROVEN'
+        $plan.python_pin_scope | Should Be 'python.exe only; stdlib and native DLLs not independently verified'
         Assert-MockCalled Register-ScheduledTask -Times 0 -Exactly -Scope It
     }
     It 'skips an unreadable Python alias and chooses a readable executable' {
@@ -108,7 +111,7 @@ pathlib.Path(__file__).parents[2].joinpath('synthetic-invoked.txt').write_text('
         $plan.registered | Should Be $true
         $plan.enabled | Should Be $false
         Assert-MockCalled Register-ScheduledTask -Times 1 -Exactly -Scope It -ParameterFilter {
-            -not $Settings.Enabled -and $Settings.MultipleInstances -eq 'IgnoreNew' -and
+            -not $Settings.Enabled -and $Settings.MultipleInstances -eq 'IgnoreNew' -and $Settings.ExecutionTimeLimit -eq 'PT30M' -and
             $Principal.LogonType -eq 'Interactive' -and $Principal.RunLevel -eq 'Limited' }
         Assert-MockCalled Start-ScheduledTask -Times 0 -Exactly -Scope It
         Assert-MockCalled Enable-ScheduledTask -Times 0 -Exactly -Scope It

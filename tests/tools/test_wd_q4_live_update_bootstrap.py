@@ -100,6 +100,38 @@ def test_modified_bootstrap_refuses_before_update_import(candidate):
 def test_unlisted_package_file_refuses_before_update_import(candidate):
     (candidate['bundle'] / 'tools-bootstrap' / 'tools' / 'extra.py').write_text('pass', encoding='ascii')
     result = execute(candidate)
+    assert result.returncode != 0 and not result.stdout and 'package_membership' in result.stderr
+
+
+def test_refuses_mixed_namespace_without_emitting_answer(candidate):
+    root = candidate['runtime']
+    injected = root / 'site' / 'sandbox' / 'mind'
+    injected.mkdir(parents=True)
+    (injected / 'injected.py').write_text('VALUE=1', encoding='ascii')
+    config = json.loads(candidate['config'].read_bytes())
+    baseline_path = Path(config['baseline_path'])
+    baseline = json.loads(baseline_path.read_bytes())
+    fixed_path = Path(baseline['fixed_plan_path'])
+    fixed = json.loads(fixed_path.read_bytes())
+    manifest_path = Path(fixed['runtime_manifest_path'])
+    manifest_path.unlink()
+    rebuilt = runtime_builder.build_runtime_manifest(root, manifest_path, generation='a' * 40, revision='b' * 40)
+    fixed['runtime_manifest_sha256'] = rebuilt['manifest_sha256']
+    fixed_path.write_bytes(encode(fixed))
+    baseline.update(runtime_manifest_sha256=rebuilt['manifest_sha256'], fixed_plan_sha256=sha(fixed_path.read_bytes()))
+    baseline_path.write_bytes(encode(baseline))
+    config['baseline_sha256'] = sha(baseline_path.read_bytes())
+    update = candidate['bundle'] / 'tools-bootstrap' / 'tools' / 'wd_q4_live_update_once.py'
+    update.write_text("def main(args):\n print('must-not-leak')\n import sandbox.mind.injected\n return 0\n", encoding='ascii')
+    manifest = candidate['bundle'] / 'deployment-manifest.json'
+    manifest_doc = json.loads(manifest.read_bytes())
+    manifest_doc['files']['tools-bootstrap/tools/wd_q4_live_update_once.py'] = sha(update.read_bytes())
+    manifest.write_bytes(encode(manifest_doc))
+    candidate['manifest_sha'] = sha(manifest.read_bytes())
+    config['manifest_sha256'] = candidate['manifest_sha']
+    candidate['config'].write_bytes(encode(config))
+    candidate['config_sha'] = sha(candidate['config'].read_bytes())
+    result = execute(candidate)
     assert result.returncode != 0 and not result.stdout
 
 

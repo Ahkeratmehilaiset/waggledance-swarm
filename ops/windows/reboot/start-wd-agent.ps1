@@ -2780,6 +2780,7 @@ $startupPrompt += (
   'bundle manifest before executing it. By default it invokes the pinned $env:WD_BRIDGE_PYTHON_WRAPPER ' +
   'tools/wd_q4_lane_caller_cli.py --enabled; -Runtime selects the packaged caller runtime bootstrap. Supply UTF-8 JSON ' +
   'with exactly "situation" and "time"; time is UTC YYYY-MM-DDTHH:MM:SSZ (optionally 1-6 fractional digits). ' +
+  'Use current UTC within 5 minutes of the observed local clock; ranking uses the observed local clock, which is not authenticated. ' +
   'For a hash-verified descriptor whose expected_binding.card_policy_sha256 exists, pipe the JSON string to ' +
   '& (Join-Path $env:WD_BRIDGE_BUNDLE_ROOT "Invoke-WdQ4LaneRecall.ps1") -Runtime; ' +
   'do not combine -Runtime with -Live or -WithCoverage. For status-v2 retain the default helper route. ' +

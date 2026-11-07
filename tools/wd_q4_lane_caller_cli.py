@@ -360,15 +360,21 @@ def main(argv=None):
         _check(argv == ["--enabled"])
         descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs = _configuration()
         live_mode = os.environ.get("WD_Q4_LIVE_MODE", "")
+        p1_mode = os.environ.get("WD_Q4_LIVE_P1", "")
         coverage_mode = os.environ.get("WD_Q4_WITH_COVERAGE", "")
         _check(live_mode in ("", "1"))
+        _check(p1_mode in ("", "1") and (p1_mode != "1" or live_mode == "1"))
         _check(coverage_mode in ("", "1") and (coverage_mode != "1" or live_mode == "1"))
+        _check(p1_mode != "1" or coverage_mode == "")
         if live_mode == "1":
             from tools import wd_q4_live_snapshot_publish as live
-            live_publication = live.select(enabled=True, baseline_path=_env("WD_Q4_SHARED_DESCRIPTOR_PATH"),
+            selection = dict(enabled=True, baseline_path=_env("WD_Q4_SHARED_DESCRIPTOR_PATH"),
                 baseline_sha256=descriptor_pin,
                 baseline=(descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs),
                 manifest_sha256=_hex(_env("WD_REBOOT_EXPECTED_MANIFEST_HASH")), load_configuration=_configuration)
+            if p1_mode == "1":
+                selection["p1_enabled"] = True
+            live_publication = live.select(**selection)
             descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs = live_publication["configuration"]
         _require_current_snapshot(descriptor, binding, inputs)
         lane, identity_raw, token = _identity(fleet_raw, descriptor, descriptor_pin)

@@ -266,6 +266,43 @@ def test_live_mode_refuses_if_no_live_publication_before_query(case, monkeypatch
     assert case["calls"] == []
 
 
+@pytest.mark.parametrize('p1,expected', [('',None), ('1',True)])
+def test_live_selector_receives_only_explicit_p1_opt_in(case, monkeypatch, capsys, p1, expected):
+    from tools import wd_q4_live_snapshot_publish as live
+    seen=[]
+    def stop_before_query(**kwargs):
+        seen.append(kwargs)
+        raise ValueError('synthetic selector stop')
+    monkeypatch.setattr(live, 'select', stop_before_query)
+    monkeypatch.setenv('WD_Q4_LIVE_MODE','1')
+    monkeypatch.setenv('WD_Q4_LIVE_P1',p1)
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert len(seen)==1 and seen[0].get('p1_enabled') is expected
+    assert not case['calls']
+
+
+@pytest.mark.parametrize('p1,live_mode',[('bad','1'),('1','')])
+def test_invalid_p1_environment_refuses_before_selection_and_query(case, monkeypatch, capsys, p1, live_mode):
+    from tools import wd_q4_live_snapshot_publish as live
+    seen=[]
+    monkeypatch.setattr(live,'select',lambda **kwargs: seen.append(kwargs))
+    monkeypatch.setenv('WD_Q4_LIVE_MODE',live_mode)
+    monkeypatch.setenv('WD_Q4_LIVE_P1',p1)
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert not seen and not case['calls']
+
+
+def test_p1_coverage_combination_refuses_before_selection_and_query(case, monkeypatch, capsys):
+    from tools import wd_q4_live_snapshot_publish as live
+    seen=[]
+    monkeypatch.setattr(live,'select',lambda **kwargs: seen.append(kwargs))
+    monkeypatch.setenv('WD_Q4_LIVE_MODE','1')
+    monkeypatch.setenv('WD_Q4_LIVE_P1','1')
+    monkeypatch.setenv('WD_Q4_WITH_COVERAGE','1')
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert not seen and not case['calls']
+
+
 @pytest.mark.parametrize('coverage,live', [('1', ''), ('bad', '1')])
 def test_coverage_envelope_requires_valid_explicit_live_mode(case, monkeypatch, capsys, coverage, live):
     monkeypatch.setenv('WD_Q4_WITH_COVERAGE', coverage)

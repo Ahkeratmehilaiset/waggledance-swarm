@@ -58,7 +58,17 @@ def test_pinned_writer_receipt_checked_after_single_append(monkeypatch):
     assert len(result['event_ref_sha256'])==64 and len(calls)==1
 
 
-@pytest.mark.parametrize('fault',['uuid','session','payload','timestamp','private','delivery','exception','interrupt'])
+def test_writer_crossing_a_minute_boundary_is_validated_as_written(monkeypatch):
+    mod,claim,args,fx=setup(monkeypatch); calls=[]
+    def run(command,**kwargs):
+        calls.append(command)
+        return receipt(command,fx,change=lambda event,delivery: event.update(ts_utc='2026-11-01T10:01:00Z'))
+    monkeypatch.setattr(mod.subprocess,'run',run)
+    result=mod.publish(enabled=True,claim=claim,**args)
+    assert result['status']=='WRITTEN' and len(calls)==1
+
+
+@pytest.mark.parametrize('fault',['uuid','session','payload','timestamp','timestamp_before','private','delivery','exception','interrupt'])
 def test_post_entry_failure_is_unknown_and_never_retried(monkeypatch,fault):
     mod,claim,args,fx=setup(monkeypatch);calls=[]
     def run(command,**kwargs):
@@ -69,7 +79,8 @@ def test_post_entry_failure_is_unknown_and_never_retried(monkeypatch,fault):
             if fault=='uuid':event['agent_uuid']=fx.UUIDS[fx.FABLE]
             if fault=='session':event['session_id']='different-session'
             if fault=='payload':event['payload']['public_knowledge']['outcome']='red'
-            if fault=='timestamp':event['ts_utc']='2026-11-01T10:01:00Z'
+            if fault=='timestamp':event['ts_utc']='2026-11-01T10:02:00Z'
+            if fault=='timestamp_before':event['ts_utc']='2026-11-01T09:59:59.9999999Z'
             if fault=='private':event['message']='synthetic secret'
             if fault=='delivery':delivery['accepted']=False
         return receipt(command,fx,change=change)

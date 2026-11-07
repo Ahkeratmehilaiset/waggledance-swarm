@@ -192,6 +192,11 @@ def reserve(*, enabled=False, private_root=None, shared_root=None, route_bytes=N
         owner_lock = checkpoint._secure(private / 'q4-cutoff-owner.lock', missing_leaf=True)
         with reader_slot(owner_lock, timeout_seconds=0.2):
             checkpoint._secure(owner_lock)
+            # Adoption owns this same lock while admitting its pending marker.
+            # An interrupted adoption requires reconciliation before a direct
+            # cutoff writer can reserve or advance the shared checkpoint.
+            if os.path.lexists(private / 'q4-continuation-adopt.pending.json'):
+                raise WatermarkUnknown('cutoff_watermark_unknown')
             with private_state.locked_state(private, shared, enabled=True) as state:
                 with private_state._checkpoint_lock(shared, 0.2):
                     if os.path.lexists(private / 'q4-cutoff.pending.json'):

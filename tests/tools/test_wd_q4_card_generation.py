@@ -20,6 +20,66 @@ def prepared(tmp_path, events=None):
     return args,out
 
 
+def mixed_prepared(tmp_path,rows,*,heads='all'):
+    events=rt.fx.corpus()
+    decision,decision_sha,source=rt.anchor(tmp_path/'source',events,prefix_rows=rows,heads=heads)
+    out=tmp_path/'out'; out.mkdir()
+    args=dict(enabled=True,decision_bytes=decision,decision_sha256=decision_sha,
+        vocabulary_bytes=rt.fx.VOCABULARY,vocabulary_sha256=rt.fx.PINS['vocabulary_sha256'],
+        path_allowlist_bytes=rt.fx.PATHS,path_allowlist_sha256=rt.fx.PINS['path_allowlist_sha256'],
+        now_utc=rt.fx.NOW,output_root=out,generation_name='candidate',encode=rt.fx.encode,
+        identity=rt.fx.IDENTITY,dimension=rt.fx.DIM,**source,**rt.pins())
+    return args,out
+
+
+def test_mixed_prefix_ignores_noncard_private_and_review_events(tmp_path):
+    pytest.importorskip('faiss')
+    cards=rt.fx.corpus()
+    noise=[{'task_id':'mind-public-knowledge-v1','type':'status','agent':'claude-rco-1',
+            'message':'synthetic-private-secret-canary','payload':{'kind':'checkpoint'}},
+           {'task_id':'unrelated','type':'status','message':'synthetic-private-secret-canary'},
+           {'task_id':'mind-public-knowledge-v1','payload':None}]
+    args,out=mixed_prepared(tmp_path,noise[:1]+cards+noise[1:])
+    result=producer.prepare_card_generation(**args)
+    assert result['status']=='STAGED'
+    for path in (out/'candidate').rglob('*'):
+        if path.is_file(): assert b'synthetic-private-secret-canary' not in path.read_bytes()
+
+
+@pytest.mark.parametrize('fault',['private_message','private_path','directed','review_author','malformed_card','extra_payload','wrong_task','foreign_uuid'])
+def test_invalid_card_claim_refuses_all_before_write(tmp_path,fault):
+    cards=rt.fx.corpus(); bad=json.loads(json.dumps(cards[0]))
+    if fault=='private_message': bad['message']='synthetic-private-secret-canary'
+    if fault=='private_path': bad['paths']=['C:/synthetic/private']
+    if fault=='directed': bad['to']='claude-rco-1'
+    if fault=='review_author': bad['agent']='claude-rco-1'
+    if fault=='malformed_card': bad['payload']['public_knowledge']=None
+    if fault=='extra_payload': bad['payload']['other']='synthetic-private-secret-canary'
+    if fault=='wrong_task': bad['task_id']='unrelated'
+    if fault=='foreign_uuid': bad['agent_uuid']=rt.fx.UUIDS[rt.fx.FABLE]
+    args,out=mixed_prepared(tmp_path,cards+[bad])
+    with pytest.raises(producer.CardGenerationRefused): producer.prepare_card_generation(**args)
+    assert list(out.iterdir())==[]
+
+
+def test_prefix_without_a_card_claim_refuses_before_write(tmp_path):
+    args,out=mixed_prepared(tmp_path,[{'task_id':'mind-public-knowledge-v1','payload':{'kind':'checkpoint'}}])
+    with pytest.raises(producer.CardGenerationRefused): producer.prepare_card_generation(**args)
+    assert list(out.iterdir())==[]
+
+
+def test_unknown_head_is_refused_before_writing(tmp_path):
+    args,out=mixed_prepared(tmp_path,rt.fx.corpus(),heads=None)
+    with pytest.raises(producer.CardGenerationRefused): producer.prepare_card_generation(**args)
+    assert list(out.iterdir())==[]
+
+
+def test_unobserved_head_is_refused_before_writing(tmp_path):
+    args,out=mixed_prepared(tmp_path,rt.fx.corpus(),heads=['1'*40])
+    with pytest.raises(producer.CardGenerationRefused): producer.prepare_card_generation(**args)
+    assert list(out.iterdir())==[]
+
+
 def test_default_off_does_not_touch_any_inputs(tmp_path):
     class Untouchable:
         def __getattribute__(self, _name): raise AssertionError('input accessed')

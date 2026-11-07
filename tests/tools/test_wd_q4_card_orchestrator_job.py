@@ -98,15 +98,17 @@ def case(tmp_path):
     return locals()
 
 
-def launch(c, *, timeout=30, bad_pin=False, scratch=None):
+def launch(c, *, timeout=30, bad_pin=False, scratch=None, receipt=None):
     host=Path(os.environ['SYSTEMROOT'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
-    return subprocess.run([str(host),'-NoProfile','-NonInteractive','-File',str(c['bundle']/ENTRY.name),'-Run',
+    args=[str(host),'-NoProfile','-NonInteractive','-File',str(c['bundle']/ENTRY.name),'-Run',
         '-BundleRoot',str(c['bundle']),'-ExpectedCommit','a'*40,'-ExpectedManifestSha256',sha(c['manifest'].read_bytes()),
         '-RequestPath',str(c['request']),'-ExpectedRequestSha256','0'*64 if bad_pin else sha(c['request'].read_bytes()),
         '-RuntimePath',str(c['runtime']),'-ExpectedRuntimeSha256',sha(c['runtime'].read_bytes()),
         '-ScratchRoot',str(scratch or c['scratch']),'-ExpectedHostSha256',sha(host.read_bytes()),
-        '-ExpectedBridgePythonSha256',sha(Path(sys.executable).read_bytes()),'-TimeoutSeconds',str(timeout)],
-        capture_output=True,text=True,timeout=60)
+        '-ExpectedBridgePythonSha256',sha(Path(sys.executable).read_bytes()),'-TimeoutSeconds',str(timeout)]
+    if receipt is not None:
+        args += ['-ReceiptPath', str(receipt)]
+    return subprocess.run(args, capture_output=True,text=True,timeout=60)
 
 
 def test_real_job_propagates_only_verified_candidate(case):
@@ -115,6 +117,28 @@ def test_real_job_propagates_only_verified_candidate(case):
     assert case['wrapper_marker'].exists(), 'the pinned bridge wrapper was bypassed'
     assert json.loads(result.stdout)=={'status':'PREPARED','pointer_path':str(case['pointer']),
                                       'pointer_sha256':sha(case['pointer'].read_bytes())}
+
+
+def test_owned_job_writes_opt_in_receipt_with_original_request_and_confirmed_cleanup(case):
+    receipt = case['scratch'] / 'refresh-job-receipt.json'
+    result = launch(case, receipt=receipt)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    answer = json.loads(result.stdout)
+    assert json.loads(receipt.read_bytes()) == {
+        'schema': 'wd.q4-card-refresh-job.v1', 'outcome': 'completed',
+        'cleanup': 'confirmed', 'exit_code': 0,
+        'request': {'path': str(case['request']), 'sha256': sha(case['request'].read_bytes())},
+        'result': answer,
+    }
+
+
+@pytest.mark.parametrize('outside', [False, True])
+def test_receipt_existing_or_outside_scratch_refuses_before_job(case, outside):
+    receipt = (case['tmp_path'] if outside else case['scratch']) / 'existing.json'
+    receipt.write_bytes(b'unchanged')
+    result = launch(case, receipt=receipt)
+    assert result.returncode == 2 and json.loads(result.stdout) == {'status': 'REFUSED'}
+    assert receipt.read_bytes() == b'unchanged' and not case['wrapper_marker'].exists()
 
 
 @pytest.mark.parametrize('matching', [True, False])

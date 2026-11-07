@@ -10,6 +10,7 @@ param(
     [string]$RequestPath='', [string]$ExpectedRequestSha256='',
     [string]$RuntimePath='', [string]$ExpectedRuntimeSha256='',
     [string]$ScratchRoot='', [string]$ExpectedHostSha256='', [string]$ExpectedBridgePythonSha256='',
+    [string]$ReceiptPath='',
     [ValidateRange(1,1800)][int]$TimeoutSeconds=1800
 )
 $ErrorActionPreference='Stop'
@@ -109,6 +110,17 @@ try {
         if ($sharedGeneration -cnotmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') { throw 'generation' }
     }
     $scratch=CheckedPath $ScratchRoot $true
+    $receipt=''
+    if ($ReceiptPath) {
+        if ($ReceiptPath -notmatch '^C:\\' -or $ReceiptPath.Contains('%') -or
+            $ReceiptPath -match '(^|\\)\.\.?($|\\)') { throw 'receipt' }
+        $receipt=[IO.Path]::GetFullPath($ReceiptPath)
+        $parent=CheckedPath ([IO.Path]::GetDirectoryName($receipt)) $true
+        $leaf=[IO.Path]::GetFileName($receipt)
+        if (-not $parent.Equals($scratch,[StringComparison]::OrdinalIgnoreCase) -or
+            $leaf -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.json$' -or
+            (Test-Path -LiteralPath $receipt)) { throw 'receipt' }
+    }
     if ($null -ne ('WdQ4CardJobPathsV1' -as [type])) { throw 'type' }
     Add-Type -TypeDefinition @'
 using System;
@@ -267,6 +279,17 @@ finally {
     }
     if (-not $pointer.Equals($expected,[StringComparison]::OrdinalIgnoreCase)) { throw 'pointer' }
     ExactHash $pointer ([string]$answer.pointer_sha256)
+    if ($receipt) {
+        $doc=[ordered]@{
+            schema='wd.q4-card-refresh-job.v1'; outcome='completed'; cleanup='confirmed'; exit_code=0
+            request=[ordered]@{path=$request;sha256=$ExpectedRequestSha256}
+            result=[ordered]@{pointer_path=[string]$answer.pointer_path;pointer_sha256=[string]$answer.pointer_sha256;status='PREPARED'}
+        }
+        $raw=[Text.UTF8Encoding]::new($false,$true).GetBytes(($doc | ConvertTo-Json -Depth 5 -Compress))
+        if ($raw.Length -gt 4096) { throw 'receipt' }
+        $stream=[IO.File]::Open($receipt,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+        try { $stream.Write($raw,0,$raw.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    }
     [Console]::Out.Write($text)
     exit 0
 } catch {

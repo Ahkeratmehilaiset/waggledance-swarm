@@ -118,6 +118,8 @@
     "tools/wd_q4_real_card_snapshot_runtime_bootstrap.py",
     "tools/wd_q4_card_audit_orchestrator.py",
     "tools/wd_q4_card_orchestrator_runtime_bootstrap.py",
+    "tools/wd_q4_initial_card_inputs.py",
+    "tools/wd_q4_live_publication_recovery.py",
     "tools/wd_q4_staged_card_composer_cli.py",
     "tools/wd_q4_public_card_prepare.py",
     "tools/wd_q4_real_card_decision_prepare.py",

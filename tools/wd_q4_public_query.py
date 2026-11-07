@@ -176,3 +176,111 @@ def query_public(config, stdin, *, root, expected_pointer_sha256=None,
         return output
     except Exception:
         raise PublicQueryRefused("public_query_refused") from None
+
+
+def query_staged_card_snapshot(config, stdin, *, root, pointer_bytes=None,
+                               expected_pointer_sha256=None, expected_source_sha256=None,
+                               expected_encoder_sha256=None, policy_bytes=None,
+                               policy_sha256=None, roster_bytes=None, roster_sha256=None,
+                               card_decision_bytes=None, card_decision_sha256=None,
+                               card_policy_bytes=None, source_path=None,
+                               generation_path=None, end_cursor=None, enabled=False):
+    """Opt-in query of one caller-pinned staged card snapshot, without history.
+
+    The explicit C2 tuple is revalidated before consuming stdin and after the
+    query. The caller must independently trust all pins, code, policy origins,
+    runtime and encoder assets. No pointer is published or installed state read.
+    The existing backend may lock/write scratch when explicitly invoked; this
+    function grants no native execution or runtime authority. Ordinary changes
+    are detected, not same-user ABA. Outer/CLI/session wiring is separate.
+    """
+    if enabled is not True:
+        raise PublicQueryRefused("disabled")
+    try:
+        if not all(pointer_resolver._pin(pin) for pin in (
+                expected_pointer_sha256, expected_source_sha256, expected_encoder_sha256,
+                policy_sha256, roster_sha256, card_decision_sha256)):
+            raise ValueError()
+        q4_query._validate_config(config)
+        snapshot = dict(root=root, pointer_bytes=pointer_bytes,
+                        expected_pointer_sha256=expected_pointer_sha256,
+                        policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+                        roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+                        card_decision_bytes=card_decision_bytes,
+                        card_decision_sha256=card_decision_sha256,
+                        card_policy_bytes=card_policy_bytes, source_path=source_path,
+                        generation_path=generation_path, end_cursor=end_cursor, enabled=True)
+        binding = pointer_resolver.resolve_card_snapshot_pointer(**snapshot)
+        if (type(binding) is not dict or binding.get("status") != "VALIDATED_STAGED"
+                or binding.get("source_mode") != "card-snapshot-v1"
+                or binding["source_prefix"]["sha256"] != expected_source_sha256
+                or "receipt_sha256" in binding
+                or any(binding[key] != expected for key, expected in (
+                    ("pointer_sha256", expected_pointer_sha256), ("policy_sha256", policy_sha256),
+                    ("roster_sha256", roster_sha256), ("card_decision_sha256", card_decision_sha256)))
+                or config.memory != binding["memory_root"]
+                or config.descriptor != binding["descriptor_path"]
+                or config.descriptor_sha256 != binding["descriptor_sha256"]):
+            raise ValueError()
+        read = pointer_resolver._read_matching
+        descriptor = pointer_resolver.checkpoint._parse(read(
+            Path(binding["descriptor_path"]), binding["descriptor_sha256"], limit=65536))
+        if (type(descriptor) is not dict
+                or set(descriptor) != {"schema", "scope", "memory_sha256", "dim", "encoder"}
+                or descriptor["schema"] != "wd.bridge-mind-q4-memory-descriptor.v2"
+                or descriptor["scope"] != _SCOPE
+                or type(descriptor["dim"]) is not int or descriptor["dim"] < 1
+                or descriptor["memory_sha256"] != binding["memory_sha256"]
+                or _encoder_digest(descriptor["encoder"]) != expected_encoder_sha256
+                or descriptor["encoder"]["revision"] != config.runtime_revision):
+            raise ValueError()
+        memory_bytes = read(Path(binding["memory_root"]) / "memory.json",
+                            binding["memory_sha256"], limit=_ARTIFACT_LIMIT)
+        projection_bytes = read(Path(binding["projection_path"]),
+                                binding["projection_sha256"], limit=_ARTIFACT_LIMIT)
+        tasks, _ = pointer_resolver.adapter.strict_pins(policy_bytes, policy_sha256,
+                                                       roster_bytes, roster_sha256)
+        result = q4_query.query_and_resolve(
+            config, stdin, memory_bytes, projection_bytes, tasks,
+            policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+            roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+            expected_memory_sha256=binding["memory_sha256"],
+            card_decision_bytes=card_decision_bytes, card_decision_sha256=card_decision_sha256)
+        if (type(result) is not dict or set(result) != {"status", "results"}
+                or result["status"] not in ("ANSWER", "ABSTAIN", "DEGRADED")
+                or type(result["results"]) is not list or len(result["results"]) > 100
+                or (result["status"] == "ANSWER" and not result["results"])
+                or (result["status"] == "ABSTAIN" and result["results"])):
+            raise ValueError()
+        clean = []
+        for item in result["results"]:
+            if (type(item) is not dict or set(item) != _RESULT_KEYS | {"stored_text"}
+                    or type(item["stored_text"]) is not str
+                    or len(item["stored_text"].encode("utf-8", errors="strict")) > _PUBLIC_TEXT_LIMIT
+                    or item["ref_kind"] != "sha256_of_projected_metadata"
+                    or item["canonical_event"] is not False
+                    or not all(pointer_resolver._pin(item[key])
+                               for key in ("ref_sha256", "doc_id_sha256"))):
+                raise ValueError()
+            clean.append({key: item[key] for key in sorted(_RESULT_KEYS | {"stored_text"})})
+        if pointer_resolver.resolve_card_snapshot_pointer(**snapshot) != binding:
+            raise ValueError()
+        output = {
+            "schema": "wd.q4-card-snapshot-query.v1", "status": result["status"], "results": clean,
+            "binding": {
+                "source_mode": "card-snapshot-v1", "pointer_sha256": expected_pointer_sha256,
+                "source_anchor_sha256": expected_source_sha256,
+                "encoder_sha256": expected_encoder_sha256,
+                **{key: binding[key] for key in ("policy_sha256", "roster_sha256",
+                    "card_decision_sha256", "card_policy_sha256", "descriptor_sha256",
+                    "memory_sha256", "projection_sha256")},
+            },
+            "publisher_authentication": "UNKNOWN", "source_filter_attestation": "UNKNOWN",
+            "freshness": "UNKNOWN", "same_user_aba": "UNKNOWN", "completeness": "UNKNOWN",
+        }
+        if len(json.dumps(output, ensure_ascii=True, separators=(",", ":"),
+                          allow_nan=False).encode("utf-8")) > q4_query.MAX_OUTPUT:
+            raise ValueError()
+        return output
+    except Exception:
+        raise PublicQueryRefused("staged_query_refused") from None

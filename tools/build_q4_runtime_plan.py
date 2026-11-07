@@ -210,7 +210,7 @@ def _blob(git_executable, repository, oid, size, deadline):
     data = _git(git_executable, repository, ["cat-file", "blob", oid], deadline, size)
     if data is None or len(data) != size:
         _fail("code_entry_invalid")
-    recomputed = hashlib.sha1() if len(oid) == 40 else hashlib.sha256()
+    recomputed = hashlib.sha1(usedforsecurity=False) if len(oid) == 40 else hashlib.sha256()
     recomputed.update(b"blob %d\0" % len(data))
     recomputed.update(data)  # no header-plus-data copy
     if recomputed.hexdigest() != oid:

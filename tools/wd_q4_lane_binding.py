@@ -5,7 +5,8 @@
 (schema ``wd.q4-lane-binding.v1``), both with caller-supplied sha256 pins, and returns exactly the pin keywords of
 ``tools.wd_q4_lane_query.query_public`` for ONE declared lane: ``lane``, ``expected_commit``,
 ``expected_manifest_sha256``, ``expected_wrapper_sha256``, ``expected_public_plan_sha256`` and ``expected_binding``
-(the eight ``BINDING_KEYS`` digests). The caller still supplies situation, time, roots, plan location, the pinned
+(the eight ``BINDING_KEYS`` digests, or the nine ``CARD_BINDING_KEYS`` when the document pins the optional
+``card_decision_sha256``; the card pin must then also be in the pinned public plan, which ``query_public`` checks). The caller still supplies situation, time, roots, plan location, the pinned
 projection/policy/roster bytes and the transport itself; this module reads no file, calls nothing but the two pure
 helpers above, and never looks at the live fleet configuration. The committed fleet file carries no binding
 document, so without a separately pinned one every call refuses and the live configuration stays OFF.
@@ -31,14 +32,16 @@ import re
 from tools import wd_q4_lane_query as lane_query
 from tools import wd_q4_roster_from_fleet as roster_mod
 
-__all__ = ["LaneBindingRefused", "resolve_lane_binding", "SCHEMA", "BINDING_KEYS", "OUTPUT_KEYS", "REASONS",
-           "BINDING_LIMIT", "IDENTITY"]
+__all__ = ["LaneBindingRefused", "resolve_lane_binding", "SCHEMA", "BINDING_KEYS", "CARD_BINDING_KEYS",
+           "OUTPUT_KEYS", "REASONS", "BINDING_LIMIT", "IDENTITY"]
 
 SCHEMA = "wd.q4-lane-binding.v1"
 IDENTITY = "declared_not_authenticated"
 BINDING_LIMIT = 1 << 16
 BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256",
                           "roster_sha256", "public_policy_sha256", "descriptor_sha256", "projection_sha256"})
+# optional, default absent: the pinned card route decision digest (v7 card mode of the lane query)
+CARD_BINDING_KEYS = BINDING_KEYS | {"card_decision_sha256"}
 OUTPUT_KEYS = frozenset({"lane", "expected_commit", "expected_manifest_sha256", "expected_wrapper_sha256",
                          "expected_public_plan_sha256", "expected_binding"})
 REASONS = frozenset({"disabled", "fleet_refused", "binding_refused", "roster_refused", "lane_refused",
@@ -115,7 +118,8 @@ def _shape(document, roster_lanes):
     if not all(_hex64(document[key]) for key in ("manifest_sha256", "wrapper_sha256", "public_plan_sha256")):
         return False
     binding = document["binding"]
-    if type(binding) is not dict or frozenset(binding) != BINDING_KEYS or not all(map(_hex64, binding.values())):
+    if (type(binding) is not dict or frozenset(binding) not in (BINDING_KEYS, CARD_BINDING_KEYS)
+            or not all(map(_hex64, binding.values()))):
         return False
     lanes = document["lanes"]
     # element types first: an unhashable element must be a refusal, never a TypeError out of set()
@@ -133,7 +137,7 @@ def _contract_holds():
         return False
     if frozenset(parameters) - _CALLER_PARAMETERS != OUTPUT_KEYS or not _CALLER_PARAMETERS <= frozenset(parameters):
         return False
-    return lane_query.BINDING_KEYS == BINDING_KEYS
+    return lane_query.BINDING_KEYS == BINDING_KEYS and lane_query.CARD_BINDING_KEYS == CARD_BINDING_KEYS
 
 
 def resolve_lane_binding(fleet_bytes, expected_fleet_sha256, binding_bytes, expected_binding_sha256, *, lane,
@@ -168,5 +172,5 @@ def resolve_lane_binding(fleet_bytes, expected_fleet_sha256, binding_bytes, expe
         "expected_manifest_sha256": document["manifest_sha256"],
         "expected_wrapper_sha256": document["wrapper_sha256"],
         "expected_public_plan_sha256": document["public_plan_sha256"],
-        "expected_binding": {key: document["binding"][key] for key in sorted(BINDING_KEYS)},
+        "expected_binding": {key: document["binding"][key] for key in sorted(document["binding"])},
     }

@@ -4,6 +4,14 @@ All pins are independently supplied by the caller. Their agreement proves byte
 consistency, not source authenticity, freshness, lane authentication, full index
 history, runtime readiness or installation. The snapshot is privately supplied
 and never returned; callers must not log their own inputs or traceback locals.
+
+Optional card mode (default absent): a ``wd.q4-public-wrapper-plan.v2`` plan pins
+``card_decision_sha256``; the caller must then pass the decision bytes, which are
+verified against that pin and the plan policy and roster pins
+(``verify_route_decision``), the snapshot projection must carry the decision
+projection schema, and the pin is bound as ``card_decision_sha256``. The decision
+issuer is not authenticated. The snapshot preflight still validates v6 public
+generations only, so a card generation is refused until it is card-aware.
 """
 import hashlib
 import hmac
@@ -11,6 +19,7 @@ import json
 import re
 
 from sandbox.mind.step2 import shared_capture_adapter as capture
+from sandbox.mind.step2 import shared_card_projection as cards
 from sandbox.mind.step2 import shared_index_pointer as index_pointer
 from sandbox.mind.step2 import shared_index_preflight as preflight
 from tools import wd_q4_lane_binding as binding
@@ -50,7 +59,8 @@ class _Active:
 
 def _build(*, expected_commit, manifest_bytes, expected_manifest_sha256,
            fleet_bytes, expected_fleet_sha256, wrapper_bytes, expected_wrapper_sha256,
-           public_plan_bytes, expected_public_plan_sha256, snapshot_bytes, expected_snapshot_sha256):
+           public_plan_bytes, expected_public_plan_sha256, snapshot_bytes, expected_snapshot_sha256,
+           card_decision_bytes):
     if type(expected_commit) is not str or _HEX40.fullmatch(expected_commit) is None:
         raise ValueError()
     for raw, pin, limit in ((manifest_bytes, expected_manifest_sha256, 2 * 1024 * 1024),
@@ -70,14 +80,19 @@ def _build(*, expected_commit, manifest_bytes, expected_manifest_sha256,
         if type(value) is not str or value.lower() != expected:
             raise ValueError()
     plan = link._json(public_plan_bytes)
-    if (type(plan) is not dict or set(plan) != link._PUBLIC_PLAN_KEYS
-            or plan.get('schema') != 'wd.q4-public-wrapper-plan.v1'
+    if (type(plan) is not dict or type(plan.get('schema')) is not str
+            or plan['schema'] not in link._PUBLIC_PLAN_SCHEMAS
+            or set(plan) != link._PUBLIC_PLAN_SCHEMAS[plan['schema']]
             or type(plan.get('config')) is not dict
             or any(type(plan.get(key)) is not str or not plan[key]
                    for key in ('root', 'policy_path', 'roster_path', 'public_policy_path'))):
         raise ValueError()
+    card = plan['schema'] == 'wd.q4-public-wrapper-plan.v2'
+    if card != (card_decision_bytes is not None) or (
+            card and (type(plan['card_decision_path']) is not str or not plan['card_decision_path'])):
+        raise ValueError()
     plan_pins = {key: (plan['config'].get(key) if key == 'descriptor_sha256' else plan[key])
-                 for key in link._PUBLIC_BIND_PINS}
+                 for key in link._PUBLIC_BIND_PINS | ({'card_decision_sha256'} if card else set())}
     if any(type(value) is not str or _HEX64.fullmatch(value) is None for value in plan_pins.values()):
         raise ValueError()
     canonical_roster, roster_sha = roster.build_roster_snapshot(fleet_bytes, expected_fleet_sha256, enabled=True)
@@ -106,6 +121,12 @@ def _build(*, expected_commit, manifest_bytes, expected_manifest_sha256,
     active = snapshot['active_artifact_bytes']
     if type(active) is not dict or set(active) != set(index_pointer.ARTIFACTS.values()):
         raise ValueError()
+    if card:
+        decision = cards.verify_route_decision(card_decision_bytes, plan_pins['card_decision_sha256'],
+            policy_sha256=plan_pins['policy_sha256'], roster_sha256=roster_sha)
+        projection = link._json(active['projection.json'])
+        if type(projection) is not dict or projection.get('schema') != decision['projection_schema']:
+            raise ValueError()
     preflight._preflight_public_snapshot(pointer, _Active(active), tasks, roster_data,
         public_policy_bytes=snapshot['public_policy_bytes'], public_policy_sha256=plan_pins['public_policy_sha256'],
         expected_source_sha256=plan_pins['source_anchor_sha256'],
@@ -125,7 +146,7 @@ def _build(*, expected_commit, manifest_bytes, expected_manifest_sha256,
 def build_lane_binding(*, enabled=False, expected_commit=None, manifest_bytes=None, expected_manifest_sha256=None,
                        fleet_bytes=None, expected_fleet_sha256=None, wrapper_bytes=None, expected_wrapper_sha256=None,
                        public_plan_bytes=None, expected_public_plan_sha256=None, snapshot_bytes=None,
-                       expected_snapshot_sha256=None):
+                       expected_snapshot_sha256=None, card_decision_bytes=None):
     """Return OFF or one canonical binding/pin; never perform filesystem or network I/O."""
     if enabled is False:
         return {'status': 'OFF'}
@@ -138,11 +159,11 @@ def build_lane_binding(*, enabled=False, expected_commit=None, manifest_bytes=No
             expected_fleet_sha256=expected_fleet_sha256, wrapper_bytes=wrapper_bytes,
             expected_wrapper_sha256=expected_wrapper_sha256, public_plan_bytes=public_plan_bytes,
             expected_public_plan_sha256=expected_public_plan_sha256, snapshot_bytes=snapshot_bytes,
-            expected_snapshot_sha256=expected_snapshot_sha256)
+            expected_snapshot_sha256=expected_snapshot_sha256, card_decision_bytes=card_decision_bytes)
     except Exception:
         pass
     finally:
-        del manifest_bytes, fleet_bytes, wrapper_bytes, public_plan_bytes, snapshot_bytes
+        del manifest_bytes, fleet_bytes, wrapper_bytes, public_plan_bytes, snapshot_bytes, card_decision_bytes
     if result is not None:
         return result
     raise BindingProducerRefused('lane_binding_producer_refused') from None

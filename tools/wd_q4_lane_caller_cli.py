@@ -442,7 +442,7 @@ def main(argv=None):
     except (KeyboardInterrupt, SystemExit):
         return _refuse_phase(130, "CALLER_INTERRUPTED")
     except TimeoutError:
-        return _refuse_phase(4, "CALLER_TIMEOUT")
+        return _refuse_phase(4, "CALLER_TIMEOUT_UNKNOWN")
     except BaseException:
         # No exception detail, query, token, path or retry on any failure.
         return _refuse_phase(2, "CALLER_REFUSED")

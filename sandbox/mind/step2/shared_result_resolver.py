@@ -21,6 +21,22 @@ REF_KIND = "sha256_of_projected_metadata"
 MAX_BYTES = 16 * 1024 * 1024
 MAX_RESULTS = 100
 HEX = re.compile(r"[0-9a-f]{64}\Z")
+# Synthetic closed-card route (lead-mind-card-route-wire-fable-20261107-v1): OFF by default. Only while this holds
+# the card module itself (sandbox.mind.step2.shared_card_projection) is a memory naming the v7 card projection schema
+# resolved, by that module and under strict pins; while it is None such a memory is refused exactly as before (its
+# projection schema is not v6). This module never imports the card module, so the packaged closure is unchanged and
+# a bundle cannot reach the card route without shipping it. The v6 path is unchanged.
+CARD_ROUTE = None
+CARD_MODULE = "sandbox.mind.step2.shared_card_projection"
+CARD_PROJECTION_SCHEMA = "wd.bridge-mind-shared-card-projection.v7"
+
+
+def card_route():
+    """The card module while the card route is on, else None."""
+    module = CARD_ROUTE
+    if module is None or getattr(module, "__name__", None) != CARD_MODULE:
+        return None
+    return module
 
 
 class ResolveRefused(ValueError):
@@ -67,6 +83,31 @@ def _strict_memory_policy(value, policy_sha256, roster_sha256):
             and hmac.compare_digest(value["roster_sha256"], roster_sha256))
 
 
+def _resolve_cards(cards, manifest, projection_bytes, results, query_utc, approved_tasks, roster, strict,
+                   policy_sha256, roster_sha256):
+    """The synthetic card route: strict pins only, the card task approved, non-review roster authors."""
+    if (not strict or manifest.get("scope") != SCOPE
+            or not isinstance(manifest.get("projection_sha256"), str)
+            or HEX.fullmatch(manifest["projection_sha256"]) is None
+            or not isinstance(projection_bytes, bytes) or len(projection_bytes) > MAX_BYTES
+            or not hmac.compare_digest(_sha(projection_bytes), manifest["projection_sha256"])
+            or not _strict_memory_policy(manifest.get("policy"), policy_sha256, roster_sha256)
+            or not isinstance(approved_tasks, frozenset) or cards.CARD_TASK not in approved_tasks
+            or not isinstance(roster, dict)):
+        _invalid()
+    projection = _parse(projection_bytes)
+    try:
+        if json.dumps(projection, sort_keys=True, indent=1).encode("utf-8") != projection_bytes:
+            _invalid()
+        cards.validate_shared_card_projection(projection)
+        if any(record["meta"]["agent"] not in roster or record["meta"]["agent"] in sp.REVIEW_LANES
+               for record in projection["records"]):
+            _invalid()
+        return cards.resolve_shared_card_results(projection, results, query_utc, enabled=True)
+    except (cards.SharedCardRefused, ValueError, TypeError, KeyError, RecursionError, UnicodeError):
+        _invalid()
+
+
 def resolve_results(*, memory_manifest, expected_memory_sha256, projection_bytes, results, query_utc,
                     approved_tasks=None, policy_bytes=None, policy_sha256=None, roster_bytes=None,
                     roster_sha256=None):
@@ -93,6 +134,11 @@ def resolve_results(*, memory_manifest, expected_memory_sha256, projection_bytes
             or not hmac.compare_digest(_sha(memory_manifest), expected_memory_sha256)):
         _invalid()
     manifest = _parse(memory_manifest)
+    cards = card_route()
+    if (cards is not None and isinstance(manifest, dict)
+            and manifest.get("projection_schema") == CARD_PROJECTION_SCHEMA):
+        return _resolve_cards(cards, manifest, projection_bytes, results, query_utc, approved_tasks, roster, strict,
+                              policy_sha256, roster_sha256)
     if (not isinstance(manifest, dict) or manifest.get("scope") != SCOPE
             or manifest.get("projection_schema") != PROJECTION_SCHEMA
             or not isinstance(manifest.get("projection_sha256"), str)

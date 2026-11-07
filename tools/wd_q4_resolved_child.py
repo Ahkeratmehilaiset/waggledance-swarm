@@ -67,8 +67,16 @@ def _validate_projection(data, tasks, roster):
                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
     if json.dumps(value, sort_keys=True, indent=1).encode("utf-8") != data:
         raise ValueError()
-    sp.validate_projection(value, approved_tasks=tasks, include_refs=False,
-                           roster=roster, exclude_review_signal=True)
+    cards = resolver.card_route()
+    if (cards is not None and isinstance(value, dict)
+            and value.get("schema") == resolver.CARD_PROJECTION_SCHEMA):
+        # synthetic card route, OFF by default: re-derived by the card module; authors must be roster lanes
+        cards.validate_shared_card_projection(value)
+        if any(record["meta"]["agent"] not in roster for record in value["records"]):
+            raise ValueError()
+    else:
+        sp.validate_projection(value, approved_tasks=tasks, include_refs=False,
+                               roster=roster, exclude_review_signal=True)
     for record in value["records"]:
         meta = record["meta"]
         if meta["task_id"] not in tasks or meta["agent"] in ("claude-rco-1", "claude-rco-2"):

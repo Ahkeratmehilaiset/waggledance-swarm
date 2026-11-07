@@ -728,12 +728,12 @@ def _build(projection, encode, identity, dim, root, name, scope, descriptor_sche
             "records": len(records), "coverage": dict(projection["coverage"])}
 
 
-def resolve_shared_card_results(projection=None, results=None, query_utc=None, *, enabled=False):
-    """Hash-only Q4 items to the exact resolved transport items, like the v6 resolver; ``resolution_refused``."""
+def resolve_shared_card_results(projection=None, results=None, query_utc=None, *, enabled=False, _real_decision=None):
+    """Format Q4 items. A real decision here is internal context, never snapshot proof or authentication."""
     if not _enabled(enabled):
         return {"status": "OFF"}
     try:
-        validate_shared_card_projection(projection)
+        validate_shared_card_projection(projection, _real_decision=_real_decision)
     except SharedCardRefused:
         raise SharedCardRefused("resolution_refused") from None
     if (not isinstance(results, list) or len(results) > MAX_RESULTS or not isinstance(query_utc, str)
@@ -763,8 +763,10 @@ def resolve_shared_card_results(projection=None, results=None, query_utc=None, *
 
 
 def resolve_route_results(projection, results, query_utc, decision):
-    """The route's resolved items; with no observed head set a card head is shown as ``head:unknown`` (RW2)."""
-    resolved = resolve_shared_card_results(projection, results, query_utc, enabled=True)
+    """Format route items; caller must independently verify the decision and snapshot before use."""
+    real = type(decision) is dict and decision.get('synthetic') is False
+    resolved = resolve_shared_card_results(projection, results, query_utc, enabled=True,
+                                           _real_decision=decision if real else None)
     if decision["observed_heads"] is not None:
         return resolved
     by_doc = {_sha(record["record_id"].encode("utf-8")): record for record in projection["records"]}
@@ -790,13 +792,41 @@ def _read_bounded(path, limit):
     return raw
 
 
-def ask_shared_cards(memory_dir, expected_memory_sha256, encoder, situation, situation_time_utc, *, enabled=False):
-    """Q4 over a pinned card memory, resolved to the transport items plus ``card_status``, with coverage."""
+def ask_shared_cards(memory_dir, expected_memory_sha256, encoder, situation, situation_time_utc, *, enabled=False,
+                     real_snapshot=None):
+    """Q4 over pinned memory; the separate real path requires an actual C2 snapshot check.
+
+    Caller pins are not publisher authentication or freshness evidence. C2 and
+    this filesystem-backed reader do not protect against hostile concurrent
+    same-user modification or close all filesystem TOCTOU windows.
+    """
     if not _enabled(enabled):
         return {"status": "OFF"}
     from sandbox.mind.step2 import memory as memory_mod
     from sandbox.mind.step2 import q4 as q4_mod
     memory_dir = Path(memory_dir)
+    decision = None
+    if real_snapshot is not None:
+        from sandbox.mind.step2 import shared_card_checkpoint as checkpoint
+        expected_fields = {'pointer_bytes', 'expected_pointer_sha256', 'decision_bytes', 'decision_sha256',
+                           'policy_bytes', 'policy_sha256', 'roster_bytes', 'roster_sha256', 'card_policy_bytes',
+                           'source_path', 'generation_path', 'end_cursor'}
+        try:
+            if type(real_snapshot) is not dict or set(real_snapshot) != expected_fields:
+                raise ValueError()
+            real_snapshot = dict(real_snapshot)
+            verdict = checkpoint.validate_card_snapshot(enabled=True, generation_dir=memory_dir, **real_snapshot)
+            if verdict != {'status': 'VALIDATED_STAGED', 'completeness': 'UNKNOWN'}:
+                raise ValueError()
+            decision = verify_route_decision(real_snapshot['decision_bytes'], real_snapshot['decision_sha256'],
+                policy_sha256=real_snapshot['policy_sha256'], roster_sha256=real_snapshot['roster_sha256'])
+            if decision['synthetic'] is not False:
+                raise ValueError()
+            pointer = json.loads(real_snapshot['pointer_bytes'])
+            if pointer['artifacts']['memory.json'] != expected_memory_sha256:
+                raise ValueError()
+        except Exception:
+            raise SharedCardRefused('snapshot_invalid') from None
     try:
         raw = _read_bounded(memory_dir / "memory.json", memory_mod.MAX_MEMORY_MANIFEST_BYTES)
     except OSError:
@@ -806,8 +836,12 @@ def ask_shared_cards(memory_dir, expected_memory_sha256, encoder, situation, sit
         raise SharedCardRefused("memory_mismatch")
     try:
         manifest = json.loads(raw)
-        if (manifest.get("scope") != SCOPE or manifest.get("synthetic") is not True
+        if (manifest.get("scope") != SCOPE or manifest.get("synthetic") is not (decision is None)
                 or manifest.get("projection_schema") != SCHEMA):
+            raise ValueError()
+        if decision is not None and (manifest.get('card_route', {}).get('decision_sha256')
+                                     != real_snapshot['decision_sha256']
+                                     or pointer['artifacts']['projection.json'] != manifest.get('projection_sha256')):
             raise ValueError()
         projection_raw = _read_bounded(memory_dir / manifest["projection_file"], 64 * 1024 * 1024)
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -815,7 +849,7 @@ def ask_shared_cards(memory_dir, expected_memory_sha256, encoder, situation, sit
     if _sha(projection_raw) != manifest["projection_sha256"]:
         raise SharedCardRefused("projection_mismatch")
     try:
-        projection = validate_shared_card_projection(json.loads(projection_raw))
+        projection = validate_shared_card_projection(json.loads(projection_raw), _real_decision=decision)
     except ValueError:
         raise SharedCardRefused("projection_invalid") from None
     if manifest["cutoff_utc"] != projection["coverage"]["cutoff_utc"]:
@@ -827,7 +861,13 @@ def ask_shared_cards(memory_dir, expected_memory_sha256, encoder, situation, sit
         raise SharedCardRefused("memory_unreadable") from None
     items = [{"ref_sha256": _sha(result["ref"].encode("utf-8")), "doc_id_sha256": _sha(result["doc_id"].encode("utf-8")),
               "ref_kind": REF_KIND, "canonical_event": False} for result in out["results"]]
-    resolved = resolve_shared_card_results(projection, items, situation_time_utc, enabled=True) if items else []
+    if decision is not None:
+        if checkpoint.validate_card_snapshot(enabled=True, generation_dir=memory_dir, **real_snapshot) != {
+                'status': 'VALIDATED_STAGED', 'completeness': 'UNKNOWN'}:
+            raise SharedCardRefused('snapshot_invalid')
+        resolved = resolve_route_results(projection, items, situation_time_utc, decision) if items else []
+    else:
+        resolved = resolve_shared_card_results(projection, items, situation_time_utc, enabled=True) if items else []
     results = [dict(item, card_status=card_status(item["stored_text"], situation_time_utc)) for item in resolved]
     answer = {"status": out["status"], "reason": out["reason"], "results": results,
               "coverage": dict(projection["coverage"])}

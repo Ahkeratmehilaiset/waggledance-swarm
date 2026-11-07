@@ -1,8 +1,10 @@
-"""Prepare one synthetic, anchored card generation; never update a pointer.
+"""Prepare one anchored card generation; never update a pointer.
 
 All pins are caller supplied. A matching prefix is not authenticated as the
-live bridge, and coverage/freshness beyond that prefix remain unknown. This
-does not implement publication, scheduling, installation or recovery.
+live bridge, and coverage/freshness beyond that prefix remain unknown. The
+separate real-decision path requires caller-approved Git anchors; neither that
+assertion nor roster consistency authenticates the source or publisher. Output
+is staged only; this does not implement publication, scheduling or installation.
 """
 import hashlib
 import json
@@ -11,6 +13,7 @@ from pathlib import Path
 from sandbox.mind.step2 import shared_card_projection as cards
 from tools import wd_q4_public_card_prefix_verifier as prefix
 from tools import wd_q4_live_snapshot_publish as live
+from tools import wd_q4_public_git_heads as public_heads
 
 
 class CardGenerationRefused(ValueError):
@@ -64,13 +67,22 @@ def prepare_card_generation(*, enabled=False, decision_bytes=None, decision_sha2
         vocabulary_bytes=None, vocabulary_sha256=None, path_allowlist_bytes=None, path_allowlist_sha256=None,
         now_utc=None, policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
         card_policy_bytes=None, source_path=None, generation_path=None, end_cursor=None,
-        output_root=None, generation_name=None, encode=None, identity=None, dimension=None):
+        output_root=None, generation_name=None, encode=None, identity=None, dimension=None,
+        real_git_executable=None, real_git_repository=None, real_approved_anchors=None):
     if enabled is False:
         return {'status': 'OFF'}
     try:
         if enabled is not True: raise ValueError()
         decision=cards.verify_route_decision(decision_bytes,decision_sha256,
                                              policy_sha256=policy_sha256,roster_sha256=roster_sha256)
+        real=decision['synthetic'] is False
+        if real:
+            observation=public_heads.observe(enabled=True,git_executable=real_git_executable,
+                    repository=real_git_repository,anchors=real_approved_anchors)
+            if (observation['sha256']!=decision['head_observation_sha256'] or
+                    observation['heads']!=decision['observed_heads']): raise ValueError()
+        elif any(value is not None for value in (real_git_executable,real_git_repository,real_approved_anchors)):
+            raise ValueError()
         anchor=decision['source_prefix']
         if (type(getattr(end_cursor,'offset',None)) is not int or end_cursor.offset!=anchor['offset'] or
                 getattr(end_cursor,'generation',None)!=anchor['generation']):
@@ -96,7 +108,8 @@ def prepare_card_generation(*, enabled=False, decision_bytes=None, decision_sha2
                 raise ValueError()
         projection=cards.project_shared_cards([row for _,row in claims],vocabulary_bytes=vocabulary_bytes,
             vocabulary_sha256=vocabulary_sha256,path_allowlist_bytes=path_allowlist_bytes,
-            path_allowlist_sha256=path_allowlist_sha256,now_utc=now_utc,enabled=True)
+            path_allowlist_sha256=path_allowlist_sha256,now_utc=now_utc,enabled=True,
+            _real_decision=decision if real else None)
         if projection['refused'].get('card_refused',0): raise ValueError()
         # Reuse the existing verifier before entering the output phase; the
         # builder repeats these checks for the precise projection it writes.
@@ -104,7 +117,7 @@ def prepare_card_generation(*, enabled=False, decision_bytes=None, decision_sha2
             generation_path=generation_path,end_cursor=end_cursor,expected_prefix_sha256=anchor['sha256'],
             nonreview_policy_bytes=policy_bytes,nonreview_policy_sha256=policy_sha256,
             card_policy_bytes=card_policy_bytes,card_policy_sha256=decision['card_policy_sha256'],
-            roster_bytes=roster_bytes,roster_sha256=roster_sha256)
+            roster_bytes=roster_bytes,roster_sha256=roster_sha256,_real_decision=decision if real else None)
     except Exception:
         raise CardGenerationRefused('card_generation_refused') from None
     try:
@@ -112,7 +125,8 @@ def prepare_card_generation(*, enabled=False, decision_bytes=None, decision_sha2
             generation_name,enabled=True,policy_bytes=policy_bytes,policy_sha256=policy_sha256,
             roster_bytes=roster_bytes,roster_sha256=roster_sha256,decision_bytes=decision_bytes,
             decision_sha256=decision_sha256,card_policy_bytes=card_policy_bytes,source_path=source_path,
-            generation_path=generation_path,end_cursor=end_cursor)
+            generation_path=generation_path,end_cursor=end_cursor,real_git_executable=real_git_executable,
+            real_git_repository=real_git_repository,real_approved_anchors=real_approved_anchors)
         directory=Path(output_root)/generation_name
         live._read(directory/'memory.json',16*1024*1024,built['memory_sha256'])
         live._read(directory/'descriptor.json',65536,built['descriptor_sha256'])

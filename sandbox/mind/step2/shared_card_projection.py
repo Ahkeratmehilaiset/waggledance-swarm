@@ -1,12 +1,13 @@
-"""HEX MEMORY STEP 2, shared-route closed cards (p3-p5): a default-OFF, synthetic-only versioned card projection.
+"""HEX MEMORY STEP 2, shared-route closed cards: a default-OFF versioned card projection.
 
 Lead request lead-mind-shared-cards-p3p5-fable-20261107-v1, after the read-only integration map of 01:29Z. It adds a
 SEPARATE versioned projection beside the existing shared projection v6; no v1-v6 reader, resolver, builder, policy or
 pin is changed, and the existing v6 resolver refuses this projection (other schema and scope).
 
 * every function is OFF unless ``enabled is True`` and returns ``{"status": "OFF"}`` without reading anything;
-  input cards are in-memory dicts, and ANY card without the ``synthetic`` tag refuses the whole call
-  (``live_input_refused``); this is not an authorization to read or index live bridge events;
+  the ordinary path refuses any card without the ``synthetic`` tag; the separate real-decision path requires
+  explicitly caller-approved Git anchors and anchored prefix verification in the builder. This code does not
+  authenticate those anchors or authorize reading a live bridge;
 * p3 projection: a card is the existing writer envelope (the bare card envelope plus ``agent_uuid``, optionally the
   writer metadata severity, run_id, pid, cwd, role, session_id and capabilities), checked with the envelope rule of
   ``tools/wd_q4_public_card_prefix_verifier.py`` and normalized exactly as that verifier does (only the closed card
@@ -25,7 +26,7 @@ pin is changed, and the existing v6 resolver refuses this projection (other sche
   answer, ABSTAIN included, carries it;
 * ``validate_shared_card_projection`` re-derives every record from the stored normalized cards and pins; the original
   source id of a card is a hash claim that re-derivation cannot check, so ``verify_shared_card_sources`` checks every
-  stored card, by that id, with the existing prefix verifier against one pinned synthetic source prefix (non-review
+  stored card, by that id, with the existing prefix verifier against one pinned source prefix (non-review
   policy, card policy and roster pins), and requires a match within that prefix for each;
 * the memory is built with the existing ``shared_index_builder`` primitives under its own scope, descriptor schema
   and projection schema; ``resolve_shared_card_results`` mirrors the v6 resolver (hash-only Q4 items in, the exact
@@ -77,6 +78,7 @@ DECISION_SCHEMA = "wd.mind-card-route-decision.v1"
 # the resolved route never imports the numpy/faiss builder
 SHARED_SCOPE = "wd.q4-shared-projected-events.v1"
 DECISION_NAME = "enable_synthetic_card_route"
+REAL_DECISION_NAME = "enable_real_card_route"
 DECISION_KEYS = frozenset({"schema", "decision", "synthetic", "projection_schema", "scope", "card_module_sha256",
                            "nonreview_policy_sha256", "roster_sha256", "card_policy_sha256", "vocabulary_sha256",
                            "path_allowlist_sha256", "source_prefix", "observed_heads"})
@@ -262,8 +264,9 @@ def _derive(entries, vocabulary, vocabulary_sha256, path_allowlist, path_allowli
             "coverage": {"cutoff_utc": cutoff, "completeness": "UNKNOWN"}}
 
 
-def _assemble(derived, refused, vocabulary_text, vocabulary_sha256, paths_text, path_allowlist_sha256, now_utc):
-    out = {"schema": SCHEMA, "authority": "none", "scope": SCOPE, "synthetic": True, "now_utc": now_utc,
+def _assemble(derived, refused, vocabulary_text, vocabulary_sha256, paths_text, path_allowlist_sha256, now_utc,
+              *, synthetic=True):
+    out = {"schema": SCHEMA, "authority": "none", "scope": SCOPE, "synthetic": synthetic, "now_utc": now_utc,
            "vocabulary": vocabulary_text, "vocabulary_sha256": vocabulary_sha256,
            "path_allowlist": paths_text, "path_allowlist_sha256": path_allowlist_sha256,
            "accepted": len(derived["records"]), "refused": dict(sorted(refused.items())),
@@ -277,17 +280,24 @@ def _assemble(derived, refused, vocabulary_text, vocabulary_sha256, paths_text, 
 
 
 def project_shared_cards(events=None, *, vocabulary_bytes=None, vocabulary_sha256=None, path_allowlist_bytes=None,
-                         path_allowlist_sha256=None, now_utc=None, enabled=False):
-    """The v7 shared card projection of in-memory synthetic writer envelopes, or ``{"status": "OFF"}``."""
+                         path_allowlist_sha256=None, now_utc=None, enabled=False, _real_decision=None):
+    """Project closed cards; the real-decision path is internal to the separately gated builder."""
     if not _enabled(enabled):
         return {"status": "OFF"}
     if type(events) is not list or len(events) > MAX_EVENTS:
         raise SharedCardRefused("events_invalid")
-    if not all(_synthetic(event) for event in events):
+    real = _real_decision is not None
+    if real and (type(_real_decision) is not dict or _real_decision.get('decision') != REAL_DECISION_NAME
+                 or _real_decision.get('synthetic') is not False
+                 or type(_real_decision.get('observed_heads')) is not list
+                 or _real_decision.get('vocabulary_sha256') != vocabulary_sha256
+                 or _real_decision.get('path_allowlist_sha256') != path_allowlist_sha256):
+        raise SharedCardRefused('real_decision_invalid')
+    if not real and not all(_synthetic(event) for event in events):
         raise SharedCardRefused("live_input_refused")
     vocabulary_text = _pinned_text(vocabulary_bytes, vocabulary_sha256)
     paths_text = _pinned_text(path_allowlist_bytes, path_allowlist_sha256)
-    if not _vocabulary_is_synthetic(vocabulary_text):
+    if not real and not _vocabulary_is_synthetic(vocabulary_text):
         raise SharedCardRefused("vocabulary_not_synthetic")
     if type(now_utc) is not str:
         raise SharedCardRefused("now_invalid")
@@ -339,18 +349,24 @@ def project_shared_cards(events=None, *, vocabulary_bytes=None, vocabulary_sha25
                       now_utc)
     for token, count in derived["refused"].items():
         refused[token] = refused.get(token, 0) + count
-    return _assemble(derived, refused, vocabulary_text, vocabulary_sha256, paths_text, path_allowlist_sha256, now_utc)
+    return _assemble(derived, refused, vocabulary_text, vocabulary_sha256, paths_text, path_allowlist_sha256, now_utc,
+                     synthetic=not real)
 
 
-def validate_shared_card_projection(projection):
+def validate_shared_card_projection(projection, *, _real_decision=None):
     """Re-derive every record from the stored normalized cards and pins; ``projection_invalid`` on any difference.
 
     The original source id of each card is a hash claim that this cannot check; ``verify_shared_card_sources`` does.
     """
     try:
+        real = _real_decision is not None
+        if real and (type(_real_decision) is not dict or _real_decision.get('decision') != REAL_DECISION_NAME
+                     or _real_decision.get('synthetic') is not False
+                     or type(_real_decision.get('observed_heads')) is not list):
+            raise ValueError()
         if (type(projection) is not dict or set(projection) != PROJECTION_KEYS or projection["schema"] != SCHEMA
                 or projection["scope"] != SCOPE or projection["authority"] != "none"
-                or projection["synthetic"] is not True or type(projection["sources"]) is not dict
+                or projection["synthetic"] is not (not real) or type(projection["sources"]) is not dict
                 or type(projection["records"]) is not list or type(projection["refused"]) is not dict
                 or any(key not in REFUSAL_TOKENS or type(count) is not int or count < 1
                        for key, count in projection["refused"].items())
@@ -360,13 +376,18 @@ def validate_shared_card_projection(projection):
         paths = projection["path_allowlist"].encode("ascii")
         _pinned_text(vocabulary, projection["vocabulary_sha256"])
         _pinned_text(paths, projection["path_allowlist_sha256"])
-        if not _vocabulary_is_synthetic(projection["vocabulary"]):
+        if real and (projection['vocabulary_sha256'] != _real_decision.get('vocabulary_sha256')
+                     or projection['path_allowlist_sha256'] != _real_decision.get('path_allowlist_sha256')):
+            raise ValueError()
+        if not real and not _vocabulary_is_synthetic(projection["vocabulary"]):
             raise ValueError()
         sources = projection["sources"]
-        if (any(type(event) is not dict or set(event) != pkc._EVENT or not _synthetic(event)
+        if (any(type(event) is not dict or set(event) != pkc._EVENT or (not real and not _synthetic(event))
                 for event in sources.values())
                 or len({event_id(event) for event in sources.values()}) != len(sources)):
             raise ValueError()
+        if real:
+            _route_heads(sources, _real_decision)
         # record order first, then the left-out predecessors in their stored order
         ordered = [record["provenance"]["source_event_ref"] for record in projection["records"]]
         ordered += [ref for ref in projection["superseded"] if ref not in ordered]
@@ -391,14 +412,30 @@ def validate_shared_card_projection(projection):
 def verify_shared_card_sources(projection=None, *, enabled=False, source_path=None, generation_path=None,
                                end_cursor=None, expected_prefix_sha256=None, nonreview_policy_bytes=None,
                                nonreview_policy_sha256=None, card_policy_bytes=None, card_policy_sha256=None,
-                               roster_bytes=None, roster_sha256=None):
-    """Every stored card, by its original source id, must match within one pinned synthetic source prefix."""
+                               roster_bytes=None, roster_sha256=None, _real_decision=None):
+    """Every stored card, by its original source id, must match within one pinned source prefix."""
     if not _enabled(enabled):
         return {"status": "OFF"}
-    validate_shared_card_projection(projection)
+    validate_shared_card_projection(projection, _real_decision=_real_decision)
     sources = projection["sources"]
     norm_to_source = {event_id(normalized): ref for ref, normalized in sources.items()}
+    try:
+        rows = verifier._read(source_path, generation_path, end_cursor, expected_prefix_sha256)
+    except Exception:
+        raise SharedCardRefused("source_unverified") from None
     for ref, normalized in sources.items():
+        try:
+            original = _normalize_one(rows[ref])
+            original_card = original['payload']['public_knowledge']
+            if 'supersedes' in original_card:
+                predecessor = original_card['supersedes']
+                if predecessor not in sources:
+                    raise ValueError()
+                original_card['supersedes'] = event_id(sources[predecessor])
+            if _canon(original) != _canon(normalized):
+                raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise SharedCardRefused("source_unverified") from None
         # the card's own minute, end of minute: the verifier then checks existence, not today's validity
         moment = normalized["ts_utc"][:17] + "59.9999999Z"
         out = verifier.verify(enabled=True, source_path=source_path, generation_path=generation_path,
@@ -439,8 +476,9 @@ def verify_route_decision(decision_bytes, decision_sha256, *, policy_sha256=None
 
     The bytes must hash to the caller pin and be canonical JSON with the exact key set; the decision must name this
     loaded module's own source hash and the same non-review policy and roster pins the route runs with, one anchored
-    source prefix (sha256, end offset, generation) and either a sorted observed head set or null. It is caller-pinned
-    and verified for consistency here; who issued it is not authenticated (no signature).
+    source prefix (sha256, end offset, generation) and either a sorted observed head set or null. A real decision
+    requires a non-null set and a pinned local-ancestry observation; that pin is checked by the builder, not here.
+    It is caller-pinned and who issued it is not authenticated (no signature).
     """
     try:
         if (type(decision_bytes) is not bytes or len(decision_bytes) > MAX_DECISION
@@ -449,13 +487,19 @@ def verify_route_decision(decision_bytes, decision_sha256, *, policy_sha256=None
             raise ValueError()
         decision = json.loads(decision_bytes.decode("ascii"), object_pairs_hook=_unique_pairs,
                               parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
-        if type(decision) is not dict or set(decision) != DECISION_KEYS:
+        if type(decision) is not dict:
+            raise ValueError()
+        real = decision.get('decision') == REAL_DECISION_NAME and decision.get('synthetic') is False
+        if set(decision) != (DECISION_KEYS | {'head_observation_sha256'} if real else DECISION_KEYS):
             raise ValueError()
         if _canon(decision).encode("ascii") != decision_bytes:
             raise ValueError()
         prefix, heads = decision["source_prefix"], decision["observed_heads"]
-        if (decision["schema"] != DECISION_SCHEMA or decision["decision"] != DECISION_NAME
-                or decision["synthetic"] is not True or decision["projection_schema"] != SCHEMA
+        if (decision["schema"] != DECISION_SCHEMA or (not real and
+                (decision["decision"] != DECISION_NAME or decision["synthetic"] is not True))
+                or (real and (type(heads) is not list or type(decision['head_observation_sha256']) is not str
+                              or sp.HEX64.fullmatch(decision['head_observation_sha256']) is None))
+                or decision["projection_schema"] != SCHEMA
                 or decision["scope"] != SHARED_SCOPE
                 or any(type(decision[key]) is not str or sp.HEX64.fullmatch(decision[key]) is None
                        for key in DECISION_PINS)
@@ -526,10 +570,12 @@ def build_shared_card_memory(projection, encode, identity, dim, root, name, *, e
 def build_shared_route_card_memory(projection, encode, identity, dim, root, name, *, policy_bytes=None,
                                    policy_sha256=None, roster_bytes=None, roster_sha256=None, decision_bytes=None,
                                    decision_sha256=None, card_policy_bytes=None, source_path=None,
-                                   generation_path=None, end_cursor=None, enabled=False):
+                                   generation_path=None, end_cursor=None, enabled=False,
+                                   real_git_executable=None, real_git_repository=None, real_approved_anchors=None):
     """The same card memory for the existing shared reader, or ``{"status": "OFF"}``.
 
-    It carries the shared scope and the v2 shared descriptor, so the unchanged private reader can run Q4 over it,
+    It carries the shared scope and the v2 shared descriptor; the real-decision output is staged-only here and
+    requires separately updated readers before Q4 can use it. The synthetic route retains its existing behavior,
     and it names the v7 card projection schema, so the unchanged v6 resolver refuses it; only a resolver call with
     the same pinned route decision resolves it. Before any card is accepted: the non-review policy must approve the
     card task, every author must be a non-review roster lane, the decision must verify (RW1) and match the card
@@ -540,7 +586,26 @@ def build_shared_route_card_memory(projection, encode, identity, dim, root, name
     """
     if not _enabled(enabled):
         return {"status": "OFF"}
-    validate_shared_card_projection(projection)
+    real = type(projection) is dict and projection.get('synthetic') is False
+    if real:
+        decision = verify_route_decision(decision_bytes, decision_sha256, policy_sha256=policy_sha256,
+                                         roster_sha256=roster_sha256)
+        if decision['synthetic'] is not False:
+            raise SharedCardRefused('decision_mismatch')
+        from tools import wd_q4_public_git_heads as head_reader
+        try:
+            observation = head_reader.observe(enabled=True, git_executable=real_git_executable,
+                                              repository=real_git_repository, anchors=real_approved_anchors)
+            if (observation['sha256'] != decision['head_observation_sha256']
+                    or observation['heads'] != decision['observed_heads']):
+                raise ValueError()
+        except (head_reader.HeadObservationRefused, KeyError, TypeError, ValueError):
+            raise SharedCardRefused('head_observation_invalid') from None
+        validate_shared_card_projection(projection, _real_decision=decision)
+    elif any(value is not None for value in (real_git_executable, real_git_repository, real_approved_anchors)):
+        raise SharedCardRefused('unexpected_real_inputs')
+    else:
+        validate_shared_card_projection(projection)
     from sandbox.mind.step2 import shared_capture_adapter as adapter
     from sandbox.mind.step2 import shared_index_builder as sib
     try:
@@ -552,8 +617,11 @@ def build_shared_route_card_memory(projection, encode, identity, dim, root, name
     if any(record["meta"]["agent"] not in roster or record["meta"]["agent"] in sp.REVIEW_LANES
            for record in projection["records"]):
         raise SharedCardRefused("roster_mismatch")
-    decision = verify_route_decision(decision_bytes, decision_sha256, policy_sha256=policy_sha256,
-                                     roster_sha256=roster_sha256)
+    if not real:
+        decision = verify_route_decision(decision_bytes, decision_sha256, policy_sha256=policy_sha256,
+                                         roster_sha256=roster_sha256)
+        if decision['synthetic'] is not True:
+            raise SharedCardRefused('decision_mismatch')
     if (projection["vocabulary_sha256"] != decision["vocabulary_sha256"]
             or projection["path_allowlist_sha256"] != decision["path_allowlist_sha256"]
             or type(card_policy_bytes) is not bytes
@@ -567,7 +635,8 @@ def build_shared_route_card_memory(projection, encode, identity, dim, root, name
                                end_cursor=end_cursor, expected_prefix_sha256=prefix["sha256"],
                                nonreview_policy_bytes=policy_bytes, nonreview_policy_sha256=policy_sha256,
                                card_policy_bytes=card_policy_bytes, card_policy_sha256=decision["card_policy_sha256"],
-                               roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+                               roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+                               _real_decision=decision if real else None)
     evidence = {"decision_sha256": decision_sha256, "source_prefix": dict(prefix),
                 "source_status": "MATCH_WITHIN_PREFIX", "completeness": "UNKNOWN",
                 "authors": _route_authors(projection["sources"], roster),
@@ -629,7 +698,7 @@ def _build(projection, encode, identity, dim, root, name, scope, descriptor_sche
                                         cutoff_utc=cutoff_utc, encoder=encoder, projection_sha256=projection_sha256)
             pointers[cell_id] = dict(pointer, count=len(rows))
         stage = "finalize"
-        memory = {"schema": memory_mod.SCHEMA, "authority": "none", "scope": scope, "synthetic": True,
+        memory = {"schema": memory_mod.SCHEMA, "authority": "none", "scope": scope, "synthetic": projection['synthetic'],
                   "cutoff_utc": cutoff_utc, "projection_sha256": projection_sha256, "projection_schema": SCHEMA,
                   "projection_file": "projection.json", "encoder": encoder, "dim": dim,
                   "placement": sib.PLACEMENT_RULE, "topology_source_sha256": cell_mod.file_sha256(sib.TOPOLOGY_FILE),

@@ -65,6 +65,30 @@ def produce(*, enabled=False, generation=None, encoder_config=None, trusted_mode
     if enabled is False:
         return {'status': 'OFF'}
     try:
+        from tools import wd_q4_public_card_prefix_verifier as verifier
+        scope = verifier._snapshot_scan_scope()
+    except Exception:
+        raise Refused('real_card_snapshot_refused') from None
+    entered = False
+    try:
+        with scope:
+            entered = True
+            return _produce(enabled=enabled, generation=generation, encoder_config=encoder_config,
+                            trusted_model_root=trusted_model_root)
+    except (Refused, Unknown):
+        raise
+    except Exception:
+        if entered:
+            raise Unknown('real_card_snapshot_unknown') from None
+        raise Refused('real_card_snapshot_refused') from None
+    except BaseException:
+        if entered:
+            raise Unknown('real_card_snapshot_unknown') from None
+        raise
+
+
+def _produce(*, enabled, generation, encoder_config, trusted_model_root):
+    try:
         if enabled is not True or type(generation) is not dict or set(generation) != _KEYS: raise ValueError()
         args = dict(generation)
         decision_bytes = args['decision_bytes']

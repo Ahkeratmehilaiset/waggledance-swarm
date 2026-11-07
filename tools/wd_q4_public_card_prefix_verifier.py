@@ -6,6 +6,9 @@ does not prove publisher identity, later supersession, or complete history.
 This module neither publishes data nor modifies a bridge or its policies.
 """
 import copy
+import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 import datetime as dt
 import hashlib
 import hmac
@@ -13,6 +16,7 @@ import json
 import ntpath
 import os
 import re
+import threading
 from pathlib import Path
 
 from sandbox.mind.step2 import public_knowledge_card as card
@@ -29,6 +33,53 @@ _MAX_SOURCE=512*1024*1024
 _PAGE=16*1024*1024
 _MAX_CANDIDATES=4096
 _MAX_HASH_WORK=6*1024*1024*1024
+_SCAN_MEMO = ContextVar('wd_q4_snapshot_scan_memo', default=None)
+
+
+class _ScanMemo:
+    def __init__(self):
+        self.owner = _scan_owner()
+        self.state = (True, None)
+
+    @property
+    def active(self): return self.state[0]
+
+    @property
+    def entry(self): return self.state[1]
+
+
+def _scan_owner():
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        task = None
+    return threading.get_ident(), task
+
+
+@contextmanager
+def _snapshot_scan_scope():
+    """Revoke and clear the one-entry cache even in copied asynchronous contexts."""
+    scope = _ScanMemo()
+    previous = _SCAN_MEMO.get()
+    token = None
+    try:
+        token = _SCAN_MEMO.set(scope)
+        yield
+    finally:
+        try:
+            scope.state = (False, None)
+        finally:
+            try:
+                # A single interruption immediately before the first assignment
+                # must not leave an inherited context holding parsed rows.
+                scope.state = (False, None)
+            finally:
+                if token is not None:
+                    _SCAN_MEMO.reset(token)
+                elif _SCAN_MEMO.get() is scope:
+                    # set() may complete before its token is assigned when a
+                    # single interrupt arrives at that bytecode boundary.
+                    _SCAN_MEMO.set(previous)
 
 
 def _unknown():
@@ -87,13 +138,29 @@ def _policy(raw, pin, tasks):
 
 
 def _scan(source_path,generation_path,end_cursor,expected_prefix_sha256,*,collect_claims=False):
+    scope=_SCAN_MEMO.get()
+    if scope is not None and scope.owner != _scan_owner(): scope=None
     if (type(source_path) is not str or not os.path.isabs(source_path)
             or type(generation_path) is not str or not os.path.isabs(generation_path)
             or type(end_cursor) is not bridge.BridgeCursor or bridge._validate_cursor(end_cursor)
             or type(end_cursor.generation) is not str or not end_cursor.generation
             or type(end_cursor.offset) is not int or not 0<end_cursor.offset<=_MAX_SOURCE
             or type(expected_prefix_sha256) is not str or _HEX.fullmatch(expected_prefix_sha256) is None):
+        if scope is not None and scope.active: scope.state = (True,None)
         raise ValueError()
+    key=(source_path,generation_path,end_cursor,expected_prefix_sha256)
+    if scope is not None and scope.active:
+        memo=scope.entry
+        if memo is not None:
+            previous_key,previous_full,previous_rows,previous_claims=memo
+            if previous_key==key and (previous_full or not collect_claims):
+                try:
+                    _check_prefix_unchanged(source_path,generation_path,end_cursor,expected_prefix_sha256)
+                except BaseException:
+                    scope.state=(True,None)
+                    raise
+                return copy.deepcopy((previous_rows, previous_claims if collect_claims else []))
+        scope.state=(True,None)
     cursor=bridge.BridgeCursor(0,end_cursor.file_identity,end_cursor.generation)
     prefix_sha=hashlib.sha256(b'').hexdigest()
     candidates={}; claims=[]; pages=work=0
@@ -131,6 +198,9 @@ def _scan(source_path,generation_path,end_cursor,expected_prefix_sha256,*,collec
                 if bridge._file_identity(stream)!=end_cursor.file_identity or os.fstat(stream.fileno()).st_size<end_cursor.offset:
                     raise ValueError()
             if bridge._read_generation(Path(generation_path))!=end_cursor.generation: raise ValueError()
+            if scope is not None and scope.active:
+                stored_rows,stored_claims=copy.deepcopy((candidates,claims))
+                scope.state=(True,(key,collect_claims,stored_rows,stored_claims))
             return candidates,claims
         if nxt.offset<=cursor.offset or nxt.offset>end_cursor.offset: raise ValueError()
         cursor,prefix_sha=nxt,read.candidate_prefix.sha256

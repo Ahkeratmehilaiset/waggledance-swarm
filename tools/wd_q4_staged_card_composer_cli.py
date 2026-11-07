@@ -15,6 +15,7 @@ from tools import wd_q4_lane_query as lane_query
 from tools import wd_q4_staged_composer as composer
 
 _SCHEMA = 'wd.q4-staged-card-composer-request.v1'
+_SHARED_SCHEMA = 'wd.q4-staged-card-composer-request.v2'  # v1 plus shared_stage, which must be exactly true
 _PATHS = frozenset({'stage_dir', 'expected_bundle', 'public_plan_path', 'fixed_plan_path',
                     'generation_root', 'bundle_store_root', 'active_bundle_root'})
 _LOWER = frozenset({'expected_public_plan_sha256', 'expected_fixed_plan_sha256',
@@ -37,7 +38,10 @@ def _request(path, expected):
     raw = input_files._read_pinned(path, 65536, expected, 'request_refused')
     value = json.loads(raw.decode('ascii', 'strict'), object_pairs_hook=input_files._pairs,
                        parse_constant=input_files._constant)
-    if (type(value) is not dict or set(value) != _KEYS or value['schema'] != _SCHEMA
+    shared = type(value) is dict and value.get('schema') == _SHARED_SCHEMA
+    if (type(value) is not dict or set(value) != (_KEYS | {'shared_stage'} if shared else _KEYS)
+            or value['schema'] != (_SHARED_SCHEMA if shared else _SCHEMA)
+            or (shared and value['shared_stage'] is not True)
             or type(value['generation']) is not str or _REVISION.fullmatch(value['generation']) is None
             or type(value['expected_commit']) is not str or _COMMIT.fullmatch(value['expected_commit']) is None
             or type(value['expected_manifest_sha256']) is not str
@@ -70,7 +74,11 @@ def _verify_result(result, values):
                    for key in ('binding_sha256', 'descriptor_sha256', 'pointer_sha256'))):
         raise ValueError()
     paths = materializer.plan_generation_paths(values['stage_dir'], values['generation'])
-    pointer_path = str(Path(values['stage_dir']) / 'candidate-pointer.json')
+    shared = values.get('shared_stage', False)
+    if shared is not True and shared is not False:
+        raise ValueError()
+    pointer_name = 'candidate-pointer-' + values['generation'] + '.json' if shared else 'candidate-pointer.json'
+    pointer_path = str(Path(values['stage_dir']) / pointer_name)
     if result['descriptor_path'] != paths['descriptor_path'] or result['pointer_path'] != pointer_path:
         raise ValueError()
     descriptor_raw = input_files._read_pinned(result['descriptor_path'], 65536, result['descriptor_sha256'], 'result_refused')

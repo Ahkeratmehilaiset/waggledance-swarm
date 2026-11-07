@@ -42,6 +42,11 @@ def _finish(*, enabled=False, output_root=None, base_plan=None, fixed_template=N
 
     The composer still checks the fixed installed CURRENT; tests may replace
     only that path with a synthetic pinned fixture. Output paths are permanent.
+    Optional composer option ``shared_stage_root`` names one existing shared
+    immutable generations root (composer ``shared_stage=True``, its parent is
+    the generation root); it must neither contain nor sit inside the output
+    root, so a sibling of the output root is fine. Without it the
+    stage stays the private, empty ``output_root/stage``.
     """
     if enabled is False:
         return {'status': 'OFF'}
@@ -54,11 +59,21 @@ def _finish(*, enabled=False, output_root=None, base_plan=None, fixed_template=N
     if enabled is not True or type(base_plan) is not dict or type(fixed_template) is not dict or type(composer_options) is not dict:
         raise ValueError()
     out = io._path(str(output_root), directory=True)
+    option_keys = {'generation', 'expected_bundle', 'expected_commit', 'expected_manifest_sha256',
+                   'expected_host_sha256', 'descriptor_options', 'bundle_store_root', 'active_bundle_root',
+                   'expected_state_sha256'}
     if ((not real and '.codex-audit' not in out.parts) or type(composer_options) is not dict
-            or set(composer_options) != {'generation', 'expected_bundle', 'expected_commit',
-                'expected_manifest_sha256', 'expected_host_sha256', 'descriptor_options',
-                'bundle_store_root', 'active_bundle_root', 'expected_state_sha256'}):
+            or set(composer_options) not in (option_keys, option_keys | {'shared_stage_root'})):
         raise ValueError()
+    shared_root = None
+    if 'shared_stage_root' in composer_options:
+        shared_root = io._path(composer_options['shared_stage_root'], directory=True)
+        generations = shared_root.parent
+        if ((not real and '.codex-audit' not in shared_root.parts) or (real and shared_root.drive.upper() != 'C:')
+                or generations == shared_root
+                or any(composer._contains(a, b) or composer._identity_contains(a, b)
+                       for a, b in ((shared_root, out), (out, shared_root)))):
+            raise ValueError()
     for value in (pointer_path, decision_path, card_policy_path, source_path, generation_path,
                   base_plan['policy_path'], base_plan['roster_path'], base_plan['public_policy_path']):
         path = io._path(value)
@@ -107,10 +122,16 @@ def _finish(*, enabled=False, output_root=None, base_plan=None, fixed_template=N
     fixed_dir = out / 'fixed-plan'; fixed_dir.mkdir()
     fixed_result = fixed_writer.write(enabled=True, arguments=fixed, output_dir=str(fixed_dir))
     fixed_raw = io._read(io._path(fixed_result['path']), fixed_result['sha256'], 4096)
-    stage = out / 'stage'; stage.mkdir()
+    opts.pop('shared_stage_root', None)
+    if shared_root is None:
+        stage, generation_root = out / 'stage', out
+        stage.mkdir()
+    else:
+        stage, generation_root = shared_root, shared_root.parent
+        opts['shared_stage'] = True
     descriptor_options = dict(opts.pop('descriptor_options'))
     descriptor_options.update(expected_binding=pins, public_plan=public_path)
-    opts.update(stage_dir=str(stage), generation_root=str(out), descriptor_options=descriptor_options,
+    opts.update(stage_dir=str(stage), generation_root=str(generation_root), descriptor_options=descriptor_options,
         public_plan_path=public_path, expected_public_plan_sha256=public_pin,
         fixed_plan_bytes=fixed_raw, expected_fixed_plan_sha256=fixed_result['sha256'])
     result = composer.compose_staged_card(enabled=True, **opts)
@@ -177,6 +198,12 @@ def run(*, enabled=False, request_path=None, request_sha256=None):
                 candidate = io._path(opts[key], directory=True)
                 if (not real and '.codex-audit' not in candidate.parts) or (real and candidate.drive.upper() != 'C:'):
                     raise ValueError()
+            if 'shared_stage_root' in opts:  # refuse a bad shared generations root before any write here
+                shared_root = io._path(opts['shared_stage_root'], directory=True)
+                if ((not real and '.codex-audit' not in shared_root.parts)
+                        or (real and shared_root.drive.upper() != 'C:')
+                        or shared_root.is_relative_to(out) or out.is_relative_to(shared_root)):
+                    raise ValueError()
         from tools import wd_q4_external_generation_anchor as anchor
         from waggledance.core.bridge_log_reader import BridgeCursor
         c, a = decision['cursor'], decision['anchor']
@@ -200,7 +227,9 @@ def run(*, enabled=False, request_path=None, request_sha256=None):
                         or composer._identity_contains(candidate_root, other)
                         or composer._identity_contains(other, candidate_root)):
                     raise ValueError()
-            for key in ('expected_bundle', 'bundle_store_root', 'active_bundle_root'):
+            for key in ('expected_bundle', 'bundle_store_root', 'active_bundle_root', 'shared_stage_root'):
+                if key not in opts:
+                    continue
                 other = io._path(opts[key], directory=True)
                 if (candidate_root.is_relative_to(other) or other.is_relative_to(candidate_root)
                         or composer._identity_contains(candidate_root, other)

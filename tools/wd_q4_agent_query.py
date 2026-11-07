@@ -11,6 +11,7 @@ same-user race resistance, model asset provenance, or a whole-call deadline.
 
 from dataclasses import dataclass, field
 import datetime as dt
+import hashlib
 import io
 import json
 import math
@@ -18,6 +19,7 @@ import ntpath
 import os
 import re
 import sys
+from pathlib import Path
 from typing import NamedTuple
 
 MAX_QUERY = 65536
@@ -276,14 +278,52 @@ def _safe_result_for_output(result, config):
             "memory_sha256": result["memory_sha256"], "results": clean}
 
 
+_CARD_SNAPSHOT_FIELDS = frozenset({"pointer_bytes", "expected_pointer_sha256", "generation_dir",
+    "decision_bytes", "decision_sha256", "policy_bytes", "policy_sha256", "roster_bytes", "roster_sha256",
+    "card_policy_bytes", "source_path", "generation_path", "end_cursor"})
+
+
+def _check_real_card_snapshot(snapshot, config, memory_bytes, projection_bytes, expected_memory_sha256,
+                              decision_bytes, decision_sha256, policy_bytes, policy_sha256,
+                              roster_bytes, roster_sha256):
+    """Run actual C2 and bind its closed tuple to this execution's exact inputs."""
+    if type(snapshot) is not dict or set(snapshot) != _CARD_SNAPSHOT_FIELDS:
+        raise QueryRefused("resolution_refused")
+    snapshot = dict(snapshot)
+    from sandbox.mind.step2 import shared_card_checkpoint as checkpoint
+    if checkpoint.validate_card_snapshot(enabled=True, **snapshot) != {
+            "status": "VALIDATED_STAGED", "completeness": "UNKNOWN"}:
+        raise QueryRefused("resolution_refused")
+    if any(snapshot[key] != value for key, value in (
+            ("decision_bytes", decision_bytes), ("decision_sha256", decision_sha256),
+            ("policy_bytes", policy_bytes), ("policy_sha256", policy_sha256),
+            ("roster_bytes", roster_bytes), ("roster_sha256", roster_sha256))):
+        raise QueryRefused("resolution_refused")
+    pointer = json.loads(snapshot["pointer_bytes"].decode("ascii"), object_pairs_hook=_pairs)
+    artifacts = pointer["artifacts"]
+    directory = Path(snapshot["generation_dir"])
+    if (type(memory_bytes) is not bytes or type(projection_bytes) is not bytes
+            or hashlib.sha256(memory_bytes).hexdigest() != artifacts["memory.json"]
+            or expected_memory_sha256 != artifacts["memory.json"]
+            or hashlib.sha256(projection_bytes).hexdigest() != artifacts["projection.json"]
+            or config.descriptor_sha256 != artifacts["descriptor.json"]
+            or config.memory != str(directory) or config.descriptor != str(directory / "descriptor.json")):
+        raise QueryRefused("resolution_refused")
+    return snapshot
+
+
 def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, approved_tasks, *,
                       policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
-                      expected_memory_sha256=None):
+                      expected_memory_sha256=None, card_decision_bytes=None, card_decision_sha256=None,
+                      card_snapshot=None):
     """Resolve one query using caller-authenticated tuple and approved-task policy.
 
     This in-memory boundary does not authenticate config, data origin, clock or
     caller, and does not prevent concurrent filesystem changes or tool logging.
-    Returned text is approved projected metadata, not a canonical event.
+    Returned text is approved projected metadata, not a canonical event. A
+    verified real-card decision additionally requires a closed card_snapshot
+    tuple and actual C2 checks before stdin and after resolution. Data-only
+    result mapping cannot supply that execution authorization.
     """
     try:
         from sandbox.mind.step2 import shared_result_resolver as resolver
@@ -295,11 +335,21 @@ def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, ap
         if any(value is None for value in (policy_bytes, policy_sha256, roster_bytes, roster_sha256,
                                            expected_memory_sha256)):
             raise QueryRefused("resolution_refused")
+        real_snapshot = None
+        if card_decision_bytes is not None or card_decision_sha256 is not None:
+            from sandbox.mind.step2 import shared_card_projection as cards
+            decision = cards.verify_route_decision(card_decision_bytes, card_decision_sha256,
+                            policy_sha256=policy_sha256, roster_sha256=roster_sha256)
+            if decision["synthetic"] is False:
+                real_snapshot = _check_real_card_snapshot(card_snapshot, config, memory_manifest_bytes,
+                    projection_bytes, expected_memory_sha256, card_decision_bytes, card_decision_sha256,
+                    policy_bytes, policy_sha256, roster_bytes, roster_sha256)
         # A mismatched tuple must not start the backend or consume the query.
         resolver.resolve_results(memory_manifest=memory_manifest_bytes, expected_memory_sha256=expected_memory_sha256,
                     projection_bytes=projection_bytes, results=[], query_utc="2000-01-01T00:00:00Z",
                     approved_tasks=approved_tasks, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
-                    roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+                    roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+                    card_decision_bytes=card_decision_bytes, card_decision_sha256=card_decision_sha256)
         raw = read_query(stdin)
         query_time = _validated_query_time(raw)
         result = _safe_result_for_output(query_with_verified_config(config, io.BytesIO(raw)), config)
@@ -312,7 +362,12 @@ def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, ap
                     expected_memory_sha256=result["memory_sha256"], projection_bytes=projection_bytes,
                     results=result["results"], query_utc=query_time, approved_tasks=approved_tasks,
                     policy_bytes=policy_bytes, policy_sha256=policy_sha256,
-                    roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+                    roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+                    card_decision_bytes=card_decision_bytes, card_decision_sha256=card_decision_sha256)
+        if real_snapshot is not None:
+            _check_real_card_snapshot(real_snapshot, config, memory_manifest_bytes,
+                projection_bytes, expected_memory_sha256, card_decision_bytes, card_decision_sha256,
+                policy_bytes, policy_sha256, roster_bytes, roster_sha256)
         output = {"status": result["status"], "results": resolved}
         if len(json.dumps(output, ensure_ascii=True, separators=(",", ":")).encode("utf-8")) > MAX_OUTPUT:
             raise QueryRefused("resolution_refused")

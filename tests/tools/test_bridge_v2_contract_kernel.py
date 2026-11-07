@@ -256,6 +256,67 @@ def test_log_reader_matches_core(tmp_path):
         assert _outcome(port.parse_bridge_json_object, text) == _outcome(core.parse_bridge_json_object, text)
 
 
+@pytest.mark.parametrize("mode", ["accept_all", "defer_first", "defer_second", "mutate_nested",
+                                  "non_boolean", "no_prefix", "snapshot_selection", "replace_path"])
+def test_log_reader_row_selection_class_matches_core(tmp_path, mode):
+    """The port must retain the whole new row-selection contract, not just its signature."""
+    import hashlib
+
+    core, port = _core("bridge_v2_log_reader"), _kernel("bridge_v2_log_reader")
+    chunks = [json.dumps({"row": i, "payload": {"items": [i]}}).encode() + b"\n" for i in (1, 2)]
+    raw = b"".join(chunks)
+    outcomes = []
+    for name, reader in (("core", core), ("port", port)):
+        path = tmp_path / (name + ".jsonl")
+        path.write_bytes(raw)
+        initial = reader.read_bridge_log(path)
+        assert initial.candidate_cursor is not None
+        zero = reader.BridgeCursor(0, initial.candidate_cursor.file_identity, initial.candidate_cursor.generation)
+        replaced = False
+
+        def ready(row):
+            nonlocal replaced
+            if mode == "mutate_nested":
+                row["payload"]["items"].append(9)
+                return True
+            if mode == "non_boolean":
+                return 1
+            if mode == "replace_path" and not replaced:
+                path.replace(path.with_suffix(".old"))
+                path.write_bytes(raw)  # same bytes, different path identity
+                replaced = True
+            return mode != "defer_first" and (mode != "defer_second" or row["row"] == 1)
+
+        args = dict(cursor=zero, expected_prefix_sha256=hashlib.sha256(b"").hexdigest(),
+                    max_prefix_bytes=len(raw), _row_ready=ready)
+        if mode == "no_prefix":
+            args = {"_row_ready": ready}
+        elif mode == "snapshot_selection":
+            args["expected_snapshot_sha256"] = hashlib.sha256(raw).hexdigest()
+        result = reader.read_bridge_log(path, **args)
+        prefix = getattr(result, "candidate_prefix", None)
+        outcomes.append((result.status.value, result.reason, result.rows, result.bytes_consumed,
+                         result.candidate_cursor.offset if result.candidate_cursor else None,
+                         prefix.sha256 if prefix else None))
+        assert path.read_bytes() == raw
+    assert outcomes[1] == outcomes[0]
+    status, reason, rows, consumed, offset, prefix_hash = outcomes[0]
+    if mode == "accept_all":
+        assert status == "OK" and len(rows) == 2 and consumed == offset == len(raw)
+        assert prefix_hash == hashlib.sha256(raw).hexdigest()
+    elif mode in ("defer_first", "defer_second"):
+        expected = 0 if mode == "defer_first" else len(chunks[0])
+        assert reason == "cutoff_deferred" and consumed == offset == expected
+        assert len(rows) == (0 if mode == "defer_first" else 1)
+        assert prefix_hash == hashlib.sha256(raw[:expected]).hexdigest()
+    elif mode == "replace_path":
+        assert status == "RETRY" and reason == "file_identity_changed_during_read" and rows == ()
+    else:
+        assert status == "BLOCKED" and rows == () and offset is None
+        assert reason == ("row_selection_configuration_invalid" if mode in ("no_prefix", "snapshot_selection")
+                          else "row_selection_invalid")
+
+
 def test_workflow_matches_core():
     core, port = _core("bridge_v2_workflow"), _kernel("bridge_v2_workflow")
     for agent in ("codex-lead-1", "claude-rco-1", "grok-scout-1", "operator", "codex"):

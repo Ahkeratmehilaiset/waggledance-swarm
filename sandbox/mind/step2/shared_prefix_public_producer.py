@@ -215,6 +215,73 @@ def _publish_locked_catchup(request, state, max_windows, cutoff_utc=None, batch_
             public_policy_bytes=config.public_policy_bytes, public_policy_sha256=pins.public_policy_sha256,
             expected_prefix_sha256=request.start_prefix.sha256, max_prefix_bytes=request.max_prefix_bytes, enabled=True,
             **cutoff_args)
+        # A wholly deferred first window has no publishable rows and does not
+        # prove catch-up. Preserve the existing pointer and cursor only after
+        # verifying the exact bounded chain and the cooperative checkpoint.
+        if (cutoff_utc is not None and request.fenced and previous is not None
+                and chain.get('end_reason') == 'deferred' and chain.get('windows') == ()
+                and chain.get('candidate_prefix') == request.start_prefix):
+            if snapshot.verify_public_catchup(chain, expected_anchor_bytes=source.anchor_bytes,
+                    expected_anchor_sha256=pins.anchor_sha256, expected_policy_sha256=pins.policy_sha256,
+                    expected_roster_sha256=pins.roster_sha256,
+                    expected_public_policy_sha256=pins.public_policy_sha256,
+                    expected_start_prefix=request.start_prefix, expected_cutoff_utc=cutoff_utc,
+                    expected_batch_rows=batch_rows) is not True:
+                raise ValueError()
+            with private_state._checkpoint_lock(Path(request.root), request.timeout):
+                if (checkpoint._active_fence(Path(request.root)) is not None
+                        or checkpoint._current_pointer(Path(request.root)) != request.expected_pointer_sha256):
+                    raise ValueError()
+                state.require(request.expected_pointer_sha256, request.start_prefix)
+                return {**_report('EMPTY_NO_CHANGE', request.expected_pointer_sha256, None),
+                        'coverage': 'partial_ready_prefix', 'source_refusals': 'NOT_AGGREGATED'}
+        # With a cutoff, EOF can yield one fully caught-up empty window whose
+        # cursor has not moved.  Verify that exact chain before returning the
+        # existing pointer; never turn a refused or advanced row into a no-op.
+        if (cutoff_utc is not None and request.fenced and previous is not None
+                and chain.get('caught_up') is True and chain.get('end_reason') == 'snapshot_end'
+                and len(chain.get('windows', ())) == 1
+                and chain.get('candidate_prefix') == request.start_prefix):
+            window = chain['windows'][0]
+            part = window.get('projection')
+            if (type(part) is dict and part.get('records') == [] and part.get('refused') == {}
+                    and part.get('accepted') == 0 and part.get('dropped_fields') == 0
+                    and window.get('candidate_prefix') == request.start_prefix):
+                if snapshot.verify_public_catchup(chain, expected_anchor_bytes=source.anchor_bytes,
+                        expected_anchor_sha256=pins.anchor_sha256, expected_policy_sha256=pins.policy_sha256,
+                        expected_roster_sha256=pins.roster_sha256,
+                        expected_public_policy_sha256=pins.public_policy_sha256,
+                        expected_start_prefix=request.start_prefix, expected_cutoff_utc=cutoff_utc,
+                        expected_batch_rows=batch_rows) is not True:
+                    raise ValueError()
+                with private_state._checkpoint_lock(Path(request.root), request.timeout):
+                    if (checkpoint._active_fence(Path(request.root)) is not None
+                            or checkpoint._current_pointer(Path(request.root)) != request.expected_pointer_sha256):
+                        raise ValueError()
+                    state.require(request.expected_pointer_sha256, request.start_prefix)
+                    return {**_report('EMPTY_NO_CHANGE', request.expected_pointer_sha256, None),
+                            'coverage': 'partial_ready_prefix', 'source_refusals': 'NOT_AGGREGATED'}
+        # A single fully caught-up empty window is already the exact bounded
+        # snapshot accepted by the existing strict empty/CAS primitive. Do not
+        # collapse multi-window chains or advance across a refused projection.
+        if (cutoff_utc is None and request.fenced and previous is not None
+                and chain.get("caught_up") is True and len(chain.get("windows", ())) == 1):
+            window = chain["windows"][0]
+            part = window.get("projection")
+            if (type(part) is dict and part.get("records") == [] and part.get("refused") == {}
+                    and part.get("accepted") == 0 and part.get("dropped_fields") == 0):
+                if snapshot.verify_public_catchup(chain, expected_anchor_bytes=source.anchor_bytes,
+                        expected_anchor_sha256=pins.anchor_sha256, expected_policy_sha256=pins.policy_sha256,
+                        expected_roster_sha256=pins.roster_sha256,
+                        expected_public_policy_sha256=pins.public_policy_sha256,
+                        expected_start_prefix=request.start_prefix) is not True:
+                    raise ValueError()
+                try:
+                    empty = _publish_prepared(request, state, window, part, tasks, previous)
+                    return {**empty, "coverage": "caught_up_to_final_snapshot_not_history",
+                            "source_refusals": "NOT_AGGREGATED"}
+                except Exception:
+                    _fail("publication_state_unknown")
         # Advance only the first verified empty window, never the rest of the
         # chain, and only through the existing fenced prefix/CAS protocol.
         if cutoff_utc is not None and request.fenced and previous is not None and chain.get("windows"):

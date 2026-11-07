@@ -21,6 +21,13 @@ REF_KIND = "sha256_of_projected_metadata"
 MAX_BYTES = 16 * 1024 * 1024
 MAX_RESULTS = 100
 HEX = re.compile(r"[0-9a-f]{64}\Z")
+# Synthetic closed-card route (lead-mind-card-route-wire-fable-20261107-v1, source binding in
+# lead-mind-card-source-binding-fable-20261107-v1): OFF by default. Only a call that passes a pinned route decision
+# which verifies (shared_card_projection.verify_route_decision) resolves a memory naming the v7 card projection
+# schema, and only with the manifest's bound source evidence; without one such a memory is refused exactly as before
+# (its projection schema is not v6), and a decision never applies to a v6 memory. There is no module-level switch.
+# The card module is imported only inside that decision path. The v6 path is unchanged.
+CARD_PROJECTION_SCHEMA = "wd.bridge-mind-shared-card-projection.v7"
 
 
 class ResolveRefused(ValueError):
@@ -67,9 +74,81 @@ def _strict_memory_policy(value, policy_sha256, roster_sha256):
             and hmac.compare_digest(value["roster_sha256"], roster_sha256))
 
 
+def _resolve_verified_real_records(projection, results, query_utc):
+    """Internal mapping after _resolve_cards verifies the real decision and projection.
+
+    This is data-only mapping, not a C2 execution boundary or a validation
+    status accepted from a caller. It maps pinned text and does not consume a
+    stream, invoke a launcher or read snapshot/source files. Execution callers
+    enforce actual C2 separately in query_and_resolve.
+    """
+    if (type(results) is not list or len(results) > MAX_RESULTS
+            or not isinstance(query_utc, str) or sp.corpus_mod.parse_utc(query_utc) is None):
+        _invalid()
+    records = {}
+    for record in projection["records"]:
+        key = (_sha(record["provenance"]["event_ref"].encode("utf-8")),
+               _sha(record["record_id"].encode("utf-8")))
+        records.setdefault(key, record)
+    resolved, seen = [], set()
+    for item in results:
+        if (type(item) is not dict
+                or set(item) != {"ref_sha256", "doc_id_sha256", "ref_kind", "canonical_event"}
+                or item["ref_kind"] != REF_KIND or item["canonical_event"] is not False
+                or any(type(item[k]) is not str or HEX.fullmatch(item[k]) is None
+                       for k in ("ref_sha256", "doc_id_sha256"))):
+            _invalid()
+        key = (item["ref_sha256"], item["doc_id_sha256"])
+        record = records.get(key)
+        if (record is None or not sp.visible_at(record, query_utc, guard_band_s=1.0)
+                or not hmac.compare_digest(record["stored_text"], record["summary"])):
+            _invalid()
+        if key not in seen:
+            resolved.append(dict(item, stored_text=record["stored_text"]))
+            seen.add(key)
+    return resolved
+
+
+def _resolve_cards(manifest, projection_bytes, results, query_utc, approved_tasks, roster, strict, policy_sha256,
+                   roster_sha256, decision_bytes, decision_sha256):
+    """The pinned card route: strict pins, a verified decision, the card task approved, non-review roster authors
+    and the manifest's bound source evidence re-checked against the decision and the roster.
+    This is data-only mapping, not a C2 boundary; it verifies declared evidence,
+    not source files. Execution routes must enforce actual C2 independently.
+    Decision verification also pins the card module's own code bytes.
+    """
+    from sandbox.mind.step2 import shared_card_projection as cards
+    if (not strict or manifest.get("scope") != SCOPE
+            or not isinstance(manifest.get("projection_sha256"), str)
+            or HEX.fullmatch(manifest["projection_sha256"]) is None
+            or not isinstance(projection_bytes, bytes) or len(projection_bytes) > MAX_BYTES
+            or not hmac.compare_digest(_sha(projection_bytes), manifest["projection_sha256"])
+            or not _strict_memory_policy(manifest.get("policy"), policy_sha256, roster_sha256)
+            or not isinstance(approved_tasks, frozenset) or cards.CARD_TASK not in approved_tasks
+            or not isinstance(roster, dict)):
+        _invalid()
+    projection = _parse(projection_bytes)
+    try:
+        if json.dumps(projection, sort_keys=True, indent=1).encode("utf-8") != projection_bytes:
+            _invalid()
+        decision = cards.verify_route_decision(decision_bytes, decision_sha256, policy_sha256=policy_sha256,
+                                               roster_sha256=roster_sha256)
+        real = decision["synthetic"] is False
+        cards.validate_shared_card_projection(projection, _real_decision=decision if real else None)
+        if any(record["meta"]["agent"] not in roster or record["meta"]["agent"] in sp.REVIEW_LANES
+               for record in projection["records"]):
+            _invalid()
+        cards.check_route_evidence(manifest.get("card_route"), projection, decision, decision_sha256, roster)
+        if real:
+            return _resolve_verified_real_records(projection, results, query_utc)
+        return cards.resolve_route_results(projection, results, query_utc, decision)
+    except (cards.SharedCardRefused, ValueError, TypeError, KeyError, RecursionError, UnicodeError):
+        _invalid()
+
+
 def resolve_results(*, memory_manifest, expected_memory_sha256, projection_bytes, results, query_utc,
                     approved_tasks=None, policy_bytes=None, policy_sha256=None, roster_bytes=None,
-                    roster_sha256=None):
+                    roster_sha256=None, card_decision_bytes=None, card_decision_sha256=None):
     """Return approved stored text only for exact, time-visible projected Q4 hits.
 
     Both Q4 hash fields and explicit projected/noncanonical labels must match
@@ -93,6 +172,11 @@ def resolve_results(*, memory_manifest, expected_memory_sha256, projection_bytes
             or not hmac.compare_digest(_sha(memory_manifest), expected_memory_sha256)):
         _invalid()
     manifest = _parse(memory_manifest)
+    if card_decision_bytes is not None or card_decision_sha256 is not None:
+        if not isinstance(manifest, dict) or manifest.get("projection_schema") != CARD_PROJECTION_SCHEMA:
+            _invalid()
+        return _resolve_cards(manifest, projection_bytes, results, query_utc, approved_tasks, roster, strict,
+                              policy_sha256, roster_sha256, card_decision_bytes, card_decision_sha256)
     if (not isinstance(manifest, dict) or manifest.get("scope") != SCOPE
             or manifest.get("projection_schema") != PROJECTION_SCHEMA
             or not isinstance(manifest.get("projection_sha256"), str)

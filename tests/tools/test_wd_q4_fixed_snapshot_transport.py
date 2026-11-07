@@ -670,6 +670,8 @@ def synthetic_runtime(base, stub=STUB, namespace=True):
         for package in (step2.parents[1], step2.parent, step2):
             (package / "__init__.py").write_bytes(b"")
     (step2 / "shared_index_checkpoint.py").write_bytes(stub.encode("ascii"))
+    helper = Path(__file__).resolve().parents[2] / "sandbox/mind/step2/q4_controlled_imports.py"
+    (step2 / "q4_controlled_imports.py").write_bytes(helper.read_bytes())
     (root / "site").mkdir()
     (root / "site" / "synthetic_site.txt").write_bytes(b"site")
     (root / "model").mkdir()

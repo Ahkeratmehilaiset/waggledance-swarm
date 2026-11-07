@@ -39,6 +39,7 @@ import json
 import math
 import os
 from pathlib import Path
+import stat
 import struct
 import subprocess
 import sys
@@ -356,6 +357,53 @@ def _prior_outcome(exc):
             "none" if exc is None else "other")
 
 
+_MAX_EXCEPTION_NODES = 128
+_MAX_EXCEPTION_FRAMES = 4096
+
+
+def _clear_exception_frames(exc):
+    """Drop unwound-frame locals across the complete exception graph.
+
+    Active frames cannot be cleared here; the _run frame clears its own input
+    locals in its outer finally. This does not authenticate a same-user caller.
+    """
+    seen, pending, frame_count = set(), [exc], 0
+    while pending:
+        item = pending.pop()
+        if item is None or id(item) in seen:
+            continue
+        seen.add(id(item))
+        if len(seen) > _MAX_EXCEPTION_NODES:
+            return False
+        pending.extend((item.__context__, item.__cause__))
+        if isinstance(item, BaseExceptionGroup):
+            if len(item.exceptions) + len(pending) > _MAX_EXCEPTION_NODES:
+                return False
+            pending.extend(item.exceptions)
+        tb = item.__traceback__
+        while tb is not None:
+            frame_count += 1
+            if frame_count > _MAX_EXCEPTION_FRAMES:
+                return False
+            try:
+                tb.tb_frame.clear()
+            except RuntimeError:
+                if tb.tb_frame.f_code is not _run.__code__:
+                    return False
+            tb = tb.tb_next
+    return True
+
+
+def _raise_context_free(exc):
+    """Raise a fresh, sanitized signal without an active caller's context."""
+    try:
+        raise exc from None
+    except BaseException as sanitized:
+        sanitized.__context__ = None
+        sanitized.__cause__ = None
+        raise
+
+
 def _io(k, pipe, data, count, deadline, *, connect=False, write=False, eof=False):
     ov = buffer = done = None
     outstanding = False
@@ -533,12 +581,12 @@ _MAX_BUNDLE = 16 * 1024 * 1024
 # an isolated child before the pinned verifier is loaded; importing the verifier
 # here would break that boundary. A regression test checks the shared limit.
 _MAX_RUNTIME_MANIFEST = 8 * 1024 * 1024
-_PEER_CODE_LIMIT = 131072
+_PEER_CODE_LIMIT = 262144
 # synthetic-v1 needs no runtime. public-snapshot-v1 is default-off: the parent
 # refuses it unless explicitly enabled, and the child verifies the externally
 # pinned runtime manifest with the pinned verifier before importing any
 # runtime code or site. No approved runtime tree exists on this path yet.
-_FIXED_BACKENDS = frozenset({"synthetic-v1", "public-snapshot-v1"})
+_FIXED_BACKENDS = frozenset({"synthetic-v1", "public-snapshot-v1", "staged-card-wrapper-v1"})
 _PLAN_KEYS = frozenset({"schema", "backend", "interpreter_sha256", "peer_code_sha256",
                         "runtime_manifest_sha256", "bundle_sha256", "bundle_bytes"})
 _PUBLIC_PINS = ("expected_pointer_sha256", "policy_sha256", "roster_sha256", "expected_public_policy_sha256",
@@ -546,8 +594,12 @@ _PUBLIC_PINS = ("expected_pointer_sha256", "policy_sha256", "roster_sha256", "ex
 _PUBLIC_PLAN_KEYS = _PLAN_KEYS | frozenset(_PUBLIC_PINS) | frozenset({
     "verifier_sha256", "runtime_root", "runtime_manifest_path", "runtime_generation", "runtime_revision",
     "approved_tasks"})
+_STAGED_PLAN_KEYS = _PUBLIC_PLAN_KEYS | frozenset({
+    "card_decision_sha256", "card_policy_sha256", "wrapper_sha256", "deployment_manifest_sha256",
+    "public_plan_sha256", "host_sha256", "backend_sha256", "bundle_root", "bundle_commit", "wrapper_path", "public_plan_path"})
 _PLAN_SCHEMAS = {"wd.q4-fixed-plan.v1": ("synthetic-v1", _PLAN_KEYS),
-                 "wd.q4-fixed-plan.v2": ("public-snapshot-v1", _PUBLIC_PLAN_KEYS)}
+                 "wd.q4-fixed-plan.v2": ("public-snapshot-v1", _PUBLIC_PLAN_KEYS),
+                 "wd.q4-fixed-plan.v3": ("staged-card-wrapper-v1", _STAGED_PLAN_KEYS)}
 _VERIFIER_LIMIT = 131072
 _VERIFIER_PARTS = ("sandbox", "mind", "step2", "runtime_manifest.py")
 _PUBLIC_RUNTIME = "MANIFEST_VERIFIED_BEFORE_IMPORT_NOT_ISOLATED"
@@ -556,7 +608,8 @@ _ANSWER_KEYS = frozenset({"schema", "status", "results", "plan_sha256", "bundle_
 _RESULT_KEYS = frozenset({"ref_sha256", "doc_id_sha256", "stored_text", "ref_kind", "canonical_event"})
 _REF_KIND = "sha256_of_projected_metadata"  # shared_result_resolver.REF_KIND
 _MAX_RESULTS = 100  # shared_result_resolver.MAX_RESULTS
-_PRELOAD_DENY = ("sandbox", "tools", "waggledance", "core")
+_PRELOAD_DENY = ("sandbox", "tools", "waggledance", "core", "torch", "numpy", "scipy",
+                 "transformers", "sentence_transformers", "cython_runtime")
 _CONTAINED = []  # NUL descriptors and sinks kept alive for the whole child process
 _BUNDLE_SCHEMA = "wd.q4-fixed-snapshot-bundle.v1"
 _BUNDLE_KEYS = frozenset({"schema", "pointer", "policy", "roster", "public_policy", "active_artifacts", "history",
@@ -583,6 +636,106 @@ def _canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
 
 
+def _staged_path(value):
+    """A closed C-drive spelling; later handle checks still must reject reparse races."""
+    _check(type(value) is str and 3 < len(value) <= 512 and value.isascii() and value.isprintable()
+           and value[0].lower() == 'c' and value[1:3] == ':\\' and '/' not in value
+           and '\\\\' not in value and ':' not in value[2:])
+    for part in value[3:].split('\\'):
+        stem = part.split('.', 1)[0].rstrip(' ').upper()
+        _check(part not in ('', '.', '..') and not part.endswith(('.', ' '))
+               and stem not in {'CON', 'PRN', 'AUX', 'NUL', 'CONIN$', 'CONOUT$'}
+               and stem not in {prefix + str(i) for prefix in ('COM', 'LPT') for i in range(10)})
+    return value
+
+
+def _canonical_windows_long_path(path):
+    _check(os.name == 'nt')
+    kernel = C.WinDLL('kernel32', use_last_error=True)
+    kernel.GetLongPathNameW.argtypes = (W.LPCWSTR, W.LPWSTR, W.DWORD)
+    kernel.GetLongPathNameW.restype = W.DWORD
+    result = C.create_unicode_buffer(32768)
+    length = kernel.GetLongPathNameW(path, result, len(result))
+    _check(0 < length < len(result))
+    return result.value
+
+
+def _staged_system_host():
+    # Only the fixed system host gets canonicalized. Attestation still opens
+    # that exact spelling, rejects reparse files, and verifies its pinned hash.
+    requested = _staged_path(os.path.join(os.environ.get('SYSTEMROOT', ''), 'System32',
+                                          'WindowsPowerShell', 'v1.0', 'powershell.exe'))
+    canonical = _staged_path(_canonical_windows_long_path(requested))
+    _check(os.path.normcase(canonical) == os.path.normcase(requested))
+    return canonical
+
+
+def _staged_read(path, pin, limit):
+    path = Path(_staged_path(str(path)))
+    _hex64(pin)
+    for item in (path, *path.parents):
+        info = item.lstat()
+        _check(not stat.S_ISLNK(info.st_mode) and not (getattr(info, 'st_file_attributes', 0) & 0x400))
+    before = path.lstat()
+    _check(stat.S_ISREG(before.st_mode) and 0 < before.st_size <= limit)
+    with path.open('rb') as stream:
+        opened = os.fstat(stream.fileno())
+        _check(os.path.samestat(before, opened))
+        raw = stream.read(limit + 1)
+        after = os.fstat(stream.fileno())
+    _check(len(raw) == before.st_size and os.path.samestat(opened, after)
+           and os.path.samestat(after, path.lstat()) and hmac.compare_digest(_sha(raw), pin))
+    return raw
+
+
+def _read_staged_backend(peer_path, plan):
+    """Bind bundle and runtime peer/helper bytes to their independent pinned manifests."""
+    try:
+        root = Path(_staged_path(plan['bundle_root']))
+        peer = root / 'tools-bootstrap' / 'tools' / 'wd_q4_secure_transport.py'
+        helper = root / 'tools-bootstrap' / 'tools' / 'wd_q4_staged_fixed_backend.py'
+        wrapper = root / 'Invoke-WdQ4Query.ps1'
+        runtime = Path(_staged_path(plan['runtime_root']))
+        runtime_peer = runtime / 'assets/code/tools/wd_q4_secure_transport.py'
+        runtime_helper = runtime / 'assets/code/tools/wd_q4_staged_fixed_backend.py'
+        normalized = lambda p: os.path.normcase(os.path.abspath(p))
+        _check(normalized(peer_path) in (normalized(peer), normalized(runtime_peer))
+               and normalized(plan['wrapper_path']) == normalized(wrapper))
+        raw = _staged_read(root/'deployment-manifest.json', plan['deployment_manifest_sha256'], 4*1024*1024)
+        manifest = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_pairs,
+                              parse_constant=lambda _: _check(False))
+        _check(type(manifest) is dict and manifest.get('schema_version') == 1
+               and manifest.get('source_commit') == plan['bundle_commit'] and type(manifest.get('files')) is dict)
+        for rel, path, key, cap in (
+            ('tools-bootstrap/tools/wd_q4_secure_transport.py', peer, 'peer_code_sha256', _PEER_CODE_LIMIT),
+            ('tools-bootstrap/tools/wd_q4_staged_fixed_backend.py', helper, 'backend_sha256', _PEER_CODE_LIMIT),
+            ('Invoke-WdQ4Query.ps1', wrapper, 'wrapper_sha256', 1024*1024)):
+            _check(type(manifest['files'].get(rel)) is str
+                   and manifest['files'][rel].lower() == plan[key])
+            value = _staged_read(path, plan[key], cap)
+            if key == 'backend_sha256':
+                result = value
+        runtime_raw = _staged_read(plan['runtime_manifest_path'], plan['runtime_manifest_sha256'], _MAX_RUNTIME_MANIFEST)
+        runtime_manifest = json.loads(runtime_raw.decode('utf-8'), object_pairs_hook=_unique_pairs,
+                                      parse_constant=lambda _: _check(False))
+        _check(type(runtime_manifest) is dict and runtime_manifest.get('schema') == 'wd.q4-runtime-manifest.v1'
+               and runtime_manifest.get('generation') == plan['runtime_generation']
+               and runtime_manifest.get('revision') == plan['runtime_revision']
+               and type(runtime_manifest.get('files')) is list)
+        for rel, path, key in (
+            ('assets/code/tools/wd_q4_secure_transport.py', runtime_peer, 'peer_code_sha256'),
+            ('assets/code/tools/wd_q4_staged_fixed_backend.py', runtime_helper, 'backend_sha256')):
+            matches = [item for item in runtime_manifest['files'] if type(item) is dict and item.get('path') == rel]
+            _check(len(matches) == 1 and matches[0].get('sha256') == plan[key])
+            value = _staged_read(path, plan[key], _PEER_CODE_LIMIT)
+            _check(type(matches[0].get('size')) is int and matches[0]['size'] == len(value))
+            if key == 'backend_sha256':
+                _check(value == result)
+        return result
+    except Exception:
+        raise _Refused() from None
+
+
 def _fixed_plan(plan_bytes):
     """Closed canonical plan; its digest is the binding both peers derive. Caller pins its digest."""
     _check(type(plan_bytes) is bytes and 0 < len(plan_bytes) <= _MAX_PLAN)
@@ -594,7 +747,7 @@ def _fixed_plan(plan_bytes):
     for name in ("interpreter_sha256", "peer_code_sha256", "runtime_manifest_sha256", "bundle_sha256"):
         _hex64(plan[name])
     _check(type(plan["bundle_bytes"]) is int and 0 < plan["bundle_bytes"] <= _MAX_BUNDLE)
-    if backend == "public-snapshot-v1":
+    if backend in ("public-snapshot-v1", "staged-card-wrapper-v1"):
         for name in _PUBLIC_PINS + ("verifier_sha256",):
             _hex64(plan[name])
         for name in ("runtime_root", "runtime_manifest_path"):
@@ -608,6 +761,16 @@ def _fixed_plan(plan_bytes):
         _check(type(tasks) is list and 0 < len(tasks) <= 64
                and all(type(t) is str and 0 < len(t) <= 128 and t.isascii() and t.isprintable() for t in tasks)
                and tasks == sorted(set(tasks)))
+    if backend == "staged-card-wrapper-v1":
+        for name in ("card_decision_sha256", "card_policy_sha256", "wrapper_sha256",
+                     "deployment_manifest_sha256", "public_plan_sha256", "host_sha256", "backend_sha256"):
+            _hex64(plan[name])
+        _check(type(plan["bundle_commit"]) is str and len(plan["bundle_commit"]) == 40
+               and all(c in "0123456789abcdef" for c in plan["bundle_commit"]))
+        for name in ("bundle_root", "wrapper_path", "public_plan_path", "runtime_root", "runtime_manifest_path"):
+            _staged_path(plan[name])
+        _check(os.path.normcase(os.path.normpath(plan["wrapper_path"])) ==
+               os.path.normcase(os.path.normpath(os.path.join(plan["bundle_root"], "Invoke-WdQ4Query.ps1"))))
     _check(_canonical(plan) == plan_bytes)
     return plan
 
@@ -869,6 +1032,47 @@ def _fixed_bundle_decode(bundle_bytes):
     raise _Refused() from None
 
 
+_CARD_BUNDLE_SCHEMA = 'wd.q4-fixed-card-bundle.v1'
+_CARD_BUNDLE_FIELDS = frozenset({'pointer', 'policy', 'roster', 'public_policy', 'card_decision',
+                                 'card_policy', 'memory', 'projection', 'descriptor'})
+
+
+def fixed_card_bundle(*, pointer, policy, roster, public_policy, card_decision, card_policy,
+                      memory, projection, descriptor, enabled=False):
+    """Encode bounded caller-provided bytes; this does not validate a C2 snapshot."""
+    if enabled is False:
+        return {'status': 'OFF'}
+    try:
+        _check(enabled is True)
+        items = {'pointer':pointer, 'policy':policy, 'roster':roster, 'public_policy':public_policy,
+                 'card_decision':card_decision, 'card_policy':card_policy, 'memory':memory,
+                 'projection':projection, 'descriptor':descriptor}
+        _check(all(type(value) is bytes and 0 < len(value) <= _MAX_BUNDLE for value in items.values()))
+        # Bound before allocating base64 copies and include room for field names.
+        _check(sum(4 * ((len(value) + 2) // 3) for value in items.values()) + 1024 <= _MAX_BUNDLE)
+        result = _canonical({'schema': _CARD_BUNDLE_SCHEMA, **{key:_b64(value) for key,value in items.items()}})
+        _check(len(result) <= _MAX_BUNDLE)
+        return result
+    except Exception:
+        pass
+    raise _Refused() from None
+
+
+def _fixed_card_bundle_decode(bundle_bytes):
+    try:
+        _check(type(bundle_bytes) is bytes and 0 < len(bundle_bytes) <= _MAX_BUNDLE)
+        document = json.loads(bundle_bytes.decode('ascii', 'strict'), object_pairs_hook=_unique_pairs,
+                              parse_constant=lambda _: _check(False))
+        _check(type(document) is dict and set(document) == _CARD_BUNDLE_FIELDS | {'schema'}
+               and document['schema'] == _CARD_BUNDLE_SCHEMA and _canonical(document) == bundle_bytes)
+        result = {key:_unb64(document[key]) for key in _CARD_BUNDLE_FIELDS}
+        _check(all(0 < len(value) <= _MAX_BUNDLE for value in result.values()))
+        return result
+    except Exception:
+        pass
+    raise _Refused() from None
+
+
 _NUL_DEVICE = "\\Device\\Null"
 
 
@@ -975,13 +1179,136 @@ def _interpreter_roots():
     return [os.path.normcase(os.path.realpath(path)) for path in (base / "Lib", base / "DLLs")]
 
 
-def _module_origins(before, roots, namespace_root=None):
+def _install_controlled_imports(runtime_root, manifest_path, manifest_sha256):
+    """Execute the fixed helper only after verifying its runtime-manifest bytes."""
+    root = Path(runtime_root).resolve(strict=True)
+    with open(manifest_path, 'rb') as stream:
+        raw = stream.read(8 * 1024 * 1024 + 1)
+    _check(len(raw) <= 8 * 1024 * 1024 and hmac.compare_digest(_sha(raw), manifest_sha256))
+    manifest = json.loads(raw.decode('utf-8', 'strict'), object_pairs_hook=_unique_pairs)
+    _check(type(manifest) is dict and type(manifest.get('files')) is list)
+    relative = 'assets/code/sandbox/mind/step2/q4_controlled_imports.py'
+    matches = [item for item in manifest['files'] if type(item) is dict and item.get('path') == relative]
+    _check(len(matches) == 1 and type(matches[0].get('size')) is int
+           and 0 < matches[0]['size'] <= 128 * 1024 and type(matches[0].get('sha256')) is str)
+    path = root.joinpath(*relative.split('/')).resolve(strict=True)
+    _check(_under(os.path.normcase(os.path.realpath(path)), os.path.normcase(os.path.realpath(root))))
+    with open(path, 'rb') as stream:
+        code = stream.read(matches[0]['size'] + 1)
+    _check(len(code) == matches[0]['size'] and hmac.compare_digest(_sha(code), matches[0]['sha256']))
+    namespace = {'__name__': '_wd_q4_controlled_imports'}
+    exec(compile(code, '<wd-q4-controlled-imports>', 'exec'), namespace)
+    return namespace['install'](root, manifest_path, manifest_sha256, _check=_check, _sha=_sha,
+        _unique_pairs=_unique_pairs, _interpreter_roots=_interpreter_roots, _under=_under)
+
+
+class _FaissSwigOrigin:
+    """Bind one runtime-created SWIG capsule to its verified FAISS image.
+
+    This is process-local consistency, not same-user authentication or a
+    defense against replacement of mapped images after runtime verification.
+    """
+    _NAME = 'swig_runtime_data4'
+    _CAPSULE = b'swig_runtime_data4.type_pointer_capsule'
+    _IMAGES = frozenset({'_swigfaiss.pyd', '_swigfaiss_avx2.pyd'})
+
+    def __init__(self, runtime_root, manifest_path, manifest_sha256):
+        self.root, self.manifest_path, self.manifest_sha256 = Path(runtime_root), Path(manifest_path), manifest_sha256
+        self.module = self.capsule = None
+        self.pointer = self.destructor = None
+
+    def _manifest(self):
+        with open(self.manifest_path, 'rb') as stream:
+            raw = stream.read(8 * 1024 * 1024 + 1)
+        _check(len(raw) <= 8 * 1024 * 1024 and hmac.compare_digest(_sha(raw), self.manifest_sha256))
+        document = json.loads(raw.decode('utf-8', 'strict'), object_pairs_hook=_unique_pairs)
+        _check(type(document) is dict and type(document.get('files')) is list)
+        return document['files']
+
+    def needs_faiss(self):
+        paths = [item.get('path') for item in self._manifest() if type(item) is dict]
+        package = paths.count('site/faiss/__init__.py')
+        native = sum(paths.count('site/faiss/' + name) for name in self._IMAGES)
+        _check((package == 0 and native == 0) or (package == 1 and native > 0))
+        return package == 1
+
+    def accept(self, module):
+        _check(type(module) is type(sys) and sys.modules.get(self._NAME) is module)
+        attrs = type(sys).__getattribute__(module, '__dict__')
+        _check(set(attrs) == {'__name__', '__doc__', '__package__', '__loader__', '__spec__',
+                              'type_pointer_capsule'} and attrs['__name__'] == self._NAME
+               and all(attrs[key] is None for key in ('__doc__', '__package__', '__loader__', '__spec__')))
+        capsule = attrs['type_pointer_capsule']
+        valid = C.pythonapi.PyCapsule_IsValid
+        valid.argtypes = [C.py_object, C.c_char_p]; valid.restype = C.c_int
+        _check(valid(capsule, self._CAPSULE) == 1)
+        get_pointer = C.pythonapi.PyCapsule_GetPointer
+        get_pointer.argtypes = [C.py_object, C.c_char_p]; get_pointer.restype = C.c_void_p
+        address = get_pointer(capsule, self._CAPSULE)
+        get_context = C.pythonapi.PyCapsule_GetContext
+        get_context.argtypes = [C.py_object]; get_context.restype = C.c_void_p
+        get_destructor = C.pythonapi.PyCapsule_GetDestructor
+        get_destructor.argtypes = [C.py_object]; get_destructor.restype = C.c_void_p
+        destructor = get_destructor(capsule)
+        _check(bool(address) and bool(destructor) and get_context(capsule) is None)
+        kernel = C.WinDLL('kernel32', use_last_error=True)
+        kernel.GetModuleHandleExW.argtypes = [W.DWORD, C.c_void_p, C.POINTER(C.c_void_p)]
+        kernel.GetModuleHandleExW.restype = W.BOOL
+        kernel.GetModuleFileNameW.argtypes = [C.c_void_p, W.LPWSTR, W.DWORD]
+        kernel.GetModuleFileNameW.restype = W.DWORD
+        handle = C.c_void_p()
+        _check(bool(kernel.GetModuleHandleExW(0x4 | 0x2, C.c_void_p(address), C.byref(handle))))
+        destructor_handle = C.c_void_p()
+        _check(bool(kernel.GetModuleHandleExW(0x4 | 0x2, C.c_void_p(destructor), C.byref(destructor_handle)))
+               and destructor_handle.value == handle.value)
+        buffer = C.create_unicode_buffer(32768)
+        count = kernel.GetModuleFileNameW(handle, buffer, len(buffer))
+        _check(0 < count < len(buffer))
+        image = Path(buffer.value)
+        _check(image.name.lower() in self._IMAGES and image.parent.name.lower() == 'faiss'
+               and os.path.samefile(image.parent, self.root / 'site' / 'faiss'))
+        native = sys.modules.get('faiss.' + image.stem)
+        _check(type(native) is type(sys))
+        native_file = type(sys).__getattribute__(native, '__dict__').get('__file__')
+        _check(type(native_file) is str and os.path.samefile(image, native_file))
+        relative = 'site/faiss/' + image.name
+        entries = [item for item in self._manifest() if type(item) is dict and item.get('path') == relative]
+        _check(len(entries) == 1 and type(entries[0].get('size')) is int and 0 < entries[0]['size'] <= 128 * 1024 * 1024)
+        with open(image, 'rb') as stream:
+            opened = os.fstat(stream.fileno())
+            data = stream.read(entries[0]['size'] + 1)
+            after = os.fstat(stream.fileno())
+        _check(os.path.samestat(opened, after) and os.path.samestat(after, image.stat())
+               and len(data) == entries[0]['size'] and hmac.compare_digest(_sha(data), entries[0]['sha256']))
+        if self.module is None:
+            self.module, self.capsule = module, capsule
+            self.pointer, self.destructor = address, destructor
+        else:
+            _check(self.module is module and self.capsule is capsule
+                   and self.pointer == address and self.destructor == destructor)
+
+    def recheck(self):
+        if self.module is not None:
+            self.accept(self.module)
+
+
+def _reject_preloaded_faiss():
+    _check(_FaissSwigOrigin._NAME not in sys.modules and not any(
+        name == 'faiss' or name.startswith('faiss.') for name in sys.modules))
+
+
+def _reject_preloaded_runtime():
+    _check(not any(name.startswith('_cython_') or any(name == deny or name.startswith(deny + '.')
+               for deny in _PRELOAD_DENY) for name in sys.modules))
+
+
+def _module_origins(before, roots, namespace_root=None, created_origin=None, swig_origin=None):
     """Check newly imported origins, including only the three known code-root namespaces.
 
     Namespace inspection is not an authenticity proof; the runtime tree and
     module state can still change after verification (same-user TOCTOU).
     """
-    from importlib.machinery import NamespaceLoader
+    from importlib.machinery import BuiltinImporter, FrozenImporter, ModuleSpec, NamespaceLoader
 
     namespaces = {"sandbox": ("sandbox",), "sandbox.mind": ("sandbox", "mind"),
                   "sandbox.mind.step2": ("sandbox", "mind", "step2")}
@@ -989,13 +1316,22 @@ def _module_origins(before, roots, namespace_root=None):
     for name, module in list(sys.modules.items()):
         if name in before or module is None:
             continue
-        origin = getattr(module, "__file__", None)
-        spec = getattr(module, "__spec__", None)
+        # A module-level __getattr__ is executable code. Never invoke it while
+        # deciding whether this very module is trustworthy.
+        _check(isinstance(module, type(sys)))
+        attrs = type(sys).__getattribute__(module, "__dict__")
+        origin = attrs.get("__file__")
+        spec = attrs.get("__spec__")
+        _check(spec is None or type(spec) is ModuleSpec)
         if name in namespaces:
             # These names are namespace packages in the verified code tree;
             # a same-named regular module from another trusted root is not one.
             _check(origin is None)
         if origin is None:
+            if name == _FaissSwigOrigin._NAME:
+                _check(swig_origin is not None)
+                swig_origin.accept(module)
+                continue
             if name in namespaces:
                 _check(namespace_root is not None)
                 root = os.path.normcase(os.path.abspath(namespace_root))
@@ -1005,8 +1341,8 @@ def _module_origins(before, roots, namespace_root=None):
                 paths = getattr(spec, "submodule_search_locations", None)
                 _check(getattr(spec, "name", None) == name and getattr(spec, "origin", None) is None and
                        isinstance(getattr(spec, "loader", None), NamespaceLoader) and
-                       getattr(module, "__loader__", None) is spec.loader and paths is not None and
-                       getattr(module, "__path__", None) is paths)
+                       attrs.get("__loader__") is spec.loader and paths is not None and
+                       attrs.get("__path__") is paths)
                 locations = list(paths)
                 _check(len(locations) == 1 and type(locations[0]) is str and os.path.isabs(locations[0]))
                 path = os.path.normcase(os.path.abspath(locations[0]))
@@ -1014,8 +1350,26 @@ def _module_origins(before, roots, namespace_root=None):
                        os.path.normcase(os.path.realpath(path)) == expected and
                        not os.path.exists(os.path.join(path, "__init__.py")))
                 continue
-            _check(name in sys.builtin_module_names or getattr(spec, "origin", None) in ("built-in", "frozen"))
+            if spec is not None and spec.origin is None and type(spec.loader) is NamespaceLoader:
+                _check(created_origin is not None and created_origin.accept_namespace(name, module))
+                continue
+            if name in sys.builtin_module_names or getattr(spec, "origin", None) in ("built-in", "frozen"):
+                # A ModuleSpec is mutable and its origin is merely a claim.
+                # Bind it to the matching interpreter importer and registry;
+                # this is cooperative consistency, not object authentication.
+                _check(spec is not None and spec.name == name and attrs.get("__loader__") is spec.loader)
+                if spec.origin == "built-in":
+                    _check(name in sys.builtin_module_names and spec.loader is BuiltinImporter
+                           and BuiltinImporter.find_spec(name) is not None)
+                elif spec.origin == "frozen":
+                    _check(spec.loader is FrozenImporter and FrozenImporter.find_spec(name) is not None)
+                else:
+                    _check(False)
+                continue
+            _check(created_origin is not None)
+            created_origin.accept_created(name, module)
             continue
+        _check(type(origin) is str)
         path = os.path.normcase(os.path.realpath(origin))
         _check(any(_under(path, root) for root in roots) and not _under(path, excluded))
 
@@ -1112,11 +1466,21 @@ def _fixed_child_backend(plan, peer_path):
     """
     if plan["backend"] == "synthetic-v1":
         return _fixed_child_answer
+    if plan["backend"] == "staged-card-wrapper-v1":
+        _check(type(peer_path) is str)
+        scope = {'__name__':'_wd_staged_fixed_backend'}
+        exec(compile(_read_staged_backend(peer_path, plan), '<wd-staged-fixed-backend>', 'exec'), scope)
+        staged = scope['prepare_staged_backend'](plan, peer_path, globals(), enabled=True)
+        _check(callable(staged) and callable(getattr(staged, 'validate_bundle', None)))
+        return staged
     _check(plan["backend"] == "public-snapshot-v1" and type(peer_path) is str)
     # First step, before any verifier, runtime or backend code runs in this process.
     _contain_child_output()
     _check(sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode)
-    _check(not any(name == deny or name.startswith(deny + ".") for name in sys.modules for deny in _PRELOAD_DENY))
+    _reject_preloaded_runtime()
+    _reject_preloaded_faiss()
+    imports = _install_controlled_imports(plan['runtime_root'], plan['runtime_manifest_path'],
+                                          plan['runtime_manifest_sha256'])
     verifier = Path(peer_path).absolute().parents[1].joinpath(*_VERIFIER_PARTS)
     with open(verifier, "rb") as stream:
         source = stream.read(_VERIFIER_LIMIT + 1)
@@ -1130,25 +1494,33 @@ def _fixed_child_backend(plan, peer_path):
     entry = code.joinpath("sandbox", "mind", "step2", "shared_index_checkpoint.py")
     _check(code.is_dir() and site.is_dir() and model.is_dir() and entry.is_file())
     roots = [os.path.normcase(os.path.realpath(path)) for path in (code, site)] + _interpreter_roots()
+    swig_origin = _FaissSwigOrigin(root, plan['runtime_manifest_path'], plan['runtime_manifest_sha256'])
     before = set(sys.modules)
     sys.path.insert(0, str(code))
     sys.path.append(str(site))
     import importlib
+    if swig_origin.needs_faiss():
+        importlib.import_module('faiss')
+        _module_origins(before, roots, code, imports, swig_origin)
+        _check(swig_origin.module is not None)
     module = importlib.import_module("sandbox.mind.step2.shared_index_checkpoint")
     _check(os.path.normcase(os.path.abspath(module.__file__)) == os.path.normcase(os.path.abspath(entry)))
-    _module_origins(before, roots, code)
+    _module_origins(before, roots, code, imports, swig_origin)
     query_public_snapshot = module.query_public_snapshot
     _check(callable(query_public_snapshot))
 
     def answer(plan_, plan_bytes, bundle_bytes, query):
         _check(plan_ is plan and type(query) is bytes and 0 < len(query) <= _MAX_INPUT)
+        imports.check()
         result = query_public_snapshot(**_fixed_bundle_decode(bundle_bytes),
                                        **{name: plan[name] for name in _PUBLIC_PINS},
                                        approved_tasks=frozenset(plan["approved_tasks"]), query_bytes=query,
                                        model_dir=str(model), expected_runtime_revision=plan["runtime_revision"],
                                        enabled=True)
         # The real query imports lazily, so origins are checked again after the call.
-        _module_origins(before, roots, code)
+        _module_origins(before, roots, code, imports, swig_origin)
+        swig_origin.recheck()
+        imports.check()
         _check(type(result) is dict and result.get("status") in ("ANSWER", "ABSTAIN", "DEGRADED"))
         return _canonical({"schema": "wd.q4-fixed-public-answer.v1", "status": result["status"],
                            "results": _fixed_closed_results(result.get("results")), "plan_sha256": _sha(plan_bytes),
@@ -1186,6 +1558,8 @@ def _fixed_child_protocol(read_frame, write_frame, peer_code_sha256, peer_path=N
                             "binding_sha256": _sha(plan_bytes)}))
     bundle_bytes = read_frame(plan["bundle_bytes"])
     _fixed_child_bundle(plan, bundle_bytes)
+    if plan["backend"] == "staged-card-wrapper-v1":
+        backend.validate_bundle(bundle_bytes)
     write_frame(_fixed_ack(challenge["nonce"], _sha(bundle_bytes)))
     if _diagnostic_marker is not None:
         # Mark before the read: a partial/failed query read must never reveal
@@ -1216,8 +1590,8 @@ _BOOTSTRAP = """
 import hashlib,sys
 try:
  with open(sys.argv[1], 'rb') as source:
-  raw=source.read(131073)
- if len(raw)>131072 or hashlib.sha256(raw).hexdigest()!=sys.argv[2]:
+  raw=source.read(262145)
+ if len(raw)>262144 or hashlib.sha256(raw).hexdigest()!=sys.argv[2]:
   raise ValueError()
  scope={'__name__':'_wd_secure_child','__file__':sys.argv[1]}
  exec(compile(raw,'<wd-secure-child>','exec'),scope)
@@ -1235,219 +1609,351 @@ _check(_DIAGNOSTIC_BOOTSTRAP != _BOOTSTRAP and _DIAGNOSTIC_BOOTSTRAP != _FIXED_B
 
 
 def _validate(stdin_bytes, timeout_seconds, max_output_bytes):
-    _check(type(stdin_bytes) is bytes and len(stdin_bytes) <= _MAX_INPUT)
-    _check(type(timeout_seconds) in (int, float) and math.isfinite(timeout_seconds)
-           and 0 < timeout_seconds <= 1800)
-    _check(type(max_output_bytes) is int and 0 < max_output_bytes <= _MAX_OUTPUT)
-
-
-def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes, fixed=None):
-    # Reject non-dicts without invoking arbitrary caller-supplied mapping code.
-    # The READY primitive is reachable only through run_fixed_peer (mode
-    # "fixed"), after every caller pin was checked and both leases are held.
-    if not (type(metadata) is dict and all(type(key) is str for key in metadata)
-            and type(metadata.get("mode")) is str
-            and metadata["mode"] in ("python-c", "echo", "fixed")
-            and (metadata["mode"] == "fixed") == (fixed is not None)
-            and (fixed is None or (type(fixed) is tuple and len(fixed) == 3))):
-        del metadata, stdin_bytes, fixed
-        raise _Refused()
-    _validate(stdin_bytes, timeout_seconds, max_output_bytes)
-    # Allocate the caller-owned native output before acquiring the dispatch
-    # lock, so allocation failure cannot strand the lock.
-    child_info = _ProcessInfo()
-    if not _RUN_LOCK.acquire(blocking=False):
-        raise _Refused()
-    if _QUARANTINE:
-        _RUN_LOCK.release()
-        raise TransportCleanupUnknown("prior_unknown") from None
-    k = a = None
-    pipe = job = process = thread = None
-    spawn_attempted = False
     try:
-        deadline = time.monotonic() + timeout_seconds
-    except BaseException:
-        # No OS resources have been acquired; release the dispatch lock while
-        # preserving the original failure or interruption.
-        _RUN_LOCK.release()
-        raise
-    try:
-        k, a = _api()
-        _check(type(cwd) is str and os.path.isabs(cwd) and os.path.isdir(cwd))
-        metadata = dict(metadata, max_output_bytes=max_output_bytes)
-        raw_meta = json.dumps(metadata, separators=(",", ":"), ensure_ascii=True).encode("ascii")
-        _check(len(raw_meta) <= _MAX_META)
-        name = r"\\.\pipe\wd-q4-synthetic-" + uuid.uuid4().hex
-        descriptor = _descriptor(k, a)
-        try:
-            security = _SA(C.sizeof(_SA), descriptor, False)
-            pipe = _handle(k.CreateNamedPipeW(
-                name, 3 | 0x40000000 | 0x00080000, 8, 1, 65536, 65536, 0,
-                C.byref(security)))
-        finally:
-            prior = _prior_outcome(sys.exc_info()[1])
-            if not _release_once(k, descriptor, local=True):
-                raise TransportCleanupUnknown(prior) from None
-        _noninheritable(k, pipe)
-        job = _handle(k.CreateJobObjectW(None, None))
-        _noninheritable(k, job)
-        limits = _Limits()
-        limits.basic.flags = 0x2000  # KILL_ON_JOB_CLOSE, no breakaway flags.
-        _check(k.SetInformationJobObject(job, 9, C.byref(limits), C.sizeof(limits)))
-        parent_created = _created(k, k.GetCurrentProcess())
-        argv = command + [name, str(os.getpid()), str(parent_created)]
-        _check(all(type(value) is str and "\0" not in value for value in argv))
-        line = subprocess.list2cmdline(argv)
-        _check(len(line) < 32767)
-        _remaining(deadline)
-        environment = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR")
-                       if key in os.environ}
-        environment.update(TEMP=cwd, TMP=cwd)  # Caller-owned, budgeted synthetic scratch.
-        # No STARTF_USESTDHANDLES, HANDLE_LIST, anonymous pipes or inheritable gap.
-        spawn_attempted = True
-        process, thread, pid, _ = _create_process_in_job(
-            k, job, command[0], line, environment, cwd, child_info)
-        _noninheritable(k, int(process))
-        _noninheritable(k, int(thread))
-        child_created = _created(k, int(process))
-        _check(k.ResumeThread(int(thread)) != 0xFFFFFFFF)
-        _io(k, pipe, None, 0, deadline, connect=True)
-        _peer(k, pipe, pid, child_created, client=True)
-        if fixed is not None:
-            _fixed_exchange(k, pipe, pid, child_created, fixed[0], fixed[1], fixed[2], stdin_bytes, deadline)
-        else:
-            _frame_write(k, pipe, raw_meta, deadline)
-            _frame_write(k, pipe, stdin_bytes, deadline)
-        status = _read(k, pipe, 1, deadline)
-        if status != b"\1":
-            raise _Refused()
-        # Fixed mode: the caller's cap bounds the inner answer; the frame carries the binding overhead only.
-        output = _frame_read(k, pipe, max_output_bytes + (_BIND_OVERHEAD if fixed is not None else 0), deadline)
-        exit_code = struct.unpack(">i", _read(k, pipe, 4, deadline))[0]
-        _check(_read(k, pipe, 4, deadline) == b"END!")
-        _check(_io(k, pipe, None, 1, deadline, eof=True) == b"")
-        state = k.WaitForSingleObject(int(process), _remaining(deadline))
-        if state == 258:
-            raise TimeoutError("secure_transport_timeout")
-        _check(state == 0)
-        actual_exit = W.DWORD()
-        _check(k.GetExitCodeProcess(int(process), C.byref(actual_exit)))
-        _check(actual_exit.value == 0)
-        return output, exit_code
-    except TransportCleanupUnknown:
-        raise
-    except TimeoutError:
-        raise TimeoutError("secure_transport_timeout") from None
-    except Exception:
-        raise _Refused() from None
+        _check(type(stdin_bytes) is bytes and len(stdin_bytes) <= _MAX_INPUT)
+        _check(type(timeout_seconds) in (int, float) and math.isfinite(timeout_seconds)
+               and 0 < timeout_seconds <= 1800)
+        _check(type(max_output_bytes) is int and 0 < max_output_bytes <= _MAX_OUTPUT)
     finally:
-        # Cover the cleanup prologue as well as its operations. Once any
-        # native handle was acquired, an unexpected interruption leaves
-        # the outcome uncertain and must block a later call.
-        try:
-            prior_outcome = _prior_outcome(sys.exc_info()[1])
-            # A suspended child may exist even when an exception prevented one
-            # or both returned handles from reaching the local variables. We
-            # cannot recover or terminate an unreferenced child/handle here.
-            # Conservatively block subsequent work; this also treats ordinary
-            # CreateProcess errors as uncertain rather than claiming cleanup.
-            cleanup_ok = not (spawn_attempted and (process is None or thread is None))
-            # The native call writes to caller-owned memory even if Python
-            # cannot unpack the returned values after the call.
-            if process is None:
-                process = child_info.process
-            if thread is None:
-                thread = child_info.thread
-            failed_closes = []
-            def cleanup_call(operation):
-                nonlocal prior_outcome
-                try:
-                    return bool(operation())
-                except BaseException as exc:
-                    reason = _prior_outcome(exc)
-                    if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
-                        prior_outcome = reason
-                    return False
-            def close_call(handle, *, convert=False):
-                # Conversion can fail or be interrupted too; keep it inside the
-                # same boundary as CloseHandle so later handles are still tried.
-                closed = cleanup_call(lambda: k.CloseHandle(int(handle) if convert else handle))
-                if not closed:
-                    failed_closes.append(handle)
-                return closed
+        del stdin_bytes
+
+
+def _run(command, cwd, metadata, stdin_bytes, timeout_seconds, max_output_bytes, fixed=None, *, transport_owner=None):
+    try:
+        # The optional private ticket is a cooperative contribution, never a result
+        # dictionary or a claim that the rest of the caller chain is cleaned up.
+        if transport_owner is not None:
+            from tools.wd_q4_guard_completion import _TransportOwner
+            if type(transport_owner) is not _TransportOwner:
+                del metadata, stdin_bytes, fixed
+                raise _Refused()
             try:
-                if k is not None:
-                    if spawn_attempted and job is not None:
-                        cleanup_deadline = None
-                        try:
-                            cleanup_deadline = time.monotonic() + _CLEANUP_WAIT_SECONDS
-                        except BaseException as exc:
-                            # Still request termination and close owned handles. Without
-                            # a clock bound there is no safe exit/zero wait; quarantine.
-                            reason = _prior_outcome(exc)
-                            if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
-                                prior_outcome = reason
-                            cleanup_ok = False
-                        try:
-                            cleanup_ok = cleanup_call(lambda: k.TerminateJobObject(job, 124)) and cleanup_ok
-                            if cleanup_deadline is not None:
-                                cleanup_ok = cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline)) and cleanup_ok
-                        except BaseException as exc:
-                            # A failure in a decision outside the individual kernel
-                            # calls cannot certify cleanup. Still try termination and
-                            # all owned closes; do not claim the retry confirmed it.
-                            reason = _prior_outcome(exc)
-                            if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
-                                prior_outcome = reason
-                            cleanup_ok = False
-                            cleanup_call(lambda: k.TerminateJobObject(job, 124))
-                            if cleanup_deadline is not None:
-                                cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline))
-                    if job is not None:
-                        cleanup_ok = close_call(job) and cleanup_ok
-                    if process is not None:
-                        cleanup_ok = close_call(process, convert=True) and cleanup_ok
-                    if thread is not None:
-                        cleanup_ok = close_call(thread, convert=True) and cleanup_ok
+                transport_owner._begin()
+            except BaseException:
+                del metadata, stdin_bytes, fixed
+                raise
+        # Reject non-dicts without invoking arbitrary caller-supplied mapping code.
+        # The READY primitive is reachable only through run_fixed_peer (mode
+        # "fixed"), after every caller pin was checked and both leases are held.
+        if not (type(metadata) is dict and all(type(key) is str for key in metadata)
+                and type(metadata.get("mode")) is str
+                and metadata["mode"] in ("python-c", "echo", "fixed")
+                and (metadata["mode"] == "fixed") == (fixed is not None)
+                and (fixed is None or (type(fixed) is tuple and len(fixed) == 3))):
+            if transport_owner is not None:
+                transport_owner._unknown()
+            del metadata, stdin_bytes, fixed
+            raise _Refused()
+        try:
+            _validate(stdin_bytes, timeout_seconds, max_output_bytes)
+            # Allocate before acquiring the dispatch lock.
+            child_info = _ProcessInfo()
+            if not _RUN_LOCK.acquire(blocking=False):
+                raise _Refused()
+        except BaseException:
+            if transport_owner is not None:
+                transport_owner._unknown()
+            del metadata, stdin_bytes, fixed
+            raise
+        if _QUARANTINE:
+            try:
+                _RUN_LOCK.release()
+                if transport_owner is not None:
+                    transport_owner._unknown()
+            finally:
+                del metadata, stdin_bytes, fixed
+            raise TransportCleanupUnknown("prior_unknown") from None
+        k = a = None
+        pipe = job = process = thread = None
+        spawn_attempted = False
+        unexpected_exception = False
+        unmanaged_exception = False
+        scrub_failed = False
+        deferred_interrupt = None
+        deferred_exit_code = None
+        raw_meta = None
+        try:
+            deadline = time.monotonic() + timeout_seconds
+        except BaseException:
+            # No OS resources have been acquired; release the dispatch lock while
+            # preserving the original failure or interruption.
+            try:
+                _RUN_LOCK.release()
+                if transport_owner is not None:
+                    transport_owner._unknown()
+            finally:
+                del metadata, stdin_bytes, fixed, raw_meta
+            raise
+        try:
+            k, a = _api()
+            _check(type(cwd) is str and os.path.isabs(cwd) and os.path.isdir(cwd))
+            metadata = dict(metadata, max_output_bytes=max_output_bytes)
+            raw_meta = json.dumps(metadata, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+            _check(len(raw_meta) <= _MAX_META)
+            name = r"\\.\pipe\wd-q4-synthetic-" + uuid.uuid4().hex
+            descriptor = _descriptor(k, a)
+            try:
+                security = _SA(C.sizeof(_SA), descriptor, False)
+                pipe = _handle(k.CreateNamedPipeW(
+                    name, 3 | 0x40000000 | 0x00080000, 8, 1, 65536, 65536, 0,
+                    C.byref(security)))
+            finally:
+                prior = _prior_outcome(sys.exc_info()[1])
+                if not _release_once(k, descriptor, local=True):
+                    raise TransportCleanupUnknown(prior) from None
+            _noninheritable(k, pipe)
+            job = _handle(k.CreateJobObjectW(None, None))
+            _noninheritable(k, job)
+            limits = _Limits()
+            limits.basic.flags = 0x2000  # KILL_ON_JOB_CLOSE, no breakaway flags.
+            _check(k.SetInformationJobObject(job, 9, C.byref(limits), C.sizeof(limits)))
+            parent_created = _created(k, k.GetCurrentProcess())
+            argv = command + [name, str(os.getpid()), str(parent_created)]
+            _check(all(type(value) is str and "\0" not in value for value in argv))
+            line = subprocess.list2cmdline(argv)
+            _check(len(line) < 32767)
+            _remaining(deadline)
+            environment = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR")
+                           if key in os.environ}
+            environment.update(TEMP=cwd, TMP=cwd)  # Caller-owned, budgeted synthetic scratch.
+            # No STARTF_USESTDHANDLES, HANDLE_LIST, anonymous pipes or inheritable gap.
+            spawn_attempted = True
+            process, thread, pid, _ = _create_process_in_job(
+                k, job, command[0], line, environment, cwd, child_info)
+            _noninheritable(k, int(process))
+            _noninheritable(k, int(thread))
+            child_created = _created(k, int(process))
+            _check(k.ResumeThread(int(thread)) != 0xFFFFFFFF)
+            _io(k, pipe, None, 0, deadline, connect=True)
+            _peer(k, pipe, pid, child_created, client=True)
+            if fixed is not None:
+                _fixed_exchange(k, pipe, pid, child_created, fixed[0], fixed[1], fixed[2], stdin_bytes, deadline)
+            else:
+                _frame_write(k, pipe, raw_meta, deadline)
+                _frame_write(k, pipe, stdin_bytes, deadline)
+            status = _read(k, pipe, 1, deadline)
+            if status != b"\1":
+                raise _Refused()
+            # Fixed mode: the caller's cap bounds the inner answer; the frame carries the binding overhead only.
+            output = _frame_read(k, pipe, max_output_bytes + (_BIND_OVERHEAD if fixed is not None else 0), deadline)
+            exit_code = struct.unpack(">i", _read(k, pipe, 4, deadline))[0]
+            _check(_read(k, pipe, 4, deadline) == b"END!")
+            _check(_io(k, pipe, None, 1, deadline, eof=True) == b"")
+            state = k.WaitForSingleObject(int(process), _remaining(deadline))
+            if state == 258:
+                raise TimeoutError("secure_transport_timeout")
+            _check(state == 0)
+            actual_exit = W.DWORD()
+            _check(k.GetExitCodeProcess(int(process), C.byref(actual_exit)))
+            _check(actual_exit.value == 0)
+            return output, exit_code
+        except TransportCleanupUnknown as exc:
+            if _clear_exception_frames(exc):
+                raise
+            scrub_failed = True
+        except TimeoutError as exc:
+            if _clear_exception_frames(exc):
+                raise TimeoutError("secure_transport_timeout") from None
+            scrub_failed = True
+        except (KeyboardInterrupt, SystemExit) as exc:
+            unmanaged_exception = True
+            if transport_owner is not None:
+                transport_owner._unknown()
+            if _clear_exception_frames(exc):
+                raise
+            deferred_interrupt = "interrupt" if isinstance(exc, KeyboardInterrupt) else "exit"
+            if deferred_interrupt == "exit":
+                deferred_exit_code = exc.code if exc.code is None or type(exc.code) is int else 1
+            scrub_failed = True
+        except Exception as exc:
+            unexpected_exception = not isinstance(exc, _Refused)
+            if _clear_exception_frames(exc):
+                raise _Refused() from None
+            scrub_failed = True
+        except BaseException as exc:
+            # Groups containing interrupts and all other unmanaged base errors
+            # must never register successful owner cleanup.
+            unmanaged_exception = True
+            if transport_owner is not None:
+                transport_owner._unknown()
+            if _clear_exception_frames(exc):
+                raise
+            if isinstance(exc, BaseExceptionGroup):
+                # Its unseen members cannot be classified within the budget.
+                # Preserve a base-exception group signal without inventing a
+                # particular interrupt or retaining the original graph.
+                deferred_interrupt = "base_group"
+            scrub_failed = True
+        finally:
+            # Cover the cleanup prologue as well as its operations. Once any
+            # native handle was acquired, an unexpected interruption leaves
+            # the outcome uncertain and must block a later call.
+            try:
+                prior_cleanup_unknown = isinstance(sys.exc_info()[1], TransportCleanupUnknown)
+                prior_outcome = _prior_outcome(sys.exc_info()[1])
+                # A suspended child may exist even when an exception prevented one
+                # or both returned handles from reaching the local variables. We
+                # cannot recover or terminate an unreferenced child/handle here.
+                # Conservatively block subsequent work; this also treats ordinary
+                # CreateProcess errors as uncertain rather than claiming cleanup.
+                cleanup_ok = not (spawn_attempted and (process is None or thread is None))
+                # The native call writes to caller-owned memory even if Python
+                # cannot unpack the returned values after the call.
+                if process is None:
+                    process = child_info.process
+                if thread is None:
+                    thread = child_info.thread
+                failed_closes = []
+                def cleanup_call(operation):
+                    nonlocal prior_outcome
                     try:
-                        if pipe is not None and not any(entry[1] == pipe for entry in _QUARANTINE):
-                            cleanup_ok = close_call(pipe) and cleanup_ok
-                        elif pipe is not None:
-                            cleanup_ok = False  # Pending overlapped I/O remains quarantined.
+                        return bool(operation())
                     except BaseException as exc:
-                        # When pending-I/O ownership cannot be checked, retaining
-                        # the handle is safer than closing a possibly active pipe.
                         reason = _prior_outcome(exc)
                         if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
                             prior_outcome = reason
-                        cleanup_ok = False
-                        if pipe is not None:
-                            failed_closes.append(pipe)
-                if not cleanup_ok and (failed_closes or not _QUARANTINE):
-                    # Record only uncertain closes, never successfully closed values.
-                    _QUARANTINE.append((k, None, tuple(failed_closes)))
+                        return False
+                def close_call(handle, *, convert=False):
+                    # Conversion can fail or be interrupted too; keep it inside the
+                    # same boundary as CloseHandle so later handles are still tried.
+                    closed = cleanup_call(lambda: k.CloseHandle(int(handle) if convert else handle))
+                    if not closed:
+                        failed_closes.append(handle)
+                    return closed
+                try:
+                    if k is not None:
+                        if spawn_attempted and job is not None:
+                            cleanup_deadline = None
+                            try:
+                                cleanup_deadline = time.monotonic() + _CLEANUP_WAIT_SECONDS
+                            except BaseException as exc:
+                                # Still request termination and close owned handles. Without
+                                # a clock bound there is no safe exit/zero wait; quarantine.
+                                reason = _prior_outcome(exc)
+                                if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                                    prior_outcome = reason
+                                cleanup_ok = False
+                            try:
+                                cleanup_ok = cleanup_call(lambda: k.TerminateJobObject(job, 124)) and cleanup_ok
+                                if cleanup_deadline is not None:
+                                    cleanup_ok = cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline)) and cleanup_ok
+                            except BaseException as exc:
+                                # A failure in a decision outside the individual kernel
+                                # calls cannot certify cleanup. Still try termination and
+                                # all owned closes; do not claim the retry confirmed it.
+                                reason = _prior_outcome(exc)
+                                if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                                    prior_outcome = reason
+                                cleanup_ok = False
+                                cleanup_call(lambda: k.TerminateJobObject(job, 124))
+                                if cleanup_deadline is not None:
+                                    cleanup_call(lambda: _wait_job_empty(k, job, cleanup_deadline))
+                            # A job reporting zero active processes can precede
+                            # its child process handle becoming signaled. Both
+                            # observations are required for confirmed cleanup.
+                            if process is not None:
+                                if cleanup_deadline is None:
+                                    cleanup_ok = False
+                                else:
+                                    cleanup_ok = cleanup_call(
+                                        lambda: _wait_child_exit(k, process, cleanup_deadline)) and cleanup_ok
+                        if job is not None:
+                            cleanup_ok = close_call(job) and cleanup_ok
+                        if process is not None:
+                            cleanup_ok = close_call(process, convert=True) and cleanup_ok
+                        if thread is not None:
+                            cleanup_ok = close_call(thread, convert=True) and cleanup_ok
+                        try:
+                            if pipe is not None and not any(entry[1] == pipe for entry in _QUARANTINE):
+                                cleanup_ok = close_call(pipe) and cleanup_ok
+                            elif pipe is not None:
+                                cleanup_ok = False  # Pending overlapped I/O remains quarantined.
+                        except BaseException as exc:
+                            # When pending-I/O ownership cannot be checked, retaining
+                            # the handle is safer than closing a possibly active pipe.
+                            reason = _prior_outcome(exc)
+                            if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                                prior_outcome = reason
+                            cleanup_ok = False
+                            if pipe is not None:
+                                failed_closes.append(pipe)
+                    if not cleanup_ok and (failed_closes or not _QUARANTINE):
+                        # Record only uncertain closes, never successfully closed values.
+                        _QUARANTINE.append((k, None, tuple(failed_closes)))
+                except BaseException as exc:
+                    # An interruption between guarded cleanup operations leaves their
+                    # progress uncertain. Retain all handle objects and fail closed;
+                    # do not retry a handle that may already have been closed/reused.
+                    # Without acquired resources, keep the preflight failure unchanged.
+                    if not any(value is not None for value in (pipe, job, process, thread)):
+                        raise
+                    reason = _prior_outcome(exc)
+                    if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
+                        prior_outcome = reason
+                    _QUARANTINE.append((k, pipe, (job, process, thread)))
+                    cleanup_ok = False
             except BaseException as exc:
-                # An interruption between guarded cleanup operations leaves their
-                # progress uncertain. Retain all handle objects and fail closed;
-                # do not retry a handle that may already have been closed/reused.
-                # Without acquired resources, keep the preflight failure unchanged.
+                if transport_owner is not None:
+                    transport_owner._unknown()
                 if not any(value is not None for value in (pipe, job, process, thread)):
                     raise
-                reason = _prior_outcome(exc)
-                if prior_outcome not in ("interrupt", "exit") and reason in ("interrupt", "exit"):
-                    prior_outcome = reason
                 _QUARANTINE.append((k, pipe, (job, process, thread)))
-                cleanup_ok = False
-        except BaseException as exc:
-            if not any(value is not None for value in (pipe, job, process, thread)):
-                raise
-            _QUARANTINE.append((k, pipe, (job, process, thread)))
-            raise TransportCleanupUnknown(_prior_outcome(exc)) from None
-        finally:
-            _RUN_LOCK.release()
-        if not cleanup_ok:
-            raise TransportCleanupUnknown(prior_outcome) from None
+                raise TransportCleanupUnknown(_prior_outcome(exc)) from None
+            finally:
+                try:
+                    _RUN_LOCK.release()
+                except BaseException:
+                    if transport_owner is not None:
+                        transport_owner._unknown()
+                    raise
+                finally:
+                    # These inputs are no longer needed after cleanup; traceback
+                    # frames must not keep their references on return or error.
+                    del metadata, stdin_bytes, fixed, raw_meta
+            if not cleanup_ok:
+                if transport_owner is not None:
+                    transport_owner._unknown()
+                raise TransportCleanupUnknown(prior_outcome) from None
+            if transport_owner is not None and unexpected_exception and not scrub_failed:
+                transport_owner._unknown()
+                raise TransportCleanupUnknown(prior_outcome) from None
+            # A no-spawn path, earlier uncertainty or interruption does not count.
+            if transport_owner is not None:
+                if (spawn_attempted and job is not None and not prior_cleanup_unknown
+                        and not unmanaged_exception and not scrub_failed
+                        and prior_outcome not in ("interrupt", "exit")):
+                    try:
+                        transport_owner._complete()
+                    except (KeyboardInterrupt, SystemExit):
+                        transport_owner._unknown()
+                        raise
+                    except BaseException:
+                        transport_owner._unknown()
+                        raise TransportCleanupUnknown(prior_outcome) from None
+                else:
+                    transport_owner._unknown()
+        if scrub_failed:
+            # Raise only after leaving the original except block so an oversized
+            # exception graph cannot survive as this error's implicit context.
+            if deferred_interrupt == "interrupt":
+                _raise_context_free(KeyboardInterrupt())
+            if deferred_interrupt == "exit":
+                _raise_context_free(SystemExit(deferred_exit_code))
+            if deferred_interrupt == "base_group":
+                _raise_context_free(BaseExceptionGroup("transport_exception_graph_unavailable",
+                                                      [BaseException("transport_unmanaged")]))
+            _raise_context_free(TransportCleanupUnknown("other"))
 
+
+    finally:
+        if "metadata" in locals():
+            del metadata
+        if "stdin_bytes" in locals():
+            del stdin_bytes
+        if "fixed" in locals():
+            del fixed
+        if "raw_meta" in locals():
+            del raw_meta
 
 def run_bounded(*, executable, arguments, cwd, stdin_bytes, timeout_seconds,
                 max_output_bytes, expected_interpreter_sha256=None, interpreter_max_bytes=None):
@@ -1510,8 +2016,8 @@ def _run_bounded_impl(*, executable, arguments, cwd, stdin_bytes, timeout_second
     _check((expected_interpreter_sha256 is None) == (interpreter_max_bytes is None))
     path = str(Path(__file__).absolute())
     with open(path, "rb") as stream:
-        raw = stream.read(131073)
-    _check(len(raw) <= 131072)
+        raw = stream.read(_PEER_CODE_LIMIT + 1)
+    _check(len(raw) <= _PEER_CODE_LIMIT)
     command = [executable, "-I", "-S", "-B", "-c", _BOOTSTRAP,
                path, hashlib.sha256(raw).hexdigest()]
     if expected_interpreter_sha256 is None:
@@ -1525,9 +2031,24 @@ def _run_bounded_impl(*, executable, arguments, cwd, stdin_bytes, timeout_second
                     timeout_seconds, max_output_bytes)
 
 
+def _fixed_owner_pair(guard, context):
+    """Validate one anchored guard/context pair; None/None is unguarded legacy."""
+    if guard is None and context is None:
+        return False
+    from tools.wd_q4_guard_completion import _Guard, _OwnerContext
+    if type(guard) is not _Guard or type(context) is not _OwnerContext:
+        raise _Refused()
+    try:
+        guard._accept_owner_context(context)
+    except Exception:
+        raise _Refused() from None
+    return True
+
+
 def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
                    expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
-                   timeout_seconds, max_output_bytes, public_snapshot_enabled=False):
+                   timeout_seconds, max_output_bytes, public_snapshot_enabled=False,
+                   _owner_guard=None, _owner_context=None):
     """Fixed peer of THIS file over the bounded pipe; synthetic by default.
 
     Every caller pin is checked before spawning: the plan digest, the plan's
@@ -1585,12 +2106,38 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
     Source authentication and freshness are UNKNOWN. Same limits as run_bounded.
     """
     cleanup_type = cleanup_lease = failure = transport_cleanup = None
+    guarded = abort_failed = False
+    exit_code = None
     try:
+        guarded = _fixed_owner_pair(_owner_guard, _owner_context)
         from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown as cleanup_type
+        if guarded:
+            result = _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
+                                          expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
+                                          timeout_seconds, max_output_bytes, public_snapshot_enabled,
+                                          _owner_guard=_owner_guard, _owner_context=_owner_context)
+            try:
+                _owner_guard._accept_owner_context(_owner_context)
+                _owner_context._require_done(("attestation", "transport"))
+            except Exception:
+                raise TransportCleanupUnknown("other") from None
+            return result
         return _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
                                     expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
                                     timeout_seconds, max_output_bytes, public_snapshot_enabled)
     except BaseException as exc:
+        result = None  # Never retain a rejected guarded result in traceback locals.
+        if guarded:
+            try:
+                _owner_context._abort()
+            except BaseException:
+                abort_failed = True
+                try:
+                    _owner_guard.mark_unknown()
+                except BaseException:
+                    # The unknown outcome is reported below; no cleanup or
+                    # successful guard release is inferred from this failure.
+                    pass
         if cleanup_type is not None and isinstance(exc, cleanup_type):
             cleanup_lease = exc.lease
         elif isinstance(exc, TransportCleanupUnknown):
@@ -1601,11 +2148,31 @@ def run_fixed_peer(*, executable, expected_interpreter_sha256, interpreter_max_b
             failure = "interrupt"
         elif isinstance(exc, SystemExit):
             failure = "exit"
+            exit_code = exc.code if exc.code is None or type(exc.code) is int else 1
+        elif isinstance(exc, BaseExceptionGroup) and not isinstance(exc, ExceptionGroup) and guarded:
+            failure = "base_group"
         else:
             failure = "refused"
+    if abort_failed:
+        transport_cleanup = "other"
     del executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes, expected_plan_sha256
     del bundle_bytes, runtime_manifest_bytes, query_bytes, cwd, timeout_seconds, max_output_bytes
-    del public_snapshot_enabled
+    del public_snapshot_enabled, _owner_guard, _owner_context
+    if guarded:
+        if cleanup_lease is not None:
+            _raise_context_free(cleanup_type(cleanup_lease))
+        if transport_cleanup is not None:
+            _raise_context_free(TransportCleanupUnknown(transport_cleanup))
+        if failure == "timeout":
+            _raise_context_free(TimeoutError("secure_transport_timeout"))
+        if failure == "interrupt":
+            _raise_context_free(KeyboardInterrupt())
+        if failure == "exit":
+            _raise_context_free(SystemExit(exit_code))
+        if failure == "base_group":
+            _raise_context_free(BaseExceptionGroup("fixed_peer_exception_graph_unavailable",
+                                                  [BaseException("fixed_peer_unmanaged")]))
+        _raise_context_free(_Refused())
     if cleanup_lease is not None:
         raise cleanup_type(cleanup_lease) from None
     if transport_cleanup is not None:
@@ -1675,55 +2242,131 @@ def run_fixed_peer_diagnostic(*, executable, expected_interpreter_sha256, interp
 
 def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_max_bytes, plan_bytes,
                          expected_plan_sha256, bundle_bytes, runtime_manifest_bytes, query_bytes, cwd,
-                         timeout_seconds, max_output_bytes, public_snapshot_enabled=False, _diagnostic_mode=None):
-    _validate(query_bytes, timeout_seconds, max_output_bytes)
-    _check(len(query_bytes) > 0 and type(public_snapshot_enabled) is bool)
-    plan = _fixed_plan(plan_bytes)
-    public = plan["backend"] == "public-snapshot-v1"
-    _check(public_snapshot_enabled or not public)
-    _check(_diagnostic_mode in (None, "observe", "synthetic-fault"))
-    _check(_diagnostic_mode is None or plan["backend"] == "synthetic-v1")
-    _check(hmac.compare_digest(_sha(plan_bytes), _hex64(expected_plan_sha256)))
-    _check(hmac.compare_digest(plan["interpreter_sha256"], _hex64(expected_interpreter_sha256)))
-    _check(type(executable) is str and
-           os.path.normcase(os.path.abspath(executable)) == os.path.normcase(os.path.abspath(sys.executable)))
-    path = str(Path(__file__).absolute())
-    with open(path, "rb") as stream:
-        raw = stream.read(_PEER_CODE_LIMIT + 1)
-    _check(len(raw) <= _PEER_CODE_LIMIT and hmac.compare_digest(_sha(raw), plan["peer_code_sha256"]))
-    _check(type(runtime_manifest_bytes) is bytes and len(runtime_manifest_bytes) <= _MAX_RUNTIME_MANIFEST
-           and hmac.compare_digest(_sha(runtime_manifest_bytes), plan["runtime_manifest_sha256"]))
-    _check(type(bundle_bytes) is bytes and len(bundle_bytes) == plan["bundle_bytes"]
-           and hmac.compare_digest(_sha(bundle_bytes), plan["bundle_sha256"]))
-    verifier = str(Path(path).parents[1].joinpath(*_VERIFIER_PARTS))
-    if public:
-        with open(verifier, "rb") as stream:
-            source = stream.read(_VERIFIER_LIMIT + 1)
-        _check(len(source) <= _VERIFIER_LIMIT and hmac.compare_digest(_sha(source), plan["verifier_sha256"]))
-    control = {"schema": "wd.q4-fixed-control.v1", "nonce": os.urandom(16).hex(), "binding_sha256": _sha(plan_bytes)}
-    bootstrap = _FIXED_BOOTSTRAP if _diagnostic_mode is None else _DIAGNOSTIC_BOOTSTRAP
-    command = [executable, "-I", "-S", "-B", "-c", bootstrap, path, plan["peer_code_sha256"]]
-    if _diagnostic_mode is not None:
-        command.append(_diagnostic_mode)
-    from tools.wd_q4_fixed_parent_attestation import attest_file
-    with attest_file(executable, expected_interpreter_sha256, max_bytes=interpreter_max_bytes, enabled=True):
-        with attest_file(path, plan["peer_code_sha256"], max_bytes=_PEER_CODE_LIMIT, enabled=True):
-            with (attest_file(verifier, plan["verifier_sha256"], max_bytes=_VERIFIER_LIMIT, enabled=True)
-                  if public else contextlib.nullcontext()):
-                output, code = _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds, max_output_bytes,
-                                    fixed=(control, plan_bytes, bundle_bytes))
-    if _diagnostic_mode is not None:
-        _check(code == 0 and output in (b"after_query", b"completed"))
-        return {"status": "DIAGNOSTIC", "phase": output.decode("ascii"), "cleanup": "UNKNOWN"}
-    # Unwrap after the diagnostic return and after _run's cleanup completed: the inner answer is used only if
-    # it is bound to this call's nonce and the parent's own query bytes.
-    output = _fixed_unwrap(control["nonce"], query_bytes, output, max_output_bytes)
-    if not public:
-        return output, code
-    # Never return the child's public answer unvalidated: re-resolve it against the pinned bundle projection.
-    _check(code == 0)
-    return _fixed_public_validate(plan_bytes, bundle_bytes, query_bytes, output), 0
+                         timeout_seconds, max_output_bytes, public_snapshot_enabled=False, _diagnostic_mode=None,
+                         *, _owner_guard=None, _owner_context=None):
+    guarded = completed = False
+    attestation_owner = None
+    try:
+        guarded = _fixed_owner_pair(_owner_guard, _owner_context)
+        _validate(query_bytes, timeout_seconds, max_output_bytes)
+        _check(len(query_bytes) > 0 and type(public_snapshot_enabled) is bool)
+        plan = _fixed_plan(plan_bytes)
+        staged = plan["backend"] == "staged-card-wrapper-v1"
+        _check(not staged or guarded)
+        public = plan["backend"] in ("public-snapshot-v1", "staged-card-wrapper-v1")
+        _check(public_snapshot_enabled or not public)
+        _check(_diagnostic_mode in (None, "observe", "synthetic-fault"))
+        _check(_diagnostic_mode is None or plan["backend"] == "synthetic-v1")
+        _check(hmac.compare_digest(_sha(plan_bytes), _hex64(expected_plan_sha256)))
+        _check(hmac.compare_digest(plan["interpreter_sha256"], _hex64(expected_interpreter_sha256)))
+        _check(type(executable) is str and
+               os.path.normcase(os.path.abspath(executable)) == os.path.normcase(os.path.abspath(sys.executable)))
+        path = str(Path(__file__).absolute())
+        with open(path, "rb") as stream:
+            raw = stream.read(_PEER_CODE_LIMIT + 1)
+        _check(len(raw) <= _PEER_CODE_LIMIT and hmac.compare_digest(_sha(raw), plan["peer_code_sha256"]))
+        _check(type(runtime_manifest_bytes) is bytes and len(runtime_manifest_bytes) <= _MAX_RUNTIME_MANIFEST
+               and hmac.compare_digest(_sha(runtime_manifest_bytes), plan["runtime_manifest_sha256"]))
+        _check(type(bundle_bytes) is bytes and len(bundle_bytes) == plan["bundle_bytes"]
+               and hmac.compare_digest(_sha(bundle_bytes), plan["bundle_sha256"]))
+        verifier = str(Path(path).parents[1].joinpath(*_VERIFIER_PARTS))
+        if public:
+            with open(verifier, "rb") as stream:
+                source = stream.read(_VERIFIER_LIMIT + 1)
+            _check(len(source) <= _VERIFIER_LIMIT and hmac.compare_digest(_sha(source), plan["verifier_sha256"]))
+        control = {"schema": "wd.q4-fixed-control.v1", "nonce": os.urandom(16).hex(), "binding_sha256": _sha(plan_bytes)}
+        bootstrap = _FIXED_BOOTSTRAP if _diagnostic_mode is None else _DIAGNOSTIC_BOOTSTRAP
+        command = [executable, "-I", "-S", "-B", "-c", bootstrap, path, plan["peer_code_sha256"]]
+        if _diagnostic_mode is not None:
+            command.append(_diagnostic_mode)
+        from tools.wd_q4_fixed_parent_attestation import attest_file, _AttestationOwner
+        if guarded:
+            attestation_ticket = _owner_context._ticket("attestation")
+            _owner_context._accept_ticket("attestation", attestation_ticket)
+            transport_ticket = _owner_context._ticket("transport")
+            _owner_context._accept_ticket("transport", transport_ticket)
+            attestation_ticket._begin()
+            attestation_owner = _AttestationOwner(on_complete=attestation_ticket._complete,
+                                                  on_unknown=attestation_ticket._unknown)
+            attest = attestation_owner.attest
+        else:
+            attest = attest_file
+        with contextlib.ExitStack() as leases:
+            leases.enter_context(attest(executable, expected_interpreter_sha256, max_bytes=interpreter_max_bytes, enabled=True))
+            leases.enter_context(attest(path, plan["peer_code_sha256"], max_bytes=_PEER_CODE_LIMIT, enabled=True))
+            if public:
+                leases.enter_context(attest(verifier, plan["verifier_sha256"], max_bytes=_VERIFIER_LIMIT, enabled=True))
+            if staged:
+                helper = str(Path(path).with_name('wd_q4_staged_fixed_backend.py'))
+                bundle_helper = str(Path(plan['bundle_root'])/'tools-bootstrap'/'tools'/'wd_q4_staged_fixed_backend.py')
+                host = _staged_system_host()
+                manifest = str(Path(plan['bundle_root'])/'deployment-manifest.json')
+                helper_targets = [(helper,plan['backend_sha256'],_PEER_CODE_LIMIT)]
+                if os.path.normcase(os.path.abspath(helper)) != os.path.normcase(os.path.abspath(bundle_helper)):
+                    helper_targets.append((bundle_helper,plan['backend_sha256'],_PEER_CODE_LIMIT))
+                for target, pin, cap in (*helper_targets,
+                        (plan['wrapper_path'],plan['wrapper_sha256'],1024*1024),
+                        (manifest,plan['deployment_manifest_sha256'],4*1024*1024),
+                        (host,plan['host_sha256'],128*1024*1024),
+                        (plan['public_plan_path'],plan['public_plan_sha256'],65536)):
+                    leases.enter_context(attest(target,pin,max_bytes=cap,enabled=True))
+                scope = {'__name__':'_wd_staged_fixed_parent'}
+                exec(compile(_read_staged_backend(path,plan),'<wd-staged-fixed-parent>','exec'),scope)
+                public_raw = _staged_read(plan['public_plan_path'],plan['public_plan_sha256'],65536)
+                _check(scope['validate_card_input'](plan,bundle_bytes,public_raw,enabled=True) ==
+                       {'status':'VALIDATED_STAGED','completeness':'UNKNOWN'})
+            if guarded:
+                output, code = _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds,
+                                    max_output_bytes, fixed=(control, plan_bytes, bundle_bytes),
+                                    transport_owner=transport_ticket)
+            else:
+                output, code = _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds,
+                                    max_output_bytes, fixed=(control, plan_bytes, bundle_bytes))
+        if guarded:
+            attestation_owner.finish()
+        if _diagnostic_mode is not None:
+            _check(code == 0 and output in (b"after_query", b"completed"))
+            completed = True
+            return {"status": "DIAGNOSTIC", "phase": output.decode("ascii"), "cleanup": "UNKNOWN"}
+        # Unwrap after the diagnostic return and after _run's cleanup completed: the inner answer is used only if
+        # it is bound to this call's nonce and the parent's own query bytes.
+        output = _fixed_unwrap(control["nonce"], query_bytes, output, max_output_bytes)
+        if not public:
+            completed = True
+            return output, code
+        if staged:
+            _check(code == 0)
+            result = scope['validate_card_result'](plan,bundle_bytes,public_raw,query_bytes,output,enabled=True), 0
+            completed = True
+            return result
+        # Never return the child's public answer unvalidated: re-resolve it against the pinned bundle projection.
+        _check(code == 0)
+        result = _fixed_public_validate(plan_bytes, bundle_bytes, query_bytes, output), 0
+        completed = True
+        return result
 
+
+    finally:
+        try:
+            if guarded and not completed:
+                try:
+                    if attestation_owner is not None:
+                        attestation_owner.abort()
+                finally:
+                    _owner_context._abort()
+        finally:
+            if "plan_bytes" in locals():
+                del plan_bytes
+            if "bundle_bytes" in locals():
+                del bundle_bytes
+            if "runtime_manifest_bytes" in locals():
+                del runtime_manifest_bytes
+            if "query_bytes" in locals():
+                del query_bytes
+            if "control" in locals():
+                del control
+            if "result" in locals():
+                del result
 
 def run_synthetic_echo(*, powershell, bootstrap_path, expected_bootstrap_sha256,
                        cwd, stdin_bytes, timeout_seconds, max_output_bytes):

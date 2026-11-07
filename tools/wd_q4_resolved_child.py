@@ -57,7 +57,7 @@ def _policy(data):
     return tasks
 
 
-def _validate_projection(data, tasks, roster):
+def _validate_projection(data, tasks, roster, decision=None):
     """Refuse UNKNOWN/unapproved tasks and RCO origins before invoking Q4.
 
     Projection loses recipient information; this check does not authenticate
@@ -67,8 +67,22 @@ def _validate_projection(data, tasks, roster):
                        parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
     if json.dumps(value, sort_keys=True, indent=1).encode("utf-8") != data:
         raise ValueError()
-    sp.validate_projection(value, approved_tasks=tasks, include_refs=False,
-                           roster=roster, exclude_review_signal=True)
+    if decision is not None:
+        # The caller must already have verified the pinned decision. A real
+        # projection receives it only as validation context, not as source or
+        # publisher authentication; the synthetic default remains unchanged.
+        from sandbox.mind.step2 import shared_card_projection as cards
+        if not isinstance(value, dict) or value.get("schema") != resolver.CARD_PROJECTION_SCHEMA:
+            raise ValueError()
+        if decision.get('synthetic') is False:
+            cards.validate_shared_card_projection(value, _real_decision=decision)
+        else:
+            cards.validate_shared_card_projection(value)
+        if any(record["meta"]["agent"] not in roster for record in value["records"]):
+            raise ValueError()
+    else:
+        sp.validate_projection(value, approved_tasks=tasks, include_refs=False,
+                               roster=roster, exclude_review_signal=True)
     for record in value["records"]:
         meta = record["meta"]
         if meta["task_id"] not in tasks or meta["agent"] in ("claude-rco-1", "claude-rco-2"):
@@ -97,7 +111,8 @@ def _result(value):
 
 
 def run_resolved(config, stdin, stdout, *, policy_bytes, policy_sha256, memory_bytes, memory_sha256,
-                 projection_bytes, projection_sha256, roster_bytes=None, roster_sha256=None):
+                 projection_bytes, projection_sha256, roster_bytes=None, roster_sha256=None,
+                 card_decision_bytes=None, card_decision_sha256=None):
     """Emit bounded resolved metadata from caller-asserted and pinned inputs."""
     try:
         _pinned(policy_bytes, policy_sha256, MAX_POLICY)
@@ -106,18 +121,27 @@ def run_resolved(config, stdin, stdout, *, policy_bytes, policy_sha256, memory_b
         tasks, roster = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
         if tasks != _policy(policy_bytes):
             raise ValueError()
-        _validate_projection(projection_bytes, tasks, roster)
+        decision = None
+        if card_decision_bytes is not None or card_decision_sha256 is not None:
+            from sandbox.mind.step2 import shared_card_projection as cards
+            decision = cards.verify_route_decision(card_decision_bytes, card_decision_sha256,
+                                                   policy_sha256=policy_sha256, roster_sha256=roster_sha256)
+            if decision["synthetic"] is not True:
+                raise ValueError()  # This legacy entrypoint carries no C2 tuple.
+        _validate_projection(projection_bytes, tasks, roster, decision)
         # Validate the exact pinned tuple before invoking Q4. This empty-result
         # call checks schema and pin consistency; it does not assert clock or
         # source authenticity, nor does it make a query against the index.
         resolver.resolve_results(memory_manifest=memory_bytes, expected_memory_sha256=memory_sha256,
                                  projection_bytes=projection_bytes, results=[], query_utc="2000-01-01T00:00:00Z",
                                  policy_bytes=policy_bytes, policy_sha256=policy_sha256,
-                                 roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+                                 roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+                                 card_decision_bytes=card_decision_bytes, card_decision_sha256=card_decision_sha256)
         result = _result(q4.query_and_resolve(config, stdin, memory_bytes, projection_bytes, tasks,
                          policy_bytes=policy_bytes, policy_sha256=policy_sha256,
                          roster_bytes=roster_bytes, roster_sha256=roster_sha256,
-                         expected_memory_sha256=memory_sha256))
+                         expected_memory_sha256=memory_sha256, card_decision_bytes=card_decision_bytes,
+                         card_decision_sha256=card_decision_sha256))
         text = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
         if len(text.encode("utf-8")) > MAX_OUTPUT:
             raise ValueError()

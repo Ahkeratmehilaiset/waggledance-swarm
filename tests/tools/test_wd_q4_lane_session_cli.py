@@ -1,4 +1,4 @@
-"""Synthetic-only CLI tests; no live source, launcher, installation or real session."""
+"""Historical test-only legacy CLI snapshot; never a production entry."""
 
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -10,7 +10,9 @@ import sys
 
 import pytest
 
-from tools import wd_q4_lane_session_cli as cli
+from q4_legacy_session_fixtures import load_legacy
+
+cli = load_legacy("session_cli")
 
 
 def sha(value):

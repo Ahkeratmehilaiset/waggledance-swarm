@@ -1,15 +1,7 @@
-"""Default-off, explicitly pinned session-outer entry candidate.
+"""Retired legacy Q4 session outer entry. All invocations refuse before input.
 
-The caller must authenticate/pin these entry bytes, the interpreter, every
-supplied option and the selected runtime before launch. No environment-derived
-pins or latest-generation discovery exist here. The trusted descriptor-to-entry
-tuple builder and parent Job/cleanup protocol are not implemented here. The
-query is read only from stdin and can block; there is no whole-call watchdog.
-Same-user races, native output and caller/interpreter/stdlib trust remain open.
-On nonzero exit the parent must discard stdout, including partial writes.
-The opt-in ``--query-utc`` option is checked syntactically here and forwarded
-unchanged as the last worker argument pair; the worker then requires stdin to
-be the matching JSON query document. Its value is not a trusted clock.
+The guarded caller candidate is tools.wd_q4_lane_caller_cli. Its supporting
+validators remain importable, but this legacy process route is not active.
 """
 
 import hashlib
@@ -170,60 +162,12 @@ def _preflight_runtime(options):
 
 
 def main(argv=None):
-    options = namespace = query = answer = raw = binding = worker_argv = encoded = None
-    code = 2
+    """Retired legacy entry: refuse before loading runtime code or stdin."""
     try:
-        options = _parse(sys.argv[1:] if argv is None else argv)
-        raw = _read_outer(options["outer-path"], options["outer-sha256"])
-        _preflight_runtime(options)
-        if _read_outer(options["outer-path"], options["outer-sha256"]) != raw:
-            raise ValueError()
-        namespace = {"__name__": "_wd_session_outer_verified", "__file__": options["outer-path"]}
-        exec(compile(raw, options["outer-path"], "exec"), namespace)
-        if not callable(namespace.get("run_session")) or not callable(namespace.get("_validate_lane_answer")):
-            raise ValueError()
-        for name in ("SessionOuterCleanupUnknown", "SessionOuterTimeout", "SessionOuterInterrupted"):
-            value = namespace.get(name)
-            if not isinstance(value, type) or not issubclass(value, Exception):
-                raise ValueError()
-        query = sys.stdin.buffer.read(_QUERY_LIMIT + 1)
-        if type(query) is not bytes or not query or len(query) > _QUERY_LIMIT:
-            raise ValueError()
-        binding = {key: options["expected-" + key.replace("_", "-")] for key in _BINDING_KEYS}
-        worker_argv = ["--enabled"]
-        for key in _WORKER_KEYS:
-            worker_argv.extend(("--" + key, options[key]))
-        if "query-utc" in options:
-            worker_argv.extend(("--query-utc", options["query-utc"]))
-        answer = namespace["run_session"](
-            enabled=True, runtime_root=options["runtime-root"], runtime_manifest=options["runtime-manifest"],
-            runtime_manifest_sha256=options["runtime-manifest-sha256"], runtime_generation=options["runtime-generation"],
-            runtime_revision=options["runtime-revision"], verifier_sha256=options["verifier-sha256"],
-            outer_sha256=options["public-outer-sha256"], child_sha256=options["public-child-sha256"],
-            query_sha256=options["public-query-sha256"], worker_sha256=options["worker-sha256"],
-            argv=worker_argv, query=query, expected_lane=options["lane"], expected_binding=binding)
-        if namespace["_validate_lane_answer"](answer, options["lane"], binding) != answer:
-            raise ValueError()
-        encoded = json.dumps(answer, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
-                             allow_nan=False).encode("ascii") + b"\n"
-        if len(encoded) > _OUTPUT_LIMIT or sys.stdout.buffer.write(encoded) != len(encoded):
-            raise ValueError()
-        sys.stdout.buffer.flush()
-        return 0
-    except BaseException as exc:
-        if _is_outer_exception(namespace, "SessionOuterCleanupUnknown", exc):
-            code = 3
-        elif _is_outer_exception(namespace, "SessionOuterTimeout", exc):
-            code = 4
-        elif isinstance(exc, KeyboardInterrupt) or _is_outer_exception(namespace, "SessionOuterInterrupted", exc):
-            code = 130
-    options = namespace = query = answer = raw = binding = worker_argv = encoded = None
-    try:
-        sys.stderr.write({2: "session_entry_refused\n", 3: "worker_cleanup_unknown\n",
-                          4: "worker_timeout\n", 130: "worker_interrupted\n"}[code])
+        sys.stderr.write("session_entry_refused\n")
     except Exception:
         pass
-    return code
+    return 2
 
 
 if __name__ == "__main__":

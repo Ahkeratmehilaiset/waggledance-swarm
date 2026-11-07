@@ -14,6 +14,24 @@ worktree. Its identity digest is SELF-COMPUTED. Same-user declarations and pins
 are not authentication: lane_authentication must remain UNKNOWN. Ancestor/path
 checks do not defeat hostile replacement after checking or same-user writers.
 
+Before entering a query and again before publishing its result, the public plan
+bound by the pinned lane binding identifies an index root whose q4-latest.json
+must still match the pointer pinned by this descriptor. A changed/missing pointer
+refuses output. This is an equality check at two instants, not authenticated time,
+source freshness, anti-ABA protection, or a default descriptor refresh.
+
+An explicitly selected WD_Q4_LIVE_MODE=1 opts into a separate, mutable local
+selector under the baseline descriptor's generation root. Each query rechecks
+the candidate against the baseline bundle, fleet, runtime and policy bindings,
+and refuses if the selector or index pointer changes before output. It does not
+authenticate the selector's same-user publisher or lane and does not prove
+wall-clock or source freshness. Missing or malformed live selectors refuse.
+
+The enabled route must acquire an independently fleet-pinned guard and its
+call-bound owner context before reading the query. Configuration and identity
+reads still happen before guard acquisition and are not protected by it. The
+adapter and native owners must each contribute actual cleanup to that context;
+without all contributions, no result is published and the marker remains.
 The existing adapter owns its native call and cleanup. This CLI adds no native
 implementation, timeout watchdog, packaging, installed config or activation.
 It requires the existing trusted bootstrap to expose the packaged tools module;
@@ -60,6 +78,9 @@ _DESCRIPTOR_KEYS = frozenset({
 })
 _BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256",
                            "roster_sha256", "public_policy_sha256", "descriptor_sha256", "projection_sha256"})
+# optional card route decision pin; when present it must also be in the public plan and the answer binding
+_CARD_BINDING_KEYS = _BINDING_KEYS | {"card_decision_sha256"}
+_STAGED_BINDING_KEYS = _CARD_BINDING_KEYS | {"card_policy_sha256"}
 _RESULT_KEYS = frozenset({"schema", "status", "lane", "lane_binding", "lane_authentication", "cleanup",
                           "inner_status", "result_count", "answer", "answer_sha256", "identity_sha256",
                           "descriptor_sha256", "call_id"})
@@ -152,13 +173,16 @@ def _integer(value, ceiling):
 
 
 def _binding(value):
-    _check(type(value) is dict and frozenset(value) == _BINDING_KEYS)
-    return {key: _hex(value[key]) for key in sorted(_BINDING_KEYS)}
+    _check(type(value) is dict and frozenset(value) in (_BINDING_KEYS, _CARD_BINDING_KEYS, _STAGED_BINDING_KEYS))
+    return {key: _hex(value[key]) for key in sorted(value)}
 
 
-def _configuration():
-    descriptor_pin = _hex(_env("WD_Q4_SHARED_DESCRIPTOR_SHA256"))
-    descriptor_raw = _read(_env("WD_Q4_SHARED_DESCRIPTOR_PATH"), MAX_DOCUMENT, descriptor_pin)
+def _configuration(descriptor_path=None, descriptor_sha256=None):
+    if descriptor_path is None and descriptor_sha256 is None:
+        descriptor_path = _env("WD_Q4_SHARED_DESCRIPTOR_PATH")
+        descriptor_sha256 = _env("WD_Q4_SHARED_DESCRIPTOR_SHA256")
+    descriptor_pin = _hex(descriptor_sha256)
+    descriptor_raw = _read(descriptor_path, MAX_DOCUMENT, descriptor_pin)
     descriptor = _json(descriptor_raw, _DESCRIPTOR_KEYS)
     bundle_root = _path(descriptor["bundle_root"])
     manifest_raw = _read(str(bundle_root / "deployment-manifest.json"), MAX_MANIFEST,
@@ -195,6 +219,26 @@ def _configuration():
                                                descriptor["runtime_manifest_sha256"]),
               "cwd": descriptor["cwd"], "timeout_seconds": timeout, "max_output_bytes": output_limit}
     return descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs
+
+
+def _require_current_snapshot(descriptor, binding, inputs):
+    """Refuse unless this exact pinned public plan still names the current index."""
+    from tools import wd_q4_lane_link as link
+    binding_doc = _json(inputs["binding_bytes"])
+    _check(binding_doc.get("schema") == "wd.q4-lane-binding.v1"
+           and binding_doc.get("binding") == binding)
+    public_hash = _hex(binding_doc.get("public_plan_sha256"))
+    _, public_bytes, public_pins = link._public_plan(descriptor["public_plan"], public_hash)
+    _check(("card_decision_sha256" in public_pins) == ("card_decision_sha256" in binding)
+           and all(public_pins[key] == binding[key] for key in public_pins))
+    public = _json(public_bytes)
+    staged = "card_policy_sha256" in binding
+    _check((public.get("schema") == "wd.q4-public-wrapper-plan.v3") == staged)
+    if staged:
+        _read(str(_path(public["pointer_path"])), 1048576, binding["pointer_sha256"])
+    else:
+        root = _path(public["root"])
+        _read(str(root / "q4-latest.json"), 16384, binding["pointer_sha256"])
 
 
 def _identity(fleet_raw, descriptor, descriptor_pin):
@@ -270,6 +314,17 @@ def _write(text):
     sys.stdout.flush()
 
 
+_DIAGNOSTIC_PHASES = frozenset({
+    "CALLER_GUARD_ACQUIRE_UNKNOWN", "CALLER_ADAPTER_CLEANUP_UNKNOWN",
+    "CALLER_TRANSPORT_CLEANUP_UNKNOWN", "CALLER_ATTESTATION_CLEANUP_UNKNOWN",
+    "CALLER_SESSION_UNKNOWN", "CALLER_TIMEOUT_UNKNOWN", "CALLER_RESULT_UNKNOWN",
+    "CALLER_TIMEOUT", "CALLER_INTERRUPTED", "CALLER_REFUSED",
+})
+_INNER_PHASES = {"transport_cleanup_unknown": "CALLER_TRANSPORT_CLEANUP_UNKNOWN",
+                 "attestation_cleanup_unknown": "CALLER_ATTESTATION_CLEANUP_UNKNOWN",
+                 "session_refused": "CALLER_SESSION_UNKNOWN", "timeout": "CALLER_TIMEOUT_UNKNOWN"}
+
+
 def _refuse(code):
     # Preserve the nonzero outcome even when the diagnostic stream is unavailable.
     try:
@@ -280,8 +335,22 @@ def _refuse(code):
     return code
 
 
+def _refuse_phase(code, phase):
+    result = _refuse(code)
+    try:
+        if os.environ.get("WD_Q4_DIAGNOSTIC_PHASES") == "1" and phase in _DIAGNOSTIC_PHASES:
+            sys.stderr.write('{"phase":"' + phase + '"}\n')
+            sys.stderr.flush()
+    except BaseException:
+        pass
+    return result
+
+
 def main(argv=None):
     token = situation = identity_raw = inputs = result = None
+    guard = owner_context = rendered = None
+    guard_released = False
+    live_publication = None
     try:
         if argv is None:
             argv = sys.argv[1:]
@@ -290,37 +359,110 @@ def main(argv=None):
             return 0
         _check(argv == ["--enabled"])
         descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs = _configuration()
+        live_mode = os.environ.get("WD_Q4_LIVE_MODE", "")
+        p1_mode = os.environ.get("WD_Q4_LIVE_P1", "")
+        coverage_mode = os.environ.get("WD_Q4_WITH_COVERAGE", "")
+        _check(live_mode in ("", "1"))
+        _check(p1_mode in ("", "1") and (p1_mode != "1" or live_mode == "1"))
+        _check(coverage_mode in ("", "1") and (coverage_mode != "1" or live_mode == "1"))
+        _check(p1_mode != "1" or coverage_mode == "")
+        if live_mode == "1":
+            from tools import wd_q4_live_snapshot_publish as live
+            selection = dict(enabled=True, baseline_path=_env("WD_Q4_SHARED_DESCRIPTOR_PATH"),
+                baseline_sha256=descriptor_pin,
+                baseline=(descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs),
+                manifest_sha256=_hex(_env("WD_REBOOT_EXPECTED_MANIFEST_HASH")), load_configuration=_configuration)
+            if p1_mode == "1":
+                selection["p1_enabled"] = True
+            live_publication = live.select(**selection)
+            descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs = live_publication["configuration"]
+        _require_current_snapshot(descriptor, binding, inputs)
         lane, identity_raw, token = _identity(fleet_raw, descriptor, descriptor_pin)
-        situation, when = _query()
+        identity_pin = _sha(identity_raw)
+        # The fleet hash has already been checked against the independently
+        # anchored deployment manifest by _configuration, before this call.
+        from tools import wd_q4_guard_completion as guard_completion
+        try:
+            guard = guard_completion.acquire_guard(
+                fleet_bytes=fleet_raw, expected_fleet_sha256=inputs["expected_fleet_sha256"],
+                lane=lane, identity_sha256=identity_pin, descriptor_sha256=descriptor_pin)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException:
+            # A failed acquisition may have left a pending marker; do not retry.
+            return _refuse_phase(3, "CALLER_GUARD_ACQUIRE_UNKNOWN")
+        owner_context = guard._owner_context()
+        _check(guard._accept_owner_context(owner_context) is owner_context)
+        try:
+            situation, when = _query()
+        except Exception:
+            # Nothing has been handed off and no owner has entered. This is a
+            # distinct cancellation witness, never a cleanup witness.
+            witness = guard._cancel_unstarted(owner_context)
+            guard.release(witness)
+            guard_released = True
+            raise
         # The trusted bootstrap supplies the existing package; never fall back.
         from tools import wd_q4_lane_caller_adapter as adapter
 
-        identity_pin = _sha(identity_raw)
         try:
+            # Cooperative contract: mark handoff before exposing the context;
+            # every downstream owner must begin its own ticket before work.
+            owner_context._handoff()
             result = adapter.call_lane_session(enabled=True, identity_bytes=identity_raw,
                 expected_identity_sha256=identity_pin, descriptor_bytes=descriptor_raw,
-                expected_descriptor_sha256=descriptor_pin, situation=situation, time=when, inputs=inputs)
+                expected_descriptor_sha256=descriptor_pin, situation=situation, time=when, inputs=inputs,
+                _owner_guard=guard, _owner_context=owner_context)
         except adapter.CallerCleanupUnknown:
-            return _refuse(3)
+            return _refuse_phase(3, "CALLER_ADAPTER_CLEANUP_UNKNOWN")
         # Unknown/unrecognized cleanup takes precedence over any status, including
         # a claimed answer or timeout. It never publishes validated stdout.
         if (type(result) is not dict or result.get("cleanup") != "chain_confirmed"
                 or result.get("status") == "UNKNOWN"):
-            return _refuse(3)
+            inner = result.get("inner_status") if type(result) is dict else None
+            phase = _INNER_PHASES.get(inner, "CALLER_RESULT_UNKNOWN") if type(inner) is str else "CALLER_RESULT_UNKNOWN"
+            return _refuse_phase(3, phase)
         if result.get("status") == "TIMEOUT":
-            return _refuse(4)
-        _write(_output(result, lane, identity_pin, descriptor_pin, binding,
-                       inputs["max_output_bytes"], token))
+            return _refuse_phase(4, "CALLER_TIMEOUT")
+        rendered = _output(result, lane, identity_pin, descriptor_pin, binding,
+                           inputs["max_output_bytes"], token)
+        if coverage_mode == "1":
+            # No independent coverage pin exists: never imply completeness.
+            # Keep the validated v1 result and its answer digest unchanged.
+            wrapped = _canon({"schema": "wd.q4-lane-coverage-envelope.v1",
+                              "coverage": "UNKNOWN", "freshness": "UNKNOWN",
+                              "result": json.loads(rendered)}) + b"\n"
+            _check(len(wrapped) <= inputs["max_output_bytes"]
+                   and token.encode("utf-8", "strict") not in wrapped
+                   and _canon(token)[1:-1] not in wrapped)
+            rendered = wrapped.decode("ascii")
+        owner_context._finish()
+        witness = guard._registry._issue()
+        guard.release(witness)
+        guard_released = True
+        _require_current_snapshot(descriptor, binding, inputs)
+        if live_publication is not None:
+            live.recheck(live_publication["publication_path"], live_publication["publication_sha256"])
+        _write(rendered)
         return 0
     except (KeyboardInterrupt, SystemExit):
-        return _refuse(130)
+        return _refuse_phase(130, "CALLER_INTERRUPTED")
     except TimeoutError:
-        return _refuse(4)
+        return _refuse_phase(4, "CALLER_TIMEOUT_UNKNOWN")
     except BaseException:
         # No exception detail, query, token, path or retry on any failure.
-        return _refuse(2)
+        return _refuse_phase(2, "CALLER_REFUSED")
     finally:
+        # Do not abort an already released context: that would turn a successful
+        # release into a spurious failure. The outer marker remains pending on
+        # any unresolved path; this is not an atomic power-loss guarantee.
+        if guard is not None and not guard_released:
+            try:
+                guard.mark_unknown()
+            except BaseException:
+                pass
         token = situation = identity_raw = inputs = result = None
+        owner_context = rendered = None
 
 
 if __name__ == "__main__":

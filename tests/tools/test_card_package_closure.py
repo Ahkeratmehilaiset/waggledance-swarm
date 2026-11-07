@@ -153,8 +153,9 @@ def test_caller_runtime_planner_includes_path_loaded_helpers(monkeypatch, missin
     from tools import build_q4_runtime_plan as planner
     secure = 'tools/wd_q4_secure_transport.py'
     backend = 'tools/wd_q4_staged_fixed_backend.py'
+    verifier = 'sandbox/mind/step2/runtime_manifest.py'
     blobs = {name: ('VALUE = %d\n' % i).encode('ascii') for i, name in
-             enumerate((secure, backend, *CALLER_RUNTIME_ONLY_HELPERS))}
+             enumerate((secure, backend, verifier, *CALLER_RUNTIME_ONLY_HELPERS))}
     if missing is not None:
         del blobs[missing]
     entries = {name: ('100644', 'blob', name, len(raw)) for name, raw in blobs.items()}
@@ -167,7 +168,7 @@ def test_caller_runtime_planner_includes_path_loaded_helpers(monkeypatch, missin
             planner._code_plan(*args, staged_backend=backend_pin)
     else:
         records, _, _, _ = planner._code_plan(*args, staged_backend=backend_pin)
-        assert set(CALLER_RUNTIME_ONLY_HELPERS) | {secure, backend} <= set(records)
+        assert set(CALLER_RUNTIME_ONLY_HELPERS) | {secure, backend, verifier} <= set(records)
         assert records[backend]['sha256'] == backend_pin
 
 

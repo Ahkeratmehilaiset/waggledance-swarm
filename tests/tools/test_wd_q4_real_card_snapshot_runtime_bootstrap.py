@@ -137,6 +137,19 @@ def test_verified_runtime_reaches_the_packaged_cli_with_the_exact_request(case):
     assert result.stderr == ""
 
 
+def test_stdlib_precedes_packaged_top_level_module(case):
+    # A manifest-pinned package can still contain an unrelated top-level name.
+    # It must not shadow a stdlib module imported after the bootstrap starts.
+    (case["code"] / "fractions.py").write_text("raise RuntimeError('shadowed stdlib')\n", encoding="ascii")
+    body = (" import fractions\n"
+            " assert fractions.Fraction(1, 2).numerator == 1\n" + success_body(expected_args(case)))
+    write_cli(case, body)
+    result = execute(case)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout == json.dumps(SUCCESS, sort_keys=True, separators=(",", ":")) + "\n"
+    assert result.stderr == ""
+
+
 def refused(item, **kwargs):
     result = execute(item, **kwargs)
     assert (result.returncode, result.stdout, result.stderr) == (2, '{"status":"REFUSED"}\n', "")

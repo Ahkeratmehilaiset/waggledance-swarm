@@ -151,7 +151,8 @@ def _bootstrap(args):
     if not (site.is_dir() and model.is_dir()
             and os.path.samefile(model, _readable_path(request.get('trusted_model_root')))):
         raise ValueError()
-    sys.path.insert(0, str(code))
+    # Preserve the isolated interpreter's standard-library precedence.
+    sys.path.append(str(code))
     sys.path.append(str(site))
     sys.meta_path.insert(0, scope['_ProjectOriginGuard'](code))
     import importlib

@@ -6,8 +6,10 @@ separate real-decision path requires caller-approved Git anchors; neither that
 assertion nor roster consistency authenticates the source or publisher. Output
 is staged only; this does not implement publication, scheduling or installation.
 """
+import copy
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from sandbox.mind.step2 import shared_card_projection as cards
@@ -89,7 +91,34 @@ def prepare_card_generation(*, enabled=False, decision_bytes=None, decision_sha2
             raise ValueError()
         claims=_claimed_cards(source_path,generation_path,end_cursor,anchor['sha256'])
         if not claims: raise ValueError()
+        accepted=[]; rejected_invalid_expiry=0; rejected_rows=None; rejection_policy=None
         for ref,event in claims:
+            # A locale-formatted expiry can be quarantined only after checking
+            # every other field against the same policy, roster and prefix.
+            # The corrected copy is validation-only and is never indexed.
+            payload=event.get('payload')
+            card=payload.get('public_knowledge') if type(payload) is dict else None
+            expiry=card.get('valid_until_utc') if type(card) is dict else None
+            if type(expiry) is str and re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}\.\d{2}\.00Z',expiry):
+                if rejected_rows is None:
+                    rejected_rows=prefix._read(source_path,generation_path,end_cursor,anchor['sha256'])
+                    tasks,roster=prefix.capture.strict_pins(policy_bytes,policy_sha256,roster_bytes,roster_sha256)
+                    rejection_policy=(prefix._policy(card_policy_bytes,decision['card_policy_sha256'],tasks),roster)
+                if rejected_rows.get(ref)!=event: raise ValueError()
+                rows=dict(rejected_rows)
+                corrected=copy.deepcopy(event)
+                corrected['payload']['public_knowledge']['valid_until_utc']=expiry[:13]+expiry[13:].replace('.',':')
+                corrected_ref=prefix.event_id(corrected)
+                rows[corrected_ref]=corrected
+                writers,roster=rejection_policy
+                moment=event['ts_utc'][:17]+'59.9999999Z'
+                prefix._check(corrected_ref,rows,writers,roster,prefix._utc(moment),vocabulary_bytes,
+                    vocabulary_sha256,path_allowlist_bytes,path_allowlist_sha256)
+                head=card.get('head')
+                if head is not None and (decision['observed_heads'] is None or head not in decision['observed_heads']):
+                    raise ValueError()
+                rejected_invalid_expiry+=1
+                continue
             # Every claim, including duplicates or wrong-task claims, must pass
             # the same exact prefix, closed envelope, writer and roster checks.
             moment=event['ts_utc'][:17]+'59.9999999Z'
@@ -106,7 +135,9 @@ def prepare_card_generation(*, enabled=False, decision_bytes=None, decision_sha2
                 # Until the projection stores a masked head without breaking
                 # source identity, never write an unverified raw head.
                 raise ValueError()
-        projection=cards.project_shared_cards([row for _,row in claims],vocabulary_bytes=vocabulary_bytes,
+            accepted.append(event)
+        if not accepted: raise ValueError()
+        projection=cards.project_shared_cards(accepted,vocabulary_bytes=vocabulary_bytes,
             vocabulary_sha256=vocabulary_sha256,path_allowlist_bytes=path_allowlist_bytes,
             path_allowlist_sha256=path_allowlist_sha256,now_utc=now_utc,enabled=True,
             _real_decision=decision if real else None)
@@ -132,7 +163,7 @@ def prepare_card_generation(*, enabled=False, decision_bytes=None, decision_sha2
         live._read(directory/'descriptor.json',65536,built['descriptor_sha256'])
         return {'status':'STAGED','memory_sha256':built['memory_sha256'],
                 'descriptor_sha256':built['descriptor_sha256'],'records':built['records'],
-                'completeness':'UNKNOWN'}
+                'completeness':'UNKNOWN','rejected_invalid_expiry':rejected_invalid_expiry}
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         raise CardGenerationInterrupted('card_generation_unknown') from None
     except Exception:

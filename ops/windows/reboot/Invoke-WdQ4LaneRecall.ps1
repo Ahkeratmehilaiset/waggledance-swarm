@@ -38,6 +38,9 @@ begin {
         $exitText = if ($null -eq $ChildExit) { 'null' } else { $ChildExit.ToString([Globalization.CultureInfo]::InvariantCulture) }
         [Console]::Error.WriteLine('{"status":"' + $Status + '","exit_code":' + $exitText + ',"cleanup":"' + $Cleanup + '"}')
     }
+    function Write-RecallPhase([string]$Phase) {
+        if ($WithStatus -and $Phase) { [Console]::Error.WriteLine('{"phase":"' + $Phase + '"}') }
+    }
 }
 process {
     if ($PSBoundParameters.ContainsKey('QueryJson')) { $items.Add($QueryJson) }
@@ -131,10 +134,15 @@ end {
                 # Only a single exact, locally generated record crosses this boundary.
                 # Never relay the worker's raw stderr, even on parse failure.
                 $record = [Text.Encoding]::ASCII.GetString($stderr.ToArray())
-                if ($record -cmatch '^\{"status":"EXITED","exit_code":(-?(?:0|[1-9][0-9]*)),"cleanup":"CONFIRMED"\}\r?\n$') {
+                $phaseNames = 'CALLER_GUARD_ACQUIRE_UNKNOWN|CALLER_ADAPTER_CLEANUP_UNKNOWN|CALLER_TRANSPORT_CLEANUP_UNKNOWN|CALLER_ATTESTATION_CLEANUP_UNKNOWN|CALLER_SESSION_UNKNOWN|CALLER_TIMEOUT_UNKNOWN|CALLER_RESULT_UNKNOWN|CALLER_TIMEOUT|CALLER_INTERRUPTED|CALLER_REFUSED|BOOTSTRAP_REFUSED|BOOTSTRAP_UNKNOWN|BOOTSTRAP_INTERRUPTED'
+                $pattern = '^\{"status":"EXITED","exit_code":(-?(?:0|[1-9][0-9]*)),"cleanup":"CONFIRMED"\}\r?\n(?:\{"phase":"(' + $phaseNames + ')"\}\r?\n)?$'
+                if ($record -cmatch $pattern) {
                     $childCode = 0
                     if ([int]::TryParse($Matches[1], [ref]$childCode) -and $childCode -eq $code) {
+                        $phase = if ($Matches.ContainsKey(2)) { $Matches[2] } else { '' }
+                        if ($childCode -eq 0) { $phase = '' }
                         Write-RecallStatus 'EXITED' $childCode 'CONFIRMED'
+                        Write-RecallPhase $phase
                     } else { Write-RecallStatus 'UNKNOWN' $null 'UNKNOWN' }
                 } else { Write-RecallStatus 'UNKNOWN' $null 'UNKNOWN' }
             }
@@ -213,7 +221,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-public sealed class $resultTypeName { public int Code; public byte[] Output; public bool ChildExitObserved; public int ChildExitCode; public bool CleanupConfirmed; }
+public sealed class $resultTypeName { public int Code; public byte[] Output; public bool ChildExitObserved; public int ChildExitCode; public bool CleanupConfirmed; public string Phase; }
 public static class $typeName {
  [StructLayout(LayoutKind.Sequential)] struct Basic { public long a,b; public uint flags; public UIntPtr min,max; public uint active; public UIntPtr affinity; public uint priority,scheduling; }
  [StructLayout(LayoutKind.Sequential)] struct Io { public ulong a,b,c,d,e,f; }
@@ -227,6 +235,33 @@ public static class $typeName {
  [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForSingleObject(IntPtr h,uint ms);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool CloseHandle(IntPtr h);
  static byte[] ReadBounded(Stream source,int max) { using(var m=new MemoryStream()) { var b=new byte[4096]; int n; while((n=source.Read(b,0,b.Length))>0) { if(m.Length+n>max) throw new InvalidDataException(); m.Write(b,0,n); } return m.ToArray(); } }
+ static string ClosedPhase(byte[] raw) {
+   var lines=Encoding.UTF8.GetString(raw).Split('\n');
+   if(lines.Length<2 || lines[lines.Length-1]!="") return null;
+   string item;
+   if(lines.Length==2) item=lines[0].TrimEnd('\r');
+   else if(lines.Length==3 && lines[0].TrimEnd('\r')=="{\"error\":\"lane_caller_refused\",\"authority\":\"none\"}") item=lines[1].TrimEnd('\r');
+   else return null;
+   string value=null;
+     switch(item) {
+       case "{\"status\":\"BOOTSTRAP_REFUSED\"}": value="BOOTSTRAP_REFUSED"; break;
+       case "{\"status\":\"BOOTSTRAP_UNKNOWN\"}": value="BOOTSTRAP_UNKNOWN"; break;
+       case "{\"status\":\"BOOTSTRAP_INTERRUPTED\"}": value="BOOTSTRAP_INTERRUPTED"; break;
+       case "{\"phase\":\"CALLER_GUARD_ACQUIRE_UNKNOWN\"}": value="CALLER_GUARD_ACQUIRE_UNKNOWN"; break;
+       case "{\"phase\":\"CALLER_ADAPTER_CLEANUP_UNKNOWN\"}": value="CALLER_ADAPTER_CLEANUP_UNKNOWN"; break;
+       case "{\"phase\":\"CALLER_TRANSPORT_CLEANUP_UNKNOWN\"}": value="CALLER_TRANSPORT_CLEANUP_UNKNOWN"; break;
+       case "{\"phase\":\"CALLER_ATTESTATION_CLEANUP_UNKNOWN\"}": value="CALLER_ATTESTATION_CLEANUP_UNKNOWN"; break;
+       case "{\"phase\":\"CALLER_SESSION_UNKNOWN\"}": value="CALLER_SESSION_UNKNOWN"; break;
+       case "{\"phase\":\"CALLER_TIMEOUT_UNKNOWN\"}": value="CALLER_TIMEOUT_UNKNOWN"; break;
+       case "{\"phase\":\"CALLER_RESULT_UNKNOWN\"}": value="CALLER_RESULT_UNKNOWN"; break;
+       case "{\"phase\":\"CALLER_TIMEOUT\"}": value="CALLER_TIMEOUT"; break;
+       case "{\"phase\":\"CALLER_INTERRUPTED\"}": value="CALLER_INTERRUPTED"; break;
+       case "{\"phase\":\"CALLER_REFUSED\"}": value="CALLER_REFUSED"; break;
+     }
+   if(lines.Length==2 && value!=null && !value.StartsWith("BOOTSTRAP_",StringComparison.Ordinal)) return null;
+   if(lines.Length==3 && value!=null && !value.StartsWith("CALLER_",StringComparison.Ordinal)) return null;
+   return value;
+ }
  public static byte[] ReadInput(int cap,int milliseconds) {
    var t=Task.Run(()=>ReadBounded(Console.OpenStandardInput(),cap));
    if(milliseconds<=0 || !t.Wait(milliseconds)) throw new TimeoutException(); return t.Result;
@@ -251,7 +286,8 @@ public static class $typeName {
        if(p.WaitForExit(20) && write.IsCompleted && output.IsCompleted && error.IsCompleted) break;
      }
      Task.WaitAll(write,output,error);
-     result.Code=p.ExitCode; result.ChildExitCode=p.ExitCode; result.ChildExitObserved=true; if(result.Code==0) result.Output=output.Result;
+     result.Code=p.ExitCode; result.ChildExitCode=p.ExitCode; result.ChildExitObserved=true;
+     if(result.Code==0) result.Output=output.Result; else result.Phase=ClosedPhase(error.Result);
    } catch(Exception) { result.Code=entered?3:2; result.Output=null; }
    finally {
      if(job!=IntPtr.Zero && !TerminateJobObject(job,125)) ok=false;
@@ -289,8 +325,9 @@ public static class $typeName {
         if (($WithCoverage -and -not $Live) -or ($Runtime -and $WithCoverage)) { throw 'refused' }
         $liveEnvironment = if ($Live) { '$env:WD_Q4_LIVE_MODE=''1''; ' } else { 'Remove-Item Env:WD_Q4_LIVE_MODE -ErrorAction SilentlyContinue; ' }
         $coverageEnvironment = if ($WithCoverage) { '$env:WD_Q4_WITH_COVERAGE=''1''; ' } else { 'Remove-Item Env:WD_Q4_WITH_COVERAGE -ErrorAction SilentlyContinue; ' }
+        $diagnosticEnvironment = if ($WithStatus) { '$env:WD_Q4_DIAGNOSTIC_PHASES=''1''; ' } else { 'Remove-Item Env:WD_Q4_DIAGNOSTIC_PHASES -ErrorAction SilentlyContinue; ' }
         $callerTool = if ($Runtime) { 'tools/wd_q4_lane_caller_runtime_bootstrap.py' } else { 'tools/wd_q4_lane_caller_cli.py' }
-        $bootstrap = $liveEnvironment + $coverageEnvironment + 'if ([Console]::OpenStandardInput().ReadByte() -ne 71) { exit 2 }; try { & $env:WD_BRIDGE_PYTHON_WRAPPER ' + $callerTool + ' --enabled; exit $LASTEXITCODE } catch { exit 2 }'
+        $bootstrap = '$ProgressPreference=''SilentlyContinue''; ' + $liveEnvironment + $coverageEnvironment + $diagnosticEnvironment + 'if ([Console]::OpenStandardInput().ReadByte() -ne 71) { exit 2 }; try { & $env:WD_BRIDGE_PYTHON_WRAPPER ' + $callerTool + ' --enabled; exit $LASTEXITCODE } catch { exit 2 }'
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap))
         $shellName = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
         $shell = [IO.Path]::Combine($PSHOME,$shellName)
@@ -298,6 +335,7 @@ public static class $typeName {
         $result = $relayType::Run($shell,$encoded,$query,$remaining)
         if ($result.ChildExitObserved -and $result.CleanupConfirmed -and $result.Code -eq $result.ChildExitCode) {
             Write-RecallStatus 'EXITED' $result.ChildExitCode 'CONFIRMED'
+            if ($result.ChildExitCode -ne 0) { Write-RecallPhase $result.Phase }
         } else { Write-RecallStatus 'UNKNOWN' $null 'UNKNOWN' }
         if ($result.Code -eq 0 -and $null -ne $result.Output) {
             $out = [Console]::OpenStandardOutput(); $out.Write($result.Output,0,$result.Output.Length); $out.Flush()

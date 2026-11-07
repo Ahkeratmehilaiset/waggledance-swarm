@@ -684,6 +684,17 @@ def test_staged_transition_accepts_contained_snapshot_and_same_source_prefix(sta
     live._validate_staged_transition(base, candidate, desc, {'runtime_root':str(runtime)})
 
 
+def test_staged_transition_rejects_dot_prefixed_run(staged_transition):
+    _, _, _, runtime, _, base, candidate, desc = staged_transition
+    old_root = Path(candidate['root'])
+    dot_root = old_root.parent.parent / '.hidden-run' / 'snapshot'
+    old_root.parent.rename(dot_root.parent)
+    candidate['root'] = str(dot_root)
+    candidate['pointer_path'] = str(dot_root / 'pointer.json')
+    with pytest.raises(ValueError):
+        live._validate_staged_transition(base, candidate, desc, {'runtime_root':str(runtime)})
+
+
 @pytest.mark.parametrize('mutation', ['root_escape','root_bundle','root_stage','root_runtime','root_source','pointer_escape',
                                       'generation_escape','generation_stage','anchor_binding',
                                       'source_rewrite','wrong_identity','offset_regression'])

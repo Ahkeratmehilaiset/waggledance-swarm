@@ -179,7 +179,8 @@ def test_materializes_from_real_synthetic_descriptor_and_fenced_checkpoint(tmp_p
         return original_enc(value)
     monkeypatch.setattr(e2e, 'helper', helper)
     monkeypatch.setattr(e2e, 'enc', with_job_assets)
-    e2e.test_two_real_fenced_publications_are_selected_by_running_caller(tmp_path, monkeypatch, capsys, 'none')
+    e2e.test_two_real_fenced_publications_are_selected_by_running_caller(
+        tmp_path, monkeypatch, capsys, 'none', False, 'codex-lead-1')
     monkeypatch.setattr(state['runner'], 'run_once', state['raw_run'])
     first = state['runs'][0]
     route, plan = json.loads(first['route_bytes']), json.loads(first['plan_bytes'])

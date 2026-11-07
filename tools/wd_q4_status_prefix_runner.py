@@ -51,7 +51,10 @@ _POLICY_SHA = frozenset({"0a9b1f67bc7015924ef595a17f7b092274c0fd568691f9d1ef07bf
 _PUBLIC_SHA = frozenset({"a5c5f0d91fc27c799678d1d97a28f48c540997ac91385ae097921388e2a4cdb5",
                          "29382d02a3adcf8dc5c3f3a078f9a1dc5565fdcf1a0f14f9c8c49fc1bb793268"})
 _FLEET_SHA = frozenset({"b60bbfd5cfa28bb93053c9b7492378d19c0abb184bd2569398109c50ef24adcb",
-                         "bded859e8ae0ffc42c5a56007883d30e0eb4fafd028da7ff8261ae3bbbf9aaf7"})
+                         "bded859e8ae0ffc42c5a56007883d30e0eb4fafd028da7ff8261ae3bbbf9aaf7",
+                         # Current fleet adds disabled Mind configuration and pinned launch helpers.
+                         "044531f7539741f82abfb1a378429cc9d5938ee87708c136583563e6bf9dc430",
+                         "285d51ce240660f0c08859cfbc2636d1f2f944537af9fc1b499c1e6878ad4821"})
 _HEX = re.compile(r"[a-f0-9]{64}\Z")
 _GENERATION = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 _IDENTITY = re.compile(r"(?:windows-v1:[0-9a-f]{8}:[0-9a-f]{16}|posix-v1:[0-9a-f]+:[0-9a-f]+)\Z")

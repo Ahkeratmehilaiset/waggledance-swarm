@@ -191,7 +191,7 @@ def test_known_git_lf_and_windows_crlf_policy_pins(runner):
                           ("ops/windows/reboot/wd-fleet.json", runner._FLEET_SHA)):
         blob = subprocess.run([git, "show", "HEAD:" + path], cwd=ROOT, capture_output=True, check=True).stdout
         assert b"\r\n" not in blob
-        assert {sha(blob), sha(blob.replace(b"\n", b"\r\n"))} == allowed
+        assert {sha(blob), sha(blob.replace(b"\n", b"\r\n"))} <= allowed
 
 
 def test_exact_pins_and_one_child_call_return_unchanged(case):

@@ -156,3 +156,97 @@ def run_public(config, stdin, stdout, *, root=None, expected_pointer_sha256=None
     except Exception:
         return 2
     return code
+
+
+_STAGED_SCHEMA = 'wd.q4-card-snapshot-query.v1'
+_STAGED_FAIL = '{"schema":"wd.q4-card-snapshot-query.v1","status":"REFUSED","reason":"staged_query_refused"}\n'
+_STAGED_UNKNOWN = _UNKNOWN_KEYS | {'completeness'}
+_STAGED_BINDING = frozenset({'source_mode', 'pointer_sha256', 'source_anchor_sha256', 'encoder_sha256',
+    'policy_sha256', 'roster_sha256', 'card_decision_sha256', 'card_policy_sha256',
+    'descriptor_sha256', 'memory_sha256', 'projection_sha256'})
+
+
+def _staged_pairs(items):
+    out = {}
+    for key, value in items:
+        if key in out:
+            raise ValueError()
+        out[key] = value
+    return out
+
+
+def _validated_staged_output(value, expected):
+    if (type(value) is not dict or set(value) != {'schema', 'status', 'results', 'binding'} | _STAGED_UNKNOWN
+            or value['schema'] != _STAGED_SCHEMA or value['status'] not in ('ANSWER', 'ABSTAIN', 'DEGRADED')
+            or type(value['results']) is not list or len(value['results']) > 100
+            or (value['status'] == 'ANSWER' and not value['results'])
+            or (value['status'] == 'ABSTAIN' and value['results'])
+            or any(value[key] != 'UNKNOWN' for key in _STAGED_UNKNOWN)):
+        raise ValueError()
+    binding = value['binding']
+    if (type(binding) is not dict or set(binding) != _STAGED_BINDING
+            or binding['source_mode'] != 'card-snapshot-v1'
+            or any(not _pin(binding[key]) for key in _STAGED_BINDING - {'source_mode'})
+            or any(not hmac.compare_digest(binding[key], pin) for key, pin in expected.items())):
+        raise ValueError()
+    for item in value['results']:
+        if (type(item) is not dict or set(item) != _RESULT_KEYS or type(item['stored_text']) is not str
+                or len(item['stored_text'].encode('utf-8', errors='strict')) > 320
+                or item['ref_kind'] != 'sha256_of_projected_metadata' or item['canonical_event'] is not False
+                or not _pin(item['ref_sha256']) or not _pin(item['doc_id_sha256'])):
+            raise ValueError()
+    text = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False) + '\n'
+    if len(text.encode('utf-8')) > MAX_OUTPUT:
+        raise ValueError()
+    return text
+
+
+def run_staged_card(config, stdin, stdout, *, root=None, pointer_bytes=None, expected_pointer_sha256=None,
+                    expected_source_sha256=None, expected_encoder_sha256=None, policy_bytes=None,
+                    policy_sha256=None, roster_bytes=None, roster_sha256=None, card_decision_bytes=None,
+                    card_decision_sha256=None, card_policy_bytes=None, source_path=None,
+                    generation_path=None, end_cursor=None, enabled=False):
+    """Run one explicitly enabled C2 snapshot query; no source or publisher authentication is implied.
+
+    The input stream is handed to the fixed query function without being read
+    here, so its actual C2 check runs before the query is consumed. The caller
+    must independently pin and contain this code, runtime and source tuple.
+    """
+    try:
+        if (enabled is not True or not _pinned(pointer_bytes, expected_pointer_sha256, 1024 * 1024)
+                or not _pinned(policy_bytes, policy_sha256, MAX_POLICY)
+                or not _pinned(roster_bytes, roster_sha256, MAX_ROSTER)
+                or not _pinned(card_decision_bytes, card_decision_sha256, MAX_DECISION)
+                or type(card_policy_bytes) is not bytes or not 0 < len(card_policy_bytes) <= MAX_POLICY
+                or not _pin(expected_source_sha256) or not _pin(expected_encoder_sha256)):
+            raise ValueError()
+        _validate_config(config)
+        pointer = json.loads(pointer_bytes.decode('ascii'), object_pairs_hook=_staged_pairs,
+                             parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        artifacts = pointer['artifacts']
+        expected = {'pointer_sha256': expected_pointer_sha256, 'source_anchor_sha256': expected_source_sha256,
+                    'encoder_sha256': expected_encoder_sha256, 'policy_sha256': policy_sha256,
+                    'roster_sha256': roster_sha256, 'card_decision_sha256': card_decision_sha256,
+                    'card_policy_sha256': hashlib.sha256(card_policy_bytes).hexdigest(),
+                    'descriptor_sha256': config.descriptor_sha256, 'memory_sha256': artifacts['memory.json'],
+                    'projection_sha256': artifacts['projection.json']}
+        if any(not _pin(value) for value in expected.values()):
+            raise ValueError()
+        from tools.wd_q4_public_query import query_staged_card_snapshot
+        result = query_staged_card_snapshot(config, stdin, root=root, pointer_bytes=pointer_bytes,
+            expected_pointer_sha256=expected_pointer_sha256, expected_source_sha256=expected_source_sha256,
+            expected_encoder_sha256=expected_encoder_sha256, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+            roster_bytes=roster_bytes, roster_sha256=roster_sha256, card_decision_bytes=card_decision_bytes,
+            card_decision_sha256=card_decision_sha256, card_policy_bytes=card_policy_bytes,
+            source_path=source_path, generation_path=generation_path, end_cursor=end_cursor, enabled=True)
+        text, code = _validated_staged_output(result, expected), 0
+    except Exception:
+        text, code = _STAGED_FAIL, 2
+    try:
+        written = stdout.write(text)
+        if type(written) is not int or written != len(text):
+            return 2
+        stdout.flush()
+    except Exception:
+        return 2
+    return code

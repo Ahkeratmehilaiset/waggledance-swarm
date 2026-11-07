@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import types
 from pathlib import Path
 import pytest
 
@@ -176,6 +177,15 @@ elif scenario == 'origin_no_side_effect':
  except ns['_Refused']: pass
  else: raise AssertionError('unwitnessed module accepted')
  assert not effects
+elif scenario in ('torch_preseed', 'cython_preseed'):
+ import types
+ name = 'torch.synthetic' if scenario == 'torch_preseed' else '_cython_3_1_4'
+ sys.modules[name] = types.ModuleType(name)
+ try:
+  try: ns['_reject_preloaded_runtime']()
+  except ns['_Refused']: pass
+  else: raise AssertionError('runtime preseed accepted')
+ finally: del sys.modules[name]
 elif scenario.startswith('witness_'):
  import types
  before = set(sys.modules)
@@ -241,7 +251,8 @@ print('PASS')
 def test_controlled_imports_preserve_missing_semantics_and_reject_injections(tmp_path):
     cases = ('clean', 'pyc', 'preseed', 'unmanifested', 'cache', 'hook', 'meta', 'metadata',
              'metadata_tamper', 'metadata_extra', 'metadata_toctou',
-             'badmanifest', 'helper_tamper', 'tamper', 'pyc_only', 'outside', 'namespace', 'origin_no_side_effect')
+             'badmanifest', 'helper_tamper', 'tamper', 'pyc_only', 'outside', 'namespace', 'origin_no_side_effect',
+             'torch_preseed', 'cython_preseed')
     if os.name == 'nt':
         cases += ('native', 'native_tamper')
     for scenario in cases:
@@ -266,3 +277,40 @@ def test_verified_source_creation_witness(tmp_path, scenario):
     result = _probe(tmp_path, scenario)
     assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
     assert result.stdout in (b'PASS\r\n', b'PASS\n')
+
+
+@pytest.mark.parametrize('scenario', ('clean', 'preseed', 'borrowed', 'hidden_borrow', 'nested_source', 'nested_native',
+                                      'concurrent', 'dict_mutation'))
+def test_native_registration_is_scoped_and_does_not_claim_creation(scenario):
+    from sandbox.mind.step2 import q4_controlled_imports as controlled
+
+    def check(condition):
+        if not condition:
+            raise ValueError('synthetic refusal')
+
+    tracker = controlled._NativeRegistrations(check)
+    alias = types.ModuleType('wd_synthetic_native')
+    alias.__file__ = None
+    before, after, tainted = {}, {'wd_synthetic_native': alias}, set()
+    known_objects = ()
+    if scenario == 'preseed':
+        before['wd_synthetic_native'] = types.ModuleType('wd_synthetic_native')
+    elif scenario == 'borrowed':
+        before['wd_existing'] = alias
+        after['wd_existing'] = alias
+    elif scenario == 'hidden_borrow':
+        known_objects = (alias,)
+    elif scenario in ('nested_source', 'nested_native'):
+        tainted.add('wd_synthetic_native')
+    if scenario == 'concurrent':
+        with pytest.raises(ValueError):
+            tracker.bind(before, after, tainted, single_thread=False, known_objects=known_objects)
+        return
+    tracker.bind(before, after, tainted, single_thread=True, known_objects=known_objects)
+    if scenario == 'dict_mutation':
+        alias.synthetic_change = 1
+    if scenario in ('preseed', 'borrowed', 'hidden_borrow', 'nested_source', 'nested_native', 'dict_mutation'):
+        with pytest.raises(ValueError):
+            tracker.accept('wd_synthetic_native', alias, after)
+    else:
+        tracker.accept('wd_synthetic_native', alias, after)

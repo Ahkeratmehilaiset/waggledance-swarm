@@ -28,6 +28,14 @@ def test_off_without_reads(monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out) == {'status':'OFF'}
 
 
+def test_bridge_definition_has_one_fixed_orchestrator_entrypoint():
+    definition=json.loads((ROOT/'ops/windows/reboot/bridge-code-files.json').read_bytes())
+    relative='tools/wd_q4_card_orchestrator_runtime_bootstrap.py'
+    assert definition['python_files'].count(relative)==1
+    assert list(definition['python_entrypoints'].values()).count(relative)==1
+    assert definition['python_entrypoints']['q4_card_orchestrator_runtime']==relative
+
+
 @pytest.fixture
 def case(tmp_path):
     from sandbox.mind.step2 import runtime_builder
@@ -70,9 +78,10 @@ def case(tmp_path):
             'template':template,'bootstrap':code/'tools'/NAME,'pointer':pointer}
 
 
-def execute(case, *, flags=('-I','-S','-B'), pin=None):
+def execute(case, *, flags=('-I','-S','-B'), pin=None, extra_env=None):
     manifest_pin = sha(case['manifest'].read_bytes())
     env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=manifest_pin)
+    if extra_env: env.update(extra_env)
     return subprocess.run([sys.executable,*flags,str(case['bootstrap']),'--enable','--request',str(case['request']),
         '--request-sha256',pin or sha(case['request'].read_bytes()),'--manifest-sha256',manifest_pin,
         '--runtime',str(case['spec']),'--runtime-sha256',sha(case['spec'].read_bytes())],
@@ -96,6 +105,14 @@ def test_isolated_pinned_runtime_reaches_only_fixed_cli(case):
                                          'pointer_sha256':sha(case['pointer'].read_bytes())}
 
 
+def test_wrapper_style_parent_reaches_isolated_child_without_foreign_pythonpath(case, tmp_path):
+    marker = tmp_path/'foreign-imported'
+    (tmp_path/'hashlib.py').write_text('open('+repr(str(marker))+',"w").write("bad")\n',encoding='ascii')
+    result = execute(case,flags=('-S','-B'),extra_env={'PYTHONPATH':str(tmp_path)})
+    assert result.returncode == 0 and json.loads(result.stdout)['status'] == 'PREPARED'
+    assert not marker.exists()
+
+
 def test_stdlib_precedes_packaged_top_level_module(case):
     (case['code']/'fractions.py').write_text("raise RuntimeError('shadowed stdlib')\n", encoding='ascii')
     cli = case['code']/'tools'/CLI
@@ -113,7 +130,7 @@ def test_stdlib_precedes_packaged_top_level_module(case):
                                    'changed_pointer','model_mismatch','wrong_runtime_schema','interpreter_pin'])
 def test_refuses_or_unknown_on_unbound_inputs(case, fault):
     options = {}
-    if fault == 'no_isolation': options['flags'] = ('-S','-B')
+    if fault == 'no_isolation': options['flags'] = ('-S',)
     if fault == 'bad_request_pin': options['pin'] = '0'*64
     if fault == 'changed_template': case['template'].write_bytes(b'{}')
     if fault == 'unlisted_file': (case['code']/'tools/extra.py').write_text('pass')

@@ -9,7 +9,7 @@ param(
     [string]$BundleRoot='', [string]$ExpectedCommit='', [string]$ExpectedManifestSha256='',
     [string]$RequestPath='', [string]$ExpectedRequestSha256='',
     [string]$RuntimePath='', [string]$ExpectedRuntimeSha256='',
-    [string]$ScratchRoot='', [string]$ExpectedHostSha256='',
+    [string]$ScratchRoot='', [string]$ExpectedHostSha256='', [string]$ExpectedBridgePythonSha256='',
     [ValidateRange(1,1800)][int]$TimeoutSeconds=1800
 )
 $ErrorActionPreference='Stop'
@@ -19,7 +19,7 @@ try {
     if ($PSVersionTable.PSEdition -ceq 'Desktop') {
         Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
     }
-    foreach ($pin in @($ExpectedManifestSha256,$ExpectedRequestSha256,$ExpectedRuntimeSha256,$ExpectedHostSha256)) {
+    foreach ($pin in @($ExpectedManifestSha256,$ExpectedRequestSha256,$ExpectedRuntimeSha256,$ExpectedHostSha256,$ExpectedBridgePythonSha256)) {
         if ($pin -cnotmatch '^[0-9a-f]{64}$') { throw 'pin' }
     }
     if ($ExpectedCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'commit' }
@@ -67,6 +67,9 @@ try {
     $request=CheckedPath $RequestPath; $runtime=CheckedPath $RuntimePath
     $manifest=CheckedPath (Join-Path $bundle 'deployment-manifest.json')
     $bootstrap=CheckedPath (Join-Path $bundle 'tools-bootstrap\tools\wd_q4_card_orchestrator_runtime_bootstrap.py')
+    $wrapper=CheckedPath (Join-Path $bundle 'Invoke-WdBridgePython.ps1')
+    $context=CheckedPath (Join-Path $bundle 'BridgeCodeContext.ps1')
+    $fleet=CheckedPath (Join-Path $bundle 'wd-fleet.json')
     $jobHelper=CheckedPath (Join-Path $bundle 'WdQ4ProcessJob.ps1')
     $self=CheckedPath (Join-Path $bundle 'Invoke-WdQ4CardOrchestratorJob.ps1')
     if (-not [IO.Path]::GetFullPath($PSCommandPath).Equals($self,[StringComparison]::OrdinalIgnoreCase)) { throw 'self' }
@@ -78,10 +81,14 @@ try {
         [string]$q.schema -cne 'wd.q4-card-real-candidate-request.v1' -or
         [string]$r.manifest_sha256 -cne $ExpectedManifestSha256 -or
         -not [IO.Path]::GetFullPath([string]$r.bundle_root).Equals($bundle,[StringComparison]::OrdinalIgnoreCase)) { throw 'binding' }
-    foreach ($pair in @(@('Invoke-WdQ4CardOrchestratorJob.ps1',$self),
+    foreach ($pair in @(@('Invoke-WdQ4CardOrchestratorJob.ps1',$self),@('Invoke-WdBridgePython.ps1',$wrapper),
+                         @('BridgeCodeContext.ps1',$context),
                          @('tools-bootstrap/tools/wd_q4_card_orchestrator_runtime_bootstrap.py',$bootstrap))) {
         ExactHash $pair[1] ([string]$m.files.PSObject.Properties[$pair[0]].Value)
     }
+    $fleetData=PinnedJson $fleet ([string]$m.files.'wd-fleet.json') 1048576
+    $bridgePython=CheckedPath ([string]$fleetData.bridge_python.executable)
+    ExactHash $bridgePython $ExpectedBridgePythonSha256
     $helperBytes=PinnedBytes $jobHelper ([string]$m.files.'WdQ4ProcessJob.ps1') 1048576
     $helperText=[Text.UTF8Encoding]::new($false,$true).GetString($helperBytes)
     $python=CheckedPath ([string]$r.interpreter_path)
@@ -112,7 +119,7 @@ public static class WdQ4CardJobPathsV1 {
 }
 '@ -ErrorAction Stop
     $scratchFinal=[WdQ4CardJobPathsV1]::Final($scratch)
-    $protected=@($bundle,(Split-Path -Parent $python),(Split-Path -Parent $hostPath),$request,$runtime,$snapshot,$decision,$finish,
+    $protected=@($bundle,(Split-Path -Parent $python),(Split-Path -Parent $bridgePython),(Split-Path -Parent $hostPath),$request,$runtime,$snapshot,$decision,$finish,
         [string]$r.runtime_root,[string]$snapshotData.trusted_model_root,[string]$q.output_root,[string]$q.generation_root,
         [string]$decisionData.source_path,(Split-Path -Parent ([string]$decisionData.source_path)),
         [string]$decisionData.anchor.root,[string]$decisionData.git.repository,
@@ -133,8 +140,36 @@ public static class WdQ4CardJobPathsV1 {
     # A fixed worker program exists only inside this launch, after all scratch
     # checks; the public script has no callable InternalWorker bypass. Values
     # enter it solely as escaped literals and cannot select code or commands.
+    # This candidate bundle's wrapper pin is local to the Job child; the
+    # calling lane's inherited bridge pins are never modified.
+    $wrapperProgram="`$ErrorActionPreference='Stop'`n" +
+        "`$env:WD_REBOOT_EXPECTED_MANIFEST_HASH=$(PSLiteral $ExpectedManifestSha256)`n" +
+        "`$env:WD_BRIDGE_PYTHON_WRAPPER=$(PSLiteral $wrapper)`n" +
+        "`$env:WD_BRIDGE_PYTHON=$(PSLiteral $bridgePython)`n" +
+        "`$env:WD_BRIDGE_PYTHON_SHA256=$(PSLiteral $ExpectedBridgePythonSha256)`n" +
+        "`$request=$(PSLiteral $request)`n`$requestPin=$(PSLiteral $ExpectedRequestSha256)`n" +
+        "`$runtime=$(PSLiteral $runtime)`n`$runtimePin=$(PSLiteral $ExpectedRuntimeSha256)`n"
+    $wrapperProgram+=@'
+$env:PSModulePath=Join-Path $PSHOME 'Modules'
+$env:PATH=(Join-Path $env:SystemRoot 'System32')+';'+$env:SystemRoot
+$env:PATHEXT='.COM;.EXE;.BAT;.CMD'
+try {
+ $script:bytes=0
+ & $env:WD_BRIDGE_PYTHON_WRAPPER -VerifyPackage -Tool 'tools/wd_q4_card_orchestrator_runtime_bootstrap.py' `
+   --enable --request $request --request-sha256 $requestPin --manifest-sha256 $env:WD_REBOOT_EXPECTED_MANIFEST_HASH `
+   --runtime $runtime --runtime-sha256 $runtimePin | ForEach-Object {
+    $line=[string]$_; $script:bytes += [Text.Encoding]::UTF8.GetByteCount($line)+1
+    if($script:bytes -gt 4096) { throw 'output' }; [Console]::Out.WriteLine($line)
+   }
+ $code=$global:LASTEXITCODE; if($null -eq $code) { throw 'exit' }; exit $code
+} catch { [Console]::Out.WriteLine('{"status":"UNKNOWN"}'); exit 3 }
+'@
+    $wrapperEncoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapperProgram))
     $worker="`$python=$(PSLiteral $python)`n`$bootstrap=$(PSLiteral $bootstrap)`n" +
         "`$manifest=$(PSLiteral $manifest)`n`$request=$(PSLiteral $request)`n`$runtime=$(PSLiteral $runtime)`n" +
+        "`$wrapper=$(PSLiteral $wrapper)`n`$bridgePython=$(PSLiteral $bridgePython)`n`$hostPath=$(PSLiteral $hostPath)`n" +
+        "`$wrapperEncoded=$(PSLiteral $wrapperEncoded)`n`$wrapperPin=$(PSLiteral ([string]$m.files.'Invoke-WdBridgePython.ps1'))`n" +
+        "`$bridgePythonPin=$(PSLiteral $ExpectedBridgePythonSha256)`n`$hostPin=$(PSLiteral $ExpectedHostSha256)`n" +
         "`$pythonPin=$(PSLiteral $pythonPin)`n`$bootstrapPin=$(PSLiteral ([string]$m.files.'tools-bootstrap/tools/wd_q4_card_orchestrator_runtime_bootstrap.py'))`n" +
         "`$manifestPin=$(PSLiteral $ExpectedManifestSha256)`n`$requestPin=$(PSLiteral $ExpectedRequestSha256)`n`$runtimePin=$(PSLiteral $ExpectedRuntimeSha256)`n"
     $worker+=@'
@@ -144,18 +179,13 @@ function Exact([string]$p,[string]$expected) {
  try { $h=[Security.Cryptography.SHA256]::Create(); try { $v=[BitConverter]::ToString($h.ComputeHash($s)).Replace('-','') } finally { $h.Dispose() } }
  finally { $s.Dispose() }; if($v -cne $expected.ToUpperInvariant()) { throw 'pin' }
 }
-function Quoted([string]$v) {
- if(-not $v -or $v.Contains('"') -or $v.EndsWith('\') -or $v -match '[\x00-\x1f\x7f]') { throw 'argument' }
- return '"'+$v+'"'
-}
 $proc=$null; $started=$false
 try {
  Exact $manifest $manifestPin; Exact $bootstrap $bootstrapPin; Exact $python $pythonPin
- Exact $request $requestPin; Exact $runtime $runtimePin
- $env:WD_REBOOT_EXPECTED_MANIFEST_HASH=$manifestPin
- $psi=[Diagnostics.ProcessStartInfo]::new(); $psi.FileName=$python
- $psi.Arguments=('-I -S -B {0} --enable --request {1} --request-sha256 {2} --manifest-sha256 {3} --runtime {4} --runtime-sha256 {5}' -f `
-     (Quoted $bootstrap),(Quoted $request),$requestPin,$manifestPin,(Quoted $runtime),$runtimePin)
+ Exact $request $requestPin; Exact $runtime $runtimePin; Exact $wrapper $wrapperPin
+ Exact $bridgePython $bridgePythonPin; Exact $hostPath $hostPin
+ $psi=[Diagnostics.ProcessStartInfo]::new(); $psi.FileName=$hostPath
+ $psi.Arguments='-NoProfile -NonInteractive -EncodedCommand '+$wrapperEncoded
  $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
  $proc=[Diagnostics.Process]::new(); $proc.StartInfo=$psi
  if(-not $proc.Start()) { throw 'start' }; $started=$true

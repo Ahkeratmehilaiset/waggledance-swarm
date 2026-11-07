@@ -1,10 +1,11 @@
 """Default-OFF package closure for the synthetic card modules (lead-mind-card-package-closure-fable-20261107-v1).
 
-The card route of ``shared_result_resolver`` is OFF unless its switch holds the card module itself, and neither the
-resolver nor the resolved child imports that module. These tests pin the smallest packaging that lets a bundle carry
-the card modules as code only: the import closure of ``shared_card_projection`` is in ``python_files``, no card module
-is an entrypoint, a manual capability or an import-smoke module, and the staged package imports with the standard
-library only while the route stays OFF. Packaging is not wiring and not activation; nothing here reads an installed
+The card route of ``shared_result_resolver`` is OFF unless the caller passes a pinned, verified route decision
+(lead-mind-card-source-binding-fable-20261107-v1), and the resolver and the resolved child import the card module only
+inside that decision path. These tests pin the smallest packaging that lets a bundle carry the card modules as code
+only: the import closure of ``shared_card_projection`` is in ``python_files``, no card module is an entrypoint, a
+manual capability or an import-smoke module, and the staged package imports with the standard library only while the
+route stays OFF. Packaging is not wiring and not activation; nothing here reads an installed
 bundle, a policy or a runtime.
 """
 import importlib.util
@@ -48,9 +49,9 @@ def test_the_card_module_import_closure_is_packaged(monkeypatch):
     assert reached <= set(closure._packaged_python()), sorted(reached - set(closure._packaged_python()))
 
 
-def test_packaging_is_not_wiring_the_route_files_never_reach_a_card_file(monkeypatch):
+def test_the_route_files_reach_card_files_only_as_packaged_code(monkeypatch):
     reached = _reach(ROUTE_FILES, monkeypatch)
-    assert not reached & set(CARD_FILES), sorted(reached & set(CARD_FILES))
+    assert reached <= set(closure._packaged_python()), sorted(reached - set(closure._packaged_python()))
 
 
 def test_card_files_are_code_only_and_never_published():
@@ -82,23 +83,34 @@ def test_the_staged_package_imports_the_card_modules_with_the_route_off(staged):
         "resolver = importlib.import_module('sandbox.mind.step2.shared_result_resolver')\n"
         "child = importlib.import_module('tools.wd_q4_resolved_child')\n"
         "before = 'sandbox.mind.step2.shared_card_projection' in sys.modules\n"
+        "switch = hasattr(resolver, 'CARD_ROUTE') or hasattr(resolver, 'card_route')\n"
+        "import hashlib\n"
+        "probe = importlib.import_module('sandbox.mind.step2.shared_card_projection')\n"
+        "try:\n"
+        "    probe.verify_route_decision(b'{}', hashlib.sha256(b'{}').hexdigest(),\n"
+        "                                policy_sha256='0' * 64, roster_sha256='0' * 64)\n"
+        "    decision = 'accepted'\n"
+        "except probe.SharedCardRefused as refusal:\n"
+        "    decision = str(refusal)\n"
         "cards = importlib.import_module('sandbox.mind.step2.shared_card_projection')\n"
         "internal = {name: str(pathlib.Path(m.__file__).resolve()) for name, m in sys.modules.copy().items()\n"
         "            if name.split('.')[0] in ('tools', 'waggledance', 'sandbox') and getattr(m, '__file__', None)}\n"
         "print(json.dumps(dict(\n"
-        "    before=before, switch=repr(resolver.CARD_ROUTE), route=repr(resolver.card_route()),\n"
+        "    before=before, switch=switch,\n"
         "    build=cards.build_shared_route_card_memory(None, None, None, None, None, None),\n"
         "    resolve=cards.resolve_shared_card_results(), card_file=str(pathlib.Path(cards.__file__).resolve()),\n"
         "    outside=sorted(n for n, p in internal.items() if not pathlib.Path(p).is_relative_to(root)),\n"
-        "    faiss='faiss' in sys.modules, isolated=sys.flags.isolated, no_site=sys.flags.no_site)))\n"
+        "    faiss='faiss' in sys.modules, numpy='numpy' in sys.modules, decision=decision,\n"
+        "    isolated=sys.flags.isolated, no_site=sys.flags.no_site)))\n"
     )
     result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', script, str(staged)], cwd=staged,
                             capture_output=True, text=True, encoding='utf-8', timeout=60)
     assert result.returncode == 0, result.stderr
     observed = json.loads(result.stdout)
-    assert observed['isolated'] == observed['no_site'] == 1 and observed['faiss'] is False
+    assert observed['isolated'] == observed['no_site'] == 1 and observed['faiss'] is observed['numpy'] is False
+    assert observed['decision'] == 'decision_invalid'
     assert observed['before'] is False
-    assert observed['switch'] == observed['route'] == 'None'
+    assert observed['switch'] is False
     assert observed['build'] == observed['resolve'] == {'status': 'OFF'}
     assert Path(observed['card_file']).is_relative_to(staged.resolve())
     assert observed['outside'] == []

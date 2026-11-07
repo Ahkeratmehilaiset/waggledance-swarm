@@ -298,9 +298,11 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
 
     def source_modules_in_gc():
         # Include ModuleType subclasses without calling an instance's custom
-        # __class__ or attribute hooks while observing nested executions.
+        # __class__ or metaclass attribute hooks while observing nested executions.
+        # The right-hand side has the built-in type metaclass, so issubclass
+        # checks the actual type hierarchy without invoking an object hook.
         return tuple(value for value in gc.get_objects()
-                     if types.ModuleType in type.__getattribute__(type(value), '__mro__'))
+                     if issubclass(type(value), types.ModuleType))
 
     def mark_nested(before, known_objects):
         if not native_stack:

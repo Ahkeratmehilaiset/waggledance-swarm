@@ -39,12 +39,64 @@ def staged(tmp_path):
     plan = {'bundle_root':str(root),'bundle_commit':'a'*40,'deployment_manifest_sha256':sha(raw),
             'peer_code_sha256':sha(peer.read_bytes()),'backend_sha256':sha(helper.read_bytes()),
             'wrapper_path':str(wrapper),'wrapper_sha256':sha(wrapper.read_bytes())}
+    runtime = tmp_path/'runtime'
+    runtime_tools = runtime/'assets'/'code'/'tools'; runtime_tools.mkdir(parents=True)
+    runtime_peer = runtime_tools/'wd_q4_secure_transport.py'; runtime_peer.write_bytes(peer.read_bytes())
+    runtime_helper = runtime_tools/'wd_q4_staged_fixed_backend.py'; runtime_helper.write_bytes(helper.read_bytes())
+    entries = [{'path':'assets/code/tools/'+p.name,'sha256':sha(p.read_bytes()),'size':p.stat().st_size}
+               for p in (runtime_peer,runtime_helper)]
+    runtime_raw = json.dumps({'schema':'wd.q4-runtime-manifest.v1','generation':'b'*40,'revision':'c'*40,
+                              'files':entries},sort_keys=True,separators=(',',':')).encode()
+    runtime_manifest = tmp_path/'runtime-manifest.json'; runtime_manifest.write_bytes(runtime_raw)
+    plan.update(runtime_root=str(runtime),runtime_manifest_path=str(runtime_manifest),
+                runtime_manifest_sha256=sha(runtime_raw),runtime_generation='b'*40,runtime_revision='c'*40)
     return root, peer, helper, plan
 
 
 def test_pinned_backend_is_read_but_not_executed(staged):
     _, peer, helper, plan = staged
     assert fixed._read_staged_backend(str(peer), plan) == helper.read_bytes()
+
+
+@pytest.fixture
+def staged_runtime(staged, tmp_path):
+    root, peer, helper, plan = staged
+    tools = Path(plan['runtime_root'])/'assets'/'code'/'tools'
+    runtime_peer = tools/'wd_q4_secure_transport.py'
+    runtime_helper = tools/'wd_q4_staged_fixed_backend.py'
+    manifest = Path(plan['runtime_manifest_path'])
+    return root, peer, helper, plan, runtime_peer, runtime_helper, manifest
+
+
+def test_runtime_peer_and_bundle_peer_use_the_same_pinned_backend(staged_runtime):
+    _, bundle_peer, helper, plan, runtime_peer, _, _ = staged_runtime
+    assert fixed._read_staged_backend(str(bundle_peer), plan) == helper.read_bytes()
+    assert fixed._read_staged_backend(str(runtime_peer), plan) == helper.read_bytes()
+
+
+@pytest.mark.parametrize('source', ['bundle','runtime'])
+@pytest.mark.parametrize('damage', ['runtime_peer','runtime_helper','runtime_manifest_pin','generation','revision',
+                                   'missing_peer_entry','missing_helper_entry','duplicate_entry','entry_hash','entry_size'])
+def test_both_peer_routes_refuse_unbound_runtime_bytes(staged_runtime, source, damage):
+    _, bundle_peer, _, plan, runtime_peer, runtime_helper, manifest = staged_runtime
+    if damage in ('runtime_peer', 'runtime_helper'):
+        path = runtime_peer if damage == 'runtime_peer' else runtime_helper
+        path.write_bytes(path.read_bytes()+b' changed')
+    elif damage == 'runtime_manifest_pin':
+        plan['runtime_manifest_sha256'] = '0'*64
+    elif damage in ('generation','revision'):
+        plan['runtime_'+damage] = 'd'*40
+    else:
+        value = json.loads(manifest.read_bytes())
+        if damage == 'missing_peer_entry': value['files'].pop(0)
+        elif damage == 'missing_helper_entry': value['files'].pop(1)
+        elif damage == 'duplicate_entry': value['files'].append(dict(value['files'][0]))
+        elif damage == 'entry_hash': value['files'][0]['sha256'] = '0'*64
+        else: value['files'][0]['size'] += 1
+        raw = json.dumps(value,sort_keys=True,separators=(',',':')).encode()
+        manifest.write_bytes(raw); plan['runtime_manifest_sha256'] = sha(raw)
+    with pytest.raises(fixed._Refused):
+        fixed._read_staged_backend(str(bundle_peer if source == 'bundle' else runtime_peer), plan)
 
 
 @pytest.mark.parametrize('damage', ['helper','peer','manifest','wrapper','backend_pin','foreign_peer'])

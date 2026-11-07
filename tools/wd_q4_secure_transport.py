@@ -689,14 +689,18 @@ def _staged_read(path, pin, limit):
 
 
 def _read_staged_backend(peer_path, plan):
-    """Read only the named candidate helper, after independent plan/manifest pinning."""
+    """Bind bundle and runtime peer/helper bytes to their independent pinned manifests."""
     try:
         root = Path(_staged_path(plan['bundle_root']))
         peer = root / 'tools-bootstrap' / 'tools' / 'wd_q4_secure_transport.py'
         helper = root / 'tools-bootstrap' / 'tools' / 'wd_q4_staged_fixed_backend.py'
         wrapper = root / 'Invoke-WdQ4Query.ps1'
-        _check(os.path.normcase(os.path.abspath(peer_path)) == os.path.normcase(os.path.abspath(peer))
-               and os.path.normcase(os.path.abspath(plan['wrapper_path'])) == os.path.normcase(os.path.abspath(wrapper)))
+        runtime = Path(_staged_path(plan['runtime_root']))
+        runtime_peer = runtime / 'assets/code/tools/wd_q4_secure_transport.py'
+        runtime_helper = runtime / 'assets/code/tools/wd_q4_staged_fixed_backend.py'
+        normalized = lambda p: os.path.normcase(os.path.abspath(p))
+        _check(normalized(peer_path) in (normalized(peer), normalized(runtime_peer))
+               and normalized(plan['wrapper_path']) == normalized(wrapper))
         raw = _staged_read(root/'deployment-manifest.json', plan['deployment_manifest_sha256'], 4*1024*1024)
         manifest = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_pairs,
                               parse_constant=lambda _: _check(False))
@@ -711,6 +715,22 @@ def _read_staged_backend(peer_path, plan):
             value = _staged_read(path, plan[key], cap)
             if key == 'backend_sha256':
                 result = value
+        runtime_raw = _staged_read(plan['runtime_manifest_path'], plan['runtime_manifest_sha256'], _MAX_RUNTIME_MANIFEST)
+        runtime_manifest = json.loads(runtime_raw.decode('utf-8'), object_pairs_hook=_unique_pairs,
+                                      parse_constant=lambda _: _check(False))
+        _check(type(runtime_manifest) is dict and runtime_manifest.get('schema') == 'wd.q4-runtime-manifest.v1'
+               and runtime_manifest.get('generation') == plan['runtime_generation']
+               and runtime_manifest.get('revision') == plan['runtime_revision']
+               and type(runtime_manifest.get('files')) is list)
+        for rel, path, key in (
+            ('assets/code/tools/wd_q4_secure_transport.py', runtime_peer, 'peer_code_sha256'),
+            ('assets/code/tools/wd_q4_staged_fixed_backend.py', runtime_helper, 'backend_sha256')):
+            matches = [item for item in runtime_manifest['files'] if type(item) is dict and item.get('path') == rel]
+            _check(len(matches) == 1 and matches[0].get('sha256') == plan[key])
+            value = _staged_read(path, plan[key], _PEER_CODE_LIMIT)
+            _check(type(matches[0].get('size')) is int and matches[0]['size'] == len(value))
+            if key == 'backend_sha256':
+                _check(value == result)
         return result
     except Exception:
         raise _Refused() from None

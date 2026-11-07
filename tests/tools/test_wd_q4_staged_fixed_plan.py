@@ -4,6 +4,8 @@ import os
 import pytest
 
 from tools import wd_q4_secure_transport as fixed
+from tools import wd_q4_fixed_plan_producer as producer
+from tests.tools.test_wd_q4_fixed_plan_producer import kwargs as base_args
 
 pytestmark = pytest.mark.skipif(os.name != 'nt', reason='Windows fixed-peer paths')
 
@@ -72,3 +74,33 @@ def test_fixed_card_bundle_refuses_missing_extra_or_empty():
         fixed.fixed_card_bundle(enabled=True, **{**data,'extra':b'x'})
     with pytest.raises(fixed._Refused):
         fixed.fixed_card_bundle(enabled=True, **{**data,'card_policy':b''})
+
+
+def staged_args():
+    return {**base_args(), **{key:'a'*64 for key in ('card_decision_sha256','card_policy_sha256',
+        'wrapper_sha256','deployment_manifest_sha256','public_plan_sha256','host_sha256','backend_sha256')},
+        'bundle_root':r'C:\fixture\bundle','bundle_commit':'c'*40,
+        'wrapper_path':r'C:\fixture\bundle\Invoke-WdQ4Query.ps1',
+        'public_plan_path':r'C:\fixture\public-plan.json'}
+
+
+def test_staged_producer_outputs_plan_accepted_by_fixed_parser():
+    result=producer.build_staged_fixed_plan(enabled=True, **staged_args())
+    plan=fixed._fixed_plan(result['plan_bytes'])
+    assert plan['backend']=='staged-card-wrapper-v1'
+    assert plan['card_policy_sha256']==staged_args()['card_policy_sha256']
+    assert result['plan_sha256']==fixed._sha(result['plan_bytes'])
+
+
+def test_staged_producer_is_disabled_by_default():
+    with pytest.raises(producer.FixedPlanRefused, match='^disabled$'):
+        producer.build_staged_fixed_plan(**staged_args())
+
+
+@pytest.mark.parametrize('change', [
+    {'backend_sha256':'A'*64}, {'wrapper_path':r'C:\foreign\Invoke-WdQ4Query.ps1'},
+    {'public_plan_path':r'C:\fixture\public.json:stream'}, {'bundle_commit':'b'*39},
+])
+def test_staged_producer_fails_closed_on_wrong_pins_or_paths(change):
+    with pytest.raises(producer.FixedPlanRefused):
+        producer.build_staged_fixed_plan(enabled=True, **{**staged_args(),**change})

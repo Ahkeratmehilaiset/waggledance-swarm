@@ -44,13 +44,17 @@ if($case.mode -cne 'v1'){
 if($case.mode -clike 'card_v2*'){
     $shared=Join-Path $root 'shared-generations'
     $private=Join-Path $root 'shared-generations.q4-lifecycle-private-v2'
+    $cardIndex=Join-Path $root 'card-index'; $lifecycleDir=Join-Path $root 'lifecycle-inputs'
+    $jobDir=Join-Path $root 'job-inputs'; $returnDir=Join-Path $root 'job-return-inputs'
     $baseGen=Join-Path $shared ('b'*40); $candidateGen=Join-Path $shared ('c'*40)
-    New-Item -ItemType Directory -Path $baseGen,$candidateGen,$private -Force|Out-Null
+    New-Item -ItemType Directory -Path $baseGen,$candidateGen,$private,$cardIndex,$lifecycleDir,$jobDir,$returnDir -Force|Out-Null
     $newBaseline=Join-Path $baseGen 'shared-session-config.v2.json'
     [IO.File]::Copy($baselinePath,$newBaseline)
     $candidate=Join-Path $candidateGen 'shared-session-config.v2.json'
-    [IO.File]::WriteAllText($candidate,'{}')
-    $lifecycle=Join-Path $pins 'lifecycle.json'; $job=Join-Path $pins 'card-job.json'; $stdout=Join-Path $pins 'job-return.json'
+    $candidatePlan=Join-Path $candidateGen 'public-plan.json'
+    [IO.File]::WriteAllText($candidatePlan,(@{root=$cardIndex}|ConvertTo-Json -Compress))
+    [IO.File]::WriteAllText($candidate,(@{public_plan=$candidatePlan}|ConvertTo-Json -Compress))
+    $lifecycle=Join-Path $lifecycleDir 'lifecycle.json'; $job=Join-Path $jobDir 'card-job.json'; $stdout=Join-Path $returnDir 'job-return.json'
     foreach($file in @($lifecycle,$job,$stdout)){[IO.File]::WriteAllText($file,'{}')}
     [IO.File]::WriteAllText($lifecycle,(@{schema='wd.q4-lifecycle-binding.v2';generation_root=$shared;private_root=$private}|ConvertTo-Json -Compress))
     $pin={param($p) (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant()}
@@ -73,7 +77,15 @@ if($case.mode -clike 'card_v2*'){
         'card_v2_private_pending' { [IO.File]::WriteAllText((Join-Path $private 'q4-card-refresh.pending.json'),'{}') }
         'card_v2_generation_pending' { [IO.File]::WriteAllText((Join-Path $shared 'q4-lifecycle-v2.pending.json'),'{}') }
         'card_v2_publication_pending' { [IO.File]::WriteAllText((Join-Path $shared 'q4-live-publication.pending.json'),'{}') }
+        'card_v2_dangling_pending' {
+            try { New-Item -ItemType SymbolicLink -Path (Join-Path $shared 'q4-lifecycle-v2.pending.json') -Target (Join-Path $shared 'does-not-exist') -ErrorAction Stop|Out-Null }
+            catch { exit 77 }
+        }
         'card_v2_scratch_overlap' { $invokeParams.ScratchRoot=$private }
+        'card_v2_scratch_index' { $invokeParams.ScratchRoot=$cardIndex }
+        'card_v2_scratch_lifecycle' { $invokeParams.ScratchRoot=$lifecycleDir }
+        'card_v2_scratch_job' { $invokeParams.ScratchRoot=$jobDir }
+        'card_v2_scratch_return' { $invokeParams.ScratchRoot=$returnDir }
     }
     [IO.File]::WriteAllText($routePath,($route|ConvertTo-Json -Depth 8 -Compress))
     $config.route_sha256=& $pin $routePath
@@ -113,9 +125,34 @@ def test_card_v2_installer_plans_disabled_one_shot_without_running(tmp_path):
     assert value['plan']['trigger_kind']=='one_shot' and not value['plan']['enabled']
 
 @pytest.mark.parametrize('fault',['candidate_pin','lifecycle_pin','lifecycle_binding','job_pin','return_pin','baseline_pin',
-    'source_generation_pin','private_pending','generation_pending','publication_pending','scratch_overlap'])
+    'source_generation_pin','private_pending','generation_pending','publication_pending','scratch_overlap',
+    'scratch_index','scratch_lifecycle','scratch_job','scratch_return'])
 def test_card_v2_installer_refuses_invalid_pins_or_pending_before_task_api(tmp_path,fault):
     result=plan(tmp_path,'card_v2_'+fault);assert result.returncode!=0 and not result.stdout
+
+def test_card_v2_installer_refuses_dangling_pending_entry(tmp_path):
+    result=plan(tmp_path,'card_v2_dangling_pending')
+    if result.returncode==77: pytest.skip('Windows symlink creation unavailable')
+    assert result.returncode!=0 and not result.stdout
+
+def test_pending_entry_counts_a_dangling_directory_entry_and_unknown_parent(tmp_path):
+    script=tmp_path/'pending_probe.ps1'
+    script.write_text(r'''param($Installer)
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($Installer,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'parse'}
+$fn=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Test-PendingEntry'},$true))
+if($fn.Count -ne 1){throw 'shape'}
+. ([scriptblock]::Create($fn[0].Extent.Text))
+function Get-ChildItem {param($LiteralPath,[switch]$Force,$ErrorAction) [pscustomobject]@{Name='q4-lifecycle-v2.pending.json'} }
+if(-not (Test-PendingEntry 'C:\synthetic\q4-lifecycle-v2.pending.json')){throw 'missed directory entry'}
+if(Test-PendingEntry 'C:\synthetic\other.json'){throw 'invented entry'}
+function Get-ChildItem {param($LiteralPath,[switch]$Force,$ErrorAction) throw 'unreadable'}
+if(-not (Test-PendingEntry 'C:\synthetic\other.json')){throw 'unknown parent accepted'}
+''',encoding='utf-8')
+    result=subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-File',str(script),
+        str(REPO/'ops/windows/reboot/Install-WdMindLiveRefresh.ps1')],capture_output=True,text=True,timeout=20)
+    assert result.returncode==0,result.stderr
 
 @pytest.mark.parametrize('flag',[False,0,1,'true',None,[]])
 def test_installer_v2_refuses_nonliteral_opt_in_before_task_api(tmp_path,flag):

@@ -88,6 +88,16 @@ function Assert-LiveSpec([object] $Spec) {
     }
     return $path
 }
+function Test-PendingEntry([string] $Path) {
+    # Enumerate the parent so a dangling reparse entry is still present.
+    try {
+        $parent = [IO.Path]::GetDirectoryName($Path)
+        $leaf = [IO.Path]::GetFileName($Path)
+        if ([string]::IsNullOrEmpty($parent) -or [string]::IsNullOrEmpty($leaf)) { return $true }
+        return @((Get-ChildItem -LiteralPath $parent -Force -ErrorAction Stop) |
+            Where-Object { [string]::Equals($_.Name, $leaf, [StringComparison]::OrdinalIgnoreCase) }).Count -ne 0
+    } catch { return $true }
+}
 
 $bundle = Assert-LivePath $BundleRoot -Directory
 $stateFile = Assert-LivePath $StatePath
@@ -150,6 +160,8 @@ $route = Get-Content -LiteralPath $routeFile -Raw -Encoding UTF8 | ConvertFrom-J
 $routeSchema = if ($null -ne $route.PSObject.Properties['schema']) { [string]$route.schema } else { '' }
 if ($routeSchema -ceq 'wd.q4-card-refresh-tuple.v1') { throw 'Card refresh requires lifecycle v2.' }
 $isCard = $routeSchema -ceq 'wd.q4-card-refresh-tuple.v2'
+$extraProtected = @()
+$candidateHash = ''
 if ($isCard) {
     if ([string]$config.schema -cne 'wd.q4-live-update-once.v2' -or $route.p1_enabled -isnot [bool] -or
         $route.p1_enabled -cne $true -or [string]$route.manifest_sha256 -cne $manifestHash.ToLowerInvariant()) {
@@ -157,6 +169,7 @@ if ($isCard) {
     }
     $routeBaseline = Assert-LiveSpec $route.baseline
     $candidateFile = Assert-LiveSpec $route.candidate
+    $candidateHash = [string]$route.candidate.sha256
     $lifecycleFile = Assert-LiveSpec $route.lifecycle
     $jobFile = Assert-LiveSpec $route.job
     $returnFile = Assert-LiveSpec $route.job_return.stdout
@@ -168,6 +181,12 @@ if ($isCard) {
             $checkpointRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Card candidate root mismatch.' }
     $checkpointRoot = Assert-LivePath $checkpointRoot -Directory
     $privateRoot = Assert-LivePath ([string]$route.private_root) -Directory
+    $candidateDescriptor = Get-Content -LiteralPath $candidateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    $candidatePlanFile = Assert-LivePath ([string]$candidateDescriptor.public_plan)
+    $candidatePlan = Get-Content -LiteralPath $candidatePlanFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    $cardIndexRoot = Assert-LivePath ([string]$candidatePlan.root) -Directory
+    $extraProtected = @($cardIndexRoot, [IO.Path]::GetDirectoryName($lifecycleFile),
+        [IO.Path]::GetDirectoryName($jobFile), [IO.Path]::GetDirectoryName($returnFile))
     $lifecycle = Get-Content -LiteralPath $lifecycleFile -Raw -Encoding UTF8 | ConvertFrom-Json
     $requiredBinding = @('schema','generation_root','private_root')
     if (@($lifecycle.PSObject.Properties.Name).Count -ne $requiredBinding.Count -or
@@ -204,21 +223,29 @@ if ($isCard) {
     $marker = Join-Path $privateRoot 'q4-live-update.pending.json'
     $pendingPaths = @($marker)
 }
-foreach ($protected in @($bundle, $runtimeRoot, $privateRoot, $checkpointRoot, $modelRoot,
+foreach ($protected in (@($bundle, $runtimeRoot, $privateRoot, $checkpointRoot, $modelRoot,
         [IO.Path]::GetDirectoryName($interpreter), [IO.Path]::GetDirectoryName($sourceFile),
         [IO.Path]::GetDirectoryName($sidecarFile), [IO.Path]::GetDirectoryName($configFile),
         [IO.Path]::GetDirectoryName($baselineFile), [IO.Path]::GetDirectoryName($fixedFile),
-        [IO.Path]::GetDirectoryName($runtimeManifest), [IO.Path]::GetDirectoryName($routeFile))) {
+        [IO.Path]::GetDirectoryName($runtimeManifest), [IO.Path]::GetDirectoryName($routeFile)) + $extraProtected)) {
     Assert-LiveDisjoint $scratch $protected
 }
 foreach ($pending in $pendingPaths) {
-    if (Test-Path -LiteralPath $pending) { throw 'An uncertain attempt requires reconciliation.' }
+    if (Test-PendingEntry $pending) { throw 'An uncertain attempt requires reconciliation.' }
 }
 
 # All substituted values are single-quoted data. Execution checks state and
 # all pins again; this remains a hash-then-execute TOCTOU boundary.
 $bootstrap = @'
 $ErrorActionPreference = 'Stop'
+function Test-PendingEntry([string] $Path) {
+    try {
+        $parent=[IO.Path]::GetDirectoryName($Path); $leaf=[IO.Path]::GetFileName($Path)
+        if ([string]::IsNullOrEmpty($parent) -or [string]::IsNullOrEmpty($leaf)) { return $true }
+        return @((Get-ChildItem -LiteralPath $parent -Force -ErrorAction Stop) |
+            Where-Object { [string]::Equals($_.Name,$leaf,[StringComparison]::OrdinalIgnoreCase) }).Count -ne 0
+    } catch { return $true }
+}
 $state = Get-Content -LiteralPath %STATE% -Raw -Encoding UTF8 | ConvertFrom-Json
 if ([string]$state.source_commit -cne %COMMIT% -or [string]$state.final_commit -cne %COMMIT% -or
     ([string]$state.manifest_sha256).ToUpperInvariant() -cne %MANIFEST_HASH% -or
@@ -233,7 +260,7 @@ if ([string]$state.source_commit -cne %COMMIT% -or [string]$state.final_commit -
     (Get-FileHash -LiteralPath %PYTHON% -Algorithm SHA256).Hash -cne %PYTHON_HASH% -or
     (Get-FileHash -LiteralPath %BOOTSTRAP% -Algorithm SHA256).Hash -cne %BOOTSTRAP_HASH% -or
     (Get-FileHash -LiteralPath %JOB% -Algorithm SHA256).Hash -cne %JOB_HASH%) { exit 3 }
-foreach ($pending in @(%MARKERS%)) { if (Test-Path -LiteralPath $pending) { exit 3 } }
+foreach ($pending in @(%MARKERS%)) { if (Test-PendingEntry $pending) { exit 3 } }
 . %JOB%
 $random = [Security.Cryptography.RandomNumberGenerator]::Create()
 try { $bytes = New-Object byte[] 32; $random.GetBytes($bytes) } finally { $random.Dispose() }
@@ -289,9 +316,13 @@ try {
     $text = [Text.UTF8Encoding]::new($false, $true).GetString($job.Stdout)
     $receipt = $text | ConvertFrom-Json -ErrorAction Stop
     if (%CARD_MODE%) {
-        if ([string]$receipt.status -cne 'PUBLISHED' -or
+        $receiptKeys = @('status','pointer_sha256','descriptor_sha256','freshness')
+        if ([regex]::Matches($text, '(?<!\\)"(?:[^"\\]|\\.)*"\s*:').Count -ne $receiptKeys.Count -or
+            @($receipt.PSObject.Properties.Name).Count -ne $receiptKeys.Count -or
+            @($receiptKeys | Where-Object { @($receipt.PSObject.Properties.Name) -cnotcontains $_ }).Count -ne 0 -or
+            [string]$receipt.status -cne 'PUBLISHED' -or
             [string]$receipt.pointer_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-            [string]$receipt.descriptor_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [string]$receipt.descriptor_sha256 -cne %CANDIDATE_HASH% -or
             [string]$receipt.freshness -cne 'UNKNOWN') { exit 3 }
         @{status='PUBLISHED'; pointer_sha256=[string]$receipt.pointer_sha256;
           descriptor_sha256=[string]$receipt.descriptor_sha256; job_cleanup='confirmed'} | ConvertTo-Json -Compress
@@ -313,6 +344,7 @@ if ($isCard) {
 $values = [ordered]@{'%STATE%'=$stateFile; '%COMMIT%'=$ExpectedCommit; '%BUNDLE%'=$bundle;
     '%MANIFEST%'=$manifestFile; '%MANIFEST_HASH%'=$manifestHash; '%CONFIG%'=$configFile; '%CONFIG_HASH%'=$configHash;
     '%ROUTE%'=$routeFile; '%ROUTE_HASH%'=([string]$config.route_sha256).ToUpperInvariant();
+    '%CANDIDATE_HASH%'=$candidateHash;
     '%CONFIG_HASH_LOWER%'=$configHash.ToLowerInvariant(); '%MANIFEST_HASH_LOWER%'=$manifestHash.ToLowerInvariant();
     '%BASELINE%'=$baselineFile; '%BASELINE_HASH%'=([string]$config.baseline_sha256).ToUpperInvariant();
     '%FIXED%'=$fixedFile; '%FIXED_HASH%'=$fixedHash; '%RUNTIME_MANIFEST%'=$runtimeManifest; '%RUNTIME_HASH%'=$runtimeHash;
@@ -336,13 +368,16 @@ $plan = [ordered]@{schema='wd.mind-live-refresh-plan.v1'; task=$taskName; regist
     job_containment='kill-on-close; owned Job only';
     python_pin_scope='python.exe only; stdlib and native DLLs not independently verified';
     supervisor='unchanged'; execution='NOT_RUN'}
-if ($isCard) { $plan['route_kind'] = 'card_v2'; $plan['trigger_kind'] = 'one_shot' }
+if ($isCard) {
+    $plan['route_kind'] = 'card_v2'; $plan['trigger_kind'] = 'one_shot'
+    $plan['activation'] = 'enable and explicitly start the task; a past one-shot trigger is not replayed'
+}
 if (-not $Apply) { $plan | ConvertTo-Json -Compress; return }
 if (@(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object { $_.TaskName -eq $taskName }).Count) {
     throw 'Task already exists; refusing replacement.'
 }
 foreach ($pending in $pendingPaths) {
-    if (Test-Path -LiteralPath $pending) { throw 'An uncertain attempt requires reconciliation.' }
+    if (Test-PendingEntry $pending) { throw 'An uncertain attempt requires reconciliation.' }
 }
 $action = New-ScheduledTaskAction -Execute $hostPath -Argument $taskArguments -WorkingDirectory $bundle
 $trigger = if ($isCard) { New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes($IntervalMinutes) }

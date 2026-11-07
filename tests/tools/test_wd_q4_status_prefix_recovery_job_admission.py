@@ -51,9 +51,10 @@ def test_live_recovery_wont_touch_own_marker_while_job_pending(tmp_path,monkeypa
     if not late: job.write_bytes(b'synthetic')
     own=private/'q4-live-update.pending.json'; own.write_bytes(b'synthetic live marker')
     pin='a'*64; calls=[]
+    generation=tmp_path/'generations'/('b'*40); generation.mkdir(parents=True)
     config={'schema':'wd.q4-live-update-once.v1','route_path':'route','route_sha256':pin,
         'plan_path':'plan','anchor_path':'anchor','policy_path':'policy','public_policy_path':'public',
-        'baseline_path':'baseline','baseline_sha256':pin,'manifest_sha256':pin}
+        'baseline_path':str(generation/'shared-session-config.v2.json'),'baseline_sha256':pin,'manifest_sha256':pin}
     route={'checkpoint_root':str(root),'private_state_root':str(private),'plan_sha256':pin,
         'anchor_sha256':pin,'policy_sha256':pin,'public_policy_sha256':pin,'roster_sha256':pin}
     values={'config':config,'route':route,'plan':{},'anchor':{},'policy':{},'public':{},'roster':{}}

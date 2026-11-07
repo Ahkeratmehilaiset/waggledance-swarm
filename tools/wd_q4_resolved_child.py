@@ -68,11 +68,16 @@ def _validate_projection(data, tasks, roster, decision=None):
     if json.dumps(value, sort_keys=True, indent=1).encode("utf-8") != data:
         raise ValueError()
     if decision is not None:
-        # synthetic card route, only with a verified route decision: re-derived by the card module; roster authors
+        # The caller must already have verified the pinned decision. A real
+        # projection receives it only as validation context, not as source or
+        # publisher authentication; the synthetic default remains unchanged.
         from sandbox.mind.step2 import shared_card_projection as cards
         if not isinstance(value, dict) or value.get("schema") != resolver.CARD_PROJECTION_SCHEMA:
             raise ValueError()
-        cards.validate_shared_card_projection(value)
+        if decision.get('synthetic') is False:
+            cards.validate_shared_card_projection(value, _real_decision=decision)
+        else:
+            cards.validate_shared_card_projection(value)
         if any(record["meta"]["agent"] not in roster for record in value["records"]):
             raise ValueError()
     else:

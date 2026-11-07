@@ -186,6 +186,8 @@ def _recover_closed_job(*, private, root, config, baseline, descriptor, binding,
         update.runner._verify_own(marker_path, marker_raw, marker_info)
         with private_state.locked_state(private, root, enabled=True) as state:
             with private_state._checkpoint_lock(root, 0.2):
+                if os.path.lexists(private / 'q4-adopt-recovery-job.pending.json'):
+                    raise RecoveryOutcomeUnknown('recovery_outcome_unknown')
                 if (checkpoint._active_fence(root) is not None
                         or os.path.lexists(checkpoint._fence_record(root, target, 'not_landed'))
                         or checkpoint._read(checkpoint._fence_record(root, target, 'landed'),
@@ -290,6 +292,12 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
             raise ValueError()
         live.pointer_io._chain(lock_path)
         with reader_slot(lock_path, timeout_seconds=0.2):
+            # The adoption recovery Job reserves its marker under the same
+            # pair. No other recovery may proceed during that attempt.
+            with private_state.locked_state(private, root, enabled=True):
+                with private_state._checkpoint_lock(root, 0.2):
+                    if os.path.lexists(private / 'q4-adopt-recovery-job.pending.json'):
+                        raise RecoveryOutcomeUnknown('recovery_outcome_unknown')
             # Adoption serializes on this same lock. A retained marker means
             # its publication outcome is unresolved and must not be replaced.
             if os.path.lexists(private / 'q4-continuation-adopt.pending.json'):
@@ -370,6 +378,8 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
             target, previous = progress['pointer_sha256'], progress['previous_pointer_sha256']
             with private_state.locked_state(private, root, enabled=True) as state:
                 with private_state._checkpoint_lock(root, 0.2):
+                    if os.path.lexists(private / 'q4-adopt-recovery-job.pending.json'):
+                        raise RecoveryOutcomeUnknown('recovery_outcome_unknown')
                     if checkpoint._active_fence(root) is not None:
                         raise ValueError()
                     if progress['status'] != 'EMPTY_NO_CHANGE' and (
@@ -434,6 +444,8 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
             # together before clearing the owned marker, including on reuse.
             with private_state.locked_state(private, root, enabled=True) as state:
                 with private_state._checkpoint_lock(root, 0.2):
+                    if os.path.lexists(private / 'q4-adopt-recovery-job.pending.json'):
+                        raise RecoveryOutcomeUnknown('recovery_outcome_unknown')
                     if checkpoint._active_fence(root) is not None:
                         raise ValueError()
                     if progress['status'] != 'EMPTY_NO_CHANGE' and (

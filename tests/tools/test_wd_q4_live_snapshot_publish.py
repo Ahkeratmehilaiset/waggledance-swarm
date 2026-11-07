@@ -641,6 +641,130 @@ def test_staged_plan_control_with_same_stable_inputs_publishes(staged):
     assert do_publish(staged)['status'] == 'PUBLISHED'
 
 
+@pytest.fixture
+def staged_transition(tmp_path, monkeypatch):
+    """Real synthetic source identity and two externally labelled anchors."""
+    from tools import wd_q4_external_generation_anchor as anchor
+    from waggledance.core import bridge_log_reader as bridge
+    parent = tmp_path / '.codex-audit' / 'approved'
+    stage = parent / 'shared'; (stage / ('b'*40)).mkdir(parents=True)
+    monkeypatch.setattr(live, '_P1_ROOT', parent)  # test-only, never read from an environment or CLI
+    bundle = tmp_path / 'bundle'; bundle.mkdir()
+    runtime = tmp_path / 'runtime'; runtime.mkdir()
+    old = parent / 'old' / 'snapshot'; old.mkdir(parents=True)
+    new = parent / 'new' / 'snapshot'; new.mkdir(parents=True)
+    source = tmp_path / 'source' / 'events.jsonl'; source.parent.mkdir()
+    source.write_bytes(b'{"synthetic":1}\n')
+    with bridge._open_log(source) as stream: identity = bridge._file_identity(stream)
+    anchors = []
+    for name in ('old-anchor', 'new-anchor'):
+        anchor_dir = parent / '.codex-audit' / 'anchors' / name; anchor_dir.mkdir(parents=True)
+        data = source.read_bytes()
+        cursor = bridge.BridgeCursor(len(data), identity, None)
+        prepared = anchor.prepare(enabled=True, source_path=str(source), original_cursor=cursor,
+            expected_prefix_sha256=sha(data), output_root=str(anchor_dir))
+        sidecar = anchor_dir / 'generation.json'
+        generation = json.loads(sidecar.read_bytes())['generation']
+        anchors.append((str(sidecar), {'offset':len(data), 'file_identity':identity, 'generation':generation}, sha(data)))
+        if name == 'old-anchor': source.write_bytes(data + b'{"synthetic":2}\n')
+    (old/'pointer.json').write_bytes(b'old')
+    (new/'pointer.json').write_bytes(b'new')
+    base = {'root':str(old), 'pointer_path':str(old/'pointer.json'), 'pointer_sha256':sha(b'old'),
+            'source_path':str(source), 'generation_path':anchors[0][0], 'end_cursor':anchors[0][1],
+            'source_anchor_sha256':anchors[0][2]}
+    candidate = {'root':str(new), 'pointer_path':str(new/'pointer.json'), 'pointer_sha256':sha(b'new'),
+                 'source_path':str(source), 'generation_path':anchors[1][0], 'end_cursor':anchors[1][1],
+                 'source_anchor_sha256':anchors[1][2]}
+    desc = {'binding_path':str(stage / ('b'*40) / 'lane-binding.v1.json'), 'bundle_root':str(bundle)}
+    return parent, stage, bundle, runtime, source, base, candidate, desc
+
+
+def test_staged_transition_accepts_contained_snapshot_and_same_source_prefix(staged_transition):
+    _, _, _, runtime, _, base, candidate, desc = staged_transition
+    live._validate_staged_transition(base, candidate, desc, {'runtime_root':str(runtime)})
+
+
+@pytest.mark.parametrize('mutation', ['root_escape','root_bundle','root_stage','root_runtime','root_source','pointer_escape',
+                                      'generation_escape','generation_stage','anchor_binding',
+                                      'source_rewrite','wrong_identity','offset_regression'])
+def test_staged_transition_rejects_escapes_and_source_tampering(staged_transition, tmp_path, mutation):
+    parent, stage, bundle, runtime, source, base, candidate, desc = staged_transition
+    if mutation == 'root_escape': candidate['root'] = str(tmp_path)
+    if mutation == 'root_bundle': candidate['root'] = str(bundle)
+    if mutation == 'root_stage': candidate['root'] = str(stage)
+    if mutation == 'root_runtime': candidate['root'] = str(runtime)
+    if mutation == 'root_source': candidate['root'] = str(source.parent)
+    if mutation == 'pointer_escape': candidate['pointer_path'] = str(Path(base['pointer_path']))
+    if mutation == 'generation_escape':
+        path = tmp_path/'outside-generation.json'; path.write_bytes(Path(candidate['generation_path']).read_bytes())
+        candidate['generation_path'] = str(path)
+    if mutation == 'generation_stage':
+        path = stage/'generation.json'; path.write_bytes(Path(candidate['generation_path']).read_bytes())
+        candidate['generation_path'] = str(path)
+    if mutation == 'anchor_binding': Path(candidate['generation_path']).with_name('binding.json').write_bytes(b'{}')
+    if mutation == 'source_rewrite': source.write_bytes(b'X' + source.read_bytes()[1:])
+    if mutation == 'wrong_identity': candidate['end_cursor']['file_identity'] = 'foreign'
+    if mutation == 'offset_regression': candidate['end_cursor']['offset'] = 1
+    with pytest.raises(ValueError):
+        live._validate_staged_transition(base, candidate, desc, {'runtime_root':str(runtime)})
+
+
+@pytest.mark.parametrize('field', ['root','generation_path'])
+def test_staged_transition_rejects_reparse_component(staged_transition, monkeypatch, field):
+    from tools import wd_q4_descriptor_pointer as pointer_io
+    _, _, _, runtime, _, base, candidate, desc = staged_transition
+    bad = Path(candidate[field])
+    original = pointer_io._is_reparse
+    monkeypatch.setattr(pointer_io, '_is_reparse', lambda path, info: path == bad or original(path, info))
+    with pytest.raises((ValueError, pointer_io.PointerRefused)):
+        live._validate_staged_transition(base, candidate, desc, {'runtime_root':str(runtime)})
+
+
+@pytest.mark.parametrize('field', ['vocabulary_sha256','path_allowlist_sha256','nonreview_policy_sha256',
+                                   'roster_sha256','card_policy_sha256'])
+def test_p1_requires_stable_decision_policy_pins(field):
+    baseline = {key:'a'*64 for key in live._P1_DECISION_STABLE}
+    live._validate_p1_decisions(enc(baseline), enc(baseline))
+    changed = dict(baseline); changed[field] = 'b'*64
+    with pytest.raises(ValueError): live._validate_p1_decisions(enc(baseline), enc(changed))
+    changed = dict(baseline); del changed[field]
+    with pytest.raises(ValueError): live._validate_p1_decisions(enc(baseline), enc(changed))
+
+
+@pytest.mark.parametrize('flag', [None, 0, 1, 'true'])
+def test_p1_flag_requires_exact_bool(staged, flag):
+    with pytest.raises(live.LiveSnapshotRefused):
+        live.publish(enabled=True, baseline_path=staged['base_path'], baseline_sha256=staged['base'][2],
+            baseline=staged['base'], manifest_sha256=staged['manifest_sha'], candidate_path=staged['candidate_path'],
+            candidate_sha256=staged['candidate'][2], candidate=staged['candidate'], p1_enabled=flag)
+
+
+@pytest.mark.parametrize('field', ['interpreter','bootstrap','runtime_root','timeout'])
+def test_staged_rehashed_config_drift_is_refused(staged, field):
+    directory = staged['root'] / ('c'*40)
+    base_directory = staged['root'] / ('b'*40)
+    # Re-pin both generations after changing only the candidate config.
+    for gen_dir, val in ((base_directory, 'baseline'), (directory, 'foreign')):
+        generation = gen_dir.name
+        item = list(staged['config'][generation]); descriptor = dict(item[0]); inputs = dict(item[5])
+        plan = json.loads((gen_dir/'public-plan.json').read_bytes())
+        plan['config'][field] = val
+        raw_plan = enc(plan); (gen_dir/'public-plan.json').write_bytes(raw_plan)
+        binding = json.loads(inputs['binding_bytes']); binding['public_plan_sha256'] = sha(raw_plan)
+        inputs['binding_bytes'] = enc(binding); (gen_dir/'lane-binding.v1.json').write_bytes(inputs['binding_bytes'])
+        fixed = json.loads(inputs['fixed_plan_bytes']); fixed['public_plan_sha256'] = sha(raw_plan)
+        inputs['fixed_plan_bytes'] = enc(fixed); (gen_dir/'fixed-plan.v2.json').write_bytes(inputs['fixed_plan_bytes'])
+        descriptor.update(binding_sha256=sha(inputs['binding_bytes']), fixed_plan_sha256=sha(inputs['fixed_plan_bytes']))
+        raw = enc(descriptor); (gen_dir/'shared-session-config.v2.json').write_bytes(raw)
+        staged['config'][generation] = (descriptor, raw, sha(raw), item[3], item[4], inputs)
+        staged['producer_out'][sha(raw_plan)] = inputs['binding_bytes']
+    staged['base'] = staged['config']['b'*40]; staged['candidate'] = staged['config']['c'*40]
+    with pytest.raises(live.LiveSnapshotRefused):
+        live.publish(enabled=True, baseline_path=staged['base_path'], baseline_sha256=staged['base'][2],
+            baseline=staged['base'], manifest_sha256=staged['manifest_sha'], candidate_path=staged['candidate_path'],
+            candidate_sha256=staged['candidate'][2], candidate=staged['candidate'], p1_enabled=True)
+
+
 def _rehash_fixed(c, gen, field, value):
     item = c['config'][gen]
     descriptor, inputs = dict(item[0]), dict(item[5])

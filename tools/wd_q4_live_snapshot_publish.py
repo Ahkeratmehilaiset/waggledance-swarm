@@ -146,6 +146,10 @@ def _staged_pointer(base_plan, candidate_plan, descriptor):
 
 def _validate_p1_decisions(old_raw, new_raw):
     old_decision, new_decision = _parse(old_raw), _parse(new_raw)
+    # Only the real-decision schema enters the opt-in P1 route. The value is
+    # a schema assertion, not proof that a source or publisher is authentic.
+    if old_decision.get('synthetic') is not False or new_decision.get('synthetic') is not False:
+        raise ValueError()
     for key in _P1_DECISION_STABLE:
         value = old_decision.get(key)
         if type(value) is not str or not _HEX.fullmatch(value) or value != new_decision.get(key):

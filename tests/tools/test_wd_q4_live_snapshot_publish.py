@@ -723,12 +723,20 @@ def test_staged_transition_rejects_reparse_component(staged_transition, monkeypa
 @pytest.mark.parametrize('field', ['vocabulary_sha256','path_allowlist_sha256','nonreview_policy_sha256',
                                    'roster_sha256','card_policy_sha256'])
 def test_p1_requires_stable_decision_policy_pins(field):
-    baseline = {key:'a'*64 for key in live._P1_DECISION_STABLE}
+    baseline = {key:'a'*64 for key in live._P1_DECISION_STABLE} | {'synthetic':False}
     live._validate_p1_decisions(enc(baseline), enc(baseline))
     changed = dict(baseline); changed[field] = 'b'*64
     with pytest.raises(ValueError): live._validate_p1_decisions(enc(baseline), enc(changed))
     changed = dict(baseline); del changed[field]
     with pytest.raises(ValueError): live._validate_p1_decisions(enc(baseline), enc(changed))
+
+
+@pytest.mark.parametrize('which', ['baseline', 'candidate'])
+def test_p1_rejects_synthetic_decision_route(which):
+    baseline = {key:'a'*64 for key in live._P1_DECISION_STABLE} | {'synthetic':False}
+    candidate = dict(baseline)
+    (baseline if which == 'baseline' else candidate)['synthetic'] = True
+    with pytest.raises(ValueError): live._validate_p1_decisions(enc(baseline), enc(candidate))
 
 
 @pytest.mark.parametrize('flag', [None, 0, 1, 'true'])

@@ -129,9 +129,17 @@ def test_real_empty_advance_reports_only_previous_build_cutoff(synthetic, monkey
             roster_sha256=roster_sha,public_policy_sha256=args['public_policy_sha256'],
             receipt_bytes=receipt_raw,expected_receipt_sha256=sha(receipt_raw),watermark_bytes=mark,
             expected_watermark_sha256=sha(mark),runner_receipt_bytes=rr,route_bytes=route))
+        # A forged caught-up claim cannot turn an EMPTY_ADVANCED partial
+        # runner receipt into a newer cutoff proof.
+        claimed = json.dumps({**receipt,'status':'caught_up_to_cutoff'},sort_keys=True,separators=(',',':')).encode()
+        assert evidence.observe(enabled=True,bundle_bytes=bundle,expected_bundle_sha256=sha(bundle),
+            expected_pointer_sha256=result['pointer_sha256'],policy_sha256=args['policy_sha256'],
+            roster_sha256=roster_sha,public_policy_sha256=args['public_policy_sha256'],
+            receipt_bytes=claimed,expected_receipt_sha256=sha(claimed),watermark_bytes=mark,
+            expected_watermark_sha256=sha(mark),runner_receipt_bytes=rr,route_bytes=route) == {'status':'UNKNOWN'}
         return result
 
     monkeypatch.setattr(producer, 'continue_once', collect)
     integration.test_real_empty_advance_binds_its_own_anchor(synthetic,monkeypatch,'none')
-    assert observed == [{'status':'ADVANCED_WITHOUT_CUTOFF','build_cutoff_utc':'2026-10-31T13:00:00+00:00',
+    assert observed == [{'status':'ADVANCED_WITHOUT_CUTOFF','build_cutoff_utc':'2026-10-31T13:00:00Z',
                          'freshness':'UNKNOWN','source_authentication':'UNKNOWN','history_coverage':'UNKNOWN'}], repr(observed)

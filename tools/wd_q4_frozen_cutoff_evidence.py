@@ -6,6 +6,8 @@ bundle to an actual reader. Hashes and cooperative receipts are not signatures.
 This reports an observed producer cutoff within the pinned prefix, not a live
 read, source authentication, complete history, wall-clock freshness, crash
 durability, or protection against same-user rollback or forged receipts.
+The genesis may deliberately skip a prehistory prefix; this proof does not
+establish whether any earlier events were indexed or accessible.
 """
 import hashlib
 import hmac
@@ -127,9 +129,10 @@ def observe(*, enabled=False, bundle_bytes=None, expected_bundle_sha256=None,
                     else continuation._utc(coverage['cutoff_utc']) != cutoff)):
             raise ValueError()
         if empty:
-            return {'status':'ADVANCED_WITHOUT_CUTOFF','build_cutoff_utc':coverage['cutoff_utc'],
+            return {'status':'ADVANCED_WITHOUT_CUTOFF',
+                    'build_cutoff_utc':continuation._utc(coverage['cutoff_utc']).isoformat().replace('+00:00','Z'),
                     'freshness':'UNKNOWN','source_authentication':'UNKNOWN','history_coverage':'UNKNOWN'}
-        return {'status':'CUTOFF_WITHIN_PINNED_PREFIX','cutoff_utc':result['cutoff_utc'],
+        return {'status':'CUTOFF_WITHIN_PINNED_PREFIX','cutoff_utc':cutoff.isoformat().replace('+00:00','Z'),
                 'freshness':'UNKNOWN','source_authentication':'UNKNOWN','history_coverage':'UNKNOWN'}
     except Exception:
         return {'status':'UNKNOWN'}

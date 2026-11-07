@@ -128,8 +128,8 @@ def _v1_plan(raw):
 
 
 def _decision(plan, card_pins, source_prefix, observed_heads):
-    if (not all(_hex(value) for value in card_pins.values()) or type(source_prefix) is not dict
-            or (observed_heads is not None and type(observed_heads) is not list)):
+    # the card pins, the prefix and the heads are checked by verify_route_decision below (the one authority)
+    if type(source_prefix) is not dict or (observed_heads is not None and type(observed_heads) is not list):
         raise ValueError()
     document = {"schema": cards.DECISION_SCHEMA, "decision": cards.DECISION_NAME, "synthetic": True,
                 "projection_schema": cards.SCHEMA, "scope": cards.SHARED_SCOPE,
@@ -137,10 +137,8 @@ def _decision(plan, card_pins, source_prefix, observed_heads):
                 "roster_sha256": plan["roster_sha256"], **card_pins, "source_prefix": dict(source_prefix),
                 "observed_heads": None if observed_heads is None else list(observed_heads)}
     raw = _encode(document)
-    verified = cards.verify_route_decision(raw, _sha(raw), policy_sha256=plan["policy_sha256"],
-                                           roster_sha256=plan["roster_sha256"])  # SharedCardRefused: ValueError
-    if verified != document:
-        raise ValueError()
+    cards.verify_route_decision(raw, _sha(raw), policy_sha256=plan["policy_sha256"],
+                                roster_sha256=plan["roster_sha256"])  # SharedCardRefused is a ValueError
     return raw
 
 
@@ -168,7 +166,7 @@ def write_card_plan(*, enabled=False, public_plan_path=None, expected_public_pla
         card_plan = dict(plan, schema=PLAN_V2, card_decision_path=str(decision_path),
                          card_decision_sha256=_sha(decision_raw))
         plan_raw = _encode(card_plan)
-        if set(card_plan) != link._PUBLIC_PLAN_SCHEMAS[PLAN_V2] or len(plan_raw) > _LIMIT:
+        if len(plan_raw) > _LIMIT:  # the key set is the exact v1 set plus the two card keys
             raise ValueError()
         attempted = True
         _exclusive(decision_path, decision_raw)

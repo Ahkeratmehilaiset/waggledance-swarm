@@ -199,7 +199,15 @@ def test_plan_pin_mismatch_refuses(case):
     lambda d: d.update(roster_sha256="7" * 63),
     lambda d: d.update(config=[]),
     lambda d: d.update(root=""),
-], ids=["v2-input", "v3", "extra-key", "missing-key", "upper-policy", "short-roster", "config-list", "empty-root"])
+    lambda d: d.update(config={}),
+    lambda d: d.update(config={"descriptor_sha256": "D5" * 32}),
+    lambda d: d.update(pointer_sha256="A" * 64),
+    lambda d: d.update(source_anchor_sha256="b" * 63),
+    lambda d: d.update(encoder_sha256=None),
+    lambda d: d.update(public_policy_sha256=7),
+], ids=["v2-input", "v3", "extra-key", "missing-key", "upper-policy", "short-roster", "config-list", "empty-root",
+        "config-without-descriptor", "upper-descriptor", "upper-pointer", "short-anchor", "none-encoder",
+        "int-public-policy"])
 def test_input_must_be_an_exact_v1_plan(case, change):
     document = dict(case["plan"])
     change(document)
@@ -255,6 +263,24 @@ def test_a_failed_write_after_the_first_file_is_unknown_not_refused(case, monkey
         write(case)
     assert exc.value.args == ("card_plan_unknown",)
     assert exc.value.__cause__ is None and exc.value.__context__ is None
+
+
+def test_a_write_that_does_not_read_back_is_unknown(case, monkeypatch):
+    real = module()._exclusive
+
+    def short(path, raw):
+        real(path, raw[:-1])
+    monkeypatch.setattr(module(), "_exclusive", short)
+    with pytest.raises(module().CardPlanUnknown):
+        write(case)
+
+
+def test_the_file_write_is_exclusive(tmp_path):
+    target = tmp_path / "existing.json"
+    target.write_bytes(b"old")
+    with pytest.raises(FileExistsError):
+        module()._exclusive(target, b"new")
+    assert target.read_bytes() == b"old"
 
 
 # ---------------------------------------------------------------------------------------------------------------

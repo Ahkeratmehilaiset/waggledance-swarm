@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,7 +18,7 @@ def _probe(tmp_path, scenario):
     site.mkdir()
     good = b'VALUE = 42\n'
     (site / 'wd_synthetic_good.py').write_bytes(good)
-    if scenario == 'pyc':
+    if scenario in ('pyc', 'direct_pyc', 'loader_pyc'):
         pyc = Path(importlib.util.cache_from_source(str(site / 'wd_synthetic_good.py')))
         pyc.parent.mkdir()
         forged = compile('VALUE = 666\n', str(site / 'wd_synthetic_good.py'), 'exec')
@@ -26,6 +27,12 @@ def _probe(tmp_path, scenario):
     (site / 'wd_synthetic_bad.py').write_text('raise AssertionError("must not execute")\n')
     files = [{'path': 'site/wd_synthetic_good.py', 'size': len(good),
               'sha256': hashlib.sha256(good).hexdigest()}]
+    helper_relative = 'assets/code/sandbox/mind/step2/q4_controlled_imports.py'
+    helper = (ROOT / 'sandbox/mind/step2/q4_controlled_imports.py').read_bytes()
+    helper_path = tmp_path.joinpath(*helper_relative.split('/'))
+    helper_path.parent.mkdir(parents=True)
+    helper_path.write_bytes(helper)
+    files.append({'path': helper_relative, 'size': len(helper), 'sha256': hashlib.sha256(helper).hexdigest()})
     if scenario in ('metadata', 'metadata_tamper', 'metadata_extra', 'metadata_toctou'):
         dist = site / 'wd_synthetic_demo-1.2.3.dist-info'
         dist.mkdir()
@@ -47,6 +54,8 @@ def _probe(tmp_path, scenario):
     manifest = json.dumps({'files': files}).encode()
     manifest_path = tmp_path / 'manifest.json'
     manifest_path.write_bytes(manifest)
+    if scenario == 'helper_tamper':
+        helper_path.write_bytes(helper + b'\n')
     if scenario == 'metadata_tamper':
         (dist / 'METADATA').write_bytes(metadata.replace(b'1.2.3', b'9.9.9'))
     if scenario == 'metadata_extra':
@@ -73,8 +82,8 @@ if scenario == 'preseed':
  sys.path_hooks.insert(0,evil_hook)
  sys.path_importer_cache[str(root/'site')] = Evil()
 pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
-if scenario == 'badmanifest':
- try: ns['_install_controlled_imports'](root, manifest, '0'*64)
+if scenario in ('badmanifest', 'helper_tamper'):
+ try: ns['_install_controlled_imports'](root, manifest, '0'*64 if scenario == 'badmanifest' else pin)
  except ns['_Refused']: print('PASS'); raise SystemExit(0)
  raise AssertionError('bad manifest pin accepted')
 ns['_install_controlled_imports'](root, manifest, pin)
@@ -114,6 +123,36 @@ elif scenario in ('outside', 'namespace'):
  try: importlib.import_module(target)
  except (ImportError, ns['_Refused']): pass
  else: raise AssertionError('outside origin or namespace accepted')
+elif scenario in ('direct_pyc', 'direct_unmanifested', 'loader_pyc', 'loader_unmanifested'):
+ bad = scenario.endswith('unmanifested')
+ path = root/'site'/('wd_synthetic_bad.py' if bad else 'wd_synthetic_good.py')
+ name = 'wd_synthetic_direct'
+ try:
+  if scenario.startswith('direct_'):
+   spec = importlib.util.spec_from_file_location(name, path)
+  else:
+   loader = importlib.machinery.SourceFileLoader(name, str(path))
+   spec = importlib.util.spec_from_loader(name, loader)
+  module = importlib.util.module_from_spec(spec)
+  spec.loader.exec_module(module)
+  if bad: raise AssertionError('unmanifested direct loader accepted')
+  assert module.VALUE == 42
+ except (ImportError, ns['_Refused']):
+  if not bad: raise
+elif scenario in ('direct_custom_loader', 'direct_custom_from_loader'):
+ class CustomLoader:
+  def create_module(self, spec): return None
+  def exec_module(self, module): effects.append('executed')
+ try:
+  if scenario == 'direct_custom_loader':
+   spec = importlib.util.spec_from_file_location('wd_synthetic_direct', root/'site'/'wd_synthetic_good.py', loader=CustomLoader())
+  else:
+   spec = importlib.util.spec_from_loader('wd_synthetic_direct', CustomLoader())
+  module = importlib.util.module_from_spec(spec)
+  spec.loader.exec_module(module)
+ except (ImportError, ns['_Refused']): pass
+ else: raise AssertionError('custom direct loader accepted')
+ assert not effects
 elif scenario == 'cache':
  sys.path_importer_cache[str(root/'site')] = Evil()
  try: importlib.import_module('wd_synthetic_good')
@@ -142,7 +181,7 @@ print('PASS')
 def test_controlled_imports_preserve_missing_semantics_and_reject_injections(tmp_path):
     cases = ('clean', 'pyc', 'preseed', 'unmanifested', 'cache', 'hook', 'meta', 'metadata',
              'metadata_tamper', 'metadata_extra', 'metadata_toctou',
-             'badmanifest', 'tamper', 'pyc_only', 'outside', 'namespace')
+             'badmanifest', 'helper_tamper', 'tamper', 'pyc_only', 'outside', 'namespace')
     if os.name == 'nt':
         cases += ('native', 'native_tamper')
     for scenario in cases:
@@ -151,3 +190,11 @@ def test_controlled_imports_preserve_missing_semantics_and_reject_injections(tmp
         result = _probe(case, scenario)
         assert result.returncode == 0, (scenario, result.stderr.decode('utf-8', 'replace'))
         assert result.stdout == b'PASS\r\n' or result.stdout == b'PASS\n'
+
+
+@pytest.mark.parametrize('scenario', ('direct_pyc', 'direct_unmanifested', 'loader_pyc', 'loader_unmanifested',
+                                      'direct_custom_loader', 'direct_custom_from_loader'))
+def test_direct_standard_loader_is_also_bounded(tmp_path, scenario):
+    result = _probe(tmp_path, scenario)
+    assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
+    assert result.stdout in (b'PASS\r\n', b'PASS\n')

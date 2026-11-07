@@ -204,6 +204,11 @@ def run_once(*,enabled=False,baseline_path=None,baseline_sha256=None,manifest_sh
                             marker, private/'q4-cutoff.pending.json',
                             private/private_state._PENDING, private/runner._PENDING, root/runner._PENDING)):
                         raise _Pending()
+                    if os.path.lexists(root/checkpoint.FENCE):
+                        raise _Pending()
+                    current=checkpoint._read(root/checkpoint.POINTER,max_bytes=checkpoint._MAX_POINTER_BYTES)
+                    if _sha(current)!=receipt['pointer_sha256']:
+                        raise ValueError()
                     entered=True
                     marker_info=runner._create(marker,marker_raw)
             runner._verify_own(marker,marker_raw,marker_info)

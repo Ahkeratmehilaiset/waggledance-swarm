@@ -148,6 +148,25 @@ def test_real_job_accepts_only_shared_generation_pointer(case, matching):
         assert result.returncode == 3 and json.loads(result.stdout) == {'status': 'UNKNOWN'}
 
 
+@pytest.mark.parametrize('fault', ['uppercase', 'short', 'missing', 'scratch_overlap'])
+def test_shared_stage_refuses_bad_generation_or_overlapping_scratch_before_job(case, fault):
+    shared = case['scratch'] if fault == 'scratch_overlap' else case['tmp_path'] / 'shared-generations'
+    if fault != 'scratch_overlap':
+        shared.mkdir()
+    finish = json.loads(case['finish'].read_bytes())
+    options = finish['composer_options']
+    options['shared_stage_root'] = str(shared)
+    if fault != 'missing':
+        options['generation'] = 'A' * 40 if fault == 'uppercase' else 'a' * (39 if fault == 'short' else 40)
+    case['finish'].write_bytes(raw(finish))
+    request = json.loads(case['request'].read_bytes())
+    request['finish']['sha256'] = sha(case['finish'].read_bytes())
+    case['request'].write_bytes(raw(request))
+    result = launch(case)
+    assert result.returncode == 2 and json.loads(result.stdout) == {'status': 'REFUSED'}
+    assert not case['wrapper_marker'].exists()
+
+
 def test_job_child_does_not_change_calling_session_wrapper_pin(case,monkeypatch):
     old=r'C:\synthetic-session-pin\Invoke-WdBridgePython.ps1'
     monkeypatch.setenv('WD_BRIDGE_PYTHON_WRAPPER',old)

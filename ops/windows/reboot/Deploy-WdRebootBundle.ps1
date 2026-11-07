@@ -534,6 +534,65 @@ function Invoke-GitCapture {
     }
 }
 
+function Assert-WdArchiveMatchesCommit {
+    param(
+        [Parameter(Mandatory)] [string] $Worktree,
+        [Parameter(Mandatory)] [string] $Commit,
+        [Parameter(Mandatory)] [string] $ArchiveRoot,
+        [Parameter(Mandatory)] [string[]] $Paths
+    )
+
+    # Archive attributes can omit/substitute/convert bytes even with autocrlf
+    # disabled. Compare raw file object IDs, never a filtered worktree hash.
+    $tree = Invoke-GitCapture -Worktree $Worktree -ArgumentList (
+        @('-c', 'core.quotepath=true', 'ls-tree', '-r', '--full-tree', $Commit, '--') + $Paths
+    )
+    if ($tree.ExitCode -ne 0 -or $tree.Output.Count -eq 0) {
+        throw 'archive_commit_inventory_refused'
+    }
+    $expected = @{}
+    foreach ($row in $tree.Output) {
+        if ([string]$row -cnotmatch '^(100644|100755) blob ([0-9a-f]{40}|[0-9a-f]{64})\t([^"\t\r\n]+)$') {
+            # Includes symlinks, submodules and quoted/unrepresentable paths.
+            throw 'archive_commit_mode_or_path_refused'
+        }
+        $oid = $Matches[2]
+        $relative = $Matches[3]
+        if ($relative -match '(^|/)(\.|\.\.)(/|$)|[\\:]|[ .](/|$)' -or
+            $relative.StartsWith('/') -or $expected.ContainsKey($relative)) {
+            throw 'archive_commit_path_refused'
+        }
+        $expected[$relative] = $oid
+    }
+
+    # Walk without following reparse directories; reject extra files as well as
+    # missing files before any materialized code is loaded or staged.
+    $root = Assert-WdPathWithoutReparse -Path $ArchiveRoot -TrustedRoot $ArchiveRoot -ExpectedType Directory
+    $pending = New-Object System.Collections.Generic.Stack[string]
+    $pending.Push($root)
+    $seen = @{}
+    while ($pending.Count -gt 0) {
+        foreach ($item in @(Get-ChildItem -LiteralPath $pending.Pop() -Force)) {
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'archive_commit_reparse_refused'
+            }
+            if ($item.PSIsContainer) { $pending.Push($item.FullName); continue }
+            $relative = $item.FullName.Substring($root.TrimEnd('\').Length + 1).Replace('\', '/')
+            if (-not $expected.ContainsKey($relative) -or $seen.ContainsKey($relative)) {
+                throw 'archive_commit_extra_file_refused'
+            }
+            $probe = Invoke-GitCapture -Worktree $Worktree -ArgumentList @(
+                'hash-object', '--no-filters', '--', $item.FullName
+            )
+            if ($probe.ExitCode -ne 0 -or $probe.Text -cne $expected[$relative]) {
+                throw 'archive_commit_bytes_refused'
+            }
+            $seen[$relative] = $true
+        }
+    }
+    if ($seen.Count -ne $expected.Count) { throw 'archive_commit_missing_file_refused' }
+}
+
 function New-ForwardingWrapper {
     param(
         [Parameter(Mandatory)] [string] $Target,
@@ -1155,19 +1214,23 @@ $materializationRoot = Assert-ChildPath `
 [void](New-Item -ItemType Directory -Path $materializationRoot -ErrorAction Stop)
 try {
 $archivePath = Join-Path $materializationRoot 'head.zip'
+$archivePaths = @(
+    'ops/windows/reboot',
+    '.agent-bridge/bin',
+    'tools/CheckedPowerShellResult.ps1',
+    'configs/bridge_identity_registry.json'
+) + $bridgeCodeSourceFiles
 $archiveProbe = Invoke-GitCapture `
     -Worktree $gitRoot `
     -ArgumentList (@(
+        '-c', 'core.autocrlf=false',
+        '-c', 'core.eol=lf',
         'archive',
         '--format=zip',
         "--output=$archivePath",
         $head,
-        '--',
-        'ops/windows/reboot',
-        '.agent-bridge/bin',
-        'tools/CheckedPowerShellResult.ps1',
-        'configs/bridge_identity_registry.json'
-    ) + $bridgeCodeSourceFiles)
+        '--'
+    ) + $archivePaths)
 if (
     $archiveProbe.ExitCode -ne 0 -or
     -not (Test-Path -LiteralPath $archivePath -PathType Leaf)
@@ -1179,6 +1242,8 @@ Expand-Archive `
     -LiteralPath $archivePath `
     -DestinationPath $archiveRoot `
     -Force
+
+Assert-WdArchiveMatchesCommit -Worktree $gitRoot -Commit $head -ArchiveRoot $archiveRoot -Paths $archivePaths
 
 $materializedRebootRoot = Join-Path $archiveRoot 'ops\windows\reboot'
 $toolsBootstrapSource = Join-Path $archiveRoot '.agent-bridge\bin'

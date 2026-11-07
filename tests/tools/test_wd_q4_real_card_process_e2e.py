@@ -1,7 +1,6 @@
-"""Opt-in synthetic actual resolved-child OS process, with an in-process Q4 launcher.
+"""Opt-in legacy resolved-child refusal in an actual synthetic OS process.
 
-Parent validates C2 before starting the child; this test is not a production
-C2-to-child integration. The child uses real resolved-child/Q4/FAISS code and
+Parent-only C2 does not authorize a legacy child without a C2 tuple. The child uses real resolved-child/Q4/FAISS code and
 fabricated data, but a synthetic encoder and a replaced INNER runtime-launcher.
 It does not exercise E5, Windows Job containment, live data or installed code.
 """
@@ -69,8 +68,8 @@ print(json.dumps({'pid':os.getpid(),'code':code,'calls':calls,'result':json.load
 
 @pytest.mark.skipif(os.name != 'nt' or os.environ.get('WD_Q4_CARD_CHILD_E2E') != '1',
                     reason='explicit opt-in and Windows are required for this subprocess test')
-@pytest.mark.parametrize('bad_decision', [False, True], ids=['answer', 'wrong-decision-pin'])
-def test_c2_then_actual_resolved_process(real_snapshot, bad_decision):
+@pytest.mark.parametrize('bad_decision', [False, True], ids=['real-without-c2-tuple', 'wrong-decision-pin'])
+def test_parent_c2_does_not_authorize_actual_legacy_resolved_process(real_snapshot, bad_decision):
     python = Path(os.environ['WD_Q4_CARD_TEST_PYTHON'])
     site = Path(os.environ['WD_Q4_CARD_TEST_SITE'])
     expected_python_sha = os.environ['WD_Q4_CARD_TEST_PYTHON_SHA256']
@@ -105,9 +104,4 @@ def test_c2_then_actual_resolved_process(real_snapshot, bad_decision):
     assert proc.returncode == 0, stderr.decode('utf-8', 'replace')
     result = json.loads(stdout)
     assert result['pid'] == proc.pid and proc.pid != os.getpid()
-    if bad_decision:
-        assert result['code'] == 2 and result['result']['status'] == 'REFUSED' and result['calls'] == []
-    else:
-        assert result['code'] == 0 and result['result']['status'] == 'ANSWER'
-        assert result['calls'] == ['in_process_private_reader']
-        assert any(item['stored_text'] == projection['records'][0]['stored_text'] for item in result['result']['results'])
+    assert result['code'] == 2 and result['result']['status'] == 'REFUSED' and result['calls'] == []

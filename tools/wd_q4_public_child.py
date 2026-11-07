@@ -115,6 +115,12 @@ def run_public(config, stdin, stdout, *, root=None, expected_pointer_sha256=None
                 or not _pinned(roster_bytes, roster_sha256, MAX_ROSTER)
                 or not _pinned(public_policy_bytes, public_policy_sha256, MAX_POLICY)):
             raise ValueError()
+        if card:
+            from sandbox.mind.step2 import shared_card_projection as cards
+            decision = cards.verify_route_decision(card_decision_bytes, card_decision_sha256,
+                            policy_sha256=policy_sha256, roster_sha256=roster_sha256)
+            if decision["synthetic"] is not True:
+                raise ValueError()  # Use run_staged_card with the actual C2 tuple.
         _validate_config(config)  # Syntax/shape only; it authenticates no caller or files.
         from tools.wd_q4_public_plan import validate_public_plan
         plan = validate_public_plan({

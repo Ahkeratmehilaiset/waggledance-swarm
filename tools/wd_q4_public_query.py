@@ -63,6 +63,12 @@ def query_public(config, stdin, *, root, expected_pointer_sha256=None,
         if card and (type(card_decision_bytes) is not bytes
                      or not pointer_resolver._pin(card_decision_sha256)):
             raise ValueError()
+        if card:
+            from sandbox.mind.step2 import shared_card_projection as cards
+            decision = cards.verify_route_decision(card_decision_bytes, card_decision_sha256,
+                            policy_sha256=policy_sha256, roster_sha256=roster_sha256)
+            if decision["synthetic"] is not True:
+                raise ValueError()  # Legacy public histories carry no real C2 tuple.
         forward = ({"card_decision_bytes": card_decision_bytes,
                     "card_decision_sha256": card_decision_sha256} if card else {})
         q4_query._validate_config(config)
@@ -240,12 +246,18 @@ def query_staged_card_snapshot(config, stdin, *, root, pointer_bytes=None,
                                 binding["projection_sha256"], limit=_ARTIFACT_LIMIT)
         tasks, _ = pointer_resolver.adapter.strict_pins(policy_bytes, policy_sha256,
                                                        roster_bytes, roster_sha256)
+        execution_snapshot = dict(snapshot)
+        del execution_snapshot["root"], execution_snapshot["enabled"]
+        execution_snapshot["generation_dir"] = Path(binding["memory_root"])
+        execution_snapshot["decision_bytes"] = execution_snapshot.pop("card_decision_bytes")
+        execution_snapshot["decision_sha256"] = execution_snapshot.pop("card_decision_sha256")
         result = q4_query.query_and_resolve(
             config, stdin, memory_bytes, projection_bytes, tasks,
             policy_bytes=policy_bytes, policy_sha256=policy_sha256,
             roster_bytes=roster_bytes, roster_sha256=roster_sha256,
             expected_memory_sha256=binding["memory_sha256"],
-            card_decision_bytes=card_decision_bytes, card_decision_sha256=card_decision_sha256)
+            card_decision_bytes=card_decision_bytes, card_decision_sha256=card_decision_sha256,
+            card_snapshot=execution_snapshot)
         if (type(result) is not dict or set(result) != {"status", "results"}
                 or result["status"] not in ("ANSWER", "ABSTAIN", "DEGRADED")
                 or type(result["results"]) is not list or len(result["results"]) > 100

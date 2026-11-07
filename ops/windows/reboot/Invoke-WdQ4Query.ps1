@@ -541,8 +541,14 @@ function Get-WdQ4PublicPlan {
     $names=[string[]]@($document.PSObject.Properties.Name); [Array]::Sort($names,[StringComparer]::Ordinal)
     $v1Names='config,encoder_sha256,pointer_sha256,policy_path,policy_sha256,public_policy_path,public_policy_sha256,root,roster_path,roster_sha256,schema,source_anchor_sha256'
     if ($document.schema -isnot [string]) { throw 'binding_refused' }
-    $card=($document.schema -ceq 'wd.q4-public-wrapper-plan.v2')
-    if ($card) {
+    $staged=($document.schema -ceq 'wd.q4-public-wrapper-plan.v3')
+    $card=($staged -or $document.schema -ceq 'wd.q4-public-wrapper-plan.v2')
+    if ($staged) {
+        $expected=[string[]]@($v1Names.Split(',')+@('card_decision_path','card_decision_sha256',
+            'card_policy_path','card_policy_sha256','pointer_path','source_path','generation_path','end_cursor'))
+        [Array]::Sort($expected,[StringComparer]::Ordinal)
+        if (($names -join ',') -cne ($expected -join ',')) { throw 'binding_refused' }
+    } elseif ($card) {
         if (($names -join ',') -cne ('card_decision_path,card_decision_sha256,'+$v1Names)) { throw 'binding_refused' }
     } elseif (($names -join ',') -cne $v1Names -or $document.schema -cne 'wd.q4-public-wrapper-plan.v1') { throw 'binding_refused' }
     foreach($name in @('encoder_sha256','pointer_sha256','policy_sha256','public_policy_sha256','roster_sha256','source_anchor_sha256')) {
@@ -564,10 +570,63 @@ function Get-WdQ4PublicPlan {
         if ($value.Hash -cne $document.card_decision_sha256.ToUpperInvariant()) { throw 'binding_refused' }
         $inputs['card_decision']=$value.Bytes
     }
+    if ($staged) {
+        if (-not (Test-WdQ4Hash $document.card_policy_sha256)) { throw 'binding_refused' }
+        $pointer=Read-WdQ4Snapshot -Path $document.pointer_path -Limit 1048576
+        if ($pointer.Hash -cne $document.pointer_sha256.ToUpperInvariant()) { throw 'binding_refused' }
+        $cardPolicy=Read-WdQ4Snapshot -Path $document.card_policy_path -Limit 65536
+        if ($cardPolicy.Hash -cne $document.card_policy_sha256.ToUpperInvariant()) { throw 'binding_refused' }
+        $inputs['pointer']=$pointer.Bytes
+        $inputs['card_policy']=$cardPolicy.Bytes
+        $source=Assert-WdQ4LocalPath -Path $document.source_path
+        $generation=Assert-WdQ4LocalPath -Path $document.generation_path
+        $cursor=$document.end_cursor
+        if ($cursor -isnot [pscustomobject]) { throw 'binding_refused' }
+        $cursorNames=[string[]]@($cursor.PSObject.Properties.Name); [Array]::Sort($cursorNames,[StringComparer]::Ordinal)
+        if (($cursorNames -join ',') -cne 'file_identity,generation,offset' -or
+            $cursor.offset -isnot [int] -and $cursor.offset -isnot [long] -or $cursor.offset -lt 0 -or
+            $cursor.file_identity -isnot [string] -or -not $cursor.file_identity -or
+            ($null -ne $cursor.generation -and $cursor.generation -isnot [string])) { throw 'binding_refused' }
+    }
     foreach($relative in @('tools/wd_q4_public_outer.py','tools/wd_q4_public_child.py','tools/wd_q4_public_query.py')) {
         if (-not (Test-WdQ4Hash $BasePlan.PublicPins[$relative])) { throw 'binding_refused' }
     }
-    return [pscustomobject]@{Base=$BasePlan;Document=$document;Root=$root;Inputs=$inputs}
+    return [pscustomobject]@{Base=$BasePlan;Document=$document;Root=$root;Inputs=$inputs;Staged=$staged}
+}
+
+function ConvertFrom-WdQ4StagedCardResult {
+    param($Result, $Expected)
+    if ($Result -isnot [pscustomobject] -or $null -eq $Expected) { throw 'runtime_refused' }
+    $keys=[string[]]@($Result.PSObject.Properties.Name); [Array]::Sort($keys,[StringComparer]::Ordinal)
+    if (($keys -join ',') -cne 'binding,completeness,freshness,publisher_authentication,results,same_user_aba,schema,source_filter_attestation,status' -or
+        $Result.schema -cne 'wd.q4-card-snapshot-query.v1' -or $Result.status -cnotin @('ANSWER','ABSTAIN','DEGRADED') -or
+        $Result.results -isnot [Array] -or $Result.results.Count -gt 100 -or
+        ($Result.status -ceq 'ANSWER' -and $Result.results.Count -eq 0) -or
+        ($Result.status -ceq 'ABSTAIN' -and $Result.results.Count -ne 0)) { throw 'runtime_refused' }
+    foreach ($name in @('completeness','freshness','publisher_authentication','same_user_aba','source_filter_attestation')) {
+        if ($Result.$name -isnot [string] -or $Result.$name -cne 'UNKNOWN') { throw 'runtime_refused' }
+    }
+    if ($Result.binding -isnot [pscustomobject]) { throw 'runtime_refused' }
+    $keys=[string[]]@($Result.binding.PSObject.Properties.Name); [Array]::Sort($keys,[StringComparer]::Ordinal)
+    if (($keys -join ',') -cne 'card_decision_sha256,card_policy_sha256,descriptor_sha256,encoder_sha256,memory_sha256,pointer_sha256,policy_sha256,projection_sha256,roster_sha256,source_anchor_sha256,source_mode' -or
+        $Result.binding.source_mode -cne 'card-snapshot-v1') { throw 'runtime_refused' }
+    foreach ($name in $keys) {
+        if ($name -cne 'source_mode' -and -not (Test-WdQ4Hash $Result.binding.$name)) { throw 'runtime_refused' }
+    }
+    foreach ($name in @('pointer_sha256','source_anchor_sha256','encoder_sha256','policy_sha256','roster_sha256',
+                         'card_decision_sha256','card_policy_sha256','descriptor_sha256')) {
+        if (-not (Test-WdQ4Hash $Expected.$name) -or $Result.binding.$name -cne $Expected.$name) { throw 'runtime_refused' }
+    }
+    foreach ($item in $Result.results) {
+        if ($item -isnot [pscustomobject]) { throw 'runtime_refused' }
+        $names=[string[]]@($item.PSObject.Properties.Name); [Array]::Sort($names,[StringComparer]::Ordinal)
+        if (($names -join ',') -cne 'canonical_event,doc_id_sha256,ref_kind,ref_sha256,stored_text' -or
+            $item.stored_text -isnot [string] -or [Text.Encoding]::UTF8.GetByteCount($item.stored_text) -gt 320 -or
+            $item.ref_kind -cne 'sha256_of_projected_metadata' -or $item.canonical_event -isnot [bool] -or
+            $item.canonical_event -ne $false -or -not (Test-WdQ4Hash $item.ref_sha256) -or
+            -not (Test-WdQ4Hash $item.doc_id_sha256)) { throw 'runtime_refused' }
+    }
+    return $Result
 }
 
 function Invoke-WdQ4PublicTransport {
@@ -580,6 +639,7 @@ function Invoke-WdQ4PublicTransport {
         public_policy_sha256=$Plan.Document.public_policy_sha256;config=$base.Config;
         verifier_sha256=$base.Config.verifier_sha256;child_sha256=$base.PublicPins['tools/wd_q4_public_child.py'];
         query_sha256=$base.PublicPins['tools/wd_q4_public_query.py']}
+    $staged=($Plan.Staged -eq $true)
     $card=$Plan.Inputs.ContainsKey('card_decision')
     $parts=@('metadata','policy','roster','public_policy','query')
     if ($card) {
@@ -587,13 +647,21 @@ function Invoke-WdQ4PublicTransport {
         $meta['card_decision_sha256']=$Plan.Document.card_decision_sha256
         $parts=@('metadata','policy','roster','public_policy','card_decision','query')
     }
+    if ($staged) {
+        if (-not $card -or -not (Test-WdQ4Hash $Plan.Document.card_policy_sha256)) { throw 'binding_refused' }
+        $meta['card_policy_sha256']=$Plan.Document.card_policy_sha256
+        $meta['source_path']=$Plan.Document.source_path
+        $meta['generation_path']=$Plan.Document.generation_path
+        $meta['end_cursor']=$Plan.Document.end_cursor
+        $parts=@('metadata','policy','roster','public_policy','card_decision','pointer','card_policy','query')
+    }
     [byte[]]$metadataBytes=[Text.UTF8Encoding]::new($false,$true).GetBytes(($meta|ConvertTo-Json -Depth 8 -Compress))
     if ($metadataBytes.Length -gt 65536) { throw 'binding_refused' }
     $frame=[IO.MemoryStream]::new()
     try {
         foreach($name in $parts) {
             [byte[]]$part=if($name -ceq 'metadata'){$metadataBytes}elseif($name -ceq 'query'){$Query}else{$Plan.Inputs[$name]}
-            $limit=if($name -ceq 'roster'){1048576}elseif($name -ceq 'card_decision'){262144}else{65536}
+            $limit=if($name -ceq 'roster' -or $name -ceq 'pointer'){1048576}elseif($name -ceq 'card_decision'){262144}else{65536}
             if ($null -eq $part -or $part.Length -gt $limit) { throw 'binding_refused' }
             $header=[BitConverter]::GetBytes([uint32]$part.Length)
             if ([BitConverter]::IsLittleEndian) { [Array]::Reverse($header) }
@@ -620,9 +688,17 @@ try:
  from tools.wd_q4_agent_query import VerifiedQ4Config
  policy=take(65536); roster=take(1048576); public=take(65536)
  card={'card_decision_bytes':take(262144),'card_decision_sha256':meta['card_decision_sha256']} if 'card_decision_sha256' in meta else {}
+ staged='card_policy_sha256' in meta
+ if staged:
+  pointer=take(1048576);card_policy=take(65536)
  query=take(65536)
  if sys.stdin.buffer.read(1): raise ValueError()
- code=outer['child'].run_public(VerifiedQ4Config(**cfg),io.BytesIO(query),sys.stdout,root=meta['root'],expected_pointer_sha256=meta['pointer_sha256'],expected_source_sha256=meta['source_anchor_sha256'],expected_encoder_sha256=meta['encoder_sha256'],policy_bytes=policy,policy_sha256=meta['policy_sha256'],roster_bytes=roster,roster_sha256=meta['roster_sha256'],public_policy_bytes=public,public_policy_sha256=meta['public_policy_sha256'],enabled=True,**card)
+ common=dict(root=meta['root'],expected_pointer_sha256=meta['pointer_sha256'],expected_source_sha256=meta['source_anchor_sha256'],expected_encoder_sha256=meta['encoder_sha256'],policy_bytes=policy,policy_sha256=meta['policy_sha256'],roster_bytes=roster,roster_sha256=meta['roster_sha256'],enabled=True,**card)
+ if staged:
+  from waggledance.core.bridge_log_reader import BridgeCursor
+  code=outer['child'].run_staged_card(VerifiedQ4Config(**cfg),io.BytesIO(query),sys.stdout,pointer_bytes=pointer,card_policy_bytes=card_policy,source_path=meta['source_path'],generation_path=meta['generation_path'],end_cursor=BridgeCursor(**meta['end_cursor']),**common)
+ else:
+  code=outer['child'].run_public(VerifiedQ4Config(**cfg),io.BytesIO(query),sys.stdout,public_policy_bytes=public,public_policy_sha256=meta['public_policy_sha256'],**common)
  sys.exit(code)
 except Exception:
  print('{"schema":"wd.q4-public-query.v2","status":"REFUSED","reason":"public_query_refused"}',flush=True)
@@ -653,6 +729,10 @@ except Exception:
         roster_sha256=$Plan.Document.roster_sha256;public_policy_sha256=$Plan.Document.public_policy_sha256;
         descriptor_sha256=$base.Config.descriptor_sha256}
     if ($card) { $expected['card_decision_sha256']=$Plan.Document.card_decision_sha256 }
+    if ($staged) {
+        $expected['card_policy_sha256']=$Plan.Document.card_policy_sha256
+        return ConvertFrom-WdQ4StagedCardResult -Result $result -Expected $expected
+    }
     return ConvertFrom-WdQ4PublicResult -Result $result -Expected $expected
 }
 

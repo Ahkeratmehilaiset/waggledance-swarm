@@ -228,6 +228,11 @@ _PUBLIC_BIND_PINS = frozenset({"pointer_sha256", "source_anchor_sha256", "encode
                                "roster_sha256", "public_policy_sha256", "descriptor_sha256"})
 _PUBLIC_BIND_KEYS = _PUBLIC_BIND_PINS | {"memory_sha256", "projection_sha256", "receipt_sha256"}
 _PUBLIC_UNKNOWN = frozenset({"freshness", "publisher_authentication", "source_filter_attestation", "same_user_aba"})
+# Optional synthetic card route (default OFF): a v2 plan pins the decision file; the pin becomes a plan pin that the
+# reply binding must carry. A v1 plan is the v6 path, unchanged.
+_CARD_PLAN_KEYS = frozenset({"card_decision_path", "card_decision_sha256"})
+_PUBLIC_PLAN_SCHEMAS = {"wd.q4-public-wrapper-plan.v1": _PUBLIC_PLAN_KEYS,
+                        "wd.q4-public-wrapper-plan.v2": _PUBLIC_PLAN_KEYS | _CARD_PLAN_KEYS}
 
 
 def _public_plan(path, expected_sha256):
@@ -238,13 +243,17 @@ def _public_plan(path, expected_sha256):
     if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected_sha256):
         raise ValueError()
     plan = _json(raw)
-    if (type(plan) is not dict or set(plan) != _PUBLIC_PLAN_KEYS
-            or plan["schema"] != "wd.q4-public-wrapper-plan.v1" or type(plan["config"]) is not dict
+    if (type(plan) is not dict or type(plan.get("schema")) is not str
+            or plan["schema"] not in _PUBLIC_PLAN_SCHEMAS or set(plan) != _PUBLIC_PLAN_SCHEMAS[plan["schema"]]
+            or type(plan["config"]) is not dict
             or any(type(plan[field]) is not str or not plan[field]
                    for field in ("root", "policy_path", "roster_path", "public_policy_path"))):
         raise ValueError()
+    card = plan["schema"] == "wd.q4-public-wrapper-plan.v2"
+    if card and (type(plan["card_decision_path"]) is not str or not plan["card_decision_path"]):
+        raise ValueError()
     pins = {key: (plan["config"].get(key) if key == "descriptor_sha256" else plan[key])
-            for key in _PUBLIC_BIND_PINS}
+            for key in (_PUBLIC_BIND_PINS | ({"card_decision_sha256"} if card else set()))}
     if any(type(value) is not str or _HEX64.fullmatch(value) is None for value in pins.values()):
         raise ValueError()
     return str(path), raw, pins
@@ -263,7 +272,8 @@ def _public_result(raw, code, pins):
     if (code != 0 or value.get("status") not in ("ANSWER", "ABSTAIN", "DEGRADED")
             or set(value) != ({"schema", "status", "binding", "results"} | _PUBLIC_UNKNOWN)
             or any(value[key] != "UNKNOWN" for key in _PUBLIC_UNKNOWN)
-            or type(value["binding"]) is not dict or set(value["binding"]) != _PUBLIC_BIND_KEYS
+            or type(value["binding"]) is not dict
+            or set(value["binding"]) != _PUBLIC_BIND_KEYS | ({"card_decision_sha256"} & set(pins))
             or type(value["results"]) is not list or len(value["results"]) > 100
             or (value["status"] == "ANSWER" and not value["results"])
             or (value["status"] == "ABSTAIN" and value["results"])):

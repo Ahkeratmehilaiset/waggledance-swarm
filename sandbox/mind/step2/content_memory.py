@@ -26,8 +26,10 @@ memory does for cards. It adds no resolver branch, no policy file, no launcher o
   presented as a negative fact. The memory and projection files are pinned by the expected memory sha256.
 """
 import hashlib
+import hmac
 import json
 import os
+import re
 from pathlib import Path
 
 from sandbox.mind.step2 import corpus as corpus_mod
@@ -43,6 +45,30 @@ PROJECTION_KEYS = frozenset({"schema", "authority", "scope", "messages", "docume
 MESSAGE_KEYS = frozenset({"rows", "policy_bytes", "policy_sha256", "roster"})
 DOCUMENT_KEYS = frozenset({"repo_root", "policy_bytes", "policy_sha256"})
 MAX_PROJECTION_BYTES = 64 * 1024 * 1024
+# Route B (Lead decision 2026-11-07 18:56Z): the same memory under the shared scope and the v2 shared descriptor, so the
+# isolated child stays the only reader; it names this projection schema, so the unchanged v6 resolver refuses it and
+# only a resolver call with the same pinned content route decision resolves it.
+ROUTE_SCOPE = "wd.q4-shared-projected-events.v1"  # == shared_index_builder.SCOPE == shared_result_resolver.SCOPE
+PROJECTED_REF_KIND = "sha256_of_projected_metadata"  # == q4.PROJECTED_REF_KIND, the only row label the child reads
+DECISION_SCHEMA = "wd.mind-content-route-decision.v1"
+DECISION_NAME = "enable_content_route"
+DECISION_KEYS = frozenset({"schema", "decision", "projection_schema", "scope", "content_module_sha256",
+                           "message_module_sha256", "doc_module_sha256", "nonreview_policy_sha256", "roster_sha256",
+                           "message_policy_sha256", "doc_policy_sha256", "source_prefix"})
+DECISION_PINS = ("content_module_sha256", "message_module_sha256", "doc_module_sha256", "nonreview_policy_sha256",
+                 "roster_sha256")
+PREFIX_KEYS = frozenset({"sha256", "offset", "generation"})
+ROUTE_KEYS = frozenset({"decision_sha256", "source_prefix", "source_status", "completeness", "message_policy_sha256",
+                        "doc_policy_sha256", "doc_commit"})
+ROUTE_MESSAGE_KEYS = frozenset({"source_path", "generation_path", "end_cursor", "policy_bytes", "policy_sha256"})
+MAX_DECISION = 65536
+MAX_SOURCE_ROWS = 4096
+MAX_ROW_BYTES = 65536
+MAX_PREFIX_BYTES = 256 * 1024 * 1024
+PAGE_BYTES = 4 * 1024 * 1024
+GENERATION = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+HEX64 = re.compile(r"[0-9a-f]{64}")
+VISIBILITY_GUARD_SECONDS = 1.0  # == the shared resolver guard band
 
 
 class ContentMemoryRefused(ValueError):
@@ -117,12 +143,12 @@ def place(record):
 
 
 def _decoded(record):
-    """The cell-row form of a record: decoded text, and no reference-kind labels (the shared Q4 accepts those only
-    for the v6 projected kind; this memory resolves every hit against its own pinned projection instead)."""
+    """The cell-row form of a record: decoded text under the one row form the shared Q4 and the isolated child read
+    (kind ``event``, the projected reference kind, not canonical). The projection keeps the record's own kind and
+    reference kind; every hit is resolved by event ref AND record id against that pinned projection."""
     text = cp.decode_text(record["stored_text"])
-    provenance = {key: value for key, value in record["provenance"].items()
-                  if key not in ("ref_kind", "canonical_event")}
-    return dict(record, stored_text=text, summary=text, provenance=provenance)
+    provenance = dict(record["provenance"], ref_kind=PROJECTED_REF_KIND, canonical_event=False)
+    return dict(record, kind="event", stored_text=text, summary=text, provenance=provenance)
 
 
 def build_content_memory(*, enabled=False, messages=None, documents=None, encode=None, identity=None, dim=None,
@@ -131,6 +157,10 @@ def build_content_memory(*, enabled=False, messages=None, documents=None, encode
     if not _enabled(enabled):
         return {"status": "OFF"}
     projection = derive_content_projection(messages, documents)
+    return _build(projection, encode, identity, dim, root, name, SCOPE, DESCRIPTOR_SCHEMA, None, None)
+
+
+def _build(projection, encode, identity, dim, root, name, scope, descriptor_schema, policy, evidence):
     from sandbox.mind.step2 import cell as cell_mod
     from sandbox.mind.step2 import memory as memory_mod
     from sandbox.mind.step2 import shared_index_builder as sib
@@ -182,16 +212,20 @@ def build_content_memory(*, enabled=False, messages=None, documents=None, encode
                                         cutoff_utc=cutoff_utc, encoder=encoder, projection_sha256=projection_sha256)
             pointers[cell_id] = dict(pointer, count=len(rows))
         stage = "finalize"
-        memory = {"schema": memory_mod.SCHEMA, "authority": "none", "scope": SCOPE, "synthetic": False,
+        memory = {"schema": memory_mod.SCHEMA, "authority": "none", "scope": scope, "synthetic": False,
                   "cutoff_utc": cutoff_utc, "projection_sha256": projection_sha256, "projection_schema": SCHEMA,
                   "projection_file": "projection.json", "encoder": encoder, "dim": dim, "placement": PLACEMENT_RULE,
                   "topology_source_sha256": cell_mod.file_sha256(sib.TOPOLOGY_FILE), "cells": pointers,
                   "records": len(records), "duplicates": duplicates, "views": list(sib.VIEWS),
                   "independent_views": False}
+        if policy is not None:
+            memory["policy"] = policy
+        if evidence is not None:
+            memory["content_route"] = evidence
         corpus_mod.ws.guard_object(memory)
         memory_bytes = cell_mod.canonical(memory).encode("utf-8")
         memory_sha256 = hashlib.sha256(memory_bytes).hexdigest()
-        descriptor = {"schema": DESCRIPTOR_SCHEMA, "scope": SCOPE, "memory_sha256": memory_sha256, "dim": dim,
+        descriptor = {"schema": descriptor_schema, "scope": scope, "memory_sha256": memory_sha256, "dim": dim,
                       "encoder": encoder}
         descriptor_bytes = cell_mod.canonical(descriptor).encode("utf-8")
         stage = "descriptor"
@@ -280,3 +314,298 @@ def ask_content_memory(memory_dir, expected_memory_sha256, encoder, situation, s
               "coverage": {"cutoff_utc": manifest["cutoff_utc"]}}
     corpus_mod.ws.guard_object(answer)
     return answer
+
+
+# --- route B: the content memory for the existing isolated reader ----------------------------------------------------
+
+def _file_sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def module_sha256s():
+    """The source hashes of the three content modules as loaded; a content route decision names all three."""
+    return {"content_module_sha256": _file_sha256(__file__), "message_module_sha256": _file_sha256(cp.__file__),
+            "doc_module_sha256": _file_sha256(dp.__file__)}
+
+
+def _canon(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _no_constant(_):
+    raise ValueError()
+
+
+def verify_content_route_decision(decision_bytes, decision_sha256, *, policy_sha256=None, roster_sha256=None):
+    """The explicit content route decision, or ``decision_invalid``.
+
+    The bytes must hash to the caller pin and be canonical JSON with the exact key set; the decision must name the
+    loaded source hashes of the three content modules, the same non-review policy and roster pins the route runs
+    with, the message and document policy pins (at least one; ``null`` for a source the route does not use) and, iff
+    messages are used, one anchored bridge prefix (sha256, end offset, generation). It is caller-pinned and who
+    issued it is not authenticated (no signature).
+    """
+    decision, failed = None, False
+    try:
+        if (type(decision_bytes) is not bytes or not 0 < len(decision_bytes) <= MAX_DECISION
+                or type(decision_sha256) is not str or HEX64.fullmatch(decision_sha256) is None
+                or not hmac.compare_digest(hashlib.sha256(decision_bytes).hexdigest(), decision_sha256)):
+            raise ValueError()
+        decision = json.loads(decision_bytes.decode("ascii"), object_pairs_hook=cp._unique_pairs,
+                              parse_constant=_no_constant)
+        if type(decision) is not dict or set(decision) != DECISION_KEYS:
+            raise ValueError()
+        if _canon(decision).encode("ascii") != decision_bytes:
+            raise ValueError()
+        message_pin, doc_pin, prefix = (decision["message_policy_sha256"], decision["doc_policy_sha256"],
+                                        decision["source_prefix"])
+        if (decision["schema"] != DECISION_SCHEMA or decision["decision"] != DECISION_NAME
+                or decision["projection_schema"] != SCHEMA or decision["scope"] != ROUTE_SCOPE
+                or any(type(decision[key]) is not str or HEX64.fullmatch(decision[key]) is None
+                       for key in DECISION_PINS)
+                or any(not hmac.compare_digest(decision[key], value) for key, value in module_sha256s().items())
+                or type(policy_sha256) is not str or type(roster_sha256) is not str
+                or not hmac.compare_digest(decision["nonreview_policy_sha256"], policy_sha256)
+                or not hmac.compare_digest(decision["roster_sha256"], roster_sha256)
+                or (message_pin is None and doc_pin is None)
+                or any(pin is not None and (type(pin) is not str or HEX64.fullmatch(pin) is None)
+                       for pin in (message_pin, doc_pin))
+                or (message_pin is None) != (prefix is None)):
+            raise ValueError()
+        if prefix is not None and (type(prefix) is not dict or set(prefix) != PREFIX_KEYS
+                                   or type(prefix["sha256"]) is not str or HEX64.fullmatch(prefix["sha256"]) is None
+                                   or type(prefix["offset"]) is not int or prefix["offset"] < 1
+                                   or type(prefix["generation"]) is not str
+                                   or GENERATION.fullmatch(prefix["generation"]) is None):
+            raise ValueError()
+    except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OSError):
+        failed = True
+    if failed:
+        _refuse("decision_invalid")
+    return decision
+
+
+def _read_prefix_rows(source_path, generation_path, end_cursor, expected_prefix_sha256, tasks):
+    """The rows of the approved tasks inside exactly the anchored bridge prefix, keyed by canonical event id.
+
+    The same chained prefix read as the card prefix verifier (prefix sha256 carried page to page, the end cursor,
+    the file identity and the generation re-checked at the end), but kept to the content policy's own approved
+    tasks; anything else raises ``ValueError``."""
+    from tools.bridge_compact_view import event_id
+    from waggledance.core import bridge_log_reader as bridge
+    if (type(source_path) is not str or not os.path.isabs(source_path)
+            or type(generation_path) is not str or not os.path.isabs(generation_path)
+            or type(end_cursor) is not bridge.BridgeCursor or bridge._validate_cursor(end_cursor)
+            or type(end_cursor.generation) is not str or not end_cursor.generation
+            or type(end_cursor.offset) is not int or not 0 < end_cursor.offset <= MAX_PREFIX_BYTES
+            or type(expected_prefix_sha256) is not str or HEX64.fullmatch(expected_prefix_sha256) is None):
+        raise ValueError()
+    cursor = bridge.BridgeCursor(0, end_cursor.file_identity, end_cursor.generation)
+    prefix_sha = hashlib.sha256(b"").hexdigest()
+    rows, pages = {}, 0
+    while True:
+        pages += 1
+        if pages > MAX_PREFIX_BYTES // PAGE_BYTES + 2:
+            raise ValueError()
+        read = bridge.read_bridge_log(source_path, cursor=cursor,
+                                      max_bytes=min(PAGE_BYTES, end_cursor.offset - cursor.offset), max_rows=100000,
+                                      generation_path=generation_path, expected_prefix_sha256=prefix_sha,
+                                      max_prefix_bytes=MAX_PREFIX_BYTES)
+        if (not isinstance(read, bridge.BridgePrefixReadResult)
+                or read.status not in (bridge.BridgeReadStatus.OK, bridge.BridgeReadStatus.IDLE)
+                or read.snapshot_length is None or read.snapshot_length < end_cursor.offset
+                or read.candidate_cursor is None or read.candidate_prefix is None):
+            raise ValueError()
+        for event in read.rows:
+            if type(event) is not dict or type(event.get("task_id")) is not str or event["task_id"] not in tasks:
+                continue
+            encoded = json.dumps(event, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+                                 allow_nan=False).encode("utf-8")
+            if len(encoded) > MAX_ROW_BYTES or len(rows) >= MAX_SOURCE_ROWS:
+                raise ValueError()
+            rows[event_id(event)] = event
+        nxt = read.candidate_cursor
+        if nxt.offset == end_cursor.offset:
+            if nxt != end_cursor or not hmac.compare_digest(read.candidate_prefix.sha256, expected_prefix_sha256):
+                raise ValueError()
+            with bridge._open_log(Path(source_path)) as stream:
+                if (bridge._file_identity(stream) != end_cursor.file_identity
+                        or os.fstat(stream.fileno()).st_size < end_cursor.offset):
+                    raise ValueError()
+            if bridge._read_generation(Path(generation_path)) != end_cursor.generation:
+                raise ValueError()
+            return rows
+        if nxt.offset <= cursor.offset or nxt.offset > end_cursor.offset:
+            raise ValueError()
+        cursor, prefix_sha = nxt, read.candidate_prefix.sha256
+
+
+def _route_evidence(decision, decision_sha256, projection):
+    documents = projection["documents"]
+    return {"decision_sha256": decision_sha256, "source_prefix": decision["source_prefix"],
+            "source_status": "MATCH_WITHIN_PREFIX" if decision["message_policy_sha256"] is not None else "NO_MESSAGES",
+            "completeness": "UNKNOWN", "message_policy_sha256": decision["message_policy_sha256"],
+            "doc_policy_sha256": decision["doc_policy_sha256"],
+            "doc_commit": documents["commit"] if documents is not None else None}
+
+
+def build_route_content_memory(*, enabled=False, messages=None, documents=None, decision_bytes=None,
+                               decision_sha256=None, policy_bytes=None, policy_sha256=None, roster_bytes=None,
+                               roster_sha256=None, encode=None, identity=None, dim=None, root=None, name=None):
+    """Route B: the content memory under the shared scope and the v2 shared descriptor, or ``{"status": "OFF"}``.
+
+    ``messages`` = ``{source_path, generation_path, end_cursor, policy_bytes, policy_sha256}``: the message rows are
+    read here, only inside the decision's anchored prefix and only for the content policy's approved tasks, which
+    must be a subset of the provisioned non-review policy's tasks; the roster is the strict pinned roster. The
+    decision must verify and pin exactly the policies used. The manifest binds the strict policy pins and the route
+    evidence; the resolver re-checks both against the same decision.
+    """
+    if not _enabled(enabled):
+        return {"status": "OFF"}
+    messages = _source(messages, ROUTE_MESSAGE_KEYS)
+    documents = _source(documents, DOCUMENT_KEYS)
+    if messages is None and documents is None:
+        _refuse("sources_missing")
+    from sandbox.mind.step2 import shared_capture_adapter as adapter
+    from sandbox.mind.step2 import shared_index_builder as sib
+    pins = None
+    try:
+        pins = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+    except Exception:  # noqa: BLE001 - one fixed token, never a pin or its bytes
+        pins = None
+    if pins is None:
+        _refuse("policy_invalid")
+    tasks, roster = pins
+    decision = verify_content_route_decision(decision_bytes, decision_sha256, policy_sha256=policy_sha256,
+                                             roster_sha256=roster_sha256)
+    if ((messages is None) != (decision["message_policy_sha256"] is None)
+            or (documents is None) != (decision["doc_policy_sha256"] is None)
+            or (messages is not None and messages["policy_sha256"] != decision["message_policy_sha256"])
+            or (documents is not None and documents["policy_sha256"] != decision["doc_policy_sha256"])):
+        _refuse("decision_mismatch")
+    derived = None
+    if messages is not None:
+        try:
+            content_policy = cp.load_content_policy(messages["policy_bytes"], messages["policy_sha256"])
+        except cp.ContentRefused:
+            content_policy = None
+        if content_policy is None:
+            _refuse("policy_refused")
+        if not content_policy["approved_tasks"] <= tasks:
+            _refuse("policy_not_subset")
+        prefix, cursor = decision["source_prefix"], messages["end_cursor"]
+        if (type(getattr(cursor, "offset", None)) is not int or cursor.offset != prefix["offset"]
+                or getattr(cursor, "generation", None) != prefix["generation"]):
+            _refuse("source_unanchored")
+        rows = None
+        try:
+            rows = _read_prefix_rows(messages["source_path"], messages["generation_path"], cursor, prefix["sha256"],
+                                     content_policy["approved_tasks"])
+        except Exception:  # noqa: BLE001 - one fixed token, never a path or row
+            rows = None
+        if rows is None:
+            _refuse("source_unverified")
+        derived = {"rows": rows, "policy_bytes": messages["policy_bytes"], "policy_sha256": messages["policy_sha256"],
+                   "roster": roster}
+    projection = derive_content_projection(derived, documents)
+    policy = {"authorship": sp.AUTHORSHIP_ROSTER, "review_signal_excluded": True, "policy_sha256": policy_sha256,
+              "roster_sha256": roster_sha256}
+    return _build(projection, encode, identity, dim, root, name, ROUTE_SCOPE, sib.DESCRIPTOR_SCHEMA, policy,
+                  _route_evidence(decision, decision_sha256, projection))
+
+
+def validate_route_projection(projection):
+    """Structural integrity of a stored content projection, or ``projection_invalid``: the exact keys and schemas,
+    every record id and event ref re-derived from its own text and source fields, the lane output class, a strict
+    decode, the record kind and reference kind of its source and no duplicate record id. It cannot re-read the
+    sources; their binding is the route decision and the producer."""
+    failed = False
+    try:
+        if (type(projection) is not dict or set(projection) != PROJECTION_KEYS or projection["schema"] != SCHEMA
+                or projection["authority"] != "none" or projection["scope"] != SCOPE):
+            raise ValueError()
+        seen = set()
+        for record in records_of(projection):
+            provenance, text = record["provenance"], record["stored_text"]
+            if type(text) is not str or cp._OUTPUT.fullmatch(text) is None or record["summary"] != text:
+                raise ValueError()
+            cp.decode_text(text)
+            if provenance["source_kind"] == cp.SOURCE_KIND:
+                source = provenance["source_event_ref"]
+                ref = hashlib.sha256(cp._canonical({"text": text, "source": source,
+                                                    "chunk": provenance["chunk_index"]})).hexdigest()
+                prefix, kind, ref_kind = "content:", "event", cp.REF_KIND
+            elif provenance["source_kind"] == dp.SOURCE_KIND:
+                source = hashlib.sha256(cp._canonical({"blob": provenance["blob_id"], "commit": provenance["commit"],
+                                                       "path": provenance["path"]})).hexdigest()
+                if provenance["source_doc_ref"] != source:
+                    raise ValueError()
+                ref = hashlib.sha256(cp._canonical({"text": text, "source": source,
+                                                    "section": provenance["section_index"],
+                                                    "chunk": provenance["chunk_index"]})).hexdigest()
+                prefix, kind, ref_kind = "doc:", "document", dp.REF_KIND
+            else:
+                raise ValueError()
+            if (provenance["event_ref"] != ref or record["record_id"] != prefix + ref or record["kind"] != kind
+                    or provenance["ref_kind"] != ref_kind or provenance["canonical_event"] is not False
+                    or record["record_id"] in seen):
+                raise ValueError()
+            seen.add(record["record_id"])
+        corpus_mod.ws.guard_object(projection)
+    except (ValueError, KeyError, TypeError, AttributeError, cp.ContentRefused, ContentMemoryRefused,
+            corpus_mod.ws.WorkspaceError):
+        failed = True
+    if failed:
+        _refuse("projection_invalid")
+    return projection
+
+
+def check_content_route_evidence(evidence, projection, decision, decision_sha256):
+    """The manifest's bound route evidence must be exactly what the decision and the projection give."""
+    failed = False
+    try:
+        messages, documents = projection["messages"], projection["documents"]
+        if (type(evidence) is not dict or set(evidence) != ROUTE_KEYS
+                or _canon(evidence) != _canon(_route_evidence(decision, decision_sha256, projection))
+                or (messages is None) != (decision["message_policy_sha256"] is None)
+                or (documents is None) != (decision["doc_policy_sha256"] is None)
+                or (messages is not None and messages["policy_sha256"] != decision["message_policy_sha256"])
+                or (documents is not None and documents["policy_sha256"] != decision["doc_policy_sha256"])):
+            raise ValueError()
+    except (ValueError, TypeError, KeyError):
+        failed = True
+    if failed:
+        _refuse("evidence_invalid")
+    return evidence
+
+
+def resolve_route_content(projection, results, query_utc):
+    """Stored text for exact, time-visible hash-only hits of the isolated child, or ``result_unresolved``.
+
+    Each hit names ``sha256(event_ref)`` and ``sha256(record_id)`` of one projected record under the projected
+    reference kind (the child's only row label); repeats collapse to their first occurrence."""
+    if not isinstance(query_utc, str) or corpus_mod.parse_utc(query_utc) is None:
+        _refuse("query_time_invalid")
+    if not isinstance(results, list) or len(results) > 100:
+        _refuse("result_unresolved")
+    records = {}
+    for record in records_of(projection):
+        key = (hashlib.sha256(record["provenance"]["event_ref"].encode("ascii")).hexdigest(),
+               hashlib.sha256(record["record_id"].encode("ascii")).hexdigest())
+        records.setdefault(key, record)
+    resolved, seen = [], set()
+    for item in results:
+        if (not isinstance(item, dict) or set(item) != {"ref_sha256", "doc_id_sha256", "ref_kind", "canonical_event"}
+                or item["ref_kind"] != PROJECTED_REF_KIND or item["canonical_event"] is not False
+                or any(not isinstance(item[key], str) or HEX64.fullmatch(item[key]) is None
+                       for key in ("ref_sha256", "doc_id_sha256"))):
+            _refuse("result_unresolved")
+        key = (item["ref_sha256"], item["doc_id_sha256"])
+        record = records.get(key)
+        if record is None or not sp.visible_at(record, query_utc, guard_band_s=VISIBILITY_GUARD_SECONDS):
+            _refuse("result_unresolved")
+        if key not in seen:
+            resolved.append({"ref_sha256": key[0], "doc_id_sha256": key[1], "stored_text": record["stored_text"],
+                             "ref_kind": PROJECTED_REF_KIND, "canonical_event": False})
+            seen.add(key)
+    return resolved

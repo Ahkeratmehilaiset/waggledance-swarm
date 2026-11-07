@@ -75,6 +75,7 @@ def sources(tmp_path):
 
 
 def build(tmp_path, messages=None, documents=None, encode=None, name="content-a"):
+    pytest.importorskip("faiss")
     out = tmp_path / "out"
     out.mkdir(exist_ok=True)
     return cm.build_content_memory(enabled=True, messages=messages, documents=documents,

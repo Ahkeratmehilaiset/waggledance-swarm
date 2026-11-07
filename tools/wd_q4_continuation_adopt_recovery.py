@@ -93,6 +93,12 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, man
             for lock in locks:
                 checkpoint._secure(lock, missing_leaf=True)
                 stack.enter_context(reader_slot(lock, timeout_seconds=0.2))
+            # Until a verified call-bound Job-child capability exists, no direct
+            # caller (including the Job child) may bypass this quarantine.
+            with private_state.locked_state(private, root, enabled=True):
+                with private_state._checkpoint_lock(root, 0.2):
+                    if os.path.lexists(private / 'q4-adopt-recovery-job.pending.json'):
+                        raise RecoveryUnknown('recovery_unknown')
             if not os.path.lexists(marker):
                 return {'status': 'NOT_NEEDED'}
             marker_info = marker.lstat()
@@ -163,6 +169,7 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, man
                 with private_state._checkpoint_lock(root, 0.2):
                     if (checkpoint._active_fence(root) is not None
                             or any(os.path.lexists(path) for path in (
+                                private / 'q4-adopt-recovery-job.pending.json',
                                 private / 'q4-cutoff.pending.json', private / private_state._PENDING,
                                 private / runner._PENDING, root / runner._PENDING,
                                 private / 'q4-continuation-orchestrator.pending.json',

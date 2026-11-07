@@ -1,5 +1,6 @@
 """Synthetic pinned bootstrap checks; no installed bundle or real model."""
 import hashlib
+import ctypes
 import importlib
 import json
 import os
@@ -7,6 +8,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import secrets
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -78,9 +81,39 @@ def case(tmp_path):
             'template':template,'bootstrap':code/'tools'/NAME,'pointer':pointer}
 
 
-def execute(case, *, flags=('-I','-S','-B'), pin=None, extra_env=None):
+def creation_filetime(pid):
+    class FileTime(ctypes.Structure):
+        _fields_=[('low',ctypes.c_uint32),('high',ctypes.c_uint32)]
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.OpenProcess.argtypes=[ctypes.c_uint32,ctypes.c_int,ctypes.c_uint32]; kernel.OpenProcess.restype=ctypes.c_void_p
+    kernel.GetProcessTimes.argtypes=[ctypes.c_void_p,*([ctypes.POINTER(FileTime)]*4)]
+    kernel.CloseHandle.argtypes=[ctypes.c_void_p]
+    handle=kernel.OpenProcess(0x1000,False,pid); assert handle
+    try:
+        created,exited,system,user=FileTime(),FileTime(),FileTime(),FileTime()
+        assert kernel.GetProcessTimes(handle,ctypes.byref(created),ctypes.byref(exited),ctypes.byref(system),ctypes.byref(user))
+        return (created.high<<32)|created.low
+    finally: kernel.CloseHandle(handle)
+
+
+def issue_token(case, *, wrong_creation=False):
+    root=case['request'].parent/'scratch'; root.mkdir(exist_ok=True)
+    nonce=secrets.token_hex(32); path=root/('wd-q4-card-'+nonce[:32]+'.json')
+    doc={'schema':'wd.q4-card-launch-token.v1','launcher_pid':os.getpid(),
+         'launcher_creation_filetime':creation_filetime(os.getpid())+(1 if wrong_creation else 0),
+         'scratch_root':str(root),'nonce':nonce,'manifest_sha256':sha(case['manifest'].read_bytes()),
+         'runtime_sha256':sha(case['spec'].read_bytes()),'request_sha256':sha(case['request'].read_bytes())}
+    path.write_bytes(raw(doc))
+    return str(path),sha(path.read_bytes())
+
+
+def execute(case, *, flags=('-I','-S','-B'), pin=None, extra_env=None, with_token=True, token=None):
     manifest_pin = sha(case['manifest'].read_bytes())
     env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=manifest_pin)
+    env.pop('WD_Q4_CARD_JOB_TOKEN_PATH',None); env.pop('WD_Q4_CARD_JOB_TOKEN_SHA256',None)
+    if with_token:
+        token=token or issue_token(case)
+        env.update(WD_Q4_CARD_JOB_TOKEN_PATH=token[0],WD_Q4_CARD_JOB_TOKEN_SHA256=token[1])
     if extra_env: env.update(extra_env)
     return subprocess.run([sys.executable,*flags,str(case['bootstrap']),'--enable','--request',str(case['request']),
         '--request-sha256',pin or sha(case['request'].read_bytes()),'--manifest-sha256',manifest_pin,
@@ -111,6 +144,37 @@ def test_wrapper_style_parent_reaches_isolated_child_without_foreign_pythonpath(
     result = execute(case,flags=('-S','-B'),extra_env={'PYTHONPATH':str(tmp_path)})
     assert result.returncode == 0 and json.loads(result.stdout)['status'] == 'PREPARED'
     assert not marker.exists()
+
+
+@pytest.mark.parametrize('flags',[('-S','-B'),('-I','-S','-B')])
+def test_direct_wrapper_without_job_token_refuses(case,flags):
+    marker=case['code']/'tools'/'synthetic-entry-marker'
+    cli=case['code']/'tools'/CLI
+    cli.write_text('def main(args):\n open('+repr(str(marker))+',"w").write("entered")\n return 0\n',encoding='ascii')
+    repin_bundle(case)
+    result=execute(case,flags=flags,with_token=False)
+    assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
+    assert not marker.exists()
+
+
+def test_job_token_is_bound_to_live_launcher_and_consumed_once(case):
+    wrong=issue_token(case,wrong_creation=True)
+    refused=execute(case,flags=('-S','-B'),token=wrong)
+    assert refused.returncode==2 and json.loads(refused.stdout)=={'status':'REFUSED'}
+    token=issue_token(case)
+    first=execute(case,flags=('-S','-B'),token=token)
+    second=execute(case,flags=('-S','-B'),token=token)
+    assert first.returncode==0 and json.loads(first.stdout)['status']=='PREPARED'
+    assert second.returncode==2 and json.loads(second.stdout)=={'status':'REFUSED'}
+    assert Path(token[0]+'.used').is_file()
+
+
+def test_concurrent_reuse_has_only_one_consumer(case):
+    token=issue_token(case)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures=[pool.submit(execute,case,flags=('-S','-B'),token=token) for _ in range(2)]
+        results=[f.result() for f in futures]
+    assert sorted(item.returncode for item in results)==[0,2]
 
 
 def test_stdlib_precedes_packaged_top_level_module(case):

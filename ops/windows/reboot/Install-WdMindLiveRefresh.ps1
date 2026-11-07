@@ -187,12 +187,18 @@ if ($isCard) {
     $candidateBindingHash = [string]$candidateDescriptor.binding_sha256
     $candidateBinding = Get-Content -LiteralPath $candidateBindingFile -Raw -Encoding UTF8 | ConvertFrom-Json
     $candidatePlanFile = Assert-LivePath ([string]$candidateDescriptor.public_plan)
+    $candidateDir = [IO.Path]::GetDirectoryName($candidateFile)
+    if (-not [string]::Equals($candidateBindingFile, (Join-Path $candidateDir 'lane-binding.v1.json'), [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($candidatePlanFile, (Join-Path $candidateDir 'public-plan.json'), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Candidate input paths do not match their generation.'
+    }
     if ([string]$candidateBinding.schema -cne 'wd.q4-lane-binding.v1' -or
         [string]$candidateBinding.public_plan_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
         (Get-FileHash -LiteralPath $candidatePlanFile -Algorithm SHA256).Hash -cne
             ([string]$candidateBinding.public_plan_sha256).ToUpperInvariant()) { throw 'Candidate plan pin mismatch.' }
     $candidatePlanHash = [string]$candidateBinding.public_plan_sha256
     $candidatePlan = Get-Content -LiteralPath $candidatePlanFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string]$candidatePlan.schema -cne 'wd.q4-public-wrapper-plan.v3') { throw 'Card plan schema mismatch.' }
     $cardIndexRoot = Assert-LivePath ([string]$candidatePlan.root) -Directory
     $extraProtected = @($cardIndexRoot, [IO.Path]::GetDirectoryName($lifecycleFile),
         [IO.Path]::GetDirectoryName($jobFile), [IO.Path]::GetDirectoryName($returnFile))

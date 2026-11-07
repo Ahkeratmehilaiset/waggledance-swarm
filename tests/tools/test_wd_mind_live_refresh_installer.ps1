@@ -178,7 +178,7 @@ print('{"status":"PUBLISHED","pointer_sha256":"' + 'a'*64 + '","receipt_sha256":
         [IO.File]::Copy($baselinePath, $newBaseline)
         $candidate = Join-Path $candidateGen 'shared-session-config.v2.json'
         $candidatePlan=Join-Path $candidateGen 'public-plan.json'
-        [IO.File]::WriteAllText($candidatePlan, (@{root=$cardIndex}|ConvertTo-Json -Compress))
+        [IO.File]::WriteAllText($candidatePlan, (@{schema='wd.q4-public-wrapper-plan.v3';root=$cardIndex}|ConvertTo-Json -Compress))
         $candidateBinding=Join-Path $candidateGen 'lane-binding.v1.json'
         [IO.File]::WriteAllText($candidateBinding, (@{schema='wd.q4-lane-binding.v1';public_plan_sha256=(Get-FileHash $candidatePlan -Algorithm SHA256).Hash.ToLowerInvariant()}|ConvertTo-Json -Compress))
         [IO.File]::WriteAllText($candidate, (@{public_plan=$candidatePlan;binding_path=$candidateBinding;binding_sha256=(Get-FileHash $candidateBinding -Algorithm SHA256).Hash.ToLowerInvariant()}|ConvertTo-Json -Compress))

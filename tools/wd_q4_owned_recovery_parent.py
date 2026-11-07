@@ -5,6 +5,7 @@ reconcile its exact marker after the Job exits; uncertain states stay pending.
 This is cooperative coordination, not hostile same-user authentication.
 """
 from contextlib import ExitStack, contextmanager
+import base64
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -13,6 +14,8 @@ import os
 from pathlib import Path
 import re
 import secrets
+import subprocess
+import sys
 
 from sandbox.mind.step2 import prefix_private_state as private_state
 from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
@@ -118,3 +121,54 @@ def reserve(private_root,shared_root,pins):
     finally:
         if owner is not None: owner.close()
         if handle: _kernel().CloseHandle(handle)
+
+
+def _reader_digest(path):
+    path=checkpoint._secure(path)
+    with path.open('rb') as stream:
+        data=stream.read(1024*1024+1)
+    if not data or len(data)>1024*1024: raise OwnerUnknown('owner_unknown')
+    return hashlib.sha256(data).hexdigest()
+
+
+def run_owned(*, enabled=False, baseline_path=None, baseline_sha256=None, manifest_sha256=None,
+              genesis_tuple_bytes=None, genesis_tuple_sha256=None, receipt_bytes=None, receipt_sha256=None,
+              owner_pins=None, reader_sha256=None):
+    """Explicit single attempt; parent alone mutates state, child only reads bytes.
+
+    Reader is trusted pinned code, not an OS-restricted process. Persist the
+    marker on every exit; only a confirmed supervising Job may reconcile it.
+    """
+    if enabled is False: return {'status':'OFF'}
+    if enabled is not True or not _valid_pins(owner_pins): raise OwnerUnknown('owner_unknown')
+    from tools import wd_q4_continuation_adopt as adopt
+    from tools import wd_q4_genesis_to_composer_cli as composer
+    from tools import wd_q4_continuation_adopt_recovery as recovery
+    gt=adopt._pinned(genesis_tuple_bytes,genesis_tuple_sha256,65536)
+    adopt._pinned(receipt_bytes,receipt_sha256,65536)
+    if any(owner_pins.get(key)!=value for key,value in (
+            ('manifest_sha256',manifest_sha256),('baseline_sha256',baseline_sha256),
+            ('tuple_sha256',genesis_tuple_sha256),('receipt_sha256',receipt_sha256))):
+        raise OwnerUnknown('owner_unknown')
+    route=composer._tuple_part(gt,'route')
+    private=Path(route['private_state_root']); shared=Path(route['checkpoint_root'])
+    reader=Path(__file__).with_name('wd_q4_owned_recovery_reader.py')
+    if type(reader_sha256) is not str or not _HEX.fullmatch(reader_sha256) or _reader_digest(reader)!=reader_sha256:
+        raise OwnerUnknown('owner_unknown')
+    payload={'schema':'wd.q4-owned-reader.v1',
+             'tuple_b64':base64.b64encode(genesis_tuple_bytes).decode('ascii'), 'tuple_sha256':genesis_tuple_sha256,
+             'receipt_b64':base64.b64encode(receipt_bytes).decode('ascii'), 'receipt_sha256':receipt_sha256}
+    with reserve(private,shared,owner_pins) as owner:
+        env={key:os.environ[key] for key in ('SYSTEMROOT','WINDIR') if key in os.environ}
+        child=subprocess.run([sys.executable,'-I','-S','-B',str(reader),'--enable'],
+            input=json.dumps(payload,separators=(',',':')).encode('ascii'), stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, env=env, close_fds=True, timeout=60, check=False)
+        expected={'status':'VERIFIED','tuple_sha256':genesis_tuple_sha256,'receipt_sha256':receipt_sha256}
+        if (child.returncode!=0 or len(child.stdout)>1024 or json.loads(child.stdout)!=expected or
+                _reader_digest(reader)!=reader_sha256):
+            raise OwnerUnknown('owner_unknown')
+        result=recovery.recover_once(enabled=True,baseline_path=baseline_path,baseline_sha256=baseline_sha256,
+            manifest_sha256=manifest_sha256,genesis_tuple_bytes=genesis_tuple_bytes,
+            genesis_tuple_sha256=genesis_tuple_sha256,receipt_bytes=receipt_bytes,receipt_sha256=receipt_sha256,
+            _owner=owner,_owner_pins=owner_pins)
+        return {**result,**owner.descriptor()}

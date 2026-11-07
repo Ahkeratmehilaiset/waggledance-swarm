@@ -31,6 +31,10 @@ CARD_FILES = (
     'tools/wd_q4_public_card_prefix_verifier.py',
 )
 ROUTE_FILES = ('sandbox/mind/step2/shared_result_resolver.py', 'tools/wd_q4_resolved_child.py')
+STAGED_CARD_CLI_FILES = (
+    'tools/wd_q4_staged_card_composer_cli.py',
+    'tools/wd_q4_real_card_snapshot_cli.py',
+)
 
 
 def _reach(seeds, monkeypatch):
@@ -43,6 +47,19 @@ def _reach(seeds, monkeypatch):
 def test_every_card_file_is_packaged_once():
     packaged = closure._packaged_python()
     assert [packaged.count(path) for path in CARD_FILES] == [1, 1, 1]
+
+
+def test_staged_card_cli_files_and_import_closure_are_packaged(monkeypatch):
+    packaged = closure._packaged_python()
+    assert all(packaged.count(path) == 1 for path in STAGED_CARD_CLI_FILES)
+    reached = _reach(STAGED_CARD_CLI_FILES, monkeypatch)
+    assert reached <= set(packaged), sorted(reached - set(packaged))
+
+
+def test_staged_card_cli_entrypoints_are_explicit():
+    entries = closure._definition()['python_entrypoints']
+    assert entries['q4_card_snapshot_prepare'] == STAGED_CARD_CLI_FILES[1]
+    assert entries['q4_card_staged_composer'] == STAGED_CARD_CLI_FILES[0]
 
 
 def test_the_card_module_import_closure_is_packaged(monkeypatch):
@@ -96,6 +113,15 @@ def staged(tmp_path):
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, destination)
     return root
+
+
+def test_staged_card_cli_entrypoints_are_off_by_default(staged):
+    for module in ('tools.wd_q4_staged_card_composer_cli', 'tools.wd_q4_real_card_snapshot_cli'):
+        code = "import sys; sys.path.insert(0, sys.argv[1]); import " + module + " as cli; raise SystemExit(cli.main([]))"
+        result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', code, str(staged)], cwd=staged,
+                                capture_output=True, text=True, encoding='utf-8', timeout=60)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {'status': 'OFF'}
 
 
 def test_the_staged_package_imports_the_card_modules_with_the_route_off(staged):

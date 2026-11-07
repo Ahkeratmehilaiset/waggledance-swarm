@@ -109,6 +109,16 @@ def test_materializes_staged_card_descriptor_with_matching_v3_pins(materialize):
     assert not (Path(materialize['bundle_store_root']).parent / 'WD_Q4_DESCRIPTOR_CURRENT.json').exists()
 
 
+def test_refuses_descriptor_interpreter_limit_exceeding_lane_caller(materialize):
+    from tools.wd_q4_lane_caller_cli import MAX_INTERPRETER
+
+    case = dict(materialize)
+    case['descriptor_options'] = dict(case['descriptor_options'], interpreter_max_bytes=MAX_INTERPRETER + 1)
+    with pytest.raises(composer.ComposeRefused):
+        composer.compose_staged_card(**case)
+    assert not any(Path(case['stage_dir']).iterdir())
+
+
 def test_real_writer_to_staged_composer_materializes_matching_descriptor(materialize, tmp_path):
     from tools import wd_q4_public_card_plan_writer as writer
     from tools import wd_q4_lane_link as link

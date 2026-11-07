@@ -181,6 +181,7 @@ def compose_staged_card(*, enabled=False, stage_dir=None, generation=None, expec
         raise ComposeRefused('input_refused')
     from tools import wd_q4_descriptor_materializer as materializer
     from tools import wd_q4_shared_descriptor_producer as descriptor_producer
+    from tools import wd_q4_lane_caller_cli as lane_caller
     from tools import wd_q4_lane_link as link
     attempted, refusal, result = False, None, None
     try:
@@ -197,7 +198,9 @@ def compose_staged_card(*, enabled=False, stage_dir=None, generation=None, expec
                 or expected_host_sha256 != expected_host_sha256.lower()
                 or type(fixed_plan_bytes) is not bytes
                 or not hmac.compare_digest(hashlib.sha256(fixed_plan_bytes).hexdigest(), expected_fixed_plan_sha256)
-                or type(descriptor_options) is not dict or set(descriptor_options) != cli._DESCRIPTOR_KEYS):
+                or type(descriptor_options) is not dict or set(descriptor_options) != cli._DESCRIPTOR_KEYS
+                or type(descriptor_options.get('interpreter_max_bytes')) is not int
+                or not 0 < descriptor_options['interpreter_max_bytes'] <= lane_caller.MAX_INTERPRETER):
             raise ValueError()
         manifest = cli._read_pinned(str(bundle / 'deployment-manifest.json'), 2*1024*1024,
                                     expected_manifest_sha256.lower(), 'source_refused')

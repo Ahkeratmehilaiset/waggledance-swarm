@@ -22,6 +22,7 @@ import secrets
 from sandbox.mind.step2 import prefix_private_state as private_state
 from sandbox.mind.step2 import shared_capture_adapter as capture
 from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
+from sandbox.mind.step2.shared_bridge_snapshot import _token
 from tools import wd_mind_anchor_issuer as issuer
 from tools import wd_q4_genesis_bootstrap as genesis
 from tools import wd_q4_roster_from_fleet as roster
@@ -168,6 +169,36 @@ def _verified(pointer_pin, route, plan, pin, roster_bytes, tasks, policy_bytes):
     return view, prefix
 
 
+def _verify_empty_advance(report, route, plan, view, before, after, anchor_pin):
+    """Check the new empty transition, not the retained generation's anchor.
+
+    _verified already checked the complete public history and private prefix.
+    Re-read the exact current pointer by its report hash so this check cannot
+    accidentally use a different checkpoint after that verification.
+    """
+    root=Path(route['checkpoint_root'])
+    raw=checkpoint._read(checkpoint._secure(root/checkpoint.POINTER),max_bytes=checkpoint._MAX_POINTER_BYTES)
+    if _sha(raw)!=report['pointer_sha256']: raise ValueError()
+    pointer=runner._json(raw,checkpoint._MAX_POINTER_BYTES)
+    advance=pointer.get('empty_advance')
+    if (type(advance) is not dict or advance.get('schema')!='wd.q4-empty-watermark.v2'
+            or advance.get('anchor_sha256')!=anchor_pin
+            or advance.get('cursor_start_sha256')!=_sha(_token(before.cursor).encode('utf-8'))
+            or advance.get('cursor_end_sha256')!=_sha(_token(after.cursor).encode('utf-8'))
+            or advance.get('policy_sha256')!=route['policy_sha256']
+            or advance.get('roster_sha256')!=route['roster_sha256']
+            or advance.get('source_mode')!={'status_mode':'public-v1',
+                                            'public_policy_sha256':route['public_policy_sha256']}
+            or pointer.get('previous_pointer_sha256')!=plan['expected_pointer_sha256']
+            or pointer.get('prefix_start_sha256')!=before.sha256
+            or pointer.get('prefix_watermark_sha256')!=after.sha256
+            or pointer.get('watermark')!=asdict(after.cursor)
+            or pointer.get('generation')!=view['generation']
+            or pointer.get('artifacts')!=view['artifacts']
+            or pointer.get('anchor_sha256')!=view['anchor_sha256']):
+        raise ValueError()
+
+
 def _checkpoint_cutoff(view, route):
     """Read the verified current generation's receipt, rechecking its pin."""
     name, artifacts = view["generation"], view["artifacts"]
@@ -299,7 +330,11 @@ def _execute(route, plan, pin, roster_bytes, tasks, policy_bytes, public_policy_
                 raise ValueError()
             outcome = "DEFERRED"
         else:
-            if (after.cursor.offset <= before.cursor.offset or view.get("anchor_sha256") != anchor_pin):
+            if after.cursor.offset <= before.cursor.offset:
+                raise ValueError()
+            if report["status"] == "EMPTY_ADVANCED":
+                _verify_empty_advance(report, route, plan, view, before, after, anchor_pin)
+            elif view.get("anchor_sha256") != anchor_pin:
                 raise ValueError()
             outcome = "partial_ready_prefix"
             if report["coverage"] == "caught_up_to_final_snapshot_not_history":

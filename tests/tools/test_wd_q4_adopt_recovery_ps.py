@@ -221,10 +221,22 @@ def test_bootstrap_independently_checks_forwarded_host_before_reservation(job):
     anchor="$psi.Arguments+=' --host-sha256 ' + $ExpectedHostSha256"
     assert text.count(anchor)==1
     worker.write_text(text.replace(anchor,"$psi.Arguments+=' --host-sha256 ' + ('f'*64)"),encoding='utf-8')
-    repin_changed(job,['Invoke-WdQ4ContinuationWorker.ps1'])
+    # Instrument only the synthetic, re-pinned bootstrap copy to prove the
+    # forwarded pin reaches its own check before the parent reservation.
+    bootstrap=job['bundle']/'tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_bootstrap.py'
+    source=bootstrap.read_text(encoding='utf-8')
+    host_check='    _read(host, host_pin, 128 * 1024 * 1024)'
+    assert source.count(host_check)==1
+    reached=job['bundle'].parent/'synthetic-bootstrap-host-check'
+    source=source.replace(host_check, '    Path('+repr(str(reached))+').write_text("reached")\n'+host_check)
+    bootstrap.write_text(source,encoding='utf-8')
+    repin_changed(job,['Invoke-WdQ4ContinuationWorker.ps1',
+                       'tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_bootstrap.py'])
     result=run_job(job,scratch); private=job['bundle'].parent/'private'
-    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    assert reached.read_text()=='reached'
+    assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
     assert not (private/'q4-adopt-recovery-job.pending.json').exists()
+    assert not list(private.glob('q4-adopt-recovery-job-result-*.json'))
 
 
 @pytest.mark.parametrize('corrupt',[False,True])

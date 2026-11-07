@@ -352,3 +352,157 @@ def test_the_projection_check_refuses_other_top_level_values(tmp_path, route, ke
     _, projection = load(memory_dir)
     with pytest.raises(cm.ContentMemoryRefused, match="projection_invalid"):
         cm.validate_route_projection(dict(projection, **{key: value}))
+
+
+# --- increment 6: the resolver content branch and the isolated child --------------------------------------------------
+
+def resolver_inputs(tmp_path, route, **changes):
+    built, memory_dir = build_route(tmp_path, route)
+    strict = strict_pins()
+    data = dict(memory_manifest=(memory_dir / "memory.json").read_bytes(), expected_memory_sha256=built["memory_sha256"],
+                projection_bytes=(memory_dir / "projection.json").read_bytes(), query_utc=tcm.ASK_TIME,
+                content_decision_bytes=route["decision"], content_decision_sha256=route["decision_sha"], **strict)
+    data.update(changes)
+    return built, memory_dir, data
+
+
+def child_hits(memory_dir, built, monkeypatch, situation):
+    """The output of the real isolated reader through the real launcher output check (no process)."""
+    from sandbox.mind.step2 import runtime_launcher
+    from sandbox.mind.step2 import wd_q4_private_read as reader
+    monkeypatch.setattr(reader, "ENCODER_FACTORY", lambda **kw: tcm.Encoder())
+    monkeypatch.setattr(reader, "bind_runtime_encoder", lambda descriptor, model_dir: None)
+    out = reader._private_read_locked(memory_dir, memory_dir / "descriptor.json", built["descriptor_sha256"], situation,
+                                      tcm.ASK_TIME, "C:/fake/model", tcm.IDENTITY["revision"])
+    return runtime_launcher._validate_output(json.dumps(out).encode("utf-8"), 0, built["descriptor_sha256"])
+
+
+def test_the_isolated_child_reads_the_route_memory_and_the_resolver_answers(tmp_path, route, monkeypatch):
+    built, memory_dir, data = resolver_inputs(tmp_path, route)
+    checked = child_hits(memory_dir, built, monkeypatch, "miten hex-muisti tallentaa parven p" + tcm.A + tcm.A + "t"
+                         + tcm.O + "kset")
+    results = checked["results"]
+    assert results and all(set(item) == {"ref_sha256", "doc_id_sha256", "ref_kind", "canonical_event"}
+                           for item in results)
+    resolved = resolver.resolve_results(results=results, **data)
+    texts = [cp.decode_text(item["stored_text"]) for item in resolved]
+    assert tcm.DOC_TEXT in texts and all(tcp.TEXT_CLASS.fullmatch(item["stored_text"]) for item in resolved)
+
+
+def test_the_resolver_answers_hash_hits_with_the_content_decision(tmp_path, route):
+    built, memory_dir, data = resolver_inputs(tmp_path, route)
+    _, projection = load(memory_dir)
+    records = projection["messages"]["records"]
+    resolved = resolver.resolve_results(results=hits(records), **data)
+    assert [item["stored_text"] for item in resolved] == [r["stored_text"] for r in records]
+
+
+def test_without_the_content_decision_the_v6_path_refuses_the_route_memory(tmp_path, route):
+    built, memory_dir, data = resolver_inputs(tmp_path, route)
+    _, projection = load(memory_dir)
+    plain = {k: v for k, v in data.items() if not k.startswith("content_decision")}
+    with pytest.raises(resolver.ResolveRefused):
+        resolver.resolve_results(results=hits(projection["messages"]["records"]), **plain)
+
+
+@pytest.mark.parametrize("change", [
+    {"card_decision_bytes": b"{}", "card_decision_sha256": "0" * 64},
+    {"content_decision_sha256": "0" * 64},
+    {"policy_bytes": None, "policy_sha256": None, "roster_bytes": None, "roster_sha256": None},
+    {"query_utc": "not-a-time"},
+])
+def test_the_content_branch_refuses_other_inputs(tmp_path, route, change):
+    built, memory_dir, data = resolver_inputs(tmp_path, route)
+    _, projection = load(memory_dir)
+    data.update(change)
+    with pytest.raises(resolver.ResolveRefused):
+        resolver.resolve_results(results=hits(projection["messages"]["records"]), **data)
+
+
+def rewrite(memory_dir, edit_manifest=None, edit_projection=None):
+    from sandbox.mind.step2 import cell as cell_mod
+    manifest, projection = load(memory_dir)
+    if edit_projection is not None:
+        edit_projection(projection)
+    projection_bytes = json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
+    manifest["projection_sha256"] = sha(projection_bytes)
+    if edit_manifest is not None:
+        edit_manifest(manifest)
+    manifest_bytes = cell_mod.canonical(manifest).encode("utf-8")
+    return manifest_bytes, projection_bytes, projection
+
+
+@pytest.mark.parametrize("edit_manifest, edit_projection", [
+    (lambda m: m["content_route"].update(doc_commit="0" * 40), None),
+    (lambda m: m.pop("content_route"), None),
+    (lambda m: m["policy"].update(review_signal_excluded=False), None),
+    (lambda m: m.update(scope=cm.SCOPE), None),
+    (None, lambda p: p["messages"]["records"][0]["meta"].update(agent=tcp.RCO1)),
+    (None, lambda p: p["messages"]["records"][0]["meta"].update(agent="unknown-lane")),
+    (None, lambda p: p["messages"]["records"][0]["meta"].update(task_id=UNAPPROVED_TASK)),
+    (None, lambda p: p["documents"]["records"][0].update(stored_text=cp.encode_text("vaihdettu"))),
+])
+def test_the_content_branch_rechecks_manifest_and_projection(tmp_path, route, edit_manifest, edit_projection):
+    built, memory_dir, data = resolver_inputs(tmp_path, route)
+    manifest_bytes, projection_bytes, projection = rewrite(memory_dir, edit_manifest, edit_projection)
+    data.update(memory_manifest=manifest_bytes, expected_memory_sha256=sha(manifest_bytes),
+                projection_bytes=projection_bytes)
+    with pytest.raises(resolver.ResolveRefused):
+        resolver.resolve_results(results=hits(projection["documents"]["records"][1:]), **data)
+
+
+def test_the_rewrite_helper_alone_keeps_an_answering_memory(tmp_path, route):
+    built, memory_dir, data = resolver_inputs(tmp_path, route)
+    manifest_bytes, projection_bytes, projection = rewrite(memory_dir)
+    data.update(memory_manifest=manifest_bytes, expected_memory_sha256=sha(manifest_bytes),
+                projection_bytes=projection_bytes)
+    assert resolver.resolve_results(results=hits(projection["documents"]["records"][1:]), **data)
+
+
+def test_a_non_canonical_projection_encoding_is_refused(tmp_path, route):
+    from sandbox.mind.step2 import cell as cell_mod
+    built, memory_dir, data = resolver_inputs(tmp_path, route)
+    _, projection = load(memory_dir)
+    compact = json.dumps(projection, sort_keys=True).encode("utf-8")
+    manifest_bytes, _, _ = rewrite(memory_dir)
+    manifest = json.loads(manifest_bytes)
+    manifest["projection_sha256"] = sha(compact)
+    manifest_bytes = cell_mod.canonical(manifest).encode("utf-8")
+    data.update(memory_manifest=manifest_bytes, expected_memory_sha256=sha(manifest_bytes), projection_bytes=compact)
+    with pytest.raises(resolver.ResolveRefused):
+        resolver.resolve_results(results=hits(projection["documents"]["records"]), **data)
+
+
+def test_a_content_decision_never_opens_a_card_or_v6_memory(tmp_path, route):
+    built, memory_dir, data = resolver_inputs(tmp_path, route)
+    for schema in (resolver.PROJECTION_SCHEMA, resolver.CARD_PROJECTION_SCHEMA):
+        manifest_bytes, projection_bytes, projection = rewrite(memory_dir,
+                                                               lambda m: m.update(projection_schema=schema))
+        data.update(memory_manifest=manifest_bytes, expected_memory_sha256=sha(manifest_bytes),
+                    projection_bytes=projection_bytes)
+        with pytest.raises(resolver.ResolveRefused):
+            resolver.resolve_results(results=hits(projection["documents"]["records"]), **data)
+
+
+def test_a_projection_not_pinned_by_the_manifest_is_refused(tmp_path, route):
+    built, memory_dir, data = resolver_inputs(tmp_path, route)
+    _, projection = load(memory_dir)
+    projection["documents"]["records"] = projection["documents"]["records"][:-1]
+    shorter = json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
+    manifest_bytes, _, _ = rewrite(memory_dir, edit_projection=lambda p: p["documents"].update(
+        records=p["documents"]["records"][:-1]))
+    repinned = dict(data, memory_manifest=manifest_bytes, expected_memory_sha256=sha(manifest_bytes),
+                    projection_bytes=shorter)
+    assert resolver.resolve_results(results=hits(projection["documents"]["records"]), **repinned)
+    data.update(projection_bytes=shorter)
+    with pytest.raises(resolver.ResolveRefused):
+        resolver.resolve_results(results=hits(projection["documents"]["records"]), **data)
+
+
+@pytest.mark.parametrize("stray", [{"content_decision_sha256": "0" * 64}, {"content_decision_bytes": b"{}"}])
+def test_any_content_decision_part_keeps_a_v6_memory_closed(stray):
+    from sandbox.mind.step2.test_shared_result_resolver import fixture as v6_fixture
+    args, record = v6_fixture()
+    assert resolver.resolve_results(**args)[0]["stored_text"] == record["stored_text"]
+    with pytest.raises(resolver.ResolveRefused):
+        resolver.resolve_results(**dict(args, **stray))

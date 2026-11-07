@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import types
 
 
 def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _unique_pairs,
@@ -77,6 +78,73 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
     original_spec_from_file = import_util.spec_from_file_location
     original_spec_from_loader = import_util.spec_from_loader
     omitted = object()
+    absent = object()
+    witnessed = {}
+
+    def code_tree(code):
+        result = [code]
+        for value in code.co_consts:
+            if type(value) is types.CodeType:
+                result.extend(code_tree(value))
+        return result
+
+    def capture_function(function, source_globals, codes, states, seen):
+        _check(type(function) is types.FunctionType and function.__globals__ is source_globals
+               and any(function.__code__ is code for code in codes)
+               and function.__defaults__ is None and function.__kwdefaults__ is None)
+        if id(function) in seen:
+            return
+        seen.add(id(function))
+        cells = function.__closure__ or ()
+        values = tuple(cell.cell_contents for cell in cells)
+        globals_used = tuple((name, source_globals.get(name, absent)) for name in function.__code__.co_names)
+        states.append((function, function.__code__, function.__closure__, values, globals_used, source_globals))
+        for value in values:
+            if type(value) is types.FunctionType:
+                capture_function(value, source_globals, codes, states, seen)
+            else:
+                _check(type(value) in (str, bytes, int, bool, type(None)))
+
+    def verify_witness(name, module, *, check_registry=True):
+        _check(name in witnessed)
+        expected, attributes, states = witnessed[name]
+        _check(module is expected and type(module) is types.ModuleType
+               and (not check_registry or sys.modules.get(name) is module))
+        current = vars(module)
+        _check(set(current) == set(attributes) and all(current[key] is value for key, value in attributes.items()))
+        for function, code, closure, values, globals_used, source_globals in states:
+            _check(function.__code__ is code and function.__globals__ is source_globals
+                   and function.__closure__ is closure and function.__defaults__ is None
+                   and function.__kwdefaults__ is None)
+            _check(all(cell.cell_contents is value for cell, value in zip(closure or (), values)))
+            _check(all(source_globals.get(key, absent) is value for key, value in globals_used))
+
+    def capture_created(before, code, source_globals):
+        codes = code_tree(code)
+        allowed = {'__name__', '__doc__', '__package__', '__loader__', '__spec__', '__file__',
+                   '__getattr__', '__dir__'}
+        for name, module in list(sys.modules.items()):
+            if before.get(name, absent) is module or type(module) is not types.ModuleType:
+                continue
+            attrs = vars(module)
+            getter = attrs.get('__getattr__')
+            if (type(getter) is not types.FunctionType or getter.__globals__ is not source_globals
+                    or not any(getter.__code__ is candidate for candidate in codes)):
+                continue
+            if not set(attrs) <= allowed or '__file__' not in attrs:
+                continue
+            _check(attrs.get('__name__') == name and attrs.get('__spec__') is None
+                   and attrs.get('__loader__') is None and attrs.get('__file__') is None)
+            if name in before:
+                _check(name in witnessed and before[name] is witnessed[name][0])
+                verify_witness(name, before[name], check_registry=False)
+            states = []
+            seen = set()
+            capture_function(getter, source_globals, codes, states, seen)
+            directory = attrs.get('__dir__')
+            if directory is not None:
+                capture_function(directory, source_globals, codes, states, seen)
+            witnessed[name] = (module, dict(attrs), states)
 
     def source_code(loader, requested):
         _check(type(loader) is loader_types[1] and loader.name == requested)
@@ -85,7 +153,16 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
 
     def source_exec(loader, module):
         _check(type(loader) is loader_types[1] and module.__name__ == loader.name)
-        exec(source_code(loader, module.__name__), module.__dict__)
+        code = source_code(loader, module.__name__)
+        names = {name for nested in code_tree(code) for name in nested.co_names}
+        before = dict(sys.modules) if 'modules' in names and 'ModuleType' in names else None
+        if before is not None:
+            for name, (existing, _, _) in tuple(witnessed.items()):
+                _check(before.get(name) is existing)
+                verify_witness(name, existing, check_registry=False)
+        exec(code, module.__dict__)
+        if before is not None:
+            capture_created(before, code, module.__dict__)
 
     def bytecode_refused(*args, **kwargs):
         _check(False)
@@ -138,6 +215,10 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
     sys.path_importer_cache.clear()
 
     class ControlledFinder:
+        def accept_created(self, name, module):
+            self.check()
+            verify_witness(name, module)
+
         def check(self):
             _check(type(sys.meta_path) is tuple and sys.meta_path == (self,) + standard[:2]
                    and type(sys.path_hooks) is list and sys.path_hooks == [hook]

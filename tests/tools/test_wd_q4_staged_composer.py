@@ -377,7 +377,9 @@ def shared_case(materialize, monkeypatch):
     fixed = staged.transport._fixed_plan(materialize['fixed_plan_bytes'])
 
     def attest(path, plan):
-        assert Path(path) == peer and plan == fixed
+        unbound = ('public_plan_path',)  # shared mode binds the plan to the new generation's own copy
+        assert Path(path) == peer and {k: v for k, v in plan.items() if k not in unbound} == {
+            k: v for k, v in fixed.items() if k not in unbound}
         return backend.read_bytes()
     monkeypatch.setattr(staged.transport, '_read_staged_backend', attest)
     return materialize
@@ -388,9 +390,21 @@ def _snapshot(stage):
             for p in sorted(Path(stage).rglob('*'))}
 
 
+def _bound_to_generation(case, generation, target=None):
+    """Shared mode: fixed plan and descriptor name GEN/public-plan.json; the caller's pinned source stays put."""
+    from tools import wd_q4_staged_composer as staged
+    target = str(Path(case['stage_dir']) / generation / 'public-plan.json') if target is None else str(target)
+    plan = json.loads(case['fixed_plan_bytes'])
+    plan['public_plan_path'] = target
+    raw = staged.transport._canonical(plan)
+    return dict(case, fixed_plan_bytes=raw, expected_fixed_plan_sha256=hashlib.sha256(raw).hexdigest(),
+                descriptor_options=dict(case['descriptor_options'], public_plan=target))
+
+
 def _shared(case, generation):
     from tools import wd_q4_staged_composer as staged
-    return staged.compose_staged_card(**dict(case, generation=generation, shared_stage=True))
+    return staged.compose_staged_card(**dict(_bound_to_generation(case, generation), generation=generation,
+                                             shared_stage=True))
 
 
 def test_shared_stage_composes_two_generations_with_noncolliding_pointers(shared_case):
@@ -545,3 +559,77 @@ def test_default_stage_still_refuses_a_publication_file(shared_case):
     _publish_like_selector(shared_case['stage_dir'], _GEN_B)
     with pytest.raises(staged.ComposeRefused):
         staged.compose_staged_card(**shared_case)
+
+
+# --- public plan layout: the live selector reads GEN/public-plan.json of a refreshed candidate ---------------------
+# Shared mode copies the caller's pinned public plan bytes exclusively into the new generation after its artifacts
+# and before its candidate pointer, re-reads the copy and the source against the same pin, and binds descriptor and
+# fixed plan to the copy. The default stage keeps binding the caller's path and writes no copy.
+
+def test_shared_stage_copies_the_pinned_public_plan_into_the_new_generation(shared_case):
+    source = Path(shared_case['public_plan_path'])
+    original = source.read_bytes()
+    result = _shared(shared_case, _GEN_B)
+    target = Path(shared_case['stage_dir']) / _GEN_B / 'public-plan.json'
+    assert target.read_bytes() == original and source.read_bytes() == original
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == shared_case['expected_public_plan_sha256']
+    descriptor = json.loads(Path(result['descriptor_path']).read_bytes())
+    fixed = json.loads((Path(shared_case['stage_dir']) / _GEN_B / 'fixed-plan.v2.json').read_bytes())
+    assert Path(descriptor['public_plan']) == target and Path(fixed['public_plan_path']) == target
+
+
+def test_default_stage_keeps_the_caller_public_plan_and_writes_no_copy(shared_case):
+    from tools import wd_q4_staged_composer as staged
+    result = staged.compose_staged_card(**shared_case)
+    descriptor = json.loads(Path(result['descriptor_path']).read_bytes())
+    assert Path(descriptor['public_plan']) == Path(shared_case['public_plan_path'])
+    assert not (Path(result['descriptor_path']).parent / 'public-plan.json').exists()
+
+
+@pytest.mark.parametrize('binding', ['caller-path', 'fixed-only', 'descriptor-only', 'other-generation'])
+def test_shared_stage_refuses_a_public_plan_bound_outside_the_new_generation(shared_case, binding):
+    from tools import wd_q4_staged_composer as staged
+    _shared(shared_case, _GEN_B)
+    stage = Path(shared_case['stage_dir'])
+    before = _snapshot(stage)
+    bound = _bound_to_generation(shared_case, _GEN_C)
+    source = shared_case['public_plan_path']
+    if binding == 'caller-path':
+        case = _bound_to_generation(shared_case, _GEN_C, source)
+    elif binding == 'fixed-only':
+        case = dict(bound, descriptor_options=dict(bound['descriptor_options'], public_plan=source))
+    elif binding == 'descriptor-only':
+        case = dict(_bound_to_generation(shared_case, _GEN_C, source), descriptor_options=bound['descriptor_options'])
+    else:
+        case = _bound_to_generation(shared_case, _GEN_C, stage / _GEN_B / 'public-plan.json')
+    with pytest.raises(staged.ComposeRefused):
+        staged.compose_staged_card(**dict(case, generation=_GEN_C, shared_stage=True))
+    assert _snapshot(stage) == before
+
+
+@pytest.mark.parametrize('tamper', ['copy-bytes', 'source-after-materialize', 'copy-write-fails'])
+def test_shared_stage_public_plan_tamper_is_incomplete_without_a_pointer(shared_case, monkeypatch, tamper):
+    from tools import wd_q4_staged_composer as staged
+    from tools import wd_q4_descriptor_materializer as materializer
+    source = Path(shared_case['public_plan_path'])
+    if tamper == 'source-after-materialize':
+        real_materialize = materializer.materialize_descriptor
+
+        def materialize_then_tamper(**kwargs):
+            out = real_materialize(**kwargs)
+            source.write_bytes(source.read_bytes() + b' ')
+            return out
+        monkeypatch.setattr(materializer, 'materialize_descriptor', materialize_then_tamper)
+    else:
+        real_exclusive = staged._exclusive
+
+        def tampered(path, raw):
+            if Path(path).name == 'public-plan.json':
+                if tamper == 'copy-write-fails':
+                    raise OSError()
+                raw = raw + b' '
+            return real_exclusive(path, raw)
+        monkeypatch.setattr(staged, '_exclusive', tampered)
+    with pytest.raises(staged.ComposeIncomplete):
+        _shared(shared_case, _GEN_B)
+    assert not (Path(shared_case['stage_dir']) / ('candidate-pointer-' + _GEN_B + '.json')).exists()

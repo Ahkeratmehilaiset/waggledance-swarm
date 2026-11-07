@@ -130,10 +130,22 @@ def _verify_empty_partial(receipt, runner_receipt, genesis_route, private, root,
                                        before,prefix,route['anchor_sha256'])
 
 
+def _require_supported_p1():
+    """Legacy status adoption cannot publish a staged P1 card tuple.
+
+    The P1 publisher requires a staged v3 pair, while the legacy update
+    publisher deliberately refuses that pair without a card-refresh tuple.
+    Refuse before creating a pending marker; the separate card refresh
+    coordinator owns the closed tuple and its compare-and-swap binding.
+    """
+    raise AdoptRefused('card_refresh_tuple_required')
+
+
 def run_once(*,enabled=False,baseline_path=None,baseline_sha256=None,manifest_sha256=None,
              genesis_tuple_bytes=None,genesis_tuple_sha256=None,receipt_bytes=None,receipt_sha256=None,
              p1_enabled=False):
     if enabled is False: return {'status':'OFF'}
+    if enabled is True and p1_enabled is True: _require_supported_p1()
     entered=False; failure=None; result=None; interrupt_type=None
     try:
         if enabled is not True or type(p1_enabled) is not bool: raise ValueError()

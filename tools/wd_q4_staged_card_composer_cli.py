@@ -88,6 +88,9 @@ def _verify_result(result, values):
                                                values['expected_fixed_plan_sha256'], 'result_refused')
     if materialized_plan != values['fixed_plan_bytes']:
         raise ValueError()
+    if shared:  # the selector reads the candidate's own public plan copy inside its generation
+        public_copy = str(Path(paths['descriptor_path']).parent / 'public-plan.json')
+        input_files._read_pinned(public_copy, 65536, values['expected_public_plan_sha256'], 'result_refused')
     fixed = composer.transport._fixed_plan(materialized_plan)
     snapshot = input_files._read_pinned(paths['snapshot_path'], input_files.LIMITS['snapshot'],
                                         fixed['bundle_sha256'], 'result_refused')

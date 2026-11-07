@@ -194,3 +194,31 @@ def test_published_selector_must_still_verify_before_marker_removal(actual_conti
     assert marker.read_bytes() == marker_before
     assert selector.read_bytes() == selector_before
     assert generation.is_dir()
+
+@pytest.mark.parametrize('late', [False, True])
+def test_recovery_job_pending_blocks_direct_recovery_and_retains_adoption(actual_continuation, monkeypatch, late):
+    from contextlib import contextmanager
+    from sandbox.mind.step2 import prefix_private_state
+    from tools import wd_q4_continuation_adopt as adopt
+    from tools import wd_q4_continuation_adopt_recovery as recovery
+    args=actual_continuation
+    private, generation=paths(args)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(adopt.update, '_publish', lambda *_a, **_k: (_ for _ in ()).throw(KeyboardInterrupt()))
+        with pytest.raises(adopt.AdoptInterrupted): adopt.run_once(**args)
+    old=private/'q4-continuation-adopt.pending.json'
+    original=old.read_bytes()
+    job=private/'q4-adopt-recovery-job.pending.json'
+    if not late:
+        job.write_bytes(b'synthetic pending')
+    else:
+        lock=prefix_private_state._checkpoint_lock
+        @contextmanager
+        def job_arrives(root,timeout):
+            with lock(root,timeout):
+                job.write_bytes(b'synthetic pending')
+                yield
+        monkeypatch.setattr(prefix_private_state,'_checkpoint_lock',job_arrives)
+    with pytest.raises(recovery.RecoveryUnknown): recovery.recover_once(**args)
+    assert old.read_bytes()==original and job.read_bytes()==b'synthetic pending'
+    assert not generation.exists()

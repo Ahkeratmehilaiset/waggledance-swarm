@@ -301,3 +301,249 @@ def test_failure_after_replace_never_claims_not_published(case, monkeypatch):
     with pytest.raises(live.LiveSnapshotOutcomeUnknown):
         do_publish(case)
     assert (case['root'] / 'q4-live-current.json').is_file()
+
+
+# --- Staged card route (v3 public plan, ten-pin binding with card_policy_sha256) -------------------------------
+# Synthetic only: the real staged producer is replaced by a spy that returns the generation's pinned binding
+# bytes only when it receives exactly the bytes on disk under the v3 plan pins. This proves the selector's
+# wiring and refusals, not the producer itself (covered by the producer and composer tests).
+
+_STAGED_FILES = (('pointer', 'card-pointer.json'), ('policy', 'policy'), ('roster', 'roster'),
+                 ('public_policy', 'public'), ('card_decision', 'card-decision.json'),
+                 ('card_policy', 'card-policy.json'))
+
+
+def _staged_generation(c, gen, files, card_policy=None):
+    """Rewrite one generation of the legacy case as a staged-card generation; returns the 6-tuple."""
+    index = c['index']
+    directory = c['root'] / gen
+    blobs = dict(files)
+    if card_policy is not None:
+        blobs['card_policy'] = card_policy
+    pins = {name + '_sha256': sha(blobs[name]) for name, _ in _STAGED_FILES}
+    plan = {'schema': 'wd.q4-public-wrapper-plan.v3', 'root': str(index),
+            'config': {'descriptor_sha256': sha(b'descriptor-' + blobs['pointer'])},
+            'encoder_sha256': c['base'][4]['encoder_sha256'], 'source_anchor_sha256': sha(b'anchor-' + blobs['pointer']),
+            'end_cursor': {'file_identity': 'synthetic-file', 'generation': None, 'offset': 0},
+            'source_path': str(index / 'source.jsonl'), 'generation_path': str(index / 'generation.json'),
+            **{name + '_path': str(index / filename) for name, filename in _STAGED_FILES}, **pins}
+    plan_raw = enc(plan)
+    binding = {'pointer_sha256': plan['pointer_sha256'], 'source_anchor_sha256': plan['source_anchor_sha256'],
+               'encoder_sha256': plan['encoder_sha256'], 'policy_sha256': plan['policy_sha256'],
+               'roster_sha256': plan['roster_sha256'], 'public_policy_sha256': plan['public_policy_sha256'],
+               'descriptor_sha256': plan['config']['descriptor_sha256'], 'projection_sha256': sha(b'projection'),
+               'card_decision_sha256': plan['card_decision_sha256'], 'card_policy_sha256': plan['card_policy_sha256']}
+    document = json.loads(c['base'][5]['binding_bytes'])
+    document['binding'] = binding
+    document['public_plan_sha256'] = sha(plan_raw)
+    binding_raw = enc(document)
+    bundle = Path(c['base'][0]['bundle_root'])
+    fixed = json.loads(c['base'][5]['fixed_plan_bytes'])
+    fixed.update(schema='wd.q4-fixed-plan.v3', backend='staged-card-wrapper-v1',
+        expected_pointer_sha256=binding['pointer_sha256'], expected_source_sha256=binding['source_anchor_sha256'],
+        expected_encoder_sha256=binding['encoder_sha256'], policy_sha256=binding['policy_sha256'],
+        roster_sha256=binding['roster_sha256'], expected_public_policy_sha256=binding['public_policy_sha256'],
+        card_decision_sha256=binding['card_decision_sha256'], card_policy_sha256=binding['card_policy_sha256'],
+        wrapper_sha256=sha((bundle / 'Invoke-WdQ4Query.ps1').read_bytes()),
+        deployment_manifest_sha256=c['manifest_sha'], public_plan_sha256=sha(plan_raw), host_sha256='8' * 64,
+        backend_sha256='9' * 64, bundle_root=str(bundle), bundle_commit='a' * 40,
+        wrapper_path=str(bundle / 'Invoke-WdQ4Query.ps1'), public_plan_path=str(directory / 'public-plan.json'))
+    fixed_raw = enc(fixed)
+    (directory / 'public-plan.json').write_bytes(plan_raw)
+    (directory / 'lane-binding.v1.json').write_bytes(binding_raw)
+    (directory / 'fixed-plan.v2.json').write_bytes(fixed_raw)
+    descriptor = dict(c['config'][gen][0])
+    descriptor.update(binding_sha256=sha(binding_raw), fixed_plan_sha256=sha(fixed_raw), expected_binding=binding)
+    descriptor_raw = enc(descriptor)
+    (directory / 'shared-session-config.v2.json').write_bytes(descriptor_raw)
+    inputs = dict(c['config'][gen][5], binding_bytes=binding_raw, fixed_plan_bytes=fixed_raw)
+    item = (descriptor, descriptor_raw, sha(descriptor_raw), c['config'][gen][3], binding, inputs)
+    c['config'][gen] = item
+    c['producer_out'][sha(plan_raw)] = binding_raw
+    return item
+
+
+@pytest.fixture
+def staged(case, monkeypatch):
+    files = {'pointer': b'{"synthetic":"card-pointer-1"}', 'policy': b'synthetic-policy', 'roster': b'synthetic-roster',
+             'public_policy': b'synthetic-public-policy', 'card_decision': b'synthetic-card-decision-1',
+             'card_policy': b'synthetic-card-policy'}
+    for name, filename in _STAGED_FILES:
+        (case['index'] / filename).write_bytes(files[name])
+    case.update(producer_out={}, staged_calls=[], legacy_calls=[], files=files, after_producer=None)
+    case['base'] = _staged_generation(case, 'b' * 40, files)
+    case['candidate'] = _staged_generation(case, 'c' * 40, files)
+
+    def staged_spy(**kw):
+        plan = json.loads(kw['public_plan_bytes'])
+        for name, _ in _STAGED_FILES:
+            assert kw[name + '_bytes'] == Path(plan[name + '_path']).read_bytes()
+            assert sha(kw[name + '_bytes']) == plan[name + '_sha256']
+        assert kw['enabled'] is True and kw['expected_commit'] == 'a' * 40
+        case['staged_calls'].append(sha(kw['public_plan_bytes']))
+        out = case['producer_out'][sha(kw['public_plan_bytes'])]
+        if case['after_producer']:
+            case['after_producer']()
+        return {'binding_bytes': out, 'binding_sha256': sha(out)}
+
+    def legacy_spy(**kw):
+        case['legacy_calls'].append(1)
+        raise AssertionError('legacy producer used for a staged descriptor')
+
+    monkeypatch.setattr(live.binding_producer, 'build_staged_lane_binding', staged_spy)
+    monkeypatch.setattr(live.binding_producer, 'build_lane_binding', legacy_spy)
+    return case
+
+
+def test_staged_publish_and_select_use_staged_producer_and_card_pointer(staged):
+    result = do_publish(staged)
+    chosen = do_select(staged)
+    assert result['status'] == 'PUBLISHED' and chosen['status'] == 'SELECTED'
+    assert chosen['configuration'][2] == staged['candidate'][2]
+    assert staged['staged_calls'] and not staged['legacy_calls']
+    publication = json.loads((staged['root'] / 'q4-live-current.json').read_bytes())
+    assert publication['index_pointer_sha256'] == sha(staged['files']['pointer'])
+    assert not (staged['index'] / 'q4-latest.json').read_bytes() == staged['files']['pointer']
+
+
+def test_staged_route_ignores_legacy_index_pointer(staged):
+    (staged['index'] / 'q4-latest.json').write_bytes(b'unrelated legacy pointer')
+    assert do_publish(staged)['status'] == 'PUBLISHED'
+    assert do_select(staged)['status'] == 'SELECTED'
+
+
+def test_staged_card_pointer_advanced_after_publish_refuses_select(staged):
+    do_publish(staged)
+    (staged['index'] / 'card-pointer.json').write_bytes(b'{"synthetic":"card-pointer-2"}')
+    with pytest.raises(live.LiveSnapshotRefused):
+        do_select(staged)
+
+
+def test_staged_card_pointer_changed_mid_publish_refuses(staged):
+    staged['after_producer'] = lambda: (staged['index'] / 'card-pointer.json').write_bytes(b'{"mid":"query"}')
+    with pytest.raises(live.LiveSnapshotRefused):
+        do_publish(staged)
+    assert not (staged['root'] / 'q4-live-current.json').exists()
+
+
+@pytest.mark.parametrize('name', [name for name, _ in _STAGED_FILES])
+def test_staged_changed_plan_input_refuses(staged, name):
+    path = staged['index'] / dict(_STAGED_FILES)[name]
+    path.write_bytes(path.read_bytes() + b'changed')
+    with pytest.raises(live.LiveSnapshotRefused):
+        do_publish(staged)
+    assert not (staged['root'] / 'q4-live-current.json').exists()
+
+
+def test_staged_candidate_with_new_card_policy_refuses(staged):
+    (staged['index'] / 'card-policy-2.json').write_bytes(b'other card policy')
+    staged['candidate'] = _staged_generation(staged, 'c' * 40, staged['files'], card_policy=b'other card policy')
+    with pytest.raises(live.LiveSnapshotRefused):
+        do_publish(staged)
+
+
+def test_staged_and_legacy_generations_do_not_mix(staged):
+    legacy = staged['candidate']
+    descriptor = dict(legacy[0])
+    descriptor['expected_binding'] = {k: v for k, v in descriptor['expected_binding'].items()
+                                      if k != 'card_policy_sha256'}
+    raw = enc(descriptor)
+    Path(staged['candidate_path']).write_bytes(raw)
+    staged['candidate'] = (descriptor, raw, sha(raw), *legacy[3:])
+    staged['config']['c' * 40] = staged['candidate']
+    with pytest.raises(live.LiveSnapshotRefused):
+        do_publish(staged)
+
+
+@pytest.mark.parametrize('field,value', [('card_policy_sha256', '0' * 64), ('card_decision_sha256', '0' * 64),
+                                         ('backend', 'public-snapshot-v1'), ('public_plan_sha256', '0' * 64),
+                                         ('wrapper_sha256', '0' * 64), ('deployment_manifest_sha256', '0' * 64),
+                                         ('bundle_commit', 'e' * 40)])
+def test_staged_rehashed_fixed_plan_mismatch_refuses(staged, field, value):
+    candidate = list(staged['candidate'])
+    descriptor, inputs = dict(candidate[0]), dict(candidate[5])
+    fixed = json.loads(inputs['fixed_plan_bytes'])
+    fixed[field] = value
+    if field == 'backend':
+        fixed['schema'] = 'wd.q4-fixed-plan.v3'
+    inputs['fixed_plan_bytes'] = enc(fixed)
+    Path(descriptor['fixed_plan_path']).write_bytes(inputs['fixed_plan_bytes'])
+    descriptor['fixed_plan_sha256'] = sha(inputs['fixed_plan_bytes'])
+    raw = enc(descriptor)
+    Path(staged['candidate_path']).write_bytes(raw)
+    staged['candidate'] = (descriptor, raw, sha(raw), candidate[3], candidate[4], inputs)
+    with pytest.raises(live.LiveSnapshotRefused):
+        do_publish(staged)
+
+
+@pytest.mark.parametrize('field', ['pointer_path', 'source_path', 'generation_path', 'card_policy_path', 'root'])
+def test_staged_rehashed_plan_moving_stable_input_refuses(staged, field, tmp_path):
+    gen = 'c' * 40
+    directory = staged['root'] / gen
+    plan = json.loads((directory / 'public-plan.json').read_bytes())
+    moved = tmp_path / ('moved-' + field)
+    moved.mkdir()
+    if field == 'root':
+        plan['root'] = str(moved)
+    else:
+        source = Path(plan[field])
+        target = moved / source.name
+        if source.exists():
+            target.write_bytes(source.read_bytes())
+        plan[field] = str(target)
+    plan_raw = enc(plan)
+    staged['producer_out'][sha(plan_raw)] = None
+    candidate = list(staged['candidate'])
+    descriptor, inputs = dict(candidate[0]), dict(candidate[5])
+    document = json.loads(inputs['binding_bytes'])
+    document['public_plan_sha256'] = sha(plan_raw)
+    inputs['binding_bytes'] = enc(document)
+    fixed = json.loads(inputs['fixed_plan_bytes'])
+    fixed['public_plan_sha256'] = sha(plan_raw)
+    inputs['fixed_plan_bytes'] = enc(fixed)
+    staged['producer_out'][sha(plan_raw)] = inputs['binding_bytes']
+    (directory / 'public-plan.json').write_bytes(plan_raw)
+    (directory / 'lane-binding.v1.json').write_bytes(inputs['binding_bytes'])
+    (directory / 'fixed-plan.v2.json').write_bytes(inputs['fixed_plan_bytes'])
+    descriptor.update(binding_sha256=sha(inputs['binding_bytes']), fixed_plan_sha256=sha(inputs['fixed_plan_bytes']))
+    raw = enc(descriptor)
+    Path(staged['candidate_path']).write_bytes(raw)
+    staged['candidate'] = (descriptor, raw, sha(raw), candidate[3], candidate[4], inputs)
+    with pytest.raises(live.LiveSnapshotRefused):
+        do_publish(staged)
+
+
+def test_staged_plan_control_with_same_stable_inputs_publishes(staged):
+    """Control for the moved-input test: rewriting the candidate plan with the same values still publishes."""
+    gen = 'c' * 40
+    staged['candidate'] = _staged_generation(staged, gen, staged['files'])
+    assert do_publish(staged)['status'] == 'PUBLISHED'
+
+
+def _rehash_fixed(c, gen, field, value):
+    item = c['config'][gen]
+    descriptor, inputs = dict(item[0]), dict(item[5])
+    fixed = json.loads(inputs['fixed_plan_bytes'])
+    fixed[field] = value
+    inputs['fixed_plan_bytes'] = enc(fixed)
+    Path(descriptor['fixed_plan_path']).write_bytes(inputs['fixed_plan_bytes'])
+    descriptor['fixed_plan_sha256'] = sha(inputs['fixed_plan_bytes'])
+    raw = enc(descriptor)
+    (c['root'] / gen / 'shared-session-config.v2.json').write_bytes(raw)
+    c['config'][gen] = (descriptor, raw, sha(raw), item[3], item[4], inputs)
+    return c['config'][gen]
+
+
+@pytest.mark.parametrize('field,value', [('wrapper_sha256', '0' * 64), ('deployment_manifest_sha256', '0' * 64),
+                                         ('bundle_commit', 'e' * 40)])
+def test_staged_both_generations_with_wrong_bundle_pins_refuse(staged, field, value):
+    staged['base'] = _rehash_fixed(staged, 'b' * 40, field, value)
+    staged['candidate'] = _rehash_fixed(staged, 'c' * 40, field, value)
+    with pytest.raises(live.LiveSnapshotRefused):
+        do_publish(staged)
+
+
+def test_staged_both_generations_rehashed_control_publishes(staged):
+    staged['base'] = _rehash_fixed(staged, 'b' * 40, 'host_sha256', '7' * 64)
+    staged['candidate'] = _rehash_fixed(staged, 'c' * 40, 'host_sha256', '7' * 64)
+    assert do_publish(staged)['status'] == 'PUBLISHED'

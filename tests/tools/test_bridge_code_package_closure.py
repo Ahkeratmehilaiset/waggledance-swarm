@@ -957,6 +957,8 @@ Q4_READONLY_FILES = frozenset({
     "sandbox/mind/step2/cell.py", "sandbox/mind/step2/corpus.py",
     "sandbox/mind/step2/encode.py", "sandbox/mind/step2/memory.py",
     "sandbox/mind/step2/q4.py", "sandbox/mind/step2/q4_descriptor.py",
+    "sandbox/mind/step2/q4_controlled_imports.py", "sandbox/mind/step2/q4_namespace_origin.py",
+    "sandbox/mind/step2/q4_native_additions.py",
     "sandbox/mind/step2/reader_slot.py", "sandbox/mind/step2/runtime_bootstrap.py",
     "sandbox/mind/step2/interpreter_identity.py",
     "sandbox/mind/step2/runtime_launcher.py", "sandbox/mind/step2/runtime_manifest.py",

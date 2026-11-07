@@ -352,3 +352,144 @@ def test_case_colliding_current_keys_refused_even_when_hash_matches(tmp_path):
     kw['expected_state_sha256'] = sha(data)
     with pytest.raises(s.ComposeRefused): s.compose(**kw)
     assert not list(stage.iterdir())
+
+
+# --- D1 shared generation root for compose_staged_card (opt-in shared_stage=True) -----------------------------
+# One live generations root receives every run: earlier generations and their per-generation candidate pointers
+# stay byte-identical, overlaps and foreign entries are refused before any write, and a failure or interruption
+# after the first write is INCOMPLETE (unknown), never a clean refusal.
+
+from tests.tools.test_wd_q4_staged_card_composer import materialize  # noqa: E402,F401 - pytest fixture
+from tests.tools.test_wd_q4_staged_lane_query import staged_producer  # noqa: E402,F401 - pytest fixture
+
+_GEN_B, _GEN_C = 'b' * 40, 'c' * 40
+
+
+@pytest.fixture
+def shared_case(materialize, monkeypatch):
+    """The materialize fixture predates the af098f1d peer fix (no runtime manifest entries for peer and backend),
+    so its success path is refused at _read_staged_backend on this head. D1 is about the stage root, so only that
+    attestation is replaced by a spy that answers for the exact bundle peer path and fixed plan; every other
+    composer check runs for real. The peer attestation itself is covered by the secure transport tests."""
+    from tools import wd_q4_staged_composer as staged
+    peer = Path(materialize['expected_bundle']) / 'tools-bootstrap' / 'tools' / 'wd_q4_secure_transport.py'
+    backend = (Path(materialize['expected_bundle']) / 'tools-bootstrap' / 'tools' / 'wd_q4_staged_fixed_backend.py')
+    fixed = staged.transport._fixed_plan(materialize['fixed_plan_bytes'])
+
+    def attest(path, plan):
+        assert Path(path) == peer and plan == fixed
+        return backend.read_bytes()
+    monkeypatch.setattr(staged.transport, '_read_staged_backend', attest)
+    return materialize
+
+
+def _snapshot(stage):
+    return {str(p.relative_to(stage)): (p.read_bytes() if p.is_file() else None)
+            for p in sorted(Path(stage).rglob('*'))}
+
+
+def _shared(case, generation):
+    from tools import wd_q4_staged_composer as staged
+    return staged.compose_staged_card(**dict(case, generation=generation, shared_stage=True))
+
+
+def test_shared_stage_composes_two_generations_with_noncolliding_pointers(shared_case):
+    first = _shared(shared_case, _GEN_B)
+    before = _snapshot(shared_case['stage_dir'])
+    second = _shared(shared_case, _GEN_C)
+    stage = Path(shared_case['stage_dir'])
+    assert first['status'] == second['status'] == 'PREPARED'
+    assert Path(first['pointer_path']) == stage / ('candidate-pointer-' + _GEN_B + '.json')
+    assert Path(second['pointer_path']) == stage / ('candidate-pointer-' + _GEN_C + '.json')
+    after = _snapshot(stage)
+    assert {key: after[key] for key in before} == before  # earlier generation bytes are rollback-safe
+    assert sha(Path(first['pointer_path']).read_bytes()) == first['pointer_sha256']
+    assert sha(Path(second['pointer_path']).read_bytes()) == second['pointer_sha256']
+
+
+def test_default_stage_still_requires_empty_dir_and_fixed_pointer_name(shared_case):
+    from tools import wd_q4_staged_composer as staged
+    result = staged.compose_staged_card(**shared_case)
+    assert Path(result['pointer_path']).name == 'candidate-pointer.json'
+    with pytest.raises(staged.ComposeRefused):
+        staged.compose_staged_card(**dict(shared_case, generation=_GEN_C))
+
+
+@pytest.mark.parametrize('flag', [1, 'yes', None, 0])
+def test_shared_stage_flag_must_be_a_bool(shared_case, flag):
+    from tools import wd_q4_staged_composer as staged
+    with pytest.raises(staged.ComposeRefused):
+        staged.compose_staged_card(**dict(shared_case, shared_stage=flag))
+    assert not any(Path(shared_case['stage_dir']).iterdir())
+
+
+@pytest.mark.parametrize('overlap', ['generation-dir', 'pointer-file', 'foreign-file', 'foreign-dir', 'bad-pointer',
+                                     'generation-named-file'])
+def test_shared_stage_refuses_overlap_or_foreign_entry_before_any_write(shared_case, overlap):
+    from tools import wd_q4_staged_composer as staged
+    stage = Path(shared_case['stage_dir'])
+    _shared(shared_case, _GEN_B)
+    if overlap == 'generation-dir':
+        (stage / _GEN_C).mkdir()
+    elif overlap == 'pointer-file':
+        (stage / ('candidate-pointer-' + _GEN_C + '.json')).write_bytes(b'{}')
+    elif overlap == 'foreign-file':
+        (stage / 'notes.txt').write_bytes(b'x')
+    elif overlap == 'foreign-dir':
+        (stage / 'scratch').mkdir()
+    elif overlap == 'bad-pointer':
+        (stage / 'candidate-pointer.json').write_bytes(b'{}')
+    else:
+        (stage / ('d' * 40)).write_bytes(b'not a generation directory')
+    before = _snapshot(stage)
+    with pytest.raises(staged.ComposeRefused):
+        _shared(shared_case, _GEN_C)
+    assert _snapshot(stage) == before
+
+
+def test_shared_stage_refuses_recomposing_an_existing_generation(shared_case):
+    from tools import wd_q4_staged_composer as staged
+    _shared(shared_case, _GEN_B)
+    before = _snapshot(shared_case['stage_dir'])
+    with pytest.raises(staged.ComposeRefused):
+        _shared(shared_case, _GEN_B)
+    assert _snapshot(shared_case['stage_dir']) == before
+
+
+@pytest.mark.parametrize('error', [OSError, KeyboardInterrupt])
+def test_shared_stage_interrupted_pointer_write_is_incomplete_and_keeps_old_bytes(shared_case, monkeypatch, error):
+    from tools import wd_q4_staged_composer as staged
+    _shared(shared_case, _GEN_B)
+    before = _snapshot(shared_case['stage_dir'])
+    real = staged._exclusive
+
+    def interrupted(path, raw):
+        if Path(path).name.startswith('candidate-pointer-'):
+            raise error()
+        return real(path, raw)
+    monkeypatch.setattr(staged, '_exclusive', interrupted)
+    with pytest.raises(staged.ComposeIncomplete):
+        _shared(shared_case, _GEN_C)
+    after = _snapshot(shared_case['stage_dir'])
+    assert {key: after[key] for key in before} == before
+    assert not (Path(shared_case['stage_dir']) / ('candidate-pointer-' + _GEN_C + '.json')).exists()
+
+
+# --- descriptor timeout_seconds must fit the lane caller cap (lane_caller_cli _configuration: 1..600) -------------
+
+@pytest.mark.parametrize('timeout', [601, 0, -1, 1800, True, 600.0, '600', None])
+def test_staged_card_refuses_timeout_outside_lane_caller_cap_before_write(shared_case, timeout):
+    from tools import wd_q4_staged_composer as staged
+    case = dict(shared_case, descriptor_options=dict(shared_case['descriptor_options'], timeout_seconds=timeout))
+    with pytest.raises(staged.ComposeRefused):
+        staged.compose_staged_card(**case)
+    assert not any(Path(case['stage_dir']).iterdir())
+
+
+@pytest.mark.parametrize('timeout', [1, 600])
+def test_staged_card_accepts_timeout_at_lane_caller_bounds(shared_case, timeout):
+    from tools import wd_q4_staged_composer as staged
+    case = dict(shared_case, descriptor_options=dict(shared_case['descriptor_options'], timeout_seconds=timeout))
+    result = staged.compose_staged_card(**case)
+    assert result['status'] == 'PREPARED'
+    assert json.loads(Path(result['descriptor_path']).read_bytes())['timeout_seconds'] == timeout

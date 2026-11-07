@@ -25,6 +25,8 @@ from tools import wd_q4_secure_transport as transport
 _STATE_POINTER = Path(r'C:\Python\WD_REBOOT_STATE_CURRENT.json')
 _HEX40 = re.compile(r'[0-9a-f]{40}\Z')
 _HEX64 = re.compile(r'[0-9a-fA-F]{64}\Z')
+_GENERATION = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
+_SHARED_POINTER = re.compile(r'candidate-pointer-(?:[0-9a-f]{40}|[0-9a-f]{64})\.json\Z')
 
 
 class ComposeRefused(ValueError):
@@ -79,7 +81,29 @@ def _anchored_active(expected_state_sha256, active, store):
         raise ValueError()
 
 
-def _check_roots(stage, bundle, root, store, active):
+def _shared_stage_ok(stage, generation):
+    """A shared generations root may hold only earlier generations and their own candidate pointers.
+
+    Every entry must be a generation directory or a regular per-generation candidate pointer; the new
+    generation's directory and pointer must both be absent. Nothing here proves earlier generations valid.
+    """
+    if type(generation) is not str or _GENERATION.fullmatch(generation) is None:
+        return False
+    for entry in stage.iterdir():
+        pointer._chain(entry)
+        if _GENERATION.fullmatch(entry.name):
+            if entry.is_symlink() or not entry.is_dir():
+                return False
+        elif _SHARED_POINTER.fullmatch(entry.name):
+            if entry.is_symlink() or not entry.is_file():
+                return False
+        else:
+            return False
+    return not any(os.path.lexists(item) for item in
+                   (stage / generation, stage / ('candidate-pointer-' + generation + '.json')))
+
+
+def _check_roots(stage, bundle, root, store, active, shared_generation=None):
     for path in (stage, bundle, root, store, active):
         pointer._chain(path)
     if (not all(path.is_dir() for path in (stage, bundle, root, store, active))
@@ -87,7 +111,8 @@ def _check_roots(stage, bundle, root, store, active):
             or any(_contains(root, item) or _contains(item, root)
                    or _identity_contains(root, item) or _identity_contains(item, root)
                    for item in (bundle, store, active))
-            or any(stage.iterdir())):
+            or (any(stage.iterdir()) if shared_generation is None
+                else not _shared_stage_ok(stage, shared_generation))):
         raise ValueError()
 
 
@@ -167,18 +192,26 @@ def compose_staged_card(*, enabled=False, stage_dir=None, generation=None, expec
         expected_commit=None, expected_manifest_sha256=None, public_plan_path=None,
         expected_public_plan_sha256=None, fixed_plan_bytes=None, expected_fixed_plan_sha256=None,
         expected_host_sha256=None, descriptor_options=None, generation_root=None,
-        bundle_store_root=None, active_bundle_root=None, expected_state_sha256=None):
+        bundle_store_root=None, active_bundle_root=None, expected_state_sha256=None, shared_stage=False):
     """Materialize a pinned v3 card bundle and descriptor; never activate it.
 
     A caller supplies an independently pinned fixed plan and v3 public plan.
     Their pins must agree with the actual candidate bundle and a fresh C2
-    validation. A failure after a materialization attempt is INCOMPLETE.
-    This does not enable the guarded backend or prove runtime readiness.
+    validation. A failure or interruption after a materialization attempt is
+    INCOMPLETE (unknown). This does not enable the guarded backend or prove
+    runtime readiness. With ``shared_stage=True`` the stage is one shared
+    immutable generations root: it may already hold earlier generations and
+    their ``candidate-pointer-GEN.json`` files, which are never touched; any
+    other entry, or an existing directory or pointer for this generation,
+    refuses before any write, and this run's pointer is
+    ``candidate-pointer-GEN.json``. The default keeps the empty stage and the
+    fixed ``candidate-pointer.json`` name.
     """
     if enabled is False:
         return {'status': 'OFF'}
-    if enabled is not True:
+    if enabled is not True or (shared_stage is not True and shared_stage is not False):
         raise ComposeRefused('input_refused')
+    shared_generation = generation if shared_stage else None
     from tools import wd_q4_descriptor_materializer as materializer
     from tools import wd_q4_shared_descriptor_producer as descriptor_producer
     from tools import wd_q4_lane_caller_cli as lane_caller
@@ -187,7 +220,7 @@ def compose_staged_card(*, enabled=False, stage_dir=None, generation=None, expec
     try:
         stage, bundle, root, store, active = map(pointer._absolute,
             (stage_dir, expected_bundle, generation_root, bundle_store_root, active_bundle_root))
-        _check_roots(stage, bundle, root, store, active)
+        _check_roots(stage, bundle, root, store, active, shared_generation)
         _anchored_active(expected_state_sha256, active, store)
         if (type(expected_manifest_sha256) is not str or _HEX64.fullmatch(expected_manifest_sha256) is None
                 or expected_manifest_sha256 != expected_manifest_sha256.upper()
@@ -200,7 +233,10 @@ def compose_staged_card(*, enabled=False, stage_dir=None, generation=None, expec
                 or not hmac.compare_digest(hashlib.sha256(fixed_plan_bytes).hexdigest(), expected_fixed_plan_sha256)
                 or type(descriptor_options) is not dict or set(descriptor_options) != cli._DESCRIPTOR_KEYS
                 or type(descriptor_options.get('interpreter_max_bytes')) is not int
-                or not 0 < descriptor_options['interpreter_max_bytes'] <= lane_caller.MAX_INTERPRETER):
+                or not 0 < descriptor_options['interpreter_max_bytes'] <= lane_caller.MAX_INTERPRETER
+                # the lane caller's _configuration caps the descriptor timeout at 600 s (strict int)
+                or type(descriptor_options.get('timeout_seconds')) is not int
+                or not 1 <= descriptor_options['timeout_seconds'] <= 600):
             raise ValueError()
         manifest = cli._read_pinned(str(bundle / 'deployment-manifest.json'), 2*1024*1024,
                                     expected_manifest_sha256.lower(), 'source_refused')
@@ -267,7 +303,7 @@ def compose_staged_card(*, enabled=False, stage_dir=None, generation=None, expec
                 or transport._read_staged_backend(str(peer), fixed) is None):
             raise ValueError()
         _anchored_active(expected_state_sha256, active, store)
-        _check_roots(stage, bundle, root, store, active)
+        _check_roots(stage, bundle, root, store, active, shared_generation)
         attempted = True
         out = materializer.materialize_descriptor(enabled=True, target_dir=str(stage), generation=generation,
             artifacts={'binding': prepared['binding_bytes'], 'fixed_plan': fixed_plan_bytes,
@@ -280,7 +316,7 @@ def compose_staged_card(*, enabled=False, stage_dir=None, generation=None, expec
             generations_root=str(stage), generation=generation, descriptor_sha256=built['descriptor_sha256'])
         if hashlib.sha256(generated['pointer_bytes']).hexdigest() != generated['pointer_sha256']:
             raise ValueError()
-        pointer_path = stage / 'candidate-pointer.json'
+        pointer_path = stage / ('candidate-pointer-' + generation + '.json' if shared_stage else 'candidate-pointer.json')
         _exclusive(pointer_path, generated['pointer_bytes'])
         if cli._read_pinned(str(pointer_path), 4096, generated['pointer_sha256'], 'source_refused') != generated['pointer_bytes']:
             raise ValueError()
@@ -288,7 +324,9 @@ def compose_staged_card(*, enabled=False, stage_dir=None, generation=None, expec
                   'manifest_sha256': expected_manifest_sha256, 'binding_sha256': prepared['binding_sha256'],
                   'descriptor_path': paths['descriptor_path'], 'descriptor_sha256': built['descriptor_sha256'],
                   'pointer_path': str(pointer_path), 'pointer_sha256': generated['pointer_sha256']}
-    except Exception:
+    except BaseException as exc:
+        if not attempted and not isinstance(exc, Exception):
+            raise  # an interrupt before any write changed nothing
         refusal = ComposeIncomplete if attempted else ComposeRefused
     if refusal:
         raise refusal('staging_incomplete' if attempted else 'input_refused') from None

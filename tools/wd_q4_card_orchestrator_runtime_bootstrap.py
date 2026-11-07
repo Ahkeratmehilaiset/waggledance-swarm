@@ -27,6 +27,7 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import ctypes
 
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
 _KEYS = frozenset({'schema', 'bundle_root', 'manifest_sha256', 'interpreter_path', 'interpreter_sha256',
@@ -41,6 +42,8 @@ _CLI_FILE = 'tools/wd_q4_card_audit_orchestrator.py'
 _REQUEST_LIMIT = 1024 * 1024
 _ANSWER_KEYS = frozenset({'status', 'pointer_path', 'pointer_sha256'})
 _REFUSED = '{"status":"REFUSED"}\n'
+_TOKEN_KEYS = frozenset({'schema','launcher_pid','launcher_creation_filetime','scratch_root','nonce',
+                         'manifest_sha256','runtime_sha256','request_sha256'})
 
 
 class _OutcomeUnknown(RuntimeError):
@@ -89,6 +92,51 @@ def _readable_path(value):
     path = Path(value)
     if not path.is_absolute() or path.drive.upper() != 'C:' or '..' in path.parts: raise ValueError()
     return path
+
+
+def _live_process_creation(pid):
+    """Read an alive Windows process identity; this is not authentication."""
+    if os.name != 'nt' or type(pid) is not int or not 0 < pid < 2**32: raise ValueError()
+    class FileTime(ctypes.Structure):
+        _fields_ = [('low',ctypes.c_uint32),('high',ctypes.c_uint32)]
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.OpenProcess.argtypes=[ctypes.c_uint32,ctypes.c_int,ctypes.c_uint32]
+    kernel.OpenProcess.restype=ctypes.c_void_p
+    kernel.WaitForSingleObject.argtypes=[ctypes.c_void_p,ctypes.c_uint32]
+    kernel.WaitForSingleObject.restype=ctypes.c_uint32
+    kernel.GetProcessTimes.argtypes=[ctypes.c_void_p,*([ctypes.POINTER(FileTime)]*4)]
+    kernel.GetProcessTimes.restype=ctypes.c_int
+    kernel.CloseHandle.argtypes=[ctypes.c_void_p]
+    handle=kernel.OpenProcess(0x00101000,False,pid)
+    if not handle: raise ValueError()
+    try:
+        if kernel.WaitForSingleObject(handle,0)!=258: raise ValueError()
+        created,exited,system,user=FileTime(),FileTime(),FileTime(),FileTime()
+        if not kernel.GetProcessTimes(handle,ctypes.byref(created),ctypes.byref(exited),
+                                      ctypes.byref(system),ctypes.byref(user)): raise ValueError()
+        return (created.high << 32) | created.low
+    finally: kernel.CloseHandle(handle)
+
+
+def _job_token(args, *, consume):
+    """Consume a cooperative launcher receipt once; same-user forgery remains possible."""
+    token_path=_readable_path(os.environ['WD_Q4_CARD_JOB_TOKEN_PATH'])
+    token_pin=os.environ['WD_Q4_CARD_JOB_TOKEN_SHA256']
+    if re.fullmatch(r'wd-q4-card-[0-9a-f]{32}\.json',token_path.name) is None: raise ValueError()
+    raw=_read(token_path,token_pin,4096); token=_doc(raw)
+    if (set(token)!=_TOKEN_KEYS or token['schema']!='wd.q4-card-launch-token.v1'
+            or type(token['nonce']) is not str or re.fullmatch(r'[0-9a-f]{64}',token['nonce']) is None
+            or token_path.name != 'wd-q4-card-'+token['nonce'][:32]+'.json'
+            or type(token['launcher_creation_filetime']) is not int
+            or token['manifest_sha256']!=args[6] or token['runtime_sha256']!=args[10]
+            or token['request_sha256']!=args[4]): raise ValueError()
+    scratch=_readable_path(token['scratch_root'])
+    if not scratch.is_dir() or not os.path.samefile(scratch,token_path.parent): raise ValueError()
+    if _live_process_creation(token['launcher_pid']) != token['launcher_creation_filetime']: raise ValueError()
+    if consume:
+        used=token_path.with_suffix(token_path.suffix+'.used')
+        os.rename(token_path,used)  # Windows: no replacement; one competing consumer wins.
+        if _read(used,token_pin,4096)!=raw: raise _OutcomeUnknown()
 
 
 def _answer(raw, request):
@@ -151,6 +199,7 @@ def _bootstrap(args):
     if not (site.is_dir() and model.is_dir()
             and os.path.samefile(model, _readable_path(snapshot.get('trusted_model_root')))):
         raise ValueError()
+    _job_token(args, consume=True)
     # Preserve the isolated interpreter's standard-library precedence.
     sys.path.append(str(code))
     sys.path.append(str(site))
@@ -210,6 +259,7 @@ def _relay(args):
         _read(own, str(manifest['files'][_SELF]).lower(), 1024 * 1024)
         interpreter = _readable_path(runtime['interpreter_path'])
         _read(interpreter, runtime['interpreter_sha256'], 128 * 1024 * 1024)
+        _job_token(args, consume=False)
         child = ['--child'] + args[1:]
         started = True
         result = subprocess.run([str(interpreter), '-I', '-S', '-B', str(own), *child], check=False)

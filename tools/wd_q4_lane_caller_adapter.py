@@ -89,6 +89,8 @@ _DESCRIPTOR_KEYS = frozenset({"schema", "fleet_sha256", "lanes", "bundle_root", 
                               "max_output_bytes", "outer", "expected_binding"})
 _BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256",
                            "roster_sha256", "public_policy_sha256", "descriptor_sha256", "projection_sha256"})
+# optional card route decision pin; when the descriptor has it, the answer binding must carry the same value
+_CARD_BINDING_KEYS = _BINDING_KEYS | {"card_decision_sha256"}
 _ANSWER_KEYS = frozenset({"schema", "lane", "status", "reason", "result_count", "results", "binding", "trust"})
 _ANSWER_SCHEMA = "wd.q4-lane-answer.v1"
 _ITEM_KEYS = frozenset({"ref_sha256", "doc_id_sha256", "stored_text"})
@@ -209,7 +211,7 @@ def _consistent_descriptor(descriptor, agent, inputs):
     if type(lanes) is not list or not all(type(lane) is str for lane in lanes) or agent not in lanes:
         _refuse()
     binding = descriptor["expected_binding"]
-    if (type(binding) is not dict or frozenset(binding) != _BINDING_KEYS
+    if (type(binding) is not dict or frozenset(binding) not in (_BINDING_KEYS, _CARD_BINDING_KEYS)
             or not all(type(value) is str and _HEX64.fullmatch(value) for value in binding.values())
             or type(descriptor["outer"]) is not dict):
         _refuse()
@@ -232,7 +234,7 @@ def _consistent_descriptor(descriptor, agent, inputs):
         value, expected = descriptor[key], inputs[key]
         if type(value) is not int or type(expected) is not int or value != expected:
             _refuse()
-    return {key: binding[key] for key in sorted(_BINDING_KEYS)}
+    return {key: binding[key] for key in sorted(binding)}
 
 
 def _validated(answer, agent, expected_binding):
@@ -255,9 +257,9 @@ def _validated(answer, agent, expected_binding):
         return "REFUSED", None, 0, None
     binding = answer["binding"]
     if (answer["status"] not in _VALIDATED or answer["reason"] != "" or type(binding) is not dict
-            or frozenset(binding) != _BINDING_KEYS
+            or frozenset(binding) != frozenset(expected_binding)
             or any(type(binding[key]) is not str or not hmac.compare_digest(binding[key], expected_binding[key])
-                   for key in _BINDING_KEYS)):
+                   for key in expected_binding)):
         return None
     for item in answer["results"]:
         if (type(item) is not dict or frozenset(item) != _ITEM_KEYS

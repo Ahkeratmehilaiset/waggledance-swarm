@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import contextlib
 import dataclasses
 import importlib.util
 import sys
@@ -72,6 +73,50 @@ def test_runtime_peer_and_bundle_peer_use_the_same_pinned_backend(staged_runtime
     _, bundle_peer, helper, plan, runtime_peer, _, _ = staged_runtime
     assert fixed._read_staged_backend(str(bundle_peer), plan) == helper.read_bytes()
     assert fixed._read_staged_backend(str(runtime_peer), plan) == helper.read_bytes()
+
+
+def test_runtime_parent_attests_the_executed_bundle_helper_before_dispatch(tmp_path, monkeypatch):
+    """Observe the actual parent path without launching a child or running a query."""
+    from tools.wd_q4_fixed_parent_attestation import _AttestationOwner
+    source = Path(fixed.__file__)
+    runtime_tools = tmp_path/'runtime'/'assets'/'code'/'tools'; runtime_tools.mkdir(parents=True)
+    peer = runtime_tools/'wd_q4_secure_transport.py'; peer.write_bytes(source.read_bytes())
+    verifier = runtime_tools.parent/'sandbox'/'mind'/'step2'/'runtime_manifest.py'
+    verifier.parent.mkdir(parents=True); verifier.write_bytes(b'synthetic verifier')
+    bundle = tmp_path/'bundle'; bundle_tools = bundle/'tools-bootstrap'/'tools'; bundle_tools.mkdir(parents=True)
+    bundle_helper = bundle_tools/'wd_q4_staged_fixed_backend.py'; bundle_helper.write_bytes(b'synthetic helper')
+    runtime_helper = runtime_tools/'wd_q4_staged_fixed_backend.py'; runtime_helper.write_bytes(bundle_helper.read_bytes())
+    spec = importlib.util.spec_from_file_location('synthetic_runtime_parent', peer)
+    candidate = importlib.util.module_from_spec(spec); spec.loader.exec_module(candidate)
+    plan_bytes, bundle_bytes, runtime_bytes = b'plan', b'bundle', b'runtime'
+    plan = {'backend':'staged-card-wrapper-v1', 'interpreter_sha256':sha(Path(sys.executable).read_bytes()),
+            'peer_code_sha256':sha(peer.read_bytes()), 'verifier_sha256':sha(verifier.read_bytes()),
+            'runtime_manifest_sha256':sha(runtime_bytes), 'bundle_bytes':len(bundle_bytes),
+            'bundle_sha256':sha(bundle_bytes), 'bundle_root':str(bundle), 'backend_sha256':sha(bundle_helper.read_bytes()),
+            'wrapper_path':str(bundle/'Invoke-WdQ4Query.ps1'), 'wrapper_sha256':'a'*64,
+            'deployment_manifest_sha256':'b'*64, 'host_sha256':'c'*64,
+            'public_plan_path':str(bundle/'public-plan.json'), 'public_plan_sha256':'d'*64}
+    class Ticket:
+        def _begin(self): pass
+        def _complete(self): pass
+        def _unknown(self): pass
+    class Context:
+        def _ticket(self, _name): return Ticket()
+        def _accept_ticket(self, _name, ticket): return ticket
+        def _abort(self): pass
+    seen = []
+    monkeypatch.setattr(candidate, '_fixed_owner_pair', lambda *_: True)
+    monkeypatch.setattr(candidate, '_fixed_plan', lambda _: plan)
+    monkeypatch.setattr(candidate, '_staged_system_host', lambda: str(tmp_path/'host.exe'))
+    monkeypatch.setattr(_AttestationOwner, 'attest', lambda _self, path, *_a, **_k:
+                        (seen.append(str(path)) or contextlib.nullcontext()))
+    monkeypatch.setattr(candidate, '_read_staged_backend', lambda *_: (_ for _ in ()).throw(ValueError('stop')))
+    monkeypatch.setattr(candidate, '_run', lambda *_a, **_k: pytest.fail('child launch reached'))
+    with pytest.raises(ValueError, match='stop'):
+        candidate._run_fixed_peer_impl(sys.executable,plan['interpreter_sha256'],64*1024*1024,
+            plan_bytes,sha(plan_bytes),bundle_bytes,runtime_bytes,b'{}',str(tmp_path),30,32768,True,
+            _owner_guard=object(),_owner_context=Context())
+    assert str(bundle_helper) in seen
 
 
 @pytest.mark.parametrize('source', ['bundle','runtime'])

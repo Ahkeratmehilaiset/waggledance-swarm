@@ -2298,9 +2298,13 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
                 leases.enter_context(attest(verifier, plan["verifier_sha256"], max_bytes=_VERIFIER_LIMIT, enabled=True))
             if staged:
                 helper = str(Path(path).with_name('wd_q4_staged_fixed_backend.py'))
+                bundle_helper = str(Path(plan['bundle_root'])/'tools-bootstrap'/'tools'/'wd_q4_staged_fixed_backend.py')
                 host = _staged_system_host()
                 manifest = str(Path(plan['bundle_root'])/'deployment-manifest.json')
-                for target, pin, cap in ((helper,plan['backend_sha256'],_PEER_CODE_LIMIT),
+                helper_targets = [(helper,plan['backend_sha256'],_PEER_CODE_LIMIT)]
+                if os.path.normcase(os.path.abspath(helper)) != os.path.normcase(os.path.abspath(bundle_helper)):
+                    helper_targets.append((bundle_helper,plan['backend_sha256'],_PEER_CODE_LIMIT))
+                for target, pin, cap in (*helper_targets,
                         (plan['wrapper_path'],plan['wrapper_sha256'],1024*1024),
                         (manifest,plan['deployment_manifest_sha256'],4*1024*1024),
                         (host,plan['host_sha256'],128*1024*1024),

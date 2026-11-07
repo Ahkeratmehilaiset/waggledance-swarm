@@ -414,13 +414,21 @@ def test_active_real_adoption_blocks_recovery_job(job,tmp_path,monkeypatch,capsy
         thread=threading.Thread(target=run_adopt); thread.start()
         try:
             assert entered.wait(20)
-            assert (private/'q4-continuation-adopt.pending.json').exists()
+            adoption_marker=private/'q4-continuation-adopt.pending.json'
+            marker_before=adoption_marker.read_bytes()
             result=run_job(job,scratch)
+            # A refusal applies to this recovery attempt only; the other
+            # adoption is still running and retains its exact pending marker.
+            assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
+            assert thread.is_alive() and not outcomes
+            assert adoption_marker.read_bytes()==marker_before
+            assert not (private/'q4-adopt-recovery-job.pending.json').exists()
+            assert not list(private.glob('q4-adopt-recovery-job-result-*.json'))
         finally:
             release.set(); thread.join(10)
     assert not thread.is_alive() and outcomes==[adopt.AdoptInterrupted]
-    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
     assert not (private/'q4-adopt-recovery-job.pending.json').exists()
+    assert adoption_marker.read_bytes()==marker_before
 
 @pytest.mark.parametrize('name',['q4-continuation-orchestrator.lock','q4-live-update.lock','q4-cutoff-owner.lock'])
 def test_each_owner_lock_blocks_recovery_before_job_marker(job,name):

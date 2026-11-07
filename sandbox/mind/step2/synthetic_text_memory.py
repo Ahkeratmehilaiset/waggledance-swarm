@@ -13,10 +13,23 @@ pieces, and it is restricted to SYNTHETIC input:
   lanes and PR-branch task ids refuse, and only the existing closed type list passes (decision, finding, rco_pass,
   vote, veto and the other review types never do); claim, release and wake bookkeeping and empty messages are
   skipped as in 6cf81dbb; payload, paths, write scope, cwd, identities and every other key are never read;
+* input is broadcast-only and non-review (RCO2 ST3/ST5): an event whose ``to`` is not exactly ``""`` is skipped
+  (``directed_excluded``), the existing capture adapter rule ``_exclude_rco_event`` skips RCO-origin and
+  RCO-addressed events including a payload ``to``/``recipient`` (``rco_addressed_excluded``), and a task id with a
+  review or RCO segment (the adapter's ``_REVIEW_TASK``) is skipped (``review_task_excluded``); none of these are
+  read beyond that check;
 * the stored text is the existing head line, a newline and the message: whole lines only, at most ``TEXT_CAP``
-  characters of message, ending before the first line that matches a refusal rule (workspace guarded words, a drive,
-  UNC, home or profile path, an environment variable path, a credential word or token prefix, sealed, gold, heldout
-  or judge, or a private tool directory); a record with no line left is refused (``text_guarded``) and counted;
+  characters of message, ending before the first line that fails the line rule; a record with no line left is
+  refused (``text_guarded``) and counted. A line is kept only if it passes a bounded allowlist (RCO2 ST1/ST2): at
+  most ``LINE_CAP`` characters, every character printable ASCII or a Finnish letter (so zero-width, format, control,
+  fullwidth, homoglyph and other non-ASCII characters never pass, which is stricter than NFKC plus a Cf/Cc refusal),
+  and no run of 20 or more base64-like characters that has a digit or an inner capital unless it is exactly a 40 or
+  64 hex digest; and then only if it matches no refusal rule: workspace guarded words, a drive, UNC, home or profile
+  path, an environment variable path, credential words also inside identifiers (password, passphrase, secret, token,
+  credential, bearer, cookie, salasana, tunnus, pwd, auth), a key=value or key: value with a secret-like key, known
+  token prefixes (GitHub, Slack, OpenAI-style, GitLab, Hugging Face, npm, AWS, Google, JWT), a PEM block, a URL with
+  user:password, sealed, gold, heldout or judge, a private tool directory, an RCO name or a review word (rco_pass,
+  changes_requested, veto, finding, vote, recusal, build_consensus, approve);
 * the memory is built with the existing ``shared_index_builder`` cell and commit primitives and read with the
   existing ``memory.Memory`` and ``q4.Q4``; it carries its own scope and descriptor schema, so the production Q4
   reader, which pins the shared scope and descriptor schema, does not accept it. The cell receipts are written by
@@ -33,8 +46,9 @@ cursor, final prefix sha256, file identity and generation rechecked), refuses th
 not synthetic, and proves for every record that a row with that canonical id exists in the prefix and re-projects to
 exactly that record. ``ask_synthetic_text(..., source=...)`` runs that check before answering. A match proves that
 the exact rows occur in that pinned prefix; it does not prove who wrote them, later supersession or complete
-history (completeness UNKNOWN); no row content is returned. The refusal rules are a review surface, not a proof that
-free text is safe. No policy, live data, launcher, installer or production path is touched.
+history (completeness UNKNOWN); no row content is returned. The line allowlist and refusal rules are a review
+surface, not a proof that free text is safe: a secret that looks like ordinary short words, or a short secret split
+over separators, still passes. No policy, live data, launcher, installer or production path is touched.
 """
 import hashlib
 import json
@@ -43,6 +57,7 @@ import re
 from pathlib import Path
 
 from sandbox.mind.step2 import corpus as corpus_mod
+from sandbox.mind.step2 import shared_capture_adapter as capture
 from sandbox.mind.step2 import shared_projection as sp
 from tools.bridge_compact_view import event_id
 
@@ -60,16 +75,28 @@ MAX_EVENTS = 4096
 MAX_SOURCE_BYTES = 64 * 1024 * 1024
 SOURCE_PAGE = 16 * 1024 * 1024
 SOURCE_KEYS = frozenset({"source_path", "generation_path", "end_cursor", "expected_prefix_sha256"})
+LINE_CAP = 280
+LINE_CHARS = frozenset(chr(code) for code in range(0x20, 0x7F)) | frozenset("\u00e4\u00f6\u00e5\u00c4\u00d6\u00c5")
+LONG_RUN = re.compile(r"[A-Za-z0-9+/]{20,}")
+DIGEST = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 REFUSE_LINE = (
     re.compile(r"(?i)(?<![a-z0-9])[a-z]:[\\/]"),  # a drive path
     re.compile(r"\\\\"),  # a UNC path or an escaped backslash pair
     re.compile(r"(?i)(?:^|[\\/])(?:home|users)[\\/]"),  # a home or profile directory
     re.compile(r"%[A-Za-z_][A-Za-z0-9_]*%"),  # an environment variable path
-    re.compile(r"(?i)\b(?:password|passwd|secret|token|credential|bearer)s?\b"),
+    re.compile(r"(?i)pass(?:word|wd|phrase|code)|secret|token|credential|bearer|cookie|salasana|tunnus"),
+    re.compile(r"(?i)\b(?:pwd|auth|authori[sz]ation)\b"),
+    re.compile(r"(?i)[a-z0-9_.-]*(?:key|session|auth|pass|pwd|cred)[a-z0-9_.-]*\s*[:=]"),  # secret-like key=value
     re.compile(r"(?i)\bapi[_ -]?key"),
-    re.compile(r"(?i)\b(?:ghp_|gho_|github_pat_|sk-|xox[abp]-)"),
+    re.compile(r"(?i)\b(?:ghp_|gho_|ghu_|ghs_|github_pat_|sk-|xox[abprs]-|glpat-|hf_|npm_)"),
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{12}|\bAIza[0-9A-Za-z_-]{20}|\beyJ[0-9A-Za-z_-]{8}"),
+    re.compile(r"-----BEGIN "),  # a PEM block
+    re.compile(r"(?i)[a-z][a-z0-9+.-]*://[^/\s:]+:[^/\s]*\x40"),  # a URL with user:password
     re.compile(r"(?i)\b(?:sealed|gold|heldout|held-out|judge)\b"),
     re.compile(r"(?i)\.(?:codex-audit|agent-bridge|ssh|aws)\b"),
+    capture._RCO_NAME,
+    re.compile(r"(?i)(?<![a-z0-9])(?:rco|changes[_ -]requested|veto(?:es|ed)?|findings?|vot(?:e|es|ed|ing)"
+               r"|recus(?:al|ed|e|ing)|build[_ -]consensus|approv(?:e|es|ed|al|ing))(?![a-z0-9])"),
 )
 
 
@@ -86,6 +113,11 @@ def _enabled(enabled):
 
 
 def _line_ok(line):
+    if len(line) > LINE_CAP or not set(line) <= LINE_CHARS:
+        return False
+    for run in LONG_RUN.findall(line):
+        if DIGEST.fullmatch(run) is None and re.search(r"[0-9]|.[A-Z]", run):
+            return False
     if any(rule.search(line) for rule in REFUSE_LINE):
         return False
     try:
@@ -165,6 +197,15 @@ def project_synthetic_text(events, *, enabled=False):
         except sp.ProjectionRefused as refusal:
             refuse(str(refusal))
             continue
+        if "to" not in event or event["to"] != "":
+            refuse("directed_excluded")
+            continue
+        if capture._exclude_rco_event(event):
+            refuse("rco_addressed_excluded")
+            continue
+        if capture._REVIEW_TASK.search(fields["task_id"]):
+            refuse("review_task_excluded")
+            continue
         if fields["type"] in BOOKKEEPING:
             refuse("bookkeeping_skipped")
             continue
@@ -198,7 +239,8 @@ def validate_projection(projection):
             meta = record["meta"]
             if (set(record) != RECORD_KEYS or set(meta) != META_KEYS or type(meta["text_cut"]) is not bool
                     or not isinstance(meta["task_id"], str) or SYNTHETIC_TASK.fullmatch(meta["task_id"]) is None
-                    or "/" in meta["task_id"] or meta["type"] not in sp.ALLOWED_TYPES or meta["type"] in BOOKKEEPING
+                    or "/" in meta["task_id"] or capture._REVIEW_TASK.search(meta["task_id"])
+                    or meta["type"] not in sp.ALLOWED_TYPES or meta["type"] in BOOKKEEPING
                     or meta["status"] not in sp.ALLOWED_STATUS | {"UNKNOWN"} or meta["agent"] not in sp.LANES
                     or meta["agent"] in sp.REVIEW_LANES):
                 raise ValueError()

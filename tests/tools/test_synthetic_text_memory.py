@@ -32,7 +32,7 @@ TOPICS = [
 
 def event(agent, kind, status, task, message, minute=0, **extra):
     value = {'ts_utc': '2026-11-01T10:%02d:30Z' % minute, 'agent': agent, 'type': kind, 'status': status,
-             'task_id': task, 'message': message}
+             'task_id': task, 'to': '', 'message': message}
     value.update(extra)
     return value
 
@@ -221,7 +221,7 @@ def consistent(agent=FABLE, kind='message', status='info', task='synthetic-a', b
 
 
 @pytest.mark.parametrize('change', ['live_task', 'review_lane', 'review_type', 'bookkeeping', 'body', 'provenance',
-                                    'branch_task'])
+                                    'branch_task', 'review_task', 'review_body', 'secret_body', 'evasion_body'])
 def test_validate_rederives_every_record(change):
     projection = stm.project_synthetic_text(corpus(), enabled=True)
     stm.validate_projection(projection)
@@ -236,6 +236,14 @@ def test_validate_rederives_every_record(change):
         bad['records'][0] = consistent(kind='claim', status='active')
     elif change == 'branch_task':
         bad['records'][0] = consistent(task='synthetic-a/pr-branch')
+    elif change == 'review_task':
+        bad['records'][0] = consistent(task='synthetic-review-a')
+    elif change == 'review_body':
+        bad['records'][0] = consistent(body='the vote is in')
+    elif change == 'secret_body':
+        bad['records'][0] = consistent(body='key AKIA' + 'IOSFODNN7EXAMPLE')
+    elif change == 'evasion_body':
+        bad['records'][0] = consistent(body='pass\u200bword is here')
     elif change == 'body':
         record = bad['records'][0]
         record['stored_text'] = record['summary'] = record['stored_text'] + ' changed'
@@ -401,3 +409,141 @@ def test_ask_refuses_a_malformed_source_binding(built, source, change):
     with pytest.raises(stm.TextRefused, match='source_refused'):
         stm.ask_synthetic_text(built['dir'], built['memory_sha256'], Encoder(), 'disk space', '2026-11-02T00:00:00Z',
                                enabled=True, source=pins)
+
+
+
+def cut_or_refused(line):
+    """The line never reaches the projection: it cuts the text after it, and alone it refuses the record."""
+    cut = stm.project_synthetic_text([event(FABLE, 'message', 'info', 'synthetic-a', 'first useful line\n' + line +
+                                            '\nlater useful line')], enabled=True)
+    assert [r['stored_text'] for r in cut['records']] == ['message info fable-5 synthetic-a\nfirst useful line']
+    assert cut['records'][0]['meta']['text_cut'] is True
+    refused = stm.project_synthetic_text([event(FABLE, 'message', 'info', 'synthetic-a', line + '\nlater line')],
+                                         enabled=True)
+    assert refused['records'] == [] and refused['refused'] == {'text_guarded': 1}
+    for projection in (cut, refused):
+        dumped = json.dumps(projection, ensure_ascii=False)
+        assert line not in dumped and 'later' not in dumped
+
+
+def kept(line):
+    projection = stm.project_synthetic_text([event(FABLE, 'message', 'info', 'synthetic-a', line)], enabled=True)
+    return [r['stored_text'] for r in projection['records']] == ['message info fable-5 synthetic-a\n' + line]
+
+
+SECRET_SHAPES = [
+    'aws key AKIA' + 'IOSFODNN7EXAMPLE',
+    'jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln',
+    '-----BEGIN OPENSSH PRIVATE KEY-----',
+    'clone https://someone:hunter2' + chr(64) + 'example.org/repo',
+    'Authorization: Basic dXNlcjpwYXNz',
+    'Cookie: sid=abc',
+    'Set-Cookie: sid=abc',
+    'the passphrase is horse',
+    'pwd=abc',
+    'auth=abc',
+    'glpat-' + 'x' * 20,
+    'AIza' + 'Sy' + 'a1' * 16,
+    'hf_' + 'a1' * 15,
+    'npm_' + 'a1' * 18,
+    'blob QWxhZGRpbjpvcGVuIHNlc2FtZQ9xK2',
+    'id 9fK2xLq8ZtR4vW7mN3pB6cJ1',
+    'salasana on kissa',
+    'tunnus abc',
+    'access_token=abc',
+    'x-api-token: abc',
+    'client_secret=abc',
+    'session_key: abc',
+    'xoxb-123',
+    'blob AbcdEfghIjklMnopQrstUv',  # long mixed-case run without digits
+    'the pwd is abc',
+    'Authorization Basic abc',
+    'key AKIA' + 'ABCDEFGHIJKL',  # short AWS shape, no long run
+    'AIza' + 'abc_def-ghi_jkl-mnop',
+    'jwt eyJ' + 'abc_defg.x',
+]
+
+
+@pytest.mark.parametrize('line', SECRET_SHAPES)
+def test_secret_like_shapes_cut_the_text(line):
+    cut_or_refused(line)
+
+
+@pytest.mark.parametrize('line', [
+    'pass​word=abc',  # zero-width space
+    'pass­word=abc',  # soft hyphen
+    'ｔｏｋｅｎ: abc',  # fullwidth letters
+    'tоken: abc',  # Cyrillic o
+    '‮abc cba',  # right-to-left override
+    'tab\there',
+    'bell\x07here',
+    'carriage\rreturn',
+    'non breaking space',
+])
+def test_unicode_evasions_and_controls_cut_the_text(line):
+    cut_or_refused(line)
+
+
+@pytest.mark.parametrize('line', [
+    'merged at 64616d07c1bfbeabe59ae4aacd0108e1780e1c7d on the synthetic branch',
+    'prefix sha ' + '0123456789abcdef' * 4,
+    'task synthetic-disk-space-dips-20261107 at 2026-11-07T00:04:55.5375230Z',
+    'Levytilan notkahdus johtuu varmuuskopiosta: äöå ÄÖÅ',
+    'short commit 64616d07 and PR 2049',
+    'internationalizations are lowercase words',
+])
+def test_ordinary_lines_are_kept(line):
+    assert kept(line)
+
+
+def test_line_length_is_bounded():
+    assert stm.LINE_CAP == 280
+    assert kept('a' + ' word' * 55 + 'x' * 4)
+    assert not kept('a' + ' word' * 55 + 'x' * 5)
+
+
+@pytest.mark.parametrize('line', [
+    'RCO2 changes_requested on PR 1562',
+    'rco_pass at head abc',
+    'this is a veto',
+    'finding GP1 is open',
+    'my vote is yes',
+    'recusal noted',
+    'build_consensus done',
+    'I approve this',
+    'claude-rco-1 said so',
+    'rco-2 looked at it',
+    'RCO2 looked at it',
+    'claude_rco2 said so',
+])
+def test_review_words_in_text_cut_it(line):
+    cut_or_refused(line)
+
+
+def test_only_broadcast_non_review_events_are_stored():
+    canary = 'zq-directed-canary'
+    events = [event(FABLE, 'message', 'info', 'synthetic-ok', 'kept broadcast text'),
+              event(LEAD, 'message', 'info', 'synthetic-d', canary + ' directed', to=TOOLS),
+              event(LEAD, 'message', 'info', 'synthetic-d', canary + ' to rco', to='claude-rco-2'),
+              event(LEAD, 'message', 'info', 'synthetic-d', canary + ' list', to=[TOOLS]),
+              event(LEAD, 'message', 'info', 'synthetic-d', canary + ' none', to=None),
+              event(LEAD, 'message', 'info', 'synthetic-d', canary + ' payload rco', payload={'to': 'claude-rco-1'}),
+              event(LEAD, 'message', 'info', 'synthetic-d', canary + ' payload rcpt',
+                    payload={'recipient': 'rco-2'}),
+              event(LEAD, 'message', 'info', 'synthetic-review-d', canary + ' review task'),
+              event(LEAD, 'message', 'info', 'synthetic-rco2-d', canary + ' rco task')]
+    no_to = event(LEAD, 'message', 'info', 'synthetic-d', canary + ' no to')
+    del no_to['to']
+    projection = stm.project_synthetic_text(events + [no_to], enabled=True)
+    assert [r['stored_text'] for r in projection['records']] == ['message info fable-5 synthetic-ok\nkept broadcast text']
+    assert projection['refused'] == {'directed_excluded': 5, 'rco_addressed_excluded': 2, 'review_task_excluded': 2}
+    assert canary not in json.dumps(projection)
+
+
+def test_a_directed_source_row_does_not_verify(source):
+    rows = [dict(e) for e in source['events']]
+    projection = stm.project_synthetic_text(rows, enabled=True)
+    rows[2]['to'] = TOOLS
+    pins = source['write'](rows)
+    with pytest.raises(stm.TextRefused, match='source_unbound'):
+        stm.verify_synthetic_sources(projection, enabled=True, **pins)

@@ -158,6 +158,15 @@ using Microsoft.Win32.SafeHandles;
 public static class WdQ4AdoptPendingV1 {
   [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
   static extern SafeFileHandle CreateFile(string name,uint access,uint share,IntPtr security,uint creation,uint flags,IntPtr template);
+  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+  static extern uint GetFileAttributes(string path);
+  public static bool Exists(string path) {
+    uint attributes=GetFileAttributes(path);
+    if(attributes!=0xFFFFFFFF) return true;
+    int e=Marshal.GetLastWin32Error();
+    if(e==2 || e==3) return false;
+    throw new Win32Exception(e);
+  }
   [DllImport("kernel32.dll",SetLastError=true)]
   static extern bool SetFileInformationByHandle(SafeFileHandle h,int info,ref byte value,uint size);
   public static SafeFileHandle Create(string path) {
@@ -183,10 +192,42 @@ public static class WdQ4AdoptPendingV1 {
         launcher_sha256=([string]$manifestData.files.'Invoke-WdQ4AdoptRecovery.ps1').ToLowerInvariant(); commit=$ExpectedCommit} | ConvertTo-Json -Compress)
     $pendingBytes=[Text.Encoding]::ASCII.GetBytes($pendingText)
     $started=$true
-    $pendingHandle=[WdQ4AdoptPendingV1]::Create($pendingPath)
-    $pendingStream=[IO.FileStream]::new($pendingHandle,[IO.FileAccess]::ReadWrite)
-    $pendingStream.Write($pendingBytes,0,$pendingBytes.Length)
-    $pendingStream.Flush($true)
+    $privateLockPath=Join-Path $private 'prefix-private-state.lock'
+    $checkpointLockPath=Join-Path $checkpoint 'q4-checkpoint.lock'
+    $privateLock=$null; $checkpointLock=$null; $privateHeld=$false; $checkpointHeld=$false
+    try {
+        if ([WdQ4AdoptPendingV1]::Exists($privateLockPath)) { [void](CheckedPath $privateLockPath) }
+        $privateLock=[IO.File]::Open($privateLockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite)
+        [void](CheckedPath $privateLockPath)
+        $privateLock.Lock(0,1); $privateHeld=$true
+        if ([WdQ4AdoptPendingV1]::Exists($checkpointLockPath)) { [void](CheckedPath $checkpointLockPath) }
+        $checkpointLock=[IO.File]::Open($checkpointLockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite)
+        [void](CheckedPath $checkpointLockPath)
+        $checkpointLock.Lock(0,1); $checkpointHeld=$true
+        # Admission and CREATE_NEW share exactly the Python private->checkpoint
+        # byte-lock window. The adoption pending is the subject of recovery and
+        # is therefore allowed; all competing reservations remain UNKNOWN.
+        $competing=@((Join-Path $private 'prefix-private-state.pending'),
+            (Join-Path $private '.wd-q4-status-prefix-runner.pending'),
+            (Join-Path $checkpoint '.wd-q4-status-prefix-runner.pending'),
+            (Join-Path $private 'q4-cutoff.pending.json'),
+            (Join-Path $private 'q4-continuation-orchestrator.pending.json'),
+            (Join-Path $private 'q4-continuation-orchestrator-job.pending.json'),
+            (Join-Path $private 'q4-live-update.pending.json'),
+            (Join-Path $checkpoint 'q4-prefix-fence.json'))
+        foreach ($other in $competing) {
+            if ([WdQ4AdoptPendingV1]::Exists($other)) { throw 'competing pending' }
+        }
+        $pendingHandle=[WdQ4AdoptPendingV1]::Create($pendingPath)
+        $pendingStream=[IO.FileStream]::new($pendingHandle,[IO.FileAccess]::ReadWrite)
+        $pendingStream.Write($pendingBytes,0,$pendingBytes.Length)
+        $pendingStream.Flush($true)
+    } finally {
+        if ($checkpointHeld) { $checkpointLock.Unlock(0,1) }
+        if ($null -ne $checkpointLock) { $checkpointLock.Dispose() }
+        if ($privateHeld) { $privateLock.Unlock(0,1) }
+        if ($null -ne $privateLock) { $privateLock.Dispose() }
+    }
     . $jobHelper
     $jobArgs=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$worker,
         '-Manifest',$manifest,'-ManifestSha256',$ExpectedManifestSha256,'-Bootstrap',$bootstrap,

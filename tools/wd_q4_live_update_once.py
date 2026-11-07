@@ -34,6 +34,37 @@ from tools import wd_q4_status_prefix_runner as runner
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
 _CONFIG_KEYS = frozenset({'schema', 'route_path', 'route_sha256', 'plan_path', 'anchor_path',
     'policy_path', 'public_policy_path', 'baseline_path', 'baseline_sha256', 'manifest_sha256'})
+_P1_CONFIG_KEYS = _CONFIG_KEYS | {'p1_enabled'}
+
+
+def _configuration(raw):
+    """A v2 config explicitly opts into P1; its external digest binds recovery.
+
+    The pending marker, intent and progress already pin the complete config
+    digest. Never infer this selection from environment or a retained marker.
+    Old v1 callers and their exact serialized configuration stay unchanged.
+    """
+    config = caller._json(raw)
+    if type(config) is not dict:
+        raise ValueError()
+    if config.get('schema') == 'wd.q4-live-update-once.v1':
+        if set(config) != _CONFIG_KEYS:
+            raise ValueError()
+    elif config.get('schema') == 'wd.q4-live-update-once.v2':
+        if set(config) != _P1_CONFIG_KEYS or config['p1_enabled'] is not True:
+            raise ValueError()
+    else:
+        raise ValueError()
+    if any(type(config[key]) is not str or not _HEX.fullmatch(config[key])
+           for key in ('route_sha256', 'baseline_sha256', 'manifest_sha256')):
+        raise ValueError()
+    return config
+
+
+def _selector_options(config):
+    """Do not pass new keywords to old/default selector callers."""
+    return {'p1_enabled': True} if config['schema'] == 'wd.q4-live-update-once.v2' else {}
+
 
 
 class UpdateRefused(ValueError):
@@ -236,7 +267,9 @@ def _require_write_roots(baseline_path, bundle_root, checkpoint_root, private_ro
             raise ValueError()
 
 
-def _publish(config, baseline, index_root, public, result, *, generation=None):
+def _publish(config, baseline, index_root, public, result, *, generation=None, p1_enabled=False):
+    if type(p1_enabled) is not bool:
+        raise ValueError()
     pointer, snapshot = _snapshot(index_root, result['pointer_sha256'], public['policy_path'],
                                   public['roster_path'], public['public_policy_path'])
     bd, _, _, fleet, binding, inputs = baseline
@@ -279,7 +312,8 @@ def _publish(config, baseline, index_root, public, result, *, generation=None):
     candidate = caller._configuration(paths['descriptor_path'], _sha(descriptor_raw))
     publication = live.publish(enabled=True, baseline_path=config['baseline_path'],
         baseline_sha256=config['baseline_sha256'], baseline=baseline, manifest_sha256=config['manifest_sha256'],
-        candidate_path=paths['descriptor_path'], candidate_sha256=_sha(descriptor_raw), candidate=candidate)
+        candidate_path=paths['descriptor_path'], candidate_sha256=_sha(descriptor_raw), candidate=candidate,
+        **({'p1_enabled': True} if p1_enabled else {}))
     return {'status': publication['status'], 'pointer_sha256': result['pointer_sha256'],
             'descriptor_sha256': _sha(descriptor_raw), 'publication_sha256': publication['publication_sha256'],
             'freshness': 'UNKNOWN', 'source_authenticity': 'UNKNOWN', 'publisher_authentication': 'UNKNOWN'}
@@ -297,11 +331,7 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None, ho
         if (enabled is not True or type(expected_config_sha256) is not str or not _HEX.fullmatch(expected_config_sha256)
                 or (host_attempt is not None and (type(host_attempt) is not str or not _HEX.fullmatch(host_attempt)))):
             raise ValueError()
-        config = caller._json(_read(config_path, 65536, expected_config_sha256), _CONFIG_KEYS)
-        if config['schema'] != 'wd.q4-live-update-once.v1' or any(
-                type(config[key]) is not str or not _HEX.fullmatch(config[key])
-                for key in ('route_sha256', 'baseline_sha256', 'manifest_sha256')):
-            raise ValueError()
+        config = _configuration(_read(config_path, 65536, expected_config_sha256))
         if os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower() != config['manifest_sha256']:
             raise ValueError()
         baseline = caller._configuration(config['baseline_path'], config['baseline_sha256'])
@@ -343,7 +373,8 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None, ho
         if os.path.lexists(selector):
             chosen = live.select(enabled=True, baseline_path=config['baseline_path'],
                 baseline_sha256=config['baseline_sha256'], baseline=baseline,
-                manifest_sha256=config['manifest_sha256'], load_configuration=caller._configuration)
+                manifest_sha256=config['manifest_sha256'], load_configuration=caller._configuration,
+                **_selector_options(config))
             current_pin = chosen['configuration'][4]['pointer_sha256']
         else:
             caller._require_current_snapshot(descriptor, binding, inputs)
@@ -409,7 +440,7 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None, ho
             live._read(root / checkpoint.POINTER, 16384, current_pin)
             result = {'status': 'NO_CHANGE', 'pointer_sha256': current_pin, 'freshness': 'UNKNOWN'}
         else:
-            result = _publish(config, baseline, root, public, report)
+            result = _publish(config, baseline, root, public, report, **_selector_options(config))
         receipt = _encode({'schema': 'wd.q4-live-update-result.v1', 'attempt': nonce,
                            'config_sha256': expected_config_sha256, 'previous_pointer_sha256': current_pin,
                            'runner_receipt_sha256': report['runner_receipt_sha256'], 'result': result})

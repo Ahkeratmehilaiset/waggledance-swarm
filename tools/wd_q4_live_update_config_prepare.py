@@ -30,12 +30,12 @@ class ConfigPrepareInterrupted(BaseException):
 
 
 def prepare_config(*, enabled=False, output_path=None, baseline_path=None, expected_baseline_sha256=None,
-                   expected_manifest_sha256=None, tuple_path=None, expected_tuple_sha256=None):
+                   expected_manifest_sha256=None, tuple_path=None, expected_tuple_sha256=None, p1_enabled=False):
     if enabled is False:
         return {'status': 'OFF'}
     attempted = False
     try:
-        if (enabled is not True or any(type(pin) is not str or not update._HEX.fullmatch(pin)
+        if (enabled is not True or type(p1_enabled) is not bool or any(type(pin) is not str or not update._HEX.fullmatch(pin)
                 for pin in (expected_baseline_sha256, expected_manifest_sha256, expected_tuple_sha256))
                 or os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower() != expected_manifest_sha256):
             raise ValueError()
@@ -60,7 +60,8 @@ def prepare_config(*, enabled=False, output_path=None, baseline_path=None, expec
         if os.path.lexists(selector):
             selected = live.select(enabled=True, baseline_path=str(baseline_path),
                 baseline_sha256=expected_baseline_sha256, baseline=baseline,
-                manifest_sha256=expected_manifest_sha256, load_configuration=caller._configuration)
+                manifest_sha256=expected_manifest_sha256, load_configuration=caller._configuration,
+                **({'p1_enabled': True} if p1_enabled else {}))
             current_pin = selected['configuration'][4]['pointer_sha256']
         else:
             caller._require_current_snapshot(descriptor, binding, inputs)
@@ -88,6 +89,8 @@ def prepare_config(*, enabled=False, output_path=None, baseline_path=None, expec
                   'anchor_path': str(paths['anchor']), 'policy_path': public['policy_path'],
                   'public_policy_path': public['public_policy_path'], 'baseline_path': str(baseline_path),
                   'baseline_sha256': expected_baseline_sha256, 'manifest_sha256': expected_manifest_sha256}
+        if p1_enabled:
+            config.update(schema='wd.q4-live-update-once.v2', p1_enabled=True)
         raw = update._encode(config)
         for name, path in paths.items():
             attempted = True
@@ -110,6 +113,7 @@ def prepare_config(*, enabled=False, output_path=None, baseline_path=None, expec
 def main(argv=None):
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument('--prepare', action='store_true')
+    parser.add_argument('--p1', action='store_true')
     for name in ('output-path', 'baseline-path', 'baseline-sha256', 'manifest-sha256', 'tuple-path', 'tuple-sha256'):
         parser.add_argument('--' + name)
     supplied = list(sys.argv[1:] if argv is None else argv)
@@ -120,7 +124,7 @@ def main(argv=None):
     if not args.prepare:
         print('{"status":"OFF"}')
         return 0
-    flags = ('--prepare', '--output-path', '--baseline-path', '--baseline-sha256', '--manifest-sha256',
+    flags = ('--prepare', '--p1', '--output-path', '--baseline-path', '--baseline-sha256', '--manifest-sha256',
              '--tuple-path', '--tuple-sha256')
     if any(sum(token == flag or token.startswith(flag + '=') for token in supplied) > 1 for flag in flags):
         print('{"status":"REFUSED"}', file=sys.stderr)
@@ -128,7 +132,7 @@ def main(argv=None):
     try:
         result = prepare_config(enabled=True, output_path=args.output_path, baseline_path=args.baseline_path,
             expected_baseline_sha256=args.baseline_sha256, expected_manifest_sha256=args.manifest_sha256,
-            tuple_path=args.tuple_path, expected_tuple_sha256=args.tuple_sha256)
+            tuple_path=args.tuple_path, expected_tuple_sha256=args.tuple_sha256, p1_enabled=args.p1)
     except ConfigPrepareUnknown:
         print('{"status":"UNKNOWN"}', file=sys.stderr)
         return 3

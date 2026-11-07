@@ -539,3 +539,94 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
     assert update.caller.main(['--enabled']) == 0
     recovered = json.loads(capsys.readouterr().out)
     assert recovered['answer']['binding']['pointer_sha256'] == result['pointer_sha256']
+
+
+def _p1_test_config():
+    return dict(schema='wd.q4-live-update-once.v2', route_path='route', route_sha256='a'*64,
+        plan_path='plan', anchor_path='anchor', policy_path='policy', public_policy_path='public',
+        baseline_path='baseline', baseline_sha256='b'*64, manifest_sha256='c'*64, p1_enabled=True)
+
+
+@pytest.mark.parametrize('legacy', [False,True])
+def test_p1_configuration_round_trip_keeps_explicit_policy(legacy):
+    config=_p1_test_config()
+    if legacy:
+        config.pop('p1_enabled');config['schema']='wd.q4-live-update-once.v1'
+    checked=update._configuration(update._encode(config))
+    assert checked==config
+    assert update._selector_options(checked)==({} if legacy else {'p1_enabled':True})
+
+
+@pytest.mark.parametrize('change', [
+    {'p1_enabled':False},{'p1_enabled':1},{'p1_enabled':'true'},{'p1_enabled':None},
+    {'schema':'wd.q4-live-update-once.v1'},{'schema':'wd.q4-live-update-once.v3'},
+    {'unexpected':'value'},{'baseline_sha256':'BAD'},
+])
+def test_p1_configuration_refuses_unrecognized_or_downgraded_policy(change):
+    with pytest.raises(ValueError):
+        update._configuration(update._encode({**_p1_test_config(),**change}))
+
+
+@pytest.mark.parametrize('fault', ['publish','before_progress','before_progress_no_change','before_runner_receipt'])
+def test_p1_opt_in_reaches_updater_and_recovery_without_policy_switch(tmp_path, monkeypatch, capsys, fault):
+    # The selector API is supplied by a disjoint Lead patch. This seam records
+    # the new literal keyword then delegates to the real legacy selector over
+    # the real synthetic status fixture: it does NOT prove real C2 P1 bounds.
+    import json
+    from pathlib import Path
+    from tools import wd_q4_live_update_recovery as recovery
+    encode, publish, select, pair = update._encode, update.live.publish, update.live.select, update.live._checked_pair
+    recover=recovery.recover
+    active={'value':False,'switched':False}
+    seen=[]
+    def encoded(value):
+        if isinstance(value,dict) and value.get('schema')=='wd.q4-live-update-once.v1':
+            active['value']=True
+            value={**value,'schema':'wd.q4-live-update-once.v2','p1_enabled':True}
+        return encode(value)
+    def forwarded(name, original):
+        def call(*args,**kw):
+            flag=kw.pop('p1_enabled',None)
+            import inspect
+            owner=Path(inspect.currentframe().f_back.f_code.co_filename).name
+            if active['value'] and name!='pair' and owner in (
+                    'wd_q4_live_update_once.py','wd_q4_live_update_recovery.py'):
+                assert flag is True, (name,owner,kw)
+            if flag is False:
+                # The seam deliberately invokes the legacy status selector.
+                # Its internal pair call explicitly carries the default False.
+                assert name == 'pair' and owner == 'wd_q4_live_snapshot_publish.py'
+            elif flag is not None:
+                assert flag is True
+                seen.append(name)
+            return original(*args,**kw)
+        return call
+    def checked_recover(**kw):
+        config_path=Path(kw['config_path'])
+        config=json.loads(config_path.read_bytes())
+        if config.get('p1_enabled') is True and not active['switched']:
+            baseline=update.caller._configuration(config['baseline_path'],config['baseline_sha256'])
+            route=json.loads(Path(config['route_path']).read_bytes())
+            marker=Path(route['private_state_root'])/'q4-live-update.pending.json'
+            before=marker.read_bytes()
+            original=config_path.read_bytes()
+            downgraded=dict(config,schema='wd.q4-live-update-once.v1')
+            downgraded.pop('p1_enabled')
+            changed=encode(downgraded)
+            try:
+                config_path.write_bytes(changed)
+                with pytest.raises(recovery.RecoveryRefused):
+                    recover(**{**kw,'expected_config_sha256':update._sha(changed)})
+                assert marker.read_bytes()==before
+            finally:
+                config_path.write_bytes(original)
+            active['switched']=True
+        return recover(**kw)
+    monkeypatch.setattr(update,'_encode',encoded)
+    monkeypatch.setattr(update.live,'publish',forwarded('publish',publish))
+    monkeypatch.setattr(update.live,'select',forwarded('select',select))
+    monkeypatch.setattr(update.live,'_checked_pair',forwarded('pair',pair))
+    monkeypatch.setattr(recovery,'recover',checked_recover)
+    test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path,monkeypatch,capsys,fault)
+    assert 'publish' in seen and 'select' in seen
+    assert active['switched'] is True

@@ -38,7 +38,8 @@ def test_cli_disabled_does_not_read_paths(capsys):
     assert json.loads(capsys.readouterr().out) == {'status': 'OFF'}
 
 
-def test_pinned_private_tuple_is_materialized_without_changing_its_cutoff(tmp_path, monkeypatch, synthetic):
+@pytest.mark.parametrize('p1', [False, True])
+def test_pinned_private_tuple_is_materialized_without_changing_its_cutoff(tmp_path, monkeypatch, synthetic, p1):
     """Real tuple and policies; descriptor/current-pointer reader is a synthetic seam."""
     module = importlib.import_module('tools.wd_q4_live_update_config_prepare')
     from tools import wd_q4_live_update_once as update
@@ -81,13 +82,17 @@ def test_pinned_private_tuple_is_materialized_without_changing_its_cutoff(tmp_pa
     kwargs = dict(enabled=True, output_path=str(output), baseline_path=str(baseline_path),
                   expected_baseline_sha256=baseline[2], expected_manifest_sha256=manifest_pin,
                   tuple_path=str(tuple_path), expected_tuple_sha256=args['expected_tuple_sha256'])
+    if p1:
+        kwargs['p1_enabled'] = True
     result = module.prepare_config(**kwargs)
     assert result['status'] == 'PREPARED' and result['freshness'] == 'UNKNOWN'
     assert result['cutoff_utc'] == route['cutoff_utc']
     raw = output.read_bytes()
     assert result['config_sha256'] == update._sha(raw)
     config = json.loads(raw)
-    assert set(config) == update._CONFIG_KEYS
+    assert set(config) == (update._CONFIG_KEYS | {'p1_enabled'} if p1 else update._CONFIG_KEYS)
+    assert config['schema'] == ('wd.q4-live-update-once.v2' if p1 else 'wd.q4-live-update-once.v1')
+    assert config.get('p1_enabled', False) is p1
     assert json.loads(Path(config['route_path']).read_bytes()) == route
     assert json.loads(Path(config['plan_path']).read_bytes()) == plan
     assert update._sha(Path(config['route_path']).read_bytes()) == config['route_sha256']
@@ -256,3 +261,23 @@ def test_materializes_from_real_synthetic_descriptor_and_fenced_checkpoint(tmp_p
     assert deferred['status'] == 'NO_CHANGE' and deferred['pointer_sha256'] == actual['pointer_sha256']
     assert reports[0]['status'] == 'EMPTY_NO_CHANGE' and reports[0]['coverage'] == 'partial_ready_prefix'
     assert not (Path(route['private_state_root']) / 'q4-live-update.pending.json').exists()
+
+
+@pytest.mark.parametrize('value', [None, 0, 1, 'true', {}, []])
+def test_p1_config_prepare_rejects_non_boolean_opt_in_before_read(tmp_path, monkeypatch, value):
+    module = importlib.import_module('tools.wd_q4_live_update_config_prepare')
+    monkeypatch.setattr(module.caller, '_configuration', lambda *_: pytest.fail('invalid flag read baseline'))
+    with pytest.raises(module.ConfigPrepareRefused):
+        module.prepare_config(enabled=True, p1_enabled=value, output_path=str(tmp_path/'updater-config.json'),
+            expected_baseline_sha256='a'*64, expected_manifest_sha256='b'*64, expected_tuple_sha256='c'*64)
+    assert not list(tmp_path.iterdir())
+
+
+def test_p1_prepare_cli_forwards_explicit_opt_in_and_rejects_duplicates(monkeypatch, capsys):
+    module = importlib.import_module('tools.wd_q4_live_update_config_prepare')
+    calls=[]
+    monkeypatch.setattr(module, 'prepare_config', lambda **kw: calls.append(kw) or {'status':'PREPARED'})
+    assert module.main(['--prepare','--p1']) == 0
+    assert calls[-1]['p1_enabled'] is True
+    assert module.main(['--prepare','--p1','--p1']) == 2
+    assert len(calls)==1

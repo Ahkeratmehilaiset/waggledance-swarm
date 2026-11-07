@@ -125,7 +125,7 @@ def _prior_selector(config, baseline, previous, current, attempt, private, confi
         raise ValueError()
     candidate_path = path.parent / item['generation'] / 'shared-session-config.v2.json'
     candidate = caller._configuration(str(candidate_path), item['descriptor_sha256'])
-    live._checked_pair(baseline, candidate, config['manifest_sha256'])
+    live._checked_pair(baseline, candidate, config['manifest_sha256'], **update._selector_options(config))
     if candidate[4]['pointer_sha256'] != item['index_pointer_sha256']:
         raise ValueError()
     if item['index_pointer_sha256'] == current:
@@ -134,7 +134,8 @@ def _prior_selector(config, baseline, previous, current, attempt, private, confi
             raise ValueError()
         selected = live.select(enabled=True, baseline_path=config['baseline_path'],
             baseline_sha256=config['baseline_sha256'], baseline=baseline,
-            manifest_sha256=config['manifest_sha256'], load_configuration=caller._configuration)
+            manifest_sha256=config['manifest_sha256'], load_configuration=caller._configuration,
+                        **update._selector_options(config))
         if selected['configuration'][2] != item['descriptor_sha256']:
             raise ValueError()
         return {'status': 'PUBLISHED', 'pointer_sha256': current,
@@ -224,7 +225,8 @@ def _recover_closed_job(*, private, root, config, baseline, descriptor, binding,
         intent_path = private / ('q4-live-recovery-intent-' + attempt + '-' + nonce + '.json')
         intent_info = update.runner._create(intent_path, intent)
         update.runner._verify_own(intent_path, intent, intent_info)
-        selected = update._publish(config, baseline, root, public, {'pointer_sha256': target}, generation=generation)
+        selected = update._publish(config, baseline, root, public, {'pointer_sha256': target}, generation=generation,
+                                   **update._selector_options(config))
     record = update._encode({'schema': 'wd.q4-live-job-reconciled.v1', 'attempt': attempt,
                              'config_sha256': config_sha, 'job_receipt_sha256': job_sha,
                              'intent_sha256': marker['intent_sha256'], 'pointer_sha256': target, 'result': selected})
@@ -265,9 +267,8 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
             raise ValueError()
         else:
             reconstruct = False
-        config = caller._json(update._read(config_path, 65536, expected_config_sha256), update._CONFIG_KEYS)
-        if (config['schema'] != 'wd.q4-live-update-once.v1'
-                or os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower() != config['manifest_sha256']):
+        config = update._configuration(update._read(config_path, 65536, expected_config_sha256))
+        if os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower() != config['manifest_sha256']:
             raise ValueError()
         baseline = caller._configuration(config['baseline_path'], config['baseline_sha256'])
         descriptor, _, _, _, binding, inputs = baseline
@@ -400,7 +401,8 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
                 if os.path.lexists(selector_path):
                     current = live.select(enabled=True, baseline_path=config['baseline_path'],
                         baseline_sha256=config['baseline_sha256'], baseline=baseline,
-                        manifest_sha256=config['manifest_sha256'], load_configuration=caller._configuration)
+                        manifest_sha256=config['manifest_sha256'], load_configuration=caller._configuration,
+                        **update._selector_options(config))
                     if current['configuration'][4]['pointer_sha256'] != target:
                         raise ValueError()
                 else:
@@ -426,7 +428,8 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
                 recovery_intent_path = private / ('q4-live-recovery-intent-' + expected_attempt + '-' + recovery_nonce + '.json')
                 intent_info = update.runner._create(recovery_intent_path, recovery_intent)
                 update.runner._verify_own(recovery_intent_path, recovery_intent, intent_info)
-                selected = update._publish(config, baseline, root, public, {'pointer_sha256': target}, generation=generation)
+                selected = update._publish(config, baseline, root, public, {'pointer_sha256': target}, generation=generation,
+                                   **update._selector_options(config))
             recovery_receipt = update._encode({'schema': 'wd.q4-live-update-recovery-result.v1',
                 'attempt': expected_attempt, 'config_sha256': expected_config_sha256,
                 'progress_sha256': expected_progress_sha256, 'result': selected})
@@ -465,7 +468,8 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
                         if os.path.lexists(selector_path):
                             check = live.select(enabled=True, baseline_path=config['baseline_path'],
                                 baseline_sha256=config['baseline_sha256'], baseline=baseline,
-                                manifest_sha256=config['manifest_sha256'], load_configuration=caller._configuration)
+                                manifest_sha256=config['manifest_sha256'], load_configuration=caller._configuration,
+                        **update._selector_options(config))
                             if check['configuration'][4]['pointer_sha256'] != target:
                                 raise ValueError()
                         else:

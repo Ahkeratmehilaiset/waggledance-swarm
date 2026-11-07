@@ -24,6 +24,7 @@ _spec.loader.exec_module(closure)
 
 CARD_MODULE = 'sandbox/mind/step2/shared_card_projection.py'
 CARD_PRODUCER = 'tools/wd_q4_card_generation.py'
+CARD_CHECKPOINT = 'sandbox/mind/step2/shared_card_checkpoint.py'
 CARD_FILES = (
     'sandbox/mind/step2/public_knowledge_card.py',
     CARD_MODULE,
@@ -62,6 +63,13 @@ def test_synthetic_card_producer_is_not_a_published_entrypoint():
     published = (set(definition['python_entrypoints'].values())
                  | set(definition['manual_execution_capability']['entrypoints'].values()))
     assert CARD_PRODUCER not in published
+
+
+def test_card_checkpoint_and_its_import_closure_are_packaged(monkeypatch):
+    packaged = closure._packaged_python()
+    assert packaged.count(CARD_CHECKPOINT) == 1
+    reached = _reach([CARD_CHECKPOINT], monkeypatch)
+    assert reached <= set(packaged), sorted(reached - set(packaged))
 
 
 def test_the_route_files_reach_card_files_only_as_packaged_code(monkeypatch):
@@ -109,12 +117,14 @@ def test_the_staged_package_imports_the_card_modules_with_the_route_off(staged):
         "    decision = str(refusal)\n"
         "cards = importlib.import_module('sandbox.mind.step2.shared_card_projection')\n"
         "producer = importlib.import_module('tools.wd_q4_card_generation')\n"
+        "checkpoint = importlib.import_module('sandbox.mind.step2.shared_card_checkpoint')\n"
         "internal = {name: str(pathlib.Path(m.__file__).resolve()) for name, m in sys.modules.copy().items()\n"
         "            if name.split('.')[0] in ('tools', 'waggledance', 'sandbox') and getattr(m, '__file__', None)}\n"
         "print(json.dumps(dict(\n"
         "    before=before, switch=switch,\n"
         "    build=cards.build_shared_route_card_memory(None, None, None, None, None, None),\n"
         "    producer=producer.prepare_card_generation(),\n"
+        "    checkpoint=checkpoint.validate_card_snapshot(),\n"
         "    resolve=cards.resolve_shared_card_results(), card_file=str(pathlib.Path(cards.__file__).resolve()),\n"
         "    outside=sorted(n for n, p in internal.items() if not pathlib.Path(p).is_relative_to(root)),\n"
         "    faiss='faiss' in sys.modules, numpy='numpy' in sys.modules, decision=decision,\n"
@@ -130,5 +140,6 @@ def test_the_staged_package_imports_the_card_modules_with_the_route_off(staged):
     assert observed['switch'] is False
     assert observed['build'] == observed['resolve'] == {'status': 'OFF'}
     assert observed['producer'] == {'status': 'OFF'}
+    assert observed['checkpoint'] == {'status': 'OFF'}
     assert Path(observed['card_file']).is_relative_to(staged.resolve())
     assert observed['outside'] == []

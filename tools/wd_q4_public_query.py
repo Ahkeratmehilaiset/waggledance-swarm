@@ -6,6 +6,11 @@ expected_source_sha256 means the verified checkpoint view's anchor_sha256.
 expected_encoder_sha256 pins canonical JSON of the descriptor's three encoder
 fields (sort_keys=True, separators=(",", ":"), UTF-8, ensure_ascii=True).
 Ordinary pointer changes are rechecked, not protected against same-user ABA.
+card_decision_bytes/card_decision_sha256 (default None, both or neither) forward
+a caller-pinned synthetic card route decision to the pointer resolver and the
+card-aware resolution and bind its pin into the output; without them the call
+and output are the v6 ones. It does not make the checkpoint accept a card
+generation, produce cards or configure a lane.
 The existing backend may take its lock/write scratch when explicitly enabled;
 this adapter itself never writes. Native execution is NOT authorized by a flag.
 """
@@ -34,7 +39,8 @@ def query_public(config, stdin, *, root, expected_pointer_sha256=None,
                  expected_source_sha256=None, expected_encoder_sha256=None,
                  policy_bytes=None, policy_sha256=None, roster_bytes=None,
                  roster_sha256=None, public_policy_bytes=None,
-                 public_policy_sha256=None, enabled=False):
+                 public_policy_sha256=None, enabled=False, card_decision_bytes=None,
+                 card_decision_sha256=None):
     """Resolve, bind and query one caller-selected public generation.
 
     No environment switch, self-derived expected pin, legacy fallback, publisher
@@ -53,13 +59,22 @@ def query_public(config, stdin, *, root, expected_pointer_sha256=None,
         if not all(type(value) is bytes for value in
                    (policy_bytes, roster_bytes, public_policy_bytes)):
             raise ValueError()
+        card = card_decision_bytes is not None or card_decision_sha256 is not None
+        if card and (type(card_decision_bytes) is not bytes
+                     or not pointer_resolver._pin(card_decision_sha256)):
+            raise ValueError()
+        forward = ({"card_decision_bytes": card_decision_bytes,
+                    "card_decision_sha256": card_decision_sha256} if card else {})
         q4_query._validate_config(config)
         binding = pointer_resolver.resolve_public_pointer(
             root, expected_pointer_sha256=expected_pointer_sha256,
             policy_bytes=policy_bytes, policy_sha256=policy_sha256,
             roster_bytes=roster_bytes, roster_sha256=roster_sha256,
             public_policy_bytes=public_policy_bytes,
-            public_policy_sha256=public_policy_sha256, enabled=True)
+            public_policy_sha256=public_policy_sha256, enabled=True, **forward)
+        if card != ("card_decision_sha256" in binding) or (
+                card and binding["card_decision_sha256"] != card_decision_sha256):
+            raise ValueError()
         tasks, _ = pointer_resolver.adapter.strict_pins(
             policy_bytes, policy_sha256, roster_bytes, roster_sha256)
         # The current public resolver omits the source anchor from its return.
@@ -119,7 +134,7 @@ def query_public(config, stdin, *, root, expected_pointer_sha256=None,
             config, stdin, memory_bytes, projection_bytes, tasks,
             policy_bytes=policy_bytes, policy_sha256=policy_sha256,
             roster_bytes=roster_bytes, roster_sha256=roster_sha256,
-            expected_memory_sha256=binding["memory_sha256"])
+            expected_memory_sha256=binding["memory_sha256"], **forward)
         if (type(result) is not dict or set(result) != {"status", "results"}
                 or result["status"] not in ("ANSWER", "ABSTAIN", "DEGRADED")
                 or type(result["results"]) is not list or len(result["results"]) > 100
@@ -149,6 +164,7 @@ def query_public(config, stdin, *, root, expected_pointer_sha256=None,
                 "policy_sha256": policy_sha256, "roster_sha256": roster_sha256,
                 "public_policy_sha256": public_policy_sha256,
                 **{key: binding[key] for key in sorted(pointer_resolver._ARTIFACT_KEYS)},
+                **({"card_decision_sha256": card_decision_sha256} if card else {}),
             },
             "publisher_authentication": "UNKNOWN",
             "source_filter_attestation": "UNKNOWN", "freshness": "UNKNOWN",

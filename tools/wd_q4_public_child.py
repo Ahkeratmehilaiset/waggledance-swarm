@@ -8,6 +8,9 @@ the publisher or source, prove freshness or prevent same-user substitution.
 Result text is not privacy-filtered by this child. Callers must buffer and
 release output only after exit code 0; a failed or short write may already
 have left partial bytes in the stream.
+An optional caller-pinned synthetic card route decision (default None) is
+forwarded to the fixed public query and its pin must come back in the output
+binding; it authenticates no issuer and enables nothing by itself.
 """
 
 import hashlib
@@ -22,6 +25,7 @@ MAX_QUERY = 65536
 MAX_POLICY = 65536
 MAX_ROSTER = 1048576
 MAX_OUTPUT = 32768
+MAX_DECISION = 256 * 1024  # == shared_card_projection.MAX_DECISION (tested)
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _SCHEMA = "wd.q4-public-query.v2"
 _FAIL = '{"schema":"wd.q4-public-query.v2","status":"REFUSED","reason":"public_query_refused"}\n'
@@ -60,7 +64,7 @@ def _read_query(stream):
     return b"".join(chunks)
 
 
-def _validated_output(value, expected):
+def _validated_output(value, expected, binding_keys=_BINDING_KEYS):
     if (type(value) is not dict or set(value) != _ROOT_KEYS or value["schema"] != _SCHEMA
             or value["status"] not in ("ANSWER", "ABSTAIN", "DEGRADED")
             or type(value["results"]) is not list or len(value["results"]) > 100
@@ -69,8 +73,8 @@ def _validated_output(value, expected):
             or any(value[key] != "UNKNOWN" for key in _UNKNOWN_KEYS)):
         raise ValueError()
     binding = value["binding"]
-    if (type(binding) is not dict or set(binding) != _BINDING_KEYS
-            or any(not _pin(binding[key]) for key in _BINDING_KEYS)
+    if (type(binding) is not dict or set(binding) != binding_keys
+            or any(not _pin(binding[key]) for key in binding_keys)
             or any(not hmac.compare_digest(binding[key], pin) for key, pin in expected.items())):
         raise ValueError()
     for item in value["results"]:
@@ -89,7 +93,8 @@ def _validated_output(value, expected):
 def run_public(config, stdin, stdout, *, root=None, expected_pointer_sha256=None,
                expected_source_sha256=None, expected_encoder_sha256=None,
                policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
-               public_policy_bytes=None, public_policy_sha256=None, enabled=False):
+               public_policy_bytes=None, public_policy_sha256=None, enabled=False,
+               card_decision_bytes=None, card_decision_sha256=None):
     """Write one validated public envelope or a fixed refusal; return 0 or 2.
 
     The fixed public query module is lazily imported after exact plan validation.
@@ -98,6 +103,11 @@ def run_public(config, stdin, stdout, *, root=None, expected_pointer_sha256=None
     have emitted bytes; callers must release output only when return code is 0.
     """
     try:
+        card = card_decision_bytes is not None or card_decision_sha256 is not None
+        if card and not _pinned(card_decision_bytes, card_decision_sha256, MAX_DECISION):
+            raise ValueError()
+        forward = ({"card_decision_bytes": card_decision_bytes,
+                    "card_decision_sha256": card_decision_sha256} if card else {})
         if (enabled is not True
                 or not all(_pin(value) for value in (expected_pointer_sha256, expected_source_sha256,
                                                      expected_encoder_sha256))
@@ -125,13 +135,17 @@ def run_public(config, stdin, stdout, *, root=None, expected_pointer_sha256=None
                               policy_bytes=plan.policy_bytes, policy_sha256=plan.policy_sha256,
                               roster_bytes=plan.roster_bytes, roster_sha256=plan.roster_sha256,
                               public_policy_bytes=plan.public_policy_bytes,
-                              public_policy_sha256=plan.public_policy_sha256, enabled=True)
+                              public_policy_sha256=plan.public_policy_sha256, enabled=True, **forward)
         expected = {"pointer_sha256": plan.expected_pointer_sha256,
                     "source_anchor_sha256": plan.expected_source_sha256,
                     "encoder_sha256": plan.expected_encoder_sha256, "policy_sha256": plan.policy_sha256,
                     "roster_sha256": plan.roster_sha256, "public_policy_sha256": plan.public_policy_sha256,
                     "descriptor_sha256": plan.config.descriptor_sha256}
-        text, code = _validated_output(result, expected), 0
+        keys = _BINDING_KEYS
+        if card:
+            expected["card_decision_sha256"] = card_decision_sha256
+            keys = _BINDING_KEYS | {"card_decision_sha256"}
+        text, code = _validated_output(result, expected, keys), 0
     except Exception:
         text, code = _FAIL, 2
     try:

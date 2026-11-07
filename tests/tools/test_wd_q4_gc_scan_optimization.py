@@ -61,3 +61,46 @@ def test_each_call_takes_a_fresh_gc_snapshot():
     second = snapshot()
     assert len(first) == 1 and len(second) == 2 and second[1] is extra
     assert calls == [True, True]
+
+
+def test_scan_does_not_call_hostile_metaclass_comparison_hooks():
+    class HostileMeta(type):
+        def __eq__(self, other):
+            raise AssertionError('metaclass equality must not run')
+
+        def __subclasscheck__(self, other):
+            raise AssertionError('metaclass subclass hook must not run')
+
+        def __instancecheck__(self, other):
+            raise AssertionError('metaclass instance hook must not run')
+
+    class HostileModule(types.ModuleType, metaclass=HostileMeta):
+        pass
+
+    class HostileObject(metaclass=HostileMeta):
+        pass
+
+    module = HostileModule('synthetic_hostile')
+    snapshot, calls = _snapshot_function([HostileObject(), module])
+    result = snapshot()
+    assert len(result) == 1 and result[0] is module and calls == [True]
+
+
+def test_scan_matches_previous_membership_for_mixed_module_subclasses():
+    class CustomMro(type):
+        def mro(cls):
+            return super().mro()
+
+    class Base(types.ModuleType, metaclass=CustomMro):
+        pass
+
+    class Deep(Base):
+        pass
+
+    first, deep = types.ModuleType('synthetic_plain'), Deep('synthetic_deep')
+    values = [object(), deep, first, None, deep, 7]
+    expected = [value for value in values if types.ModuleType in type.__getattribute__(type(value), '__mro__')]
+    snapshot, _ = _snapshot_function(values)
+    actual = snapshot()
+    assert len(actual) == len(expected)
+    assert all(left is right for left, right in zip(actual, expected))

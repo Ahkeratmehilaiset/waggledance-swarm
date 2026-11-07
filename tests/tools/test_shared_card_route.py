@@ -171,11 +171,10 @@ def test_shared_reader_answers_synthetic_cards_end_to_end(route):
     assert 'ZQ-PRIVATE-CANARY' not in json.dumps(out)
 
 
-def test_status_after_until_is_stale_and_before_any_card_abstains(route, monkeypatch):
+def test_public_status_after_until_and_before_any_card_abstains(route, monkeypatch):
     monkeypatch.setattr(q4, '_utc_now', lambda: dt.datetime(2026, 11, 6, tzinfo=dt.timezone.utc))
     code, out = run(route, when='2026-11-05T00:00:00Z')
-    assert code == 0 and out['status'] == 'ANSWER'
-    assert {scp.card_status(i['stored_text'], '2026-11-05T00:00:00Z') for i in out['results']} == {'STALE'}
+    assert code == 0 and out == {'schema': 'wd.q4-resolved-child.v1', 'status': 'ABSTAIN', 'results': []}
     code, out = run(route, situation='mind genesis', when='2026-10-01T00:00:00Z')
     assert code == 0 and out == {'schema': 'wd.q4-resolved-child.v1', 'status': 'ABSTAIN', 'results': []}
 

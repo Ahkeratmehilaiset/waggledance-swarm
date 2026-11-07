@@ -139,9 +139,14 @@ def _resolve_cards(manifest, projection_bytes, results, query_utc, approved_task
                for record in projection["records"]):
             _invalid()
         cards.check_route_evidence(manifest.get("card_route"), projection, decision, decision_sha256, roster)
-        if real:
-            return _resolve_verified_real_records(projection, results, query_utc)
-        return cards.resolve_route_results(projection, results, query_utc, decision)
+        resolved = (_resolve_verified_real_records(projection, results, query_utc) if real
+                    else cards.resolve_route_results(projection, results, query_utc, decision))
+        # Public answers require a current card at the bound query time. Keep
+        # the separate historical card formatter's explicit STALE semantics.
+        # Refuse the entire result on any expired or unknown returned hit.
+        if any(cards.card_status(item["stored_text"], query_utc) != "CURRENT" for item in resolved):
+            _invalid()
+        return resolved
     except (cards.SharedCardRefused, ValueError, TypeError, KeyError, RecursionError, UnicodeError):
         _invalid()
 

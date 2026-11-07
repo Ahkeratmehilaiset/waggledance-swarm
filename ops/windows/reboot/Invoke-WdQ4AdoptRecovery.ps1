@@ -195,7 +195,20 @@ public static class WdQ4AdoptPendingV1 {
     $privateLockPath=Join-Path $private 'prefix-private-state.lock'
     $checkpointLockPath=Join-Path $checkpoint 'q4-checkpoint.lock'
     $privateLock=$null; $checkpointLock=$null; $privateHeld=$false; $checkpointHeld=$false
+    $ownerLocks=[System.Collections.Generic.List[IO.FileStream]]::new()
     try {
+        # Adoption and recovery take these owner slots in this exact order.
+        # They cover the live writer after its short private/checkpoint window.
+        foreach ($name in @('q4-continuation-orchestrator.lock','q4-live-update.lock','q4-cutoff-owner.lock')) {
+            $ownerPath=Join-Path $private $name
+            if ([WdQ4AdoptPendingV1]::Exists($ownerPath)) { [void](CheckedPath $ownerPath) }
+            $owner=[IO.File]::Open($ownerPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite)
+            try {
+                [void](CheckedPath $ownerPath)
+                $owner.Lock(0,1)
+                $ownerLocks.Add($owner)
+            } catch { $owner.Dispose(); throw }
+        }
         if ([WdQ4AdoptPendingV1]::Exists($privateLockPath)) { [void](CheckedPath $privateLockPath) }
         $privateLock=[IO.File]::Open($privateLockPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite)
         [void](CheckedPath $privateLockPath)
@@ -227,6 +240,9 @@ public static class WdQ4AdoptPendingV1 {
         if ($null -ne $checkpointLock) { $checkpointLock.Dispose() }
         if ($privateHeld) { $privateLock.Unlock(0,1) }
         if ($null -ne $privateLock) { $privateLock.Dispose() }
+        for ($i=$ownerLocks.Count-1; $i -ge 0; $i--) {
+            try { $ownerLocks[$i].Unlock(0,1) } finally { $ownerLocks[$i].Dispose() }
+        }
     }
     . $jobHelper
     $jobArgs=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$worker,

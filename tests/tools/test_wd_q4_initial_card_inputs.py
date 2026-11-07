@@ -6,7 +6,9 @@ synthetic prefix pin receipt. Nothing reads a bridge log, publishes a card or to
 import hashlib
 import importlib
 import json
+import os
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -59,7 +61,7 @@ def repo(tmp_path):
     path.mkdir()
     env = {"GIT_AUTHOR_NAME": "synthetic", "GIT_AUTHOR_EMAIL": "synthetic.invalid", "GIT_COMMITTER_NAME": "synthetic",
            "GIT_COMMITTER_EMAIL": "synthetic.invalid", "GIT_CONFIG_GLOBAL": "NUL", "GIT_CONFIG_NOSYSTEM": "1",
-           "SYSTEMROOT": __import__("os").environ.get("SYSTEMROOT", "")}
+           "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")}
 
     def run(*args):
         return subprocess.run([git, "-C", str(path), *args], env=env, check=True, capture_output=True,
@@ -113,9 +115,64 @@ def test_off_touches_nothing(mod):
     assert proc.returncode == 0 and json.loads(proc.stdout) == {"status": "OFF"}
 
 
-def test_publish_phase_writes_roster_anchor_doc_and_typed_requests(mod, base, monkeypatch):
+DRAFTS = {"roster.json", "approved-git-anchors.json", "claim-draft-pr1951.json", "claim-draft-pr1950.json"}
+
+
+def test_publish_default_writes_only_unverified_drafts_never_a_publish_request(mod, base):
+    """Reachability from a pinned anchor commit proves neither a merge nor green checks, and no independently
+    verifiable authority for either exists here, so the default output is a non-publishable draft."""
+    from tools import wd_q4_public_card_publish_cli as publish_cli
+    assert mod._MERGED_GREEN_AUTHORITY is None
+    out, _, build = run_spec(mod, base, publish_spec(base), "drafts")
+    result = build()
+    assert result["status"] == "WRITTEN" and result["phase"] == "publish"
+    files = tree(out)
+    manifest = json.loads(files["inputs-manifest.json"])
+    assert set(manifest["files"]) == DRAFTS and set(files) == DRAFTS | {"inputs-manifest.json"}
+    assert manifest["verified_claims"] == 0
+    draft = json.loads(files["claim-draft-pr1951.json"])
+    assert draft == {"schema": "wd.q4-initial-card-claim-draft.v1", "truth": "UNVERIFIED", "publishable": False,
+                     "pr": 1951, "head": base["repo"]["commits"][1], "author": "codex-lead-1",
+                     "valid_until_utc": UNTIL,
+                     "observed": {"anchor": {"refs/heads/main": base["repo"]["commits"][2]},
+                                  "head_reachable_from_anchor_commit": True},
+                     "missing_evidence": ["checks_green_by_verifiable_authority",
+                                          "pr_merged_by_verifiable_authority"]}
+    assert "claim" not in draft and b"green" not in files["claim-draft-pr1951.json"].replace(b"checks_green", b"")
+    with pytest.raises(publish_cli.Refused):
+        publish_cli.run(enabled=True, request_path=str(out / "claim-draft-pr1951.json"),
+                        request_sha256=manifest["files"]["claim-draft-pr1951.json"])
+
+
+def test_only_one_unset_authority_assignment_exists_in_the_module():
+    source = (ROOT / "tools/wd_q4_initial_card_inputs.py").read_text(encoding="ascii")
+    assert source.count("_MERGED_GREEN_AUTHORITY =") == 1 and "_MERGED_GREEN_AUTHORITY = None" in source
+    assert "setattr" not in source and "os.environ" not in source and "getenv" not in source and "globals()" not in source
+
+
+@pytest.mark.parametrize("verdict", [False, None, 1, "yes", {"merged": True}, [True]])
+def test_test_seam_verdict_other_than_true_still_yields_drafts(mod, base, monkeypatch, verdict):
+    monkeypatch.setattr(mod, "_MERGED_GREEN_AUTHORITY", lambda **kwargs: verdict)
+    out, _, build = run_spec(mod, base, publish_spec(base), "verdict")
+    build()
+    assert set(json.loads((out / "inputs-manifest.json").read_bytes())["files"]) == DRAFTS
+
+
+def test_test_seam_error_refuses_before_any_write(mod, base, monkeypatch):
+    def broken(**kwargs):
+        raise RuntimeError("authority unavailable")
+    monkeypatch.setattr(mod, "_MERGED_GREEN_AUTHORITY", broken)
+    out, _, build = run_spec(mod, base, publish_spec(base), "seam-error")
+    with pytest.raises(mod.Refused):
+        build()
+    assert list(out.iterdir()) == []
+
+
+def test_publish_requests_only_through_the_test_seam_authority(mod, base, monkeypatch):
     from tools import wd_q4_public_card_publish_cli as publish_cli
     from tools import wd_q4_roster_from_fleet as roster_mod
+    asked = []
+    monkeypatch.setattr(mod, "_MERGED_GREEN_AUTHORITY", lambda **kwargs: asked.append(kwargs) or True)
     out, _, build = run_spec(mod, base, publish_spec(base), "publish")
     result = build()
     assert result["status"] == "WRITTEN" and result["phase"] == "publish"
@@ -124,6 +181,10 @@ def test_publish_phase_writes_roster_anchor_doc_and_typed_requests(mod, base, mo
     assert sha(files["inputs-manifest.json"]) == result["manifest_sha256"]
     assert set(manifest["files"]) == {"roster.json", "approved-git-anchors.json",
                                       "publish-request-pr1951.json", "publish-request-pr1950.json"}
+    assert manifest["verified_claims"] == 2
+    anchor = {"refs/heads/main": base["repo"]["commits"][2]}
+    assert asked == [{"pr": 1951, "head": base["repo"]["commits"][1], "anchor": anchor},
+                     {"pr": 1950, "head": base["repo"]["commits"][0], "anchor": anchor}]
     assert all(sha(files[name]) == pin for name, pin in manifest["files"].items())
     fleet_raw = Path(base["fleet"]["path"]).read_bytes()
     assert files["roster.json"] == roster_mod.build_roster_snapshot(fleet_raw, sha(fleet_raw), enabled=True)[0]
@@ -244,6 +305,74 @@ def test_interrupt_after_first_write_is_unknown_and_dir_is_not_reused(mod, base,
     monkeypatch.setattr(mod, "_write_new", real)
     with pytest.raises(mod.Refused):
         build()
+
+
+def _mutate_after_first_write(mod, monkeypatch, action):
+    """Run the change once after the first output write; a failing change is recorded, never turned into UNKNOWN."""
+    real = mod._write_new
+    calls, failures = [], []
+
+    def first(path, data):
+        calls.append(path)
+        real(path, data)
+        if len(calls) == 1:
+            try:
+                action()
+            except BaseException as error:  # noqa: B036 - reported by the caller's assertion
+                failures.append(error)
+    monkeypatch.setattr(mod, "_write_new", first)
+    return failures
+
+
+def _junction_copy(directory):
+    """Replace a dir by a junction to a byte-identical copy: same bytes, but no longer the pinned plain path."""
+    copy = directory.parent / (directory.name + "-copy")
+    shutil.copytree(directory, copy)
+
+    def writable(func, path, _):  # git object files are read-only on Windows
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    shutil.rmtree(directory, **({"onexc": writable} if sys.version_info >= (3, 12) else {"onerror": writable}))
+    made = subprocess.run(["cmd", "/c", "mklink", "/J", str(directory), str(copy)], capture_output=True)
+    if made.returncode != 0:
+        pytest.skip("junction unavailable")
+
+
+@pytest.mark.parametrize("target", ["vocabulary", "policy", "fleet", "spec", "configs_junction", "repo_junction",
+                                    "extra_output"])
+def test_publish_input_changed_after_first_write_is_unknown(mod, base, monkeypatch, target):
+    out, pin, build = run_spec(mod, base, publish_spec(base), "late-" + target)
+    path = {"vocabulary": base["configs"]["vocabulary"]["path"], "policy": base["configs"]["policy"]["path"],
+            "fleet": base["fleet"]["path"], "spec": pin["path"]}.get(target)
+    if target == "configs_junction":
+        def action():
+            _junction_copy(Path(base["configs"]["vocabulary"]["path"]).parent)
+    elif target == "repo_junction":
+        def action():
+            _junction_copy(Path(base["git"]["repository"]))
+    elif target == "extra_output":
+        def action():
+            (out / "extra.json").write_bytes(b"{}")
+    else:
+        def action():
+            Path(path).write_bytes(Path(path).read_bytes() + b" ")
+    failures = _mutate_after_first_write(mod, monkeypatch, action)
+    with pytest.raises(mod.Unknown):
+        build()
+    assert failures == []
+
+
+def test_input_changed_before_first_write_refuses_with_nothing_written(mod, base, monkeypatch):
+    vocabulary = Path(base["configs"]["vocabulary"]["path"])
+
+    def mutating(**kwargs):  # runs after the inputs were read and before the pre-write recheck
+        vocabulary.write_bytes(vocabulary.read_bytes() + b" ")
+        return False
+    monkeypatch.setattr(mod, "_MERGED_GREEN_AUTHORITY", mutating)
+    out, _, build = run_spec(mod, base, publish_spec(base), "early-change")
+    with pytest.raises(mod.Refused):
+        build()
+    assert list(out.iterdir()) == []
 
 
 # --- candidate phase ------------------------------------------------------------------------------------------------
@@ -422,6 +551,18 @@ def test_write_new_never_replaces_an_existing_file(mod, tmp_path):
     with pytest.raises(FileExistsError):
         mod._write_new(target, b"second")
     assert target.read_bytes() == b"first"
+
+
+@pytest.mark.parametrize("target", ["roster", "approved_anchors", "prefix_pin", "base_plan", "fixed_template",
+                                    "composer_options", "card_policy"])
+def test_candidate_input_changed_after_first_write_is_unknown(mod, base, published, parent, monkeypatch, target):
+    spec = candidate_spec(base, published, parent)
+    path = Path((spec["configs"] if target == "card_policy" else spec)[target]["path"])
+    out, _, build = run_spec(mod, base, spec, "late-c-" + target)
+    failures = _mutate_after_first_write(mod, monkeypatch, lambda: path.write_bytes(path.read_bytes() + b" "))
+    with pytest.raises(mod.Unknown):
+        build()
+    assert failures == []
 
 
 def test_cli_maps_refusal_and_prints_only_sanitized_status(mod, base, tmp_path):

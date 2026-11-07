@@ -3,18 +3,23 @@
 One caller spec, pinned by sha256, selects one of two phases:
 
 * ``publish``: the roster snapshot (from pinned fleet bytes), the approved git anchors document (exactly one explicit
-  ref and full commit, the commit is the authority, never the mutable ref), and one typed publish request per card
-  (kind merged, outcome green, next none, no tags, an explicit PR number and head). Every card head must be observed
-  reachable from the pinned anchor commit with a pinned git executable, and every claim must pass the public card
-  preparer for its roster author, before anything is written.
+  ref and full commit, the commit is the authority, never the mutable ref), and one document per card. Every card
+  head must be observed reachable from the pinned anchor commit with a pinned git executable, and the would-be claim
+  must pass the public card preparer for its roster author, before anything is written. Reachability proves neither
+  that the PR was merged nor that its checks were green, and no independently verifiable authority for either exists
+  in production, so each card becomes a non-publishable UNVERIFIED claim draft naming the missing evidence. A typed
+  publish request (kind merged, outcome green) is written only when ``_MERGED_GREEN_AUTHORITY`` answers exactly True;
+  that seam is None in this module and only tests replace it in-process (no spec field, CLI flag or environment
+  variable can set it).
 * ``candidate``: the real decision request, snapshot template, finish template and real candidate request for the
   card audit orchestrator, from the pinned publish-phase roster and anchors document, a pinned bridge prefix pin
   receipt and the caller's anchor tuple, in the IM9 P1 layout (run P/RUN, anchor P/.codex-audit/anchors/ID).
 
 It never reads a bridge log, publishes, installs, deploys or chooses a head. Pins are caller assertions, not
 authentication. The output dir is an existing empty direct child of a .codex-audit dir. Refusal happens before any
-write; once a write has begun, any error is UNKNOWN and the output dir must not be reused. Nothing about the inputs
-is printed.
+write. Every consumed input pin and path is checked again before the first write and after the last one; once a write
+has begun, any error or changed input is UNKNOWN and the output dir must not be reused. Nothing about the inputs is
+printed.
 """
 import hashlib
 import json
@@ -38,6 +43,11 @@ _CANDIDATE_KEYS = frozenset({'schema', 'phase', 'now_utc', 'configs', 'roster', 
 _CARD_KEYS = frozenset({'pr', 'head', 'author', 'valid_until_utc'})
 _OPTION_KEYS = ('expected_bundle', 'bundle_store_root', 'active_bundle_root', 'expected_state_sha256')
 _LIMIT = 1024 * 1024
+_GIT_LIMIT = 64 * 1024 * 1024
+_MISSING_EVIDENCE = ['checks_green_by_verifiable_authority', 'pr_merged_by_verifiable_authority']
+# Test-only seam: no production authority verifies a PR merge and green checks independently, so this stays None and
+# every card is written as an UNVERIFIED draft. Called as authority(pr=, head=, anchor=); only an exact True counts.
+_MERGED_GREEN_AUTHORITY = None
 
 
 class Refused(ValueError):
@@ -57,24 +67,34 @@ def _write_new(path, data):
         stream.write(data)
 
 
-def _pinned(spec):
+def _pinned(spec, seen):
     path, raw = files._spec(spec, _LIMIT)
+    seen.append((str(path), spec['sha256'], _LIMIT))
     return {'path': str(path), 'sha256': spec['sha256']}, raw
 
 
-def _git(spec):
+def _git(spec, seen):
     if type(spec) is not dict or set(spec) != {'executable', 'sha256', 'repository'}:
         raise ValueError()
     executable = files._path(spec['executable'])
-    files._read(executable, spec['sha256'], 64 * 1024 * 1024)
+    files._read(executable, spec['sha256'], _GIT_LIMIT)
     repository = files._path(spec['repository'], directory=True)
+    seen.extend([(str(executable), spec['sha256'], _GIT_LIMIT), (str(repository), None, None)])
     return {'executable': str(executable), 'sha256': spec['sha256'], 'repository': str(repository)}
 
 
-def _configs(spec):
+def _recheck(seen):
+    """Every consumed file still has its pinned bytes and every consumed path is still the same plain path."""
+    for path, pin, limit in seen:
+        checked = files._path(path, directory=pin is None)
+        if pin is not None:
+            files._read(checked, pin, limit)
+
+
+def _configs(spec, seen):
     if type(spec) is not dict or set(spec) != _CONFIGS:
         raise ValueError()
-    pinned = {name: _pinned(spec[name]) for name in sorted(_CONFIGS)}
+    pinned = {name: _pinned(spec[name], seen) for name in sorted(_CONFIGS)}
     return {name: pin for name, (pin, _) in pinned.items()}, {name: raw for name, (_, raw) in pinned.items()}
 
 
@@ -83,7 +103,7 @@ def _inside(child, parent):
     return child == parent or child.is_relative_to(parent)
 
 
-def _publish(spec, output):
+def _publish(spec, output, seen):
     import datetime as dt
     from tools import wd_q4_public_card_prefix_verifier as verifier
     from tools import wd_q4_public_card_prepare as prepare
@@ -91,10 +111,10 @@ def _publish(spec, output):
     from tools import wd_q4_roster_from_fleet as roster_mod
     if set(spec) != _PUBLISH_KEYS:
         raise ValueError()
-    configs, raw_configs = _configs(spec['configs'])
-    fleet_spec, fleet_raw = _pinned(spec['fleet'])
+    configs, raw_configs = _configs(spec['configs'], seen)
+    fleet_spec, fleet_raw = _pinned(spec['fleet'], seen)
     roster_raw, roster_pin = roster_mod.build_roster_snapshot(fleet_raw, fleet_spec['sha256'], enabled=True)
-    git = _git(spec['git'])
+    git = _git(spec['git'], seen)
     anchor = spec['anchor']
     if (type(anchor) is not dict or set(anchor) != {'ref', 'commit'} or type(anchor['ref']) is not str
             or not _REF.fullmatch(anchor['ref']) or type(anchor['commit']) is not str
@@ -118,6 +138,8 @@ def _publish(spec, output):
     outputs = {'roster.json': roster_raw,
                'approved-git-anchors.json': _canonical({'schema': 'wd.q4-approved-git-anchors.v1',
                                                         'anchors': {anchor['ref']: anchor['commit']}})}
+    authority = _MERGED_GREEN_AUTHORITY
+    verified = 0
     for card in cards:
         claim = {'v': '1', 'kind': 'merged', 'subject': {'pr': card['pr']}, 'outcome': 'green', 'next': 'none',
                  'valid_until_utc': card['valid_until_utc'], 'tags': [], 'head': card['head']}
@@ -133,14 +155,25 @@ def _publish(spec, output):
         # The publisher refuses a card that could expire during its two-minute rollover.
         if verifier._utc(claim['valid_until_utc'])[0] < verifier._utc(spec['now_utc'])[0] + dt.timedelta(minutes=2):
             raise ValueError()
-        inputs = {name: configs[name] for name in _CONFIGS}
-        inputs['roster'] = {'path': str(roster_path), 'sha256': roster_pin}
-        outputs['publish-request-pr%d.json' % card['pr']] = _canonical(
-            {'schema': 'wd.q4-public-card-publish-request.v1', 'claim': claim, 'inputs': inputs})
-    return outputs
+        approved = {anchor['ref']: anchor['commit']}
+        verdict = False if authority is None else authority(pr=card['pr'], head=card['head'], anchor=dict(approved))
+        if verdict is True:
+            verified += 1
+            inputs = {name: configs[name] for name in _CONFIGS}
+            inputs['roster'] = {'path': str(roster_path), 'sha256': roster_pin}
+            outputs['publish-request-pr%d.json' % card['pr']] = _canonical(
+                {'schema': 'wd.q4-public-card-publish-request.v1', 'claim': claim, 'inputs': inputs})
+        else:
+            outputs['claim-draft-pr%d.json' % card['pr']] = _canonical({
+                'schema': 'wd.q4-initial-card-claim-draft.v1', 'truth': 'UNVERIFIED', 'publishable': False,
+                'pr': card['pr'], 'head': card['head'], 'author': author,
+                'valid_until_utc': card['valid_until_utc'],
+                'observed': {'anchor': approved, 'head_reachable_from_anchor_commit': True},
+                'missing_evidence': list(_MISSING_EVIDENCE)})
+    return outputs, {'verified_claims': verified}
 
 
-def _candidate(spec, output):
+def _candidate(spec, output, seen):
     from sandbox.mind.step2 import public_knowledge_card as card_mod
     from sandbox.mind.step2 import shared_capture_adapter as capture
     from sandbox.mind.step2 import shared_card_projection as projection
@@ -150,17 +183,17 @@ def _candidate(spec, output):
     if set(spec) != _CANDIDATE_KEYS:
         raise ValueError()
     card_mod._time(spec['now_utc'])
-    configs, raw_configs = _configs(spec['configs'])
-    roster, roster_raw = _pinned(spec['roster'])
+    configs, raw_configs = _configs(spec['configs'], seen)
+    roster, roster_raw = _pinned(spec['roster'], seen)
     capture.strict_pins(raw_configs['policy'], configs['policy']['sha256'], roster_raw, roster['sha256'])
-    anchors_spec, anchors_raw = _pinned(spec['approved_anchors'])
+    anchors_spec, anchors_raw = _pinned(spec['approved_anchors'], seen)
     anchors_doc = card_mod._document(anchors_raw, anchors_spec['sha256'], 'wd.q4-approved-git-anchors.v1',
                                      {'schema', 'anchors'})
-    git = _git(spec['git'])
+    git = _git(spec['git'], seen)
     source = spec['source_path']
     if type(source) is not str or not Path(source).is_absolute() or '..' in Path(source).parts:
         raise ValueError()
-    pin_spec, pin_raw = _pinned(spec['prefix_pin'])
+    pin_spec, pin_raw = _pinned(spec['prefix_pin'], seen)
     pin = files._json(pin_raw)
     if (type(pin) is not dict or set(pin) != {'schema', 'cursor', 'prefix_sha256', 'source_authentication',
                                               'freshness', 'completeness', 'scope'}
@@ -203,14 +236,14 @@ def _candidate(spec, output):
             or type(spec['generation']) is not str or not composer._GENERATION.fullmatch(spec['generation'])
             or type(spec['encoder']) is not dict):
         raise ValueError()
-    base_spec, base_raw = _pinned(spec['base_plan'])
+    base_spec, base_raw = _pinned(spec['base_plan'], seen)
     base = files._json(base_raw)
     plan_keys = link._PUBLIC_PLAN_SCHEMAS['wd.q4-public-wrapper-plan.v1']
     if type(base) is not dict or set(base) != plan_keys or base['schema'] != 'wd.q4-public-wrapper-plan.v1':
         raise ValueError()
-    fixed_spec, fixed_raw = _pinned(spec['fixed_template'])
+    fixed_spec, fixed_raw = _pinned(spec['fixed_template'], seen)
     fixed = files._json(fixed_raw)
-    options_spec, options_raw = _pinned(spec['composer_options'])
+    options_spec, options_raw = _pinned(spec['composer_options'], seen)
     options = files._json(options_raw)
     if (type(fixed) is not dict or type(options) is not dict or any(key not in options for key in _OPTION_KEYS)
             or 'shared_stage_root' in options or 'generation' in options):
@@ -245,7 +278,7 @@ def _candidate(spec, output):
         'schema': 'wd.q4-card-real-candidate-request.v1', 'decision': ref('decision-request.json'),
         'snapshot_template': ref('snapshot-template.json'), 'output_root': str(audit_out),
         'finish': ref('finish-template.json'), 'generation_root': str(run)})
-    return outputs
+    return outputs, {}
 
 
 def build(*, enabled=False, spec_path=None, spec_sha256=None, output_root=None):
@@ -258,26 +291,32 @@ def build(*, enabled=False, spec_path=None, spec_sha256=None, output_root=None):
         spec_raw = files._read(spec_file, spec_sha256, _LIMIT)
         spec = files._json(spec_raw)
         output = files._path(output_root, directory=True)
+        seen = [(str(spec_file), spec_sha256, _LIMIT), (str(output), None, None)]
         if output.parent.name != '.codex-audit' or any(output.iterdir()) or spec_file.is_relative_to(output):
             raise ValueError()
         if type(spec) is not dict or spec.get('schema') != _SPEC or spec.get('phase') not in ('publish', 'candidate'):
             raise ValueError()
         from sandbox.mind.step2 import public_knowledge_card as card_mod
         card_mod._time(spec['now_utc'])
-        outputs = (_publish if spec['phase'] == 'publish' else _candidate)(spec, output)
-        manifest = _canonical({'schema': _MANIFEST, 'phase': spec['phase'], 'spec_sha256': spec_sha256,
-                               'files': {name: hashlib.sha256(data).hexdigest() for name, data in outputs.items()}})
-        if any(output.iterdir()) or files._read(spec_file, spec_sha256, _LIMIT) != spec_raw:
+        outputs, extra = (_publish if spec['phase'] == 'publish' else _candidate)(spec, output, seen)
+        manifest = _canonical(dict(extra, schema=_MANIFEST, phase=spec['phase'], spec_sha256=spec_sha256,
+                                   files={name: hashlib.sha256(data).hexdigest() for name, data in outputs.items()}))
+        if any(output.iterdir()):
             raise ValueError()
+        _recheck(seen)
     except Exception:
         raise Refused('initial_card_inputs_refused') from None
     try:
         for name, data in outputs.items():
             _write_new(output / name, data)
         _write_new(output / 'inputs-manifest.json', manifest)
-        for name, data in list(outputs.items()) + [('inputs-manifest.json', manifest)]:
+        written = dict(outputs, **{'inputs-manifest.json': manifest})
+        if {path.name for path in output.iterdir()} != set(written):
+            raise ValueError()
+        for name, data in written.items():
             if (output / name).read_bytes() != data:
                 raise ValueError()
+        _recheck(seen)
     except BaseException:
         raise Unknown('initial_card_inputs_unknown') from None
     return {'status': 'WRITTEN', 'phase': spec['phase'], 'manifest_sha256': hashlib.sha256(manifest).hexdigest()}

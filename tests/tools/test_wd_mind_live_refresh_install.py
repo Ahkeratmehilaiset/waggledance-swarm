@@ -53,7 +53,9 @@ if($case.mode -clike 'card_v2*'){
     $candidate=Join-Path $candidateGen 'shared-session-config.v2.json'
     $candidatePlan=Join-Path $candidateGen 'public-plan.json'
     [IO.File]::WriteAllText($candidatePlan,(@{root=$cardIndex}|ConvertTo-Json -Compress))
-    [IO.File]::WriteAllText($candidate,(@{public_plan=$candidatePlan}|ConvertTo-Json -Compress))
+    $candidateBinding=Join-Path $candidateGen 'lane-binding.v1.json'
+    [IO.File]::WriteAllText($candidateBinding,(@{schema='wd.q4-lane-binding.v1';public_plan_sha256=(Get-FileHash $candidatePlan -Algorithm SHA256).Hash.ToLowerInvariant()}|ConvertTo-Json -Compress))
+    [IO.File]::WriteAllText($candidate,(@{public_plan=$candidatePlan;binding_path=$candidateBinding;binding_sha256=(Get-FileHash $candidateBinding -Algorithm SHA256).Hash.ToLowerInvariant()}|ConvertTo-Json -Compress))
     $lifecycle=Join-Path $lifecycleDir 'lifecycle.json'; $job=Join-Path $jobDir 'card-job.json'; $stdout=Join-Path $returnDir 'job-return.json'
     foreach($file in @($lifecycle,$job,$stdout)){[IO.File]::WriteAllText($file,'{}')}
     [IO.File]::WriteAllText($lifecycle,(@{schema='wd.q4-lifecycle-binding.v2';generation_root=$shared;private_root=$private}|ConvertTo-Json -Compress))
@@ -70,6 +72,7 @@ if($case.mode -clike 'card_v2*'){
         'card_v2_candidate_pin' { $route.candidate.sha256='0'*64 }
         'card_v2_lifecycle_pin' { $route.lifecycle.sha256='0'*64 }
         'card_v2_lifecycle_binding' { [IO.File]::WriteAllText($lifecycle,'{}'); $route.lifecycle.sha256=& $pin $lifecycle }
+        'card_v2_plan_tamper' { [IO.File]::WriteAllText($candidatePlan,(@{root=$source}|ConvertTo-Json -Compress)) }
         'card_v2_job_pin' { $route.job.sha256='0'*64 }
         'card_v2_return_pin' { $route.job_return.stdout.sha256='0'*64 }
         'card_v2_baseline_pin' { $route.baseline.sha256='0'*64 }
@@ -124,7 +127,7 @@ def test_card_v2_installer_plans_disabled_one_shot_without_running(tmp_path):
     value=json.loads(result.stdout);assert value['plan']['route_kind']=='card_v2'
     assert value['plan']['trigger_kind']=='one_shot' and not value['plan']['enabled']
 
-@pytest.mark.parametrize('fault',['candidate_pin','lifecycle_pin','lifecycle_binding','job_pin','return_pin','baseline_pin',
+@pytest.mark.parametrize('fault',['candidate_pin','lifecycle_pin','lifecycle_binding','plan_tamper','job_pin','return_pin','baseline_pin',
     'source_generation_pin','private_pending','generation_pending','publication_pending','scratch_overlap',
     'scratch_index','scratch_lifecycle','scratch_job','scratch_return'])
 def test_card_v2_installer_refuses_invalid_pins_or_pending_before_task_api(tmp_path,fault):

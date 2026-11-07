@@ -162,6 +162,7 @@ if ($routeSchema -ceq 'wd.q4-card-refresh-tuple.v1') { throw 'Card refresh requi
 $isCard = $routeSchema -ceq 'wd.q4-card-refresh-tuple.v2'
 $extraProtected = @()
 $candidateHash = ''
+$candidateFile = ''; $candidateBindingFile = ''; $candidateBindingHash = ''; $candidatePlanFile = ''; $candidatePlanHash = ''
 if ($isCard) {
     if ([string]$config.schema -cne 'wd.q4-live-update-once.v2' -or $route.p1_enabled -isnot [bool] -or
         $route.p1_enabled -cne $true -or [string]$route.manifest_sha256 -cne $manifestHash.ToLowerInvariant()) {
@@ -182,7 +183,15 @@ if ($isCard) {
     $checkpointRoot = Assert-LivePath $checkpointRoot -Directory
     $privateRoot = Assert-LivePath ([string]$route.private_root) -Directory
     $candidateDescriptor = Get-Content -LiteralPath $candidateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    $candidateBindingFile = Assert-LiveSpec ([pscustomobject]@{path=[string]$candidateDescriptor.binding_path; sha256=[string]$candidateDescriptor.binding_sha256})
+    $candidateBindingHash = [string]$candidateDescriptor.binding_sha256
+    $candidateBinding = Get-Content -LiteralPath $candidateBindingFile -Raw -Encoding UTF8 | ConvertFrom-Json
     $candidatePlanFile = Assert-LivePath ([string]$candidateDescriptor.public_plan)
+    if ([string]$candidateBinding.schema -cne 'wd.q4-lane-binding.v1' -or
+        [string]$candidateBinding.public_plan_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        (Get-FileHash -LiteralPath $candidatePlanFile -Algorithm SHA256).Hash -cne
+            ([string]$candidateBinding.public_plan_sha256).ToUpperInvariant()) { throw 'Candidate plan pin mismatch.' }
+    $candidatePlanHash = [string]$candidateBinding.public_plan_sha256
     $candidatePlan = Get-Content -LiteralPath $candidatePlanFile -Raw -Encoding UTF8 | ConvertFrom-Json
     $cardIndexRoot = Assert-LivePath ([string]$candidatePlan.root) -Directory
     $extraProtected = @($cardIndexRoot, [IO.Path]::GetDirectoryName($lifecycleFile),
@@ -261,6 +270,9 @@ if ([string]$state.source_commit -cne %COMMIT% -or [string]$state.final_commit -
     (Get-FileHash -LiteralPath %BOOTSTRAP% -Algorithm SHA256).Hash -cne %BOOTSTRAP_HASH% -or
     (Get-FileHash -LiteralPath %JOB% -Algorithm SHA256).Hash -cne %JOB_HASH%) { exit 3 }
 foreach ($pending in @(%MARKERS%)) { if (Test-PendingEntry $pending) { exit 3 } }
+if (%CARD_MODE% -and ((Get-FileHash -LiteralPath %CANDIDATE% -Algorithm SHA256).Hash -cne %CANDIDATE_HASH_UPPER% -or
+    (Get-FileHash -LiteralPath %CANDIDATE_BINDING% -Algorithm SHA256).Hash -cne %CANDIDATE_BINDING_HASH% -or
+    (Get-FileHash -LiteralPath %CANDIDATE_PLAN% -Algorithm SHA256).Hash -cne %CANDIDATE_PLAN_HASH%)) { exit 3 }
 . %JOB%
 $random = [Security.Cryptography.RandomNumberGenerator]::Create()
 try { $bytes = New-Object byte[] 32; $random.GetBytes($bytes) } finally { $random.Dispose() }
@@ -345,6 +357,9 @@ $values = [ordered]@{'%STATE%'=$stateFile; '%COMMIT%'=$ExpectedCommit; '%BUNDLE%
     '%MANIFEST%'=$manifestFile; '%MANIFEST_HASH%'=$manifestHash; '%CONFIG%'=$configFile; '%CONFIG_HASH%'=$configHash;
     '%ROUTE%'=$routeFile; '%ROUTE_HASH%'=([string]$config.route_sha256).ToUpperInvariant();
     '%CANDIDATE_HASH%'=$candidateHash;
+    '%CANDIDATE%'=$candidateFile; '%CANDIDATE_HASH_UPPER%'=$candidateHash.ToUpperInvariant();
+    '%CANDIDATE_BINDING%'=$candidateBindingFile; '%CANDIDATE_BINDING_HASH%'=$candidateBindingHash.ToUpperInvariant();
+    '%CANDIDATE_PLAN%'=$candidatePlanFile; '%CANDIDATE_PLAN_HASH%'=$candidatePlanHash.ToUpperInvariant();
     '%CONFIG_HASH_LOWER%'=$configHash.ToLowerInvariant(); '%MANIFEST_HASH_LOWER%'=$manifestHash.ToLowerInvariant();
     '%BASELINE%'=$baselineFile; '%BASELINE_HASH%'=([string]$config.baseline_sha256).ToUpperInvariant();
     '%FIXED%'=$fixedFile; '%FIXED_HASH%'=$fixedHash; '%RUNTIME_MANIFEST%'=$runtimeManifest; '%RUNTIME_HASH%'=$runtimeHash;

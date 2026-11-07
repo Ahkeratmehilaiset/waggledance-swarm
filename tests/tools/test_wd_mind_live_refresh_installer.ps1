@@ -179,7 +179,9 @@ print('{"status":"PUBLISHED","pointer_sha256":"' + 'a'*64 + '","receipt_sha256":
         $candidate = Join-Path $candidateGen 'shared-session-config.v2.json'
         $candidatePlan=Join-Path $candidateGen 'public-plan.json'
         [IO.File]::WriteAllText($candidatePlan, (@{root=$cardIndex}|ConvertTo-Json -Compress))
-        [IO.File]::WriteAllText($candidate, (@{public_plan=$candidatePlan}|ConvertTo-Json -Compress))
+        $candidateBinding=Join-Path $candidateGen 'lane-binding.v1.json'
+        [IO.File]::WriteAllText($candidateBinding, (@{schema='wd.q4-lane-binding.v1';public_plan_sha256=(Get-FileHash $candidatePlan -Algorithm SHA256).Hash.ToLowerInvariant()}|ConvertTo-Json -Compress))
+        [IO.File]::WriteAllText($candidate, (@{public_plan=$candidatePlan;binding_path=$candidateBinding;binding_sha256=(Get-FileHash $candidateBinding -Algorithm SHA256).Hash.ToLowerInvariant()}|ConvertTo-Json -Compress))
         $candidateHash=(Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
         $badFlag=Join-Path $root 'synthetic-bad-card-receipt'
         $badFlagLiteral=ConvertTo-Json -InputObject $badFlag -Compress
@@ -238,6 +240,12 @@ print('{"status":"PUBLISHED","pointer_sha256":"' + 'a'*64 + '","receipt_sha256":
             & $powershell -NoProfile -NonInteractive -EncodedCommand $encoded
             $LASTEXITCODE | Should Be 3
         } } finally { [IO.File]::Delete($badFlag) }
+        $originalPlan=[IO.File]::ReadAllText($candidatePlan)
+        try {
+            [IO.File]::AppendAllText($candidatePlan, ' ')
+            & $powershell -NoProfile -NonInteractive -EncodedCommand $encoded
+            $LASTEXITCODE | Should Be 3
+        } finally { [IO.File]::WriteAllText($candidatePlan, $originalPlan) }
         [IO.File]::WriteAllText((Join-Path $shared 'q4-lifecycle-v2.pending.json'),'{}')
         & $powershell -NoProfile -NonInteractive -EncodedCommand $encoded
         $LASTEXITCODE | Should Be 3

@@ -166,3 +166,122 @@ print(json.dumps({'descriptor_sha256':chosen['configuration'][2], 'public_plan':
     refused = invoke()
     assert refused.returncode != 0 and not refused.stdout
     candidate.write_bytes(original)
+
+
+@pytest.mark.parametrize('selector_case', ['previous', 'publication', 'unrelated'])
+def test_pending_fallback_checks_real_c2_selector_and_leaves_root_unchanged(
+        attested, staged_producer, tmp_path, monkeypatch, capsys, selector_case):
+    """Real P1/C2 generation and selector; identity/adapter/guard are synthetic only."""
+    pytest.importorskip('faiss')
+    from tools import wd_q4_card_audit_orchestrator as orchestrator
+    from tools import wd_q4_guard_completion as guard_completion
+    from tools import wd_q4_lane_caller_adapter as adapter
+    from tools import wd_q4_lane_caller_cli as caller
+    from tools import wd_q4_live_snapshot_publish as live
+
+    shared = tmp_path / 'live' / 'generations'
+    shared.mkdir(parents=True)
+    monkeypatch.setattr(live, '_P1_ROOT', shared.parent)
+    path, _, _ = _chain(attested, tmp_path, monkeypatch, lambda out: shared)
+    request = json.loads(path.read_bytes())
+    anchors = shared.parent / '.codex-audit' / 'anchors'
+    anchors.mkdir(parents=True)
+    decision = json.loads(Path(request['decision']['path']).read_bytes())
+    first_anchor = anchors / 'first'
+    shutil.copytree(decision['anchor']['root'], first_anchor)
+    decision['anchor']['root'] = str(first_anchor)
+    first_request = tmp_path / 'pending-decision-first.json'
+    request['decision'] = {'path': str(first_request), 'sha256': write(first_request, decision)}
+    finish = json.loads(Path(request['finish']['path']).read_bytes())
+
+    def build(gen, name):
+        changed = dict(request)
+        template = tmp_path / (name + '-finish.json')
+        changed['finish'] = {'path': str(template), 'sha256': write(template, dict(finish,
+            composer_options=dict(finish['composer_options'], generation=gen)))}
+        out = shared.parent / (name + '-output')
+        out.mkdir()
+        changed['output_root'] = str(out)
+        req = tmp_path / (name + '-request.json')
+        assert orchestrator.run(enabled=True, request_path=str(req),
+                                request_sha256=write(req, changed))['status'] == 'PREPARED'
+
+    base_gen, next_gen = 'b' * 40, 'c' * 40
+    build(base_gen, 'pending-baseline')
+    build(next_gen, 'pending-candidate')
+    manifest_pin = attested['expected_manifest_sha256']
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', manifest_pin)
+    real_read = caller._read
+    interpreter = attested['descriptor_options']['interpreter']
+    monkeypatch.setattr(caller, '_read',
+                        lambda p, limit, pin=None: b'' if str(p) == interpreter else real_read(p, limit, pin))
+    base_path = shared / base_gen / 'shared-session-config.v2.json'
+    next_path = shared / next_gen / 'shared-session-config.v2.json'
+    base_pin, next_pin = sha(base_path.read_bytes()), sha(next_path.read_bytes())
+    baseline = caller._configuration(str(base_path), base_pin)
+    assert live.publish(enabled=True, baseline_path=str(base_path), baseline_sha256=base_pin,
+        baseline=baseline, manifest_sha256=manifest_pin, p1_enabled=True, candidate_path=str(next_path),
+        candidate_sha256=next_pin, expected_previous_selector_sha256=None,
+        candidate=caller._configuration(str(next_path), next_pin))['status'] == 'PUBLISHED'
+    selector_raw = (shared / live._POINTER).read_bytes()
+    selector_sha = sha(selector_raw)
+    unrelated = '0' * 64
+    assert unrelated != selector_sha
+    attempt = 'a' * 32
+    previous = selector_sha if selector_case == 'previous' else unrelated
+    publication = selector_sha if selector_case == 'publication' else '1' * 64
+    marker = {'schema': 'wd.q4-live-publication-pending.v1', 'attempt': attempt,
+              'baseline_sha256': base_pin, 'previous_selector_sha256': previous,
+              'publication_sha256': publication, 'temporary_name': '.q4-live-current-' + attempt + '.tmp'}
+    (shared / live._PUBLICATION_PENDING).write_bytes(caller._canon(marker))
+    (shared / marker['temporary_name']).write_bytes(b'orphaned-synthetic-temp')
+    monkeypatch.setenv('WD_Q4_SHARED_DESCRIPTOR_PATH', str(base_path))
+    monkeypatch.setenv('WD_Q4_SHARED_DESCRIPTOR_SHA256', base_pin)
+    monkeypatch.setenv('WD_Q4_LIVE_MODE', '1')
+    monkeypatch.setenv('WD_Q4_LIVE_P1', '1')
+    monkeypatch.delenv('WD_Q4_WITH_COVERAGE', raising=False)
+
+    class Owner:
+        def _handoff(self): pass
+        def _finish(self): pass
+    class Registry:
+        def _issue(self): return object()
+    class Guard:
+        def __init__(self): self.owner, self._registry = Owner(), Registry()
+        def _owner_context(self): return self.owner
+        def _accept_owner_context(self, owner): return owner
+        def release(self, witness): pass
+        def mark_unknown(self): pass
+    monkeypatch.setattr(guard_completion, 'acquire_guard', lambda **kwargs: Guard())
+    monkeypatch.setattr(caller, '_identity', lambda *args: ('codex-lead-1', b'synthetic-identity', 'synthetic-token'))
+    monkeypatch.setattr(caller, '_query', lambda: ('synthetic', '2026-11-06T00:00:00Z'))
+    calls = []
+    def synthetic_adapter(**kwargs):
+        calls.append(kwargs)
+        descriptor = json.loads(kwargs['descriptor_bytes'])
+        answer = {'schema': 'wd.q4-lane-answer.v1', 'lane': 'codex-lead-1', 'status': 'ABSTAIN',
+                  'reason': '', 'result_count': 0, 'results': [], 'binding': descriptor['expected_binding'],
+                  'trust': dict(caller._TRUST)}
+        return {'schema': 'wd.q4-lane-caller-result.v1', 'status': 'VALIDATED', 'lane': 'codex-lead-1',
+                'lane_binding': 'DECLARED_CONSISTENT', 'lane_authentication': 'UNKNOWN',
+                'cleanup': 'chain_confirmed', 'inner_status': 'ABSTAIN', 'result_count': 0,
+                'answer': answer, 'answer_sha256': sha(caller._canon(answer)),
+                'identity_sha256': sha(kwargs['identity_bytes']),
+                'descriptor_sha256': kwargs['expected_descriptor_sha256'], 'call_id': '2' * 32}
+    monkeypatch.setattr(adapter, 'call_lane_session', synthetic_adapter)
+    def tree():
+        return {str(p.relative_to(shared)): (p.read_bytes() if p.is_file() else None)
+                for p in sorted(shared.rglob('*'))}
+    before = tree()
+    code = caller.main(['--enabled'])
+    captured = capsys.readouterr()
+    assert tree() == before
+    if selector_case == 'unrelated':
+        assert code == 2 and captured.out == '' and not calls
+    else:
+        assert code == 0 and len(calls) == 1
+        envelope = json.loads(captured.out)
+        assert (envelope['schema'], envelope['selection'], envelope['publication_state'], envelope['freshness']) == (
+            'wd.q4-lane-interrupted-envelope.v1', 'BASELINE_FALLBACK', 'INTERRUPTED', 'STALE')
+        assert envelope['result']['descriptor_sha256'] == base_pin
+        assert envelope['result']['descriptor_sha256'] != next_pin

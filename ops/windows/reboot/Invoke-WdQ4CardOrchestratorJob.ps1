@@ -42,7 +42,7 @@ try {
         finally { $stream.Dispose() }
         if ($actual -cne $Pin.ToUpperInvariant()) { throw 'hash' }
     }
-    function PinnedJson([string]$Path,[string]$Pin,[int]$Limit) {
+    function PinnedBytes([string]$Path,[string]$Pin,[int]$Limit) {
         if ($Pin -cnotmatch '^[0-9a-fA-F]{64}$') { throw 'pin' }
         $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
         try {
@@ -56,6 +56,10 @@ try {
         $h=[Security.Cryptography.SHA256]::Create()
         try { $actual=[BitConverter]::ToString($h.ComputeHash($bytes)).Replace('-','') } finally { $h.Dispose() }
         if ($actual -cne $Pin.ToUpperInvariant()) { throw 'hash' }
+        return ,$bytes
+    }
+    function PinnedJson([string]$Path,[string]$Pin,[int]$Limit) {
+        $bytes=PinnedBytes $Path $Pin $Limit
         $text=[Text.UTF8Encoding]::new($false,$true).GetString($bytes)
         return ($text | ConvertFrom-Json -ErrorAction Stop)
     }
@@ -74,10 +78,12 @@ try {
         [string]$q.schema -cne 'wd.q4-card-real-candidate-request.v1' -or
         [string]$r.manifest_sha256 -cne $ExpectedManifestSha256 -or
         -not [IO.Path]::GetFullPath([string]$r.bundle_root).Equals($bundle,[StringComparison]::OrdinalIgnoreCase)) { throw 'binding' }
-    foreach ($pair in @(@('Invoke-WdQ4CardOrchestratorJob.ps1',$self),@('WdQ4ProcessJob.ps1',$jobHelper),
+    foreach ($pair in @(@('Invoke-WdQ4CardOrchestratorJob.ps1',$self),
                          @('tools-bootstrap/tools/wd_q4_card_orchestrator_runtime_bootstrap.py',$bootstrap))) {
         ExactHash $pair[1] ([string]$m.files.PSObject.Properties[$pair[0]].Value)
     }
+    $helperBytes=PinnedBytes $jobHelper ([string]$m.files.'WdQ4ProcessJob.ps1') 1048576
+    $helperText=[Text.UTF8Encoding]::new($false,$true).GetString($helperBytes)
     $python=CheckedPath ([string]$r.interpreter_path)
     $pythonPin=[string]$r.interpreter_sha256; ExactHash $python $pythonPin
     $hostPath=CheckedPath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
@@ -119,9 +125,9 @@ public static class WdQ4CardJobPathsV1 {
             $scratchFinal.StartsWith($other+'\',[StringComparison]::OrdinalIgnoreCase) -or
             $other.StartsWith($scratchFinal+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'scratch' }
     }
-    . $jobHelper
+    . ([scriptblock]::Create($helperText))
     function PSLiteral([string]$Value) {
-        if ($Value -match '[\x00-\x1f\x7f]') { throw 'argument' }
+        if ($Value -match '[^\x20-\x7e]') { throw 'argument' }
         return "'" + $Value.Replace("'","''") + "'"
     }
     # A fixed worker program exists only inside this launch, after all scratch

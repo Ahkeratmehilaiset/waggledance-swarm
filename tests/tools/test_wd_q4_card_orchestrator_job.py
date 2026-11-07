@@ -140,6 +140,8 @@ def test_pinned_json_parses_the_hashed_bytes_after_synthetic_change(tmp_path):
     quote=lambda s:"'"+str(s).replace("'","''")+"'"
     injection='[IO.File]::WriteAllBytes($Path,[IO.File]::ReadAllBytes('+quote(replacement)+')); '
     script=("$t=$null;$e=$null;$ast=[Management.Automation.Language.Parser]::ParseFile("+quote(ENTRY)+",[ref]$t,[ref]$e)\n"
+      "$b=$ast.Find({param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -ceq 'PinnedBytes'},$true)\n"
+      ". ([scriptblock]::Create($b.Extent.Text))\n"
       "$n=$ast.Find({param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -ceq 'PinnedJson'},$true)\n"
       "$source=$n.Extent.Text\n"
       "$needle='$text=[Text.UTF8Encoding]::new($false,$true).GetString($bytes)'\n"
@@ -168,6 +170,40 @@ def test_powershell_metacharacters_in_bundle_path_are_literals(case):
     result=launch(case)
     assert result.returncode==0, (result.stdout,result.stderr)
     assert json.loads(result.stdout)['status']=='PREPARED'
+
+
+@pytest.mark.parametrize('quote_char',['\u2018','\u2019','\u201a','\u201b'])
+def test_typographic_quotes_refuse_before_worker(case,quote_char):
+    marker=case['tmp_path']/'typographic-worker-entered'
+    replace_bootstrap(case,'open('+repr(str(marker))+',"w").write("entered")\n')
+    moved=case['tmp_path']/('bundle'+quote_char+'quoted')
+    case['bundle'].rename(moved); case['bundle']=moved; case['manifest']=moved/'deployment-manifest.json'
+    runtime=json.loads(case['runtime'].read_bytes()); runtime['bundle_root']=str(moved)
+    case['runtime'].write_bytes(raw(runtime))
+    finish=json.loads(case['finish'].read_bytes())
+    finish['composer_options'].update(bundle_store_root=str(moved),active_bundle_root=str(moved))
+    case['finish'].write_bytes(raw(finish))
+    request=json.loads(case['request'].read_bytes()); request['finish']['sha256']=sha(case['finish'].read_bytes())
+    case['request'].write_bytes(raw(request))
+    result=launch(case)
+    assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
+    assert not marker.exists()
+
+
+def test_job_helper_uses_the_verified_bytes_after_synthetic_swap(case):
+    launcher=case['bundle']/ENTRY.name
+    script=launcher.read_text(encoding='utf-8')
+    marker=". ([scriptblock]::Create($helperText))"
+    assert marker in script
+    injection="[IO.File]::WriteAllText($jobHelper,'throw ''synthetic-tamper'''); "+marker
+    launcher.write_text(script.replace(marker,injection),encoding='utf-8')
+    manifest=json.loads(case['manifest'].read_bytes()); manifest['files'][ENTRY.name]=sha(launcher.read_bytes())
+    case['manifest'].write_bytes(raw(manifest))
+    runtime=json.loads(case['runtime'].read_bytes()); runtime['manifest_sha256']=sha(case['manifest'].read_bytes())
+    case['runtime'].write_bytes(raw(runtime))
+    result=launch(case)
+    assert result.returncode==0 and json.loads(result.stdout)['status']=='PREPARED', (result.stdout,result.stderr)
+    assert 'synthetic-tamper' in (case['bundle']/JOB.name).read_text()
 
 
 @pytest.mark.parametrize('source', [

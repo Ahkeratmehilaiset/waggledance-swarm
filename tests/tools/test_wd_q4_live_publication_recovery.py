@@ -93,6 +93,25 @@ def test_candidate_may_disappear_after_proven_prewrite_failure(cas_case, monkeyp
     assert recover(cas_case)['status'] == 'NOT_PUBLISHED'
 
 
+def test_prewrite_recovery_refuses_baseline_dict_not_matching_pinned_bytes(cas_case, monkeypatch):
+    real_open = live.os.open
+    def fail_temp(path, *args, **kwargs):
+        if str(path).endswith('.tmp'):
+            raise OSError('synthetic failure before create')
+        return real_open(path, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(live.os, 'open', fail_temp)
+        with pytest.raises(live.LiveSnapshotOutcomeUnknown):
+            _cas_publish(cas_case, expected_previous_selector_sha256=None)
+    baseline = list(cas_case['base'])
+    baseline[0] = dict(baseline[0], interpreter='foreign')
+    pending = cas_case['root'] / live._PUBLICATION_PENDING
+    marker = pending.read_bytes()
+    with pytest.raises(live.LiveSnapshotOutcomeUnknown):
+        recover(cas_case, baseline=tuple(baseline))
+    assert pending.read_bytes() == marker
+
+
 def test_temp_fdopen_failure_closes_and_cleans_owned_temp(cas_case, monkeypatch):
     original = live.os.fdopen
     count = 0

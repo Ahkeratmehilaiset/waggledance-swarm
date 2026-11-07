@@ -67,13 +67,46 @@ def test_staged_backend_refuses_unpinned_or_foreign_source(staged,tmp_path,damag
 def test_fixed_wrapper_command_has_no_query_or_arbitrary_code(staged):
     from tools import wd_q4_staged_fixed_backend as backend
     root, _, _, plan = staged
-    plan.update(public_plan_path=str(root/'public-plan.json'),public_plan_sha256='a'*64)
-    command=backend._wrapper_command(plan,r'C:\Windows')
+    public=json.dumps({'schema':'wd.q4-public-wrapper-plan.v3','config':{'timeout':900}}).encode()
+    plan.update(public_plan_path=str(root/'public-plan.json'),public_plan_sha256=sha(public))
+    command=backend._wrapper_command(plan,r'C:\Windows',public)
     assert command[:5]==[r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe',
                           '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass']
     assert command[5:7]==['-File',str(root/'Invoke-WdQ4Query.ps1')]
     assert '-Public' in command and '-Command' not in command and '-EncodedCommand' not in command
+    assert command[command.index('-TimeoutSeconds')+1]=='900'
     assert all('synthetic-secret-query' not in item for item in command)
+
+
+@pytest.mark.parametrize('timeout',[0,1801,-1,True,'900',None,float('inf'),float('nan')])
+def test_wrapper_refuses_unusable_public_plan_timeout(staged, timeout):
+    from tools import wd_q4_staged_fixed_backend as backend
+    root, _, _, plan=staged
+    public=json.dumps({'schema':'wd.q4-public-wrapper-plan.v3','config':{'timeout':timeout}}).encode()
+    plan.update(public_plan_path=str(root/'public-plan.json'),public_plan_sha256=sha(public))
+    with pytest.raises(ValueError): backend._wrapper_command(plan,r'C:\Windows',public)
+
+
+def test_wrapper_refuses_wrong_public_plan_pin_and_duplicate_timeout(staged):
+    from tools import wd_q4_staged_fixed_backend as backend
+    root, _, _, plan=staged
+    public=b'{"schema":"wd.q4-public-wrapper-plan.v3","config":{"timeout":900}}'
+    plan.update(public_plan_path=str(root/'public-plan.json'),public_plan_sha256='a'*64)
+    with pytest.raises(ValueError): backend._wrapper_command(plan,r'C:\Windows',public)
+    duplicate=b'{"schema":"wd.q4-public-wrapper-plan.v3","config":{"timeout":900,"timeout":2}}'
+    plan['public_plan_sha256']=sha(duplicate)
+    with pytest.raises(ValueError): backend._wrapper_command(plan,r'C:\Windows',duplicate)
+
+
+@pytest.mark.parametrize('timeout',[1,30,900,1800,1.5])
+def test_wrapper_uses_only_the_matching_pinned_timeout(staged, timeout):
+    from tools import wd_q4_staged_fixed_backend as backend
+    root, _, _, plan=staged
+    public=json.dumps({'schema':'wd.q4-public-wrapper-plan.v3','config':{'timeout':timeout}}).encode()
+    plan.update(public_plan_path=str(root/'public-plan.json'),public_plan_sha256=sha(public))
+    command=backend._wrapper_command(plan,r'C:\Windows',public)
+    assert command.count('-TimeoutSeconds')==1
+    assert float(command[command.index('-TimeoutSeconds')+1])==timeout
 
 
 def test_staged_backend_preparation_is_default_off_and_refuses_unbound_input():

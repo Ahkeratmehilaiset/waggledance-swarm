@@ -724,6 +724,35 @@ def published(mod, base):
                         "sha256": manifest["files"]["approved-git-anchors.json"]}}
 
 
+def composer_options():
+    """The exact caller composer options: the orchestrator's nine keys minus the generation the builder adds."""
+    from tools import wd_q4_shared_descriptor_producer as shared
+    outer = {key: "e" * 64 for key in shared._OUTER_KEYS}
+    outer.update({"outer-path": "C:/synthetic/runtime/assets/code/tools/wd_q4_session_outer_synthetic.py",
+                  "runtime-root": "C:/synthetic/runtime", "runtime-generation": "f" * 64,
+                  "runtime-revision": "1" * 40})
+    descriptor = {"bundle_root": "C:/synthetic/bundle", "interpreter": "C:/synthetic/python.exe",
+                  "interpreter_sha256": "e" * 64, "interpreter_max_bytes": 64 * 1024 * 1024,
+                  "cwd": "C:/synthetic/bundle", "timeout_seconds": 600, "max_output_bytes": 65536,
+                  "runtime_manifest_path": "C:/synthetic/runtime-manifest.json", "runtime_manifest_sha256": "e" * 64,
+                  "outer": outer}
+    return {"expected_bundle": "C:/synthetic/bundle", "expected_commit": "2" * 40,
+            "expected_manifest_sha256": "A" * 64, "expected_host_sha256": "3" * 64,
+            "descriptor_options": descriptor, "bundle_store_root": "C:/synthetic/store",
+            "active_bundle_root": "C:/synthetic/active", "expected_state_sha256": "b" * 64}
+
+
+def orchestrator_option_keys():
+    """The option key set exactly as the orchestrator's _finish source spells it."""
+    import ast
+    import inspect
+    from tools import wd_q4_card_audit_orchestrator as orchestrator
+    found = [ast.literal_eval(node.value) for node in ast.walk(ast.parse(inspect.getsource(orchestrator._finish)))
+             if isinstance(node, ast.Assign) and [getattr(t, "id", None) for t in node.targets] == ["option_keys"]]
+    assert len(found) == 1
+    return set(found[0])
+
+
 def candidate_spec(base, published, parent, **changes):
     from tools import wd_q4_lane_link as link
     from sandbox.mind.step2 import shared_card_projection as projection
@@ -735,9 +764,7 @@ def candidate_spec(base, published, parent, **changes):
         "completeness": "UNKNOWN", "scope": "bounded_observed_prefix"})
     plan = {key: "synthetic-" + key for key in link._PUBLIC_PLAN_SCHEMAS["wd.q4-public-wrapper-plan.v1"]}
     plan["schema"] = "wd.q4-public-wrapper-plan.v1"
-    options = {"expected_bundle": "C:/synthetic/bundle", "bundle_store_root": "C:/synthetic/store",
-               "active_bundle_root": "C:/synthetic/active", "expected_state_sha256": "b" * 64,
-               "timeout_seconds": 60}
+    options = composer_options()
     spec = {"schema": "wd.q4-initial-card-inputs-spec.v1", "phase": "candidate", "now_utc": NOW,
             "configs": base["configs"], "roster": published["roster"], "approved_anchors": published["anchors"],
             "git": base["git"], "source_path": str(tmp / "synthetic-source" / "events.jsonl"),
@@ -797,6 +824,9 @@ def test_candidate_phase_writes_orchestrator_shaped_requests(mod, base, publishe
         assert finish["base_plan"][key + "_sha256"] == decision["inputs"][key]["sha256"]
     assert finish["composer_options"]["shared_stage_root"] == str(parent / "live")
     assert finish["composer_options"]["generation"] == "1" * 40
+    assert set(finish["composer_options"]) == orchestrator_option_keys() | {"shared_stage_root"}
+    assert finish["composer_options"] == dict(composer_options(), shared_stage_root=str(parent / "live"),
+                                              generation="1" * 40)
     assert set(request) == {"schema", "decision", "snapshot_template", "output_root", "finish", "generation_root"}
     assert request["schema"] == "wd.q4-card-real-candidate-request.v1"
     assert request["generation_root"] == str(parent / "run-1")
@@ -877,6 +907,102 @@ def test_candidate_phase_refuses_before_any_write(mod, base, published, parent, 
         assert list(out.iterdir()) == []
         return
     out, _, build = run_spec(mod, base, spec, "cand-" + fault)
+    with pytest.raises(mod.Refused):
+        build()
+    assert list(out.iterdir()) == []
+
+
+def test_builder_option_keys_are_the_orchestrator_keys(mod):
+    from tools import wd_q4_descriptor_cli as descriptor_cli
+    keys = orchestrator_option_keys()
+    assert len(keys) == 9 and set(mod._OPTION_KEYS) | {"generation"} == keys and "generation" not in mod._OPTION_KEYS
+    assert set(composer_options()) == set(mod._OPTION_KEYS)
+    assert (set(composer_options()["descriptor_options"]) | {"expected_binding", "public_plan"}
+            == descriptor_cli._DESCRIPTOR_KEYS)
+
+
+def _bad_options(fault):
+    options = composer_options()
+    descriptor = options["descriptor_options"]
+    if fault.startswith("missing_"):
+        options.pop(fault[len("missing_"):])
+    elif fault == "extra_key":
+        options["timeout_seconds"] = 60
+    elif fault == "mistyped_key":
+        options["expected_host_sha265"] = options.pop("expected_host_sha256")
+    elif fault == "preset_generation":
+        options["generation"] = "1" * 40
+    elif fault == "not_object":
+        return [options]
+    elif fault == "commit_upper":
+        options["expected_commit"] = "A" * 40
+    elif fault == "commit_short":
+        options["expected_commit"] = "2" * 39
+    elif fault == "manifest_lower":
+        options["expected_manifest_sha256"] = "a" * 64
+    elif fault == "host_upper":
+        options["expected_host_sha256"] = "C" * 64
+    elif fault == "state_short":
+        options["expected_state_sha256"] = "b" * 63
+    elif fault == "bundle_relative":
+        options["expected_bundle"] = "synthetic/bundle"
+    elif fault == "store_other_drive":
+        options["bundle_store_root"] = "D:/synthetic/store"
+    elif fault == "active_dotdot":
+        options["active_bundle_root"] = "C:/synthetic/../active"
+    elif fault == "bundle_non_ascii":
+        options["expected_bundle"] = "C:/synthetic/b\u00fcndle"
+    elif fault == "bundle_drive_relative":
+        options["expected_bundle"] = "C:synthetic/bundle"
+    elif fault == "bundle_not_string":
+        options["expected_bundle"] = 1
+    elif fault == "descriptor_not_object":
+        options["descriptor_options"] = []
+    elif fault == "descriptor_missing_outer":
+        descriptor.pop("outer")
+    elif fault == "descriptor_orchestrator_binding":
+        descriptor["expected_binding"] = {}
+    elif fault == "descriptor_mistyped_key":
+        descriptor["cwdir"] = descriptor.pop("cwd")
+    elif fault == "timeout_too_big":
+        descriptor["timeout_seconds"] = 601
+    elif fault == "timeout_bool":
+        descriptor["timeout_seconds"] = True
+    elif fault == "timeout_string":
+        descriptor["timeout_seconds"] = "60"
+    elif fault == "interpreter_cap_zero":
+        descriptor["interpreter_max_bytes"] = 0
+    elif fault == "interpreter_cap_too_big":
+        descriptor["interpreter_max_bytes"] = 64 * 1024 * 1024 + 1
+    elif fault == "output_too_big":
+        descriptor["max_output_bytes"] = 65537
+    elif fault == "outer_not_object":
+        descriptor["outer"] = "synthetic"
+    elif fault == "outer_missing_key":
+        descriptor["outer"].pop("worker-sha256")
+    elif fault == "outer_extra_key":
+        descriptor["outer"]["extra-sha256"] = "e" * 64
+    else:
+        raise AssertionError(fault)
+    return options
+
+
+_OPTION_FAULTS = ["missing_" + key for key in ("expected_bundle", "expected_commit", "expected_manifest_sha256",
+                                               "expected_host_sha256", "descriptor_options", "bundle_store_root",
+                                               "active_bundle_root", "expected_state_sha256")] + [
+    "extra_key", "mistyped_key", "preset_generation", "not_object", "commit_upper", "commit_short", "manifest_lower",
+    "host_upper", "state_short", "bundle_relative", "store_other_drive", "active_dotdot", "bundle_not_string",
+    "bundle_non_ascii", "bundle_drive_relative",
+    "descriptor_not_object", "descriptor_missing_outer", "descriptor_orchestrator_binding", "descriptor_mistyped_key",
+    "timeout_too_big", "timeout_bool", "timeout_string", "interpreter_cap_zero", "interpreter_cap_too_big",
+    "output_too_big", "outer_not_object", "outer_missing_key", "outer_extra_key"]
+
+
+@pytest.mark.parametrize("fault", _OPTION_FAULTS)
+def test_candidate_composer_options_refused_before_any_write(mod, base, published, parent, fault):
+    options = write(base["tmp"] / "plans" / ("options-" + fault + ".json"), _bad_options(fault))
+    out, _, build = run_spec(mod, base, candidate_spec(base, published, parent, composer_options=options),
+                             "opt-" + fault)
     with pytest.raises(mod.Refused):
         build()
     assert list(out.iterdir()) == []

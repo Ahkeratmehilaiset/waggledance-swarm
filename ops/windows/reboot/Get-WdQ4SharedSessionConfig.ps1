@@ -125,6 +125,9 @@ function Get-WdQ4SharedSessionConfig {
             if ($doc.expected_binding -is [pscustomobject] -and
                 $null -ne $doc.expected_binding.PSObject.Properties['card_decision_sha256']) {
                 $bindingKeys+=@('card_decision_sha256')
+                if ($null -ne $doc.expected_binding.PSObject.Properties['card_policy_sha256']) {
+                    $bindingKeys+=@('card_policy_sha256')
+                }
             }
             foreach ($section in @('outer','expected_binding')) {
                 $obj=$doc.$section;$keys=$outerKeys

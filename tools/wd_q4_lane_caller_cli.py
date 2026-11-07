@@ -80,6 +80,7 @@ _BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sh
                            "roster_sha256", "public_policy_sha256", "descriptor_sha256", "projection_sha256"})
 # optional card route decision pin; when present it must also be in the public plan and the answer binding
 _CARD_BINDING_KEYS = _BINDING_KEYS | {"card_decision_sha256"}
+_STAGED_BINDING_KEYS = _CARD_BINDING_KEYS | {"card_policy_sha256"}
 _RESULT_KEYS = frozenset({"schema", "status", "lane", "lane_binding", "lane_authentication", "cleanup",
                           "inner_status", "result_count", "answer", "answer_sha256", "identity_sha256",
                           "descriptor_sha256", "call_id"})
@@ -172,7 +173,7 @@ def _integer(value, ceiling):
 
 
 def _binding(value):
-    _check(type(value) is dict and frozenset(value) in (_BINDING_KEYS, _CARD_BINDING_KEYS))
+    _check(type(value) is dict and frozenset(value) in (_BINDING_KEYS, _CARD_BINDING_KEYS, _STAGED_BINDING_KEYS))
     return {key: _hex(value[key]) for key in sorted(value)}
 
 
@@ -231,8 +232,13 @@ def _require_current_snapshot(descriptor, binding, inputs):
     _check(("card_decision_sha256" in public_pins) == ("card_decision_sha256" in binding)
            and all(public_pins[key] == binding[key] for key in public_pins))
     public = _json(public_bytes)
-    root = _path(public["root"])
-    _read(str(root / "q4-latest.json"), 16384, binding["pointer_sha256"])
+    staged = "card_policy_sha256" in binding
+    _check((public.get("schema") == "wd.q4-public-wrapper-plan.v3") == staged)
+    if staged:
+        _read(str(_path(public["pointer_path"])), 1048576, binding["pointer_sha256"])
+    else:
+        root = _path(public["root"])
+        _read(str(root / "q4-latest.json"), 16384, binding["pointer_sha256"])
 
 
 def _identity(fleet_raw, descriptor, descriptor_pin):

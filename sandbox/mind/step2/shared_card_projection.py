@@ -836,7 +836,8 @@ def ask_shared_cards(memory_dir, expected_memory_sha256, encoder, situation, sit
         raise SharedCardRefused("memory_mismatch")
     try:
         manifest = json.loads(raw)
-        if (manifest.get("scope") != SCOPE or manifest.get("synthetic") is not (decision is None)
+        if (manifest.get("scope") != (SCOPE if decision is None else SHARED_SCOPE)
+                or manifest.get("synthetic") is not (decision is None)
                 or manifest.get("projection_schema") != SCHEMA):
             raise ValueError()
         if decision is not None and (manifest.get('card_route', {}).get('decision_sha256')

@@ -77,9 +77,31 @@ def _check_paths(root, private, lock):
         raise ValueError()
 
 
-def _legacy_pending(root, private):
+def _legacy_pending(root, private, *, ignore_private=()):
     return any(os.path.lexists(parent / name) for parent, names in
-               ((root, _LEGACY_GENERATION), (private, _LEGACY_PRIVATE)) for name in names)
+               ((root, _LEGACY_GENERATION), (private, _LEGACY_PRIVATE)) for name in names
+               if parent != private or name not in ignore_private)
+
+
+def _record(binding_sha256, attempt, previous_selector_sha256):
+    _pin(binding_sha256); _pin(attempt)
+    if previous_selector_sha256 is not None: _pin(previous_selector_sha256)
+    return _encode({'schema': _PENDING_SCHEMA, 'binding_sha256': binding_sha256,
+                    'attempt': attempt, 'previous_selector_sha256': previous_selector_sha256})
+
+
+def _clear_owned(root, binding_sha256, attempt, previous_selector_sha256):
+    """Clear only exact owned bytes; caller holds the lock and verifies outcome.
+
+    This is an internal primitive, not independent proof of publication. The
+    integration must verify the durable result and selector while locked.
+    """
+    pending = root / _PENDING
+    expected = _record(binding_sha256, attempt, previous_selector_sha256)
+    if _read_pending(pending) != expected:
+        raise Unknown('lifecycle_pending_mismatch')
+    pointer._chain(pending)
+    pending.unlink()
 
 
 def _read_pending(path):
@@ -125,9 +147,7 @@ def admit(*, enabled=False, binding_bytes=None, binding_sha256=None, attempt=Non
             _check_paths(root, private, lock)
             if os.path.lexists(pending) or _legacy_pending(root, private):
                 raise Unknown('lifecycle_pending_or_unknown')
-            record = {'schema': _PENDING_SCHEMA, 'binding_sha256': binding_sha256,
-                      'attempt': attempt, 'previous_selector_sha256': previous_selector_sha256}
-            raw = _encode(record)
+            raw = _record(binding_sha256, attempt, previous_selector_sha256)
             flags = (os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0)
                      | getattr(os, 'O_NOINHERIT', 0) | getattr(os, 'O_NOFOLLOW', 0))
             # From the create attempt onward, an interruption or failure can
@@ -144,6 +164,27 @@ def admit(*, enabled=False, binding_bytes=None, binding_sha256=None, attempt=Non
             yield {'status': 'ADMITTED', 'attempt': attempt, 'binding_sha256': binding_sha256}
     except ReaderBusy:
         raise Unknown('lifecycle_busy') from None
+    except Unknown:
+        raise
+    except Exception:
+        raise Unknown('lifecycle_unknown') from None
+
+
+@contextmanager
+def _resume(*, binding_bytes, binding_sha256, attempt, previous_selector_sha256):
+    """Lock and verify the exact pending record; never infer an outcome."""
+    try:
+        root, private = _binding(binding_bytes, binding_sha256)
+        expected = _record(binding_sha256, attempt, previous_selector_sha256)
+        lock = root / _LOCK
+        if os.path.lexists(lock): pointer._chain(lock)
+        with reader_slot(lock, timeout_seconds=0.2):
+            _check_paths(root, private, lock)
+            if _legacy_pending(root, private, ignore_private=('q4-card-refresh.pending.json',)):
+                raise Unknown('legacy_pending')
+            if _read_pending(root / _PENDING) != expected:
+                raise Unknown('lifecycle_pending_mismatch')
+            yield root
     except Unknown:
         raise
     except Exception:

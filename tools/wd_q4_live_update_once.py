@@ -339,7 +339,7 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None, ho
         if os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower() != config['manifest_sha256']:
             raise ValueError()
         route_probe = caller._json(_read(config['route_path'], 65536, config['route_sha256']))
-        if route_probe.get('schema') == 'wd.q4-card-refresh-tuple.v1':
+        if route_probe.get('schema') in ('wd.q4-card-refresh-tuple.v1', 'wd.q4-card-refresh-tuple.v2'):
             if config['schema'] != 'wd.q4-live-update-once.v2':
                 raise ValueError()
             from tools import wd_q4_card_refresh_coordinator as cards

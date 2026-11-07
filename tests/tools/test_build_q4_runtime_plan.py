@@ -168,6 +168,27 @@ def test_secure_transport_requires_its_dynamic_controlled_import_helper(tmp_path
         refused(kwargs, 'code_closure_incomplete')
 
 
+@pytest.mark.parametrize('include_helper', [True, False])
+def test_public_reader_requires_controlled_import_helper_without_transport(tmp_path, include_helper):
+    reader = 'sandbox/mind/step2/shared_index_checkpoint.py'
+    helper = 'sandbox/mind/step2/q4_controlled_imports.py'
+    files = {reader: b'VALUE = 1\n'}
+    if include_helper:
+        files[helper] = b'VALUE = 2\n'
+    repo, commit = make_repo(tmp_path, files)
+    site = make_tree(tmp_path / 'site', {'pkg.py': b'VALUE = 1\n'})
+    model = make_tree(tmp_path / 'model', {'model.safetensors': WEIGHTS})
+    kwargs = dict(git_executable=GIT, repository=str(repo), commit=commit,
+                  code_roots=[reader], site_root=str(site), model_root=str(model),
+                  expected_model_files=['model.safetensors'], expected_weights_sha256=sha(WEIGHTS),
+                  generation=GENERATION, revision=REVISION, max_bytes=1024 * 1024, enabled=True)
+    if include_helper:
+        plan = plan_mod.plan_runtime_inputs(**kwargs)
+        assert plan['pins']['assets/code/' + helper] == {'size': len(files[helper]), 'sha256': sha(files[helper])}
+    else:
+        refused(kwargs, 'code_closure_incomplete')
+
+
 def test_plan_contains_no_absolute_paths(case):
     kwargs, repo, site, model = case
     text = repr(plan_mod.plan_runtime_inputs(**kwargs))

@@ -314,6 +314,17 @@ def _write(text):
     sys.stdout.flush()
 
 
+_DIAGNOSTIC_PHASES = frozenset({
+    "CALLER_GUARD_ACQUIRE_UNKNOWN", "CALLER_ADAPTER_CLEANUP_UNKNOWN",
+    "CALLER_TRANSPORT_CLEANUP_UNKNOWN", "CALLER_ATTESTATION_CLEANUP_UNKNOWN",
+    "CALLER_SESSION_UNKNOWN", "CALLER_TIMEOUT_UNKNOWN", "CALLER_RESULT_UNKNOWN",
+    "CALLER_TIMEOUT", "CALLER_INTERRUPTED", "CALLER_REFUSED",
+})
+_INNER_PHASES = {"transport_cleanup_unknown": "CALLER_TRANSPORT_CLEANUP_UNKNOWN",
+                 "attestation_cleanup_unknown": "CALLER_ATTESTATION_CLEANUP_UNKNOWN",
+                 "session_refused": "CALLER_SESSION_UNKNOWN", "timeout": "CALLER_TIMEOUT_UNKNOWN"}
+
+
 def _refuse(code):
     # Preserve the nonzero outcome even when the diagnostic stream is unavailable.
     try:
@@ -322,6 +333,17 @@ def _refuse(code):
     except BaseException:
         pass
     return code
+
+
+def _refuse_phase(code, phase):
+    result = _refuse(code)
+    try:
+        if os.environ.get("WD_Q4_DIAGNOSTIC_PHASES") == "1" and phase in _DIAGNOSTIC_PHASES:
+            sys.stderr.write('{"phase":"' + phase + '"}\n')
+            sys.stderr.flush()
+    except BaseException:
+        pass
+    return result
 
 
 def main(argv=None):
@@ -362,7 +384,7 @@ def main(argv=None):
             raise
         except BaseException:
             # A failed acquisition may have left a pending marker; do not retry.
-            return _refuse(3)
+            return _refuse_phase(3, "CALLER_GUARD_ACQUIRE_UNKNOWN")
         owner_context = guard._owner_context()
         _check(guard._accept_owner_context(owner_context) is owner_context)
         try:
@@ -386,14 +408,16 @@ def main(argv=None):
                 expected_descriptor_sha256=descriptor_pin, situation=situation, time=when, inputs=inputs,
                 _owner_guard=guard, _owner_context=owner_context)
         except adapter.CallerCleanupUnknown:
-            return _refuse(3)
+            return _refuse_phase(3, "CALLER_ADAPTER_CLEANUP_UNKNOWN")
         # Unknown/unrecognized cleanup takes precedence over any status, including
         # a claimed answer or timeout. It never publishes validated stdout.
         if (type(result) is not dict or result.get("cleanup") != "chain_confirmed"
                 or result.get("status") == "UNKNOWN"):
-            return _refuse(3)
+            inner = result.get("inner_status") if type(result) is dict else None
+            phase = _INNER_PHASES.get(inner, "CALLER_RESULT_UNKNOWN") if type(inner) is str else "CALLER_RESULT_UNKNOWN"
+            return _refuse_phase(3, phase)
         if result.get("status") == "TIMEOUT":
-            return _refuse(4)
+            return _refuse_phase(4, "CALLER_TIMEOUT")
         rendered = _output(result, lane, identity_pin, descriptor_pin, binding,
                            inputs["max_output_bytes"], token)
         if coverage_mode == "1":
@@ -416,12 +440,12 @@ def main(argv=None):
         _write(rendered)
         return 0
     except (KeyboardInterrupt, SystemExit):
-        return _refuse(130)
+        return _refuse_phase(130, "CALLER_INTERRUPTED")
     except TimeoutError:
-        return _refuse(4)
+        return _refuse_phase(4, "CALLER_TIMEOUT")
     except BaseException:
         # No exception detail, query, token, path or retry on any failure.
-        return _refuse(2)
+        return _refuse_phase(2, "CALLER_REFUSED")
     finally:
         # Do not abort an already released context: that would turn a successful
         # release into a spurious failure. The outer marker remains pending on

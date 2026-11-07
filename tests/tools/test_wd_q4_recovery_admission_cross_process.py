@@ -3,6 +3,7 @@ import base64
 import json
 from pathlib import Path
 import subprocess
+import sys
 import threading
 import time
 import pytest
@@ -12,6 +13,8 @@ from tests.tools import test_wd_q4_genesis_bootstrap as genesis_fixture
 from tests.tools import test_wd_q4_continuation_adopt as adopt_fixture
 from tools import wd_q4_continuation_adopt as adopt
 from tools import wd_q4_genesis_to_composer_cli as composer
+
+pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows byte-range lock and Job integration")
 
 
 @pytest.mark.parametrize('crash_first',[False,True])

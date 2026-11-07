@@ -237,28 +237,30 @@ def build_staged_lane_binding(*, enabled=False, expected_commit=None, manifest_b
             card_decision_bytes=card_decision_bytes, card_decision_sha256=plan['card_decision_sha256'],
             card_policy_bytes=card_policy_bytes, source_path=plan['source_path'],
             generation_path=plan['generation_path'], end_cursor=BridgeCursor(**cursor), enabled=True)
-        resolved = staged_resolver.resolve_card_snapshot_pointer(**snapshot_args)
-        if (resolved['status'] != 'VALIDATED_STAGED' or resolved['source_mode'] != 'card-snapshot-v1'
-                or resolved['completeness'] != 'UNKNOWN'
-                or resolved['source_prefix']['sha256'] != plan['source_anchor_sha256']
-                or resolved['card_policy_sha256'] != plan['card_policy_sha256']
-                or resolved['descriptor_sha256'] != plan['config'].get('descriptor_sha256')
-                or resolved['descriptor_path'] != plan['config'].get('descriptor')
-                or resolved['memory_root'] != plan['config'].get('memory')):
-            raise ValueError()
-        descriptor_raw = staged_resolver._read_matching(Path(resolved['descriptor_path']),
-                                                        resolved['descriptor_sha256'], limit=65536)
-        descriptor = link._json(descriptor_raw)
-        if (preflight._encoder_digest(descriptor['encoder']) != plan['encoder_sha256']
-                or descriptor['encoder']['revision'] != plan['config'].get('runtime_revision')):
-            raise ValueError()
-        values = {key: (plan['config']['descriptor_sha256'] if key == 'descriptor_sha256'
-                        else resolved['projection_sha256'] if key == 'projection_sha256' else plan[key])
-                  for key in query.STAGED_BINDING_KEYS}
-        if any(type(value) is not str or _HEX64.fullmatch(value) is None for value in values.values()):
-            raise ValueError()
-        if staged_resolver.resolve_card_snapshot_pointer(**snapshot_args) != resolved:
-            raise ValueError()
+        from tools import wd_q4_public_card_prefix_verifier as prefix
+        with prefix._snapshot_scan_scope():
+            resolved = staged_resolver.resolve_card_snapshot_pointer(**snapshot_args)
+            if (resolved['status'] != 'VALIDATED_STAGED' or resolved['source_mode'] != 'card-snapshot-v1'
+                    or resolved['completeness'] != 'UNKNOWN'
+                    or resolved['source_prefix']['sha256'] != plan['source_anchor_sha256']
+                    or resolved['card_policy_sha256'] != plan['card_policy_sha256']
+                    or resolved['descriptor_sha256'] != plan['config'].get('descriptor_sha256')
+                    or resolved['descriptor_path'] != plan['config'].get('descriptor')
+                    or resolved['memory_root'] != plan['config'].get('memory')):
+                raise ValueError()
+            descriptor_raw = staged_resolver._read_matching(Path(resolved['descriptor_path']),
+                                                            resolved['descriptor_sha256'], limit=65536)
+            descriptor = link._json(descriptor_raw)
+            if (preflight._encoder_digest(descriptor['encoder']) != plan['encoder_sha256']
+                    or descriptor['encoder']['revision'] != plan['config'].get('runtime_revision')):
+                raise ValueError()
+            values = {key: (plan['config']['descriptor_sha256'] if key == 'descriptor_sha256'
+                            else resolved['projection_sha256'] if key == 'projection_sha256' else plan[key])
+                      for key in query.STAGED_BINDING_KEYS}
+            if any(type(value) is not str or _HEX64.fullmatch(value) is None for value in values.values()):
+                raise ValueError()
+            if staged_resolver.resolve_card_snapshot_pointer(**snapshot_args) != resolved:
+                raise ValueError()
         for name, (raw, limit) in inputs.items():
             if not hmac.compare_digest(link._read(link._path(plan[name + '_path'], directory=False), limit), raw):
                 raise ValueError()

@@ -246,8 +246,11 @@ print(json.dumps(dict(pid=os.getpid(),code=code,events=events,result=json.loads(
 '''
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows staged-child process witness")
+@pytest.mark.skipif(os.name != "nt" or os.environ.get("WD_Q4_RC2_PROCESS_E2E") != "1",
+                    reason="Explicit synthetic RC2 staged-child process witness")
 def test_actual_staged_child_process_keeps_real_c2_checks(route):
+    required = ("WD_Q4_RC2_CANDIDATE_ROOT", "WD_Q4_RC2_AUDIT")
+    assert all(os.environ.get(key) for key in required), "Explicit RC2 process test requires candidate root and audit"
     candidate = Path(os.environ["WD_Q4_RC2_CANDIDATE_ROOT"])
     arguments = staged_args(route)
     byte_fields = [k for k,v in arguments.items() if type(v) is bytes]

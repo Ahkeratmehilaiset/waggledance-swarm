@@ -161,7 +161,8 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
     source_stack = []
     bootstrap_main = sys.modules.get('__main__')
     _check(type(bootstrap_main) is types.ModuleType)
-    _check(sys.modules.get('__mp_main__', bootstrap_main) is bootstrap_main)
+    initial_main_alias = sys.modules.get('__mp_main__', absent)
+    _check(initial_main_alias is absent or initial_main_alias is bootstrap_main)
     main_alias_witnessed = False
     multiprocessing_source = os.path.normcase(os.path.realpath(
         Path(sys.base_prefix) / 'Lib' / 'multiprocessing' / '__init__.py'))
@@ -288,11 +289,14 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             if (loader.name == 'multiprocessing'
                     and os.path.normcase(os.path.realpath(loader.path)) == multiprocessing_source):
                 _check(source_before.get('__main__') is bootstrap_main
-                       and source_before.get('__mp_main__', bootstrap_main) is bootstrap_main
                        and '__mp_main__' not in source_tainted
                        and len(sys._current_frames()) == 1)
+                existing_alias = source_before.get('__mp_main__', absent)
+                _check(existing_alias is absent or (existing_alias is bootstrap_main
+                                                     and initial_main_alias is bootstrap_main))
                 check_main_alias()
-                main_alias_witnessed = True
+                if existing_alias is absent:
+                    main_alias_witnessed = True
             if native_witnessed._deferred and len(sys._current_frames()) == 1:
                 native_witnessed.bind_source(source_before, dict(sys.modules), source_tainted,
                                              single_thread=True)

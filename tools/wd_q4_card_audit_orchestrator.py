@@ -227,6 +227,23 @@ def run(*, enabled=False, request_path=None, request_sha256=None):
             if (candidate_root.drive.upper() != 'C:' or not os.path.samefile(candidate_root.parent, parent)
                     or any(candidate_root.iterdir())):
                 raise ValueError()
+
+            def overlaps(x, y):
+                return (x.is_relative_to(y) or y.is_relative_to(x)
+                        or composer._identity_contains(x, y) or composer._identity_contains(y, x))
+            # IM9 P1 layout: run = P/RUN (snapshot below it), source anchor = P/.codex-audit/anchors/ID/generation.json;
+            # one-component names without a leading dot, every subtree disjoint from the others, no reparse anywhere.
+            audit = io._path(str(parent / '.codex-audit'), directory=True)
+            anchors = io._path(str(audit / 'anchors'), directory=True)
+            anchor_root = io._path(a['root'], directory=True)
+            if (candidate_root.name.startswith('.') or anchor_root.name.startswith('.')
+                    or anchor_root.parent != anchors or not os.path.samefile(anchor_root.parent, anchors)
+                    or overlaps(anchor_root, out)):
+                raise ValueError()
+            if 'shared_stage_root' in opts:
+                shared_root = io._path(opts['shared_stage_root'], directory=True)
+                if overlaps(shared_root, audit):
+                    raise ValueError()
             for other in (out, *synthetic_paths, request_file, decision_path, template_path, finish_path):
                 if (candidate_root.is_relative_to(other) or other.is_relative_to(candidate_root)
                         or composer._identity_contains(candidate_root, other)

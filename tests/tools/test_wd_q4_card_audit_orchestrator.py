@@ -210,7 +210,28 @@ def test_full_synthetic_chain_uses_real_writers_and_fixture_current(materialize,
     assert not (tmp_path / 'WD_Q4_DESCRIPTOR_CURRENT.json').exists()
 
 
-@pytest.mark.parametrize('fault', [None, 'outside_parent', 'nonempty', 'wrong_state', 'policy_mismatch', 'mode_mismatch', 'interrupted'])
+def _reanchor(decision_path, root):
+    """Anchor the decision's own synthetic prefix again in a fresh empty dir (P1: P/.codex-audit/anchors/ID)."""
+    from tools import wd_q4_external_generation_anchor as anchor
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    decision = json.loads(decision_path.read_bytes())
+    root.mkdir(parents=True)
+    c = decision['cursor']
+    pins = anchor.prepare(enabled=True, source_path=decision['source_path'],
+                          original_cursor=BridgeCursor(c['offset'], c['file_identity'], None),
+                          expected_prefix_sha256=decision['prefix_sha256'], output_root=str(root))
+    decision['anchor'] = {'root': str(root), 'generation_sha256': pins['generation_sha256'],
+                          'binding_sha256': pins['binding_sha256']}
+    return write(decision_path, decision)
+
+
+# IM9 P1 real-mode layout: run = P/RUN/snapshot, source anchor = P/.codex-audit/anchors/ID/generation.json.
+_P1_FAULTS = ['anchor_outside_parent', 'anchor_other_dir', 'anchor_nested', 'anchor_dot_id', 'anchor_is_anchors',
+              'dot_run', 'shared_in_audit', 'shared_contains_anchor', 'out_audit_parent']
+
+
+@pytest.mark.parametrize('fault', [None, 'outside_parent', 'nonempty', 'wrong_state', 'policy_mismatch', 'mode_mismatch',
+                                   'interrupted', *_P1_FAULTS])
 def test_real_source_mode_stages_candidate_in_separate_generation_root(materialize, tmp_path, monkeypatch, fault):
     pytest.importorskip('faiss')
     from tools import wd_q4_lane_link
@@ -246,6 +267,23 @@ def test_real_source_mode_stages_candidate_in_separate_generation_root(materiali
     gen_parent = tmp_path / 'persistent-generations'; gen_parent.mkdir()
     gen = gen_parent / 'generation-one'; gen.mkdir()
     monkeypatch.setattr(mod, '_GENERATION_PARENT', gen_parent)
+    anchors = gen_parent / '.codex-audit' / 'anchors'
+    anchor_root = {'anchor_outside_parent': None, 'anchor_other_dir': gen_parent / '.codex-audit' / 'other' / 'a1',
+                   'anchor_nested': anchors / 'x' / 'a1', 'anchor_dot_id': anchors / '.a1',
+                   'anchor_is_anchors': anchors}.get(fault, anchors / 'a1')
+    if anchor_root is not None:
+        request['decision']['sha256'] = _reanchor(Path(request['decision']['path']), anchor_root)
+    if fault == 'dot_run':
+        gen = gen_parent / '.run-one'; gen.mkdir()
+    if fault == 'out_audit_parent':
+        out = gen_parent / '.codex-audit'
+        request['output_root'] = str(out)
+    if fault in ('shared_in_audit', 'shared_contains_anchor'):
+        shared = gen_parent / '.codex-audit' / 'live' if fault == 'shared_in_audit' else gen_parent / '.codex-audit'
+        shared.mkdir(exist_ok=True)
+        document = json.loads(finish_path.read_bytes())
+        document['composer_options'].update(shared_stage_root=str(shared), generation=_GEN_B)
+        request['finish']['sha256'] = write(finish_path, document)
     if fault == 'outside_parent':
         monkeypatch.setattr(mod, '_GENERATION_PARENT', tmp_path)
     if fault == 'nonempty':
@@ -275,6 +313,13 @@ def test_real_source_mode_stages_candidate_in_separate_generation_root(materiali
         assert list(out.iterdir()) and list(gen.iterdir())
         with pytest.raises(mod.Refused):
             mod.run(enabled=True, request_path=str(path), request_sha256=pin)
+        return
+    if fault in _P1_FAULTS:  # refused before any write by run or by the anchor reader
+        before = {str(p): (p.read_bytes() if p.is_file() else None) for p in sorted(gen_parent.rglob('*'))}
+        with pytest.raises(mod.Refused):
+            mod.run(enabled=True, request_path=str(path), request_sha256=pin)
+        assert {str(p): (p.read_bytes() if p.is_file() else None) for p in sorted(gen_parent.rglob('*'))} == before
+        assert list(gen.iterdir()) == [] and not (out / 'decision').exists()
         return
     if fault:
         with pytest.raises(mod.Refused):

@@ -123,6 +123,8 @@ def inspect(*, enabled=False, descriptor_path=None, descriptor_sha256=None,
                 or plan['runtime_generation'] != descriptor['outer']['runtime-generation']
                 or plan['runtime_revision'] != descriptor['outer']['runtime-revision']):
             raise ValueError()
+        host_path = fixed._staged_system_host()
+        fixed._staged_read(host_path, plan['host_sha256'], 128 * 1024 * 1024)
         for lane in LANES:
             resolved = binding.resolve_lane_binding(fleet, inputs['expected_fleet_sha256'], inputs['binding_bytes'],
                 inputs['expected_binding_sha256'], lane=lane, enabled=True)
@@ -137,13 +139,14 @@ def inspect(*, enabled=False, descriptor_path=None, descriptor_sha256=None,
                                 caller.MAX_MANIFEST, manifest_pin) != manifest_raw):
             raise RuntimeError()
         caller._require_current_snapshot(descriptor2, pins2, inputs2)
+        fixed._staged_read(host_path, plan['host_sha256'], 128 * 1024 * 1024)
         if _inspect_guards(fleet2, inputs2['expected_fleet_sha256']) != guards:
             raise RuntimeError()
         status = ('UNKNOWN' if 'UNKNOWN' in guards.values() else
                   'PRECHECK_PASSED' if all(value == 'CLEAR_AT_CHECK' for value in guards.values()) else 'UNAVAILABLE')
         return {'status':status, 'guards':guards, 'observed_utc':datetime.now(timezone.utc).isoformat(),
                 'next_turn':'UNKNOWN', 'source_authentication':'UNKNOWN', 'query_chain':'NOT_CHECKED',
-                'native_launch':'UNKNOWN', 'freshness':'UNKNOWN'}
+                'native_launch':'UNKNOWN', 'freshness':'UNKNOWN', 'card_snapshot':'NOT_CHECKED'}
     except (TimeoutError, KeyboardInterrupt, SystemExit, RuntimeError):
         return {'status':'UNKNOWN'}
     except Exception:

@@ -114,6 +114,10 @@ def composed_readiness(real_tiny_runtime, guards, monkeypatch):
     from tools import wd_q4_guard_completion, wd_q4_lane_binding, wd_q4_lane_caller_cli, wd_q4_secure_transport
     plan, _, _, runtime_manifest = real_tiny_runtime
     _, _, fleet, fleet_pin = guards
+    host = guards[0]/'synthetic-powershell.exe'
+    host.write_bytes(b'synthetic-host')
+    plan['host_sha256'] = sha(host.read_bytes())
+    monkeypatch.setattr(wd_q4_secure_transport, '_staged_system_host', lambda: str(host))
     manifest_pin = plan['deployment_manifest_sha256']
     plan.update(backend='staged-card-wrapper-v1', bundle_commit='a'*40,
                 bundle_bytes=len(b'synthetic-card-bundle'), bundle_sha256=sha(b'synthetic-card-bundle'),
@@ -149,10 +153,28 @@ def test_composed_inspection_rechecks_all_five_without_acquiring(composed_readin
     result = module().inspect(**args)
     assert result['status'] == 'PRECHECK_PASSED' and result['next_turn'] == 'UNKNOWN'
     assert result['source_authentication'] == 'UNKNOWN'
+    assert result['card_snapshot'] == 'NOT_CHECKED'
     assert result['guards'] == {lane:'CLEAR_AT_CHECK' for lane in LANES}
     assert calls.count('configuration') == 2 and calls.count('snapshot') == 2
     assert all(calls.count(lane) == 1 for lane in LANES)
     assert sorted(str(p.relative_to(runtime)) for p in runtime.rglob('*')) == before
+
+
+def test_composed_changed_host_fails_closed(composed_readiness):
+    args, _, guards, _ = composed_readiness
+    (guards[0]/'synthetic-powershell.exe').write_bytes(b'changed-host')
+    assert module().inspect(**args) == {'status':'UNAVAILABLE'}
+
+
+def test_composed_host_changed_during_inspection_fails_closed(composed_readiness, monkeypatch):
+    args, _, guards, _ = composed_readiness
+    target = module(); original = target._inspect_guards
+    def changed(*values):
+        observed = original(*values)
+        (guards[0]/'synthetic-powershell.exe').write_bytes(b'changed-during-inspection')
+        return observed
+    monkeypatch.setattr(target, '_inspect_guards', changed)
+    assert target.inspect(**args) == {'status':'UNAVAILABLE'}
 
 
 def test_composed_pending_is_unavailable_without_deleting_it(composed_readiness):

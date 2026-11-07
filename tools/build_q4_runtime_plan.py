@@ -14,10 +14,16 @@ known path-loaded import helper, namespace verifier and native-addition verifier
 The staged fixed backend (``tools/wd_q4_staged_fixed_backend.py``) is loaded by
 path from the pinned bundle, so no static closure reaches it; it is planned
 only when the caller requests the staged route with ``staged_backend_sha256``
-(the fixed plan's ``backend_sha256``). Then the helper and its whole import
-closure, including the imports inside its functions, are pinned, the committed
-helper blob must hash to that value, and the result names it under
-``staged_backend``. Without the request the plan is unchanged.
+(the fixed plan's ``backend_sha256``). Then the staged runtime profile is
+planned whatever the roots reach: the helper, the secure transport that loads it
+(with its controlled-import helper, namespace and native-addition verifiers) and
+the stdlib-only runtime manifest verifier the staged child reads from the
+runtime tree (``sandbox/mind/step2/runtime_manifest.py``), each with its whole
+import closure, including the imports inside functions. Any of them missing
+from the commit refuses (``code_closure_incomplete``), the committed helper
+blob must hash to the requested value, and the result names the helper under
+``staged_backend`` and all three under ``staged_runtime``. Without the request
+the plan is unchanged.
 Imports made through
 dynamic loaders (importlib, exec, runpy, file specs) cannot be followed
 statically. A conservative AST heuristic flags files that import importlib,
@@ -86,6 +92,10 @@ _CONTROLLED_IMPORTS = "sandbox/mind/step2/q4_controlled_imports.py"
 _NAMESPACE_ORIGIN = "sandbox/mind/step2/q4_namespace_origin.py"
 _NATIVE_ADDITIONS = "sandbox/mind/step2/q4_native_additions.py"
 _STAGED_FIXED_BACKEND = "tools/wd_q4_staged_fixed_backend.py"
+_RUNTIME_VERIFIER = "sandbox/mind/step2/runtime_manifest.py"
+# Staged runtime profile: planned whenever staged_backend_sha256 is given, never otherwise.
+_STAGED_PROFILE = (("backend", _STAGED_FIXED_BACKEND), ("transport", _SECURE_TRANSPORT),
+                   ("verifier", _RUNTIME_VERIFIER))
 _DYNAMIC_MODULES = frozenset({"importlib", "runpy", "builtins"})
 _DYNAMIC_NAMES = frozenset({"__import__", "exec", "eval", "compile", "__builtins__"})
 _DYNAMIC_ATTRS = frozenset({"import_module", "__import__", "run_path", "run_module", "spec_from_file_location",
@@ -321,10 +331,10 @@ def _code_plan(git_executable, repository, commit, roots, extras, deadline, budg
     closure = _Closure(entries)
     records, third, dynamic, used = {}, set(), set(), 0
     pending = list(roots) + list(extras)
-    if staged_backend is not None:  # path-loaded by the transport: no static import reaches it
-        if _STAGED_FIXED_BACKEND not in entries:
+    if staged_backend is not None:  # path-loaded by the transport: no static import reaches the profile
+        if any(item not in entries for _, item in _STAGED_PROFILE):
             _fail("code_closure_incomplete")
-        pending.append(_STAGED_FIXED_BACKEND)
+        pending.extend(item for _, item in _STAGED_PROFILE)
     while pending:
         path = pending.pop()
         if path in records:
@@ -511,6 +521,7 @@ def plan_runtime_inputs(*, git_executable, repository, commit, code_roots, site_
                   "weights_sha256": expected_weights_sha256, "trust": dict(_TRUST)}
         if staged_backend_sha256 is not None:
             result["staged_backend"] = {"path": _STAGED_FIXED_BACKEND, **code[_STAGED_FIXED_BACKEND]}
+            result["staged_runtime"] = {name: {"path": item, **code[item]} for name, item in _STAGED_PROFILE}
         return result
     except RuntimePlanRefused as exc:
         token = exc.args[0]

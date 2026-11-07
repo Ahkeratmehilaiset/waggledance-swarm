@@ -122,3 +122,72 @@ def resolve_public_pointer(root, *, expected_pointer_sha256, policy_bytes, polic
         return binding
     except Exception:
         raise PublicPointerRefused("resolution_refused") from None
+
+
+def resolve_card_snapshot_pointer(root, *, pointer_bytes=None, expected_pointer_sha256=None,
+                                  policy_bytes=None, policy_sha256=None, roster_bytes=None,
+                                  roster_sha256=None, card_decision_bytes=None,
+                                  card_decision_sha256=None, card_policy_bytes=None,
+                                  source_path=None, generation_path=None, end_cursor=None,
+                                  enabled=False):
+    """Validate one caller-pinned synthetic C2 snapshot into a staged binding.
+
+    This separate opt-in route never calls the v6 history verifier, publishes
+    a pointer or supplies a history receipt. The caller supplies the snapshot
+    bytes and every source/decision pin; none is inferred from installed state.
+    The result is private resolver data, not a public event or query lease.
+    Query/outer/CLI consumers must explicitly support this distinct binding;
+    it cannot stand in for the legacy public-v1 binding. Caller/source trust,
+    freshness and same-user race protection remain unproven.
+    """
+    if enabled is not True:
+        raise PublicPointerRefused("disabled")
+    try:
+        import json
+        from sandbox.mind.step2 import shared_card_checkpoint as card_checkpoint
+
+        if (type(pointer_bytes) is not bytes or len(pointer_bytes) > 1024 * 1024
+                or not _pin(expected_pointer_sha256)
+                or hashlib.sha256(pointer_bytes).hexdigest() != expected_pointer_sha256):
+            raise ValueError()
+        pointer = json.loads(pointer_bytes)
+        if (type(pointer) is not dict or type(pointer.get("generation")) is not str
+                or not _NAME.fullmatch(pointer["generation"])):
+            raise ValueError()
+        root = checkpoint._secure(Path(root))
+        if not root.is_absolute() or not root.is_dir():
+            raise ValueError()
+        generation = root / pointer["generation"]
+        checked = card_checkpoint.validate_card_snapshot(
+            enabled=True, pointer_bytes=pointer_bytes,
+            expected_pointer_sha256=expected_pointer_sha256, generation_dir=generation,
+            decision_bytes=card_decision_bytes, decision_sha256=card_decision_sha256,
+            policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+            roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+            card_policy_bytes=card_policy_bytes, source_path=source_path,
+            generation_path=generation_path, end_cursor=end_cursor)
+        if checked != {"status": "VALIDATED_STAGED", "completeness": "UNKNOWN"}:
+            raise ValueError()
+        artifacts = pointer["artifacts"]
+        # Bind the exact bytes still present after C2's complete verification.
+        for name in ("descriptor", "memory", "projection"):
+            _read_matching(generation / (name + ".json"), artifacts[name + ".json"],
+                           limit=65536 if name == "descriptor" else checkpoint._MAX)
+        return {
+            "status": "VALIDATED_STAGED", "completeness": "UNKNOWN",
+            "memory_root": str(generation), "descriptor_path": str(generation / "descriptor.json"),
+            "descriptor_sha256": artifacts["descriptor.json"],
+            "memory_sha256": artifacts["memory.json"],
+            "projection_path": str(generation / "projection.json"),
+            "projection_sha256": artifacts["projection.json"],
+            "pointer_sha256": expected_pointer_sha256, "generation": pointer["generation"],
+            "policy_sha256": policy_sha256, "roster_sha256": roster_sha256,
+            "card_decision_sha256": card_decision_sha256,
+            "card_policy_sha256": hashlib.sha256(card_policy_bytes).hexdigest(),
+            "source_prefix": pointer["source_prefix"], "source_mode": "card-snapshot-v1",
+            "freshness": "UNKNOWN", "identity": "NOT_AUTHENTICATED",
+            "publisher_authentication": "NOT_AUTHENTICATED",
+            "source_filter_attestation": "NOT_VERIFIED",
+        }
+    except Exception:
+        raise PublicPointerRefused("resolution_refused") from None

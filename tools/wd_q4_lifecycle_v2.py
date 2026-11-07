@@ -11,12 +11,15 @@ races against path replacement are not established. Do not use as a release
 or production-readiness signal.
 """
 from contextlib import contextmanager
+from contextvars import ContextVar
+import asyncio
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import stat
+import threading
 
 from sandbox.mind.step2.reader_slot import reader_slot, ReaderBusy
 from tools import wd_q4_descriptor_pointer as pointer
@@ -28,6 +31,7 @@ _PENDING = 'q4-lifecycle-v2.pending.json'
 _LOCK = 'q4-lifecycle-v2.lock'
 _ENROLLED = 'q4-lifecycle-v2.enrolled.json'
 _PRIVATE_SUFFIX = '.q4-lifecycle-private-v2'
+_ADMISSION = ContextVar('wd_q4_lifecycle_publication_admission', default=None)
 _LEGACY_PRIVATE = ('q4-card-refresh.pending.json', 'q4-live-update.pending.json',
                    'q4-continuation-adopt.pending.json', 'q4-adopt-recovery-job.pending.json',
                    'prefix-private-state.pending', '.wd-q4-status-prefix-runner.pending',
@@ -149,6 +153,43 @@ def _ensure_enrollment(root, binding_sha256):
         raise ValueError()
 
 
+def _owner():
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        task = None
+    return threading.get_ident(), task
+
+
+@contextmanager
+def _publication_admission(root, binding_sha256, attempt, previous):
+    scope = {'active': True, 'owner': _owner(), 'root': root, 'binding': binding_sha256,
+             'pending': _record(binding_sha256, attempt, previous), 'previous': previous}
+    previous_scope = _ADMISSION.get()
+    token = None
+    try:
+        token = _ADMISSION.set(scope)
+        yield
+    finally:
+        scope['active'] = False
+        if token is not None:
+            _ADMISSION.reset(token)
+        elif _ADMISSION.get() is scope:
+            _ADMISSION.set(previous_scope)
+
+
+def _check_publication(root, previous):
+    """Called while the shared publication lock is held; raise on uncertainty."""
+    if not (os.path.lexists(root / _ENROLLED) or os.path.lexists(root / _PENDING)):
+        return
+    scope = _ADMISSION.get()
+    if (not scope or not scope['active'] or scope['owner'] != _owner()
+            or not pointer._same(scope['root'], root) or scope['previous'] != previous
+            or _read_pending(root / _ENROLLED) != _enrollment(scope['binding'])
+            or _read_pending(root / _PENDING) != scope['pending']):
+        raise ValueError('lifecycle_admission_required')
+
+
 @contextmanager
 def admit(*, enabled=False, binding_bytes=None, binding_sha256=None, attempt=None,
           previous_selector_sha256=None):
@@ -177,22 +218,27 @@ def admit(*, enabled=False, binding_bytes=None, binding_sha256=None, attempt=Non
                      | getattr(os, 'O_NOINHERIT', 0) | getattr(os, 'O_NOFOLLOW', 0))
             # From the create attempt onward, an interruption or failure can
             # leave partial state. Never remove, recreate, or retry the marker.
-            try:
-                # Enrollment is a separately pinned persistent record; an
-                # inspection or a failed legacy check must not enroll a root.
-                _ensure_enrollment(root, binding_sha256)
-                fd = os.open(str(pending), flags, 0o600)
-                with os.fdopen(fd, 'wb') as stream:
-                    if stream.write(raw) != len(raw): raise OSError()
-                    stream.flush(); os.fsync(stream.fileno())
-                _check_paths(root, private, lock)
-                if _read_pending(pending) != raw: raise ValueError()
-            except BaseException as exc:
-                if not isinstance(exc, Exception):
-                    raise Interrupted('lifecycle_write_unknown') from None
-                raise Unknown('lifecycle_write_unknown') from None
+            # Serialize enrollment with every participating legacy publisher.
+            publication_lock = root / 'q4-live-publication.lock'
+            if os.path.lexists(publication_lock): pointer._chain(publication_lock)
+            with reader_slot(publication_lock, timeout_seconds=0.2):
+                if os.path.lexists(pending) or _legacy_pending(root, private):
+                    raise Unknown('lifecycle_pending_or_unknown')
+                try:
+                    _ensure_enrollment(root, binding_sha256)
+                    fd = os.open(str(pending), flags, 0o600)
+                    with os.fdopen(fd, 'wb') as stream:
+                        if stream.write(raw) != len(raw): raise OSError()
+                        stream.flush(); os.fsync(stream.fileno())
+                    _check_paths(root, private, lock)
+                    if _read_pending(pending) != raw: raise ValueError()
+                except BaseException as exc:
+                    if not isinstance(exc, Exception):
+                        raise Interrupted('lifecycle_write_unknown') from None
+                    raise Unknown('lifecycle_write_unknown') from None
             admitted = True
-            yield {'status': 'ADMITTED', 'attempt': attempt, 'binding_sha256': binding_sha256}
+            with _publication_admission(root, binding_sha256, attempt, previous_selector_sha256):
+                yield {'status': 'ADMITTED', 'attempt': attempt, 'binding_sha256': binding_sha256}
     except ReaderBusy:
         # A foreign pending record is unresolved even though this caller did
         # not reserve. A busy lock alone is a clean refusal by this caller.

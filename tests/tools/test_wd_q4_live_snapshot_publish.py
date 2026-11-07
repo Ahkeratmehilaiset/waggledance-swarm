@@ -121,6 +121,72 @@ def _cas_publish(c, **kwargs):
         candidate_sha256=c['candidate'][2], candidate=c['candidate'], p1_enabled=True, **kwargs)
 
 
+def test_enrolled_generation_rejects_unadmitted_publication(cas_case):
+    root = cas_case['root']
+    (root / 'q4-lifecycle-v2.enrolled.json').write_bytes(
+        b'{"binding_sha256":"' + b'a' * 64 + b'","schema":"wd.q4-lifecycle-enrollment.v2"}')
+    with pytest.raises(live.LiveSnapshotRefused):
+        _cas_publish(cas_case, expected_previous_selector_sha256=None)
+    assert not (root / 'q4-live-current.json').exists()
+    assert not (root / 'q4-live-publication.pending.json').exists()
+
+
+def _lifecycle_binding(root):
+    private = root.parent / (root.name + '.q4-lifecycle-private-v2')
+    private.mkdir()
+    raw = enc({'schema': 'wd.q4-lifecycle-binding.v2', 'generation_root': str(root),
+               'private_root': str(private)})
+    return raw, sha(raw)
+
+
+def test_lifecycle_admission_allows_owned_publication(cas_case):
+    from tools import wd_q4_lifecycle_v2 as lifecycle
+    raw, digest = _lifecycle_binding(cas_case['root'])
+    with lifecycle.admit(enabled=True, binding_bytes=raw, binding_sha256=digest,
+                         attempt='a' * 64, previous_selector_sha256=None):
+        result = _cas_publish(cas_case, expected_previous_selector_sha256=None)
+    assert result['status'] == 'PUBLISHED'
+    with pytest.raises(live.LiveSnapshotRefused):
+        _cas_publish(cas_case, expected_previous_selector_sha256=result['publication_sha256'])
+
+
+def test_copied_admission_is_revoked_after_exit(cas_case):
+    from contextvars import copy_context
+    from tools import wd_q4_lifecycle_v2 as lifecycle
+    raw, digest = _lifecycle_binding(cas_case['root'])
+    with lifecycle.admit(enabled=True, binding_bytes=raw, binding_sha256=digest,
+                         attempt='a' * 64, previous_selector_sha256=None):
+        copied = copy_context()
+    with pytest.raises(live.LiveSnapshotRefused):
+        copied.run(_cas_publish, cas_case, expected_previous_selector_sha256=None)
+    assert not (cas_case['root'] / 'q4-live-current.json').exists()
+
+
+@pytest.mark.parametrize('tamper', ['enrollment', 'pending', 'different_previous', 'foreign_thread'])
+def test_lifecycle_admission_refuses_foreign_or_changed_state(cas_case, tamper):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextvars import copy_context
+    from tools import wd_q4_lifecycle_v2 as lifecycle
+    root = cas_case['root']
+    raw, digest = _lifecycle_binding(root)
+    with lifecycle.admit(enabled=True, binding_bytes=raw, binding_sha256=digest,
+                         attempt='a' * 64, previous_selector_sha256=None):
+        if tamper in ('enrollment', 'pending'):
+            name = 'q4-lifecycle-v2.enrolled.json' if tamper == 'enrollment' else 'q4-lifecycle-v2.pending.json'
+            (root / name).write_bytes(b'{}')
+        expected = 'b' * 64 if tamper == 'different_previous' else None
+        def publish():
+            with pytest.raises(live.LiveSnapshotRefused):
+                _cas_publish(cas_case, expected_previous_selector_sha256=expected)
+        if tamper == 'foreign_thread':
+            context = copy_context()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(context.run, publish).result()
+        else:
+            publish()
+    assert not (root / 'q4-live-current.json').exists()
+
+
 def test_p1_requires_an_explicit_previous_selector_pin(cas_case):
     with pytest.raises(live.LiveSnapshotRefused):
         _cas_publish(cas_case)
@@ -197,6 +263,30 @@ def _hold_publication_lock(lock_path, ready, release):
     with reader_slot(lock_path, timeout_seconds=5):
         ready.set()
         release.wait(20)
+
+
+def test_lifecycle_enrollment_waits_for_legacy_publisher(cas_case):
+    import multiprocessing
+    from tools import wd_q4_lifecycle_v2 as lifecycle
+    root = cas_case['root']
+    raw, digest = _lifecycle_binding(root)
+    ctx = multiprocessing.get_context('spawn')
+    ready, release = ctx.Event(), ctx.Event()
+    child = ctx.Process(target=_hold_publication_lock,
+                        args=(str(root / 'q4-live-publication.lock'), ready, release))
+    child.start()
+    try:
+        assert ready.wait(10)
+        with pytest.raises(lifecycle.Refused):
+            with lifecycle.admit(enabled=True, binding_bytes=raw, binding_sha256=digest,
+                                 attempt='a' * 64, previous_selector_sha256=None):
+                pass
+        assert not (root / 'q4-lifecycle-v2.enrolled.json').exists()
+        assert not (root / 'q4-lifecycle-v2.pending.json').exists()
+    finally:
+        release.set()
+        child.join(10)
+    assert child.exitcode == 0
 
 
 @pytest.mark.parametrize('p1', [False, True])

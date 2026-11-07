@@ -16,6 +16,7 @@ import re
 import secrets
 
 from sandbox.mind.step2.reader_slot import reader_slot
+from tools import wd_q4_lifecycle_v2 as lifecycle
 from tools import wd_q4_descriptor_pointer as pointer_io
 from tools import wd_q4_lane_binding_producer as binding_producer
 from tools import wd_q4_lane_link as link
@@ -433,6 +434,7 @@ def publish(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline
         with reader_slot(lock, timeout_seconds=5):
             pointer_io._chain(root)
             pointer_io._chain(lock)
+            lifecycle._check_publication(root, expected_previous_selector_sha256)
             if os.path.lexists(pending):
                 raise LiveSnapshotOutcomeUnknown('live_publication_unknown')
             present = os.path.lexists(target)

@@ -6,8 +6,8 @@ from sandbox.mind.step2 import q4
 from sandbox.mind.step2.test_q4_readonly_port import FakeEncoder, fake_memory
 
 
-def engine_with_expiries(expiries):
-    memory = fake_memory(records=len(expiries))
+def engine_with_expiries(expiries, *, quarantined=False):
+    memory = fake_memory(records=len(expiries), quarantined=quarantined)
     for row in memory.views["learning"].rows:
         index = int(row["provenance"]["record"].split("-")[-1])
         expiry = expiries[index]
@@ -49,3 +49,20 @@ def test_before_expiry_and_legacy_rows_remain_eligible():
     result = engine.ask("retry network", "2026-01-01T23:59:59Z")
     assert result["status"] == "ANSWER"
     assert result["telemetry"]["candidates"] == 5
+
+
+@pytest.mark.parametrize("when, expected", [
+    ("2026-01-02T01:59:59+02:00", "ANSWER"),
+    ("2026-01-02T02:00:00+02:00", "ABSTAIN"),
+    ("2026-01-02T02:00:01+02:00", "ABSTAIN"),
+])
+def test_expiry_boundary_is_compared_in_utc(when, expected):
+    engine = engine_with_expiries(["2026-01-02T00:00:00Z"] * 5)
+    assert engine.ask("retry network", when)["status"] == expected
+
+
+def test_expired_only_with_quarantined_cell_is_degraded_and_empty():
+    engine = engine_with_expiries(["2026-01-02T00:00:00Z"] * 5, quarantined=True)
+    result = engine.ask("retry network", "2026-01-02T00:00:00Z")
+    assert result["status"] == "DEGRADED"
+    assert result["results"] == []

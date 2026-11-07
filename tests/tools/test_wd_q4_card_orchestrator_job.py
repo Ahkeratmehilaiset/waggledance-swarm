@@ -33,9 +33,20 @@ def case(tmp_path):
     bundle=tmp_path/'bundle'; code=bundle/'tools-bootstrap'/'tools'; code.mkdir(parents=True)
     shutil.copyfile(ENTRY,bundle/ENTRY.name); shutil.copyfile(JOB,bundle/JOB.name)
     bootstrap=code/'wd_q4_card_orchestrator_runtime_bootstrap.py'
+    wrapper=bundle/'Invoke-WdBridgePython.ps1'; context=bundle/'BridgeCodeContext.ps1'
+    fleet=bundle/'wd-fleet.json'; wrapper_marker=tmp_path/'synthetic-wrapper-entered'
+    context.write_text('# synthetic context\n',encoding='ascii')
+    fleet.write_bytes(raw({'bridge_python':{'executable':sys.executable}}))
+    wrapper.write_text("param([string]$Tool,[switch]$VerifyPackage,[Parameter(ValueFromRemainingArguments=$true)][string[]]$ToolArguments)\n"
+        "if ($Tool -cne 'tools/wd_q4_card_orchestrator_runtime_bootstrap.py' -or -not $VerifyPackage) { throw 'wrong-wrapper' }\n"
+        "[IO.File]::WriteAllText('"+str(wrapper_marker).replace("'","''")+"','entered')\n"
+        "& $env:WD_BRIDGE_PYTHON -S -B (Join-Path $PSScriptRoot 'tools-bootstrap\\tools\\wd_q4_card_orchestrator_runtime_bootstrap.py') @ToolArguments\n"
+        "$global:LASTEXITCODE=$LASTEXITCODE\n",encoding='ascii')
     generation=tmp_path/'generation'; (generation/'stage').mkdir(parents=True)
     pointer=generation/'stage'/'candidate-pointer.json'; pointer.write_bytes(b'synthetic')
-    bootstrap.write_text('import json,sys,os\nassert sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode\n'
+    bootstrap.write_text('import json,sys,os,subprocess\n'
+        'if not sys.flags.isolated: sys.exit(subprocess.run([sys.executable,"-I","-S","-B",__file__,*sys.argv[1:]]).returncode)\n'
+        'assert sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode\n'
         'assert "PYTHONPATH" not in os.environ\nassert os.environ["WD_REBOOT_EXPECTED_MANIFEST_HASH"] == sys.argv[sys.argv.index("--manifest-sha256")+1]\n'
         'print(json.dumps({"status":"PREPARED","pointer_path":'+repr(str(pointer))+
         ',"pointer_sha256":'+repr(sha(pointer.read_bytes()))+'},sort_keys=True,separators=(",",":")))\n',encoding='ascii')
@@ -54,7 +65,8 @@ def case(tmp_path):
         'finish':{'path':str(finish),'sha256':sha(finish.read_bytes())},'output_root':str(audit),'generation_root':str(generation)}))
     manifest=bundle/'deployment-manifest.json'
     files={ENTRY.name:sha((bundle/ENTRY.name).read_bytes()),JOB.name:sha((bundle/JOB.name).read_bytes()),
-           'tools-bootstrap/tools/'+bootstrap.name:sha(bootstrap.read_bytes())}
+           'tools-bootstrap/tools/'+bootstrap.name:sha(bootstrap.read_bytes()),
+           wrapper.name:sha(wrapper.read_bytes()),context.name:sha(context.read_bytes()),fleet.name:sha(fleet.read_bytes())}
     manifest.write_bytes(raw({'schema_version':1,'source_commit':'a'*40,'files':files}))
     runtime=tmp_path/'runtime.json'; runtime.write_bytes(raw({'schema':'wd.q4-card-orchestrator-runtime.v1',
         'bundle_root':str(bundle),'manifest_sha256':sha(manifest.read_bytes()),'interpreter_path':sys.executable,
@@ -68,15 +80,25 @@ def launch(c, *, timeout=30, bad_pin=False, scratch=None):
         '-BundleRoot',str(c['bundle']),'-ExpectedCommit','a'*40,'-ExpectedManifestSha256',sha(c['manifest'].read_bytes()),
         '-RequestPath',str(c['request']),'-ExpectedRequestSha256','0'*64 if bad_pin else sha(c['request'].read_bytes()),
         '-RuntimePath',str(c['runtime']),'-ExpectedRuntimeSha256',sha(c['runtime'].read_bytes()),
-        '-ScratchRoot',str(scratch or c['scratch']),'-ExpectedHostSha256',sha(host.read_bytes()),'-TimeoutSeconds',str(timeout)],
+        '-ScratchRoot',str(scratch or c['scratch']),'-ExpectedHostSha256',sha(host.read_bytes()),
+        '-ExpectedBridgePythonSha256',sha(Path(sys.executable).read_bytes()),'-TimeoutSeconds',str(timeout)],
         capture_output=True,text=True,timeout=60)
 
 
 def test_real_job_propagates_only_verified_candidate(case):
     result=launch(case)
     assert result.returncode==0, (result.stdout,result.stderr)
+    assert case['wrapper_marker'].exists(), 'the pinned bridge wrapper was bypassed'
     assert json.loads(result.stdout)=={'status':'PREPARED','pointer_path':str(case['pointer']),
                                       'pointer_sha256':sha(case['pointer'].read_bytes())}
+
+
+def test_job_child_does_not_change_calling_session_wrapper_pin(case,monkeypatch):
+    old=r'C:\synthetic-session-pin\Invoke-WdBridgePython.ps1'
+    monkeypatch.setenv('WD_BRIDGE_PYTHON_WRAPPER',old)
+    result=launch(case)
+    assert result.returncode==0 and case['wrapper_marker'].exists()
+    assert os.environ['WD_BRIDGE_PYTHON_WRAPPER']==old
 
 
 def test_bad_pin_and_overlapping_scratch_refuse(case):
@@ -102,7 +124,8 @@ def test_internal_worker_cannot_bypass_launcher_from_unrelated_job(case):
         '-BundleRoot',str(case['bundle']),'-ExpectedCommit','a'*40,'-ExpectedManifestSha256',sha(case['manifest'].read_bytes()),
         '-RequestPath',str(case['request']),'-ExpectedRequestSha256',sha(case['request'].read_bytes()),
         '-RuntimePath',str(case['runtime']),'-ExpectedRuntimeSha256',sha(case['runtime'].read_bytes()),
-        '-ScratchRoot',str(case['bundle']),'-ExpectedHostSha256',sha(host.read_bytes()),'-TimeoutSeconds','20']
+        '-ScratchRoot',str(case['bundle']),'-ExpectedHostSha256',sha(host.read_bytes()),
+        '-ExpectedBridgePythonSha256',sha(Path(sys.executable).read_bytes()),'-TimeoutSeconds','20']
     quote=lambda s:"'"+str(s).replace("'","''")+"'"
     ps=". "+quote(case['bundle']/JOB.name)+"\n"
     ps+=("$r=Invoke-WdQ4ProcessJob -Executable "+quote(host)+" -Arguments @("+','.join(map(quote,args))+
@@ -240,3 +263,63 @@ def test_timeout_stops_synthetic_owned_child_and_returns_unknown(case):
             assert kernel.WaitForSingleObject(handle,5000)==0, 'observed PID still running'
         finally:
             kernel.CloseHandle(handle)
+
+
+@pytest.mark.parametrize('fault',[None,'entrypoint_missing','code_tampered'])
+def test_job_uses_actual_packaged_bridge_wrapper_and_bootstrap(case,tmp_path,fault):
+    from tests.tools.test_wd_bridge_code_context import _stage_fake_bundle, PWSH, HAS_BRIDGE_PYTHON
+    from sandbox.mind.step2 import runtime_builder
+    if PWSH is None or not HAS_BRIDGE_PYTHON:
+        pytest.skip('pinned bridge interpreter unavailable')
+    relative='tools/wd_q4_card_orchestrator_runtime_bootstrap.py'
+    bundle=_stage_fake_bundle(tmp_path/'staged', real_files=(relative,'tools/wd_q4_live_update_bootstrap.py',
+        'sandbox/mind/step2/runtime_manifest.py','tools/wd_q4_card_audit_orchestrator.py'),
+        real_entrypoints={'q4_card_orchestrator_runtime':relative})
+    shutil.copyfile(ENTRY,bundle/ENTRY.name); shutil.copyfile(JOB,bundle/JOB.name)
+    marker=tmp_path/'actual-wrapper-cli-entered'
+    fake_cli=bundle/'tools-bootstrap/tools/wd_q4_card_audit_orchestrator.py'
+    fake_cli.write_text('import json\ndef main(args):\n open('+repr(str(marker))+',"w").write("entered")\n'
+        ' print(json.dumps({"status":"PREPARED","pointer_path":'+repr(str(case['pointer']))+',"pointer_sha256":'+
+        repr(sha(case['pointer'].read_bytes()))+'},sort_keys=True,separators=(",",":")))\n return 0\n',encoding='ascii')
+    manifest_path=bundle/'deployment-manifest.json'; manifest=json.loads(manifest_path.read_bytes())
+    manifest['source_commit']='a'*40
+    for path,relative_path in ((bundle/ENTRY.name,ENTRY.name),(bundle/JOB.name,JOB.name),
+                               (fake_cli,'tools-bootstrap/tools/wd_q4_card_audit_orchestrator.py')):
+        manifest['files'][relative_path]=sha(path.read_bytes()).upper()
+    if fault=='entrypoint_missing':
+        definition_path=bundle/'bridge-code-files.json'; definition=json.loads(definition_path.read_bytes())
+        definition['python_entrypoints'].pop('q4_card_orchestrator_runtime')
+        definition_path.write_bytes(raw(definition))
+        manifest['files']['bridge-code-files.json']=sha(definition_path.read_bytes()).upper()
+    manifest_path.write_bytes(raw(manifest))
+    if fault=='code_tampered':
+        fake_cli.write_bytes(fake_cli.read_bytes()+b'\n# unpinned synthetic mutation\n')
+    runtime_root=case['runtime_root']
+    for name in ('assets/code','site','model'): (runtime_root/name).mkdir(parents=True)
+    (runtime_root/'assets/code/stub').write_bytes(b'code')
+    (runtime_root/'site/stub').write_bytes(b'site')
+    (runtime_root/'model/stub').write_bytes(b'model')
+    runtime_manifest=tmp_path/'runtime-manifest.json'
+    built=runtime_builder.build_runtime_manifest(runtime_root,runtime_manifest,generation='a'*40,revision='b'*40)
+    snapshot=json.loads(case['snapshot'].read_bytes()); snapshot['trusted_model_root']=str(runtime_root/'model')
+    case['snapshot'].write_bytes(raw(snapshot))
+    finish=json.loads(case['finish'].read_bytes())
+    finish['composer_options'].update(bundle_store_root=str(bundle),active_bundle_root=str(bundle))
+    case['finish'].write_bytes(raw(finish))
+    request=json.loads(case['request'].read_bytes())
+    request['snapshot_template']['sha256']=sha(case['snapshot'].read_bytes())
+    request['finish']['sha256']=sha(case['finish'].read_bytes()); case['request'].write_bytes(raw(request))
+    verifier=bundle/'tools-bootstrap/sandbox/mind/step2/runtime_manifest.py'
+    runtime={'schema':'wd.q4-card-orchestrator-runtime.v1','bundle_root':str(bundle),
+        'manifest_sha256':sha(manifest_path.read_bytes()),'interpreter_path':sys.executable,
+        'interpreter_sha256':sha(Path(sys.executable).read_bytes()),'runtime_root':str(runtime_root),
+        'runtime_manifest_path':str(runtime_manifest),'runtime_manifest_sha256':built['manifest_sha256'],
+        'runtime_generation':'a'*40,'runtime_revision':'b'*40,'verifier_sha256':sha(verifier.read_bytes())}
+    case['runtime'].write_bytes(raw(runtime)); case['bundle']=bundle; case['manifest']=manifest_path
+    result=launch(case,timeout=45)
+    if fault:
+        assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+        assert not marker.exists()
+        return
+    assert result.returncode==0, (result.stdout,result.stderr)
+    assert marker.exists() and json.loads(result.stdout)['status']=='PREPARED'

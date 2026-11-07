@@ -5,14 +5,28 @@ model pins, and never selects an arbitrary module. A verified candidate is not
 activation or source authentication. After entry uncertainty is UNKNOWN.
 External bounded Job containment is a separate responsibility.
 """
+import sys
+import os
+
+# The pinned bridge wrapper runs -S -B. Remove all inherited import paths
+# before importing other modules; the isolated child repeats every check.
+if not sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode:
+    _base = os.path.normcase(os.path.abspath(sys.base_prefix))
+    def _stdlib_only(value):
+        try:
+            if not value: return False
+            full = os.path.normcase(os.path.abspath(value))
+            return os.path.commonpath((_base, full)) == _base and 'site-packages' not in full.lower()
+        except (OSError, ValueError): return False
+    sys.path[:] = [value for value in sys.path if _stdlib_only(value)]
+
 import hashlib
 import hmac
 import json
-import os
 from pathlib import Path
 import re
 import stat
-import sys
+import subprocess
 
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
 _KEYS = frozenset({'schema', 'bundle_root', 'manifest_sha256', 'interpreter_path', 'interpreter_sha256',
@@ -92,7 +106,7 @@ def _answer(raw, request):
 
 def _bootstrap(args):
     if (not sys.flags.isolated or not sys.flags.no_site or not sys.dont_write_bytecode or len(args) != 11
-            or args[0] != '--enable' or args[1] != '--request' or args[3] != '--request-sha256'
+            or args[0] not in ('--enable', '--child') or args[1] != '--request' or args[3] != '--request-sha256'
             or args[5] != '--manifest-sha256' or args[7] != '--runtime' or args[9] != '--runtime-sha256'):
         raise ValueError()
     request_path, request_pin, manifest_pin, runtime_path, runtime_pin = args[2], args[4], args[6], args[8], args[10]
@@ -174,11 +188,44 @@ def _bootstrap(args):
     return 0
 
 
+def _relay(args):
+    """Bridge-wrapper parent: no model import, no interpreter or pin substitution."""
+    started = False
+    try:
+        if (not sys.flags.no_site or not sys.dont_write_bytecode or len(args) != 11
+                or args[0] != '--enable' or args[1] != '--request' or args[3] != '--request-sha256'
+                or args[5] != '--manifest-sha256' or args[7] != '--runtime' or args[9] != '--runtime-sha256'):
+            raise ValueError()
+        request = _doc(_read(args[2], args[4], _REQUEST_LIMIT))
+        runtime = _doc(_read(args[8], args[10], 65536))
+        if (set(runtime) != _KEYS or runtime['schema'] != _RUNTIME_SCHEMA
+                or request.get('schema') != _REQUEST_SCHEMA or runtime['manifest_sha256'] != args[6]
+                or os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower() != args[6]):
+            raise ValueError()
+        bundle = _readable_path(runtime['bundle_root'])
+        manifest = _doc(_read(bundle / 'deployment-manifest.json', args[6], 4 * 1024 * 1024))
+        if manifest.get('schema_version') != 1 or type(manifest.get('files')) is not dict: raise ValueError()
+        own = bundle / _SELF
+        if not os.path.samefile(_readable_path(__file__), own): raise ValueError()
+        _read(own, str(manifest['files'][_SELF]).lower(), 1024 * 1024)
+        interpreter = _readable_path(runtime['interpreter_path'])
+        _read(interpreter, runtime['interpreter_sha256'], 128 * 1024 * 1024)
+        child = ['--child'] + args[1:]
+        started = True
+        result = subprocess.run([str(interpreter), '-I', '-S', '-B', str(own), *child], check=False)
+        return result.returncode if result.returncode in (0, 2, 3) else 3
+    except BaseException:
+        print('{"status":"UNKNOWN"}' if started else _REFUSED, end='\n' if started else '')
+        return 3 if started else 2
+
+
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         print('{"status":"OFF"}')
         return 0
+    if not sys.flags.isolated:
+        return _relay(args)
     try:
         return _bootstrap(args)
     except _OutcomeUnknown:

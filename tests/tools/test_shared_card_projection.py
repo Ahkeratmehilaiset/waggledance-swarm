@@ -472,11 +472,28 @@ def test_ask_answers_in_the_resolved_transport_shape_with_status_and_coverage(bu
     assert blocked
 
 
-def test_ask_reports_stale_after_until(built):
+def test_ask_abstains_when_all_cards_have_expired(built):
     answer = scp.ask_shared_cards(built['dir'], built['memory_sha256'], Encoder(),
                                   'blocked red mind genesis needs operator disk', '2026-11-05T00:00:00Z',
                                   enabled=True)
-    assert answer['results'] and {i['card_status'] for i in answer['results']} == {'STALE'}
+    assert answer['status'] == 'ABSTAIN' and answer['results'] == []
+
+
+def test_built_card_memory_answers_only_current_cards_in_mixed_corpus(tmp_path):
+    events = corpus()
+    for event in events[2:]:
+        event['payload']['public_knowledge']['valid_until_utc'] = '2026-11-07T10:00:00Z'
+    projection = project(events)
+    root = tmp_path / 'out'
+    root.mkdir()
+    built = scp.build_shared_card_memory(projection, encode, IDENTITY, DIM, root, 'mixed', enabled=True)
+    answer = scp.ask_shared_cards(root / 'mixed', built['memory_sha256'], Encoder(),
+                                  'mind synthetic red', '2026-11-05T00:00:00Z', enabled=True)
+    assert answer['status'] == 'ANSWER' and answer['results']
+    assert {item['card_status'] for item in answer['results']} == {'CURRENT'}
+    stale_refs = {sha(record['provenance']['event_ref'].encode()) for record in projection['records']
+                  if scp.card_status(record['stored_text'], '2026-11-05T00:00:00Z') == 'STALE'}
+    assert stale_refs and all(item['ref_sha256'] not in stale_refs for item in answer['results'])
 
 
 def test_abstain_before_any_card_still_reports_coverage(built):

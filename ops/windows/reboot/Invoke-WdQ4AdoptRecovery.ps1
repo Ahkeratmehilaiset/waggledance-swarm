@@ -208,6 +208,12 @@ public static class WdQ4AdoptPendingV1 {
     $lines=@($text.TrimEnd("`r","`n"))
     if ($lines.Count -ne 1 -or ([string]$lines[0]).Length -gt 256) { throw 'output' }
     $answer=[string]$lines[0] | ConvertFrom-Json -ErrorAction Stop
+    # A fixed bootstrap returns this only when no parent reservation was made.
+    # Do not touch a potentially foreign attempt marker in this case.
+    if ($code -eq 2 -and @($answer.PSObject.Properties.Name).Count -eq 1 -and
+        [string]$answer.status -ceq 'REFUSED') {
+        [Console]::Out.WriteLine('{"status":"REFUSED"}'); exit 2
+    }
     } else {
         # Explicit continuation of an already drained Job; never start a child.
         $started=$true
@@ -225,7 +231,7 @@ public static class WdQ4AdoptPendingV1 {
     $keys=@($answer.PSObject.Properties.Name)
     if ($code -ne 0 -or $keys.Count -ne 4 -or
         @('status','attempt','marker_id','marker_sha256').Where({ $_ -cnotin $keys }).Count -ne 0 -or
-        [string]$answer.status -cnotin @('ADOPTED','NOT_ADOPTED','NOT_NEEDED') -or
+        [string]$answer.status -cnotin @('ADOPTED','NOT_ADOPTED','NOT_NEEDED','REFUSED') -or
         [string]$answer.attempt -cnotmatch '^[0-9a-f]{64}$' -or
         [string]$answer.marker_id -cnotmatch '^[0-9a-f]{48}$' -or
         [string]$answer.marker_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'uncertain result' }
@@ -322,6 +328,7 @@ public static class WdQ4AdoptPendingV1 {
         }
     }
     [Console]::Out.WriteLine((@{ status=[string]$answer.status } | ConvertTo-Json -Compress))
+    if ([string]$answer.status -ceq 'REFUSED') { exit 2 }
     exit $code
 } catch {
     if ($started) { [Console]::Out.WriteLine('{"status":"UNKNOWN"}'); exit 3 }

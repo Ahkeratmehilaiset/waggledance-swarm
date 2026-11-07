@@ -19,6 +19,22 @@ import shutil
 import sys
 import time
 import pytest
+from tests.tools.test_wd_q4_adopt_recovery_job_e2e import prepared, launch, _available
+from tools import wd_q4_owned_recovery_parent, wd_q4_owned_recovery_reader
+
+@pytest.mark.skipif(not _available(os.environ,sys.platform),reason='explicit synthetic Windows native-runtime opt-in required')
+def test_real_job_finishes_proven_early_refusal(prepared):
+    case,runtime,args=prepared
+    import base64
+    tup=json.loads(args['genesis_tuple_bytes'])
+    route=json.loads(base64.b64decode(tup['route']['bytes_b64']))
+    private=Path(route['private_state_root'])
+    baseline=Path(args['baseline_path']); baseline.write_bytes(baseline.read_bytes()+b' ')
+    result=launch(case,runtime,args)
+    assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
+    assert not (private/'q4-adopt-recovery-job.pending.json').exists()
+    receipt,=private.glob('q4-adopt-recovery-job-result-*.json')
+    assert json.loads(receipt.read_bytes())['job_cleanup']=='confirmed'
 
 _spec=importlib.util.spec_from_file_location('continuation_job_fixture',Path(__file__).with_name('test_wd_q4_continuation_runtime_bootstrap.py'))
 _existing=importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_existing)
@@ -141,6 +157,15 @@ def test_wrong_parent_marker_identity_or_digest_stays_unknown(job,field):
     assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
     assert (private/'q4-adopt-recovery-job.pending.json').is_file()
     assert not list(private.glob('q4-adopt-recovery-job-result-*.json'))
+
+def test_confirmed_no_mutation_refusal_finishes_owned_marker(job):
+    prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
+    parent_behavior(job,"return {'status':'REFUSED', **owner.descriptor()}")
+    result=run_job(job,scratch); private=job['bundle'].parent/'private'
+    assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
+    assert not (private/'q4-adopt-recovery-job.pending.json').exists()
+    receipt,=private.glob('q4-adopt-recovery-job-result-*.json')
+    assert json.loads(receipt.read_bytes())['job_cleanup']=='confirmed'
 
 
 def test_mismatched_worker_host_pin_refuses_before_parent_reservation(job):
@@ -370,5 +395,5 @@ def test_each_owner_lock_blocks_recovery_before_job_marker(job,name):
     private=job['bundle'].parent/'private'
     with reader_slot(private/name,timeout_seconds=1):
         result=run_job(job,scratch)
-    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
     assert not (private/'q4-adopt-recovery-job.pending.json').exists()

@@ -168,18 +168,21 @@ def _bootstrap(args):
             genesis_tuple_bytes=tuple_raw, genesis_tuple_sha256=config['tuple_sha256'],
             receipt_bytes=receipt_raw, receipt_sha256=config['receipt_sha256'],
             owner_pins=owner_pins, reader_sha256=reader_pin)
+    except module.OwnerRefused:
+        print('{"status":"REFUSED"}')
+        return 2
+    except BaseException:
+        raise _OutcomeUnknown() from None
+    try:
         scope['_check_project_origins'](code)
         if (set(answer) != {'status', 'attempt', 'marker_id', 'marker_sha256'} or
                 answer['status'] not in ('ADOPTED', 'NOT_ADOPTED', 'NOT_NEEDED', 'REFUSED') or
                 not _HEX.fullmatch(answer['attempt']) or not _HEX.fullmatch(answer['marker_sha256']) or
                 re.fullmatch(r'[0-9a-f]{48}', answer['marker_id']) is None):
             raise ValueError()
-    except module.OwnerRefused:
-        print('{"status":"REFUSED"}')
-        return 2
+        print(json.dumps(answer, sort_keys=True, separators=(',', ':')))
     except BaseException:
         raise _OutcomeUnknown() from None
-    print(json.dumps(answer, sort_keys=True, separators=(',', ':')))
     return 0
 
 

@@ -36,6 +36,38 @@ def test_real_job_finishes_proven_early_refusal(prepared):
     receipt,=private.glob('q4-adopt-recovery-job-result-*.json')
     assert json.loads(receipt.read_bytes())['job_cleanup']=='confirmed'
 
+@pytest.mark.skipif(not _available(os.environ,sys.platform),reason='explicit synthetic Windows native-runtime opt-in required')
+def test_stdout_error_after_real_f3_mutation_is_unknown(tmp_path,monkeypatch,capsys):
+    from tests.tools.test_wd_q4_continuation_adopt_recovery import paths
+    from tools import wd_q4_continuation_adopt as adopt
+    original_copy=shutil.copyfile
+    def patched_copy(src,dst,*args,**kwargs):
+        result=original_copy(src,dst,*args,**kwargs)
+        if Path(src).name=='wd_q4_continuation_adopt_recovery_bootstrap.py':
+            path=Path(dst); source=path.read_text(encoding='utf-8')
+            needle="print(json.dumps(answer, sort_keys=True, separators=(',', ':')))"
+            assert source.count(needle)==1
+            source=source.replace(needle,'_synthetic_emit(answer)')
+            source=source.replace("if __name__ == '__main__':", "def _synthetic_emit(_answer):\n    raise OSError('synthetic stdout error')\n\nif __name__ == '__main__':")
+            path.write_text(source,encoding='utf-8')
+        return result
+    with monkeypatch.context() as scoped:
+        scoped.setattr(shutil,'copyfile',patched_copy)
+        case,runtime,args=prepared.__wrapped__(tmp_path,monkeypatch,capsys)
+    private,generation=paths(args); original=adopt.update._publish
+    def interrupted(*a,**kw):
+        original(*a,**kw)
+        raise KeyboardInterrupt()
+    with monkeypatch.context() as scoped:
+        scoped.setattr(adopt.update,'_publish',interrupted)
+        with pytest.raises(adopt.AdoptInterrupted): adopt.run_once(**args)
+    adoption=private/'q4-continuation-adopt.pending.json'
+    assert adoption.exists() and generation.is_dir()
+    result=launch(case,runtime,args)
+    assert not adoption.exists(), 'the real F3 mutation must happen before the synthetic error'
+    assert (private/'q4-adopt-recovery-job.pending.json').exists()
+    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+
 _spec=importlib.util.spec_from_file_location('continuation_job_fixture',Path(__file__).with_name('test_wd_q4_continuation_runtime_bootstrap.py'))
 _existing=importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_existing)
 candidate=_existing.candidate

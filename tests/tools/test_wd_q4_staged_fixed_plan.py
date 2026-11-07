@@ -35,6 +35,9 @@ def test_plan_is_closed_and_no_code_argument(plan):
     ('host_sha256', 'A'*64), ('bundle_commit', 'c'*39),
     ('wrapper_path', r'C:\foreign\Invoke-WdQ4Query.ps1'),
     ('public_plan_path', 'relative.json'),
+    ('bundle_root', r'C:\fixture\bundle\..\bundle'),
+    ('public_plan_path', r'C:\fixture\public.json:stream'),
+    ('public_plan_path', r'\\server\share\public.json'),
 ])
 def test_invalid_pin_or_path_is_refused(plan, key, value):
     plan[key] = value

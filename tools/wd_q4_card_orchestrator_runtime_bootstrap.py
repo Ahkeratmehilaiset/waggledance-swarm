@@ -139,11 +139,21 @@ def _job_token(args, *, consume):
         if _read(used,token_pin,4096)!=raw: raise _OutcomeUnknown()
 
 
-def _answer(raw, request):
+def _expected_pointer(request, finish):
+    options = finish.get('composer_options')
+    if type(options) is not dict: raise ValueError()
+    if 'shared_stage_root' in options:
+        generation = options.get('generation')
+        if type(generation) is not str or re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', generation) is None:
+            raise ValueError()
+        return _readable_path(options['shared_stage_root']) / ('candidate-pointer-' + generation + '.json')
+    return _readable_path(request['generation_root']) / 'stage' / 'candidate-pointer.json'
+
+
+def _answer(raw, expected):
     if not 0 < len(raw) <= 4096 or raw.count(b'\n') != 1 or not raw.endswith(b'\n'):
         raise ValueError()
     answer = _doc(raw)
-    expected = _readable_path(request['generation_root']) / 'stage' / 'candidate-pointer.json'
     if (set(answer) != _ANSWER_KEYS or answer['status'] != 'PREPARED'
             or type(answer['pointer_path']) is not str or answer['pointer_path'] != str(expected)
             or type(answer['pointer_sha256']) is not str or not _HEX.fullmatch(answer['pointer_sha256'])):
@@ -162,12 +172,17 @@ def _bootstrap(args):
     request = _doc(request_raw)
     if (set(request) != {'schema','decision','snapshot_template','output_root','finish','generation_root'}
             or type(request['snapshot_template']) is not dict
-            or set(request['snapshot_template']) != {'path','sha256'}):
+            or set(request['snapshot_template']) != {'path','sha256'}
+            or type(request['finish']) is not dict or set(request['finish']) != {'path','sha256'}):
         raise ValueError()
     snapshot_spec = request['snapshot_template']
     snapshot_raw = _read(snapshot_spec['path'], snapshot_spec['sha256'], _REQUEST_LIMIT)
     snapshot = _doc(snapshot_raw)
     if snapshot.get('schema') != 'wd.q4-real-card-snapshot-request.v1': raise ValueError()
+    finish_spec = request['finish']
+    finish_raw = _read(finish_spec['path'], finish_spec['sha256'], _REQUEST_LIMIT)
+    finish = _doc(finish_raw)
+    expected_pointer = _expected_pointer(request, finish)
     runtime = _doc(_read(runtime_path, runtime_pin, 65536))
     if (set(runtime) != _KEYS or runtime['schema'] != _RUNTIME_SCHEMA or request.get('schema') != _REQUEST_SCHEMA
             or type(manifest_pin) is not str or not _HEX.fullmatch(manifest_pin)
@@ -226,10 +241,12 @@ def _bootstrap(args):
             return 2
         if type(result) is not int or result != 0 or err != b'':
             raise ValueError()
-        answer = _answer(out, request)
+        answer = _answer(out, expected_pointer)
         if _read(request_path, request_pin, _REQUEST_LIMIT) != request_raw:
             raise ValueError()
         if _read(snapshot_spec['path'], snapshot_spec['sha256'], _REQUEST_LIMIT) != snapshot_raw:
+            raise ValueError()
+        if _read(finish_spec['path'], finish_spec['sha256'], _REQUEST_LIMIT) != finish_raw:
             raise ValueError()
     except Exception:
         raise _OutcomeUnknown() from None

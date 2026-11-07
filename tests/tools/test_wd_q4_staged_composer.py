@@ -633,3 +633,57 @@ def test_shared_stage_public_plan_tamper_is_incomplete_without_a_pointer(shared_
     with pytest.raises(staged.ComposeIncomplete):
         _shared(shared_case, _GEN_B)
     assert not (Path(shared_case['stage_dir']) / ('candidate-pointer-' + _GEN_B + '.json')).exists()
+
+
+# --- IM6: the actual live selector over the shared root: compose, publish, compose, publish -------------------
+# Baseline B is composed in shared mode; candidates C and D are composed into the same root and published with the
+# real selector and the real lane caller loader. Only the loader's read of the synthetic interpreter (pinned to a
+# placeholder digest by the fixture, no file on disk) is answered by a stub; every other read is real.
+
+def test_real_selector_compose_publish_compose_publish_keeps_earlier_generations(shared_case, monkeypatch):
+    from tools import wd_q4_lane_caller_cli as caller
+    from tools import wd_q4_live_snapshot_publish as live
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', shared_case['expected_manifest_sha256'])
+    real_read = caller._read
+    interpreter = shared_case['descriptor_options']['interpreter']
+
+    def read(path, limit, pin=None):
+        return b'' if str(path) == interpreter else real_read(path, limit, pin)
+    monkeypatch.setattr(caller, '_read', read)
+    stage = Path(shared_case['stage_dir'])
+    card_pointer = Path(json.loads(Path(shared_case['public_plan_path']).read_bytes())['pointer_path'])
+    card_pointer_bytes = card_pointer.read_bytes()
+    generations = {}
+    for gen in ('b' * 40, 'c' * 40):
+        result = _shared(shared_case, gen)
+        generations[gen] = (result['descriptor_path'], result['descriptor_sha256'])
+    base_path, base_pin = generations['b' * 40]
+    baseline = caller._configuration(base_path, base_pin)
+
+    def publish(gen):
+        path, pin = generations[gen]
+        return live.publish(enabled=True, baseline_path=base_path, baseline_sha256=base_pin, baseline=baseline,
+                            manifest_sha256=shared_case['expected_manifest_sha256'], candidate_path=path,
+                            candidate_sha256=pin, candidate=caller._configuration(path, pin))
+    assert publish('c' * 40)['status'] == 'PUBLISHED'
+    publication = stage / 'q4-live-current.json'
+    assert json.loads(publication.read_bytes())['generation'] == 'c' * 40
+    before = _snapshot(stage)
+    result = _shared(shared_case, 'd' * 40)  # IM1: the publication in the root does not block the next generation
+    generations['d' * 40] = (result['descriptor_path'], result['descriptor_sha256'])
+    assert publish('d' * 40)['status'] == 'PUBLISHED'
+    after = _snapshot(stage)
+    assert {key: after[key] for key in before if key != 'q4-live-current.json'} == {
+        key: value for key, value in before.items() if key != 'q4-live-current.json'}
+    assert {name for name in after if name.startswith('candidate-pointer-')} == {
+        'candidate-pointer-' + gen + '.json' for gen in ('b' * 40, 'c' * 40, 'd' * 40)}
+    for gen in ('c' * 40, 'd' * 40):
+        assert after[str(Path(gen) / 'public-plan.json')] == Path(shared_case['public_plan_path']).read_bytes()
+    assert card_pointer.read_bytes() == card_pointer_bytes  # the old card snapshot pointer persists
+
+    def loader(path, pin):
+        return caller._configuration(path, pin)
+    selected = live.select(enabled=True, baseline_path=base_path, baseline_sha256=base_pin, baseline=baseline,
+                           manifest_sha256=shared_case['expected_manifest_sha256'], load_configuration=loader)
+    assert selected['status'] == 'SELECTED'
+    assert Path(selected['configuration'][0]['public_plan']) == stage / ('d' * 40) / 'public-plan.json'

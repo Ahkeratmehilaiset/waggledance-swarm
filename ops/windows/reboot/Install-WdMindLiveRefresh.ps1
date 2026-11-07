@@ -77,6 +77,17 @@ function Assert-LiveDisjoint([string] $Left, [string] $Right) {
         $a.StartsWith($b + '\', [StringComparison]::OrdinalIgnoreCase) -or
         $b.StartsWith($a + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Scratch overlaps a protected path.' }
 }
+function Assert-LiveSpec([object] $Spec) {
+    if ($null -eq $Spec -or @($Spec.PSObject.Properties.Name).Count -ne 2 -or
+        @($Spec.PSObject.Properties.Name) -cnotcontains 'path' -or
+        @($Spec.PSObject.Properties.Name) -cnotcontains 'sha256' -or
+        [string]$Spec.sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'Malformed pinned file.' }
+    $path = Assert-LivePath ([string]$Spec.path)
+    if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -cne ([string]$Spec.sha256).ToUpperInvariant()) {
+        throw 'Pinned file hash mismatch.'
+    }
+    return $path
+}
 
 $bundle = Assert-LivePath $BundleRoot -Directory
 $stateFile = Assert-LivePath $StatePath
@@ -136,11 +147,63 @@ if ((Get-FileHash -LiteralPath $routeFile -Algorithm SHA256).Hash -cne ([string]
     throw 'Route pin mismatch.'
 }
 $route = Get-Content -LiteralPath $routeFile -Raw -Encoding UTF8 | ConvertFrom-Json
-$privateRoot = Assert-LivePath ([string]$route.private_state_root) -Directory
-$checkpointRoot = Assert-LivePath ([string]$route.checkpoint_root) -Directory
-$modelRoot = Assert-LivePath ([string]$route.trusted_model_root) -Directory
-$sourceFile = Assert-LivePath ([string]$route.source)
-$sidecarFile = Assert-LivePath ([string]$route.generation_path)
+$routeSchema = if ($null -ne $route.PSObject.Properties['schema']) { [string]$route.schema } else { '' }
+if ($routeSchema -ceq 'wd.q4-card-refresh-tuple.v1') { throw 'Card refresh requires lifecycle v2.' }
+$isCard = $routeSchema -ceq 'wd.q4-card-refresh-tuple.v2'
+if ($isCard) {
+    if ([string]$config.schema -cne 'wd.q4-live-update-once.v2' -or $route.p1_enabled -isnot [bool] -or
+        $route.p1_enabled -cne $true -or [string]$route.manifest_sha256 -cne $manifestHash.ToLowerInvariant()) {
+        throw 'Card route policy mismatch.'
+    }
+    $routeBaseline = Assert-LiveSpec $route.baseline
+    $candidateFile = Assert-LiveSpec $route.candidate
+    $lifecycleFile = Assert-LiveSpec $route.lifecycle
+    $jobFile = Assert-LiveSpec $route.job
+    $returnFile = Assert-LiveSpec $route.job_return.stdout
+    if ($route.job_return.exit_code -isnot [int] -or $route.job_return.exit_code -ne 0 -or
+        -not [string]::Equals($routeBaseline, $baselineFile, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$route.baseline.sha256 -cne [string]$config.baseline_sha256) { throw 'Card route baseline or job mismatch.' }
+    $checkpointRoot = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($baselineFile))
+    if (-not [string]::Equals([IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($candidateFile)),
+            $checkpointRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Card candidate root mismatch.' }
+    $checkpointRoot = Assert-LivePath $checkpointRoot -Directory
+    $privateRoot = Assert-LivePath ([string]$route.private_root) -Directory
+    $lifecycle = Get-Content -LiteralPath $lifecycleFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    $requiredBinding = @('schema','generation_root','private_root')
+    if (@($lifecycle.PSObject.Properties.Name).Count -ne $requiredBinding.Count -or
+        @($requiredBinding | Where-Object { @($lifecycle.PSObject.Properties.Name) -cnotcontains $_ }).Count -ne 0 -or
+        [string]$lifecycle.schema -cne 'wd.q4-lifecycle-binding.v2' -or
+        -not [string]::Equals([string]$lifecycle.generation_root, $checkpointRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$lifecycle.private_root, $privateRoot, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($privateRoot, ($checkpointRoot + '.q4-lifecycle-private-v2'), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Lifecycle binding mismatch.'
+    }
+    $sourceFile = Assert-LivePath ([string]$route.source.path)
+    $sidecarFile = Assert-LivePath ([string]$route.source.generation_path)
+    if ([string]$route.source.generation_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        (Get-FileHash -LiteralPath $sidecarFile -Algorithm SHA256).Hash -cne
+            ([string]$route.source.generation_sha256).ToUpperInvariant()) { throw 'Source generation pin mismatch.' }
+    $modelRoot = $runtimeRoot
+    $marker = Join-Path $privateRoot 'q4-card-refresh.pending.json'
+    $pendingPaths = @($marker, (Join-Path $checkpointRoot 'q4-lifecycle-v2.pending.json'),
+        (Join-Path $checkpointRoot 'q4-live-publication.pending.json'))
+    foreach ($name in @('q4-live-update.pending.json','q4-continuation-adopt.pending.json',
+            'q4-adopt-recovery-job.pending.json','prefix-private-state.pending',
+            '.wd-q4-status-prefix-runner.pending','q4-cutoff.pending.json',
+            'q4-continuation-orchestrator.pending.json','q4-continuation-orchestrator-job.pending.json')) {
+        $pendingPaths += Join-Path $privateRoot $name
+    }
+    $pendingPaths += Join-Path $checkpointRoot 'q4-prefix-fence.json'
+    $pendingPaths += Join-Path $checkpointRoot '.wd-q4-status-prefix-runner.pending'
+} else {
+    $privateRoot = Assert-LivePath ([string]$route.private_state_root) -Directory
+    $checkpointRoot = Assert-LivePath ([string]$route.checkpoint_root) -Directory
+    $modelRoot = Assert-LivePath ([string]$route.trusted_model_root) -Directory
+    $sourceFile = Assert-LivePath ([string]$route.source)
+    $sidecarFile = Assert-LivePath ([string]$route.generation_path)
+    $marker = Join-Path $privateRoot 'q4-live-update.pending.json'
+    $pendingPaths = @($marker)
+}
 foreach ($protected in @($bundle, $runtimeRoot, $privateRoot, $checkpointRoot, $modelRoot,
         [IO.Path]::GetDirectoryName($interpreter), [IO.Path]::GetDirectoryName($sourceFile),
         [IO.Path]::GetDirectoryName($sidecarFile), [IO.Path]::GetDirectoryName($configFile),
@@ -148,8 +211,9 @@ foreach ($protected in @($bundle, $runtimeRoot, $privateRoot, $checkpointRoot, $
         [IO.Path]::GetDirectoryName($runtimeManifest), [IO.Path]::GetDirectoryName($routeFile))) {
     Assert-LiveDisjoint $scratch $protected
 }
-$marker = Join-Path $privateRoot 'q4-live-update.pending.json'
-if (Test-Path -LiteralPath $marker) { throw 'An uncertain attempt requires reconciliation.' }
+foreach ($pending in $pendingPaths) {
+    if (Test-Path -LiteralPath $pending) { throw 'An uncertain attempt requires reconciliation.' }
+}
 
 # All substituted values are single-quoted data. Execution checks state and
 # all pins again; this remains a hash-then-execute TOCTOU boundary.
@@ -162,13 +226,14 @@ if ([string]$state.source_commit -cne %COMMIT% -or [string]$state.final_commit -
     -not [string]::Equals([string]$state.active_bundle, %BUNDLE%, [StringComparison]::OrdinalIgnoreCase) -or
     (Get-FileHash -LiteralPath %MANIFEST% -Algorithm SHA256).Hash -cne %MANIFEST_HASH% -or
     (Get-FileHash -LiteralPath %CONFIG% -Algorithm SHA256).Hash -cne %CONFIG_HASH% -or
+    (Get-FileHash -LiteralPath %ROUTE% -Algorithm SHA256).Hash -cne %ROUTE_HASH% -or
     (Get-FileHash -LiteralPath %BASELINE% -Algorithm SHA256).Hash -cne %BASELINE_HASH% -or
     (Get-FileHash -LiteralPath %FIXED% -Algorithm SHA256).Hash -cne %FIXED_HASH% -or
     (Get-FileHash -LiteralPath %RUNTIME_MANIFEST% -Algorithm SHA256).Hash -cne %RUNTIME_HASH% -or
     (Get-FileHash -LiteralPath %PYTHON% -Algorithm SHA256).Hash -cne %PYTHON_HASH% -or
     (Get-FileHash -LiteralPath %BOOTSTRAP% -Algorithm SHA256).Hash -cne %BOOTSTRAP_HASH% -or
-    (Get-FileHash -LiteralPath %JOB% -Algorithm SHA256).Hash -cne %JOB_HASH% -or
-    (Test-Path -LiteralPath %MARKER%)) { exit 3 }
+    (Get-FileHash -LiteralPath %JOB% -Algorithm SHA256).Hash -cne %JOB_HASH%) { exit 3 }
+foreach ($pending in @(%MARKERS%)) { if (Test-Path -LiteralPath $pending) { exit 3 } }
 . %JOB%
 $random = [Security.Cryptography.RandomNumberGenerator]::Create()
 try { $bytes = New-Object byte[] 32; $random.GetBytes($bytes) } finally { $random.Dispose() }
@@ -177,7 +242,8 @@ $job = Invoke-WdQ4ProcessJob -Executable %PYTHON% -WorkingDirectory %BUNDLE% -Sc
     -Arguments @('-I','-S','-B',%BOOTSTRAP%,'--config',%CONFIG%,'--sha256',%CONFIG_HASH_LOWER%,
                  '--manifest-sha256',%MANIFEST_HASH_LOWER%,'--host-attempt',$attempt) -InputBytes ([byte[]]@()) `
     -TimeoutSeconds 1700 -MaxOutputBytes 65536 -DetailedOutcome
-if ($null -ne $job -and $job.Cleanup -ceq 'confirmed' -and (Test-Path -LiteralPath %MARKER%)) {
+# LEGACY_RECEIPT_BEGIN
+if (-not %CARD_MODE% -and $null -ne $job -and $job.Cleanup -ceq 'confirmed' -and (Test-Path -LiteralPath %MARKER%)) {
     try {
         # A completed owned Job is necessary but not sufficient to recover. This
         # receipt records only this host's observation, not writer identity or
@@ -217,10 +283,20 @@ if ($null -ne $job -and $job.Cleanup -ceq 'confirmed' -and (Test-Path -LiteralPa
         try { $stream.Write($encodedReceipt, 0, $encodedReceipt.Length); $stream.Flush($true) } finally { $stream.Dispose() }
     } catch { exit 3 }
 }
+# LEGACY_RECEIPT_END
 if ($null -eq $job -or $job.Cleanup -cne 'confirmed' -or $job.Outcome -cne 'completed' -or $job.ExitCode -ne 0) { exit 3 }
 try {
     $text = [Text.UTF8Encoding]::new($false, $true).GetString($job.Stdout)
     $receipt = $text | ConvertFrom-Json -ErrorAction Stop
+    if (%CARD_MODE%) {
+        if ([string]$receipt.status -cne 'PUBLISHED' -or
+            [string]$receipt.pointer_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [string]$receipt.descriptor_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [string]$receipt.freshness -cne 'UNKNOWN') { exit 3 }
+        @{status='PUBLISHED'; pointer_sha256=[string]$receipt.pointer_sha256;
+          descriptor_sha256=[string]$receipt.descriptor_sha256; job_cleanup='confirmed'} | ConvertTo-Json -Compress
+        exit 0
+    }
     if ([string]$receipt.status -cnotin @('PUBLISHED','NO_CHANGE') -or
         [string]$receipt.pointer_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
         [string]$receipt.receipt_sha256 -cnotmatch '^[0-9a-f]{64}$') { exit 3 }
@@ -229,8 +305,14 @@ try {
 } catch { exit 3 }
 exit 0
 '@
+if ($isCard) {
+    # The old receipt format does not apply to cards. Omit the entire block
+    # before encoding so a one-shot task remains within Windows command limits.
+    $bootstrap = [regex]::Replace($bootstrap, '(?s)# LEGACY_RECEIPT_BEGIN\r?\n.*?# LEGACY_RECEIPT_END\r?\n', '')
+}
 $values = [ordered]@{'%STATE%'=$stateFile; '%COMMIT%'=$ExpectedCommit; '%BUNDLE%'=$bundle;
     '%MANIFEST%'=$manifestFile; '%MANIFEST_HASH%'=$manifestHash; '%CONFIG%'=$configFile; '%CONFIG_HASH%'=$configHash;
+    '%ROUTE%'=$routeFile; '%ROUTE_HASH%'=([string]$config.route_sha256).ToUpperInvariant();
     '%CONFIG_HASH_LOWER%'=$configHash.ToLowerInvariant(); '%MANIFEST_HASH_LOWER%'=$manifestHash.ToLowerInvariant();
     '%BASELINE%'=$baselineFile; '%BASELINE_HASH%'=([string]$config.baseline_sha256).ToUpperInvariant();
     '%FIXED%'=$fixedFile; '%FIXED_HASH%'=$fixedHash; '%RUNTIME_MANIFEST%'=$runtimeManifest; '%RUNTIME_HASH%'=$runtimeHash;
@@ -240,7 +322,12 @@ $values = [ordered]@{'%STATE%'=$stateFile; '%COMMIT%'=$ExpectedCommit; '%BUNDLE%
     '%JOB_HASH_LOWER%'=(Get-FileHash -LiteralPath $jobHelper -Algorithm SHA256).Hash.ToLowerInvariant();
     '%SCRATCH%'=$scratch; '%MARKER%'=$marker; '%PRIVATE%'=$privateRoot}
 foreach ($key in $values.Keys) { $bootstrap = $bootstrap.Replace($key, (Literal $values[$key])) }
+$bootstrap = $bootstrap.Replace('%CARD_MODE%', $(if ($isCard) { '$true' } else { '$false' }))
+$bootstrap = $bootstrap.Replace('%MARKERS%', (($pendingPaths | ForEach-Object { Literal $_ }) -join ','))
 $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap))
+$hostPath = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+$taskArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand ' + $encoded
+if ($hostPath.Length + $taskArguments.Length + 4 -gt 32767) { throw 'Scheduled task command exceeds the Windows process limit.' }
 $taskName = 'WD-MindLiveUpdate'
 $plan = [ordered]@{schema='wd.mind-live-refresh-plan.v1'; task=$taskName; registered=[bool]$Apply; enabled=$false;
     source_commit=$ExpectedCommit; manifest_sha256=$manifestHash; config_sha256=$configHash; user_sid=$ApprovedUserSid;
@@ -249,14 +336,17 @@ $plan = [ordered]@{schema='wd.mind-live-refresh-plan.v1'; task=$taskName; regist
     job_containment='kill-on-close; owned Job only';
     python_pin_scope='python.exe only; stdlib and native DLLs not independently verified';
     supervisor='unchanged'; execution='NOT_RUN'}
+if ($isCard) { $plan['route_kind'] = 'card_v2'; $plan['trigger_kind'] = 'one_shot' }
 if (-not $Apply) { $plan | ConvertTo-Json -Compress; return }
 if (@(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object { $_.TaskName -eq $taskName }).Count) {
     throw 'Task already exists; refusing replacement.'
 }
-if (Test-Path -LiteralPath $marker) { throw 'An uncertain attempt requires reconciliation.' }
-$hostPath = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
-$action = New-ScheduledTaskAction -Execute $hostPath -Argument ('-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand ' + $encoded) -WorkingDirectory $bundle
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes($IntervalMinutes) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
+foreach ($pending in $pendingPaths) {
+    if (Test-Path -LiteralPath $pending) { throw 'An uncertain attempt requires reconciliation.' }
+}
+$action = New-ScheduledTaskAction -Execute $hostPath -Argument $taskArguments -WorkingDirectory $bundle
+$trigger = if ($isCard) { New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes($IntervalMinutes) }
+    else { New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes($IntervalMinutes) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) }
 $settings = New-ScheduledTaskSettingsSet -Disable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
 $principal = New-ScheduledTaskPrincipal -UserId $ApprovedUserSid -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal | Out-Null
@@ -269,6 +359,15 @@ if ($verified.Count -eq 1) {
         else { $verifiedSid = (New-Object Security.Principal.NTAccount($actualUser)).Translate([Security.Principal.SecurityIdentifier]).Value }
     } catch { $verifiedSid = $null }
 }
+$repetitionMismatch = $false
+if ($verified.Count -eq 1 -and @($verified[0].Triggers).Count -eq 1) {
+    if ($isCard) {
+        $repetition = $verified[0].Triggers[0].Repetition
+        $repetitionMismatch = $null -ne $repetition -and -not [string]::IsNullOrEmpty([string]$repetition.Interval)
+    } else {
+        $repetitionMismatch = [string]$verified[0].Triggers[0].Repetition.Interval -cne [string]$trigger.Repetition.Interval
+    }
+}
 if ($verified.Count -ne 1 -or $verified[0].Settings.Enabled -or
     [string]$verified[0].Settings.MultipleInstances -cne 'IgnoreNew' -or
     [string]$verified[0].Settings.ExecutionTimeLimit -cne 'PT30M' -or
@@ -279,8 +378,7 @@ if ($verified.Count -ne 1 -or $verified[0].Settings.Enabled -or
     [string]$verified[0].Actions[0].Execute -cne $hostPath -or
     [string]$verified[0].Actions[0].Arguments -cne [string]$action.Arguments -or
     [string]$verified[0].Actions[0].WorkingDirectory -cne $bundle -or
-    @($verified[0].Triggers).Count -ne 1 -or
-    [string]$verified[0].Triggers[0].Repetition.Interval -cne [string]$trigger.Repetition.Interval) {
+    @($verified[0].Triggers).Count -ne 1 -or $repetitionMismatch) {
     throw 'Task registration outcome requires manual reconciliation.'
 }
 $plan | ConvertTo-Json -Compress

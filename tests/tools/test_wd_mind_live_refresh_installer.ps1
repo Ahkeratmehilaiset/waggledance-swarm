@@ -168,6 +168,76 @@ print('{"status":"PUBLISHED","pointer_sha256":"' + 'a'*64 + '","receipt_sha256":
         $LASTEXITCODE | Should Be 3
         Test-Path -LiteralPath (Join-Path $bundle 'synthetic-invoked.txt') | Should Be $false
     }
+    It 'plans and registers a disabled one-shot card task under mocks and accepts its synthetic receipt' {
+        $badFlag=Join-Path $root 'synthetic-bad-card-receipt'
+        $badFlagLiteral=ConvertTo-Json -InputObject $badFlag -Compress
+        $bootstrapCode = 'import os,json; print(json.dumps(({"status":"PUBLISHED","pointer_sha256":"' + ('a'*64) + '","receipt_sha256":"' + ('b'*64) + '"} if os.path.isfile(' + $badFlagLiteral + ') else {"status":"PUBLISHED","pointer_sha256":"' + ('a'*64) + '","descriptor_sha256":"' + ('b'*64) + '","freshness":"UNKNOWN"})))'
+        [IO.File]::WriteAllText($bootstrap, $bootstrapCode)
+        $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+        $manifest.files.'tools-bootstrap/tools/wd_q4_live_update_bootstrap.py' = (Get-FileHash $bootstrap -Algorithm SHA256).Hash.ToLowerInvariant()
+        [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 8 -Compress))
+        $newHash = (Get-FileHash $manifestPath -Algorithm SHA256).Hash
+        $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        $state.manifest_sha256 = $newHash; $state.final_manifest_sha256 = $newHash
+        [IO.File]::WriteAllText($statePath, ($state | ConvertTo-Json -Depth 8 -Compress))
+        $shared = Join-Path $root 'card-generations'
+        $private = Join-Path $root 'card-generations.q4-lifecycle-private-v2'
+        $baseGen = Join-Path $shared ('b'*40); $candidateGen = Join-Path $shared ('c'*40)
+        New-Item -ItemType Directory -Path $baseGen,$candidateGen,$private -Force | Out-Null
+        $newBaseline = Join-Path $baseGen 'shared-session-config.v2.json'
+        [IO.File]::Copy($baselinePath, $newBaseline)
+        $candidate = Join-Path $candidateGen 'shared-session-config.v2.json'
+        [IO.File]::WriteAllText($candidate, '{}')
+        $lifecycle = Join-Path $pins 'lifecycle.json'; $cardJob = Join-Path $pins 'card-job.json'; $returnFile = Join-Path $pins 'return.json'
+        foreach ($path in @($lifecycle,$cardJob,$returnFile)) { [IO.File]::WriteAllText($path, '{}') }
+        [IO.File]::WriteAllText($lifecycle, (@{schema='wd.q4-lifecycle-binding.v2';generation_root=$shared;private_root=$private} | ConvertTo-Json -Compress))
+        $pin = { param($p) (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() }
+        $route = @{schema='wd.q4-card-refresh-tuple.v2'; p1_enabled=$true; manifest_sha256=$newHash.ToLowerInvariant();
+            baseline=@{path=$newBaseline;sha256=(& $pin $newBaseline)}; candidate=@{path=$candidate;sha256=(& $pin $candidate)};
+            previous_selector_sha256=$null;private_root=$private;job=@{path=$cardJob;sha256=(& $pin $cardJob)};
+            job_return=@{exit_code=0;stdout=@{path=$returnFile;sha256=(& $pin $returnFile)}};
+            source=@{path=$sourceFile;generation_path=$sidecar;generation_sha256=(& $pin $sidecar);file_identity='synthetic';bytes=2;sha256=(& $pin $sourceFile)};
+            lifecycle=@{path=$lifecycle;sha256=(& $pin $lifecycle)}}
+        [IO.File]::WriteAllText($routePath, ($route | ConvertTo-Json -Depth 8 -Compress))
+        $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+        $config.schema='wd.q4-live-update-once.v2'; $config.route_sha256=& $pin $routePath
+        $config.baseline_path=$newBaseline; $config.baseline_sha256=& $pin $newBaseline; $config.manifest_sha256=$newHash.ToLowerInvariant()
+        $config | Add-Member -NotePropertyName p1_enabled -NotePropertyValue $true
+        foreach ($key in @('plan_path','anchor_path','policy_path','public_policy_path')) {
+            $part=Join-Path $pins ($key+'.json');[IO.File]::WriteAllText($part,'{}')
+            $config | Add-Member -NotePropertyName $key -NotePropertyValue $part
+        }
+        [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 8 -Compress))
+        $invokeParams.ExpectedManifestSha256=$newHash; $invokeParams.ExpectedConfigSha256=(Get-FileHash $configPath -Algorithm SHA256).Hash
+        Mock Get-ScheduledTask { if ($TaskName -eq 'WD-MindLiveUpdate') { $global:wdSyntheticRegisteredTask } else { @() } }
+        Mock Register-ScheduledTask {
+            $global:wdSyntheticTaskAction=$Action
+            $global:wdSyntheticRegisteredTask=New-ScheduledTask -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal
+        }
+        Mock Start-ScheduledTask { throw 'must not start' }
+        Mock Enable-ScheduledTask { throw 'must not enable' }
+        $plan=& $installer @invokeParams -Apply | ConvertFrom-Json
+        $plan.route_kind | Should Be 'card_v2'
+        $plan.trigger_kind | Should Be 'one_shot'
+        $plan.enabled | Should Be $false
+        Assert-MockCalled Register-ScheduledTask -Times 1 -Exactly -Scope It
+        Assert-MockCalled Start-ScheduledTask -Times 0 -Exactly -Scope It
+        Assert-MockCalled Enable-ScheduledTask -Times 0 -Exactly -Scope It
+        $encoded=[string]$global:wdSyntheticTaskAction.Arguments -replace '^.*-EncodedCommand ', ''
+        $powershell=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+        $result=(& $powershell -NoProfile -NonInteractive -EncodedCommand $encoded | ConvertFrom-Json)
+        $LASTEXITCODE | Should Be 0
+        $result.status | Should Be 'PUBLISHED'
+        $result.job_cleanup | Should Be 'confirmed'
+        try {
+            [IO.File]::WriteAllText($badFlag, '1')
+            & $powershell -NoProfile -NonInteractive -EncodedCommand $encoded
+            $LASTEXITCODE | Should Be 3
+        } finally { [IO.File]::Delete($badFlag) }
+        [IO.File]::WriteAllText((Join-Path $shared 'q4-lifecycle-v2.pending.json'),'{}')
+        & $powershell -NoProfile -NonInteractive -EncodedCommand $encoded
+        $LASTEXITCODE | Should Be 3
+    }
     It 'does not replace an existing scheduled task' {
         Mock Get-ScheduledTask { [pscustomobject]@{TaskName='WD-MindLiveUpdate'} }
         Mock Register-ScheduledTask { throw 'must not register' }

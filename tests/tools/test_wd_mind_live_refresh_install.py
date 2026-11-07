@@ -41,6 +41,43 @@ if($case.mode -cne 'v1'){
         $config|Add-Member -NotePropertyName $key -NotePropertyValue $part
     }
 }
+if($case.mode -clike 'card_v2*'){
+    $shared=Join-Path $root 'shared-generations'
+    $private=Join-Path $root 'shared-generations.q4-lifecycle-private-v2'
+    $baseGen=Join-Path $shared ('b'*40); $candidateGen=Join-Path $shared ('c'*40)
+    New-Item -ItemType Directory -Path $baseGen,$candidateGen,$private -Force|Out-Null
+    $newBaseline=Join-Path $baseGen 'shared-session-config.v2.json'
+    [IO.File]::Copy($baselinePath,$newBaseline)
+    $candidate=Join-Path $candidateGen 'shared-session-config.v2.json'
+    [IO.File]::WriteAllText($candidate,'{}')
+    $lifecycle=Join-Path $pins 'lifecycle.json'; $job=Join-Path $pins 'card-job.json'; $stdout=Join-Path $pins 'job-return.json'
+    foreach($file in @($lifecycle,$job,$stdout)){[IO.File]::WriteAllText($file,'{}')}
+    [IO.File]::WriteAllText($lifecycle,(@{schema='wd.q4-lifecycle-binding.v2';generation_root=$shared;private_root=$private}|ConvertTo-Json -Compress))
+    $pin={param($p) (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant()}
+    $config.baseline_path=$newBaseline; $config.baseline_sha256=& $pin $newBaseline
+    $route=[ordered]@{schema='wd.q4-card-refresh-tuple.v2';p1_enabled=$true;manifest_sha256=$config.manifest_sha256;
+      baseline=@{path=$newBaseline;sha256=$config.baseline_sha256};candidate=@{path=$candidate;sha256=(& $pin $candidate)};
+      previous_selector_sha256=$null;private_root=$private;job=@{path=$job;sha256=(& $pin $job)};
+      job_return=@{exit_code=0;stdout=@{path=$stdout;sha256=(& $pin $stdout)}};
+      source=@{path=$sourceFile;generation_path=$sidecar;generation_sha256=(& $pin $sidecar);
+          file_identity='synthetic';bytes=2;sha256=(& $pin $sourceFile)};
+      lifecycle=@{path=$lifecycle;sha256=(& $pin $lifecycle)}}
+    switch ($case.mode) {
+        'card_v2_candidate_pin' { $route.candidate.sha256='0'*64 }
+        'card_v2_lifecycle_pin' { $route.lifecycle.sha256='0'*64 }
+        'card_v2_lifecycle_binding' { [IO.File]::WriteAllText($lifecycle,'{}'); $route.lifecycle.sha256=& $pin $lifecycle }
+        'card_v2_job_pin' { $route.job.sha256='0'*64 }
+        'card_v2_return_pin' { $route.job_return.stdout.sha256='0'*64 }
+        'card_v2_baseline_pin' { $route.baseline.sha256='0'*64 }
+        'card_v2_source_generation_pin' { $route.source.generation_sha256='0'*64 }
+        'card_v2_private_pending' { [IO.File]::WriteAllText((Join-Path $private 'q4-card-refresh.pending.json'),'{}') }
+        'card_v2_generation_pending' { [IO.File]::WriteAllText((Join-Path $shared 'q4-lifecycle-v2.pending.json'),'{}') }
+        'card_v2_publication_pending' { [IO.File]::WriteAllText((Join-Path $shared 'q4-live-publication.pending.json'),'{}') }
+        'card_v2_scratch_overlap' { $invokeParams.ScratchRoot=$private }
+    }
+    [IO.File]::WriteAllText($routePath,($route|ConvertTo-Json -Depth 8 -Compress))
+    $config.route_sha256=& $pin $routePath
+}
 if($case.mode -ceq 'missing'){$config.PSObject.Properties.Remove('p1_enabled')}
 if($case.mode -ceq 'unknown'){$config|Add-Member -NotePropertyName unexpected -NotePropertyValue 'invalid'}
 if($case.mode -ceq 'downgrade'){$config.schema='wd.q4-live-update-once.v1'}
@@ -69,6 +106,16 @@ def test_installer_legacy_read_only_plan_control(tmp_path):
 def test_installer_v2_read_only_plan_control(tmp_path):
     result=plan(tmp_path,'v2');assert result.returncode==0,result.stderr
     value=json.loads(result.stdout);assert value['ok'] and not value['plan']['enabled']
+
+def test_card_v2_installer_plans_disabled_one_shot_without_running(tmp_path):
+    result=plan(tmp_path,'card_v2');assert result.returncode==0,result.stderr
+    value=json.loads(result.stdout);assert value['plan']['route_kind']=='card_v2'
+    assert value['plan']['trigger_kind']=='one_shot' and not value['plan']['enabled']
+
+@pytest.mark.parametrize('fault',['candidate_pin','lifecycle_pin','lifecycle_binding','job_pin','return_pin','baseline_pin',
+    'source_generation_pin','private_pending','generation_pending','publication_pending','scratch_overlap'])
+def test_card_v2_installer_refuses_invalid_pins_or_pending_before_task_api(tmp_path,fault):
+    result=plan(tmp_path,'card_v2_'+fault);assert result.returncode!=0 and not result.stdout
 
 @pytest.mark.parametrize('flag',[False,0,1,'true',None,[]])
 def test_installer_v2_refuses_nonliteral_opt_in_before_task_api(tmp_path,flag):

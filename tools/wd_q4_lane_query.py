@@ -82,6 +82,10 @@ BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sha
 CARD_BINDING_KEYS = BINDING_KEYS | {"card_decision_sha256"}
 # The public-policy digest is a plan/input pin, not a claim in a staged reply.
 STAGED_BINDING_KEYS = CARD_BINDING_KEYS | {"card_policy_sha256"}
+# Content snapshot mode (useful content route B, default OFF): the seven pins of a v4 plan.
+CONTENT_BINDING_KEYS = frozenset({"encoder_sha256", "policy_sha256", "roster_sha256", "content_decision_sha256",
+                                  "descriptor_sha256", "memory_sha256", "projection_sha256"})
+MAX_CONTENT_DECISION_BYTES = 65536  # == content_memory.MAX_DECISION
 _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _PIN64 = re.compile(r"[0-9A-Fa-f]{64}\Z")
@@ -114,7 +118,7 @@ def _inputs(situation, time, expected_commit, expected_manifest_sha256, expected
     if (not _hex(expected_commit, _HEX40) or not _hex(expected_manifest_sha256, _PIN64)
             or not _hex(expected_wrapper_sha256, _PIN64) or not _hex(expected_public_plan_sha256, _HEX64)
             or type(expected_binding) is not dict or set(expected_binding) not in
-               (BINDING_KEYS, CARD_BINDING_KEYS, STAGED_BINDING_KEYS)
+               (BINDING_KEYS, CARD_BINDING_KEYS, STAGED_BINDING_KEYS, CONTENT_BINDING_KEYS)
             or any(not _hex(expected_binding[key], _HEX64) for key in expected_binding)
             or not isinstance(bundle_root, (str, PathLike)) or not isinstance(public_plan_path, (str, PathLike))
             or not _bounded(projection_bytes, MAX_PROJECTION_BYTES) or not _bounded(policy_bytes, MAX_POLICY_BYTES)
@@ -191,6 +195,41 @@ def _records(projection_bytes, expected_sha256, tasks, roster):
             raise ValueError()
         records[key] = record
     return records
+
+
+def _content_records(projection_bytes, expected_sha256, tasks, roster):
+    """Content mode: the record index of a caller-pinned content projection that hashes to the caller's pin, is the
+    builder's canonical serialization, passes ``content_memory.validate_route_projection`` (every record re-derived
+    from its own fields, the lane output class, the projected reference kind) and whose every message record is by a
+    non-review roster lane on a caller-approved task (the route validator refuses any repeated record id)."""
+    from sandbox.mind.step2 import content_memory as content
+    if not hmac.compare_digest(hashlib.sha256(projection_bytes).hexdigest(), expected_sha256):
+        raise ValueError()
+    projection = json.loads(projection_bytes.decode("utf-8", "strict"), object_pairs_hook=_pairs,
+                            parse_constant=_constant)
+    if (type(projection) is not dict
+            or json.dumps(projection, sort_keys=True, indent=1).encode("utf-8") != projection_bytes):
+        raise ValueError()
+    content.validate_route_projection(projection)  # ContentMemoryRefused is a ValueError
+    for record in (projection["messages"] or {"records": []})["records"]:
+        meta = record["meta"]
+        if meta["agent"] not in roster or meta["agent"] in sp.REVIEW_LANES or meta["task_id"] not in tasks:
+            raise ValueError()
+    records = {}
+    for record in content.records_of(projection):
+        key = (hashlib.sha256(record["provenance"]["event_ref"].encode("ascii")).hexdigest(),
+               hashlib.sha256(record["record_id"].encode("ascii")).hexdigest())
+        records[key] = record
+    return records
+
+
+def _checked_content_decision(plan, expected_binding):
+    """Content mode: the v4 plan's decision file, verified (its digest included) against the caller's pins."""
+    from sandbox.mind.step2 import content_memory as content
+    raw = link._read(link._path(plan["content_decision_path"], directory=False), MAX_CONTENT_DECISION_BYTES)
+    content.verify_content_route_decision(raw, expected_binding["content_decision_sha256"],
+                                          policy_sha256=expected_binding["policy_sha256"],
+                                          roster_sha256=expected_binding["roster_sha256"])
 
 
 def _card_records(projection_bytes, expected_sha256, tasks, *, _real_decision=None):
@@ -299,12 +338,17 @@ def _answer(lane, value, expected_binding, records, when):
                 "result_count": 0, "results": [], "binding": None, "trust": dict(_TRUST)}, None
     binding = value["binding"]
     staged = set(expected_binding) == STAGED_BINDING_KEYS
+    content = set(expected_binding) == CONTENT_BINDING_KEYS
     reply_pins = set(expected_binding) - ({"public_policy_sha256"} if staged else set())
     if (type(binding) is not dict or reply_pins - set(binding)
             or (staged and (value.get("schema") != "wd.q4-card-snapshot-query.v1"
                             or value.get("completeness") != "UNKNOWN"
                             or binding.get("source_mode") != "card-snapshot-v1"))
+            or (content and (value.get("schema") != "wd.q4-content-snapshot-query.v1"
+                             or value.get("completeness") != "UNKNOWN"
+                             or binding.get("source_mode") != "content-snapshot-v1"))
             or ("card_decision_sha256" in binding) != ("card_decision_sha256" in expected_binding)
+            or ("content_decision_sha256" in binding) != ("content_decision_sha256" in expected_binding)
             or any(not hmac.compare_digest(binding[key], expected_binding[key]) for key in reply_pins)):
         return None, "binding_refused"
     results = value["results"]
@@ -382,6 +426,8 @@ def _query_public_impl(*, lane, situation, time, bundle_root, expected_commit, e
                     raise ValueError()
             records = _card_records(projection_bytes, expected_binding["projection_sha256"], tasks,
                                     _real_decision=real_decision)
+        elif "content_decision_sha256" in expected_binding:
+            records = _content_records(projection_bytes, expected_binding["projection_sha256"], tasks, roster)
         else:
             records = _records(projection_bytes, expected_binding["projection_sha256"], tasks, roster)
     except Exception:  # noqa: BLE001
@@ -390,7 +436,9 @@ def _query_public_impl(*, lane, situation, time, bundle_root, expected_commit, e
         raise LaneQueryRefused("projection_refused")
     plan_pins = None
     try:
-        plan_pins = link._public_plan(public_plan_path, expected_public_plan_sha256)[2]
+        _, plan_raw, plan_pins = link._public_plan(public_plan_path, expected_public_plan_sha256)
+        if "content_decision_sha256" in plan_pins:
+            _checked_content_decision(link._json(plan_raw), expected_binding)
     except Exception:  # noqa: BLE001 - unreadable, unpinned or malformed plan
         plan_pins = None
     if (type(plan_pins) is not dict or not plan_pins

@@ -315,7 +315,7 @@ def _check_real_card_snapshot(snapshot, config, memory_bytes, projection_bytes, 
 def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, approved_tasks, *,
                       policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
                       expected_memory_sha256=None, card_decision_bytes=None, card_decision_sha256=None,
-                      card_snapshot=None):
+                      card_snapshot=None, content_decision_bytes=None, content_decision_sha256=None):
     """Resolve one query using caller-authenticated tuple and approved-task policy.
 
     This in-memory boundary does not authenticate config, data origin, clock or
@@ -324,6 +324,11 @@ def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, ap
     verified real-card decision additionally requires a closed card_snapshot
     tuple and actual C2 checks before stdin and after resolution. Data-only
     result mapping cannot supply that execution authorization.
+    A pinned content route decision (content_decision_bytes/sha256, default
+    None: OFF) may not come with a card decision or snapshot and selects the
+    resolver content branch, whose pre-stdin call verifies it against the strict
+    pins; the isolated reader is the same. This is data-only mapping, not an
+    execution grant.
     """
     try:
         from sandbox.mind.step2 import shared_result_resolver as resolver
@@ -336,6 +341,12 @@ def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, ap
                                            expected_memory_sha256)):
             raise QueryRefused("resolution_refused")
         real_snapshot = None
+        content = content_decision_bytes is not None or content_decision_sha256 is not None
+        if content:
+            if card_decision_bytes is not None or card_decision_sha256 is not None or card_snapshot is not None:
+                raise QueryRefused("resolution_refused")
+        forward = ({"content_decision_bytes": content_decision_bytes,
+                    "content_decision_sha256": content_decision_sha256} if content else {})
         if card_decision_bytes is not None or card_decision_sha256 is not None:
             from sandbox.mind.step2 import shared_card_projection as cards
             decision = cards.verify_route_decision(card_decision_bytes, card_decision_sha256,
@@ -349,7 +360,7 @@ def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, ap
                     projection_bytes=projection_bytes, results=[], query_utc="2000-01-01T00:00:00Z",
                     approved_tasks=approved_tasks, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
                     roster_bytes=roster_bytes, roster_sha256=roster_sha256,
-                    card_decision_bytes=card_decision_bytes, card_decision_sha256=card_decision_sha256)
+                    card_decision_bytes=card_decision_bytes, card_decision_sha256=card_decision_sha256, **forward)
         raw = read_query(stdin)
         query_time = _validated_query_time(raw)
         result = _safe_result_for_output(query_with_verified_config(config, io.BytesIO(raw)), config)
@@ -363,7 +374,7 @@ def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, ap
                     results=result["results"], query_utc=query_time, approved_tasks=approved_tasks,
                     policy_bytes=policy_bytes, policy_sha256=policy_sha256,
                     roster_bytes=roster_bytes, roster_sha256=roster_sha256,
-                    card_decision_bytes=card_decision_bytes, card_decision_sha256=card_decision_sha256)
+                    card_decision_bytes=card_decision_bytes, card_decision_sha256=card_decision_sha256, **forward)
         if real_snapshot is not None:
             _check_real_card_snapshot(real_snapshot, config, memory_manifest_bytes,
                 projection_bytes, expected_memory_sha256, card_decision_bytes, card_decision_sha256,

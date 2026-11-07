@@ -28,6 +28,13 @@ HEX = re.compile(r"[0-9a-f]{64}\Z")
 # (its projection schema is not v6), and a decision never applies to a v6 memory. There is no module-level switch.
 # The card module is imported only inside that decision path. The v6 path is unchanged.
 CARD_PROJECTION_SCHEMA = "wd.bridge-mind-shared-card-projection.v7"
+# Useful content route B (lead-q4-useful-work-content-fable-20261107-v1, Lead decision 2026-11-07 18:56Z): OFF by
+# default. Only a call that passes a pinned content route decision which verifies
+# (content_memory.verify_content_route_decision) resolves a memory naming the content projection schema, only with
+# strict pins and the manifest's bound content route evidence; a content decision never applies to a v6 or card
+# memory, and a call may not pass both a card and a content decision. The content module is imported only inside
+# that decision path. The v6 and card paths are unchanged.
+CONTENT_PROJECTION_SCHEMA = "wd.mind-content-memory-projection.v1"
 
 
 class ResolveRefused(ValueError):
@@ -151,9 +158,44 @@ def _resolve_cards(manifest, projection_bytes, results, query_utc, approved_task
         _invalid()
 
 
+def _resolve_content(manifest, projection_bytes, results, query_utc, approved_tasks, roster, strict, policy_sha256,
+                     roster_sha256, decision_bytes, decision_sha256):
+    """The pinned content route: strict pins, a verified content decision, the manifest's strict policy and bound
+    route evidence re-checked against that decision, every stored record re-derived from its own fields, every
+    message record by a non-review roster lane on an approved task, and only exact, time-visible hash hits.
+    This is data-only mapping, not a C2 boundary; it verifies declared evidence, not the sources themselves.
+    """
+    from sandbox.mind.step2 import content_memory as content
+    if (not strict or manifest.get("scope") != SCOPE
+            or not isinstance(manifest.get("projection_sha256"), str)
+            or HEX.fullmatch(manifest["projection_sha256"]) is None
+            or not isinstance(projection_bytes, bytes) or len(projection_bytes) > MAX_BYTES
+            or not hmac.compare_digest(_sha(projection_bytes), manifest["projection_sha256"])
+            or not _strict_memory_policy(manifest.get("policy"), policy_sha256, roster_sha256)
+            or not isinstance(approved_tasks, frozenset) or not isinstance(roster, dict)):
+        _invalid()
+    projection = _parse(projection_bytes)
+    try:
+        if json.dumps(projection, sort_keys=True, indent=1).encode("utf-8") != projection_bytes:
+            _invalid()
+        decision = content.verify_content_route_decision(decision_bytes, decision_sha256, policy_sha256=policy_sha256,
+                                                         roster_sha256=roster_sha256)
+        content.validate_route_projection(projection)
+        content.check_content_route_evidence(manifest.get("content_route"), projection, decision, decision_sha256)
+        for record in (projection["messages"] or {"records": []})["records"]:
+            meta = record["meta"]
+            if (meta["agent"] not in roster or meta["agent"] in sp.REVIEW_LANES
+                    or meta["task_id"] not in approved_tasks):
+                _invalid()
+        return content.resolve_route_content(projection, results, query_utc)
+    except (content.ContentMemoryRefused, ValueError, TypeError, KeyError, RecursionError, UnicodeError):
+        _invalid()
+
+
 def resolve_results(*, memory_manifest, expected_memory_sha256, projection_bytes, results, query_utc,
                     approved_tasks=None, policy_bytes=None, policy_sha256=None, roster_bytes=None,
-                    roster_sha256=None, card_decision_bytes=None, card_decision_sha256=None):
+                    roster_sha256=None, card_decision_bytes=None, card_decision_sha256=None,
+                    content_decision_bytes=None, content_decision_sha256=None):
     """Return approved stored text only for exact, time-visible projected Q4 hits.
 
     Both Q4 hash fields and explicit projected/noncanonical labels must match
@@ -177,6 +219,13 @@ def resolve_results(*, memory_manifest, expected_memory_sha256, projection_bytes
             or not hmac.compare_digest(_sha(memory_manifest), expected_memory_sha256)):
         _invalid()
     manifest = _parse(memory_manifest)
+    content_route = content_decision_bytes is not None or content_decision_sha256 is not None
+    if content_route:
+        if (card_decision_bytes is not None or card_decision_sha256 is not None or not isinstance(manifest, dict)
+                or manifest.get("projection_schema") != CONTENT_PROJECTION_SCHEMA):
+            _invalid()
+        return _resolve_content(manifest, projection_bytes, results, query_utc, approved_tasks, roster, strict,
+                                policy_sha256, roster_sha256, content_decision_bytes, content_decision_sha256)
     if card_decision_bytes is not None or card_decision_sha256 is not None:
         if not isinstance(manifest, dict) or manifest.get("projection_schema") != CARD_PROJECTION_SCHEMA:
             _invalid()

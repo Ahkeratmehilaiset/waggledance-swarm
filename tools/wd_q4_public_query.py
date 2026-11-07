@@ -296,3 +296,102 @@ def query_staged_card_snapshot(config, stdin, *, root, pointer_bytes=None,
         return output
     except Exception:
         raise PublicQueryRefused("staged_query_refused") from None
+
+
+_CONTENT_SCHEMA = "wd.q4-content-snapshot-query.v1"
+_CONTENT_PROJECTION_SCHEMA = "wd.mind-content-memory-projection.v1"  # == content_memory.SCHEMA (tested)
+
+
+def query_content_snapshot(config, stdin, *, expected_encoder_sha256=None, policy_bytes=None, policy_sha256=None,
+                           roster_bytes=None, roster_sha256=None, content_decision_bytes=None,
+                           content_decision_sha256=None, expected_memory_sha256=None,
+                           expected_projection_sha256=None, enabled=False):
+    """Opt-in query of one caller-pinned content route snapshot (route B), without history or a pointer.
+
+    Before stdin is consumed: the content route decision verifies against the strict pins, and the descriptor,
+    memory manifest and projection under config.memory are read by their pins (descriptor v2 shape, shared scope,
+    encoder digest and runtime revision, the content projection schema and its pin). The query runs through the
+    agent query boundary with the decision, so the isolated reader is the same; every pinned artifact is re-read
+    after the query and every pin is bound into the output. Ordinary changes are detected, not same-user ABA. The
+    caller must independently trust all pins, code, policy origins, runtime and encoder assets; this function grants
+    no native execution or runtime authority and reads no installed state.
+    """
+    if enabled is not True:
+        raise PublicQueryRefused("disabled")
+    try:
+        if (not all(pointer_resolver._pin(pin) for pin in (
+                expected_encoder_sha256, policy_sha256, roster_sha256, content_decision_sha256,
+                expected_memory_sha256, expected_projection_sha256))
+                or not all(type(value) is bytes for value in (policy_bytes, roster_bytes, content_decision_bytes))):
+            raise ValueError()
+        q4_query._validate_config(config)
+        from sandbox.mind.step2 import content_memory as content
+        content.verify_content_route_decision(content_decision_bytes, content_decision_sha256,
+                                              policy_sha256=policy_sha256, roster_sha256=roster_sha256)
+        tasks, _ = pointer_resolver.adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+        memory_dir = Path(config.memory)
+        if Path(config.descriptor) != memory_dir / "descriptor.json":
+            raise ValueError()
+        read = pointer_resolver._read_matching
+        pinned = ((memory_dir / "descriptor.json", config.descriptor_sha256, 65536),
+                  (memory_dir / "memory.json", expected_memory_sha256, _ARTIFACT_LIMIT),
+                  (memory_dir / "projection.json", expected_projection_sha256, _ARTIFACT_LIMIT))
+        artifacts = tuple(read(path, pin, limit=limit) for path, pin, limit in pinned)
+        descriptor_bytes, memory_bytes, projection_bytes = artifacts
+        descriptor = pointer_resolver.checkpoint._parse(descriptor_bytes)
+        manifest = pointer_resolver.checkpoint._parse(memory_bytes)
+        if (type(descriptor) is not dict
+                or set(descriptor) != {"schema", "scope", "memory_sha256", "dim", "encoder"}
+                or descriptor["schema"] != "wd.bridge-mind-q4-memory-descriptor.v2"
+                or descriptor["scope"] != _SCOPE
+                or type(descriptor["dim"]) is not int or descriptor["dim"] < 1
+                or descriptor["memory_sha256"] != expected_memory_sha256
+                or _encoder_digest(descriptor["encoder"]) != expected_encoder_sha256
+                or descriptor["encoder"]["revision"] != config.runtime_revision
+                or type(manifest) is not dict
+                or manifest.get("projection_schema") != _CONTENT_PROJECTION_SCHEMA
+                or manifest.get("projection_sha256") != expected_projection_sha256):
+            raise ValueError()
+        result = q4_query.query_and_resolve(
+            config, stdin, memory_bytes, projection_bytes, tasks,
+            policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+            roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+            expected_memory_sha256=expected_memory_sha256,
+            content_decision_bytes=content_decision_bytes, content_decision_sha256=content_decision_sha256)
+        if (type(result) is not dict or set(result) != {"status", "results"}
+                or result["status"] not in ("ANSWER", "ABSTAIN", "DEGRADED")
+                or type(result["results"]) is not list or len(result["results"]) > 100
+                or (result["status"] == "ANSWER" and not result["results"])
+                or (result["status"] == "ABSTAIN" and result["results"])):
+            raise ValueError()
+        clean = []
+        for item in result["results"]:
+            if (type(item) is not dict or set(item) != _RESULT_KEYS | {"stored_text"}
+                    or type(item["stored_text"]) is not str
+                    or len(item["stored_text"].encode("utf-8", errors="strict")) > _PUBLIC_TEXT_LIMIT
+                    or item["ref_kind"] != "sha256_of_projected_metadata"
+                    or item["canonical_event"] is not False
+                    or not all(pointer_resolver._pin(item[key])
+                               for key in ("ref_sha256", "doc_id_sha256"))):
+                raise ValueError()
+            clean.append({key: item[key] for key in sorted(_RESULT_KEYS | {"stored_text"})})
+        if tuple(read(path, pin, limit=limit) for path, pin, limit in pinned) != artifacts:
+            raise ValueError()
+        output = {
+            "schema": _CONTENT_SCHEMA, "status": result["status"], "results": clean,
+            "binding": {
+                "source_mode": "content-snapshot-v1", "encoder_sha256": expected_encoder_sha256,
+                "policy_sha256": policy_sha256, "roster_sha256": roster_sha256,
+                "content_decision_sha256": content_decision_sha256,
+                "descriptor_sha256": config.descriptor_sha256, "memory_sha256": expected_memory_sha256,
+                "projection_sha256": expected_projection_sha256,
+            },
+            "publisher_authentication": "UNKNOWN", "source_filter_attestation": "UNKNOWN",
+            "freshness": "UNKNOWN", "same_user_aba": "UNKNOWN", "completeness": "UNKNOWN",
+        }
+        if len(json.dumps(output, ensure_ascii=True, separators=(",", ":"),
+                          allow_nan=False).encode("utf-8")) > q4_query.MAX_OUTPUT:
+            raise ValueError()
+        return output
+    except Exception:
+        raise PublicQueryRefused("content_query_refused") from None

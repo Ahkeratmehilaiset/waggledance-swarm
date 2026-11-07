@@ -11,6 +11,8 @@ have left partial bytes in the stream.
 An optional caller-pinned synthetic card route decision (default None) is
 forwarded to the fixed public query and its pin must come back in the output
 binding; it authenticates no issuer and enables nothing by itself.
+run_content (default OFF) is the caller-pinned content snapshot route B: the
+content decision, descriptor, memory and projection pins all come back bound.
 """
 
 import hashlib
@@ -248,6 +250,82 @@ def run_staged_card(config, stdin, stdout, *, root=None, pointer_bytes=None, exp
         text, code = _validated_staged_output(result, expected), 0
     except Exception:
         text, code = _STAGED_FAIL, 2
+    try:
+        written = stdout.write(text)
+        if type(written) is not int or written != len(text):
+            return 2
+        stdout.flush()
+    except Exception:
+        return 2
+    return code
+
+
+_CONTENT_SCHEMA = 'wd.q4-content-snapshot-query.v1'
+_CONTENT_FAIL = '{"schema":"wd.q4-content-snapshot-query.v1","status":"REFUSED","reason":"content_query_refused"}\n'
+_CONTENT_BINDING = frozenset({'source_mode', 'encoder_sha256', 'policy_sha256', 'roster_sha256',
+    'content_decision_sha256', 'descriptor_sha256', 'memory_sha256', 'projection_sha256'})
+MAX_CONTENT_DECISION = 65536  # == content_memory.MAX_DECISION (tested)
+
+
+def _validated_content_output(value, expected):
+    if (type(value) is not dict or set(value) != {'schema', 'status', 'results', 'binding'} | _STAGED_UNKNOWN
+            or value['schema'] != _CONTENT_SCHEMA or value['status'] not in ('ANSWER', 'ABSTAIN', 'DEGRADED')
+            or type(value['results']) is not list or len(value['results']) > 100
+            or (value['status'] == 'ANSWER' and not value['results'])
+            or (value['status'] == 'ABSTAIN' and value['results'])
+            or any(value[key] != 'UNKNOWN' for key in _STAGED_UNKNOWN)):
+        raise ValueError()
+    binding = value['binding']
+    if (type(binding) is not dict or set(binding) != _CONTENT_BINDING
+            or binding['source_mode'] != 'content-snapshot-v1'
+            or set(expected) != _CONTENT_BINDING - {'source_mode'}
+            or any(not _pin(binding[key]) or not hmac.compare_digest(binding[key], expected[key])
+                   for key in expected)):
+        raise ValueError()
+    for item in value['results']:
+        if (type(item) is not dict or set(item) != _RESULT_KEYS or type(item['stored_text']) is not str
+                or len(item['stored_text'].encode('utf-8', errors='strict')) > 320
+                or item['ref_kind'] != 'sha256_of_projected_metadata' or item['canonical_event'] is not False
+                or not _pin(item['ref_sha256']) or not _pin(item['doc_id_sha256'])):
+            raise ValueError()
+    text = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False) + '\n'
+    if len(text.encode('utf-8')) > MAX_OUTPUT:
+        raise ValueError()
+    return text
+
+
+def run_content(config, stdin, stdout, *, expected_encoder_sha256=None, policy_bytes=None, policy_sha256=None,
+                roster_bytes=None, roster_sha256=None, content_decision_bytes=None, content_decision_sha256=None,
+                expected_memory_sha256=None, expected_projection_sha256=None, enabled=False):
+    """Run one explicitly enabled caller-pinned content snapshot query (route B, default OFF).
+
+    The input stream is handed to the fixed query function without being read here, so the decision and artifact
+    checks run before the query is consumed. Every pin must come back in the output binding. No source, publisher
+    or issuer is authenticated; the caller must independently pin and contain this code, runtime and snapshot.
+    """
+    try:
+        if (enabled is not True or not _pinned(policy_bytes, policy_sha256, MAX_POLICY)
+                or not _pinned(roster_bytes, roster_sha256, MAX_ROSTER)
+                or not _pinned(content_decision_bytes, content_decision_sha256, MAX_CONTENT_DECISION)
+                or not all(_pin(pin) for pin in (expected_encoder_sha256, expected_memory_sha256,
+                                                 expected_projection_sha256))):
+            raise ValueError()
+        _validate_config(config)
+        expected = {'encoder_sha256': expected_encoder_sha256, 'policy_sha256': policy_sha256,
+                    'roster_sha256': roster_sha256, 'content_decision_sha256': content_decision_sha256,
+                    'descriptor_sha256': config.descriptor_sha256, 'memory_sha256': expected_memory_sha256,
+                    'projection_sha256': expected_projection_sha256}
+        if any(not _pin(value) for value in expected.values()):
+            raise ValueError()
+        from tools.wd_q4_public_query import query_content_snapshot
+        result = query_content_snapshot(config, stdin, expected_encoder_sha256=expected_encoder_sha256,
+            policy_bytes=policy_bytes, policy_sha256=policy_sha256, roster_bytes=roster_bytes,
+            roster_sha256=roster_sha256, content_decision_bytes=content_decision_bytes,
+            content_decision_sha256=content_decision_sha256, expected_memory_sha256=expected_memory_sha256,
+            expected_projection_sha256=expected_projection_sha256, enabled=True)
+        text, code = _validated_content_output(result, expected), 0
+    except Exception:
+        text, code = _CONTENT_FAIL, 2
     try:
         written = stdout.write(text)
         if type(written) is not int or written != len(text):

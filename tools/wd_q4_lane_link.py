@@ -238,6 +238,16 @@ _PUBLIC_PLAN_SCHEMAS = {"wd.q4-public-wrapper-plan.v1": _PUBLIC_PLAN_KEYS,
                         "wd.q4-public-wrapper-plan.v3": _PUBLIC_PLAN_KEYS | _CARD_PLAN_KEYS | _STAGED_PLAN_KEYS}
 _STAGED_BIND_PINS = (_PUBLIC_BIND_PINS - {"public_policy_sha256"}) | {"card_decision_sha256", "card_policy_sha256"}
 _STAGED_BIND_KEYS = _STAGED_BIND_PINS | {"memory_sha256", "projection_sha256", "source_mode"}
+# Content snapshot plan v4 (useful content route B, lead-q4-useful-work-content-fable-20261107-v1, default OFF):
+# the plan pins the policy, roster and content route decision files and the encoder, memory and projection
+# digests; with the config descriptor pin these are the seven pins the closed content reply must carry
+# (wd.q4-content-snapshot-query.v1, source_mode content-snapshot-v1). v1-v3 plans are unchanged.
+_CONTENT_PLAN_SCHEMA = "wd.q4-public-wrapper-plan.v4"
+_CONTENT_PLAN_KEYS = frozenset({"schema", "config", "policy_path", "roster_path", "content_decision_path",
+                                "policy_sha256", "roster_sha256", "content_decision_sha256", "encoder_sha256",
+                                "memory_sha256", "projection_sha256"})
+_CONTENT_BIND_PINS = frozenset({"encoder_sha256", "policy_sha256", "roster_sha256", "content_decision_sha256",
+                                "descriptor_sha256", "memory_sha256", "projection_sha256"})
 
 
 def _public_plan(path, expected_sha256):
@@ -248,6 +258,16 @@ def _public_plan(path, expected_sha256):
     if not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected_sha256):
         raise ValueError()
     plan = _json(raw)
+    if type(plan) is dict and plan.get("schema") == _CONTENT_PLAN_SCHEMA:
+        if (set(plan) != _CONTENT_PLAN_KEYS or type(plan["config"]) is not dict
+                or any(type(plan[field]) is not str or not plan[field]
+                       for field in ("policy_path", "roster_path", "content_decision_path"))):
+            raise ValueError()
+        pins = {key: (plan["config"].get(key) if key == "descriptor_sha256" else plan[key])
+                for key in _CONTENT_BIND_PINS}
+        if any(type(value) is not str or _HEX64.fullmatch(value) is None for value in pins.values()):
+            raise ValueError()
+        return str(path), raw, pins
     if (type(plan) is not dict or type(plan.get("schema")) is not str
             or plan["schema"] not in _PUBLIC_PLAN_SCHEMAS or set(plan) != _PUBLIC_PLAN_SCHEMAS[plan["schema"]]
             or type(plan["config"]) is not dict
@@ -275,6 +295,35 @@ def _public_plan(path, expected_sha256):
     return str(path), raw, pins
 
 
+def _result_items(results):
+    for item in results:
+        if (type(item) is not dict or set(item) != {"stored_text", "ref_sha256", "doc_id_sha256", "ref_kind", "canonical_event"}
+                or type(item["stored_text"]) is not str or len(item["stored_text"].encode("utf-8", errors="strict")) > 320
+                or item["ref_kind"] != "sha256_of_projected_metadata" or item["canonical_event"] is not False
+                or any(type(item[key]) is not str or _HEX64.fullmatch(item[key]) is None
+                       for key in ("ref_sha256", "doc_id_sha256"))):
+            raise ValueError()
+
+
+def _content_result(value, code, pins):
+    unknown = _PUBLIC_UNKNOWN | {"completeness"}
+    binding = value.get("binding")
+    if (code != 0 or set(pins) != _CONTENT_BIND_PINS or value.get("status") not in ("ANSWER", "ABSTAIN", "DEGRADED")
+            or value.get("schema") != "wd.q4-content-snapshot-query.v1"
+            or set(value) != ({"schema", "status", "binding", "results"} | unknown)
+            or any(value[key] != "UNKNOWN" for key in unknown)
+            or type(binding) is not dict or set(binding) != _CONTENT_BIND_PINS | {"source_mode"}
+            or binding["source_mode"] != "content-snapshot-v1"
+            or any(type(binding[key]) is not str or _HEX64.fullmatch(binding[key]) is None
+                   or not hmac.compare_digest(binding[key], pins[key]) for key in _CONTENT_BIND_PINS)
+            or type(value["results"]) is not list or len(value["results"]) > 100
+            or (value["status"] == "ANSWER" and not value["results"])
+            or (value["status"] == "ABSTAIN" and value["results"])):
+        raise ValueError()
+    _result_items(value["results"])
+    return value
+
+
 def _public_result(raw, code, pins):
     if type(raw) is not bytes or len(raw) > 32768 or type(code) is not int:
         raise ValueError()
@@ -286,6 +335,8 @@ def _public_result(raw, code, pins):
                 or set(value) != {"schema", "status", "reason"} or type(value["reason"]) is not str):
             raise ValueError()
         return {"schema": "wd.q4-public-query.v2", "status": "REFUSED", "reason": "runtime_refused"}
+    if "content_decision_sha256" in pins:
+        return _content_result(value, code, pins)
     staged = "card_policy_sha256" in pins
     unknown = _PUBLIC_UNKNOWN | ({"completeness"} if staged else set())
     binding_keys = _STAGED_BIND_KEYS if staged else _PUBLIC_BIND_KEYS | ({"card_decision_sha256"} & set(pins))

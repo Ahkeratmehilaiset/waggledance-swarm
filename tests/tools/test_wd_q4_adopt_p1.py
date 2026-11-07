@@ -87,3 +87,24 @@ def test_p1_result_construction_failure_preserves_marker(actual_continuation, mo
     with pytest.raises(adopt.AdoptOutcomeUnknown):
         adopt.run_once(**args, p1_enabled=True)
     assert (private / 'q4-continuation-adopt.pending.json').is_file()
+
+
+def test_prior_selector_forwards_p1_to_pair_check(actual_continuation, monkeypatch):
+    # Status-v1 selection substitutes for the not-yet-integrated P1 selector.
+    from tools import wd_q4_continuation_adopt as adopt
+    from tools import wd_q4_lane_caller_cli as caller
+    args = actual_continuation
+    published = adopt.run_once(**args)
+    baseline = caller._configuration(args['baseline_path'], args['baseline_sha256'])
+    original = adopt.live._checked_pair
+    observed = []
+
+    def pair(*pos, **kw):
+        observed.append(kw.pop('p1_enabled', None))
+        return original(*pos, **kw)
+
+    monkeypatch.setattr(adopt.live, '_checked_pair', pair)
+    pointer, raw = adopt._prior_pointer(args['baseline_path'], args['baseline_sha256'], baseline,
+                                        args['manifest_sha256'], p1_enabled=True)
+    assert observed == [True]
+    assert pointer == published['pointer_sha256'] and raw is not None

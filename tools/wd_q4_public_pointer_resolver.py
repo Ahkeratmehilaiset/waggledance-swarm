@@ -7,6 +7,9 @@ or same-user race protection. It never derives the expected pin from the file.
 The checkpoint implementation must support the public-v1 mode. A returned
 binding is not a lease: a caller must independently protect/revalidate inputs
 through their use. It contains paths and is not a public log or event payload.
+An optional caller-pinned synthetic card route decision is verified and bound
+(default None: the v6 behaviour and binding are unchanged); it authenticates no
+issuer, and the checkpoint itself still validates v6 public histories only.
 """
 
 import hashlib
@@ -43,7 +46,7 @@ def _read_matching(path, expected, *, limit):
 
 def resolve_public_pointer(root, *, expected_pointer_sha256, policy_bytes, policy_sha256,
                            roster_bytes, roster_sha256, public_policy_bytes, public_policy_sha256,
-                           enabled=False):
+                           enabled=False, card_decision_bytes=None, card_decision_sha256=None):
     """Resolve one independently pinned pointer into a Q4 reader binding.
 
     All policy bytes are caller-supplied and their origins must be separately
@@ -51,6 +54,9 @@ def resolve_public_pointer(root, *, expected_pointer_sha256, policy_bytes, polic
     boundary additionally applies the public task/type/agent allowlists to
     every retained projection record. Agent names are not authenticated and
     recipient filtering is not proven here. No writes or query execution occur.
+    With a card decision (both values or neither), the decision must verify for
+    these policy and roster pins and the generation projection must be the card
+    projection it names; the binding then carries ``card_decision_sha256``.
     """
     if enabled is not True:
         raise PublicPointerRefused("disabled")
@@ -58,6 +64,11 @@ def resolve_public_pointer(root, *, expected_pointer_sha256, policy_bytes, polic
         if not all(_pin(value) for value in (expected_pointer_sha256, policy_sha256, roster_sha256,
                                               public_policy_sha256)):
             raise ValueError()
+        card = card_decision_bytes is not None or card_decision_sha256 is not None
+        if card:
+            from sandbox.mind.step2 import shared_card_projection as cards
+            decision = cards.verify_route_decision(card_decision_bytes, card_decision_sha256,
+                                                   policy_sha256=policy_sha256, roster_sha256=roster_sha256)
         root = checkpoint._secure(Path(root))
         tasks, _ = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
         public_tasks, public_types = adapter.public_status_policy(public_policy_bytes, public_policy_sha256, tasks)
@@ -81,6 +92,8 @@ def resolve_public_pointer(root, *, expected_pointer_sha256, policy_bytes, polic
         projection_bytes = _read_matching(projection, view["artifacts"]["projection_sha256"], limit=checkpoint._MAX)
         parsed = checkpoint._parse(projection_bytes)
         records = parsed.get("records")
+        if card and parsed.get("schema") != decision["projection_schema"]:
+            raise ValueError()
         if type(records) is not list:
             raise ValueError()
         for record in records:
@@ -92,7 +105,7 @@ def resolve_public_pointer(root, *, expected_pointer_sha256, policy_bytes, polic
                 raise ValueError()
         # Refuse an ordinary concurrent pointer replacement during resolution.
         _read_matching(root / checkpoint.POINTER, expected_pointer_sha256, limit=checkpoint._MAX_POINTER_BYTES)
-        return {
+        binding = {
             "memory_root": str(generation), "descriptor_path": str(descriptor),
             "descriptor_sha256": view["artifacts"]["descriptor_sha256"],
             "memory_sha256": view["artifacts"]["memory_sha256"],
@@ -104,5 +117,8 @@ def resolve_public_pointer(root, *, expected_pointer_sha256, policy_bytes, polic
             "source_mode": "public-v1", "freshness": "UNKNOWN", "identity": "NOT_AUTHENTICATED",
             "publisher_authentication": "NOT_AUTHENTICATED", "source_filter_attestation": "NOT_VERIFIED",
         }
+        if card:
+            binding["card_decision_sha256"] = card_decision_sha256
+        return binding
     except Exception:
         raise PublicPointerRefused("resolution_refused") from None

@@ -56,6 +56,48 @@ def test_live_owner_blocks_another_reservation(roots):
             with parent.reserve(private,shared,pins()): pytest.fail('overlapping reservation')
         assert owner.verify_locked(private,shared,pins())
 
+def test_busy_owner_slot_is_refused_before_marker_creation(roots):
+    from sandbox.mind.step2.reader_slot import reader_slot
+    from tools import wd_q4_owned_recovery_parent as parent
+    private,shared=roots
+    with reader_slot(private/'q4-live-update.lock',timeout_seconds=1):
+        with pytest.raises(parent.OwnerRefused):
+            with parent.reserve(private,shared,pins()): pytest.fail('busy slot was admitted')
+    assert not (private/'q4-adopt-recovery-job.pending.json').exists()
+
+def test_refused_exception_after_reservation_stays_unknown(roots):
+    from tools import wd_q4_owned_recovery_parent as parent
+    private,shared=roots
+    with pytest.raises(parent.OwnerUnknown):
+        with parent.reserve(private,shared,pins()): raise parent.OwnerRefused('synthetic')
+    assert (private/'q4-adopt-recovery-job.pending.json').exists()
+
+def test_proven_early_refusal_preserves_owner_for_drained_job_finalization(actual_continuation):
+    import hashlib
+    from tools import wd_q4_owned_recovery_parent as parent
+    args={**actual_continuation, 'baseline_path':str(Path(actual_continuation['baseline_path']).with_name('missing-baseline.json'))}
+    reader=Path(parent.__file__).with_name('wd_q4_owned_recovery_reader.py')
+    result=parent.run_owned(**args,owner_pins=bound_pins(args),reader_sha256=hashlib.sha256(reader.read_bytes()).hexdigest())
+    assert result['status']=='REFUSED'
+    assert set(result)=={'status','attempt','marker_id','marker_sha256'}
+
+def test_invalid_baseline_with_existing_adoption_stays_unknown(actual_continuation,monkeypatch):
+    import hashlib
+    from tests.tools.test_wd_q4_continuation_adopt_recovery import paths
+    from tools import wd_q4_continuation_adopt as adopt
+    from tools import wd_q4_owned_recovery_parent as parent
+    args=actual_continuation; private,_=paths(args)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(adopt.update,'_publish',lambda *_a,**_k: (_ for _ in ()).throw(KeyboardInterrupt()))
+        with pytest.raises(adopt.AdoptInterrupted): adopt.run_once(**args)
+    old=private/'q4-continuation-adopt.pending.json'; old_bytes=old.read_bytes()
+    changed={**args,'baseline_path':str(Path(args['baseline_path']).with_name('missing-baseline.json'))}
+    reader=Path(parent.__file__).with_name('wd_q4_owned_recovery_reader.py')
+    with pytest.raises(parent.OwnerUnknown):
+        parent.run_owned(**changed,owner_pins=bound_pins(changed),reader_sha256=hashlib.sha256(reader.read_bytes()).hexdigest())
+    assert old.read_bytes()==old_bytes
+    assert (private/'q4-adopt-recovery-job.pending.json').exists()
+
 @pytest.mark.parametrize('stage,expected',[('before','NOT_ADOPTED'),('after','ADOPTED')])
 def test_parent_owned_job_may_reconcile_real_adoption(actual_continuation,monkeypatch,stage,expected):
     import json

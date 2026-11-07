@@ -19,10 +19,12 @@ import sys
 
 from sandbox.mind.step2 import prefix_private_state as private_state
 from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
-from sandbox.mind.step2.reader_slot import reader_slot
+from sandbox.mind.step2.reader_slot import reader_slot, ReaderBusy
 
 
 class OwnerUnknown(RuntimeError): pass
+class OwnerRefused(ValueError):
+    """This attempt proved it did not create a marker or start a mutation."""
 _KEYS=frozenset({'manifest_sha256','config_sha256','runtime_sha256','host_sha256','receipt_sha256',
                  'tuple_sha256','baseline_sha256','interpreter_sha256','launcher_sha256','commit'})
 _HEX=re.compile(r'^[0-9a-f]{64}$'); _COMMIT=re.compile(r'^[0-9a-f]{40}$')
@@ -95,7 +97,10 @@ def reserve(private_root,shared_root,pins):
         if not private.is_dir() or not shared.is_dir(): raise ValueError()
         with ExitStack() as slots:
             for name in ('q4-continuation-orchestrator.lock','q4-live-update.lock','q4-cutoff-owner.lock'):
-                slots.enter_context(reader_slot(checkpoint._secure(private/name,missing_leaf=True),timeout_seconds=.2))
+                try:
+                    slots.enter_context(reader_slot(checkpoint._secure(private/name,missing_leaf=True),timeout_seconds=.2))
+                except ReaderBusy:
+                    raise OwnerRefused('owner_busy') from None
             with private_state.locked_state(private,shared,enabled=True):
                 with private_state._checkpoint_lock(shared,.2):
                     competing=(private/'prefix-private-state.pending',private/'.wd-q4-status-prefix-runner.pending',
@@ -114,6 +119,10 @@ def reserve(private_root,shared_root,pins):
                         raise OwnerUnknown('owner_unknown')
                     owner=_Owner(handle,path,private,shared,pins,raw,_identity(kernel,handle),attempt); handle=None
         yield owner
+    except OwnerRefused:
+        if created:
+            raise OwnerUnknown('owner_unknown') from None
+        raise
     except OwnerUnknown:
         raise
     except BaseException:
@@ -167,8 +176,12 @@ def run_owned(*, enabled=False, baseline_path=None, baseline_sha256=None, manife
         if (child.returncode!=0 or len(child.stdout)>1024 or json.loads(child.stdout)!=expected or
                 _reader_digest(reader)!=reader_sha256):
             raise OwnerUnknown('owner_unknown')
-        result=recovery.recover_once(enabled=True,baseline_path=baseline_path,baseline_sha256=baseline_sha256,
-            manifest_sha256=manifest_sha256,genesis_tuple_bytes=genesis_tuple_bytes,
-            genesis_tuple_sha256=genesis_tuple_sha256,receipt_bytes=receipt_bytes,receipt_sha256=receipt_sha256,
-            _owner=owner,_owner_pins=owner_pins)
+        try:
+            result=recovery.recover_once(enabled=True,baseline_path=baseline_path,baseline_sha256=baseline_sha256,
+                manifest_sha256=manifest_sha256,genesis_tuple_bytes=genesis_tuple_bytes,
+                genesis_tuple_sha256=genesis_tuple_sha256,receipt_bytes=receipt_bytes,receipt_sha256=receipt_sha256,
+                _owner=owner,_owner_pins=owner_pins)
+        except recovery.RecoveryRefused:
+            # F3 guarantees this class only before entering reconciliation.
+            result={'status':'REFUSED'}
         return {**result,**owner.descriptor()}

@@ -9,7 +9,9 @@ from tools import wd_q4_lane_binding_producer as binding_producer
 from tools import wd_q4_live_snapshot_publish as live
 from tools import wd_q4_secure_transport as transport
 from tests.tools.test_wd_q4_fixed_result_adapter import make_case
+from tests.tools.test_wd_q4_staged_lane_query import staged_producer  # noqa: F401 - pytest fixture
 
+_REAL_STAGED_BINDING_PRODUCER = binding_producer.build_staged_lane_binding
 
 def enc(obj):
     return json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
@@ -404,6 +406,125 @@ def test_staged_publish_and_select_use_staged_producer_and_card_pointer(staged):
     publication = json.loads((staged['root'] / 'q4-live-current.json').read_bytes())
     assert publication['index_pointer_sha256'] == sha(staged['files']['pointer'])
     assert not (staged['index'] / 'q4-latest.json').read_bytes() == staged['files']['pointer']
+
+
+@pytest.fixture
+def real_staged(case, staged_producer):
+    """Build C2 with the real synthetic producer and retain the real binding producer."""
+    c, evidence = case, staged_producer
+    plan_raw = evidence['public_plan_bytes']; plan = json.loads(plan_raw)
+    made = _REAL_STAGED_BINDING_PRODUCER(**evidence)
+    binding = json.loads(made['binding_bytes'])['binding']
+    assert len(binding) == 10 and 'receipt_sha256' not in binding
+    directory = Path(plan['config']['memory'])
+    snapshot = transport.fixed_card_bundle(enabled=True, **{key:evidence[key+'_bytes'] for key in
+        ('pointer','policy','roster','public_policy','card_decision','card_policy')},
+        memory=(directory/'memory.json').read_bytes(), projection=(directory/'projection.json').read_bytes(),
+        descriptor=(directory/'descriptor.json').read_bytes())
+    bundle = Path(c['base'][0]['bundle_root'])
+    (bundle/'wd-fleet.json').write_bytes(evidence['fleet_bytes'])
+    (bundle/'deployment-manifest.json').write_bytes(evidence['manifest_bytes'])
+    (bundle/'Invoke-WdQ4Query.ps1').write_bytes(evidence['wrapper_bytes'])
+    c['manifest_sha'] = evidence['expected_manifest_sha256']
+    c['index'] = Path(plan['root'])
+    for gen in ('b'*40, 'c'*40):
+        generation = c['root']/gen
+        public_path = generation/'public-plan.json'
+        fixed = json.loads(c['config'][gen][5]['fixed_plan_bytes'])
+        fixed.update(schema='wd.q4-fixed-plan.v3',backend='staged-card-wrapper-v1',
+            bundle_sha256=sha(snapshot),bundle_bytes=len(snapshot),
+            expected_pointer_sha256=binding['pointer_sha256'],expected_source_sha256=binding['source_anchor_sha256'],
+            expected_encoder_sha256=binding['encoder_sha256'],policy_sha256=binding['policy_sha256'],
+            roster_sha256=binding['roster_sha256'],expected_public_policy_sha256=binding['public_policy_sha256'],
+            card_decision_sha256=binding['card_decision_sha256'],card_policy_sha256=binding['card_policy_sha256'],
+            wrapper_sha256=evidence['expected_wrapper_sha256'],deployment_manifest_sha256=c['manifest_sha'],
+            public_plan_sha256=sha(plan_raw),host_sha256='8'*64,backend_sha256='9'*64,
+            bundle_root=str(bundle),bundle_commit='a'*40,wrapper_path=str(bundle/'Invoke-WdQ4Query.ps1'),
+            public_plan_path=str(public_path))
+        fixed_raw=enc(fixed)
+        for name, data in (('public-plan.json',plan_raw),('lane-binding.v1.json',made['binding_bytes']),
+                           ('fixed-plan.v2.json',fixed_raw),('public-snapshot.v1.json',snapshot)):
+            (generation/name).write_bytes(data)
+        descriptor=dict(c['config'][gen][0])
+        descriptor.update(fleet_sha256=evidence['expected_fleet_sha256'],binding_sha256=made['binding_sha256'],
+            fixed_plan_sha256=sha(fixed_raw),snapshot_sha256=sha(snapshot),expected_binding=binding)
+        descriptor_raw=enc(descriptor);(generation/'shared-session-config.v2.json').write_bytes(descriptor_raw)
+        inputs=dict(c['config'][gen][5],binding_bytes=made['binding_bytes'],fixed_plan_bytes=fixed_raw,
+                    fixed_bundle_bytes=snapshot)
+        c['config'][gen]=(descriptor,descriptor_raw,sha(descriptor_raw),evidence['fleet_bytes'],binding,inputs)
+    c['base']=c['config']['b'*40];c['candidate']=c['config']['c'*40]
+    c['real_plan']=plan
+    return c
+
+
+def test_real_staged_binding_producer_publishes_and_selects(real_staged):
+    assert live.binding_producer.build_staged_lane_binding is _REAL_STAGED_BINDING_PRODUCER
+    published = do_publish(real_staged)
+    selected = do_select(real_staged)
+    assert published['status'] == 'PUBLISHED' and selected['status'] == 'SELECTED'
+    assert selected['configuration'][2] == real_staged['candidate'][2]
+    assert selected['publication_sha256'] == published['publication_sha256']
+
+
+@pytest.mark.parametrize('part', ['pointer','policy','card_policy','card_decision','projection','source','generation'])
+def test_real_staged_binding_rejects_changed_c2_inputs_before_publish(real_staged, part):
+    plan = real_staged['real_plan']
+    if part == 'projection':
+        path = Path(plan['config']['memory'])/'projection.json'
+    else:
+        path = Path(plan[part+'_path'])
+    if part == 'source':
+        data = path.read_bytes()
+        path.write_bytes(b'!' + data[1:])  # Rewrite inside the pinned prefix, not an allowed append.
+    elif part == 'generation':
+        path.write_bytes(enc({'generation':'synthetic-changed'}))
+    else:
+        path.write_bytes(path.read_bytes()+b' ')
+    with pytest.raises(live.LiveSnapshotRefused):
+        do_publish(real_staged)
+    assert not (real_staged['root']/'q4-live-current.json').exists()
+
+
+def test_real_staged_source_append_is_allowed_without_claiming_freshness(real_staged):
+    path = Path(real_staged['real_plan']['source_path'])
+    path.write_bytes(path.read_bytes()+b'{"synthetic":"later"}\n')
+    assert do_publish(real_staged)['status'] == 'PUBLISHED'
+    assert do_select(real_staged)['status'] == 'SELECTED'
+
+
+def test_real_staged_pointer_change_after_producer_before_publish_refuses(real_staged, monkeypatch):
+    pointer = Path(real_staged['real_plan']['pointer_path'])
+    calls = []
+    def run_and_change(**kwargs):
+        value = _REAL_STAGED_BINDING_PRODUCER(**kwargs)
+        calls.append(True)
+        pointer.write_bytes(pointer.read_bytes()+b' ')
+        return value
+    monkeypatch.setattr(live.binding_producer,'build_staged_lane_binding',run_and_change)
+    with pytest.raises(live.LiveSnapshotRefused):
+        do_publish(real_staged)
+    assert calls == [True]
+    assert not (real_staged['root']/'q4-live-current.json').exists()
+
+
+@pytest.mark.parametrize('part', ['pointer','publication'])
+def test_real_staged_changed_evidence_before_query_output_refuses(real_staged, part):
+    from tools import wd_q4_lane_caller_cli as caller
+    published = do_publish(real_staged)
+    selected = do_select(real_staged)
+    descriptor, _, _, _, binding, inputs = selected['configuration']
+    caller._require_current_snapshot(descriptor, binding, inputs)
+    live.recheck(selected['publication_path'], published['publication_sha256'])
+    if part == 'pointer':
+        path = Path(real_staged['real_plan']['pointer_path'])
+        path.write_bytes(path.read_bytes()+b' ')
+        with pytest.raises(ValueError):
+            caller._require_current_snapshot(descriptor, binding, inputs)
+    else:
+        path = Path(selected['publication_path'])
+        path.write_bytes(path.read_bytes()+b' ')
+        with pytest.raises(live.LiveSnapshotRefused):
+            live.recheck(selected['publication_path'], published['publication_sha256'])
 
 
 def test_staged_route_ignores_legacy_index_pointer(staged):

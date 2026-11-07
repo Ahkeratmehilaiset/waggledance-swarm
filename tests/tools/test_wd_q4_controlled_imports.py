@@ -102,6 +102,8 @@ if scenario == 'preseed':
 if scenario == 'mp_foreign_preseed':
  import types
  sys.modules['__mp_main__'] = types.ModuleType('foreign')
+if scenario == 'mp_initial_same':
+ sys.modules['__mp_main__'] = sys.modules['__main__']
 pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
 if scenario in ('badmanifest', 'helper_tamper', 'mp_foreign_preseed'):
  try: ns['_install_controlled_imports'](root, manifest, '0'*64 if scenario == 'badmanifest' else pin)
@@ -110,8 +112,22 @@ if scenario in ('badmanifest', 'helper_tamper', 'mp_foreign_preseed'):
 guard = ns['_install_controlled_imports'](root, manifest, pin)
 if scenario.startswith('mp_'):
  import types
+ if scenario == 'mp_initial_same':
+  baseline = set(sys.modules)
+  importlib.import_module('multiprocessing')
+  assert sys.modules['__mp_main__'] is sys.modules['__main__']
+  assert '__mp_main__' in baseline
+  print('PASS'); raise SystemExit(0)
  assert '__mp_main__' not in sys.modules
  main = sys.modules['__main__']
+ if scenario == 'mp_prior_source':
+  sys.modules['__mp_main__'] = main
+  try:
+   importlib.import_module('multiprocessing')
+   guard.accept_created('__mp_main__', main)
+  except ns['_Refused']: pass
+  else: raise AssertionError('alias registered before source was credited to source')
+  print('PASS'); raise SystemExit(0)
  if scenario == 'mp_unwitnessed': sys.modules['__mp_main__'] = main
  else: importlib.import_module('multiprocessing')
  if scenario == 'mp_alias_swap': sys.modules['__mp_main__'] = types.ModuleType('foreign')
@@ -306,7 +322,7 @@ def test_verified_source_creation_witness(tmp_path, scenario):
     assert result.stdout in (b'PASS\r\n', b'PASS\n')
 
 
-@pytest.mark.parametrize('scenario', ('mp_clean', 'mp_origin', 'mp_unwitnessed', 'mp_wrong_source',
+@pytest.mark.parametrize('scenario', ('mp_clean', 'mp_origin', 'mp_unwitnessed', 'mp_prior_source', 'mp_initial_same', 'mp_wrong_source',
                                       'mp_foreign_preseed', 'mp_alias_swap', 'mp_main_swap',
                                       'mp_file_mutation', 'mp_spec_mutation'))
 def test_main_alias_is_bound_to_bootstrap_and_verified_stdlib_source(tmp_path, scenario):

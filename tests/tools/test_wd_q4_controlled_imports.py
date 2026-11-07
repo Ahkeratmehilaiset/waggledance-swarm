@@ -28,6 +28,11 @@ def _probe(tmp_path, scenario):
     (site / 'wd_synthetic_bad.py').write_text('raise AssertionError("must not execute")\n')
     files = [{'path': 'site/wd_synthetic_good.py', 'size': len(good),
               'sha256': hashlib.sha256(good).hexdigest()}]
+    if scenario == 'mp_wrong_source':
+        source = b'import sys\nsys.modules["__mp_main__"] = sys.modules["__main__"]\n'
+        (site / 'multiprocessing.py').write_bytes(source)
+        files.append({'path': 'site/multiprocessing.py', 'size': len(source),
+                      'sha256': hashlib.sha256(source).hexdigest()})
     if scenario.startswith('witness_'):
         producer = (b'import sys, types\nVALUE = "safe"\n'
                     b'def make_alias(target):\n'
@@ -94,13 +99,35 @@ def evil_hook(path): effects.append('hook'); return Evil()
 if scenario == 'preseed':
  sys.path_hooks.insert(0,evil_hook)
  sys.path_importer_cache[str(root/'site')] = Evil()
+if scenario == 'mp_foreign_preseed':
+ import types
+ sys.modules['__mp_main__'] = types.ModuleType('foreign')
 pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
-if scenario in ('badmanifest', 'helper_tamper'):
+if scenario in ('badmanifest', 'helper_tamper', 'mp_foreign_preseed'):
  try: ns['_install_controlled_imports'](root, manifest, '0'*64 if scenario == 'badmanifest' else pin)
  except ns['_Refused']: print('PASS'); raise SystemExit(0)
  raise AssertionError('bad manifest pin accepted')
 guard = ns['_install_controlled_imports'](root, manifest, pin)
-if scenario == 'preseed':
+if scenario.startswith('mp_'):
+ import types
+ assert '__mp_main__' not in sys.modules
+ main = sys.modules['__main__']
+ if scenario == 'mp_unwitnessed': sys.modules['__mp_main__'] = main
+ else: importlib.import_module('multiprocessing')
+ if scenario == 'mp_alias_swap': sys.modules['__mp_main__'] = types.ModuleType('foreign')
+ if scenario == 'mp_main_swap': sys.modules['__main__'] = types.ModuleType('foreign')
+ if scenario == 'mp_file_mutation': main.__file__ = 'synthetic-invalid'
+ if scenario == 'mp_spec_mutation': main.__spec__ = object()
+ if scenario in ('mp_clean', 'mp_origin'):
+  guard.accept_created('__mp_main__', sys.modules['__mp_main__'])
+  if scenario == 'mp_origin':
+   roots = [ns['os'].path.normcase(ns['os'].path.realpath(root/'site'))] + ns['_interpreter_roots']()
+   ns['_module_origins'](set(sys.modules)-{'__mp_main__'}, roots, str(root/'assets'/'code'), guard)
+ else:
+  try: guard.accept_created('__mp_main__', sys.modules['__mp_main__'])
+  except ns['_Refused']: pass
+  else: raise AssertionError('unbound main alias accepted')
+elif scenario == 'preseed':
  assert importlib.import_module('wd_synthetic_good').VALUE == 42 and not effects
 elif scenario in ('clean', 'pyc'):
  assert importlib.import_module('wd_synthetic_good').VALUE == 42
@@ -274,6 +301,15 @@ def test_direct_standard_loader_is_also_bounded(tmp_path, scenario):
 @pytest.mark.parametrize('scenario', ('witness_clean', 'witness_preseed', 'witness_swap', 'witness_code',
                                       'witness_globals', 'witness_closure', 'witness_direct_reload', 'witness_origin'))
 def test_verified_source_creation_witness(tmp_path, scenario):
+    result = _probe(tmp_path, scenario)
+    assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
+    assert result.stdout in (b'PASS\r\n', b'PASS\n')
+
+
+@pytest.mark.parametrize('scenario', ('mp_clean', 'mp_origin', 'mp_unwitnessed', 'mp_wrong_source',
+                                      'mp_foreign_preseed', 'mp_alias_swap', 'mp_main_swap',
+                                      'mp_file_mutation', 'mp_spec_mutation'))
+def test_main_alias_is_bound_to_bootstrap_and_verified_stdlib_source(tmp_path, scenario):
     result = _probe(tmp_path, scenario)
     assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
     assert result.stdout in (b'PASS\r\n', b'PASS\n')

@@ -219,13 +219,64 @@ def test_recovery_job_does_not_admit_while_checkpoint_lock_is_held(job):
 def test_admission_locks_are_released_before_the_child(job):
     prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
     private=job['bundle'].parent/'private'; checkpoint=job['bundle'].parent/'checkpoint'
+    paths=[private/name for name in ('q4-continuation-orchestrator.lock','q4-live-update.lock',
+          'q4-cutoff-owner.lock','prefix-private-state.lock')]+[checkpoint/'q4-checkpoint.lock']
     cli=job['bundle']/'tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_cli.py'
-    cli.write_text("def main(args):\n import msvcrt\n"
-        + " p=open("+repr(str(private/'prefix-private-state.lock'))+",'r+b'); p.seek(0); msvcrt.locking(p.fileno(),msvcrt.LK_NBLCK,1)\n"
-        + " q=open("+repr(str(checkpoint/'q4-checkpoint.lock'))+",'r+b'); q.seek(0); msvcrt.locking(q.fileno(),msvcrt.LK_NBLCK,1)\n"
-        + " q.seek(0); msvcrt.locking(q.fileno(),msvcrt.LK_UNLCK,1); q.close()\n"
-        + " p.seek(0); msvcrt.locking(p.fileno(),msvcrt.LK_UNLCK,1); p.close()\n"
-        + " print('{\"status\":\"NOT_ADOPTED\"}'); return 0\n",encoding='ascii')
+    code="def main(args):\n import msvcrt\n slots=[]\n"
+    code+=" for name in "+repr([str(path) for path in paths])+":\n  f=open(name,'r+b'); f.seek(0); msvcrt.locking(f.fileno(),msvcrt.LK_NBLCK,1); slots.append(f)\n"
+    code+=" for f in reversed(slots):\n  f.seek(0); msvcrt.locking(f.fileno(),msvcrt.LK_UNLCK,1); f.close()\n"
+    code+=" print('{\"status\":\"NOT_ADOPTED\"}'); return 0\n"
+    cli.write_text(code,encoding='ascii')
     repin_changed(job,['tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_cli.py'])
     result=run_job(job,scratch)
     assert result.returncode==0 and json.loads(result.stdout)=={'status':'NOT_ADOPTED'}
+
+
+def test_active_real_adoption_blocks_recovery_job(job,tmp_path,monkeypatch,capsys):
+    import base64
+    import threading
+    from tests.tools import test_wd_q4_genesis_bootstrap as genesis_fixture
+    from tests.tools import test_wd_q4_continuation_adopt as adopt_fixture
+    from tools import wd_q4_continuation_adopt as adopt
+    from tools import wd_q4_genesis_to_composer_cli as composer
+    prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
+    case=tmp_path/'real-adoption'; case.mkdir()
+    synthetic=genesis_fixture.synthetic.__wrapped__(case,monkeypatch)
+    args=adopt_fixture.actual_continuation.__wrapped__(synthetic,monkeypatch,case,capsys)
+    actual_route=composer._tuple_part(json.loads(args['genesis_tuple_bytes']),'route')
+    private=Path(actual_route['private_state_root']); checkpoint=Path(actual_route['checkpoint_root'])
+    tup=json.loads(job['tuple'].read_bytes()); route=json.loads(base64.b64decode(tup['route']['bytes_b64']))
+    route.update(private_state_root=str(private),checkpoint_root=str(checkpoint))
+    raw=_existing.encode(route); tup['route']={'bytes_b64':base64.b64encode(raw).decode(),'sha256':_existing.sha(raw)}
+    job['tuple'].write_bytes(_existing.encode(tup))
+    config=json.loads(job['config'].read_bytes()); config['tuple_sha256']=_existing.sha(job['tuple'].read_bytes())
+    job['config'].write_bytes(_existing.encode(config)); job['config_pin']=_existing.sha(job['config'].read_bytes())
+    entered=threading.Event(); release=threading.Event(); outcomes=[]
+    def waiting_publish(*_a,**_kw):
+        entered.set(); release.wait(40)
+        raise KeyboardInterrupt()
+    def run_adopt():
+        try: adopt.run_once(**args)
+        except BaseException as exc: outcomes.append(type(exc))
+    with monkeypatch.context() as scoped:
+        scoped.setattr(adopt.update,'_publish',waiting_publish)
+        thread=threading.Thread(target=run_adopt); thread.start()
+        try:
+            assert entered.wait(20)
+            assert (private/'q4-continuation-adopt.pending.json').exists()
+            result=run_job(job,scratch)
+        finally:
+            release.set(); thread.join(10)
+    assert not thread.is_alive() and outcomes==[adopt.AdoptInterrupted]
+    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    assert not (private/'q4-adopt-recovery-job.pending.json').exists()
+
+@pytest.mark.parametrize('name',['q4-continuation-orchestrator.lock','q4-live-update.lock','q4-cutoff-owner.lock'])
+def test_each_owner_lock_blocks_recovery_before_job_marker(job,name):
+    from sandbox.mind.step2.reader_slot import reader_slot
+    prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
+    private=job['bundle'].parent/'private'
+    with reader_slot(private/name,timeout_seconds=1):
+        result=run_job(job,scratch)
+    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    assert not (private/'q4-adopt-recovery-job.pending.json').exists()

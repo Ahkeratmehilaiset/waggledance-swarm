@@ -326,6 +326,48 @@ def test_sources_verify_within_a_pinned_synthetic_prefix(source):
     assert out == {'status': 'MATCH_WITHIN_PREFIX', 'cards': len(events) + 1, 'completeness': 'UNKNOWN'}
 
 
+@pytest.mark.parametrize('count',[1,None])
+def test_source_verification_parses_one_prefix_for_all_cards(source, monkeypatch, count):
+    from tools import wd_q4_public_card_prefix_verifier as verifier
+    events=corpus()[:count];projection=project(events);args=source(events)
+    original=verifier._read;calls=[]
+    def counted(*a,**kw):
+        calls.append(1)
+        return original(*a,**kw)
+    monkeypatch.setattr(verifier,'_read',counted)
+    assert scp.verify_shared_card_sources(projection,enabled=True,**args)=={
+        'status':'MATCH_WITHIN_PREFIX','cards':len(events),'completeness':'UNKNOWN'}
+    assert len(calls)==1
+
+
+@pytest.mark.parametrize('mutation',['rewrite','replace','generation','append'])
+def test_source_rechecked_after_all_card_checks(source,monkeypatch,mutation):
+    from tools import wd_q4_public_card_prefix_verifier as verifier
+    from pathlib import Path
+    events=corpus();projection=project(events);args=source(events)
+    original=verifier._check;calls=[]
+    def mutate(*a,**kw):
+        result=original(*a,**kw)
+        calls.append(1)
+        if len(calls)!=len(projection['sources']): return result
+        file=Path(args['source_path'])
+        if mutation=='rewrite':
+            data=file.read_bytes();file.write_bytes(b'!' + data[1:])
+        elif mutation=='replace':
+            data=file.read_bytes();file.rename(file.with_name('old-synthetic.jsonl'));file.write_bytes(data)
+        elif mutation=='generation':
+            Path(args['generation_path']).write_bytes(b'{"generation":"other"}')
+        else:
+            with file.open('ab') as stream:stream.write(b'{"task_id":"unrelated"}\n')
+        return result
+    monkeypatch.setattr(verifier,'_check',mutate)
+    if mutation=='append':
+        assert scp.verify_shared_card_sources(projection,enabled=True,**args)['status']=='MATCH_WITHIN_PREFIX'
+    else:
+        with pytest.raises(scp.SharedCardRefused,match='source_unverified'):
+            scp.verify_shared_card_sources(projection,enabled=True,**args)
+
+
 @pytest.mark.parametrize('change', ['missing_row', 'changed_row', 'wrong_uuid', 'writer_not_in_policy',
                                     'tampered_ref'])
 def test_source_verification_fails_closed(source, change):

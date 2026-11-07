@@ -59,7 +59,14 @@ _SIDECAR_KEYS = frozenset({'schema', 'pr', 'pr_head', 'merge_commit', 'card_head
                            'required_contexts', 'contexts_on', 'check_runs_head_sha', 'captures',
                            'merge_commit_reachable_from', 'source_authentication', 'operator_attested',
                            'cryptographic_proof', 'request_sha256', 'claim_sha256', 'reader_truth', 'evidence_link'})
-_OPTION_KEYS = ('expected_bundle', 'bundle_store_root', 'active_bundle_root', 'expected_state_sha256')
+# The caller's composer options: exactly the orchestrator's nine option keys minus 'generation', which the builder
+# adds together with the optional 'shared_stage_root' (always set here, from the spec).
+_OPTION_KEYS = frozenset({'expected_bundle', 'expected_commit', 'expected_manifest_sha256', 'expected_host_sha256',
+                          'descriptor_options', 'bundle_store_root', 'active_bundle_root', 'expected_state_sha256'})
+_OPTION_PATHS = ('expected_bundle', 'bundle_store_root', 'active_bundle_root')
+_HEX_UPPER = re.compile(r'[0-9A-F]{64}\Z')
+# The orchestrator overwrites these two descriptor options, so a caller value would be silently replaced.
+_ORCHESTRATOR_DESCRIPTOR_KEYS = frozenset({'expected_binding', 'public_plan'})
 _LIMIT = 1024 * 1024
 _GIT_LIMIT = 64 * 1024 * 1024
 _MISSING_EVIDENCE = ['checks_green_by_verifiable_authority', 'pr_merged_by_verifiable_authority']
@@ -295,6 +302,34 @@ def _link(spec, output, seen):
     return {'card-evidence-link-pr%d.json' % sidecar['pr']: _canonical(link)}, {}
 
 
+def _composer_options(options):
+    """Refuse unless the caller options have the exact orchestrator key set and the types and limits its composer
+    requires (paths absolute on C: as the real orchestrator requires); deeper equalities stay the composer's."""
+    from tools import wd_q4_descriptor_cli as descriptor_cli
+    from tools import wd_q4_lane_caller_cli as lane_caller
+    from tools import wd_q4_shared_descriptor_producer as shared_descriptor
+    if type(options) is not dict or set(options) != _OPTION_KEYS:
+        raise ValueError()
+    for key in _OPTION_PATHS:
+        value = options[key]
+        if (type(value) is not str or not value.isascii() or not Path(value).is_absolute()
+                or Path(value).drive.upper() != 'C:' or '..' in Path(value).parts):
+            raise ValueError()
+    descriptor = options['descriptor_options']
+    if (type(options['expected_commit']) is not str or not _COMMIT.fullmatch(options['expected_commit'])
+            or type(options['expected_manifest_sha256']) is not str
+            or not _HEX_UPPER.fullmatch(options['expected_manifest_sha256'])
+            or any(type(options[key]) is not str or not _HEX.fullmatch(options[key])
+                   for key in ('expected_host_sha256', 'expected_state_sha256'))
+            or type(descriptor) is not dict
+            or set(descriptor) != descriptor_cli._DESCRIPTOR_KEYS - _ORCHESTRATOR_DESCRIPTOR_KEYS
+            or any(type(descriptor[key]) is not int or not 1 <= descriptor[key] <= limit
+                   for key, limit in (('interpreter_max_bytes', lane_caller.MAX_INTERPRETER), ('timeout_seconds', 600),
+                                      ('max_output_bytes', lane_caller.MAX_OUTPUT)))
+            or type(descriptor['outer']) is not dict or set(descriptor['outer']) != shared_descriptor._OUTER_KEYS):
+        raise ValueError()
+
+
 def _candidate(spec, output, seen):
     from sandbox.mind.step2 import public_knowledge_card as card_mod
     from sandbox.mind.step2 import shared_capture_adapter as capture
@@ -367,9 +402,9 @@ def _candidate(spec, output, seen):
     fixed = files._json(fixed_raw)
     options_spec, options_raw = _pinned(spec['composer_options'], seen)
     options = files._json(options_raw)
-    if (type(fixed) is not dict or type(options) is not dict or any(key not in options for key in _OPTION_KEYS)
-            or 'shared_stage_root' in options or 'generation' in options):
+    if type(fixed) is not dict:
         raise ValueError()
+    _composer_options(options)
     inputs = {name: configs[name] for name in _CONFIGS}
     inputs.update(roster=roster, anchors=anchors_spec)
     decision = {'schema': 'wd.q4-real-card-decision-request.v1', 'mode': 'real',

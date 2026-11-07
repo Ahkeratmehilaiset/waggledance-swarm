@@ -10,6 +10,8 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 
 import pytest
@@ -40,8 +42,14 @@ def helper(name, path):
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='fenced producer and guarded peer need Windows')
-@pytest.mark.parametrize('fault', ['none', 'selector_changed', 'index_changed'])
-def test_two_real_fenced_publications_are_selected_by_running_caller(tmp_path, monkeypatch, capsys, fault):
+@pytest.mark.parametrize('fault,envelope,lane', [
+    ('none', False, 'codex-lead-1'), ('selector_changed', False, 'codex-lead-1'),
+    ('index_changed', False, 'codex-lead-1'), ('none', True, 'codex-lead-1'),
+    ('selector_changed', True, 'codex-lead-1'), ('index_changed', True, 'codex-lead-1'),
+    ('none', True, 'codex-tools-1'), ('none', True, 'claude-rco-1'),
+    ('none', True, 'claude-rco-2'), ('none', True, 'fable-5'),
+])
+def test_two_real_fenced_publications_are_selected_by_running_caller(tmp_path, monkeypatch, capsys, fault, envelope, lane):
     pytest.importorskip('faiss')
     status = helper('e2e_real_status_helpers', 'test_wd_q4_status_prefix_runner.py')
     fixed = helper('e2e_fixed_runtime_helpers', 'test_wd_q4_fixed_snapshot_transport.py')
@@ -49,7 +57,6 @@ def test_two_real_fenced_publications_are_selected_by_running_caller(tmp_path, m
     original_case = status.case.__wrapped__(tmp_path, monkeypatch, runner)
     _, original_args, route, checkpoint, private, _ = original_case
     fleet_doc = json.loads(original_args()['fleet_bytes'])
-    lane = 'codex-lead-1'
     worktree = tmp_path / 'worktree'
     worktree.mkdir()
     runtime_root = tmp_path / 'lane-runtime'
@@ -68,18 +75,28 @@ def test_two_real_fenced_publications_are_selected_by_running_caller(tmp_path, m
     bundle.mkdir()
     wrapper = b'synthetic-wrapper-never-executed'
     (bundle / 'Invoke-WdQ4Query.ps1').write_bytes(wrapper)
+    bridge_wrapper = bundle / 'Invoke-WdBridgePython.ps1'
+    quote=lambda value: "'" + str(value).replace("'", "''") + "'"
+    root=Path(__file__).resolve().parents[2]
+    code="import runpy,sys;sys.path.insert(0,"+repr(str(root))+");sys.argv=['wd_q4_lane_caller_cli.py','--enabled'];runpy.run_module('tools.wd_q4_lane_caller_cli',run_name='__main__')"
+    bridge_wrapper.write_text('& '+quote(sys.executable)+' -c '+quote(code)+'\n$global:LASTEXITCODE=$LASTEXITCODE\n', encoding='utf-8')
     (bundle / 'wd-fleet.json').write_bytes(fleet)
     manifest = enc({'schema_version': 1, 'source_commit': 'a' * 40,
-                    'files': {'wd-fleet.json': sha(fleet), 'Invoke-WdQ4Query.ps1': sha(wrapper)}})
+                    'files': {'wd-fleet.json': sha(fleet), 'Invoke-WdQ4Query.ps1': sha(wrapper),
+                              'Invoke-WdBridgePython.ps1':sha(bridge_wrapper.read_bytes())}})
     (bundle / 'deployment-manifest.json').write_bytes(manifest)
     generations = tmp_path / 'shared-generations'
     generations.mkdir()
     monkeypatch.chdir(worktree)
-    uuid = next(e['agent_uuid'] for e in fleet_doc['lanes'] if e['agent'] == lane)
+    uuid = next(e['agent_uuid'] for e in fleet_doc['lanes'] + [fleet_doc['tools_supervisor']] if e['agent'] == lane)
     for key, value in {'AGENT_BRIDGE_AGENT': lane, 'AGENT_BRIDGE_AGENT_UUID': uuid,
                        'AGENT_BRIDGE_RUN_ID': 'synthetic-live-run', 'AGENT_BRIDGE_OWNER_TOKEN': 'synthetic-token',
                        'WD_REBOOT_EXPECTED_MANIFEST_HASH': sha(manifest), 'WD_Q4_LIVE_MODE': '1'}.items():
         monkeypatch.setenv(key, value)
+    if envelope:
+        monkeypatch.setenv('WD_Q4_WITH_COVERAGE', '1')
+    else:
+        monkeypatch.delenv('WD_Q4_WITH_COVERAGE', raising=False)
     runtime = baseline = None
     answers = []
 
@@ -220,6 +237,11 @@ def test_two_real_fenced_publications_are_selected_by_running_caller(tmp_path, m
             out = capsys.readouterr()
             assert not out.err
             answer = json.loads(out.out)
+            if envelope:
+                assert set(answer) == {'schema', 'coverage', 'freshness', 'result'}
+                assert answer['schema'] == 'wd.q4-lane-coverage-envelope.v1'
+                assert answer['coverage'] == answer['freshness'] == 'UNKNOWN'
+                answer = answer['result']
             assert answer['status'] == 'VALIDATED' and answer['inner_status'] == 'ANSWER'
             assert answer['descriptor_sha256'] == candidate[1]
             assert answer['answer']['binding']['pointer_sha256'] == result['pointer_sha256']
@@ -228,6 +250,18 @@ def test_two_real_fenced_publications_are_selected_by_running_caller(tmp_path, m
             assert answer['answer']['results']
             assert all(item['ref_sha256'] in {sha(r['provenance']['event_ref'].encode()) for r in records}
                        for item in answer['answer']['results'])
+            if envelope:
+                host=shutil.which('powershell.exe'); assert host
+                env=dict(os.environ)
+                env.update(WD_BRIDGE_BUNDLE_ROOT=str(bundle),WD_BRIDGE_PYTHON_WRAPPER=str(bridge_wrapper))
+                helper=root/'ops/windows/reboot/Invoke-WdQ4LaneRecall.ps1'
+                call=subprocess.run([host,'-NoProfile','-NonInteractive','-File',str(helper),'-Live','-WithCoverage'],
+                                    input=query,capture_output=True,timeout=120,cwd=worktree,env=env)
+                assert call.returncode==0,call.stderr.decode(errors='replace')
+                outer=json.loads(call.stdout)
+                assert outer['schema']=='wd.q4-lane-coverage-envelope.v1'
+                assert outer['coverage']==outer['freshness']=='UNKNOWN'
+                assert outer['result']['answer']['binding']['pointer_sha256']==result['pointer_sha256']
             answers.append(answer)
         return result
 

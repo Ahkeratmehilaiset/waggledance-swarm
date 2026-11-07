@@ -298,26 +298,143 @@ def test_crash_window_preserves_marker_for_new_launcher(job,point):
     assert len(receipts)==(1 if point=='after_receipt_flush' else 0)
 
 
+def wait_for_synthetic_preflight_and_marker(process,ready,marker,total_deadline,*,marker_seconds):
+    def wait_for(path, deadline, phase):
+        while not path.exists():
+            if process.poll() is not None: raise AssertionError('launcher exited before '+phase)
+            if time.monotonic() >= deadline: raise TimeoutError('timed out waiting for '+phase)
+            time.sleep(.05)
+    wait_for(ready,total_deadline,'verified fixture preflight')
+    if ready.read_bytes()!=b'ready': raise AssertionError('invalid fixture preflight signal')
+    marker_deadline=min(total_deadline,time.monotonic()+marker_seconds)
+    wait_for(marker,marker_deadline,'owner marker')
+
+
+def test_marker_window_starts_after_synthetic_preflight(tmp_path):
+    ready=tmp_path/'preflight'; marker=tmp_path/'marker'
+    code=("import pathlib,time; time.sleep(2.5); pathlib.Path("+repr(str(ready))+").write_bytes(b'ready'); "
+          "time.sleep(.2); pathlib.Path("+repr(str(marker))+").write_bytes(b'marker')")
+    process=subprocess.Popen([sys.executable,'-c',code])
+    try:
+        deadline=time.monotonic()+10
+        wait_for_synthetic_preflight_and_marker(process,ready,marker,deadline,marker_seconds=2)
+        assert ready.read_bytes()==b'ready' and marker.read_bytes()==b'marker'
+    finally:
+        if process.poll() is None: process.kill()
+        process.wait(timeout=5)
+
+
+@pytest.mark.parametrize('signal', [False, True])
+def test_preflight_and_marker_waits_remain_bounded(tmp_path,signal):
+    ready=tmp_path/'preflight'; marker=tmp_path/'marker'
+    if signal: ready.write_bytes(b'ready')
+    process=subprocess.Popen([sys.executable,'-c','import time; time.sleep(5)'])
+    try:
+        with pytest.raises(TimeoutError):
+            wait_for_synthetic_preflight_and_marker(process,ready,marker,time.monotonic()+.5,marker_seconds=.2)
+        assert not marker.exists()
+    finally:
+        if process.poll() is None: process.kill()
+        process.wait(timeout=5)
+
+
 def test_concurrent_then_killed_launcher_never_restarts(job):
     prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
-    parent_behavior(job,'import time; time.sleep(20)')
+    # Both children verify all real fixture pins before the test-only barrier.
+    # Start them together so their independently bounded 30s Jobs overlap;
+    # no barrier signal claims reservation, cleanup, or authentication.
+    base=job['bundle'].parent
+    ready_first=base/'synthetic-first.ready'; ready_second=base/'synthetic-second.ready'
+    gate_first=base/'synthetic-first.go'; gate_second=base/'synthetic-second.go'
+    outer=job['bundle']/'Invoke-WdQ4AdoptRecovery.ps1'
+    text=outer.read_text(encoding='utf-8-sig')
+    outer_anchor="'-ExpectedHostSha256',$ExpectedHostSha256)"
+    assert text.count(outer_anchor)==1
+    text=text.replace(outer_anchor,"'-ExpectedHostSha256',$ExpectedHostSha256,'-SyntheticRole',[string]$env:WD_Q4_SYNTHETIC_ROLE)")
+    outer.write_text(text,encoding='utf-8')
+    worker=job['bundle']/'Invoke-WdQ4ContinuationWorker.ps1'
+    text=worker.read_text(encoding='utf-8-sig')
+    worker_param="[string]$Runtime,[string]$RuntimeSha256,[string]$ExpectedHostSha256='')"
+    worker_start='$psi.UseShellExecute=$false; $psi.CreateNoWindow=$true'
+    assert text.count(worker_param)==1 and text.count(worker_start)==1
+    text=text.replace(worker_param,"[string]$Runtime,[string]$RuntimeSha256,[string]$ExpectedHostSha256='',[string]$SyntheticRole='')")
+    text=text.replace(worker_start,worker_start+"\n    $psi.EnvironmentVariables['WD_Q4_SYNTHETIC_ROLE']=$SyntheticRole")
+    worker.write_text(text,encoding='utf-8')
+    bootstrap=job['bundle']/'tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_bootstrap.py'
+    source=bootstrap.read_text(encoding='utf-8')
+    anchor="    scope['_check_project_origins'](code)\n"
+    assert source.count(anchor)==2
+    signal=("    _role=os.environ.get('WD_Q4_SYNTHETIC_ROLE')\n"
+            "    if _role in ('first','second'):\n"
+            "        import time as _synthetic_time\n"
+            "        _base=Path("+repr(str(base))+")\n"
+            "        _ready=_base/('synthetic-'+_role+'.ready')\n"
+            "        _stage=_base/('synthetic-'+_role+'.stage')\n"
+            "        _stage.write_bytes(b'ready'); os.replace(_stage,_ready)\n"
+            "        _gate=_base/('synthetic-'+_role+'.go')\n"
+            "        _limit=_synthetic_time.monotonic()+25\n"
+            "        while not _gate.exists():\n"
+            "            if _synthetic_time.monotonic()>=_limit: raise TimeoutError()\n"
+            "            _synthetic_time.sleep(.05)\n")
+    bootstrap.write_text(source.replace(anchor,anchor+signal,1),encoding='utf-8')
+    repin_changed(job,['Invoke-WdQ4AdoptRecovery.ps1','Invoke-WdQ4ContinuationWorker.ps1',
+                       'tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_bootstrap.py'])
+    # Hold the synthetic owner until its actual Job terminates. Its production
+    # 30-second Job deadline remains in force; this is not cleanup evidence.
+    parent_behavior(job,'import threading; threading.Event().wait()')
     marker=job['bundle'].parent/'private'/'q4-adopt-recovery-job.pending.json'
-    first=subprocess.Popen(command(job,scratch),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    command_args=command(job,scratch)
+    total_deadline=time.monotonic()+120
+    def env(role): return dict(os.environ,WD_Q4_SYNTHETIC_ROLE=role)
+    def remaining_budget(cap):
+        remaining=total_deadline-time.monotonic()
+        if remaining<=0: raise TimeoutError('concurrency test overall deadline')
+        return min(cap,remaining)
+    def run_with_remaining_budget():
+        return subprocess.run(command_args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                              text=True,timeout=remaining_budget(50),env=env('third'))
+    first=subprocess.Popen(command_args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env('first'))
+    second=None
+    first_killed=False
     try:
-        deadline=time.monotonic()+20
-        while not marker.exists() and time.monotonic()<deadline:
-            if first.poll() is not None: pytest.fail('first launcher exited before reservation')
-            time.sleep(.1)
-        assert marker.exists()
-        second=run_job(job,scratch)
-        assert second.returncode==3 and json.loads(second.stdout)=={'status':'UNKNOWN'}
+        second=subprocess.Popen(command_args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env('second'))
+        while not (ready_first.exists() and ready_second.exists()):
+            if first.poll() is not None or second.poll() is not None: raise AssertionError('launcher exited before fixture preflight barrier')
+            if time.monotonic()>=total_deadline: raise TimeoutError('concurrency test overall deadline')
+            time.sleep(.05)
+        assert ready_first.read_bytes()==ready_second.read_bytes()==b'ready'
+        assert first.poll() is None and second.poll() is None
+        gate_first.write_bytes(b'go')
+        wait_for_synthetic_preflight_and_marker(first,ready_first,marker,total_deadline,marker_seconds=20)
+        assert first.poll() is None and second.poll() is None
+        # The owner keeps a write handle open on Windows. Capture file identity
+        # now; read the bytes only after the owner has exited.
+        first_stat=marker.stat()
+        marker_id=(first_stat.st_dev,first_stat.st_ino)
+        assert marker_id[1]
+        gate_second.write_bytes(b'go')
+        second_stdout,second_stderr=second.communicate(timeout=remaining_budget(50))
+        assert second.returncode==3 and json.loads(second_stdout)=={'status':'UNKNOWN'}, second_stderr
+        assert first.poll() is None  # the owner is genuinely still active
+        current=marker.stat()
+        assert (current.st_dev,current.st_ino)==marker_id
     finally:
-        if first.poll() is None: first.kill()
-        first.communicate(timeout=10)
+        if second is not None and second.poll() is None: second.kill()
+        if first.poll() is None:
+            first.kill(); first_killed=True
+        try:
+            if second is not None:
+                second.communicate(timeout=max(.01,min(10,total_deadline-time.monotonic())))
+        finally:
+            first.communicate(timeout=max(.01,min(10,total_deadline-time.monotonic())))
+    assert first_killed, 'first launcher exited before the deliberate interrupt'
+    current=marker.stat()
     initial=marker.read_bytes()
-    third=run_job(job,scratch)
+    assert initial and (current.st_dev,current.st_ino)==marker_id
+    third=run_with_remaining_budget()
     assert third.returncode==3 and json.loads(third.stdout)=={'status':'UNKNOWN'}
-    assert marker.read_bytes()==initial
+    current=marker.stat()
+    assert marker.read_bytes()==initial and (current.st_dev,current.st_ino)==marker_id
 
 def test_private_root_cannot_overlap_the_bundle(job):
     import base64

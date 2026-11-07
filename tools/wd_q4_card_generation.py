@@ -7,7 +7,6 @@ assertion nor roster consistency authenticates the source or publisher. Output
 is staged only; this does not implement publication, scheduling or installation.
 """
 import copy
-import hashlib
 import json
 import re
 from pathlib import Path
@@ -32,37 +31,7 @@ class CardGenerationInterrupted(BaseException):
 
 def _claimed_cards(source_path,generation_path,end_cursor,expected_sha256):
     """Select card claims from the exact bounded prefix; never return other rows."""
-    bridge=prefix.bridge
-    # Reuse the prefix verifier's full cursor, generation, identity and budget
-    # preflight. Its task filter alone cannot detect a card claim on a wrong task.
-    prefix._read(source_path,generation_path,end_cursor,expected_sha256)
-    cursor=bridge.BridgeCursor(0,end_cursor.file_identity,end_cursor.generation)
-    digest=hashlib.sha256(b'').hexdigest(); pages=work=0; selected=[]
-    while True:
-        pages+=1; work+=2*min(end_cursor.offset,cursor.offset+prefix._PAGE)
-        if pages>128 or work>prefix._MAX_HASH_WORK: raise ValueError()
-        result=bridge.read_bridge_log(source_path,cursor=cursor,
-            max_bytes=min(prefix._PAGE,end_cursor.offset-cursor.offset),max_rows=100000,
-            generation_path=generation_path,expected_prefix_sha256=digest,max_prefix_bytes=prefix._MAX_SOURCE)
-        if (not isinstance(result,bridge.BridgePrefixReadResult) or
-                result.status not in (bridge.BridgeReadStatus.OK,bridge.BridgeReadStatus.IDLE) or
-                result.snapshot_length is None or result.snapshot_length<end_cursor.offset or
-                result.candidate_cursor is None or result.candidate_prefix is None):
-            raise ValueError()
-        for row in result.rows:
-            if type(row) is not dict: continue
-            payload=row.get('payload')
-            if type(payload) is not dict or 'public_knowledge' not in payload: continue
-            if len(selected)>=prefix._MAX_CANDIDATES: raise ValueError()
-            raw=json.dumps(row,sort_keys=True,ensure_ascii=False,separators=(',',':'),allow_nan=False).encode('utf-8')
-            if len(raw)>8192: raise ValueError()
-            selected.append((prefix.event_id(row),row))
-        next_cursor=result.candidate_cursor
-        if next_cursor.offset==end_cursor.offset:
-            if next_cursor!=end_cursor or result.candidate_prefix.sha256!=expected_sha256: raise ValueError()
-            return selected
-        if next_cursor.offset<=cursor.offset or next_cursor.offset>end_cursor.offset: raise ValueError()
-        cursor,digest=next_cursor,result.candidate_prefix.sha256
+    return prefix._read_with_claims(source_path,generation_path,end_cursor,expected_sha256)[1]
 
 
 def prepare_card_generation(*, enabled=False, decision_bytes=None, decision_sha256=None,
@@ -89,9 +58,13 @@ def prepare_card_generation(*, enabled=False, decision_bytes=None, decision_sha2
         if (type(getattr(end_cursor,'offset',None)) is not int or end_cursor.offset!=anchor['offset'] or
                 getattr(end_cursor,'generation',None)!=anchor['generation']):
             raise ValueError()
-        claims=_claimed_cards(source_path,generation_path,end_cursor,anchor['sha256'])
+        rows,claims=prefix._read_with_claims(source_path,generation_path,end_cursor,anchor['sha256'])
         if not claims: raise ValueError()
-        accepted=[]; rejected_invalid_expiry=0; rejected_rows=None; rejection_policy=None
+        tasks,roster=prefix.capture.strict_pins(policy_bytes,policy_sha256,roster_bytes,roster_sha256)
+        writers=prefix._policy(card_policy_bytes,decision['card_policy_sha256'],tasks)
+        prefix.card._document(vocabulary_bytes,vocabulary_sha256,'wd.mind-public-vocabulary.v1',{'schema','components','tags'})
+        prefix.card._document(path_allowlist_bytes,path_allowlist_sha256,'wd.mind-public-paths.v1',{'schema','paths'})
+        accepted=[]; rejected_invalid_expiry=0
         for ref,event in claims:
             # A locale-formatted expiry can be quarantined only after checking
             # every other field against the same policy, roster and prefix.
@@ -100,19 +73,14 @@ def prepare_card_generation(*, enabled=False, decision_bytes=None, decision_sha2
             card=payload.get('public_knowledge') if type(payload) is dict else None
             expiry=card.get('valid_until_utc') if type(card) is dict else None
             if type(expiry) is str and re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}\.\d{2}\.00Z',expiry):
-                if rejected_rows is None:
-                    rejected_rows=prefix._read(source_path,generation_path,end_cursor,anchor['sha256'])
-                    tasks,roster=prefix.capture.strict_pins(policy_bytes,policy_sha256,roster_bytes,roster_sha256)
-                    rejection_policy=(prefix._policy(card_policy_bytes,decision['card_policy_sha256'],tasks),roster)
-                if rejected_rows.get(ref)!=event: raise ValueError()
-                rows=dict(rejected_rows)
+                if rows.get(ref)!=event: raise ValueError()
+                corrected_rows=dict(rows)
                 corrected=copy.deepcopy(event)
                 corrected['payload']['public_knowledge']['valid_until_utc']=expiry[:13]+expiry[13:].replace('.',':')
                 corrected_ref=prefix.event_id(corrected)
-                rows[corrected_ref]=corrected
-                writers,roster=rejection_policy
+                corrected_rows[corrected_ref]=corrected
                 moment=event['ts_utc'][:17]+'59.9999999Z'
-                prefix._check(corrected_ref,rows,writers,roster,prefix._utc(moment),vocabulary_bytes,
+                prefix._check(corrected_ref,corrected_rows,writers,roster,prefix._utc(moment),vocabulary_bytes,
                     vocabulary_sha256,path_allowlist_bytes,path_allowlist_sha256)
                 head=card.get('head')
                 if head is not None and (decision['observed_heads'] is None or head not in decision['observed_heads']):
@@ -122,13 +90,8 @@ def prepare_card_generation(*, enabled=False, decision_bytes=None, decision_sha2
             # Every claim, including duplicates or wrong-task claims, must pass
             # the same exact prefix, closed envelope, writer and roster checks.
             moment=event['ts_utc'][:17]+'59.9999999Z'
-            checked=prefix.verify(enabled=True,source_path=source_path,generation_path=generation_path,
-                end_cursor=end_cursor,expected_prefix_sha256=anchor['sha256'],target_event_ref=ref,
-                nonreview_policy_bytes=policy_bytes,nonreview_policy_sha256=policy_sha256,
-                card_policy_bytes=card_policy_bytes,card_policy_sha256=decision['card_policy_sha256'],
-                roster_bytes=roster_bytes,roster_sha256=roster_sha256,vocabulary_bytes=vocabulary_bytes,
-                vocabulary_sha256=vocabulary_sha256,path_allowlist_bytes=path_allowlist_bytes,
-                path_allowlist_sha256=path_allowlist_sha256,now_utc=moment)
+            checked=prefix._check(ref,rows,writers,roster,prefix._utc(moment),vocabulary_bytes,
+                vocabulary_sha256,path_allowlist_bytes,path_allowlist_sha256)
             if checked.get('status')!='MATCH_WITHIN_PREFIX': raise ValueError()
             head=event['payload']['public_knowledge'].get('head')
             if head is not None and (decision['observed_heads'] is None or head not in decision['observed_heads']):
@@ -136,6 +99,7 @@ def prepare_card_generation(*, enabled=False, decision_bytes=None, decision_sha2
                 # source identity, never write an unverified raw head.
                 raise ValueError()
             accepted.append(event)
+        prefix._check_prefix_unchanged(source_path,generation_path,end_cursor,anchor['sha256'])
         if not accepted: raise ValueError()
         projection=cards.project_shared_cards(accepted,vocabulary_bytes=vocabulary_bytes,
             vocabulary_sha256=vocabulary_sha256,path_allowlist_bytes=path_allowlist_bytes,

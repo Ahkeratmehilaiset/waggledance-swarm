@@ -78,6 +78,18 @@ def test_prefix_changed_between_checks_is_refused(real_fixture,monkeypatch):
     assert len(calls)==1
 
 
+def test_decision_parses_pinned_prefix_only_once(real_fixture,monkeypatch):
+    mod=importlib.import_module('tools.wd_q4_real_card_decision_prepare');args=arguments(real_fixture)
+    from tools import wd_q4_public_card_prefix_verifier as prefix
+    original=prefix._read;calls=[]
+    def counted(*values,**kwargs):
+        calls.append(1)
+        return original(*values,**kwargs)
+    monkeypatch.setattr(prefix,'_read',counted)
+    assert mod.prepare(**args)['status']=='PREPARED'
+    assert len(calls)==1
+
+
 def test_prepared_real_decision_drives_actual_generation(real_fixture):
     pytest.importorskip('faiss')
     mod=importlib.import_module('tools.wd_q4_real_card_decision_prepare')

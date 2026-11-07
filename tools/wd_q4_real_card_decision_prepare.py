@@ -95,7 +95,7 @@ def prepare(*, enabled=False, mode=None, policy_bytes=None, policy_sha256=None,
         pin=_sha(decision)
         if projection.verify_route_decision(decision,pin,policy_sha256=policy_sha256,roster_sha256=roster_sha256)!=value:
             raise ValueError()
-        prefix._read(source_path,generation_path,end_cursor,expected_prefix_sha256)
+        prefix._check_prefix_unchanged(source_path,generation_path,end_cursor,expected_prefix_sha256)
         if (_git_bytes(git_executable,git_executable_sha256)!=executable_raw
                 or projection.module_sha256()!=expected_card_module_sha256
                 or git.observe(enabled=True,git_executable=git_executable,repository=git_repository,

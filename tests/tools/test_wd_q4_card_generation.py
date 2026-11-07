@@ -32,6 +32,46 @@ def mixed_prepared(tmp_path,rows,*,heads='all'):
     return args,out
 
 
+def test_claim_collection_reads_small_pinned_prefix_once(tmp_path, monkeypatch):
+    from waggledance.core import bridge_log_reader as bridge
+    args,_=prepared(tmp_path)
+    original=bridge.read_bridge_log;calls=[]
+    def counted(*a,**kw):
+        calls.append(1)
+        return original(*a,**kw)
+    monkeypatch.setattr(bridge,'read_bridge_log',counted)
+    decision=json.loads(args['decision_bytes'])
+    claims=producer._claimed_cards(args['source_path'],args['generation_path'],args['end_cursor'],
+                                   decision['source_prefix']['sha256'])
+    assert len(claims)==len(rt.fx.corpus())
+    assert len(calls)==1
+
+
+@pytest.mark.parametrize('mutation', ['rewrite','replace','generation','append'])
+def test_prefix_is_rebound_after_claim_scan_before_generation(tmp_path,monkeypatch,mutation):
+    if mutation=='append': pytest.importorskip('faiss')
+    args,out=prepared(tmp_path)
+    original=producer.prefix._read_with_claims
+    def mutate(*values,**kwargs):
+        result=original(*values,**kwargs)
+        source=Path(args['source_path'])
+        if mutation=='rewrite':
+            data=source.read_bytes();source.write_bytes(b'!' + data[1:])
+        elif mutation=='replace':
+            data=source.read_bytes();source.rename(source.with_name('old-synthetic.jsonl'));source.write_bytes(data)
+        elif mutation=='generation':
+            Path(args['generation_path']).write_bytes(b'{"generation":"other"}')
+        else:
+            with source.open('ab') as stream:stream.write(b'{"task_id":"unrelated"}\n')
+        return result
+    monkeypatch.setattr(producer.prefix,'_read_with_claims',mutate)
+    if mutation=='append':
+        assert producer.prepare_card_generation(**args)['status']=='STAGED'
+    else:
+        with pytest.raises(producer.CardGenerationRefused):producer.prepare_card_generation(**args)
+        assert list(out.iterdir())==[]
+
+
 def test_mixed_prefix_ignores_noncard_private_and_review_events(tmp_path):
     pytest.importorskip('faiss')
     cards=rt.fx.corpus()

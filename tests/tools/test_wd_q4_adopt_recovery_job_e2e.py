@@ -1,5 +1,6 @@
 """Windows Job through the actual recovery, isolated synthetic state only."""
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,23 @@ from tools import wd_q4_live_update_once as update
 from tools import wd_q4_continuation_adopt as adopt
 
 ROOT=Path(__file__).resolve().parents[2]
+
+def _available(environ, platform):
+    if platform != 'win32' or environ.get('WD_Q4_ADOPT_JOB_E2E') != '1':
+        return False
+    try:
+        specs=[importlib.util.find_spec(name) for name in ('numpy','faiss','packaging')]
+        if any(spec is None or not spec.origin for spec in specs): return False
+        site=Path(specs[0].origin).parent.parent
+        return all((site/name).is_dir() for name in ('numpy','numpy.libs','faiss','faiss_cpu.libs','packaging'))
+    except (ImportError, OSError, ValueError):
+        return False
+
+def test_e2e_requires_explicit_opt_in_and_windows():
+    assert not _available({}, 'win32')
+    assert not _available({'WD_Q4_ADOPT_JOB_E2E':'1'}, 'linux')
+    assert not _available({'WD_Q4_ADOPT_JOB_E2E':'true'}, 'win32')
+
 def sha(raw): return hashlib.sha256(raw).hexdigest()
 def enc(obj): return json.dumps(obj,sort_keys=True,separators=(',',':')).encode()
 
@@ -99,6 +117,7 @@ def launch(case,runtime,args):
     return subprocess.run(cmd,text=True,capture_output=True,timeout=140)
 
 
+@pytest.mark.skipif(not _available(os.environ,sys.platform), reason='explicit Windows native-runtime opt-in required')
 @pytest.mark.parametrize('mode',['before','after','partial'])
 def test_job_reconciles_only_proven_adoptions(prepared,monkeypatch,mode):
     case,runtime,args=prepared; private,generation=paths(args)

@@ -132,6 +132,14 @@ def test_packaging_alone_does_not_activate_descriptor_or_provision_writers():
     assert "'Invoke-WdQ4AdoptRecovery.ps1'," in deployer
 
 
+def test_recovery_modules_are_in_import_smoke():
+    modules = _definition()['import_smoke']['package_modules']
+    for name in ('tools.wd_q4_continuation_adopt_recovery',
+                 'tools.wd_q4_continuation_adopt_recovery_cli',
+                 'tools.wd_q4_continuation_adopt_recovery_bootstrap'):
+        assert modules.count(name) == 1
+
+
 def test_staged_composer_command_is_packaged_and_explicitly_published():
     definition = _definition()
     assert definition['python_entrypoints']['q4_staged_composer'] == 'tools/wd_q4_staged_composer_cli.py'

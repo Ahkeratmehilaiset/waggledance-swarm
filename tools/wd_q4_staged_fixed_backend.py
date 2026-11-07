@@ -6,6 +6,7 @@ prove byte consistency only. Path rechecks do not prevent same-user ABA races.
 import hashlib
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -16,8 +17,8 @@ def _sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def _wrapper_command(plan, system_root):
-    """The only admitted staged command; query bytes are supplied on stdin."""
+def _wrapper_command(plan, system_root, public_plan_bytes):
+    """The only admitted command; its timeout comes solely from the pinned plan."""
     for value in (system_root, plan['bundle_root'], plan['wrapper_path'], plan['public_plan_path']):
         if (type(value) is not str or not 3 < len(value) <= 512 or not value.isascii() or not value.isprintable()
                 or value[0].lower() != 'c' or value[1:3] != ':\\' or '/' in value
@@ -34,11 +35,33 @@ def _wrapper_command(plan, system_root):
     if type(plan['bundle_commit']) is not str or len(plan['bundle_commit']) != 40 or any(
             c not in '0123456789abcdef' for c in plan['bundle_commit']):
         raise ValueError('staged_wrapper_refused')
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('staged_wrapper_refused')
+            result[key] = value
+        return result
+    if (type(public_plan_bytes) is not bytes or not 0 < len(public_plan_bytes) <= 65536
+            or not hmac.compare_digest(_sha(public_plan_bytes),plan['public_plan_sha256'])):
+        raise ValueError('staged_wrapper_refused')
+    try:
+        public = json.loads(public_plan_bytes.decode('utf-8', 'strict'), object_pairs_hook=unique,
+                            parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        if (type(public) is not dict or public.get('schema') != 'wd.q4-public-wrapper-plan.v3'
+                or type(public.get('config')) is not dict):
+            raise ValueError()
+        timeout = public['config']['timeout']
+        if (type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 1800):
+            raise ValueError()
+    except Exception:
+        raise ValueError('staged_wrapper_refused') from None
     host = os.path.join(system_root,'System32','WindowsPowerShell','v1.0','powershell.exe')
     return [host,'-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',plan['wrapper_path'],
             '-BundleRoot',plan['bundle_root'],'-ExpectedBundleCommit',plan['bundle_commit'],
             '-ExpectedManifestSha256',plan['deployment_manifest_sha256'],'-Public',
-            '-PublicPlanPath',plan['public_plan_path'],'-ExpectedPublicPlanSha256',plan['public_plan_sha256']]
+            '-PublicPlanPath',plan['public_plan_path'],'-ExpectedPublicPlanSha256',plan['public_plan_sha256'],
+            '-TimeoutSeconds',str(timeout)]
 
 
 def validate_card_input(plan, bundle_bytes, public_plan_bytes, *, enabled=False):
@@ -207,9 +230,9 @@ def prepare_staged_backend(plan, peer_path, services, *, enabled=False):
         check(plan.get('backend') == 'staged-card-wrapper-v1')
         services['_read_staged_backend'](peer_path, plan)
         system_root = os.environ.get('SYSTEMROOT', '')
-        command = _wrapper_command(plan, system_root)
-        services['_staged_read'](command[0], plan['host_sha256'], 128*1024*1024)
         public_bytes = services['_staged_read'](plan['public_plan_path'], plan['public_plan_sha256'], 65536)
+        command = _wrapper_command(plan, system_root, public_bytes)
+        services['_staged_read'](command[0], plan['host_sha256'], 128*1024*1024)
         services['_contain_child_output']()
         services['_reject_preloaded_runtime']()
         services['_reject_preloaded_faiss']()

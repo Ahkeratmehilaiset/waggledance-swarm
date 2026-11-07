@@ -46,8 +46,9 @@ class _NativeRegistrations:
         """Bind a later registration to the same observed object, not its name."""
         self._check(type(before) is dict and type(after) is dict and type(tainted) is set
                     and single_thread is True)
+        previously_registered = {id(module) for module in before.values()}
         for name, module in after.items():
-            if name in before or name in tainted or type(name) is not str:
+            if name in before or name in tainted or type(name) is not str or id(module) in previously_registered:
                 continue
             candidate = self._deferred.get(id(module))
             if candidate is None or candidate[0] is not module:

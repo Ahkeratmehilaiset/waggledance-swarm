@@ -318,7 +318,7 @@ def test_native_registration_is_scoped_and_does_not_claim_creation(scenario):
 
 @pytest.mark.parametrize('scenario', ('clean', 'preexisting', 'nested_source', 'nested_native',
                                       'registered_early', 'source_nested', 'source_preseed',
-                                      'substitution', 'native_mutation', 'source_mutation', 'concurrent'))
+                                      'source_other_key', 'substitution', 'native_mutation', 'source_mutation', 'concurrent'))
 def test_native_object_later_registered_by_verified_source(scenario):
     from sandbox.mind.step2 import q4_controlled_imports as controlled
 
@@ -339,8 +339,12 @@ def test_native_object_later_registered_by_verified_source(scenario):
     if scenario == 'native_mutation':
         alias.changed = 1
     source_before = {name: alias} if scenario in ('registered_early', 'source_preseed') else {}
+    if scenario == 'source_other_key':
+        source_before['wd_synthetic_other'] = alias
     candidate = types.ModuleType(name) if scenario == 'substitution' else alias
     source_after = {name: candidate}
+    if scenario == 'source_other_key':
+        source_after.update(source_before)
     source_tainted = {name} if scenario == 'source_nested' else set()
     tracker.bind_source(source_before, source_after, source_tainted, single_thread=True)
     if scenario == 'source_mutation':

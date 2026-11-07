@@ -233,6 +233,7 @@ for ($position=0; $position -lt $rows.Count; $position++) {
     $first.occurrences++
 }
 if ($historicalRows.Count -gt 0) {
+    if ($historicalRows.Count -ne 2) { throw 'Historical conflict requires exactly two pinned events' }
     $verified=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($event in $historicalRows) {
         $ref=(Get-BridgeReplyTextHash (ConvertTo-InventoryReferenceJson $event)).ToLowerInvariant()

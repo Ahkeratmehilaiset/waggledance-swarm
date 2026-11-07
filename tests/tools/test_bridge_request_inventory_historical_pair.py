@@ -4,10 +4,12 @@ No historical messages/payloads are committed. Tests replace only the pinned
 tuple literals in a fixture copy, never hashing, parsing or inventory behavior.
 """
 from copy import deepcopy
+import base64
 import hashlib
 import json
 from pathlib import Path
 import shutil
+import subprocess
 
 import pytest
 
@@ -38,6 +40,31 @@ def digest(event):
     for char in "'<>&":
         text = text.replace(char, "\\u%04x" % ord(char))
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_reference_serializer_matches_canonical_json(tmp_path, shell):
+    event = {"empty": [], "nested": {"number": 7, "flag": True},
+             "text": "ääkkönen\n\t\"\\", "nothing": None}
+    source = tmp_path / "event.json"
+    source.write_text(canonical(event), encoding="utf-8")
+    inventory = str(INVENTORY).replace("'", "''")
+    file = str(source).replace("'", "''")
+    script = f"""
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile('{inventory}',[ref]$tokens,[ref]$errors)
+if($errors.Count) {{ throw 'parse failure' }}
+$fn=$ast.Find({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ConvertTo-InventoryReferenceJson'}},$true)
+. ([scriptblock]::Create($fn.Extent.Text))
+$value=Get-Content -LiteralPath '{file}' -Raw -Encoding UTF8 | ConvertFrom-Json
+$json=ConvertTo-InventoryReferenceJson $value
+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+"""
+    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert base64.b64decode(result.stdout.strip()).decode("utf-8") == canonical(event)
 
 
 def pair():
@@ -90,11 +117,13 @@ def test_exact_pair_is_historical_and_never_a_request(tmp_path, shell):
 
 
 @pytest.mark.parametrize("shell", SHELLS)
-@pytest.mark.parametrize("change", ["third_row", "other_id", "one_row", "timestamp", "digest", "payload"])
+@pytest.mark.parametrize("change", ["third_row", "duplicate_row", "other_id", "one_row", "timestamp", "digest", "payload"])
 def test_all_unpinned_variants_fail_closed(tmp_path, shell, change):
     rows = pair()
     if change == "third_row":
         bad = deepcopy(rows[0]); bad["message"] = "third conflicting request"; rows.append(bad)
+    elif change == "duplicate_row":
+        rows.append(deepcopy(rows[0]))
     elif change == "other_id":
         for row in rows:
             row["request_id"] = "another-id"; row["request_digest"] = digest(row)

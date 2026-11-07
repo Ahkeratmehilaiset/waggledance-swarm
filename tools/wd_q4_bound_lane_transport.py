@@ -119,3 +119,73 @@ def make_bound_transport(*, bundle_root, expected_commit, expected_manifest_sha2
         return dispatch(stdin_bytes)
 
     return transport
+
+
+def make_guarded_staged_transport(*, bundle_root, expected_commit, expected_manifest_sha256, expected_wrapper_sha256,
+        public_plan_path, expected_public_plan_sha256, executable, expected_interpreter_sha256,
+        interpreter_max_bytes, fixed_plan_bytes, expected_fixed_plan_sha256, fixed_bundle_bytes,
+        runtime_manifest_bytes, cwd, timeout_seconds, max_output_bytes, enabled=False,
+        _owner_guard=None, _owner_context=None):
+    """Fixed staged-card dispatch only, requiring the exact existing guard context."""
+    try:
+        if (enabled is not True or type(_owner_guard) is not guard_completion._Guard
+                or _owner_guard._accept_owner_context(_owner_context) is not _owner_context
+                or type(fixed_plan_bytes) is not bytes
+                or not hmac.compare_digest(hashlib.sha256(fixed_plan_bytes).hexdigest(), expected_fixed_plan_sha256)):
+            raise ValueError()
+        plan = fixed._fixed_plan(fixed_plan_bytes)
+        if (plan['backend'] != 'staged-card-wrapper-v1' or type(fixed_bundle_bytes) is not bytes
+                or len(fixed_bundle_bytes) != plan['bundle_bytes']
+                or hashlib.sha256(fixed_bundle_bytes).hexdigest() != plan['bundle_sha256']
+                or type(runtime_manifest_bytes) is not bytes
+                or hashlib.sha256(runtime_manifest_bytes).hexdigest() != plan['runtime_manifest_sha256']
+                or expected_interpreter_sha256 != plan['interpreter_sha256']):
+            raise ValueError()
+        root, wrapper = lane._binding(bundle_root,expected_commit,expected_manifest_sha256,expected_wrapper_sha256)
+        path, public_bytes, pins = lane._public_plan(public_plan_path,expected_public_plan_sha256)
+        if (root != plan['bundle_root'] or wrapper != plan['wrapper_path'] or path != plan['public_plan_path']
+                or expected_commit != plan['bundle_commit']
+                or expected_manifest_sha256 != plan['deployment_manifest_sha256']
+                or expected_wrapper_sha256 != plan['wrapper_sha256']
+                or expected_public_plan_sha256 != plan['public_plan_sha256']):
+            raise ValueError()
+        parts = fixed._fixed_card_bundle_decode(fixed_bundle_bytes)
+        public = lane._json(public_bytes)
+        if public['schema'] != 'wd.q4-public-wrapper-plan.v3':
+            raise ValueError()
+        expected = {'pointer_sha256':plan['expected_pointer_sha256'],
+            'source_anchor_sha256':plan['expected_source_sha256'], 'encoder_sha256':plan['expected_encoder_sha256'],
+            'policy_sha256':plan['policy_sha256'], 'roster_sha256':plan['roster_sha256'],
+            'public_policy_sha256':plan['expected_public_policy_sha256'],
+            'card_decision_sha256':plan['card_decision_sha256'], 'card_policy_sha256':plan['card_policy_sha256'],
+            'descriptor_sha256':hashlib.sha256(parts['descriptor']).hexdigest()}
+        if (pins != expected or any(hashlib.sha256(parts[key]).hexdigest() != plan[pin]
+                for key,pin in (('pointer','expected_pointer_sha256'),('policy','policy_sha256'),
+                    ('roster','roster_sha256'),('public_policy','expected_public_policy_sha256'),
+                    ('card_decision','card_decision_sha256'),('card_policy','card_policy_sha256')))):
+            raise ValueError()
+        arguments = ('-BundleRoot',root,'-ExpectedBundleCommit',expected_commit,
+                     '-ExpectedManifestSha256',expected_manifest_sha256,'-Public','-PublicPlanPath',path,
+                     '-ExpectedPublicPlanSha256',expected_public_plan_sha256)
+    except Exception:
+        raise BoundLaneTransportRefused('binding_refused') from None
+
+    def transport(*, wrapper, arguments: tuple, stdin_bytes: bytes):
+        try:
+            if (_owner_guard._accept_owner_context(_owner_context) is not _owner_context
+                    or wrapper != lane._binding(bundle_root,expected_commit,expected_manifest_sha256,expected_wrapper_sha256)[1]
+                    or wrapper != plan['wrapper_path'] or arguments != arguments_expected
+                    or lane._public_plan(public_plan_path,expected_public_plan_sha256) != (path,public_bytes,pins)
+                    or type(stdin_bytes) is not bytes or not 0 < len(stdin_bytes) <= lane._MAX_QUERY):
+                raise ValueError()
+        except Exception:
+            raise BoundLaneTransportRefused('binding_refused') from None
+        return fixed.run_fixed_peer(executable=executable,expected_interpreter_sha256=expected_interpreter_sha256,
+            interpreter_max_bytes=interpreter_max_bytes,plan_bytes=fixed_plan_bytes,
+            expected_plan_sha256=expected_fixed_plan_sha256,bundle_bytes=fixed_bundle_bytes,
+            runtime_manifest_bytes=runtime_manifest_bytes,query_bytes=stdin_bytes,cwd=cwd,
+            timeout_seconds=timeout_seconds,max_output_bytes=max_output_bytes,public_snapshot_enabled=True,
+            _owner_guard=_owner_guard,_owner_context=_owner_context)
+
+    arguments_expected = arguments
+    return transport

@@ -1,14 +1,16 @@
 #requires -Version 5.1
 <# Fixed on-demand public card publication in the inherited lane session. Default OFF.
 Candidate code and the active bridge have independent caller-pinned manifests; the card
-request is a caller-pinned typed file. The publisher runs once in a bounded child that alone
-sees the candidate pin; the calling session keeps its own bridge pins. Output is rebuilt from
+request is a caller-pinned typed file. The publisher runs once as a child in an owned Windows
+Job (WdQ4ProcessJob.ps1, pinned by the candidate manifest) with an independent scratch root;
+only that child sees the candidate pin, and only a completed run with confirmed Job cleanup is
+read. The calling session keeps its own bridge pins. Output is rebuilt from
 validated fields only. UNKNOWN means do not retry blindly. Pins are caller assertions, not
 authentication, policy authorization or proof that a card is true.
 #>
 [CmdletBinding(PositionalBinding=$false)]
 param([switch]$Run, [string]$CandidateBundle='', [string]$ExpectedCandidateManifestSha256='',
-      [string]$CardRequest='', [string]$ExpectedCardRequestSha256='', [int]$TimeoutSeconds=120)
+      [string]$CardRequest='', [string]$ExpectedCardRequestSha256='', [string]$ScratchRoot='', [int]$TimeoutSeconds=120)
 $ErrorActionPreference='Stop'
 if (-not $Run) { [Console]::Out.WriteLine('{"status":"OFF"}'); return }
 $entered=$false
@@ -111,39 +113,73 @@ try {
     }
     $wrapper=Join-Path $candidate 'Invoke-WdBridgePython.ps1'
     $hostPath=CheckPath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
+    # Independent scratch root for the owned Job: plain, on C:, and disjoint from every bundle,
+    # the request, its inputs and the host directory. The helper adds a fresh child dir in it.
+    $scratch=CheckPath $ScratchRoot $true
+    $protected=@($candidate,$activeBundle,$request,(Split-Path -Parent $hostPath))
+    foreach ($spec in @($card.inputs.PSObject.Properties)) { $protected+=[IO.Path]::GetFullPath([string]$spec.Value.path) }
+    foreach ($other in $protected) {
+        $left=$scratch.TrimEnd('\'); $right=([string]$other).TrimEnd('\')
+        if ($left.Equals($right,[StringComparison]::OrdinalIgnoreCase) -or
+            $left.StartsWith($right+'\',[StringComparison]::OrdinalIgnoreCase) -or
+            $right.StartsWith($left+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'scratch' }
+    }
+    $helperText=PinnedText (CheckPath (Join-Path $candidate 'WdQ4ProcessJob.ps1')) ([string]$doc.files.PSObject.Properties['WdQ4ProcessJob.ps1'].Value) 1048576
     function PSLiteral([string]$Value) {
         if ($Value -match '[^\x20-\x7e]') { throw 'argument' }
         return "'" + $Value.Replace("'","''") + "'"
     }
-    $child="`$ErrorActionPreference='Stop'`n" +
-        "try {`n" +
-        " Import-Module -Name (Join-Path `$PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop`n" +
-        " & $(PSLiteral $wrapper) -VerifyPackage -Tool 'tools/wd_q4_public_card_publish_cli.py' --enabled --request $(PSLiteral $request) --request-sha256 $(PSLiteral $ExpectedCardRequestSha256)`n" +
-        " `$code=`$global:LASTEXITCODE; if (`$null -eq `$code) { exit 3 }; exit `$code`n" +
-        "} catch { exit 3 }`n"
-    $psi=[Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName=$hostPath
-    $psi.Arguments='-NoProfile -NonInteractive -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($child))
-    $psi.WorkingDirectory=$candidate
-    $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true
-    $psi.RedirectStandardInput=$true; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
-    # Child-only pins: the publisher reads the active bridge from the first, the candidate
-    # package from the second. This process environment is never modified.
-    $psi.EnvironmentVariables['WD_MIND_PUBLIC_ACTIVE_MANIFEST_SHA256']=$activePin
-    $psi.EnvironmentVariables['WD_REBOOT_EXPECTED_MANIFEST_HASH']=$ExpectedCandidateManifestSha256
-    $proc=[Diagnostics.Process]::new(); $proc.StartInfo=$psi
+    # The Job child starts with SYSTEMROOT, WINDIR, TEMP and TMP only. A fixed allowlist of the
+    # inherited session values plus the two child-only pins goes on its stdin, never on its
+    # command line; this process environment is never modified.
+    $names=@('AGENT_BRIDGE_AGENT','AGENT_BRIDGE_AGENT_UUID','AGENT_BRIDGE_SESSION_ID','AGENT_BRIDGE_RUN_ID',
+        'AGENT_BRIDGE_ROOT','AGENT_BRIDGE_RUNTIME_ROOT','WD_BRIDGE_BIN','WD_BRIDGE_PYTHON','WD_BRIDGE_PYTHON_SHA256',
+        'WD_BRIDGE_RUNTIME_ROOT','USERPROFILE','APPDATA','LOCALAPPDATA','HOMEDRIVE','HOMEPATH','USERNAME','USERDOMAIN',
+        'COMPUTERNAME','SystemDrive','ProgramData','ProgramFiles','CommonProgramFiles','ALLUSERSPROFILE','PUBLIC',
+        'NUMBER_OF_PROCESSORS','PROCESSOR_ARCHITECTURE','OS')
+    $forward=[ordered]@{}
+    foreach ($name in $names) {
+        $value=[Environment]::GetEnvironmentVariable($name,'Process')
+        if (-not [string]::IsNullOrEmpty($value)) { if ($value.Contains([string][char]0)) { throw 'environment' }; $forward[$name]=$value }
+    }
+    $forward['WD_MIND_PUBLIC_ACTIVE_MANIFEST_SHA256']=$activePin
+    $forward['WD_REBOOT_EXPECTED_MANIFEST_HASH']=$ExpectedCandidateManifestSha256
+    $json=[regex]::Replace(($forward | ConvertTo-Json -Compress),'[^\x20-\x7e]',{ param($m) '\u{0:x4}' -f [int][char]$m.Value })
+    $stdinBytes=[Text.Encoding]::ASCII.GetBytes($json)
+    if ($stdinBytes.Length -gt 65536) { throw 'environment' }
+    $allowed=(@($names+@('WD_MIND_PUBLIC_ACTIVE_MANIFEST_SHA256','WD_REBOOT_EXPECTED_MANIFEST_HASH')) | ForEach-Object { PSLiteral $_ }) -join ','
+    $child="`$ErrorActionPreference='Stop'`n`$allowed=@($allowed)`n`$wrapper=$(PSLiteral $wrapper)`n" +
+        "`$request=$(PSLiteral $request)`n`$requestPin=$(PSLiteral $ExpectedCardRequestSha256)`n"
+    $child+=@'
+try {
+ $text=[Console]::In.ReadToEnd()
+ if ($text.Length -gt 65536) { exit 3 }
+ $vars=$text | ConvertFrom-Json
+ foreach ($p in @($vars.PSObject.Properties)) {
+  if ($allowed -cnotcontains $p.Name) { exit 3 }
+  [Environment]::SetEnvironmentVariable($p.Name,[string]$p.Value,'Process')
+ }
+ $env:PSModulePath=Join-Path $PSHOME 'Modules'
+ $env:PATH=(Join-Path $env:SystemRoot 'System32')+';'+$env:SystemRoot+';'+$PSHOME
+ $env:PATHEXT='.COM;.EXE;.BAT;.CMD'
+ Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+ & $wrapper -VerifyPackage -Tool 'tools/wd_q4_public_card_publish_cli.py' --enabled --request $request --request-sha256 $requestPin
+ $code=$global:LASTEXITCODE; if ($null -eq $code) { exit 3 }; exit $code
+} catch { exit 3 }
+'@
+    $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($child))
+    . ([scriptblock]::Create($helperText))
     $entered=$true
-    try {
-        if (-not $proc.Start()) { throw 'start' }
-        $proc.StandardInput.Close()
-        $outTask=$proc.StandardOutput.ReadToEndAsync()
-        $errTask=$proc.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null)
-        if (-not $proc.WaitForExit($TimeoutSeconds*1000)) { throw 'timeout' }
-        $proc.WaitForExit()
-        if (-not $outTask.Wait(5000) -or -not $errTask.Wait(5000)) { throw 'drain' }
-        $code=$proc.ExitCode; $text=[string]$outTask.Result
-    } finally { $proc.Dispose() }
-    if ($text.Length -gt 4096) { throw 'output' }
+    $job=Invoke-WdQ4ProcessJob -Executable $hostPath -Arguments @('-NoProfile','-NonInteractive','-EncodedCommand',$encoded) `
+        -WorkingDirectory $candidate -ScratchRoot $scratch -InputBytes $stdinBytes -TimeoutSeconds $TimeoutSeconds `
+        -MaxOutputBytes 8192 -DetailedOutcome
+    # Only a completed run whose owned Job tree was confirmed gone is read; anything else is UNKNOWN.
+    if ([string]$job.Outcome -cne 'completed' -or [string]$job.Cleanup -cne 'confirmed' -or
+        $null -eq $job.ExitCode -or $null -eq $job.Stdout) { throw 'job' }
+    $code=[int]$job.ExitCode
+    $bytes=[byte[]]$job.Stdout
+    if ($bytes.Length -gt 4096) { throw 'output' }
+    $text=[Text.UTF8Encoding]::new($false,$true).GetString($bytes)
     if ($code -eq 2 -and $text.Trim().Length -eq 0) { [Console]::Out.WriteLine('{"status":"REFUSED"}'); exit 2 }
     $lines=@($text -split "`r?`n" | Where-Object { $_.Length -gt 0 })
     if ($code -ne 0 -or $lines.Count -ne 1) { throw 'result' }

@@ -266,6 +266,15 @@ def test_live_mode_refuses_if_no_live_publication_before_query(case, monkeypatch
     assert case["calls"] == []
 
 
+@pytest.mark.parametrize('coverage,live', [('1', ''), ('bad', '1')])
+def test_coverage_envelope_requires_valid_explicit_live_mode(case, monkeypatch, capsys, coverage, live):
+    monkeypatch.setenv('WD_Q4_WITH_COVERAGE', coverage)
+    monkeypatch.setenv('WD_Q4_LIVE_MODE', live)
+    case['outcome']['validated'] = True
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert case['calls'] == []
+
+
 def test_snapshot_changed_during_query_is_never_published(case, monkeypatch, capsys):
     pointer = case["latest"]
     case["outcome"]["validated"] = True

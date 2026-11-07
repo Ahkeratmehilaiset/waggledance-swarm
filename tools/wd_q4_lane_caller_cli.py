@@ -329,7 +329,9 @@ def main(argv=None):
         _check(argv == ["--enabled"])
         descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs = _configuration()
         live_mode = os.environ.get("WD_Q4_LIVE_MODE", "")
+        coverage_mode = os.environ.get("WD_Q4_WITH_COVERAGE", "")
         _check(live_mode in ("", "1"))
+        _check(coverage_mode in ("", "1") and (coverage_mode != "1" or live_mode == "1"))
         if live_mode == "1":
             from tools import wd_q4_live_snapshot_publish as live
             live_publication = live.select(enabled=True, baseline_path=_env("WD_Q4_SHARED_DESCRIPTOR_PATH"),
@@ -385,6 +387,16 @@ def main(argv=None):
             return _refuse(4)
         rendered = _output(result, lane, identity_pin, descriptor_pin, binding,
                            inputs["max_output_bytes"], token)
+        if coverage_mode == "1":
+            # No independent coverage pin exists: never imply completeness.
+            # Keep the validated v1 result and its answer digest unchanged.
+            wrapped = _canon({"schema": "wd.q4-lane-coverage-envelope.v1",
+                              "coverage": "UNKNOWN", "freshness": "UNKNOWN",
+                              "result": json.loads(rendered)}) + b"\n"
+            _check(len(wrapped) <= inputs["max_output_bytes"]
+                   and token.encode("utf-8", "strict") not in wrapped
+                   and _canon(token)[1:-1] not in wrapped)
+            rendered = wrapped.decode("ascii")
         owner_context._finish()
         witness = guard._registry._issue()
         guard.release(witness)

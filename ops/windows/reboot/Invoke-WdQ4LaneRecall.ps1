@@ -3,6 +3,8 @@
    Query bytes are never put in argv, environment, a file, or diagnostics.
    -Live selects the separately provisioned live pointer only in the query child;
    without it any inherited live-mode value is removed from that child.
+   -WithCoverage requires -Live and returns a versioned envelope that reports
+   coverage and freshness as UNKNOWN; it does not assert completeness.
    Job containment is cooperative with Windows and is not hostile-user isolation.
    A stopped runspace can suppress the status: without a complete exit-zero reply,
    treat the outcome as UNKNOWN and do not retry until separately reconciled.
@@ -16,6 +18,7 @@ param(
     [Parameter(ValueFromPipeline=$true)][AllowEmptyString()][string]$QueryJson,
     [ValidateRange(1,300)][int]$TimeoutSeconds = 120,
     [switch]$Live,
+    [switch]$WithCoverage,
     [switch]$InternalWorker
 )
 begin {
@@ -40,6 +43,7 @@ end {
         # terminating this worker alone is not proof of whole-tree cleanup.
         $worker = $null; $stdout = $null; $stderr = $null
         try {
+            if ($WithCoverage -and -not $Live) { throw 'refused' }
             if ($items.Count -gt 1) { throw 'refused' }
             if ($items.Count -eq 1) {
                 $query = [Text.UTF8Encoding]::new($false,$true).GetBytes($items[0])
@@ -71,6 +75,7 @@ end {
             $start.FileName = $shell
             $start.Arguments = '-NoProfile -NonInteractive -File "' + $scriptPath + '" -InternalWorker -TimeoutSeconds ' + $remainingSeconds
             if ($Live) { $start.Arguments += ' -Live' }
+            if ($WithCoverage) { $start.Arguments += ' -WithCoverage' }
             $start.UseShellExecute = $false; $start.CreateNoWindow = $true
             $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
             $worker = [Diagnostics.Process]::Start($start)
@@ -258,8 +263,10 @@ public static class $typeName {
             $document.situation -isnot [string] -or [string]::IsNullOrWhiteSpace($document.situation) -or
             ($document.time -isnot [string] -and $document.time -isnot [datetime]) -or
             ($document.time -is [string] -and $document.time -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$')) { throw 'refused' }
+        if ($WithCoverage -and -not $Live) { throw 'refused' }
         $liveEnvironment = if ($Live) { '$env:WD_Q4_LIVE_MODE=''1''; ' } else { 'Remove-Item Env:WD_Q4_LIVE_MODE -ErrorAction SilentlyContinue; ' }
-        $bootstrap = $liveEnvironment + 'if ([Console]::OpenStandardInput().ReadByte() -ne 71) { exit 2 }; try { & $env:WD_BRIDGE_PYTHON_WRAPPER tools/wd_q4_lane_caller_cli.py --enabled; exit $LASTEXITCODE } catch { exit 2 }'
+        $coverageEnvironment = if ($WithCoverage) { '$env:WD_Q4_WITH_COVERAGE=''1''; ' } else { 'Remove-Item Env:WD_Q4_WITH_COVERAGE -ErrorAction SilentlyContinue; ' }
+        $bootstrap = $liveEnvironment + $coverageEnvironment + 'if ([Console]::OpenStandardInput().ReadByte() -ne 71) { exit 2 }; try { & $env:WD_BRIDGE_PYTHON_WRAPPER tools/wd_q4_lane_caller_cli.py --enabled; exit $LASTEXITCODE } catch { exit 2 }'
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($bootstrap))
         $shellName = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
         $shell = [IO.Path]::Combine($PSHOME,$shellName)

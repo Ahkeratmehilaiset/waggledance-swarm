@@ -250,6 +250,29 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
         if (enabled is not True or any(type(item) is not str or not update._HEX.fullmatch(item)
                 for item in (expected_config_sha256, expected_attempt))):
             raise ValueError()
+        card_config = update._configuration(update._read(config_path, 65536, expected_config_sha256))
+        card_route = caller._json(update._read(card_config['route_path'], 65536, card_config['route_sha256']))
+        if card_route.get('schema') == 'wd.q4-card-refresh-tuple.v1':
+            from tools import wd_q4_card_refresh_coordinator as cards
+            if (card_config['schema'] != 'wd.q4-live-update-once.v2'
+                    or expected_runner_receipt_sha256 is not None
+                    or (expected_job_receipt_sha256 is not None and (
+                        expected_progress_sha256 is not None
+                        or expected_job_receipt_sha256 != card_route['job']['sha256']))
+                    or (expected_pointer_sha256 is not None and expected_job_receipt_sha256 is None)):
+                raise ValueError()
+            try:
+                if expected_pointer_sha256 is not None:
+                    checked = cards._configuration(card_config)
+                    if expected_pointer_sha256 != checked[2][4]['pointer_sha256']:
+                        raise ValueError()
+                return cards.recover(config=card_config, config_sha256=expected_config_sha256,
+                    attempt=expected_attempt, progress_sha256=expected_progress_sha256)
+            except cards.Unknown:
+                raise RecoveryOutcomeUnknown('recovery_outcome_unknown') from None
+        if card_config['schema'] == 'wd.q4-live-update-once.v2':
+            # An old P1/status marker cannot authorize a card recovery path.
+            raise RecoveryOutcomeUnknown('recovery_outcome_unknown')
         job_mode = expected_job_receipt_sha256 is not None
         if job_mode:
             if (expected_progress_sha256 is not None or expected_runner_receipt_sha256 is not None

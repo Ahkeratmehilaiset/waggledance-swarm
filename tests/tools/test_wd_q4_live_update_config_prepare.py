@@ -84,6 +84,11 @@ def test_pinned_private_tuple_is_materialized_without_changing_its_cutoff(tmp_pa
                   tuple_path=str(tuple_path), expected_tuple_sha256=args['expected_tuple_sha256'])
     if p1:
         kwargs['p1_enabled'] = True
+        monkeypatch.setattr(module.caller, '_configuration', lambda *_: pytest.fail('P1 reached v6 baseline'))
+        with pytest.raises(module.ConfigPrepareRefused):
+            module.prepare_config(**kwargs)
+        assert not list(out_dir.iterdir())
+        return
     result = module.prepare_config(**kwargs)
     assert result['status'] == 'PREPARED' and result['freshness'] == 'UNKNOWN'
     assert result['cutoff_utc'] == route['cutoff_utc']

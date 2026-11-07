@@ -567,66 +567,21 @@ def test_p1_configuration_refuses_unrecognized_or_downgraded_policy(change):
         update._configuration(update._encode({**_p1_test_config(),**change}))
 
 
-@pytest.mark.parametrize('fault', ['publish','before_progress','before_progress_no_change','before_runner_receipt'])
-def test_p1_opt_in_reaches_updater_and_recovery_without_policy_switch(tmp_path, monkeypatch, capsys, fault):
-    # The selector API is supplied by a disjoint Lead patch. This seam records
-    # the new literal keyword then delegates to the real legacy selector over
-    # the real synthetic status fixture: it does NOT prove real C2 P1 bounds.
-    import json
-    from pathlib import Path
-    from tools import wd_q4_live_update_recovery as recovery
-    encode, publish, select, pair = update._encode, update.live.publish, update.live.select, update.live._checked_pair
-    recover=recovery.recover
-    active={'value':False,'switched':False}
-    seen=[]
-    def encoded(value):
-        if isinstance(value,dict) and value.get('schema')=='wd.q4-live-update-once.v1':
-            active['value']=True
-            value={**value,'schema':'wd.q4-live-update-once.v2','p1_enabled':True}
-        return encode(value)
-    def forwarded(name, original):
-        def call(*args,**kw):
-            flag=kw.pop('p1_enabled',None)
-            import inspect
-            owner=Path(inspect.currentframe().f_back.f_code.co_filename).name
-            if active['value'] and name!='pair' and owner in (
-                    'wd_q4_live_update_once.py','wd_q4_live_update_recovery.py'):
-                assert flag is True, (name,owner,kw)
-            if flag is False:
-                # The seam deliberately invokes the legacy status selector.
-                # Its internal pair call explicitly carries the default False.
-                assert name == 'pair' and owner == 'wd_q4_live_snapshot_publish.py'
-            elif flag is not None:
-                assert flag is True
-                seen.append(name)
-            return original(*args,**kw)
-        return call
-    def checked_recover(**kw):
-        config_path=Path(kw['config_path'])
-        config=json.loads(config_path.read_bytes())
-        if config.get('p1_enabled') is True and not active['switched']:
-            baseline=update.caller._configuration(config['baseline_path'],config['baseline_sha256'])
-            route=json.loads(Path(config['route_path']).read_bytes())
-            marker=Path(route['private_state_root'])/'q4-live-update.pending.json'
-            before=marker.read_bytes()
-            original=config_path.read_bytes()
-            downgraded=dict(config,schema='wd.q4-live-update-once.v1')
-            downgraded.pop('p1_enabled')
-            changed=encode(downgraded)
-            try:
-                config_path.write_bytes(changed)
-                with pytest.raises(recovery.RecoveryRefused):
-                    recover(**{**kw,'expected_config_sha256':update._sha(changed)})
-                assert marker.read_bytes()==before
-            finally:
-                config_path.write_bytes(original)
-            active['switched']=True
-        return recover(**kw)
-    monkeypatch.setattr(update,'_encode',encoded)
-    monkeypatch.setattr(update.live,'publish',forwarded('publish',publish))
-    monkeypatch.setattr(update.live,'select',forwarded('select',select))
-    monkeypatch.setattr(update.live,'_checked_pair',forwarded('pair',pair))
-    monkeypatch.setattr(recovery,'recover',checked_recover)
-    test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path,monkeypatch,capsys,fault)
-    assert 'publish' in seen and 'select' in seen
-    assert active['switched'] is True
+@pytest.mark.parametrize('route_schema', ['wd.q4-status-prefix-route.v1', 'wd.q4-genesis-private-tuple.v1', 'unknown'])
+def test_p1_status_route_refuses_before_legacy_baseline(tmp_path, monkeypatch, route_schema):
+    route = tmp_path / 'route.json'; route.write_bytes(update._encode({'schema': route_schema}))
+    config = _p1_test_config()
+    config.update(route_path=str(route), route_sha256=update._sha(route.read_bytes()))
+    path = tmp_path / 'config.json'; path.write_bytes(update._encode(config))
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', config['manifest_sha256'])
+    seen = []
+    def baseline(*_):
+        seen.append('baseline')
+        raise ValueError()
+    monkeypatch.setattr(update.caller, '_configuration', baseline)
+    monkeypatch.setattr(update.runner, 'run_once', lambda **_: pytest.fail('legacy writer reached'))
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    with pytest.raises(update.UpdateRefused):
+        update.run_once(enabled=True, config_path=str(path), expected_config_sha256=update._sha(path.read_bytes()))
+    assert seen == []
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before

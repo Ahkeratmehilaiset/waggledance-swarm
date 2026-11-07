@@ -61,3 +61,24 @@ def test_recovery_uses_same_closed_configuration_reader_before_baseline(tmp_path
             expected_attempt='d'*64,expected_progress_sha256='e'*64)
     assert seen==([{'p1_enabled':True}] if p1 else [{}])
     assert list(tmp_path.iterdir())==[path]
+
+
+@pytest.mark.parametrize('route_schema', ['wd.q4-status-prefix-route.v1', 'wd.q4-genesis-private-tuple.v1', 'unknown'])
+def test_p1_status_recovery_stays_unknown_before_legacy_baseline(tmp_path, monkeypatch, route_schema):
+    from tools import wd_q4_live_update_once as update
+    from tests.tools.test_wd_q4_live_update_once import _p1_test_config
+    route = tmp_path / 'route.json'; route.write_bytes(update._encode({'schema': route_schema}))
+    config = _p1_test_config(); config.update(route_path=str(route), route_sha256=update._sha(route.read_bytes()))
+    path = tmp_path / 'config.json'; path.write_bytes(update._encode(config))
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', config['manifest_sha256'])
+    seen = []
+    def baseline(*_):
+        seen.append('baseline')
+        raise ValueError()
+    monkeypatch.setattr(recovery.caller, '_configuration', baseline)
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    with pytest.raises(recovery.RecoveryOutcomeUnknown):
+        recovery.recover(enabled=True, config_path=str(path), expected_config_sha256=update._sha(path.read_bytes()),
+            expected_attempt='d' * 64, expected_progress_sha256='e' * 64)
+    assert seen == []
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before

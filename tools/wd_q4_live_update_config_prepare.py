@@ -39,6 +39,19 @@ def prepare_config(*, enabled=False, output_path=None, baseline_path=None, expec
                 for pin in (expected_baseline_sha256, expected_manifest_sha256, expected_tuple_sha256))
                 or os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower() != expected_manifest_sha256):
             raise ValueError()
+        if p1_enabled:
+            tuple_raw = update._read(tuple_path, 65536, expected_tuple_sha256)
+            if caller._json(tuple_raw).get('schema') != 'wd.q4-card-refresh-tuple.v1':
+                raise ValueError()
+            from tools import wd_q4_card_refresh_coordinator as cards
+            try:
+                return cards.prepare_config(tuple_path=tuple_path, tuple_sha256=expected_tuple_sha256,
+                    output_path=output_path, baseline_path=baseline_path,
+                    baseline_sha256=expected_baseline_sha256, manifest_sha256=expected_manifest_sha256)
+            except cards.Unknown:
+                raise ConfigPrepareUnknown('config_prepare_unknown') from None
+            except cards.Interrupted:
+                raise ConfigPrepareInterrupted('config_prepare_unknown') from None
         baseline = caller._configuration(baseline_path, expected_baseline_sha256)
         descriptor, _, _, fleet, binding, inputs = baseline
         manifest = caller._json(update._read(str(Path(descriptor['bundle_root']) / 'deployment-manifest.json'),
@@ -89,8 +102,6 @@ def prepare_config(*, enabled=False, output_path=None, baseline_path=None, expec
                   'anchor_path': str(paths['anchor']), 'policy_path': public['policy_path'],
                   'public_policy_path': public['public_policy_path'], 'baseline_path': str(baseline_path),
                   'baseline_sha256': expected_baseline_sha256, 'manifest_sha256': expected_manifest_sha256}
-        if p1_enabled:
-            config.update(schema='wd.q4-live-update-once.v2', p1_enabled=True)
         raw = update._encode(config)
         for name, path in paths.items():
             attempted = True
@@ -100,6 +111,8 @@ def prepare_config(*, enabled=False, output_path=None, baseline_path=None, expec
         runner._verify_own(output, raw, info)
         return {'status': 'PREPARED', 'config_path': str(output), 'config_sha256': update._sha(raw),
                 'cutoff_utc': route['cutoff_utc'], 'freshness': 'UNKNOWN'}
+    except (ConfigPrepareUnknown, ConfigPrepareInterrupted):
+        raise
     except Exception:
         if attempted:
             raise ConfigPrepareUnknown('config_prepare_unknown') from None

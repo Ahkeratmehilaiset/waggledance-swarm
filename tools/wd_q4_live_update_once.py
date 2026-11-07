@@ -270,6 +270,10 @@ def _require_write_roots(baseline_path, bundle_root, checkpoint_root, private_ro
 def _publish(config, baseline, index_root, public, result, *, generation=None, p1_enabled=False):
     if type(p1_enabled) is not bool:
         raise ValueError()
+    if public.get('schema') == 'wd.q4-public-wrapper-plan.v3':
+        # A staged card requires the closed tuple and retained Job/journal
+        # contract, never the legacy status writer or discovery by directory.
+        raise UpdateRefused('card_refresh_tuple_required')
     pointer, snapshot = _snapshot(index_root, result['pointer_sha256'], public['policy_path'],
                                   public['roster_path'], public['public_policy_path'])
     bd, _, _, fleet, binding, inputs = baseline
@@ -334,6 +338,20 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None, ho
         config = _configuration(_read(config_path, 65536, expected_config_sha256))
         if os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower() != config['manifest_sha256']:
             raise ValueError()
+        route_probe = caller._json(_read(config['route_path'], 65536, config['route_sha256']))
+        if route_probe.get('schema') == 'wd.q4-card-refresh-tuple.v1':
+            if config['schema'] != 'wd.q4-live-update-once.v2':
+                raise ValueError()
+            from tools import wd_q4_card_refresh_coordinator as cards
+            try:
+                return cards.run_once(config=config, config_sha256=expected_config_sha256,
+                    attempt=host_attempt if host_attempt is not None else secrets.token_hex(32))
+            except cards.Unknown:
+                raise UpdateOutcomeUnknown('update_outcome_unknown') from None
+            except cards.Interrupted:
+                raise UpdateInterrupted('update_outcome_unknown') from None
+        if config['schema'] == 'wd.q4-live-update-once.v2':
+            raise UpdateRefused('card_refresh_tuple_required')
         baseline = caller._configuration(config['baseline_path'], config['baseline_sha256'])
         descriptor, _, _, fleet, binding, inputs = baseline
         route_raw = _read(config['route_path'], 65536, config['route_sha256'])

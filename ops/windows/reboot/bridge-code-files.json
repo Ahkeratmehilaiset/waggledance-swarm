@@ -106,6 +106,7 @@
     "tools/wd_q4_public_card_prefix_verifier.py",
     "tools/wd_q4_card_generation.py",
     "tools/wd_q4_public_git_heads.py",
+    "tools/wd_q4_public_card_plan_writer.py",
     "tools/wd_q4_roster_from_fleet.py",
     "tools/wd_q4_secure_transport.py",
     "tools/wd_q4_fixed_plan_producer.py",

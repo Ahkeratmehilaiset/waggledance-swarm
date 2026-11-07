@@ -978,6 +978,7 @@ Q4_READONLY_FILES = frozenset({
 CARD_PACKAGE_FILES = frozenset({
     "sandbox/mind/step2/public_knowledge_card.py",
     "sandbox/mind/step2/shared_card_projection.py",
+    "sandbox/mind/step2/shared_card_checkpoint.py",
 })
 Q4_AGENT_API = "tools/wd_q4_agent_query.py"
 Q4_RESOLVED_CHILD = "tools/wd_q4_resolved_child.py"

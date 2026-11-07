@@ -85,9 +85,10 @@ def _anchored_active(expected_state_sha256, active, store):
 def _shared_stage_ok(stage, generation):
     """A shared generations root may hold only earlier generations and their own candidate pointers.
 
-    Every entry must be a generation directory, a regular per-generation candidate pointer, or the live
-    selector's regular publication file (never read or touched here); selector temp leftovers and every other
-    entry refuse. The new generation's directory and pointer must both be absent. Nothing here proves earlier
+    Every entry must be a generation directory, a regular per-generation candidate pointer, the live
+    selector's regular publication file, or its regular persistent publication lock. The composer never
+    reads or touches the publication or lock; pending and temporary files and other entries refuse.
+    The new generation's directory and pointer must both be absent. Nothing here proves earlier
     generations or the publication valid.
     """
     if type(generation) is not str or _GENERATION.fullmatch(generation) is None:
@@ -97,7 +98,8 @@ def _shared_stage_ok(stage, generation):
         if _GENERATION.fullmatch(entry.name):
             if entry.is_symlink() or not entry.is_dir():
                 return False
-        elif _SHARED_POINTER.fullmatch(entry.name) or entry.name == _LIVE_PUBLICATION:
+        elif (_SHARED_POINTER.fullmatch(entry.name) or entry.name == _LIVE_PUBLICATION
+              or entry.name == 'q4-live-publication.lock'):
             if entry.is_symlink() or not entry.is_file():
                 return False
         else:

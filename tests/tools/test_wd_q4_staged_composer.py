@@ -537,13 +537,36 @@ def test_shared_stage_compose_publish_compose_keeps_the_publication_untouched(sh
     assert {key: after[key] for key in before} == before and target.read_bytes() == raw
 
 
-@pytest.mark.parametrize('shape', ['temp-leftover', 'publication-dir', 'similar-name'])
+def test_shared_stage_composes_after_publication_lock_is_created(shared_case):
+    from sandbox.mind.step2.reader_slot import reader_slot
+    stage = Path(shared_case['stage_dir'])
+    _shared(shared_case, _GEN_B)
+    target, raw = _publish_like_selector(stage, _GEN_B)
+    lock = stage / 'q4-live-publication.lock'
+    with reader_slot(lock, timeout_seconds=0.2):
+        assert lock.is_file()
+    assert _shared(shared_case, _GEN_C)['status'] == 'PREPARED'
+    assert lock.is_file() and target.read_bytes() == raw
+
+
+def test_shared_stage_refuses_publication_lock_directory(shared_case):
+    from tools import wd_q4_staged_composer as staged
+    stage = Path(shared_case['stage_dir'])
+    _shared(shared_case, _GEN_B)
+    (stage / 'q4-live-publication.lock').mkdir()
+    with pytest.raises(staged.ComposeRefused):
+        _shared(shared_case, _GEN_C)
+
+
+@pytest.mark.parametrize('shape', ['temp-leftover', 'pending-leftover', 'publication-dir', 'similar-name'])
 def test_shared_stage_still_refuses_selector_leftovers_and_odd_shapes(shared_case, shape):
     from tools import wd_q4_staged_composer as staged
     stage = Path(shared_case['stage_dir'])
     _shared(shared_case, _GEN_B)
     if shape == 'temp-leftover':
         (stage / ('.q4-live-current-' + 'f' * 32 + '.tmp')).write_bytes(b'{}')
+    elif shape == 'pending-leftover':
+        (stage / 'q4-live-publication.pending.json').write_bytes(b'{}')
     elif shape == 'publication-dir':
         (stage / 'q4-live-current.json').mkdir()
     else:

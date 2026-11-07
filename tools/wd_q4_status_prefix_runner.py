@@ -393,7 +393,8 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
         try:
             with private_state.locked_state(private, checkpoint, enabled=True):
                 with private_state._checkpoint_lock(checkpoint, 0.2):
-                    if os.path.lexists(private / 'q4-continuation-adopt.pending.json'):
+                    if any(os.path.lexists(private / name) for name in (
+                            'q4-continuation-adopt.pending.json', 'q4-adopt-recovery-job.pending.json')):
                         raise _AdmissionBlocked()
                     # A different runner may have reserved after preflight.
                     # Its markers remain untouched and require reconciliation.

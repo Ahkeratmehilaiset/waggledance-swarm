@@ -201,7 +201,7 @@ def run_once(*,enabled=False,baseline_path=None,baseline_sha256=None,manifest_sh
             with private_state.locked_state(private,root,enabled=True):
                 with private_state._checkpoint_lock(root,0.2):
                     if any(os.path.lexists(path) for path in (
-                            marker, private/'q4-cutoff.pending.json',
+                            marker, private/'q4-cutoff.pending.json', private/'q4-adopt-recovery-job.pending.json',
                             private/private_state._PENDING, private/runner._PENDING, root/runner._PENDING)):
                         raise _Pending()
                     if os.path.lexists(root/checkpoint.FENCE):

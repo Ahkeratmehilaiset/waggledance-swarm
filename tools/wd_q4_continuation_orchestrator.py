@@ -151,8 +151,14 @@ def run_once(*, enabled=False, template_path=None, template_sha256=None, expecte
             marker_raw = _raw({'schema': 'wd.q4-continuation-orchestrator-pending.v1', 'attempt': attempt,
                                'template_sha256': template_sha256, 'config_sha256': _sha(config_raw),
                                'previous_record_sha256': previous_pin, 'pointer_sha256': pointer})
-            marker_info = runner._create(pending, marker_raw)
-            entered = True
+            # The recovery host uses this same pair when reserving its Job
+            # marker. Keep the check and our own reservation indivisible.
+            with private_state.locked_state(private, shared, enabled=True):
+                with private_state._checkpoint_lock(shared, 0.2):
+                    if os.path.lexists(private / 'q4-adopt-recovery-job.pending.json'):
+                        raise OrchestrationUnknown('orchestration_unknown')
+                    marker_info = runner._create(pending, marker_raw)
+                    entered = True
             runner._verify_own(pending, marker_raw, marker_info)
             config_info = runner._create(config_path, config_raw)
             runner._verify_own(config_path, config_raw, config_info)

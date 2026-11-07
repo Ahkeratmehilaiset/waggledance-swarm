@@ -72,6 +72,8 @@ PLAN_READER = "wd_q4_lane_link._public_plan(path, expected_sha256) -> (path, raw
 BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256",
                           "roster_sha256", "public_policy_sha256", "descriptor_sha256", "projection_sha256"})
 CARD_BINDING_KEYS = BINDING_KEYS | {"card_decision_sha256"}
+# The public-policy digest is a plan/input pin, not a claim in a staged reply.
+STAGED_BINDING_KEYS = CARD_BINDING_KEYS | {"card_policy_sha256"}
 _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _PIN64 = re.compile(r"[0-9A-Fa-f]{64}\Z")
@@ -103,7 +105,8 @@ def _inputs(situation, time, expected_commit, expected_manifest_sha256, expected
     """Syntax of every caller input, checked before any file is touched; returns the canonical query bytes."""
     if (not _hex(expected_commit, _HEX40) or not _hex(expected_manifest_sha256, _PIN64)
             or not _hex(expected_wrapper_sha256, _PIN64) or not _hex(expected_public_plan_sha256, _HEX64)
-            or type(expected_binding) is not dict or set(expected_binding) not in (BINDING_KEYS, CARD_BINDING_KEYS)
+            or type(expected_binding) is not dict or set(expected_binding) not in
+               (BINDING_KEYS, CARD_BINDING_KEYS, STAGED_BINDING_KEYS)
             or any(not _hex(expected_binding[key], _HEX64) for key in expected_binding)
             or not isinstance(bundle_root, (str, PathLike)) or not isinstance(public_plan_path, (str, PathLike))
             or not _bounded(projection_bytes, MAX_PROJECTION_BYTES) or not _bounded(policy_bytes, MAX_POLICY_BYTES)
@@ -247,9 +250,14 @@ def _answer(lane, value, expected_binding, records, when):
         return {"schema": SCHEMA, "lane": lane, "status": "REFUSED", "reason": "runtime_refused",
                 "result_count": 0, "results": [], "binding": None, "trust": dict(_TRUST)}, None
     binding = value["binding"]
-    if (type(binding) is not dict or set(expected_binding) - set(binding)
+    staged = set(expected_binding) == STAGED_BINDING_KEYS
+    reply_pins = set(expected_binding) - ({"public_policy_sha256"} if staged else set())
+    if (type(binding) is not dict or reply_pins - set(binding)
+            or (staged and (value.get("schema") != "wd.q4-card-snapshot-query.v1"
+                            or value.get("completeness") != "UNKNOWN"
+                            or binding.get("source_mode") != "card-snapshot-v1"))
             or ("card_decision_sha256" in binding) != ("card_decision_sha256" in expected_binding)
-            or any(not hmac.compare_digest(binding[key], expected_binding[key]) for key in expected_binding)):
+            or any(not hmac.compare_digest(binding[key], expected_binding[key]) for key in reply_pins)):
         return None, "binding_refused"
     results = value["results"]
     if type(results) is not list or len(results) > MAX_RESULTS:
@@ -326,6 +334,7 @@ def _query_public_impl(*, lane, situation, time, bundle_root, expected_commit, e
         plan_pins = None
     if (type(plan_pins) is not dict or not plan_pins
             or ("card_decision_sha256" in plan_pins) != ("card_decision_sha256" in expected_binding)
+            or ("card_policy_sha256" in plan_pins) != ("card_policy_sha256" in expected_binding)
             or any(key not in expected_binding or type(plan_pins[key]) is not str
                    or not hmac.compare_digest(plan_pins[key], expected_binding[key]) for key in plan_pins)):
         raise LaneQueryRefused("binding_refused")

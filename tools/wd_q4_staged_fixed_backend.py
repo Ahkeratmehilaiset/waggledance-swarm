@@ -74,3 +74,44 @@ def validate_card_input(plan, bundle_bytes, public_plan_bytes, *, enabled=False)
         return {'status':'VALIDATED_STAGED', 'completeness':'UNKNOWN'}
     except Exception:
         raise ValueError('staged_card_input_refused') from None
+
+
+def validate_card_result(plan, bundle_bytes, public_plan_bytes, query_bytes, result_bytes, *, enabled=False):
+    """Recheck C2 and independently resolve every result against caller-pinned bytes."""
+    if enabled is False:
+        return {'status': 'OFF'}
+    try:
+        if enabled is not True or validate_card_input(plan,bundle_bytes,public_plan_bytes,enabled=True) != {
+                'status':'VALIDATED_STAGED','completeness':'UNKNOWN'}:
+            raise ValueError()
+        from tools import wd_q4_lane_link as link
+        from tools import wd_q4_secure_transport as fixed
+        from sandbox.mind.step2 import shared_capture_adapter as capture
+        from sandbox.mind.step2 import shared_result_resolver as resolver
+        query = link._json(query_bytes)
+        if (type(query) is not dict or set(query) != {'situation','time'}
+                or type(query['situation']) is not str or type(query['time']) is not str):
+            raise ValueError()
+        _, _, pins = link._public_plan(plan['public_plan_path'], plan['public_plan_sha256'])
+        answer = link._public_result(result_bytes, 0, pins)
+        data = fixed._fixed_card_bundle_decode(bundle_bytes)
+        if (answer['status'] not in ('ANSWER','ABSTAIN','DEGRADED') or
+                any(answer['binding'][key+'_sha256'] != _sha(data[key])
+                    for key in ('memory','projection','descriptor'))):
+            raise ValueError()
+        tasks, _ = capture.strict_pins(data['policy'], plan['policy_sha256'], data['roster'], plan['roster_sha256'])
+        claims = [{key:item[key] for key in ('ref_sha256','doc_id_sha256','ref_kind','canonical_event')}
+                  for item in answer['results']]
+        resolved = resolver.resolve_results(memory_manifest=data['memory'], expected_memory_sha256=_sha(data['memory']),
+            projection_bytes=data['projection'], results=claims, query_utc=query['time'], approved_tasks=tasks,
+            policy_bytes=data['policy'], policy_sha256=plan['policy_sha256'], roster_bytes=data['roster'],
+            roster_sha256=plan['roster_sha256'], card_decision_bytes=data['card_decision'],
+            card_decision_sha256=plan['card_decision_sha256'])
+        resolved = [{key:item[key] for key in ('ref_sha256','doc_id_sha256','ref_kind','canonical_event','stored_text')}
+                    for item in resolved]
+        if (resolved != answer['results'] or validate_card_input(plan,bundle_bytes,public_plan_bytes,enabled=True) !=
+                {'status':'VALIDATED_STAGED','completeness':'UNKNOWN'}):
+            raise ValueError()
+        return json.dumps(answer,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('ascii')
+    except Exception:
+        raise ValueError('staged_card_result_refused') from None

@@ -24,20 +24,22 @@ class _NativeRegistrations:
         self._records = {}
         self._deferred = {}
 
-    def bind_objects(self, before, after, tainted, *, single_thread):
+    def bind_objects(self, before, after, tainted, *, owner, single_thread):
         """Observe newly GC-tracked objects across one verified native call.
 
         Observation is cooperative evidence, not proof of native allocation.
         Keep strong references to exclude borrowed objects and identity reuse.
         """
         self._check(type(before) is tuple and type(after) is tuple and type(tainted) is set
+                    and type(owner) is str and owner != ''
                     and single_thread is True)
         known = {id(module) for module in before} | tainted
         for module in after:
             if type(module) is not types.ModuleType or id(module) in known:
                 continue
             attrs = vars(module)
-            if (type(attrs.get('__name__')) is not str or attrs.get('__file__') is not None
+            if (type(attrs.get('__name__')) is not str or not attrs['__name__'].startswith(owner + '.')
+                    or attrs.get('__file__') is not None
                     or attrs.get('__spec__') is not None or attrs.get('__loader__') is not None):
                 continue
             self._deferred[id(module)] = (module, dict(attrs))
@@ -319,7 +321,7 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             native_witnessed.bind(before, dict(sys.modules), tainted['names'],
                                   single_thread=len(sys._current_frames()) == 1, known_objects=known_objects)
             native_witnessed.bind_objects(known_objects, modules_in_gc(), tainted['objects'],
-                                          single_thread=len(sys._current_frames()) == 1)
+                                          owner=loader.name, single_thread=len(sys._current_frames()) == 1)
         return value
 
     def native_create(loader, spec):

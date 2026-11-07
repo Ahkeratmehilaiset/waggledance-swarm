@@ -118,6 +118,18 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
         scoped.setattr(update.os, 'open', marker_race)
         assert update.main(['--once', '--config', str(config_path), '--sha256', update._sha(raw)]) == 2
         assert json.loads(capsys.readouterr().err)['status'] == 'REFUSED'
+    if fault_stage == 'capture':
+        private_root = Path(route['private_state_root'])
+        marker = private_root / 'q4-continuation-adopt.pending.json'
+        marker.write_bytes(b'unknown adoption outcome\n')
+        before = (Path(route['checkpoint_root']) / 'q4-latest.json').read_bytes()
+        try:
+            assert update.main(['--once', '--config', str(config_path), '--sha256', update._sha(raw)]) == 3
+            assert json.loads(capsys.readouterr().err)['status'] == 'UNKNOWN'
+            assert (Path(route['checkpoint_root']) / 'q4-latest.json').read_bytes() == before
+            assert marker.read_bytes() == b'unknown adoption outcome\n'
+        finally:
+            marker.unlink()
     answer_pins = []
     for minute in (2, 3):
         event['ts_utc'] = f'2026-10-31T12:0{minute}:00Z'

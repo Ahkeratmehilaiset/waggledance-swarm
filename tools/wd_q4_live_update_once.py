@@ -335,6 +335,10 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None, ho
         marker = private_root / 'q4-live-update.pending.json'
         if not runner._absent(marker):
             raise ValueError()
+        # Adoption owns this same live-update lock while publishing. A marker
+        # left after it releases the lock means its outcome still needs review.
+        if os.path.lexists(private_root / 'q4-continuation-adopt.pending.json'):
+            raise UpdateOutcomeUnknown('update_outcome_unknown')
         selector = Path(config['baseline_path']).parent.parent / 'q4-live-current.json'
         if os.path.lexists(selector):
             chosen = live.select(enabled=True, baseline_path=config['baseline_path'],
@@ -414,6 +418,8 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None, ho
         slot.__exit__(None, None, None)
         slot_acquired = False
         return {**result, 'receipt_sha256': _sha(receipt), 'receipt_file': receipt_path.name}
+    except UpdateOutcomeUnknown:
+        failure = 'unknown'
     except Exception:
         failure = 'unknown' if entered else 'refused'
     except BaseException:

@@ -86,7 +86,7 @@ def _policy(raw, pin, tasks):
     return frozenset(obj['writers'])
 
 
-def _read(source_path,generation_path,end_cursor,expected_prefix_sha256):
+def _scan(source_path,generation_path,end_cursor,expected_prefix_sha256,*,collect_claims=False):
     if (type(source_path) is not str or not os.path.isabs(source_path)
             or type(generation_path) is not str or not os.path.isabs(generation_path)
             or type(end_cursor) is not bridge.BridgeCursor or bridge._validate_cursor(end_cursor)
@@ -96,7 +96,7 @@ def _read(source_path,generation_path,end_cursor,expected_prefix_sha256):
         raise ValueError()
     cursor=bridge.BridgeCursor(0,end_cursor.file_identity,end_cursor.generation)
     prefix_sha=hashlib.sha256(b'').hexdigest()
-    candidates={}; pages=work=0
+    candidates={}; claims=[]; pages=work=0
     while True:
         pages+=1
         work+=2*min(end_cursor.offset,cursor.offset+_PAGE)
@@ -110,11 +110,19 @@ def _read(source_path,generation_path,end_cursor,expected_prefix_sha256):
                 or read.candidate_cursor is None or read.candidate_prefix is None):
             raise ValueError()
         for event in read.rows:
-            if type(event) is not dict or event.get('task_id')!=_TASK: continue
+            if type(event) is not dict: continue
+            payload=event.get('payload')
+            claim=collect_claims and type(payload) is dict and 'public_knowledge' in payload
+            if event.get('task_id')!=_TASK and not claim: continue
             encoded=json.dumps(event,sort_keys=True,ensure_ascii=False,separators=(',',':'),allow_nan=False).encode()
-            if len(encoded)>8192 or len(candidates)>=_MAX_CANDIDATES: raise ValueError()
+            if len(encoded)>8192: raise ValueError()
             ref=event_id(event)
-            candidates[ref]=event
+            if event.get('task_id')==_TASK:
+                if len(candidates)>=_MAX_CANDIDATES: raise ValueError()
+                candidates[ref]=event
+            if claim:
+                if len(claims)>=_MAX_CANDIDATES: raise ValueError()
+                claims.append((ref,event))
         nxt=read.candidate_cursor
         if nxt.offset==end_cursor.offset:
             if nxt!=end_cursor or not hmac.compare_digest(read.candidate_prefix.sha256,expected_prefix_sha256):
@@ -123,9 +131,41 @@ def _read(source_path,generation_path,end_cursor,expected_prefix_sha256):
                 if bridge._file_identity(stream)!=end_cursor.file_identity or os.fstat(stream.fileno()).st_size<end_cursor.offset:
                     raise ValueError()
             if bridge._read_generation(Path(generation_path))!=end_cursor.generation: raise ValueError()
-            return candidates
+            return candidates,claims
         if nxt.offset<=cursor.offset or nxt.offset>end_cursor.offset: raise ValueError()
         cursor,prefix_sha=nxt,read.candidate_prefix.sha256
+
+
+def _read(source_path,generation_path,end_cursor,expected_prefix_sha256):
+    return _scan(source_path,generation_path,end_cursor,expected_prefix_sha256)[0]
+
+
+def _read_with_claims(source_path,generation_path,end_cursor,expected_prefix_sha256):
+    return _scan(source_path,generation_path,end_cursor,expected_prefix_sha256,collect_claims=True)
+
+
+def _check_prefix_unchanged(source_path,generation_path,end_cursor,expected_prefix_sha256):
+    """Rebind a previously parsed prefix without parsing it a second time."""
+    if (type(source_path) is not str or not os.path.isabs(source_path)
+            or type(generation_path) is not str or not os.path.isabs(generation_path)
+            or type(end_cursor) is not bridge.BridgeCursor or bridge._validate_cursor(end_cursor)
+            or type(end_cursor.generation) is not str or not end_cursor.generation
+            or type(end_cursor.offset) is not int or not 0<end_cursor.offset<=_MAX_SOURCE
+            or type(expected_prefix_sha256) is not str or _HEX.fullmatch(expected_prefix_sha256) is None):
+        raise ValueError()
+    if bridge._read_generation(Path(generation_path))!=end_cursor.generation: raise ValueError()
+    with bridge._open_log(Path(source_path)) as stream:
+        if (bridge._file_identity(stream)!=end_cursor.file_identity
+                or os.fstat(stream.fileno()).st_size<end_cursor.offset
+                or not hmac.compare_digest(bridge._hash_prefix(stream,end_cursor.offset).hexdigest(),expected_prefix_sha256)):
+            raise ValueError()
+        stream.seek(end_cursor.offset-1)
+        if (stream.read(1)!=b'\n' or bridge._file_identity(stream)!=end_cursor.file_identity
+                or os.fstat(stream.fileno()).st_size<end_cursor.offset): raise ValueError()
+    with bridge._open_log(Path(source_path)) as current:
+        if (bridge._file_identity(current)!=end_cursor.file_identity
+                or os.fstat(current.fileno()).st_size<end_cursor.offset): raise ValueError()
+    if bridge._read_generation(Path(generation_path))!=end_cursor.generation: raise ValueError()
 
 
 def _check(target,rows,writers,roster,now,vocab,vocab_sha,paths,paths_sha):

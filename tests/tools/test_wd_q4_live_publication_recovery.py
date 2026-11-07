@@ -39,6 +39,78 @@ def test_default_off():
     assert recovery.recover_once() == {'status': 'OFF'}
 
 
+def test_owned_temp_is_cleaned_on_pre_replace_error_and_invalid_candidate_is_not_published(cas_case, monkeypatch):
+    interrupted(cas_case, monkeypatch, False)
+    pending = cas_case['root'] / live._PUBLICATION_PENDING
+    temp = cas_case['root'] / json.loads(pending.read_bytes())['temporary_name']
+    assert not temp.exists()
+    Path(cas_case['candidate_path']).write_bytes(b'broken candidate')
+    assert recover(cas_case)['status'] == 'NOT_PUBLISHED'
+    assert not pending.exists()
+
+
+def test_partial_temp_write_is_cleaned_by_its_live_owner(cas_case, monkeypatch):
+    original = live.os.fdopen
+    count = 0
+    class FailWrite:
+        def __init__(self, stream):
+            self.stream = stream
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+        def fileno(self):
+            return self.stream.fileno()
+        def write(self, data):
+            self.stream.write(data[:1])
+            raise OSError('synthetic partial write')
+    def open_stream(fd, mode):
+        nonlocal count
+        count += 1
+        stream = original(fd, mode)
+        return FailWrite(stream) if count == 2 else stream
+    with monkeypatch.context() as patch:
+        patch.setattr(live.os, 'fdopen', open_stream)
+        with pytest.raises(live.LiveSnapshotOutcomeUnknown):
+            _cas_publish(cas_case, expected_previous_selector_sha256=None)
+    pending = cas_case['root'] / live._PUBLICATION_PENDING
+    assert not (cas_case['root'] / json.loads(pending.read_bytes())['temporary_name']).exists()
+    assert recover(cas_case)['status'] == 'NOT_PUBLISHED'
+
+
+def test_candidate_may_disappear_after_proven_prewrite_failure(cas_case, monkeypatch):
+    real_open = live.os.open
+    def fail_temp(path, *args, **kwargs):
+        if str(path).endswith('.tmp'):
+            raise OSError('simulated failure before create')
+        return real_open(path, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(live.os, 'open', fail_temp)
+        with pytest.raises(live.LiveSnapshotOutcomeUnknown):
+            _cas_publish(cas_case, expected_previous_selector_sha256=None)
+    Path(cas_case['candidate_path']).unlink()
+    assert recover(cas_case)['status'] == 'NOT_PUBLISHED'
+
+
+def test_temp_fdopen_failure_closes_and_cleans_owned_temp(cas_case, monkeypatch):
+    original = live.os.fdopen
+    count = 0
+    def fail_second(fd, mode):
+        nonlocal count
+        count += 1
+        if count == 2:
+            raise OSError('synthetic stream setup failure')
+        return original(fd, mode)
+    with monkeypatch.context() as patch:
+        patch.setattr(live.os, 'fdopen', fail_second)
+        with pytest.raises(live.LiveSnapshotOutcomeUnknown):
+            _cas_publish(cas_case, expected_previous_selector_sha256=None)
+    pending = cas_case['root'] / live._PUBLICATION_PENDING
+    assert not (cas_case['root'] / json.loads(pending.read_bytes())['temporary_name']).exists()
+    assert recover(cas_case)['status'] == 'NOT_PUBLISHED'
+
+
 def test_after_replace_validates_and_unblocks(cas_case, monkeypatch):
     interrupted(cas_case, monkeypatch, True)
     assert recover(cas_case)['status'] == 'PUBLISHED'
@@ -47,7 +119,15 @@ def test_after_replace_validates_and_unblocks(cas_case, monkeypatch):
 
 
 def test_before_replace_with_unproven_temp_stays_unknown(cas_case, monkeypatch):
-    interrupted(cas_case, monkeypatch, False)
+    # Simulate an uncompleted cleanup (including abrupt process death).
+    original_unlink = Path.unlink
+    def fail_temp_unlink(path, *args, **kwargs):
+        if str(path).endswith('.tmp'):
+            raise OSError('synthetic cleanup interruption')
+        return original_unlink(path, *args, **kwargs)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, 'unlink', fail_temp_unlink)
+        interrupted(cas_case, patch, False)
     pending = cas_case['root'] / live._PUBLICATION_PENDING
     marker = pending.read_bytes()
     temp = cas_case['root'] / json.loads(marker)['temporary_name']
@@ -55,6 +135,40 @@ def test_before_replace_with_unproven_temp_stays_unknown(cas_case, monkeypatch):
     with pytest.raises(live.LiveSnapshotOutcomeUnknown):
         recover(cas_case)
     assert pending.read_bytes() == marker and temp.read_bytes() == before
+
+
+def test_foreign_replacement_is_not_cleaned_by_publisher(cas_case, monkeypatch):
+    def replace_with_foreign(temp, target):
+        temp = Path(temp)
+        temp.rename(temp.with_suffix('.owned-synthetic'))
+        temp.write_bytes(b'foreign')
+        raise OSError('synthetic foreign replacement')
+    with monkeypatch.context() as patch:
+        patch.setattr(live.pointer_io, '_atomic_replace', replace_with_foreign)
+        with pytest.raises(live.LiveSnapshotOutcomeUnknown):
+            _cas_publish(cas_case, expected_previous_selector_sha256=None)
+    pending = cas_case['root'] / live._PUBLICATION_PENDING
+    temp = cas_case['root'] / json.loads(pending.read_bytes())['temporary_name']
+    assert temp.read_bytes() == b'foreign'
+    with pytest.raises(live.LiveSnapshotOutcomeUnknown):
+        recover(cas_case)
+    assert temp.read_bytes() == b'foreign' and pending.exists()
+
+
+def test_changed_selector_blocks_owner_cleanup(cas_case, monkeypatch):
+    target = cas_case['root'] / live._POINTER
+    def change_target(temp, _target):
+        target.write_bytes(b'unrelated selector')
+        raise OSError('synthetic concurrent change')
+    with monkeypatch.context() as patch:
+        patch.setattr(live.pointer_io, '_atomic_replace', change_target)
+        with pytest.raises(live.LiveSnapshotOutcomeUnknown):
+            _cas_publish(cas_case, expected_previous_selector_sha256=None)
+    pending = cas_case['root'] / live._PUBLICATION_PENDING
+    temp = cas_case['root'] / json.loads(pending.read_bytes())['temporary_name']
+    assert temp.exists() and target.read_bytes() == b'unrelated selector'
+    with pytest.raises(live.LiveSnapshotOutcomeUnknown):
+        recover(cas_case)
 
 
 def test_wrong_pending_pin_is_unknown_and_preserved(cas_case, monkeypatch):

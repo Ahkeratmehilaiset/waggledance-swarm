@@ -436,13 +436,16 @@ def publish(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline
             if os.path.lexists(pending):
                 raise LiveSnapshotOutcomeUnknown('live_publication_unknown')
             present = os.path.lexists(target)
+            previous_raw = None
             if present:
                 pointer_io._chain(target)
+                if p1_enabled:
+                    previous_raw = _read(target, 4096)
             if p1_enabled:
                 if expected_previous_selector_sha256 is None:
                     if present:
                         raise ValueError()
-                elif not present or _sha(_read(target, 4096)) != expected_previous_selector_sha256:
+                elif not present or _sha(previous_raw) != expected_previous_selector_sha256:
                     raise ValueError()
             attempt = secrets.token_hex(16)
             temp = root / ('.q4-live-current-' + attempt + '.tmp')
@@ -460,14 +463,43 @@ def publish(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline
                     stream.flush()
                     os.fsync(stream.fileno())
             entered = True
-            fd = os.open(str(temp), os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0), 0o600)
-            with os.fdopen(fd, 'wb') as stream:
-                if stream.write(raw) != len(raw):
-                    raise OSError()
-                stream.flush()
-                os.fsync(stream.fileno())
-            _read(pointer_path, pointer_limit, index_pin)
-            pointer_io._atomic_replace(temp, target)
+            temp_info = None
+            try:
+                fd = os.open(str(temp), os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0), 0o600)
+                try:
+                    temp_info = os.fstat(fd)
+                    stream = os.fdopen(fd, 'wb')
+                except BaseException:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+                    raise
+                with stream:
+                    if stream.write(raw) != len(raw):
+                        raise OSError()
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                _read(pointer_path, pointer_limit, index_pin)
+                pointer_io._atomic_replace(temp, target)
+            except BaseException:
+                # Only the live creator may clean its own temp, while still holding
+                # the publication lock and only if the original selector is intact.
+                # A hard kill bypasses this and remains UNKNOWN for later recovery.
+                try:
+                    if p1_enabled and temp_info is not None and os.path.lexists(temp):
+                        pointer_io._chain(temp)
+                        pointer_io._chain(pending)
+                        target_present = os.path.lexists(target)
+                        if (target_present == present
+                                and (not present or _read(target, 4096) == previous_raw)
+                                and os.path.samestat(temp_info, temp.stat())
+                                and os.path.samestat(marker_info, pending.stat())
+                                and _read(pending, 4096) == marker):
+                            temp.unlink()
+                except Exception:
+                    pass
+                raise
             _read(target, 4096, _sha(raw))
             _read(pointer_path, pointer_limit, index_pin)
             if p1_enabled:

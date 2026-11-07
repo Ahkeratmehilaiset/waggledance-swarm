@@ -5,8 +5,12 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import pytest
+from sandbox.mind.step2 import prefix_private_state
+from sandbox.mind.step2.reader_slot import reader_slot
 from tests.tools.test_wd_q4_genesis_bootstrap import synthetic
 from tests.tools import test_wd_q4_genesis_bootstrap as base
 from tests.tools import test_wd_q4_genesis_to_composer_cli as existing
@@ -304,3 +308,96 @@ def test_empty_advance_consumer_reproduction(actual_continuation,monkeypatch,fau
     assert json.loads(run.stdout)['pointer_sha256']==report['pointer_sha256']
 
 
+
+
+def _recheck_paths(args):
+    route=initial._tuple_part(json.loads(args['genesis_tuple_bytes']),'route')
+    return Path(route['private_state_root']),Path(route['checkpoint_root'])
+
+
+def test_leaf_secure_is_called_at_recheck_and_refuses_before_publication(actual_continuation, monkeypatch):
+    from tools import wd_q4_continuation_adopt as adopt
+    args=actual_continuation
+    private,root=_recheck_paths(args)
+    pointer=root/adopt.checkpoint.POINTER
+    prior=adopt._prior_pointer
+    secure=adopt.checkpoint._secure
+    activated=[]; seen=[]; published=[]
+    def reject_leaf(path, **kwargs):
+        if activated and Path(path)==pointer:
+            seen.append(Path(path).name)
+            raise ValueError('synthetic reparse refusal')
+        return secure(path, **kwargs)
+    def arm(*pos, **kw):
+        result=prior(*pos, **kw)
+        activated.append(True)
+        monkeypatch.setattr(adopt.checkpoint,'_secure',reject_leaf)
+        return result
+    monkeypatch.setattr(adopt,'_prior_pointer',arm)
+    monkeypatch.setattr(adopt.update,'_publish',lambda *a, **kw: published.append(True))
+    with pytest.raises(adopt.AdoptRefused):
+        adopt.run_once(**args)
+    assert seen == [pointer.name]
+    assert not published and not (private/'q4-continuation-adopt.pending.json').exists()
+
+
+def test_reparse_pointer_leaf_is_rejected_during_recheck(actual_continuation, monkeypatch):
+    from tools import wd_q4_continuation_adopt as adopt
+    args=actual_continuation
+    private,root=_recheck_paths(args)
+    pointer=root/adopt.checkpoint.POINTER
+    prior=adopt._prior_pointer
+    lstat=adopt.checkpoint.os.lstat
+    observed=[]; published=[]
+    class ReparseInfo:
+        def __init__(self, info):
+            self.info=info
+            self.st_file_attributes=getattr(info,'st_file_attributes',0) | 0x400
+        def __getattr__(self, name):
+            return getattr(self.info,name)
+    def forged(path, *pos, **kw):
+        result=lstat(path,*pos,**kw)
+        if isinstance(path,(str,Path)) and Path(path)==pointer:
+            observed.append(True)
+            return ReparseInfo(result)
+        return result
+    def arm(*pos, **kw):
+        result=prior(*pos, **kw)
+        monkeypatch.setattr(adopt.checkpoint.os,'lstat',forged)
+        return result
+    monkeypatch.setattr(adopt,'_prior_pointer',arm)
+    monkeypatch.setattr(adopt.update,'_publish',lambda *a, **kw: published.append(True))
+    with pytest.raises(adopt.AdoptRefused):
+        adopt.run_once(**args)
+    assert observed and not published
+    assert not (private/'q4-continuation-adopt.pending.json').exists()
+
+
+@pytest.mark.parametrize('lock_name',['private','checkpoint'])
+def test_pair_lock_contention_refuses_before_publication(actual_continuation, monkeypatch, lock_name):
+    from tools import wd_q4_continuation_adopt as adopt
+    args=actual_continuation
+    private,root=_recheck_paths(args)
+    lock=private/prefix_private_state._LOCK if lock_name=='private' else root/adopt.checkpoint.LOCK
+    prior=adopt._prior_pointer
+    held,release=Event(),Event()
+    pool=ThreadPoolExecutor(max_workers=1)
+    futures=[]; published=[]
+    def owner():
+        with reader_slot(lock,timeout_seconds=2):
+            held.set(); assert release.wait(8)
+    def arm(*pos, **kw):
+        result=prior(*pos, **kw)
+        futures.append(pool.submit(owner))
+        assert held.wait(5)
+        return result
+    monkeypatch.setattr(adopt,'_prior_pointer',arm)
+    monkeypatch.setattr(adopt.update,'_publish',lambda *a, **kw: published.append(True))
+    try:
+        with pytest.raises(adopt.AdoptRefused):
+            adopt.run_once(**args)
+        assert not published and not (private/'q4-continuation-adopt.pending.json').exists()
+    finally:
+        release.set()
+        if futures: futures[0].result(timeout=5)
+        pool.shutdown(wait=True)

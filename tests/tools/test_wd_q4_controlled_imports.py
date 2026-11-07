@@ -26,6 +26,13 @@ def _probe(tmp_path, scenario):
     (site / 'wd_synthetic_bad.py').write_text('raise AssertionError("must not execute")\n')
     files = [{'path': 'site/wd_synthetic_good.py', 'size': len(good),
               'sha256': hashlib.sha256(good).hexdigest()}]
+    if scenario in ('metadata', 'metadata_tamper', 'metadata_extra', 'metadata_toctou'):
+        dist = site / 'wd_synthetic_demo-1.2.3.dist-info'
+        dist.mkdir()
+        metadata = b'Metadata-Version: 2.1\nName: wd-synthetic-demo\nVersion: 1.2.3\n\n'
+        (dist / 'METADATA').write_bytes(metadata)
+        files.append({'path': 'site/wd_synthetic_demo-1.2.3.dist-info/METADATA',
+                      'size': len(metadata), 'sha256': hashlib.sha256(metadata).hexdigest()})
     if scenario in ('native', 'native_tamper'):
         native = (Path(sys.base_prefix) / 'DLLs' / 'winsound.pyd').read_bytes()
         (site / 'winsound.pyd').write_bytes(native if scenario == 'native' else native + b'X')
@@ -40,6 +47,10 @@ def _probe(tmp_path, scenario):
     manifest = json.dumps({'files': files}).encode()
     manifest_path = tmp_path / 'manifest.json'
     manifest_path.write_bytes(manifest)
+    if scenario == 'metadata_tamper':
+        (dist / 'METADATA').write_bytes(metadata.replace(b'1.2.3', b'9.9.9'))
+    if scenario == 'metadata_extra':
+        (dist / 'EXTRA').write_bytes(b'not in manifest')
     if scenario == 'tamper':
         (site / 'wd_synthetic_good.py').write_bytes(b'VALUE = 99\n')
     outside = tmp_path.parent / '_outside_shared'
@@ -47,7 +58,7 @@ def _probe(tmp_path, scenario):
     (outside / 'wd_synthetic_external.py').write_text('raise AssertionError("must not execute")\n')
     (outside / 'wd_synthetic_ns').mkdir(exist_ok=True)
     probe = r'''
-import hashlib, importlib, importlib.machinery, importlib.util, sys
+import hashlib, importlib, importlib.machinery, importlib.metadata, importlib.util, sys
 from pathlib import Path
 source, root, scenario = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 ns = {'__name__':'_wd_secure_child', '__file__':str(source)}
@@ -87,6 +98,16 @@ elif scenario in ('tamper', 'native_tamper', 'pyc_only'):
 elif scenario == 'native':
  module = importlib.import_module('winsound')
  assert Path(module.__file__).parent == root/'site' and callable(module.Beep)
+elif scenario == 'metadata':
+ assert importlib.metadata.version('wd-synthetic-demo') == '1.2.3'
+elif scenario == 'metadata_toctou':
+ dist = importlib.metadata.distribution('wd-synthetic-demo')
+ (root/'site'/'wd_synthetic_demo-1.2.3.dist-info'/'METADATA').write_text('Metadata-Version: 2.1\nName: wd-synthetic-demo\nVersion: 9.9.9\n\n')
+ assert dist.version == '1.2.3'
+elif scenario in ('metadata_tamper', 'metadata_extra'):
+ try: importlib.metadata.version('wd-synthetic-demo')
+ except (ImportError, ns['_Refused']): pass
+ else: raise AssertionError('unverified distribution metadata accepted')
 elif scenario in ('outside', 'namespace'):
  sys.path.insert(0,str(root.parent/'_outside_shared'))
  target = 'wd_synthetic_external' if scenario == 'outside' else 'wd_synthetic_ns'
@@ -119,7 +140,8 @@ print('PASS')
 
 
 def test_controlled_imports_preserve_missing_semantics_and_reject_injections(tmp_path):
-    cases = ('clean', 'pyc', 'preseed', 'unmanifested', 'cache', 'hook', 'meta',
+    cases = ('clean', 'pyc', 'preseed', 'unmanifested', 'cache', 'hook', 'meta', 'metadata',
+             'metadata_tamper', 'metadata_extra', 'metadata_toctou',
              'badmanifest', 'tamper', 'pyc_only', 'outside', 'namespace')
     if os.name == 'nt':
         cases += ('native', 'native_tamper')

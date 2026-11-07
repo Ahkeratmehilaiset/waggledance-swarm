@@ -122,9 +122,21 @@ class _Guard(importlib.abc.MetaPathFinder):
         return spec
 
 
-def _check_origins(code):
+def _check_origins(code,files):
+    """Project modules must load from runtime code with the bundle manifest bytes (RB1); nothing else may (RB3)."""
     for name,module in tuple(sys.modules.items()):
-        if _project(name) and module is not None:_check_spec(getattr(module,'__spec__',None),code)
+        if module is None:continue
+        spec=getattr(module,'__spec__',None)
+        if _project(name):
+            _check_spec(spec,code)
+            if spec.origin is not None:
+                relative=Path(os.path.abspath(spec.origin)).relative_to(Path(os.path.abspath(code))).as_posix()
+                entry=files.get('tools-bootstrap/'+relative)
+                if type(entry) is not str:raise ImportError('project_bundle_refused')
+                try:_read(spec.origin,_pin(entry),16*1024*1024)
+                except (OSError,ValueError):raise ImportError('project_bundle_refused') from None
+        elif spec is not None and type(spec.origin) is str and os.path.isabs(spec.origin) and _inside(spec.origin,code):
+            raise ImportError('code_shadow_refused')
 
 
 class _BoundedBytes(io.BytesIO):
@@ -221,12 +233,12 @@ def main(argv=None):
         runtime_caller=code/'tools/wd_q4_lane_caller_cli.py'
         if _read(runtime_caller,caller_pin,1024*1024)!=caller_raw:raise ValueError()
         # The base path list comes exclusively from isolated Python; no inherited
-        # PYTHONPATH or caller-controlled directory is added.
-        sys.path[:]=[str(code),*sys.path,str(site)]
+        # PYTHONPATH or caller-controlled directory is added. Code follows the stdlib (RB3).
+        sys.path[:]=[*sys.path,str(code),str(site)]
         expected_path=tuple(sys.path);guard=_Guard(code);sys.meta_path.insert(0,guard)
         caller=importlib.import_module('tools.wd_q4_lane_caller_cli')
         if not os.path.samefile(_path(caller.__file__),runtime_caller):raise ValueError()
-        _check_origins(code)
+        _check_origins(code,files)
         if tuple(sys.path)!=expected_path or sys.meta_path[0] is not guard:raise ValueError()
         output=_BoundedBytes();wrapped=io.TextIOWrapper(output,encoding='utf-8',write_through=True)
         prior=sys.stdout
@@ -236,7 +248,7 @@ def main(argv=None):
             wrapped.flush()
             if (type(result) is not int or result not in (0,2,3,4,130)
                     or tuple(sys.path)!=expected_path or sys.meta_path[0] is not guard):raise ValueError()
-            _check_origins(code)
+            _check_origins(code,files)
             data=output.getvalue()
         finally:
             sys.stdout=prior;wrapped.detach()

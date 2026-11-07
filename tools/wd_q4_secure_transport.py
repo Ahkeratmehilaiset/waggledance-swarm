@@ -1128,6 +1128,73 @@ def _install_controlled_imports(runtime_root, manifest_path, manifest_sha256):
                 spec.loader = VerifiedSourceLoader(fullname, str(file))
             return spec
 
+        def find_distributions(self, context=None):
+            # importlib.metadata uses this hook (not find_spec). Return only
+            # distribution directories whose complete bytes match the runtime
+            # manifest; never fall through to an ambient site or ZIP archive.
+            import importlib.metadata
+            import stat
+            self.check()
+            requested = sys.path if context is None else context.path
+            for entry in requested:
+                _check(type(entry) is str and os.path.isabs(entry))
+                normalized = os.path.normcase(os.path.realpath(entry))
+                _check(any(_under(normalized, allowed) for allowed in roots) and not _under(normalized, excluded)
+                       and not os.path.isfile(entry))
+            discovered = machinery.PathFinder.find_distributions(context=context)
+            result = []
+            for distribution in discovered:
+                directory = Path(distribution._path)
+                _check(not directory.is_symlink() and directory.is_dir())
+                directory = directory.resolve(strict=True)
+                site = (root / 'site').resolve(strict=True)
+                _check(directory.parent == site and directory.name.endswith('.dist-info'))
+                prefix = directory.relative_to(root).as_posix() + '/'
+                expected = {name for name in entries if name.startswith(prefix)}
+                actual = set()
+                verified_data = {}
+                total = 0
+                pending = [directory]
+                while pending:
+                    parent = pending.pop()
+                    with os.scandir(parent) as iterator:
+                        for item in iterator:
+                            # Windows DirEntry.stat may report st_nlink=0.
+                            info = os.lstat(item.path)
+                            _check(not getattr(info, 'st_file_attributes', 0) & 0x400)
+                            item_path = Path(item.path)
+                            if stat.S_ISDIR(info.st_mode):
+                                pending.append(item_path)
+                            else:
+                                _check(stat.S_ISREG(info.st_mode) and info.st_nlink == 1)
+                                name = item_path.relative_to(root).as_posix()
+                                _check(name in expected and name not in actual)
+                                size, digest = entries[name]
+                                total += size
+                                _check(size <= 8 * 1024 * 1024 and total <= 32 * 1024 * 1024)
+                                with open(item_path, 'rb') as stream:
+                                    data = stream.read(size + 1)
+                                _check(len(data) == size and hmac.compare_digest(_sha(data), digest))
+                                actual.add(name)
+                                verified_data[name[len(prefix):]] = data
+                _check(actual == expected and actual)
+                # A PathDistribution would reopen METADATA/RECORD after the
+                # checks. Its replacement serves the exact checked bytes.
+                class VerifiedDistribution(importlib.metadata.Distribution):
+                    def __init__(self, data, base):
+                        self._verified_data, self._base = data, base
+
+                    def read_text(self, filename):
+                        if type(filename) is not str:
+                            return None
+                        data = self._verified_data.get(filename.replace('\\', '/'))
+                        return None if data is None else data.decode('utf-8')
+
+                    def locate_file(self, path):
+                        return self._base / path
+                result.append(VerifiedDistribution(verified_data, site))
+            return result
+
     finder = ControlledFinder()
     sys.meta_path = (finder,) + standard[:2]
     return finder

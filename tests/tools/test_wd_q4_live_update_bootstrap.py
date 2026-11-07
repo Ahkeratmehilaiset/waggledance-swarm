@@ -273,3 +273,59 @@ def test_explicit_audit_runtime_loads_actual_pinned_dependencies(candidate):
         '--config', str(config_path), '--sha256', candidate['config_sha'], '--manifest-sha256', candidate['manifest_sha']],
         capture_output=True, text=True, timeout=600, env=env)
     assert result.returncode == 0 and result.stdout.strip() == 'pinned-dependencies-loaded', result.stderr
+
+
+def _p1_repin(candidate,change=None):
+    p=candidate['config'];doc=json.loads(p.read_bytes())
+    for key in ('route_path','plan_path','anchor_path','policy_path','public_policy_path'):
+        doc[key]=str(p.parent/(key+'.json'))
+    doc.update(schema='wd.q4-live-update-once.v2',p1_enabled=True,route_sha256='a'*64)
+    if change:doc.update(change)
+    p.write_bytes(encode(doc));candidate['config_sha']=sha(p.read_bytes())
+    return doc
+
+def _p1_invoke(candidate,mode):
+    args=['--config',str(candidate['config']),'--sha256',candidate['config_sha'],
+          '--manifest-sha256',candidate['manifest_sha']]
+    if mode!='update':
+        args=['--recover',*args,'--attempt','a'*64]
+        if mode=='progress':args+=['--progress-sha256','b'*64]
+        else:args+=['--'+mode+'-receipt-sha256','b'*64,'--pointer-sha256','c'*64]
+    return subprocess.run([sys.executable,'-I','-S','-B',str(candidate['bootstrap']),*args],
+        env=dict(os.environ,WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha']),
+        capture_output=True,text=True,timeout=30)
+
+def test_legacy_bootstrap_control(candidate):
+    result=_p1_invoke(candidate,'update')
+    assert result.returncode==0 and 'pinned-site-loaded' in result.stdout
+
+@pytest.mark.parametrize('mode',['update','progress','runner','job'])
+def test_v2_bootstrap_exact_opt_in_reaches_only_pinned_module(candidate,mode):
+    _p1_repin(candidate)
+    result=_p1_invoke(candidate,mode)
+    assert result.returncode==0,result.stderr
+    assert ('pinned-site-loaded' if mode=='update' else 'fixed-recovery-loaded') in result.stdout
+
+@pytest.mark.parametrize('flag',[False,0,1,'true',None,[]])
+@pytest.mark.parametrize('mode',['update','progress'])
+def test_v2_bootstrap_refuses_nonliteral_opt_in(candidate,flag,mode):
+    _p1_repin(candidate,{'p1_enabled':flag})
+    result=_p1_invoke(candidate,mode)
+    assert result.returncode!=0 and not result.stdout
+
+@pytest.mark.parametrize('form',['missing','extra','downgrade','duplicate'])
+def test_v2_bootstrap_refuses_ambiguous_policy(candidate,form):
+    doc=_p1_repin(candidate)
+    if form=='missing':doc.pop('p1_enabled')
+    if form=='extra':doc['unexpected']='no'
+    if form=='downgrade':doc['schema']='wd.q4-live-update-once.v1'
+    raw=encode(doc)
+    if form=='duplicate':raw=raw[:-1]+b',"p1_enabled":true}'
+    candidate['config'].write_bytes(raw);candidate['config_sha']=sha(raw)
+    result=_p1_invoke(candidate,'update')
+    assert result.returncode!=0 and not result.stdout
+
+def test_v2_bootstrap_keeps_external_config_hash(candidate):
+    _p1_repin(candidate);candidate['config'].write_bytes(candidate['config'].read_bytes()+b' ')
+    result=_p1_invoke(candidate,'update')
+    assert result.returncode!=0 and not result.stdout

@@ -42,6 +42,33 @@ function Assert-LivePath {
     }
     return $full
 }
+function Test-LiveConfigPolicy {
+    param([object] $Config, [string] $Raw)
+    $names = @($Config.PSObject.Properties.Name)
+    if ([string]$Config.schema -ceq 'wd.q4-live-update-once.v1') {
+        return ($names -notcontains 'p1_enabled')
+    }
+    $required = @('schema','route_path','route_sha256','plan_path','anchor_path','policy_path',
+        'public_policy_path','baseline_path','baseline_sha256','manifest_sha256','p1_enabled')
+    if ([string]$Config.schema -cne 'wd.q4-live-update-once.v2' -or $names.Count -ne $required.Count -or
+        $Raw.Length -gt 65536 -or $Config.p1_enabled -isnot [bool] -or $Config.p1_enabled -cne $true) {
+        return $false
+    }
+    # ConvertFrom-Json can collapse duplicate keys. V2 requires each literal
+    # generated ASCII key once, including no escaped duplicate aliases.
+    if ([regex]::Matches($Raw, '(?<!\\)"(?:[^"\\]|\\.)*"\s*:').Count -ne $required.Count) { return $false }
+    foreach ($key in $required) {
+        if ($names -cnotcontains $key -or
+            [regex]::Matches($Raw, '(?<!\\)"' + [regex]::Escape($key) + '"\s*:').Count -ne 1) { return $false }
+        if ($key -cne 'p1_enabled' -and ($Config.$key -isnot [string] -or [string]::IsNullOrEmpty($Config.$key))) {
+            return $false
+        }
+    }
+    foreach ($key in @('route_sha256','baseline_sha256','manifest_sha256')) {
+        if ($Config.$key -cnotmatch '^[0-9a-f]{64}$') { return $false }
+    }
+    return $true
+}
 function Literal([string] $Value) { return "'" + $Value.Replace("'", "''") + "'" }
 function Assert-LiveDisjoint([string] $Left, [string] $Right) {
     $a = [IO.Path]::GetFullPath($Left).TrimEnd('\')
@@ -66,13 +93,14 @@ if ((Get-FileHash -LiteralPath $manifestFile -Algorithm SHA256).Hash -cne $manif
     (Get-FileHash -LiteralPath $configFile -Algorithm SHA256).Hash -cne $configHash) { throw 'Manifest or config pin mismatch.' }
 $manifest = Get-Content -LiteralPath $manifestFile -Raw -Encoding UTF8 | ConvertFrom-Json
 $state = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
-$config = Get-Content -LiteralPath $configFile -Raw -Encoding UTF8 | ConvertFrom-Json
+$configRaw = Get-Content -LiteralPath $configFile -Raw -Encoding UTF8
+$config = $configRaw | ConvertFrom-Json
 if ([int]$manifest.schema_version -ne 1 -or [string]$manifest.source_commit -cne $ExpectedCommit -or
     [string]$state.source_commit -cne $ExpectedCommit -or [string]$state.final_commit -cne $ExpectedCommit -or
     ([string]$state.manifest_sha256).ToUpperInvariant() -cne $manifestHash -or
     ([string]$state.final_manifest_sha256).ToUpperInvariant() -cne $manifestHash -or
     -not [string]::Equals([string]$state.active_bundle, $bundle, [StringComparison]::OrdinalIgnoreCase) -or
-    [string]$config.schema -cne 'wd.q4-live-update-once.v1' -or
+    -not (Test-LiveConfigPolicy -Config $config -Raw $configRaw) -or
     ([string]$config.manifest_sha256).ToUpperInvariant() -cne $manifestHash) { throw 'State, commit or config does not bind the approved bundle.' }
 foreach ($entry in @(@('tools-bootstrap/tools/wd_q4_live_update_bootstrap.py', $bootstrapFile),
                        @('tools-bootstrap/tools/wd_q4_live_update_once.py', $module),

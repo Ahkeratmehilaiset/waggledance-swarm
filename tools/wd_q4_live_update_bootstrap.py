@@ -21,6 +21,21 @@ import sys
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
 _MAX = 8 * 1024 * 1024
 _PROJECT = ('tools', 'sandbox', 'core', 'waggledance')
+_P1_CONFIG_KEYS = frozenset({'schema', 'route_path', 'route_sha256', 'plan_path', 'anchor_path',
+    'policy_path', 'public_policy_path', 'baseline_path', 'baseline_sha256', 'manifest_sha256', 'p1_enabled'})
+
+
+def _configuration_allowed(config):
+    """Keep v1 defaults; v2 is the exact externally pinned P1 opt-in."""
+    if type(config) is not dict:
+        return False
+    if config.get('schema') == 'wd.q4-live-update-once.v1':
+        return not any(key.lower() == 'p1_enabled' for key in config)
+    return (config.get('schema') == 'wd.q4-live-update-once.v2'
+        and set(config) == _P1_CONFIG_KEYS and config['p1_enabled'] is True
+        and all(type(config[key]) is str and config[key] for key in _P1_CONFIG_KEYS - {'p1_enabled'})
+        and all(_HEX.fullmatch(config[key]) for key in ('route_sha256', 'baseline_sha256', 'manifest_sha256')))
+
 
 
 class _PackageMembershipRefused(ValueError):
@@ -196,7 +211,7 @@ def main(argv):
         else:
             raise ValueError()
         config = _document(_read(config_path, config_pin, 65536))
-        if config.get('schema') != 'wd.q4-live-update-once.v1' or config.get('manifest_sha256') != manifest_pin:
+        if not _configuration_allowed(config) or config.get('manifest_sha256') != manifest_pin:
             raise ValueError()
         inherited_manifest = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
         if inherited_manifest and inherited_manifest != manifest_pin:

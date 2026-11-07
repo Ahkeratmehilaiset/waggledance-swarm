@@ -8,7 +8,9 @@ trees (``site`` and ``model``). It returns the ``pins`` map that
 ``tools.build_q4_runtime_candidate.build_candidate_from_sources`` consumes,
 keyed ``assets/code/...``, ``site/...`` and ``model/...``, with exact size and
 SHA256 values. The code set is the static import closure of caller-named roots
-plus caller-listed extra paths, labelled unverified. Imports made through
+plus caller-listed extra paths, labelled unverified. When that closure contains
+the Q4 secure transport, it also requires its known path-loaded import helper.
+Imports made through
 dynamic loaders (importlib, exec, runpy, file specs) cannot be followed
 statically. A conservative AST heuristic flags files that import importlib,
 runpy or builtins under any alias, or name a known loader, eval, exec,
@@ -70,6 +72,8 @@ _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _ALIAS = re.compile(r"~[0-9]+(?:\.[^.]*)?\Z")
 _LOCAL = frozenset({"tools", "sandbox", "core", "waggledance"})
+_SECURE_TRANSPORT = "tools/wd_q4_secure_transport.py"
+_CONTROLLED_IMPORTS = "sandbox/mind/step2/q4_controlled_imports.py"
 _DYNAMIC_MODULES = frozenset({"importlib", "runpy", "builtins"})
 _DYNAMIC_NAMES = frozenset({"__import__", "exec", "eval", "compile", "__builtins__"})
 _DYNAMIC_ATTRS = frozenset({"import_module", "__import__", "run_path", "run_module", "spec_from_file_location",
@@ -309,6 +313,10 @@ def _code_plan(git_executable, repository, commit, roots, extras, deadline, budg
         path = pending.pop()
         if path in records:
             continue
+        if path == _SECURE_TRANSPORT:
+            if _CONTROLLED_IMPORTS not in entries:
+                _fail("code_closure_incomplete")
+            pending.append(_CONTROLLED_IMPORTS)
         mode, kind, oid, size = entries[path]
         if kind != "blob" or mode not in ("100644", "100755"):
             _fail("code_entry_invalid")

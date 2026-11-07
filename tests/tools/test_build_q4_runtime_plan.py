@@ -145,6 +145,29 @@ def test_plan_pins_the_static_closure_from_committed_blobs_and_hashes_site_and_m
     assert set(files) == set(pins)
 
 
+@pytest.mark.parametrize('include_helper', [True, False])
+def test_secure_transport_requires_its_dynamic_controlled_import_helper(tmp_path, include_helper):
+    helper = 'sandbox/mind/step2/q4_controlled_imports.py'
+    files = {
+        'tools/wd_q4_fixed_peer.py': b'from tools import wd_q4_secure_transport\n',
+        'tools/wd_q4_secure_transport.py': b'HELPER = "sandbox/mind/step2/q4_controlled_imports.py"\n',
+    }
+    if include_helper:
+        files[helper] = b'VALUE = 1\n'
+    repo, commit = make_repo(tmp_path, files)
+    site = make_tree(tmp_path / 'site', {'pkg.py': b'VALUE = 1\n'})
+    model = make_tree(tmp_path / 'model', {'model.safetensors': WEIGHTS})
+    kwargs = dict(git_executable=GIT, repository=str(repo), commit=commit,
+                  code_roots=['tools/wd_q4_fixed_peer.py'], site_root=str(site), model_root=str(model),
+                  expected_model_files=['model.safetensors'], expected_weights_sha256=sha(WEIGHTS),
+                  generation=GENERATION, revision=REVISION, max_bytes=1024 * 1024, enabled=True)
+    if include_helper:
+        plan = plan_mod.plan_runtime_inputs(**kwargs)
+        assert plan['pins']['assets/code/' + helper] == {'size': len(files[helper]), 'sha256': sha(files[helper])}
+    else:
+        refused(kwargs, 'code_closure_incomplete')
+
+
 def test_plan_contains_no_absolute_paths(case):
     kwargs, repo, site, model = case
     text = repr(plan_mod.plan_runtime_inputs(**kwargs))

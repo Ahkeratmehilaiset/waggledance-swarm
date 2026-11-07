@@ -29,6 +29,8 @@ _OUTER_KEYS = frozenset({"outer-path", "outer-sha256", "runtime-root", "runtime-
                          "worker-sha256"})
 _BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256",
                            "roster_sha256", "public_policy_sha256", "descriptor_sha256", "projection_sha256"})
+_CARD_BINDING_KEYS = _BINDING_KEYS | {"card_decision_sha256"}
+_STAGED_CARD_BINDING_KEYS = _CARD_BINDING_KEYS | {"card_policy_sha256"}
 _OUTER_FILE = ("assets", "code", "tools", "wd_q4_session_outer_synthetic.py")
 _MAX_FLEET = 1048576
 _MAX_DESCRIPTOR = 65536
@@ -138,9 +140,12 @@ def build_shared_descriptor(*, enabled=False, fleet_bytes=None, expected_fleet_s
         if type(values[key]) is not int or not 1 <= values[key] <= maximum:
             _refuse("limit_refused")
     outer = _section(outer, _OUTER_KEYS)
-    binding = _section(expected_binding, _BINDING_KEYS)
+    if (type(expected_binding) is not dict or frozenset(expected_binding) not in
+            (_BINDING_KEYS, _CARD_BINDING_KEYS, _STAGED_CARD_BINDING_KEYS)):
+        _refuse("schema_refused")
+    binding = _section(expected_binding, frozenset(expected_binding))
     if (not all(_pin(outer[key]) for key in _OUTER_KEYS if key.endswith("sha256"))
-            or not all(_pin(binding[key]) for key in _BINDING_KEYS)
+            or not all(_pin(value) for value in binding.values())
             or not all(_REVISION.match(outer[key]) for key in ("runtime-generation", "runtime-revision"))):
         _refuse("pin_refused")
     root, outer_path, manifest = outer["runtime-root"], outer["outer-path"], runtime_manifest_path

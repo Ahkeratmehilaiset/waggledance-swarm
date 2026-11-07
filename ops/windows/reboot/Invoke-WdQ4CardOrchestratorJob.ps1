@@ -102,6 +102,12 @@ try {
     $finishData=PinnedJson $finish ([string]$q.finish.sha256) 1048576
     $decisionData=PinnedJson $decision ([string]$q.decision.sha256) 1048576
     if ([string]$decisionData.source_mode -cne 'operator_authorized_source') { throw 'mode' }
+    $sharedStage=''; $sharedGeneration=''
+    if ($null -ne $finishData.composer_options.PSObject.Properties['shared_stage_root']) {
+        $sharedStage=CheckedPath ([string]$finishData.composer_options.shared_stage_root) $true
+        $sharedGeneration=[string]$finishData.composer_options.generation
+        if ($sharedGeneration -cnotmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') { throw 'generation' }
+    }
     $scratch=CheckedPath $ScratchRoot $true
     if ($null -ne ('WdQ4CardJobPathsV1' -as [type])) { throw 'type' }
     Add-Type -TypeDefinition @'
@@ -130,6 +136,7 @@ public static class WdQ4CardJobPathsV1 {
         [string]$decisionData.source_path,(Split-Path -Parent ([string]$decisionData.source_path)),
         [string]$decisionData.anchor.root,[string]$decisionData.git.repository,
         [string]$finishData.composer_options.bundle_store_root,[string]$finishData.composer_options.active_bundle_root)
+    if ($sharedStage) { $protected+= $sharedStage }
     foreach ($item in @($decisionData.inputs.PSObject.Properties)) { $protected+= [string]$item.Value.path }
     foreach ($item in $protected) {
         $checked=CheckedPath $item ([IO.Directory]::Exists($item))
@@ -251,7 +258,13 @@ finally {
     if ($text -cnotmatch '^\{"pointer_path":"(?:[^"\\\x00-\x1f]|\\.)*","pointer_sha256":"[0-9a-f]{64}","status":"PREPARED"\}\r?\n$') { throw 'output' }
     $answer=$text | ConvertFrom-Json -ErrorAction Stop
     $pointer=CheckedPath ([string]$answer.pointer_path)
-    $expected=Join-Path (CheckedPath ([string]$q.generation_root) $true) 'stage\candidate-pointer.json'
+    ExactHash $request $ExpectedRequestSha256
+    ExactHash $finish ([string]$q.finish.sha256)
+    $expected=if ($sharedStage) {
+        Join-Path (CheckedPath $sharedStage $true) ('candidate-pointer-'+$sharedGeneration+'.json')
+    } else {
+        Join-Path (CheckedPath ([string]$q.generation_root) $true) 'stage\candidate-pointer.json'
+    }
     if (-not $pointer.Equals($expected,[StringComparison]::OrdinalIgnoreCase)) { throw 'pointer' }
     ExactHash $pointer ([string]$answer.pointer_sha256)
     [Console]::Out.Write($text)

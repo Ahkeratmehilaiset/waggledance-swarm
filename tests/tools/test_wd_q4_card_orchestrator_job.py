@@ -117,6 +117,37 @@ def test_real_job_propagates_only_verified_candidate(case):
                                       'pointer_sha256':sha(case['pointer'].read_bytes())}
 
 
+@pytest.mark.parametrize('matching', [True, False])
+def test_real_job_accepts_only_shared_generation_pointer(case, matching):
+    shared = case['tmp_path'] / 'shared-generations'
+    shared.mkdir()
+    generation = 'c' * 40
+    pointer = shared / ('candidate-pointer-' + generation + '.json')
+    pointer.write_bytes(case['pointer'].read_bytes())
+    finish = json.loads(case['finish'].read_bytes())
+    finish['composer_options'].update(shared_stage_root=str(shared), generation=generation if matching else 'd' * 40)
+    case['finish'].write_bytes(raw(finish))
+    request = json.loads(case['request'].read_bytes())
+    request['finish']['sha256'] = sha(case['finish'].read_bytes())
+    case['request'].write_bytes(raw(request))
+    bootstrap = case['bootstrap']
+    before = bootstrap.read_text(encoding='ascii')
+    assert repr(str(case['pointer'])) in before
+    bootstrap.write_text(before.replace(repr(str(case['pointer'])), repr(str(pointer))), encoding='ascii')
+    manifest = json.loads(case['manifest'].read_bytes())
+    manifest['files']['tools-bootstrap/tools/' + bootstrap.name] = sha(bootstrap.read_bytes())
+    case['manifest'].write_bytes(raw(manifest))
+    runtime = json.loads(case['runtime'].read_bytes())
+    runtime['manifest_sha256'] = sha(case['manifest'].read_bytes())
+    case['runtime'].write_bytes(raw(runtime))
+    result = launch(case)
+    if matching:
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert json.loads(result.stdout)['pointer_path'] == str(pointer)
+    else:
+        assert result.returncode == 3 and json.loads(result.stdout) == {'status': 'UNKNOWN'}
+
+
 def test_job_child_does_not_change_calling_session_wrapper_pin(case,monkeypatch):
     old=r'C:\synthetic-session-pin\Invoke-WdBridgePython.ps1'
     monkeypatch.setenv('WD_BRIDGE_PYTHON_WRAPPER',old)

@@ -109,6 +109,8 @@
     "tools/wd_q4_public_card_plan_writer.py",
     "tools/wd_q4_staged_fixed_backend.py",
     "tools/wd_q4_real_card_snapshot_producer.py",
+    "tools/wd_q4_real_card_snapshot_cli.py",
+    "tools/wd_q4_staged_card_composer_cli.py",
     "tools/wd_q4_roster_from_fleet.py",
     "tools/wd_q4_secure_transport.py",
     "tools/wd_q4_fixed_plan_producer.py",
@@ -283,6 +285,8 @@
     "q4_genesis_composer": "tools/wd_q4_genesis_to_composer_cli.py",
     "q4_update_config_prepare": "tools/wd_q4_live_update_config_prepare.py",
     "q4_staged_composer": "tools/wd_q4_staged_composer_cli.py",
+    "q4_card_snapshot_prepare": "tools/wd_q4_real_card_snapshot_cli.py",
+    "q4_card_staged_composer": "tools/wd_q4_staged_card_composer_cli.py",
     "rco_changes_requested": "tools/check_bridge_changes_requested.py",
     "rco_pass_present": "tools/check_rco_pass_present.py"
   },

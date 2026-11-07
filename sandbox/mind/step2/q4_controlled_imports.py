@@ -288,7 +288,17 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
         except ValueError:
             # The interpreter's own extensions retain the old trust boundary,
             # but cannot mint manifest-bound native registration observations.
-            return callback(loader, argument)
+            # Their nested effects must not be credited to an enclosing
+            # manifest-native or verified-source execution window either.
+            if not native_stack and not source_stack:
+                return callback(loader, argument)
+            interpreter_before = dict(sys.modules)
+            interpreter_objects = modules_in_gc() if native_stack else ()
+            try:
+                return callback(loader, argument)
+            finally:
+                mark_nested(interpreter_before, interpreter_objects)
+                mark_source_nested(interpreter_before)
         _check(relative in entries and len(sys._current_frames()) == 1)
         before = dict(sys.modules)
         # Keep strong references so an already existing, unregistered module

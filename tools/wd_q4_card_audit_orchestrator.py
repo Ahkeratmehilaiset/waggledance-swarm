@@ -71,6 +71,12 @@ def run(*, enabled=False, request_path=None, request_sha256=None):
         from tools import wd_q4_external_generation_anchor as anchor
         from waggledance.core.bridge_log_reader import BridgeCursor
         c, a = decision['cursor'], decision['anchor']
+        synthetic_paths = [io._path(decision['source_path']), io._path(a['root'], directory=True),
+                           io._path(decision['git']['repository'], directory=True)]
+        synthetic_paths.extend(io._path(spec['path']) for spec in decision['inputs'].values())
+        if any('.codex-audit' not in p.parts or p.is_relative_to(out) or out.is_relative_to(p)
+               for p in synthetic_paths):
+            raise ValueError()
         cursor = BridgeCursor(c['offset'], c['file_identity'], None)
         verified = anchor.verify(enabled=True, source_path=decision['source_path'], original_cursor=cursor,
             expected_prefix_sha256=decision['prefix_sha256'], output_root=a['root'],

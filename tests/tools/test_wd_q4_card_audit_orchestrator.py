@@ -96,3 +96,22 @@ def test_mismatch_refused_before_output(real_fixture, tmp_path, fault):
     with pytest.raises(mod.Refused):
         mod.run(enabled=True, request_path=str(path), request_sha256=write(path, request))
     assert list(out.iterdir()) == []
+
+
+def test_non_audit_source_rejected_before_anchor_reader(real_fixture, tmp_path, monkeypatch):
+    mod = importlib.import_module('tools.wd_q4_card_audit_orchestrator')
+    from tools import wd_q4_external_generation_anchor as anchor
+    path, _, out, _ = make_request(real_fixture, tmp_path)
+    request = json.loads(path.read_bytes())
+    decision_path = Path(request['decision']['path'])
+    template_path = Path(request['snapshot_template']['path'])
+    decision, template = json.loads(decision_path.read_bytes()), json.loads(template_path.read_bytes())
+    decision['source_path'] = decision['git']['executable']
+    template['source_path'] = decision['source_path']
+    request['decision']['sha256'] = write(decision_path, decision)
+    request['snapshot_template']['sha256'] = write(template_path, template)
+    seen = []
+    monkeypatch.setattr(anchor, 'verify', lambda **kwargs: seen.append(True))
+    with pytest.raises(mod.Refused):
+        mod.run(enabled=True, request_path=str(path), request_sha256=write(path, request))
+    assert seen == [] and list(out.iterdir()) == []

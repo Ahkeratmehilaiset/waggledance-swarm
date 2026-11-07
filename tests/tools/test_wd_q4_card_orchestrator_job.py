@@ -101,6 +101,33 @@ def test_job_child_does_not_change_calling_session_wrapper_pin(case,monkeypatch)
     assert os.environ['WD_BRIDGE_PYTHON_WRAPPER']==old
 
 
+def test_pre_wrapper_failure_is_a_confirmed_refusal(case):
+    launcher=case['bundle']/ENTRY.name
+    script=launcher.read_text(encoding='utf-8')
+    anchor=' $script:bytes=0'
+    assert script.count(anchor)==1
+    launcher.write_text(script.replace(anchor,anchor+"\n throw 'synthetic-before-wrapper'"),encoding='utf-8')
+    manifest=json.loads(case['manifest'].read_bytes()); manifest['files'][ENTRY.name]=sha(launcher.read_bytes())
+    case['manifest'].write_bytes(raw(manifest))
+    runtime=json.loads(case['runtime'].read_bytes()); runtime['manifest_sha256']=sha(case['manifest'].read_bytes())
+    case['runtime'].write_bytes(raw(runtime))
+    result=launch(case)
+    assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
+    assert not case['wrapper_marker'].exists()
+
+
+def test_failure_after_wrapper_entry_remains_unknown(case):
+    case['wrapper'].write_text("throw 'synthetic-after-wrapper-entry'\n",encoding='ascii')
+    manifest=json.loads(case['manifest'].read_bytes())
+    manifest['files'][case['wrapper'].name]=sha(case['wrapper'].read_bytes())
+    case['manifest'].write_bytes(raw(manifest))
+    runtime=json.loads(case['runtime'].read_bytes()); runtime['manifest_sha256']=sha(case['manifest'].read_bytes())
+    case['runtime'].write_bytes(raw(runtime))
+    result=launch(case)
+    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    assert 'synthetic-after-wrapper-entry' not in result.stdout+result.stderr
+
+
 def test_bad_pin_and_overlapping_scratch_refuse(case):
     for kw in ({'bad_pin':True},{'scratch':case['bundle']},{'scratch':case['generation']},{'scratch':case['bridge']}):
         result=launch(case,**kw)

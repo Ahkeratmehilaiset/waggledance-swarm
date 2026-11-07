@@ -137,6 +137,28 @@ public static class WdQ4CardJobPathsV1 {
         if ($Value -match '[^\x20-\x7e]') { throw 'argument' }
         return "'" + $Value.Replace("'","''") + "'"
     }
+    foreach ($value in @($python,$bootstrap,$manifest,$request,$runtime,$wrapper,$bridgePython,$hostPath,$scratch)) {
+        [void](PSLiteral $value)
+    }
+    # Cooperative, one-attempt receipt. A same-user process can forge it;
+    # it is a guard against accidental direct invocation, not authentication.
+    $random=New-Object byte[] 32; $rng=[Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($random) } finally { $rng.Dispose() }
+    $nonce=[BitConverter]::ToString($random).Replace('-','').ToLowerInvariant()
+    $tokenPath=Join-Path $scratch ('wd-q4-card-'+$nonce.Substring(0,32)+'.json')
+    $launchProcess=[Diagnostics.Process]::GetCurrentProcess()
+    try { $creation=[long]$launchProcess.StartTime.ToUniversalTime().ToFileTimeUtc() }
+    finally { $launchProcess.Dispose() }
+    $tokenDoc=[ordered]@{schema='wd.q4-card-launch-token.v1';launcher_pid=[int]$PID;
+        launcher_creation_filetime=$creation;scratch_root=$scratch;nonce=$nonce;
+        manifest_sha256=$ExpectedManifestSha256;runtime_sha256=$ExpectedRuntimeSha256;request_sha256=$ExpectedRequestSha256}
+    $tokenRaw=[Text.UTF8Encoding]::new($false,$true).GetBytes(($tokenDoc | ConvertTo-Json -Compress))
+    $entered=$true
+    $tokenStream=[IO.File]::Open($tokenPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try { $tokenStream.Write($tokenRaw,0,$tokenRaw.Length); $tokenStream.Flush($true) } finally { $tokenStream.Dispose() }
+    $tokenHasher=[Security.Cryptography.SHA256]::Create()
+    try { $tokenPin=([BitConverter]::ToString($tokenHasher.ComputeHash($tokenRaw)).Replace('-','')).ToLowerInvariant() }
+    finally { $tokenHasher.Dispose() }
     # A fixed worker program exists only inside this launch, after all scratch
     # checks; the public script has no callable InternalWorker bypass. Values
     # enter it solely as escaped literals and cannot select code or commands.
@@ -147,14 +169,18 @@ public static class WdQ4CardJobPathsV1 {
         "`$env:WD_BRIDGE_PYTHON_WRAPPER=$(PSLiteral $wrapper)`n" +
         "`$env:WD_BRIDGE_PYTHON=$(PSLiteral $bridgePython)`n" +
         "`$env:WD_BRIDGE_PYTHON_SHA256=$(PSLiteral $ExpectedBridgePythonSha256)`n" +
+        "`$env:WD_Q4_CARD_JOB_TOKEN_PATH=$(PSLiteral $tokenPath)`n" +
+        "`$env:WD_Q4_CARD_JOB_TOKEN_SHA256=$(PSLiteral $tokenPin)`n" +
         "`$request=$(PSLiteral $request)`n`$requestPin=$(PSLiteral $ExpectedRequestSha256)`n" +
         "`$runtime=$(PSLiteral $runtime)`n`$runtimePin=$(PSLiteral $ExpectedRuntimeSha256)`n"
     $wrapperProgram+=@'
 $env:PSModulePath=Join-Path $PSHOME 'Modules'
 $env:PATH=(Join-Path $env:SystemRoot 'System32')+';'+$env:SystemRoot
 $env:PATHEXT='.COM;.EXE;.BAT;.CMD'
+$wrapperEntered=$false
 try {
  $script:bytes=0
+ $wrapperEntered=$true
  & $env:WD_BRIDGE_PYTHON_WRAPPER -VerifyPackage -Tool 'tools/wd_q4_card_orchestrator_runtime_bootstrap.py' `
    --enable --request $request --request-sha256 $requestPin --manifest-sha256 $env:WD_REBOOT_EXPECTED_MANIFEST_HASH `
    --runtime $runtime --runtime-sha256 $runtimePin | ForEach-Object {
@@ -162,7 +188,10 @@ try {
     if($script:bytes -gt 4096) { throw 'output' }; [Console]::Out.WriteLine($line)
    }
  $code=$global:LASTEXITCODE; if($null -eq $code) { throw 'exit' }; exit $code
-} catch { [Console]::Out.WriteLine('{"status":"UNKNOWN"}'); exit 3 }
+} catch {
+ if(-not $wrapperEntered) { [Console]::Out.WriteLine('{"status":"REFUSED"}'); exit 2 }
+ [Console]::Out.WriteLine('{"status":"UNKNOWN"}'); exit 3
+}
 '@
     $wrapperEncoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapperProgram))
     $worker="`$python=$(PSLiteral $python)`n`$bootstrap=$(PSLiteral $bootstrap)`n" +
@@ -206,12 +235,15 @@ finally {
 '@
     $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($worker))
     $args=@('-NoProfile','-NonInteractive','-EncodedCommand',$encoded)
-    $entered=$true
     $result=Invoke-WdQ4ProcessJob -Executable $hostPath -Arguments $args -WorkingDirectory $bundle `
         -ScratchRoot $scratch -InputBytes ([byte[]]@()) -TimeoutSeconds $TimeoutSeconds -MaxOutputBytes 8192 -DetailedOutcome
     if ([string]$result.Outcome -cne 'completed' -or [string]$result.Cleanup -cne 'confirmed' -or
-        $result.ExitCode -ne 0 -or $null -eq $result.Stdout) { throw 'job' }
+        $null -eq $result.ExitCode -or $null -eq $result.Stdout) { throw 'job' }
     $text=[Text.UTF8Encoding]::new($false,$true).GetString([byte[]]$result.Stdout)
+    if ($result.ExitCode -eq 2 -and $text -cmatch '^\{"status":"REFUSED"\}\r?\n$') {
+        [Console]::Out.WriteLine('{"status":"REFUSED"}'); exit 2
+    }
+    if ($result.ExitCode -ne 0) { throw 'job' }
     if ($text -cnotmatch '^\{"pointer_path":"(?:[^"\\\x00-\x1f]|\\.)*","pointer_sha256":"[0-9a-f]{64}","status":"PREPARED"\}\r?\n$') { throw 'output' }
     $answer=$text | ConvertFrom-Json -ErrorAction Stop
     $pointer=CheckedPath ([string]$answer.pointer_path)

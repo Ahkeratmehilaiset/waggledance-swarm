@@ -143,6 +143,57 @@ def test_wrong_parent_marker_identity_or_digest_stays_unknown(job,field):
     assert not list(private.glob('q4-adopt-recovery-job-result-*.json'))
 
 
+def test_mismatched_worker_host_pin_refuses_before_parent_reservation(job):
+    prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
+    script=job['bundle']/'Invoke-WdQ4AdoptRecovery.ps1'; text=script.read_text(encoding='utf-8-sig')
+    anchor="'-ExpectedHostSha256',$ExpectedHostSha256"
+    assert text.count(anchor)==1
+    text=text.replace(anchor,"'-ExpectedHostSha256',('f'*64)")
+    script.write_text(text,encoding='utf-8'); repin_changed(job,['Invoke-WdQ4AdoptRecovery.ps1'])
+    result=run_job(job,scratch); private=job['bundle'].parent/'private'
+    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    assert not (private/'q4-adopt-recovery-job.pending.json').exists()
+    assert not list(private.glob('q4-adopt-recovery-job-result-*.json'))
+
+
+def test_bootstrap_independently_checks_forwarded_host_before_reservation(job):
+    prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
+    worker=job['bundle']/'Invoke-WdQ4ContinuationWorker.ps1'; text=worker.read_text(encoding='utf-8-sig')
+    anchor="$psi.Arguments+=' --host-sha256 ' + $ExpectedHostSha256"
+    assert text.count(anchor)==1
+    worker.write_text(text.replace(anchor,"$psi.Arguments+=' --host-sha256 ' + ('f'*64)"),encoding='utf-8')
+    repin_changed(job,['Invoke-WdQ4ContinuationWorker.ps1'])
+    result=run_job(job,scratch); private=job['bundle'].parent/'private'
+    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    assert not (private/'q4-adopt-recovery-job.pending.json').exists()
+
+
+@pytest.mark.parametrize('corrupt',[False,True])
+def test_finalization_reuses_exact_prior_receipt_without_starting_job(job,monkeypatch,corrupt):
+    prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
+    script=job['bundle']/'Invoke-WdQ4AdoptRecovery.ps1'; text=script.read_text(encoding='utf-8-sig')
+    target='[WdQ4AdoptPendingV1]::DeleteOwned($pendingStream.SafeFileHandle)'
+    assert text.count(target)==1 and text.count('    . $jobHelper')==1
+    text=text.replace(target,"if ($env:WD_TEST_CRASH -eq '1') { throw 'synthetic' }; "+target)
+    text=text.replace('    . $jobHelper',"    if ($env:WD_TEST_FORBID_JOB -eq '1') { throw 'forbidden retry' }\n    . $jobHelper")
+    script.write_text(text,encoding='utf-8'); repin_changed(job,['Invoke-WdQ4AdoptRecovery.ps1'])
+    monkeypatch.setenv('WD_TEST_CRASH','1')
+    first=run_job(job,scratch)
+    assert first.returncode==3 and json.loads(first.stdout)=={'status':'UNKNOWN'}
+    private=job['bundle'].parent/'private'; marker=private/'q4-adopt-recovery-job.pending.json'
+    before=marker.read_bytes(); receipt,=private.glob('q4-adopt-recovery-job-result-*.json')
+    attempt=json.loads(receipt.read_bytes())['attempt']
+    if corrupt: receipt.write_bytes(receipt.read_bytes()+b' ')
+    monkeypatch.delenv('WD_TEST_CRASH'); monkeypatch.setenv('WD_TEST_FORBID_JOB','1')
+    result=subprocess.run(command(job,scratch)+['-FinalizeAttempt',attempt],text=True,capture_output=True,timeout=50)
+    if corrupt:
+        assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+        assert marker.read_bytes()==before
+    else:
+        assert result.returncode==0 and json.loads(result.stdout)=={'status':'NOT_ADOPTED'}
+        assert not marker.exists()
+
+
 def test_unknown_child_keeps_marker_and_never_retries(job):
     prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
     parent_behavior(job,"raise RuntimeError('synthetic uncertain child')")

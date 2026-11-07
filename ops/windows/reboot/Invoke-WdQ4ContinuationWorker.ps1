@@ -2,7 +2,7 @@
 # Fixed job child. Its caller hash-pins this script and interpreter before start.
 param([string]$Manifest,[string]$ManifestSha256,[string]$Bootstrap,[string]$BootstrapSha256,
       [string]$Python,[string]$PythonSha256,[string]$Config,[string]$ConfigSha256,
-      [string]$Runtime,[string]$RuntimeSha256)
+      [string]$Runtime,[string]$RuntimeSha256,[string]$ExpectedHostSha256='')
 $ErrorActionPreference='Stop'
 $entered=$false
 try {
@@ -18,6 +18,9 @@ try {
     ExactHash $Python $PythonSha256
     ExactHash $Config $ConfigSha256
     ExactHash $Runtime $RuntimeSha256
+    if ($ExpectedHostSha256) {
+        ExactHash (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') $ExpectedHostSha256
+    }
     $env:WD_REBOOT_EXPECTED_MANIFEST_HASH=$ManifestSha256
     # A nested native child does not reliably inherit the outer Job pipe via
     # PowerShell's native pipeline. Bind explicit OS pipes and discard stderr.
@@ -29,6 +32,7 @@ try {
     $psi.FileName=$Python
     $psi.Arguments=('-I -S -B {0} --enable --config {1} --sha256 {2} --manifest-sha256 {3} --runtime {4} --runtime-sha256 {5}' -f `
         (Quoted $Bootstrap),(Quoted $Config),$ConfigSha256,$ManifestSha256,(Quoted $Runtime),$RuntimeSha256)
+    if ($ExpectedHostSha256) { $psi.Arguments+=' --host-sha256 ' + $ExpectedHostSha256 }
     $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true
     $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
     $proc=[Diagnostics.Process]::new(); $proc.StartInfo=$psi

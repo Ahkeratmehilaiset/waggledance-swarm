@@ -99,6 +99,70 @@ def _exclusive(path, raw):
         os.fsync(stream.fileno())
 
 
+def _prepare_staged_card_binding_impl(*, expected_commit, manifest_bytes, expected_manifest_sha256,
+        fleet_bytes, expected_fleet_sha256, wrapper_bytes, expected_wrapper_sha256,
+        public_plan_bytes, expected_public_plan_sha256):
+    """Validate caller-pinned v3 inputs and C2 before any composer write.
+
+    This helper does not build a fixed plan, materialize a descriptor, activate
+    a lane, or prove source authenticity or snapshot freshness. The caller must
+    independently anchor every supplied pin and manage any later writes.
+    """
+    from tools import wd_q4_lane_link as link
+
+    if (type(public_plan_bytes) is not bytes or type(expected_public_plan_sha256) is not str
+            or _HEX64.fullmatch(expected_public_plan_sha256) is None
+            or not hmac.compare_digest(hashlib.sha256(public_plan_bytes).hexdigest(), expected_public_plan_sha256)):
+        raise ValueError()
+    plan = link._json(public_plan_bytes)
+    if (type(plan) is not dict or plan.get('schema') != 'wd.q4-public-wrapper-plan.v3'
+            or set(plan) != link._PUBLIC_PLAN_SCHEMAS['wd.q4-public-wrapper-plan.v3']):
+        raise ValueError()
+    limits = {'pointer': 1024*1024, 'policy': 65536, 'roster': 1024*1024,
+              'public_policy': 65536, 'card_decision': 262144, 'card_policy': 65536}
+    inputs = {name: cli._read_pinned(plan[name + '_path'], limit, plan[name + '_sha256'], 'source_refused')
+              for name, limit in limits.items()}
+    producer_args = dict(enabled=True, expected_commit=expected_commit,
+        manifest_bytes=manifest_bytes, expected_manifest_sha256=expected_manifest_sha256,
+        fleet_bytes=fleet_bytes, expected_fleet_sha256=expected_fleet_sha256,
+        wrapper_bytes=wrapper_bytes, expected_wrapper_sha256=expected_wrapper_sha256,
+        public_plan_bytes=public_plan_bytes, expected_public_plan_sha256=expected_public_plan_sha256,
+        **{name + '_bytes': raw for name, raw in inputs.items()})
+    built = binding_producer.build_staged_lane_binding(**producer_args)
+    tasks, _ = capture.strict_pins(inputs['policy'], plan['policy_sha256'],
+                                   inputs['roster'], plan['roster_sha256'])
+    document = link._json(built['binding_bytes'])
+    pinned_pointer = link._json(inputs['pointer'])
+    artifacts = pinned_pointer['artifacts']
+    memory_root = Path(plan['config']['memory'])
+    pinned = {}
+    for name in ('memory', 'projection', 'descriptor'):
+        pin = artifacts[name + '.json']
+        if name != 'memory' and pin != document['binding'][name + '_sha256']:
+            raise ValueError()
+        pinned[name] = cli._read_pinned(str(memory_root / (name + '.json')),
+                                        65536 if name == 'descriptor' else transport._MAX_BUNDLE,
+                                        pin, 'source_refused')
+    bundle = transport.fixed_card_bundle(enabled=True, **inputs, **pinned)
+    if type(bundle) is not bytes or binding_producer.build_staged_lane_binding(**producer_args) != built:
+        raise ValueError()
+    return {'binding_bytes': built['binding_bytes'], 'binding_sha256': built['binding_sha256'],
+            'approved_tasks': sorted(tasks), 'bundle_bytes': bundle,
+            'bundle_sha256': hashlib.sha256(bundle).hexdigest()}
+
+
+def _prepare_staged_card_binding(**kwargs):
+    """Collapse pre-write validation failures to a fixed, context-free refusal."""
+    result = None
+    try:
+        result = _prepare_staged_card_binding_impl(**kwargs)
+    except Exception:
+        pass
+    if result is None:
+        raise ComposeRefused('input_refused') from None
+    return result
+
+
 def compose(*, enabled=False, request_path=None, stage_dir=None, expected_bundle=None,
             expected_commit=None, expected_manifest_sha256=None, expected_public_plan_sha256=None,
             generation_root=None, bundle_store_root=None, active_bundle_root=None, expected_state_sha256=None):

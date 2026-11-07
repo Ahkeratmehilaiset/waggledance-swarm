@@ -4,6 +4,7 @@ The encoder and peer runtime are test doubles; bridge, deployment and real data
 are never used. Actual fence, snapshot capture, binding, caller guard and Windows
 named-pipe peer are exercised. This is not authentication or a production test.
 """
+from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import io
@@ -204,7 +205,10 @@ def test_two_real_fenced_publications_are_selected_by_running_caller(tmp_path, m
             baseline=base_cfg, manifest_sha256=sha(manifest), candidate_path=candidate[0],
             candidate_sha256=candidate[1], candidate=candidate_cfg)
         assert published['status'] == 'PUBLISHED'
-        query = enc({'situation': 'synthetic recall', 'time': '2026-11-01T12:00:00Z'})
+        # The enabled CLI (and its PowerShell helper below) rank with the observed
+        # local UTC and refuse a supplied time over 300 s away from it.
+        now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        query = enc({'situation': 'synthetic recall', 'time': now})
         monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(query), encoding='utf-8'))
         if fault != 'none' and len(answers) == 1:
             original_check = caller._require_current_snapshot

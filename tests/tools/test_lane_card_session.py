@@ -124,7 +124,9 @@ def tamper_answer(case, monkeypatch, change):
 
 
 def validated(case, monkeypatch, capsys):
-    case["outcome"].update(validated=True, stored_text="synthetic public card record head:unknown")
+    # A returned card must still be CURRENT at the CLI's observed end (case clock 2026-01-01T00:00Z).
+    case["outcome"].update(validated=True,
+                           stored_text="synthetic public card record head:unknown until:2026-01-01T00:01Z")
     code = cc.invoke(case, monkeypatch)
     return code, capsys.readouterr()
 

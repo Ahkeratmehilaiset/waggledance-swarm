@@ -45,6 +45,37 @@ def _probe(tmp_path, scenario):
         (site / 'wd_synthetic_vf.py').write_bytes(producer)
         files.append({'path': 'site/wd_synthetic_vf.py', 'size': len(producer),
                       'sha256': hashlib.sha256(producer).hexdigest()})
+    if scenario.startswith('inherited_'):
+        sources = {
+            'wd_synthetic_base.py': (b'import types\n'
+                b'class PropModule(types.ModuleType):\n'
+                b' def __init__(self, module, name):\n'
+                b'  super().__init__(name)\n'
+                b'  self.m = module\n'
+                b' def __getattr__(self, name): return getattr(self.m, name)\n'),
+            'wd_synthetic_wrapped.py': (b'import sys\nfrom contextlib import contextmanager\nfrom functools import lru_cache\n'
+                b'from wd_synthetic_base import PropModule\n'
+                b'class ContextProp:\n'
+                b' def __init__(self, getter): self.getter = getter\n'
+                b' def __get__(self, obj, objtype): return self.getter()\n'
+                b'def get_value(): return 1\n'
+                b'class Wrapped(PropModule):\n'
+                b' def __init__(self, module, name): super().__init__(module, name)\n'
+                b' @staticmethod\n'
+                b' def work(): return 1\n'
+                b' @property\n'
+                b' def property_value(self): return 1\n'
+                b' @contextmanager\n'
+                b' def operation(self): yield 1\n'
+                b' @lru_cache(maxsize=None)\n'
+                b' def cached(self): return 1\n'
+                b' option = ContextProp(get_value)\n'
+                b'sys.modules[__name__] = Wrapped(sys.modules[__name__], __name__)\n')}
+        if scenario == 'inherited_parent_failure':
+            sources['wd_synthetic_base.py'] += b'import wd_synthetic_wrapped\nraise RuntimeError("synthetic failure")\n'
+        for filename, data in sources.items():
+            (site / filename).write_bytes(data)
+            files.append({'path':'site/' + filename, 'size':len(data), 'sha256':hashlib.sha256(data).hexdigest()})
     if scenario.startswith('witness_'):
         producer = (b'import sys, types\nVALUE = "safe"\n'
                     b'def make_alias(target):\n'
@@ -241,6 +272,31 @@ elif scenario in ('torch_preseed', 'cython_preseed'):
   except ns['_Refused']: pass
   else: raise AssertionError('runtime preseed accepted')
  finally: del sys.modules[name]
+elif scenario.startswith('inherited_'):
+ import types
+ name = 'wd_synthetic_wrapped'
+ if scenario == 'inherited_parent_failure':
+  try: importlib.import_module('wd_synthetic_base')
+  except RuntimeError: pass
+  else: raise AssertionError('synthetic parent unexpectedly succeeded')
+  try: guard.accept_created(name, sys.modules[name])
+  except ns['_Refused']: pass
+  else: raise AssertionError('witness from failed parent source accepted')
+  print('PASS'); raise SystemExit(0)
+ module = importlib.import_module(name)
+ guard.accept_created(name, module)
+ cls = type(module)
+ if scenario == 'inherited_swap': sys.modules[name] = types.ModuleType(name)
+ elif scenario == 'inherited_base_mutation': cls.__bases__[0].__getattr__ = lambda self, name: None
+ elif scenario == 'inherited_base_global_swap': sys.modules['wd_synthetic_base'].PropModule = type('PropModule', (types.ModuleType,), {})
+ elif scenario == 'inherited_original_swap': module.m = types.ModuleType(name)
+ elif scenario == 'inherited_descriptor_mutation': vars(cls)['option'].getter = lambda: 2
+ elif scenario == 'inherited_cached_mutation': vars(cls)['cached'].__wrapped__ = lambda: 2
+ elif scenario == 'inherited_static_mutation': cls.work = staticmethod(lambda: 2)
+ if scenario != 'inherited_clean':
+  try: guard.accept_created(name, sys.modules[name])
+  except ns['_Refused']: pass
+  else: raise AssertionError('mutated inherited source witness accepted')
 elif scenario.startswith('subclass_'):
  import types
  name = 'wd_synthetic_vf'
@@ -365,6 +421,16 @@ def test_main_alias_is_bound_to_bootstrap_and_verified_stdlib_source(tmp_path, s
 @pytest.mark.parametrize('scenario', ('subclass_clean', 'subclass_preseed', 'subclass_swap',
                                       'subclass_instance_mutation', 'subclass_class_mutation', 'subclass_code_mutation'))
 def test_verified_source_created_module_subclass_is_bound(tmp_path, scenario):
+    result = _probe(tmp_path, scenario)
+    assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
+    assert result.stdout in (b'PASS\r\n', b'PASS\n')
+
+
+@pytest.mark.parametrize('scenario', ('inherited_clean', 'inherited_swap', 'inherited_base_mutation',
+                                      'inherited_base_global_swap', 'inherited_parent_failure',
+                                      'inherited_original_swap', 'inherited_descriptor_mutation', 'inherited_cached_mutation',
+                                      'inherited_static_mutation'))
+def test_verified_inherited_wrapper_and_descriptor_are_bound(tmp_path, scenario):
     result = _probe(tmp_path, scenario)
     assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
     assert result.stdout in (b'PASS\r\n', b'PASS\n')

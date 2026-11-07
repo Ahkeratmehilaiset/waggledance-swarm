@@ -940,6 +940,14 @@ Q4_READONLY_FILES = frozenset({
     "sandbox/mind/step2/wd_q4_private_read.py",
     "sandbox/mind/step2/wd_q4_prefix_build_child.py",
 })
+# Synthetic closed-card modules, code only (lead-mind-card-package-closure-fable-20261107-v1): the card route of
+# shared_result_resolver stays OFF unless its switch holds the card module itself, and neither the resolver nor
+# the resolved child imports it; never an entrypoint, manual capability or import-smoke module
+# (tests/tools/test_card_package_closure.py).
+CARD_PACKAGE_FILES = frozenset({
+    "sandbox/mind/step2/public_knowledge_card.py",
+    "sandbox/mind/step2/shared_card_projection.py",
+})
 Q4_AGENT_API = "tools/wd_q4_agent_query.py"
 Q4_RESOLVED_CHILD = "tools/wd_q4_resolved_child.py"
 PUBLIC_STATUS_API = "tools/wd_mind_public_session.py"
@@ -1259,7 +1267,7 @@ def _assert_shadow_release_delivery(definition):
     sandbox_files = {path for path in definition["python_files"] if path.startswith("sandbox/")}
     # Q4 files are delivery-only too: the existing CLI and smoke boundaries remain unchanged.
     assert Q4_READONLY_FILES <= sandbox_files, "q4_file_drop"
-    assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES) | Q4_READONLY_FILES | {
+    assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES) | Q4_READONLY_FILES | CARD_PACKAGE_FILES | {
         "sandbox/mind/capture/capacity_read.py",
         "sandbox/mind/step2/prefix_private_state.py",
         "sandbox/mind/step2/shared_prefix_public_producer.py",

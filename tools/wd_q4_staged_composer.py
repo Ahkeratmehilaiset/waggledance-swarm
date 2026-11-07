@@ -26,6 +26,7 @@ _STATE_POINTER = Path(r'C:\Python\WD_REBOOT_STATE_CURRENT.json')
 _HEX40 = re.compile(r'[0-9a-f]{40}\Z')
 _HEX64 = re.compile(r'[0-9a-fA-F]{64}\Z')
 _GENERATION = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
+_LIVE_PUBLICATION = 'q4-live-current.json'  # the live selector's own publication (wd_q4_live_snapshot_publish._POINTER)
 _SHARED_POINTER = re.compile(r'candidate-pointer-(?:[0-9a-f]{40}|[0-9a-f]{64})\.json\Z')
 
 
@@ -84,8 +85,10 @@ def _anchored_active(expected_state_sha256, active, store):
 def _shared_stage_ok(stage, generation):
     """A shared generations root may hold only earlier generations and their own candidate pointers.
 
-    Every entry must be a generation directory or a regular per-generation candidate pointer; the new
-    generation's directory and pointer must both be absent. Nothing here proves earlier generations valid.
+    Every entry must be a generation directory, a regular per-generation candidate pointer, or the live
+    selector's regular publication file (never read or touched here); selector temp leftovers and every other
+    entry refuse. The new generation's directory and pointer must both be absent. Nothing here proves earlier
+    generations or the publication valid.
     """
     if type(generation) is not str or _GENERATION.fullmatch(generation) is None:
         return False
@@ -94,7 +97,7 @@ def _shared_stage_ok(stage, generation):
         if _GENERATION.fullmatch(entry.name):
             if entry.is_symlink() or not entry.is_dir():
                 return False
-        elif _SHARED_POINTER.fullmatch(entry.name):
+        elif _SHARED_POINTER.fullmatch(entry.name) or entry.name == _LIVE_PUBLICATION:
             if entry.is_symlink() or not entry.is_file():
                 return False
         else:

@@ -184,3 +184,80 @@ def test_interruption_after_actual_publication_stays_unknown(actual_continuation
     with pytest.raises(adopt.AdoptOutcomeUnknown): adopt.run_once(**args)
 
 
+
+
+@pytest.mark.parametrize('fault',['none','tampered_route','tampered_watermark','competing','interrupt'])
+def test_empty_advance_consumer_reproduction(actual_continuation,monkeypatch,fault):
+    from tools import wd_q4_continuation_adopt as adopt
+    args=actual_continuation
+    first=adopt.run_once(**args)
+    previous=json.loads(args['receipt_bytes'])
+    route=initial._tuple_part(json.loads(args['genesis_tuple_bytes']),'route')
+    baseline=caller._configuration(args['baseline_path'],args['baseline_sha256'])
+    public,_,_=live._plan(baseline[0],baseline[5])
+    source=Path(route['source'])
+    event=json.loads(base.f2_rows({'fleet_bytes':baseline[3]},['private'])[0])
+    event['ts_utc']='2026-10-31T13:02:30Z'
+    with source.open('ab') as stream: stream.write(base.raw(event)+b'\n')
+    report=continuation.continue_once(enabled=True,tuple_bytes=args['genesis_tuple_bytes'],
+        expected_tuple_sha256=args['genesis_tuple_sha256'],expected_pointer_sha256=previous['pointer_sha256'],
+        policy_bytes=Path(public['policy_path']).read_bytes(),
+        public_policy_bytes=Path(public['public_policy_path']).read_bytes(),
+        fleet_bytes=baseline[3],expected_fleet_sha256=baseline[0]['fleet_sha256'],
+        cutoff_utc='2026-10-31T13:04:00Z',previous_cutoff_utc=previous['cutoff_utc'],
+        watermark_enabled=True,expected_watermark_record_sha256=previous['watermark_record_sha256'])
+    private=Path(route['private_state_root'])
+    runner,=[json.loads(p.read_bytes()) for p in private.glob('q4-status-result-*.json')
+             if caller._sha(p.read_bytes())==report['runner_receipt_sha256']]
+    assert runner['status']=='EMPTY_ADVANCED'
+    assert report['status']=='partial_ready_prefix'
+    with pytest.raises(live.LiveSnapshotRefused):
+        live.select(enabled=True,baseline_path=args['baseline_path'],baseline_sha256=args['baseline_sha256'],
+            baseline=baseline,manifest_sha256=args['manifest_sha256'],load_configuration=caller._configuration)
+    raw=enc({key:report[key] for key in initial._RECEIPT_V3})
+    marker=private/'q4-continuation-adopt.pending.json'
+    if fault in ('tampered_route','tampered_watermark'):
+        field='route_sha256' if fault=='tampered_route' else 'watermark_record_sha256'
+        bad=json.loads(raw); bad[field]='0'*64; bad_raw=enc(bad)
+        with pytest.raises(adopt.AdoptRefused):
+            adopt.run_once(**{**args,'receipt_bytes':bad_raw,'receipt_sha256':caller._sha(bad_raw)})
+        assert not marker.exists()
+        return
+    if fault=='competing':
+        pending=private/'q4-cutoff.pending.json'; pending.write_bytes(b'{}')
+        with pytest.raises(adopt.AdoptOutcomeUnknown):
+            adopt.run_once(**{**args,'receipt_bytes':raw,'receipt_sha256':caller._sha(raw)})
+        assert not marker.exists()
+        return
+    if fault=='interrupt':
+        original=adopt.update._publish
+        def interrupt(*pos,**kw):
+            original(*pos,**kw)
+            raise KeyboardInterrupt()
+        monkeypatch.setattr(adopt.update,'_publish',interrupt)
+        with pytest.raises(adopt.AdoptInterrupted):
+            adopt.run_once(**{**args,'receipt_bytes':raw,'receipt_sha256':caller._sha(raw)})
+        assert marker.exists()
+        with pytest.raises(adopt.AdoptOutcomeUnknown):
+            adopt.run_once(**{**args,'receipt_bytes':raw,'receipt_sha256':caller._sha(raw)})
+        return
+    second=adopt.run_once(**{**args,'receipt_bytes':raw,'receipt_sha256':caller._sha(raw)})
+    assert second['status']=='PUBLISHED' and second['publication_sha256']!=first['publication_sha256']
+    assert second['coverage']=='partial_ready_prefix' and second['freshness']=='UNKNOWN'
+    selected=live.select(enabled=True,baseline_path=args['baseline_path'],baseline_sha256=args['baseline_sha256'],
+        baseline=baseline,manifest_sha256=args['manifest_sha256'],load_configuration=caller._configuration)
+    caller._require_current_snapshot(selected['configuration'][0],selected['configuration'][4],selected['configuration'][5])
+    assert selected['configuration'][4]['pointer_sha256']==report['pointer_sha256']
+    host=shutil.which('powershell.exe'); assert host
+    env={key:value for key,value in os.environ.items() if not key.startswith(('WD_BRIDGE_','WD_Q4_','WD_REBOOT_'))}
+    bundle=Path(baseline[0]['bundle_root'])
+    env.update(WD_BRIDGE_BUNDLE_ROOT=str(bundle),WD_BRIDGE_PYTHON_WRAPPER=str(bundle/'Invoke-WdBridgePython.ps1'),
+               WD_REBOOT_EXPECTED_MANIFEST_HASH=args['manifest_sha256'],
+               WD_Q4_SHARED_DESCRIPTOR_PATH=args['baseline_path'],WD_Q4_SHARED_DESCRIPTOR_SHA256=args['baseline_sha256'])
+    helper=Path(__file__).resolve().parents[2]/'ops/windows/reboot/Invoke-WdQ4LaneRecall.ps1'
+    run=subprocess.run([host,'-NoProfile','-NonInteractive','-File',str(helper),'-Live'],env=env,
+        input=b'{"situation":"synthetic","time":"2026-11-01T12:00:00Z"}',capture_output=True,timeout=30)
+    assert run.returncode==0,run.stderr.decode(errors='replace')
+    assert json.loads(run.stdout)['pointer_sha256']==report['pointer_sha256']
+
+

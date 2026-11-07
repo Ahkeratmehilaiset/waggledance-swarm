@@ -4,6 +4,9 @@ Only caller-pinned inputs are accepted. A durable pending marker remains on any
 uncertain write or interruption; never retry automatically. Cooperative locks do
 not authenticate publishers, exclude hostile same-user writes, or prove freshness.
 This module neither schedules work nor installs a bundle or launches a query.
+An empty partial advance retains the previously published generation. Its
+adoption result reports partial coverage; the current reader answer schema
+does not carry that coverage, and wall-clock freshness remains UNKNOWN.
 """
 from contextlib import ExitStack
 import hashlib
@@ -23,7 +26,9 @@ from tools import wd_q4_live_snapshot_publish as live
 from tools import wd_q4_live_update_once as update
 from tools import wd_q4_live_update_recovery as recovery
 from tools import wd_q4_status_prefix_runner as runner
+from tools import wd_q4_production_continuation as continuation
 from waggledance.core.bridge_log_reader import _file_identity
+from waggledance.core.bridge_log_reader import BridgeCursor, BridgePrefixPin
 
 
 class AdoptRefused(ValueError):
@@ -93,6 +98,38 @@ def _prior_pointer(baseline_path,baseline_sha256,baseline,manifest_sha256):
     return doc['index_pointer_sha256'],raw
 
 
+def _verify_empty_partial(receipt, runner_receipt, genesis_route, private, root, view, prefix, pointer):
+    """Verify one real empty transition without claiming cutoff coverage."""
+    if runner_receipt.get('status')!='EMPTY_ADVANCED': raise ValueError()
+    route_pin=receipt['route_sha256']
+    if runner_receipt.get('route_sha256')!=route_pin: raise ValueError()
+    route=caller._json(live._read(private/('q4-continuation-route-'+route_pin+'.json'),65536,route_pin))
+    expected=set(genesis_route)-{'genesis_skip_sha256'}
+    dynamic={'cursor','prefix_sha256','plan_sha256','anchor_sha256','cutoff_utc'}
+    if (set(route)!=expected or route.get('cutoff_utc')!=receipt['cutoff_utc']
+            or any(route[k]!=genesis_route[k] for k in expected-dynamic)
+            or runner_receipt.get('plan_sha256')!=route.get('plan_sha256')): raise ValueError()
+    prior=pointer.get('previous_pointer_sha256')
+    if (type(prior) is not str or not caller._HEX.fullmatch(prior)
+            or runner_receipt.get('prior_pointer_sha256')!=prior): raise ValueError()
+    old_raw=checkpoint._read(root/('q4-pointer-'+prior+'.json'),max_bytes=checkpoint._MAX_POINTER_BYTES)
+    if _sha(old_raw)!=prior: raise ValueError()
+    old=caller._json(old_raw)
+    if (route.get('cursor')!=old.get('watermark')
+            or route.get('prefix_sha256')!=old.get('prefix_watermark_sha256')
+            or any(old.get(k)!=pointer.get(k) for k in ('generation','artifacts','anchor_sha256'))):
+        raise ValueError()
+    previous=runner._cutoff_datetime(receipt['previous_cutoff_utc'])
+    cutoff=runner._cutoff_datetime(receipt['cutoff_utc'])
+    floor=runner._cutoff_datetime(genesis_route['cutoff_utc'])
+    old_cutoff=continuation._utc(continuation._checkpoint_cutoff(old,genesis_route))
+    if previous<max(floor,old_cutoff) or cutoff<previous: raise ValueError()
+    before=BridgePrefixPin(BridgeCursor(**old['watermark']),old['prefix_watermark_sha256'])
+    if prefix.cursor.offset<=before.cursor.offset: raise ValueError()
+    continuation._verify_empty_advance(receipt,route,{'expected_pointer_sha256':prior},view,
+                                       before,prefix,route['anchor_sha256'])
+
+
 def run_once(*,enabled=False,baseline_path=None,baseline_sha256=None,manifest_sha256=None,
              genesis_tuple_bytes=None,genesis_tuple_sha256=None,receipt_bytes=None,receipt_sha256=None):
     if enabled is False: return {'status':'OFF'}
@@ -102,7 +139,7 @@ def run_once(*,enabled=False,baseline_path=None,baseline_sha256=None,manifest_sh
         gt=_pinned(genesis_tuple_bytes,genesis_tuple_sha256,1024*1024)
         receipt=_pinned(receipt_bytes,receipt_sha256,65536)
         if (gt.get('schema')!='wd.q4-genesis-private-tuple.v1' or gt.get('publication')!='UNKNOWN'
-                or set(receipt)!=composer._RECEIPT_V3 or receipt.get('status')!='caught_up_to_cutoff'
+                or set(receipt)!=composer._RECEIPT_V3 or receipt.get('status') not in ('caught_up_to_cutoff','partial_ready_prefix')
                 or receipt.get('cutoff_monotonicity')!='COOPERATIVE_LEASE_PERSISTED_CRASH_UNKNOWN'
                 or any(type(receipt.get(key)) is not str or not caller._HEX.fullmatch(receipt[key])
                        for key in ('pointer_sha256','runner_receipt_sha256','route_sha256','watermark_record_sha256'))):
@@ -145,7 +182,10 @@ def run_once(*,enabled=False,baseline_path=None,baseline_sha256=None,manifest_sh
                     or runner_receipt.get('generation')!=view['generation']
                     or runner_receipt.get('prefix_sha256')!=prefix.sha256
                     or runner_receipt.get('watermark_sha256')!=view['watermark_sha256']): raise ValueError()
-            composer._verify_v2(receipt,runner_receipt,route,private,root,view,pointer)
+            if receipt['status']=='partial_ready_prefix':
+                _verify_empty_partial(receipt,runner_receipt,route,private,root,view,prefix,pointer)
+            else:
+                composer._verify_v2(receipt,runner_receipt,route,private,root,view,pointer)
             composer._verify_v3(receipt,runner_receipt,private,root,receipt['pointer_sha256'],prefix)
             _source(route,gt['independent_source_pin'],prefix)
             prior,selector_raw=_prior_pointer(baseline_path,baseline_sha256,baseline,manifest_sha256)
@@ -159,6 +199,7 @@ def run_once(*,enabled=False,baseline_path=None,baseline_sha256=None,manifest_sh
             marker_info=runner._create(marker,marker_raw)
             runner._verify_own(marker,marker_raw,marker_info)
             result=update._publish(config,baseline,root,public,receipt)
+            if receipt['status']=='partial_ready_prefix': result['coverage']='partial_ready_prefix'
             composer._verify_v3(receipt,runner_receipt,private,root,receipt['pointer_sha256'],prefix)
             _source(route,gt['independent_source_pin'],prefix)
             selected=live.select(enabled=True,baseline_path=baseline_path,baseline_sha256=baseline_sha256,

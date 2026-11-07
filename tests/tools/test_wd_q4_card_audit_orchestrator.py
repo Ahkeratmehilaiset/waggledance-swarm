@@ -194,3 +194,81 @@ def test_full_synthetic_chain_uses_real_writers_and_fixture_current(materialize,
     candidate = out / 'stage' / 'candidate-pointer.json'
     assert sha(candidate.read_bytes()) == result['pointer_sha256']
     assert not (tmp_path / 'WD_Q4_DESCRIPTOR_CURRENT.json').exists()
+
+
+@pytest.mark.parametrize('fault', [None, 'outside_parent', 'nonempty', 'wrong_state', 'policy_mismatch', 'mode_mismatch', 'interrupted'])
+def test_real_source_mode_stages_candidate_in_separate_generation_root(materialize, tmp_path, monkeypatch, fault):
+    pytest.importorskip('faiss')
+    from tools import wd_q4_lane_link
+    from tools import wd_q4_real_card_snapshot_producer as producer
+    mod = importlib.import_module('tools.wd_q4_card_audit_orchestrator')
+    real_dir = tmp_path / 'synthetic-input'; real_dir.mkdir()
+    real = real_fixture.__wrapped__(real_dir)
+    staged = json.loads(Path(materialize['public_plan_path']).read_bytes())
+    real[0]['roster_bytes'] = Path(staged['roster_path']).read_bytes()
+    real[0]['roster_sha256'] = sha(real[0]['roster_bytes'])
+    path, _, out, args = make_request(real, real_dir)
+    request = json.loads(path.read_bytes())
+    for key in ('decision', 'snapshot_template'):
+        p = Path(request[key]['path']); doc = json.loads(p.read_bytes())
+        doc['source_mode'] = 'operator_authorized_source'
+        request[key]['sha256'] = write(p, doc)
+    decision = json.loads(Path(request['decision']['path']).read_bytes())
+    base = {k: staged[k] for k in wd_q4_lane_link._PUBLIC_PLAN_SCHEMAS['wd.q4-public-wrapper-plan.v1']}
+    base['schema'] = 'wd.q4-public-wrapper-plan.v1'
+    for key in ('policy', 'roster', 'public_policy'):
+        base[key + '_path'] = decision['inputs'][key]['path']
+        base[key + '_sha256'] = decision['inputs'][key]['sha256']
+    case = dict(materialize)
+    fixed = json.loads(case.pop('fixed_plan_bytes'))
+    fixed = {k: v for k, v in fixed.items() if k not in ('schema', 'backend')}
+    for key in ('enabled', 'expected_fixed_plan_sha256', 'public_plan_path', 'expected_public_plan_sha256',
+                'stage_dir', 'generation_root'):
+        case.pop(key)
+    finish_path = tmp_path / 'real-finish-template.json'
+    request['finish'] = {'path': str(finish_path), 'sha256': write(finish_path,
+        {'schema':'wd.q4-card-audit-finish-template.v1', 'base_plan':base, 'fixed_template':fixed,
+         'composer_options':case})}
+    gen_parent = tmp_path / 'persistent-generations'; gen_parent.mkdir()
+    gen = gen_parent / 'generation-one'; gen.mkdir()
+    monkeypatch.setattr(mod, '_GENERATION_PARENT', gen_parent)
+    if fault == 'outside_parent':
+        monkeypatch.setattr(mod, '_GENERATION_PARENT', tmp_path)
+    if fault == 'nonempty':
+        (gen / 'partial').write_bytes(b'partial')
+    if fault == 'wrong_state':
+        document = json.loads(finish_path.read_bytes())
+        document['composer_options']['expected_state_sha256'] = '0' * 64
+        request['finish']['sha256'] = write(finish_path, document)
+    if fault == 'policy_mismatch':
+        document = json.loads(finish_path.read_bytes())
+        document['base_plan']['policy_sha256'] = '0' * 64
+        request['finish']['sha256'] = write(finish_path, document)
+    if fault == 'mode_mismatch':
+        snapshot_path = Path(request['snapshot_template']['path'])
+        snapshot = json.loads(snapshot_path.read_bytes())
+        snapshot['source_mode'] = 'synthetic_fixture'
+        request['snapshot_template']['sha256'] = write(snapshot_path, snapshot)
+    request.update(schema='wd.q4-card-real-candidate-request.v1', generation_root=str(gen))
+    pin = write(path, request)
+    monkeypatch.setattr(producer, '_load_pinned_e5', lambda **_: (args['encode'], args['identity'], args['dimension'], lambda: True))
+    if fault == 'interrupted':
+        def interrupted(**kwargs):
+            raise KeyboardInterrupt()
+        monkeypatch.setattr(mod, '_finish', interrupted)
+        with pytest.raises(mod.Unknown):
+            mod.run(enabled=True, request_path=str(path), request_sha256=pin)
+        assert list(out.iterdir()) and list(gen.iterdir())
+        with pytest.raises(mod.Refused):
+            mod.run(enabled=True, request_path=str(path), request_sha256=pin)
+        return
+    if fault:
+        with pytest.raises(mod.Refused):
+            mod.run(enabled=True, request_path=str(path), request_sha256=pin)
+        assert list(out.iterdir()) == [] and not (gen / 'stage').exists()
+        return
+    result = mod.run(enabled=True, request_path=str(path), request_sha256=pin)
+    pointer = gen / 'stage' / 'candidate-pointer.json'
+    assert result['status'] == 'PREPARED' and result['pointer_path'] == str(pointer)
+    assert sha(pointer.read_bytes()) == result['pointer_sha256']
+    assert not (tmp_path / 'WD_Q4_DESCRIPTOR_CURRENT.json').exists()

@@ -9,6 +9,8 @@ from tests.tools.test_wd_q4_continuation_adopt_recovery import paths
 
 def test_p1_marker_is_explicit_and_forwarded_before_publication(actual_continuation, monkeypatch):
     from tools import wd_q4_continuation_adopt as adopt
+    # Simulate a legacy pending record; this is not a live P1 card route.
+    monkeypatch.setattr(adopt, '_require_supported_p1', lambda: None)
     args = actual_continuation
     private, _ = paths(args)
     marker = private / 'q4-continuation-adopt.pending.json'
@@ -43,6 +45,8 @@ def test_p1_success_forwards_opt_in_and_labels_result(actual_continuation, monke
     # The status-v1 producer/selector are only substitutes for the future P1
     # components; this checks forwarding and the resulting API binding.
     from tools import wd_q4_continuation_adopt as adopt
+    # Simulate a legacy pending record; this is not a live P1 card route.
+    monkeypatch.setattr(adopt, '_require_supported_p1', lambda: None)
     original_publish, original_select = adopt.update._publish, adopt.live.select
     observed = []
 
@@ -66,6 +70,8 @@ def test_p1_success_forwards_opt_in_and_labels_result(actual_continuation, monke
 
 def test_p1_result_construction_failure_preserves_marker(actual_continuation, monkeypatch):
     from tools import wd_q4_continuation_adopt as adopt
+    # Simulate a legacy pending record; this is not a live P1 card route.
+    monkeypatch.setattr(adopt, '_require_supported_p1', lambda: None)
     args = actual_continuation
     private, _ = paths(args)
     original_publish, original_select = adopt.update._publish, adopt.live.select
@@ -108,3 +114,26 @@ def test_prior_selector_forwards_p1_to_pair_check(actual_continuation, monkeypat
                                         args['manifest_sha256'], p1_enabled=True)
     assert observed == [True]
     assert pointer == published['pointer_sha256'] and raw is not None
+
+
+def test_real_legacy_adoption_p1_refuses_before_any_pending_or_publication(actual_continuation, monkeypatch):
+    """P1 card refresh uses the closed tuple coordinator, never status adoption."""
+    from pathlib import Path
+    from tools import wd_q4_continuation_adopt as adopt
+    private, _ = paths(actual_continuation)
+    selector = Path(actual_continuation['baseline_path']).parent.parent / adopt.live._POINTER
+    before = {str(p.relative_to(private)): p.read_bytes() for p in private.rglob('*') if p.is_file()}
+    previous = selector.read_bytes() if selector.exists() else None
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError('legacy P1 path attempted publication')
+    monkeypatch.setattr(adopt.live, 'publish', unexpected)
+    with pytest.raises(adopt.AdoptRefused, match='card_refresh_tuple_required'):
+        adopt.run_once(**actual_continuation, p1_enabled=True)
+    assert before == {str(p.relative_to(private)): p.read_bytes() for p in private.rglob('*') if p.is_file()}
+    assert (selector.read_bytes() if selector.exists() else None) == previous
+    assert not (private / 'q4-continuation-adopt.pending.json').exists()
+
+
+def test_legacy_adoption_remains_off_by_default_with_p1_flag():
+    from tools import wd_q4_continuation_adopt as adopt
+    assert adopt.run_once(p1_enabled=True) == {'status': 'OFF'}

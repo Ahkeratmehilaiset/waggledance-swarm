@@ -9,6 +9,8 @@ from tests.tools.test_wd_q4_continuation_adopt_recovery import paths
 
 def test_v2_marker_requires_same_explicit_p1_on_recovery(actual_continuation, monkeypatch):
     from tools import wd_q4_continuation_adopt as adopt
+    # Simulate a legacy pending record; this is not a live P1 card route.
+    monkeypatch.setattr(adopt, '_require_supported_p1', lambda: None)
     from tools import wd_q4_continuation_adopt_recovery as recovery
     args = actual_continuation
     private, _ = paths(args)
@@ -48,6 +50,8 @@ def test_v1_marker_cannot_be_recovered_as_p1(actual_continuation, monkeypatch):
 @pytest.mark.parametrize('flag', [False, 1, 'true', None])
 def test_invalid_or_incompatible_flag_never_removes_v2_marker(actual_continuation, monkeypatch, flag):
     from tools import wd_q4_continuation_adopt as adopt
+    # Simulate a legacy pending record; this is not a live P1 card route.
+    monkeypatch.setattr(adopt, '_require_supported_p1', lambda: None)
     from tools import wd_q4_continuation_adopt_recovery as recovery
     args = actual_continuation
     private, _ = paths(args)
@@ -63,6 +67,8 @@ def test_invalid_or_incompatible_flag_never_removes_v2_marker(actual_continuatio
 
 def test_changed_v2_marker_is_unknown_and_preserved(actual_continuation, monkeypatch):
     from tools import wd_q4_continuation_adopt as adopt
+    # Simulate a legacy pending record; this is not a live P1 card route.
+    monkeypatch.setattr(adopt, '_require_supported_p1', lambda: None)
     from tools import wd_q4_continuation_adopt_recovery as recovery
     from tools import wd_q4_live_update_once as update
     args = actual_continuation
@@ -84,6 +90,8 @@ def test_p1_recovery_rechecks_selector_on_both_lock_passes(actual_continuation, 
     # Use the existing synthetic status-v1 implementation as a strict spy only;
     # the actual P1 producer/selector integration is tested separately.
     from tools import wd_q4_continuation_adopt as adopt
+    # Simulate a legacy pending record; this is not a live P1 card route.
+    monkeypatch.setattr(adopt, '_require_supported_p1', lambda: None)
     from tools import wd_q4_continuation_adopt_recovery as recovery
     args = actual_continuation
     private, _ = paths(args)

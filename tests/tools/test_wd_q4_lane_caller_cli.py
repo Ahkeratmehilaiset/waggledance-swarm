@@ -266,6 +266,172 @@ def test_live_mode_refuses_if_no_live_publication_before_query(case, monkeypatch
     assert case["calls"] == []
 
 
+def _pending_baseline(case, monkeypatch, *, staged=True):
+    """Synthetic baseline laid out like the live selector's generation root."""
+    from tools import wd_q4_live_snapshot_publish as live
+    test_root = case['files']['descriptor.json'].parent
+    if staged:
+        binding = case['descriptor']['expected_binding']
+        binding.update(card_decision_sha256='9' * 64, card_policy_sha256='8' * 64)
+        plan = json.loads(case['files']['public-plan.json'].read_bytes())
+        plan.update(schema='wd.q4-public-wrapper-plan.v3', card_decision_path=str(test_root / 'decision'),
+                    card_decision_sha256=binding['card_decision_sha256'],
+                    card_policy_path=str(test_root / 'card-policy'), card_policy_sha256=binding['card_policy_sha256'],
+                    pointer_path=str(case['latest']), source_path=str(test_root / 'source'),
+                    generation_path=str(test_root / 'generation'),
+                    end_cursor={'offset': 1, 'file_identity': 'synthetic-file-id', 'generation': None})
+        plan_raw = canon(plan)
+        case['files']['public-plan.json'].write_bytes(plan_raw)
+        binding_raw = canon({'schema': 'wd.q4-lane-binding.v1', 'public_plan_sha256': sha(plan_raw),
+                             'binding': binding})
+        case['files']['binding.json'].write_bytes(binding_raw)
+        case['descriptor']['binding_sha256'] = sha(binding_raw)
+    root = test_root.parent / (test_root.name + '-synthetic-generations')
+    generation = root / ('a' * 40)
+    generation.mkdir(parents=True)
+    for key, name in live._BASELINE_GENERATION_PATHS:
+        path = generation / name
+        path.write_bytes(Path(case['descriptor'][key]).read_bytes())
+        case['descriptor'][key] = str(path)
+    path = generation / 'shared-session-config.v2.json'
+    raw = canon(case['descriptor'])
+    path.write_bytes(raw)
+    monkeypatch.setenv('WD_Q4_SHARED_DESCRIPTOR_PATH', str(path))
+    monkeypatch.setenv('WD_Q4_SHARED_DESCRIPTOR_SHA256', sha(raw))
+    monkeypatch.setenv('WD_Q4_LIVE_MODE', '1')
+    monkeypatch.setenv('WD_Q4_LIVE_P1', '1')
+    attempt = 'b' * 32
+    marker = root / live._PUBLICATION_PENDING
+    marker.write_bytes(canon({'schema': 'wd.q4-live-publication-pending.v1', 'attempt': attempt,
+        'baseline_sha256': sha(raw), 'previous_selector_sha256': None,
+        'publication_sha256': 'c' * 64, 'temporary_name': '.q4-live-current-' + attempt + '.tmp'}))
+    temp = root / ('.q4-live-current-' + attempt + '.tmp')
+    temp.write_bytes(b'synthetic-interrupted-temp')
+    return root, marker, temp
+
+
+def test_interrupted_p1_returns_labelled_baseline_without_touching_publication(case, monkeypatch, capsys):
+    root, marker, temp = _pending_baseline(case, monkeypatch)
+    before = {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    case['outcome']['validated'] = True
+    case['outcome']['stored_text'] = 'synthetic-baseline-card'
+    assert invoke(case, monkeypatch) == 0
+    actual = json.loads(capsys.readouterr().out)
+    assert actual['schema'] == 'wd.q4-lane-interrupted-envelope.v1'
+    assert (actual['selection'], actual['publication_state'], actual['freshness']) == (
+        'BASELINE_FALLBACK', 'INTERRUPTED', 'STALE')
+    assert actual['result']['schema'] == 'wd.q4-lane-caller-result.v1'
+    assert actual['result']['answer']['results'][0]['stored_text'] == 'synthetic-baseline-card'
+    assert actual.get('answer') is None  # Existing v1 consumers cannot silently mistake the envelope for v1.
+    assert marker.exists() and temp.exists()
+    assert {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()} == before
+
+
+def test_pending_marker_removed_during_recall_refuses_output(case, monkeypatch, capsys):
+    _, marker, _ = _pending_baseline(case, monkeypatch)
+    case['outcome']['validated'] = True
+    original = case['adapter'].call_lane_session
+    def finish_then_remove(**kwargs):
+        value = original(**kwargs)
+        marker.unlink()
+        return value
+    monkeypatch.setattr(case['adapter'], 'call_lane_session', finish_then_remove)
+    assert_refused(invoke(case, monkeypatch), capsys)
+
+
+def test_pending_marker_replaced_with_identical_bytes_during_recall_refuses(case, monkeypatch, capsys):
+    root, marker, _ = _pending_baseline(case, monkeypatch)
+    replacement = root / 'unrelated-synthetic-marker'
+    replacement.write_bytes(marker.read_bytes())
+    case['outcome']['validated'] = True
+    original = case['adapter'].call_lane_session
+    def finish_then_replace(**kwargs):
+        value = original(**kwargs)
+        os.replace(replacement, marker)
+        return value
+    monkeypatch.setattr(case['adapter'], 'call_lane_session', finish_then_replace)
+    assert_refused(invoke(case, monkeypatch), capsys)
+
+
+def test_damaged_baseline_refuses_even_with_pending_marker(case, monkeypatch, capsys):
+    _pending_baseline(case, monkeypatch)
+    Path(case['descriptor']['snapshot_path']).write_bytes(b'damaged')
+    case['outcome']['validated'] = True
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert not case['calls']
+
+
+def test_live_without_pending_refuses_malformed_selector(case, monkeypatch, capsys):
+    root, marker, _ = _pending_baseline(case, monkeypatch)
+    marker.unlink()
+    (root / 'q4-live-current.json').write_bytes(b'not-json')
+    case['outcome']['validated'] = True
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert not case['calls']
+
+
+def test_pending_with_unrelated_malformed_selector_refuses(case, monkeypatch, capsys):
+    root, _, _ = _pending_baseline(case, monkeypatch)
+    (root / 'q4-live-current.json').write_bytes(b'not-json')
+    case['outcome']['validated'] = True
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert not case['calls']
+
+
+def test_pending_with_missing_selector_candidate_refuses(case, monkeypatch, capsys):
+    from tools import wd_q4_live_snapshot_publish as live
+    root, marker, _ = _pending_baseline(case, monkeypatch)
+    pending = json.loads(marker.read_bytes())
+    selection = {'schema': live._SCHEMA, 'baseline_sha256': pending['baseline_sha256'],
+                 'generation': 'd' * 40, 'descriptor_sha256': 'e' * 64,
+                 'index_pointer_sha256': 'f' * 64}
+    raw = canon(selection)
+    pending['publication_sha256'] = sha(raw)
+    marker.write_bytes(canon(pending))
+    (root / live._POINTER).write_bytes(raw)
+    case['outcome']['validated'] = True
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert not case['calls']
+
+
+@pytest.mark.parametrize('fault', ['empty', 'noncanonical', 'schema', 'baseline', 'attempt', 'temporary',
+                                   'same-selector-hashes', 'extra-field', 'missing-field'])
+def test_untrusted_or_incomplete_pending_marker_refuses_before_query(case, monkeypatch, capsys, fault):
+    root, marker, _ = _pending_baseline(case, monkeypatch)
+    pending = json.loads(marker.read_bytes())
+    if fault == 'empty':
+        marker.write_bytes(b'')
+    elif fault == 'noncanonical':
+        marker.write_bytes(json.dumps(pending).encode())
+    else:
+        if fault == 'schema': pending['schema'] = 'other'
+        elif fault == 'baseline': pending['baseline_sha256'] = 'e' * 64
+        elif fault == 'attempt': pending['attempt'] = 'A' * 32
+        elif fault == 'temporary': pending['temporary_name'] = '../not-ours'
+        elif fault == 'same-selector-hashes': pending['previous_selector_sha256'] = pending['publication_sha256']
+        elif fault == 'extra-field': pending['extra'] = True
+        elif fault == 'missing-field': pending.pop('attempt')
+        marker.write_bytes(canon(pending))
+    case['outcome']['validated'] = True
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert not case['calls']
+
+
+def test_pending_marker_does_not_enable_fallback_without_p1_opt_in(case, monkeypatch, capsys):
+    _pending_baseline(case, monkeypatch)
+    monkeypatch.delenv('WD_Q4_LIVE_P1')
+    case['outcome']['validated'] = True
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert not case['calls']
+
+
+def test_p1_pending_does_not_make_legacy_baseline_valid(case, monkeypatch, capsys):
+    _pending_baseline(case, monkeypatch, staged=False)
+    case['outcome']['validated'] = True
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert not case['calls']
+
+
 @pytest.mark.parametrize('p1,expected', [('',None), ('1',True)])
 def test_live_selector_receives_only_explicit_p1_opt_in(case, monkeypatch, capsys, p1, expected):
     from tools import wd_q4_live_snapshot_publish as live

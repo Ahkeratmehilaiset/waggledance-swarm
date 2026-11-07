@@ -27,6 +27,13 @@ and refuses if the selector or index pointer changes before output. It does not
 authenticate the selector's same-user publisher or lane and does not prove
 wall-clock or source freshness. Missing or malformed live selectors refuse.
 
+When the explicit P1 live route observes a well-formed interrupted publication,
+it may instead use the already pinned baseline without touching the pending
+marker or temporary file. This is a separate interrupted envelope: STALE means
+that consumers must treat the baseline as potentially stale, not that the age
+or the interruption's cause was authenticated. The baseline and the same
+pending record are rechecked before output; all other selector failures refuse.
+
 The enabled route must acquire an independently fleet-pinned guard and its
 call-bound owner context before reading the query. Configuration and identity
 reads still happen before guard acquisition and are not protected by it. The
@@ -241,6 +248,69 @@ def _require_current_snapshot(descriptor, binding, inputs):
         _read(str(root / "q4-latest.json"), 16384, binding["pointer_sha256"])
 
 
+def _interrupted_baseline_marker(live, descriptor_path, baseline):
+    """Validate a pinned baseline and an unchanged, explicit P1 pending marker.
+
+    The record is a cooperative observation, not publisher authentication.
+    Neither the marker nor its temporary file is modified or interpreted as
+    proof that publication succeeded.
+    """
+    descriptor, descriptor_raw, descriptor_pin, fleet_raw, _, inputs = baseline
+    base = live.pointer_io._absolute(descriptor_path)
+    _check(base.name == 'shared-session-config.v2.json'
+           and live._GEN.fullmatch(base.parent.name) is not None
+           and all(Path(descriptor[key]) == base.parent / name
+                   for key, name in live._BASELINE_GENERATION_PATHS))
+    root = base.parent.parent
+    live._check_disk(descriptor, descriptor_raw, descriptor_pin, fleet_raw, inputs)
+    public, _, _ = live._plan(descriptor, inputs)
+    _check(frozenset(descriptor['expected_binding']) == _STAGED_BINDING_KEYS
+           and public.get('schema') == 'wd.q4-public-wrapper-plan.v3')
+    live._validate_roots(root, Path(descriptor['bundle_root']), Path(public['root']))
+    marker_path = root / live._PUBLICATION_PENDING
+    def signature(info):
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    before = marker_path.lstat()
+    raw = live._read(marker_path, 4096)
+    after = marker_path.lstat()
+    _check(stat.S_ISREG(before.st_mode) and signature(before) == signature(after))
+    marker = _json(raw, frozenset({'schema', 'attempt', 'baseline_sha256',
+                                   'previous_selector_sha256', 'publication_sha256', 'temporary_name'}))
+    attempt = marker['attempt']
+    previous = marker['previous_selector_sha256']
+    publication = marker['publication_sha256']
+    _check(_canon(marker) == raw and marker['schema'] == 'wd.q4-live-publication-pending.v1'
+           and type(attempt) is str and re.fullmatch(r'[0-9a-f]{32}', attempt) is not None
+           and marker['baseline_sha256'] == descriptor_pin
+           and marker['temporary_name'] == '.q4-live-current-' + attempt + '.tmp'
+           and type(publication) is str and live._HEX.fullmatch(publication) is not None
+           and (previous is None or (type(previous) is str and live._HEX.fullmatch(previous) is not None))
+           and previous != publication)
+    target = root / live._POINTER
+    if os.path.lexists(target):
+        selected_raw = live._read(target, 4096)
+        selected = _json(selected_raw, live._KEYS)
+        _check(_sha(selected_raw) in (previous, publication) and selected['schema'] == live._SCHEMA
+               and selected['baseline_sha256'] == descriptor_pin
+               and type(selected['generation']) is str and live._GEN.fullmatch(selected['generation']) is not None
+               and all(type(selected[key]) is str and live._HEX.fullmatch(selected[key]) is not None
+                       for key in ('descriptor_sha256', 'index_pointer_sha256')))
+        candidate_path = root / selected['generation'] / 'shared-session-config.v2.json'
+        candidate = _configuration(str(candidate_path), selected['descriptor_sha256'])
+        _check(all(Path(candidate[0][key]) == candidate_path.parent / name
+                   for key, name in live._GENERATION_PATHS))
+        index_root, (pointer_path, pointer_limit) = live._checked_pair(
+            baseline, candidate, _hex(_env('WD_REBOOT_EXPECTED_MANIFEST_HASH')), p1_enabled=True)
+        live._validate_roots(root, Path(descriptor['bundle_root']), Path(index_root))
+        _check(candidate[0]['expected_binding']['pointer_sha256'] == selected['index_pointer_sha256'])
+        live._read(pointer_path, pointer_limit, selected['index_pointer_sha256'])
+        live._read(candidate_path, MAX_DOCUMENT, selected['descriptor_sha256'])
+        _check(live._read(target, 4096) == selected_raw)
+    else:
+        _check(previous is None)
+    return str(marker_path), raw, signature(after)
+
+
 def _identity(fleet_raw, descriptor, descriptor_pin):
     lane = _env("AGENT_BRIDGE_AGENT", 32)
     agent_uuid = _env("AGENT_BRIDGE_AGENT_UUID", 36)
@@ -351,6 +421,7 @@ def main(argv=None):
     guard = owner_context = rendered = None
     guard_released = False
     live_publication = None
+    interrupted_marker = None
     try:
         if argv is None:
             argv = sys.argv[1:]
@@ -374,8 +445,14 @@ def main(argv=None):
                 manifest_sha256=_hex(_env("WD_REBOOT_EXPECTED_MANIFEST_HASH")), load_configuration=_configuration)
             if p1_mode == "1":
                 selection["p1_enabled"] = True
-            live_publication = live.select(**selection)
-            descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs = live_publication["configuration"]
+            base_path = live.pointer_io._absolute(selection['baseline_path'])
+            pending_path = base_path.parent.parent / live._PUBLICATION_PENDING
+            if p1_mode == "1" and os.path.lexists(pending_path):
+                interrupted_marker = _interrupted_baseline_marker(
+                    live, selection['baseline_path'], selection['baseline'])
+            else:
+                live_publication = live.select(**selection)
+                descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs = live_publication["configuration"]
         _require_current_snapshot(descriptor, binding, inputs)
         lane, identity_raw, token = _identity(fleet_raw, descriptor, descriptor_pin)
         identity_pin = _sha(identity_raw)
@@ -436,11 +513,24 @@ def main(argv=None):
                    and token.encode("utf-8", "strict") not in wrapped
                    and _canon(token)[1:-1] not in wrapped)
             rendered = wrapped.decode("ascii")
+        if interrupted_marker is not None:
+            wrapped = _canon({"schema": "wd.q4-lane-interrupted-envelope.v1",
+                              "selection": "BASELINE_FALLBACK", "publication_state": "INTERRUPTED",
+                              "freshness": "STALE", "result": json.loads(rendered)}) + b"\n"
+            _check(len(wrapped) <= inputs["max_output_bytes"]
+                   and token.encode("utf-8", "strict") not in wrapped
+                   and _canon(token)[1:-1] not in wrapped)
+            rendered = wrapped.decode("ascii")
         owner_context._finish()
         witness = guard._registry._issue()
         guard.release(witness)
         guard_released = True
         _require_current_snapshot(descriptor, binding, inputs)
+        if interrupted_marker is not None:
+            fresh = _configuration(_env("WD_Q4_SHARED_DESCRIPTOR_PATH"), descriptor_pin)
+            _check(fresh == (descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs))
+            _check(_interrupted_baseline_marker(live, _env("WD_Q4_SHARED_DESCRIPTOR_PATH"), fresh)
+                   == interrupted_marker)
         if live_publication is not None:
             live.recheck(live_publication["publication_path"], live_publication["publication_sha256"])
         _write(rendered)

@@ -28,6 +28,7 @@ def bundle(tmp_path):
               "if ($env:RECALL_COVERAGE_FILE) { [IO.File]::WriteAllText($env:RECALL_COVERAGE_FILE,[string]$env:WD_Q4_WITH_COVERAGE) }\n"
               "$code=if ($env:RECALL_TEST_MODE -eq 'slow') {'import sys,time,pathlib,os; sys.stdin.buffer.read(); pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(8); pathlib.Path(sys.argv[2]).touch()'} "
               "elseif ($env:RECALL_TEST_MODE -eq 'exit4') {'import sys; sys.stdin.buffer.read(); sys.exit(4)'} "
+              "elseif ($env:RECALL_TEST_MODE -eq 'interrupted') {'import sys; sys.stdin.buffer.read(); print(bytes.fromhex(sys.argv[1]).decode())'} "
               "else {'import sys,os,hashlib; raw=sys.stdin.buffer.read(); assert raw not in str(sys.argv).encode(); assert raw not in str(dict(os.environ)).encode(); print(hashlib.sha256(raw).hexdigest())'}\n"
               "& '" + py + "' -c $code $env:RECALL_STARTED $env:RECALL_SENTINEL\n"
               "$global:LASTEXITCODE=$LASTEXITCODE\n")
@@ -123,6 +124,23 @@ def test_nonzero_child_is_propagated_without_output(bundle):
     env['RECALL_TEST_MODE']='exit4'
     result = invoke(SHELLS[0], env, b'{"situation":"x","time":"2026-11-06T00:00:00Z"}')
     assert result.returncode == 4 and result.stdout == b''
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+def test_interrupted_envelope_reaches_powershell_user_without_appearing_as_v1(bundle, shell):
+    env, _ = bundle
+    env['RECALL_TEST_MODE'] = 'interrupted'
+    env['RECALL_STARTED'] = json.dumps({'schema': 'wd.q4-lane-interrupted-envelope.v1',
+        'selection': 'BASELINE_FALLBACK', 'publication_state': 'INTERRUPTED', 'freshness': 'STALE',
+        'result': {'schema': 'wd.q4-lane-caller-result.v1'}}).encode().hex()
+    result = invoke(shell, env, b'{"situation":"x","time":"2026-11-06T00:00:00Z"}', '-Live', '-WithStatus')
+    assert result.returncode == 0, result.stderr
+    value = json.loads(result.stdout)
+    assert value['schema'] == 'wd.q4-lane-interrupted-envelope.v1'
+    assert (value['selection'], value['publication_state'], value['freshness']) == (
+        'BASELINE_FALLBACK', 'INTERRUPTED', 'STALE')
+    assert value['result']['schema'] == 'wd.q4-lane-caller-result.v1'
+    assert value.get('answer') is None
 
 def test_timeout_is_unknown_and_does_not_return_partial_output(bundle):
     env, root = bundle

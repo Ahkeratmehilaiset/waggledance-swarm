@@ -72,6 +72,8 @@ def complete_owned_publication(*, checkpoint, private, model, source_parent, sid
     pointer = report['pointer_sha256']
     with private_state.locked_state(private, checkpoint, enabled=True) as state:
         with private_state._checkpoint_lock(checkpoint, 0.2):
+            if os.path.lexists(private / 'q4-adopt-recovery-job.pending.json'):
+                raise ValueError('recovery_job_pending')
             current_ids = tuple(roots._observe(p) for p in (checkpoint, private, model, source_parent, sidecar_parent))
             if current_ids != expected_ids:
                 raise ValueError('root_refused')

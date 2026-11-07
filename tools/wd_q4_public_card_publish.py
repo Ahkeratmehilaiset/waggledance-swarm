@@ -87,8 +87,12 @@ def publish(*, enabled=False, claim=None, **policies):
         if (evidence.get('pin_status')!='manifest_and_launcher_verified'
                 or evidence.get('observed_agent')!=agent or not evidence.get('native_conversation_id')):
             raise ValueError()
-        prepared=prepare.prepare(enabled=True,author=agent,agent_uuid=uuid,created_utc=_minute_now(),
+        created_minute=_minute_now()
+        prepared=prepare.prepare(enabled=True,author=agent,agent_uuid=uuid,created_utc=created_minute,
                                  claim=claim,**policies)
+        # Avoid appending a card that can expire during the allowed rollover.
+        if verifier._utc(claim['valid_until_utc'])[0] < verifier._utc(created_minute)[0]+dt.timedelta(minutes=2):
+            raise ValueError()
         _,writer=status_writer._pinned_helpers()
         env=status_writer._active_environment()
         env.pop('AGENT_BRIDGE_ROLE',None); env.pop('AGENT_BRIDGE_CAPABILITIES',None)

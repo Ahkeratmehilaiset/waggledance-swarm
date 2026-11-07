@@ -5,12 +5,15 @@ One caller spec, pinned by sha256, selects one of two phases:
 * ``publish``: the roster snapshot (from pinned fleet bytes), the approved git anchors document (exactly one explicit
   ref and full commit, the commit is the authority, never the mutable ref), and one document per card. Every card
   head must be observed reachable from the pinned anchor commit with a pinned git executable, and the would-be claim
-  must pass the public card preparer for its roster author, before anything is written. Reachability proves neither
-  that the PR was merged nor that its checks were green, and no independently verifiable authority for either exists
-  in production, so each card becomes a non-publishable UNVERIFIED claim draft naming the missing evidence. A typed
-  publish request (kind merged, outcome green) is written only when ``_MERGED_GREEN_AUTHORITY`` answers exactly True;
-  that seam is None in this module and only tests replace it in-process (no spec field, CLI flag or environment
-  variable can set it).
+  must pass the public card preparer for its roster author, before anything is written. Reachability alone proves
+  neither that the PR was merged nor that its checks were green, so a card without evidence becomes a non-publishable
+  UNVERIFIED claim draft naming the missing evidence. A typed publish request (kind merged, outcome green) is written
+  only for a card whose caller-pinned GitHub capture (the exact ``gh pr view`` JSON shape) binds the PR number, state
+  MERGED, the anchor's base branch, a past merge time, the PR head, the merge commit equal to the card head and
+  locally observed reachable from the anchor commit, and exactly the six required contexts as completed successful
+  check runs finished no later than the merge. A sidecar keeps the PR head, the capture digest, the named lane
+  observer and the honest assurance: source authentication UNKNOWN, no operator attestation, no cryptographic proof.
+  The card schema itself has no field for the PR head or the evidence digest; the manifest binds request to sidecar.
 * ``candidate``: the real decision request, snapshot template, finish template and real candidate request for the
   card audit orchestrator, from the pinned publish-phase roster and anchors document, a pinned bridge prefix pin
   receipt and the caller's anchor tuple, in the IM9 P1 layout (run P/RUN, anchor P/.codex-audit/anchors/ID).
@@ -41,13 +44,18 @@ _CANDIDATE_KEYS = frozenset({'schema', 'phase', 'now_utc', 'configs', 'roster', 
                              'trusted_model_root', 'base_plan', 'fixed_template', 'composer_options',
                              'shared_stage_root', 'generation', 'generation_root', 'audit_output_root'})
 _CARD_KEYS = frozenset({'pr', 'head', 'author', 'valid_until_utc'})
+_EVIDENCE_KEYS = frozenset({'path', 'sha256', 'observer'})
 _OPTION_KEYS = ('expected_bundle', 'bundle_store_root', 'active_bundle_root', 'expected_state_sha256')
 _LIMIT = 1024 * 1024
 _GIT_LIMIT = 64 * 1024 * 1024
 _MISSING_EVIDENCE = ['checks_green_by_verifiable_authority', 'pr_merged_by_verifiable_authority']
-# Test-only seam: no production authority verifies a PR merge and green checks independently, so this stays None and
-# every card is written as an UNVERIFIED draft. Called as authority(pr=, head=, anchor=); only an exact True counts.
-_MERGED_GREEN_AUTHORITY = None
+# Required GitHub check runs on the PR head; a caller cannot change or weaken this set.
+_REQUIRED_CONTEXTS = ('lock-resolver-check', 'security-scan', 'test (3.11)', 'test (3.12)', 'test (3.13)', 'unified')
+_CAPTURE_KEYS = frozenset({'baseRefName', 'headRefOid', 'mergeCommit', 'mergedAt', 'number', 'state',
+                           'statusCheckRollup'})
+_CHECK_KEYS = frozenset({'__typename', 'completedAt', 'conclusion', 'detailsUrl', 'name', 'startedAt', 'status',
+                         'workflowName'})
+_GH_TIME = re.compile(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\Z')
 
 
 class Refused(ValueError):
@@ -91,6 +99,42 @@ def _recheck(seen):
             files._read(checked, pin, limit)
 
 
+def _gh_time(value):
+    import datetime as dt
+    if type(value) is not str or not _GH_TIME.fullmatch(value):
+        raise ValueError()
+    return dt.datetime.strptime(value, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=dt.timezone.utc)
+
+
+def _evidence(card, raw, anchor, now):
+    """Validate one caller-pinned gh pr view capture against the card; return the sidecar body or raise."""
+    capture = files._json(raw)
+    if type(capture) is not dict or set(capture) != _CAPTURE_KEYS:
+        raise ValueError()
+    merge = capture['mergeCommit']
+    if (type(capture['number']) is not int or capture['number'] != card['pr'] or capture['state'] != 'MERGED'
+            or capture['baseRefName'] != anchor['ref'][len('refs/heads/'):]
+            or type(capture['headRefOid']) is not str or not _COMMIT.fullmatch(capture['headRefOid'])
+            or type(merge) is not dict or set(merge) != {'oid'} or merge['oid'] != card['head']):
+        raise ValueError()
+    merged = _gh_time(capture['mergedAt'])
+    checks = capture['statusCheckRollup']
+    if (merged > now or type(checks) is not list
+            or sorted(check.get('name') if type(check) is dict else None for check in checks)
+            != sorted(_REQUIRED_CONTEXTS)):
+        raise ValueError()
+    for check in checks:
+        if (set(check) != _CHECK_KEYS or check['__typename'] != 'CheckRun' or check['status'] != 'COMPLETED'
+                or check['conclusion'] != 'SUCCESS'
+                or not _gh_time(check['startedAt']) <= _gh_time(check['completedAt']) <= merged):
+            raise ValueError()
+    return {'schema': 'wd.q4-observed-gh-pr-evidence.v1', 'pr': card['pr'], 'pr_head': capture['headRefOid'],
+            'merge_commit': merge['oid'], 'card_head': card['head'], 'base_ref': anchor['ref'],
+            'merged_at_utc': capture['mergedAt'], 'required_contexts': sorted(_REQUIRED_CONTEXTS),
+            'contexts_on': 'pr_head', 'merge_commit_reachable_from': {anchor['ref']: anchor['commit']},
+            'source_authentication': 'UNKNOWN', 'operator_attested': False, 'cryptographic_proof': False}
+
+
 def _configs(spec, seen):
     if type(spec) is not dict or set(spec) != _CONFIGS:
         raise ValueError()
@@ -122,7 +166,7 @@ def _publish(spec, output, seen):
         raise ValueError()
     cards = spec['cards']
     if (type(cards) is not list or not 1 <= len(cards) <= 4
-            or any(type(card) is not dict or set(card) != _CARD_KEYS for card in cards)
+            or any(type(card) is not dict or set(card) - {'evidence'} != _CARD_KEYS for card in cards)
             or any(type(card['pr']) is not int or not 1 <= card['pr'] <= 9_999_999 for card in cards)
             or len({card['pr'] for card in cards}) != len(cards)
             or any(type(card['head']) is not str or not _COMMIT.fullmatch(card['head']) for card in cards)):
@@ -138,8 +182,8 @@ def _publish(spec, output, seen):
     outputs = {'roster.json': roster_raw,
                'approved-git-anchors.json': _canonical({'schema': 'wd.q4-approved-git-anchors.v1',
                                                         'anchors': {anchor['ref']: anchor['commit']}})}
-    authority = _MERGED_GREEN_AUTHORITY
-    verified = 0
+    now = _gh_time(spec['now_utc'])
+    verified, bindings = 0, {}
     for card in cards:
         claim = {'v': '1', 'kind': 'merged', 'subject': {'pr': card['pr']}, 'outcome': 'green', 'next': 'none',
                  'valid_until_utc': card['valid_until_utc'], 'tags': [], 'head': card['head']}
@@ -156,13 +200,25 @@ def _publish(spec, output, seen):
         if verifier._utc(claim['valid_until_utc'])[0] < verifier._utc(spec['now_utc'])[0] + dt.timedelta(minutes=2):
             raise ValueError()
         approved = {anchor['ref']: anchor['commit']}
-        verdict = False if authority is None else authority(pr=card['pr'], head=card['head'], anchor=dict(approved))
-        if verdict is True:
+        if 'evidence' in card:
+            pin = card['evidence']
+            if (type(pin) is not dict or set(pin) != _EVIDENCE_KEYS or type(pin['observer']) is not str
+                    or pin['observer'] not in uuids):
+                raise ValueError()
+            capture_spec, capture_raw = _pinned({'path': pin['path'], 'sha256': pin['sha256']}, seen)
+            sidecar = _evidence(card, capture_raw, anchor, now)
             verified += 1
             inputs = {name: configs[name] for name in _CONFIGS}
             inputs['roster'] = {'path': str(roster_path), 'sha256': roster_pin}
-            outputs['publish-request-pr%d.json' % card['pr']] = _canonical(
+            request_name = 'publish-request-pr%d.json' % card['pr']
+            outputs[request_name] = _canonical(
                 {'schema': 'wd.q4-public-card-publish-request.v1', 'claim': claim, 'inputs': inputs})
+            sidecar['capture'] = {'sha256': capture_spec['sha256'], 'observer': pin['observer'],
+                                  'observation': 'lane_observed_github_api_capture'}
+            sidecar['request_sha256'] = hashlib.sha256(outputs[request_name]).hexdigest()
+            sidecar_name = 'card-evidence-pr%d.json' % card['pr']
+            outputs[sidecar_name] = _canonical(sidecar)
+            bindings[request_name] = sidecar_name
         else:
             outputs['claim-draft-pr%d.json' % card['pr']] = _canonical({
                 'schema': 'wd.q4-initial-card-claim-draft.v1', 'truth': 'UNVERIFIED', 'publishable': False,
@@ -170,7 +226,7 @@ def _publish(spec, output, seen):
                 'valid_until_utc': card['valid_until_utc'],
                 'observed': {'anchor': approved, 'head_reachable_from_anchor_commit': True},
                 'missing_evidence': list(_MISSING_EVIDENCE)})
-    return outputs, {'verified_claims': verified}
+    return outputs, {'verified_claims': verified, 'evidence_bindings': bindings}
 
 
 def _candidate(spec, output, seen):

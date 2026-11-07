@@ -74,8 +74,11 @@ def repo(tmp_path):
     run("checkout", "-q", "-b", "side", commits[0])
     run("commit", "-q", "--allow-empty", "-m", "s1")
     side = run("rev-parse", "HEAD")
+    run("checkout", "-q", "-b", "side2", commits[0])
+    run("commit", "-q", "--allow-empty", "-m", "s2")
+    side2 = run("rev-parse", "HEAD")
     run("checkout", "-q", "main")
-    return {"git": git, "path": path, "commits": commits, "side": side}
+    return {"git": git, "path": path, "commits": commits, "side": side, "side2": side2}
 
 
 @pytest.fixture
@@ -122,7 +125,7 @@ def test_publish_default_writes_only_unverified_drafts_never_a_publish_request(m
     """Reachability from a pinned anchor commit proves neither a merge nor green checks, and no independently
     verifiable authority for either exists here, so the default output is a non-publishable draft."""
     from tools import wd_q4_public_card_publish_cli as publish_cli
-    assert mod._MERGED_GREEN_AUTHORITY is None
+    assert not hasattr(mod, "_MERGED_GREEN_AUTHORITY")  # no seam: only validated evidence yields a request
     out, _, build = run_spec(mod, base, publish_spec(base), "drafts")
     result = build()
     assert result["status"] == "WRITTEN" and result["phase"] == "publish"
@@ -144,62 +147,182 @@ def test_publish_default_writes_only_unverified_drafts_never_a_publish_request(m
                         request_sha256=manifest["files"]["claim-draft-pr1951.json"])
 
 
-def test_only_one_unset_authority_assignment_exists_in_the_module():
-    source = (ROOT / "tools/wd_q4_initial_card_inputs.py").read_text(encoding="ascii")
-    assert source.count("_MERGED_GREEN_AUTHORITY =") == 1 and "_MERGED_GREEN_AUTHORITY = None" in source
-    assert "setattr" not in source and "os.environ" not in source and "getenv" not in source and "globals()" not in source
+CONTEXTS = ["lock-resolver-check", "security-scan", "test (3.11)", "test (3.12)", "test (3.13)", "unified"]
 
 
-@pytest.mark.parametrize("verdict", [False, None, 1, "yes", {"merged": True}, [True]])
-def test_test_seam_verdict_other_than_true_still_yields_drafts(mod, base, monkeypatch, verdict):
-    monkeypatch.setattr(mod, "_MERGED_GREEN_AUTHORITY", lambda **kwargs: verdict)
-    out, _, build = run_spec(mod, base, publish_spec(base), "verdict")
-    build()
-    assert set(json.loads((out / "inputs-manifest.json").read_bytes())["files"]) == DRAFTS
+def gh_capture(pr, pr_head, merge, **changes):
+    """Synthetic capture in the exact shape of gh pr view --json baseRefName,headRefOid,mergeCommit,mergedAt,number,
+    state,statusCheckRollup (synthetic commits and URLs only)."""
+    checks = [{"__typename": "CheckRun", "completedAt": "2026-10-28T20:30:00Z", "conclusion": "SUCCESS",
+               "detailsUrl": "https://example.invalid/run/%d" % i, "name": name,
+               "startedAt": "2026-10-28T20:00:00Z", "status": "COMPLETED", "workflowName": "Tests"}
+              for i, name in enumerate(CONTEXTS)]
+    value = {"baseRefName": "main", "headRefOid": pr_head, "mergeCommit": {"oid": merge},
+             "mergedAt": "2026-10-28T21:00:00Z", "number": pr, "state": "MERGED", "statusCheckRollup": checks}
+    value.update(changes)
+    return value
 
 
-def test_test_seam_error_refuses_before_any_write(mod, base, monkeypatch):
-    def broken(**kwargs):
-        raise RuntimeError("authority unavailable")
-    monkeypatch.setattr(mod, "_MERGED_GREEN_AUTHORITY", broken)
-    out, _, build = run_spec(mod, base, publish_spec(base), "seam-error")
-    with pytest.raises(mod.Refused):
-        build()
-    assert list(out.iterdir()) == []
+def evidence_spec(base, captures=None):
+    c1, c2, c3 = base["repo"]["commits"]
+    tmp = base["tmp"]
+    captures = captures or {}
+    spec = publish_spec(base)
+    for card, pr_head in zip(spec["cards"], (base["repo"]["side"], base["repo"]["side2"])):
+        value = captures.get(card["pr"], gh_capture(card["pr"], pr_head, card["head"]))
+        pin = write(tmp / "captures" / ("pr-%d.json" % card["pr"]), value)
+        card["evidence"] = dict(pin, observer="codex-lead-1")
+    return spec
 
 
-def test_publish_requests_only_through_the_test_seam_authority(mod, base, monkeypatch):
+def test_observed_evidence_binds_both_squash_prs_with_merge_commit_head_and_sidecar(mod, base, monkeypatch):
     from tools import wd_q4_public_card_publish_cli as publish_cli
     from tools import wd_q4_roster_from_fleet as roster_mod
-    asked = []
-    monkeypatch.setattr(mod, "_MERGED_GREEN_AUTHORITY", lambda **kwargs: asked.append(kwargs) or True)
-    out, _, build = run_spec(mod, base, publish_spec(base), "publish")
+    c1, c2, c3 = base["repo"]["commits"]
+    side, side2 = base["repo"]["side"], base["repo"]["side2"]
+    git = [base["git"]["executable"], "-C", base["git"]["repository"], "merge-base", "--is-ancestor"]
+    assert subprocess.run(git + [side, c3]).returncode == 1 and subprocess.run(git + [side2, c3]).returncode == 1
+    spec = evidence_spec(base)
+    out, _, build = run_spec(mod, base, spec, "evidence")
     result = build()
     assert result["status"] == "WRITTEN" and result["phase"] == "publish"
     files = tree(out)
     manifest = json.loads(files["inputs-manifest.json"])
     assert sha(files["inputs-manifest.json"]) == result["manifest_sha256"]
     assert set(manifest["files"]) == {"roster.json", "approved-git-anchors.json",
-                                      "publish-request-pr1951.json", "publish-request-pr1950.json"}
-    assert manifest["verified_claims"] == 2
-    anchor = {"refs/heads/main": base["repo"]["commits"][2]}
-    assert asked == [{"pr": 1951, "head": base["repo"]["commits"][1], "anchor": anchor},
-                     {"pr": 1950, "head": base["repo"]["commits"][0], "anchor": anchor}]
+                                      "publish-request-pr1951.json", "publish-request-pr1950.json",
+                                      "card-evidence-pr1951.json", "card-evidence-pr1950.json"}
+    assert set(files) == set(manifest["files"]) | {"inputs-manifest.json"}
     assert all(sha(files[name]) == pin for name, pin in manifest["files"].items())
+    assert manifest["verified_claims"] == 2
+    assert manifest["evidence_bindings"] == {"publish-request-pr1951.json": "card-evidence-pr1951.json",
+                                             "publish-request-pr1950.json": "card-evidence-pr1950.json"}
     fleet_raw = Path(base["fleet"]["path"]).read_bytes()
     assert files["roster.json"] == roster_mod.build_roster_snapshot(fleet_raw, sha(fleet_raw), enabled=True)[0]
     assert json.loads(files["approved-git-anchors.json"]) == {
-        "schema": "wd.q4-approved-git-anchors.v1", "anchors": {"refs/heads/main": base["repo"]["commits"][2]}}
+        "schema": "wd.q4-approved-git-anchors.v1", "anchors": {"refs/heads/main": c3}}
     request = json.loads(files["publish-request-pr1951.json"])
     assert request["claim"] == {"v": "1", "kind": "merged", "subject": {"pr": 1951}, "outcome": "green", "next": "none",
-                                "valid_until_utc": UNTIL, "tags": [], "head": base["repo"]["commits"][1]}
+                                "valid_until_utc": UNTIL, "tags": [], "head": c2}
     assert request["inputs"]["roster"] == {"path": str(out / "roster.json"), "sha256": manifest["files"]["roster.json"]}
+    sidecar = json.loads(files["card-evidence-pr1950.json"])
+    assert sidecar == {
+        "schema": "wd.q4-observed-gh-pr-evidence.v1", "pr": 1950, "pr_head": side2, "merge_commit": c1,
+        "card_head": c1, "base_ref": "refs/heads/main", "merged_at_utc": "2026-10-28T21:00:00Z",
+        "required_contexts": CONTEXTS, "contexts_on": "pr_head",
+        "capture": {"sha256": spec["cards"][1]["evidence"]["sha256"], "observer": "codex-lead-1",
+                    "observation": "lane_observed_github_api_capture"},
+        "merge_commit_reachable_from": {"refs/heads/main": c3},
+        "source_authentication": "UNKNOWN", "operator_attested": False, "cryptographic_proof": False,
+        "request_sha256": manifest["files"]["publish-request-pr1950.json"]}
+    assert b"example.invalid" not in b"".join(files.values())
     seen = []
     monkeypatch.setattr(publish_cli.publisher, "publish", lambda **kwargs: seen.append(kwargs) or {"status": "X"})
     with pytest.raises(publish_cli.Unknown):  # shape accepted by the real CLI; the synthetic answer is not a receipt
         publish_cli.run(enabled=True, request_path=str(out / "publish-request-pr1951.json"),
                         request_sha256=manifest["files"]["publish-request-pr1951.json"])
     assert seen[0]["claim"] == request["claim"] and seen[0]["roster_bytes"] == files["roster.json"]
+
+
+def test_card_without_evidence_stays_a_draft_next_to_an_evidenced_request(mod, base):
+    spec = evidence_spec(base)
+    del spec["cards"][1]["evidence"]
+    out, _, build = run_spec(mod, base, spec, "mixed")
+    build()
+    manifest = json.loads((out / "inputs-manifest.json").read_bytes())
+    assert set(manifest["files"]) == {"roster.json", "approved-git-anchors.json", "publish-request-pr1951.json",
+                                      "card-evidence-pr1951.json", "claim-draft-pr1950.json"}
+    assert manifest["verified_claims"] == 1
+
+
+def _bad_evidence(base, fault):
+    c1, c2, c3 = base["repo"]["commits"]
+    side = base["repo"]["side"]
+    good = gh_capture(1951, side, c2)
+    checks = good["statusCheckRollup"]
+    captures = {}
+    if fault == "pr_mismatch":
+        captures[1951] = dict(good, number=1952)
+    elif fault == "number_not_int":
+        captures[1951] = dict(good, number="1951")
+    elif fault == "state_open":
+        captures[1951] = dict(good, state="OPEN")
+    elif fault == "base_mismatch":
+        captures[1951] = dict(good, baseRefName="develop")
+    elif fault == "card_head_is_pr_head":
+        captures[1951] = dict(good, mergeCommit={"oid": c3})
+    elif fault == "pr_head_short":
+        captures[1951] = dict(good, headRefOid=side[:12])
+    elif fault == "merge_commit_extra_key":
+        captures[1951] = dict(good, mergeCommit={"oid": c2, "url": "x"})
+    elif fault == "context_missing":
+        captures[1951] = dict(good, statusCheckRollup=checks[:5])
+    elif fault == "context_extra":
+        captures[1951] = dict(good, statusCheckRollup=checks + [dict(checks[0], name="lint")])
+    elif fault == "context_renamed":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], name="test (3.10)")] + checks[1:])
+    elif fault == "context_duplicate":
+        captures[1951] = dict(good, statusCheckRollup=checks + [checks[5]])
+    elif fault == "check_failed":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], conclusion="FAILURE")] + checks[1:])
+    elif fault == "check_skipped":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], conclusion="SKIPPED")] + checks[1:])
+    elif fault == "check_in_progress":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], status="IN_PROGRESS", conclusion="")]
+                              + checks[1:])
+    elif fault == "status_not_completed":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], status="QUEUED")] + checks[1:])
+    elif fault == "status_context":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], __typename="StatusContext")] + checks[1:])
+    elif fault == "check_extra_key":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], headSha=side)] + checks[1:])
+    elif fault == "merged_in_future":
+        captures[1951] = dict(good, mergedAt="2026-11-07T14:00:01Z")
+    elif fault == "check_after_merge":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], completedAt="2026-10-28T21:30:00Z")]
+                              + checks[1:])
+    elif fault == "check_started_after_completed":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], startedAt="2026-10-28T20:45:00Z")]
+                              + checks[1:])
+    elif fault == "time_format":
+        captures[1951] = dict(good, mergedAt="2026-10-28 21:00:00")
+    elif fault == "extra_top_key":
+        captures[1951] = dict(good, title="x")
+    elif fault == "missing_top_key":
+        captures[1951] = {k: v for k, v in good.items() if k != "mergedAt"}
+    elif fault == "duplicate_json_key":
+        captures[1951] = None
+    spec = evidence_spec(base, captures)
+    evidence = spec["cards"][0]["evidence"]
+    if fault == "duplicate_json_key":
+        raw = json.dumps(good, sort_keys=True).encode()
+        raw = raw[:-1] + b',"state":"MERGED"}'
+        spec["cards"][0]["evidence"] = dict(write(base["tmp"] / "captures" / "dup.json", raw), observer="codex-lead-1")
+    elif fault == "capture_pin":
+        evidence["sha256"] = "0" * 64
+    elif fault == "observer_unknown":
+        evidence["observer"] = "someone-else"
+    elif fault == "observer_missing":
+        del evidence["observer"]
+    elif fault == "evidence_extra_key":
+        evidence["operator_attested"] = True
+    elif fault == "merge_unreachable":
+        spec["cards"][0]["head"] = side
+    return spec
+
+
+@pytest.mark.parametrize("fault", [
+    "pr_mismatch", "number_not_int", "state_open", "base_mismatch", "card_head_is_pr_head", "pr_head_short",
+    "merge_commit_extra_key", "context_missing", "context_extra", "context_renamed", "context_duplicate",
+    "check_failed", "check_skipped", "check_in_progress", "status_not_completed", "status_context",
+    "check_extra_key", "merged_in_future", "check_after_merge", "check_started_after_completed", "time_format",
+    "extra_top_key", "missing_top_key", "duplicate_json_key", "capture_pin", "observer_unknown", "observer_missing",
+    "evidence_extra_key", "merge_unreachable"])
+def test_bad_evidence_refuses_before_any_write(mod, base, fault):
+    out, _, build = run_spec(mod, base, _bad_evidence(base, fault), "ev-" + fault)
+    with pytest.raises(mod.Refused):
+        build()
+    assert list(out.iterdir()) == []
 
 
 def _broken(base, fault):
@@ -363,16 +486,35 @@ def test_publish_input_changed_after_first_write_is_unknown(mod, base, monkeypat
 
 
 def test_input_changed_before_first_write_refuses_with_nothing_written(mod, base, monkeypatch):
+    from tools import wd_q4_public_git_heads as heads
     vocabulary = Path(base["configs"]["vocabulary"]["path"])
+    real = heads.observe
 
     def mutating(**kwargs):  # runs after the inputs were read and before the pre-write recheck
         vocabulary.write_bytes(vocabulary.read_bytes() + b" ")
-        return False
-    monkeypatch.setattr(mod, "_MERGED_GREEN_AUTHORITY", mutating)
+        return real(**kwargs)
+    monkeypatch.setattr(heads, "observe", mutating)
     out, _, build = run_spec(mod, base, publish_spec(base), "early-change")
     with pytest.raises(mod.Refused):
         build()
     assert list(out.iterdir()) == []
+
+
+@pytest.mark.parametrize("target", ["capture", "capture_junction"])
+def test_evidence_changed_after_first_write_is_unknown(mod, base, monkeypatch, target):
+    spec = evidence_spec(base)
+    capture = Path(spec["cards"][0]["evidence"]["path"])
+    out, _, build = run_spec(mod, base, spec, "late-ev-" + target)
+    if target == "capture":
+        def action():
+            capture.write_bytes(capture.read_bytes() + b" ")
+    else:
+        def action():
+            _junction_copy(capture.parent)
+    failures = _mutate_after_first_write(mod, monkeypatch, action)
+    with pytest.raises(mod.Unknown):
+        build()
+    assert failures == []
 
 
 # --- candidate phase ------------------------------------------------------------------------------------------------

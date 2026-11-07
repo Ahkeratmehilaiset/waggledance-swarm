@@ -35,6 +35,17 @@ _GENERATION_PATHS = (('binding_path', 'lane-binding.v1.json'), ('fixed_plan_path
 # digest in the lane binding; it materializes the other three files in the
 # baseline generation. Refreshed candidates materialize all four locally.
 _BASELINE_GENERATION_PATHS = tuple(item for item in _GENERATION_PATHS if item[0] != 'public_plan')
+# Staged card route: the baseline binding carries card_policy_sha256 (ten pins). A refreshed card generation may
+# change the pointer, source anchor, card decision, projection and descriptor, never the card policy or the
+# stable plan inputs below; the binding is recomputed with the real staged producer from the plan's own files.
+_STAGED_STABLE_PINS = _STABLE_PINS | {'card_policy_sha256'}
+_PLAN_STABLE = ('root', 'policy_path', 'roster_path', 'public_policy_path')
+_STAGED_PLAN_STABLE = _PLAN_STABLE + ('pointer_path', 'card_policy_path', 'card_policy_sha256', 'source_path',
+                                      'generation_path', 'encoder_sha256', 'schema')
+_CARD_FIXED_PINS = ('card_decision_sha256', 'card_policy_sha256')
+_STAGED_FIXED_DYNAMIC = _PLAN_DYNAMIC | {'card_decision_sha256', 'public_plan_path', 'public_plan_sha256'}
+_STAGED_INPUTS = (('pointer', 1024 * 1024), ('policy', 65536), ('roster', 1024 * 1024), ('public_policy', 65536),
+                  ('card_decision', 262144), ('card_policy', 65536))
 _FIXED_BINDING_PINS = (('expected_pointer_sha256', 'pointer_sha256'),
                        ('expected_source_sha256', 'source_anchor_sha256'),
                        ('expected_encoder_sha256', 'encoder_sha256'), ('policy_sha256', 'policy_sha256'),
@@ -121,23 +132,34 @@ def _checked_pair(base, candidate, manifest_sha256):
     cd, _, candidate_pin, fleet, _, ci = candidate
     _check_disk(bd, base[1], base_pin, base_fleet, bi)
     _check_disk(cd, candidate[1], candidate_pin, fleet, ci)
+    staged = 'card_policy_sha256' in bd['expected_binding']
     if (set(bd) != set(cd) or any(bd[key] != cd[key] for key in set(bd) - _DYNAMIC)
-            or any(bd['expected_binding'][key] != cd['expected_binding'][key] for key in _STABLE_PINS)
+            or set(bd['expected_binding']) != set(cd['expected_binding'])
+            or any(bd['expected_binding'][key] != cd['expected_binding'][key]
+                   for key in (_STAGED_STABLE_PINS if staged else _STABLE_PINS))
             or fleet != base_fleet):
         raise ValueError()
-    bp, _, _ = _plan(bd, bi)
+    bp, bb, _ = _plan(bd, bi)
     cp, cb, public_raw = _plan(cd, ci)
-    if any(bp[key] != cp[key] for key in ('root', 'policy_path', 'roster_path', 'public_policy_path')):
+    if (any(bp[key] != cp[key] for key in (_STAGED_PLAN_STABLE if staged else _PLAN_STABLE))
+            or (staged and cp['schema'] != 'wd.q4-public-wrapper-plan.v3')):
         raise ValueError()
     old_fixed = transport._fixed_plan(bi['fixed_plan_bytes'])
     new_fixed = transport._fixed_plan(ci['fixed_plan_bytes'])
-    for fixed, descriptor in ((old_fixed, bd), (new_fixed, cd)):
+    for fixed, descriptor, document in ((old_fixed, bd, bb), (new_fixed, cd, cb)):
         if (any(fixed[left] != descriptor['expected_binding'][right] for left, right in _FIXED_BINDING_PINS)
                 or fixed['runtime_manifest_path'] != descriptor['runtime_manifest_path']
                 or fixed['runtime_manifest_sha256'] != descriptor['runtime_manifest_sha256']):
             raise ValueError()
+        if staged and (fixed['backend'] != 'staged-card-wrapper-v1'
+                or any(fixed[key] != descriptor['expected_binding'][key] for key in _CARD_FIXED_PINS)
+                or fixed['public_plan_sha256'] != document['public_plan_sha256']
+                or os.path.normcase(os.path.normpath(fixed['public_plan_path']))
+                != os.path.normcase(os.path.normpath(descriptor['public_plan']))):
+            raise ValueError()
     if (set(old_fixed) != set(new_fixed)
-            or any(old_fixed[key] != new_fixed[key] for key in set(old_fixed) - _PLAN_DYNAMIC)
+            or any(old_fixed[key] != new_fixed[key]
+                   for key in set(old_fixed) - (_STAGED_FIXED_DYNAMIC if staged else _PLAN_DYNAMIC))
             or old_fixed['bundle_sha256'] != _sha(bi['fixed_bundle_bytes'])
             or old_fixed['bundle_bytes'] != len(bi['fixed_bundle_bytes'])
             or new_fixed['bundle_sha256'] != _sha(ci['fixed_bundle_bytes'])
@@ -147,17 +169,28 @@ def _checked_pair(base, candidate, manifest_sha256):
     manifest_raw = _read(bundle_root / 'deployment-manifest.json', 4 * 1024 * 1024, manifest_sha256.lower())
     manifest = _parse(manifest_raw)
     wrapper_raw = _read(bundle_root / 'Invoke-WdQ4Query.ps1', 1024 * 1024)
-    produced = binding_producer.build_lane_binding(enabled=True, expected_commit=manifest['source_commit'],
+    common = dict(enabled=True, expected_commit=manifest['source_commit'],
         manifest_bytes=manifest_raw, expected_manifest_sha256=manifest_sha256.lower(), fleet_bytes=fleet,
         expected_fleet_sha256=_sha(fleet), wrapper_bytes=wrapper_raw, expected_wrapper_sha256=_sha(wrapper_raw),
-        public_plan_bytes=public_raw,
-        expected_public_plan_sha256=cb['public_plan_sha256'], snapshot_bytes=ci['fixed_bundle_bytes'],
-        expected_snapshot_sha256=cd['snapshot_sha256'])
+        public_plan_bytes=public_raw, expected_public_plan_sha256=cb['public_plan_sha256'])
+    if staged:
+        if (new_fixed['wrapper_sha256'] != _sha(wrapper_raw)
+                or new_fixed['deployment_manifest_sha256'] != manifest_sha256.lower()
+                or new_fixed['bundle_commit'] != manifest['source_commit']):
+            raise ValueError()
+        files = {name + '_bytes': _read(cp[name + '_path'], limit, cp[name + '_sha256'])
+                 for name, limit in _STAGED_INPUTS}
+        produced = binding_producer.build_staged_lane_binding(**common, **files)
+        pointer = (Path(cp['pointer_path']), 1024 * 1024)
+    else:
+        produced = binding_producer.build_lane_binding(**common, snapshot_bytes=ci['fixed_bundle_bytes'],
+            expected_snapshot_sha256=cd['snapshot_sha256'])
+        pointer = (Path(cp['root']) / 'q4-latest.json', 16384)
     if not hmac.compare_digest(produced['binding_bytes'], ci['binding_bytes']):
         raise ValueError()
     if base_pin == candidate_pin:
         raise ValueError()
-    return cp['root']
+    return cp['root'], pointer
 
 
 def select(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline=None,
@@ -192,11 +225,12 @@ def select(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline=
         candidate = load_configuration(str(path), publication['descriptor_sha256'])
         if any(Path(candidate[0][key]) != path.parent / name for key, name in _GENERATION_PATHS):
             raise ValueError()
-        index_root = Path(_checked_pair(baseline, candidate, manifest_sha256))
+        index_root, (pointer_path, pointer_limit) = _checked_pair(baseline, candidate, manifest_sha256)
+        index_root = Path(index_root)
         _validate_roots(root, Path(baseline[0]['bundle_root']), index_root)
         if candidate[0]['expected_binding']['pointer_sha256'] != publication['index_pointer_sha256']:
             raise ValueError()
-        _read(index_root / 'q4-latest.json', 16384, publication['index_pointer_sha256'])
+        _read(pointer_path, pointer_limit, publication['index_pointer_sha256'])
         _read(base_path, 65536, baseline_sha256)
         _read(path, 65536, publication['descriptor_sha256'])
         if _read(publication_path, 4096) != raw:
@@ -208,7 +242,7 @@ def select(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline=
     if result is not None:
         return result
     baseline_path = baseline_sha256 = baseline = manifest_sha256 = load_configuration = None
-    base_path = root = publication_path = raw = publication = path = candidate = index_root = None
+    base_path = root = publication_path = raw = publication = path = candidate = index_root = pointer_path = None
     raise LiveSnapshotRefused('live_snapshot_refused') from None
 
 
@@ -249,10 +283,11 @@ def publish(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline
         if (baseline[2] != baseline_sha256 or candidate[2] != candidate_sha256
                 or baseline[1] != baseline_raw or candidate[1] != candidate_raw):
             raise ValueError()
-        index_root = Path(_checked_pair(baseline, candidate, manifest_sha256))
+        index_root, (pointer_path, pointer_limit) = _checked_pair(baseline, candidate, manifest_sha256)
+        index_root = Path(index_root)
         _validate_roots(bp.parent.parent, Path(baseline[0]['bundle_root']), index_root)
         index_pin = candidate[0]['expected_binding']['pointer_sha256']
-        _read(index_root / 'q4-latest.json', 16384, index_pin)
+        _read(pointer_path, pointer_limit, index_pin)
         publication = {'schema': _SCHEMA, 'baseline_sha256': baseline_sha256, 'generation': cp.parent.name,
                        'descriptor_sha256': candidate_sha256, 'index_pointer_sha256': index_pin}
         raw = json.dumps(publication, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
@@ -269,10 +304,10 @@ def publish(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline
                 raise OSError()
             stream.flush()
             os.fsync(stream.fileno())
-        _read(index_root / 'q4-latest.json', 16384, index_pin)
+        _read(pointer_path, pointer_limit, index_pin)
         pointer_io._atomic_replace(temp, target)
         _read(target, 4096, _sha(raw))
-        _read(index_root / 'q4-latest.json', 16384, index_pin)
+        _read(pointer_path, pointer_limit, index_pin)
         return {'status': 'PUBLISHED', 'publication_sha256': _sha(raw)}
     except Exception:
         failure = 'unknown' if entered else 'refused'
@@ -283,6 +318,7 @@ def publish(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline
             raise
     baseline_path = baseline_sha256 = baseline = manifest_sha256 = candidate_path = candidate_sha256 = candidate = None
     bp = cp = baseline_raw = candidate_raw = index_root = index_pin = publication = raw = root = target = temp = fd = None
+    pointer_path = None
     if failure == 'unknown':
         raise LiveSnapshotOutcomeUnknown('live_publication_unknown') from None
     if failure == 'interrupt':

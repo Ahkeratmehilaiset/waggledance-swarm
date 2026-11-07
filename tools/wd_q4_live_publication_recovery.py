@@ -40,8 +40,7 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, bas
                 or bp.parent.parent != cp.parent.parent or not live._GEN.fullmatch(bp.parent.name)
                 or not live._GEN.fullmatch(cp.parent.name)):
             raise ValueError()
-        if (any(Path(candidate[0][key]) != cp.parent / name for key, name in live._GENERATION_PATHS)
-                or any(Path(baseline[0][key]) != bp.parent / name for key, name in live._BASELINE_GENERATION_PATHS)):
+        if any(Path(baseline[0][key]) != bp.parent / name for key, name in live._BASELINE_GENERATION_PATHS):
             raise ValueError()
         root = bp.parent.parent
         pending = root / live._PUBLICATION_PENDING
@@ -69,12 +68,41 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, bas
             temp = root / marker['temporary_name']
             if os.path.lexists(temp):
                 raise ValueError()  # There is no bound file identity in the v1 marker.
-            if (baseline[2] != baseline_sha256 or candidate[2] != candidate_sha256
-                    or live._read(bp, 65536, baseline_sha256) != baseline[1]
-                    or live._read(cp, 65536, candidate_sha256) != candidate[1]):
+            if baseline[2] != baseline_sha256 or live._read(bp, 65536, baseline_sha256) != baseline[1]:
                 raise ValueError()
             manifest_path = Path(baseline[0]['bundle_root']) / 'deployment-manifest.json'
             live._read(manifest_path, 4 * 1024 * 1024, manifest_sha256)
+            present = os.path.lexists(target)
+            current = live._read(target, 4096) if present else None
+            previous = ((current is None and previous_selector_sha256 is None)
+                        or (current is not None and previous_selector_sha256 is not None
+                            and live._sha(current) == previous_selector_sha256))
+            if previous:
+                # The pinned pending and exact former selector prove no change
+                # under the cooperative publication lock. A missing or invalid
+                # candidate does not alter that fact.
+                if current is not None:
+                    old = live._parse(current)
+                    if (type(old) is not dict or set(old) != live._KEYS or old['schema'] != live._SCHEMA
+                            or old['baseline_sha256'] != baseline_sha256
+                            or type(old['generation']) is not str or not live._GEN.fullmatch(old['generation'])
+                            or any(type(old[key]) is not str or not live._HEX.fullmatch(old[key])
+                                   for key in ('descriptor_sha256', 'index_pointer_sha256'))
+                            or marker['publication_sha256'] == previous_selector_sha256):
+                        raise ValueError()
+                if (os.path.lexists(temp) or os.path.lexists(target) != present
+                        or (present and live._read(target, 4096) != current)
+                        or live._read(bp, 65536, baseline_sha256) != baseline[1]
+                        or not os.path.samestat(marker_info, pending.stat())
+                        or live._read(pending, 4096, pending_sha256) != marker_raw):
+                    raise ValueError()
+                live._read(manifest_path, 4 * 1024 * 1024, manifest_sha256)
+                pending.unlink()
+                return {'status': 'NOT_PUBLISHED', 'publication_sha256': marker['publication_sha256']}
+            if (any(Path(candidate[0][key]) != cp.parent / name for key, name in live._GENERATION_PATHS)
+                    or candidate[2] != candidate_sha256
+                    or live._read(cp, 65536, candidate_sha256) != candidate[1]):
+                raise ValueError()
             index_root, (pointer_path, pointer_limit) = live._checked_pair(
                 baseline, candidate, manifest_sha256, p1_enabled=True)
             live._validate_roots(root, Path(baseline[0]['bundle_root']), Path(index_root))
@@ -86,22 +114,9 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, bas
                              separators=(',', ':'), ensure_ascii=True).encode('ascii')
             if live._sha(raw) != marker['publication_sha256']:
                 raise ValueError()
-            present = os.path.lexists(target)
-            current = live._read(target, 4096) if present else None
             new = current == raw
-            previous = ((current is None and previous_selector_sha256 is None)
-                        or (current is not None and previous_selector_sha256 is not None
-                            and live._sha(current) == previous_selector_sha256))
             if new == previous:
                 raise ValueError()
-            if previous and present:
-                old = live._parse(current)
-                if (type(old) is not dict or set(old) != live._KEYS or old['schema'] != live._SCHEMA
-                        or old['baseline_sha256'] != baseline_sha256
-                        or type(old['generation']) is not str or not live._GEN.fullmatch(old['generation'])
-                        or any(type(old[key]) is not str or not live._HEX.fullmatch(old[key])
-                               for key in ('descriptor_sha256', 'index_pointer_sha256'))):
-                    raise ValueError()
             # Revalidate all externally mutable bindings immediately before removing
             # the exact marker. The lock serializes cooperating publishers only.
             checked_root, checked_pointer = live._checked_pair(baseline, candidate, manifest_sha256, p1_enabled=True)

@@ -42,6 +42,11 @@ _STAGED_STABLE_PINS = _STABLE_PINS | {'card_policy_sha256'}
 _PLAN_STABLE = ('root', 'policy_path', 'roster_path', 'public_policy_path')
 _STAGED_PLAN_STABLE = _PLAN_STABLE + ('card_policy_path', 'card_policy_sha256', 'source_path',
                                       'generation_path', 'encoder_sha256', 'schema')
+_STAGED_P1_PLAN_STABLE = tuple(key for key in _STAGED_PLAN_STABLE if key not in ('root', 'generation_path'))
+_P1_ROOT = Path(r'C:\Python\wd-q4-generations')
+_STAGED_CONFIG_DYNAMIC = frozenset({'memory', 'descriptor', 'descriptor_sha256'})
+_P1_DECISION_STABLE = ('vocabulary_sha256', 'path_allowlist_sha256', 'nonreview_policy_sha256',
+                       'roster_sha256', 'card_policy_sha256')
 _CARD_FIXED_PINS = ('card_decision_sha256', 'card_policy_sha256')
 _STAGED_FIXED_DYNAMIC = _PLAN_DYNAMIC | {'card_decision_sha256', 'public_plan_path', 'public_plan_sha256'}
 _STAGED_INPUTS = (('pointer', 1024 * 1024), ('policy', 65536), ('roster', 1024 * 1024), ('public_policy', 65536),
@@ -139,7 +144,80 @@ def _staged_pointer(base_plan, candidate_plan, descriptor):
     return new
 
 
-def _checked_pair(base, candidate, manifest_sha256):
+def _validate_p1_decisions(old_raw, new_raw):
+    old_decision, new_decision = _parse(old_raw), _parse(new_raw)
+    for key in _P1_DECISION_STABLE:
+        value = old_decision.get(key)
+        if type(value) is not str or not _HEX.fullmatch(value) or value != new_decision.get(key):
+            raise ValueError()
+
+
+def _validate_staged_transition(base_plan, candidate_plan, descriptor, fixed):
+    """Validate the separately enabled, code-pinned P1 snapshot/anchor layout.
+
+    This is a cooperative byte/identity continuity check, not source or
+    publisher authentication, anti-rollback or protection against same-user
+    replacement after the check. The sidecar hashes below are calculated from
+    observed files solely to validate their internal binding, not as authority.
+    """
+    from tools import wd_q4_external_generation_anchor as anchor
+    from waggledance.core import bridge_log_reader as bridge
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    stage = pointer_io._absolute(descriptor['binding_path']).parent.parent
+    approved = pointer_io._absolute(str(_P1_ROOT))
+    bundle = pointer_io._absolute(descriptor['bundle_root'])
+    runtime = pointer_io._absolute(fixed['runtime_root'])
+    old = pointer_io._absolute(base_plan['root'])
+    new = pointer_io._absolute(candidate_plan['root'])
+    source = pointer_io._absolute(candidate_plan['source_path'])
+    old_generation = pointer_io._absolute(base_plan['generation_path'])
+    new_generation = pointer_io._absolute(candidate_plan['generation_path'])
+    for path in (approved, stage, bundle, runtime, old, new, source, old_generation, new_generation):
+        pointer_io._chain(path)
+    if not all(path.is_dir() for path in (approved, stage, bundle, runtime, old, new)):
+        raise ValueError()
+    if not source.is_file() or not old_generation.is_file() or not new_generation.is_file():
+        raise ValueError()
+    def inside(path, root):
+        return path != root and path.is_relative_to(root)
+    if (new.name != 'snapshot' or new.parent.parent != approved or
+            new.parent.name in ('.codex-audit', '.', '..') or
+            new_generation.name != 'generation.json' or
+            new_generation.parent.parent != approved / '.codex-audit' / 'anchors'):
+        raise ValueError()
+    if any(not _disjoint(new, other) for other in (stage, bundle, runtime, source)):
+        raise ValueError()
+    candidate_pointer = pointer_io._absolute(candidate_plan['pointer_path'])
+    pointer_io._chain(candidate_pointer)
+    if candidate_pointer.parent != new or not candidate_pointer.is_file():
+        raise ValueError()
+    if new != old:
+        if not inside(new, approved) or not _disjoint(new, old):
+            raise ValueError()
+    if (not inside(new_generation, approved) or any(not _disjoint(new_generation, other)
+            for other in (stage, bundle, runtime, old, new, source))):
+        raise ValueError()
+    before, after = base_plan['end_cursor'], candidate_plan['end_cursor']
+    if (type(before) is not dict or type(after) is not dict or
+            set(before) != {'offset', 'file_identity', 'generation'} or set(after) != set(before) or
+            type(before['offset']) is not int or type(after['offset']) is not int or
+            before['offset'] <= 0 or after['offset'] < before['offset'] or
+            before['file_identity'] != after['file_identity'] or
+            base_plan['source_path'] != candidate_plan['source_path'] or
+            (after['offset'] == before['offset'] and
+             candidate_plan['source_anchor_sha256'] != base_plan['source_anchor_sha256'])):
+        raise ValueError()
+    anchor._verify_source(bridge, source, BridgeCursor(before['offset'], before['file_identity'], None),
+                          base_plan['source_anchor_sha256'])
+    generation_raw = _read(new_generation, 512)
+    binding_raw = _read(new_generation.parent / 'binding.json', 4096)
+    anchor.verify(enabled=True, source_path=str(source),
+        original_cursor=BridgeCursor(after['offset'], after['file_identity'], None),
+        expected_prefix_sha256=candidate_plan['source_anchor_sha256'], output_root=str(new_generation.parent),
+        expected_generation_sha256=_sha(generation_raw), expected_binding_sha256=_sha(binding_raw))
+
+
+def _checked_pair(base, candidate, manifest_sha256, *, p1_enabled=False):
     """Compare immutable runtime/fleet/policy and check the real binding producer."""
     bd, _, base_pin, base_fleet, _, bi = base
     cd, _, candidate_pin, fleet, _, ci = candidate
@@ -154,11 +232,21 @@ def _checked_pair(base, candidate, manifest_sha256):
         raise ValueError()
     bp, bb, _ = _plan(bd, bi)
     cp, cb, public_raw = _plan(cd, ci)
-    if (any(bp[key] != cp[key] for key in (_STAGED_PLAN_STABLE if staged else _PLAN_STABLE))
+    if (p1_enabled and not staged):
+        raise ValueError()
+    stable_plan = _STAGED_P1_PLAN_STABLE if staged and p1_enabled else (_STAGED_PLAN_STABLE if staged else _PLAN_STABLE)
+    if (any(bp[key] != cp[key] for key in stable_plan)
             or (staged and cp['schema'] != 'wd.q4-public-wrapper-plan.v3')):
         raise ValueError()
     old_fixed = transport._fixed_plan(bi['fixed_plan_bytes'])
     new_fixed = transport._fixed_plan(ci['fixed_plan_bytes'])
+    staged_transition = False
+    if staged and p1_enabled:
+        if (set(bp['config']) != set(cp['config']) or any(bp['config'][key] != cp['config'][key]
+                for key in set(bp['config']) - _STAGED_CONFIG_DYNAMIC)):
+            raise ValueError()
+        _validate_staged_transition(bp, cp, bd, old_fixed)
+        staged_transition = True
     for fixed, descriptor, document in ((old_fixed, bd, bb), (new_fixed, cd, cb)):
         if (any(fixed[left] != descriptor['expected_binding'][right] for left, right in _FIXED_BINDING_PINS)
                 or fixed['runtime_manifest_path'] != descriptor['runtime_manifest_path']
@@ -194,7 +282,12 @@ def _checked_pair(base, candidate, manifest_sha256):
             raise ValueError()
         files = {name + '_bytes': _read(cp[name + '_path'], limit, cp[name + '_sha256'])
                  for name, limit in _STAGED_INPUTS}
+        if p1_enabled:
+            _validate_p1_decisions(_read(bp['card_decision_path'], 262144, bp['card_decision_sha256']),
+                                   files['card_decision_bytes'])
         produced = binding_producer.build_staged_lane_binding(**common, **files)
+        if staged_transition:
+            _validate_staged_transition(bp, cp, bd, old_fixed)
         pointer = (_staged_pointer(bp, cp, cd), 1024 * 1024)
     else:
         produced = binding_producer.build_lane_binding(**common, snapshot_bytes=ci['fixed_bundle_bytes'],
@@ -208,13 +301,13 @@ def _checked_pair(base, candidate, manifest_sha256):
 
 
 def select(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline=None,
-           manifest_sha256=None, load_configuration=None):
+           manifest_sha256=None, load_configuration=None, p1_enabled=False):
     """Select once; caller must recheck the publication bytes before output."""
     if enabled is False:
         return {'status': 'OFF'}
     result = None
     try:
-        if (enabled is not True or type(baseline_path) is not str or type(baseline_sha256) is not str
+        if (enabled is not True or type(p1_enabled) is not bool or type(baseline_path) is not str or type(baseline_sha256) is not str
                 or not _HEX.fullmatch(baseline_sha256) or not callable(load_configuration)):
             raise ValueError()
         base_path = pointer_io._absolute(baseline_path)
@@ -239,7 +332,8 @@ def select(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline=
         candidate = load_configuration(str(path), publication['descriptor_sha256'])
         if any(Path(candidate[0][key]) != path.parent / name for key, name in _GENERATION_PATHS):
             raise ValueError()
-        index_root, (pointer_path, pointer_limit) = _checked_pair(baseline, candidate, manifest_sha256)
+        index_root, (pointer_path, pointer_limit) = _checked_pair(baseline, candidate, manifest_sha256,
+                                                                 p1_enabled=p1_enabled)
         index_root = Path(index_root)
         _validate_roots(root, Path(baseline[0]['bundle_root']), index_root)
         if candidate[0]['expected_binding']['pointer_sha256'] != publication['index_pointer_sha256']:
@@ -273,14 +367,14 @@ def recheck(path, expected):
 
 
 def publish(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline=None, manifest_sha256=None,
-            candidate_path=None, candidate_sha256=None, candidate=None):
+            candidate_path=None, candidate_sha256=None, candidate=None, p1_enabled=False):
     """Verify a completed candidate and atomically publish its selector, never its artifacts."""
     if enabled is False:
         return {'status': 'OFF'}
     entered = False
     failure = None
     try:
-        if (enabled is not True or type(baseline_path) is not str or type(candidate_path) is not str
+        if (enabled is not True or type(p1_enabled) is not bool or type(baseline_path) is not str or type(candidate_path) is not str
                 or type(baseline_sha256) is not str or not _HEX.fullmatch(baseline_sha256)
                 or type(candidate_sha256) is not str or not _HEX.fullmatch(candidate_sha256)):
             raise ValueError()
@@ -297,7 +391,8 @@ def publish(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline
         if (baseline[2] != baseline_sha256 or candidate[2] != candidate_sha256
                 or baseline[1] != baseline_raw or candidate[1] != candidate_raw):
             raise ValueError()
-        index_root, (pointer_path, pointer_limit) = _checked_pair(baseline, candidate, manifest_sha256)
+        index_root, (pointer_path, pointer_limit) = _checked_pair(baseline, candidate, manifest_sha256,
+                                                                 p1_enabled=p1_enabled)
         index_root = Path(index_root)
         _validate_roots(bp.parent.parent, Path(baseline[0]['bundle_root']), index_root)
         index_pin = candidate[0]['expected_binding']['pointer_sha256']

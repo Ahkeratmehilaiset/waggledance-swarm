@@ -40,7 +40,7 @@ _BASELINE_GENERATION_PATHS = tuple(item for item in _GENERATION_PATHS if item[0]
 # stable plan inputs below; the binding is recomputed with the real staged producer from the plan's own files.
 _STAGED_STABLE_PINS = _STABLE_PINS | {'card_policy_sha256'}
 _PLAN_STABLE = ('root', 'policy_path', 'roster_path', 'public_policy_path')
-_STAGED_PLAN_STABLE = _PLAN_STABLE + ('pointer_path', 'card_policy_path', 'card_policy_sha256', 'source_path',
+_STAGED_PLAN_STABLE = _PLAN_STABLE + ('card_policy_path', 'card_policy_sha256', 'source_path',
                                       'generation_path', 'encoder_sha256', 'schema')
 _CARD_FIXED_PINS = ('card_decision_sha256', 'card_policy_sha256')
 _STAGED_FIXED_DYNAMIC = _PLAN_DYNAMIC | {'card_decision_sha256', 'public_plan_path', 'public_plan_sha256'}
@@ -126,6 +126,19 @@ def _check_disk(descriptor, descriptor_raw, descriptor_pin, fleet, inputs):
             raise ValueError()
 
 
+def _staged_pointer(base_plan, candidate_plan, descriptor):
+    """A separate per-run pointer stays scoped and preserves the old reader's bytes."""
+    old = pointer_io._absolute(base_plan['pointer_path'])
+    new = pointer_io._absolute(candidate_plan['pointer_path'])
+    if old != new:
+        roots = (pointer_io._absolute(candidate_plan['root']),
+                 pointer_io._absolute(descriptor['public_plan']).parent)
+        if not any(new != root and new.is_relative_to(root) for root in roots):
+            raise ValueError()
+        _read(old, 1024 * 1024, base_plan['pointer_sha256'])
+    return new
+
+
 def _checked_pair(base, candidate, manifest_sha256):
     """Compare immutable runtime/fleet/policy and check the real binding producer."""
     bd, _, base_pin, base_fleet, _, bi = base
@@ -174,6 +187,7 @@ def _checked_pair(base, candidate, manifest_sha256):
         expected_fleet_sha256=_sha(fleet), wrapper_bytes=wrapper_raw, expected_wrapper_sha256=_sha(wrapper_raw),
         public_plan_bytes=public_raw, expected_public_plan_sha256=cb['public_plan_sha256'])
     if staged:
+        _staged_pointer(bp, cp, cd)
         if (new_fixed['wrapper_sha256'] != _sha(wrapper_raw)
                 or new_fixed['deployment_manifest_sha256'] != manifest_sha256.lower()
                 or new_fixed['bundle_commit'] != manifest['source_commit']):
@@ -181,7 +195,7 @@ def _checked_pair(base, candidate, manifest_sha256):
         files = {name + '_bytes': _read(cp[name + '_path'], limit, cp[name + '_sha256'])
                  for name, limit in _STAGED_INPUTS}
         produced = binding_producer.build_staged_lane_binding(**common, **files)
-        pointer = (Path(cp['pointer_path']), 1024 * 1024)
+        pointer = (_staged_pointer(bp, cp, cd), 1024 * 1024)
     else:
         produced = binding_producer.build_lane_binding(**common, snapshot_bytes=ci['fixed_bundle_bytes'],
             expected_snapshot_sha256=cd['snapshot_sha256'])

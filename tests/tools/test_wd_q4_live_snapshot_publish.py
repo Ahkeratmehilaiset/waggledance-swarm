@@ -668,3 +668,112 @@ def test_staged_both_generations_rehashed_control_publishes(staged):
     staged['base'] = _rehash_fixed(staged, 'b' * 40, 'host_sha256', '7' * 64)
     staged['candidate'] = _rehash_fixed(staged, 'c' * 40, 'host_sha256', '7' * 64)
     assert do_publish(staged)['status'] == 'PUBLISHED'
+
+
+def _fresh_real_generation(c, evidence, pointer_location='index'):
+    """Build a second immutable memory with the real producer, not a binding spy."""
+    from tests.tools import test_shared_card_route as rt
+    from tools import wd_q4_card_generation
+    from waggledance.core.bridge_log_reader import BridgeCursor
+
+    old = c['real_plan']
+    cursor = old['end_cursor']
+    args = dict(enabled=True, decision_bytes=evidence['card_decision_bytes'],
+        decision_sha256=sha(evidence['card_decision_bytes']),
+        vocabulary_bytes=rt.fx.VOCABULARY, vocabulary_sha256=rt.fx.PINS['vocabulary_sha256'],
+        path_allowlist_bytes=rt.fx.PATHS, path_allowlist_sha256=rt.fx.PINS['path_allowlist_sha256'],
+        now_utc=rt.fx.NOW, output_root=old['root'], generation_name='fresh-run',
+        encode=rt.fx.encode, identity=rt.fx.IDENTITY, dimension=rt.fx.DIM,
+        policy_bytes=evidence['policy_bytes'], policy_sha256=sha(evidence['policy_bytes']),
+        roster_bytes=evidence['roster_bytes'], roster_sha256=sha(evidence['roster_bytes']),
+        card_policy_bytes=evidence['card_policy_bytes'], source_path=old['source_path'],
+        generation_path=old['generation_path'], end_cursor=BridgeCursor(**cursor))
+    made = wd_q4_card_generation.prepare_card_generation(**args)
+    assert made['status'] == 'STAGED'
+    memory = Path(old['root']) / 'fresh-run'
+    artifacts = {p.relative_to(memory).as_posix(): sha(p.read_bytes())
+                 for p in memory.rglob('*') if p.is_file()}
+    decision = json.loads(evidence['card_decision_bytes'])
+    pointer = enc({'schema': 'wd.q4-card-snapshot.v1', 'generation': 'fresh-run',
+        'artifacts': artifacts, 'decision_sha256': args['decision_sha256'],
+        'policy_sha256': args['policy_sha256'], 'roster_sha256': args['roster_sha256'],
+        'source_prefix': decision['source_prefix']})
+    scope = Path(old['root']) if pointer_location == 'index' else Path(c['candidate_path']).parent
+    pointer_path = scope / ('q4-pointer-' + sha(pointer) + '.json')
+    pointer_path.write_bytes(pointer)
+    plan = dict(old, pointer_path=str(pointer_path), pointer_sha256=sha(pointer),
+        config=dict(old['config'], memory=str(memory), descriptor=str(memory/'descriptor.json'),
+                    descriptor_sha256=artifacts['descriptor.json']))
+    plan_raw = enc(plan)
+    evidence = dict(evidence, pointer_bytes=pointer, public_plan_bytes=plan_raw,
+                    expected_public_plan_sha256=sha(plan_raw))
+    binding_result = _REAL_STAGED_BINDING_PRODUCER(**evidence)
+    binding = json.loads(binding_result['binding_bytes'])['binding']
+    snapshot = transport.fixed_card_bundle(enabled=True,
+        **{key:evidence[key+'_bytes'] for key in
+           ('pointer','policy','roster','public_policy','card_decision','card_policy')},
+        memory=(memory/'memory.json').read_bytes(), projection=(memory/'projection.json').read_bytes(),
+        descriptor=(memory/'descriptor.json').read_bytes())
+    item = c['candidate']
+    descriptor, inputs = dict(item[0]), dict(item[5])
+    fixed = json.loads(inputs['fixed_plan_bytes'])
+    fixed.update(bundle_sha256=sha(snapshot), bundle_bytes=len(snapshot),
+        expected_pointer_sha256=binding['pointer_sha256'], public_plan_sha256=sha(plan_raw))
+    fixed_raw = enc(fixed)
+    descriptor.update(binding_sha256=binding_result['binding_sha256'], fixed_plan_sha256=sha(fixed_raw),
+        snapshot_sha256=sha(snapshot), expected_binding=binding)
+    raw = enc(descriptor)
+    for key, blob in (('public_plan',plan_raw), ('binding_path',binding_result['binding_bytes']),
+                      ('fixed_plan_path',fixed_raw), ('snapshot_path',snapshot)):
+        Path(descriptor[key]).write_bytes(blob)
+    Path(c['candidate_path']).write_bytes(raw)
+    inputs.update(binding_bytes=binding_result['binding_bytes'], fixed_plan_bytes=fixed_raw,
+                  fixed_bundle_bytes=snapshot)
+    c['candidate'] = (descriptor,raw,sha(raw),item[3],binding,inputs)
+    c['config'][Path(c['candidate_path']).parent.name] = c['candidate']
+    c['fresh_plan'] = plan
+    return pointer_path
+
+
+@pytest.mark.parametrize('pointer_location', ['index', 'descriptor_generation'])
+def test_fresh_real_generation_has_separate_pointer_and_preserves_old_reader(
+        real_staged, staged_producer, pointer_location):
+    from tools import wd_q4_lane_caller_cli as caller
+    c = real_staged
+    old_paths = [Path(c['real_plan']['pointer_path'])] + list(Path(c['real_plan']['config']['memory']).rglob('*'))
+    old_bytes = {p:p.read_bytes() for p in old_paths if p.is_file()}
+    new_pointer = _fresh_real_generation(c, staged_producer, pointer_location)
+    assert new_pointer != Path(c['real_plan']['pointer_path'])
+    published = do_publish(c)
+    chosen = do_select(c)
+    assert published['status'] == 'PUBLISHED' and chosen['status'] == 'SELECTED'
+    assert chosen['configuration'][2] == c['candidate'][2]
+    assert all(p.read_bytes() == raw for p,raw in old_bytes.items())
+    descriptor, _, _, _, binding, inputs = c['base']
+    caller._require_current_snapshot(descriptor,binding,inputs)
+    caller._require_current_snapshot(chosen['configuration'][0],chosen['configuration'][4],chosen['configuration'][5])
+
+
+@pytest.mark.parametrize('moment', ['before_publish','during_producer','before_select'])
+def test_separate_pointer_refuses_mutation_of_the_baseline_pointer(
+        real_staged, staged_producer, monkeypatch, moment):
+    c = real_staged
+    _fresh_real_generation(c, staged_producer)
+    old = Path(c['real_plan']['pointer_path'])
+    def mutate():
+        old.write_bytes(old.read_bytes()+b' ')
+    if moment == 'during_producer':
+        def produce(**kwargs):
+            value = _REAL_STAGED_BINDING_PRODUCER(**kwargs)
+            mutate()
+            return value
+        monkeypatch.setattr(live.binding_producer,'build_staged_lane_binding',produce)
+    elif moment == 'before_select':
+        do_publish(c)
+        mutate()
+        with pytest.raises(live.LiveSnapshotRefused): do_select(c)
+        return
+    else:
+        mutate()
+    with pytest.raises(live.LiveSnapshotRefused): do_publish(c)
+    assert not (c['root']/'q4-live-current.json').exists()

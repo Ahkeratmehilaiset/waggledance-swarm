@@ -148,6 +148,7 @@ def test_publish_default_writes_only_unverified_drafts_never_a_publish_request(m
 
 
 CONTEXTS = ["lock-resolver-check", "security-scan", "test (3.11)", "test (3.12)", "test (3.13)", "unified"]
+OBSERVED = "2026-11-07T13:50:00Z"
 
 
 def gh_capture(pr, pr_head, merge, **changes):
@@ -163,15 +164,32 @@ def gh_capture(pr, pr_head, merge, **changes):
     return value
 
 
-def evidence_spec(base, captures=None):
-    c1, c2, c3 = base["repo"]["commits"]
+def check_runs(pr_head, **changes):
+    """Synthetic capture in the shape of the REST commits/{PR head}/check-runs answer (reduced app object)."""
+    runs = [{"id": 1000 + i, "name": name, "node_id": "synthetic-%d" % i, "head_sha": pr_head,
+             "external_id": "synthetic", "url": "https://example.invalid/check-runs/%d" % i,
+             "html_url": "https://example.invalid/html/%d" % i, "details_url": "https://example.invalid/d/%d" % i,
+             "status": "completed", "conclusion": "success", "started_at": "2026-10-28T20:00:00Z",
+             "completed_at": "2026-10-28T20:30:00Z",
+             "output": {"title": None, "summary": None, "text": None, "annotations_count": 0,
+                        "annotations_url": "https://example.invalid/a/%d" % i},
+             "check_suite": {"id": 7}, "app": {"id": 15368, "slug": "github-actions"}, "pull_requests": []}
+            for i, name in enumerate(CONTEXTS)]
+    value = {"total_count": len(runs), "check_runs": runs}
+    value.update(changes)
+    return value
+
+
+def evidence_spec(base, captures=None, runs=None):
     tmp = base["tmp"]
-    captures = captures or {}
+    captures, runs = captures or {}, runs or {}
     spec = publish_spec(base)
     for card, pr_head in zip(spec["cards"], (base["repo"]["side"], base["repo"]["side2"])):
-        value = captures.get(card["pr"], gh_capture(card["pr"], pr_head, card["head"]))
-        pin = write(tmp / "captures" / ("pr-%d.json" % card["pr"]), value)
-        card["evidence"] = dict(pin, observer="codex-lead-1")
+        view = captures.get(card["pr"], gh_capture(card["pr"], pr_head, card["head"]))
+        listed = runs.get(card["pr"], check_runs(pr_head))
+        card["evidence"] = {"pr_capture": write(tmp / "captures" / ("pr-%d.json" % card["pr"]), view),
+                            "check_runs": write(tmp / "captures" / ("check-runs-%d.json" % card["pr"]), listed),
+                            "observer": "codex-lead-1", "observed_at_utc": OBSERVED}
     return spec
 
 
@@ -206,15 +224,21 @@ def test_observed_evidence_binds_both_squash_prs_with_merge_commit_head_and_side
                                 "valid_until_utc": UNTIL, "tags": [], "head": c2}
     assert request["inputs"]["roster"] == {"path": str(out / "roster.json"), "sha256": manifest["files"]["roster.json"]}
     sidecar = json.loads(files["card-evidence-pr1950.json"])
+    evidence = spec["cards"][1]["evidence"]
+    claim1950 = json.loads(files["publish-request-pr1950.json"])["claim"]
     assert sidecar == {
-        "schema": "wd.q4-observed-gh-pr-evidence.v1", "pr": 1950, "pr_head": side2, "merge_commit": c1,
+        "schema": "wd.q4-observed-gh-pr-evidence.v2", "pr": 1950, "pr_head": side2, "merge_commit": c1,
         "card_head": c1, "base_ref": "refs/heads/main", "merged_at_utc": "2026-10-28T21:00:00Z",
-        "required_contexts": CONTEXTS, "contexts_on": "pr_head",
-        "capture": {"sha256": spec["cards"][1]["evidence"]["sha256"], "observer": "codex-lead-1",
-                    "observation": "lane_observed_github_api_capture"},
+        "required_contexts": CONTEXTS, "contexts_on": "pr_head", "check_runs_head_sha": side2,
+        "captures": {"pr_view_sha256": evidence["pr_capture"]["sha256"],
+                     "check_runs_sha256": evidence["check_runs"]["sha256"], "observer": "codex-lead-1",
+                     "observed_at_utc": OBSERVED, "observed_at_authentication": "UNKNOWN",
+                     "observation": "lane_observed_github_api_capture"},
         "merge_commit_reachable_from": {"refs/heads/main": c3},
         "source_authentication": "UNKNOWN", "operator_attested": False, "cryptographic_proof": False,
-        "request_sha256": manifest["files"]["publish-request-pr1950.json"]}
+        "request_sha256": manifest["files"]["publish-request-pr1950.json"],
+        "claim_sha256": sha(json.dumps(claim1950, sort_keys=True, separators=(",", ":")).encode()),
+        "reader_truth": "UNVERIFIED", "evidence_link": "PENDING_PUBLICATION"}
     assert b"example.invalid" not in b"".join(files.values())
     seen = []
     monkeypatch.setattr(publish_cli.publisher, "publish", lambda **kwargs: seen.append(kwargs) or {"status": "X"})
@@ -237,10 +261,12 @@ def test_card_without_evidence_stays_a_draft_next_to_an_evidenced_request(mod, b
 
 def _bad_evidence(base, fault):
     c1, c2, c3 = base["repo"]["commits"]
-    side = base["repo"]["side"]
+    side, side2 = base["repo"]["side"], base["repo"]["side2"]
     good = gh_capture(1951, side, c2)
     checks = good["statusCheckRollup"]
-    captures = {}
+    listed = check_runs(side)
+    runs = listed["check_runs"]
+    captures, lists = {}, {}
     if fault == "pr_mismatch":
         captures[1951] = dict(good, number=1952)
     elif fault == "number_not_int":
@@ -281,29 +307,67 @@ def _bad_evidence(base, fault):
     elif fault == "check_after_merge":
         captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], completedAt="2026-10-28T21:30:00Z")]
                               + checks[1:])
+        lists[1951] = dict(listed, check_runs=[dict(runs[0], completed_at="2026-10-28T21:30:00Z")] + runs[1:])
     elif fault == "check_started_after_completed":
         captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], startedAt="2026-10-28T20:45:00Z")]
                               + checks[1:])
+        lists[1951] = dict(listed, check_runs=[dict(runs[0], started_at="2026-10-28T20:45:00Z")] + runs[1:])
     elif fault == "time_format":
         captures[1951] = dict(good, mergedAt="2026-10-28 21:00:00")
     elif fault == "extra_top_key":
         captures[1951] = dict(good, title="x")
     elif fault == "missing_top_key":
         captures[1951] = {k: v for k, v in good.items() if k != "mergedAt"}
+    elif fault == "runs_other_head":
+        lists[1951] = dict(listed, check_runs=[dict(runs[0], head_sha=side2)] + runs[1:])
+    elif fault == "runs_all_other_head":
+        lists[1951] = check_runs(side2)
+    elif fault == "runs_merge_commit_head":
+        lists[1951] = check_runs(c2)
+    elif fault == "runs_missing":
+        lists[1951] = dict(listed, total_count=5, check_runs=runs[:5])
+    elif fault == "runs_extra":
+        lists[1951] = dict(listed, total_count=7, check_runs=runs + [dict(runs[0], name="lint")])
+    elif fault == "runs_duplicate":
+        lists[1951] = dict(listed, total_count=7, check_runs=runs + [runs[5]])
+    elif fault == "runs_failed":
+        lists[1951] = dict(listed, check_runs=[dict(runs[0], conclusion="failure")] + runs[1:])
+    elif fault == "runs_not_completed":
+        lists[1951] = dict(listed, check_runs=[dict(runs[0], status="in_progress")] + runs[1:])
+    elif fault == "runs_count_mismatch":
+        lists[1951] = dict(listed, total_count=9)
+    elif fault == "runs_time_mismatch":
+        lists[1951] = dict(listed, check_runs=[dict(runs[0], completed_at="2026-10-28T20:31:00Z")] + runs[1:])
+    elif fault == "runs_field_missing":
+        lists[1951] = dict(listed, check_runs=[{k: v for k, v in runs[0].items() if k != "head_sha"}] + runs[1:])
+    elif fault == "runs_extra_top_key":
+        lists[1951] = dict(listed, message="x")
     elif fault == "duplicate_json_key":
         captures[1951] = None
-    spec = evidence_spec(base, captures)
+    spec = evidence_spec(base, {k: v for k, v in captures.items() if v is not None}, lists)
     evidence = spec["cards"][0]["evidence"]
     if fault == "duplicate_json_key":
         raw = json.dumps(good, sort_keys=True).encode()
         raw = raw[:-1] + b',"state":"MERGED"}'
-        spec["cards"][0]["evidence"] = dict(write(base["tmp"] / "captures" / "dup.json", raw), observer="codex-lead-1")
+        evidence["pr_capture"] = write(base["tmp"] / "captures" / "dup.json", raw)
     elif fault == "capture_pin":
-        evidence["sha256"] = "0" * 64
+        evidence["pr_capture"] = dict(evidence["pr_capture"], sha256="0" * 64)
+    elif fault == "runs_pin":
+        evidence["check_runs"] = dict(evidence["check_runs"], sha256="0" * 64)
+    elif fault == "runs_missing_spec":
+        del evidence["check_runs"]
+    elif fault == "same_file_twice":
+        evidence["check_runs"] = dict(evidence["pr_capture"])
     elif fault == "observer_unknown":
         evidence["observer"] = "someone-else"
     elif fault == "observer_missing":
         del evidence["observer"]
+    elif fault == "observed_before_merge":
+        evidence["observed_at_utc"] = "2026-10-28T20:59:59Z"
+    elif fault == "observed_in_future":
+        evidence["observed_at_utc"] = "2026-11-07T14:00:01Z"
+    elif fault == "observed_bad_format":
+        evidence["observed_at_utc"] = "2026-11-07T13:50Z"
     elif fault == "evidence_extra_key":
         evidence["operator_attested"] = True
     elif fault == "merge_unreachable":
@@ -316,13 +380,144 @@ def _bad_evidence(base, fault):
     "merge_commit_extra_key", "context_missing", "context_extra", "context_renamed", "context_duplicate",
     "check_failed", "check_skipped", "check_in_progress", "status_not_completed", "status_context",
     "check_extra_key", "merged_in_future", "check_after_merge", "check_started_after_completed", "time_format",
-    "extra_top_key", "missing_top_key", "duplicate_json_key", "capture_pin", "observer_unknown", "observer_missing",
-    "evidence_extra_key", "merge_unreachable"])
+    "extra_top_key", "missing_top_key", "runs_other_head", "runs_all_other_head", "runs_merge_commit_head",
+    "runs_missing", "runs_extra", "runs_duplicate", "runs_failed", "runs_not_completed", "runs_count_mismatch",
+    "runs_time_mismatch", "runs_field_missing", "runs_extra_top_key", "duplicate_json_key", "capture_pin",
+    "runs_pin", "runs_missing_spec", "same_file_twice", "observer_unknown", "observer_missing",
+    "observed_before_merge", "observed_in_future", "observed_bad_format", "evidence_extra_key",
+    "merge_unreachable"])
 def test_bad_evidence_refuses_before_any_write(mod, base, fault):
     out, _, build = run_spec(mod, base, _bad_evidence(base, fault), "ev-" + fault)
     with pytest.raises(mod.Refused):
         build()
     assert list(out.iterdir()) == []
+
+
+# --- link phase: eventual card event ref -> sidecar, no live data -----------------------------------------------------
+
+@pytest.fixture
+def evidenced(mod, base):
+    out, _, build = run_spec(mod, base, evidence_spec(base), "evidenced")
+    assert build()["status"] == "WRITTEN"
+    manifest = json.loads((out / "inputs-manifest.json").read_bytes())
+    return {name: {"path": str(out / name), "sha256": pin} for name, pin in manifest["files"].items()}
+
+
+def publish_result(status="WRITTEN", **changes):
+    value = {"status": status, "delivery": "canonical" if status == "WRITTEN" else "queued",
+             "event_ref_sha256": "e" * 64, "truth": "UNVERIFIED", "source_authentication": "UNKNOWN",
+             "publisher_authentication": "UNKNOWN", "clock_authentication": "UNKNOWN"}
+    if status == "QUEUED":
+        value["retained_wal_sha256"] = "f" * 64
+    value.update(changes)
+    return value
+
+
+def link_spec(base, evidenced, pr=1951, result=None, **changes):
+    spec = {"schema": "wd.q4-initial-card-inputs-spec.v1", "phase": "link", "now_utc": NOW,
+            "request": evidenced["publish-request-pr%d.json" % pr],
+            "sidecar": evidenced["card-evidence-pr%d.json" % pr],
+            "publish_result": write(base["tmp"] / "results" / ("result-%d.json" % pr),
+                                    result if result is not None else publish_result())}
+    spec.update(changes)
+    return spec
+
+
+@pytest.mark.parametrize("status", ["WRITTEN", "QUEUED"])
+def test_link_binds_card_event_ref_to_request_claim_sidecar_and_captures(mod, base, evidenced, status):
+    spec = link_spec(base, evidenced, result=publish_result(status))
+    out, _, build = run_spec(mod, base, spec, "link-" + status)
+    result = build()
+    assert result["status"] == "WRITTEN" and result["phase"] == "link"
+    files = tree(out)
+    manifest = json.loads(files["inputs-manifest.json"])
+    assert set(manifest["files"]) == {"card-evidence-link-pr1951.json"} and set(files) == {
+        "card-evidence-link-pr1951.json", "inputs-manifest.json"}
+    sidecar = json.loads(Path(spec["sidecar"]["path"]).read_bytes())
+    link = json.loads(files["card-evidence-link-pr1951.json"])
+    assert link == {
+        "schema": "wd.q4-card-evidence-link.v1", "card_event_ref_sha256": "e" * 64,
+        "delivery": "canonical" if status == "WRITTEN" else "queued", "pr": 1951,
+        "card_head": base["repo"]["commits"][1], "pr_head": base["repo"]["side"],
+        "request_sha256": spec["request"]["sha256"], "claim_sha256": sidecar["claim_sha256"],
+        "sidecar_sha256": spec["sidecar"]["sha256"], "publish_result_sha256": spec["publish_result"]["sha256"],
+        "pr_view_sha256": sidecar["captures"]["pr_view_sha256"],
+        "check_runs_sha256": sidecar["captures"]["check_runs_sha256"],
+        "reader_truth": "UNVERIFIED", "link_authentication": "UNKNOWN", "source_authentication": "UNKNOWN",
+        "pairing": "caller_asserted_publish_result_for_request"}
+
+
+def _bad_link(base, evidenced, fault):
+    if fault == "other_pr_sidecar":
+        return link_spec(base, evidenced, sidecar=evidenced["card-evidence-pr1950.json"])
+    if fault == "other_pr_request":
+        return link_spec(base, evidenced, request=evidenced["publish-request-pr1950.json"])
+    if fault == "request_pin":
+        return link_spec(base, evidenced, request=dict(evidenced["publish-request-pr1951.json"], sha256="0" * 64))
+    if fault == "sidecar_pin":
+        return link_spec(base, evidenced, sidecar=dict(evidenced["card-evidence-pr1951.json"], sha256="0" * 64))
+    if fault == "claim_edited":
+        request = json.loads(Path(evidenced["publish-request-pr1951.json"]["path"]).read_bytes())
+        request["claim"]["outcome"] = "partial"
+        return link_spec(base, evidenced, request=write(base["tmp"] / "results" / "edited.json", request))
+    if fault == "sidecar_already_linked":
+        sidecar = json.loads(Path(evidenced["card-evidence-pr1951.json"]["path"]).read_bytes())
+        sidecar["evidence_link"] = "LINKED"
+        return link_spec(base, evidenced, sidecar=write(base["tmp"] / "results" / "linked.json", sidecar))
+    if fault == "sidecar_v1":
+        sidecar = json.loads(Path(evidenced["card-evidence-pr1951.json"]["path"]).read_bytes())
+        sidecar["schema"] = "wd.q4-observed-gh-pr-evidence.v1"
+        return link_spec(base, evidenced, sidecar=write(base["tmp"] / "results" / "v1.json", sidecar))
+    if fault in ("sidecar_request_digest", "sidecar_claim_digest", "sidecar_card_head", "sidecar_pr"):
+        sidecar = json.loads(Path(evidenced["card-evidence-pr1951.json"]["path"]).read_bytes())
+        key = {"sidecar_request_digest": "request_sha256", "sidecar_claim_digest": "claim_sha256",
+               "sidecar_card_head": "card_head", "sidecar_pr": "pr"}[fault]
+        sidecar[key] = 1950 if key == "pr" else ("a" * 40 if key == "card_head" else "a" * 64)
+        return link_spec(base, evidenced, sidecar=write(base["tmp"] / "results" / (fault + ".json"), sidecar))
+    if fault == "result_refused":
+        return link_spec(base, evidenced, result={"status": "REFUSED"})
+    if fault == "result_unknown":
+        return link_spec(base, evidenced, result=publish_result(status="UNKNOWN"))
+    if fault == "result_ref_short":
+        return link_spec(base, evidenced, result=publish_result(event_ref_sha256="e" * 63))
+    if fault == "result_extra_key":
+        return link_spec(base, evidenced, result=publish_result(note="x"))
+    if fault == "result_truth_claimed":
+        return link_spec(base, evidenced, result=publish_result(truth="VERIFIED"))
+    if fault == "queued_without_wal":
+        value = publish_result("QUEUED")
+        del value["retained_wal_sha256"]
+        return link_spec(base, evidenced, result=value)
+    if fault == "result_pin":
+        spec = link_spec(base, evidenced)
+        spec["publish_result"] = dict(spec["publish_result"], sha256="0" * 64)
+        return spec
+    if fault == "spec_extra_key":
+        return link_spec(base, evidenced, deploy=True)
+    raise AssertionError(fault)
+
+
+@pytest.mark.parametrize("fault", [
+    "other_pr_sidecar", "other_pr_request", "request_pin", "sidecar_pin", "claim_edited", "sidecar_already_linked",
+    "sidecar_v1", "sidecar_request_digest", "sidecar_claim_digest", "sidecar_card_head", "sidecar_pr",
+    "result_refused", "result_unknown", "result_ref_short", "result_extra_key", "result_truth_claimed",
+    "queued_without_wal", "result_pin", "spec_extra_key"])
+def test_bad_link_refuses_before_any_write(mod, base, evidenced, fault):
+    out, _, build = run_spec(mod, base, _bad_link(base, evidenced, fault), "badlink-" + fault)
+    with pytest.raises(mod.Refused):
+        build()
+    assert list(out.iterdir()) == []
+
+
+@pytest.mark.parametrize("target", ["request", "sidecar", "publish_result"])
+def test_link_input_changed_after_first_write_is_unknown(mod, base, evidenced, monkeypatch, target):
+    spec = link_spec(base, evidenced)
+    path = Path(spec[target]["path"])
+    out, _, build = run_spec(mod, base, spec, "late-link-" + target)
+    failures = _mutate_after_first_write(mod, monkeypatch, lambda: path.write_bytes(path.read_bytes() + b" "))
+    with pytest.raises(mod.Unknown):
+        build()
+    assert failures == []
 
 
 def _broken(base, fault):
@@ -500,12 +695,12 @@ def test_input_changed_before_first_write_refuses_with_nothing_written(mod, base
     assert list(out.iterdir()) == []
 
 
-@pytest.mark.parametrize("target", ["capture", "capture_junction"])
+@pytest.mark.parametrize("target", ["pr_capture", "check_runs", "capture_junction"])
 def test_evidence_changed_after_first_write_is_unknown(mod, base, monkeypatch, target):
     spec = evidence_spec(base)
-    capture = Path(spec["cards"][0]["evidence"]["path"])
+    capture = Path(spec["cards"][0]["evidence"]["check_runs" if target == "check_runs" else "pr_capture"]["path"])
     out, _, build = run_spec(mod, base, spec, "late-ev-" + target)
-    if target == "capture":
+    if target != "capture_junction":
         def action():
             capture.write_bytes(capture.read_bytes() + b" ")
     else:

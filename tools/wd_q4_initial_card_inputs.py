@@ -8,12 +8,19 @@ One caller spec, pinned by sha256, selects one of two phases:
   must pass the public card preparer for its roster author, before anything is written. Reachability alone proves
   neither that the PR was merged nor that its checks were green, so a card without evidence becomes a non-publishable
   UNVERIFIED claim draft naming the missing evidence. A typed publish request (kind merged, outcome green) is written
-  only for a card whose caller-pinned GitHub capture (the exact ``gh pr view`` JSON shape) binds the PR number, state
-  MERGED, the anchor's base branch, a past merge time, the PR head, the merge commit equal to the card head and
-  locally observed reachable from the anchor commit, and exactly the six required contexts as completed successful
-  check runs finished no later than the merge. A sidecar keeps the PR head, the capture digest, the named lane
-  observer and the honest assurance: source authentication UNKNOWN, no operator attestation, no cryptographic proof.
-  The card schema itself has no field for the PR head or the evidence digest; the manifest binds request to sidecar.
+  only for a card whose two caller-pinned GitHub captures agree: the ``gh pr view`` JSON binds the PR number, state
+  MERGED, the anchor's base branch, a past merge time, the PR head, and the merge commit equal to the card head and
+  locally observed reachable from the anchor commit; the REST check-runs answer for the PR head binds exactly the six
+  required check runs, each with head_sha equal to the PR head, completed successfully no later than the merge, with
+  the same times as the rollup. The caller states a lane observer and an observation time between the merge and now.
+  A sidecar keeps the PR head, both capture digests, the observer and time, the claim digest and the honest
+  assurance: source and observation time authentication UNKNOWN, no operator attestation, no cryptographic proof,
+  reader truth UNVERIFIED and the evidence link PENDING_PUBLICATION. The card schema has no field for the PR head or
+  the evidence digest; the manifest binds request to sidecar before publication.
+* ``link``: after a separate publication, binds the pinned publish CLI result (its card event ref) to the pinned
+  request, its claim digest, the pending sidecar and both capture digests in one link document, so a reader holding
+  the card event ref can follow it to the evidence. The pairing of result and request is the caller's assertion and
+  the link stays UNVERIFIED; nothing here publishes or reads the bridge.
 * ``candidate``: the real decision request, snapshot template, finish template and real candidate request for the
   card audit orchestrator, from the pinned publish-phase roster and anchors document, a pinned bridge prefix pin
   receipt and the caller's anchor tuple, in the IM9 P1 layout (run P/RUN, anchor P/.codex-audit/anchors/ID).
@@ -44,7 +51,14 @@ _CANDIDATE_KEYS = frozenset({'schema', 'phase', 'now_utc', 'configs', 'roster', 
                              'trusted_model_root', 'base_plan', 'fixed_template', 'composer_options',
                              'shared_stage_root', 'generation', 'generation_root', 'audit_output_root'})
 _CARD_KEYS = frozenset({'pr', 'head', 'author', 'valid_until_utc'})
-_EVIDENCE_KEYS = frozenset({'path', 'sha256', 'observer'})
+_EVIDENCE_KEYS = frozenset({'pr_capture', 'check_runs', 'observer', 'observed_at_utc'})
+_RUN_FIELDS = frozenset({'name', 'head_sha', 'status', 'conclusion', 'started_at', 'completed_at'})
+_LINK_KEYS = frozenset({'schema', 'phase', 'now_utc', 'request', 'sidecar', 'publish_result'})
+_SIDECAR = 'wd.q4-observed-gh-pr-evidence.v2'
+_SIDECAR_KEYS = frozenset({'schema', 'pr', 'pr_head', 'merge_commit', 'card_head', 'base_ref', 'merged_at_utc',
+                           'required_contexts', 'contexts_on', 'check_runs_head_sha', 'captures',
+                           'merge_commit_reachable_from', 'source_authentication', 'operator_attested',
+                           'cryptographic_proof', 'request_sha256', 'claim_sha256', 'reader_truth', 'evidence_link'})
 _OPTION_KEYS = ('expected_bundle', 'bundle_store_root', 'active_bundle_root', 'expected_state_sha256')
 _LIMIT = 1024 * 1024
 _GIT_LIMIT = 64 * 1024 * 1024
@@ -106,8 +120,9 @@ def _gh_time(value):
     return dt.datetime.strptime(value, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=dt.timezone.utc)
 
 
-def _evidence(card, raw, anchor, now):
-    """Validate one caller-pinned gh pr view capture against the card; return the sidecar body or raise."""
+def _evidence(card, raw, runs_raw, anchor, now):
+    """Validate the caller-pinned gh pr view capture and PR-head check-runs capture against the card; return the
+    sidecar body or raise."""
     capture = files._json(raw)
     if type(capture) is not dict or set(capture) != _CAPTURE_KEYS:
         raise ValueError()
@@ -128,11 +143,26 @@ def _evidence(card, raw, anchor, now):
                 or check['conclusion'] != 'SUCCESS'
                 or not _gh_time(check['startedAt']) <= _gh_time(check['completedAt']) <= merged):
             raise ValueError()
-    return {'schema': 'wd.q4-observed-gh-pr-evidence.v1', 'pr': card['pr'], 'pr_head': capture['headRefOid'],
+    rollup = {check['name']: (check['startedAt'], check['completedAt']) for check in checks}
+    listed = files._json(runs_raw)
+    if (type(listed) is not dict or set(listed) != {'total_count', 'check_runs'}
+            or type(listed['check_runs']) is not list or type(listed['total_count']) is not int
+            or listed['total_count'] != len(listed['check_runs'])
+            or sorted(run.get('name') if type(run) is dict else None for run in listed['check_runs'])
+            != sorted(_REQUIRED_CONTEXTS)):
+        raise ValueError()
+    for run in listed['check_runs']:
+        if (not _RUN_FIELDS <= set(run) or run['head_sha'] != capture['headRefOid'] or run['status'] != 'completed'
+                or run['conclusion'] != 'success'
+                or (run['started_at'], run['completed_at']) != rollup[run['name']]):
+            raise ValueError()
+    return {'schema': _SIDECAR, 'pr': card['pr'], 'pr_head': capture['headRefOid'],
             'merge_commit': merge['oid'], 'card_head': card['head'], 'base_ref': anchor['ref'],
             'merged_at_utc': capture['mergedAt'], 'required_contexts': sorted(_REQUIRED_CONTEXTS),
-            'contexts_on': 'pr_head', 'merge_commit_reachable_from': {anchor['ref']: anchor['commit']},
-            'source_authentication': 'UNKNOWN', 'operator_attested': False, 'cryptographic_proof': False}
+            'contexts_on': 'pr_head', 'check_runs_head_sha': capture['headRefOid'],
+            'merge_commit_reachable_from': {anchor['ref']: anchor['commit']},
+            'source_authentication': 'UNKNOWN', 'operator_attested': False, 'cryptographic_proof': False,
+            'reader_truth': 'UNVERIFIED', 'evidence_link': 'PENDING_PUBLICATION'}, merged
 
 
 def _configs(spec, seen):
@@ -205,17 +235,23 @@ def _publish(spec, output, seen):
             if (type(pin) is not dict or set(pin) != _EVIDENCE_KEYS or type(pin['observer']) is not str
                     or pin['observer'] not in uuids):
                 raise ValueError()
-            capture_spec, capture_raw = _pinned({'path': pin['path'], 'sha256': pin['sha256']}, seen)
-            sidecar = _evidence(card, capture_raw, anchor, now)
+            view_spec, view_raw = _pinned(pin['pr_capture'], seen)
+            runs_spec, runs_raw = _pinned(pin['check_runs'], seen)
+            sidecar, merged = _evidence(card, view_raw, runs_raw, anchor, now)
+            if not merged <= _gh_time(pin['observed_at_utc']) <= now:
+                raise ValueError()
             verified += 1
             inputs = {name: configs[name] for name in _CONFIGS}
             inputs['roster'] = {'path': str(roster_path), 'sha256': roster_pin}
             request_name = 'publish-request-pr%d.json' % card['pr']
             outputs[request_name] = _canonical(
                 {'schema': 'wd.q4-public-card-publish-request.v1', 'claim': claim, 'inputs': inputs})
-            sidecar['capture'] = {'sha256': capture_spec['sha256'], 'observer': pin['observer'],
-                                  'observation': 'lane_observed_github_api_capture'}
+            sidecar['captures'] = {'pr_view_sha256': view_spec['sha256'], 'check_runs_sha256': runs_spec['sha256'],
+                                   'observer': pin['observer'], 'observed_at_utc': pin['observed_at_utc'],
+                                   'observed_at_authentication': 'UNKNOWN',
+                                   'observation': 'lane_observed_github_api_capture'}
             sidecar['request_sha256'] = hashlib.sha256(outputs[request_name]).hexdigest()
+            sidecar['claim_sha256'] = hashlib.sha256(_canonical(claim)).hexdigest()
             sidecar_name = 'card-evidence-pr%d.json' % card['pr']
             outputs[sidecar_name] = _canonical(sidecar)
             bindings[request_name] = sidecar_name
@@ -227,6 +263,36 @@ def _publish(spec, output, seen):
                 'observed': {'anchor': approved, 'head_reachable_from_anchor_commit': True},
                 'missing_evidence': list(_MISSING_EVIDENCE)})
     return outputs, {'verified_claims': verified, 'evidence_bindings': bindings}
+
+
+def _link(spec, output, seen):
+    from tools import wd_q4_public_card_publish_cli as publish_cli
+    if set(spec) != _LINK_KEYS:
+        raise ValueError()
+    request_spec, request_raw = _pinned(spec['request'], seen)
+    sidecar_spec, sidecar_raw = _pinned(spec['sidecar'], seen)
+    result_spec, result_raw = _pinned(spec['publish_result'], seen)
+    request, sidecar, result = files._json(request_raw), files._json(sidecar_raw), files._json(result_raw)
+    if (type(request) is not dict or set(request) != {'schema', 'claim', 'inputs'}
+            or request['schema'] != 'wd.q4-public-card-publish-request.v1' or type(request['claim']) is not dict
+            or type(sidecar) is not dict or set(sidecar) != _SIDECAR_KEYS or sidecar['schema'] != _SIDECAR
+            or sidecar['evidence_link'] != 'PENDING_PUBLICATION' or sidecar['reader_truth'] != 'UNVERIFIED'
+            or sidecar['request_sha256'] != request_spec['sha256']
+            or sidecar['claim_sha256'] != hashlib.sha256(_canonical(request['claim'])).hexdigest()
+            or sidecar['card_head'] != request['claim'].get('head')
+            or {'pr': sidecar['pr']} != request['claim'].get('subject')):
+        raise ValueError()
+    publish_cli._result(result)  # exact keys, hex event ref, truth UNVERIFIED, every authentication UNKNOWN
+    link = {'schema': 'wd.q4-card-evidence-link.v1', 'card_event_ref_sha256': result['event_ref_sha256'],
+            'delivery': result['delivery'], 'pr': sidecar['pr'], 'card_head': sidecar['card_head'],
+            'pr_head': sidecar['pr_head'], 'request_sha256': request_spec['sha256'],
+            'claim_sha256': sidecar['claim_sha256'], 'sidecar_sha256': sidecar_spec['sha256'],
+            'publish_result_sha256': result_spec['sha256'],
+            'pr_view_sha256': sidecar['captures']['pr_view_sha256'],
+            'check_runs_sha256': sidecar['captures']['check_runs_sha256'],
+            'reader_truth': 'UNVERIFIED', 'link_authentication': 'UNKNOWN', 'source_authentication': 'UNKNOWN',
+            'pairing': 'caller_asserted_publish_result_for_request'}
+    return {'card-evidence-link-pr%d.json' % sidecar['pr']: _canonical(link)}, {}
 
 
 def _candidate(spec, output, seen):
@@ -350,11 +416,13 @@ def build(*, enabled=False, spec_path=None, spec_sha256=None, output_root=None):
         seen = [(str(spec_file), spec_sha256, _LIMIT), (str(output), None, None)]
         if output.parent.name != '.codex-audit' or any(output.iterdir()) or spec_file.is_relative_to(output):
             raise ValueError()
-        if type(spec) is not dict or spec.get('schema') != _SPEC or spec.get('phase') not in ('publish', 'candidate'):
+        if (type(spec) is not dict or spec.get('schema') != _SPEC
+                or spec.get('phase') not in ('publish', 'candidate', 'link')):
             raise ValueError()
         from sandbox.mind.step2 import public_knowledge_card as card_mod
         card_mod._time(spec['now_utc'])
-        outputs, extra = (_publish if spec['phase'] == 'publish' else _candidate)(spec, output, seen)
+        phase = {'publish': _publish, 'candidate': _candidate, 'link': _link}[spec['phase']]
+        outputs, extra = phase(spec, output, seen)
         manifest = _canonical(dict(extra, schema=_MANIFEST, phase=spec['phase'], spec_sha256=spec_sha256,
                                    files={name: hashlib.sha256(data).hexdigest() for name, data in outputs.items()}))
         if any(output.iterdir()):

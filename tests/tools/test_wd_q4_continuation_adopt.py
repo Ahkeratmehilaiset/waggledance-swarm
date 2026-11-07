@@ -190,6 +190,29 @@ def test_runner_marker_between_verification_and_admission_blocks_adoption(actual
     assert not (private / 'q4-continuation-adopt.pending.json').exists()
 
 
+@pytest.mark.parametrize('change', ['pointer', 'fence'])
+def test_changed_pointer_or_fence_before_admission_is_refused(actual_continuation, monkeypatch, change):
+    from tools import wd_q4_continuation_adopt as adopt
+    args = actual_continuation
+    route = initial._tuple_part(json.loads(args['genesis_tuple_bytes']), 'route')
+    private = Path(route['private_state_root'])
+    root = Path(route['checkpoint_root'])
+    original = adopt._prior_pointer
+
+    def change_after_verification(*pos, **kw):
+        result = original(*pos, **kw)
+        if change == 'pointer':
+            (root / adopt.checkpoint.POINTER).write_bytes(b'{"changed":true}')
+        else:
+            (root / adopt.checkpoint.FENCE).write_bytes(b'synthetic pending fence')
+        return result
+
+    monkeypatch.setattr(adopt, '_prior_pointer', change_after_verification)
+    with pytest.raises((adopt.AdoptRefused, adopt.AdoptOutcomeUnknown)):
+        adopt.run_once(**args)
+    assert not (private / 'q4-continuation-adopt.pending.json').exists()
+
+
 def test_interruption_after_actual_publication_stays_unknown(actual_continuation,monkeypatch):
     from tools import wd_q4_continuation_adopt as adopt
     args=actual_continuation

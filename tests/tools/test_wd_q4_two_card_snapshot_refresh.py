@@ -107,9 +107,12 @@ def test_newer_card_snapshot_from_appended_prefix_is_published_and_selected(atte
 
     def publish(generation):
         candidate_path, candidate_pin = descriptor(generation)
+        current = Path(base_path).parent.parent / 'q4-live-current.json'
+        previous = sha(current.read_bytes()) if current.exists() else None
         return live.publish(enabled=True, baseline_path=base_path, baseline_sha256=base_pin, baseline=baseline,
                             manifest_sha256=attested['expected_manifest_sha256'], p1_enabled=True, candidate_path=candidate_path,
-                            candidate_sha256=candidate_pin, candidate=caller._configuration(candidate_path, candidate_pin))
+                            candidate_sha256=candidate_pin, candidate=caller._configuration(candidate_path, candidate_pin),
+                            expected_previous_selector_sha256=previous)
 
     def selected():
         return live.select(enabled=True, baseline_path=base_path, baseline_sha256=base_pin, baseline=baseline,
@@ -154,6 +157,7 @@ def test_newer_card_snapshot_from_appended_prefix_is_published_and_selected(atte
     with pytest.raises(ValueError): caller._require_current_snapshot(picked[0], picked[4], picked[5])
     changed_pointer.write_bytes(original_pointer)
     after = _tree(shared)
-    assert {k: v for k, v in after.items() if k != 'q4-live-current.json'} == {
-        k: v for k, v in before.items() if k != 'q4-live-current.json'}
+    mutable = {'q4-live-current.json', 'q4-live-publication.lock'}
+    assert {k: v for k, v in after.items() if k not in mutable} == {
+        k: v for k, v in before.items() if k not in mutable}
     assert card_pointer.read_bytes() == card_pointer_bytes  # the baseline card snapshot pointer is retained

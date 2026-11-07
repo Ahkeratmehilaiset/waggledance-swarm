@@ -68,6 +68,22 @@ def test_writer_crossing_a_minute_boundary_is_validated_as_written(monkeypatch):
     assert result['status']=='WRITTEN' and len(calls)==1
 
 
+def test_card_expiring_at_next_minute_refuses_before_append(monkeypatch):
+    mod,claim,args,fx=setup(monkeypatch)
+    claim['valid_until_utc']='2026-11-01T10:01:00Z'
+    monkeypatch.setattr(mod.subprocess,'run',lambda *_a,**_kw:pytest.fail('must not append expiring card'))
+    with pytest.raises(mod.Refused):
+        mod.publish(enabled=True,claim=claim,**args)
+
+
+def test_two_minute_validity_survives_one_minute_rollover(monkeypatch):
+    mod,claim,args,fx=setup(monkeypatch)
+    claim['valid_until_utc']='2026-11-01T10:02:00Z'
+    monkeypatch.setattr(mod.subprocess,'run',lambda command,**_kw: receipt(
+        command,fx,change=lambda event,delivery: event.update(ts_utc='2026-11-01T10:01:59Z')))
+    assert mod.publish(enabled=True,claim=claim,**args)['status']=='WRITTEN'
+
+
 @pytest.mark.parametrize('fault',['uuid','session','payload','timestamp','timestamp_before','private','delivery','exception','interrupt'])
 def test_post_entry_failure_is_unknown_and_never_retried(monkeypatch,fault):
     mod,claim,args,fx=setup(monkeypatch);calls=[]

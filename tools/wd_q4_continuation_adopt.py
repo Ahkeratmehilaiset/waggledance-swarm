@@ -195,8 +195,17 @@ def run_once(*,enabled=False,baseline_path=None,baseline_sha256=None,manifest_sh
                 'watermark_record_sha256':receipt['watermark_record_sha256'],
                 'pointer_sha256':receipt['pointer_sha256'],'prior_pointer_sha256':prior,
                 'prior_selector_sha256':None if selector_raw is None else _sha(selector_raw)})
-            entered=True
-            marker_info=runner._create(marker,marker_raw)
+            # Share the runner's short admission lock window. Otherwise a
+            # runner can reserve its markers after verification but before
+            # adoption creates its own marker.
+            with private_state.locked_state(private,root,enabled=True):
+                with private_state._checkpoint_lock(root,0.2):
+                    if any(os.path.lexists(path) for path in (
+                            marker, private/'q4-cutoff.pending.json',
+                            private/private_state._PENDING, private/runner._PENDING, root/runner._PENDING)):
+                        raise _Pending()
+                    entered=True
+                    marker_info=runner._create(marker,marker_raw)
             runner._verify_own(marker,marker_raw,marker_info)
             result=update._publish(config,baseline,root,public,receipt)
             if receipt['status']=='partial_ready_prefix': result['coverage']='partial_ready_prefix'

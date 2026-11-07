@@ -7,7 +7,7 @@ param(
     [string] $BundleRoot='', [string] $ExpectedCommit='', [string] $ExpectedManifestSha256='',
     [string] $ConfigPath='', [string] $ExpectedConfigSha256='',
     [string] $RuntimePath='', [string] $ExpectedRuntimeSha256='',
-    [string] $ScratchRoot='', [string] $ExpectedHostSha256='',
+    [string] $ScratchRoot='', [string] $ExpectedHostSha256='', [string] $FinalizeAttempt='',
     [ValidateRange(1,1800)] [int] $TimeoutSeconds=1800
 )
 $ErrorActionPreference='Stop'
@@ -22,6 +22,7 @@ try {
         if ($pin -cnotmatch '^[0-9a-f]{64}$') { throw 'pin' }
     }
     if ($ExpectedCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'commit' }
+    if ($FinalizeAttempt -and $FinalizeAttempt -cnotmatch '^[0-9a-f]{64}$') { throw 'attempt' }
     function CheckedPath([string]$Path, [bool]$Directory=$false) {
         if ($Path -cnotmatch '^C:\\' -or $Path.Contains('%') -or $Path -match '(^|\\)\.\.?($|\\)') { throw 'path' }
         $full=[IO.Path]::GetFullPath($Path)
@@ -189,12 +190,14 @@ public static class WdQ4AdoptPendingV1 {
   }
 }
 '@ -ErrorAction Stop
+    if (-not $FinalizeAttempt) {
     . $jobHelper
     $jobArgs=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$worker,
         '-Manifest',$manifest,'-ManifestSha256',$ExpectedManifestSha256,'-Bootstrap',$bootstrap,
         '-BootstrapSha256',([string]$manifestData.files.'tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_bootstrap.py').ToLowerInvariant(),
         '-Python',$python,'-PythonSha256',$pythonPin,'-Config',$config,'-ConfigSha256',$ExpectedConfigSha256,
-        '-Runtime',$runtime,'-RuntimeSha256',$ExpectedRuntimeSha256)
+        '-Runtime',$runtime,'-RuntimeSha256',$ExpectedRuntimeSha256,
+        '-ExpectedHostSha256',$ExpectedHostSha256)
     $started=$true
     $job=Invoke-WdQ4ProcessJob -Executable $hostPath -Arguments $jobArgs -WorkingDirectory $bundle `
         -ScratchRoot $scratch -InputBytes ([byte[]]@()) -TimeoutSeconds $TimeoutSeconds -MaxOutputBytes 4096 -DetailedOutcome
@@ -205,6 +208,20 @@ public static class WdQ4AdoptPendingV1 {
     $lines=@($text.TrimEnd("`r","`n"))
     if ($lines.Count -ne 1 -or ([string]$lines[0]).Length -gt 256) { throw 'output' }
     $answer=[string]$lines[0] | ConvertFrom-Json -ErrorAction Stop
+    } else {
+        # Explicit continuation of an already drained Job; never start a child.
+        $started=$true
+        $priorPath=Join-Path $private ('q4-adopt-recovery-job-result-'+$FinalizeAttempt+'.json')
+        [void](CheckedPath $priorPath)
+        $priorBytes=[IO.File]::ReadAllBytes($priorPath)
+        if ($priorBytes.Length -eq 0 -or $priorBytes.Length -gt 65536) { throw 'receipt' }
+        $prior=[Text.Encoding]::ASCII.GetString($priorBytes) | ConvertFrom-Json -ErrorAction Stop
+        if ([string]$prior.attempt -cne $FinalizeAttempt -or [string]$prior.job_outcome -cne 'completed' -or
+            [string]$prior.job_cleanup -cne 'confirmed' -or [int]$prior.exit_code -ne 0) { throw 'receipt' }
+        $code=0
+        $answer=[PSCustomObject]@{ status=[string]$prior.status; attempt=[string]$prior.attempt;
+            marker_id=[string]$prior.marker_id; marker_sha256=[string]$prior.marker_sha256 }
+    }
     $keys=@($answer.PSObject.Properties.Name)
     if ($code -ne 0 -or $keys.Count -ne 4 -or
         @('status','attempt','marker_id','marker_sha256').Where({ $_ -cnotin $keys }).Count -ne 0 -or
@@ -285,9 +302,13 @@ public static class WdQ4AdoptPendingV1 {
             launcher_sha256=([string]$manifestData.files.'Invoke-WdQ4AdoptRecovery.ps1').ToLowerInvariant(); commit=$ExpectedCommit;
             status=[string]$answer.status; exit_code=$code; job_outcome='completed'; job_cleanup='confirmed'
         } | ConvertTo-Json -Compress))
-        $resultStream=[IO.File]::Open($resultPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
-        try { $resultStream.Write($resultBytes,0,$resultBytes.Length); $resultStream.Flush($true) }
-        finally { $resultStream.Dispose() }
+        if ($FinalizeAttempt) {
+            if ([Convert]::ToBase64String($priorBytes) -cne [Convert]::ToBase64String($resultBytes)) { throw 'receipt mismatch' }
+        } else {
+            $resultStream=[IO.File]::Open($resultPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+            try { $resultStream.Write($resultBytes,0,$resultBytes.Length); $resultStream.Flush($true) }
+            finally { $resultStream.Dispose() }
+        }
         [WdQ4AdoptPendingV1]::DeleteOwned($pendingStream.SafeFileHandle)
         $pendingStream.Dispose(); $pendingStream=$null
         if ([IO.File]::Exists($pendingPath)) { throw 'pending still exists' }

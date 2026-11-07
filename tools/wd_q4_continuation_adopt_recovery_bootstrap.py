@@ -86,8 +86,9 @@ def _parent_pins(manifest, config, runtime, config_pin, runtime_pin, host_pin):
 
 def _bootstrap(args):
     if (not sys.flags.isolated or not sys.flags.no_site or not sys.dont_write_bytecode or
-            len(args) != 11 or args[0] != '--enable' or args[1] != '--config' or args[3] != '--sha256'
-            or args[5] != '--manifest-sha256' or args[7] != '--runtime' or args[9] != '--runtime-sha256'):
+            len(args) != 13 or args[0] != '--enable' or args[1] != '--config' or args[3] != '--sha256'
+            or args[5] != '--manifest-sha256' or args[7] != '--runtime' or args[9] != '--runtime-sha256'
+            or args[11] != '--host-sha256' or _HEX.fullmatch(args[12]) is None):
         raise ValueError()
     config_path, config_pin, manifest_pin, runtime_path, runtime_pin = args[2], args[4], args[6], args[8], args[10]
     config = _doc(_read(config_path, config_pin, 65536))
@@ -156,8 +157,7 @@ def _bootstrap(args):
     reader_pin = str(files['tools-bootstrap/tools/wd_q4_owned_recovery_reader.py']).lower()
     _read(reader_path, reader_pin, 1024 * 1024)
     host = Path(os.environ['SYSTEMROOT']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
-    with host.open('rb') as stream:
-        host_pin = hashlib.file_digest(stream, 'sha256').hexdigest()
+    host_pin = args[12]
     _read(host, host_pin, 128 * 1024 * 1024)
     owner_pins = _parent_pins(manifest, config, runtime, config_pin, runtime_pin, host_pin)
     receipt_raw = _read(config['receipt_path'], config['receipt_sha256'], 65536)

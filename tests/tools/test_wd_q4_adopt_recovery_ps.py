@@ -167,3 +167,65 @@ def test_private_root_cannot_overlap_the_bundle(job):
     result=run_job(job,scratch)
     assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
     assert not (job['bundle']/'q4-adopt-recovery-job.pending.json').exists()
+
+def test_recovery_job_does_not_admit_while_private_lock_is_held(job):
+    from sandbox.mind.step2.reader_slot import reader_slot
+    prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
+    private=job['bundle'].parent/'private'; marker=private/'q4-adopt-recovery-job.pending.json'
+    with reader_slot(private/'prefix-private-state.lock',timeout_seconds=1):
+        result=run_job(job,scratch)
+    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    assert not marker.exists()
+
+def test_recovery_job_refuses_foreign_runner_pending(job):
+    prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
+    private=job['bundle'].parent/'private'; foreign=private/'.wd-q4-status-prefix-runner.pending'
+    foreign.write_bytes(b'foreign synthetic pending')
+    result=run_job(job,scratch)
+    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    assert foreign.read_bytes()==b'foreign synthetic pending'
+    assert not (private/'q4-adopt-recovery-job.pending.json').exists()
+
+@pytest.mark.parametrize('where,name',[
+    ('private','prefix-private-state.pending'),
+    ('private','.wd-q4-status-prefix-runner.pending'),
+    ('checkpoint','.wd-q4-status-prefix-runner.pending'),
+    ('private','q4-cutoff.pending.json'),
+    ('private','q4-continuation-orchestrator.pending.json'),
+    ('private','q4-continuation-orchestrator-job.pending.json'),
+    ('private','q4-live-update.pending.json'),
+    ('checkpoint','q4-prefix-fence.json'),
+])
+def test_each_competing_reservation_is_preserved_and_blocks_job(job,where,name):
+    prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
+    root=job['bundle'].parent/where; other=root/name
+    other.write_bytes(b'foreign synthetic reservation')
+    result=run_job(job,scratch)
+    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    assert other.read_bytes()==b'foreign synthetic reservation'
+    assert not (job['bundle'].parent/'private'/'q4-adopt-recovery-job.pending.json').exists()
+
+
+def test_recovery_job_does_not_admit_while_checkpoint_lock_is_held(job):
+    from sandbox.mind.step2.reader_slot import reader_slot
+    prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
+    checkpoint=job['bundle'].parent/'checkpoint'
+    with reader_slot(checkpoint/'q4-checkpoint.lock',timeout_seconds=1):
+        result=run_job(job,scratch)
+    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    assert not (job['bundle'].parent/'private'/'q4-adopt-recovery-job.pending.json').exists()
+
+
+def test_admission_locks_are_released_before_the_child(job):
+    prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
+    private=job['bundle'].parent/'private'; checkpoint=job['bundle'].parent/'checkpoint'
+    cli=job['bundle']/'tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_cli.py'
+    cli.write_text("def main(args):\n import msvcrt\n"
+        + " p=open("+repr(str(private/'prefix-private-state.lock'))+",'r+b'); p.seek(0); msvcrt.locking(p.fileno(),msvcrt.LK_NBLCK,1)\n"
+        + " q=open("+repr(str(checkpoint/'q4-checkpoint.lock'))+",'r+b'); q.seek(0); msvcrt.locking(q.fileno(),msvcrt.LK_NBLCK,1)\n"
+        + " q.seek(0); msvcrt.locking(q.fileno(),msvcrt.LK_UNLCK,1); q.close()\n"
+        + " p.seek(0); msvcrt.locking(p.fileno(),msvcrt.LK_UNLCK,1); p.close()\n"
+        + " print('{\"status\":\"NOT_ADOPTED\"}'); return 0\n",encoding='ascii')
+    repin_changed(job,['tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_cli.py'])
+    result=run_job(job,scratch)
+    assert result.returncode==0 and json.loads(result.stdout)=={'status':'NOT_ADOPTED'}

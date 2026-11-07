@@ -20,11 +20,13 @@ from contextlib import contextmanager
 import hashlib
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
 import stat
 import sys
+from time import monotonic as _monotonic
 
 MAX_CAPTURE = 16 * 1024 * 1024
 MAX_RAW = 8 * 1024 * 1024
@@ -48,7 +50,72 @@ class ConnectorRefused(ValueError):
 
 
 class ConnectorOutcomeUnknown(RuntimeError):
-    pass
+    def __init__(self, diagnostic=None):
+        super().__init__("p10_connector_state_unknown")
+        self.diagnostic = _closed_diagnostic(diagnostic)
+
+
+_PHASES = frozenset({"UNKNOWN", "CONFIG_READ", "INPUT_VALIDATION", "RUNTIME_VERIFICATION",
+    "INPUTS_PINNED", "CAPTURE_MAPPING", "OUTPUT_CREATED", "STAGED", "GUARD_PROVISIONING",
+    "CALLER_ENTERED", "CALLER_RETURNED", "RESULT_VALIDATION", "TARGET_VALIDATION", "RESULT_WRITE"})
+
+
+def _clock():
+    try:
+        value = _monotonic()
+        if type(value) in (int, float) and math.isfinite(value):
+            return value
+    except BaseException:
+        pass
+    return None
+
+
+class _Phase(dict):
+    """Per-call observation only: a phase never proves query entry or cleanup."""
+    def __init__(self, phase):
+        super().__init__(phase=phase)
+        self.started = self.phase_started = _clock()
+
+    def __setitem__(self, key, value):
+        if key == "phase":
+            self.phase_started = _clock()
+        super().__setitem__(key, value)
+
+
+def _word(value, choices):
+    return value if type(value) is str and value in choices else "UNKNOWN"
+
+
+def _duration(value):
+    return round(value, 3) if type(value) in (int, float) and math.isfinite(value) and value >= 0 else None
+
+
+def _closed_diagnostic(value):
+    data = value if isinstance(value, dict) else {}
+    phase = _word(data.get("phase"), _PHASES)
+    elapsed, phase_elapsed = data.get("elapsed_ms"), data.get("phase_elapsed_ms")
+    if isinstance(value, _Phase):
+        now = _clock()
+        elapsed = (now - value.started) * 1000 if now is not None and value.started is not None else None
+        phase_elapsed = ((now - value.phase_started) * 1000
+                         if now is not None and value.phase_started is not None and phase != "UNKNOWN" else None)
+    code = data.get("caller_exit_code")
+    return {"schema": "wd.q4-p10-phase-receipt.v1", "phase": phase,
+        "caller_exit_code": code if type(code) is int and code in (0, 2, 3, 4, 130) else None,
+        "reported_status": _word(data.get("reported_status"), ("UNKNOWN", "OFF", "REFUSED", "VALIDATED")),
+        "reported_cleanup": _word(data.get("reported_cleanup"), ("UNKNOWN", "unknown", "chain_confirmed")),
+        "failure_kind": _word(data.get("failure_kind"), ("UNKNOWN", "NONE", "REFUSED", "TIMEOUT", "INTERRUPTED", "IO_ERROR")),
+        "elapsed_ms": _duration(elapsed), "phase_elapsed_ms": _duration(phase_elapsed)}
+
+
+def _failure_kind(error):
+    if isinstance(error, (KeyboardInterrupt, SystemExit)):
+        return "INTERRUPTED"
+    if isinstance(error, TimeoutError):
+        return "TIMEOUT"
+    if isinstance(error, ConnectorRefused):
+        return "REFUSED"
+    return "IO_ERROR" if isinstance(error, OSError) else "UNKNOWN"
 
 
 def _check(ok):
@@ -272,7 +339,30 @@ def _verified_runtime(config):
     return root, manifest
 
 
-def _run(config):
+def _invoke_guarded_caller(caller, staged, manifest_sha256, mode, *, diagnostic):
+    query = _raw(synthetic_probe_spec()["query"])
+    old_stdin, old_stdout, old_stderr = sys.stdin, sys.stdout, sys.stderr
+    stdout, stderr = io.StringIO(), io.StringIO()
+    sys.stdin = io.TextIOWrapper(io.BytesIO(query), encoding="ascii")
+    sys.stdout, sys.stderr = stdout, stderr
+    try:
+        with _frozen_caller_environment(staged, manifest_sha256, mode):
+            diagnostic["phase"] = "CALLER_ENTERED"
+            code = caller.main(["--enabled"])
+            diagnostic["phase"] = "CALLER_RETURNED"
+            diagnostic["caller_exit_code"] = code if type(code) is int and code in (0, 2, 3, 4, 130) else None
+    finally:
+        sys.stdin, sys.stdout, sys.stderr = old_stdin, old_stdout, old_stderr
+    _check(type(code) is int and code == 0 and not stderr.getvalue() and len(stdout.getvalue()) <= 65536)
+    result = _json(stdout.getvalue().encode("ascii"))
+    _check(type(result) is dict)
+    diagnostic["reported_status"] = _word(result.get("status"), ("UNKNOWN", "OFF", "REFUSED", "VALIDATED"))
+    diagnostic["reported_cleanup"] = _word(result.get("cleanup"), ("UNKNOWN", "unknown", "chain_confirmed"))
+    return result
+
+
+def _run(config, *, _diagnostic):
+    _diagnostic["phase"] = "INPUT_VALIDATION"
     _check(type(config) is dict and set(config) == _CONFIG
            and config["schema"] == "wd.q4-p10-guarded-config.v1" and config["approved_to_execute"] is True)
     _state_pin(config)
@@ -280,8 +370,10 @@ def _run(config):
     output = _path(config["output_root"])
     audit = Path(__file__).resolve().parents[1] / ".codex-audit"
     _check(audit in output.parents and not output.exists())
+    _diagnostic["phase"] = "RUNTIME_VERIFICATION"
     root, runtime_manifest = _verified_runtime(config)
     _check(root != output and root not in output.parents and output not in root.parents)
+    _diagnostic["phase"] = "INPUTS_PINNED"
     policy, public, fleet = (_read(config[key], 1024 * 1024) for key in ("policy", "public_policy", "fleet"))
     capture = _read(config["capture"], MAX_CAPTURE)
     request = _json(_read(config["request_template"], 65536))
@@ -306,6 +398,7 @@ def _run(config):
     from tools import wd_q4_lane_caller_cli as caller
     from tools import wd_q4_guard_state_provision as provision
     roster, _ = roster_producer.build_roster_snapshot(fleet, _sha(fleet), enabled=True)
+    _diagnostic["phase"] = "CAPTURE_MAPPING"
     parts = capture_parts(capture, expected_capture_sha256=config["capture"]["sha256"],
                            policy_bytes=policy, public_policy_bytes=public, roster_bytes=roster)
     snapshot = transport.fixed_snapshot_bundle(**parts)
@@ -323,6 +416,7 @@ def _run(config):
            and fixed["runtime_manifest_sha256"] == _sha(runtime_manifest)
            and fixed["verifier_sha256"] == config["verifier_sha256"])
     output.mkdir()
+    _diagnostic["phase"] = "OUTPUT_CREATED"
     stage = output / "generations" / "stage"
     stage.mkdir(parents=True)
     for name, data in (("policy.json", policy), ("public-policy.json", public), ("roster.json", roster),
@@ -354,31 +448,23 @@ def _run(config):
         roster_sha256=pins["roster_sha256"], expected_public_policy_sha256=pins["public_policy_sha256"],
         expected_source_sha256=pins["source_anchor_sha256"], expected_encoder_sha256=pins["encoder_sha256"])
     _exclusive(output / "request.json", _raw(request))
+    _diagnostic["phase"] = "STAGED"
     staged = _compose_staged(composer, config=config, stage=stage, bundle=bundle,
                               manifest=manifest, public_plan=public_raw)
     # Synthetic guard ancestors only; never point this at the live fleet root.
+    _diagnostic["phase"] = "GUARD_PROVISIONING"
     (guard_root / "shared/.codex-audit").mkdir(parents=True)
     provision.provision_guard_state(enabled=True, fleet_bytes=fleet, expected_fleet_sha256=_sha(fleet))
     state = guard_root / "shared/.codex-audit/codex-tools-1/q4-caller-state"
     _check(not list(state.iterdir()))
-    probe = synthetic_probe_spec()
-    query = _raw(probe["query"])
-    old_stdin, old_stdout, old_stderr = sys.stdin, sys.stdout, sys.stderr
-    stdout, stderr = io.StringIO(), io.StringIO()
-    sys.stdin = io.TextIOWrapper(io.BytesIO(query), encoding="ascii")
-    sys.stdout, sys.stderr = stdout, stderr
-    try:
-        with _frozen_caller_environment(staged, _sha(manifest), config["live_mode"]):
-            code = caller.main(["--enabled"])
-    finally:
-        sys.stdin, sys.stdout, sys.stderr = old_stdin, old_stdout, old_stderr
-    _check(type(code) is int and code == 0 and not stderr.getvalue() and len(stdout.getvalue()) <= 65536)
-    result = _json(stdout.getvalue().encode("ascii"))
+    result = _invoke_guarded_caller(caller, staged, _sha(manifest), config["live_mode"], diagnostic=_diagnostic)
+    _diagnostic["phase"] = "RESULT_VALIDATION"
     _check(result["status"] == "VALIDATED" and result["cleanup"] == "chain_confirmed"
            and result["lane"] == "codex-tools-1" and result["answer"]["binding"] == pins
            and result["inner_status"] == "ANSWER" and not list(state.iterdir())
            and _read(current_desc, 65536) == parts["pointer_bytes"])
-    target = probe["target_text"]
+    _diagnostic["phase"] = "TARGET_VALIDATION"
+    target = synthetic_probe_spec()["target_text"]
     _check(any(item["stored_text"] == target for item in result["answer"]["results"]))
     return {"status": "GUARDED_SYNTHETIC_ANSWER", "cleanup": result["cleanup"],
             "answer": result, "staged": staged, "child_hook_coverage": "UNKNOWN",
@@ -389,26 +475,40 @@ def run_guarded_candidate(config):
     """Fresh isolated worker only. Failure after any write is UNKNOWN, never retried."""
     _check(type(config) is dict and config.get("approved_to_execute") is True)
     old_path, old_env = list(sys.path), dict(os.environ)
+    diagnostic = _Phase("INPUT_VALIDATION")
     try:
-        return _run(config)
-    except BaseException:
-        pass
+        return _run(config, _diagnostic=diagnostic)
+    except BaseException as error:
+        diagnostic["failure_kind"] = _failure_kind(error)
     finally:
         sys.path[:] = old_path
         os.environ.clear()
         os.environ.update(old_env)
-    raise ConnectorOutcomeUnknown("p10_connector_state_unknown") from None
+    raise ConnectorOutcomeUnknown(diagnostic) from None
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    diagnostic = _Phase("CONFIG_READ")
     try:
-        _check(len(sys.argv) == 4 and sys.argv[1] == "--config")
-        path = _path(sys.argv[2])
-        config = _json(_read({"path": str(path), "bytes": path.stat().st_size, "sha256": sys.argv[3]}, 65536))
+        args = sys.argv[1:] if argv is None else argv
+        _check(type(args) is list and len(args) == 3 and args[0] == "--config")
+        path = _path(args[1])
+        config = _json(_read({"path": str(path), "bytes": path.stat().st_size, "sha256": args[2]}, 65536))
         result = run_guarded_candidate(config)
+        diagnostic["phase"] = "RESULT_WRITE"
         output = _path(config["output_root"]) / "RESULT.json"
         _exclusive(output, _raw(result))
         sys.stdout.write('{"status":"GUARDED_SYNTHETIC_ANSWER","authority":"none"}\n')
-    except BaseException:
-        sys.stdout.write('{"status":"CONNECTOR_NOT_COMPLETED","authority":"none"}\n')
-        raise SystemExit(2)
+        return 0
+    except BaseException as error:
+        if isinstance(error, ConnectorOutcomeUnknown):
+            receipt = _closed_diagnostic(error.diagnostic)
+        else:
+            diagnostic["failure_kind"] = _failure_kind(error)
+            receipt = _closed_diagnostic(diagnostic)
+        sys.stdout.write(_raw({"status": "CONNECTOR_NOT_COMPLETED", "authority": "none", "diagnostic": receipt}).decode("ascii") + "\n")
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

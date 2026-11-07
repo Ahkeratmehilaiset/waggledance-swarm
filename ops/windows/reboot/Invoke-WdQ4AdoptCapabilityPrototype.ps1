@@ -5,7 +5,7 @@
 param(
     [switch]$Run,
     [string]$AuditRoot='',
-    [ValidateSet('good','missing','closed','foreign','notjob','readonly')][string]$Scenario='good',
+    [ValidateSet('good','missing','closed','foreign','notjob','readonly','unsafejob','deletecap','killparent','mutate','grandchild','breakaway','silentbreakaway','wrongattempt')][string]$Scenario='good',
     [string]$Python='', [string]$PythonSha256='', [string]$ProbeSha256='',
     [string]$Manifest='', [string]$ManifestSha256=''
 )
@@ -34,9 +34,10 @@ try {
     }
     $document=Get-Content -LiteralPath $Manifest -Raw -Encoding UTF8 | ConvertFrom-Json
     $keys=@($document.PSObject.Properties.Name)
-    if ($keys.Count -ne 3 -or @($keys | Where-Object { $_ -cnotin @('schema','python_sha256','probe_sha256') }).Count -ne 0 -or
+    if ($keys.Count -ne 5 -or @($keys | Where-Object { $_ -cnotin @('schema','python_sha256','probe_sha256','attempt','marker_sha256') }).Count -ne 0 -or
         [string]$document.schema -cne 'wd.synthetic-adopt-capability.v1' -or
-        [string]$document.python_sha256 -cne $PythonSha256 -or [string]$document.probe_sha256 -cne $ProbeSha256) { throw 'manifest' }
+        [string]$document.python_sha256 -cne $PythonSha256 -or [string]$document.probe_sha256 -cne $ProbeSha256 -or
+        [string]$document.attempt -cnotmatch '^[0-9a-f]{64}$' -or [string]$document.marker_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'manifest' }
     if ($null -ne ('WdQ4CapabilityPrototypeV1' -as [type])) { throw 'type' }
     Add-Type -TypeDefinition @'
 using System;
@@ -85,18 +86,21 @@ public static class WdQ4CapabilityPrototypeV1 {
     static IntPtr Dup(IntPtr h,uint access,bool same) {
         IntPtr result; Check(DuplicateHandle(GetCurrentProcess(),h,GetCurrentProcess(),out result,access,true,same?2u:0u)); return result;
     }
-    public static int Run(string root,string python,string probe,string scenario) {
-        IntPtr job=IntPtr.Zero,foreignJob=IntPtr.Zero,markerDup=IntPtr.Zero,jobDup=IntPtr.Zero;
-        IntPtr process=IntPtr.Zero,thread=IntPtr.Zero,attrs=IntPtr.Zero,list=IntPtr.Zero,env=IntPtr.Zero;
+    public static int Run(string root,string python,string probe,string scenario,string manifest,string manifestSha,string attempt,string markerSha) {
+        IntPtr job=IntPtr.Zero,markerDup=IntPtr.Zero;
+        IntPtr process=IntPtr.Zero,thread=IntPtr.Zero,attrs=IntPtr.Zero,list=IntPtr.Zero,jobList=IntPtr.Zero,env=IntPtr.Zero;
         bool attrsReady=false,assigned=false; FileStream marker=null,foreign=null;
         try {
             string path=Path.Combine(root,"synthetic-capability-marker.bin");
             var mh=CreateFile(path,0xC0010000,1,IntPtr.Zero,1,0x80000080,IntPtr.Zero);
             if(mh.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
             marker=new FileStream(mh,FileAccess.ReadWrite);
-            byte[] bytes=Encoding.ASCII.GetBytes("synthetic capability only\n"); marker.Write(bytes,0,bytes.Length); marker.Flush(true);
+            byte[] bytes=Encoding.ASCII.GetBytes("wd.synthetic-adopt-marker:"+attempt+"\n");
+            if(Sha(bytes)!=markerSha) throw new InvalidOperationException();
+            marker.Write(bytes,0,bytes.Length); marker.Flush(true);
+            if(scenario=="wrongattempt") { marker.Position=0; marker.WriteByte((byte)'X'); marker.Flush(true); }
             job=CreateJobObject(IntPtr.Zero,null); Check(job!=IntPtr.Zero);
-            var limits=new EXT(); limits.basic.flags=0x2000;
+            var limits=new EXT(); limits.basic.flags=scenario=="unsafejob"?0u:scenario=="breakaway"?0x2800u:scenario=="silentbreakaway"?0x3000u:0x2000u;
             Check(SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(typeof(EXT))));
             IntPtr chosen=marker.SafeFileHandle.DangerousGetHandle();
             if(scenario=="foreign") {
@@ -105,28 +109,37 @@ public static class WdQ4CapabilityPrototypeV1 {
                 foreign=new FileStream(fh,FileAccess.ReadWrite); foreign.Write(bytes,0,bytes.Length); foreign.Flush(true);
                 chosen=foreign.SafeFileHandle.DangerousGetHandle();
             }
-            jobDup=Dup(job,0,true);
-            if(scenario=="notjob") {
-                Check(CloseHandle(jobDup)); jobDup=IntPtr.Zero;
-                foreignJob=CreateJobObject(IntPtr.Zero,null); Check(foreignJob!=IntPtr.Zero); jobDup=Dup(foreignJob,0,true);
+            // Give the child only read/write data, read attributes and
+            // synchronize. It must never inherit DELETE or the Job handle.
+            if(scenario!="missing") {
+                uint access=scenario=="readonly"?0x120089u:0x100083u;
+                markerDup=Dup(chosen,access,scenario=="deletecap");
             }
-            if(scenario!="missing") markerDup=Dup(chosen,scenario=="readonly"?0x120089u:0u,scenario!="readonly");
             IntPtr childMarker=markerDup;
             if(scenario=="closed") { Check(CloseHandle(markerDup)); markerDup=IntPtr.Zero; }
-            var inherited=new List<IntPtr>(); inherited.Add(jobDup); if(markerDup!=IntPtr.Zero) inherited.Add(markerDup);
-            IntPtr size=IntPtr.Zero; InitializeProcThreadAttributeList(IntPtr.Zero,1,0,ref size);
+            int count=(scenario=="notjob"?0:1)+(markerDup!=IntPtr.Zero?1:0);
+            if(count==0) throw new InvalidOperationException();
+            IntPtr size=IntPtr.Zero; InitializeProcThreadAttributeList(IntPtr.Zero,count,0,ref size);
             if(size==IntPtr.Zero) throw new InvalidOperationException();
-            attrs=Marshal.AllocHGlobal(size); Check(InitializeProcThreadAttributeList(attrs,1,0,ref size)); attrsReady=true;
-            list=Marshal.AllocHGlobal(IntPtr.Size*inherited.Count);
-            for(int i=0;i<inherited.Count;i++) Marshal.WriteIntPtr(list,i*IntPtr.Size,inherited[i]);
-            Check(UpdateProcThreadAttribute(attrs,0,new IntPtr(0x00020002),list,new IntPtr(IntPtr.Size*inherited.Count),IntPtr.Zero,IntPtr.Zero));
+            attrs=Marshal.AllocHGlobal(size); Check(InitializeProcThreadAttributeList(attrs,count,0,ref size)); attrsReady=true;
+            if(markerDup!=IntPtr.Zero) {
+                list=Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(list,markerDup);
+                Check(UpdateProcThreadAttribute(attrs,0,new IntPtr(0x00020002),list,new IntPtr(IntPtr.Size),IntPtr.Zero,IntPtr.Zero));
+            }
+            if(scenario!="notjob") {
+                jobList=Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(jobList,job);
+                Check(UpdateProcThreadAttribute(attrs,0,new IntPtr(0x0002000D),jobList,new IntPtr(IntPtr.Size),IntPtr.Zero,IntPtr.Zero));
+            }
             var si=new SIX {startup=new SI {cb=Marshal.SizeOf(typeof(SIX))},attributes=attrs};
-            string command=Q(python)+" -I -S -B "+Q(probe)+" --child "+childMarker.ToInt64()+" "+jobDup.ToInt64()+" "+Q(path)+" "+Sha(bytes);
+            string mode=scenario=="killparent"?"linger":scenario=="mutate"?"mutate":scenario=="grandchild"?"grandchild":"once";
+            string command=Q(python)+" -I -S -B "+Q(probe)+" --child "+childMarker.ToInt64()+" "+Q(path)+" "+Q(manifest)+" "+manifestSha+" "+mode;
             string system=Environment.GetEnvironmentVariable("SYSTEMROOT");
             env=Marshal.StringToHGlobalUni("SYSTEMROOT="+system+"\0WINDIR="+system+"\0TEMP="+root+"\0TMP="+root+"\0\0");
-            PI pi; Check(CreateProcessW(python,new StringBuilder(command),IntPtr.Zero,IntPtr.Zero,true,0x08080404,env,root,ref si,out pi));
+            PI pi; Check(CreateProcessW(python,new StringBuilder(command),IntPtr.Zero,IntPtr.Zero,markerDup!=IntPtr.Zero,0x08080404,env,root,ref si,out pi));
             process=pi.process; thread=pi.thread;
-            Check(AssignProcessToJobObject(job,process)); assigned=true;
+            assigned=scenario!="notjob";
+            // Inherited duplicates are closed immediately in the parent.
+            if(markerDup!=IntPtr.Zero) { Check(CloseHandle(markerDup)); markerDup=IntPtr.Zero; }
             if(ResumeThread(thread)==UInt32.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error());
             if(WaitForSingleObject(process,15000)!=0) throw new TimeoutException();
             uint code; Check(GetExitCodeProcess(process,out code));
@@ -136,16 +149,15 @@ public static class WdQ4CapabilityPrototypeV1 {
             if(job!=IntPtr.Zero) TerminateJobObject(job,124);
             if(process!=IntPtr.Zero && !assigned) { TerminateProcess(process,125); WaitForSingleObject(process,2000); }
             if(thread!=IntPtr.Zero) CloseHandle(thread); if(process!=IntPtr.Zero) CloseHandle(process);
-            if(markerDup!=IntPtr.Zero) CloseHandle(markerDup); if(jobDup!=IntPtr.Zero) CloseHandle(jobDup);
-            if(foreignJob!=IntPtr.Zero) CloseHandle(foreignJob); if(job!=IntPtr.Zero) CloseHandle(job);
+            if(markerDup!=IntPtr.Zero) CloseHandle(markerDup); if(job!=IntPtr.Zero) CloseHandle(job);
             if(foreign!=null) foreign.Dispose(); if(marker!=null) marker.Dispose();
             if(attrsReady) DeleteProcThreadAttributeList(attrs); if(attrs!=IntPtr.Zero) Marshal.FreeHGlobal(attrs);
-            if(list!=IntPtr.Zero) Marshal.FreeHGlobal(list); if(env!=IntPtr.Zero) Marshal.FreeHGlobal(env);
+            if(list!=IntPtr.Zero) Marshal.FreeHGlobal(list); if(jobList!=IntPtr.Zero) Marshal.FreeHGlobal(jobList); if(env!=IntPtr.Zero) Marshal.FreeHGlobal(env);
         }
     }
 }
 '@ -ErrorAction Stop
-    $code=[WdQ4CapabilityPrototypeV1]::Run($audit,$Python,$probe,$Scenario)
+    $code=[WdQ4CapabilityPrototypeV1]::Run($audit,$Python,$probe,$Scenario,$manifestFull,$ManifestSha256,[string]$document.attempt,[string]$document.marker_sha256)
     if ($code -eq 0) { [Console]::Out.WriteLine('{"status":"CAPABILITY_VALID"}'); exit 0 }
     [Console]::Out.WriteLine('{"status":"REFUSED"}'); exit 2
 } catch {

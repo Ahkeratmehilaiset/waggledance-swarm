@@ -7,24 +7,30 @@ outside this cooperative proof.
 import ctypes
 from ctypes import wintypes
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
+import time
 
 
-def _valid(marker_number, job_number, marker_path, expected_sha):
-    if os.name!='nt' or not re.fullmatch(r'[0-9a-f]{64}',expected_sha):
+def _valid(marker_number, marker_path, manifest_path, expected_manifest_sha):
+    if os.name!='nt' or not re.fullmatch(r'[0-9a-f]{64}',expected_manifest_sha):
         return False
-    marker_number=int(marker_number); job_number=int(job_number)
-    if not 0 < marker_number < 2**64 or not 0 < job_number < 2**64: return False
+    marker_number=int(marker_number)
+    if not 0 < marker_number < 2**64: return False
     kernel=ctypes.WinDLL('kernel32',use_last_error=True)
     ntdll=ctypes.WinDLL('ntdll')
     handle=ctypes.c_void_p; dword=wintypes.DWORD
     kernel.GetCurrentProcess.restype=handle
     kernel.GetFileType.argtypes=[handle]; kernel.GetFileType.restype=dword
+    kernel.SetHandleInformation.argtypes=[handle,dword,dword]; kernel.SetHandleInformation.restype=wintypes.BOOL
     kernel.IsProcessInJob.argtypes=[handle,handle,ctypes.POINTER(wintypes.BOOL)]
     kernel.IsProcessInJob.restype=wintypes.BOOL
+    kernel.QueryInformationJobObject.argtypes=[handle,ctypes.c_int,handle,dword,ctypes.POINTER(dword)]
+    kernel.QueryInformationJobObject.restype=wintypes.BOOL
     kernel.CreateFileW.argtypes=[wintypes.LPCWSTR,dword,dword,handle,dword,dword,handle]
     kernel.CreateFileW.restype=handle
     kernel.GetFileInformationByHandleEx.argtypes=[handle,ctypes.c_int,handle,dword]
@@ -34,17 +40,33 @@ def _valid(marker_number, job_number, marker_path, expected_sha):
     kernel.CloseHandle.argtypes=[handle]; kernel.CloseHandle.restype=wintypes.BOOL
     ntdll.NtQueryObject.argtypes=[handle,ctypes.c_int,handle,dword,ctypes.POINTER(dword)]
     ntdll.NtQueryObject.restype=ctypes.c_long
-    marker=handle(marker_number); job=handle(job_number)
+    marker=handle(marker_number)
     class FileId(ctypes.Structure):
         _fields_=[('volume',ctypes.c_uint64),('identifier',ctypes.c_ubyte*16)]
     if kernel.GetFileType(marker)!=1: return False
+    # Do not pass the marker capability to a later child process.
+    if not kernel.SetHandleInformation(marker,1,0): return False
     info=(ctypes.c_ubyte*56)(); returned=dword()
     status=ntdll.NtQueryObject(marker,0,info,ctypes.sizeof(info),ctypes.byref(returned))
     if status!=0: return False
     granted=int.from_bytes(bytes(info[4:8]),'little')
-    if (granted & 0x10002)!=0x10002: return False  # DELETE and FILE_WRITE_DATA
+    if not (granted & 0x2) or (granted & 0x10000): return False  # WRITE_DATA required, DELETE forbidden
     in_job=wintypes.BOOL()
-    if not kernel.IsProcessInJob(kernel.GetCurrentProcess(),job,ctypes.byref(in_job)) or not in_job.value: return False
+    if not kernel.IsProcessInJob(kernel.GetCurrentProcess(),None,ctypes.byref(in_job)) or not in_job.value: return False
+    class Basic(ctypes.Structure):
+        _fields_=[('process_time',ctypes.c_int64),('job_time',ctypes.c_int64),('flags',dword),
+                  ('minimum',ctypes.c_size_t),('maximum',ctypes.c_size_t),('active',dword),
+                  ('affinity',ctypes.c_size_t),('priority',dword),('scheduling',dword)]
+    class Io(ctypes.Structure):
+        _fields_=[(str(i),ctypes.c_uint64) for i in range(6)]
+    class Extended(ctypes.Structure):
+        _fields_=[('basic',Basic),('io',Io),('process_memory',ctypes.c_size_t),('job_memory',ctypes.c_size_t),
+                  ('peak_process',ctypes.c_size_t),('peak_job',ctypes.c_size_t)]
+    limits=Extended(); size=dword()
+    # NULL queries the immediate Job without inheriting a keep-alive Job handle.
+    if not kernel.QueryInformationJobObject(None,9,ctypes.byref(limits),ctypes.sizeof(limits),ctypes.byref(size)):
+        return False
+    if not (limits.basic.flags & 0x2000) or (limits.basic.flags & (0x800|0x1000)): return False
     original=FileId()
     if not kernel.GetFileInformationByHandleEx(marker,18,ctypes.byref(original),ctypes.sizeof(original)): return False
     path=Path(marker_path)
@@ -55,6 +77,30 @@ def _valid(marker_number, job_number, marker_path, expected_sha):
     for parent in (path,*path.parents):
         info_stat=os.lstat(parent)
         if getattr(info_stat,'st_file_attributes',0)&0x400: return False
+    manifest=Path(manifest_path)
+    if not manifest.is_absolute() or not os.path.samefile(manifest.parent,path.parent): return False
+    manifest_stat=os.lstat(manifest)
+    if getattr(manifest_stat,'st_file_attributes',0)&0x400 or manifest_stat.st_size>65536: return False
+    with manifest.open('rb') as stream:
+        before=os.fstat(stream.fileno()); raw=stream.read(65537); after=os.fstat(stream.fileno())
+    if (len(raw)!=manifest_stat.st_size or not os.path.samestat(manifest_stat,before) or
+            not os.path.samestat(before,after) or not os.path.samestat(after,os.lstat(manifest)) or
+            hashlib.sha256(raw).hexdigest()!=expected_manifest_sha): return False
+    def unique(pairs):
+        result={}
+        for key,value in pairs:
+            if key in result: raise ValueError('duplicate')
+            result[key]=value
+        return result
+    value=json.loads(raw,object_pairs_hook=unique)
+    if (type(value) is not dict or set(value)!={'schema','python_sha256','probe_sha256','attempt','marker_sha256'} or
+            value['schema']!='wd.synthetic-adopt-capability.v1' or
+            not re.fullmatch(r'[0-9a-f]{64}',value['attempt']) or
+            not re.fullmatch(r'[0-9a-f]{64}',value['marker_sha256']) or
+            value['python_sha256']!=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest() or
+            value['probe_sha256']!=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()): return False
+    expected_marker=('wd.synthetic-adopt-marker:'+value['attempt']+'\n').encode('ascii')
+    if hashlib.sha256(expected_marker).hexdigest()!=value['marker_sha256']: return False
     other=kernel.CreateFileW(str(path),0x80000000,7,None,3,0x80,None)
     if other in (None,ctypes.c_void_p(-1).value): return False
     try:
@@ -63,7 +109,7 @@ def _valid(marker_number, job_number, marker_path, expected_sha):
         if original.volume!=observed.volume or bytes(original.identifier)!=bytes(observed.identifier): return False
         buffer=ctypes.create_string_buffer(4097); count=dword()
         if not kernel.ReadFile(other,buffer,4097,ctypes.byref(count),None) or count.value>4096: return False
-        return hashlib.sha256(buffer.raw[:count.value]).hexdigest()==expected_sha
+        return buffer.raw[:count.value]==expected_marker
     finally:
         kernel.CloseHandle(other)
 
@@ -73,10 +119,38 @@ def main(argv=None):
     if not args:
         print('{"status":"OFF"}')
         return 0
-    if len(args)!=5 or args[0]!='--child' or not (sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode):
+    if len(args)==2 and args[0]=='--grandchild' and sys.flags.isolated and sys.flags.no_site:
+        try:
+            kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+            kernel.GetFileType.argtypes=[ctypes.c_void_p]; kernel.GetFileType.restype=wintypes.DWORD
+            return 2 if kernel.GetFileType(ctypes.c_void_p(int(args[1])))==1 else 0
+        except BaseException:
+            return 0
+    if (len(args)!=6 or args[0]!='--child' or args[5] not in ('once','linger','mutate','grandchild') or
+            not (sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode)):
         return 2
     try:
-        return 0 if _valid(*args[1:]) else 2
+        if not _valid(*args[1:5]): return 2
+        if args[5]=='mutate':
+            kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+            kernel.SetFilePointerEx.argtypes=[ctypes.c_void_p,ctypes.c_int64,ctypes.c_void_p,wintypes.DWORD]
+            kernel.WriteFile.argtypes=[ctypes.c_void_p,ctypes.c_void_p,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD),ctypes.c_void_p]
+            count=wintypes.DWORD(); data=ctypes.create_string_buffer(b'X')
+            if not kernel.SetFilePointerEx(ctypes.c_void_p(int(args[1])),0,None,0): return 2
+            if not kernel.WriteFile(ctypes.c_void_p(int(args[1])),data,1,ctypes.byref(count),None) or count.value!=1: return 2
+        if args[5]=='grandchild':
+            result=subprocess.run([sys.executable,'-I','-S','-B',__file__,'--grandchild',args[1]],
+                stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,close_fds=False,timeout=10)
+            if result.returncode!=0: return 2
+        # A persistent marker or manifest edit between initial validation and
+        # this decision is refused. No production recovery lock is claimed.
+        if not _valid(*args[1:5]): return 2
+        if args[5]=='linger':
+            ready=Path(args[2]).parent/'synthetic-child-ready.json'
+            with ready.open('x',encoding='ascii') as stream:
+                json.dump({'pid':os.getpid()},stream); stream.flush(); os.fsync(stream.fileno())
+            time.sleep(30)
+        return 0
     except BaseException:
         return 2
 

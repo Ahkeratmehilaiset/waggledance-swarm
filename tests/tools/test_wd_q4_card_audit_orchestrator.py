@@ -143,7 +143,7 @@ def test_real_plan_and_composer_from_verified_synthetic_c2(materialize, tmp_path
     assert not (tmp_path / 'WD_Q4_DESCRIPTOR_CURRENT.json').exists()
 
 
-@pytest.mark.parametrize('fault', [None, 'finish_pin', 'interrupted'])
+@pytest.mark.parametrize('fault', [None, 'finish_pin', 'interrupted', 'wrapper_tamper'])
 def test_full_synthetic_chain_uses_real_writers_and_fixture_current(materialize, tmp_path, monkeypatch, fault):
     pytest.importorskip('faiss')
     from tools import wd_q4_lane_link
@@ -185,6 +185,12 @@ def test_full_synthetic_chain_uses_real_writers_and_fixture_current(materialize,
         def interrupted(**kwargs):
             raise KeyboardInterrupt()
         monkeypatch.setattr(mod, '_finish', interrupted)
+        with pytest.raises(mod.Unknown):
+            mod.run(enabled=True, request_path=str(path), request_sha256=pin)
+        assert list(out.iterdir()) and not (out / 'stage' / 'candidate-pointer.json').exists()
+        return
+    if fault == 'wrapper_tamper':
+        (Path(case['expected_bundle']) / 'Invoke-WdQ4Query.ps1').write_bytes(b'tampered synthetic wrapper')
         with pytest.raises(mod.Unknown):
             mod.run(enabled=True, request_path=str(path), request_sha256=pin)
         assert list(out.iterdir()) and not (out / 'stage' / 'candidate-pointer.json').exists()

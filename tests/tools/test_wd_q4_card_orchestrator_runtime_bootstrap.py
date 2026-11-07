@@ -177,6 +177,24 @@ def test_concurrent_reuse_has_only_one_consumer(case):
     assert sorted(item.returncode for item in results)==[0,2]
 
 
+@pytest.mark.parametrize('fault',['request_binding','scratch_binding','dead_launcher'])
+def test_token_rejects_stale_or_unbound_evidence(case,fault,tmp_path):
+    token=issue_token(case); path=Path(token[0]); document=json.loads(path.read_bytes())
+    if fault=='request_binding': document['request_sha256']='0'*64
+    if fault=='scratch_binding': document['scratch_root']=str(tmp_path)
+    if fault=='dead_launcher':
+        child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'])
+        try:
+            document['launcher_pid']=child.pid
+            document['launcher_creation_filetime']=creation_filetime(child.pid)
+        finally:
+            child.terminate(); child.wait(timeout=10)
+    path.write_bytes(raw(document)); token=(str(path),sha(path.read_bytes()))
+    result=execute(case,flags=('-S','-B'),token=token)
+    assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
+    assert path.exists() and not Path(str(path)+'.used').exists()
+
+
 def test_stdlib_precedes_packaged_top_level_module(case):
     (case['code']/'fractions.py').write_text("raise RuntimeError('shadowed stdlib')\n", encoding='ascii')
     cli = case['code']/'tools'/CLI

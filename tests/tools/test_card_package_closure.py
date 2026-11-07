@@ -35,6 +35,10 @@ STAGED_CARD_CLI_FILES = (
     'tools/wd_q4_staged_card_composer_cli.py',
     'tools/wd_q4_real_card_snapshot_cli.py',
 )
+CARD_PREPARE_FILES = ('tools/wd_q4_public_card_prepare.py', 'tools/wd_q4_real_card_decision_prepare.py')
+CARD_POLICY_FILES = tuple('configs/mind/' + name for name in (
+    'shared_card_non_review_policy.json', 'shared_card_writer_policy.json',
+    'shared_card_vocabulary.json', 'shared_card_paths.json'))
 
 
 def _reach(seeds, monkeypatch):
@@ -60,6 +64,15 @@ def test_staged_card_cli_entrypoints_are_explicit():
     entries = closure._definition()['python_entrypoints']
     assert entries['q4_card_snapshot_prepare'] == STAGED_CARD_CLI_FILES[1]
     assert entries['q4_card_staged_composer'] == STAGED_CARD_CLI_FILES[0]
+
+
+def test_card_policy_and_prepare_libraries_are_packaged(monkeypatch):
+    packaged = closure._packaged_python()
+    assert all(packaged.count(path) == 1 for path in CARD_PREPARE_FILES)
+    all_files = closure._definition()['python_files']
+    assert all(all_files.count(path) == 1 for path in CARD_POLICY_FILES)
+    reached = _reach(CARD_PREPARE_FILES, monkeypatch)
+    assert reached <= set(packaged), sorted(reached - set(packaged))
 
 
 def test_the_card_module_import_closure_is_packaged(monkeypatch):

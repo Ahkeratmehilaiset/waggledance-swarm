@@ -87,7 +87,8 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
 
     monkeypatch.setattr(e2e, 'helper', helper)
     monkeypatch.setattr(update.live, 'publish', publish)
-    e2e.test_two_real_fenced_publications_are_selected_by_running_caller(tmp_path, monkeypatch, capsys, 'none')
+    e2e.test_two_real_fenced_publications_are_selected_by_running_caller(
+        tmp_path, monkeypatch, capsys, 'none', False, 'codex-lead-1')
     assert len(state['runs']) == len(state['publications']) == 2
     monkeypatch.setattr(state['runner'], 'run_once', state['raw_run'])
     monkeypatch.setattr(update, 'runner', state['runner'])
@@ -107,6 +108,18 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
     raw = update._encode(config)
     config_path = config_dir / 'config.json'
     config_path.write_bytes(raw)
+    private_root = Path(route['private_state_root'])
+    job_marker = private_root / 'q4-adopt-recovery-job.pending.json'
+    job_marker.write_bytes(b'synthetic recovery job pending')
+    before = (Path(route['checkpoint_root']) / 'q4-latest.json').read_bytes()
+    try:
+        assert update.main(['--once', '--config', str(config_path), '--sha256', update._sha(raw)]) == 3
+        assert json.loads(capsys.readouterr().err)['status'] == 'UNKNOWN'
+        assert job_marker.read_bytes() == b'synthetic recovery job pending'
+        assert not (private_root / 'q4-live-update.pending.json').exists()
+        assert (Path(route['checkpoint_root']) / 'q4-latest.json').read_bytes() == before
+    finally:
+        job_marker.unlink()
     bridge = Path(route['source'])
     event = json.loads(bridge.read_bytes().splitlines()[0])
     real_open = update.os.open

@@ -372,15 +372,21 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None, ho
         old_receipts = {p.name for p in private_root.glob('q4-status-result-*.json')}
         if len(old_receipts) > 50000:
             raise ValueError()
-        entered = True
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOINHERIT', 0)
         flags |= getattr(os, 'O_NOFOLLOW', 0)
-        try:
-            marker_fd = os.open(marker, flags, 0o600)
-        except FileExistsError:
-            entered = False
-            raise
-        marker_info = _finish_open_marker(marker_fd, marker_raw)
+        # Match the recovery host's private -> checkpoint admission pair.
+        # The pending check and marker creation must be one lock window.
+        with private_state.locked_state(private_root, root, enabled=True):
+            with private_state._checkpoint_lock(root, 0.2):
+                if os.path.lexists(private_root / 'q4-adopt-recovery-job.pending.json'):
+                    raise UpdateOutcomeUnknown('update_outcome_unknown')
+                entered = True
+                try:
+                    marker_fd = os.open(marker, flags, 0o600)
+                except FileExistsError:
+                    entered = False
+                    raise
+                marker_info = _finish_open_marker(marker_fd, marker_raw)
         intent_path = private_root / ('q4-live-update-intent-' + nonce + '.json')
         intent_info = runner._create(intent_path, intent)
         runner._verify_own(intent_path, intent, intent_info)

@@ -17,15 +17,22 @@ One caller spec, pinned by sha256, selects one of two phases:
   assurance: source and observation time authentication UNKNOWN, no operator attestation, no cryptographic proof,
   reader truth UNVERIFIED and the evidence link PENDING_PUBLICATION. The card schema has no field for the PR head or
   the evidence digest; the manifest binds request to sidecar before publication.
-* ``link``: after a separate publication, binds the pinned publish CLI result (its card event ref) to the pinned
-  request, its claim digest, the pending sidecar and both capture digests in one link document, so a reader holding
-  the card event ref can follow it to the evidence. The pairing of result and request is the caller's assertion and
-  the link stays UNVERIFIED; nothing here publishes or reads the bridge.
+* ``link``: after a separate publication, takes the pinned publish CLI result (its card event ref), the pinned
+  request and the pending sidecar. A publish result alone is never proof of a canonical append: without an
+  observation the phase writes only a pending document (PENDING_DELIVERY for a queued result, PENDING_OBSERVATION
+  for a written one) and no link. A link is prepared only when the caller pins an independently observed bridge
+  prefix in which the card prefix verifier finds the exact event ref as a current card (MATCH_WITHIN_PREFIX) and the
+  observed event payload equals the request claim. It binds the event ref to request, claim, sidecar and both capture
+  digests, records the prefix pin and cursor (never the source path) with completeness UNKNOWN, and is written with
+  an unposted publish request so a reader can later resolve it from the bridge; reader truth stays UNVERIFIED and
+  link and source authentication UNKNOWN.
 * ``candidate``: the real decision request, snapshot template, finish template and real candidate request for the
   card audit orchestrator, from the pinned publish-phase roster and anchors document, a pinned bridge prefix pin
   receipt and the caller's anchor tuple, in the IM9 P1 layout (run P/RUN, anchor P/.codex-audit/anchors/ID).
 
-It never reads a bridge log, publishes, installs, deploys or chooses a head. Pins are caller assertions, not
+It reads a bridge log only in the link phase, as a caller-pinned prefix through the card prefix verifier; it
+never publishes, posts, installs, deploys or chooses a head. ``read_card_evidence`` is the reader side: it keeps
+UNVERIFIED unless a v2 link for the card event ref and the pinned captures it names match. Pins are caller assertions, not
 authentication. The output dir is an existing empty direct child of a .codex-audit dir. Refusal happens before any
 write. Every consumed input pin and path is checked again before the first write and after the last one; once a write
 has begun, any error or changed input is UNKNOWN and the output dir must not be reused. Nothing about the inputs is
@@ -53,7 +60,14 @@ _CANDIDATE_KEYS = frozenset({'schema', 'phase', 'now_utc', 'configs', 'roster', 
 _CARD_KEYS = frozenset({'pr', 'head', 'author', 'valid_until_utc'})
 _EVIDENCE_KEYS = frozenset({'pr_capture', 'check_runs', 'observer', 'observed_at_utc'})
 _RUN_FIELDS = frozenset({'name', 'head_sha', 'status', 'conclusion', 'started_at', 'completed_at'})
-_LINK_KEYS = frozenset({'schema', 'phase', 'now_utc', 'request', 'sidecar', 'publish_result'})
+_LINK_KEYS = frozenset({'schema', 'phase', 'now_utc', 'request', 'sidecar', 'publish_result', 'observation'})
+_LINK = 'wd.q4-card-evidence-link.v2'
+_LINK_DOC_KEYS = frozenset({'schema', 'card_event_ref_sha256', 'publish_delivery', 'canonical', 'observation', 'pr',
+                            'card_head', 'pr_head', 'merge_commit', 'base_ref', 'request_sha256', 'claim_sha256',
+                            'sidecar_sha256', 'publish_result_sha256', 'pr_view_sha256', 'check_runs_sha256',
+                            'reader_truth', 'link_authentication', 'source_authentication', 'pairing'})
+_OBSERVATION_KEYS = frozenset({'source_path', 'generation_path', 'cursor', 'prefix_sha256'})
+_UNVERIFIED = {'status': 'UNVERIFIED', 'reader_truth': 'UNVERIFIED', 'authentication': 'UNKNOWN'}
 _SIDECAR = 'wd.q4-observed-gh-pr-evidence.v2'
 _SIDECAR_KEYS = frozenset({'schema', 'pr', 'pr_head', 'merge_commit', 'card_head', 'base_ref', 'merged_at_utc',
                            'required_contexts', 'contexts_on', 'check_runs_head_sha', 'captures',
@@ -272,6 +286,43 @@ def _publish(spec, output, seen):
     return outputs, {'verified_claims': verified, 'evidence_bindings': bindings}
 
 
+def _observe(observation, request, ref, now_utc, seen):
+    """Independently observe the card event in a caller-pinned bridge prefix; refuse unless it is current there and
+    its payload is exactly the request claim. Returns the observation record without the source path."""
+    from tools import wd_q4_public_card_prefix_verifier as verifier
+    from waggledance.core import bridge_log_reader as bridge
+    if type(observation) is not dict or set(observation) != _OBSERVATION_KEYS:
+        raise ValueError()
+    cursor = observation['cursor']
+    if (type(cursor) is not dict or set(cursor) != {'offset', 'file_identity', 'generation'}
+            or type(observation['prefix_sha256']) is not str or not _HEX.fullmatch(observation['prefix_sha256'])):
+        raise ValueError()
+    inputs = request['inputs']
+    if type(inputs) is not dict or set(inputs) != set(_CONFIGS) | {'roster'}:
+        raise ValueError()
+    raw = {name: _pinned(inputs[name], seen)[1] for name in ('policy', 'card_policy', 'roster', 'vocabulary',
+                                                              'path_allowlist')}
+    end = bridge.BridgeCursor(cursor['offset'], cursor['file_identity'], cursor['generation'])
+    found = verifier.verify(
+        enabled=True, source_path=observation['source_path'], generation_path=observation['generation_path'],
+        end_cursor=end, expected_prefix_sha256=observation['prefix_sha256'], target_event_ref=ref,
+        nonreview_policy_bytes=raw['policy'], nonreview_policy_sha256=inputs['policy']['sha256'],
+        card_policy_bytes=raw['card_policy'], card_policy_sha256=inputs['card_policy']['sha256'],
+        roster_bytes=raw['roster'], roster_sha256=inputs['roster']['sha256'],
+        vocabulary_bytes=raw['vocabulary'], vocabulary_sha256=inputs['vocabulary']['sha256'],
+        path_allowlist_bytes=raw['path_allowlist'], path_allowlist_sha256=inputs['path_allowlist']['sha256'],
+        now_utc=now_utc)
+    if found.get('status') != 'MATCH_WITHIN_PREFIX' or found.get('canonical_event_ref') != ref:
+        raise ValueError()
+    rows = verifier._read(observation['source_path'], observation['generation_path'], end,
+                          observation['prefix_sha256'])
+    if rows[ref].get('payload') != {'public_knowledge': request['claim']}:
+        raise ValueError()
+    return {'prefix_sha256': observation['prefix_sha256'], 'cursor': dict(cursor), 'status': found['status'],
+            'completeness': found['completeness'], 'predecessor_refs': list(found['predecessor_refs']),
+            'observed_at_utc': now_utc}
+
+
 def _link(spec, output, seen):
     from tools import wd_q4_public_card_publish_cli as publish_cli
     if set(spec) != _LINK_KEYS:
@@ -290,16 +341,64 @@ def _link(spec, output, seen):
             or {'pr': sidecar['pr']} != request['claim'].get('subject')):
         raise ValueError()
     publish_cli._result(result)  # exact keys, hex event ref, truth UNVERIFIED, every authentication UNKNOWN
-    link = {'schema': 'wd.q4-card-evidence-link.v1', 'card_event_ref_sha256': result['event_ref_sha256'],
-            'delivery': result['delivery'], 'pr': sidecar['pr'], 'card_head': sidecar['card_head'],
-            'pr_head': sidecar['pr_head'], 'request_sha256': request_spec['sha256'],
-            'claim_sha256': sidecar['claim_sha256'], 'sidecar_sha256': sidecar_spec['sha256'],
-            'publish_result_sha256': result_spec['sha256'],
-            'pr_view_sha256': sidecar['captures']['pr_view_sha256'],
-            'check_runs_sha256': sidecar['captures']['check_runs_sha256'],
-            'reader_truth': 'UNVERIFIED', 'link_authentication': 'UNKNOWN', 'source_authentication': 'UNKNOWN',
-            'pairing': 'caller_asserted_publish_result_for_request'}
-    return {'card-evidence-link-pr%d.json' % sidecar['pr']: _canonical(link)}, {}
+    ref = result['event_ref_sha256']
+    digests = {'request_sha256': request_spec['sha256'], 'claim_sha256': sidecar['claim_sha256'],
+               'sidecar_sha256': sidecar_spec['sha256'], 'publish_result_sha256': result_spec['sha256']}
+    if spec['observation'] is None:
+        pending = dict(digests, schema='wd.q4-card-evidence-pending.v1', card_event_ref_sha256=ref,
+                       publish_delivery=result['delivery'],
+                       state='PENDING_DELIVERY' if result['delivery'] == 'queued' else 'PENDING_OBSERVATION',
+                       pr=sidecar['pr'], card_head=sidecar['card_head'], reader_truth='UNVERIFIED', link=None)
+        return {'card-evidence-pending-pr%d.json' % sidecar['pr']: _canonical(pending)}, {}
+    observed = _observe(spec['observation'], request, ref, spec['now_utc'], seen)
+    link = dict(digests, schema=_LINK, card_event_ref_sha256=ref, publish_delivery=result['delivery'],
+                canonical='observed_within_pinned_prefix', observation=observed, pr=sidecar['pr'],
+                card_head=sidecar['card_head'], pr_head=sidecar['pr_head'], merge_commit=sidecar['merge_commit'],
+                base_ref=sidecar['base_ref'], pr_view_sha256=sidecar['captures']['pr_view_sha256'],
+                check_runs_sha256=sidecar['captures']['check_runs_sha256'], reader_truth='UNVERIFIED',
+                link_authentication='UNKNOWN', source_authentication='UNKNOWN',
+                pairing='observed_event_payload_equals_request_claim')
+    if set(link) != _LINK_DOC_KEYS:
+        raise ValueError()
+    link_raw = _canonical(link)
+    publish = {'schema': 'wd.q4-card-evidence-link-publish-request.v1', 'posted': False,
+               'proposed_task_id': 'mind-card-evidence-link-v1',
+               'event': {'type': 'status', 'status': 'info', 'payload': {'card_evidence_link': link}},
+               'link_sha256': hashlib.sha256(link_raw).hexdigest()}
+    return {'card-evidence-link-pr%d.json' % sidecar['pr']: link_raw,
+            'card-evidence-link-publish-pr%d.json' % sidecar['pr']: _canonical(publish)}, {}
+
+
+def read_card_evidence(*, enabled=False, card_event_ref=None, link=None, pr_capture=None, check_runs=None,
+                       now_utc=None):
+    """Reader side of a v2 evidence link (for example the payload of its published event). Default off. Returns
+    MATCHED only when the link names this card event ref as observed canonical within a pinned prefix and the two
+    capture files at the caller's paths have the digests the link names and still validate against its PR, PR head,
+    merge commit (card head) and base ref. Anything else, including any error, is UNVERIFIED. Authentication of the
+    publisher, the link, the captures and the clock stays UNKNOWN in both outcomes; MATCHED is not a proof of fact."""
+    if enabled is False:
+        return {'status': 'OFF'}
+    try:
+        if (enabled is not True or type(card_event_ref) is not str or not _HEX.fullmatch(card_event_ref)
+                or type(link) is not dict or set(link) != _LINK_DOC_KEYS or link['schema'] != _LINK
+                or link['card_event_ref_sha256'] != card_event_ref
+                or link['canonical'] != 'observed_within_pinned_prefix'
+                or type(link['observation']) is not dict or link['observation'].get('status') != 'MATCH_WITHIN_PREFIX'
+                or type(link['pr']) is not int
+                or type(link['base_ref']) is not str or not _REF.fullmatch(link['base_ref'])):
+            return dict(_UNVERIFIED)
+        view_raw = files._spec({'path': pr_capture, 'sha256': link['pr_view_sha256']}, _LIMIT)[1]
+        runs_raw = files._spec({'path': check_runs, 'sha256': link['check_runs_sha256']}, _LIMIT)[1]
+        sidecar, _ = _evidence({'pr': link['pr'], 'head': link['card_head']}, view_raw, runs_raw,
+                               {'ref': link['base_ref'], 'commit': None}, _gh_time(now_utc))
+        if sidecar['pr_head'] != link['pr_head'] or sidecar['merge_commit'] != link['merge_commit']:
+            return dict(_UNVERIFIED)
+        return {'status': 'MATCHED', 'reader_truth': 'MATCHED_PINNED_CAPTURES', 'card_event_ref_sha256': card_event_ref,
+                'pr': link['pr'], 'card_head': link['card_head'], 'pr_head': link['pr_head'],
+                'canonical': 'observed_within_pinned_prefix', 'completeness': 'UNKNOWN', 'authentication': 'UNKNOWN',
+                'source_authentication': 'UNKNOWN', 'link_authentication': 'UNKNOWN'}
+    except Exception:
+        return dict(_UNVERIFIED)
 
 
 def _composer_options(options):

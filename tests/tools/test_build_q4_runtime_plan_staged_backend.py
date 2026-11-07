@@ -19,6 +19,8 @@ from tests.tools.test_build_q4_runtime_plan import GENERATION, GIT, REVISION, WE
 pytestmark = pytest.mark.skipif(GIT is None, reason="git executable required")
 
 HELPER = "tools/wd_q4_staged_fixed_backend.py"
+TRANSPORT = "tools/wd_q4_secure_transport.py"
+VERIFIER = "sandbox/mind/step2/runtime_manifest.py"
 CONTROLLED = ("sandbox/mind/step2/q4_controlled_imports.py", "sandbox/mind/step2/q4_namespace_origin.py",
               "sandbox/mind/step2/q4_native_additions.py")
 HELPER_SOURCE = (b"import hashlib\n\n\ndef validate():\n"
@@ -35,6 +37,7 @@ FILES = {
     "waggledance/core/__init__.py": b"",
     "waggledance/core/bridge_log_reader.py": b"class BridgeCursor:\n    pass\n",
     HELPER: HELPER_SOURCE,
+    VERIFIER: b"import hashlib\nimport os\n",
     **{path: b"VALUE = %d\n" % index for index, path in enumerate(CONTROLLED)},
 }
 LAZY = {"tools/wd_q4_secure_transport.py", "tools/wd_q4_lane_link.py", "waggledance/core/bridge_log_reader.py",
@@ -69,7 +72,7 @@ def test_a_staged_request_pins_the_helper_and_its_lazy_import_closure(tmp_path):
     for path in LAZY | set(CONTROLLED):
         assert plan["pins"]["assets/code/" + path] == {"size": len(FILES[path]), "sha256": sha(FILES[path])}
     base = plan_mod.plan_runtime_inputs(**kwargs)
-    assert set(plan["code_paths"]) - set(base["code_paths"]) == LAZY - set(base["code_paths"]) | {HELPER}
+    assert set(plan["code_paths"]) - set(base["code_paths"]) == LAZY - set(base["code_paths"]) | {HELPER, VERIFIER}
     assert plan["trust"] == base["trust"]
 
 
@@ -131,3 +134,65 @@ def test_the_committed_transport_closure_lacks_the_helper_until_the_staged_route
     assert {HELPER} | actual | set(CONTROLLED) <= set(plan["code_paths"])
     assert plan["staged_backend"]["sha256"] == hashlib.sha256(helper).hexdigest()
     assert not {HELPER} & set(base["code_paths"]) and set(base["code_paths"]) < set(plan["code_paths"])
+
+
+# --- Staged runtime profile (RCO1 design 11-07): a staged request always plans the backend, the transport that
+# loads it by path, the transport's controlled-import helpers and the stdlib-only runtime manifest verifier the
+# staged child reads from the runtime tree. Any of them missing from the commit refuses before a blob is read.
+
+INDEPENDENT_HELPER = b"import hashlib\n\n\ndef validate():\n    return hashlib\n"
+
+
+def _entry(path, files=FILES):
+    return {"path": path, "size": len(files[path]), "sha256": sha(files[path])}
+
+
+def test_a_staged_request_reports_the_runtime_profile_with_exact_blob_pins(tmp_path):
+    plan = plan_mod.plan_runtime_inputs(**make_case(tmp_path), staged_backend_sha256=sha(HELPER_SOURCE))
+    assert plan["staged_runtime"] == {"backend": _entry(HELPER), "transport": _entry(TRANSPORT),
+                                      "verifier": _entry(VERIFIER)}
+    assert plan["staged_backend"] == _entry(HELPER)
+    for path in (HELPER, TRANSPORT, VERIFIER, *CONTROLLED):
+        assert plan["pins"]["assets/code/" + path] == {"size": len(FILES[path]), "sha256": sha(FILES[path])}
+
+
+def test_the_profile_plans_transport_helpers_and_verifier_even_when_nothing_imports_them(tmp_path):
+    files = dict(FILES, **{HELPER: INDEPENDENT_HELPER, "tools/other.py": b"VALUE = 9\n"})
+    kwargs = make_case(tmp_path, files, roots=("tools/other.py",))
+    base = plan_mod.plan_runtime_inputs(**kwargs)
+    assert not {HELPER, TRANSPORT, VERIFIER, *CONTROLLED} & set(base["code_paths"])
+    plan = plan_mod.plan_runtime_inputs(**kwargs, staged_backend_sha256=sha(INDEPENDENT_HELPER))
+    assert {HELPER, TRANSPORT, VERIFIER, *CONTROLLED} <= set(plan["code_paths"])
+    assert plan["staged_runtime"]["transport"] == _entry(TRANSPORT, files)
+    assert plan["staged_runtime"]["verifier"] == _entry(VERIFIER, files)
+
+
+@pytest.mark.parametrize("missing", [TRANSPORT, VERIFIER, *CONTROLLED])
+def test_a_profile_file_missing_from_the_commit_refuses(tmp_path, missing):
+    files = {key: value for key, value in FILES.items() if key not in (missing, "tools/wd_q4_fixed_peer.py")}
+    files[HELPER] = INDEPENDENT_HELPER
+    files["tools/other.py"] = b"VALUE = 9\n"
+    kwargs = make_case(tmp_path, files, roots=("tools/other.py",))
+    assert plan_mod.plan_runtime_inputs(**kwargs)["status"] == "CANDIDATE_UNVERIFIED"
+    refused(dict(kwargs, staged_backend_sha256=sha(INDEPENDENT_HELPER)), "code_closure_incomplete")
+
+
+def test_without_a_staged_request_a_committed_verifier_stays_out_of_the_plan(tmp_path):
+    plan = plan_mod.plan_runtime_inputs(**make_case(tmp_path))
+    assert VERIFIER not in plan["code_paths"] and "staged_runtime" not in plan
+
+
+def test_the_committed_staged_profile_includes_the_real_verifier_and_transport(tmp_path):
+    root, head = _repository_root()
+    blobs = {path: subprocess.run([GIT, "-C", str(root), "cat-file", "blob", head + ":" + path],
+                                  capture_output=True, check=True).stdout for path in (HELPER, TRANSPORT, VERIFIER)}
+    site = make_tree(tmp_path / "site", {"pkg.py": b"VALUE = 1\n"})
+    model = make_tree(tmp_path / "model", {"model.safetensors": WEIGHTS})
+    plan = plan_mod.plan_runtime_inputs(git_executable=GIT, repository=str(root), commit=head,
+        code_roots=["tools/wd_q4_fixed_peer.py"], site_root=str(site), model_root=str(model),
+        expected_model_files=["model.safetensors"], expected_weights_sha256=sha(WEIGHTS), generation=GENERATION,
+        revision=REVISION, max_bytes=256 * 1024 * 1024, timeout_seconds=300, enabled=True,
+        staged_backend_sha256=sha(blobs[HELPER]))
+    assert plan["staged_runtime"] == {name: _entry(path, blobs) for name, path in
+                                      (("backend", HELPER), ("transport", TRANSPORT), ("verifier", VERIFIER))}
+    assert set(CONTROLLED) <= set(plan["code_paths"])

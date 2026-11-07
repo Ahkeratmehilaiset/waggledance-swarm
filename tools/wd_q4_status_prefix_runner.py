@@ -37,6 +37,7 @@ import re
 import secrets
 import stat
 
+from sandbox.mind.step2 import prefix_private_state as private_state
 from sandbox.mind.step2 import shared_capture_adapter as adapter
 from sandbox.mind.step2 import shared_producer as producer
 from tools import wd_q4_guard_state_binding as roots
@@ -54,6 +55,12 @@ _HEX = re.compile(r"[a-f0-9]{64}\Z")
 _GENERATION = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 _IDENTITY = re.compile(r"(?:windows-v1:[0-9a-f]{8}:[0-9a-f]{16}|posix-v1:[0-9a-f]+:[0-9a-f]+)\Z")
 _PENDING = ".wd-q4-status-prefix-runner.pending"
+
+
+class _AdoptionPending(Exception):
+    """A foreign adoption was observed before either runner marker existed."""
+
+
 _ROUTE_KEYS = frozenset({"schema", "source", "generation_path", "checkpoint_root", "private_state_root",
                          "trusted_model_root", "cursor", "prefix_sha256", "max_bytes", "max_rows", "plan_sha256",
                          "anchor_sha256", "policy_sha256", "roster_sha256", "public_policy_sha256"})
@@ -375,8 +382,14 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
                 or roots._observe(model) != model_ids or roots._observe(source.parent) != source_parent_ids
                 or roots._observe(sidecar.parent) != sidecar_parent_ids):
             raise ValueError()
-        first = _create(marks[0], token)
-        second = _create(marks[1], token)
+        # Serialize admission with adoption's pending marker reservation. The
+        # short locks are released before the child and its own state locks.
+        with private_state.locked_state(private, checkpoint, enabled=True):
+            with private_state._checkpoint_lock(checkpoint, 0.2):
+                if os.path.lexists(private / 'q4-continuation-adopt.pending.json'):
+                    raise _AdoptionPending()
+                first = _create(marks[0], token)
+                second = _create(marks[1], token)
         extra = {} if cutoff is None else {"cutoff_utc": cutoff}
         if batch_rows:
             extra["batch_rows"] = True
@@ -400,6 +413,8 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
                 expected_route_sha256=expected_route_sha256, policy_bytes=policy_bytes, roster_bytes=roster_bytes)
             report = {**report, "runner_receipt_sha256": receipt_sha}
         uncertain = False
+    except _AdoptionPending:
+        raise StatusRunnerRefused('status_runner_refused') from None
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         interrupted = True
     except Exception:

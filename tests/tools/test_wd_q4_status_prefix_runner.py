@@ -123,6 +123,21 @@ def test_verified_fleet_is_converted_to_the_binding_roster(case, monkeypatch):
     assert consumer._roster(fleet, sha(fleet))[1] == roster_sha
 
 
+@pytest.mark.parametrize('renewable', [False, True])
+def test_runner_refuses_unresolved_adoption_before_creating_its_markers(case, monkeypatch, renewable):
+    runner, args, _, checkpoint, private, _ = case
+    marker = private / 'q4-continuation-adopt.pending.json'
+    marker.write_bytes(b'unknown adoption outcome\n')
+    calls = []
+    fake_child(monkeypatch, lambda **kw: calls.append(kw) or child_report())
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**args(), renewable=renewable)
+    assert calls == []
+    assert marker.read_bytes() == b'unknown adoption outcome\n'
+    assert not (checkpoint / runner._PENDING).exists()
+    assert not (private / runner._PENDING).exists()
+
+
 @pytest.mark.parametrize("failure", ["missing_fleet", "wrong_fleet_pin", "forged_roster", "fleet_as_roster"])
 def test_fleet_and_canonical_roster_must_both_bind_before_child(case, monkeypatch, failure):
     runner, args, _, checkpoint, private, _ = case

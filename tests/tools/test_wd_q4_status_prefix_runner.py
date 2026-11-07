@@ -9,8 +9,16 @@ import subprocess
 import sys
 import types
 from dataclasses import asdict
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from threading import Event
 
 import pytest
+
+from sandbox.mind.step2 import shared_index_checkpoint as checkpoint_mod
+from sandbox.mind.step2 import prefix_private_state as private_state
+from sandbox.mind.step2.reader_slot import reader_slot
+from tests.tools.test_wd_q4_genesis_bootstrap import synthetic as genesis_synthetic
 
 ROOT = Path(__file__).resolve().parents[2]
 TASK = "lead-mind-production-20261031"
@@ -932,3 +940,103 @@ def test_genesis_skip_receipt_parser_is_strict_and_canonical(runner):
                 encode(dict(value, prefix_sha256="D" * 64)), b"{" + b" " * 4100 + b"}"):
         with pytest.raises(ValueError):
             runner._genesis_skip(bad)
+
+
+@pytest.mark.parametrize('busy', ['private', 'checkpoint'])
+def test_busy_pair_lock_refuses_without_own_reservation(case, monkeypatch, busy):
+    runner, args, _, checkpoint, private, _ = case
+    lock = private / private_state._LOCK if busy == 'private' else checkpoint / checkpoint_mod.LOCK
+    held, release = Event(), Event()
+    def other_owner():
+        with reader_slot(lock, timeout_seconds=2):
+            held.set()
+            assert release.wait(8)
+    fake_child(monkeypatch, lambda **kw: pytest.fail('child should not run'))
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(other_owner)
+        try:
+            assert held.wait(5)
+            with pytest.raises(runner.StatusRunnerRefused):
+                runner.run_once(**args())
+            assert not (checkpoint / runner._PENDING).exists()
+            assert not (private / runner._PENDING).exists()
+        finally:
+            release.set()
+            future.result(timeout=5)
+
+
+@pytest.mark.parametrize('foreign', ['private', 'checkpoint'])
+def test_foreign_marker_between_preflight_and_lock_refuses_without_own_marker(case, monkeypatch, foreign):
+    runner, args, _, checkpoint, private, _ = case
+    marker = (private if foreign == 'private' else checkpoint) / runner._PENDING
+    untouched = (checkpoint if foreign == 'private' else private) / runner._PENDING
+    original = runner.private_state.locked_state
+    @contextmanager
+    def competitor_arrives(*a, **kw):
+        marker.write_bytes(b'foreign pending, reconciliation required')
+        with original(*a, **kw) as state:
+            yield state
+    monkeypatch.setattr(runner.private_state, 'locked_state', competitor_arrives)
+    fake_child(monkeypatch, lambda **kw: pytest.fail('child should not run'))
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**args())
+    assert marker.read_bytes() == b'foreign pending, reconciliation required'
+    assert not untouched.exists()
+    # Refusal does not clear the other owner's marker or permit a blind retry.
+    monkeypatch.setattr(runner.private_state, 'locked_state', original)
+    with pytest.raises(runner.StatusRunnerRefused):
+        runner.run_once(**args())
+    assert marker.read_bytes() == b'foreign pending, reconciliation required'
+    assert not untouched.exists()
+
+
+@pytest.mark.parametrize('fault', ['before_write', 'after_write', 'interrupt_after_write'])
+def test_attempted_first_marker_failure_remains_unknown(case, monkeypatch, fault):
+    runner, args, _, checkpoint, private, _ = case
+    original = runner._create
+    def fail(path, raw):
+        if fault != 'before_write':
+            original(path, raw)
+        if fault == 'interrupt_after_write':
+            raise KeyboardInterrupt('synthetic interruption')
+        raise OSError('synthetic failure')
+    monkeypatch.setattr(runner, '_create', fail)
+    fake_child(monkeypatch, lambda **kw: pytest.fail('child should not run'))
+    expected = runner.StatusRunnerInterrupted if fault == 'interrupt_after_write' else runner.StatusRunnerOutcomeUnknown
+    with pytest.raises(expected):
+        runner.run_once(**args())
+    assert (checkpoint / runner._PENDING).exists() == (fault != 'before_write')
+    assert not (private / runner._PENDING).exists()
+
+
+def test_runner_refusal_does_not_clear_or_retry_an_owned_cutoff_lease(genesis_synthetic, monkeypatch):
+    pytest.importorskip('faiss')
+    from tests.tools import test_wd_q4_genesis_bootstrap as base
+    from tools import wd_q4_production_continuation as continuation
+
+    args, _ = genesis_synthetic
+    base.test_late_skip_real_producer_publishes_every_public_row_after_the_skip(genesis_synthetic, monkeypatch)
+    private = Path(args['private_state_root'])
+    shared = Path(args['checkpoint_root'])
+    raw_tuple = (private / 'q4-genesis-tuple-v1.json').read_bytes()
+    pointer = shared / 'q4-latest.json'
+    calls = []
+
+    def refuse(**kw):
+        calls.append(kw)
+        raise continuation.runner.StatusRunnerRefused('status_runner_refused')
+
+    monkeypatch.setattr(continuation.runner, 'run_once', refuse)
+    kwargs = dict(enabled=True, tuple_bytes=raw_tuple, expected_tuple_sha256=sha(raw_tuple),
+        expected_pointer_sha256=sha(pointer.read_bytes()), policy_bytes=args['policy_bytes'],
+        public_policy_bytes=args['public_policy_bytes'], fleet_bytes=args['fleet_bytes'],
+        expected_fleet_sha256=args['expected_fleet_sha256'], cutoff_utc='2026-10-31T13:01:00Z',
+        previous_cutoff_utc='2026-10-31T13:00:00Z', watermark_enabled=True,
+        expected_watermark_record_sha256=None)
+    for _ in range(2):
+        with pytest.raises(continuation.ContinuationUnknown):
+            continuation.continue_once(**kwargs)
+        assert (private / 'q4-cutoff.pending.json').exists()
+        assert not (private / continuation.runner._PENDING).exists()
+        assert not (shared / continuation.runner._PENDING).exists()
+    assert len(calls) == 1

@@ -40,6 +40,7 @@ import stat
 from sandbox.mind.step2 import prefix_private_state as private_state
 from sandbox.mind.step2 import shared_capture_adapter as adapter
 from sandbox.mind.step2 import shared_producer as producer
+from sandbox.mind.step2.reader_slot import ReaderBusy
 from tools import wd_q4_guard_state_binding as roots
 from tools import wd_q4_roster_from_fleet as roster_producer
 from waggledance.core.bridge_log_reader import BridgeCursor, BridgePrefixPin
@@ -57,8 +58,8 @@ _IDENTITY = re.compile(r"(?:windows-v1:[0-9a-f]{8}:[0-9a-f]{16}|posix-v1:[0-9a-f
 _PENDING = ".wd-q4-status-prefix-runner.pending"
 
 
-class _AdoptionPending(Exception):
-    """A foreign adoption was observed before either runner marker existed."""
+class _AdmissionBlocked(Exception):
+    """This runner did not attempt to create a marker; other state is not cleared."""
 
 
 _ROUTE_KEYS = frozenset({"schema", "source", "generation_path", "checkpoint_root", "private_state_root",
@@ -74,7 +75,11 @@ _REPORT_KEYS = frozenset({"status", "pointer_sha256", "generation", "publisher_a
 
 
 class StatusRunnerRefused(ValueError):
-    """Fixed pre-child refusal; no input or path in the error."""
+    """This invocation did not reserve; foreign pending state may still need reconciliation.
+
+    Refusal is not permission to automatically retry or proof that another
+    writer has stopped. No input or path is included in the error.
+    """
 
 
 class StatusRunnerOutcomeUnknown(RuntimeError):
@@ -384,12 +389,23 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
             raise ValueError()
         # Serialize admission with adoption's pending marker reservation. The
         # short locks are released before the child and its own state locks.
-        with private_state.locked_state(private, checkpoint, enabled=True):
-            with private_state._checkpoint_lock(checkpoint, 0.2):
-                if os.path.lexists(private / 'q4-continuation-adopt.pending.json'):
-                    raise _AdoptionPending()
-                first = _create(marks[0], token)
-                second = _create(marks[1], token)
+        reservation_attempted = False
+        try:
+            with private_state.locked_state(private, checkpoint, enabled=True):
+                with private_state._checkpoint_lock(checkpoint, 0.2):
+                    if os.path.lexists(private / 'q4-continuation-adopt.pending.json'):
+                        raise _AdmissionBlocked()
+                    # A different runner may have reserved after preflight.
+                    # Its markers remain untouched and require reconciliation.
+                    if not all(_absent(path) for path in marks):
+                        raise _AdmissionBlocked()
+                    reservation_attempted = True
+                    first = _create(marks[0], token)
+                    second = _create(marks[1], token)
+        except (private_state.StateRefused, ReaderBusy):
+            if not reservation_attempted:
+                raise _AdmissionBlocked() from None
+            raise
         extra = {} if cutoff is None else {"cutoff_utc": cutoff}
         if batch_rows:
             extra["batch_rows"] = True
@@ -413,7 +429,7 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
                 expected_route_sha256=expected_route_sha256, policy_bytes=policy_bytes, roster_bytes=roster_bytes)
             report = {**report, "runner_receipt_sha256": receipt_sha}
         uncertain = False
-    except _AdoptionPending:
+    except _AdmissionBlocked:
         raise StatusRunnerRefused('status_runner_refused') from None
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         interrupted = True

@@ -354,3 +354,44 @@ def test_native_object_later_registered_by_verified_source(scenario):
     else:
         with pytest.raises(ValueError):
             tracker.accept(name, candidate, source_after)
+
+
+def test_nested_interpreter_native_object_is_not_credited_to_manifest_native(tmp_path):
+    # Only synthetic callbacks execute: both .pyd paths are verified but never loaded.
+    probe = r'''
+import hashlib, importlib.machinery as mach, importlib.util as util, json, os, pathlib, sys, types
+workspace, root = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+spec = util.spec_from_file_location('q4_audit_helper', workspace/'sandbox/mind/step2/q4_controlled_imports.py')
+helper = util.module_from_spec(spec); spec.loader.exec_module(helper)
+def check(value):
+ if not value: raise ValueError('refused')
+def sha(value): return hashlib.sha256(value).hexdigest()
+def under(path, base):
+ try: return os.path.commonpath((path, base)) == base
+ except ValueError: return False
+site = root/'site'; site.mkdir(); (root/'assets/code').mkdir(parents=True)
+source = b'import sys\nsys.modules["wd_nested_alias"] = sys.modules["__main__"].candidate\n'
+native = b'synthetic native file; never loaded'
+(site/'wd_producer.py').write_bytes(source); (site/'wd_outer.pyd').write_bytes(native)
+files = [{'path':p, 'size':len(b), 'sha256':sha(b)} for p,b in [('site/wd_producer.py',source),('site/wd_outer.pyd',native)]]
+manifest=root/'manifest.json'; raw=json.dumps({'files':files}).encode(); manifest.write_bytes(raw)
+def fake_exec(loader, module):
+ if loader.name == 'wd_outer':
+  nested=mach.ExtensionFileLoader('trusted_nested', str(pathlib.Path(sys.base_prefix)/'DLLs'/'_socket.pyd'))
+  nested.exec_module(types.ModuleType('trusted_nested'))
+ else:
+  sys.modules['__main__'].candidate=types.ModuleType('wd_nested_alias')
+mach.ExtensionFileLoader.exec_module=fake_exec
+sys.path.insert(0,str(site))
+guard=helper.install(root,manifest,sha(raw),_check=check,_sha=sha,_unique_pairs=dict,
+                    _interpreter_roots=lambda:(os.path.normcase(os.path.realpath(sys.base_prefix)),),_under=under)
+mach.ExtensionFileLoader('wd_outer',str(site/'wd_outer.pyd')).exec_module(types.ModuleType('wd_outer'))
+import wd_producer
+try: guard.accept_created('wd_nested_alias',candidate)
+except ValueError: print('PASS')
+else: raise AssertionError('nested interpreter object wrongly attributed to outer manifest native')
+'''
+    completed = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', probe, str(ROOT), str(tmp_path)],
+                               capture_output=True, timeout=30)
+    assert completed.returncode == 0, completed.stderr.decode('utf-8', 'replace')
+    assert completed.stdout in (b'PASS\n', b'PASS\r\n')

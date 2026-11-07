@@ -585,7 +585,7 @@ _PEER_CODE_LIMIT = 131072
 # refuses it unless explicitly enabled, and the child verifies the externally
 # pinned runtime manifest with the pinned verifier before importing any
 # runtime code or site. No approved runtime tree exists on this path yet.
-_FIXED_BACKENDS = frozenset({"synthetic-v1", "public-snapshot-v1"})
+_FIXED_BACKENDS = frozenset({"synthetic-v1", "public-snapshot-v1", "staged-card-wrapper-v1"})
 _PLAN_KEYS = frozenset({"schema", "backend", "interpreter_sha256", "peer_code_sha256",
                         "runtime_manifest_sha256", "bundle_sha256", "bundle_bytes"})
 _PUBLIC_PINS = ("expected_pointer_sha256", "policy_sha256", "roster_sha256", "expected_public_policy_sha256",
@@ -593,8 +593,12 @@ _PUBLIC_PINS = ("expected_pointer_sha256", "policy_sha256", "roster_sha256", "ex
 _PUBLIC_PLAN_KEYS = _PLAN_KEYS | frozenset(_PUBLIC_PINS) | frozenset({
     "verifier_sha256", "runtime_root", "runtime_manifest_path", "runtime_generation", "runtime_revision",
     "approved_tasks"})
+_STAGED_PLAN_KEYS = _PUBLIC_PLAN_KEYS | frozenset({
+    "card_decision_sha256", "card_policy_sha256", "wrapper_sha256", "deployment_manifest_sha256",
+    "public_plan_sha256", "host_sha256", "bundle_root", "bundle_commit", "wrapper_path", "public_plan_path"})
 _PLAN_SCHEMAS = {"wd.q4-fixed-plan.v1": ("synthetic-v1", _PLAN_KEYS),
-                 "wd.q4-fixed-plan.v2": ("public-snapshot-v1", _PUBLIC_PLAN_KEYS)}
+                 "wd.q4-fixed-plan.v2": ("public-snapshot-v1", _PUBLIC_PLAN_KEYS),
+                 "wd.q4-fixed-plan.v3": ("staged-card-wrapper-v1", _STAGED_PLAN_KEYS)}
 _VERIFIER_LIMIT = 131072
 _VERIFIER_PARTS = ("sandbox", "mind", "step2", "runtime_manifest.py")
 _PUBLIC_RUNTIME = "MANIFEST_VERIFIED_BEFORE_IMPORT_NOT_ISOLATED"
@@ -642,7 +646,7 @@ def _fixed_plan(plan_bytes):
     for name in ("interpreter_sha256", "peer_code_sha256", "runtime_manifest_sha256", "bundle_sha256"):
         _hex64(plan[name])
     _check(type(plan["bundle_bytes"]) is int and 0 < plan["bundle_bytes"] <= _MAX_BUNDLE)
-    if backend == "public-snapshot-v1":
+    if backend in ("public-snapshot-v1", "staged-card-wrapper-v1"):
         for name in _PUBLIC_PINS + ("verifier_sha256",):
             _hex64(plan[name])
         for name in ("runtime_root", "runtime_manifest_path"):
@@ -656,6 +660,18 @@ def _fixed_plan(plan_bytes):
         _check(type(tasks) is list and 0 < len(tasks) <= 64
                and all(type(t) is str and 0 < len(t) <= 128 and t.isascii() and t.isprintable() for t in tasks)
                and tasks == sorted(set(tasks)))
+    if backend == "staged-card-wrapper-v1":
+        for name in ("card_decision_sha256", "card_policy_sha256", "wrapper_sha256",
+                     "deployment_manifest_sha256", "public_plan_sha256", "host_sha256"):
+            _hex64(plan[name])
+        _check(type(plan["bundle_commit"]) is str and len(plan["bundle_commit"]) == 40
+               and all(c in "0123456789abcdef" for c in plan["bundle_commit"]))
+        for name in ("bundle_root", "wrapper_path", "public_plan_path"):
+            value = plan[name]
+            _check(type(value) is str and 0 < len(value) <= 512 and value.isascii()
+                   and value.isprintable() and os.path.isabs(value))
+        _check(os.path.normcase(os.path.normpath(plan["wrapper_path"])) ==
+               os.path.normcase(os.path.normpath(os.path.join(plan["bundle_root"], "Invoke-WdQ4Query.ps1"))))
     _check(_canonical(plan) == plan_bytes)
     return plan
 
@@ -2086,6 +2102,10 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
         _validate(query_bytes, timeout_seconds, max_output_bytes)
         _check(len(query_bytes) > 0 and type(public_snapshot_enabled) is bool)
         plan = _fixed_plan(plan_bytes)
+        # The staged schema is parsed separately, but cannot run until its own
+        # fixed child and independent parent validation are wired. Never let it
+        # fall through to the synthetic backend during incremental development.
+        _check(plan["backend"] != "staged-card-wrapper-v1")
         public = plan["backend"] == "public-snapshot-v1"
         _check(public_snapshot_enabled or not public)
         _check(_diagnostic_mode in (None, "observe", "synthetic-fault"))

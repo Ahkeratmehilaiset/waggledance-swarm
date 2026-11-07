@@ -54,6 +54,7 @@ def test_real_formatter_is_internal_and_default_reader_still_refuses(real_snapsh
 
 def test_real_reader_refuses_without_an_actual_c2_verdict(real_snapshot):
     directory, built, _, snapshot, _, args = real_snapshot
+    snapshot = dict(snapshot, expected_pointer_sha256='0' * 64)
     assert checkpoint.validate_card_snapshot(enabled=True, generation_dir=directory, **snapshot)['status'] == 'INCOMPLETE'
     with pytest.raises(cards.SharedCardRefused, match='snapshot_invalid'):
         cards.ask_shared_cards(directory, built['memory_sha256'], None, 'synthetic',

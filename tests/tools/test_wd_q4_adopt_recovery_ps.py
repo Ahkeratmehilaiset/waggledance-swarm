@@ -208,7 +208,9 @@ def test_mismatched_worker_host_pin_refuses_before_parent_reservation(job):
     text=text.replace(anchor,"'-ExpectedHostSha256',('f'*64)")
     script.write_text(text,encoding='utf-8'); repin_changed(job,['Invoke-WdQ4AdoptRecovery.ps1'])
     result=run_job(job,scratch); private=job['bundle'].parent/'private'
-    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    # The pinned worker checks this host before entering its Python child.
+    # A confirmed pre-entry refusal is safe to distinguish from UNKNOWN.
+    assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
     assert not (private/'q4-adopt-recovery-job.pending.json').exists()
     assert not list(private.glob('q4-adopt-recovery-job-result-*.json'))
 

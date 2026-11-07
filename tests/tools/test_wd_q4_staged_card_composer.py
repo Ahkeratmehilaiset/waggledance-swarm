@@ -62,6 +62,17 @@ def materialize(staged_producer, tmp_path, monkeypatch):
     options = {key: descriptor[key] for key in composer.cli._DESCRIPTOR_KEYS}
     plan = json.loads(staged_producer['public_plan_bytes'])
     options['outer']['runtime-revision'] = plan['config']['runtime_revision']
+    runtime_tools = Path(options['outer']['runtime-root']) / 'assets' / 'code' / 'tools'
+    runtime_tools.mkdir(parents=True)
+    runtime_files = []
+    for name, raw in (('wd_q4_secure_transport.py', peer), ('wd_q4_staged_fixed_backend.py', backend)):
+        (runtime_tools / name).write_bytes(raw)
+        runtime_files.append({'path': 'assets/code/tools/' + name, 'size': len(raw), 'sha256': sha(raw)})
+    runtime_manifest = json.dumps({'schema': 'wd.q4-runtime-manifest.v1',
+        'generation': options['outer']['runtime-generation'], 'revision': options['outer']['runtime-revision'],
+        'files': runtime_files}, sort_keys=True).encode()
+    Path(options['runtime_manifest_path']).write_bytes(runtime_manifest)
+    options['runtime_manifest_sha256'] = sha(runtime_manifest)
     plan['config'].update(interpreter=options['interpreter'], interpreter_sha256=options['interpreter_sha256'],
         runtime_root=options['outer']['runtime-root'], runtime_manifest=options['runtime_manifest_path'],
         runtime_manifest_sha256=options['runtime_manifest_sha256'],

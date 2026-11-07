@@ -13,6 +13,9 @@ FILES = (
     "tools/wd_q4_guard_state_binding.py",
     "tools/wd_q4_guard_completion.py",
     "tools/wd_q4_lane_quarantine.py",
+    "sandbox/mind/step2/q4_controlled_imports.py",
+    "sandbox/mind/step2/q4_namespace_origin.py",
+    "sandbox/mind/step2/q4_native_additions.py",
 )
 
 

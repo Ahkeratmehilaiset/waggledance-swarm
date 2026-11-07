@@ -10,7 +10,7 @@ keyed ``assets/code/...``, ``site/...`` and ``model/...``, with exact size and
 SHA256 values. The code set is the static import closure of caller-named roots
 plus caller-listed extra paths, labelled unverified. When that closure contains
 the Q4 secure transport or public snapshot reader, it also requires their
-known path-loaded import helper.
+known path-loaded import helper and its namespace verifier.
 Imports made through
 dynamic loaders (importlib, exec, runpy, file specs) cannot be followed
 statically. A conservative AST heuristic flags files that import importlib,
@@ -76,6 +76,7 @@ _LOCAL = frozenset({"tools", "sandbox", "core", "waggledance"})
 _SECURE_TRANSPORT = "tools/wd_q4_secure_transport.py"
 _PUBLIC_SNAPSHOT_READER = "sandbox/mind/step2/shared_index_checkpoint.py"
 _CONTROLLED_IMPORTS = "sandbox/mind/step2/q4_controlled_imports.py"
+_NAMESPACE_ORIGIN = "sandbox/mind/step2/q4_namespace_origin.py"
 _DYNAMIC_MODULES = frozenset({"importlib", "runpy", "builtins"})
 _DYNAMIC_NAMES = frozenset({"__import__", "exec", "eval", "compile", "__builtins__"})
 _DYNAMIC_ATTRS = frozenset({"import_module", "__import__", "run_path", "run_module", "spec_from_file_location",
@@ -319,6 +320,10 @@ def _code_plan(git_executable, repository, commit, roots, extras, deadline, budg
             if _CONTROLLED_IMPORTS not in entries:
                 _fail("code_closure_incomplete")
             pending.append(_CONTROLLED_IMPORTS)
+        if path == _CONTROLLED_IMPORTS:
+            if _NAMESPACE_ORIGIN not in entries:
+                _fail("code_closure_incomplete")
+            pending.append(_NAMESPACE_ORIGIN)
         mode, kind, oid, size = entries[path]
         if kind != "blob" or mode not in ("100644", "100755"):
             _fail("code_entry_invalid")

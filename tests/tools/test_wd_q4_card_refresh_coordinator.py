@@ -505,6 +505,34 @@ def _lifecycle_v2_document(case):
     return document, private
 
 
+def test_lifecycle_inspection_does_not_block_v1_writer(lifecycle_case):
+    from tools import wd_q4_lifecycle_v2 as lifecycle
+    case = lifecycle_case
+    document, _ = _lifecycle_v2_document(case)
+    raw = Path(document['lifecycle']['path']).read_bytes()
+    assert lifecycle.inspect(enabled=True, binding_bytes=raw,
+                             binding_sha256=document['lifecycle']['sha256']) == {'status': 'ABSENT_V2_ONLY'}
+    assert not (case['shared'] / lifecycle._ENROLLED).exists()
+    assert invoke(configured(case, case['tuple_for'](), name='v1-after-inspect'))['status'] == 'PUBLISHED'
+
+
+def test_lifecycle_busy_without_pending_refuses_before_card_reservation(lifecycle_case, monkeypatch):
+    from contextlib import contextmanager
+    from tools import wd_q4_live_update_once as update
+    case = lifecycle_case
+    document, private = _lifecycle_v2_document(case)
+    config = configured(case, document, name='v2-busy-without-pending')
+    @contextmanager
+    def busy(*args, **kwargs):
+        raise case['coordinator'].lifecycle.ReaderBusy()
+        yield
+    monkeypatch.setattr(case['coordinator'].lifecycle, 'reader_slot', busy)
+    with pytest.raises(update.UpdateRefused):
+        invoke(config)
+    assert not (case['shared'] / 'q4-lifecycle-v2.pending.json').exists()
+    assert not (private / 'q4-card-refresh.pending.json').exists()
+
+
 def test_lifecycle_v2_interrupted_a_blocks_b_on_same_generation(lifecycle_case, monkeypatch):
     """A private pending record cannot be bypassed by B in the v2 route."""
     from tools import wd_q4_live_update_once as update

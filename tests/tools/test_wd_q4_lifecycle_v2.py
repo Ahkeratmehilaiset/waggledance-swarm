@@ -28,6 +28,63 @@ def test_default_off_neither_reads_binding_nor_writes(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_inspection_of_unused_root_does_not_enroll_or_create_lock(tmp_path):
+    root, private, raw, pin = binding(tmp_path)
+    assert lifecycle.inspect(enabled=True, binding_bytes=raw, binding_sha256=pin) == {'status': 'ABSENT_V2_ONLY'}
+    assert list(root.iterdir()) == []
+    assert list(private.iterdir()) == []
+
+
+def test_failed_admission_does_not_enroll_over_a_legacy_pending_record(tmp_path):
+    root, private, raw, pin = binding(tmp_path)
+    (private / 'q4-card-refresh.pending.json').write_bytes(b'legacy')
+    with pytest.raises(lifecycle.Unknown):
+        with lifecycle.admit(enabled=True, binding_bytes=raw, binding_sha256=pin,
+                             attempt='a' * 64, previous_selector_sha256=None):
+            pass
+    assert not (root / 'q4-lifecycle-v2.enrolled.json').exists()
+    assert not (root / 'q4-lifecycle-v2.pending.json').exists()
+
+
+def test_successful_admission_creates_explicit_binding_pinned_enrollment(tmp_path):
+    root, private, raw, pin = binding(tmp_path)
+    with lifecycle.admit(enabled=True, binding_bytes=raw, binding_sha256=pin,
+                         attempt='a' * 64, previous_selector_sha256=None):
+        enrolled = root / 'q4-lifecycle-v2.enrolled.json'
+        assert json.loads(enrolled.read_bytes()) == {
+            'schema': 'wd.q4-lifecycle-enrollment.v2', 'binding_sha256': pin}
+        assert (root / 'q4-lifecycle-v2.pending.json').exists()
+
+
+def test_foreign_enrollment_is_never_replaced_or_accepted(tmp_path):
+    root, private, raw, pin = binding(tmp_path)
+    enrolled = root / 'q4-lifecycle-v2.enrolled.json'
+    enrolled.write_bytes(b'{"foreign":true}')
+    with pytest.raises(lifecycle.Unknown):
+        lifecycle.inspect(enabled=True, binding_bytes=raw, binding_sha256=pin)
+    with pytest.raises(lifecycle.Unknown):
+        with lifecycle.admit(enabled=True, binding_bytes=raw, binding_sha256=pin,
+                             attempt='a' * 64, previous_selector_sha256=None):
+            pass
+    assert enrolled.read_bytes() == b'{"foreign":true}'
+    assert not (root / 'q4-lifecycle-v2.pending.json').exists()
+
+
+def test_busy_before_admission_is_refused_without_intent(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    root, private, raw, pin = binding(tmp_path)
+    @contextmanager
+    def busy(*args, **kwargs):
+        raise lifecycle.ReaderBusy()
+        yield
+    monkeypatch.setattr(lifecycle, 'reader_slot', busy)
+    with pytest.raises(lifecycle.Refused):
+        with lifecycle.admit(enabled=True, binding_bytes=raw, binding_sha256=pin,
+                             attempt='a' * 64, previous_selector_sha256=None):
+            pass
+    assert list(root.iterdir()) == []
+
+
 def test_rejects_wrong_private_root_before_any_state_write(tmp_path):
     root, private, raw, _ = binding(tmp_path)
     doc = json.loads(raw)
@@ -149,12 +206,41 @@ def test_binding_hash_mismatch_refuses_before_any_state_write(tmp_path):
 
 def test_error_after_marker_creation_stays_unknown_and_marker_is_preserved(tmp_path, monkeypatch):
     root, private, raw, pin = binding(tmp_path)
-    monkeypatch.setattr(lifecycle, '_read_pending', lambda *_: (_ for _ in ()).throw(OSError()))
+    original_read = lifecycle._read_pending
+    def fail_pending_read(path):
+        if path.name == 'q4-lifecycle-v2.pending.json':
+            raise OSError()
+        return original_read(path)
+    monkeypatch.setattr(lifecycle, '_read_pending', fail_pending_read)
     with pytest.raises(lifecycle.Unknown):
         with lifecycle.admit(enabled=True,binding_bytes=raw,binding_sha256=pin,
                              attempt='a'*64,previous_selector_sha256=None):
             pass
     assert (root/'q4-lifecycle-v2.pending.json').is_file()
+
+
+def test_error_after_enrollment_creation_stays_unknown_and_enrollment_is_preserved(tmp_path, monkeypatch):
+    root, private, raw, pin = binding(tmp_path)
+    monkeypatch.setattr(lifecycle, '_read_pending', lambda *_: (_ for _ in ()).throw(OSError()))
+    with pytest.raises(lifecycle.Unknown):
+        with lifecycle.admit(enabled=True, binding_bytes=raw, binding_sha256=pin,
+                             attempt='a' * 64, previous_selector_sha256=None):
+            pass
+    assert (root / 'q4-lifecycle-v2.enrolled.json').is_file()
+    assert not (root / 'q4-lifecycle-v2.pending.json').exists()
+
+
+def test_interrupt_during_enrollment_is_not_a_clean_refusal(tmp_path, monkeypatch):
+    root, private, raw, pin = binding(tmp_path)
+    def interrupted(root, binding_pin):
+        (root / 'q4-lifecycle-v2.enrolled.json').write_bytes(b'partial')
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(lifecycle, '_ensure_enrollment', interrupted)
+    with pytest.raises(lifecycle.Interrupted):
+        with lifecycle.admit(enabled=True, binding_bytes=raw, binding_sha256=pin,
+                             attempt='a' * 64, previous_selector_sha256=None):
+            pass
+    assert (root / 'q4-lifecycle-v2.enrolled.json').read_bytes() == b'partial'
 
 
 def test_child_exception_after_admission_never_claims_clean_refusal(tmp_path):

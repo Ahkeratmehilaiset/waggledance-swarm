@@ -284,11 +284,11 @@ def run_once(*, config, config_sha256, attempt):
         if 'expected_previous_selector_sha256' not in inspect.signature(live.publish).parameters:
             raise Refused('card_selector_cas_required')
         with _locks(root, private) as locks:
-            # A persistent lifecycle lock is also an enrollment sentinel. Once
+            # A persistent explicit enrollment marks v2 use. Once
             # v2 has been entered, legacy refresh must not bypass its intent
             # protocol even after a successful v2 clears its pending record.
             if document['schema'] != LIFECYCLE_SCHEMA and any(os.path.lexists(root / name)
-                    for name in (lifecycle._LOCK, lifecycle._PENDING)):
+                    for name in (lifecycle._ENROLLED, lifecycle._PENDING)):
                 raise Unknown('card_refresh_unknown')
             marker = private / 'q4-card-refresh.pending.json'
             if os.path.lexists(marker): raise Unknown('card_refresh_unknown')
@@ -302,11 +302,17 @@ def run_once(*, config, config_sha256, attempt):
             target = _target(document, candidate)
             if document['schema'] == LIFECYCLE_SCHEMA:
                 binding_raw = _spec(document['lifecycle'])
-                # Admission may write its marker even if it then fails.
+                # Admission can fail after creating a marker. Preserve that
+                # distinct unknown; only a pre-write refusal stays a refusal.
+                try:
+                    locks.enter_context(lifecycle.admit(enabled=True, binding_bytes=binding_raw,
+                        binding_sha256=document['lifecycle']['sha256'], attempt=attempt,
+                        previous_selector_sha256=document['previous_selector_sha256']))
+                except lifecycle.Unknown:
+                    raise Unknown('card_refresh_unknown') from None
+                except lifecycle.Interrupted:
+                    raise Interrupted('card_refresh_unknown') from None
                 entered = True
-                locks.enter_context(lifecycle.admit(enabled=True, binding_bytes=binding_raw,
-                    binding_sha256=document['lifecycle']['sha256'], attempt=attempt,
-                    previous_selector_sha256=document['previous_selector_sha256']))
             intent = {'schema': 'wd.q4-card-refresh-intent.v1', 'attempt': attempt,
                       'config_sha256': config_sha256, 'tuple_sha256': config['route_sha256'],
                       'previous_selector_sha256': document['previous_selector_sha256'],
@@ -354,7 +360,7 @@ def recover(*, config, config_sha256, attempt, progress_sha256=None):
                 locks.enter_context(lifecycle._resume(binding_bytes=binding_raw,
                     binding_sha256=document['lifecycle']['sha256'], attempt=attempt,
                     previous_selector_sha256=document['previous_selector_sha256']))
-            elif any(os.path.lexists(root / name) for name in (lifecycle._LOCK, lifecycle._PENDING)):
+            elif any(os.path.lexists(root / name) for name in (lifecycle._ENROLLED, lifecycle._PENDING)):
                 raise Unknown('card_refresh_unknown')
             # No publisher may still land while reconciliation observes "old".
             # Recovery never calls publish, so this third lock is not recursive.

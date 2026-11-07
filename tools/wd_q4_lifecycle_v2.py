@@ -1,8 +1,9 @@
 """Experimental, default-off, pre-publication lifecycle admission.
 
-This component is NOT integrated with any writer, installer, or recovery path.
-It establishes only a cooperative process lock and one persistent pending
-record for a hash-pinned new-generation binding. It never clears the record.
+The optional card-refresh coordinator integrates this component; other writers,
+installers and recovery paths do not automatically participate. It establishes
+a cooperative process lock and one persistent pending record for a hash-pinned
+new-generation binding. The coordinator clears only verified owned records.
 It does not inspect other private roots, migrate old records, authenticate the
 caller or defend against a hostile same-user process. A process crash can leave
 an incomplete record, which is UNKNOWN; hardware power-loss durability and
@@ -25,6 +26,7 @@ _BINDING_SCHEMA = 'wd.q4-lifecycle-binding.v2'
 _PENDING_SCHEMA = 'wd.q4-lifecycle-pending.v2'
 _PENDING = 'q4-lifecycle-v2.pending.json'
 _LOCK = 'q4-lifecycle-v2.lock'
+_ENROLLED = 'q4-lifecycle-v2.enrolled.json'
 _PRIVATE_SUFFIX = '.q4-lifecycle-private-v2'
 _LEGACY_PRIVATE = ('q4-card-refresh.pending.json', 'q4-live-update.pending.json',
                    'q4-continuation-adopt.pending.json', 'q4-adopt-recovery-job.pending.json',
@@ -41,6 +43,10 @@ class Refused(ValueError):
 
 class Unknown(RuntimeError):
     """Pending state, concurrent work, or outcome must be inspected externally."""
+
+
+class Interrupted(BaseException):
+    """An interrupt occurred after enrollment or reservation was attempted."""
 
 
 def _encode(value):
@@ -125,6 +131,24 @@ def _read_pending(path):
         os.close(fd)
 
 
+def _enrollment(binding_sha256):
+    return _encode({'schema': 'wd.q4-lifecycle-enrollment.v2', 'binding_sha256': _pin(binding_sha256)})
+
+
+def _ensure_enrollment(root, binding_sha256):
+    path = root / _ENROLLED
+    raw = _enrollment(binding_sha256)
+    if not os.path.lexists(path):
+        flags = (os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0)
+                 | getattr(os, 'O_NOINHERIT', 0) | getattr(os, 'O_NOFOLLOW', 0))
+        fd = os.open(str(path), flags, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            if stream.write(raw) != len(raw): raise OSError()
+            stream.flush(); os.fsync(stream.fileno())
+    if _read_pending(path) != raw:
+        raise ValueError()
+
+
 @contextmanager
 def admit(*, enabled=False, binding_bytes=None, binding_sha256=None, attempt=None,
           previous_selector_sha256=None):
@@ -141,6 +165,7 @@ def admit(*, enabled=False, binding_bytes=None, binding_sha256=None, attempt=Non
         raise Refused('lifecycle_refused') from None
     lock = root / _LOCK
     pending = root / _PENDING
+    admitted = False
     try:
         if os.path.lexists(lock): pointer._chain(lock)
         with reader_slot(lock, timeout_seconds=0.2):
@@ -153,17 +178,31 @@ def admit(*, enabled=False, binding_bytes=None, binding_sha256=None, attempt=Non
             # From the create attempt onward, an interruption or failure can
             # leave partial state. Never remove, recreate, or retry the marker.
             try:
+                # Enrollment is a separately pinned persistent record; an
+                # inspection or a failed legacy check must not enroll a root.
+                _ensure_enrollment(root, binding_sha256)
                 fd = os.open(str(pending), flags, 0o600)
                 with os.fdopen(fd, 'wb') as stream:
                     if stream.write(raw) != len(raw): raise OSError()
                     stream.flush(); os.fsync(stream.fileno())
                 _check_paths(root, private, lock)
                 if _read_pending(pending) != raw: raise ValueError()
-            except Exception:
+            except BaseException as exc:
+                if not isinstance(exc, Exception):
+                    raise Interrupted('lifecycle_write_unknown') from None
                 raise Unknown('lifecycle_write_unknown') from None
+            admitted = True
             yield {'status': 'ADMITTED', 'attempt': attempt, 'binding_sha256': binding_sha256}
     except ReaderBusy:
-        raise Unknown('lifecycle_busy') from None
+        # A foreign pending record is unresolved even though this caller did
+        # not reserve. A busy lock alone is a clean refusal by this caller.
+        if admitted or os.path.lexists(pending):
+            raise Unknown('lifecycle_busy_with_pending') from None
+        raise Refused('lifecycle_busy') from None
+    except Refused:
+        if admitted:
+            raise Unknown('lifecycle_unknown') from None
+        raise
     except Unknown:
         raise
     except Exception:
@@ -182,6 +221,8 @@ def _resume(*, binding_bytes, binding_sha256, attempt, previous_selector_sha256)
             _check_paths(root, private, lock)
             if _legacy_pending(root, private, ignore_private=('q4-card-refresh.pending.json',)):
                 raise Unknown('legacy_pending')
+            if _read_pending(root / _ENROLLED) != _enrollment(binding_sha256):
+                raise Unknown('lifecycle_enrollment_mismatch')
             if _read_pending(root / _PENDING) != expected:
                 raise Unknown('lifecycle_pending_mismatch')
             yield root
@@ -194,8 +235,8 @@ def _resume(*, binding_bytes, binding_sha256, attempt, previous_selector_sha256)
 def inspect(*, enabled=False, binding_bytes=None, binding_sha256=None):
     """Observe the v2 pending state under its lock; never clear anything.
 
-    May create the persistent lock file. ABSENT_V2_ONLY does not attest that
-    an old private root has no pending data.
+    An unenrolled root is inspected without creating the lifecycle lock.
+    ABSENT_V2_ONLY does not attest that an old private root has no pending data.
     """
     if enabled is False: return {'status': 'OFF'}
     try:
@@ -206,10 +247,16 @@ def inspect(*, enabled=False, binding_bytes=None, binding_sha256=None):
     lock = root / _LOCK
     pending = root / _PENDING
     try:
+        if not os.path.lexists(root / _ENROLLED):
+            if os.path.lexists(pending) or _legacy_pending(root, private):
+                raise Unknown('lifecycle_pending_or_unknown')
+            return {'status': 'ABSENT_V2_ONLY'}
         if os.path.lexists(lock): pointer._chain(lock)
         with reader_slot(lock, timeout_seconds=0.2):
             _check_paths(root, private, lock)
             if _legacy_pending(root, private): raise Unknown('legacy_pending')
+            if _read_pending(root / _ENROLLED) != _enrollment(binding_sha256):
+                raise Unknown('lifecycle_enrollment_mismatch')
             if not os.path.lexists(pending): return {'status': 'ABSENT_V2_ONLY'}
             raw = _read_pending(pending)
             record = pointer._json(raw)

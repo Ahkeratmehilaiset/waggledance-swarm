@@ -11,6 +11,7 @@ import pytest
 from tests.tools.test_wd_q4_adopt_recovery_job_e2e import prepared, launch, paths, _available
 from tools import wd_q4_continuation_adopt as adopt
 from tools import wd_q4_continuation_adopt_recovery as recovery
+from tools import wd_q4_owned_recovery_parent, wd_q4_owned_recovery_reader
 
 ENABLED=(os.environ.get('WD_Q4_ADOPT_CAPABILITY_E2E')=='1' and
          _available({'WD_Q4_ADOPT_JOB_E2E':'1'},sys.platform))

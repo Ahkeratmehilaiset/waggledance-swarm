@@ -20,6 +20,8 @@ _HEX = re.compile(r'[0-9a-f]{64}\Z')
 _KEYS = frozenset({'schema', 'bundle_root', 'manifest_sha256', 'interpreter_path', 'interpreter_sha256',
                    'runtime_root', 'runtime_manifest_path', 'runtime_manifest_sha256', 'runtime_generation',
                    'runtime_revision', 'verifier_sha256'})
+_CONFIG_KEYS = frozenset({'schema', 'bundle_root', 'manifest_sha256', 'baseline_path', 'baseline_sha256',
+                          'tuple_path', 'tuple_sha256', 'receipt_path', 'receipt_sha256'})
 _CUTOFF = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z')
 
 
@@ -70,6 +72,18 @@ def _read(value, pin, limit):
     return raw
 
 
+def _parent_pins(manifest, config, runtime, config_pin, runtime_pin, host_pin):
+    result = {key: config[key] for key in ('manifest_sha256', 'baseline_sha256', 'tuple_sha256', 'receipt_sha256')}
+    result.update(config_sha256=config_pin, runtime_sha256=runtime_pin, host_sha256=host_pin,
+                  interpreter_sha256=runtime['interpreter_sha256'],
+                  launcher_sha256=manifest['files']['Invoke-WdQ4AdoptRecovery.ps1'].lower(),
+                  commit=manifest['source_commit'])
+    if any(type(value) is not str or (_HEX.fullmatch(value) is None if key != 'commit' else
+            re.fullmatch(r'[0-9a-f]{40}', value) is None) for key, value in result.items()):
+        raise ValueError()
+    return result
+
+
 def _bootstrap(args):
     if (not sys.flags.isolated or not sys.flags.no_site or not sys.dont_write_bytecode or
             len(args) != 11 or args[0] != '--enable' or args[1] != '--config' or args[3] != '--sha256'
@@ -79,7 +93,7 @@ def _bootstrap(args):
     config = _doc(_read(config_path, config_pin, 65536))
     runtime = _doc(_read(runtime_path, runtime_pin, 65536))
     version = config.get('schema')
-    if (set(runtime) != _KEYS or runtime['schema'] != 'wd.q4-genesis-runtime.v1'
+    if (set(runtime) != _KEYS or set(config) != _CONFIG_KEYS or runtime['schema'] != 'wd.q4-genesis-runtime.v1'
             or version != 'wd.q4-adopt-recovery-cli.v1'
             or runtime['manifest_sha256'] != manifest_pin or config.get('manifest_sha256') != manifest_pin
             or os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower() != manifest_pin):
@@ -135,33 +149,35 @@ def _bootstrap(args):
     sys.path.append(str(site))
     sys.meta_path.insert(0, scope['_ProjectOriginGuard'](code))
     import importlib
-    module = importlib.import_module('tools.wd_q4_continuation_adopt_recovery_cli')
-    if not os.path.samefile(module.__file__, code / 'tools/wd_q4_continuation_adopt_recovery_cli.py'):
+    module = importlib.import_module('tools.wd_q4_owned_recovery_parent')
+    if not os.path.samefile(module.__file__, code / 'tools/wd_q4_owned_recovery_parent.py'):
         raise ValueError()
+    reader_path = code / 'tools/wd_q4_owned_recovery_reader.py'
+    reader_pin = str(files['tools-bootstrap/tools/wd_q4_owned_recovery_reader.py']).lower()
+    _read(reader_path, reader_pin, 1024 * 1024)
+    host = Path(os.environ['SYSTEMROOT']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    with host.open('rb') as stream:
+        host_pin = hashlib.file_digest(stream, 'sha256').hexdigest()
+    _read(host, host_pin, 128 * 1024 * 1024)
+    owner_pins = _parent_pins(manifest, config, runtime, config_pin, runtime_pin, host_pin)
+    receipt_raw = _read(config['receipt_path'], config['receipt_sha256'], 65536)
     scope['_check_project_origins'](code)
-    output = scope['_BoundedOutput']()
-    previous = sys.stdout
     try:
-        sys.stdout = output
-        try:
-            result = module.main(['--enable', '--config', config_path, '--sha256', config_pin])
-            scope['_check_project_origins'](code)
-        except BaseException:
-            raise _OutcomeUnknown() from None
-    finally:
-        sys.stdout = previous
-    try:
-        raw = output.getvalue().encode('ascii')
-        if not 0 < len(raw) <= 256 or raw.count(b'\n') != 1 or not raw.endswith(b'\n'):
+        answer = module.run_owned(enabled=True, baseline_path=config['baseline_path'],
+            baseline_sha256=config['baseline_sha256'], manifest_sha256=manifest_pin,
+            genesis_tuple_bytes=tuple_raw, genesis_tuple_sha256=config['tuple_sha256'],
+            receipt_bytes=receipt_raw, receipt_sha256=config['receipt_sha256'],
+            owner_pins=owner_pins, reader_sha256=reader_pin)
+        scope['_check_project_origins'](code)
+        if (set(answer) != {'status', 'attempt', 'marker_id', 'marker_sha256'} or
+                answer['status'] not in ('ADOPTED', 'NOT_ADOPTED', 'NOT_NEEDED') or
+                not _HEX.fullmatch(answer['attempt']) or not _HEX.fullmatch(answer['marker_sha256']) or
+                re.fullmatch(r'[0-9a-f]{48}', answer['marker_id']) is None):
             raise ValueError()
-        answer = _doc(raw)
-        if (set(answer) != {'status'} or (result, answer['status']) not in
-                ((0, 'ADOPTED'), (0, 'NOT_ADOPTED'), (0, 'NOT_NEEDED'), (2, 'REFUSED'), (3, 'UNKNOWN'))):
-            raise ValueError()
-    except Exception:
+    except BaseException:
         raise _OutcomeUnknown() from None
     print(json.dumps(answer, sort_keys=True, separators=(',', ':')))
-    return result
+    return 0
 
 
 def _readable_path(value):

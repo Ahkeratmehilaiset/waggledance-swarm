@@ -16,6 +16,7 @@ import hashlib
 import importlib.util
 import os
 import shutil
+import sys
 import time
 import pytest
 
@@ -30,6 +31,28 @@ def prep_job(job):
     shutil.copyfile(Path('tools')/bootstrap.name, bootstrap)
     cli=code/'wd_q4_continuation_adopt_recovery_cli.py'
     cli.write_text("def main(args):\n print('{\"status\":\"NOT_ADOPTED\"}')\n return 0\n",encoding='ascii')
+    # Synthetic parent retains the real Windows reservation/lock code; only
+    # F3 itself is replaced here. The separate opt-in test runs real F3.
+    from tools import wd_q4_owned_recovery_parent, wd_q4_owned_recovery_reader
+    project=Path.cwd().resolve(); code_root=bundle/'tools-bootstrap'
+    for module in list(sys.modules.values()):
+        filename=getattr(module,'__file__',None)
+        if not filename: continue
+        try: relative=Path(filename).resolve().relative_to(project)
+        except ValueError: continue
+        if relative.suffix!='.py' or relative.parts[0] not in ('tools','sandbox','core','waggledance'): continue
+        target=code_root/relative; target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copyfile(project/relative,target)
+    owner=code/'wd_q4_owned_recovery_parent.py'
+    with owner.open('a',encoding='utf-8') as stream:
+        stream.write('''\n\ndef run_owned(*, genesis_tuple_bytes, owner_pins, **kwargs):
+    import base64
+    tup=json.loads(genesis_tuple_bytes)
+    route=json.loads(base64.b64decode(tup['route']['bytes_b64']))
+    with reserve(Path(route['private_state_root']), Path(route['checkpoint_root']), owner_pins) as owner:
+        # SYNTHETIC_BEHAVIOR
+        return {'status':'NOT_ADOPTED', **owner.descriptor()}
+''')
     base=job['config'].parent/'baseline.json'; base.write_bytes(b'{}')
     receipt=job['config'].parent/'receipt.json'; receipt.write_bytes(b'{}')
     old=json.loads(job['config'].read_bytes())
@@ -100,11 +123,17 @@ def repin_changed(job, names):
         job[name].write_bytes(_existing.encode(data)); job[pin]=_existing.sha(job[name].read_bytes())
 
 
+def parent_behavior(job, statement):
+    parent=job['bundle']/'tools-bootstrap/tools/wd_q4_owned_recovery_parent.py'
+    source=parent.read_text(encoding='utf-8')
+    assert source.count('# SYNTHETIC_BEHAVIOR')==1
+    parent.write_text(source.replace('# SYNTHETIC_BEHAVIOR',statement),encoding='utf-8')
+    repin_changed(job,['tools-bootstrap/tools/wd_q4_owned_recovery_parent.py'])
+
+
 def test_unknown_child_keeps_marker_and_never_retries(job):
     prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
-    cli=job['bundle']/'tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_cli.py'
-    cli.write_text("def main(args):\n print('{\"status\":\"UNKNOWN\"}')\n return 3\n",encoding='ascii')
-    repin_changed(job,['tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_cli.py'])
+    parent_behavior(job,"raise RuntimeError('synthetic uncertain child')")
     first=run_job(job,scratch); assert first.returncode==3 and json.loads(first.stdout)=={'status':'UNKNOWN'}
     private=job['bundle'].parent/'private'; marker=private/'q4-adopt-recovery-job.pending.json'
     initial=marker.read_bytes(); assert json.loads(initial)['config_sha256']==job['config_pin']
@@ -117,9 +146,14 @@ def test_crash_window_preserves_marker_for_new_launcher(job,point):
     prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
     script=job['bundle']/'Invoke-WdQ4AdoptRecovery.ps1'; text=script.read_text(encoding='utf-8-sig')
     if point=='before_marker_flush':
-        text=text.replace('$pendingStream.Write($pendingBytes,0,$pendingBytes.Length)', "throw 'synthetic crash before write'")
+        parent=job['bundle']/'tools-bootstrap/tools/wd_q4_owned_recovery_parent.py'
+        source=parent.read_text(encoding='utf-8')
+        assert source.count('created=True')==1
+        parent.write_text(source.replace('created=True','created=True; raise RuntimeError()'),encoding='utf-8')
+        repin_changed(job,['tools-bootstrap/tools/wd_q4_owned_recovery_parent.py'])
     else:
-        text=text.replace('$pendingStream.Position=0', "throw 'synthetic crash after receipt'")
+        assert text.count('[WdQ4AdoptPendingV1]::DeleteOwned($pendingStream.SafeFileHandle)')==1
+        text=text.replace('[WdQ4AdoptPendingV1]::DeleteOwned($pendingStream.SafeFileHandle)', "throw 'synthetic crash after receipt'")
     script.write_text(text,encoding='utf-8'); repin_changed(job,['Invoke-WdQ4AdoptRecovery.ps1'])
     first=run_job(job,scratch); assert first.returncode==3 and json.loads(first.stdout)=={'status':'UNKNOWN'}
     private=job['bundle'].parent/'private'; marker=private/'q4-adopt-recovery-job.pending.json'
@@ -132,9 +166,7 @@ def test_crash_window_preserves_marker_for_new_launcher(job,point):
 
 def test_concurrent_then_killed_launcher_never_restarts(job):
     prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
-    cli=job['bundle']/'tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_cli.py'
-    cli.write_text("def main(args):\n import time\n time.sleep(20)\n print('{\"status\":\"NOT_ADOPTED\"}')\n return 0\n",encoding='ascii')
-    repin_changed(job,['tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_cli.py'])
+    parent_behavior(job,'import time; time.sleep(20)')
     marker=job['bundle'].parent/'private'/'q4-adopt-recovery-job.pending.json'
     first=subprocess.Popen(command(job,scratch),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     try:
@@ -221,13 +253,10 @@ def test_admission_locks_are_released_before_the_child(job):
     private=job['bundle'].parent/'private'; checkpoint=job['bundle'].parent/'checkpoint'
     paths=[private/name for name in ('q4-continuation-orchestrator.lock','q4-live-update.lock',
           'q4-cutoff-owner.lock','prefix-private-state.lock')]+[checkpoint/'q4-checkpoint.lock']
-    cli=job['bundle']/'tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_cli.py'
-    code="def main(args):\n import msvcrt\n slots=[]\n"
-    code+=" for name in "+repr([str(path) for path in paths])+":\n  f=open(name,'r+b'); f.seek(0); msvcrt.locking(f.fileno(),msvcrt.LK_NBLCK,1); slots.append(f)\n"
-    code+=" for f in reversed(slots):\n  f.seek(0); msvcrt.locking(f.fileno(),msvcrt.LK_UNLCK,1); f.close()\n"
-    code+=" print('{\"status\":\"NOT_ADOPTED\"}'); return 0\n"
-    cli.write_text(code,encoding='ascii')
-    repin_changed(job,['tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_cli.py'])
+    code="import msvcrt; slots=[]\n"
+    code+="        for name in "+repr([str(path) for path in paths])+":\n            f=open(name,'r+b'); f.seek(0); msvcrt.locking(f.fileno(),msvcrt.LK_NBLCK,1); slots.append(f)\n"
+    code+="        for f in reversed(slots):\n            f.seek(0); msvcrt.locking(f.fileno(),msvcrt.LK_UNLCK,1); f.close()"
+    parent_behavior(job,code)
     result=run_job(job,scratch)
     assert result.returncode==0 and json.loads(result.stdout)=={'status':'NOT_ADOPTED'}
 

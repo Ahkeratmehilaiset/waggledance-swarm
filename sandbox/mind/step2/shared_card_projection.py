@@ -70,6 +70,25 @@ REFUSAL_TOKENS = frozenset({"card_refused", "duplicate_skipped", "superseded_exc
 ITEM_KEYS = frozenset({"ref_sha256", "doc_id_sha256", "ref_kind", "canonical_event"})
 CARD_TASK = "mind-public-knowledge-v1"
 CARD_META = {"type": "status", "status": "info", "task_id": CARD_TASK}
+# The pinned route decision (lead-mind-card-source-binding-fable-20261107-v1). Canonical JSON bytes under a caller
+# pin; nothing else turns the shared card route on.
+DECISION_SCHEMA = "wd.mind-card-route-decision.v1"
+# == shared_index_builder.SCOPE == shared_result_resolver.SCOPE (tested); a constant here so the decision check on
+# the resolved route never imports the numpy/faiss builder
+SHARED_SCOPE = "wd.q4-shared-projected-events.v1"
+DECISION_NAME = "enable_synthetic_card_route"
+DECISION_KEYS = frozenset({"schema", "decision", "synthetic", "projection_schema", "scope", "card_module_sha256",
+                           "nonreview_policy_sha256", "roster_sha256", "card_policy_sha256", "vocabulary_sha256",
+                           "path_allowlist_sha256", "source_prefix", "observed_heads"})
+DECISION_PINS = ("card_module_sha256", "nonreview_policy_sha256", "roster_sha256", "card_policy_sha256",
+                 "vocabulary_sha256", "path_allowlist_sha256")
+PREFIX_KEYS = frozenset({"sha256", "offset", "generation"})
+ROUTE_KEYS = frozenset({"decision_sha256", "source_prefix", "source_status", "completeness", "authors", "heads"})
+MAX_DECISION = 256 * 1024
+MAX_HEADS = 4096
+HEAD = re.compile(r"[0-9a-f]{40}\Z")
+GENERATION = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
+UNKNOWN_HEAD = "head:unknown"
 
 
 class SharedCardRefused(ValueError):
@@ -399,6 +418,103 @@ def verify_shared_card_sources(projection=None, *, enabled=False, source_path=No
     return {"status": "MATCH_WITHIN_PREFIX", "cards": len(sources), "completeness": "UNKNOWN"}
 
 
+def module_sha256():
+    """The sha256 of this module's own source file as loaded; a route decision names it."""
+    return _sha(Path(__file__).read_bytes())
+
+
+def _unique_pairs(pairs):
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError()
+    return dict(pairs)
+
+
+def _canon(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def verify_route_decision(decision_bytes, decision_sha256, *, policy_sha256=None, roster_sha256=None):
+    """RW1: the explicit route decision, or ``decision_invalid``.
+
+    The bytes must hash to the caller pin and be canonical JSON with the exact key set; the decision must name this
+    loaded module's own source hash and the same non-review policy and roster pins the route runs with, one anchored
+    source prefix (sha256, end offset, generation) and either a sorted observed head set or null. It is caller-pinned
+    and verified for consistency here; who issued it is not authenticated (no signature).
+    """
+    try:
+        if (type(decision_bytes) is not bytes or len(decision_bytes) > MAX_DECISION
+                or type(decision_sha256) is not str or sp.HEX64.fullmatch(decision_sha256) is None
+                or not hmac.compare_digest(_sha(decision_bytes), decision_sha256)):
+            raise ValueError()
+        decision = json.loads(decision_bytes.decode("ascii"), object_pairs_hook=_unique_pairs,
+                              parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        if type(decision) is not dict or set(decision) != DECISION_KEYS:
+            raise ValueError()
+        if _canon(decision).encode("ascii") != decision_bytes:
+            raise ValueError()
+        prefix, heads = decision["source_prefix"], decision["observed_heads"]
+        if (decision["schema"] != DECISION_SCHEMA or decision["decision"] != DECISION_NAME
+                or decision["synthetic"] is not True or decision["projection_schema"] != SCHEMA
+                or decision["scope"] != SHARED_SCOPE
+                or any(type(decision[key]) is not str or sp.HEX64.fullmatch(decision[key]) is None
+                       for key in DECISION_PINS)
+                or not hmac.compare_digest(decision["card_module_sha256"], module_sha256())
+                or type(policy_sha256) is not str or type(roster_sha256) is not str
+                or not hmac.compare_digest(decision["nonreview_policy_sha256"], policy_sha256)
+                or not hmac.compare_digest(decision["roster_sha256"], roster_sha256)
+                or type(prefix) is not dict or set(prefix) != PREFIX_KEYS
+                or type(prefix["sha256"]) is not str or sp.HEX64.fullmatch(prefix["sha256"]) is None
+                or type(prefix["offset"]) is not int or prefix["offset"] < 1
+                or type(prefix["generation"]) is not str or GENERATION.fullmatch(prefix["generation"]) is None):
+            raise ValueError()
+        if heads is not None and (type(heads) is not list or len(heads) > MAX_HEADS
+                                  or any(type(head) is not str or HEAD.fullmatch(head) is None for head in heads)
+                                  or heads != sorted(set(heads))):
+            raise ValueError()
+    except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+        raise SharedCardRefused("decision_invalid") from None
+    return decision
+
+
+def _route_heads(sources, decision):
+    """RW2: VERIFIED when a card head is in the observed set, UNKNOWN without a set; ``head_unverified`` otherwise."""
+    heads, observed = {}, decision["observed_heads"]
+    for ref, normalized in sources.items():
+        data = normalized["payload"]["public_knowledge"]
+        if "head" not in data:
+            continue
+        if observed is None:
+            heads[ref] = "UNKNOWN"
+        elif data["head"] in observed:
+            heads[ref] = "VERIFIED"
+        else:
+            raise SharedCardRefused("head_unverified")
+    return heads
+
+
+def _route_authors(sources, roster):
+    """RW3: the roster uuid of every card author; the source check proved the prefix event carries it."""
+    return {ref: roster[normalized["agent"]] for ref, normalized in sources.items()}
+
+
+def check_route_evidence(evidence, projection, decision, decision_sha256, roster):
+    """The manifest's bound evidence must be exactly what the decision, the projection and the roster give."""
+    try:
+        if (type(evidence) is not dict or set(evidence) != ROUTE_KEYS
+                or not hmac.compare_digest(evidence["decision_sha256"], decision_sha256)
+                or _canon(evidence["source_prefix"]) != _canon(decision["source_prefix"])
+                or evidence["source_status"] != "MATCH_WITHIN_PREFIX" or evidence["completeness"] != "UNKNOWN"
+                or projection["vocabulary_sha256"] != decision["vocabulary_sha256"]
+                or projection["path_allowlist_sha256"] != decision["path_allowlist_sha256"]
+                or _canon(evidence["authors"]) != _canon(_route_authors(projection["sources"], roster))
+                or _canon(evidence["heads"]) != _canon(_route_heads(projection["sources"], decision))):
+            raise ValueError()
+    except (SharedCardRefused, ValueError, TypeError, KeyError):
+        raise SharedCardRefused("evidence_invalid") from None
+    return evidence
+
+
 def build_shared_card_memory(projection, encode, identity, dim, root, name, *, enabled=False):
     """One frozen card memory ``root/name`` from a validated v7 projection, or ``{"status": "OFF"}``."""
     if not _enabled(enabled):
@@ -408,14 +524,19 @@ def build_shared_card_memory(projection, encode, identity, dim, root, name, *, e
 
 
 def build_shared_route_card_memory(projection, encode, identity, dim, root, name, *, policy_bytes=None,
-                                   policy_sha256=None, roster_bytes=None, roster_sha256=None, enabled=False):
+                                   policy_sha256=None, roster_bytes=None, roster_sha256=None, decision_bytes=None,
+                                   decision_sha256=None, card_policy_bytes=None, source_path=None,
+                                   generation_path=None, end_cursor=None, enabled=False):
     """The same card memory for the existing shared reader, or ``{"status": "OFF"}``.
 
     It carries the shared scope and the v2 shared descriptor, so the unchanged private reader can run Q4 over it,
-    and it names the v7 card projection schema, so the unchanged v6 resolver refuses it; only the explicit card
-    route of ``shared_result_resolver`` (``CARD_ROUTE``, OFF by default) resolves it. The caller-pinned non-review
-    policy must approve the card task and every card author must be a non-review roster lane; the manifest binds both
-    pins exactly like the strict v6 builder. These pins are caller-asserted, not authenticated here.
+    and it names the v7 card projection schema, so the unchanged v6 resolver refuses it; only a resolver call with
+    the same pinned route decision resolves it. Before any card is accepted: the non-review policy must approve the
+    card task, every author must be a non-review roster lane, the decision must verify (RW1) and match the card
+    policy, vocabulary and path pins, the end cursor must be the decision's anchored prefix, every stored card must
+    match within that exact prefix with its roster uuid (RW3), and every head must be in the decision's observed set
+    or is recorded UNKNOWN (RW2). The manifest binds the policy pins and this evidence. Pins and the decision are
+    caller-asserted; the prefix is not proven to be the live log and freshness beyond it is UNKNOWN.
     """
     if not _enabled(enabled):
         return {"status": "OFF"}
@@ -431,12 +552,32 @@ def build_shared_route_card_memory(projection, encode, identity, dim, root, name
     if any(record["meta"]["agent"] not in roster or record["meta"]["agent"] in sp.REVIEW_LANES
            for record in projection["records"]):
         raise SharedCardRefused("roster_mismatch")
+    decision = verify_route_decision(decision_bytes, decision_sha256, policy_sha256=policy_sha256,
+                                     roster_sha256=roster_sha256)
+    if (projection["vocabulary_sha256"] != decision["vocabulary_sha256"]
+            or projection["path_allowlist_sha256"] != decision["path_allowlist_sha256"]
+            or type(card_policy_bytes) is not bytes
+            or not hmac.compare_digest(_sha(card_policy_bytes), decision["card_policy_sha256"])):
+        raise SharedCardRefused("decision_mismatch")
+    prefix = decision["source_prefix"]
+    if (type(getattr(end_cursor, "offset", None)) is not int or end_cursor.offset != prefix["offset"]
+            or getattr(end_cursor, "generation", None) != prefix["generation"]):
+        raise SharedCardRefused("source_unanchored")
+    verify_shared_card_sources(projection, enabled=True, source_path=source_path, generation_path=generation_path,
+                               end_cursor=end_cursor, expected_prefix_sha256=prefix["sha256"],
+                               nonreview_policy_bytes=policy_bytes, nonreview_policy_sha256=policy_sha256,
+                               card_policy_bytes=card_policy_bytes, card_policy_sha256=decision["card_policy_sha256"],
+                               roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+    evidence = {"decision_sha256": decision_sha256, "source_prefix": dict(prefix),
+                "source_status": "MATCH_WITHIN_PREFIX", "completeness": "UNKNOWN",
+                "authors": _route_authors(projection["sources"], roster),
+                "heads": _route_heads(projection["sources"], decision)}
     policy = {"authorship": sp.AUTHORSHIP_ROSTER, "review_signal_excluded": True, "policy_sha256": policy_sha256,
               "roster_sha256": roster_sha256}
-    return _build(projection, encode, identity, dim, root, name, sib.SCOPE, sib.DESCRIPTOR_SCHEMA, policy)
+    return _build(projection, encode, identity, dim, root, name, sib.SCOPE, sib.DESCRIPTOR_SCHEMA, policy, evidence)
 
 
-def _build(projection, encode, identity, dim, root, name, scope, descriptor_schema, policy):
+def _build(projection, encode, identity, dim, root, name, scope, descriptor_schema, policy, evidence=None):
     from sandbox.mind.step2 import cell as cell_mod
     from sandbox.mind.step2 import memory as memory_mod
     from sandbox.mind.step2 import shared_index_builder as sib
@@ -496,6 +637,8 @@ def _build(projection, encode, identity, dim, root, name, scope, descriptor_sche
                   "independent_views": False}
         if policy is not None:
             memory["policy"] = dict(policy)
+        if evidence is not None:
+            memory["card_route"] = copy.deepcopy(evidence)
         corpus_mod.ws.guard_object(memory)
         memory_bytes = cell_mod.canonical(memory).encode("utf-8")
         memory_sha256 = _sha(memory_bytes)
@@ -548,6 +691,26 @@ def resolve_shared_card_results(projection=None, results=None, query_utc=None, *
                              "ref_kind": REF_KIND, "canonical_event": False})
             seen.add(key)
     return resolved
+
+
+def resolve_route_results(projection, results, query_utc, decision):
+    """The route's resolved items; with no observed head set a card head is shown as ``head:unknown`` (RW2)."""
+    resolved = resolve_shared_card_results(projection, results, query_utc, enabled=True)
+    if decision["observed_heads"] is not None:
+        return resolved
+    by_doc = {_sha(record["record_id"].encode("utf-8")): record for record in projection["records"]}
+    out = []
+    for item in resolved:
+        record = by_doc[item["doc_id_sha256"]]
+        data = projection["sources"][record["provenance"]["source_event_ref"]]["payload"]["public_knowledge"]
+        text = item["stored_text"]
+        if "head" in data:
+            claimed = " head:" + data["head"] + " "
+            if text.count(claimed) != 1:
+                raise SharedCardRefused("resolution_refused")
+            text = text.replace(claimed, " " + UNKNOWN_HEAD + " ")
+        out.append(dict(item, stored_text=text))
+    return out
 
 
 def _read_bounded(path, limit):

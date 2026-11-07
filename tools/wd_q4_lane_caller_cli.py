@@ -33,6 +33,10 @@ marker or temporary file. This is a separate interrupted envelope: STALE means
 that consumers must treat the baseline as potentially stale, not that the age
 or the interruption's cause was authenticated. The baseline and the same
 pending record are rechecked before output; all other selector failures refuse.
+When a selector exists its validation checks consistency; it is not the source
+of the answer, which remains the baseline. There is no automatic age limit or
+expiry for this fallback: it can remain marked STALE until recovery reconciles
+the interruption, and callers must not present it as current.
 
 The enabled route must acquire an independently fleet-pinned guard and its
 call-bound owner context before reading the query. Configuration and identity

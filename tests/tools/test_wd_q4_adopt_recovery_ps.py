@@ -131,6 +131,18 @@ def parent_behavior(job, statement):
     repin_changed(job,['tools-bootstrap/tools/wd_q4_owned_recovery_parent.py'])
 
 
+@pytest.mark.parametrize('field',['marker_id','marker_sha256'])
+def test_wrong_parent_marker_identity_or_digest_stays_unknown(job,field):
+    prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
+    value='0'*(48 if field=='marker_id' else 64)
+    parent_behavior(job,"d=owner.descriptor(); d[%r]=%r; return {'status':'NOT_ADOPTED',**d}" % (field,value))
+    result=run_job(job,scratch)
+    private=job['bundle'].parent/'private'
+    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    assert (private/'q4-adopt-recovery-job.pending.json').is_file()
+    assert not list(private.glob('q4-adopt-recovery-job-result-*.json'))
+
+
 def test_unknown_child_keeps_marker_and_never_retries(job):
     prep_job(job); scratch=job['bundle'].parent/'scratch'; scratch.mkdir()
     parent_behavior(job,"raise RuntimeError('synthetic uncertain child')")

@@ -19,7 +19,7 @@ Screening (fail closed, before any chunking, on the whole text). The text must b
 normalized, so a fullwidth or zero-width-split credential is still seen. Then, in order, the whole row drops with one
 closed token: ``credential`` (key prefixes, bearer/authorization values, password/secret/token/key assignments, PEM
 headers, JWTs, URL user info, hex runs of 32 or more, mixed-case base64 runs of 32 or more), ``identifier`` (UUIDs,
-the build machine's user and computer names compared in memory only), ``personal`` (the bridge LLM redactor's e-mail,
+the build machine's user and computer names compared in memory only), ``personal`` (copies of the bridge LLM redactor's e-mail,
 card, HETU, Y-tunnus and phone detectors, with ISO dates and times masked for the phone detector only, plus an IBAN
 detector with a mod-97 check), ``sealed`` (sealed, gold, heldout or judge anywhere, or a workspace guarded word), ``mixed_script`` (a non-Latin
 letter next to Latin text), ``encoding`` (other scripts, non-BMP characters, control characters, invalid text),
@@ -52,7 +52,6 @@ from sandbox.mind.step2 import corpus as corpus_mod
 from sandbox.mind.step2 import shared_capture_adapter as capture
 from sandbox.mind.step2 import shared_projection as sp
 from tools.bridge_compact_view import event_id
-from waggledance.core.bridge_llm import redactor
 
 SCHEMA = "wd.bridge-mind-content-projection.v1"
 POLICY_SCHEMA = "wd.mind-content-policy.v1"
@@ -99,7 +98,15 @@ _IBAN_LENGTHS = dict((code[:2], int(code[2:])) for code in (
     "LU20 LV21 LY25 MC27 MD24 ME22 MK19 MR27 MT31 MU30 NL18 NO15 PK24 PL28 PS29 PT25 QA29 RO24 RS22 SA24 SC31 SE24 "
     "SI19 SK24 SM27 ST25 SV28 TL23 TN24 TR26 UA29 VA22 VG24 XK20").split())
 _IBAN_CANDIDATE = re.compile(r"(?i)\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}\b")
-_PERSONAL = (redactor.EMAIL_RE, redactor.CREDIT_CARD_RE, redactor.HETU_RE, redactor.Y_TUNNUS_RE)
+# Copies of the bridge LLM redactor's personal-data detectors (waggledance/core/bridge_llm/redactor.py): importing
+# that module runs the bridge_llm package, which loads the LLM provider clients that the bridge code package does
+# not ship. test_shared_content_projection pins every copy to the redactor's pattern and flags.
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.+-]+")
+_CREDIT_CARD_RE = re.compile(r"\b\d{13,19}\b")
+_HETU_RE = re.compile(r"\b[0-3]\d[01]\d\d{2}[+\-A-FYXWVU]\d{3}[0-9A-Y]\b")
+_Y_TUNNUS_RE = re.compile(r"\b\d{7}-\d\b")
+_PHONE_RE = re.compile(r"\+?\d[\d\s-]{8,}")
+_PERSONAL = (_EMAIL_RE, _CREDIT_CARD_RE, _HETU_RE, _Y_TUNNUS_RE)
 _URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://\S+")
 _LOCAL_PATH = (re.compile(r"[A-Za-z]:\\[^\s]*"), re.compile(r"\\\\[^\s]+"),
                re.compile(r"(?<![^\s(\"'])(?:~|/)[\w.-]*(?:/[\w.-]+)+/?"))
@@ -303,7 +310,7 @@ def _screen(text):
     if _UUID.search(text) or any(name in lowered for name in _local_identifiers()):
         raise _Drop("identifier")
     if (any(pattern.search(text) for pattern in _PERSONAL) or _iban(text)
-            or redactor.PHONE_RE.search(_ISO_TIME.sub(" ", text))):
+            or _PHONE_RE.search(_ISO_TIME.sub(" ", text))):
         raise _Drop("personal")
     if any(marker in lowered for marker in sp.SEALED_MARKERS) or corpus_mod.ws._has_marker(text):
         raise _Drop("sealed")

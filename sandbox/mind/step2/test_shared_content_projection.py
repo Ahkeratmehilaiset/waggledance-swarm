@@ -395,3 +395,11 @@ def test_projection_is_deterministic_and_bounded_for_the_lane_output():
         assert record["available_utc"] > record["time_utc"]
         assert record["provenance"]["available_utc"] == record["available_utc"]
     assert first["review_signal_excluded"] is True and first["authority"] == "none"
+
+
+def test_the_personal_detectors_are_exact_copies_of_the_redactor_detectors():
+    from waggledance.core.bridge_llm import redactor
+    for name in ("EMAIL_RE", "CREDIT_CARD_RE", "HETU_RE", "Y_TUNNUS_RE", "PHONE_RE"):
+        copy, origin = getattr(cp, "_" + name), getattr(redactor, name)
+        assert (copy.pattern, copy.flags) == (origin.pattern, origin.flags), name
+    assert cp._PERSONAL == (cp._EMAIL_RE, cp._CREDIT_CARD_RE, cp._HETU_RE, cp._Y_TUNNUS_RE)

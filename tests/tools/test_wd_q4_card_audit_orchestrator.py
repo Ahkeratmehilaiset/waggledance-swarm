@@ -345,6 +345,11 @@ def test_finish_composes_two_generations_into_one_shared_root(attested, tmp_path
     assert second['status'] == 'PREPARED'
     assert Path(second['pointer_path']) == shared / ('candidate-pointer-' + _GEN_C + '.json')
     assert Path(second['descriptor_path']).is_relative_to(shared / _GEN_C)
+    descriptor = json.loads(Path(second['descriptor_path']).read_bytes())
+    fixed = json.loads((shared / _GEN_C / 'fixed-plan.v2.json').read_bytes())
+    copy = shared / _GEN_C / 'public-plan.json'  # the selector reads the candidate's own public plan here
+    assert Path(descriptor['public_plan']) == copy and Path(fixed['public_plan_path']) == copy
+    assert sha(copy.read_bytes()) == fixed['public_plan_sha256']
     after = _tree(shared)
     assert {key: after[key] for key in before} == before
     assert not (tmp_path / 'finish-b' / 'stage').exists() and not (tmp_path / 'finish-c' / 'stage').exists()
@@ -354,6 +359,9 @@ def test_finish_default_keeps_private_stage_and_fixed_pointer_name(attested, tmp
     out = tmp_path / 'finish'
     result = _finish_into(attested, out)
     assert Path(result['pointer_path']) == out / 'stage' / 'candidate-pointer.json'
+    descriptor = json.loads(Path(result['descriptor_path']).read_bytes())
+    assert Path(descriptor['public_plan']).parent == out / 'public-plan'
+    assert not (Path(result['descriptor_path']).parent / 'public-plan.json').exists()
 
 
 def test_finish_accepts_shared_root_beside_the_output_root(attested, tmp_path):
@@ -382,11 +390,18 @@ def test_finish_refuses_bad_shared_root_before_any_write(attested, tmp_path, lay
 
 
 @pytest.mark.parametrize('options', [{'shared_stage': True}, {'shared_stage_root': None},
-                                     {'shared_stage_root': 1}])
+                                     {'shared_stage_root': 1}, {'generation': '..', 'shared_stage_root': 'live'},
+                                     {'generation': 'B' * 40, 'shared_stage_root': 'live'}])
 def test_finish_refuses_unknown_or_malformed_shared_option_before_any_write(attested, tmp_path, options):
     out = tmp_path / 'finish'
+    changes = dict(generation=_GEN_B)
+    changes.update(options)
+    if changes.get('shared_stage_root') == 'live':
+        shared = tmp_path / 'live' / 'generations'
+        shared.mkdir(parents=True)
+        changes['shared_stage_root'] = str(shared)
     with pytest.raises((ValueError, OSError)):
-        _finish_into(attested, out, generation=_GEN_B, **options)
+        _finish_into(attested, out, **changes)
     assert list(out.iterdir()) == []
 
 

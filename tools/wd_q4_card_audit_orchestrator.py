@@ -71,6 +71,8 @@ def _finish(*, enabled=False, output_root=None, base_plan=None, fixed_template=N
         generations = shared_root.parent
         if ((not real and '.codex-audit' not in shared_root.parts) or (real and shared_root.drive.upper() != 'C:')
                 or generations == shared_root
+                or type(composer_options['generation']) is not str
+                or composer._GENERATION.fullmatch(composer_options['generation']) is None
                 or any(composer._contains(a, b) or composer._identity_contains(a, b)
                        for a, b in ((shared_root, out), (out, shared_root)))):
             raise ValueError()
@@ -112,13 +114,16 @@ def _finish(*, enabled=False, output_root=None, base_plan=None, fixed_template=N
         expected_fleet_sha256=fleet_pin, wrapper_bytes=wrapper, expected_wrapper_sha256=_sha(wrapper),
         public_plan_bytes=public_raw, expected_public_plan_sha256=public_pin)
     pins = io._json(prep['binding_bytes'])['binding']
+    # shared mode: fixed plan and descriptor bind the new generation's own copy of the public plan
+    bound_public = (public_path if shared_root is None
+                    else str(shared_root / composer_options['generation'] / 'public-plan.json'))
     fixed = dict(fixed_template)
     fixed.update(bundle_sha256=prep['bundle_sha256'], bundle_bytes=len(prep['bundle_bytes']),
         approved_tasks=prep['approved_tasks'], expected_pointer_sha256=pins['pointer_sha256'],
         policy_sha256=pins['policy_sha256'], roster_sha256=pins['roster_sha256'],
         expected_public_policy_sha256=pins['public_policy_sha256'], expected_source_sha256=pins['source_anchor_sha256'],
         expected_encoder_sha256=pins['encoder_sha256'], card_decision_sha256=pins['card_decision_sha256'],
-        card_policy_sha256=pins['card_policy_sha256'], public_plan_path=public_path, public_plan_sha256=public_pin)
+        card_policy_sha256=pins['card_policy_sha256'], public_plan_path=bound_public, public_plan_sha256=public_pin)
     fixed_dir = out / 'fixed-plan'; fixed_dir.mkdir()
     fixed_result = fixed_writer.write(enabled=True, arguments=fixed, output_dir=str(fixed_dir))
     fixed_raw = io._read(io._path(fixed_result['path']), fixed_result['sha256'], 4096)
@@ -130,7 +135,7 @@ def _finish(*, enabled=False, output_root=None, base_plan=None, fixed_template=N
         stage, generation_root = shared_root, shared_root.parent
         opts['shared_stage'] = True
     descriptor_options = dict(opts.pop('descriptor_options'))
-    descriptor_options.update(expected_binding=pins, public_plan=public_path)
+    descriptor_options.update(expected_binding=pins, public_plan=bound_public)
     opts.update(stage_dir=str(stage), generation_root=str(generation_root), descriptor_options=descriptor_options,
         public_plan_path=public_path, expected_public_plan_sha256=public_pin,
         fixed_plan_bytes=fixed_raw, expected_fixed_plan_sha256=fixed_result['sha256'])

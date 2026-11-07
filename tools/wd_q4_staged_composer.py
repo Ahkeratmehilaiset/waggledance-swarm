@@ -207,8 +207,12 @@ def compose_staged_card(*, enabled=False, stage_dir=None, generation=None, expec
     their ``candidate-pointer-GEN.json`` files, which are never touched; any
     other entry, or an existing directory or pointer for this generation,
     refuses before any write, and this run's pointer is
-    ``candidate-pointer-GEN.json``. The default keeps the empty stage and the
-    fixed ``candidate-pointer.json`` name.
+    ``candidate-pointer-GEN.json``. In shared mode the fixed plan and the
+    descriptor must name ``GEN/public-plan.json``; the caller's pinned public
+    plan bytes are copied there exclusively after the generation artifacts
+    and before the pointer, and the copy and the source are re-read against
+    the same pin. The default keeps the empty stage, binds the caller's public
+    plan path, and uses the fixed ``candidate-pointer.json`` name.
     """
     if enabled is False:
         return {'status': 'OFF'}
@@ -248,6 +252,9 @@ def compose_staged_card(*, enabled=False, stage_dir=None, generation=None, expec
         fleet = cli._read_pinned(str(bundle / 'wd-fleet.json'), cli.LIMITS['fleet'], fleet_pin, 'source_refused')
         wrapper = cli._read_regular(str(bundle / 'Invoke-WdQ4Query.ps1'), 1024*1024, 'source_refused')
         public_plan = cli._read_pinned(public_plan_path, 65536, expected_public_plan_sha256, 'source_refused')
+        # shared mode binds the new generation's own copy; the default binds the caller's path
+        public_copy = stage / generation / 'public-plan.json' if shared_stage else None
+        bound_public = public_plan_path if public_copy is None else public_copy
         fixed = transport._fixed_plan(fixed_plan_bytes)
         if fixed['backend'] != 'staged-card-wrapper-v1':
             raise ValueError()
@@ -262,12 +269,12 @@ def compose_staged_card(*, enabled=False, stage_dir=None, generation=None, expec
         config, outer = public['config'], descriptor_options['outer']
         if (descriptor_options['expected_binding'] != pins
                 or not _same(descriptor_options['bundle_root'], bundle)
-                or not _same(descriptor_options['public_plan'], public_plan_path)
+                or not _same(descriptor_options['public_plan'], bound_public)
                 or not _same(fixed['bundle_root'], bundle) or fixed['bundle_commit'] != expected_commit
                 or fixed['deployment_manifest_sha256'] != expected_manifest_sha256.lower()
                 or fixed['wrapper_sha256'] != prep_args['expected_wrapper_sha256']
                 or not _same(fixed['wrapper_path'], bundle / 'Invoke-WdQ4Query.ps1')
-                or not _same(fixed['public_plan_path'], public_plan_path)
+                or not _same(fixed['public_plan_path'], bound_public)
                 or fixed['public_plan_sha256'] != expected_public_plan_sha256
                 or fixed['host_sha256'] != expected_host_sha256
                 or fixed['bundle_sha256'] != prepared['bundle_sha256']
@@ -314,6 +321,12 @@ def compose_staged_card(*, enabled=False, stage_dir=None, generation=None, expec
             expected_descriptor_sha256=built['descriptor_sha256'])
         if out.get('status') != 'MATERIALIZED' or out.get('descriptor_path') != paths['descriptor_path']:
             raise ValueError()
+        if public_copy is not None:
+            _exclusive(public_copy, public_plan)
+            if (cli._read_pinned(str(public_copy), 65536, expected_public_plan_sha256, 'source_refused') != public_plan
+                    or cli._read_pinned(public_plan_path, 65536, expected_public_plan_sha256,
+                                        'source_refused') != public_plan):
+                raise ValueError()
         generated = pointer.prepare_staged_descriptor_pointer(enabled=True, expected_bundle=str(bundle),
             expected_commit=expected_commit, expected_manifest_sha256=expected_manifest_sha256,
             generations_root=str(stage), generation=generation, descriptor_sha256=built['descriptor_sha256'])

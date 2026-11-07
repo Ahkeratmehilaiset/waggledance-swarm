@@ -160,10 +160,29 @@ def _write_request(case, tmp_path, name, **changes):
         plan_path.write_bytes(plan)
     values.update(schema='wd.q4-staged-card-composer-request.v1', fixed_plan_path=str(plan_path))
     values.update(changes)
+    if values['schema'] == _V2:  # shared mode binds fixed plan and descriptor to GEN/public-plan.json
+        values = _bound_to_generation(values, plan_path)
     path = tmp_path / (name + '-request.json')
     raw = json.dumps(values, sort_keys=True, separators=(',', ':')).encode()
     path.write_bytes(raw)
     return path, raw
+
+
+def _bound_to_generation(values, plan_path):
+    target = str(Path(values['stage_dir']) / values['generation'] / 'public-plan.json')
+    if 'fixed_plan_bytes' in values:
+        plan = json.loads(values['fixed_plan_bytes'])
+    else:
+        plan = json.loads(Path(values['fixed_plan_path']).read_bytes())
+    plan['public_plan_path'] = target
+    raw = cli.composer.transport._canonical(plan)
+    values = dict(values, expected_fixed_plan_sha256=sha(raw),
+                  descriptor_options=dict(values['descriptor_options'], public_plan=target))
+    if 'fixed_plan_bytes' in values:
+        return dict(values, fixed_plan_bytes=raw)
+    bound_path = Path(str(plan_path) + '.' + values['generation'][:8] + '.json')
+    bound_path.write_bytes(raw)
+    return dict(values, fixed_plan_path=str(bound_path))
 
 
 def _snapshot(stage):
@@ -181,6 +200,8 @@ def test_v2_request_composes_into_shared_root_with_generation_pointer(attested, 
     assert run(path, sha(raw)) == 0
     second = json.loads(capsys.readouterr().out)
     assert second['status'] == 'PREPARED'
+    copy = stage / _GEN_C / 'public-plan.json'
+    assert copy.read_bytes() == Path(attested['public_plan_path']).read_bytes()
     assert Path(second['pointer_path']) == stage / ('candidate-pointer-' + _GEN_C + '.json')
     after = _snapshot(stage)
     assert {key: after[key] for key in before} == before
@@ -205,7 +226,7 @@ def test_shared_flag_must_match_the_schema_before_any_write(attested, tmp_path, 
 
 
 def test_v2_result_naming_the_legacy_pointer_is_rejected(attested):
-    values = dict(attested, shared_stage=True)
+    values = _bound_to_generation(dict(attested, shared_stage=True), None)
     values.pop('enabled')
     result = cli.composer.compose_staged_card(enabled=True, **values)
     cli._verify_result(result, values)
@@ -214,3 +235,17 @@ def test_v2_result_naming_the_legacy_pointer_is_rejected(attested):
         cli._verify_result(forged, values)
     with pytest.raises(ValueError):
         cli._verify_result(result, dict(values, shared_stage=False))
+
+
+@pytest.mark.parametrize('damage', ['missing', 'changed'])
+def test_v2_result_without_the_pinned_generation_public_plan_is_rejected(attested, damage):
+    values = _bound_to_generation(dict(attested, shared_stage=True), None)
+    values.pop('enabled')
+    result = cli.composer.compose_staged_card(enabled=True, **values)
+    copy = Path(result['descriptor_path']).parent / 'public-plan.json'
+    if damage == 'missing':
+        copy.unlink()
+    else:
+        copy.write_bytes(copy.read_bytes() + b' ')
+    with pytest.raises(cli.input_files._Refused):
+        cli._verify_result(result, values)

@@ -1045,13 +1045,13 @@ def _install_controlled_imports(runtime_root, manifest_path, manifest_sha256):
         _unique_pairs=_unique_pairs, _interpreter_roots=_interpreter_roots, _under=_under)
 
 
-def _module_origins(before, roots, namespace_root=None):
+def _module_origins(before, roots, namespace_root=None, created_origin=None):
     """Check newly imported origins, including only the three known code-root namespaces.
 
     Namespace inspection is not an authenticity proof; the runtime tree and
     module state can still change after verification (same-user TOCTOU).
     """
-    from importlib.machinery import NamespaceLoader
+    from importlib.machinery import ModuleSpec, NamespaceLoader
 
     namespaces = {"sandbox": ("sandbox",), "sandbox.mind": ("sandbox", "mind"),
                   "sandbox.mind.step2": ("sandbox", "mind", "step2")}
@@ -1059,8 +1059,13 @@ def _module_origins(before, roots, namespace_root=None):
     for name, module in list(sys.modules.items()):
         if name in before or module is None:
             continue
-        origin = getattr(module, "__file__", None)
-        spec = getattr(module, "__spec__", None)
+        # A module-level __getattr__ is executable code. Never invoke it while
+        # deciding whether this very module is trustworthy.
+        _check(isinstance(module, type(sys)))
+        attrs = type(sys).__getattribute__(module, "__dict__")
+        origin = attrs.get("__file__")
+        spec = attrs.get("__spec__")
+        _check(spec is None or type(spec) is ModuleSpec)
         if name in namespaces:
             # These names are namespace packages in the verified code tree;
             # a same-named regular module from another trusted root is not one.
@@ -1075,8 +1080,8 @@ def _module_origins(before, roots, namespace_root=None):
                 paths = getattr(spec, "submodule_search_locations", None)
                 _check(getattr(spec, "name", None) == name and getattr(spec, "origin", None) is None and
                        isinstance(getattr(spec, "loader", None), NamespaceLoader) and
-                       getattr(module, "__loader__", None) is spec.loader and paths is not None and
-                       getattr(module, "__path__", None) is paths)
+                       attrs.get("__loader__") is spec.loader and paths is not None and
+                       attrs.get("__path__") is paths)
                 locations = list(paths)
                 _check(len(locations) == 1 and type(locations[0]) is str and os.path.isabs(locations[0]))
                 path = os.path.normcase(os.path.abspath(locations[0]))
@@ -1084,8 +1089,12 @@ def _module_origins(before, roots, namespace_root=None):
                        os.path.normcase(os.path.realpath(path)) == expected and
                        not os.path.exists(os.path.join(path, "__init__.py")))
                 continue
-            _check(name in sys.builtin_module_names or getattr(spec, "origin", None) in ("built-in", "frozen"))
+            if name in sys.builtin_module_names or getattr(spec, "origin", None) in ("built-in", "frozen"):
+                continue
+            _check(created_origin is not None)
+            created_origin.accept_created(name, module)
             continue
+        _check(type(origin) is str)
         path = os.path.normcase(os.path.realpath(origin))
         _check(any(_under(path, root) for root in roots) and not _under(path, excluded))
 
@@ -1208,7 +1217,7 @@ def _fixed_child_backend(plan, peer_path):
     import importlib
     module = importlib.import_module("sandbox.mind.step2.shared_index_checkpoint")
     _check(os.path.normcase(os.path.abspath(module.__file__)) == os.path.normcase(os.path.abspath(entry)))
-    _module_origins(before, roots, code)
+    _module_origins(before, roots, code, imports)
     query_public_snapshot = module.query_public_snapshot
     _check(callable(query_public_snapshot))
 
@@ -1221,7 +1230,7 @@ def _fixed_child_backend(plan, peer_path):
                                        model_dir=str(model), expected_runtime_revision=plan["runtime_revision"],
                                        enabled=True)
         # The real query imports lazily, so origins are checked again after the call.
-        _module_origins(before, roots, code)
+        _module_origins(before, roots, code, imports)
         imports.check()
         _check(type(result) is dict and result.get("status") in ("ANSWER", "ABSTAIN", "DEGRADED"))
         return _canonical({"schema": "wd.q4-fixed-public-answer.v1", "status": result["status"],

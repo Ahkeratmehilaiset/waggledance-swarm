@@ -27,6 +27,18 @@ def _probe(tmp_path, scenario):
     (site / 'wd_synthetic_bad.py').write_text('raise AssertionError("must not execute")\n')
     files = [{'path': 'site/wd_synthetic_good.py', 'size': len(good),
               'sha256': hashlib.sha256(good).hexdigest()}]
+    if scenario.startswith('witness_'):
+        producer = (b'import sys, types\nVALUE = "safe"\n'
+                    b'def make_alias(target):\n'
+                    b'    alias = types.ModuleType("wd_synthetic_alias")\n'
+                    b'    alias.__file__ = None\n'
+                    b'    def getter(name): return target + VALUE\n'
+                    b'    alias.__getattr__ = getter\n'
+                    b'    return alias\n'
+                    b'sys.modules["wd_synthetic_alias"] = make_alias("fixture")\n')
+        (site / 'wd_synthetic_producer.py').write_bytes(producer)
+        files.append({'path': 'site/wd_synthetic_producer.py', 'size': len(producer),
+                      'sha256': hashlib.sha256(producer).hexdigest()})
     helper_relative = 'assets/code/sandbox/mind/step2/q4_controlled_imports.py'
     helper = (ROOT / 'sandbox/mind/step2/q4_controlled_imports.py').read_bytes()
     helper_path = tmp_path.joinpath(*helper_relative.split('/'))
@@ -86,7 +98,7 @@ if scenario in ('badmanifest', 'helper_tamper'):
  try: ns['_install_controlled_imports'](root, manifest, '0'*64 if scenario == 'badmanifest' else pin)
  except ns['_Refused']: print('PASS'); raise SystemExit(0)
  raise AssertionError('bad manifest pin accepted')
-ns['_install_controlled_imports'](root, manifest, pin)
+guard = ns['_install_controlled_imports'](root, manifest, pin)
 if scenario == 'preseed':
  assert importlib.import_module('wd_synthetic_good').VALUE == 42 and not effects
 elif scenario in ('clean', 'pyc'):
@@ -153,6 +165,54 @@ elif scenario in ('direct_custom_loader', 'direct_custom_from_loader'):
  except (ImportError, ns['_Refused']): pass
  else: raise AssertionError('custom direct loader accepted')
  assert not effects
+elif scenario == 'origin_no_side_effect':
+ import types
+ fake = types.ModuleType('wd_synthetic_untrusted')
+ def side_effect(name): effects.append('executed'); return None
+ fake.__getattr__ = side_effect
+ sys.modules['wd_synthetic_untrusted'] = fake
+ roots = [ns['os'].path.normcase(ns['os'].path.realpath(root/'site'))] + ns['_interpreter_roots']()
+ try: ns['_module_origins'](set(sys.modules)-{'wd_synthetic_untrusted'}, roots, str(root/'assets'/'code'), guard)
+ except ns['_Refused']: pass
+ else: raise AssertionError('unwitnessed module accepted')
+ assert not effects
+elif scenario.startswith('witness_'):
+ import types
+ before = set(sys.modules)
+ if scenario == 'witness_preseed':
+  sys.modules['wd_synthetic_alias'] = types.ModuleType('wd_synthetic_alias')
+ try:
+  producer = importlib.import_module('wd_synthetic_producer')
+ except ns['_Refused']:
+  if scenario != 'witness_preseed': raise
+ else:
+  if scenario == 'witness_preseed': raise AssertionError('preseed accepted')
+  alias = sys.modules['wd_synthetic_alias']
+  guard.accept_created('wd_synthetic_alias', alias)
+  if scenario == 'witness_swap':
+   fake = types.ModuleType('wd_synthetic_alias')
+   fake.__getattr__ = alias.__getattr__
+   sys.modules['wd_synthetic_alias'] = fake
+  elif scenario == 'witness_code':
+   alias.__getattr__.__code__ = alias.__getattr__.__code__.replace()
+  elif scenario == 'witness_globals':
+   producer.VALUE = 'changed'
+  elif scenario == 'witness_closure':
+   alias.__getattr__.__closure__[0].cell_contents = 'changed'
+  elif scenario == 'witness_direct_reload':
+   spec = importlib.util.spec_from_file_location('wd_synthetic_producer', root/'site'/'wd_synthetic_producer.py')
+   module = importlib.util.module_from_spec(spec)
+   spec.loader.exec_module(module)
+   alias = sys.modules['wd_synthetic_alias']
+  if scenario in ('witness_swap','witness_code','witness_globals','witness_closure'):
+   try: guard.accept_created('wd_synthetic_alias', sys.modules['wd_synthetic_alias'])
+   except ns['_Refused']: pass
+   else: raise AssertionError('changed creator evidence accepted')
+  else:
+   guard.accept_created('wd_synthetic_alias', alias)
+   if scenario == 'witness_origin':
+    roots = [ns['os'].path.normcase(ns['os'].path.realpath(root/'site'))] + ns['_interpreter_roots']()
+    ns['_module_origins'](set(sys.modules)-{'wd_synthetic_alias'}, roots, str(root/'assets'/'code'), guard)
 elif scenario == 'cache':
  sys.path_importer_cache[str(root/'site')] = Evil()
  try: importlib.import_module('wd_synthetic_good')
@@ -181,7 +241,7 @@ print('PASS')
 def test_controlled_imports_preserve_missing_semantics_and_reject_injections(tmp_path):
     cases = ('clean', 'pyc', 'preseed', 'unmanifested', 'cache', 'hook', 'meta', 'metadata',
              'metadata_tamper', 'metadata_extra', 'metadata_toctou',
-             'badmanifest', 'helper_tamper', 'tamper', 'pyc_only', 'outside', 'namespace')
+             'badmanifest', 'helper_tamper', 'tamper', 'pyc_only', 'outside', 'namespace', 'origin_no_side_effect')
     if os.name == 'nt':
         cases += ('native', 'native_tamper')
     for scenario in cases:
@@ -195,6 +255,14 @@ def test_controlled_imports_preserve_missing_semantics_and_reject_injections(tmp
 @pytest.mark.parametrize('scenario', ('direct_pyc', 'direct_unmanifested', 'loader_pyc', 'loader_unmanifested',
                                       'direct_custom_loader', 'direct_custom_from_loader'))
 def test_direct_standard_loader_is_also_bounded(tmp_path, scenario):
+    result = _probe(tmp_path, scenario)
+    assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
+    assert result.stdout in (b'PASS\r\n', b'PASS\n')
+
+
+@pytest.mark.parametrize('scenario', ('witness_clean', 'witness_preseed', 'witness_swap', 'witness_code',
+                                      'witness_globals', 'witness_closure', 'witness_direct_reload', 'witness_origin'))
+def test_verified_source_creation_witness(tmp_path, scenario):
     result = _probe(tmp_path, scenario)
     assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
     assert result.stdout in (b'PASS\r\n', b'PASS\n')

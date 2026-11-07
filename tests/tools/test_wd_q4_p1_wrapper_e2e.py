@@ -1,7 +1,7 @@
 """Synthetic P1 relay -> real configuration/selector, with explicit test boundaries.
 
-The bridge wrapper and runtime child are test doubles. They call the real caller
-configuration and selector, but do not execute the guarded adapter or an E5 model.
+The bridge wrapper and runtime child are test doubles. They run the real caller
+through its selector, but stop before the guarded adapter or an E5 model.
 The fixed P1 root and placeholder interpreter read are injected for this fixture.
 """
 import hashlib
@@ -36,7 +36,7 @@ def test_packaged_p1_relay_selects_changed_generation_and_checks_pins(attested, 
     bundle = Path(attested['expected_bundle'])
     driver = tmp_path / 'synthetic-selector-child.py'
     driver.write_text('''\
-import json, os, pathlib, sys
+import contextlib, io, json, os, pathlib, sys
 sys.path.insert(0, os.environ['SYNTHETIC_REPO'])
 from tools import wd_q4_lane_caller_cli as caller
 from tools import wd_q4_live_snapshot_publish as live
@@ -49,12 +49,24 @@ live._P1_ROOT = pathlib.Path(os.environ['SYNTHETIC_P1_ROOT'])
 real_read = caller._read
 interpreter = os.environ['SYNTHETIC_INTERPRETER']
 caller._read = lambda p, limit, pin=None: b'' if str(p) == interpreter else real_read(p, limit, pin)
-baseline = caller._configuration()
-chosen = live.select(enabled=True, baseline_path=os.environ['WD_Q4_SHARED_DESCRIPTOR_PATH'],
-    baseline_sha256=os.environ['WD_Q4_SHARED_DESCRIPTOR_SHA256'], baseline=baseline,
-    manifest_sha256=os.environ['WD_REBOOT_EXPECTED_MANIFEST_HASH'].lower(),
-    p1_enabled=True, load_configuration=caller._configuration)
-caller._require_current_snapshot(chosen['configuration'][0], chosen['configuration'][4], chosen['configuration'][5])
+observed = []
+real_select = live.select
+def record_select(**kwargs):
+    if os.environ.get('SYNTHETIC_SUPPRESS_P1') == '1':
+        kwargs.pop('p1_enabled', None)  # explicit mutation: strict selector must refuse
+    chosen = real_select(**kwargs)
+    observed.append(chosen)
+    return chosen
+live.select = record_select
+identity_boundary = []
+def stop_before_guard(*args):
+    identity_boundary.append(True)
+    raise RuntimeError('synthetic stop before guard')
+caller._identity = stop_before_guard
+with contextlib.redirect_stderr(io.StringIO()):
+    code = caller.main(['--enabled'])
+assert code == 2 and len(observed) == 1 and identity_boundary == [True]
+chosen = observed[0]
 print(json.dumps({'descriptor_sha256':chosen['configuration'][2], 'public_plan':pathlib.Path(chosen['configuration'][0]['public_plan']).parent.name}))
 ''', encoding='utf-8')
     bridge_wrapper = bundle / 'Invoke-WdBridgePython.ps1'
@@ -129,6 +141,10 @@ print(json.dumps({'descriptor_sha256':chosen['configuration'][2], 'public_plan':
             '-Runtime', '-Live', '-LiveP1'], input=raw, capture_output=True, env=env, timeout=90)
     for gen in (c, d):
         publish(gen)
+        env['SYNTHETIC_SUPPRESS_P1'] = '1'
+        refused = invoke()
+        assert refused.returncode != 0 and not refused.stdout
+        env.pop('SYNTHETIC_SUPPRESS_P1')
         result = invoke()
         assert result.returncode == 0, result.stderr
         selected = json.loads(result.stdout)

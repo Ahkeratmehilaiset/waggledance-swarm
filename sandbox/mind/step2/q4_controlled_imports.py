@@ -158,6 +158,9 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
     witnessed = {}
     subclass_witnessed = {}
     inherited_witnessed = {}
+    deferred_source_aliases = {}
+    tracked_source_aliases = {}
+    source_alias_dependencies = {}
     verified_sources = {}
     active_sources = set()
     failed_sources = set()
@@ -182,6 +185,12 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
     def modules_in_gc():
         return tuple(value for value in gc.get_objects() if type(value) is types.ModuleType)
 
+    def source_modules_in_gc():
+        # Include ModuleType subclasses without calling an instance's custom
+        # __class__ or attribute hooks while observing nested executions.
+        return tuple(value for value in gc.get_objects()
+                     if types.ModuleType in type.__getattribute__(type(value), '__mro__'))
+
     def mark_nested(before, known_objects):
         if not native_stack:
             return
@@ -194,13 +203,19 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             event['names'].update(changed)
             event['objects'].update(changed_objects)
 
-    def mark_source_nested(before):
+    def mark_source_nested(before, known_objects=None):
         if source_stack:
             after = sys.modules
             changed = {name for name in set(before) | set(after)
                        if before.get(name, absent) is not after.get(name, absent)}
             for event in source_stack:
-                event.update(changed)
+                event['names'].update(changed)
+            if known_objects is not None and any(event['watch'] for event in source_stack):
+                known = {id(module) for module in known_objects}
+                changed_objects = {id(module) for module in source_modules_in_gc() if id(module) not in known}
+                for event in source_stack:
+                    if event['watch']:
+                        event['objects'].update(changed_objects)
 
     def code_tree(code):
         result = [code]
@@ -268,7 +283,7 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             _check(all(cell.cell_contents is value for cell, value in zip(closure or (), values)))
             _check(all(source_globals.get(key, absent) is value for key, value in globals_used))
 
-    def capture_inherited(module, source_module):
+    def capture_inherited(module, source_module, *, require_original=True):
         """Bind inherited wrappers to previously verified Python source objects.
 
         This is same-process observation, not authentication of native state or
@@ -340,12 +355,58 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
         _check(type(cls) is type and issubclass(cls, types.ModuleType))
         visit_class(cls)
         attrs = types.ModuleType.__getattribute__(module, '__dict__')
-        _check(attrs.get('m') is source_module)
+        if require_original:
+            _check(attrs.get('m') is source_module)
         return cls, dict(attrs), classes, objects, functions
+
+    def capture_source_aliases(source_globals, source_module, known_objects, tainted_objects):
+        known = {id(module) for module in known_objects} | tainted_objects
+        for module in tuple(source_globals.values()):
+            cls = type(module)
+            if (id(module) in known or type(cls) is not type or cls is types.ModuleType
+                    or not issubclass(cls, types.ModuleType)
+                    or cls.__module__ != source_globals.get('__name__')
+                    or source_globals.get(cls.__name__) is not cls):
+                continue
+            attrs = types.ModuleType.__getattribute__(module, '__dict__')
+            name = attrs.get('__name__')
+            if (type(name) is not str or '.' not in name or attrs.get('__file__') is not None
+                    or attrs.get('__spec__') is not None or attrs.get('__loader__') is not None):
+                continue
+            cls, attrs, classes, objects, functions = capture_inherited(module, source_module, require_original=False)
+            candidate = (module, cls, attrs, classes, objects, functions)
+            deferred_source_aliases[id(module)] = candidate
+            tracked_source_aliases[id(module)] = candidate
+            source_alias_dependencies[id(module)] = {id(source_globals)}
+
+    def observe_source_aliases(*, allow_additions, source_id):
+        for identity, (module, cls, attrs, classes, objects, functions) in tracked_source_aliases.items():
+            _check(type(module) is cls)
+            current = types.ModuleType.__getattribute__(module, '__dict__')
+            _check(set(attrs) <= set(current) and all(current[key] is value for key, value in attrs.items()))
+            added = set(current) - set(attrs)
+            if added:
+                _check(allow_additions and source_id is not None and len(sys._current_frames()) == 1)
+                attrs.update((key, current[key]) for key in added)
+                source_alias_dependencies[identity].add(source_id)
+
+    def bind_source_aliases(before, after, tainted, parent_name):
+        for name, module in after.items():
+            if (type(name) is not str or name in before or name in tainted
+                    or not name.startswith(parent_name + '.')):
+                continue
+            candidate = deferred_source_aliases.get(id(module))
+            if candidate is None or candidate[0] is not module or candidate[2].get('__name__') != name:
+                continue
+            _check(name not in inherited_witnessed)
+            inherited_witnessed[name] = candidate
+            del deferred_source_aliases[id(module)]
 
     def verify_inherited(name, module):
         expected, cls, attrs, classes, objects, functions = inherited_witnessed[name]
         _check(module is expected and type(module) is cls and sys.modules.get(name) is module)
+        dependencies = source_alias_dependencies.get(id(module), set())
+        _check(not (dependencies & active_sources) and not (dependencies & failed_sources))
         current = types.ModuleType.__getattribute__(module, '__dict__')
         _check(set(current) == set(attrs) and all(current[key] is value for key, value in attrs.items()))
         for observed_cls, expected_attrs, owner in classes:
@@ -385,7 +446,8 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
                 _check(original_spec is not None and original_spec.loader is loader
                        and original_spec.name == name and original.get('__loader__') is loader
                        and original.get('__file__') == loader.path)
-                if cls.__bases__ != (types.ModuleType,):
+                instance_attrs = types.ModuleType.__getattribute__(module, '__dict__')
+                if instance_attrs.get('m') is source_module:
                     cls, attrs, classes, objects, functions = capture_inherited(module, source_module)
                     _check(attrs.get('__name__') == name and attrs.get('__file__') is None
                            and attrs.get('__spec__') is None and attrs.get('__loader__') is None)
@@ -438,6 +500,9 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
     def source_exec(loader, module):
         nonlocal main_alias_witnessed
         _check(type(loader) is loader_types[1] and module.__name__ == loader.name)
+        if tracked_source_aliases:
+            observe_source_aliases(allow_additions=bool(source_stack),
+                                   source_id=source_stack[-1]['id'] if source_stack else None)
         code = source_code(loader, module.__name__)
         names = {name for nested in code_tree(code) for name in nested.co_names}
         before = dict(sys.modules) if 'modules' in names else None
@@ -446,19 +511,25 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
         verified_sources[id(module.__dict__)] = (module.__dict__, previous_codes + tuple(code_tree(code)))
         source_before = dict(sys.modules)
         nested_before = source_before if native_stack else None
-        nested_objects = modules_in_gc() if native_stack else None
-        source_tainted = set()
+        watch_objects = 'ModuleType' in names
+        parent_watches_objects = any(event['watch'] for event in source_stack)
+        nested_objects = (source_modules_in_gc() if parent_watches_objects or watch_objects
+                          else modules_in_gc() if native_stack else None)
+        source_event = {'names':set(), 'objects':set(), 'watch':watch_objects, 'id':id(module.__dict__)}
+        source_tainted = source_event['names']
         if before is not None:
             for name, (existing, _, _) in tuple(witnessed.items()):
                 _check(before.get(name) is existing)
                 verify_witness(name, existing, check_registry=False)
         source_id = id(module.__dict__)
         _check(source_id not in active_sources)
-        source_stack.append(source_tainted)
+        source_stack.append(source_event)
         active_sources.add(source_id)
         succeeded = False
         try:
             exec(code, module.__dict__)
+            if tracked_source_aliases:
+                observe_source_aliases(allow_additions=True, source_id=source_id)
             if before is not None:
                 capture_created(before, code, module.__dict__, module, loader)
             if (loader.name == 'multiprocessing'
@@ -475,13 +546,17 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             if native_witnessed._deferred and len(sys._current_frames()) == 1:
                 native_witnessed.bind_source(source_before, dict(sys.modules), source_tainted,
                                              single_thread=True)
+            if watch_objects and len(sys._current_frames()) == 1:
+                capture_source_aliases(module.__dict__, module, nested_objects, source_event['objects'])
+            if deferred_source_aliases and len(sys._current_frames()) == 1:
+                bind_source_aliases(source_before, dict(sys.modules), source_tainted, loader.name)
             succeeded = True
         finally:
             active_sources.discard(source_id)
             if not succeeded:
                 failed_sources.add(source_id)
-            _check(source_stack.pop() is source_tainted)
-            mark_source_nested(source_before)
+            _check(source_stack.pop() is source_event)
+            mark_source_nested(source_before, nested_objects)
             if nested_before is not None:
                 mark_nested(nested_before, nested_objects)
 
@@ -500,17 +575,19 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             if not native_stack and not source_stack:
                 return callback(loader, argument)
             interpreter_before = dict(sys.modules)
-            interpreter_objects = modules_in_gc() if native_stack else ()
+            interpreter_objects = (source_modules_in_gc() if any(event['watch'] for event in source_stack)
+                                   else modules_in_gc() if native_stack else None)
             try:
                 return callback(loader, argument)
             finally:
                 mark_nested(interpreter_before, interpreter_objects)
-                mark_source_nested(interpreter_before)
+                mark_source_nested(interpreter_before, interpreter_objects)
         _check(relative in entries and len(sys._current_frames()) == 1)
         before = dict(sys.modules)
         # Keep strong references so an already existing, unregistered module
         # cannot be presented as new merely through a registry assignment.
         known_objects = modules_in_gc()
+        known_source_objects = source_modules_in_gc() if any(event['watch'] for event in source_stack) else None
         tainted = {'names': set(), 'objects': set()}
         native_stack.append(tainted)
         succeeded = False
@@ -520,7 +597,7 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
         finally:
             _check(native_stack.pop() is tainted)
             mark_nested(before, known_objects)
-            mark_source_nested(before)
+            mark_source_nested(before, known_source_objects)
         if succeeded:
             verified_file(loader.path, source=False)
             native_witnessed.bind(before, dict(sys.modules), tainted['names'],
@@ -573,8 +650,45 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
                    and not _under(os.path.normcase(os.path.realpath(item)), excluded)]
     sys.path_hooks[:] = [hook]
     sys.path_importer_cache.clear()
+    namespace_checker = None
+
+    def load_namespace_checker():
+        nonlocal namespace_checker
+        if namespace_checker is not None:
+            return namespace_checker
+        helper_path = root / 'assets/code/sandbox/mind/step2/q4_namespace_origin.py'
+        verifier_path = root / 'assets/code/sandbox/mind/step2/runtime_manifest.py'
+        try:
+            _, data = verified_file(str(helper_path), source=True)
+            verified_file(str(verifier_path), source=True)
+            code = compile(data, '<wd-q4-namespace-origin>', 'exec', dont_inherit=True)
+            namespace = {'__name__':'_wd_q4_namespace_origin'}
+            exec(code, namespace)
+            verifier = sys.modules.get('sandbox.mind.step2.runtime_manifest')
+            _check(type(verifier) is types.ModuleType)
+            attrs = vars(verifier)
+            spec = attrs.get('__spec__')
+            _check(type(spec) is machinery.ModuleSpec and type(spec.loader) is machinery.SourceFileLoader
+                   and attrs.get('__loader__') is spec.loader and type(attrs.get('__file__')) is str
+                   and os.path.normcase(os.path.realpath(attrs['__file__'])) == os.path.normcase(os.path.realpath(verifier_path)))
+            record = verified_sources.get(id(attrs))
+            _check(record is not None and record[0] is attrs
+                   and id(attrs) not in active_sources and id(attrs) not in failed_sources)
+            checker = namespace.get('verify_namespace')
+            _check(type(checker) is types.FunctionType and checker.__globals__ is namespace
+                   and any(checker.__code__ is item for item in code_tree(code)))
+            verified_file(str(helper_path), source=True)
+            verified_file(str(verifier_path), source=True)
+            namespace_checker = checker
+            return checker
+        except Exception:
+            _check(False)
 
     class ControlledFinder:
+        def accept_namespace(self, name, module):
+            self.check()
+            return load_namespace_checker()(name, module, runtime_root=root, entries=entries, enabled=True)
+
         def accept_created(self, name, module):
             self.check()
             if name == '__mp_main__':

@@ -412,6 +412,18 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
         kwargs = {'enabled': True, 'config_path': str(config_path), 'expected_config_sha256': update._sha(raw),
                   'expected_attempt': attempt, 'expected_runner_receipt_sha256': reports[0]['runner_receipt_sha256'],
                   'expected_pointer_sha256': reports[0]['pointer_sha256']}
+        if fault_stage == 'before_progress':
+            foreign = private_root / 'q4-continuation-adopt.pending.json'
+            foreign.write_bytes(b'unknown adoption outcome\n')
+            own = private_root / 'q4-live-update.pending.json'
+            own_before = own.read_bytes()
+            try:
+                with pytest.raises(recovery.RecoveryOutcomeUnknown):
+                    recovery.recover(**kwargs)
+                assert foreign.read_bytes() == b'unknown adoption outcome\n'
+                assert own.read_bytes() == own_before
+            finally:
+                foreign.unlink()  # Remove only this test's own synthetic marker.
         with pytest.raises(recovery.RecoveryRefused):
             recovery.recover(**{**kwargs, 'expected_runner_receipt_sha256': '0' * 64})
         partial_progress = private_root / ('q4-live-update-progress-' + attempt + '.json')

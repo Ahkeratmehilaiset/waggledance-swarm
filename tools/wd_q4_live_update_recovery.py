@@ -290,6 +290,10 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
             raise ValueError()
         live.pointer_io._chain(lock_path)
         with reader_slot(lock_path, timeout_seconds=0.2):
+            # Adoption serializes on this same lock. A retained marker means
+            # its publication outcome is unresolved and must not be replaced.
+            if os.path.lexists(private / 'q4-continuation-adopt.pending.json'):
+                raise RecoveryOutcomeUnknown('recovery_outcome_unknown')
             marker_path = private / 'q4-live-update.pending.json'
             marker_info = marker_path.lstat()
             marker_raw = live._read(marker_path, 65536)
@@ -465,6 +469,8 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
                     update.runner._verify_own(marker_path, marker_raw, marker_info)
                     marker_path.unlink()
             return {**selected, 'recovery_receipt_sha256': update._sha(recovery_receipt), 'receipt_file': path.name}
+    except RecoveryOutcomeUnknown:
+        failure = 'unknown'
     except Exception:
         failure = 'unknown' if entered else 'refused'
     except BaseException:

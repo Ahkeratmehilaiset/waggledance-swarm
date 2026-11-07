@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import re
 
 import pytest
 
@@ -26,6 +27,29 @@ def test_off_without_inputs():
     result = subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-File',str(ENTRY)],
                             capture_output=True,text=True,timeout=20)
     assert result.returncode == 0 and json.loads(result.stdout) == {'status':'OFF'}
+
+
+def test_launcher_creation_pin_matches_raw_windows_filetime(tmp_path):
+    from tests.tools.test_wd_q4_card_orchestrator_runtime_bootstrap import creation_filetime
+    source=ENTRY.read_text(encoding='utf-8-sig')
+    assert '.StartTime' not in source
+    match=re.search(r"(?s)Add-Type -TypeDefinition @'\r?\n(.*?)\r?\n'@ -ErrorAction Stop",source)
+    assert match and 'GetProcessTimes' in match.group(1)
+    script=("$ErrorActionPreference='Stop'\nAdd-Type -TypeDefinition @'\n"+match.group(1)+"\n'@\n"
+        "[Console]::Out.WriteLine(([ordered]@{pid=$PID;created=[WdQ4CardJobPathsV1]::CreationFiletime()} | ConvertTo-Json -Compress))\n"
+        "[Console]::Out.Flush()\n[Threading.Thread]::Sleep(30000)\n")
+    encoded=base64.b64encode(script.encode('utf-16le')).decode('ascii')
+    host=Path(os.environ['SYSTEMROOT'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
+    child=subprocess.Popen([str(host),'-NoProfile','-NonInteractive','-EncodedCommand',encoded],
+                           cwd=tmp_path,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    try:
+        line=child.stdout.readline()
+        assert line, child.stderr.read()
+        observed=json.loads(line)
+        assert observed['pid']==child.pid and observed['created']==creation_filetime(child.pid)
+    finally:
+        if child.poll() is None: child.terminate()
+        child.communicate(timeout=10)
 
 
 @pytest.fixture

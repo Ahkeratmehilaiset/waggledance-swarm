@@ -48,6 +48,14 @@ def test_changed_bindings_are_not_owned(roots):
         assert not owner.verify_locked(private,shared,changed)
         assert owner.verify_locked(private,shared,original)
 
+def test_live_owner_blocks_another_reservation(roots):
+    from tools import wd_q4_owned_recovery_parent as parent
+    private,shared=roots
+    with parent.reserve(private,shared,pins()) as owner:
+        with pytest.raises(parent.OwnerUnknown):
+            with parent.reserve(private,shared,pins()): pytest.fail('overlapping reservation')
+        assert owner.verify_locked(private,shared,pins())
+
 @pytest.mark.parametrize('stage,expected',[('before','NOT_ADOPTED'),('after','ADOPTED')])
 def test_parent_owned_job_may_reconcile_real_adoption(actual_continuation,monkeypatch,stage,expected):
     import json
@@ -78,6 +86,48 @@ def bound_pins(args):
             'tuple_sha256': args['genesis_tuple_sha256'],
             'receipt_sha256': args['receipt_sha256']}
 
+def test_bootstrap_binds_all_owner_pins():
+    from tools import wd_q4_continuation_adopt_recovery_bootstrap as boot
+    p=pins()
+    manifest={'source_commit':p['commit'],'files':{'Invoke-WdQ4AdoptRecovery.ps1':p['launcher_sha256'].upper()}}
+    config={key:p[key] for key in ('manifest_sha256','baseline_sha256','tuple_sha256','receipt_sha256')}
+    runtime={'interpreter_sha256':p['interpreter_sha256']}
+    assert boot._parent_pins(manifest,config,runtime,p['config_sha256'],p['runtime_sha256'],p['host_sha256'])==p
+
+@pytest.mark.parametrize('after_reader',[False,True])
+def test_parent_process_death_preserves_marker_and_blocks_retry(roots, after_reader):
+    import json
+    import subprocess
+    import sys
+    from tools import wd_q4_owned_recovery_parent as parent
+    private,shared=roots
+    code='''import base64, hashlib, json, pathlib, subprocess, sys
+from tools import wd_q4_owned_recovery_parent as parent
+with parent.reserve(pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), json.loads(sys.argv[3])):
+ if sys.argv[4]=='after':
+  reader=pathlib.Path(parent.__file__).with_name('wd_q4_owned_recovery_reader.py')
+  raw=b'synthetic'; pin=hashlib.sha256(raw).hexdigest(); value=base64.b64encode(raw).decode()
+  request={'schema':'wd.q4-owned-reader.v1','tuple_b64':value,'tuple_sha256':pin,'receipt_b64':value,'receipt_sha256':pin}
+  result=subprocess.run([sys.executable,'-I','-S','-B',str(reader),'--enable'],input=json.dumps(request).encode(),capture_output=True)
+  assert result.returncode==0 and json.loads(result.stdout)['status']=='VERIFIED'
+ print('READY',flush=True)
+ sys.stdin.read()
+'''
+    child=subprocess.Popen([sys.executable,'-B','-c',code,str(private),str(shared),json.dumps(pins()),
+                            'after' if after_reader else 'before'],stdin=subprocess.PIPE,
+                           stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    try:
+        assert child.stdout.readline().strip()=='READY'
+        marker=private/'q4-adopt-recovery-job.pending.json'; assert marker.exists()
+        child.kill(); child.communicate(timeout=10)
+        before=marker.read_bytes()
+        with pytest.raises(parent.OwnerUnknown):
+            with parent.reserve(private,shared,pins()): pytest.fail('attempt was retried')
+        assert marker.read_bytes()==before
+    finally:
+        if child.poll() is None: child.kill()
+        child.communicate(timeout=10)
+
 def test_parent_runs_bound_reader_and_real_recovery(actual_continuation, monkeypatch):
     import hashlib
     from tools import wd_q4_continuation_adopt as adopt
@@ -90,6 +140,32 @@ def test_parent_runs_bound_reader_and_real_recovery(actual_continuation, monkeyp
     result=parent.run_owned(**args, owner_pins=bound_pins(args), reader_sha256=hashlib.sha256(reader.read_bytes()).hexdigest())
     assert result['status']=='NOT_ADOPTED'
     assert set(result)=={'status','attempt','marker_id','marker_sha256'}
+
+@pytest.mark.parametrize('change',['before','after'])
+def test_changed_reader_is_refused_without_reconciling(actual_continuation, monkeypatch, tmp_path, change):
+    import hashlib
+    from tests.tools.test_wd_q4_continuation_adopt_recovery import paths
+    from tools import wd_q4_continuation_adopt as adopt
+    from tools import wd_q4_owned_recovery_parent as parent
+    args=actual_continuation; private,_=paths(args)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(adopt.update,'_publish',lambda *a,**kw: (_ for _ in ()).throw(KeyboardInterrupt()))
+        with pytest.raises(adopt.AdoptInterrupted): adopt.run_once(**args)
+    marker=private/'q4-continuation-adopt.pending.json'; original=marker.read_bytes()
+    source=Path(parent.__file__).with_name('wd_q4_owned_recovery_reader.py')
+    reader=tmp_path/'wd_q4_owned_recovery_reader.py'; reader.write_bytes(source.read_bytes())
+    pin=hashlib.sha256(reader.read_bytes()).hexdigest()
+    monkeypatch.setattr(parent,'__file__',str(tmp_path/'parent.py'))
+    if change=='before': reader.write_bytes(reader.read_bytes()+b'\n# changed')
+    else:
+        run=parent.subprocess.run
+        def changed(*a,**kw):
+            result=run(*a,**kw); reader.write_bytes(reader.read_bytes()+b'\n# changed'); return result
+        monkeypatch.setattr(parent.subprocess,'run',changed)
+    with pytest.raises(parent.OwnerUnknown):
+        parent.run_owned(**args,owner_pins=bound_pins(args),reader_sha256=pin)
+    assert marker.read_bytes()==original
+    assert (private/'q4-adopt-recovery-job.pending.json').exists() == (change=='after')
 
 def test_matching_owner_must_still_bind_recovery_inputs(actual_continuation, monkeypatch):
     import json

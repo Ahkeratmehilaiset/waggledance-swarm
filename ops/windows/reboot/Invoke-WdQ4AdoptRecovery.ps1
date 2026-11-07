@@ -169,10 +169,19 @@ public static class WdQ4AdoptPendingV1 {
   }
   [DllImport("kernel32.dll",SetLastError=true)]
   static extern bool SetFileInformationByHandle(SafeFileHandle h,int info,ref byte value,uint size);
-  public static SafeFileHandle Create(string path) {
-    var h=CreateFile(path,0xC0010000,1,IntPtr.Zero,1,0x80000080,IntPtr.Zero);
+  public static SafeFileHandle OpenExisting(string path) {
+    var h=CreateFile(path,0x80010000,1,IntPtr.Zero,3,0x00200080,IntPtr.Zero);
     if(h.IsInvalid) { int e=Marshal.GetLastWin32Error(); h.Dispose(); throw new Win32Exception(e); }
     return h;
+  }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct FileId { public ulong volume; [MarshalAs(UnmanagedType.ByValArray,SizeConst=16)] public byte[] identifier; }
+  [DllImport("kernel32.dll",SetLastError=true)]
+  static extern bool GetFileInformationByHandleEx(SafeFileHandle h,int info,out FileId id,uint size);
+  public static string Identity(SafeFileHandle h) {
+    FileId id;
+    if(!GetFileInformationByHandleEx(h,18,out id,(uint)Marshal.SizeOf(typeof(FileId)))) throw new Win32Exception(Marshal.GetLastWin32Error());
+    return id.volume.ToString("x16")+BitConverter.ToString(id.identifier).Replace("-","").ToLowerInvariant();
   }
   public static void DeleteOwned(SafeFileHandle h) {
     byte yes=1;
@@ -180,18 +189,30 @@ public static class WdQ4AdoptPendingV1 {
   }
 }
 '@ -ErrorAction Stop
-    $random=New-Object byte[] 32
-    $rng=[Security.Cryptography.RandomNumberGenerator]::Create()
-    try { $rng.GetBytes($random) } finally { $rng.Dispose() }
-    $attempt=[BitConverter]::ToString($random).Replace('-','').ToLowerInvariant()
-    $pendingText=([ordered]@{schema='wd.q4-adopt-recovery-job-pending.v1'; attempt=$attempt;
-        manifest_sha256=$ExpectedManifestSha256; config_sha256=$ExpectedConfigSha256;
-        runtime_sha256=$ExpectedRuntimeSha256; host_sha256=$ExpectedHostSha256;
-        receipt_sha256=[string]$configData.receipt_sha256; tuple_sha256=[string]$configData.tuple_sha256;
-        baseline_sha256=[string]$configData.baseline_sha256; interpreter_sha256=$pythonPin;
-        launcher_sha256=([string]$manifestData.files.'Invoke-WdQ4AdoptRecovery.ps1').ToLowerInvariant(); commit=$ExpectedCommit} | ConvertTo-Json -Compress)
-    $pendingBytes=[Text.Encoding]::ASCII.GetBytes($pendingText)
+    . $jobHelper
+    $jobArgs=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$worker,
+        '-Manifest',$manifest,'-ManifestSha256',$ExpectedManifestSha256,'-Bootstrap',$bootstrap,
+        '-BootstrapSha256',([string]$manifestData.files.'tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_bootstrap.py').ToLowerInvariant(),
+        '-Python',$python,'-PythonSha256',$pythonPin,'-Config',$config,'-ConfigSha256',$ExpectedConfigSha256,
+        '-Runtime',$runtime,'-RuntimeSha256',$ExpectedRuntimeSha256)
     $started=$true
+    $job=Invoke-WdQ4ProcessJob -Executable $hostPath -Arguments $jobArgs -WorkingDirectory $bundle `
+        -ScratchRoot $scratch -InputBytes ([byte[]]@()) -TimeoutSeconds $TimeoutSeconds -MaxOutputBytes 4096 -DetailedOutcome
+    if ([string]$job.Outcome -cne 'completed' -or [string]$job.Cleanup -cne 'confirmed' -or
+        $null -eq $job.ExitCode -or $null -eq $job.Stdout) { throw 'job' }
+    $code=[int]$job.ExitCode
+    $text=[Text.UTF8Encoding]::new($false,$true).GetString([byte[]]$job.Stdout)
+    $lines=@($text.TrimEnd("`r","`n"))
+    if ($lines.Count -ne 1 -or ([string]$lines[0]).Length -gt 256) { throw 'output' }
+    $answer=[string]$lines[0] | ConvertFrom-Json -ErrorAction Stop
+    $keys=@($answer.PSObject.Properties.Name)
+    if ($code -ne 0 -or $keys.Count -ne 4 -or
+        @('status','attempt','marker_id','marker_sha256').Where({ $_ -cnotin $keys }).Count -ne 0 -or
+        [string]$answer.status -cnotin @('ADOPTED','NOT_ADOPTED','NOT_NEEDED') -or
+        [string]$answer.attempt -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$answer.marker_id -cnotmatch '^[0-9a-f]{48}$' -or
+        [string]$answer.marker_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'uncertain result' }
+    $attempt=[string]$answer.attempt
     $privateLockPath=Join-Path $private 'prefix-private-state.lock'
     $checkpointLockPath=Join-Path $checkpoint 'q4-checkpoint.lock'
     $privateLock=$null; $checkpointLock=$null; $privateHeld=$false; $checkpointHeld=$false
@@ -231,10 +252,45 @@ public static class WdQ4AdoptPendingV1 {
         foreach ($other in $competing) {
             if ([WdQ4AdoptPendingV1]::Exists($other)) { throw 'competing pending' }
         }
-        $pendingHandle=[WdQ4AdoptPendingV1]::Create($pendingPath)
-        $pendingStream=[IO.FileStream]::new($pendingHandle,[IO.FileAccess]::ReadWrite)
-        $pendingStream.Write($pendingBytes,0,$pendingBytes.Length)
-        $pendingStream.Flush($true)
+        [void](CheckedPath $pendingPath)
+        $pendingHandle=[WdQ4AdoptPendingV1]::OpenExisting($pendingPath)
+        $pendingStream=[IO.FileStream]::new($pendingHandle,[IO.FileAccess]::Read)
+        if ([WdQ4AdoptPendingV1]::Identity($pendingStream.SafeFileHandle) -cne [string]$answer.marker_id -or
+            $pendingStream.Length -le 0 -or $pendingStream.Length -gt 65536) { throw 'marker identity' }
+        $observed=New-Object byte[] ([int]$pendingStream.Length)
+        if ($pendingStream.Read($observed,0,$observed.Length) -ne $observed.Length) { throw 'marker read' }
+        $hasher=[Security.Cryptography.SHA256]::Create()
+        try { $markerPin=[BitConverter]::ToString($hasher.ComputeHash($observed)).Replace('-','').ToLowerInvariant() }
+        finally { $hasher.Dispose() }
+        if ($markerPin -cne [string]$answer.marker_sha256) { throw 'marker digest' }
+        $markerData=[Text.Encoding]::ASCII.GetString($observed) | ConvertFrom-Json -ErrorAction Stop
+        if ([string]$markerData.schema -cne 'wd.q4-parent-owned-recovery.v1' -or
+            [string]$markerData.attempt -cne $attempt -or [string]$markerData.commit -cne $ExpectedCommit -or
+            [string]$markerData.manifest_sha256 -cne $ExpectedManifestSha256 -or
+            [string]$markerData.config_sha256 -cne $ExpectedConfigSha256 -or
+            [string]$markerData.runtime_sha256 -cne $ExpectedRuntimeSha256 -or
+            [string]$markerData.host_sha256 -cne $ExpectedHostSha256 -or
+            [string]$markerData.receipt_sha256 -cne [string]$configData.receipt_sha256 -or
+            [string]$markerData.tuple_sha256 -cne [string]$configData.tuple_sha256 -or
+            [string]$markerData.baseline_sha256 -cne [string]$configData.baseline_sha256 -or
+            [string]$markerData.interpreter_sha256 -cne $pythonPin -or
+            [string]$markerData.launcher_sha256 -cne ([string]$manifestData.files.'Invoke-WdQ4AdoptRecovery.ps1').ToLowerInvariant()) { throw 'marker binding' }
+        $resultPath=Join-Path $private ('q4-adopt-recovery-job-result-'+$attempt+'.json')
+        $resultBytes=[Text.Encoding]::ASCII.GetBytes(([ordered]@{
+            schema='wd.q4-adopt-recovery-job-result.v1'; attempt=$attempt; marker_id=[string]$answer.marker_id;
+            marker_sha256=$markerPin; manifest_sha256=$ExpectedManifestSha256; config_sha256=$ExpectedConfigSha256;
+            runtime_sha256=$ExpectedRuntimeSha256; host_sha256=$ExpectedHostSha256;
+            receipt_sha256=[string]$configData.receipt_sha256; tuple_sha256=[string]$configData.tuple_sha256;
+            baseline_sha256=[string]$configData.baseline_sha256; interpreter_sha256=$pythonPin;
+            launcher_sha256=([string]$manifestData.files.'Invoke-WdQ4AdoptRecovery.ps1').ToLowerInvariant(); commit=$ExpectedCommit;
+            status=[string]$answer.status; exit_code=$code; job_outcome='completed'; job_cleanup='confirmed'
+        } | ConvertTo-Json -Compress))
+        $resultStream=[IO.File]::Open($resultPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+        try { $resultStream.Write($resultBytes,0,$resultBytes.Length); $resultStream.Flush($true) }
+        finally { $resultStream.Dispose() }
+        [WdQ4AdoptPendingV1]::DeleteOwned($pendingStream.SafeFileHandle)
+        $pendingStream.Dispose(); $pendingStream=$null
+        if ([IO.File]::Exists($pendingPath)) { throw 'pending still exists' }
     } finally {
         if ($checkpointHeld) { $checkpointLock.Unlock(0,1) }
         if ($null -ne $checkpointLock) { $checkpointLock.Dispose() }
@@ -244,52 +300,7 @@ public static class WdQ4AdoptPendingV1 {
             try { $ownerLocks[$i].Unlock(0,1) } finally { $ownerLocks[$i].Dispose() }
         }
     }
-    . $jobHelper
-    $jobArgs=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$worker,
-        '-Manifest',$manifest,'-ManifestSha256',$ExpectedManifestSha256,'-Bootstrap',$bootstrap,
-        '-BootstrapSha256',([string]$manifestData.files.'tools-bootstrap/tools/wd_q4_continuation_adopt_recovery_bootstrap.py').ToLowerInvariant(),
-        '-Python',$python,'-PythonSha256',$pythonPin,'-Config',$config,'-ConfigSha256',$ExpectedConfigSha256,
-        '-Runtime',$runtime,'-RuntimeSha256',$ExpectedRuntimeSha256)
-    $started=$true
-    $job=Invoke-WdQ4ProcessJob -Executable $hostPath -Arguments $jobArgs -WorkingDirectory $bundle `
-        -ScratchRoot $scratch -InputBytes ([byte[]]@()) -TimeoutSeconds $TimeoutSeconds -MaxOutputBytes 4096 -DetailedOutcome
-    if ([string]$job.Outcome -cne 'completed' -or [string]$job.Cleanup -cne 'confirmed' -or
-        $null -eq $job.ExitCode -or $null -eq $job.Stdout) { throw 'job' }
-    $code=[int]$job.ExitCode
-    $text=[Text.UTF8Encoding]::new($false,$true).GetString([byte[]]$job.Stdout)
-    $lines=@($text.TrimEnd("`r","`n"))
-    if ($lines.Count -ne 1 -or ([string]$lines[0]).Length -gt 256) { throw 'output' }
-    $answer=[string]$lines[0] | ConvertFrom-Json -ErrorAction Stop
-    $keys=@($answer.PSObject.Properties.Name)
-    if ($keys.Count -ne 1 -or $keys[0] -cne 'status' -or
-        -not (($code -eq 0 -and [string]$answer.status -cin @('ADOPTED','NOT_ADOPTED','NOT_NEEDED')) -or
-              ($code -eq 2 -and [string]$answer.status -ceq 'REFUSED') -or
-              ($code -eq 3 -and [string]$answer.status -ceq 'UNKNOWN'))) { throw 'output' }
-    # Even a fully drained Job cannot resolve an UNKNOWN child result.
-    if ([string]$answer.status -ceq 'UNKNOWN') { throw 'uncertain result' }
-    $resultPath=Join-Path $private ('q4-adopt-recovery-job-result-'+$attempt+'.json')
-    $resultBytes=[Text.Encoding]::ASCII.GetBytes(([ordered]@{
-        schema='wd.q4-adopt-recovery-job-result.v1'; attempt=$attempt;
-        manifest_sha256=$ExpectedManifestSha256; config_sha256=$ExpectedConfigSha256;
-        runtime_sha256=$ExpectedRuntimeSha256; host_sha256=$ExpectedHostSha256;
-        receipt_sha256=[string]$configData.receipt_sha256; tuple_sha256=[string]$configData.tuple_sha256;
-        baseline_sha256=[string]$configData.baseline_sha256; interpreter_sha256=$pythonPin;
-        launcher_sha256=([string]$manifestData.files.'Invoke-WdQ4AdoptRecovery.ps1').ToLowerInvariant(); commit=$ExpectedCommit;
-        status=[string]$answer.status; exit_code=$code; job_outcome='completed'; job_cleanup='confirmed'
-    } | ConvertTo-Json -Compress))
-    $resultStream=[IO.File]::Open($resultPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
-    try { $resultStream.Write($resultBytes,0,$resultBytes.Length); $resultStream.Flush($true) }
-    finally { $resultStream.Dispose() }
-    # Delete the still-open owned Windows handle, not a potentially replaced pathname.
-    $pendingStream.Position=0
-    $observed=New-Object byte[] $pendingBytes.Length
-    if ($pendingStream.Read($observed,0,$observed.Length) -ne $observed.Length -or
-        $pendingStream.Length -ne $pendingBytes.Length -or
-        [Convert]::ToBase64String($observed) -cne [Convert]::ToBase64String($pendingBytes)) { throw 'pending changed' }
-    [WdQ4AdoptPendingV1]::DeleteOwned($pendingStream.SafeFileHandle)
-    $pendingStream.Dispose(); $pendingStream=$null
-    if ([IO.File]::Exists($pendingPath)) { throw 'pending still exists' }
-    [Console]::Out.WriteLine(($answer | ConvertTo-Json -Compress))
+    [Console]::Out.WriteLine((@{ status=[string]$answer.status } | ConvertTo-Json -Compress))
     exit $code
 } catch {
     if ($started) { [Console]::Out.WriteLine('{"status":"UNKNOWN"}'); exit 3 }

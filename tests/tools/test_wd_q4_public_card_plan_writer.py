@@ -602,3 +602,43 @@ def test_the_written_plan_equals_the_hand_built_v3_plan_and_binds_the_same_lane_
     hand_pin = staged_producer["expected_public_plan_sha256"].encode()
     assert (json.loads(actual["binding_bytes"].replace(sha(written).encode(), b"PLAN"))
             == json.loads(expected["binding_bytes"].replace(hand_pin, b"PLAN")))
+
+
+from tests.tools.test_wd_q4_real_card_snapshot_e2e import real_fixture, real_snapshot  # noqa: E402,F401
+
+
+def test_a_real_format_non_synthetic_decision_writes_a_v3_plan_the_real_resolver_validates(real_snapshot, tmp_path):
+    # fabricated local Git heads and cards; the decision is enable_real_card_route with synthetic False
+    directory, built, decision, snapshot, _, _ = real_snapshot
+    assert decision["decision"] == "enable_real_card_route" and decision["synthetic"] is False
+    assert "head_observation_sha256" in decision
+    files = tmp_path / "real-inputs"
+    files.mkdir()
+    blobs = {"pointer": snapshot["pointer_bytes"], "card_decision": snapshot["decision_bytes"],
+             "card_policy": snapshot["card_policy_bytes"], "policy": snapshot["policy_bytes"],
+             "roster": snapshot["roster_bytes"], "public_policy": b"{}"}
+    paths = {}
+    for name, raw in blobs.items():
+        (files / (name + ".json")).write_bytes(raw)
+        paths[name] = str(files / (name + ".json"))
+    plan = {"schema": V1, "root": str(directory.parent), "config": {"descriptor_sha256": built["descriptor_sha256"]},
+            "pointer_sha256": sha(blobs["pointer"]), "source_anchor_sha256": decision["source_prefix"]["sha256"],
+            "encoder_sha256": "e5" * 32}
+    for name in ("policy", "roster", "public_policy"):
+        plan[name + "_path"], plan[name + "_sha256"] = paths[name], sha(blobs[name])
+    (files / "plan-v1.json").write_bytes(canon(plan))
+    out = tmp_path / "real-out"
+    out.mkdir()
+    result = module().write_staged_card_plan(
+        enabled=True, public_plan_path=str(files / "plan-v1.json"), expected_public_plan_sha256=sha(canon(plan)),
+        output_dir=str(out), pointer_path=paths["pointer"], card_decision_path=paths["card_decision"],
+        card_policy_path=paths["card_policy"], source_path=str(snapshot["source_path"]),
+        generation_path=str(snapshot["generation_path"]))
+    written = json.loads(open(result["public_plan_path"], "rb").read())
+    assert written["end_cursor"] == dataclasses.asdict(snapshot["end_cursor"])
+    assert written["card_decision_sha256"] == snapshot["decision_sha256"]
+    binding = pointer_resolver.resolve_card_snapshot_pointer(written["root"], enabled=True,
+                                                             **staged_inputs_from_plan(written))
+    assert binding["status"] == "VALIDATED_STAGED" and binding["source_mode"] == "card-snapshot-v1"
+    _, _, pins = link._public_plan(result["public_plan_path"], result["public_plan_sha256"])
+    assert pins["card_policy_sha256"] == written["card_policy_sha256"]

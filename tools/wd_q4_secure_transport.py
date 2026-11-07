@@ -1194,6 +1194,9 @@ def _module_origins(before, roots, namespace_root=None, created_origin=None, swi
                        os.path.normcase(os.path.realpath(path)) == expected and
                        not os.path.exists(os.path.join(path, "__init__.py")))
                 continue
+            if spec is not None and spec.origin is None and type(spec.loader) is NamespaceLoader:
+                _check(created_origin is not None and created_origin.accept_namespace(name, module))
+                continue
             if name in sys.builtin_module_names or getattr(spec, "origin", None) in ("built-in", "frozen"):
                 # A ModuleSpec is mutable and its origin is merely a claim.
                 # Bind it to the matching interpreter importer and registry;

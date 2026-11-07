@@ -73,9 +73,51 @@ def _probe(tmp_path, scenario):
                 b'sys.modules[__name__] = Wrapped(sys.modules[__name__], __name__)\n')}
         if scenario == 'inherited_parent_failure':
             sources['wd_synthetic_base.py'] += b'import wd_synthetic_wrapped\nraise RuntimeError("synthetic failure")\n'
+        if scenario == 'inherited_direct':
+            sources['wd_synthetic_wrapped.py'] = sources['wd_synthetic_wrapped.py'].replace(
+                b'from wd_synthetic_base import PropModule', b'import types\nPropModule = types.ModuleType').replace(
+                b'super().__init__(module, name)', b'super().__init__(name); self.m = module')
         for filename, data in sources.items():
             (site / filename).write_bytes(data)
             files.append({'path':'site/' + filename, 'size':len(data), 'sha256':hashlib.sha256(data).hexdigest()})
+    if scenario.startswith('sourcealias_'):
+        factory = (b'import types\n'
+                   b'class Namespace(types.ModuleType):\n'
+                   b' def __init__(self):\n'
+                   b'  super().__init__("wd_synthetic_root.ops")\n'
+                   b'  self.marker = object()\n'
+                   b' def __getattr__(self, name): raise AttributeError(name)\n')
+        if scenario == 'sourcealias_nested':
+            factory += b'import wd_synthetic_nested\nops = wd_synthetic_nested.ops\n'
+            nested = b'from wd_synthetic_factory import Namespace\nops = Namespace()\n'
+            (site / 'wd_synthetic_nested.py').write_bytes(nested)
+            files.append({'path':'site/wd_synthetic_nested.py','size':len(nested),'sha256':hashlib.sha256(nested).hexdigest()})
+        else:
+            factory += b'ops = Namespace()\n'
+        parent = (b'import sys\nfrom wd_synthetic_factory import ops\n'
+                  b'sys.modules.setdefault(__name__ + ".ops", ops)\n')
+        if scenario == 'sourcealias_source_addition':
+            parent += b'ops.synthetic_namespace = object()\n'
+        if scenario == 'sourcealias_source_replacement':
+            parent += b'ops.marker = object()\n'
+        for filename,data in (('wd_synthetic_factory.py',factory),('wd_synthetic_root.py',parent)):
+            (site / filename).write_bytes(data)
+            files.append({'path':'site/' + filename,'size':len(data),'sha256':hashlib.sha256(data).hexdigest()})
+    if scenario.startswith('namespace_'):
+        namespace = site / 'wd_synthetic_namespace'
+        namespace.mkdir()
+        child = b'VALUE = 1\n'
+        (namespace / 'child.py').write_bytes(child)
+        files.append({'path':'site/wd_synthetic_namespace/child.py','size':len(child),'sha256':hashlib.sha256(child).hexdigest()})
+        for filename in ('q4_namespace_origin.py', 'runtime_manifest.py'):
+            relative = 'assets/code/sandbox/mind/step2/' + filename
+            data = (ROOT / 'sandbox/mind/step2' / filename).read_bytes()
+            destination = tmp_path.joinpath(*relative.split('/'))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(data)
+            if not ((scenario == 'namespace_missing_pin' and filename == 'q4_namespace_origin.py')
+                    or (scenario == 'namespace_missing_verifier_pin' and filename == 'runtime_manifest.py')):
+                files.append({'path':relative,'size':len(data),'sha256':hashlib.sha256(data).hexdigest()})
     if scenario.startswith('witness_'):
         producer = (b'import sys, types\nVALUE = "safe"\n'
                     b'def make_alias(target):\n'
@@ -91,7 +133,7 @@ def _probe(tmp_path, scenario):
     helper_relative = 'assets/code/sandbox/mind/step2/q4_controlled_imports.py'
     helper = (ROOT / 'sandbox/mind/step2/q4_controlled_imports.py').read_bytes()
     helper_path = tmp_path.joinpath(*helper_relative.split('/'))
-    helper_path.parent.mkdir(parents=True)
+    helper_path.parent.mkdir(parents=True, exist_ok=True)
     helper_path.write_bytes(helper)
     files.append({'path': helper_relative, 'size': len(helper), 'sha256': hashlib.sha256(helper).hexdigest()})
     if scenario in ('metadata', 'metadata_tamper', 'metadata_extra', 'metadata_toctou'):
@@ -123,6 +165,10 @@ def _probe(tmp_path, scenario):
         (dist / 'EXTRA').write_bytes(b'not in manifest')
     if scenario == 'tamper':
         (site / 'wd_synthetic_good.py').write_bytes(b'VALUE = 99\n')
+    if scenario == 'namespace_tampered_helper':
+        (tmp_path / 'assets/code/sandbox/mind/step2/q4_namespace_origin.py').write_bytes(b'raise AssertionError("must not execute")\n')
+    if scenario == 'namespace_tampered_verifier':
+        (tmp_path / 'assets/code/sandbox/mind/step2/runtime_manifest.py').write_bytes(b'raise AssertionError("must not execute")\n')
     outside = tmp_path.parent / '_outside_shared'
     outside.mkdir(exist_ok=True)
     (outside / 'wd_synthetic_external.py').write_text('raise AssertionError("must not execute")\n')
@@ -272,6 +318,42 @@ elif scenario in ('torch_preseed', 'cython_preseed'):
   except ns['_Refused']: pass
   else: raise AssertionError('runtime preseed accepted')
  finally: del sys.modules[name]
+elif scenario.startswith('namespace_'):
+ sys.path.insert(0,str(root/'assets'/'code'))
+ if scenario == 'namespace_preloaded_verifier':
+  import types
+  sys.modules['sandbox.mind.step2.runtime_manifest'] = types.ModuleType('sandbox.mind.step2.runtime_manifest')
+ name = 'wd_synthetic_namespace'
+ module = importlib.import_module(name)
+ roots = [ns['os'].path.normcase(ns['os'].path.realpath(root/'site')),
+          ns['os'].path.normcase(ns['os'].path.realpath(root/'assets'/'code'))] + ns['_interpreter_roots']()
+ try: ns['_module_origins'](set(sys.modules)-{name}, roots, str(root/'assets'/'code'), guard)
+ except (ns['_Refused'], ImportError):
+  if scenario == 'namespace_clean': raise
+ else:
+  if scenario != 'namespace_clean': raise AssertionError('unverified namespace helper accepted')
+elif scenario.startswith('sourcealias_'):
+ import types
+ name = 'wd_synthetic_root.ops'
+ if scenario == 'sourcealias_preseed': sys.modules[name] = types.ModuleType(name)
+ try: importlib.import_module('wd_synthetic_root')
+ except ns['_Refused']:
+  if scenario != 'sourcealias_source_replacement': raise
+  print('PASS'); raise SystemExit(0)
+ module = sys.modules[name]
+ if scenario in ('sourcealias_preseed', 'sourcealias_nested', 'sourcealias_source_replacement'):
+  try: guard.accept_created(name, module)
+  except ns['_Refused']: pass
+  else: raise AssertionError('unproven source alias accepted')
+ else:
+  guard.accept_created(name, module)
+  if scenario == 'sourcealias_swap': sys.modules[name] = types.ModuleType(name)
+  elif scenario == 'sourcealias_instance_mutation': module.marker = object()
+  elif scenario == 'sourcealias_class_mutation': type(module).__getattr__ = lambda self, name: None
+  if scenario not in ('sourcealias_clean', 'sourcealias_source_addition'):
+   try: guard.accept_created(name, sys.modules[name])
+   except ns['_Refused']: pass
+   else: raise AssertionError('changed source alias accepted')
 elif scenario.startswith('inherited_'):
  import types
  name = 'wd_synthetic_wrapped'
@@ -293,7 +375,7 @@ elif scenario.startswith('inherited_'):
  elif scenario == 'inherited_descriptor_mutation': vars(cls)['option'].getter = lambda: 2
  elif scenario == 'inherited_cached_mutation': vars(cls)['cached'].__wrapped__ = lambda: 2
  elif scenario == 'inherited_static_mutation': cls.work = staticmethod(lambda: 2)
- if scenario != 'inherited_clean':
+ if scenario not in ('inherited_clean', 'inherited_direct'):
   try: guard.accept_created(name, sys.modules[name])
   except ns['_Refused']: pass
   else: raise AssertionError('mutated inherited source witness accepted')
@@ -426,11 +508,29 @@ def test_verified_source_created_module_subclass_is_bound(tmp_path, scenario):
     assert result.stdout in (b'PASS\r\n', b'PASS\n')
 
 
-@pytest.mark.parametrize('scenario', ('inherited_clean', 'inherited_swap', 'inherited_base_mutation',
+@pytest.mark.parametrize('scenario', ('inherited_clean', 'inherited_direct', 'inherited_swap', 'inherited_base_mutation',
                                       'inherited_base_global_swap', 'inherited_parent_failure',
                                       'inherited_original_swap', 'inherited_descriptor_mutation', 'inherited_cached_mutation',
                                       'inherited_static_mutation'))
 def test_verified_inherited_wrapper_and_descriptor_are_bound(tmp_path, scenario):
+    result = _probe(tmp_path, scenario)
+    assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
+    assert result.stdout in (b'PASS\r\n', b'PASS\n')
+
+
+@pytest.mark.parametrize('scenario', ('sourcealias_clean', 'sourcealias_source_addition', 'sourcealias_source_replacement',
+                                      'sourcealias_preseed', 'sourcealias_nested',
+                                      'sourcealias_swap', 'sourcealias_instance_mutation', 'sourcealias_class_mutation'))
+def test_source_created_alias_is_bound_across_verified_source_calls(tmp_path, scenario):
+    result = _probe(tmp_path, scenario)
+    assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
+    assert result.stdout in (b'PASS\r\n', b'PASS\n')
+
+
+@pytest.mark.parametrize('scenario', ('namespace_clean', 'namespace_missing_pin', 'namespace_tampered_helper',
+                                      'namespace_missing_verifier_pin', 'namespace_tampered_verifier',
+                                      'namespace_preloaded_verifier'))
+def test_namespace_consumer_loads_only_manifest_pinned_helper(tmp_path, scenario):
     result = _probe(tmp_path, scenario)
     assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
     assert result.stdout in (b'PASS\r\n', b'PASS\n')

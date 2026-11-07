@@ -4,11 +4,46 @@ Experimental process-local consistency layer. It does not authenticate same-user
 code, native DLL dependencies, or prevent filesystem replacement races.
 """
 import hmac
+import gc
 import json
 import os
 from pathlib import Path
 import sys
 import types
+
+
+class _NativeRegistrations:
+    """Record bounded registration observations, never native object creation.
+
+    Cooperative same-process evidence only: GC-untracked objects, malicious
+    native code and hostile same-user writes are not authenticated or excluded.
+    Nested or concurrent intervals are not proof.
+    """
+    def __init__(self, check):
+        self._check = check
+        self._records = {}
+
+    def bind(self, before, after, tainted, *, single_thread, known_objects):
+        self._check(type(before) is dict and type(after) is dict and type(tainted) is set
+                    and type(known_objects) is tuple and single_thread is True)
+        known = {id(value) for value in before.values()} | {id(value) for value in known_objects}
+        for name, module in after.items():
+            if (name in before or name in tainted or type(name) is not str
+                    or type(module) is not types.ModuleType or id(module) in known):
+                continue
+            attrs = types.ModuleType.__getattribute__(module, '__dict__')
+            if (attrs.get('__name__') != name or attrs.get('__file__') is not None
+                    or attrs.get('__spec__') is not None or attrs.get('__loader__') is not None):
+                continue
+            self._check(name not in self._records)
+            self._records[name] = (module, dict(attrs))
+
+    def accept(self, name, module, registry):
+        self._check(name in self._records and type(registry) is dict and registry.get(name) is module)
+        expected, attrs = self._records[name]
+        self._check(module is expected and type(module) is types.ModuleType)
+        current = types.ModuleType.__getattribute__(module, '__dict__')
+        self._check(set(current) == set(attrs) and all(current[key] is value for key, value in attrs.items()))
 
 
 def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _unique_pairs,
@@ -80,6 +115,17 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
     omitted = object()
     absent = object()
     witnessed = {}
+    native_witnessed = _NativeRegistrations(_check)
+    native_stack = []
+
+    def mark_nested(before):
+        if not native_stack:
+            return
+        after = sys.modules
+        changed = {name for name in set(before) | set(after)
+                   if before.get(name, absent) is not after.get(name, absent)}
+        for event in native_stack:
+            event.update(changed)
 
     def code_tree(code):
         result = [code]
@@ -156,26 +202,57 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
         code = source_code(loader, module.__name__)
         names = {name for nested in code_tree(code) for name in nested.co_names}
         before = dict(sys.modules) if 'modules' in names and 'ModuleType' in names else None
+        nested_before = dict(sys.modules) if native_stack else None
         if before is not None:
             for name, (existing, _, _) in tuple(witnessed.items()):
                 _check(before.get(name) is existing)
                 verify_witness(name, existing, check_registry=False)
-        exec(code, module.__dict__)
-        if before is not None:
-            capture_created(before, code, module.__dict__)
+        try:
+            exec(code, module.__dict__)
+            if before is not None:
+                capture_created(before, code, module.__dict__)
+        finally:
+            if nested_before is not None:
+                mark_nested(nested_before)
 
     def bytecode_refused(*args, **kwargs):
         _check(False)
 
+    def native_call(loader, callback, argument):
+        file, _ = verified_file(loader.path, source=False)
+        try:
+            relative = file.relative_to(root).as_posix()
+        except ValueError:
+            # The interpreter's own extensions retain the old trust boundary,
+            # but cannot mint manifest-bound native registration observations.
+            return callback(loader, argument)
+        _check(relative in entries and len(sys._current_frames()) == 1)
+        before = dict(sys.modules)
+        # Keep strong references so an already existing, unregistered module
+        # cannot be presented as new merely through a registry assignment.
+        known_objects = tuple(value for value in gc.get_objects() if type(value) is types.ModuleType)
+        tainted = set()
+        native_stack.append(tainted)
+        succeeded = False
+        try:
+            value = callback(loader, argument)
+            succeeded = True
+        finally:
+            _check(native_stack.pop() is tainted)
+            mark_nested(before)
+        if succeeded:
+            verified_file(loader.path, source=False)
+            native_witnessed.bind(before, dict(sys.modules), tainted,
+                                  single_thread=len(sys._current_frames()) == 1, known_objects=known_objects)
+        return value
+
     def native_create(loader, spec):
         _check(type(loader) is loader_types[0] and spec.loader is loader)
-        verified_file(loader.path, source=False)
-        return original_native_create(loader, spec)
+        return native_call(loader, original_native_create, spec)
 
     def native_exec(loader, module):
         _check(type(loader) is loader_types[0])
-        verified_file(loader.path, source=False)
-        return original_native_exec(loader, module)
+        return native_call(loader, original_native_exec, module)
 
     def direct_spec(name, location=None, *, loader=None, submodule_search_locations=omitted):
         _check(loader is None or type(loader) in loader_types[:2])
@@ -217,7 +294,10 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
     class ControlledFinder:
         def accept_created(self, name, module):
             self.check()
-            verify_witness(name, module)
+            if name in witnessed:
+                verify_witness(name, module)
+            else:
+                native_witnessed.accept(name, module, sys.modules)
 
         def check(self):
             _check(type(sys.meta_path) is tuple and sys.meta_path == (self,) + standard[:2]

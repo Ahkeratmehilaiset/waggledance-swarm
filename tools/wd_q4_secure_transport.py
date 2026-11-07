@@ -603,7 +603,8 @@ _ANSWER_KEYS = frozenset({"schema", "status", "results", "plan_sha256", "bundle_
 _RESULT_KEYS = frozenset({"ref_sha256", "doc_id_sha256", "stored_text", "ref_kind", "canonical_event"})
 _REF_KIND = "sha256_of_projected_metadata"  # shared_result_resolver.REF_KIND
 _MAX_RESULTS = 100  # shared_result_resolver.MAX_RESULTS
-_PRELOAD_DENY = ("sandbox", "tools", "waggledance", "core")
+_PRELOAD_DENY = ("sandbox", "tools", "waggledance", "core", "torch", "numpy", "scipy",
+                 "transformers", "sentence_transformers", "cython_runtime")
 _CONTAINED = []  # NUL descriptors and sinks kept alive for the whole child process
 _BUNDLE_SCHEMA = "wd.q4-fixed-snapshot-bundle.v1"
 _BUNDLE_KEYS = frozenset({"schema", "pointer", "policy", "roster", "public_policy", "active_artifacts", "history",
@@ -1140,6 +1141,11 @@ def _reject_preloaded_faiss():
         name == 'faiss' or name.startswith('faiss.') for name in sys.modules))
 
 
+def _reject_preloaded_runtime():
+    _check(not any(name.startswith('_cython_') or any(name == deny or name.startswith(deny + '.')
+               for deny in _PRELOAD_DENY) for name in sys.modules))
+
+
 def _module_origins(before, roots, namespace_root=None, created_origin=None, swig_origin=None):
     """Check newly imported origins, including only the three known code-root namespaces.
 
@@ -1294,7 +1300,7 @@ def _fixed_child_backend(plan, peer_path):
     # First step, before any verifier, runtime or backend code runs in this process.
     _contain_child_output()
     _check(sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode)
-    _check(not any(name == deny or name.startswith(deny + ".") for name in sys.modules for deny in _PRELOAD_DENY))
+    _reject_preloaded_runtime()
     _reject_preloaded_faiss()
     imports = _install_controlled_imports(plan['runtime_root'], plan['runtime_manifest_path'],
                                           plan['runtime_manifest_sha256'])

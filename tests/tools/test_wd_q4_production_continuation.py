@@ -342,6 +342,68 @@ def test_real_late_genesis_deferred_row_then_later_cutoff(genesis_synthetic, mon
     assert pointer_path.read_bytes() == before
 
 
+@pytest.mark.parametrize('fault',['none','pointer_tamper','interrupt'])
+def test_real_empty_advance_binds_its_own_anchor(genesis_synthetic,monkeypatch,fault):
+    """A genuine later empty delta keeps the old generation but has a new anchor."""
+    from pathlib import Path
+    from tests.tools import test_wd_q4_genesis_bootstrap as base
+    from tools import wd_q4_production_continuation as mod
+    args,_=genesis_synthetic
+    base.test_late_skip_real_producer_publishes_every_public_row_after_the_skip(genesis_synthetic,monkeypatch)
+    source=Path(args['source_path']); row=json.loads(base.f2_rows(args,['private'])[0])
+    row['ts_utc']='2026-10-31T13:00:30Z'
+    with source.open('ab') as stream: stream.write(base.raw(row)+b'\n')
+    private=Path(args['private_state_root']); root=Path(args['checkpoint_root'])
+    raw_tuple=(private/'q4-genesis-tuple-v1.json').read_bytes()
+    pointer_path=root/'q4-latest.json'; old_bytes=pointer_path.read_bytes(); old=json.loads(old_bytes)
+    kwargs=dict(enabled=True,tuple_bytes=raw_tuple,expected_tuple_sha256=sha(raw_tuple),
+        expected_pointer_sha256=sha(old_bytes),policy_bytes=args['policy_bytes'],
+        public_policy_bytes=args['public_policy_bytes'],fleet_bytes=args['fleet_bytes'],
+        expected_fleet_sha256=args['expected_fleet_sha256'],cutoff_utc='2026-10-31T13:02:00Z',
+        previous_cutoff_utc='2026-10-31T13:00:00Z',watermark_enabled=True,
+        expected_watermark_record_sha256=None)
+    if fault!='none':
+        actual=mod._verified; calls=[]
+        def interfere(*pos,**kw):
+            result=actual(*pos,**kw); calls.append(True)
+            if len(calls)==2:
+                if fault=='pointer_tamper':
+                    value=json.loads(pointer_path.read_bytes()); value['empty_advance']['anchor_sha256']='0'*64
+                    pointer_path.write_bytes(base.raw(value))
+                else:
+                    raise KeyboardInterrupt()
+            return result
+        monkeypatch.setattr(mod,'_verified',interfere)
+        with pytest.raises(mod.ContinuationUnknown): mod.continue_once(**kwargs)
+        assert (private/'q4-cutoff.pending.json').exists()
+        assert len(calls)==2
+        return
+    result=mod.continue_once(**kwargs)
+    pointer=json.loads(pointer_path.read_bytes())
+    receipt,=[json.loads(p.read_bytes()) for p in private.glob('q4-status-result-*.json')
+              if sha(p.read_bytes())==result['runner_receipt_sha256']]
+    assert receipt['status']=='EMPTY_ADVANCED' and result['pointer_sha256']==sha(pointer_path.read_bytes())
+    assert pointer['generation']==old['generation'] and pointer['anchor_sha256']==old['anchor_sha256']
+    assert pointer['empty_advance']['anchor_sha256']!=pointer['anchor_sha256']
+    assert not (private/'q4-cutoff.pending.json').exists()
+    from waggledance.core.bridge_log_reader import BridgeCursor, BridgePrefixPin
+    before=BridgePrefixPin(BridgeCursor(**old['watermark']),old['prefix_watermark_sha256'])
+    after=BridgePrefixPin(BridgeCursor(**pointer['watermark']),pointer['prefix_watermark_sha256'])
+    route=json.loads((private/('q4-continuation-route-'+result['route_sha256']+'.json')).read_bytes())
+    plan={'expected_pointer_sha256':sha(old_bytes)}
+    view={name:pointer[name] for name in ('generation','artifacts','anchor_sha256')}
+    anchor=pointer['empty_advance']['anchor_sha256']
+    mod._verify_empty_advance(result,route,plan,view,before,after,anchor)
+    for wrong in ('0'*64, old['anchor_sha256']):
+        with pytest.raises(ValueError): mod._verify_empty_advance(result,route,plan,view,before,after,wrong)
+    with pytest.raises(ValueError):
+        mod._verify_empty_advance(result,{**route,'policy_sha256':'0'*64},plan,view,before,after,anchor)
+    with pytest.raises(ValueError):
+        mod._verify_empty_advance(result,route,{'expected_pointer_sha256':'0'*64},view,before,after,anchor)
+    with pytest.raises(ValueError):
+        mod._verify_empty_advance(result,route,plan,view,replace(before,sha256='0'*64),after,anchor)
+
+
 def test_watermarked_real_deferred_advances_floor_and_interruption_stays_unknown(genesis_synthetic, monkeypatch):
     from pathlib import Path
     from tests.tools import test_wd_q4_genesis_bootstrap as base

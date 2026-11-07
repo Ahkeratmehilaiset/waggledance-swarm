@@ -2,6 +2,10 @@
 
 No arguments emits OFF without reading environment, stdin, configuration or the
 adapter. --enabled reads one JSON situation/time query exclusively from stdin.
+The supplied time must lie within 300 seconds of the observed local UTC at the
+start; that observed start ranks the query. Before output a backward local clock
+refuses, and with a card binding every returned card must still be CURRENT at the
+observed end. The local clock is read, never authenticated (no freshness claim).
 WD_Q4_SHARED_DESCRIPTOR_PATH/SHA256 select the existing v2 descriptor. Its
 bundle_root contains deployment-manifest.json, whose bytes must match the
 externally supplied WD_REBOOT_EXPECTED_MANIFEST_HASH. The manifest's wd-fleet.json
@@ -55,7 +59,7 @@ until cleanup is independently reconciled. These codes are signals, not cleanup
 proof or a persistent cross-process guard. A separate caller-owned watchdog is
 required to bound the entire invocation, including a stalled stdin read.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
@@ -349,6 +353,11 @@ def _query():
     return situation, datetime.fromisoformat(when[:-1] + "+00:00")
 
 
+def _utc_now():
+    """Observed local UTC (read, never authenticated); a module seam for synthetic tests."""
+    return datetime.now(timezone.utc)
+
+
 def _output(result, lane, identity_pin, descriptor_pin, expected_binding, limit, token):
     _check(type(result) is dict and frozenset(result) == _RESULT_KEYS
            and result["schema"] == "wd.q4-lane-caller-result.v1" and result["status"] == "VALIDATED"
@@ -475,7 +484,11 @@ def main(argv=None):
         owner_context = guard._owner_context()
         _check(guard._accept_owner_context(owner_context) is owner_context)
         try:
-            situation, when = _query()
+            situation, supplied = _query()
+            # The observed start ranks the query; a supplied time over 300 s
+            # away refuses. No clock authentication, no freshness claim.
+            from tools import wd_q4_lane_query as lane_query
+            when = lane_query.observed_lane_time(supplied, _utc_now())
         except Exception:
             # Nothing has been handed off and no owner has entered. This is a
             # distinct cancellation witness, never a cleanup witness.
@@ -537,6 +550,9 @@ def main(argv=None):
                    == interrupted_marker)
         if live_publication is not None:
             live.recheck(live_publication["publication_path"], live_publication["publication_sha256"])
+        # Last step before output: refuse a backward clock and any returned
+        # card no longer CURRENT at the observed end (v6 is not rechecked).
+        lane_query.recheck_live_card_results(result["answer"]["results"], binding, when, _utc_now())
         _write(rendered)
         return 0
     except (KeyboardInterrupt, SystemExit):

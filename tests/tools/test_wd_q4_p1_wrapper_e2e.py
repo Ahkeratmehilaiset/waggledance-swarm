@@ -4,6 +4,7 @@ The bridge wrapper and runtime child are test doubles. They run the real caller
 through its selector, but stop before the guarded adapter or an E5 model.
 The fixed P1 root and placeholder interpreter read are injected for this fixture.
 """
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -254,7 +255,10 @@ def test_pending_fallback_checks_real_c2_selector_and_leaves_root_unchanged(
         def mark_unknown(self): pass
     monkeypatch.setattr(guard_completion, 'acquire_guard', lambda **kwargs: Guard())
     monkeypatch.setattr(caller, '_identity', lambda *args: ('codex-lead-1', b'synthetic-identity', 'synthetic-token'))
-    monkeypatch.setattr(caller, '_query', lambda: ('synthetic', '2026-11-06T00:00:00Z'))
+    # The enabled CLI ranks with its observed local UTC; pin that seam to the supplied instant.
+    now = datetime(2026, 11, 6, tzinfo=timezone.utc)
+    monkeypatch.setattr(caller, '_query', lambda: ('synthetic', now))
+    monkeypatch.setattr(caller, '_utc_now', lambda: now)
     calls = []
     def synthetic_adapter(**kwargs):
         calls.append(kwargs)

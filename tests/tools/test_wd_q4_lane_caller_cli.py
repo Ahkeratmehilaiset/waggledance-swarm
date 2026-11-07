@@ -15,6 +15,7 @@ return cannot establish a working native peer, cleanup or an installed route.
 Source A43589FD stays unchanged until Lead preserves this revision's RED run.
 """
 import builtins
+from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib.util
 import io
@@ -38,6 +39,8 @@ QUERY_CANARY = "synthetic-query-canary-never-an-answer"
 TOKEN_CANARY = "synthetic-owner-token-never-output"
 REFUSAL = '{"error":"lane_caller_refused","authority":"none"}\n'
 LIMIT = 65536
+NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+CARD = "status done codex-lead-1 pr:7 head:unknown next:none until:"
 MANIFEST_LIMIT = 1024 * 1024
 
 
@@ -216,6 +219,14 @@ def case(tmp_path, monkeypatch):
             "worktree": worktree, "worktrees": worktrees, "cli": load_cli(), "adapter": adapter,
             "real_adapter": real_adapter}
     values["latest"] = prepare_synthetic_latest(values, monkeypatch)
+    # Synthetic local clock seam: start observation, then end observation.
+    clock = {"times": [], "default": NOW}
+
+    def utc_now():
+        return clock["times"].pop(0) if clock["times"] else clock["default"]
+
+    monkeypatch.setattr(values["cli"], "_utc_now", utc_now, raising=False)
+    values["clock"] = clock
     return values
 
 
@@ -266,26 +277,40 @@ def test_live_mode_refuses_if_no_live_publication_before_query(case, monkeypatch
     assert case["calls"] == []
 
 
+def _stage_card_plan(case):
+    """Synthetic staged card binding and v3 plan (card decision and policy pins)."""
+    test_root = case['files']['descriptor.json'].parent
+    binding = case['descriptor']['expected_binding']
+    binding.update(card_decision_sha256='9' * 64, card_policy_sha256='8' * 64)
+    plan = json.loads(case['files']['public-plan.json'].read_bytes())
+    plan.update(schema='wd.q4-public-wrapper-plan.v3', card_decision_path=str(test_root / 'decision'),
+                card_decision_sha256=binding['card_decision_sha256'],
+                card_policy_path=str(test_root / 'card-policy'), card_policy_sha256=binding['card_policy_sha256'],
+                pointer_path=str(case['latest']), source_path=str(test_root / 'source'),
+                generation_path=str(test_root / 'generation'),
+                end_cursor={'offset': 1, 'file_identity': 'synthetic-file-id', 'generation': None})
+    plan_raw = canon(plan)
+    case['files']['public-plan.json'].write_bytes(plan_raw)
+    binding_raw = canon({'schema': 'wd.q4-lane-binding.v1', 'public_plan_sha256': sha(plan_raw),
+                         'binding': binding})
+    case['files']['binding.json'].write_bytes(binding_raw)
+    case['descriptor']['binding_sha256'] = sha(binding_raw)
+
+
+def _direct_card_route(case, monkeypatch):
+    """The staged card binding on the direct (non-live) descriptor route."""
+    _stage_card_plan(case)
+    raw = canon(case['descriptor'])
+    case['files']['descriptor.json'].write_bytes(raw)
+    monkeypatch.setenv('WD_Q4_SHARED_DESCRIPTOR_SHA256', sha(raw))
+
+
 def _pending_baseline(case, monkeypatch, *, staged=True):
     """Synthetic baseline laid out like the live selector's generation root."""
     from tools import wd_q4_live_snapshot_publish as live
     test_root = case['files']['descriptor.json'].parent
     if staged:
-        binding = case['descriptor']['expected_binding']
-        binding.update(card_decision_sha256='9' * 64, card_policy_sha256='8' * 64)
-        plan = json.loads(case['files']['public-plan.json'].read_bytes())
-        plan.update(schema='wd.q4-public-wrapper-plan.v3', card_decision_path=str(test_root / 'decision'),
-                    card_decision_sha256=binding['card_decision_sha256'],
-                    card_policy_path=str(test_root / 'card-policy'), card_policy_sha256=binding['card_policy_sha256'],
-                    pointer_path=str(case['latest']), source_path=str(test_root / 'source'),
-                    generation_path=str(test_root / 'generation'),
-                    end_cursor={'offset': 1, 'file_identity': 'synthetic-file-id', 'generation': None})
-        plan_raw = canon(plan)
-        case['files']['public-plan.json'].write_bytes(plan_raw)
-        binding_raw = canon({'schema': 'wd.q4-lane-binding.v1', 'public_plan_sha256': sha(plan_raw),
-                             'binding': binding})
-        case['files']['binding.json'].write_bytes(binding_raw)
-        case['descriptor']['binding_sha256'] = sha(binding_raw)
+        _stage_card_plan(case)
     root = test_root.parent / (test_root.name + '-synthetic-generations')
     generation = root / ('a' * 40)
     generation.mkdir(parents=True)
@@ -314,14 +339,14 @@ def test_interrupted_p1_returns_labelled_baseline_without_touching_publication(c
     root, marker, temp = _pending_baseline(case, monkeypatch)
     before = {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()}
     case['outcome']['validated'] = True
-    case['outcome']['stored_text'] = 'synthetic-baseline-card'
+    case['outcome']['stored_text'] = CARD + '2026-01-01T00:01Z'
     assert invoke(case, monkeypatch) == 0
     actual = json.loads(capsys.readouterr().out)
     assert actual['schema'] == 'wd.q4-lane-interrupted-envelope.v1'
     assert (actual['selection'], actual['publication_state'], actual['freshness']) == (
         'BASELINE_FALLBACK', 'INTERRUPTED', 'STALE')
     assert actual['result']['schema'] == 'wd.q4-lane-caller-result.v1'
-    assert actual['result']['answer']['results'][0]['stored_text'] == 'synthetic-baseline-card'
+    assert actual['result']['answer']['results'][0]['stored_text'] == CARD + '2026-01-01T00:01Z'
     assert actual.get('answer') is None  # Existing v1 consumers cannot silently mistake the envelope for v1.
     assert marker.exists() and temp.exists()
     assert {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()} == before
@@ -858,3 +883,81 @@ def test_enabled_cli_and_real_adapter_parent_path_needs_no_model_import(case, mo
     assert result["lane"] == lane and result["inner_status"] == "ABSTAIN"
     assert result["lane_authentication"] == "UNKNOWN" and calls == [lane]
     assert not attempted and QUERY_CANARY not in observed.out and TOKEN_CANARY not in observed.out
+
+
+# --- live clock: observed local UTC ranks the query; returned cards rechecked before output -------------------
+
+def _query_at(case, when):
+    case["query"] = canon({"situation": QUERY_CANARY, "time": when})
+
+
+@pytest.mark.parametrize("when", ["2025-12-31T23:54:59Z", "2026-01-01T00:05:01Z", "2025-12-31T00:00:00Z",
+                                  "2027-01-01T00:00:00Z"])
+def test_supplied_time_more_than_300_seconds_from_observed_refuses_before_adapter(case, monkeypatch, capsys, when):
+    case["outcome"].update(validated=True)
+    _query_at(case, when)
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert case["calls"] == []
+
+
+@pytest.mark.parametrize("when", ["2025-12-31T23:55:01Z", "2026-01-01T00:05:00Z", "2026-01-01T00:00:00Z"])
+def test_supplied_time_within_300_seconds_is_accepted_but_observed_start_ranks(case, monkeypatch, capsys, when):
+    case["outcome"].update(validated=True)
+    start = NOW + timedelta(microseconds=250000)
+    case["clock"]["times"] = [start, start + timedelta(seconds=2)]
+    _query_at(case, when)
+    assert invoke(case, monkeypatch) == 0
+    assert capsys.readouterr().err == ""
+    assert len(case["calls"]) == 1 and case["calls"][0]["time"] == start
+    assert case["clock"]["times"] == []
+
+
+def test_backward_local_clock_during_call_refuses_output(case, monkeypatch, capsys):
+    case["outcome"].update(validated=True)
+    case["clock"]["times"] = [NOW, NOW - timedelta(microseconds=1)]
+    assert_refused(invoke(case, monkeypatch), capsys)
+    assert len(case["calls"]) == 1
+
+
+@pytest.mark.parametrize("end, until, ok", [
+    (NOW + timedelta(seconds=59), "2026-01-01T00:01Z", True),
+    (NOW + timedelta(seconds=60), "2026-01-01T00:01Z", False),
+    (NOW + timedelta(seconds=61), "2026-01-01T00:01Z", False),
+    (NOW + timedelta(minutes=9), "2026-01-01T00:05Z", False),
+], ids=["current-at-end", "expires-at-end", "expired-during-call", "expired-long-call"])
+def test_card_expiring_during_the_call_is_not_output(case, monkeypatch, capsys, end, until, ok):
+    _direct_card_route(case, monkeypatch)
+    case["outcome"].update(validated=True, stored_text=CARD + until)
+    case["clock"]["times"] = [NOW, end]
+    if ok:
+        assert invoke(case, monkeypatch) == 0
+        assert json.loads(capsys.readouterr().out)["answer"]["results"][0]["stored_text"] == CARD + until
+    else:
+        assert_refused(invoke(case, monkeypatch), capsys)
+    assert len(case["calls"]) == 1
+
+
+@pytest.mark.parametrize("text", ["status done codex-lead-1 pr:7 next:none", CARD + "2026-01-01T00:01",
+                                  CARD + "2026-13-01T00:01Z"], ids=["no-until", "no-z", "bad-month"])
+def test_card_without_a_usable_until_is_not_output(case, monkeypatch, capsys, text):
+    _direct_card_route(case, monkeypatch)
+    case["outcome"].update(validated=True, stored_text=text)
+    assert_refused(invoke(case, monkeypatch), capsys)
+
+
+def test_interrupted_card_baseline_expiring_during_the_call_is_not_output(case, monkeypatch, capsys):
+    _pending_baseline(case, monkeypatch)
+    case["outcome"].update(validated=True, stored_text=CARD + "2026-01-01T00:01Z")
+    case["clock"]["times"] = [NOW, NOW + timedelta(seconds=60)]
+    assert_refused(invoke(case, monkeypatch), capsys)
+
+
+def test_v6_non_card_results_are_not_rechecked_by_card_status(case, monkeypatch, capsys):
+    """v6 records carry no card until field; their behavior is unchanged (still no freshness claim)."""
+    text = "status done codex-lead-1 synthetic public record until:2020-01-01T00:00Z"
+    case["outcome"].update(validated=True, stored_text=text)
+    case["clock"]["times"] = [NOW, NOW + timedelta(seconds=30)]
+    assert invoke(case, monkeypatch) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["answer"]["results"][0]["stored_text"] == text
+    assert result["answer"]["trust"]["freshness"] == "UNKNOWN"

@@ -1,4 +1,5 @@
 """Synthetic CLI orchestration tests; no native chain or production proof."""
+from datetime import datetime, timezone
 import hashlib
 import json
 import subprocess
@@ -10,6 +11,10 @@ import pytest
 from tools import wd_q4_guard_completion as guard_module
 from tools import wd_q4_lane_caller_adapter as adapter
 from tools import wd_q4_lane_caller_cli as cli
+
+# The enabled CLI ranks with its observed local UTC (seam below) and refuses a
+# supplied time more than 300 s away from it.
+NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 @pytest.fixture
@@ -47,6 +52,7 @@ def setup_cli(tmp_path, monkeypatch):
                                                        fleet, binding, inputs))
     monkeypatch.setattr(cli, "_identity", lambda *args: (lane, b"synthetic-identity", "synthetic-token"))
     monkeypatch.setattr(cli, "_refuse", lambda code: code)
+    monkeypatch.setattr(cli, "_utc_now", lambda: NOW)
     writes = []
     monkeypatch.setattr(cli, "_write", lambda text: writes.append(text))
     acquired = []
@@ -120,7 +126,7 @@ print('acquired-and-cancelled')
 
 
 def test_owner_context_handoff_precedes_adapter_dispatch(setup_cli, monkeypatch):
-    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", None))
+    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", NOW))
     events = []
     original = guard_module._OwnerContext._handoff
     def handoff(context):
@@ -159,7 +165,7 @@ def test_query_interrupt_preserves_unknown_instead_of_cancelling(setup_cli, monk
 
 
 def test_failed_handoff_does_not_dispatch_or_cancel(setup_cli, monkeypatch):
-    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", None))
+    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", NOW))
     def fail_handoff(*args):
         raise guard_module.GuardCompletionUnavailable()
     monkeypatch.setattr(guard_module._OwnerContext, "_handoff", fail_handoff)
@@ -170,7 +176,7 @@ def test_failed_handoff_does_not_dispatch_or_cancel(setup_cli, monkeypatch):
 
 
 def test_incomplete_owners_never_release_or_publish(setup_cli, monkeypatch):
-    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", None))
+    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", NOW))
     monkeypatch.setattr(adapter, "call_lane_session", lambda **kwargs: {
         "status": "VALIDATED", "cleanup": "chain_confirmed", "inner_status": "ANSWER"})
     monkeypatch.setattr(cli, "_output", lambda *args: "synthetic-output")
@@ -181,7 +187,7 @@ def test_incomplete_owners_never_release_or_publish(setup_cli, monkeypatch):
 
 def test_synthetic_protocol_success_does_not_abort_after_release(setup_cli, monkeypatch):
     """Only checks CLI ordering; synthetic ticket completion is not cleanup proof."""
-    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", None))
+    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", NOW))
     def fake_adapter(**kwargs):
         item, context = kwargs["_owner_guard"], kwargs["_owner_context"]
         assert item._accept_owner_context(context) is context
@@ -190,7 +196,9 @@ def test_synthetic_protocol_success_does_not_abort_after_release(setup_cli, monk
             assert context._accept_ticket(name, ticket) is ticket
             ticket._begin()
             ticket._complete()
-        return {"status": "VALIDATED", "cleanup": "chain_confirmed", "inner_status": "ANSWER"}
+        # The CLI rechecks the returned results against its observed clock before output.
+        return {"status": "VALIDATED", "cleanup": "chain_confirmed", "inner_status": "ANSWER",
+                "answer": {"results": []}}
     monkeypatch.setattr(adapter, "call_lane_session", fake_adapter)
     monkeypatch.setattr(cli, "_output", lambda *args: "synthetic-output")
     assert cli.main(["--enabled"]) == 0
@@ -247,7 +255,7 @@ def test_same_lane_pending_marker_blocks_second_query(setup_cli, monkeypatch):
 
 
 def test_interrupt_after_adapter_before_finish_marks_unknown(setup_cli, monkeypatch):
-    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", None))
+    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", NOW))
     monkeypatch.setattr(adapter, "call_lane_session", lambda **kwargs: {
         "status": "VALIDATED", "cleanup": "chain_confirmed", "inner_status": "ANSWER"})
     def interrupt(*args):
@@ -259,7 +267,7 @@ def test_interrupt_after_adapter_before_finish_marks_unknown(setup_cli, monkeypa
 
 
 def test_release_failure_does_not_publish_and_marks_unknown(setup_cli, monkeypatch):
-    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", None))
+    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", NOW))
     def fake_adapter(**kwargs):
         context = kwargs["_owner_context"]
         for name in ("adapter", "attestation", "transport"):
@@ -278,7 +286,7 @@ def test_release_failure_does_not_publish_and_marks_unknown(setup_cli, monkeypat
 
 
 def test_output_failure_after_release_does_not_abort_consumed_guard(setup_cli, monkeypatch):
-    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", None))
+    monkeypatch.setattr(cli, "_query", lambda: ("synthetic-query", NOW))
     def fake_adapter(**kwargs):
         context = kwargs["_owner_context"]
         for name in ("adapter", "attestation", "transport"):

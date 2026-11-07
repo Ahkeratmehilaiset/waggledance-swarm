@@ -533,6 +533,28 @@ def test_lifecycle_busy_without_pending_refuses_before_card_reservation(lifecycl
     assert not (private / 'q4-card-refresh.pending.json').exists()
 
 
+def test_interrupted_enrollment_blocks_v1_and_allows_new_v2_attempt(lifecycle_case, monkeypatch):
+    from tools import wd_q4_live_update_once as update
+    case = lifecycle_case
+    document, private = _lifecycle_v2_document(case)
+    config = configured(case, document, name='v2-interrupted-enrollment')
+    lifecycle = case['coordinator'].lifecycle
+    original = lifecycle._ensure_enrollment
+    def interrupt_after_enrollment(root, pin):
+        original(root, pin)
+        raise OSError('synthetic interruption after enrollment')
+    with monkeypatch.context() as scoped:
+        scoped.setattr(lifecycle, '_ensure_enrollment', interrupt_after_enrollment)
+        with pytest.raises(update.UpdateOutcomeUnknown):
+            invoke(config, attempt='1' * 64)
+    assert (case['shared'] / lifecycle._ENROLLED).is_file()
+    assert not (case['shared'] / lifecycle._PENDING).exists()
+    assert not (private / 'q4-card-refresh.pending.json').exists()
+    with pytest.raises(update.UpdateOutcomeUnknown):
+        invoke(configured(case, case['tuple_for'](), name='v1-after-interrupted-enrollment'))
+    assert invoke(config, attempt='2' * 64)['status'] == 'PUBLISHED'
+
+
 def test_lifecycle_v2_interrupted_a_blocks_b_on_same_generation(lifecycle_case, monkeypatch):
     """A private pending record cannot be bypassed by B in the v2 route."""
     from tools import wd_q4_live_update_once as update

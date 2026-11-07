@@ -62,6 +62,18 @@ def test_staged_backend_refuses_unpinned_or_foreign_source(staged,tmp_path,damag
         fixed._read_staged_backend(str(peer), plan)
 
 
+def test_fixed_wrapper_command_has_no_query_or_arbitrary_code(staged):
+    from tools import wd_q4_staged_fixed_backend as backend
+    root, _, _, plan = staged
+    plan.update(public_plan_path=str(root/'public-plan.json'),public_plan_sha256='a'*64)
+    command=backend._wrapper_command(plan,r'C:\Windows')
+    assert command[:5]==[r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe',
+                          '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass']
+    assert command[5:7]==['-File',str(root/'Invoke-WdQ4Query.ps1')]
+    assert '-Public' in command and '-Command' not in command and '-EncodedCommand' not in command
+    assert all('synthetic-secret-query' not in item for item in command)
+
+
 @pytest.mark.parametrize('damage', ['projection','source','pointer','card_policy','plan','bundle'])
 def test_actual_c2_inputs_bind_independent_plan_before_dispatch(real_snapshot, tmp_path, damage):
     from tools import wd_q4_staged_fixed_backend as backend

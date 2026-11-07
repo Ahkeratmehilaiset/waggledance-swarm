@@ -5,7 +5,7 @@
    Pins are caller assertions, not authentication or hostile-user isolation. #>
 [CmdletBinding(PositionalBinding=$false)]
 param(
-    [switch]$Run, [switch]$InternalWorker,
+    [switch]$Run,
     [string]$BundleRoot='', [string]$ExpectedCommit='', [string]$ExpectedManifestSha256='',
     [string]$RequestPath='', [string]$ExpectedRequestSha256='',
     [string]$RuntimePath='', [string]$ExpectedRuntimeSha256='',
@@ -42,6 +42,23 @@ try {
         finally { $stream.Dispose() }
         if ($actual -cne $Pin.ToUpperInvariant()) { throw 'hash' }
     }
+    function PinnedJson([string]$Path,[string]$Pin,[int]$Limit) {
+        if ($Pin -cnotmatch '^[0-9a-fA-F]{64}$') { throw 'pin' }
+        $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        try {
+            if ($stream.Length -le 0 -or $stream.Length -gt $Limit) { throw 'size' }
+            $bytes=New-Object byte[] ([int]$stream.Length); $offset=0
+            while ($offset -lt $bytes.Length) {
+                $n=$stream.Read($bytes,$offset,$bytes.Length-$offset); if ($n -le 0) { throw 'read' }; $offset+=$n
+            }
+            if ($stream.ReadByte() -ne -1) { throw 'size' }
+        } finally { $stream.Dispose() }
+        $h=[Security.Cryptography.SHA256]::Create()
+        try { $actual=[BitConverter]::ToString($h.ComputeHash($bytes)).Replace('-','') } finally { $h.Dispose() }
+        if ($actual -cne $Pin.ToUpperInvariant()) { throw 'hash' }
+        $text=[Text.UTF8Encoding]::new($false,$true).GetString($bytes)
+        return ($text | ConvertFrom-Json -ErrorAction Stop)
+    }
     $bundle=CheckedPath $BundleRoot $true
     $request=CheckedPath $RequestPath; $runtime=CheckedPath $RuntimePath
     $manifest=CheckedPath (Join-Path $bundle 'deployment-manifest.json')
@@ -49,10 +66,9 @@ try {
     $jobHelper=CheckedPath (Join-Path $bundle 'WdQ4ProcessJob.ps1')
     $self=CheckedPath (Join-Path $bundle 'Invoke-WdQ4CardOrchestratorJob.ps1')
     if (-not [IO.Path]::GetFullPath($PSCommandPath).Equals($self,[StringComparison]::OrdinalIgnoreCase)) { throw 'self' }
-    ExactHash $manifest $ExpectedManifestSha256; ExactHash $request $ExpectedRequestSha256; ExactHash $runtime $ExpectedRuntimeSha256
-    $m=Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-    $r=Get-Content -LiteralPath $runtime -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-    $q=Get-Content -LiteralPath $request -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    $m=PinnedJson $manifest $ExpectedManifestSha256 4194304
+    $r=PinnedJson $runtime $ExpectedRuntimeSha256 65536
+    $q=PinnedJson $request $ExpectedRequestSha256 1048576
     if ([int]$m.schema_version -ne 1 -or [string]$m.source_commit -cne $ExpectedCommit -or
         [string]$r.schema -cne 'wd.q4-card-orchestrator-runtime.v1' -or
         [string]$q.schema -cne 'wd.q4-card-real-candidate-request.v1' -or
@@ -66,55 +82,13 @@ try {
     $pythonPin=[string]$r.interpreter_sha256; ExactHash $python $pythonPin
     $hostPath=CheckedPath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
     ExactHash $hostPath $ExpectedHostSha256
-    $snapshot=CheckedPath ([string]$q.snapshot_template.path); ExactHash $snapshot ([string]$q.snapshot_template.sha256)
-    $decision=CheckedPath ([string]$q.decision.path); ExactHash $decision ([string]$q.decision.sha256)
-    $finish=CheckedPath ([string]$q.finish.path); ExactHash $finish ([string]$q.finish.sha256)
-    $decisionData=Get-Content -LiteralPath $decision -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    $snapshot=CheckedPath ([string]$q.snapshot_template.path)
+    $decision=CheckedPath ([string]$q.decision.path)
+    $finish=CheckedPath ([string]$q.finish.path)
+    $snapshotData=PinnedJson $snapshot ([string]$q.snapshot_template.sha256) 1048576
+    $finishData=PinnedJson $finish ([string]$q.finish.sha256) 1048576
+    $decisionData=PinnedJson $decision ([string]$q.decision.sha256) 1048576
     if ([string]$decisionData.source_mode -cne 'operator_authorized_source') { throw 'mode' }
-    if ($InternalWorker) {
-        # Membership is only a cooperative guard; it does not identify this
-        # launcher's particular Job or authenticate another same-user process.
-        if ($null -ne ('WdQ4CardWorkerMembershipV1' -as [type])) { throw 'type' }
-        Add-Type -TypeDefinition @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-public static class WdQ4CardWorkerMembershipV1 {
- [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
- [DllImport("kernel32.dll",SetLastError=true)] static extern bool IsProcessInJob(IntPtr p,IntPtr j,out bool value);
- public static bool InJob() { bool value; if(!IsProcessInJob(GetCurrentProcess(),IntPtr.Zero,out value))
-  throw new Win32Exception(Marshal.GetLastWin32Error()); return value; }
-}
-'@ -ErrorAction Stop
-        if (-not [WdQ4CardWorkerMembershipV1]::InJob()) { throw 'job' }
-        # This process is inside the Job. Only the pinned manifest value is added.
-        $env:WD_REBOOT_EXPECTED_MANIFEST_HASH=$ExpectedManifestSha256
-        function Quoted([string]$Value) {
-            if (-not $Value -or $Value.Contains('"') -or $Value.EndsWith('\') -or $Value -match '[\x00-\x1f\x7f]') { throw 'argument' }
-            return '"' + $Value + '"'
-        }
-        $psi=[Diagnostics.ProcessStartInfo]::new()
-        $psi.FileName=$python
-        $psi.Arguments=('-I -S -B {0} --enable --request {1} --request-sha256 {2} --manifest-sha256 {3} --runtime {4} --runtime-sha256 {5}' -f `
-            (Quoted $bootstrap),(Quoted $request),$ExpectedRequestSha256,$ExpectedManifestSha256,(Quoted $runtime),$ExpectedRuntimeSha256)
-        $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true
-        $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
-        $proc=[Diagnostics.Process]::new(); $proc.StartInfo=$psi
-        try {
-            $entered=$true
-            if (-not $proc.Start()) { throw 'start' }
-            $drain=$proc.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null)
-            $buffer=New-Object byte[] 1024; $total=0; $output=[Console]::OpenStandardOutput()
-            while (($n=$proc.StandardOutput.BaseStream.Read($buffer,0,$buffer.Length)) -gt 0) {
-                $total+=$n; if ($total -gt 4096) { throw 'output' }
-                $output.Write($buffer,0,$n)
-            }
-            $proc.WaitForExit()
-            if (-not $drain.Wait(2000)) { throw 'stderr' }
-            $exitCode=$proc.ExitCode
-        } finally { $proc.Dispose() }
-        exit $exitCode
-    }
     $scratch=CheckedPath $ScratchRoot $true
     if ($null -ne ('WdQ4CardJobPathsV1' -as [type])) { throw 'type' }
     Add-Type -TypeDefinition @'
@@ -133,8 +107,10 @@ public static class WdQ4CardJobPathsV1 {
 '@ -ErrorAction Stop
     $scratchFinal=[WdQ4CardJobPathsV1]::Final($scratch)
     $protected=@($bundle,(Split-Path -Parent $python),(Split-Path -Parent $hostPath),$request,$runtime,$snapshot,$decision,$finish,
-        [string]$r.runtime_root,[string]$q.output_root,[string]$q.generation_root,[string]$decisionData.source_path,
-        [string]$decisionData.anchor.root,[string]$decisionData.git.repository)
+        [string]$r.runtime_root,[string]$snapshotData.trusted_model_root,[string]$q.output_root,[string]$q.generation_root,
+        [string]$decisionData.source_path,(Split-Path -Parent ([string]$decisionData.source_path)),
+        [string]$decisionData.anchor.root,[string]$decisionData.git.repository,
+        [string]$finishData.composer_options.bundle_store_root,[string]$finishData.composer_options.active_bundle_root)
     foreach ($item in @($decisionData.inputs.PSObject.Properties)) { $protected+= [string]$item.Value.path }
     foreach ($item in $protected) {
         $checked=CheckedPath $item ([IO.Directory]::Exists($item))
@@ -144,11 +120,56 @@ public static class WdQ4CardJobPathsV1 {
             $other.StartsWith($scratchFinal+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'scratch' }
     }
     . $jobHelper
-    $args=@('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$self,'-Run','-InternalWorker',
-        '-BundleRoot',$bundle,'-ExpectedCommit',$ExpectedCommit,'-ExpectedManifestSha256',$ExpectedManifestSha256,
-        '-RequestPath',$request,'-ExpectedRequestSha256',$ExpectedRequestSha256,
-        '-RuntimePath',$runtime,'-ExpectedRuntimeSha256',$ExpectedRuntimeSha256,
-        '-ScratchRoot',$scratch,'-ExpectedHostSha256',$ExpectedHostSha256,'-TimeoutSeconds',[string]$TimeoutSeconds)
+    function PSLiteral([string]$Value) {
+        if ($Value -match '[\x00-\x1f\x7f]') { throw 'argument' }
+        return "'" + $Value.Replace("'","''") + "'"
+    }
+    # A fixed worker program exists only inside this launch, after all scratch
+    # checks; the public script has no callable InternalWorker bypass. Values
+    # enter it solely as escaped literals and cannot select code or commands.
+    $worker="`$python=$(PSLiteral $python)`n`$bootstrap=$(PSLiteral $bootstrap)`n" +
+        "`$manifest=$(PSLiteral $manifest)`n`$request=$(PSLiteral $request)`n`$runtime=$(PSLiteral $runtime)`n" +
+        "`$pythonPin=$(PSLiteral $pythonPin)`n`$bootstrapPin=$(PSLiteral ([string]$m.files.'tools-bootstrap/tools/wd_q4_card_orchestrator_runtime_bootstrap.py'))`n" +
+        "`$manifestPin=$(PSLiteral $ExpectedManifestSha256)`n`$requestPin=$(PSLiteral $ExpectedRequestSha256)`n`$runtimePin=$(PSLiteral $ExpectedRuntimeSha256)`n"
+    $worker+=@'
+$ErrorActionPreference='Stop'
+function Exact([string]$p,[string]$expected) {
+ $s=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+ try { $h=[Security.Cryptography.SHA256]::Create(); try { $v=[BitConverter]::ToString($h.ComputeHash($s)).Replace('-','') } finally { $h.Dispose() } }
+ finally { $s.Dispose() }; if($v -cne $expected.ToUpperInvariant()) { throw 'pin' }
+}
+function Quoted([string]$v) {
+ if(-not $v -or $v.Contains('"') -or $v.EndsWith('\') -or $v -match '[\x00-\x1f\x7f]') { throw 'argument' }
+ return '"'+$v+'"'
+}
+$proc=$null; $started=$false
+try {
+ Exact $manifest $manifestPin; Exact $bootstrap $bootstrapPin; Exact $python $pythonPin
+ Exact $request $requestPin; Exact $runtime $runtimePin
+ $env:WD_REBOOT_EXPECTED_MANIFEST_HASH=$manifestPin
+ $psi=[Diagnostics.ProcessStartInfo]::new(); $psi.FileName=$python
+ $psi.Arguments=('-I -S -B {0} --enable --request {1} --request-sha256 {2} --manifest-sha256 {3} --runtime {4} --runtime-sha256 {5}' -f `
+     (Quoted $bootstrap),(Quoted $request),$requestPin,$manifestPin,(Quoted $runtime),$runtimePin)
+ $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
+ $proc=[Diagnostics.Process]::new(); $proc.StartInfo=$psi
+ if(-not $proc.Start()) { throw 'start' }; $started=$true
+ $drain=$proc.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null)
+ $buffer=New-Object byte[] 1024; $total=0; $out=[Console]::OpenStandardOutput()
+ while(($n=$proc.StandardOutput.BaseStream.Read($buffer,0,$buffer.Length)) -gt 0) {
+  $total+=$n; if($total -gt 4096) { throw 'output' }; $out.Write($buffer,0,$n)
+ }
+ $proc.WaitForExit(); if(-not $drain.Wait(2000)) { throw 'stderr' }
+ $code=$proc.ExitCode; exit $code
+} catch { [Console]::Out.WriteLine('{"status":"UNKNOWN"}'); exit 3 }
+finally {
+ if($null -ne $proc) {
+  try { if($started -and -not $proc.HasExited) { $proc.Kill(); [void]$proc.WaitForExit(2000) } } catch { }
+  $proc.Dispose()
+ }
+}
+'@
+    $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($worker))
+    $args=@('-NoProfile','-NonInteractive','-EncodedCommand',$encoded)
     $entered=$true
     $result=Invoke-WdQ4ProcessJob -Executable $hostPath -Arguments $args -WorkingDirectory $bundle `
         -ScratchRoot $scratch -InputBytes ([byte[]]@()) -TimeoutSeconds $TimeoutSeconds -MaxOutputBytes 8192 -DetailedOutcome

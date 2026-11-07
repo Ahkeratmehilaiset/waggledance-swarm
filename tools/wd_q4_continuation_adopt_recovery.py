@@ -22,6 +22,7 @@ from tools import wd_q4_live_snapshot_publish as live
 from tools import wd_q4_live_update_once as update
 from tools import wd_q4_live_update_recovery as runner_recovery
 from tools import wd_q4_status_prefix_runner as runner
+from tools import wd_q4_owned_recovery_parent as owner_parent
 
 
 class RecoveryRefused(ValueError):
@@ -41,7 +42,8 @@ _MARKER_KEYS = frozenset({'schema', 'receipt_sha256', 'baseline_sha256', 'waterm
 
 
 def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, manifest_sha256=None,
-                 genesis_tuple_bytes=None, genesis_tuple_sha256=None, receipt_bytes=None, receipt_sha256=None):
+                 genesis_tuple_bytes=None, genesis_tuple_sha256=None, receipt_bytes=None, receipt_sha256=None,
+                 _owner=None, _owner_pins=None):
     if enabled is False:
         return {'status': 'OFF'}
     marker_candidate = None
@@ -51,6 +53,11 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, man
         gt = adopt._pinned(genesis_tuple_bytes, genesis_tuple_sha256, 1024 * 1024)
         early_route = composer._tuple_part(gt, 'route')
         marker_candidate = Path(early_route['private_state_root']) / 'q4-continuation-adopt.pending.json'
+        if _owner is not None and (type(_owner_pins) is not dict or any(
+                _owner_pins.get(key) != value for key, value in (
+                    ('manifest_sha256', manifest_sha256), ('baseline_sha256', baseline_sha256),
+                    ('tuple_sha256', genesis_tuple_sha256), ('receipt_sha256', receipt_sha256)))):
+            raise ValueError()
         receipt = adopt._pinned(receipt_bytes, receipt_sha256, 65536)
         if (gt.get('schema') != 'wd.q4-genesis-private-tuple.v1' or gt.get('publication') != 'UNKNOWN'
                 or set(receipt) != composer._RECEIPT_V3
@@ -97,7 +104,11 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, man
             # caller (including the Job child) may bypass this quarantine.
             with private_state.locked_state(private, root, enabled=True):
                 with private_state._checkpoint_lock(root, 0.2):
-                    if os.path.lexists(private / 'q4-adopt-recovery-job.pending.json'):
+                    job_marker=private / 'q4-adopt-recovery-job.pending.json'
+                    if os.path.lexists(job_marker):
+                        if type(_owner) is not owner_parent._Owner or not _owner.verify_locked(private,root,_owner_pins):
+                            raise RecoveryUnknown('recovery_unknown')
+                    elif _owner is not None:
                         raise RecoveryUnknown('recovery_unknown')
             if not os.path.lexists(marker):
                 return {'status': 'NOT_NEEDED'}
@@ -167,9 +178,14 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, man
             # exact unchanged marker, never a generation or selector.
             with private_state.locked_state(private, root, enabled=True) as state:
                 with private_state._checkpoint_lock(root, 0.2):
+                    job_marker=private / 'q4-adopt-recovery-job.pending.json'
+                    if os.path.lexists(job_marker):
+                        if type(_owner) is not owner_parent._Owner or not _owner.verify_locked(private,root,_owner_pins):
+                            raise ValueError()
+                    elif _owner is not None:
+                        raise ValueError()
                     if (checkpoint._active_fence(root) is not None
                             or any(os.path.lexists(path) for path in (
-                                private / 'q4-adopt-recovery-job.pending.json',
                                 private / 'q4-cutoff.pending.json', private / private_state._PENDING,
                                 private / runner._PENDING, root / runner._PENDING,
                                 private / 'q4-continuation-orchestrator.pending.json',

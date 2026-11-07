@@ -43,7 +43,7 @@ _MARKER_KEYS = frozenset({'schema', 'receipt_sha256', 'baseline_sha256', 'waterm
 
 def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, manifest_sha256=None,
                  genesis_tuple_bytes=None, genesis_tuple_sha256=None, receipt_bytes=None, receipt_sha256=None,
-                 _owner=None, _owner_pins=None):
+                 _owner=None, _owner_pins=None, p1_enabled=False):
     if enabled is False:
         return {'status': 'OFF'}
     marker_candidate = None
@@ -53,6 +53,8 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, man
         gt = adopt._pinned(genesis_tuple_bytes, genesis_tuple_sha256, 1024 * 1024)
         early_route = composer._tuple_part(gt, 'route')
         marker_candidate = Path(early_route['private_state_root']) / 'q4-continuation-adopt.pending.json'
+        if type(p1_enabled) is not bool:
+            raise ValueError()
         if _owner is not None and (type(_owner_pins) is not dict or any(
                 _owner_pins.get(key) != value for key, value in (
                     ('manifest_sha256', manifest_sha256), ('baseline_sha256', baseline_sha256),
@@ -116,8 +118,10 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, man
             marker_raw = checkpoint._read(checkpoint._secure(marker), max_bytes=65536)
             runner._verify_own(marker, marker_raw, marker_info)
             pending = caller._json(marker_raw)
-            if (marker_raw != update._encode(pending) or set(pending) != _MARKER_KEYS
-                    or pending['schema'] != 'wd.q4-continuation-adopt-pending.v1'
+            expected_keys = _MARKER_KEYS | ({'p1_enabled'} if p1_enabled else set())
+            if (marker_raw != update._encode(pending) or set(pending) != expected_keys
+                    or pending['schema'] != ('wd.q4-continuation-adopt-pending.v2' if p1_enabled else 'wd.q4-continuation-adopt-pending.v1')
+                    or (p1_enabled and pending.get('p1_enabled') is not True)
                     or pending['receipt_sha256'] != receipt_sha256 or pending['baseline_sha256'] != baseline_sha256
                     or pending['watermark_record_sha256'] != receipt['watermark_record_sha256']
                     or pending['pointer_sha256'] != receipt['pointer_sha256']
@@ -154,7 +158,8 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, man
             selector_pin = None if selector_raw is None else adopt._sha(selector_raw)
             generation = Path(baseline_path).parent.parent / receipt['pointer_sha256']
             if selector_pin == pending['prior_selector_sha256']:
-                prior, prior_raw = adopt._prior_pointer(baseline_path, baseline_sha256, baseline, manifest_sha256)
+                prior, prior_raw = adopt._prior_pointer(baseline_path, baseline_sha256, baseline, manifest_sha256,
+                    **({'p1_enabled': True} if p1_enabled else {}))
                 if (prior != pending['prior_pointer_sha256'] or prior_raw != selector_raw
                         or os.path.lexists(generation)):
                     raise ValueError()
@@ -167,7 +172,8 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, man
                         or doc.get('index_pointer_sha256') != receipt['pointer_sha256']):
                     raise ValueError()
                 selected = live.select(enabled=True, baseline_path=baseline_path, baseline_sha256=baseline_sha256,
-                    baseline=baseline, manifest_sha256=manifest_sha256, load_configuration=caller._configuration)
+                    baseline=baseline, manifest_sha256=manifest_sha256, load_configuration=caller._configuration,
+                    **({'p1_enabled': True} if p1_enabled else {}))
                 if (selected['publication_sha256'] != selector_pin
                         or selected['configuration'][4]['pointer_sha256'] != receipt['pointer_sha256']):
                     raise ValueError()
@@ -205,13 +211,18 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, man
                         raise ValueError()
                     if outcome == 'ADOPTED':
                         selected = live.select(enabled=True, baseline_path=baseline_path, baseline_sha256=baseline_sha256,
-                            baseline=baseline, manifest_sha256=manifest_sha256, load_configuration=caller._configuration)
+                            baseline=baseline, manifest_sha256=manifest_sha256, load_configuration=caller._configuration,
+                            **({'p1_enabled': True} if p1_enabled else {}))
                         if (selected['publication_sha256'] != selector_pin
                                 or selected['configuration'][4]['pointer_sha256'] != receipt['pointer_sha256']):
                             raise ValueError()
+                    result = {'status': outcome}
+                    if p1_enabled:
+                        result.update(schema='wd.q4-continuation-adopt-recovery-result.v2',
+                                      p1_enabled=True, receipt_sha256=receipt_sha256)
                     runner._verify_own(marker, marker_raw, marker_info)
                     os.unlink(marker)
-            return {'status': outcome}
+            return result
     except ReaderBusy:
         raise RecoveryRefused('recovery_busy') from None
     except (KeyboardInterrupt, SystemExit, GeneratorExit):

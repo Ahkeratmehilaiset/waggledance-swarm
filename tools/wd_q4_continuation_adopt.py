@@ -76,7 +76,7 @@ def _source(route,independent,prefix):
             raise ValueError()
 
 
-def _prior_pointer(baseline_path,baseline_sha256,baseline,manifest_sha256):
+def _prior_pointer(baseline_path,baseline_sha256,baseline,manifest_sha256,*,p1_enabled=False):
     bp=live.pointer_io._absolute(baseline_path)
     selector=bp.parent.parent/'q4-live-current.json'
     if not os.path.lexists(selector):
@@ -93,7 +93,7 @@ def _prior_pointer(baseline_path,baseline_sha256,baseline,manifest_sha256):
     if (candidate[4]['pointer_sha256']!=doc['index_pointer_sha256']
             or any(Path(candidate[0][key])!=path.parent/name for key,name in live._GENERATION_PATHS)):
         raise ValueError()
-    live._checked_pair(baseline,candidate,manifest_sha256)
+    live._checked_pair(baseline,candidate,manifest_sha256,**({'p1_enabled':True} if p1_enabled else {}))
     if live._read(selector,4096)!=raw: raise ValueError()
     return doc['index_pointer_sha256'],raw
 
@@ -131,11 +131,12 @@ def _verify_empty_partial(receipt, runner_receipt, genesis_route, private, root,
 
 
 def run_once(*,enabled=False,baseline_path=None,baseline_sha256=None,manifest_sha256=None,
-             genesis_tuple_bytes=None,genesis_tuple_sha256=None,receipt_bytes=None,receipt_sha256=None):
+             genesis_tuple_bytes=None,genesis_tuple_sha256=None,receipt_bytes=None,receipt_sha256=None,
+             p1_enabled=False):
     if enabled is False: return {'status':'OFF'}
     entered=False; failure=None; result=None; interrupt_type=None
     try:
-        if enabled is not True: raise ValueError()
+        if enabled is not True or type(p1_enabled) is not bool: raise ValueError()
         gt=_pinned(genesis_tuple_bytes,genesis_tuple_sha256,1024*1024)
         receipt=_pinned(receipt_bytes,receipt_sha256,65536)
         if (gt.get('schema')!='wd.q4-genesis-private-tuple.v1' or gt.get('publication')!='UNKNOWN'
@@ -188,13 +189,16 @@ def run_once(*,enabled=False,baseline_path=None,baseline_sha256=None,manifest_sh
                 composer._verify_v2(receipt,runner_receipt,route,private,root,view,pointer)
             composer._verify_v3(receipt,runner_receipt,private,root,receipt['pointer_sha256'],prefix)
             _source(route,gt['independent_source_pin'],prefix)
-            prior,selector_raw=_prior_pointer(baseline_path,baseline_sha256,baseline,manifest_sha256)
+            prior,selector_raw=_prior_pointer(baseline_path,baseline_sha256,baseline,manifest_sha256,
+                **({'p1_enabled':True} if p1_enabled else {}))
             if prior!=pointer['previous_pointer_sha256']: raise ValueError()
-            marker_raw=update._encode({'schema':'wd.q4-continuation-adopt-pending.v1',
+            marker_doc={'schema':'wd.q4-continuation-adopt-pending.v2' if p1_enabled else 'wd.q4-continuation-adopt-pending.v1',
                 'receipt_sha256':receipt_sha256,'baseline_sha256':baseline_sha256,
                 'watermark_record_sha256':receipt['watermark_record_sha256'],
                 'pointer_sha256':receipt['pointer_sha256'],'prior_pointer_sha256':prior,
-                'prior_selector_sha256':None if selector_raw is None else _sha(selector_raw)})
+                'prior_selector_sha256':None if selector_raw is None else _sha(selector_raw)}
+            if p1_enabled: marker_doc['p1_enabled']=True
+            marker_raw=update._encode(marker_doc)
             # Share the runner's short admission lock window. Otherwise a
             # runner can reserve its markers after verification but before
             # adoption creates its own marker.
@@ -212,14 +216,17 @@ def run_once(*,enabled=False,baseline_path=None,baseline_sha256=None,manifest_sh
                     entered=True
                     marker_info=runner._create(marker,marker_raw)
             runner._verify_own(marker,marker_raw,marker_info)
-            result=update._publish(config,baseline,root,public,receipt)
+            result=update._publish(config,baseline,root,public,receipt,**({'p1_enabled':True} if p1_enabled else {}))
             if receipt['status']=='partial_ready_prefix': result['coverage']='partial_ready_prefix'
             composer._verify_v3(receipt,runner_receipt,private,root,receipt['pointer_sha256'],prefix)
             _source(route,gt['independent_source_pin'],prefix)
             selected=live.select(enabled=True,baseline_path=baseline_path,baseline_sha256=baseline_sha256,
-                baseline=baseline,manifest_sha256=manifest_sha256,load_configuration=caller._configuration)
+                baseline=baseline,manifest_sha256=manifest_sha256,load_configuration=caller._configuration,
+                **({'p1_enabled':True} if p1_enabled else {}))
             if (selected['publication_sha256']!=result['publication_sha256']
                     or selected['configuration'][4]['pointer_sha256']!=receipt['pointer_sha256']): raise ValueError()
+            if p1_enabled:
+                result.update(schema='wd.q4-continuation-adopt-result.v2',p1_enabled=True,receipt_sha256=receipt_sha256)
             runner._verify_own(marker,marker_raw,marker_info)
             os.unlink(marker)
     except (KeyboardInterrupt,SystemExit,GeneratorExit) as signal:

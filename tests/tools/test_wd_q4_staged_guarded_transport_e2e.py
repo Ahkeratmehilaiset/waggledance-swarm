@@ -328,3 +328,32 @@ def bootstrap_public_imports(**kw):return {'status':'MODULES_IMPORTED','child':c
     assert answer['freshness']=='UNKNOWN' and answer['completeness']=='UNKNOWN'
     context._require_done(('attestation','transport'))
     assert marker.is_file()  # adapter and outer owner were not exercised.
+
+    # A fresh guard and separate call exercise the native Job timeout path.
+    # The wrappers only observe actual OS operations; none simulates cleanup.
+    timeout_guard, timeout_marker = _synthetic_guard(tmp_path/'timeout-guard','codex-lead-1')
+    timeout_context = timeout_guard._owner_context()
+    observations = []
+    originals = {}
+    for name in ('_create_process_in_job', '_wait_job_empty', '_wait_child_exit'):
+        original = getattr(actual, name)
+        originals[name] = original
+        def observe(*args, _name=name, _original=original, **kwargs):
+            outcome = _original(*args, **kwargs)
+            observations.append((_name, outcome if _name != '_create_process_in_job' else True))
+            return outcome
+        setattr(actual, name, observe)
+    try:
+        with pytest.raises(TimeoutError):
+            actual.run_fixed_peer(executable=str(python),expected_interpreter_sha256=_sha(python.read_bytes()),
+                interpreter_max_bytes=128*1024*1024,plan_bytes=plan['plan_bytes'],expected_plan_sha256=plan['plan_sha256'],
+                bundle_bytes=fixed_bundle,runtime_manifest_bytes=runtime_manifest.read_bytes(),query_bytes=query,cwd=str(scratch),
+                timeout_seconds=2,max_output_bytes=32768,public_snapshot_enabled=True,
+                _owner_guard=timeout_guard,_owner_context=timeout_context)
+    finally:
+        for name, original in originals.items():
+            setattr(actual, name, original)
+    assert ('_create_process_in_job', True) in observations
+    assert ('_wait_job_empty', True) in observations and ('_wait_child_exit', True) in observations
+    assert timeout_marker.is_file() and timeout_guard._registry._uncertain
+    assert not actual._QUARANTINE

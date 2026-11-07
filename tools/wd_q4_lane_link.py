@@ -231,8 +231,13 @@ _PUBLIC_UNKNOWN = frozenset({"freshness", "publisher_authentication", "source_fi
 # Optional synthetic card route (default OFF): a v2 plan pins the decision file; the pin becomes a plan pin that the
 # reply binding must carry. A v1 plan is the v6 path, unchanged.
 _CARD_PLAN_KEYS = frozenset({"card_decision_path", "card_decision_sha256"})
+_STAGED_PLAN_KEYS = frozenset({"card_policy_path", "card_policy_sha256", "pointer_path", "source_path",
+                               "generation_path", "end_cursor"})
 _PUBLIC_PLAN_SCHEMAS = {"wd.q4-public-wrapper-plan.v1": _PUBLIC_PLAN_KEYS,
-                        "wd.q4-public-wrapper-plan.v2": _PUBLIC_PLAN_KEYS | _CARD_PLAN_KEYS}
+                        "wd.q4-public-wrapper-plan.v2": _PUBLIC_PLAN_KEYS | _CARD_PLAN_KEYS,
+                        "wd.q4-public-wrapper-plan.v3": _PUBLIC_PLAN_KEYS | _CARD_PLAN_KEYS | _STAGED_PLAN_KEYS}
+_STAGED_BIND_PINS = (_PUBLIC_BIND_PINS - {"public_policy_sha256"}) | {"card_decision_sha256", "card_policy_sha256"}
+_STAGED_BIND_KEYS = _STAGED_BIND_PINS | {"memory_sha256", "projection_sha256", "source_mode"}
 
 
 def _public_plan(path, expected_sha256):
@@ -249,11 +254,22 @@ def _public_plan(path, expected_sha256):
             or any(type(plan[field]) is not str or not plan[field]
                    for field in ("root", "policy_path", "roster_path", "public_policy_path"))):
         raise ValueError()
-    card = plan["schema"] == "wd.q4-public-wrapper-plan.v2"
+    staged = plan["schema"] == "wd.q4-public-wrapper-plan.v3"
+    card = plan["schema"] in ("wd.q4-public-wrapper-plan.v2", "wd.q4-public-wrapper-plan.v3")
     if card and (type(plan["card_decision_path"]) is not str or not plan["card_decision_path"]):
         raise ValueError()
+    if staged:
+        cursor = plan["end_cursor"]
+        if (any(type(plan[key]) is not str or not plan[key]
+                for key in ("card_policy_path", "pointer_path", "source_path", "generation_path"))
+                or type(cursor) is not dict or set(cursor) != {"file_identity", "generation", "offset"}
+                or type(cursor["offset"]) is not int or not 0 <= cursor["offset"] < 2**63
+                or type(cursor["file_identity"]) is not str or not cursor["file_identity"]
+                or (cursor["generation"] is not None and type(cursor["generation"]) is not str)):
+            raise ValueError()
     pins = {key: (plan["config"].get(key) if key == "descriptor_sha256" else plan[key])
-            for key in (_PUBLIC_BIND_PINS | ({"card_decision_sha256"} if card else set()))}
+            for key in (_PUBLIC_BIND_PINS | ({"card_decision_sha256"} if card else set())
+                        | ({"card_policy_sha256"} if staged else set()))}
     if any(type(value) is not str or _HEX64.fullmatch(value) is None for value in pins.values()):
         raise ValueError()
     return str(path), raw, pins
@@ -263,22 +279,30 @@ def _public_result(raw, code, pins):
     if type(raw) is not bytes or len(raw) > 32768 or type(code) is not int:
         raise ValueError()
     value = _json(raw)
-    if type(value) is not dict or value.get("schema") != "wd.q4-public-query.v2":
+    if type(value) is not dict:
         raise ValueError()
     if value.get("status") == "REFUSED":
-        if code != 2 or set(value) != {"schema", "status", "reason"} or type(value["reason"]) is not str:
+        if (value.get("schema") != "wd.q4-public-query.v2" or code != 2
+                or set(value) != {"schema", "status", "reason"} or type(value["reason"]) is not str):
             raise ValueError()
         return {"schema": "wd.q4-public-query.v2", "status": "REFUSED", "reason": "runtime_refused"}
+    staged = "card_policy_sha256" in pins
+    unknown = _PUBLIC_UNKNOWN | ({"completeness"} if staged else set())
+    binding_keys = _STAGED_BIND_KEYS if staged else _PUBLIC_BIND_KEYS | ({"card_decision_sha256"} & set(pins))
     if (code != 0 or value.get("status") not in ("ANSWER", "ABSTAIN", "DEGRADED")
-            or set(value) != ({"schema", "status", "binding", "results"} | _PUBLIC_UNKNOWN)
-            or any(value[key] != "UNKNOWN" for key in _PUBLIC_UNKNOWN)
+            or value.get("schema") != ("wd.q4-card-snapshot-query.v1" if staged else "wd.q4-public-query.v2")
+            or set(value) != ({"schema", "status", "binding", "results"} | unknown)
+            or any(value[key] != "UNKNOWN" for key in unknown)
             or type(value["binding"]) is not dict
-            or set(value["binding"]) != _PUBLIC_BIND_KEYS | ({"card_decision_sha256"} & set(pins))
+            or set(value["binding"]) != binding_keys
+            or (staged and value["binding"]["source_mode"] != "card-snapshot-v1")
             or type(value["results"]) is not list or len(value["results"]) > 100
             or (value["status"] == "ANSWER" and not value["results"])
             or (value["status"] == "ABSTAIN" and value["results"])):
         raise ValueError()
     for key, binding in value["binding"].items():
+        if staged and key == "source_mode":
+            continue
         if type(binding) is not str or _HEX64.fullmatch(binding) is None:
             raise ValueError()
         if key in pins and not hmac.compare_digest(binding, pins[key]):

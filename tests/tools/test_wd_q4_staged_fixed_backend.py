@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 import dataclasses
+import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -79,6 +81,63 @@ def test_staged_backend_preparation_is_default_off_and_refuses_unbound_input():
     assert backend.prepare_staged_backend(None, None, None) == {'status':'OFF'}
     with pytest.raises(ValueError):
         backend.prepare_staged_backend(None, None, None, enabled=True)
+
+
+def test_guarded_parent_refuses_tampered_helper_before_launch(tmp_path, monkeypatch):
+    """Actual guard and attestation; no subprocess is started by this negative test."""
+    from tests.tools.test_wd_q4_owner_plumbing import _synthetic_guard
+    from tests.tools.test_wd_q4_staged_fixed_plan import staged_args
+    from tools import wd_q4_fixed_plan_producer as producer
+    from tools.wd_q4_fixed_parent_attestation import _AttestationOwner
+    root=tmp_path/'bundle'
+    tools=root/'tools-bootstrap'/'tools';tools.mkdir(parents=True)
+    verifier=root/'tools-bootstrap'/'sandbox'/'mind'/'step2'/'runtime_manifest.py'
+    verifier.parent.mkdir(parents=True)
+    source=Path(fixed.__file__)
+    peer=tools/'wd_q4_secure_transport.py';peer.write_bytes(source.read_bytes())
+    helper=tools/'wd_q4_staged_fixed_backend.py'
+    helper.write_bytes((source.parent/'wd_q4_staged_fixed_backend.py').read_bytes())
+    verifier.write_bytes((source.parents[1]/'sandbox/mind/step2/runtime_manifest.py').read_bytes())
+    wrapper=root/'Invoke-WdQ4Query.ps1'
+    wrapper.write_bytes((source.parents[1]/'ops/windows/reboot/Invoke-WdQ4Query.ps1').read_bytes())
+    spec=importlib.util.spec_from_file_location('synthetic_fixed_parent',peer)
+    candidate=importlib.util.module_from_spec(spec);spec.loader.exec_module(candidate)
+    monkeypatch.setattr(candidate,'_run',lambda *a,**k:pytest.fail('launch reached'))
+    public_path=tmp_path/'public-plan.json';public_path.write_bytes(b'{}')
+    runtime_path=tmp_path/'runtime-manifest.json';runtime_path.write_bytes(b'{}')
+    runtime_root=tmp_path/'runtime';runtime_root.mkdir()
+    bundle=b'synthetic-c2'
+    manifest={'schema_version':1,'source_commit':'a'*40,'files':{
+        'tools-bootstrap/tools/wd_q4_secure_transport.py':sha(peer.read_bytes()),
+        'tools-bootstrap/tools/wd_q4_staged_fixed_backend.py':sha(helper.read_bytes()),
+        'Invoke-WdQ4Query.ps1':sha(wrapper.read_bytes())}}
+    manifest_raw=json.dumps(manifest,sort_keys=True,separators=(',',':')).encode()
+    (root/'deployment-manifest.json').write_bytes(manifest_raw)
+    host=Path(os.environ['SYSTEMROOT'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
+    values=staged_args()
+    values.update(interpreter_sha256=sha(Path(sys.executable).read_bytes()),peer_code_sha256=sha(peer.read_bytes()),
+        verifier_sha256=sha(verifier.read_bytes()),runtime_manifest_sha256=sha(runtime_path.read_bytes()),
+        bundle_sha256=sha(bundle),bundle_bytes=len(bundle),runtime_root=str(runtime_root),
+        runtime_manifest_path=str(runtime_path),bundle_root=str(root),bundle_commit='a'*40,
+        wrapper_path=str(wrapper),wrapper_sha256=sha(wrapper.read_bytes()),
+        deployment_manifest_sha256=sha(manifest_raw),public_plan_path=str(public_path),
+        public_plan_sha256=sha(public_path.read_bytes()),host_sha256=sha(host.read_bytes()),
+        backend_sha256=sha(helper.read_bytes()))
+    plan=producer.build_staged_fixed_plan(enabled=True,**values)['plan_bytes']
+    guard,marker=_synthetic_guard(tmp_path/'guard','codex-lead-1')
+    before=marker.read_bytes();context=guard._owner_context()
+    observed=[];original_attest=_AttestationOwner.attest
+    def observe(owner,path,*args,**kwargs):
+        observed.append(str(path))
+        return original_attest(owner,path,*args,**kwargs)
+    monkeypatch.setattr(_AttestationOwner,'attest',observe)
+    with helper.open('ab') as stream:stream.write(b'\n# tampered synthetic copy\n')
+    with pytest.raises(Exception):
+        candidate._run_fixed_peer_impl(sys.executable,values['interpreter_sha256'],128*1024*1024,
+            plan,sha(plan),bundle,runtime_path.read_bytes(),b'{}',str(tmp_path),30,32768,True,
+            _owner_guard=guard,_owner_context=context)
+    assert marker.read_bytes()==before
+    assert str(helper) in observed
 
 
 @pytest.mark.parametrize('damage', ['projection','source','pointer','card_policy','plan','bundle'])

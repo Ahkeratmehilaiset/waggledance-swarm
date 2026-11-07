@@ -2210,11 +2210,9 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
         _validate(query_bytes, timeout_seconds, max_output_bytes)
         _check(len(query_bytes) > 0 and type(public_snapshot_enabled) is bool)
         plan = _fixed_plan(plan_bytes)
-        # The staged schema is parsed separately, but cannot run until its own
-        # fixed child and independent parent validation are wired. Never let it
-        # fall through to the synthetic backend during incremental development.
-        _check(plan["backend"] != "staged-card-wrapper-v1")
-        public = plan["backend"] == "public-snapshot-v1"
+        staged = plan["backend"] == "staged-card-wrapper-v1"
+        _check(not staged or guarded)
+        public = plan["backend"] in ("public-snapshot-v1", "staged-card-wrapper-v1")
         _check(public_snapshot_enabled or not public)
         _check(_diagnostic_mode in (None, "observe", "synthetic-fault"))
         _check(_diagnostic_mode is None or plan["backend"] == "synthetic-v1")
@@ -2252,17 +2250,33 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
             attest = attestation_owner.attest
         else:
             attest = attest_file
-        with attest(executable, expected_interpreter_sha256, max_bytes=interpreter_max_bytes, enabled=True):
-            with attest(path, plan["peer_code_sha256"], max_bytes=_PEER_CODE_LIMIT, enabled=True):
-                with (attest(verifier, plan["verifier_sha256"], max_bytes=_VERIFIER_LIMIT, enabled=True)
-                      if public else contextlib.nullcontext()):
-                    if guarded:
-                        output, code = _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds,
-                                            max_output_bytes, fixed=(control, plan_bytes, bundle_bytes),
-                                            transport_owner=transport_ticket)
-                    else:
-                        output, code = _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds,
-                                            max_output_bytes, fixed=(control, plan_bytes, bundle_bytes))
+        with contextlib.ExitStack() as leases:
+            leases.enter_context(attest(executable, expected_interpreter_sha256, max_bytes=interpreter_max_bytes, enabled=True))
+            leases.enter_context(attest(path, plan["peer_code_sha256"], max_bytes=_PEER_CODE_LIMIT, enabled=True))
+            if public:
+                leases.enter_context(attest(verifier, plan["verifier_sha256"], max_bytes=_VERIFIER_LIMIT, enabled=True))
+            if staged:
+                helper = str(Path(path).with_name('wd_q4_staged_fixed_backend.py'))
+                host = os.path.join(os.environ.get('SYSTEMROOT',''), 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+                manifest = str(Path(plan['bundle_root'])/'deployment-manifest.json')
+                for target, pin, cap in ((helper,plan['backend_sha256'],_PEER_CODE_LIMIT),
+                        (plan['wrapper_path'],plan['wrapper_sha256'],1024*1024),
+                        (manifest,plan['deployment_manifest_sha256'],4*1024*1024),
+                        (host,plan['host_sha256'],128*1024*1024),
+                        (plan['public_plan_path'],plan['public_plan_sha256'],65536)):
+                    leases.enter_context(attest(target,pin,max_bytes=cap,enabled=True))
+                scope = {'__name__':'_wd_staged_fixed_parent'}
+                exec(compile(_read_staged_backend(path,plan),'<wd-staged-fixed-parent>','exec'),scope)
+                public_raw = _staged_read(plan['public_plan_path'],plan['public_plan_sha256'],65536)
+                _check(scope['validate_card_input'](plan,bundle_bytes,public_raw,enabled=True) ==
+                       {'status':'VALIDATED_STAGED','completeness':'UNKNOWN'})
+            if guarded:
+                output, code = _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds,
+                                    max_output_bytes, fixed=(control, plan_bytes, bundle_bytes),
+                                    transport_owner=transport_ticket)
+            else:
+                output, code = _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds,
+                                    max_output_bytes, fixed=(control, plan_bytes, bundle_bytes))
         if guarded:
             attestation_owner.finish()
         if _diagnostic_mode is not None:
@@ -2275,6 +2289,11 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
         if not public:
             completed = True
             return output, code
+        if staged:
+            _check(code == 0)
+            result = scope['validate_card_result'](plan,bundle_bytes,public_raw,query_bytes,output,enabled=True), 0
+            completed = True
+            return result
         # Never return the child's public answer unvalidated: re-resolve it against the pinned bundle projection.
         _check(code == 0)
         result = _fixed_public_validate(plan_bytes, bundle_bytes, query_bytes, output), 0

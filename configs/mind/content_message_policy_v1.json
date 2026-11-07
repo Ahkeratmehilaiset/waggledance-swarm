@@ -1,0 +1,23 @@
+{
+  "approved_tasks": [
+    "lead-mind-production-20261031"
+  ],
+  "lanes": [
+    "codex-lead-1",
+    "codex-tools-1",
+    "fable-5"
+  ],
+  "max_chunk_chars": 300,
+  "max_message_chars": 4096,
+  "removed_source_refs": [],
+  "schema": "wd.mind-content-policy.v1",
+  "types": [
+    "done",
+    "handoff",
+    "message",
+    "milestone",
+    "progress",
+    "status",
+    "test"
+  ]
+}

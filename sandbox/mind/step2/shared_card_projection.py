@@ -421,6 +421,16 @@ def verify_shared_card_sources(projection=None, *, enabled=False, source_path=No
     norm_to_source = {event_id(normalized): ref for ref, normalized in sources.items()}
     try:
         rows = verifier._read(source_path, generation_path, end_cursor, expected_prefix_sha256)
+        if sources:
+            tasks, roster = verifier.capture.strict_pins(nonreview_policy_bytes, nonreview_policy_sha256,
+                                                         roster_bytes, roster_sha256)
+            writers = verifier._policy(card_policy_bytes, card_policy_sha256, tasks)
+            vocab = projection['vocabulary'].encode('ascii')
+            paths = projection['path_allowlist'].encode('ascii')
+            verifier.card._document(vocab, projection['vocabulary_sha256'], 'wd.mind-public-vocabulary.v1',
+                                    {'schema', 'components', 'tags'})
+            verifier.card._document(paths, projection['path_allowlist_sha256'], 'wd.mind-public-paths.v1',
+                                    {'schema', 'paths'})
     except Exception:
         raise SharedCardRefused("source_unverified") from None
     for ref, normalized in sources.items():
@@ -438,20 +448,22 @@ def verify_shared_card_sources(projection=None, *, enabled=False, source_path=No
             raise SharedCardRefused("source_unverified") from None
         # the card's own minute, end of minute: the verifier then checks existence, not today's validity
         moment = normalized["ts_utc"][:17] + "59.9999999Z"
-        out = verifier.verify(enabled=True, source_path=source_path, generation_path=generation_path,
-                              end_cursor=end_cursor, expected_prefix_sha256=expected_prefix_sha256,
-                              target_event_ref=ref, nonreview_policy_bytes=nonreview_policy_bytes,
-                              nonreview_policy_sha256=nonreview_policy_sha256, card_policy_bytes=card_policy_bytes,
-                              card_policy_sha256=card_policy_sha256, roster_bytes=roster_bytes,
-                              roster_sha256=roster_sha256, vocabulary_bytes=projection["vocabulary"].encode("ascii"),
-                              vocabulary_sha256=projection["vocabulary_sha256"],
-                              path_allowlist_bytes=projection["path_allowlist"].encode("ascii"),
-                              path_allowlist_sha256=projection["path_allowlist_sha256"], now_utc=moment)
+        try:
+            if type(ref) is not str or verifier._HEX.fullmatch(ref) is None:
+                raise ValueError()
+            out = verifier._check(ref, rows, writers, roster, verifier._utc(moment), vocab,
+                                  projection['vocabulary_sha256'], paths, projection['path_allowlist_sha256'])
+        except Exception:
+            raise SharedCardRefused("source_unverified") from None
         prior = normalized["payload"]["public_knowledge"].get("supersedes")
         expected_prior = [norm_to_source.get(prior)] if prior is not None else []
         if (out.get("status") != "MATCH_WITHIN_PREFIX" or out.get("canonical_event_ref") != ref
                 or out.get("predecessor_refs", [])[:1] != expected_prior):
             raise SharedCardRefused("source_unverified")
+    try:
+        verifier._check_prefix_unchanged(source_path, generation_path, end_cursor, expected_prefix_sha256)
+    except Exception:
+        raise SharedCardRefused("source_unverified") from None
     return {"status": "MATCH_WITHIN_PREFIX", "cards": len(sources), "completeness": "UNKNOWN"}
 
 

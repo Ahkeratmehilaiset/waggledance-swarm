@@ -33,6 +33,18 @@ def _probe(tmp_path, scenario):
         (site / 'multiprocessing.py').write_bytes(source)
         files.append({'path': 'site/multiprocessing.py', 'size': len(source),
                       'sha256': hashlib.sha256(source).hexdigest()})
+    if scenario.startswith('subclass_'):
+        producer = (b'import sys, types\n'
+                    b'class VFModule(types.ModuleType):\n'
+                    b' def __init__(self, name):\n'
+                    b'  super().__init__(name)\n'
+                    b'  self.vf = object()\n'
+                    b' def __getattr__(self, name):\n'
+                    b'  return getattr(self.vf, name)\n'
+                    b'sys.modules[__name__] = VFModule(__name__)\n')
+        (site / 'wd_synthetic_vf.py').write_bytes(producer)
+        files.append({'path': 'site/wd_synthetic_vf.py', 'size': len(producer),
+                      'sha256': hashlib.sha256(producer).hexdigest()})
     if scenario.startswith('witness_'):
         producer = (b'import sys, types\nVALUE = "safe"\n'
                     b'def make_alias(target):\n'
@@ -229,6 +241,25 @@ elif scenario in ('torch_preseed', 'cython_preseed'):
   except ns['_Refused']: pass
   else: raise AssertionError('runtime preseed accepted')
  finally: del sys.modules[name]
+elif scenario.startswith('subclass_'):
+ import types
+ name = 'wd_synthetic_vf'
+ if scenario == 'subclass_preseed': sys.modules[name] = types.ModuleType(name)
+ module = importlib.import_module(name)
+ if scenario == 'subclass_preseed':
+  try: guard.accept_created(name, module)
+  except ns['_Refused']: pass
+  else: raise AssertionError('preseeded module accepted')
+ else:
+  guard.accept_created(name, module)
+  if scenario == 'subclass_swap': sys.modules[name] = types.ModuleType(name)
+  elif scenario == 'subclass_instance_mutation': module.vf = object()
+  elif scenario == 'subclass_class_mutation': type(module).__getattr__ = lambda self, name: None
+  elif scenario == 'subclass_code_mutation': type(module).__getattr__.__code__ = type(module).__getattr__.__code__.replace()
+  if scenario != 'subclass_clean':
+   try: guard.accept_created(name, sys.modules[name])
+   except ns['_Refused']: pass
+   else: raise AssertionError('modified source subclass witness accepted')
 elif scenario.startswith('witness_'):
  import types
  before = set(sys.modules)
@@ -326,6 +357,14 @@ def test_verified_source_creation_witness(tmp_path, scenario):
                                       'mp_foreign_preseed', 'mp_alias_swap', 'mp_main_swap',
                                       'mp_file_mutation', 'mp_spec_mutation'))
 def test_main_alias_is_bound_to_bootstrap_and_verified_stdlib_source(tmp_path, scenario):
+    result = _probe(tmp_path, scenario)
+    assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
+    assert result.stdout in (b'PASS\r\n', b'PASS\n')
+
+
+@pytest.mark.parametrize('scenario', ('subclass_clean', 'subclass_preseed', 'subclass_swap',
+                                      'subclass_instance_mutation', 'subclass_class_mutation', 'subclass_code_mutation'))
+def test_verified_source_created_module_subclass_is_bound(tmp_path, scenario):
     result = _probe(tmp_path, scenario)
     assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
     assert result.stdout in (b'PASS\r\n', b'PASS\n')

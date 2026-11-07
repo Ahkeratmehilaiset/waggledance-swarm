@@ -22,10 +22,12 @@ def bundle(tmp_path):
     # Synthetic executable echoes only digest; query stays inside in-memory streams.
     py = sys.executable.replace("'", "''")
     source = ("param([Parameter(Position=0)][string]$Tool,[Parameter(ValueFromRemainingArguments)][string[]]$Rest)\n"
-              "if ($Tool -cne 'tools/wd_q4_lane_caller_cli.py' -or @($Rest).Count -ne 1 -or $Rest[0] -cne '--enabled') { exit 9 }\n"
+              "if (($Tool -cne 'tools/wd_q4_lane_caller_cli.py' -and $Tool -cne 'tools/wd_q4_lane_caller_runtime_bootstrap.py') -or @($Rest).Count -ne 1 -or $Rest[0] -cne '--enabled') { exit 9 }\n"
               "if ($env:RECALL_INVOKED) { [IO.File]::WriteAllText($env:RECALL_INVOKED,'started') }\n"
               "if ($env:RECALL_MODE_FILE) { [IO.File]::WriteAllText($env:RECALL_MODE_FILE,[string]$env:WD_Q4_LIVE_MODE) }\n"
               "if ($env:RECALL_COVERAGE_FILE) { [IO.File]::WriteAllText($env:RECALL_COVERAGE_FILE,[string]$env:WD_Q4_WITH_COVERAGE) }\n"
+              "if ($env:RECALL_P1_FILE) { [IO.File]::WriteAllText($env:RECALL_P1_FILE,[string]$env:WD_Q4_LIVE_P1) }\n"
+              "if ($env:RECALL_TOOL_FILE) { [IO.File]::WriteAllText($env:RECALL_TOOL_FILE,[string]$Tool) }\n"
               "$code=if ($env:RECALL_TEST_MODE -eq 'slow') {'import sys,time,pathlib,os; sys.stdin.buffer.read(); pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(8); pathlib.Path(sys.argv[2]).touch()'} "
               "elseif ($env:RECALL_TEST_MODE -eq 'exit4') {'import sys; sys.stdin.buffer.read(); sys.exit(4)'} "
               "elseif ($env:RECALL_TEST_MODE -eq 'interrupted') {'import sys; sys.stdin.buffer.read(); print(bytes.fromhex(sys.argv[1]).decode())'} "
@@ -141,6 +143,28 @@ def test_interrupted_envelope_reaches_powershell_user_without_appearing_as_v1(bu
         'BASELINE_FALLBACK', 'INTERRUPTED', 'STALE')
     assert value['result']['schema'] == 'wd.q4-lane-caller-result.v1'
     assert value.get('answer') is None
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+def test_interrupted_envelope_reaches_runtime_p1_powershell_user(bundle, shell):
+    env, root = bundle
+    env['RECALL_TEST_MODE'] = 'interrupted'
+    env['RECALL_STARTED'] = json.dumps({'schema': 'wd.q4-lane-interrupted-envelope.v1',
+        'selection': 'BASELINE_FALLBACK', 'publication_state': 'INTERRUPTED', 'freshness': 'STALE',
+        'result': {'schema': 'wd.q4-lane-caller-result.v1'}}).encode().hex()
+    env['RECALL_P1_FILE'] = str(root / 'p1-mode')
+    env['RECALL_TOOL_FILE'] = str(root / 'selected-tool')
+    result = invoke(shell, env, b'{"situation":"x","time":"2026-11-06T00:00:00Z"}',
+                    '-Runtime', '-Live', '-LiveP1', '-WithStatus')
+    assert result.returncode == 0, result.stderr
+    value = json.loads(result.stdout)
+    assert value['schema'] == 'wd.q4-lane-interrupted-envelope.v1'
+    assert (value['selection'], value['publication_state'], value['freshness']) == (
+        'BASELINE_FALLBACK', 'INTERRUPTED', 'STALE')
+    assert value['result']['schema'] == 'wd.q4-lane-caller-result.v1'
+    assert value.get('answer') is None
+    assert (root / 'p1-mode').read_text() == '1'
+    assert (root / 'selected-tool').read_text() == 'tools/wd_q4_lane_caller_runtime_bootstrap.py'
 
 def test_timeout_is_unknown_and_does_not_return_partial_output(bundle):
     env, root = bundle

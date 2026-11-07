@@ -156,6 +156,7 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
     omitted = object()
     absent = object()
     witnessed = {}
+    subclass_witnessed = {}
     native_witnessed = _NativeRegistrations(_check)
     native_stack = []
     source_stack = []
@@ -204,7 +205,7 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
                 result.extend(code_tree(value))
         return result
 
-    def capture_function(function, source_globals, codes, states, seen):
+    def capture_function(function, source_globals, codes, states, seen, allowed_class=None):
         _check(type(function) is types.FunctionType and function.__globals__ is source_globals
                and any(function.__code__ is code for code in codes)
                and function.__defaults__ is None and function.__kwdefaults__ is None)
@@ -217,7 +218,9 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
         states.append((function, function.__code__, function.__closure__, values, globals_used, source_globals))
         for value in values:
             if type(value) is types.FunctionType:
-                capture_function(value, source_globals, codes, states, seen)
+                capture_function(value, source_globals, codes, states, seen, allowed_class)
+            elif value is allowed_class and allowed_class is not None:
+                continue
             else:
                 _check(type(value) in (str, bytes, int, bool, type(None)))
 
@@ -235,12 +238,42 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             _check(all(cell.cell_contents is value for cell, value in zip(closure or (), values)))
             _check(all(source_globals.get(key, absent) is value for key, value in globals_used))
 
-    def capture_created(before, code, source_globals):
+    def capture_created(before, code, source_globals, source_module, loader):
         codes = code_tree(code)
         allowed = {'__name__', '__doc__', '__package__', '__loader__', '__spec__', '__file__',
                    '__getattr__', '__dir__'}
         for name, module in list(sys.modules.items()):
-            if before.get(name, absent) is module or type(module) is not types.ModuleType:
+            if before.get(name, absent) is module:
+                continue
+            if type(module) is not types.ModuleType:
+                cls = type(module)
+                if (name != loader.name or before.get(name) is not source_module
+                        or type(cls) is not type or cls.__bases__ != (types.ModuleType,)
+                        or not any(value is cls for value in source_globals.values())):
+                    continue
+                original = types.ModuleType.__getattribute__(source_module, '__dict__')
+                original_spec = original.get('__spec__')
+                _check(original_spec is not None and original_spec.loader is loader
+                       and original_spec.name == name and original.get('__loader__') is loader
+                       and original.get('__file__') == loader.path)
+                class_attrs = dict(vars(cls))
+                allowed_class_attrs = {'__module__', '__qualname__', '__doc__', '__annotations__',
+                                       '__init__', '__getattr__', '__firstlineno__', '__static_attributes__'}
+                if (not set(class_attrs) <= allowed_class_attrs or class_attrs.get('__module__') != name
+                        or type(class_attrs.get('__init__')) is not types.FunctionType
+                        or type(class_attrs.get('__getattr__')) is not types.FunctionType):
+                    continue
+                class_codes = [item for item in codes if item.co_name == cls.__name__]
+                if len(class_codes) != 1:
+                    continue
+                method_codes = code_tree(class_codes[0])
+                states, seen = [], set()
+                capture_function(class_attrs['__init__'], source_globals, method_codes, states, seen, cls)
+                capture_function(class_attrs['__getattr__'], source_globals, method_codes, states, seen, cls)
+                attrs = types.ModuleType.__getattribute__(module, '__dict__')
+                _check(attrs.get('__name__') == name and attrs.get('__file__') is None
+                       and attrs.get('__spec__') is None and attrs.get('__loader__') is None)
+                subclass_witnessed[name] = (module, dict(attrs), cls, class_attrs, states)
                 continue
             attrs = vars(module)
             getter = attrs.get('__getattr__')
@@ -285,7 +318,7 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
         try:
             exec(code, module.__dict__)
             if before is not None:
-                capture_created(before, code, module.__dict__)
+                capture_created(before, code, module.__dict__, module, loader)
             if (loader.name == 'multiprocessing'
                     and os.path.normcase(os.path.realpath(loader.path)) == multiprocessing_source):
                 _check(source_before.get('__main__') is bootstrap_main
@@ -401,6 +434,20 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             if name == '__mp_main__':
                 _check(main_alias_witnessed and module is bootstrap_main)
                 check_main_alias()
+            elif name in subclass_witnessed:
+                expected, attrs, cls, class_attrs, states = subclass_witnessed[name]
+                _check(module is expected and type(module) is cls and sys.modules.get(name) is module)
+                current = types.ModuleType.__getattribute__(module, '__dict__')
+                _check(set(current) == set(attrs) and all(current[key] is value for key, value in attrs.items()))
+                current_class = vars(cls)
+                _check(set(current_class) == set(class_attrs)
+                       and all(current_class[key] is value for key, value in class_attrs.items()))
+                for function, code, closure, values, globals_used, source_globals in states:
+                    _check(function.__code__ is code and function.__globals__ is source_globals
+                           and function.__closure__ is closure and function.__defaults__ is None
+                           and function.__kwdefaults__ is None)
+                    _check(all(cell.cell_contents is value for cell, value in zip(closure or (), values)))
+                    _check(all(source_globals.get(key, absent) is value for key, value in globals_used))
             elif name in witnessed:
                 verify_witness(name, module)
             else:

@@ -19,10 +19,19 @@ class _NativeRegistrations:
     native code and hostile same-user writes are not authenticated or excluded.
     Nested or concurrent intervals are not proof.
     """
-    def __init__(self, check):
+    def __init__(self, check, validator=None):
         self._check = check
+        self._validator = validator
         self._records = {}
         self._deferred = {}
+        self._active = set()
+        self._uncertain = set()
+
+    def begin_segmented(self, name, module, registry, *, window_verified, single_thread):
+        self._check(window_verified is True and single_thread is True and name not in self._active)
+        self.accept(name, module, registry)
+        self._active.add(name)
+        return _NativeSegment(self, name, module, registry)
 
     def bind_objects(self, before, after, tainted, *, owner, single_thread):
         """Observe newly GC-tracked objects across one verified native call.
@@ -80,11 +89,111 @@ class _NativeRegistrations:
             self._records[name] = (module, dict(attrs))
 
     def accept(self, name, module, registry):
-        self._check(name in self._records and type(registry) is dict and registry.get(name) is module)
+        self._check(name in self._records and name not in self._active and name not in self._uncertain
+                    and type(registry) is dict and registry.get(name) is module)
         expected, attrs = self._records[name]
         self._check(module is expected and type(module) is types.ModuleType)
         current = types.ModuleType.__getattribute__(module, '__dict__')
         self._check(set(current) == set(attrs) and all(current[key] is value for key, value in attrs.items()))
+
+
+class _NativeSegment:
+    """Stage observations only; no completion before the outer native returns."""
+    def __init__(self, owner, name, module, registry):
+        self._owner, self._name, self._module = owner, name, module
+        self._registry_before = dict(registry)
+        self._staged = dict(owner._records[name][1])
+        self._open = True
+
+    def abort(self):
+        if self._open:
+            self._open = False
+            self._owner._active.discard(self._name)
+            self._owner._uncertain.add(self._name)
+
+    def checkpoint(self, registry, *, segment_kind, verified, single_thread):
+        owner, name, module = self._owner, self._name, self._module
+        try:
+            owner._check(self._open and type(registry) is dict and registry.get(name) is module
+                         and self._registry_before.get(name) is module and verified is True
+                         and single_thread is True and segment_kind in ('native', 'source'))
+            after = dict(types.ModuleType.__getattribute__(module, '__dict__'))
+            unchanged = (after.keys() == self._staged.keys()
+                         and all(after[key] is value for key, value in self._staged.items()))
+            if not unchanged:
+                owner._check(segment_kind == 'native' and owner._validator is not None)
+                owner._check(self._staged.keys() < after.keys()
+                             and all(after[key] is value for key, value in self._staged.items()))
+                validate = owner._validator()
+                self._staged = validate(name=name, module=module, registry=registry,
+                    registry_before=self._registry_before, registry_after=dict(registry),
+                    recorded=self._staged, before=dict(self._staged), after=after,
+                    window_verified=True, nested_or_concurrent=False)
+            self._registry_before = dict(registry)
+        except BaseException:
+            self.abort()
+            self._owner._uncertain.add(self._name)
+            self._owner._active.discard(self._name)
+            raise
+
+    def finish(self, registry, *, outer_success, verified, single_thread):
+        try:
+            self._owner._check(outer_success is True)
+            self.checkpoint(registry, segment_kind='native', verified=verified, single_thread=single_thread)
+            self._owner._records[self._name] = (self._module, dict(self._staged))
+            self._open = False
+            self._owner._active.remove(self._name)
+        except BaseException:
+            self.abort()
+            self._owner._uncertain.add(self._name)
+            self._owner._active.discard(self._name)
+            raise
+
+
+class _NativeBatch:
+    """One enclosing native call; all observations commit together or none do."""
+    def __init__(self, tracker, registry):
+        self._tracker = tracker
+        self._transactions = {}
+        self.add_new(registry)
+
+    def add_new(self, registry):
+        try:
+            for name, (module, _) in tuple(self._tracker._records.items()):
+                if name not in self._transactions:
+                    self._transactions[name] = self._tracker.begin_segmented(
+                        name, module, registry, window_verified=True, single_thread=len(sys._current_frames()) == 1)
+        except BaseException:
+            self.abort()
+            raise
+
+    def checkpoint(self, registry, kind):
+        try:
+            for transaction in self._transactions.values():
+                transaction.checkpoint(registry, segment_kind=kind, verified=True,
+                                       single_thread=len(sys._current_frames()) == 1)
+        except BaseException:
+            self.abort()
+            raise
+
+    def finish(self, registry):
+        try:
+            self.checkpoint(registry, 'native')
+            for transaction in self._transactions.values():
+                self._tracker._check(transaction._open)
+            for name, transaction in self._transactions.items():
+                self._tracker._records[name] = (transaction._module, dict(transaction._staged))
+                transaction._open = False
+                self._tracker._active.remove(name)
+        except BaseException:
+            self.abort()
+            raise
+
+    def abort(self):
+        for name, transaction in self._transactions.items():
+            transaction.abort()
+            self._tracker._uncertain.add(name)
+            self._tracker._active.discard(name)
 
 
 def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _unique_pairs,
@@ -166,6 +275,8 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
     failed_sources = set()
     native_witnessed = _NativeRegistrations(_check)
     native_stack = []
+    active_batch = [None]
+    segment_kinds = []
     source_stack = []
     bootstrap_main = sys.modules.get('__main__')
     _check(type(bootstrap_main) is types.ModuleType)
@@ -223,6 +334,48 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             if type(value) is types.CodeType:
                 result.extend(code_tree(value))
         return result
+
+    native_validator = [None]
+    def load_native_validator():
+        if native_validator[0] is not None:
+            return native_validator[0]
+        path = root / 'assets/code/sandbox/mind/step2/q4_native_additions.py'
+        try:
+            _, data = verified_file(str(path), source=True)
+            code = compile(data, '<wd-q4-native-additions>', 'exec', dont_inherit=True)
+            namespace = {'__name__':'_wd_q4_native_additions'}
+            exec(code, namespace)
+            function = namespace.get('validate_additions')
+            _check(type(function) is types.FunctionType and function.__globals__ is namespace
+                   and any(function.__code__ is item for item in code_tree(code)))
+            verified_file(str(path), source=True)
+            native_validator[0] = function
+            return function
+        except Exception:
+            _check(False)
+    native_witnessed._validator = load_native_validator
+
+    def enter_segment(kind):
+        batch = active_batch[0]
+        if batch is not None:
+            if segment_kinds:
+                batch.checkpoint(sys.modules, segment_kinds[-1])
+            segment_kinds.append(kind)
+
+    def leave_segment(kind, succeeded):
+        batch = active_batch[0]
+        if batch is None:
+            return
+        _check(segment_kinds and segment_kinds[-1] == kind)
+        if not succeeded:
+            batch.abort()
+            segment_kinds.pop()
+            return
+        try:
+            batch.checkpoint(sys.modules, kind)
+            batch.add_new(sys.modules)
+        finally:
+            segment_kinds.pop()
 
     # Interpreter files loaded before this guard retain the pre-existing trusted
     # interpreter boundary. Save exact code objects (including nested decorator
@@ -523,6 +676,7 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
                 verify_witness(name, existing, check_registry=False)
         source_id = id(module.__dict__)
         _check(source_id not in active_sources)
+        enter_segment('source')
         source_stack.append(source_event)
         active_sources.add(source_id)
         succeeded = False
@@ -559,6 +713,7 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             mark_source_nested(source_before, nested_objects)
             if nested_before is not None:
                 mark_nested(nested_before, nested_objects)
+            leave_segment('source', succeeded)
 
     def bytecode_refused(*args, **kwargs):
         _check(False)
@@ -577,11 +732,16 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             interpreter_before = dict(sys.modules)
             interpreter_objects = (source_modules_in_gc() if any(event['watch'] for event in source_stack)
                                    else modules_in_gc() if native_stack else None)
+            enter_segment('source')
+            interpreter_succeeded = False
             try:
-                return callback(loader, argument)
+                value = callback(loader, argument)
+                interpreter_succeeded = True
+                return value
             finally:
                 mark_nested(interpreter_before, interpreter_objects)
                 mark_source_nested(interpreter_before, interpreter_objects)
+                leave_segment('source', interpreter_succeeded)
         _check(relative in entries and len(sys._current_frames()) == 1)
         before = dict(sys.modules)
         # Keep strong references so an already existing, unregistered module
@@ -589,21 +749,35 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
         known_objects = modules_in_gc()
         known_source_objects = source_modules_in_gc() if any(event['watch'] for event in source_stack) else None
         tainted = {'names': set(), 'objects': set()}
+        outermost = not native_stack
+        if outermost:
+            _check(active_batch[0] is None and not segment_kinds)
+            active_batch[0] = _NativeBatch(native_witnessed, sys.modules)
+        enter_segment('native')
         native_stack.append(tainted)
         succeeded = False
         try:
             value = callback(loader, argument)
-            succeeded = True
-        finally:
-            _check(native_stack.pop() is tainted)
-            mark_nested(before, known_objects)
-            mark_source_nested(before, known_source_objects)
-        if succeeded:
             verified_file(loader.path, source=False)
             native_witnessed.bind(before, dict(sys.modules), tainted['names'],
                                   single_thread=len(sys._current_frames()) == 1, known_objects=known_objects)
             native_witnessed.bind_objects(known_objects, modules_in_gc(), tainted['objects'],
                                           owner=loader.name, single_thread=len(sys._current_frames()) == 1)
+            succeeded = True
+        finally:
+            _check(native_stack.pop() is tainted)
+            mark_nested(before, known_objects)
+            mark_source_nested(before, known_source_objects)
+            try:
+                leave_segment('native', succeeded)
+                if outermost and succeeded:
+                    active_batch[0].finish(sys.modules)
+            finally:
+                if outermost:
+                    if not succeeded:
+                        active_batch[0].abort()
+                    active_batch[0] = None
+                    segment_kinds.clear()
         return value
 
     def native_create(loader, spec):

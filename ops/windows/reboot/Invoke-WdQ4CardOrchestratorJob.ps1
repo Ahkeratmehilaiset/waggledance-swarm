@@ -111,8 +111,14 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 public static class WdQ4CardJobPathsV1 {
+ [StructLayout(LayoutKind.Sequential)] struct FileTime { public uint low,high; }
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern SafeFileHandle CreateFile(string n,uint a,uint s,IntPtr p,uint d,uint f,IntPtr t);
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandle(SafeFileHandle h,StringBuilder p,uint n,uint f);
+ [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetProcessTimes(IntPtr h,out FileTime c,out FileTime e,out FileTime k,out FileTime u);
+ public static long CreationFiletime() { FileTime c,e,k,u;
+  if(!GetProcessTimes(GetCurrentProcess(),out c,out e,out k,out u)) throw new Win32Exception(Marshal.GetLastWin32Error());
+  return unchecked((long)(((ulong)c.high<<32)|c.low)); }
  public static string Final(string p) { using(var h=CreateFile(p,0,7,IntPtr.Zero,3,0x02000000,IntPtr.Zero)) {
   if(h.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error()); var b=new StringBuilder(32768);
   uint n=GetFinalPathNameByHandle(h,b,(uint)b.Capacity,0); if(n==0||n>=b.Capacity) throw new Win32Exception(Marshal.GetLastWin32Error()); return b.ToString().TrimEnd('\\'); } }
@@ -146,9 +152,7 @@ public static class WdQ4CardJobPathsV1 {
     try { $rng.GetBytes($random) } finally { $rng.Dispose() }
     $nonce=[BitConverter]::ToString($random).Replace('-','').ToLowerInvariant()
     $tokenPath=Join-Path $scratch ('wd-q4-card-'+$nonce.Substring(0,32)+'.json')
-    $launchProcess=[Diagnostics.Process]::GetCurrentProcess()
-    try { $creation=[long]$launchProcess.StartTime.ToUniversalTime().ToFileTimeUtc() }
-    finally { $launchProcess.Dispose() }
+    $creation=[long][WdQ4CardJobPathsV1]::CreationFiletime()
     $tokenDoc=[ordered]@{schema='wd.q4-card-launch-token.v1';launcher_pid=[int]$PID;
         launcher_creation_filetime=$creation;scratch_root=$scratch;nonce=$nonce;
         manifest_sha256=$ExpectedManifestSha256;runtime_sha256=$ExpectedRuntimeSha256;request_sha256=$ExpectedRequestSha256}

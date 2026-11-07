@@ -84,6 +84,7 @@ def test_opt_in_public_status_writer_ships_with_its_fixed_wrapper():
     "tools/wd_q4_staged_composer_cli.py",
     "tools/wd_q4_status_prefix_recovery.py",
     "tools/wd_q4_live_snapshot_publish.py",
+    "tools/wd_q4_lifecycle_v2.py",
     "tools/wd_q4_live_update_once.py",
     "tools/wd_q4_live_update_recovery.py",
     "tools/wd_q4_live_update_bootstrap.py",

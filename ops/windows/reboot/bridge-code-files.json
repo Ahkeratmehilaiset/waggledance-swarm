@@ -163,6 +163,7 @@
     "tools/wd_q4_status_prefix_runner.py",
     "tools/wd_q4_status_prefix_recovery.py",
     "tools/wd_q4_live_snapshot_publish.py",
+    "tools/wd_q4_lifecycle_v2.py",
     "tools/wd_q4_live_update_once.py",
     "tools/wd_q4_live_update_recovery.py",
     "tools/wd_q4_live_update_bootstrap.py",

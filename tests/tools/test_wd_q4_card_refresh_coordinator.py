@@ -92,8 +92,22 @@ def _build_case(attested, tmp_path, monkeypatch):
                            'generation_path': plan['generation_path'],
                            'generation_sha256': sha(Path(plan['generation_path']).read_bytes())}}
 
+    def compose_next(char='e'):
+        """Compose another synthetic candidate in this same live generations root."""
+        changed = dict(request)
+        options = dict(finish['composer_options'], generation=char * 40)
+        finish_path = tmp_path / (char + '-finish.json')
+        changed['finish'] = {'path': str(finish_path), 'sha256': write(finish_path, dict(finish, composer_options=options))}
+        out = shared.parent / (char + '-out'); out.mkdir()
+        changed['output_root'] = str(out)
+        generation_root = shared.parent / (char + '-run'); generation_root.mkdir()
+        changed.update(schema='wd.q4-card-real-candidate-request.v1', generation_root=str(generation_root))
+        request_path = tmp_path / (char + '-request.json')
+        return producer.run(enabled=True, request_path=str(request_path), request_sha256=write(request_path, changed))
+
     return dict(coordinator=coordinator, tuple_for=tuple_for, selector=selector, private=private,
-                shared=shared, tmp=tmp_path, manifest=manifest, baseline=baseline, caller=caller, live=live)
+                shared=shared, tmp=tmp_path, manifest=manifest, baseline=baseline, caller=caller, live=live,
+                compose_next=compose_next)
 
 
 @pytest.fixture(scope='module')
@@ -531,6 +545,20 @@ def test_lifecycle_busy_without_pending_refuses_before_card_reservation(lifecycl
         invoke(config)
     assert not (case['shared'] / 'q4-lifecycle-v2.pending.json').exists()
     assert not (private / 'q4-card-refresh.pending.json').exists()
+
+
+@pytest.mark.parametrize('v2', [False, True])
+def test_actual_card_publish_then_next_compose_in_shared_root(lifecycle_case, v2):
+    case = lifecycle_case
+    document = _lifecycle_v2_document(case)[0] if v2 else case['tuple_for']()
+    assert invoke(configured(case, document, name='before-next-compose'))['status'] == 'PUBLISHED'
+    previous = case['selector'].read_bytes()
+    assert (case['shared'] / 'q4-card-refresh.lock').is_file()
+    if v2:
+        assert (case['shared'] / 'q4-lifecycle-v2.lock').is_file()
+        assert (case['shared'] / 'q4-lifecycle-v2.enrolled.json').is_file()
+    assert case['compose_next']()['status'] == 'PREPARED'
+    assert case['selector'].read_bytes() == previous
 
 
 def test_interrupted_enrollment_blocks_v1_and_allows_new_v2_attempt(lifecycle_case, monkeypatch):

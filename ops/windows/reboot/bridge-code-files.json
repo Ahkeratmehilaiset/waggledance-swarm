@@ -126,6 +126,7 @@
     "tools/wd_q4_external_generation_anchor.py",
     "tools/wd_q4_bridge_prefix_pin.py",
     "tools/wd_q4_real_card_decision_cli.py",
+    "tools/wd_q4_lane_caller_runtime_bootstrap.py",
     "tools/wd_q4_roster_from_fleet.py",
     "tools/wd_q4_secure_transport.py",
     "tools/wd_q4_fixed_plan_producer.py",
@@ -307,6 +308,7 @@
     "q4_card_fixed_plan": "tools/wd_q4_staged_fixed_plan_writer.py",
     "q4_bridge_prefix_pin": "tools/wd_q4_bridge_prefix_pin.py",
     "q4_card_decision": "tools/wd_q4_real_card_decision_cli.py",
+    "q4_lane_runtime_caller": "tools/wd_q4_lane_caller_runtime_bootstrap.py",
     "rco_changes_requested": "tools/check_bridge_changes_requested.py",
     "rco_pass_present": "tools/check_rco_pass_present.py"
   },

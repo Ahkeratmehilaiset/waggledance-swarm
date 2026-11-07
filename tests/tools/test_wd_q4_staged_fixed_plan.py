@@ -49,3 +49,26 @@ def test_parsed_new_schema_cannot_fall_through_to_old_backend(plan):
     raw = fixed._canonical(plan)
     with pytest.raises(fixed._Refused):
         fixed._run_fixed_peer_impl(None,None,None,raw,None,None,None,b'{}',None,1,1024,True)
+
+
+def test_fixed_card_bundle_is_explicit_closed_and_roundtrips():
+    names = ('pointer','policy','roster','public_policy','card_decision','card_policy',
+             'memory','projection','descriptor')
+    data = {name: ('synthetic-' + name).encode() for name in names}
+    assert fixed.fixed_card_bundle(**data) == {'status':'OFF'}
+    raw = fixed.fixed_card_bundle(enabled=True, **data)
+    assert type(raw) is bytes and fixed._fixed_card_bundle_decode(raw) == data
+    with pytest.raises(fixed._Refused):
+        fixed._fixed_card_bundle_decode(raw+b' ')
+
+
+def test_fixed_card_bundle_refuses_missing_extra_or_empty():
+    names = ('pointer','policy','roster','public_policy','card_decision','card_policy',
+             'memory','projection','descriptor')
+    data = {name: b'synthetic' for name in names}
+    with pytest.raises((TypeError, fixed._Refused)):
+        fixed.fixed_card_bundle(enabled=True, **{k:v for k,v in data.items() if k != 'pointer'})
+    with pytest.raises((TypeError, fixed._Refused)):
+        fixed.fixed_card_bundle(enabled=True, **{**data,'extra':b'x'})
+    with pytest.raises(fixed._Refused):
+        fixed.fixed_card_bundle(enabled=True, **{**data,'card_policy':b''})

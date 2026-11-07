@@ -944,6 +944,47 @@ def _fixed_bundle_decode(bundle_bytes):
     raise _Refused() from None
 
 
+_CARD_BUNDLE_SCHEMA = 'wd.q4-fixed-card-bundle.v1'
+_CARD_BUNDLE_FIELDS = frozenset({'pointer', 'policy', 'roster', 'public_policy', 'card_decision',
+                                 'card_policy', 'memory', 'projection', 'descriptor'})
+
+
+def fixed_card_bundle(*, pointer, policy, roster, public_policy, card_decision, card_policy,
+                      memory, projection, descriptor, enabled=False):
+    """Encode bounded caller-provided bytes; this does not validate a C2 snapshot."""
+    if enabled is False:
+        return {'status': 'OFF'}
+    try:
+        _check(enabled is True)
+        items = {'pointer':pointer, 'policy':policy, 'roster':roster, 'public_policy':public_policy,
+                 'card_decision':card_decision, 'card_policy':card_policy, 'memory':memory,
+                 'projection':projection, 'descriptor':descriptor}
+        _check(all(type(value) is bytes and 0 < len(value) <= _MAX_BUNDLE for value in items.values()))
+        # Bound before allocating base64 copies and include room for field names.
+        _check(sum(4 * ((len(value) + 2) // 3) for value in items.values()) + 1024 <= _MAX_BUNDLE)
+        result = _canonical({'schema': _CARD_BUNDLE_SCHEMA, **{key:_b64(value) for key,value in items.items()}})
+        _check(len(result) <= _MAX_BUNDLE)
+        return result
+    except Exception:
+        pass
+    raise _Refused() from None
+
+
+def _fixed_card_bundle_decode(bundle_bytes):
+    try:
+        _check(type(bundle_bytes) is bytes and 0 < len(bundle_bytes) <= _MAX_BUNDLE)
+        document = json.loads(bundle_bytes.decode('ascii', 'strict'), object_pairs_hook=_unique_pairs,
+                              parse_constant=lambda _: _check(False))
+        _check(type(document) is dict and set(document) == _CARD_BUNDLE_FIELDS | {'schema'}
+               and document['schema'] == _CARD_BUNDLE_SCHEMA and _canonical(document) == bundle_bytes)
+        result = {key:_unb64(document[key]) for key in _CARD_BUNDLE_FIELDS}
+        _check(all(0 < len(value) <= _MAX_BUNDLE for value in result.values()))
+        return result
+    except Exception:
+        pass
+    raise _Refused() from None
+
+
 _NUL_DEVICE = "\\Device\\Null"
 
 

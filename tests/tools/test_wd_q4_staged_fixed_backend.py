@@ -2,10 +2,13 @@
 import hashlib
 import json
 import os
+import dataclasses
+from pathlib import Path
 
 import pytest
 
 from tools import wd_q4_secure_transport as fixed
+from tests.tools.test_wd_q4_real_card_snapshot_e2e import real_fixture, real_snapshot
 
 pytestmark = pytest.mark.skipif(os.name != 'nt', reason='Windows bundle paths')
 
@@ -57,3 +60,51 @@ def test_staged_backend_refuses_unpinned_or_foreign_source(staged,tmp_path,damag
         peer.write_bytes(b'synthetic peer')
     with pytest.raises(fixed._Refused):
         fixed._read_staged_backend(str(peer), plan)
+
+
+@pytest.mark.parametrize('damage', ['projection','source','pointer','card_policy','plan','bundle'])
+def test_actual_c2_inputs_bind_independent_plan_before_dispatch(real_snapshot, tmp_path, damage):
+    from tools import wd_q4_staged_fixed_backend as backend
+    from tools.wd_q4_public_query import _encoder_digest
+    directory, built, decision, snapshot, projection, args = real_snapshot
+    data = {'pointer':snapshot['pointer_bytes'], 'policy':args['policy_bytes'], 'roster':args['roster_bytes'],
+            'public_policy':b'{}', 'card_decision':args['decision_bytes'], 'card_policy':args['card_policy_bytes'],
+            'memory':(directory/'memory.json').read_bytes(), 'projection':(directory/'projection.json').read_bytes(),
+            'descriptor':(directory/'descriptor.json').read_bytes()}
+    paths={}
+    for key in ('pointer','policy','roster','public_policy','card_decision','card_policy'):
+        path=tmp_path/(key+'.json');path.write_bytes(data[key]);paths[key]=str(path)
+    descriptor=json.loads(data['descriptor'])
+    public={'schema':'wd.q4-public-wrapper-plan.v3','root':str(directory.parent),
+            'config':{'memory':str(directory),'descriptor':str(directory/'descriptor.json'),
+                      'descriptor_sha256':built['descriptor_sha256'],'runtime_revision':descriptor['encoder']['revision']},
+            'source_path':str(args['source_path']),'generation_path':str(args['generation_path']),
+            'end_cursor':dataclasses.asdict(args['end_cursor']),
+            'source_anchor_sha256':decision['source_prefix']['sha256'],
+            'encoder_sha256':_encoder_digest(descriptor['encoder'])}
+    for key,path in paths.items():
+        public[key+'_path']=path;public[key+'_sha256']=sha(data[key])
+    public_raw=json.dumps(public,sort_keys=True,separators=(',',':')).encode()
+    public_path=tmp_path/'staged-public-plan.json';public_path.write_bytes(public_raw)
+    bundle=fixed.fixed_card_bundle(enabled=True,**data)
+    plan={'bundle_sha256':sha(bundle),'bundle_bytes':len(bundle),'public_plan_sha256':sha(public_raw),
+          'public_plan_path':str(public_path),
+          'expected_pointer_sha256':sha(data['pointer']),'policy_sha256':sha(data['policy']),
+          'roster_sha256':sha(data['roster']),'expected_public_policy_sha256':sha(data['public_policy']),
+          'card_decision_sha256':sha(data['card_decision']),'card_policy_sha256':sha(data['card_policy']),
+          'expected_source_sha256':decision['source_prefix']['sha256'],
+          'expected_encoder_sha256':_encoder_digest(descriptor['encoder'])}
+    assert backend.validate_card_input(plan,bundle,public_raw) == {'status':'OFF'}
+    result=backend.validate_card_input(plan,bundle,public_raw,enabled=True)
+    assert result['status']=='VALIDATED_STAGED' and result['completeness']=='UNKNOWN'
+    if damage == 'projection':
+        with (directory/'projection.json').open('ab') as stream:stream.write(b' ')
+    elif damage == 'source':
+        path=Path(args['source_path']);original=path.read_bytes();path.write_bytes(b'X'+original[1:])
+    elif damage in ('pointer','card_policy'):
+        with Path(paths[damage]).open('ab') as stream:stream.write(b' ')
+    elif damage == 'plan':
+        public_path.write_bytes(public_raw+b' ')
+    else:
+        bundle += b' '
+    with pytest.raises(ValueError):backend.validate_card_input(plan,bundle,public_raw,enabled=True)

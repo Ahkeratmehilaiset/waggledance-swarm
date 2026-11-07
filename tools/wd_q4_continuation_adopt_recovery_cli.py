@@ -37,7 +37,7 @@ def main(argv=None):
                 or os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH','').lower()!=config['manifest_sha256']):
             raise ValueError()
         pins._read(config['baseline_path'], config['baseline_sha256'], 1024*1024)
-        tup=pins._read(config['tuple_path'],config['tuple_sha256'],1024*1024)
+        tup=pins._read(config['tuple_path'],config['tuple_sha256'],65536)
         receipt=pins._read(config['receipt_path'],config['receipt_sha256'],65536)
     except (Exception, SystemExit):
         print('{"status":"REFUSED"}')

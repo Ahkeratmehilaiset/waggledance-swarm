@@ -8,6 +8,30 @@ def test_off_does_not_inspect_configuration():
     assert update.run_once(config_path=object(), expected_config_sha256=object()) == {'status': 'OFF'}
 
 
+def test_legacy_writer_and_v2_enrollment_cannot_overlap(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from tools import wd_q4_lifecycle_v2 as lifecycle
+    root = tmp_path / 'generations'
+    (root / ('b' * 40)).mkdir(parents=True)
+    private = tmp_path / (root.name + '.q4-lifecycle-private-v2')
+    private.mkdir()
+    baseline = root / ('b' * 40) / 'shared-session-config.v2.json'
+    raw = update._encode({'schema': 'wd.q4-lifecycle-binding.v2', 'generation_root': str(root),
+                          'private_root': str(private)})
+    def attempt():
+        with pytest.raises(lifecycle.Refused):
+            with lifecycle.admit(enabled=True, binding_bytes=raw, binding_sha256=update._sha(raw),
+                                 attempt='a' * 64, previous_selector_sha256=None):
+                pass
+    with update._legacy_lifecycle_guard(str(baseline)):
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(attempt).result()
+        assert not (root / 'q4-lifecycle-v2.enrolled.json').exists()
+    with lifecycle.admit(enabled=True, binding_bytes=raw, binding_sha256=update._sha(raw),
+                         attempt='a' * 64, previous_selector_sha256=None):
+        assert (root / 'q4-lifecycle-v2.enrolled.json').exists()
+
+
 def test_enabled_requires_exact_external_config_pin(tmp_path):
     path = tmp_path / 'config.json'
     path.write_text('{}', encoding='ascii')
@@ -109,6 +133,20 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
     config_path = config_dir / 'config.json'
     config_path.write_bytes(raw)
     private_root = Path(route['private_state_root'])
+    if fault_stage == 'capture':
+        from tools import wd_q4_live_update_recovery as recovery
+        enrolled = Path(config['baseline_path']).parent.parent / 'q4-lifecycle-v2.enrolled.json'
+        enrolled.write_bytes(b'synthetic enrollment')
+        try:
+            assert update.main(['--once', '--config', str(config_path), '--sha256', update._sha(raw)]) == 2
+            assert json.loads(capsys.readouterr().err)['status'] == 'REFUSED'
+            assert not (private_root / 'q4-live-update.pending.json').exists()
+            with pytest.raises(recovery.RecoveryRefused):
+                recovery.recover(enabled=True, config_path=str(config_path), expected_config_sha256=update._sha(raw),
+                                 expected_attempt='a' * 64, expected_progress_sha256='b' * 64)
+            assert not (private_root / 'q4-live-update.pending.json').exists()
+        finally:
+            enrolled.unlink()
     job_marker = private_root / 'q4-adopt-recovery-job.pending.json'
     job_marker.write_bytes(b'synthetic recovery job pending')
     before = (Path(route['checkpoint_root']) / 'q4-latest.json').read_bytes()

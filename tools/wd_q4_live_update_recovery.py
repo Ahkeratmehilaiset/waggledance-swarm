@@ -315,7 +315,7 @@ def recover(*, enabled=False, config_path=None, expected_config_sha256=None,
         if not lock_path.is_file():
             raise ValueError()
         live.pointer_io._chain(lock_path)
-        with reader_slot(lock_path, timeout_seconds=0.2):
+        with reader_slot(lock_path, timeout_seconds=0.2), update._legacy_lifecycle_guard(config['baseline_path']):
             # The adoption recovery Job reserves its marker under the same
             # pair. No other recovery may proceed during that attempt.
             with private_state.locked_state(private, root, enabled=True):

@@ -180,6 +180,7 @@ def run_once(*,enabled=False,baseline_path=None,baseline_sha256=None,manifest_sh
             for lock in locks:
                 checkpoint._secure(lock,missing_leaf=True)
                 stack.enter_context(reader_slot(lock,timeout_seconds=0.2))
+            stack.enter_context(update._legacy_lifecycle_guard(baseline_path))
             if any(os.path.lexists(private/name) for name in ('q4-continuation-adopt.pending.json',
                     'q4-continuation-orchestrator.pending.json','q4-live-update.pending.json')):
                 raise _Pending()

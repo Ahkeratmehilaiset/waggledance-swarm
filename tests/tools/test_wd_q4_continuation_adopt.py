@@ -99,6 +99,19 @@ def test_off_reads_nothing():
     assert adopt.run_once()=={'status':'OFF'}
 
 
+def test_legacy_adoption_refuses_enrolled_generation_before_marker(actual_continuation):
+    from tools import wd_q4_continuation_adopt as adopt
+    args = actual_continuation
+    generation_root = Path(args['baseline_path']).parent.parent
+    (generation_root / 'q4-lifecycle-v2.enrolled.json').write_bytes(b'synthetic enrollment')
+    route = initial._tuple_part(json.loads(args['genesis_tuple_bytes']), 'route')
+    marker = Path(route['private_state_root']) / 'q4-continuation-adopt.pending.json'
+    with pytest.raises(adopt.AdoptRefused):
+        adopt.run_once(**args)
+    assert not marker.exists()
+    assert not (generation_root / 'q4-live-current.json').exists()
+
+
 def test_actual_continuation_can_be_adopted_for_live_reader(actual_continuation):
     from tools import wd_q4_continuation_adopt as adopt
     args=actual_continuation

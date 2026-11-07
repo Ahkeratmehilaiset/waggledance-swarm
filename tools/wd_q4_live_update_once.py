@@ -8,6 +8,7 @@ After a write begins, interruption or failure is UNKNOWN: reconcile, never retry
 automatically. No raw bridge text or query is included in the receipt.
 """
 import argparse
+from contextlib import contextmanager, ExitStack
 from dataclasses import asdict
 import hashlib
 import json
@@ -26,6 +27,7 @@ from tools import wd_q4_descriptor_materializer as materializer
 from tools import wd_q4_lane_binding_producer as binding_producer
 from tools import wd_q4_lane_caller_cli as caller
 from tools import wd_q4_lane_link as link
+from tools import wd_q4_lifecycle_v2 as lifecycle
 from tools import wd_q4_live_snapshot_publish as live
 from tools import wd_q4_secure_transport as transport
 from tools import wd_q4_snapshot_candidate as capture
@@ -35,6 +37,21 @@ _HEX = re.compile(r'[0-9a-f]{64}\Z')
 _CONFIG_KEYS = frozenset({'schema', 'route_path', 'route_sha256', 'plan_path', 'anchor_path',
     'policy_path', 'public_policy_path', 'baseline_path', 'baseline_sha256', 'manifest_sha256'})
 _P1_CONFIG_KEYS = _CONFIG_KEYS | {'p1_enabled'}
+
+
+@contextmanager
+def _legacy_lifecycle_guard(baseline_path):
+    """Exclude enrolled v2 roots for the lifetime of a legacy write/recovery."""
+    root = live.pointer_io._absolute(baseline_path).parent.parent
+    live.pointer_io._chain(root)
+    lock = root / lifecycle._LOCK
+    if os.path.lexists(lock):
+        live.pointer_io._chain(lock)
+    with reader_slot(lock, timeout_seconds=0.2):
+        live.pointer_io._chain(lock)
+        if any(os.path.lexists(root / name) for name in (lifecycle._ENROLLED, lifecycle._PENDING)):
+            raise ValueError('legacy_lifecycle_enrolled')
+        yield
 
 
 def _configuration(raw):
@@ -377,9 +394,11 @@ def run_once(*, enabled=False, config_path=None, expected_config_sha256=None, ho
         lock_path = private_root / 'q4-live-update.lock'
         if os.path.lexists(lock_path):
             live.pointer_io._chain(lock_path)
-        slot = reader_slot(lock_path, timeout_seconds=0.2)
+        slot = ExitStack()
         slot.__enter__()
         slot_acquired = True
+        slot.enter_context(reader_slot(lock_path, timeout_seconds=0.2))
+        slot.enter_context(_legacy_lifecycle_guard(config['baseline_path']))
         marker = private_root / 'q4-live-update.pending.json'
         if not runner._absent(marker):
             raise ValueError()

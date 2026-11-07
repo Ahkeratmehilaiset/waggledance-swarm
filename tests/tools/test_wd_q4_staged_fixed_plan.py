@@ -1,5 +1,6 @@
 """The staged C2 wire plan is closed and cannot launch during this slice."""
 import os
+from pathlib import Path
 
 import pytest
 
@@ -95,6 +96,43 @@ def test_staged_producer_outputs_plan_accepted_by_fixed_parser():
 def test_staged_producer_is_disabled_by_default():
     with pytest.raises(producer.FixedPlanRefused, match='^disabled$'):
         producer.build_staged_fixed_plan(**staged_args())
+
+
+def test_staged_child_validates_bundle_before_ack_or_query(plan, monkeypatch):
+    """Protocol-order seam only; no real Job or owner completion claimed."""
+    bundle=b'synthetic-c2-bundle'
+    plan.update(bundle_sha256=fixed._sha(bundle),bundle_bytes=len(bundle))
+    nonce='e'*32
+    challenge=fixed._canonical({'schema':'wd.q4-fixed-challenge.v1','nonce':nonce})
+    frames=[fixed._canonical(plan),challenge,bundle,b'synthetic-query']
+    state={'validated':False,'ack':False}
+    class Backend:
+        def validate_bundle(self,raw):
+            assert raw==bundle and not state['ack']
+            state['validated']=True
+        def __call__(self,_plan,_raw,_bundle,query):
+            assert state['validated'] and state['ack'] and query==b'synthetic-query'
+            return b'{}'
+    monkeypatch.setattr(fixed,'_fixed_child_backend',lambda *_:Backend())
+    def read(_limit):
+        frame=frames.pop(0)
+        if frame==b'synthetic-query':assert state['validated'] and state['ack']
+        return frame
+    def write(raw):
+        doc=fixed.json.loads(raw)
+        if doc['status']=='BUNDLE_VERIFIED':
+            assert state['validated']
+            state['ack']=True
+    result=fixed._fixed_child_protocol(read,write,plan['peer_code_sha256'])
+    assert fixed._fixed_unwrap(nonce,b'synthetic-query',result,1024)==b'{}'
+
+
+def test_peer_limit_covers_exact_lf_and_crlf_checkout_bytes():
+    source=Path(fixed.__file__).read_bytes().replace(b'\r\n',b'\n')
+    assert len(source) <= fixed._PEER_CODE_LIMIT
+    assert len(source.replace(b'\n',b'\r\n')) <= fixed._PEER_CODE_LIMIT
+    assert 'source.read(%d)' % (fixed._PEER_CODE_LIMIT+1) in fixed._FIXED_BOOTSTRAP
+    assert 'len(raw)>%d' % fixed._PEER_CODE_LIMIT in fixed._FIXED_BOOTSTRAP
 
 
 @pytest.mark.parametrize('change', [

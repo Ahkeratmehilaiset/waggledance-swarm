@@ -581,7 +581,7 @@ _MAX_BUNDLE = 16 * 1024 * 1024
 # an isolated child before the pinned verifier is loaded; importing the verifier
 # here would break that boundary. A regression test checks the shared limit.
 _MAX_RUNTIME_MANIFEST = 8 * 1024 * 1024
-_PEER_CODE_LIMIT = 131072
+_PEER_CODE_LIMIT = 262144
 # synthetic-v1 needs no runtime. public-snapshot-v1 is default-off: the parent
 # refuses it unless explicitly enabled, and the child verifies the externally
 # pinned runtime manifest with the pinned verifier before importing any
@@ -1425,6 +1425,13 @@ def _fixed_child_backend(plan, peer_path):
     """
     if plan["backend"] == "synthetic-v1":
         return _fixed_child_answer
+    if plan["backend"] == "staged-card-wrapper-v1":
+        _check(type(peer_path) is str)
+        scope = {'__name__':'_wd_staged_fixed_backend'}
+        exec(compile(_read_staged_backend(peer_path, plan), '<wd-staged-fixed-backend>', 'exec'), scope)
+        staged = scope['prepare_staged_backend'](plan, peer_path, globals(), enabled=True)
+        _check(callable(staged) and callable(getattr(staged, 'validate_bundle', None)))
+        return staged
     _check(plan["backend"] == "public-snapshot-v1" and type(peer_path) is str)
     # First step, before any verifier, runtime or backend code runs in this process.
     _contain_child_output()
@@ -1510,6 +1517,8 @@ def _fixed_child_protocol(read_frame, write_frame, peer_code_sha256, peer_path=N
                             "binding_sha256": _sha(plan_bytes)}))
     bundle_bytes = read_frame(plan["bundle_bytes"])
     _fixed_child_bundle(plan, bundle_bytes)
+    if plan["backend"] == "staged-card-wrapper-v1":
+        backend.validate_bundle(bundle_bytes)
     write_frame(_fixed_ack(challenge["nonce"], _sha(bundle_bytes)))
     if _diagnostic_marker is not None:
         # Mark before the read: a partial/failed query read must never reveal
@@ -1540,8 +1549,8 @@ _BOOTSTRAP = """
 import hashlib,sys
 try:
  with open(sys.argv[1], 'rb') as source:
-  raw=source.read(131073)
- if len(raw)>131072 or hashlib.sha256(raw).hexdigest()!=sys.argv[2]:
+  raw=source.read(262145)
+ if len(raw)>262144 or hashlib.sha256(raw).hexdigest()!=sys.argv[2]:
   raise ValueError()
  scope={'__name__':'_wd_secure_child','__file__':sys.argv[1]}
  exec(compile(raw,'<wd-secure-child>','exec'),scope)
@@ -1966,8 +1975,8 @@ def _run_bounded_impl(*, executable, arguments, cwd, stdin_bytes, timeout_second
     _check((expected_interpreter_sha256 is None) == (interpreter_max_bytes is None))
     path = str(Path(__file__).absolute())
     with open(path, "rb") as stream:
-        raw = stream.read(131073)
-    _check(len(raw) <= 131072)
+        raw = stream.read(_PEER_CODE_LIMIT + 1)
+    _check(len(raw) <= _PEER_CODE_LIMIT)
     command = [executable, "-I", "-S", "-B", "-c", _BOOTSTRAP,
                path, hashlib.sha256(raw).hexdigest()]
     if expected_interpreter_sha256 is None:

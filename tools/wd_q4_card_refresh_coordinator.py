@@ -7,6 +7,10 @@ actual staged binding/selector validate candidate and frozen source bytes.
 No generation is discovered, rebuilt or retried here. Locks coordinate callers
 using this protocol; arbitrary non-cooperating selector writers remain outside
 that guarantee. Post-write failures retain UNKNOWN evidence for reconciliation.
+The production route requires an explicitly operator-authorized real candidate;
+test inputs may be fabricated but cannot silently select the audit source mode.
+Seeing the previous selector does not prove no publication occurred: without
+independent nonpublication evidence, recovery remains UNKNOWN, including ABA.
 """
 from contextlib import ExitStack
 import hashlib
@@ -133,15 +137,17 @@ def _load(path, pin):
     request = caller._json(_spec(job['request'], 1024 * 1024, receipt_hex_case=True))
     request_keys = {'schema', 'decision', 'snapshot_template', 'output_root', 'finish'}
     if (type(request) is not dict
-            or request.get('schema') not in ('wd.q4-card-real-candidate-request.v1', 'wd.q4-card-audit-prefix-request.v1')
-            or set(request) != (request_keys | {'generation_root'}
-                               if request['schema'] == 'wd.q4-card-real-candidate-request.v1' else request_keys)
-            or Path(public['root']) != Path(request.get('generation_root', request['output_root'])) / 'snapshot'):
+            or request.get('schema') != 'wd.q4-card-real-candidate-request.v1'
+            or set(request) != request_keys | {'generation_root'}
+            or Path(public['root']) != Path(request['generation_root']) / 'snapshot'):
         raise ValueError()
     decision = caller._json(_spec(request['decision'], 1024 * 1024))
     template = caller._json(_spec(request['snapshot_template'], 1024 * 1024))
     if (decision.get('schema') != 'wd.q4-real-card-decision-request.v1'
             or template.get('schema') != 'wd.q4-real-card-snapshot-request.v1'
+            or decision.get('mode') != 'real'
+            or decision.get('source_mode') != 'operator_authorized_source'
+            or template.get('source_mode') != 'operator_authorized_source'
             or Path(decision['source_path']) != Path(source['path']) or Path(template['source_path']) != Path(source['path'])
             or decision['cursor']['offset'] != source['bytes']
             or decision['cursor']['file_identity'] != source['file_identity']
@@ -237,7 +243,9 @@ def _locks(root, private):
     stack = ExitStack()
     try:
         # Generation-root lock covers different private directories; the second
-        # lock coordinates existing update/adoption callers on this private root.
+        # lock coordinates existing update/adoption callers only if they share
+        # this exact private root. Publication CAS is not a lifecycle mutex for
+        # adoption configured with a different private root.
         for path in (root / 'q4-card-refresh.lock', private / 'q4-live-update.lock'):
             live.pointer_io._chain(path if os.path.lexists(path) else path.parent)
             stack.enter_context(reader_slot(path, timeout_seconds=0.2))
@@ -344,7 +352,10 @@ def recover(*, config, config_sha256, attempt, progress_sha256=None):
             if actual == intent['target_selector_sha256']:
                 _selected(document, baseline, candidate, root); status = 'PUBLISHED'
             elif actual == intent['previous_selector_sha256']:
-                status = 'NOT_PUBLISHED'
+                # A publish followed by ordinary rollback has the same selector
+                # value. Intent/progress/marker presence (or loss) cannot prove
+                # that publication was never attempted. Preserve all journals.
+                raise Unknown('card_refresh_unknown')
             else: raise ValueError()
             result = _result(document, candidate, status)
             receipt_path = private / ('q4-card-result-' + attempt + '.json')

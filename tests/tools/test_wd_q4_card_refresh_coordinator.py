@@ -29,13 +29,24 @@ def _build_case(attested, tmp_path, monkeypatch):
     monkeypatch.setattr(live, '_P1_ROOT', shared.parent)
     request_path, _, _ = _chain(attested, tmp_path, monkeypatch, lambda _: shared)
     request = json.loads(request_path.read_bytes())
+    # Exercise the production request contract using fabricated local inputs.
+    # No synthetic-mode exemption is added to the coordinator.
+    monkeypatch.setattr(producer, '_GENERATION_PARENT', shared.parent)
     anchors = shared.parent / '.codex-audit' / 'anchors'; anchors.mkdir(parents=True)
     decision = json.loads(Path(request['decision']['path']).read_bytes())
+    decision['source_mode'] = 'operator_authorized_source'
     first = anchors / 'first'; shutil.copytree(decision['anchor']['root'], first)
     decision['anchor']['root'] = str(first)
     path = tmp_path / 'd1.json'
     request['decision'] = {'path': str(path), 'sha256': write(path, decision)}
     finish = json.loads(Path(request['finish']['path']).read_bytes())
+    for key in ('public_policy',):
+        finish['base_plan'][key + '_path'] = decision['inputs'][key]['path']
+        finish['base_plan'][key + '_sha256'] = decision['inputs'][key]['sha256']
+    template = json.loads(Path(request['snapshot_template']['path']).read_bytes())
+    template['source_mode'] = 'operator_authorized_source'
+    template_path = tmp_path / 'operator-template.json'
+    request['snapshot_template'] = {'path': str(template_path), 'sha256': write(template_path, template)}
     jobs, process_results = {}, {}
     for char in 'bcd':
         gen = char * 40
@@ -47,6 +58,8 @@ def _build_case(attested, tmp_path, monkeypatch):
             changed['decision'] = _append_prefix(request, anchors)
         out = shared.parent / (char + '-out'); out.mkdir()
         changed['output_root'] = str(out)
+        generation_root = shared.parent / (char + '-run'); generation_root.mkdir()
+        changed.update(schema='wd.q4-card-real-candidate-request.v1', generation_root=str(generation_root))
         path = tmp_path / (char + '-request.json'); pin = write(path, changed)
         result = producer.run(enabled=True, request_path=str(path), request_sha256=pin)
         assert result['status'] == 'PREPARED'
@@ -161,6 +174,91 @@ def test_real_p1_run_once_publishes_c_then_d_without_v6(case, monkeypatch):
     assert all(Path(path).read_bytes() == raw for path, raw in original.items())
 
 
+@pytest.mark.parametrize('fault', ['audit_schema', 'decision_synthetic', 'template_synthetic',
+    'both_synthetic', 'missing_decision_mode', 'unknown_template_mode', 'nonreal_decision_mode'])
+def test_source_mode_class_is_closed_before_any_config_write(case, fault):
+    from tools import wd_q4_live_update_config_prepare as prepare
+    document = case['tuple_for']()
+    job_path = Path(document['job']['path'])
+    job = json.loads(job_path.read_bytes())
+    request_path = Path(job['request']['path'])
+    request = json.loads(request_path.read_bytes())
+    if fault == 'audit_schema':
+        request['schema'] = 'wd.q4-card-audit-prefix-request.v1'
+        request['output_root'] = request.pop('generation_root')
+    for field in ('decision', 'snapshot_template'):
+        data_path = Path(request[field]['path'])
+        data = json.loads(data_path.read_bytes())
+        if ((field == 'decision' and fault in ('decision_synthetic', 'both_synthetic'))
+                or (field == 'snapshot_template' and fault in ('template_synthetic', 'both_synthetic'))):
+            data['source_mode'] = 'synthetic_fixture'
+        if field == 'decision' and fault == 'missing_decision_mode':
+            del data['source_mode']
+        if field == 'snapshot_template' and fault == 'unknown_template_mode':
+            data['source_mode'] = 'UNKNOWN'
+        if field == 'decision' and fault == 'nonreal_decision_mode':
+            data['mode'] = 'synthetic'
+        request[field]['sha256'] = write(data_path, data)
+    job['request']['sha256'] = write(request_path, request)
+    document['job']['sha256'] = write(job_path, job)
+    before = {p: p.read_bytes() for p in case['private'].rglob('*') if p.is_file()}
+    with pytest.raises(prepare.ConfigPrepareRefused):
+        configured(case, document, fault)
+    assert before == {p: p.read_bytes() for p in case['private'].rglob('*') if p.is_file()}
+    assert not case['selector'].exists()
+
+
+def test_selector_aba_cannot_prove_not_published(case, monkeypatch):
+    from tools import wd_q4_live_update_once as update
+    from tools import wd_q4_live_update_recovery as recovery
+    config = configured(case, case['tuple_for']())
+    actual_publish = case['live'].publish
+    @wraps(actual_publish)
+    def published_then_interrupted(**kwargs):
+        actual_publish(**kwargs)
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(case['live'], 'publish', published_then_interrupted)
+    with pytest.raises(update.UpdateInterrupted):
+        invoke(config)
+    assert case['selector'].exists()
+    case['selector'].unlink()  # Ordinary rollback of this fixture's selector to its prior absent state.
+    before = {p: p.read_bytes() for p in case['private'].rglob('*') if p.is_file()}
+    with pytest.raises(recovery.RecoveryOutcomeUnknown):
+        recover(config)
+    assert before == {p: p.read_bytes() for p in case['private'].rglob('*') if p.is_file()}
+
+
+@pytest.mark.parametrize('cut', ['before_marker', 'lost_marker_after_publish'])
+def test_missing_marker_is_not_nonpublication_evidence(case, monkeypatch, cut):
+    from tools import wd_q4_live_update_once as update
+    from tools import wd_q4_live_update_recovery as recovery
+    config = configured(case, case['tuple_for']())
+    coordinator = case['coordinator']
+    if cut == 'before_marker':
+        actual_write = coordinator._write
+        def interrupted(path, raw):
+            if path.name == 'q4-card-refresh.pending.json':
+                raise KeyboardInterrupt()
+            return actual_write(path, raw)
+        monkeypatch.setattr(coordinator, '_write', interrupted)
+    else:
+        actual_publish = case['live'].publish
+        @wraps(actual_publish)
+        def interrupted(**kwargs):
+            actual_publish(**kwargs)
+            raise KeyboardInterrupt()
+        monkeypatch.setattr(case['live'], 'publish', interrupted)
+    with pytest.raises(update.UpdateInterrupted):
+        invoke(config)
+    if cut == 'lost_marker_after_publish':
+        (case['private'] / 'q4-card-refresh.pending.json').unlink()
+        case['selector'].unlink()
+    before = {p: p.read_bytes() for p in case['private'].rglob('*') if p.is_file()}
+    with pytest.raises(recovery.RecoveryOutcomeUnknown):
+        recover(config)
+    assert before == {p: p.read_bytes() for p in case['private'].rglob('*') if p.is_file()}
+
+
 _BAD_TUPLES = [
     ('flag_false', lambda d: d.update(p1_enabled=False)),
     ('flag_int', lambda d: d.update(p1_enabled=1)),
@@ -205,6 +303,7 @@ def test_job_class_sweep_refuses_before_output(case, name, value):
 @pytest.mark.parametrize('cut', ['pending', 'progress', 'published', 'result'])
 def test_crashes_reconcile_old_or_target_without_republish(case, monkeypatch, cut):
     from tools import wd_q4_live_update_once as update
+    from tools import wd_q4_live_update_recovery as recovery
     coordinator = case['coordinator']; config = configured(case, case['tuple_for']())
     real_write = coordinator._write
     real_publish = case['live'].publish
@@ -224,8 +323,15 @@ def test_crashes_reconcile_old_or_target_without_republish(case, monkeypatch, cu
         with pytest.raises((update.UpdateInterrupted, update.UpdateOutcomeUnknown)): invoke(config)
     before = case['selector'].read_bytes() if case['selector'].exists() else None
     monkeypatch.setattr(case['live'], 'publish', lambda **_: pytest.fail('recovery republished'))
+    if cut in ('pending', 'progress'):
+        journals = {p: p.read_bytes() for p in case['private'].rglob('*') if p.is_file()}
+        with pytest.raises(recovery.RecoveryOutcomeUnknown):
+            recover(config)
+        assert journals == {p: p.read_bytes() for p in case['private'].rglob('*') if p.is_file()}
+        assert (case['selector'].read_bytes() if case['selector'].exists() else None) == before
+        return
     result = recover(config)
-    assert result['status'] == ('PUBLISHED' if cut in ('published', 'result') else 'NOT_PUBLISHED')
+    assert result['status'] == 'PUBLISHED'
     assert (case['selector'].read_bytes() if case['selector'].exists() else None) == before
     assert recover(config) == result
     assert not (case['private'] / 'q4-card-refresh.pending.json').exists()
@@ -278,7 +384,7 @@ def test_job_request_binding_and_protected_output(case, fault):
     if fault in ('request_root', 'request_decision'):
         request_path = Path(job['request']['path']); request = json.loads(request_path.read_bytes())
         if fault == 'request_root':
-            request['output_root'] = str(case['tmp'])
+            request['generation_root'] = str(case['tmp'])
         else:
             decision_path = Path(request['decision']['path'])
             decision = json.loads(decision_path.read_bytes()); decision['source_path'] = str(case['tmp'] / 'other')

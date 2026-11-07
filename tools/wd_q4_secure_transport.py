@@ -1152,7 +1152,7 @@ def _module_origins(before, roots, namespace_root=None, created_origin=None, swi
     Namespace inspection is not an authenticity proof; the runtime tree and
     module state can still change after verification (same-user TOCTOU).
     """
-    from importlib.machinery import ModuleSpec, NamespaceLoader
+    from importlib.machinery import BuiltinImporter, FrozenImporter, ModuleSpec, NamespaceLoader
 
     namespaces = {"sandbox": ("sandbox",), "sandbox.mind": ("sandbox", "mind"),
                   "sandbox.mind.step2": ("sandbox", "mind", "step2")}
@@ -1195,6 +1195,17 @@ def _module_origins(before, roots, namespace_root=None, created_origin=None, swi
                        not os.path.exists(os.path.join(path, "__init__.py")))
                 continue
             if name in sys.builtin_module_names or getattr(spec, "origin", None) in ("built-in", "frozen"):
+                # A ModuleSpec is mutable and its origin is merely a claim.
+                # Bind it to the matching interpreter importer and registry;
+                # this is cooperative consistency, not object authentication.
+                _check(spec is not None and spec.name == name and attrs.get("__loader__") is spec.loader)
+                if spec.origin == "built-in":
+                    _check(name in sys.builtin_module_names and spec.loader is BuiltinImporter
+                           and BuiltinImporter.find_spec(name) is not None)
+                elif spec.origin == "frozen":
+                    _check(spec.loader is FrozenImporter and FrozenImporter.find_spec(name) is not None)
+                else:
+                    _check(False)
                 continue
             _check(created_origin is not None)
             created_origin.accept_created(name, module)

@@ -112,6 +112,18 @@ def test_orphan_pending_is_never_deleted_or_retried(real_synthetic):
     assert not seen
 
 
+def test_unresolved_adoption_blocks_further_continuation(real_synthetic):
+    module, _, private, shared, _, seen = real_synthetic
+    marker = private / 'q4-continuation-adopt.pending.json'
+    marker.write_bytes(b'unknown adoption outcome\n')
+    before = (shared / 'q4-latest.json').read_bytes()
+    with pytest.raises(module.OrchestrationUnknown):
+        module.run_once(enabled=True, template_sha256='a' * 64, cutoff_utc='2026-10-31T13:02:00Z')
+    assert marker.read_bytes() == b'unknown adoption outcome\n'
+    assert (shared / 'q4-latest.json').read_bytes() == before
+    assert not seen
+
+
 def test_bad_child_receipt_is_unknown_and_leaves_pending(real_synthetic, monkeypatch):
     module, _, private, _, _, _ = real_synthetic
     monkeypatch.setattr(module, '_run_fixed', lambda *_: SimpleNamespace(

@@ -128,7 +128,9 @@ def run_once(*, enabled=False, template_path=None, template_sha256=None, expecte
         with reader_slot(lock, timeout_seconds=0.2):
             checkpoint._secure(lock)
             pending = private / 'q4-continuation-orchestrator.pending.json'
-            if os.path.lexists(pending):
+            # Adoption takes this same lock; once it releases the lock, a
+            # retained marker means publication may have been interrupted.
+            if os.path.lexists(pending) or os.path.lexists(private / 'q4-continuation-adopt.pending.json'):
                 raise OrchestrationUnknown('orchestration_unknown')
             head = runner._json(checkpoint._read(checkpoint._secure(private / 'q4-cutoff-current.json'), max_bytes=4096), 4096)
             previous_pin = head['record_sha256']

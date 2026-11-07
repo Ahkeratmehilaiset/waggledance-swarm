@@ -286,3 +286,157 @@ def test_real_source_mode_stages_candidate_in_separate_generation_root(materiali
     assert result['status'] == 'PREPARED' and result['pointer_path'] == str(pointer)
     assert sha(pointer.read_bytes()) == result['pointer_sha256']
     assert not (tmp_path / 'WD_Q4_DESCRIPTOR_CURRENT.json').exists()
+
+
+# --- D1: _finish may compose into one shared immutable generations root (composer shared_stage=True) ------------
+# The materialize fixture predates the af098f1d peer fix, so the composer refuses its success path at
+# _read_staged_backend on this head. These tests replace only that attestation (exact bundle peer path, staged
+# backend plan); the plan writers, the fixed plan writer, the composer and the CLI result verifier run for real.
+
+_GEN_B, _GEN_C = 'b' * 40, 'c' * 40
+
+
+@pytest.fixture
+def attested(materialize, monkeypatch):
+    from tools import wd_q4_staged_composer as staged
+    tools_dir = Path(materialize['expected_bundle']) / 'tools-bootstrap' / 'tools'
+
+    def attest(path, plan):
+        assert Path(path) == tools_dir / 'wd_q4_secure_transport.py' and plan['backend'] == 'staged-card-wrapper-v1'
+        return (tools_dir / 'wd_q4_staged_fixed_backend.py').read_bytes()
+    monkeypatch.setattr(staged.transport, '_read_staged_backend', attest)
+    return materialize
+
+
+def _finish_into(case, out, **option_changes):
+    from tools import wd_q4_lane_link
+    mod = importlib.import_module('tools.wd_q4_card_audit_orchestrator')
+    case = dict(case)
+    staged = json.loads(Path(case['public_plan_path']).read_bytes())
+    base = {key: staged[key] for key in wd_q4_lane_link._PUBLIC_PLAN_SCHEMAS['wd.q4-public-wrapper-plan.v1']}
+    base['schema'] = 'wd.q4-public-wrapper-plan.v1'
+    fixed = json.loads(case.pop('fixed_plan_bytes'))
+    fixed = {k: v for k, v in fixed.items() if k not in ('schema', 'backend')}
+    for key in ('enabled', 'expected_fixed_plan_sha256', 'public_plan_path', 'expected_public_plan_sha256',
+                'stage_dir', 'generation_root'):
+        case.pop(key)
+    case.update(option_changes)
+    real_pointer = Path(staged['root']) / 'card-snapshot-candidate.json'
+    real_pointer.write_bytes(Path(staged['pointer_path']).read_bytes())
+    out.mkdir(exist_ok=True)
+    return mod._finish(enabled=True, output_root=out, base_plan=base, fixed_template=fixed,
+        composer_options=case, pointer_path=str(real_pointer), pointer_sha256=staged['pointer_sha256'],
+        decision_path=staged['card_decision_path'], card_policy_path=staged['card_policy_path'],
+        source_path=staged['source_path'], generation_path=staged['generation_path'])
+
+
+def _tree(root):
+    return {str(p.relative_to(root)): (p.read_bytes() if p.is_file() else None) for p in sorted(Path(root).rglob('*'))}
+
+
+def test_finish_composes_two_generations_into_one_shared_root(attested, tmp_path):
+    shared = tmp_path / 'live' / 'generations'
+    shared.mkdir(parents=True)
+    first = _finish_into(attested, tmp_path / 'finish-b', generation=_GEN_B, shared_stage_root=str(shared))
+    assert first['status'] == 'PREPARED'
+    assert Path(first['pointer_path']) == shared / ('candidate-pointer-' + _GEN_B + '.json')
+    before = _tree(shared)
+    second = _finish_into(attested, tmp_path / 'finish-c', generation=_GEN_C, shared_stage_root=str(shared))
+    assert second['status'] == 'PREPARED'
+    assert Path(second['pointer_path']) == shared / ('candidate-pointer-' + _GEN_C + '.json')
+    assert Path(second['descriptor_path']).is_relative_to(shared / _GEN_C)
+    after = _tree(shared)
+    assert {key: after[key] for key in before} == before
+    assert not (tmp_path / 'finish-b' / 'stage').exists() and not (tmp_path / 'finish-c' / 'stage').exists()
+
+
+def test_finish_default_keeps_private_stage_and_fixed_pointer_name(attested, tmp_path):
+    out = tmp_path / 'finish'
+    result = _finish_into(attested, out)
+    assert Path(result['pointer_path']) == out / 'stage' / 'candidate-pointer.json'
+
+
+def test_finish_accepts_shared_root_beside_the_output_root(attested, tmp_path):
+    shared = tmp_path / 'live' / 'generations'  # the generation root (its parent) must not hold the bundle store
+    shared.mkdir(parents=True)
+    result = _finish_into(attested, tmp_path / 'live' / 'finish', generation=_GEN_B, shared_stage_root=str(shared))
+    assert Path(result['pointer_path']) == shared / ('candidate-pointer-' + _GEN_B + '.json')
+
+
+@pytest.mark.parametrize('layout', ['inside-output', 'contains-output', 'missing', 'file'])
+def test_finish_refuses_bad_shared_root_before_any_write(attested, tmp_path, layout):
+    out = tmp_path / 'case' / 'finish'
+    (tmp_path / 'case').mkdir()
+    shared = {'inside-output': out / 'generations', 'contains-output': tmp_path / 'case',
+              'missing': tmp_path / 'absent', 'file': tmp_path / 'not-a-dir'}[layout]
+    if layout == 'file':
+        shared.write_bytes(b'x')
+    if layout == 'inside-output':
+        shared.mkdir(parents=True)
+    with pytest.raises((ValueError, OSError)):
+        _finish_into(attested, out, generation=_GEN_B, shared_stage_root=str(shared))
+    expected = ['generations'] if layout == 'inside-output' else []
+    assert sorted(p.name for p in out.iterdir()) == expected
+    if shared.is_dir() and layout != 'contains-output':
+        assert list(shared.iterdir()) == []
+
+
+@pytest.mark.parametrize('options', [{'shared_stage': True}, {'shared_stage_root': None},
+                                     {'shared_stage_root': 1}])
+def test_finish_refuses_unknown_or_malformed_shared_option_before_any_write(attested, tmp_path, options):
+    out = tmp_path / 'finish'
+    with pytest.raises((ValueError, OSError)):
+        _finish_into(attested, out, generation=_GEN_B, **options)
+    assert list(out.iterdir()) == []
+
+
+def _chain(materialize, tmp_path, monkeypatch, shared):
+    from tools import wd_q4_lane_link
+    from tools import wd_q4_real_card_snapshot_producer as producer
+    real_dir = tmp_path / 'real-card-fixture'; real_dir.mkdir()
+    real = real_fixture.__wrapped__(real_dir)
+    staged = json.loads(Path(materialize['public_plan_path']).read_bytes())
+    real[0]['roster_bytes'] = Path(staged['roster_path']).read_bytes()
+    real[0]['roster_sha256'] = sha(real[0]['roster_bytes'])
+    path, _, out, args = make_request(real, real_dir)
+    request = json.loads(path.read_bytes())
+    decision = json.loads(Path(request['decision']['path']).read_bytes())
+    case = dict(materialize)
+    base = {k: staged[k] for k in wd_q4_lane_link._PUBLIC_PLAN_SCHEMAS['wd.q4-public-wrapper-plan.v1']}
+    base['schema'] = 'wd.q4-public-wrapper-plan.v1'
+    for key in ('policy', 'roster'):
+        base[key + '_path'] = decision['inputs'][key]['path']
+        base[key + '_sha256'] = decision['inputs'][key]['sha256']
+    fixed = json.loads(case.pop('fixed_plan_bytes'))
+    fixed = {k: v for k, v in fixed.items() if k not in ('schema', 'backend')}
+    for key in ('enabled', 'expected_fixed_plan_sha256', 'public_plan_path', 'expected_public_plan_sha256',
+                'stage_dir', 'generation_root'):
+        case.pop(key)
+    case.update(generation=_GEN_B, shared_stage_root=str(shared(out)))
+    finish = {'schema': 'wd.q4-card-audit-finish-template.v1', 'base_plan': base,
+              'fixed_template': fixed, 'composer_options': case}
+    finish_path = tmp_path / 'finish-template.json'
+    request['finish'] = {'path': str(finish_path), 'sha256': write(finish_path, finish)}
+    monkeypatch.setattr(producer, '_load_pinned_e5', lambda **_: (args['encode'], args['identity'], args['dimension'], lambda: True))
+    return path, write(path, request), out
+
+
+def test_run_composes_into_shared_root_with_generation_pointer(attested, tmp_path, monkeypatch):
+    pytest.importorskip('faiss')
+    mod = importlib.import_module('tools.wd_q4_card_audit_orchestrator')
+    shared = tmp_path / 'live' / 'generations'
+    shared.mkdir(parents=True)
+    path, pin, out = _chain(attested, tmp_path, monkeypatch, lambda out: shared)
+    result = mod.run(enabled=True, request_path=str(path), request_sha256=pin)
+    assert result['status'] == 'PREPARED'
+    assert Path(result['pointer_path']) == shared / ('candidate-pointer-' + _GEN_B + '.json')
+    assert not (out / 'stage').exists()
+
+
+def test_run_refuses_shared_root_containing_output_before_any_write(attested, tmp_path, monkeypatch):
+    pytest.importorskip('faiss')
+    mod = importlib.import_module('tools.wd_q4_card_audit_orchestrator')
+    path, pin, out = _chain(attested, tmp_path, monkeypatch, lambda out: out.parent)
+    with pytest.raises(mod.Refused):  # run must refuse before its own decision and snapshot writes
+        mod.run(enabled=True, request_path=str(path), request_sha256=pin)
+    assert list(out.iterdir()) == []

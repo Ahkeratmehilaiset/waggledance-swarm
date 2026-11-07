@@ -128,3 +128,89 @@ def test_changed_materialized_artifact_after_composition_is_unknown(pinned_reque
     path, raw = pinned_request
     assert run(path, sha(raw)) == 3
     assert json.loads(capsys.readouterr().out) == {'status': 'UNKNOWN'}
+
+
+# --- D1: v2 request selects the shared immutable generations root (composer shared_stage=True) ------------------
+# The materialize fixture predates the af098f1d peer fix, so its success path is refused at _read_staged_backend on
+# this head. These tests replace only that attestation (bundle peer path, staged backend plan); every other composer
+# and CLI check runs for real.
+
+_V2 = 'wd.q4-staged-card-composer-request.v2'
+_GEN_B, _GEN_C = 'b' * 40, 'c' * 40
+
+
+@pytest.fixture
+def attested(materialize, monkeypatch):
+    peer = Path(materialize['expected_bundle']) / 'tools-bootstrap' / 'tools' / 'wd_q4_secure_transport.py'
+    backend = Path(materialize['expected_bundle']) / 'tools-bootstrap' / 'tools' / 'wd_q4_staged_fixed_backend.py'
+
+    def attest(path, plan):
+        assert Path(path) == peer and plan['backend'] == 'staged-card-wrapper-v1'
+        return backend.read_bytes()
+    monkeypatch.setattr(cli.composer.transport, '_read_staged_backend', attest)
+    return materialize
+
+
+def _write_request(case, tmp_path, name, **changes):
+    values = dict(case)
+    values.pop('enabled')
+    plan = values.pop('fixed_plan_bytes')
+    plan_path = tmp_path / (name + '-fixed-plan-v3.json')
+    if not plan_path.exists():
+        plan_path.write_bytes(plan)
+    values.update(schema='wd.q4-staged-card-composer-request.v1', fixed_plan_path=str(plan_path))
+    values.update(changes)
+    path = tmp_path / (name + '-request.json')
+    raw = json.dumps(values, sort_keys=True, separators=(',', ':')).encode()
+    path.write_bytes(raw)
+    return path, raw
+
+
+def _snapshot(stage):
+    return {str(p.relative_to(stage)): (p.read_bytes() if p.is_file() else None) for p in sorted(Path(stage).rglob('*'))}
+
+
+def test_v2_request_composes_into_shared_root_with_generation_pointer(attested, tmp_path, capsys):
+    stage = Path(attested['stage_dir'])
+    path, raw = _write_request(attested, tmp_path, 'b', schema=_V2, shared_stage=True, generation=_GEN_B)
+    assert run(path, sha(raw)) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert Path(first['pointer_path']) == stage / ('candidate-pointer-' + _GEN_B + '.json')
+    before = _snapshot(stage)
+    path, raw = _write_request(attested, tmp_path, 'c', schema=_V2, shared_stage=True, generation=_GEN_C)
+    assert run(path, sha(raw)) == 0
+    second = json.loads(capsys.readouterr().out)
+    assert second['status'] == 'PREPARED'
+    assert Path(second['pointer_path']) == stage / ('candidate-pointer-' + _GEN_C + '.json')
+    after = _snapshot(stage)
+    assert {key: after[key] for key in before} == before
+
+
+def test_v1_request_keeps_legacy_empty_stage_and_fixed_pointer(attested, tmp_path, capsys):
+    path, raw = _write_request(attested, tmp_path, 'legacy')
+    assert run(path, sha(raw)) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert Path(output['pointer_path']) == Path(attested['stage_dir']) / 'candidate-pointer.json'
+
+
+@pytest.mark.parametrize('variant', ['v2-false', 'v2-missing', 'v2-int', 'v2-string', 'v1-with-flag'])
+def test_shared_flag_must_match_the_schema_before_any_write(attested, tmp_path, capsys, variant):
+    changes = {'v2-false': dict(schema=_V2, shared_stage=False), 'v2-missing': dict(schema=_V2),
+               'v2-int': dict(schema=_V2, shared_stage=1), 'v2-string': dict(schema=_V2, shared_stage='true'),
+               'v1-with-flag': dict(shared_stage=True)}[variant]
+    path, raw = _write_request(attested, tmp_path, variant, **changes)
+    assert run(path, sha(raw)) == 2
+    assert json.loads(capsys.readouterr().out) == {'status': 'REFUSED'}
+    assert not any(Path(attested['stage_dir']).iterdir())
+
+
+def test_v2_result_naming_the_legacy_pointer_is_rejected(attested):
+    values = dict(attested, shared_stage=True)
+    values.pop('enabled')
+    result = cli.composer.compose_staged_card(enabled=True, **values)
+    cli._verify_result(result, values)
+    forged = dict(result, pointer_path=str(Path(values['stage_dir']) / 'candidate-pointer.json'))
+    with pytest.raises(ValueError):
+        cli._verify_result(forged, values)
+    with pytest.raises(ValueError):
+        cli._verify_result(result, dict(values, shared_stage=False))

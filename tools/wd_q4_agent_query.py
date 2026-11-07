@@ -278,7 +278,7 @@ def _safe_result_for_output(result, config):
 
 def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, approved_tasks, *,
                       policy_bytes=None, policy_sha256=None, roster_bytes=None, roster_sha256=None,
-                      expected_memory_sha256=None):
+                      expected_memory_sha256=None, card_decision_bytes=None, card_decision_sha256=None):
     """Resolve one query using caller-authenticated tuple and approved-task policy.
 
     This in-memory boundary does not authenticate config, data origin, clock or
@@ -299,7 +299,8 @@ def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, ap
         resolver.resolve_results(memory_manifest=memory_manifest_bytes, expected_memory_sha256=expected_memory_sha256,
                     projection_bytes=projection_bytes, results=[], query_utc="2000-01-01T00:00:00Z",
                     approved_tasks=approved_tasks, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
-                    roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+                    roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+                    card_decision_bytes=card_decision_bytes, card_decision_sha256=card_decision_sha256)
         raw = read_query(stdin)
         query_time = _validated_query_time(raw)
         result = _safe_result_for_output(query_with_verified_config(config, io.BytesIO(raw)), config)
@@ -312,7 +313,8 @@ def query_and_resolve(config, stdin, memory_manifest_bytes, projection_bytes, ap
                     expected_memory_sha256=result["memory_sha256"], projection_bytes=projection_bytes,
                     results=result["results"], query_utc=query_time, approved_tasks=approved_tasks,
                     policy_bytes=policy_bytes, policy_sha256=policy_sha256,
-                    roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+                    roster_bytes=roster_bytes, roster_sha256=roster_sha256,
+                    card_decision_bytes=card_decision_bytes, card_decision_sha256=card_decision_sha256)
         output = {"status": result["status"], "results": resolved}
         if len(json.dumps(output, ensure_ascii=True, separators=(",", ":")).encode("utf-8")) > MAX_OUTPUT:
             raise QueryRefused("resolution_refused")

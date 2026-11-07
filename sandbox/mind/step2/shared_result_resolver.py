@@ -74,9 +74,44 @@ def _strict_memory_policy(value, policy_sha256, roster_sha256):
             and hmac.compare_digest(value["roster_sha256"], roster_sha256))
 
 
+def _resolve_verified_real_records(projection, results, query_utc):
+    """Internal mapping after _resolve_cards verifies the real decision and projection.
+
+    The card module's public result helper is synthetic-only. Keep real mapping
+    here without changing that helper, altering the projection's synthetic flag
+    or accepting a caller-supplied validation status. This maps pinned text; it
+    does not authenticate the source or perform a filesystem source check.
+    """
+    if (type(results) is not list or len(results) > MAX_RESULTS
+            or not isinstance(query_utc, str) or sp.corpus_mod.parse_utc(query_utc) is None):
+        _invalid()
+    records = {}
+    for record in projection["records"]:
+        key = (_sha(record["provenance"]["event_ref"].encode("utf-8")),
+               _sha(record["record_id"].encode("utf-8")))
+        records.setdefault(key, record)
+    resolved, seen = [], set()
+    for item in results:
+        if (type(item) is not dict
+                or set(item) != {"ref_sha256", "doc_id_sha256", "ref_kind", "canonical_event"}
+                or item["ref_kind"] != REF_KIND or item["canonical_event"] is not False
+                or any(type(item[k]) is not str or HEX.fullmatch(item[k]) is None
+                       for k in ("ref_sha256", "doc_id_sha256"))):
+            _invalid()
+        key = (item["ref_sha256"], item["doc_id_sha256"])
+        record = records.get(key)
+        if (record is None or not sp.visible_at(record, query_utc, guard_band_s=1.0)
+                or not hmac.compare_digest(record["stored_text"], record["summary"])):
+            _invalid()
+        if key not in seen:
+            resolved.append(dict(item, stored_text=record["stored_text"]))
+            seen.add(key)
+    return resolved
+
+
 def _resolve_cards(manifest, projection_bytes, results, query_utc, approved_tasks, roster, strict, policy_sha256,
                    roster_sha256, decision_bytes, decision_sha256):
-    """The synthetic card route: strict pins, a verified decision, the card task approved, non-review roster authors
+    """The pinned card route: strict pins, a verified decision, the card task approved, non-review roster authors
     and the manifest's bound source evidence re-checked against the decision and the roster."""
     from sandbox.mind.step2 import shared_card_projection as cards
     if (not strict or manifest.get("scope") != SCOPE
@@ -94,11 +129,14 @@ def _resolve_cards(manifest, projection_bytes, results, query_utc, approved_task
             _invalid()
         decision = cards.verify_route_decision(decision_bytes, decision_sha256, policy_sha256=policy_sha256,
                                                roster_sha256=roster_sha256)
-        cards.validate_shared_card_projection(projection)
+        real = decision["synthetic"] is False
+        cards.validate_shared_card_projection(projection, _real_decision=decision if real else None)
         if any(record["meta"]["agent"] not in roster or record["meta"]["agent"] in sp.REVIEW_LANES
                for record in projection["records"]):
             _invalid()
         cards.check_route_evidence(manifest.get("card_route"), projection, decision, decision_sha256, roster)
+        if real:
+            return _resolve_verified_real_records(projection, results, query_utc)
         return cards.resolve_route_results(projection, results, query_utc, decision)
     except (cards.SharedCardRefused, ValueError, TypeError, KeyError, RecursionError, UnicodeError):
         _invalid()

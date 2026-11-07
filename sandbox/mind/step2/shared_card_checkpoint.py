@@ -1,4 +1,4 @@
-"""Default-OFF validation of one staged synthetic card snapshot.
+"""Default-OFF validation of one decision-pinned staged card snapshot.
 
 Caller pins are consistency inputs, not authenticated authority or freshness.
 This module never publishes a pointer, commits a generation or resolves history.
@@ -128,7 +128,8 @@ def validate_card_snapshot(*, enabled=False, pointer_bytes=None, expected_pointe
             expected_prefix_sha256=decision["source_prefix"]["sha256"],
             nonreview_policy_bytes=policy_bytes, nonreview_policy_sha256=policy_sha256,
             roster_bytes=roster_bytes, roster_sha256=roster_sha256,
-            card_policy_bytes=card_policy_bytes, card_policy_sha256=decision["card_policy_sha256"])
+            card_policy_bytes=card_policy_bytes, card_policy_sha256=decision["card_policy_sha256"],
+            _real_decision=decision if decision["synthetic"] is False else None)
         opened = memory.Memory(root, manifest_bytes=captured["memory.json"])
         if not opened.views or any(not view.healthy for view in opened.views.values()):
             raise ValueError()

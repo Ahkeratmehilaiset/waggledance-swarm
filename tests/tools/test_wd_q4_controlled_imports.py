@@ -318,7 +318,7 @@ def test_native_registration_is_scoped_and_does_not_claim_creation(scenario):
 
 @pytest.mark.parametrize('scenario', ('clean', 'preexisting', 'nested_source', 'nested_native',
                                       'registered_early', 'source_nested', 'source_preseed',
-                                      'source_other_key', 'substitution', 'native_mutation', 'source_mutation', 'concurrent'))
+                                      'source_other_key', 'wrong_owner', 'substitution', 'native_mutation', 'source_mutation', 'concurrent'))
 def test_native_object_later_registered_by_verified_source(scenario):
     from sandbox.mind.step2 import q4_controlled_imports as controlled
 
@@ -327,15 +327,16 @@ def test_native_object_later_registered_by_verified_source(scenario):
             raise ValueError('synthetic refusal')
 
     tracker = controlled._NativeRegistrations(check)
-    name = 'wd_synthetic_deferred'
+    name = 'wd_synthetic_native.deferred'
     alias = types.ModuleType(name)
     known = (alias,) if scenario == 'preexisting' else ()
     tainted_objects = {id(alias)} if scenario in ('nested_source', 'nested_native') else set()
     if scenario == 'concurrent':
         with pytest.raises(ValueError):
-            tracker.bind_objects(known, (alias,), tainted_objects, single_thread=False)
+            tracker.bind_objects(known, (alias,), tainted_objects, owner='wd_synthetic_native', single_thread=False)
         return
-    tracker.bind_objects(known, (alias,), tainted_objects, single_thread=True)
+    owner = 'wd_unrelated_native' if scenario == 'wrong_owner' else 'wd_synthetic_native'
+    tracker.bind_objects(known, (alias,), tainted_objects, owner=owner, single_thread=True)
     if scenario == 'native_mutation':
         alias.changed = 1
     source_before = {name: alias} if scenario in ('registered_early', 'source_preseed') else {}
@@ -370,7 +371,7 @@ def under(path, base):
  try: return os.path.commonpath((path, base)) == base
  except ValueError: return False
 site = root/'site'; site.mkdir(); (root/'assets/code').mkdir(parents=True)
-source = b'import sys\nsys.modules["wd_nested_alias"] = sys.modules["__main__"].candidate\n'
+source = b'import sys\nsys.modules["wd_outer.nested_alias"] = sys.modules["__main__"].candidate\n'
 native = b'synthetic native file; never loaded'
 (site/'wd_producer.py').write_bytes(source); (site/'wd_outer.pyd').write_bytes(native)
 files = [{'path':p, 'size':len(b), 'sha256':sha(b)} for p,b in [('site/wd_producer.py',source),('site/wd_outer.pyd',native)]]
@@ -380,14 +381,14 @@ def fake_exec(loader, module):
   nested=mach.ExtensionFileLoader('trusted_nested', str(pathlib.Path(sys.base_prefix)/'DLLs'/'_socket.pyd'))
   nested.exec_module(types.ModuleType('trusted_nested'))
  else:
-  sys.modules['__main__'].candidate=types.ModuleType('wd_nested_alias')
+  sys.modules['__main__'].candidate=types.ModuleType('wd_outer.nested_alias')
 mach.ExtensionFileLoader.exec_module=fake_exec
 sys.path.insert(0,str(site))
 guard=helper.install(root,manifest,sha(raw),_check=check,_sha=sha,_unique_pairs=dict,
                     _interpreter_roots=lambda:(os.path.normcase(os.path.realpath(sys.base_prefix)),),_under=under)
 mach.ExtensionFileLoader('wd_outer',str(site/'wd_outer.pyd')).exec_module(types.ModuleType('wd_outer'))
 import wd_producer
-try: guard.accept_created('wd_nested_alias',candidate)
+try: guard.accept_created('wd_outer.nested_alias',candidate)
 except ValueError: print('PASS')
 else: raise AssertionError('nested interpreter object wrongly attributed to outer manifest native')
 '''

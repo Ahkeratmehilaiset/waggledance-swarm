@@ -6,11 +6,32 @@ prove byte consistency only. Path rechecks do not prevent same-user ABA races.
 import hashlib
 import hmac
 import json
+import os
 from pathlib import Path
 
 
 def _sha(raw):
     return hashlib.sha256(raw).hexdigest()
+
+
+def _wrapper_command(plan, system_root):
+    """The only admitted staged command; query bytes are supplied on stdin."""
+    from tools import wd_q4_secure_transport as fixed
+    for value in (system_root, plan['bundle_root'], plan['wrapper_path'], plan['public_plan_path']):
+        fixed._staged_path(value)
+    if os.path.normcase(os.path.normpath(plan['wrapper_path'])) != os.path.normcase(
+            os.path.join(plan['bundle_root'], 'Invoke-WdQ4Query.ps1')):
+        raise ValueError('staged_wrapper_refused')
+    for key in ('deployment_manifest_sha256','public_plan_sha256'):
+        fixed._hex64(plan[key])
+    if type(plan['bundle_commit']) is not str or len(plan['bundle_commit']) != 40 or any(
+            c not in '0123456789abcdef' for c in plan['bundle_commit']):
+        raise ValueError('staged_wrapper_refused')
+    host = os.path.join(system_root,'System32','WindowsPowerShell','v1.0','powershell.exe')
+    return [host,'-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',plan['wrapper_path'],
+            '-BundleRoot',plan['bundle_root'],'-ExpectedBundleCommit',plan['bundle_commit'],
+            '-ExpectedManifestSha256',plan['deployment_manifest_sha256'],'-Public',
+            '-PublicPlanPath',plan['public_plan_path'],'-ExpectedPublicPlanSha256',plan['public_plan_sha256']]
 
 
 def validate_card_input(plan, bundle_bytes, public_plan_bytes, *, enabled=False):

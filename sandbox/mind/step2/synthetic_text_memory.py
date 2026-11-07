@@ -13,23 +13,31 @@ pieces, and it is restricted to SYNTHETIC input:
   lanes and PR-branch task ids refuse, and only the existing closed type list passes (decision, finding, rco_pass,
   vote, veto and the other review types never do); claim, release and wake bookkeeping and empty messages are
   skipped as in 6cf81dbb; payload, paths, write scope, cwd, identities and every other key are never read;
-* input is broadcast-only and non-review (RCO2 ST3/ST5): an event whose ``to`` is not exactly ``""`` is skipped
-  (``directed_excluded``), the existing capture adapter rule ``_exclude_rco_event`` skips RCO-origin and
-  RCO-addressed events including a payload ``to``/``recipient`` (``rco_addressed_excluded``), and a task id with a
-  review or RCO segment (the adapter's ``_REVIEW_TASK``) is skipped (``review_task_excluded``); none of these are
-  read beyond that check;
+* input is broadcast-only and non-review (RCO2 ST3/ST5, TP3): the existing capture adapter rule
+  ``_exclude_rco_event`` skips RCO-origin and RCO-addressed events including a payload ``to``/``recipient``
+  (``rco_addressed_excluded``); an event whose top-level ``to`` is not exactly ``""``, or that carries any other
+  routing key of the adapter's ``_PUBLIC_ROUTING_KEYS`` (to_list, recipients, target_agent, audience, visibility,
+  private, reply_to, expected_responders, responders and the rest, in any letter case, at any depth) is skipped
+  (``directed_excluded``); a task id with a review or RCO segment (the adapter's ``_REVIEW_TASK``) is skipped
+  (``review_task_excluded``); none of these are read beyond that check;
 * the stored text is the existing head line, a newline and the message: whole lines only, at most ``TEXT_CAP``
   characters of message, ending before the first line that fails the line rule; a record with no line left is
   refused (``text_guarded``) and counted. A line is kept only if it passes a bounded allowlist (RCO2 ST1/ST2): at
   most ``LINE_CAP`` characters, every character printable ASCII or a Finnish letter (so zero-width, format, control,
   fullwidth, homoglyph and other non-ASCII characters never pass, which is stricter than NFKC plus a Cf/Cc refusal),
-  and no run of 20 or more base64-like characters that has a digit or an inner capital unless it is exactly a 40 or
-  64 hex digest; and then only if it matches no refusal rule: workspace guarded words, a drive, UNC, home or profile
+  and in every run of 20 or more token characters (letters, digits, ``+ / = _ -``) every alphanumeric piece must
+  look like a word (an optional capital, lower-case letters, at most four trailing digits) or a number of at most
+  eight digits; a 40 or 64 lower-case hex digest is the only other piece allowed, and only right after a digest
+  context word (commit, head, sha, sha1, sha256, ref, digest, hash) (RCO2 TP1/TP2); and then only if it matches no
+  refusal rule: workspace guarded words, a drive, UNC, home or profile
   path, an environment variable path, credential words also inside identifiers (password, passphrase, secret, token,
   credential, bearer, cookie, salasana, tunnus, pwd, auth), a key=value or key: value with a secret-like key, known
   token prefixes (GitHub, Slack, OpenAI-style, GitLab, Hugging Face, npm, AWS, Google, JWT), a PEM block, a URL with
   user:password, sealed, gold, heldout or judge, a private tool directory, an RCO name or a review word (rco_pass,
-  changes_requested, veto, finding, vote, recusal, build_consensus, approve);
+  changes_requested, veto, finding, vote, recusal, build_consensus, approve, review, verdict, consensus, LGTM,
+  sign-off, pass at head; RCO2 TP4), or a personal-data shape, failing closed (RCO2 TP5): an at sign (e-mail
+  addresses and handles), two capitalized words in a row (a full name), an international or grouped phone number,
+  or a Finnish personal identity code;
 * the memory is built with the existing ``shared_index_builder`` cell and commit primitives and read with the
   existing ``memory.Memory`` and ``q4.Q4``; it carries its own scope and descriptor schema, so the production Q4
   reader, which pins the shared scope and descriptor schema, does not accept it. The cell receipts are written by
@@ -47,8 +55,8 @@ not synthetic, and proves for every record that a row with that canonical id exi
 exactly that record. ``ask_synthetic_text(..., source=...)`` runs that check before answering. A match proves that
 the exact rows occur in that pinned prefix; it does not prove who wrote them, later supersession or complete
 history (completeness UNKNOWN); no row content is returned. The line allowlist and refusal rules are a review
-surface, not a proof that free text is safe: a secret that looks like ordinary short words, or a short secret split
-over separators, still passes. No policy, live data, launcher, installer or production path is touched.
+surface, not a proof that free text is safe: a secret that looks like ordinary words, a short secret (under 20
+token characters), a single first name or a name written in lower case still passes. No policy, live data, launcher, installer or production path is touched.
 """
 import hashlib
 import json
@@ -77,8 +85,11 @@ SOURCE_PAGE = 16 * 1024 * 1024
 SOURCE_KEYS = frozenset({"source_path", "generation_path", "end_cursor", "expected_prefix_sha256"})
 LINE_CAP = 280
 LINE_CHARS = frozenset(chr(code) for code in range(0x20, 0x7F)) | frozenset("\u00e4\u00f6\u00e5\u00c4\u00d6\u00c5")
-LONG_RUN = re.compile(r"[A-Za-z0-9+/]{20,}")
+TOKEN_RUN = re.compile(r"[A-Za-z0-9+/=_-]{20,}")
+TOKEN_PIECE = re.compile(r"[A-Za-z0-9]+")
+WORD_PIECE = re.compile(r"[A-Z]?[a-z]+[0-9]{0,4}|[0-9]{1,8}")
 DIGEST = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+DIGEST_CONTEXT = re.compile(r"(?i)\b(?:commit|head|sha|sha1|sha256|ref|digest|hash)s?[ :=#]{1,3}\Z")
 REFUSE_LINE = (
     re.compile(r"(?i)(?<![a-z0-9])[a-z]:[\\/]"),  # a drive path
     re.compile(r"\\\\"),  # a UNC path or an escaped backslash pair
@@ -97,6 +108,12 @@ REFUSE_LINE = (
     capture._RCO_NAME,
     re.compile(r"(?i)(?<![a-z0-9])(?:rco|changes[_ -]requested|veto(?:es|ed)?|findings?|vot(?:e|es|ed|ing)"
                r"|recus(?:al|ed|e|ing)|build[_ -]consensus|approv(?:e|es|ed|al|ing))(?![a-z0-9])"),
+    re.compile(r"(?i)(?<![a-z0-9])(?:review(?:s|ed|er|ers|ing)?|verdicts?|consensus|lgtm|sign-?offs?|signed off"
+               r"|pass(?:ed)? at head)(?![a-z0-9])"),
+    re.compile(r"\x40"),  # an e-mail address or account handle
+    re.compile(r"\b[A-Z\u00c4\u00d6\u00c5][a-z\u00e4\u00f6\u00e5]+[ ]+[A-Z\u00c4\u00d6\u00c5][a-z\u00e4\u00f6\u00e5]+\b"),  # a full name
+    re.compile(r"\+[0-9]{6,}|\b[0-9]{2,4}[ -][0-9]{3,4}[ -][0-9]{3,4}\b"),  # a phone number
+    re.compile(r"\b[0-9]{6}[-+A][0-9]{3}[0-9A-Y]\b"),  # a Finnish personal identity code
 )
 
 
@@ -115,9 +132,12 @@ def _enabled(enabled):
 def _line_ok(line):
     if len(line) > LINE_CAP or not set(line) <= LINE_CHARS:
         return False
-    for run in LONG_RUN.findall(line):
-        if DIGEST.fullmatch(run) is None and re.search(r"[0-9]|.[A-Z]", run):
-            return False
+    for run in TOKEN_RUN.finditer(line):
+        for piece in TOKEN_PIECE.finditer(run.group()):
+            if DIGEST.fullmatch(piece.group()) and DIGEST_CONTEXT.search(line[:run.start() + piece.start()]):
+                continue
+            if WORD_PIECE.fullmatch(piece.group()) is None:
+                return False
     if any(rule.search(line) for rule in REFUSE_LINE):
         return False
     try:
@@ -125,6 +145,25 @@ def _line_ok(line):
     except corpus_mod.ws.WorkspaceError:
         return False
     return True
+
+
+def _routed(event):
+    """True unless the only routing key anywhere in the event is the top-level ``to`` with exactly ``""``."""
+    if "to" not in event or type(event["to"]) is not str or event["to"] != "":
+        return True
+    stack = [(event, True)]
+    while stack:
+        value, top = stack.pop()
+        if type(value) is dict:
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    return True
+                if key.lower() in capture._PUBLIC_ROUTING_KEYS and not (top and key == "to"):
+                    return True
+                stack.append((item, False))
+        elif type(value) is list:
+            stack.extend((item, False) for item in value)
+    return False
 
 
 def kept_text(message):
@@ -197,11 +236,11 @@ def project_synthetic_text(events, *, enabled=False):
         except sp.ProjectionRefused as refusal:
             refuse(str(refusal))
             continue
-        if "to" not in event or event["to"] != "":
-            refuse("directed_excluded")
-            continue
         if capture._exclude_rco_event(event):
             refuse("rco_addressed_excluded")
+            continue
+        if _routed(event):
+            refuse("directed_excluded")
             continue
         if capture._REVIEW_TASK.search(fields["task_id"]):
             refuse("review_task_excluded")

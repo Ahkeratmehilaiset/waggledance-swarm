@@ -485,7 +485,11 @@ def test_unicode_evasions_and_controls_cut_the_text(line):
 
 
 @pytest.mark.parametrize('line', [
-    'merged at 64616d07c1bfbeabe59ae4aacd0108e1780e1c7d on the synthetic branch',
+    'merged commit 64616d07c1bfbeabe59ae4aacd0108e1780e1c7d on the synthetic branch',
+    'head: 64616d07c1bfbeabe59ae4aacd0108e1780e1c7d',
+    'sha256=' + '0123456789abcdef' * 4,
+    'see sandbox/mind/step2/synthetic_text_memory.py for the rule',
+    'the lead-mind-synthetic-text-privacy-fixes-20261108-v2 task is done',
     'prefix sha ' + '0123456789abcdef' * 4,
     'task synthetic-disk-space-dips-20261107 at 2026-11-07T00:04:55.5375230Z',
     'Levytilan notkahdus johtuu varmuuskopiosta: äöå ÄÖÅ',
@@ -536,7 +540,7 @@ def test_only_broadcast_non_review_events_are_stored():
     del no_to['to']
     projection = stm.project_synthetic_text(events + [no_to], enabled=True)
     assert [r['stored_text'] for r in projection['records']] == ['message info fable-5 synthetic-ok\nkept broadcast text']
-    assert projection['refused'] == {'directed_excluded': 5, 'rco_addressed_excluded': 2, 'review_task_excluded': 2}
+    assert projection['refused'] == {'directed_excluded': 4, 'rco_addressed_excluded': 3, 'review_task_excluded': 2}
     assert canary not in json.dumps(projection)
 
 
@@ -547,3 +551,81 @@ def test_a_directed_source_row_does_not_verify(source):
     pins = source['write'](rows)
     with pytest.raises(stm.TextRefused, match='source_unbound'):
         stm.verify_synthetic_sources(projection, enabled=True, **pins)
+
+
+
+@pytest.mark.parametrize('line', [
+    'merged at 64616d07c1bfbeabe59ae4aacd0108e1780e1c7d on the synthetic branch',  # no digest context word
+    'value ' + '0123456789abcdef' * 4,
+    '0123456789abcdef0123456789abcdef01234567',
+    'tok=' + '0123456789abcdef' * 4,
+])
+def test_a_hex_digest_without_a_digest_context_word_cuts_the_text(line):
+    cut_or_refused(line)
+
+
+@pytest.mark.parametrize('line', [
+    'tok a3f9k2x8-q1m7z4c6_v0b5n8w2',
+    'id Ab3dE-fG7hI_jK9lM-nO1pQ',
+    'k 9a8b7c6d-5e4f3g2h-1i0j',
+    'x abcdefghijklmnop12345',
+    'opaque abc-def_ghi-jkl_mnop=Q9',
+])
+def test_url_safe_token_runs_cut_the_text(line):
+    cut_or_refused(line)
+
+
+@pytest.mark.parametrize('routing', [
+    {'expected_responders': {'claude-rco-2': {}}},
+    {'visibility': 'private'},
+    {'private': True},
+    {'reply_to': TOOLS},
+    {'recipients': []},
+    {'target_agent': LEAD},
+    {'audience': 'lanes'},
+    {'payload': {'audience': 'rco'}},
+    {'payload': {'nested': [{'to_list': [TOOLS]}]}},
+    {'payload': {'To': ''}},
+    {'To': ''},
+])
+def test_any_routing_key_besides_the_top_level_broadcast_to_excludes_the_event(routing):
+    canary = 'zq-routing-canary'
+    projection = stm.project_synthetic_text([event(FABLE, 'message', 'info', 'synthetic-ok', 'kept broadcast text'),
+                                             event(LEAD, 'message', 'info', 'synthetic-d', canary, **routing)],
+                                            enabled=True)
+    assert projection['accepted'] == 1 and projection['refused'] == {'directed_excluded': 1}
+    assert canary not in json.dumps(projection)
+
+
+@pytest.mark.parametrize('line', [
+    'reviewed and fine',
+    'under review now',
+    'the reviewer said yes',
+    'the verdict is clear',
+    'consensus reached',
+    'LGTM',
+    'signed off by the lead',
+    'sign-off given',
+    'pass at head 1234567',
+])
+def test_wider_review_words_cut_the_text(line):
+    cut_or_refused(line)
+
+
+@pytest.mark.parametrize('line', [
+    'contact matti' + chr(64) + 'example.org',
+    'ping ' + chr(64) + 'mattiv please',
+    'Matti Virtanen said hello',
+    'kysy Maija Meikäläiseltä',
+    'call +358401234567',
+    'call 040 123 4567',
+    'hetu 010190-123A',
+])
+def test_personal_data_shapes_cut_the_text(line):
+    cut_or_refused(line)
+
+
+def test_corpus_lines_are_still_kept_after_the_privacy_rules():
+    projection = stm.project_synthetic_text(corpus(), enabled=True)
+    assert projection['accepted'] == len(TOPICS) and projection['refused'] == {}
+    assert all(record['meta']['text_cut'] is False for record in projection['records'])

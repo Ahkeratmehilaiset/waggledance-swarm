@@ -41,6 +41,21 @@ def test_real_projection_rederived_only_after_c2_validates_decision(candidate):
     assert records
 
 
+def test_verified_real_child_text_is_compared_before_head_is_masked(candidate):
+    plan, binding, projection, _ = candidate
+    decision=lane._checked_staged_card_decision(plan,binding,projection)
+    records=lane._card_records(projection,binding['projection_sha256'],{'mind-public-knowledge-v1'},
+                               _real_decision=decision)
+    record=json.loads(projection)['records'][0]
+    item={'ref_sha256':sha(record['provenance']['event_ref'].encode()),
+          'doc_id_sha256':sha(record['record_id'].encode()),'stored_text':record['stored_text']}
+    result=lane._resolved(item,records,'2026-11-02T00:00:00Z',set())
+    assert 'head:unknown' in result['stored_text']
+    assert all(head not in result['stored_text'] for head in decision['observed_heads'])
+    item['stored_text'] += ' altered'
+    with pytest.raises(ValueError): lane._resolved(item,records,'2026-11-02T00:00:00Z',set())
+
+
 @pytest.mark.parametrize('fault',['decision_pin','changed_decision','changed_source','projection_pin'])
 def test_c2_rejects_changed_or_wrong_decision_and_projection(candidate, fault):
     plan, binding, projection, _ = candidate

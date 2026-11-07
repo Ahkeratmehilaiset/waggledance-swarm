@@ -221,6 +221,10 @@ def _card_records(projection_bytes, expected_sha256, tasks, *, _real_decision=No
         if key in records:
             raise ValueError()
         records[key] = dict(record, stored_text=text)
+        if _real_decision is not None:
+            # The verified real route can return the pinned observed head.
+            # Compare that exact text first; outward text remains head-masked.
+            records[key]['_reply_text'] = record['stored_text']
     return records
 
 
@@ -271,7 +275,8 @@ def _resolved(item, records, when, seen):
     key = (item["ref_sha256"], item["doc_id_sha256"])
     record = records.get(key)
     if (record is None or key in seen or type(item["stored_text"]) is not str
-            or not hmac.compare_digest(item["stored_text"].encode("utf-8"), record["stored_text"].encode("utf-8"))
+            or not hmac.compare_digest(item["stored_text"].encode("utf-8"),
+                                       record.get("_reply_text", record["stored_text"]).encode("utf-8"))
             or not sp.visible_at(record, when, guard_band_s=VISIBILITY_GUARD_SECONDS)):
         raise ValueError()
     seen.add(key)

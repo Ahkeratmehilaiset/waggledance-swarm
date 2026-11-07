@@ -30,3 +30,16 @@ def test_lane_startup_gives_bounded_q4_recall_and_bridge_fallback(relative, vari
     ):
         assert required.lower() in block.lower(), required
     assert "not proof" in block.lower()
+
+
+@pytest.mark.parametrize('relative',[
+    'ops/windows/reboot/start-wd-agent.ps1',
+    'ops/windows/reboot/start-wd-tools-consumer.ps1',
+])
+def test_prompt_selects_staged_runtime_only_from_verified_descriptor(relative):
+    text=(ROOT/relative).read_text(encoding='utf-8')
+    assert 'expected_binding.card_policy_sha256' in text
+    assert 'hash-verified descriptor' in text
+    assert '-Runtime' in text
+    assert 'do not combine -Runtime with -Live' in text
+    assert 'status-v2' in text

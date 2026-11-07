@@ -12,6 +12,7 @@ import secrets
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from tests.tools.test_wd_q4_card_orchestrator_job import case as shared_job_case
 
 ROOT = Path(__file__).resolve().parents[2]
 NAME = 'wd_q4_card_orchestrator_runtime_bootstrap.py'
@@ -60,10 +61,12 @@ def case(tmp_path):
     template = tmp_path / 'snapshot-template.json'
     template.write_bytes(raw({'schema':'wd.q4-real-card-snapshot-request.v1',
                               'trusted_model_root':str(runtime / 'model')}))
+    finish = tmp_path / 'finish.json'
+    finish.write_bytes(raw({'composer_options':{}}))
     request = tmp_path / 'request.json'
     request.write_bytes(raw({'schema':'wd.q4-card-real-candidate-request.v1',
         'snapshot_template':{'path':str(template),'sha256':sha(template.read_bytes())},'generation_root':str(gen),
-        'decision':{}, 'finish':{}, 'output_root':str(tmp_path/'audit')}))
+        'decision':{}, 'finish':{'path':str(finish),'sha256':sha(finish.read_bytes())}, 'output_root':str(tmp_path/'audit')}))
     cli = code / 'tools' / CLI
     cli.write_text('import json\ndef main(args):\n import synthetic_dependency\n assert synthetic_dependency.VALUE == 42\n'
         ' print(json.dumps({"status":"PREPARED","pointer_path":'+repr(str(pointer))+',"pointer_sha256":'+repr(sha(pointer.read_bytes()))+'},sort_keys=True,separators=(",",":")))\n return 0\n', encoding='ascii')
@@ -78,7 +81,7 @@ def case(tmp_path):
         'runtime_manifest_path':str(runtime_manifest),'runtime_manifest_sha256':built['manifest_sha256'],
         'runtime_generation':'a'*40,'runtime_revision':'b'*40,'verifier_sha256':sha(verifier.read_bytes())}))
     return {'bundle':bundle,'code':code,'runtime':runtime,'manifest':manifest,'spec':spec,'request':request,
-            'template':template,'bootstrap':code/'tools'/NAME,'pointer':pointer}
+            'template':template,'finish':finish,'bootstrap':code/'tools'/NAME,'pointer':pointer}
 
 
 def creation_filetime(pid):
@@ -136,6 +139,86 @@ def test_isolated_pinned_runtime_reaches_only_fixed_cli(case):
     assert result.returncode == 0 and result.stderr == ''
     assert json.loads(result.stdout) == {'status':'PREPARED','pointer_path':str(case['pointer']),
                                          'pointer_sha256':sha(case['pointer'].read_bytes())}
+
+
+def set_shared_candidate(case, *, generation='d'*40, pointer_generation=None):
+    shared=case['request'].parent/'shared-generations';shared.mkdir()
+    pointer=shared/('candidate-pointer-'+(generation if pointer_generation is None else pointer_generation)+'.json')
+    pointer.write_bytes(b'synthetic-shared-pointer')
+    finish=json.loads(case['finish'].read_bytes())
+    finish['composer_options'].update(shared_stage_root=str(shared),generation=generation)
+    case['finish'].write_bytes(raw(finish))
+    request=json.loads(case['request'].read_bytes())
+    request['finish']['sha256']=sha(case['finish'].read_bytes())
+    case['request'].write_bytes(raw(request))
+    cli=case['code']/'tools'/CLI
+    cli.write_text('import json\ndef main(args):\n import synthetic_dependency\n assert synthetic_dependency.VALUE == 42\n'
+        ' print(json.dumps({"status":"PREPARED","pointer_path":'+repr(str(pointer))+',"pointer_sha256":'+
+        repr(sha(pointer.read_bytes()))+'},sort_keys=True,separators=(",",":")))\n return 0\n',encoding='ascii')
+    repin_bundle(case)
+    return pointer
+
+
+def test_shared_candidate_through_isolated_bootstrap(case):
+    pointer=set_shared_candidate(case)
+    result=execute(case)
+    assert result.returncode==0 and json.loads(result.stdout)=={
+        'status':'PREPARED','pointer_path':str(pointer),'pointer_sha256':sha(pointer.read_bytes())}
+
+
+def test_shared_candidate_rejects_wrong_generation(case):
+    set_shared_candidate(case,pointer_generation='e'*40)
+    result=execute(case)
+    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+
+
+def test_bad_shared_generation_is_refused_before_cli(case):
+    set_shared_candidate(case,generation='invalid')
+    marker=case['code']/'tools'/'synthetic-cli-entered'
+    cli=case['code']/'tools'/CLI
+    cli.write_text('def main(args):\n open('+repr(str(marker))+',"w").write("entered")\n return 0\n',encoding='ascii')
+    repin_bundle(case)
+    result=execute(case)
+    assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
+    assert not marker.exists()
+
+
+def test_finish_change_after_cli_entry_is_unknown(case):
+    pointer=set_shared_candidate(case)
+    cli=case['code']/'tools'/CLI
+    cli.write_text('import json,pathlib\ndef main(args):\n pathlib.Path('+repr(str(case['finish']))+').write_bytes(b"changed")\n'
+        ' print(json.dumps({"status":"PREPARED","pointer_path":'+repr(str(pointer))+',"pointer_sha256":'+
+        repr(sha(pointer.read_bytes()))+'},sort_keys=True,separators=(",",":")))\n return 0\n',encoding='ascii')
+    repin_bundle(case)
+    result=execute(case)
+    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+
+
+def test_changed_pinned_finish_is_refused_before_cli(case):
+    set_shared_candidate(case)
+    marker=case['code']/'tools'/'synthetic-cli-entered'
+    cli=case['code']/'tools'/CLI
+    cli.write_text('def main(args):\n open('+repr(str(marker))+',"w").write("entered")\n return 0\n',encoding='ascii')
+    repin_bundle(case)
+    case['finish'].write_bytes(b'{"composer_options":{}}')
+    result=execute(case)
+    assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
+    assert not marker.exists()
+
+
+def test_actual_job_and_packaged_bootstrap_accept_shared_candidate(shared_job_case,tmp_path):
+    # Real Windows Job and packaged wrapper/bootstrap; fake CLI, data and runtime.
+    from tests.tools.test_wd_q4_card_orchestrator_job import test_job_uses_actual_packaged_bridge_wrapper_and_bootstrap
+    shared=tmp_path/'shared-stage';shared.mkdir()
+    generation='d'*40
+    pointer=shared/('candidate-pointer-'+generation+'.json');pointer.write_bytes(b'synthetic-shared-pointer')
+    finish=json.loads(shared_job_case['finish'].read_bytes())
+    finish['composer_options'].update(shared_stage_root=str(shared),generation=generation)
+    shared_job_case['finish'].write_bytes(raw(finish))
+    request=json.loads(shared_job_case['request'].read_bytes())
+    request['finish']['sha256']=sha(shared_job_case['finish'].read_bytes())
+    shared_job_case['request'].write_bytes(raw(request));shared_job_case['pointer']=pointer
+    test_job_uses_actual_packaged_bridge_wrapper_and_bootstrap(shared_job_case,tmp_path,None)
 
 
 def test_wrapper_style_parent_reaches_isolated_child_without_foreign_pythonpath(case, tmp_path):

@@ -46,7 +46,10 @@ def _receipt(raw, prepared, policies, run_id, session_id):
     if any(obj.get(key)!=value for key,value in expected.items()): raise ValueError()
     verifier._envelope(obj)
     when=verifier._utc(obj['ts_utc'])
-    if verifier._minute(when)!=prepared['prepared_minute']: raise ValueError()
+    # The actual writer owns the append timestamp. Permit one minute boundary
+    # during the call, then validate that actual event against the full policy.
+    prepared_minute=verifier._utc(prepared['prepared_minute'])[0]
+    if not prepared_minute <= when[0] < prepared_minute+dt.timedelta(minutes=2): raise ValueError()
     tasks,roster=verifier.capture.strict_pins(policies['policy_bytes'],policies['policy_sha256'],
         policies['roster_bytes'],policies['roster_sha256'])
     writers=verifier._policy(policies['card_policy_bytes'],policies['card_policy_sha256'],tasks)

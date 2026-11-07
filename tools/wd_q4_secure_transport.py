@@ -1097,7 +1097,9 @@ def _install_controlled_imports(runtime_root, manifest_path, manifest_sha256):
                        for r in roots) and not _under(os.path.normcase(os.path.realpath(p)), excluded)
                        for p in locations))
                 return spec
-            _check(type(spec.loader) in loader_types and type(spec.origin) is str)
+            # Never load a cache-only .pyc: its normal loader reopens the file
+            # after this check. Source files use the exact checked bytes below.
+            _check(type(spec.loader) in loader_types[:2] and type(spec.origin) is str)
             file = Path(spec.origin).resolve(strict=True)
             normalized = os.path.normcase(os.path.realpath(file))
             _check(any(_under(normalized, allowed) for allowed in roots) and not _under(normalized, excluded))
@@ -1105,12 +1107,25 @@ def _install_controlled_imports(runtime_root, manifest_path, manifest_sha256):
                 relative = file.relative_to(root).as_posix()
             except ValueError:
                 _check(any(_under(normalized, allowed) for allowed in interpreter_roots))
-                return spec
-            _check(relative in entries)
-            size, digest = entries[relative]
-            with open(file, 'rb') as source:
-                data = source.read(size + 1)
-            _check(len(data) == size and hmac.compare_digest(_sha(data), digest))
+                relative = None
+            if relative is not None:
+                _check(relative in entries)
+                size, digest = entries[relative]
+                with open(file, 'rb') as source:
+                    data = source.read(size + 1)
+                _check(len(data) == size and hmac.compare_digest(_sha(data), digest))
+            elif type(spec.loader) is machinery.SourceFileLoader:
+                with open(file, 'rb') as source:
+                    data = source.read(64 * 1024 * 1024 + 1)
+                _check(len(data) <= 64 * 1024 * 1024)
+            if type(spec.loader) is machinery.SourceFileLoader:
+                # SourceFileLoader otherwise prefers a pre-existing unchecked
+                # .pyc even under -B and reopens the path after verification.
+                class VerifiedSourceLoader(machinery.SourceFileLoader):
+                    def get_code(self, requested):
+                        _check(requested == fullname)
+                        return compile(data, str(file), 'exec', dont_inherit=True)
+                spec.loader = VerifiedSourceLoader(fullname, str(file))
             return spec
 
     finder = ControlledFinder()

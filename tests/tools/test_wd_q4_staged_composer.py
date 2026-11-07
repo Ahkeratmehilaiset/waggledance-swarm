@@ -549,6 +549,36 @@ def test_shared_stage_composes_after_publication_lock_is_created(shared_case):
     assert lock.is_file() and target.read_bytes() == raw
 
 
+@pytest.mark.parametrize('name', ['q4-card-refresh.lock', 'q4-lifecycle-v2.lock', 'q4-lifecycle-v2.enrolled.json'])
+def test_shared_stage_composes_after_refresh_lock_is_created(shared_case, name):
+    from sandbox.mind.step2.reader_slot import reader_slot
+    stage = Path(shared_case['stage_dir'])
+    _shared(shared_case, _GEN_B)
+    lock = stage / name
+    if name.endswith('.json'):
+        lock.write_bytes(b'{}')
+    else:
+        with reader_slot(lock, timeout_seconds=0.2):
+            assert lock.is_file()
+    assert _shared(shared_case, _GEN_C)['status'] == 'PREPARED'
+    assert lock.is_file()
+
+
+@pytest.mark.parametrize('name', ['q4-card-refresh.lock', 'q4-lifecycle-v2.lock', 'q4-lifecycle-v2.enrolled.json',
+                                   'q4-lifecycle-v2.pending.json'])
+def test_shared_stage_rejects_refresh_lock_directories_and_pending(shared_case, name):
+    from tools import wd_q4_staged_composer as staged
+    stage = Path(shared_case['stage_dir'])
+    _shared(shared_case, _GEN_B)
+    item = stage / name
+    if name.endswith('.pending.json'):
+        item.write_bytes(b'{}')
+    else:
+        item.mkdir()
+    with pytest.raises(staged.ComposeRefused):
+        _shared(shared_case, _GEN_C)
+
+
 def test_shared_stage_refuses_publication_lock_directory(shared_case):
     from tools import wd_q4_staged_composer as staged
     stage = Path(shared_case['stage_dir'])

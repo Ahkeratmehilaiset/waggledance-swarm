@@ -86,8 +86,8 @@ def _shared_stage_ok(stage, generation):
     """A shared generations root may hold only earlier generations and their own candidate pointers.
 
     Every entry must be a generation directory, a regular per-generation candidate pointer, the live
-    selector's regular publication file, or its regular persistent publication lock. The composer never
-    reads or touches the publication or lock; pending and temporary files and other entries refuse.
+    selector's regular publication file, or an exact regular persistent publication/refresh lock. The composer never
+    reads or touches the publication or locks; pending and temporary files and other entries refuse.
     The new generation's directory and pointer must both be absent. Nothing here proves earlier
     generations or the publication valid.
     """
@@ -99,7 +99,8 @@ def _shared_stage_ok(stage, generation):
             if entry.is_symlink() or not entry.is_dir():
                 return False
         elif (_SHARED_POINTER.fullmatch(entry.name) or entry.name == _LIVE_PUBLICATION
-              or entry.name == 'q4-live-publication.lock'):
+              or entry.name in ('q4-live-publication.lock', 'q4-card-refresh.lock', 'q4-lifecycle-v2.lock',
+                                'q4-lifecycle-v2.enrolled.json')):
             if entry.is_symlink() or not entry.is_file():
                 return False
         else:

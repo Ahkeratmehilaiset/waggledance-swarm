@@ -8,6 +8,8 @@ import hmac
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 
 def _sha(raw):
@@ -16,14 +18,19 @@ def _sha(raw):
 
 def _wrapper_command(plan, system_root):
     """The only admitted staged command; query bytes are supplied on stdin."""
-    from tools import wd_q4_secure_transport as fixed
     for value in (system_root, plan['bundle_root'], plan['wrapper_path'], plan['public_plan_path']):
-        fixed._staged_path(value)
+        if (type(value) is not str or not 3 < len(value) <= 512 or not value.isascii() or not value.isprintable()
+                or value[0].lower() != 'c' or value[1:3] != ':\\' or '/' in value
+                or '\\\\' in value or ':' in value[2:]
+                or any(part in ('','.','..') or part.endswith(('.', ' ')) for part in value[3:].split('\\'))):
+            raise ValueError('staged_wrapper_refused')
     if os.path.normcase(os.path.normpath(plan['wrapper_path'])) != os.path.normcase(
             os.path.join(plan['bundle_root'], 'Invoke-WdQ4Query.ps1')):
         raise ValueError('staged_wrapper_refused')
     for key in ('deployment_manifest_sha256','public_plan_sha256'):
-        fixed._hex64(plan[key])
+        if (type(plan[key]) is not str or len(plan[key]) != 64
+                or any(c not in '0123456789abcdef' for c in plan[key])):
+            raise ValueError('staged_wrapper_refused')
     if type(plan['bundle_commit']) is not str or len(plan['bundle_commit']) != 40 or any(
             c not in '0123456789abcdef' for c in plan['bundle_commit']):
         raise ValueError('staged_wrapper_refused')
@@ -136,3 +143,103 @@ def validate_card_result(plan, bundle_bytes, public_plan_bytes, query_bytes, res
         return json.dumps(answer,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('ascii')
     except Exception:
         raise ValueError('staged_card_result_refused') from None
+
+
+class _PreparedBackend:
+    """One fixed staged backend inside the caller-owned outer Windows Job."""
+
+    def __init__(self, plan, public_bytes, command, services, imports, before, roots, code, swig):
+        self.plan, self.public_bytes, self.command = plan, public_bytes, command
+        self.services, self.imports, self.before, self.roots, self.code, self.swig = (
+            services, imports, before, roots, code, swig)
+        self._accepted_bundle = None
+
+    def _check_imports(self):
+        self.services['_module_origins'](self.before, self.roots, self.code, self.imports, self.swig)
+        self.swig.recheck()
+        self.imports.check()
+
+    def validate_bundle(self, bundle_bytes):
+        self._check_imports()
+        if validate_card_input(self.plan, bundle_bytes, self.public_bytes, enabled=True) != {
+                'status':'VALIDATED_STAGED','completeness':'UNKNOWN'}:
+            raise ValueError('staged_bundle_refused')
+        self._check_imports()
+        self._accepted_bundle = _sha(bundle_bytes)
+
+    def __call__(self, plan, plan_bytes, bundle_bytes, query_bytes):
+        if (plan is not self.plan or self._accepted_bundle != _sha(bundle_bytes)
+                or type(query_bytes) is not bytes or not 0 < len(query_bytes) <= 65536):
+            raise ValueError('staged_dispatch_refused')
+        self.validate_bundle(bundle_bytes)
+        self._check_imports()
+        process = None
+        try:
+            process = subprocess.Popen(self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, cwd=self.plan['bundle_root'], close_fds=True,
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            process.stdin.write(query_bytes)
+            process.stdin.close()
+            output = process.stdout.read(32769)
+            process.stdout.close()
+            if len(output) > 32768 or process.wait() != 0:
+                raise ValueError('staged_wrapper_refused')
+            self._check_imports()
+            return validate_card_result(plan, bundle_bytes, self.public_bytes, query_bytes, output, enabled=True)
+        finally:
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait()
+
+
+def prepare_staged_backend(plan, peer_path, services, *, enabled=False):
+    """Prepare the fixed wrapper only after independently pinned runtime verification.
+
+    Called in the already-owned peer Job. The outer transport remains solely
+    responsible for timeouts, process-tree drain and transport/attestation tickets.
+    """
+    if enabled is False:
+        return {'status':'OFF'}
+    try:
+        if enabled is not True or type(plan) is not dict or type(services) is not dict:
+            raise ValueError()
+        check = services['_check']
+        check(plan.get('backend') == 'staged-card-wrapper-v1')
+        services['_read_staged_backend'](peer_path, plan)
+        system_root = os.environ.get('SYSTEMROOT', '')
+        command = _wrapper_command(plan, system_root)
+        services['_staged_read'](command[0], plan['host_sha256'], 128*1024*1024)
+        public_bytes = services['_staged_read'](plan['public_plan_path'], plan['public_plan_sha256'], 65536)
+        services['_contain_child_output']()
+        services['_reject_preloaded_runtime']()
+        services['_reject_preloaded_faiss']()
+        imports = services['_install_controlled_imports'](plan['runtime_root'], plan['runtime_manifest_path'],
+                                                        plan['runtime_manifest_sha256'])
+        code_root = Path(peer_path).absolute().parents[1]
+        verifier = code_root/'sandbox'/'mind'/'step2'/'runtime_manifest.py'
+        verifier_bytes = services['_staged_read'](verifier, plan['verifier_sha256'], 131072)
+        manifest = json.loads(services['_staged_read'](Path(plan['bundle_root'])/'deployment-manifest.json',
+            plan['deployment_manifest_sha256'],4*1024*1024).decode('utf-8'))
+        check(str(manifest['files']['tools-bootstrap/sandbox/mind/step2/runtime_manifest.py']).lower() ==
+              plan['verifier_sha256'])
+        verifier_scope = {'__name__':'_wd_staged_runtime_verifier'}
+        exec(compile(verifier_bytes,'<wd-staged-runtime-verifier>','exec'),verifier_scope)
+        root = Path(plan['runtime_root'])
+        verifier_scope['verify_runtime'](root, Path(plan['runtime_manifest_path']), plan['runtime_manifest_sha256'],
+            expected_generation=plan['runtime_generation'], expected_revision=plan['runtime_revision'])
+        code, site, model = root/'assets'/'code', root/'site', root/'model'
+        check(code.is_dir() and site.is_dir() and model.is_dir())
+        roots = [os.path.normcase(os.path.realpath(path)) for path in (code,site)] + services['_interpreter_roots']()
+        swig = services['_FaissSwigOrigin'](root,plan['runtime_manifest_path'],plan['runtime_manifest_sha256'])
+        before = set(sys.modules)
+        sys.path.insert(0,str(code));sys.path.append(str(site))
+        if swig.needs_faiss():
+            import importlib
+            importlib.import_module('faiss')
+            services['_module_origins'](before,roots,code,imports,swig)
+            check(swig.module is not None)
+        result = _PreparedBackend(plan,public_bytes,command,services,imports,before,roots,code,swig)
+        result._check_imports()
+        return result
+    except Exception:
+        raise ValueError('staged_backend_preparation_refused') from None

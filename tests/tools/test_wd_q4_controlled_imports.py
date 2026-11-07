@@ -314,3 +314,39 @@ def test_native_registration_is_scoped_and_does_not_claim_creation(scenario):
             tracker.accept('wd_synthetic_native', alias, after)
     else:
         tracker.accept('wd_synthetic_native', alias, after)
+
+
+@pytest.mark.parametrize('scenario', ('clean', 'preexisting', 'nested_source', 'nested_native',
+                                      'registered_early', 'source_nested', 'source_preseed',
+                                      'substitution', 'native_mutation', 'source_mutation', 'concurrent'))
+def test_native_object_later_registered_by_verified_source(scenario):
+    from sandbox.mind.step2 import q4_controlled_imports as controlled
+
+    def check(condition):
+        if not condition:
+            raise ValueError('synthetic refusal')
+
+    tracker = controlled._NativeRegistrations(check)
+    name = 'wd_synthetic_deferred'
+    alias = types.ModuleType(name)
+    known = (alias,) if scenario == 'preexisting' else ()
+    tainted_objects = {id(alias)} if scenario in ('nested_source', 'nested_native') else set()
+    if scenario == 'concurrent':
+        with pytest.raises(ValueError):
+            tracker.bind_objects(known, (alias,), tainted_objects, single_thread=False)
+        return
+    tracker.bind_objects(known, (alias,), tainted_objects, single_thread=True)
+    if scenario == 'native_mutation':
+        alias.changed = 1
+    source_before = {name: alias} if scenario in ('registered_early', 'source_preseed') else {}
+    candidate = types.ModuleType(name) if scenario == 'substitution' else alias
+    source_after = {name: candidate}
+    source_tainted = {name} if scenario == 'source_nested' else set()
+    tracker.bind_source(source_before, source_after, source_tainted, single_thread=True)
+    if scenario == 'source_mutation':
+        alias.changed = 1
+    if scenario == 'clean':
+        tracker.accept(name, alias, source_after)
+    else:
+        with pytest.raises(ValueError):
+            tracker.accept(name, candidate, source_after)

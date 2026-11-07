@@ -65,7 +65,7 @@ def _clock():
         value = _monotonic()
         if type(value) in (int, float) and math.isfinite(value):
             return value
-    except BaseException:
+    except Exception:
         pass
     return None
 
@@ -95,7 +95,11 @@ def _closed_diagnostic(value):
     phase = _word(data.get("phase"), _PHASES)
     elapsed, phase_elapsed = data.get("elapsed_ms"), data.get("phase_elapsed_ms")
     if isinstance(value, _Phase):
-        now = _clock()
+        try:
+            now = _clock()
+        except BaseException:
+            # Rendering an already terminal failure never resumes guarded work.
+            now = None
         elapsed = (now - value.started) * 1000 if now is not None and value.started is not None else None
         phase_elapsed = ((now - value.phase_started) * 1000
                          if now is not None and value.phase_started is not None and phase != "UNKNOWN" else None)
@@ -475,8 +479,9 @@ def run_guarded_candidate(config):
     """Fresh isolated worker only. Failure after any write is UNKNOWN, never retried."""
     _check(type(config) is dict and config.get("approved_to_execute") is True)
     old_path, old_env = list(sys.path), dict(os.environ)
-    diagnostic = _Phase("INPUT_VALIDATION")
+    diagnostic = {"phase": "INPUT_VALIDATION"}
     try:
+        diagnostic = _Phase("INPUT_VALIDATION")
         return _run(config, _diagnostic=diagnostic)
     except BaseException as error:
         diagnostic["failure_kind"] = _failure_kind(error)
@@ -488,8 +493,9 @@ def run_guarded_candidate(config):
 
 
 def main(argv=None):
-    diagnostic = _Phase("CONFIG_READ")
+    diagnostic = {"phase": "CONFIG_READ"}
     try:
+        diagnostic = _Phase("CONFIG_READ")
         args = sys.argv[1:] if argv is None else argv
         _check(type(args) is list and len(args) == 3 and args[0] == "--config")
         path = _path(args[1])

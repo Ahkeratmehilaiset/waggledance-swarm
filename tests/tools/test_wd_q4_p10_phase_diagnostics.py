@@ -241,3 +241,40 @@ def test_unavailable_timing_is_unknown_without_losing_the_failure(monkeypatch):
     assert error.value.diagnostic["elapsed_ms"] is None
     assert error.value.diagnostic["phase_elapsed_ms"] is None
 
+
+@pytest.mark.parametrize("kind", [KeyboardInterrupt, SystemExit])
+def test_clock_cancellation_never_enters_the_guarded_pipeline(monkeypatch, kind):
+    m = module()
+    entered = []
+
+    def clock():
+        raise kind(SECRET)
+
+    monkeypatch.setattr(m, "_monotonic", clock)
+    monkeypatch.setattr(m, "_run", lambda *_args, **_kwargs: entered.append(True))
+    with pytest.raises((kind, m.ConnectorOutcomeUnknown)):
+        m.run_guarded_candidate({"approved_to_execute": True})
+    assert entered == []
+
+
+@pytest.mark.parametrize("kind", [KeyboardInterrupt, SystemExit])
+def test_cli_clock_cancellation_is_redacted_and_never_continues(monkeypatch, capsys, kind):
+    m = module()
+    entered = []
+
+    def clock():
+        raise kind(SECRET)
+
+    monkeypatch.setattr(m, "_monotonic", clock)
+    monkeypatch.setattr(m, "_run", lambda *_args, **_kwargs: entered.append(True))
+    assert m.main([SECRET]) == 2
+    output = capsys.readouterr()
+    assert not output.err and SECRET not in output.out
+    diagnostic = json.loads(output.out)["diagnostic"]
+    assert_closed(diagnostic)
+    assert diagnostic["failure_kind"] == "INTERRUPTED"
+    assert diagnostic["elapsed_ms"] is None
+    assert diagnostic["phase_elapsed_ms"] is None
+    assert entered == []
+
+

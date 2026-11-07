@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from tools import wd_q4_secure_transport as fixed
-from tests.tools.test_wd_q4_real_card_snapshot_e2e import real_fixture, real_snapshot
+from tests.tools.test_wd_q4_real_card_snapshot_e2e import real_fixture, real_snapshot, rt
 
 pytestmark = pytest.mark.skipif(os.name != 'nt', reason='Windows bundle paths')
 
@@ -97,6 +97,28 @@ def test_actual_c2_inputs_bind_independent_plan_before_dispatch(real_snapshot, t
     assert backend.validate_card_input(plan,bundle,public_raw) == {'status':'OFF'}
     result=backend.validate_card_input(plan,bundle,public_raw,enabled=True)
     assert result['status']=='VALIDATED_STAGED' and result['completeness']=='UNKNOWN'
+    from sandbox.mind.step2 import shared_card_projection as cards
+    when='2026-11-02T00:00:00Z'
+    answer=cards.ask_shared_cards(directory,built['memory_sha256'],rt.fx.Encoder(),
+        'merged green pr 2046 genesis',when,enabled=True,real_snapshot=snapshot)
+    assert answer['status']=='ANSWER'
+    results=[{key:item[key] for key in ('ref_sha256','doc_id_sha256','ref_kind','canonical_event','stored_text')}
+             for item in answer['results']]
+    reply={'schema':'wd.q4-card-snapshot-query.v1','status':'ANSWER','results':results,
+           'binding':{'source_mode':'card-snapshot-v1','pointer_sha256':sha(data['pointer']),
+             'source_anchor_sha256':plan['expected_source_sha256'],'encoder_sha256':plan['expected_encoder_sha256'],
+             'policy_sha256':sha(data['policy']),'roster_sha256':sha(data['roster']),
+             'card_decision_sha256':sha(data['card_decision']),'card_policy_sha256':sha(data['card_policy']),
+             'descriptor_sha256':sha(data['descriptor']),'memory_sha256':sha(data['memory']),
+             'projection_sha256':sha(data['projection'])},
+           **{key:'UNKNOWN' for key in ('publisher_authentication','source_filter_attestation',
+                                          'freshness','same_user_aba','completeness')}}
+    query=json.dumps({'situation':'merged green pr 2046 genesis','time':when}).encode()
+    wire=json.dumps(reply,sort_keys=True,separators=(',',':')).encode()
+    assert backend.validate_card_result(plan,bundle,public_raw,query,wire,enabled=True)==wire
+    bad={**reply,'results':[{**reply['results'][0],'stored_text':'invented'}]}
+    with pytest.raises(ValueError):
+        backend.validate_card_result(plan,bundle,public_raw,query,json.dumps(bad).encode(),enabled=True)
     if damage == 'projection':
         with (directory/'projection.json').open('ab') as stream:stream.write(b' ')
     elif damage == 'source':

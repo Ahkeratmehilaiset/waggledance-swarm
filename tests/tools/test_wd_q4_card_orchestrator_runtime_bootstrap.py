@@ -96,6 +96,19 @@ def test_isolated_pinned_runtime_reaches_only_fixed_cli(case):
                                          'pointer_sha256':sha(case['pointer'].read_bytes())}
 
 
+def test_stdlib_precedes_packaged_top_level_module(case):
+    (case['code']/'fractions.py').write_text("raise RuntimeError('shadowed stdlib')\n", encoding='ascii')
+    cli = case['code']/'tools'/CLI
+    body = cli.read_text(encoding='ascii').replace(
+        ' import synthetic_dependency\n',
+        ' import fractions\n assert fractions.Fraction(1, 2).numerator == 1\n import synthetic_dependency\n')
+    cli.write_text(body, encoding='ascii')
+    repin_bundle(case)
+    result = execute(case)
+    assert result.returncode == 0 and result.stderr == ''
+    assert json.loads(result.stdout)['status'] == 'PREPARED'
+
+
 @pytest.mark.parametrize('fault',['no_isolation','bad_request_pin','changed_template','unlisted_file','bad_site',
                                    'changed_pointer','model_mismatch','wrong_runtime_schema','interpreter_pin'])
 def test_refuses_or_unknown_on_unbound_inputs(case, fault):

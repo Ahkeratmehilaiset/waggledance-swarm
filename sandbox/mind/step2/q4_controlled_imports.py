@@ -22,6 +22,44 @@ class _NativeRegistrations:
     def __init__(self, check):
         self._check = check
         self._records = {}
+        self._deferred = {}
+
+    def bind_objects(self, before, after, tainted, *, single_thread):
+        """Observe newly GC-tracked objects across one verified native call.
+
+        Observation is cooperative evidence, not proof of native allocation.
+        Keep strong references to exclude borrowed objects and identity reuse.
+        """
+        self._check(type(before) is tuple and type(after) is tuple and type(tainted) is set
+                    and single_thread is True)
+        known = {id(module) for module in before} | tainted
+        for module in after:
+            if type(module) is not types.ModuleType or id(module) in known:
+                continue
+            attrs = vars(module)
+            if (type(attrs.get('__name__')) is not str or attrs.get('__file__') is not None
+                    or attrs.get('__spec__') is not None or attrs.get('__loader__') is not None):
+                continue
+            self._deferred[id(module)] = (module, dict(attrs))
+
+    def bind_source(self, before, after, tainted, *, single_thread):
+        """Bind a later registration to the same observed object, not its name."""
+        self._check(type(before) is dict and type(after) is dict and type(tainted) is set
+                    and single_thread is True)
+        for name, module in after.items():
+            if name in before or name in tainted or type(name) is not str:
+                continue
+            candidate = self._deferred.get(id(module))
+            if candidate is None or candidate[0] is not module:
+                continue
+            attrs = vars(module)
+            saved = candidate[1]
+            if (attrs.get('__name__') != name or set(attrs) != set(saved)
+                    or any(attrs[key] is not value for key, value in saved.items())):
+                continue
+            self._check(name not in self._records)
+            self._records[name] = (module, dict(attrs))
+            del self._deferred[id(module)]
 
     def bind(self, before, after, tainted, *, single_thread, known_objects):
         self._check(type(before) is dict and type(after) is dict and type(tainted) is set
@@ -117,15 +155,30 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
     witnessed = {}
     native_witnessed = _NativeRegistrations(_check)
     native_stack = []
+    source_stack = []
 
-    def mark_nested(before):
+    def modules_in_gc():
+        return tuple(value for value in gc.get_objects() if type(value) is types.ModuleType)
+
+    def mark_nested(before, known_objects):
         if not native_stack:
             return
         after = sys.modules
         changed = {name for name in set(before) | set(after)
                    if before.get(name, absent) is not after.get(name, absent)}
+        known_ids = {id(module) for module in known_objects}
+        changed_objects = {id(module) for module in modules_in_gc() if id(module) not in known_ids}
         for event in native_stack:
-            event.update(changed)
+            event['names'].update(changed)
+            event['objects'].update(changed_objects)
+
+    def mark_source_nested(before):
+        if source_stack:
+            after = sys.modules
+            changed = {name for name in set(before) | set(after)
+                       if before.get(name, absent) is not after.get(name, absent)}
+            for event in source_stack:
+                event.update(changed)
 
     def code_tree(code):
         result = [code]
@@ -202,18 +255,27 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
         code = source_code(loader, module.__name__)
         names = {name for nested in code_tree(code) for name in nested.co_names}
         before = dict(sys.modules) if 'modules' in names and 'ModuleType' in names else None
-        nested_before = dict(sys.modules) if native_stack else None
+        source_before = dict(sys.modules)
+        nested_before = source_before if native_stack else None
+        nested_objects = modules_in_gc() if native_stack else None
+        source_tainted = set()
         if before is not None:
             for name, (existing, _, _) in tuple(witnessed.items()):
                 _check(before.get(name) is existing)
                 verify_witness(name, existing, check_registry=False)
+        source_stack.append(source_tainted)
         try:
             exec(code, module.__dict__)
             if before is not None:
                 capture_created(before, code, module.__dict__)
+            if native_witnessed._deferred and len(sys._current_frames()) == 1:
+                native_witnessed.bind_source(source_before, dict(sys.modules), source_tainted,
+                                             single_thread=True)
         finally:
+            _check(source_stack.pop() is source_tainted)
+            mark_source_nested(source_before)
             if nested_before is not None:
-                mark_nested(nested_before)
+                mark_nested(nested_before, nested_objects)
 
     def bytecode_refused(*args, **kwargs):
         _check(False)
@@ -230,8 +292,8 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
         before = dict(sys.modules)
         # Keep strong references so an already existing, unregistered module
         # cannot be presented as new merely through a registry assignment.
-        known_objects = tuple(value for value in gc.get_objects() if type(value) is types.ModuleType)
-        tainted = set()
+        known_objects = modules_in_gc()
+        tainted = {'names': set(), 'objects': set()}
         native_stack.append(tainted)
         succeeded = False
         try:
@@ -239,11 +301,14 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             succeeded = True
         finally:
             _check(native_stack.pop() is tainted)
-            mark_nested(before)
+            mark_nested(before, known_objects)
+            mark_source_nested(before)
         if succeeded:
             verified_file(loader.path, source=False)
-            native_witnessed.bind(before, dict(sys.modules), tainted,
+            native_witnessed.bind(before, dict(sys.modules), tainted['names'],
                                   single_thread=len(sys._current_frames()) == 1, known_objects=known_objects)
+            native_witnessed.bind_objects(known_objects, modules_in_gc(), tainted['objects'],
+                                          single_thread=len(sys._current_frames()) == 1)
         return value
 
     def native_create(loader, spec):

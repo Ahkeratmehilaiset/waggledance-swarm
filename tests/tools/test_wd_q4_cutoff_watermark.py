@@ -70,6 +70,65 @@ def test_disabled_context_does_not_touch_inputs():
         assert lease is None
 
 
+@pytest.mark.parametrize('kind', ['file', 'directory'])
+def test_adoption_pending_blocks_direct_cutoff_before_reservation(fixture, kind):
+    mod = importlib.import_module('tools.wd_q4_cutoff_watermark')
+    private, shared, prefix, pointer, pointer_raw = fixture
+    marker = private / 'q4-continuation-adopt.pending.json'
+    if kind == 'file':
+        marker.write_bytes(b'synthetic pending')
+    else:
+        marker.mkdir()
+    data = route(prefix, '2026-11-07T10:00:00Z', private, shared)
+    with pytest.raises(mod.WatermarkUnknown):
+        with mod.reserve(enabled=True, private_root=private, shared_root=shared, route_bytes=data,
+                         expected_route_sha256=sha(data), expected_pointer_sha256=pointer,
+                         expected_previous_record_sha256=None):
+            pytest.fail('cutoff admitted with unresolved adoption')
+    assert marker.exists()
+    assert not (private / 'q4-cutoff.pending.json').exists()
+    assert (shared / 'q4-latest.json').read_bytes() == pointer_raw
+
+
+def test_adoption_pending_checked_after_cutoff_owner_lock(fixture, monkeypatch):
+    from contextlib import contextmanager
+    mod = importlib.import_module('tools.wd_q4_cutoff_watermark')
+    private, shared, prefix, pointer, _ = fixture
+    data = route(prefix, '2026-11-07T10:00:00Z', private, shared)
+    original = mod.reader_slot
+
+    @contextmanager
+    def admission_race(lock, **kwargs):
+        with original(lock, **kwargs):
+            # A cooperating adoption can publish the marker immediately before
+            # the cutoff owner obtains this lock, but not while it holds it.
+            (private / 'q4-continuation-adopt.pending.json').write_bytes(b'synthetic pending')
+            yield
+
+    monkeypatch.setattr(mod, 'reader_slot', admission_race)
+    with pytest.raises(mod.WatermarkUnknown):
+        with mod.reserve(enabled=True, private_root=private, shared_root=shared, route_bytes=data,
+                         expected_route_sha256=sha(data), expected_pointer_sha256=pointer,
+                         expected_previous_record_sha256=None):
+            pytest.fail('pending marker missed inside owner lock')
+    assert not (private / 'q4-cutoff.pending.json').exists()
+
+
+def test_orchestrator_parent_pending_does_not_block_its_cutoff(fixture):
+    mod = importlib.import_module('tools.wd_q4_cutoff_watermark')
+    private, shared, prefix, pointer, _ = fixture
+    parent = private / 'q4-continuation-orchestrator.pending.json'
+    parent.write_bytes(b'synthetic parent')
+    data = route(prefix, '2026-11-07T10:00:00Z', private, shared)
+    with mod.reserve(enabled=True, private_root=private, shared_root=shared, route_bytes=data,
+                     expected_route_sha256=sha(data), expected_pointer_sha256=pointer,
+                     expected_previous_record_sha256=None) as lease:
+        path, pin = receipt(lease, private, pointer, prefix)
+        lease.complete(receipt_path=path, expected_receipt_sha256=pin)
+    assert parent.read_bytes() == b'synthetic parent'
+    assert not (private / 'q4-cutoff.pending.json').exists()
+
+
 def test_no_change_commits_cutoff_without_changing_pointer_and_rejects_older(fixture):
     mod = importlib.import_module('tools.wd_q4_cutoff_watermark')
     private, shared, prefix, pointer, pointer_raw = fixture

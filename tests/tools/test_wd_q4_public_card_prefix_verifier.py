@@ -52,6 +52,195 @@ def test_off_does_not_read():
     assert v.verify() == {'status':'OFF'}
 
 
+def test_scoped_scan_reuses_verified_prefix_without_sharing_mutable_rows(case, monkeypatch):
+    from tools import wd_q4_public_card_prefix_verifier as v
+    event, make = case
+    args = make([event])
+    calls = []
+    original = bridge.read_bridge_log
+    def counted(*a, **kw):
+        calls.append(1)
+        return original(*a, **kw)
+    monkeypatch.setattr(bridge, 'read_bridge_log', counted)
+    key = (args['source_path'], args['generation_path'], args['end_cursor'], args['expected_prefix_sha256'])
+    with v._snapshot_scan_scope():
+        rows, claims = v._read_with_claims(*key)
+        assert len(claims) == 1
+        rows[event_id(event)]['status'] = 'modified-in-caller'
+        second = v._read(*key)
+        assert second[event_id(event)]['status'] == event['status']
+        assert len(calls) == 1
+    v._read(*key)
+    assert len(calls) == 2
+
+
+def test_scoped_scan_rejects_prefix_mutation_but_allows_append(case, monkeypatch):
+    from tools import wd_q4_public_card_prefix_verifier as v
+    event, make = case
+    args = make([event])
+    key = (args['source_path'], args['generation_path'], args['end_cursor'], args['expected_prefix_sha256'])
+    from pathlib import Path
+    source = Path(args['source_path'])
+    original = source.read_bytes()
+    scans = []
+    read = bridge.read_bridge_log
+    def counted(*a, **kw):
+        scans.append(1)
+        return read(*a, **kw)
+    monkeypatch.setattr(bridge, 'read_bridge_log', counted)
+    with v._snapshot_scan_scope():
+        v._read_with_claims(*key)
+        with source.open('ab') as stream:
+            stream.write(b'{"synthetic":"append"}\n')
+        assert event_id(event) in v._read(*key)
+        source.write_bytes(original.replace(b'"status":"info"', b'"status":"nope"'))
+        with pytest.raises(ValueError):
+            v._read(*key)
+        source.write_bytes(original)
+        assert event_id(event) in v._read(*key)
+        assert len(scans) == 2
+
+
+def test_scan_scope_does_not_leak_into_another_thread(case, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from tools import wd_q4_public_card_prefix_verifier as v
+    event, make = case
+    args = make([event])
+    key = (args['source_path'], args['generation_path'], args['end_cursor'], args['expected_prefix_sha256'])
+    scans = []
+    read = bridge.read_bridge_log
+    def counted(*a, **kw):
+        scans.append(1)
+        return read(*a, **kw)
+    monkeypatch.setattr(bridge, 'read_bridge_log', counted)
+    with v._snapshot_scan_scope():
+        v._read_with_claims(*key)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            assert event_id(event) in pool.submit(v._read, *key).result()
+        assert event_id(event) in v._read(*key)
+    assert len(scans) == 2
+
+
+def test_scan_scope_is_not_shared_with_child_async_task(case, monkeypatch):
+    import asyncio
+    from tools import wd_q4_public_card_prefix_verifier as v
+    event, make = case
+    args = make([event])
+    key = (args['source_path'], args['generation_path'], args['end_cursor'], args['expected_prefix_sha256'])
+    scans = []
+    read = bridge.read_bridge_log
+    def counted(*a, **kw):
+        scans.append(1)
+        return read(*a, **kw)
+    monkeypatch.setattr(bridge, 'read_bridge_log', counted)
+    async def check():
+        with v._snapshot_scan_scope():
+            v._read_with_claims(*key)
+            async def child():
+                return v._read(*key)
+            assert event_id(event) in await asyncio.create_task(child())
+            assert event_id(event) in v._read(*key)
+    asyncio.run(check())
+    assert len(scans) == 2
+
+
+def test_copied_context_cannot_reuse_rows_after_scope_exits(case, monkeypatch):
+    from contextvars import copy_context
+    from tools import wd_q4_public_card_prefix_verifier as v
+    event, make = case
+    args = make([event])
+    key = (args['source_path'], args['generation_path'], args['end_cursor'], args['expected_prefix_sha256'])
+    scans = []
+    read = bridge.read_bridge_log
+    def counted(*a, **kw):
+        scans.append(1)
+        return read(*a, **kw)
+    monkeypatch.setattr(bridge, 'read_bridge_log', counted)
+    with v._snapshot_scan_scope():
+        v._read_with_claims(*key)
+        inherited = copy_context()
+    assert event_id(event) in inherited.run(v._read, *key)
+    assert len(scans) == 2
+
+
+def test_scope_revokes_rows_if_cleanup_is_interrupted_after_assignment(case, monkeypatch):
+    from contextvars import copy_context
+    from tools import wd_q4_public_card_prefix_verifier as v
+    event, make = case
+    args = make([event])
+    key = (args['source_path'], args['generation_path'], args['end_cursor'], args['expected_prefix_sha256'])
+    original = v._ScanMemo
+    class InterruptScope(original):
+        def __setattr__(self, name, value):
+            super().__setattr__(name, value)
+            if name == 'state' and value == (False, None):
+                raise KeyboardInterrupt('synthetic cleanup interrupt')
+    monkeypatch.setattr(v, '_ScanMemo', InterruptScope)
+    with pytest.raises(KeyboardInterrupt):
+        with v._snapshot_scan_scope():
+            v._read_with_claims(*key)
+            inherited = copy_context()
+            scope = v._SCAN_MEMO.get()
+    assert scope.active is False
+    assert scope.entry is None
+    assert inherited.run(v._SCAN_MEMO.get).entry is None
+
+
+def test_scope_revokes_rows_if_cleanup_is_interrupted_before_assignment(case):
+    import inspect
+    import sys
+    from contextvars import copy_context
+    from tools import wd_q4_public_card_prefix_verifier as v
+    event, make = case
+    args = make([event])
+    key = (args['source_path'], args['generation_path'], args['end_cursor'], args['expected_prefix_sha256'])
+    func = v._snapshot_scan_scope.__wrapped__
+    lines, start = inspect.getsourcelines(func)
+    target = start + next(i for i, line in enumerate(lines) if 'scope.state = (False, None)' in line)
+    fired = []
+    def trace(frame, kind, _arg):
+        if frame.f_code is func.__code__ and kind == 'line' and frame.f_lineno == target and not fired:
+            fired.append(True)
+            raise KeyboardInterrupt('synthetic interruption before revocation')
+        return trace
+    previous = sys.gettrace()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            with v._snapshot_scan_scope():
+                v._read_with_claims(*key)
+                inherited = copy_context()
+                scope = v._SCAN_MEMO.get()
+                sys.settrace(trace)
+    finally:
+        sys.settrace(previous)
+    assert fired
+    assert scope.state == (False, None)
+    assert inherited.run(v._SCAN_MEMO.get).entry is None
+
+
+def test_nested_scope_restores_outer_if_set_is_interrupted_before_token(monkeypatch):
+    from tools import wd_q4_public_card_prefix_verifier as v
+    actual = v._SCAN_MEMO
+    class InterruptAfterSet:
+        fired = False
+        def get(self): return actual.get()
+        def reset(self, token): return actual.reset(token)
+        def set(self, value):
+            token = actual.set(value)
+            if not self.fired:
+                self.fired = True
+                raise KeyboardInterrupt('synthetic interrupt after context set')
+            return token
+    with v._snapshot_scan_scope():
+        outer = actual.get()
+        monkeypatch.setattr(v, '_SCAN_MEMO', InterruptAfterSet())
+        with pytest.raises(KeyboardInterrupt):
+            with v._snapshot_scan_scope():
+                raise AssertionError('inner scope must not begin')
+        assert actual.get() is outer
+        assert outer.active is True
+
+
 def test_original_envelope_is_verified_within_pinned_prefix(case):
     from tools import wd_q4_public_card_prefix_verifier as v
     event,make=case

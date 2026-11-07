@@ -123,3 +123,25 @@ def test_duplicate_option_is_refused_without_output_leak(capsys):
     assert main(['--enable','--config','private-1','--sha256','0'*64,'--config','private-2'])==2
     captured=capsys.readouterr()
     assert not captured.err and json.loads(captured.out)=={'status':'REFUSED'}
+
+@pytest.mark.parametrize('size,expected,called', [(65536,0,True),(65537,2,False)])
+def test_tuple_limit_matches_bootstrap(tmp_path,monkeypatch,capsys,size,expected,called):
+    from tools import wd_q4_continuation_adopt_recovery_cli as cli
+    from tools import wd_q4_continuation_adopt_recovery as recovery
+    def put(name,data):
+        path=tmp_path/name; path.write_bytes(data)
+        return str(path),hashlib.sha256(data).hexdigest()
+    base,bp=put('base',b'{}'); tup,tp=put('tuple',b'x'*size); receipt,rp=put('receipt',b'{}')
+    doc={'schema':'wd.q4-adopt-recovery-cli.v1','bundle_root':str(tmp_path),
+         'manifest_sha256':'a'*64,'baseline_path':base,'baseline_sha256':bp,
+         'tuple_path':tup,'tuple_sha256':tp,'receipt_path':receipt,'receipt_sha256':rp}
+    path,pin=put('config',json.dumps(doc).encode())
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH','a'*64)
+    calls=[]
+    def recover(**kwargs):
+        calls.append(kwargs)
+        return {'status':'NOT_NEEDED'}
+    monkeypatch.setattr(recovery,'recover_once',recover)
+    assert cli.main(['--enable','--config',path,'--sha256',pin])==expected
+    assert bool(calls) is called
+    assert json.loads(capsys.readouterr().out)=={'status':'NOT_NEEDED' if called else 'REFUSED'}

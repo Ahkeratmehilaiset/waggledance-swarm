@@ -1022,6 +1022,102 @@ def _interpreter_roots():
     return [os.path.normcase(os.path.realpath(path)) for path in (base / "Lib", base / "DLLs")]
 
 
+def _install_controlled_imports(runtime_root, manifest_path, manifest_sha256):
+    """Constrain new path imports in this isolated child; not an OS sandbox.
+
+    The independently pinned manifest bounds runtime files. Interpreter files
+    remain trusted as in _module_origins. Native DLL dependencies, direct
+    sys.modules insertion, same-user mutation and check/use races remain outside
+    this control; the existing origin checks still run before and after query.
+    ZIP imports are deliberately unsupported on this fixed peer route.
+    """
+    import importlib.machinery as machinery
+
+    _check(sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode)
+    standard = (machinery.BuiltinImporter, machinery.FrozenImporter, machinery.PathFinder)
+    _check(type(sys.meta_path) is list and tuple(sys.meta_path) == standard
+           and type(sys.path_hooks) is list and type(sys.path_importer_cache) is dict)
+    root = Path(runtime_root).resolve(strict=True)
+    with open(manifest_path, 'rb') as stream:
+        raw = stream.read(8 * 1024 * 1024 + 1)
+    _check(len(raw) <= 8 * 1024 * 1024 and hmac.compare_digest(_sha(raw), manifest_sha256))
+    document = json.loads(raw.decode('utf-8', 'strict'), object_pairs_hook=_unique_pairs)
+    _check(type(document) is dict and type(document.get('files')) is list)
+    entries = {}
+    for item in document['files']:
+        _check(type(item) is dict and type(item.get('path')) is str and item['path'] not in entries
+               and type(item.get('size')) is int and item['size'] >= 0 and type(item.get('sha256')) is str)
+        entries[item['path']] = (item['size'], item['sha256'])
+    runtime_roots = tuple(os.path.normcase(os.path.realpath(root / part)) for part in ('assets/code', 'site'))
+    interpreter_roots = tuple(_interpreter_roots())
+    roots = runtime_roots + interpreter_roots
+    excluded = os.path.normcase(os.path.realpath(Path(sys.base_prefix) / 'Lib' / 'site-packages'))
+    loader_types = (machinery.ExtensionFileLoader, machinery.SourceFileLoader, machinery.SourcelessFileLoader)
+    hook = machinery.FileFinder.path_hook((loader_types[0], machinery.EXTENSION_SUFFIXES),
+                                          (loader_types[1], machinery.SOURCE_SUFFIXES),
+                                          (loader_types[2], machinery.BYTECODE_SUFFIXES))
+    methods = tuple(vars(item).get('find_spec') for item in standard)
+    _check(type(sys.path) is list and all(type(item) is str and os.path.isabs(item) for item in sys.path))
+    # -I may retain the interpreter prefix and a ZIP probe outside the two
+    # trusted interpreter subdirectories. Remove all such search entries.
+    sys.path[:] = [item for item in sys.path if any(_under(os.path.normcase(os.path.realpath(item)), r)
+                                                     for r in roots)
+                   and not _under(os.path.normcase(os.path.realpath(item)), excluded)]
+    sys.path_hooks[:] = [hook]
+    sys.path_importer_cache.clear()
+
+    class ControlledFinder:
+        def check(self):
+            _check(type(sys.meta_path) is tuple and sys.meta_path == (self,) + standard[:2]
+                   and type(sys.path_hooks) is list and sys.path_hooks == [hook]
+                   and type(sys.path_importer_cache) is dict
+                   and all(value is None or type(value) is machinery.FileFinder
+                           for value in sys.path_importer_cache.values())
+                   and tuple(vars(item).get('find_spec') for item in standard) == methods)
+
+        def find_spec(self, fullname, path=None, target=None):
+            self.check()
+            if (standard[0].find_spec(fullname, path, target) is not None or
+                    standard[1].find_spec(fullname, path, target) is not None):
+                return None
+            search = sys.path if path is None else path
+            for entry in search:
+                _check(type(entry) is str and os.path.isabs(entry))
+                resolved = os.path.normcase(os.path.realpath(entry))
+                _check(any(_under(resolved, allowed) for allowed in roots) and not _under(resolved, excluded))
+                _check(not os.path.isfile(entry))  # no unverified ZIP importer
+            # Discard any FileFinder internal state before invoking it again.
+            sys.path_importer_cache.clear()
+            spec = machinery.PathFinder.find_spec(fullname, path, target)
+            if spec is None:
+                return None  # the remaining standard finders produce Python's normal missing semantics
+            if spec.origin is None:
+                locations = list(spec.submodule_search_locations or ())
+                _check(locations and all(type(p) is str and any(_under(os.path.normcase(os.path.realpath(p)), r)
+                       for r in roots) and not _under(os.path.normcase(os.path.realpath(p)), excluded)
+                       for p in locations))
+                return spec
+            _check(type(spec.loader) in loader_types and type(spec.origin) is str)
+            file = Path(spec.origin).resolve(strict=True)
+            normalized = os.path.normcase(os.path.realpath(file))
+            _check(any(_under(normalized, allowed) for allowed in roots) and not _under(normalized, excluded))
+            try:
+                relative = file.relative_to(root).as_posix()
+            except ValueError:
+                _check(any(_under(normalized, allowed) for allowed in interpreter_roots))
+                return spec
+            _check(relative in entries)
+            size, digest = entries[relative]
+            with open(file, 'rb') as source:
+                data = source.read(size + 1)
+            _check(len(data) == size and hmac.compare_digest(_sha(data), digest))
+            return spec
+
+    finder = ControlledFinder()
+    sys.meta_path = (finder,) + standard[:2]
+    return finder
+
+
 def _module_origins(before, roots, namespace_root=None):
     """Check newly imported origins, including only the three known code-root namespaces.
 
@@ -1164,6 +1260,8 @@ def _fixed_child_backend(plan, peer_path):
     _contain_child_output()
     _check(sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode)
     _check(not any(name == deny or name.startswith(deny + ".") for name in sys.modules for deny in _PRELOAD_DENY))
+    imports = _install_controlled_imports(plan['runtime_root'], plan['runtime_manifest_path'],
+                                          plan['runtime_manifest_sha256'])
     verifier = Path(peer_path).absolute().parents[1].joinpath(*_VERIFIER_PARTS)
     with open(verifier, "rb") as stream:
         source = stream.read(_VERIFIER_LIMIT + 1)
@@ -1189,6 +1287,7 @@ def _fixed_child_backend(plan, peer_path):
 
     def answer(plan_, plan_bytes, bundle_bytes, query):
         _check(plan_ is plan and type(query) is bytes and 0 < len(query) <= _MAX_INPUT)
+        imports.check()
         result = query_public_snapshot(**_fixed_bundle_decode(bundle_bytes),
                                        **{name: plan[name] for name in _PUBLIC_PINS},
                                        approved_tasks=frozenset(plan["approved_tasks"]), query_bytes=query,
@@ -1196,6 +1295,7 @@ def _fixed_child_backend(plan, peer_path):
                                        enabled=True)
         # The real query imports lazily, so origins are checked again after the call.
         _module_origins(before, roots, code)
+        imports.check()
         _check(type(result) is dict and result.get("status") in ("ANSWER", "ABSTAIN", "DEGRADED"))
         return _canonical({"schema": "wd.q4-fixed-public-answer.v1", "status": result["status"],
                            "results": _fixed_closed_results(result.get("results")), "plan_sha256": _sha(plan_bytes),

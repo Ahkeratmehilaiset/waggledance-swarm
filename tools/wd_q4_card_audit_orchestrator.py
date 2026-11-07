@@ -1,8 +1,8 @@
-"""Default-off synthetic card preparation; the descriptor step is unavailable.
+"""Default-off synthetic card candidate preparation, with no activation.
 
-The installed composer reads a fixed live CURRENT pointer. This audit-only
-prefix therefore stops at the verified C2 card snapshot and reports INCOMPLETE;
-it does not manufacture an isolated CURRENT or activate a descriptor.
+The optional composer uses its fixed, independently pinned installed CURRENT.
+Tests may substitute only a synthetic CURRENT path. Without a finish template
+the result is INCOMPLETE. Post-write errors are UNKNOWN and are never retried.
 """
 import hashlib
 import json
@@ -32,6 +32,89 @@ def _write_new(path, data):
         os.fsync(stream.fileno())
 
 
+def _finish(*, enabled=False, output_root=None, base_plan=None, fixed_template=None,
+           composer_options=None, pointer_path=None, pointer_sha256=None, decision_path=None,
+           card_policy_path=None, source_path=None, generation_path=None):
+    """Finish a synthetic C2 with actual plan writers and composer.
+
+    The composer still checks the fixed installed CURRENT; tests may replace
+    only that path with a synthetic pinned fixture. Output paths are permanent.
+    """
+    if enabled is False:
+        return {'status': 'OFF'}
+    from pathlib import Path
+    from sandbox.mind.step2.shared_index_preflight import _encoder_digest
+    from tools import wd_q4_public_card_plan_writer as public_writer
+    from tools import wd_q4_staged_fixed_plan_writer as fixed_writer
+    from tools import wd_q4_staged_composer as composer
+    from tools import wd_q4_staged_card_composer_cli as composer_cli
+
+    if enabled is not True or type(base_plan) is not dict or type(fixed_template) is not dict or type(composer_options) is not dict:
+        raise ValueError()
+    out = io._path(str(output_root), directory=True)
+    if ('.codex-audit' not in out.parts or type(composer_options) is not dict
+            or set(composer_options) != {'generation', 'expected_bundle', 'expected_commit',
+                'expected_manifest_sha256', 'expected_host_sha256', 'descriptor_options',
+                'bundle_store_root', 'active_bundle_root', 'expected_state_sha256'}):
+        raise ValueError()
+    for value in (pointer_path, decision_path, card_policy_path, source_path, generation_path,
+                  base_plan['policy_path'], base_plan['roster_path'], base_plan['public_policy_path']):
+        if '.codex-audit' not in io._path(value).parts:
+            raise ValueError()
+    pointer = io._json(io._read(io._path(pointer_path), pointer_sha256, 1024 * 1024))
+    generation_root = Path(pointer_path).parent
+    memory = generation_root / pointer['generation']
+    descriptor_path = memory / 'descriptor.json'
+    descriptor = io._json(io._read(io._path(str(descriptor_path)), pointer['artifacts']['descriptor.json'], 65536))
+    plan = dict(base_plan)
+    plan['config'] = dict(plan['config'])
+    plan.update(root=str(generation_root), pointer_sha256=pointer_sha256,
+                source_anchor_sha256=pointer['source_prefix']['sha256'], encoder_sha256=_encoder_digest(descriptor['encoder']))
+    plan['config'].update(memory=str(memory), descriptor=str(descriptor_path),
+                          descriptor_sha256=pointer['artifacts']['descriptor.json'])
+    raw = json.dumps(plan, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
+    plan_file = out / 'base-public-plan.json'; _write_new(plan_file, raw)
+    plan_dir = out / 'public-plan'; plan_dir.mkdir()
+    published = public_writer.write_staged_card_plan(enabled=True, public_plan_path=str(plan_file),
+        expected_public_plan_sha256=_sha(raw), output_dir=str(plan_dir), pointer_path=pointer_path,
+        card_decision_path=decision_path, card_policy_path=card_policy_path,
+        source_path=source_path, generation_path=generation_path)
+    public_path, public_pin = published['public_plan_path'], published['public_plan_sha256']
+    public_raw = io._read(io._path(public_path), public_pin, 65536)
+    opts = dict(composer_options)
+    bundle = io._path(opts['expected_bundle'], directory=True)
+    manifest = io._read(io._path(str(bundle / 'deployment-manifest.json')),
+                        opts['expected_manifest_sha256'].lower(), 2 * 1024 * 1024)
+    manifest_doc = io._json(manifest)
+    fleet_pin = manifest_doc['files']['wd-fleet.json'].lower()
+    fleet = io._read(io._path(str(bundle / 'wd-fleet.json')), fleet_pin, 1024 * 1024)
+    wrapper = io._path(str(bundle / 'Invoke-WdQ4Query.ps1')).read_bytes()
+    prep = composer._prepare_staged_card_binding(expected_commit=opts['expected_commit'],
+        manifest_bytes=manifest, expected_manifest_sha256=_sha(manifest), fleet_bytes=fleet,
+        expected_fleet_sha256=fleet_pin, wrapper_bytes=wrapper, expected_wrapper_sha256=_sha(wrapper),
+        public_plan_bytes=public_raw, expected_public_plan_sha256=public_pin)
+    pins = io._json(prep['binding_bytes'])['binding']
+    fixed = dict(fixed_template)
+    fixed.update(bundle_sha256=prep['bundle_sha256'], bundle_bytes=len(prep['bundle_bytes']),
+        approved_tasks=prep['approved_tasks'], expected_pointer_sha256=pins['pointer_sha256'],
+        policy_sha256=pins['policy_sha256'], roster_sha256=pins['roster_sha256'],
+        expected_public_policy_sha256=pins['public_policy_sha256'], expected_source_sha256=pins['source_anchor_sha256'],
+        expected_encoder_sha256=pins['encoder_sha256'], card_decision_sha256=pins['card_decision_sha256'],
+        card_policy_sha256=pins['card_policy_sha256'], public_plan_path=public_path, public_plan_sha256=public_pin)
+    fixed_dir = out / 'fixed-plan'; fixed_dir.mkdir()
+    fixed_result = fixed_writer.write(enabled=True, arguments=fixed, output_dir=str(fixed_dir))
+    fixed_raw = io._read(io._path(fixed_result['path']), fixed_result['sha256'], 4096)
+    stage = out / 'stage'; stage.mkdir()
+    descriptor_options = dict(opts.pop('descriptor_options'))
+    descriptor_options.update(expected_binding=pins, public_plan=public_path)
+    opts.update(stage_dir=str(stage), generation_root=str(out), descriptor_options=descriptor_options,
+        public_plan_path=public_path, expected_public_plan_sha256=public_pin,
+        fixed_plan_bytes=fixed_raw, expected_fixed_plan_sha256=fixed_result['sha256'])
+    result = composer.compose_staged_card(enabled=True, **opts)
+    composer_cli._verify_result(result, opts)
+    return result
+
+
 def run(*, enabled=False, request_path=None, request_sha256=None):
     if enabled is False:
         return {'status': 'OFF'}
@@ -41,7 +124,9 @@ def run(*, enabled=False, request_path=None, request_sha256=None):
         request_file = io._path(request_path)
         request_raw = io._read(request_file, request_sha256, 1024 * 1024)
         request = io._json(request_raw)
-        if (type(request) is not dict or set(request) != {'schema', 'decision', 'snapshot_template', 'output_root'}
+        if (type(request) is not dict or set(request) not in (
+                {'schema', 'decision', 'snapshot_template', 'output_root'},
+                {'schema', 'decision', 'snapshot_template', 'output_root', 'finish'})
                 or request['schema'] != 'wd.q4-card-audit-prefix-request.v1'):
             raise ValueError()
         decision_path, decision_raw = io._spec(request['decision'], 1024 * 1024)
@@ -68,6 +153,21 @@ def run(*, enabled=False, request_path=None, request_sha256=None):
                 or any('.codex-audit' not in p.parts or p.is_relative_to(out)
                        for p in (request_file, decision_path, template_path))):
             raise ValueError()
+        finish_path = finish_raw = finish_template = None
+        if 'finish' in request:
+            finish_path, finish_raw = io._spec(request['finish'], 1024 * 1024)
+            finish_template = io._json(finish_raw)
+            if ('.codex-audit' not in finish_path.parts or finish_path.is_relative_to(out)
+                    or type(finish_template) is not dict
+                    or set(finish_template) != {'schema', 'base_plan', 'fixed_template', 'composer_options'}
+                    or finish_template['schema'] != 'wd.q4-card-audit-finish-template.v1'):
+                raise ValueError()
+            opts = finish_template['composer_options']
+            if type(opts) is not dict:
+                raise ValueError()
+            for key in ('expected_bundle', 'bundle_store_root', 'active_bundle_root'):
+                if '.codex-audit' not in io._path(opts[key], directory=True).parts:
+                    raise ValueError()
         from tools import wd_q4_external_generation_anchor as anchor
         from waggledance.core.bridge_log_reader import BridgeCursor
         c, a = decision['cursor'], decision['anchor']
@@ -112,6 +212,17 @@ def run(*, enabled=False, request_path=None, request_sha256=None):
                 or io._read(decision_path, request['decision']['sha256'], 1024 * 1024) != decision_raw
                 or io._read(template_path, request['snapshot_template']['sha256'], 1024 * 1024) != template_raw):
             raise ValueError()
+        if finish_template is not None:
+            result = _finish(enabled=True, output_root=out, base_plan=finish_template['base_plan'],
+                fixed_template=finish_template['fixed_template'], composer_options=finish_template['composer_options'],
+                pointer_path=str(pointer), pointer_sha256=snapshot['pointer_sha256'], decision_path=str(decision_file),
+                card_policy_path=decision['inputs']['card_policy']['path'], source_path=decision['source_path'],
+                generation_path=template['source_generation']['path'])
+            if (io._read(request_file, request_sha256, 1024 * 1024) != request_raw
+                    or io._read(finish_path, request['finish']['sha256'], 1024 * 1024) != finish_raw):
+                raise ValueError()
+            return {'status': 'PREPARED', 'pointer_path': result['pointer_path'],
+                    'pointer_sha256': result['pointer_sha256']}
         return {'status': 'INCOMPLETE', 'next_step': 'STAGED_COMPOSER_REQUIRES_PINNED_CURRENT',
                 'card_pointer_sha256': snapshot['pointer_sha256']}
     except BaseException:
@@ -129,7 +240,7 @@ def main(argv=None):
     try:
         result = run(enabled=True, request_path=args[2], request_sha256=args[4])
         print(json.dumps(result, sort_keys=True, separators=(',', ':')))
-        return 3
+        return 0 if result['status'] == 'PREPARED' else 3
     except Refused:
         print('{"status":"REFUSED"}', file=sys.stderr)
         return 2

@@ -8,6 +8,7 @@ import pytest
 from tests.tools.test_wd_q4_real_card_generation import real_fixture
 from tests.tools.test_wd_q4_real_card_decision_cli import fixture
 from tests.tools.test_wd_q4_real_card_snapshot_cli import setup_request
+from tests.tools.test_wd_q4_staged_card_composer import materialize, staged_producer
 
 
 def sha(raw):
@@ -115,3 +116,81 @@ def test_non_audit_source_rejected_before_anchor_reader(real_fixture, tmp_path, 
     with pytest.raises(mod.Refused):
         mod.run(enabled=True, request_path=str(path), request_sha256=write(path, request))
     assert seen == [] and list(out.iterdir()) == []
+
+
+def test_real_plan_and_composer_from_verified_synthetic_c2(materialize, tmp_path):
+    from tools import wd_q4_lane_link
+    mod = importlib.import_module('tools.wd_q4_card_audit_orchestrator')
+    case = dict(materialize)
+    staged = json.loads(Path(case['public_plan_path']).read_bytes())
+    base = {key: staged[key] for key in wd_q4_lane_link._PUBLIC_PLAN_SCHEMAS['wd.q4-public-wrapper-plan.v1']}
+    base['schema'] = 'wd.q4-public-wrapper-plan.v1'
+    fixed = json.loads(case.pop('fixed_plan_bytes'))
+    fixed = {k: v for k, v in fixed.items() if k not in ('schema', 'backend')}
+    case.pop('enabled'); case.pop('expected_fixed_plan_sha256')
+    case.pop('public_plan_path'); case.pop('expected_public_plan_sha256')
+    case.pop('stage_dir'); case.pop('generation_root')
+    real_pointer = Path(staged['root']) / 'card-snapshot-candidate.json'
+    real_pointer.write_bytes(Path(staged['pointer_path']).read_bytes())
+    out = tmp_path / 'finish'; out.mkdir()
+    result = mod._finish(enabled=True, output_root=out, base_plan=base, fixed_template=fixed,
+        composer_options=case, pointer_path=str(real_pointer), pointer_sha256=staged['pointer_sha256'],
+        decision_path=staged['card_decision_path'], card_policy_path=staged['card_policy_path'],
+        source_path=staged['source_path'], generation_path=staged['generation_path'])
+    assert result['status'] == 'PREPARED'
+    pointer = Path(result['pointer_path'])
+    assert sha(pointer.read_bytes()) == result['pointer_sha256']
+    assert not (tmp_path / 'WD_Q4_DESCRIPTOR_CURRENT.json').exists()
+
+
+@pytest.mark.parametrize('fault', [None, 'finish_pin', 'interrupted'])
+def test_full_synthetic_chain_uses_real_writers_and_fixture_current(materialize, tmp_path, monkeypatch, fault):
+    pytest.importorskip('faiss')
+    from tools import wd_q4_lane_link
+    from tools import wd_q4_real_card_snapshot_producer as producer
+    mod = importlib.import_module('tools.wd_q4_card_audit_orchestrator')
+    real_dir = tmp_path / 'real-card-fixture'; real_dir.mkdir()
+    real = real_fixture.__wrapped__(real_dir)
+    staged = json.loads(Path(materialize['public_plan_path']).read_bytes())
+    real[0]['roster_bytes'] = Path(staged['roster_path']).read_bytes()
+    real[0]['roster_sha256'] = sha(real[0]['roster_bytes'])
+    path, _, out, args = make_request(real, real_dir)
+    request = json.loads(path.read_bytes())
+    decision = json.loads(Path(request['decision']['path']).read_bytes())
+    case = dict(materialize)
+    base = {k: staged[k] for k in wd_q4_lane_link._PUBLIC_PLAN_SCHEMAS['wd.q4-public-wrapper-plan.v1']}
+    base['schema'] = 'wd.q4-public-wrapper-plan.v1'
+    for key in ('policy', 'roster'):
+        base[key + '_path'] = decision['inputs'][key]['path']
+        base[key + '_sha256'] = decision['inputs'][key]['sha256']
+    fixed = json.loads(case.pop('fixed_plan_bytes'))
+    fixed = {k: v for k, v in fixed.items() if k not in ('schema', 'backend')}
+    for key in ('enabled', 'expected_fixed_plan_sha256', 'public_plan_path', 'expected_public_plan_sha256',
+                'stage_dir', 'generation_root'):
+        case.pop(key)
+    finish = {'schema': 'wd.q4-card-audit-finish-template.v1', 'base_plan': base,
+              'fixed_template': fixed, 'composer_options': case}
+    finish_path = tmp_path / 'finish-template.json'
+    request['finish'] = {'path': str(finish_path), 'sha256': write(finish_path, finish)}
+    if fault == 'finish_pin':
+        request['finish']['sha256'] = '0' * 64
+    pin = write(path, request)
+    monkeypatch.setattr(producer, '_load_pinned_e5', lambda **_: (args['encode'], args['identity'], args['dimension'], lambda: True))
+    if fault == 'finish_pin':
+        with pytest.raises(mod.Refused):
+            mod.run(enabled=True, request_path=str(path), request_sha256=pin)
+        assert list(out.iterdir()) == []
+        return
+    if fault == 'interrupted':
+        def interrupted(**kwargs):
+            raise KeyboardInterrupt()
+        monkeypatch.setattr(mod, '_finish', interrupted)
+        with pytest.raises(mod.Unknown):
+            mod.run(enabled=True, request_path=str(path), request_sha256=pin)
+        assert list(out.iterdir()) and not (out / 'stage' / 'candidate-pointer.json').exists()
+        return
+    result = mod.run(enabled=True, request_path=str(path), request_sha256=pin)
+    assert result['status'] == 'PREPARED'
+    candidate = out / 'stage' / 'candidate-pointer.json'
+    assert sha(candidate.read_bytes()) == result['pointer_sha256']
+    assert not (tmp_path / 'WD_Q4_DESCRIPTOR_CURRENT.json').exists()

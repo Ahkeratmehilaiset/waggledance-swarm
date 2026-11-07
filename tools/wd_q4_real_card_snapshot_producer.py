@@ -99,7 +99,8 @@ def produce(*, enabled=False, generation=None, encoder_config=None, trusted_mode
     except BaseException:
         raise Unknown('real_card_snapshot_unknown') from None
     try:
-        if built.get('status') != 'STAGED' or not recheck(): raise ValueError()
+        if (built.get('status') != 'STAGED' or type(built.get('rejected_invalid_expiry')) is not int
+                or not 0 <= built['rejected_invalid_expiry'] <= 4096 or not recheck()): raise ValueError()
         artifacts = {}
         for path in generation_dir.rglob('*'):
             checkpoint._plain(path)
@@ -125,6 +126,7 @@ def produce(*, enabled=False, generation=None, encoder_config=None, trusted_mode
             raise ValueError()
         return {'status':'VALIDATED_STAGED', 'pointer_sha256':pin, 'memory_sha256':built['memory_sha256'],
                 'descriptor_sha256':built['descriptor_sha256'], 'completeness':'UNKNOWN',
-                'source_authentication':'UNKNOWN', 'publisher_authentication':'UNKNOWN', 'freshness':'UNKNOWN'}
+                'source_authentication':'UNKNOWN', 'publisher_authentication':'UNKNOWN', 'freshness':'UNKNOWN',
+                'rejected_invalid_expiry':built['rejected_invalid_expiry']}
     except BaseException:
         raise Unknown('real_card_snapshot_unknown') from None

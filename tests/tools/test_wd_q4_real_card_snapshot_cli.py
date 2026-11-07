@@ -62,6 +62,28 @@ def test_synthetic_fixture_calls_actual_c2_producer(real_fixture,tmp_path,monkey
     assert str(tmp_path) not in json.dumps(result)
 
 
+def test_invalid_expiry_count_reaches_cli_without_invalid_card(real_fixture,tmp_path,monkeypatch):
+    pytest.importorskip('faiss')
+    mod=importlib.import_module('tools.wd_q4_real_card_snapshot_cli')
+    from tools import wd_q4_real_card_snapshot_producer as producer
+    from tests.tools.test_wd_q4_real_card_generation import rt
+    args,out,event,observation=real_fixture
+    bad=json.loads(json.dumps(event))
+    expiry=bad['payload']['public_knowledge']['valid_until_utc']
+    bad['payload']['public_knowledge']['valid_until_utc']=expiry[:13]+expiry[13:].replace(':','.')
+    decision,pin,source=rt.anchor(tmp_path/'mixed-card-prefix',[bad,event],
+        decision='enable_real_card_route',synthetic=False,observed_heads=observation['heads'],
+        vocabulary_sha256=args['vocabulary_sha256'],head_observation_sha256=observation['sha256'])
+    args.update(source,decision_bytes=decision,decision_sha256=pin)
+    _,path,request_pin,_=setup_request(real_fixture,tmp_path)
+    monkeypatch.setattr(producer,'_load_pinned_e5',lambda **_: (args['encode'],args['identity'],args['dimension'],lambda:True))
+    result=mod.run(enabled=True,request_path=str(path),request_sha256=request_pin)
+    assert result['status']=='VALIDATED_STAGED' and result['rejected_invalid_expiry']==1
+    projection=json.loads((Path(out)/'candidate'/'projection.json').read_bytes())
+    assert rt.fx.event_id(bad) not in projection['sources']
+    assert rt.fx.event_id(event) in projection['sources']
+
+
 def test_bad_cli_request_reports_fixed_token_without_path_or_canary(tmp_path):
     path=tmp_path/'sensitive-synthetic-canary.json';path.write_bytes(b'{}')
     proc=subprocess.run([sys.executable,'-B','-m','tools.wd_q4_real_card_snapshot_cli',

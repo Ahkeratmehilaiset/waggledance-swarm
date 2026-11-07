@@ -46,6 +46,48 @@ def test_mixed_prefix_ignores_noncard_private_and_review_events(tmp_path):
         if path.is_file(): assert b'synthetic-private-secret-canary' not in path.read_bytes()
 
 
+def test_bad_expiry_is_reported_and_excluded_while_valid_cards_are_built(tmp_path):
+    pytest.importorskip('faiss')
+    cards=rt.fx.corpus()
+    bad=json.loads(json.dumps(cards[0]))
+    valid_expiry=bad['payload']['public_knowledge']['valid_until_utc']
+    bad['payload']['public_knowledge']['valid_until_utc']=valid_expiry[:13]+valid_expiry[13:].replace(':','.')
+    args,out=mixed_prepared(tmp_path,[bad]+cards)
+    result=producer.prepare_card_generation(**args)
+    assert result['status']=='STAGED'
+    assert result['rejected_invalid_expiry']==1
+    projection=json.loads((out/'candidate'/'projection.json').read_bytes())
+    bad_ref=rt.fx.event_id(bad)
+    assert bad_ref not in projection['sources']
+    assert rt.fx.event_id(cards[0]) in projection['sources']
+    assert result['records'] > 0
+
+
+@pytest.mark.parametrize('fault',['private_message','directed','review_author','extra_payload','wrong_task','foreign_uuid'])
+def test_bad_expiry_does_not_hide_other_card_failures(tmp_path,fault):
+    cards=rt.fx.corpus(); bad=json.loads(json.dumps(cards[0]))
+    expiry=bad['payload']['public_knowledge']['valid_until_utc']
+    bad['payload']['public_knowledge']['valid_until_utc']=expiry[:13]+expiry[13:].replace(':','.')
+    if fault=='private_message': bad['message']='synthetic-private-secret-canary'
+    if fault=='directed': bad['to']='claude-rco-1'
+    if fault=='review_author': bad['agent']='claude-rco-1'
+    if fault=='extra_payload': bad['payload']['other']='synthetic-private-secret-canary'
+    if fault=='wrong_task': bad['task_id']='unrelated'
+    if fault=='foreign_uuid': bad['agent_uuid']=rt.fx.UUIDS[rt.fx.FABLE]
+    args,out=mixed_prepared(tmp_path,cards+[bad])
+    with pytest.raises(producer.CardGenerationRefused): producer.prepare_card_generation(**args)
+    assert list(out.iterdir())==[]
+
+
+def test_bad_expiry_alone_never_creates_an_empty_generation(tmp_path):
+    bad=rt.fx.corpus()[0]
+    expiry=bad['payload']['public_knowledge']['valid_until_utc']
+    bad['payload']['public_knowledge']['valid_until_utc']=expiry[:13]+expiry[13:].replace(':','.')
+    args,out=mixed_prepared(tmp_path,[bad])
+    with pytest.raises(producer.CardGenerationRefused): producer.prepare_card_generation(**args)
+    assert list(out.iterdir())==[]
+
+
 @pytest.mark.parametrize('fault',['private_message','private_path','directed','review_author','malformed_card','extra_payload','wrong_task','foreign_uuid'])
 def test_invalid_card_claim_refuses_all_before_write(tmp_path,fault):
     cards=rt.fx.corpus(); bad=json.loads(json.dumps(cards[0]))

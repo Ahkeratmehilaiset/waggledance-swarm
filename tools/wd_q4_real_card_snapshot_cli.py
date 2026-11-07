@@ -115,8 +115,9 @@ def run(*, enabled=False, request_path=None, request_sha256=None):
         for f,pin,limit,expected in watched:
             if _read(f,pin,limit)!=expected: raise ValueError()
         expected={'status','pointer_sha256','memory_sha256','descriptor_sha256','completeness',
-                  'source_authentication','publisher_authentication','freshness'}
+                  'source_authentication','publisher_authentication','freshness','rejected_invalid_expiry'}
         if (type(result) is not dict or set(result)!=expected or result['status']!='VALIDATED_STAGED'
+                or type(result['rejected_invalid_expiry']) is not int or not 0<=result['rejected_invalid_expiry']<=4096
                 or any(result[k]!='UNKNOWN' for k in ('completeness','source_authentication','publisher_authentication','freshness'))
                 or any(type(result[k]) is not str or not _HEX.fullmatch(result[k]) for k in
                        ('pointer_sha256','memory_sha256','descriptor_sha256'))): raise ValueError()

@@ -1045,7 +1045,102 @@ def _install_controlled_imports(runtime_root, manifest_path, manifest_sha256):
         _unique_pairs=_unique_pairs, _interpreter_roots=_interpreter_roots, _under=_under)
 
 
-def _module_origins(before, roots, namespace_root=None, created_origin=None):
+class _FaissSwigOrigin:
+    """Bind one runtime-created SWIG capsule to its verified FAISS image.
+
+    This is process-local consistency, not same-user authentication or a
+    defense against replacement of mapped images after runtime verification.
+    """
+    _NAME = 'swig_runtime_data4'
+    _CAPSULE = b'swig_runtime_data4.type_pointer_capsule'
+    _IMAGES = frozenset({'_swigfaiss.pyd', '_swigfaiss_avx2.pyd'})
+
+    def __init__(self, runtime_root, manifest_path, manifest_sha256):
+        self.root, self.manifest_path, self.manifest_sha256 = Path(runtime_root), Path(manifest_path), manifest_sha256
+        self.module = self.capsule = None
+        self.pointer = self.destructor = None
+
+    def _manifest(self):
+        with open(self.manifest_path, 'rb') as stream:
+            raw = stream.read(8 * 1024 * 1024 + 1)
+        _check(len(raw) <= 8 * 1024 * 1024 and hmac.compare_digest(_sha(raw), self.manifest_sha256))
+        document = json.loads(raw.decode('utf-8', 'strict'), object_pairs_hook=_unique_pairs)
+        _check(type(document) is dict and type(document.get('files')) is list)
+        return document['files']
+
+    def needs_faiss(self):
+        paths = [item.get('path') for item in self._manifest() if type(item) is dict]
+        package = paths.count('site/faiss/__init__.py')
+        native = sum(paths.count('site/faiss/' + name) for name in self._IMAGES)
+        _check((package == 0 and native == 0) or (package == 1 and native > 0))
+        return package == 1
+
+    def accept(self, module):
+        _check(type(module) is type(sys) and sys.modules.get(self._NAME) is module)
+        attrs = type(sys).__getattribute__(module, '__dict__')
+        _check(set(attrs) == {'__name__', '__doc__', '__package__', '__loader__', '__spec__',
+                              'type_pointer_capsule'} and attrs['__name__'] == self._NAME
+               and all(attrs[key] is None for key in ('__doc__', '__package__', '__loader__', '__spec__')))
+        capsule = attrs['type_pointer_capsule']
+        valid = C.pythonapi.PyCapsule_IsValid
+        valid.argtypes = [C.py_object, C.c_char_p]; valid.restype = C.c_int
+        _check(valid(capsule, self._CAPSULE) == 1)
+        get_pointer = C.pythonapi.PyCapsule_GetPointer
+        get_pointer.argtypes = [C.py_object, C.c_char_p]; get_pointer.restype = C.c_void_p
+        address = get_pointer(capsule, self._CAPSULE)
+        get_context = C.pythonapi.PyCapsule_GetContext
+        get_context.argtypes = [C.py_object]; get_context.restype = C.c_void_p
+        get_destructor = C.pythonapi.PyCapsule_GetDestructor
+        get_destructor.argtypes = [C.py_object]; get_destructor.restype = C.c_void_p
+        destructor = get_destructor(capsule)
+        _check(bool(address) and bool(destructor) and get_context(capsule) is None)
+        kernel = C.WinDLL('kernel32', use_last_error=True)
+        kernel.GetModuleHandleExW.argtypes = [W.DWORD, C.c_void_p, C.POINTER(C.c_void_p)]
+        kernel.GetModuleHandleExW.restype = W.BOOL
+        kernel.GetModuleFileNameW.argtypes = [C.c_void_p, W.LPWSTR, W.DWORD]
+        kernel.GetModuleFileNameW.restype = W.DWORD
+        handle = C.c_void_p()
+        _check(bool(kernel.GetModuleHandleExW(0x4 | 0x2, C.c_void_p(address), C.byref(handle))))
+        destructor_handle = C.c_void_p()
+        _check(bool(kernel.GetModuleHandleExW(0x4 | 0x2, C.c_void_p(destructor), C.byref(destructor_handle)))
+               and destructor_handle.value == handle.value)
+        buffer = C.create_unicode_buffer(32768)
+        count = kernel.GetModuleFileNameW(handle, buffer, len(buffer))
+        _check(0 < count < len(buffer))
+        image = Path(buffer.value)
+        _check(image.name.lower() in self._IMAGES and image.parent.name.lower() == 'faiss'
+               and os.path.samefile(image.parent, self.root / 'site' / 'faiss'))
+        native = sys.modules.get('faiss.' + image.stem)
+        _check(type(native) is type(sys))
+        native_file = type(sys).__getattribute__(native, '__dict__').get('__file__')
+        _check(type(native_file) is str and os.path.samefile(image, native_file))
+        relative = 'site/faiss/' + image.name
+        entries = [item for item in self._manifest() if type(item) is dict and item.get('path') == relative]
+        _check(len(entries) == 1 and type(entries[0].get('size')) is int and 0 < entries[0]['size'] <= 128 * 1024 * 1024)
+        with open(image, 'rb') as stream:
+            opened = os.fstat(stream.fileno())
+            data = stream.read(entries[0]['size'] + 1)
+            after = os.fstat(stream.fileno())
+        _check(os.path.samestat(opened, after) and os.path.samestat(after, image.stat())
+               and len(data) == entries[0]['size'] and hmac.compare_digest(_sha(data), entries[0]['sha256']))
+        if self.module is None:
+            self.module, self.capsule = module, capsule
+            self.pointer, self.destructor = address, destructor
+        else:
+            _check(self.module is module and self.capsule is capsule
+                   and self.pointer == address and self.destructor == destructor)
+
+    def recheck(self):
+        if self.module is not None:
+            self.accept(self.module)
+
+
+def _reject_preloaded_faiss():
+    _check(_FaissSwigOrigin._NAME not in sys.modules and not any(
+        name == 'faiss' or name.startswith('faiss.') for name in sys.modules))
+
+
+def _module_origins(before, roots, namespace_root=None, created_origin=None, swig_origin=None):
     """Check newly imported origins, including only the three known code-root namespaces.
 
     Namespace inspection is not an authenticity proof; the runtime tree and
@@ -1071,6 +1166,10 @@ def _module_origins(before, roots, namespace_root=None, created_origin=None):
             # a same-named regular module from another trusted root is not one.
             _check(origin is None)
         if origin is None:
+            if name == _FaissSwigOrigin._NAME:
+                _check(swig_origin is not None)
+                swig_origin.accept(module)
+                continue
             if name in namespaces:
                 _check(namespace_root is not None)
                 root = os.path.normcase(os.path.abspath(namespace_root))
@@ -1196,6 +1295,7 @@ def _fixed_child_backend(plan, peer_path):
     _contain_child_output()
     _check(sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode)
     _check(not any(name == deny or name.startswith(deny + ".") for name in sys.modules for deny in _PRELOAD_DENY))
+    _reject_preloaded_faiss()
     imports = _install_controlled_imports(plan['runtime_root'], plan['runtime_manifest_path'],
                                           plan['runtime_manifest_sha256'])
     verifier = Path(peer_path).absolute().parents[1].joinpath(*_VERIFIER_PARTS)
@@ -1211,13 +1311,18 @@ def _fixed_child_backend(plan, peer_path):
     entry = code.joinpath("sandbox", "mind", "step2", "shared_index_checkpoint.py")
     _check(code.is_dir() and site.is_dir() and model.is_dir() and entry.is_file())
     roots = [os.path.normcase(os.path.realpath(path)) for path in (code, site)] + _interpreter_roots()
+    swig_origin = _FaissSwigOrigin(root, plan['runtime_manifest_path'], plan['runtime_manifest_sha256'])
     before = set(sys.modules)
     sys.path.insert(0, str(code))
     sys.path.append(str(site))
     import importlib
+    if swig_origin.needs_faiss():
+        importlib.import_module('faiss')
+        _module_origins(before, roots, code, imports, swig_origin)
+        _check(swig_origin.module is not None)
     module = importlib.import_module("sandbox.mind.step2.shared_index_checkpoint")
     _check(os.path.normcase(os.path.abspath(module.__file__)) == os.path.normcase(os.path.abspath(entry)))
-    _module_origins(before, roots, code, imports)
+    _module_origins(before, roots, code, imports, swig_origin)
     query_public_snapshot = module.query_public_snapshot
     _check(callable(query_public_snapshot))
 
@@ -1230,7 +1335,8 @@ def _fixed_child_backend(plan, peer_path):
                                        model_dir=str(model), expected_runtime_revision=plan["runtime_revision"],
                                        enabled=True)
         # The real query imports lazily, so origins are checked again after the call.
-        _module_origins(before, roots, code, imports)
+        _module_origins(before, roots, code, imports, swig_origin)
+        swig_origin.recheck()
         imports.check()
         _check(type(result) is dict and result.get("status") in ("ANSWER", "ABSTAIN", "DEGRADED"))
         return _canonical({"schema": "wd.q4-fixed-public-answer.v1", "status": result["status"],

@@ -18,6 +18,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-11-07T14:00:00Z"
 UNTIL = "2026-11-08T14:00:00Z"
+UNTIL2 = "2026-11-08T15:00:00Z"
 _CONFIGS = {"policy": "shared_card_non_review_policy.json", "public_policy": "shared_card_public_status_policy.json",
             "card_policy": "shared_card_writer_policy.json", "vocabulary": "shared_card_vocabulary.json",
             "path_allowlist": "shared_card_paths.json"}
@@ -418,33 +419,90 @@ def link_spec(base, evidenced, pr=1951, result=None, **changes):
             "request": evidenced["publish-request-pr%d.json" % pr],
             "sidecar": evidenced["card-evidence-pr%d.json" % pr],
             "publish_result": write(base["tmp"] / "results" / ("result-%d.json" % pr),
-                                    result if result is not None else publish_result())}
+                                    result if result is not None else publish_result()),
+            "observation": None}
     spec.update(changes)
     return spec
 
 
+def observe(base, evidenced, name, pr=1951, claim_changes=None, before=()):
+    """A synthetic bridge prefix holding the card event for the pinned request claim (never the real bridge)."""
+    from tools.bridge_compact_view import event_id
+    from waggledance.core import bridge_log_reader as bridge
+    request = json.loads(Path(evidenced["publish-request-pr%d.json" % pr]["path"]).read_bytes())
+    roster = json.loads(Path(request["inputs"]["roster"]["path"]).read_bytes())
+    uuid = {lane["agent"]: lane["agent_uuid"] for lane in roster["lanes"]}["codex-lead-1"]
+    claim = dict(request["claim"], **(claim_changes or {}))
+    event = {"ts_utc": NOW, "agent": "codex-lead-1", "agent_uuid": uuid, "type": "status",
+             "task_id": "mind-public-knowledge-v1", "status": "info", "to": "", "message": "", "paths": [],
+             "write_scope": [], "payload": {"public_knowledge": claim}}
+    root = base["tmp"] / ("bridge-" + name)
+    root.mkdir()
+    source, generation = root / "events.jsonl", root / "generation.json"
+    generation.write_bytes(json.dumps({"generation": "synthetic-g1"}).encode())
+    content = b"".join(json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+                       for row in (*before, event))
+    source.write_bytes(content)
+    cursor = bridge.read_bridge_log(str(source), generation_path=str(generation)).candidate_cursor
+    observation = {"source_path": str(source), "generation_path": str(generation),
+                   "cursor": {"offset": cursor.offset, "file_identity": cursor.file_identity,
+                              "generation": cursor.generation},
+                   "prefix_sha256": sha(content)}
+    return observation, event_id(event)
+
+
 @pytest.mark.parametrize("status", ["WRITTEN", "QUEUED"])
-def test_link_binds_card_event_ref_to_request_claim_sidecar_and_captures(mod, base, evidenced, status):
+def test_link_without_observation_stays_pending(mod, base, evidenced, status):
     spec = link_spec(base, evidenced, result=publish_result(status))
+    out, _, build = run_spec(mod, base, spec, "pending-" + status)
+    result = build()
+    assert result["status"] == "WRITTEN" and result["phase"] == "link"
+    files = tree(out)
+    assert set(files) == {"card-evidence-pending-pr1951.json", "inputs-manifest.json"}
+    sidecar = json.loads(Path(spec["sidecar"]["path"]).read_bytes())
+    assert json.loads(files["card-evidence-pending-pr1951.json"]) == {
+        "schema": "wd.q4-card-evidence-pending.v1", "card_event_ref_sha256": "e" * 64,
+        "publish_delivery": "canonical" if status == "WRITTEN" else "queued",
+        "state": "PENDING_OBSERVATION" if status == "WRITTEN" else "PENDING_DELIVERY", "pr": 1951,
+        "card_head": base["repo"]["commits"][1], "request_sha256": spec["request"]["sha256"],
+        "claim_sha256": sidecar["claim_sha256"], "sidecar_sha256": spec["sidecar"]["sha256"],
+        "publish_result_sha256": spec["publish_result"]["sha256"], "reader_truth": "UNVERIFIED", "link": None}
+
+
+@pytest.mark.parametrize("status", ["WRITTEN", "QUEUED"])
+def test_link_for_independently_observed_canonical_card_event(mod, base, evidenced, status):
+    observation, ref = observe(base, evidenced, "link-" + status)
+    spec = link_spec(base, evidenced, result=publish_result(status, event_ref_sha256=ref), observation=observation)
     out, _, build = run_spec(mod, base, spec, "link-" + status)
     result = build()
     assert result["status"] == "WRITTEN" and result["phase"] == "link"
     files = tree(out)
     manifest = json.loads(files["inputs-manifest.json"])
-    assert set(manifest["files"]) == {"card-evidence-link-pr1951.json"} and set(files) == {
-        "card-evidence-link-pr1951.json", "inputs-manifest.json"}
+    assert set(manifest["files"]) == {"card-evidence-link-pr1951.json", "card-evidence-link-publish-pr1951.json"}
     sidecar = json.loads(Path(spec["sidecar"]["path"]).read_bytes())
-    link = json.loads(files["card-evidence-link-pr1951.json"])
+    link_raw = files["card-evidence-link-pr1951.json"]
+    link = json.loads(link_raw)
     assert link == {
-        "schema": "wd.q4-card-evidence-link.v1", "card_event_ref_sha256": "e" * 64,
-        "delivery": "canonical" if status == "WRITTEN" else "queued", "pr": 1951,
-        "card_head": base["repo"]["commits"][1], "pr_head": base["repo"]["side"],
+        "schema": "wd.q4-card-evidence-link.v2", "card_event_ref_sha256": ref,
+        "publish_delivery": "canonical" if status == "WRITTEN" else "queued",
+        "canonical": "observed_within_pinned_prefix",
+        "observation": {"prefix_sha256": observation["prefix_sha256"], "cursor": observation["cursor"],
+                        "status": "MATCH_WITHIN_PREFIX", "completeness": "UNKNOWN", "predecessor_refs": [],
+                        "observed_at_utc": NOW},
+        "pr": 1951, "card_head": base["repo"]["commits"][1], "pr_head": base["repo"]["side"],
+        "merge_commit": base["repo"]["commits"][1], "base_ref": "refs/heads/main",
         "request_sha256": spec["request"]["sha256"], "claim_sha256": sidecar["claim_sha256"],
         "sidecar_sha256": spec["sidecar"]["sha256"], "publish_result_sha256": spec["publish_result"]["sha256"],
         "pr_view_sha256": sidecar["captures"]["pr_view_sha256"],
         "check_runs_sha256": sidecar["captures"]["check_runs_sha256"],
         "reader_truth": "UNVERIFIED", "link_authentication": "UNKNOWN", "source_authentication": "UNKNOWN",
-        "pairing": "caller_asserted_publish_result_for_request"}
+        "pairing": "observed_event_payload_equals_request_claim"}
+    assert "source_path" not in link_raw.decode() and observation["source_path"].encode() not in link_raw
+    publish = json.loads(files["card-evidence-link-publish-pr1951.json"])
+    assert publish == {"schema": "wd.q4-card-evidence-link-publish-request.v1", "posted": False,
+                       "proposed_task_id": "mind-card-evidence-link-v1",
+                       "event": {"type": "status", "status": "info", "payload": {"card_evidence_link": link}},
+                       "link_sha256": sha(link_raw)}
 
 
 def _bad_link(base, evidenced, fault):
@@ -494,6 +552,36 @@ def _bad_link(base, evidenced, fault):
         return spec
     if fault == "spec_extra_key":
         return link_spec(base, evidenced, deploy=True)
+    if fault == "spec_missing_observation":
+        spec = link_spec(base, evidenced)
+        del spec["observation"]
+        return spec
+    if fault.startswith("observation_"):
+        observation, ref = observe(base, evidenced, fault)
+        result = publish_result(event_ref_sha256=ref)
+        if fault == "observation_other_event":
+            result = publish_result()
+        elif fault == "observation_claim_differs":
+            observation, ref = observe(base, evidenced, fault + "-2", claim_changes={"valid_until_utc": UNTIL2})
+            result = publish_result(event_ref_sha256=ref)
+        elif fault == "observation_prefix_pin":
+            observation["prefix_sha256"] = "0" * 64
+        elif fault == "observation_extra_key":
+            observation["note"] = "x"
+        elif fault == "observation_cursor_generation":
+            observation["cursor"]["generation"] = "synthetic-g2"
+        elif fault == "observation_cursor_extra_key":
+            observation["cursor"]["note"] = "x"
+        elif fault == "observation_cursor_offset":
+            observation["cursor"]["offset"] -= 1
+        elif fault == "observation_not_object":
+            observation = "synthetic"
+        elif fault == "observation_other_pr_request":
+            return link_spec(base, evidenced, request=evidenced["publish-request-pr1950.json"],
+                             result=result, observation=observation)
+        else:
+            raise AssertionError(fault)
+        return link_spec(base, evidenced, result=result, observation=observation)
     raise AssertionError(fault)
 
 
@@ -501,7 +589,10 @@ def _bad_link(base, evidenced, fault):
     "other_pr_sidecar", "other_pr_request", "request_pin", "sidecar_pin", "claim_edited", "sidecar_already_linked",
     "sidecar_v1", "sidecar_request_digest", "sidecar_claim_digest", "sidecar_card_head", "sidecar_pr",
     "result_refused", "result_unknown", "result_ref_short", "result_extra_key", "result_truth_claimed",
-    "queued_without_wal", "result_pin", "spec_extra_key"])
+    "queued_without_wal", "result_pin", "spec_extra_key", "spec_missing_observation", "observation_other_event",
+    "observation_claim_differs", "observation_prefix_pin", "observation_extra_key", "observation_cursor_generation",
+    "observation_cursor_offset", "observation_not_object", "observation_other_pr_request",
+    "observation_cursor_extra_key"])
 def test_bad_link_refuses_before_any_write(mod, base, evidenced, fault):
     out, _, build = run_spec(mod, base, _bad_link(base, evidenced, fault), "badlink-" + fault)
     with pytest.raises(mod.Refused):
@@ -518,6 +609,98 @@ def test_link_input_changed_after_first_write_is_unknown(mod, base, evidenced, m
     with pytest.raises(mod.Unknown):
         build()
     assert failures == []
+
+
+@pytest.mark.parametrize("target", ["roster", "card_policy", "vocabulary"])
+def test_observed_link_policy_changed_after_first_write_is_unknown(mod, base, evidenced, monkeypatch, target):
+    observation, ref = observe(base, evidenced, "late-" + target)
+    spec = link_spec(base, evidenced, result=publish_result(event_ref_sha256=ref), observation=observation)
+    request = json.loads(Path(spec["request"]["path"]).read_bytes())
+    path = Path(request["inputs"][target]["path"])
+    out, _, build = run_spec(mod, base, spec, "late-observed-" + target)
+    failures = _mutate_after_first_write(mod, monkeypatch, lambda: path.write_bytes(path.read_bytes() + b" "))
+    with pytest.raises(mod.Unknown):
+        build()
+    assert failures == []
+
+
+# --- reader: a published link stays UNVERIFIED unless pinned captures match ------------------------------------------
+
+UNVERIFIED = {"status": "UNVERIFIED", "reader_truth": "UNVERIFIED", "authentication": "UNKNOWN"}
+
+
+@pytest.fixture
+def observed_link(mod, base, evidenced):
+    observation, ref = observe(base, evidenced, "reader")
+    spec = link_spec(base, evidenced, result=publish_result(event_ref_sha256=ref), observation=observation)
+    out, _, build = run_spec(mod, base, spec, "reader-link")
+    assert build()["status"] == "WRITTEN"
+    link = json.loads((out / "card-evidence-link-pr1951.json").read_bytes())
+    captures = base["tmp"] / "captures"
+    return {"ref": ref, "link": link, "pr_capture": str(captures / "pr-1951.json"),
+            "check_runs": str(captures / "check-runs-1951.json")}
+
+
+def read(mod, case, **changes):
+    args = {"enabled": True, "card_event_ref": case["ref"], "link": case["link"], "pr_capture": case["pr_capture"],
+            "check_runs": case["check_runs"], "now_utc": NOW}
+    args.update(changes)
+    return mod.read_card_evidence(**args)
+
+
+def test_reader_off_reads_nothing(mod):
+    assert mod.read_card_evidence() == {"status": "OFF"}
+
+
+def test_reader_matches_link_and_pinned_captures_with_unknown_authentication(mod, base, observed_link):
+    assert read(mod, observed_link) == {
+        "status": "MATCHED", "reader_truth": "MATCHED_PINNED_CAPTURES",
+        "card_event_ref_sha256": observed_link["ref"], "pr": 1951, "card_head": base["repo"]["commits"][1],
+        "pr_head": base["repo"]["side"], "canonical": "observed_within_pinned_prefix", "completeness": "UNKNOWN",
+        "authentication": "UNKNOWN", "source_authentication": "UNKNOWN", "link_authentication": "UNKNOWN"}
+
+
+@pytest.mark.parametrize("fault", ["other_ref", "pending_doc", "link_v1", "link_extra_key", "link_pr_head",
+                                   "link_card_head", "link_not_canonical", "link_observation_status",
+                                   "capture_edited", "runs_edited", "captures_swapped", "capture_missing",
+                                   "other_pr_capture", "now_before_merge", "not_enabled_true"])
+def test_reader_retains_unverified(mod, base, evidenced, observed_link, fault):
+    case = dict(observed_link, link=json.loads(json.dumps(observed_link["link"])))
+    changes = {}
+    link = case["link"]
+    if fault == "other_ref":
+        changes["card_event_ref"] = "e" * 64
+    elif fault == "pending_doc":
+        changes["link"] = {"schema": "wd.q4-card-evidence-pending.v1", "card_event_ref_sha256": case["ref"]}
+    elif fault == "link_v1":
+        link["schema"] = "wd.q4-card-evidence-link.v1"
+    elif fault == "link_extra_key":
+        link["verified"] = True
+    elif fault == "link_pr_head":
+        link["pr_head"] = base["repo"]["side2"]
+    elif fault == "link_card_head":
+        link["card_head"] = base["repo"]["commits"][0]
+    elif fault == "link_not_canonical":
+        link["canonical"] = "queued"
+    elif fault == "link_observation_status":
+        link["observation"]["status"] = "UNKNOWN"
+    elif fault in ("capture_edited", "runs_edited"):
+        key = "pr_capture" if fault == "capture_edited" else "check_runs"
+        path = Path(case[key])
+        copy = base["tmp"] / ("edited-" + path.name)
+        copy.write_bytes(path.read_bytes() + b" ")
+        changes[key] = str(copy)
+    elif fault == "captures_swapped":
+        changes.update(pr_capture=case["check_runs"], check_runs=case["pr_capture"])
+    elif fault == "capture_missing":
+        changes["pr_capture"] = str(base["tmp"] / "captures" / "absent.json")
+    elif fault == "other_pr_capture":
+        changes["pr_capture"] = str(base["tmp"] / "captures" / "pr-1950.json")
+    elif fault == "now_before_merge":
+        changes["now_utc"] = "2026-10-27T00:00:00Z"
+    elif fault == "not_enabled_true":
+        changes["enabled"] = 1
+    assert read(mod, case, **changes) == UNVERIFIED
 
 
 def _broken(base, fault):

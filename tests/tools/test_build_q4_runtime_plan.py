@@ -155,6 +155,7 @@ def test_secure_transport_requires_its_dynamic_controlled_import_helper(tmp_path
     if include_helper:
         files[helper] = b'VALUE = 1\n'
         files['sandbox/mind/step2/q4_namespace_origin.py'] = b'VALUE = 2\n'
+        files['sandbox/mind/step2/q4_native_additions.py'] = b'VALUE = 3\n'
     repo, commit = make_repo(tmp_path, files)
     site = make_tree(tmp_path / 'site', {'pkg.py': b'VALUE = 1\n'})
     model = make_tree(tmp_path / 'model', {'model.safetensors': WEIGHTS})
@@ -177,6 +178,7 @@ def test_public_reader_requires_controlled_import_helper_without_transport(tmp_p
     if include_helper:
         files[helper] = b'VALUE = 2\n'
         files['sandbox/mind/step2/q4_namespace_origin.py'] = b'VALUE = 3\n'
+        files['sandbox/mind/step2/q4_native_additions.py'] = b'VALUE = 4\n'
     repo, commit = make_repo(tmp_path, files)
     site = make_tree(tmp_path / 'site', {'pkg.py': b'VALUE = 1\n'})
     model = make_tree(tmp_path / 'model', {'model.safetensors': WEIGHTS})
@@ -196,7 +198,8 @@ def test_reader_requires_namespace_helper_from_runtime_manifest(tmp_path, includ
     reader = 'sandbox/mind/step2/shared_index_checkpoint.py'
     controlled = 'sandbox/mind/step2/q4_controlled_imports.py'
     namespace = 'sandbox/mind/step2/q4_namespace_origin.py'
-    files = {reader: b'VALUE = 1\n', controlled: b'VALUE = 2\n'}
+    files = {reader: b'VALUE = 1\n', controlled: b'VALUE = 2\n',
+             'sandbox/mind/step2/q4_native_additions.py': b'VALUE = 4\n'}
     if include_namespace:
         files[namespace] = b'VALUE = 3\n'
     repo, commit = make_repo(tmp_path, files)
@@ -210,6 +213,29 @@ def test_reader_requires_namespace_helper_from_runtime_manifest(tmp_path, includ
         plan = plan_mod.plan_runtime_inputs(**kwargs)
         assert plan['pins']['assets/code/' + namespace] == {'size': len(files[namespace]),
                                                             'sha256': sha(files[namespace])}
+    else:
+        refused(kwargs, 'code_closure_incomplete')
+
+
+@pytest.mark.parametrize('include_native', [True, False])
+def test_reader_requires_native_additions_helper_from_runtime_manifest(tmp_path, include_native):
+    reader = 'sandbox/mind/step2/shared_index_checkpoint.py'
+    controlled = 'sandbox/mind/step2/q4_controlled_imports.py'
+    namespace = 'sandbox/mind/step2/q4_namespace_origin.py'
+    native = 'sandbox/mind/step2/q4_native_additions.py'
+    files = {reader: b'VALUE = 1\n', controlled: b'VALUE = 2\n', namespace: b'VALUE = 3\n'}
+    if include_native:
+        files[native] = b'VALUE = 4\n'
+    repo, commit = make_repo(tmp_path, files)
+    site = make_tree(tmp_path / 'site', {'pkg.py': b'VALUE = 1\n'})
+    model = make_tree(tmp_path / 'model', {'model.safetensors': WEIGHTS})
+    kwargs = dict(git_executable=GIT, repository=str(repo), commit=commit,
+                  code_roots=[reader], site_root=str(site), model_root=str(model),
+                  expected_model_files=['model.safetensors'], expected_weights_sha256=sha(WEIGHTS),
+                  generation=GENERATION, revision=REVISION, max_bytes=1024 * 1024, enabled=True)
+    if include_native:
+        plan = plan_mod.plan_runtime_inputs(**kwargs)
+        assert plan['pins']['assets/code/' + native] == {'size': len(files[native]), 'sha256': sha(files[native])}
     else:
         refused(kwargs, 'code_closure_incomplete')
 

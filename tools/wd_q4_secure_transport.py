@@ -39,6 +39,7 @@ import json
 import math
 import os
 from pathlib import Path
+import stat
 import struct
 import subprocess
 import sys
@@ -646,6 +647,52 @@ def _staged_path(value):
                and stem not in {'CON', 'PRN', 'AUX', 'NUL', 'CONIN$', 'CONOUT$'}
                and stem not in {prefix + str(i) for prefix in ('COM', 'LPT') for i in range(10)})
     return value
+
+
+def _staged_read(path, pin, limit):
+    path = Path(_staged_path(str(path)))
+    _hex64(pin)
+    for item in (path, *path.parents):
+        info = item.lstat()
+        _check(not stat.S_ISLNK(info.st_mode) and not (getattr(info, 'st_file_attributes', 0) & 0x400))
+    before = path.lstat()
+    _check(stat.S_ISREG(before.st_mode) and 0 < before.st_size <= limit)
+    with path.open('rb') as stream:
+        opened = os.fstat(stream.fileno())
+        _check(os.path.samestat(before, opened))
+        raw = stream.read(limit + 1)
+        after = os.fstat(stream.fileno())
+    _check(len(raw) == before.st_size and os.path.samestat(opened, after)
+           and os.path.samestat(after, path.lstat()) and hmac.compare_digest(_sha(raw), pin))
+    return raw
+
+
+def _read_staged_backend(peer_path, plan):
+    """Read only the named candidate helper, after independent plan/manifest pinning."""
+    try:
+        root = Path(_staged_path(plan['bundle_root']))
+        peer = root / 'tools-bootstrap' / 'tools' / 'wd_q4_secure_transport.py'
+        helper = root / 'tools-bootstrap' / 'tools' / 'wd_q4_staged_fixed_backend.py'
+        wrapper = root / 'Invoke-WdQ4Query.ps1'
+        _check(os.path.normcase(os.path.abspath(peer_path)) == os.path.normcase(os.path.abspath(peer))
+               and os.path.normcase(os.path.abspath(plan['wrapper_path'])) == os.path.normcase(os.path.abspath(wrapper)))
+        raw = _staged_read(root/'deployment-manifest.json', plan['deployment_manifest_sha256'], 4*1024*1024)
+        manifest = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_pairs,
+                              parse_constant=lambda _: _check(False))
+        _check(type(manifest) is dict and manifest.get('schema_version') == 1
+               and manifest.get('source_commit') == plan['bundle_commit'] and type(manifest.get('files')) is dict)
+        for rel, path, key, cap in (
+            ('tools-bootstrap/tools/wd_q4_secure_transport.py', peer, 'peer_code_sha256', _PEER_CODE_LIMIT),
+            ('tools-bootstrap/tools/wd_q4_staged_fixed_backend.py', helper, 'backend_sha256', _PEER_CODE_LIMIT),
+            ('Invoke-WdQ4Query.ps1', wrapper, 'wrapper_sha256', 1024*1024)):
+            _check(type(manifest['files'].get(rel)) is str
+                   and manifest['files'][rel].lower() == plan[key])
+            value = _staged_read(path, plan[key], cap)
+            if key == 'backend_sha256':
+                result = value
+        return result
+    except Exception:
+        raise _Refused() from None
 
 
 def _fixed_plan(plan_bytes):

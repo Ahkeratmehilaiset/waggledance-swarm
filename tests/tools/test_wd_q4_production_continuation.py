@@ -157,6 +157,36 @@ def test_fresh_anchor_and_actual_pointer_retain_pinned_controls(synthetic):
     assert result["source_authenticity"] == result["freshness"] == "UNKNOWN"
 
 
+def test_unwatermarked_continuation_does_not_advance_after_interrupted_adoption(synthetic):
+    from pathlib import Path
+    mod, args, state, _, route, *_ = synthetic
+    marker = Path(route['private_state_root']) / 'q4-continuation-adopt.pending.json'
+    marker.write_bytes(b'unknown adoption outcome\n')
+    with pytest.raises(mod.ContinuationUnknown):
+        mod.continue_once(**args)
+    assert state['calls'] == []
+    assert marker.read_bytes() == b'unknown adoption outcome\n'
+
+
+def test_unwatermarked_continuation_checks_adoption_after_acquiring_owner_lock(synthetic, monkeypatch):
+    from pathlib import Path
+    mod, args, state, _, route, *_ = synthetic
+    marker = Path(route['private_state_root']) / 'q4-continuation-adopt.pending.json'
+    original = mod.reader_slot
+
+    @contextmanager
+    def adoption_finishes_with_pending(*pos, **kw):
+        with original(*pos, **kw):
+            marker.write_bytes(b'unknown adoption outcome\n')
+            yield
+
+    monkeypatch.setattr(mod, 'reader_slot', adoption_finishes_with_pending)
+    with pytest.raises(mod.ContinuationUnknown):
+        mod.continue_once(**args)
+    assert state['calls'] == []
+    assert marker.read_bytes() == b'unknown adoption outcome\n'
+
+
 def test_next_explicit_call_uses_new_pointer_and_stops_at_cutoff(synthetic):
     mod, args, state, *_ = synthetic
     assert mod.continue_once(**args)["status"] == "partial_ready_prefix"

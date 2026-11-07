@@ -16,6 +16,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import secrets
 
@@ -23,6 +24,7 @@ from sandbox.mind.step2 import prefix_private_state as private_state
 from sandbox.mind.step2 import shared_capture_adapter as capture
 from sandbox.mind.step2 import shared_index_checkpoint as checkpoint
 from sandbox.mind.step2.shared_bridge_snapshot import _token
+from sandbox.mind.step2.reader_slot import reader_slot
 from tools import wd_mind_anchor_issuer as issuer
 from tools import wd_q4_genesis_bootstrap as genesis
 from tools import wd_q4_roster_from_fleet as roster
@@ -280,9 +282,23 @@ def continue_once(*, enabled=False, tuple_bytes=None, expected_tuple_sha256=None
         raise ContinuationRefused("continuation_refused") from None
 
     if not watermark_enabled:
-        return _execute(route, plan, pin, roster_bytes, tasks, policy_bytes, public_policy_bytes,
-                        fleet_bytes, expected_fleet_sha256, anchor_bytes, anchor_pin, plan_bytes,
-                        route_bytes, before, explicit_cutoff, cutoff_utc, previous_cutoff_utc, None)
+        # Adoption holds this same owner lock while publishing. Without a
+        # watermark lease, still serialize against adoption and its retained
+        # marker; otherwise an interrupted publication can be overwritten.
+        private = Path(route["private_state_root"])
+        try:
+            lock = checkpoint._secure(private / 'q4-cutoff-owner.lock', missing_leaf=True)
+            with reader_slot(lock, timeout_seconds=0.2):
+                checkpoint._secure(lock)
+                if os.path.lexists(private / 'q4-continuation-adopt.pending.json'):
+                    raise ContinuationUnknown("continuation_state_unknown")
+                return _execute(route, plan, pin, roster_bytes, tasks, policy_bytes, public_policy_bytes,
+                                fleet_bytes, expected_fleet_sha256, anchor_bytes, anchor_pin, plan_bytes,
+                                route_bytes, before, explicit_cutoff, cutoff_utc, previous_cutoff_utc, None)
+        except (ContinuationUnknown, ContinuationRefused):
+            raise
+        except Exception:
+            raise ContinuationRefused("continuation_refused") from None
     from tools import wd_q4_cutoff_watermark as watermark
     try:
         with watermark.reserve(enabled=True, private_root=route["private_state_root"],

@@ -169,9 +169,21 @@ print('{"status":"PUBLISHED","pointer_sha256":"' + 'a'*64 + '","receipt_sha256":
         Test-Path -LiteralPath (Join-Path $bundle 'synthetic-invoked.txt') | Should Be $false
     }
     It 'plans and registers a disabled one-shot card task under mocks and accepts its synthetic receipt' {
+        $shared = Join-Path $root 'card-generations'
+        $private = Join-Path $root 'card-generations.q4-lifecycle-private-v2'
+        $baseGen = Join-Path $shared ('b'*40); $candidateGen = Join-Path $shared ('c'*40)
+        $cardIndex = Join-Path $root 'card-index'
+        New-Item -ItemType Directory -Path $baseGen,$candidateGen,$private,$cardIndex -Force | Out-Null
+        $newBaseline = Join-Path $baseGen 'shared-session-config.v2.json'
+        [IO.File]::Copy($baselinePath, $newBaseline)
+        $candidate = Join-Path $candidateGen 'shared-session-config.v2.json'
+        $candidatePlan=Join-Path $candidateGen 'public-plan.json'
+        [IO.File]::WriteAllText($candidatePlan, (@{root=$cardIndex}|ConvertTo-Json -Compress))
+        [IO.File]::WriteAllText($candidate, (@{public_plan=$candidatePlan}|ConvertTo-Json -Compress))
+        $candidateHash=(Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
         $badFlag=Join-Path $root 'synthetic-bad-card-receipt'
         $badFlagLiteral=ConvertTo-Json -InputObject $badFlag -Compress
-        $bootstrapCode = 'import os,json; print(json.dumps(({"status":"PUBLISHED","pointer_sha256":"' + ('a'*64) + '","receipt_sha256":"' + ('b'*64) + '"} if os.path.isfile(' + $badFlagLiteral + ') else {"status":"PUBLISHED","pointer_sha256":"' + ('a'*64) + '","descriptor_sha256":"' + ('b'*64) + '","freshness":"UNKNOWN"})))'
+        $bootstrapCode = 'import os,json; p=' + $badFlagLiteral + '; m=open(p).read() if os.path.isfile(p) else ""; r={"status":"PUBLISHED","pointer_sha256":"' + ('a'*64) + '","descriptor_sha256":("' + ('b'*64) + '" if m=="wrong" else "' + $candidateHash + '"),"freshness":"UNKNOWN"}; r.update({"extra":1} if m=="extra" else {}); s=json.dumps(r); print(s[:-1]+",\"status\":\"PUBLISHED\"}" if m=="duplicate" else s)'
         [IO.File]::WriteAllText($bootstrap, $bootstrapCode)
         $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
         $manifest.files.'tools-bootstrap/tools/wd_q4_live_update_bootstrap.py' = (Get-FileHash $bootstrap -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -180,14 +192,6 @@ print('{"status":"PUBLISHED","pointer_sha256":"' + 'a'*64 + '","receipt_sha256":
         $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
         $state.manifest_sha256 = $newHash; $state.final_manifest_sha256 = $newHash
         [IO.File]::WriteAllText($statePath, ($state | ConvertTo-Json -Depth 8 -Compress))
-        $shared = Join-Path $root 'card-generations'
-        $private = Join-Path $root 'card-generations.q4-lifecycle-private-v2'
-        $baseGen = Join-Path $shared ('b'*40); $candidateGen = Join-Path $shared ('c'*40)
-        New-Item -ItemType Directory -Path $baseGen,$candidateGen,$private -Force | Out-Null
-        $newBaseline = Join-Path $baseGen 'shared-session-config.v2.json'
-        [IO.File]::Copy($baselinePath, $newBaseline)
-        $candidate = Join-Path $candidateGen 'shared-session-config.v2.json'
-        [IO.File]::WriteAllText($candidate, '{}')
         $lifecycle = Join-Path $pins 'lifecycle.json'; $cardJob = Join-Path $pins 'card-job.json'; $returnFile = Join-Path $pins 'return.json'
         foreach ($path in @($lifecycle,$cardJob,$returnFile)) { [IO.File]::WriteAllText($path, '{}') }
         [IO.File]::WriteAllText($lifecycle, (@{schema='wd.q4-lifecycle-binding.v2';generation_root=$shared;private_root=$private} | ConvertTo-Json -Compress))
@@ -229,11 +233,11 @@ print('{"status":"PUBLISHED","pointer_sha256":"' + 'a'*64 + '","receipt_sha256":
         $LASTEXITCODE | Should Be 0
         $result.status | Should Be 'PUBLISHED'
         $result.job_cleanup | Should Be 'confirmed'
-        try {
-            [IO.File]::WriteAllText($badFlag, '1')
+        try { foreach ($kind in @('wrong','extra','duplicate')) {
+            [IO.File]::WriteAllText($badFlag, $kind)
             & $powershell -NoProfile -NonInteractive -EncodedCommand $encoded
             $LASTEXITCODE | Should Be 3
-        } finally { [IO.File]::Delete($badFlag) }
+        } } finally { [IO.File]::Delete($badFlag) }
         [IO.File]::WriteAllText((Join-Path $shared 'q4-lifecycle-v2.pending.json'),'{}')
         & $powershell -NoProfile -NonInteractive -EncodedCommand $encoded
         $LASTEXITCODE | Should Be 3

@@ -2765,10 +2765,13 @@ $startupPrompt += (
   'WD_Q4_SHARED_DESCRIPTOR_SHA256 and the externally verified WD_REBOOT_EXPECTED_MANIFEST_HASH are present, ' +
   'and a manifest-verified Invoke-WdQ4LaneRecall.ps1 is packaged, use that helper from this lane worktree ' +
   'with the inherited lane identity and pins. Verify the helper file SHA256 against the externally anchored ' +
-  'bundle manifest before executing it. It invokes the pinned $env:WD_BRIDGE_PYTHON_WRAPPER ' +
-  'tools/wd_q4_lane_caller_cli.py --enabled. Supply UTF-8 JSON ' +
+  'bundle manifest before executing it. By default it invokes the pinned $env:WD_BRIDGE_PYTHON_WRAPPER ' +
+  'tools/wd_q4_lane_caller_cli.py --enabled; -Runtime selects the packaged caller runtime bootstrap. Supply UTF-8 JSON ' +
   'with exactly "situation" and "time"; time is UTC YYYY-MM-DDTHH:MM:SSZ (optionally 1-6 fractional digits). ' +
-  'When the live selector is provisioned for this bundle, pipe the JSON string to ' +
+  'For a hash-verified descriptor whose expected_binding.card_policy_sha256 exists, pipe the JSON string to ' +
+  '& (Join-Path $env:WD_BRIDGE_BUNDLE_ROOT "Invoke-WdQ4LaneRecall.ps1") -Runtime; ' +
+  'do not combine -Runtime with -Live or -WithCoverage. For status-v2 retain the default helper route. ' +
+  'For status-v2, when the live selector is provisioned for this bundle, pipe the JSON string to ' +
   '& (Join-Path $env:WD_BRIDGE_BUNDLE_ROOT "Invoke-WdQ4LaneRecall.ps1") -Live -WithCoverage. ' +
   'The versioned result envelope reports coverage UNKNOWN and freshness UNKNOWN; do not assume completeness. ' +
   'ABSTAIN with coverage UNKNOWN does not prove absence; check the bridge. ' +

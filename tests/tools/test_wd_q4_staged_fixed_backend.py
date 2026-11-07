@@ -121,11 +121,16 @@ def test_runtime_parent_attests_the_executed_bundle_helper_before_dispatch(tmp_p
 
 @pytest.mark.parametrize('source', ['bundle','runtime'])
 @pytest.mark.parametrize('damage', ['runtime_peer','runtime_helper','runtime_manifest_pin','generation','revision',
-                                   'missing_peer_entry','missing_helper_entry','duplicate_entry','entry_hash','entry_size'])
+                                   'missing_peer_entry','missing_helper_entry','duplicate_entry','entry_hash','entry_size',
+                                   'bundle_peer','bundle_helper','bundle_manifest'])
 def test_both_peer_routes_refuse_unbound_runtime_bytes(staged_runtime, source, damage):
-    _, bundle_peer, _, plan, runtime_peer, runtime_helper, manifest = staged_runtime
+    root, bundle_peer, bundle_helper, plan, runtime_peer, runtime_helper, manifest = staged_runtime
     if damage in ('runtime_peer', 'runtime_helper'):
         path = runtime_peer if damage == 'runtime_peer' else runtime_helper
+        path.write_bytes(path.read_bytes()+b' changed')
+    elif damage in ('bundle_peer', 'bundle_helper', 'bundle_manifest'):
+        path = {'bundle_peer':bundle_peer,'bundle_helper':bundle_helper,
+                'bundle_manifest':root/'deployment-manifest.json'}[damage]
         path.write_bytes(path.read_bytes()+b' changed')
     elif damage == 'runtime_manifest_pin':
         plan['runtime_manifest_sha256'] = '0'*64
@@ -142,6 +147,15 @@ def test_both_peer_routes_refuse_unbound_runtime_bytes(staged_runtime, source, d
         manifest.write_bytes(raw); plan['runtime_manifest_sha256'] = sha(raw)
     with pytest.raises(fixed._Refused):
         fixed._read_staged_backend(str(bundle_peer if source == 'bundle' else runtime_peer), plan)
+
+
+def test_runtime_fixture_refuses_identical_third_peer_location(staged_runtime, tmp_path):
+    _, bundle_peer, _, plan, runtime_peer, _, _ = staged_runtime
+    foreign = tmp_path/'foreign'/'wd_q4_secure_transport.py'
+    foreign.parent.mkdir(); foreign.write_bytes(runtime_peer.read_bytes())
+    assert foreign.read_bytes() == runtime_peer.read_bytes() == bundle_peer.read_bytes()
+    with pytest.raises(fixed._Refused):
+        fixed._read_staged_backend(str(foreign), plan)
 
 
 @pytest.mark.parametrize('damage', ['helper','peer','manifest','wrapper','backend_pin','foreign_peer'])

@@ -20,6 +20,7 @@ param(
     [switch]$Live,
     [switch]$WithCoverage,
     [switch]$Runtime,
+    [switch]$WithStatus,
     [switch]$InternalWorker
 )
 begin {
@@ -31,6 +32,11 @@ begin {
         $sha = [Security.Cryptography.SHA256]::Create()
         try { return [BitConverter]::ToString($sha.ComputeHash($Bytes)).Replace('-','') }
         finally { $sha.Dispose() }
+    }
+    function Write-RecallStatus([string]$Status, [Nullable[int]]$ChildExit, [string]$Cleanup) {
+        if (-not $WithStatus) { return }
+        $exitText = if ($null -eq $ChildExit) { 'null' } else { $ChildExit.ToString([Globalization.CultureInfo]::InvariantCulture) }
+        [Console]::Error.WriteLine('{"status":"' + $Status + '","exit_code":' + $exitText + ',"cleanup":"' + $Cleanup + '"}')
     }
 }
 process {
@@ -79,6 +85,7 @@ end {
             if ($Live) { $start.Arguments += ' -Live' }
             if ($WithCoverage) { $start.Arguments += ' -WithCoverage' }
             if ($Runtime) { $start.Arguments += ' -Runtime' }
+            if ($WithStatus) { $start.Arguments += ' -WithStatus' }
             $start.UseShellExecute = $false; $start.CreateNoWindow = $true
             $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
             $worker = [Diagnostics.Process]::Start($start)
@@ -120,12 +127,24 @@ end {
                 [Threading.Thread]::Sleep(10)
             }
             $code = $worker.ExitCode
+            if ($WithStatus) {
+                # Only a single exact, locally generated record crosses this boundary.
+                # Never relay the worker's raw stderr, even on parse failure.
+                $record = [Text.Encoding]::ASCII.GetString($stderr.ToArray())
+                if ($record -cmatch '^\{"status":"EXITED","exit_code":(-?(?:0|[1-9][0-9]*)),"cleanup":"CONFIRMED"\}\r?\n$') {
+                    $childCode = 0
+                    if ([int]::TryParse($Matches[1], [ref]$childCode) -and $childCode -eq $code) {
+                        Write-RecallStatus 'EXITED' $childCode 'CONFIRMED'
+                    } else { Write-RecallStatus 'UNKNOWN' $null 'UNKNOWN' }
+                } else { Write-RecallStatus 'UNKNOWN' $null 'UNKNOWN' }
+            }
             if ($code -eq 0) {
                 $bytes = $stdout.ToArray(); $out = [Console]::OpenStandardOutput()
                 $out.Write($bytes,0,$bytes.Length); $out.Flush()
             }
             exit $code
         } catch {
+            Write-RecallStatus 'UNKNOWN' $null 'UNKNOWN'
             if ($null -ne $worker) {
                 try { if (-not $worker.HasExited) { $worker.Kill(); [void]$worker.WaitForExit(2000) } } catch { }
                 exit 3
@@ -194,7 +213,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-public sealed class $resultTypeName { public int Code; public byte[] Output; }
+public sealed class $resultTypeName { public int Code; public byte[] Output; public bool ChildExitObserved; public int ChildExitCode; public bool CleanupConfirmed; }
 public static class $typeName {
  [StructLayout(LayoutKind.Sequential)] struct Basic { public long a,b; public uint flags; public UIntPtr min,max; public uint active; public UIntPtr affinity; public uint priority,scheduling; }
  [StructLayout(LayoutKind.Sequential)] struct Io { public ulong a,b,c,d,e,f; }
@@ -232,7 +251,7 @@ public static class $typeName {
        if(p.WaitForExit(20) && write.IsCompleted && output.IsCompleted && error.IsCompleted) break;
      }
      Task.WaitAll(write,output,error);
-     result.Code=p.ExitCode; if(result.Code==0) result.Output=output.Result;
+     result.Code=p.ExitCode; result.ChildExitCode=p.ExitCode; result.ChildExitObserved=true; if(result.Code==0) result.Output=output.Result;
    } catch(Exception) { result.Code=entered?3:2; result.Output=null; }
    finally {
      if(job!=IntPtr.Zero && !TerminateJobObject(job,125)) ok=false;
@@ -249,6 +268,7 @@ public static class $typeName {
      }
      try { if(p!=null) p.Dispose(); } catch(Exception) {ok=false;}
    }
+   result.CleanupConfirmed=ok && entered && assigned;
    if(!ok) { result.Code=3; result.Output=null; } return result;
  }
 }
@@ -276,11 +296,14 @@ public static class $typeName {
         $shell = [IO.Path]::Combine($PSHOME,$shellName)
         $remaining = [Math]::Max(0, ($TimeoutSeconds * 1000) - [int]$watch.ElapsedMilliseconds)
         $result = $relayType::Run($shell,$encoded,$query,$remaining)
+        if ($result.ChildExitObserved -and $result.CleanupConfirmed -and $result.Code -eq $result.ChildExitCode) {
+            Write-RecallStatus 'EXITED' $result.ChildExitCode 'CONFIRMED'
+        } else { Write-RecallStatus 'UNKNOWN' $null 'UNKNOWN' }
         if ($result.Code -eq 0 -and $null -ne $result.Output) {
             $out = [Console]::OpenStandardOutput(); $out.Write($result.Output,0,$result.Output.Length); $out.Flush()
         }
         exit $result.Code
-    } catch { exit 2 }
+    } catch { Write-RecallStatus 'UNKNOWN' $null 'UNKNOWN'; exit 2 }
     finally {
         if ($null -ne $wrapperStream) { $wrapperStream.Dispose() }
         if ($null -ne $manifestStream) { $manifestStream.Dispose() }

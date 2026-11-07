@@ -16,7 +16,7 @@
 [CmdletBinding()]
 param(
     [Parameter(ValueFromPipeline=$true)][AllowEmptyString()][string]$QueryJson,
-    [ValidateRange(1,1800)][int]$TimeoutSeconds = 900,
+    [ValidateRange(1,1800)][int]$TimeoutSeconds = 120,
     [switch]$Live,
     [switch]$WithCoverage,
     [switch]$Runtime,
@@ -24,6 +24,7 @@ param(
 )
 begin {
     $ErrorActionPreference = 'Stop'
+    if ($Runtime -and -not $PSBoundParameters.ContainsKey('TimeoutSeconds')) { $TimeoutSeconds = 900 }
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $items = [Collections.Generic.List[string]]::new()
     function Get-RecallHash([byte[]]$Bytes) {

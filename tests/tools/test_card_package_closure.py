@@ -39,7 +39,7 @@ CARD_PREPARE_FILES = ('tools/wd_q4_public_card_prepare.py', 'tools/wd_q4_real_ca
                       'tools/wd_q4_public_card_publish.py', 'tools/wd_q4_public_card_publish_cli.py',
                       'tools/build_q4_runtime_plan.py', 'tools/wd_q4_staged_runtime_plan.py',
                       'tools/wd_q4_staged_fixed_plan_writer.py', 'tools/wd_q4_external_generation_anchor.py',
-                      'tools/wd_q4_bridge_prefix_pin.py')
+                      'tools/wd_q4_bridge_prefix_pin.py', 'tools/wd_q4_real_card_decision_cli.py')
 CARD_POLICY_FILES = tuple('configs/mind/' + name for name in (
     'shared_card_non_review_policy.json', 'shared_card_writer_policy.json',
     'shared_card_vocabulary.json', 'shared_card_paths.json', 'shared_card_public_status_policy.json'))
@@ -72,6 +72,7 @@ def test_staged_card_cli_entrypoints_are_explicit():
     assert entries['q4_card_runtime_plan'] == 'tools/wd_q4_staged_runtime_plan.py'
     assert entries['q4_card_fixed_plan'] == 'tools/wd_q4_staged_fixed_plan_writer.py'
     assert entries['q4_bridge_prefix_pin'] == 'tools/wd_q4_bridge_prefix_pin.py'
+    assert entries['q4_card_decision'] == 'tools/wd_q4_real_card_decision_cli.py'
 
 
 def test_card_policy_and_prepare_libraries_are_packaged(monkeypatch):
@@ -139,7 +140,8 @@ def staged(tmp_path):
 def test_staged_card_cli_entrypoints_are_off_by_default(staged):
     for module in ('tools.wd_q4_staged_card_composer_cli', 'tools.wd_q4_real_card_snapshot_cli',
                    'tools.wd_q4_public_card_publish_cli', 'tools.wd_q4_staged_runtime_plan',
-                   'tools.wd_q4_staged_fixed_plan_writer', 'tools.wd_q4_bridge_prefix_pin'):
+                   'tools.wd_q4_staged_fixed_plan_writer', 'tools.wd_q4_bridge_prefix_pin',
+                   'tools.wd_q4_real_card_decision_cli'):
         code = "import sys; sys.path.insert(0, sys.argv[1]); import " + module + " as cli; raise SystemExit(cli.main([]))"
         result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', code, str(staged)], cwd=staged,
                                 capture_output=True, text=True, encoding='utf-8', timeout=60)

@@ -68,7 +68,8 @@ PROJECTION_KEYS = frozenset({"schema", "authority", "scope", "synthetic", "now_u
                              "superseded", "records", "sources", "coverage"})
 REFUSAL_TOKENS = frozenset({"card_refused", "duplicate_skipped", "superseded_excluded"})
 ITEM_KEYS = frozenset({"ref_sha256", "doc_id_sha256", "ref_kind", "canonical_event"})
-CARD_META = {"type": "status", "status": "info", "task_id": "mind-public-knowledge-v1"}
+CARD_TASK = "mind-public-knowledge-v1"
+CARD_META = {"type": "status", "status": "info", "task_id": CARD_TASK}
 
 
 class SharedCardRefused(ValueError):
@@ -403,6 +404,39 @@ def build_shared_card_memory(projection, encode, identity, dim, root, name, *, e
     if not _enabled(enabled):
         return {"status": "OFF"}
     validate_shared_card_projection(projection)
+    return _build(projection, encode, identity, dim, root, name, SCOPE, DESCRIPTOR_SCHEMA, None)
+
+
+def build_shared_route_card_memory(projection, encode, identity, dim, root, name, *, policy_bytes=None,
+                                   policy_sha256=None, roster_bytes=None, roster_sha256=None, enabled=False):
+    """The same card memory for the existing shared reader, or ``{"status": "OFF"}``.
+
+    It carries the shared scope and the v2 shared descriptor, so the unchanged private reader can run Q4 over it,
+    and it names the v7 card projection schema, so the unchanged v6 resolver refuses it; only the explicit card
+    route of ``shared_result_resolver`` (``CARD_ROUTE``, OFF by default) resolves it. The caller-pinned non-review
+    policy must approve the card task and every card author must be a non-review roster lane; the manifest binds both
+    pins exactly like the strict v6 builder. These pins are caller-asserted, not authenticated here.
+    """
+    if not _enabled(enabled):
+        return {"status": "OFF"}
+    validate_shared_card_projection(projection)
+    from sandbox.mind.step2 import shared_capture_adapter as adapter
+    from sandbox.mind.step2 import shared_index_builder as sib
+    try:
+        tasks, roster = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
+    except Exception:  # noqa: BLE001 - one fixed token, never a pin or its bytes
+        raise SharedCardRefused("policy_invalid") from None
+    if CARD_TASK not in tasks:
+        raise SharedCardRefused("policy_not_card")
+    if any(record["meta"]["agent"] not in roster or record["meta"]["agent"] in sp.REVIEW_LANES
+           for record in projection["records"]):
+        raise SharedCardRefused("roster_mismatch")
+    policy = {"authorship": sp.AUTHORSHIP_ROSTER, "review_signal_excluded": True, "policy_sha256": policy_sha256,
+              "roster_sha256": roster_sha256}
+    return _build(projection, encode, identity, dim, root, name, sib.SCOPE, sib.DESCRIPTOR_SCHEMA, policy)
+
+
+def _build(projection, encode, identity, dim, root, name, scope, descriptor_schema, policy):
     from sandbox.mind.step2 import cell as cell_mod
     from sandbox.mind.step2 import memory as memory_mod
     from sandbox.mind.step2 import shared_index_builder as sib
@@ -454,16 +488,18 @@ def build_shared_card_memory(projection, encode, identity, dim, root, name, *, e
                                         cutoff_utc=cutoff_utc, encoder=encoder, projection_sha256=projection_sha256)
             pointers[cell_id] = dict(pointer, count=len(rows))
         stage = "finalize"
-        memory = {"schema": memory_mod.SCHEMA, "authority": "none", "scope": SCOPE, "synthetic": True,
+        memory = {"schema": memory_mod.SCHEMA, "authority": "none", "scope": scope, "synthetic": True,
                   "cutoff_utc": cutoff_utc, "projection_sha256": projection_sha256, "projection_schema": SCHEMA,
                   "projection_file": "projection.json", "encoder": encoder, "dim": dim,
                   "placement": sib.PLACEMENT_RULE, "topology_source_sha256": cell_mod.file_sha256(sib.TOPOLOGY_FILE),
                   "cells": pointers, "records": len(records), "duplicates": duplicates, "views": list(sib.VIEWS),
                   "independent_views": False}
+        if policy is not None:
+            memory["policy"] = dict(policy)
         corpus_mod.ws.guard_object(memory)
         memory_bytes = cell_mod.canonical(memory).encode("utf-8")
         memory_sha256 = _sha(memory_bytes)
-        descriptor = {"schema": DESCRIPTOR_SCHEMA, "scope": SCOPE, "memory_sha256": memory_sha256, "dim": dim,
+        descriptor = {"schema": descriptor_schema, "scope": scope, "memory_sha256": memory_sha256, "dim": dim,
                       "encoder": encoder}
         descriptor_bytes = cell_mod.canonical(descriptor).encode("utf-8")
         stage = "descriptor"

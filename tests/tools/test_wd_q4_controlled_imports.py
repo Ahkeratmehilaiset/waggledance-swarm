@@ -1,6 +1,9 @@
 """Isolated admission checks; never use an installed bundle or live data."""
 import hashlib
+import importlib._bootstrap_external
+import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -14,11 +17,35 @@ def _probe(tmp_path, scenario):
     site.mkdir()
     good = b'VALUE = 42\n'
     (site / 'wd_synthetic_good.py').write_bytes(good)
+    if scenario == 'pyc':
+        pyc = Path(importlib.util.cache_from_source(str(site / 'wd_synthetic_good.py')))
+        pyc.parent.mkdir()
+        forged = compile('VALUE = 666\n', str(site / 'wd_synthetic_good.py'), 'exec')
+        pyc.write_bytes(importlib._bootstrap_external._code_to_hash_pyc(
+            forged, importlib.util.source_hash(good), checked=False))
     (site / 'wd_synthetic_bad.py').write_text('raise AssertionError("must not execute")\n')
-    manifest = json.dumps({'files': [{'path': 'site/wd_synthetic_good.py', 'size': len(good),
-                                     'sha256': hashlib.sha256(good).hexdigest()}]}).encode()
+    files = [{'path': 'site/wd_synthetic_good.py', 'size': len(good),
+              'sha256': hashlib.sha256(good).hexdigest()}]
+    if scenario in ('native', 'native_tamper'):
+        native = (Path(sys.base_prefix) / 'DLLs' / 'winsound.pyd').read_bytes()
+        (site / 'winsound.pyd').write_bytes(native if scenario == 'native' else native + b'X')
+        files.append({'path': 'site/winsound.pyd', 'size': len(native),
+                      'sha256': hashlib.sha256(native).hexdigest()})
+    if scenario == 'pyc_only':
+        pyc = importlib._bootstrap_external._code_to_hash_pyc(
+            compile('VALUE = 42\n', '<synthetic>', 'exec'), importlib.util.source_hash(good), checked=False)
+        (site / 'wd_synthetic_only.pyc').write_bytes(pyc)
+        files.append({'path': 'site/wd_synthetic_only.pyc', 'size': len(pyc),
+                      'sha256': hashlib.sha256(pyc).hexdigest()})
+    manifest = json.dumps({'files': files}).encode()
     manifest_path = tmp_path / 'manifest.json'
     manifest_path.write_bytes(manifest)
+    if scenario == 'tamper':
+        (site / 'wd_synthetic_good.py').write_bytes(b'VALUE = 99\n')
+    outside = tmp_path.parent / '_outside_shared'
+    outside.mkdir(exist_ok=True)
+    (outside / 'wd_synthetic_external.py').write_text('raise AssertionError("must not execute")\n')
+    (outside / 'wd_synthetic_ns').mkdir(exist_ok=True)
     probe = r'''
 import hashlib, importlib, importlib.machinery, importlib.util, sys
 from pathlib import Path
@@ -26,7 +53,7 @@ source, root, scenario = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
 ns = {'__name__':'_wd_secure_child', '__file__':str(source)}
 exec(compile(source.read_bytes(), '<secure>', 'exec'), ns)
 manifest = root/'manifest.json'
-sys.path.append(str(root/'site'))
+sys.path.insert(0,str(root/'site'))
 effects = []
 class Evil:
  def find_spec(self, name, target=None): effects.append('executed'); return None
@@ -34,10 +61,15 @@ def evil_hook(path): effects.append('hook'); return Evil()
 if scenario == 'preseed':
  sys.path_hooks.insert(0,evil_hook)
  sys.path_importer_cache[str(root/'site')] = Evil()
-ns['_install_controlled_imports'](root, manifest, hashlib.sha256(manifest.read_bytes()).hexdigest())
+pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+if scenario == 'badmanifest':
+ try: ns['_install_controlled_imports'](root, manifest, '0'*64)
+ except ns['_Refused']: print('PASS'); raise SystemExit(0)
+ raise AssertionError('bad manifest pin accepted')
+ns['_install_controlled_imports'](root, manifest, pin)
 if scenario == 'preseed':
  assert importlib.import_module('wd_synthetic_good').VALUE == 42 and not effects
-elif scenario == 'clean':
+elif scenario in ('clean', 'pyc'):
  assert importlib.import_module('wd_synthetic_good').VALUE == 42
  assert importlib.util.find_spec('wd_synthetic_absent') is None
  try: importlib.import_module('wd_synthetic_absent')
@@ -47,6 +79,20 @@ elif scenario == 'unmanifested':
  try: importlib.import_module('wd_synthetic_bad')
  except (ImportError, ns['_Refused']): pass
  else: raise AssertionError('unmanifested file accepted')
+elif scenario in ('tamper', 'native_tamper', 'pyc_only'):
+ target = {'tamper':'wd_synthetic_good','native_tamper':'winsound','pyc_only':'wd_synthetic_only'}[scenario]
+ try: importlib.import_module(target)
+ except (ImportError, ns['_Refused']): pass
+ else: raise AssertionError('tampered or bytecode-only import accepted')
+elif scenario == 'native':
+ module = importlib.import_module('winsound')
+ assert Path(module.__file__).parent == root/'site' and callable(module.Beep)
+elif scenario in ('outside', 'namespace'):
+ sys.path.insert(0,str(root.parent/'_outside_shared'))
+ target = 'wd_synthetic_external' if scenario == 'outside' else 'wd_synthetic_ns'
+ try: importlib.import_module(target)
+ except (ImportError, ns['_Refused']): pass
+ else: raise AssertionError('outside origin or namespace accepted')
 elif scenario == 'cache':
  sys.path_importer_cache[str(root/'site')] = Evil()
  try: importlib.import_module('wd_synthetic_good')
@@ -73,7 +119,11 @@ print('PASS')
 
 
 def test_controlled_imports_preserve_missing_semantics_and_reject_injections(tmp_path):
-    for scenario in ('clean', 'preseed', 'unmanifested', 'cache', 'hook', 'meta'):
+    cases = ('clean', 'pyc', 'preseed', 'unmanifested', 'cache', 'hook', 'meta',
+             'badmanifest', 'tamper', 'pyc_only', 'outside', 'namespace')
+    if os.name == 'nt':
+        cases += ('native', 'native_tamper')
+    for scenario in cases:
         case = tmp_path / scenario
         case.mkdir()
         result = _probe(case, scenario)

@@ -16,7 +16,7 @@ import sys
 import time
 
 
-def _valid(marker_number, marker_path, manifest_path, expected_manifest_sha):
+def _valid(marker_number, marker_path, manifest_path, expected_manifest_sha, mode='once'):
     if os.name!='nt' or not re.fullmatch(r'[0-9a-f]{64}',expected_manifest_sha):
         return False
     marker_number=int(marker_number)
@@ -29,6 +29,7 @@ def _valid(marker_number, marker_path, manifest_path, expected_manifest_sha):
     kernel.SetHandleInformation.argtypes=[handle,dword,dword]; kernel.SetHandleInformation.restype=wintypes.BOOL
     kernel.IsProcessInJob.argtypes=[handle,handle,ctypes.POINTER(wintypes.BOOL)]
     kernel.IsProcessInJob.restype=wintypes.BOOL
+    kernel.OpenJobObjectW.argtypes=[dword,wintypes.BOOL,wintypes.LPCWSTR]; kernel.OpenJobObjectW.restype=handle
     kernel.QueryInformationJobObject.argtypes=[handle,ctypes.c_int,handle,dword,ctypes.POINTER(dword)]
     kernel.QueryInformationJobObject.restype=wintypes.BOOL
     kernel.CreateFileW.argtypes=[wintypes.LPCWSTR,dword,dword,handle,dword,dword,handle]
@@ -37,6 +38,7 @@ def _valid(marker_number, marker_path, manifest_path, expected_manifest_sha):
     kernel.GetFileInformationByHandleEx.restype=wintypes.BOOL
     kernel.ReadFile.argtypes=[handle,handle,dword,ctypes.POINTER(dword),handle]
     kernel.ReadFile.restype=wintypes.BOOL
+    kernel.GetFileSizeEx.argtypes=[handle,ctypes.POINTER(ctypes.c_int64)]; kernel.GetFileSizeEx.restype=wintypes.BOOL
     kernel.CloseHandle.argtypes=[handle]; kernel.CloseHandle.restype=wintypes.BOOL
     ntdll.NtQueryObject.argtypes=[handle,ctypes.c_int,handle,dword,ctypes.POINTER(dword)]
     ntdll.NtQueryObject.restype=ctypes.c_long
@@ -69,11 +71,10 @@ def _valid(marker_number, marker_path, manifest_path, expected_manifest_sha):
     if not (limits.basic.flags & 0x2000) or (limits.basic.flags & (0x800|0x1000)): return False
     original=FileId()
     if not kernel.GetFileInformationByHandleEx(marker,18,ctypes.byref(original),ctypes.sizeof(original)): return False
+    length=ctypes.c_int64()
+    if not kernel.GetFileSizeEx(marker,ctypes.byref(length)) or length.value!=0: return False
     path=Path(marker_path)
     if not path.is_absolute() or path.drive.upper()!='C:' or '..' in path.parts: return False
-    audit=Path(r'C:\Python\project2\.codex-audit')
-    if os.path.commonpath((os.path.normcase(str(path)),os.path.normcase(str(audit)))) != os.path.normcase(str(audit)):
-        return False
     for parent in (path,*path.parents):
         info_stat=os.lstat(parent)
         if getattr(info_stat,'st_file_attributes',0)&0x400: return False
@@ -93,25 +94,45 @@ def _valid(marker_number, marker_path, manifest_path, expected_manifest_sha):
             result[key]=value
         return result
     value=json.loads(raw,object_pairs_hook=unique)
-    if (type(value) is not dict or set(value)!={'schema','python_sha256','probe_sha256','attempt','marker_sha256'} or
+    if (type(value) is not dict or set(value)!={'schema','python_sha256','probe_sha256','attempt','audit_anchor'} or
             value['schema']!='wd.synthetic-adopt-capability.v1' or
             not re.fullmatch(r'[0-9a-f]{64}',value['attempt']) or
-            not re.fullmatch(r'[0-9a-f]{64}',value['marker_sha256']) or
             value['python_sha256']!=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest() or
             value['probe_sha256']!=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()): return False
-    expected_marker=('wd.synthetic-adopt-marker:'+value['attempt']+'\n').encode('ascii')
-    if hashlib.sha256(expected_marker).hexdigest()!=value['marker_sha256']: return False
+    anchor=Path(value['audit_anchor'])
+    if not anchor.is_absolute() or anchor.drive.upper()!='C:' or '..' in anchor.parts: return False
+    if os.path.commonpath((os.path.normcase(str(path)),os.path.normcase(str(anchor)))) != os.path.normcase(str(anchor)):
+        return False
+    for parent in (anchor,*anchor.parents):
+        if getattr(os.lstat(parent),'st_file_attributes',0)&0x400: return False
+    cap_id=format(original.volume,'016x')+bytes(original.identifier).hex()
+    expected_marker=('wd.synthetic-adopt-marker:'+value['attempt']+':'+cap_id+'\n').encode('ascii')
     other=kernel.CreateFileW(str(path),0x80000000,7,None,3,0x80,None)
     if other in (None,ctypes.c_void_p(-1).value): return False
     try:
         observed=FileId()
         if not kernel.GetFileInformationByHandleEx(other,18,ctypes.byref(observed),ctypes.sizeof(observed)): return False
-        if original.volume!=observed.volume or bytes(original.identifier)!=bytes(observed.identifier): return False
         buffer=ctypes.create_string_buffer(4097); count=dword()
         if not kernel.ReadFile(other,buffer,4097,ctypes.byref(count),None) or count.value>4096: return False
-        return buffer.raw[:count.value]==expected_marker
+        if buffer.raw[:count.value]!=expected_marker: return False
     finally:
         kernel.CloseHandle(other)
+    # Open the attempt-derived named Job only briefly. This QUERY handle itself
+    # can delay KILL_ON_JOB_CLOSE if the host dies during the query.
+    job=kernel.OpenJobObjectW(0x4,False,'Local\\wd-q4-synthetic-'+value['attempt'])
+    if not job: return False
+    try:
+        member=wintypes.BOOL()
+        if not kernel.IsProcessInJob(kernel.GetCurrentProcess(),job,ctypes.byref(member)) or not member.value:
+            return False
+        if mode=='holdjob':
+            ready=path.parent/'synthetic-child-holdjob.json'
+            with ready.open('x',encoding='ascii') as stream:
+                json.dump({'pid':os.getpid()},stream); stream.flush(); os.fsync(stream.fileno())
+            time.sleep(30)
+        return True
+    finally:
+        kernel.CloseHandle(job)
 
 
 def main(argv=None):
@@ -126,11 +147,18 @@ def main(argv=None):
             return 2 if kernel.GetFileType(ctypes.c_void_p(int(args[1])))==1 else 0
         except BaseException:
             return 0
-    if (len(args)!=6 or args[0]!='--child' or args[5] not in ('once','linger','mutate','grandchild') or
+    if (len(args)!=6 or args[0]!='--child' or args[5] not in ('once','linger','mutate','grandchild','markerprotect','holdjob') or
             not (sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode)):
         return 2
     try:
-        if not _valid(*args[1:5]): return 2
+        if not _valid(*args[1:5],mode=args[5]): return 2
+        if args[5]=='markerprotect':
+            kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+            kernel.CreateFileW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p]
+            kernel.CreateFileW.restype=ctypes.c_void_p
+            opened=kernel.CreateFileW(args[2],0x40000000,7,None,3,0x80,None)
+            if opened not in (None,ctypes.c_void_p(-1).value):
+                kernel.CloseHandle(ctypes.c_void_p(opened)); return 2
         if args[5]=='mutate':
             kernel=ctypes.WinDLL('kernel32',use_last_error=True)
             kernel.SetFilePointerEx.argtypes=[ctypes.c_void_p,ctypes.c_int64,ctypes.c_void_p,wintypes.DWORD]

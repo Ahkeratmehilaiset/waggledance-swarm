@@ -15,9 +15,8 @@ pytestmark=pytest.mark.skipif(sys.platform!='win32', reason='Windows native hand
 def make_manifest(path):
     sha=lambda value: hashlib.sha256(value).hexdigest()
     attempt=secrets.token_hex(32)
-    marker=('wd.synthetic-adopt-marker:'+attempt+'\n').encode('ascii')
     value={'schema':'wd.synthetic-adopt-capability.v1','python_sha256':sha(Path(sys.executable).read_bytes()),
-           'probe_sha256':sha(PROBE.read_bytes()),'attempt':attempt,'marker_sha256':sha(marker)}
+           'probe_sha256':sha(PROBE.read_bytes()),'attempt':attempt,'audit_anchor':str(path.parent.parent)}
     path.write_text(json.dumps(value),encoding='ascii')
 
 def test_prototype_default_off():
@@ -32,7 +31,7 @@ def test_synthetic_real_windows_capability(tmp_path,scenario,expected):
     manifest=tmp_path/'manifest.json'
     make_manifest(manifest)
     result=subprocess.run(['powershell','-NoProfile','-NonInteractive','-File',str(SCRIPT),'-Run',
-      '-AuditRoot',str(tmp_path),'-Scenario',scenario,'-Python',sys.executable,'-PythonSha256',sha(sys.executable),
+      '-AuditRoot',str(tmp_path),'-AuditAnchor',str(tmp_path.parent),'-Scenario',scenario,'-Python',sys.executable,'-PythonSha256',sha(sys.executable),
       '-ProbeSha256',sha(PROBE),'-Manifest',str(manifest),'-ManifestSha256',sha(manifest)],capture_output=True,text=True,timeout=30)
     assert result.returncode==(0 if expected=='CAPABILITY_VALID' else 2), result.stdout+result.stderr
     assert json.loads(result.stdout)=={'status':expected}
@@ -42,9 +41,9 @@ def test_unbound_manifest_refuses_before_marker_creation(tmp_path):
     manifest=tmp_path/'manifest.json'
     make_manifest(manifest)
     result=subprocess.run(['powershell','-NoProfile','-NonInteractive','-File',str(SCRIPT),'-Run',
-      '-AuditRoot',str(tmp_path),'-Scenario','good','-Python',sys.executable,'-PythonSha256',sha(sys.executable),
+      '-AuditRoot',str(tmp_path),'-AuditAnchor',str(tmp_path.parent),'-Scenario','good','-Python',sys.executable,'-PythonSha256',sha(sys.executable),
       '-ProbeSha256',sha(PROBE),'-Manifest',str(manifest),'-ManifestSha256','0'*64],capture_output=True,text=True,timeout=15)
-    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
     assert not (tmp_path/'synthetic-capability-marker.bin').exists()
 
 
@@ -52,9 +51,9 @@ def test_outside_audit_root_refuses_before_writes(tmp_path):
     sha=lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
     manifest=tmp_path/'manifest.json'; manifest.write_bytes(b'{}')
     result=subprocess.run(['powershell','-NoProfile','-NonInteractive','-File',str(SCRIPT),'-Run',
-      '-AuditRoot',str(ROOT),'-Scenario','good','-Python',sys.executable,'-PythonSha256',sha(sys.executable),
+      '-AuditRoot',str(ROOT),'-AuditAnchor',str(tmp_path.parent),'-Scenario','good','-Python',sys.executable,'-PythonSha256',sha(sys.executable),
       '-ProbeSha256',sha(PROBE),'-Manifest',str(manifest),'-ManifestSha256',sha(manifest)],capture_output=True,text=True,timeout=15)
-    assert result.returncode==3 and json.loads(result.stdout)=={'status':'UNKNOWN'}
+    assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
     assert not (ROOT/'synthetic-capability-marker.bin').exists()
 
 
@@ -69,7 +68,7 @@ def test_unsafe_job_or_delete_capable_marker_is_refused(tmp_path,scenario):
     manifest=tmp_path/'manifest.json'
     make_manifest(manifest)
     result=subprocess.run(['powershell','-NoProfile','-NonInteractive','-File',str(SCRIPT),'-Run',
-      '-AuditRoot',str(tmp_path),'-Scenario',scenario,'-Python',sys.executable,'-PythonSha256',sha(sys.executable),
+      '-AuditRoot',str(tmp_path),'-AuditAnchor',str(tmp_path.parent),'-Scenario',scenario,'-Python',sys.executable,'-PythonSha256',sha(sys.executable),
       '-ProbeSha256',sha(PROBE),'-Manifest',str(manifest),'-ManifestSha256',sha(manifest)],capture_output=True,text=True,timeout=30)
     assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
 
@@ -81,7 +80,7 @@ def test_parent_death_terminates_job_child(tmp_path):
     sha=lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
     manifest=tmp_path/'manifest.json'
     make_manifest(manifest)
-    cmd=['powershell','-NoProfile','-NonInteractive','-File',str(SCRIPT),'-Run','-AuditRoot',str(tmp_path),
+    cmd=['powershell','-NoProfile','-NonInteractive','-File',str(SCRIPT),'-Run','-AuditRoot',str(tmp_path),'-AuditAnchor',str(tmp_path.parent),
        '-Scenario','killparent','-Python',sys.executable,'-PythonSha256',sha(sys.executable),'-ProbeSha256',sha(PROBE),
        '-Manifest',str(manifest),'-ManifestSha256',sha(manifest)]
     parent=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
@@ -115,7 +114,7 @@ def test_capability_rechecked_and_not_inherited(tmp_path,scenario,expected):
     manifest=tmp_path/'manifest.json'
     make_manifest(manifest)
     result=subprocess.run(['powershell','-NoProfile','-NonInteractive','-File',str(SCRIPT),'-Run',
-      '-AuditRoot',str(tmp_path),'-Scenario',scenario,'-Python',sys.executable,'-PythonSha256',sha(sys.executable),
+      '-AuditRoot',str(tmp_path),'-AuditAnchor',str(tmp_path.parent),'-Scenario',scenario,'-Python',sys.executable,'-PythonSha256',sha(sys.executable),
       '-ProbeSha256',sha(PROBE),'-Manifest',str(manifest),'-ManifestSha256',sha(manifest)],capture_output=True,text=True,timeout=30)
     assert result.returncode==(0 if expected=='CAPABILITY_VALID' else 2), result.stdout+result.stderr
     assert json.loads(result.stdout)=={'status':expected}
@@ -125,6 +124,49 @@ def test_unsafe_job_flags_and_wrong_attempt_are_refused(tmp_path,scenario):
     sha=lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
     manifest=tmp_path/'manifest.json'; make_manifest(manifest)
     result=subprocess.run(['powershell','-NoProfile','-NonInteractive','-File',str(SCRIPT),'-Run',
-      '-AuditRoot',str(tmp_path),'-Scenario',scenario,'-Python',sys.executable,'-PythonSha256',sha(sys.executable),
+      '-AuditRoot',str(tmp_path),'-AuditAnchor',str(tmp_path.parent),'-Scenario',scenario,'-Python',sys.executable,'-PythonSha256',sha(sys.executable),
       '-ProbeSha256',sha(PROBE),'-Manifest',str(manifest),'-ManifestSha256',sha(manifest)],capture_output=True,text=True,timeout=30)
     assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
+
+@pytest.mark.parametrize('scenario,expected',[('outer_notjob','REFUSED'),('squat','UNKNOWN'),('markerprotect','CAPABILITY_VALID')])
+def test_named_job_and_separate_capability(tmp_path,scenario,expected):
+    sha=lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    manifest=tmp_path/'manifest.json'; make_manifest(manifest)
+    result=subprocess.run(['powershell','-NoProfile','-NonInteractive','-File',str(SCRIPT),'-Run',
+      '-AuditRoot',str(tmp_path),'-AuditAnchor',str(tmp_path.parent),'-Scenario',scenario,'-Python',sys.executable,'-PythonSha256',sha(sys.executable),
+      '-ProbeSha256',sha(PROBE),'-Manifest',str(manifest),'-ManifestSha256',sha(manifest)],capture_output=True,text=True,timeout=30)
+    assert result.returncode=={'CAPABILITY_VALID':0,'REFUSED':2,'UNKNOWN':3}[expected],result.stdout+result.stderr
+    assert json.loads(result.stdout)=={'status':expected}
+
+
+def test_parent_death_while_child_holds_query_handle_is_unknown(tmp_path):
+    import ctypes
+    import time
+    from ctypes import wintypes
+    sha=lambda path: hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    manifest=tmp_path/'manifest.json'; make_manifest(manifest)
+    cmd=['powershell','-NoProfile','-NonInteractive','-File',str(SCRIPT),'-Run','-AuditRoot',str(tmp_path),'-AuditAnchor',str(tmp_path.parent),
+       '-Scenario','holdjob','-Python',sys.executable,'-PythonSha256',sha(sys.executable),'-ProbeSha256',sha(PROBE),
+       '-Manifest',str(manifest),'-ManifestSha256',sha(manifest)]
+    parent=subprocess.Popen(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True); child=None
+    kernel.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]; kernel.OpenProcess.restype=wintypes.HANDLE
+    kernel.WaitForSingleObject.argtypes=[wintypes.HANDLE,wintypes.DWORD]; kernel.WaitForSingleObject.restype=wintypes.DWORD
+    kernel.TerminateProcess.argtypes=[wintypes.HANDLE,wintypes.UINT]; kernel.TerminateProcess.restype=wintypes.BOOL
+    kernel.CloseHandle.argtypes=[wintypes.HANDLE]; kernel.CloseHandle.restype=wintypes.BOOL
+    try:
+        ready=tmp_path/'synthetic-child-holdjob.json'; deadline=time.monotonic()+20
+        while not ready.exists() and time.monotonic()<deadline:
+            if parent.poll() is not None: pytest.fail('launcher exited before query handle was held')
+            time.sleep(.05)
+        assert ready.exists()
+        child=kernel.OpenProcess(0x00100001,False,json.loads(ready.read_text())['pid']); assert child
+        parent.kill(); parent.communicate(timeout=10)
+        assert kernel.WaitForSingleObject(child,1000)==258  # WAIT_TIMEOUT: child still alive
+        assert (tmp_path/'synthetic-capability-marker.bin').exists()
+    finally:
+        if parent.poll() is None: parent.kill(); parent.communicate(timeout=10)
+        if child:
+            if kernel.WaitForSingleObject(child,0)!=0:
+                kernel.TerminateProcess(child,125); kernel.WaitForSingleObject(child,2000)
+            kernel.CloseHandle(child)

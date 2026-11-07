@@ -428,4 +428,9 @@ def bootstrap_public_imports(**kw):return {'status':'MODULES_IMPORTED','child':c
         inputs=inputs,_owner_guard=full_guard,_owner_context=full_context)
     assert adapter_result['status']=='VALIDATED' and adapter_result['inner_status']=='ANSWER', adapter_result
     full_context._require_done(('adapter','attestation','transport'))
-    assert (state/'codex-lead-1.pending.json').is_file()
+    pending=state/'codex-lead-1.pending.json'
+    assert pending.is_file()
+    # This test is the cooperative outer owner, after the real inner owners.
+    full_context._finish()
+    full_guard.release(full_guard._registry._issue())
+    assert not pending.exists()

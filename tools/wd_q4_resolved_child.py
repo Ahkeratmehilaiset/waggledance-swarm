@@ -126,6 +126,8 @@ def run_resolved(config, stdin, stdout, *, policy_bytes, policy_sha256, memory_b
             from sandbox.mind.step2 import shared_card_projection as cards
             decision = cards.verify_route_decision(card_decision_bytes, card_decision_sha256,
                                                    policy_sha256=policy_sha256, roster_sha256=roster_sha256)
+            if decision["synthetic"] is not True:
+                raise ValueError()  # This legacy entrypoint carries no C2 tuple.
         _validate_projection(projection_bytes, tasks, roster, decision)
         # Validate the exact pinned tuple before invoking Q4. This empty-result
         # call checks schema and pin consistency; it does not assert clock or

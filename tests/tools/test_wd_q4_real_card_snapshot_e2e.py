@@ -61,7 +61,7 @@ def real_snapshot(real_fixture, tmp_path):
     return directory, built, decision_obj, snapshot, projection, args
 
 
-def test_real_format_card_c2_to_resolved_child_answer(real_snapshot, monkeypatch):
+def test_c2_in_harness_does_not_authorize_legacy_resolved_child(real_snapshot, monkeypatch):
     directory, built, _, snapshot, projection, args = real_snapshot
     verdict = shared_card_checkpoint.validate_card_snapshot(enabled=True, generation_dir=directory, **snapshot)
     assert verdict == {'status': 'VALIDATED_STAGED', 'completeness': 'UNKNOWN'}
@@ -87,8 +87,7 @@ def test_real_format_card_c2_to_resolved_child_answer(real_snapshot, monkeypatch
         projection_bytes=projection_bytes, projection_sha256=hashlib.sha256(projection_bytes).hexdigest(),
         card_decision_bytes=args['decision_bytes'], card_decision_sha256=args['decision_sha256'])
     answer = json.loads(output.getvalue())
-    assert code == 0 and answer['status'] == 'ANSWER' and calls == ['in_process_private_reader']
-    assert any(item['stored_text'] == projection['records'][0]['stored_text'] for item in answer['results'])
+    assert code == 2 and answer['status'] == 'REFUSED' and calls == []
     assert projection['records'][0]['provenance']['source_event_ref'] in projection['sources']
 
 

@@ -77,10 +77,10 @@ def _strict_memory_policy(value, policy_sha256, roster_sha256):
 def _resolve_verified_real_records(projection, results, query_utc):
     """Internal mapping after _resolve_cards verifies the real decision and projection.
 
-    The card module's public result helper is synthetic-only. Keep real mapping
-    here without changing that helper, altering the projection's synthetic flag
-    or accepting a caller-supplied validation status. This maps pinned text; it
-    does not authenticate the source or perform a filesystem source check.
+    This is data-only mapping, not a C2 execution boundary or a validation
+    status accepted from a caller. It maps pinned text and does not consume a
+    stream, invoke a launcher or read snapshot/source files. Execution callers
+    enforce actual C2 separately in query_and_resolve.
     """
     if (type(results) is not list or len(results) > MAX_RESULTS
             or not isinstance(query_utc, str) or sp.corpus_mod.parse_utc(query_utc) is None):
@@ -112,7 +112,11 @@ def _resolve_verified_real_records(projection, results, query_utc):
 def _resolve_cards(manifest, projection_bytes, results, query_utc, approved_tasks, roster, strict, policy_sha256,
                    roster_sha256, decision_bytes, decision_sha256):
     """The pinned card route: strict pins, a verified decision, the card task approved, non-review roster authors
-    and the manifest's bound source evidence re-checked against the decision and the roster."""
+    and the manifest's bound source evidence re-checked against the decision and the roster.
+    This is data-only mapping, not a C2 boundary; it verifies declared evidence,
+    not source files. Execution routes must enforce actual C2 independently.
+    Decision verification also pins the card module's own code bytes.
+    """
     from sandbox.mind.step2 import shared_card_projection as cards
     if (not strict or manifest.get("scope") != SCOPE
             or not isinstance(manifest.get("projection_sha256"), str)

@@ -69,6 +69,8 @@ def resolve_public_pointer(root, *, expected_pointer_sha256, policy_bytes, polic
             from sandbox.mind.step2 import shared_card_projection as cards
             decision = cards.verify_route_decision(card_decision_bytes, card_decision_sha256,
                                                    policy_sha256=policy_sha256, roster_sha256=roster_sha256)
+            if decision["synthetic"] is not True:
+                raise ValueError()  # Real snapshots use the separate C2 resolver.
         root = checkpoint._secure(Path(root))
         tasks, _ = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
         public_tasks, public_types = adapter.public_status_policy(public_policy_bytes, public_policy_sha256, tasks)

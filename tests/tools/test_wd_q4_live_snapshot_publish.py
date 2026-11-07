@@ -106,6 +106,122 @@ def do_select(c):
                        manifest_sha256=c['manifest_sha'], load_configuration=loader)
 
 
+@pytest.fixture
+def cas_case(case, monkeypatch):
+    # Exercise selector publication/locking independently of C2 construction;
+    # separate B/C/D tests retain the real staged producer and prefix checks.
+    monkeypatch.setattr(live, '_checked_pair', lambda *a, **k:
+                        (str(case['index']), (case['index'] / 'q4-latest.json', 16384)))
+    return case
+
+
+def _cas_publish(c, **kwargs):
+    return live.publish(enabled=True, baseline_path=c['base_path'], baseline_sha256=c['base'][2],
+        baseline=c['base'], manifest_sha256=c['manifest_sha'], candidate_path=c['candidate_path'],
+        candidate_sha256=c['candidate'][2], candidate=c['candidate'], p1_enabled=True, **kwargs)
+
+
+def test_p1_requires_an_explicit_previous_selector_pin(cas_case):
+    with pytest.raises(live.LiveSnapshotRefused):
+        _cas_publish(cas_case)
+    assert not (cas_case['root'] / 'q4-live-current.json').exists()
+
+
+def test_p1_compare_and_swap_rejects_absent_and_stale_expectations(cas_case):
+    result = _cas_publish(cas_case, expected_previous_selector_sha256=None)
+    path = cas_case['root'] / 'q4-live-current.json'
+    prior = path.read_bytes()
+    for expected in (None, '0' * 64):
+        with pytest.raises(live.LiveSnapshotRefused):
+            _cas_publish(cas_case, expected_previous_selector_sha256=expected)
+        assert path.read_bytes() == prior
+    result2 = _cas_publish(cas_case, expected_previous_selector_sha256=result['publication_sha256'])
+    assert result2['status'] == 'PUBLISHED'
+
+
+def test_p1_uncertain_publish_blocks_writers_and_readers(cas_case, monkeypatch):
+    def fail_replace(*args):
+        raise OSError('synthetic failure after reservation')
+    monkeypatch.setattr(live.pointer_io, '_atomic_replace', fail_replace)
+    with pytest.raises(live.LiveSnapshotOutcomeUnknown):
+        _cas_publish(cas_case, expected_previous_selector_sha256=None)
+    pending = cas_case['root'] / 'q4-live-publication.pending.json'
+    assert pending.is_file()
+    before = pending.read_bytes()
+    with pytest.raises(live.LiveSnapshotOutcomeUnknown):
+        _cas_publish(cas_case, expected_previous_selector_sha256=None)
+    assert pending.read_bytes() == before
+    with pytest.raises(live.LiveSnapshotRefused):
+        do_select(cas_case)
+
+
+def test_p1_simultaneous_first_publication_has_only_one_winner(cas_case, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    barrier = Barrier(2)
+    original = live._checked_pair
+    def synchronized(*args, **kwargs):
+        result = original(*args, **kwargs)
+        barrier.wait(timeout=10)
+        return result
+    monkeypatch.setattr(live, '_checked_pair', synchronized)
+    def attempt():
+        try:
+            return _cas_publish(cas_case, expected_previous_selector_sha256=None)['status']
+        except live.LiveSnapshotRefused:
+            return 'REFUSED'
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _: attempt(), range(2)))
+    assert sorted(outcomes) == ['PUBLISHED', 'REFUSED']
+
+
+def test_p1_replace_failure_keeps_pending_and_blocks_selection(cas_case, monkeypatch):
+    actual = live.pointer_io._atomic_replace
+    def fail_after_replace(*args):
+        actual(*args)
+        raise OSError('synthetic uncertainty after replace')
+    monkeypatch.setattr(live.pointer_io, '_atomic_replace', fail_after_replace)
+    with pytest.raises(live.LiveSnapshotOutcomeUnknown):
+        _cas_publish(cas_case, expected_previous_selector_sha256=None)
+    assert (cas_case['root'] / 'q4-live-current.json').is_file()
+    assert (cas_case['root'] / 'q4-live-publication.pending.json').is_file()
+    with pytest.raises(live.LiveSnapshotRefused):
+        do_select(cas_case)
+    with pytest.raises(live.LiveSnapshotRefused):
+        live.recheck(cas_case['root'] / 'q4-live-current.json',
+                     sha((cas_case['root'] / 'q4-live-current.json').read_bytes()))
+
+
+def _hold_publication_lock(lock_path, ready, release):
+    from sandbox.mind.step2.reader_slot import reader_slot
+    with reader_slot(lock_path, timeout_seconds=5):
+        ready.set()
+        release.wait(20)
+
+
+@pytest.mark.parametrize('p1', [False, True])
+def test_all_writers_respect_cross_process_publication_lock(cas_case, p1):
+    import multiprocessing
+    ctx = multiprocessing.get_context('spawn')
+    ready, release = ctx.Event(), ctx.Event()
+    lock = cas_case['root'] / 'q4-live-publication.lock'
+    child = ctx.Process(target=_hold_publication_lock, args=(str(lock), ready, release))
+    child.start()
+    try:
+        assert ready.wait(10)
+        with pytest.raises(live.LiveSnapshotRefused):
+            if p1:
+                _cas_publish(cas_case, expected_previous_selector_sha256=None)
+            else:
+                do_publish(cas_case)
+        assert not (cas_case['root'] / 'q4-live-current.json').exists()
+        assert not (cas_case['root'] / 'q4-live-publication.pending.json').exists()
+    finally:
+        release.set()
+        child.join(10)
+    assert child.exitcode == 0
+
+
 def test_published_candidate_selects_same_real_binding_and_fixed_plan(case):
     result = do_publish(case)
     chosen = do_select(case)

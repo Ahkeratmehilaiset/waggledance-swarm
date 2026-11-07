@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import secrets
 
+from sandbox.mind.step2.reader_slot import reader_slot
 from tools import wd_q4_descriptor_pointer as pointer_io
 from tools import wd_q4_lane_binding_producer as binding_producer
 from tools import wd_q4_lane_link as link
@@ -24,6 +25,9 @@ _GEN = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})\Z')
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
 _SCHEMA = 'wd.q4-live-descriptor.v1'
 _POINTER = 'q4-live-current.json'
+_PUBLICATION_LOCK = 'q4-live-publication.lock'
+_PUBLICATION_PENDING = 'q4-live-publication.pending.json'
+_UNSPECIFIED = object()
 _KEYS = frozenset({'schema', 'baseline_sha256', 'generation', 'descriptor_sha256', 'index_pointer_sha256'})
 _DYNAMIC = frozenset({'public_plan', 'binding_path', 'binding_sha256', 'fixed_plan_path', 'fixed_plan_sha256',
                       'snapshot_path', 'snapshot_sha256', 'expected_binding'})
@@ -323,6 +327,8 @@ def select(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline=
         if any(Path(baseline[0][key]) != base_path.parent / name for key, name in _BASELINE_GENERATION_PATHS):
             raise ValueError()
         publication_path = root / _POINTER
+        if os.path.lexists(root / _PUBLICATION_PENDING):
+            raise ValueError()
         raw = _read(publication_path, 4096)
         publication = _parse(raw)
         if (set(publication) != _KEYS or publication['schema'] != _SCHEMA
@@ -345,7 +351,7 @@ def select(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline=
         _read(pointer_path, pointer_limit, publication['index_pointer_sha256'])
         _read(base_path, 65536, baseline_sha256)
         _read(path, 65536, publication['descriptor_sha256'])
-        if _read(publication_path, 4096) != raw:
+        if _read(publication_path, 4096) != raw or os.path.lexists(root / _PUBLICATION_PENDING):
             raise ValueError()
         result = {'status': 'SELECTED', 'configuration': candidate, 'publication_path': str(publication_path),
                   'publication_sha256': _sha(raw)}
@@ -361,7 +367,11 @@ def select(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline=
 def recheck(path, expected):
     ok = False
     try:
+        if os.path.lexists(Path(path).parent / _PUBLICATION_PENDING):
+            raise ValueError()
         _read(path, 4096, expected)
+        if os.path.lexists(Path(path).parent / _PUBLICATION_PENDING):
+            raise ValueError()
         ok = True
     except Exception:
         pass
@@ -371,7 +381,8 @@ def recheck(path, expected):
 
 
 def publish(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline=None, manifest_sha256=None,
-            candidate_path=None, candidate_sha256=None, candidate=None, p1_enabled=False):
+            candidate_path=None, candidate_sha256=None, candidate=None, p1_enabled=False,
+            expected_previous_selector_sha256=_UNSPECIFIED):
     """Verify a completed candidate and atomically publish its selector, never its artifacts."""
     if enabled is False:
         return {'status': 'OFF'}
@@ -381,6 +392,14 @@ def publish(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline
         if (enabled is not True or type(p1_enabled) is not bool or type(baseline_path) is not str or type(candidate_path) is not str
                 or type(baseline_sha256) is not str or not _HEX.fullmatch(baseline_sha256)
                 or type(candidate_sha256) is not str or not _HEX.fullmatch(candidate_sha256)):
+            raise ValueError()
+        if p1_enabled:
+            if (expected_previous_selector_sha256 is _UNSPECIFIED or
+                    (expected_previous_selector_sha256 is not None and
+                     (type(expected_previous_selector_sha256) is not str or
+                      not _HEX.fullmatch(expected_previous_selector_sha256)))):
+                raise ValueError()
+        elif expected_previous_selector_sha256 is not _UNSPECIFIED:
             raise ValueError()
         bp, cp = pointer_io._absolute(baseline_path), pointer_io._absolute(candidate_path)
         if (not bp.is_absolute() or bp.name != 'shared-session-config.v2.json' or cp.name != bp.name
@@ -406,22 +425,59 @@ def publish(*, enabled=False, baseline_path=None, baseline_sha256=None, baseline
         raw = json.dumps(publication, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
         root = bp.parent.parent
         target = root / _POINTER
+        lock = root / _PUBLICATION_LOCK
+        pending = root / _PUBLICATION_PENDING
         pointer_io._chain(root)
-        if os.path.lexists(target):
-            pointer_io._chain(target)
-        temp = root / ('.q4-live-current-' + secrets.token_hex(16) + '.tmp')
-        entered = True
-        fd = os.open(str(temp), os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0), 0o600)
-        with os.fdopen(fd, 'wb') as stream:
-            if stream.write(raw) != len(raw):
-                raise OSError()
-            stream.flush()
-            os.fsync(stream.fileno())
-        _read(pointer_path, pointer_limit, index_pin)
-        pointer_io._atomic_replace(temp, target)
-        _read(target, 4096, _sha(raw))
-        _read(pointer_path, pointer_limit, index_pin)
+        if os.path.lexists(lock):
+            pointer_io._chain(lock)
+        with reader_slot(lock, timeout_seconds=5):
+            pointer_io._chain(root)
+            pointer_io._chain(lock)
+            if os.path.lexists(pending):
+                raise LiveSnapshotOutcomeUnknown('live_publication_unknown')
+            present = os.path.lexists(target)
+            if present:
+                pointer_io._chain(target)
+            if p1_enabled:
+                if expected_previous_selector_sha256 is None:
+                    if present:
+                        raise ValueError()
+                elif not present or _sha(_read(target, 4096)) != expected_previous_selector_sha256:
+                    raise ValueError()
+            attempt = secrets.token_hex(16)
+            temp = root / ('.q4-live-current-' + attempt + '.tmp')
+            if p1_enabled:
+                marker = json.dumps({'schema': 'wd.q4-live-publication-pending.v1', 'attempt': attempt,
+                    'baseline_sha256': baseline_sha256, 'previous_selector_sha256': expected_previous_selector_sha256,
+                    'publication_sha256': _sha(raw), 'temporary_name': temp.name},
+                    sort_keys=True, separators=(',', ':')).encode('ascii')
+                entered = True
+                fd = os.open(str(pending), os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0), 0o600)
+                with os.fdopen(fd, 'wb') as stream:
+                    marker_info = os.fstat(stream.fileno())
+                    if stream.write(marker) != len(marker):
+                        raise OSError()
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            entered = True
+            fd = os.open(str(temp), os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_BINARY', 0), 0o600)
+            with os.fdopen(fd, 'wb') as stream:
+                if stream.write(raw) != len(raw):
+                    raise OSError()
+                stream.flush()
+                os.fsync(stream.fileno())
+            _read(pointer_path, pointer_limit, index_pin)
+            pointer_io._atomic_replace(temp, target)
+            _read(target, 4096, _sha(raw))
+            _read(pointer_path, pointer_limit, index_pin)
+            if p1_enabled:
+                pointer_io._chain(pending)
+                if not os.path.samestat(marker_info, pending.stat()) or _read(pending, 4096) != marker:
+                    raise ValueError()
+                pending.unlink()
         return {'status': 'PUBLISHED', 'publication_sha256': _sha(raw)}
+    except LiveSnapshotOutcomeUnknown:
+        failure = 'unknown'
     except Exception:
         failure = 'unknown' if entered else 'refused'
     except BaseException:

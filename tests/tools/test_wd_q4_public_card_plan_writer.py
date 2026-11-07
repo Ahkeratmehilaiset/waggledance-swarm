@@ -336,3 +336,269 @@ def test_module_reads_no_environment_and_imports_no_model_stack():
     source = (lf.ROOT / "tools" / "wd_q4_public_card_plan_writer.py").read_text(encoding="utf-8")
     assert "os.environ" not in source and "getenv" not in source
     assert "faiss" not in source and "numpy" not in source and "subprocess" not in source
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# v3 staged card plan (write_staged_card_plan): binds an EXISTING C3 generation, decision and source
+# ---------------------------------------------------------------------------------------------------------------
+
+import dataclasses  # noqa: E402
+
+from tests.tools.test_shared_card_checkpoint import staged  # noqa: E402,F401  (pytest fixture, real C3 generation)
+from tools import wd_q4_public_pointer_resolver as pointer_resolver  # noqa: E402
+from waggledance.core.bridge_log_reader import BridgeCursor  # noqa: E402
+
+V3 = "wd.q4-public-wrapper-plan.v3"
+STAGED_KEYS = {"card_decision_path", "card_decision_sha256", "card_policy_path", "card_policy_sha256",
+               "pointer_path", "source_path", "generation_path", "end_cursor"}
+
+
+@pytest.fixture
+def staged_case(staged, tmp_path):
+    pointer, call, directory = staged
+    files = tmp_path / "inputs"
+    files.mkdir()
+
+    def put(name, raw):
+        path = files / name
+        path.write_bytes(raw)
+        return str(path), sha(raw)
+
+    pointer_raw = canon(pointer)
+    paths = {}
+    for name, raw in (("pointer", pointer_raw), ("card_decision", call["decision_bytes"]),
+                      ("card_policy", call["card_policy_bytes"]), ("policy", call["policy_bytes"]),
+                      ("roster", call["roster_bytes"]), ("public_policy", b"{}")):
+        paths[name] = put(name + ".json", raw)
+    descriptor_sha = sha((directory / "descriptor.json").read_bytes())
+    plan = {"schema": V1, "root": str(directory.parent), "config": {"descriptor_sha256": descriptor_sha},
+            "pointer_sha256": paths["pointer"][1], "source_anchor_sha256": pointer["source_prefix"]["sha256"],
+            "encoder_sha256": "e5" * 32}
+    for name in ("policy", "roster", "public_policy"):
+        plan[name + "_path"], plan[name + "_sha256"] = paths[name]
+    plan_path, plan_pin = put("plan-v1.json", canon(plan))
+    out = tmp_path / "plan-out"
+    out.mkdir()
+    return {"pointer": pointer, "call": call, "directory": directory, "paths": paths, "plan": plan,
+            "plan_path": plan_path, "plan_pin": plan_pin, "out": out, "tmp": tmp_path, "put": put}
+
+
+def write_staged(sc, **changes):
+    kwargs = dict(enabled=True, public_plan_path=sc["plan_path"], expected_public_plan_sha256=sc["plan_pin"],
+                  output_dir=str(sc["out"]), pointer_path=sc["paths"]["pointer"][0],
+                  card_decision_path=sc["paths"]["card_decision"][0], card_policy_path=sc["paths"]["card_policy"][0],
+                  source_path=str(sc["call"]["source_path"]), generation_path=str(sc["call"]["generation_path"]))
+    kwargs.update(changes)
+    return module().write_staged_card_plan(**kwargs)
+
+
+def staged_refused(sc, **changes):
+    with pytest.raises(module().CardPlanRefused) as exc:
+        write_staged(sc, **changes)
+    assert exc.value.args == (REFUSED,)
+    assert exc.value.__cause__ is None and exc.value.__context__ is None
+    assert list(sc["out"].iterdir()) == []
+
+
+def test_staged_default_off_reads_nothing():
+    class NoTouch:
+        def __getattribute__(self, name):
+            raise AssertionError("disabled path inspected input")
+    assert module().write_staged_card_plan(public_plan_path=NoTouch(), source_path=NoTouch()) == {"status": "OFF"}
+
+
+def test_staged_writes_only_the_v3_plan_bound_to_the_existing_generation(staged_case):
+    sc = staged_case
+    result = write_staged(sc)
+    assert [path.name for path in sc["out"].iterdir()] == ["public-plan.v3.json"]
+    raw = (sc["out"] / "public-plan.v3.json").read_bytes()
+    plan = json.loads(raw)
+    assert raw == canon(plan) and plan["schema"] == V3
+    assert set(plan) == link._PUBLIC_PLAN_SCHEMAS[V3] == set(sc["plan"]) | STAGED_KEYS
+    assert {key: plan[key] for key in sc["plan"] if key != "schema"} == {
+        key: value for key, value in sc["plan"].items() if key != "schema"}
+    assert plan["pointer_path"] == sc["paths"]["pointer"][0]
+    assert plan["card_decision_path"] == sc["paths"]["card_decision"][0]
+    assert plan["card_decision_sha256"] == sc["pointer"]["decision_sha256"] == sc["paths"]["card_decision"][1]
+    assert plan["card_policy_path"] == sc["paths"]["card_policy"][0]
+    assert plan["card_policy_sha256"] == sc["paths"]["card_policy"][1]
+    assert plan["source_path"] == str(sc["call"]["source_path"])
+    assert plan["generation_path"] == str(sc["call"]["generation_path"])
+    assert plan["end_cursor"] == dataclasses.asdict(sc["call"]["end_cursor"])
+    assert result == {
+        "schema": "wd.q4-public-staged-card-plan-written.v1", "status": "WRITTEN",
+        "base_public_plan_sha256": sc["plan_pin"], "public_plan_path": str(sc["out"] / "public-plan.v3.json"),
+        "public_plan_sha256": sha(raw), "pointer_sha256": sc["paths"]["pointer"][1],
+        "card_decision_sha256": plan["card_decision_sha256"], "card_policy_sha256": plan["card_policy_sha256"],
+        "source_prefix": sc["pointer"]["source_prefix"], "end_cursor": plan["end_cursor"],
+        "authority": "none", "issuer_authentication": "UNKNOWN"}
+
+
+def staged_inputs_from_plan(plan):
+    read = lambda key: open(plan[key], "rb").read()  # noqa: E731
+    return dict(pointer_bytes=read("pointer_path"), expected_pointer_sha256=plan["pointer_sha256"],
+                policy_bytes=read("policy_path"), policy_sha256=plan["policy_sha256"],
+                roster_bytes=read("roster_path"), roster_sha256=plan["roster_sha256"],
+                card_decision_bytes=read("card_decision_path"), card_decision_sha256=plan["card_decision_sha256"],
+                card_policy_bytes=read("card_policy_path"), source_path=plan["source_path"],
+                generation_path=plan["generation_path"], end_cursor=BridgeCursor(**plan["end_cursor"]))
+
+
+def test_the_real_staged_resolver_validates_the_written_plan_tuple(staged_case):
+    sc = staged_case
+    result = write_staged(sc)
+    plan = json.loads(open(result["public_plan_path"], "rb").read())
+    binding = pointer_resolver.resolve_card_snapshot_pointer(plan["root"], enabled=True,
+                                                              **staged_inputs_from_plan(plan))
+    assert binding["status"] == "VALIDATED_STAGED"
+    assert binding["source_prefix"]["sha256"] == plan["source_anchor_sha256"]
+    assert binding["card_decision_sha256"] == plan["card_decision_sha256"]
+    _, _, pins = link._public_plan(result["public_plan_path"], result["public_plan_sha256"])
+    assert pins["card_policy_sha256"] == plan["card_policy_sha256"]
+
+
+def test_an_appended_source_suffix_keeps_the_frozen_prefix_cursor(staged_case):
+    sc = staged_case
+    with open(sc["call"]["source_path"], "ab") as stream:
+        stream.write(b'{"synthetic":"appended after the prefix"}\n')
+    result = write_staged(sc)
+    assert result["end_cursor"]["offset"] == sc["pointer"]["source_prefix"]["offset"]
+    plan = json.loads(open(result["public_plan_path"], "rb").read())
+    assert pointer_resolver.resolve_card_snapshot_pointer(plan["root"], enabled=True,
+                                                          **staged_inputs_from_plan(plan))["status"] == "VALIDATED_STAGED"
+
+
+@lf.windows
+def test_the_windows_wrapper_reads_the_written_v3_plan(staged_case):
+    result = write_staged(staged_case)
+    script = (f". '{lf.quote(lf.WRAPPER)}'\n" + lf.BASE +
+              f"$p=Get-WdQ4PublicPlan -BasePlan $base -Path '{lf.quote(result['public_plan_path'])}' "
+              f"-ExpectedSha256 '{result['public_plan_sha256']}'\n"
+              "@{staged=$p.Staged;pointer=$p.Inputs.pointer.Length;card=$p.Inputs.card_policy.Length;"
+              "decision=$p.Inputs.card_decision.Length} | ConvertTo-Json -Compress")
+    paths = staged_case["paths"]
+    assert lf.ps(script) == {"staged": True, "pointer": len(open(paths["pointer"][0], "rb").read()),
+                             "card": len(open(paths["card_policy"][0], "rb").read()),
+                             "decision": len(open(paths["card_decision"][0], "rb").read())}
+
+
+def tamper(path, raw=b" "):
+    with open(path, "ab") as stream:
+        stream.write(raw)
+
+
+@pytest.mark.parametrize("fault", [
+    "pointer-bytes", "decision-bytes", "card-policy-bytes", "source-prefix-byte", "source-truncated",
+    "generation-marker", "anchor-pin", "plan-policy", "other-decision-path", "v2-input"])
+def test_staged_partial_or_mismatched_tuple_refuses_and_writes_nothing(staged_case, fault):
+    sc = staged_case
+    if fault == "pointer-bytes":
+        tamper(sc["paths"]["pointer"][0])
+    elif fault == "decision-bytes":
+        tamper(sc["paths"]["card_decision"][0])
+    elif fault == "card-policy-bytes":
+        tamper(sc["paths"]["card_policy"][0])
+    elif fault == "source-prefix-byte":
+        raw = bytearray(open(sc["call"]["source_path"], "rb").read())
+        raw[1] = ord("x") if raw[1] != ord("x") else ord("y")
+        open(sc["call"]["source_path"], "wb").write(bytes(raw))
+    elif fault == "source-truncated":
+        raw = open(sc["call"]["source_path"], "rb").read()
+        open(sc["call"]["source_path"], "wb").write(raw[:-2])
+    elif fault == "generation-marker":
+        open(sc["call"]["generation_path"], "wb").write(canon({"generation": "synthetic-other-generation"}))
+    elif fault in ("anchor-pin", "plan-policy", "v2-input"):
+        plan = dict(sc["plan"])
+        if fault == "anchor-pin":
+            plan["source_anchor_sha256"] = "a0" * 32
+        elif fault == "plan-policy":
+            plan["policy_path"], plan["policy_sha256"] = sc["put"]("other-policy.json", b'{"other":1}')
+        else:
+            plan.update(schema=V2, card_decision_path=sc["paths"]["card_decision"][0],
+                        card_decision_sha256=sc["paths"]["card_decision"][1])
+        sc["plan_path"], sc["plan_pin"] = sc["put"]("plan-changed.json", canon(plan))
+    elif fault == "other-decision-path":
+        other = json.loads(open(sc["paths"]["card_decision"][0], "rb").read())
+        other["observed_heads"] = None if other["observed_heads"] else []
+        path, _ = sc["put"]("other-decision.json", canon(other))
+        staged_refused(sc, card_decision_path=path)
+        return
+    staged_refused(sc)
+
+
+@pytest.mark.parametrize("key", ["pointer_path", "card_decision_path", "card_policy_path", "source_path",
+                                 "generation_path", "public_plan_path"])
+@pytest.mark.parametrize("value", ["relative.json", None, "missing"])
+def test_staged_paths_must_be_existing_absolute_files(staged_case, key, value):
+    if value == "missing":
+        value = str(staged_case["tmp"] / "missing.json")
+    staged_refused(staged_case, **{key: value})
+
+
+def test_staged_output_directory_must_be_empty(staged_case):
+    (staged_case["out"] / "other.txt").write_bytes(b"x")
+    with pytest.raises(module().CardPlanRefused):
+        write_staged(staged_case)
+    assert [path.name for path in staged_case["out"].iterdir()] == ["other.txt"]
+
+
+def test_staged_cli_request_selects_v3_and_prints_the_descriptor(staged_case, capsys):
+    sc = staged_case
+    document = {"schema": "wd.q4-public-staged-card-plan-request.v1", "public_plan_path": sc["plan_path"],
+                "public_plan_sha256": sc["plan_pin"], "output_dir": str(sc["out"]),
+                "pointer_path": sc["paths"]["pointer"][0], "card_decision_path": sc["paths"]["card_decision"][0],
+                "card_policy_path": sc["paths"]["card_policy"][0], "source_path": str(sc["call"]["source_path"]),
+                "generation_path": str(sc["call"]["generation_path"])}
+    path, pin = sc["put"]("staged-request.json", canon(document))
+    code, out, err = cli(["--enabled", "--request", path, "--request-sha256", pin], capsys)
+    assert code == 0 and err == ""
+    descriptor = json.loads(out)
+    assert descriptor["schema"] == "wd.q4-public-staged-card-plan-written.v1"
+    assert out == canon(descriptor).decode("ascii") + "\n"
+    fresh = sc["tmp"] / "plan-out-extra"
+    fresh.mkdir()
+    document.update(output_dir=str(fresh), memory_path="x")  # an otherwise valid request into an empty directory
+    path, pin = sc["put"]("staged-request-extra.json", canon(document))
+    assert cli(["--enabled", "--request", path, "--request-sha256", pin], capsys) == (
+        2, "", '{"error":"card_plan_refused"}\n')
+    assert list(fresh.iterdir()) == []
+
+
+@pytest.mark.parametrize("kind", ["fails", "short"])
+def test_a_staged_write_that_fails_or_does_not_read_back_is_unknown(staged_case, monkeypatch, kind):
+    real = module()._exclusive
+
+    def broken(path, raw):
+        if kind == "fails":
+            raise OSError("synthetic")
+        real(path, raw[:-1])
+    monkeypatch.setattr(module(), "_exclusive", broken)
+    with pytest.raises(module().CardPlanUnknown) as exc:
+        write_staged(staged_case)
+    assert exc.value.args == ("card_plan_unknown",)
+    assert exc.value.__cause__ is None and exc.value.__context__ is None
+
+
+from tests.tools.test_wd_q4_staged_lane_query import staged_producer  # noqa: E402,F401  (Lead v3 producer fixture)
+from tools import wd_q4_lane_binding_producer as binding_producer  # noqa: E402
+
+
+def test_the_written_plan_equals_the_hand_built_v3_plan_and_binds_the_same_lane_document(staged_producer, tmp_path):
+    hand = json.loads(staged_producer["public_plan_bytes"])
+    base = dict({key: hand[key] for key in link._PUBLIC_PLAN_SCHEMAS[V1]}, schema=V1)
+    base_path = tmp_path / "plan-v1-from-hand.json"
+    base_path.write_bytes(canon(base))
+    out = tmp_path / "plan-out-hand"
+    out.mkdir()
+    result = module().write_staged_card_plan(
+        enabled=True, public_plan_path=str(base_path), expected_public_plan_sha256=sha(canon(base)),
+        output_dir=str(out), **{key: hand[key] for key in ("pointer_path", "card_decision_path", "card_policy_path",
+                                                          "source_path", "generation_path")})
+    written = open(result["public_plan_path"], "rb").read()
+    assert json.loads(written) == hand
+    expected = binding_producer.build_staged_lane_binding(**staged_producer)
+    actual = binding_producer.build_staged_lane_binding(
+        **dict(staged_producer, public_plan_bytes=written, expected_public_plan_sha256=sha(written)))
+    hand_pin = staged_producer["expected_public_plan_sha256"].encode()
+    assert (json.loads(actual["binding_bytes"].replace(sha(written).encode(), b"PLAN"))
+            == json.loads(expected["binding_bytes"].replace(hand_pin, b"PLAN")))

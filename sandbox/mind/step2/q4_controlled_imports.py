@@ -159,6 +159,19 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
     native_witnessed = _NativeRegistrations(_check)
     native_stack = []
     source_stack = []
+    bootstrap_main = sys.modules.get('__main__')
+    _check(type(bootstrap_main) is types.ModuleType)
+    _check(sys.modules.get('__mp_main__', bootstrap_main) is bootstrap_main)
+    main_alias_witnessed = False
+    multiprocessing_source = os.path.normcase(os.path.realpath(
+        Path(sys.base_prefix) / 'Lib' / 'multiprocessing' / '__init__.py'))
+
+    def check_main_alias():
+        attrs = types.ModuleType.__getattribute__(bootstrap_main, '__dict__')
+        _check(type(bootstrap_main) is types.ModuleType and attrs.get('__name__') == '__main__'
+               and attrs.get('__file__') is None and attrs.get('__spec__') is None
+               and sys.modules.get('__main__') is bootstrap_main
+               and sys.modules.get('__mp_main__') is bootstrap_main)
 
     def modules_in_gc():
         return tuple(value for value in gc.get_objects() if type(value) is types.ModuleType)
@@ -254,6 +267,7 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
         return compile(data, str(file), 'exec', dont_inherit=True)
 
     def source_exec(loader, module):
+        nonlocal main_alias_witnessed
         _check(type(loader) is loader_types[1] and module.__name__ == loader.name)
         code = source_code(loader, module.__name__)
         names = {name for nested in code_tree(code) for name in nested.co_names}
@@ -271,6 +285,14 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             exec(code, module.__dict__)
             if before is not None:
                 capture_created(before, code, module.__dict__)
+            if (loader.name == 'multiprocessing'
+                    and os.path.normcase(os.path.realpath(loader.path)) == multiprocessing_source):
+                _check(source_before.get('__main__') is bootstrap_main
+                       and source_before.get('__mp_main__', bootstrap_main) is bootstrap_main
+                       and '__mp_main__' not in source_tainted
+                       and len(sys._current_frames()) == 1)
+                check_main_alias()
+                main_alias_witnessed = True
             if native_witnessed._deferred and len(sys._current_frames()) == 1:
                 native_witnessed.bind_source(source_before, dict(sys.modules), source_tainted,
                                              single_thread=True)
@@ -372,7 +394,10 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
     class ControlledFinder:
         def accept_created(self, name, module):
             self.check()
-            if name in witnessed:
+            if name == '__mp_main__':
+                _check(main_alias_witnessed and module is bootstrap_main)
+                check_main_alias()
+            elif name in witnessed:
                 verify_witness(name, module)
             else:
                 native_witnessed.accept(name, module, sys.modules)

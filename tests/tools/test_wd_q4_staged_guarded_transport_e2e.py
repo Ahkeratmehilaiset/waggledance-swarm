@@ -205,7 +205,7 @@ def test_actual_nested_job_c2_query_and_real_guard_owners(real_snapshot, tmp_pat
     assert python.is_file() and _sha(python.read_bytes()) == os.environ['WD_Q4_TEST_PYTHON_SHA256']
     assert os.path.normcase(str(python)) == os.path.normcase(sys.executable)
     runtime=tmp_path/'runtime';code=runtime/'assets'/'code';code.mkdir(parents=True)
-    for relative in ('tools','waggledance','sandbox/mind/step2','core'):
+    for relative in ('tools','waggledance','sandbox/mind','core'):
         source=root/relative
         if not source.is_dir():continue
         for original in source.rglob('*.py'):
@@ -279,6 +279,7 @@ def bootstrap_public_imports(**kw):return {'status':'MODULES_IMPORTED','child':c
     manifest_sha=_sha(manifest_raw); code_root=bundle['root']/'tools-bootstrap'
     scratch=tmp_path/'scratch';scratch.mkdir();lock=tmp_path/'read.lock'
     config=dataclasses.asdict(rt.config(directory,built['descriptor_sha256']))
+    config.pop('interpreter_identity')  # Not part of the wrapper's closed public config.
     config.update(interpreter=str(python),interpreter_sha256=_sha(python.read_bytes()),
         bootstrap=str(code_root/'sandbox/mind/step2/runtime_bootstrap.py'),
         bootstrap_sha256=bundle['files']['tools-bootstrap/sandbox/mind/step2/runtime_bootstrap.py'],
@@ -318,16 +319,6 @@ def bootstrap_public_imports(**kw):return {'status':'MODULES_IMPORTED','child':c
     actual=importlib.util.module_from_spec(spec);spec.loader.exec_module(actual)
     guard,marker=_synthetic_guard(tmp_path/'nested-guard','codex-lead-1');context=guard._owner_context()
     query=json.dumps({'situation':'merged green pr 2046 genesis','time':'2026-11-02T00:00:00Z'}).encode()
-    if os.environ.get('WD_Q4_NESTED_DEBUG') == '1':
-        original_impl = actual._run_fixed_peer_impl
-        def debug_impl(*args, **kwargs):
-            try:
-                return original_impl(*args, **kwargs)
-            except BaseException:
-                import traceback
-                (tmp_path / 'synthetic-parent-trace.txt').write_text(traceback.format_exc(), encoding='utf-8')
-                raise
-        actual._run_fixed_peer_impl = debug_impl
     result,exit_code=actual.run_fixed_peer(executable=str(python),expected_interpreter_sha256=_sha(python.read_bytes()),
         interpreter_max_bytes=128*1024*1024,plan_bytes=plan['plan_bytes'],expected_plan_sha256=plan['plan_sha256'],
         bundle_bytes=fixed_bundle,runtime_manifest_bytes=runtime_manifest.read_bytes(),query_bytes=query,cwd=str(scratch),

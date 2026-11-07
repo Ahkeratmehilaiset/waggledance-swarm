@@ -54,6 +54,18 @@ def test_redirected_stdin_reaches_nested_python_exactly(bundle, shell):
     assert b'synthetic' not in result.stderr
 
 
+def test_bounded_timeout_accepts_cold_model_budget_and_refuses_over_30_minutes(bundle):
+    env, root = bundle
+    raw = b'{"situation":"synthetic","time":"2026-11-06T00:00:00Z"}'
+    result = invoke(SHELLS[0], env, raw, '-TimeoutSeconds', '600')
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().decode() == hashlib.sha256(raw).hexdigest()
+    marker = root / 'wrapper-started-over-limit'
+    env['RECALL_INVOKED'] = str(marker)
+    result = invoke(SHELLS[0], env, raw, '-TimeoutSeconds', '1801')
+    assert result.returncode != 0 and not marker.exists()
+
+
 @pytest.mark.parametrize('shell', SHELLS)
 @pytest.mark.parametrize('fraction', ['.1', '.123456'])
 def test_supported_fractional_utc_reaches_nested_python_unchanged(bundle, shell, fraction):

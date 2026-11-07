@@ -16,7 +16,7 @@
 [CmdletBinding()]
 param(
     [Parameter(ValueFromPipeline=$true)][AllowEmptyString()][string]$QueryJson,
-    [ValidateRange(1,300)][int]$TimeoutSeconds = 120,
+    [ValidateRange(1,1800)][int]$TimeoutSeconds = 600,
     [switch]$Live,
     [switch]$WithCoverage,
     [switch]$InternalWorker

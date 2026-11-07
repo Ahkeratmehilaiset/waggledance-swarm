@@ -2792,6 +2792,7 @@ $prompt += (
   'When the live selector is provisioned for this bundle, pipe the JSON string to ' +
   '& (Join-Path $env:WD_BRIDGE_BUNDLE_ROOT "Invoke-WdQ4LaneRecall.ps1") -Live -WithCoverage. ' +
   'The versioned result envelope reports coverage UNKNOWN and freshness UNKNOWN; do not assume completeness. ' +
+  'ABSTAIN with coverage UNKNOWN does not prove absence; check the bridge. ' +
   'If it is unavailable, read the bridge; there is no fallback to an old snapshot. ' +
   'The helper forwards stdin through an OS pipe; do not pipe directly to the wrapper. Its successful output ' +
   'is direct stdout, not a PowerShell object; check $LASTEXITCODE and use only exit code 0 output. If pins ' +

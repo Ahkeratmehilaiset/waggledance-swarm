@@ -23,6 +23,37 @@ def _sha(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
+@pytest.fixture
+def canonical_card_snapshot(real_snapshot, tmp_path):
+    """Rebuild the fabricated cards with the actual fleet-to-roster contract."""
+    from tools import wd_q4_card_generation, wd_q4_roster_from_fleet
+    _, _, decision, _, _, args = real_snapshot
+    fleet = json.loads(args['roster_bytes'])
+    for item in [*fleet['lanes'], fleet['tools_supervisor']]:
+        item['worktree'] = str(tmp_path)
+    fleet['runtime_root'] = str(tmp_path/'fleet-runtime')
+    fleet['q4_read'] = {'enabled': False}
+    fleet_bytes = fixed._canonical(fleet)
+    roster, roster_sha = wd_q4_roster_from_fleet.build_roster_snapshot(fleet_bytes, _sha(fleet_bytes), enabled=True)
+    decision = dict(decision, roster_sha256=roster_sha)
+    decision_bytes = fixed._canonical(decision)
+    output_root = tmp_path/'canonical-card-output'; output_root.mkdir()
+    args = dict(args, roster_bytes=roster, roster_sha256=roster_sha,
+                decision_bytes=decision_bytes, decision_sha256=_sha(decision_bytes), output_root=output_root)
+    built = wd_q4_card_generation.prepare_card_generation(**args)
+    directory = output_root/args['generation_name']
+    artifacts = {str(p.relative_to(directory)).replace('\\','/'): _sha(p.read_bytes())
+                 for p in directory.rglob('*') if p.is_file()}
+    pointer = fixed._canonical({'schema':'wd.q4-card-snapshot.v1','generation':args['generation_name'],
+        'artifacts':artifacts,'decision_sha256':args['decision_sha256'],'policy_sha256':args['policy_sha256'],
+        'roster_sha256':roster_sha,'source_prefix':decision['source_prefix']})
+    snapshot = dict(pointer_bytes=pointer, expected_pointer_sha256=_sha(pointer), decision_bytes=decision_bytes,
+        decision_sha256=_sha(decision_bytes), policy_bytes=args['policy_bytes'], policy_sha256=args['policy_sha256'],
+        roster_bytes=roster, roster_sha256=roster_sha, card_policy_bytes=args['card_policy_bytes'],
+        source_path=args['source_path'], generation_path=args['generation_path'], end_cursor=args['end_cursor'])
+    return (directory, built, decision, snapshot, None, args), fleet_bytes
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows system-host attestation')
 def test_staged_system_host_canonical_spelling_keeps_strict_handle_lease(monkeypatch):
     from tools.wd_q4_fixed_parent_attestation import attest_file
@@ -188,7 +219,7 @@ def test_actual_staged_job_positive_control_separate_from_guard(real_snapshot, t
 
 @pytest.mark.skipif(os.name != 'nt' or os.environ.get('WD_Q4_NESTED_JOB_E2E') != '1',
                     reason='Windows and explicit nested-Job test opt-in required')
-def test_actual_nested_job_c2_query_and_real_guard_owners(real_snapshot, tmp_path):
+def test_actual_nested_job_c2_query_and_real_guard_owners(canonical_card_snapshot, tmp_path, monkeypatch):
     """Synthetic files/encoder; actual fixed outer Job and staged wrapper inner Job.
 
     The public outer and inner model launcher are explicit synthetic shims. This
@@ -252,7 +283,7 @@ def launcher(*,query,**kw):
 q4._invoke_launcher=launcher
 def bootstrap_public_imports(**kw):return {'status':'MODULES_IMPORTED','child':child}
 '''
-    directory,built,decision,snapshot,_,args=real_snapshot
+    (directory,built,decision,snapshot,_,args), fleet_bytes = canonical_card_snapshot
     constants={'SITE':str(site),'ROOT':str(root),'DIRECTORY':str(directory),
                'DESCRIPTOR':str(directory/'descriptor.json'),'DIGEST':built['descriptor_sha256']}
     shim='\n'.join(k+'='+repr(v) for k,v in constants.items())+'\n'+shim
@@ -272,7 +303,7 @@ def bootstrap_public_imports(**kw):return {'status':'MODULES_IMPORTED','child':c
     bundle['put']('bridge-code-files.json',json.dumps(package).encode())
     bundle['config']['code_manifest_sha256']=bundle['files']['bridge-code-files.json']
     bundle['config']['python_path']=str(python);bundle['config']['python_sha256']=_sha(python.read_bytes())
-    bundle['put']('wd-fleet.json',json.dumps({'q4_read':{'enabled':False}}).encode())
+    bundle['put']('wd-fleet.json',fleet_bytes)
     manifest={'schema_version':1,'source_commit':module.COMMIT,'files':bundle['files'],
        'bridge_code_package':{'python_executable':str(python),'python_executable_sha256':_sha(python.read_bytes())}}
     manifest_raw=json.dumps(manifest).encode();(bundle['root']/'deployment-manifest.json').write_bytes(manifest_raw)
@@ -287,7 +318,9 @@ def bootstrap_public_imports(**kw):return {'status':'MODULES_IMPORTED','child':c
         runtime_root=str(runtime),runtime_manifest=str(runtime_manifest),runtime_manifest_sha256=generated['manifest_sha256'],
         runtime_generation='f'*40,runtime_revision='a'*40,lock_file=str(lock),timeout=30,scratch_root=str(scratch))
     data={'pointer':snapshot['pointer_bytes'],'policy':args['policy_bytes'],'roster':args['roster_bytes'],
-          'public_policy':b'{}','card_decision':args['decision_bytes'],'card_policy':args['card_policy_bytes'],
+          'public_policy':fixed._canonical({'schema':'wd.mind-public-status-policy.v1',
+              'public_tasks':['mind-public-knowledge-v1'],'public_types':['status']}),
+          'card_decision':args['decision_bytes'],'card_policy':args['card_policy_bytes'],
           'memory':(directory/'memory.json').read_bytes(),'projection':(directory/'projection.json').read_bytes(),
           'descriptor':(directory/'descriptor.json').read_bytes()}
     public={'schema':'wd.q4-public-wrapper-plan.v3','root':str(directory.parent),'config':config,
@@ -357,3 +390,42 @@ def bootstrap_public_imports(**kw):return {'status':'MODULES_IMPORTED','child':c
     assert ('_wait_job_empty', True) in observations and ('_wait_child_exit', True) in observations
     assert timeout_marker.is_file() and timeout_guard._registry._uncertain
     assert not actual._QUARANTINE
+
+    # Assemble the full adapter/session contract from actual canonical fleet,
+    # C2 and binding producers. Only the Python module-location seam is set to
+    # the already pinned candidate peer; no session/owner result is simulated.
+    import datetime
+    from tests.tools import test_wd_q4_lane_caller_adapter as adapter_fixture
+    from tools import wd_q4_lane_binding_producer, wd_q4_guard_completion, wd_q4_lane_caller_adapter
+    wrapper_bytes=(bundle['root']/'Invoke-WdQ4Query.ps1').read_bytes()
+    binding=wd_q4_lane_binding_producer.build_staged_lane_binding(enabled=True,expected_commit=module.COMMIT,
+        manifest_bytes=manifest_raw,expected_manifest_sha256=manifest_sha,fleet_bytes=fleet_bytes,
+        expected_fleet_sha256=_sha(fleet_bytes),wrapper_bytes=wrapper_bytes,expected_wrapper_sha256=_sha(wrapper_bytes),
+        public_plan_bytes=public_path.read_bytes(),expected_public_plan_sha256=_sha(public_path.read_bytes()),
+        pointer_bytes=data['pointer'],policy_bytes=data['policy'],roster_bytes=data['roster'],
+        public_policy_bytes=data['public_policy'],card_decision_bytes=data['card_decision'],card_policy_bytes=data['card_policy'])
+    expected_binding=json.loads(binding['binding_bytes'])['binding']
+    inputs=dict(fleet_bytes=fleet_bytes,expected_fleet_sha256=_sha(fleet_bytes),binding_bytes=binding['binding_bytes'],
+        expected_binding_sha256=binding['binding_sha256'],bundle_root=str(bundle['root']),public_plan_path=str(public_path),
+        executable=str(python),expected_interpreter_sha256=_sha(python.read_bytes()),interpreter_max_bytes=128*1024*1024,
+        fixed_plan_bytes=plan['plan_bytes'],expected_fixed_plan_sha256=plan['plan_sha256'],fixed_bundle_bytes=fixed_bundle,
+        runtime_manifest_bytes=runtime_manifest.read_bytes(),cwd=str(scratch),timeout_seconds=180,max_output_bytes=32768)
+    descriptor=adapter_fixture.descriptor_for(inputs,expected_binding=expected_binding)
+    fleet_document=json.loads(fleet_bytes)
+    agent=next(x for x in fleet_document['lanes'] if x['agent']=='codex-lead-1')
+    identity=adapter_fixture.identity_for(descriptor,agent_uuid=agent['agent_uuid'],
+        worktree=str(tmp_path),cwd=str(scratch))
+    state=Path(fleet_document['runtime_root'])/'shared'/'.codex-audit'/'codex-lead-1'/'q4-caller-state'
+    state.mkdir(parents=True)
+    full_guard=wd_q4_guard_completion.acquire_guard(fleet_bytes=fleet_bytes,expected_fleet_sha256=_sha(fleet_bytes),
+        lane='codex-lead-1',identity_sha256=_sha(identity),descriptor_sha256=_sha(descriptor))
+    full_context=full_guard._owner_context()
+    monkeypatch.chdir(scratch)
+    monkeypatch.setattr(bound, 'fixed', actual)
+    adapter_result=wd_q4_lane_caller_adapter.call_lane_session(enabled=True,identity_bytes=identity,
+        expected_identity_sha256=_sha(identity),descriptor_bytes=descriptor,expected_descriptor_sha256=_sha(descriptor),
+        situation='merged green pr 2046 genesis',time=datetime.datetime(2026,11,2,tzinfo=datetime.timezone.utc),
+        inputs=inputs,_owner_guard=full_guard,_owner_context=full_context)
+    assert adapter_result['status']=='VALIDATED' and adapter_result['inner_status']=='ANSWER', adapter_result
+    full_context._require_done(('adapter','attestation','transport'))
+    assert (state/'codex-lead-1.pending.json').is_file()

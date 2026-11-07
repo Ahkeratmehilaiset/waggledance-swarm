@@ -185,7 +185,7 @@ def _records(projection_bytes, expected_sha256, tasks, roster):
     return records
 
 
-def _card_records(projection_bytes, expected_sha256, tasks):
+def _card_records(projection_bytes, expected_sha256, tasks, *, _real_decision=None):
     """Card mode: the index of a v7 card projection that hashes to the caller pin, is the builder's canonical
     serialization and re-derives under ``validate_shared_card_projection``; each record's text is its head-masked
     form (the card's own head replaced once by ``head:unknown``), so a raw head is never accepted or output."""
@@ -198,7 +198,7 @@ def _card_records(projection_bytes, expected_sha256, tasks):
             or json.dumps(projection, sort_keys=True, indent=1).encode("utf-8") != projection_bytes
             or projection.get("schema") != cards.SCHEMA):
         raise ValueError()
-    cards.validate_shared_card_projection(projection)  # SharedCardRefused is a ValueError
+    cards.validate_shared_card_projection(projection, _real_decision=_real_decision)
     records = {}
     for record in projection["records"]:
         provenance = record["provenance"]
@@ -222,6 +222,41 @@ def _card_records(projection_bytes, expected_sha256, tasks):
             raise ValueError()
         records[key] = dict(record, stored_text=text)
     return records
+
+
+def _checked_staged_card_decision(plan, expected_binding, projection_bytes):
+    """Bind a route decision to the actual caller-pinned C2 result, not a status claim."""
+    from tools import wd_q4_public_pointer_resolver as resolver
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    limits = {'pointer': 1024*1024, 'policy': 65536, 'roster': 1024*1024,
+              'public_policy': 65536, 'card_decision': 262144, 'card_policy': 65536}
+    raw = {}
+    for key, limit in limits.items():
+        value = link._read(link._path(plan[key+'_path'], directory=False), limit)
+        digest = hashlib.sha256(value).hexdigest()
+        if not hmac.compare_digest(digest, plan[key+'_sha256']) or not hmac.compare_digest(
+                digest, expected_binding[key+'_sha256']):
+            raise ValueError()
+        raw[key] = value
+    cursor = plan['end_cursor']
+    checked = resolver.resolve_card_snapshot_pointer(plan['root'], pointer_bytes=raw['pointer'],
+        expected_pointer_sha256=expected_binding['pointer_sha256'],policy_bytes=raw['policy'],
+        policy_sha256=expected_binding['policy_sha256'],roster_bytes=raw['roster'],
+        roster_sha256=expected_binding['roster_sha256'],card_decision_bytes=raw['card_decision'],
+        card_decision_sha256=expected_binding['card_decision_sha256'],card_policy_bytes=raw['card_policy'],
+        source_path=plan['source_path'],generation_path=plan['generation_path'],end_cursor=BridgeCursor(**cursor),
+        enabled=True)
+    if (checked['status'] != 'VALIDATED_STAGED' or checked['completeness'] != 'UNKNOWN'
+            or checked['source_prefix']['sha256'] != expected_binding['source_anchor_sha256']
+            or checked['projection_sha256'] != expected_binding['projection_sha256']
+            or not hmac.compare_digest(hashlib.sha256(projection_bytes).hexdigest(), checked['projection_sha256'])):
+        raise ValueError()
+    decision = link._json(raw['card_decision'])
+    if decision.get('synthetic') is True:
+        return None
+    if decision.get('synthetic') is not False:
+        raise ValueError()
+    return decision
 
 
 def _text(value):
@@ -320,7 +355,20 @@ def _query_public_impl(*, lane, situation, time, bundle_root, expected_commit, e
     records = None
     try:
         if "card_decision_sha256" in expected_binding:
-            records = _card_records(projection_bytes, expected_binding["projection_sha256"], tasks)
+            projection = link._json(projection_bytes)
+            real_decision = None
+            if projection.get('synthetic') is False:
+                if set(expected_binding) != STAGED_BINDING_KEYS:
+                    raise ValueError()
+                _, plan_raw, early_pins = link._public_plan(public_plan_path, expected_public_plan_sha256)
+                if (not early_pins or any(key not in expected_binding or
+                        not hmac.compare_digest(value, expected_binding[key]) for key, value in early_pins.items())):
+                    raise ValueError()
+                real_decision = _checked_staged_card_decision(link._json(plan_raw), expected_binding, projection_bytes)
+                if real_decision is None:
+                    raise ValueError()
+            records = _card_records(projection_bytes, expected_binding["projection_sha256"], tasks,
+                                    _real_decision=real_decision)
         else:
             records = _records(projection_bytes, expected_binding["projection_sha256"], tasks, roster)
     except Exception:  # noqa: BLE001
@@ -330,7 +378,7 @@ def _query_public_impl(*, lane, situation, time, bundle_root, expected_commit, e
     plan_pins = None
     try:
         plan_pins = link._public_plan(public_plan_path, expected_public_plan_sha256)[2]
-    except Exception:  # noqa: BLE001 - unreadable, unpinned or malformed plan: one fixed refusal, no transport
+    except Exception:  # noqa: BLE001 - unreadable, unpinned or malformed plan
         plan_pins = None
     if (type(plan_pins) is not dict or not plan_pins
             or ("card_decision_sha256" in plan_pins) != ("card_decision_sha256" in expected_binding)

@@ -1040,3 +1040,25 @@ def test_runner_refusal_does_not_clear_or_retry_an_owned_cutoff_lease(genesis_sy
         assert not (private / continuation.runner._PENDING).exists()
         assert not (shared / continuation.runner._PENDING).exists()
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize('stage', ['before_write', 'first_marker', 'second_marker', 'child'])
+def test_admission_blocked_after_reservation_attempt_is_unknown(case, monkeypatch, stage):
+    runner, args, _, checkpoint, private, _ = case
+    original = runner._create
+    def create(path, raw):
+        if stage == 'before_write':
+            raise runner._AdmissionBlocked()
+        result = original(path, raw)
+        if (stage == 'first_marker' and path == checkpoint / runner._PENDING
+                or stage == 'second_marker' and path == private / runner._PENDING):
+            raise runner._AdmissionBlocked()
+        return result
+    def child(**kwargs):
+        raise runner._AdmissionBlocked()
+    monkeypatch.setattr(runner, '_create', create)
+    fake_child(monkeypatch, child)
+    with pytest.raises(runner.StatusRunnerOutcomeUnknown):
+        runner.run_once(**args())
+    assert (checkpoint / runner._PENDING).exists() == (stage != 'before_write')
+    assert (private / runner._PENDING).exists() == (stage in ('second_marker', 'child'))

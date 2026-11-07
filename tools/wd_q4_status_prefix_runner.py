@@ -381,6 +381,7 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
     uncertain = True
     interrupted = False
     report = None
+    reservation_attempted = False
     try:
         token = reservation_bytes if reservation_bytes is not None else secrets.token_hex(32).encode("ascii") + b"\n"
         if (roots._observe(checkpoint) != checkpoint_ids or roots._observe(private) != private_ids
@@ -389,7 +390,6 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
             raise ValueError()
         # Serialize admission with adoption's pending marker reservation. The
         # short locks are released before the child and its own state locks.
-        reservation_attempted = False
         try:
             with private_state.locked_state(private, checkpoint, enabled=True):
                 with private_state._checkpoint_lock(checkpoint, 0.2):
@@ -430,7 +430,11 @@ def run_once(*, enabled=False, route_bytes=None, expected_route_sha256=None, pla
             report = {**report, "runner_receipt_sha256": receipt_sha}
         uncertain = False
     except _AdmissionBlocked:
-        raise StatusRunnerRefused('status_runner_refused') from None
+        # The same exception can surface from a nested call after marker
+        # creation. Only the pre-attempt path proves this runner did not
+        # attempt its own reservation.
+        if not reservation_attempted:
+            raise StatusRunnerRefused('status_runner_refused') from None
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         interrupted = True
     except Exception:

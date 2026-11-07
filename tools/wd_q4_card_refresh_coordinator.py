@@ -23,8 +23,10 @@ import re
 from sandbox.mind.step2.reader_slot import reader_slot
 from tools import wd_q4_lane_caller_cli as caller
 from tools import wd_q4_live_snapshot_publish as live
+from tools import wd_q4_lifecycle_v2 as lifecycle
 
 SCHEMA = 'wd.q4-card-refresh-tuple.v1'
+LIFECYCLE_SCHEMA = 'wd.q4-card-refresh-tuple.v2'
 _HEX = re.compile(r'[0-9a-f]{64}\Z')
 _KEYS = {'schema', 'p1_enabled', 'manifest_sha256', 'baseline', 'candidate',
          'previous_selector_sha256', 'private_root', 'job', 'job_return', 'source'}
@@ -97,7 +99,8 @@ def _target(document, candidate):
 
 def _load(path, pin):
     raw = _read(path, 65536, _pin(pin)); document = caller._json(raw)
-    if (type(document) is not dict or set(document) != _KEYS or document['schema'] != SCHEMA
+    if (type(document) is not dict or document.get('schema') not in (SCHEMA, LIFECYCLE_SCHEMA)
+            or set(document) != (_KEYS | ({'lifecycle'} if document.get('schema') == LIFECYCLE_SCHEMA else set()))
             or document['p1_enabled'] is not True
             or os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower() != _pin(document['manifest_sha256'])):
         raise ValueError()
@@ -189,6 +192,11 @@ def _load(path, pin):
             root, Path(public['root']), Path(baseline[0]['bundle_root']), Path(source['path']).parent,
             Path(source['generation_path']).parent)):
         raise ValueError()
+    if document['schema'] == LIFECYCLE_SCHEMA:
+        binding_raw = _spec(document['lifecycle'])
+        bound_root, bound_private = lifecycle._binding(binding_raw, document['lifecycle']['sha256'])
+        if not live.pointer_io._same(bound_root, root) or not live.pointer_io._same(bound_private, private):
+            raise ValueError()
     return document, baseline, candidate, public, root, private, raw
 
 
@@ -275,7 +283,13 @@ def run_once(*, config, config_sha256, attempt):
         document, baseline, candidate, _, root, private, _ = _configuration(config)
         if 'expected_previous_selector_sha256' not in inspect.signature(live.publish).parameters:
             raise Refused('card_selector_cas_required')
-        with _locks(root, private):
+        with _locks(root, private) as locks:
+            # A persistent lifecycle lock is also an enrollment sentinel. Once
+            # v2 has been entered, legacy refresh must not bypass its intent
+            # protocol even after a successful v2 clears its pending record.
+            if document['schema'] != LIFECYCLE_SCHEMA and any(os.path.lexists(root / name)
+                    for name in (lifecycle._LOCK, lifecycle._PENDING)):
+                raise Unknown('card_refresh_unknown')
             marker = private / 'q4-card-refresh.pending.json'
             if os.path.lexists(marker): raise Unknown('card_refresh_unknown')
             # Respect legacy/adoption uncertainty rather than replacing it.
@@ -286,6 +300,13 @@ def run_once(*, config, config_sha256, attempt):
             selector = root / live._POINTER
             if _selector(selector) != document['previous_selector_sha256']: raise ValueError()
             target = _target(document, candidate)
+            if document['schema'] == LIFECYCLE_SCHEMA:
+                binding_raw = _spec(document['lifecycle'])
+                # Admission may write its marker even if it then fails.
+                entered = True
+                locks.enter_context(lifecycle.admit(enabled=True, binding_bytes=binding_raw,
+                    binding_sha256=document['lifecycle']['sha256'], attempt=attempt,
+                    previous_selector_sha256=document['previous_selector_sha256']))
             intent = {'schema': 'wd.q4-card-refresh-intent.v1', 'attempt': attempt,
                       'config_sha256': config_sha256, 'tuple_sha256': config['route_sha256'],
                       'previous_selector_sha256': document['previous_selector_sha256'],
@@ -310,6 +331,9 @@ def run_once(*, config, config_sha256, attempt):
             _write(private / ('q4-card-result-' + attempt + '.json'), _raw({'intent_sha256': _sha(intent_raw), 'result': result}))
             if _read(str(marker)) != marker_raw or _selector(selector) != _sha(target): raise ValueError()
             marker.unlink()
+            if document['schema'] == LIFECYCLE_SCHEMA:
+                lifecycle._clear_owned(root, document['lifecycle']['sha256'], attempt,
+                                       document['previous_selector_sha256'])
             return result
     except Unknown: raise
     except Exception:
@@ -325,6 +349,13 @@ def recover(*, config, config_sha256, attempt, progress_sha256=None):
         _pin(config_sha256); _pin(attempt)
         document, baseline, candidate, _, root, private, _ = _configuration(config)
         with _locks(root, private) as locks:
+            if document['schema'] == LIFECYCLE_SCHEMA:
+                binding_raw = _spec(document['lifecycle'])
+                locks.enter_context(lifecycle._resume(binding_bytes=binding_raw,
+                    binding_sha256=document['lifecycle']['sha256'], attempt=attempt,
+                    previous_selector_sha256=document['previous_selector_sha256']))
+            elif any(os.path.lexists(root / name) for name in (lifecycle._LOCK, lifecycle._PENDING)):
+                raise Unknown('card_refresh_unknown')
             # No publisher may still land while reconciliation observes "old".
             # Recovery never calls publish, so this third lock is not recursive.
             publication_lock = root / live._PUBLICATION_LOCK
@@ -369,6 +400,9 @@ def recover(*, config, config_sha256, attempt, progress_sha256=None):
             if os.path.lexists(marker):
                 if _read(str(marker)) != marker_raw: raise ValueError()
                 marker.unlink()
+            if document['schema'] == LIFECYCLE_SCHEMA:
+                lifecycle._clear_owned(root, document['lifecycle']['sha256'], attempt,
+                                       document['previous_selector_sha256'])
             return result
     except BaseException:
         raise Unknown('card_refresh_unknown') from None

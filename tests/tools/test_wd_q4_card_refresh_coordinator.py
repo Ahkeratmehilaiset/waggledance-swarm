@@ -482,3 +482,135 @@ def test_selector_uncertainty_cannot_clear_handoff(case, monkeypatch, fault):
         with reader_slot(case['shared'] / case['live']._PUBLICATION_LOCK, timeout_seconds=0.2):
             with pytest.raises(recovery.RecoveryOutcomeUnknown): recover(config)
     assert (case['private'] / 'q4-card-refresh.pending.json').exists()
+
+
+@pytest.fixture
+def lifecycle_case(attested, tmp_path, monkeypatch):
+    # Each v2 case has its own generation and canonical private directory.
+    return _build_case(attested, tmp_path, monkeypatch)
+
+
+def _lifecycle_v2_document(case):
+    shared = case['shared']
+    private = shared.parent / (shared.name + '.q4-lifecycle-private-v2')
+    private.mkdir()
+    binding = {'schema':'wd.q4-lifecycle-binding.v2', 'generation_root':str(shared),
+               'private_root':str(private)}
+    binding_path = case['tmp'] / 'lifecycle-binding.json'
+    binding_raw = json.dumps(binding,sort_keys=True,separators=(',',':')).encode('ascii')
+    binding_path.write_bytes(binding_raw)
+    document = case['tuple_for']()
+    document.update(schema='wd.q4-card-refresh-tuple.v2',private_root=str(private),
+                    lifecycle={'path':str(binding_path),'sha256':sha(binding_raw)})
+    return document, private
+
+
+def test_lifecycle_v2_interrupted_a_blocks_b_on_same_generation(lifecycle_case, monkeypatch):
+    """A private pending record cannot be bypassed by B in the v2 route."""
+    from tools import wd_q4_live_update_once as update
+    from tools import wd_q4_live_update_recovery as recovery
+    case = lifecycle_case
+    shared = case['shared']
+    document, private = _lifecycle_v2_document(case)
+    first=configured(case,document,name='v2-first')
+    real_write=case['coordinator']._write
+    def interrupt_after_private_marker(path,raw):
+        value=real_write(path,raw)
+        if path.name == 'q4-card-refresh.pending.json': raise KeyboardInterrupt()
+        return value
+    with monkeypatch.context() as scoped:
+        scoped.setattr(case['coordinator'],'_write',interrupt_after_private_marker)
+        with pytest.raises(update.UpdateInterrupted): invoke(first,attempt='a'*64)
+    shared_pending=shared/'q4-lifecycle-v2.pending.json'
+    private_pending=private/'q4-card-refresh.pending.json'
+    assert shared_pending.is_file() and private_pending.is_file()
+    shared_before=shared_pending.read_bytes(); private_before=private_pending.read_bytes()
+    second=configured(case,document,name='v2-second')
+    with pytest.raises(update.UpdateOutcomeUnknown): invoke(second,attempt='b'*64)
+    legacy=configured(case,case['tuple_for'](),name='v1-after')
+    with pytest.raises(update.UpdateOutcomeUnknown): invoke(legacy,attempt='c'*64)
+    with pytest.raises(recovery.RecoveryOutcomeUnknown): recover(first,attempt='b'*64)
+    with pytest.raises(recovery.RecoveryOutcomeUnknown): recover(first,attempt='a'*64)
+    assert shared_pending.read_bytes()==shared_before and private_pending.read_bytes()==private_before
+
+
+def test_lifecycle_v2_success_releases_only_after_verified_selector(lifecycle_case):
+    from tools import wd_q4_live_update_once as update
+    case = lifecycle_case
+    document, private = _lifecycle_v2_document(case)
+    config = configured(case, document, name='v2-success')
+    result = invoke(config, attempt='d'*64)
+    assert result['status'] == 'PUBLISHED'
+    assert not (case['shared']/'q4-lifecycle-v2.pending.json').exists()
+    assert not (private/'q4-card-refresh.pending.json').exists()
+    assert (private/('q4-card-result-' + 'd'*64 + '.json')).is_file()
+    assert (case['shared']/'q4-lifecycle-v2.lock').is_file()
+    legacy = case['tuple_for'](previous=sha(case['selector'].read_bytes()))
+    old_config = configured(case, legacy, name='v1-after-success')
+    with pytest.raises(update.UpdateOutcomeUnknown): invoke(old_config, attempt='f'*64)
+
+
+def test_lifecycle_v2_recovery_clears_owned_markers_only_after_verified_publication(lifecycle_case, monkeypatch):
+    from tools import wd_q4_live_update_once as update
+    case = lifecycle_case
+    document, private = _lifecycle_v2_document(case)
+    config = configured(case, document, name='v2-recover')
+    original = case['live'].publish
+    @wraps(original)
+    def published_then_interrupted(**kwargs):
+        original(**kwargs)
+        raise KeyboardInterrupt()
+    with monkeypatch.context() as scoped:
+        scoped.setattr(case['live'], 'publish', published_then_interrupted)
+        with pytest.raises(update.UpdateInterrupted): invoke(config, attempt='e'*64)
+    assert (case['shared']/'q4-lifecycle-v2.pending.json').is_file()
+    assert (private/'q4-card-refresh.pending.json').is_file()
+    result = recover(config, attempt='e'*64)
+    assert result['status'] == 'PUBLISHED'
+    assert not (case['shared']/'q4-lifecycle-v2.pending.json').exists()
+    assert not (private/'q4-card-refresh.pending.json').exists()
+    assert (private/('q4-card-result-' + 'e'*64 + '.json')).is_file()
+
+
+def test_lifecycle_v2_recovery_handles_interruption_between_marker_removals(lifecycle_case, monkeypatch):
+    from tools import wd_q4_live_update_once as update
+    case = lifecycle_case
+    document, private = _lifecycle_v2_document(case)
+    config = configured(case, document, name='v2-clear-interrupt')
+    with monkeypatch.context() as scoped:
+        scoped.setattr(case['coordinator'].lifecycle, '_clear_owned',
+                       lambda *_: (_ for _ in ()).throw(OSError('synthetic failure')))
+        with pytest.raises(update.UpdateOutcomeUnknown): invoke(config, attempt='1'*64)
+    assert (case['shared']/'q4-lifecycle-v2.pending.json').is_file()
+    assert not (private/'q4-card-refresh.pending.json').exists()
+    assert (private/('q4-card-result-' + '1'*64 + '.json')).is_file()
+    assert recover(config, attempt='1'*64)['status'] == 'PUBLISHED'
+    assert not (case['shared']/'q4-lifecycle-v2.pending.json').exists()
+
+
+def test_lifecycle_v2_other_process_holding_intent_blocks_card_writer(lifecycle_case):
+    import os
+    import subprocess
+    import sys
+    from tools import wd_q4_live_update_once as update
+    case = lifecycle_case
+    document, private = _lifecycle_v2_document(case)
+    config = configured(case, document, name='v2-concurrent')
+    raw=Path(document['lifecycle']['path']).read_bytes()
+    code = '''import sys
+from tools import wd_q4_lifecycle_v2 as life
+with life.admit(enabled=True,binding_bytes=bytes.fromhex(sys.argv[1]),binding_sha256=sys.argv[2],attempt='a'*64,previous_selector_sha256=None):
+    print('ADMITTED',flush=True)
+    sys.stdin.readline()
+'''
+    env = dict(os.environ, PYTHONPATH=str(Path.cwd()))
+    child = subprocess.Popen([sys.executable,'-B','-c',code,raw.hex(),document['lifecycle']['sha256']],
+                             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
+    try:
+        assert child.stdout.readline().strip() == 'ADMITTED'
+        with pytest.raises(update.UpdateOutcomeUnknown): invoke(config,attempt='2'*64)
+        assert (case['shared']/'q4-lifecycle-v2.pending.json').is_file()
+        assert not (private/'q4-card-refresh.pending.json').exists()
+    finally:
+        child.stdin.write('\n'); child.stdin.flush()
+        assert child.wait(timeout=15) == 0

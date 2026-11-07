@@ -41,7 +41,7 @@ def prepare_config(*, enabled=False, output_path=None, baseline_path=None, expec
             raise ValueError()
         if p1_enabled:
             tuple_raw = update._read(tuple_path, 65536, expected_tuple_sha256)
-            if caller._json(tuple_raw).get('schema') != 'wd.q4-card-refresh-tuple.v1':
+            if caller._json(tuple_raw).get('schema') not in ('wd.q4-card-refresh-tuple.v1', 'wd.q4-card-refresh-tuple.v2'):
                 raise ValueError()
             from tools import wd_q4_card_refresh_coordinator as cards
             try:

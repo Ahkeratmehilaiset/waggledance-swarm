@@ -157,6 +157,10 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
     absent = object()
     witnessed = {}
     subclass_witnessed = {}
+    inherited_witnessed = {}
+    verified_sources = {}
+    active_sources = set()
+    failed_sources = set()
     native_witnessed = _NativeRegistrations(_check)
     native_stack = []
     source_stack = []
@@ -205,7 +209,30 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
                 result.extend(code_tree(value))
         return result
 
-    def capture_function(function, source_globals, codes, states, seen, allowed_class=None):
+    # Interpreter files loaded before this guard retain the pre-existing trusted
+    # interpreter boundary. Save exact code objects (including nested decorator
+    # code) now; a filename string alone cannot mint a later witness.
+    baseline_lru_type = None
+    for baseline_name, baseline_module in tuple(sys.modules.items()):
+        if type(baseline_module) is not types.ModuleType:
+            continue
+        baseline_globals = types.ModuleType.__getattribute__(baseline_module, '__dict__')
+        baseline_path = baseline_globals.get('__file__')
+        if type(baseline_path) is not str or not os.path.isabs(baseline_path):
+            continue
+        normalized = os.path.normcase(os.path.realpath(baseline_path))
+        if not any(_under(normalized, allowed) for allowed in interpreter_roots) or _under(normalized, excluded):
+            continue
+        if baseline_name == 'functools' and type(baseline_globals.get('_lru_cache_wrapper')) is type:
+            baseline_lru_type = baseline_globals['_lru_cache_wrapper']
+        baseline_codes = []
+        for value in tuple(baseline_globals.values()):
+            if type(value) is types.FunctionType and value.__globals__ is baseline_globals:
+                baseline_codes.extend(code_tree(value.__code__))
+        if baseline_codes:
+            verified_sources[id(baseline_globals)] = (baseline_globals, tuple(baseline_codes))
+
+    def capture_function(function, source_globals, codes, states, seen, allowed_class=None, cross_source=None):
         _check(type(function) is types.FunctionType and function.__globals__ is source_globals
                and any(function.__code__ is code for code in codes)
                and function.__defaults__ is None and function.__kwdefaults__ is None)
@@ -218,7 +245,10 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
         states.append((function, function.__code__, function.__closure__, values, globals_used, source_globals))
         for value in values:
             if type(value) is types.FunctionType:
-                capture_function(value, source_globals, codes, states, seen, allowed_class)
+                if cross_source is not None and value.__globals__ is not source_globals:
+                    cross_source(value)
+                else:
+                    capture_function(value, source_globals, codes, states, seen, allowed_class, cross_source)
             elif value is allowed_class and allowed_class is not None:
                 continue
             else:
@@ -238,6 +268,105 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             _check(all(cell.cell_contents is value for cell, value in zip(closure or (), values)))
             _check(all(source_globals.get(key, absent) is value for key, value in globals_used))
 
+    def capture_inherited(module, source_module):
+        """Bind inherited wrappers to previously verified Python source objects.
+
+        This is same-process observation, not authentication of native state or
+        protection against hostile same-user mutation between checks.
+        """
+        classes, objects, functions, seen_classes, seen_functions = [], [], [], set(), set()
+
+        def source_for_class(cls):
+            matches = []
+            for source_globals, codes in verified_sources.values():
+                if (source_globals.get('__name__') == cls.__module__
+                        and source_globals.get(cls.__name__) is cls):
+                    candidates = [item for item in codes if item.co_qualname == cls.__qualname__]
+                    if len(candidates) == 1:
+                        matches.append((source_globals, code_tree(candidates[0])))
+            _check(len(matches) == 1)
+            return matches[0]
+
+        def add_function(function, allowed_class=None):
+            record = verified_sources.get(id(function.__globals__))
+            _check(record is not None and record[0] is function.__globals__)
+            capture_function(function, record[0], record[1], functions, seen_functions, allowed_class, add_function)
+
+        def visit_class(cls):
+            if cls in (object, types.ModuleType) or cls in seen_classes:
+                return
+            _check(type(cls) is type and len(cls.__bases__) == 1)
+            seen_classes.add(cls)
+            visit_class(cls.__bases__[0])
+            owner, class_codes = source_for_class(cls)
+            attrs = dict(vars(cls))
+            classes.append((cls, attrs, owner))
+            metadata = {'__module__', '__qualname__', '__doc__', '__annotations__',
+                        '__firstlineno__', '__static_attributes__', '__dict__', '__weakref__'}
+            for name, value in attrs.items():
+                if name in metadata:
+                    continue
+                if type(value) is types.FunctionType:
+                    add_function(value, cls)
+                elif type(value) is staticmethod:
+                    function = value.__func__
+                    _check(type(function) is types.FunctionType)
+                    add_function(function, cls)
+                elif type(value) is property:
+                    for function in (value.fget, value.fset, value.fdel):
+                        if function is not None:
+                            _check(type(function) is types.FunctionType)
+                            add_function(function, cls)
+                elif baseline_lru_type is not None and type(value) is baseline_lru_type:
+                    state = dict(object.__getattribute__(value, '__dict__'))
+                    _check(type(state.get('__wrapped__')) is types.FunctionType)
+                    objects.append((value, baseline_lru_type, state))
+                    for item in state.values():
+                        if type(item) is types.FunctionType:
+                            add_function(item, cls)
+                elif type(value) in (str, int, float, bool, type(None)):
+                    continue
+                else:
+                    descriptor_cls = type(value)
+                    visit_class(descriptor_cls)
+                    _check(descriptor_cls not in (object, types.ModuleType))
+                    state = dict(object.__getattribute__(value, '__dict__'))
+                    objects.append((value, descriptor_cls, state))
+                    for item in state.values():
+                        if type(item) is types.FunctionType:
+                            add_function(item)
+
+        cls = type(module)
+        _check(type(cls) is type and issubclass(cls, types.ModuleType))
+        visit_class(cls)
+        attrs = types.ModuleType.__getattribute__(module, '__dict__')
+        _check(attrs.get('m') is source_module)
+        return cls, dict(attrs), classes, objects, functions
+
+    def verify_inherited(name, module):
+        expected, cls, attrs, classes, objects, functions = inherited_witnessed[name]
+        _check(module is expected and type(module) is cls and sys.modules.get(name) is module)
+        current = types.ModuleType.__getattribute__(module, '__dict__')
+        _check(set(current) == set(attrs) and all(current[key] is value for key, value in attrs.items()))
+        for observed_cls, expected_attrs, owner in classes:
+            _check(id(owner) not in active_sources and id(owner) not in failed_sources
+                   and owner.get(observed_cls.__name__) is observed_cls)
+            current_attrs = vars(observed_cls)
+            _check(set(current_attrs) == set(expected_attrs)
+                   and all(current_attrs[key] is value for key, value in expected_attrs.items()))
+        for obj, observed_cls, expected_attrs in objects:
+            _check(type(obj) is observed_cls)
+            current_attrs = object.__getattribute__(obj, '__dict__')
+            _check(set(current_attrs) == set(expected_attrs)
+                   and all(current_attrs[key] is value for key, value in expected_attrs.items()))
+        for function, code, closure, values, globals_used, source_globals in functions:
+            _check(id(source_globals) not in active_sources and id(source_globals) not in failed_sources
+                   and function.__code__ is code and function.__globals__ is source_globals
+                   and function.__closure__ is closure and function.__defaults__ is None
+                   and function.__kwdefaults__ is None)
+            _check(all(cell.cell_contents is value for cell, value in zip(closure or (), values)))
+            _check(all(source_globals.get(key, absent) is value for key, value in globals_used))
+
     def capture_created(before, code, source_globals, source_module, loader):
         codes = code_tree(code)
         allowed = {'__name__', '__doc__', '__package__', '__loader__', '__spec__', '__file__',
@@ -248,7 +377,7 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             if type(module) is not types.ModuleType:
                 cls = type(module)
                 if (name != loader.name or before.get(name) is not source_module
-                        or type(cls) is not type or cls.__bases__ != (types.ModuleType,)
+                        or type(cls) is not type or not issubclass(cls, types.ModuleType)
                         or not any(value is cls for value in source_globals.values())):
                     continue
                 original = types.ModuleType.__getattribute__(source_module, '__dict__')
@@ -256,6 +385,12 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
                 _check(original_spec is not None and original_spec.loader is loader
                        and original_spec.name == name and original.get('__loader__') is loader
                        and original.get('__file__') == loader.path)
+                if cls.__bases__ != (types.ModuleType,):
+                    cls, attrs, classes, objects, functions = capture_inherited(module, source_module)
+                    _check(attrs.get('__name__') == name and attrs.get('__file__') is None
+                           and attrs.get('__spec__') is None and attrs.get('__loader__') is None)
+                    inherited_witnessed[name] = (module, cls, attrs, classes, objects, functions)
+                    continue
                 class_attrs = dict(vars(cls))
                 allowed_class_attrs = {'__module__', '__qualname__', '__doc__', '__annotations__',
                                        '__init__', '__getattr__', '__firstlineno__', '__static_attributes__'}
@@ -305,7 +440,10 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
         _check(type(loader) is loader_types[1] and module.__name__ == loader.name)
         code = source_code(loader, module.__name__)
         names = {name for nested in code_tree(code) for name in nested.co_names}
-        before = dict(sys.modules) if 'modules' in names and 'ModuleType' in names else None
+        before = dict(sys.modules) if 'modules' in names else None
+        previous = verified_sources.get(id(module.__dict__))
+        previous_codes = previous[1] if previous is not None and previous[0] is module.__dict__ else ()
+        verified_sources[id(module.__dict__)] = (module.__dict__, previous_codes + tuple(code_tree(code)))
         source_before = dict(sys.modules)
         nested_before = source_before if native_stack else None
         nested_objects = modules_in_gc() if native_stack else None
@@ -314,7 +452,11 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             for name, (existing, _, _) in tuple(witnessed.items()):
                 _check(before.get(name) is existing)
                 verify_witness(name, existing, check_registry=False)
+        source_id = id(module.__dict__)
+        _check(source_id not in active_sources)
         source_stack.append(source_tainted)
+        active_sources.add(source_id)
+        succeeded = False
         try:
             exec(code, module.__dict__)
             if before is not None:
@@ -333,7 +475,11 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             if native_witnessed._deferred and len(sys._current_frames()) == 1:
                 native_witnessed.bind_source(source_before, dict(sys.modules), source_tainted,
                                              single_thread=True)
+            succeeded = True
         finally:
+            active_sources.discard(source_id)
+            if not succeeded:
+                failed_sources.add(source_id)
             _check(source_stack.pop() is source_tainted)
             mark_source_nested(source_before)
             if nested_before is not None:
@@ -434,6 +580,8 @@ def install(runtime_root, manifest_path, manifest_sha256, *, _check, _sha, _uniq
             if name == '__mp_main__':
                 _check(main_alias_witnessed and module is bootstrap_main)
                 check_main_alias()
+            elif name in inherited_witnessed:
+                verify_inherited(name, module)
             elif name in subclass_witnessed:
                 expected, attrs, cls, class_attrs, states = subclass_witnessed[name]
                 _check(module is expected and type(module) is cls and sys.modules.get(name) is module)

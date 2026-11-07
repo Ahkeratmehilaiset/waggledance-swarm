@@ -13,8 +13,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 REBOOT = ROOT / "ops/windows/reboot"
 NAME = "WdQ4ProcessJob.ps1"
+CARD_ORCHESTRATOR = "Invoke-WdQ4CardOrchestratorJob.ps1"
 SESSION_SCRIPTS = ("Invoke-WdQ4SessionCommand.ps1", "Invoke-WdQ4SessionHost.ps1")
-SIBLINGS = ("Get-WdQ4ReadConfig.ps1", "Invoke-WdQ4Query.ps1", *SESSION_SCRIPTS)
+SIBLINGS = ("Get-WdQ4ReadConfig.ps1", "Invoke-WdQ4Query.ps1", *SESSION_SCRIPTS, CARD_ORCHESTRATOR)
 DEPLOY = REBOOT / "Deploy-WdRebootBundle.ps1"
 FLEET = REBOOT / "wd-fleet.json"
 
@@ -52,7 +53,7 @@ def test_fleet_start_checks_each_required_name_against_hashed_manifest_entries()
 
 
 @pytest.mark.skipif(os.name != "nt" or not shutil.which("powershell.exe"), reason="Windows PowerShell required")
-@pytest.mark.parametrize("helper_name", (NAME, *SESSION_SCRIPTS))
+@pytest.mark.parametrize("helper_name", (NAME, *SESSION_SCRIPTS, CARD_ORCHESTRATOR))
 def test_actual_hash_map_pins_synthetic_helper_and_detects_change(tmp_path, helper_name):
     text = DEPLOY.read_text(encoding="utf-8-sig")
     match = re.search(r"(?ms)^function Get-RelativeFileHashMap \{.*?^\}", text)
@@ -81,3 +82,26 @@ def test_actual_hash_map_pins_synthetic_helper_and_detects_change(tmp_path, help
     helper.write_bytes(changed)
     assert read_map()[helper_name] == hashlib.sha256(changed).hexdigest().upper()
     assert read_map()[helper_name] != hashes[helper_name]
+
+
+@pytest.mark.skipif(os.name != "nt" or not shutil.which("powershell.exe"), reason="Windows PowerShell required")
+@pytest.mark.parametrize("listed", [False, True])
+def test_actual_fleet_required_loop_refuses_missing_card_job(tmp_path, listed):
+    fleet=json.loads(FLEET.read_text(encoding="utf-8-sig"))
+    assert CARD_ORCHESTRATOR in fleet['deployment']['required_bundle_files']
+    source=(REBOOT/'start-wd-all.ps1').read_text(encoding='utf-8-sig')
+    loop=re.search(r'(?ms)^  foreach \(\$requiredName in @\(\$Manifest\.deployment\.required_bundle_files\)\) \{.*?^  \}',source)
+    assert loop
+    script=("$ErrorActionPreference='Stop'\n"
+            "$Manifest=[pscustomobject]@{deployment=[pscustomobject]@{required_bundle_files=@('"+CARD_ORCHESTRATOR+"')}}\n"
+            "$listed=@{}\n")
+    if listed:
+        script+="$listed['"+CARD_ORCHESTRATOR.lower()+"']=$true\n"
+    script+=loop.group(0)+"\n[Console]::Out.WriteLine('verified')\n"
+    encoded=base64.b64encode(script.encode('utf-16le')).decode('ascii')
+    result=subprocess.run([shutil.which('powershell.exe'),'-NoProfile','-NonInteractive','-EncodedCommand',encoded],
+                          cwd=tmp_path,capture_output=True,text=True,timeout=15)
+    if listed:
+        assert result.returncode==0 and result.stdout.strip()=='verified'
+    else:
+        assert result.returncode!=0 and 'deployment manifest does not cover required file' in result.stderr

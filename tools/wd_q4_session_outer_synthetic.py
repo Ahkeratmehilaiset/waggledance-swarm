@@ -1,16 +1,7 @@
-"""Opt-in session bootstrap candidate; caller owns the process and all anchors.
+"""Retired legacy Q4 outer bootstrap: OFF is preserved and enabled calls refuse.
 
-Caller must hash-pin and execute these exact bootstrap bytes and independently
-pin the interpreter. The runtime manifest is externally authenticated by the
-caller and covers BOTH assets/code and site; code from a separate bundle root
-is not accepted. This is not an installer, a session identity verifier or a
-whole-process watchdog. Same-user replacement races, native DLLs and the
-interpreter/stdlib remain outside this boundary. Discard the process after any
-return or refusal. The parent must also require Job cleanup confirmation,
-exit zero and complete framed output; an in-process result alone is insufficient.
-Namespace-package paths can be recalculated if sys.path changes; a worker that
-changes import state is not contained. BaseException subclasses are not caught
-or scrubbed here: caller and worker traceback frames may retain sensitive data.
+The closed answer validator remains importable for other code. The guarded
+caller candidate is tools.wd_q4_lane_caller_cli; this is not that route.
 """
 
 import hashlib
@@ -215,90 +206,11 @@ def run_session(*, enabled=False, runtime_root=None, runtime_manifest=None, runt
                 runtime_generation=None, runtime_revision=None, verifier_sha256=None, outer_sha256=None,
                 child_sha256=None, query_sha256=None, worker_sha256=None, argv=None, query=None,
                 expected_lane=None, expected_binding=None):
-    """Execute a caller-pinned named worker only after manifest verification.
-
-    Output is accepted only as one bounded LF-terminated JSON document with the
-    expected public schema and successful worker return. This is framing and
-    pin consistency, not an independently authenticated answer or source.
-    """
+    """Retired legacy entry; the closed answer validator remains importable."""
     if enabled is False:
         return {"status": "OFF"}
-    old_stdin = old_stdout = old_stderr = None
-    critical = None
-    try:
-        if enabled is not True or not (sys.flags.isolated and sys.flags.no_site and sys.flags.dont_write_bytecode):
-            raise ValueError()
-        if (type(query) is not bytes or not query or len(query) > 16000 or type(argv) is not list
-                or not argv or any(type(arg) is not str or not arg or len(arg) > 32767 for arg in argv)):
-            raise ValueError()
-        root = Path(runtime_root)
-        if not root.is_absolute() or ".." in root.parts:
-            raise ValueError()
-        code = root / "assets" / "code"
-        verifier = code / "sandbox" / "mind" / "step2" / "runtime_manifest.py"
-        outer_path = code / "tools" / "wd_q4_public_outer.py"
-        worker_path = code / "tools" / "wd_q4_lane_session_cli.py"
-        if any(name == "tools" or name.startswith("tools.") or name == "sandbox" or name.startswith("sandbox.")
-               or name == "core" or name.startswith("core.") or name == "waggledance"
-               or name.startswith("waggledance.") for name in sys.modules):
-            raise ValueError()
-        verifier_raw = _pinned(verifier, verifier_sha256)
-        namespace = {"__name__": "_wd_session_runtime_verifier", "__file__": str(verifier)}
-        exec(compile(verifier_raw, str(verifier), "exec"), namespace)
-        namespace["verify_runtime"](root, runtime_manifest, runtime_manifest_sha256,
-                                    expected_generation=runtime_generation, expected_revision=runtime_revision)
-        outer_raw = _pinned(outer_path, outer_sha256)
-        worker_raw = _pinned(worker_path, worker_sha256)
-        sys.path.insert(0, str(code))
-        public_outer = importlib.import_module("tools.wd_q4_public_outer")
-        result = public_outer.bootstrap_public_imports(
-            enabled=True, code_root=str(code), verifier_path=str(verifier), verifier_sha256=verifier_sha256,
-            public_child_sha256=child_sha256, public_query_sha256=query_sha256,
-            runtime_root=str(root), runtime_manifest=runtime_manifest, runtime_manifest_sha256=runtime_manifest_sha256,
-            runtime_generation=runtime_generation, runtime_revision=runtime_revision)
-        if (result.get("status") != "MODULES_IMPORTED" or _pinned(outer_path, outer_sha256) != outer_raw
-                or _pinned(worker_path, worker_sha256) != worker_raw):
-            raise ValueError()
-        guard = _ImportGuard(code, root / "site")
-        sys.meta_path.insert(2, guard)
-        old_stdin, old_stdout, old_stderr = sys.stdin, sys.stdout, sys.stderr
-        raw_output = _BoundedBytes()
-        sys.stdin = io.TextIOWrapper(io.BytesIO(query), encoding="utf-8")
-        sys.stdout = io.TextIOWrapper(raw_output, encoding="utf-8", newline="\n", write_through=True)
-        sys.stderr = io.TextIOWrapper(_BoundedBytes(), encoding="utf-8", write_through=True)
-        worker = importlib.import_module("tools.wd_q4_lane_session_cli")
-        if worker.__file__ != str(worker_path) or not callable(getattr(worker, "main", None)):
-            raise ValueError()
-        exit_code = worker.main(argv)
-        sys.stdout.flush()
-        raw = raw_output.getvalue()
-        if type(exit_code) is int and exit_code in (3, 4, 130):
-            critical = {3: "cleanup_unknown", 4: "timeout", 130: "interrupted"}[exit_code]
-            raise ValueError()
-        if (type(exit_code) is not int or exit_code != 0 or not raw or len(raw) > _MAX_OUTPUT
-                or not raw.endswith(b"\n") or raw.count(b"\n") != 1 or b"\r" in raw):
-            raise ValueError()
-        value = json.loads(raw[:-1].decode("utf-8", "strict"), object_pairs_hook=_unique,
-                           parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
-        return _validate_lane_answer(value, expected_lane, expected_binding)
-    except Exception:
-        pass
-    finally:
-        if old_stdin is not None:
-            sys.stdin, sys.stdout, sys.stderr = old_stdin, old_stdout, old_stderr
-    # The refusal traceback must not retain caller data in this frame. This
-    # does not scrub caller frames or objects retained by the worker itself.
-    query = argv = runtime_root = runtime_manifest = runtime_manifest_sha256 = None
+    runtime_root = runtime_manifest = runtime_manifest_sha256 = None
     runtime_generation = runtime_revision = verifier_sha256 = outer_sha256 = None
-    child_sha256 = query_sha256 = worker_sha256 = expected_lane = expected_binding = None
-    old_stdin = old_stdout = old_stderr = None
-    root = code = verifier = outer_path = worker_path = None
-    verifier_raw = outer_raw = worker_raw = namespace = public_outer = result = guard = None
-    raw_output = worker = exit_code = raw = value = None
-    if critical == "cleanup_unknown":
-        raise SessionOuterCleanupUnknown("worker_cleanup_unknown") from None
-    if critical == "timeout":
-        raise SessionOuterTimeout("worker_timeout") from None
-    if critical == "interrupted":
-        raise SessionOuterInterrupted("worker_interrupted") from None
+    child_sha256 = query_sha256 = worker_sha256 = argv = query = None
+    expected_lane = expected_binding = None
     raise SessionOuterRefused("session_outer_refused") from None

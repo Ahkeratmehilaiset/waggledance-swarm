@@ -60,6 +60,97 @@ def test_public_publisher_is_in_bundle_python_files():
     assert "tools/wd_mind_public_publish_cli.py" in _packaged_python()
 
 
+def test_on_demand_capacity_reader_is_packaged_as_an_explicit_entrypoint():
+    definition = _definition()
+    assert "sandbox/mind/capture/capacity_read.py" in _packaged_python()
+    assert definition["python_entrypoints"]["mind_capacity_read"] == "sandbox/mind/capture/capacity_read.py"
+
+
+def test_opt_in_public_status_writer_ships_with_its_fixed_wrapper():
+    definition = _definition()
+    assert "tools/wd_mind_public_event_writer.py" in _packaged_python()
+    assert definition["python_entrypoints"]["mind_public_status"] == "tools/wd_mind_public_event_writer_cli.py"
+    assert "tools/wd_mind_public_event_writer_cli.py" in _packaged_python()
+    deployer = (OPS_ROOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+    assert "'Invoke-WdMindPublicStatus.ps1'," in deployer
+
+
+@pytest.mark.parametrize("path", [
+    "tools/wd_q4_descriptor_cli.py",
+    "tools/wd_q4_descriptor_materializer.py",
+    "tools/wd_q4_descriptor_pointer.py",
+    "tools/wd_q4_lane_binding_producer.py",
+    "tools/wd_q4_staged_composer.py",
+    "tools/wd_q4_staged_composer_cli.py",
+    "tools/wd_q4_status_prefix_recovery.py",
+    "tools/wd_q4_live_snapshot_publish.py",
+    "tools/wd_q4_lifecycle_v2.py",
+    "tools/wd_q4_live_update_once.py",
+    "tools/wd_q4_live_update_recovery.py",
+    "tools/wd_q4_live_update_bootstrap.py",
+    "tools/wd_q4_genesis_bootstrap.py",
+    "tools/wd_q4_genesis_cli.py",
+    "tools/wd_q4_production_continuation.py",
+    "tools/wd_q4_production_continuation_cli.py",
+    "tools/wd_q4_cutoff_watermark.py",
+    "tools/wd_q4_continuation_orchestrator.py",
+    "tools/wd_q4_continuation_adopt.py",
+    "tools/wd_q4_continuation_adopt_recovery.py",
+    "tools/wd_q4_continuation_adopt_recovery_cli.py",
+    "tools/wd_q4_continuation_adopt_recovery_bootstrap.py",
+    "tools/wd_q4_owned_recovery_parent.py",
+    "tools/wd_q4_owned_recovery_reader.py",
+    "tools/wd_q4_continuation_orchestrator_cli.py",
+    "tools/wd_q4_continuation_orchestrator_bootstrap.py",
+    "tools/wd_q4_continuation_runtime_bootstrap.py",
+    "tools/wd_q4_genesis_snapshot_prepare.py",
+    "tools/wd_q4_genesis_request_prepare.py",
+    "tools/wd_q4_genesis_to_composer_cli.py",
+    "tools/wd_q4_live_update_config_prepare.py",
+    "tools/wd_q4_canonical_ref_verifier.py",
+    "tools/wd_q4_shared_descriptor_producer.py",
+])
+def test_shared_descriptor_builder_is_packaged_with_internal_dependencies(path, monkeypatch):
+    packaged = _packaged_python()
+    assert packaged.count(path) == 1
+    monkeypatch.setitem(globals(), "INTERNAL_ROOTS", (*INTERNAL_ROOTS, "core"))
+    reached, unresolved = _closure([path])
+    assert not unresolved, unresolved
+    assert set(reached) <= set(packaged), sorted(set(reached) - set(packaged))
+
+
+def test_packaging_alone_does_not_activate_descriptor_or_provision_writers():
+    entries = _definition()["python_entrypoints"].values()
+    assert "tools/wd_q4_descriptor_cli.py" not in entries
+    # The fixed provision CLI is opt-in and remains OFF without --enable.
+    assert _definition()["python_entrypoints"]["q4_guard_provision"] == "tools/wd_q4_guard_state_provision_cli.py"
+    assert _definition()["python_entrypoints"]["q4_genesis_composer"] == "tools/wd_q4_genesis_to_composer_cli.py"
+    assert _definition()["python_entrypoints"]["q4_update_config_prepare"] == "tools/wd_q4_live_update_config_prepare.py"
+    deployer = (REPO_ROOT / "ops/windows/reboot/Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+    assert "'Invoke-WdQ4ProvisionGuard.ps1'," in deployer
+    assert "'Invoke-WdQ4GenesisWorker.ps1'," in deployer
+    assert "'Invoke-WdQ4Continuation.ps1'," in deployer
+    assert "'Invoke-WdQ4ContinuationWorker.ps1'," in deployer
+    assert "'Invoke-WdQ4ContinuationOrchestrator.ps1'," in deployer
+    assert "'Invoke-WdQ4AdoptRecovery.ps1'," in deployer
+
+
+def test_recovery_modules_are_in_import_smoke():
+    modules = _definition()['import_smoke']['package_modules']
+    for name in ('tools.wd_q4_continuation_adopt_recovery',
+                 'tools.wd_q4_continuation_adopt_recovery_cli',
+                 'tools.wd_q4_continuation_adopt_recovery_bootstrap',
+                 'tools.wd_q4_owned_recovery_parent',
+                 'tools.wd_q4_owned_recovery_reader'):
+        assert modules.count(name) == 1
+
+
+def test_staged_composer_command_is_packaged_and_explicitly_published():
+    definition = _definition()
+    assert definition['python_entrypoints']['q4_staged_composer'] == 'tools/wd_q4_staged_composer_cli.py'
+    assert 'tools.wd_q4_staged_composer_cli' in definition['import_smoke']['package_modules']
+
+
 def test_bound_lane_transport_is_in_bundle_python_files():
     assert "tools/wd_q4_bound_lane_transport.py" in _packaged_python()
 
@@ -866,6 +957,8 @@ Q4_READONLY_FILES = frozenset({
     "sandbox/mind/step2/cell.py", "sandbox/mind/step2/corpus.py",
     "sandbox/mind/step2/encode.py", "sandbox/mind/step2/memory.py",
     "sandbox/mind/step2/q4.py", "sandbox/mind/step2/q4_descriptor.py",
+    "sandbox/mind/step2/q4_controlled_imports.py", "sandbox/mind/step2/q4_namespace_origin.py",
+    "sandbox/mind/step2/q4_native_additions.py",
     "sandbox/mind/step2/reader_slot.py", "sandbox/mind/step2/runtime_bootstrap.py",
     "sandbox/mind/step2/interpreter_identity.py",
     "sandbox/mind/step2/runtime_launcher.py", "sandbox/mind/step2/runtime_manifest.py",
@@ -880,6 +973,15 @@ Q4_READONLY_FILES = frozenset({
     "sandbox/mind/step2/status_metadata_producer.py",
     "sandbox/mind/step2/wd_q4_private_read.py",
     "sandbox/mind/step2/wd_q4_prefix_build_child.py",
+})
+# Synthetic closed-card modules, code only (lead-mind-card-package-closure-fable-20261107-v1): the card route of
+# shared_result_resolver stays OFF unless its switch holds the card module itself, and neither the resolver nor
+# the resolved child imports it; never an entrypoint, manual capability or import-smoke module
+# (tests/tools/test_card_package_closure.py).
+CARD_PACKAGE_FILES = frozenset({
+    "sandbox/mind/step2/public_knowledge_card.py",
+    "sandbox/mind/step2/shared_card_projection.py",
+    "sandbox/mind/step2/shared_card_checkpoint.py",
 })
 Q4_AGENT_API = "tools/wd_q4_agent_query.py"
 Q4_RESOLVED_CHILD = "tools/wd_q4_resolved_child.py"
@@ -1200,12 +1302,14 @@ def _assert_shadow_release_delivery(definition):
     sandbox_files = {path for path in definition["python_files"] if path.startswith("sandbox/")}
     # Q4 files are delivery-only too: the existing CLI and smoke boundaries remain unchanged.
     assert Q4_READONLY_FILES <= sandbox_files, "q4_file_drop"
-    assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES) | Q4_READONLY_FILES | {
+    assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES) | Q4_READONLY_FILES | CARD_PACKAGE_FILES | {
+        "sandbox/mind/capture/capacity_read.py",
         "sandbox/mind/step2/prefix_private_state.py",
         "sandbox/mind/step2/shared_prefix_public_producer.py",
+        "sandbox/mind/step2/shared_index_preflight.py",
     }, "deferred_sandbox_file_published"
     sandbox_entrypoints = {path for path in published if path.startswith("sandbox/")}
-    assert sandbox_entrypoints <= set(SHADOW_RELEASE_CLI.values()), "deferred_shadow_entrypoint"
+    assert sandbox_entrypoints <= set(SHADOW_RELEASE_CLI.values()) | {"sandbox/mind/capture/capacity_read.py"}, "deferred_shadow_entrypoint"
     sandbox_smoke = {name for name in definition["import_smoke"]["package_modules"]
                      if name.startswith("sandbox.")}
     assert sandbox_smoke <= set(SHADOW_RELEASE_MODULES), "deferred_shadow_smoke"
@@ -1523,6 +1627,7 @@ M0_MEASUREMENT_TOOL_FILES = (
 PREFIX_MIND_LIBRARY_FILES = (
     "sandbox/mind/step2/prefix_private_state.py",
     "sandbox/mind/step2/shared_prefix_public_producer.py",
+    "sandbox/mind/step2/shared_index_preflight.py",
     "sandbox/mind/step2/wd_q4_prefix_build_child.py",
     "tools/wd_mind_status_projection_v3.py",
     "tools/wd_mind_status_approval_issuer.py",
@@ -1693,3 +1798,101 @@ def test_m0_file_only_delivery_contract_refuses_each_boundary_mutant(relative, m
     with pytest.raises(AssertionError):
         _assert_m0_measurement_tool_delivery(mutant, relative)
     _assert_m0_measurement_tool_delivery(definition, relative)
+
+
+Q4_PROVISION_RUNNER_DEPENDENCIES = {
+    "tools/wd_q4_guard_state_provision.py": frozenset({
+        "tools/wd_q4_guard_state_binding.py",
+    }),
+    "tools/wd_q4_guard_state_provision_cli.py": frozenset({
+        "tools/wd_q4_guard_state_provision.py",
+        "tools/wd_q4_lane_caller_cli.py",
+    }),
+    "tools/wd_q4_status_prefix_runner.py": frozenset({
+        "tools/wd_q4_guard_state_binding.py",
+        "sandbox/mind/step2/shared_capture_adapter.py",
+        "sandbox/mind/step2/shared_producer.py",
+        "sandbox/mind/step2/wd_q4_prefix_build_child.py",
+        "waggledance/core/bridge_log_reader.py",
+    }),
+}
+
+
+def _assert_q4_provision_runner_delivery(definition, relative):
+    if relative == "tools/wd_q4_guard_state_provision_cli.py":
+        assert definition["python_files"].count(relative) == 1, "prefix_library_not_packaged_once"
+        entries = definition["python_entrypoints"]
+        assert entries.get("q4_guard_provision") == relative, "guard_entrypoint_missing"
+        assert list(entries.values()).count(relative) == 1, "guard_entrypoint_duplicate"
+        assert relative not in definition["manual_execution_capability"]["entrypoints"].values(), "prefix_manual_not_authorized"
+        assert relative[:-3].replace("/", ".") not in definition["import_smoke"]["package_modules"], "prefix_smoke_not_authorized"
+    else:
+        _assert_prefix_mind_library_only(definition, relative)
+    source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+    imports = {_module_path(name) for name in _internal_imports(source, "tools")}
+    assert Q4_PROVISION_RUNNER_DEPENDENCIES[relative] <= imports, "q4_runtime_import_contract_changed"
+    for dependency in imports - {None}:
+        assert definition["python_files"].count(dependency) == 1, "q4_runtime_dependency_missing"
+
+
+@pytest.mark.parametrize("relative", sorted(Q4_PROVISION_RUNNER_DEPENDENCIES))
+def test_q4_provision_and_runner_ship_as_inert_files_with_dependencies(relative):
+    _assert_q4_provision_runner_delivery(_definition(), relative)
+
+
+@pytest.mark.parametrize("relative", sorted(Q4_PROVISION_RUNNER_DEPENDENCIES))
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "dependency", "entrypoint", "manual", "smoke"])
+def test_q4_provision_runner_delivery_refuses_manifest_mutants(relative, mutation):
+    definition = deepcopy(_definition())
+    _assert_q4_provision_runner_delivery(definition, relative)
+    if mutation == "missing":
+        definition["python_files"].remove(relative)
+    elif mutation == "duplicate":
+        definition["python_files"].append(relative)
+    elif mutation == "dependency":
+        definition["python_files"].remove(sorted(Q4_PROVISION_RUNNER_DEPENDENCIES[relative])[0])
+    elif mutation == "entrypoint":
+        definition["python_entrypoints"]["not_approved"] = relative
+    elif mutation == "manual":
+        definition["manual_execution_capability"]["entrypoints"]["not_approved"] = relative
+    else:
+        definition["import_smoke"]["package_modules"].append(relative[:-3].replace("/", "."))
+    with pytest.raises(AssertionError):
+        _assert_q4_provision_runner_delivery(definition, relative)
+
+
+def test_staged_q4_provision_and_runner_import_and_stay_off(staged_mind_source):
+    # No installed bundle and no live guard: only copied allow-list bytes.
+    names = [path[:-3].replace("/", ".") for path in Q4_PROVISION_RUNNER_DEPENDENCIES]
+    names.append("sandbox.mind.step2.shared_index_preflight")
+    script = (
+        "import importlib, json, pathlib, sys\n"
+        "root = pathlib.Path(sys.argv[1]).resolve()\n"
+        "sys.path.insert(0, str(root))\n"
+        "names = json.loads(sys.argv[2])\n"
+        "loaded = {name: importlib.import_module(name) for name in names}\n"
+        "internal = {n: str(pathlib.Path(m.__file__).resolve()) for n, m in sys.modules.copy().items() "
+        "if n.split('.')[0] in ('tools','sandbox','waggledance') and getattr(m, '__file__', None)}\n"
+        "assert internal and all(pathlib.Path(p).is_relative_to(root) for p in internal.values()), internal\n"
+        "assert loaded['tools.wd_q4_guard_state_provision'].provision_guard_state() == {'status':'OFF'}\n"
+        "assert loaded['tools.wd_q4_guard_state_provision_cli'].provision_anchored() == {'status':'OFF'}\n"
+        "assert loaded['tools.wd_q4_status_prefix_runner'].run_once() == {'status':'OFF'}\n"
+        "print(json.dumps({'loaded': sorted(loaded), 'isolated': sys.flags.isolated, 'no_site': sys.flags.no_site}))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-c", script, str(staged_mind_source), json.dumps(names)],
+        cwd=staged_mind_source, capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    assert observed == {"loaded": sorted(names), "isolated": 1, "no_site": 1}
+
+
+def test_packaged_index_preflight_is_required_by_actual_q4_consumers():
+    relative = "sandbox/mind/step2/shared_index_preflight.py"
+    _assert_prefix_mind_library_only(_definition(), relative)
+    consumers = ("sandbox/mind/step2/shared_index_checkpoint.py", "tools/wd_q4_public_query.py",
+                 "tools/wd_q4_secure_transport.py")
+    for consumer in consumers:
+        source = (REPO_ROOT / consumer).read_text(encoding="utf-8")
+        assert "sandbox.mind.step2.shared_index_preflight" in _internal_imports(source, _package_of(consumer))

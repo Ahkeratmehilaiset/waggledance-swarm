@@ -10,6 +10,7 @@ import subprocess
 
 import pytest
 from tools import wd_q4_session_outer_entry as entry
+from q4_legacy_session_fixtures import legacy_bytes
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMAND = ROOT / "ops/windows/reboot/Invoke-WdQ4SessionCommand.ps1"
@@ -155,7 +156,8 @@ def test_redot_source_regression_detects_a_synthetic_reset_mutant(tmp_path):
         {"status": "UNKNOWN", "output": None}, {"status": "REFUSED"}]
 
 
-def test_real_host_and_entry_with_synthetic_query_backend(tmp_path):
+@pytest.mark.parametrize("legacy_fixture", [True, False], ids=["test-only-legacy", "packaged-refused"])
+def test_host_and_entry_with_synthetic_query_backend(tmp_path, legacy_fixture):
     path = Path(__file__).with_name("test_wd_q4_session_host_e2e.py")
     spec = importlib.util.spec_from_file_location("synthetic_host_e2e_fixture", path)
     fixture = importlib.util.module_from_spec(spec)
@@ -166,6 +168,9 @@ def test_real_host_and_entry_with_synthetic_query_backend(tmp_path):
         args.extend(("--" + key, value))
     args_ps = "@(" + ",".join(quote(value) for value in args) + ")"
     job, host, bootstrap = fixture.JOB, fixture.HOST, fixture.ENTRY
+    if legacy_fixture:
+        bootstrap = tmp_path / "test-only-legacy-entry.py"
+        bootstrap.write_bytes(legacy_bytes("outer_entry"))
     options_ps = ("JobHelper=" + quote(job) + ";JobHelperSha256=" + quote(fixture.sha(job))
         + ";Interpreter=" + quote(fixture.sys.executable)
         + ";InterpreterSha256=" + quote(fixture.sha(Path(fixture.sys.executable)))
@@ -183,5 +188,9 @@ def test_real_host_and_entry_with_synthetic_query_backend(tmp_path):
     assert result.returncode == 0, result.stderr.decode(errors="replace")
     assert fixture.QUERY not in result.stdout + result.stderr
     data = json.loads(result.stdout)
-    assert data["status"] == "UNVALIDATED"
-    assert json.loads(data["output"]) == expected
+    if legacy_fixture:
+        assert data["status"] == "UNVALIDATED"
+        assert json.loads(data["output"]) == expected
+    else:
+        # The packaged legacy route is intentionally retired; it publishes no answer.
+        assert data == {"status": "REFUSED", "output": None}

@@ -298,6 +298,10 @@ def _intra_repo_closure(entrypoints):
                 prefix = "sandbox.mind.step1" if top.startswith("lane_view") else "sandbox.mind"
                 module = f"{prefix}.{module}"
                 top = "sandbox"
+            if relative.startswith("sandbox/mind/capture/") and top == "capacity_lens":
+                # The capture CLI intentionally imports its packaged sibling as a flat module.
+                module = f"sandbox.mind.capture.{module}"
+                top = "sandbox"
             if not _is_repo_module(module) and (ROOT / "tools" / f"{top}.py").is_file():
                 # A flat-layout fallback ("from bridge_capacity_advisor import ...") names a sibling
                 # tools module: it is intra-repo code and must be packaged, never a third-party name.
@@ -340,6 +344,21 @@ def test_mind_smoke_closure_follows_unlisted_transitive_and_flat_imports(tmp_pat
     assert _module_relative("sandbox.other.example") is None
 
 
+def test_mind_capture_flat_sibling_is_in_repo_not_third_party(tmp_path, monkeypatch):
+    sources = {
+        "sandbox/mind/capture/capacity_read.py": "import capacity_lens\n",
+        "sandbox/mind/capture/capacity_lens.py": "import jsonschema\n",
+    }
+    for relative, source in sources.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    closure, third_party = _intra_repo_closure(["sandbox/mind/capture/capacity_read.py"])
+    assert closure == set(sources)
+    assert third_party == {"jsonschema"}
+
+
 def test_package_closes_over_every_intra_repo_import_and_pins_its_third_party_closure():
     # Seed with every entrypoint AND every module the import smoke loads: the gate modules reach
     # jsonschema only through modules that no entrypoint imports.
@@ -349,7 +368,13 @@ def test_package_closes_over_every_intra_repo_import_and_pins_its_third_party_cl
     closure, third_party = _intra_repo_closure(seeds)
     packaged = set(DEFINITION["python_files"])
     assert closure <= packaged, sorted(closure - packaged)
-    assert third_party == {"pydantic", "jsonschema"}, sorted(third_party)
+    # Q4's numerical and model dependencies belong to its separate CPU runtime,
+    # while the bridge wrapper retains its independently pinned small closure.
+    assert third_party == {"pydantic", "jsonschema", "faiss", "numpy", "sentence_transformers", "torch"}, sorted(third_party)
+    q4_lock = (ROOT / "ops/windows/reboot/requirements-q4-cpu-windows.txt").read_text(encoding="utf-8")
+    for distribution in ("faiss_cpu", "numpy", "sentence_transformers", "torch"):
+        pattern = rf"(?m)^{re.escape(distribution)}==[^\s]+\s+--hash=sha256:[0-9a-f]{{64}}$"
+        assert re.search(pattern, q4_lock), distribution
     lock = (ROOT / "requirements.lock.txt").read_text(encoding="utf-8")
     pinned = {
         match.group(1).lower().replace("_", "-"): match.group(2)

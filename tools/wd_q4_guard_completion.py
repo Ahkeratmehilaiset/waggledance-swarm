@@ -1,13 +1,10 @@
 """Strict cooperative consumer of one call's private cleanup witness.
 
-This unconnected protocol candidate neither launches a caller nor observes
-native cleanup. There is no public proof factory. The private registry gives
-each fixed resource owner a distinct in-process capability; future trusted
-owner code must complete ONLY its own capability AFTER its actual cleanup.
-Synthetic completions prove this protocol only, never resource cleanup.
+This protocol candidate does not launch a caller. The transport owner can now
+contribute after its own cleanup; attestation and adapter owners remain unwired.
+There is no public proof factory. Synthetic tests do not prove native cleanup.
 
-The existing real chain has no such owner contributions. It therefore cannot
-release through this consumer until separately wired and tested. Result dicts,
+The real chain cannot release until all owners are separately wired and tested. Result dicts,
 hashes, process disappearance and same-field objects do not supply a witness.
 Private Python objects are cooperative consistency, not same-user isolation or
 authentication. Introspection/monkeypatching can defeat private boundaries.
@@ -56,6 +53,11 @@ class _Witness:
     __slots__ = ()
 
 
+class _CancelUnstartedWitness:
+    """Separate from a cleanup witness; does not assert any owner completed."""
+    __slots__ = ()
+
+
 class _Registry:
     """Private per-call seam; future real owner hooks are deliberately absent."""
 
@@ -67,6 +69,11 @@ class _Registry:
         self._used = False
         self._uncertain = False
         self._lock = threading.Lock()
+        self._transport_issued = False
+        self._context = None
+        self._outer_done = False
+        self._handed_off = False
+        self._cancel_issued = None
 
     def _complete_owner(self, capability):
         # Only a retained capability object contributes, never an owner-name,
@@ -79,7 +86,8 @@ class _Registry:
 
     def _issue(self):
         with self._lock:
-            _check(not self._uncertain and not self._used and self._done == set(_OWNERS))
+            _check(not self._uncertain and not self._used and self._done == set(_OWNERS)
+                   and (self._context is None or self._outer_done))
             if self._issued is None:
                 self._issued = _Witness()
             return self._issued
@@ -88,23 +96,205 @@ class _Registry:
         with self._lock:
             self._uncertain = True
             self._issued = None
+            self._cancel_issued = None
+
+    def _transport_owner(self):
+        with self._lock:
+            _check(not self._uncertain and not self._used and self._context is None and not self._transport_issued
+                   and "transport" not in self._done)
+            self._transport_issued = True
+            return _TransportOwner(self, self._owners["transport"])
 
     def _consume(self, witness, binding, release):
         # Hold the registry lock across verification/delete: simultaneous
         # consumers cannot both consume a token. File bytes/id still fence a
         # newer process's marker; this does not supply OS-user authentication.
         with self._lock:
-            _check(not self._uncertain and not self._used
-                   and self._done == set(_OWNERS) and binding == self._binding
-                   and type(witness) is _Witness and witness is self._issued)
+            normal = (type(witness) is _Witness and witness is self._issued
+                      and (self._context is None or self._outer_done)
+                      and self._done == set(_OWNERS))
+            ctx = self._context
+            cancelled = (type(witness) is _CancelUnstartedWitness
+                         and witness is self._cancel_issued and ctx is not None
+                         and ctx._state == "cancelled" and not self._handed_off
+                         and not self._done and not self._outer_done
+                         and all(ticket._state == "new" for ticket in ctx._tickets.values()))
+            _check(not self._uncertain and not self._used and binding == self._binding
+                   and (normal or cancelled))
             try:
                 release()
             except BaseException:
                 self._uncertain = True
                 self._issued = None
+                self._cancel_issued = None
                 raise
             self._used = True
             self._issued = None
+            self._cancel_issued = None
+
+
+class _TransportOwner:
+    """One call-bound transport contribution; not an authentication boundary."""
+
+    __slots__ = ("_registry", "_capability", "_state")
+
+    def __init__(self, registry, capability):
+        self._registry, self._capability, self._state = registry, capability, "new"
+
+    def _begin(self):
+        # Linearize admission against all registry uncertainty and completion
+        # transitions. An already-unknown call must not enter the native chain.
+        with self._registry._lock:
+            if (self._registry._context is not None
+                    and self._registry._context._state == "cancelled"
+                    and not self._registry._used):
+                self._registry._uncertain = True
+                self._registry._cancel_issued = None
+            _check(self._state == "new" and not self._registry._uncertain
+                   and not self._registry._used and "transport" not in self._registry._done
+                   and (self._registry._context is None or
+                        (self._registry._context._state == "active" and
+                         self._registry._context._tickets["transport"] is self)))
+            self._registry._handed_off = True
+            self._state = "started"
+
+    def _complete(self):
+        _check(self._state == "started")
+        self._registry._complete_owner(self._capability)
+        self._state = "done"
+
+    def _unknown(self):
+        self._registry._unknown()
+        self._state = "unknown"
+
+
+class _NamedOwner:
+    """Private, per-context cooperative owner; not a native cleanup proof."""
+
+    __slots__ = ("_registry", "_capability", "_state")
+    _name = None
+
+    def __init__(self, registry, capability):
+        self._registry, self._capability, self._state = registry, capability, "new"
+
+    def _begin(self):
+        with self._registry._lock:
+            ctx = self._registry._context
+            if ctx is not None and ctx._state == "cancelled" and not self._registry._used:
+                self._registry._uncertain = True
+                self._registry._cancel_issued = None
+            _check(self._state == "new" and ctx is not None and ctx._state == "active"
+                   and ctx._tickets[self._name] is self and not self._registry._uncertain
+                   and not self._registry._used and self._name not in self._registry._done)
+            self._registry._handed_off = True
+            self._state = "started"
+
+    def _complete(self):
+        _check(self._state == "started")
+        self._registry._complete_owner(self._capability)
+        self._state = "done"
+
+    def _unknown(self):
+        self._registry._unknown()
+        self._state = "unknown"
+
+
+class _AttestationOwner(_NamedOwner):
+    _name = "attestation"
+
+
+class _AdapterOwner(_NamedOwner):
+    _name = "adapter"
+
+
+class _OwnerContext:
+    """One guard's outer-call barrier and three distinct private tickets.
+
+    The outer owner must call _finish only after its real operation and all
+    cleanup have ended, and _abort for uncertain completion. This class cannot
+    observe native cleanup or authenticate a same-user caller.
+    """
+
+    __slots__ = ("_guard", "_registry", "_binding", "_tickets", "_state")
+
+    def __init__(self, guard, registry, binding):
+        self._guard, self._registry, self._binding, self._state = guard, registry, binding, "active"
+        self._tickets = {
+            "transport": _TransportOwner(registry, registry._owners["transport"]),
+            "attestation": _AttestationOwner(registry, registry._owners["attestation"]),
+            "adapter": _AdapterOwner(registry, registry._owners["adapter"]),
+        }
+
+    def _cancelled_access_locked(self):
+        # A late user of a cancellation candidate makes the no-entry claim
+        # uncertain if it has not already been consumed.
+        if self._state == "cancelled" and not self._registry._used:
+            self._registry._uncertain = True
+            self._registry._cancel_issued = None
+
+    def _ticket(self, name):
+        with self._registry._lock:
+            self._cancelled_access_locked()
+            _check(self._registry._context is self and self._state == "active"
+                   and not self._registry._uncertain and not self._registry._used
+                   and type(name) is str and name in self._tickets)
+            return self._tickets[name]
+
+    def _handoff(self):
+        """Cooperatively seal before exposing this context or tickets to a callee."""
+        with self._registry._lock:
+            self._cancelled_access_locked()
+            _check(self._registry._context is self and self._state == "active"
+                   and self._guard._registry is self._registry
+                   and self._binding == self._registry._binding
+                   and not self._registry._uncertain and not self._registry._used)
+            self._registry._handed_off = True
+
+    def _accept_ticket(self, name, ticket):
+        with self._registry._lock:
+            self._cancelled_access_locked()
+            _check(self._registry._context is self and self._state == "active"
+                   and not self._registry._uncertain and not self._registry._used
+                   and type(name) is str and name in self._tickets
+                   and ticket is self._tickets[name]
+                   and type(ticket) is {"transport": _TransportOwner, "attestation": _AttestationOwner,
+                                        "adapter": _AdapterOwner}[name])
+            return ticket
+
+    def _require_done(self, names):
+        """Check exact inner-owner tickets without completing the outer call."""
+        with self._registry._lock:
+            self._cancelled_access_locked()
+            _check(self._registry._context is self and self._state == "active"
+                   and self._guard._registry is self._registry and self._binding == self._registry._binding
+                   and not self._registry._uncertain and not self._registry._used
+                   and type(names) is tuple and 0 < len(names) <= len(_OWNERS)
+                   and all(type(name) is str and name in _OWNERS for name in names)
+                   and len(set(names)) == len(names))
+            types = {"transport": _TransportOwner, "attestation": _AttestationOwner, "adapter": _AdapterOwner}
+            for name in names:
+                ticket = self._tickets[name]
+                _check(type(ticket) is types[name] and ticket._registry is self._registry
+                       and ticket._capability is self._registry._owners[name]
+                       and ticket._state == "done" and name in self._registry._done)
+
+    def _finish(self):
+        with self._registry._lock:
+            self._cancelled_access_locked()
+            _check(self._registry._context is self and self._state == "active"
+                   and not self._registry._uncertain and not self._registry._used
+                   and self._registry._done == set(_OWNERS)
+                   and all(ticket._state == "done" for ticket in self._tickets.values()))
+            self._registry._outer_done = True
+            self._state = "finished"
+
+    def _abort(self):
+        with self._registry._lock:
+            _check(self._registry._context is self and not self._registry._used)
+            self._registry._uncertain = True
+            self._registry._issued = None
+            self._registry._cancel_issued = None
+            self._state = "unknown"
 
 
 class _Guard:
@@ -116,6 +306,69 @@ class _Guard:
 
     def mark_unknown(self):
         self._registry._unknown()
+
+    def _transport_owner(self):
+        _check(not self._closed)
+        self._root.revalidate()
+        return self._registry._transport_owner()
+
+    def _owner_context(self):
+        _check(not self._closed)
+        self._root.revalidate()
+        with self._registry._lock:
+            _check(not self._registry._uncertain and not self._registry._used
+                   and self._registry._context is None and not self._registry._transport_issued
+                   and not self._registry._done and self._registry._issued is None)
+            ctx = _OwnerContext(self, self._registry, self._binding)
+            self._registry._context = ctx
+            self._registry._transport_issued = True
+            return ctx
+
+    def _accept_owner_context(self, ctx):
+        _check(type(ctx) is _OwnerContext)
+        with self._registry._lock:
+            if self._registry._context is ctx:
+                ctx._cancelled_access_locked()
+            _check(self._registry._context is ctx and ctx._guard is self
+                   and ctx._registry is self._registry and ctx._binding == self._binding
+                   and ctx._state == "active" and not self._registry._uncertain
+                   and not self._registry._used and not self._closed)
+            return ctx
+
+    def _cancel_unstarted(self, ctx):
+        """Issue a distinct one-use witness only before cooperative handoff/entry.
+
+        The caller must mark handoff before publishing any context or ticket;
+        Python object privacy cannot enforce that contract against hostile callers.
+        """
+        with self._registry._lock:
+            try:
+                _check(type(ctx) is _OwnerContext and self._registry._context is ctx
+                       and ctx._guard is self and ctx._registry is self._registry
+                       and ctx._binding == self._binding == self._registry._binding
+                       and ctx._state == "active" and not self._closed
+                       and not self._registry._uncertain and not self._registry._used
+                       and not self._registry._handed_off and not self._registry._done
+                       and not self._registry._outer_done and self._registry._issued is None
+                       and self._registry._cancel_issued is None
+                       and set(ctx._tickets) == set(_OWNERS))
+                types = {"transport": _TransportOwner, "attestation": _AttestationOwner,
+                         "adapter": _AdapterOwner}
+                for name in _OWNERS:
+                    ticket = ctx._tickets[name]
+                    _check(type(ticket) is types[name] and ticket._registry is self._registry
+                           and ticket._capability is self._registry._owners[name]
+                           and ticket._state == "new")
+                witness = _CancelUnstartedWitness()
+                ctx._state = "cancelled"
+                self._registry._cancel_issued = witness
+                return witness
+            except BaseException:
+                if not self._registry._used:
+                    self._registry._uncertain = True
+                    self._registry._issued = None
+                    self._registry._cancel_issued = None
+                raise
 
     def _clear_own_marker(self):
         self._root.revalidate()

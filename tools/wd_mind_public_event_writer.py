@@ -47,10 +47,53 @@ def _digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _active_environment() -> dict:
+    """Keep candidate code and inherited bridge anchors separate per child."""
+    env = dict(os.environ)
+    active = env.get("WD_MIND_PUBLIC_ACTIVE_MANIFEST_SHA256", env.get("WD_REBOOT_EXPECTED_MANIFEST_HASH", ""))
+    if not _HEX.fullmatch(active):
+        raise ValueError()
+    env["WD_REBOOT_EXPECTED_MANIFEST_HASH"] = active
+    return env
+
+
+def _policy_fleet_bytes() -> tuple[bytes, bytes, bytes]:
+    """Read checkout inputs or candidate-bundle inputs from the candidate pin."""
+    if ROOT.name != "tools-bootstrap":
+        return ((ROOT / "configs/mind/pilot_non_review_policy.json").read_bytes(),
+                (ROOT / "configs/mind/pilot_public_status_policy.json").read_bytes(),
+                (ROOT / "ops/windows/reboot/wd-fleet.json").read_bytes())
+    bundle = ROOT.parent
+    anchor = os.environ.get("WD_REBOOT_EXPECTED_MANIFEST_HASH", "")
+    if not _HEX.fullmatch(anchor):
+        raise ValueError()
+    raw = (bundle / "deployment-manifest.json").read_bytes()
+    if not 0 < len(raw) <= 16 * 1024 * 1024 or _digest(raw).lower() != anchor.lower():
+        raise ValueError()
+    manifest = json.loads(raw)
+    if type(manifest) is not dict or type(manifest.get("files")) is not dict:
+        raise ValueError()
+    files = manifest["files"]
+    items = ((ROOT / "tools/wd_mind_public_event_writer.py", "tools-bootstrap/tools/wd_mind_public_event_writer.py"),
+             (ROOT / "configs/mind/pilot_non_review_policy.json", "tools-bootstrap/configs/mind/pilot_non_review_policy.json"),
+             (ROOT / "configs/mind/pilot_public_status_policy.json", "tools-bootstrap/configs/mind/pilot_public_status_policy.json"),
+             (bundle / "wd-fleet.json", "wd-fleet.json"))
+    values = []
+    for path, key in items:
+        pin = files.get(key)
+        if not isinstance(pin, str) or not _HEX.fullmatch(pin):
+            raise ValueError()
+        data = path.read_bytes()
+        if len(data) > 1024 * 1024 or _digest(data).lower() != pin.lower():
+            raise ValueError()
+        values.append(data)
+    return values[1], values[2], values[3]
+
+
 def _pinned_helpers() -> tuple[Path, Path]:
     """Verify inherited manifest anchor and both helper bytes before execution."""
     raw_bin = os.environ.get("WD_BRIDGE_BIN", "")
-    anchor = os.environ.get("WD_REBOOT_EXPECTED_MANIFEST_HASH", "")
+    anchor = _active_environment()["WD_REBOOT_EXPECTED_MANIFEST_HASH"]
     if not raw_bin or not _HEX.fullmatch(anchor):
         raise ValueError()
     bin_dir = Path(raw_bin).resolve(strict=True)
@@ -61,6 +104,29 @@ def _pinned_helpers() -> tuple[Path, Path]:
     if len(raw) > 16 * 1024 * 1024 or _digest(raw).lower() != anchor.lower():
         raise ValueError()
     files = json.loads(raw)["files"]
+    registry_name = "tools-bootstrap/configs/bridge_identity_registry.json"
+    registry = bundle / registry_name
+    registry_pin = files[registry_name]
+    if (not isinstance(registry_pin, str) or not _HEX.fullmatch(registry_pin)
+            or _digest(registry.read_bytes()).lower() != registry_pin.lower()):
+        raise ValueError()
+    # The two entry helpers load sibling scripts with dot-sourcing. Verify all
+    # packaged PowerShell helpers in this pinned active manifest, not just the
+    # entry scripts, before either subprocess can run.
+    prefix = "tools-bootstrap/.agent-bridge/bin/"
+    helper_entries = [name for name in files if name.startswith(prefix) and name.lower().endswith(".ps1")]
+    if not helper_entries:
+        raise ValueError()
+    for relative in helper_entries:
+        leaf = relative[len(prefix):]
+        if not leaf or "/" in leaf or "\\" in leaf or leaf in (".", ".."):
+            raise ValueError()
+        path = bin_dir / leaf
+        expected = files[relative]
+        if (not isinstance(expected, str) or not _HEX.fullmatch(expected)
+                or path.resolve(strict=True).parent != bin_dir
+                or _digest(path.read_bytes()).lower() != expected.lower()):
+            raise ValueError()
     result = []
     for name in ("Get-BridgeExecutionEvidence.ps1", "Write-AgentEvent.ps1"):
         path = bin_dir / name
@@ -79,7 +145,7 @@ def _powershell() -> str:
 def _attest() -> dict:
     evidence, _ = _pinned_helpers()
     result = subprocess.run([_powershell(), "-NoProfile", "-NonInteractive", "-File", str(evidence)],
-                            capture_output=True, text=True, timeout=30, check=True)
+                            capture_output=True, text=True, timeout=30, check=True, env=_active_environment())
     return json.loads(result.stdout)
 
 
@@ -87,7 +153,7 @@ def _write(event: dict) -> dict:
     _, writer = _pinned_helpers()
     # Remove uncontrolled free-text metadata; the writer still derives the
     # actor UUID, session and run from the inherited launch frame.
-    env = dict(os.environ)
+    env = _active_environment()
     env.pop("AGENT_BRIDGE_ROLE", None)
     env.pop("AGENT_BRIDGE_CAPABILITIES", None)
     command = [_powershell(), "-NoProfile", "-NonInteractive", "-File", str(writer),
@@ -120,9 +186,7 @@ def _write(event: dict) -> dict:
 
 
 def _validated_event() -> dict:
-    policy = (ROOT / "configs/mind/pilot_non_review_policy.json").read_bytes()
-    public = (ROOT / "configs/mind/pilot_public_status_policy.json").read_bytes()
-    roster = (ROOT / "ops/windows/reboot/wd-fleet.json").read_bytes()
+    policy, public, roster = _policy_fleet_bytes()
     policy_sha, public_sha, roster_sha = _digest(policy), _digest(public), _digest(roster)
     # The two digests per file pin the exact Git LF blob and its known CRLF
     # checkout. No byte normalization or caller-supplied trust anchor occurs.

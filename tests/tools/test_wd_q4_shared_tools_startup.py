@@ -180,10 +180,19 @@ def _sha(value):
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize("case", ["ok", "off", "half", "descriptor", "fleet", "manifest", "helper", "identity", "runtime", "old_q4"])
+@pytest.mark.parametrize("case", ["ok", "off", "half", "descriptor", "fleet", "manifest", "helper", "identity", "runtime", "old_q4", "missing_recall", "tampered_recall", "missing_resolver", "missing_pin", "invalid_pin"])
 def test_tools_reference_uses_pinned_fleet_identity_and_descriptor(tmp_path, ps, case):
     helper = tmp_path / "Get-WdQ4SharedSessionConfig.ps1"
     helper.write_bytes((REBOOT / helper.name).read_bytes())
+    extras = {}
+    for name in ("Invoke-WdQ4LaneRecall.ps1", "Get-WdQ4DefaultDescriptor.ps1"):
+        path = tmp_path / name
+        path.write_text("# synthetic helper\n", encoding="utf-8")
+        extras[name] = _sha(path.read_bytes()).upper()
+    if case == "missing_pin":
+        extras.pop("Invoke-WdQ4LaneRecall.ps1")
+    if case == "invalid_pin":
+        extras["Invoke-WdQ4LaneRecall.ps1"] = "bad"
     lanes = ["codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"]
     identity = "11111111-1111-1111-1111-111111111111"
     fleet = {"lanes": [{"agent": name} for name in lanes if name != "codex-tools-1"],
@@ -206,12 +215,14 @@ def test_tools_reference_uses_pinned_fleet_identity_and_descriptor(tmp_path, ps,
     descriptor.write_bytes(raw)
     deployment = tmp_path / "deployment-manifest.json"
     deployment.write_bytes(json.dumps({"files": {"wd-fleet.json": _sha(fleet_raw).upper(),
-        helper.name: _sha(helper.read_bytes()).upper()}}).encode())
+        helper.name: _sha(helper.read_bytes()).upper(), **extras}}).encode())
     manifest_pin, descriptor_pin = _sha(deployment.read_bytes()), _sha(raw)
     agent_uuid = identity if case != "identity" else "22222222-2222-2222-2222-222222222222"
     runtime = tmp_path if case != "runtime" else tmp_path / "wrong"
     if case == "off":
         descriptor, descriptor_pin = "", ""
+        for name in extras:
+            (tmp_path / name).unlink()
     elif case == "half":
         descriptor_pin = ""
     elif case == "descriptor":
@@ -222,6 +233,11 @@ def test_tools_reference_uses_pinned_fleet_identity_and_descriptor(tmp_path, ps,
         manifest_pin = "0" * 64
     elif case == "helper":
         helper.write_bytes(helper.read_bytes() + b"\n# changed")
+    elif case in ("missing_recall", "tampered_recall"):
+        path = tmp_path / "Invoke-WdQ4LaneRecall.ps1"
+        path.unlink() if case == "missing_recall" else path.write_bytes(b"changed")
+    elif case == "missing_resolver":
+        (tmp_path / "Get-WdQ4DefaultDescriptor.ps1").unlink()
     names = ("Test-PathAtOrBelow", "Assert-DirectoryPathWithoutReparse", "Assert-FilePathWithoutReparse", "Read-Utf8FileSnapshot",
              "Get-WdToolsSharedQ4Reference", "Clear-WdInheritedQ4ReadSettings")
     script = "\n".join(load(TOOLS, name) for name in names)

@@ -497,3 +497,38 @@ def test_repeated_empty_delta_is_a_verified_no_change_not_a_refusal_and_not_a_pu
     report_b = _publish(_request(config_b, root, "gen-b", predecessor=predecessor_p1))
     assert report_b["status"] == "PUBLISHED_HISTORY" and report_b["records"] == 5
     assert _public_read(root, report_b["pointer_sha256"])["generation"] == "gen-b"
+
+
+from tests.tools.test_wd_q4_genesis_bootstrap import synthetic as genesis_synthetic
+
+
+def test_cutoff_caught_up_at_eof_preserves_pointer_and_cutoff_watermark(genesis_synthetic, monkeypatch):
+    from pathlib import Path
+    from tests.tools import test_wd_q4_genesis_bootstrap as base
+    from tools import wd_q4_production_continuation as continuation
+    args, _ = genesis_synthetic
+    base.test_late_skip_real_producer_publishes_every_public_row_after_the_skip(genesis_synthetic, monkeypatch)
+    raw_tuple = (Path(args['private_state_root']) / 'q4-genesis-tuple-v1.json').read_bytes()
+    pointer = Path(args['checkpoint_root']) / 'q4-latest.json'
+    common = dict(enabled=True, tuple_bytes=raw_tuple, expected_tuple_sha256=base.sha(raw_tuple),
+                  expected_pointer_sha256=base.sha(pointer.read_bytes()), policy_bytes=args['policy_bytes'],
+                  public_policy_bytes=args['public_policy_bytes'], fleet_bytes=args['fleet_bytes'],
+                  expected_fleet_sha256=args['expected_fleet_sha256'], watermark_enabled=True)
+    first = continuation.continue_once(**common, cutoff_utc='2026-10-31T13:02:00Z',
+        previous_cutoff_utc='2026-10-31T13:00:00Z', expected_watermark_record_sha256=None)
+    assert first['status'] == 'DEFERRED'
+    second = continuation.continue_once(**common, cutoff_utc='2026-10-31T13:03:00Z',
+        previous_cutoff_utc='2026-10-31T13:02:00Z',
+        expected_watermark_record_sha256=first['watermark_record_sha256'])
+    assert second['status'] == 'DEFERRED'
+    assert second['pointer_sha256'] == first['pointer_sha256']
+    assert second['watermark_record_sha256'] != first['watermark_record_sha256']
+    for directory in (Path(args['private_state_root']), Path(args['checkpoint_root'])):
+        assert not (directory / '.wd-q4-status-prefix-runner.pending').exists()
+    orphan = Path(args['private_state_root']) / '.wd-q4-status-prefix-runner.pending'
+    orphan.write_bytes(b'synthetic orphan\n')
+    with pytest.raises(continuation.ContinuationUnknown):
+        continuation.continue_once(**common, cutoff_utc='2026-10-31T13:04:00Z',
+            previous_cutoff_utc='2026-10-31T13:03:00Z',
+            expected_watermark_record_sha256=second['watermark_record_sha256'])
+    assert orphan.read_bytes() == b'synthetic orphan\n'

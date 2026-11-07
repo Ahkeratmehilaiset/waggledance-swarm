@@ -89,6 +89,22 @@ class Q4:
         self.w = np.vstack([entry["w"] for entry in self.entries]) if self.entries else np.zeros((0, dim), np.float32)
         self.d = np.vstack([entry["d"] for entry in self.entries]) if self.entries else np.zeros((0, dim), np.float32)
         self.available = np.array([entry["row"]["provenance"]["available_utc"] for entry in self.entries], dtype=str)
+        # Legacy records have no expiry. A public card, or any record which
+        # explicitly supplies expiry metadata, is eligible only while that
+        # metadata parses and the query is strictly before its deadline.
+        self.expiry = []
+        invalid_expiry = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+        for entry in self.entries:
+            provenance = entry["row"]["provenance"]
+            if "valid_until_utc" not in provenance and provenance.get("source_kind") != "shared_closed_card":
+                self.expiry.append(None)
+                continue
+            raw_until = provenance.get("valid_until_utc")
+            try:
+                until = corpus_mod.parse_utc(raw_until) if isinstance(raw_until, str) else None
+            except (TypeError, ValueError, OverflowError):
+                until = None
+            self.expiry.append(until if until is not None else invalid_expiry)
         self.lexical = Lexical([entry["text"] for entry in self.entries], self.rule["bm25_k1"], self.rule["bm25_b"])
         size = self.rule["self_match_shingle"]
         self.joined = []
@@ -124,11 +140,14 @@ class Q4:
             return self._out("REFUSED", "situation_time_invalid", [], {}, started)
         limit = corpus_mod.utc_text(when - dt.timedelta(seconds=self.rule["guard_band_s"]))
         fresh = self.available < limit
+        current = np.fromiter((until is None or when < until for until in self.expiry), dtype=bool,
+                              count=len(self.entries))
         self_match = self._self_matches(situation)
-        candidate = fresh & ~self_match
+        candidate = fresh & current & ~self_match
         telemetry = {"records": len(self.entries), "candidates": int(candidate.sum()),
                      "excluded_not_before_situation": int((~fresh).sum()),
-                     "excluded_self_match": int((fresh & self_match).sum())}
+                     "excluded_expired": int((fresh & ~current).sum()),
+                     "excluded_self_match": int((fresh & current & self_match).sum())}
         if not candidate.any():
             return self._out("DEGRADED" if self.quarantined else "ABSTAIN", "empty_cell", [], telemetry, started)
         if telemetry["candidates"] <= self.rule["agree_depth"]:

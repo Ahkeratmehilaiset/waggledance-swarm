@@ -341,6 +341,14 @@ function Get-WdToolsSharedQ4Reference {
         $helper = Join-Path $BundleRoot 'Get-WdQ4SharedSessionConfig.ps1'
         Assert-FilePathWithoutReparse -Candidate $helper -Root $TrustedRoot
         $helperSnapshot = Read-Utf8FileSnapshot -Path $helper
+        foreach ($name in @('Invoke-WdQ4LaneRecall.ps1', 'Get-WdQ4DefaultDescriptor.ps1')) {
+            $pin = $deployment.files.PSObject.Properties[$name]
+            if ($null -eq $pin -or [string]$pin.Value -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'invalid' }
+            $path = Join-Path $BundleRoot $name
+            Assert-FilePathWithoutReparse -Candidate $path -Root $TrustedRoot
+            $snapshot = Read-Utf8FileSnapshot -Path $path
+            if ($snapshot.Hash -cne ([string]$pin.Value).ToUpperInvariant()) { throw 'invalid' }
+        }
         if ($helperSnapshot.Hash -cne ([string]$helperPin.Value).ToUpperInvariant() -or
             (Get-FileHash -LiteralPath $DeploymentManifestPath -Algorithm SHA256).Hash -cne $ExpectedManifestSha256.ToUpperInvariant()) { throw 'invalid' }
         . ([scriptblock]::Create([string]$helperSnapshot.Text))
@@ -350,6 +358,18 @@ function Get-WdToolsSharedQ4Reference {
         return [pscustomobject]@{ WD_Q4_SHARED_DESCRIPTOR_PATH = $DescriptorPath;
             WD_Q4_SHARED_DESCRIPTOR_SHA256 = $DescriptorSha256 }
     } catch { throw 'q4_shared_reference_refused' }
+}
+
+function Get-WdQ4P1StartupGuidance {
+    param([string] $Text, [bool] $DescriptorValidated)
+    if (-not $DescriptorValidated) { return $Text }
+    $previous = 'do not combine -Runtime with -Live or -WithCoverage.'
+    if (-not $Text.Contains($previous)) { throw 'q4_p1_guidance_missing' }
+    $Text = $Text.Replace($previous, 'For the legacy static route, use -Runtime without -Live or -WithCoverage.')
+    return $Text + (' For a hash-verified card descriptor, only when its P1 selector is provisioned for this bundle, ' +
+        'the explicit live card alternative is & (Join-Path $env:WD_BRIDGE_BUNDLE_ROOT "Invoke-WdQ4LaneRecall.ps1") ' +
+        '-Runtime -Live -LiveP1; do not add -WithCoverage. If it fails, do not retry or fall back to the static snapshot. ' +
+        'This guidance does not prove a successful read.')
 }
 
 function Assert-WdToolsColdStart {
@@ -2774,6 +2794,32 @@ $prompt += (' The authoritative lane checkpoint is ' + (Join-Path $worktree '.co
     '. Reconcile it at startup and write it after each bounded slice with the pinned Write-WdLaneCurrentState.ps1 -Worktree ' +
     $worktree + '; task-specific worktree copies do not replace this lane checkpoint. Record a concrete next action and bounded next wake when work remains.')
 $prompt += (
+  ' Q4 on-demand recall: only when memory is needed and WD_Q4_SHARED_DESCRIPTOR_PATH, ' +
+  'WD_Q4_SHARED_DESCRIPTOR_SHA256 and the externally verified WD_REBOOT_EXPECTED_MANIFEST_HASH are present, ' +
+  'and a manifest-verified Invoke-WdQ4LaneRecall.ps1 is packaged, use that helper from this lane worktree ' +
+  'with the inherited lane identity and pins. Verify the helper file SHA256 against the externally anchored ' +
+  'bundle manifest before executing it. By default it invokes the pinned $env:WD_BRIDGE_PYTHON_WRAPPER ' +
+  'tools/wd_q4_lane_caller_cli.py --enabled; -Runtime selects the packaged caller runtime bootstrap. Supply UTF-8 JSON ' +
+  'with exactly "situation" and "time"; time is UTC YYYY-MM-DDTHH:MM:SSZ (optionally 1-6 fractional digits). ' +
+  'For a hash-verified descriptor whose expected_binding.card_policy_sha256 exists, pipe the JSON string to ' +
+  '& (Join-Path $env:WD_BRIDGE_BUNDLE_ROOT "Invoke-WdQ4LaneRecall.ps1") -Runtime; ' +
+  'do not combine -Runtime with -Live or -WithCoverage. For status-v2 retain the default helper route. ' +
+  'For status-v2, when the live selector is provisioned for this bundle, pipe the JSON string to ' +
+  '& (Join-Path $env:WD_BRIDGE_BUNDLE_ROOT "Invoke-WdQ4LaneRecall.ps1") -Live -WithCoverage. ' +
+  'The versioned result envelope reports coverage UNKNOWN and freshness UNKNOWN; do not assume completeness. ' +
+  'ABSTAIN with coverage UNKNOWN does not prove absence; check the bridge. ' +
+  'If it is unavailable, read the bridge; there is no fallback to an old snapshot. ' +
+  'The helper forwards stdin through an OS pipe; do not pipe directly to the wrapper. Its successful output ' +
+  'is direct stdout, not a PowerShell object; check $LASTEXITCODE and use only exit code 0 output. If pins ' +
+  'or helper are missing or the call ' +
+  'refuses, errors or times out, read the bridge. ' +
+  'There is no automatic retry after a nonzero result; exit 3 means cleanup UNKNOWN and requires reconciliation. ' +
+  'Do not use the helper internal worker switch. A stopped or incompletely exited call is UNKNOWN. ' +
+  'Use no secrets or private paths in the query; do not put raw queries or raw answers in bridge events. ' +
+  'Check referenced evidence independently; freshness and lane authentication remain UNKNOWN. This instruction ' +
+  'is not proof of an installed or used Mind and is not a vote or gate input.'
+)
+$prompt += (
     ' Public status is a separate opt-in: only when WD_MIND_PUBLIC_ENABLED is 1, use the pinned ' +
     'WD_BRIDGE_PYTHON_WRAPPER to run tools/wd_mind_public_session_cli.py with no CLI arguments, using only ' +
     'the verified session tuple. Missing configuration or refusal means unavailable; never fall back to the ' +
@@ -3268,6 +3314,7 @@ if ($Q4SharedDescriptorPath -or $Q4SharedDescriptorSha256) {
         -DeploymentManifestPath $toolsDeploymentManifestPath -ExpectedManifestSha256 $toolsExpectedManifestHash `
         -BundleRoot $PSScriptRoot -TrustedRoot $toolsTrustedDrive -Lane $agent -AgentUuid $agentUuid -RuntimeRoot $runtimeRoot
 }
+$prompt = Get-WdQ4P1StartupGuidance -Text $prompt -DescriptorValidated ($null -ne $toolsSharedQ4Values)
 $nativeToolsSaved = $null
 if ($conversationSurface -ceq 'native_terminal') { $nativeToolsSaved = Get-WdNativeToolsResumeState -Worktree $worktree }
 

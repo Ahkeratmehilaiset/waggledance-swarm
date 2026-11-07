@@ -64,6 +64,7 @@ import secrets
 import threading
 
 from tools import wd_q4_lane_session_client as session
+from tools import wd_q4_guard_completion as completion
 from tools import wd_q4_roster_from_fleet as roster
 from tools.wd_q4_fixed_parent_attestation import AttestationCleanupUnknown
 from tools.wd_q4_secure_transport import TransportCleanupUnknown
@@ -88,6 +89,9 @@ _DESCRIPTOR_KEYS = frozenset({"schema", "fleet_sha256", "lanes", "bundle_root", 
                               "max_output_bytes", "outer", "expected_binding"})
 _BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256",
                            "roster_sha256", "public_policy_sha256", "descriptor_sha256", "projection_sha256"})
+# optional card route decision pin; when the descriptor has it, the answer binding must carry the same value
+_CARD_BINDING_KEYS = _BINDING_KEYS | {"card_decision_sha256"}
+_STAGED_BINDING_KEYS = _CARD_BINDING_KEYS | {"card_policy_sha256"}
 _ANSWER_KEYS = frozenset({"schema", "lane", "status", "reason", "result_count", "results", "binding", "trust"})
 _ANSWER_SCHEMA = "wd.q4-lane-answer.v1"
 _ITEM_KEYS = frozenset({"ref_sha256", "doc_id_sha256", "stored_text"})
@@ -208,7 +212,7 @@ def _consistent_descriptor(descriptor, agent, inputs):
     if type(lanes) is not list or not all(type(lane) is str for lane in lanes) or agent not in lanes:
         _refuse()
     binding = descriptor["expected_binding"]
-    if (type(binding) is not dict or frozenset(binding) != _BINDING_KEYS
+    if (type(binding) is not dict or frozenset(binding) not in (_BINDING_KEYS, _CARD_BINDING_KEYS, _STAGED_BINDING_KEYS)
             or not all(type(value) is str and _HEX64.fullmatch(value) for value in binding.values())
             or type(descriptor["outer"]) is not dict):
         _refuse()
@@ -231,7 +235,7 @@ def _consistent_descriptor(descriptor, agent, inputs):
         value, expected = descriptor[key], inputs[key]
         if type(value) is not int or type(expected) is not int or value != expected:
             _refuse()
-    return {key: binding[key] for key in sorted(_BINDING_KEYS)}
+    return {key: binding[key] for key in sorted(binding)}
 
 
 def _validated(answer, agent, expected_binding):
@@ -254,9 +258,9 @@ def _validated(answer, agent, expected_binding):
         return "REFUSED", None, 0, None
     binding = answer["binding"]
     if (answer["status"] not in _VALIDATED or answer["reason"] != "" or type(binding) is not dict
-            or frozenset(binding) != _BINDING_KEYS
+            or frozenset(binding) != frozenset(expected_binding)
             or any(type(binding[key]) is not str or not hmac.compare_digest(binding[key], expected_binding[key])
-                   for key in _BINDING_KEYS)):
+                   for key in expected_binding)):
         return None
     for item in answer["results"]:
         if (type(item) is not dict or frozenset(item) != _ITEM_KEYS
@@ -272,7 +276,7 @@ def _validated(answer, agent, expected_binding):
 
 
 class _AdapterOwner:
-    """Unwired per-call cleanup callback adapter, not a guard or native witness.
+    """Per-call cleanup callback adapter, not a guard or native witness.
 
     The trusted integrator must supply callbacks for the distinct call-bound
     adapter ticket, never a transport or attestation ticket. Completion is
@@ -328,8 +332,29 @@ class _AdapterOwner:
 
 
 def call_lane_session(*, enabled=False, identity_bytes=None, expected_identity_sha256=None, descriptor_bytes=None,
-                      expected_descriptor_sha256=None, situation=None, time=None, inputs=None, _owner=None):
-    """One declared-consistent call of the existing chain; ``{"status": "OFF"}`` when ``enabled`` is ``False``."""
+                      expected_descriptor_sha256=None, situation=None, time=None, inputs=None, _owner=None,
+                      _owner_guard=None, _owner_context=None):
+    """Call the existing chain; the outer caller must abort any unconsumed context."""
+    if enabled is False and _owner is None:
+        return {"status": "OFF"}
+    if _owner_guard is not None or _owner_context is not None:
+        accepted = False
+        try:
+            if (type(_owner_guard) is not completion._Guard or _owner_context is None or _owner is not None
+                    or _owner_guard._accept_owner_context(_owner_context) is not _owner_context):
+                _refuse()
+            ticket = _owner_context._ticket("adapter")
+            if _owner_context._accept_ticket("adapter", ticket) is not ticket:
+                _refuse()
+            _owner = _AdapterOwner(on_begin=ticket._begin, on_complete=ticket._complete, on_unknown=ticket._unknown)
+            accepted = True
+        except BaseException as error:
+            if not isinstance(error, Exception):
+                del identity_bytes, descriptor_bytes, situation, time, inputs
+                raise
+        if not accepted:
+            del identity_bytes, descriptor_bytes, situation, time, inputs
+            raise CallerRefused("caller_refused")
     if _owner is None:
         if enabled is False:
             return {"status": "OFF"}
@@ -370,7 +395,8 @@ def call_lane_session(*, enabled=False, identity_bytes=None, expected_identity_s
         if _QUARANTINED:
             raise CallerRefused("caller_quarantined")
         result = _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_bytes,
-                              expected_descriptor_sha256, situation, time, inputs, _owner=_owner)
+                              expected_descriptor_sha256, situation, time, inputs, _owner=_owner,
+                              _owner_guard=_owner_guard, _owner_context=_owner_context)
         returned = True
     finally:
         try:
@@ -392,7 +418,7 @@ def call_lane_session(*, enabled=False, identity_bytes=None, expected_identity_s
 
 
 def _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_bytes, expected_descriptor_sha256,
-                 situation, time, inputs, _owner=None):
+                 situation, time, inputs, _owner=None, _owner_guard=None, _owner_context=None):
     global _QUARANTINED
     agent = binding = identity = descriptor = chain_inputs = None
     unknown_cleanup = False
@@ -405,6 +431,9 @@ def _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_b
         agent = _consistent_identity(identity, expected_descriptor_sha256, inputs["fleet_bytes"],
                                      inputs["expected_fleet_sha256"])
         binding = _consistent_descriptor(descriptor, agent, inputs)
+        if (_owner_guard is not None and
+                _owner_guard._binding[1:] != (agent, expected_identity_sha256, expected_descriptor_sha256)):
+            _refuse()
         chain_inputs = dict(inputs)
     except AttestationCleanupUnknown as exc:
         agent, unknown_cleanup = None, True
@@ -430,7 +459,11 @@ def _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_b
     owner_eligible = False
     _QUARANTINED = True  # pessimistic: only a confirmed outcome below clears it
     try:
-        answer = session.query_session(lane=agent, situation=situation, time=time, **chain_inputs, enabled=True)
+        if _owner_guard is None:
+            answer = session.query_session(lane=agent, situation=situation, time=time, **chain_inputs, enabled=True)
+        else:
+            answer = session.query_session(lane=agent, situation=situation, time=time, **chain_inputs, enabled=True,
+                                           _owner_guard=_owner_guard, _owner_context=_owner_context)
         validated = _validated(answer, agent, binding)
         if validated is None:
             result["inner_status"] = "output_refused"

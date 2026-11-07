@@ -1,23 +1,10 @@
-"""Default-off, caller-pinned session CLI adapter; no live discovery or launcher.
+"""Retired legacy session worker: its public entry always refuses.
 
-The caller authenticates the executable, this worker, its entire import
-closure, fleet pin and separately supplied post-deployment descriptor pin BEFORE
-starting Python. A matching hash is not authorization or caller authentication.
-The descriptor is not stored in or pinned by the fleet, avoiding a manifest
-hash cycle. Paths and hashes are configuration: referenced session data is not
-validated by this adapter. The existing session CLI checks them before query.
-
-Only the CLI reads the single bounded stdin question; neither this worker nor
-the CLI creates a question file. Output is the CLI's bounded stream, not a
-worker-validated receipt. Its caller MUST reject all stdout on nonzero exit,
-and accept exit zero only with exactly one complete newline-framed JSON reply.
-No whole-process watchdog, secure OS transport, production session identity,
-source authentication or freshness is established here. Same-process patching
-and same-user file races are outside this boundary.
-KeyboardInterrupt during preflight is returned as status 130 without emitting
-its arguments or a traceback. This does not sanitize other callers' frames.
-SystemExit preflight payloads become one fixed diagnostic; ordinary nonzero
-integer codes survive except the reserved cleanup/timeout/interruption codes.
+The former unguarded session route is not a production entrypoint. ``main``
+returns 2 without inspecting arguments, configuration or stdin, or importing
+the retired session CLI. Private parsing helpers remain importable for existing
+diagnostic users; they do not grant a route to execute a session. The separate
+guarded caller and its own validation are not modified by this module.
 """
 
 import hmac
@@ -116,26 +103,8 @@ def _cli_arguments(options, cli):
 
 
 def main(argv=None):
-    try:
-        options = _options(sys.argv[1:] if argv is None else argv)
-        if options is None:
-            return 2
-        from tools import wd_q4_lane_session_cli as cli
-        arguments = _cli_arguments(options, cli)
-    except KeyboardInterrupt:
-        return 130
-    except SystemExit as exc:
-        code = exc.code if type(exc.code) is int and 1 <= exc.code <= 255 and exc.code not in (3, 4, 130) else 2
-        try:
-            sys.stderr.write('{"error":"session_exit","authority":"none"}\n')
-        except Exception:
-            pass
-        return code
-    except Exception:
-        return 2
-    # CLI catches and labels timeout/cleanup uncertainty; don't reclassify it.
-    del options
-    return cli.main(arguments)
+    """Retired entry: refuse without reading arguments, files or stdin."""
+    return 2
 
 
 if __name__ == "__main__":

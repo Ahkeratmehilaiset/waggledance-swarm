@@ -134,6 +134,58 @@ function Add-InventoryConflict {
     $script:conflictChars+=$size
     $conflicts.Add($entry)
 }
+# One reviewed historical collision, not an ID-only exemption. Keep refs paired
+# with their independently verified request-content digests. No answer is inferred.
+$historicalId='lead-mind-shared-index-fable-20261031-v2'
+$historicalPins=[ordered]@{
+    '24ad958a518d4d0aaac3ffbc8bf30c9fc14e96b9f421bafde2b2a346f7c45db5'='3dd19b718f1829753c8cd86aee754eddc2ca8f10924aa590446c91a919123058'
+    '112488f88756d98430d7eb71c76fdccdec356b063ed10f29954c855230ea7e21'='43e076ce3d49dd07ae4b9f76c4828878508e87211fac02430d097bbc0a5b3c45'
+}
+$historicalRows=[Collections.Generic.List[object]]::new()
+$historicalConflicts=@()
+function ConvertTo-InventoryReferenceJson {
+    # Event refs use bridge_compact_view.event_id: ordinal keys, UTF-8 JSON,
+    # unescaped Unicode/HTML punctuation. The request digest has its separate
+    # existing Get-BridgeRequestContent serialization and is checked below.
+    param($Value)
+    if ($null -eq $Value) { return 'null' }
+    if ($Value -is [string]) {
+        $text=New-Object Text.StringBuilder
+        [void]$text.Append('"')
+        foreach ($character in $Value.ToCharArray()) {
+            switch ([int]$character) {
+                34 { [void]$text.Append('\"'); break }
+                92 { [void]$text.Append('\\'); break }
+                8 { [void]$text.Append('\b'); break }
+                12 { [void]$text.Append('\f'); break }
+                10 { [void]$text.Append('\n'); break }
+                13 { [void]$text.Append('\r'); break }
+                9 { [void]$text.Append('\t'); break }
+                default {
+                    if ([int]$character -lt 32) { [void]$text.Append(('\u{0:x4}' -f [int]$character)) }
+                    else { [void]$text.Append($character) }
+                }
+            }
+        }
+        [void]$text.Append('"'); return $text.ToString()
+    }
+    if ($Value -is [bool]) { return $Value.ToString().ToLowerInvariant() }
+    if ($Value -is [int] -or $Value -is [long]) { return $Value.ToString([Globalization.CultureInfo]::InvariantCulture) }
+    if ($Value -is [Collections.IDictionary] -or $Value -is [pscustomobject]) {
+        [string[]]$names=if ($Value -is [Collections.IDictionary]) { @($Value.Keys) } else { @($Value.PSObject.Properties.Name) }
+        [Array]::Sort($names,[StringComparer]::Ordinal)
+        $parts=@(foreach ($name in $names) {
+            if ($Value -is [Collections.IDictionary]) { $item=$Value[$name] }
+            else { $item=$Value.PSObject.Properties[$name].Value }
+            (ConvertTo-InventoryReferenceJson $name)+':'+(ConvertTo-InventoryReferenceJson $item)
+        })
+        return '{'+($parts -join ',')+'}'
+    }
+    if ($Value -is [Collections.IEnumerable]) {
+        return '['+(@(foreach ($item in $Value) { ConvertTo-InventoryReferenceJson $item }) -join ',')+']'
+    }
+    throw 'Historical conflict reference contains an unsupported value type'
+}
 for ($position=0; $position -lt $rows.Count; $position++) {
     $event=$rows[$position]
     $id=Get-BridgeContractField $event 'request_id'
@@ -160,6 +212,10 @@ for ($position=0; $position -lt $rows.Count; $position++) {
             -Kind (Get-InventoryBindingKind $event 'request_id' 'request_id_binding_conflict' 'malformed_request_id')
         continue
     }
+    if (-not $DiagnosticPartial -and $Agent -ceq 'codex-lead-1' -and $id -ceq $historicalId) {
+        $historicalRows.Add($event)
+        continue   # never enter a request, session, cursor or successor inventory
+    }
     if (-not $byId.ContainsKey($id)) {
         $byId[$id]=[pscustomobject]@{first_position=$position;occurrences=1;event=$event}
         $order.Add($id)
@@ -175,6 +231,25 @@ for ($position=0; $position -lt $rows.Count; $position++) {
         continue
     }
     $first.occurrences++
+}
+if ($historicalRows.Count -gt 0) {
+    if ($historicalRows.Count -ne 2) { throw 'Historical conflict requires exactly two pinned events' }
+    $verified=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($event in $historicalRows) {
+        $ref=(Get-BridgeReplyTextHash (ConvertTo-InventoryReferenceJson $event)).ToLowerInvariant()
+        if (-not $historicalPins.Contains($ref) -or
+            (Get-BridgeContractField $event 'request_digest') -cne $historicalPins[$ref] -or
+            (Get-BridgeReplyTextHash (Get-BridgeRequestContent $event)).ToLowerInvariant() -cne $historicalPins[$ref]) {
+            throw "Conflicting content for immutable request ID $historicalId; historical pair does not match"
+        }
+        [void]$verified.Add($ref)
+    }
+    if ($verified.Count -ne 2) { throw 'Historical conflict requires both exact pinned events' }
+    $historicalConflicts=@([pscustomobject]@{
+        kind='known_historical_immutable_id_conflict'; request_id=$historicalId
+        event_refs=@($historicalPins.Keys); request_digests=@($historicalPins.Values)
+        answer_state='not_evaluated'; authority_effect='none'
+    })
 }
 # -SessionId scopes the OUTPUT only. Every own row of every session went through the binding and
 # immutable-content checks above, so a session filter can never hide a conflicting row with the same
@@ -280,6 +355,9 @@ $output=[pscustomobject]@{
     answer_authority='Get-BridgeReplySnapshot.ps1 -RequestId <id> -Requester <requester>'
     note='Discovery only; answer_state never evaluated. HOLD/cancel/finding controls are separate. Re-read after append.'
     authority_effect='none'
+}
+if ($historicalConflicts.Count -gt 0) {
+    $output | Add-Member NoteProperty historical_conflicts $historicalConflicts
 }
 if ($DiagnosticPartial) {
     # A DIFFERENT typed schema, so no v2 consumer can mistake it for a complete inventory.

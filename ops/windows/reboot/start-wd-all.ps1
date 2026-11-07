@@ -65,6 +65,21 @@ function Get-WdQ4SharedForwardingArguments {
 $q4SharedForward = Get-WdQ4SharedForwardingArguments -Path $Q4SharedDescriptorPath -Sha256 $Q4SharedDescriptorSha256
 $q4SharedDirect = $q4SharedForward.direct
 
+function Get-WdQ4DryRunStatus {
+  param([AllowEmptyString()][string] $Path, [AllowEmptyString()][string] $Sha256)
+  # Absence only describes the arguments reaching this launcher; the outer
+  # resolver may have omitted them for several reasons. No file is inspected.
+  $descriptor = if ([string]::IsNullOrEmpty($Path) -and [string]::IsNullOrEmpty($Sha256)) {
+    'OFF'
+  } else {
+    'UNKNOWN'
+  }
+  return [pscustomobject]@{
+    descriptor = $descriptor; runtime = 'UNKNOWN'; interpreter = 'UNKNOWN'
+    stdlib = 'UNKNOWN'; guards = 'UNKNOWN'; query = 'UNKNOWN'
+  }
+}
+
 function Start-WdBridgeConversationWindow {
   param(
     [Parameter(Mandatory)] [string] $HostExecutable,
@@ -3629,6 +3644,9 @@ Write-Host (
 
 if ($DryRun) {
   Assert-WdBridgeSafetyBaseline -Baseline $bridgeSafetyBaseline
+  $q4DryRunStatus = Get-WdQ4DryRunStatus -Path $Q4SharedDescriptorPath -Sha256 $Q4SharedDescriptorSha256
+  Write-Host ("  Q4 descriptor forwarded: {0} (OFF means no pair was forwarded; reason not determined)" -f $q4DryRunStatus.descriptor)
+  Write-Host '  Q4 runtime, interpreter, stdlib, guards and query: UNKNOWN (not checked)'
   if (-not $NoBridgeConversation) {
     Write-Host '  Bridge conversation: would open a deduplicated colored read-only window before restore; not a success indicator.'
   }

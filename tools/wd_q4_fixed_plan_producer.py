@@ -129,3 +129,39 @@ def build_fixed_plan(*, enabled=False, interpreter_sha256, peer_code_sha256, ver
     if len(raw) > MAX_PLAN_BYTES:
         _refuse("limit_refused")
     return {"plan_bytes": raw, "plan_sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def build_staged_fixed_plan(*, enabled=False, interpreter_sha256, peer_code_sha256, verifier_sha256,
+        runtime_manifest_sha256, bundle_sha256, expected_pointer_sha256, policy_sha256, roster_sha256,
+        expected_public_policy_sha256, expected_source_sha256, expected_encoder_sha256,
+        runtime_generation, runtime_revision, runtime_root, runtime_manifest_path, bundle_bytes, approved_tasks,
+        card_decision_sha256, card_policy_sha256, wrapper_sha256, deployment_manifest_sha256,
+        public_plan_sha256, host_sha256, backend_sha256, bundle_root, bundle_commit, wrapper_path, public_plan_path):
+    """Build the closed staged-card plan; caller must independently authorize every pin."""
+    base = build_fixed_plan(enabled=enabled, interpreter_sha256=interpreter_sha256,
+        peer_code_sha256=peer_code_sha256, verifier_sha256=verifier_sha256,
+        runtime_manifest_sha256=runtime_manifest_sha256, bundle_sha256=bundle_sha256,
+        expected_pointer_sha256=expected_pointer_sha256, policy_sha256=policy_sha256, roster_sha256=roster_sha256,
+        expected_public_policy_sha256=expected_public_policy_sha256, expected_source_sha256=expected_source_sha256,
+        expected_encoder_sha256=expected_encoder_sha256, runtime_generation=runtime_generation,
+        runtime_revision=runtime_revision, runtime_root=runtime_root, runtime_manifest_path=runtime_manifest_path,
+        bundle_bytes=bundle_bytes, approved_tasks=approved_tasks)
+    document = json.loads(base['plan_bytes'])
+    for key, value in (('card_decision_sha256',card_decision_sha256), ('card_policy_sha256',card_policy_sha256),
+                       ('wrapper_sha256',wrapper_sha256), ('deployment_manifest_sha256',deployment_manifest_sha256),
+                       ('public_plan_sha256',public_plan_sha256), ('host_sha256',host_sha256),
+                       ('backend_sha256',backend_sha256)):
+        document[key] = _pin(value)
+    for key, value in (('bundle_root',bundle_root), ('wrapper_path',wrapper_path),
+                       ('public_plan_path',public_plan_path)):
+        document[key] = _path(value)
+    if any(value[0].lower() != 'c' for value in (runtime_root, runtime_manifest_path, bundle_root, wrapper_path, public_plan_path)):
+        _refuse('path_refused')
+    if _fold(wrapper_path) != _fold(bundle_root + r'\Invoke-WdQ4Query.ps1'):
+        _refuse('path_refused')
+    document.update(schema='wd.q4-fixed-plan.v3', backend='staged-card-wrapper-v1',
+                    bundle_commit=_pin(bundle_commit, re.compile(r'[0-9a-f]{40}\Z')))
+    raw = json.dumps(document, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False).encode('ascii')
+    if len(raw) > MAX_PLAN_BYTES:
+        _refuse('limit_refused')
+    return {'plan_bytes':raw, 'plan_sha256':hashlib.sha256(raw).hexdigest()}

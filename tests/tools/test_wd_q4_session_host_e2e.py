@@ -1,4 +1,4 @@
-"""Synthetic host -> real entry -> real outer -> real session CLI.
+"""Synthetic host -> test-only historical entry -> outer -> session CLI.
 
 Only the session query backend is synthetic. This
 does not prove real retrieval, source freshness, authentication, install or
@@ -15,6 +15,7 @@ import subprocess
 import sys
 
 import pytest
+from q4_legacy_session_fixtures import legacy_bytes
 
 from sandbox.mind.step2 import runtime_builder
 
@@ -29,6 +30,13 @@ QUERY = b"q4-e2e-query-only-2683c489"
 ANSWER_QUERY = b"q4-e2e-answer-only-8054b638"
 
 pytestmark = pytest.mark.skipif(os.name != "nt" or not PWSH, reason="Windows PowerShell 7 required")
+
+
+@pytest.fixture(autouse=True)
+def legacy_entry_path(monkeypatch, tmp_path):
+    entry = tmp_path / "test-only-legacy-entry.py"
+    entry.write_bytes(legacy_bytes("outer_entry"))
+    monkeypatch.setitem(globals(), "ENTRY", entry)
 
 
 def sha(path):
@@ -49,9 +57,9 @@ def plan(tmp_path):
     root = Path(inputs["runtime_root"])
     code = root / "assets/code"
     outer = code / "tools/wd_q4_session_outer_synthetic.py"
-    outer.write_bytes(OUTER.read_bytes())
+    outer.write_bytes(legacy_bytes("outer_synthetic"))
     worker = code / "tools/wd_q4_lane_session_cli.py"
-    worker.write_bytes(CLI.read_bytes())
+    worker.write_bytes(legacy_bytes("session_cli"))
     # Only the session query seam is substituted; argv and stdin assertions
     # run INSIDE the synthetic child and are not written to an artifact.
     _, answer, reason = fixtures._projected_answer("m0-snapshot-ready")
@@ -122,6 +130,13 @@ def test_default_off_does_not_launch(plan):
     options, scratch, _, _ = plan
     assert call_host(options, scratch, enabled=False) == {"status": "OFF", "output": None}
     assert list(scratch.iterdir()) == []
+
+
+def test_packaged_entry_refuses_the_legacy_enabled_route(plan, monkeypatch):
+    """Exercise the current production entry, not the historical fixture."""
+    monkeypatch.setitem(globals(), "ENTRY", ROOT / "tools/wd_q4_session_outer_entry.py")
+    options, scratch, _, _ = plan
+    assert call_host(options, scratch) == {"status": "REFUSED", "output": None}
 
 
 def test_real_chain_with_synthetic_query_seam_returns_bounded_answer(plan):

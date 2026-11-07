@@ -493,3 +493,55 @@ def test_staged_card_accepts_timeout_at_lane_caller_bounds(shared_case, timeout)
     result = staged.compose_staged_card(**case)
     assert result['status'] == 'PREPARED'
     assert json.loads(Path(result['descriptor_path']).read_bytes())['timeout_seconds'] == timeout
+
+
+# --- IM1: the live selector publishes q4-live-current.json into the shared generations root ----------------------
+# After compose (baseline B), publish writes exactly that regular file at the root; the next compose (C) must admit
+# it and leave its bytes untouched. Selector temp leftovers and any other shape of that name still refuse. The
+# publication here is written with the selector's own file name and schema shape; a real publish needs the
+# candidate public plan inside its generation (layout gap reported separately), so it is not run here.
+
+def _publish_like_selector(stage, generation):
+    from tools import wd_q4_live_snapshot_publish as selector
+    raw = json.dumps({'schema': selector._SCHEMA, 'baseline_sha256': 'a' * 64, 'generation': generation,
+                      'descriptor_sha256': 'd' * 64, 'index_pointer_sha256': 'e' * 64},
+                     sort_keys=True, separators=(',', ':')).encode('ascii')
+    from tools import wd_q4_staged_composer as staged
+    assert staged._LIVE_PUBLICATION == selector._POINTER
+    target = Path(stage) / selector._POINTER
+    target.write_bytes(raw)
+    return target, raw
+
+
+def test_shared_stage_compose_publish_compose_keeps_the_publication_untouched(shared_case):
+    _shared(shared_case, _GEN_B)
+    target, raw = _publish_like_selector(shared_case['stage_dir'], _GEN_B)
+    before = _snapshot(shared_case['stage_dir'])
+    second = _shared(shared_case, _GEN_C)
+    assert second['status'] == 'PREPARED'
+    after = _snapshot(shared_case['stage_dir'])
+    assert {key: after[key] for key in before} == before and target.read_bytes() == raw
+
+
+@pytest.mark.parametrize('shape', ['temp-leftover', 'publication-dir', 'similar-name'])
+def test_shared_stage_still_refuses_selector_leftovers_and_odd_shapes(shared_case, shape):
+    from tools import wd_q4_staged_composer as staged
+    stage = Path(shared_case['stage_dir'])
+    _shared(shared_case, _GEN_B)
+    if shape == 'temp-leftover':
+        (stage / ('.q4-live-current-' + 'f' * 32 + '.tmp')).write_bytes(b'{}')
+    elif shape == 'publication-dir':
+        (stage / 'q4-live-current.json').mkdir()
+    else:
+        (stage / 'q4-live-current.json.bak').write_bytes(b'{}')
+    before = _snapshot(stage)
+    with pytest.raises(staged.ComposeRefused):
+        _shared(shared_case, _GEN_C)
+    assert _snapshot(stage) == before
+
+
+def test_default_stage_still_refuses_a_publication_file(shared_case):
+    from tools import wd_q4_staged_composer as staged
+    _publish_like_selector(shared_case['stage_dir'], _GEN_B)
+    with pytest.raises(staged.ComposeRefused):
+        staged.compose_staged_card(**shared_case)

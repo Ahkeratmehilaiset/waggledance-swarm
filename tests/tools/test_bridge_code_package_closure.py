@@ -97,6 +97,8 @@ def test_opt_in_public_status_writer_ships_with_its_fixed_wrapper():
     "tools/wd_q4_continuation_adopt_recovery.py",
     "tools/wd_q4_continuation_adopt_recovery_cli.py",
     "tools/wd_q4_continuation_adopt_recovery_bootstrap.py",
+    "tools/wd_q4_owned_recovery_parent.py",
+    "tools/wd_q4_owned_recovery_reader.py",
     "tools/wd_q4_continuation_orchestrator_cli.py",
     "tools/wd_q4_continuation_orchestrator_bootstrap.py",
     "tools/wd_q4_continuation_runtime_bootstrap.py",
@@ -136,7 +138,9 @@ def test_recovery_modules_are_in_import_smoke():
     modules = _definition()['import_smoke']['package_modules']
     for name in ('tools.wd_q4_continuation_adopt_recovery',
                  'tools.wd_q4_continuation_adopt_recovery_cli',
-                 'tools.wd_q4_continuation_adopt_recovery_bootstrap'):
+                 'tools.wd_q4_continuation_adopt_recovery_bootstrap',
+                 'tools.wd_q4_owned_recovery_parent',
+                 'tools.wd_q4_owned_recovery_reader'):
         assert modules.count(name) == 1
 
 

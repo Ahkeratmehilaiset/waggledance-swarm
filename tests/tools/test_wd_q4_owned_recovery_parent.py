@@ -78,6 +78,19 @@ def bound_pins(args):
             'tuple_sha256': args['genesis_tuple_sha256'],
             'receipt_sha256': args['receipt_sha256']}
 
+def test_parent_runs_bound_reader_and_real_recovery(actual_continuation, monkeypatch):
+    import hashlib
+    from tools import wd_q4_continuation_adopt as adopt
+    from tools import wd_q4_owned_recovery_parent as parent
+    args=actual_continuation
+    with monkeypatch.context() as scoped:
+        scoped.setattr(adopt.update,'_publish',lambda *a,**kw: (_ for _ in ()).throw(KeyboardInterrupt()))
+        with pytest.raises(adopt.AdoptInterrupted): adopt.run_once(**args)
+    reader=Path(parent.__file__).with_name('wd_q4_owned_recovery_reader.py')
+    result=parent.run_owned(**args, owner_pins=bound_pins(args), reader_sha256=hashlib.sha256(reader.read_bytes()).hexdigest())
+    assert result['status']=='NOT_ADOPTED'
+    assert set(result)=={'status','attempt','marker_id','marker_sha256'}
+
 def test_matching_owner_must_still_bind_recovery_inputs(actual_continuation, monkeypatch):
     import json
     from tests.tools.test_wd_q4_continuation_adopt_recovery import paths

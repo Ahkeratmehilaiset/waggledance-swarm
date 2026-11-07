@@ -127,8 +127,11 @@ print(json.dumps({'descriptor_sha256':chosen['configuration'][2], 'public_plan':
     baseline = caller._configuration(base_path, base_pin)
     def publish(gen):
         p, pin = descriptor(gen)
+        current = shared / 'q4-live-current.json'
+        previous = sha(current.read_bytes()) if current.exists() else None
         assert live.publish(enabled=True, baseline_path=base_path, baseline_sha256=base_pin, baseline=baseline,
             manifest_sha256=manifest_pin, p1_enabled=True, candidate_path=p, candidate_sha256=pin,
+            expected_previous_selector_sha256=previous,
             candidate=caller._configuration(p, pin))['status'] == 'PUBLISHED'
     env = {k: v for k, v in os.environ.items() if not k.startswith(('WD_BRIDGE_', 'WD_REBOOT_', 'AGENT_BRIDGE_', 'WD_Q4_'))}
     env.update(WD_BRIDGE_BUNDLE_ROOT=str(bundle), WD_BRIDGE_PYTHON_WRAPPER=str(bridge_wrapper),

@@ -74,6 +74,13 @@ def test_fixed_wrapper_command_has_no_query_or_arbitrary_code(staged):
     assert all('synthetic-secret-query' not in item for item in command)
 
 
+def test_staged_backend_preparation_is_default_off_and_refuses_unbound_input():
+    from tools import wd_q4_staged_fixed_backend as backend
+    assert backend.prepare_staged_backend(None, None, None) == {'status':'OFF'}
+    with pytest.raises(ValueError):
+        backend.prepare_staged_backend(None, None, None, enabled=True)
+
+
 @pytest.mark.parametrize('damage', ['projection','source','pointer','card_policy','plan','bundle'])
 def test_actual_c2_inputs_bind_independent_plan_before_dispatch(real_snapshot, tmp_path, damage):
     from tools import wd_q4_staged_fixed_backend as backend

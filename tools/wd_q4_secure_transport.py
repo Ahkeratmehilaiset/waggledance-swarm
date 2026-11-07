@@ -635,6 +635,19 @@ def _canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
 
 
+def _staged_path(value):
+    """A closed C-drive spelling; later handle checks still must reject reparse races."""
+    _check(type(value) is str and 3 < len(value) <= 512 and value.isascii() and value.isprintable()
+           and value[0].lower() == 'c' and value[1:3] == ':\\' and '/' not in value
+           and '\\\\' not in value and ':' not in value[2:])
+    for part in value[3:].split('\\'):
+        stem = part.split('.', 1)[0].rstrip(' ').upper()
+        _check(part not in ('', '.', '..') and not part.endswith(('.', ' '))
+               and stem not in {'CON', 'PRN', 'AUX', 'NUL', 'CONIN$', 'CONOUT$'}
+               and stem not in {prefix + str(i) for prefix in ('COM', 'LPT') for i in range(10)})
+    return value
+
+
 def _fixed_plan(plan_bytes):
     """Closed canonical plan; its digest is the binding both peers derive. Caller pins its digest."""
     _check(type(plan_bytes) is bytes and 0 < len(plan_bytes) <= _MAX_PLAN)
@@ -666,10 +679,8 @@ def _fixed_plan(plan_bytes):
             _hex64(plan[name])
         _check(type(plan["bundle_commit"]) is str and len(plan["bundle_commit"]) == 40
                and all(c in "0123456789abcdef" for c in plan["bundle_commit"]))
-        for name in ("bundle_root", "wrapper_path", "public_plan_path"):
-            value = plan[name]
-            _check(type(value) is str and 0 < len(value) <= 512 and value.isascii()
-                   and value.isprintable() and os.path.isabs(value))
+        for name in ("bundle_root", "wrapper_path", "public_plan_path", "runtime_root", "runtime_manifest_path"):
+            _staged_path(plan[name])
         _check(os.path.normcase(os.path.normpath(plan["wrapper_path"])) ==
                os.path.normcase(os.path.normpath(os.path.join(plan["bundle_root"], "Invoke-WdQ4Query.ps1"))))
     _check(_canonical(plan) == plan_bytes)

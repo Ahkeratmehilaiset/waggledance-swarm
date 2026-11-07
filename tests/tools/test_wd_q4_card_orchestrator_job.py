@@ -135,10 +135,36 @@ def test_owned_job_writes_opt_in_receipt_with_original_request_and_confirmed_cle
 @pytest.mark.parametrize('outside', [False, True])
 def test_receipt_existing_or_outside_scratch_refuses_before_job(case, outside):
     receipt = (case['tmp_path'] if outside else case['scratch']) / 'existing.json'
-    receipt.write_bytes(b'unchanged')
+    if not outside:
+        receipt.write_bytes(b'unchanged')
     result = launch(case, receipt=receipt)
     assert result.returncode == 2 and json.loads(result.stdout) == {'status': 'REFUSED'}
-    assert receipt.read_bytes() == b'unchanged' and not case['wrapper_marker'].exists()
+    assert (not receipt.exists() if outside else receipt.read_bytes() == b'unchanged')
+    assert not case['wrapper_marker'].exists()
+
+
+@pytest.mark.parametrize('leaf', ['bad space.json', 'bad.txt'])
+def test_invalid_receipt_leaf_refuses_before_job(case, leaf):
+    receipt = case['scratch'] / leaf
+    result = launch(case, receipt=receipt)
+    assert result.returncode == 2 and json.loads(result.stdout) == {'status': 'REFUSED'}
+    assert not receipt.exists() and not case['wrapper_marker'].exists()
+
+
+def test_child_refusal_never_writes_receipt(case):
+    launcher=case['bundle']/ENTRY.name
+    script=launcher.read_text(encoding='utf-8')
+    anchor=' $script:bytes=0'
+    assert script.count(anchor)==1
+    launcher.write_text(script.replace(anchor,anchor+"\n throw 'synthetic-before-wrapper'"),encoding='utf-8')
+    manifest=json.loads(case['manifest'].read_bytes()); manifest['files'][ENTRY.name]=sha(launcher.read_bytes())
+    case['manifest'].write_bytes(raw(manifest))
+    runtime=json.loads(case['runtime'].read_bytes()); runtime['manifest_sha256']=sha(case['manifest'].read_bytes())
+    case['runtime'].write_bytes(raw(runtime))
+    receipt=case['scratch']/'receipt.json'
+    result=launch(case,receipt=receipt)
+    assert result.returncode==2 and json.loads(result.stdout)=={'status':'REFUSED'}
+    assert not receipt.exists() and not case['wrapper_marker'].exists()
 
 
 @pytest.mark.parametrize('matching', [True, False])

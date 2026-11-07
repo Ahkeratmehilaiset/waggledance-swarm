@@ -36,6 +36,7 @@ def candidate(tmp_path):
         b' assert sys.stdin.buffer.read()==b"synthetic-query-canary"\n'
         b' sys.stdout.buffer.write(b"{\\"status\\":\\"SYNTHETIC\\"}\\n");return 0\n')
     caller=code/'tools/wd_q4_lane_caller_cli.py';caller.write_bytes(caller_bytes)
+    (code/'tools/__init__.py').write_bytes(b'')
     runtime=tmp_path/'runtime';(runtime/'assets/code/tools').mkdir(parents=True)
     (runtime/'assets/code/tools/__init__.py').write_bytes(b'')
     (runtime/'assets/code/tools/wd_q4_lane_caller_cli.py').write_bytes(caller_bytes)
@@ -65,6 +66,7 @@ def candidate(tmp_path):
     manifest={'schema_version':1,'source_commit':'c'*40,'files':{
         'tools-bootstrap/tools/wd_q4_lane_caller_runtime_bootstrap.py':sha(bootstrap.read_bytes()),
         'tools-bootstrap/tools/wd_q4_lane_caller_cli.py':sha(caller_bytes),
+        'tools-bootstrap/tools/__init__.py':sha(b''),
         'tools-bootstrap/sandbox/mind/step2/runtime_manifest.py':sha(verifier.read_bytes()),'wd-fleet.json':sha(fleet)}}
     manifest_path=bundle/'deployment-manifest.json';manifest_path.write_bytes(canonical(manifest))
     env=dict(os.environ,WD_REBOOT_EXPECTED_MANIFEST_HASH=sha(manifest_path.read_bytes()),
@@ -192,3 +194,101 @@ def test_abnormal_child_exit_is_unknown(candidate):
     _rebind_caller(candidate,b'def main(argv):\n import os,sys\n sys.stdin.buffer.read()\n os._exit(9)\n')
     result=execute(candidate,isolated=False)
     assert result.returncode==3 and not result.stdout
+
+
+# RB1: every imported project module must match the bundle deployment manifest bytes, not only the runtime pins.
+# RB3: verified runtime code must not shadow the standard library (or site) by path order.
+
+HELPER = 'tools/synthetic_project_helper.py'
+SUCCESS_MAIN = (b'def main(argv):\n import sys\n sys.stdin.buffer.read()\n'
+                b' sys.stdout.buffer.write(b"{\\"status\\":\\"SYNTHETIC\\"}\\n");return 0\n')
+
+
+def test_success_main_is_valid_source():
+    compile(SUCCESS_MAIN, '<success-main>', 'exec')
+    compile(main_importing(b'colorsys'), '<main-importing>', 'exec')
+
+
+def _install(candidate, *, caller_tail, runtime=None, bundle=None, drop=()):
+    """Append caller_tail to both caller copies, write extra runtime and bundle code files, rebind every pin."""
+    runtime, bundle = runtime or {}, bundle or {}
+    code = candidate['bootstrap'].parents[1]
+    for relative, raw in runtime.items():
+        target = candidate['runtime'] / 'assets/code' / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+    for relative, raw in bundle.items():
+        target = code / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+    _rebind_caller(candidate, caller_tail)
+    manifest = json.loads(candidate['manifest'].read_bytes())
+    for relative, raw in bundle.items():
+        manifest['files']['tools-bootstrap/' + relative] = sha(raw)
+    for relative in drop:
+        del manifest['files']['tools-bootstrap/' + relative]
+    candidate['manifest'].write_bytes(canonical(manifest))
+    candidate['env']['WD_REBOOT_EXPECTED_MANIFEST_HASH'] = sha(candidate['manifest'].read_bytes())
+
+
+HELPER_SOURCE = b'VALUE = "bundle"\n'
+
+
+def main_importing(module, check=b''):
+    """The caller imports project modules lazily inside its functions, after its own preflight; mirror that."""
+    return (b'def main(argv):\n import sys\n sys.stdin.buffer.read()\n import ' + module + b' as _imported\n' + check +
+            b' sys.stdout.buffer.write(b"{\\"status\\":\\"SYNTHETIC\\"}\\n");return 0\n')
+
+
+def outcome(candidate):
+    result = execute(candidate)
+    return result.returncode, result.stdout
+
+
+def test_rb1_an_imported_project_module_matching_the_bundle_runs(candidate):
+    _install(candidate, caller_tail=main_importing(b'tools.synthetic_project_helper'),
+             runtime={HELPER: HELPER_SOURCE}, bundle={HELPER: HELPER_SOURCE})
+    assert outcome(candidate) == (0, b'{"status":"SYNTHETIC"}\n')
+
+
+def test_rb1_a_changed_project_module_is_unknown_and_unpublished(candidate):
+    _install(candidate, caller_tail=main_importing(b'tools.synthetic_project_helper'),
+             runtime={HELPER: b'VALUE = "older runtime"\n'}, bundle={HELPER: HELPER_SOURCE})
+    assert outcome(candidate) == (3, b'')
+
+
+def test_rb1_a_project_module_missing_from_the_bundle_manifest_is_unknown(candidate):
+    _install(candidate, caller_tail=main_importing(b'tools.synthetic_project_helper'),
+             runtime={HELPER: HELPER_SOURCE}, bundle={HELPER: HELPER_SOURCE}, drop=(HELPER,))
+    assert outcome(candidate) == (3, b'')
+
+
+def test_rb1_a_changed_package_init_refuses_before_entry(candidate):
+    _install(candidate, caller_tail=SUCCESS_MAIN, runtime={'tools/__init__.py': b'# older runtime\n'})
+    assert outcome(candidate) == (2, b'')
+
+
+def test_rb1_a_package_init_missing_from_the_bundle_manifest_refuses_before_entry(candidate):
+    _install(candidate, caller_tail=SUCCESS_MAIN, drop=('tools/__init__.py',))
+    assert outcome(candidate) == (2, b'')
+
+
+def test_rb3_a_stdlib_named_module_in_runtime_code_does_not_shadow_the_stdlib(candidate):
+    base = os.path.normcase(os.path.abspath(sys.base_prefix))
+    check = (b' import os\n assert os.path.normcase(os.path.abspath(_imported.__file__)).startswith('
+             + repr(base).encode() + b')\n')
+    _install(candidate, caller_tail=main_importing(b'colorsys', check),
+             runtime={'colorsys.py': b'raise RuntimeError("synthetic shadow")\n'})
+    assert outcome(candidate) == (0, b'{"status":"SYNTHETIC"}\n')
+
+
+def test_rb3_a_non_project_module_loaded_from_runtime_code_is_unknown(candidate):
+    _install(candidate, caller_tail=main_importing(b'synthetic_code_shadow'),
+             runtime={'synthetic_code_shadow.py': b'VALUE = 1\n'})
+    assert outcome(candidate) == (3, b'')
+
+
+def test_rb3_runtime_code_shadowing_a_site_module_is_unknown(candidate):
+    _install(candidate, caller_tail=main_importing(b'synthetic_pinned_dependency'),
+             runtime={'synthetic_pinned_dependency.py': b'VALUE = "shadow"\n'})
+    assert outcome(candidate) == (3, b'')

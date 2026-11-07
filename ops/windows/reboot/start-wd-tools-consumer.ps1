@@ -360,6 +360,18 @@ function Get-WdToolsSharedQ4Reference {
     } catch { throw 'q4_shared_reference_refused' }
 }
 
+function Get-WdQ4P1StartupGuidance {
+    param([string] $Text, [bool] $DescriptorValidated)
+    if (-not $DescriptorValidated) { return $Text }
+    $previous = 'do not combine -Runtime with -Live or -WithCoverage.'
+    if (-not $Text.Contains($previous)) { throw 'q4_p1_guidance_missing' }
+    $Text = $Text.Replace($previous, 'For the legacy static route, use -Runtime without -Live or -WithCoverage.')
+    return $Text + (' For a hash-verified card descriptor, only when its P1 selector is provisioned for this bundle, ' +
+        'the explicit live card alternative is & (Join-Path $env:WD_BRIDGE_BUNDLE_ROOT "Invoke-WdQ4LaneRecall.ps1") ' +
+        '-Runtime -Live -LiveP1; do not add -WithCoverage. If it fails, do not retry or fall back to the static snapshot. ' +
+        'This guidance does not prove a successful read.')
+}
+
 function Assert-WdToolsColdStart {
     param([string] $BridgeRoot, [string] $LaneRoot, [string] $TurnLoopCode)
     # Call only with the already hash-verified library bytes. This scope loads
@@ -3302,6 +3314,7 @@ if ($Q4SharedDescriptorPath -or $Q4SharedDescriptorSha256) {
         -DeploymentManifestPath $toolsDeploymentManifestPath -ExpectedManifestSha256 $toolsExpectedManifestHash `
         -BundleRoot $PSScriptRoot -TrustedRoot $toolsTrustedDrive -Lane $agent -AgentUuid $agentUuid -RuntimeRoot $runtimeRoot
 }
+$prompt = Get-WdQ4P1StartupGuidance -Text $prompt -DescriptorValidated ($null -ne $toolsSharedQ4Values)
 $nativeToolsSaved = $null
 if ($conversationSurface -ceq 'native_terminal') { $nativeToolsSaved = Get-WdNativeToolsResumeState -Worktree $worktree }
 

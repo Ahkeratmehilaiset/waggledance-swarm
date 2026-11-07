@@ -278,6 +278,18 @@ function Get-WdLaneSharedQ4Reference {
   } catch { throw 'q4_shared_reference_refused' }
 }
 
+function Get-WdQ4P1StartupGuidance {
+  param([string] $Text, [bool] $DescriptorValidated)
+  if (-not $DescriptorValidated) { return $Text }
+  $previous = 'do not combine -Runtime with -Live or -WithCoverage.'
+  if (-not $Text.Contains($previous)) { throw 'q4_p1_guidance_missing' }
+  $Text = $Text.Replace($previous, 'For the legacy static route, use -Runtime without -Live or -WithCoverage.')
+  return $Text + (' For a hash-verified card descriptor, only when its P1 selector is provisioned for this bundle, ' +
+    'the explicit live card alternative is & (Join-Path $env:WD_BRIDGE_BUNDLE_ROOT "Invoke-WdQ4LaneRecall.ps1") ' +
+    '-Runtime -Live -LiveP1; do not add -WithCoverage. If it fails, do not retry or fall back to the static snapshot. ' +
+    'This guidance does not prove a successful read.')
+}
+
 function Read-NonEmptyFile {
   param(
     [Parameter(Mandatory)] [string] $Path,
@@ -2786,6 +2798,7 @@ $startupPrompt += (
   'Check referenced evidence independently; freshness and lane authentication remain UNKNOWN. This instruction ' +
   'is not proof of an installed or used Mind and is not a vote or gate input.'
 )
+$startupPrompt = Get-WdQ4P1StartupGuidance -Text $startupPrompt -DescriptorValidated ($null -ne $q4SharedValues)
 $startupPrompt += (
     ' Public status is a separate opt-in: only when WD_MIND_PUBLIC_ENABLED is 1, use the pinned ' +
     'WD_BRIDGE_PYTHON_WRAPPER to run tools/wd_mind_public_session_cli.py with no CLI arguments, using only ' +

@@ -70,6 +70,7 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, bas
                 raise ValueError()  # There is no bound file identity in the v1 marker.
             if baseline[2] != baseline_sha256 or live._read(bp, 65536, baseline_sha256) != baseline[1]:
                 raise ValueError()
+            live._check_disk(baseline[0], baseline[1], baseline[2], baseline[3], baseline[5])
             manifest_path = Path(baseline[0]['bundle_root']) / 'deployment-manifest.json'
             live._read(manifest_path, 4 * 1024 * 1024, manifest_sha256)
             present = os.path.lexists(target)
@@ -97,6 +98,7 @@ def recover_once(*, enabled=False, baseline_path=None, baseline_sha256=None, bas
                         or live._read(pending, 4096, pending_sha256) != marker_raw):
                     raise ValueError()
                 live._read(manifest_path, 4 * 1024 * 1024, manifest_sha256)
+                live._check_disk(baseline[0], baseline[1], baseline[2], baseline[3], baseline[5])
                 pending.unlink()
                 return {'status': 'NOT_PUBLISHED', 'publication_sha256': marker['publication_sha256']}
             if (any(Path(candidate[0][key]) != cp.parent / name for key, name in live._GENERATION_PATHS)

@@ -97,8 +97,13 @@ function Get-WdQ4DefaultDescriptor {
         $binding=ConvertFrom-WdSharedSessionJson (ReadPinned ([string]$descriptor.binding_path) ([string]$descriptor.binding_sha256) 65536)
         if ([string]$binding.schema -cne 'wd.q4-lane-binding.v1' -or [string]$binding.bundle_commit -cne $ExpectedCommit -or
             ([string]$binding.manifest_sha256).ToUpperInvariant() -cne $ExpectedManifestHash.ToUpperInvariant()) { throw 'binding' }
-        foreach ($name in @('pointer_sha256','source_anchor_sha256','encoder_sha256','policy_sha256',
-            'roster_sha256','public_policy_sha256','descriptor_sha256','projection_sha256')) {
+        if ($binding.binding -isnot [pscustomobject] -or $descriptor.expected_binding -isnot [pscustomobject]) { throw 'binding' }
+        $bindingNames=[string[]]@($binding.binding.PSObject.Properties.Name)
+        $descriptorNames=[string[]]@($descriptor.expected_binding.PSObject.Properties.Name)
+        [Array]::Sort($bindingNames,[StringComparer]::Ordinal)
+        [Array]::Sort($descriptorNames,[StringComparer]::Ordinal)
+        if (($bindingNames -join ',') -cne ($descriptorNames -join ',')) { throw 'binding' }
+        foreach ($name in $descriptorNames) {
             if ([string]$binding.binding.$name -cne [string]$descriptor.expected_binding.$name) { throw 'binding' }
         }
         [void](ReadPinned $manifestPath $ExpectedManifestHash 1048576)

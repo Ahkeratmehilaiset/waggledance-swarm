@@ -32,7 +32,7 @@ import re
 from tools import wd_q4_lane_query as lane_query
 from tools import wd_q4_roster_from_fleet as roster_mod
 
-__all__ = ["LaneBindingRefused", "resolve_lane_binding", "SCHEMA", "BINDING_KEYS", "CARD_BINDING_KEYS",
+__all__ = ["LaneBindingRefused", "resolve_lane_binding", "SCHEMA", "BINDING_KEYS", "CARD_BINDING_KEYS", "STAGED_BINDING_KEYS",
            "OUTPUT_KEYS", "REASONS", "BINDING_LIMIT", "IDENTITY"]
 
 SCHEMA = "wd.q4-lane-binding.v1"
@@ -42,6 +42,7 @@ BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sha
                           "roster_sha256", "public_policy_sha256", "descriptor_sha256", "projection_sha256"})
 # optional, default absent: the pinned card route decision digest (v7 card mode of the lane query)
 CARD_BINDING_KEYS = BINDING_KEYS | {"card_decision_sha256"}
+STAGED_BINDING_KEYS = CARD_BINDING_KEYS | {"card_policy_sha256"}
 OUTPUT_KEYS = frozenset({"lane", "expected_commit", "expected_manifest_sha256", "expected_wrapper_sha256",
                          "expected_public_plan_sha256", "expected_binding"})
 REASONS = frozenset({"disabled", "fleet_refused", "binding_refused", "roster_refused", "lane_refused",
@@ -118,7 +119,7 @@ def _shape(document, roster_lanes):
     if not all(_hex64(document[key]) for key in ("manifest_sha256", "wrapper_sha256", "public_plan_sha256")):
         return False
     binding = document["binding"]
-    if (type(binding) is not dict or frozenset(binding) not in (BINDING_KEYS, CARD_BINDING_KEYS)
+    if (type(binding) is not dict or frozenset(binding) not in (BINDING_KEYS, CARD_BINDING_KEYS, STAGED_BINDING_KEYS)
             or not all(map(_hex64, binding.values()))):
         return False
     lanes = document["lanes"]
@@ -128,7 +129,7 @@ def _shape(document, roster_lanes):
     return len(set(lanes)) == len(lanes) and all(lane in roster_lanes for lane in lanes)
 
 
-def _contract_holds():
+def _contract_holds(staged=False):
     try:
         parameters = inspect.signature(lane_query.query_public).parameters
     except (TypeError, ValueError):
@@ -137,7 +138,8 @@ def _contract_holds():
         return False
     if frozenset(parameters) - _CALLER_PARAMETERS != OUTPUT_KEYS or not _CALLER_PARAMETERS <= frozenset(parameters):
         return False
-    return lane_query.BINDING_KEYS == BINDING_KEYS and lane_query.CARD_BINDING_KEYS == CARD_BINDING_KEYS
+    return (lane_query.BINDING_KEYS == BINDING_KEYS and lane_query.CARD_BINDING_KEYS == CARD_BINDING_KEYS
+            and (not staged or getattr(lane_query, "STAGED_BINDING_KEYS", None) == STAGED_BINDING_KEYS))
 
 
 def resolve_lane_binding(fleet_bytes, expected_fleet_sha256, binding_bytes, expected_binding_sha256, *, lane,
@@ -162,7 +164,7 @@ def resolve_lane_binding(fleet_bytes, expected_fleet_sha256, binding_bytes, expe
     # the pinned fleet, so the lane list and the roster pin handed to query_public describe the same roster
     if not hmac.compare_digest(document["binding"]["roster_sha256"], roster_digest):
         raise LaneBindingRefused("roster_refused")
-    if not _contract_holds():
+    if not _contract_holds(staged=frozenset(document["binding"]) == STAGED_BINDING_KEYS):
         raise LaneBindingRefused("contract_refused")
     if type(lane) is not str or lane not in roster_lanes or lane not in document["lanes"]:
         raise LaneBindingRefused("lane_refused")

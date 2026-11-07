@@ -51,7 +51,7 @@ end {
         # terminating this worker alone is not proof of whole-tree cleanup.
         $worker = $null; $stdout = $null; $stderr = $null
         try {
-            if (($WithCoverage -and -not $Live) -or ($Runtime -and ($Live -or $WithCoverage))) { throw 'refused' }
+            if (($WithCoverage -and -not $Live) -or ($Runtime -and $WithCoverage)) { throw 'refused' }
             if ($items.Count -gt 1) { throw 'refused' }
             if ($items.Count -eq 1) {
                 $query = [Text.UTF8Encoding]::new($false,$true).GetBytes($items[0])
@@ -286,7 +286,7 @@ public static class $typeName {
             $document.situation -isnot [string] -or [string]::IsNullOrWhiteSpace($document.situation) -or
             ($document.time -isnot [string] -and $document.time -isnot [datetime]) -or
             ($document.time -is [string] -and $document.time -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$')) { throw 'refused' }
-        if (($WithCoverage -and -not $Live) -or ($Runtime -and ($Live -or $WithCoverage))) { throw 'refused' }
+        if (($WithCoverage -and -not $Live) -or ($Runtime -and $WithCoverage)) { throw 'refused' }
         $liveEnvironment = if ($Live) { '$env:WD_Q4_LIVE_MODE=''1''; ' } else { 'Remove-Item Env:WD_Q4_LIVE_MODE -ErrorAction SilentlyContinue; ' }
         $coverageEnvironment = if ($WithCoverage) { '$env:WD_Q4_WITH_COVERAGE=''1''; ' } else { 'Remove-Item Env:WD_Q4_WITH_COVERAGE -ErrorAction SilentlyContinue; ' }
         $callerTool = if ($Runtime) { 'tools/wd_q4_lane_caller_runtime_bootstrap.py' } else { 'tools/wd_q4_lane_caller_cli.py' }

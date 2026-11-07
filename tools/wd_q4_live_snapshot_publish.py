@@ -185,7 +185,7 @@ def _validate_staged_transition(base_plan, candidate_plan, descriptor, fixed):
     def inside(path, root):
         return path != root and path.is_relative_to(root)
     if (new.name != 'snapshot' or new.parent.parent != approved or
-            new.parent.name in ('.codex-audit', '.', '..') or
+            new.parent.name.startswith('.') or
             new_generation.name != 'generation.json' or
             new_generation.parent.parent != approved / '.codex-audit' / 'anchors'):
         raise ValueError()

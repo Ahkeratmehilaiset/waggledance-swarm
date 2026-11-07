@@ -649,6 +649,27 @@ def _staged_path(value):
     return value
 
 
+def _canonical_windows_long_path(path):
+    _check(os.name == 'nt')
+    kernel = C.WinDLL('kernel32', use_last_error=True)
+    kernel.GetLongPathNameW.argtypes = (W.LPCWSTR, W.LPWSTR, W.DWORD)
+    kernel.GetLongPathNameW.restype = W.DWORD
+    result = C.create_unicode_buffer(32768)
+    length = kernel.GetLongPathNameW(path, result, len(result))
+    _check(0 < length < len(result))
+    return result.value
+
+
+def _staged_system_host():
+    # Only the fixed system host gets canonicalized. Attestation still opens
+    # that exact spelling, rejects reparse files, and verifies its pinned hash.
+    requested = _staged_path(os.path.join(os.environ.get('SYSTEMROOT', ''), 'System32',
+                                          'WindowsPowerShell', 'v1.0', 'powershell.exe'))
+    canonical = _staged_path(_canonical_windows_long_path(requested))
+    _check(os.path.normcase(canonical) == os.path.normcase(requested))
+    return canonical
+
+
 def _staged_read(path, pin, limit):
     path = Path(_staged_path(str(path)))
     _hex64(pin)
@@ -2257,7 +2278,7 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
                 leases.enter_context(attest(verifier, plan["verifier_sha256"], max_bytes=_VERIFIER_LIMIT, enabled=True))
             if staged:
                 helper = str(Path(path).with_name('wd_q4_staged_fixed_backend.py'))
-                host = os.path.join(os.environ.get('SYSTEMROOT',''), 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+                host = _staged_system_host()
                 manifest = str(Path(plan['bundle_root'])/'deployment-manifest.json')
                 for target, pin, cap in ((helper,plan['backend_sha256'],_PEER_CODE_LIMIT),
                         (plan['wrapper_path'],plan['wrapper_sha256'],1024*1024),

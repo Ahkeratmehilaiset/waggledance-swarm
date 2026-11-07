@@ -14,13 +14,29 @@ import pytest
 from sandbox.mind.step2 import shared_card_checkpoint
 from tests.tools.test_wd_q4_bound_lane_transport import case, create
 from tests.tools.test_wd_q4_owner_plumbing import _synthetic_guard
-from tests.tools.test_wd_q4_real_card_snapshot_e2e import real_fixture, real_snapshot
+from tests.tools.test_wd_q4_real_card_snapshot_e2e import real_fixture, real_snapshot, rt
 from tools import wd_q4_bound_lane_transport as bound, wd_q4_secure_transport as fixed
 from tools.wd_q4_public_query import _encoder_digest
 
 
 def _sha(raw):
     return hashlib.sha256(raw).hexdigest()
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows system-host attestation')
+def test_staged_system_host_canonical_spelling_keeps_strict_handle_lease(monkeypatch):
+    from tools.wd_q4_fixed_parent_attestation import attest_file
+    monkeypatch.setenv('SYSTEMROOT', os.environ['SYSTEMROOT'].upper())
+    path = fixed._staged_system_host()
+    with attest_file(path, _sha(Path(path).read_bytes()), max_bytes=128*1024*1024, enabled=True):
+        pass
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows system-host canonicalization')
+def test_staged_system_host_refuses_different_resolved_path(monkeypatch):
+    monkeypatch.setattr(fixed, '_canonical_windows_long_path', lambda _path: r'C:\Windows\not-the-system-host.exe')
+    with pytest.raises(fixed._Refused):
+        fixed._staged_system_host()
 
 
 def test_real_c2_staged_plan_refuses_status_transport_without_clearing_guard(case, real_snapshot, tmp_path):
@@ -168,3 +184,156 @@ def test_actual_staged_job_positive_control_separate_from_guard(real_snapshot, t
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.test_staged_job_runs_real_c2_and_q4_and_refuses_changed_projection(real_snapshot, tmp_path)
+
+
+@pytest.mark.skipif(os.name != 'nt' or os.environ.get('WD_Q4_NESTED_JOB_E2E') != '1',
+                    reason='Windows and explicit nested-Job test opt-in required')
+def test_actual_nested_job_c2_query_and_real_guard_owners(real_snapshot, tmp_path):
+    """Synthetic files/encoder; actual fixed outer Job and staged wrapper inner Job.
+
+    The public outer and inner model launcher are explicit synthetic shims. This
+    tests transport/attestation owners only, not adapter completion or E5.
+    """
+    import shutil
+    import sys
+    from sandbox.mind.step2 import runtime_builder
+    from tests.tools.test_wd_q4_staged_fixed_plan import staged_args
+    from tools import wd_q4_fixed_plan_producer as producer
+    root = Path(__file__).resolve().parents[2]
+    site = Path(os.environ['WD_Q4_TEST_SITE'])
+    python = Path(os.environ['WD_Q4_TEST_PYTHON'])
+    assert python.is_file() and _sha(python.read_bytes()) == os.environ['WD_Q4_TEST_PYTHON_SHA256']
+    assert os.path.normcase(str(python)) == os.path.normcase(sys.executable)
+    runtime=tmp_path/'runtime';code=runtime/'assets'/'code';code.mkdir(parents=True)
+    for relative in ('tools','waggledance','sandbox/mind/step2','core'):
+        source=root/relative
+        if not source.is_dir():continue
+        for original in source.rglob('*.py'):
+            assert not original.is_symlink()
+            dest=code/original.relative_to(root);dest.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copyfile(original,dest)
+    runtime_site=runtime/'site';runtime_site.mkdir()
+    for name in ('numpy','numpy.libs','faiss','faiss_cpu.libs','packaging'):
+        original=site/name
+        assert original.is_dir() and not original.is_symlink()
+        for parent,dirs,files in os.walk(original,followlinks=False):
+            for item in dirs+files:
+                candidate=Path(parent)/item
+                assert not candidate.is_symlink() and not (getattr(candidate.lstat(),'st_file_attributes',0)&0x400)
+        shutil.copytree(original,runtime_site/name,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+    model=runtime/'model';model.mkdir();(model/'synthetic-model.txt').write_bytes(b'not E5')
+    runtime_manifest=tmp_path/'runtime-manifest.json'
+    generated=runtime_builder.build_runtime_manifest(runtime,runtime_manifest,generation='f'*40,revision='a'*40)
+    module_spec=importlib.util.spec_from_file_location('nested_wrapper_fixture',
+        root/'tests/tools/test_wd_q4_agent_wrapper.py')
+    module=importlib.util.module_from_spec(module_spec);module_spec.loader.exec_module(module)
+    bundle_dir=tmp_path/'bundle-fixture';bundle_dir.mkdir()
+    bundle=module.bundle.__wrapped__(bundle_dir)
+    package=json.loads((bundle['root']/'bridge-code-files.json').read_bytes())
+    shim='''\
+import datetime,hashlib,json,re,sys
+sys.path.insert(0,SITE);sys.path.insert(1,ROOT)
+import numpy as np
+from sandbox.mind.step2 import runtime_launcher,wd_q4_private_read as reader
+from tools import wd_q4_agent_query as q4,wd_q4_public_child as child
+class Encoder:
+ def query(self,text):
+  v=[0.0]*64
+  for t in re.findall(r'[a-z0-9]{2,}',text.lower()):v[int(hashlib.sha256(t.encode()).hexdigest(),16)%64]+=1
+  n=sum(x*x for x in v)**0.5 or 1.0
+  return np.array([x/n for x in v],dtype=np.float32)
+reader.ENCODER_FACTORY=lambda **kw:Encoder()
+reader.bind_runtime_encoder=lambda *a,**kw:None
+q4._utc_now=lambda:datetime.datetime(2026,11,3,tzinfo=datetime.timezone.utc)
+def launcher(*,query,**kw):
+ q=json.loads(query)
+ r=reader._private_read_locked(DIRECTORY,DESCRIPTOR,DIGEST,q['situation'],q['time'],r'C:\\fake\\synthetic','a'*40)
+ return runtime_launcher._validate_output(json.dumps(r).encode(),0,DIGEST)
+q4._invoke_launcher=launcher
+def bootstrap_public_imports(**kw):return {'status':'MODULES_IMPORTED','child':child}
+'''
+    directory,built,decision,snapshot,_,args=real_snapshot
+    constants={'SITE':str(site),'ROOT':str(root),'DIRECTORY':str(directory),
+               'DESCRIPTOR':str(directory/'descriptor.json'),'DIGEST':built['descriptor_sha256']}
+    shim='\n'.join(k+'='+repr(v) for k,v in constants.items())+'\n'+shim
+    source_files={
+        'tools/__init__.py':('__path__.append('+repr(str(root/'tools'))+')\n').encode(),
+        'tools/wd_q4_public_outer.py':shim.encode(),
+        'tools/wd_q4_public_child.py':(root/'tools/wd_q4_public_child.py').read_bytes(),
+        'tools/wd_q4_public_query.py':(root/'tools/wd_q4_public_query.py').read_bytes(),
+        'tools/wd_q4_agent_query.py':(root/'tools/wd_q4_agent_query.py').read_bytes(),
+        'tools/wd_q4_secure_transport.py':(root/'tools/wd_q4_secure_transport.py').read_bytes(),
+        'tools/wd_q4_staged_fixed_backend.py':(root/'tools/wd_q4_staged_fixed_backend.py').read_bytes(),
+        'sandbox/mind/step2/runtime_manifest.py':(root/'sandbox/mind/step2/runtime_manifest.py').read_bytes(),
+    }
+    for relative,raw in source_files.items():
+        bundle['put']('tools-bootstrap/'+relative,raw)
+        if relative not in package['python_files']:package['python_files'].append(relative)
+    bundle['put']('bridge-code-files.json',json.dumps(package).encode())
+    bundle['config']['code_manifest_sha256']=bundle['files']['bridge-code-files.json']
+    bundle['config']['python_path']=str(python);bundle['config']['python_sha256']=_sha(python.read_bytes())
+    bundle['put']('wd-fleet.json',json.dumps({'q4_read':{'enabled':False}}).encode())
+    manifest={'schema_version':1,'source_commit':module.COMMIT,'files':bundle['files'],
+       'bridge_code_package':{'python_executable':str(python),'python_executable_sha256':_sha(python.read_bytes())}}
+    manifest_raw=json.dumps(manifest).encode();(bundle['root']/'deployment-manifest.json').write_bytes(manifest_raw)
+    manifest_sha=_sha(manifest_raw); code_root=bundle['root']/'tools-bootstrap'
+    scratch=tmp_path/'scratch';scratch.mkdir();lock=tmp_path/'read.lock'
+    config=dataclasses.asdict(rt.config(directory,built['descriptor_sha256']))
+    config.update(interpreter=str(python),interpreter_sha256=_sha(python.read_bytes()),
+        bootstrap=str(code_root/'sandbox/mind/step2/runtime_bootstrap.py'),
+        bootstrap_sha256=bundle['files']['tools-bootstrap/sandbox/mind/step2/runtime_bootstrap.py'],
+        verifier_sha256=_sha((code_root/'sandbox/mind/step2/runtime_manifest.py').read_bytes()),
+        runtime_root=str(runtime),runtime_manifest=str(runtime_manifest),runtime_manifest_sha256=generated['manifest_sha256'],
+        runtime_generation='f'*40,runtime_revision='a'*40,lock_file=str(lock),timeout=30,scratch_root=str(scratch))
+    data={'pointer':snapshot['pointer_bytes'],'policy':args['policy_bytes'],'roster':args['roster_bytes'],
+          'public_policy':b'{}','card_decision':args['decision_bytes'],'card_policy':args['card_policy_bytes'],
+          'memory':(directory/'memory.json').read_bytes(),'projection':(directory/'projection.json').read_bytes(),
+          'descriptor':(directory/'descriptor.json').read_bytes()}
+    public={'schema':'wd.q4-public-wrapper-plan.v3','root':str(directory.parent),'config':config,
+            'source_path':str(args['source_path']),'generation_path':str(args['generation_path']),
+            'end_cursor':dataclasses.asdict(args['end_cursor']),
+            'source_anchor_sha256':decision['source_prefix']['sha256'],
+            'encoder_sha256':_encoder_digest(json.loads(data['descriptor'])['encoder'])}
+    for name in ('pointer','policy','roster','public_policy','card_decision','card_policy'):
+        path=tmp_path/('nested-'+name+'.json');path.write_bytes(data[name])
+        public[name+'_path']=str(path);public[name+'_sha256']=_sha(data[name])
+    public_path=tmp_path/'nested-public-plan.json';public_path.write_bytes(fixed._canonical(public))
+    fixed_bundle=fixed.fixed_card_bundle(enabled=True,**data)
+    host=Path(os.environ['SYSTEMROOT'])/'System32/WindowsPowerShell/v1.0/powershell.exe'
+    values=staged_args();peer=code_root/'tools/wd_q4_secure_transport.py'
+    values.update(interpreter_sha256=_sha(python.read_bytes()),peer_code_sha256=_sha(peer.read_bytes()),
+        verifier_sha256=config['verifier_sha256'],runtime_manifest_sha256=generated['manifest_sha256'],
+        bundle_sha256=_sha(fixed_bundle),bundle_bytes=len(fixed_bundle),runtime_root=str(runtime),
+        runtime_manifest_path=str(runtime_manifest),runtime_generation='f'*40,runtime_revision='a'*40,
+        expected_pointer_sha256=public['pointer_sha256'],policy_sha256=public['policy_sha256'],
+        roster_sha256=public['roster_sha256'],expected_public_policy_sha256=public['public_policy_sha256'],
+        expected_source_sha256=public['source_anchor_sha256'],expected_encoder_sha256=public['encoder_sha256'],
+        approved_tasks=['mind-public-knowledge-v1'],card_decision_sha256=public['card_decision_sha256'],
+        card_policy_sha256=public['card_policy_sha256'],bundle_root=str(bundle['root']),bundle_commit=module.COMMIT,
+        wrapper_path=str(bundle['root']/'Invoke-WdQ4Query.ps1'),wrapper_sha256=_sha((bundle['root']/'Invoke-WdQ4Query.ps1').read_bytes()),
+        deployment_manifest_sha256=manifest_sha,public_plan_path=str(public_path),public_plan_sha256=_sha(public_path.read_bytes()),
+        host_sha256=_sha(host.read_bytes()),backend_sha256=_sha((code_root/'tools/wd_q4_staged_fixed_backend.py').read_bytes()))
+    plan=producer.build_staged_fixed_plan(enabled=True,**values)
+    spec=importlib.util.spec_from_file_location('nested_actual_fixed_parent',peer)
+    actual=importlib.util.module_from_spec(spec);spec.loader.exec_module(actual)
+    guard,marker=_synthetic_guard(tmp_path/'nested-guard','codex-lead-1');context=guard._owner_context()
+    query=json.dumps({'situation':'merged green pr 2046 genesis','time':'2026-11-02T00:00:00Z'}).encode()
+    if os.environ.get('WD_Q4_NESTED_DEBUG') == '1':
+        original_impl = actual._run_fixed_peer_impl
+        def debug_impl(*args, **kwargs):
+            try:
+                return original_impl(*args, **kwargs)
+            except BaseException:
+                import traceback
+                (tmp_path / 'synthetic-parent-trace.txt').write_text(traceback.format_exc(), encoding='utf-8')
+                raise
+        actual._run_fixed_peer_impl = debug_impl
+    result,exit_code=actual.run_fixed_peer(executable=str(python),expected_interpreter_sha256=_sha(python.read_bytes()),
+        interpreter_max_bytes=128*1024*1024,plan_bytes=plan['plan_bytes'],expected_plan_sha256=plan['plan_sha256'],
+        bundle_bytes=fixed_bundle,runtime_manifest_bytes=runtime_manifest.read_bytes(),query_bytes=query,cwd=str(scratch),
+        timeout_seconds=180,max_output_bytes=32768,public_snapshot_enabled=True,_owner_guard=guard,_owner_context=context)
+    answer=json.loads(result)
+    assert exit_code==0 and answer['status']=='ANSWER'
+    assert answer['freshness']=='UNKNOWN' and answer['completeness']=='UNKNOWN'
+    context._require_done(('attestation','transport'))
+    assert marker.is_file()  # adapter and outer owner were not exercised.

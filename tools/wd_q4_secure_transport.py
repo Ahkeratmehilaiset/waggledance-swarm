@@ -595,7 +595,7 @@ _PUBLIC_PLAN_KEYS = _PLAN_KEYS | frozenset(_PUBLIC_PINS) | frozenset({
     "approved_tasks"})
 _STAGED_PLAN_KEYS = _PUBLIC_PLAN_KEYS | frozenset({
     "card_decision_sha256", "card_policy_sha256", "wrapper_sha256", "deployment_manifest_sha256",
-    "public_plan_sha256", "host_sha256", "bundle_root", "bundle_commit", "wrapper_path", "public_plan_path"})
+    "public_plan_sha256", "host_sha256", "backend_sha256", "bundle_root", "bundle_commit", "wrapper_path", "public_plan_path"})
 _PLAN_SCHEMAS = {"wd.q4-fixed-plan.v1": ("synthetic-v1", _PLAN_KEYS),
                  "wd.q4-fixed-plan.v2": ("public-snapshot-v1", _PUBLIC_PLAN_KEYS),
                  "wd.q4-fixed-plan.v3": ("staged-card-wrapper-v1", _STAGED_PLAN_KEYS)}
@@ -675,7 +675,7 @@ def _fixed_plan(plan_bytes):
                and tasks == sorted(set(tasks)))
     if backend == "staged-card-wrapper-v1":
         for name in ("card_decision_sha256", "card_policy_sha256", "wrapper_sha256",
-                     "deployment_manifest_sha256", "public_plan_sha256", "host_sha256"):
+                     "deployment_manifest_sha256", "public_plan_sha256", "host_sha256", "backend_sha256"):
             _hex64(plan[name])
         _check(type(plan["bundle_commit"]) is str and len(plan["bundle_commit"]) == 40
                and all(c in "0123456789abcdef" for c in plan["bundle_commit"]))

@@ -15,7 +15,7 @@ def plan():
                 'bundle_sha256','verifier_sha256','expected_pointer_sha256','policy_sha256',
                 'roster_sha256','expected_public_policy_sha256','expected_source_sha256',
                 'expected_encoder_sha256','card_decision_sha256','card_policy_sha256',
-                'wrapper_sha256','deployment_manifest_sha256','public_plan_sha256','host_sha256')},
+                'wrapper_sha256','deployment_manifest_sha256','public_plan_sha256','host_sha256','backend_sha256')},
             'bundle_bytes':100, 'runtime_root':r'C:\fixture\runtime',
             'runtime_manifest_path':r'C:\fixture\runtime-manifest.json',
             'runtime_generation':'a'*40,'runtime_revision':'b'*40,'approved_tasks':['synthetic-task'],

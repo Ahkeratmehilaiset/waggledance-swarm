@@ -283,6 +283,21 @@ def test_hex_31_boundary_and_base64url_still_refuses():
     assert cp.classify("AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc") == ("DROP", "credential")
 
 
+def test_long_public_command_can_be_retained_only_as_a_placeholder():
+    command = "Get-WdQ4LifecycleCutoverReadiness"
+    verdict, encoded = cp.classify("run " + command + " now")
+    assert verdict == "KEEP"
+    assert cp.decode_text(encoded) == "run token-redacted now"
+    assert command not in encoded
+
+
+def test_named_base64url_secret_still_drops():
+    value = "AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc"
+    assert cp.classify("password=" + value) == ("DROP", "credential")
+    assert cp.classify("password=Get-WdQ4LifecycleCutoverReadiness") == ("DROP", "credential")
+    assert cp.classify("Get-WdQ4LifecycleCutoverReadinessX") == ("DROP", "credential")
+
+
 @pytest.mark.parametrize("value", [r"copied to D:\Data\Jane Smith yesterday",
                                      r"copied to \\server\share\Jane Smith yesterday",
                                      "copied to /home/Jane Smith yesterday"])

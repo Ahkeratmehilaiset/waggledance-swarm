@@ -363,6 +363,15 @@ def test_hex_run_is_redacted_from_its_section(tmp_path):
     assert projection["refused_sections"] == {} and projection["refused_docs"] == {}
 
 
+def test_long_public_command_is_redacted_from_document(tmp_path):
+    value = "Get-WdQ4LifecycleCutoverReadiness"
+    root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, "run " + value + " now", SECOND)})
+    raw, sha = policy(commit, ["docs/a.md"])
+    projection = build(root, raw, sha)
+    assert "run token-redacted now" in texts(projection)
+    assert value not in json.dumps(projection)
+
+
 def test_inherited_git_variables_cannot_redirect_the_read(repo, tmp_path, monkeypatch):
     root, commit = repo
     other = tmp_path / "other"

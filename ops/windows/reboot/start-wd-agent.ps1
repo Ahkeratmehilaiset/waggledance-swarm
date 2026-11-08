@@ -77,10 +77,11 @@ function Clear-WdInheritedClaudeSessionMarkers {
   return $removed
 }
 $script:WdScrubbedClaudeMarkers = @(Clear-WdInheritedClaudeSessionMarkers)
-# Clear the whole namespace, including unknown/stale Q4 settings. Values are never logged.
+# Clear inherited Q4 settings and any prior startup recall. Values are never logged.
 function Clear-WdInheritedQ4ReadSettings {
   foreach ($q4Name in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
-    if (([string]$q4Name).StartsWith('WD_Q4_', [StringComparison]::OrdinalIgnoreCase)) {
+    if (([string]$q4Name).StartsWith('WD_Q4_', [StringComparison]::OrdinalIgnoreCase) -or
+        ([string]$q4Name).Equals('WD_MIND_STARTUP_RECALL', [StringComparison]::OrdinalIgnoreCase)) {
       if (Test-Path -LiteralPath "Env:$q4Name") { Remove-Item -LiteralPath "Env:$q4Name" }
     }
   }
@@ -350,7 +351,7 @@ function Invoke-WdQ4StartupMindRead {
     delivered_items = 0
     delivered_chars = 0
     delivered_sha256 = ''
-    note = 'One bounded startup recall; the query and the answer are not recorded here (the caller-validated content is delivered in memory only); not proof of an installed or used Mind; not a vote or gate input.'
+    note = 'One bounded startup recall; the query and answer are not recorded or delivered while freshness is unverified; not proof of an installed or used Mind; not a vote or gate input.'
   }
   $isContent = $false
   try {
@@ -479,16 +480,14 @@ function Invoke-WdQ4StartupMindRead {
             $record.refs = @($refs)
             $lines = New-Object Collections.Generic.List[string]
             $index = 0
-            # Only a nonempty ANSWER delivers; ABSTAIN, DEGRADED and zero results are non-success.
+            # Validate the shape of any nonempty ANSWER before suppressing its delivery.
             foreach ($item in @(if ([string]$result.inner_status -ceq 'ANSWER') { $result.answer.results })) {
               $index += 1
               $text = [string]$item.stored_text
               if ($text.Length -gt 320 -or $text -cmatch '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]') { throw 'result_shape' }
               $lines.Add('[' + $index.ToString([Globalization.CultureInfo]::InvariantCulture) + '] ' + $text)
             }
-            # S1 (RCO1 2026-11-08): the caller-validated content goes back to the call site in memory only (the
-            # record keeps its size and digest). One environment variable holds fewer than 32767 characters, so
-            # the delivery is capped below that by dropping trailing items.
+            # Bound parsing work; the text and delivery digest are cleared before returning.
             while ($lines.Count -gt 0 -and ($lines -join "`n").Length -gt 24000) { $lines.RemoveAt($lines.Count - 1) }
             $delivered = [string]($lines -join "`n")
             $record.delivered_items = $lines.Count
@@ -500,7 +499,14 @@ function Invoke-WdQ4StartupMindRead {
               } finally { $deliveredSha.Dispose() }
             }
             if ($record.inner_status -ceq 'ANSWER' -and $record.delivered_items -gt 0 -and $record.delivered_chars -gt 0) {
-              $record.outcome = 'success'
+              # The caller currently proves byte consistency, not source freshness.
+              # Do not trust even a caller-supplied FRESH label without independent evidence.
+              $delivered = ''
+              $record.delivered_items = 0
+              $record.delivered_chars = 0
+              $record.delivered_sha256 = ''
+              $record.outcome = 'unknown'
+              $record.reason = 'freshness_unverified'
             } else {
               $record.outcome = 'empty'
               $record.reason = if ($record.inner_status -ceq 'ANSWER') { 'no_result' } else { $record.inner_status.ToLowerInvariant() }
@@ -547,7 +553,7 @@ function Invoke-WdQ4StartupMindRead {
     $recordWritten = $true
   } catch {
     $recordWritten = $false
-    if ($record.outcome -ceq 'success') {
+    if ($record.outcome -ceq 'success' -or $record.reason -ceq 'freshness_unverified') {
       $record.outcome = 'unknown'
       $record.reason = 'record_write'
     }

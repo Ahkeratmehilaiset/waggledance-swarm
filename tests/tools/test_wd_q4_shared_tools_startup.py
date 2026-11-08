@@ -293,6 +293,9 @@ $results = @(@{ stored_text = ('STORED-TEXT-SECRET ' + $query); ref_sha256 = ('a
 if ($mode -in @('abstain', 'zero')) { $results = @() }
 $answer = @{ schema = 'wd.q4-lane-answer.v1'; lane = 'LANE'; status = $innerStatus; result_count = $results.Count
   results = $results }
+if ($mode -eq 'trust_unknown') { $answer.trust = @{ freshness = 'UNKNOWN' } }
+if ($mode -eq 'trust_stale') { $answer.trust = @{ freshness = 'STALE' } }
+if ($mode -eq 'trust_forged_fresh') { $answer.trust = @{ freshness = 'FRESH' } }
 $result = @{ schema = 'wd.q4-lane-caller-result.v1'; status = 'VALIDATED'; lane = 'LANE'; inner_status = $innerStatus
   answer = $answer; answer_sha256 = ('d' * 64); call_id = ('e' * 32); result_count = $results.Count; descriptor_sha256 = ('f' * 64)
   cleanup = 'chain_confirmed' }
@@ -374,6 +377,28 @@ def assert_no_secret(text):
     assert "stored-text-secret" not in lowered and "situation" not in lowered and "startup read:" not in lowered
 
 
+@pytest.mark.parametrize("mode", ["answer", "trust_unknown", "trust_stale", "trust_forged_fresh"])
+def test_tools_startup_read_never_delivers_unverified_freshness(tmp_path, mode):
+    fx = startup_read_fixture(tmp_path, "codex-tools-1", mode=mode)
+    script = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
+    script += "\n$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n" + startup_read_call(fx, "codex-tools-1")
+    record = json.loads(_run_powershell(script).stdout.strip())
+    assert record["outcome"] == "unknown" and record["reason"] == "freshness_unverified"
+    assert record["delivered_text"] == "" and record["delivered_items"] == 0
+    assert record["delivered_chars"] == 0 and record["delivered_sha256"] == ""
+    assert_no_secret(fx["record"].read_text(encoding="ascii"))
+
+
+def test_inherited_tools_startup_recall_is_cleared_before_launch():
+    script = load(TOOLS, "Clear-WdInheritedQ4ReadSettings") + "\n" + r"""
+$env:WD_MIND_STARTUP_RECALL='synthetic stale content'
+$env:WD_Q4_TEST='synthetic'
+Clear-WdInheritedQ4ReadSettings
+@{recall=(Test-Path Env:WD_MIND_STARTUP_RECALL); q4=(Test-Path Env:WD_Q4_TEST)} | ConvertTo-Json -Compress
+"""
+    assert json.loads(_run_powershell(script).stdout) == {"recall": False, "q4": False}
+
+
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize("mode", ["answer", "abstain", "degraded", "zero", "refuse", "garbage"])
 def test_tools_startup_read_records_only_outcome_digests_and_refs(tmp_path, ps, mode):
@@ -384,7 +409,8 @@ def test_tools_startup_read_records_only_outcome_digests_and_refs(tmp_path, ps, 
     record = json.loads(out)
     assert record["lane"] == "codex-tools-1" and record["route"] == "default_caller_cli"
     if mode == "answer":
-        assert record["outcome"] == "success" and record["refs"] == ["a" * 64] and record["exit_code"] == 0
+        assert record["outcome"] == "unknown" and record["reason"] == "freshness_unverified"
+        assert record["refs"] == ["a" * 64] and record["exit_code"] == 0
     elif mode in ("abstain", "degraded", "zero"):
         assert record["outcome"] == "empty" and record["reason"] == ("no_result" if mode == "zero" else mode)
         assert record["inner_status"] == ("ANSWER" if mode == "zero" else mode.upper())
@@ -395,10 +421,7 @@ def test_tools_startup_read_records_only_outcome_digests_and_refs(tmp_path, ps, 
     assert json.loads(fx["record"].read_bytes()) == {key: value for key, value in record.items()
                                                      if key not in ("delivered_text", "record_written")}
     assert record["record_written"] is True and isinstance(record["duration_ms"], int)
-    if mode == "answer":
-        assert record["delivered_items"] == 1 and record["delivered_text"].startswith("[1] STORED-TEXT-SECRET ")
-    else:
-        assert record["delivered_items"] == 0 and record["delivered_text"] == ""
+    assert record["delivered_items"] == 0 and record["delivered_text"] == ""
     assert_no_secret(fx["record"].read_text(encoding="ascii"))
     seen = json.loads(fx["seen"].read_text(encoding="utf-8-sig"))
     assert seen["switches"] == ["TimeoutSeconds", "WithStatus"]
@@ -588,8 +611,9 @@ $read=if($null -ne $startupMindRead){$startupMindRead}else{$toolsStartupMindRead
         assert observed["read"]["outcome"] in ("refused", "unknown")
         assert observed["read"]["delivered_text"] == "" and observed["read"]["delivered_items"] == 0
     else:
-        assert observed["read"]["outcome"] == "success", observed["read"]["reason"]
-        assert observed["read"]["record_written"] is True and observed["read"]["delivered_items"] == 1
+        assert observed["read"]["outcome"] == "unknown", observed["read"]["reason"]
+        assert observed["read"]["reason"] == "freshness_unverified"
+        assert observed["read"]["record_written"] is True and observed["read"]["delivered_items"] == 0
 
 
 @pytest.mark.parametrize("case", ["unset", "null", "unwritten", "non_success", "empty", "success",

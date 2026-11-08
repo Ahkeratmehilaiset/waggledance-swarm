@@ -353,12 +353,14 @@ def test_refusals_never_carry_input_text(tmp_path):
     assert str(caught.value) == "policy_refused"
 
 
-def test_hex_run_drops_only_its_section(tmp_path):
-    root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, "commit " + "a1" * 20 + " landed", SECOND)})
+def test_hex_run_is_redacted_from_its_section(tmp_path):
+    value = "a1" * 20
+    root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, "commit " + value + " landed", SECOND)})
     raw, sha = policy(commit, ["docs/a.md"])
     projection = build(root, raw, sha)
-    assert texts(projection) == ["# Otsikko", FINNISH, SECOND]
-    assert projection["refused_sections"] == {"credential": 1} and projection["refused_docs"] == {}
+    assert texts(projection) == ["# Otsikko", FINNISH, "commit hex-redacted landed", SECOND]
+    assert value not in json.dumps(projection)
+    assert projection["refused_sections"] == {} and projection["refused_docs"] == {}
 
 
 def test_inherited_git_variables_cannot_redirect_the_read(repo, tmp_path, monkeypatch):

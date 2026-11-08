@@ -258,6 +258,8 @@ def _normalize(text, limit):
 def _base64_secret(text):
     for match in _BASE64_RUN.finditer(text):
         run = match.group(0)
+        if re.fullmatch(r"[0-9a-fA-F]{32,}", run):
+            continue  # Hex is independently screened or replaced; never retained.
         if any(c.isdigit() for c in run) and any(c.isupper() for c in run) and any(c.islower() for c in run):
             return True
     return False
@@ -307,9 +309,10 @@ def _script(text):
         raise _Drop("mixed_script" if latin else "encoding")
 
 
-def _screen(text):
+def _screen(text, *, redact_hex=False):
     """The detectors, in order, on one normalized text; raises ``_Drop`` with the first matching class."""
-    if any(pattern.search(text) for pattern in _CREDENTIAL) or _base64_secret(text):
+    patterns = _CREDENTIAL[:-1] if redact_hex else _CREDENTIAL
+    if any(pattern.search(text) for pattern in patterns) or _base64_secret(text):
         raise _Drop("credential")
     if _AMBIGUOUS_PROFILE.search(text) or _AMBIGUOUS_TERMINAL_PATH.search(text):
         raise _Drop("personal")
@@ -340,7 +343,8 @@ def classify(raw_text, limit=MAX_MESSAGE_CHARS):
         text = _normalize(raw_text, limit)
         if not text:
             raise _Drop("empty")
-        _screen(text)
+        _screen(text, redact_hex=True)
+        text = _CREDENTIAL[-1].sub("hex-redacted", text)
         text = _replace_locations(text)
         if not text:
             raise _Drop("empty")

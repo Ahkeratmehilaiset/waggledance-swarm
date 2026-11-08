@@ -1,4 +1,5 @@
-"""Content snapshot plan v4 through the Windows query wrapper (lead-q4-useful-work-content-fable-20261107-v1, 7b2).
+"""Content snapshot plan v5 through the Windows query wrapper (lead-q4-useful-work-content-fable-20261107-v1, 7b2;
+v5 for RCO2 MP1 R1: the plan also names the decision's sources, which the wrapper reads and frames to the child).
 
 Route B, Lead 20:06Z: the plan pins the policy, roster and content route decision files and the encoder, memory and
 projection digests. ``Get-WdQ4PublicPlan`` reads the three files by their pins, ``Invoke-WdQ4PublicTransport`` frames
@@ -13,7 +14,7 @@ import pytest
 
 from test_lane_card_decision_forward import BASE, WRAPPER, ROOT, ps, quote, windows
 
-PLAN_SCHEMA = "wd.q4-public-wrapper-plan.v4"
+PLAN_SCHEMA = "wd.q4-public-wrapper-plan.v5"
 PINS = {"encoder_sha256": "c" * 64, "memory_sha256": "2" * 64, "projection_sha256": "3" * 64}
 
 
@@ -30,6 +31,14 @@ def content_plan(tmp_path, **changes):
     plan = dict(PINS, schema=PLAN_SCHEMA, config={"descriptor_sha256": "1" * 64})
     for name, data in (("policy", b"policy-bytes"), ("roster", b"roster-bytes"), ("content_decision", b"decision")):
         plan[name + "_path"], plan[name + "_sha256"] = write_file(tmp_path / (name + ".json"), data)
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    plan["message_source_path"], _ = write_file(tmp_path / "events.jsonl", b"{}\n")
+    plan["message_generation_path"], _ = write_file(tmp_path / "generation.json", b"{}")
+    plan["message_policy_path"], _ = write_file(tmp_path / "message-policy.json", b"message-policy")
+    plan["doc_repo_root"] = str(repo)
+    plan["doc_policy_path"], _ = write_file(tmp_path / "doc-policy.json", b"doc-policy")
+    plan["doc_git_executable"], plan["doc_git_sha256"] = write_file(tmp_path / "git.exe", b"synthetic git")
     plan.update(changes)
     plan = {key: value for key, value in plan.items() if value is not ...}
     path, pin = write_file(tmp_path / "plan.json", json.dumps(plan, separators=(",", ":")).encode())
@@ -48,8 +57,22 @@ def test_a_content_plan_loads_its_three_pinned_inputs(tmp_path):
     script = load(path, pin) + (
         "@{content=$plan.Content;staged=$plan.Staged;names=(@($plan.Inputs.Keys)|Sort-Object) -join ',';"
         "decision=[Text.Encoding]::ASCII.GetString($plan.Inputs.content_decision)} | ConvertTo-Json -Compress")
-    assert ps(script) == {"content": True, "staged": False, "names": "content_decision,policy,roster",
-                          "decision": "decision"}
+    assert ps(script) == {"content": True, "staged": False,
+                          "names": "content_decision,doc_policy,message_policy,policy,roster", "decision": "decision"}
+
+
+@windows
+@pytest.mark.parametrize("group, names", [
+    ("message", "content_decision,message_policy,policy,roster"),
+    ("doc", "content_decision,doc_policy,policy,roster"),
+])
+def test_a_content_plan_with_one_source_group_reads_only_that_policy(tmp_path, group, names):
+    nulls = ({"doc_repo_root": None, "doc_policy_path": None, "doc_git_executable": None, "doc_git_sha256": None}
+             if group == "message" else
+             {"message_source_path": None, "message_generation_path": None, "message_policy_path": None})
+    path, pin, _ = content_plan(tmp_path, **nulls)
+    script = load(path, pin) + "@{names=(@($plan.Inputs.Keys)|Sort-Object) -join ','} | ConvertTo-Json -Compress"
+    assert ps(script) == {"names": names}
 
 
 @windows
@@ -61,7 +84,18 @@ def test_a_content_plan_loads_its_three_pinned_inputs(tmp_path):
     {"content_decision_sha256": "0" * 64},
     {"content_decision_path": ""},
     {"card_decision_sha256": "9" * 64},
-    {"schema": "wd.q4-public-wrapper-plan.v5"},
+    {"schema": "wd.q4-public-wrapper-plan.v4"},
+    {"schema": "wd.q4-public-wrapper-plan.v6"},
+    {"message_source_path": ...},
+    {"doc_git_sha256": ...},
+    {"message_source_path": None},
+    {"doc_git_sha256": None},
+    {"message_source_path": None, "message_generation_path": None, "message_policy_path": None,
+     "doc_repo_root": None, "doc_policy_path": None, "doc_git_executable": None, "doc_git_sha256": None},
+    {"doc_git_sha256": "A" * 64},
+    {"doc_repo_root": "relative\\repo"},
+    {"message_source_path": "C:/forward/events.jsonl"},
+    {"doc_policy_path": "C:\\missing\\doc-policy.json"},
 ])
 def test_a_partial_tampered_or_extended_content_plan_is_refused(tmp_path, change):
     path, pin, _ = content_plan(tmp_path, **change)
@@ -144,6 +178,10 @@ def test_the_content_plan_reaches_the_real_windows_job_as_framed_inputs(tmp_path
         "  assert pins['content_decision_sha256']=='9'*64 and pins['expected_encoder_sha256']=='c'*64\n"
         "  assert pins['expected_memory_sha256']=='2'*64 and pins['expected_projection_sha256']=='3'*64\n"
         "  assert pins['policy_sha256']=='d'*64 and pins['roster_sha256']=='e'*64\n"
+        "  assert pins['content_sources']=={'message_source_path':'C:\\\\s\\\\events.jsonl',"
+        "'message_generation_path':'C:\\\\s\\\\generation.json','message_policy_bytes':b'message-secret',"
+        "'doc_repo_root':'C:\\\\repo','doc_policy_bytes':b'doc-secret','doc_git_executable':'C:\\\\git.exe',"
+        "'doc_git_sha256':'a'*64}\n"
         "  assert all('secret' not in item for item in sys.argv)\n"
         "  stdout.write(json.dumps(" + repr(output) + "));stdout.flush();return 0\n"
         " def run_public(*a, **k): raise AssertionError('not the content route')\n"
@@ -160,8 +198,8 @@ $hash=[BitConverter]::ToString($sha.ComputeHash($h)).Replace('-','');$sha.Dispos
 $base=@{{CodeRoot='{quote(root)}';JobHelperBytes=$h;JobHelperSha256=$hash;
  Config=@{{interpreter='{quote(sys.executable)}';timeout=10;scratch_root='{quote(scratch)}';verifier_sha256=('7'*64);descriptor_sha256=('1'*64);runtime_root='C:\\r';runtime_manifest='C:\\m';runtime_manifest_sha256=('8'*64);runtime_generation=('9'*40);runtime_revision=('8'*40)}};
  PublicPins=@{{'tools/wd_q4_public_child.py'=('8'*64);'tools/wd_q4_public_query.py'=('9'*64)}}}}
-$doc=@{{encoder_sha256=('c'*64);policy_sha256=('d'*64);roster_sha256=('e'*64);content_decision_sha256=('9'*64);memory_sha256=('2'*64);projection_sha256=('3'*64)}}
-$plan=@{{Base=$base;Document=$doc;Root=$null;Staged=$false;Content=$true;Inputs=@{{policy=[Text.Encoding]::UTF8.GetBytes('policy-secret');roster=[Text.Encoding]::UTF8.GetBytes('roster-secret');content_decision=[Text.Encoding]::UTF8.GetBytes('decision-secret')}}}}
+$doc=@{{encoder_sha256=('c'*64);policy_sha256=('d'*64);roster_sha256=('e'*64);content_decision_sha256=('9'*64);memory_sha256=('2'*64);projection_sha256=('3'*64);message_source_path='C:\\s\\events.jsonl';message_generation_path='C:\\s\\generation.json';doc_repo_root='C:\\repo';doc_git_executable='C:\\git.exe';doc_git_sha256=('a'*64)}}
+$plan=@{{Base=$base;Document=$doc;Root=$null;Staged=$false;Content=$true;Inputs=@{{policy=[Text.Encoding]::UTF8.GetBytes('policy-secret');roster=[Text.Encoding]::UTF8.GetBytes('roster-secret');content_decision=[Text.Encoding]::UTF8.GetBytes('decision-secret');message_policy=[Text.Encoding]::UTF8.GetBytes('message-secret');doc_policy=[Text.Encoding]::UTF8.GetBytes('doc-secret')}}}}
 Invoke-WdQ4PublicTransport -Plan $plan -Query ([Text.Encoding]::UTF8.GetBytes('query-secret')) | ConvertTo-Json -Depth 8 -Compress
 """
     out = ps(script)
@@ -203,12 +241,21 @@ TRANSPORT = (HELPER + "$base=@{CodeRoot='C:\\code';JobHelperBytes=$hb;JobHelperS
 
 
 @windows
-@pytest.mark.parametrize("fault", ["none", "card_input", "staged", "bad_pin"])
+@pytest.mark.parametrize("fault", ["none", "card_input", "staged", "bad_pin", "no_message_policy", "no_doc_policy",
+                                   "no_sources", "bad_git_pin", "message_only", "doc_only", "stray_message_policy",
+                                   "stray_doc_policy"])
 def test_the_content_transport_refuses_a_mixed_or_unpinned_plan_before_any_job(fault):
-    doc = ("$doc=@{encoder_sha256=('c'*64);policy_sha256=('d'*64);roster_sha256=('e'*64);"
+    message = "" if fault in ("no_sources", "doc_only", "stray_message_policy") else "message_source_path='C:\\e.jsonl';"
+    git = "'A'" if fault == "bad_git_pin" else "('a'*64)"
+    docs = "" if fault in ("no_sources", "message_only", "stray_doc_policy") else "doc_repo_root='C:\\r';doc_git_sha256=" + git + ";"
+    doc = ("$doc=@{" + message + docs + "encoder_sha256=('c'*64);policy_sha256=('d'*64);roster_sha256=('e'*64);"
            "content_decision_sha256=('9'*64);memory_sha256=('2'*64);projection_sha256=" +
            ("'x'" if fault == "bad_pin" else "('3'*64)") + "}\n")
     inputs = "policy=[byte[]]@(1);roster=[byte[]]@(2);content_decision=[byte[]]@(3)"
+    if fault not in ("no_message_policy", "no_sources", "doc_only"):
+        inputs += ";message_policy=[byte[]]@(6)"
+    if fault not in ("no_doc_policy", "no_sources", "message_only"):
+        inputs += ";doc_policy=[byte[]]@(7)"
     if fault == "card_input":
         inputs += ";card_decision=[byte[]]@(4)"
     staged = "$true" if fault == "staged" else "$false"
@@ -216,4 +263,5 @@ def test_the_content_transport_refuses_a_mixed_or_unpinned_plan_before_any_job(f
               f"$plan=@{{Base=$base;Document=$doc;Root=$null;Staged={staged};Content=$true;Inputs=@{{{inputs}}}}}\n"
               "$r=try {$null=Invoke-WdQ4PublicTransport -Plan $plan -Query ([byte[]]@(5));'accepted'} catch {[string]$_}\n"
               "@{r=$r} | ConvertTo-Json -Compress")
-    assert ps(script) == {"r": "runtime_refused" if fault == "none" else "binding_refused"}
+    ok = fault in ("none", "message_only", "doc_only")
+    assert ps(script) == {"r": "runtime_refused" if ok else "binding_refused"}

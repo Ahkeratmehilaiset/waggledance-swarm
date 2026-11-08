@@ -242,10 +242,14 @@ _STAGED_BIND_KEYS = _STAGED_BIND_PINS | {"memory_sha256", "projection_sha256", "
 # the plan pins the policy, roster and content route decision files and the encoder, memory and projection
 # digests; with the config descriptor pin these are the seven pins the closed content reply must carry
 # (wd.q4-content-snapshot-query.v1, source_mode content-snapshot-v1). v1-v3 plans are unchanged.
-_CONTENT_PLAN_SCHEMA = "wd.q4-public-wrapper-plan.v4"
+# v5 (RCO2 MP1 R1, Lead 2026-11-08 14:27Z) adds the source locations the public child re-derives the projection
+# from before every query; v4 plans are refused. The source fields are not reply pins.
+_CONTENT_PLAN_SCHEMA = "wd.q4-public-wrapper-plan.v5"
+_CONTENT_SOURCE_PATHS = ("message_source_path", "message_generation_path", "message_policy_path", "doc_repo_root",
+                         "doc_policy_path", "doc_git_executable")
 _CONTENT_PLAN_KEYS = frozenset({"schema", "config", "policy_path", "roster_path", "content_decision_path",
                                 "policy_sha256", "roster_sha256", "content_decision_sha256", "encoder_sha256",
-                                "memory_sha256", "projection_sha256"})
+                                "memory_sha256", "projection_sha256", "doc_git_sha256", *_CONTENT_SOURCE_PATHS})
 _CONTENT_BIND_PINS = frozenset({"encoder_sha256", "policy_sha256", "roster_sha256", "content_decision_sha256",
                                 "descriptor_sha256", "memory_sha256", "projection_sha256"})
 
@@ -261,7 +265,11 @@ def _public_plan(path, expected_sha256):
     if type(plan) is dict and plan.get("schema") == _CONTENT_PLAN_SCHEMA:
         if (set(plan) != _CONTENT_PLAN_KEYS or type(plan["config"]) is not dict
                 or any(type(plan[field]) is not str or not plan[field]
-                       for field in ("policy_path", "roster_path", "content_decision_path"))):
+                       for field in ("policy_path", "roster_path", "content_decision_path"))
+                or any(plan[field] is not None and (type(plan[field]) is not str or not plan[field])
+                       for field in _CONTENT_SOURCE_PATHS)
+                or (plan["doc_git_sha256"] is not None
+                    and (type(plan["doc_git_sha256"]) is not str or _HEX64.fullmatch(plan["doc_git_sha256"]) is None))):
             raise ValueError()
         pins = {key: (plan["config"].get(key) if key == "descriptor_sha256" else plan[key])
                 for key in _CONTENT_BIND_PINS}

@@ -252,3 +252,52 @@ def test_every_genuine_record_passes_the_read_time_screen(tmp_path, route):
     projection = json.loads(built(tmp_path, route))
     records = projection["messages"]["records"] + projection["documents"]["records"]
     assert len(cm.resolve_route_content(projection, tcr.hits(records), tcm.ASK_TIME)) == len(records)
+
+
+def sources_of(route):
+    messages, documents = route["messages"], route["documents"]
+    return {"message_source_path": messages["source_path"], "message_generation_path": messages["generation_path"],
+            "message_policy_bytes": messages["policy_bytes"], "doc_repo_root": documents["repo_root"],
+            "doc_policy_bytes": documents["policy_bytes"], "doc_git_executable": documents["git_executable"],
+            "doc_git_sha256": documents["git_sha256"]}
+
+
+def test_the_query_sources_map_back_to_the_decision_sources(route):
+    """MP1 R1: the query path names locations only; the cursor and the policy pins come from the decision."""
+    messages, documents = cm.snapshot_sources(json.loads(route["decision"]), sources_of(route))
+    assert messages == route["messages"] and documents == route["documents"]
+
+
+MESSAGE_NULL = {"message_source_path": None, "message_generation_path": None, "message_policy_bytes": None}
+DOC_NULL = {"doc_repo_root": None, "doc_policy_bytes": None, "doc_git_executable": None, "doc_git_sha256": None}
+
+
+@pytest.mark.parametrize("decision_change, source_change", [
+    ({}, {"extra": 1}),
+    ({}, {"doc_git_sha256": "A" * 64}),
+    ({}, {"doc_git_sha256": "0" * 63}),
+    ({}, {"doc_git_executable": "git"}),
+    ({}, {"doc_repo_root": "repo"}),
+    ({}, {"doc_policy_bytes": "policy"}),
+    ({}, {"message_policy_bytes": None}),
+    ({}, MESSAGE_NULL),
+    ({}, DOC_NULL),
+    ({"message_policy_sha256": None, "source_prefix": None}, {}),
+    ({"doc_policy_sha256": None}, {}),
+    ({"doc_policy_sha256": None}, dict(DOC_NULL, doc_git_sha256="0" * 64)),
+    ({"message_policy_sha256": None, "source_prefix": None}, dict(MESSAGE_NULL, message_policy_bytes=b"x")),
+])
+def test_query_sources_not_matching_the_decision_shape_are_refused(route, decision_change, source_change):
+    decision = dict(json.loads(route["decision"]), **decision_change)
+    with pytest.raises(cm.ContentMemoryRefused, match="^sources_invalid$"):
+        cm.snapshot_sources(decision, dict(sources_of(route), **source_change))
+
+
+@pytest.mark.parametrize("key", ["message_source_path", "message_generation_path"])
+def test_a_relative_bridge_location_is_refused_even_when_it_resolves(route, monkeypatch, key):
+    """A relative path would follow the working directory; only absolute locations are a source."""
+    import os
+    absolute = sources_of(route)[key]
+    monkeypatch.chdir(os.path.dirname(absolute))
+    with pytest.raises(cm.ContentMemoryRefused, match="^sources_invalid$"):
+        cm.snapshot_sources(json.loads(route["decision"]), dict(sources_of(route), **{key: os.path.basename(absolute)}))

@@ -531,13 +531,17 @@ function ConvertFrom-WdQ4PublicResult {
         same_user_aba='UNKNOWN';results=$items}
 }
 
-# Content snapshot plan v4 (useful content route B, lead-q4-useful-work-content-fable-20261107-v1, Lead 2026-11-07
-# 20:06Z): the plan pins the policy, roster and content route decision files and the encoder, memory and projection
-# digests; the descriptor pin is the deployed config's. The public child's run_content checks them all before the
-# query and must bind every pin into its reply. Default OFF: only a v4 plan reaches this branch; v1-v3 are unchanged.
+# Content snapshot plan v5 (useful content route B, lead-q4-useful-work-content-fable-20261107-v1, Lead 2026-11-07
+# 20:06Z; v5 for RCO2 MP1 R1, Lead 2026-11-08 14:27Z): the plan pins the policy, roster and content route decision
+# files and the encoder, memory and projection digests; the descriptor pin is the deployed config's. It also names
+# the decision's sources (bridge log, generation file and message policy; repository, document policy, Git
+# executable and its digest), each group all present or all null: the policy files are read here and framed with
+# the paths to the public child, whose query re-derives the pinned projection from them before the query is read
+# and refuses otherwise. The public child's run_content checks every pin before the query and must bind every pin
+# into its reply. Default OFF: only a v5 plan reaches this branch; v4 is refused; v1-v3 are unchanged.
 function Get-WdQ4ContentPlan {
     param($BasePlan, $Document, [string[]]$Names)
-    if (($Names -join ',') -cne 'config,content_decision_path,content_decision_sha256,encoder_sha256,memory_sha256,policy_path,policy_sha256,projection_sha256,roster_path,roster_sha256,schema' -or
+    if (($Names -join ',') -cne 'config,content_decision_path,content_decision_sha256,doc_git_executable,doc_git_sha256,doc_policy_path,doc_repo_root,encoder_sha256,memory_sha256,message_generation_path,message_policy_path,message_source_path,policy_path,policy_sha256,projection_sha256,roster_path,roster_sha256,schema' -or
         $Document.config -isnot [pscustomobject]) { throw 'binding_refused' }
     foreach($name in @('content_decision_sha256','encoder_sha256','memory_sha256','policy_sha256','projection_sha256','roster_sha256')) {
         if (-not (Test-WdQ4Hash $Document.$name)) { throw 'binding_refused' }
@@ -550,6 +554,24 @@ function Get-WdQ4ContentPlan {
         $value=Read-WdQ4Snapshot -Path $Document.$pathKey -Limit $limit
         if ($value.Hash -cne $Document.$hashKey.ToUpperInvariant()) { throw 'binding_refused' }
         $inputs[$name]=$value.Bytes
+    }
+    $messageKeys=@('message_source_path','message_generation_path','message_policy_path')
+    $docKeys=@('doc_repo_root','doc_policy_path','doc_git_executable','doc_git_sha256')
+    foreach($group in @(,$messageKeys) + @(,$docKeys)) {
+        $present=@($group | Where-Object { $null -ne $Document.$_ }).Count
+        if ($present -ne 0 -and $present -ne $group.Count) { throw 'binding_refused' }
+    }
+    if ($null -eq $Document.message_source_path -and $null -eq $Document.doc_repo_root) { throw 'binding_refused' }
+    if ($null -ne $Document.message_source_path) {
+        $null=Assert-WdQ4LocalPath -Path $Document.message_source_path
+        $null=Assert-WdQ4LocalPath -Path $Document.message_generation_path
+        $inputs['message_policy']=(Read-WdQ4Snapshot -Path $Document.message_policy_path -Limit 65536).Bytes
+    }
+    if ($null -ne $Document.doc_repo_root) {
+        if (-not (Test-WdQ4Hash $Document.doc_git_sha256)) { throw 'binding_refused' }
+        $null=Assert-WdQ4LocalPath -Path $Document.doc_repo_root -Directory $true
+        $null=Assert-WdQ4LocalPath -Path $Document.doc_git_executable
+        $inputs['doc_policy']=(Read-WdQ4Snapshot -Path $Document.doc_policy_path -Limit 65536).Bytes
     }
     foreach($relative in @('tools/wd_q4_public_outer.py','tools/wd_q4_public_child.py','tools/wd_q4_public_query.py')) {
         if (-not (Test-WdQ4Hash $BasePlan.PublicPins[$relative])) { throw 'binding_refused' }
@@ -600,7 +622,7 @@ function Get-WdQ4PublicPlan {
     $names=[string[]]@($document.PSObject.Properties.Name); [Array]::Sort($names,[StringComparer]::Ordinal)
     $v1Names='config,encoder_sha256,pointer_sha256,policy_path,policy_sha256,public_policy_path,public_policy_sha256,root,roster_path,roster_sha256,schema,source_anchor_sha256'
     if ($document.schema -isnot [string]) { throw 'binding_refused' }
-    if ($document.schema -ceq 'wd.q4-public-wrapper-plan.v4') {
+    if ($document.schema -ceq 'wd.q4-public-wrapper-plan.v5') {
         return Get-WdQ4ContentPlan -BasePlan $BasePlan -Document $document -Names $names
     }
     $staged=($document.schema -ceq 'wd.q4-public-wrapper-plan.v3')
@@ -726,8 +748,20 @@ function Invoke-WdQ4PublicTransport {
             child_sha256=$base.PublicPins['tools/wd_q4_public_child.py'];query_sha256=$base.PublicPins['tools/wd_q4_public_query.py'];
             encoder_sha256=$Plan.Document.encoder_sha256;policy_sha256=$Plan.Document.policy_sha256;
             roster_sha256=$Plan.Document.roster_sha256;content_decision_sha256=$Plan.Document.content_decision_sha256;
-            memory_sha256=$Plan.Document.memory_sha256;projection_sha256=$Plan.Document.projection_sha256}
-        $parts=@('metadata','policy','roster','content_decision','query')
+            memory_sha256=$Plan.Document.memory_sha256;projection_sha256=$Plan.Document.projection_sha256;
+            message_source_path=$Plan.Document.message_source_path;message_generation_path=$Plan.Document.message_generation_path;
+            doc_repo_root=$Plan.Document.doc_repo_root;doc_git_executable=$Plan.Document.doc_git_executable;
+            doc_git_sha256=$Plan.Document.doc_git_sha256}
+        $hasMessages=($null -ne $Plan.Document.message_source_path)
+        $hasDocuments=($null -ne $Plan.Document.doc_repo_root)
+        if ((-not $hasMessages -and -not $hasDocuments) -or
+            $hasMessages -ne $Plan.Inputs.ContainsKey('message_policy') -or
+            $hasDocuments -ne $Plan.Inputs.ContainsKey('doc_policy') -or
+            ($hasDocuments -and -not (Test-WdQ4Hash $Plan.Document.doc_git_sha256))) { throw 'binding_refused' }
+        $parts=@('metadata','policy','roster','content_decision')
+        if ($hasMessages) { $parts+=@('message_policy') }
+        if ($hasDocuments) { $parts+=@('doc_policy') }
+        $parts+=@('query')
     }
     [byte[]]$metadataBytes=[Text.UTF8Encoding]::new($false,$true).GetBytes(($meta|ConvertTo-Json -Depth 8 -Compress))
     if ($metadataBytes.Length -gt 65536) { throw 'binding_refused' }
@@ -761,9 +795,13 @@ try:
  if outer['status']!='MODULES_IMPORTED': raise ValueError()
  from tools.wd_q4_agent_query import VerifiedQ4Config
  if 'content_decision_sha256' in meta:
-  policy=take(65536); roster=take(1048576); decision=take(65536); query=take(65536)
+  policy=take(65536); roster=take(1048576); decision=take(65536)
+  message_policy=take(65536) if meta['message_source_path'] is not None else None
+  doc_policy=take(65536) if meta['doc_repo_root'] is not None else None
+  query=take(65536)
   if sys.stdin.buffer.read(1): raise ValueError()
-  sys.exit(outer['child'].run_content(VerifiedQ4Config(**cfg),io.BytesIO(query),sys.stdout,expected_encoder_sha256=meta['encoder_sha256'],policy_bytes=policy,policy_sha256=meta['policy_sha256'],roster_bytes=roster,roster_sha256=meta['roster_sha256'],content_decision_bytes=decision,content_decision_sha256=meta['content_decision_sha256'],expected_memory_sha256=meta['memory_sha256'],expected_projection_sha256=meta['projection_sha256'],enabled=True))
+  sources={'message_source_path':meta['message_source_path'],'message_generation_path':meta['message_generation_path'],'message_policy_bytes':message_policy,'doc_repo_root':meta['doc_repo_root'],'doc_policy_bytes':doc_policy,'doc_git_executable':meta['doc_git_executable'],'doc_git_sha256':meta['doc_git_sha256']}
+  sys.exit(outer['child'].run_content(VerifiedQ4Config(**cfg),io.BytesIO(query),sys.stdout,expected_encoder_sha256=meta['encoder_sha256'],policy_bytes=policy,policy_sha256=meta['policy_sha256'],roster_bytes=roster,roster_sha256=meta['roster_sha256'],content_decision_bytes=decision,content_decision_sha256=meta['content_decision_sha256'],expected_memory_sha256=meta['memory_sha256'],expected_projection_sha256=meta['projection_sha256'],content_sources=sources,enabled=True))
  policy=take(65536); roster=take(1048576); public=take(65536)
  card={'card_decision_bytes':take(262144),'card_decision_sha256':meta['card_decision_sha256']} if 'card_decision_sha256' in meta else {}
  staged='card_policy_sha256' in meta

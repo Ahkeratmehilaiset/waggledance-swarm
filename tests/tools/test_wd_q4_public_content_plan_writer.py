@@ -1,7 +1,7 @@
 """The default-off v4 content plan writer (lead-q4-useful-work-content-fable-20261107-v1, increment 7b4).
 
 Route B, Lead 20:06Z and 21:30Z. ``write_content_plan`` turns a caller-pinned v1 public plan, a pinned content route
-decision and an installed content memory directory into ``public-plan.v4.json``; every check the content query makes
+decision and an installed content memory directory into ``public-plan.v5.json``; every check the content query makes
 before stdin runs here first, so a written plan is one the lane caller answers through. Synthetic data; the lane
 transport stands in for the wrapper and calls the real public child ``run_content`` in process.
 """
@@ -31,7 +31,7 @@ lane = cl.lane
 V1 = "wd.q4-public-wrapper-plan.v1"
 SOURCE_KEYS = ("message_source_path", "message_generation_path", "message_policy_path", "doc_repo_root",
                "doc_policy_path", "doc_git_executable", "doc_git_sha256")
-V4_KEYS = {"schema", "config", "policy_path", "roster_path", "content_decision_path", "policy_sha256",
+PIN_KEYS = {"schema", "config", "policy_path", "roster_path", "content_decision_path", "policy_sha256",
            "roster_sha256", "content_decision_sha256", "encoder_sha256", "memory_sha256", "projection_sha256"}
 
 
@@ -98,14 +98,15 @@ def test_the_writer_is_off_by_default_and_reads_nothing(setup):
 def test_the_written_v4_plan_carries_the_seven_pins(setup):
     module = writer()
     result = module.write_content_plan(enabled=True, **setup["arguments"])
-    plan_path = setup["out"] / "public-plan.v4.json"
-    assert [item.name for item in setup["out"].iterdir()] == ["public-plan.v4.json"]
+    plan_path = setup["out"] / "public-plan.v5.json"
+    assert [item.name for item in setup["out"].iterdir()] == ["public-plan.v5.json"]
     raw = plan_path.read_bytes()
     plan = json.loads(raw)
-    assert set(plan) == V4_KEYS and plan["schema"] == "wd.q4-public-wrapper-plan.v4"
+    assert set(plan) == PIN_KEYS | set(SOURCE_KEYS) and plan["schema"] == "wd.q4-public-wrapper-plan.v5"
+    assert {key: plan[key] for key in SOURCE_KEYS} == {key: setup["arguments"][key] for key in SOURCE_KEYS}
     assert plan["config"] == setup["v1"]["config"]
-    assert {key: plan[key] for key in V4_KEYS - {"schema", "config"}} == {
-        key: setup["document"][key] for key in V4_KEYS - {"schema", "config"}}
+    assert {key: plan[key] for key in PIN_KEYS - {"schema", "config"}} == {
+        key: setup["document"][key] for key in PIN_KEYS - {"schema", "config"}}
     assert link._public_plan(str(plan_path), sha(raw))[2] == setup["lane"]["call"]["expected_binding"]
     assert result == {"schema": "wd.q4-public-content-plan-written.v1", "status": "WRITTEN",
                       "base_public_plan_sha256": setup["arguments"]["expected_public_plan_sha256"],
@@ -314,7 +315,7 @@ def test_a_source_the_decision_does_not_pin_is_refused(key):
     """Unit layer: a decision with neither pin takes no source at all."""
     sources = dict.fromkeys(SOURCE_KEYS)
     decision = {"message_policy_sha256": None, "doc_policy_sha256": None, "source_prefix": None}
-    assert writer()._route_sources(decision, sources) == (None, None)
+    assert writer()._route_sources(decision, sources) == (None, None, sources)
     with pytest.raises(ValueError):
         writer()._route_sources(decision, dict(sources, **{key: "C:\\synthetic"}))
 

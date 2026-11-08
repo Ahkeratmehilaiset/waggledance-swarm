@@ -62,6 +62,8 @@ PREFIX_KEYS = frozenset({"sha256", "offset", "generation"})
 ROUTE_KEYS = frozenset({"decision_sha256", "source_prefix", "source_status", "completeness", "message_policy_sha256",
                         "doc_policy_sha256", "doc_commit"})
 ROUTE_MESSAGE_KEYS = frozenset({"source_path", "generation_path", "end_cursor", "policy_bytes", "policy_sha256"})
+SNAPSHOT_SOURCE_KEYS = frozenset({"message_source_path", "message_generation_path", "message_policy_bytes",
+                                  "doc_repo_root", "doc_policy_bytes", "doc_git_executable", "doc_git_sha256"})
 MAX_DECISION = 65536
 MAX_SOURCE_ROWS = 4096
 MAX_ROW_BYTES = 65536
@@ -527,6 +529,59 @@ def _route_projection(messages, documents, decision_bytes, decision_sha256, poli
         derived = {"rows": rows, "policy_bytes": messages["policy_bytes"], "policy_sha256": messages["policy_sha256"],
                    "roster": roster}
     return derive_content_projection(derived, documents), decision
+
+
+def snapshot_sources(decision, sources):
+    """``(messages, documents)`` for ``validate_content_snapshot`` from the closed source locations, or
+    ``sources_invalid``.
+
+    ``sources`` has exactly ``SNAPSHOT_SOURCE_KEYS``: the bridge log and generation file and the content message
+    policy bytes, the repository root, the document policy bytes and the absolute Git executable and its SHA-256
+    pin. The message fields are null exactly when the decision pins no message policy, the document fields exactly
+    when it pins no document policy. The policies carry the DECISION pins (their bytes are re-hashed against them by
+    the projection modules) and the end cursor is the decision prefix's offset and generation with the identity of
+    the file at the given path, so only the anchored prefix of that file can re-derive."""
+    failed = False
+    messages = documents = None
+    try:
+        if type(sources) is not dict or set(sources) != SNAPSHOT_SOURCE_KEYS:
+            raise ValueError()
+        message_keys = ("message_source_path", "message_generation_path", "message_policy_bytes")
+        doc_keys = ("doc_repo_root", "doc_policy_bytes", "doc_git_executable", "doc_git_sha256")
+        if decision["message_policy_sha256"] is None:
+            if any(sources[key] is not None for key in message_keys):
+                raise ValueError()
+        else:
+            from waggledance.core import bridge_log_reader as bridge
+            source_path, generation_path = sources["message_source_path"], sources["message_generation_path"]
+            if (type(source_path) is not str or not os.path.isabs(source_path) or type(generation_path) is not str
+                    or not os.path.isabs(generation_path) or type(sources["message_policy_bytes"]) is not bytes):
+                raise ValueError()
+            prefix = decision["source_prefix"]
+            with bridge._open_log(Path(source_path)) as stream:
+                identity = bridge._file_identity(stream)
+            messages = {"source_path": source_path, "generation_path": generation_path,
+                        "end_cursor": bridge.BridgeCursor(prefix["offset"], identity, prefix["generation"]),
+                        "policy_bytes": sources["message_policy_bytes"],
+                        "policy_sha256": decision["message_policy_sha256"]}
+        if decision["doc_policy_sha256"] is None:
+            if any(sources[key] is not None for key in doc_keys):
+                raise ValueError()
+        else:
+            root, executable, pin = (sources["doc_repo_root"], sources["doc_git_executable"],
+                                     sources["doc_git_sha256"])
+            if (type(root) is not str or not os.path.isabs(root) or type(executable) is not str
+                    or not os.path.isabs(executable) or type(pin) is not str or HEX64.fullmatch(pin) is None
+                    or type(sources["doc_policy_bytes"]) is not bytes):
+                raise ValueError()
+            documents = {"repo_root": root, "policy_bytes": sources["doc_policy_bytes"],
+                         "policy_sha256": decision["doc_policy_sha256"], "git_executable": executable,
+                         "git_sha256": pin}
+    except (ValueError, TypeError, KeyError, OSError):
+        failed = True
+    if failed:
+        _refuse("sources_invalid")
+    return messages, documents
 
 
 def validate_content_snapshot(*, enabled=False, projection_bytes=None, projection_sha256=None, messages=None,

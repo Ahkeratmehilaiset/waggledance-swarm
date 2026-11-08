@@ -305,14 +305,22 @@ _CONTENT_PROJECTION_SCHEMA = "wd.mind-content-memory-projection.v1"  # == conten
 def query_content_snapshot(config, stdin, *, expected_encoder_sha256=None, policy_bytes=None, policy_sha256=None,
                            roster_bytes=None, roster_sha256=None, content_decision_bytes=None,
                            content_decision_sha256=None, expected_memory_sha256=None,
-                           expected_projection_sha256=None, enabled=False):
+                           expected_projection_sha256=None, content_sources=None, enabled=False):
     """Opt-in query of one caller-pinned content route snapshot (route B), without history or a pointer.
 
     Before stdin is consumed: the content route decision verifies against the strict pins, and the descriptor,
     memory manifest and projection under config.memory are read by their pins (descriptor v2 shape, shared scope,
     encoder digest and runtime revision, the content projection schema and its pin). The query runs through the
     agent query boundary with the decision, so the isolated reader is the same; every pinned artifact is re-read
-    after the query and every pin is bound into the output. Ordinary changes are detected, not same-user ABA. The
+    after the query and every pin is bound into the output. Ordinary changes are detected, not same-user ABA.
+
+    Source re-derivation on the query path (RCO2 MP1 R1): ``content_sources`` (``content_memory.snapshot_sources``
+    keys: bridge log, generation file and message policy bytes; repository root, document policy bytes, absolute Git
+    executable and its pin) is required, and before stdin is read the pinned projection bytes must be exactly what
+    the decision's sources re-derive to (``content_memory.validate_content_snapshot``: the anchored prefix only, the
+    pinned commit through the pinned Git, the policies by the decision pins). A plan written by hand therefore
+    cannot pair a decision with a projection its sources do not produce; it still cannot authenticate who wrote
+    the decision, and sources can change after the check (same user). The
     caller must independently trust all pins, code, policy origins, runtime and encoder assets; this function grants
     no native execution or runtime authority and reads no installed state.
     """
@@ -326,8 +334,9 @@ def query_content_snapshot(config, stdin, *, expected_encoder_sha256=None, polic
             raise ValueError()
         q4_query._validate_config(config)
         from sandbox.mind.step2 import content_memory as content
-        content.verify_content_route_decision(content_decision_bytes, content_decision_sha256,
-                                              policy_sha256=policy_sha256, roster_sha256=roster_sha256)
+        decision = content.verify_content_route_decision(content_decision_bytes, content_decision_sha256,
+                                                         policy_sha256=policy_sha256, roster_sha256=roster_sha256)
+        messages, documents = content.snapshot_sources(decision, content_sources)
         tasks, _ = pointer_resolver.adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
         memory_dir = Path(config.memory)
         if Path(config.descriptor) != memory_dir / "descriptor.json":
@@ -351,6 +360,13 @@ def query_content_snapshot(config, stdin, *, expected_encoder_sha256=None, polic
                 or type(manifest) is not dict
                 or manifest.get("projection_schema") != _CONTENT_PROJECTION_SCHEMA
                 or manifest.get("projection_sha256") != expected_projection_sha256):
+            raise ValueError()
+        checked = content.validate_content_snapshot(
+            enabled=True, projection_bytes=projection_bytes, projection_sha256=expected_projection_sha256,
+            messages=messages, documents=documents, decision_bytes=content_decision_bytes,
+            decision_sha256=content_decision_sha256, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
+            roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+        if checked.get("status") != "MATCH" or checked.get("projection_sha256") != expected_projection_sha256:
             raise ValueError()
         result = q4_query.query_and_resolve(
             config, stdin, memory_bytes, projection_bytes, tasks,

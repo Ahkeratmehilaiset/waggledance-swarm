@@ -15,6 +15,7 @@ import pytest
 
 from sandbox.mind.step2 import shared_content_projection as cp
 from sandbox.mind.step2 import test_content_memory as tcm
+from sandbox.mind.step2 import test_content_rederive as tcrd
 from sandbox.mind.step2 import test_content_route as tcr
 from tools import wd_q4_lane_link as link
 from tools import wd_q4_lane_query as lane_query
@@ -28,6 +29,8 @@ content = cl.content
 lane = cl.lane
 
 V1 = "wd.q4-public-wrapper-plan.v1"
+SOURCE_KEYS = ("message_source_path", "message_generation_path", "message_policy_path", "doc_repo_root",
+               "doc_policy_path")
 V4_KEYS = {"schema", "config", "policy_path", "roster_path", "content_decision_path", "policy_sha256",
            "roster_sha256", "content_decision_sha256", "encoder_sha256", "memory_sha256", "projection_sha256"}
 
@@ -61,10 +64,18 @@ def setup(lane, tmp_path):
     plan_path, plan_sha = write(files / "plan.v1.json", json.dumps(v1, sort_keys=True).encode())
     out = tmp_path / "content-plan-out"
     out.mkdir()
+    route = lane["content"]["route"]
+    message_policy, _ = write(files / "message-policy.json", route["messages"]["policy_bytes"])
+    doc_policy, _ = write(files / "doc-policy.json", route["documents"]["policy_bytes"])
     arguments = {"public_plan_path": plan_path, "expected_public_plan_sha256": plan_sha, "output_dir": str(out),
                  "memory_dir": str(lane["content"]["dir"]), "content_decision_path": document["content_decision_path"],
-                 "content_decision_sha256": document["content_decision_sha256"]}
-    return {"arguments": arguments, "out": out, "files": files, "v1": v1, "lane": lane, "document": document}
+                 "content_decision_sha256": document["content_decision_sha256"],
+                 "message_source_path": route["messages"]["source_path"],
+                 "message_generation_path": route["messages"]["generation_path"],
+                 "message_policy_path": message_policy, "doc_repo_root": route["documents"]["repo_root"],
+                 "doc_policy_path": doc_policy}
+    return {"arguments": arguments, "out": out, "files": files, "v1": v1, "lane": lane, "document": document,
+            "route": route}
 
 
 def refused(setup, **changes):
@@ -100,7 +111,7 @@ def test_the_written_v4_plan_carries_the_seven_pins(setup):
                       "public_plan_path": str(plan_path), "public_plan_sha256": sha(raw),
                       "content_decision_sha256": plan["content_decision_sha256"],
                       "memory_sha256": plan["memory_sha256"], "projection_sha256": plan["projection_sha256"],
-                      "authority": "none", "issuer_authentication": "UNKNOWN"}
+                      "source_rederivation": "MATCH", "authority": "none", "issuer_authentication": "UNKNOWN"}
 
 
 def test_the_lane_caller_answers_through_the_written_plan(setup):
@@ -179,12 +190,13 @@ def test_a_failure_after_the_write_began_is_unknown(setup, monkeypatch):
 
 
 def request(setup, **changes):
-    document = {"schema": "wd.q4-public-content-plan-request.v1",
+    document = {"schema": "wd.q4-public-content-plan-request.v2",
                 "public_plan_path": setup["arguments"]["public_plan_path"],
                 "public_plan_sha256": setup["arguments"]["expected_public_plan_sha256"],
                 "output_dir": setup["arguments"]["output_dir"], "memory_dir": setup["arguments"]["memory_dir"],
                 "content_decision_path": setup["arguments"]["content_decision_path"],
-                "content_decision_sha256": setup["arguments"]["content_decision_sha256"]}
+                "content_decision_sha256": setup["arguments"]["content_decision_sha256"],
+                **{key: setup["arguments"][key] for key in SOURCE_KEYS}}
     document.update(changes)
     document = {key: value for key, value in document.items() if value is not ...}
     return write(setup["files"] / "request.json", json.dumps(document, sort_keys=True).encode())
@@ -201,7 +213,11 @@ def test_the_command_line_is_off_without_arguments_and_writes_through_a_pinned_r
     assert out["status"] == "WRITTEN" and Path(out["public_plan_path"]).is_file()
 
 
-@pytest.mark.parametrize("changes", [{"memory_dir": ...}, {"extra": "x"}, {"schema": "wd.q4-public-card-plan-request.v1"}])
+@pytest.mark.parametrize("changes", [
+    {"memory_dir": ...}, {"extra": "x"}, {"schema": "wd.q4-public-card-plan-request.v1"},
+    {"schema": "wd.q4-public-content-plan-request.v1"}, {"doc_policy_path": ...},
+    dict({key: ... for key in SOURCE_KEYS}, schema="wd.q4-public-content-plan-request.v1"),
+])
 def test_the_command_line_refuses_any_other_request_with_one_fixed_line(setup, capsys, changes):
     module = writer()
     path, pin = request(setup, **changes)
@@ -258,6 +274,79 @@ def test_a_re_pinned_projection_that_does_not_re_derive_is_refused(setup):
     path, pin = rechain(setup, projection=lambda p: p["documents"]["records"][0].update(
         stored_text=cp.encode_text("vaihdettu")))
     refused(setup, public_plan_path=path, expected_public_plan_sha256=pin)
+
+
+@pytest.mark.parametrize("part", ["messages", "documents"])
+def test_a_forged_row_that_passes_every_structural_check_is_refused(setup, part):
+    """RCO2 MP1: a record whose text never occurred in the sources, every self-derived field recomputed and the
+    whole chain re-pinned, passes the structural checks; only the source re-derivation refuses it."""
+    path, pin = rechain(setup, projection=lambda p: p.update(tcrd.forge(p, part)))
+    refused(setup, public_plan_path=path, expected_public_plan_sha256=pin)
+
+
+def test_the_sources_are_the_ones_the_decision_pins(setup):
+    """Present exactly when the decision pins them; the policies are read by the decision pins; the message source
+    is exactly the anchored prefix; the documents come from a repository holding the pinned commit."""
+    refused(setup, **{key: None for key in SOURCE_KEYS})
+    refused(setup, message_source_path=None)
+    refused(setup, doc_repo_root=None, doc_policy_path=None)
+    refused(setup, message_policy_path=setup["arguments"]["doc_policy_path"])
+    refused(setup, doc_policy_path=setup["arguments"]["message_policy_path"])
+    refused(setup, message_generation_path=setup["arguments"]["message_policy_path"])
+    refused(setup, doc_repo_root=str(setup["files"]))
+    refused(setup, message_source_path="relative/events.jsonl")
+    with pytest.raises(TypeError):
+        writer().write_content_plan(enabled=True, **{key: value for key, value in setup["arguments"].items()
+                                                      if key != "doc_repo_root"}, repo_root="x")
+
+
+@pytest.mark.parametrize("key", SOURCE_KEYS)
+def test_a_source_the_decision_does_not_pin_is_refused(key):
+    """Unit layer: a decision with neither pin takes no source at all."""
+    sources = dict.fromkeys(SOURCE_KEYS)
+    decision = {"message_policy_sha256": None, "doc_policy_sha256": None, "source_prefix": None}
+    assert writer()._route_sources(decision, sources) == (None, None)
+    with pytest.raises(ValueError):
+        writer()._route_sources(decision, dict(sources, **{key: "C:\\synthetic"}))
+
+
+def test_a_message_prefix_changed_after_the_build_is_refused(setup):
+    path = Path(setup["arguments"]["message_source_path"])
+    path.write_bytes(path.read_bytes().replace(b"valmiiksi", b"valmiixsi", 1))
+    refused(setup)
+
+
+def test_rows_appended_after_the_anchored_prefix_still_write(setup):
+    with open(setup["arguments"]["message_source_path"], "ab") as stream:
+        stream.write(tcr.raw(tcr.prefix_rows()[0] | {"ts_utc": "2026-11-07T10:09:00Z"}) + bytes([10]))
+    assert writer().write_content_plan(enabled=True, **setup["arguments"])["status"] == "WRITTEN"
+
+
+def test_the_source_re_derivation_runs_on_the_pinned_projection_bytes(setup, monkeypatch):
+    """Layer test: the writer hands the module check the raw pinned bytes, the plan pins and the decision sources."""
+    from sandbox.mind.step2 import content_memory as cm
+    seen = []
+    real = cm.validate_content_snapshot
+
+    def spy(**kwargs):
+        seen.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(cm, "validate_content_snapshot", spy)
+    writer().write_content_plan(enabled=True, **setup["arguments"])
+    (kwargs,) = seen
+    projection = (Path(setup["arguments"]["memory_dir"]) / "projection.json").read_bytes()
+    assert kwargs["enabled"] is True and kwargs["projection_bytes"] == projection
+    assert kwargs["projection_sha256"] == sha(projection)
+    assert kwargs["decision_sha256"] == setup["arguments"]["content_decision_sha256"]
+    assert kwargs["policy_sha256"] == setup["v1"]["policy_sha256"]
+    assert kwargs["roster_sha256"] == setup["v1"]["roster_sha256"]
+    messages, documents = kwargs["messages"], kwargs["documents"]
+    route = setup["route"]["messages"]
+    assert {key: messages[key] for key in ("source_path", "generation_path", "policy_bytes", "policy_sha256")} == {
+        key: route[key] for key in ("source_path", "generation_path", "policy_bytes", "policy_sha256")}
+    assert messages["end_cursor"] == route["end_cursor"]
+    assert documents == setup["route"]["documents"]
 
 
 def test_a_valid_policy_other_than_the_decision_policy_is_refused(setup):

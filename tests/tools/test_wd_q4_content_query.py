@@ -70,7 +70,8 @@ def content(tmp_path, monkeypatch):
                 projection_bytes=(memory_dir / "projection.json").read_bytes(),
                 approved_tasks=frozenset({tcp.TASK, tcr.OTHER_TASK}), expected_memory_sha256=built["memory_sha256"],
                 content_decision_bytes=route["decision"], content_decision_sha256=route["decision_sha"], **strict)
-    return {"config": config(memory_dir, descriptor_sha256), "args": args, "calls": calls, "dir": memory_dir}
+    return {"config": config(memory_dir, descriptor_sha256), "args": args, "calls": calls, "dir": memory_dir,
+            "route": route}
 
 
 def ask(content, situation=SITUATION, when=tcm.ASK_TIME, **changes):

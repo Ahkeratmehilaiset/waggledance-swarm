@@ -31,6 +31,8 @@ _BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sh
                            "roster_sha256", "public_policy_sha256", "descriptor_sha256", "projection_sha256"})
 _CARD_BINDING_KEYS = _BINDING_KEYS | {"card_decision_sha256"}
 _STAGED_CARD_BINDING_KEYS = _CARD_BINDING_KEYS | {"card_policy_sha256"}
+_CONTENT_BINDING_KEYS = frozenset({"encoder_sha256", "policy_sha256", "roster_sha256", "content_decision_sha256",
+                                   "descriptor_sha256", "memory_sha256", "projection_sha256"})
 _OUTER_FILE = ("assets", "code", "tools", "wd_q4_session_outer_synthetic.py")
 _MAX_FLEET = 1048576
 _MAX_DESCRIPTOR = 65536
@@ -141,7 +143,7 @@ def build_shared_descriptor(*, enabled=False, fleet_bytes=None, expected_fleet_s
             _refuse("limit_refused")
     outer = _section(outer, _OUTER_KEYS)
     if (type(expected_binding) is not dict or frozenset(expected_binding) not in
-            (_BINDING_KEYS, _CARD_BINDING_KEYS, _STAGED_CARD_BINDING_KEYS)):
+            (_BINDING_KEYS, _CARD_BINDING_KEYS, _STAGED_CARD_BINDING_KEYS, _CONTENT_BINDING_KEYS)):
         _refuse("schema_refused")
     binding = _section(expected_binding, frozenset(expected_binding))
     if (not all(_pin(outer[key]) for key in _OUTER_KEYS if key.endswith("sha256"))

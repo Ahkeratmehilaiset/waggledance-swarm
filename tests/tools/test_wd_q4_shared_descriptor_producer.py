@@ -28,6 +28,34 @@ OUTER_KEYS = ("outer-path", "outer-sha256", "runtime-root", "runtime-generation"
 BINDING_KEYS = ("pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256", "roster_sha256",
                 "public_policy_sha256", "descriptor_sha256", "projection_sha256")
 REASONS = {"fleet_refused", "lanes_refused", "path_refused", "pin_refused", "limit_refused", "schema_refused"}
+CONTENT_KEYS = ("encoder_sha256", "policy_sha256", "roster_sha256", "content_decision_sha256",
+                "descriptor_sha256", "memory_sha256", "projection_sha256")
+
+
+@pytest.mark.parametrize("lane", LANES)
+def test_content_descriptor_carries_exact_seven_pins_for_each_lane(tmp_path, lane):
+    kw = kwargs(tmp_path)
+    kw["lanes"] = [lane]
+    kw["expected_binding"] = {key: format(i + 1, "064x") for i, key in enumerate(CONTENT_KEYS)}
+    result = build(kw)
+    doc = json.loads(result["descriptor_bytes"])
+    assert doc["lanes"] == [lane]
+    assert doc["expected_binding"] == kw["expected_binding"]
+
+
+@pytest.mark.parametrize("change", ["missing", "extra", "invalid"])
+def test_content_descriptor_rejects_missing_extra_or_invalid_pins(tmp_path, change):
+    kw = kwargs(tmp_path)
+    pins = {key: "a" * 64 for key in CONTENT_KEYS}
+    if change == "missing":
+        del pins["memory_sha256"]
+    elif change == "extra":
+        pins["surprise_sha256"] = "a" * 64
+    else:
+        pins["content_decision_sha256"] = "not-a-hash"
+    kw["expected_binding"] = pins
+    with pytest.raises(module().DescriptorRefused):
+        build(kw)
 
 
 def sha(data):

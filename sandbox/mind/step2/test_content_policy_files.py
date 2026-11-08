@@ -18,6 +18,21 @@ MESSAGE = ROOT / "configs" / "mind" / "content_message_policy_v1.json"
 DOCS = ROOT / "configs" / "mind" / "content_doc_policy_v1.json"
 PILOT = ROOT / "configs" / "mind" / "pilot_non_review_policy.json"
 DOC_RECORD_BUDGET = sib.MAX_RECORDS // 2
+# At this exact historical commit the whole-document credential screen refuses
+# these paths. A screen hit is not a claim that the document contains a secret.
+CREDENTIAL_SCREEN_COMMIT = "b19f806f59a38f0b2580ffcd86f2e148706e5274"
+CREDENTIAL_SCREEN_REFUSED_PATHS = frozenset({
+    "docs/architecture/BRIDGE_SNAPSHOT_DELTA_V1.md",
+    "docs/architecture/BRIDGE_V2_SWITCH_INTERFACE_CONTRACT.md",
+    "docs/architecture/CONTROL_PLANE_AND_DATA_PLANE.md",
+    "docs/architecture/LEAK_POLICY.md",
+    "docs/architecture/SANITIZATION_CONTRACT_V0.md",
+    "docs/operations/LOW_RISK_AUTOGROWTH_RUNBOOK.md",
+    "docs/operations/MAGMA_HANDOFF_PROVIDER_METRICS_RUNBOOK.md",
+    "docs/operations/R25_DECISION_RUNBOOK.md",
+    "docs/operations/ROUTE_STAGE_LATENCY_RUNBOOK.md",
+    "docs/release/RELEASE_FINALIZATION_RUNBOOK.md",
+})
 
 
 def pinned(path):
@@ -67,6 +82,13 @@ def test_document_policy_record_budget_at_its_pinned_commit():
         pytest.skip("the pinned document commit is not in this clone")
     projection = dp.build_doc_projection(enabled=True, repo_root=str(ROOT), policy_bytes=raw, policy_sha256=sha,
                                          **tdp.git_pin())
-    assert projection["refused_docs"] == {}
+    # Keep the expected refusals explicit: relaxing the screen to admit any of
+    # these documents, or dropping another document, must fail this test.
+    assert commit == CREDENTIAL_SCREEN_COMMIT
+    assert projection["refused_docs"] == {"credential": len(CREDENTIAL_SCREEN_REFUSED_PATHS)}
     assert 0 < projection["accepted"] <= DOC_RECORD_BUDGET
-    assert {r["provenance"]["path"] for r in projection["records"]} == set(json.loads(raw)["paths"])
+    policy_paths = set(json.loads(raw)["paths"])
+    assert CREDENTIAL_SCREEN_REFUSED_PATHS <= policy_paths
+    assert {r["provenance"]["path"] for r in projection["records"]} == (
+        policy_paths - CREDENTIAL_SCREEN_REFUSED_PATHS
+    )

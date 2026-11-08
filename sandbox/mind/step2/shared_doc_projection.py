@@ -263,6 +263,17 @@ def _read_blob(root, env, oid, limit):
 
 # --- screening and sections ----------------------------------------------------------------------------------------
 
+def _wrapped_long_run(text, limit):
+    """Fail closed when a long token-like line has a token-like continuation."""
+    preceding_long = False
+    for raw_line in text.splitlines():
+        line = cp._normalize(raw_line, limit)
+        if preceding_long and re.fullmatch(r"[A-Za-z0-9+/_=-]{8,}", line):
+            return True
+        preceding_long = cp._BASE64_RUN.fullmatch(line) is not None
+    return False
+
+
 def _doc_screen(text, limit):
     """Whole-document taint check; raises ``cp._Drop`` with ``credential``, ``sealed`` or a normalizer token."""
     normalized = cp._normalize(text, limit)
@@ -271,7 +282,8 @@ def _doc_screen(text, limit):
     # Named credentials still taint the whole document. Ambiguous long runs
     # are not trusted: each retained section passes classify(), which redacts
     # the entire matched run before a record is constructed.
-    if any(pattern.search(normalized) for pattern in cp._CREDENTIAL[:-1]):
+    if (any(pattern.search(normalized) for pattern in cp._CREDENTIAL[:-1])
+            or cp._OWNER_HEX.search(normalized) or _wrapped_long_run(text, limit)):
         raise cp._Drop("credential")
     lowered = normalized.lower()
     if any(marker in lowered for marker in sp.SEALED_MARKERS) or corpus_mod.ws._has_marker(normalized):

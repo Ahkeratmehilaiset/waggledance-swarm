@@ -218,6 +218,32 @@ def test_named_long_secret_refuses_whole_document(tmp_path):
     assert value not in json.dumps(projection)
 
 
+def test_wrapped_unnamed_token_and_tail_refuse_whole_document(tmp_path):
+    parts = ["AbCdEfGhIjKlMnOpQrStUv12a3b4c5Z9", "ZyXwVuTsRqPoNmLkJiHgFe98z7y6x5W4", "TailSyntheticValueXY"]
+    root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, "\n".join(parts), SECOND)})
+    raw, sha = policy(commit, ["docs/a.md"])
+    projection = build(root, raw, sha)
+    assert projection["records"] == [] and projection["refused_docs"] == {"credential": 1}
+    assert all(part not in json.dumps(projection) for part in parts)
+
+
+def test_owner_hex_refuses_whole_document(tmp_path):
+    value = "a1" * 32
+    root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, "owner=" + value, SECOND)})
+    raw, sha = policy(commit, ["docs/a.md"])
+    projection = build(root, raw, sha)
+    assert projection["records"] == [] and projection["refused_docs"] == {"credential": 1}
+    assert value not in json.dumps(projection)
+
+
+@pytest.mark.parametrize("text", ["password is SyntheticSecretValue", "salasana on SyntheticSecretValue"])
+def test_named_prose_secrets_still_refuse_whole_document(tmp_path, text):
+    root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, text, SECOND)})
+    raw, sha = policy(commit, ["docs/a.md"])
+    projection = build(root, raw, sha)
+    assert projection["records"] == [] and projection["refused_docs"] == {"credential": 1}
+
+
 def test_marker_split_across_lines_still_drops_the_document(tmp_path):
     root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, "api_key =" + chr(10) + "Zq8" * 8)})
     raw, sha = policy(commit, ["docs/a.md"])

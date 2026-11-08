@@ -193,7 +193,7 @@ public static class WdQ4ContinuationDirectoryV1 {
         $null -eq $job.ExitCode -or $null -eq $job.Stdout) { throw 'job' }
     $code=[int]$job.ExitCode
     $text=[Text.UTF8Encoding]::new($false,$true).GetString([byte[]]$job.Stdout)
-    $lines=@($text.TrimEnd("`r","`n"))
+    $lines=@($text.TrimEnd("`r","`n") -split '\r\n|\r|\n')
     $outputLimit=if ($v3) { 1024 } else { 512 }
     if ($lines.Count -ne 1 -or ([string]$lines[0]).Length -gt $outputLimit) { throw 'output' }
     $answer=[string]$lines[0] | ConvertFrom-Json -ErrorAction Stop

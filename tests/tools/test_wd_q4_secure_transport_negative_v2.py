@@ -290,6 +290,7 @@ def test_real_wrong_client_connects_first_and_is_rejected(transport, tmp_path, m
     ready = tmp_path / "rogue-ready"
     proc = thread = None
     real_create = _winapi.CreateProcess
+    real_spawn = transport._create_process_in_job
     original_write = transport._frame_write
     writes = []
 
@@ -317,14 +318,14 @@ time.sleep(30)
             if time.monotonic() >= deadline:
                 raise AssertionError("synthetic_competitor_timeout")
             time.sleep(0.01)
-        return real_create(*args)
+        return real_spawn(*args)
 
     def record_write(*args, **kwargs):
         writes.append(True)
         return original_write(*args, **kwargs)
 
     monkeypatch.setattr(transport.uuid, "uuid4", lambda: FixedUuid())
-    monkeypatch.setattr(_winapi, "CreateProcess", with_competitor)
+    monkeypatch.setattr(transport, "_create_process_in_job", with_competitor)
     monkeypatch.setattr(transport, "_frame_write", record_write)
     try:
         with pytest.raises(ValueError):

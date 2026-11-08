@@ -757,3 +757,76 @@ def test_traceback_probe_detects_unsanitized_private_implementation(plan):
     captured = traceback.TracebackException.from_exception(caught.value, capture_locals=True)
     own = [frame for frame in captured.stack if Path(frame.filename).name == "wd_q4_lane_query.py"]
     assert any(marker in repr(frame.locals) for frame in own)
+
+
+# --- live clock helpers (enabled lane route only; query_public itself stays offline and historical) -----------
+
+LIVE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+CARD_BINDING = {"card_decision_sha256": "9" * 64}
+CARD_TEXT = "status done codex-lead-1 pr:7 head:unknown next:none until:"
+
+
+@pytest.mark.parametrize("delta, ok", [(0, True), (300, True), (-300, True), (301, False), (-301, False),
+                                       (86400, False)])
+def test_observed_lane_time_is_the_observed_start_within_300_seconds(delta, ok):
+    mod = _module()
+    assert mod.MAX_CLOCK_SKEW_SECONDS == 300
+    observed = LIVE + timedelta(microseconds=5)
+    supplied = observed + timedelta(seconds=delta)
+    if ok:
+        assert mod.observed_lane_time(supplied, observed) is observed
+    else:
+        with pytest.raises(ValueError):
+            mod.observed_lane_time(supplied, observed)
+
+
+@pytest.mark.parametrize("supplied, observed", [
+    (LIVE.replace(tzinfo=None), LIVE), (LIVE, LIVE.replace(tzinfo=None)),
+    (LIVE, LIVE.astimezone(timezone(timedelta(hours=2)))), ("2026-01-01T00:00:00Z", LIVE), (LIVE, None),
+], ids=["naive-supplied", "naive-observed", "non-utc-observed", "text-supplied", "no-observed"])
+def test_observed_lane_time_refuses_unusable_clock_values(supplied, observed):
+    with pytest.raises(ValueError):
+        _module().observed_lane_time(supplied, observed)
+
+
+def _items(*texts):
+    return [{"ref_sha256": "1" * 64, "doc_id_sha256": "2" * 64, "stored_text": text} for text in texts]
+
+
+@pytest.mark.parametrize("end, ok", [(LIVE + timedelta(seconds=59), True), (LIVE + timedelta(seconds=60), False),
+                                     (LIVE + timedelta(hours=1), False)])
+def test_every_returned_card_is_rechecked_against_the_observed_end(end, ok):
+    mod = _module()
+    results = _items(CARD_TEXT + "2026-01-02T00:00Z", CARD_TEXT + "2026-01-01T00:01Z")
+    if ok:
+        assert mod.recheck_live_card_results(results, CARD_BINDING, LIVE, end) is None
+    else:
+        with pytest.raises(ValueError):
+            mod.recheck_live_card_results(results, CARD_BINDING, LIVE, end)
+
+
+@pytest.mark.parametrize("results", [
+    _items("status done codex-lead-1 pr:7 next:none"), _items(CARD_TEXT + "2026-01-01T00:01"),
+    [{"stored_text": None}], ["not-an-item"], "not-a-list", tuple(_items(CARD_TEXT + "2026-01-02T00:00Z")),
+], ids=["no-until", "no-z", "text-not-str", "item-not-dict", "results-not-list", "tuple-of-current-cards"])
+def test_card_results_without_a_usable_until_refuse(results):
+    with pytest.raises(ValueError):
+        _module().recheck_live_card_results(results, CARD_BINDING, LIVE, LIVE)
+
+
+@pytest.mark.parametrize("start, end", [
+    (LIVE, LIVE - timedelta(microseconds=1)), (LIVE.replace(tzinfo=None), LIVE), (LIVE, LIVE.replace(tzinfo=None)),
+    (LIVE, LIVE.astimezone(timezone(timedelta(hours=-1)))), (None, LIVE),
+], ids=["backward", "naive-start", "naive-end", "non-utc-end", "no-start"])
+def test_backward_or_unusable_clock_refuses_in_both_modes(start, end):
+    mod = _module()
+    for binding in (CARD_BINDING, {"descriptor_sha256": "3" * 64}):
+        with pytest.raises(ValueError):
+            mod.recheck_live_card_results([], binding, start, end)
+
+
+def test_non_card_v6_results_are_not_rechecked_and_empty_card_results_pass():
+    mod = _module()
+    old = _items("status done codex-lead-1 record until:2020-01-01T00:00Z", "no until at all")
+    assert mod.recheck_live_card_results(old, {"descriptor_sha256": "3" * 64}, LIVE, LIVE) is None
+    assert mod.recheck_live_card_results([], CARD_BINDING, LIVE, LIVE + timedelta(days=9)) is None

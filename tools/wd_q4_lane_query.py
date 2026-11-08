@@ -43,8 +43,15 @@ it, and the caller-pinned projection must be a v7 card projection that ``shared_
 (``validate_shared_card_projection``) with every card task in the caller-pinned policy. Only the head-masked card
 text (``head:unknown`` in place of the card's own head) is accepted and output, re-derived from the caller's own
 projection bytes. The decision itself is verified by the child and the resolver, not here.
+
+Live clock (enabled lane route only): ``observed_lane_time`` and ``recheck_live_card_results`` are used by the lane
+caller CLI. The observed local UTC at the start of the call ranks the query and a supplied time more than
+``MAX_CLOCK_SKEW_SECONDS`` away from it refuses; after the call, a local clock that went backward refuses and, with
+a card binding, every returned card must still be CURRENT at the observed end. The local clock is read, never
+authenticated: this is no clock authentication and no source freshness claim. ``query_public`` itself and offline
+historical queries keep their supplied time; non-card (v6) results are not rechecked.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
@@ -66,6 +73,7 @@ MAX_PROJECTION_BYTES = 16 * 1024 * 1024  # == shared_result_resolver.MAX_BYTES
 MAX_POLICY_BYTES = 65536  # == shared_capture_adapter._POLICY_LIMIT
 MAX_ROSTER_BYTES = sp.ROSTER_BUDGET
 VISIBILITY_GUARD_SECONDS = 1.0  # == the resolver guard band over shared_projection.visible_at
+MAX_CLOCK_SKEW_SECONDS = 300  # enabled lane route: supplied query time vs observed local UTC at the start
 REF_KIND = "sha256_of_projected_metadata"
 TRANSPORT_INTERFACE = "transport(*, wrapper: str, arguments: tuple, stdin_bytes: bytes) -> (bytes, int)"
 PLAN_READER = "wd_q4_lane_link._public_plan(path, expected_sha256) -> (path, raw, pins)"
@@ -431,6 +439,40 @@ def _query_public_impl(*, lane, situation, time, bundle_root, expected_commit, e
     if reason is not None or answer is None:
         raise LaneQueryRefused(reason or "result_refused")
     return answer
+
+
+def _utc_instant(value):
+    if type(value) is not datetime or value.utcoffset() != timedelta(0):  # naive: utcoffset() is None
+        raise ValueError()
+    return value
+
+
+def observed_lane_time(supplied, observed):
+    """Enabled lane route only: the observed local UTC at the start of the call is the ranking time. A supplied
+    time more than MAX_CLOCK_SKEW_SECONDS away from it (backdated or forward-dated) refuses. The clock is read, not
+    authenticated."""
+    if abs((_utc_instant(supplied) - _utc_instant(observed)).total_seconds()) > MAX_CLOCK_SKEW_SECONDS:
+        raise ValueError()
+    return observed
+
+
+def recheck_live_card_results(results, expected_binding, start, end):
+    """Enabled lane route only, after the call and before any output. A local clock that went backward between the
+    start and end observations refuses. With a card binding every returned card must still be CURRENT at the
+    observed end (its ``until:`` later than ``end``); a stale or unusable card refuses the whole answer. Non-card
+    (v6) results are not rechecked. No clock authentication and no source freshness claim."""
+    if _utc_instant(end) < _utc_instant(start) or type(expected_binding) is not dict:
+        raise ValueError()
+    if "card_decision_sha256" not in expected_binding:
+        return None
+    from sandbox.mind.step2 import shared_card_projection as cards
+    if type(results) is not list:
+        raise ValueError()
+    now = end.isoformat()
+    for item in results:
+        if type(item) is not dict or cards.card_status(item.get("stored_text"), now) != "CURRENT":
+            raise ValueError()
+    return None
 
 
 def query_public(*, lane, situation, time, bundle_root, expected_commit, expected_manifest_sha256,

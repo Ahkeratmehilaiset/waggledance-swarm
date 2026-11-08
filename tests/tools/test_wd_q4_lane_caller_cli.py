@@ -1000,7 +1000,7 @@ def test_content_output_rejects_each_substituted_pin_even_after_rehash():
 
 
 def test_content_pinned_snapshot_is_rechecked_without_legacy_pointer(tmp_path):
-    from tools import wd_q4_lane_caller_cli as target
+    from tools import wd_q4_lane_caller_cli as target, wd_q4_lane_link as link
     from sandbox.mind.step2.shared_index_preflight import _encoder_digest
     memory = tmp_path / "memory"
     memory.mkdir()
@@ -1024,7 +1024,7 @@ def test_content_pinned_snapshot_is_rechecked_without_legacy_pointer(tmp_path):
             "roster_sha256": sha(files["roster"][1]), "content_decision_sha256": sha(files["content_decision"][1]),
             "descriptor_sha256": sha(descriptor), "memory_sha256": sha(manifest),
             "projection_sha256": projection_pin}
-    plan = {"schema": "wd.q4-public-wrapper-plan.v4",
+    plan = {"schema": link._CONTENT_PLAN_SCHEMA,
             "config": {"memory": str(memory), "descriptor": str(files["descriptor"][0]),
                        "descriptor_sha256": pins["descriptor_sha256"], "runtime_revision": "b" * 40},
             "encoder_sha256": pins["encoder_sha256"], "memory_sha256": pins["memory_sha256"],
@@ -1032,7 +1032,11 @@ def test_content_pinned_snapshot_is_rechecked_without_legacy_pointer(tmp_path):
     for key in ("policy", "roster", "content_decision"):
         plan[key + "_path"] = str(files[key][0])
         plan[key + "_sha256"] = pins[key + "_sha256"]
-    public = tmp_path / "public-plan.v4.json"
+    if link._CONTENT_PLAN_SCHEMA == "wd.q4-public-wrapper-plan.v5":
+        for key in ("message_source_path", "message_generation_path", "message_policy_path",
+                    "doc_repo_root", "doc_policy_path", "doc_git_executable", "doc_git_sha256"):
+            plan[key] = None
+    public = tmp_path / "public-plan.json"
     public_raw = canon(plan)
     public.write_bytes(public_raw)
     binding_doc = canon({"schema": "wd.q4-lane-binding.v1", "binding": pins,

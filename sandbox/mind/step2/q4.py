@@ -18,6 +18,28 @@ RULE = {"version": "q4-rule-v1.2", "agree_depth": 3, "views": ["w", "d", "b"], "
 TOKEN = re.compile(r"[^\W_]{2,}", re.UNICODE)
 WORDS = re.compile(r"[^\W_]+", re.UNICODE)
 PROJECTED_REF_KIND = "sha256_of_projected_metadata"
+# The launcher's fixed own-task startup situation: "<lane> startup read: own current task, ...". The same
+# pattern is held by tools/wd_q4_lane_caller_adapter.py, which admits it only for its declared-consistent lane.
+STARTUP_OWN_TASK = re.compile(r"(?P<lane>[a-z0-9][a-z0-9-]{0,63}) startup read: own current task\b")
+
+
+def startup_origin_lane(situation):
+    """The lane named by the launcher's fixed own-task startup situation; None for every other question."""
+    match = STARTUP_OWN_TASK.match(situation) if isinstance(situation, str) else None
+    return match.group("lane") if match else None
+
+
+def origin_label(metadata, position):
+    """The projection-bound ``agent`` label of one collection row, or None when it cannot be read.
+
+    The label comes from the receipt-hashed collection metadata (meta.json), so it proves consistency with the
+    projection, not authenticated authorship. Anything but a complete list of dicts with a string agent reads as
+    None, which a startup read rejects.
+    """
+    if not isinstance(metadata, (list, tuple)) or position >= len(metadata) or type(metadata[position]) is not dict:
+        return None
+    agent = metadata[position].get("agent")
+    return agent if type(agent) is str else None
 
 
 def valid_reference_metadata(kind, ref, ref_kind, canonical_event):
@@ -75,16 +97,22 @@ class Q4:
                 continue
             vectors = view.collection._index.reconstruct_n(0, view.collection.count) if view.collection.count \
                 else np.zeros((0, memory.memory["dim"]), dtype=np.float32)
+            metadata = getattr(view.collection, "_metadata", None)
+            if not isinstance(metadata, (list, tuple)) or len(metadata) != view.collection.count:
+                metadata = None  # no complete per-row metadata: every origin of this cell is unreadable
             for position, row in enumerate(view.rows):
                 record_id, which = row["provenance"]["record"], row["provenance"]["view"]
                 entry = rows.setdefault(record_id, {"cell": cell_id, "row": row})
                 entry[which] = vectors[position]
+                entry["origin_" + which] = origin_label(metadata, position)
                 if which == "w":
                     entry["text"] = view.collection._texts[position]
         self.ids = sorted(record_id for record_id, entry in rows.items() if "w" in entry and "d" in entry)
         if len(self.ids) != len(rows):
             raise memory_mod.MemoryError_("record_view_missing")
         self.entries = [rows[record_id] for record_id in self.ids]
+        # One origin label per record, readable only when both of its rows carry the same label.
+        self.origin = [entry["origin_w"] if entry["origin_w"] == entry["origin_d"] else None for entry in self.entries]
         dim = memory.memory["dim"]
         self.w = np.vstack([entry["w"] for entry in self.entries]) if self.entries else np.zeros((0, dim), np.float32)
         self.d = np.vstack([entry["d"] for entry in self.entries]) if self.entries else np.zeros((0, dim), np.float32)
@@ -172,10 +200,20 @@ class Q4:
         agreed = sorted(agreed, key=lambda i: (-fused[i], self.ids[index[i]]))[:self.rule["shown_max"]]
         results = [self._result(index[i], float(views["w"][i]), float(fused[i]),
                                 {name: int(ranks[name][i]) for name in self.rule["views"]}) for i in agreed]
+        origin_lane = startup_origin_lane(situation)
+        emptied_by_origin = False
+        if origin_lane is not None:
+            # After the full-set consensus, a startup own-task read keeps only the shown results whose
+            # projection-bound origin label is the named lane; it never adds, reorders or promotes a result.
+            kept = [result for i, result in zip(agreed, results) if self.origin[index[i]] == origin_lane]
+            telemetry["rejected_origin"] = len(results) - len(kept)
+            emptied_by_origin = bool(results) and not kept
+            results = kept
         if self.quarantined:
             return self._out("DEGRADED", "cell_quarantined", results, telemetry, started)
         if not results:
-            return self._out("ABSTAIN", "no_view_consensus", [], telemetry, started)
+            return self._out("ABSTAIN", "no_lane_origin_results" if emptied_by_origin else "no_view_consensus", [],
+                             telemetry, started)
         return self._out("ANSWER", None, results, telemetry, started)
 
     def _result(self, position, cosine, fused, ranks):

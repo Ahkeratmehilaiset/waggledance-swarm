@@ -1,0 +1,275 @@
+"""Startup own-task reads keep only results whose verified origin lane is the named lane, after the unchanged
+full-set consensus; every other question is untouched. Model-free synthetic memories only."""
+
+import copy
+import hashlib
+import random
+from types import SimpleNamespace
+
+import pytest
+
+np = pytest.importorskip("numpy")
+pytest.importorskip("faiss")
+
+from sandbox.mind.step2 import cell, q4
+from sandbox.mind.step2.test_q4_readonly_port import FakeEncoder, FakeIndex
+
+LANES = ("codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2")
+BUILD_LANES = ("codex-lead-1", "codex-tools-1", "fable-5")  # reviewer rows are excluded by the projection policy
+STARTUP = "%s startup read: own current task, last bound reply, operator directive of the day"
+WHEN = "2026-01-02T00:00:00Z"
+AVAILABLE = "2026-01-01T00:00:00.000000Z"
+
+
+def lane_memory(lanes, *, counts=None, metadata="rows", text=None):
+    """Rows per lane in the given order (record ids sort in that order); ``metadata`` selects what the
+    collection exposes: per-row dicts, a short list, non-dict entries, mismatched w/d agents, or nothing."""
+    rows, texts, metas = [], [], []
+    for order, lane in enumerate(lanes):
+        for number in range((counts or {}).get(lane, 4)):
+            record = "%s-%s-%d" % (chr(ord("a") + order), lane, number)
+            for kind in ("w", "d"):
+                rows.append({"kind": "lesson", "time_utc": AVAILABLE,
+                             "provenance": {"record": record, "view": kind, "available_utc": AVAILABLE,
+                                            "file": "%s.md" % record, "tier": {"source_type": "learned_from_case"}}})
+                texts.append(text or "current task bound reply directive note %d" % number)
+                agent = lane
+                if metadata == "mismatch" and kind == "d":
+                    agent = "someone-else"
+                metas.append({"agent": agent, "type": "message", "view": kind})
+    if metadata == "short":
+        metas = metas[:-1]
+    elif metadata == "not-dict":
+        metas = [["agent", lane] for lane in metas]
+    elif metadata == "no-agent":
+        metas = [{"type": "message"} for _ in metas]
+    collection = SimpleNamespace(_index=FakeIndex(len(rows)), count=len(rows), _texts=texts)
+    if metadata != "absent":
+        collection._metadata = metas
+    views = {"learning": SimpleNamespace(healthy=True, collection=collection, rows=rows)}
+    topology = SimpleNamespace(get_neighbors=lambda cell_id, max_ring: ["learning"])
+    return SimpleNamespace(views=views, memory={"dim": 2}, topology=topology)
+
+
+def refs(answer):
+    return [item["ref"] for item in answer["results"]]
+
+
+def lanes_of(answer):
+    return {ref.split("-", 1)[1].rsplit("-", 1)[0] for ref in refs(answer)}
+
+
+# --- RED reproduction: the launcher's fixed startup situation answers with another lane's rows --------------
+
+
+def test_startup_read_never_returns_another_lanes_rows():
+    engine = q4.Q4(lane_memory(BUILD_LANES), FakeEncoder())
+    answer = engine.ask(STARTUP % "fable-5", WHEN)
+    assert lanes_of(answer) <= {"fable-5"}
+    assert answer["status"] != "ANSWER" or answer["results"]
+
+
+def test_startup_read_abstains_with_a_fixed_reason_when_the_consensus_set_is_foreign():
+    engine = q4.Q4(lane_memory(BUILD_LANES), FakeEncoder())
+    answer = engine.ask(STARTUP % "fable-5", WHEN)
+    assert answer["status"] == "ABSTAIN" and answer["reason"] == "no_lane_origin_results"
+    assert answer["results"] == [] and answer["telemetry"]["rejected_origin"] == 3
+
+
+# --- five identities ------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("lane", LANES)
+def test_each_identity_receives_only_its_own_rows_or_abstains(lane):
+    for first in BUILD_LANES:
+        ordered = (first,) + tuple(other for other in BUILD_LANES if other != first)
+        answer = q4.Q4(lane_memory(ordered), FakeEncoder()).ask(STARTUP % lane, WHEN)
+        if lane == first:
+            assert answer["status"] == "ANSWER" and lanes_of(answer) == {lane} and len(answer["results"]) == 3
+        else:
+            assert answer["status"] == "ABSTAIN" and answer["reason"] == "no_lane_origin_results"
+            assert answer["results"] == []
+
+
+@pytest.mark.parametrize("lane", ("claude-rco-1", "claude-rco-2"))
+def test_reviewer_identities_abstain_because_their_rows_are_excluded_upstream(lane):
+    answer = q4.Q4(lane_memory(BUILD_LANES), FakeEncoder()).ask(STARTUP % lane, WHEN)
+    assert answer["status"] == "ABSTAIN" and answer["results"] == []
+
+
+def test_missing_own_rows_abstain():
+    answer = q4.Q4(lane_memory(("codex-lead-1", "codex-tools-1")), FakeEncoder()).ask(STARTUP % "fable-5", WHEN)
+    assert answer["status"] == "ABSTAIN" and answer["results"] == []
+
+
+@pytest.mark.parametrize("lane", ("mallory", "fable-5-evil", "x"))
+def test_unknown_or_forged_lane_tokens_abstain(lane):
+    answer = q4.Q4(lane_memory(BUILD_LANES), FakeEncoder()).ask(STARTUP % lane, WHEN)
+    assert answer["status"] == "ABSTAIN" and answer["results"] == []
+
+
+# --- unverifiable origin is rejected (fail closed) -------------------------------------------------------
+
+
+@pytest.mark.parametrize("metadata", ("absent", "short", "not-dict", "no-agent", "mismatch"))
+def test_rows_without_a_verified_origin_are_rejected_for_startup_reads(metadata):
+    answer = q4.Q4(lane_memory(("fable-5",), metadata=metadata), FakeEncoder()).ask(STARTUP % "fable-5", WHEN)
+    assert answer["status"] == "ABSTAIN" and answer["reason"] == "no_lane_origin_results"
+    assert answer["results"] == [] and answer["telemetry"]["rejected_origin"] == 3
+
+
+def test_origin_is_read_from_the_collection_metadata_not_from_the_text():
+    memory = lane_memory(("codex-lead-1",), text="fable-5 fable-5 current task bound reply directive")
+    answer = q4.Q4(memory, FakeEncoder()).ask(STARTUP % "fable-5", WHEN)
+    assert answer["status"] == "ABSTAIN" and answer["results"] == []
+
+
+# --- unrelated, directive and private-shaped questions are byte-identical to the unfiltered engine -------
+
+
+def strip_ms(answer):
+    answer = copy.deepcopy(answer)
+    answer["telemetry"].pop("ms", None)
+    return answer
+
+
+@pytest.mark.parametrize("question", [
+    "current task bound reply",
+    "operator directive of the day",
+    "operator personal email address and phone number",
+    "fable-5 status today",
+    "startup read: own current task",  # no lane token: not the launcher shape
+    "Fable-5 startup read: own current task",  # lane tokens are lower case
+    "please run fable-5 startup read: own current task",  # not at the start
+    "retry network",
+    "unrelated token",
+])
+def test_non_startup_questions_are_unchanged_by_origin_metadata(question):
+    with_origin = q4.Q4(lane_memory(BUILD_LANES), FakeEncoder()).ask(question, WHEN)
+    without = q4.Q4(lane_memory(BUILD_LANES, metadata="absent"), FakeEncoder()).ask(question, WHEN)
+    assert strip_ms(with_origin) == strip_ms(without)
+    assert "rejected_origin" not in with_origin["telemetry"]
+
+
+def test_a_plain_question_may_still_return_every_lane():
+    answer = q4.Q4(lane_memory(BUILD_LANES), FakeEncoder()).ask("bound reply current task", WHEN)
+    assert answer["status"] == "ANSWER" and lanes_of(answer) == {"codex-lead-1"}
+
+
+# --- monotonicity: the startup filter runs after the unchanged full-set consensus ------------------------
+
+
+class HashIndex:
+    """Per-row unit vectors derived from the row text, so the two vector views rank non-trivially."""
+
+    def __init__(self, texts, dim=8):
+        self.vectors = (np.vstack([unit(text, dim) for text in texts]) if texts
+                        else np.zeros((0, dim))).astype(np.float32)
+
+    def reconstruct_n(self, start, count):
+        assert (start, count) == (0, len(self.vectors))
+        return self.vectors
+
+
+class HashEncoder:
+    def __init__(self, dim=8):
+        self.dim = dim
+
+    def query(self, text):
+        return unit(text, self.dim)
+
+
+def unit(text, dim):
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    vector = np.array([(digest[i % len(digest)] - 128.0) for i in range(dim)], dtype=np.float32)
+    return vector / (np.linalg.norm(vector) or 1.0)
+
+
+VOCABULARY = ("current", "task", "bound", "reply", "directive", "operator", "day", "note", "memory", "index",
+              "gate", "review", "claim", "release", "savepoint", "restart", "bundle", "pointer", "fleet", "startup")
+
+
+def random_memory(rng, *, own_everywhere=False):
+    rows, texts, metas = [], [], []
+    for lane in BUILD_LANES:
+        for number in range(rng.randint(0, 6)):
+            record = "%s-%d" % (lane, number)
+            text = " ".join(rng.choice(VOCABULARY) for _ in range(rng.randint(3, 9)))
+            for kind in ("w", "d"):
+                rows.append({"kind": "lesson", "time_utc": AVAILABLE,
+                             "provenance": {"record": record, "view": kind, "available_utc": AVAILABLE,
+                                            "file": "%s.md" % record, "tier": {"source_type": "learned_from_case"}}})
+                texts.append(text)
+                metas.append({"agent": lane, "view": kind})
+    collection = SimpleNamespace(_index=HashIndex(texts), count=len(rows), _texts=texts, _metadata=metas)
+    views = {"learning": SimpleNamespace(healthy=True, collection=collection, rows=rows)}
+    topology = SimpleNamespace(get_neighbors=lambda cell_id, max_ring: ["learning"])
+    memory = SimpleNamespace(views=views, memory={"dim": 8}, topology=topology)
+    return memory, metas
+
+
+def test_startup_filter_never_creates_an_answer_and_only_removes_shown_results():
+    rng = random.Random(20261109)
+    seen_answer = seen_abstain = 0
+    for _ in range(300):
+        memory, metas = random_memory(rng)
+        lane = rng.choice(LANES)
+        situation = STARTUP % lane + (" " + " ".join(rng.choice(VOCABULARY) for _ in range(rng.randint(0, 4))))
+        filtered = q4.Q4(memory, HashEncoder()).ask(situation, WHEN)
+        for meta in metas:  # the same memory with every row owned by the named lane: the filter keeps everything
+            meta["agent"] = lane
+        baseline = q4.Q4(memory, HashEncoder()).ask(situation, WHEN)
+        assert set(refs(filtered)) <= set(refs(baseline))
+        assert refs(filtered) == [ref for ref in refs(baseline) if ref in set(refs(filtered))]
+        if baseline["status"] != "ANSWER":
+            assert strip_ms(filtered) == strip_ms(baseline)
+        else:
+            assert filtered["status"] in ("ANSWER", "ABSTAIN")
+            assert (filtered["status"] == "ANSWER") == bool(filtered["results"])
+            assert filtered["telemetry"]["rejected_origin"] == len(baseline["results"]) - len(filtered["results"])
+            seen_answer += filtered["status"] == "ANSWER"
+            seen_abstain += filtered["status"] == "ABSTAIN"
+    assert seen_answer and seen_abstain
+
+
+def test_the_startup_shape_is_the_launchers_fixed_prefix():
+    assert q4.startup_origin_lane(STARTUP % "codex-lead-1") == "codex-lead-1"
+    assert q4.startup_origin_lane("codex-tools-1 startup read: own current task") == "codex-tools-1"
+    assert q4.startup_origin_lane("fable-5 startup read: own current tasks") is None
+    assert q4.startup_origin_lane("fable-5 startup read: own current task") == "fable-5"
+    assert q4.startup_origin_lane(" fable-5 startup read: own current task") is None
+    assert q4.startup_origin_lane("startup read: own current task") is None
+    assert q4.startup_origin_lane(None) is None
+
+
+# --- the read-only snapshot facade exposes the receipt-hashed collection metadata -------------------------
+
+
+def test_snapshot_facade_exposes_verified_metadata_read_only():
+    metadata = [{"agent": "fable-5", "view": "w"}, {"agent": "fable-5", "view": "d"}]
+    candidate = SimpleNamespace(search=lambda *a: [], _texts=["one", "one"], _doc_ids=["r#w", "r#d"], count=2,
+                                _index=FakeIndex(2), dim=2, _metadata=metadata)
+    facade = cell._ReadOnlySnapshotCollection(candidate, verified_dim=2)
+    assert facade._metadata == tuple(metadata) and type(facade._metadata) is tuple
+    metadata[0]["agent"] = "someone-else"
+    assert facade._metadata[0]["agent"] == "fable-5"
+    with pytest.raises(AttributeError):
+        facade._metadata = ()
+
+
+def test_snapshot_facade_without_metadata_exposes_an_empty_tuple():
+    candidate = SimpleNamespace(search=lambda *a: [], _texts=["one"], _doc_ids=["r#w"], count=1,
+                                _index=FakeIndex(1), dim=2)
+    assert cell._ReadOnlySnapshotCollection(candidate, verified_dim=2)._metadata == ()
+
+
+def test_q4_reads_origin_through_the_snapshot_facade():
+    memory = lane_memory(("fable-5",))
+    view = memory.views["learning"]
+    raw = view.collection
+    raw.search = lambda *a: []
+    raw._doc_ids = [row["provenance"]["record"] + "#" + row["provenance"]["view"] for row in view.rows]
+    raw.dim = 2
+    view.collection = cell._ReadOnlySnapshotCollection(raw, verified_dim=2)
+    answer = q4.Q4(memory, FakeEncoder()).ask(STARTUP % "fable-5", WHEN)
+    assert answer["status"] == "ANSWER" and lanes_of(answer) == {"fable-5"}

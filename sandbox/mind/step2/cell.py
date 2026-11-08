@@ -160,7 +160,7 @@ class _ReadOnlySnapshotIndex:
 class _ReadOnlySnapshotCollection:
     """Reader facade, not a security boundary against code in this process."""
 
-    __slots__ = ("__search", "__texts", "__doc_ids", "__count", "__index")
+    __slots__ = ("__search", "__texts", "__doc_ids", "__count", "__index", "__metadata")
 
     def __init__(self, collection, *, verified_dim):
         object.__setattr__(self, "_ReadOnlySnapshotCollection__search", collection.search)
@@ -168,6 +168,10 @@ class _ReadOnlySnapshotCollection:
             raise CellError("snapshot_text_invalid")
         object.__setattr__(self, "_ReadOnlySnapshotCollection__texts", tuple(collection._texts))
         object.__setattr__(self, "_ReadOnlySnapshotCollection__doc_ids", tuple(collection._doc_ids))
+        # The per-row metadata of the receipt-hashed meta.json, copied once; readers
+        # (Q4 origin checks) treat anything but a dict per row as unverifiable.
+        object.__setattr__(self, "_ReadOnlySnapshotCollection__metadata",
+                           tuple(copy.deepcopy(list(getattr(collection, "_metadata", ())))))
         object.__setattr__(self, "_ReadOnlySnapshotCollection__count", collection.count)
         object.__setattr__(self, "_ReadOnlySnapshotCollection__index",
                            _ReadOnlySnapshotIndex(collection._index, collection.count, verified_dim))
@@ -186,6 +190,10 @@ class _ReadOnlySnapshotCollection:
     @property
     def _index(self):
         return self.__index
+
+    @property
+    def _metadata(self):
+        return self.__metadata
 
     def has_doc_id(self, doc_id):
         return doc_id in self.__doc_ids

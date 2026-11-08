@@ -160,6 +160,11 @@ def build_content_memory(*, enabled=False, messages=None, documents=None, encode
     return _build(projection, encode, identity, dim, root, name, SCOPE, DESCRIPTOR_SCHEMA, None, None)
 
 
+def _serialized(projection):
+    """The one byte form of a projection: what the build writes and what the snapshot check re-derives."""
+    return json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
+
+
 def _build(projection, encode, identity, dim, root, name, scope, descriptor_schema, policy, evidence):
     from sandbox.mind.step2 import cell as cell_mod
     from sandbox.mind.step2 import memory as memory_mod
@@ -188,7 +193,7 @@ def _build(projection, encode, identity, dim, root, name, scope, descriptor_sche
         by_text = dict(zip(texts, sib._vectors(encode, texts, dim)))
     except (sib.BuildRefused, sp.ProjectionRefused, cp.ContentRefused) as refusal:
         raise ContentMemoryRefused(str(refusal)) from None
-    projection_bytes = json.dumps(projection, sort_keys=True, indent=1).encode("utf-8")
+    projection_bytes = _serialized(projection)
     projection_sha256 = hashlib.sha256(projection_bytes).hexdigest()
     memory_dir = root / name
     try:
@@ -462,12 +467,25 @@ def build_route_content_memory(*, enabled=False, messages=None, documents=None, 
     """
     if not _enabled(enabled):
         return {"status": "OFF"}
+    from sandbox.mind.step2 import shared_index_builder as sib
+    projection, decision = _route_projection(messages, documents, decision_bytes, decision_sha256, policy_bytes,
+                                             policy_sha256, roster_bytes, roster_sha256)
+    policy = {"authorship": sp.AUTHORSHIP_ROSTER, "review_signal_excluded": True, "policy_sha256": policy_sha256,
+              "roster_sha256": roster_sha256}
+    return _build(projection, encode, identity, dim, root, name, ROUTE_SCOPE, sib.DESCRIPTOR_SCHEMA, policy,
+                  _route_evidence(decision, decision_sha256, projection))
+
+
+def _route_projection(messages, documents, decision_bytes, decision_sha256, policy_bytes, policy_sha256,
+                      roster_bytes, roster_sha256):
+    """``(projection, decision)`` re-derived from the sources: the strict pins, the verified decision, the content
+    policy as a subset of the non-review policy, exactly the anchored message prefix and the pinned document blobs.
+    The route build and the snapshot check both take this one path."""
     messages = _source(messages, ROUTE_MESSAGE_KEYS)
     documents = _source(documents, DOCUMENT_KEYS)
     if messages is None and documents is None:
         _refuse("sources_missing")
     from sandbox.mind.step2 import shared_capture_adapter as adapter
-    from sandbox.mind.step2 import shared_index_builder as sib
     pins = None
     try:
         pins = adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
@@ -507,11 +525,33 @@ def build_route_content_memory(*, enabled=False, messages=None, documents=None, 
             _refuse("source_unverified")
         derived = {"rows": rows, "policy_bytes": messages["policy_bytes"], "policy_sha256": messages["policy_sha256"],
                    "roster": roster}
-    projection = derive_content_projection(derived, documents)
-    policy = {"authorship": sp.AUTHORSHIP_ROSTER, "review_signal_excluded": True, "policy_sha256": policy_sha256,
-              "roster_sha256": roster_sha256}
-    return _build(projection, encode, identity, dim, root, name, ROUTE_SCOPE, sib.DESCRIPTOR_SCHEMA, policy,
-                  _route_evidence(decision, decision_sha256, projection))
+    return derive_content_projection(derived, documents), decision
+
+
+def validate_content_snapshot(*, enabled=False, projection_bytes=None, projection_sha256=None, messages=None,
+                              documents=None, decision_bytes=None, decision_sha256=None, policy_bytes=None,
+                              policy_sha256=None, roster_bytes=None, roster_sha256=None):
+    """Source re-derivation of a pinned route projection (RCO2 MP1), or ``{"status": "OFF"}``.
+
+    The structural checks only prove that a record agrees with itself. This re-reads exactly the decision's anchored
+    message prefix and the pinned document blobs, re-derives the projection on the build's own path and requires
+    byte equality with the pinned projection bytes; the projection pin is checked before any source is read. Any
+    difference is ``snapshot_mismatch``; a source that is not the pinned one refuses with the build's own token.
+    Not run per query: it costs one read of the whole anchored prefix."""
+    if not _enabled(enabled):
+        return {"status": "OFF"}
+    if (type(projection_bytes) is not bytes or len(projection_bytes) > MAX_PROJECTION_BYTES
+            or type(projection_sha256) is not str or HEX64.fullmatch(projection_sha256) is None
+            or not hmac.compare_digest(hashlib.sha256(projection_bytes).hexdigest(), projection_sha256)):
+        _refuse("snapshot_mismatch")
+    projection, decision = _route_projection(messages, documents, decision_bytes, decision_sha256, policy_bytes,
+                                             policy_sha256, roster_bytes, roster_sha256)
+    if not hmac.compare_digest(_serialized(projection), projection_bytes):
+        _refuse("snapshot_mismatch")
+    documents = projection["documents"]
+    return {"status": "MATCH", "projection_sha256": projection_sha256, "decision_sha256": decision_sha256,
+            "source_prefix": decision["source_prefix"],
+            "doc_commit": documents["commit"] if documents is not None else None}
 
 
 def validate_route_projection(projection):
@@ -579,6 +619,17 @@ def check_content_route_evidence(evidence, projection, decision, decision_sha256
     return evidence
 
 
+def _rescreened(record):
+    """The read-time screen: the decoded text of a returned record must still classify KEEP to the same stored text
+    (the length bound is the build's; here only the screen counts)."""
+    try:
+        text = cp.decode_text(record["stored_text"])
+        verdict, value = cp.classify(text, max(cp.MAX_MESSAGE_CHARS, len(text)))
+    except Exception:  # noqa: BLE001 - a fixed refusal, never the text
+        return False
+    return verdict == "KEEP" and value == record["stored_text"]
+
+
 def resolve_route_content(projection, results, query_utc):
     """Stored text for exact, time-visible hash-only hits of the isolated child, or ``result_unresolved``.
 
@@ -602,7 +653,8 @@ def resolve_route_content(projection, results, query_utc):
             _refuse("result_unresolved")
         key = (item["ref_sha256"], item["doc_id_sha256"])
         record = records.get(key)
-        if record is None or not sp.visible_at(record, query_utc, guard_band_s=VISIBILITY_GUARD_SECONDS):
+        if (record is None or not sp.visible_at(record, query_utc, guard_band_s=VISIBILITY_GUARD_SECONDS)
+                or not _rescreened(record)):
             _refuse("result_unresolved")
         if key not in seen:
             resolved.append({"ref_sha256": key[0], "doc_id_sha256": key[1], "stored_text": record["stored_text"],

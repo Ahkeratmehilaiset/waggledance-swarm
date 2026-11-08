@@ -37,6 +37,14 @@ from waggledance.core.bridge_log_reader import BridgeCursor
 
 _HEX40 = re.compile(r'[0-9a-f]{40}\Z')
 _HEX64 = re.compile(r'[0-9a-f]{64}\Z')
+_CONTENT_PINS = frozenset({'encoder_sha256', 'policy_sha256', 'roster_sha256',
+                           'content_decision_sha256', 'descriptor_sha256',
+                           'memory_sha256', 'projection_sha256'})
+_CONTENT_SOURCES = ('message_source_path', 'message_generation_path', 'message_policy_path',
+                    'doc_repo_root', 'doc_policy_path', 'doc_git_executable', 'doc_git_sha256')
+_CONTENT_PLAN_KEYS = frozenset({'schema', 'config', 'policy_path', 'roster_path', 'content_decision_path',
+                                'policy_sha256', 'roster_sha256', 'content_decision_sha256', 'encoder_sha256',
+                                'memory_sha256', 'projection_sha256', *_CONTENT_SOURCES})
 
 
 class BindingProducerRefused(ValueError):
@@ -63,6 +71,88 @@ class _Active:
         if type(name) is not str or name not in self._files:
             raise ValueError()
         return self._files[name]
+
+
+def build_content_lane_binding(*, enabled=False, expected_commit=None, manifest_bytes=None,
+        expected_manifest_sha256=None, fleet_bytes=None, expected_fleet_sha256=None,
+        wrapper_bytes=None, expected_wrapper_sha256=None, public_plan_bytes=None,
+        expected_public_plan_sha256=None, expected_binding=None, memory_dir=None):
+    """Build a seven-pin content binding after re-deriving its pinned sources.
+
+    The content plan and all other bytes are explicitly pinned by the caller.
+    This does not authenticate the publisher, install the route, or prove freshness.
+    Consumers must independently implement the content binding contract.
+    """
+    if enabled is False:
+        return {'status': 'OFF'}
+    result = None
+    try:
+        if enabled is not True or type(expected_commit) is not str or not _HEX40.fullmatch(expected_commit):
+            raise ValueError()
+        for raw_bytes, pin, limit in ((manifest_bytes, expected_manifest_sha256, 2 * 1024 * 1024),
+                                      (fleet_bytes, expected_fleet_sha256, 1024 * 1024),
+                                      (wrapper_bytes, expected_wrapper_sha256, 1024 * 1024),
+                                      (public_plan_bytes, expected_public_plan_sha256, 65536)):
+            _checked_bytes(raw_bytes, pin, limit)
+        manifest, plan = link._json(manifest_bytes), link._json(public_plan_bytes)
+        if (type(manifest) is not dict or type(manifest.get('schema_version')) is not int
+                or manifest['schema_version'] != 1 or manifest.get('source_commit') != expected_commit
+                or type(manifest.get('files')) is not dict
+                or any(type(manifest['files'].get(name)) is not str or manifest['files'][name].lower() != pin
+                       for name, pin in (('wd-fleet.json', expected_fleet_sha256),
+                                         ('Invoke-WdQ4Query.ps1', expected_wrapper_sha256)))
+                or type(plan) is not dict or set(plan) != _CONTENT_PLAN_KEYS
+                or plan.get('schema') != 'wd.q4-public-wrapper-plan.v5' or type(plan.get('config')) is not dict
+                or type(expected_binding) is not dict or frozenset(expected_binding) != _CONTENT_PINS
+                or any(type(value) is not str or not _HEX64.fullmatch(value)
+                       for value in expected_binding.values())):
+            raise ValueError()
+        canonical_roster, roster_sha = roster.build_roster_snapshot(fleet_bytes, expected_fleet_sha256, enabled=True)
+        if plan['roster_sha256'] != roster_sha:
+            raise ValueError()
+        # The writer's exact content validator re-reads policy/roster and re-derives
+        # the projection from the v5 plan's pinned message and document sources.
+        from tools import wd_q4_public_content_plan_writer as content_writer
+        sources = {key: plan[key] for key in _CONTENT_SOURCES}
+        config = plan['config']
+        if 'memory' in config and Path(config['memory']) != Path(memory_dir):
+            raise ValueError()
+        if 'descriptor' in config and Path(config['descriptor']) != Path(memory_dir) / 'descriptor.json':
+            raise ValueError()
+        derived = content_writer._content_plan(plan, memory_dir, plan['content_decision_path'],
+                                               plan['content_decision_sha256'], sources)
+        for key in ('config', 'policy_path', 'roster_path', 'content_decision_path', 'policy_sha256',
+                    'roster_sha256', 'content_decision_sha256', 'encoder_sha256', 'memory_sha256',
+                    'projection_sha256'):
+            if derived[key] != plan[key]:
+                raise ValueError()
+        # The v5 validator also returns normalized source locations. A v4-based
+        # worktree does not; those values have still been checked by _content_plan.
+        if derived.get('schema') == 'wd.q4-public-wrapper-plan.v5':
+            if any(derived[key] != plan[key] for key in _CONTENT_SOURCES):
+                raise ValueError()
+        elif derived.get('schema') != 'wd.q4-public-wrapper-plan.v4':
+            raise ValueError()
+        if not hmac.compare_digest(link._read(link._path(plan['roster_path'], directory=False), 1024 * 1024),
+                                   canonical_roster):
+            raise ValueError()
+        values = {key: (config['descriptor_sha256'] if key == 'descriptor_sha256' else plan[key])
+                  for key in _CONTENT_PINS}
+        if values != expected_binding:
+            raise ValueError()
+        document = {'schema': binding.SCHEMA, 'bundle_commit': expected_commit,
+                    'manifest_sha256': expected_manifest_sha256, 'wrapper_sha256': expected_wrapper_sha256,
+                    'public_plan_sha256': expected_public_plan_sha256, 'binding': values,
+                    'lanes': sorted(roster.LANES)}
+        raw = json.dumps(document, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
+        result = {'binding_bytes': raw, 'binding_sha256': _digest(raw)}
+    except Exception:
+        pass
+    finally:
+        del manifest_bytes, fleet_bytes, wrapper_bytes, public_plan_bytes
+    if result is not None:
+        return result
+    raise BindingProducerRefused('lane_binding_producer_refused') from None
 
 
 def _build(*, expected_commit, manifest_bytes, expected_manifest_sha256,

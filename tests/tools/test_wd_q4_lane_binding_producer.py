@@ -2,10 +2,12 @@
 import hashlib
 import importlib
 import json
+from pathlib import Path
 
 import pytest
 from tools import wd_q4_lane_binding as consumer, wd_q4_secure_transport as transport
 from tests.tools.test_wd_q4_fixed_result_adapter import make_case
+from tests.tools.test_wd_q4_public_content_plan_writer import setup, lane, content
 
 
 def raw(value):
@@ -18,6 +20,113 @@ def sha(value):
 
 def module():
     return importlib.import_module('tools.wd_q4_lane_binding_producer')
+
+
+@pytest.fixture
+def canonical_content_roster(monkeypatch):
+    from sandbox.mind.step2 import test_content_route as route
+    from tools import wd_q4_roster_from_fleet as producer
+    original = route.strict_pins
+
+    def canonical(*args, **kwargs):
+        pins = original(*args, **kwargs)
+        pins['roster_bytes'], pins['roster_sha256'] = producer.build_roster_snapshot(
+            pins['roster_bytes'], pins['roster_sha256'], enabled=True)
+        return pins
+
+    monkeypatch.setattr(route, 'strict_pins', canonical)
+
+
+@pytest.fixture
+def content_case(canonical_content_roster, setup):
+    from tools import wd_q4_public_content_plan_writer as writer
+    written = writer.write_content_plan(enabled=True, **setup['arguments'])
+    plan = json.loads(Path(written['public_plan_path']).read_bytes())
+    plan['schema'] = 'wd.q4-public-wrapper-plan.v5'
+    for key in ('message_source_path', 'message_generation_path', 'message_policy_path', 'doc_repo_root',
+                'doc_policy_path', 'doc_git_executable', 'doc_git_sha256'):
+        plan[key] = setup['arguments'][key]
+    fleet = setup['lane']['content']['args']['roster_bytes']
+    wrapper = b'synthetic-wrapper'
+    manifest = raw({'schema_version': 1, 'source_commit': 'a' * 40,
+                    'files': {'wd-fleet.json': sha(fleet), 'Invoke-WdQ4Query.ps1': sha(wrapper)}})
+    plan_raw = raw(plan)
+    return dict(enabled=True, expected_commit='a' * 40, manifest_bytes=manifest,
+                expected_manifest_sha256=sha(manifest), fleet_bytes=fleet, expected_fleet_sha256=sha(fleet),
+                wrapper_bytes=wrapper, expected_wrapper_sha256=sha(wrapper), public_plan_bytes=plan_raw,
+                expected_public_plan_sha256=sha(plan_raw), expected_binding=setup['lane']['call']['expected_binding'],
+                memory_dir=setup['arguments']['memory_dir'])
+
+
+def test_content_binding_uses_seven_independent_pins_and_all_five_lanes(content_case):
+    result = module().build_content_lane_binding(**content_case)
+    document = json.loads(result['binding_bytes'])
+    assert result['binding_sha256'] == sha(result['binding_bytes'])
+    assert document['binding'] == content_case['expected_binding']
+    assert set(document['lanes']) == {'codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5'}
+    assert document['public_plan_sha256'] == content_case['expected_public_plan_sha256']
+
+
+def test_each_content_pin_is_required_and_bound_to_the_plan(content_case):
+    for key in content_case['expected_binding']:
+        for change in ('missing', 'wrong', 'bad_value'):
+            altered = dict(content_case['expected_binding'])
+            if change == 'missing':
+                del altered[key]
+            else:
+                altered[key] = 'f' * 64 if change == 'wrong' else 'bad'
+            with pytest.raises(module().BindingProducerRefused):
+                module().build_content_lane_binding(**dict(content_case, expected_binding=altered))
+
+
+def test_content_binding_off_is_default_and_never_inspects_inputs():
+    class NoTouch:
+        def __getattribute__(self, name):
+            raise AssertionError('disabled path inspected input')
+    assert module().build_content_lane_binding(manifest_bytes=NoTouch()) == {'status': 'OFF'}
+
+
+def test_content_binding_does_not_return_source_or_projection_contents(content_case):
+    result = module().build_content_lane_binding(**content_case)
+    doc = json.loads(result['binding_bytes'])
+    assert set(doc) == {'schema', 'bundle_commit', 'manifest_sha256', 'wrapper_sha256',
+                        'public_plan_sha256', 'binding', 'lanes'}
+    assert b'content_decision_path' not in result['binding_bytes']
+    assert b'message_source_path' not in result['binding_bytes']
+
+
+@pytest.mark.parametrize('change', ['missing', 'extra', 'wrong', 'bad_value'])
+def test_content_binding_refuses_changed_pins(content_case, change):
+    pins = dict(content_case['expected_binding'])
+    if change == 'missing': del pins['memory_sha256']
+    elif change == 'extra': pins['unexpected_sha256'] = 'a' * 64
+    elif change == 'wrong': pins['memory_sha256'] = 'a' * 64
+    else: pins['memory_sha256'] = 'invalid'
+    content_case['expected_binding'] = pins
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_content_lane_binding(**content_case)
+
+
+@pytest.mark.parametrize('field', ['message_policy_path', 'doc_git_sha256', 'memory_sha256', 'projection_sha256'])
+def test_content_binding_refuses_rehashed_changed_source_or_artifact_pin(content_case, field):
+    plan = json.loads(content_case['public_plan_bytes'])
+    plan[field] = 'a' * 64 if field.endswith('sha256') else str(Path(plan[field]).with_name('missing-policy'))
+    content_case['public_plan_bytes'] = raw(plan)
+    content_case['expected_public_plan_sha256'] = sha(content_case['public_plan_bytes'])
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_content_lane_binding(**content_case)
+
+
+@pytest.mark.parametrize('change', ['missing_source', 'extra_source', 'old_version'])
+def test_content_binding_requires_the_exact_v5_plan(content_case, change):
+    plan = json.loads(content_case['public_plan_bytes'])
+    if change == 'missing_source': del plan['message_generation_path']
+    elif change == 'extra_source': plan['extra_source'] = 'untrusted'
+    else: plan['schema'] = 'wd.q4-public-wrapper-plan.v4'
+    content_case['public_plan_bytes'] = raw(plan)
+    content_case['expected_public_plan_sha256'] = sha(content_case['public_plan_bytes'])
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_content_lane_binding(**content_case)
 
 
 @pytest.fixture

@@ -28,7 +28,8 @@ or any sealed marker or workspace guarded word drops the whole document, so a se
 sections still taints it. The rest is split into sections on blank lines (an over-long section on line boundaries)
 and each section goes through ``shared_content_projection.classify`` with its full screen, so one personal,
 identifier or mixed-script section drops alone. Ambiguous long runs are redacted by the section screen before records
-are produced. Deterministic screening over-blocks and is a screen, not a guarantee.
+are produced. A long token-like line followed by a token-like continuation refuses the whole document. Deterministic
+screening over-blocks and is a screen, not a guarantee.
 
 Records and removal. Each kept section is encoded, chunked and written as records with the commit, path, blob id,
 section and chunk position and a source ref ``sha256({blob, commit, path})``; the record time is the pinned commit's

@@ -9,6 +9,7 @@ decoded text at read time. Synthetic data only.
 """
 import hashlib
 import json
+import os
 
 import pytest
 
@@ -35,7 +36,7 @@ def built(tmp_path, route):
 def validate(route, data, **changes):
     kwargs = dict(enabled=True, projection_bytes=data, projection_sha256=sha(data),
                   messages=route["messages"], documents=route["documents"], decision_bytes=route["decision"],
-                  decision_sha256=route["decision_sha"], **tcr.strict_pins())
+                  decision_sha256=route["decision_sha"], trusted_git=trusted_of(route), **tcr.strict_pins())
     kwargs.update(changes)
     return cm.validate_content_snapshot(**kwargs)
 
@@ -179,13 +180,17 @@ def test_sources_or_pins_other_than_the_decision_are_refused(tmp_path, route, ch
 
 
 @pytest.mark.parametrize("pins, token", [
-    ({"git_sha256": "0" * 64}, "repo_refused"),
-    ({"git_executable": "git"}, "repo_refused"),
-    ({"git_sha256": "A" * 64}, "repo_refused"),
-    ({"git_executable": None}, "repo_refused"),
+    ({"git_sha256": "0" * 64}, "git_pin_mismatch"),
+    ({"git_executable": "git"}, "git_pin_mismatch"),
+    ({"git_sha256": "A" * 64}, "git_pin_mismatch"),
+    ({"git_executable": None}, "git_pin_mismatch"),
 ])
-def test_the_document_re_derivation_runs_only_the_pinned_git(tmp_path, route, pins, token):
+def test_the_document_re_derivation_runs_only_the_trusted_git(tmp_path, route, monkeypatch, pins, token):
+    """RCO1 Q1: documents whose Git is not the trusted pin refuse before any subprocess (before Q1: repo_refused
+    after the hash check of the named file)."""
+    from sandbox.mind.step2 import shared_doc_projection as sdp
     projection_bytes = built(tmp_path, route)
+    monkeypatch.setattr(sdp.subprocess, "run", lambda *a, **k: pytest.fail("subprocess started"))
     refused(token, route, projection_bytes, documents=dict(route["documents"], **pins))
 
 
@@ -366,3 +371,88 @@ def test_a_message_only_decision_needs_no_trusted_git(route):
         cm.snapshot_sources(decision, sources, {"git_executable": "git", "git_sha256": "0" * 64})
     with pytest.raises(cm.ContentMemoryRefused, match="^sources_invalid$"):
         cm.snapshot_sources(decision, sources, dict(trusted_of(route), git_sha256="A" * 64))
+
+
+OTHER_PROGRAM = os.path.abspath(os.sep + "synthetic-other-git.exe")
+
+
+def test_the_builder_and_the_validator_run_the_trusted_git(tmp_path, route):
+    """RCO1 Q1 (RCO2 Q1-3): the build and the re-derivation take one trusted pin; the documents must equal it."""
+    data = built(tmp_path, route)
+    assert validate(route, data)["status"] == "MATCH"
+
+
+def test_a_document_build_or_check_without_a_trusted_git_pin_refuses_before_any_subprocess(tmp_path, route,
+                                                                                            no_subprocess):
+    with pytest.raises(cm.ContentMemoryRefused, match="^git_pin_unavailable$"):
+        tcr.build_route(tmp_path, route, trusted_git=None)
+    assert not (tmp_path / "out" / "route-a").exists()
+    with pytest.raises(cm.ContentMemoryRefused, match="^git_pin_unavailable$"):
+        validate(route, b"{}", trusted_git=None)
+
+
+@pytest.mark.parametrize("doc_change, trusted_change, token", [
+    ({"git_sha256": "0" * 64}, {}, "git_pin_mismatch"),
+    ({"git_executable": OTHER_PROGRAM}, {}, "git_pin_mismatch"),
+    ({}, {"git_sha256": "0" * 64}, "git_pin_mismatch"),
+    ({}, {"git_executable": OTHER_PROGRAM}, "git_pin_mismatch"),
+    ({}, {"git_sha256": "A" * 64}, "sources_invalid"),
+    ({}, {"git_executable": "git"}, "sources_invalid"),
+    ({}, {"extra": 1}, "sources_invalid"),
+    ({}, {"git_executable": None}, "sources_invalid"),
+])
+def test_documents_that_are_not_the_trusted_git_refuse_before_any_subprocess(tmp_path, route, no_subprocess,
+                                                                               doc_change, trusted_change, token):
+    documents = dict(route["documents"], **doc_change)
+    trusted = dict(trusted_of(route), **trusted_change)
+    with pytest.raises(cm.ContentMemoryRefused, match="^" + token + "$"):
+        tcr.build_route(tmp_path, route, documents=documents, trusted_git=trusted)
+    with pytest.raises(cm.ContentMemoryRefused, match="^" + token + "$"):
+        validate(route, b"{}", documents=documents, trusted_git=trusted)
+
+
+@pytest.mark.parametrize("trusted", ["pin", 1, [], ()])
+def test_a_builder_trusted_pin_of_another_type_refuses(tmp_path, route, no_subprocess, trusted):
+    with pytest.raises(cm.ContentMemoryRefused, match="^sources_invalid$"):
+        tcr.build_route(tmp_path, route, trusted_git=trusted)
+
+
+def test_an_attacker_chosen_program_in_the_documents_refuses_before_any_subprocess(tmp_path, route, no_subprocess):
+    evil = tmp_path / "evil-git.exe"
+    evil.write_bytes(b"not git")
+    documents = dict(route["documents"], git_executable=str(evil), git_sha256=sha(evil.read_bytes()))
+    with pytest.raises(cm.ContentMemoryRefused, match="^git_pin_mismatch$"):
+        tcr.build_route(tmp_path, route, documents=documents)
+    with pytest.raises(cm.ContentMemoryRefused, match="^git_pin_mismatch$"):
+        validate(route, b"{}", documents=documents)
+
+
+def test_a_trusted_git_whose_bytes_changed_after_the_pin_never_starts(tmp_path, route, monkeypatch):
+    """Changed Git bytes (RCO2): the pin names a copy of the genuine Git taken before one byte changed; the
+    projection re-hashes the file and refuses before the program starts."""
+    from sandbox.mind.step2 import shared_doc_projection as sdp
+    genuine = trusted_of(route)
+    copy = tmp_path / "git-copy.exe"
+    with open(genuine["git_executable"], "rb") as stream:
+        data = stream.read()
+    copy.write_bytes(data)
+    trusted = {"git_executable": str(copy), "git_sha256": sha(data)}
+    documents = dict(route["documents"], **trusted)
+    copy.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+    started = []
+    monkeypatch.setattr(sdp.subprocess, "run", lambda *a, **k: started.append(a) or pytest.fail("subprocess started"))
+    with pytest.raises(ValueError, match="^repo_refused$"):
+        tcr.build_route(tmp_path, route, documents=documents, trusted_git=trusted)
+    with pytest.raises(ValueError, match="^repo_refused$"):
+        validate(route, b"{}", documents=documents, trusted_git=trusted)
+    assert started == []
+
+
+def test_a_message_only_build_needs_no_trusted_git(tmp_path, route):
+    decision, decision_sha = tcr.decision_of(prefix=route["prefix"], message_pin=route["messages"]["policy_sha256"])
+    built_memory, _ = tcr.build_route(tmp_path, route, documents=None, decision_bytes=decision,
+                                      decision_sha256=decision_sha, trusted_git=None)
+    assert built_memory != {"status": "OFF"} and (tmp_path / "out" / "route-a" / "projection.json").is_file()
+    with pytest.raises(cm.ContentMemoryRefused, match="^sources_invalid$"):
+        tcr.build_route(tmp_path, route, name="route-b", documents=None, decision_bytes=decision,
+                        decision_sha256=decision_sha, trusted_git={"git_executable": "git", "git_sha256": "0" * 64})

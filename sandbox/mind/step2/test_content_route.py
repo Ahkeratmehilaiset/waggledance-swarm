@@ -82,13 +82,19 @@ def route(tmp_path):
             "prefix": prefix, "commit": commit, "path": path}
 
 
+def trusted_git(route):
+    """The trusted Git pin a builder passes (RCO1 Q1): in deployment the fleet record's, here the fixture's own."""
+    return {"git_executable": route["documents"]["git_executable"], "git_sha256": route["documents"]["git_sha256"]}
+
+
 def build_route(tmp_path, route, name="route-a", **changes):
     pytest.importorskip("faiss")
     out = tmp_path / "out"
     out.mkdir(exist_ok=True)
     kwargs = dict(enabled=True, messages=route["messages"], documents=route["documents"],
                   decision_bytes=route["decision"], decision_sha256=route["decision_sha"], encode=tcm.Spy(),
-                  identity=tcm.IDENTITY, dim=tcm.DIM, root=out, name=name, **strict_pins())
+                  identity=tcm.IDENTITY, dim=tcm.DIM, root=out, name=name, trusted_git=trusted_git(route),
+                  **strict_pins())
     kwargs.update(changes)
     built = cm.build_route_content_memory(**kwargs)
     memory_dir = out / name

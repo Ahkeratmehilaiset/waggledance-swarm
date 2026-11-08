@@ -154,7 +154,7 @@ def _content_plan(plan, memory_dir, content_decision_path, content_decision_sha2
         enabled=True, projection_bytes=projection_raw, projection_sha256=manifest["projection_sha256"],
         messages=messages, documents=documents, decision_bytes=decision_raw, decision_sha256=content_decision_sha256,
         policy_bytes=policy_raw, policy_sha256=plan["policy_sha256"], roster_bytes=roster_raw,
-        roster_sha256=plan["roster_sha256"])
+        roster_sha256=plan["roster_sha256"], trusted_git=trusted_git)
     if checked.get("status") != "MATCH":
         raise ValueError()
     return {"schema": PLAN_V5, "config": dict(plan["config"]), "policy_path": plan["policy_path"],

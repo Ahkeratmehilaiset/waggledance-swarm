@@ -372,7 +372,7 @@ def query_content_snapshot(config, stdin, *, expected_encoder_sha256=None, polic
             enabled=True, projection_bytes=projection_bytes, projection_sha256=expected_projection_sha256,
             messages=messages, documents=documents, decision_bytes=content_decision_bytes,
             decision_sha256=content_decision_sha256, policy_bytes=policy_bytes, policy_sha256=policy_sha256,
-            roster_bytes=roster_bytes, roster_sha256=roster_sha256)
+            roster_bytes=roster_bytes, roster_sha256=roster_sha256, trusted_git=trusted_git)
         if checked.get("status") != "MATCH" or checked.get("projection_sha256") != expected_projection_sha256:
             raise ValueError()
         result = q4_query.query_and_resolve(

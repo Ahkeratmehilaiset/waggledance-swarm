@@ -9,6 +9,8 @@
     "configs/bridge_v2_activation.json",
     "configs/bridge_v2_grok_admission.json",
     "configs/lane_profile_catalog.json",
+    "configs/mind/content_message_policy_v2.json",
+    "configs/mind/content_non_review_policy_v2.json",
     "configs/mind/pilot_non_review_policy.json",
     "configs/mind/pilot_public_status_policy.json",
     "configs/mind/shared_card_non_review_policy.json",

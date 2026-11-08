@@ -43,6 +43,7 @@ import json
 import os
 import re
 import subprocess
+import unicodedata
 
 from sandbox.mind.step2 import corpus as corpus_mod
 from sandbox.mind.step2 import shared_content_projection as cp
@@ -72,6 +73,14 @@ _EXCLUDED_WORDS = tuple(sp.SEALED_MARKERS) + ("approval", "secret", "credential"
 _MODES = {b"100644": None, b"100755": "not_regular", b"120000": "symlink", b"160000": "submodule"}
 _COMMITTER = re.compile(rb"committer [^\n]* ([0-9]{1,12}) [+-][0-9]{4}")
 _BLANK_LINE = re.compile(r"\n[ \t]*\n")
+# Bounded additional coverage: two long mixed-case fragments separated by a
+# blank line, optionally with one Markdown heading between them.  This is a
+# detector, not a guarantee against every possible split or encoding.
+_SPLIT_CREDENTIAL = re.compile(
+    r"(?<![A-Za-z0-9+/_-])([A-Za-z0-9+/_-]{8,})[ \t]*"
+    r"(?:\n[ \t]*){2,}(?:#{1,6}[ \t]+[^\n]{0,160}\n[ \t]*)?"
+    r"([A-Za-z0-9+/_-]{8,}={0,2})(?![A-Za-z0-9+/_=-])"
+)
 
 
 class DocRefused(ValueError):
@@ -263,6 +272,25 @@ def _read_blob(root, env, oid, limit):
 
 # --- screening and sections ----------------------------------------------------------------------------------------
 
+def _split_credential(text):
+    """Detect the documented two-fragment case without emitting source text."""
+    normalized = match = candidate = None
+    try:
+        # Match the existing normalizer's treatment of format characters and
+        # compatibility characters while preserving section boundaries.
+        normalized = "".join(c for c in text if unicodedata.category(c) != "Cf")
+        normalized = unicodedata.normalize("NFKC", normalized)
+        normalized = "".join(c for c in normalized if unicodedata.category(c) != "Cf")
+        normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
+        for match in _SPLIT_CREDENTIAL.finditer(normalized):
+            candidate = match.group(1) + match.group(2)
+            if len(candidate) >= 32 and cp._base64_secret(candidate):
+                return True
+        return False
+    finally:
+        text = normalized = match = candidate = None
+
+
 def _doc_screen(text, limit):
     """Whole-document taint check; raises ``cp._Drop`` with ``credential``, ``sealed`` or a normalizer token."""
     normalized = cp._normalize(text, limit)
@@ -273,6 +301,8 @@ def _doc_screen(text, limit):
     lowered = normalized.lower()
     if any(marker in lowered for marker in sp.SEALED_MARKERS) or corpus_mod.ws._has_marker(normalized):
         raise cp._Drop("sealed")
+    if _split_credential(text):
+        raise cp._Drop("credential")
 
 
 def _sections(text, limit):

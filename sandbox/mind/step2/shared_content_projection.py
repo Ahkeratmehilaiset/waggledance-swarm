@@ -113,6 +113,7 @@ _URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://\S+")
 _LOCAL_PATH = (re.compile(r"[A-Za-z]:[\\/][^\s:]*(?:[ \t][^\s\\/:]+)+[\\/][^\s]*"),
                re.compile(r"[A-Za-z]:[\\/][^\s]*"), re.compile(r"\\\\[^\s]+"),
                re.compile(r"(?<![^\s(\"'])(?:~|/)[\w.-]*(?:/[\w.-]+)+/?"))
+_AMBIGUOUS_PROFILE = re.compile(r"(?i)[a-z]:[\\/]users[\\/][^\s\\/]+[ \t]+[a-z][^\s\\/]*")
 
 
 class ContentRefused(ValueError):
@@ -309,6 +310,8 @@ def _screen(text):
     """The detectors, in order, on one normalized text; raises ``_Drop`` with the first matching class."""
     if any(pattern.search(text) for pattern in _CREDENTIAL) or _base64_secret(text):
         raise _Drop("credential")
+    if _AMBIGUOUS_PROFILE.search(text):
+        raise _Drop("personal")
     lowered = text.lower()
     if _UUID.search(text) or any(name in lowered for name in _local_identifiers()):
         raise _Drop("identifier")

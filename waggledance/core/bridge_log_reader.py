@@ -155,6 +155,10 @@ def _bridge_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+_LEXICAL_IN_STRING = re.compile('["\\\\\ud800-\udfff]')
+_LEXICAL_OUTSIDE_STRING = re.compile('["\\[\\]{}]')
+
+
 def _validate_json_lexical_contract(text: str) -> None:
     """Enforce bounded nesting and surrogate-escape rules before parsing.
 
@@ -167,6 +171,13 @@ def _validate_json_lexical_contract(text: str) -> None:
     in_string = False
     index = 0
     while index < len(text):
+        # Only these code points affect the lexical contract. Skipping runs
+        # of ordinary characters avoids a Python loop over every character;
+        # the JSON parser still checks the complete input afterwards.
+        match = (_LEXICAL_IN_STRING if in_string else _LEXICAL_OUTSIDE_STRING).search(text, index)
+        if match is None:
+            return
+        index = match.start()
         char = text[index]
         if in_string:
             if char == '"':

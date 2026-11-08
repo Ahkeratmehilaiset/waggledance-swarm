@@ -9,6 +9,7 @@
     "enabled": false
   },
   "git_executable": "C:\\Program Files\\Git\\cmd\\git.exe",
+  "git_sha256": "81ef35ae005ca9318018d18e3327578ce939fb99feaad6b2d7c8ab15f3de8db5",
   "primary_repo_root": "C:\\Python\\project2",
   "repo_common_git_dir": "C:\\Python\\project2\\.git",
   "runtime_root": "C:\\Python\\project2-master\\.agent-bridge",

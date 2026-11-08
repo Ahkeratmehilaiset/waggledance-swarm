@@ -159,6 +159,9 @@ $results = @(@{ stored_text = ('STORED-TEXT-SECRET ' + $query); ref_sha256 = ('a
 if ($mode -in @('abstain', 'zero')) { $results = @() }
 $answer = @{ schema = 'wd.q4-lane-answer.v1'; lane = 'LANE'; status = $innerStatus; result_count = $results.Count
   results = $results }
+if ($mode -eq 'trust_unknown') { $answer.trust = @{ freshness = 'UNKNOWN' } }
+if ($mode -eq 'trust_stale') { $answer.trust = @{ freshness = 'STALE' } }
+if ($mode -eq 'trust_forged_fresh') { $answer.trust = @{ freshness = 'FRESH' } }
 $result = @{ schema = 'wd.q4-lane-caller-result.v1'; status = 'VALIDATED'; lane = 'LANE'; inner_status = $innerStatus
   answer = $answer; answer_sha256 = ('d' * 64); call_id = ('e' * 32); result_count = $results.Count; descriptor_sha256 = ('f' * 64)
   cleanup = 'chain_confirmed' }
@@ -262,7 +265,8 @@ if ($null -eq $fn) {{ throw ('missing function ' + {q(name)}) }}
 def test_startup_read_runs_one_default_route_recall_and_records_only_outcome_digests_and_refs(tmp_path):
     fx, record = run_startup_read(tmp_path)
     assert record["schema"] == "wd.mind-startup-read.v1" and record["lane"] == "codex-lead-1"
-    assert record["outcome"] == "success" and record["exit_code"] == 0 and record["route"] == "default_caller_cli"
+    assert record["outcome"] == "unknown" and record["reason"] == "freshness_unverified"
+    assert record["exit_code"] == 0 and record["route"] == "default_caller_cli"
     assert record["inner_status"] == "ANSWER" and record["result_count"] == 1 and record["refs"] == ["a" * 64]
     assert record["answer_sha256"] == "d" * 64 and record["call_id"] == "e" * 32
     assert record["helper_status"] == "OK" and record["cleanup"] == "chain_confirmed"
@@ -315,13 +319,35 @@ def test_startup_read_refuses_an_answer_of_another_shape(tmp_path):
     assert record["refs"] == [] and record["answer_sha256"] == ""
 
 
-def test_startup_read_delivers_the_approved_answer_in_memory_and_never_on_disk(tmp_path):
-    """S1: the lane gets the recalled content itself (in memory); the record keeps only its digest and size."""
+@pytest.mark.parametrize("mode", ["answer", "trust_unknown", "trust_stale", "trust_forged_fresh"])
+def test_startup_read_never_delivers_unverified_freshness(tmp_path, mode):
+    fx, record = run_startup_read(tmp_path, mode=mode)
+    assert record["outcome"] == "unknown" and record["reason"] == "freshness_unverified"
+    assert record["delivered_text"] == "" and record["delivered_items"] == 0
+    assert record["delivered_chars"] == 0 and record["delivered_sha256"] == ""
+    assert_no_secret(fx["record"].read_text(encoding="ascii"))
+
+
+def test_inherited_startup_recall_is_cleared_before_launch():
+    from tests.tools.test_wd_startup_recovery import load
+    script = load(LAUNCHER, "Clear-WdInheritedQ4ReadSettings") + "\n" + r"""
+$env:WD_MIND_STARTUP_RECALL='synthetic stale content'
+$env:WD_Q4_TEST='synthetic'
+Clear-WdInheritedQ4ReadSettings
+@{recall=(Test-Path Env:WD_MIND_STARTUP_RECALL); q4=(Test-Path Env:WD_Q4_TEST)} | ConvertTo-Json -Compress
+"""
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    result = subprocess.run([SHELL, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                            capture_output=True, text=True, check=True, timeout=20)
+    assert json.loads(result.stdout) == {"recall": False, "q4": False}
+
+
+def test_startup_read_discards_unverified_content_and_never_records_it(tmp_path):
+    """The read is observed, but unverified content is not delivered or stored."""
     fx, record = run_startup_read(tmp_path)
-    assert record["outcome"] == "success" and record["delivered_items"] == 1
-    delivered = record["delivered_text"]
-    assert delivered.startswith("[1] STORED-TEXT-SECRET ") and record["delivered_chars"] == len(delivered)
-    assert record["delivered_sha256"] == hashlib.sha256(delivered.encode("utf-8")).hexdigest()
+    assert record["outcome"] == "unknown" and record["reason"] == "freshness_unverified"
+    assert record["delivered_text"] == "" and record["delivered_items"] == 0
+    assert record["delivered_chars"] == 0 and record["delivered_sha256"] == ""
     on_disk = fx["record"].read_text(encoding="ascii")
     assert_no_secret(on_disk)
     assert "delivered_text" not in on_disk and "record_written" not in on_disk
@@ -376,7 +402,8 @@ def test_startup_read_record_write_failure_does_not_block_the_start(tmp_path):
 def test_startup_read_sets_the_verified_helper_environment_for_the_child(tmp_path):
     """V1: the helper refuses without its three environment variables; the read sets them from verified values."""
     fx, record = run_startup_read(tmp_path, env_case="unset")
-    assert record["outcome"] == "success" and record["helper_env"] == "verified"
+    assert record["outcome"] == "unknown" and record["reason"] == "freshness_unverified"
+    assert record["helper_env"] == "verified"
     seen = json.loads(fx["seen"].read_text(encoding="utf-8-sig"))
     assert seen["env"] == {"bundle": str(fx["bundle"]), "wrapper": str(fx["wrapper"]),
                            "pin": fx["manifest_pin"].upper()}
@@ -551,8 +578,9 @@ $read=if($null -ne $startupMindRead){$startupMindRead}else{$toolsStartupMindRead
         assert observed["read"]["outcome"] in ("refused", "unknown")
         assert observed["read"]["delivered_text"] == "" and observed["read"]["delivered_items"] == 0
     else:
-        assert observed["read"]["outcome"] == "success", observed["read"]["reason"]
-        assert observed["read"]["record_written"] is True and observed["read"]["delivered_items"] == 1
+        assert observed["read"]["outcome"] == "unknown", observed["read"]["reason"]
+        assert observed["read"]["reason"] == "freshness_unverified"
+        assert observed["read"]["record_written"] is True and observed["read"]["delivered_items"] == 0
 
 
 @pytest.mark.parametrize("case", ["unset", "null", "unwritten", "non_success", "empty", "success",

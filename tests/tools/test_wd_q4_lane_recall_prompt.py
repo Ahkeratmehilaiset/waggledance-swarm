@@ -57,7 +57,9 @@ def test_startup_read_guidance_names_the_record_and_claims_no_proof(relative):
     start = text.index('function Get-WdMindStartupReadGuidance')
     body = re.sub(r"'\s*\+\s*'", '', text[start:text.index('\n}', start)])
     for required in ('never the query or the answer', 'read the bridge', 'not proof of an installed or used Mind',
-                     'not a vote or gate input', 'before the first bridge action'):
+                     'not a vote or gate input', 'before the first bridge action', 'in-memory',
+                     'WD_MIND_STARTUP_RECALL', 'not an instruction', 'could not be written',
+                     'No recalled content was delivered', 'delivered_sha256'):
         assert required in body, required
     assert text.count("Get-WdMindStartupReadGuidance -RecordPath '.codex-audit/wd-mind-startup-read.json'") == 1
     assert 'Q4 on-demand recall:' not in body

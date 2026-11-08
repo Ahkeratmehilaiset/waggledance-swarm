@@ -143,15 +143,24 @@ FAKE_RECALL = r"""param([int]$TimeoutSeconds = 120, [switch]$WithStatus, [switch
 $ErrorActionPreference = 'Stop'
 $query = [Console]::In.ReadToEnd()
 $mode = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'fake-mode.txt') -Raw).Trim()
-$seen = @{ query = $query; switches = @($PSBoundParameters.Keys | Sort-Object); timeout = $TimeoutSeconds }
+$seen = @{ query = $query; switches = @($PSBoundParameters.Keys | Sort-Object); timeout = $TimeoutSeconds
+  env = @{ bundle = [string]$env:WD_BRIDGE_BUNDLE_ROOT; wrapper = [string]$env:WD_BRIDGE_PYTHON_WRAPPER; pin = [string]$env:WD_REBOOT_EXPECTED_MANIFEST_HASH } }
 [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'fake-seen.json'), ($seen | ConvertTo-Json -Compress))
 if ($mode -eq 'hang') { Start-Sleep -Seconds 4; exit 0 }
 if ($mode -eq 'refuse') { if ($WithStatus) { [Console]::Error.WriteLine('{"status":"UNKNOWN","exit_code":3,"cleanup":"unknown"}') }; exit 3 }
 if ($mode -eq 'garbage') { [Console]::Out.Write('{"schema":"other"}' + "`n"); exit 0 }
-$answer = @{ schema = 'wd.q4-lane-answer.v1'; lane = 'LANE'; status = 'ANSWER'; result_count = 1
-  results = @(@{ stored_text = ('STORED-TEXT-SECRET ' + $query); ref_sha256 = ('a' * 64); doc_id_sha256 = ('b' * 64) }) }
-$result = @{ schema = 'wd.q4-lane-caller-result.v1'; status = 'VALIDATED'; lane = 'LANE'; inner_status = 'ANSWER'
-  answer = $answer; answer_sha256 = ('d' * 64); call_id = ('e' * 32); result_count = 1; descriptor_sha256 = ('f' * 64)
+if ($mode -eq 'orphan') {
+  # a process started by the helper keeps the inherited stdout/stderr pipes open after the helper itself exited
+  $shell = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
+  Start-Process -FilePath (Join-Path $PSHOME $shell) -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 6') -NoNewWindow | Out-Null
+}
+$innerStatus = if ($mode -eq 'abstain') { 'ABSTAIN' } elseif ($mode -eq 'degraded') { 'DEGRADED' } else { 'ANSWER' }
+$results = @(@{ stored_text = ('STORED-TEXT-SECRET ' + $query); ref_sha256 = ('a' * 64); doc_id_sha256 = ('b' * 64) })
+if ($mode -eq 'abstain') { $results = @() }
+$answer = @{ schema = 'wd.q4-lane-answer.v1'; lane = 'LANE'; status = $innerStatus; result_count = $results.Count
+  results = $results }
+$result = @{ schema = 'wd.q4-lane-caller-result.v1'; status = 'VALIDATED'; lane = 'LANE'; inner_status = $innerStatus
+  answer = $answer; answer_sha256 = ('d' * 64); call_id = ('e' * 32); result_count = $results.Count; descriptor_sha256 = ('f' * 64)
   cleanup = 'chain_confirmed' }
 if ($WithStatus) { [Console]::Error.WriteLine('{"status":"OK","exit_code":0,"cleanup":"chain_confirmed"}') }
 [Console]::Out.Write(($result | ConvertTo-Json -Depth 6 -Compress) + "`n")
@@ -162,19 +171,27 @@ STARTUP_READ_FUNCTIONS = ("Test-WdQ4ContentDescriptorBinding", "Invoke-WdQ4Start
 
 
 def startup_read_fixture(tmp_path, lane, *, mode="answer", binding=CONTENT_BINDING, descriptor_case="ok",
-                         manifest_case="ok"):
+                         manifest_case="ok", env_case="ok", audit_case="ok"):
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     worktree = tmp_path / "worktree"
     worktree.mkdir()
+    if audit_case == "file":  # S3: the record directory cannot be created
+        (worktree / ".codex-audit").write_text("not a directory", encoding="utf-8")
     helper = bundle / "Invoke-WdQ4LaneRecall.ps1"
     helper.write_text(FAKE_RECALL.replace("LANE", lane), encoding="utf-8")
     (bundle / "fake-mode.txt").write_text(mode, encoding="utf-8")
+    wrapper = bundle / "Invoke-WdBridgePython.ps1"  # V1: the helper default route runs this pinned wrapper
+    wrapper.write_text("exit 0\n", encoding="utf-8")
+    wrapper_pin = hashlib.sha256(wrapper.read_bytes()).hexdigest().upper()
+    if manifest_case == "wrapper_pin":
+        wrapper_pin = "3" * 64
     helper_pin = hashlib.sha256(helper.read_bytes()).hexdigest().upper()
     if manifest_case == "helper_pin":
         helper_pin = "0" * 64
     manifest = bundle / "deployment-manifest.json"
-    manifest.write_bytes(json.dumps({"files": {"Invoke-WdQ4LaneRecall.ps1": helper_pin}}).encode())
+    manifest.write_bytes(json.dumps({"files": {"Invoke-WdQ4LaneRecall.ps1": helper_pin,
+                                              "Invoke-WdBridgePython.ps1": wrapper_pin}}).encode())
     manifest_pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
     if manifest_case == "manifest":
         manifest_pin = "1" * 64
@@ -186,12 +203,24 @@ def startup_read_fixture(tmp_path, lane, *, mode="answer", binding=CONTENT_BINDI
         descriptor_pin = "2" * 64
     return {"bundle": bundle, "worktree": worktree, "helper": helper, "helper_pin": helper_pin,
             "manifest": manifest, "manifest_pin": manifest_pin, "descriptor": descriptor,
-            "descriptor_pin": descriptor_pin, "seen": bundle / "fake-seen.json",
-            "record": worktree / ".codex-audit" / RECORD_NAME}
+            "descriptor_pin": descriptor_pin, "seen": bundle / "fake-seen.json", "wrapper": wrapper,
+            "record": worktree / ".codex-audit" / RECORD_NAME,
+            "env_prelude": _env_prelude(env_case, bundle, wrapper, manifest_pin)}
+
+
+def _env_prelude(env_case, bundle, wrapper, manifest_pin):
+    """The helper environment the launcher process inherits: complete, absent, or disagreeing with the bundle."""
+    names = ("WD_BRIDGE_BUNDLE_ROOT", "WD_BRIDGE_PYTHON_WRAPPER", "WD_REBOOT_EXPECTED_MANIFEST_HASH")
+    if env_case == "unset":
+        return "\n".join(f"Remove-Item -LiteralPath Env:\\{name} -ErrorAction SilentlyContinue" for name in names)
+    bundle_value = bundle.parent if env_case == "mismatch" else bundle
+    values = (str(bundle_value), str(wrapper), manifest_pin.upper())
+    return "\n".join(f"$env:{name} = {_quote(value)}" for name, value in zip(names, values))
 
 
 def startup_read_call(fx, lane, *, timeout=5, grace=1):
-    return (f"$r = Invoke-WdQ4StartupMindRead -DescriptorPath {_quote(fx['descriptor'])} -DescriptorSha256 "
+    return (fx["env_prelude"] + "\n"
+            f"$r = Invoke-WdQ4StartupMindRead -DescriptorPath {_quote(fx['descriptor'])} -DescriptorSha256 "
             f"{_quote(fx['descriptor_pin'])} -DeploymentManifestPath {_quote(fx['manifest'])} -ExpectedManifestSha256 "
             f"{_quote(fx['manifest_pin'])} -BundleRoot {_quote(fx['bundle'])} -Lane {_quote(lane)} -Worktree "
             f"{_quote(fx['worktree'])} -TimeoutSeconds {timeout} -GraceSeconds {grace}\n"
@@ -217,7 +246,7 @@ if ($null -eq $fn) {{ throw ('missing function ' + {q(name)}) }}
 . ([scriptblock]::Create($fn.Extent.Text))""" for name in STARTUP_READ_FUNCTIONS)
     script = ("$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest\n"
               "if($PSVersionTable.PSEdition -eq 'Desktop'){$env:PSModulePath=Join-Path $PSHOME 'Modules'}\n" + script
-              + "\n" + startup_read_call(fx, lane, timeout=(1 if changes.get("mode") == "hang" else 5)))
+              + "\n" + startup_read_call(fx, lane, timeout=(1 if changes.get("mode") in ("hang", "orphan") else 5)))
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     result = subprocess.run([SHELL, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
                             capture_output=True, text=True, timeout=60)
@@ -236,7 +265,8 @@ def test_startup_read_runs_one_default_route_recall_and_records_only_outcome_dig
     assert record["helper_sha256"] == fx["helper_pin"].lower() and record["descriptor_sha256"] == fx["descriptor_pin"]
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", record["ts_utc"])
     stored = json.loads(fx["record"].read_bytes())
-    assert stored == record
+    assert stored == {key: value for key, value in record.items() if key not in ("delivered_text", "record_written")}
+    assert record["record_written"] is True and record["helper_env"] == "verified"
     assert_no_secret(fx["record"].read_text(encoding="ascii"))
     seen = json.loads(fx["seen"].read_text(encoding="utf-8-sig"))
     assert seen["switches"] == ["TimeoutSeconds", "WithStatus"] and seen["timeout"] == 5
@@ -281,6 +311,80 @@ def test_startup_read_refuses_an_answer_of_another_shape(tmp_path):
     assert record["refs"] == [] and record["answer_sha256"] == ""
 
 
+def test_startup_read_delivers_the_approved_answer_in_memory_and_never_on_disk(tmp_path):
+    """S1: the lane gets the recalled content itself (in memory); the record keeps only its digest and size."""
+    fx, record = run_startup_read(tmp_path)
+    assert record["outcome"] == "success" and record["delivered_items"] == 1
+    delivered = record["delivered_text"]
+    assert delivered.startswith("[1] STORED-TEXT-SECRET ") and record["delivered_chars"] == len(delivered)
+    assert record["delivered_sha256"] == hashlib.sha256(delivered.encode("utf-8")).hexdigest()
+    on_disk = fx["record"].read_text(encoding="ascii")
+    assert_no_secret(on_disk)
+    assert "delivered_text" not in on_disk and "record_written" not in on_disk
+    assert json.loads(on_disk)["delivered_sha256"] == record["delivered_sha256"]
+
+
+@pytest.mark.parametrize("mode", ["refuse", "garbage", "hang"])
+def test_startup_read_delivers_nothing_unless_the_answer_validated(tmp_path, mode):
+    fx, record = run_startup_read(tmp_path, mode=mode)
+    assert record["outcome"] != "success"
+    assert record["delivered_text"] == "" and record["delivered_items"] == 0 and record["delivered_chars"] == 0
+    assert record["delivered_sha256"] == ""
+
+
+@pytest.mark.parametrize("mode", ["abstain", "degraded"])
+def test_startup_read_delivers_only_an_answer_with_results(tmp_path, mode):
+    """ABSTAIN, DEGRADED or zero results are a successful read that delivers no content (Lead 19:34:51Z)."""
+    fx, record = run_startup_read(tmp_path, mode=mode)
+    assert record["outcome"] == "success" and record["inner_status"] == mode.upper()
+    assert record["delivered_text"] == "" and record["delivered_items"] == 0 and record["delivered_sha256"] == ""
+    assert record["result_count"] == (0 if mode == "abstain" else 1)
+
+
+def test_startup_read_bounds_the_complete_operation_by_one_wall_clock_deadline(tmp_path):
+    """The helper exits but a process it started holds the output pipes: the read ends at the deadline as UNKNOWN
+    with nothing parsed, instead of waiting on the output read without bound (Lead 19:34:51Z)."""
+    fx, record = run_startup_read(tmp_path, mode="orphan")
+    assert record["outcome"] == "unknown" and record["reason"] == "io_timeout" and record["exit_code"] == 0
+    assert record["cleanup"] == "unknown" and record["refs"] == [] and record["delivered_items"] == 0
+    assert record["answer_sha256"] == "" and record["duration_ms"] < 5500
+
+
+def test_startup_read_measures_its_duration(tmp_path):
+    """S2: elapsed time is recorded, for a hung helper at least the wait it actually spent."""
+    fx, record = run_startup_read(tmp_path)
+    assert isinstance(record["duration_ms"], int) and record["duration_ms"] >= 0
+    assert json.loads(fx["record"].read_bytes())["duration_ms"] == record["duration_ms"]
+    fx, record = run_startup_read(tmp_path / "hang", mode="hang") if (tmp_path / "hang").mkdir() is None else None
+    assert record["reason"] == "timeout" and record["duration_ms"] >= 1000
+
+
+def test_startup_read_record_write_failure_does_not_block_the_start(tmp_path):
+    """S3: when the record cannot be written the read still returns its outcome and content; nothing throws."""
+    fx, record = run_startup_read(tmp_path, audit_case="file")
+    assert record["outcome"] == "success" and record["record_written"] is False
+    assert record["delivered_items"] == 1 and record["delivered_text"].startswith("[1] STORED-TEXT-SECRET ")
+    assert (fx["worktree"] / ".codex-audit").is_file() and not fx["record"].exists()
+
+
+def test_startup_read_sets_the_verified_helper_environment_for_the_child(tmp_path):
+    """V1: the helper refuses without its three environment variables; the read sets them from verified values."""
+    fx, record = run_startup_read(tmp_path, env_case="unset")
+    assert record["outcome"] == "success" and record["helper_env"] == "verified"
+    seen = json.loads(fx["seen"].read_text(encoding="utf-8-sig"))
+    assert seen["env"] == {"bundle": str(fx["bundle"]), "wrapper": str(fx["wrapper"]),
+                           "pin": fx["manifest_pin"].upper()}
+
+
+def test_startup_read_refuses_without_running_when_the_helper_environment_cannot_be_verified(tmp_path):
+    for changes in ({"env_case": "mismatch"}, {"manifest_case": "wrapper_pin"}):
+        sub = tmp_path / "-".join(changes.values())
+        sub.mkdir()
+        fx, record = run_startup_read(sub, **changes)
+        assert record["outcome"] == "refused" and record["reason"] == "helper_env", record
+        assert record["helper_env"] == "" and not fx["seen"].exists() and record["delivered_items"] == 0
+
+
 def test_launcher_runs_the_startup_read_after_dry_run_returns_and_before_the_cli_launch():
     source = LAUNCHER.read_text(encoding="utf-8-sig")
     call = source.index("Invoke-WdQ4StartupMindRead -DescriptorPath")
@@ -288,9 +392,17 @@ def test_launcher_runs_the_startup_read_after_dry_run_returns_and_before_the_cli
     assert source.index("SetEnvironmentVariable('WD_Q4_SHARED_DESCRIPTOR_SHA256'") < call
     assert call < source.index("$launchArguments += $startupPrompt")
     assert "$startupPrompt += $startupMindReadGuidance" in source
+    delivery = source.index("SetEnvironmentVariable('WD_MIND_STARTUP_RECALL'")
+    # set immediately before the launch, so the lane CLI is the process that inherits it; never argv or the prompt
+    assert source.index("$env:WD_GROK_MODEL_GUIDE = $grokMarkdown") < delivery < source.index("$launchArguments += $startupPrompt")
+    assert source.count("SetEnvironmentVariable('WD_MIND_STARTUP_RECALL'") == 1 and source.count("delivered_text") == 2
+    assert "-RecordWritten ([bool]$startupMindRead.record_written)" in source
+    assert "-DeliveredChars ([int]$startupMindRead.delivered_chars)" in source
     assert "$continuationPrompt += $startupMindReadGuidance" in source
     assert source.count("Invoke-WdQ4StartupMindRead -DescriptorPath") == 1  # one call, no retry
     body = source[source.index("function Invoke-WdQ4StartupMindRead"):source.index("function Get-WdMindStartupReadGuidance")]
     assert ".Kill(" not in body and "Start-Process" not in body
     assert "' -WithStatus'" in body and "-Runtime" not in body and "-Live" not in body and "-WithCoverage" not in body
     assert "wd_q4_lane_caller_cli" not in body  # the route is the helper default, never a direct wrapper call
+    assert "WaitAll(" in body and "io_timeout" in body and "output_over_budget" in body
+    assert "$deadline" in body and ".BaseStream.Write($query" not in body

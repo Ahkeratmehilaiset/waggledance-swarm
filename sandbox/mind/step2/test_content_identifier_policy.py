@@ -124,12 +124,34 @@ def test_interrupt_clears_contains_own_frame(monkeypatch):
     value = "SyntheticPrivateInput"
     def interrupt(*args, **kwargs):
         raise KeyboardInterrupt()
-    monkeypatch.setattr(policy.unicodedata, "normalize", interrupt)
-    with pytest.raises(KeyboardInterrupt) as caught:
-        obj.contains(value)
+    # Restore the process-wide unicodedata function before pytest's terminal
+    # progress renderer or any later fixture uses it.
+    with monkeypatch.context() as local_patch:
+        local_patch.setattr(policy.unicodedata, "normalize", interrupt)
+        with pytest.raises(KeyboardInterrupt) as caught:
+            obj.contains(value)
     tb = caught.value.__traceback__
     while tb is not None:
         if tb.tb_frame.f_globals.get("__name__") == policy.__name__:
             values = list(tb.tb_frame.f_locals.values())
             assert value not in values and obj not in values
+        tb = tb.tb_next
+
+
+@pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit])
+def test_interrupt_during_membership_does_not_leave_identifier_in_generator(monkeypatch, exception):
+    raw, tag = bound(["SyntheticPrivateName"])
+    obj = policy.load_policy(raw, KEY, tag)
+
+    class InterruptedText(str):
+        def __contains__(self, item):
+            raise exception()
+
+    monkeypatch.setattr(policy, "_normalize", lambda _: InterruptedText("synthetic input"))
+    with pytest.raises(exception) as caught:
+        obj.contains("synthetic input")
+    tb = caught.value.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_globals.get("__name__") == policy.__name__:
+            assert "syntheticprivatename" not in tb.tb_frame.f_locals.values()
         tb = tb.tb_next

@@ -367,10 +367,16 @@ def _output(result, lane, identity_pin, descriptor_pin, expected_binding, limit,
            and result["identity_sha256"] == identity_pin and result["descriptor_sha256"] == descriptor_pin
            and type(result["call_id"]) is str and re.fullmatch(r"[0-9a-f]{32}", result["call_id"]) is not None)
     answer = result["answer"]
-    _check(type(answer) is dict and frozenset(answer) == _ANSWER_KEYS
-           and answer["schema"] == "wd.q4-lane-answer.v1" and answer["lane"] == lane
+    content = "content_decision_sha256" in expected_binding
+    if content:
+        from tools import wd_q4_lane_caller_adapter as adapter
+        checked = adapter._validated(answer, lane, expected_binding)
+        _check(checked is not None and checked[0] == result["inner_status"] and checked[1] == answer
+               and checked[2] == result["result_count"] and checked[3] == result["answer_sha256"])
+    _check(type(answer) is dict and (content or frozenset(answer) == _ANSWER_KEYS)
+           and (content or answer["schema"] == "wd.q4-lane-answer.v1") and answer["lane"] == lane
            and answer["status"] == result["inner_status"] and answer["reason"] == ""
-           and type(answer["trust"]) is dict and answer["trust"] == _TRUST
+           and type(answer["trust"]) is dict and (content or answer["trust"] == _TRUST)
            and _binding(answer["binding"]) == expected_binding
            and type(answer["results"]) is list and len(answer["results"]) <= 100
            and type(answer["result_count"]) is int and type(result["result_count"]) is int
@@ -378,7 +384,7 @@ def _output(result, lane, identity_pin, descriptor_pin, expected_binding, limit,
     _check(answer["status"] != "ANSWER" or answer["result_count"] > 0)
     _check(answer["status"] != "ABSTAIN" or answer["result_count"] == 0)
     for item in answer["results"]:
-        _check(type(item) is dict and frozenset(item) == _ITEM_KEYS
+        _check(type(item) is dict and (content or frozenset(item) == _ITEM_KEYS)
                and type(item["stored_text"]) is str and len(item["stored_text"].encode("utf-8", "strict")) <= 320)
         _hex(item["ref_sha256"])
         _hex(item["doc_id_sha256"])

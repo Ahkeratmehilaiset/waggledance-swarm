@@ -317,7 +317,7 @@ def _text(value):
     return value
 
 
-def _resolved(item, records, when, seen):
+def _resolved(item, records, when, seen, content=False):
     """The projection record a child result names, or ValueError; the output text is the RECORD's, never the item's."""
     key = (item["ref_sha256"], item["doc_id_sha256"])
     record = records.get(key)
@@ -327,7 +327,13 @@ def _resolved(item, records, when, seen):
             or not sp.visible_at(record, when, guard_band_s=VISIBILITY_GUARD_SECONDS)):
         raise ValueError()
     seen.add(key)
-    return {"ref_sha256": key[0], "doc_id_sha256": key[1], "stored_text": _text(record["stored_text"])}
+    result = {"ref_sha256": key[0], "doc_id_sha256": key[1], "stored_text": _text(record["stored_text"])}
+    if content:
+        source_kind = record["provenance"]["source_kind"]
+        bases = {"bridge_message": "bridge_event_minute", "repo_doc": "pinned_commit_time"}
+        record_time = sp.corpus_mod.parse_utc(record["time_utc"])
+        result.update(record_time_utc=sp.corpus_mod.utc_text(record_time), time_basis=bases[source_kind])
+    return result
 
 
 def _answer(lane, value, expected_binding, records, when):
@@ -357,15 +363,25 @@ def _answer(lane, value, expected_binding, records, when):
     seen, clean = set(), []
     for item in results:
         try:
-            resolved = _resolved(item, records, when, seen)
+            resolved = _resolved(item, records, when, seen, content=content)
         except Exception:  # noqa: BLE001 - any failure of one item is one fixed refusal, raised outside the handler
             resolved = None
         if resolved is None:
             return None, "result_refused"
         clean.append(resolved)
-    return {"schema": SCHEMA, "lane": lane, "status": value["status"], "reason": "", "result_count": len(clean),
-            "results": clean, "binding": {key: expected_binding[key] for key in sorted(expected_binding)},
-            "trust": dict(_TRUST)}, None
+    answer = {"schema": SCHEMA, "lane": lane, "status": value["status"], "reason": "", "result_count": len(clean),
+              "results": clean, "binding": {key: expected_binding[key] for key in sorted(expected_binding)},
+              "trust": dict(_TRUST)}
+    if content:
+        try:
+            answer["schema"] = "wd.q4-lane-answer.v2"
+            answer["snapshot_cutoff_utc"] = max(_canonical_utc(record["available_utc"]) for record in records.values())
+            query_time = sp.corpus_mod.parse_utc(when) if isinstance(when, str) else when
+            answer["query_time_utc"] = sp.corpus_mod.utc_text(query_time)
+            answer["trust"]["coverage_after_cutoff"] = "UNKNOWN"
+        except Exception:  # noqa: BLE001 - never expose pinned projection details
+            return None, "result_refused"
+    return answer, None
 
 
 def _query_public_impl(*, lane, situation, time, bundle_root, expected_commit, expected_manifest_sha256,

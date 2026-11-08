@@ -245,9 +245,13 @@ def _validated(answer, agent, expected_binding):
     UNKNOWN trust fields, resolved items of exactly three string fields); the canonical bytes are computed here so
     that nothing is accepted that cannot be hashed.
     """
-    if (type(answer) is not dict or frozenset(answer) != _ANSWER_KEYS or answer["schema"] != _ANSWER_SCHEMA
+    content = "content_decision_sha256" in expected_binding and answer.get("status") != "REFUSED" if type(answer) is dict else False
+    answer_keys = _ANSWER_KEYS | {"snapshot_cutoff_utc", "query_time_utc"} if content else _ANSWER_KEYS
+    trust = dict(_TRUST, coverage_after_cutoff="UNKNOWN") if content else _TRUST
+    schema = "wd.q4-lane-answer.v2" if content else _ANSWER_SCHEMA
+    if (type(answer) is not dict or frozenset(answer) != answer_keys or answer["schema"] != schema
             or type(answer["status"]) is not str or type(answer["lane"]) is not str or answer["lane"] != agent
-            or type(answer["reason"]) is not str or type(answer["trust"]) is not dict or answer["trust"] != _TRUST
+            or type(answer["reason"]) is not str or type(answer["trust"]) is not dict or answer["trust"] != trust
             or any(type(value) is not str for value in answer["trust"].values())
             or type(answer["results"]) is not list or len(answer["results"]) > _MAX_RESULTS
             or type(answer["result_count"]) is not int or answer["result_count"] != len(answer["results"])):
@@ -262,11 +266,26 @@ def _validated(answer, agent, expected_binding):
             or any(type(binding[key]) is not str or not hmac.compare_digest(binding[key], expected_binding[key])
                    for key in expected_binding)):
         return None
+    if content:
+        try:
+            from tools import wd_q4_lane_query as lane_query
+            cutoff = lane_query.sp.corpus_mod.parse_utc(lane_query._canonical_utc(answer["snapshot_cutoff_utc"]))
+            lane_query._canonical_utc(answer["query_time_utc"])
+        except Exception:
+            return None
     for item in answer["results"]:
-        if (type(item) is not dict or frozenset(item) != _ITEM_KEYS
+        item_keys = _ITEM_KEYS | {"record_time_utc", "time_basis"} if content else _ITEM_KEYS
+        if (type(item) is not dict or frozenset(item) != item_keys
                 or any(type(value) is not str for value in item.values())
                 or _HEX64.fullmatch(item["ref_sha256"]) is None or _HEX64.fullmatch(item["doc_id_sha256"]) is None):
             return None
+        if content:
+            try:
+                when = lane_query.sp.corpus_mod.parse_utc(lane_query._canonical_utc(item["record_time_utc"]))
+                if when > cutoff or item["time_basis"] not in ("bridge_event_minute", "pinned_commit_time"):
+                    return None
+            except Exception:
+                return None
     try:
         canonical = json.dumps(answer, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
                                allow_nan=False).encode("ascii")

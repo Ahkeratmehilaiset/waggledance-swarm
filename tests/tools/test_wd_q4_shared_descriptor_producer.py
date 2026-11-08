@@ -36,10 +36,12 @@ CONTENT_KEYS = ("encoder_sha256", "policy_sha256", "roster_sha256", "content_dec
 def test_content_descriptor_carries_exact_seven_pins_for_each_lane(tmp_path, lane):
     kw = kwargs(tmp_path)
     kw["lanes"] = [lane]
+    kw["timeout_seconds"] = 540
     kw["expected_binding"] = {key: format(i + 1, "064x") for i, key in enumerate(CONTENT_KEYS)}
     result = build(kw)
     doc = json.loads(result["descriptor_bytes"])
     assert doc["lanes"] == [lane]
+    assert doc["timeout_seconds"] == 540
     assert doc["expected_binding"] == kw["expected_binding"]
 
 

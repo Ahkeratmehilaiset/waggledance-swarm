@@ -47,6 +47,7 @@ def content_case(canonical_content_roster, setup):
     plan['schema'] = 'wd.q4-public-wrapper-plan.v5'
     plan['config']['memory'] = setup['arguments']['memory_dir']
     plan['config']['descriptor'] = str(Path(setup['arguments']['memory_dir']) / 'descriptor.json')
+    plan['config']['timeout'] = 480
     for key in ('message_source_path', 'message_generation_path', 'message_policy_path', 'doc_repo_root',
                 'doc_policy_path', 'doc_git_executable', 'doc_git_sha256'):
         plan[key] = setup['arguments'][key]
@@ -165,7 +166,7 @@ def test_message_only_binding_succeeds_without_fleet_git(content_case, setup, tm
     decision_path.write_bytes(decision)
     v1 = dict(setup['v1'])
     v1['config'] = dict(v1['config'], descriptor_sha256=built['descriptor_sha256'], memory=str(memory),
-                        descriptor=str(memory / 'descriptor.json'))
+                        descriptor=str(memory / 'descriptor.json'), timeout=480)
     v1_raw = raw(v1)
     v1_path = tmp_path / 'message-only-v1.json'
     v1_path.write_bytes(v1_raw)
@@ -196,6 +197,17 @@ def test_content_binding_uses_seven_independent_pins_and_all_five_lanes(content_
     assert document['binding'] == content_case['expected_binding']
     assert set(document['lanes']) == {'codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5'}
     assert document['public_plan_sha256'] == content_case['expected_public_plan_sha256']
+
+
+def test_content_fixture_preserves_a_bounded_timeout_ladder(content_case, tmp_path):
+    from tests.tools.test_wd_q4_shared_descriptor_producer import kwargs, build
+    kw = kwargs(tmp_path)
+    kw['expected_binding'] = dict(content_case['expected_binding'])
+    kw['timeout_seconds'] = 540
+    descriptor = json.loads(build(kw)['descriptor_bytes'])
+    inner = json.loads(content_case['public_plan_bytes'])['config']['timeout']
+    assert type(inner) is int and type(descriptor['timeout_seconds']) is int
+    assert 200.49 < inner < descriptor['timeout_seconds'] <= 1800
 
 
 def test_each_content_pin_is_required_and_bound_to_the_plan(content_case):

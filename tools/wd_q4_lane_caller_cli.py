@@ -18,11 +18,11 @@ worktree. Its identity digest is SELF-COMPUTED. Same-user declarations and pins
 are not authentication: lane_authentication must remain UNKNOWN. Ancestor/path
 checks do not defeat hostile replacement after checking or same-user writers.
 
-Before entering a query and again before publishing its result, the public plan
-bound by the pinned lane binding identifies an index root whose q4-latest.json
-must still match the pointer pinned by this descriptor. A changed/missing pointer
-refuses output. This is an equality check at two instants, not authenticated time,
-source freshness, anti-ABA protection, or a default descriptor refresh.
+Before entering a query and again before publishing its result, status/card plans
+must still match their pinned pointer. A content plan has no legacy pointer: it
+instead rechecks its exact plan, policy, roster, decision, descriptor, memory and
+projection pins and encoder metadata. These are equality checks at two instants,
+not authenticated time, source freshness, anti-ABA protection or a refresh.
 
 An explicitly selected WD_Q4_LIVE_MODE=1 opts into a separate, mutable local
 selector under the baseline descriptor's generation root. Each query rechecks
@@ -96,6 +96,9 @@ _BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sh
 # optional card route decision pin; when present it must also be in the public plan and the answer binding
 _CARD_BINDING_KEYS = _BINDING_KEYS | {"card_decision_sha256"}
 _STAGED_BINDING_KEYS = _CARD_BINDING_KEYS | {"card_policy_sha256"}
+_CONTENT_BINDING_KEYS = frozenset({"encoder_sha256", "policy_sha256", "roster_sha256",
+                                   "content_decision_sha256", "descriptor_sha256", "memory_sha256",
+                                   "projection_sha256"})
 _RESULT_KEYS = frozenset({"schema", "status", "lane", "lane_binding", "lane_authentication", "cleanup",
                           "inner_status", "result_count", "answer", "answer_sha256", "identity_sha256",
                           "descriptor_sha256", "call_id"})
@@ -188,7 +191,7 @@ def _integer(value, ceiling):
 
 
 def _binding(value):
-    _check(type(value) is dict and frozenset(value) in (_BINDING_KEYS, _CARD_BINDING_KEYS, _STAGED_BINDING_KEYS))
+    _check(type(value) is dict and frozenset(value) in (_BINDING_KEYS, _CARD_BINDING_KEYS, _STAGED_BINDING_KEYS, _CONTENT_BINDING_KEYS))
     return {key: _hex(value[key]) for key in sorted(value)}
 
 
@@ -237,7 +240,7 @@ def _configuration(descriptor_path=None, descriptor_sha256=None):
 
 
 def _require_current_snapshot(descriptor, binding, inputs):
-    """Refuse unless this exact pinned public plan still names the current index."""
+    """Recheck pinned inputs before and after the call; no authenticated freshness claim."""
     from tools import wd_q4_lane_link as link
     binding_doc = _json(inputs["binding_bytes"])
     _check(binding_doc.get("schema") == "wd.q4-lane-binding.v1"
@@ -247,6 +250,35 @@ def _require_current_snapshot(descriptor, binding, inputs):
     _check(("card_decision_sha256" in public_pins) == ("card_decision_sha256" in binding)
            and all(public_pins[key] == binding[key] for key in public_pins))
     public = _json(public_bytes)
+    if frozenset(binding) == _CONTENT_BINDING_KEYS:
+        # Content snapshots have no legacy pointer. Recheck every selected input
+        # at both call boundaries; this proves byte consistency, not freshness.
+        _check(public.get("schema") == link._CONTENT_PLAN_SCHEMA
+               and frozenset(public_pins) == _CONTENT_BINDING_KEYS)
+        config = public["config"]
+        _check(type(config) is dict)
+        memory = _path(config["memory"])
+        descriptor_path = _path(config["descriptor"])
+        _check(descriptor_path == memory / "descriptor.json")
+        for name in ("policy", "roster", "content_decision"):
+            limit = MAX_FLEET if name == "roster" else MAX_DOCUMENT
+            _read(public[name + "_path"], limit, binding[name + "_sha256"])
+        descriptor_raw = _read(str(descriptor_path), MAX_DOCUMENT, binding["descriptor_sha256"])
+        memory_raw = _read(str(memory / "memory.json"), MAX_SNAPSHOT, binding["memory_sha256"])
+        _read(str(memory / "projection.json"), MAX_SNAPSHOT, binding["projection_sha256"])
+        selected = _json(descriptor_raw)
+        manifest = _json(memory_raw)
+        from sandbox.mind.step2.shared_index_preflight import _encoder_digest
+        _check(frozenset(selected) == frozenset({"schema", "scope", "memory_sha256", "dim", "encoder"})
+               and selected["schema"] == "wd.bridge-mind-q4-memory-descriptor.v2"
+               and selected["scope"] == "wd.q4-shared-projected-events.v1"
+               and type(selected["dim"]) is int and selected["dim"] > 0
+               and selected["memory_sha256"] == binding["memory_sha256"]
+               and _encoder_digest(selected["encoder"]) == binding["encoder_sha256"]
+               and selected["encoder"]["revision"] == config["runtime_revision"]
+               and manifest.get("projection_schema") == "wd.mind-content-memory-projection.v1"
+               and manifest.get("projection_sha256") == binding["projection_sha256"])
+        return
     staged = "card_policy_sha256" in binding
     _check((public.get("schema") == "wd.q4-public-wrapper-plan.v3") == staged)
     if staged:

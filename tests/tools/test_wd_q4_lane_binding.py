@@ -385,3 +385,47 @@ def test_module_is_pure_stdlib_with_fixed_refusals():
     assert imports == {"hashlib", "hmac", "inspect", "json", "re", "tools"}
     assert module().REASONS == frozenset({"disabled", "fleet_refused", "binding_refused", "roster_refused",
                                           "lane_refused", "contract_refused"})
+
+
+# Synthetic content-v4 lane binding: exact seven fields, no authority claim.
+@pytest.mark.parametrize("lane", LANES)
+def test_content_binding_exact_pins_for_each_lane(lane):
+    content = {key: hex64(key) for key in lane_query.CONTENT_BINDING_KEYS}
+    content["roster_sha256"] = roster_digest(fleet())
+    result = resolve(lane=lane, document=binding_document(binding=content))
+    assert result["expected_binding"] == content
+
+
+@pytest.mark.parametrize("key", sorted(lane_query.CONTENT_BINDING_KEYS))
+def test_content_binding_refuses_each_missing_or_malformed_pin(key):
+    content = {k: hex64(k) for k in lane_query.CONTENT_BINDING_KEYS}
+    content["roster_sha256"] = roster_digest(fleet())
+    missing = dict(content)
+    del missing[key]
+    refused("binding_refused", document=binding_document(binding=missing))
+    malformed = dict(content, **{key: "z" * 64})
+    refused("binding_refused", document=binding_document(binding=malformed))
+
+
+def test_content_binding_refuses_additional_field_and_wrong_roster():
+    content = {key: hex64(key) for key in lane_query.CONTENT_BINDING_KEYS}
+    content["roster_sha256"] = roster_digest(fleet())
+    refused("binding_refused", document=binding_document(binding=dict(content, extra="a" * 64)))
+    content["roster_sha256"] = "0" * 64
+    refused("roster_refused", document=binding_document(binding=content))
+
+
+def test_content_binding_contract_mismatch_fails_closed(monkeypatch):
+    content = {key: hex64(key) for key in lane_query.CONTENT_BINDING_KEYS}
+    content["roster_sha256"] = roster_digest(fleet())
+    document = binding_document(binding=content)
+    monkeypatch.setattr(lane_query, "CONTENT_BINDING_KEYS", frozenset({"unexpected"}))
+    refused("contract_refused", document=document)
+
+
+def test_content_contract_does_not_depend_on_status_pin_set(monkeypatch):
+    content = {key: hex64(key) for key in lane_query.CONTENT_BINDING_KEYS}
+    content["roster_sha256"] = roster_digest(fleet())
+    document = binding_document(binding=content)
+    monkeypatch.setattr(lane_query, "BINDING_KEYS", frozenset({"not-content"}))
+    assert resolve(document=document)["expected_binding"] == content

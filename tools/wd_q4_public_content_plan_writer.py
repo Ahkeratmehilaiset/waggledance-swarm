@@ -1,11 +1,13 @@
-"""Default-off writer of the v4 public content plan (useful content route B, caller-pinned content snapshot).
+"""Default-off writer of the v5 public content plan (useful content route B, caller-pinned content snapshot).
 
 ``write_content_plan`` reads ONE caller-pinned v1 public wrapper plan (``wd.q4-public-wrapper-plan.v1``, the card
 writer's exact v1 check), the caller-pinned content route decision and the installed content memory directory, and
-writes exclusively into one existing EMPTY absolute directory ``public-plan.v4.json``
-(``wd.q4-public-wrapper-plan.v4``): the v1 plan's ``config``, policy and roster paths and pins and encoder pin, plus
-``content_decision_path`` / ``content_decision_sha256`` and the memory and projection pins of that directory. It
-references the caller's decision file, it copies none.
+writes exclusively into one existing EMPTY absolute directory ``public-plan.v5.json``
+(``wd.q4-public-wrapper-plan.v5``): the v1 plan's ``config``, policy and roster paths and pins and encoder pin, plus
+``content_decision_path`` / ``content_decision_sha256``, the memory and projection pins of that directory and the
+seven source locations of the request (v5, RCO2 MP1 R1: the public child re-derives the projection from them before
+every query, so the writer is no longer the only place the sources are checked). It references the caller's
+decision, policy and source files, it copies none.
 
 Before anything is written, every check ``wd_q4_public_query.query_content_snapshot`` makes before stdin runs here
 on the same inputs: the decision verifies against the plan's policy and roster pins
@@ -21,9 +23,15 @@ Source re-derivation (RCO2 MP1, Lead source GO 2026-11-08): the structural check
 with itself, so the writer also re-reads the decision's sources and requires the pinned projection bytes to be
 exactly what they derive to (``content_memory.validate_content_snapshot``): the bridge log and generation file of
 the anchored message prefix (read only up to the decision's offset, prefix sha256 and generation; rows appended
-later are not part of it) and the git repository holding the pinned document commit, read only with the caller's
-absolute Git executable under its SHA-256 pin (MP3: checked before each call, every object re-hashed), with the
-content message policy and the document policy read by the DECISION pins. Sources are given exactly when the decision pins them.
+later are not part of it) and the git repository holding the pinned document commit, read only with the TRUSTED
+Git pin (RCO1 Q1): ``trusted_git`` is exactly ``git_executable`` (absolute) and ``git_sha256`` supplied by the
+caller apart from the request (in deployment the fleet record's pin, the same source the query wrapper uses), the
+request's ``doc_git_executable`` / ``doc_git_sha256`` must equal it, and a document-bearing decision without a
+trusted pin refuses before any Git starts (MP3: the trusted Git is re-hashed before each call, every object
+re-hashed). The writer has no fleet access, so this trust is exactly as good as the caller's reading of the fleet
+record; the query path checks the same pin against the deployment-manifest-pinned fleet record on every query. The
+content message policy and the document policy are read by the DECISION pins. Sources are given exactly when the
+decision pins them.
 The projection bytes checked are the same bytes the pins name. This runs once per written plan, not per query.
 
 What this does NOT establish: who issued the decision (unsigned, caller-pinned; a plan written by hand outside this
@@ -36,21 +44,22 @@ Command line: no arguments prints ``{"status":"OFF"}`` and reads nothing; ``--en
 --request-sha256 HEX`` reads one pinned closed request ``wd.q4-public-content-plan-request.v3`` (keys
 public_plan_path, public_plan_sha256, output_dir, memory_dir, content_decision_path, content_decision_sha256,
 message_source_path, message_generation_path, message_policy_path, doc_repo_root, doc_policy_path,
-doc_git_executable, doc_git_sha256; v1 and v2 refuse) and
-prints the descriptor as one canonical JSON line. A refusal prints one fixed line to stderr and exits 2 (unknown: 3).
+doc_git_executable, doc_git_sha256; v1 and v2 refuse), optionally followed by exactly
+``--trusted-git-executable PATH --trusted-git-sha256 HEX`` (the trusted pin, required when the decision pins
+documents), and prints the descriptor as one canonical JSON line. A refusal prints one fixed line to stderr and
+exits 2 (unknown: 3).
 """
 import sys
-from pathlib import Path
 
 from tools import wd_q4_public_card_plan_writer as base
 
-__all__ = ["ContentPlanRefused", "ContentPlanUnknown", "write_content_plan", "main", "PLAN_V4", "REQUEST_SCHEMA",
+__all__ = ["ContentPlanRefused", "ContentPlanUnknown", "write_content_plan", "main", "PLAN_V5", "REQUEST_SCHEMA",
            "RESULT_SCHEMA", "PLAN_NAME"]
 
-PLAN_V4 = "wd.q4-public-wrapper-plan.v4"
+PLAN_V5 = "wd.q4-public-wrapper-plan.v5"
 REQUEST_SCHEMA = "wd.q4-public-content-plan-request.v3"
 RESULT_SCHEMA = "wd.q4-public-content-plan-written.v1"
-PLAN_NAME = "public-plan.v4.json"
+PLAN_NAME = "public-plan.v5.json"
 _SCOPE = "wd.q4-shared-projected-events.v1"
 _DESCRIPTOR_SCHEMA = "wd.bridge-mind-q4-memory-descriptor.v2"
 _ARTIFACT_LIMIT = 16 * 1024 * 1024  # == wd_q4_public_query._ARTIFACT_LIMIT
@@ -74,40 +83,43 @@ class ContentPlanUnknown(RuntimeError):
     """A write was attempted; fixed token ``content_plan_unknown``. Inspect the output directory before a retry."""
 
 
-def _route_sources(decision, sources):
-    """The route sources of ``validate_content_snapshot``, exactly those the decision pins, policies by its pins."""
-    from waggledance.core import bridge_log_reader as bridge
+def _route_sources(decision, sources, trusted_git=None):
+    """``(messages, documents, plan_sources)``: the route sources of ``validate_content_snapshot``, exactly those
+    the decision pins, policies read by its pins, through ``content_memory.snapshot_sources`` (the same helper the
+    query path uses, with the same trusted Git pin), and the normalized source locations the v5 plan carries."""
+    from sandbox.mind.step2 import content_memory as content
     message_keys, doc_keys = _SOURCE_KEYS[:3], _SOURCE_KEYS[3:]
-    messages = documents = None
+    snapshot = dict.fromkeys(content.SNAPSHOT_SOURCE_KEYS)
+    plan_sources = dict.fromkeys(_SOURCE_KEYS)
     if decision["message_policy_sha256"] is None:
         if any(sources[key] is not None for key in message_keys):
             raise ValueError()
     else:
-        source_path = str(base._path(sources["message_source_path"]))
-        generation_path = str(base._path(sources["message_generation_path"]))
-        prefix = decision["source_prefix"]
-        with bridge._open_log(Path(source_path)) as stream:
-            identity = bridge._file_identity(stream)
-        messages = {"source_path": source_path, "generation_path": generation_path,
-                    "end_cursor": bridge.BridgeCursor(prefix["offset"], identity, prefix["generation"]),
-                    "policy_bytes": base._read_pinned(sources["message_policy_path"],
-                                                      decision["message_policy_sha256"]),
-                    "policy_sha256": decision["message_policy_sha256"]}
+        for key in message_keys:
+            plan_sources[key] = str(base._path(sources[key]))
+        snapshot.update(message_source_path=plan_sources["message_source_path"],
+                        message_generation_path=plan_sources["message_generation_path"],
+                        message_policy_bytes=base._read_pinned(plan_sources["message_policy_path"],
+                                                               decision["message_policy_sha256"]))
     if decision["doc_policy_sha256"] is None:
         if any(sources[key] is not None for key in doc_keys):
             raise ValueError()
     else:
         if not base._hex(sources["doc_git_sha256"]):
             raise ValueError()
-        documents = {"repo_root": str(base._path(sources["doc_repo_root"])),
-                     "policy_bytes": base._read_pinned(sources["doc_policy_path"], decision["doc_policy_sha256"]),
-                     "policy_sha256": decision["doc_policy_sha256"],
-                     "git_executable": str(base._path(sources["doc_git_executable"])),
-                     "git_sha256": sources["doc_git_sha256"]}
-    return messages, documents
+        for key in ("doc_repo_root", "doc_policy_path", "doc_git_executable"):
+            plan_sources[key] = str(base._path(sources[key]))
+        plan_sources["doc_git_sha256"] = sources["doc_git_sha256"]
+        snapshot.update(doc_repo_root=plan_sources["doc_repo_root"],
+                        doc_policy_bytes=base._read_pinned(plan_sources["doc_policy_path"],
+                                                           decision["doc_policy_sha256"]),
+                        doc_git_executable=plan_sources["doc_git_executable"],
+                        doc_git_sha256=plan_sources["doc_git_sha256"])
+    messages, documents = content.snapshot_sources(decision, snapshot, trusted_git)
+    return messages, documents, plan_sources
 
 
-def _content_plan(plan, memory_dir, content_decision_path, content_decision_sha256, sources):
+def _content_plan(plan, memory_dir, content_decision_path, content_decision_sha256, sources, trusted_git):
     from sandbox.mind.step2 import content_memory as content
     from sandbox.mind.step2 import shared_capture_adapter as adapter
     from sandbox.mind.step2.shared_index_preflight import _encoder_digest
@@ -137,27 +149,29 @@ def _content_plan(plan, memory_dir, content_decision_path, content_decision_sha2
     content.validate_route_projection(projection)  # ContentMemoryRefused is a ValueError
     content.check_content_route_evidence(manifest.get("content_route"), projection, decision,
                                          content_decision_sha256)
-    messages, documents = _route_sources(decision, sources)
+    messages, documents, plan_sources = _route_sources(decision, sources, trusted_git)
     checked = content.validate_content_snapshot(
         enabled=True, projection_bytes=projection_raw, projection_sha256=manifest["projection_sha256"],
         messages=messages, documents=documents, decision_bytes=decision_raw, decision_sha256=content_decision_sha256,
         policy_bytes=policy_raw, policy_sha256=plan["policy_sha256"], roster_bytes=roster_raw,
-        roster_sha256=plan["roster_sha256"])
+        roster_sha256=plan["roster_sha256"], trusted_git=trusted_git)
     if checked.get("status") != "MATCH":
         raise ValueError()
-    return {"schema": PLAN_V4, "config": dict(plan["config"]), "policy_path": plan["policy_path"],
+    return {"schema": PLAN_V5, "config": dict(plan["config"]), "policy_path": plan["policy_path"],
             "roster_path": plan["roster_path"], "policy_sha256": plan["policy_sha256"],
             "roster_sha256": plan["roster_sha256"], "encoder_sha256": plan["encoder_sha256"],
             "content_decision_path": str(base._path(content_decision_path)),
             "content_decision_sha256": content_decision_sha256, "memory_sha256": descriptor["memory_sha256"],
-            "projection_sha256": manifest["projection_sha256"]}
+            "projection_sha256": manifest["projection_sha256"], **plan_sources}
 
 
 def write_content_plan(*, enabled=False, public_plan_path=None, expected_public_plan_sha256=None, output_dir=None,
                        memory_dir=None, content_decision_path=None, content_decision_sha256=None,
                        message_source_path=None, message_generation_path=None, message_policy_path=None,
-                       doc_repo_root=None, doc_policy_path=None, doc_git_executable=None, doc_git_sha256=None):
-    """Write the v4 content plan; see the module doc. ``enabled`` must be the bool ``True``."""
+                       doc_repo_root=None, doc_policy_path=None, doc_git_executable=None, doc_git_sha256=None,
+                       trusted_git=None):
+    """Write the v5 content plan; see the module doc. ``enabled`` must be the bool ``True``; ``trusted_git`` is
+    the trusted Git pin (``git_executable``, ``git_sha256``) or None."""
     if enabled is False:
         return {"status": "OFF"}
     attempted = failed = False
@@ -170,7 +184,10 @@ def write_content_plan(*, enabled=False, public_plan_path=None, expected_public_
                    "message_policy_path": message_policy_path, "doc_repo_root": doc_repo_root,
                    "doc_policy_path": doc_policy_path, "doc_git_executable": doc_git_executable,
                    "doc_git_sha256": doc_git_sha256}
-        document = _content_plan(plan, memory_dir, content_decision_path, content_decision_sha256, sources)
+        if trusted_git is not None and type(trusted_git) is not dict:
+            raise ValueError()
+        document = _content_plan(plan, memory_dir, content_decision_path, content_decision_sha256, sources,
+                                 trusted_git)
         out = base._path(output_dir)
         if not out.is_dir() or any(out.iterdir()):
             raise ValueError()
@@ -214,15 +231,20 @@ def main(argv=None):
         sys.stdout.write('{"status":"OFF"}\n')
         return 0
     try:
-        if len(argv) != 5 or argv[0] != "--enabled" or argv[1] != "--request" or argv[3] != "--request-sha256":
+        if len(argv) not in (5, 9) or argv[:2] != ["--enabled", "--request"] or argv[3] != "--request-sha256":
             raise ContentPlanRefused("content_plan_refused")
+        trusted = None
+        if len(argv) == 9:
+            if argv[5] != "--trusted-git-executable" or argv[7] != "--trusted-git-sha256":
+                raise ContentPlanRefused("content_plan_refused")
+            trusted = {"git_executable": argv[6], "git_sha256": argv[8]}
         try:
             arguments = _request(argv[2], argv[4])
         except Exception:
             arguments = None
         if arguments is None:
             raise ContentPlanRefused("content_plan_refused")
-        result = write_content_plan(enabled=True, **arguments)
+        result = write_content_plan(enabled=True, trusted_git=trusted, **arguments)
         sys.stdout.write(base._encode(result).decode("ascii") + "\n")
         sys.stdout.flush()
         return 0

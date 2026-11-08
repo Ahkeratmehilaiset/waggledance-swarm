@@ -121,8 +121,14 @@ function Get-WdQ4SharedSessionConfig {
                          'verifier-sha256','public-outer-sha256','public-child-sha256','public-query-sha256','worker-sha256')
             $bindingKeys=@('pointer_sha256','source_anchor_sha256','encoder_sha256','policy_sha256',
                            'roster_sha256','public_policy_sha256','descriptor_sha256','projection_sha256')
-            # optional card route decision pin; the name check below is case-sensitive, so only this exact key
+            # Content has a separate exact seven-pin shape; never mix with status/card pins.
             if ($doc.expected_binding -is [pscustomobject] -and
+                $null -ne $doc.expected_binding.PSObject.Properties['content_decision_sha256']) {
+                $bindingKeys=@('encoder_sha256','policy_sha256','roster_sha256','content_decision_sha256',
+                               'descriptor_sha256','memory_sha256','projection_sha256')
+            }
+            # optional card route decision pin; the name check below is case-sensitive, so only this exact key
+            elseif ($doc.expected_binding -is [pscustomobject] -and
                 $null -ne $doc.expected_binding.PSObject.Properties['card_decision_sha256']) {
                 $bindingKeys+=@('card_decision_sha256')
                 if ($null -ne $doc.expected_binding.PSObject.Properties['card_policy_sha256']) {

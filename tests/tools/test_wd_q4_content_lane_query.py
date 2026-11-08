@@ -30,7 +30,7 @@ cq = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cq)
 content = cq.content
 
-PLAN_SCHEMA = "wd.q4-public-wrapper-plan.v4"
+PLAN_SCHEMA = "wd.q4-public-wrapper-plan.v5"
 WHEN = datetime(2026, 11, 8, tzinfo=timezone.utc)
 PINS = ("encoder_sha256", "policy_sha256", "roster_sha256", "content_decision_sha256", "memory_sha256",
         "projection_sha256")
@@ -54,6 +54,14 @@ def plan_document(content, files, **changes):
     for name, data in (("policy", args["policy_bytes"]), ("roster", args["roster_bytes"]),
                        ("content_decision", args["content_decision_bytes"])):
         document[name + "_path"], document[name + "_sha256"] = write(files / (name + ".bin"), data)
+    route = content["route"]
+    document["message_source_path"] = route["messages"]["source_path"]
+    document["message_generation_path"] = route["messages"]["generation_path"]
+    document["message_policy_path"], _ = write(files / "message_policy.bin", route["messages"]["policy_bytes"])
+    document["doc_repo_root"] = route["documents"]["repo_root"]
+    document["doc_policy_path"], _ = write(files / "doc_policy.bin", route["documents"]["policy_bytes"])
+    document["doc_git_executable"] = route["documents"]["git_executable"]
+    document["doc_git_sha256"] = route["documents"]["git_sha256"]
     document.update(changes)
     return {key: value for key, value in document.items() if value is not ...}
 
@@ -71,12 +79,20 @@ def lane(content, tmp_path):
     manifest = json.dumps({"schema_version": 1, "source_commit": "e" * 40,
                            "files": {"Invoke-WdQ4Query.ps1": sha(wrapper.read_bytes())}}, sort_keys=True).encode()
     (bundle / "deployment-manifest.json").write_bytes(manifest)
-    calls = []
+    calls, codes = [], []
 
     def transport(*, wrapper, arguments, stdin_bytes):
-        """What the wrapper does for a v4 plan: read the pinned plan and inputs, call run_content once."""
+        """What the wrapper does for a v5 plan: read the pinned plan, inputs and sources, call run_content once."""
         calls.append(arguments)
         plan = json.loads(Path(arguments[arguments.index("-PublicPlanPath") + 1]).read_bytes())
+        policy_of = (lambda key: Path(plan[key]).read_bytes() if plan[key] is not None else None)
+        sources = {"message_source_path": plan["message_source_path"],
+                   "message_generation_path": plan["message_generation_path"],
+                   "message_policy_bytes": policy_of("message_policy_path"), "doc_repo_root": plan["doc_repo_root"],
+                   "doc_policy_bytes": policy_of("doc_policy_path"), "doc_git_executable": plan["doc_git_executable"],
+                   "doc_git_sha256": plan["doc_git_sha256"]}
+        documents = content["route"]["documents"]  # the deployment-manifest-pinned fleet record, synthetic here
+        trusted = {"git_executable": documents["git_executable"], "git_sha256": documents["git_sha256"]}
         out = io.StringIO()
         code = child.run_content(content["config"], io.BytesIO(stdin_bytes), out,
                                  expected_encoder_sha256=plan["encoder_sha256"],
@@ -85,7 +101,9 @@ def lane(content, tmp_path):
                                  content_decision_bytes=Path(plan["content_decision_path"]).read_bytes(),
                                  content_decision_sha256=plan["content_decision_sha256"],
                                  expected_memory_sha256=plan["memory_sha256"],
-                                 expected_projection_sha256=plan["projection_sha256"], enabled=True)
+                                 expected_projection_sha256=plan["projection_sha256"], content_sources=sources,
+                                 trusted_git=trusted, enabled=True)
+        codes.append(code)
         return out.getvalue().encode("utf-8"), code
 
     binding = {key: document[key] for key in PINS}
@@ -97,7 +115,8 @@ def lane(content, tmp_path):
             "expected_public_plan_sha256": plan_sha, "expected_binding": binding,
             "projection_bytes": args["projection_bytes"], "policy_bytes": args["policy_bytes"],
             "roster_bytes": args["roster_bytes"], "transport": transport, "enabled": True}
-    return {"call": call, "calls": calls, "document": document, "files": files, "content": content}
+    return {"call": call, "calls": calls, "codes": codes, "document": document, "files": files,
+            "content": content}
 
 
 def refused(reason, call):
@@ -107,7 +126,7 @@ def refused(reason, call):
 
 # --- the seam ---------------------------------------------------------------------------------------------------------
 
-def test_a_v4_plan_reads_into_its_seven_pins(lane):
+def test_a_v5_plan_reads_into_its_seven_pins(lane):
     path, raw, pins = link._public_plan(lane["call"]["public_plan_path"], lane["call"]["expected_public_plan_sha256"])
     assert pins == lane["call"]["expected_binding"]
 
@@ -115,8 +134,11 @@ def test_a_v4_plan_reads_into_its_seven_pins(lane):
 @pytest.mark.parametrize("change", [
     {"root": "C:\\public"}, {"memory_sha256": ...}, {"content_decision_path": ""}, {"config": "x"},
     {"projection_sha256": "X" * 64}, {"card_decision_sha256": "9" * 64}, {"public_policy_sha256": "0" * 64},
+    {"schema": "wd.q4-public-wrapper-plan.v4"}, {"message_source_path": ...}, {"doc_git_sha256": ...},
+    {"doc_git_sha256": "A" * 64}, {"doc_git_sha256": 1}, {"message_source_path": ""}, {"doc_repo_root": 1},
+    {"doc_git_executable": ""}, {"message_policy_path": []},
 ])
-def test_a_partial_or_extended_v4_plan_is_refused(lane, change):
+def test_a_partial_or_extended_v5_plan_is_refused(lane, change):
     document = plan_document(lane["content"], lane["files"], **change)
     path, pin = write(lane["files"] / "other-plan.json", json.dumps(document, sort_keys=True).encode())
     with pytest.raises(ValueError):
@@ -151,7 +173,37 @@ def test_the_seam_accepts_only_the_closed_content_reply(lane):
 
 # --- the lane caller --------------------------------------------------------------------------------------------------
 
-def test_the_lane_caller_answers_content_through_the_v4_plan(lane):
+def test_a_v5_plan_without_message_or_document_sources_still_reads(lane):
+    """The plan layer takes null source fields; whether they match the decision is the query path's check."""
+    document = plan_document(lane["content"], lane["files"], message_source_path=None, message_generation_path=None,
+                             message_policy_path=None)
+    path, pin = write(lane["files"] / "null-plan.json", json.dumps(document, sort_keys=True).encode())
+    assert link._public_plan(path, pin)[2] == lane["call"]["expected_binding"]
+
+
+def test_a_hand_written_v5_plan_whose_sources_are_not_the_decision_sources_does_not_answer(lane):
+    """RCO2 R1 at the lane layer: the plan pins pass, the child re-derives from the plan's sources and refuses."""
+    other, _ = write(lane["files"] / "other_message_policy.bin", tcr.message_policy(tasks=(tcr.OTHER_TASK,))[0])
+    document = plan_document(lane["content"], lane["files"], message_policy_path=other)
+    path, pin = write(lane["files"] / "hand-plan.json", json.dumps(document, sort_keys=True).encode())
+    with pytest.raises(lane_query.LaneQueryRefused):
+        lane_query.query_public(**dict(lane["call"], public_plan_path=path, expected_public_plan_sha256=pin))
+    assert len(lane["calls"]) == 1 and lane["content"]["calls"] == []
+
+
+def test_a_hand_written_v5_plan_naming_another_git_program_does_not_run_it(lane, monkeypatch):
+    """RCO1 Q1 at the lane layer: the plan names a program with its true digest; only the trusted pin may run."""
+    from sandbox.mind.step2 import shared_doc_projection as sdp
+    monkeypatch.setattr(sdp.subprocess, "run", lambda *a, **k: pytest.fail("subprocess started"))
+    evil_path, evil_pin = write(lane["files"] / "evil-git.exe", b"not git")
+    document = plan_document(lane["content"], lane["files"], doc_git_executable=evil_path, doc_git_sha256=evil_pin)
+    path, pin = write(lane["files"] / "evil-plan.json", json.dumps(document, sort_keys=True).encode())
+    with pytest.raises(lane_query.LaneQueryRefused):
+        lane_query.query_public(**dict(lane["call"], public_plan_path=path, expected_public_plan_sha256=pin))
+    assert len(lane["calls"]) == 1 and lane["codes"] == [2] and lane["content"]["calls"] == []
+
+
+def test_the_lane_caller_answers_content_through_the_v5_plan(lane):
     answer = lane_query.query_public(**lane["call"])
     assert answer["status"] == "ANSWER" and answer["lane"] == "fable-5" and len(lane["calls"]) == 1
     assert answer["binding"] == lane["call"]["expected_binding"]

@@ -62,6 +62,8 @@ PREFIX_KEYS = frozenset({"sha256", "offset", "generation"})
 ROUTE_KEYS = frozenset({"decision_sha256", "source_prefix", "source_status", "completeness", "message_policy_sha256",
                         "doc_policy_sha256", "doc_commit"})
 ROUTE_MESSAGE_KEYS = frozenset({"source_path", "generation_path", "end_cursor", "policy_bytes", "policy_sha256"})
+SNAPSHOT_SOURCE_KEYS = frozenset({"message_source_path", "message_generation_path", "message_policy_bytes",
+                                  "doc_repo_root", "doc_policy_bytes", "doc_git_executable", "doc_git_sha256"})
 MAX_DECISION = 65536
 MAX_SOURCE_ROWS = 4096
 MAX_ROW_BYTES = 65536
@@ -457,7 +459,8 @@ def _route_evidence(decision, decision_sha256, projection):
 
 def build_route_content_memory(*, enabled=False, messages=None, documents=None, decision_bytes=None,
                                decision_sha256=None, policy_bytes=None, policy_sha256=None, roster_bytes=None,
-                               roster_sha256=None, encode=None, identity=None, dim=None, root=None, name=None):
+                               roster_sha256=None, encode=None, identity=None, dim=None, root=None, name=None,
+                               trusted_git=None):
     """Route B: the content memory under the shared scope and the v2 shared descriptor, or ``{"status": "OFF"}``.
 
     ``messages`` = ``{source_path, generation_path, end_cursor, policy_bytes, policy_sha256}``: the message rows are
@@ -465,12 +468,18 @@ def build_route_content_memory(*, enabled=False, messages=None, documents=None, 
     must be a subset of the provisioned non-review policy's tasks; the roster is the strict pinned roster. The
     decision must verify and pin exactly the policies used. The manifest binds the strict policy pins and the route
     evidence; the resolver re-checks both against the same decision.
+
+    Git trust (RCO1 Q1): the Git that reads ``documents`` is ``trusted_git`` (``_trusted_git_pin``), which the caller
+    takes from an independently verified source, never the documents' own ``git_executable`` / ``git_sha256``; those
+    must equal the trusted pin (``git_pin_mismatch``) and a document source without a trusted pin refuses
+    (``git_pin_unavailable``), both before any source is read or any subprocess starts. Message-only sources need no
+    pin.
     """
     if not _enabled(enabled):
         return {"status": "OFF"}
     from sandbox.mind.step2 import shared_index_builder as sib
     projection, decision = _route_projection(messages, documents, decision_bytes, decision_sha256, policy_bytes,
-                                             policy_sha256, roster_bytes, roster_sha256)
+                                             policy_sha256, roster_bytes, roster_sha256, trusted_git)
     policy = {"authorship": sp.AUTHORSHIP_ROSTER, "review_signal_excluded": True, "policy_sha256": policy_sha256,
               "roster_sha256": roster_sha256}
     return _build(projection, encode, identity, dim, root, name, ROUTE_SCOPE, sib.DESCRIPTOR_SCHEMA, policy,
@@ -478,14 +487,24 @@ def build_route_content_memory(*, enabled=False, messages=None, documents=None, 
 
 
 def _route_projection(messages, documents, decision_bytes, decision_sha256, policy_bytes, policy_sha256,
-                      roster_bytes, roster_sha256):
+                      roster_bytes, roster_sha256, trusted_git=None):
     """``(projection, decision)`` re-derived from the sources: the strict pins, the verified decision, the content
-    policy as a subset of the non-review policy, exactly the anchored message prefix and the pinned document blobs.
-    The route build and the snapshot check both take this one path."""
+    policy as a subset of the non-review policy, exactly the anchored message prefix and the pinned document blobs,
+    read only with the trusted Git pin. The route build and the snapshot check both take this one path."""
     messages = _source(messages, ROUTE_MESSAGE_KEYS)
     documents = _source(documents, DOCUMENT_KEYS)
     if messages is None and documents is None:
         _refuse("sources_missing")
+    if trusted_git is not None and not _trusted_git_pin(trusted_git):
+        _refuse("sources_invalid")
+    if documents is not None:
+        if trusted_git is None:
+            _refuse("git_pin_unavailable")
+        if (documents["git_executable"] != trusted_git["git_executable"] or type(documents["git_sha256"]) is not str
+                or not hmac.compare_digest(documents["git_sha256"], trusted_git["git_sha256"])):
+            _refuse("git_pin_mismatch")
+        documents = dict(documents, git_executable=trusted_git["git_executable"],
+                         git_sha256=trusted_git["git_sha256"])
     from sandbox.mind.step2 import shared_capture_adapter as adapter
     pins = None
     try:
@@ -529,10 +548,86 @@ def _route_projection(messages, documents, decision_bytes, decision_sha256, poli
     return derive_content_projection(derived, documents), decision
 
 
+def _trusted_git_pin(value):
+    """True for a Git pin from an independently verified source (RCO1 Q1): exactly ``git_executable`` (an absolute
+    path) and ``git_sha256`` (lowercase hex). The content query takes it from the deployment-manifest-pinned fleet
+    record, never from the plan."""
+    return (type(value) is dict and set(value) == {"git_executable", "git_sha256"}
+            and type(value["git_executable"]) is str and os.path.isabs(value["git_executable"])
+            and type(value["git_sha256"]) is str and HEX64.fullmatch(value["git_sha256"]) is not None)
+
+
+def snapshot_sources(decision, sources, trusted_git=None):
+    """``(messages, documents)`` for ``validate_content_snapshot`` from the closed source locations, or
+    ``sources_invalid``; ``git_pin_unavailable`` when the decision pins documents and no trusted Git pin exists.
+
+    ``sources`` has exactly ``SNAPSHOT_SOURCE_KEYS``: the bridge log and generation file and the content message
+    policy bytes, the repository root, the document policy bytes and the absolute Git executable and its SHA-256
+    pin. The message fields are null exactly when the decision pins no message policy, the document fields exactly
+    when it pins no document policy. The policies carry the DECISION pins (their bytes are re-hashed against them by
+    the projection modules) and the end cursor is the decision prefix's offset and generation with the identity of
+    the file at the given path, so only the anchored prefix of that file can re-derive.
+
+    The Git that re-derives documents is ``trusted_git`` (``_trusted_git_pin``), which the caller takes from an
+    independently verified source; the plan's ``doc_git_executable`` and ``doc_git_sha256`` must equal it and are
+    never what runs. A document-bearing decision without a trusted pin refuses before any subprocess."""
+    failed = unavailable = False
+    messages = documents = None
+    try:
+        if type(sources) is not dict or set(sources) != SNAPSHOT_SOURCE_KEYS:
+            raise ValueError()
+        if trusted_git is not None and not _trusted_git_pin(trusted_git):
+            raise ValueError()
+        message_keys = ("message_source_path", "message_generation_path", "message_policy_bytes")
+        doc_keys = ("doc_repo_root", "doc_policy_bytes", "doc_git_executable", "doc_git_sha256")
+        if decision["message_policy_sha256"] is None:
+            if any(sources[key] is not None for key in message_keys):
+                raise ValueError()
+        else:
+            from waggledance.core import bridge_log_reader as bridge
+            source_path, generation_path = sources["message_source_path"], sources["message_generation_path"]
+            if (type(source_path) is not str or not os.path.isabs(source_path) or type(generation_path) is not str
+                    or not os.path.isabs(generation_path) or type(sources["message_policy_bytes"]) is not bytes):
+                raise ValueError()
+            prefix = decision["source_prefix"]
+            with bridge._open_log(Path(source_path)) as stream:
+                identity = bridge._file_identity(stream)
+            messages = {"source_path": source_path, "generation_path": generation_path,
+                        "end_cursor": bridge.BridgeCursor(prefix["offset"], identity, prefix["generation"]),
+                        "policy_bytes": sources["message_policy_bytes"],
+                        "policy_sha256": decision["message_policy_sha256"]}
+        if decision["doc_policy_sha256"] is None:
+            if any(sources[key] is not None for key in doc_keys):
+                raise ValueError()
+        else:
+            root, executable, pin = (sources["doc_repo_root"], sources["doc_git_executable"],
+                                     sources["doc_git_sha256"])
+            if (type(root) is not str or not os.path.isabs(root) or type(executable) is not str
+                    or not os.path.isabs(executable) or type(pin) is not str or HEX64.fullmatch(pin) is None
+                    or type(sources["doc_policy_bytes"]) is not bytes):
+                raise ValueError()
+            if trusted_git is None:
+                unavailable = True
+                raise ValueError()
+            if executable != trusted_git["git_executable"] or not hmac.compare_digest(pin, trusted_git["git_sha256"]):
+                raise ValueError()
+            documents = {"repo_root": root, "policy_bytes": sources["doc_policy_bytes"],
+                         "policy_sha256": decision["doc_policy_sha256"],
+                         "git_executable": trusted_git["git_executable"], "git_sha256": trusted_git["git_sha256"]}
+    except (ValueError, TypeError, KeyError, OSError):
+        failed = True
+    if unavailable:
+        _refuse("git_pin_unavailable")
+    if failed:
+        _refuse("sources_invalid")
+    return messages, documents
+
+
 def validate_content_snapshot(*, enabled=False, projection_bytes=None, projection_sha256=None, messages=None,
                               documents=None, decision_bytes=None, decision_sha256=None, policy_bytes=None,
-                              policy_sha256=None, roster_bytes=None, roster_sha256=None):
-    """Source re-derivation of a pinned route projection (RCO2 MP1), or ``{"status": "OFF"}``.
+                              policy_sha256=None, roster_bytes=None, roster_sha256=None, trusted_git=None):
+    """Source re-derivation of a pinned route projection (RCO2 MP1), or ``{"status": "OFF"}``; ``trusted_git`` is
+    the trusted Git pin the documents are read with (see ``build_route_content_memory``).
 
     The structural checks only prove that a record agrees with itself. This re-reads exactly the decision's anchored
     message prefix and the pinned document blobs, re-derives the projection on the build's own path and requires
@@ -546,7 +641,7 @@ def validate_content_snapshot(*, enabled=False, projection_bytes=None, projectio
             or not hmac.compare_digest(hashlib.sha256(projection_bytes).hexdigest(), projection_sha256)):
         _refuse("snapshot_mismatch")
     projection, decision = _route_projection(messages, documents, decision_bytes, decision_sha256, policy_bytes,
-                                             policy_sha256, roster_bytes, roster_sha256)
+                                             policy_sha256, roster_bytes, roster_sha256, trusted_git)
     if not hmac.compare_digest(_serialized(projection), projection_bytes):
         _refuse("snapshot_mismatch")
     documents = projection["documents"]

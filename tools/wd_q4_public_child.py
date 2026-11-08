@@ -296,19 +296,25 @@ def _validated_content_output(value, expected):
 
 def run_content(config, stdin, stdout, *, expected_encoder_sha256=None, policy_bytes=None, policy_sha256=None,
                 roster_bytes=None, roster_sha256=None, content_decision_bytes=None, content_decision_sha256=None,
-                expected_memory_sha256=None, expected_projection_sha256=None, enabled=False):
+                expected_memory_sha256=None, expected_projection_sha256=None, content_sources=None, trusted_git=None,
+                enabled=False):
     """Run one explicitly enabled caller-pinned content snapshot query (route B, default OFF).
 
     The input stream is handed to the fixed query function without being read here, so the decision and artifact
-    checks run before the query is consumed. Every pin must come back in the output binding. No source, publisher
-    or issuer is authenticated; the caller must independently pin and contain this code, runtime and snapshot.
+    checks run before the query is consumed; ``content_sources`` is required and the query function re-derives
+    the pinned projection from them before stdin is read; ``trusted_git`` (the Git executable and digest from an
+    independently verified source, or None) is forwarded unchanged and is the only Git the re-derivation may start.
+    Every pin must come back in the output binding. No publisher or issuer is authenticated; the caller must
+    independently pin and contain this code, runtime and snapshot.
     """
     try:
         if (enabled is not True or not _pinned(policy_bytes, policy_sha256, MAX_POLICY)
                 or not _pinned(roster_bytes, roster_sha256, MAX_ROSTER)
                 or not _pinned(content_decision_bytes, content_decision_sha256, MAX_CONTENT_DECISION)
                 or not all(_pin(pin) for pin in (expected_encoder_sha256, expected_memory_sha256,
-                                                 expected_projection_sha256))):
+                                                 expected_projection_sha256))
+                or type(content_sources) is not dict
+                or (trusted_git is not None and type(trusted_git) is not dict)):
             raise ValueError()
         _validate_config(config)
         expected = {'encoder_sha256': expected_encoder_sha256, 'policy_sha256': policy_sha256,
@@ -322,7 +328,8 @@ def run_content(config, stdin, stdout, *, expected_encoder_sha256=None, policy_b
             policy_bytes=policy_bytes, policy_sha256=policy_sha256, roster_bytes=roster_bytes,
             roster_sha256=roster_sha256, content_decision_bytes=content_decision_bytes,
             content_decision_sha256=content_decision_sha256, expected_memory_sha256=expected_memory_sha256,
-            expected_projection_sha256=expected_projection_sha256, enabled=True)
+            expected_projection_sha256=expected_projection_sha256, content_sources=content_sources,
+            trusted_git=trusted_git, enabled=True)
         text, code = _validated_content_output(result, expected), 0
     except Exception:
         text, code = _CONTENT_FAIL, 2

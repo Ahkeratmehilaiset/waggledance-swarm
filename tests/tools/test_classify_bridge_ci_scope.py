@@ -17,7 +17,7 @@ from tools.select_affected_tests import BRIDGE_EXPLICIT_TESTS, bridge_test_closu
 
 BASE = "a" * 40
 HEAD = "b" * 40
-EIGHT = (
+BRIDGE_SOURCES = (
     ".agent-bridge/bin/BridgeEventClassifier.ps1",
     ".agent-bridge/bin/Invoke-StaleClaimSweep.ps1",
     "ops/windows/reboot/Get-WdSwarmParallelStatus.ps1",
@@ -25,14 +25,12 @@ EIGHT = (
     "ops/windows/reboot/bridge-code-files.json",
     "ops/windows/reboot/start-wd-agent.ps1",
     "ops/windows/reboot/start-wd-tools-consumer.ps1",
-    "ops/windows/reboot/Deploy-WdRebootBundle.ps1",
 )
 CANDIDATE_SOURCES = (
     ".agent-bridge/bin/BridgeEventClassifier.ps1",
     ".agent-bridge/bin/Get-BridgeRequestInventory.ps1",
     ".agent-bridge/bin/Invoke-StaleClaimSweep.ps1",
     "docs/adr/ADR-continuity-recovery-20260929.md",
-    "ops/windows/reboot/Deploy-WdRebootBundle.ps1",
     "ops/windows/reboot/Get-WdNativeWakePrompt.ps1",
     "ops/windows/reboot/Get-WdSwarmParallelStatus.ps1",
     "ops/windows/reboot/Send-WdContinuityAlert.ps1",
@@ -87,11 +85,11 @@ def fixture_repo(tmp_path: Path) -> Path:
         target = tmp_path / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         copyfile(module.__file__, target)
-    for test in sorted(bridge_test_closure(set().union(*(BRIDGE_EXPLICIT_TESTS[path] for path in EIGHT)))):
+    for test in sorted(bridge_test_closure(set().union(*(BRIDGE_EXPLICIT_TESTS[path] for path in BRIDGE_SOURCES)))):
         target = tmp_path / test
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("def test_dummy(): assert True\n", encoding="utf-8")
-    for source in EIGHT:
+    for source in BRIDGE_SOURCES:
         target = tmp_path / source
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("source\n", encoding="utf-8")
@@ -213,6 +211,17 @@ def fake_git(changed: tuple[str, ...], *, diff_code=0, object_code=0,
     return run, calls
 
 
+def test_reboot_installer_cannot_use_bridge_only_scope(tmp_path):
+    root = fixture_repo(tmp_path)
+    installer = "ops/windows/reboot/Deploy-WdRebootBundle.ps1"
+    (root / installer).write_text("source\n", encoding="utf-8")
+    for changed in ((installer,), (BRIDGE_SOURCES[0], installer)):
+        run, _ = fake_git(changed)
+        result = classify_scope(BASE, HEAD, root, run_git=run)
+        assert result["scope"] == "full", result
+        assert "unmapped" in result["reason"], result
+
+
 def real_git_repo(tmp_path: Path) -> tuple[Path, str, str]:
     """Two clean commits in a disposable repo, never in the production checkout."""
     root = fixture_repo(tmp_path)
@@ -228,8 +237,8 @@ def real_git_repo(tmp_path: Path) -> tuple[Path, str, str]:
     git("add", "-A")
     git("commit", "-qm", "base fixture")
     base = git("rev-parse", "HEAD")
-    (root / EIGHT[4]).write_text("changed source\n", encoding="utf-8")
-    git("add", "--", EIGHT[4])
+    (root / BRIDGE_SOURCES[4]).write_text("changed source\n", encoding="utf-8")
+    git("add", "--", BRIDGE_SOURCES[4])
     git("commit", "-qm", "head fixture")
     head = git("rev-parse", "HEAD")
     return root, base, head
@@ -244,22 +253,22 @@ def test_clean_real_git_exact_commits_narrow_and_ignored_audit_is_safe(tmp_path)
     (root / ".git/info/exclude").write_text(".codex-audit/\n", encoding="utf-8")
     result = classify_scope(base, head, root)
     assert result["scope"] == "bridge", result
-    assert result["changed_files"] == [EIGHT[4]]
+    assert result["changed_files"] == [BRIDGE_SOURCES[4]]
 
 
 @pytest.mark.parametrize("dirty", ["source", "mapped_test", "selector", "staged", "untracked_replacement"])
 def test_real_git_dirty_checkout_fails_full(tmp_path, dirty):
     root, base, head = real_git_repo(tmp_path)
-    mapped_test = sorted(BRIDGE_EXPLICIT_TESTS[EIGHT[4]])[0]
+    mapped_test = sorted(BRIDGE_EXPLICIT_TESTS[BRIDGE_SOURCES[4]])[0]
     if dirty == "source":
-        (root / EIGHT[4]).write_text("dirty source\n", encoding="utf-8")
+        (root / BRIDGE_SOURCES[4]).write_text("dirty source\n", encoding="utf-8")
     elif dirty == "mapped_test":
         (root / mapped_test).write_text("def test_dirty(): assert False\n", encoding="utf-8")
     elif dirty == "selector":
         (root / "tools/select_affected_tests.py").write_text("# dirty map\n", encoding="utf-8")
     elif dirty == "staged":
-        (root / EIGHT[4]).write_text("staged source\n", encoding="utf-8")
-        subprocess.run(["git", "add", "--", EIGHT[4]], cwd=root, check=True, capture_output=True)
+        (root / BRIDGE_SOURCES[4]).write_text("staged source\n", encoding="utf-8")
+        subprocess.run(["git", "add", "--", BRIDGE_SOURCES[4]], cwd=root, check=True, capture_output=True)
     else:
         subprocess.run(["git", "rm", "--cached", "--", mapped_test], cwd=root,
                        check=True, capture_output=True)
@@ -268,19 +277,19 @@ def test_real_git_dirty_checkout_fails_full(tmp_path, dirty):
     assert "dirty" in result["reason"] or "loaded tool differs" in result["reason"]
 
 
-def test_complete_eight_path_bridge_fixture_narrows(tmp_path):
+def test_complete_bridge_sources_fixture_narrows(tmp_path):
     root = fixture_repo(tmp_path)
-    run, calls = fake_git(EIGHT)
+    run, calls = fake_git(BRIDGE_SOURCES)
     result = classify_scope(BASE, HEAD, root, run_git=run)
     assert result["scope"] == "bridge", result
-    assert set(result["tests"]) == bridge_test_closure(set().union(*(BRIDGE_EXPLICIT_TESTS[path] for path in EIGHT)))
-    assert result["changed_files"] == list(EIGHT)
+    assert set(result["tests"]) == bridge_test_closure(set().union(*(BRIDGE_EXPLICIT_TESTS[path] for path in BRIDGE_SOURCES)))
+    assert result["changed_files"] == list(BRIDGE_SOURCES)
     assert any(command[3:7] == ("diff", "--name-only", "-z", "--no-renames") for command in calls)
 
 
 def test_git_process_uses_trusted_router_cwd_and_explicit_checkout(tmp_path):
     root = fixture_repo(tmp_path)
-    original, _ = fake_git(EIGHT)
+    original, _ = fake_git(BRIDGE_SOURCES)
     trusted = Path(ci_scope.__file__).resolve().parent
     observed = []
 
@@ -317,7 +326,7 @@ def test_checkout_git_executable_is_rejected_before_invocation(tmp_path, monkeyp
 ])
 def test_policy_change_forces_full_independent_of_map(tmp_path, policy):
     root = fixture_repo(tmp_path)
-    run, _ = fake_git((EIGHT[0], policy))
+    run, _ = fake_git((BRIDGE_SOURCES[0], policy))
     result = classify_scope(BASE, HEAD, root, run_git=run)
     assert result["scope"] == "full", result
     assert "policy" in result["reason"]
@@ -325,11 +334,11 @@ def test_policy_change_forces_full_independent_of_map(tmp_path, policy):
 
 def test_non_merge_base_or_missing_base_policy_fails_full(tmp_path):
     root = fixture_repo(tmp_path)
-    run, _ = fake_git(EIGHT, merge_base="c" * 40)
+    run, _ = fake_git(BRIDGE_SOURCES, merge_base="c" * 40)
     result = classify_scope(BASE, HEAD, root, run_git=run)
     assert result["scope"] == "full", result
     assert "merge-base" in result["reason"]
-    run, _ = fake_git(EIGHT, show_code=128)
+    run, _ = fake_git(BRIDGE_SOURCES, show_code=128)
     result = classify_scope(BASE, HEAD, root, run_git=run)
     assert result["scope"] == "full", result
     assert "base policy missing" in result["reason"]
@@ -383,7 +392,7 @@ def test_mixed_product_config_or_test_only_file_forces_full(tmp_path, extra):
     target = root / extra
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("product\n", encoding="utf-8")
-    run, _ = fake_git((EIGHT[0], extra))
+    run, _ = fake_git((BRIDGE_SOURCES[0], extra))
     assert classify_scope(BASE, HEAD, root, run_git=run)["scope"] == "full"
     run, _ = fake_git((extra,))
     assert classify_scope(BASE, HEAD, root, run_git=run)["scope"] == "full"
@@ -413,9 +422,9 @@ def test_missing_source_mapping_and_missing_mapped_test_fail_closed(tmp_path):
 
 def test_failed_git_diff_and_missing_git_fail_closed(tmp_path):
     root = fixture_repo(tmp_path)
-    run, _ = fake_git(EIGHT, diff_code=128)
+    run, _ = fake_git(BRIDGE_SOURCES, diff_code=128)
     assert classify_scope(BASE, HEAD, root, run_git=run)["scope"] == "full"
-    run, _ = fake_git(EIGHT, status_code=128)
+    run, _ = fake_git(BRIDGE_SOURCES, status_code=128)
     assert classify_scope(BASE, HEAD, root, run_git=run)["scope"] == "full"
 
     def missing_git(command, **kwargs):
@@ -427,7 +436,7 @@ def test_failed_git_diff_and_missing_git_fail_closed(tmp_path):
 @pytest.mark.parametrize("raw", [b"tests/tools/test_wd_native_tools_wake.py", b"\xff\0"])
 def test_malformed_or_non_utf8_diff_fails_closed(tmp_path, raw):
     root = fixture_repo(tmp_path)
-    normal, _ = fake_git(EIGHT)
+    normal, _ = fake_git(BRIDGE_SOURCES)
 
     def malformed_git(command, **kwargs):
         if command[3] == "diff":
@@ -468,7 +477,7 @@ def test_invalid_or_equal_commit_ids_fail_without_git(tmp_path, base, head):
 
 def test_commit_not_found_or_checkout_head_mismatch_fails_closed(tmp_path):
     root = fixture_repo(tmp_path)
-    run, _ = fake_git(EIGHT, object_code=128)
+    run, _ = fake_git(BRIDGE_SOURCES, object_code=128)
     assert classify_scope(BASE, HEAD, root, run_git=run)["scope"] == "full"
-    run, _ = fake_git(EIGHT, head="c" * 40)
+    run, _ = fake_git(BRIDGE_SOURCES, head="c" * 40)
     assert classify_scope(BASE, HEAD, root, run_git=run)["scope"] == "full"

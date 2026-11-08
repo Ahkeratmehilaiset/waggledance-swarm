@@ -24,6 +24,13 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "select_affected_tests.py"
 
 
+def test_reboot_installer_requires_full_suite():
+    installer = "ops/windows/reboot/Deploy-WdRebootBundle.ps1"
+    for changed in ([installer], [".agent-bridge/bin/BridgeEventClassifier.ps1", installer]):
+        result = select_affected_tests(changed, ROOT)
+        assert result["full_suite"] is True, result
+
+
 def _mkrepo(tmp_path: Path) -> Path:
     (tmp_path / "tests" / "tools").mkdir(parents=True)
     # A test that IMPORTS waggledance.x.alpha.
@@ -226,7 +233,7 @@ def test_bridge_native_wake_source_and_procedures_include_behavior_and_package(t
         assert set(result["tests"]) == bridge_test_closure(set(BRIDGE_EXPLICIT_TESTS[source]))
 
 
-ACTUAL_EIGHT = (
+ACTUAL_BRIDGE_SOURCES = (
     ".agent-bridge/bin/BridgeEventClassifier.ps1",
     ".agent-bridge/bin/Invoke-StaleClaimSweep.ps1",
     "ops/windows/reboot/Get-WdSwarmParallelStatus.ps1",
@@ -234,24 +241,23 @@ ACTUAL_EIGHT = (
     "ops/windows/reboot/bridge-code-files.json",
     "ops/windows/reboot/start-wd-agent.ps1",
     "ops/windows/reboot/start-wd-tools-consumer.ps1",
-    "ops/windows/reboot/Deploy-WdRebootBundle.ps1",
 )
 
 
 def _bridge_candidate_fixture(tmp_path):
     root = _mkrepo(tmp_path)
-    for test in sorted(bridge_test_closure(set().union(*(BRIDGE_EXPLICIT_TESTS[path] for path in ACTUAL_EIGHT)))):
+    for test in sorted(bridge_test_closure(set().union(*(BRIDGE_EXPLICIT_TESTS[path] for path in ACTUAL_BRIDGE_SOURCES)))):
         candidate = root / test
         candidate.parent.mkdir(parents=True, exist_ok=True)
         candidate.write_text("def test_decoy(): assert True\n", encoding="utf-8")
     return root
 
 
-def test_actual_eight_integration_paths_narrow_to_reviewed_bridge_tests(tmp_path):
+def test_actual_bridge_sources_narrow_to_reviewed_bridge_tests(tmp_path):
     root = _bridge_candidate_fixture(tmp_path)
-    result = select_affected_tests(ACTUAL_EIGHT, root)
+    result = select_affected_tests(ACTUAL_BRIDGE_SOURCES, root)
     assert result["full_suite"] is False, result
-    assert set(result["tests"]) == bridge_test_closure(set().union(*(BRIDGE_EXPLICIT_TESTS[path] for path in ACTUAL_EIGHT)))
+    assert set(result["tests"]) == bridge_test_closure(set().union(*(BRIDGE_EXPLICIT_TESTS[path] for path in ACTUAL_BRIDGE_SOURCES)))
     assert {
         "tests/tools/test_wd_native_tools_wake.py",
         "tests/tools/test_wd_lead_reply_delivery.py",
@@ -262,10 +268,10 @@ def test_actual_eight_integration_paths_narrow_to_reviewed_bridge_tests(tmp_path
     assert all(test.startswith("tests/tools/") for test in result["tests"])
 
 
-def test_actual_eight_missing_one_required_test_fails_closed(tmp_path):
+def test_actual_bridge_sources_missing_one_required_test_fails_closed(tmp_path):
     root = _bridge_candidate_fixture(tmp_path)
     (root / "tests/tools/test_wd_native_tools_wake.py").unlink()
-    result = select_affected_tests(ACTUAL_EIGHT, root)
+    result = select_affected_tests(ACTUAL_BRIDGE_SOURCES, root)
     assert result["full_suite"] is True
     assert "missing" in result["reason"]
 

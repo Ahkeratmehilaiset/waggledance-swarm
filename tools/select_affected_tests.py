@@ -184,13 +184,6 @@ BRIDGE_EXPLICIT_TESTS: dict[str, frozenset[str]] = {
         tests/tools/test_wd_swarm_parallel_status.py
         tests/tools/test_wd_tools_conversation.py
     """.split()),
-    "ops/windows/reboot/Deploy-WdRebootBundle.ps1": frozenset({
-        "tests/tools/test_bridge_final_acceptance_20260927.py",
-        "tests/tools/test_wd_bridge_code_context.py",
-        "tests/tools/test_wd_dynamic_model_startup.py",
-        "tests/tools/test_wd_grok_helper.py",
-        "tests/tools/test_wd_reboot_bundle.py",
-    }),
     "ops/windows/reboot/Get-WdNativeWakePrompt.ps1": frozenset({
         "tests/tools/test_wd_native_wake_prompt.py",
         "tests/tools/test_wd_reboot_bundle.py",

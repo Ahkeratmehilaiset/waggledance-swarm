@@ -22,13 +22,13 @@ SHA-1 object framing and tree paths are walked from the pinned commit. These che
 the executable publisher or Git's helpers, and do not prevent same-user executable replacement races.
 
 Screening. A document that is larger than ``max_doc_bytes``, holds a NUL byte or is not strict UTF-8 is counted and
-skipped. The whole normalized document is then checked once: any credential shape except a bare hex run (key
-prefixes, bearer/authorization values, secret assignments, PEM headers, JWTs, URL user info, mixed-case base64 runs)
+skipped. The whole normalized document is then checked once: named credential shapes (key
+prefixes, bearer/authorization values, secret assignments, PEM headers, JWTs and URL user info)
 or any sealed marker or workspace guarded word drops the whole document, so a secret or sealed fragment split over
 sections still taints it. The rest is split into sections on blank lines (an over-long section on line boundaries)
 and each section goes through ``shared_content_projection.classify`` with its full screen, so one personal,
-identifier, hex-run or mixed-script section drops alone. Deterministic screening over-blocks and is a screen, not a
-guarantee.
+identifier or mixed-script section drops alone. Ambiguous long runs are redacted by the section screen before records
+are produced. Deterministic screening over-blocks and is a screen, not a guarantee.
 
 Records and removal. Each kept section is encoded, chunked and written as records with the commit, path, blob id,
 section and chunk position and a source ref ``sha256({blob, commit, path})``; the record time is the pinned commit's
@@ -268,7 +268,10 @@ def _doc_screen(text, limit):
     normalized = cp._normalize(text, limit)
     if not normalized:
         raise cp._Drop("empty")
-    if any(pattern.search(normalized) for pattern in cp._CREDENTIAL[:-1]) or cp._base64_secret(normalized):
+    # Named credentials still taint the whole document. Ambiguous long runs
+    # are not trusted: each retained section passes classify(), which redacts
+    # the entire matched run before a record is constructed.
+    if any(pattern.search(normalized) for pattern in cp._CREDENTIAL[:-1]):
         raise cp._Drop("credential")
     lowered = normalized.lower()
     if any(marker in lowered for marker in sp.SEALED_MARKERS) or corpus_mod.ws._has_marker(normalized):

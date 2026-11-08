@@ -197,6 +197,27 @@ def test_credential_or_sealed_anywhere_drops_the_whole_document(tmp_path, bad, t
     assert projection["records"] == [] and projection["refused_docs"] == {token: 1}
 
 
+@pytest.mark.parametrize("value", ["docs/architecture/Synthetic_Version9_Long_Reference.md",
+                                     "AbCdEfGhIjKlMnOpQrStUv_WxYz12a345b678c9"])
+def test_ambiguous_long_runs_are_not_stored_and_do_not_refuse_document(tmp_path, value):
+    root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, "reference " + value, SECOND)})
+    raw, sha = policy(commit, ["docs/a.md"])
+    projection = build(root, raw, sha)
+    assert projection["refused_docs"] == {}
+    assert projection["records"]
+    assert value not in json.dumps(projection)
+    assert "token-redacted" in " ".join(texts(projection))
+
+
+def test_named_long_secret_refuses_whole_document(tmp_path):
+    value = "AbCdEfGhIjKlMnOpQrStUv_WxYz12a345b678c9"
+    root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, "password=" + value, SECOND)})
+    raw, sha = policy(commit, ["docs/a.md"])
+    projection = build(root, raw, sha)
+    assert projection["records"] == [] and projection["refused_docs"] == {"credential": 1}
+    assert value not in json.dumps(projection)
+
+
 def test_marker_split_across_lines_still_drops_the_document(tmp_path):
     root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, "api_key =" + chr(10) + "Zq8" * 8)})
     raw, sha = policy(commit, ["docs/a.md"])
@@ -371,12 +392,12 @@ def test_hex_run_is_redacted_from_its_section(tmp_path):
     assert projection["refused_sections"] == {} and projection["refused_docs"] == {}
 
 
-def test_long_public_command_keeps_document_fail_closed(tmp_path):
+def test_long_public_command_is_redacted_in_document(tmp_path):
     value = "Get-WdQ4LifecycleCutoverReadiness"
     root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, "run " + value + " now", SECOND)})
     raw, sha = policy(commit, ["docs/a.md"])
     projection = build(root, raw, sha)
-    assert "run token-redacted now" not in texts(projection)
+    assert "run token-redacted now" in texts(projection)
     assert value not in json.dumps(projection)
 
 

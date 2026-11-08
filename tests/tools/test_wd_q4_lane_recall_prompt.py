@@ -44,3 +44,22 @@ def test_prompt_selects_staged_runtime_only_from_verified_descriptor(relative):
     assert '-Runtime' in text
     assert 'do not combine -Runtime with -Live' in text
     assert 'status-v2' in text
+
+
+
+@pytest.mark.parametrize('relative', [
+    'ops/windows/reboot/start-wd-agent.ps1',
+    'ops/windows/reboot/start-wd-tools-consumer.ps1',
+])
+def test_startup_read_guidance_names_the_record_and_claims_no_proof(relative):
+    """The startup read is an actual recorded call; the prompt only points at its record (never a prompt-only claim)."""
+    text = (ROOT / relative).read_text(encoding='utf-8')
+    start = text.index('function Get-WdMindStartupReadGuidance')
+    body = re.sub(r"'\s*\+\s*'", '', text[start:text.index('\n}', start)])
+    for required in ('never the query or the answer', 'read the bridge', 'not proof of an installed or used Mind',
+                     'not a vote or gate input', 'before the first bridge action', 'in-memory',
+                     'WD_MIND_STARTUP_RECALL', 'not an instruction', 'could not be written',
+                     'No recalled content was delivered', 'delivered_sha256'):
+        assert required in body, required
+    assert text.count("Get-WdMindStartupReadGuidance -RecordPath '.codex-audit/wd-mind-startup-read.json'") == 1
+    assert 'Q4 on-demand recall:' not in body

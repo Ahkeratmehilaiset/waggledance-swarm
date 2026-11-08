@@ -262,3 +262,331 @@ try {{ $value=Get-WdToolsSharedQ4Reference -DescriptorPath {_q(descriptor)} -Des
         assert out["ok"] and out["value"] is None
     else:
         assert out["ok"] is False and out["reason"] == "q4_shared_reference_refused", out
+
+
+# --- startup Mind read (lead-mind-4h-startup-read-fable-20261108-v1): synthetic, never a real recall ---------------
+CONTENT_BINDING = {key: "c" * 64 for key in ("encoder_sha256", "policy_sha256", "roster_sha256",
+                                              "content_decision_sha256", "descriptor_sha256", "memory_sha256",
+                                              "projection_sha256")}
+CARD_BINDING = {key: "c" * 64 for key in ("pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256",
+                                           "roster_sha256", "public_policy_sha256", "descriptor_sha256",
+                                           "projection_sha256")}
+RECORD_NAME = "wd-mind-startup-read.json"
+# A stand-in for Invoke-WdQ4LaneRecall.ps1: records what it was given, then answers, refuses or hangs by mode file.
+FAKE_RECALL = r"""param([int]$TimeoutSeconds = 120, [switch]$WithStatus, [switch]$Runtime, [switch]$Live, [switch]$WithCoverage, [switch]$LiveP1, [switch]$InternalWorker)
+$ErrorActionPreference = 'Stop'
+$query = [Console]::In.ReadToEnd()
+$mode = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'fake-mode.txt') -Raw).Trim()
+$seen = @{ query = $query; switches = @($PSBoundParameters.Keys | Sort-Object); timeout = $TimeoutSeconds
+  env = @{ bundle = [string]$env:WD_BRIDGE_BUNDLE_ROOT; wrapper = [string]$env:WD_BRIDGE_PYTHON_WRAPPER; pin = [string]$env:WD_REBOOT_EXPECTED_MANIFEST_HASH } }
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'fake-seen.json'), ($seen | ConvertTo-Json -Compress))
+if ($mode -eq 'hang') { Start-Sleep -Seconds 4; exit 0 }
+if ($mode -eq 'refuse') { if ($WithStatus) { [Console]::Error.WriteLine('{"status":"UNKNOWN","exit_code":3,"cleanup":"unknown"}') }; exit 3 }
+if ($mode -eq 'garbage') { [Console]::Out.Write('{"schema":"other"}' + "`n"); exit 0 }
+if ($mode -eq 'orphan') {
+  # a process started by the helper keeps the inherited stdout/stderr pipes open after the helper itself exited
+  $shell = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
+  Start-Process -FilePath (Join-Path $PSHOME $shell) -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 6') -NoNewWindow | Out-Null
+}
+$innerStatus = if ($mode -eq 'abstain') { 'ABSTAIN' } elseif ($mode -eq 'degraded') { 'DEGRADED' } else { 'ANSWER' }
+$results = @(@{ stored_text = ('STORED-TEXT-SECRET ' + $query); ref_sha256 = ('a' * 64); doc_id_sha256 = ('b' * 64) })
+if ($mode -in @('abstain', 'zero')) { $results = @() }
+$answer = @{ schema = 'wd.q4-lane-answer.v1'; lane = 'LANE'; status = $innerStatus; result_count = $results.Count
+  results = $results }
+$result = @{ schema = 'wd.q4-lane-caller-result.v1'; status = 'VALIDATED'; lane = 'LANE'; inner_status = $innerStatus
+  answer = $answer; answer_sha256 = ('d' * 64); call_id = ('e' * 32); result_count = $results.Count; descriptor_sha256 = ('f' * 64)
+  cleanup = 'chain_confirmed' }
+if ($WithStatus) { [Console]::Error.WriteLine('{"status":"OK","exit_code":0,"cleanup":"chain_confirmed"}') }
+[Console]::Out.Write(($result | ConvertTo-Json -Depth 6 -Compress) + "`n")
+exit 0
+"""
+STARTUP_READ_FUNCTIONS = ("Test-WdQ4ContentDescriptorBinding", "Invoke-WdQ4StartupMindRead",
+                          "Get-WdMindStartupReadGuidance")
+
+
+def startup_read_fixture(tmp_path, lane, *, mode="answer", binding=CONTENT_BINDING, descriptor_case="ok",
+                         manifest_case="ok", env_case="ok", audit_case="ok"):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    if audit_case == "file":  # S3: the record directory cannot be created
+        (worktree / ".codex-audit").write_text("not a directory", encoding="utf-8")
+    if audit_case == "stale":
+        (worktree / ".codex-audit").mkdir()
+        (worktree / ".codex-audit" / RECORD_NAME).write_text("prior-receipt", encoding="ascii")
+    helper = bundle / "Invoke-WdQ4LaneRecall.ps1"
+    helper.write_text(FAKE_RECALL.replace("LANE", lane), encoding="utf-8")
+    (bundle / "fake-mode.txt").write_text(mode, encoding="utf-8")
+    wrapper = bundle / "Invoke-WdBridgePython.ps1"  # V1: the helper default route runs this pinned wrapper
+    wrapper.write_text("exit 0\n", encoding="utf-8")
+    wrapper_pin = hashlib.sha256(wrapper.read_bytes()).hexdigest().upper()
+    if manifest_case == "wrapper_pin":
+        wrapper_pin = "3" * 64
+    helper_pin = hashlib.sha256(helper.read_bytes()).hexdigest().upper()
+    if manifest_case == "helper_pin":
+        helper_pin = "0" * 64
+    manifest = bundle / "deployment-manifest.json"
+    manifest.write_bytes(json.dumps({"files": {"Invoke-WdQ4LaneRecall.ps1": helper_pin,
+                                              "Invoke-WdBridgePython.ps1": wrapper_pin}}).encode())
+    manifest_pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    if manifest_case == "manifest":
+        manifest_pin = "1" * 64
+    descriptor = tmp_path / "descriptor.json"
+    raw = json.dumps({"schema": "wd.q4-shared-session-config.v2", "expected_binding": binding}).encode()
+    descriptor.write_bytes(raw)
+    descriptor_pin = hashlib.sha256(raw).hexdigest()
+    if descriptor_case == "sha":
+        descriptor_pin = "2" * 64
+    return {"bundle": bundle, "worktree": worktree, "helper": helper, "helper_pin": helper_pin,
+            "manifest": manifest, "manifest_pin": manifest_pin, "descriptor": descriptor,
+            "descriptor_pin": descriptor_pin, "seen": bundle / "fake-seen.json", "wrapper": wrapper,
+            "record": worktree / ".codex-audit" / RECORD_NAME,
+            "env_prelude": ("function Move-Item { throw 'synthetic_record_move' }\n" if audit_case == "stale" else "")
+                           + _env_prelude(env_case, bundle, wrapper, manifest_pin)}
+
+
+def _env_prelude(env_case, bundle, wrapper, manifest_pin):
+    """The helper environment the launcher process inherits: complete, absent, or disagreeing with the bundle."""
+    names = ("WD_BRIDGE_BUNDLE_ROOT", "WD_BRIDGE_PYTHON_WRAPPER", "WD_REBOOT_EXPECTED_MANIFEST_HASH")
+    if env_case == "unset":
+        return "\n".join(f"Remove-Item -LiteralPath Env:\\{name} -ErrorAction SilentlyContinue" for name in names)
+    bundle_value = bundle.parent if env_case == "mismatch" else bundle
+    values = (str(bundle_value), str(wrapper), manifest_pin.upper())
+    return "\n".join(f"$env:{name} = {_quote(value)}" for name, value in zip(names, values))
+
+
+def startup_read_call(fx, lane, *, timeout=5, grace=1):
+    return (fx["env_prelude"] + "\n"
+            f"$r = Invoke-WdQ4StartupMindRead -DescriptorPath {_quote(fx['descriptor'])} -DescriptorSha256 "
+            f"{_quote(fx['descriptor_pin'])} -DeploymentManifestPath {_quote(fx['manifest'])} -ExpectedManifestSha256 "
+            f"{_quote(fx['manifest_pin'])} -BundleRoot {_quote(fx['bundle'])} -Lane {_quote(lane)} -Worktree "
+            f"{_quote(fx['worktree'])} -TimeoutSeconds {timeout} -GraceSeconds {grace}\n"
+            "if ($null -eq $r) { 'null' } else { $r | ConvertTo-Json -Depth 5 -Compress }")
+
+
+def _quote(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def assert_no_secret(text):
+    lowered = text.lower()
+    assert "stored-text-secret" not in lowered and "situation" not in lowered and "startup read:" not in lowered
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("mode", ["answer", "abstain", "degraded", "zero", "refuse", "garbage"])
+def test_tools_startup_read_records_only_outcome_digests_and_refs(tmp_path, ps, mode):
+    fx = startup_read_fixture(tmp_path, "codex-tools-1", mode=mode)
+    script = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
+    script += "\n$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n" + startup_read_call(fx, "codex-tools-1")
+    out = _run_powershell(script, executable=ps).stdout.strip()
+    record = json.loads(out)
+    assert record["lane"] == "codex-tools-1" and record["route"] == "default_caller_cli"
+    if mode == "answer":
+        assert record["outcome"] == "success" and record["refs"] == ["a" * 64] and record["exit_code"] == 0
+    elif mode in ("abstain", "degraded", "zero"):
+        assert record["outcome"] == "empty" and record["reason"] == ("no_result" if mode == "zero" else mode)
+        assert record["inner_status"] == ("ANSWER" if mode == "zero" else mode.upper())
+    elif mode == "refuse":
+        assert record["outcome"] == "refused" and record["exit_code"] == 3 and record["reason"] == "cleanup_unknown"
+    else:
+        assert record["outcome"] == "refused" and record["reason"] == "result_shape"
+    assert json.loads(fx["record"].read_bytes()) == {key: value for key, value in record.items()
+                                                     if key not in ("delivered_text", "record_written")}
+    assert record["record_written"] is True and isinstance(record["duration_ms"], int)
+    if mode == "answer":
+        assert record["delivered_items"] == 1 and record["delivered_text"].startswith("[1] STORED-TEXT-SECRET ")
+    else:
+        assert record["delivered_items"] == 0 and record["delivered_text"] == ""
+    assert_no_secret(fx["record"].read_text(encoding="ascii"))
+    seen = json.loads(fx["seen"].read_text(encoding="utf-8-sig"))
+    assert seen["switches"] == ["TimeoutSeconds", "WithStatus"]
+    assert set(json.loads(seen["query"])) == {"situation", "time"}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_tools_startup_read_is_off_for_a_card_descriptor(tmp_path, ps):
+    fx = startup_read_fixture(tmp_path, "codex-tools-1", binding=CARD_BINDING)
+    script = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
+    script += "\n$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n" + startup_read_call(fx, "codex-tools-1")
+    assert _run_powershell(script, executable=ps).stdout.strip() == "null"
+    assert not fx["record"].exists() and not fx["seen"].exists()
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_tools_startup_read_survives_a_record_write_failure_and_sets_the_helper_environment(tmp_path, ps):
+    """S3 + V1 on the Tools copy: no throw when the record directory is a file; the child gets the verified env."""
+    fx = startup_read_fixture(tmp_path, "codex-tools-1", audit_case="file", env_case="unset")
+    script = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
+    script += "\n$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n" + startup_read_call(fx, "codex-tools-1")
+    record = json.loads(_run_powershell(script, executable=ps).stdout.strip())
+    assert record["outcome"] == "unknown" and record["reason"] == "record_write"
+    assert record["record_written"] is False and not fx["record"].exists()
+    assert record["delivered_items"] == 0 and record["delivered_text"] == ""
+    assert record["helper_env"] == "verified"
+    seen = json.loads(fx["seen"].read_text(encoding="utf-8-sig"))
+    assert seen["env"] == {"bundle": str(fx["bundle"]), "wrapper": str(fx["wrapper"]),
+                           "pin": fx["manifest_pin"].upper()}
+
+
+def test_tools_consumer_runs_the_startup_read_after_the_export_and_never_in_validate_only():
+    source = TOOLS.read_text(encoding="utf-8-sig")
+    call = source.index("Invoke-WdQ4StartupMindRead -DescriptorPath")
+    assert source.index("SetEnvironmentVariable('WD_Q4_SHARED_DESCRIPTOR_SHA256'") < call
+    guard = source.rindex("if (", 0, call)
+    assert "-not $ValidateOnly" in source[guard:call] and "$null -ne $toolsSharedQ4Values" in source[guard:call]
+    assert "$prompt += Get-WdMindStartupReadGuidance" in source
+    delivery = source.index("SetEnvironmentVariable('WD_MIND_STARTUP_RECALL'")
+    launch = source.index("if ($conversationSurface -cin @('local_window','native_terminal')) {",
+                          source.rindex("Invoke-WdLaneProfileShadowRead -BundleRoot"))
+    # set immediately before the conversation or consumer start; never argv or the prompt
+    assert source.index("$prompt += Get-WdMindStartupReadGuidance") < delivery < launch
+    assert source.count("SetEnvironmentVariable('WD_MIND_STARTUP_RECALL'") == 1 and source.count("delivered_text") == 2
+    assert "-RecordWritten ([bool]$toolsStartupMindRead.record_written)" in source
+    assert "-DeliveredChars ([int]$toolsStartupMindRead.delivered_chars)" in source
+    assert source.count("Invoke-WdQ4StartupMindRead -DescriptorPath") == 1
+    body = source[source.index("function Invoke-WdQ4StartupMindRead"):source.index("function Get-WdMindStartupReadGuidance")]
+    assert ".Kill(" not in body and "Start-Process" not in body and "-Runtime" not in body and "-Live" not in body
+    assert "WaitAll(" in body and "io_timeout" in body and "output_over_budget" in body
+
+
+def test_startup_failed_record_replace_never_delivers_against_a_prior_receipt(tmp_path):
+    """An old receipt is not the matching digest for this recall; no real ACL or startup is used."""
+    fx = startup_read_fixture(tmp_path, "codex-tools-1", audit_case="stale")
+    script = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
+    script += "\n$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n" + startup_read_call(fx, "codex-tools-1")
+    record = json.loads(_run_powershell(script, executable=LANE_TEST_SHELLS[0]).stdout.strip())
+    assert record["outcome"] == "unknown" and record["reason"] == "record_write"
+    assert record["record_written"] is False
+    assert record["delivered_text"] == "" and record["delivered_items"] == 0
+    assert record["delivered_chars"] == 0 and record["delivered_sha256"] == ""
+    assert fx["record"].read_text(encoding="ascii") == "prior-receipt"
+
+
+def test_startup_missing_record_never_promises_digest_verification():
+    command = "Get-WdMindStartupReadGuidance -RecordPath 'synthetic-receipt' -Outcome success -RecordWritten $false -DeliveredChars 20 -DeliveredItems 1"
+    script = load(TOOLS, "Get-WdMindStartupReadGuidance") + "\n" + command
+    output = _run_powershell(script, executable=LANE_TEST_SHELLS[0]).stdout
+    assert "No recalled content was delivered." in output
+    assert "WD_MIND_STARTUP_RECALL" not in output and "delivered_sha256" not in output
+    assert "record could not be written" in output
+
+
+
+@pytest.mark.parametrize("fault", ["own_session", "starter_refuses", "missing_identity", "wrong_lane", "outside_cwd"])
+def test_startup_uses_its_own_session_and_native_worktree_in_real_statement_order(tmp_path, monkeypatch, fault):
+    """Execute only the real session/recall statements, with an isolated session seam.
+
+    The seam uses the actual owner initializer and actual session assignments; it
+    never drains a queue, writes a heartbeat, or copies an inherited owner token.
+    No native agent, live bridge, model or real content is used.
+    """
+    starter_fails = fault == "starter_refuses"
+    root = ROOT if "ROOT" in globals() else REBOOT.parents[2]
+    launcher = LAUNCHER if "LAUNCHER" in globals() else TOOLS
+    lane = "codex-lead-1" if "LAUNCHER" in globals() else "codex-tools-1"
+    shell = SHELL if "SHELL" in globals() else LANE_TEST_SHELLS[0]
+    from test_wd_startup_recovery import load
+    guard = r"""
+$expected = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'identity-expected.json') -Raw | ConvertFrom-Json
+if ($env:AGENT_BRIDGE_AGENT -cne $expected.lane -or $env:AGENT_BRIDGE_AGENT_UUID -cne $expected.uuid -or
+    $env:AGENT_BRIDGE_RUN_ID -cne $expected.run -or $env:AGENT_BRIDGE_OWNER_SESSION_ID -cne $expected.run -or
+    [string]$env:AGENT_BRIDGE_OWNER_TOKEN -cnotmatch '^[0-9a-f]{64}$' -or
+    -not [Environment]::CurrentDirectory.Equals([string]$expected.worktree, [StringComparison]::OrdinalIgnoreCase)) { exit 2 }
+"""
+    marker = "if ($mode -eq 'hang')"
+    assert FAKE_RECALL.count(marker) == 1
+    monkeypatch.setitem(globals(), "FAKE_RECALL", FAKE_RECALL.replace(marker, guard + "\n" + marker))
+    fx = startup_read_fixture(tmp_path, lane)
+    expected = {"lane": lane, "uuid": "11111111-1111-4111-8111-111111111111", "run": "synthetic-own-startup",
+                "worktree": str(fx["worktree"])}
+    (fx["bundle"] / "identity-expected.json").write_bytes(json.dumps(expected).encode("ascii"))
+    # Reuse the real identity mint and the exact env/cwd assignments, not the
+    # whole starter (which has initial heartbeat and accepted-queue side effects).
+    starter_source = (root / ".agent-bridge/bin/Start-AgentBridgeSession.ps1").read_text(encoding="utf-8-sig")
+    begin = starter_source.index("$env:AGENT_BRIDGE_RUNTIME_ROOT = $runtimeFull")
+    end = starter_source.index("Set-Location -LiteralPath $repoFull", begin) + len("Set-Location -LiteralPath $repoFull")
+    starter = fx["bundle"] / "synthetic-session.ps1"
+    starter_text = r"""param($Agent,$RuntimeRoot,$RepoRoot,$PrimaryRepoRoot,$RunId,$Role,$AgentUuid,$Capabilities,
+ [switch]$RequireDedicatedWorktree,[switch]$SkipBridgeRead,[switch]$SkipGitStatus,[switch]$SkipWakeWatcher,[switch]$SkipHeartbeatJob)
+if ($env:WD_SYNTHETIC_STARTER_FAIL -ceq '1') { throw 'synthetic_starter_refusal' }
+"""
+    starter_text += "\n. " + _quote(root / ".agent-bridge/bin/AgentBridgeSessionIdentity.ps1")
+    starter_text += "\n$runtimeFull=$RuntimeRoot; $repoFull=$RepoRoot\n" + starter_source[begin:end]
+    starter.write_bytes(starter_text.encode("utf-8"))
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    functions = "\n".join(load(launcher, name) for name in STARTUP_READ_FUNCTIONS)
+    quote = _quote
+    driver = functions + r"""
+$ErrorActionPreference='Stop';Set-StrictMode -Version Latest
+Get-ChildItem Env: | Where-Object { $_.Name.StartsWith('AGENT_BRIDGE_', [StringComparison]::OrdinalIgnoreCase) } |
+ ForEach-Object { [Environment]::SetEnvironmentVariable($_.Name,$null,'Process') }
+function Assert-LaneBootstrapIntegrity {}
+function Assert-LanePathWithoutReparse {}
+"""
+    driver += "\n" + fx["env_prelude"] + "\n"
+    values = {"worktree": fx["worktree"], "runtimeRoot": tmp_path / "isolated-bridge", "primaryRepoRoot": tmp_path,
+              "primaryRepo": tmp_path, "agent": lane, "runId": expected["run"], "runIdPrefix": "synthetic",
+              "role": "tools-tests", "agentUuid": expected["uuid"], "starter": starter, "sessionScript": starter,
+              "bootstrapRoot": fx["bundle"], "laneTrustedDrive": "C:\\", "fixedDeploymentManifest": fx["manifest"],
+              "toolsDeploymentManifestPath": fx["manifest"], "toolsExpectedManifestHash": fx["manifest_pin"]}
+    driver += "\n".join("$" + k + "=" + quote(v) for k, v in values.items())
+    driver += "\n$script:LaneManifestAnchor=" + quote(fx["manifest_pin"])
+    driver += "\n$env:WD_SYNTHETIC_STARTER_FAIL=" + quote("1" if starter_fails else "0")
+    driver += "\nSet-Location -LiteralPath " + quote(unrelated)
+    driver += r"""
+$capabilities=@('tests'); $requireDedicatedWorktree=$false; $ValidateOnly=$false
+$startupMindRead=$null; $toolsStartupMindRead=$null; $startupPrompt=''; $continuationPrompt=''; $prompt=''
+$sessionArgs=@{Agent=$agent;RuntimeRoot=$runtimeRoot;RepoRoot=$worktree;RunId=$runId;Role=$role;AgentUuid=$agentUuid;Capabilities=$capabilities}
+"""
+    ref = "@{WD_Q4_SHARED_DESCRIPTOR_PATH=" + quote(fx["descriptor"]) + ";WD_Q4_SHARED_DESCRIPTOR_SHA256=" + quote(fx["descriptor_pin"]) + "}"
+    driver += "\n$q4SharedValues=" + ref + ";$toolsSharedQ4Values=" + ref
+    # Created scriptblocks have no file-owned PSScriptRoot; bind only that file context explicitly.
+    driver += "\n$syntheticBundleRoot=" + quote(fx["bundle"])
+    driver += "\n$sourcePath=" + quote(launcher)
+    driver += "\n$fault=" + quote(fault)
+    driver += "\n$outside=" + quote(unrelated)
+    driver += r"""
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($sourcePath,[ref]$tokens,[ref]$errors)
+if($errors.Count){throw 'source_parse'}
+$reads=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.IfStatementAst] -and
+ $n.Extent.Text.Contains('Invoke-WdQ4StartupMindRead -DescriptorPath')},$true) | Sort-Object { $_.Extent.Text.Length })
+$sessions=@($ast.FindAll({param($n)
+ ($n -is [Management.Automation.Language.TryStatementAst] -and $n.Extent.Text.Contains('$session = . $starter @sessionArgs')) -or
+ ($n -is [Management.Automation.Language.PipelineAst] -and $n.Extent.Text.StartsWith('. $sessionScript '))
+},$true) | Sort-Object { $_.Extent.Text.Length })
+if($reads.Count -lt 1 -or $sessions.Count -lt 1){throw 'missing_real_statement'}
+$parts=@($reads[0],$sessions[0])
+if(@($parts | Where-Object {$_.Extent.Text.Length -gt 4000}).Count){throw 'unsafe_statement_selection'}
+$driverFailed=$false;$driverError=''
+try { foreach($part in @($parts | Sort-Object { $_.Extent.StartOffset })) {
+ if($part -eq $reads[0]) {
+  if($fault -ceq 'missing_identity'){[Environment]::SetEnvironmentVariable('AGENT_BRIDGE_OWNER_TOKEN',$null,'Process')}
+  if($fault -ceq 'wrong_lane'){$env:AGENT_BRIDGE_AGENT='fable-5'}
+  if($fault -ceq 'outside_cwd'){$worktree=$outside}
+ }
+ . ([scriptblock]::Create($part.Extent.Text.Replace('$PSScriptRoot','$syntheticBundleRoot')))
+} }
+catch { $driverFailed=$true;$driverError=$_.Exception.GetType().FullName+':'+$_.FullyQualifiedErrorId }
+$read=if($null -ne $startupMindRead){$startupMindRead}else{$toolsStartupMindRead}
+@{starter_failed=$driverFailed;driver_error=$driverError;read=$read} | ConvertTo-Json -Depth 8 -Compress
+"""
+    script = fx["bundle"] / "isolated-order-driver.ps1"
+    script.write_bytes(driver.encode("utf-8"))
+    import subprocess
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-File", str(script)],
+                            cwd=unrelated, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    observed = json.loads(result.stdout.strip())
+    assert observed["starter_failed"] is starter_fails, observed["driver_error"]
+    if starter_fails:
+        assert observed["read"] is None and not fx["seen"].exists() and not fx["record"].exists()
+    elif fault in ("missing_identity", "wrong_lane", "outside_cwd"):
+        assert observed["read"]["outcome"] in ("refused", "unknown")
+        assert observed["read"]["delivered_text"] == "" and observed["read"]["delivered_items"] == 0
+    else:
+        assert observed["read"]["outcome"] == "success", observed["read"]["reason"]
+        assert observed["read"]["record_written"] is True and observed["read"]["delivered_items"] == 1

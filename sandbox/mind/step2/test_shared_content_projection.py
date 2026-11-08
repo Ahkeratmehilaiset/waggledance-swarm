@@ -260,6 +260,37 @@ def test_named_hex_secret_is_refused_even_when_hex_can_be_replaced():
     assert cp.classify("password=" + "a1" * 20) == ("DROP", "credential")
 
 
+@pytest.mark.parametrize("value", ["a" * 15 + "123456789" + "a" * 16,
+                                     "Aa" * 20, "AA" * 20])
+def test_hex_with_digit_runs_and_case_is_redacted(value):
+    verdict, encoded = cp.classify("sha256:" + value)
+    assert verdict == "KEEP"
+    assert cp.decode_text(encoded) == "sha256:hex-redacted"
+    assert value not in encoded
+
+
+def test_hex_redaction_preserves_adjacent_personal_and_secret_checks():
+    value = "a" * 15 + "123456789" + "a" * 16
+    assert cp.classify("owner=" + value) == ("DROP", "credential")
+    assert cp.classify("password=" + value) == ("DROP", "credential")
+    assert cp.classify("work " + value + " someone@example.invalid") == ("DROP", "personal")
+    assert cp.classify("work " + value + " +358 40 1234567") == ("DROP", "personal")
+
+
+def test_hex_31_boundary_and_base64url_still_refuses():
+    short = "ab" * 15 + "a"
+    assert cp.classify("commit " + short) == ("KEEP", "commit " + short)
+    assert cp.classify("AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc") == ("DROP", "credential")
+
+
+@pytest.mark.parametrize("value", [r"copied to D:\Data\Jane Smith yesterday",
+                                     r"copied to \\server\share\Jane Smith yesterday",
+                                     "copied to /home/Jane Smith yesterday"])
+def test_spaced_paths_followed_by_words_fail_closed(value):
+    verdict, encoded = cp.classify(value)
+    assert verdict == "DROP" or "Smith" not in cp.decode_text(encoded)
+
+
 # --- fail-closed screening before chunking -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", sorted(CANARIES))

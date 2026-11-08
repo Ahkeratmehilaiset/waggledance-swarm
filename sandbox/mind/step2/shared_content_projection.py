@@ -267,6 +267,30 @@ def _base64_secret(text):
     return False
 
 
+def _redact_sensitive_runs(text, *, include_urls=False):
+    """Replace the union of matches found on the same original text."""
+    spans = []
+    for match in _BASE64_RUN.finditer(text):
+        label = "hex-redacted" if re.fullmatch(r"[0-9a-fA-F]{32,}", match.group()) else "token-redacted"
+        spans.append((match.start(), match.end(), label))
+    if include_urls:
+        spans.extend((match.start(), match.end(), "url") for match in _URL.finditer(text))
+    spans.sort()
+    merged = []
+    for start, end, label in spans:
+        if merged and start < merged[-1][1]:
+            left, right, old_label = merged[-1]
+            merged[-1] = (left, max(right, end), old_label if label == old_label else "token-redacted")
+        else:
+            merged.append((start, end, label))
+    out, position = [], 0
+    for start, end, label in merged:
+        out.extend((text[position:start], label))
+        position = end
+    out.append(text[position:])
+    return "".join(out)
+
+
 def _iban(text):
     """An IBAN of a registered country at exactly its ISO 13616 length with a valid mod-97 sum. The greedy candidate
     may run into the next words, so only its country-length prefix is checked."""
@@ -326,8 +350,7 @@ def _screen(text, *, redact_hex=False):
     if _UUID.search(text) or any(name in lowered for name in _local_identifiers()):
         raise _Drop("identifier")
     if redact_hex:
-        text = _CREDENTIAL[-1].sub("hex-redacted", text)
-        text = _BASE64_RUN.sub("token-redacted", text)
+        text = _redact_sensitive_runs(text)
     lowered = text.lower()
     if _UUID.search(text) or any(name in lowered for name in _local_identifiers()):
         raise _Drop("identifier")
@@ -356,9 +379,8 @@ def classify(raw_text, limit=MAX_MESSAGE_CHARS):
         if not text:
             raise _Drop("empty")
         _screen(text, redact_hex=True)
-        text = _CREDENTIAL[-1].sub("hex-redacted", text)
+        text = _redact_sensitive_runs(text, include_urls=True)
         text = _replace_locations(text)
-        text = _BASE64_RUN.sub("token-redacted", text)
         if not text:
             raise _Drop("empty")
         _screen(text)

@@ -382,23 +382,9 @@ def _replace_locations(text):
     return " ".join(text.split())
 
 
-def classify(raw_text, limit=MAX_MESSAGE_CHARS, *, require_identifier_policy=False, identifier_policy_binding=None):
-    """Classify without logging; the opt-in list must include every required local identifier.
-
-    The pinned list replaces environment-derived names. Missing/invalid binding
-    refuses a row, but is not a builder-level validation or activation gate.
-    """
-    token = encoded = text = policy = None
+def _classify_with_policy(raw_text, limit, policy):
+    token = encoded = text = None
     try:
-        if type(require_identifier_policy) is not bool:
-            raise _Drop("unknown")
-        if require_identifier_policy:
-            if type(identifier_policy_binding) is not tuple or len(identifier_policy_binding) != 3:
-                raise _Drop("unknown")
-            from sandbox.mind.step2.content_identifier_policy import load_policy
-            policy = load_policy(*identifier_policy_binding)
-        elif identifier_policy_binding is not None:
-            raise _Drop("unknown")
         text = _normalize(raw_text, limit)
         if not text:
             raise _Drop("empty")
@@ -418,10 +404,30 @@ def classify(raw_text, limit=MAX_MESSAGE_CHARS, *, require_identifier_policy=Fal
     except Exception:
         token = "unknown"
     finally:
-        raw_text = text = policy = identifier_policy_binding = None
+        raw_text = text = policy = None
     if token is not None:
         return "DROP", token
     return "KEEP", encoded
+
+
+def classify(raw_text, limit=MAX_MESSAGE_CHARS, *, require_identifier_policy=False, identifier_policy_binding=None):
+    """Opt-in callers supply a pinned binding including all required local identifiers."""
+    policy = None
+    try:
+        if type(require_identifier_policy) is not bool:
+            return "DROP", "unknown"
+        if require_identifier_policy:
+            if type(identifier_policy_binding) is not tuple or len(identifier_policy_binding) != 3:
+                return "DROP", "unknown"
+            from sandbox.mind.step2.content_identifier_policy import load_policy
+            policy = load_policy(*identifier_policy_binding)
+        elif identifier_policy_binding is not None:
+            return "DROP", "unknown"
+        return _classify_with_policy(raw_text, limit, policy)
+    except Exception:
+        return "DROP", "unknown"
+    finally:
+        raw_text = policy = identifier_policy_binding = None
 
 
 def chunk(encoded, limit=MAX_CHUNK_CHARS):
@@ -494,7 +500,7 @@ def _records(source_ref, fields, chunks):
     return out
 
 
-def _build(rows, policy_bytes, policy_sha256, roster):
+def _build_core(rows, policy_bytes, policy_sha256, roster, identifier_policy_box):
     policy = load_content_policy(policy_bytes, policy_sha256)
     try:
         roster = sp._roster(roster)
@@ -529,7 +535,8 @@ def _build(rows, policy_bytes, policy_sha256, roster):
         if message is None or message == "":
             refused["no_message"] = refused.get("no_message", 0) + 1
             continue
-        verdict, value = classify(message, policy["max_message_chars"])
+        verdict, value = _classify_with_policy(message, policy["max_message_chars"],
+                                               identifier_policy_box.get("policy"))
         if verdict != "KEEP":
             refused[value] = refused.get(value, 0) + 1
             continue
@@ -546,25 +553,65 @@ def _build(rows, policy_bytes, policy_sha256, roster):
     projection = {"schema": SCHEMA, "authority": "none", "scope": SCOPE, "policy_sha256": policy_sha256,
                   "text_encoding": TEXT_ENCODING, "accepted": len(records), "refused": dict(sorted(refused.items())),
                   "records": records, "authorship": sp.AUTHORSHIP_ROSTER, "review_signal_excluded": True}
+    if identifier_policy_box.get("tag") is not None:
+        projection["identifier_policy_hmac"] = identifier_policy_box["tag"]
     corpus_mod.ws.guard_object(projection)
     return projection
 
 
-def build_content_projection(*, enabled=False, rows=None, policy_bytes=None, policy_sha256=None, roster=None):
+def _build(rows, policy_bytes, policy_sha256, roster, require_identifier_policy=False, identifier_policy_binding=None):
+    identifier_policy_box = {}
+    invalid = False
+    try:
+        try:
+            if type(require_identifier_policy) is not bool:
+                invalid = True
+            elif require_identifier_policy:
+                if type(identifier_policy_binding) is not tuple or len(identifier_policy_binding) != 3:
+                    invalid = True
+                else:
+                    from sandbox.mind.step2.content_identifier_policy import load_policy
+                    identifier_policy_box["policy"] = load_policy(*identifier_policy_binding)
+                    identifier_policy_box["tag"] = identifier_policy_binding[2]
+            elif identifier_policy_binding is not None:
+                invalid = True
+        except Exception:
+            invalid = True
+        if invalid:
+            identifier_policy_binding = None
+            _refuse("identifier_policy_refused")
+        identifier_policy_binding = None
+        return _build_core(rows, policy_bytes, policy_sha256, roster, identifier_policy_box)
+    finally:
+        identifier_policy_binding = None
+        identifier_policy_box.clear()
+
+
+def build_content_projection(*, enabled=False, rows=None, policy_bytes=None, policy_sha256=None, roster=None,
+                             require_identifier_policy=False, identifier_policy_binding=None):
     """Default OFF. With ``enabled=True``: the content projection of the caller-pinned prefix rows under the pinned
     policy and roster. Row-level problems are counted by closed token; input-level problems refuse the build."""
     if enabled is False:
         return {"status": "OFF"}
     if enabled is not True:
         _refuse("enabled_invalid")
-    return _build(rows, policy_bytes, policy_sha256, roster)
+    try:
+        return _build(rows, policy_bytes, policy_sha256, roster, require_identifier_policy, identifier_policy_binding)
+    finally:
+        identifier_policy_binding = None
 
 
-def validate_content_projection(projection, *, rows, policy_bytes, policy_sha256, roster):
+def validate_content_projection(projection, *, rows, policy_bytes, policy_sha256, roster,
+                                require_identifier_policy=False, identifier_policy_binding=None):
     """Refuse unless ``projection`` is exactly the re-derivation from the pinned rows, policy and roster."""
-    if type(projection) is not dict or set(projection) != _PROJECTION_KEYS:
+    expected_keys = _PROJECTION_KEYS | ({"identifier_policy_hmac"} if require_identifier_policy is True else set())
+    if type(projection) is not dict or set(projection) != expected_keys:
+        identifier_policy_binding = None
         _refuse("projection_mismatch")
-    expected = _build(rows, policy_bytes, policy_sha256, roster)
+    try:
+        expected = _build(rows, policy_bytes, policy_sha256, roster, require_identifier_policy, identifier_policy_binding)
+    finally:
+        identifier_policy_binding = None
     try:
         same = hmac.compare_digest(_canonical(projection), _canonical(expected))
     except (TypeError, ValueError, RecursionError):

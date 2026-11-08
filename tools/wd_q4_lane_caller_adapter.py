@@ -75,6 +75,9 @@ DESCRIPTOR_SCHEMA = "wd.q4-shared-session-config.v2"
 MAX_DOCUMENT_BYTES = 65536
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
+# The launcher's fixed own-task startup situation (same pattern as sandbox/mind/step2/q4.py STARTUP_OWN_TASK):
+# it may name only the lane this process has declared consistent; any other lane token refuses before the chain.
+_STARTUP_OWN_TASK = re.compile(r"(?P<lane>[a-z0-9][a-z0-9-]{0,63}) startup read: own current task\b")
 _IDENTITY_KEYS = frozenset({"schema", "agent", "agent_uuid", "worktree", "cwd", "owner_token_sha256", "caller_pid",
                             "run_id", "descriptor_sha256"})
 _INPUT_KEYS = frozenset({"fleet_bytes", "expected_fleet_sha256", "binding_bytes", "expected_binding_sha256",
@@ -436,6 +439,9 @@ def _call_locked(enabled, identity_bytes, expected_identity_sha256, descriptor_b
         binding = _consistent_descriptor(descriptor, agent, inputs)
         if (_owner_guard is not None and
                 _owner_guard._binding[1:] != (agent, expected_identity_sha256, expected_descriptor_sha256)):
+            _refuse()
+        named = _STARTUP_OWN_TASK.match(situation) if type(situation) is str else None
+        if named is not None and named.group("lane") != agent:
             _refuse()
         chain_inputs = dict(inputs)
     except AttestationCleanupUnknown as exc:

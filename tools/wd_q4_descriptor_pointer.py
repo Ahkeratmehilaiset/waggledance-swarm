@@ -135,7 +135,7 @@ def _verify(*, state_path, expected_bundle, expected_commit, expected_manifest_s
     target = None if staged else state_path.parent / 'WD_Q4_DESCRIPTOR_CURRENT.json'
     if target is not None:
         for parent in (bundle, root):
-            if os.path.commonpath((str(target), str(parent))) == str(parent):
+            if _same(os.path.commonpath((str(target), str(parent))), parent):
                 raise PointerRefused('path_refused')
     _chain(bundle)
     _chain(root)

@@ -31,7 +31,7 @@ _BATCH_LIMIT = 8 * 1024 * 1024
 _NODES_LIMIT = 10000
 _DEPTH_LIMIT = 32
 _RCO = frozenset({"claude-rco-1", "claude-rco-2"})
-_RCO_NAME = re.compile(r"(?<![a-z0-9])(?:claude[-_]rco[-_]?[12]|rco[-_ ]?[12])(?![a-z0-9])", re.IGNORECASE)
+_RCO_NAME = re.compile(r"(?<![a-z0-9])(?:claude[-_]rco[-_]?[0-9]+|rco[-_ ]?[0-9]+)(?![a-z0-9])", re.IGNORECASE)
 MAX_TTL_SECONDS = 900
 _POLICY_LIMIT = 65536
 _REVIEW_TASK = re.compile(r"(?:^|[._-])(?:review|rco[12]?)(?:$|[._-])", re.IGNORECASE)
@@ -117,6 +117,9 @@ def public_status_policy(data, digest, tasks):
 _PUBLIC_ROUTING_KEYS = frozenset({"to", "to_list", "recipient", "recipients", "recipient_agent", "target",
     "target_agent", "target_agents", "destination", "destinations", "audience", "visibility", "private",
     "reply_to", "expected_responders", "responders"})
+_RECIPIENT_KEYS = (_PUBLIC_ROUTING_KEYS - {"visibility", "private"}) | frozenset({
+    "targets", "target_list", "recipient_agents", "recipient_list", "cc", "bcc", "addressee", "addressees",
+    "send_to"})
 _PUBLIC_EVENT_KEYS = frozenset({"ts_utc", "agent", "agent_uuid", "type", "task_id", "status", "severity",
     "to", "message", "paths", "write_scope", "run_id", "pid", "cwd", "payload", "role", "session_id",
     "capabilities"})
@@ -229,8 +232,6 @@ def _snapshot(value, ttl_seconds, allow_partial=False):
 
 def _unsafe_recipient(value):
     """Exclude named RCO recipients and recipient values that cannot be classified."""
-    if value is None:
-        return False
     if isinstance(value, str):
         return _RCO_NAME.search(value) is not None
     if isinstance(value, list):
@@ -243,15 +244,25 @@ def _exclude_rco_event(event):
     agent = fields.get("agent")
     if not isinstance(agent, str) or agent in _RCO or _RCO_NAME.search(agent):
         return True
-    if any(_unsafe_recipient(fields.get(key)) for key in ("to", "recipient")):
-        return True
     payload = fields.get("payload")
-    if payload is None:
-        return False
-    if not isinstance(payload, dict):
+    if payload is not None and not isinstance(payload, dict):
         return True
-    payload_fields = {key.lower(): value for key, value in payload.items()}
-    return any(_unsafe_recipient(payload_fields.get(key)) for key in ("to", "recipient"))
+    # Inspect each declared route, including nested request payloads. An
+    # unclassifiable value is an exclusion, never a broadcast assumption.
+    stack = [event]
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    return True
+                if key.lower() in _RECIPIENT_KEYS and _unsafe_recipient(item):
+                    return True
+                if isinstance(item, (dict, list)):
+                    stack.append(item)
+        elif isinstance(value, list):
+            stack.extend(item for item in value if isinstance(item, (dict, list)))
+    return False
 
 
 def _exclude_review_signal(event):

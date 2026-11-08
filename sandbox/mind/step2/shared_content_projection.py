@@ -115,6 +115,8 @@ _LOCAL_PATH = (re.compile(r"[A-Za-z]:[\\/][^\s:]*(?:[ \t][^\s\\/:]+)+[\\/][^\s]*
                re.compile(r"(?<![^\s(\"'])(?:~|/)[\w.-]*(?:/[\w.-]+)+/?"))
 _AMBIGUOUS_PROFILE = re.compile(r"(?i)[a-z]:[\\/]users[\\/][^\s\\/]+[ \t]+[a-z][^\s\\/]*")
 _AMBIGUOUS_TERMINAL_PATH = re.compile(r"(?i)[a-z]:[\\/][^\s]+[ \t]+[^\s]+$")
+_AMBIGUOUS_SPACED_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\|(?<!\S)/(?:home|Users)/)[^\s]*[ \t]+[A-Z][a-z]+")
+_OWNER_HEX = re.compile(r"(?i)(?<![a-z0-9])(?:[a-z0-9]+_)*owner\s*[:=]\s*[0-9a-f]{32,}")
 
 
 class ContentRefused(ValueError):
@@ -312,10 +314,13 @@ def _script(text):
 def _screen(text, *, redact_hex=False):
     """The detectors, in order, on one normalized text; raises ``_Drop`` with the first matching class."""
     patterns = _CREDENTIAL[:-1] if redact_hex else _CREDENTIAL
-    if any(pattern.search(text) for pattern in patterns) or _base64_secret(text):
+    if any(pattern.search(text) for pattern in patterns) or _base64_secret(text) or _OWNER_HEX.search(text):
         raise _Drop("credential")
-    if _AMBIGUOUS_PROFILE.search(text) or _AMBIGUOUS_TERMINAL_PATH.search(text):
+    if (_AMBIGUOUS_PROFILE.search(text) or _AMBIGUOUS_TERMINAL_PATH.search(text)
+            or _AMBIGUOUS_SPACED_PATH.search(text)):
         raise _Drop("personal")
+    if redact_hex:
+        text = _CREDENTIAL[-1].sub("hex-redacted", text)
     lowered = text.lower()
     if _UUID.search(text) or any(name in lowered for name in _local_identifiers()):
         raise _Drop("identifier")

@@ -16,7 +16,9 @@ the decision verified against those pins (``sources_refused`` or the decision's 
 through ``content_memory.snapshot_sources`` with the trusted Git (a document-bearing decision without a trusted pin
 is ``git_pin_unavailable`` before any subprocess) -> model root (``model_root_refused``) -> assets
 (``assets_refused``) -> identity (``identity_refused``) -> encoder (``encoder_refused``) -> build (the build's own
-token or ``build_refused``) -> report of the built projection (``report_refused``). Every refusal is raised outside
+token or ``build_refused``) -> report of the built projection (``report_refused``; the reread memory.json must hash
+to the digest the builder returned and the projection bytes to the pin inside it, so a swap after the build is
+refused). Every refusal is raised outside
 its ``except`` block, so no refusal carries a cause or a context holding a path or a document (RCO1 B2/B3,
 2026-11-08). The report carries the memory, descriptor and projection digests, the record and document counts, the
 anchored prefix size and the build seconds; ``authority`` is ``none`` and ``publisher_authentication`` is ``none``:
@@ -212,13 +214,22 @@ def build_content_generation(*, enabled=False, plan_bytes=None, expected_plan_sh
     seconds = time.monotonic() - started
     memory_dir = Path(root) / plan["name"]
     try:
-        projection_raw = (memory_dir / "projection.json").read_bytes()
+        # B2b: the reread is bound to the build. memory.json must hash to the digest the builder just returned, and
+        # the projection bytes must hash to the pin inside that manifest; a same-user swap of either file after the
+        # build is refused instead of reported.
+        manifest_raw = (memory_dir / "memory.json").read_bytes()
+        if not hmac.compare_digest(hashlib.sha256(manifest_raw).hexdigest(), built["memory_sha256"]):
+            raise ValueError()
+        manifest = json.loads(manifest_raw)
+        projection_raw = (memory_dir / manifest["projection_file"]).read_bytes()
+        if not hmac.compare_digest(hashlib.sha256(projection_raw).hexdigest(), manifest["projection_sha256"]):
+            raise ValueError()
         documents_part = json.loads(projection_raw)["documents"]
         document_count = 0 if documents_part is None else len(documents_part["records"])
         report = {"schema": REPORT_SCHEMA, "status": "BUILT", "name": plan["name"], "memory_dir": str(memory_dir),
                   "plan_sha256": expected_plan_sha256, "decision_sha256": plan["decision_sha256"],
                   "memory_sha256": built["memory_sha256"], "descriptor_sha256": built["descriptor_sha256"],
-                  "projection_sha256": hashlib.sha256(projection_raw).hexdigest(),
+                  "projection_sha256": manifest["projection_sha256"],
                   "projection_bytes": len(projection_raw), "records": built["records"],
                   "document_count": document_count,
                   "message_prefix_bytes": None if messages is None else messages["end_cursor"].offset,

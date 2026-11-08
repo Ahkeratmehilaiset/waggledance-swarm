@@ -347,6 +347,22 @@ def broken_after_build(setup, monkeypatch, damage):
 SECRET_TEXT = '{"documents": "hunter2-secret-token-' + "x" * 40 + '"}'
 
 
+def swapped_projection(memory_dir, built, *, rewrite_manifest):
+    """B2b (RCO1 18:30Z): a same-user swap of the built projection between the build and the report reread. A valid
+    projection with one more record would otherwise be reported under its own digest; with ``rewrite_manifest`` the
+    swap also rewrites memory.json consistently, so only the builder's returned memory digest can expose it."""
+    projection = json.loads((memory_dir / "projection.json").read_bytes())
+    record = dict(projection["messages"]["records"][0])
+    record["meta"] = dict(record["meta"], hunter2="swapped-after-build")
+    projection["messages"]["records"].append(record)
+    swapped = json.dumps(projection, sort_keys=True, separators=(",", ":")).encode("ascii")
+    (memory_dir / "projection.json").write_bytes(swapped)
+    if rewrite_manifest:
+        manifest = json.loads((memory_dir / "memory.json").read_bytes())
+        manifest["projection_sha256"] = sha(swapped)
+        (memory_dir / "memory.json").write_bytes(json.dumps(manifest, sort_keys=True).encode("utf-8"))
+
+
 @pytest.mark.parametrize("damage", [
     lambda memory_dir, built: (memory_dir / "projection.json").unlink(),
     lambda memory_dir, built: (memory_dir / "projection.json").write_text("{not json " + SECRET_TEXT, "ascii"),
@@ -354,8 +370,13 @@ SECRET_TEXT = '{"documents": "hunter2-secret-token-' + "x" * 40 + '"}'
     lambda memory_dir, built: (memory_dir / "projection.json").write_text("[]", "ascii"),
     lambda memory_dir, built: (memory_dir / "projection.json").write_text('{"documents": {}}', "ascii"),
     lambda memory_dir, built: built.pop("records"),
+    lambda memory_dir, built: swapped_projection(memory_dir, built, rewrite_manifest=False),
+    lambda memory_dir, built: swapped_projection(memory_dir, built, rewrite_manifest=True),
+    lambda memory_dir, built: (memory_dir / "memory.json").unlink(),
+    lambda memory_dir, built: built.update(memory_sha256="0" * 64),
 ], ids=["absent", "not-json", "documents-not-a-mapping", "not-a-mapping", "documents-without-records",
-        "builder-record-missing"])
+        "builder-record-missing", "projection-swapped", "projection-and-manifest-swapped", "manifest-absent",
+        "builder-memory-digest-differs"])
 def test_a_report_that_cannot_be_assembled_is_one_fixed_token(setup, monkeypatch, damage):
     """B2: the projection reread and parse after the build used to run outside refusal handling, so an OSError
     with the path or a JSONDecodeError with the document reached the caller."""
@@ -363,8 +384,20 @@ def test_a_report_that_cannot_be_assembled_is_one_fixed_token(setup, monkeypatch
     with pytest.raises(child.ContentBuildRefused) as caught:
         run(setup)
     only_the_token(caught.value, "report_refused", str(setup["out"]), "hunter2", "projection.json", "records",
-                   "Expecting")
+                   "Expecting", "memory.json")
     assert "report_refused" in child.REASONS
+
+
+def test_the_report_digests_are_the_manifest_pins_of_the_build(setup):
+    """The reported projection digest is the pin inside memory.json, whose own digest is the builder's return value;
+    the reread bytes must hash to that pin (B2b, fail closed)."""
+    report = run(setup)
+    memory_dir = Path(report["memory_dir"])
+    manifest_raw = (memory_dir / "memory.json").read_bytes()
+    assert sha(manifest_raw) == report["memory_sha256"]
+    manifest = json.loads(manifest_raw)
+    assert report["projection_sha256"] == manifest["projection_sha256"] == sha((memory_dir / "projection.json").read_bytes())
+    assert manifest["projection_file"] == "projection.json" and report["records"] == manifest["records"]
 
 
 def test_the_refusal_tokens_are_the_fixed_set():

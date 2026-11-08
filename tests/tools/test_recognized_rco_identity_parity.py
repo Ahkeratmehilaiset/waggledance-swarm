@@ -108,6 +108,21 @@ def test_current_powershell_literal_admission_lists_cannot_omit_the_third_rco(pa
     # recognized identity into a provisioned worker merely to satisfy parity.
     if path in {"ops/windows/reboot/WdBridgeLimitedBootstrap.ps1", "ops/windows/reboot/wd_supervisor.ps1"}:
         text = re.sub(r"\$runtimeWatcherAgents\s*=\s*@\([^)]*\)", "", text)
+    if path == "ops/windows/reboot/Deploy-WdRebootBundle.ps1":
+        # These two loops validate the provisioned five-lane Q4 bundle, not
+        # the set of identities recognized by review/admission policy.
+        start = text.index("function Get-WdPinnedQ4InstallDefault {")
+        end = text.index("\nfunction Read-WdManualExecutionApprovalText {", start)
+        section = text[start:end]
+        pattern = r"foreach\s*\(\$lane\s+in\s+@\(([^)]*)\)\)"
+        loops = re.findall(pattern, section)
+        provisioned = {"codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"}
+        assert len(loops) == 2
+        for body in loops:
+            names = re.findall(r"'([^']+)'", body)
+            assert len(names) == len(provisioned) and set(names) == provisioned
+        section = re.sub(pattern, "foreach ($lane in $provisionedQ4Lanes)", section)
+        text = text[:start] + section + text[end:]
     # Literal arrays and ValidateSet arguments are admission lists. Arrays of
     # machine-wrapper objects are deployment inventory, not identity policy.
     bodies = re.findall(r"(?:@|ValidateSet)\(([^)]*)\)", text, re.DOTALL)

@@ -63,3 +63,25 @@ def test_interrupt_clears_classifier_binding_locals(monkeypatch):
             values = list(tb.tb_frame.f_locals.values())
             assert data not in values and message not in values
         tb = tb.tb_next
+
+
+def test_interrupt_inside_policy_match_clears_screen_frame(monkeypatch):
+    from sandbox.mind.step2 import content_identifier_policy as ip
+    data = binding()
+    message = "synthetic private test message"
+    seen = []
+
+    def interrupt(self, text):
+        seen.append(self)
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(ip.IdentifierPolicy, "contains", interrupt)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        cp.classify(message, require_identifier_policy=True, identifier_policy_binding=data)
+    tb = caught.value.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_name in ("_screen", "classify") and tb.tb_frame.f_globals.get("__name__") == cp.__name__:
+            values = list(tb.tb_frame.f_locals.values())
+            assert message not in values and data not in values
+            assert not any(value is seen[0] for value in values)
+        tb = tb.tb_next

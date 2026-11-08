@@ -69,6 +69,7 @@
     "sandbox/mind/step2/shared_card_projection.py",
     "sandbox/mind/step2/shared_card_checkpoint.py",
     "sandbox/mind/step2/content_memory.py",
+    "sandbox/mind/step2/content_identifier_policy.py",
     "sandbox/mind/step2/shared_content_projection.py",
     "sandbox/mind/step2/shared_doc_projection.py",
     "sandbox/mind/step2/status_metadata_producer.py",

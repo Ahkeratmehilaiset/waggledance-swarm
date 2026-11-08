@@ -248,12 +248,16 @@ def test_end_to_end_answer_cites_a_current_closed_card(built):
     assert answer['coverage'] == {'cutoff_utc': built['result']['cutoff_utc']}
 
 
-def test_card_status_is_stale_after_valid_until(built):
+def test_expired_cards_are_not_returned_after_valid_until(built):
     answer = scm.ask_synthetic_cards(built['dir'], built['memory_sha256'], Encoder(),
                                      'blocked red mind genesis needs operator disk', '2026-11-05T00:00:00Z',
                                      enabled=True)
-    statuses = {r['source_ref_sha256']: r['card_status'] for r in answer['results']}
-    assert statuses[event_id(built['events'][1])] == 'STALE'
+    # The whole synthetic corpus has expired; Q4 excludes it before ranking,
+    # and must abstain instead of returning stale source content.
+    assert answer['status'] == 'ABSTAIN'
+    assert answer['reason'] == 'empty_cell'
+    assert answer['results'] == []
+    assert answer['coverage'] == {'cutoff_utc': built['result']['cutoff_utc']}
 
 
 def test_a_superseded_card_is_marked_superseded(tmp_path):

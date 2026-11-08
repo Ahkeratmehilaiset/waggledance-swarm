@@ -74,9 +74,49 @@ def setup(lane, tmp_path):
                  "message_generation_path": route["messages"]["generation_path"],
                  "message_policy_path": message_policy, "doc_repo_root": route["documents"]["repo_root"],
                  "doc_policy_path": doc_policy, "doc_git_executable": route["documents"]["git_executable"],
-                 "doc_git_sha256": route["documents"]["git_sha256"]}
+                 "doc_git_sha256": route["documents"]["git_sha256"],
+                 "trusted_git": {"git_executable": route["documents"]["git_executable"],
+                                 "git_sha256": route["documents"]["git_sha256"]}}
     return {"arguments": arguments, "out": out, "files": files, "v1": v1, "lane": lane, "document": document,
             "route": route}
+
+
+def test_the_trusted_git_pin_is_not_a_request_value(setup, monkeypatch):
+    """RCO1 Q1: the Git the writer's re-derivation starts is the trusted pin the caller supplies apart from the
+    request; the request's doc_git values must equal it; without a trusted pin a document-bearing decision refuses
+    before any Git starts; the writer hands the pin to the module helper unchanged."""
+    from sandbox.mind.step2 import content_memory as cm
+    genuine = setup["arguments"]["trusted_git"]
+    other = setup["arguments"]["message_policy_path"]
+    seen = []
+    real = cm.snapshot_sources
+
+    def spy(decision, sources, trusted_git=None):
+        seen.append(trusted_git)
+        return real(decision, sources, trusted_git)
+
+    monkeypatch.setattr(cm, "snapshot_sources", spy)
+    refused(setup, trusted_git=None)
+    refused(setup, doc_git_executable=other)
+    refused(setup, doc_git_sha256="0" * 64)
+    refused(setup, trusted_git=dict(genuine, git_executable=other))
+    refused(setup, trusted_git=dict(genuine, git_sha256="0" * 64))
+    refused(setup, trusted_git=dict(genuine, git_sha256=genuine["git_sha256"].upper()))
+    refused(setup, trusted_git={"git_executable": genuine["git_executable"]})
+    refused(setup, trusted_git=dict(genuine, extra=1))
+    refused(setup, trusted_git=(genuine["git_executable"], genuine["git_sha256"]))
+    attacker = {"git_executable": other, "git_sha256": sha(Path(other).read_bytes())}
+    refused(setup, doc_git_executable=other, doc_git_sha256=attacker["git_sha256"], trusted_git=attacker)
+    assert seen[0] is None and seen[1] == genuine and seen[-1] == attacker
+    started = []
+    from sandbox.mind.step2 import shared_doc_projection as sdp
+    monkeypatch.setattr(sdp.subprocess, "run", lambda *a, **k: started.append(a) or pytest.fail("git started"))
+    refused(setup, trusted_git=None)
+    assert started == []
+    monkeypatch.undo()
+    monkeypatch.setattr(cm, "snapshot_sources", spy)
+    assert writer().write_content_plan(enabled=True, **setup["arguments"])["status"] == "WRITTEN"
+    assert seen[-1] == genuine
 
 
 def refused(setup, **changes):
@@ -210,7 +250,25 @@ def test_the_command_line_is_off_without_arguments_and_writes_through_a_pinned_r
     path, pin = request(setup)
     assert module.main(["--enabled", "--request", path, "--request-sha256", pin, "--force"]) == 2
     assert capsys.readouterr().err == '{"error":"content_plan_refused"}\n' and list(setup["out"].iterdir()) == []
-    assert module.main(["--enabled", "--request", path, "--request-sha256", pin]) == 0
+    trusted = setup["arguments"]["trusted_git"]
+    pinned = ["--enabled", "--request", path, "--request-sha256", pin]
+    for argv in (pinned, pinned + ["--trusted-git-executable", trusted["git_executable"]],
+                 pinned + ["--trusted-git-executable", trusted["git_executable"], "--trusted-git-sha256",
+                           trusted["git_sha256"].upper()],
+                 pinned + ["--trusted-git-sha256", trusted["git_sha256"], "--trusted-git-executable",
+                           trusted["git_executable"]],
+                 pinned + ["--trusted-git-executable", setup["arguments"]["message_policy_path"],
+                           "--trusted-git-sha256", trusted["git_sha256"]],
+                 pinned + ["--trusted-git-exe", trusted["git_executable"], "--trusted-git-sha256",
+                           trusted["git_sha256"]],
+                 pinned + ["--trusted-git-executable", trusted["git_executable"], "--trusted-git-sha",
+                           trusted["git_sha256"]],
+                 pinned + ["--trusted-git-executable", trusted["git_executable"], "--trusted-git-sha256",
+                           trusted["git_sha256"], "--force"]):
+        assert module.main(argv) == 2
+        assert capsys.readouterr().err == '{"error":"content_plan_refused"}\n' and list(setup["out"].iterdir()) == []
+    assert module.main(pinned + ["--trusted-git-executable", trusted["git_executable"], "--trusted-git-sha256",
+                                 trusted["git_sha256"]]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["status"] == "WRITTEN" and Path(out["public_plan_path"]).is_file()
 
@@ -225,10 +283,12 @@ def test_the_command_line_is_off_without_arguments_and_writes_through_a_pinned_r
 def test_the_command_line_refuses_any_other_request_with_one_fixed_line(setup, capsys, changes):
     module = writer()
     path, pin = request(setup, **changes)
-    assert module.main(["--enabled", "--request", path, "--request-sha256", pin]) == 2
+    trusted = setup["arguments"]["trusted_git"]
+    tail = ["--trusted-git-executable", trusted["git_executable"], "--trusted-git-sha256", trusted["git_sha256"]]
+    assert module.main(["--enabled", "--request", path, "--request-sha256", pin] + tail) == 2
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err == '{"error":"content_plan_refused"}\n'
-    assert module.main(["--enabled", "--request", path, "--request-sha256", "0" * 64]) == 2
+    assert module.main(["--enabled", "--request", path, "--request-sha256", "0" * 64] + tail) == 2
     assert list(setup["out"].iterdir()) == []
 
 

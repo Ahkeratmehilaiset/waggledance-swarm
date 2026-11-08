@@ -335,7 +335,7 @@ def _script(text):
         raise _Drop("mixed_script" if latin else "encoding")
 
 
-def _screen(text, *, redact_hex=False):
+def _screen(text, *, redact_hex=False, identifier_policy=None):
     """The detectors, in order, on one normalized text; raises ``_Drop`` with the first matching class."""
     patterns = _CREDENTIAL[:-1] if redact_hex else _CREDENTIAL
     if any(pattern.search(text) for pattern in patterns) or (not redact_hex and _base64_secret(text)) or _OWNER_HEX.search(text):
@@ -347,7 +347,8 @@ def _screen(text, *, redact_hex=False):
             or _AMBIGUOUS_SPACED_PATH.search(path_text)):
         raise _Drop("personal")
     lowered = text.lower()
-    if _UUID.search(text) or any(name in lowered for name in _local_identifiers()):
+    if _UUID.search(text) or (identifier_policy.contains(text) if identifier_policy is not None
+                              else any(name in lowered for name in _local_identifiers())):
         raise _Drop("identifier")
     # Taint checks must see the original normalized row, including markers
     # embedded in a run that will later be redacted.
@@ -360,7 +361,8 @@ def _screen(text, *, redact_hex=False):
     if redact_hex:
         text = _redact_sensitive_runs(text)
     lowered = text.lower()
-    if _UUID.search(text) or any(name in lowered for name in _local_identifiers()):
+    if _UUID.search(text) or (identifier_policy.contains(text) if identifier_policy is not None
+                              else any(name in lowered for name in _local_identifiers())):
         raise _Drop("identifier")
     if (any(pattern.search(text) for pattern in _PERSONAL) or _iban(text)
             or _PHONE_RE.search(_ISO_TIME.sub(" ", text))):
@@ -379,19 +381,28 @@ def _replace_locations(text):
     return " ".join(text.split())
 
 
-def classify(raw_text, limit=MAX_MESSAGE_CHARS):
+def classify(raw_text, limit=MAX_MESSAGE_CHARS, *, require_identifier_policy=False, identifier_policy_binding=None):
     """``("KEEP", encoded)`` or ``("DROP", token)``; pure, no I/O, no logging, never raises with input text."""
-    token = encoded = None
+    token = encoded = text = policy = None
     try:
+        if type(require_identifier_policy) is not bool:
+            raise _Drop("unknown")
+        if require_identifier_policy:
+            if type(identifier_policy_binding) is not tuple or len(identifier_policy_binding) != 3:
+                raise _Drop("unknown")
+            from sandbox.mind.step2.content_identifier_policy import load_policy
+            policy = load_policy(*identifier_policy_binding)
+        elif identifier_policy_binding is not None:
+            raise _Drop("unknown")
         text = _normalize(raw_text, limit)
         if not text:
             raise _Drop("empty")
-        _screen(text, redact_hex=True)
+        _screen(text, redact_hex=True, identifier_policy=policy)
         text = _redact_sensitive_runs(text, include_urls=True)
         text = _replace_locations(text)
         if not text:
             raise _Drop("empty")
-        _screen(text)
+        _screen(text, identifier_policy=policy)
         encoded = encode_text(text)
         if _UUID.search(encoded) or any(pattern.search(encoded) for pattern in _CREDENTIAL[-1:]):
             raise _Drop("credential")
@@ -401,6 +412,8 @@ def classify(raw_text, limit=MAX_MESSAGE_CHARS):
         token = "encoding"
     except Exception:
         token = "unknown"
+    finally:
+        raw_text = text = policy = identifier_policy_binding = None
     if token is not None:
         return "DROP", token
     return "KEEP", encoded

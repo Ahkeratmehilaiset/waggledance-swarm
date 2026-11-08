@@ -82,15 +82,16 @@ _CREDENTIAL = (
     re.compile(r"(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{20,}"),
     re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}"),
     re.compile(r"(?i)\bauthorization\s*[:=]\s*\S{8,}"),
-    re.compile(r"(?i)\b(?:password|passwd|pwd|secret|token|api[_-]?key|client[_-]?secret|private[_-]?key"
-               r"|access[_-]?key)\s*[:=]\s*\S+"),
+    re.compile(r"(?i)(?<![a-z0-9])(?:[a-z0-9]+_)*(?:password|passwd|pwd|secret|token|api[_-]?key|client[_-]?secret|private[_-]?key"
+               r"|access[_-]?key|salasana|tunnussana|pin[-_ ]?koodi)\s*(?:[:=]|\bis\b|\bon\b)\s*\S+"),
     re.compile(r"-----BEGIN [A-Z0-9 ]*-----"),
     re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*"),
     re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]*@"),
     re.compile(r"(?i)(?<![a-z0-9])\d{2}(?:-[a-z0-9]{4,7}){5,}(?![a-z0-9-])"),
+    re.compile(r"(?i)(?<![a-z0-9])(?:[a-z0-9]{5}-){4}[a-z0-9]{5}(?![a-z0-9-])"),
     re.compile(r"[0-9a-fA-F]{32,}"),
 )
-_BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{32,}={0,2}")
+_BASE64_RUN = re.compile(r"[A-Za-z0-9+/_-]{32,}={0,2}")
 _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _ISO_TIME = re.compile(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?Z?)?")
 _IBAN_LENGTHS = dict((code[:2], int(code[2:])) for code in (
@@ -109,7 +110,8 @@ _Y_TUNNUS_RE = re.compile(r"\b\d{7}-\d\b")
 _PHONE_RE = re.compile(r"\+?\d[\d\s-]{8,}")
 _PERSONAL = (_EMAIL_RE, _CREDIT_CARD_RE, _HETU_RE, _Y_TUNNUS_RE)
 _URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://\S+")
-_LOCAL_PATH = (re.compile(r"[A-Za-z]:[\\/][^\s]*"), re.compile(r"\\\\[^\s]+"),
+_LOCAL_PATH = (re.compile(r"[A-Za-z]:[\\/][^\s:]*(?:[ \t][^\s\\/:]+)+[\\/][^\s]*"),
+               re.compile(r"[A-Za-z]:[\\/][^\s]*"), re.compile(r"\\\\[^\s]+"),
                re.compile(r"(?<![^\s(\"'])(?:~|/)[\w.-]*(?:/[\w.-]+)+/?"))
 
 

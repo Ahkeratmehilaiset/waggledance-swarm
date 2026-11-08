@@ -228,6 +228,10 @@ def test_windows_path_with_spaces_is_not_retained(path):
     assert verdict != "KEEP" or "Smith" not in cp.decode_text(encoded)
 
 
+def test_terminal_windows_profile_with_spaces_is_refused():
+    assert cp.classify("see C:/Users/Jane Smith") == ("DROP", "personal")
+
+
 # --- fail-closed screening before chunking -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", sorted(CANARIES))

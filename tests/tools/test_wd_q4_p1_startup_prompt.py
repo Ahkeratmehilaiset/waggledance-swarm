@@ -3,18 +3,18 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-PS = str(Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
-
-
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell is required for the AST execution")
 @pytest.mark.parametrize("relative,variable", [
     ("ops/windows/reboot/start-wd-agent.ps1", "startupPrompt"),
     ("ops/windows/reboot/start-wd-tools-consumer.ps1", "prompt"),
 ])
 def test_p1_is_advertised_only_with_validated_descriptor(relative, variable):
+    ps = str(Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
     # Parse (do not execute) the launcher, and evaluate only its literal Q4
     # prompt expression and the pure prompt formatter in an isolated process.
     script = r'''
@@ -43,7 +43,7 @@ $on = Get-WdQ4P1StartupGuidance -Text $original -DescriptorValidated $true
 } | ConvertTo-Json -Compress
 '''
     env = dict(os.environ, WD_TEST_LAUNCHER=str(ROOT / relative), WD_TEST_PROMPT_VARIABLE=variable)
-    result = subprocess.run([PS, "-NoProfile", "-NonInteractive", "-Command", script],
+    result = subprocess.run([ps, "-NoProfile", "-NonInteractive", "-Command", script],
                             text=True, capture_output=True, timeout=30, env=env)
     assert result.returncode == 0, result.stderr
     observed = json.loads(result.stdout)

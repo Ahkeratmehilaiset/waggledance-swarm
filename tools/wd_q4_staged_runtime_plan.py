@@ -111,10 +111,13 @@ def _request(path, pin):
 
 def _emit(stream, text):
     try:
-        stream.write(text)
+        written = stream.write(text)
+        if type(written) is not int or written != len(text):
+            return False
         stream.flush()
+        return True
     except Exception:
-        pass
+        return False
 
 
 def main(argv=None):
@@ -123,8 +126,7 @@ def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
     if argv == []:
-        _emit(sys.stdout, '{"status":"OFF"}\n')
-        return 0
+        return 0 if _emit(sys.stdout, '{"status":"OFF"}\n') else 2
     token = "staged_runtime_plan_refused"
     try:
         if len(argv) != 5 or argv[0] != "--enabled" or argv[1] != "--request" or argv[3] != "--request-sha256":
@@ -135,8 +137,7 @@ def main(argv=None):
         except StagedRuntimePlanRefused as exc:
             token = exc.args[0]
             raise
-        _emit(sys.stdout, _encode(result).decode("ascii") + "\n")
-        return 0
+        return 0 if _emit(sys.stdout, _encode(result).decode("ascii") + "\n") else 2
     except Exception:
         _emit(sys.stderr, _encode({"error": token}).decode("ascii") + "\n")
         return 2

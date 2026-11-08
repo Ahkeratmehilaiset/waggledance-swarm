@@ -4081,7 +4081,7 @@ if ($null -ne $bridgeCodeContext -and -not $ValidateOnly) {
         -Writer $writer -Role $role -AgentUuid $agentUuid -RunId $runId -Capabilities $capabilities
 }
 
-if ($null -ne $toolsStartupMindRead -and [bool]$toolsStartupMindRead.record_written -and [string]$toolsStartupMindRead.outcome -ceq 'success' -and [int]$toolsStartupMindRead.delivered_chars -gt 0) {
+if ((Test-Path -LiteralPath 'variable:toolsStartupMindRead') -and $null -ne $toolsStartupMindRead -and [bool]$toolsStartupMindRead.record_written -and [string]$toolsStartupMindRead.outcome -ceq 'success' -and [int]$toolsStartupMindRead.delivered_chars -gt 0) {
     # S1: in-memory delivery only, set immediately before the conversation or consumer start so that its child
     # processes inherit it; never argv, never the prompt, never a log file.
     [Environment]::SetEnvironmentVariable('WD_MIND_STARTUP_RECALL', [string]$toolsStartupMindRead.delivered_text, 'Process')

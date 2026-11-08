@@ -98,13 +98,16 @@ function Get-WdMindReadConfig {
     if ($null -eq $fleet -or $fleet -isnot [pscustomobject]) { throw 'mind_config_fleet_invalid' }
     $property = $fleet.PSObject.Properties['mind_read']
     if ($null -eq $property) { return $null }
+    if ($property.Name -cne 'mind_read') { throw 'mind_config_invalid' }
     $config = $property.Value
     if ($null -eq $config -or $config -isnot [pscustomobject]) { throw 'mind_config_invalid' }
     $enabled = $config.PSObject.Properties['enabled']
-    if ($null -eq $enabled -or $enabled.Value -isnot [bool]) { throw 'mind_config_invalid' }
+    if ($null -eq $enabled -or $enabled.Name -cne 'enabled' -or $enabled.Value -isnot [bool]) { throw 'mind_config_invalid' }
     if (-not $enabled.Value) { return $null }
     $liveProperty = $config.PSObject.Properties['live_dir']
     $liveMode = $config.PSObject.Properties['live_dir_mode']
+    if (($null -ne $liveProperty -and $liveProperty.Name -cne 'live_dir') -or
+        ($null -ne $liveMode -and $liveMode.Name -cne 'live_dir_mode')) { throw 'mind_config_invalid' }
     if ($null -ne $liveProperty -and $null -eq $liveMode) {
         if ($liveProperty.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($liveProperty.Value)) {
             throw 'mind_config_invalid'
@@ -113,7 +116,7 @@ function Get-WdMindReadConfig {
     } elseif ($null -eq $liveProperty -and $null -ne $liveMode -and
               $liveMode.Value -ceq 'shared_runtime_audit') {
         $runtimeProperty = $fleet.PSObject.Properties['runtime_root']
-        if ($null -eq $runtimeProperty -or $runtimeProperty.Value -isnot [string] -or
+        if ($null -eq $runtimeProperty -or $runtimeProperty.Name -cne 'runtime_root' -or $runtimeProperty.Value -isnot [string] -or
             [string]::IsNullOrWhiteSpace($runtimeProperty.Value)) { throw 'mind_config_invalid' }
         $runtime = Assert-MindLocalPath -Path $runtimeProperty.Value
         $live = Assert-MindLocalPath -Path (Join-Path $runtime 'shared\.codex-audit\mind-live')

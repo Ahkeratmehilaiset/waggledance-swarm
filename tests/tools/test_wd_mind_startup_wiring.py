@@ -30,6 +30,70 @@ ROSTER = {"codex-lead-1": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 
 
 @pytest.mark.skipif(os.name != "nt", reason="actual startup configuration helper requires Windows")
+@pytest.mark.parametrize("variant", ["mind_read", "enabled", "live_dir_mode", "runtime_root", "live_dir"])
+def test_synthetic_fleet_rejects_case_variant_fields(tmp_path, variant):
+    runtime = tmp_path / "runtime"
+    live = runtime / "shared" / ".codex-audit" / "mind-live"
+    live.mkdir(parents=True)
+    config = {"runtime_root": str(runtime), "mind_read": {"enabled": True, "live_dir_mode": "shared_runtime_audit"}}
+    if variant == "mind_read":
+        config["Mind_Read"] = config.pop("mind_read")
+    elif variant == "runtime_root":
+        config["Runtime_Root"] = config.pop("runtime_root")
+    elif variant == "live_dir":
+        config["mind_read"] = {"enabled": True, "Live_Dir": str(live)}
+    else:
+        obj = config["mind_read"]
+        obj[variant.title()] = obj.pop(variant)
+    raw = json.dumps(config).encode("utf-8")
+    fleet = tmp_path / "fleet.json"
+    fleet.write_bytes(raw)
+    env = dict(os.environ, TASK_MIND_HELPER=str(OPS / "Get-WdMindReadConfig.ps1"),
+               TASK_MIND_FLEET=str(fleet), TASK_MIND_FLEET_SHA=hashlib.sha256(raw).hexdigest())
+    script = ("$ErrorActionPreference='Stop'; . $env:TASK_MIND_HELPER; "
+              "try { $v=Get-WdMindReadConfig -FleetPath $env:TASK_MIND_FLEET "
+              "-FleetSha256 $env:TASK_MIND_FLEET_SHA; if ($null -eq $v) { 'OFF' } else { 'ENABLED' } } "
+              "catch { 'REFUSED' }")
+    result = subprocess.run([shutil.which("powershell.exe"), "-NoProfile", "-NonInteractive", "-Command", script],
+                            env=env, capture_output=True, text=True, timeout=30, check=True)
+    assert result.stderr == ""
+    assert result.stdout.strip() == "REFUSED"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="actual startup configuration helper requires Windows")
+@pytest.mark.parametrize("variant,expected", [("missing", "OFF"), ("disabled", "OFF"),
+                                               ("non_bool", "REFUSED"), ("duplicate_case", "REFUSED"),
+                                               ("wrong_digest", "REFUSED"), ("direct_live", "ENABLED")])
+def test_synthetic_fleet_existing_boundaries(tmp_path, variant, expected):
+    runtime = tmp_path / "runtime"
+    live = runtime / "shared" / ".codex-audit" / "mind-live"
+    live.mkdir(parents=True)
+    config = {"runtime_root": str(runtime), "mind_read": {"enabled": True, "live_dir": str(live)}}
+    if variant == "missing":
+        config.pop("mind_read")
+    elif variant == "disabled":
+        config["mind_read"]["enabled"] = False
+    elif variant == "non_bool":
+        config["mind_read"]["enabled"] = "true"
+    elif variant == "duplicate_case":
+        config["Mind_Read"] = config["mind_read"]
+    raw = json.dumps(config).encode("utf-8")
+    fleet = tmp_path / "fleet.json"
+    fleet.write_bytes(raw)
+    digest = "0" * 64 if variant == "wrong_digest" else hashlib.sha256(raw).hexdigest()
+    env = dict(os.environ, TASK_MIND_HELPER=str(OPS / "Get-WdMindReadConfig.ps1"),
+               TASK_MIND_FLEET=str(fleet), TASK_MIND_FLEET_SHA=digest)
+    script = ("$ErrorActionPreference='Stop'; . $env:TASK_MIND_HELPER; "
+              "try { $v=Get-WdMindReadConfig -FleetPath $env:TASK_MIND_FLEET "
+              "-FleetSha256 $env:TASK_MIND_FLEET_SHA; if ($null -eq $v) { 'OFF' } else { 'ENABLED' } } "
+              "catch { 'REFUSED' }")
+    result = subprocess.run([shutil.which("powershell.exe"), "-NoProfile", "-NonInteractive", "-Command", script],
+                            env=env, capture_output=True, text=True, timeout=30, check=True)
+    assert result.stderr == ""
+    assert result.stdout.strip() == expected
+
+
+@pytest.mark.skipif(os.name != "nt", reason="actual startup configuration helper requires Windows")
 def test_synthetic_fleet_loader_publication_and_five_session_reads(tmp_path, monkeypatch, capsys):
     # Test the original launchers' configuration and prompt wiring statically;
     # never run either launcher or impersonate a live agent.

@@ -3852,7 +3852,7 @@ if ($cliName -ieq 'claude.cmd') {
 } else {
   throw "lane '$Agent' uses unsupported CLI '$cliName'"
 }
-if ($null -ne $startupMindRead -and [bool]$startupMindRead.record_written -and [string]$startupMindRead.outcome -ceq 'success' -and [int]$startupMindRead.delivered_chars -gt 0) {
+if ((Test-Path -LiteralPath 'variable:startupMindRead') -and $null -ne $startupMindRead -and [bool]$startupMindRead.record_written -and [string]$startupMindRead.outcome -ceq 'success' -and [int]$startupMindRead.delivered_chars -gt 0) {
   # S1: in-memory delivery only, set immediately before the launch so that the lane CLI is the process that
   # inherits it; never argv, never the prompt, never a log file.
   [Environment]::SetEnvironmentVariable('WD_MIND_STARTUP_RECALL', [string]$startupMindRead.delivered_text, 'Process')

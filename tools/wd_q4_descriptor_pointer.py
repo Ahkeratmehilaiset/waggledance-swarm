@@ -135,12 +135,21 @@ def _verify(*, state_path, expected_bundle, expected_commit, expected_manifest_s
     target = None if staged else state_path.parent / 'WD_Q4_DESCRIPTOR_CURRENT.json'
     if target is not None:
         for parent in (bundle, root):
-            if os.path.commonpath((str(target), str(parent))) == str(parent):
+            if _same(os.path.commonpath((str(target), str(parent))), parent):
                 raise PointerRefused('path_refused')
     _chain(bundle)
     _chain(root)
     if not bundle.is_dir() or not root.is_dir():
         raise PointerRefused('path_refused')
+    if target is not None:
+        # The spelling may be an 8.3 alias, which lexical commonpath alone
+        # cannot identify. Check every existing ancestor before resolving; do
+        # not turn a missing parent or a reparse point into an allowed path.
+        _chain(target.parent)
+        canonical_target_parent = target.parent.resolve(strict=True)
+        for parent in (bundle.resolve(strict=True), root.resolve(strict=True)):
+            if _same(os.path.commonpath((str(canonical_target_parent), str(parent))), parent):
+                raise PointerRefused('path_refused')
     manifest_path, fleet_path = bundle / 'deployment-manifest.json', bundle / 'wd-fleet.json'
     state_raw = None
     if not staged:

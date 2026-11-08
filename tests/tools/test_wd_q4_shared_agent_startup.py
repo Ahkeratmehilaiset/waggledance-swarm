@@ -553,3 +553,62 @@ $read=if($null -ne $startupMindRead){$startupMindRead}else{$toolsStartupMindRead
     else:
         assert observed["read"]["outcome"] == "success", observed["read"]["reason"]
         assert observed["read"]["record_written"] is True and observed["read"]["delivered_items"] == 1
+
+
+@pytest.mark.parametrize("case", ["unset", "null", "unwritten", "non_success", "empty", "success",
+                                 "missing_receipt", "missing_outcome"])
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell execution required")
+def test_startup_delivery_guard_is_strict_mode_safe(tmp_path, case):
+    """Execute the real delivery statement with optional result absent, refused, or authorized."""
+    import subprocess
+
+    variable = "startupMindRead"
+    source_path = Path(__file__).resolve().parents[2] / "ops/windows/reboot/start-wd-agent.ps1"
+    quoted_path = "'" + str(source_path).replace("'", "''") + "'"
+    record = {"record_written": True, "outcome": "success", "delivered_chars": 19,
+              "delivered_text": "SYNTHETIC_RECALL_123"}
+    if case == "unwritten":
+        record["record_written"] = False
+    elif case == "non_success":
+        record["outcome"] = "refused"
+    elif case == "empty":
+        record["delivered_chars"] = 0
+    elif case == "missing_receipt":
+        del record["record_written"]
+    elif case == "missing_outcome":
+        del record["outcome"]
+    assignment = ""
+    if case == "null":
+        assignment = "$" + variable + "=$null"
+    elif case != "unset":
+        assignment = "$" + variable + "='" + json.dumps(record).replace("'", "''") + "'|ConvertFrom-Json"
+    driver = tmp_path / "delivery-guard.ps1"
+    driver.write_text(
+        "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+        "[Environment]::SetEnvironmentVariable('WD_MIND_STARTUP_RECALL',$null,'Process')\n"
+        "$tokens=$null;$parseErrors=$null\n"
+        "$ast=[Management.Automation.Language.Parser]::ParseFile(" + quoted_path
+        + ",[ref]$tokens,[ref]$parseErrors)\n"
+        "if($parseErrors.Count){throw 'source_parse'}\n"
+        '$needle="[Environment]::SetEnvironmentVariable(\'WD_MIND_STARTUP_RECALL\'"\n'
+        "$matches=@($ast.FindAll({param($node) "
+        "$node -is [Management.Automation.Language.IfStatementAst] -and "
+        "$node.Extent.Text.Contains($needle)},$true)|Sort-Object {$_.Extent.Text.Length})\n"
+        "if(-not $matches.Count -or $matches[0].Extent.Text.Length -gt 1000){throw 'delivery_statement_scope'}\n"
+        + assignment + "\n. ([scriptblock]::Create($matches[0].Extent.Text))\n"
+        "$value=[Environment]::GetEnvironmentVariable('WD_MIND_STARTUP_RECALL','Process')\n"
+        "@{present=($null -ne $value);value=$value}|ConvertTo-Json -Compress\n",
+        encoding="utf-8",
+    )
+    shell = str(Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe")
+    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-File", str(driver)],
+                            capture_output=True, text=True, timeout=20)
+    if case in ("missing_receipt", "missing_outcome"):
+        # Defined malformed records still fail closed; the guard must not suppress schema errors.
+        assert result.returncode != 0
+        assert not result.stdout.strip()
+        return
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    assert observed["present"] is (case == "success")
+    assert observed["value"] == (record["delivered_text"] if case == "success" else None)

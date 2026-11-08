@@ -74,10 +74,10 @@ _MODES = {b"100644": None, b"100755": "not_regular", b"120000": "symlink", b"160
 _COMMITTER = re.compile(rb"committer [^\n]* ([0-9]{1,12}) [+-][0-9]{4}")
 _BLANK_LINE = re.compile(r"\n[ \t]*\n")
 # Bounded additional coverage: two to four long mixed-case fragments separated
-# by blank lines, optionally with a Markdown heading and list marker at each
+# by line boundaries, optionally with a Markdown heading and list marker at each
 # boundary. This is not a guarantee against every possible split or encoding.
 _SPLIT_CREDENTIAL_SEPARATOR = (
-    r"[ \t]*(?:[.,;:][ \t]*)?(?:\n[ \t]*){2,}"
+    r"[ \t]*(?:[.,;:][ \t]*)?(?:\n[ \t]*){1,}"
     r"(?:#{1,6}[ \t]+[^\n]{0,160}\n[ \t]*)?"
     r"(?:(?:[-*]|[0-9]{1,3}\.)[ \t]+)?"
 )

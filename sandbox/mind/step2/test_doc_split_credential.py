@@ -54,6 +54,14 @@ def test_split_credential_with_unicode_linebreaks_is_refused(linebreak):
     assert exc.value.token == "credential"
 
 
+@pytest.mark.parametrize("linebreak", ["\n", "\u2028", "\u2029", "\u0085", "\v", "\f"])
+def test_single_line_boundary_between_fragments_is_refused(linebreak):
+    document = SYNTHETIC_RUN[:20] + linebreak + SYNTHETIC_RUN[20:]
+    with pytest.raises(cp._Drop) as exc:
+        dp._doc_screen(document, dp.MAX_DOC_BYTES)
+    assert exc.value.token == "credential"
+
+
 @pytest.mark.parametrize("punctuation", [".", ",", ";", ":"])
 def test_split_credential_with_trailing_fragment_punctuation_is_refused(punctuation):
     document = SYNTHETIC_RUN[:20] + punctuation + "\n\n# Heading\n" + SYNTHETIC_RUN[20:]
@@ -91,3 +99,18 @@ def test_split_credential_drops_document_before_any_record_is_built(tmp_path):
     assert {record["meta"]["path"] for record in projection["records"]} == {"docs/good.md"}
     assert SYNTHETIC_RUN[:20] not in repr(projection)
     assert SYNTHETIC_RUN[20:] not in repr(projection)
+
+
+def test_single_newline_forced_section_split_drops_all_document_records(tmp_path):
+    # The first fragment is the last line that fits in a section. The next
+    # line must be emitted in a different section by the actual splitter.
+    prefix = "x" * (dp.MAX_SECTION_CHARS - len(SYNTHETIC_RUN[:20]) - 1)
+    document = prefix + "\n" + SYNTHETIC_RUN[:20] + "\n" + SYNTHETIC_RUN[20:]
+    sections = dp._sections(document, dp.MAX_SECTION_CHARS)
+    assert len(sections) == 2
+    assert sections[0].endswith(SYNTHETIC_RUN[:20]) and sections[1] == SYNTHETIC_RUN[20:]
+    root, commit = fixture.make_repo(tmp_path, {"docs/split.md": document.encode()})
+    raw, sha = fixture.policy(commit, ["docs/split.md"])
+    projection = fixture.build(root, raw, sha)
+    assert projection["refused_docs"] == {"credential": 1}
+    assert projection["records"] == []

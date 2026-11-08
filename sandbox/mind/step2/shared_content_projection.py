@@ -114,6 +114,7 @@ _LOCAL_PATH = (re.compile(r"[A-Za-z]:[\\/][^\s:]*(?:[ \t][^\s\\/:]+)+[\\/][^\s]*
                re.compile(r"[A-Za-z]:[\\/][^\s]*"), re.compile(r"\\\\[^\s]+"),
                re.compile(r"(?<![^\s(\"'])(?:~|/)[\w.-]*(?:/[\w.-]+)+/?"))
 _AMBIGUOUS_PROFILE = re.compile(r"(?i)[a-z]:[\\/]users[\\/][^\s\\/]+[ \t]+[a-z][^\s\\/]*")
+_AMBIGUOUS_TERMINAL_PATH = re.compile(r"(?i)[a-z]:[\\/][^\s]+[ \t]+[^\s]+$")
 
 
 class ContentRefused(ValueError):
@@ -310,7 +311,7 @@ def _screen(text):
     """The detectors, in order, on one normalized text; raises ``_Drop`` with the first matching class."""
     if any(pattern.search(text) for pattern in _CREDENTIAL) or _base64_secret(text):
         raise _Drop("credential")
-    if _AMBIGUOUS_PROFILE.search(text):
+    if _AMBIGUOUS_PROFILE.search(text) or _AMBIGUOUS_TERMINAL_PATH.search(text):
         raise _Drop("personal")
     lowered = text.lower()
     if _UUID.search(text) or any(name in lowered for name in _local_identifiers()):
@@ -327,6 +328,8 @@ def _replace_locations(text):
     text = _URL.sub("url", text)
     for pattern in _LOCAL_PATH:
         text = pattern.sub("local-path", text)
+    if "\\" in text or re.search(r"(?i)(?<![a-z0-9])[a-z]:[\\/]", text):
+        raise _Drop("personal")
     return " ".join(text.split())
 
 

@@ -30,6 +30,11 @@ and each section goes through ``shared_content_projection.classify`` with its fu
 identifier, hex-run or mixed-script section drops alone. Deterministic screening over-blocks and is a screen, not a
 guarantee.
 
+Exact admission. Policy v2 adds ``approved_doc_refs``: each entry names the same pinned commit, one allowlisted
+path and its exact blob id. Paths absent from that list are never opened; a different blob refuses the build before
+its bytes are read. An empty list admits nothing. This is a caller assertion, not proof of content review or issuer
+identity. The route must independently pin the policy and decision; legacy v1 retains its original behavior.
+
 Records and removal. Each kept section is encoded, chunked and written as records with the commit, path, blob id,
 section and chunk position and a source ref ``sha256({blob, commit, path})``; the record time is the pinned commit's
 committer time. ``removed_blobs`` in the pinned policy removes every record of a blob (so the content stays removed
@@ -51,6 +56,7 @@ from sandbox.mind.step2 import shared_projection as sp
 
 SCHEMA = "wd.repo-doc-content-projection.v1"
 POLICY_SCHEMA = "wd.mind-doc-policy.v1"
+POLICY_SCHEMA_EXACT_BLOBS = "wd.mind-doc-policy.v2"
 SCOPE = "shared_doc_projection_not_gate"
 SOURCE_KIND = "repo_doc"
 REF_KIND = "sha256_of_doc_chunk_and_source"
@@ -130,7 +136,12 @@ def load_doc_policy(policy_bytes, policy_sha256):
                 or not hmac.compare_digest(hashlib.sha256(policy_bytes).hexdigest(), policy_sha256)):
             raise ValueError()
         doc = json.loads(policy_bytes.decode("ascii"), object_pairs_hook=cp._unique_pairs)
-        if type(doc) is not dict or set(doc) != _POLICY_KEYS or doc["schema"] != POLICY_SCHEMA:
+        if type(doc) is not dict:
+            raise ValueError()
+        schema = doc.get("schema")
+        expected_keys = (_POLICY_KEYS if schema == POLICY_SCHEMA else
+                         _POLICY_KEYS | {"approved_doc_refs"} if schema == POLICY_SCHEMA_EXACT_BLOBS else None)
+        if expected_keys is None or set(doc) != expected_keys:
             raise ValueError()
         if type(doc["commit"]) is not str or _HEX40.fullmatch(doc["commit"]) is None:
             raise ValueError()
@@ -142,6 +153,19 @@ def load_doc_policy(policy_bytes, policy_sha256):
                   "max_section_chars": cp._bounded_int(doc["max_section_chars"], 1, MAX_SECTION_CHARS),
                   "max_chunk_chars": cp._bounded_int(doc["max_chunk_chars"], cp.MIN_CHUNK_CHARS, cp.MAX_CHUNK_CHARS),
                   "max_doc_bytes": cp._bounded_int(doc["max_doc_bytes"], 1, MAX_DOC_BYTES)}
+        if schema == POLICY_SCHEMA_EXACT_BLOBS:
+            entries = doc["approved_doc_refs"]
+            if type(entries) is not list or len(entries) > MAX_PATHS:
+                raise ValueError()
+            approved = {}
+            for entry in entries:
+                if (type(entry) is not dict or set(entry) != {"commit", "path", "blob"}
+                        or entry["commit"] != doc["commit"] or type(entry["path"]) is not str
+                        or entry["path"] not in paths or entry["path"] in approved
+                        or type(entry["blob"]) is not str or _HEX40.fullmatch(entry["blob"]) is None):
+                    raise ValueError()
+                approved[entry["path"]] = entry["blob"]
+            policy["approved_doc_refs"] = approved
     except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
         failed = True
     if failed:
@@ -368,6 +392,8 @@ def _document(root, env, policy, path, time_text, refused_docs, refused_sections
     oid, token = _entry(root, env, commit, path)
     if token is not None:
         return _count(refused_docs, token) or []
+    if "approved_doc_refs" in policy and not hmac.compare_digest(oid, policy["approved_doc_refs"][path]):
+        _refuse("approved_blob_mismatch")
     if oid in policy["removed_blobs"]:
         return _count(refused_docs, "removed") or []
     text, token = _read_blob(root, env, oid, policy["max_doc_bytes"])
@@ -404,6 +430,8 @@ def _build(repo_root, policy_bytes, policy_sha256, git_executable, git_sha256):
     records, refused_docs, refused_sections = [], {}, {}
     try:
         for path in sorted(policy["paths"]):
+            if "approved_doc_refs" in policy and path not in policy["approved_doc_refs"]:
+                continue  # don't inspect or count unapproved paths
             records.extend(_document(root, env, policy, path, time_text, refused_docs, refused_sections))
     except _GitFailed:
         _refuse("read_refused")

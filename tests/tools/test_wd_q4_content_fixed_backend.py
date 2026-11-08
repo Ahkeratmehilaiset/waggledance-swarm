@@ -97,7 +97,7 @@ def content_v5(content, tmp_path):
     d = json.loads(descriptor)
     public = {'schema': 'wd.q4-public-wrapper-plan.v5',
         'config': {'descriptor_sha256': sha(descriptor), 'descriptor': str(memory_dir / 'descriptor.json'),
-                   'memory': str(memory_dir), 'runtime_revision': d['encoder']['revision']},
+                   'memory': str(memory_dir), 'runtime_revision': d['encoder']['revision'], 'timeout': 30},
         'policy_path': policy_path, 'roster_path': roster_path, 'content_decision_path': decision_path,
         'policy_sha256': args['policy_sha256'], 'roster_sha256': args['roster_sha256'],
         'content_decision_sha256': args['content_decision_sha256'], 'encoder_sha256': _encoder_digest(d['encoder']),
@@ -159,18 +159,23 @@ def test_content_v5_reresolves_real_synthetic_child_result(content_v5, content):
 from tests.tools.test_wd_q4_bound_lane_transport import case
 
 
-@pytest.mark.parametrize('changed', [None, *sorted(fixed._CONTENT_PINS)])
+@pytest.mark.parametrize('changed', [None, *sorted(fixed._CONTENT_PINS),
+                                    'inner_equal', 'inner_above', 'inner_zero', 'inner_bool'])
 def test_guarded_content_factory_requires_all_seven_matching_pins(content_v5, case, tmp_path, monkeypatch, changed):
     from tests.tools.test_wd_q4_owner_plumbing import _synthetic_guard
     from tools import wd_q4_bound_lane_transport as bound
     from tools import wd_q4_fixed_plan_producer as producer
-    input_plan, bundle, public_bytes, _ = content_v5
+    input_plan, bundle, public_bytes, public_doc = content_v5
+    timeouts = {'inner_equal': 60, 'inner_above': 61, 'inner_zero': 0, 'inner_bool': True}
+    if changed in timeouts:
+        public_doc['config']['timeout'] = timeouts[changed]
+        public_bytes = json.dumps(public_doc, sort_keys=True).encode()
     path = Path(case['public_plan_path'])
     path.write_bytes(public_bytes)
     case['expected_public_plan_sha256'] = sha(public_bytes)
     base = fixed._fixed_plan(case['fixed_plan_bytes'])
     pins = {key: input_plan[key] for key in fixed._CONTENT_PINS}
-    if changed is not None:
+    if changed in fixed._CONTENT_PINS:
         pins[changed] = '0' * 64
     fixed_plan = producer.build_content_fixed_plan(enabled=True, **pins,
         interpreter_sha256=base['interpreter_sha256'], peer_code_sha256=base['peer_code_sha256'],

@@ -11,6 +11,7 @@ each caller; the runtime's full cleanup remains the caller's responsibility.
 
 import hashlib
 import hmac
+import math
 
 from sandbox.mind.step2 import shared_index_pointer as checkpoint
 from tools import wd_q4_fixed_result_adapter as adapter
@@ -213,6 +214,13 @@ def make_guarded_content_transport(*, bundle_root, expected_commit, expected_man
             raise ValueError()
         root, wrapper = lane._binding(bundle_root, expected_commit, expected_manifest_sha256, expected_wrapper_sha256)
         path, public_bytes, pins = lane._public_plan(public_plan_path, expected_public_plan_sha256)
+        public = lane._json(public_bytes)
+        config = public.get('config') if type(public) is dict else None
+        inner_timeout = config.get('timeout') if type(config) is dict else None
+        if (type(inner_timeout) not in (int, float) or not math.isfinite(inner_timeout)
+                or type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
+                or not (0 < inner_timeout < timeout_seconds <= 1800)):
+            raise ValueError()
         if (root != plan['bundle_root'] or wrapper != plan['wrapper_path'] or path != plan['public_plan_path']
                 or expected_commit != plan['bundle_commit']
                 or expected_manifest_sha256 != plan['deployment_manifest_sha256']

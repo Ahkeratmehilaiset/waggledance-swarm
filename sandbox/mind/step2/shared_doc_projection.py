@@ -73,13 +73,20 @@ _EXCLUDED_WORDS = tuple(sp.SEALED_MARKERS) + ("approval", "secret", "credential"
 _MODES = {b"100644": None, b"100755": "not_regular", b"120000": "symlink", b"160000": "submodule"}
 _COMMITTER = re.compile(rb"committer [^\n]* ([0-9]{1,12}) [+-][0-9]{4}")
 _BLANK_LINE = re.compile(r"\n[ \t]*\n")
-# Bounded additional coverage: two long mixed-case fragments separated by a
-# blank line, optionally with one Markdown heading between them.  This is a
-# detector, not a guarantee against every possible split or encoding.
+# Bounded additional coverage: two to four long mixed-case fragments separated
+# by blank lines, optionally with a Markdown heading and list marker at each
+# boundary. This is not a guarantee against every possible split or encoding.
+_SPLIT_CREDENTIAL_SEPARATOR = (
+    r"[ \t]*(?:[.,;:][ \t]*)?(?:\n[ \t]*){2,}"
+    r"(?:#{1,6}[ \t]+[^\n]{0,160}\n[ \t]*)?"
+    r"(?:(?:[-*]|[0-9]{1,3}\.)[ \t]+)?"
+)
 _SPLIT_CREDENTIAL = re.compile(
-    r"(?<![A-Za-z0-9+/_-])([A-Za-z0-9+/_-]{8,})[ \t]*"
-    r"(?:\n[ \t]*){2,}(?:#{1,6}[ \t]+[^\n]{0,160}\n[ \t]*)?"
-    r"([A-Za-z0-9+/_-]{8,}={0,2})(?![A-Za-z0-9+/_=-])"
+    r"(?<![A-Za-z0-9+/_-])([A-Za-z0-9+/_-]{8,})"
+    + _SPLIT_CREDENTIAL_SEPARATOR + r"([A-Za-z0-9+/_-]{8,})"
+    + r"(?:" + _SPLIT_CREDENTIAL_SEPARATOR + r"([A-Za-z0-9+/_-]{8,}))?"
+    + r"(?:" + _SPLIT_CREDENTIAL_SEPARATOR + r"([A-Za-z0-9+/_-]{8,}))?"
+    + r"={0,2}(?![A-Za-z0-9+/_=-])"
 )
 
 
@@ -273,7 +280,7 @@ def _read_blob(root, env, oid, limit):
 # --- screening and sections ----------------------------------------------------------------------------------------
 
 def _split_credential(text):
-    """Detect the documented two-fragment case without emitting source text."""
+    """Detect the documented section-fragment cases without emitting source text."""
     normalized = match = candidate = None
     try:
         # Match the existing normalizer's treatment of format characters and
@@ -281,9 +288,11 @@ def _split_credential(text):
         normalized = "".join(c for c in text if unicodedata.category(c) != "Cf")
         normalized = unicodedata.normalize("NFKC", normalized)
         normalized = "".join(c for c in normalized if unicodedata.category(c) != "Cf")
-        normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
+        normalized = normalized.replace("\r\n", "\n")
+        normalized = normalized.translate(str.maketrans({"\r": "\n", "\u2028": "\n", "\u2029": "\n",
+                                                         "\u0085": "\n", "\v": "\n", "\f": "\n"}))
         for match in _SPLIT_CREDENTIAL.finditer(normalized):
-            candidate = match.group(1) + match.group(2)
+            candidate = match.group(1) + match.group(2) + (match.group(3) or "") + (match.group(4) or "")
             if len(candidate) >= 32 and cp._base64_secret(candidate):
                 return True
         return False

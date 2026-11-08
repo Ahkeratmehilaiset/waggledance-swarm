@@ -59,7 +59,7 @@ def message_source(*events):
 def doc_source(tmp_path, files, paths):
     root, commit = tdp.make_repo(tmp_path, files)
     raw, pin = tdp.policy(commit, paths)
-    return {"repo_root": str(root), "policy_bytes": raw, "policy_sha256": pin}, root, commit
+    return {"repo_root": str(root), "policy_bytes": raw, "policy_sha256": pin, **tdp.git_pin()}, root, commit
 
 
 DOC_TEXT = "Hex-muisti tallentaa parven p" + A + "" + A + "t" + O + "kset ja niiden perustelut."
@@ -137,6 +137,9 @@ def test_messages_only_and_documents_only_both_build(tmp_path, sources):
     ({}, "sources_missing"),
     ({"messages": {"rows": {}}}, "sources_invalid"),
     ({"documents": {"repo_root": "x", "policy_bytes": b"", "policy_sha256": "0" * 64, "extra": 1}}, "sources_invalid"),
+    ({"documents": {"repo_root": "x", "policy_bytes": b"", "policy_sha256": "0" * 64}}, "sources_invalid"),
+    ({"documents": {"repo_root": "x", "policy_bytes": b"", "policy_sha256": "0" * 64, "git_executable": "x"}},
+     "sources_invalid"),
     ({"messages": []}, "sources_invalid"),
 ])
 def test_sources_are_closed(tmp_path, change, token):
@@ -156,6 +159,9 @@ def test_projection_refusals_pass_through_as_closed_tokens(tmp_path, sources):
     worse = dict(documents, repo_root=str(tmp_path / "nowhere"))
     with pytest.raises(cm.ContentMemoryRefused, match="repo_refused"):
         build(tmp_path, documents=worse)
+    for pins in ({"git_sha256": "0" * 64}, {"git_executable": "git"}, {"git_executable": None, "git_sha256": None}):
+        with pytest.raises(cm.ContentMemoryRefused, match="repo_refused"):
+            build(tmp_path, documents=dict(documents, **pins))
 
 
 def test_empty_projection_refuses(tmp_path):

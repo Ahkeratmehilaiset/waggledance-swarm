@@ -30,7 +30,7 @@ lane = cl.lane
 
 V1 = "wd.q4-public-wrapper-plan.v1"
 SOURCE_KEYS = ("message_source_path", "message_generation_path", "message_policy_path", "doc_repo_root",
-               "doc_policy_path")
+               "doc_policy_path", "doc_git_executable", "doc_git_sha256")
 V4_KEYS = {"schema", "config", "policy_path", "roster_path", "content_decision_path", "policy_sha256",
            "roster_sha256", "content_decision_sha256", "encoder_sha256", "memory_sha256", "projection_sha256"}
 
@@ -73,7 +73,8 @@ def setup(lane, tmp_path):
                  "message_source_path": route["messages"]["source_path"],
                  "message_generation_path": route["messages"]["generation_path"],
                  "message_policy_path": message_policy, "doc_repo_root": route["documents"]["repo_root"],
-                 "doc_policy_path": doc_policy}
+                 "doc_policy_path": doc_policy, "doc_git_executable": route["documents"]["git_executable"],
+                 "doc_git_sha256": route["documents"]["git_sha256"]}
     return {"arguments": arguments, "out": out, "files": files, "v1": v1, "lane": lane, "document": document,
             "route": route}
 
@@ -190,7 +191,7 @@ def test_a_failure_after_the_write_began_is_unknown(setup, monkeypatch):
 
 
 def request(setup, **changes):
-    document = {"schema": "wd.q4-public-content-plan-request.v2",
+    document = {"schema": "wd.q4-public-content-plan-request.v3",
                 "public_plan_path": setup["arguments"]["public_plan_path"],
                 "public_plan_sha256": setup["arguments"]["expected_public_plan_sha256"],
                 "output_dir": setup["arguments"]["output_dir"], "memory_dir": setup["arguments"]["memory_dir"],
@@ -216,6 +217,8 @@ def test_the_command_line_is_off_without_arguments_and_writes_through_a_pinned_r
 @pytest.mark.parametrize("changes", [
     {"memory_dir": ...}, {"extra": "x"}, {"schema": "wd.q4-public-card-plan-request.v1"},
     {"schema": "wd.q4-public-content-plan-request.v1"}, {"doc_policy_path": ...},
+    {"schema": "wd.q4-public-content-plan-request.v2"}, {"doc_git_sha256": ...},
+    {"doc_git_executable": ..., "doc_git_sha256": ..., "schema": "wd.q4-public-content-plan-request.v2"},
     dict({key: ... for key in SOURCE_KEYS}, schema="wd.q4-public-content-plan-request.v1"),
 ])
 def test_the_command_line_refuses_any_other_request_with_one_fixed_line(setup, capsys, changes):
@@ -295,6 +298,12 @@ def test_the_sources_are_the_ones_the_decision_pins(setup):
     refused(setup, message_generation_path=setup["arguments"]["message_policy_path"])
     refused(setup, doc_repo_root=str(setup["files"]))
     refused(setup, message_source_path="relative/events.jsonl")
+    refused(setup, doc_git_executable=None, doc_git_sha256=None)
+    refused(setup, doc_git_sha256=None)
+    refused(setup, doc_git_sha256="0" * 64)
+    refused(setup, doc_git_sha256=setup["arguments"]["doc_git_sha256"].upper())
+    refused(setup, doc_git_executable="git")
+    refused(setup, doc_git_executable=setup["arguments"]["message_policy_path"])
     with pytest.raises(TypeError):
         writer().write_content_plan(enabled=True, **{key: value for key, value in setup["arguments"].items()
                                                       if key != "doc_repo_root"}, repo_root="x")
@@ -308,6 +317,19 @@ def test_a_source_the_decision_does_not_pin_is_refused(key):
     assert writer()._route_sources(decision, sources) == (None, None)
     with pytest.raises(ValueError):
         writer()._route_sources(decision, dict(sources, **{key: "C:\\synthetic"}))
+
+
+@pytest.mark.parametrize("change", [
+    lambda a: {"doc_git_sha256": a["doc_git_sha256"].upper()}, lambda a: {"doc_git_sha256": a["doc_git_sha256"][:63]},
+    lambda a: {"doc_git_executable": "git"}, lambda a: {"doc_git_executable": "relative/git.exe"},
+])
+def test_a_malformed_git_pin_is_refused_before_any_source_is_re_derived(setup, monkeypatch, change):
+    """Layer test: the writer refuses a non-hex pin or a relative executable itself, so no git process starts."""
+    from sandbox.mind.step2 import content_memory as cm
+    seen = []
+    monkeypatch.setattr(cm, "validate_content_snapshot", lambda **kwargs: seen.append(kwargs))
+    refused(setup, **change(setup["arguments"]))
+    assert seen == []
 
 
 def test_a_message_prefix_changed_after_the_build_is_refused(setup):
@@ -347,6 +369,7 @@ def test_the_source_re_derivation_runs_on_the_pinned_projection_bytes(setup, mon
         key: route[key] for key in ("source_path", "generation_path", "policy_bytes", "policy_sha256")}
     assert messages["end_cursor"] == route["end_cursor"]
     assert documents == setup["route"]["documents"]
+    assert set(documents) == {"repo_root", "policy_bytes", "policy_sha256", "git_executable", "git_sha256"}
 
 
 def test_a_valid_policy_other_than_the_decision_policy_is_refused(setup):

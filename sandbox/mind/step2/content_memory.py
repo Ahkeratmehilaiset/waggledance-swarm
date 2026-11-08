@@ -8,7 +8,8 @@ memory does for cards. It adds no resolver branch, no policy file, no launcher o
 
 * Every function is OFF unless ``enabled is True`` and then returns ``{"status": "OFF"}`` without reading anything.
 * The caller passes the SOURCES, not projections: ``messages`` = ``{rows, policy_bytes, policy_sha256, roster}`` and
-  ``documents`` = ``{repo_root, policy_bytes, policy_sha256}`` with exactly those keys, at least one of them. The
+  ``documents`` = ``{repo_root, policy_bytes, policy_sha256, git_executable, git_sha256}`` with exactly those keys
+  (the absolute Git executable and its SHA-256 pin, MP3: never Git from PATH), at least one of them. The
   projections are derived here by the two modules' own builders, so a projection is never trusted as given; their
   refusal tokens pass through unchanged.
 * The memory carries its own scope ``wd.mind-content-events.v1`` and descriptor schema, so the production Q4 reader,
@@ -43,7 +44,7 @@ DESCRIPTOR_SCHEMA = "wd.mind-content-descriptor.v1"
 PLACEMENT_RULE = "content-v1: bridge_message by projected type (shared closed table), repo_doc -> learning"
 PROJECTION_KEYS = frozenset({"schema", "authority", "scope", "messages", "documents"})
 MESSAGE_KEYS = frozenset({"rows", "policy_bytes", "policy_sha256", "roster"})
-DOCUMENT_KEYS = frozenset({"repo_root", "policy_bytes", "policy_sha256"})
+DOCUMENT_KEYS = frozenset({"repo_root", "policy_bytes", "policy_sha256", "git_executable", "git_sha256"})
 MAX_PROJECTION_BYTES = 64 * 1024 * 1024
 # Route B (Lead decision 2026-11-07 18:56Z): the same memory under the shared scope and the v2 shared descriptor, so the
 # isolated child stays the only reader; it names this projection schema, so the unchanged v6 resolver refuses it and

@@ -79,7 +79,6 @@ CANARIES = {
     "pem": lambda: "-----BEG" + "IN RSA PRIVATE KEY-----",
     "jwt": lambda: "ey" + "Jhbm9uZSI6dHJ1ZX0." + "eyJzdWIiOiIxIn0." + "c2ln",
     "url_userinfo": lambda: "https" + "://user:" + "pw" + "@example.invalid/x",
-    "hex_run": lambda: "0123456789abcdef" * 2,
     "base64_run": lambda: "QmFzZTY0" + "U3ludGhldGljQ2FuYXJ5" + "VmFsdWUx",
 }
 IDENTIFIERS = {"uuid": lambda: "12345678-" + "1234-4234-8234-" + "123456789abc"}
@@ -246,6 +245,19 @@ def test_other_windows_spaced_paths_do_not_leak(value):
                                      "service_password=synthetic-value"])
 def test_additional_assignment_forms_are_refused(value):
     assert cp.classify(value) == ("DROP", "credential")
+
+
+@pytest.mark.parametrize("length", [32, 40, 64])
+def test_long_hex_values_are_replaced_without_retaining_the_value(length):
+    value = ("a1" * 32)[:length]
+    verdict, encoded = cp.classify("commit " + value + " ready")
+    assert verdict == "KEEP"
+    assert cp.decode_text(encoded) == "commit hex-redacted ready"
+    assert value not in encoded
+
+
+def test_named_hex_secret_is_refused_even_when_hex_can_be_replaced():
+    assert cp.classify("password=" + "a1" * 20) == ("DROP", "credential")
 
 
 # --- fail-closed screening before chunking -------------------------------------------------------------------------

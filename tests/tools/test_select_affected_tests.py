@@ -31,6 +31,20 @@ def test_reboot_installer_requires_full_suite():
         assert result["full_suite"] is True, result
 
 
+@pytest.mark.parametrize("source", [
+    "ops/windows/reboot/wd-fleet.json",
+    "ops/windows/reboot/bridge-code-files.json",
+    "ops/windows/reboot/start-wd-agent.ps1",
+    "ops/windows/reboot/start-wd-tools-consumer.ps1",
+    "ops/windows/reboot/wd_supervisor_loop.json",
+])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_incomplete_reboot_maps_require_full_suite(source, mixed):
+    changed = [source, ".agent-bridge/bin/BridgeEventClassifier.ps1"] if mixed else [source]
+    result = select_affected_tests(changed, ROOT)
+    assert result["full_suite"] is True, result
+
+
 def _mkrepo(tmp_path: Path) -> Path:
     (tmp_path / "tests" / "tools").mkdir(parents=True)
     # A test that IMPORTS waggledance.x.alpha.
@@ -238,9 +252,6 @@ ACTUAL_BRIDGE_SOURCES = (
     ".agent-bridge/bin/Invoke-StaleClaimSweep.ps1",
     "ops/windows/reboot/Get-WdSwarmParallelStatus.ps1",
     "ops/windows/reboot/Send-WdContinuityAlert.ps1",
-    "ops/windows/reboot/bridge-code-files.json",
-    "ops/windows/reboot/start-wd-agent.ps1",
-    "ops/windows/reboot/start-wd-tools-consumer.ps1",
 )
 
 
@@ -330,9 +341,9 @@ def test_bridge_known_source_missing_mapped_test_fails_closed(tmp_path):
     assert "missing" in result["reason"]
 
 
-def test_bridge_json_requires_exact_mapped_package_tests(tmp_path):
+def test_bridge_source_requires_exact_mapped_package_tests(tmp_path):
     root = _bridge_candidate_fixture(tmp_path)
-    mapped = select_affected_tests(["ops/windows/reboot/bridge-code-files.json"], root)
+    mapped = select_affected_tests(["ops/windows/reboot/Get-WdSwarmParallelStatus.ps1"], root)
     assert mapped["full_suite"] is False
     assert "tests/tools/test_bridge_code_package_closure.py" in mapped["tests"]
     assert "tests/tools/test_wd_bridge_code_context.py" in mapped["tests"]
@@ -350,7 +361,7 @@ def test_bridge_unreadable_candidate_fails_closed(tmp_path, monkeypatch):
         return real_read_text(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", unreadable)
-    result = select_affected_tests(["ops/windows/reboot/bridge-code-files.json"], root)
+    result = select_affected_tests(["ops/windows/reboot/Get-WdSwarmParallelStatus.ps1"], root)
     assert result["full_suite"] is True
     assert "unreadable" in result["reason"]
 
@@ -358,7 +369,7 @@ def test_bridge_unreadable_candidate_fails_closed(tmp_path, monkeypatch):
 def test_bridge_mixed_product_change_requires_product_full_suite(tmp_path):
     root = _bridge_candidate_fixture(tmp_path)
     result = select_affected_tests(
-        ["ops/windows/reboot/bridge-code-files.json", "waggledance/x/alpha.py"], root
+        ["ops/windows/reboot/Get-WdSwarmParallelStatus.ps1", "waggledance/x/alpha.py"], root
     )
     assert result["full_suite"] is True
 

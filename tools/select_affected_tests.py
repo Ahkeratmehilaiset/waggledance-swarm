@@ -134,56 +134,6 @@ BRIDGE_EXPLICIT_TESTS: dict[str, frozenset[str]] = {
         "tests/tools/test_wd_continuity_alert.py",
         "tests/tools/test_wd_native_tools_wake.py",
     }),
-    "ops/windows/reboot/bridge-code-files.json": frozenset("""
-        tests/tools/test_bridge_code_package_closure.py
-        tests/tools/test_lane_profile_launch_probe.py
-        tests/tools/test_wd_bridge_code_context.py
-        tests/tools/test_wd_grok_helper.py
-        tests/tools/test_wd_native_tools_wake.py
-    """.split()),
-    "ops/windows/reboot/start-wd-agent.ps1": frozenset("""
-        tests/tools/test_bridge_task_result.py
-        tests/tools/test_lane_launch_preflight.py
-        tests/tools/test_lane_profile_launch_probe.py
-        tests/tools/test_wd_bridge_code_context.py
-        tests/tools/test_wd_capacity_observer.py
-        tests/tools/test_wd_conversation_recovery.py
-        tests/tools/test_wd_conversation_resume.py
-        tests/tools/test_wd_dynamic_model_startup.py
-        tests/tools/test_wd_event_driven_wake.py
-        tests/tools/test_wd_grok_helper.py
-        tests/tools/test_wd_lane_context_window.py
-        tests/tools/test_wd_launcher_claude_marker_scrub.py
-        tests/tools/test_wd_lead_continuity_imports.py
-        tests/tools/test_wd_lead_reply_delivery.py
-        tests/tools/test_wd_native_lead.py
-        tests/tools/test_wd_native_tools_wake.py
-        tests/tools/test_wd_reboot_bundle.py
-        tests/tools/test_wd_startup_recovery.py
-        tests/tools/test_wd_startup_repair.py
-        tests/tools/test_wd_swarm_parallel_status.py
-    """.split()),
-    "ops/windows/reboot/start-wd-tools-consumer.ps1": frozenset("""
-        tests/tools/test_bridge_final_acceptance_20260927.py
-        tests/tools/test_bridge_inbox_recovery.py
-        tests/tools/test_bridge_wake_observation.py
-        tests/tools/test_lane_launch_preflight.py
-        tests/tools/test_lane_profile_launch_probe.py
-        tests/tools/test_wd_bridge_code_context.py
-        tests/tools/test_wd_continuity_controls.py
-        tests/tools/test_wd_conversation_recovery.py
-        tests/tools/test_wd_dynamic_model_startup.py
-        tests/tools/test_wd_launcher_claude_marker_scrub.py
-        tests/tools/test_wd_lead_continuity_imports.py
-        tests/tools/test_wd_lead_reply_delivery.py
-        tests/tools/test_wd_native_tools.py
-        tests/tools/test_wd_native_tools_wake.py
-        tests/tools/test_wd_reboot_bundle.py
-        tests/tools/test_wd_startup_recovery.py
-        tests/tools/test_wd_supervisor_opaque_process.py
-        tests/tools/test_wd_swarm_parallel_status.py
-        tests/tools/test_wd_tools_conversation.py
-    """.split()),
     "ops/windows/reboot/Get-WdNativeWakePrompt.ps1": frozenset({
         "tests/tools/test_wd_native_wake_prompt.py",
         "tests/tools/test_wd_reboot_bundle.py",
@@ -200,12 +150,6 @@ BRIDGE_EXPLICIT_TESTS: dict[str, frozenset[str]] = {
     "tools/bridge_continuity_guard.py": frozenset({
         "tests/tools/test_bridge_continuity_guard.py",
         "tests/tools/test_wd_native_tools_wake.py",
-    }),
-    "ops/windows/reboot/wd-fleet.json": frozenset({
-        "tests/tools/test_wd_reboot_bundle.py",
-    }),
-    "ops/windows/reboot/wd_supervisor_loop.json": frozenset({
-        "tests/tools/test_wd_reboot_bundle.py",
     }),
 }
 
@@ -229,6 +173,31 @@ BRIDGE_SHARED_TEST_CONSUMERS: dict[str, frozenset[str]] = {
 # changes; two additional direct importers were checked at ec76 (request
 # preflight and task-console bridge-pin tests). No product test is inferred by
 # directory prefix. Missing members force full in both selector and router.
+# Preserve the prior shared-test boundary when removing incomplete source maps.
+# The classifier source already closes over these tests via its shared provider;
+# adding the same edges directly keeps classifier test-only routing unchanged.
+BRIDGE_EXPLICIT_TESTS[".agent-bridge/bin/BridgeEventClassifier.ps1"] |= frozenset("""
+    tests/tools/test_bridge_code_package_closure.py
+    tests/tools/test_bridge_final_acceptance_20260927.py
+    tests/tools/test_bridge_wake_observation.py
+    tests/tools/test_lane_launch_preflight.py
+    tests/tools/test_lane_profile_launch_probe.py
+    tests/tools/test_wd_bridge_code_context.py
+    tests/tools/test_wd_capacity_observer.py
+    tests/tools/test_wd_conversation_recovery.py
+    tests/tools/test_wd_conversation_resume.py
+    tests/tools/test_wd_dynamic_model_startup.py
+    tests/tools/test_wd_grok_helper.py
+    tests/tools/test_wd_lane_context_window.py
+    tests/tools/test_wd_launcher_claude_marker_scrub.py
+    tests/tools/test_wd_lead_reply_delivery.py
+    tests/tools/test_wd_native_lead.py
+    tests/tools/test_wd_native_tools.py
+    tests/tools/test_wd_startup_recovery.py
+    tests/tools/test_wd_startup_repair.py
+    tests/tools/test_wd_supervisor_opaque_process.py
+    tests/tools/test_wd_tools_conversation.py
+""".split())
 BRIDGE_PROVIDER_CONSUMERS = frozenset(set().union(*BRIDGE_EXPLICIT_TESTS.values()) | {
     "tests/tools/test_bridge_request_preflight.py",
     "tests/tools/test_wd_task_console_containment_pin.py",

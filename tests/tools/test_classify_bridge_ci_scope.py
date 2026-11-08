@@ -22,9 +22,6 @@ BRIDGE_SOURCES = (
     ".agent-bridge/bin/Invoke-StaleClaimSweep.ps1",
     "ops/windows/reboot/Get-WdSwarmParallelStatus.ps1",
     "ops/windows/reboot/Send-WdContinuityAlert.ps1",
-    "ops/windows/reboot/bridge-code-files.json",
-    "ops/windows/reboot/start-wd-agent.ps1",
-    "ops/windows/reboot/start-wd-tools-consumer.ps1",
 )
 CANDIDATE_SOURCES = (
     ".agent-bridge/bin/BridgeEventClassifier.ps1",
@@ -36,9 +33,6 @@ CANDIDATE_SOURCES = (
     "ops/windows/reboot/Send-WdContinuityAlert.ps1",
     "ops/windows/reboot/WAKE_PROCEDURE_LEAD.md",
     "ops/windows/reboot/WAKE_PROCEDURE_TOOLS.md",
-    "ops/windows/reboot/bridge-code-files.json",
-    "ops/windows/reboot/start-wd-agent.ps1",
-    "ops/windows/reboot/start-wd-tools-consumer.ps1",
     "tools/bridge_continuity_guard.py",
 )
 CANDIDATE_TESTS = (
@@ -222,6 +216,26 @@ def test_reboot_installer_cannot_use_bridge_only_scope(tmp_path):
         assert "unmapped" in result["reason"], result
 
 
+@pytest.mark.parametrize("source", [
+    "ops/windows/reboot/wd-fleet.json",
+    "ops/windows/reboot/bridge-code-files.json",
+    "ops/windows/reboot/start-wd-agent.ps1",
+    "ops/windows/reboot/start-wd-tools-consumer.ps1",
+    "ops/windows/reboot/wd_supervisor_loop.json",
+])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_incomplete_reboot_maps_cannot_use_bridge_only_scope(tmp_path, source, mixed):
+    root = fixture_repo(tmp_path)
+    target = root / source
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("source\n", encoding="utf-8")
+    changed = (source, BRIDGE_SOURCES[0]) if mixed else (source,)
+    run, _ = fake_git(changed)
+    result = classify_scope(BASE, HEAD, root, run_git=run)
+    assert result["scope"] == "full", result
+    assert "unmapped" in result["reason"], result
+
+
 def real_git_repo(tmp_path: Path) -> tuple[Path, str, str]:
     """Two clean commits in a disposable repo, never in the production checkout."""
     root = fixture_repo(tmp_path)
@@ -237,8 +251,8 @@ def real_git_repo(tmp_path: Path) -> tuple[Path, str, str]:
     git("add", "-A")
     git("commit", "-qm", "base fixture")
     base = git("rev-parse", "HEAD")
-    (root / BRIDGE_SOURCES[4]).write_text("changed source\n", encoding="utf-8")
-    git("add", "--", BRIDGE_SOURCES[4])
+    (root / BRIDGE_SOURCES[2]).write_text("changed source\n", encoding="utf-8")
+    git("add", "--", BRIDGE_SOURCES[2])
     git("commit", "-qm", "head fixture")
     head = git("rev-parse", "HEAD")
     return root, base, head
@@ -253,22 +267,22 @@ def test_clean_real_git_exact_commits_narrow_and_ignored_audit_is_safe(tmp_path)
     (root / ".git/info/exclude").write_text(".codex-audit/\n", encoding="utf-8")
     result = classify_scope(base, head, root)
     assert result["scope"] == "bridge", result
-    assert result["changed_files"] == [BRIDGE_SOURCES[4]]
+    assert result["changed_files"] == [BRIDGE_SOURCES[2]]
 
 
 @pytest.mark.parametrize("dirty", ["source", "mapped_test", "selector", "staged", "untracked_replacement"])
 def test_real_git_dirty_checkout_fails_full(tmp_path, dirty):
     root, base, head = real_git_repo(tmp_path)
-    mapped_test = sorted(BRIDGE_EXPLICIT_TESTS[BRIDGE_SOURCES[4]])[0]
+    mapped_test = sorted(BRIDGE_EXPLICIT_TESTS[BRIDGE_SOURCES[2]])[0]
     if dirty == "source":
-        (root / BRIDGE_SOURCES[4]).write_text("dirty source\n", encoding="utf-8")
+        (root / BRIDGE_SOURCES[2]).write_text("dirty source\n", encoding="utf-8")
     elif dirty == "mapped_test":
         (root / mapped_test).write_text("def test_dirty(): assert False\n", encoding="utf-8")
     elif dirty == "selector":
         (root / "tools/select_affected_tests.py").write_text("# dirty map\n", encoding="utf-8")
     elif dirty == "staged":
-        (root / BRIDGE_SOURCES[4]).write_text("staged source\n", encoding="utf-8")
-        subprocess.run(["git", "add", "--", BRIDGE_SOURCES[4]], cwd=root, check=True, capture_output=True)
+        (root / BRIDGE_SOURCES[2]).write_text("staged source\n", encoding="utf-8")
+        subprocess.run(["git", "add", "--", BRIDGE_SOURCES[2]], cwd=root, check=True, capture_output=True)
     else:
         subprocess.run(["git", "rm", "--cached", "--", mapped_test], cwd=root,
                        check=True, capture_output=True)
@@ -414,7 +428,7 @@ def test_missing_source_mapping_and_missing_mapped_test_fail_closed(tmp_path):
     run, _ = fake_git((unknown,))
     assert classify_scope(BASE, HEAD, root, run_git=run)["scope"] == "full"
     (root / "tests/tools/test_wd_native_tools_wake.py").unlink()
-    run, _ = fake_git(("ops/windows/reboot/bridge-code-files.json",))
+    run, _ = fake_git(("ops/windows/reboot/Send-WdContinuityAlert.ps1",))
     result = classify_scope(BASE, HEAD, root, run_git=run)
     assert result["scope"] == "full"
     assert "missing" in result["reason"]

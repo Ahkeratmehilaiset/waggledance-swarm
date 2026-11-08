@@ -79,7 +79,6 @@ CANARIES = {
     "pem": lambda: "-----BEG" + "IN RSA PRIVATE KEY-----",
     "jwt": lambda: "ey" + "Jhbm9uZSI6dHJ1ZX0." + "eyJzdWIiOiIxIn0." + "c2ln",
     "url_userinfo": lambda: "https" + "://user:" + "pw" + "@example.invalid/x",
-    "base64_run": lambda: "QmFzZTY0" + "U3ludGhldGljQ2FuYXJ5" + "VmFsdWUx",
 }
 IDENTIFIERS = {"uuid": lambda: "12345678-" + "1234-4234-8234-" + "123456789abc"}
 PERSONAL = {
@@ -211,7 +210,6 @@ def test_synthetic_grouped_license_key_is_refused():
     "tunnussana is synthetic-value",
     "PIN-koodi: synthetic-value",
     "password is synthetic-value",
-    "synthetic AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc",
     "synthetic ABCDE-FGHIJ-KLMNO-PQRST-UVWXY",
 ])
 def test_additional_synthetic_credentials_are_refused(message):
@@ -280,7 +278,7 @@ def test_hex_redaction_preserves_adjacent_personal_and_secret_checks():
 def test_hex_31_boundary_and_base64url_still_refuses():
     short = "ab" * 15 + "a"
     assert cp.classify("commit " + short) == ("KEEP", "commit " + short)
-    assert cp.classify("AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc") == ("DROP", "credential")
+    assert cp.classify("AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc") == ("KEEP", "token-redacted")
 
 
 def test_long_public_command_can_be_retained_only_as_a_placeholder():
@@ -295,7 +293,27 @@ def test_named_base64url_secret_still_drops():
     value = "AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc"
     assert cp.classify("password=" + value) == ("DROP", "credential")
     assert cp.classify("password=Get-WdQ4LifecycleCutoverReadiness") == ("DROP", "credential")
-    assert cp.classify("Get-WdQ4LifecycleCutoverReadinessX") == ("DROP", "credential")
+    assert cp.classify("Get-WdQ4LifecycleCutoverReadinessX") == ("KEEP", "token-redacted")
+
+
+@pytest.mark.parametrize("value", ["Get-ExampleLongPublicCommandName2026", "AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc",
+                                     "XyZa0123456789ABCDEFGHIJKLMNOPQRSTuvwx/=="])
+def test_any_long_base64url_candidate_is_wholly_redacted(value):
+    verdict, encoded = cp.classify("run " + value + " now")
+    assert verdict == "KEEP"
+    assert cp.decode_text(encoded) == "run token-redacted now"
+    assert value not in encoded
+    assert cp.classify("password=" + value) == ("DROP", "credential")
+
+
+def test_redacted_token_does_not_hide_pii_sealed_or_url_userinfo():
+    value = "AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc"
+    assert cp.classify(value + " someone@example.invalid") == ("DROP", "personal")
+    assert cp.classify(value + " gold") == ("DROP", "sealed")
+    assert cp.classify("https://name:password@example.invalid/" + value) == ("DROP", "credential")
+    verdict, encoded = cp.classify("see https://example.invalid/" + value + " done")
+    assert verdict == "KEEP"
+    assert value not in cp.decode_text(encoded) and "example.invalid" not in cp.decode_text(encoded)
 
 
 @pytest.mark.parametrize("value", [r"copied to D:\Data\Jane Smith yesterday",

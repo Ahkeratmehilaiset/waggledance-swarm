@@ -92,9 +92,6 @@ _CREDENTIAL = (
     re.compile(r"[0-9a-fA-F]{32,}"),
 )
 _BASE64_RUN = re.compile(r"[A-Za-z0-9+/_-]{32,}={0,2}")
-# A reviewed literal is never retained: it is only allowed through to a fixed
-# replacement. Other long token-shaped runs continue to fail closed.
-_REDACT_ONLY_TOKENS = frozenset({"Get-WdQ4LifecycleCutoverReadiness"})
 _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 _ISO_TIME = re.compile(r"\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?Z?)?")
 _IBAN_LENGTHS = dict((code[:2], int(code[2:])) for code in (
@@ -263,8 +260,6 @@ def _normalize(text, limit):
 def _base64_secret(text):
     for match in _BASE64_RUN.finditer(text):
         run = match.group(0)
-        if run in _REDACT_ONLY_TOKENS:
-            continue
         if re.fullmatch(r"[0-9a-fA-F]{32,}", run):
             continue  # Hex is independently screened or replaced; never retained.
         if any(c.isdigit() for c in run) and any(c.isupper() for c in run) and any(c.islower() for c in run):
@@ -319,7 +314,7 @@ def _script(text):
 def _screen(text, *, redact_hex=False):
     """The detectors, in order, on one normalized text; raises ``_Drop`` with the first matching class."""
     patterns = _CREDENTIAL[:-1] if redact_hex else _CREDENTIAL
-    if any(pattern.search(text) for pattern in patterns) or _base64_secret(text) or _OWNER_HEX.search(text):
+    if any(pattern.search(text) for pattern in patterns) or (not redact_hex and _base64_secret(text)) or _OWNER_HEX.search(text):
         raise _Drop("credential")
     # Credential and URL-userinfo checks above inspect the original text first.
     # A URL scheme such as https:/ must not be mistaken for a drive path.
@@ -327,8 +322,12 @@ def _screen(text, *, redact_hex=False):
     if (_AMBIGUOUS_PROFILE.search(path_text) or _AMBIGUOUS_TERMINAL_PATH.search(path_text)
             or _AMBIGUOUS_SPACED_PATH.search(path_text)):
         raise _Drop("personal")
+    lowered = text.lower()
+    if _UUID.search(text) or any(name in lowered for name in _local_identifiers()):
+        raise _Drop("identifier")
     if redact_hex:
         text = _CREDENTIAL[-1].sub("hex-redacted", text)
+        text = _BASE64_RUN.sub("token-redacted", text)
     lowered = text.lower()
     if _UUID.search(text) or any(name in lowered for name in _local_identifiers()):
         raise _Drop("identifier")
@@ -358,9 +357,8 @@ def classify(raw_text, limit=MAX_MESSAGE_CHARS):
             raise _Drop("empty")
         _screen(text, redact_hex=True)
         text = _CREDENTIAL[-1].sub("hex-redacted", text)
-        text = _BASE64_RUN.sub(lambda match: "token-redacted" if match.group(0) in _REDACT_ONLY_TOKENS
-                               else match.group(0), text)
         text = _replace_locations(text)
+        text = _BASE64_RUN.sub("token-redacted", text)
         if not text:
             raise _Drop("empty")
         _screen(text)

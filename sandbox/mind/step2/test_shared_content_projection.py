@@ -196,6 +196,16 @@ def test_iso_times_and_repo_paths_are_kept_but_local_paths_and_urls_are_tokens()
     assert decoded.count("local-path") == 2 and "url" in decoded
 
 
+def test_forward_slash_windows_private_path_is_not_retained():
+    verdict, encoded = cp.classify("see C:/Users/Example/private.txt")
+    assert verdict == "KEEP"
+    assert cp.decode_text(encoded) == "see local-path"
+
+
+def test_synthetic_grouped_license_key_is_refused():
+    assert cp.classify("key 36-ABCD-EFGH-JKLM-NPQR-STUV-WXYZ234") == ("DROP", "credential")
+
+
 # --- fail-closed screening before chunking -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", sorted(CANARIES))

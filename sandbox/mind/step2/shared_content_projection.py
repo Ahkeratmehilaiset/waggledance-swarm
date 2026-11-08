@@ -87,6 +87,7 @@ _CREDENTIAL = (
     re.compile(r"-----BEGIN [A-Z0-9 ]*-----"),
     re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*"),
     re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]*@"),
+    re.compile(r"(?i)(?<![a-z0-9])\d{2}(?:-[a-z0-9]{4,7}){5,}(?![a-z0-9-])"),
     re.compile(r"[0-9a-fA-F]{32,}"),
 )
 _BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{32,}={0,2}")
@@ -108,7 +109,7 @@ _Y_TUNNUS_RE = re.compile(r"\b\d{7}-\d\b")
 _PHONE_RE = re.compile(r"\+?\d[\d\s-]{8,}")
 _PERSONAL = (_EMAIL_RE, _CREDIT_CARD_RE, _HETU_RE, _Y_TUNNUS_RE)
 _URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://\S+")
-_LOCAL_PATH = (re.compile(r"[A-Za-z]:\\[^\s]*"), re.compile(r"\\\\[^\s]+"),
+_LOCAL_PATH = (re.compile(r"[A-Za-z]:[\\/][^\s]*"), re.compile(r"\\\\[^\s]+"),
                re.compile(r"(?<![^\s(\"'])(?:~|/)[\w.-]*(?:/[\w.-]+)+/?"))
 
 

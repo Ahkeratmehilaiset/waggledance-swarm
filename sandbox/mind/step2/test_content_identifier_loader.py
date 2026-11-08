@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import importlib
+import inspect
 import json
 
 import pytest
@@ -77,3 +78,47 @@ def test_interrupt_propagates_and_clears_own_frames(monkeypatch, interrupt):
     with pytest.raises(interrupt) as caught:
         mod.load_identifier_policy(raw, key, tag)
     assert_own_frames_clear(caught.value, mod, (raw, key, tag))
+
+
+@pytest.mark.parametrize("location", ["hmac", "normalize"])
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+def test_real_policy_interrupt_clears_own_frames_by_value(monkeypatch, location, interrupt):
+    mod = loader()
+    raw, key, tag = valid()
+    original = policy.hmac.new if location == "hmac" else policy.unicodedata.normalize
+    expected_caller = "load_policy" if location == "hmac" else "_normalize"
+
+    def injected(*args, **kwargs):
+        if inspect.currentframe().f_back.f_code.co_name == expected_caller:
+            raise interrupt()
+        return original(*args, **kwargs)
+
+    if location == "hmac":
+        monkeypatch.setattr(policy.hmac, "new", injected)
+    else:
+        monkeypatch.setattr(policy.unicodedata, "normalize", injected)
+    with pytest.raises(interrupt) as caught:
+        mod.load_identifier_policy(raw, key, tag)
+    current = caught.value.__traceback__
+    seen = set()
+    saw_external_injected_frame = False
+    foreign_args_contain_input = False
+    while current:
+        frame = current.tb_frame
+        module = frame.f_globals.get("__name__")
+        if module in (mod.__name__, policy.__name__):
+            seen.add(module)
+            for item in frame.f_locals.values():
+                if isinstance(item, (bytes, str)) and any(item == secret for secret in (raw, key, tag, NAME)):
+                    pytest.fail("synthetic input remains in an owned frame by value")
+                if isinstance(item, (list, tuple, dict)) and NAME in repr(item):
+                    pytest.fail("synthetic identifier remains in an owned container")
+        elif frame.f_code is injected.__code__:
+            saw_external_injected_frame = True
+            foreign_args = frame.f_locals.get("args", ())
+            foreign_args_contain_input = any(item == expected for item in foreign_args
+                                             for expected in (raw, key, tag, NAME))
+        current = current.tb_next
+    assert seen == {mod.__name__, policy.__name__}
+    assert saw_external_injected_frame  # foreign frames remain outside this boundary
+    assert foreign_args_contain_input  # a deliberately injected foreign frame can retain input

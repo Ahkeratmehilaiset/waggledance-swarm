@@ -24,8 +24,8 @@ card, HETU, Y-tunnus and phone detectors, with ISO dates and times masked for th
 detector with a mod-97 check), ``sealed`` (sealed, gold, heldout or judge anywhere, or a workspace guarded word), ``mixed_script`` (a non-Latin
 letter next to Latin text), ``encoding`` (other scripts, non-BMP characters, control characters, invalid text),
 ``empty`` or ``oversize``. Any detector or normalizer error drops the row as ``unknown``; KEEP is reachable only
-through the success path. Known credential patterns drop the row before masking. Non-whitespace runs of at least 32
-characters and adjacent runs of at least 16 characters are conservatively masked, including ordinary work identifiers;
+through the success path. Known credential patterns drop the row before masking. Non-whitespace runs of at least 16
+characters are conservatively masked, including ordinary work identifiers;
 this does not detect every way to split a secret. Absolute local paths and URLs are replaced by the fixed words
 ``local-path`` and ``url`` where the conservative mask has not already covered them. Deterministic screening has limits: it
 over-blocks (for example digit groups that look like phone numbers, or "golden") and cannot prove that no sensitive
@@ -274,7 +274,7 @@ def _redact_sensitive_runs(text, *, include_urls=False):
     spans = []
     words = list(re.finditer(r"\S+", text))
     for word in words:
-        if len(word.group()) >= 32:
+        if len(word.group()) >= 16:
             label = "hex-redacted" if re.fullmatch(r"[0-9a-fA-F]{32,}", word.group()) else "token-redacted"
             spans.append((word.start(), word.end(), label))
     for left, right in zip(words, words[1:]):

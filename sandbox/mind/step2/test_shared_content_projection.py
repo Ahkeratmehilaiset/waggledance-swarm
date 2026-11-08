@@ -11,6 +11,29 @@ import re
 import pytest
 
 
+@pytest.mark.parametrize("value", [
+    "abcdefghiJKLMN12",
+    "abcdefghijklmnopqrstuvwxyzzzzzz",
+    "abcdefghijklmnop",
+    "abCD1234efGH5678 filler ijKL9012mnOP3456",
+])
+def test_individual_long_fragments_are_masked_even_across_filler(value):
+    verdict, encoded = cp.classify("run " + value + " done")
+    assert verdict == "KEEP"
+    output = cp.decode_text(encoded)
+    for word in value.split():
+        if len(word) >= 16:
+            assert word not in output
+    assert "token-redacted" in output
+
+
+def test_short_plain_fragments_are_not_claimed_as_protected():
+    value = "abcdefghijklmno filler pqrstuvwxyzabcd"
+    verdict, encoded = cp.classify("run " + value + " done")
+    assert verdict == "KEEP"
+    assert cp.decode_text(encoded) == "run " + value + " done"
+
+
 @pytest.mark.parametrize("separator", [".", "~", "%", "ä"])
 def test_long_unspaced_segments_are_masked_even_with_unusual_characters(separator):
     value = "abcdefghijklmnop" + separator + "qrstuvwxyzabcdef"
@@ -211,20 +234,20 @@ def test_one_overlong_word_is_split_without_breaking_an_escape():
         assert "".join(cp.decode_text(c) for c in chunks) == text
 
 
-def test_iso_times_and_repo_paths_are_kept_but_local_paths_and_urls_are_tokens():
+def test_long_times_and_paths_are_masked_and_local_paths_are_not_exposed():
     text = ("valmis 2026-11-07T17:52:46Z ja 2026-11-07, katso tests/tools/test_x.py; ensin C:" + "\\Users\\someone\\x.txt"
             " ja https" + "://example.invalid/a/b sek\u00e4 /home/someone/x")
     (record,) = build(rows_of(row(text)))["records"]
     decoded = cp.decode_text(record["stored_text"])
-    assert "2026-11-07T17:52:46Z" in decoded and "tests/tools/test_x.py" in decoded
+    assert "2026-11-07T17:52:46Z" not in decoded and "tests/tools/test_x.py" not in decoded
     assert "someone" not in decoded and "example.invalid" not in decoded
-    assert decoded.count("local-path") == 2 and "url" in decoded
+    assert "token-redacted" in decoded and "local-path" in decoded
 
 
 def test_forward_slash_windows_private_path_is_not_retained():
     verdict, encoded = cp.classify("see C:/Users/Example/private.txt")
     assert verdict == "KEEP"
-    assert cp.decode_text(encoded) == "see local-path"
+    assert cp.decode_text(encoded) == "see token-redacted"
 
 
 def test_synthetic_grouped_license_key_is_refused():
@@ -304,7 +327,7 @@ def test_hex_redaction_preserves_adjacent_personal_and_secret_checks():
 
 def test_hex_31_boundary_and_base64url_still_refuses():
     short = "ab" * 15 + "a"
-    assert cp.classify("commit " + short) == ("KEEP", "commit " + short)
+    assert cp.classify("commit " + short) == ("KEEP", "commit token-redacted")
     assert cp.classify("AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc") == ("DROP", "personal")
 
 

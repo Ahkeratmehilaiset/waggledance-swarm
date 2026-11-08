@@ -92,6 +92,9 @@ _BINDING_KEYS = frozenset({"pointer_sha256", "source_anchor_sha256", "encoder_sh
 # optional card route decision pin; when the descriptor has it, the answer binding must carry the same value
 _CARD_BINDING_KEYS = _BINDING_KEYS | {"card_decision_sha256"}
 _STAGED_BINDING_KEYS = _CARD_BINDING_KEYS | {"card_policy_sha256"}
+_CONTENT_BINDING_KEYS = frozenset({"encoder_sha256", "policy_sha256", "roster_sha256",
+                                   "content_decision_sha256", "descriptor_sha256", "memory_sha256",
+                                   "projection_sha256"})
 _ANSWER_KEYS = frozenset({"schema", "lane", "status", "reason", "result_count", "results", "binding", "trust"})
 _ANSWER_SCHEMA = "wd.q4-lane-answer.v1"
 _ITEM_KEYS = frozenset({"ref_sha256", "doc_id_sha256", "stored_text"})
@@ -212,7 +215,7 @@ def _consistent_descriptor(descriptor, agent, inputs):
     if type(lanes) is not list or not all(type(lane) is str for lane in lanes) or agent not in lanes:
         _refuse()
     binding = descriptor["expected_binding"]
-    if (type(binding) is not dict or frozenset(binding) not in (_BINDING_KEYS, _CARD_BINDING_KEYS, _STAGED_BINDING_KEYS)
+    if (type(binding) is not dict or frozenset(binding) not in (_BINDING_KEYS, _CARD_BINDING_KEYS, _STAGED_BINDING_KEYS, _CONTENT_BINDING_KEYS)
             or not all(type(value) is str and _HEX64.fullmatch(value) for value in binding.values())
             or type(descriptor["outer"]) is not dict):
         _refuse()

@@ -961,3 +961,90 @@ def test_v6_non_card_results_are_not_rechecked_by_card_status(case, monkeypatch,
     result = json.loads(capsys.readouterr().out)
     assert result["answer"]["results"][0]["stored_text"] == text
     assert result["answer"]["trust"]["freshness"] == "UNKNOWN"
+
+
+def test_content_binding_cli_requires_exact_seven_well_formed_pins():
+    from tools.wd_q4_lane_query import CONTENT_BINDING_KEYS
+    from tools import wd_q4_lane_caller_cli as target
+    binding = {key: "a" * 64 for key in CONTENT_BINDING_KEYS}
+    assert target._binding(binding) == binding
+    for key in CONTENT_BINDING_KEYS:
+        bad = dict(binding)
+        del bad[key]
+        with pytest.raises(ValueError):
+            target._binding(bad)
+        bad = dict(binding, **{key: "z" * 64})
+        with pytest.raises(ValueError):
+            target._binding(bad)
+    with pytest.raises(ValueError):
+        target._binding(dict(binding, unexpected="a" * 64))
+
+
+def test_content_output_rejects_each_substituted_pin_even_after_rehash():
+    from tools import wd_q4_lane_caller_cli as target
+    from tools.wd_q4_lane_query import CONTENT_BINDING_KEYS
+    expected = {key: "a" * 64 for key in CONTENT_BINDING_KEYS}
+    answer = {"schema": "wd.q4-lane-answer.v1", "lane": "fable-5", "status": "ABSTAIN", "reason": "",
+              "result_count": 0, "results": [], "binding": expected, "trust": dict(target._TRUST)}
+    result = {"schema": "wd.q4-lane-caller-result.v1", "status": "VALIDATED", "lane": "fable-5",
+              "lane_binding": "DECLARED_CONSISTENT", "lane_authentication": "UNKNOWN",
+              "cleanup": "chain_confirmed", "inner_status": "ABSTAIN", "result_count": 0,
+              "answer": answer, "answer_sha256": target._sha(target._canon(answer)),
+              "identity_sha256": "1" * 64, "descriptor_sha256": "2" * 64, "call_id": "3" * 32}
+    assert target._output(result, "fable-5", "1" * 64, "2" * 64, expected, 65536, "not-in-output")
+    for key in CONTENT_BINDING_KEYS:
+        changed = dict(answer, binding=dict(expected, **{key: "b" * 64}))
+        forged = dict(result, answer=changed, answer_sha256=target._sha(target._canon(changed)))
+        with pytest.raises(ValueError):
+            target._output(forged, "fable-5", "1" * 64, "2" * 64, expected, 65536, "not-in-output")
+
+
+def test_content_pinned_snapshot_is_rechecked_without_legacy_pointer(tmp_path):
+    from tools import wd_q4_lane_caller_cli as target
+    from sandbox.mind.step2.shared_index_preflight import _encoder_digest
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    encoder = {"model": "synthetic", "revision": "b" * 40, "weights_sha256": "a" * 64}
+    projection = b"{}"
+    projection_pin = sha(projection)
+    manifest = canon({"projection_schema": "wd.mind-content-memory-projection.v1",
+                      "projection_sha256": projection_pin})
+    descriptor = canon({"schema": "wd.bridge-mind-q4-memory-descriptor.v2",
+                        "scope": "wd.q4-shared-projected-events.v1", "memory_sha256": sha(manifest),
+                        "dim": 2, "encoder": encoder})
+    files = {"descriptor": (memory / "descriptor.json", descriptor),
+             "memory": (memory / "memory.json", manifest),
+             "projection": (memory / "projection.json", projection),
+             "policy": (tmp_path / "policy.json", b"{}"),
+             "roster": (tmp_path / "roster.json", b"{}"),
+             "content_decision": (tmp_path / "decision.json", b"{}")}
+    for path, raw in files.values():
+        path.write_bytes(raw)
+    pins = {"encoder_sha256": _encoder_digest(encoder), "policy_sha256": sha(files["policy"][1]),
+            "roster_sha256": sha(files["roster"][1]), "content_decision_sha256": sha(files["content_decision"][1]),
+            "descriptor_sha256": sha(descriptor), "memory_sha256": sha(manifest),
+            "projection_sha256": projection_pin}
+    plan = {"schema": "wd.q4-public-wrapper-plan.v4",
+            "config": {"memory": str(memory), "descriptor": str(files["descriptor"][0]),
+                       "descriptor_sha256": pins["descriptor_sha256"], "runtime_revision": "b" * 40},
+            "encoder_sha256": pins["encoder_sha256"], "memory_sha256": pins["memory_sha256"],
+            "projection_sha256": pins["projection_sha256"]}
+    for key in ("policy", "roster", "content_decision"):
+        plan[key + "_path"] = str(files[key][0])
+        plan[key + "_sha256"] = pins[key + "_sha256"]
+    public = tmp_path / "public-plan.v4.json"
+    public_raw = canon(plan)
+    public.write_bytes(public_raw)
+    binding_doc = canon({"schema": "wd.q4-lane-binding.v1", "binding": pins,
+                         "public_plan_sha256": sha(public_raw)})
+    descriptor_input = {"public_plan": str(public)}
+    inputs = {"binding_bytes": binding_doc}
+    target._require_current_snapshot(descriptor_input, pins, inputs)
+    for path, raw in files.values():
+        path.write_bytes(raw + b" ")
+        with pytest.raises(ValueError):
+            target._require_current_snapshot(descriptor_input, pins, inputs)
+        path.write_bytes(raw)
+    public.write_bytes(public_raw + b" ")
+    with pytest.raises(ValueError):
+        target._require_current_snapshot(descriptor_input, pins, inputs)

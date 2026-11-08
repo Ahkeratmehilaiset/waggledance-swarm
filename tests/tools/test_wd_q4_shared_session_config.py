@@ -244,3 +244,44 @@ def test_v2_disabled_ignores_invalid_pins_and_new_fields(tmp_path):
 def test_v2_external_fleet_or_descriptor_pin_mismatch_refuses(tmp_path, kwargs):
     result, _ = run_v2(tmp_path, **kwargs)
     assert result == {"ok": False, "reason": "q4_shared_session_config_refused"}
+
+
+@pytest.mark.parametrize("lane", LANES)
+def test_v2_content_binding_preserves_exact_seven_pins_for_each_lane(tmp_path, lane):
+    from tools.wd_q4_lane_query import CONTENT_BINDING_KEYS
+    content = {key: "a" * 64 for key in CONTENT_BINDING_KEYS}
+    result, _ = run_v2(tmp_path, lane=lane, mutate=lambda d: d.update(expected_binding=content))
+    assert result["ok"] and result["value"]["expected_binding"] == content
+
+
+@pytest.mark.parametrize("key", ["encoder_sha256", "policy_sha256", "roster_sha256",
+                                  "content_decision_sha256", "descriptor_sha256",
+                                  "memory_sha256", "projection_sha256"])
+def test_v2_content_binding_refuses_each_missing_or_invalid_pin(tmp_path, key):
+    from tools.wd_q4_lane_query import CONTENT_BINDING_KEYS
+    def change(d):
+        d["expected_binding"] = {k: "a" * 64 for k in CONTENT_BINDING_KEYS}
+        d["expected_binding"][key] = "z" * 64
+    result, _ = run_v2(tmp_path, mutate=change)
+    assert not result["ok"]
+
+
+@pytest.mark.parametrize("key", ["encoder_sha256", "policy_sha256", "roster_sha256",
+                                  "content_decision_sha256", "descriptor_sha256",
+                                  "memory_sha256", "projection_sha256"])
+def test_v2_content_binding_refuses_each_missing_pin(tmp_path, key):
+    from tools.wd_q4_lane_query import CONTENT_BINDING_KEYS
+    def change(d):
+        d["expected_binding"] = {k: "a" * 64 for k in CONTENT_BINDING_KEYS}
+        del d["expected_binding"][key]
+    result, _ = run_v2(tmp_path, mutate=change)
+    assert not result["ok"]
+
+
+def test_v2_content_binding_rejects_mixed_status_or_card_pins(tmp_path):
+    from tools.wd_q4_lane_query import CONTENT_BINDING_KEYS
+    def change(d):
+        d["expected_binding"] = {k: "a" * 64 for k in CONTENT_BINDING_KEYS}
+        d["expected_binding"]["card_decision_sha256"] = "b" * 64
+    result, _ = run_v2(tmp_path, mutate=change)
+    assert not result["ok"]

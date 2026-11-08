@@ -905,3 +905,24 @@ def test_real_synthetic_chain_returns_a_validated_answer_with_unknown_authentica
     assert result["answer"]["trust"]["lane_authentication"] == "UNKNOWN"
     assert result["lane_authentication"] == "UNKNOWN" and result["lane_binding"] == "DECLARED_CONSISTENT"
     assert result["cleanup"] == "chain_confirmed" and result["result_count"] == len(case["_expected"])
+
+
+def test_content_descriptor_and_result_require_all_seven_bound_pins():
+    from tools.wd_q4_lane_query import CONTENT_BINDING_KEYS
+    expected = {key: "2" * 64 for key in CONTENT_BINDING_KEYS}
+    inputs = synthetic_inputs()
+    descriptor = descriptor_for(inputs, expected_binding=expected)
+    assert adapter()._consistent_descriptor(json.loads(descriptor), LANE, inputs) == expected
+    answer = answer_for(LANE, descriptor)
+    answer["results"] = [{"ref_sha256": "a" * 64, "doc_id_sha256": "b" * 64, "stored_text": "synthetic record"}]
+    assert adapter()._validated(answer, LANE, expected) is not None
+    for key in CONTENT_BINDING_KEYS:
+        altered = dict(answer, binding=dict(expected, **{key: "3" * 64}))
+        assert adapter()._validated(altered, LANE, expected) is None
+        missing = dict(expected)
+        del missing[key]
+        bad = dict(answer, binding=missing)
+        assert adapter()._validated(bad, LANE, expected) is None
+        with pytest.raises(ValueError):
+            bad_desc = descriptor_for(inputs, expected_binding=missing)
+            adapter()._consistent_descriptor(json.loads(bad_desc), LANE, inputs)

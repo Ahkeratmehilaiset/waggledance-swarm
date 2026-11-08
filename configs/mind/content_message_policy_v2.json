@@ -1,4 +1,5 @@
 {
+  "approved_source_refs": [],
   "approved_tasks": [
     "lead-mind-4h-fable-memory-20261108-v1",
     "lead-mind-4h-integration-tools-20261108-v1",
@@ -17,7 +18,7 @@
   "max_chunk_chars": 300,
   "max_message_chars": 4096,
   "removed_source_refs": [],
-  "schema": "wd.mind-content-policy.v1",
+  "schema": "wd.mind-content-policy.v2",
   "types": [
     "done",
     "handoff",

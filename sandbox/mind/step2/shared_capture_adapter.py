@@ -34,7 +34,7 @@ _RCO = frozenset({"claude-rco-1", "claude-rco-2"})
 _RCO_NAME = re.compile(r"(?<![a-z0-9])(?:claude[-_]rco[-_]?[0-9]+|rco[-_ ]?[0-9]+)(?![a-z0-9])", re.IGNORECASE)
 MAX_TTL_SECONDS = 900
 _POLICY_LIMIT = 65536
-_REVIEW_TASK = re.compile(r"(?:^|[._-])(?:review|rco[12]?)(?:$|[._-])", re.IGNORECASE)
+_REVIEW_TASK = re.compile(r"(?:^|[._-])(?:review|rco[0-9]*)(?:$|[._-])", re.IGNORECASE)
 
 
 class AdapterRefused(ValueError):
@@ -239,6 +239,23 @@ def _unsafe_recipient(value):
     return True
 
 
+def _unsafe_expected_responders(value):
+    """Accept only the complete, non-RCO bound-responder identity shape."""
+    if type(value) is not dict or not value:
+        return True
+    for lane, identity in value.items():
+        if (type(lane) is not str or re.fullmatch(r"[a-z][a-z0-9_-]{1,32}", lane) is None
+                or _RCO_NAME.search(lane) or type(identity) is not dict
+                or set(identity) != {"agent_uuid", "run_id", "session_id"}):
+            return True
+        for key, item in identity.items():
+            pattern = (r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}" if key == "agent_uuid"
+                       else r"[A-Za-z0-9._:-]{1,128}")
+            if type(item) is not str or re.fullmatch(pattern, item) is None or _RCO_NAME.search(item):
+                return True
+    return False
+
+
 def _exclude_rco_event(event):
     fields = {key.lower(): value for key, value in event.items()}
     agent = fields.get("agent")
@@ -256,7 +273,11 @@ def _exclude_rco_event(event):
             for key, item in value.items():
                 if not isinstance(key, str):
                     return True
-                if key.lower() in _RECIPIENT_KEYS and _unsafe_recipient(item):
+                normalized = key.lower().replace("-", "_")
+                if normalized == "expected_responders" and isinstance(item, dict):
+                    if _unsafe_expected_responders(item):
+                        return True
+                elif normalized in _RECIPIENT_KEYS and _unsafe_recipient(item):
                     return True
                 if isinstance(item, (dict, list)):
                     stack.append(item)

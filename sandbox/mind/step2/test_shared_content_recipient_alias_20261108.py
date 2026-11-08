@@ -30,6 +30,8 @@ def project(monkeypatch, event, strict):
     {"recipients": None},
     {"payload": {"targets": {"unknown": "fable-5"}}},
     {"payload": {"request": {"to_list": ["fable-5", 1]}}},
+    {"target-agents": ["claude-rco-3"]},
+    {"payload": {"recipient-list": ["claude-rco-1"]}},
 ])
 def test_rco_or_unclassifiable_alias_never_enters_projection(monkeypatch, strict, event):
     result = project(monkeypatch, event, strict)
@@ -42,3 +44,44 @@ def test_rco_or_unclassifiable_alias_never_enters_projection(monkeypatch, strict
 def test_non_rco_control_is_still_projected(monkeypatch, strict):
     result = project(monkeypatch, {"to": "fable-5"}, strict)
     assert result["accepted"] == 1
+
+
+def responder(**changes):
+    value = {"agent_uuid": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "run_id": "run-synthetic",
+             "session_id": "session-synthetic"}
+    value.update(changes)
+    return value
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("lane", ["fable-5", "codex-tools-1"])
+def test_canonical_non_rco_expected_responders_are_kept(monkeypatch, strict, lane):
+    expected = {lane: responder()}
+    assert project(monkeypatch, {"to": lane, "expected_responders": expected}, strict)["accepted"] == 1
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("expected", [
+    {"claude-rco-3": responder()}, {"fable-5": responder(run_id="rco3")},
+    {"fable-5": responder(run_id=123)}, {"fable-5": responder(extra="unknown")},
+    {"fable-5": {"agent_uuid": "synthetic"}}, {"fable-5": []}, {},
+])
+def test_malformed_or_rco_expected_responders_are_excluded(monkeypatch, strict, expected):
+    assert project(monkeypatch, {"to": "fable-5", "expected_responders": expected}, strict)["accepted"] == 0
+
+
+@pytest.mark.parametrize("task", ["x-rco3-work", "rco4", "x-rco123_work", "review"])
+def test_all_rco_task_ids_rejected_by_strict_policy(task):
+    policy, fleet, _ = strict_inputs()
+    policy["approved_tasks"] = [task]
+    with pytest.raises(ValueError):
+        adapter.strict_pins(*encoded_pins(policy, fleet))
+
+
+def test_content_projection_preserves_only_safe_bound_request():
+    from sandbox.mind.step2.test_shared_content_projection import build, row as content_row, rows_of
+
+    safe = content_row(expected_responders={"fable-5": responder()})
+    unsafe = content_row(expected_responders={"claude-rco-3": responder()})
+    assert build(rows_of(safe))["accepted"] == 1
+    assert build(rows_of(unsafe))["accepted"] == 0

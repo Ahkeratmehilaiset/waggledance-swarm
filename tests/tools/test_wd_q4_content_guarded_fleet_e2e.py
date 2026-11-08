@@ -2,6 +2,7 @@
 
 The process/Job acceptance test is separate and remains pending integration of
 producer, backend and v5 query at one pinned head.
+The roster uses a canonical synthetic test adapter, not a production fleet read.
 """
 import hashlib
 import json
@@ -49,14 +50,17 @@ def canonical_content_roster(monkeypatch):
 @pytest.fixture
 def pinned_content_candidate(canonical_content_roster, setup):
     from tools import wd_q4_public_content_plan_writer as writer
-    written = writer.write_content_plan(enabled=True, **setup['arguments'])
-    plan = json.loads(Path(written['public_plan_path']).read_bytes())
-    plan['schema'] = 'wd.q4-public-wrapper-plan.v5'
-    plan['config']['memory'] = str(setup['lane']['content']['dir'])
-    plan['config']['descriptor'] = str(Path(plan['config']['memory']) / 'descriptor.json')
-    for key in ('message_source_path', 'message_generation_path', 'message_policy_path', 'doc_repo_root',
-                'doc_policy_path', 'doc_git_executable', 'doc_git_sha256'):
-        plan[key] = setup['arguments'][key]
+    arguments = dict(setup['arguments'])
+    v1_path = Path(arguments['public_plan_path'])
+    v1 = json.loads(v1_path.read_bytes())
+    v1['config']['memory'] = str(setup['lane']['content']['dir'])
+    v1['config']['descriptor'] = str(Path(v1['config']['memory']) / 'descriptor.json')
+    v1_bytes = canonical(v1)
+    v1_path.write_bytes(v1_bytes)
+    arguments['expected_public_plan_sha256'] = digest(v1_bytes)
+    written = writer.write_content_plan(enabled=True, **arguments)
+    raw = Path(written['public_plan_path']).read_bytes()
+    assert digest(raw) == written['public_plan_sha256']
     fleet_doc = json.loads(setup['lane']['content']['args']['roster_bytes'])
     fleet_doc.update(git_executable=setup['arguments']['doc_git_executable'],
                      git_sha256=setup['arguments']['doc_git_sha256'])
@@ -64,12 +68,31 @@ def pinned_content_candidate(canonical_content_roster, setup):
     wrapper = b'synthetic-wrapper-not-executed-in-this-test'
     manifest = canonical({'schema_version': 1, 'source_commit': 'a' * 40,
                           'files': {'wd-fleet.json': digest(fleet), 'Invoke-WdQ4Query.ps1': digest(wrapper)}})
-    raw = canonical(plan)
     return dict(enabled=True, expected_commit='a' * 40, manifest_bytes=manifest,
                 expected_manifest_sha256=digest(manifest), fleet_bytes=fleet, expected_fleet_sha256=digest(fleet),
                 wrapper_bytes=wrapper, expected_wrapper_sha256=digest(wrapper), public_plan_bytes=raw,
-                expected_public_plan_sha256=digest(raw), expected_binding=setup['lane']['call']['expected_binding'],
+                expected_public_plan_sha256=written['public_plan_sha256'], expected_binding=setup['lane']['call']['expected_binding'],
                 memory_dir=setup['arguments']['memory_dir'])
+
+
+def test_producer_receives_exact_writer_output(setup, pinned_content_candidate):
+    raw = (setup['out'] / 'public-plan.v5.json').read_bytes()
+    assert pinned_content_candidate['public_plan_bytes'] == raw
+    assert pinned_content_candidate['expected_public_plan_sha256'] == digest(raw)
+    config = json.loads(raw)['config']
+    assert config['memory'] == pinned_content_candidate['memory_dir']
+    assert config['descriptor'] == str(Path(config['memory']) / 'descriptor.json')
+
+
+@pytest.mark.parametrize('field', ['memory', 'descriptor'])
+def test_producer_refuses_mismatched_config_paths(pinned_content_candidate, field):
+    candidate = dict(pinned_content_candidate)
+    plan = json.loads(candidate['public_plan_bytes'])
+    plan['config'][field] += '.wrong'
+    candidate['public_plan_bytes'] = canonical(plan)
+    candidate['expected_public_plan_sha256'] = digest(candidate['public_plan_bytes'])
+    with pytest.raises(producer.BindingProducerRefused):
+        producer.build_content_lane_binding(**candidate)
 
 
 @pytest.mark.parametrize('agent', LANES)

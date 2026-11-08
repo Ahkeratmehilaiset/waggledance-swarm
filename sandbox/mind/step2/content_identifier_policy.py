@@ -73,14 +73,17 @@ class IdentifierPolicy:
         return "<IdentifierPolicy private>"
 
     def contains(self, text):
-        normalized = None
+        normalized = value = None
         try:
             if type(text) is not str:
                 _refuse()
             normalized = _normalize(text)
-            return any(value in normalized for value in self.__values)
+            for value in self.__values:
+                if value in normalized:
+                    return True
+            return False
         finally:
-            self = text = normalized = None
+            self = text = normalized = value = None
 
 
 def load_policy(policy_bytes, key, expected_tag):

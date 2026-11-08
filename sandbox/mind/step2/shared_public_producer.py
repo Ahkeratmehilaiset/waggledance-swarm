@@ -17,6 +17,7 @@ checkpoint refuses after the builder has published a directory, that directory i
 """
 import hashlib
 import hmac
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -91,7 +92,7 @@ def _validate_request(request):
             or checkpoint.NAME.fullmatch(request.generation) is None or not callable(request.encode)
             or not isinstance(request.identity, dict) or type(request.dim) is not int
             or not isinstance(request.timeout, (int, float)) or isinstance(request.timeout, bool)
-            or request.timeout <= 0
+            or not 0 < request.timeout <= 30 or not math.isfinite(request.timeout)
             or (request.predecessor is not None and type(request.predecessor) is not Predecessor)):
         _refuse("request_invalid")
     predecessor = request.predecessor

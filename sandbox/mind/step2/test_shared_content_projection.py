@@ -10,6 +10,33 @@ import re
 
 import pytest
 
+
+@pytest.mark.parametrize("separator", [".", "~", "%", "ä"])
+def test_long_unspaced_segments_are_masked_even_with_unusual_characters(separator):
+    value = "abcdefghijklmnop" + separator + "qrstuvwxyzabcdef"
+    verdict, encoded = cp.classify("run " + value + " done")
+    assert verdict == "KEEP"
+    assert cp.decode_text(encoded) == "run token-redacted done"
+
+
+@pytest.mark.parametrize("value", [
+    "abcdefghijklmnop qrstuvwxyzabcdef",
+    "abcdefghijklmnop qrstuvwxyzabcdef ghijklmnopqrstuv",
+    "abcdefghijklmnop.qrstuvwxyzabcdef ghijklmnopqrstuv",
+])
+def test_adjacent_long_fragments_are_masked_without_leaving_overlap(value):
+    verdict, encoded = cp.classify("run " + value + " done")
+    assert verdict == "KEEP"
+    assert cp.decode_text(encoded) == "run token-redacted done"
+
+
+def test_fragment_text_is_absent_from_projected_records():
+    first, second = "abcdefghijklmnop", "qrstuvwxyzabcdef"
+    projected = build(rows_of(row("run " + first + " " + second + " done")))
+    serialized = json.dumps(projected, ensure_ascii=False)
+    assert first not in serialized and second not in serialized
+    assert [cp.decode_text(value) for value in texts(projected)] == ["run token-redacted done"]
+
 from sandbox.mind.step2 import shared_content_projection as cp
 from tools.bridge_compact_view import event_id
 
@@ -179,13 +206,13 @@ def test_long_text_is_chunked_on_word_boundaries_and_rejoins():
 
 def test_one_overlong_word_is_split_without_breaking_an_escape():
     for text in ("\u00e4" * 200, "x" + "\u00e4" * 200, "xy" + "\u00f6" * 150):
-        chunks = texts(build(rows_of(row(text))))
+        chunks = cp.chunk(cp.encode_text(text))
         assert len(chunks) > 1 and all(len(c) <= 300 for c in chunks)
         assert "".join(cp.decode_text(c) for c in chunks) == text
 
 
 def test_iso_times_and_repo_paths_are_kept_but_local_paths_and_urls_are_tokens():
-    text = ("valmis 2026-11-07T17:52:46Z ja 2026-11-07, katso tests/tools/test_x.py; C:" + "\\Users\\someone\\x.txt"
+    text = ("valmis 2026-11-07T17:52:46Z ja 2026-11-07, katso tests/tools/test_x.py; ensin C:" + "\\Users\\someone\\x.txt"
             " ja https" + "://example.invalid/a/b sek\u00e4 /home/someone/x")
     (record,) = build(rows_of(row(text)))["records"]
     decoded = cp.decode_text(record["stored_text"])
@@ -263,7 +290,7 @@ def test_named_hex_secret_is_refused_even_when_hex_can_be_replaced():
 def test_hex_with_digit_runs_and_case_is_redacted(value):
     verdict, encoded = cp.classify("sha256:" + value)
     assert verdict == "KEEP"
-    assert cp.decode_text(encoded) == "sha256:hex-redacted"
+    assert cp.decode_text(encoded) == "token-redacted"
     assert value not in encoded
 
 

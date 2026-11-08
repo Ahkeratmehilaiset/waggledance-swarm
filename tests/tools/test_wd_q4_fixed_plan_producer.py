@@ -16,6 +16,63 @@ import pytest
 
 from tools import wd_q4_secure_transport as transport
 
+
+def test_content_v4_fixed_backend_preserves_exact_seven_public_pins():
+    """The content backend must be explicit and cannot fall through to legacy pointer mode."""
+    from tools import wd_q4_fixed_plan_producer as producer
+
+    expected = {name: format(i + 1, "x") * 64 for i, name in enumerate((
+        "encoder_sha256", "policy_sha256", "roster_sha256", "content_decision_sha256",
+        "descriptor_sha256", "memory_sha256", "projection_sha256"))}
+    result = producer.build_content_fixed_plan(
+        enabled=True,
+        **expected,
+        interpreter_sha256="a" * 64,
+        peer_code_sha256="b" * 64,
+        runtime_manifest_sha256="c" * 64,
+        bundle_sha256="d" * 64,
+        verifier_sha256="e" * 64,
+        wrapper_sha256="f" * 64,
+        deployment_manifest_sha256="1" * 64,
+        public_plan_sha256="2" * 64,
+        host_sha256="3" * 64,
+        backend_sha256="4" * 64,
+        bundle_bytes=100,
+        runtime_root=r"C:\synthetic\runtime",
+        runtime_manifest_path=r"C:\synthetic\runtime-manifest.json",
+        runtime_generation="a" * 40,
+        runtime_revision="b" * 40,
+        bundle_root=r"C:\synthetic\bundle",
+        bundle_commit="c" * 40,
+        wrapper_path=r"C:\synthetic\bundle\Invoke-WdQ4Query.ps1",
+        public_plan_path=r"C:\synthetic\public-plan.json",
+        approved_tasks=["synthetic-task"],
+    )
+    plan = transport._fixed_plan(result["plan_bytes"])
+    assert plan["schema"] == "wd.q4-fixed-plan.v4"
+    assert plan["backend"] == "content-wrapper-v1"
+    assert {name: plan[name] for name in expected} == expected
+    assert "expected_pointer_sha256" not in plan
+
+
+@pytest.mark.parametrize("missing", sorted(transport._CONTENT_PINS))
+def test_content_v4_fixed_parser_rejects_each_missing_public_pin(missing):
+    document = {
+        "schema": "wd.q4-fixed-plan.v4", "backend": "content-wrapper-v1",
+        **{key: "a" * 64 for key in transport._CONTENT_FIXED_KEYS
+           if key.endswith("_sha256")},
+        "bundle_bytes": 100, "runtime_root": r"C:\synthetic\runtime",
+        "runtime_manifest_path": r"C:\synthetic\runtime-manifest.json",
+        "runtime_generation": "a" * 40, "runtime_revision": "b" * 40,
+        "approved_tasks": ["synthetic-task"], "bundle_root": r"C:\synthetic\bundle",
+        "bundle_commit": "c" * 40, "wrapper_path": r"C:\synthetic\bundle\Invoke-WdQ4Query.ps1",
+        "public_plan_path": r"C:\synthetic\public-plan.json",
+    }
+    assert transport._fixed_plan(transport._canonical(document)) == document
+    del document[missing]
+    with pytest.raises(transport._Refused):
+        transport._fixed_plan(transport._canonical(document))
+
 SCHEMA = "wd.q4-fixed-plan.v2"
 BACKEND = "public-snapshot-v1"
 PINS = ("interpreter_sha256", "peer_code_sha256", "verifier_sha256", "runtime_manifest_sha256", "bundle_sha256",

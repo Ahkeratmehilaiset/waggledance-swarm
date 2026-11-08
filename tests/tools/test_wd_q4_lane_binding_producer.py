@@ -2,10 +2,14 @@
 import hashlib
 import importlib
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from tools import wd_q4_lane_binding as consumer, wd_q4_secure_transport as transport
 from tests.tools.test_wd_q4_fixed_result_adapter import make_case
+from tests.tools.test_wd_q4_public_content_plan_writer import setup, lane, content
 
 
 def raw(value):
@@ -18,6 +22,254 @@ def sha(value):
 
 def module():
     return importlib.import_module('tools.wd_q4_lane_binding_producer')
+
+
+@pytest.fixture
+def canonical_content_roster(monkeypatch):
+    from sandbox.mind.step2 import test_content_route as route
+    from tools import wd_q4_roster_from_fleet as producer
+    original = route.strict_pins
+
+    def canonical(*args, **kwargs):
+        pins = original(*args, **kwargs)
+        pins['roster_bytes'], pins['roster_sha256'] = producer.build_roster_snapshot(
+            pins['roster_bytes'], pins['roster_sha256'], enabled=True)
+        return pins
+
+    monkeypatch.setattr(route, 'strict_pins', canonical)
+
+
+@pytest.fixture
+def content_case(canonical_content_roster, setup):
+    from tools import wd_q4_public_content_plan_writer as writer
+    written = writer.write_content_plan(enabled=True, **setup['arguments'])
+    plan = json.loads(Path(written['public_plan_path']).read_bytes())
+    plan['schema'] = 'wd.q4-public-wrapper-plan.v5'
+    plan['config']['memory'] = setup['arguments']['memory_dir']
+    plan['config']['descriptor'] = str(Path(setup['arguments']['memory_dir']) / 'descriptor.json')
+    plan['config']['timeout'] = 480
+    for key in ('message_source_path', 'message_generation_path', 'message_policy_path', 'doc_repo_root',
+                'doc_policy_path', 'doc_git_executable', 'doc_git_sha256'):
+        plan[key] = setup['arguments'][key]
+    fleet_doc = json.loads(setup['lane']['content']['args']['roster_bytes'])
+    fleet_doc.update(setup['arguments']['trusted_git'])
+    fleet = raw(fleet_doc)
+    wrapper = b'synthetic-wrapper'
+    manifest = raw({'schema_version': 1, 'source_commit': 'a' * 40,
+                    'files': {'wd-fleet.json': sha(fleet), 'Invoke-WdQ4Query.ps1': sha(wrapper)}})
+    plan_raw = raw(plan)
+    return dict(enabled=True, expected_commit='a' * 40, manifest_bytes=manifest,
+                expected_manifest_sha256=sha(manifest), fleet_bytes=fleet, expected_fleet_sha256=sha(fleet),
+                wrapper_bytes=wrapper, expected_wrapper_sha256=sha(wrapper), public_plan_bytes=plan_raw,
+                expected_public_plan_sha256=sha(plan_raw), expected_binding=setup['lane']['call']['expected_binding'],
+                memory_dir=setup['arguments']['memory_dir'])
+
+
+def update_fleet(case, fleet):
+    case['fleet_bytes'] = raw(fleet)
+    case['expected_fleet_sha256'] = sha(case['fleet_bytes'])
+    manifest = json.loads(case['manifest_bytes'])
+    manifest['files']['wd-fleet.json'] = case['expected_fleet_sha256']
+    case['manifest_bytes'] = raw(manifest)
+    case['expected_manifest_sha256'] = sha(case['manifest_bytes'])
+
+
+def update_plan(case, plan):
+    case['public_plan_bytes'] = raw(plan)
+    case['expected_public_plan_sha256'] = sha(case['public_plan_bytes'])
+
+
+@pytest.mark.parametrize('field', ['git_executable', 'git_sha256'])
+def test_documents_missing_independent_fleet_git_pin_refuse_before_subprocess(content_case, monkeypatch, field):
+    fleet = json.loads(content_case['fleet_bytes'])
+    del fleet[field]
+    update_fleet(content_case, fleet)
+    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: pytest.fail('unexpected subprocess'))
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_content_lane_binding(**content_case)
+
+
+@pytest.mark.parametrize('field', ['doc_git_executable', 'doc_git_sha256'])
+def test_attacker_selected_document_git_refuses_before_subprocess(content_case, monkeypatch, field):
+    plan = json.loads(content_case['public_plan_bytes'])
+    plan[field] = sys.executable if field == 'doc_git_executable' else 'f' * 64
+    update_plan(content_case, plan)
+    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: pytest.fail('unexpected subprocess'))
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_content_lane_binding(**content_case)
+
+
+def test_attacker_selected_path_and_matching_hash_refuse_before_subprocess(content_case, monkeypatch):
+    plan = json.loads(content_case['public_plan_bytes'])
+    plan['doc_git_executable'] = sys.executable
+    plan['doc_git_sha256'] = sha(Path(sys.executable).read_bytes())
+    update_plan(content_case, plan)
+    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: pytest.fail('unexpected subprocess'))
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_content_lane_binding(**content_case)
+
+
+@pytest.mark.parametrize('field,value', [('git_executable', 'relative-git'), ('git_sha256', 'invalid')])
+def test_malformed_fleet_git_refuses_before_subprocess(content_case, monkeypatch, field, value):
+    fleet = json.loads(content_case['fleet_bytes'])
+    fleet[field] = value
+    update_fleet(content_case, fleet)
+    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: pytest.fail('unexpected subprocess'))
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_content_lane_binding(**content_case)
+
+
+@pytest.mark.parametrize('field,change', [('memory', 'missing'), ('memory', 'different'),
+                                          ('descriptor', 'missing'), ('descriptor', 'different')])
+def test_content_binding_requires_exact_runtime_paths(content_case, monkeypatch, field, change):
+    from tools import wd_q4_public_content_plan_writer as writer
+    monkeypatch.setattr(writer, '_content_plan', lambda plan, *a, **kw: dict(plan))
+    plan = json.loads(content_case['public_plan_bytes'])
+    if change == 'missing':
+        del plan['config'][field]
+    else:
+        plan['config'][field] = str(Path(content_case['memory_dir']) / 'wrong')
+    update_plan(content_case, plan)
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_content_lane_binding(**content_case)
+
+
+def test_content_binding_requires_derived_v5_schema(content_case, monkeypatch):
+    from tools import wd_q4_public_content_plan_writer as writer
+    monkeypatch.setattr(writer, '_content_plan', lambda plan, *a, **kw:
+                        dict(plan, schema='wd.q4-public-wrapper-plan.v4'))
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_content_lane_binding(**content_case)
+
+
+def test_projection_refuses_after_pinned_source_mutation(content_case):
+    plan = json.loads(content_case['public_plan_bytes'])
+    path = Path(plan['message_source_path'])
+    raw_data = bytearray(path.read_bytes())
+    raw_data[0] = ord('!')
+    path.write_bytes(raw_data)
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_content_lane_binding(**content_case)
+
+
+def test_message_only_binding_succeeds_without_fleet_git(content_case, setup, tmp_path, monkeypatch):
+    from sandbox.mind.step2 import test_content_route as route_fixture
+    from tools import wd_q4_public_content_plan_writer as writer
+    route = setup['route']
+    original_decision = json.loads(route['decision'])
+    decision, decision_sha = route_fixture.decision_of(
+        prefix=original_decision['source_prefix'], message_pin=route['messages']['policy_sha256'], doc_pin=None)
+    built, memory = route_fixture.build_route(tmp_path, route, name='message-only', documents=None,
+                                              decision_bytes=decision, decision_sha256=decision_sha,
+                                              trusted_git=None)
+    decision_path = tmp_path / 'message-only-decision.json'
+    decision_path.write_bytes(decision)
+    v1 = dict(setup['v1'])
+    v1['config'] = dict(v1['config'], descriptor_sha256=built['descriptor_sha256'], memory=str(memory),
+                        descriptor=str(memory / 'descriptor.json'), timeout=480)
+    v1_raw = raw(v1)
+    v1_path = tmp_path / 'message-only-v1.json'
+    v1_path.write_bytes(v1_raw)
+    out = tmp_path / 'message-only-plan'
+    out.mkdir()
+    opts = dict(setup['arguments'], public_plan_path=str(v1_path), expected_public_plan_sha256=sha(v1_raw),
+                output_dir=str(out), memory_dir=str(memory), content_decision_path=str(decision_path),
+                content_decision_sha256=decision_sha, doc_repo_root=None, doc_policy_path=None,
+                doc_git_executable=None, doc_git_sha256=None, trusted_git=None)
+    written = writer.write_content_plan(enabled=True, **opts)
+    plan_raw = Path(written['public_plan_path']).read_bytes()
+    plan = json.loads(plan_raw)
+    fleet = json.loads(content_case['fleet_bytes'])
+    del fleet['git_executable'], fleet['git_sha256']
+    update_fleet(content_case, fleet)
+    content_case.update(public_plan_bytes=plan_raw, expected_public_plan_sha256=sha(plan_raw), memory_dir=str(memory),
+                        expected_binding={key: (plan['config']['descriptor_sha256'] if key == 'descriptor_sha256'
+                                                 else plan[key]) for key in module()._CONTENT_PINS})
+    monkeypatch.setattr(subprocess, 'Popen', lambda *a, **k: pytest.fail('unexpected subprocess'))
+    result = module().build_content_lane_binding(**content_case)
+    assert json.loads(result['binding_bytes'])['binding'] == content_case['expected_binding']
+
+
+def test_content_binding_uses_seven_independent_pins_and_all_five_lanes(content_case):
+    result = module().build_content_lane_binding(**content_case)
+    document = json.loads(result['binding_bytes'])
+    assert result['binding_sha256'] == sha(result['binding_bytes'])
+    assert document['binding'] == content_case['expected_binding']
+    assert set(document['lanes']) == {'codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5'}
+    assert document['public_plan_sha256'] == content_case['expected_public_plan_sha256']
+
+
+def test_content_fixture_preserves_a_bounded_timeout_ladder(content_case, tmp_path):
+    from tests.tools.test_wd_q4_shared_descriptor_producer import kwargs, build
+    kw = kwargs(tmp_path)
+    kw['expected_binding'] = dict(content_case['expected_binding'])
+    kw['timeout_seconds'] = 540
+    descriptor = json.loads(build(kw)['descriptor_bytes'])
+    inner = json.loads(content_case['public_plan_bytes'])['config']['timeout']
+    assert type(inner) is int and type(descriptor['timeout_seconds']) is int
+    assert 200.49 < inner < descriptor['timeout_seconds'] <= 1800
+
+
+def test_each_content_pin_is_required_and_bound_to_the_plan(content_case):
+    for key in content_case['expected_binding']:
+        for change in ('missing', 'wrong', 'bad_value'):
+            altered = dict(content_case['expected_binding'])
+            if change == 'missing':
+                del altered[key]
+            else:
+                altered[key] = 'f' * 64 if change == 'wrong' else 'bad'
+            with pytest.raises(module().BindingProducerRefused):
+                module().build_content_lane_binding(**dict(content_case, expected_binding=altered))
+
+
+def test_content_binding_off_is_default_and_never_inspects_inputs():
+    class NoTouch:
+        def __getattribute__(self, name):
+            raise AssertionError('disabled path inspected input')
+    assert module().build_content_lane_binding(manifest_bytes=NoTouch()) == {'status': 'OFF'}
+
+
+def test_content_binding_does_not_return_source_or_projection_contents(content_case):
+    result = module().build_content_lane_binding(**content_case)
+    doc = json.loads(result['binding_bytes'])
+    assert set(doc) == {'schema', 'bundle_commit', 'manifest_sha256', 'wrapper_sha256',
+                        'public_plan_sha256', 'binding', 'lanes'}
+    assert b'content_decision_path' not in result['binding_bytes']
+    assert b'message_source_path' not in result['binding_bytes']
+
+
+@pytest.mark.parametrize('change', ['missing', 'extra', 'wrong', 'bad_value'])
+def test_content_binding_refuses_changed_pins(content_case, change):
+    pins = dict(content_case['expected_binding'])
+    if change == 'missing': del pins['memory_sha256']
+    elif change == 'extra': pins['unexpected_sha256'] = 'a' * 64
+    elif change == 'wrong': pins['memory_sha256'] = 'a' * 64
+    else: pins['memory_sha256'] = 'invalid'
+    content_case['expected_binding'] = pins
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_content_lane_binding(**content_case)
+
+
+@pytest.mark.parametrize('field', ['message_policy_path', 'doc_git_sha256', 'memory_sha256', 'projection_sha256'])
+def test_content_binding_refuses_rehashed_changed_source_or_artifact_pin(content_case, field):
+    plan = json.loads(content_case['public_plan_bytes'])
+    plan[field] = 'a' * 64 if field.endswith('sha256') else str(Path(plan[field]).with_name('missing-policy'))
+    content_case['public_plan_bytes'] = raw(plan)
+    content_case['expected_public_plan_sha256'] = sha(content_case['public_plan_bytes'])
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_content_lane_binding(**content_case)
+
+
+@pytest.mark.parametrize('change', ['missing_source', 'extra_source', 'old_version'])
+def test_content_binding_requires_the_exact_v5_plan(content_case, change):
+    plan = json.loads(content_case['public_plan_bytes'])
+    if change == 'missing_source': del plan['message_generation_path']
+    elif change == 'extra_source': plan['extra_source'] = 'untrusted'
+    else: plan['schema'] = 'wd.q4-public-wrapper-plan.v4'
+    content_case['public_plan_bytes'] = raw(plan)
+    content_case['expected_public_plan_sha256'] = sha(content_case['public_plan_bytes'])
+    with pytest.raises(module().BindingProducerRefused):
+        module().build_content_lane_binding(**content_case)
 
 
 @pytest.fixture

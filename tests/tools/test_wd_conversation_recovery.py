@@ -73,8 +73,16 @@ foreach ($name in @('Resolve-NormalizedPath','Assert-LanePathWithoutReparse','Re
 }}
 $lease=Enter-WdManagedAttemptLease -RuntimeRoot {quote(runtime)} -Agent codex-lead-1
 try {{
-    # Use the actual process snapshot, including Windows' PID-zero sentinel.
-    $evidence=Get-WdManagedAttemptEvidence -Agent codex-lead-1 -Worktree {quote(tmp_path)} -RuntimeRoot {quote(runtime)}
+    # Keep this isolated recovery test independent of host CIM permissions.
+    # A recycled owner PID must not be mistaken for the original live owner.
+    function Get-CimInstance {{ throw 'Unexpected live CIM access in isolated recovery test' }}
+    $fixtureOwner=Get-Content -LiteralPath {quote(pointer)} -Raw | ConvertFrom-Json
+    $fixtureStart=([DateTimeOffset]$fixtureOwner.process_start_utc).AddSeconds(1)
+    $processSnapshot=@(
+        [pscustomobject]@{{ ProcessId=0; CreationDate=$null }}
+        [pscustomobject]@{{ ProcessId=[int]$fixtureOwner.pid; CreationDate=$fixtureStart }}
+    )
+    $evidence=Get-WdManagedAttemptEvidence -Agent codex-lead-1 -Worktree {quote(tmp_path)} -RuntimeRoot {quote(runtime)} -ProcessSnapshot $processSnapshot
     Invoke-WdManagedAttemptRetirement -Evidence $evidence -ReviewedJournalDigest $evidence.digest -Reason 'Isolated regression: abandon uncertain fake-native attempt' | ConvertTo-Json -Depth 8 -Compress
 }} finally {{ $lease.Dispose() }}
 """

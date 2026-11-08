@@ -232,6 +232,22 @@ def test_terminal_windows_profile_with_spaces_is_refused():
     assert cp.classify("see C:/Users/Jane Smith") == ("DROP", "personal")
 
 
+@pytest.mark.parametrize("value", [
+    r"D:\Data\First Last",
+    r"D:\Data\First Middle Last\file.txt",
+    "D:/Data/First Middle Last/file.txt",
+])
+def test_other_windows_spaced_paths_do_not_leak(value):
+    verdict, result = cp.classify("see " + value)
+    assert verdict == "DROP" or not any(part in cp.decode_text(result) for part in ("First", "Middle", "Last"))
+
+
+@pytest.mark.parametrize("value", ["salasana on synthetic-value", "X_API_KEY=synthetic-value",
+                                     "service_password=synthetic-value"])
+def test_additional_assignment_forms_are_refused(value):
+    assert cp.classify(value) == ("DROP", "credential")
+
+
 # --- fail-closed screening before chunking -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", sorted(CANARIES))

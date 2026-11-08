@@ -337,39 +337,40 @@ def _script(text):
 
 def _screen(text, *, redact_hex=False, identifier_policy=None):
     """The detectors, in order, on one normalized text; raises ``_Drop`` with the first matching class."""
-    patterns = _CREDENTIAL[:-1] if redact_hex else _CREDENTIAL
-    if any(pattern.search(text) for pattern in patterns) or (not redact_hex and _base64_secret(text)) or _OWNER_HEX.search(text):
-        raise _Drop("credential")
-    # Credential and URL-userinfo checks above inspect the original text first.
-    # A URL scheme such as https:/ must not be mistaken for a drive path.
-    path_text = _URL.sub("url", text)
-    if (_AMBIGUOUS_PROFILE.search(path_text) or _AMBIGUOUS_TERMINAL_PATH.search(path_text)
-            or _AMBIGUOUS_SPACED_PATH.search(path_text)):
-        raise _Drop("personal")
-    lowered = text.lower()
-    if _UUID.search(text) or (identifier_policy.contains(text) if identifier_policy is not None
-                              else any(name in lowered for name in _local_identifiers())):
-        raise _Drop("identifier")
-    # Taint checks must see the original normalized row, including markers
-    # embedded in a run that will later be redacted.
-    if any(marker in lowered for marker in sp.SEALED_MARKERS) or corpus_mod.ws._has_marker(text):
-        raise _Drop("sealed")
-    phone_text = _CREDENTIAL[-1].sub("hex-redacted", text) if redact_hex else text
-    if (any(pattern.search(text) for pattern in _PERSONAL) or _iban(text)
-            or _PHONE_RE.search(_ISO_TIME.sub(" ", phone_text))):
-        raise _Drop("personal")
-    if redact_hex:
-        text = _redact_sensitive_runs(text)
-    lowered = text.lower()
-    if _UUID.search(text) or (identifier_policy.contains(text) if identifier_policy is not None
-                              else any(name in lowered for name in _local_identifiers())):
-        raise _Drop("identifier")
-    if (any(pattern.search(text) for pattern in _PERSONAL) or _iban(text)
-            or _PHONE_RE.search(_ISO_TIME.sub(" ", text))):
-        raise _Drop("personal")
-    if any(marker in lowered for marker in sp.SEALED_MARKERS) or corpus_mod.ws._has_marker(text):
-        raise _Drop("sealed")
-    _script(text)
+    path_text = lowered = phone_text = None
+    try:
+        patterns = _CREDENTIAL[:-1] if redact_hex else _CREDENTIAL
+        if any(pattern.search(text) for pattern in patterns) or (not redact_hex and _base64_secret(text)) or _OWNER_HEX.search(text):
+            raise _Drop("credential")
+        # Check original credentials before masking URLs for path screening.
+        path_text = _URL.sub("url", text)
+        if (_AMBIGUOUS_PROFILE.search(path_text) or _AMBIGUOUS_TERMINAL_PATH.search(path_text)
+                or _AMBIGUOUS_SPACED_PATH.search(path_text)):
+            raise _Drop("personal")
+        lowered = text.lower()
+        if _UUID.search(text) or (identifier_policy.contains(text) if identifier_policy is not None
+                                  else any(name in lowered for name in _local_identifiers())):
+            raise _Drop("identifier")
+        if any(marker in lowered for marker in sp.SEALED_MARKERS) or corpus_mod.ws._has_marker(text):
+            raise _Drop("sealed")
+        phone_text = _CREDENTIAL[-1].sub("hex-redacted", text) if redact_hex else text
+        if (any(pattern.search(text) for pattern in _PERSONAL) or _iban(text)
+                or _PHONE_RE.search(_ISO_TIME.sub(" ", phone_text))):
+            raise _Drop("personal")
+        if redact_hex:
+            text = _redact_sensitive_runs(text)
+        lowered = text.lower()
+        if _UUID.search(text) or (identifier_policy.contains(text) if identifier_policy is not None
+                                  else any(name in lowered for name in _local_identifiers())):
+            raise _Drop("identifier")
+        if (any(pattern.search(text) for pattern in _PERSONAL) or _iban(text)
+                or _PHONE_RE.search(_ISO_TIME.sub(" ", text))):
+            raise _Drop("personal")
+        if any(marker in lowered for marker in sp.SEALED_MARKERS) or corpus_mod.ws._has_marker(text):
+            raise _Drop("sealed")
+        _script(text)
+    finally:
+        text = identifier_policy = path_text = lowered = phone_text = None
 
 
 def _replace_locations(text):
@@ -382,7 +383,11 @@ def _replace_locations(text):
 
 
 def classify(raw_text, limit=MAX_MESSAGE_CHARS, *, require_identifier_policy=False, identifier_policy_binding=None):
-    """``("KEEP", encoded)`` or ``("DROP", token)``; pure, no I/O, no logging, never raises with input text."""
+    """Classify without logging; the opt-in list must include every required local identifier.
+
+    The pinned list replaces environment-derived names. Missing/invalid binding
+    refuses a row, but is not a builder-level validation or activation gate.
+    """
     token = encoded = text = policy = None
     try:
         if type(require_identifier_policy) is not bool:

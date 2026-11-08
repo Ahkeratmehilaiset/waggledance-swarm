@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFINITION = ROOT / "ops/windows/reboot/bridge-code-files.json"
 CONTENT_FILES = (
     "sandbox/mind/step2/content_memory.py",
+    "sandbox/mind/step2/content_identifier_policy.py",
     "sandbox/mind/step2/shared_content_projection.py",
     "sandbox/mind/step2/shared_doc_projection.py",
 )

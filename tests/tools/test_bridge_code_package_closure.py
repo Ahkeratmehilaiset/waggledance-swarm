@@ -989,6 +989,7 @@ CARD_PACKAGE_FILES = frozenset({
 # (tests/tools/test_content_package_closure.py).
 CONTENT_PACKAGE_FILES = frozenset({
     "sandbox/mind/step2/content_memory.py",
+    "sandbox/mind/step2/content_identifier_policy.py",
     "sandbox/mind/step2/shared_content_projection.py",
     "sandbox/mind/step2/shared_doc_projection.py",
 })

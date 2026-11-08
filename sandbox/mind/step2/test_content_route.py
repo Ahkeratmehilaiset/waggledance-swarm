@@ -36,7 +36,10 @@ def strict_pins(tasks=(tcp.TASK, OTHER_TASK)):
 
 
 def message_policy(tasks=(tcp.TASK,)):
-    data = raw(tcp.policy_doc(approved_tasks=list(tasks)))
+    # Exact refs are synthetic fixture evidence, never production approval.
+    refs = sorted(tcp.rows_of(*prefix_rows()))
+    data = raw(tcp.policy_doc(schema="wd.mind-content-policy.v2", approved_source_refs=refs,
+                              approved_tasks=list(tasks)))
     return data, sha(data)
 
 

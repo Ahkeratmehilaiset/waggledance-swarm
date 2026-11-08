@@ -531,6 +531,11 @@ def _route_projection(messages, documents, decision_bytes, decision_sha256, poli
             _refuse("policy_refused")
         if not content_policy["approved_tasks"] <= tasks:
             _refuse("policy_not_subset")
+        # Production build and query-time re-derivation share this gate. A
+        # legacy v1 policy lacks exact source admission and is not suitable for
+        # this route, even though the low-level projector still supports v1.
+        if type(content_policy.get("approved_source_refs")) is not frozenset:
+            _refuse("exact_source_policy_required")
         prefix, cursor = decision["source_prefix"], messages["end_cursor"]
         if (type(getattr(cursor, "offset", None)) is not int or cursor.offset != prefix["offset"]
                 or getattr(cursor, "generation", None) != prefix["generation"]):

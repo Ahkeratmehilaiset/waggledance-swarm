@@ -34,6 +34,14 @@ def allowlist_policy(tasks=FOUR_H_TASKS):
     return tcr.raw(tcp.policy_doc(approved_tasks=list(tasks), types=["message", "done", "status", "handoff"]))
 
 
+def exact_synthetic_policy(legacy_bytes, rows):
+    doc = json.loads(legacy_bytes)
+    doc["schema"] = "wd.mind-content-policy.v2"
+    # Synthetic test rows only; real refs still require independent review.
+    doc["approved_source_refs"] = sorted(tcp.rows_of(*rows))
+    return tcr.raw(doc)
+
+
 def test_the_non_rco_4h_task_ids_fit_every_grammar_of_the_11_06_policy_mechanism():
     for task in FOUR_H_TASKS:
         assert sp.TASK.fullmatch(task) is not None
@@ -86,7 +94,7 @@ def rows_4h():
 def build_4h(tmp_path, *, strict_tasks):
     pytest.importorskip("faiss")
     path, generation, cursor, prefix_sha = tcr.write_prefix(tmp_path / "prefix", rows_4h())
-    policy = allowlist_policy()
+    policy = exact_synthetic_policy(allowlist_policy(), rows_4h())
     strict = tcr.strict_pins(tasks=strict_tasks)
     prefix = {"sha256": prefix_sha, "offset": cursor.offset, "generation": cursor.generation}
     decision, decision_sha = tcr.decision_of(prefix=prefix, message_pin=tcr.sha(policy), strict=strict)
@@ -169,18 +177,27 @@ def test_the_candidate_bytes_are_exactly_the_pinned_ones_and_load_through_both_m
     assert policy["approved_tasks"] < tasks  # content allowlist is a strict subset of the non-review candidate
 
 
-def test_a_build_under_the_exact_candidate_bytes_recalls_only_the_allowed_rows(tmp_path):
+@pytest.mark.parametrize("exact_sources", [False, True])
+def test_candidate_build_requires_exact_synthetic_sources(tmp_path, exact_sources):
     pytest.importorskip("faiss")
     path, generation, cursor, prefix_sha = tcr.write_prefix(tmp_path / "prefix", rows_4h())
     roster_bytes, roster_sha = fleet_shaped_roster()
     strict = {"policy_bytes": NONREVIEW_CANDIDATE, "policy_sha256": NONREVIEW_CANDIDATE_SHA256,
               "roster_bytes": roster_bytes, "roster_sha256": roster_sha}
     prefix = {"sha256": prefix_sha, "offset": cursor.offset, "generation": cursor.generation}
-    decision, decision_sha = tcr.decision_of(prefix=prefix, message_pin=CONTENT_CANDIDATE_SHA256, strict=strict)
+    content_policy = exact_synthetic_policy(CONTENT_CANDIDATE, rows_4h()) if exact_sources else CONTENT_CANDIDATE
+    content_pin = tcr.sha(content_policy)
+    decision, decision_sha = tcr.decision_of(prefix=prefix, message_pin=content_pin, strict=strict)
     out = tmp_path / "out"
     out.mkdir()
     messages = {"source_path": str(path), "generation_path": str(generation), "end_cursor": cursor,
-                "policy_bytes": CONTENT_CANDIDATE, "policy_sha256": CONTENT_CANDIDATE_SHA256}
+                "policy_bytes": content_policy, "policy_sha256": content_pin}
+    if not exact_sources:
+        with pytest.raises(cm.ContentMemoryRefused, match="^exact_source_policy_required$"):
+            cm.build_route_content_memory(enabled=True, messages=messages, documents=None, decision_bytes=decision,
+                                          decision_sha256=decision_sha, encode=tcm.Spy(), identity=tcm.IDENTITY,
+                                          dim=tcm.DIM, root=out, name="candidate-4h", trusted_git=None, **strict)
+        return
     built = cm.build_route_content_memory(enabled=True, messages=messages, documents=None, decision_bytes=decision,
                                           decision_sha256=decision_sha, encode=tcm.Spy(), identity=tcm.IDENTITY,
                                           dim=tcm.DIM, root=out, name="candidate-4h", trusted_git=None, **strict)

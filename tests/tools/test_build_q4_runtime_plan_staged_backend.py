@@ -141,6 +141,56 @@ def test_the_committed_transport_closure_lacks_the_helper_until_the_staged_route
 # staged child reads from the runtime tree. Any of them missing from the commit refuses before a blob is read.
 
 INDEPENDENT_HELPER = b"import hashlib\n\n\ndef validate():\n    return hashlib\n"
+CONTENT_HELPER = "tools/wd_q4_content_fixed_backend.py"
+
+
+def test_content_profile_pins_the_content_backend_transport_and_verifier(tmp_path):
+    files = dict(FILES, **{CONTENT_HELPER: INDEPENDENT_HELPER, "tools/other.py": b"VALUE = 9\n"})
+    kwargs = make_case(tmp_path, files, roots=("tools/other.py",))
+    plan = plan_mod.plan_runtime_inputs(**kwargs, content_backend_sha256=sha(INDEPENDENT_HELPER))
+    assert plan["content_runtime"] == {"backend": _entry(CONTENT_HELPER, files),
+                                       "transport": _entry(TRANSPORT, files), "verifier": _entry(VERIFIER, files)}
+    assert {CONTENT_HELPER, TRANSPORT, VERIFIER, *CONTROLLED} <= set(plan["code_paths"])
+    assert HELPER not in plan["code_paths"]
+
+
+@pytest.mark.parametrize("missing", [CONTENT_HELPER, TRANSPORT, VERIFIER, *CONTROLLED])
+def test_content_profile_rejects_missing_components(tmp_path, missing):
+    files = dict(FILES, **{CONTENT_HELPER: INDEPENDENT_HELPER, "tools/other.py": b"VALUE = 9\n"})
+    del files[missing]
+    kwargs = make_case(tmp_path, files, roots=("tools/other.py",))
+    refused(dict(kwargs, content_backend_sha256=sha(INDEPENDENT_HELPER)), "code_closure_incomplete")
+
+
+def test_content_profile_rejects_wrong_hash_or_ambiguous_profiles(tmp_path):
+    files = dict(FILES, **{CONTENT_HELPER: INDEPENDENT_HELPER})
+    kwargs = make_case(tmp_path, files)
+    refused(dict(kwargs, content_backend_sha256=sha(b"wrong")), "content_backend_mismatch")
+    refused(dict(kwargs, content_backend_sha256=sha(INDEPENDENT_HELPER),
+                 staged_backend_sha256=sha(HELPER_SOURCE)), "inputs_invalid")
+
+
+@pytest.mark.parametrize("pin", ["", "A" * 64, "a" * 63, "g" * 64, 1, False])
+def test_content_profile_rejects_invalid_hash(tmp_path, pin):
+    refused(dict(make_case(tmp_path), content_backend_sha256=pin), "inputs_invalid")
+
+
+def test_real_committed_content_profile_has_exact_code_blobs(tmp_path):
+    root, head = _repository_root()
+    blobs = {path: subprocess.run([GIT, "-C", str(root), "cat-file", "blob", head + ":" + path],
+                                  capture_output=True, check=True).stdout
+             for path in (CONTENT_HELPER, TRANSPORT, VERIFIER)}
+    site = make_tree(tmp_path / "site", {"pkg.py": b"VALUE = 1\n"})
+    model = make_tree(tmp_path / "model", {"model.safetensors": WEIGHTS})
+    plan = plan_mod.plan_runtime_inputs(git_executable=GIT, repository=str(root), commit=head,
+        code_roots=["tools/wd_q4_fixed_peer.py"], site_root=str(site), model_root=str(model),
+        expected_model_files=["model.safetensors"], expected_weights_sha256=sha(WEIGHTS), generation=GENERATION,
+        revision=REVISION, max_bytes=256 * 1024 * 1024, timeout_seconds=300, enabled=True,
+        content_backend_sha256=sha(blobs[CONTENT_HELPER]))
+    assert plan["content_runtime"] == {name: _entry(path, blobs) for name, path in
+                                      (("backend", CONTENT_HELPER), ("transport", TRANSPORT),
+                                       ("verifier", VERIFIER))}
+    assert set(CONTROLLED) <= set(plan["code_paths"])
 
 
 def _entry(path, files=FILES):

@@ -1,12 +1,13 @@
-"""Default-off staged runtime-plan caller: the runtime input plan for one frozen v3 fixed plan.
+"""Default-off runtime-plan caller for one frozen staged v3 or content v4 fixed plan.
 
 ``plan_staged_runtime`` checks the caller pin of the fixed-plan bytes, parses them with the transport's own closed
-parser (``wd_q4_secure_transport._fixed_plan``) and requires the staged card backend
-(``wd.q4-fixed-plan.v3``, ``staged-card-wrapper-v1``). It then calls
+parser (``wd_q4_secure_transport._fixed_plan``) and requires either the staged card backend
+(``wd.q4-fixed-plan.v3``, ``staged-card-wrapper-v1``) or the content backend
+(``wd.q4-fixed-plan.v4``, ``content-wrapper-v1``). It then calls
 ``build_q4_runtime_plan.plan_runtime_inputs`` with values taken from that plan, not from the caller:
 ``commit = bundle_commit``, ``generation = runtime_generation``, ``revision = runtime_revision`` and
-``staged_backend_sha256 = backend_sha256``. So the planned code is the committed blobs of the bundle commit,
-the path-loaded staged fixed backend and its import closure are pinned, and the committed helper blob must hash to
+the selected profile's backend SHA256 = ``backend_sha256``. So the planned code is the committed blobs of the bundle commit,
+the selected path-loaded fixed backend and its import closure are pinned, and the committed helper blob must hash to
 the plan's backend pin. The caller still names the code roots, site and model trees, model files, weights digest
 and byte budget, exactly as for ``plan_runtime_inputs``.
 
@@ -47,7 +48,8 @@ def _staged_fixed_plan(plan_bytes, expected_sha256):
             or hashlib.sha256(plan_bytes).hexdigest() != expected_sha256):
         raise ValueError()
     plan = transport._fixed_plan(plan_bytes)  # closed canonical schema, pins and paths
-    if plan["schema"] != "wd.q4-fixed-plan.v3" or plan["backend"] != "staged-card-wrapper-v1":
+    if (plan["schema"], plan["backend"]) not in (("wd.q4-fixed-plan.v3", "staged-card-wrapper-v1"),
+                                                  ("wd.q4-fixed-plan.v4", "content-wrapper-v1")):
         raise ValueError()
     return plan
 
@@ -69,16 +71,25 @@ def plan_staged_runtime(*, enabled=False, fixed_plan_bytes=None, expected_fixed_
         from tools import build_q4_runtime_plan as planner
 
         try:
+            profile_pin = ({"content_backend_sha256": plan["backend_sha256"]}
+                           if plan["backend"] == "content-wrapper-v1"
+                           else {"staged_backend_sha256": plan["backend_sha256"]})
             runtime = planner.plan_runtime_inputs(
                 enabled=True, git_executable=git_executable, repository=repository, commit=plan["bundle_commit"],
                 code_roots=code_roots, site_root=site_root, model_root=model_root,
                 expected_model_files=expected_model_files, expected_weights_sha256=expected_weights_sha256,
                 generation=plan["runtime_generation"], revision=plan["runtime_revision"], max_bytes=max_bytes,
                 extra_code_paths=extra_code_paths, expected_site_pins=expected_site_pins,
-                timeout_seconds=timeout_seconds, staged_backend_sha256=plan["backend_sha256"])
+                timeout_seconds=timeout_seconds, **profile_pin)
         except planner.RuntimePlanRefused as exc:
             token = exc.args[0]  # the planner's fixed vocabulary
             raise ValueError() from None
+        if plan["backend"] == "content-wrapper-v1":
+            token = "content_profile_mismatch"
+            profile = runtime["content_runtime"]
+            if (profile["transport"]["sha256"] != plan["peer_code_sha256"]
+                    or profile["verifier"]["sha256"] != plan["verifier_sha256"]):
+                raise ValueError()
         return {"schema": SCHEMA, "status": "CANDIDATE_UNVERIFIED", "fixed_plan_sha256": expected_fixed_plan_sha256,
                 "bundle_commit": plan["bundle_commit"], "backend_sha256": plan["backend_sha256"],
                 "expected_runtime_manifest_sha256": plan["runtime_manifest_sha256"], "runtime_plan": runtime}

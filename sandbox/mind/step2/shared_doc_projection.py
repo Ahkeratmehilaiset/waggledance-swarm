@@ -28,7 +28,7 @@ or any sealed marker or workspace guarded word drops the whole document, so a se
 sections still taints it. The rest is split into sections on blank lines (an over-long section on line boundaries)
 and each section goes through ``shared_content_projection.classify`` with its full screen, so one personal,
 identifier or mixed-script section drops alone. Ambiguous long runs are redacted by the section screen before records
-are produced. A long token-like line followed by a token-like continuation refuses the whole document. Deterministic
+are produced. A long token-like line followed by a short token-like continuation refuses the whole document. Deterministic
 screening over-blocks and is a screen, not a guarantee.
 
 Records and removal. Each kept section is encoded, chunked and written as records with the commit, path, blob id,
@@ -265,11 +265,11 @@ def _read_blob(root, env, oid, limit):
 # --- screening and sections ----------------------------------------------------------------------------------------
 
 def _wrapped_long_run(text, limit):
-    """Fail closed when a long token-like line has a token-like continuation."""
+    """Fail closed when a long token-like line has a short token-like continuation."""
     preceding_long = False
     for raw_line in text.splitlines():
-        line = cp._normalize(raw_line, limit)
-        if preceding_long and re.fullmatch(r"[A-Za-z0-9+/_=-]{8,}", line):
+        line = cp._normalize(raw_line, limit).strip(" \t\"'`,\\>-*")
+        if preceding_long and len(line) < 32 and re.fullmatch(r"[A-Za-z0-9+/_=-]+", line):
             return True
         preceding_long = cp._BASE64_RUN.fullmatch(line) is not None
     return False

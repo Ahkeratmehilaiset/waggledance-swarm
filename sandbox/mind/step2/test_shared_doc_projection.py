@@ -227,6 +227,34 @@ def test_wrapped_unnamed_token_and_tail_refuse_whole_document(tmp_path):
     assert all(part not in json.dumps(projection) for part in parts)
 
 
+@pytest.mark.parametrize("tail", ["TailSyntheticValueXY", "abc"])
+def test_wrapped_token_with_quotes_commas_and_short_tail_refuses(tmp_path, tail):
+    parts = ["AbCdEfGhIjKlMnOpQrStUv12a3b4c5Z9", "ZyXwVuTsRqPoNmLkJiHgFe98z7y6x5W4", tail]
+    wrapped = "\n".join('"' + part + '",' for part in parts)
+    root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, wrapped, SECOND)})
+    raw, sha = policy(commit, ["docs/a.md"])
+    projection = build(root, raw, sha)
+    assert projection["records"] == [] and projection["refused_docs"] == {"credential": 1}
+    assert all(part not in json.dumps(projection) for part in parts)
+
+
+def test_named_prose_followed_by_separate_short_value_refuses_whole_document(tmp_path):
+    root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, "password is below", "SyntheticValue")})
+    raw, sha = policy(commit, ["docs/a.md"])
+    projection = build(root, raw, sha)
+    assert projection["records"] == [] and projection["refused_docs"] == {"credential": 1}
+    assert "SyntheticValue" not in json.dumps(projection)
+
+
+def test_wrapped_long_runs_without_short_tail_are_both_redacted(tmp_path):
+    parts = ["AbCdEfGhIjKlMnOpQrStUv12a3b4c5Z9", "ZyXwVuTsRqPoNmLkJiHgFe98z7y6x5W4"]
+    root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, "\n".join(parts), SECOND)})
+    raw, sha = policy(commit, ["docs/a.md"])
+    projection = build(root, raw, sha)
+    assert projection["refused_docs"] == {} and projection["records"]
+    assert all(part not in json.dumps(projection) for part in parts)
+
+
 def test_owner_hex_refuses_whole_document(tmp_path):
     value = "a1" * 32
     root, commit = make_repo(tmp_path, {"docs/a.md": doc_bytes(FINNISH, "owner=" + value, SECOND)})

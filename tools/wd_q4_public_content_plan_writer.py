@@ -21,8 +21,9 @@ Source re-derivation (RCO2 MP1, Lead source GO 2026-11-08): the structural check
 with itself, so the writer also re-reads the decision's sources and requires the pinned projection bytes to be
 exactly what they derive to (``content_memory.validate_content_snapshot``): the bridge log and generation file of
 the anchored message prefix (read only up to the decision's offset, prefix sha256 and generation; rows appended
-later are not part of it) and the git repository holding the pinned document commit, with the content message
-policy and the document policy read by the DECISION pins. Sources are given exactly when the decision pins them.
+later are not part of it) and the git repository holding the pinned document commit, read only with the caller's
+absolute Git executable under its SHA-256 pin (MP3: checked before each call, every object re-hashed), with the
+content message policy and the document policy read by the DECISION pins. Sources are given exactly when the decision pins them.
 The projection bytes checked are the same bytes the pins name. This runs once per written plan, not per query.
 
 What this does NOT establish: who issued the decision (unsigned, caller-pinned; a plan written by hand outside this
@@ -32,9 +33,10 @@ installed where the wrapper runtime config points, or any activation; same-user 
 directory must be inspected before any retry. Both carry one fixed token and no input content.
 
 Command line: no arguments prints ``{"status":"OFF"}`` and reads nothing; ``--enabled --request PATH
---request-sha256 HEX`` reads one pinned closed request ``wd.q4-public-content-plan-request.v2`` (keys
+--request-sha256 HEX`` reads one pinned closed request ``wd.q4-public-content-plan-request.v3`` (keys
 public_plan_path, public_plan_sha256, output_dir, memory_dir, content_decision_path, content_decision_sha256,
-message_source_path, message_generation_path, message_policy_path, doc_repo_root, doc_policy_path; v1 refuses) and
+message_source_path, message_generation_path, message_policy_path, doc_repo_root, doc_policy_path,
+doc_git_executable, doc_git_sha256; v1 and v2 refuse) and
 prints the descriptor as one canonical JSON line. A refusal prints one fixed line to stderr and exits 2 (unknown: 3).
 """
 import sys
@@ -46,7 +48,7 @@ __all__ = ["ContentPlanRefused", "ContentPlanUnknown", "write_content_plan", "ma
            "RESULT_SCHEMA", "PLAN_NAME"]
 
 PLAN_V4 = "wd.q4-public-wrapper-plan.v4"
-REQUEST_SCHEMA = "wd.q4-public-content-plan-request.v2"
+REQUEST_SCHEMA = "wd.q4-public-content-plan-request.v3"
 RESULT_SCHEMA = "wd.q4-public-content-plan-written.v1"
 PLAN_NAME = "public-plan.v4.json"
 _SCOPE = "wd.q4-shared-projected-events.v1"
@@ -55,7 +57,7 @@ _ARTIFACT_LIMIT = 16 * 1024 * 1024  # == wd_q4_public_query._ARTIFACT_LIMIT
 _DECISION_LIMIT = 65536  # == content_memory.MAX_DECISION and the Invoke-WdQ4Query.ps1 content plan read limit
 _ROSTER_LIMIT = 1048576
 _SOURCE_KEYS = ("message_source_path", "message_generation_path", "message_policy_path", "doc_repo_root",
-                "doc_policy_path")
+                "doc_policy_path", "doc_git_executable", "doc_git_sha256")
 _REQUEST_KEYS = frozenset({"schema", "public_plan_path", "public_plan_sha256", "output_dir", "memory_dir",
                            "content_decision_path", "content_decision_sha256", *_SOURCE_KEYS})
 _REFUSAL = '{"error":"content_plan_refused"}\n'
@@ -95,9 +97,13 @@ def _route_sources(decision, sources):
         if any(sources[key] is not None for key in doc_keys):
             raise ValueError()
     else:
+        if not base._hex(sources["doc_git_sha256"]):
+            raise ValueError()
         documents = {"repo_root": str(base._path(sources["doc_repo_root"])),
                      "policy_bytes": base._read_pinned(sources["doc_policy_path"], decision["doc_policy_sha256"]),
-                     "policy_sha256": decision["doc_policy_sha256"]}
+                     "policy_sha256": decision["doc_policy_sha256"],
+                     "git_executable": str(base._path(sources["doc_git_executable"])),
+                     "git_sha256": sources["doc_git_sha256"]}
     return messages, documents
 
 
@@ -150,7 +156,7 @@ def _content_plan(plan, memory_dir, content_decision_path, content_decision_sha2
 def write_content_plan(*, enabled=False, public_plan_path=None, expected_public_plan_sha256=None, output_dir=None,
                        memory_dir=None, content_decision_path=None, content_decision_sha256=None,
                        message_source_path=None, message_generation_path=None, message_policy_path=None,
-                       doc_repo_root=None, doc_policy_path=None):
+                       doc_repo_root=None, doc_policy_path=None, doc_git_executable=None, doc_git_sha256=None):
     """Write the v4 content plan; see the module doc. ``enabled`` must be the bool ``True``."""
     if enabled is False:
         return {"status": "OFF"}
@@ -162,7 +168,8 @@ def write_content_plan(*, enabled=False, public_plan_path=None, expected_public_
         plan = base._v1_plan(base._read_pinned(public_plan_path, expected_public_plan_sha256))
         sources = {"message_source_path": message_source_path, "message_generation_path": message_generation_path,
                    "message_policy_path": message_policy_path, "doc_repo_root": doc_repo_root,
-                   "doc_policy_path": doc_policy_path}
+                   "doc_policy_path": doc_policy_path, "doc_git_executable": doc_git_executable,
+                   "doc_git_sha256": doc_git_sha256}
         document = _content_plan(plan, memory_dir, content_decision_path, content_decision_sha256, sources)
         out = base._path(output_dir)
         if not out.is_dir() or any(out.iterdir()):

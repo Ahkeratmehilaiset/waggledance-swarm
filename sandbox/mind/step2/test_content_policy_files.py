@@ -11,6 +11,7 @@ import pytest
 from sandbox.mind.step2 import shared_content_projection as cp
 from sandbox.mind.step2 import shared_doc_projection as dp
 from sandbox.mind.step2 import shared_index_builder as sib
+from sandbox.mind.step2 import test_shared_doc_projection as tdp
 
 ROOT = Path(__file__).resolve().parents[3]
 MESSAGE = ROOT / "configs" / "mind" / "content_message_policy_v1.json"
@@ -64,7 +65,8 @@ def test_document_policy_record_budget_at_its_pinned_commit():
     commit = json.loads(raw)["commit"]
     if not _commit_present(commit):
         pytest.skip("the pinned document commit is not in this clone")
-    projection = dp.build_doc_projection(enabled=True, repo_root=str(ROOT), policy_bytes=raw, policy_sha256=sha)
+    projection = dp.build_doc_projection(enabled=True, repo_root=str(ROOT), policy_bytes=raw, policy_sha256=sha,
+                                         **tdp.git_pin())
     assert projection["refused_docs"] == {}
     assert 0 < projection["accepted"] <= DOC_RECORD_BUDGET
     assert {r["provenance"]["path"] for r in projection["records"]} == set(json.loads(raw)["paths"])

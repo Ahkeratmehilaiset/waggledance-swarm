@@ -178,6 +178,41 @@ def test_sources_or_pins_other_than_the_decision_are_refused(tmp_path, route, ch
         validate(route, projection_bytes, **change(route))
 
 
+@pytest.mark.parametrize("pins, token", [
+    ({"git_sha256": "0" * 64}, "repo_refused"),
+    ({"git_executable": "git"}, "repo_refused"),
+    ({"git_sha256": "A" * 64}, "repo_refused"),
+    ({"git_executable": None}, "repo_refused"),
+])
+def test_the_document_re_derivation_runs_only_the_pinned_git(tmp_path, route, pins, token):
+    projection_bytes = built(tmp_path, route)
+    refused(token, route, projection_bytes, documents=dict(route["documents"], **pins))
+
+
+def test_documents_without_the_git_pins_are_not_a_source(tmp_path, route):
+    projection_bytes = built(tmp_path, route)
+    documents = {key: value for key, value in route["documents"].items() if not key.startswith("git_")}
+    refused("sources_invalid", route, projection_bytes, documents=documents)
+
+
+@pytest.mark.parametrize("kind", ["blob", "commit", "tree"])
+def test_a_git_object_altered_at_re_derivation_is_refused(tmp_path, route, monkeypatch, kind):
+    """The re-derivation re-hashes every object it reads (MP3), so a changed object never yields a MATCH."""
+    from sandbox.mind.step2 import shared_doc_projection as dp
+    projection_bytes = built(tmp_path, route)
+    original = dp._git
+
+    def altered(root, env, *args):
+        result = original(root, env, *args)
+        if args[:2] == ("cat-file", kind):
+            return bytes([result[0] ^ 1]) + result[1:]
+        return result
+
+    monkeypatch.setattr(dp, "_git", altered)
+    with pytest.raises(cm.ContentMemoryRefused):
+        validate(route, projection_bytes)
+
+
 def test_a_returned_record_whose_text_fails_the_screen_is_refused_at_read_time(tmp_path, route):
     projection = json.loads(built(tmp_path, route))
     record = projection["messages"]["records"][0]

@@ -87,20 +87,17 @@ def test_occupied_pipe_name_refuses_before_child_launch(transport, tmp_path, mon
 
 
 def test_unconnected_child_times_out_without_query_in_arguments(transport, tmp_path, monkeypatch):
-    import _winapi
-
     marker = b"SYNTHETIC_QUERY_SENTINEL_5d6aac68"
     calls = []
-    original = _winapi.CreateProcess
+    original = transport._create_process_in_job
 
-    def observed(*args):
-        environment = args[6] or {}
-        calls.append((args[1], dict(environment)))
-        return original(*args)
+    def observed(k, job, executable, line, environment, cwd, info):
+        calls.append((line, dict(environment)))
+        return original(k, job, executable, line, environment, cwd, info)
 
     # The bootstrap deliberately never opens the named pipe.
     monkeypatch.setattr(transport, "_BOOTSTRAP", "import time; time.sleep(30)")
-    monkeypatch.setattr(_winapi, "CreateProcess", observed)
+    monkeypatch.setattr(transport, "_create_process_in_job", observed)
     started = time.monotonic()
     with pytest.raises(TimeoutError):
         _run(transport, tmp_path, "pass", payload=marker, timeout=0.2)
@@ -141,6 +138,7 @@ def test_unrelated_inheritor_cannot_open_pipe_handle_or_write_sentinel(transport
 
     original_check = transport._noninheritable
     original_create = _winapi.CreateProcess
+    original_spawn = transport._create_process_in_job
     pipe_handles = []
     probe_codes = []
 
@@ -152,7 +150,7 @@ def test_unrelated_inheritor_cannot_open_pipe_handle_or_write_sentinel(transport
         if get_type(handle) == 3 and not pipe_handles:
             pipe_handles.append(int(handle))
 
-    def probe_before_root_launch(*args):
+    def probe_before_root_launch(k, job, executable, line, environment, cwd, info):
         assert len(pipe_handles) == 1
         # If the unrelated child obtains this inherited handle, attempt a
         # synthetic write as well as reporting the handle as a failure. A
@@ -169,13 +167,13 @@ def test_unrelated_inheritor_cannot_open_pipe_handle_or_write_sentinel(transport
             "f(h,sentinel,19,ctypes.byref(n),None) if present else None; "
             "sys.exit(91 if present else 0)"
         )
-        line = subprocess.list2cmdline([sys.executable, "-I", "-S", "-B", "-c", code])
+        probe_line = subprocess.list2cmdline([sys.executable, "-I", "-S", "-B", "-c", code])
         env = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ}
         env.update(TEMP=str(tmp_path), TMP=str(tmp_path))
         proc = thread = None
         try:
             proc, thread, _, _ = original_create(
-                sys.executable, line, None, None, True, 0x08000400,
+                sys.executable, probe_line, None, None, True, 0x08000400,
                 env, str(tmp_path), subprocess.STARTUPINFO())
             wait = _winapi.WaitForSingleObject(proc, 5000)
             if wait != _winapi.WAIT_OBJECT_0:
@@ -188,10 +186,10 @@ def test_unrelated_inheritor_cannot_open_pipe_handle_or_write_sentinel(transport
                 _winapi.CloseHandle(thread)
             if proc is not None:
                 _winapi.CloseHandle(proc)
-        return original_create(*args)
+        return original_spawn(k, job, executable, line, environment, cwd, info)
 
     monkeypatch.setattr(transport, "_noninheritable", capture_pipe)
-    monkeypatch.setattr(_winapi, "CreateProcess", probe_before_root_launch)
+    monkeypatch.setattr(transport, "_create_process_in_job", probe_before_root_launch)
     result = _run(transport, tmp_path,
                   "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())",
                   payload=b"synthetic-only")

@@ -16,6 +16,11 @@ and system config off, replace objects off, literal pathspecs and a ceiling dire
 given root. Each path must be a regular ``100644`` blob: a symlink, submodule, executable, tree or missing path is
 counted by a closed token and never followed.
 
+The caller must supply an absolute Git executable path and its SHA-256 digest; this module never resolves Git from
+PATH. The executable is checked before each call. Commit, tree and blob bytes are independently rehashed using Git's
+SHA-1 object framing and tree paths are walked from the pinned commit. These checks do not authenticate the caller,
+the executable publisher or Git's helpers, and do not prevent same-user executable replacement races.
+
 Screening. A document that is larger than ``max_doc_bytes``, holds a NUL byte or is not strict UTF-8 is counted and
 skipped. The whole normalized document is then checked once: any credential shape except a bare hex run (key
 prefixes, bearer/authorization values, secret assignments, PEM headers, JWTs, URL user info, mixed-case base64 runs)
@@ -130,17 +135,28 @@ def load_doc_policy(policy_bytes, policy_sha256):
 
 # --- git object reads ----------------------------------------------------------------------------------------------
 
-def _git_env(root):
+def _git_env(root, git_executable=None, git_sha256=None):
     env = {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
     env.update({"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "GIT_NO_REPLACE_OBJECTS": "1",
                 "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_LITERAL_PATHSPECS": "1",
                 "GIT_CEILING_DIRECTORIES": os.path.dirname(root)})
+    env["WD_DOC_GIT_EXECUTABLE"] = git_executable or ""
+    env["WD_DOC_GIT_SHA256"] = git_sha256 or ""
     return env
 
 
 def _git(root, env, *args):
     try:
-        result = subprocess.run(["git", "-C", root, *args], stdin=subprocess.DEVNULL, capture_output=True, env=env,
+        executable = env.get("WD_DOC_GIT_EXECUTABLE", "")
+        expected = env.get("WD_DOC_GIT_SHA256", "")
+        if (type(executable) is not str or type(expected) is not str or not os.path.isabs(executable)
+                or cp._HEX64.fullmatch(expected) is None):
+            raise ValueError()
+        with open(executable, "rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if not hmac.compare_digest(digest, expected):
+            raise ValueError()
+        result = subprocess.run([executable, "-C", root, *args], stdin=subprocess.DEVNULL, capture_output=True, env=env,
                                 timeout=GIT_TIMEOUT_SECONDS, check=False)
     except (OSError, subprocess.SubprocessError, ValueError):
         raise _GitFailed() from None
@@ -149,11 +165,11 @@ def _git(root, env, *args):
     return result.stdout
 
 
-def _open_repo(repo_root):
+def _open_repo(repo_root, git_executable, git_sha256):
     if type(repo_root) is not str or not repo_root or "\0" in repo_root or not os.path.isdir(repo_root):
         _refuse("repo_refused")
     root = os.path.abspath(repo_root)
-    env = _git_env(root)
+    env = _git_env(root, git_executable, git_sha256)
     try:
         _git(root, env, "rev-parse", "--git-dir")
     except _GitFailed:
@@ -161,11 +177,19 @@ def _open_repo(repo_root):
     return root, env
 
 
+def _object(root, env, kind, oid):
+    data = _git(root, env, "cat-file", kind, oid)
+    actual = hashlib.sha1(kind.encode("ascii") + b" " + str(len(data)).encode("ascii") + b"\0" + data).hexdigest()
+    if not hmac.compare_digest(actual, oid):
+        raise _GitFailed()
+    return data
+
+
 def _commit_time(root, env, commit):
     match = None
     try:
         if _git(root, env, "cat-file", "-t", commit) == b"commit\n":
-            header = _git(root, env, "cat-file", "commit", commit).split(b"\n\n", 1)[0]
+            header = _object(root, env, "commit", commit).split(b"\n\n", 1)[0]
             match = [m for m in (_COMMITTER.fullmatch(line) for line in header.split(b"\n")) if m]
     except _GitFailed:
         match = None
@@ -180,22 +204,39 @@ def _commit_time(root, env, commit):
 
 def _entry(root, env, commit, path):
     """``(blob_id, None)`` for a regular blob at exactly ``path``, else ``(None, token)``."""
-    listing = _git(root, env, "ls-tree", "-z", "--full-tree", commit, "--", path)
-    found = []
-    for item in listing.split(b"\0"):
-        if not item:
-            continue
-        head, _, name = item.partition(b"\t")
-        if name == path.encode("ascii"):
-            found.append(head.split(b" "))
-    if not found:
+    if not path or path.endswith("/"):
         return None, "path_missing"
-    if len(found) != 1 or len(found[0]) != 3:
-        return None, "not_blob"
-    mode, kind, oid = found[0]
+    header = _object(root, env, "commit", commit).split(b"\n\n", 1)[0]
+    roots = [line[5:] for line in header.split(b"\n") if line.startswith(b"tree ")]
+    if len(roots) != 1 or _HEX40.fullmatch(roots[0].decode("ascii", "replace")) is None:
+        raise _GitFailed()
+    tree = roots[0].decode("ascii")
+    parts = path.split("/")
+    for index, part in enumerate(parts):
+        data = _object(root, env, "tree", tree)
+        found = []
+        pos = 0
+        while pos < len(data):
+            space = data.find(b" ", pos)
+            end = data.find(b"\0", space + 1) if space >= 0 else -1
+            if space < 0 or end < 0 or end + 21 > len(data):
+                raise _GitFailed()
+            mode, name, oid = data[pos:space], data[space + 1:end], data[end + 1:end + 21].hex()
+            if name == part.encode("ascii"):
+                found.append((mode, oid))
+            pos = end + 21
+        if not found:
+            return None, "path_missing"
+        if len(found) != 1:
+            raise _GitFailed()
+        mode, oid = found[0]
+        if index < len(parts) - 1:
+            if mode not in (b"40000", b"040000"):
+                return None, "path_missing"
+            tree = oid
+    kind = b"blob" if mode in (b"100644", b"100755", b"120000") else b"other"
     if mode in _MODES and _MODES[mode] is not None:
         return None, _MODES[mode]
-    oid = oid.decode("ascii", "replace")
     if mode != b"100644" or kind != b"blob" or _HEX40.fullmatch(oid) is None:
         return None, "not_blob"
     return oid, None
@@ -209,7 +250,7 @@ def _read_blob(root, env, oid, limit):
         raise _GitFailed() from None
     if size > limit:
         return None, "oversize"
-    data = _git(root, env, "cat-file", "blob", oid)
+    data = _object(root, env, "blob", oid)
     if len(data) != size:
         raise _GitFailed()
     if b"\0" in data:
@@ -316,9 +357,9 @@ def _document(root, env, policy, path, time_text, refused_docs, refused_sections
     return records
 
 
-def _build(repo_root, policy_bytes, policy_sha256):
+def _build(repo_root, policy_bytes, policy_sha256, git_executable, git_sha256):
     policy = load_doc_policy(policy_bytes, policy_sha256)
-    root, env = _open_repo(repo_root)
+    root, env = _open_repo(repo_root, git_executable, git_sha256)
     time_text = _commit_time(root, env, policy["commit"])
     records, refused_docs, refused_sections = [], {}, {}
     try:
@@ -334,21 +375,22 @@ def _build(repo_root, policy_bytes, policy_sha256):
     return projection
 
 
-def build_doc_projection(*, enabled=False, repo_root=None, policy_bytes=None, policy_sha256=None):
+def build_doc_projection(*, enabled=False, repo_root=None, policy_bytes=None, policy_sha256=None,
+                         git_executable=None, git_sha256=None):
     """Default OFF. With ``enabled=True``: the content projection of the policy's exact paths at its pinned commit.
     Document- and section-level problems are counted by closed token; input-level problems refuse the build."""
     if enabled is False:
         return {"status": "OFF"}
     if enabled is not True:
         _refuse("enabled_invalid")
-    return _build(repo_root, policy_bytes, policy_sha256)
+    return _build(repo_root, policy_bytes, policy_sha256, git_executable, git_sha256)
 
 
-def validate_doc_projection(projection, *, repo_root, policy_bytes, policy_sha256):
+def validate_doc_projection(projection, *, repo_root, policy_bytes, policy_sha256, git_executable=None, git_sha256=None):
     """Refuse unless ``projection`` is exactly the re-derivation from the pinned commit and policy."""
     if type(projection) is not dict or set(projection) != _PROJECTION_KEYS:
         _refuse("projection_mismatch")
-    expected = _build(repo_root, policy_bytes, policy_sha256)
+    expected = _build(repo_root, policy_bytes, policy_sha256, git_executable, git_sha256)
     try:
         same = hmac.compare_digest(cp._canonical(projection), cp._canonical(expected))
     except (TypeError, ValueError, RecursionError):

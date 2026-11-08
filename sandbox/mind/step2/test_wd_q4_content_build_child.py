@@ -266,9 +266,111 @@ def test_the_model_root_assets_identity_and_encoder_are_bound_like_the_prefix_ch
     refused("encoder_refused", setup)
 
 
+def chain(failure):
+    """Every exception reachable from a refusal through __cause__ or __context__, the refusal first."""
+    seen, link = [], failure
+    while link is not None and link not in seen:
+        seen.append(link)
+        link = link.__cause__ if link.__cause__ is not None else link.__context__
+    return seen
+
+
+def only_the_token(failure, token, *secrets):
+    """RCO1 B2/B3: the refusal carries one fixed token, no cause, no context, and none of the secrets anywhere."""
+    assert str(failure) == token and failure.args == (token,)
+    assert chain(failure) == [failure] and failure.__cause__ is None and failure.__context__ is None
+    rendered = repr(failure) + repr(failure.args) + repr(failure.__dict__)
+    for secret in secrets:
+        assert secret and secret not in rendered
+
+
+def test_a_source_refusal_carries_no_path_bearing_context(setup):
+    """B3: the two refusals raised while a source read failed used to retain the OSError with the path."""
+    absent = str(setup["files"] / "absent-secret-name.json")
+    missing = dict(setup["plan"]["documents"], policy_path=absent)
+    with pytest.raises(child.ContentBuildRefused) as caught:
+        run(setup, plan_with(setup, documents=missing))
+    only_the_token(caught.value, "sources_refused", absent, "absent-secret-name", str(setup["files"]))
+    with pytest.raises(child.ContentBuildRefused) as caught:
+        run(setup, plan_with(setup, decision_path=absent))
+    only_the_token(caught.value, "sources_refused", absent, "absent-secret-name", str(setup["files"]))
+    with pytest.raises(child.ContentBuildRefused) as caught:
+        run(setup, plan_with(setup, documents=None))
+    only_the_token(caught.value, "sources_refused", str(setup["files"]))
+    assert list(setup["out"].iterdir()) == []
+
+
+def test_a_document_plan_without_a_pin_refuses_with_a_bare_token(setup):
+    with pytest.raises(child.ContentBuildRefused) as caught:
+        run(setup, trusted_git=None)
+    only_the_token(caught.value, "git_pin_unavailable", str(setup["files"]))
+
+
+def test_every_refusal_of_the_fixed_set_is_bare(setup, tmp_path, monkeypatch):
+    """No refusal anywhere in the child may carry a cause or a context (the file system message would name paths)."""
+    cases = [("plan_refused", {"plan_bytes": b"{", "plan_sha": sha(b"{")}),
+             ("request_refused", {"trusted_git": {"git_executable": "git", "git_sha256": "0" * 64}}),
+             ("model_root_refused", {"trusted_model_root": str(tmp_path / "elsewhere")})]
+    for token, changes in cases:
+        with pytest.raises(child.ContentBuildRefused) as caught:
+            run(setup, **changes)
+        only_the_token(caught.value, token, str(setup["files"]), str(tmp_path))
+    monkeypatch.setattr(encode_mod, "E5", lambda **k: (_ for _ in ()).throw(RuntimeError(str(tmp_path))))
+    with pytest.raises(child.ContentBuildRefused) as caught:
+        run(setup)
+    only_the_token(caught.value, "encoder_refused", str(tmp_path))
+
+
+def test_the_refusal_helper_suppresses_a_context_even_when_called_while_handling_an_error():
+    """Defense in depth for a future caller inside an ``except`` block: the cause is None and the context is
+    suppressed, so a traceback never prints the handled error."""
+    try:
+        raise OSError("a path would be here")
+    except OSError:
+        with pytest.raises(child.ContentBuildRefused, match="^x$") as caught:
+            child._refuse("x")
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__ is True
+
+
+def broken_after_build(setup, monkeypatch, damage):
+    """The real build, then ``damage(memory_dir)`` before the report is assembled."""
+    original = child.content.build_route_content_memory
+
+    def build(**kwargs):
+        built = original(**kwargs)
+        damage(setup["out"] / setup["plan"]["name"], built)
+        return built
+
+    monkeypatch.setattr(child.content, "build_route_content_memory", build)
+
+
+SECRET_TEXT = '{"documents": "hunter2-secret-token-' + "x" * 40 + '"}'
+
+
+@pytest.mark.parametrize("damage", [
+    lambda memory_dir, built: (memory_dir / "projection.json").unlink(),
+    lambda memory_dir, built: (memory_dir / "projection.json").write_text("{not json " + SECRET_TEXT, "ascii"),
+    lambda memory_dir, built: (memory_dir / "projection.json").write_text(SECRET_TEXT, "ascii"),
+    lambda memory_dir, built: (memory_dir / "projection.json").write_text("[]", "ascii"),
+    lambda memory_dir, built: (memory_dir / "projection.json").write_text('{"documents": {}}', "ascii"),
+    lambda memory_dir, built: built.pop("records"),
+], ids=["absent", "not-json", "documents-not-a-mapping", "not-a-mapping", "documents-without-records",
+        "builder-record-missing"])
+def test_a_report_that_cannot_be_assembled_is_one_fixed_token(setup, monkeypatch, damage):
+    """B2: the projection reread and parse after the build used to run outside refusal handling, so an OSError
+    with the path or a JSONDecodeError with the document reached the caller."""
+    broken_after_build(setup, monkeypatch, damage)
+    with pytest.raises(child.ContentBuildRefused) as caught:
+        run(setup)
+    only_the_token(caught.value, "report_refused", str(setup["out"]), "hunter2", "projection.json", "records",
+                   "Expecting")
+    assert "report_refused" in child.REASONS
+
+
 def test_the_refusal_tokens_are_the_fixed_set():
     assert child.REASONS >= {"plan_refused", "request_refused", "sources_refused", "git_pin_unavailable",
-                             "model_root_refused", "assets_refused", "identity_refused", "encoder_refused"}
+                             "model_root_refused", "assets_refused", "identity_refused", "encoder_refused",
+                             "build_refused", "report_refused"}
     assert prefix.ENCODER_MODEL == encode_mod.MODEL and prefix.ENCODER_DIM == encode_mod.DIM
     assert child.PLAN_KEYS == {"schema", "name", "encoder", "decision_path", "decision_sha256", "nonreview_policy_path",
                                "nonreview_policy_sha256", "roster_path", "roster_sha256", "messages", "documents"}

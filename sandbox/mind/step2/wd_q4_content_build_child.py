@@ -16,7 +16,9 @@ the decision verified against those pins (``sources_refused`` or the decision's 
 through ``content_memory.snapshot_sources`` with the trusted Git (a document-bearing decision without a trusted pin
 is ``git_pin_unavailable`` before any subprocess) -> model root (``model_root_refused``) -> assets
 (``assets_refused``) -> identity (``identity_refused``) -> encoder (``encoder_refused``) -> build (the build's own
-token). The report carries the memory, descriptor and projection digests, the record and document counts, the
+token or ``build_refused``) -> report of the built projection (``report_refused``). Every refusal is raised outside
+its ``except`` block, so no refusal carries a cause or a context holding a path or a document (RCO1 B2/B3,
+2026-11-08). The report carries the memory, descriptor and projection digests, the record and document counts, the
 anchored prefix size and the build seconds; ``authority`` is ``none`` and ``publisher_authentication`` is ``none``:
 nothing is published, pointed to, installed or activated here. The real build runs only under an
 operator-approved pinned policy and decision; the tests use synthetic sources and a synthetic backend.
@@ -43,7 +45,8 @@ PLAN_KEYS = frozenset({"schema", "name", "encoder", "decision_path", "decision_s
 MESSAGE_KEYS = frozenset({"source_path", "generation_path", "policy_path"})
 DOCUMENT_KEYS = frozenset({"repo_root", "policy_path"})
 REASONS = frozenset({"disabled", "plan_refused", "request_refused", "sources_refused", "git_pin_unavailable",
-                     "model_root_refused", "assets_refused", "identity_refused", "encoder_refused", "build_refused"})
+                     "model_root_refused", "assets_refused", "identity_refused", "encoder_refused", "build_refused",
+                     "report_refused"})
 REPORT_KEYS = frozenset({"schema", "status", "name", "memory_dir", "plan_sha256", "decision_sha256", "memory_sha256",
                          "descriptor_sha256", "projection_sha256", "projection_bytes", "records", "document_count",
                          "message_prefix_bytes", "encoder", "trusted_git_sha256", "build_seconds", "authority",
@@ -107,7 +110,9 @@ def _read_pinned(path, pin, limit):
 
 
 def _refuse(token):
-    raise ContentBuildRefused(token)
+    """Raised OUTSIDE every ``except`` block, so the refusal has neither a cause nor a context (an OSError or a
+    JSONDecodeError would carry the path or the document); the token is the whole message."""
+    raise ContentBuildRefused(token) from None
 
 
 def _sources(plan, decision, trusted_git):
@@ -119,6 +124,9 @@ def _sources(plan, decision, trusted_git):
         _refuse("sources_refused")
     if (documents is None) != (decision["doc_policy_sha256"] is None):
         _refuse("sources_refused")
+    if documents is not None and trusted_git is None:
+        _refuse("git_pin_unavailable")
+    failed = False
     try:
         if messages is not None:
             sources.update(message_source_path=messages["source_path"],
@@ -126,15 +134,13 @@ def _sources(plan, decision, trusted_git):
                            message_policy_bytes=_read_pinned(messages["policy_path"],
                                                              decision["message_policy_sha256"], POLICY_LIMIT))
         if documents is not None:
-            if trusted_git is None:
-                _refuse("git_pin_unavailable")
             sources.update(doc_repo_root=documents["repo_root"],
                            doc_policy_bytes=_read_pinned(documents["policy_path"], decision["doc_policy_sha256"],
                                                          POLICY_LIMIT),
                            doc_git_executable=trusted_git["git_executable"], doc_git_sha256=trusted_git["git_sha256"])
-    except (OSError, ValueError, TypeError) as failure:
-        if isinstance(failure, ContentBuildRefused):
-            raise
+    except (OSError, ValueError, TypeError):
+        failed = True
+    if failed:
         _refuse("sources_refused")
     return content.snapshot_sources(decision, sources, trusted_git)
 
@@ -159,19 +165,24 @@ def build_content_generation(*, enabled=False, plan_bytes=None, expected_plan_sh
         _refuse("request_refused")
     if trusted_git is not None and not content._trusted_git_pin(trusted_git):
         _refuse("request_refused")
+    token = None
     try:
         decision_bytes = _read_pinned(plan["decision_path"], plan["decision_sha256"], content.MAX_DECISION)
         policy_bytes = _read_pinned(plan["nonreview_policy_path"], plan["nonreview_policy_sha256"], POLICY_LIMIT)
         roster_bytes = _read_pinned(plan["roster_path"], plan["roster_sha256"], POLICY_LIMIT)
     except (OSError, ValueError):
-        _refuse("sources_refused")
+        token = "sources_refused"
+    if token is not None:
+        _refuse(token)
     try:
         decision = content.verify_content_route_decision(decision_bytes, plan["decision_sha256"],
                                                          policy_sha256=plan["nonreview_policy_sha256"],
                                                          roster_sha256=plan["roster_sha256"])
         messages, documents = _sources(plan, decision, trusted_git)
     except content.ContentMemoryRefused as refusal:
-        raise ContentBuildRefused(str(refusal)) from None
+        token = str(refusal)
+    if token is not None:
+        _refuse(token)
     encoder = plan["encoder"]
     files = prefix._model_root_bound(encoder["model_dir"], trusted_model_root, root, root)
     if files is None:
@@ -193,20 +204,29 @@ def build_content_generation(*, enabled=False, plan_bytes=None, expected_plan_sh
             roster_sha256=plan["roster_sha256"], encode=encode, identity=identity, dim=encoder["dim"],
             root=Path(root), name=plan["name"], trusted_git=trusted_git)
     except content.ContentMemoryRefused as refusal:
-        raise ContentBuildRefused(str(refusal)) from None
+        token = str(refusal)
     except Exception:  # noqa: BLE001 - one fixed token, never a message from the backend or the file system
-        raise ContentBuildRefused("build_refused") from None
+        token = "build_refused"
+    if token is not None:
+        _refuse(token)
     seconds = time.monotonic() - started
     memory_dir = Path(root) / plan["name"]
-    projection_raw = (memory_dir / "projection.json").read_bytes()
-    projection = json.loads(projection_raw)
-    documents_part = projection.get("documents")
-    return {"schema": REPORT_SCHEMA, "status": "BUILT", "name": plan["name"], "memory_dir": str(memory_dir),
-            "plan_sha256": expected_plan_sha256, "decision_sha256": plan["decision_sha256"],
-            "memory_sha256": built["memory_sha256"], "descriptor_sha256": built["descriptor_sha256"],
-            "projection_sha256": hashlib.sha256(projection_raw).hexdigest(), "projection_bytes": len(projection_raw),
-            "records": built["records"],
-            "document_count": 0 if documents_part is None else len(documents_part["records"]),
-            "message_prefix_bytes": None if messages is None else messages["end_cursor"].offset,
-            "encoder": identity, "trusted_git_sha256": None if trusted_git is None else trusted_git["git_sha256"],
-            "build_seconds": round(seconds, 3), "authority": "none", "publisher_authentication": "none"}
+    try:
+        projection_raw = (memory_dir / "projection.json").read_bytes()
+        documents_part = json.loads(projection_raw)["documents"]
+        document_count = 0 if documents_part is None else len(documents_part["records"])
+        report = {"schema": REPORT_SCHEMA, "status": "BUILT", "name": plan["name"], "memory_dir": str(memory_dir),
+                  "plan_sha256": expected_plan_sha256, "decision_sha256": plan["decision_sha256"],
+                  "memory_sha256": built["memory_sha256"], "descriptor_sha256": built["descriptor_sha256"],
+                  "projection_sha256": hashlib.sha256(projection_raw).hexdigest(),
+                  "projection_bytes": len(projection_raw), "records": built["records"],
+                  "document_count": document_count,
+                  "message_prefix_bytes": None if messages is None else messages["end_cursor"].offset,
+                  "encoder": identity,
+                  "trusted_git_sha256": None if trusted_git is None else trusted_git["git_sha256"],
+                  "build_seconds": round(seconds, 3), "authority": "none", "publisher_authentication": "none"}
+    except Exception:  # noqa: BLE001 - the reread or parse of the built projection: path and document stay out
+        token = "report_refused"
+    if token is not None:
+        _refuse(token)
+    return report

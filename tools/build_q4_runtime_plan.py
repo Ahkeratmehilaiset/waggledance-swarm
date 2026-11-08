@@ -23,7 +23,9 @@ import closure, including the imports inside functions. Any of them missing
 from the commit refuses (``code_closure_incomplete``), the committed helper
 blob must hash to the requested value, and the result names the helper under
 ``staged_backend`` and all three under ``staged_runtime``. Without the request
-the plan is unchanged.
+the plan is unchanged. The separate ``content_backend_sha256`` requests the
+analogous content backend, transport and verifier profile, whose committed
+backend must match that pin. The two profile requests are mutually exclusive.
 Imports made through
 dynamic loaders (importlib, exec, runpy, file specs) cannot be followed
 statically. A conservative AST heuristic flags files that import importlib,
@@ -92,10 +94,13 @@ _CONTROLLED_IMPORTS = "sandbox/mind/step2/q4_controlled_imports.py"
 _NAMESPACE_ORIGIN = "sandbox/mind/step2/q4_namespace_origin.py"
 _NATIVE_ADDITIONS = "sandbox/mind/step2/q4_native_additions.py"
 _STAGED_FIXED_BACKEND = "tools/wd_q4_staged_fixed_backend.py"
+_CONTENT_FIXED_BACKEND = "tools/wd_q4_content_fixed_backend.py"
 _RUNTIME_VERIFIER = "sandbox/mind/step2/runtime_manifest.py"
 # Staged runtime profile: planned whenever staged_backend_sha256 is given, never otherwise.
 _STAGED_PROFILE = (("backend", _STAGED_FIXED_BACKEND), ("transport", _SECURE_TRANSPORT),
                    ("verifier", _RUNTIME_VERIFIER))
+_CONTENT_PROFILE = (("backend", _CONTENT_FIXED_BACKEND), ("transport", _SECURE_TRANSPORT),
+                    ("verifier", _RUNTIME_VERIFIER))
 _DYNAMIC_MODULES = frozenset({"importlib", "runpy", "builtins"})
 _DYNAMIC_NAMES = frozenset({"__import__", "exec", "eval", "compile", "__builtins__"})
 _DYNAMIC_ATTRS = frozenset({"import_module", "__import__", "run_path", "run_module", "spec_from_file_location",
@@ -317,7 +322,8 @@ def _parents(path, entries):
     return {item for item in candidates if item in entries}
 
 
-def _code_plan(git_executable, repository, commit, roots, extras, deadline, budget, staged_backend=None):
+def _code_plan(git_executable, repository, commit, roots, extras, deadline, budget, staged_backend=None,
+               content_backend=None):
     if (type(roots) not in (list, tuple) or not roots or len(set(roots)) != len(roots)
             or type(extras) not in (list, tuple) or len(set(extras)) != len(extras)):
         _fail("code_roots_invalid")
@@ -335,6 +341,10 @@ def _code_plan(git_executable, repository, commit, roots, extras, deadline, budg
         if any(item not in entries for _, item in _STAGED_PROFILE):
             _fail("code_closure_incomplete")
         pending.extend(item for _, item in _STAGED_PROFILE)
+    if content_backend is not None:
+        if any(item not in entries for _, item in _CONTENT_PROFILE):
+            _fail("code_closure_incomplete")
+        pending.extend(item for _, item in _CONTENT_PROFILE)
     while pending:
         path = pending.pop()
         if path in records:
@@ -368,6 +378,8 @@ def _code_plan(git_executable, repository, commit, roots, extras, deadline, budg
         del raw  # only sizes and digests are kept, so at most one blob is in memory
     if staged_backend is not None and records[_STAGED_FIXED_BACKEND]["sha256"] != staged_backend:
         _fail("staged_backend_mismatch")
+    if content_backend is not None and records[_CONTENT_FIXED_BACKEND]["sha256"] != content_backend:
+        _fail("content_backend_mismatch")
     return records, sorted(third), sorted(dynamic), used
 
 
@@ -455,7 +467,7 @@ def _tree_pins(root, budget, used, expected_members=None, mismatch_token="tree_c
 def plan_runtime_inputs(*, git_executable, repository, commit, code_roots, site_root, model_root,
                         expected_model_files, expected_weights_sha256, generation, revision, max_bytes,
                         extra_code_paths=(), expected_site_pins=None, timeout_seconds=60, enabled=False,
-                        staged_backend_sha256=None):
+                        staged_backend_sha256=None, content_backend_sha256=None):
     """Return the exact candidate-builder pins and identity, or refuse with a fixed token."""
     if enabled is False:
         return {"status": "OFF"}
@@ -473,7 +485,10 @@ def plan_runtime_inputs(*, git_executable, repository, commit, code_roots, site_
                 or any(type(item) is not str for item in expected_model_files)
                 or (expected_site_pins is not None and type(expected_site_pins) is not dict)
                 or (staged_backend_sha256 is not None and (type(staged_backend_sha256) is not str
-                                                           or not _SHA256.fullmatch(staged_backend_sha256)))):
+                                                           or not _SHA256.fullmatch(staged_backend_sha256)))
+                or (content_backend_sha256 is not None and (type(content_backend_sha256) is not str
+                                                            or not _SHA256.fullmatch(content_backend_sha256)))
+                or (staged_backend_sha256 is not None and content_backend_sha256 is not None)):
             _fail("inputs_invalid")
         if not _COMMIT.fullmatch(commit):
             _fail("commit_invalid")
@@ -494,7 +509,7 @@ def plan_runtime_inputs(*, git_executable, repository, commit, code_roots, site_
                 _fail("site_pin_mismatch")
         deadline = time.monotonic() + timeout_seconds  # one wall-time budget for every git call of this plan
         code, third, dynamic, used = _code_plan(git_executable, repository, commit, code_roots, extra_code_paths,
-                                                deadline, max_bytes, staged_backend_sha256)
+                                                deadline, max_bytes, staged_backend_sha256, content_backend_sha256)
         site_pins, site_files, used = _tree_pins(
             site, max_bytes, used, set(expected_site_pins) if expected_site_pins is not None else None,
             "site_pin_mismatch")
@@ -522,6 +537,8 @@ def plan_runtime_inputs(*, git_executable, repository, commit, code_roots, site_
         if staged_backend_sha256 is not None:
             result["staged_backend"] = {"path": _STAGED_FIXED_BACKEND, **code[_STAGED_FIXED_BACKEND]}
             result["staged_runtime"] = {name: {"path": item, **code[item]} for name, item in _STAGED_PROFILE}
+        if content_backend_sha256 is not None:
+            result["content_runtime"] = {name: {"path": item, **code[item]} for name, item in _CONTENT_PROFILE}
         return result
     except RuntimePlanRefused as exc:
         token = exc.args[0]

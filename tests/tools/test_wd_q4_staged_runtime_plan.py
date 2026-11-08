@@ -18,8 +18,11 @@ import pytest
 from tools import build_q4_runtime_plan as planner
 from tools import wd_q4_fixed_plan_producer as producer
 from tests.tools.test_build_q4_runtime_plan import GIT, WEIGHTS, make_repo, make_tree, sha
-from tests.tools.test_build_q4_runtime_plan_staged_backend import FILES, HELPER, HELPER_SOURCE, LAZY
+from tests.tools.test_build_q4_runtime_plan_staged_backend import FILES, HELPER, HELPER_SOURCE, LAZY, TRANSPORT, VERIFIER
 from tests.tools.test_wd_q4_staged_fixed_plan import staged_args
+
+CONTENT_HELPER = "tools/wd_q4_content_fixed_backend.py"
+CONTENT_SOURCE = b"import hashlib\n"
 
 pytestmark = [pytest.mark.skipif(GIT is None, reason="git executable required"),
               pytest.mark.skipif(os.name != "nt", reason="Windows fixed-peer paths")]
@@ -40,6 +43,58 @@ def fixed_plan(commit, backend=sha(HELPER_SOURCE), **changes):
     args = dict(staged_args(), backend_sha256=backend, bundle_commit=commit, runtime_generation=GENERATION,
                 runtime_revision=REVISION, **changes)
     return producer.build_staged_fixed_plan(enabled=True, **args)
+
+
+def content_fixed_plan(commit, backend=sha(CONTENT_SOURCE)):
+    old = json.loads(fixed_plan(commit)["plan_bytes"])
+    old.update(schema="wd.q4-fixed-plan.v4", backend="content-wrapper-v1", backend_sha256=backend)
+    old.update(peer_code_sha256=sha(FILES[TRANSPORT]), verifier_sha256=sha(FILES[VERIFIER]))
+    old["encoder_sha256"] = old.pop("expected_encoder_sha256")
+    for key in ("expected_pointer_sha256", "expected_public_policy_sha256", "expected_source_sha256",
+                "card_policy_sha256", "card_decision_sha256"):
+        del old[key]
+    for key in ("content_decision_sha256", "descriptor_sha256", "memory_sha256", "projection_sha256"):
+        old[key] = "a" * 64
+    raw = canon(old)
+    return {"plan_bytes": raw, "plan_sha256": sha(raw)}
+
+
+def test_content_fixed_plan_binds_content_profile_without_changing_v3(tmp_path):
+    files = dict(FILES, **{CONTENT_HELPER: CONTENT_SOURCE})
+    commit, args = inputs(tmp_path, files)
+    plan = content_fixed_plan(commit)
+    result = call(plan, args)
+    runtime = result["runtime_plan"]
+    assert result["fixed_plan_sha256"] == plan["plan_sha256"]
+    assert runtime["content_runtime"]["backend"]["sha256"] == sha(CONTENT_SOURCE)
+    assert runtime["content_runtime"]["backend"]["path"] == CONTENT_HELPER
+    assert runtime["commit"] == commit
+    assert "staged_runtime" not in runtime
+    assert call(fixed_plan(commit), args)["runtime_plan"]["staged_backend"]["path"] == HELPER
+
+
+def test_content_fixed_plan_refuses_a_mismatched_backend_pin(tmp_path):
+    commit, args = inputs(tmp_path, dict(FILES, **{CONTENT_HELPER: CONTENT_SOURCE}))
+    refused(content_fixed_plan(commit, backend=sha(b"wrong")), args, "content_backend_mismatch")
+
+
+def test_content_fixed_plan_rejects_wrong_fixed_plan_hash_or_schema_backend_pair(tmp_path):
+    commit, args = inputs(tmp_path, dict(FILES, **{CONTENT_HELPER: CONTENT_SOURCE}))
+    plan = content_fixed_plan(commit)
+    refused(plan, args, "fixed_plan_refused", expected_fixed_plan_sha256="0" * 64)
+    document = json.loads(plan["plan_bytes"])
+    document["backend"] = "staged-card-wrapper-v1"
+    raw = canon(document)
+    refused({"plan_bytes": raw, "plan_sha256": sha(raw)}, args, "fixed_plan_refused")
+
+
+@pytest.mark.parametrize("pin", ["peer_code_sha256", "verifier_sha256"])
+def test_content_fixed_plan_refuses_a_mismatched_runtime_component(tmp_path, pin):
+    commit, args = inputs(tmp_path, dict(FILES, **{CONTENT_HELPER: CONTENT_SOURCE}))
+    document = json.loads(content_fixed_plan(commit)["plan_bytes"])
+    document[pin] = sha(b"wrong")
+    raw = canon(document)
+    refused({"plan_bytes": raw, "plan_sha256": sha(raw)}, args, "content_profile_mismatch")
 
 
 def inputs(tmp_path, files=FILES):

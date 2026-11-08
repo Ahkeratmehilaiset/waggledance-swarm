@@ -79,7 +79,7 @@ def lane(content, tmp_path):
     manifest = json.dumps({"schema_version": 1, "source_commit": "e" * 40,
                            "files": {"Invoke-WdQ4Query.ps1": sha(wrapper.read_bytes())}}, sort_keys=True).encode()
     (bundle / "deployment-manifest.json").write_bytes(manifest)
-    calls = []
+    calls, codes = [], []
 
     def transport(*, wrapper, arguments, stdin_bytes):
         """What the wrapper does for a v5 plan: read the pinned plan, inputs and sources, call run_content once."""
@@ -91,6 +91,8 @@ def lane(content, tmp_path):
                    "message_policy_bytes": policy_of("message_policy_path"), "doc_repo_root": plan["doc_repo_root"],
                    "doc_policy_bytes": policy_of("doc_policy_path"), "doc_git_executable": plan["doc_git_executable"],
                    "doc_git_sha256": plan["doc_git_sha256"]}
+        documents = content["route"]["documents"]  # the deployment-manifest-pinned fleet record, synthetic here
+        trusted = {"git_executable": documents["git_executable"], "git_sha256": documents["git_sha256"]}
         out = io.StringIO()
         code = child.run_content(content["config"], io.BytesIO(stdin_bytes), out,
                                  expected_encoder_sha256=plan["encoder_sha256"],
@@ -100,7 +102,8 @@ def lane(content, tmp_path):
                                  content_decision_sha256=plan["content_decision_sha256"],
                                  expected_memory_sha256=plan["memory_sha256"],
                                  expected_projection_sha256=plan["projection_sha256"], content_sources=sources,
-                                 enabled=True)
+                                 trusted_git=trusted, enabled=True)
+        codes.append(code)
         return out.getvalue().encode("utf-8"), code
 
     binding = {key: document[key] for key in PINS}
@@ -112,7 +115,8 @@ def lane(content, tmp_path):
             "expected_public_plan_sha256": plan_sha, "expected_binding": binding,
             "projection_bytes": args["projection_bytes"], "policy_bytes": args["policy_bytes"],
             "roster_bytes": args["roster_bytes"], "transport": transport, "enabled": True}
-    return {"call": call, "calls": calls, "document": document, "files": files, "content": content}
+    return {"call": call, "calls": calls, "codes": codes, "document": document, "files": files,
+            "content": content}
 
 
 def refused(reason, call):
@@ -185,6 +189,18 @@ def test_a_hand_written_v5_plan_whose_sources_are_not_the_decision_sources_does_
     with pytest.raises(lane_query.LaneQueryRefused):
         lane_query.query_public(**dict(lane["call"], public_plan_path=path, expected_public_plan_sha256=pin))
     assert len(lane["calls"]) == 1 and lane["content"]["calls"] == []
+
+
+def test_a_hand_written_v5_plan_naming_another_git_program_does_not_run_it(lane, monkeypatch):
+    """RCO1 Q1 at the lane layer: the plan names a program with its true digest; only the trusted pin may run."""
+    from sandbox.mind.step2 import shared_doc_projection as sdp
+    monkeypatch.setattr(sdp.subprocess, "run", lambda *a, **k: pytest.fail("subprocess started"))
+    evil_path, evil_pin = write(lane["files"] / "evil-git.exe", b"not git")
+    document = plan_document(lane["content"], lane["files"], doc_git_executable=evil_path, doc_git_sha256=evil_pin)
+    path, pin = write(lane["files"] / "evil-plan.json", json.dumps(document, sort_keys=True).encode())
+    with pytest.raises(lane_query.LaneQueryRefused):
+        lane_query.query_public(**dict(lane["call"], public_plan_path=path, expected_public_plan_sha256=pin))
+    assert len(lane["calls"]) == 1 and lane["codes"] == [2] and lane["content"]["calls"] == []
 
 
 def test_the_lane_caller_answers_content_through_the_v5_plan(lane):

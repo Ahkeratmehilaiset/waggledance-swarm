@@ -305,7 +305,7 @@ _CONTENT_PROJECTION_SCHEMA = "wd.mind-content-memory-projection.v1"  # == conten
 def query_content_snapshot(config, stdin, *, expected_encoder_sha256=None, policy_bytes=None, policy_sha256=None,
                            roster_bytes=None, roster_sha256=None, content_decision_bytes=None,
                            content_decision_sha256=None, expected_memory_sha256=None,
-                           expected_projection_sha256=None, content_sources=None, enabled=False):
+                           expected_projection_sha256=None, content_sources=None, trusted_git=None, enabled=False):
     """Opt-in query of one caller-pinned content route snapshot (route B), without history or a pointer.
 
     Before stdin is consumed: the content route decision verifies against the strict pins, and the descriptor,
@@ -315,14 +315,21 @@ def query_content_snapshot(config, stdin, *, expected_encoder_sha256=None, polic
     after the query and every pin is bound into the output. Ordinary changes are detected, not same-user ABA.
 
     Source re-derivation on the query path (RCO2 MP1 R1): ``content_sources`` (``content_memory.snapshot_sources``
-    keys: bridge log, generation file and message policy bytes; repository root, document policy bytes, absolute Git
-    executable and its pin) is required, and before stdin is read the pinned projection bytes must be exactly what
+    keys: bridge log, generation file and message policy bytes; repository root, document policy bytes, the plan's
+    Git executable and pin) is required, and before stdin is read the pinned projection bytes must be exactly what
     the decision's sources re-derive to (``content_memory.validate_content_snapshot``: the anchored prefix only, the
     pinned commit through the pinned Git, the policies by the decision pins). A plan written by hand therefore
     cannot pair a decision with a projection its sources do not produce; it still cannot authenticate who wrote
-    the decision, and sources can change after the check (same user). The
-    caller must independently trust all pins, code, policy origins, runtime and encoder assets; this function grants
-    no native execution or runtime authority and reads no installed state.
+    the decision, and sources can change after the check (same user).
+
+    Git trust (RCO1 Q1): the Git that runs is ``trusted_git`` (``content_memory._trusted_git_pin``: executable and
+    sha256 from an independently verified source, in the deployed wrapper the deployment-manifest-pinned fleet
+    record), never a program named by the plan; the plan's ``doc_git_executable`` and ``doc_git_sha256`` must equal
+    it, and a document-bearing decision without a trusted pin refuses (``git_pin_unavailable``) before any
+    subprocess. The caller must independently trust all pins, code, policy origins, runtime and encoder assets.
+    This function grants no runtime authority and reads no installed state; its one native execution is that
+    document re-derivation, which starts exactly the trusted Git (re-hashed immediately before each start by the
+    document projection) and nothing else.
     """
     if enabled is not True:
         raise PublicQueryRefused("disabled")
@@ -336,7 +343,7 @@ def query_content_snapshot(config, stdin, *, expected_encoder_sha256=None, polic
         from sandbox.mind.step2 import content_memory as content
         decision = content.verify_content_route_decision(content_decision_bytes, content_decision_sha256,
                                                          policy_sha256=policy_sha256, roster_sha256=roster_sha256)
-        messages, documents = content.snapshot_sources(decision, content_sources)
+        messages, documents = content.snapshot_sources(decision, content_sources, trusted_git)
         tasks, _ = pointer_resolver.adapter.strict_pins(policy_bytes, policy_sha256, roster_bytes, roster_sha256)
         memory_dir = Path(config.memory)
         if Path(config.descriptor) != memory_dir / "descriptor.json":

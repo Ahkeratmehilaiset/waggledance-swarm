@@ -45,8 +45,17 @@ def content_plan(tmp_path, **changes):
     return path, pin, plan
 
 
-def load(path, pin):
-    return (f". '{quote(WRAPPER)}'\n" + BASE +
+def trusted(plan, **changes):
+    """The base plan's TrustedGit as Get-WdQ4QueryPlan derives it from the manifest-pinned fleet record."""
+    value = {"git_executable": plan.get("doc_git_executable"), "git_sha256": plan.get("doc_git_sha256"), **changes}
+    if value["git_executable"] is None or value["git_sha256"] is None:
+        return "$base.TrustedGit=$null\n"
+    return ("$base.TrustedGit=@{git_executable='" + quote(value["git_executable"]) + "';git_sha256='" +
+            value["git_sha256"] + "'}\n")
+
+
+def load(path, pin, plan=None, **changes):
+    return (f". '{quote(WRAPPER)}'\n" + BASE + ("" if plan is None else trusted(plan, **changes)) +
             f"$plan=try {{Get-WdQ4PublicPlan -BasePlan $base -Path '{quote(path)}' -ExpectedSha256 '{pin}'}}"
             "catch {$null}\n")
 
@@ -54,7 +63,7 @@ def load(path, pin):
 @windows
 def test_a_content_plan_loads_its_three_pinned_inputs(tmp_path):
     path, pin, plan = content_plan(tmp_path)
-    script = load(path, pin) + (
+    script = load(path, pin, plan) + (
         "@{content=$plan.Content;staged=$plan.Staged;names=(@($plan.Inputs.Keys)|Sort-Object) -join ',';"
         "decision=[Text.Encoding]::ASCII.GetString($plan.Inputs.content_decision)} | ConvertTo-Json -Compress")
     assert ps(script) == {"content": True, "staged": False,
@@ -70,9 +79,62 @@ def test_a_content_plan_with_one_source_group_reads_only_that_policy(tmp_path, g
     nulls = ({"doc_repo_root": None, "doc_policy_path": None, "doc_git_executable": None, "doc_git_sha256": None}
              if group == "message" else
              {"message_source_path": None, "message_generation_path": None, "message_policy_path": None})
-    path, pin, _ = content_plan(tmp_path, **nulls)
-    script = load(path, pin) + "@{names=(@($plan.Inputs.Keys)|Sort-Object) -join ','} | ConvertTo-Json -Compress"
+    path, pin, plan = content_plan(tmp_path, **nulls)
+    script = load(path, pin, plan) + "@{names=(@($plan.Inputs.Keys)|Sort-Object) -join ','} | ConvertTo-Json -Compress"
     assert ps(script) == {"names": names}
+
+
+@windows
+@pytest.mark.parametrize("fleet, expected", [
+    ('{"git_executable":"C:\\\\Program Files\\\\Git\\\\cmd\\\\git.exe","git_sha256":"' + "a" * 64 + '"}',
+     {"git_executable": "C:\\Program Files\\Git\\cmd\\git.exe", "git_sha256": "a" * 64}),
+    ('{"git_executable":"C:\\\\git.exe"}', None),
+    ('{"git_sha256":"' + "a" * 64 + '"}', None),
+    ('{"git_executable":"C:\\\\git.exe","git_sha256":"' + "A" * 64 + '"}', None),
+    ('{"git_executable":"C:\\\\git.exe","git_sha256":"' + "a" * 63 + '"}', None),
+    ('{"git_executable":"","git_sha256":"' + "a" * 64 + '"}', None),
+    ('{"git_executable":1,"git_sha256":"' + "a" * 64 + '"}', None),
+    ('{"git_executable":"C:\\\\git.exe","git_sha256":null}', None),
+    ("@(1,2)", None),
+    ("$null", None),
+])
+def test_the_trusted_git_pin_is_derived_only_from_a_complete_fleet_record(fleet, expected):
+    """RCO1 Q1: a fleet record yields a pin only with git_executable and a lowercase hex git_sha256; else null."""
+    value = fleet if fleet.startswith(("@", "$")) else f"ConvertFrom-WdQ4StrictJson -Text '{fleet}'"
+    script = (f". '{quote(WRAPPER)}'\n$fleet={value}\n"
+              "$t=Get-WdQ4TrustedGit -Fleet $fleet\n"
+              "@{t=$(if($null -eq $t){$null}else{@{git_executable=$t.git_executable;git_sha256=$t.git_sha256}})}"
+              " | ConvertTo-Json -Compress -Depth 4")
+    assert ps(script) == {"t": expected}
+
+
+@windows
+def test_the_repository_fleet_record_yields_no_trusted_git_pin_yet():
+    """Truth of the missing interface: ops/windows/reboot/wd-fleet.json names git_executable but no git_sha256, so a
+    deployed wrapper passes no trusted pin and every document-bearing content plan fails closed."""
+    fleet_path = ROOT / "ops/windows/reboot/wd-fleet.json"
+    fleet = json.loads(fleet_path.read_text(encoding="utf-8"))
+    assert "git_executable" in fleet and "git_sha256" not in fleet
+    script = (f". '{quote(WRAPPER)}'\n"
+              f"$fleet=ConvertFrom-WdQ4StrictJson -Text ([IO.File]::ReadAllText('{quote(fleet_path)}'))\n"
+              "@{t=$(if($null -eq (Get-WdQ4TrustedGit -Fleet $fleet)){'null'}else{'pin'})} | ConvertTo-Json -Compress")
+    assert ps(script) == {"t": "null"}
+
+
+@windows
+@pytest.mark.parametrize("change", [
+    {"git_sha256": None},
+    {"git_sha256": "0" * 64},
+    {"git_executable": "C:\\other\\git.exe"},
+])
+def test_a_content_plan_whose_git_is_not_the_trusted_fleet_git_is_refused(tmp_path, change):
+    """RCO1 Q1: the plan may not choose the program; without a fleet Git digest no document plan loads at all."""
+    path, pin, plan = content_plan(tmp_path)
+    assert ps(load(path, pin, plan, **change) + "@{loaded=($null -ne $plan)} | ConvertTo-Json -Compress") == {
+        "loaded": False}
+    nulls = {"doc_repo_root": None, "doc_policy_path": None, "doc_git_executable": None, "doc_git_sha256": None}
+    path, pin, plan = content_plan(tmp_path, **nulls)
+    assert ps(load(path, pin, plan) + "@{loaded=($null -ne $plan)} | ConvertTo-Json -Compress") == {"loaded": True}
 
 
 @windows
@@ -98,14 +160,14 @@ def test_a_content_plan_with_one_source_group_reads_only_that_policy(tmp_path, g
     {"doc_policy_path": "C:\\missing\\doc-policy.json"},
 ])
 def test_a_partial_tampered_or_extended_content_plan_is_refused(tmp_path, change):
-    path, pin, _ = content_plan(tmp_path, **change)
-    assert ps(load(path, pin) + "@{loaded=($null -ne $plan)} | ConvertTo-Json -Compress") == {"loaded": False}
+    path, pin, plan = content_plan(tmp_path, **change)
+    assert ps(load(path, pin, plan) + "@{loaded=($null -ne $plan)} | ConvertTo-Json -Compress") == {"loaded": False}
 
 
 @windows
 def test_a_changed_decision_file_is_refused(tmp_path):
     path, pin, plan = content_plan(tmp_path)
-    script = load(path, pin) + (
+    script = load(path, pin, plan) + (
         f"[IO.File]::WriteAllText('{quote(plan['content_decision_path'])}','changed')\n"
         f"$again=try {{$null=Get-WdQ4PublicPlan -BasePlan $base -Path '{quote(path)}' -ExpectedSha256 '{pin}';'accepted'}}"
         "catch{'refused'}\n@{first=($null -ne $plan);again=$again} | ConvertTo-Json -Compress")
@@ -182,6 +244,7 @@ def test_the_content_plan_reaches_the_real_windows_job_as_framed_inputs(tmp_path
         "'message_generation_path':'C:\\\\s\\\\generation.json','message_policy_bytes':b'message-secret',"
         "'doc_repo_root':'C:\\\\repo','doc_policy_bytes':b'doc-secret','doc_git_executable':'C:\\\\git.exe',"
         "'doc_git_sha256':'a'*64}\n"
+        "  assert pins['trusted_git']=={'git_executable':'C:\\\\git.exe','git_sha256':'a'*64}\n"
         "  assert all('secret' not in item for item in sys.argv)\n"
         "  stdout.write(json.dumps(" + repr(output) + "));stdout.flush();return 0\n"
         " def run_public(*a, **k): raise AssertionError('not the content route')\n"
@@ -197,6 +260,7 @@ $h=[IO.File]::ReadAllBytes('{quote(helper)}');$sha=[Security.Cryptography.SHA256
 $hash=[BitConverter]::ToString($sha.ComputeHash($h)).Replace('-','');$sha.Dispose()
 $base=@{{CodeRoot='{quote(root)}';JobHelperBytes=$h;JobHelperSha256=$hash;
  Config=@{{interpreter='{quote(sys.executable)}';timeout=10;scratch_root='{quote(scratch)}';verifier_sha256=('7'*64);descriptor_sha256=('1'*64);runtime_root='C:\\r';runtime_manifest='C:\\m';runtime_manifest_sha256=('8'*64);runtime_generation=('9'*40);runtime_revision=('8'*40)}};
+ TrustedGit=@{{git_executable='C:\\git.exe';git_sha256=('a'*64)}};
  PublicPins=@{{'tools/wd_q4_public_child.py'=('8'*64);'tools/wd_q4_public_query.py'=('9'*64)}}}}
 $doc=@{{encoder_sha256=('c'*64);policy_sha256=('d'*64);roster_sha256=('e'*64);content_decision_sha256=('9'*64);memory_sha256=('2'*64);projection_sha256=('3'*64);message_source_path='C:\\s\\events.jsonl';message_generation_path='C:\\s\\generation.json';doc_repo_root='C:\\repo';doc_git_executable='C:\\git.exe';doc_git_sha256=('a'*64)}}
 $plan=@{{Base=$base;Document=$doc;Root=$null;Staged=$false;Content=$true;Inputs=@{{policy=[Text.Encoding]::UTF8.GetBytes('policy-secret');roster=[Text.Encoding]::UTF8.GetBytes('roster-secret');content_decision=[Text.Encoding]::UTF8.GetBytes('decision-secret');message_policy=[Text.Encoding]::UTF8.GetBytes('message-secret');doc_policy=[Text.Encoding]::UTF8.GetBytes('doc-secret')}}}}
@@ -204,6 +268,16 @@ Invoke-WdQ4PublicTransport -Plan $plan -Query ([Text.Encoding]::UTF8.GetBytes('q
 """
     out = ps(script)
     assert out["status"] == "ANSWER" and out["binding"]["source_mode"] == "content-snapshot-v1"
+
+
+@windows
+def test_the_base_plan_derives_its_trusted_git_from_the_manifest_pinned_fleet_snapshot():
+    """Call-site truth (the full bundle walk is not run here): the only TrustedGit source is the verified fleet
+    snapshot, derived by Get-WdQ4TrustedGit and returned on the base plan; no other assignment exists."""
+    text = WRAPPER.read_text(encoding="utf-8")
+    assert text.count("$trustedGit=") == 1
+    assert "$trustedGit=Get-WdQ4TrustedGit -Fleet (ConvertFrom-WdQ4StrictJson -Text $snapshots['wd-fleet.json'].Text)" in text
+    assert "TrustedGit=$trustedGit;" in text and text.count("function Get-WdQ4TrustedGit") == 1
 
 
 @windows
@@ -236,18 +310,27 @@ HELPER = ("$hb=[Text.Encoding]::UTF8.GetBytes('function Invoke-WdQ4ProcessJob {p
           "$sx.Dispose()\n")
 TRANSPORT = (HELPER + "$base=@{CodeRoot='C:\\code';JobHelperBytes=$hb;JobHelperSha256=$hh;"
              "Config=@{descriptor_sha256=('1'*64);verifier_sha256=('7'*64);timeout=10;interpreter='C:\\py.exe';"
-             "scratch_root='C:\\s'};"
+             "scratch_root='C:\\s'};TrustedGit=@{git_executable='C:\\g.exe';git_sha256=('a'*64)};"
              "PublicPins=@{'tools/wd_q4_public_child.py'=('8'*64);'tools/wd_q4_public_query.py'=('9'*64)}}\n")
 
 
 @windows
 @pytest.mark.parametrize("fault", ["none", "card_input", "staged", "bad_pin", "no_message_policy", "no_doc_policy",
                                    "no_sources", "bad_git_pin", "message_only", "doc_only", "stray_message_policy",
-                                   "stray_doc_policy"])
+                                   "stray_doc_policy", "no_trusted_git", "trusted_git_other_pin",
+                                   "plan_git_other_program"])
 def test_the_content_transport_refuses_a_mixed_or_unpinned_plan_before_any_job(fault):
     message = "" if fault in ("no_sources", "doc_only", "stray_message_policy") else "message_source_path='C:\\e.jsonl';"
     git = "'A'" if fault == "bad_git_pin" else "('a'*64)"
-    docs = "" if fault in ("no_sources", "message_only", "stray_doc_policy") else "doc_repo_root='C:\\r';doc_git_sha256=" + git + ";"
+    exe = "'C:\\evil.exe'" if fault == "plan_git_other_program" else "'C:\\g.exe'"
+    docs = ("" if fault in ("no_sources", "message_only", "stray_doc_policy") else
+            "doc_repo_root='C:\\r';doc_git_executable=" + exe + ";doc_git_sha256=" + git + ";")
+    base = TRANSPORT
+    if fault == "no_trusted_git":
+        base = base.replace("TrustedGit=@{git_executable='C:\\g.exe';git_sha256=('a'*64)};", "")
+    if fault == "trusted_git_other_pin":
+        base = base.replace("git_sha256=('a'*64)};", "git_sha256=('b'*64)};")
+    assert fault not in ("no_trusted_git", "trusted_git_other_pin") or base != TRANSPORT
     doc = ("$doc=@{" + message + docs + "encoder_sha256=('c'*64);policy_sha256=('d'*64);roster_sha256=('e'*64);"
            "content_decision_sha256=('9'*64);memory_sha256=('2'*64);projection_sha256=" +
            ("'x'" if fault == "bad_pin" else "('3'*64)") + "}\n")
@@ -259,7 +342,7 @@ def test_the_content_transport_refuses_a_mixed_or_unpinned_plan_before_any_job(f
     if fault == "card_input":
         inputs += ";card_decision=[byte[]]@(4)"
     staged = "$true" if fault == "staged" else "$false"
-    script = (f". '{quote(WRAPPER)}'\n" + TRANSPORT + doc +
+    script = (f". '{quote(WRAPPER)}'\n" + base + doc +
               f"$plan=@{{Base=$base;Document=$doc;Root=$null;Staged={staged};Content=$true;Inputs=@{{{inputs}}}}}\n"
               "$r=try {$null=Invoke-WdQ4PublicTransport -Plan $plan -Query ([byte[]]@(5));'accepted'} catch {[string]$_}\n"
               "@{r=$r} | ConvertTo-Json -Compress")

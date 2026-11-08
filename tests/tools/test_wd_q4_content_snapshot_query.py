@@ -46,7 +46,12 @@ def pins(content):
                 content_decision_sha256=args["content_decision_sha256"],
                 expected_memory_sha256=args["expected_memory_sha256"],
                 expected_projection_sha256=sha(args["projection_bytes"]),
-                content_sources=content_sources(content["route"]))
+                content_sources=content_sources(content["route"]), trusted_git=trusted_git(content["route"]))
+
+
+def trusted_git(route):
+    """The fleet-record Git pin as the deployed wrapper passes it (synthetic: the route's own pin)."""
+    return {"git_executable": route["documents"]["git_executable"], "git_sha256": route["documents"]["git_sha256"]}
 
 
 def content_sources(route):
@@ -68,7 +73,7 @@ def run(content, config=None, **changes):
 
 
 def expected_binding(content):
-    p = {key: value for key, value in pins(content).items() if key != "content_sources"}
+    p = {key: value for key, value in pins(content).items() if key not in ("content_sources", "trusted_git")}
     return {"source_mode": "content-snapshot-v1", "encoder_sha256": p["expected_encoder_sha256"],
             "policy_sha256": p["policy_sha256"], "roster_sha256": p["roster_sha256"],
             "content_decision_sha256": p["content_decision_sha256"],

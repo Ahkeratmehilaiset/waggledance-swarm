@@ -78,7 +78,8 @@ class Stdin(io.BytesIO):
 
 
 def run(content, config=None, memory_dir=None, **changes):
-    kwargs = dict(pins(content, memory_dir), content_sources=sources_of(content["route"]), enabled=True)
+    kwargs = dict(pins(content, memory_dir), content_sources=sources_of(content["route"]),
+                  trusted_git=tcrd.trusted_of(content["route"]), enabled=True)
     kwargs.update(changes)
     kwargs = {key: value for key, value in kwargs.items() if value is not ...}
     out, stdin = io.StringIO(), Stdin()
@@ -217,6 +218,53 @@ def test_the_child_forwards_the_sources_unchanged(content, monkeypatch):
     monkeypatch.setattr(public, "query_content_snapshot", spy)
     assert run(content)[0] == 0
     assert seen == [sources_of(content["route"])]
+
+
+# --- RCO1 Q1: the Git that runs is the trusted fleet pin, never the plan's -------------------------------------------
+
+@pytest.fixture
+def no_subprocess(monkeypatch):
+    from sandbox.mind.step2 import shared_doc_projection as sdp
+    monkeypatch.setattr(sdp.subprocess, "run", lambda *a, **k: pytest.fail("subprocess started"))
+
+
+def test_without_a_trusted_git_pin_a_document_decision_refuses_before_any_subprocess(content, no_subprocess):
+    """Fail closed: the fleet record has no Git digest yet, so the deployed wrapper passes None and documents refuse."""
+    assert run(content, trusted_git=...) == (2, FAIL, 0)
+    assert run(content, trusted_git=None) == (2, FAIL, 0)
+    assert content["calls"] == []
+
+
+def test_an_attacker_chosen_program_with_its_true_digest_in_the_plan_refuses_before_any_subprocess(
+        content, tmp_path, no_subprocess):
+    """A hand-written plan may name any program and its true digest; only the trusted pin may run, so it refuses."""
+    evil = tmp_path / "evil-git.exe"
+    evil.write_bytes(b"not git")
+    sources = dict(sources_of(content["route"]), doc_git_executable=str(evil), doc_git_sha256=sha(evil.read_bytes()))
+    assert run(content, content_sources=sources) == (2, FAIL, 0)
+    assert content["calls"] == []
+
+
+@pytest.mark.parametrize("trusted", [{"git_sha256": "0" * 64}, {"git_executable": "git"}, {"git_sha256": "A" * 64},
+                                     {"extra": 1}, "pin", 1])
+def test_a_trusted_pin_that_does_not_match_the_plan_or_is_malformed_refuses(content, no_subprocess, trusted):
+    value = trusted if type(trusted) is not dict else dict(tcrd.trusted_of(content["route"]), **trusted)
+    assert run(content, trusted_git=value) == (2, FAIL, 0)
+    assert content["calls"] == []
+
+
+def test_the_trusted_pin_reaches_the_module_check_and_the_child_unchanged(content, monkeypatch):
+    from sandbox.mind.step2 import content_memory as cm
+    seen = []
+    real = cm.snapshot_sources
+
+    def spy(decision, sources, trusted_git=None):
+        seen.append(trusted_git)
+        return real(decision, sources, trusted_git)
+
+    monkeypatch.setattr(cm, "snapshot_sources", spy)
+    code, out, _ = run(content)
+    assert code == 0 and out["status"] == "ANSWER" and seen == [tcrd.trusted_of(content["route"])]
 
 
 def test_a_config_for_another_memory_still_refuses(content):

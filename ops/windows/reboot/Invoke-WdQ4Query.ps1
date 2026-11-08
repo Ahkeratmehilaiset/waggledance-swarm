@@ -157,6 +157,18 @@ function Get-WdQ4RosterPairs {
     return ,$pairs
 }
 
+# The Git pin an independently verified fleet record carries (RCO1 Q1): git_executable (non-empty string) and
+# git_sha256 (lowercase hex), both present, or $null. The content query re-derivation may start no other program.
+function Get-WdQ4TrustedGit {
+    param($Fleet)
+    if ($null -eq $Fleet -or $Fleet -isnot [pscustomobject]) { return $null }
+    $exe=$Fleet.PSObject.Properties['git_executable']
+    $pin=$Fleet.PSObject.Properties['git_sha256']
+    if ($null -eq $exe -or $null -eq $pin -or $exe.Value -isnot [string] -or -not $exe.Value -or
+        $pin.Value -isnot [string] -or -not (Test-WdQ4Hash $pin.Value)) { return $null }
+    return @{git_executable=[string]$exe.Value;git_sha256=[string]$pin.Value}
+}
+
 function Get-WdQ4QueryPlan {
     param([string] $BundleRoot, [string] $ExpectedBundleCommit,
           [string] $ExpectedManifestSha256, [double] $TimeoutSeconds = 30,
@@ -290,6 +302,9 @@ function Get-WdQ4QueryPlan {
             }
         } catch { throw 'roster_fleet_mismatch' }
     }
+    # Trusted Git pin (RCO1 Q1): only the deployment-manifest-pinned fleet record may name the Git executable the
+    # content re-derivation starts, together with its sha256 digest. Without both, no document source runs.
+    $trustedGit=Get-WdQ4TrustedGit -Fleet (ConvertFrom-WdQ4StrictJson -Text $snapshots['wd-fleet.json'].Text)
     $publicPins=@{}
     foreach($relative in @('tools/wd_q4_public_outer.py','tools/wd_q4_public_child.py','tools/wd_q4_public_query.py')) {
         if (@($package.Definition.python_files) -ccontains $relative) {
@@ -300,7 +315,7 @@ function Get-WdQ4QueryPlan {
         }
     }
     return [pscustomobject]@{Enabled=$true;CodeRoot=$integrity.CodeRoot;Config=$binding;PublicPins=$publicPins;
-        ResolvedInputs=$resolvedInputs;ResolvedPins=$resolvedPins;
+        TrustedGit=$trustedGit;ResolvedInputs=$resolvedInputs;ResolvedPins=$resolvedPins;
         JobHelperBytes=$jobSnapshot.Bytes;JobHelperSha256=$jobSnapshot.Hash}
 }
 
@@ -537,8 +552,11 @@ function ConvertFrom-WdQ4PublicResult {
 # the decision's sources (bridge log, generation file and message policy; repository, document policy, Git
 # executable and its digest), each group all present or all null: the policy files are read here and framed with
 # the paths to the public child, whose query re-derives the pinned projection from them before the query is read
-# and refuses otherwise. The public child's run_content checks every pin before the query and must bind every pin
-# into its reply. Default OFF: only a v5 plan reaches this branch; v4 is refused; v1-v3 are unchanged.
+# and refuses otherwise. The plan's Git executable and digest must equal the base plan's TrustedGit (the
+# deployment-manifest-pinned fleet record; RCO1 Q1), which is what the child passes to the re-derivation; a plan
+# naming documents while no trusted Git pin exists is refused. The public child's run_content checks every pin
+# before the query and must bind every pin into its reply. Default OFF: only a v5 plan reaches this branch; v4 is
+# refused; v1-v3 are unchanged.
 function Get-WdQ4ContentPlan {
     param($BasePlan, $Document, [string[]]$Names)
     if (($Names -join ',') -cne 'config,content_decision_path,content_decision_sha256,doc_git_executable,doc_git_sha256,doc_policy_path,doc_repo_root,encoder_sha256,memory_sha256,message_generation_path,message_policy_path,message_source_path,policy_path,policy_sha256,projection_sha256,roster_path,roster_sha256,schema' -or
@@ -569,6 +587,9 @@ function Get-WdQ4ContentPlan {
     }
     if ($null -ne $Document.doc_repo_root) {
         if (-not (Test-WdQ4Hash $Document.doc_git_sha256)) { throw 'binding_refused' }
+        $trusted=$BasePlan.TrustedGit
+        if ($null -eq $trusted -or $Document.doc_git_executable -cne $trusted.git_executable -or
+            $Document.doc_git_sha256 -cne $trusted.git_sha256) { throw 'binding_refused' }
         $null=Assert-WdQ4LocalPath -Path $Document.doc_repo_root -Directory $true
         $null=Assert-WdQ4LocalPath -Path $Document.doc_git_executable
         $inputs['doc_policy']=(Read-WdQ4Snapshot -Path $Document.doc_policy_path -Limit 65536).Bytes
@@ -751,13 +772,21 @@ function Invoke-WdQ4PublicTransport {
             memory_sha256=$Plan.Document.memory_sha256;projection_sha256=$Plan.Document.projection_sha256;
             message_source_path=$Plan.Document.message_source_path;message_generation_path=$Plan.Document.message_generation_path;
             doc_repo_root=$Plan.Document.doc_repo_root;doc_git_executable=$Plan.Document.doc_git_executable;
-            doc_git_sha256=$Plan.Document.doc_git_sha256}
+            doc_git_sha256=$Plan.Document.doc_git_sha256;trusted_git_executable=$null;trusted_git_sha256=$null}
         $hasMessages=($null -ne $Plan.Document.message_source_path)
         $hasDocuments=($null -ne $Plan.Document.doc_repo_root)
+        $trusted=$base.TrustedGit
         if ((-not $hasMessages -and -not $hasDocuments) -or
             $hasMessages -ne $Plan.Inputs.ContainsKey('message_policy') -or
             $hasDocuments -ne $Plan.Inputs.ContainsKey('doc_policy') -or
             ($hasDocuments -and -not (Test-WdQ4Hash $Plan.Document.doc_git_sha256))) { throw 'binding_refused' }
+        if ($hasDocuments) {
+            if ($null -eq $trusted -or -not (Test-WdQ4Hash $trusted.git_sha256) -or
+                $Plan.Document.doc_git_executable -cne $trusted.git_executable -or
+                $Plan.Document.doc_git_sha256 -cne $trusted.git_sha256) { throw 'binding_refused' }
+            $meta.trusted_git_executable=[string]$trusted.git_executable
+            $meta.trusted_git_sha256=[string]$trusted.git_sha256
+        }
         $parts=@('metadata','policy','roster','content_decision')
         if ($hasMessages) { $parts+=@('message_policy') }
         if ($hasDocuments) { $parts+=@('doc_policy') }
@@ -801,7 +830,8 @@ try:
   query=take(65536)
   if sys.stdin.buffer.read(1): raise ValueError()
   sources={'message_source_path':meta['message_source_path'],'message_generation_path':meta['message_generation_path'],'message_policy_bytes':message_policy,'doc_repo_root':meta['doc_repo_root'],'doc_policy_bytes':doc_policy,'doc_git_executable':meta['doc_git_executable'],'doc_git_sha256':meta['doc_git_sha256']}
-  sys.exit(outer['child'].run_content(VerifiedQ4Config(**cfg),io.BytesIO(query),sys.stdout,expected_encoder_sha256=meta['encoder_sha256'],policy_bytes=policy,policy_sha256=meta['policy_sha256'],roster_bytes=roster,roster_sha256=meta['roster_sha256'],content_decision_bytes=decision,content_decision_sha256=meta['content_decision_sha256'],expected_memory_sha256=meta['memory_sha256'],expected_projection_sha256=meta['projection_sha256'],content_sources=sources,enabled=True))
+  trusted=None if meta['trusted_git_executable'] is None else {'git_executable':meta['trusted_git_executable'],'git_sha256':meta['trusted_git_sha256']}
+  sys.exit(outer['child'].run_content(VerifiedQ4Config(**cfg),io.BytesIO(query),sys.stdout,expected_encoder_sha256=meta['encoder_sha256'],policy_bytes=policy,policy_sha256=meta['policy_sha256'],roster_bytes=roster,roster_sha256=meta['roster_sha256'],content_decision_bytes=decision,content_decision_sha256=meta['content_decision_sha256'],expected_memory_sha256=meta['memory_sha256'],expected_projection_sha256=meta['projection_sha256'],content_sources=sources,trusted_git=trusted,enabled=True))
  policy=take(65536); roster=take(1048576); public=take(65536)
  card={'card_decision_bytes':take(262144),'card_decision_sha256':meta['card_decision_sha256']} if 'card_decision_sha256' in meta else {}
  staged='card_policy_sha256' in meta

@@ -264,7 +264,7 @@ def sources_of(route):
 
 def test_the_query_sources_map_back_to_the_decision_sources(route):
     """MP1 R1: the query path names locations only; the cursor and the policy pins come from the decision."""
-    messages, documents = cm.snapshot_sources(json.loads(route["decision"]), sources_of(route))
+    messages, documents = cm.snapshot_sources(json.loads(route["decision"]), sources_of(route), trusted_of(route))
     assert messages == route["messages"] and documents == route["documents"]
 
 
@@ -301,3 +301,68 @@ def test_a_relative_bridge_location_is_refused_even_when_it_resolves(route, monk
     monkeypatch.chdir(os.path.dirname(absolute))
     with pytest.raises(cm.ContentMemoryRefused, match="^sources_invalid$"):
         cm.snapshot_sources(json.loads(route["decision"]), dict(sources_of(route), **{key: os.path.basename(absolute)}))
+
+
+def trusted_of(route):
+    """The fleet-record Git pin the deployed wrapper passes (RCO1 Q1); here the route's own synthetic pin."""
+    return {"git_executable": route["documents"]["git_executable"], "git_sha256": route["documents"]["git_sha256"]}
+
+
+@pytest.fixture
+def no_subprocess(monkeypatch):
+    """Fails the test if any program is started: every Git trust check must come first."""
+    from sandbox.mind.step2 import shared_doc_projection as sdp
+    monkeypatch.setattr(sdp.subprocess, "run", lambda *a, **k: pytest.fail("subprocess started"))
+
+
+def test_the_documents_run_with_the_trusted_git_pin(route):
+    messages, documents = cm.snapshot_sources(json.loads(route["decision"]), sources_of(route), trusted_of(route))
+    assert messages == route["messages"] and documents == route["documents"]
+
+
+def test_a_document_decision_without_a_trusted_git_pin_refuses_before_any_subprocess(route, no_subprocess):
+    with pytest.raises(cm.ContentMemoryRefused, match="^git_pin_unavailable$"):
+        cm.snapshot_sources(json.loads(route["decision"]), sources_of(route))
+    with pytest.raises(cm.ContentMemoryRefused, match="^git_pin_unavailable$"):
+        cm.snapshot_sources(json.loads(route["decision"]), sources_of(route), None)
+
+
+def test_an_attacker_chosen_program_with_its_true_digest_in_the_plan_refuses_before_any_subprocess(
+        route, tmp_path, no_subprocess):
+    evil = tmp_path / "evil-git.exe"
+    evil.write_bytes(b"not git")
+    sources = dict(sources_of(route), doc_git_executable=str(evil), doc_git_sha256=sha(evil.read_bytes()))
+    with pytest.raises(cm.ContentMemoryRefused, match="^sources_invalid$"):
+        cm.snapshot_sources(json.loads(route["decision"]), sources, trusted_of(route))
+
+
+@pytest.mark.parametrize("plan_change, trusted_change", [
+    ({"doc_git_sha256": "0" * 64}, {}),
+    ({}, {"git_sha256": "0" * 64}),
+    ({}, {"git_sha256": "A" * 64}),
+    ({}, {"git_executable": "git"}),
+    ({}, {"extra": 1}),
+    ({}, {"git_executable": None}),
+])
+def test_a_plan_git_that_is_not_the_trusted_git_or_a_malformed_trusted_pin_refuses(route, no_subprocess, plan_change,
+                                                                                   trusted_change):
+    with pytest.raises(cm.ContentMemoryRefused, match="^sources_invalid$"):
+        cm.snapshot_sources(json.loads(route["decision"]), dict(sources_of(route), **plan_change),
+                            dict(trusted_of(route), **trusted_change))
+
+
+@pytest.mark.parametrize("trusted", ["pin", 1, [], ()])
+def test_a_trusted_pin_of_another_type_refuses(route, no_subprocess, trusted):
+    with pytest.raises(cm.ContentMemoryRefused, match="^sources_invalid$"):
+        cm.snapshot_sources(json.loads(route["decision"]), sources_of(route), trusted)
+
+
+def test_a_message_only_decision_needs_no_trusted_git(route):
+    decision = dict(json.loads(route["decision"]), doc_policy_sha256=None)
+    sources = dict(sources_of(route), **DOC_NULL)
+    assert cm.snapshot_sources(decision, sources)[1] is None
+    assert cm.snapshot_sources(decision, sources, trusted_of(route))[1] is None
+    with pytest.raises(cm.ContentMemoryRefused, match="^sources_invalid$"):
+        cm.snapshot_sources(decision, sources, {"git_executable": "git", "git_sha256": "0" * 64})
+    with pytest.raises(cm.ContentMemoryRefused, match="^sources_invalid$"):
+        cm.snapshot_sources(decision, sources, dict(trusted_of(route), git_sha256="A" * 64))

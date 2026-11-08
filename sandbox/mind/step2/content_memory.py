@@ -531,20 +531,35 @@ def _route_projection(messages, documents, decision_bytes, decision_sha256, poli
     return derive_content_projection(derived, documents), decision
 
 
-def snapshot_sources(decision, sources):
+def _trusted_git_pin(value):
+    """True for a Git pin from an independently verified source (RCO1 Q1): exactly ``git_executable`` (an absolute
+    path) and ``git_sha256`` (lowercase hex). The content query takes it from the deployment-manifest-pinned fleet
+    record, never from the plan."""
+    return (type(value) is dict and set(value) == {"git_executable", "git_sha256"}
+            and type(value["git_executable"]) is str and os.path.isabs(value["git_executable"])
+            and type(value["git_sha256"]) is str and HEX64.fullmatch(value["git_sha256"]) is not None)
+
+
+def snapshot_sources(decision, sources, trusted_git=None):
     """``(messages, documents)`` for ``validate_content_snapshot`` from the closed source locations, or
-    ``sources_invalid``.
+    ``sources_invalid``; ``git_pin_unavailable`` when the decision pins documents and no trusted Git pin exists.
 
     ``sources`` has exactly ``SNAPSHOT_SOURCE_KEYS``: the bridge log and generation file and the content message
     policy bytes, the repository root, the document policy bytes and the absolute Git executable and its SHA-256
     pin. The message fields are null exactly when the decision pins no message policy, the document fields exactly
     when it pins no document policy. The policies carry the DECISION pins (their bytes are re-hashed against them by
     the projection modules) and the end cursor is the decision prefix's offset and generation with the identity of
-    the file at the given path, so only the anchored prefix of that file can re-derive."""
-    failed = False
+    the file at the given path, so only the anchored prefix of that file can re-derive.
+
+    The Git that re-derives documents is ``trusted_git`` (``_trusted_git_pin``), which the caller takes from an
+    independently verified source; the plan's ``doc_git_executable`` and ``doc_git_sha256`` must equal it and are
+    never what runs. A document-bearing decision without a trusted pin refuses before any subprocess."""
+    failed = unavailable = False
     messages = documents = None
     try:
         if type(sources) is not dict or set(sources) != SNAPSHOT_SOURCE_KEYS:
+            raise ValueError()
+        if trusted_git is not None and not _trusted_git_pin(trusted_git):
             raise ValueError()
         message_keys = ("message_source_path", "message_generation_path", "message_policy_bytes")
         doc_keys = ("doc_repo_root", "doc_policy_bytes", "doc_git_executable", "doc_git_sha256")
@@ -574,11 +589,18 @@ def snapshot_sources(decision, sources):
                     or not os.path.isabs(executable) or type(pin) is not str or HEX64.fullmatch(pin) is None
                     or type(sources["doc_policy_bytes"]) is not bytes):
                 raise ValueError()
+            if trusted_git is None:
+                unavailable = True
+                raise ValueError()
+            if executable != trusted_git["git_executable"] or not hmac.compare_digest(pin, trusted_git["git_sha256"]):
+                raise ValueError()
             documents = {"repo_root": root, "policy_bytes": sources["doc_policy_bytes"],
-                         "policy_sha256": decision["doc_policy_sha256"], "git_executable": executable,
-                         "git_sha256": pin}
+                         "policy_sha256": decision["doc_policy_sha256"],
+                         "git_executable": trusted_git["git_executable"], "git_sha256": trusted_git["git_sha256"]}
     except (ValueError, TypeError, KeyError, OSError):
         failed = True
+    if unavailable:
+        _refuse("git_pin_unavailable")
     if failed:
         _refuse("sources_invalid")
     return messages, documents

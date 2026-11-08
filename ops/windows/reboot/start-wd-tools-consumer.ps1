@@ -360,6 +360,206 @@ function Get-WdToolsSharedQ4Reference {
     } catch { throw 'q4_shared_reference_refused' }
 }
 
+# Startup Mind read (operator requirement: every lane reads Mind at startup): begin
+function Test-WdQ4ContentDescriptorBinding {
+    # True only for the hash-verified shared descriptor whose expected_binding is the exact content seven-pin
+    # shape of Get-WdQ4SharedSessionConfig; a card or status descriptor returns false. A hash mismatch throws.
+    param(
+        [Parameter(Mandatory)] [string] $DescriptorPath,
+        [Parameter(Mandatory)] [string] $DescriptorSha256
+    )
+    $bytes = [IO.File]::ReadAllBytes($DescriptorPath)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '') } finally { $sha.Dispose() }
+    if ($DescriptorSha256 -cnotmatch '^[0-9a-f]{64}$' -or $hash -cne $DescriptorSha256.ToUpperInvariant()) {
+        throw 'startup_read_descriptor_refused'
+    }
+    $text = [Text.Encoding]::UTF8.GetString($bytes)
+    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+    $document = $text | ConvertFrom-Json
+    $binding = $document.PSObject.Properties['expected_binding']
+    if ($null -eq $binding -or $binding.Value -isnot [pscustomobject]) { return $false }
+    $contentKeys = @('encoder_sha256', 'policy_sha256', 'roster_sha256', 'content_decision_sha256',
+        'descriptor_sha256', 'memory_sha256', 'projection_sha256')
+    $names = @($binding.Value.PSObject.Properties | ForEach-Object { $_.Name })
+    if ($names.Count -ne $contentKeys.Count) { return $false }
+    foreach ($key in $contentKeys) { if ($names -cnotcontains $key) { return $false } }
+    return $true
+}
+
+function Invoke-WdQ4StartupMindRead {
+    <# ONE bounded content recall before the agent process starts. Runs only for a hash-verified CONTENT
+          descriptor (otherwise returns $null, nothing runs, nothing is written). The manifest-verified recall
+          helper is invoked on its default caller route (never the runtime bootstrap, live or coverage switches)
+         with a fixed
+          query on stdin. The record keeps the outcome, the helper status, digests and evidence refs; never the
+          query, the answer text or any secret. A timeout or an incomplete exit is UNKNOWN: no retry, no kill,
+          no success. The record is not proof of an installed or used Mind and is not a vote or gate input. #>
+    param(
+        [Parameter(Mandatory)] [string] $DescriptorPath,
+        [Parameter(Mandatory)] [string] $DescriptorSha256,
+        [Parameter(Mandatory)] [string] $DeploymentManifestPath,
+        [Parameter(Mandatory)] [string] $ExpectedManifestSha256,
+        [Parameter(Mandatory)] [string] $BundleRoot,
+        [Parameter(Mandatory)] [string] $Lane,
+        [Parameter(Mandatory)] [string] $Worktree,
+        [ValidateRange(1, 600)] [int] $TimeoutSeconds = 90,
+        [ValidateRange(1, 600)] [int] $GraceSeconds = 30
+    )
+    $record = [ordered]@{
+        schema = 'wd.mind-startup-read.v1'
+        lane = $Lane
+        ts_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        route = 'default_caller_cli'
+        descriptor_sha256 = $DescriptorSha256.ToLowerInvariant()
+        helper_sha256 = ''
+        timeout_seconds = $TimeoutSeconds
+        outcome = 'refused'
+        reason = ''
+        exit_code = $null
+        helper_status = ''
+        cleanup = ''
+        inner_status = ''
+        result_count = $null
+        answer_sha256 = ''
+        call_id = ''
+        refs = @()
+        note = 'One bounded startup recall; the query and the answer are not recorded; not proof of an installed or used Mind; not a vote or gate input.'
+    }
+    $isContent = $false
+    try {
+        $isContent = Test-WdQ4ContentDescriptorBinding -DescriptorPath $DescriptorPath -DescriptorSha256 $DescriptorSha256
+    } catch { $record.reason = 'descriptor' }
+    if ($record.reason -ceq '' -and -not $isContent) { return $null }
+    $helper = Join-Path $BundleRoot 'Invoke-WdQ4LaneRecall.ps1'
+    if ($record.reason -ceq '') {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $manifestBytes = [IO.File]::ReadAllBytes($DeploymentManifestPath)
+            $manifestHash = [BitConverter]::ToString($sha.ComputeHash($manifestBytes)).Replace('-', '')
+            if ($ExpectedManifestSha256 -notmatch '^[0-9A-Fa-f]{64}$' -or
+                    $manifestHash -cne $ExpectedManifestSha256.ToUpperInvariant()) { throw 'manifest' }
+            $manifestText = [Text.Encoding]::UTF8.GetString($manifestBytes)
+            if ($manifestText.Length -gt 0 -and $manifestText[0] -eq [char]0xFEFF) { $manifestText = $manifestText.Substring(1) }
+            $deployment = $manifestText | ConvertFrom-Json
+            $pin = $deployment.files.PSObject.Properties['Invoke-WdQ4LaneRecall.ps1']
+            if ($null -eq $pin -or [string]$pin.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+                    -not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw 'helper_pin' }
+            $helperHash = [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($helper))).Replace('-', '')
+            if ($helperHash -cne ([string]$pin.Value).ToUpperInvariant()) { throw 'helper_pin' }
+            $record.helper_sha256 = $helperHash.ToLowerInvariant()
+        } catch {
+            $record.reason = if ($_.Exception.Message -ceq 'helper_pin') { 'helper_pin' } else { 'manifest' }
+        } finally { $sha.Dispose() }
+    }
+    if ($record.reason -ceq '') {
+        $shellName = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
+        $start = New-Object Diagnostics.ProcessStartInfo
+        $start.FileName = [IO.Path]::Combine($PSHOME, $shellName)
+        $start.Arguments = ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $helper.Replace('"', '') +
+            '" -TimeoutSeconds ' + $TimeoutSeconds.ToString([Globalization.CultureInfo]::InvariantCulture) + ' -WithStatus')
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardInput = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $query = [Text.Encoding]::ASCII.GetBytes('{"situation":"' + $Lane +
+            ' startup read: own current task, last bound reply, operator directive of the day","time":"' +
+            [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ') + '"}')
+        $process = $null
+        try {
+            $process = [Diagnostics.Process]::Start($start)
+            if ($null -eq $process) { throw 'start' }
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            $process.StandardInput.BaseStream.Write($query, 0, $query.Length)
+            $process.StandardInput.Close()
+            if (-not $process.WaitForExit(($TimeoutSeconds + $GraceSeconds) * 1000)) {
+                # UNKNOWN: the helper or its worker is still running. No kill, no retry, never reported as success.
+                $record.outcome = 'unknown'
+                $record.reason = 'timeout'
+                $record.cleanup = 'unknown'
+            } else {
+                $record.exit_code = [int]$process.ExitCode
+                $stdoutText = [string]$stdoutTask.Result
+                $stderrText = [string]$stderrTask.Result
+                foreach ($line in ($stderrText -split "`n")) {
+                    $trimmed = $line.Trim()
+                    if (-not $trimmed.StartsWith('{"status":')) { continue }
+                    try {
+                        $status = $trimmed | ConvertFrom-Json
+                        $statusText = [string]$status.status
+                        $cleanupText = [string]$status.cleanup
+                        if ($statusText -cmatch '^[A-Za-z_]{1,32}$') { $record.helper_status = $statusText }
+                        if ($cleanupText -cmatch '^[A-Za-z_]{1,32}$') { $record.cleanup = $cleanupText }
+                    } catch { }
+                }
+                if ($record.exit_code -eq 0) {
+                    try {
+                        $result = $stdoutText.Trim() | ConvertFrom-Json
+                        if ([string]$result.schema -cne 'wd.q4-lane-caller-result.v1' -or [string]$result.status -cne 'VALIDATED' -or
+                                [string]$result.lane -cne $Lane -or
+                                @('ANSWER', 'ABSTAIN', 'DEGRADED') -cnotcontains [string]$result.inner_status -or
+                                [string]$result.answer_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                                [string]$result.call_id -cnotmatch '^[0-9a-f]{32}$' -or
+                                ($result.result_count -isnot [int] -and $result.result_count -isnot [long])) { throw 'result_shape' }
+                        $refs = @()
+                        foreach ($item in @($result.answer.results)) {
+                            if ([string]$item.ref_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'result_shape' }
+                            $refs += [string]$item.ref_sha256
+                        }
+                        if ($refs.Count -gt 100 -or $refs.Count -ne [int]$result.result_count) { throw 'result_shape' }
+                        $record.inner_status = [string]$result.inner_status
+                        $record.result_count = [int]$result.result_count
+                        $record.answer_sha256 = [string]$result.answer_sha256
+                        $record.call_id = [string]$result.call_id
+                        $record.refs = @($refs)
+                        $record.outcome = 'success'
+                    } catch {
+                        $record.outcome = 'refused'
+                        $record.reason = 'result_shape'
+                        $record.inner_status = ''
+                        $record.result_count = $null
+                        $record.answer_sha256 = ''
+                        $record.call_id = ''
+                        $record.refs = @()
+                    }
+                } elseif ($record.exit_code -eq 3) {
+                    $record.reason = 'cleanup_unknown'
+                    $record.cleanup = 'unknown'
+                } else {
+                    $record.reason = 'nonzero_exit'
+                }
+            }
+        } catch {
+            if ($null -eq $process) { $record.reason = 'start' } else { $record.outcome = 'unknown'; $record.reason = 'io' }
+        }
+    }
+    $auditDirectory = Join-Path $Worktree '.codex-audit'
+    if (-not (Test-Path -LiteralPath $auditDirectory -PathType Container)) {
+        [void](New-Item -ItemType Directory -Path $auditDirectory -Force)
+    }
+    $recordPath = Join-Path $auditDirectory 'wd-mind-startup-read.json'
+    $temporaryRecord = "$recordPath.$PID.tmp"
+    $recordObject = [pscustomobject]$record
+    [IO.File]::WriteAllBytes($temporaryRecord, [Text.Encoding]::ASCII.GetBytes(($recordObject | ConvertTo-Json -Depth 4 -Compress)))
+    Move-Item -LiteralPath $temporaryRecord -Destination $recordPath -Force
+    return $recordObject
+}
+
+function Get-WdMindStartupReadGuidance {
+    param(
+        [Parameter(Mandatory)] [string] $RecordPath,
+        [Parameter(Mandatory)] [string] $Outcome
+    )
+    return (' Mind startup read: before this session started, the launcher ran one bounded content recall and ' +
+        'recorded only its outcome, helper status, digests and evidence refs (never the query or the answer) in ' +
+        $RecordPath + ' of this worktree; its outcome was ' + $Outcome + '. Read that file before the first bridge ' +
+        'action and state its outcome; when the outcome is not success, read the bridge; the record is ' +
+        'not proof of an installed or used Mind and is not a vote or gate input.')
+}
+# Startup Mind read: end
+
 function Get-WdQ4P1StartupGuidance {
     param([string] $Text, [bool] $DescriptorValidated)
     if (-not $DescriptorValidated) { return $Text }
@@ -3609,6 +3809,17 @@ if ($null -ne $toolsSharedQ4Values) {
     # These are untrusted hints for a separately pinned future adapter, not a connection proof.
     [Environment]::SetEnvironmentVariable('WD_Q4_SHARED_DESCRIPTOR_PATH', [string]$toolsSharedQ4Values.WD_Q4_SHARED_DESCRIPTOR_PATH, 'Process')
     [Environment]::SetEnvironmentVariable('WD_Q4_SHARED_DESCRIPTOR_SHA256', [string]$toolsSharedQ4Values.WD_Q4_SHARED_DESCRIPTOR_SHA256, 'Process')
+}
+# Startup Mind read: one bounded recall before the consumer starts; off unless the validated shared descriptor is
+# a content descriptor and never in -ValidateOnly. The record never carries the query or the answer.
+$toolsStartupMindRead = $null
+if ($null -ne $toolsSharedQ4Values -and -not $ValidateOnly) {
+    $toolsStartupMindRead = Invoke-WdQ4StartupMindRead -DescriptorPath ([string]$toolsSharedQ4Values.WD_Q4_SHARED_DESCRIPTOR_PATH) `
+        -DescriptorSha256 ([string]$toolsSharedQ4Values.WD_Q4_SHARED_DESCRIPTOR_SHA256) -DeploymentManifestPath $toolsDeploymentManifestPath `
+        -ExpectedManifestSha256 $toolsExpectedManifestHash -BundleRoot $PSScriptRoot -Lane $agent -Worktree $worktree
+    if ($null -ne $toolsStartupMindRead) {
+        $prompt += Get-WdMindStartupReadGuidance -RecordPath '.codex-audit/wd-mind-startup-read.json' -Outcome ([string]$toolsStartupMindRead.outcome)
+    }
 }
 
 $writer = Join-Path $bootstrapRoot 'Write-AgentEvent.ps1'

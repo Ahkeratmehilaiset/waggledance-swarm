@@ -262,3 +262,123 @@ try {{ $value=Get-WdToolsSharedQ4Reference -DescriptorPath {_q(descriptor)} -Des
         assert out["ok"] and out["value"] is None
     else:
         assert out["ok"] is False and out["reason"] == "q4_shared_reference_refused", out
+
+
+# --- startup Mind read (lead-mind-4h-startup-read-fable-20261108-v1): synthetic, never a real recall ---------------
+CONTENT_BINDING = {key: "c" * 64 for key in ("encoder_sha256", "policy_sha256", "roster_sha256",
+                                              "content_decision_sha256", "descriptor_sha256", "memory_sha256",
+                                              "projection_sha256")}
+CARD_BINDING = {key: "c" * 64 for key in ("pointer_sha256", "source_anchor_sha256", "encoder_sha256", "policy_sha256",
+                                           "roster_sha256", "public_policy_sha256", "descriptor_sha256",
+                                           "projection_sha256")}
+RECORD_NAME = "wd-mind-startup-read.json"
+# A stand-in for Invoke-WdQ4LaneRecall.ps1: records what it was given, then answers, refuses or hangs by mode file.
+FAKE_RECALL = r"""param([int]$TimeoutSeconds = 120, [switch]$WithStatus, [switch]$Runtime, [switch]$Live, [switch]$WithCoverage, [switch]$LiveP1, [switch]$InternalWorker)
+$ErrorActionPreference = 'Stop'
+$query = [Console]::In.ReadToEnd()
+$mode = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'fake-mode.txt') -Raw).Trim()
+$seen = @{ query = $query; switches = @($PSBoundParameters.Keys | Sort-Object); timeout = $TimeoutSeconds }
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'fake-seen.json'), ($seen | ConvertTo-Json -Compress))
+if ($mode -eq 'hang') { Start-Sleep -Seconds 4; exit 0 }
+if ($mode -eq 'refuse') { if ($WithStatus) { [Console]::Error.WriteLine('{"status":"UNKNOWN","exit_code":3,"cleanup":"unknown"}') }; exit 3 }
+if ($mode -eq 'garbage') { [Console]::Out.Write('{"schema":"other"}' + "`n"); exit 0 }
+$answer = @{ schema = 'wd.q4-lane-answer.v1'; lane = 'LANE'; status = 'ANSWER'; result_count = 1
+  results = @(@{ stored_text = ('STORED-TEXT-SECRET ' + $query); ref_sha256 = ('a' * 64); doc_id_sha256 = ('b' * 64) }) }
+$result = @{ schema = 'wd.q4-lane-caller-result.v1'; status = 'VALIDATED'; lane = 'LANE'; inner_status = 'ANSWER'
+  answer = $answer; answer_sha256 = ('d' * 64); call_id = ('e' * 32); result_count = 1; descriptor_sha256 = ('f' * 64)
+  cleanup = 'chain_confirmed' }
+if ($WithStatus) { [Console]::Error.WriteLine('{"status":"OK","exit_code":0,"cleanup":"chain_confirmed"}') }
+[Console]::Out.Write(($result | ConvertTo-Json -Depth 6 -Compress) + "`n")
+exit 0
+"""
+STARTUP_READ_FUNCTIONS = ("Test-WdQ4ContentDescriptorBinding", "Invoke-WdQ4StartupMindRead",
+                          "Get-WdMindStartupReadGuidance")
+
+
+def startup_read_fixture(tmp_path, lane, *, mode="answer", binding=CONTENT_BINDING, descriptor_case="ok",
+                         manifest_case="ok"):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    helper = bundle / "Invoke-WdQ4LaneRecall.ps1"
+    helper.write_text(FAKE_RECALL.replace("LANE", lane), encoding="utf-8")
+    (bundle / "fake-mode.txt").write_text(mode, encoding="utf-8")
+    helper_pin = hashlib.sha256(helper.read_bytes()).hexdigest().upper()
+    if manifest_case == "helper_pin":
+        helper_pin = "0" * 64
+    manifest = bundle / "deployment-manifest.json"
+    manifest.write_bytes(json.dumps({"files": {"Invoke-WdQ4LaneRecall.ps1": helper_pin}}).encode())
+    manifest_pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    if manifest_case == "manifest":
+        manifest_pin = "1" * 64
+    descriptor = tmp_path / "descriptor.json"
+    raw = json.dumps({"schema": "wd.q4-shared-session-config.v2", "expected_binding": binding}).encode()
+    descriptor.write_bytes(raw)
+    descriptor_pin = hashlib.sha256(raw).hexdigest()
+    if descriptor_case == "sha":
+        descriptor_pin = "2" * 64
+    return {"bundle": bundle, "worktree": worktree, "helper": helper, "helper_pin": helper_pin,
+            "manifest": manifest, "manifest_pin": manifest_pin, "descriptor": descriptor,
+            "descriptor_pin": descriptor_pin, "seen": bundle / "fake-seen.json",
+            "record": worktree / ".codex-audit" / RECORD_NAME}
+
+
+def startup_read_call(fx, lane, *, timeout=5, grace=1):
+    return (f"$r = Invoke-WdQ4StartupMindRead -DescriptorPath {_quote(fx['descriptor'])} -DescriptorSha256 "
+            f"{_quote(fx['descriptor_pin'])} -DeploymentManifestPath {_quote(fx['manifest'])} -ExpectedManifestSha256 "
+            f"{_quote(fx['manifest_pin'])} -BundleRoot {_quote(fx['bundle'])} -Lane {_quote(lane)} -Worktree "
+            f"{_quote(fx['worktree'])} -TimeoutSeconds {timeout} -GraceSeconds {grace}\n"
+            "if ($null -eq $r) { 'null' } else { $r | ConvertTo-Json -Depth 5 -Compress }")
+
+
+def _quote(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def assert_no_secret(text):
+    lowered = text.lower()
+    assert "stored-text-secret" not in lowered and "situation" not in lowered and "startup read:" not in lowered
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("mode", ["answer", "refuse", "garbage"])
+def test_tools_startup_read_records_only_outcome_digests_and_refs(tmp_path, ps, mode):
+    fx = startup_read_fixture(tmp_path, "codex-tools-1", mode=mode)
+    script = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
+    script += "\n$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n" + startup_read_call(fx, "codex-tools-1")
+    out = _run_powershell(script, executable=ps).stdout.strip()
+    record = json.loads(out)
+    assert record["lane"] == "codex-tools-1" and record["route"] == "default_caller_cli"
+    if mode == "answer":
+        assert record["outcome"] == "success" and record["refs"] == ["a" * 64] and record["exit_code"] == 0
+    elif mode == "refuse":
+        assert record["outcome"] == "refused" and record["exit_code"] == 3 and record["reason"] == "cleanup_unknown"
+    else:
+        assert record["outcome"] == "refused" and record["reason"] == "result_shape"
+    assert json.loads(fx["record"].read_bytes()) == record
+    assert_no_secret(fx["record"].read_text(encoding="ascii"))
+    seen = json.loads(fx["seen"].read_text(encoding="utf-8-sig"))
+    assert seen["switches"] == ["TimeoutSeconds", "WithStatus"]
+    assert set(json.loads(seen["query"])) == {"situation", "time"}
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_tools_startup_read_is_off_for_a_card_descriptor(tmp_path, ps):
+    fx = startup_read_fixture(tmp_path, "codex-tools-1", binding=CARD_BINDING)
+    script = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
+    script += "\n$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n" + startup_read_call(fx, "codex-tools-1")
+    assert _run_powershell(script, executable=ps).stdout.strip() == "null"
+    assert not fx["record"].exists() and not fx["seen"].exists()
+
+
+def test_tools_consumer_runs_the_startup_read_after_the_export_and_never_in_validate_only():
+    source = TOOLS.read_text(encoding="utf-8-sig")
+    call = source.index("Invoke-WdQ4StartupMindRead -DescriptorPath")
+    assert source.index("SetEnvironmentVariable('WD_Q4_SHARED_DESCRIPTOR_SHA256'") < call
+    guard = source.rindex("if (", 0, call)
+    assert "-not $ValidateOnly" in source[guard:call] and "$null -ne $toolsSharedQ4Values" in source[guard:call]
+    assert "$prompt += Get-WdMindStartupReadGuidance" in source
+    assert source.count("Invoke-WdQ4StartupMindRead -DescriptorPath") == 1
+    body = source[source.index("function Invoke-WdQ4StartupMindRead"):source.index("function Get-WdMindStartupReadGuidance")]
+    assert ".Kill(" not in body and "Start-Process" not in body and "-Runtime" not in body and "-Live" not in body

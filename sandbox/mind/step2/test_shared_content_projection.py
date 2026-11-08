@@ -316,6 +316,25 @@ def test_redacted_token_does_not_hide_pii_sealed_or_url_userinfo():
     assert value not in cp.decode_text(encoded) and "example.invalid" not in cp.decode_text(encoded)
 
 
+@pytest.mark.parametrize("value", [
+    "0123456789abcdef0123456789abcdefQwErTyUiOpAsDfGhJkL",
+    "QwErTyUiOpAsDfGhJkZ0123456789abcdef0123456789abcdef",
+    "QwErTyUiOpAsDfGhJkZ0123456789abcdef0123456789abcdefQwErTyUiOpAsDfGhJkL",
+])
+def test_overlapping_hex_and_tokens_leave_no_tail(value):
+    verdict, encoded = cp.classify("deploy " + value + " done")
+    assert verdict == "KEEP"
+    assert cp.decode_text(encoded) == "deploy token-redacted done"
+    assert value not in encoded and "QwErTy" not in encoded
+
+
+def test_overlapping_token_url_is_removed_whole():
+    value = "0123456789abcdef0123456789abcdefQwErTyUiOpAsDfGhJkL"
+    verdict, encoded = cp.classify("see https://example.invalid/" + value + "?private=synthetic now")
+    assert verdict == "KEEP"
+    assert "QwErTy" not in encoded and "private" not in encoded
+
+
 @pytest.mark.parametrize("value", [r"copied to D:\Data\Jane Smith yesterday",
                                      r"copied to \\server\share\Jane Smith yesterday",
                                      "copied to /home/Jane Smith yesterday"])

@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import subprocess
+import shutil
 
 import pytest
 
@@ -66,7 +67,14 @@ def policy(commit, paths, removed=(), section=4096, chunk=300, max_bytes=262144)
 
 
 def build(root, raw, sha):
-    return dp.build_doc_projection(enabled=True, repo_root=str(root), policy_bytes=raw, policy_sha256=sha)
+    return dp.build_doc_projection(enabled=True, repo_root=str(root), policy_bytes=raw, policy_sha256=sha, **git_pin())
+
+
+def git_pin():
+    executable = os.path.abspath(shutil.which("git"))
+    with open(executable, "rb") as stream:
+        digest = hashlib.sha256(stream.read()).hexdigest()
+    return {"git_executable": executable, "git_sha256": digest}
 
 
 def texts(projection):
@@ -249,22 +257,22 @@ def test_removed_blob_is_not_projected_and_validator_refuses_a_survivor(repo):
     after = build(root, raw2, sha2)
     assert after["refused_docs"] == {"removed": 1}
     assert {r["provenance"]["path"] for r in after["records"]} == {"docs/other.md"}
-    assert dp.validate_doc_projection(after, repo_root=str(root), policy_bytes=raw2, policy_sha256=sha2) is None
+    assert dp.validate_doc_projection(after, repo_root=str(root), policy_bytes=raw2, policy_sha256=sha2, **git_pin()) is None
     stale = dict(before, policy_sha256=sha2)
     with pytest.raises(dp.DocRefused, match="projection_mismatch"):
-        dp.validate_doc_projection(stale, repo_root=str(root), policy_bytes=raw2, policy_sha256=sha2)
+        dp.validate_doc_projection(stale, repo_root=str(root), policy_bytes=raw2, policy_sha256=sha2, **git_pin())
 
 
 def test_validator_refuses_any_tampering(repo):
     root, commit = repo
     raw, sha = policy(commit, ["docs/guide.md"])
     projection = build(root, raw, sha)
-    assert dp.validate_doc_projection(projection, repo_root=str(root), policy_bytes=raw, policy_sha256=sha) is None
+    assert dp.validate_doc_projection(projection, repo_root=str(root), policy_bytes=raw, policy_sha256=sha, **git_pin()) is None
     tampered = json.loads(json.dumps(projection))
     tampered["records"][1]["stored_text"] = cp.encode_text("vaihdettu")
     for bad in (tampered, dict(projection, extra=1), [], dict(projection, accepted=0)):
         with pytest.raises(dp.DocRefused, match="projection_mismatch"):
-            dp.validate_doc_projection(bad, repo_root=str(root), policy_bytes=raw, policy_sha256=sha)
+            dp.validate_doc_projection(bad, repo_root=str(root), policy_bytes=raw, policy_sha256=sha, **git_pin())
 
 
 def test_projection_is_deterministic_and_path_order_free(repo):
@@ -412,7 +420,50 @@ def test_an_annotated_tag_id_is_not_a_commit_pin(repo):
 
 def test_tree_listing_entries_never_stand_in_for_the_named_path(repo):
     root, commit = repo
-    env = dp._git_env(str(root))
+    env = dp._git_env(str(root), **git_pin())
     assert dp._entry(str(root), env, commit, "docs/") == (None, "path_missing")
     assert dp._entry(str(root), env, commit, "docs") == (None, "not_blob")
     assert dp._entry(str(root), env, commit, "docs/guide.md")[1] is None
+
+
+@pytest.mark.parametrize("kind", ["blob", "commit", "tree"])
+def test_modified_git_object_is_refused(repo, monkeypatch, kind):
+    root, commit = repo
+    raw, sha = policy(commit, ["docs/guide.md"])
+    original = dp._git
+    def altered(root, env, *args):
+        result = original(root, env, *args)
+        if len(args) >= 2 and args[:2] == ("cat-file", kind):
+            return bytes([result[0] ^ 1]) + result[1:]
+        return result
+    monkeypatch.setattr(dp, "_git", altered)
+    with pytest.raises(dp.DocRefused):
+        build(root, raw, sha)
+
+
+def test_git_does_not_execute_a_path_selected_binary(repo, monkeypatch, tmp_path):
+    root, _ = repo
+    executable = os.path.abspath(shutil.which("git"))
+    with open(executable, "rb") as stream:
+        digest = hashlib.sha256(stream.read()).hexdigest()
+    evil = tmp_path / "fake-bin"
+    evil.mkdir()
+    (evil / ("git.exe" if os.name == "nt" else "git")).write_bytes(b"not a trusted executable")
+    monkeypatch.setenv("PATH", str(evil) + os.pathsep + os.environ.get("PATH", ""))
+    original = dp.subprocess.run
+    def guarded(argv, *args, **kwargs):
+        assert os.path.isabs(argv[0]) and os.path.normcase(argv[0]) == os.path.normcase(executable)
+        return original(argv, *args, **kwargs)
+    monkeypatch.setattr(dp.subprocess, "run", guarded)
+    assert dp._git(str(root), dp._git_env(str(root), executable, digest), "rev-parse", "--git-dir")
+
+
+def test_missing_or_wrong_git_pin_refuses_without_path_fallback(repo):
+    root, commit = repo
+    raw, sha = policy(commit, ["docs/guide.md"])
+    with pytest.raises(dp.DocRefused, match="repo_refused"):
+        dp.build_doc_projection(enabled=True, repo_root=str(root), policy_bytes=raw, policy_sha256=sha)
+    pin = git_pin()
+    pin["git_sha256"] = "0" * 64
+    with pytest.raises(dp.DocRefused, match="repo_refused"):
+        dp.build_doc_projection(enabled=True, repo_root=str(root), policy_bytes=raw, policy_sha256=sha, **pin)

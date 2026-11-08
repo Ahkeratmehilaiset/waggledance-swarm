@@ -1,0 +1,13 @@
+{
+  "approved_tasks": [
+    "lead-mind-4h-fable-memory-20261108-v1",
+    "lead-mind-4h-integration-tools-20261108-v1",
+    "lead-mind-4h-live-anchor-fable-20261108-v1",
+    "lead-mind-4h-package-20261108",
+    "lead-mind-4h-tools-package-20261108-v1",
+    "lead-mind-current-recall-policy-fable-20261108-v1",
+    "lead-mind-final-head-memory-fable-20261108-v1",
+    "lead-mind-production-20261031"
+  ],
+  "schema": "wd.q4-non-review-policy.v1"
+}

@@ -1,0 +1,31 @@
+{
+  "approved_source_refs": [],
+  "approved_tasks": [
+    "lead-mind-4h-fable-memory-20261108-v1",
+    "lead-mind-4h-integration-tools-20261108-v1",
+    "lead-mind-4h-live-anchor-fable-20261108-v1",
+    "lead-mind-4h-package-20261108",
+    "lead-mind-4h-tools-package-20261108-v1",
+    "lead-mind-current-recall-policy-fable-20261108-v1",
+    "lead-mind-final-head-memory-fable-20261108-v1",
+    "lead-mind-production-20261031"
+  ],
+  "lanes": [
+    "codex-lead-1",
+    "codex-tools-1",
+    "fable-5"
+  ],
+  "max_chunk_chars": 300,
+  "max_message_chars": 4096,
+  "removed_source_refs": [],
+  "schema": "wd.mind-content-policy.v2",
+  "types": [
+    "done",
+    "handoff",
+    "message",
+    "milestone",
+    "progress",
+    "status",
+    "test"
+  ]
+}

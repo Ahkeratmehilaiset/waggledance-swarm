@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -218,6 +219,45 @@ def write_request(tmp_path, plan, planner_args, **changes):
 
 def test_cli_without_arguments_is_off(capsys):
     assert run_cli([], capsys) == (0, '{"status":"OFF"}\n', "")
+
+
+@pytest.mark.parametrize("phase", ["off", "enabled"])
+@pytest.mark.parametrize("failure", ["write", "flush", "short", "none"])
+def test_cli_fails_closed_when_stdout_is_broken(monkeypatch, phase, failure):
+    class Broken(io.StringIO):
+        def write(self, text):
+            if failure == "write":
+                raise BrokenPipeError()
+            if failure == "short":
+                return len(text) - 1
+            if failure == "none":
+                return None
+            return super().write(text)
+
+        def flush(self):
+            if failure == "flush":
+                raise OSError("synthetic failure")
+            return super().flush()
+
+    target = module()
+    with monkeypatch.context() as patcher:
+        patcher.setattr(sys, "stdout", Broken())
+        patcher.setattr(target, "_request", lambda *args: {})
+        patcher.setattr(target, "plan_staged_runtime", lambda **kwargs: {"status": "SYNTHETIC"})
+        args = [] if phase == "off" else ["--enabled", "--request", "synthetic", "--request-sha256", "0" * 64]
+        code = target.main(args)
+    assert code == 2
+
+
+def test_cli_refusal_remains_nonzero_if_stderr_is_broken(monkeypatch):
+    class Broken(io.StringIO):
+        def write(self, text):
+            raise OSError("synthetic failure")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(sys, "stderr", Broken())
+        code = module().main(["--invalid"])
+    assert code == 2
 
 
 def test_cli_plans_from_one_pinned_request_and_prints_one_canonical_line(tmp_path, capsys):

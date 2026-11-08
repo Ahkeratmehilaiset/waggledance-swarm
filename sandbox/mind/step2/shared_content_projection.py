@@ -37,6 +37,12 @@ non-canonical or malformed escape refuses). Encoded text is chunked on spaces in
 characters (an over-long word is split between characters, never inside an escape); one record per chunk with the
 source ref, chunk index and count.
 
+Admission. Policy v2 requires a hash-pinned exact ``approved_source_refs`` list; every other source event is
+silently excluded before message projection. An empty list includes nothing. A ref appearing there is a caller
+assertion, not proof of semantic review or issuer identity. The route caller must independently pin the policy and
+its decision/prefix/generation; standalone projection cannot authenticate them. The legacy v1 schema retains its
+original behavior and must not be treated as if it enforces exact-source admission.
+
 Removal. ``removed_source_refs`` in the pinned policy removes every chunk of a source event from the next build, and
 ``validate_content_projection`` refuses any projection that is not the exact re-derivation from the pinned rows and
 policy, so a removed ref cannot survive. Nothing here reads files, writes, logs, posts or indexes; exceptions carry
@@ -56,6 +62,7 @@ from tools.bridge_compact_view import event_id
 
 SCHEMA = "wd.bridge-mind-content-projection.v1"
 POLICY_SCHEMA = "wd.mind-content-policy.v1"
+POLICY_SCHEMA_EXACT_SOURCES = "wd.mind-content-policy.v2"
 TEXT_ENCODING = "wd.content-text.v1"
 SCOPE = "shared_content_projection_not_gate"
 SOURCE_KIND = "bridge_message"
@@ -173,7 +180,12 @@ def load_content_policy(policy_bytes, policy_sha256):
                 or not hmac.compare_digest(hashlib.sha256(policy_bytes).hexdigest(), policy_sha256)):
             raise ValueError()
         doc = json.loads(policy_bytes.decode("ascii"), object_pairs_hook=_unique_pairs)
-        if type(doc) is not dict or set(doc) != _POLICY_KEYS or doc["schema"] != POLICY_SCHEMA:
+        if type(doc) is not dict:
+            raise ValueError()
+        schema = doc.get("schema")
+        expected_keys = (_POLICY_KEYS if schema == POLICY_SCHEMA else
+                         _POLICY_KEYS | {"approved_source_refs"} if schema == POLICY_SCHEMA_EXACT_SOURCES else None)
+        if expected_keys is None or set(doc) != expected_keys:
             raise ValueError()
         lanes = _string_set(doc["lanes"], lambda lane: lane in sp.LANES and lane not in sp.REVIEW_LANES)
         types = _string_set(doc["types"], lambda kind: kind in sp.ALLOWED_TYPES and kind not in sp.EXCLUDED_TYPES)
@@ -183,6 +195,9 @@ def load_content_policy(policy_bytes, policy_sha256):
         policy = {"lanes": lanes, "types": types, "approved_tasks": tasks, "removed_source_refs": removed,
                   "max_message_chars": _bounded_int(doc["max_message_chars"], 1, MAX_MESSAGE_CHARS),
                   "max_chunk_chars": _bounded_int(doc["max_chunk_chars"], MIN_CHUNK_CHARS, MAX_CHUNK_CHARS)}
+        if schema == POLICY_SCHEMA_EXACT_SOURCES:
+            policy["approved_source_refs"] = _string_set(doc["approved_source_refs"],
+                                                          lambda ref: _HEX64.fullmatch(ref) is not None)
     except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
         failed = True
     if failed:
@@ -531,6 +546,8 @@ def _build_core(rows, policy_bytes, policy_sha256, roster, identifier_policy_box
     records, refused = [], {}
     for ref in sorted(rows):
         event = rows[ref]
+        if "approved_source_refs" in policy and ref not in policy["approved_source_refs"]:
+            continue  # not an approved source; disclose neither text nor count
         fields = _eligible(event, policy, roster)
         if fields is None:
             continue

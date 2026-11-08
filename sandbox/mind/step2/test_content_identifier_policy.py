@@ -58,3 +58,37 @@ def test_duplicate_json_keys_refuse_and_never_echo():
     with pytest.raises(policy.PolicyRefused, match="^policy_refused$") as exc:
         policy.load_policy(raw, KEY, tag)
     assert "SyntheticName" not in str(exc.value) and "OtherName" not in str(exc.value)
+
+
+@pytest.mark.parametrize("raw", [b'{"identifiers":["SyntheticPrivateName"],',
+                                  b'\xffSyntheticPrivateName',
+                                  b'{"schema":"wd.mind-identifier-policy.v1","identifiers":["SyntheticPrivateName",""]}'])
+def test_refusal_does_not_expose_context_or_own_frame_secrets(raw):
+    key = b"synthetic-private-key-0123456789abcdef"
+    tag = hmac.new(key, raw, hashlib.sha256).hexdigest()
+    with pytest.raises(policy.PolicyRefused) as caught:
+        policy.load_policy(raw, key, tag)
+    error = caught.value
+    assert error.__context__ is None and error.__cause__ is None
+    tb = error.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_globals.get("__name__") == policy.__name__:
+            values = list(tb.tb_frame.f_locals.values())
+            assert key not in values and raw not in values
+            assert all("SyntheticPrivateName" not in repr(value) for value in values)
+        tb = tb.tb_next
+
+
+def test_contains_refusal_does_not_keep_policy_or_input_in_own_frames():
+    raw, tag = bound(["SyntheticPrivateName"])
+    obj = policy.load_policy(raw, KEY, tag)
+    bad_input = b"synthetic-private-input"
+    with pytest.raises(policy.PolicyRefused) as caught:
+        obj.contains(bad_input)
+    assert caught.value.__context__ is None
+    tb = caught.value.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_globals.get("__name__") == policy.__name__:
+            values = list(tb.tb_frame.f_locals.values())
+            assert bad_input not in values and obj not in values
+        tb = tb.tb_next

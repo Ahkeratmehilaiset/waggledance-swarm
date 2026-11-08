@@ -48,6 +48,8 @@ class IdentifierPolicy:
 
     def contains(self, text):
         if type(text) is not str:
+            self = None
+            text = None
             _refuse()
         normalized = unicodedata.normalize("NFKC", text).casefold()
         return any(value in normalized for value in self.__values)
@@ -55,6 +57,7 @@ class IdentifierPolicy:
 
 def load_policy(policy_bytes, key, expected_tag):
     """Validate caller-supplied private policy bytes and their keyed HMAC-SHA256."""
+    document = values = item = normalized = actual = None
     try:
         if (type(policy_bytes) is not bytes or not 0 < len(policy_bytes) <= 65536
                 or type(key) is not bytes or not 32 <= len(key) <= 1024
@@ -79,5 +82,10 @@ def load_policy(policy_bytes, key, expected_tag):
                 _refuse()
             values.append(normalized)
         return IdentifierPolicy(values)
-    except (ValueError, TypeError, UnicodeError, RecursionError):
-        _refuse()
+    except Exception:
+        pass
+    # Raise outside the handler so the original parse exception and its input
+    # are not reachable through __context__. Clear sensitive locals first.
+    document = values = item = normalized = actual = None
+    policy_bytes = key = expected_tag = None
+    _refuse()

@@ -586,7 +586,7 @@ _PEER_CODE_LIMIT = 262144
 # refuses it unless explicitly enabled, and the child verifies the externally
 # pinned runtime manifest with the pinned verifier before importing any
 # runtime code or site. No approved runtime tree exists on this path yet.
-_FIXED_BACKENDS = frozenset({"synthetic-v1", "public-snapshot-v1", "staged-card-wrapper-v1"})
+_FIXED_BACKENDS = frozenset({"synthetic-v1", "public-snapshot-v1", "staged-card-wrapper-v1", "content-wrapper-v1"})
 _PLAN_KEYS = frozenset({"schema", "backend", "interpreter_sha256", "peer_code_sha256",
                         "runtime_manifest_sha256", "bundle_sha256", "bundle_bytes"})
 _PUBLIC_PINS = ("expected_pointer_sha256", "policy_sha256", "roster_sha256", "expected_public_policy_sha256",
@@ -597,9 +597,16 @@ _PUBLIC_PLAN_KEYS = _PLAN_KEYS | frozenset(_PUBLIC_PINS) | frozenset({
 _STAGED_PLAN_KEYS = _PUBLIC_PLAN_KEYS | frozenset({
     "card_decision_sha256", "card_policy_sha256", "wrapper_sha256", "deployment_manifest_sha256",
     "public_plan_sha256", "host_sha256", "backend_sha256", "bundle_root", "bundle_commit", "wrapper_path", "public_plan_path"})
+_CONTENT_PINS = frozenset({"encoder_sha256", "policy_sha256", "roster_sha256", "content_decision_sha256",
+                           "descriptor_sha256", "memory_sha256", "projection_sha256"})
+_CONTENT_FIXED_KEYS = _PLAN_KEYS | _CONTENT_PINS | frozenset({
+    "verifier_sha256", "runtime_root", "runtime_manifest_path", "runtime_generation", "runtime_revision",
+    "approved_tasks", "wrapper_sha256", "deployment_manifest_sha256", "public_plan_sha256", "host_sha256",
+    "backend_sha256", "bundle_root", "bundle_commit", "wrapper_path", "public_plan_path"})
 _PLAN_SCHEMAS = {"wd.q4-fixed-plan.v1": ("synthetic-v1", _PLAN_KEYS),
                  "wd.q4-fixed-plan.v2": ("public-snapshot-v1", _PUBLIC_PLAN_KEYS),
-                 "wd.q4-fixed-plan.v3": ("staged-card-wrapper-v1", _STAGED_PLAN_KEYS)}
+                 "wd.q4-fixed-plan.v3": ("staged-card-wrapper-v1", _STAGED_PLAN_KEYS),
+                 "wd.q4-fixed-plan.v4": ("content-wrapper-v1", _CONTENT_FIXED_KEYS)}
 _VERIFIER_LIMIT = 131072
 _VERIFIER_PARTS = ("sandbox", "mind", "step2", "runtime_manifest.py")
 _PUBLIC_RUNTIME = "MANIFEST_VERIFIED_BEFORE_IMPORT_NOT_ISOLATED"
@@ -693,11 +700,13 @@ def _read_staged_backend(peer_path, plan):
     try:
         root = Path(_staged_path(plan['bundle_root']))
         peer = root / 'tools-bootstrap' / 'tools' / 'wd_q4_secure_transport.py'
-        helper = root / 'tools-bootstrap' / 'tools' / 'wd_q4_staged_fixed_backend.py'
+        helper_name = ('wd_q4_content_fixed_backend.py' if plan['backend'] == 'content-wrapper-v1'
+                       else 'wd_q4_staged_fixed_backend.py')
+        helper = root / 'tools-bootstrap' / 'tools' / helper_name
         wrapper = root / 'Invoke-WdQ4Query.ps1'
         runtime = Path(_staged_path(plan['runtime_root']))
         runtime_peer = runtime / 'assets/code/tools/wd_q4_secure_transport.py'
-        runtime_helper = runtime / 'assets/code/tools/wd_q4_staged_fixed_backend.py'
+        runtime_helper = runtime / 'assets/code/tools' / helper_name
         normalized = lambda p: os.path.normcase(os.path.abspath(p))
         _check(normalized(peer_path) in (normalized(peer), normalized(runtime_peer))
                and normalized(plan['wrapper_path']) == normalized(wrapper))
@@ -708,7 +717,7 @@ def _read_staged_backend(peer_path, plan):
                and manifest.get('source_commit') == plan['bundle_commit'] and type(manifest.get('files')) is dict)
         for rel, path, key, cap in (
             ('tools-bootstrap/tools/wd_q4_secure_transport.py', peer, 'peer_code_sha256', _PEER_CODE_LIMIT),
-            ('tools-bootstrap/tools/wd_q4_staged_fixed_backend.py', helper, 'backend_sha256', _PEER_CODE_LIMIT),
+            ('tools-bootstrap/tools/' + helper_name, helper, 'backend_sha256', _PEER_CODE_LIMIT),
             ('Invoke-WdQ4Query.ps1', wrapper, 'wrapper_sha256', 1024*1024)):
             _check(type(manifest['files'].get(rel)) is str
                    and manifest['files'][rel].lower() == plan[key])
@@ -724,7 +733,7 @@ def _read_staged_backend(peer_path, plan):
                and type(runtime_manifest.get('files')) is list)
         for rel, path, key in (
             ('assets/code/tools/wd_q4_secure_transport.py', runtime_peer, 'peer_code_sha256'),
-            ('assets/code/tools/wd_q4_staged_fixed_backend.py', runtime_helper, 'backend_sha256')):
+            ('assets/code/tools/' + helper_name, runtime_helper, 'backend_sha256')):
             matches = [item for item in runtime_manifest['files'] if type(item) is dict and item.get('path') == rel]
             _check(len(matches) == 1 and matches[0].get('sha256') == plan[key])
             value = _staged_read(path, plan[key], _PEER_CODE_LIMIT)
@@ -747,8 +756,9 @@ def _fixed_plan(plan_bytes):
     for name in ("interpreter_sha256", "peer_code_sha256", "runtime_manifest_sha256", "bundle_sha256"):
         _hex64(plan[name])
     _check(type(plan["bundle_bytes"]) is int and 0 < plan["bundle_bytes"] <= _MAX_BUNDLE)
-    if backend in ("public-snapshot-v1", "staged-card-wrapper-v1"):
-        for name in _PUBLIC_PINS + ("verifier_sha256",):
+    if backend in ("public-snapshot-v1", "staged-card-wrapper-v1", "content-wrapper-v1"):
+        pins = tuple(_CONTENT_PINS) if backend == "content-wrapper-v1" else _PUBLIC_PINS
+        for name in pins + ("verifier_sha256",):
             _hex64(plan[name])
         for name in ("runtime_root", "runtime_manifest_path"):
             value = plan[name]
@@ -761,9 +771,11 @@ def _fixed_plan(plan_bytes):
         _check(type(tasks) is list and 0 < len(tasks) <= 64
                and all(type(t) is str and 0 < len(t) <= 128 and t.isascii() and t.isprintable() for t in tasks)
                and tasks == sorted(set(tasks)))
-    if backend == "staged-card-wrapper-v1":
-        for name in ("card_decision_sha256", "card_policy_sha256", "wrapper_sha256",
-                     "deployment_manifest_sha256", "public_plan_sha256", "host_sha256", "backend_sha256"):
+    if backend in ("staged-card-wrapper-v1", "content-wrapper-v1"):
+        pins = ("wrapper_sha256", "deployment_manifest_sha256", "public_plan_sha256", "host_sha256", "backend_sha256")
+        if backend == "staged-card-wrapper-v1":
+            pins += ("card_decision_sha256", "card_policy_sha256")
+        for name in pins:
             _hex64(plan[name])
         _check(type(plan["bundle_commit"]) is str and len(plan["bundle_commit"]) == 40
                and all(c in "0123456789abcdef" for c in plan["bundle_commit"]))
@@ -1066,6 +1078,43 @@ def _fixed_card_bundle_decode(bundle_bytes):
         _check(type(document) is dict and set(document) == _CARD_BUNDLE_FIELDS | {'schema'}
                and document['schema'] == _CARD_BUNDLE_SCHEMA and _canonical(document) == bundle_bytes)
         result = {key:_unb64(document[key]) for key in _CARD_BUNDLE_FIELDS}
+        _check(all(0 < len(value) <= _MAX_BUNDLE for value in result.values()))
+        return result
+    except Exception:
+        pass
+    raise _Refused() from None
+
+
+_CONTENT_BUNDLE_SCHEMA = 'wd.q4-fixed-content-bundle.v1'
+_CONTENT_BUNDLE_FIELDS = frozenset({'policy', 'roster', 'content_decision', 'memory', 'projection', 'descriptor'})
+
+
+def fixed_content_bundle(*, policy, roster, content_decision, memory, projection, descriptor, enabled=False):
+    """Encode caller-pinned content bytes; this does not authenticate or rederive the source."""
+    if enabled is False:
+        return {'status': 'OFF'}
+    try:
+        _check(enabled is True)
+        items = {'policy': policy, 'roster': roster, 'content_decision': content_decision,
+                 'memory': memory, 'projection': projection, 'descriptor': descriptor}
+        _check(all(type(value) is bytes and 0 < len(value) <= _MAX_BUNDLE for value in items.values()))
+        _check(sum(4 * ((len(value) + 2) // 3) for value in items.values()) + 1024 <= _MAX_BUNDLE)
+        raw = _canonical({'schema': _CONTENT_BUNDLE_SCHEMA, **{k: _b64(v) for k, v in items.items()}})
+        _check(len(raw) <= _MAX_BUNDLE)
+        return raw
+    except Exception:
+        pass
+    raise _Refused() from None
+
+
+def _fixed_content_bundle_decode(bundle_bytes):
+    try:
+        _check(type(bundle_bytes) is bytes and 0 < len(bundle_bytes) <= _MAX_BUNDLE)
+        document = json.loads(bundle_bytes.decode('ascii', 'strict'), object_pairs_hook=_unique_pairs,
+                              parse_constant=lambda _: _check(False))
+        _check(type(document) is dict and set(document) == _CONTENT_BUNDLE_FIELDS | {'schema'}
+               and document['schema'] == _CONTENT_BUNDLE_SCHEMA and _canonical(document) == bundle_bytes)
+        result = {key: _unb64(document[key]) for key in _CONTENT_BUNDLE_FIELDS}
         _check(all(0 < len(value) <= _MAX_BUNDLE for value in result.values()))
         return result
     except Exception:
@@ -1466,11 +1515,12 @@ def _fixed_child_backend(plan, peer_path):
     """
     if plan["backend"] == "synthetic-v1":
         return _fixed_child_answer
-    if plan["backend"] == "staged-card-wrapper-v1":
+    if plan["backend"] in ("staged-card-wrapper-v1", "content-wrapper-v1"):
         _check(type(peer_path) is str)
         scope = {'__name__':'_wd_staged_fixed_backend'}
         exec(compile(_read_staged_backend(peer_path, plan), '<wd-staged-fixed-backend>', 'exec'), scope)
-        staged = scope['prepare_staged_backend'](plan, peer_path, globals(), enabled=True)
+        prepare = ('prepare_content_backend' if plan['backend'] == 'content-wrapper-v1' else 'prepare_staged_backend')
+        staged = scope[prepare](plan, peer_path, globals(), enabled=True)
         _check(callable(staged) and callable(getattr(staged, 'validate_bundle', None)))
         return staged
     _check(plan["backend"] == "public-snapshot-v1" and type(peer_path) is str)
@@ -1558,7 +1608,7 @@ def _fixed_child_protocol(read_frame, write_frame, peer_code_sha256, peer_path=N
                             "binding_sha256": _sha(plan_bytes)}))
     bundle_bytes = read_frame(plan["bundle_bytes"])
     _fixed_child_bundle(plan, bundle_bytes)
-    if plan["backend"] == "staged-card-wrapper-v1":
+    if plan["backend"] in ("staged-card-wrapper-v1", "content-wrapper-v1"):
         backend.validate_bundle(bundle_bytes)
     write_frame(_fixed_ack(challenge["nonce"], _sha(bundle_bytes)))
     if _diagnostic_marker is not None:
@@ -2251,9 +2301,10 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
         _validate(query_bytes, timeout_seconds, max_output_bytes)
         _check(len(query_bytes) > 0 and type(public_snapshot_enabled) is bool)
         plan = _fixed_plan(plan_bytes)
-        staged = plan["backend"] == "staged-card-wrapper-v1"
+        content = plan["backend"] == "content-wrapper-v1"
+        staged = plan["backend"] in ("staged-card-wrapper-v1", "content-wrapper-v1")
         _check(not staged or guarded)
-        public = plan["backend"] in ("public-snapshot-v1", "staged-card-wrapper-v1")
+        public = plan["backend"] in ("public-snapshot-v1", "staged-card-wrapper-v1", "content-wrapper-v1")
         _check(public_snapshot_enabled or not public)
         _check(_diagnostic_mode in (None, "observe", "synthetic-fault"))
         _check(_diagnostic_mode is None or plan["backend"] == "synthetic-v1")
@@ -2297,8 +2348,9 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
             if public:
                 leases.enter_context(attest(verifier, plan["verifier_sha256"], max_bytes=_VERIFIER_LIMIT, enabled=True))
             if staged:
-                helper = str(Path(path).with_name('wd_q4_staged_fixed_backend.py'))
-                bundle_helper = str(Path(plan['bundle_root'])/'tools-bootstrap'/'tools'/'wd_q4_staged_fixed_backend.py')
+                helper_name = 'wd_q4_content_fixed_backend.py' if content else 'wd_q4_staged_fixed_backend.py'
+                helper = str(Path(path).with_name(helper_name))
+                bundle_helper = str(Path(plan['bundle_root'])/'tools-bootstrap'/'tools'/helper_name)
                 host = _staged_system_host()
                 manifest = str(Path(plan['bundle_root'])/'deployment-manifest.json')
                 helper_targets = [(helper,plan['backend_sha256'],_PEER_CODE_LIMIT)]
@@ -2313,8 +2365,10 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
                 scope = {'__name__':'_wd_staged_fixed_parent'}
                 exec(compile(_read_staged_backend(path,plan),'<wd-staged-fixed-parent>','exec'),scope)
                 public_raw = _staged_read(plan['public_plan_path'],plan['public_plan_sha256'],65536)
-                _check(scope['validate_card_input'](plan,bundle_bytes,public_raw,enabled=True) ==
-                       {'status':'VALIDATED_STAGED','completeness':'UNKNOWN'})
+                validator = 'validate_content_input' if content else 'validate_card_input'
+                status = 'VALIDATED_CONTENT' if content else 'VALIDATED_STAGED'
+                _check(scope[validator](plan,bundle_bytes,public_raw,enabled=True) ==
+                       {'status':status,'completeness':'UNKNOWN'})
             if guarded:
                 output, code = _run(command, cwd, {"mode": "fixed"}, query_bytes, timeout_seconds,
                                     max_output_bytes, fixed=(control, plan_bytes, bundle_bytes),
@@ -2336,7 +2390,8 @@ def _run_fixed_peer_impl(executable, expected_interpreter_sha256, interpreter_ma
             return output, code
         if staged:
             _check(code == 0)
-            result = scope['validate_card_result'](plan,bundle_bytes,public_raw,query_bytes,output,enabled=True), 0
+            validator = 'validate_content_result' if content else 'validate_card_result'
+            result = scope[validator](plan,bundle_bytes,public_raw,query_bytes,output,enabled=True), 0
             completed = True
             return result
         # Never return the child's public answer unvalidated: re-resolve it against the pinned bundle projection.

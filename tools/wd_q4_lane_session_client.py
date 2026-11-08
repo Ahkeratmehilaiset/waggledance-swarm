@@ -59,9 +59,10 @@ def query_session(*, lane, situation, time, fleet_bytes, expected_fleet_sha256, 
                     or not hmac.compare_digest(hashlib.sha256(fixed_plan_bytes).hexdigest(), expected_fixed_plan_sha256)):
                 raise ValueError()
             plan = fixed._fixed_plan(fixed_plan_bytes)
+            content = plan['backend'] == 'content-wrapper-v1'
             staged = plan['backend'] == 'staged-card-wrapper-v1'
-            if (plan["backend"] not in ("public-snapshot-v1", "staged-card-wrapper-v1")
-                    or (staged and not owner_options) or type(fixed_bundle_bytes) is not bytes
+            if (plan["backend"] not in ("public-snapshot-v1", "staged-card-wrapper-v1", "content-wrapper-v1")
+                    or ((staged or content) and not owner_options) or type(fixed_bundle_bytes) is not bytes
                     or len(fixed_bundle_bytes) != plan["bundle_bytes"]
                     or not hmac.compare_digest(hashlib.sha256(fixed_bundle_bytes).hexdigest(), plan["bundle_sha256"])
                     or type(runtime_manifest_bytes) is not bytes or len(runtime_manifest_bytes) > fixed._MAX_RUNTIME_MANIFEST
@@ -70,13 +71,15 @@ def query_session(*, lane, situation, time, fleet_bytes, expected_fleet_sha256, 
                     or type(expected_interpreter_sha256) is not str
                     or not hmac.compare_digest(expected_interpreter_sha256, plan["interpreter_sha256"])):
                 raise ValueError()
-            parts = (fixed._fixed_card_bundle_decode(fixed_bundle_bytes) if staged
-                     else fixed._fixed_bundle_decode(fixed_bundle_bytes))
+            parts = (fixed._fixed_content_bundle_decode(fixed_bundle_bytes) if content else
+                     fixed._fixed_card_bundle_decode(fixed_bundle_bytes) if staged else
+                     fixed._fixed_bundle_decode(fixed_bundle_bytes))
             roster_bytes, roster_sha = roster.build_roster_snapshot(fleet_bytes, expected_fleet_sha256, enabled=True)
             if (not hmac.compare_digest(roster_sha, pins["expected_binding"]["roster_sha256"])
-                    or not hmac.compare_digest(roster_bytes, parts['roster'] if staged else parts["roster_bytes"])):
+                    or not hmac.compare_digest(roster_bytes, parts['roster'] if staged or content else parts["roster_bytes"])):
                 raise ValueError()
-            factory = bound.make_guarded_staged_transport if staged else bound.make_bound_transport
+            factory = (bound.make_guarded_content_transport if content else
+                       bound.make_guarded_staged_transport if staged else bound.make_bound_transport)
             transport = factory(
                 bundle_root=bundle_root, expected_commit=pins["expected_commit"],
                 expected_manifest_sha256=pins["expected_manifest_sha256"],
@@ -88,9 +91,9 @@ def query_session(*, lane, situation, time, fleet_bytes, expected_fleet_sha256, 
                 timeout_seconds=timeout_seconds, max_output_bytes=max_output_bytes, enabled=True, **owner_options)
             return lane_query.query_public(
                 **pins, situation=situation, time=time, bundle_root=bundle_root, public_plan_path=public_plan_path,
-                projection_bytes=parts['projection'] if staged else parts["active_artifact_bytes"]["projection.json"],
-                policy_bytes=parts['policy'] if staged else parts["policy_bytes"],
-                roster_bytes=parts['roster'] if staged else parts["roster_bytes"], transport=transport, enabled=True)
+                projection_bytes=parts['projection'] if staged or content else parts["active_artifact_bytes"]["projection.json"],
+                policy_bytes=parts['policy'] if staged or content else parts["policy_bytes"],
+                roster_bytes=parts['roster'] if staged or content else parts["roster_bytes"], transport=transport, enabled=True)
     except AttestationCleanupUnknown as exc:
         failure, lease = "attestation", exc.lease
     except fixed.TransportCleanupUnknown as exc:

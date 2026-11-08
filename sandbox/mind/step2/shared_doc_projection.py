@@ -305,7 +305,8 @@ def _doc_screen(text, limit):
     normalized = cp._normalize(text, limit)
     if not normalized:
         raise cp._Drop("empty")
-    if any(pattern.search(normalized) for pattern in cp._CREDENTIAL[:-1]) or cp._base64_secret(normalized):
+    if (any(pattern.search(normalized) for pattern in cp._CREDENTIAL[:-1])
+            or cp._OWNER_HEX.search(normalized) or cp._base64_secret(normalized)):
         raise cp._Drop("credential")
     lowered = normalized.lower()
     if any(marker in lowered for marker in sp.SEALED_MARKERS) or corpus_mod.ws._has_marker(normalized):

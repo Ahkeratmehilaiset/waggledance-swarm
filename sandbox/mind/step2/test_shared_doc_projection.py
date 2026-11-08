@@ -186,6 +186,7 @@ def test_personal_section_drops_alone(tmp_path):
 
 @pytest.mark.parametrize("bad, token", [
     ("api_key = " + "Zq8" * 8, "credential"),
+    ("owner=" + "ab12" * 8, "credential"),
     ("-----BEGIN PRIVATE " + "KEY-----", "credential"),
     ("the " + "gold" + " answers live here", "sealed"),
     ("a " + "heldout" + " split", "sealed"),

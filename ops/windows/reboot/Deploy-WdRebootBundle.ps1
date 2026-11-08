@@ -240,9 +240,24 @@ function Get-WdPinnedQ4InstallDefault {
             ([string]$binding.manifest_sha256).ToUpperInvariant() -cne $ExpectedManifestHash.ToUpperInvariant()) {
             throw 'invalid'
         }
-        foreach ($name in @('pointer_sha256','source_anchor_sha256','encoder_sha256','policy_sha256',
-                'roster_sha256','public_policy_sha256','descriptor_sha256','projection_sha256')) {
-            if ([string]$binding.binding.$name -cne [string]$descriptor.expected_binding.$name) { throw 'invalid' }
+        # The shared-config helper has already accepted exactly one supported
+        # status, card, staged-card or seven-pin content shape for every lane.
+        # Require the binding to have precisely that same shape and values;
+        # an eight-pin status-only comparison rejects content under StrictMode
+        # and fails to compare the additional card pins.
+        if ($binding.binding -isnot [pscustomobject] -or
+                $descriptor.expected_binding -isnot [pscustomobject]) { throw 'invalid' }
+        $expectedNames = @($descriptor.expected_binding.PSObject.Properties.Name)
+        $actualNames = @($binding.binding.PSObject.Properties.Name)
+        if ($actualNames.Count -ne $expectedNames.Count) { throw 'invalid' }
+        foreach ($name in $expectedNames) {
+            $expectedProperty = $descriptor.expected_binding.PSObject.Properties[$name]
+            $actualProperty = $binding.binding.PSObject.Properties[$name]
+            if ($null -eq $expectedProperty -or $null -eq $actualProperty -or
+                    $expectedProperty.Name -cne $name -or $actualProperty.Name -cne $name -or
+                    $expectedProperty.Value -isnot [string] -or $actualProperty.Value -isnot [string] -or
+                    $expectedProperty.Value -cnotmatch '^[0-9a-f]{64}$' -or
+                    $actualProperty.Value -cne $expectedProperty.Value) { throw 'invalid' }
         }
         foreach ($lane in @('codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5')) {
             if (@($binding.lanes) -cnotcontains $lane) { throw 'invalid' }

@@ -52,7 +52,7 @@ function Assert-WdRefreshPath {
         if (($walk.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw 'A task path contains a reparse point.'
         }
-        if ($walk.PSIsContainer) { $walk = $walk.Parent } else { $walk = $walk.Directory }
+        if ($walk -is [IO.DirectoryInfo]) { $walk = $walk.Parent } else { $walk = $walk.Directory }
     }
     return $full
 }
@@ -98,15 +98,42 @@ try { $fleetHash = [BitConverter]::ToString($fleetHasher.ComputeHash($fleetBytes
 finally { $fleetHasher.Dispose() }
 if ($fleetHash -cne ([string]$fleetEntry.Value).ToUpperInvariant()) { throw 'The fleet bytes do not match the manifest.' }
 $fleet = [Text.Encoding]::UTF8.GetString($fleetBytes).TrimStart([char]0xFEFF) | ConvertFrom-Json
-$runtimeRoot = Assert-WdRefreshPath -Path ([string]$fleet.runtime_root) -Directory
+$runtimeProperty = $fleet.PSObject.Properties['runtime_root']
+if ($null -eq $runtimeProperty -or $runtimeProperty.Name -cne 'runtime_root' -or
+    $runtimeProperty.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($runtimeProperty.Value)) {
+    throw 'The fleet runtime root is invalid.'
+}
+$runtimeRoot = Assert-WdRefreshPath -Path $runtimeProperty.Value -Directory
 $mindConfig = $fleet.PSObject.Properties['mind_read']
-if ($null -ne $mindConfig -and $null -ne $mindConfig.Value -and
-    $null -ne $mindConfig.Value.PSObject.Properties['live_dir_mode'] -and
-    [string]$mindConfig.Value.live_dir_mode -ceq 'shared_runtime_audit') {
+if ($null -eq $mindConfig) {
     $expectedLive = [IO.Path]::GetFullPath((Join-Path $runtimeRoot 'shared\.codex-audit\mind-live'))
-    if (-not $liveRoot.TrimEnd('\').Equals($expectedLive.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'The producer live directory does not match the fleet Mind location.'
+} else {
+    if ($mindConfig.Name -cne 'mind_read' -or $mindConfig.Value -isnot [pscustomobject]) {
+        throw 'The fleet Mind configuration is invalid.'
     }
+    $config = $mindConfig.Value
+    $enabled = $config.PSObject.Properties['enabled']
+    $mode = $config.PSObject.Properties['live_dir_mode']
+    $explicit = $config.PSObject.Properties['live_dir']
+    if ($null -eq $enabled -or $enabled.Name -cne 'enabled' -or $enabled.Value -isnot [bool] -or
+        ($null -ne $mode -and $mode.Name -cne 'live_dir_mode') -or
+        ($null -ne $explicit -and $explicit.Name -cne 'live_dir')) {
+        throw 'The fleet Mind configuration is invalid.'
+    }
+    if ($null -ne $mode -and $null -eq $explicit -and $mode.Value -is [string] -and
+        $mode.Value -ceq 'shared_runtime_audit') {
+        $expectedLive = [IO.Path]::GetFullPath((Join-Path $runtimeRoot 'shared\.codex-audit\mind-live'))
+    } elseif ($null -eq $mode -and $null -ne $explicit -and $explicit.Value -is [string] -and
+              -not [string]::IsNullOrWhiteSpace($explicit.Value)) {
+        $expectedLive = Assert-WdRefreshPath -Path $explicit.Value -Directory
+    } elseif (-not $enabled.Value -and $null -eq $mode -and $null -eq $explicit) {
+        $expectedLive = [IO.Path]::GetFullPath((Join-Path $runtimeRoot 'shared\.codex-audit\mind-live'))
+    } else {
+        throw 'The fleet Mind location is invalid.'
+    }
+}
+if (-not $liveRoot.TrimEnd('\').Equals($expectedLive.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'The producer live directory does not match the fleet Mind location.'
 }
 $state = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
 if ([string]$state.source_commit -cne $ExpectedSourceCommit -or

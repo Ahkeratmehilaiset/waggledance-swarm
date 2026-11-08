@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 from copy import deepcopy
+import hashlib
 import json
 import re
 import shutil
@@ -50,6 +51,30 @@ def _definition() -> dict:
 
 def _packaged_python() -> list[str]:
     return [entry for entry in _definition()["python_files"] if entry.endswith(".py")]
+
+
+@pytest.mark.parametrize("relative, schema", [
+    ("configs/mind/content_message_policy_v2.json", "wd.mind-content-policy.v2"),
+    ("configs/mind/content_non_review_policy_v2.json", "wd.q4-non-review-policy.v1"),
+])
+def test_opt_in_content_v2_policies_are_packaged_and_pinned_readable(tmp_path, relative, schema):
+    """The content producer can read explicit staged policy bytes under their source hash."""
+    from sandbox.mind.step2 import wd_q4_content_build_child as child
+
+    assert _definition()["python_files"].count(relative) == 1
+    source = REPO_ROOT / relative
+    staged = tmp_path / "tools-bootstrap" / relative
+    staged.parent.mkdir(parents=True)
+    shutil.copyfile(source, staged)
+    raw = source.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    assert child._read_pinned(str(staged), digest, 65536) == raw
+    document = json.loads(raw)
+    assert document["schema"] == schema
+    if schema == "wd.mind-content-policy.v2":
+        assert document["approved_source_refs"] == []
+    with pytest.raises(ValueError):
+        child._read_pinned(str(staged), "0" * 64, 65536)
 
 
 def test_fixed_peer_result_adapter_is_in_bundle_python_files():

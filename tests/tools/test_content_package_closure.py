@@ -62,6 +62,18 @@ def test_the_content_import_closure_is_packaged():
     assert set(gaps) <= packaged
 
 
+def test_content_plan_writer_and_its_imports_ship_inert():
+    writer = "tools/wd_q4_public_content_plan_writer.py"
+    data = definition()
+    assert data["python_files"].count(writer) == 1
+    assert writer not in data["python_entrypoints"].values()
+    assert writer not in data["manual_execution_capability"]["entrypoints"].values()
+    assert writer[:-3].replace("/", ".") not in data["import_smoke"]["package_modules"]
+    gaps, unresolved = closure._closure([writer])
+    assert not unresolved
+    assert set(gaps) <= set(data["python_files"])
+
+
 def test_importing_the_resolver_and_the_content_modules_loads_no_bridge_llm_module():
     code = ("import sys; sys.path.insert(0, sys.argv[1]); "
             "from sandbox.mind.step2 import shared_result_resolver; "

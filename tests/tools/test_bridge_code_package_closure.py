@@ -973,6 +973,7 @@ Q4_READONLY_FILES = frozenset({
     "sandbox/mind/step2/status_metadata_producer.py",
     "sandbox/mind/step2/wd_q4_private_read.py",
     "sandbox/mind/step2/wd_q4_prefix_build_child.py",
+    "sandbox/mind/step2/wd_q4_content_build_child.py",
 })
 # Synthetic closed-card modules, code only (lead-mind-card-package-closure-fable-20261107-v1): the card route of
 # shared_result_resolver stays OFF unless its switch holds the card module itself, and neither the resolver nor
@@ -1906,3 +1907,15 @@ def test_packaged_index_preflight_is_required_by_actual_q4_consumers():
     for consumer in consumers:
         source = (REPO_ROOT / consumer).read_text(encoding="utf-8")
         assert "sandbox.mind.step2.shared_index_preflight" in _internal_imports(source, _package_of(consumer))
+
+
+def test_content_build_child_is_packaged_once_as_inert_source():
+    path = "sandbox/mind/step2/wd_q4_content_build_child.py"
+    dotted = path[:-3].replace("/", ".")
+    data = _definition()
+    assert data["python_files"].count(path) == 1
+    assert path in Q4_READONLY_FILES
+    assert path not in data["python_entrypoints"].values()
+    assert dotted not in data["import_smoke"]["package_modules"]
+    assert path not in json.dumps(data["manual_execution_capability"])
+    assert dotted not in json.dumps(data["manual_execution_capability"])

@@ -75,6 +75,7 @@
     "sandbox/mind/step2/status_metadata_producer.py",
     "sandbox/mind/step2/wd_q4_private_read.py",
     "sandbox/mind/step2/wd_q4_prefix_build_child.py",
+    "sandbox/mind/step2/wd_q4_content_build_child.py",
     "tools/__init__.py",
     "tools/wd_mind_anchor_issuer.py",
     "tools/wd_mind_live_reader.py",

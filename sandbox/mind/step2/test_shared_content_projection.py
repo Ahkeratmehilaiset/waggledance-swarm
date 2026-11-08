@@ -179,25 +179,27 @@ def test_long_text_is_chunked_on_word_boundaries_and_rejoins():
 
 def test_one_overlong_word_is_split_without_breaking_an_escape():
     for text in ("\u00e4" * 200, "x" + "\u00e4" * 200, "xy" + "\u00f6" * 150):
-        chunks = texts(build(rows_of(row(text))))
+        chunks = cp.chunk(cp.encode_text(text))
         assert len(chunks) > 1 and all(len(c) <= 300 for c in chunks)
         assert "".join(cp.decode_text(c) for c in chunks) == text
 
 
-def test_iso_times_and_repo_paths_are_kept_but_local_paths_and_urls_are_tokens():
-    text = ("valmis 2026-11-07T17:52:46Z ja 2026-11-07, katso tests/tools/test_x.py; C:" + "\\Users\\someone\\x.txt"
+def test_long_times_and_paths_are_masked_and_local_paths_are_not_exposed():
+    text = ("valmis 2026-11-07T17:52:46Z ja 2026-11-07, katso tests/tools/test_x.py; ensin C:" + "\\Users\\someone\\x.txt"
             " ja https" + "://example.invalid/a/b sek\u00e4 /home/someone/x")
     (record,) = build(rows_of(row(text)))["records"]
     decoded = cp.decode_text(record["stored_text"])
-    assert "2026-11-07T17:52:46Z" in decoded and "tests/tools/test_x.py" in decoded
+    assert "2026-11-07T17:52:46Z" not in decoded and "tests/tools/test_x.py" not in decoded
     assert "someone" not in decoded and "example.invalid" not in decoded
-    assert decoded.count("local-path") == 2 and "url" in decoded
+    assert "token-redacted" in decoded and "local-path" in decoded
+
 
 
 def test_forward_slash_windows_private_path_is_not_retained():
     verdict, encoded = cp.classify("see C:/Users/Example/private.txt")
     assert verdict == "KEEP"
-    assert cp.decode_text(encoded) == "see local-path"
+    assert cp.decode_text(encoded) == "see token-redacted"
+
 
 
 def test_synthetic_grouped_license_key_is_refused():
@@ -263,7 +265,7 @@ def test_named_hex_secret_is_refused_even_when_hex_can_be_replaced():
 def test_hex_with_digit_runs_and_case_is_redacted(value):
     verdict, encoded = cp.classify("sha256:" + value)
     assert verdict == "KEEP"
-    assert cp.decode_text(encoded) == "sha256:hex-redacted"
+    assert cp.decode_text(encoded) == "token-redacted"
     assert value not in encoded
 
 
@@ -277,8 +279,9 @@ def test_hex_redaction_preserves_adjacent_personal_and_secret_checks():
 
 def test_hex_31_boundary_and_base64url_still_refuses():
     short = "ab" * 15 + "a"
-    assert cp.classify("commit " + short) == ("KEEP", "commit " + short)
+    assert cp.classify("commit " + short) == ("KEEP", "commit token-redacted")
     assert cp.classify("AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc") == ("DROP", "personal")
+
 
 
 def test_long_public_command_can_be_retained_only_as_a_placeholder():
@@ -591,3 +594,57 @@ def test_the_personal_detectors_are_exact_copies_of_the_redactor_detectors():
         copy, origin = getattr(cp, "_" + name), getattr(redactor, name)
         assert (copy.pattern, copy.flags) == (origin.pattern, origin.flags), name
     assert cp._PERSONAL == (cp._EMAIL_RE, cp._CREDIT_CARD_RE, cp._HETU_RE, cp._Y_TUNNUS_RE)
+
+
+@pytest.mark.parametrize("value", [
+    "abcdefghiJKLMN12",
+    "abcdefghijklmnopqrstuvwxyzzzzzz",
+    "abcdefghijklmnop",
+    "abCD1234efGH5678 filler ijKL9012mnOP3456",
+])
+def test_individual_long_fragments_are_masked_even_across_filler(value):
+    verdict, encoded = cp.classify("run " + value + " done")
+    assert verdict == "KEEP"
+    output = cp.decode_text(encoded)
+    for word in value.split():
+        if len(word) >= 16:
+            assert word not in output
+    assert "token-redacted" in output
+
+
+
+def test_short_plain_fragments_are_not_claimed_as_protected():
+    value = "abcdefghijklmno filler pqrstuvwxyzabcd"
+    verdict, encoded = cp.classify("run " + value + " done")
+    assert verdict == "KEEP"
+    assert cp.decode_text(encoded) == "run " + value + " done"
+
+
+
+@pytest.mark.parametrize("separator", [".", "~", "%", "\u00e4"])
+def test_long_unspaced_segments_are_masked_even_with_unusual_characters(separator):
+    value = "abcdefghijklmnop" + separator + "qrstuvwxyzabcdef"
+    verdict, encoded = cp.classify("run " + value + " done")
+    assert verdict == "KEEP"
+    assert cp.decode_text(encoded) == "run token-redacted done"
+
+
+
+@pytest.mark.parametrize("value", [
+    "abcdefghijklmnop qrstuvwxyzabcdef",
+    "abcdefghijklmnop qrstuvwxyzabcdef ghijklmnopqrstuv",
+    "abcdefghijklmnop.qrstuvwxyzabcdef ghijklmnopqrstuv",
+])
+def test_adjacent_long_fragments_are_masked_without_leaving_overlap(value):
+    verdict, encoded = cp.classify("run " + value + " done")
+    assert verdict == "KEEP"
+    assert cp.decode_text(encoded) == "run token-redacted done"
+
+
+
+def test_fragment_text_is_absent_from_projected_records():
+    first, second = "abcdefghijklmnop", "qrstuvwxyzabcdef"
+    projected = build(rows_of(row("run " + first + " " + second + " done")))
+    serialized = json.dumps(projected, ensure_ascii=False)
+    assert first not in serialized and second not in serialized
+    assert [cp.decode_text(value) for value in texts(projected)] == ["run token-redacted done"]

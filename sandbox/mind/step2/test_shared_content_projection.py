@@ -206,6 +206,28 @@ def test_synthetic_grouped_license_key_is_refused():
     assert cp.classify("key 36-ABCD-EFGH-JKLM-NPQR-STUV-WXYZ234") == ("DROP", "credential")
 
 
+@pytest.mark.parametrize("message", [
+    "APP_PASSWORD=synthetic-value",
+    "salasana: synthetic-value",
+    "tunnussana is synthetic-value",
+    "PIN-koodi: synthetic-value",
+    "password is synthetic-value",
+    "synthetic AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc",
+    "synthetic ABCDE-FGHIJ-KLMNO-PQRST-UVWXY",
+])
+def test_additional_synthetic_credentials_are_refused(message):
+    assert cp.classify(message) == ("DROP", "credential")
+
+
+@pytest.mark.parametrize("path", [
+    r"C:\Users\Jane Smith\private.txt",
+    "C:/Users/Jane Smith/private.txt",
+])
+def test_windows_path_with_spaces_is_not_retained(path):
+    verdict, encoded = cp.classify("see " + path)
+    assert verdict != "KEEP" or "Smith" not in cp.decode_text(encoded)
+
+
 # --- fail-closed screening before chunking -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", sorted(CANARIES))

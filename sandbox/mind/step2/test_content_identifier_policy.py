@@ -38,7 +38,7 @@ def test_tampering_and_key_rotation_refuse_without_echo():
     assert policy.load_policy(rotated_raw, b"y" * 32, rotated_tag).contains("SyntheticNameForTest")
 
 
-@pytest.mark.parametrize("names", [[], [""], ["ab"], ["SyntheticName", "syntheticname"], [None], ["bad\nname"]])
+@pytest.mark.parametrize("names", [[], [""], ["ab"], ["SyntheticName", "syntheticname"], [None], ["bad\u0001name"]])
 def test_invalid_identifier_lists_refuse(names):
     raw, tag = bound(names)
     with pytest.raises(policy.PolicyRefused, match="^policy_refused$"):
@@ -91,4 +91,45 @@ def test_contains_refusal_does_not_keep_policy_or_input_in_own_frames():
         if tb.tb_frame.f_globals.get("__name__") == policy.__name__:
             values = list(tb.tb_frame.f_locals.values())
             assert bad_input not in values and obj not in values
+        tb = tb.tb_next
+
+
+def test_format_and_whitespace_normalized_on_policy_and_input():
+    raw, tag = bound(["Synthetic\u200b Name", "Other\n Example"])
+    obj = policy.load_policy(raw, KEY, tag)
+    assert obj.contains("synthetic  \nname")
+    assert obj.contains("OTHER\u200d EXAMPLE")
+
+
+@pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit])
+def test_interrupt_clears_loader_own_frame(monkeypatch, exception):
+    raw, tag = bound(["SyntheticPrivateName"])
+    key = KEY
+    def interrupt(*args, **kwargs):
+        raise exception()
+    monkeypatch.setattr(policy.json, "loads", interrupt)
+    with pytest.raises(exception) as caught:
+        policy.load_policy(raw, key, tag)
+    tb = caught.value.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_globals.get("__name__") == policy.__name__:
+            values = list(tb.tb_frame.f_locals.values())
+            assert key not in values and raw not in values
+        tb = tb.tb_next
+
+
+def test_interrupt_clears_contains_own_frame(monkeypatch):
+    raw, tag = bound(["SyntheticPrivateName"])
+    obj = policy.load_policy(raw, KEY, tag)
+    value = "SyntheticPrivateInput"
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(policy.unicodedata, "normalize", interrupt)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        obj.contains(value)
+    tb = caught.value.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_globals.get("__name__") == policy.__name__:
+            values = list(tb.tb_frame.f_locals.values())
+            assert value not in values and obj not in values
         tb = tb.tb_next

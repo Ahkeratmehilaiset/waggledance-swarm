@@ -3,6 +3,8 @@
 The caller must provision a secret random key and protect the policy bytes and
 key. An HMAC proves byte consistency with that key, not the caller's authority.
 This foundation does not activate content processing or persist any material.
+Callers remain responsible for clearing their own frames and exception chains;
+this module cannot clear references retained by calling or foreign code.
 """
 
 import hashlib
@@ -24,12 +26,33 @@ def _refuse():
 
 
 def _unique_pairs(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError()
-        result[key] = value
-    return result
+    result = key = value = None
+    try:
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError()
+            result[key] = value
+        return result
+    finally:
+        pairs = result = key = value = None
+
+
+def _normalize(text):
+    normalized = chars = char = category = None
+    try:
+        normalized = unicodedata.normalize("NFKC", text).casefold()
+        chars = []
+        for char in normalized:
+            category = unicodedata.category(char)
+            if category == "Cf":
+                continue
+            if category.startswith("C") and not char.isspace():
+                raise ValueError()
+            chars.append(char)
+        return " ".join("".join(chars).split())
+    finally:
+        text = normalized = chars = char = category = None
 
 
 class IdentifierPolicy:
@@ -38,7 +61,10 @@ class IdentifierPolicy:
     __slots__ = ("__values",)
 
     def __init__(self, values):
-        object.__setattr__(self, "_IdentifierPolicy__values", tuple(values))
+        try:
+            object.__setattr__(self, "_IdentifierPolicy__values", tuple(values))
+        finally:
+            self = values = None
 
     def __setattr__(self, name, value):
         raise AttributeError("immutable")
@@ -47,12 +73,14 @@ class IdentifierPolicy:
         return "<IdentifierPolicy private>"
 
     def contains(self, text):
-        if type(text) is not str:
-            self = None
-            text = None
-            _refuse()
-        normalized = unicodedata.normalize("NFKC", text).casefold()
-        return any(value in normalized for value in self.__values)
+        normalized = None
+        try:
+            if type(text) is not str:
+                _refuse()
+            normalized = _normalize(text)
+            return any(value in normalized for value in self.__values)
+        finally:
+            self = text = normalized = None
 
 
 def load_policy(policy_bytes, key, expected_tag):
@@ -75,7 +103,7 @@ def load_policy(policy_bytes, key, expected_tag):
         for item in document["identifiers"]:
             if type(item) is not str:
                 _refuse()
-            normalized = unicodedata.normalize("NFKC", item).casefold()
+            normalized = _normalize(item)
             if (not 3 <= len(normalized) <= 128 or normalized != normalized.strip()
                     or any(unicodedata.category(c).startswith("C") for c in normalized)
                     or normalized in values):
@@ -84,8 +112,9 @@ def load_policy(policy_bytes, key, expected_tag):
         return IdentifierPolicy(values)
     except Exception:
         pass
+    finally:
+        document = values = item = normalized = actual = None
+        policy_bytes = key = expected_tag = None
     # Raise outside the handler so the original parse exception and its input
     # are not reachable through __context__. Clear sensitive locals first.
-    document = values = item = normalized = actual = None
-    policy_bytes = key = expected_tag = None
     _refuse()

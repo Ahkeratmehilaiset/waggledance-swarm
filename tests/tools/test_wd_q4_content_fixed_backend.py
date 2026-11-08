@@ -59,7 +59,7 @@ def test_any_public_pin_difference_refuses_before_source_access(changed, monkeyp
         backend.validate_content_input(plan, raw, public, enabled=True)
 
 
-def test_parent_refuses_to_start_wrapper_if_source_recheck_fails(monkeypatch):
+def test_parent_refuses_to_start_wrapper_if_pinned_input_check_fails(monkeypatch):
     calls = []
     monkeypatch.setattr(backend, 'validate_content_input', lambda *a, **k: (_ for _ in ()).throw(ValueError()))
     monkeypatch.setattr(backend.subprocess, 'Popen', lambda *a, **k: calls.append('started'))

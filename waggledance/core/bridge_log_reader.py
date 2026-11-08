@@ -433,14 +433,17 @@ def _complete_prefix_length(payload: bytes, *, max_rows: int) -> int:
     """Return bytes through at most ``max_rows`` complete LF records."""
 
     rows = 0
-    for index, value in enumerate(payload):
-        if value != 0x0A:
-            continue
+    start = 0
+    last_lf = -1
+    while True:
+        index = payload.find(b"\n", start)
+        if index < 0:
+            return 0 if last_lf < 0 else last_lf + 1
         rows += 1
         if rows >= max_rows:
             return index + 1
-    last_lf = payload.rfind(b"\n")
-    return 0 if last_lf < 0 else last_lf + 1
+        last_lf = index
+        start = index + 1
 
 
 def read_bridge_log(

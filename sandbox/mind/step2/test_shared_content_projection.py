@@ -278,7 +278,7 @@ def test_hex_redaction_preserves_adjacent_personal_and_secret_checks():
 def test_hex_31_boundary_and_base64url_still_refuses():
     short = "ab" * 15 + "a"
     assert cp.classify("commit " + short) == ("KEEP", "commit " + short)
-    assert cp.classify("AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc") == ("KEEP", "token-redacted")
+    assert cp.classify("AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc") == ("DROP", "personal")
 
 
 def test_long_public_command_can_be_retained_only_as_a_placeholder():
@@ -300,6 +300,9 @@ def test_named_base64url_secret_still_drops():
                                      "XyZa0123456789ABCDEFGHIJKLMNOPQRSTuvwx/=="])
 def test_any_long_base64url_candidate_is_wholly_redacted(value):
     verdict, encoded = cp.classify("run " + value + " now")
+    if "0123456789" in value or "1234567890" in value:
+        assert (verdict, encoded) == ("DROP", "personal")
+        return
     assert verdict == "KEEP"
     assert cp.decode_text(encoded) == "run token-redacted now"
     assert value not in encoded
@@ -307,7 +310,7 @@ def test_any_long_base64url_candidate_is_wholly_redacted(value):
 
 
 def test_redacted_token_does_not_hide_pii_sealed_or_url_userinfo():
-    value = "AbCdEfGhIjKlMnOpQrStUv_WxYz1234567890abc"
+    value = "AbCdEfGhIjKlMnOpQrStUv_WxYz12a345b678c9"
     assert cp.classify(value + " someone@example.invalid") == ("DROP", "personal")
     assert cp.classify(value + " gold") == ("DROP", "sealed")
     assert cp.classify("https://name:password@example.invalid/" + value) == ("DROP", "credential")
@@ -333,6 +336,29 @@ def test_overlapping_token_url_is_removed_whole():
     verdict, encoded = cp.classify("see https://example.invalid/" + value + "?private=synthetic now")
     assert verdict == "KEEP"
     assert "QwErTy" not in encoded and "private" not in encoded
+
+
+@pytest.mark.parametrize("marker", ["heldout", "gold", "judge", "sealed"])
+def test_sealed_marker_inside_redacted_token_drops_whole_row(marker):
+    value = "synthetic_" + marker + "_evaluation_split_final_2026"
+    assert cp.classify("status " + value + " ready") == ("DROP", "sealed")
+
+
+def test_workspace_guard_marker_is_checked_before_redaction(monkeypatch):
+    marker = "synthworkspaceguard"
+    monkeypatch.setattr(cp.corpus_mod.ws, "_has_marker", lambda text: marker in text)
+    assert cp.classify("status synthetic_" + marker + "_evaluation_2026 ready") == ("DROP", "sealed")
+
+
+def test_personal_values_next_to_redacted_token_remain_tainted():
+    value = "syntheticVeryLongTokenValue1234567890"
+    assert cp.classify(value + " someone@example.invalid") == ("DROP", "personal")
+    assert cp.classify(value + " +358 40 1234567") == ("DROP", "personal")
+
+
+def test_hex_digest_with_digit_run_is_not_a_phone_number():
+    value = "a" * 15 + "123456789" + "a" * 16
+    assert cp.classify("commit " + value) == ("KEEP", "commit hex-redacted")
 
 
 @pytest.mark.parametrize("value", [r"copied to D:\Data\Jane Smith yesterday",

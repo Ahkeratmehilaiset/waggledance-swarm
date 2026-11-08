@@ -349,6 +349,14 @@ def _screen(text, *, redact_hex=False):
     lowered = text.lower()
     if _UUID.search(text) or any(name in lowered for name in _local_identifiers()):
         raise _Drop("identifier")
+    # Taint checks must see the original normalized row, including markers
+    # embedded in a run that will later be redacted.
+    if any(marker in lowered for marker in sp.SEALED_MARKERS) or corpus_mod.ws._has_marker(text):
+        raise _Drop("sealed")
+    phone_text = _CREDENTIAL[-1].sub("hex-redacted", text) if redact_hex else text
+    if (any(pattern.search(text) for pattern in _PERSONAL) or _iban(text)
+            or _PHONE_RE.search(_ISO_TIME.sub(" ", phone_text))):
+        raise _Drop("personal")
     if redact_hex:
         text = _redact_sensitive_runs(text)
     lowered = text.lower()

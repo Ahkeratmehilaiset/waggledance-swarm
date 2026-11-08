@@ -60,13 +60,36 @@ def _commit_present(commit):
     return result.returncode == 0
 
 
-def test_document_policy_record_budget_at_its_pinned_commit():
+def test_document_policy_record_budget_at_its_pinned_commit(monkeypatch):
     raw, sha = pinned(DOCS)
     commit = json.loads(raw)["commit"]
     if not _commit_present(commit):
         pytest.skip("the pinned document commit is not in this clone")
+    # Observe the real per-document result because the public projection has
+    # aggregate refusal counts, not a list of refused paths. A refused document
+    # must not leak records, independently of why it was refused.
+    original_document = dp._document
+    refused_paths = set()
+
+    def observe_document(root, env, policy, path, time_text, refused_docs, refused_sections):
+        before = sum(refused_docs.values())
+        records = original_document(root, env, policy, path, time_text, refused_docs, refused_sections)
+        after = sum(refused_docs.values())
+        if after > before:
+            assert after == before + 1
+            assert records == []
+            refused_paths.add(path)
+        return records
+
+    monkeypatch.setattr(dp, "_document", observe_document)
     projection = dp.build_doc_projection(enabled=True, repo_root=str(ROOT), policy_bytes=raw, policy_sha256=sha,
                                          **tdp.git_pin())
-    assert projection["refused_docs"] == {}
     assert 0 < projection["accepted"] <= DOC_RECORD_BUDGET
-    assert {r["provenance"]["path"] for r in projection["records"]} == set(json.loads(raw)["paths"])
+    assert projection["accepted"] == len(projection["records"])
+    actual_paths = {r["provenance"]["path"] for r in projection["records"]}
+    allowed_paths = set(json.loads(raw)["paths"])
+    assert actual_paths <= allowed_paths
+    assert actual_paths.isdisjoint(refused_paths)
+    assert sum(projection["refused_docs"].values()) == len(refused_paths)
+    assert set(projection["refused_docs"]) <= dp.DOC_TOKENS
+    assert all(type(count) is int and count > 0 for count in projection["refused_docs"].values())

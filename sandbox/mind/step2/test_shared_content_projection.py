@@ -291,6 +291,21 @@ def test_spaced_paths_followed_by_words_fail_closed(value):
     assert verdict == "DROP" or "Smith" not in cp.decode_text(encoded)
 
 
+@pytest.mark.parametrize("message", ["see https://github.com/o/r/pull/2077 Lead merged it",
+                                      "PR https://github.com/o/r/pull/2077 merged"])
+def test_public_url_does_not_trigger_windows_path_rule(message):
+    verdict, encoded = cp.classify(message)
+    assert verdict == "KEEP"
+    assert "github.com" not in cp.decode_text(encoded)
+
+
+@pytest.mark.parametrize("value", ["~/Jane Smith/x", "/mnt/data/Jane Smith yesterday",
+                                     r"D:\Data\JANE SMITH"])
+def test_more_spaced_local_paths_fail_closed(value):
+    verdict, encoded = cp.classify("see " + value)
+    assert verdict == "DROP" or "Smith" not in cp.decode_text(encoded).title()
+
+
 # --- fail-closed screening before chunking -------------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", sorted(CANARIES))

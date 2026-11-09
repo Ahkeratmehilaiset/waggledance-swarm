@@ -544,9 +544,13 @@ def _retention_cases():
         ("task_coverage_later_refusal", lambda: diag.task_coverage(
             rows={}, policy_bytes=raw, policy_sha256="0" * 64, roster=fx.ROSTER, require_identifier_policy=True,
             identifier_policy_binding=bindings["good"]), "policy_refused"),
-        ("task_coverage_build_refusal", lambda: diag.task_coverage(
+        ("task_coverage_wrong_tag", lambda: diag.task_coverage(
             rows=rows(), policy_bytes=raw, policy_sha256=pin, roster=fx.ROSTER, require_identifier_policy=True,
             identifier_policy_binding=bindings["good"][:2] + ("0" * 64,)), "identifier_policy_refused"),
+        ("task_coverage_build_refusal", lambda: diag.task_coverage(
+            rows={"0" * 64: fx.row("ref does not match its event")}, policy_bytes=raw, policy_sha256=pin,
+            roster=fx.ROSTER, require_identifier_policy=True, identifier_policy_binding=bindings["good"]),
+         "rows_refused"),
         ("from_projection_bad_bytes", lambda: diag.coverage_from_projection(
             {}, policy_bytes=raw, policy_sha256=pin, require_identifier_policy=True,
             identifier_policy_binding=bindings["bad_bytes"]), "identifier_policy_refused"),

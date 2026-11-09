@@ -39,6 +39,7 @@ def rows():
         fx.row("row of an unapproved task", minute=7, task_id="synthetic-not-approved"),
         fx.row("reviewer row is silently excluded", agent=RCO1, minute=8),
         fx.row("decision typed review signal row is silently excluded", minute=9, type="decision"),
+        fx.row("task b personal note: call +358 40 7654321 later", agent=FABLE, minute=10, task_id=TASK_B),
     ]
     return fx.rows_of(*events)
 
@@ -53,8 +54,11 @@ def test_per_task_counts_match_a_full_build_per_task():
     assert report["schema"] == diag.SCHEMA
     assert set(report["tasks"]) == set(TASKS)
     assert report["tasks"][TASK_A] == {"accepted": 2, "refused": {"personal": 1}}
-    assert report["tasks"][TASK_B] == {"accepted": 1, "refused": {"sealed": 1, "type_not_allowed": 1}}
+    assert report["tasks"][TASK_B] == {"accepted": 1, "refused": {"personal": 1, "sealed": 1, "type_not_allowed": 1}}
     assert report["tasks"][TASK_C] == {"accepted": 0, "refused": {}}
+    assert report["totals"] == {"accepted": 3, "refused": {"personal": 2, "sealed": 1, "task_not_approved": 1,
+                                                           "type_not_allowed": 1}}
+    assert report["label"] == diag.LABEL == "counts diagnostic, not a coverage guarantee"
 
 
 def test_zero_coverage_tasks_are_named_and_sorted():
@@ -81,7 +85,7 @@ def test_silent_review_signal_rows_leave_no_count_anywhere():
     dumped = json.dumps(report)
     assert "silent" not in dumped and "review" not in dumped and RCO1 not in dumped
     counted = sum(report["totals"]["refused"].values()) + report["totals"]["accepted"]
-    assert counted == 7  # nine rows: the reviewer row and the decision-typed row leave no count anywhere
+    assert counted == 8  # ten rows: the reviewer row and the decision-typed row leave no count anywhere
 
 
 def test_output_carries_counts_and_reason_codes_only():
@@ -107,11 +111,37 @@ def test_malformed_rows_refuse_before_any_count(bad):
     assert str(info.value) == "rows_refused"
 
 
-def test_policy_pin_mismatch_refuses():
+@pytest.mark.parametrize("given", [lambda: rows(), lambda: {}])
+def test_policy_pin_mismatch_refuses_before_any_count(given):
     raw, _ = policy()
     with pytest.raises(diag.CoverageRefused) as info:
-        diag.task_coverage(rows=rows(), policy_bytes=raw, policy_sha256="0" * 64, roster=fx.ROSTER)
+        diag.task_coverage(rows=given(), policy_bytes=raw, policy_sha256="0" * 64, roster=fx.ROSTER)
     assert str(info.value) == "policy_refused"
+
+
+def test_no_rows_at_all_reports_every_task_as_zero_coverage():
+    raw, pin = policy()
+    report = diag.task_coverage(rows={}, policy_bytes=raw, policy_sha256=pin, roster=fx.ROSTER)
+    assert report["tasks"] == {task: {"accepted": 0, "refused": {}} for task in TASKS}
+    assert report["zero_coverage_tasks"] == sorted(TASKS)
+    assert report["totals"] == {"accepted": 0, "refused": {}} and report["match"] == "MATCH"
+
+
+def test_match_reports_mismatch_when_the_full_build_disagrees_with_the_per_task_sums(monkeypatch):
+    raw, pin = policy()
+    real = cp.build_content_projection
+    everything = len(rows())
+
+    def skewed(**kwargs):
+        projection = real(**kwargs)
+        if len(kwargs["rows"]) == everything:
+            projection = dict(projection, accepted=projection["accepted"] + 1)
+        return projection
+
+    monkeypatch.setattr(diag.cp, "build_content_projection", skewed)
+    report = diag.task_coverage(rows=rows(), policy_bytes=raw, policy_sha256=pin, roster=fx.ROSTER)
+    assert report["match"] == "MISMATCH"
+    assert report["totals"]["accepted"] == 3
 
 
 def test_default_off_reads_nothing():

@@ -363,3 +363,75 @@ def test_startup_filter_with_recipients_never_creates_an_answer_and_only_removes
             seen_answer += filtered["status"] == "ANSWER"
             seen_abstain += filtered["status"] == "ABSTAIN"
     assert seen_answer and seen_abstain and seen_kept_by_recipient
+
+
+# --- UF2: the lane filter must see the whole agreement set, not only the shown_max cut -----------------------
+
+
+def narrow_rule(shown_max=1):
+    return dict(q4.RULE, shown_max=shown_max)
+
+
+def test_pinned_rule_agreement_set_cannot_exceed_the_shown_cut():
+    # Every agreed record ranks within agree_depth in every view, and ranks are distinct, so the agreement set
+    # holds at most agree_depth records; with shown_max >= agree_depth the cut can never discard one of them.
+    assert q4.RULE["shown_max"] >= q4.RULE["agree_depth"] == 3
+
+
+def test_uf2_own_evidence_beyond_a_narrow_cut_is_kept_not_discarded():
+    # lead-0 sorts first and wins every tie; fable-0 and fable-1 also pass the depth-3 consensus. A cut of one
+    # shown before the lane filter would show lead-0 only, reject it and abstain although own evidence agreed.
+    memory = lane_memory(("codex-lead-1", "fable-5"), counts={"codex-lead-1": 1, "fable-5": 4})
+    answer = q4.Q4(memory, FakeEncoder(), rule=narrow_rule(1)).ask(STARTUP % "fable-5", WHEN)
+    assert answer["status"] == "ANSWER" and lanes_of(answer) == {"fable-5"} and len(answer["results"]) == 1
+    assert answer["results"][0]["ref"] == "b-fable-5-0.md"
+    assert answer["telemetry"]["rejected_origin"] == 1
+
+
+def test_uf2_addressed_evidence_beyond_a_narrow_cut_is_kept_not_discarded():
+    memory = lane_memory(("codex-lead-1", "codex-tools-1"), counts={"codex-lead-1": 1, "codex-tools-1": 4})
+    for meta in memory.views["learning"].collection._metadata:
+        if meta["agent"] == "codex-tools-1":
+            meta["to"] = "fable-5"
+    answer = q4.Q4(memory, FakeEncoder(), rule=narrow_rule(2)).ask(STARTUP % "fable-5", WHEN)
+    assert answer["status"] == "ANSWER" and lanes_of(answer) == {"codex-tools-1"} and len(answer["results"]) == 2
+    assert answer["telemetry"]["rejected_origin"] == 1
+
+
+def test_uf2_filter_never_admits_a_record_outside_the_agreement_set():
+    # fable rows exist but rank 4th and beyond in every view: no consensus for them, so the startup read abstains.
+    memory = lane_memory(("codex-lead-1", "fable-5"), counts={"codex-lead-1": 3, "fable-5": 4})
+    answer = q4.Q4(memory, FakeEncoder(), rule=narrow_rule(1)).ask(STARTUP % "fable-5", WHEN)
+    assert answer["status"] == "ABSTAIN" and answer["reason"] == "no_lane_origin_results"
+    assert answer["results"] == [] and answer["telemetry"]["rejected_origin"] == 3
+
+
+def test_uf2_a_narrow_cut_still_applies_after_the_filter():
+    memory = lane_memory(("fable-5",), counts={"fable-5": 5})
+    answer = q4.Q4(memory, FakeEncoder(), rule=narrow_rule(2)).ask(STARTUP % "fable-5", WHEN)
+    assert answer["status"] == "ANSWER" and len(answer["results"]) == 2
+    assert [item["ref"] for item in answer["results"]] == ["a-fable-5-0.md", "a-fable-5-1.md"]
+
+
+def test_uf2_narrow_cut_filter_is_monotone_against_the_unfiltered_agreement_set():
+    rng = random.Random(20261111)
+    seen = 0
+    for _ in range(200):
+        memory, metas = random_memory(rng)
+        for meta in metas:
+            meta["to"] = rng.choice(BUILD_LANES + (None,))
+        lane = rng.choice(LANES)
+        situation = STARTUP % lane
+        rule = narrow_rule(rng.choice((1, 2)))
+        filtered = q4.Q4(memory, HashEncoder(), rule=rule).ask(situation, WHEN)
+        for meta in metas:
+            meta["agent"] = lane
+        wide = q4.Q4(memory, HashEncoder(), rule=dict(rule, shown_max=3)).ask(situation, WHEN)
+        # every shown record passed the unchanged consensus (it is in the unfiltered depth-3 agreement set)
+        assert set(refs(filtered)) <= set(refs(wide))
+        assert len(filtered["results"]) <= rule["shown_max"]
+        if wide["status"] != "ANSWER":
+            assert filtered["status"] == wide["status"] and filtered["results"] == []
+        else:
+            seen += filtered["status"] == "ANSWER"
+    assert seen

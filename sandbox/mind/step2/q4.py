@@ -200,21 +200,23 @@ class Q4:
         depth = self.rule["agree_depth"]
         agreed = np.flatnonzero(np.all([ranks[name] <= depth for name in self.rule["views"]], axis=0))
         fused = sum(1.0 / (self.rule["rrf_k"] + ranks[name]) for name in self.rule["views"])
-        agreed = sorted(agreed, key=lambda i: (-fused[i], self.ids[index[i]]))[:self.rule["shown_max"]]
-        results = [self._result(index[i], float(views["w"][i]), float(fused[i]),
-                                {name: int(ranks[name][i]) for name in self.rule["views"]}) for i in agreed]
+        agreed = sorted(agreed, key=lambda i: (-fused[i], self.ids[index[i]]))
         origin_lane = startup_origin_lane(situation)
         emptied_by_origin = False
         if origin_lane is not None:
-            # After the full-set consensus, a startup own-task read keeps only the shown results whose
-            # projection-bound origin (author) label or recipient label is the named lane; it never adds,
-            # reorders or promotes a result. Reviewer-authored and reviewer-addressed rows never enter the
-            # projection, and a recipient label is only ever a build lane of the pinned policy.
-            kept = [result for i, result in zip(agreed, results)
-                    if origin_lane in (self.origin[index[i]], self.recipient[index[i]])]
-            telemetry["rejected_origin"] = len(results) - len(kept)
-            emptied_by_origin = bool(results) and not kept
-            results = kept
+            # After the full-set consensus, a startup own-task read keeps only the agreed records whose
+            # projection-bound origin (author) label or recipient label is the named lane. The filter sees the
+            # whole agreement set (every member passed the unchanged depth consensus), so a record is never
+            # discarded only because a narrower shown cut fell before it; nothing outside the agreement set
+            # can enter, and no refusal condition changes. Reviewer-authored and reviewer-addressed rows never
+            # enter the projection, and a recipient label is only ever a build lane of the pinned policy.
+            kept = [i for i in agreed if origin_lane in (self.origin[index[i]], self.recipient[index[i]])]
+            telemetry["rejected_origin"] = len(agreed) - len(kept)
+            emptied_by_origin = bool(agreed) and not kept
+            agreed = kept
+        agreed = agreed[:self.rule["shown_max"]]
+        results = [self._result(index[i], float(views["w"][i]), float(fused[i]),
+                                {name: int(ranks[name][i]) for name in self.rule["views"]}) for i in agreed]
         if self.quarantined:
             return self._out("DEGRADED", "cell_quarantined", results, telemetry, started)
         if not results:

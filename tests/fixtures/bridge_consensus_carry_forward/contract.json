@@ -9,7 +9,9 @@
   "raw diff bytes of merge-base..head under a pinned command are byte-identical and non-empty",
   "git patch-id --stable of those bytes exists and is identical",
   "same repository, pr_number and base_ref on both sides",
-  "the supplied bases are checked against the base branch in repo_path (refs/heads/<base_ref>): proposed.base_sha is its current tip and approved.base_sha is on it; a supplied base off the base branch (side-commit base substitution, RCO2 via Lead 2026-11-09T07:25:55Z) refuses",
+  "proposed.base_sha is the actual fresh target PR base, the current tip of refs/heads/<base_ref> in repo_path; a supplied base off the base branch (side-commit base substitution, RCO2 via Lead 2026-11-09T07:25:55Z) refuses. approved.base_sha is the authenticated original reviewed base; no further ancestry rule is placed on it (Lead 2026-11-09T07:37:02Z)",
+  "identity authority is the canonical registry the existing verifier loads (configs/bridge_identity_registry.json); evidence.roster is caller data and never authority (Tools 07:36:27Z, Lead 07:38:08Z)",
+  "carried items are only actual non-author approvals; the receipt records build_author_slot_waivers (sorted author agents whose build slot is waived), the field name used by the existing verifier",
   "original approvals satisfy the existing old-head identity and scope rules: lead and tools build_consensus plus a recognized RCO rco_pass that is not the PR author",
   "carried approvals bind by structured original event reference; text mentioning both heads is never a second approval",
   "no unretracted recognized-RCO veto at the approved head, the proposed head or the canonical task/PR scope; a clear counts only from the same RCO at the same head after the veto",
@@ -52,7 +54,7 @@
   "proposed": "head, base_sha, base_ref, pr_number, repository of the head to evaluate",
   "recognized_rco_agents": "agents whose rco_pass fills the RCO slot and whose veto blocks",
   "repo_path": "local git repository holding both heads and both base tips",
-  "roster": "canonical agent name to agent_uuid",
+  "roster": "caller-supplied agent name to agent_uuid; informational only, never identity authority",
   "schema": "the evidence_schema value",
   "task_id": "canonical task id of the PR (branch name)"
  },
@@ -68,6 +70,7 @@
   "scope": "scope"
  },
  "gate_reason_patterns_note": "proposed reason classes; regexes over verdict reason; Tools may repoint them when the gate API is published",
+ "git_authority": "content proofs run the physical git named by the anchored fleet (WD_BRIDGE_BUNDLE_ROOT generation folder, deployment-manifest.json pinned by WD_REBOOT_EXPECTED_MANIFEST_HASH, wd-fleet.json git_executable), Tools 60b50965; the corpus installs a wholly synthetic test-owned generation per test",
  "never_carried": [
   "ci",
   "operator_signature",
@@ -94,7 +97,8 @@
   "carried",
   "veto_scan_complete",
   "ci_head",
-  "ci_checks"
+  "ci_checks",
+  "build_author_slot_waivers"
  ],
  "reference_diff_command": {
   "diff_options": [

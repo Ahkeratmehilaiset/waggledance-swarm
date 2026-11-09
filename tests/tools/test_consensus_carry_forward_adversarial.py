@@ -513,13 +513,12 @@ def test_side_commit_base_substitution_hazard_is_real():
 
 
 def test_existing_cases_supply_the_base_ref_tip_as_proposed_base(histories):
-    """The base-branch rule added for the gate-level case does not change any existing verdict: every content case
-    supplies the current base branch tip as the proposed base and an approved base on the base branch."""
+    """The proposed-base rule added for the gate-level case does not change any existing verdict: every content case
+    supplies the current base branch tip (the actual fresh target PR base) as the proposed base. No ancestry rule is
+    placed on the approved base; it is the authenticated original reviewed base (Lead 07:37:02Z)."""
     for name in BUILDERS:
         history = histories[name]
-        repo = history["repo"]
-        assert history["proposed"]["base_sha"] == repo.rev("refs/heads/main"), name
-        assert _is_ancestor(repo, history["approved"]["base_sha"], "refs/heads/main"), name
+        assert history["proposed"]["base_sha"] == history["repo"].rev("refs/heads/main"), name
 
 
 def _clean_twin(name, tmp_path, histories):
@@ -554,10 +553,11 @@ def _entry_point(key):
     return fn
 
 
-ROSTER = {"codex-lead-1": "11111111-1111-4111-8111-111111111111",
-          "codex-tools-1": "22222222-2222-4222-8222-222222222222",
-          "claude-rco-1": "33333333-3333-4333-8333-333333333333",
-          "claude-rco-2": "44444444-4444-4444-8444-444444444444"}
+# Identity authority is the tracked canonical registry the existing verifier loads (Tools 07:36:27Z, Lead 07:38:08Z);
+# evidence.roster is caller data only and never authority. Read at test time, never hard-coded.
+CANONICAL_REGISTRY = json.loads((ROOT / "configs" / "bridge_identity_registry.json").read_bytes())["identities"]
+ROSTER = {agent: CANONICAL_REGISTRY[agent]
+          for agent in ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")}
 TASK = "fable-5/corpus-pr-9001"
 PR = 9001
 REPOSITORY = "Ahkeratmehilaiset/waggledance-swarm"
@@ -629,6 +629,10 @@ def _apply(evidence, mutation):
         del ev["events"][mutation["index"]]
     elif op == "rebind_approvals":
         ev["events"] = approvals({"old": old, "new": new, "third": third}[mutation["to"]])
+    elif op == "forge_identity":
+        # roster and event agree with each other on a forged uuid; only the canonical registry can refuse it
+        ev["roster"][mutation["agent"]] = mutation["uuid"]
+        ev["events"][mutation["index"]]["agent_uuid"] = mutation["uuid"]
     elif op == "author_without_own_vote":
         ev["pr_author"] = mutation["author"]
         del ev["events"][mutation["index"]]
@@ -674,15 +678,44 @@ def _check_verdict(verdict, evidence, expected, reason_class=None):
         by_ref = {event_sha256(e): e for e in evidence["events"]}
         for item in verdict["carried"]:
             original = by_ref[item["event_sha256"]]
-            assert item["agent"] == original["agent"] and item["agent_uuid"] == evidence["roster"][original["agent"]]
+            assert item["agent"] == original["agent"] and item["agent_uuid"] == CANONICAL_REGISTRY[original["agent"]]
             assert item["approved_head"] == evidence["approved"]["head"]
         rco = {item["agent"] for item in verdict["carried"] if item["kind"] == "rco_pass"}
         assert rco and rco <= set(evidence["recognized_rco_agents"]) and evidence["pr_author"] not in rco
         build = {item["agent"] for item in verdict["carried"] if item["kind"] == "build_consensus"}
         # Rule 9a waives the author's build slot: the author's own vote is never required and never carried
         assert build == {"codex-lead-1", "codex-tools-1"} - {evidence["pr_author"]}
+        # the receipt records the waived author build slot under the existing verifier field name
+        expected_waivers = sorted({"codex-lead-1", "codex-tools-1"} & {evidence["pr_author"]})
+        assert verdict["receipt"]["build_author_slot_waivers"] == expected_waivers
     else:
         assert not verdict.get("carried"), "a refused carry must not carry anything"
+
+
+def _physical_git():
+    path = Path(os.path.realpath(GIT))
+    if os.name == "nt" and path.suffix.lower() != ".exe":
+        pytest.skip("anchored fleet needs the physical git.exe; " + str(path))
+    return path
+
+
+@pytest.fixture(autouse=True)
+def anchored_fleet(tmp_path, monkeypatch):
+    """Wholly synthetic, test-owned bundle generation (Lead 07:37:02Z): a 40-hex generation folder with
+    deployment-manifest.json pinning wd-fleet.json, whose git_executable is the physical git found for this test
+    run. Only the two environment variables of this test process point at it; no installed pin is read or changed."""
+    executable = _physical_git()
+    root = tmp_path / "anchored-bundle" / hashlib.sha1(b"fable-5 corpus generation").hexdigest()
+    root.mkdir(parents=True)
+    fleet = json.dumps({"schema_version": 2, "git_executable": str(executable)}).encode("ascii")
+    (root / "wd-fleet.json").write_bytes(fleet)
+    manifest = json.dumps({"source_commit": root.name,
+                           "files": {"wd-fleet.json": hashlib.sha256(fleet).hexdigest()}}).encode("ascii")
+    (root / "deployment-manifest.json").write_bytes(manifest)
+    monkeypatch.setenv("WD_BRIDGE_BUNDLE_ROOT", str(root))
+    monkeypatch.setenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", hashlib.sha256(manifest).hexdigest())
+    return {"root": root, "executable": executable,
+            "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest()}
 
 
 def _identity_kwargs(history):
@@ -733,6 +766,39 @@ def test_content_identity_proof_swapped_heads_does_not_verify(histories):
     swapped = dict(kwargs, old_base=kwargs["new_base"], old_head=kwargs["new_head"],
                    new_base=kwargs["old_base"], new_head=kwargs["old_head"])
     _refused_for(lambda: verify(proof=copy.deepcopy(proof), **swapped), "rederivation")
+
+
+def _hostile_path_dir(tmp_path):
+    """A directory with git look-alikes for every launcher form; each prints one fixed, well-formed patch that would
+    make any two heads look identical if the proof reader ever ran it."""
+    fake = tmp_path / "hostile-path"
+    fake.mkdir()
+    patch = ("diff --git a/x b/x", "--- a/x", "+++ b/x", "@@ -0,0 +1 @@", "+same")
+    (fake / "git").write_bytes(("#!/bin/sh\n" + "".join("echo '%s'\n" % line for line in patch)).encode("ascii"))
+    os.chmod(fake / "git", 0o755)
+    cmd = ("@echo off\r\n" + "".join("echo %s\r\n" % line for line in patch)).encode("ascii")
+    (fake / "git.cmd").write_bytes(cmd)
+    (fake / "git.bat").write_bytes(cmd)
+    return fake
+
+
+@pytest.mark.parametrize("name", ["whitespace_same_patch_id", "legit_rebase_onto_advanced_main"])
+def test_hostile_path_cannot_replace_the_anchored_git(histories, tmp_path, monkeypatch, anchored_fleet, name):
+    """Real PATH variable, not a patched lookup (disjoint from Tools' own shutil.which test): a hostile directory first
+    on PATH must not change any verdict, and a proof records the anchored executable digest."""
+    fake = _hostile_path_dir(tmp_path)
+    monkeypatch.setenv("PATH", str(fake) + os.pathsep + os.environ.get("PATH", ""))
+    found = shutil.which("git")
+    assert found and Path(found).parent == fake  # the hostile git really is first on PATH
+    derive = _entry_point("derive_content_identity")
+    kwargs = _identity_kwargs(histories[name])
+    case = REPRODUCTIONS["cases"][name]
+    if case["expected_carry"]:
+        proof = derive(**kwargs)
+        assert proof["git_executable_sha256"] == anchored_fleet["executable_sha256"]
+        assert proof["old_diff_sha256"] == case["facts"]["approved"]["diff_sha256"]
+    else:
+        _refused_for(lambda: derive(**kwargs), case["content_refusal_class"])
 
 
 @pytest.mark.parametrize("name", sorted(HOSTILE_TWINS))

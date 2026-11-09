@@ -316,6 +316,18 @@
   },
   {
    "expected_carry": false,
+   "id": "forged_roster_and_forged_rco_event_consistent",
+   "mutation": {
+    "agent": "claude-rco-1",
+    "index": 2,
+    "op": "forge_identity",
+    "uuid": "66666666-6666-4666-8666-666666666666"
+   },
+   "reason": "approval",
+   "why": "roster and event agree on a forged uuid; the canonical registry disagrees, so the caller roster is no authority"
+  },
+  {
+   "expected_carry": false,
    "id": "rco_prose_mentions_both_heads",
    "mutation": {
     "heads": [

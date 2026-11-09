@@ -60,11 +60,10 @@ function Clear-WdInheritedClaudeSessionMarkers {
   return $removed
 }
 $script:WdScrubbedClaudeMarkers = @(Clear-WdInheritedClaudeSessionMarkers)
-# Clear inherited Q4 settings and any prior startup recall. Values are never logged.
+# Clear the whole namespace, including unknown/stale Q4 settings. Values are never logged.
 function Clear-WdInheritedQ4ReadSettings {
   foreach ($q4Name in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
-    if (([string]$q4Name).StartsWith('WD_Q4_', [StringComparison]::OrdinalIgnoreCase) -or
-        ([string]$q4Name).Equals('WD_MIND_STARTUP_RECALL', [StringComparison]::OrdinalIgnoreCase)) {
+    if (([string]$q4Name).StartsWith('WD_Q4_', [StringComparison]::OrdinalIgnoreCase)) {
       if (Test-Path -LiteralPath "Env:$q4Name") { Remove-Item -LiteralPath "Env:$q4Name" }
     }
   }
@@ -3133,8 +3132,11 @@ $prompt += (
   'ABSTAIN with coverage UNKNOWN does not prove absence; check the bridge. ' +
   'If it is unavailable, read the bridge; there is no fallback to an old snapshot. ' +
   'The helper forwards stdin through an OS pipe; do not pipe directly to the wrapper. Its successful output ' +
-  'is direct stdout, not a PowerShell object; check $LASTEXITCODE and use only exit code 0 output. If pins ' +
-  'or helper are missing or the call ' +
+  'is direct stdout, not a PowerShell object; check $LASTEXITCODE and use only exit code 0 output. ' +
+  'Neither exit code 0 nor VALIDATED proves source freshness. ' +
+  'UNKNOWN, STALE or missing freshness must not be presented as current state. ' +
+  'Verify current state independently against the live bridge before making a current claim. ' +
+  'If pins or helper are missing or the call ' +
   'refuses, errors or times out, read the bridge. ' +
   'There is no automatic retry after a nonzero result; exit 3 means cleanup UNKNOWN and requires reconciliation. ' +
   'Do not use the helper internal worker switch. A stopped or incompletely exited call is UNKNOWN. ' +

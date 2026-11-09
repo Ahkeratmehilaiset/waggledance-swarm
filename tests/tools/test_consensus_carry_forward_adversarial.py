@@ -73,7 +73,11 @@ class Repo:
         env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_ATTR_NOSYSTEM="1",
                    GIT_AUTHOR_NAME="corpus", GIT_AUTHOR_EMAIL="corpus@example.invalid",
                    GIT_COMMITTER_NAME="corpus", GIT_COMMITTER_EMAIL="corpus@example.invalid",
-                   GIT_TERMINAL_PROMPT="0", LC_ALL="C")
+                   GIT_TERMINAL_PROMPT="0", LC_ALL="C",
+                   # a fresh repository under a long pytest basetemp inherits no core.longpaths (on this host it is
+                   # set only in the main repository config), so Windows git init fails with "Filename too long";
+                   # the setting only lifts the Windows path limit and is ignored elsewhere, diff bytes are unchanged
+                   GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="core.longpaths", GIT_CONFIG_VALUE_0="true")
         stamp = "2026-11-09T01:%02d:%02d+00:00" % (self.clock // 60 % 60, self.clock % 60)
         env["GIT_AUTHOR_DATE"] = env["GIT_COMMITTER_DATE"] = stamp
         return env

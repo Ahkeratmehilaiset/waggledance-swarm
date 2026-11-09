@@ -67,7 +67,8 @@
   "content": "(?i)content|diff|patch.id|merge-base|object|identity",
   "queue": "(?i)queue",
   "schema": "(?i)schema|invalid",
-  "scope": "(?i)scope|origin|same PR/repository/base ref"
+  "scope": "(?i)scope|origin|same PR/repository/base ref",
+  "same_head": "(?i)same head"
  },
  "gate_reason_patterns_note": "case-insensitive regexes over verdict reason; repointed to the published wording of Tools evaluator 95afd92f (Lead 2026-11-09T08:05:42Z); verdicts unchanged",
  "git_authority": "content proofs run the physical git named by the anchored fleet (WD_BRIDGE_BUNDLE_ROOT generation folder, deployment-manifest.json pinned by WD_REBOOT_EXPECTED_MANIFEST_HASH, wd-fleet.json git_executable), Tools 60b50965; the corpus installs a wholly synthetic test-owned generation per test",
@@ -142,5 +143,7 @@
   "accepted_event_count",
   "accepted_events_sha256"
  ],
- "receipt_prefix_note": "schema adaptation to Tools 7ba6dc51 (Lead 2026-11-09T08:19:00Z): the receipt records the observed ledger prefix as a count plus the canonical JSON digest of events[:count]; a harmless append keeps an old receipt valid, any change to the prefix or a late recognized-RCO objection at either head invalidates it; a receipt may not shrink its prefix below the approvals it carries"
+ "receipt_prefix_note": "schema adaptation to Tools 7ba6dc51 (Lead 2026-11-09T08:19:00Z): the receipt records the observed ledger prefix as a count plus the canonical JSON digest of events[:count]; a harmless append keeps an old receipt valid, any change to the prefix or a late recognized-RCO objection at either head invalidates it; a receipt may not shrink its prefix below the approvals it carries",
+ "prefix_coverage_note": "fixture adaptation to Tools 1fd5f4ad (Lead 2026-11-09T08:50:37Z): the selected approval occurrence per role is read from the evaluator's original_verdict.identities[role].approval_index (author-waived roles excluded) and each recorded review control from receipt.veto_controls[].index; a receipt resealed to a shorter prefix (count and digest consistent) verifies only if every selected approval index and every control index lies inside it; an identical event digest inside the prefix never stands in for a selected occurrence outside it",
+ "stacked_ancestry_note": "Lead 2026-11-09T08:53:17Z (RCO2 counterexample, RCO1 legacy merge-base proposal withdrawn): F+P reviewed on M0, F lands on main by fast-forward, only P remains in the current diff. With the recorded historical base M0 the helper never carries: no rewrite -> same head needs no carry (exact-head rules unchanged, no global block inferred); P rebased onto F -> content differs. The current-target merge-base (F) is never the reviewed base; the real factory test must source the reviewed base from the historical record once wired"
 }

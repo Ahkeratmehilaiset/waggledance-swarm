@@ -1031,3 +1031,196 @@ def test_receipt_prefix_count_must_be_a_valid_index(histories, count):
     bad = copy.deepcopy(receipt)
     bad[count_field] = count
     assert verify(bad, copy.deepcopy(evidence)) is False
+
+
+# ==============================================================================================================
+# Prefix coverage of the material basis (Lead 2026-11-09T08:50:37Z, Tools fix 1fd5f4ad): a resealed shorter prefix
+# must contain every SELECTED approval occurrence and every recorded review control; an identical event digest
+# inside the prefix never stands in for a selected occurrence outside it; an author waiver contributes no own vote.
+# Built from this corpus's own helpers; the selected occurrence is read from the evaluator's original verdict
+# (fixture adaptation recorded in contract.json prefix_coverage_note).
+# ==============================================================================================================
+def _reseal(receipt, events, count):
+    count_field, digest_field = CONTRACT["receipt_prefix_fields"]
+    resealed = copy.deepcopy(receipt)
+    resealed[count_field] = count
+    resealed[digest_field] = _prefix_digest(events[:count])
+    return resealed
+
+
+def _evaluated(histories, events, *, author="fable-5"):
+    evaluate = _entry_point("evaluate")
+    history = histories["legit_rebase_onto_advanced_main"]
+    evidence = base_evidence(history)
+    evidence["pr_author"], evidence["events"] = author, events(history["approved"]["head"])
+    verdict = evaluate(copy.deepcopy(evidence))
+    assert verdict["carry"] is True, verdict.get("reason")
+    count_field, digest_field = CONTRACT["receipt_prefix_fields"]
+    assert verdict["receipt"][count_field] == len(evidence["events"])
+    assert verdict["receipt"][digest_field] == _prefix_digest(evidence["events"])
+    return history, evidence, verdict
+
+
+def _selected_indexes(verdict):
+    identities = verdict["original_verdict"]["identities"]
+    return {role: identities[role].get("approval_index") for role in ("build_lead", "build_tools", "rco")
+            if identities[role].get("build_author_slot_waived") is not True}
+
+
+def _role_last(agent):
+    def build(old):
+        events = approvals(old)
+        return [e for e in events if e["agent"] != agent] + [e for e in events if e["agent"] == agent]
+    return build
+
+
+@pytest.mark.parametrize("agent", ["codex-lead-1", "codex-tools-1", "claude-rco-1"])
+def test_prefix_coverage_each_selected_approval_must_lie_inside(histories, agent):
+    verify = _entry_point("verify_receipt")
+    history, evidence, verdict = _evaluated(histories, _role_last(agent))
+    events = evidence["events"]
+    assert max(_selected_indexes(verdict).values()) == len(events) - 1
+    assert verify(_reseal(verdict["receipt"], events, len(events) - 1), copy.deepcopy(evidence)) is False
+    assert verify(_reseal(verdict["receipt"], events, len(events)), copy.deepcopy(evidence)) is True
+
+
+def _with_controls(old):
+    return approvals(old) + [_objection(old, 6),
+                             _event("claude-rco-2", "decision", "changes_requested_cleared", old, 7)]
+
+
+@pytest.mark.parametrize("count", [3, 4])
+def test_prefix_coverage_each_review_control_must_lie_inside(histories, count):
+    verify = _entry_point("verify_receipt")
+    history, evidence, verdict = _evaluated(histories, _with_controls)
+    controls = verdict["receipt"]["veto_controls"]
+    assert [(c["index"], c["action"]) for c in controls] == [(3, "block"), (4, "clear")]
+    assert all(c["event_sha256"] == event_sha256(evidence["events"][c["index"]]) for c in controls)
+    assert max(_selected_indexes(verdict).values()) < count  # every approval is inside; a control is not
+    assert verify(_reseal(verdict["receipt"], evidence["events"], count), copy.deepcopy(evidence)) is False
+
+
+def test_prefix_coverage_covered_controls_survive_a_harmless_append(histories):
+    verify = _entry_point("verify_receipt")
+    history, evidence, verdict = _evaluated(histories, _with_controls)
+    later = copy.deepcopy(evidence)
+    later["events"].append(_note(20, task="lead-unrelated-note"))
+    assert verify(copy.deepcopy(verdict["receipt"]), later) is True
+
+
+def test_prefix_coverage_inside_duplicate_never_stands_in_for_the_selected_occurrence(histories):
+    verify = _entry_point("verify_receipt")
+    duplicated = lambda old: approvals(old) + [copy.deepcopy(approvals(old)[2])]
+    history, evidence, verdict = _evaluated(histories, duplicated)
+    events = evidence["events"]
+    assert event_sha256(events[2]) == event_sha256(events[3])
+    selected = _selected_indexes(verdict)["rco"]
+    assert selected in (2, 3)
+    assert event_sha256(events[selected]) in {c["event_sha256"] for c in verdict["carried"]}
+    shrunk = verify(_reseal(verdict["receipt"], events, 3), copy.deepcopy(evidence))
+    assert shrunk is (selected < 3), (selected, shrunk)
+
+
+def test_prefix_coverage_identical_append_after_the_receipt_never_verifies_outside_selection(histories):
+    """Re-posting an identical approval after the receipt: the re-evaluation still carries the same refs; the old
+    receipt verifies only if the selected occurrence stayed inside its recorded prefix."""
+    evaluate = _entry_point("evaluate")
+    verify = _entry_point("verify_receipt")
+    history, evidence, verdict = _evaluated(histories, approvals)
+    later = copy.deepcopy(evidence)
+    later["events"].append(copy.deepcopy(later["events"][2]))
+    current = evaluate(copy.deepcopy(later))
+    assert current["carry"] is True and current["carried"] == verdict["carried"]
+    selected = _selected_indexes(current)["rco"]
+    assert verify(copy.deepcopy(verdict["receipt"]), copy.deepcopy(later)) is (selected < len(evidence["events"]))
+    assert verify(copy.deepcopy(current["receipt"]), copy.deepcopy(later)) is True
+
+
+@pytest.mark.parametrize("author", ["codex-lead-1", "codex-tools-1"])
+def test_prefix_coverage_author_waiver_contributes_no_own_vote(histories, author):
+    verify = _entry_point("verify_receipt")
+    without_author = lambda old: [e for e in approvals(old) if e["agent"] != author]
+    history, evidence, verdict = _evaluated(histories, without_author, author=author)
+    events = evidence["events"]
+    assert verdict["receipt"]["build_author_slot_waivers"] == [author]
+    assert len(_selected_indexes(verdict)) == 2 and len(events) == 2
+    assert verify(_reseal(verdict["receipt"], events, 1), copy.deepcopy(evidence)) is False  # rco dropped
+    assert verify(_reseal(verdict["receipt"], events, 2), copy.deepcopy(evidence)) is True
+    later = copy.deepcopy(evidence)
+    later["events"].append(_note(20, task="lead-unrelated-note"))
+    assert verify(copy.deepcopy(verdict["receipt"]), later) is True
+
+
+# ==============================================================================================================
+# Stacked ancestry without a rewrite (Lead 2026-11-09T08:53:17Z, RCO2 counterexample): F+P was reviewed on main M0;
+# F later lands on main by fast-forward and the PR head is not rewritten, so only P remains in the current diff.
+# The exact historical reviewed base M0 and its content basis decide; the current-target merge-base alone (F) is
+# not the reviewed base. No global block is inferred and no verdict is relaxed.
+# ==============================================================================================================
+def _stacked(tmp, *, rebase):
+    repo, main0 = _start(tmp)
+    repo.checkout("pr", main0)
+    feature = repo.commit({"src/feature_f.txt": b"stacked feature F\n"}, "pr: F")
+    head = repo.commit({"src/feature_p.txt": b"stacked feature P\n"}, "pr: P")
+    repo.checkout("main", feature)  # F lands on main (fast-forward); the PR head is untouched
+    proposed = head
+    if rebase:
+        repo.checkout("pr-rebased", feature)
+        proposed = repo.commit({"src/feature_p.txt": b"stacked feature P\n"}, "pr: P")
+    repo.git("checkout", "-q", "main")
+    return {"repo": repo, "feature": feature,
+            "approved": {"head": head, "base_sha": main0}, "proposed": {"head": proposed, "base_sha": feature}}
+
+
+# variant: (P rebased onto the landed F, refusal class of the recorded-base verdict). Without a rewrite the head is
+# unchanged, so the helper answers that the exact head needs no carry (exact-head approvals keep their own rules).
+STACKED = {"no_rewrite": (False, "same_head"), "p_rebased_onto_landed_f": (True, "content")}
+
+
+@pytest.fixture(scope="module")
+def stacked(tmp_path_factory):
+    return {name: _stacked(tmp_path_factory.mktemp("stacked_" + name) / "repo", rebase=spec[0])
+            for name, spec in STACKED.items()}
+
+
+def test_stacked_ancestry_reproduction(stacked):
+    for name, history in stacked.items():
+        repo, approved, proposed = history["repo"], history["approved"], history["proposed"]
+        reviewed = repo.identity(approved["base_sha"], approved["head"])
+        current = repo.identity(proposed["base_sha"], proposed["head"])
+        assert reviewed["merge_base_count"] == current["merge_base_count"] == 1
+        assert reviewed["diff_sha256"] != current["diff_sha256"], name  # F+P reviewed, only P now
+        assert repo.merge_bases(proposed["base_sha"], approved["head"]) == [history["feature"]]
+        assert (approved["head"] == proposed["head"]) is (name == "no_rewrite")
+
+
+@pytest.mark.parametrize("name", sorted(STACKED))
+def test_stacked_ancestry_recorded_reviewed_base_never_carries(stacked, name):
+    evaluate = _entry_point("evaluate")
+    history = stacked[name]
+    evidence = base_evidence(history)
+    _check_verdict(evaluate(copy.deepcopy(evidence)), evidence, False, STACKED[name][1])
+
+
+@pytest.mark.parametrize("name", sorted(STACKED))
+def test_stacked_ancestry_content_identity_refuses_against_the_reviewed_base(stacked, name):
+    derive = _entry_point("derive_content_identity")
+    kwargs = _identity_kwargs(stacked[name])
+    _refused_for(lambda: derive(**kwargs), "content_differs")
+
+
+@pytest.mark.parametrize("name", sorted(STACKED))
+def test_stacked_ancestry_merge_base_derived_base_is_never_the_reviewed_base(stacked, name):
+    """Helper level (the factory is unwired): with the withdrawn derivation (approved base = merge-base of the
+    approved head and the current target) the per-base bytes match, so only the recorded historical base can
+    refuse. Whatever the helper decides, a carry must expose the substituted base in its receipt; the real factory
+    test must source the reviewed base from the historical record (kept explicit, like the side-base case)."""
+    evaluate = _entry_point("evaluate")
+    history = copy.deepcopy({k: v for k, v in stacked[name].items() if k != "repo"})
+    history["repo"] = stacked[name]["repo"]
+    history["approved"]["base_sha"] = history["feature"]
+    evidence = base_evidence(history)
+    verdict = evaluate(copy.deepcopy(evidence))
+    if verdict["carry"] is True:
+        assert verdict["receipt"]["approved_base_sha"] == history["feature"]
+        assert verdict["receipt"]["approved_base_sha"] != stacked[name]["approved"]["base_sha"]

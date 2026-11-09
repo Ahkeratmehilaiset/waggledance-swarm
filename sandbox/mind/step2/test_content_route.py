@@ -512,3 +512,83 @@ def test_any_content_decision_part_keeps_a_v6_memory_closed(stray):
     assert resolver.resolve_results(**args)[0]["stored_text"] == record["stored_text"]
     with pytest.raises(resolver.ResolveRefused):
         resolver.resolve_results(**dict(args, **stray))
+
+
+def doc_v2_route(tmp_path, route, *, blob_override=None):
+    """Use only a synthetic repository and leave the existing message policy untouched."""
+    folder = tmp_path / "doc-v2-fixture"
+    folder.mkdir()
+    allowed, excluded = "docs/guide.md", "docs/excluded.md"
+    root, commit = tdp.make_repo(folder, {
+        allowed: tdp.doc_bytes("Synthetic reviewed documentation."),
+        excluded: tdp.doc_bytes("Synthetic unapproved documentation."),
+    })
+    blob = tdp.blob_of(root, commit, allowed)
+    original, _ = tdp.policy(commit, [allowed, excluded])
+    document = json.loads(original)
+    document.update(schema="wd.mind-doc-policy.v2", approved_doc_refs=[{
+        "commit": commit, "path": allowed, "blob": blob if blob_override is None else blob_override,
+    }])
+    policy_bytes = raw(document)
+    documents = {"repo_root": str(root), "policy_bytes": policy_bytes, "policy_sha256": sha(policy_bytes),
+                 **tdp.git_pin()}
+    decision, decision_sha = decision_of(prefix=route["prefix"], message_pin=route["messages"]["policy_sha256"],
+                                         doc_pin=documents["policy_sha256"])
+    return {**route, "documents": documents, "decision": decision, "decision_sha": decision_sha,
+            "commit": commit}, (allowed, excluded, blob)
+
+
+def validate_doc_v2_snapshot(route, projection_bytes, *, documents=None, projection_pin=None):
+    return cm.validate_content_snapshot(
+        enabled=True, projection_bytes=projection_bytes,
+        projection_sha256=sha(projection_bytes) if projection_pin is None else projection_pin,
+        messages=route["messages"], documents=route["documents"] if documents is None else documents,
+        decision_bytes=route["decision"], decision_sha256=route["decision_sha"],
+        trusted_git=trusted_git(route), **strict_pins())
+
+
+def test_doc_v2_exact_tuple_survives_route_build_and_snapshot_validation(tmp_path, route):
+    message_policy_before = (route["messages"]["policy_bytes"], route["messages"]["policy_sha256"])
+    route_v2, (allowed, excluded, blob) = doc_v2_route(tmp_path, route)
+    built, memory_dir = build_route(tmp_path, route_v2)
+    manifest, projection = load(memory_dir)
+    docs = projection["documents"]
+    assert docs["commit"] == route_v2["commit"] and docs["accepted"] > 0
+    assert {record["provenance"]["path"] for record in docs["records"]} == {allowed}
+    assert all(record["provenance"]["blob_id"] == blob and
+               record["provenance"]["commit"] == route_v2["commit"] for record in docs["records"])
+    assert excluded not in {record["provenance"]["path"] for record in docs["records"]}
+    assert manifest["content_route"]["doc_policy_sha256"] == route_v2["documents"]["policy_sha256"]
+    assert manifest["content_route"]["message_policy_sha256"] == message_policy_before[1]
+    assert (route["messages"]["policy_bytes"], route["messages"]["policy_sha256"]) == message_policy_before
+    assert projection["messages"]["policy_sha256"] == message_policy_before[1]
+    projection_bytes = (memory_dir / "projection.json").read_bytes()
+    assert manifest["projection_sha256"] == sha(projection_bytes)
+    match = validate_doc_v2_snapshot(route_v2, projection_bytes)
+    assert match["status"] == "MATCH" and match["doc_commit"] == route_v2["commit"]
+
+
+def test_doc_v2_wrong_blob_refuses_route_build_and_snapshot_revalidation(tmp_path, route, monkeypatch):
+    from sandbox.mind.step2 import shared_doc_projection as doc
+    route_v2, _ = doc_v2_route(tmp_path, route, blob_override="0" * 40)
+    monkeypatch.setattr(doc, "_read_blob", lambda *args: pytest.fail("unapproved blob was read"))
+    with pytest.raises(cm.ContentMemoryRefused, match="approved_blob_mismatch"):
+        build_route(tmp_path, route_v2, name="bad-blob")
+    assert not (tmp_path / "out" / "bad-blob").exists()
+    # Even a correctly hashed empty placeholder must re-derive and reject the bad blob.
+    with pytest.raises(cm.ContentMemoryRefused, match="approved_blob_mismatch"):
+        validate_doc_v2_snapshot(route_v2, b"{}")
+
+
+def test_doc_v2_changed_policy_or_projection_pin_refuses(tmp_path, route):
+    route_v2, _ = doc_v2_route(tmp_path, route)
+    _, memory_dir = build_route(tmp_path, route_v2)
+    projection_bytes = (memory_dir / "projection.json").read_bytes()
+    altered = dict(route_v2["documents"], policy_sha256="0" * 64)
+    with pytest.raises(cm.ContentMemoryRefused):
+        build_route(tmp_path, route_v2, name="wrong-pin", documents=altered)
+    assert not (tmp_path / "out" / "wrong-pin").exists()
+    with pytest.raises(cm.ContentMemoryRefused):
+        validate_doc_v2_snapshot(route_v2, projection_bytes, documents=altered)
+    with pytest.raises(cm.ContentMemoryRefused, match="snapshot_mismatch"):
+        validate_doc_v2_snapshot(route_v2, projection_bytes, projection_pin="0" * 64)

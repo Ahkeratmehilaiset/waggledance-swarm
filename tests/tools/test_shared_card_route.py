@@ -85,26 +85,29 @@ SYNTHETIC_MEMORY = r'C:\synthetic\cards'
 
 
 REAL_STAGED_PATH_AVAILABLE = os.name == 'nt'
-# The real binding check (q4._validate_config) accepts only normalized drive-letter Windows paths, and the card and
-# staged routes then require config.memory to equal the real generation directory (resolved child, public query).
-# Off Windows no config can satisfy both, so every test that reads a real directory is SKIPPED explicitly here:
-# a synthetic drive-letter path would make each negative test refuse at the binding compare instead of at the check
-# under test, i.e. pass for the wrong reason. On Windows the real tmp directory is bound unchanged.
-OFF_WINDOWS_SKIP_REASON = ('the Q4 card/staged routes bind config.memory to the real generation directory under the '
+# The real binding check (q4._validate_config) accepts only normalized drive-letter Windows paths. The real-snapshot
+# (C2) routes then require config.memory to equal the real generation directory (q4._check_real_card_snapshot for a
+# non-synthetic decision, wd_q4_public_query.query_staged_card_snapshot). Off Windows no config satisfies both, so a
+# test that reads a real snapshot directory is SKIPPED explicitly through real_config: a synthetic drive-letter path
+# would make each negative test refuse at the binding compare instead of at the check under test, i.e. pass for the
+# wrong reason. On Windows the real tmp directory is bound unchanged.
+OFF_WINDOWS_SKIP_REASON = ('the Q4 real-snapshot routes bind config.memory to the real generation directory under the '
                            'Windows-only drive-letter rule; off Windows they refuse before the check under test, so '
                            'this test is skipped explicitly instead of passing for the wrong reason')
 
 
 def real_config(memory_dir, descriptor_sha256):
-    """The real directory, bound unchanged; off Windows the route cannot run, so the test skips (never a fake pass)."""
+    """Real-snapshot routes: the real directory bound unchanged; off Windows the test skips (never a fake pass)."""
     if not REAL_STAGED_PATH_AVAILABLE:
         pytest.skip(OFF_WINDOWS_SKIP_REASON)
     return _config(str(memory_dir), str(memory_dir / 'descriptor.json'), descriptor_sha256)
 
 
 def config(memory_dir, descriptor_sha256):
-    """Binding-shape helper only: off Windows it carries the synthetic drive-letter path so the tuple itself passes
-    q4._validate_config (tests/tools/test_card_source_binding.py). Routes that read a real directory use real_config."""
+    """Synthetic card route (synthetic decision: the resolved child never compares config.memory to a directory) and
+    the binding-shape tests: off Windows the tuple carries the synthetic drive-letter path so it passes
+    q4._validate_config; the launcher closure in make_route reads the real tmp directory itself, so no source,
+    refusal or privacy check is relaxed. On Windows the real tmp_path is bound unchanged."""
     memory, descriptor = str(memory_dir), str(memory_dir / 'descriptor.json')
     if os.name != 'nt':
         memory, descriptor = SYNTHETIC_MEMORY, SYNTHETIC_MEMORY + r'\descriptor.json'
@@ -159,7 +162,7 @@ def make_route(tmp_path, monkeypatch, *, events=None, heads='all'):
                 memory_sha256=built['memory_sha256'], projection_bytes=(memory_dir / 'projection.json').read_bytes(),
                 projection_sha256=fx.sha((memory_dir / 'projection.json').read_bytes()),
                 card_decision_bytes=decision, card_decision_sha256=decision_sha256)
-    return {'config': real_config(memory_dir, descriptor_sha256), 'data': data, 'events': events, 'calls': calls,
+    return {'config': config(memory_dir, descriptor_sha256), 'data': data, 'events': events, 'calls': calls,
             'projection': projection, 'built': built, 'dir': memory_dir}
 
 

@@ -14,6 +14,7 @@ import datetime as dt
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -80,12 +81,22 @@ def anchor(directory, events, *, heads='all', prefix_rows=None, **overrides):
                               'generation_path': str(generation), 'end_cursor': cursor}
 
 
+SYNTHETIC_MEMORY = r'C:\synthetic\cards'
+
+
 def config(memory_dir, descriptor_sha256):
+    memory, descriptor = str(memory_dir), str(memory_dir / 'descriptor.json')
+    if os.name != 'nt':
+        # The real binding check (q4._validate_config) accepts only normalized drive-letter Windows paths, so a
+        # POSIX pytest tmp_path is refused before the synthetic chain starts. Off Windows the tuple carries an
+        # equivalent synthetic Windows path; the launcher closure in make_route reads the real tmp directory itself,
+        # so no source, refusal or privacy check is relaxed. On Windows the real tmp_path is bound unchanged.
+        memory, descriptor = SYNTHETIC_MEMORY, SYNTHETIC_MEMORY + r'\descriptor.json'
     return q4.VerifiedQ4Config(interpreter=r'C:\fake\python.exe', interpreter_sha256='1' * 64,
         bootstrap=r'C:\fake\runtime_bootstrap.py', bootstrap_sha256='2' * 64, verifier_sha256='3' * 64,
         runtime_root=r'C:\fake\runtime', runtime_manifest=r'C:\fake\runtime.json', runtime_manifest_sha256='4' * 64,
-        runtime_generation='5' * 40, runtime_revision=fx.IDENTITY['revision'], memory=str(memory_dir),
-        descriptor=str(memory_dir / 'descriptor.json'), descriptor_sha256=descriptor_sha256,
+        runtime_generation='5' * 40, runtime_revision=fx.IDENTITY['revision'], memory=memory,
+        descriptor=descriptor, descriptor_sha256=descriptor_sha256,
         lock_file=r'C:\fake\lock', lock_timeout='2', timeout=30, scratch_root=r'C:\fake-scratch')
 
 

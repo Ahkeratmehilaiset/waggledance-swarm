@@ -45,7 +45,7 @@
     "binding_event_note": "Tools proposal 09:01:14Z: binding = decision with status review_basis_bound. Observed today (probe_binding_supersede_v1): verify_bridge_consensus reads a recognized RCO's later decision with that status as an RCO block on the head and drops its head-bound approval (lead and tools bindings are neutral; the same event as type message, or posted before the approval, is neutral). The valid descriptor case uses a lead issuer (neutral); an RCO issuer would void its own approval under today's reading, recorded by the control test; this key is the single adaptation point"
   },
   "reason_patterns": {
-    "origin": "(?i)basis|bases|\borigin\b|descriptor|binding|legacy|attest",
+    "origin": "(?i)basis|bases|\\borigin\\b|descriptor|binding|legacy|attest",
     "content": "(?i)content|diff|patch.id|merge-base|identity",
     "base": "(?i)base",
     "ci": "(?i)\\bci\\b|check",
@@ -100,7 +100,7 @@
     },
     "basis_not_matching_git": {
       "expect": "refuse",
-      "reason": "origin",
+      "reason": "origin|content",
       "note": "self-consistent basis whose diff digest is not the git diff of the approved head"
     },
     "descriptor_resealed_without_canonical_binding": {
@@ -174,5 +174,17 @@
   "expected_base_note": "Lead 2026-11-09T09:25:34Z: the observable contract is that the factory refuses when expected_base_sha differs from the live PR base. The published build_pr_status_snapshot already raises stale_base_ref for that mismatch when it receives expected_base_sha, so a second comparison inside the factory has no separately observable outcome (audit mutant M5 removes only that second comparison and stays green); audit mutant M6 also stops passing expected_base_sha to the snapshot and is caught by expected_base_mismatch_isolated (a carry) and by side_base_substitution_expected_base (refused for content instead of base)",
   "regressions": {
     "test_control_binding_event_effect_on_exact_head_consensus_today": "a recognized RCO decision review_basis_bound after its own approval reads as an RCO block at that head today; lead or tools as issuer is neutral (probe_binding_supersede_v1)"
+  },
+  "published_api": {
+    "tools_head": "be79431efd4f2c36bfcb333cd97e26b25eb929c4",
+    "factory": "derive_live_carry_forward(*, request, events_path, repo, pr_number, task_id, expected_head, expected_base_sha, runner=None, accepted_queue_checker=None): keyword-only, as proposed",
+    "adaptations": [
+      "descriptor.path is absolute and must lie inside repo_root/.codex-audit (or the runtime shared root); the corpus writes it there",
+      "the checkout must name the target repository as remote origin; the test histories add https://github.com/example/repo.git",
+      "the strict RCO qualification needs the head in the event (payload.exact_head, or payload.head plus the head in the message); approval messages now name the head",
+      "the packaging event is a decision review_basis_bound by one of the selected original voters (not the author) whose approval_event_sha256 equals the selected refs in order",
+      "fixture defect fixed: the origin reason pattern carried a backspace byte instead of a regex word boundary (heredoc escape), so it never matched a word boundary; the pattern is now written with real backslashes",
+      "basis_not_matching_git accepts the content reason class too: the published refusal reads authenticated original reviewed content does not match Git"
+    ]
   }
 }

@@ -81,13 +81,16 @@ def _from_stacked(built):
 def histories(tmp_path_factory):
     side = _from_pair(corpus.build_side_commit_base_substitution(tmp_path_factory.mktemp("side") / "repo"))
     side.side_base, side.live_base = side.live_base, side.repo.rev("refs/heads/main")
-    return {
+    built = {
         "legit": _from_pair(corpus.build_legit_rebase(tmp_path_factory.mktemp("legit") / "repo")),
         "side": side,
         "stacked_rebased": _from_stacked(corpus._stacked(tmp_path_factory.mktemp("stacked_r") / "repo", rebase=True)),
         "stacked_no_rewrite": _from_stacked(corpus._stacked(tmp_path_factory.mktemp("stacked_n") / "repo",
                                                             rebase=False)),
     }
+    for h in built.values():  # be79431e binds the checkout to the target repository by its origin URL
+        h.repo.git("remote", "add", "origin", f"https://github.com/{REPO_NAME}.git")
+    return built
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +125,8 @@ def _event(agent, typ, status, head, minute, *, task=TASK, payload=None):
     body = {"head": head, "pr": PR} if head else {"pr": PR}
     body.update(payload or {})
     return {"ts_utc": "2026-11-09T08:%02d:00Z" % minute, "agent": agent, "agent_uuid": REGISTRY[agent],
-            "type": typ, "status": status, "task_id": task, "message": f"{status} at the bound head",
+            "type": typ, "status": status, "task_id": task,
+            "message": f"{status} at head {head}" if head else f"{status} for the PR task",
             "payload": body}
 
 
@@ -163,11 +167,11 @@ def _descriptor(h, tmp_path, approvals, *, name="origin"):
     body = {"schema": SNAPSHOT_SCHEMA, "review_basis": basis, "review_basis_sha256": _sha(basis),
             "approval_event_sha256": [corpus.event_sha256(e) for e in approvals]}
     raw = _canonical(body)
-    rel = f".review-origin/{tmp_path.name}/{name}.json"
-    path = Path(h.repo.path) / rel
+    # be79431e: an absolute path inside an approved artifact root (repo_root/.codex-audit)
+    path = Path(h.repo.path).resolve() / ".codex-audit" / "review-origin" / tmp_path.name / f"{name}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw)
-    return {"path": rel, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}, basis, path
+    return {"path": str(path), "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}, basis, path
 
 
 def _binding(h, voter, descriptor, basis, approval_refs, minute):

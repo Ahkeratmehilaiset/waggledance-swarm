@@ -86,6 +86,13 @@ class Repo:
         assert result.returncode == 0, (args, result.stderr.decode("utf-8", "replace"))
         return result.stdout.decode().strip()
 
+    def raw(self, *args, data=None):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0", LC_ALL="C")
+        result = subprocess.run([GIT, *args], cwd=self.path, input=data, capture_output=True, env=env)
+        assert result.returncode == 0, (args, result.stderr.decode("utf-8", "replace"))
+        return result.stdout
+
     def commit(self, files, message):
         for name, raw in files.items():
             target = self.path / name
@@ -102,11 +109,11 @@ APP = b"".join(b"line %02d\n" % i for i in range(1, 41))
 def _legit_rebase(repo):
     main0 = repo.commit({"README.md": b"base\n", "src/app.txt": APP}, "base")
     repo.git("checkout", "-q", "-b", "pr", main0)
-    old = repo.commit({"src/feature.txt": b"feature one\n"}, "pr: feature")
+    old = repo.commit({CHANGED_PATH: b"feature one\n"}, "pr: feature")
     repo.git("checkout", "-q", "main")
     main1 = repo.commit({"docs/notes.txt": b"unrelated\n"}, "main advances")
     repo.git("checkout", "-q", "-b", "pr-rebased", main1)
-    new = repo.commit({"src/feature.txt": b"feature one\n"}, "pr: feature")
+    new = repo.commit({CHANGED_PATH: b"feature one\n"}, "pr: feature")
     return old, main0, new, main1
 
 
@@ -122,6 +129,7 @@ def _content_changing_rebase(repo):
 
 
 HISTORIES = {"legit_rebase": _legit_rebase, "content_changing_rebase": _content_changing_rebase}
+CHANGED = {"legit_rebase": CHANGED_PATH, "content_changing_rebase": "src/app.txt"}
 
 
 @pytest.fixture(scope="module")
@@ -131,7 +139,9 @@ def histories(tmp_path_factory):
         repo = Repo(tmp_path_factory.mktemp(name) / "repo")
         old, old_base, new, new_base = builder(repo)
         assert len({old, new, old_base, new_base}) == 4
-        built[name] = SimpleNamespace(repo=repo, old=old, old_base=old_base, new=new, new_base=new_base)
+        repo.git("remote", "add", "origin", f"https://github.com/{REPO_NAME}.git")  # be79431e binds the origin
+        built[name] = SimpleNamespace(repo=repo, old=old, old_base=old_base, new=new, new_base=new_base,
+                                      path=CHANGED[name])
     return built
 
 
@@ -171,18 +181,62 @@ def _event(agent, typ, status, head, minute, *, task=TASK, message=None):
             "payload": {"head": head, "pr": PR}}
 
 
-def _claim():
+def _claim(scope=CHANGED_PATH):
     event = _event(AUTHOR, "claim", "active", None, 0, message="claim for the PR task")
     event["payload"] = {"pr": PR}
-    event["write_scope"] = [CHANGED_PATH]
+    event["write_scope"] = [scope]
     return event
 
 
-def _approvals(head):
-    return [_claim(),
-            _event("codex-lead-1", "decision", "build_consensus_pass", head, 1),
-            _event("codex-tools-1", "decision", "build_consensus_pass", head, 2),
-            _event("claude-rco-1", "decision", "rco_pass", head, 3)]
+def _approvals(head, *, basis=None, scope=CHANGED_PATH):
+    events = [_claim(scope),
+              _event("codex-lead-1", "decision", "build_consensus_pass", head, 1),
+              _event("codex-tools-1", "decision", "build_consensus_pass", head, 2),
+              _event("claude-rco-1", "decision", "rco_pass", head, 3)]
+    if basis is not None:  # be79431e: every original vote commits the same reviewed basis (direct route)
+        digest = hashlib.sha256(json.dumps(basis, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+                                .encode("ascii")).hexdigest()
+        for event in events[1:]:
+            event["payload"].update(review_basis=basis, review_basis_sha256=digest)
+    return events
+
+
+CONTRACT = json.loads((ROOT / "tests" / "fixtures" / "bridge_consensus_carry_forward" / "contract.json")
+                      .read_text(encoding="utf-8"))
+
+
+def _basis(h):
+    """The reviewed basis of the approved head, derived independently from git with the pinned diff command."""
+    merge_base = h.repo.raw("merge-base", h.old_base, h.old).decode().strip()
+    cmd = CONTRACT["reference_diff_command"]
+    raw = h.repo.raw(*cmd["global_options"], "diff", *cmd["diff_options"], merge_base, h.old)
+    return {"schema": "wd.bridge-reviewed-basis.v1", "repository": REPO_NAME, "pr_number": PR, "task_id": TASK,
+            "base_ref": "main", "head": h.old, "base_sha": h.old_base, "merge_base": merge_base,
+            "diff_sha256": hashlib.sha256(raw).hexdigest(),
+            "patch_id": h.repo.raw("patch-id", "--stable", data=raw).split()[0].decode()}
+
+
+def _carry_events(h, extra=()):
+    return _approvals(h.old, basis=_basis(h), scope=h.path) + list(extra)
+
+
+def _carry_gh(h, *, head=None, ci_case=None):
+    """Synthetic strict GitHub for a carry gate call: the published factory reads the live PR itself through the
+    runner seam, so every carry call passes it (never a live gh call)."""
+    gh = ci_harness.FakeGitHub(head=head or h.new, base=h.new_base, repo=REPO_NAME, pr=PR, branch=TASK,
+                               changed_path=h.path, author_login="Ahkeratmehilaiset", merge_sha=MERGE_SHA)
+    if ci_case is not None:
+        ci_harness._setup(ci_case, gh)
+    return gh
+
+
+def _carry_gate(tmp_path, h, *, events=None, gh=None, queue=True):
+    opt = _carry_opt_in(GATE, evaluate_auto_merge_gate, h)
+    gh = gh or _carry_gh(h)
+    report = _gate(tmp_path, pr_status=_snapshot(head=h.new, base=h.new_base), expected_head=h.new,
+                   base=h.new_base, events=_carry_events(h) if events is None else events, queue=queue,
+                   runner=gh, **opt)
+    return report, gh
 
 
 def _objection(head, *, task, minute=4, with_pr=False):
@@ -334,10 +388,13 @@ def _assert_carry_record(node, history):
     records = [r for r in _carry_records(node)
                if r["approved_head"] == history.old and r["proposed_head"] == history.new]
     assert records, "no carry record naming the approved and proposed heads"
-    missing = [f for f in CASES["carry_record_fields"] if f not in records[0]]
+    names = CASES["carry_record_fields_published"]
+    record = records[0]
+    flat = dict(record, **(record.get("content_identity") or {}))
+    missing = [f for f in CASES["carry_record_fields"] if names.get(f, f) not in flat]
     assert not missing, missing
-    assert records[0]["approved_diff_sha256"] == records[0]["proposed_diff_sha256"]
-    return records[0]
+    assert flat[names["approved_diff_sha256"]] == flat[names["proposed_diff_sha256"]]
+    return {f: flat[names.get(f, f)] for f in CASES["carry_record_fields"]}
 
 
 def test_every_fixture_case_has_a_carry_test():
@@ -491,10 +548,9 @@ def test_control_non_opt_in_consumer_call_sites_pass_no_carry_argument(consumer)
 # ==============================================================================================================
 def test_carry_valid_carry_end_to_end_gate(tmp_path, histories):
     h = histories["legit_rebase"]
-    opt = _carry_opt_in(GATE, evaluate_auto_merge_gate, h)
-    report = _gate(tmp_path, pr_status=_snapshot(head=h.new, base=h.new_base), expected_head=h.new,
-                   base=h.new_base, events=_approvals(h.old), **opt)
+    report, gh = _carry_gate(tmp_path, h)
     assert report["decision"] == "auto_merge_plan_ready", _reasons(report)
+    assert _merge_calls(gh.calls) == []
     assert report["rco_pass_gate"]["ok"] is True and report["bridge_consensus"]["ok"] is True
     record = _assert_carry_record(report, h)
     assert record["proposed_base_sha"] == h.new_base and record["approved_base_sha"] == h.old_base
@@ -528,15 +584,15 @@ def test_carry_match_head_commit_is_the_proposed_head(tmp_path, histories):
     assert not any(h.old in part for part in merges[0])
 
 
-def _carry_refusal(tmp_path, histories, case, *, events=None, checks=GREEN, snapshot_head=None, queue=True):
+def _carry_refusal(tmp_path, histories, case, *, events=None, ci_case=None, snapshot_head=None, queue=True):
     spec = CASES["cases"][case]
     h = histories[spec["history"]]
-    opt = _carry_opt_in(GATE, evaluate_auto_merge_gate, h)
-    report = _gate(tmp_path, pr_status=_snapshot(head=snapshot_head or h.new, base=h.new_base, checks=checks),
-                   expected_head=h.new, base=h.new_base,
-                   events=_approvals(h.old) if events is None else events(h), queue=queue, **opt)
+    gh = _carry_gh(h, head=snapshot_head, ci_case=ci_case)
+    report, _ = _carry_gate(tmp_path, h, events=None if events is None else events(h), gh=gh, queue=queue)
     assert _refused(report), _reasons(report)
-    assert re.search(spec["reason"], json.dumps(report.get("reasons", []))), _reasons(report)
+    assert _merge_calls(gh.calls) == []
+    assert re.search(spec.get("reason_published", spec["reason"]), json.dumps(report.get("reasons", []))),         _reasons(report)
+    return report
 
 
 def test_carry_content_change(tmp_path, histories):
@@ -546,8 +602,12 @@ def test_carry_content_change(tmp_path, histories):
 @pytest.mark.parametrize("shape", sorted(OBJECTION_SHAPES))
 def test_carry_old_head_objection_under_descriptive_task(tmp_path, histories, shape):
     _carry_refusal(tmp_path, histories, "old_head_objection_under_descriptive_task",
-                   events=lambda h: _approvals(h.old) + [_objection(h.old, task=DESCRIPTIVE_TASK,
-                                                                    with_pr=OBJECTION_SHAPES[shape])])
+                   events=lambda h: _carry_events(h, [_objection(h.old, task=DESCRIPTIVE_TASK,
+                                                                 with_pr=OBJECTION_SHAPES[shape])]))
+    # differential: the identical carry without the objection is not refused for consensus
+    (tmp_path / "control").mkdir()
+    control, _ = _carry_gate(tmp_path / "control", histories["legit_rebase"])
+    assert "Rule9a consensus" not in json.dumps(control.get("reasons", [])), _reasons(control)
 
 
 def test_carry_incomplete_queue(tmp_path, histories):
@@ -555,11 +615,11 @@ def test_carry_incomplete_queue(tmp_path, histories):
 
 
 def test_carry_ci_pending_at_proposed_head(tmp_path, histories):
-    _carry_refusal(tmp_path, histories, "ci_pending_at_proposed_head", checks=PENDING)
+    _carry_refusal(tmp_path, histories, "ci_pending_at_proposed_head", ci_case="pending_required_check")
 
 
 def test_carry_ci_failed_at_proposed_head(tmp_path, histories):
-    _carry_refusal(tmp_path, histories, "ci_failed_at_proposed_head", checks=FAILED)
+    _carry_refusal(tmp_path, histories, "ci_failed_at_proposed_head", ci_case="failed_required_check")
 
 
 def test_carry_snapshot_head_is_the_approved_head(tmp_path, histories):
@@ -766,23 +826,19 @@ def test_strict_ci_apply_drift_refuses_merge(tmp_path, histories, monkeypatch):
 def test_strict_ci_carry_success_at_proposed_head(tmp_path, histories):
     _require_strict_ci()
     h = histories["legit_rebase"]
-    opt = _carry_opt_in(GATE, evaluate_auto_merge_gate, h)
-    snapshot = _strict_snapshot(_strict_gh(h), h.new_base)
-    report = _gate(tmp_path, pr_status=snapshot, expected_head=h.new, base=h.new_base, events=_approvals(h.old),
-                   **opt)
+    report, gh = _carry_gate(tmp_path, h)
     assert report["decision"] == "auto_merge_plan_ready", _reasons(report)
     _assert_carry_record(report, h)
-    assert h.old not in json.dumps(report.get("ci_evidence", snapshot["ci_evidence"]))
+    ci = (report.get("carry_forward") or {}).get("ci_evidence") or {}
+    assert ci.get("head_sha") == h.new and ci.get("all_required_success") is True, ci
+    assert h.old not in json.dumps(ci)
 
 
 @pytest.mark.parametrize("ci_case", STRICT["carry_non_green_at_proposed_head"]["ci_cases"])
 def test_strict_ci_carry_non_green_at_proposed_head(tmp_path, histories, ci_case):
     _require_strict_ci()
     h = histories["legit_rebase"]
-    opt = _carry_opt_in(GATE, evaluate_auto_merge_gate, h)
-    snapshot = _strict_snapshot(_strict_gh(h, case=ci_case), h.new_base)
-    report = _gate(tmp_path, pr_status=snapshot, expected_head=h.new, base=h.new_base, events=_approvals(h.old),
-                   **opt)
+    report, _ = _carry_gate(tmp_path, h, gh=_carry_gh(h, ci_case=ci_case))
     if not _refused(report):
         _missing_wiring("carry gate is ready although ci_evidence.all_required_success is false at the proposed head")
     assert re.search(STRICT["carry_non_green_at_proposed_head"]["reason"], _reasons(report)), _reasons(report)
@@ -791,10 +847,7 @@ def test_strict_ci_carry_non_green_at_proposed_head(tmp_path, histories, ci_case
 def test_strict_ci_carry_snapshot_at_the_approved_head(tmp_path, histories):
     _require_strict_ci()
     h = histories["legit_rebase"]
-    opt = _carry_opt_in(GATE, evaluate_auto_merge_gate, h)
-    snapshot = _strict_snapshot(_strict_gh(h, head=h.old), h.new_base)
-    report = _gate(tmp_path, pr_status=snapshot, expected_head=h.new, base=h.new_base, events=_approvals(h.old),
-                   **opt)
+    report, _ = _carry_gate(tmp_path, h, gh=_carry_gh(h, head=h.old))
     assert _refused(report), _reasons(report)
 
 

@@ -10,11 +10,12 @@
   },
   "opt_in": {
     "parameter": {
-      "tools.idle_consensus_auto_merge:evaluate_auto_merge_gate": "approval_carry_forward",
+      "tools.idle_consensus_auto_merge:evaluate_auto_merge_gate": "carry_forward",
       "tools.merge_with_bridge_receipt:merge_with_bridge_receipt": "approval_carry_forward"
     },
     "value": "mapping with approved_head, approved_base_sha and repo_root (pathlib.Path of the checkout holding both heads); built only by _carry_opt_in() in the test file, the single adaptation point once Tools publishes the wired names",
-    "default": "absent or None means exact-head behaviour, unchanged"
+    "default": "absent or None means exact-head behaviour, unchanged",
+    "published_at": "be79431efd4f2c36bfcb333cd97e26b25eb929c4: evaluate_auto_merge_gate(carry_forward=request) with the request fields approved_head, approved_base_sha (assertion), repo_root; merge_with_bridge_receipt publishes no carry opt-in and evaluate_auto_merge_gate refuses carry with apply=True until the semantic receipt consumer exists (intentionally unavailable)"
   },
   "non_opt_in_consumers": {
     "tools/bridge_loop_tick.py": [
@@ -61,7 +62,9 @@
       "shapes": {
         "no_pr": "payload has only the structured head: invisible to both shared checks at the proposed head today (probe v3 case F)",
         "with_pr": "payload also names the pr: the consensus block scope matches it by PR today (probe v2 case B)"
-      }
+      },
+      "reason_published": "(?i)block|veto|objection|finding|original head has no valid Rule9a consensus",
+      "reason_published_note": "be79431e refuses in the factory consensus check at the approved head and names the consensus, not the objection; the test also asserts the same carry without the objection is not refused for consensus"
     },
     "incomplete_queue": {
       "history": "legit_rebase",
@@ -181,5 +184,21 @@
         "until_wired": "missing_api"
       }
     }
-  }
+  },
+  "carry_record_fields_published": {
+    "approved_diff_sha256": "old_diff_sha256",
+    "proposed_diff_sha256": "new_diff_sha256",
+    "approved_base_sha": "approved_base_sha",
+    "proposed_base_sha": "proposed_base_sha",
+    "patch_id": "patch_id"
+  },
+  "be79_adaptations": [
+    "every carry gate call passes the synthetic strict GitHub runner (the factory reads the live PR itself; never a live gh call)",
+    "original votes carry the reviewed basis (direct route) derived independently from git with the pinned diff command",
+    "test checkouts name https://github.com/example/repo.git as origin and the PR change set is the real git path",
+    "CI pending and failed at the proposed head are set in the strict check-run inventory, not the rollup",
+    "carry record fields are read from the published receipt and its content_identity (names mapped in carry_record_fields_published)",
+    "the legit history changes the allowlisted CHANGED_PATH (the carry gate reads the live change set, which must equal git)",
+    "old_head_objection reason accepts the published consensus wording, guarded by a no-objection differential"
+  ]
 }

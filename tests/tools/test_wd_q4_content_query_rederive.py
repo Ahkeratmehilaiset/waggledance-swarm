@@ -270,3 +270,93 @@ def test_the_trusted_pin_reaches_the_module_check_and_the_child_unchanged(conten
 def test_a_config_for_another_memory_still_refuses(content):
     config = dataclasses.replace(content["config"], descriptor_sha256="0" * 64)
     assert run(content, config=config) == (2, FAIL, 0)
+
+
+@pytest.fixture
+def exact_doc_v2_query(tmp_path, monkeypatch):
+    """Synthetic Git, prefix and index; the launcher is an in-process reader, never a real runtime."""
+    import datetime as dt
+    from sandbox.mind.step2 import runtime_launcher, wd_q4_private_read as reader
+    pytest.importorskip("faiss")
+    baseline = tcr.route.__wrapped__(tmp_path)
+    route, (allowed, excluded, blob) = tcr.doc_v2_route(tmp_path, baseline)
+    built, memory_dir = tcr.build_route(tmp_path, route)
+    descriptor_sha256 = built["descriptor_sha256"]
+    monkeypatch.setattr(reader, "ENCODER_FACTORY", lambda **kw: tcm.Encoder())
+    monkeypatch.setattr(reader, "bind_runtime_encoder", lambda descriptor, model_dir: None)
+    calls = []
+    def launcher(*, query, **kwargs):
+        situation = json.loads(query)
+        calls.append(True)
+        out = reader._private_read_locked(memory_dir, memory_dir / "descriptor.json", descriptor_sha256,
+                                          situation["situation"], situation["time"], r"C:\fake\model",
+                                          tcm.IDENTITY["revision"])
+        return runtime_launcher._validate_output(json.dumps(out).encode("utf-8"), 0, descriptor_sha256)
+    monkeypatch.setattr(q4, "_invoke_launcher", launcher)
+    monkeypatch.setattr(q4, "_utc_now", lambda: dt.datetime(2026, 11, 8, 1, tzinfo=dt.timezone.utc))
+    kwargs = dict(memory_pins(memory_dir), **tcr.strict_pins(),
+                  content_decision_bytes=route["decision"], content_decision_sha256=route["decision_sha"],
+                  content_sources=sources_of(route), trusted_git=tcrd.trusted_of(route), enabled=True)
+    return {"route": route, "memory": memory_dir, "config": cq.config(memory_dir, descriptor_sha256),
+            "kwargs": kwargs, "allowed": allowed, "excluded": excluded, "blob": blob, "calls": calls}
+
+
+def v2_stdin():
+    stdin = Stdin()
+    stdin.seek(0)
+    stdin.truncate()
+    stdin.write(json.dumps({"situation": "what does reviewed documentation discuss", "time": tcm.ASK_TIME}).encode("utf-8"))
+    stdin.seek(0)
+    return stdin
+
+
+def test_doc_v2_query_rederives_exact_document_and_preserves_message_policy(exact_doc_v2_query):
+    fixture = exact_doc_v2_query
+    original_policy = fixture["route"]["messages"]["policy_bytes"]
+    stdin = v2_stdin()
+    answer = public.query_content_snapshot(fixture["config"], stdin, **fixture["kwargs"])
+    assert answer["status"] == "ANSWER" and stdin.reads > 0 and fixture["calls"] == [True]
+    texts = [cp.decode_text(item["stored_text"]) for item in answer["results"]]
+    assert "Synthetic reviewed documentation." in texts
+    assert "Synthetic unapproved documentation." not in texts
+    assert answer["freshness"] == "UNKNOWN" and answer["publisher_authentication"] == "UNKNOWN"
+    assert fixture["route"]["messages"]["policy_bytes"] == original_policy
+    assert fixture["kwargs"]["content_sources"]["message_policy_bytes"] == original_policy
+    projection = json.loads((fixture["memory"] / "projection.json").read_bytes())
+    assert {item["provenance"]["path"] for item in projection["documents"]["records"]} == {fixture["allowed"]}
+    assert all(item["provenance"]["blob_id"] == fixture["blob"] and
+               item["provenance"]["commit"] == fixture["route"]["commit"]
+               for item in projection["documents"]["records"])
+
+
+@pytest.mark.parametrize("fault", ["blob_bytes", "policy_bytes", "git_pin", "projection_pin"])
+def test_doc_v2_query_refuses_changed_blob_or_independent_pin_before_query(exact_doc_v2_query, monkeypatch, fault):
+    from sandbox.mind.step2 import shared_doc_projection as doc
+    fixture = exact_doc_v2_query
+    kwargs = dict(fixture["kwargs"])
+    calls = []
+    if fault == "blob_bytes":
+        original = doc._git
+        def altered(root, env, *args):
+            value = original(root, env, *args)
+            if len(args) >= 2 and args[:2] == ("cat-file", "blob"):
+                calls.append(True)
+                return bytes([value[0] ^ 1]) + value[1:]
+            return value
+        monkeypatch.setattr(doc, "_git", altered)
+    elif fault == "policy_bytes":
+        source = dict(kwargs["content_sources"])
+        source["doc_policy_bytes"] += b" "
+        kwargs["content_sources"] = source
+    elif fault == "git_pin":
+        source = dict(kwargs["content_sources"])
+        source["doc_git_sha256"] = "0" * 64
+        kwargs["content_sources"] = source
+    else:
+        kwargs["expected_projection_sha256"] = "0" * 64
+    stdin = v2_stdin()
+    with pytest.raises(public.PublicQueryRefused, match="^content_query_refused$"):
+        public.query_content_snapshot(fixture["config"], stdin, **kwargs)
+    assert stdin.reads == 0 and fixture["calls"] == []
+    if fault == "blob_bytes":
+        assert calls == [True]  # the synthetic object mismatch, not an earlier unrelated failure

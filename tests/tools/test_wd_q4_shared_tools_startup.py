@@ -390,13 +390,22 @@ def test_tools_startup_read_never_delivers_unverified_freshness(tmp_path, mode):
 
 
 def test_inherited_tools_startup_recall_is_cleared_before_launch():
-    script = load(TOOLS, "Clear-WdInheritedQ4ReadSettings") + "\n" + r"""
+    script = load(TOOLS, "Clear-WdInheritedMindReadSettings") + "\n" + r"""
 $env:WD_MIND_STARTUP_RECALL='synthetic stale content'
-$env:WD_Q4_TEST='synthetic'
-Clear-WdInheritedQ4ReadSettings
-@{recall=(Test-Path Env:WD_MIND_STARTUP_RECALL); q4=(Test-Path Env:WD_Q4_TEST)} | ConvertTo-Json -Compress
+$env:WD_MIND_TEST='synthetic'
+Clear-WdInheritedMindReadSettings
+@{recall=(Test-Path Env:WD_MIND_STARTUP_RECALL); mind=(Test-Path Env:WD_MIND_TEST)} | ConvertTo-Json -Compress
 """
-    assert json.loads(_run_powershell(script).stdout) == {"recall": False, "q4": False}
+    assert json.loads(_run_powershell(script).stdout) == {"recall": False, "mind": False}
+
+
+def test_on_demand_prompt_does_not_treat_unknown_freshness_as_current():
+    text = TOOLS.read_text(encoding="utf-8-sig")
+    start = text.index("' Q4 on-demand recall:")
+    block = text[start:text.index("\n)", start)]
+    assert "Neither exit code 0 nor VALIDATED proves source freshness." in block
+    assert "UNKNOWN, STALE or missing freshness must not be presented as current state." in block
+    assert "Verify current state independently against the live bridge before making a current claim." in block
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)

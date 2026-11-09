@@ -330,16 +330,25 @@ def test_startup_read_never_delivers_unverified_freshness(tmp_path, mode):
 
 def test_inherited_startup_recall_is_cleared_before_launch():
     from tests.tools.test_wd_startup_recovery import load
-    script = load(LAUNCHER, "Clear-WdInheritedQ4ReadSettings") + "\n" + r"""
+    script = load(LAUNCHER, "Clear-WdInheritedMindReadSettings") + "\n" + r"""
 $env:WD_MIND_STARTUP_RECALL='synthetic stale content'
-$env:WD_Q4_TEST='synthetic'
-Clear-WdInheritedQ4ReadSettings
-@{recall=(Test-Path Env:WD_MIND_STARTUP_RECALL); q4=(Test-Path Env:WD_Q4_TEST)} | ConvertTo-Json -Compress
+$env:WD_MIND_TEST='synthetic'
+Clear-WdInheritedMindReadSettings
+@{recall=(Test-Path Env:WD_MIND_STARTUP_RECALL); mind=(Test-Path Env:WD_MIND_TEST)} | ConvertTo-Json -Compress
 """
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     result = subprocess.run([SHELL, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
                             capture_output=True, text=True, check=True, timeout=20)
-    assert json.loads(result.stdout) == {"recall": False, "q4": False}
+    assert json.loads(result.stdout) == {"recall": False, "mind": False}
+
+
+def test_on_demand_prompt_does_not_treat_unknown_freshness_as_current():
+    text = LAUNCHER.read_text(encoding="utf-8-sig")
+    start = text.index("' Q4 on-demand recall:")
+    block = text[start:text.index("\n)", start)]
+    assert "Neither exit code 0 nor VALIDATED proves source freshness." in block
+    assert "UNKNOWN, STALE or missing freshness must not be presented as current state." in block
+    assert "Verify current state independently against the live bridge before making a current claim." in block
 
 
 def test_startup_read_discards_unverified_content_and_never_records_it(tmp_path):

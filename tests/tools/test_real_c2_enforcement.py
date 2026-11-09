@@ -51,7 +51,7 @@ def route(real_snapshot, monkeypatch):
         card_decision_sha256=args["decision_sha256"],
         **{k: args[k] for k in ("policy_bytes", "policy_sha256", "roster_bytes", "roster_sha256")})
     return dict(directory=directory, built=built, snapshot=snapshot, args=args, data=data, projection=projection,
-                config=rt.config(directory, built["descriptor_sha256"]), calls=calls)
+                config=rt.real_config(directory, built["descriptor_sha256"]), calls=calls)
 
 
 def question():

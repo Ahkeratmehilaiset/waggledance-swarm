@@ -84,14 +84,34 @@ def anchor(directory, events, *, heads='all', prefix_rows=None, **overrides):
 SYNTHETIC_MEMORY = r'C:\synthetic\cards'
 
 
+REAL_STAGED_PATH_AVAILABLE = os.name == 'nt'
+# The real binding check (q4._validate_config) accepts only normalized drive-letter Windows paths, and the card and
+# staged routes then require config.memory to equal the real generation directory (resolved child, public query).
+# Off Windows no config can satisfy both, so every test that reads a real directory is SKIPPED explicitly here:
+# a synthetic drive-letter path would make each negative test refuse at the binding compare instead of at the check
+# under test, i.e. pass for the wrong reason. On Windows the real tmp directory is bound unchanged.
+OFF_WINDOWS_SKIP_REASON = ('the Q4 card/staged routes bind config.memory to the real generation directory under the '
+                           'Windows-only drive-letter rule; off Windows they refuse before the check under test, so '
+                           'this test is skipped explicitly instead of passing for the wrong reason')
+
+
+def real_config(memory_dir, descriptor_sha256):
+    """The real directory, bound unchanged; off Windows the route cannot run, so the test skips (never a fake pass)."""
+    if not REAL_STAGED_PATH_AVAILABLE:
+        pytest.skip(OFF_WINDOWS_SKIP_REASON)
+    return _config(str(memory_dir), str(memory_dir / 'descriptor.json'), descriptor_sha256)
+
+
 def config(memory_dir, descriptor_sha256):
+    """Binding-shape helper only: off Windows it carries the synthetic drive-letter path so the tuple itself passes
+    q4._validate_config (tests/tools/test_card_source_binding.py). Routes that read a real directory use real_config."""
     memory, descriptor = str(memory_dir), str(memory_dir / 'descriptor.json')
     if os.name != 'nt':
-        # The real binding check (q4._validate_config) accepts only normalized drive-letter Windows paths, so a
-        # POSIX pytest tmp_path is refused before the synthetic chain starts. Off Windows the tuple carries an
-        # equivalent synthetic Windows path; the launcher closure in make_route reads the real tmp directory itself,
-        # so no source, refusal or privacy check is relaxed. On Windows the real tmp_path is bound unchanged.
         memory, descriptor = SYNTHETIC_MEMORY, SYNTHETIC_MEMORY + r'\descriptor.json'
+    return _config(memory, descriptor, descriptor_sha256)
+
+
+def _config(memory, descriptor, descriptor_sha256):
     return q4.VerifiedQ4Config(interpreter=r'C:\fake\python.exe', interpreter_sha256='1' * 64,
         bootstrap=r'C:\fake\runtime_bootstrap.py', bootstrap_sha256='2' * 64, verifier_sha256='3' * 64,
         runtime_root=r'C:\fake\runtime', runtime_manifest=r'C:\fake\runtime.json', runtime_manifest_sha256='4' * 64,
@@ -139,7 +159,7 @@ def make_route(tmp_path, monkeypatch, *, events=None, heads='all'):
                 memory_sha256=built['memory_sha256'], projection_bytes=(memory_dir / 'projection.json').read_bytes(),
                 projection_sha256=fx.sha((memory_dir / 'projection.json').read_bytes()),
                 card_decision_bytes=decision, card_decision_sha256=decision_sha256)
-    return {'config': config(memory_dir, descriptor_sha256), 'data': data, 'events': events, 'calls': calls,
+    return {'config': real_config(memory_dir, descriptor_sha256), 'data': data, 'events': events, 'calls': calls,
             'projection': projection, 'built': built, 'dir': memory_dir}
 
 

@@ -24,7 +24,7 @@ rt = fixture_module.rt
 def route(real_snapshot, monkeypatch):
     directory, built, _, snapshot, _, _ = real_snapshot
     descriptor = json.loads((directory / 'descriptor.json').read_bytes())
-    config = rt.config(directory, built['descriptor_sha256'])
+    config = rt.real_config(directory, built['descriptor_sha256'])
     pointer = json.loads(snapshot['pointer_bytes'])
     args = dict(root=directory.parent, expected_source_sha256=pointer['source_prefix']['sha256'],
                 expected_encoder_sha256=query._encoder_digest(descriptor['encoder']),

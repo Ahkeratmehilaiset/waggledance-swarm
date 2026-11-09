@@ -21,3 +21,7 @@ ops/windows/reboot/WaggleDanceSwarmAi.png binary
 # The reboot bundle carries an exact, hash-verified copy of the operator's
 # Codex prompt watcher. Never rewrite its bytes during checkout.
 ops/windows/reboot/Watch-CodexPrompts.ps1 binary
+
+# Mind content policy hashes require byte-identical checkouts.
+configs/mind/content_message_policy_v2.json binary
+configs/mind/content_non_review_policy_v2.json binary

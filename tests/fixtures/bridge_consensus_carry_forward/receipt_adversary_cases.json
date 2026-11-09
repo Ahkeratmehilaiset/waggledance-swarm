@@ -1,0 +1,241 @@
+{
+  "schema": "wd.fable5-carry-receipt-adversary.v1",
+  "request": "codex-lead-1 2026-11-09T10:16:25.9267763Z lead-carry-receipt-adversary-fable-20261109-v1",
+  "tools_head": "be79431efd4f2c36bfcb333cd97e26b25eb929c4",
+  "corpus_base": "f5343ebdeb92a2da9a900c6b5e7948d048f91062",
+  "interfaces": {
+    "writer": "tools.bridge_approval_carry_forward:derive_live_carry_forward (live factory; its receipt comes from evaluate_approval_carry_forward)",
+    "consumer": "tools.bridge_approval_carry_forward:verify_carry_forward_receipt(receipt, evidence) -> bool, the published re-verification the gate runs against the current ledger",
+    "gate_apply": "tools.idle_consensus_auto_merge:evaluate_auto_merge_gate(carry_forward=..., apply=True): published, refuses until the semantic receipt consumer exists (intentionally unavailable)",
+    "merge_apply": "tools.merge_with_bridge_receipt:merge_with_bridge_receipt: no carry input published (RED missing API, intentionally unavailable)",
+    "magma_writer": "tools.write_bridge_consensus_merge_receipt:write_bridge_consensus_merge_receipt: no carry receipt input published (RED missing API; Tools is wiring the actual writer)"
+  },
+  "canonical_digest": "sha256 of json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False) as published for receipt digests",
+  "reseal": "an attacker able to write the receipt recomputes every receipt-internal digest (approval_event_sha256 list, original_approval_basis_sha256, content-identity mirrors) so the forged receipt is self-consistent; only re-derivation from the ledger, git and CI can refuse it",
+  "classes": {
+    "control": "valid receipt must verify",
+    "resealed": "integrity-valid re-sealed material change",
+    "extra_authority": "additional authority beyond the derived receipt",
+    "type_alias": "JSON value of another type that compares equal in Python",
+    "append": "events appended to the ledger after the receipt",
+    "stale": "CI or queue observation no longer current",
+    "prefix": "accepted-event prefix count and digest",
+    "apply": "apply paths and writer"
+  },
+  "cases": {
+    "control_valid": {
+      "class": "control",
+      "expect": "accept"
+    },
+    "control_reseal_is_faithful": {
+      "class": "control",
+      "expect": "accept",
+      "note": "resealing an unmodified receipt changes nothing"
+    },
+    "control_json_roundtrip": {
+      "class": "control",
+      "expect": "accept",
+      "note": "a persisted and reloaded receipt still verifies"
+    },
+    "control_key_order": {
+      "class": "control",
+      "expect": "accept"
+    },
+    "resealed_rco_identity_swapped": {
+      "class": "resealed",
+      "expect": "refuse"
+    },
+    "resealed_event_digest_to_claim": {
+      "class": "resealed",
+      "expect": "refuse"
+    },
+    "resealed_veto_controls_dropped": {
+      "class": "resealed",
+      "expect": "refuse"
+    },
+    "resealed_content_identity_digests": {
+      "class": "resealed",
+      "expect": "refuse"
+    },
+    "resealed_proposed_head": {
+      "class": "resealed",
+      "expect": "refuse"
+    },
+    "resealed_approved_base_to_live_base": {
+      "class": "resealed",
+      "expect": "refuse"
+    },
+    "resealed_task_id": {
+      "class": "resealed",
+      "expect": "refuse"
+    },
+    "resealed_registry_digest": {
+      "class": "resealed",
+      "expect": "refuse"
+    },
+    "resealed_forged_author_waiver": {
+      "class": "resealed",
+      "expect": "refuse",
+      "note": "drop the lead vote and claim a waiver"
+    },
+    "resealed_ci_checks_from_approved_head": {
+      "class": "resealed",
+      "expect": "refuse"
+    },
+    "extra_top_level_merge_authorization": {
+      "class": "extra_authority",
+      "expect": "refuse"
+    },
+    "extra_operator_signature": {
+      "class": "extra_authority",
+      "expect": "refuse"
+    },
+    "extra_carried_row": {
+      "class": "extra_authority",
+      "expect": "refuse"
+    },
+    "extra_field_in_carried_row": {
+      "class": "extra_authority",
+      "expect": "refuse"
+    },
+    "evidence_rco_subset_hides_later_veto": {
+      "class": "extra_authority",
+      "expect": "refuse",
+      "note": "caller supplies only claude-rco-1 as recognized RCO while claude-rco-2 vetoes later",
+      "reason": "(?i)veto/block survives"
+    },
+    "alias_pr_number_float": {
+      "class": "type_alias",
+      "expect": "refuse"
+    },
+    "alias_pr_number_string": {
+      "class": "type_alias",
+      "expect": "refuse"
+    },
+    "alias_veto_scan_complete_one": {
+      "class": "type_alias",
+      "expect": "refuse"
+    },
+    "alias_control_index_float": {
+      "class": "type_alias",
+      "expect": "refuse"
+    },
+    "alias_event_count_bool": {
+      "class": "type_alias",
+      "expect": "refuse"
+    },
+    "alias_event_count_float": {
+      "class": "type_alias",
+      "expect": "refuse"
+    },
+    "alias_ci_conclusion_case": {
+      "class": "type_alias",
+      "expect": "refuse"
+    },
+    "alias_schema_trailing_space": {
+      "class": "type_alias",
+      "expect": "refuse"
+    },
+    "append_harmless_rco_diagnostic": {
+      "class": "append",
+      "expect": "accept",
+      "note": "recognized RCO message, informational status, names the approved head"
+    },
+    "append_harmless_other_task_note": {
+      "class": "append",
+      "expect": "accept"
+    },
+    "append_rco_changes_requested_old_head": {
+      "class": "append",
+      "expect": "refuse",
+      "reason": "(?i)veto/block survives"
+    },
+    "append_rco_typed_block_new_head": {
+      "class": "append",
+      "expect": "refuse",
+      "reason": "(?i)veto/block survives"
+    },
+    "append_rco_veto_descriptive_task_head_bound": {
+      "class": "append",
+      "expect": "refuse",
+      "reason": "(?i)veto/block survives"
+    },
+    "append_build_lead_block": {
+      "class": "append",
+      "expect": "refuse",
+      "reason": "(?i)veto/block survives"
+    },
+    "append_rco_pass_after_own_veto": {
+      "class": "append",
+      "expect": "refuse",
+      "note": "a later RCO pass is not a retraction of the same RCO veto",
+      "reason": "(?i)veto/block survives"
+    },
+    "stale_queue_incomplete": {
+      "class": "stale",
+      "expect": "refuse",
+      "reason": "(?i)queue"
+    },
+    "stale_ci_failed_at_proposed_head": {
+      "class": "stale",
+      "expect": "refuse",
+      "reason": "(?i)CI"
+    },
+    "stale_ci_pending_at_proposed_head": {
+      "class": "stale",
+      "expect": "refuse",
+      "reason": "(?i)CI"
+    },
+    "stale_ci_runs_at_approved_head": {
+      "class": "stale",
+      "expect": "refuse",
+      "reason": "(?i)CI"
+    },
+    "stale_ci_required_set_grew": {
+      "class": "stale",
+      "expect": "refuse",
+      "reason": "(?i)CI"
+    },
+    "prefix_truncated_excludes_rco_vote": {
+      "class": "prefix",
+      "expect": "refuse"
+    },
+    "prefix_count_beyond_ledger": {
+      "class": "prefix",
+      "expect": "refuse"
+    },
+    "prefix_count_zero": {
+      "class": "prefix",
+      "expect": "refuse"
+    },
+    "prefix_reordered": {
+      "class": "prefix",
+      "expect": "refuse"
+    },
+    "prefix_event_inserted_inside": {
+      "class": "prefix",
+      "expect": "refuse"
+    },
+    "prefix_truncated_harmless_tail": {
+      "class": "prefix",
+      "expect": "accept",
+      "note": "by published design: only material basis and controls must lie inside the prefix; the entire current ledger is re-derived, so dropping a harmless tail grants nothing"
+    },
+    "apply_gate_refuses_carry_apply": {
+      "class": "apply",
+      "expect": "refuse",
+      "note": "published, intentionally unavailable"
+    },
+    "apply_merge_carry_input": {
+      "class": "apply",
+      "expect": "refuse",
+      "until_published": "missing_api"
+    },
+    "apply_magma_writer_carry_input": {
+      "class": "apply",
+      "expect": "refuse",
+      "until_published": "missing_api"
+    }
+  },
+  "reason_rule": "for cases with a reason, the published evaluator must refuse the current evidence for that reason; for prefix cases the evaluator must still carry, so only the receipt prefix check refuses"
+}

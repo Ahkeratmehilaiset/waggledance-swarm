@@ -6,6 +6,8 @@ telemetry remains unknown. Historical identities must be explicitly supplied
 with provenance and a current-session selection. Event digests identify content,
 not authenticated writers. No Mind import, cursor file, log append or claim
 sweep occurs. Prefix digests stay private in the instance and are never output.
+The private classification helpers are advisory dependencies, not gate inputs.
+Veto retractions are not evaluated by this view.
 """
 from __future__ import annotations
 
@@ -449,7 +451,8 @@ class SituationPicture:
         ambiguity = 'ambiguous_request_id' if duplicate_ids else None
         veto_items = [{'source_event_ref': record[1], 'age_seconds': self._field(True, record, persistent=True)['age_seconds'],
             'writer_identity_in_roster': record[0].get('_identity') is not None,
-            'head': record[0].get('_typed_head'), 'retracted': False} for record in veto_records]
+            'head': record[0].get('_typed_head'), 'retracted': None,
+            'retraction_evaluated': False} for record in veto_records]
         return {'schema': 'wd.bridge-situation-picture.v1', 'authority': 'none', 'as_of': self._as_of.isoformat(),
             'coverage': 'COMPLETE' if self._coverage else 'UNKNOWN', 'reason': self._reason,
             'cursor': asdict(self._cursor) if self._cursor else None, 'lanes': lanes,

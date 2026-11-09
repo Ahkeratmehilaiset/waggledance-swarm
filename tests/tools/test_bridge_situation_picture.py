@@ -228,6 +228,24 @@ def test_pass_after_veto_does_not_retract_the_veto(tmp_path):
     assert result['prs_awaiting_rco']['value'][0]['result_state'] == 'REPORTED_VETO'
 
 
+@pytest.mark.parametrize('include_retraction', [False, True])
+def test_veto_retraction_status_is_unknown_when_not_evaluated(tmp_path, include_retraction):
+    path = tmp_path / 'events.jsonl'
+    veto = row(agent=RCO, type='finding', status='changes_requested',
+               payload={'result': {'status': 'changes_requested', 'head': 'e' * 40}})
+    events = [veto]
+    if include_retraction:
+        events.append(row(agent=RCO, seconds=1, type='decision', status='retracted',
+                          payload={'head': 'e' * 40, 'source_event_ref': event_id(veto)}))
+    write(path, events)
+    result = picture().update(path, now=stamp(10))
+    observations = result['recognized_veto_observations']['value']
+    assert event_id(veto) in {item['source_event_ref'] for item in observations}
+    assert all(item['retracted'] is None for item in observations)
+    assert all(item['retraction_evaluated'] is False for item in observations)
+    assert result['merge_eligibility'] == 'NOT_EVALUATED'
+
+
 def test_binding_checks_are_indexed_by_target_and_request_id(tmp_path, monkeypatch):
     path = tmp_path / 'events.jsonl'
     module = importlib.import_module('tools.bridge_situation_picture')

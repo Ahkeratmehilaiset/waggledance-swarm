@@ -454,9 +454,12 @@ def evaluate_approval_carry_forward(evidence: Mapping[str, Any]) -> dict[str, An
                        proposed_diff_sha256=proof["new_diff_sha256"], patch_id=proof["old_patch_id"],
                        content_identity=proof, approval_event_sha256=[row["event_sha256"] for row in carried],
                        carried=carried, veto_scan_complete=True, veto_controls=scan["controls"],
-                       accepted_events_sha256=_canonical_sha(events), registry_sha256=_canonical_sha(registry),
+                       accepted_event_count=len(events), accepted_events_sha256=_canonical_sha(events),
+                       registry_sha256=_canonical_sha(registry),
                        ci_head=new["head"], ci_checks=ci_checks,
-                       original_verdict_sha256=_canonical_sha(original),
+                       original_approval_basis_sha256=_canonical_sha(dict(
+                           carried=carried,
+                           build_author_slot_waivers=original.get("build_author_slot_waivers", []))),
                        build_author_slot_waivers=original.get("build_author_slot_waivers", []))
         return dict(carry=True, reason="content_identical_original_reviews_verified", carried=carried,
                     receipt=receipt, original_verdict=original, authority="evidence_only")
@@ -465,7 +468,27 @@ def evaluate_approval_carry_forward(evidence: Mapping[str, Any]) -> dict[str, An
 
 
 def verify_carry_forward_receipt(receipt: Mapping[str, Any], evidence: Mapping[str, Any]) -> bool:
-    """Re-read Git and re-derive reviews, queue controls and CI; flags do nothing."""
+    """Keep the recorded prefix immutable; recheck the entire current ledger.
+
+    Nonmaterial appends need no new receipt. Original refs, scoped controls, CI
+    and Git must still rederive exactly; no selected approval is silently replaced.
+    Diagnostic-only legacy verifier rows are not part of the approval basis.
+    """
+    if not isinstance(receipt, Mapping) or not isinstance(evidence, Mapping):
+        return False
+    events, count = evidence.get("events"), receipt.get("accepted_event_count")
+    if type(events) is not list or type(count) is not int or not 0 < count <= len(events):
+        return False
+    try:
+        if _canonical_sha(events[:count]) != receipt.get("accepted_events_sha256"):
+            return False
+    except (ValueError, TypeError):
+        return False
     current = evaluate_approval_carry_forward(evidence)
-    return (current["carry"] is True and isinstance(receipt, Mapping)
-            and dict(receipt) == current["receipt"])
+    if current["carry"] is not True:
+        return False
+    # Only the observation length/hash may grow. The old prefix was verified
+    # above; every material field, including veto controls, remains exact.
+    expected = dict(current["receipt"], accepted_event_count=count,
+                    accepted_events_sha256=receipt["accepted_events_sha256"])
+    return dict(receipt) == expected

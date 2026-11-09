@@ -406,3 +406,70 @@ def test_approval_carry_plain_cleared_token_does_not_weaken_existing_taxonomy(ap
     e = approval_evidence
     e["events"].extend([_veto(e), _veto(e, kind="decision", status="cleared")])
     assert _api().evaluate_approval_carry_forward(e)["carry"] is False
+
+
+@pytest.mark.parametrize("kind", ["heartbeat", "unrelated_message", "forged_positive"])
+def test_carry_receipt_ignores_nonmaterial_appends_but_keeps_original_refs(approval_evidence, kind):
+    e = approval_evidence
+    receipt = _api().evaluate_approval_carry_forward(e)["receipt"]
+    original_refs = copy.deepcopy(receipt["approval_event_sha256"])
+    if kind == "forged_positive":
+        # A bad positive identity changes legacy diagnostic rows, not authority.
+        extra = copy.deepcopy(e["events"][2])
+        extra["agent_uuid"] = "00000000-0000-4000-8000-000000000000"
+    else:
+        extra = dict(agent="fable-5", agent_uuid=e["roster"]["fable-5"],
+                     type="heartbeat" if kind == "heartbeat" else "message", status="active",
+                     task_id="unrelated-task", message="ordinary append", payload={})
+    e["events"].append(extra)
+    assert _api().verify_carry_forward_receipt(receipt, e) is True
+    assert receipt["approval_event_sha256"] == original_refs
+
+
+@pytest.mark.parametrize("mutation", ["edit", "reorder", "remove_prefix", "truncate_tail"])
+def test_carry_receipt_requires_the_original_complete_prefix(approval_evidence, mutation):
+    e = approval_evidence
+    e["events"].append(dict(agent="fable-5", type="heartbeat", task_id="elsewhere"))
+    receipt = _api().evaluate_approval_carry_forward(e)["receipt"]
+    if mutation == "edit":
+        e["events"][-1]["message"] = "mutated even though nonmaterial"
+    elif mutation == "reorder":
+        e["events"][0], e["events"][1] = e["events"][1], e["events"][0]
+    elif mutation == "remove_prefix":
+        del e["events"][0]
+    else:
+        e["events"].pop()
+    assert _api().verify_carry_forward_receipt(receipt, e) is False
+
+
+@pytest.mark.parametrize("head", ["old", "new"])
+@pytest.mark.parametrize("uuid_valid", [True, False])
+def test_carry_receipt_scans_all_later_backdated_vetoes(approval_evidence, head, uuid_valid):
+    e = approval_evidence
+    receipt = _api().evaluate_approval_carry_forward(e)["receipt"]
+    e["events"].append(dict(agent="fable-5", type="heartbeat", task_id="elsewhere"))
+    event = _veto(e, head=head)
+    if not uuid_valid:
+        event["agent_uuid"] = "00000000-0000-4000-8000-000000000000"
+    e["events"].append(event)
+    assert _api().verify_carry_forward_receipt(receipt, e) is False
+
+
+@pytest.mark.parametrize("count", [None, True, -1, 0, 999, "3"])
+def test_carry_receipt_prefix_count_is_required_and_typed(approval_evidence, count):
+    e = approval_evidence
+    receipt = _api().evaluate_approval_carry_forward(e)["receipt"]
+    if count is None:
+        receipt.pop("accepted_event_count", None)
+    else:
+        receipt["accepted_event_count"] = count
+    assert _api().verify_carry_forward_receipt(receipt, e) is False
+
+
+def test_carry_receipt_cannot_reselect_a_new_original_approval(approval_evidence):
+    e = approval_evidence
+    receipt = _api().evaluate_approval_carry_forward(e)["receipt"]
+    extra = copy.deepcopy(e["events"][2])
+    extra["ts_utc"] = "2026-11-09T02:00:00Z"
+    e["events"].append(extra)
+    assert _api().verify_carry_forward_receipt(receipt, e) is False

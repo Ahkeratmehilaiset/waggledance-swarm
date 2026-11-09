@@ -6305,6 +6305,137 @@ catch {{
         assert "--no-replace-objects" in source
 
 
+def _terminal_store_fixture(tmp_path: Path, case: str = "valid") -> tuple[str, Path]:
+    """Own only Appx inventory and ProgramFiles; keep resolver guards executable."""
+    program_files = tmp_path / "terminal-program-files"
+    store = program_files / "WindowsApps"
+    install = store / "Microsoft.WindowsTerminal_fixture"
+    if case == "outside_root":
+        install = tmp_path / "outside-store"
+    elif case == "prefix_sibling":
+        install = program_files / "WindowsApps-shadow" / "package"
+    elif case == "root_itself":
+        install = store
+    junction = ""
+    real_install = store / "real-package" if case == "reparse_parent" else install
+    real_install.mkdir(parents=True)
+    terminal = install / "wt.exe"
+    if case == "directory_leaf":
+        terminal.mkdir()
+    elif case != "missing_leaf":
+        (real_install / "wt.exe").write_bytes(b"fixture application: never executed\n")
+    quote = lambda text: str(text).replace("'", "''")
+    if case == "reparse_parent":
+        assert not install.exists() and real_install.is_relative_to(store)
+        junction = (
+            f"New-Item -ItemType Junction -Path '{quote(install)}' "
+            f"-Target '{quote(real_install)}' -ErrorAction Stop | Out-Null\n"
+        )
+    package = dict(Name="Microsoft.WindowsTerminal",
+                   PackageFamilyName="Microsoft.WindowsTerminal_8wekyb3d8bbwe",
+                   PublisherId="8wekyb3d8bbwe", Status="Ok", SignatureKind="Store",
+                   InstallLocation=str(install))
+    invalid_fields = {"wrong_name": "Name", "wrong_family": "PackageFamilyName",
+                      "wrong_publisher": "PublisherId", "wrong_status": "Status",
+                      "wrong_signature": "SignatureKind"}
+    packages = [package]
+    if case == "missing_package":
+        packages = []
+    elif case == "multiple_packages":
+        packages = [package, dict(package)]
+    elif case in invalid_fields:
+        package[invalid_fields[case]] = "untrusted-fixture-value"
+    elif case == "mixed_identities":
+        packages += [dict(package, **{field: "untrusted-fixture-value"})
+                     for field in invalid_fields.values()]
+    mismatch = ""
+    if case == "command_mismatch":
+        other = tmp_path / "other-application.exe"
+        other.write_bytes(b"other fixture application: never executed\n")
+        mismatch = rf"""
+function Get-Command {{
+  [CmdletBinding()]
+  param([string] $Name, [object] $CommandType)
+  if ($Name -ceq '{quote(terminal)}') {{
+    return Microsoft.PowerShell.Core\Get-Command -Name '{quote(other)}' -CommandType Application -ErrorAction Stop
+  }}
+  return Microsoft.PowerShell.Core\Get-Command @PSBoundParameters
+}}
+"""
+    script = rf"""
+$ErrorActionPreference = 'Stop'
+$script:FixtureTerminalProgramFiles = '{quote(program_files)}'
+$decodedPackages = ConvertFrom-Json -InputObject '{quote(json.dumps(packages))}'
+$script:FixtureTerminalPackages = if ($null -eq $decodedPackages) {{ @() }} else {{ @($decodedPackages) }}
+{junction}
+function Get-FixtureTerminalPackages {{
+  [CmdletBinding()]
+  param([string] $Name)
+  if ($Name -cne 'Microsoft.WindowsTerminal') {{ throw 'unexpected fixture package query' }}
+  return $script:FixtureTerminalPackages
+}}
+function Get-FixtureTerminalResolverSource {{
+  param([Management.Automation.Language.FunctionDefinitionAst] $FunctionAst)
+  if ($FunctionAst.Name -cne 'Resolve-WdWindowsTerminalApplication') {{ throw 'unexpected fixture function' }}
+  $text = [string]$FunctionAst.Extent.Text
+  $appx = 'Appx\Get-AppxPackage'
+  if ([regex]::Matches($text, [regex]::Escape($appx)).Count -ne 1) {{ throw 'Appx fixture boundary changed' }}
+  $folderPattern = '\[Environment\]::GetFolderPath\(\s*\[Environment\+SpecialFolder\]::ProgramFiles\s*\)'
+  $folders = [regex]::Matches($text, $folderPattern)
+  if ($folders.Count -ne 1) {{ throw 'ProgramFiles fixture boundary changed' }}
+  return $text.Replace($appx, 'Get-FixtureTerminalPackages').Replace(
+    $folders[0].Value, '$script:FixtureTerminalProgramFiles')
+}}
+{mismatch}
+"""
+    return script, terminal
+
+
+@pytest.mark.skipif(
+    WINDOWS_POWERSHELL is None or os.name != "nt",
+    reason="Windows PowerShell 5.1 is unavailable",
+)
+@pytest.mark.parametrize("case, error", [
+    ("valid", None), ("mixed_identities", None),
+    ("missing_package", "expected exactly one healthy Store Windows Terminal package"),
+    ("multiple_packages", "expected exactly one healthy Store Windows Terminal package"),
+    *[(case, "expected exactly one healthy Store Windows Terminal package")
+      for case in ("wrong_name", "wrong_family", "wrong_publisher", "wrong_status", "wrong_signature")],
+    *[(case, "escaped the protected WindowsApps root")
+      for case in ("outside_root", "prefix_sibling", "root_itself")],
+    ("missing_leaf", "fleet safety path component is missing"),
+    ("directory_leaf", "fleet safety path is not a file"),
+    ("reparse_parent", "fleet safety path component is a reparse point"),
+    ("command_mismatch", "did not resolve to the trusted Store application"),
+])
+def test_terminal_store_fixture_preserves_real_resolver_refusals(tmp_path, case, error):
+    fixture_script, expected = _terminal_store_fixture(tmp_path, case)
+    launcher = str(REBOOT / "start-wd-all.ps1").replace("'", "''")
+    result = _run_powershell(f"""
+{fixture_script}
+$tokens = $null; $errors = $null
+$ast = [Management.Automation.Language.Parser]::ParseFile('{launcher}', [ref]$tokens, [ref]$errors)
+if ($errors.Count) {{ throw 'fleet launcher parse failed' }}
+foreach ($name in @('Assert-WdFleetPathWithoutReparse', 'Resolve-WdWindowsTerminalApplication')) {{
+  $functionAst = $ast.Find({{ param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name
+  }}, $true)
+  if ($null -eq $functionAst) {{ throw "missing fleet function: $name" }}
+  $source = if ($name -ceq 'Resolve-WdWindowsTerminalApplication') {{
+    Get-FixtureTerminalResolverSource -FunctionAst $functionAst
+  }} else {{ [string]$functionAst.Extent.Text }}
+  . ([scriptblock]::Create($source))
+}}
+@{{ terminal = (Resolve-WdWindowsTerminalApplication) }} | ConvertTo-Json -Compress
+""", check=False, executable=WINDOWS_POWERSHELL)
+    if error is not None:
+        assert result.returncode != 0
+        assert error in result.stdout + result.stderr
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert Path(json.loads(result.stdout)["terminal"]).resolve() == expected.resolve()
+
+
 @pytest.mark.skipif(
     WINDOWS_POWERSHELL is None or os.name != "nt",
     reason="Windows PowerShell 5.1 is unavailable",
@@ -6336,8 +6467,10 @@ def test_reboot_native_applications_ignore_path_and_environment_aliases(
     )
     attacker_quoted = str(attacker).replace("'", "''")
     python_quoted = configured_python.replace("'", "''")
+    fixture_script, fixture_terminal = _terminal_store_fixture(tmp_path)
     result = _run_powershell(
         f"""
+{fixture_script}
 $oldPath = $env:Path
 $oldAppData = $env:APPDATA
 $oldLocalAppData = $env:LOCALAPPDATA
@@ -6367,7 +6500,10 @@ try {{
       $true
     )
     if ($null -eq $functionAst) {{ throw "missing fleet function: $name" }}
-    . ([scriptblock]::Create($functionAst.Extent.Text))
+    $source = if ($name -ceq 'Resolve-WdWindowsTerminalApplication') {{
+      Get-FixtureTerminalResolverSource -FunctionAst $functionAst
+    }} else {{ [string]$functionAst.Extent.Text }}
+    . ([scriptblock]::Create($source))
   }}
   $fleetCodex = Resolve-WdNpmNativeApplication -Name codex.cmd
   $fleetClaude = Resolve-WdNpmNativeApplication -Name claude.cmd
@@ -6493,7 +6629,7 @@ finally {{
     ).resolve()
     terminal = Path(payload["terminal"]).resolve()
     assert terminal.name.casefold() == "wt.exe"
-    assert "program files\\windowsapps" in str(terminal).casefold()
+    assert terminal == fixture_terminal.resolve()
     assert payload["attacker_python_rejected"] is True
 
 

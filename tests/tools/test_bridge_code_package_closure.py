@@ -652,6 +652,97 @@ def test_staged_mind_cli_help_is_available_without_site_packages(staged_mind_sou
     assert "Traceback" not in result.stderr
 
 
+SITUATION_MODULES = ("tools.bridge_situation_picture", "tools.bridge_situation_host")
+
+
+def _assert_situation_delivery(definition):
+    seeds = [name.replace(".", "/") + ".py" for name in SITUATION_MODULES]
+    reached, unresolved = _closure(seeds)
+    assert not unresolved, unresolved
+    required = set(seeds) | set(reached)
+    required |= {
+        (parent / "__init__.py").as_posix()
+        for relative in required
+        for parent in Path(relative).parents
+        if parent != Path(".") and (REPO_ROOT / parent / "__init__.py").is_file()
+    }
+    missing = required - set(definition["python_files"])
+    assert not missing, f"situation_dependency_drop: {sorted(missing)}"
+    return required
+
+
+@pytest.mark.parametrize("module", SITUATION_MODULES)
+def test_situation_roots_are_hashed_and_smoked_without_publishing_a_cli(module):
+    definition = _definition()
+    relative = module.replace(".", "/") + ".py"
+    assert definition["python_files"].count(relative) == 1
+    assert definition["import_smoke"]["package_modules"].count(module) == 1
+    assert relative not in definition["python_entrypoints"].values()
+
+
+def test_situation_roots_include_their_transitive_local_imports_and_initializers():
+    _assert_situation_delivery(_definition())
+
+
+@pytest.mark.parametrize("relative", [
+    "waggledance/core/bridge_log_reader.py",
+    "tools/bridge_compact_view.py",
+])
+def test_situation_delivery_refuses_a_missing_existing_dependency(relative):
+    definition = _definition()
+    _assert_situation_delivery(definition)
+    mutant = deepcopy(definition)
+    mutant["python_files"].remove(relative)
+    with pytest.raises(AssertionError, match="situation_dependency_drop"):
+        _assert_situation_delivery(mutant)
+
+
+@pytest.mark.parametrize("module", SITUATION_MODULES)
+def test_staged_situation_imports_use_only_packaged_source_and_declared_site(staged_mind_source, module):
+    """No source-worktree fallback; the existing pinned pydantic dependency is explicit."""
+    import importlib.util
+
+    definition = _definition()
+    required = _assert_situation_delivery(definition)
+    expected = {relative: hashlib.sha256((REPO_ROOT / relative).read_bytes()).hexdigest()
+                for relative in required}
+    site_roots = set()
+    for dependency in definition["python_requirements"]:
+        relative = Path(dependency["import_path"])
+        name = relative.parts[0].removesuffix(".py")
+        spec = importlib.util.find_spec(name)
+        assert spec is not None and spec.origin, name
+        origin = Path(spec.origin).resolve()
+        site_roots.add(str(origin.parent.parent if len(relative.parts) > 1 else origin.parent))
+    script = (
+        "import hashlib, importlib, json, pathlib, sys\n"
+        "root = pathlib.Path(sys.argv[1]).resolve()\n"
+        "sys.path[:] = [str(root), *sys.path, *json.loads(sys.argv[3])]\n"
+        "expected = json.loads(sys.argv[4])\n"
+        "loaded = importlib.import_module(sys.argv[2])\n"
+        "internal = {}\n"
+        "for name, value in sys.modules.copy().items():\n"
+        " if name.split('.')[0] in ('tools', 'waggledance') and getattr(value, '__file__', None):\n"
+        "  path = pathlib.Path(value.__file__).resolve()\n"
+        "  assert path.is_relative_to(root), (name, str(path))\n"
+        "  relative = path.relative_to(root).as_posix()\n"
+        "  assert relative in expected, (name, relative)\n"
+        "  assert hashlib.sha256(path.read_bytes()).hexdigest() == expected[relative], name\n"
+        "  internal[name] = relative\n"
+        "assert loaded.__file__ and sys.flags.isolated == sys.flags.no_site == 1\n"
+        "print(json.dumps({'loaded': internal}))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-c", script, str(staged_mind_source), module,
+         json.dumps(sorted(site_roots)), json.dumps(expected)],
+        cwd=staged_mind_source, capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)["loaded"]
+    assert module in observed
+    assert observed[module] == module.replace(".", "/") + ".py"
+
+
 def test_consensus_gate_fixes_ship_and_are_smoke_checked_without_activation():
     """A new bundle must deliver its reviewed gate fixes, not just a new pointer.
 

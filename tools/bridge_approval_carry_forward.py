@@ -502,3 +502,199 @@ def verify_carry_forward_receipt(receipt: Mapping[str, Any], evidence: Mapping[s
     expected = dict(current["receipt"], accepted_event_count=count,
                     accepted_events_sha256=receipt["accepted_events_sha256"])
     return dict(receipt) == expected
+
+
+def _selected_original_events(original: Mapping, events: list) -> list[Mapping]:
+    selected = []
+    for role in _CARRY_APPROVAL_ROLES:
+        info = original["identities"][role]
+        if info.get("build_author_slot_waived") is True:
+            _require(info.get("build_author_slot_waiver_satisfied") is True, "original author waiver is blocked")
+            continue
+        index = info.get("approval_index")
+        _require(type(index) is int and 0 <= index < len(events), "original review index is missing")
+        selected.append(events[index])
+    return selected
+
+
+def _review_basis(value: Any, *, repo: str, pr_number: int, task_id: str,
+                  base_ref: str, old_head: str) -> dict:
+    fields = {"schema", "repository", "pr_number", "task_id", "base_ref", "head",
+              "base_sha", "merge_base", "diff_sha256", "patch_id"}
+    _require(isinstance(value, Mapping) and set(value) == fields, "original reviewed basis is missing or malformed")
+    basis = dict(value)
+    expected = dict(schema="wd.bridge-reviewed-basis.v1", repository=repo, pr_number=pr_number,
+                    task_id=task_id, base_ref=base_ref, head=old_head)
+    _require(type(basis["pr_number"]) is int
+             and all(basis[key] == item for key, item in expected.items()),
+             "original reviewed basis belongs to another PR/task/ref/head")
+    for key in ("head", "base_sha", "merge_base", "patch_id"):
+        _require(type(basis[key]) is str and _SHA.fullmatch(basis[key]) is not None,
+                 "original reviewed basis requires exact commit/patch identities")
+    _require(type(basis["diff_sha256"]) is str
+             and re.fullmatch(r"[0-9a-f]{64}", basis["diff_sha256"]) is not None,
+             "original reviewed content digest is missing")
+    return basis
+
+
+def _bound_review_origin(*, request: Mapping, selected: list, events: list, registry: dict,
+                         author: str, repo_root: Path, repo: str, pr_number: int,
+                         task_id: str, base_ref: str, old_head: str) -> dict:
+    refs = [_canonical_sha(event) for event in selected]
+    binding_ref = request.get("origin_binding_event_sha256")
+    parse = lambda value: _review_basis(value, repo=repo, pr_number=pr_number, task_id=task_id,
+                                        base_ref=base_ref, old_head=old_head)
+    if binding_ref is None:
+        bases = []
+        for event in selected:
+            payload = event.get("payload")
+            _require(isinstance(payload, Mapping), "original approval has no reviewed basis")
+            basis = parse(payload.get("review_basis"))
+            _require(payload.get("review_basis_sha256") == _canonical_sha(basis),
+                     "original approval reviewed-basis digest does not match")
+            bases.append(basis)
+        _require(bool(bases) and all(basis == bases[0] for basis in bases),
+                 "original approvals disagree on reviewed basis")
+        return dict(schema="wd.bridge-bound-review-origin.v1", mode="direct", review_basis=bases[0],
+                    approval_event_sha256=refs, authentication="canonical_registered_identity_binding")
+
+    _require(type(binding_ref) is str and re.fullmatch(r"[0-9a-f]{64}", binding_ref) is not None,
+             "original origin event ref is invalid")
+    matches = [event for event in events if _canonical_sha(event) == binding_ref]
+    _require(len(matches) == 1, "original origin event is absent or ambiguous")
+    binding = matches[0]
+    from waggledance.core.bridge_identity_registry import bridge_identity_binding_status
+    issuers = {event["agent"] for event in selected}
+    _require(binding.get("agent") in issuers and binding.get("agent") != author
+             and bridge_identity_binding_status(binding, registry=registry, restricted_agents=issuers) == "valid"
+             and binding.get("task_id") == task_id and binding.get("type") == "decision"
+             and binding.get("status") == "review_basis_bound", "original descriptor issuer/binding is not authorized")
+    payload = binding.get("payload")
+    origin = payload.get("review_origin") if isinstance(payload, Mapping) else None
+    _require(isinstance(origin, Mapping) and origin.get("schema") == "wd.bridge-review-origin.v1"
+             and origin.get("approval_event_sha256") == refs, "original descriptor review references are not bound")
+    basis = parse(origin.get("review_basis"))
+    descriptor = origin.get("descriptor")
+    _require(isinstance(descriptor, Mapping) and type(descriptor.get("path")) is str
+             and type(descriptor.get("bytes")) is int and 0 < descriptor["bytes"] <= 1024 * 1024
+             and type(descriptor.get("sha256")) is str
+             and re.fullmatch(r"[0-9a-f]{64}", descriptor["sha256"]) is not None,
+             "original review descriptor is malformed")
+    path = Path(descriptor["path"])
+    _require(path.is_absolute() and ".." not in path.parts, "original descriptor path must be absolute")
+    _trusted_paths._no_reparse(path)
+    roots = [repo_root.resolve(strict=True) / ".codex-audit"]
+    runtime = os.environ.get("AGENT_BRIDGE_RUNTIME_ROOT")
+    if runtime and Path(runtime).is_dir():
+        roots.append(Path(runtime).resolve(strict=True) / "shared")
+    _require(any(path.is_relative_to(root) for root in roots), "original descriptor is outside approved artifact roots")
+    raw, _ = _file_bytes(path, 1024 * 1024)
+    _require(len(raw) == descriptor["bytes"] and hashlib.sha256(raw).hexdigest() == descriptor["sha256"],
+             "original review descriptor bytes do not match canonical binding")
+    body = json.loads(raw.decode("utf-8"), object_pairs_hook=_trusted_paths._pairs,
+                      parse_constant=_trusted_paths._constant)
+    _require(isinstance(body, Mapping) and body.get("schema") == "wd.bridge-review-snapshot.v1"
+             and body.get("review_basis") == basis and body.get("approval_event_sha256") == refs,
+             "original review snapshot does not bind the reviewed basis and approvals")
+    # Each original voter commits to the same basis. The descriptor supplies
+    # the preimage and references; its issuer cannot vouch for another voter.
+    for event in selected:
+        fields = event.get("payload", {})
+        _require(isinstance(fields, Mapping)
+                 and fields.get("review_basis_sha256") == _canonical_sha(basis),
+                 "original approval has no matching reviewed-basis commitment")
+        if "review_basis" in fields:
+            _require(fields["review_basis"] == basis,
+                     "original descriptor contradicts an approval's direct reviewed basis")
+    return dict(schema="wd.bridge-bound-review-origin.v1", mode="descriptor", review_basis=basis,
+                approval_event_sha256=refs, binding_event_sha256=binding_ref, descriptor=dict(descriptor),
+                authentication="canonical_registered_identity_binding")
+
+
+def derive_live_carry_forward(*, request: Mapping, events_path: Path, repo: str, pr_number: int,
+                              task_id: str, expected_head: str, expected_base_sha: str,
+                              runner=None, accepted_queue_checker=None) -> dict:
+    """Build carry evidence from the real readers, never caller queue/CI flags.
+
+    Runner/checker are the existing test seams. The default path uses the real
+    accepted-queue preflight, full ledger and strict github.com snapshot reader.
+    Registered bridge identity binding is not a cryptographic signature. This
+    function proves review inputs; final merge/receipt policy remains separate.
+    """
+    try:
+        from tools.idle_consensus_auto_merge import (
+            _accepted_queue_preflight, _read_bridge_events, _pr_author_resolution, verify_bridge_consensus,
+        )
+        from tools.pr_status_snapshot import build_pr_status_snapshot
+        from waggledance.core.bridge_identity_registry import load_bridge_identity_registry
+        from tools.check_rco_pass_present import (
+            DEFAULT_RCO_AGENTS, check_rco_pass_present, _is_qualifying_rco_pass,
+        )
+
+        _require(isinstance(request, Mapping), "carry request must be an object")
+        old_head = request.get("approved_head")
+        _require(type(old_head) is str and _SHA.fullmatch(old_head) is not None,
+                 "carry request needs the exact approved head")
+        _require(isinstance(events_path, Path), "carry needs the canonical events path")
+        queue = _accepted_queue_preflight(events_path=events_path, checker=accepted_queue_checker)
+        _require(queue.get("ok") is True and queue.get("complete") is True,
+                 "carry accepted queue is incomplete")
+        events = _read_bridge_events(events_path)
+        snapshot = build_pr_status_snapshot(pr_number=pr_number, repo=repo, expected_base_sha=expected_base_sha,
+                                            require_ci_evidence=True, runner=runner)
+        _require(snapshot["head_sha"] == expected_head and snapshot["base_sha"] == snapshot["base_tip_sha"],
+                 "carry proposed snapshot head/base is stale")
+        ci = snapshot["ci_evidence"]
+        _require(ci["head_sha"] == expected_head and ci["all_required_success"] is True,
+                 "carry required CI is not green at proposed head")
+        resolution = _pr_author_resolution(snapshot, task_id, events=events,
+                                          expected_head_sha=expected_head, expected_base_sha=snapshot["base_sha"])
+        _require(resolution.get("ok") is True, "carry PR author is not bound to the current snapshot")
+        author = resolution["author_agent"]
+        original = verify_bridge_consensus(events=events, task_id=task_id, head_sha=old_head,
+                                           pr_number=pr_number, author_agent=author)
+        _require(original.get("ok") is True, "original head has no valid Rule9a consensus")
+        selected = _selected_original_events(original, events)
+        rco = check_rco_pass_present(events=events, task_id=task_id, head=old_head,
+                                     rco_agent=DEFAULT_RCO_AGENTS, author_agent=author)
+        _require(rco.get("ok") is True, "original head has no qualifying exact-head RCO_PASS")
+        _require(all(_is_qualifying_rco_pass(event, old_head, event["agent"])
+                     for event in selected if event["agent"] in DEFAULT_RCO_AGENTS),
+                 "selected original RCO approval lacks the required exact-head binding")
+        root_value = request.get("repo_root")
+        _require(isinstance(root_value, (str, Path)) and bool(str(root_value)), "carry repository root is missing")
+        root = Path(root_value)
+        git = _git_reader(root)
+        remote = git("config", "--get", "remote.origin.url").decode("utf-8", "strict").strip().casefold()
+        _require(remote in {f"https://github.com/{repo}.git".casefold(), f"https://github.com/{repo}".casefold(),
+                            f"git@github.com:{repo}.git".casefold()}, "carry Git origin does not match target repository")
+        registry = load_bridge_identity_registry()
+        origin = _bound_review_origin(request=request, selected=selected, events=events, registry=registry,
+                                      author=author, repo_root=root, repo=repo, pr_number=pr_number,
+                                      task_id=task_id, base_ref=snapshot["base_ref"], old_head=old_head)
+        basis = origin["review_basis"]
+        for hint, actual in (("approved_base_sha", basis["base_sha"]), ("proposed_base_sha", snapshot["base_sha"])):
+            _require(hint not in request or request[hint] == actual, "carry base hint conflicts with authenticated source")
+        side = dict(repository=repo, pr_number=pr_number, base_ref=snapshot["base_ref"])
+        # A JSON pair is an unambiguous check key even if two apps share a name.
+        check_key = lambda name, app: json.dumps([name, app], separators=(",", ":"), ensure_ascii=True)
+        evidence = dict(schema="wd.bridge-approval-carry-forward-evidence.v1", repo_path=str(root),
+                        task_id=task_id, pr_author=author, roster=registry, recognized_rco_agents=list(DEFAULT_RCO_AGENTS),
+                        approved=dict(side, head=old_head, base_sha=basis["base_sha"]),
+                        proposed=dict(side, head=snapshot["head_sha"], base_sha=snapshot["base_sha"]),
+                        events=events, accepted_queue_complete=True,
+                        ci=dict(required=[check_key(row["name"], row["app_id"]) for row in ci["required"]],
+                                runs=[dict(name=check_key(row["name"], row["app_id"]), head=row["head_sha"],
+                                           status=row["status"], conclusion=row["conclusion"]) for row in ci["runs"]]))
+        result = evaluate_approval_carry_forward(evidence)
+        _require(result["carry"] is True, result["reason"])
+        proof = result["receipt"]["content_identity"]
+        _require(basis["merge_base"] == proof["old_merge_base"]
+                 and basis["diff_sha256"] == proof["old_diff_sha256"] and basis["patch_id"] == proof["old_patch_id"],
+                 "authenticated original reviewed content does not match Git")
+        paths = {bytes.fromhex(entry["path_hex"]).decode("utf-8", "strict") for entry in proof["new_entries"]}
+        _require(paths == set(snapshot["changed_paths"]), "carry snapshot paths do not match actual Git change set")
+        return dict(result, authority="live_review_inputs_derived", review_origin=origin, ci_evidence=ci,
+                    _fresh_snapshot=snapshot, _events=events, _evidence=evidence)
+    except (ValueError, TypeError, KeyError, OSError) as exc:
+        return dict(carry=False, reason=str(exc), carried=[], receipt=None, authority="no_carry")

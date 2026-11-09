@@ -361,6 +361,7 @@ def evaluate_auto_merge_gate(
     now_utc: datetime | None = None,
     grok_fallback: bool = False,
     _grok_reports_root: Path | None = None,
+    carry_forward: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate and optionally apply the final idle auto-merge gate.
 
@@ -399,6 +400,33 @@ def evaluate_auto_merge_gate(
         review_policy=review_policy,
         now_utc=now_utc,
     )
+    carry_material: dict[str, Any] | None = None
+    if carry_forward is not None:
+        if review_policy != REVIEW_POLICY_LEGACY or require_bridge_consensus is not True:
+            return dict(ok=False, decision="operator_review_required", would_merge=False,
+                        operator_review_required=True,
+                        reasons=["carry-forward requires complete legacy Rule9a consensus; Rule12 carry is unsupported"])
+        # This intermediate API prepares a real plan. Carry apply stays closed
+        # until the actual merge/MAGMA receipt consumer can rederive the proof.
+        if apply:
+            return dict(ok=False, decision="operator_review_required", would_merge=False,
+                        operator_review_required=True, reasons=["carry apply requires the integrated semantic receipt consumer"])
+        from tools.bridge_approval_carry_forward import derive_live_carry_forward
+        carry_material = derive_live_carry_forward(
+            request=carry_forward, events_path=events_path, repo=repo,
+            pr_number=_require_int(pr_status.get("pr_number"), "pr_number"),
+            task_id=bridge_task_id if bridge_task_id != "" else consensus_proposal_id,
+            expected_head=expected_head, expected_base_sha=expected_base_sha,
+            runner=runner, accepted_queue_checker=accepted_queue_checker,
+        )
+        if carry_material.get("carry") is not True:
+            return dict(ok=False, decision="operator_review_required", would_merge=False,
+                        operator_review_required=True, reasons=["carry refused: " + carry_material["reason"]],
+                        carry_forward={key: value for key, value in carry_material.items() if not key.startswith("_")})
+        # The caller's snapshot cannot hide paths, CI or tuple drift. Existing
+        # receipt_verified remains legacy *plan metadata*, never a carry proof;
+        # carry apply above is unavailable until semantic receipt verification.
+        pr_status = dict(carry_material["_fresh_snapshot"], receipt_verified=pr_status.get("receipt_verified", False))
     diff_text = _diff_text(pr_status)
     diff_marker = find_diff_private_marker(diff_text)
     if diff_marker is not None:
@@ -428,6 +456,12 @@ def evaluate_auto_merge_gate(
         checker=accepted_queue_checker,
     )
     events = _read_bridge_events(events_path) if events_path is not None else []
+    carry_still_valid = False
+    if carry_material is not None:
+        from tools.bridge_approval_carry_forward import verify_carry_forward_receipt
+        refreshed = dict(carry_material["_evidence"], events=events, accepted_queue_complete=(
+            accepted_queue_preflight.get("ok") is True and accepted_queue_preflight.get("complete") is True))
+        carry_still_valid = verify_carry_forward_receipt(carry_material["receipt"], refreshed)
     pr_number = _require_int(pr_status.get("pr_number"), "pr_number")
     bridge_gate_task_id = (
         bridge_task_id if bridge_task_id != "" else consensus_proposal_id
@@ -512,12 +546,14 @@ def evaluate_auto_merge_gate(
         events=events,
         task_id=bridge_gate_task_id,
         pr_number=pr_number,
-        head_sha=head_sha,
+        head_sha=carry_material["receipt"]["approved_head"] if carry_still_valid else head_sha,
         author_agent=author_agent,
         checked=events_path is not None,
     )
 
     blockers: list[str] = []
+    if carry_material is not None and not carry_still_valid:
+        blockers.append("carry proof changed after its live snapshot/queue derivation")
     if author_resolution.get("ok") is not True:
         reasons = author_resolution.get("reasons") or [
             "PR author could not be resolved"
@@ -596,7 +632,7 @@ def evaluate_auto_merge_gate(
             events=events,
             events_path=events_path,
             task_id=bridge_gate_task_id,
-            head_sha=head_sha,
+            head_sha=carry_material["receipt"]["approved_head"] if carry_still_valid else head_sha,
             pr_number=pr_number,
             author_agent=author_agent,
             charter_path=charter_path,
@@ -706,6 +742,15 @@ def evaluate_auto_merge_gate(
     )
     base["author_resolution"] = author_resolution
     base["review_policy"] = review_policy
+    if carry_material is not None:
+        base["carry_forward"] = {key: value for key, value in carry_material.items() if not key.startswith("_")}
+        base["carry_forward"]["current_ledger_reverified"] = carry_still_valid
+        if carry_still_valid:
+            # Keep the actual original approval head visible. No event is
+            # rewritten into a new-head vote and CI/signatures never transfer.
+            for verdict in (base["rco_pass_gate"], base["bridge_consensus"]):
+                verdict["carried_from_head"] = carry_material["receipt"]["approved_head"]
+                verdict["carried_to_head"] = head_sha
     if pool_rco_slot_lift is not None:
         # Only present under rule12, so legacy reports stay unchanged.
         base["pool_rco_slot_lift"] = pool_rco_slot_lift

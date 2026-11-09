@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,8 +36,7 @@ def pinned_fleet(tmp_path, monkeypatch):
     return root, executable
 
 
-@pytest.fixture
-def history(tmp_path):
+def _build_history(tmp_path, filename="sample.txt"):
     root = tmp_path / "git-fixture"
     root.mkdir()
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -48,17 +48,24 @@ def history(tmp_path):
                                        stderr=subprocess.PIPE)
     git("init", "--quiet")
     git("config", "core.autocrlf", "false")
-    (root / "sample.txt").write_bytes(b"before\n")
-    git("add", "sample.txt")
+    target = root / filename
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"before\n")
+    git("add", filename)
     git("commit", "--quiet", "-m", "base")
     base = git("rev-parse", "HEAD").decode().strip()
-    (root / "sample.txt").write_bytes(b"alpha gamma\n")
-    git("add", "sample.txt")
+    target.write_bytes(b"alpha gamma\n")
+    git("add", filename)
     git("commit", "--quiet", "-m", "old reviewed content")
     old = git("rev-parse", "HEAD").decode().strip()
     tree = git("rev-parse", "HEAD^{tree}").decode().strip()
     new = git("commit-tree", tree, "-p", base, data=b"new message only\n").decode().strip()
     return root, git, dict(old_base=base, old_head=old, new_base=base, new_head=new)
+
+
+@pytest.fixture
+def history(tmp_path):
+    return _build_history(tmp_path)
 
 
 def test_real_message_only_change_has_rederivable_identity(history):
@@ -536,3 +543,342 @@ def test_carry_receipt_covered_controls_keep_harmless_append_valid(approval_evid
     assert _api().verify_carry_forward_receipt(receipt, e) is True
     e["events"].append(dict(agent="fable-5", type="heartbeat", task_id="elsewhere"))
     assert _api().verify_carry_forward_receipt(receipt, e) is True
+
+
+@pytest.fixture
+def live_factory(tmp_path):
+    from waggledance.core.bridge_identity_registry import load_bridge_identity_registry
+    path = "tools/agent_next_task.py"
+    root, git, pair = _build_history(tmp_path, path)
+    repo, task, pr = "example/carry", "fable-5/carry-fixture-9001", 9001
+    git("remote", "add", "origin", f"https://github.com/{repo}.git")
+    proof = _api().derive_content_identity(repo_root=root, **pair)
+    basis = dict(schema="wd.bridge-reviewed-basis.v1", repository=repo, pr_number=pr,
+                 task_id=task, base_ref="main", head=pair["old_head"], base_sha=pair["old_base"],
+                 merge_base=proof["old_merge_base"], diff_sha256=proof["old_diff_sha256"], patch_id=proof["old_patch_id"])
+    roster = load_bridge_identity_registry()
+    claim = dict(agent="fable-5", agent_uuid=roster["fable-5"], type="claim", status="active",
+                 task_id=task, ts_utc="2026-11-09T01:00:00Z", write_scope=[path], payload=dict(pr=pr))
+    events = [claim] + [dict(agent=agent, agent_uuid=roster[agent], type="decision", status=status,
+                            task_id=task, ts_utc=f"2026-11-09T01:0{i}:00Z", message="",
+                            payload=dict(head=pair["old_head"], exact_head=pair["old_head"], pr=pr, review_basis=copy.deepcopy(basis),
+                                         review_basis_sha256=_event_hash(basis)))
+                        for i, (agent, status) in enumerate((("codex-lead-1", "build_consensus"),
+                                                            ("codex-tools-1", "build_consensus"),
+                                                            ("claude-rco-1", "rco_pass")), 1)]
+    context = dict(root=root, git=git, pair=pair, repo=repo, task=task, pr=pr, path=path, basis=basis,
+                   events=events, events_path=tmp_path / "events.jsonl", calls=[], fault="", queue=True)
+    context["request"] = dict(approved_head=pair["old_head"], approved_base_sha=pair["old_base"], repo_root=root)
+
+    def runner(command):
+        command = list(command)
+        context["calls"].append(command)
+        fault = context["fault"]
+        head, base = pair["new_head"], pair["new_base"]
+        if command[:3] == ["gh", "pr", "view"]:
+            payload = dict(number=pr, title="carry factory", headRefOid=head, headRefName=context["task"],
+                           baseRefOid=base, baseRefName="main", mergeable="MERGEABLE", state="OPEN", isDraft=False,
+                           url=f"https://github.com/{repo}/pull/{pr}", updatedAt="2026-11-09T01:30:00Z",
+                           changedFiles=1, statusCheckRollup=[dict(name="unit", state="SUCCESS")],
+                           author=dict(login="Ahkeratmehilaiset", name="", email=""),
+                           commits=[dict(oid=head, authors=[dict(name="Jani", email="jani@jkhservice.fi", login="")])])
+        elif command[:3] == ["gh", "pr", "diff"]:
+            return SimpleNamespace(returncode=0, stdout=f"diff --git a/{path} b/{path}\n", stderr="")
+        elif command[:2] == ["gh", "api"]:
+            endpoint = command[4]
+            if "/git/ref/heads/" in endpoint:
+                payload = dict(ref="refs/heads/main", object=dict(type="commit", sha=base))
+            elif endpoint.endswith("/protection/required_status_checks"):
+                payload = dict(strict=True, contexts=["unit"], checks=[dict(context="unit", app_id=15368)])
+            elif "/rules/branches/" in endpoint:
+                payload = []
+            elif endpoint.endswith("/check-runs"):
+                run = dict(id=1, name="unit", head_sha="0" * 40 if fault == "ci_old" else head,
+                           app=dict(id=15368), check_suite=dict(id=2), status="completed",
+                           conclusion="failure" if fault == "ci_failed" else "success",
+                           url=f"https://api.github.com/repos/{repo}/check-runs/1")
+                payload = dict(total_count=1, check_runs=[run])
+            elif endpoint.endswith("/files"):
+                payload = [dict(filename="tools/wrong.py" if fault == "paths" else path, status="modified")]
+            else:
+                raise AssertionError(command)
+        else:
+            raise AssertionError(f"factory must never merge: {command}")
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+    context["runner"] = runner
+    return context
+
+
+def _run_live_factory(context):
+    context["events_path"].write_text("\n".join(json.dumps(e) for e in context["events"]), encoding="utf-8")
+    return _api().derive_live_carry_forward(
+        request=context["request"], events_path=context["events_path"], repo=context["repo"],
+        pr_number=context["pr"], task_id=context["task"], expected_head=context["pair"]["new_head"],
+        expected_base_sha=context["pair"]["new_base"], runner=context["runner"],
+        accepted_queue_checker=lambda **_: dict(ok=True, complete=context["queue"]))
+
+
+def _descriptor_origin(context, *, commitments=True, retain_basis=False):
+    for event in context["events"]:
+        if event["type"] == "decision":
+            if not retain_basis:
+                event["payload"].pop("review_basis", None)
+            if not commitments:
+                event["payload"].pop("review_basis_sha256", None)
+    # Descriptor references the actual original events after removing the direct
+    # route; an independent accepted binding event anchors the immutable bytes.
+    refs = [_event_hash(e) for e in context["events"] if e["type"] == "decision"]
+    folder = context["root"] / ".codex-audit"
+    folder.mkdir()
+    path = folder / "original-review.json"
+    body = dict(schema="wd.bridge-review-snapshot.v1", review_basis=context["basis"], approval_event_sha256=refs)
+    raw = json.dumps(body).encode()
+    path.write_bytes(raw)
+    descriptor = dict(path=str(path), bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    binding = dict(agent="codex-lead-1", agent_uuid=context["events"][1]["agent_uuid"], type="decision",
+                   status="review_basis_bound", task_id=context["task"], ts_utc="2026-11-09T01:20:00Z",
+                   payload=dict(review_origin=dict(schema="wd.bridge-review-origin.v1", descriptor=descriptor,
+                                                   review_basis=copy.deepcopy(context["basis"]),
+                                                   approval_event_sha256=refs)))
+    context["events"].append(binding)
+    context["request"]["origin_binding_event_sha256"] = _event_hash(binding)
+    return path, binding
+
+
+@pytest.mark.parametrize("origin", ["direct", "descriptor"])
+def test_live_factory_reconstructs_origin_queue_and_strict_ci(live_factory, origin):
+    c = live_factory
+    if origin == "descriptor":
+        _descriptor_origin(c)
+    result = _run_live_factory(c)
+    assert result["carry"] is True, result
+    assert result["review_origin"]["mode"] == origin
+    assert result["ci_evidence"]["head_sha"] == c["pair"]["new_head"]
+    assert result["ci_evidence"]["all_required_success"] is True
+    assert result["receipt"]["approved_base_sha"] == c["basis"]["base_sha"]
+    assert all(row["kind"] in {"build_consensus", "rco_pass"} for row in result["carried"])
+    assert any(call[:2] == ["gh", "api"] for call in c["calls"])
+
+
+@pytest.mark.parametrize("fault", ["missing_basis", "missing_one_basis", "wrong_basis_hash", "wrong_repo",
+                                  "wrong_pr", "wrong_task", "wrong_ref", "wrong_old_base", "wrong_merge_base",
+                                  "wrong_diff", "wrong_patch", "forged_vote", "forged_claim", "queue_partial",
+                                  "ci_failed", "ci_old", "paths", "remote", "different_vote_basis"])
+def test_live_factory_refuses_unproven_original_or_current_facts(live_factory, fault):
+    c = live_factory
+    if fault == "missing_basis":
+        for event in c["events"][1:]:
+            event["payload"].pop("review_basis")
+            event["payload"].pop("review_basis_sha256")
+    elif fault == "missing_one_basis":
+        c["events"][2]["payload"].pop("review_basis")
+    elif fault == "wrong_basis_hash":
+        c["events"][1]["payload"]["review_basis_sha256"] = "0" * 64
+    elif fault == "different_vote_basis":
+        payload = c["events"][3]["payload"]
+        payload["review_basis"]["diff_sha256"] = "0" * 64
+        payload["review_basis_sha256"] = _event_hash(payload["review_basis"])
+    elif fault.startswith("wrong_"):
+        field = {"wrong_repo":"repository", "wrong_pr":"pr_number", "wrong_task":"task_id", "wrong_ref":"base_ref",
+                 "wrong_old_base":"base_sha", "wrong_merge_base":"merge_base", "wrong_diff":"diff_sha256", "wrong_patch":"patch_id"}[fault]
+        value = 9002 if field == "pr_number" else ("0" * 64 if field == "diff_sha256" else "0" * 40)
+        for event in c["events"][1:]:
+            event["payload"]["review_basis"][field] = value
+            event["payload"]["review_basis_sha256"] = _event_hash(event["payload"]["review_basis"])
+    elif fault in {"forged_vote", "forged_claim"}:
+        c["events"][1 if fault == "forged_vote" else 0]["agent_uuid"] = "00000000-0000-4000-8000-000000000000"
+    elif fault == "queue_partial":
+        c["queue"] = False
+        c["request"]["accepted_queue_complete"] = True
+    elif fault == "remote":
+        c["git"]("remote", "set-url", "origin", "https://github.com/other/repo.git")
+    else:
+        c["fault"] = fault
+    result = _run_live_factory(c)
+    assert result["carry"] is False, result
+    if fault == "queue_partial":
+        assert c["calls"] == []
+
+
+@pytest.mark.parametrize("fault", ["unbound", "forged_issuer", "wrong_refs", "tamper", "reseal", "outside_root",
+                                  "author_issuer", "wrong_binding_task", "body_wrong_basis", "contradicts_direct"])
+def test_live_factory_descriptor_requires_canonical_binding_and_immutable_bytes(live_factory, fault):
+    c = live_factory
+    path, binding = _descriptor_origin(c)
+    origin = binding["payload"]["review_origin"]
+    if fault == "unbound":
+        c["request"]["origin_binding_event_sha256"] = "0" * 64
+    elif fault == "forged_issuer":
+        binding["agent_uuid"] = "00000000-0000-4000-8000-000000000000"
+    elif fault == "wrong_refs":
+        origin["approval_event_sha256"] = ["0" * 64]
+    elif fault in {"tamper", "reseal"}:
+        path.write_bytes(path.read_bytes() + b" ")
+        if fault == "reseal":
+            c["request"]["descriptor"] = dict(origin["descriptor"], bytes=path.stat().st_size,
+                                             sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    elif fault == "outside_root":
+        outside = c["root"].parent / "unapproved.json"
+        outside.write_bytes(path.read_bytes())
+        origin["descriptor"]["path"] = str(outside)
+    elif fault == "author_issuer":
+        binding.update(agent="fable-5", agent_uuid=c["events"][0]["agent_uuid"])
+    elif fault == "wrong_binding_task":
+        binding["task_id"] = "unrelated"
+    else:
+        body = json.loads(path.read_bytes())
+        if fault == "body_wrong_basis":
+            body["review_basis"]["base_sha"] = "0" * 40
+        else:
+            conflicting = dict(c["basis"], diff_sha256="0" * 64)
+            c["events"][3]["payload"].update(review_basis=conflicting, review_basis_sha256=_event_hash(conflicting))
+            refs = [_event_hash(e) for e in c["events"][1:4]]
+            origin["approval_event_sha256"] = refs
+            body["approval_event_sha256"] = refs
+        raw = json.dumps(body).encode()
+        path.write_bytes(raw)
+        origin["descriptor"].update(bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    if fault != "unbound":
+        c["request"]["origin_binding_event_sha256"] = _event_hash(binding)
+    assert _run_live_factory(c)["carry"] is False
+
+
+def test_live_factory_does_not_take_a_side_commit_as_the_target_base(live_factory):
+    c = live_factory
+    git, root, pair = c["git"], c["root"], c["pair"]
+    git("checkout", "--quiet", pair["old_base"])
+    (root / "side.txt").write_bytes(b"not reviewed\n")
+    git("add", "side.txt"); git("commit", "--quiet", "-m", "unreviewed side")
+    side = git("rev-parse", "HEAD").decode().strip()
+    (root / c["path"]).write_bytes(b"alpha gamma\n")
+    git("add", c["path"]); git("commit", "--quiet", "-m", "reapply reviewed patch")
+    pair["new_head"] = git("rev-parse", "HEAD").decode().strip()
+    c["request"]["proposed_base_sha"] = side
+    assert _run_live_factory(c)["carry"] is False
+
+
+def test_live_factory_real_plan_wires_both_gates_but_keeps_apply_unavailable(live_factory):
+    from tools.idle_consensus_auto_merge import evaluate_auto_merge_gate
+    c = live_factory
+    derived = _run_live_factory(c)
+    assert derived["carry"] is True
+    kwargs = dict(pr_status=derived["_fresh_snapshot"], expected_head=c["pair"]["new_head"],
+                  expected_base_sha=c["pair"]["new_base"], consensus_proposal_id=c["task"],
+                  events_path=c["events_path"], bridge_task_id=c["task"], repo=c["repo"],
+                  from_agent="codex-lead-1", require_bridge_consensus=True,
+                  receipt_bundle_path="synthetic/manifest.json", runner=c["runner"],
+                  accepted_queue_checker=lambda **_: dict(ok=True, complete=True))
+    kwargs["pr_status"]["receipt_verified"] = True  # legacy plan metadata, never carry proof
+    plain = evaluate_auto_merge_gate(**kwargs)
+    assert plain["ok"] is False
+    result = evaluate_auto_merge_gate(**kwargs, carry_forward=c["request"])
+    assert result["decision"] == "auto_merge_plan_ready", result.get("reasons")
+    assert result["rco_pass_gate"]["ok"] and result["bridge_consensus"]["ok"]
+    for key in ("rco_pass_gate", "bridge_consensus"):
+        assert result[key]["carried_from_head"] == c["pair"]["old_head"]
+        assert result[key]["carried_to_head"] == c["pair"]["new_head"]
+    assert result["carry_forward"]["receipt"]["proposed_head"] == c["pair"]["new_head"]
+    applied = evaluate_auto_merge_gate(**kwargs, carry_forward=c["request"], apply=True)
+    assert applied["ok"] is False and applied["would_merge"] is False
+    assert not any(call[:3] == ["gh", "pr", "merge"] for call in c["calls"])
+
+
+@pytest.mark.parametrize("legacy", [True, False])
+def test_live_factory_never_reconstructs_reviewed_base_from_current_stacked_target(live_factory, legacy):
+    c = live_factory
+    git, root, pair = c["git"], c["root"], c["pair"]
+    original_base = pair["old_base"]
+    git("checkout", "--quiet", original_base)
+    (root / "feature.txt").write_bytes(b"feature F\n")
+    git("add", "feature.txt")
+    git("commit", "--quiet", "-m", "unmerged feature F")
+    feature = git("rev-parse", "HEAD").decode().strip()
+    (root / c["path"]).write_bytes(b"alpha gamma\n")
+    git("add", c["path"])
+    git("commit", "--quiet", "-m", "reviewed F plus P")
+    old = git("rev-parse", "HEAD").decode().strip()
+    tree = git("rev-parse", "HEAD^{tree}").decode().strip()
+    alternate = git("commit-tree", tree, "-p", original_base, data=b"review-basis twin\n").decode().strip()
+    reviewed = _api().derive_content_identity(repo_root=root, old_base=original_base, old_head=old,
+                                             new_base=original_base, new_head=alternate)
+    pair.update(old_head=old, new_base=feature,
+                new_head=git("commit-tree", tree, "-p", feature, data=b"P after F landed\n").decode().strip())
+    c["basis"].update(head=old, base_sha=original_base, merge_base=original_base,
+                       diff_sha256=reviewed["old_diff_sha256"], patch_id=reviewed["old_patch_id"])
+    c["request"].update(approved_head=old, approved_base_sha=feature if legacy else original_base)
+    for event in c["events"][1:]:
+        event["payload"].update(head=old, exact_head=old)
+        if legacy:
+            event["payload"].pop("review_basis")
+            event["payload"].pop("review_basis_sha256")
+        else:
+            event["payload"]["review_basis"] = copy.deepcopy(c["basis"])
+            event["payload"]["review_basis_sha256"] = _event_hash(c["basis"])
+    assert git("merge-base", old, feature).decode().strip() == feature
+    assert _run_live_factory(c)["carry"] is False
+
+
+@pytest.mark.parametrize("fault", ["ci_failed", "ci_old", "paths"])
+def test_live_factory_real_gate_does_not_trust_the_callers_old_green_snapshot(live_factory, fault):
+    from tools.idle_consensus_auto_merge import evaluate_auto_merge_gate
+    c = live_factory
+    observed = _run_live_factory(c)
+    assert observed["carry"] is True
+    stale = observed["_fresh_snapshot"]
+    stale["receipt_verified"] = True
+    c["fault"] = fault
+    result = evaluate_auto_merge_gate(
+        pr_status=stale, expected_head=c["pair"]["new_head"], expected_base_sha=c["pair"]["new_base"],
+        consensus_proposal_id=c["task"], events_path=c["events_path"], bridge_task_id=c["task"],
+        repo=c["repo"], from_agent="codex-lead-1", require_bridge_consensus=True,
+        receipt_bundle_path="synthetic/manifest.json", runner=c["runner"],
+        accepted_queue_checker=lambda **_: dict(ok=True, complete=True), carry_forward=c["request"])
+    assert result["ok"] is False
+
+
+@pytest.mark.parametrize("policy", ["rule12", "no_full_consensus"])
+def test_live_factory_real_gate_refuses_unsupported_carry_policy_without_fetch(live_factory, policy):
+    from tools.idle_consensus_auto_merge import REVIEW_POLICY_LEGACY, evaluate_auto_merge_gate
+    c = live_factory
+    observed = _run_live_factory(c)
+    assert observed["carry"] is True
+    calls_before = len(c["calls"])
+    result = evaluate_auto_merge_gate(
+        pr_status=observed["_fresh_snapshot"], expected_head=c["pair"]["new_head"],
+        expected_base_sha=c["pair"]["new_base"], consensus_proposal_id=c["task"],
+        events_path=c["events_path"], bridge_task_id=c["task"], repo=c["repo"],
+        from_agent="codex-lead-1", require_bridge_consensus=policy != "no_full_consensus",
+        review_policy="rule12" if policy == "rule12" else REVIEW_POLICY_LEGACY, runner=c["runner"],
+        accepted_queue_checker=lambda **_: dict(ok=True, complete=True), carry_forward=c["request"])
+    assert result["ok"] is False
+    assert len(c["calls"]) == calls_before
+
+
+@pytest.mark.parametrize("missing", ["all", "tools", "rco"])
+def test_live_factory_descriptor_cannot_proxy_a_missing_original_reviewer_commitment(live_factory, missing):
+    c = live_factory
+    if missing == "all":
+        _descriptor_origin(c, commitments=False)
+    else:
+        index = 2 if missing == "tools" else 3
+        c["events"][index]["payload"].pop("review_basis")
+        c["events"][index]["payload"].pop("review_basis_sha256")
+        _descriptor_origin(c, retain_basis=True)
+    assert _run_live_factory(c)["carry"] is False
+
+
+@pytest.mark.parametrize("shape", ["head_only", "prose", "mixed_selected_weak"])
+def test_live_factory_preserves_the_existing_strict_rco_pass_shape(live_factory, shape):
+    from waggledance.core.bridge_identity_registry import load_bridge_identity_registry
+    c = live_factory
+    rco = c["events"][3]
+    rco["payload"].pop("exact_head")
+    if shape == "prose":
+        rco["message"] = c["pair"]["old_head"]
+    elif shape == "mixed_selected_weak":
+        valid = copy.deepcopy(rco)
+        valid.update(agent="claude-rco-2", agent_uuid=load_bridge_identity_registry()["claude-rco-2"])
+        valid["payload"]["exact_head"] = c["pair"]["old_head"]
+        c["events"].insert(3, valid)
+    result = _run_live_factory(c)
+    assert result["carry"] is (shape == "prose"), result.get("reason")

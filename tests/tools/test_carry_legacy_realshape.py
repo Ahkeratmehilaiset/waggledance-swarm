@@ -37,7 +37,7 @@ def _load(name, filename):
     return module
 
 
-lg = _load("fable5_realshape_legacy_corpus", "test_carry_legacy_tuple_adversarial.py")
+lg = _load("fable5_realshape_legacy_corpus", "_carry_legacy_tuple_adversarial.py")
 of, corpus, ci_harness = lg.of, lg.corpus, lg.ci_harness
 
 histories = lg.histories

@@ -441,6 +441,11 @@ def test_an_untrusted_projection_reports_the_binding_as_bound_unverified_after_a
     with pytest.raises(diag.CoverageRefused) as info:
         from_projection(forged, allow_untrusted=True, require_identifier_policy=True, identifier_policy_binding=data)
     assert str(info.value) == "identifier_policy_refused"
+    for tag in (NON_ASCII_TAG, chr(0x130) * 64, data[2].upper(), data[2][:63], data[2] + "0", "", "x" * 64):
+        with pytest.raises(diag.CoverageRefused) as info:  # a closed refusal, never a TypeError from compare_digest
+            from_projection(dict(full, identifier_policy_hmac=tag), allow_untrusted=True,
+                            require_identifier_policy=True, identifier_policy_binding=data)
+        assert str(info.value) == "identifier_policy_refused", repr(tag)
     assert from_projection(full, allow_untrusted=True, require_identifier_policy=True,
                            identifier_policy_binding=data)["rederivation"] == "NONE"
     assert "bound_unverified" not in json.dumps(rederived(full, require_identifier_policy=True,
@@ -558,9 +563,24 @@ def _retention_cases():
             {}, policy_bytes=raw, policy_sha256=pin, require_identifier_policy=True,
             identifier_policy_binding=bindings["good"]), "projection_refused"),
         ("from_projection_rederivation_refusal", lambda: diag.coverage_from_projection(
-            full_build()[2], policy_bytes=raw, policy_sha256=pin, rows=rows(), roster=fx.ROSTER,
+            full_build(require_identifier_policy=True, identifier_policy_binding=bindings["good"])[2],
+            policy_bytes=raw, policy_sha256=pin, rows=fewer_rows(), roster=fx.ROSTER,
+            require_identifier_policy=True, identifier_policy_binding=bindings["good"]), "projection_refused"),
+        ("from_projection_untrusted_malformed_tag", lambda: diag.coverage_from_projection(
+            dict(full_build(require_identifier_policy=True, identifier_policy_binding=bindings["good"])[2],
+                 identifier_policy_hmac=NON_ASCII_TAG),
+            policy_bytes=raw, policy_sha256=pin, allow_untrusted=True,
             require_identifier_policy=True, identifier_policy_binding=bindings["good"]), "identifier_policy_refused"),
     ]
+
+
+NON_ASCII_TAG = chr(0xE9) * 64  # a non-ASCII string of hex length; compare_digest raises TypeError on it
+
+
+def fewer_rows():
+    altered = rows()
+    altered.pop(sorted(altered)[0])
+    return altered
 
 
 @pytest.mark.parametrize("name, call, token", _retention_cases(), ids=lambda value: value if type(value) is str else "")
@@ -577,3 +597,4 @@ def test_task_ids_are_documented_as_coming_from_caller_supplied_policy_bytes():
     doc = (diag.__doc__ or "").lower()
     assert "caller-supplied policy bytes" in doc and "not an authenticated authority" in doc
     assert "never from caller input" not in doc
+    assert "this module" in doc and "already inside an exception" in doc  # hygiene claim scoped to own handlers

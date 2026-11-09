@@ -32,9 +32,11 @@ binding, or a binding for a projection built without one, refuses explicitly. In
 tag is compared to the projection tag in constant time and reported as ``bound_unverified`` (the projection itself
 was not re-derived); only the re-derived branch reports ``bound``.
 
-Exception hygiene. A binding carries key bytes. Every refusal path clears the binding from its frame locals before
-raising and raises outside any exception handler, so neither the traceback frames nor an exception context chain of a
-``CoverageRefused`` can reach the binding (the pattern of ``content_identifier_policy.load_policy``).
+Exception hygiene, scoped to this module. A binding carries key bytes. Every refusal path of this module clears the
+binding from its own frame locals before raising and raises outside its own exception handlers, so neither this
+module's traceback frames nor a context chain created by this module's handlers can reach the binding (the pattern of
+``content_identifier_policy.load_policy``). A caller that is already inside an exception handler when it calls this
+module owns its outer context and its own frame locals; this module cannot clear those.
 """
 
 import hmac
@@ -278,8 +280,9 @@ def coverage_from_projection(projection, *, policy_bytes=None, policy_sha256=Non
                 _refuse("untrusted_refused")
             if require_identifier_policy:
                 tag = projection["identifier_policy_hmac"]
-                if type(tag) is not str or not hmac.compare_digest(tag, options["identifier_policy_binding"][2]):
-                    _refuse("identifier_policy_refused")
+                if (type(tag) is not str or _HEX64.fullmatch(tag) is None
+                        or not hmac.compare_digest(tag, options["identifier_policy_binding"][2])):
+                    _refuse("identifier_policy_refused")  # shape first: compare_digest raises on non-ASCII text
                 identifier_policy = "bound_unverified"  # tag equal, projection not re-derived
             trust, rederivation, label, distribution = "untrusted", "NONE", LABEL_UNTRUSTED, "do_not_publish"
         else:

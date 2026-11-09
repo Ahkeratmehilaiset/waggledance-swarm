@@ -541,10 +541,42 @@ def verify_carry_forward_merge_receipt(*, manifest_path: Path, carry_forward: Ma
                     "carry receipt original review report differs from its bound historical prefix")
         require(all(_file_bytes(path, 32 * 1024 * 1024) == before for path, before in snapshots.items()),
                 "carry receipt files changed during verification")
-        return dict(ok=True, decision="carry_merge_receipt_rederived", head=expected_head,
+        return dict(ok=True, decision="carry_merge_receipt_rederived", head=expected_head, base_ref=snapshot["base_ref"],
                     approved_head=fresh["receipt"]["approved_head"], authority="receipt_evidence_only_no_merge")
     except (ValueError, TypeError, KeyError, OSError) as exc:
         return dict(ok=False, decision="carry_merge_receipt_refused", errors=[str(exc)], authority="none")
+
+
+def verify_carry_forward_apply(*, manifest_path: Path, carry_forward: Mapping,
+                               events_path: Path, repo: str, pr_number: int, task_id: str,
+                               expected_head: str, expected_base_sha: str,
+                               runner=None, accepted_queue_checker=None) -> dict[str, Any]:
+    """Reconsume the real proof and observe the target tip immediately pre-effect.
+
+    The caller must already have passed its full fresh merge gate. GitHub's
+    match-head flag protects the PR head, not the base: this late read narrows
+    but cannot eliminate the remaining server-side base movement race.
+    """
+    from tools.pr_status_snapshot import PrStatusSnapshotError, _fetch_base_ref_tip, _github_ci_runner, _run_command
+    semantic = verify_carry_forward_merge_receipt(
+        manifest_path=manifest_path, carry_forward=carry_forward, events_path=events_path,
+        repo=repo, pr_number=pr_number, task_id=task_id, expected_head=expected_head,
+        expected_base_sha=expected_base_sha, runner=runner, accepted_queue_checker=accepted_queue_checker)
+    if semantic.get("ok") is not True:
+        return semantic
+    try:
+        # The actual consumer returns its freshly derived target ref, not a
+        # caller hint or a second, unverified read of the on-disk payload.
+        base_ref = semantic["base_ref"]
+        base = _fetch_base_ref_tip(run=_github_ci_runner(runner or _run_command, repo=repo),
+                                   repo=repo, base_ref_name=base_ref)
+        if base != expected_base_sha:
+            raise ValueError("target base moved after semantic receipt verification")
+        return dict(ok=True, decision="carry_apply_reverified", semantic=semantic,
+                    target_base_observed=base, atomic_base_guard=False,
+                    limitation="target base can still move between this read and GitHub merge")
+    except (PrStatusSnapshotError, ValueError, TypeError, KeyError, OSError) as exc:
+        return dict(ok=False, decision="carry_apply_refused", errors=[str(exc)])
 
 
 def _pool_evidence(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:

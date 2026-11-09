@@ -406,11 +406,8 @@ def evaluate_auto_merge_gate(
             return dict(ok=False, decision="operator_review_required", would_merge=False,
                         operator_review_required=True,
                         reasons=["carry-forward requires complete legacy Rule9a consensus; Rule12 carry is unsupported"])
-        # This intermediate API prepares a real plan. Carry apply stays closed
-        # until the actual merge/MAGMA receipt consumer can rederive the proof.
-        if apply:
-            return dict(ok=False, decision="operator_review_required", would_merge=False,
-                        operator_review_required=True, reasons=["carry apply requires the integrated semantic receipt consumer"])
+        from copy import deepcopy
+        carry_forward = deepcopy(carry_forward)
         from tools.bridge_approval_carry_forward import derive_live_carry_forward
         carry_material = derive_live_carry_forward(
             request=carry_forward, events_path=events_path, repo=repo,
@@ -424,8 +421,8 @@ def evaluate_auto_merge_gate(
                         operator_review_required=True, reasons=["carry refused: " + carry_material["reason"]],
                         carry_forward={key: value for key, value in carry_material.items() if not key.startswith("_")})
         # The caller's snapshot cannot hide paths, CI or tuple drift. Existing
-        # receipt_verified remains legacy *plan metadata*, never a carry proof;
-        # carry apply above is unavailable until semantic receipt verification.
+        # receipt_verified remains legacy plan metadata, never a carry proof.
+        # Apply separately consumes the actual MAGMA files before any effect.
         pr_status = dict(carry_material["_fresh_snapshot"], receipt_verified=pr_status.get("receipt_verified", False))
     diff_text = _diff_text(pr_status)
     diff_marker = find_diff_private_marker(diff_text)
@@ -720,7 +717,7 @@ def evaluate_auto_merge_gate(
     command = _merge_command(
         pr_number=pr_number,
         expected_head=expected_head,
-        repo=repo,
+        repo=f"github.com/{repo}" if carry_forward is not None else repo,
     )
     base = _base_report(
         pr_number=pr_number,
@@ -818,6 +815,7 @@ def evaluate_auto_merge_gate(
             receipt_verified=True,
             expected_base_sha=expected_base_sha,
             runner=runner,
+            **({"require_ci_evidence": True} if carry_forward is not None else {}),
         )
     except PrStatusSnapshotError as exc:
         return {
@@ -872,6 +870,7 @@ def evaluate_auto_merge_gate(
             now_utc=gate_now,
             grok_fallback=grok_fallback,
             _grok_reports_root=_grok_reports_root,
+            **({"carry_forward": carry_forward, "runner": runner} if carry_forward is not None else {}),
         )
         apply_recheck["fresh_gate"] = fresh_gate
         if fresh_gate.get("ok") is not True:
@@ -922,11 +921,22 @@ def evaluate_auto_merge_gate(
             lambda number, head, repository: _query_pr_merge_state(
                 number,
                 head,
-                repository,
+                f"github.com/{repository}" if carry_forward is not None else repository,
                 runner=run,
             )
         )
     )
+    if carry_forward is not None:
+        from tools.write_bridge_consensus_merge_receipt import verify_carry_forward_apply
+        verification = verify_carry_forward_apply(
+            manifest_path=Path(receipt_bundle_path), carry_forward=carry_forward,
+            events_path=events_path, repo=repo, pr_number=pr_number, task_id=bridge_gate_task_id,
+            expected_head=expected_head, expected_base_sha=expected_base_sha,
+            runner=run, accepted_queue_checker=accepted_queue_checker)
+        report["carry_apply_verification"] = verification
+        if verification.get("ok") is not True:
+            return dict(report, ok=False, decision="operator_review_required", would_merge=False,
+                        operator_review_required=True, reasons=verification.get("errors", ["carry verification refused"]))
     attempted_failure = {
         **base,
         "dry_run": False,

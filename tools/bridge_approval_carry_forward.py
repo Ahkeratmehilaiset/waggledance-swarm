@@ -425,7 +425,8 @@ def evaluate_approval_carry_forward(evidence: Mapping[str, Any]) -> dict[str, An
             if isinstance(payload, Mapping):
                 for key in ("pr", "pr_number", "pull_request", "pull_request_number"):
                     if key in payload:
-                        _require(payload[key] in (old["pr_number"], str(old["pr_number"])),
+                        _require((type(payload[key]) is int and payload[key] == old["pr_number"])
+                                 or (type(payload[key]) is str and payload[key] == str(old["pr_number"])),
                                  "original approval has conflicting PR binding")
                 for key in ("repository", "repo"):
                     if key in payload:

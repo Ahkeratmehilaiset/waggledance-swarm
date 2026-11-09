@@ -618,6 +618,175 @@ def _run_live_factory(context):
         accepted_queue_checker=lambda **_: dict(ok=True, complete=context["queue"]))
 
 
+@pytest.mark.parametrize("key", ["pr", "pr_number", "pull_request", "pull_request_number"])
+@pytest.mark.parametrize("value", [True, 1.0, "01", "1.0", " 1", None])
+def test_carry_original_vote_pr_binding_is_json_typed(approval_evidence, key, value):
+    evidence = approval_evidence
+    evidence["approved"]["pr_number"] = evidence["proposed"]["pr_number"] = 1
+    for event in evidence["events"]:
+        event["payload"]["pr"] = 1
+    evidence["events"][0]["payload"][key] = value
+    result = _api().evaluate_approval_carry_forward(evidence)
+    assert result["carry"] is False, result
+
+
+def _install_fake_carry_merge(c):
+    """Exercise the real entrypoints and receipt consumer without a GH effect."""
+    from types import SimpleNamespace
+    original = c["runner"]
+    c["merges"] = []
+    c["effect_armed"] = False
+
+    def runner(command):
+        command = list(command)
+        if command[:3] == ["gh", "pr", "merge"]:
+            c["merges"].append(command)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:3] == ["gh", "pr", "view"] and "mergeCommit" in command[command.index("--json") + 1]:
+            return SimpleNamespace(returncode=0, stderr="", stdout=json.dumps(dict(
+                number=c["pr"], state="MERGED", mergeCommit=dict(oid="f" * 40),
+                headRefOid=c["pair"]["new_head"], headRefName=c["task"], baseRefName="main")))
+        return original(command)
+    c["runner"] = runner
+
+
+def _run_actual_carry_apply(c, out_dir, route):
+    fresh = _run_live_factory(c)
+    assert fresh["carry"] is True, fresh
+    common = dict(events_path=c["events_path"], expected_head=c["pair"]["new_head"],
+                  expected_base_sha=c["pair"]["new_base"], consensus_proposal_id=c["task"],
+                  repo=c["repo"], from_agent="codex-lead-1", bridge_task_id=c["task"],
+                  apply=True, carry_forward=c["request"], runner=c["runner"],
+                  accepted_queue_checker=lambda **_: dict(ok=True, complete=c["queue"]))
+    if route == "wrapper":
+        from tools.merge_with_bridge_receipt import merge_with_bridge_receipt
+        return merge_with_bridge_receipt(pr_number=c["pr"], out_dir=out_dir, **common)
+    from tools.idle_consensus_auto_merge import evaluate_auto_merge_gate
+    return evaluate_auto_merge_gate(
+        pr_status=dict(fresh["_fresh_snapshot"], receipt_verified=True),
+        require_bridge_consensus=True,
+        artifact_writer=lambda: _write_live_merge_bundle(c, out_dir), **common)
+
+
+@pytest.mark.parametrize("route", ["wrapper", "idle"])
+def test_actual_carry_apply_consumes_magma_before_exact_head_merge(live_factory, tmp_path, route):
+    c = live_factory
+    _install_fake_carry_merge(c)
+    result = _run_actual_carry_apply(c, tmp_path / "apply", route)
+    assert result["ok"] is True, result
+    assert len(c["merges"]) == 1
+    command = c["merges"][0]
+    assert "--match-head-commit=" + c["pair"]["new_head"] in command
+    assert command[command.index("--repo") + 1] == "github.com/" + c["repo"]
+    from pathlib import Path
+    manifest = Path(result["receipt_bundle_path"])
+    payload = json.loads((manifest.parent / "payload-001-merge.json").read_bytes())
+    assert payload["artifact_version"] == "wd.bridge_consensus_merge_receipt.v1"
+    assert result["carry_apply_verification"]["ok"] is True
+    assert result["carry_apply_verification"]["target_base_observed"] == c["pair"]["new_base"]
+    assert result["carry_apply_verification"]["atomic_base_guard"] is False
+
+
+@pytest.mark.parametrize("route", ["wrapper", "idle"])
+@pytest.mark.parametrize("fault", ["old-veto", "new-veto", "queue", "ci_failed", "ci_old", "paths", "receipt", "late-base"])
+def test_actual_carry_apply_refuses_changed_authority_before_effect(live_factory, tmp_path, monkeypatch, route, fault):
+    from pathlib import Path
+    import tools.write_bridge_consensus_merge_receipt as writer
+    import tools.merge_with_bridge_receipt as wrapper
+    c = live_factory
+    _install_fake_carry_merge(c)
+    original_writer = writer.write_bridge_consensus_merge_receipt
+    original_verify = writer.verify_carry_forward_merge_receipt
+
+    def changed_writer(**kwargs):
+        result = original_writer(**kwargs)
+        if fault.endswith("veto"):
+            event = copy.deepcopy(c["events"][-1])
+            event.update(type="finding", status="changes_requested")
+            event["payload"] = dict(pr=c["pr"], head=c["pair"]["old_head" if fault == "old-veto" else "new_head"])
+            c["events"].append(event)
+            c["events_path"].write_text("\n".join(json.dumps(e) for e in c["events"]), encoding="utf-8")
+        elif fault == "queue":
+            c["queue"] = False
+        elif fault == "receipt":
+            (Path(result["receipt_bundle_path"]).parent / "payload-001-merge.json").write_text("{}", encoding="utf-8")
+        elif fault != "late-base":
+            c["fault"] = fault
+        return result
+
+    def changed_verify(**kwargs):
+        result = original_verify(**kwargs)
+        if fault == "late-base" and result["ok"]:
+            c["late_base"] = True
+        return result
+    monkeypatch.setattr(writer, "write_bridge_consensus_merge_receipt", changed_writer)
+    monkeypatch.setattr(wrapper, "write_bridge_consensus_merge_receipt", changed_writer)
+    monkeypatch.setattr(writer, "verify_carry_forward_merge_receipt", changed_verify)
+    runner = c["runner"]
+
+    def late_runner(command):
+        result = runner(command)
+        if c.get("late_base") and list(command)[:2] == ["gh", "api"] and "/git/ref/heads/" in command[4]:
+            data = json.loads(result.stdout)
+            data["object"]["sha"] = "e" * 40
+            result.stdout = json.dumps(data)
+        return result
+    c["runner"] = late_runner
+    result = _run_actual_carry_apply(c, tmp_path / "changed", route)
+    assert result["ok"] is False, result
+    assert not c["merges"], result
+
+
+def test_pure_carry_evidence_callers_are_reviewed():
+    """Any new production use must undergo an origin/authority review."""
+    import ast
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    targets = {"evaluate_approval_carry_forward", "verify_carry_forward_receipt"}
+    allowed = {
+        ("tools/bridge_approval_carry_forward.py", "verify_carry_forward_receipt", "evaluate_approval_carry_forward"),
+        ("tools/bridge_approval_carry_forward.py", "derive_live_carry_forward", "evaluate_approval_carry_forward"),
+        ("tools/bridge_approval_carry_forward.py", "verify_live_carry_forward_receipt", "verify_carry_forward_receipt"),
+        ("tools/idle_consensus_auto_merge.py", "evaluate_auto_merge_gate", "verify_carry_forward_receipt"),
+    }
+    found = set()
+    for directory in ("tools", "waggledance", "sandbox", "ops"):
+        for path in (root / directory).rglob("*.py"):
+            if any(part.startswith(".") or part == "__pycache__" for part in path.relative_to(root).parts):
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+            aliases = {node.asname or node.name: node.name for node in ast.walk(tree)
+                       if isinstance(node, ast.alias) and node.name in targets}
+            class Calls(ast.NodeVisitor):
+                owner = "<module>"
+                def visit_FunctionDef(self, node):
+                    old, self.owner = self.owner, node.name
+                    self.generic_visit(node)
+                    self.owner = old
+                visit_AsyncFunctionDef = visit_FunctionDef
+                def visit_Call(self, node):
+                    name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+                    name = aliases.get(name, name)
+                    if name in targets:
+                        found.add((path.relative_to(root).as_posix(), self.owner, name))
+                    self.generic_visit(node)
+            Calls().visit(tree)
+    assert found == allowed, (found - allowed, allowed - found)
+
+
+@pytest.mark.parametrize("key", ["pr", "pr_number", "pull_request", "pull_request_number"])
+@pytest.mark.parametrize("value", [True, 1.0])
+def test_carry_pr_type_hardening_does_not_drop_ambiguous_veto(approval_evidence, key, value):
+    e = approval_evidence
+    e["approved"]["pr_number"] = e["proposed"]["pr_number"] = 1
+    for event in e["events"]:
+        event["payload"]["pr"] = 1
+    veto = _veto(e)
+    veto["payload"][key] = value
+    e["events"].append(veto)
+    assert _api().evaluate_approval_carry_forward(e)["carry"] is False
+
+
 def _descriptor_origin(context, *, commitments=True, retain_basis=False):
     for event in context["events"]:
         if event["type"] == "decision":

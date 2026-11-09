@@ -89,6 +89,28 @@
   },
   {
    "expected_carry": true,
+   "id": "build_author_waiver_lead_is_author",
+   "mutation": {
+    "op": "set",
+    "path": [
+     "pr_author"
+    ],
+    "value": "codex-lead-1"
+   },
+   "why": "Rule 9a waives the author build slot; the author vote is present but never carried (Tools 07:30:36Z)"
+  },
+  {
+   "expected_carry": true,
+   "id": "build_author_waiver_lead_is_author_without_own_vote",
+   "mutation": {
+    "author": "codex-lead-1",
+    "index": 0,
+    "op": "author_without_own_vote"
+   },
+   "why": "the waived author slot needs no author vote; only the other build vote and the RCO carry"
+  },
+  {
+   "expected_carry": true,
    "id": "valid_explicit_clear_same_rco_same_head",
    "mutation": {
     "events": [
@@ -124,6 +146,7 @@
     ],
     "value": 9002
    },
+   "reason": "scope",
    "why": "different PR"
   },
   {
@@ -137,6 +160,7 @@
     ],
     "value": "someone/fork"
    },
+   "reason": "scope",
    "why": "different repository"
   },
   {
@@ -150,6 +174,7 @@
     ],
     "value": "release"
    },
+   "reason": "scope",
    "why": "different base branch"
   },
   {
@@ -159,6 +184,7 @@
     "op": "rebind_approvals",
     "to": "third"
    },
+   "reason": "approval",
    "why": "approvals name neither head"
   },
   {
@@ -168,6 +194,7 @@
     "index": 1,
     "op": "drop_event"
    },
+   "reason": "approval",
    "why": "incomplete build pair"
   },
   {
@@ -177,6 +204,7 @@
     "index": 2,
     "op": "drop_event"
    },
+   "reason": "approval",
    "why": "no RCO slot"
   },
   {
@@ -189,6 +217,7 @@
     ],
     "value": "claude-rco-1"
    },
+   "reason": "approval",
    "why": "the author never reviews the own PR"
   },
   {
@@ -200,6 +229,7 @@
     "op": "event_field",
     "value": "claude-rco-9"
    },
+   "reason": "approval",
    "why": "not a recognized RCO"
   },
   {
@@ -211,6 +241,7 @@
     "index": 0,
     "op": "event_field"
    },
+   "reason": "approval",
    "why": "unverifiable identity"
   },
   {
@@ -222,6 +253,7 @@
     "op": "event_field",
     "value": "55555555-5555-4555-8555-555555555555"
    },
+   "reason": "approval",
    "why": "uuid does not match the roster"
   },
   {
@@ -233,6 +265,7 @@
     "op": "event_field",
     "value": "Codex-Lead-1"
    },
+   "reason": "approval",
    "why": "noncanonical identity"
   },
   {
@@ -244,6 +277,7 @@
     "op": "event_field",
     "value": "build_consensus_pending"
    },
+   "reason": "approval",
    "why": "not an approval status"
   },
   {
@@ -255,6 +289,7 @@
     "op": "event_field",
     "value": "unrelated-task-20261109"
    },
+   "reason": "approval",
    "why": "approval not bound to this PR task"
   },
   {
@@ -267,6 +302,7 @@
     ],
     "op": "prose_heads"
    },
+   "reason": "approval",
    "why": "ambiguous binding; text mentioning both heads never counts twice and never carries"
   },
   {
@@ -286,6 +322,7 @@
     ],
     "op": "append_events"
    },
+   "reason": "block",
    "why": "a veto bound only by the old structured head must still block"
   },
   {
@@ -304,6 +341,7 @@
     ],
     "op": "append_events"
    },
+   "reason": "block",
    "why": "veto at the proposed head"
   },
   {
@@ -322,6 +360,7 @@
     ],
     "op": "append_events"
    },
+   "reason": "block",
    "why": "appended after the approvals; an earlier ts_utc must not change precedence"
   },
   {
@@ -340,6 +379,7 @@
     ],
     "op": "append_events"
    },
+   "reason": "block",
    "why": "a veto outranks a pass"
   },
   {
@@ -365,6 +405,7 @@
     ],
     "op": "append_events"
    },
+   "reason": "block",
    "why": "a clear before the veto does not retract it"
   },
   {
@@ -390,6 +431,7 @@
     ],
     "op": "append_events"
    },
+   "reason": "block",
    "why": "only the vetoing RCO can clear"
   },
   {
@@ -415,6 +457,7 @@
     ],
     "op": "append_events"
    },
+   "reason": "block",
    "why": "a clear at a third head does not retract an old-head veto"
   },
   {
@@ -427,6 +470,7 @@
     ],
     "value": false
    },
+   "reason": "queue",
    "why": "veto scan incomplete"
   },
   {
@@ -438,6 +482,7 @@
     "op": "ci",
     "status": "completed"
    },
+   "reason": "ci",
    "why": "CI red"
   },
   {
@@ -449,6 +494,7 @@
     "op": "ci",
     "status": "in_progress"
    },
+   "reason": "ci",
    "why": "CI pending"
   },
   {
@@ -460,6 +506,7 @@
     "op": "ci",
     "status": "completed"
    },
+   "reason": "ci",
    "why": "CI never carries"
   },
   {
@@ -472,6 +519,7 @@
     "op": "ci",
     "status": "completed"
    },
+   "reason": "ci",
    "why": "one required check absent"
   },
   {
@@ -485,6 +533,7 @@
     ],
     "value": []
    },
+   "reason": "ci",
    "why": "vacuous CI evidence"
   },
   {
@@ -497,6 +546,7 @@
     ],
     "value": "wd.something-else.v1"
    },
+   "reason": "schema",
    "why": "unknown evidence schema"
   }
  ],

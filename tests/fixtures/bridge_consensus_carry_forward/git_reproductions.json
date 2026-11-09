@@ -3,6 +3,7 @@
   "approved_head_object_missing": {
    "approved_head": "173e2e68def3fdc806ec0076ecc3ad50e9ca619d",
    "classification": "approved head object is not in the repository",
+   "content_refusal_class": "missing_object",
    "expected_carry": false,
    "facts": {
     "approved": {
@@ -23,6 +24,7 @@
   "binary_content_change": {
    "approved_head": "a0e1e39a4b5370cfceb563ae802b040f1029b243",
    "classification": "binary payload differs; --binary bytes and patch-id differ",
+   "content_refusal_class": "content_differs",
    "expected_carry": false,
    "facts": {
     "approved": {
@@ -43,6 +45,7 @@
   "content_changing_rebase": {
    "approved_head": "8616c3d7b3dcf777a05fd6c47c988e3eacf8fc32",
    "classification": "conflict resolution changed the PR content",
+   "content_refusal_class": "content_differs",
    "expected_carry": false,
    "facts": {
     "approved": {
@@ -63,6 +66,7 @@
   "empty_proposed_diff": {
    "approved_head": "f2f17fac4da96054d8b5f0b952758b36ec7fba23",
    "classification": "empty diff against the base: no patch-id, nothing to compare",
+   "content_refusal_class": "empty_diff",
    "expected_carry": false,
    "facts": {
     "approved": {
@@ -83,6 +87,7 @@
   "hostile_external_diff_hides_change": {
    "approved_head": "763d266e0c8379c9bec9ad6cf5fb22536c5b5bf3",
    "classification": "content differs; a repository diff.external hides it from a plain git diff",
+   "content_refusal_class": "content_differs",
    "expected_carry": false,
    "facts": {
     "approved": {
@@ -103,6 +108,7 @@
   "hostile_textconv_hides_change": {
    "approved_head": "763d266e0c8379c9bec9ad6cf5fb22536c5b5bf3",
    "classification": "content differs; a repository textconv driver hides it from a plain git diff",
+   "content_refusal_class": "content_differs",
    "expected_carry": false,
    "facts": {
     "approved": {
@@ -183,6 +189,7 @@
   "mode_only_change": {
    "approved_head": "33ab2052deb7890eaa589b3616cf1f36e935ad15",
    "classification": "same content, executable bit added",
+   "content_refusal_class": "content_differs",
    "expected_carry": false,
    "facts": {
     "approved": {
@@ -200,9 +207,30 @@
    },
    "proposed_head": "b2481a9d9d318ea745c2ff42bfc48b73ef39e98a"
   },
+  "multi_hunk_legit_rebase_under_hostile_order_and_inter_hunk": {
+   "approved_head": "967f08a0920fef9b14482e4a33f23250eb5e365b",
+   "classification": "legit rebase, two files with two hunks each, in a repository with diff.orderFile and diff.interHunkContext set (Lead 07:27:50Z); pinned bytes equal the clean repository",
+   "expected_carry": true,
+   "facts": {
+    "approved": {
+     "diff_bytes": 738,
+     "diff_sha256": "cb453bdcd0ac912b6c2d8f24750fe3e640e913fda6627968390fb44c69d15fb0",
+     "merge_base_count": 1,
+     "patch_id": "a3fb5ac1ad674e44ffc3a89c2e367eb85d1eb74e"
+    },
+    "proposed": {
+     "diff_bytes": 738,
+     "diff_sha256": "cb453bdcd0ac912b6c2d8f24750fe3e640e913fda6627968390fb44c69d15fb0",
+     "merge_base_count": 1,
+     "patch_id": "a3fb5ac1ad674e44ffc3a89c2e367eb85d1eb74e"
+    }
+   },
+   "proposed_head": "742f592f6cd6a643ac9a3b4c55822e0561314559"
+  },
   "multiple_merge_bases": {
    "approved_head": "f2f17fac4da96054d8b5f0b952758b36ec7fba23",
    "classification": "criss-cross history: two merge-bases, ambiguous base",
+   "content_refusal_class": "merge_base",
    "expected_carry": false,
    "facts": {
     "approved": {
@@ -223,6 +251,7 @@
   "rename_to_different_target": {
    "approved_head": "58f58db67c2849d2a1904eccf3a29448cd346bf1",
    "classification": "rename to another path; --no-renames shows delete plus add of different paths",
+   "content_refusal_class": "content_differs",
    "expected_carry": false,
    "facts": {
     "approved": {
@@ -263,6 +292,7 @@
   "submodule_pointer_change": {
    "approved_head": "17a34493a5df0872103797c94d82477626d6ea5d",
    "classification": "gitlink points at another commit",
+   "content_refusal_class": "content_differs",
    "expected_carry": false,
    "facts": {
     "approved": {
@@ -283,6 +313,7 @@
   "whitespace_same_patch_id": {
    "approved_head": "767c34d8484fe5029b9f48265664571c0abdb5ae",
    "classification": "REAL patch-id --stable collision: patch-id equal, raw bytes differ; patch-id alone must never carry",
+   "content_refusal_class": "content_differs",
    "expected_carry": false,
    "facts": {
     "approved": {
@@ -299,6 +330,38 @@
     }
    },
    "proposed_head": "9bc51ec7559daccc54325d69dc277e73dd68032f"
+  }
+ },
+ "gate_level_cases": {
+  "side_commit_base_substitution": {
+   "approved_head": "f2f17fac4da96054d8b5f0b952758b36ec7fba23",
+   "classification": "REFUSE at gate level (RCO2 via Lead 07:25:55Z): content identity holds for the supplied side-commit base, but that base is not on the base branch and the real merge into main would bring the unreviewed side change",
+   "expected_carry": false,
+   "facts": {
+    "approved_with_supplied_base": {
+     "diff_bytes": 235,
+     "diff_sha256": "b50db8e7440ca40df84abfd0bc1683ad86ac41ad0737091449d051273e04120d",
+     "merge_base_count": 1,
+     "patch_id": "b294c8f8b01e409f2e4c27a0c780e479fb0dc524"
+    },
+    "proposed_against_base_ref_tip": {
+     "diff_bytes": 475,
+     "diff_sha256": "4200fc5b57971ccb6e89c1b5f5ee72a430b00664e3db5a381a849a4c207d765e",
+     "merge_base_count": 1,
+     "patch_id": "6ffccf99d984b959c718029348eeccd46b3f8b6f"
+    },
+    "proposed_with_supplied_base": {
+     "diff_bytes": 235,
+     "diff_sha256": "b50db8e7440ca40df84abfd0bc1683ad86ac41ad0737091449d051273e04120d",
+     "merge_base_count": 1,
+     "patch_id": "b294c8f8b01e409f2e4c27a0c780e479fb0dc524"
+    },
+    "supplied_proposed_base_is_base_ref_tip": false,
+    "supplied_proposed_base_on_base_ref": false
+   },
+   "gate_reason": "base",
+   "proposed_head": "b144ad7e78c5c14ded83559deef0d98633500520",
+   "supplied_proposed_base": "8dd1bbcdcd5662c3654349eba10dfff3c96a832c"
   }
  },
  "note": "facts are recomputed from actual git by test_git_reproduction_matches_the_recorded_facts",

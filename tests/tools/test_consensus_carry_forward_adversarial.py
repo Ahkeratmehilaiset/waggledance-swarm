@@ -26,6 +26,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -314,6 +315,58 @@ def build_legit_rebase_hostile_config(tmp):
     return repo, approved, proposed
 
 
+MULTI = b"".join(b"line %02d\n" % i for i in range(1, 41))
+MULTI_EDIT = MULTI.replace(b"line 05\n", b"line 05 pr\n").replace(b"line 30\n", b"line 30 pr\n")
+
+
+def build_multi_hunk_legit_rebase(tmp):
+    """Legit rebase of a PR touching two files with two separated hunks each (clean repository)."""
+    repo = Repo(tmp)
+    main0 = repo.commit({"a/first.txt": MULTI, "z/last.txt": MULTI}, "base")
+    repo.checkout("pr", main0)
+    approved = repo.commit({"a/first.txt": MULTI_EDIT, "z/last.txt": MULTI_EDIT}, "pr: two files two hunks")
+    repo.checkout("main", main0)
+    main1 = repo.commit({"docs/notes.txt": b"unrelated main change\n"}, "main advances")
+    repo.checkout("pr-rebased", main1)
+    proposed = repo.commit({"a/first.txt": MULTI_EDIT, "z/last.txt": MULTI_EDIT}, "pr: two files two hunks")
+    return repo, (approved, main0), (proposed, main1)
+
+
+def build_multi_hunk_hostile_order_and_inter_hunk(tmp):
+    """Same commits as build_multi_hunk_legit_rebase; afterwards the repository reverses the file order and merges
+    nearby hunks (Lead 2026-11-09T07:27:50Z). Observed against Tools e89f85b5: orderFile changes the diff bytes and
+    interHunkContext changes the bytes and the stable patch-id unless the diff command pins both."""
+    repo, approved, proposed = build_multi_hunk_legit_rebase(tmp)
+    order = repo.path / ".git" / "order.txt"
+    order.write_bytes(b"z/*\na/*\n")
+    repo.git("config", "diff.orderFile", str(order).replace("\\", "/"))
+    repo.git("config", "diff.interHunkContext", "20")
+    return repo, approved, proposed
+
+
+HOSTILE_TWINS = {"legit_rebase_under_hostile_repo_config": build_legit_rebase,
+                 "multi_hunk_legit_rebase_under_hostile_order_and_inter_hunk": build_multi_hunk_legit_rebase}
+
+
+def build_side_commit_base_substitution(tmp):
+    """RCO2 hazard (Lead 2026-11-09T07:25:55Z): P was reviewed on main M0. An unreviewed side commit X is made from
+    M0 and P is reapplied on X. With the caller-supplied base X the per-base diff bytes and patch-id equal the
+    reviewed ones, yet merging the new head into the real main also brings X. main itself never contains X."""
+    repo, main0 = _start(tmp)
+    repo.checkout("pr", main0)
+    approved = repo.commit(_pr_files(), "pr: add feature")
+    repo.checkout("side", main0)
+    side = repo.commit({"src/unreviewed.txt": b"unreviewed side change\n"}, "side: unreviewed change")
+    repo.checkout("pr-on-side", side)
+    proposed = repo.commit(_pr_files(), "pr: add feature")
+    repo.git("checkout", "-q", "main")
+    return repo, (approved, main0), (proposed, side)
+
+
+# Gate-level cases: content identity holds for the SUPPLIED bases, so the refusal must come from the gate checking the
+# supplied base against the base branch in the repository. Kept apart from BUILDERS (pure content cases).
+GATE_BUILDERS = {"side_commit_base_substitution": build_side_commit_base_substitution}
+
 BUILDERS = {
     "legit_rebase_onto_advanced_main": build_legit_rebase,
     "message_only_amend": build_message_only,
@@ -330,13 +383,14 @@ BUILDERS = {
     "hostile_textconv_hides_change": build_hostile_textconv,
     "hostile_external_diff_hides_change": build_hostile_external_diff,
     "legit_rebase_under_hostile_repo_config": build_legit_rebase_hostile_config,
+    "multi_hunk_legit_rebase_under_hostile_order_and_inter_hunk": build_multi_hunk_hostile_order_and_inter_hunk,
 }
 
 
 @pytest.fixture(scope="module")
 def histories(tmp_path_factory):
     built = {}
-    for name, builder in BUILDERS.items():
+    for name, builder in {**BUILDERS, **GATE_BUILDERS}.items():
         repo, approved, proposed = builder(tmp_path_factory.mktemp(name) / "repo")
         built[name] = {"repo": repo, "approved": {"head": approved[0], "base_sha": approved[1]},
                        "proposed": {"head": proposed[0], "base_sha": proposed[1]}}
@@ -363,6 +417,10 @@ def test_every_git_case_is_recorded_and_classified():
     for name, case in REPRODUCTIONS["cases"].items():
         assert case["expected_carry"] in (True, False), name
         assert case["classification"], name
+        if not case["expected_carry"]:
+            assert case["content_refusal_class"] in CONTRACT["content_refusal_patterns"], name
+    for case in SYNTHETIC["cases"]:
+        assert case["expected_carry"] or case["reason"] in CONTRACT["gate_reason_patterns"], case["id"]
 
 
 @pytest.mark.parametrize("name", sorted(BUILDERS))
@@ -411,12 +469,71 @@ def test_an_unpinned_diff_would_hide_a_real_change(histories, name):
     assert pinned["approved"]["patch_id"] != pinned["proposed"]["patch_id"]
 
 
-def test_pinned_diff_bytes_ignore_hostile_repository_settings(histories, tmp_path):
-    clean = build_legit_rebase(tmp_path / "clean")
-    hostile = histories["legit_rebase_under_hostile_repo_config"]
-    assert clean[1][0] == hostile["approved"]["head"] and clean[2][0] == hostile["proposed"]["head"]
-    clean_history = {"repo": clean[0], "approved": {"head": clean[1][0], "base_sha": clean[1][1]},
-                     "proposed": {"head": clean[2][0], "base_sha": clean[2][1]}}
+def _is_ancestor(repo, commit, ref):
+    return subprocess.run([GIT, "merge-base", "--is-ancestor", commit, ref], cwd=repo.path, capture_output=True,
+                          env=repo.env()).returncode == 0
+
+
+def gate_level_facts(history):
+    repo = history["repo"]
+    main_tip = repo.rev("refs/heads/main")
+    approved, proposed = history["approved"], history["proposed"]
+    return {
+        "approved_with_supplied_base": repo.identity(approved["base_sha"], approved["head"]),
+        "proposed_with_supplied_base": repo.identity(proposed["base_sha"], proposed["head"]),
+        "proposed_against_base_ref_tip": repo.identity(main_tip, proposed["head"]),
+        "supplied_proposed_base_is_base_ref_tip": proposed["base_sha"] == main_tip,
+        "supplied_proposed_base_on_base_ref": _is_ancestor(repo, proposed["base_sha"], "refs/heads/main"),
+    }
+
+
+def test_every_gate_level_case_is_recorded():
+    assert set(REPRODUCTIONS["gate_level_cases"]) == set(GATE_BUILDERS)
+    for name, case in REPRODUCTIONS["gate_level_cases"].items():
+        assert case["expected_carry"] is False and case["classification"], name
+
+
+@pytest.mark.parametrize("name", sorted(GATE_BUILDERS))
+def test_gate_level_reproduction_matches_the_recorded_facts(histories, name):
+    assert gate_level_facts(histories[name]) == REPRODUCTIONS["gate_level_cases"][name]["facts"]
+
+
+def test_side_commit_base_substitution_hazard_is_real():
+    """With the supplied side base the content looks identical (bytes AND patch-id), but against the real base
+    branch tip the proposed head carries the unreviewed side change, and the supplied base is not on main."""
+    facts = REPRODUCTIONS["gate_level_cases"]["side_commit_base_substitution"]["facts"]
+    approved, supplied = facts["approved_with_supplied_base"], facts["proposed_with_supplied_base"]
+    real = facts["proposed_against_base_ref_tip"]
+    assert approved["merge_base_count"] == supplied["merge_base_count"] == real["merge_base_count"] == 1
+    assert approved["patch_id"] == supplied["patch_id"] is not None
+    assert approved["diff_sha256"] == supplied["diff_sha256"]
+    assert real["diff_sha256"] != approved["diff_sha256"] and real["patch_id"] != approved["patch_id"]
+    assert facts["supplied_proposed_base_is_base_ref_tip"] is False
+    assert facts["supplied_proposed_base_on_base_ref"] is False
+
+
+def test_existing_cases_supply_the_base_ref_tip_as_proposed_base(histories):
+    """The base-branch rule added for the gate-level case does not change any existing verdict: every content case
+    supplies the current base branch tip as the proposed base and an approved base on the base branch."""
+    for name in BUILDERS:
+        history = histories[name]
+        repo = history["repo"]
+        assert history["proposed"]["base_sha"] == repo.rev("refs/heads/main"), name
+        assert _is_ancestor(repo, history["approved"]["base_sha"], "refs/heads/main"), name
+
+
+def _clean_twin(name, tmp_path, histories):
+    repo, approved, proposed = HOSTILE_TWINS[name](tmp_path / "clean")
+    hostile = histories[name]
+    assert approved[0] == hostile["approved"]["head"] and proposed[0] == hostile["proposed"]["head"]
+    return {"repo": repo, "approved": {"head": approved[0], "base_sha": approved[1]},
+            "proposed": {"head": proposed[0], "base_sha": proposed[1]}}
+
+
+@pytest.mark.parametrize("name", sorted(HOSTILE_TWINS))
+def test_pinned_diff_bytes_ignore_hostile_repository_settings(histories, tmp_path, name):
+    hostile = histories[name]
+    clean_history = _clean_twin(name, tmp_path, histories)
     assert _facts(hostile) == _facts(clean_history)
     assert _facts(hostile, pinned=False) != _facts(clean_history, pinned=False)
 
@@ -477,7 +594,7 @@ def base_evidence(history):
         "schema": CONTRACT["evidence_schema"],
         "repo_path": str(history["repo"].path),
         "task_id": TASK,
-        "pr_author": "codex-lead-1",
+        "pr_author": "fable-5",  # a non-voting author: no build slot is waived in the baseline (Tools 07:30:36Z)
         "approved": dict(side, head=approved, base_sha=history["approved"]["base_sha"]),
         "proposed": dict(side, head=proposed, base_sha=history["proposed"]["base_sha"]),
         "roster": dict(ROSTER),
@@ -512,6 +629,9 @@ def _apply(evidence, mutation):
         del ev["events"][mutation["index"]]
     elif op == "rebind_approvals":
         ev["events"] = approvals({"old": old, "new": new, "third": third}[mutation["to"]])
+    elif op == "author_without_own_vote":
+        ev["pr_author"] = mutation["author"]
+        del ev["events"][mutation["index"]]
     elif op == "duplicate_event":
         ev["events"].append(copy.deepcopy(ev["events"][mutation["index"]]))
     elif op == "prose_heads":
@@ -539,9 +659,13 @@ def _carried_kinds(verdict):
     return {item["kind"] for item in verdict.get("carried", [])}
 
 
-def _check_verdict(verdict, evidence, expected):
+def _check_verdict(verdict, evidence, expected, reason_class=None):
     assert isinstance(verdict, dict) and verdict.get("carry") in (True, False), verdict
     assert verdict["carry"] is expected, verdict.get("reason")
+    if not expected:
+        assert reason_class, "every refusal case names the check it must be refused by"
+        pattern = CONTRACT["gate_reason_patterns"][reason_class]
+        assert re.search(pattern, str(verdict.get("reason", ""))), (reason_class, verdict.get("reason"))
     allowed = set(CONTRACT["carriable_kinds"])
     assert _carried_kinds(verdict) <= allowed
     if verdict["carry"]:
@@ -555,31 +679,42 @@ def _check_verdict(verdict, evidence, expected):
         rco = {item["agent"] for item in verdict["carried"] if item["kind"] == "rco_pass"}
         assert rco and rco <= set(evidence["recognized_rco_agents"]) and evidence["pr_author"] not in rco
         build = {item["agent"] for item in verdict["carried"] if item["kind"] == "build_consensus"}
-        assert build == {"codex-lead-1", "codex-tools-1"}
+        # Rule 9a waives the author's build slot: the author's own vote is never required and never carried
+        assert build == {"codex-lead-1", "codex-tools-1"} - {evidence["pr_author"]}
     else:
         assert not verdict.get("carried"), "a refused carry must not carry anything"
 
 
 def _identity_kwargs(history):
-    return {"repo_root": str(history["repo"].path),
+    """Tools' published convention (e89f85b5, adopted per Lead 07:27:50Z): keyword-only, repo_root a pathlib.Path."""
+    return {"repo_root": Path(history["repo"].path),
             "old_base": history["approved"]["base_sha"], "old_head": history["approved"]["head"],
             "new_base": history["proposed"]["base_sha"], "new_head": history["proposed"]["head"]}
 
 
+def _refused_for(call, refusal_class):
+    """Run call; it must raise ValueError whose text matches the contract pattern of the intended check, so a
+    refusal for another reason (argument type, unavailable git, wrong check) cannot pass the test."""
+    with pytest.raises(ValueError) as caught:
+        call()
+    pattern = CONTRACT["content_refusal_patterns"][refusal_class]
+    assert re.search(pattern, str(caught.value)), (refusal_class, str(caught.value))
+
+
 @pytest.mark.parametrize("name", sorted(BUILDERS))
 def test_content_identity_proof_verdict(histories, name):
-    """Tools' lower-level proof: derive refuses with ValueError unless the content is identical; a derived proof
-    verifies against the same tuple."""
+    """Tools' lower-level proof: derive refuses with ValueError from the intended check unless the content is
+    identical; a derived proof verifies against the same tuple."""
     derive = _entry_point("derive_content_identity")
     verify = _entry_point("verify_content_identity")
     kwargs = _identity_kwargs(histories[name])
-    if REPRODUCTIONS["cases"][name]["expected_carry"]:
+    case = REPRODUCTIONS["cases"][name]
+    if case["expected_carry"]:
         proof = derive(**kwargs)
         assert proof
-        assert verify(copy.deepcopy(proof), **kwargs) is not False
+        assert verify(proof=copy.deepcopy(proof), **kwargs) is not False
     else:
-        with pytest.raises(ValueError):
-            derive(**kwargs)
+        _refused_for(lambda: derive(**kwargs), case["content_refusal_class"])
 
 
 @pytest.mark.parametrize("other", ["whitespace_same_patch_id", "message_only_amend", "content_changing_rebase"])
@@ -587,11 +722,7 @@ def test_content_identity_proof_does_not_verify_for_another_tuple(histories, oth
     derive = _entry_point("derive_content_identity")
     verify = _entry_point("verify_content_identity")
     proof = derive(**_identity_kwargs(histories["legit_rebase_onto_advanced_main"]))
-    try:
-        accepted = verify(copy.deepcopy(proof), **_identity_kwargs(histories[other]))
-    except ValueError:
-        accepted = False
-    assert accepted is False
+    _refused_for(lambda: verify(proof=copy.deepcopy(proof), **_identity_kwargs(histories[other])), "rederivation")
 
 
 def test_content_identity_proof_swapped_heads_does_not_verify(histories):
@@ -601,11 +732,44 @@ def test_content_identity_proof_swapped_heads_does_not_verify(histories):
     proof = derive(**kwargs)
     swapped = dict(kwargs, old_base=kwargs["new_base"], old_head=kwargs["new_head"],
                    new_base=kwargs["old_base"], new_head=kwargs["old_head"])
-    try:
-        accepted = verify(copy.deepcopy(proof), **swapped)
-    except ValueError:
-        accepted = False
-    assert accepted is False
+    _refused_for(lambda: verify(proof=copy.deepcopy(proof), **swapped), "rederivation")
+
+
+@pytest.mark.parametrize("name", sorted(HOSTILE_TWINS))
+def test_content_identity_proof_is_independent_of_repository_diff_settings(histories, tmp_path, name):
+    """The same commits in a clean repository and in one with hostile diff settings must give the same proof, so a
+    receipt re-derived on another clone reproduces it. Against Tools e89f85b5 the multi-hunk case differs
+    (diff.orderFile and diff.interHunkContext are not pinned there)."""
+    derive = _entry_point("derive_content_identity")
+    clean = _clean_twin(name, tmp_path, histories)
+    assert derive(**_identity_kwargs(histories[name])) == derive(**_identity_kwargs(clean))
+
+
+def test_gate_refuses_side_commit_base_substitution(histories):
+    """Gate-level: the caller supplies the side commit as the proposed base; content identity holds for that base,
+    so only the gate's check of the supplied base against the base branch in the repository can refuse."""
+    evaluate = _entry_point("evaluate")
+    history = histories["side_commit_base_substitution"]
+    evidence = base_evidence(history)
+    verdict = evaluate(copy.deepcopy(evidence))
+    _check_verdict(verdict, evidence, False, "base")
+
+
+def test_gate_refuses_side_commit_head_against_the_real_base(histories):
+    evaluate = _entry_point("evaluate")
+    history = histories["side_commit_base_substitution"]
+    evidence = base_evidence(history)
+    evidence["proposed"]["base_sha"] = history["repo"].rev("refs/heads/main")
+    verdict = evaluate(copy.deepcopy(evidence))
+    _check_verdict(verdict, evidence, False, "content")
+
+
+def test_content_identity_against_the_real_base_refuses_the_side_commit(histories):
+    """Content layer, with the real base branch tip as new_base: the identity truthfully differs."""
+    derive = _entry_point("derive_content_identity")
+    history = histories["side_commit_base_substitution"]
+    kwargs = dict(_identity_kwargs(history), new_base=history["repo"].rev("refs/heads/main"))
+    _refused_for(lambda: derive(**kwargs), "content_differs")
 
 
 @pytest.mark.parametrize("name", sorted(BUILDERS))
@@ -613,7 +777,7 @@ def test_git_case_verdict(histories, name):
     evaluate = _entry_point("evaluate")
     evidence = base_evidence(histories[name])
     verdict = evaluate(copy.deepcopy(evidence))
-    _check_verdict(verdict, evidence, REPRODUCTIONS["cases"][name]["expected_carry"])
+    _check_verdict(verdict, evidence, REPRODUCTIONS["cases"][name]["expected_carry"], "content")
 
 
 @pytest.mark.parametrize("case", SYNTHETIC["cases"], ids=lambda c: c["id"])
@@ -621,7 +785,7 @@ def test_synthetic_evidence_case_verdict(histories, case):
     evaluate = _entry_point("evaluate")
     evidence = _apply(base_evidence(histories["legit_rebase_onto_advanced_main"]), case["mutation"])
     verdict = evaluate(copy.deepcopy(evidence))
-    _check_verdict(verdict, evidence, case["expected_carry"])
+    _check_verdict(verdict, evidence, case["expected_carry"], case.get("reason"))
     if case.get("never_carried_kind"):
         assert case["never_carried_kind"] not in _carried_kinds(verdict)
 

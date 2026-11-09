@@ -9,14 +9,25 @@
   "raw diff bytes of merge-base..head under a pinned command are byte-identical and non-empty",
   "git patch-id --stable of those bytes exists and is identical",
   "same repository, pr_number and base_ref on both sides",
+  "the supplied bases are checked against the base branch in repo_path (refs/heads/<base_ref>): proposed.base_sha is its current tip and approved.base_sha is on it; a supplied base off the base branch (side-commit base substitution, RCO2 via Lead 2026-11-09T07:25:55Z) refuses",
   "original approvals satisfy the existing old-head identity and scope rules: lead and tools build_consensus plus a recognized RCO rco_pass that is not the PR author",
   "carried approvals bind by structured original event reference; text mentioning both heads is never a second approval",
   "no unretracted recognized-RCO veto at the approved head, the proposed head or the canonical task/PR scope; a clear counts only from the same RCO at the same head after the veto",
   "accepted_queue_complete is true",
   "every required CI check completed with success at the proposed head; the required list is non-empty"
  ],
+ "content_refusal_patterns": {
+  "content_differs": "content identity differs",
+  "empty_diff": "empty diff",
+  "merge_base": "unambiguous merge-base",
+  "missing_object": "Git read refused|requires commit objects",
+  "rederivation": "failed re-derivation|content identity differs"
+ },
+ "content_refusal_patterns_note": "regexes over str(ValueError) taken from Tools e89f85b5 messages; Tools may repoint them, a refusal for any other reason (for example argument type) fails the test",
  "entry_point_signatures": {
-  "evaluate": "evaluate(evidence: dict) -> dict with carry (bool), reason (str), carried (list of dicts with agent, agent_uuid, kind, approved_head, event_sha256) and receipt (dict)",
+  "derive_content_identity": "derive_content_identity(*, repo_root: pathlib.Path, old_base, old_head, new_base, new_head) -> proof dict; ValueError on refusal whose text matches content_refusal_patterns[expected class] (Tools e89f85b5 convention, adopted per Lead 07:27:50Z)",
+  "evaluate": "evaluate(evidence: dict) -> dict with carry (bool), reason (str), carried (list of dicts with agent, agent_uuid, kind, approved_head, event_sha256) and receipt (dict); a refusal reason matches gate_reason_patterns[expected reason class]",
+  "verify_content_identity": "verify_content_identity(*, proof, repo_root: pathlib.Path, old_base, old_head, new_base, new_head) -> re-derived proof; ValueError on refusal (Tools e89f85b5 convention)",
   "verify_receipt": "verify_receipt(receipt: dict, evidence: dict) -> bool; recomputes merge-bases, raw diff bytes and patch-id from git at evidence.repo_path and the approvals, vetoes and CI from evidence; never trusts receipt booleans"
  },
  "entry_point_status": {
@@ -46,6 +57,17 @@
   "task_id": "canonical task id of the PR (branch name)"
  },
  "evidence_schema": "wd.bridge-approval-carry-forward-evidence.v1",
+ "gate_reason_patterns": {
+  "approval": "approval",
+  "base": "base",
+  "block": "block",
+  "ci": "ci",
+  "content": "content",
+  "queue": "queue",
+  "schema": "schema",
+  "scope": "scope"
+ },
+ "gate_reason_patterns_note": "proposed reason classes; regexes over verdict reason; Tools may repoint them when the gate API is published",
  "never_carried": [
   "ci",
   "operator_signature",

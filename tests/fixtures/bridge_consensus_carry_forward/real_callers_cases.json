@@ -1,0 +1,112 @@
+{
+  "schema": "wd.fable5-carry-real-callers.v1",
+  "corpus_head": "4d7eb1c7b78718e16d5c83b68d8f2b3de86a498b",
+  "callers_read_at": "23564ad4c0494b659bb726f1ed4c57cbbfbac1ba",
+  "request": "codex-lead-1 2026-11-09T07:51:27.4852688Z lead-carry-real-callers-fable-20261109-v1",
+  "failure_classes": {
+    "missing_api": "failure text starts with 'RED: missing API:'; the opt-in carry parameter of a real caller does not exist yet; never counted as verified behaviour",
+    "behaviour": "any other failure; the real caller behaved differently from the expectation recorded here"
+  },
+  "opt_in": {
+    "parameter": {
+      "tools.idle_consensus_auto_merge:evaluate_auto_merge_gate": "approval_carry_forward",
+      "tools.merge_with_bridge_receipt:merge_with_bridge_receipt": "approval_carry_forward"
+    },
+    "value": "mapping with approved_head, approved_base_sha and repo_root (pathlib.Path of the checkout holding both heads); built only by _carry_opt_in() in the test file, the single adaptation point once Tools publishes the wired names",
+    "default": "absent or None means exact-head behaviour, unchanged"
+  },
+  "non_opt_in_consumers": {
+    "tools/bridge_loop_tick.py": [
+      "check_rco_pass_present",
+      "verify_bridge_consensus"
+    ],
+    "tools/check_promotion_eligible.py": [
+      "check_rco_pass_present",
+      "verify_bridge_consensus"
+    ]
+  },
+  "carry_record_fields": [
+    "approved_head",
+    "proposed_head",
+    "approved_base_sha",
+    "proposed_base_sha",
+    "patch_id",
+    "approved_diff_sha256",
+    "proposed_diff_sha256",
+    "carried",
+    "build_author_slot_waivers"
+  ],
+  "cases": {
+    "valid_carry_end_to_end": {
+      "history": "legit_rebase",
+      "expect": "carry",
+      "layers": [
+        "gate",
+        "receipt_writer",
+        "apply"
+      ],
+      "note": "approvals only at the approved head; content identical; CI green at the proposed head; queue complete"
+    },
+    "content_change": {
+      "history": "content_changing_rebase",
+      "expect": "refuse",
+      "reason": "(?i)content"
+    },
+    "old_head_objection_under_descriptive_task": {
+      "history": "legit_rebase",
+      "expect": "refuse",
+      "reason": "(?i)block|veto|objection|finding",
+      "note": "recognized RCO objection bound only by the approved head under a descriptive task id (map bypass 3)",
+      "shapes": {
+        "no_pr": "payload has only the structured head: invisible to both shared checks at the proposed head today (probe v3 case F)",
+        "with_pr": "payload also names the pr: the consensus block scope matches it by PR today (probe v2 case B)"
+      }
+    },
+    "incomplete_queue": {
+      "history": "legit_rebase",
+      "expect": "refuse",
+      "reason": "(?i)queue"
+    },
+    "ci_pending_at_proposed_head": {
+      "history": "legit_rebase",
+      "expect": "refuse",
+      "reason": "(?i)check|ci"
+    },
+    "ci_failed_at_proposed_head": {
+      "history": "legit_rebase",
+      "expect": "refuse",
+      "reason": "(?i)check|ci"
+    },
+    "snapshot_head_is_the_approved_head": {
+      "history": "legit_rebase",
+      "expect": "refuse",
+      "reason": "(?i)head",
+      "note": "stale snapshot: pr_status still names the approved head while the caller expects the proposed head"
+    },
+    "fresh_apply_after_objection_append": {
+      "history": "legit_rebase",
+      "expect": "refuse_at_apply",
+      "note": "objection appended between receipt write and apply; the fresh gate must refuse and gh pr merge must never run",
+      "shapes": {
+        "no_pr": "refuse at apply",
+        "with_pr": "refuse at apply",
+        "benign_message": "an unrelated ledger message appended between receipt and apply must NOT refuse; the merge runs with --match-head-commit=<proposed head> (Tools 08:00:29Z full-ledger digest concern)"
+      }
+    },
+    "match_head_commit_is_the_proposed_head": {
+      "history": "legit_rebase",
+      "expect": "carry",
+      "note": "the merge command carries --match-head-commit=<proposed head> and never the approved head"
+    }
+  },
+  "probe_observations_today": {
+    "source": "exact-head code at main 23564ad4 (identical in this branch), audit probes probe_real_callers_v1..v3",
+    "consensus_sees_descriptive_task_objection_bound_by_structured_head": "verify_bridge_consensus refuses at the exact head it names (cases G, H)",
+    "rco_check_misses_descriptive_task_objection": "check_rco_pass_present returns rco_pass_present at the exact head even with a recognized-RCO objection bound to that head under a descriptive task id (cases D, G, H); only matters where bridge consensus is not required",
+    "old_head_objection_without_pr_invisible_at_new_head": "both shared checks pass at the proposed head (case F): the carry path must scan the approved head explicitly"
+  },
+  "mutant_runs": {
+    "M0_no_op": "parameter accepted and ignored: the three positive carry tests and the reason-specific refusals fail",
+    "M1_naive_rebind": "old-head approvals rebound to the proposed head without content or objection checks: content change, no-pr objection, no-pr late objection and content-change merge tests fail; plan-ready gate still fails on the missing carry record"
+  }
+}

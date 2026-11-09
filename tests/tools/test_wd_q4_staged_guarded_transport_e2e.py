@@ -70,7 +70,7 @@ def test_staged_system_host_refuses_different_resolved_path(monkeypatch):
         fixed._staged_system_host()
 
 
-def test_real_c2_staged_plan_refuses_status_transport_without_clearing_guard(case, real_snapshot, tmp_path):
+def test_real_c2_staged_plan_refuses_status_transport_without_clearing_guard(case, real_snapshot, tmp_path, monkeypatch):
     directory, built, decision, snapshot, _projection, args = real_snapshot
     assert shared_card_checkpoint.validate_card_snapshot(enabled=True, generation_dir=directory, **snapshot) == {
         'status': 'VALIDATED_STAGED', 'completeness': 'UNKNOWN'}
@@ -105,8 +105,20 @@ def test_real_c2_staged_plan_refuses_status_transport_without_clearing_guard(cas
     # mismatch. The eventual real-Job integration requires its own test.
     public = {k:v for k,v in case.items() if not k.startswith('_')}
     public.update(_owner_guard=guard,_owner_context=context)
+    # Reason-specific spy: the refusal must come from the fixed-vs-public pin compare, i.e. after the bundle binding
+    # and the staged public plan were both accepted (their path checks differ by platform), never from an earlier check.
+    parsed = []
+    original_public_plan = bound.lane._public_plan
+    def public_plan_spy(*a, **kw):
+        result = original_public_plan(*a, **kw)
+        parsed.append(result[2])
+        return result
+    monkeypatch.setattr(bound.lane, '_public_plan', public_plan_spy)
     with pytest.raises(bound.BoundLaneTransportRefused):
         bound.make_bound_transport(**public)
+    assert len(parsed) == 1, 'refused before the staged public plan was parsed'
+    assert {'card_decision_sha256', 'card_policy_sha256'} <= set(parsed[0])
+    assert parsed[0]['card_policy_sha256'] == _sha(args['card_policy_bytes'])
     assert pending.read_bytes()==before
 
 

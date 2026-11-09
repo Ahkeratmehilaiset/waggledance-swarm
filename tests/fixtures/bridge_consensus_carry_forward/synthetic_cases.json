@@ -111,6 +111,28 @@
   },
   {
    "expected_carry": true,
+   "id": "build_author_waiver_tools_is_author",
+   "mutation": {
+    "op": "set",
+    "path": [
+     "pr_author"
+    ],
+    "value": "codex-tools-1"
+   },
+   "why": "Rule 9a waives the author build slot for a Tools-authored PR; the Tools vote is present but never carried (Lead 07:32:12Z)"
+  },
+  {
+   "expected_carry": true,
+   "id": "build_author_waiver_tools_is_author_without_own_vote",
+   "mutation": {
+    "author": "codex-tools-1",
+    "index": 1,
+    "op": "author_without_own_vote"
+   },
+   "why": "the waived Tools author slot needs no Tools vote; only the Lead vote and the RCO carry"
+  },
+  {
+   "expected_carry": true,
    "id": "valid_explicit_clear_same_rco_same_head",
    "mutation": {
     "events": [

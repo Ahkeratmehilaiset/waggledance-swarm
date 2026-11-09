@@ -1,0 +1,67 @@
+{
+  "schema": "wd.fable5-carry-n4-replay.v1",
+  "request": "codex-lead-1 2026-11-09T12:53:22.1409899Z lead-carry-n4-replay-fable-20261109-v1",
+  "design": {
+    "path": "tools-carry-n4-audit-20261109-v1/N4_REPLAY_MATRIX_DESIGN.json",
+    "sha256": "078cf23f07d25bb3bc685832a3d7cf551cf901eccb9fa2f51ce52b040af3015c",
+    "schema": "wd.carry-n4-replay-design.v1"
+  },
+  "tools_head": "211490de981a43e2cf64c86297c4ca2b3b37bc20",
+  "corpus_base": "bdf3f68be7e1107bfd790e0286241ad2fa17f479",
+  "executor": "tools.idle_consensus_auto_merge:evaluate_auto_merge_gate(apply=True, carry_forward, receipt_bundle_path): the published receipt-path API; the merge executor writes its own receipt each run and has no caller receipt path, so it is not a replay surface here and none is invented",
+  "consumer": "tools.write_bridge_consensus_merge_receipt:verify_carry_forward_merge_receipt (via verify_carry_forward_apply on the idle path)",
+  "tuple_fields": [
+    "repo",
+    "pr_number",
+    "task_id",
+    "head_sha",
+    "base_sha"
+  ],
+  "tuple_error": "carry receipt belongs to another repository/PR/task/head/base",
+  "repository_target": "example/repo-n4-target",
+  "task_target": "claude-rco-2/origin-factory-pr-9301-n4-target",
+  "harness": "real git on the allowlisted MAGMA path (fresh history per case); synthetic strict GitHub only (recorded calls, never a live PR); actual MAGMA writer and semantic consumer",
+  "per_case_steps": [
+    "source: actual writer writes bundle B at the source tuple; the actual consumer accepts B there (creation-time validity) and B carries exactly the source tuple",
+    "target: the actual writer writes a fresh bundle at the target (complete live target derivation; a refusal here is reported as a constructor failure, never as a binding pass)",
+    "replay: B offered to the idle executor at the target with apply true: zero synthetic merge commands and no mutating GitHub call, carry_apply_verification refuses with the tuple error, the direct consumer refuses B with the same text, and the set of differing outer tuple fields equals changed_receipt_fields",
+    "positive control: the fresh target bundle is accepted by the consumer and the idle executor merges exactly once at the target head"
+  ],
+  "cases": {
+    "proposed_head_replay": {
+      "order": 1,
+      "changed_receipt_fields": [
+        "head_sha"
+      ],
+      "setup": "same repository, PR, task, approved head and base; target head C = git commit-tree of the B tree with the same parent (live base) and another message; synthetic PR head and required check runs move to C; original rows unchanged"
+    },
+    "base_advance_replay": {
+      "order": 2,
+      "changed_receipt_fields": [
+        "head_sha",
+        "base_sha"
+      ],
+      "setup": "target base Y = empty-content child of the live base X (same tree); target head C = B tree with parent Y; synthetic base ref and tip move to Y, required check runs to C; approved head and basis unchanged (legal same-content carry to a new base)"
+    },
+    "repository_replay": {
+      "order": 3,
+      "changed_receipt_fields": [
+        "repo"
+      ],
+      "setup": "second test-owned git repository with the same object graph and origin URL of the target repository; original rows kept, authenticated original-voter basis rows for the target repository appended (later minutes); synthetic PR and CI under the target repository; PR, task, heads and base unchanged"
+    },
+    "task_replay": {
+      "order": 4,
+      "changed_receipt_fields": [
+        "task_id"
+      ],
+      "setup": "repository, PR, heads and base unchanged; synthetic branch and task become the target task; original rows kept, a valid author claim plus each original voter's own basis-bound row on the target task appended (no proxy issuer); adaptation: the source claim binds its task only (no PR number field), because a PR-bound claim on the old task makes the target unresolvable (see task_axis_pr_bound_claim_control)",
+      "source_claim": "task_only"
+    }
+  },
+  "task_axis_pr_bound_claim_control": {
+    "meaning": "source claim with the PR number field (corpus default): the published author resolution classifies the old-task claim as a non-canonical contributor claim on the target task, so the target carry does not derive (constructor-failure branch of the design); B offered there refuses with zero synthetic effects",
+    "writer_error": "carry PR author is not bound to the current snapshot",
+    "observed_resolution_reason": "non-canonical contributor claim(s) bind this PR: claude-rco-2"
+  }
+}

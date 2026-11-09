@@ -345,8 +345,11 @@ def test_interrupted_p1_returns_labelled_baseline_without_touching_publication(c
     assert actual['schema'] == 'wd.q4-lane-interrupted-envelope.v1'
     assert (actual['selection'], actual['publication_state'], actual['freshness']) == (
         'BASELINE_FALLBACK', 'INTERRUPTED', 'STALE')
-    assert actual['result']['schema'] == 'wd.q4-lane-caller-result.v1'
-    assert actual['result']['answer']['results'][0]['stored_text'] == CARD + '2026-01-01T00:01Z'
+    assert actual['result']['schema'] == 'wd.q4-lane-content-withheld.v1'
+    assert actual['result']['status'] == 'CONTENT_WITHHELD'
+    assert actual['result']['original_inner_status'] == 'ANSWER'
+    assert actual['result']['original_result_count'] == 1
+    assert 'stored_text' not in json.dumps(actual)
     assert actual.get('answer') is None  # Existing v1 consumers cannot silently mistake the envelope for v1.
     assert marker.exists() and temp.exists()
     assert {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()} == before
@@ -799,8 +802,9 @@ def test_public_stored_text_and_metadata_may_coincide_with_short_queries(case, m
     assert invoke(case, monkeypatch, raw) == 0
     observed = capsys.readouterr()
     result = json.loads(observed.out)
-    assert observed.err == "" and result["status"] == "VALIDATED"
-    assert result["answer"]["results"][0]["stored_text"] == case["outcome"]["stored_text"]
+    assert observed.err == "" and result["status"] == "CONTENT_WITHHELD"
+    assert result["original_inner_status"] == "ANSWER" and result["original_result_count"] == 1
+    assert "stored_text" not in observed.out
     assert result["lane_authentication"] == "UNKNOWN"
     assert TOKEN_CANARY not in observed.out and len(case["calls"]) == 1
 
@@ -931,7 +935,9 @@ def test_card_expiring_during_the_call_is_not_output(case, monkeypatch, capsys, 
     case["clock"]["times"] = [NOW, end]
     if ok:
         assert invoke(case, monkeypatch) == 0
-        assert json.loads(capsys.readouterr().out)["answer"]["results"][0]["stored_text"] == CARD + until
+        output = json.loads(capsys.readouterr().out)
+        assert output["status"] == "CONTENT_WITHHELD" and output["original_result_count"] == 1
+        assert "stored_text" not in json.dumps(output)
     else:
         assert_refused(invoke(case, monkeypatch), capsys)
     assert len(case["calls"]) == 1
@@ -953,14 +959,16 @@ def test_interrupted_card_baseline_expiring_during_the_call_is_not_output(case, 
 
 
 def test_v6_non_card_results_are_not_rechecked_by_card_status(case, monkeypatch, capsys):
-    """v6 records carry no card until field; their behavior is unchanged (still no freshness claim)."""
+    """v6 records bypass card expiry checks but unverified text is still withheld."""
     text = "status done codex-lead-1 synthetic public record until:2020-01-01T00:00Z"
     case["outcome"].update(validated=True, stored_text=text)
     case["clock"]["times"] = [NOW, NOW + timedelta(seconds=30)]
     assert invoke(case, monkeypatch) == 0
     result = json.loads(capsys.readouterr().out)
-    assert result["answer"]["results"][0]["stored_text"] == text
-    assert result["answer"]["trust"]["freshness"] == "UNKNOWN"
+    assert result["status"] == "CONTENT_WITHHELD"
+    assert result["original_inner_status"] == "ANSWER" and result["original_result_count"] == 1
+    assert result["trust"]["freshness"] == "UNKNOWN"
+    assert "stored_text" not in json.dumps(result) and text not in json.dumps(result)
 
 
 def test_content_binding_cli_requires_exact_seven_well_formed_pins():

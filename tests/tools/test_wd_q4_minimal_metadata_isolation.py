@@ -131,15 +131,18 @@ def test_five_declared_lanes_query_same_descriptor_and_get_same_records(tmp_path
                 output=capsys.readouterr()
                 assert not output.err
                 value=json.loads(output.out)
-                assert value['lane']==value['answer']['lane']==name
+                assert value['lane']==name and value['status']=='CONTENT_WITHHELD'
+                assert value['original_inner_status']=='ANSWER' and value['original_result_count']>0
+                assert 'stored_text' not in output.out
                 assert value['lane_authentication']=='UNKNOWN'
                 results[name]=(value,output.out)
         assert set(results)==caller._LANES
         expected=results['codex-lead-1'][0]
         for value,_ in results.values():
             assert value['descriptor_sha256']==expected['descriptor_sha256']
-            assert value['answer']['binding']==expected['answer']['binding']
-            assert value['answer']['results']==expected['answer']['results']
+            assert value['binding']==expected['binding']
+            assert value['original_result_refs']==expected['original_result_refs']
+            assert value['original_answer_sha256'] != ''
         comparisons.append(expected['descriptor_sha256'])
         sys.stdout.write(results['codex-lead-1'][1])
         return 0

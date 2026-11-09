@@ -181,6 +181,9 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
             assert marker.read_bytes() == b'unknown adoption outcome\n'
         finally:
             marker.unlink()
+    # Fixture observation time matches its synthetic query, never source freshness.
+    from datetime import datetime, timezone
+    monkeypatch.setattr(update.caller, '_utc_now', lambda: datetime(2026, 11, 1, 12, tzinfo=timezone.utc))
     answer_pins = []
     for minute in (2, 3):
         event['ts_utc'] = f'2026-10-31T12:0{minute}:00Z'
@@ -193,9 +196,10 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
         monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(query), encoding='utf-8'))
         assert update.caller.main(['--enabled']) == 0
         answer = json.loads(capsys.readouterr().out)
-        assert answer['status'] == 'VALIDATED' and answer['inner_status'] == 'ANSWER'
+        assert answer['status'] == 'CONTENT_WITHHELD' and answer['original_inner_status'] == 'ANSWER'
+        assert 'stored_text' not in json.dumps(answer)
         assert answer['descriptor_sha256'] == receipt['descriptor_sha256']
-        assert answer['answer']['binding']['pointer_sha256'] == receipt['pointer_sha256']
+        assert answer['binding']['pointer_sha256'] == receipt['pointer_sha256']
         answer_pins.append(receipt['pointer_sha256'])
     assert answer_pins[0] != answer_pins[1]
     private_root = Path(route['private_state_root'])
@@ -312,7 +316,7 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
         assert not (private_root / 'q4-live-update.pending.json').exists()
         monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(query), encoding='utf-8'))
         assert update.caller.main(['--enabled']) == 0
-        assert json.loads(capsys.readouterr().out)['answer']['binding']['pointer_sha256'] == empty_advanced['pointer_sha256']
+        assert json.loads(capsys.readouterr().out)['binding']['pointer_sha256'] == empty_advanced['pointer_sha256']
         answer_pins.append(empty_advanced['pointer_sha256'])
     event['ts_utc'] = '2026-10-31T12:04:00Z'
     if fault_stage != 'before_progress_no_change':
@@ -453,7 +457,7 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
         monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(query), encoding='utf-8'))
         assert update.caller.main(['--enabled']) == 0
         answer = json.loads(capsys.readouterr().out)
-        assert answer['answer']['binding']['pointer_sha256'] == target
+        assert answer['binding']['pointer_sha256'] == target
         return
     if fault_stage in ('before_progress', 'before_progress_no_change'):
         from tools import wd_q4_live_update_recovery as recovery
@@ -507,7 +511,7 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
         assert not (private_root / 'q4-live-update.pending.json').exists() and calls == [1]
         monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(query), encoding='utf-8'))
         assert update.caller.main(['--enabled']) == 0
-        assert json.loads(capsys.readouterr().out)['answer']['binding']['pointer_sha256'] == result['pointer_sha256']
+        assert json.loads(capsys.readouterr().out)['binding']['pointer_sha256'] == result['pointer_sha256']
         return
     assert len(progress_files) == (5 if fault_stage == 'capture' else 3)
     attempt = json.loads((private_root / 'q4-live-update.pending.json').read_bytes())['attempt']
@@ -576,7 +580,7 @@ def test_two_cli_updates_are_consumed_by_same_guarded_caller(tmp_path, monkeypat
     monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(query), encoding='utf-8'))
     assert update.caller.main(['--enabled']) == 0
     recovered = json.loads(capsys.readouterr().out)
-    assert recovered['answer']['binding']['pointer_sha256'] == result['pointer_sha256']
+    assert recovered['binding']['pointer_sha256'] == result['pointer_sha256']
 
 
 def _p1_test_config():

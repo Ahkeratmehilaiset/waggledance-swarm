@@ -242,12 +242,15 @@ def test_materializes_from_real_synthetic_descriptor_and_fenced_checkpoint(tmp_p
     actual = update.run_once(enabled=True, config_path=str(output_dir / 'updater-config.json'),
                              expected_config_sha256=result['config_sha256'])
     assert actual['status'] == 'PUBLISHED' and actual['freshness'] == 'UNKNOWN'
+    # Fixture observation time matches its synthetic query, never source freshness.
+    from datetime import datetime, timezone
+    monkeypatch.setattr(update.caller, '_utc_now', lambda: datetime(2026, 11, 1, 12, tzinfo=timezone.utc))
     query = update._encode({'situation': 'synthetic recall', 'time': '2026-11-01T12:00:00Z'})
     monkeypatch.setattr(sys, 'stdin', io.TextIOWrapper(io.BytesIO(query), encoding='utf-8'))
     capsys.readouterr()
     assert update.caller.main(['--enabled']) == 0
     answer = json.loads(capsys.readouterr().out)
-    assert answer['answer']['binding']['pointer_sha256'] == actual['pointer_sha256']
+    assert answer['binding']['pointer_sha256'] == actual['pointer_sha256']
     # The pinned genesis cutoff deliberately prevents claiming rolling freshness.
     # The next event is after that cutoff, so it remains deferred. The report
     # must not claim that the event stream was caught up.

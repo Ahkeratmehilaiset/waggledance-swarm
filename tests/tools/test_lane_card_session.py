@@ -136,9 +136,10 @@ def test_cli_card_pin_in_config_document_plan_and_answer_is_published(case, monk
     code, observed = validated(case, monkeypatch, capsys)
     assert code == 0 and observed.err == ""
     result = json.loads(observed.out)
-    assert result["status"] == "VALIDATED" and result["inner_status"] == "ANSWER"
-    assert result["answer"]["binding"][CARD] == PIN
-    assert list(result["answer"]["binding"]) == sorted(case["descriptor"]["expected_binding"])
+    assert result["status"] == "CONTENT_WITHHELD" and result["original_inner_status"] == "ANSWER"
+    assert "stored_text" not in observed.out and result["original_result_count"] == 1
+    assert result["binding"][CARD] == PIN
+    assert list(result["binding"]) == sorted(case["descriptor"]["expected_binding"])
     assert len(case["calls"]) == 1
     assert json.loads(case["calls"][0]["descriptor_bytes"])["expected_binding"][CARD] == PIN
 
@@ -146,7 +147,7 @@ def test_cli_card_pin_in_config_document_plan_and_answer_is_published(case, monk
 def test_cli_v6_answer_still_has_exactly_the_eight_keys(case, monkeypatch, capsys):
     code, observed = validated(case, monkeypatch, capsys)
     assert code == 0
-    assert list(json.loads(observed.out)["answer"]["binding"]) == sorted(lb.PIN_KEYS)
+    assert list(json.loads(observed.out)["binding"]) == sorted(lb.PIN_KEYS)
 
 
 @pytest.mark.parametrize("pins", [

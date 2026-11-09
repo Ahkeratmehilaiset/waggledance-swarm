@@ -930,3 +930,104 @@ def test_a_receipt_from_another_case_does_not_replay(histories):
     other = base_evidence(histories["message_only_amend"])
     receipt = evaluate(copy.deepcopy(other))["receipt"]
     assert verify(receipt, legit) is False
+
+
+# --------------------------------------------------------------------------------------------------------------
+# Receipt prefix liveness and late objections (Lead 2026-11-09T08:19:00Z). Schema adaptation, recorded in
+# contract.json receipt_prefix_fields: Tools 7ba6dc51 records the observed ledger prefix as accepted_event_count plus
+# accepted_events_sha256, the canonical JSON digest of events[:count] (same canonical form as event_sha256 here, so
+# the corpus recomputes it independently). Expected verdicts below are the corpus intent, not read from the evaluator.
+# --------------------------------------------------------------------------------------------------------------
+UNRELATED_HEAD = "ab" * 20
+DESCRIPTIVE_TASK = "rco2-review-descriptive-note-9001"
+
+
+def _objection(head, minute, *, task=TASK):
+    """A recognized non-author RCO objection bound only by its structured head; no pr number, no SHA in prose."""
+    return _event("claude-rco-2", "finding", "changes_requested", head, minute, task=task,
+                  message="objection at the bound head")
+
+
+def _note(minute, *, task):
+    return _event("codex-lead-1", "message", "", None, minute, task=task, message="unrelated note")
+
+
+def _swap_first_two(events):
+    events[0], events[1] = events[1], events[0]
+
+
+LIVENESS = {
+    # case: (mutation of the ledger after the receipt, old receipt verifies, re-evaluated carry, refusal class)
+    "harmless_unrelated_append": (lambda ev, old, new: ev.append(_note(20, task="lead-unrelated-note")), True, True, None),
+    "harmless_canonical_task_message": (lambda ev, old, new: ev.append(_note(20, task=TASK)), True, True, None),
+    "objection_on_unrelated_head_descriptive_task": (
+        lambda ev, old, new: ev.append(_objection(UNRELATED_HEAD, 20, task=DESCRIPTIVE_TASK)), True, True, None),
+    "prefix_event_changed": (lambda ev, old, new: ev[0].update(message="edited after the receipt"), False, True, None),
+    "prefix_event_inserted": (lambda ev, old, new: ev.insert(0, _note(0, task="lead-unrelated-note")), False, True, None),
+    "prefix_reordered": (lambda ev, old, new: _swap_first_two(ev), False, True, None),
+    "prefix_truncated": (lambda ev, old, new: ev.pop(), False, False, "approval"),
+    "late_objection_old_head": (lambda ev, old, new: ev.append(_objection(old, 20)), False, False, "block"),
+    "late_objection_new_head": (lambda ev, old, new: ev.append(_objection(new, 20)), False, False, "block"),
+    "late_objection_old_head_descriptive_task": (
+        lambda ev, old, new: ev.append(_objection(old, 20, task=DESCRIPTIVE_TASK)), False, False, "block"),
+    "late_objection_new_head_descriptive_task": (
+        lambda ev, old, new: ev.append(_objection(new, 20, task=DESCRIPTIVE_TASK)), False, False, "block"),
+}
+
+
+def _prefix_digest(events):
+    return hashlib.sha256(json.dumps(events, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+                          .encode("ascii")).hexdigest()
+
+
+def _carry_receipt(histories):
+    evaluate = _entry_point("evaluate")
+    history = histories["legit_rebase_onto_advanced_main"]
+    evidence = base_evidence(history)
+    first = evaluate(copy.deepcopy(evidence))
+    assert first["carry"] is True, first.get("reason")
+    receipt = first["receipt"]
+    count_field, digest_field = CONTRACT["receipt_prefix_fields"]
+    if count_field not in receipt or digest_field not in receipt:
+        pytest.fail(f"RED: carry receipt records no ledger prefix ({count_field}, {digest_field}) yet")
+    assert receipt[count_field] == len(evidence["events"])
+    assert receipt[digest_field] == _prefix_digest(evidence["events"])  # independent recomputation
+    return history, evidence, receipt
+
+
+@pytest.mark.parametrize("case", sorted(LIVENESS))
+def test_receipt_prefix_liveness_and_late_objections(histories, case):
+    """A harmless append keeps the old receipt valid; any change to the recorded prefix, or a late recognized-RCO
+    objection at either head (canonical or descriptive task), invalidates it and refuses the re-evaluation."""
+    evaluate = _entry_point("evaluate")
+    verify = _entry_point("verify_receipt")
+    history, evidence, receipt = _carry_receipt(histories)
+    mutate, still_valid, carry, reason_class = LIVENESS[case]
+    later = copy.deepcopy(evidence)
+    mutate(later["events"], history["approved"]["head"], history["proposed"]["head"])
+    assert verify(copy.deepcopy(receipt), copy.deepcopy(later)) is still_valid
+    _check_verdict(evaluate(copy.deepcopy(later)), later, carry, reason_class)
+
+
+def test_receipt_prefix_cannot_shrink_below_its_own_approvals(histories):
+    """A receipt rewritten to a shorter prefix (consistent count and digest) no longer contains the approvals it
+    claims to carry; it must not verify."""
+    verify = _entry_point("verify_receipt")
+    history, evidence, receipt = _carry_receipt(histories)
+    count_field, digest_field = CONTRACT["receipt_prefix_fields"]
+    shrunk = copy.deepcopy(receipt)
+    shrunk[count_field] = len(evidence["events"]) - 1
+    shrunk[digest_field] = _prefix_digest(evidence["events"][:-1])
+    carried_refs = set(receipt["approval_event_sha256"])
+    assert carried_refs - {event_sha256(e) for e in evidence["events"][:-1]}, "the dropped event is a carried approval"
+    assert verify(shrunk, copy.deepcopy(evidence)) is False
+
+
+@pytest.mark.parametrize("count", [0, -1, "3", None, 99])
+def test_receipt_prefix_count_must_be_a_valid_index(histories, count):
+    verify = _entry_point("verify_receipt")
+    history, evidence, receipt = _carry_receipt(histories)
+    count_field, _ = CONTRACT["receipt_prefix_fields"]
+    bad = copy.deepcopy(receipt)
+    bad[count_field] = count
+    assert verify(bad, copy.deepcopy(evidence)) is False

@@ -98,7 +98,9 @@
   "veto_scan_complete",
   "ci_head",
   "ci_checks",
-  "build_author_slot_waivers"
+  "build_author_slot_waivers",
+  "accepted_event_count",
+  "accepted_events_sha256"
  ],
  "reference_diff_command": {
   "diff_options": [
@@ -135,5 +137,10 @@
   "note": "reference only; an implementation may use another argv if its receipt records it as diff_argv (arguments after git, before the two revisions) and re-running it reproduces the bytes under hostile repository settings",
   "patch_id": "git patch-id --stable on the raw bytes; empty output means no patch-id"
  },
- "schema": "wd.bridge-approval-carry-forward-corpus-contract.v1"
+ "schema": "wd.bridge-approval-carry-forward-corpus-contract.v1",
+ "receipt_prefix_fields": [
+  "accepted_event_count",
+  "accepted_events_sha256"
+ ],
+ "receipt_prefix_note": "schema adaptation to Tools 7ba6dc51 (Lead 2026-11-09T08:19:00Z): the receipt records the observed ledger prefix as a count plus the canonical JSON digest of events[:count]; a harmless append keeps an old receipt valid, any change to the prefix or a late recognized-RCO objection at either head invalidates it; a receipt may not shrink its prefix below the approvals it carries"
 }

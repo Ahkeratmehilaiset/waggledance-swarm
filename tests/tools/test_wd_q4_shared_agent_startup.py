@@ -177,6 +177,11 @@ if ($mode -like 'withheld*') {
   [Console]::Out.Write(($result | ConvertTo-Json -Depth 8 -Compress) + "`n")
   exit 0
 }
+if ($mode -eq 'producer_bytes') {
+  if ($WithStatus) { [Console]::Error.WriteLine('{"status":"EXITED","exit_code":0,"cleanup":"CONFIRMED"}') }
+  $bytes = [IO.File]::ReadAllBytes((Join-Path $PSScriptRoot 'producer-response.bin'))
+  $out = [Console]::OpenStandardOutput(); $out.Write($bytes, 0, $bytes.Length); $out.Flush(); exit 0
+}
 if ($mode -eq 'orphan') {
   # a process started by the helper keeps the inherited stdout/stderr pipes open after the helper itself exited
   $shell = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
@@ -202,7 +207,7 @@ STARTUP_READ_FUNCTIONS = ("Test-WdQ4ContentDescriptorBinding", "Invoke-WdQ4Start
 
 
 def startup_read_fixture(tmp_path, lane, *, mode="answer", binding=CONTENT_BINDING, descriptor_case="ok",
-                         manifest_case="ok", env_case="ok", audit_case="ok"):
+                         manifest_case="ok", env_case="ok", audit_case="ok", producer_bytes=None):
     bundle = tmp_path / "bundle"
     bundle.mkdir()
     worktree = tmp_path / "worktree"
@@ -215,6 +220,8 @@ def startup_read_fixture(tmp_path, lane, *, mode="answer", binding=CONTENT_BINDI
     helper = bundle / "Invoke-WdQ4LaneRecall.ps1"
     helper.write_text(FAKE_RECALL.replace("LANE", lane), encoding="utf-8")
     (bundle / "fake-mode.txt").write_text(mode, encoding="utf-8")
+    if producer_bytes is not None:
+        (bundle / "producer-response.bin").write_bytes(producer_bytes)
     wrapper = bundle / "Invoke-WdBridgePython.ps1"  # V1: the helper default route runs this pinned wrapper
     wrapper.write_text("exit 0\n", encoding="utf-8")
     wrapper_pin = hashlib.sha256(wrapper.read_bytes()).hexdigest().upper()
@@ -389,6 +396,53 @@ def test_withheld_content_metadata_is_strict_and_never_delivered(tmp_path, mode)
     assert record["delivered_text"] == "" and record["delivered_items"] == 0
     assert record["delivered_chars"] == 0 and record["delivered_sha256"] == ""
     assert_no_secret(fx["record"].read_text(encoding="ascii"))
+
+
+@pytest.mark.parametrize("mutation", ["none", "authority"])
+def test_real_producer_withheld_bytes_reach_startup_parser_without_text(tmp_path, mutation):
+    from tools import wd_q4_lane_caller_cli as producer
+    from tests.tools.test_wd_q4_ondemand_freshness_20261109 import result
+    lane = "codex-lead-1"
+    descriptor = json.dumps({"schema": "wd.q4-shared-session-config.v2", "expected_binding": CONTENT_BINDING}).encode()
+    descriptor_pin = hashlib.sha256(descriptor).hexdigest()
+    value = result(text="SYNTHETIC-PRODUCER-SECRET")
+    value["lane"] = value["answer"]["lane"] = lane
+    value["descriptor_sha256"] = descriptor_pin
+    value["answer"]["binding"] = dict(CONTENT_BINDING)
+    value["answer_sha256"] = hashlib.sha256(producer._canon(value["answer"])).hexdigest()
+    raw = producer._output(value, lane, value["identity_sha256"], descriptor_pin,
+                           CONTENT_BINDING, 65536, "synthetic-owner-token").encode("ascii")
+    assert b'"schema":"wd.q4-lane-content-withheld.v1"' in raw
+    assert b"SYNTHETIC-PRODUCER-SECRET" not in raw
+    if mutation == "authority":
+        assert raw.count(b'"authority":"none"') == 1
+        raw = raw.replace(b'"authority":"none"', b'"authority":"root"')
+    fx, record = run_startup_read(tmp_path, lane=lane, mode="producer_bytes", producer_bytes=raw)
+    if mutation == "none":
+        assert record["outcome"] == "unknown" and record["reason"] == "freshness_unverified"
+        assert record["refs"] == ["b" * 64] and record["answer_sha256"] == value["answer_sha256"]
+        assert record["result_count"] == 1 and record["inner_status"] == "ANSWER"
+        assert "caller-reported" in record["note"]
+    else:
+        assert record["outcome"] == "refused" and record["reason"] == "result_shape"
+        assert record["refs"] == [] and record["answer_sha256"] == ""
+    assert record["delivered_text"] == "" and record["delivered_items"] == 0
+    assert record["delivered_chars"] == 0 and record["delivered_sha256"] == ""
+    stored = fx["record"].read_text(encoding="ascii")
+    assert "SYNTHETIC-PRODUCER-SECRET" not in stored
+    assert_no_secret(stored)
+
+
+def test_startup_record_note_shape_is_stable_across_outcomes(tmp_path):
+    shapes = []
+    for mode in ("answer", "garbage", "withheld"):
+        folder = tmp_path / mode
+        folder.mkdir()
+        fx, record = run_startup_read(folder, mode=mode)
+        stored = json.loads(fx["record"].read_bytes())
+        shapes.append(set(stored))
+        assert stored["note"] == record["note"] and isinstance(stored["note"], str)
+    assert shapes[0] == shapes[1] == shapes[2]
 
 def test_on_demand_prompt_does_not_treat_unknown_freshness_as_current():
     text = LAUNCHER.read_text(encoding="utf-8-sig")

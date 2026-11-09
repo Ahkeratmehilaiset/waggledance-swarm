@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -15,6 +17,22 @@ def _api():
     # turning the entire file into a collection error before the implementation.
     from tools import bridge_approval_carry_forward
     return bridge_approval_carry_forward
+
+
+@pytest.fixture(autouse=True)
+def pinned_fleet(tmp_path, monkeypatch):
+    """Synthetic launcher authority; never reads or changes installed pins."""
+    root = tmp_path / ".codex-audit" / ("d" * 40)
+    root.mkdir(parents=True)
+    executable = Path(r"C:\Program Files\Git\cmd\git.exe") if os.name == "nt" else Path("/usr/bin/git")
+    fleet = json.dumps({"schema_version": 2, "git_executable": str(executable)}).encode()
+    (root / "wd-fleet.json").write_bytes(fleet)
+    manifest = json.dumps({"source_commit": root.name, "files": {
+        "wd-fleet.json": hashlib.sha256(fleet).hexdigest()}}).encode()
+    (root / "deployment-manifest.json").write_bytes(manifest)
+    monkeypatch.setenv("WD_BRIDGE_BUNDLE_ROOT", str(root))
+    monkeypatch.setenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", hashlib.sha256(manifest).hexdigest())
+    return root, executable
 
 
 @pytest.fixture
@@ -135,3 +153,75 @@ def test_ambiguous_criss_cross_merge_bases_refuse(history):
     pair.update(old_base=left, old_head=right)
     with pytest.raises(ValueError, match="merge.base|ambiguous"):
         _api().derive_content_identity(repo_root=root, **pair)
+
+
+def test_path_substitution_cannot_choose_identity_proof_executable(history, monkeypatch):
+    root, _, pair = history
+    api = _api()
+    selected = []
+    def malicious_path_lookup(name):
+        selected.append(name)
+        return str(root / "untrusted-git.exe")
+    monkeypatch.setattr(shutil, "which", malicious_path_lookup)
+    assert api.derive_content_identity(repo_root=root, **pair)
+    assert selected == [], "production identity reader must never consult PATH"
+
+
+@pytest.mark.parametrize("fault", ["missing_root", "missing_pin", "wrong_manifest", "wrong_fleet"])
+def test_untrusted_launcher_authority_refuses_before_git(history, pinned_fleet, monkeypatch, fault):
+    root, _, pair = history
+    bundle, _ = pinned_fleet
+    if fault == "missing_root":
+        monkeypatch.delenv("WD_BRIDGE_BUNDLE_ROOT")
+    elif fault == "missing_pin":
+        monkeypatch.delenv("WD_REBOOT_EXPECTED_MANIFEST_HASH")
+    elif fault == "wrong_manifest":
+        monkeypatch.setenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", "0" * 64)
+    else:
+        (bundle / "wd-fleet.json").write_bytes(b'{"git_executable":"untrusted.exe"}')
+    api = _api()
+    def no_spawn(*args, **kwargs):
+        pytest.fail("untrusted bundle/fleet must refuse before any child process")
+    monkeypatch.setattr(api.subprocess, "Popen", no_spawn)
+    with pytest.raises(ValueError):
+        api.derive_content_identity(repo_root=root, **pair)
+
+
+def test_native_git_hash_is_measured_and_recorded(history, pinned_fleet):
+    root, _, pair = history
+    _, executable = pinned_fleet
+    proof = _api().derive_content_identity(repo_root=root, **pair)
+    assert proof["git_executable_sha256"] == hashlib.sha256(executable.read_bytes()).hexdigest()
+    assert proof["git_executable_trust"] == "anchored_fleet_path_measured_sha256"
+
+
+def test_executable_change_during_git_reads_refuses(history, monkeypatch):
+    root, _, pair = history
+    api = _api()
+    measured = getattr(api, "_native_git_snapshot", lambda path: {"sha256": "1" * 64})
+    count = 0
+    def changed(path):
+        nonlocal count
+        value = dict(measured(path))
+        count += 1
+        if count > 1:
+            value["sha256"] = "0" * 64
+        return value
+    monkeypatch.setattr(api, "_native_git_snapshot", changed, raising=False)
+    with pytest.raises(ValueError, match="executable|Git|identity"):
+        api.derive_content_identity(repo_root=root, **pair)
+
+
+def test_canonical_diff_ignores_repository_order_file(history):
+    root, git, pair = history
+    (root / "second.txt").write_bytes(b"second changed path\n")
+    git("add", "second.txt")
+    git("commit", "--quiet", "-m", "two-file patch")
+    pair["old_head"] = git("rev-parse", "HEAD").decode().strip()
+    tree = git("rev-parse", "HEAD^{tree}").decode().strip()
+    pair["new_head"] = git("commit-tree", tree, "-p", pair["old_base"], data=b"same two files\n").decode().strip()
+    proof = _api().derive_content_identity(repo_root=root, **pair)
+    order = root / ".git" / "order.txt"
+    order.write_bytes(b"second.txt\nsample.txt\n")
+    git("config", "diff.orderFile", str(order))
+    assert _api().verify_content_identity(proof=proof, repo_root=root, **pair) == proof

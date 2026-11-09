@@ -1089,6 +1089,7 @@ def test_pure_carry_evidence_callers_are_reviewed():
     """Any new production use must undergo an origin/authority review."""
     allowed = {
         ("ops/windows/reboot/bridge-code-files.json", "<text>", "tools.bridge_approval_carry_forward"),
+        ("tools/bridge_review_basis.py", "<module>", "tools.bridge_approval_carry_forward"),
         ("tools/bridge_approval_carry_forward.py", "verify_carry_forward_receipt", "evaluate_approval_carry_forward"),
         ("tools/bridge_approval_carry_forward.py", "derive_live_carry_forward", "evaluate_approval_carry_forward"),
         ("tools/bridge_approval_carry_forward.py", "verify_live_carry_forward_receipt", "verify_carry_forward_receipt"),

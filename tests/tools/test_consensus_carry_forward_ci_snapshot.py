@@ -51,15 +51,21 @@ def _required_rule(names, app=APP):
 
 
 class FakeGitHub:
-    """Synthetic GitHub behind the published gh runner seam; records every command."""
+    """Synthetic GitHub behind the published gh runner seam; records every command. Parameterized so the
+    real-caller carry harness can serve its real git heads; the defaults are the constants of this file."""
 
-    def __init__(self):
+    def __init__(self, *, head=HEAD, base=BASE, repo=REPO, pr=PR, branch=BRANCH, changed_path=CHANGED_PATH,
+                 author_login="example-author", commit_author=("Example", "author@example.invalid"),
+                 merge_sha="2" * 40):
+        self.head, self.base, self.repo, self.pr, self.branch = head, base, repo, pr, branch
+        self.changed_path, self.author_login, self.commit_author, self.merge_sha = (
+            changed_path, author_login, commit_author, merge_sha)
         self.calls = []
-        self.protection = {"url": f"https://api.github.com/repos/{REPO}/branches/main/protection/required_status_checks",
+        self.protection = {"url": f"https://api.github.com/repos/{repo}/branches/main/protection/required_status_checks",
                            "strict": True, "contexts": list(REQUIRED),
                            "checks": [{"context": n, "app_id": APP} for n in REQUIRED]}
         self.rules_pages = [[]]
-        self.runs = [_run(100 + i, name) for i, name in enumerate(REQUIRED)]
+        self.runs = [_run(100 + i, name, head=head, repo=repo) for i, name in enumerate(REQUIRED)]
         self.run_reads = None      # optional list of run lists, one per complete inventory read
         self.total_override = {}   # page -> total_count served on that page
         self.page_rows_cut = {}    # page -> number of rows to drop from that page
@@ -76,13 +82,13 @@ class FakeGitHub:
         return None
 
     def _payload(self):
-        return {"number": PR, "title": "feat(tools): ci snapshot test", "headRefOid": HEAD, "headRefName": BRANCH,
-                "baseRefOid": BASE, "baseRefName": "main", "mergeable": "MERGEABLE", "state": "OPEN",
-                "isDraft": False, "url": f"https://github.com/{REPO}/pull/{PR}", "reviewDecision": "",
-                "updatedAt": "2026-11-09T08:30:00Z", "changedFiles": 1,
-                "author": {"login": "example-author", "name": "", "email": ""},
-                "commits": [{"oid": HEAD, "authors": [{"name": "Example", "email": "author@example.invalid",
-                                                        "login": ""}]}],
+        return {"number": self.pr, "title": "feat(tools): ci snapshot test", "headRefOid": self.head,
+                "headRefName": self.branch, "baseRefOid": self.base, "baseRefName": "main", "mergeable": "MERGEABLE",
+                "state": "OPEN", "isDraft": False, "url": f"https://github.com/{self.repo}/pull/{self.pr}",
+                "reviewDecision": "", "updatedAt": "2026-11-09T08:30:00Z", "changedFiles": 1,
+                "author": {"login": self.author_login, "name": "", "email": ""},
+                "commits": [{"oid": self.head, "authors": [{"name": self.commit_author[0],
+                                                             "email": self.commit_author[1], "login": ""}]}],
                 "statusCheckRollup": [{"name": n, "conclusion": "SUCCESS", "status": "COMPLETED"} for n in REQUIRED]}
 
     def _ok(self, body):
@@ -92,21 +98,27 @@ class FakeGitHub:
         args = list(command)
         self.calls.append(args)
         if args[:3] == ["gh", "pr", "view"]:
+            if "number,state,mergeCommit,headRefOid,headRefName,baseRefName" in args:
+                return self._ok({"number": self.pr, "state": "MERGED", "headRefOid": self.head,
+                                 "headRefName": self.branch, "baseRefName": "main",
+                                 "mergeCommit": {"oid": self.merge_sha}})
             return self._ok(self._payload())
         if args[:3] == ["gh", "pr", "diff"]:
-            return self._ok(f"diff --git a/{CHANGED_PATH} b/{CHANGED_PATH}\n")
+            return self._ok(f"diff --git a/{self.changed_path} b/{self.changed_path}\n")
+        if args[:3] == ["gh", "pr", "merge"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         assert args[:2] == ["gh", "api"], args
         endpoint, page = args[4], self._page(args)
         if endpoint.endswith("/protection/required_status_checks"):
             kind = "protection"
         elif "/rules/branches/" in endpoint:
             kind = "rules"
-        elif endpoint.endswith(f"/commits/{HEAD}/check-runs"):
+        elif endpoint.endswith(f"/commits/{self.head}/check-runs"):
             kind = "runs"
         elif "/git/ref/heads/" in endpoint:
-            return self._ok({"ref": "refs/heads/main", "object": {"type": "commit", "sha": BASE}})
-        elif endpoint.endswith(f"/pulls/{PR}/files"):
-            return self._ok([{"filename": CHANGED_PATH, "status": "modified"}] if page in (None, 1) else [])
+            return self._ok({"ref": "refs/heads/main", "object": {"type": "commit", "sha": self.base}})
+        elif endpoint.endswith(f"/pulls/{self.pr}/files"):
+            return self._ok([{"filename": self.changed_path, "status": "modified"}] if page in (None, 1) else [])
         else:
             raise AssertionError(f"unexpected endpoint: {args}")
         if (kind, page) in self.fail:

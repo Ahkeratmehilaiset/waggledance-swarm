@@ -12,6 +12,9 @@ Two failure classes (fixture real_callers_cases.json, failure_classes):
 
 * "RED: missing API: ..." -- the opt-in carry parameter of a real caller does not exist yet. These failures are
   expected until Tools wires carry-forward; they never count as verified behaviour.
+* "RED: missing wiring: ..." -- the API exists but a real caller does not consume it yet (strict required-CI
+  evidence, Lead 2026-11-09T08:40:02Z): the caller still decides on the rollup or never captures strict CI at apply.
+  Expected until Tools wires the strict evidence into the gate and merge path; never verified behaviour.
 * any other failure -- the real caller behaved differently from the recorded expectation.
 
 The GREEN controls verify today's exact-head behaviour through the same harness, so a RED is never a broken
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib.util
 import inspect
 import json
 import os
@@ -598,3 +602,211 @@ def test_carry_content_change_never_reaches_merge(tmp_path, histories):
                     expected_head=h.new, expected_base_sha=h.new_base, **opt)
     assert _refused(report), _reasons(report)
     assert _merge_calls(calls) == []
+
+
+# ==============================================================================================================
+# Strict required-CI evidence through the real callers (Lead 2026-11-09T08:40:02Z). The synthetic GitHub published
+# in test_consensus_carry_forward_ci_snapshot.py (loaded by path, one class, unchanged defaults) serves this
+# harness's real git heads; its statusCheckRollup stays all-SUCCESS in every strict case, so any refusal below can
+# only come from the strict evidence and never from the rollup the gate reads today.
+# ==============================================================================================================
+_CI_SPEC = importlib.util.spec_from_file_location(
+    "fable5_carry_ci_snapshot_harness", ROOT / "tests" / "tools" / "test_consensus_carry_forward_ci_snapshot.py")
+ci_harness = importlib.util.module_from_spec(_CI_SPEC)
+_CI_SPEC.loader.exec_module(ci_harness)
+STRICT = CASES["strict_ci"]["cases"]
+
+
+def _require_strict_ci():
+    if "require_ci_evidence" not in inspect.signature(build_pr_status_snapshot).parameters:
+        pytest.fail("RED: missing API: build_pr_status_snapshot has no require_ci_evidence opt-in yet "
+                    "(published by Tools at 556118c1)")
+
+
+def _missing_wiring(where):
+    pytest.fail(f"RED: missing wiring: {where}")
+
+
+def _strict_gh(h, *, head=None, case=None):
+    gh = ci_harness.FakeGitHub(head=head or h.new, base=h.new_base, repo=REPO_NAME, pr=PR, branch=TASK,
+                               changed_path=CHANGED_PATH, author_login="Ahkeratmehilaiset", merge_sha=MERGE_SHA)
+    if case is not None:
+        ci_harness._setup(case, gh)
+    assert all(c["conclusion"] == "SUCCESS" for c in gh._payload()["statusCheckRollup"]), "rollup must stay green"
+    return gh
+
+
+def _strict_snapshot(gh, base):
+    return build_pr_status_snapshot(pr_number=PR, repo=REPO_NAME, receipt_verified=True, expected_base_sha=base,
+                                    runner=gh, require_ci_evidence=True)
+
+
+def _strict_reads(gh):
+    return [c for c in gh.calls
+            if any("check-runs" in a or "/rules/branches/" in a or "required_status_checks" in a for a in c)]
+
+
+def _merge_outcome(tmp_path, gh, h, **extra):
+    """A wired merge path may return a refused report or raise the snapshot error; both are refusals."""
+    try:
+        return _merge(tmp_path, events_path=extra.pop("events_path"), runner=gh, apply=True, expected_head=h.new,
+                      expected_base_sha=h.new_base, **extra)
+    except ci_harness.PrStatusSnapshotError as exc:
+        return {"ok": False, "decision": exc.report.get("decision"), "errors": exc.report.get("errors")}
+
+
+def _flip_unified_before_apply(monkeypatch, gh, *, flip=True):
+    """Timing hook only: before the apply snapshot (second call) the bound app's unified run turns failed at the
+    exact head; the rollup is untouched. The real builder is then called unchanged."""
+    seen = []
+    real = merge_tool.build_pr_status_snapshot
+
+    def hooked(**kwargs):
+        seen.append(bool(kwargs.get("require_ci_evidence")))
+        if len(seen) == 2 and flip:
+            ci_harness._set(gh.runs, "unified", conclusion="failure")
+        return real(**kwargs)
+
+    monkeypatch.setattr(merge_tool, "build_pr_status_snapshot", hooked)
+    return seen
+
+
+def test_every_strict_ci_case_has_a_test():
+    tests = [name for name in globals() if name.startswith("test_strict_ci_")]
+    assert [case for case in STRICT if not any(n.startswith("test_strict_ci_" + case) for n in tests)] == []
+    for spec in STRICT.values():
+        for ci_case in spec.get("ci_cases", []):
+            assert ci_case in ci_harness.CASES["cases"], ci_case
+
+
+def test_strict_ci_control_exact_head_success_feeds_the_real_gate(tmp_path, histories):
+    _require_strict_ci()
+    h = histories["legit_rebase"]
+    gh = _strict_gh(h)
+    snapshot = _strict_snapshot(gh, h.new_base)
+    evidence = snapshot["ci_evidence"]
+    assert evidence["all_required_success"] is True
+    assert (evidence["head_sha"], evidence["base_sha"], evidence["repository"]) == (h.new, h.new_base, REPO_NAME)
+    assert {r["head_sha"] for r in evidence["runs"]} == {h.new}
+    report = _gate(tmp_path, pr_status=snapshot, expected_head=h.new, base=h.new_base, events=_approvals(h.new))
+    assert report["decision"] == "auto_merge_plan_ready", _reasons(report)
+
+
+@pytest.mark.parametrize("ci_case", STRICT["non_green_with_green_rollup"]["ci_cases"])
+def test_strict_ci_non_green_with_green_rollup(tmp_path, histories, ci_case):
+    _require_strict_ci()
+    h = histories["legit_rebase"]
+    snapshot = _strict_snapshot(_strict_gh(h, case=ci_case), h.new_base)
+    assert snapshot["ci_evidence"]["all_required_success"] is False
+    assert snapshot["ci_evidence"]["head_sha"] == h.new
+    report = _gate(tmp_path, pr_status=snapshot, expected_head=h.new, base=h.new_base, events=_approvals(h.new))
+    if not _refused(report):
+        _missing_wiring("evaluate_auto_merge_gate is ready although ci_evidence.all_required_success is false at "
+                        "the expected head (the gate reads only the green rollup)")
+    assert re.search(STRICT["non_green_with_green_rollup"]["reason"], _reasons(report)), _reasons(report)
+
+
+@pytest.mark.parametrize("ci_case", STRICT["capture_refuses"]["ci_cases"])
+def test_strict_ci_capture_refuses(histories, ci_case):
+    _require_strict_ci()
+    h = histories["legit_rebase"]
+    with pytest.raises(ci_harness.PrStatusSnapshotError) as caught:
+        _strict_snapshot(_strict_gh(h, case=ci_case), h.new_base)
+    assert caught.value.report.get("decision") == ci_harness.CASES["cases"][ci_case]["decision"]
+
+
+def test_strict_ci_capture_refuses_snapshot_at_the_old_head(tmp_path, histories):
+    """A strict snapshot captured while the PR still pointed at the approved head never serves the proposed head."""
+    _require_strict_ci()
+    h = histories["legit_rebase"]
+    snapshot = _strict_snapshot(_strict_gh(h, head=h.old), h.new_base)
+    assert snapshot["ci_evidence"]["head_sha"] == h.old
+    report = _gate(tmp_path, pr_status=snapshot, expected_head=h.new, base=h.new_base, events=_approvals(h.new))
+    assert _refused(report), _reasons(report)
+
+
+@pytest.mark.parametrize("ci_case", STRICT["merge_refuses_capture_failure"]["ci_cases"])
+def test_strict_ci_merge_refuses_capture_failure(tmp_path, histories, ci_case):
+    _require_strict_ci()
+    h = histories["legit_rebase"]
+    gh = _strict_gh(h, case=ci_case)
+    report = _merge_outcome(tmp_path, gh, h, events_path=_events_file(tmp_path, _approvals(h.new)))
+    if _merge_calls(gh.calls) and not _strict_reads(gh):
+        _missing_wiring("merge_with_bridge_receipt merged without reading the required-CI evidence")
+    assert _refused(report), _reasons(report)
+    assert _merge_calls(gh.calls) == []
+
+
+def test_strict_ci_control_apply_without_drift_merges(tmp_path, histories, monkeypatch):
+    """The no-flip twin proves the hook itself never causes a refusal (green today and after wiring)."""
+    h = histories["legit_rebase"]
+    gh = _strict_gh(h)
+    seen = _flip_unified_before_apply(monkeypatch, gh, flip=False)
+    report = _merge_outcome(tmp_path, gh, h, events_path=_events_file(tmp_path, _approvals(h.new)))
+    assert len(seen) == 2
+    assert report["decision"] == "merge_executed_after_receipt", _reasons(report)
+    merges = _merge_calls(gh.calls)
+    assert len(merges) == 1 and f"--match-head-commit={h.new}" in merges[0]
+
+
+def test_strict_ci_apply_drift_refuses_merge(tmp_path, histories, monkeypatch):
+    _require_strict_ci()
+    h = histories["legit_rebase"]
+    gh = _strict_gh(h)
+    seen = _flip_unified_before_apply(monkeypatch, gh)
+    report = _merge_outcome(tmp_path, gh, h, events_path=_events_file(tmp_path, _approvals(h.new)))
+    assert len(seen) == 2, "the hook must fire at the apply snapshot"
+    if _merge_calls(gh.calls) and not any(seen):
+        _missing_wiring("merge_with_bridge_receipt does not capture strict CI at apply (require_ci_evidence never "
+                        "passed), so a required run failing after the receipt still merges")
+    assert _refused(report), _reasons(report)
+    assert _merge_calls(gh.calls) == []
+
+
+def test_strict_ci_carry_success_at_proposed_head(tmp_path, histories):
+    _require_strict_ci()
+    h = histories["legit_rebase"]
+    opt = _carry_opt_in(GATE, evaluate_auto_merge_gate, h)
+    snapshot = _strict_snapshot(_strict_gh(h), h.new_base)
+    report = _gate(tmp_path, pr_status=snapshot, expected_head=h.new, base=h.new_base, events=_approvals(h.old),
+                   **opt)
+    assert report["decision"] == "auto_merge_plan_ready", _reasons(report)
+    _assert_carry_record(report, h)
+    assert h.old not in json.dumps(report.get("ci_evidence", snapshot["ci_evidence"]))
+
+
+@pytest.mark.parametrize("ci_case", STRICT["carry_non_green_at_proposed_head"]["ci_cases"])
+def test_strict_ci_carry_non_green_at_proposed_head(tmp_path, histories, ci_case):
+    _require_strict_ci()
+    h = histories["legit_rebase"]
+    opt = _carry_opt_in(GATE, evaluate_auto_merge_gate, h)
+    snapshot = _strict_snapshot(_strict_gh(h, case=ci_case), h.new_base)
+    report = _gate(tmp_path, pr_status=snapshot, expected_head=h.new, base=h.new_base, events=_approvals(h.old),
+                   **opt)
+    if not _refused(report):
+        _missing_wiring("carry gate is ready although ci_evidence.all_required_success is false at the proposed head")
+    assert re.search(STRICT["carry_non_green_at_proposed_head"]["reason"], _reasons(report)), _reasons(report)
+
+
+def test_strict_ci_carry_snapshot_at_the_approved_head(tmp_path, histories):
+    _require_strict_ci()
+    h = histories["legit_rebase"]
+    opt = _carry_opt_in(GATE, evaluate_auto_merge_gate, h)
+    snapshot = _strict_snapshot(_strict_gh(h, head=h.old), h.new_base)
+    report = _gate(tmp_path, pr_status=snapshot, expected_head=h.new, base=h.new_base, events=_approvals(h.old),
+                   **opt)
+    assert _refused(report), _reasons(report)
+
+
+def test_strict_ci_carry_apply_drift(tmp_path, histories, monkeypatch):
+    _require_strict_ci()
+    h = histories["legit_rebase"]
+    opt = _carry_opt_in(MERGE, merge_with_bridge_receipt, h)
+    gh = _strict_gh(h)
+    seen = _flip_unified_before_apply(monkeypatch, gh)
+    report = _merge_outcome(tmp_path, gh, h, events_path=_events_file(tmp_path, _approvals(h.old)), **opt)
+    assert len(seen) == 2
+    if _merge_calls(gh.calls) and not any(seen):
+        _missing_wiring("carry merge path does not capture strict CI at apply")
+    assert _refused(report), _reasons(report)
+    assert _merge_calls(gh.calls) == []

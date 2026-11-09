@@ -5,7 +5,8 @@
   "request": "codex-lead-1 2026-11-09T07:51:27.4852688Z lead-carry-real-callers-fable-20261109-v1",
   "failure_classes": {
     "missing_api": "failure text starts with 'RED: missing API:'; the opt-in carry parameter of a real caller does not exist yet; never counted as verified behaviour",
-    "behaviour": "any other failure; the real caller behaved differently from the expectation recorded here"
+    "behaviour": "any other failure; the real caller behaved differently from the expectation recorded here",
+    "missing_wiring": "failure text starts with 'RED: missing wiring:'; the API exists but the real gate or merge path does not consume strict required-CI evidence yet; never counted as verified behaviour"
   },
   "opt_in": {
     "parameter": {
@@ -108,5 +109,77 @@
   "mutant_runs": {
     "M0_no_op": "parameter accepted and ignored: the three positive carry tests and the reason-specific refusals fail",
     "M1_naive_rebind": "old-head approvals rebound to the proposed head without content or objection checks: content change, no-pr objection, no-pr late objection and content-change merge tests fail; plan-ready gate still fails on the missing carry record"
+  },
+  "strict_ci": {
+    "request": "codex-lead-1 2026-11-09T08:40:02.4592582Z lead-carry-strict-ci-callers-fable-20261109-v1",
+    "api": "tools.pr_status_snapshot:build_pr_status_snapshot(require_ci_evidence=True), published by Tools at 556118c161dc92a19c70882fb1ae84189ba0aa4f",
+    "synthetic_github": "FakeGitHub of tests/tools/test_consensus_carry_forward_ci_snapshot.py loaded by path and parameterized with this harness's real git heads; case setups reused from ci_snapshot_cases.json",
+    "rollup_isolation": "statusCheckRollup stays all-SUCCESS in every strict case, so a refusal can only come from the strict evidence",
+    "wiring_expectation": "a wired gate refuses unless ci_evidence.all_required_success is true at the expected head; a wired merge path captures strict CI at receipt and again at apply",
+    "cases": {
+      "control_exact_head_success_feeds_the_real_gate": {
+        "expect": "ready",
+        "class": "green_control"
+      },
+      "non_green_with_green_rollup": {
+        "expect": "refuse",
+        "reason": "(?i)ci|check",
+        "ci_cases": [
+          "failed_required_check",
+          "pending_required_check"
+        ],
+        "until_wired": "missing_wiring"
+      },
+      "capture_refuses": {
+        "expect": "PrStatusSnapshotError with the ci_snapshot_cases decision",
+        "ci_cases": [
+          "stale_row_for_another_head",
+          "rules_requirement_on_page_two_missing_run",
+          "rules_page_two_read_fails"
+        ]
+      },
+      "capture_refuses_snapshot_at_the_old_head": {
+        "expect": "refuse"
+      },
+      "merge_refuses_capture_failure": {
+        "expect": "refuse, no gh pr merge",
+        "ci_cases": [
+          "stale_row_for_another_head",
+          "rules_requirement_on_page_two_missing_run",
+          "rules_page_two_read_fails"
+        ],
+        "until_wired": "missing_wiring"
+      },
+      "control_apply_without_drift_merges": {
+        "expect": "merge_executed_after_receipt",
+        "class": "green_control"
+      },
+      "apply_drift_refuses_merge": {
+        "expect": "refuse, no gh pr merge",
+        "drift": "bound app unified run turns failed before the apply snapshot",
+        "until_wired": "missing_wiring"
+      },
+      "carry_success_at_proposed_head": {
+        "expect": "ready with carry record",
+        "until_wired": "missing_api"
+      },
+      "carry_non_green_at_proposed_head": {
+        "expect": "refuse",
+        "reason": "(?i)ci|check",
+        "ci_cases": [
+          "failed_required_check",
+          "pending_required_check"
+        ],
+        "until_wired": "missing_api"
+      },
+      "carry_snapshot_at_the_approved_head": {
+        "expect": "refuse",
+        "until_wired": "missing_api"
+      },
+      "carry_apply_drift": {
+        "expect": "refuse, no gh pr merge",
+        "until_wired": "missing_api"
+      }
+    }
   }
 }

@@ -1,0 +1,307 @@
+{
+ "cases": {
+  "approved_head_object_missing": {
+   "approved_head": "173e2e68def3fdc806ec0076ecc3ad50e9ca619d",
+   "classification": "approved head object is not in the repository",
+   "expected_carry": false,
+   "facts": {
+    "approved": {
+     "diff_bytes": null,
+     "diff_sha256": null,
+     "merge_base_count": 0,
+     "patch_id": null
+    },
+    "proposed": {
+     "diff_bytes": 235,
+     "diff_sha256": "b50db8e7440ca40df84abfd0bc1683ad86ac41ad0737091449d051273e04120d",
+     "merge_base_count": 1,
+     "patch_id": "b294c8f8b01e409f2e4c27a0c780e479fb0dc524"
+    }
+   },
+   "proposed_head": "f2f17fac4da96054d8b5f0b952758b36ec7fba23"
+  },
+  "binary_content_change": {
+   "approved_head": "a0e1e39a4b5370cfceb563ae802b040f1029b243",
+   "classification": "binary payload differs; --binary bytes and patch-id differ",
+   "expected_carry": false,
+   "facts": {
+    "approved": {
+     "diff_bytes": 241,
+     "diff_sha256": "e64d92eb4bd4fae34b093662cb19e3347df6ef3c92ccd26ad712af2e87a49d6c",
+     "merge_base_count": 1,
+     "patch_id": "3fbbdcb6fdc174ab101a64eb374991426c745f01"
+    },
+    "proposed": {
+     "diff_bytes": 241,
+     "diff_sha256": "112e4d6a72f2758aea55865a4490db205dee25b0fc86e396e47c9e478464aab8",
+     "merge_base_count": 1,
+     "patch_id": "d3669fde73d532103f6bc9293c41963e489e6fab"
+    }
+   },
+   "proposed_head": "e73bd66e12929fa11535b59442a67c7e13d0d52c"
+  },
+  "content_changing_rebase": {
+   "approved_head": "8616c3d7b3dcf777a05fd6c47c988e3eacf8fc32",
+   "classification": "conflict resolution changed the PR content",
+   "expected_carry": false,
+   "facts": {
+    "approved": {
+     "diff_bytes": 270,
+     "diff_sha256": "58fd7bd0c414cdd79eb6e4301ca4f8eea613ebd85eed00032d1d0a1980303b09",
+     "merge_base_count": 1,
+     "patch_id": "0509b994b3a7cd73cacf62d142f4d337b12de76b"
+    },
+    "proposed": {
+     "diff_bytes": 280,
+     "diff_sha256": "f791ed6ad5187480034f5c5745cba28388d8a4f129daf1bd495c21a672e68131",
+     "merge_base_count": 1,
+     "patch_id": "404b915c42e39301a58189018537b204fe7ea26c"
+    }
+   },
+   "proposed_head": "c04e4704ea4c342f00ed75335061341c9eff1e95"
+  },
+  "empty_proposed_diff": {
+   "approved_head": "f2f17fac4da96054d8b5f0b952758b36ec7fba23",
+   "classification": "empty diff against the base: no patch-id, nothing to compare",
+   "expected_carry": false,
+   "facts": {
+    "approved": {
+     "diff_bytes": 235,
+     "diff_sha256": "b50db8e7440ca40df84abfd0bc1683ad86ac41ad0737091449d051273e04120d",
+     "merge_base_count": 1,
+     "patch_id": "b294c8f8b01e409f2e4c27a0c780e479fb0dc524"
+    },
+    "proposed": {
+     "diff_bytes": 0,
+     "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "merge_base_count": 1,
+     "patch_id": null
+    }
+   },
+   "proposed_head": "ee09a0a0dd4517465532cb3b2b43068de106038e"
+  },
+  "hostile_external_diff_hides_change": {
+   "approved_head": "763d266e0c8379c9bec9ad6cf5fb22536c5b5bf3",
+   "classification": "content differs; a repository diff.external hides it from a plain git diff",
+   "expected_carry": false,
+   "facts": {
+    "approved": {
+     "diff_bytes": 222,
+     "diff_sha256": "2c055a19ed32071007c375a1c410b7ca5cd0846f1a2a9136d5c61f33cdf17561",
+     "merge_base_count": 1,
+     "patch_id": "9cc4c0f270f7cbb60f5dccab6b6160f9981b104a"
+    },
+    "proposed": {
+     "diff_bytes": 223,
+     "diff_sha256": "26d601b16f8d53f27618c5e029a1387822a5a8962f96994d1cf3647ae647489b",
+     "merge_base_count": 1,
+     "patch_id": "680027990b5e2315a43fab085d6fd9e20048141f"
+    }
+   },
+   "proposed_head": "7f4f0dc4c199ac1375795ba8789e0c056962c6ac"
+  },
+  "hostile_textconv_hides_change": {
+   "approved_head": "763d266e0c8379c9bec9ad6cf5fb22536c5b5bf3",
+   "classification": "content differs; a repository textconv driver hides it from a plain git diff",
+   "expected_carry": false,
+   "facts": {
+    "approved": {
+     "diff_bytes": 222,
+     "diff_sha256": "2c055a19ed32071007c375a1c410b7ca5cd0846f1a2a9136d5c61f33cdf17561",
+     "merge_base_count": 1,
+     "patch_id": "9cc4c0f270f7cbb60f5dccab6b6160f9981b104a"
+    },
+    "proposed": {
+     "diff_bytes": 223,
+     "diff_sha256": "26d601b16f8d53f27618c5e029a1387822a5a8962f96994d1cf3647ae647489b",
+     "merge_base_count": 1,
+     "patch_id": "680027990b5e2315a43fab085d6fd9e20048141f"
+    }
+   },
+   "proposed_head": "7f4f0dc4c199ac1375795ba8789e0c056962c6ac"
+  },
+  "legit_rebase_onto_advanced_main": {
+   "approved_head": "f2f17fac4da96054d8b5f0b952758b36ec7fba23",
+   "classification": "rebase onto an advanced main, no conflict: same bytes, same patch-id, different merge-bases",
+   "expected_carry": true,
+   "facts": {
+    "approved": {
+     "diff_bytes": 235,
+     "diff_sha256": "b50db8e7440ca40df84abfd0bc1683ad86ac41ad0737091449d051273e04120d",
+     "merge_base_count": 1,
+     "patch_id": "b294c8f8b01e409f2e4c27a0c780e479fb0dc524"
+    },
+    "proposed": {
+     "diff_bytes": 235,
+     "diff_sha256": "b50db8e7440ca40df84abfd0bc1683ad86ac41ad0737091449d051273e04120d",
+     "merge_base_count": 1,
+     "patch_id": "b294c8f8b01e409f2e4c27a0c780e479fb0dc524"
+    }
+   },
+   "proposed_head": "855ba15164fc1bfcaad893b1f249d3bbaf465fc4"
+  },
+  "legit_rebase_under_hostile_repo_config": {
+   "approved_head": "f2f17fac4da96054d8b5f0b952758b36ec7fba23",
+   "classification": "legit rebase in a repository with hostile diff settings; pinned bytes equal the clean repository",
+   "expected_carry": true,
+   "facts": {
+    "approved": {
+     "diff_bytes": 235,
+     "diff_sha256": "b50db8e7440ca40df84abfd0bc1683ad86ac41ad0737091449d051273e04120d",
+     "merge_base_count": 1,
+     "patch_id": "b294c8f8b01e409f2e4c27a0c780e479fb0dc524"
+    },
+    "proposed": {
+     "diff_bytes": 235,
+     "diff_sha256": "b50db8e7440ca40df84abfd0bc1683ad86ac41ad0737091449d051273e04120d",
+     "merge_base_count": 1,
+     "patch_id": "b294c8f8b01e409f2e4c27a0c780e479fb0dc524"
+    }
+   },
+   "proposed_head": "855ba15164fc1bfcaad893b1f249d3bbaf465fc4"
+  },
+  "message_only_amend": {
+   "approved_head": "f2f17fac4da96054d8b5f0b952758b36ec7fba23",
+   "classification": "ELIGIBLE (Lead 07:03:39Z, both RCO maps): only the commit message changed; history shape is not a refusal reason",
+   "expected_carry": true,
+   "facts": {
+    "approved": {
+     "diff_bytes": 235,
+     "diff_sha256": "b50db8e7440ca40df84abfd0bc1683ad86ac41ad0737091449d051273e04120d",
+     "merge_base_count": 1,
+     "patch_id": "b294c8f8b01e409f2e4c27a0c780e479fb0dc524"
+    },
+    "proposed": {
+     "diff_bytes": 235,
+     "diff_sha256": "b50db8e7440ca40df84abfd0bc1683ad86ac41ad0737091449d051273e04120d",
+     "merge_base_count": 1,
+     "patch_id": "b294c8f8b01e409f2e4c27a0c780e479fb0dc524"
+    }
+   },
+   "proposed_head": "72e03f1a419073c9dc74f8ee52cf8dce795061d3"
+  },
+  "mode_only_change": {
+   "approved_head": "33ab2052deb7890eaa589b3616cf1f36e935ad15",
+   "classification": "same content, executable bit added",
+   "expected_carry": false,
+   "facts": {
+    "approved": {
+     "diff_bytes": 193,
+     "diff_sha256": "990007d4a9516f0e728b5c4168b408cb77e2da1eef5daa457de14577e8c65dc5",
+     "merge_base_count": 1,
+     "patch_id": "545aff20c8a8bfb9e5dd69760e22a355657f1064"
+    },
+    "proposed": {
+     "diff_bytes": 193,
+     "diff_sha256": "a0793df2a8c843a54f8c22a7ab19b5c7cfcd7b35a305431f8fd43f09dfb8945a",
+     "merge_base_count": 1,
+     "patch_id": "be806176b8931e8d557eadba4756c78b581f3c23"
+    }
+   },
+   "proposed_head": "b2481a9d9d318ea745c2ff42bfc48b73ef39e98a"
+  },
+  "multiple_merge_bases": {
+   "approved_head": "f2f17fac4da96054d8b5f0b952758b36ec7fba23",
+   "classification": "criss-cross history: two merge-bases, ambiguous base",
+   "expected_carry": false,
+   "facts": {
+    "approved": {
+     "diff_bytes": 235,
+     "diff_sha256": "b50db8e7440ca40df84abfd0bc1683ad86ac41ad0737091449d051273e04120d",
+     "merge_base_count": 1,
+     "patch_id": "b294c8f8b01e409f2e4c27a0c780e479fb0dc524"
+    },
+    "proposed": {
+     "diff_bytes": null,
+     "diff_sha256": null,
+     "merge_base_count": 2,
+     "patch_id": null
+    }
+   },
+   "proposed_head": "8927ac1ef82da4264ee24aa31d23bc3d12ad771d"
+  },
+  "rename_to_different_target": {
+   "approved_head": "58f58db67c2849d2a1904eccf3a29448cd346bf1",
+   "classification": "rename to another path; --no-renames shows delete plus add of different paths",
+   "expected_carry": false,
+   "facts": {
+    "approved": {
+     "diff_bytes": 420,
+     "diff_sha256": "b266681bb6ab5836e3c01bfec0a2a42b1386908667620bc3f6eaf6909abcdf45",
+     "merge_base_count": 1,
+     "patch_id": "619229265ff0899076b172e1c98df242bbc85889"
+    },
+    "proposed": {
+     "diff_bytes": 420,
+     "diff_sha256": "de2cbf80c97484a0f83d6a8d61b69092e9d3b95bef4f545b7e27a42cd7e40396",
+     "merge_base_count": 1,
+     "patch_id": "1452f71e366936ba281f125ba2a1df430fbdc2fd"
+    }
+   },
+   "proposed_head": "836da14700f67efb5dc2d8c1810237a6a6901b71"
+  },
+  "squash_same_tree": {
+   "approved_head": "3926d247df914ffdce19eeeb4f19080a4e118e60",
+   "classification": "ELIGIBLE (Lead 07:03:39Z, both RCO maps): two commits squashed into one with the same final tree; bytes and patch-id equal",
+   "expected_carry": true,
+   "facts": {
+    "approved": {
+     "diff_bytes": 235,
+     "diff_sha256": "b50db8e7440ca40df84abfd0bc1683ad86ac41ad0737091449d051273e04120d",
+     "merge_base_count": 1,
+     "patch_id": "b294c8f8b01e409f2e4c27a0c780e479fb0dc524"
+    },
+    "proposed": {
+     "diff_bytes": 235,
+     "diff_sha256": "b50db8e7440ca40df84abfd0bc1683ad86ac41ad0737091449d051273e04120d",
+     "merge_base_count": 1,
+     "patch_id": "b294c8f8b01e409f2e4c27a0c780e479fb0dc524"
+    }
+   },
+   "proposed_head": "5c7cf2b466eb4d23c60a82e7ab8fe1cfab514886"
+  },
+  "submodule_pointer_change": {
+   "approved_head": "17a34493a5df0872103797c94d82477626d6ea5d",
+   "classification": "gitlink points at another commit",
+   "expected_carry": false,
+   "facts": {
+    "approved": {
+     "diff_bytes": 252,
+     "diff_sha256": "212f0d3e5eabe591468c3796d5bb9ab3169ed195199aaab11d24c491be23247a",
+     "merge_base_count": 1,
+     "patch_id": "e6404f649318e89a9b39b5a46679a5cb6669e126"
+    },
+    "proposed": {
+     "diff_bytes": 252,
+     "diff_sha256": "0461338a322f26881c2a5df950c0e342435fc91fb82eb2ceb6c455abfb8256e7",
+     "merge_base_count": 1,
+     "patch_id": "986a9ba05e176268e31e4a5128cd56bb4cc4d767"
+    }
+   },
+   "proposed_head": "636b5ff4f2b6ff2aeddff2dc24a4eb735c120c9c"
+  },
+  "whitespace_same_patch_id": {
+   "approved_head": "767c34d8484fe5029b9f48265664571c0abdb5ae",
+   "classification": "REAL patch-id --stable collision: patch-id equal, raw bytes differ; patch-id alone must never carry",
+   "expected_carry": false,
+   "facts": {
+    "approved": {
+     "diff_bytes": 190,
+     "diff_sha256": "0e2e9a132f5fdc33a046287c4343239cc241f190db20abc2c46b3a8a5cdfed17",
+     "merge_base_count": 1,
+     "patch_id": "047d196515633489aba1bca49d860010563e15a0"
+    },
+    "proposed": {
+     "diff_bytes": 193,
+     "diff_sha256": "bc85e5ebd783a3ce3bcc10f4437bfbad86b1538e4081e8d6e7efa19a8feb4b02",
+     "merge_base_count": 1,
+     "patch_id": "047d196515633489aba1bca49d860010563e15a0"
+    }
+   },
+   "proposed_head": "9bc51ec7559daccc54325d69dc277e73dd68032f"
+  }
+ },
+ "note": "facts are recomputed from actual git by test_git_reproduction_matches_the_recorded_facts",
+ "recorded_with": "git version 2.54.0.windows.1",
+ "schema": "wd.bridge-approval-carry-forward-git-reproductions.v1"
+}

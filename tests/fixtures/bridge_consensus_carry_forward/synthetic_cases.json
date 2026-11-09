@@ -1,0 +1,505 @@
+{
+ "base_case": "legit_rebase_onto_advanced_main",
+ "cases": [
+  {
+   "expected_carry": true,
+   "id": "baseline_legit_rebase",
+   "mutation": {
+    "op": "none"
+   },
+   "why": "all operator conditions pass"
+  },
+  {
+   "expected_carry": true,
+   "id": "build_consensus_pass_alias",
+   "mutation": {
+    "field": "status",
+    "index": 1,
+    "op": "event_field",
+    "value": "build_consensus_pass"
+   },
+   "why": "the existing verifier accepts this build status"
+  },
+  {
+   "expected_carry": true,
+   "id": "rco_pass_as_rco_review_type",
+   "mutation": {
+    "field": "type",
+    "index": 2,
+    "op": "event_field",
+    "value": "rco_review"
+   },
+   "why": "the existing verifier accepts this decision type"
+  },
+  {
+   "expected_carry": true,
+   "id": "rco_pass_prose_old_head_only",
+   "mutation": {
+    "heads": [
+     "old"
+    ],
+    "op": "prose_heads"
+   },
+   "why": "the existing old-head verifier accepts prose containment without a structured head; not discarded retroactively"
+  },
+  {
+   "expected_carry": true,
+   "id": "duplicate_identical_rco_event",
+   "mutation": {
+    "index": 2,
+    "op": "duplicate_event"
+   },
+   "why": "the same original event appended twice counts once"
+  },
+  {
+   "expected_carry": true,
+   "id": "operator_signature_present_not_carried",
+   "mutation": {
+    "events": [
+     {
+      "agent": "operator",
+      "head": "old",
+      "minute": 4,
+      "status": "operator_signature",
+      "type": "decision"
+     }
+    ],
+    "op": "append_events"
+   },
+   "never_carried_kind": "operator_signature",
+   "why": "signatures never carry"
+  },
+  {
+   "expected_carry": true,
+   "id": "rule10_approval_present_not_carried",
+   "mutation": {
+    "events": [
+     {
+      "agent": "operator",
+      "head": "old",
+      "minute": 4,
+      "status": "rule10_approval",
+      "type": "decision"
+     }
+    ],
+    "op": "append_events"
+   },
+   "never_carried_kind": "rule10_approval",
+   "why": "Rule 10 approvals never carry"
+  },
+  {
+   "expected_carry": true,
+   "id": "valid_explicit_clear_same_rco_same_head",
+   "mutation": {
+    "events": [
+     {
+      "agent": "claude-rco-2",
+      "head": "old",
+      "minute": 4,
+      "payload_key": "head",
+      "status": "changes_requested",
+      "type": "finding"
+     },
+     {
+      "agent": "claude-rco-2",
+      "head": "old",
+      "minute": 5,
+      "status": "no_changes_requested",
+      "type": "decision"
+     }
+    ],
+    "op": "append_events"
+   },
+   "never_carried_kind": "no_changes_requested",
+   "why": "a clear from the same RCO at the same head after the veto retracts it"
+  },
+  {
+   "expected_carry": false,
+   "id": "wrong_pr_number",
+   "mutation": {
+    "op": "set",
+    "path": [
+     "proposed",
+     "pr_number"
+    ],
+    "value": 9002
+   },
+   "why": "different PR"
+  },
+  {
+   "expected_carry": false,
+   "id": "wrong_repository",
+   "mutation": {
+    "op": "set",
+    "path": [
+     "proposed",
+     "repository"
+    ],
+    "value": "someone/fork"
+   },
+   "why": "different repository"
+  },
+  {
+   "expected_carry": false,
+   "id": "wrong_base_ref",
+   "mutation": {
+    "op": "set",
+    "path": [
+     "proposed",
+     "base_ref"
+    ],
+    "value": "release"
+   },
+   "why": "different base branch"
+  },
+  {
+   "expected_carry": false,
+   "id": "approvals_bound_to_third_head",
+   "mutation": {
+    "op": "rebind_approvals",
+    "to": "third"
+   },
+   "why": "approvals name neither head"
+  },
+  {
+   "expected_carry": false,
+   "id": "missing_tools_build_consensus",
+   "mutation": {
+    "index": 1,
+    "op": "drop_event"
+   },
+   "why": "incomplete build pair"
+  },
+  {
+   "expected_carry": false,
+   "id": "missing_rco_pass",
+   "mutation": {
+    "index": 2,
+    "op": "drop_event"
+   },
+   "why": "no RCO slot"
+  },
+  {
+   "expected_carry": false,
+   "id": "rco_is_pr_author",
+   "mutation": {
+    "op": "set",
+    "path": [
+     "pr_author"
+    ],
+    "value": "claude-rco-1"
+   },
+   "why": "the author never reviews the own PR"
+  },
+  {
+   "expected_carry": false,
+   "id": "unrecognized_rco",
+   "mutation": {
+    "field": "agent",
+    "index": 2,
+    "op": "event_field",
+    "value": "claude-rco-9"
+   },
+   "why": "not a recognized RCO"
+  },
+  {
+   "expected_carry": false,
+   "id": "missing_agent_uuid",
+   "mutation": {
+    "delete": true,
+    "field": "agent_uuid",
+    "index": 0,
+    "op": "event_field"
+   },
+   "why": "unverifiable identity"
+  },
+  {
+   "expected_carry": false,
+   "id": "forged_agent_uuid",
+   "mutation": {
+    "field": "agent_uuid",
+    "index": 2,
+    "op": "event_field",
+    "value": "55555555-5555-4555-8555-555555555555"
+   },
+   "why": "uuid does not match the roster"
+  },
+  {
+   "expected_carry": false,
+   "id": "noncanonical_agent_name",
+   "mutation": {
+    "field": "agent",
+    "index": 0,
+    "op": "event_field",
+    "value": "Codex-Lead-1"
+   },
+   "why": "noncanonical identity"
+  },
+  {
+   "expected_carry": false,
+   "id": "build_event_wrong_status",
+   "mutation": {
+    "field": "status",
+    "index": 1,
+    "op": "event_field",
+    "value": "build_consensus_pending"
+   },
+   "why": "not an approval status"
+  },
+  {
+   "expected_carry": false,
+   "id": "approval_wrong_task",
+   "mutation": {
+    "field": "task_id",
+    "index": 0,
+    "op": "event_field",
+    "value": "unrelated-task-20261109"
+   },
+   "why": "approval not bound to this PR task"
+  },
+  {
+   "expected_carry": false,
+   "id": "rco_prose_mentions_both_heads",
+   "mutation": {
+    "heads": [
+     "old",
+     "new"
+    ],
+    "op": "prose_heads"
+   },
+   "why": "ambiguous binding; text mentioning both heads never counts twice and never carries"
+  },
+  {
+   "expected_carry": false,
+   "id": "old_head_only_structured_veto_descriptive_task",
+   "mutation": {
+    "events": [
+     {
+      "agent": "claude-rco-2",
+      "head": "old",
+      "minute": 4,
+      "payload_key": "head",
+      "status": "changes_requested",
+      "task": "rco2-review-notes-carry-corpus",
+      "type": "finding"
+     }
+    ],
+    "op": "append_events"
+   },
+   "why": "a veto bound only by the old structured head must still block"
+  },
+  {
+   "expected_carry": false,
+   "id": "new_head_veto",
+   "mutation": {
+    "events": [
+     {
+      "agent": "claude-rco-2",
+      "head": "new",
+      "minute": 4,
+      "payload_key": "head",
+      "status": "changes_requested",
+      "type": "finding"
+     }
+    ],
+    "op": "append_events"
+   },
+   "why": "veto at the proposed head"
+  },
+  {
+   "expected_carry": false,
+   "id": "late_veto_backdated_timestamp",
+   "mutation": {
+    "events": [
+     {
+      "agent": "claude-rco-2",
+      "head": "old",
+      "minute": 0,
+      "payload_key": "head",
+      "status": "changes_requested",
+      "type": "finding"
+     }
+    ],
+    "op": "append_events"
+   },
+   "why": "appended after the approvals; an earlier ts_utc must not change precedence"
+  },
+  {
+   "expected_carry": false,
+   "id": "veto_by_approving_rco_after_pass",
+   "mutation": {
+    "events": [
+     {
+      "agent": "claude-rco-1",
+      "head": "old",
+      "minute": 4,
+      "payload_key": "head",
+      "status": "changes_requested",
+      "type": "finding"
+     }
+    ],
+    "op": "append_events"
+   },
+   "why": "a veto outranks a pass"
+  },
+  {
+   "expected_carry": false,
+   "id": "stale_clear_before_veto",
+   "mutation": {
+    "events": [
+     {
+      "agent": "claude-rco-2",
+      "head": "old",
+      "minute": 4,
+      "status": "no_changes_requested",
+      "type": "decision"
+     },
+     {
+      "agent": "claude-rco-2",
+      "head": "old",
+      "minute": 5,
+      "payload_key": "head",
+      "status": "changes_requested",
+      "type": "finding"
+     }
+    ],
+    "op": "append_events"
+   },
+   "why": "a clear before the veto does not retract it"
+  },
+  {
+   "expected_carry": false,
+   "id": "forged_clear_by_other_agent",
+   "mutation": {
+    "events": [
+     {
+      "agent": "claude-rco-2",
+      "head": "old",
+      "minute": 4,
+      "payload_key": "head",
+      "status": "changes_requested",
+      "type": "finding"
+     },
+     {
+      "agent": "codex-tools-1",
+      "head": "old",
+      "minute": 5,
+      "status": "no_changes_requested",
+      "type": "decision"
+     }
+    ],
+    "op": "append_events"
+   },
+   "why": "only the vetoing RCO can clear"
+  },
+  {
+   "expected_carry": false,
+   "id": "clear_at_other_head",
+   "mutation": {
+    "events": [
+     {
+      "agent": "claude-rco-2",
+      "head": "old",
+      "minute": 4,
+      "payload_key": "head",
+      "status": "changes_requested",
+      "type": "finding"
+     },
+     {
+      "agent": "claude-rco-2",
+      "head": "third",
+      "minute": 5,
+      "status": "no_changes_requested",
+      "type": "decision"
+     }
+    ],
+    "op": "append_events"
+   },
+   "why": "a clear at a third head does not retract an old-head veto"
+  },
+  {
+   "expected_carry": false,
+   "id": "incomplete_accepted_queue",
+   "mutation": {
+    "op": "set",
+    "path": [
+     "accepted_queue_complete"
+    ],
+    "value": false
+   },
+   "why": "veto scan incomplete"
+  },
+  {
+   "expected_carry": false,
+   "id": "ci_red_at_new_head",
+   "mutation": {
+    "conclusion": "failure",
+    "head": "new",
+    "op": "ci",
+    "status": "completed"
+   },
+   "why": "CI red"
+  },
+  {
+   "expected_carry": false,
+   "id": "ci_pending_at_new_head",
+   "mutation": {
+    "conclusion": null,
+    "head": "new",
+    "op": "ci",
+    "status": "in_progress"
+   },
+   "why": "CI pending"
+  },
+  {
+   "expected_carry": false,
+   "id": "ci_green_only_at_old_head",
+   "mutation": {
+    "conclusion": "success",
+    "head": "old",
+    "op": "ci",
+    "status": "completed"
+   },
+   "why": "CI never carries"
+  },
+  {
+   "expected_carry": false,
+   "id": "ci_required_check_missing",
+   "mutation": {
+    "conclusion": "success",
+    "drop_one": true,
+    "head": "new",
+    "op": "ci",
+    "status": "completed"
+   },
+   "why": "one required check absent"
+  },
+  {
+   "expected_carry": false,
+   "id": "ci_required_list_empty",
+   "mutation": {
+    "op": "set",
+    "path": [
+     "ci",
+     "required"
+    ],
+    "value": []
+   },
+   "why": "vacuous CI evidence"
+  },
+  {
+   "expected_carry": false,
+   "id": "wrong_evidence_schema",
+   "mutation": {
+    "op": "set",
+    "path": [
+     "schema"
+    ],
+    "value": "wd.something-else.v1"
+   },
+   "why": "unknown evidence schema"
+  }
+ ],
+ "note": "structured synthetic evidence only; no live bridge events",
+ "schema": "wd.bridge-approval-carry-forward-synthetic-cases.v1"
+}

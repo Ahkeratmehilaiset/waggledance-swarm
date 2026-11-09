@@ -1,0 +1,113 @@
+{
+ "carriable_kinds": [
+  "build_consensus",
+  "rco_pass"
+ ],
+ "carry_requires_all": [
+  "both heads are commit objects in repo_path",
+  "exactly one merge-base for (approved.base_sha, approved.head) and for (proposed.base_sha, proposed.head)",
+  "raw diff bytes of merge-base..head under a pinned command are byte-identical and non-empty",
+  "git patch-id --stable of those bytes exists and is identical",
+  "same repository, pr_number and base_ref on both sides",
+  "original approvals satisfy the existing old-head identity and scope rules: lead and tools build_consensus plus a recognized RCO rco_pass that is not the PR author",
+  "carried approvals bind by structured original event reference; text mentioning both heads is never a second approval",
+  "no unretracted recognized-RCO veto at the approved head, the proposed head or the canonical task/PR scope; a clear counts only from the same RCO at the same head after the veto",
+  "accepted_queue_complete is true",
+  "every required CI check completed with success at the proposed head; the required list is non-empty"
+ ],
+ "entry_point_signatures": {
+  "evaluate": "evaluate(evidence: dict) -> dict with carry (bool), reason (str), carried (list of dicts with agent, agent_uuid, kind, approved_head, event_sha256) and receipt (dict)",
+  "verify_receipt": "verify_receipt(receipt: dict, evidence: dict) -> bool; recomputes merge-bases, raw diff bytes and patch-id from git at evidence.repo_path and the approvals, vetoes and CI from evidence; never trusts receipt booleans"
+ },
+ "entry_point_status": {
+  "derive_content_identity": "named by Tools 2026-11-09T07:13:19Z: keyword-only (repo_root, old_base, old_head, new_base, new_head), ValueError on refusal",
+  "evaluate": "proposed by this corpus; Tools has not published a gate API yet",
+  "verify_content_identity": "named by Tools 2026-11-09T07:13:19Z: verify_content_identity(proof, same keyword tuple), ValueError on refusal",
+  "verify_receipt": "proposed by this corpus; Tools has not published a gate API yet"
+ },
+ "entry_points": {
+  "derive_content_identity": "tools.bridge_approval_carry_forward:derive_content_identity",
+  "evaluate": "tools.bridge_approval_carry_forward:evaluate_approval_carry_forward",
+  "verify_content_identity": "tools.bridge_approval_carry_forward:verify_content_identity",
+  "verify_receipt": "tools.bridge_approval_carry_forward:verify_carry_forward_receipt"
+ },
+ "event_sha256": "sha256 of json.dumps(event, sort_keys=True, separators=(',', ':'), ensure_ascii=True)",
+ "evidence_fields": {
+  "accepted_queue_complete": "true only when the whole accepted queue was scanned",
+  "approved": "head, base_sha, base_ref, pr_number, repository of the head the approvals name",
+  "ci": "required (check names) and runs (head, name, status, conclusion)",
+  "events": "accepted queue events in canonical append order; list order decides precedence, ts_utc never does",
+  "pr_author": "agent that authored the PR; never satisfies the RCO slot",
+  "proposed": "head, base_sha, base_ref, pr_number, repository of the head to evaluate",
+  "recognized_rco_agents": "agents whose rco_pass fills the RCO slot and whose veto blocks",
+  "repo_path": "local git repository holding both heads and both base tips",
+  "roster": "canonical agent name to agent_uuid",
+  "schema": "the evidence_schema value",
+  "task_id": "canonical task id of the PR (branch name)"
+ },
+ "evidence_schema": "wd.bridge-approval-carry-forward-evidence.v1",
+ "never_carried": [
+  "ci",
+  "operator_signature",
+  "rule10_approval",
+  "no_changes_requested"
+ ],
+ "owner": "fable-5 independent corpus; Tools may change only entry_points to the published names",
+ "receipt_required_fields": [
+  "schema",
+  "repository",
+  "pr_number",
+  "base_ref",
+  "approved_head",
+  "proposed_head",
+  "approved_base_sha",
+  "proposed_base_sha",
+  "approved_merge_base",
+  "proposed_merge_base",
+  "diff_argv",
+  "approved_diff_sha256",
+  "proposed_diff_sha256",
+  "patch_id",
+  "approval_event_sha256",
+  "carried",
+  "veto_scan_complete",
+  "ci_head",
+  "ci_checks"
+ ],
+ "reference_diff_command": {
+  "diff_options": [
+   "--no-ext-diff",
+   "--no-textconv",
+   "--no-color",
+   "--binary",
+   "--full-index",
+   "--no-renames",
+   "--unified=3",
+   "--inter-hunk-context=0",
+   "--src-prefix=a/",
+   "--dst-prefix=b/",
+   "--diff-algorithm=myers",
+   "--indent-heuristic",
+   "--no-relative",
+   "--ignore-submodules=none",
+   "--submodule=short",
+   "-O/dev/null"
+  ],
+  "environment": {
+   "GIT_ATTR_NOSYSTEM": "1",
+   "GIT_CONFIG_GLOBAL": "os.devnull",
+   "GIT_CONFIG_NOSYSTEM": "1",
+   "LC_ALL": "C"
+  },
+  "global_options": [
+   "-c",
+   "core.quotePath=true",
+   "-c",
+   "diff.suppressBlankEmpty=false",
+   "--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+  ],
+  "note": "reference only; an implementation may use another argv if its receipt records it as diff_argv (arguments after git, before the two revisions) and re-running it reproduces the bytes under hostile repository settings",
+  "patch_id": "git patch-id --stable on the raw bytes; empty output means no patch-id"
+ },
+ "schema": "wd.bridge-approval-carry-forward-corpus-contract.v1"
+}

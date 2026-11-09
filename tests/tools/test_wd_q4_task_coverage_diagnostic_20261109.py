@@ -266,6 +266,8 @@ def test_identifier_policy_options_reach_every_per_task_build(monkeypatch):
                                      dict(require_identifier_policy=True, identifier_policy_binding=(b"x",)),
                                      dict(require_identifier_policy=True, identifier_policy_binding=(b"x", b"k" * 32, "0" * 64)),
                                      dict(require_identifier_policy="yes"),
+                                     dict(require_identifier_policy="yes", identifier_policy_binding=identifier_binding()),
+                                     dict(require_identifier_policy=1, identifier_policy_binding=identifier_binding()),
                                      dict(require_identifier_policy=False, identifier_policy_binding=identifier_binding())])
 def test_invalid_identifier_policy_options_refuse_before_any_build(monkeypatch, options):
     monkeypatch.setattr(diag.cp, "build_content_projection", lambda **kw: pytest.fail("built before validation"))

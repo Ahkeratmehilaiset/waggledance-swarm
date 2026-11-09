@@ -20,6 +20,183 @@ def _api():
     return bridge_approval_carry_forward
 
 
+def _with_voter_basis(evidence):
+    old, new = evidence["approved"], evidence["proposed"]
+    proof = _api().derive_content_identity(repo_root=Path(evidence["repo_path"]),
+        old_base=old["base_sha"], old_head=old["head"], new_base=new["base_sha"], new_head=new["head"])
+    basis = dict(schema="wd.bridge-reviewed-basis.v1", repository=old["repository"],
+        pr_number=old["pr_number"], task_id=evidence["task_id"], base_ref=old["base_ref"],
+        head=old["head"], base_sha=old["base_sha"], merge_base=proof["old_merge_base"],
+        diff_sha256=proof["old_diff_sha256"], patch_id=proof["old_patch_id"])
+    for event in evidence["events"]:
+        event["payload"].update(review_basis=copy.deepcopy(basis), review_basis_sha256=_event_hash(basis))
+    return basis
+
+
+@pytest.mark.parametrize("fault", ["base_sha", "merge_base", "diff_sha256", "patch_id",
+                                    "digest", "partial", "malformed"])
+def test_helper_requires_present_voter_basis_to_match_derived_git(approval_evidence, history, fault):
+    evidence = approval_evidence
+    _, git, pair = history
+    git("update-ref", "refs/heads/main", pair["new_base"])
+    _with_voter_basis(evidence)
+    for event in evidence["events"]:
+        payload = event["payload"]
+        if fault in {"base_sha", "merge_base", "patch_id", "diff_sha256"}:
+            payload["review_basis"][fault] = "f" * (64 if fault == "diff_sha256" else 40)
+            payload["review_basis_sha256"] = _event_hash(payload["review_basis"])
+        elif fault == "digest":
+            payload["review_basis_sha256"] = "f" * 64
+        elif fault == "malformed":
+            payload["review_basis"] = None
+    if fault == "partial":
+        evidence["events"][0]["payload"].pop("review_basis")
+    result = _api().evaluate_approval_carry_forward(evidence)
+    assert result["carry"] is False, result
+    assert "basis" in result["reason"] or "base" in result["reason"], result
+    assert _api().verify_carry_forward_receipt(result.get("receipt") or {}, evidence) is False
+
+
+@pytest.mark.parametrize("fault", ["missing", "stale", "invalid_ref"])
+def test_helper_requires_proposed_base_on_named_local_branch(approval_evidence, history, fault):
+    evidence = approval_evidence
+    _, git, pair = history
+    if fault == "stale":
+        tree = git("rev-parse", pair["old_base"] + "^{tree}").decode().strip()
+        unrelated = git("commit-tree", tree, data=b"unrelated main\n").decode().strip()
+        git("update-ref", "refs/heads/main", unrelated)
+    elif fault == "invalid_ref":
+        evidence["approved"]["base_ref"] = evidence["proposed"]["base_ref"] = "../main"
+    else:
+        git("update-ref", "-d", "refs/heads/main")
+    result = _api().evaluate_approval_carry_forward(evidence)
+    assert result["carry"] is False, result
+    assert "base" in result["reason"], result
+
+
+@pytest.mark.parametrize("basis", [False, True])
+def test_helper_local_base_and_optional_voter_basis_honest_control(approval_evidence, history, basis):
+    evidence = approval_evidence
+    _, git, pair = history
+    git("update-ref", "refs/heads/main", pair["new_base"])
+    if basis:
+        _with_voter_basis(evidence)
+    result = _api().evaluate_approval_carry_forward(evidence)
+    assert result["carry"] is True, result
+    # No-basis acceptance is diagnostic evidence_only, not authenticated origin.
+    assert result["authority"] == "evidence_only"
+    assert _api().verify_carry_forward_receipt(result["receipt"], evidence) is True
+
+
+def _boundary_corpus(name):
+    import importlib.util
+    path = Path(__file__).resolve().parent / (name + ".py")
+    spec = importlib.util.spec_from_file_location("tools_boundary_" + name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def exact_boundary_histories(tmp_path_factory):
+    forged = _boundary_corpus("test_consensus_carry_forward_origin_forgery")
+    executors = _boundary_corpus("test_consensus_carry_forward_apply_executors")
+    return forged, executors, forged.histories.__wrapped__(tmp_path_factory)
+
+
+@pytest.mark.parametrize("attack", ["side", "stacked_rebased"])
+def test_exact_corpus_attack_reaches_real_magma_and_idle_apply(tmp_path, exact_boundary_histories, attack, monkeypatch):
+    """Same corpus histories/payloads; integrity-valid untrusted MAGMA, real consumers.
+
+    The wrapper has no caller-receipt input. Test its live factory boundary via
+    the unchanged corpus, and offer the actual forged bundle to idle apply and
+    verify_carry_forward_apply. Every effect assertion uses the invoked runner.
+    """
+    from datetime import datetime, timezone
+    from dataclasses import replace
+    import tools.idle_consensus_auto_merge as idle
+    import tools.write_bridge_consensus_merge_receipt as writer
+    from tools.verify_magma_receipt import verify_manifest
+    forged, executors, histories = exact_boundary_histories
+    of = forged.of
+    # Keep the original src/feature.txt histories and payloads byte-exact. Give
+    # this synthetic gate context that one path instead of relabelling the
+    # GitHub diff or rewriting history to fit the production allowlist. All
+    # other charter checks and the actual gate/consumer implementations run.
+    charter = idle.load_charter()
+    fixture_charter = replace(charter, allowlist=(*charter.allowlist, of.CHANGED_PATH))
+    monkeypatch.setattr(idle, "load_charter", lambda path: fixture_charter)
+    legitimate = executors.Env(histories["legit"], tmp_path / "control")
+    manifest = executors._write_receipt(legitimate)
+    payload = json.loads((manifest.parent / "payload-001-merge.json").read_bytes())
+    material = copy.deepcopy(payload["carry_forward"])
+    h = histories[attack]
+    target = executors.Env(h, tmp_path / "attack")
+    expected_base = h.live_base
+    if attack == "side":
+        # Drive the unchanged adversarial probe with these EXACT commits first.
+        original = dict(repo=h.repo, approved=dict(head=h.old, base_sha=h.old_base),
+                        proposed=dict(head=h.new, base_sha=h.side_base))
+        of.corpus.test_gate_refuses_side_commit_base_substitution({"side_commit_base_substitution": original})
+        proof = _api().derive_content_identity(repo_root=Path(h.repo.path), old_base=h.old_base,
+                   old_head=h.old, new_base=h.side_base, new_head=h.new)
+        untrusted = copy.deepcopy(material["approval_receipt"])
+        untrusted.update(approved_head=h.old, proposed_head=h.new, approved_base_sha=h.old_base,
+                         proposed_base_sha=h.side_base, approved_merge_base=proof["old_merge_base"],
+                         proposed_merge_base=proof["new_merge_base"], content_identity=proof,
+                         approved_diff_sha256=proof["old_diff_sha256"], proposed_diff_sha256=proof["new_diff_sha256"],
+                         patch_id=proof["old_patch_id"], diff_argv=proof["diff_argv"])
+        target.request["proposed_base_sha"] = expected_base = h.side_base
+    else:
+        (tmp_path / "template").mkdir()
+        live = of._run(tmp_path / "template", histories["legit"], of._all_bound(histories["legit"]))
+        assert live.carry is True, live.text
+        evidence = forged._forged_stacked_evidence(live.result["_evidence"], h, approved_base=h.feature)
+        forged.test_helper_forged_stacked_receipt_and_evidence((h, live.result["_evidence"]))
+        # Evidence-only construction without a committed basis remains possible;
+        # it is explicitly untrusted and cannot become live authorization.
+        unbound = copy.deepcopy(evidence)
+        for event in unbound["events"]:
+            event.get("payload", {}).pop("review_basis", None)
+            event.get("payload", {}).pop("review_basis_sha256", None)
+        diagnostic = _api().evaluate_approval_carry_forward(unbound)
+        assert diagnostic["carry"] is True and diagnostic["authority"] == "evidence_only", diagnostic
+        untrusted = diagnostic["receipt"]
+        refs = {_event_hash(before): _event_hash(after) for before, after in zip(unbound["events"], evidence["events"])}
+        for row in untrusted["carried"]:
+            row["event_sha256"] = refs[row["event_sha256"]]
+        untrusted["approval_event_sha256"] = [row["event_sha256"] for row in untrusted["carried"]]
+        untrusted["accepted_events_sha256"] = _event_hash(evidence["events"])
+        untrusted["original_approval_basis_sha256"] = _event_hash(dict(
+            carried=untrusted["carried"], build_author_slot_waivers=untrusted["build_author_slot_waivers"]))
+        assert untrusted["approved_base_sha"] == h.feature != h.old_base
+        material["review_origin"] = dict(material["review_origin"], review_basis=of._basis(h, base=h.feature))
+    assert untrusted["approved_diff_sha256"] == untrusted["proposed_diff_sha256"]
+    material["approval_receipt"] = untrusted
+    payload.update(repo=of.REPO_NAME, pr_number=of.PR, task_id=of.TASK, head_sha=h.new,
+                   base_sha=expected_base, carry_forward=material)
+    bundle = writer._write_receipt_bundle(payload=payload, bridge_consensus=payload["bridge_consensus"],
+                  out_dir=tmp_path / "untrusted", now_utc=datetime.now(timezone.utc))
+    forged_manifest = Path(bundle["manifest"])
+    assert verify_manifest(forged_manifest)["ok"] is True
+    consumed = writer.verify_carry_forward_apply(manifest_path=forged_manifest, carry_forward=target.request,
+        events_path=target.events_path(), repo=of.REPO_NAME, pr_number=of.PR, task_id=of.TASK,
+        expected_head=h.new, expected_base_sha=expected_base, runner=target.gh,
+        accepted_queue_checker=target.queue_checker())
+    assert consumed["ok"] is False, consumed
+    reason = " ".join(consumed.get("errors", []))
+    assert any(word in reason for word in ("basis", "base", "diff bytes")), consumed
+    assert not any(word in reason for word in ("schema", "integrity", "malformed", "parse")), consumed
+    refused = executors._outcome(lambda: executors._run_idle_executor(target, forged_manifest, expected_base=expected_base))
+    assert refused.get("ok") is not True, refused
+    assert not executors._merges(target.gh)
+    assert not forged._gh_effects(target.gh.calls)
+    control = executors._outcome(lambda: executors._run_idle_executor(legitimate, manifest))
+    assert control.get("ok") is True, control
+    merges = executors._merges(legitimate.gh)
+    assert len(merges) == 1 and f"--match-head-commit={legitimate.h.new}" in merges[0]
+
+
 _CARRY_CLIS = ("tools.idle_consensus_auto_merge", "tools.merge_with_bridge_receipt",
                "tools.write_bridge_consensus_merge_receipt")
 
@@ -163,6 +340,7 @@ def _build_history(tmp_path, filename="sample.txt"):
     old = git("rev-parse", "HEAD").decode().strip()
     tree = git("rev-parse", "HEAD^{tree}").decode().strip()
     new = git("commit-tree", tree, "-p", base, data=b"new message only\n").decode().strip()
+    git("update-ref", "refs/heads/main", base)
     return root, git, dict(old_base=base, old_head=old, new_base=base, new_head=new)
 
 
@@ -840,41 +1018,143 @@ def test_actual_carry_apply_refuses_changed_authority_before_effect(live_factory
     assert not c["merges"], result
 
 
+def _scan_carry_references(root, tracked=None):
+    """Inventory literal references in all tracked code/launchers; no parse skips.
+
+    This is a reviewed-reference tripwire, not proof against arbitrary dynamic
+    Python construction. Production still requires the live factory/consumer.
+    """
+    import ast
+    module = "tools.bridge_approval_carry_forward"
+    targets = {"evaluate_approval_carry_forward", "verify_carry_forward_receipt",
+               "derive_live_carry_forward", "verify_live_carry_forward_receipt"}
+    if tracked is None:
+        tracked = _api()._git_reader(root)("ls-files", "-z", "--", "*.py", "*.ps1", "*.cmd", "*.json").decode("utf-8").split("\0")
+    found = set()
+    for relative in tracked:
+        if not relative or relative.startswith("tests/"):
+            continue  # Test-owned attack construction is intentionally separate.
+        path = root / relative
+        source = path.read_text(encoding="utf-8-sig")
+        if path.suffix != ".py":
+            for target in targets | {module}:
+                if target in source:
+                    found.add((relative, "<text>", target))
+            continue
+        tree = ast.parse(source)
+        aliases = {node.asname or node.name: node.name for node in ast.walk(tree)
+                   if isinstance(node, ast.alias) and node.name in targets}
+
+        class References(ast.NodeVisitor):
+            owner = "<module>"
+
+            def record(self, target):
+                if target in targets or target == module:
+                    found.add((relative, self.owner, target))
+
+            def visit_FunctionDef(self, node):
+                old, self.owner = self.owner, node.name
+                self.generic_visit(node)
+                self.owner = old
+
+            visit_AsyncFunctionDef = visit_FunctionDef
+
+            def visit_Name(self, node):
+                self.record(aliases.get(node.id, node.id))
+
+            def visit_Attribute(self, node):
+                self.record(node.attr)
+                self.generic_visit(node)
+
+            def visit_Constant(self, node):
+                if type(node.value) is str:
+                    self.record(node.value)
+
+            def visit_Import(self, node):
+                for alias in node.names:
+                    self.record(alias.name)
+
+            def visit_ImportFrom(self, node):
+                if node.module == module or (node.module == "tools" and any(
+                        alias.name == "bridge_approval_carry_forward" for alias in node.names)):
+                    self.record(module)
+                for alias in node.names:
+                    self.record(alias.name)
+
+        References().visit(tree)
+    return found
+
+
 def test_pure_carry_evidence_callers_are_reviewed():
     """Any new production use must undergo an origin/authority review."""
-    import ast
-    from pathlib import Path
-    root = Path(__file__).resolve().parents[2]
-    targets = {"evaluate_approval_carry_forward", "verify_carry_forward_receipt"}
     allowed = {
+        ("ops/windows/reboot/bridge-code-files.json", "<text>", "tools.bridge_approval_carry_forward"),
         ("tools/bridge_approval_carry_forward.py", "verify_carry_forward_receipt", "evaluate_approval_carry_forward"),
         ("tools/bridge_approval_carry_forward.py", "derive_live_carry_forward", "evaluate_approval_carry_forward"),
         ("tools/bridge_approval_carry_forward.py", "verify_live_carry_forward_receipt", "verify_carry_forward_receipt"),
+        ("tools/bridge_approval_carry_forward.py", "verify_live_carry_forward_receipt", "derive_live_carry_forward"),
+        ("tools/idle_consensus_auto_merge.py", "build_parser", "tools.bridge_approval_carry_forward"),
+        ("tools/idle_consensus_auto_merge.py", "main", "tools.bridge_approval_carry_forward"),
+        ("tools/idle_consensus_auto_merge.py", "evaluate_auto_merge_gate", "tools.bridge_approval_carry_forward"),
+        ("tools/idle_consensus_auto_merge.py", "evaluate_auto_merge_gate", "derive_live_carry_forward"),
         ("tools/idle_consensus_auto_merge.py", "evaluate_auto_merge_gate", "verify_carry_forward_receipt"),
+        ("tools/merge_with_bridge_receipt.py", "build_parser", "tools.bridge_approval_carry_forward"),
+        ("tools/merge_with_bridge_receipt.py", "main", "tools.bridge_approval_carry_forward"),
+        ("tools/write_bridge_consensus_merge_receipt.py", "build_parser", "tools.bridge_approval_carry_forward"),
+        ("tools/write_bridge_consensus_merge_receipt.py", "main", "tools.bridge_approval_carry_forward"),
+        ("tools/write_bridge_consensus_merge_receipt.py", "write_bridge_consensus_merge_receipt", "tools.bridge_approval_carry_forward"),
+        ("tools/write_bridge_consensus_merge_receipt.py", "write_bridge_consensus_merge_receipt", "derive_live_carry_forward"),
+        ("tools/write_bridge_consensus_merge_receipt.py", "_receipt_payload", "tools.bridge_approval_carry_forward"),
+        ("tools/write_bridge_consensus_merge_receipt.py", "_historical_carry_verdicts", "tools.bridge_approval_carry_forward"),
+        ("tools/write_bridge_consensus_merge_receipt.py", "verify_carry_forward_merge_receipt", "tools.bridge_approval_carry_forward"),
+        ("tools/write_bridge_consensus_merge_receipt.py", "verify_carry_forward_merge_receipt", "verify_live_carry_forward_receipt"),
     }
-    found = set()
-    for directory in ("tools", "waggledance", "sandbox", "ops"):
-        for path in (root / directory).rglob("*.py"):
-            if any(part.startswith(".") or part == "__pycache__" for part in path.relative_to(root).parts):
-                continue
-            tree = ast.parse(path.read_text(encoding="utf-8-sig"))
-            aliases = {node.asname or node.name: node.name for node in ast.walk(tree)
-                       if isinstance(node, ast.alias) and node.name in targets}
-            class Calls(ast.NodeVisitor):
-                owner = "<module>"
-                def visit_FunctionDef(self, node):
-                    old, self.owner = self.owner, node.name
-                    self.generic_visit(node)
-                    self.owner = old
-                visit_AsyncFunctionDef = visit_FunctionDef
-                def visit_Call(self, node):
-                    name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
-                    name = aliases.get(name, name)
-                    if name in targets:
-                        found.add((path.relative_to(root).as_posix(), self.owner, name))
-                    self.generic_visit(node)
-            Calls().visit(tree)
+    found = _scan_carry_references(Path(__file__).resolve().parents[2])
     assert found == allowed, (found - allowed, allowed - found)
+
+
+@pytest.mark.parametrize("relative,source,target", [
+    ("tools/probe.py", "module.verify_carry_forward_receipt({}, {})", "verify_carry_forward_receipt"),
+    ("tools/probe.py", "callback = module.verify_carry_forward_receipt", "verify_carry_forward_receipt"),
+    ("tools/probe.py", "from tools.bridge_approval_carry_forward import verify_carry_forward_receipt as f\ncallback = f", "verify_carry_forward_receipt"),
+    ("tools/probe.py", "getattr(module, 'verify_carry_forward_receipt')", "verify_carry_forward_receipt"),
+    ("tools/probe.py", "module.__dict__['derive_live_carry_forward']", "derive_live_carry_forward"),
+    ("tools/probe.py", "functools.partial(module.verify_live_carry_forward_receipt, {})", "verify_live_carry_forward_receipt"),
+    ("root_probe.py", "verify_carry_forward_receipt({}, {})", "verify_carry_forward_receipt"),
+    (".agent-bridge/bin/probe.py", "verify_carry_forward_receipt({}, {})", "verify_carry_forward_receipt"),
+    ("scripts/probe.py", "evaluate_approval_carry_forward({})", "evaluate_approval_carry_forward"),
+    ("tools/probe.py", "import tools.bridge_approval_carry_forward as module", "tools.bridge_approval_carry_forward"),
+    ("tools/probe.py", "importlib.import_module('tools.bridge_approval_carry_forward')", "tools.bridge_approval_carry_forward"),
+    ("tools/probe.ps1", 'python -c "verify_carry_forward_receipt({}, {})"', "verify_carry_forward_receipt"),
+    ("tools/probe.cmd", 'python -c "evaluate_approval_carry_forward({})"', "evaluate_approval_carry_forward"),
+    ("ops/probe.json", '{"handler":"tools.bridge_approval_carry_forward"}', "tools.bridge_approval_carry_forward"),
+])
+def test_carry_reference_guard_covers_tracked_aliases_and_launchers(tmp_path, relative, source, target):
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source, encoding="utf-8")
+    found = _scan_carry_references(tmp_path, tracked=[relative])
+    assert any(row[0] == relative and row[2] == target for row in found), found
+
+
+def test_carry_reference_guard_uses_git_inventory_and_ignores_untracked(history):
+    root, git, _ = history
+    (root / "tools").mkdir()
+    for name in ("tracked.py", "untracked.py"):
+        (root / "tools" / name).write_text("verify_carry_forward_receipt({}, {})", encoding="utf-8")
+    git("add", "tools/tracked.py")
+    git("commit", "--quiet", "-m", "tracked guard fixture")
+    found = _scan_carry_references(root)
+    assert found == {("tools/tracked.py", "<module>", "verify_carry_forward_receipt")}
+
+
+@pytest.mark.parametrize("raw,error", [(b"\xff", UnicodeError), (b"def broken(:", SyntaxError)])
+def test_carry_reference_guard_never_skips_unreadable_python(tmp_path, raw, error):
+    path = tmp_path / "tools/probe.py"
+    path.parent.mkdir()
+    path.write_bytes(raw)
+    with pytest.raises(error):
+        _scan_carry_references(tmp_path, tracked=["tools/probe.py"])
 
 
 @pytest.mark.parametrize("key", ["pr", "pr_number", "pull_request", "pull_request_number"])
@@ -1381,3 +1661,239 @@ def test_actual_magma_emission_append_preserves_chatter_but_refuses_veto(live_fa
             _write_live_merge_bundle(c, tmp_path / "magma")
     else:
         assert _write_live_merge_bundle(c, tmp_path / "magma")["carry_semantic_verification"]["ok"] is True
+
+
+_OPTIONAL_GIT_PIN_ABSENT = object()
+
+
+def _set_optional_git_pin(pinned_fleet, monkeypatch, value):
+    """Re-seal only test-owned fleet/manifest bytes; no installed pin is used."""
+    import hashlib
+    import json
+
+    root, executable = pinned_fleet
+    fleet = {"schema_version": 2, "git_executable": str(executable)}
+    if value is not _OPTIONAL_GIT_PIN_ABSENT:
+        fleet["git_sha256"] = value
+    raw = json.dumps(fleet).encode()
+    (root / "wd-fleet.json").write_bytes(raw)
+    manifest = json.dumps({"source_commit": root.name, "files": {
+        "wd-fleet.json": hashlib.sha256(raw).hexdigest()}}).encode()
+    (root / "deployment-manifest.json").write_bytes(manifest)
+    monkeypatch.setenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", hashlib.sha256(manifest).hexdigest())
+    return executable
+
+
+def _synthetic_git_reader(api, tmp_path, monkeypatch):
+    """Only the three reader preflight replies; no Git process can run."""
+    from types import SimpleNamespace
+
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[-2:] == ["rev-parse", "--show-toplevel"]:
+            out = str(tmp_path).encode() + b"\n"
+        elif argv[-2:] == ["rev-parse", "--is-shallow-repository"]:
+            out = b"false\n"
+        elif argv[-3:] == ["rev-parse", "--git-path", "info/grafts"]:
+            out = str(tmp_path / "no-grafts").encode() + b"\n"
+        else:
+            pytest.fail(f"unexpected synthetic Git read: {argv}")
+        return SimpleNamespace(returncode=0, stdout=out, stderr=b"")
+    monkeypatch.setattr(api.subprocess, "run", run)
+    return calls
+
+
+@pytest.mark.parametrize("form", ["absent", "matching-lower", "matching-upper"])
+def test_optional_git_pin_preserves_legacy_and_matching_authority(pinned_fleet, tmp_path, monkeypatch, form):
+    import hashlib
+
+    executable = pinned_fleet[1]
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    value = (_OPTIONAL_GIT_PIN_ABSENT if form == "absent"
+             else digest.upper() if form == "matching-upper" else digest)
+    _set_optional_git_pin(pinned_fleet, monkeypatch, value)
+    api = _api()
+    calls = _synthetic_git_reader(api, tmp_path, monkeypatch)
+    reader = api._git_reader(tmp_path)
+    assert len(calls) == 3
+    path, measured, authority = reader.authority
+    assert path == executable and measured["sha256"] == digest
+    assert set(authority) == {"manifest_sha256", "fleet_sha256", "generation"}
+
+
+@pytest.mark.parametrize("value", [
+    pytest.param(None, id="null"),
+    pytest.param(True, id="bool-true"),
+    pytest.param(False, id="bool-false"),
+    pytest.param(1, id="integer"),
+    pytest.param(1.0, id="float"),
+    pytest.param([], id="array"),
+    pytest.param({}, id="object"),
+    pytest.param("", id="empty"),
+    pytest.param(" " * 64, id="whitespace"),
+    pytest.param("g" * 64, id="non-hex"),
+    pytest.param("f" * 63, id="short"),
+    pytest.param("f" * 65, id="long"),
+    pytest.param("0" * 64, id="mismatched-lower"),
+    pytest.param("F" * 64, id="mismatched-upper"),
+])
+def test_optional_git_pin_malformed_or_mismatch_refuses_before_git(pinned_fleet, tmp_path, monkeypatch, value):
+    _set_optional_git_pin(pinned_fleet, monkeypatch, value)
+    api = _api()
+    calls = _synthetic_git_reader(api, tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="git_sha256|Git.*digest|Git.*pin"):
+        api._git_reader(tmp_path)
+    assert calls == [], "a malformed or mismatched declared pin must stop before Git"
+
+
+@pytest.mark.parametrize("changed", [
+    pytest.param(None, id="became-null"),
+    pytest.param("0" * 64, id="became-mismatch"),
+    pytest.param("invalid", id="became-malformed"),
+])
+def test_optional_git_pin_recheck_rejects_changed_declaration(pinned_fleet, monkeypatch, changed):
+    import hashlib
+
+    digest = hashlib.sha256(pinned_fleet[1].read_bytes()).hexdigest()
+    _set_optional_git_pin(pinned_fleet, monkeypatch, digest)
+    api = _api()
+    assert api._fleet_git_authority()[1]["sha256"] == digest
+    _set_optional_git_pin(pinned_fleet, monkeypatch, changed)
+    with pytest.raises(ValueError, match="git_sha256|Git.*digest|Git.*pin"):
+        api._fleet_git_authority()
+
+
+def test_optional_git_pin_matching_mixed_case(pinned_fleet, tmp_path, monkeypatch):
+    import hashlib
+
+    digest = hashlib.sha256(pinned_fleet[1].read_bytes()).hexdigest()
+    mixed = "".join(c.upper() if i % 2 else c for i, c in enumerate(digest))
+    _set_optional_git_pin(pinned_fleet, monkeypatch, mixed)
+    api = _api()
+    calls = _synthetic_git_reader(api, tmp_path, monkeypatch)
+    assert api._git_reader(tmp_path).authority[1]["sha256"] == digest
+    assert len(calls) == 3
+
+
+def test_optional_git_pin_padded_value_refuses_before_git(pinned_fleet, tmp_path, monkeypatch):
+    import hashlib
+
+    digest = hashlib.sha256(pinned_fleet[1].read_bytes()).hexdigest()
+    _set_optional_git_pin(pinned_fleet, monkeypatch, " " + digest + " ")
+    api = _api()
+    calls = _synthetic_git_reader(api, tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="git_sha256|Git.*digest|Git.*pin"):
+        api._git_reader(tmp_path)
+    assert calls == []
+
+
+@pytest.mark.parametrize("key", ["git_sha256", "git_executable"])
+def test_optional_git_pin_duplicate_authority_key_refuses(pinned_fleet, tmp_path, monkeypatch, key):
+    import hashlib
+    import json
+
+    root, executable = pinned_fleet
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    _set_optional_git_pin(pinned_fleet, monkeypatch, digest)
+    value = digest if key == "git_sha256" else str(executable)
+    raw = (root / "wd-fleet.json").read_bytes()[:-1] + (", " + json.dumps(key) + ": " + json.dumps(value) + "}").encode()
+    (root / "wd-fleet.json").write_bytes(raw)
+    manifest = json.dumps({"source_commit": root.name, "files": {
+        "wd-fleet.json": hashlib.sha256(raw).hexdigest()}}).encode()
+    (root / "deployment-manifest.json").write_bytes(manifest)
+    monkeypatch.setenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", hashlib.sha256(manifest).hexdigest())
+    api = _api()
+    calls = _synthetic_git_reader(api, tmp_path, monkeypatch)
+    with pytest.raises(ValueError):
+        api._git_reader(tmp_path)
+    assert calls == []
+
+
+def test_optional_git_pin_environment_cannot_override_bad_fleet_pin(pinned_fleet, tmp_path, monkeypatch):
+    import hashlib
+
+    digest = hashlib.sha256(pinned_fleet[1].read_bytes()).hexdigest()
+    _set_optional_git_pin(pinned_fleet, monkeypatch, "0" * 64)
+    monkeypatch.setenv("WD_GIT_SHA256", digest)
+    monkeypatch.setenv("GIT_SHA256", digest)
+    api = _api()
+    calls = _synthetic_git_reader(api, tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="git_sha256|Git.*digest|Git.*pin"):
+        api._git_reader(tmp_path)
+    assert calls == []
+
+
+def test_optional_git_pin_launcher_mutation_after_success_refuses(pinned_fleet, tmp_path, monkeypatch):
+    import hashlib
+    from types import SimpleNamespace
+
+    root, _ = pinned_fleet
+    executable = tmp_path / "test-owned-git.exe"
+    executable.write_bytes(b"test-owned launcher bytes")
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    _set_optional_git_pin((root, executable), monkeypatch, digest)
+    api = _api()
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(list(argv))
+        if len(calls) == 1:
+            return SimpleNamespace(returncode=0, stdout=str(tmp_path).encode() + b"\n", stderr=b"")
+        executable.write_bytes(b"replaced after the first successful synthetic command")
+        return SimpleNamespace(returncode=0, stdout=b"false\n", stderr=b"")
+    monkeypatch.setattr(api.subprocess, "run", run)
+    with pytest.raises(ValueError, match="Git executable identity changed during command"):
+        api._git_reader(tmp_path)
+    assert len(calls) == 2
+
+
+_EFFECT_CLASS_CASES = [
+    ('default_get', ['gh', 'api', 'repos/example/repo/issues/1/comments'], True),
+    ('long_get', ['gh', 'api', '--method', 'GET', 'repos/example/repo/issues/1/comments'], True),
+    ('short_get', ['gh', 'api', '-X', 'GET', 'repos/example/repo/issues/1/comments'], True),
+    ('long_get_query', ['gh', 'api', '--method', 'GET', 'repos/example/repo/issues/1/comments', '-f', 'page=1'], True),
+    ('short_get_typed_query', ['gh', 'api', '-X', 'GET', 'repos/example/repo/issues/1/comments', '-F', 'page=1'], True),
+    ('explicit_post', ['gh', 'api', '--method', 'POST', 'repos/example/repo/issues/1/comments'], False),
+    ('short_post', ['gh', 'api', '-X', 'POST', 'repos/example/repo/issues/1/comments'], False),
+    ('short_patch', ['gh', 'api', '-X', 'PATCH', 'repos/example/repo/issues/1/comments'], False),
+    ('short_delete', ['gh', 'api', '-X', 'DELETE', 'repos/example/repo/issues/1/comments'], False),
+    ('long_equal_post', ['gh', 'api', '--method=POST', 'repos/example/repo/issues/1/comments'], False),
+    ('attached_short_post', ['gh', 'api', '-XPOST', 'repos/example/repo/issues/1/comments'], False),
+    ('equal_short_post', ['gh', 'api', '-X=POST', 'repos/example/repo/issues/1/comments'], False),
+    ('raw_field_implicit_post', ['gh', 'api', 'repos/example/repo/issues/1/comments', '-f', 'body=value'], False),
+    ('typed_field_implicit_post', ['gh', 'api', 'repos/example/repo/issues/1/comments', '-F', 'body=value'], False),
+    ('long_field_implicit_post', ['gh', 'api', 'repos/example/repo/issues/1/comments', '--field', 'body=value'], False),
+    ('long_raw_field_implicit_post', ['gh', 'api', 'repos/example/repo/issues/1/comments', '--raw-field', 'body=value'], False),
+    ('equal_field_implicit_post', ['gh', 'api', 'repos/example/repo/issues/1/comments', '--field=body=value'], False),
+    ('equal_raw_field_implicit_post', ['gh', 'api', 'repos/example/repo/issues/1/comments', '--raw-field=body=value'], False),
+    ('attached_raw_implicit_post', ['gh', 'api', 'repos/example/repo/issues/1/comments', '-fbody=value'], False),
+    ('attached_typed_implicit_post', ['gh', 'api', 'repos/example/repo/issues/1/comments', '-Fbody=value'], False),
+    ('input_implicit_post', ['gh', 'api', 'repos/example/repo/issues/1/comments', '--input', '-'], False),
+    ('equal_input_implicit_post', ['gh', 'api', 'repos/example/repo/issues/1/comments', '--input=-'], False),
+    ('explicit_get_input', ['gh', 'api', '--method', 'GET', 'repos/example/repo/issues/1/comments', '--input', '-'], True),
+    ('ambiguous_methods', ['gh', 'api', '--method', 'GET', '-X', 'POST', 'repos/example/repo/issues/1/comments'], False),
+    ('missing_method', ['gh', 'api', 'repos/example/repo/issues/1/comments', '-X'], False),
+    ('unknown_option', ['gh', 'api', 'repos/example/repo/issues/1/comments', '--unknown-body-option', 'value'], False),
+]
+
+
+@pytest.fixture(scope="module")
+def recorded_gh_effect_classifiers():
+    import ast
+    forged = _boundary_corpus("test_consensus_carry_forward_origin_forgery")
+    replay = _boundary_corpus("test_consensus_carry_forward_n4_replay")
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8-sig"))
+    function = next(node for node in tree.body if isinstance(node,ast.FunctionDef)
+                    and node.name == "test_exact_corpus_attack_reaches_real_magma_and_idle_apply")
+    expression = next(node.test for node in ast.walk(function) if isinstance(node,ast.Assert)
+                      and "forged._gh_effects(target.gh.calls)" in ast.unparse(node.test))
+    code = compile(ast.Expression(expression),__file__,"eval")
+    return {"origin": lambda calls: not forged._gh_effects(calls),
+            "n4": lambda calls: not replay._effects(SimpleNamespace(calls=calls)),
+            "own": lambda calls: bool(eval(code,{"forged":forged,"target":SimpleNamespace(gh=SimpleNamespace(calls=calls))}))}
+
+
+@pytest.mark.parametrize("name,command,expected_read_only", _EFFECT_CLASS_CASES)
+@pytest.mark.parametrize("detector", ["origin","n4","own"])
+def test_recorded_gh_effect_class_is_fail_closed(name, command, expected_read_only, detector, recorded_gh_effect_classifiers):
+    assert recorded_gh_effect_classifiers[detector]([command]) is expected_read_only, name

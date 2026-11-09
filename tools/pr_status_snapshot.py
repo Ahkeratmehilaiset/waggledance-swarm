@@ -452,6 +452,59 @@ def _fetch_required_ci_evidence(*, run: Runner, repo: str, anchor: Mapping[str, 
                 strict_branch_protection=protection["strict"])
 
 
+def validate_required_ci_evidence(
+    snapshot: Mapping[str, Any], *, expected_head: str, expected_base_sha: str, repo: str,
+) -> None:
+    """Validate the strict inventory, never a rollup or a caller's green flag.
+
+    This checks captured material only. Apply executors must obtain it through
+    the live strict reader at both boundaries; this function grants no origin.
+    """
+    ci = snapshot.get("ci_evidence")
+    _ci_require(isinstance(ci, Mapping), "required CI evidence is missing or malformed")
+    _ci_require(ci.get("schema") == "wd.github-required-ci.v1" and ci.get("host") == "github.com"
+                and bool(repo) and ci.get("repository") == repo
+                and type(ci.get("pr_number")) is int and ci["pr_number"] == snapshot.get("pr_number")
+                and ci.get("head_sha") == expected_head == snapshot.get("head_sha")
+                and ci.get("base_sha") == expected_base_sha == snapshot.get("base_sha")
+                and ci.get("base_ref") == snapshot.get("base_ref") == "main",
+                "required CI evidence does not match the exact PR/repository/head/base")
+    _ci_require(ci.get("all_required_success") is True,
+                "required CI is not green at the exact head")
+    required, runs = ci.get("required"), ci.get("runs")
+    _ci_require(type(required) is list and bool(required) and type(runs) is list,
+                "required CI inventory is empty or malformed")
+    identities = []
+    for item in required:
+        _ci_require(isinstance(item, Mapping) and type(item.get("name")) is str
+                    and bool(item["name"]) and item["name"] == item["name"].strip()
+                    and _ci_positive_int(item.get("app_id")), "required CI identity is malformed")
+        identities.append((item["name"], item["app_id"]))
+    _ci_require(len(identities) == len(set(identities)) == len(runs),
+                "required CI run inventory is missing or duplicated")
+    seen, run_ids = set(), set()
+    for row in runs:
+        _ci_require(isinstance(row, Mapping) and type(row.get("name")) is str
+                    and _ci_positive_int(row.get("app_id")) and _ci_positive_int(row.get("id"))
+                    and _ci_positive_int(row.get("check_suite_id")), "required CI run identity is malformed")
+        identity = (row["name"], row["app_id"])
+        _ci_require(identity in identities and identity not in seen and row["id"] not in run_ids
+                    and row.get("head_sha") == expected_head
+                    and row.get("status") == "completed" and row.get("conclusion") == "success"
+                    and type(row.get("url")) is str
+                    and row["url"].casefold() == f"https://api.github.com/repos/{repo}/check-runs/{row['id']}".casefold(),
+                    "required CI run is not uniquely successful at this head and app")
+        seen.add(identity)
+        run_ids.add(row["id"])
+    sources = ci.get("sources")
+    _ci_require(type(sources) is list and bool(sources) and all(
+        isinstance(source, Mapping) and type(source.get("endpoint")) is str
+        and source["endpoint"].startswith(f"repos/{repo}/")
+        and type(source.get("response_sha256")) is str
+        and re.fullmatch(r"[0-9a-f]{64}", source["response_sha256"]) is not None
+        for source in sources), "required CI source inventory is missing or malformed")
+
+
 def _gh_pr_view_command(*, pr_number: int, repo: str) -> list[str]:
     command = ["gh", "pr", "view", str(pr_number), "--json", f"{GH_JSON_FIELDS},state"]
     if repo:

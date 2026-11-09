@@ -161,6 +161,18 @@ the preimage, not a proxy approval. Canonical JSON comparisons distinguish
 integers, booleans and floats; PR aliases accept an exact integer or its exact
 decimal string. Malformed veto evidence is not silently discarded.
 
+The evidence-only evaluator also checks expanded voter bases when present:
+each selected vote must bind the same basis, and its base, unique merge-base,
+raw diff digest and patch-id must match the Git derivation. Without expanded
+bases this helper remains diagnostic and cannot authenticate caller evidence;
+the live adapter still requires the complete direct or descriptor origin.
+The proposed base must be an ancestor of or equal to the locally named
+`refs/heads/<base_ref>` tip, observed through anchored Git and rechecked for
+drift. A missing or stale local ref refuses carry; fetch it before retrying
+with a newly bound tuple. A caller-owned repository/ref is not an authenticated
+GitHub source, and this local constraint does not eliminate the documented
+server-side base movement race.
+
 The Git repository must match the PR's GitHub origin. A launcher-anchored native
 Git executable rederives both heads and their unique merge-bases from real
 objects. Stable patch-id equality alone is insufficient: deterministic binary,
@@ -168,16 +180,32 @@ full-index raw diff bytes and their SHA256 must also match, including paths,
 modes and blob identities. Whitespace patch-id collisions, conflict edits,
 missing objects and ambiguous merge-bases refuse. In particular, the original
 reviewed base is not inferred from today's merge-base after part of a stacked
-change has landed. Native executable measurement does not attest loaded DLLs;
-the accepted-output limit does not bound peak PIPE capture memory.
+change has landed. If the hash-pinned fleet contains `git_sha256`, it must be a
+64-hex string (case-insensitive) matching the measured launcher digest before a
+Git child starts and on authority recheck. A malformed or mismatching present
+value refuses; an absent key retains the explicitly measured-only legacy path.
+The public proof format and conservative trust label do not change. Neither
+mode attests the downstream Git executable, loaded DLLs or helpers; the
+accepted-output limit does not bound peak PIPE capture memory.
 
 ### Current CI, vetoes and actual receipt consumption
 
 CI never transfers. The strict reader owns fresh `github.com` PR/head/base,
 target-tip, protection/rules and complete check-run observations. Every required
 run must have succeeded at the proposed head. Missing, pending, failed,
-wrong-head, incomplete or drifting evidence refuses. This stricter reader is
-opt-in for carry; the default non-carry CI policy is unchanged.
+wrong-head, incomplete or drifting evidence refuses. Both apply executors
+(`merge_with_bridge_receipt` and `idle_consensus_auto_merge`) require this
+inventory initially and immediately before merge, with or without carry.
+An explicit repository is required. Required checks must be completed with
+`success`; `skipped` and `neutral` do not satisfy a requirement. The rollup
+remains an additional check, never a substitute for missing required runs or
+their bound app identities. A standalone non-carry snapshot/plan may still be
+diagnostic without strict evidence; it cannot authorize apply. Present strict
+evidence is validated even for plans. Protection/rules API denial (including
+403/404), empty or unsupported requirements, malformed or incomplete pages and
+unreadable evidence fail closed. Availability must be observed using the actual
+executor's `gh` identity; another connector's authentication is not evidence of
+executor access. This code change supplies no credentials or access grant.
 
 All recognized RCOs' objections are scanned at both heads over the complete
 current ledger, including later or backdated appends. Carry neither expires a

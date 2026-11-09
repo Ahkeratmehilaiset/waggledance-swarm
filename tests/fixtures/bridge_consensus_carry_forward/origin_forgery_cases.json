@@ -1,0 +1,181 @@
+{
+  "schema": "wd.fable5-carry-origin-forgery.v1",
+  "request": "codex-lead-1 2026-11-09T10:39:08.6473023Z lead-carry-origin-forgery-fable-20261109-v1 (RCO1 interim F1, 10:37Z, non-voting)",
+  "tools_head": "be79431efd4f2c36bfcb333cd97e26b25eb929c4",
+  "corpus_base": "627983bd569ec8d227b95940fe1048ed10a30e0d",
+  "scenario": "real stacked history: the PR head holds F then P and was reviewed against main M0 (reviewed diff = F+P, votes bound to that basis); F later lands on main; P is rebased onto F. The current merge-base of the approved head with main is F, so a P-only diff looks content identical. The attacker builds a P-only receipt and matching caller evidence on that current merge-base.",
+  "production_callers_at_tools_head": {
+    "tools/idle_consensus_auto_merge.py": "evaluate_auto_merge_gate(carry_forward=...): derive_live_carry_forward, then verify_carry_forward_receipt(receipt, factory evidence with the current ledger and queue)",
+    "tools/bridge_approval_carry_forward.py": "derive_live_carry_forward and verify_carry_forward_receipt call evaluate_approval_carry_forward internally"
+  },
+  "classes": {
+    "helper_misuse": "the evidence-only helpers called directly with caller-built evidence; the published docstring says they cannot authenticate a caller dict",
+    "production_route": "the live factory and the gate, which derive the approved base from the votes' bound reviewed basis",
+    "pr_type": "strict PR number type, bool vs int, with PR number 1 so that True == 1 in Python",
+    "descriptor_issuer": "trusted origin descriptor packaged by each original voter and by non-voters",
+    "at_use": "queue, CI and a later objection re-checked when the receipt is used",
+    "semantic_consumer": "the actual MAGMA semantic consumer (unpublished at the Tools head)"
+  },
+  "cases": {
+    "helper_forged_stacked_receipt_and_evidence": {
+      "class": "helper_misuse",
+      "expect": "refuse",
+      "until": "helper_gap",
+      "note": "the evidence-only verifier re-derives from caller evidence; with a P-only base it cannot see the F+P reviewed basis bound in the votes"
+    },
+    "helper_honest_stacked_evidence": {
+      "class": "helper_misuse",
+      "expect": "refuse",
+      "note": "control: the same votes with the recorded reviewed base M0 refuse for content"
+    },
+    "production_factory_stacked": {
+      "class": "production_route",
+      "expect": "refuse"
+    },
+    "production_factory_stacked_base_hint_current_merge_base": {
+      "class": "production_route",
+      "expect": "refuse"
+    },
+    "production_gate_plan_stacked": {
+      "class": "production_route",
+      "expect": "refuse"
+    },
+    "production_descriptor_p_only_basis_by_lead": {
+      "class": "production_route",
+      "expect": "refuse",
+      "note": "lead packages a P-only basis while every vote committed to the F+P basis"
+    },
+    "production_callers_map": {
+      "class": "production_route",
+      "expect": "pinned",
+      "note": "every production call of the carry helpers must be a reviewed entry in reviewed_production_calls (evidence source named); a new or moved call fails until it is reviewed for F1"
+    },
+    "pr_bool_in_receipt": {
+      "class": "pr_type",
+      "expect": "refuse"
+    },
+    "pr_bool_in_evidence": {
+      "class": "pr_type",
+      "expect": "refuse"
+    },
+    "pr_bool_factory_argument": {
+      "class": "pr_type",
+      "expect": "refuse"
+    },
+    "pr_bool_gate_snapshot": {
+      "class": "pr_type",
+      "expect": "refuse"
+    },
+    "pr_bool_in_vote_payload": {
+      "class": "pr_type",
+      "expect": "refuse",
+      "note": "original votes name the PR as JSON true for PR 1"
+    },
+    "descriptor_issuer_codex-lead-1": {
+      "class": "descriptor_issuer",
+      "expect": "carry"
+    },
+    "descriptor_issuer_codex-tools-1": {
+      "class": "descriptor_issuer",
+      "expect": "carry"
+    },
+    "descriptor_issuer_claude-rco-1": {
+      "class": "descriptor_issuer",
+      "expect": "refuse",
+      "note": "today a recognized RCO decision after its own approval reads as an RCO block (pinned regression); the descriptor is otherwise valid"
+    },
+    "descriptor_issuer_claude-rco-2": {
+      "class": "descriptor_issuer",
+      "expect": "refuse",
+      "note": "PR author, not a selected voter"
+    },
+    "descriptor_issuer_fable-5": {
+      "class": "descriptor_issuer",
+      "expect": "refuse",
+      "note": "registered identity that is not an original voter"
+    },
+    "at_use_queue_incomplete": {
+      "class": "at_use",
+      "expect": "refuse"
+    },
+    "at_use_ci_failed_at_proposed_head": {
+      "class": "at_use",
+      "expect": "refuse"
+    },
+    "at_use_later_rco_change_request": {
+      "class": "at_use",
+      "expect": "refuse"
+    },
+    "at_use_gate_ledger_with_later_rco_change_request": {
+      "class": "at_use",
+      "expect": "refuse"
+    },
+    "semantic_consumer_rederives_reviewed_basis": {
+      "class": "semantic_consumer",
+      "expect": "refuse",
+      "until_published": "missing_api",
+      "note": "Tools announced verify_live_carry_forward_receipt and verify_carry_forward_merge_receipt for head a032f622 (handoff 2026-11-09T10:42:10Z, not yet on the remote); the test turns to ADAPT once a candidate is published"
+    }
+  },
+  "reviewed_production_calls": [
+    {
+      "path": "tools/bridge_approval_carry_forward.py",
+      "call": "evaluate_approval_carry_forward",
+      "heads": [
+        "be79431e",
+        "a032f622"
+      ],
+      "evidence": "inside verify_carry_forward_receipt and derive_live_carry_forward (factory-built evidence)"
+    },
+    {
+      "path": "tools/idle_consensus_auto_merge.py",
+      "call": "derive_live_carry_forward",
+      "heads": [
+        "be79431e",
+        "a032f622"
+      ],
+      "evidence": "live factory"
+    },
+    {
+      "path": "tools/idle_consensus_auto_merge.py",
+      "call": "verify_carry_forward_receipt",
+      "heads": [
+        "be79431e",
+        "a032f622"
+      ],
+      "evidence": "factory _evidence with the current ledger and queue"
+    },
+    {
+      "path": "tools/bridge_approval_carry_forward.py",
+      "call": "derive_live_carry_forward",
+      "heads": [
+        "a032f622"
+      ],
+      "evidence": "inside verify_live_carry_forward_receipt: fresh live derivation"
+    },
+    {
+      "path": "tools/bridge_approval_carry_forward.py",
+      "call": "verify_carry_forward_receipt",
+      "heads": [
+        "a032f622"
+      ],
+      "evidence": "material receipt against the fresh factory _evidence"
+    },
+    {
+      "path": "tools/write_bridge_consensus_merge_receipt.py",
+      "call": "derive_live_carry_forward",
+      "heads": [
+        "a032f622"
+      ],
+      "evidence": "writer: live factory"
+    },
+    {
+      "path": "tools/write_bridge_consensus_merge_receipt.py",
+      "call": "verify_live_carry_forward_receipt",
+      "heads": [
+        "a032f622"
+      ],
+      "evidence": "consumer: semantic re-derivation"
+    }
+  ]
+}

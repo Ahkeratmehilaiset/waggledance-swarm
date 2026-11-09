@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 from copy import deepcopy
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -106,8 +107,9 @@ def _native_git_snapshot(path: Path) -> dict[str, Any]:
 def _fleet_git_authority() -> tuple[Path, dict, dict]:
     """Existing external manifest -> pinned fleet -> configured physical path.
 
-    The executable digest is measured consistency, not an external digest pin;
-    this does not authenticate or hash-pin Git's DLL/helper chain.
+    An optional fleet git_sha256 is case-insensitive 64-hex and must match the
+    measured launcher bytes. Without it, authority remains measured consistency.
+    The public proof/trust label is unchanged; neither mode attests DLL/helpers.
     """
     try:
         root_value = os.environ.get("WD_BRIDGE_BUNDLE_ROOT")
@@ -144,6 +146,12 @@ def _fleet_git_authority() -> tuple[Path, dict, dict]:
                 or (os.name == "nt" and path.suffix.lower() != ".exe")):
             raise ValueError("Git executable authority path must be absolute")
         snapshot = _native_git_snapshot(path)
+        if "git_sha256" in fleet:
+            expected = fleet["git_sha256"]
+            if type(expected) is not str or re.fullmatch(r"[0-9a-fA-F]{64}", expected) is None:
+                raise ValueError("Git git_sha256 digest pin is malformed")
+            if not hmac.compare_digest(snapshot["sha256"], expected.lower()):
+                raise ValueError("Git git_sha256 digest pin mismatch")
         authority = dict(manifest_sha256=pin.lower(), fleet_sha256=fleet_pin.lower(),
                          generation=manifest["source_commit"])
         return path, snapshot, authority
@@ -203,6 +211,26 @@ def _merge_base(read, base: str, head: str) -> str:
     if _SHA.fullmatch(result) is None:
         raise ValueError("invalid merge-base identity")
     return result
+
+
+def _require_proposed_base_on_local_ref(root: Path, base: str, base_ref: str) -> None:
+    """Constrain evidence to the named local branch, without authenticating it.
+
+    A caller controls its repository. Only the live adapter binds that clone
+    and base to GitHub. Missing/stale local refs reduce availability, not safety.
+    """
+    read = _git_reader(root)
+    ref = "refs/heads/" + base_ref
+    try:
+        read("check-ref-format", ref)
+        tip = read("rev-parse", "--verify", ref + "^{commit}").strip().decode("ascii", "strict")
+        _require(_SHA.fullmatch(tip) is not None, "base branch tip is invalid")
+        read("merge-base", "--is-ancestor", base, tip)
+        _require(read("rev-parse", "--verify", ref + "^{commit}").strip().decode("ascii", "strict") == tip,
+                 "base branch changed during carry")
+        _require(_fleet_git_authority() == read.authority, "base Git authority changed during carry")
+    except (ValueError, UnicodeError) as exc:
+        raise ValueError("proposed base is missing, stale or not on the named local base branch") from exc
 
 
 def _entries(raw: bytes) -> list[dict[str, str]]:
@@ -447,6 +475,7 @@ def evaluate_approval_carry_forward(evidence: Mapping[str, Any]) -> dict[str, An
                                            pr_number=old["pr_number"], author_agent=author)
         _require(original.get("ok") is True, "original head has no valid Rule9a consensus")
         carried = []
+        selected = []
         for role in _CARRY_APPROVAL_ROLES:
             info = original["identities"][role]
             if info.get("build_author_slot_waived") is True:
@@ -477,12 +506,32 @@ def evaluate_approval_carry_forward(evidence: Mapping[str, Any]) -> dict[str, An
             carried.append(dict(agent=event["agent"], agent_uuid=event["agent_uuid"],
                                 kind="rco_pass" if role == "rco" else "build_consensus",
                                 approved_head=old["head"], event_sha256=_canonical_sha(event)))
+            selected.append(event)
         _require(len({row["event_sha256"] for row in carried}) == len(carried),
                  "one original event cannot fill two approval slots")
         root = evidence.get("repo_path")
         _require(type(root) is str and bool(root), "carry repository path is invalid")
+        _require_proposed_base_on_local_ref(Path(root), new["base_sha"], new["base_ref"])
         proof = derive_content_identity(repo_root=Path(root), old_base=old["base_sha"], old_head=old["head"],
                                         new_base=new["base_sha"], new_head=new["head"])
+        # Directly committed review bases, when supplied, constrain this pure
+        # helper too. Descriptor-only origins remain the live adapter's job.
+        if any(isinstance(event.get("payload"), Mapping) and "review_basis" in event["payload"]
+               for event in selected):
+            bases = []
+            for event in selected:
+                payload = event.get("payload") or {}
+                basis = _review_basis(payload.get("review_basis"), repo=old["repository"],
+                    pr_number=old["pr_number"], task_id=task, base_ref=old["base_ref"], old_head=old["head"])
+                _require(payload.get("review_basis_sha256") == _canonical_sha(basis),
+                         "original reviewed-basis digest does not match")
+                _require(basis["base_sha"] == old["base_sha"] and basis["merge_base"] == proof["old_merge_base"]
+                         and basis["diff_sha256"] == proof["old_diff_sha256"]
+                         and basis["patch_id"] == proof["old_patch_id"],
+                         "original reviewed basis/base does not match derived Git content")
+                bases.append(basis)
+            _require(all(_canonical_sha(basis) == _canonical_sha(bases[0]) for basis in bases),
+                     "original approvals disagree on reviewed basis")
         receipt = dict(schema="wd.bridge-approval-carry-forward-receipt.v1",
                        repository=old["repository"], pr_number=old["pr_number"], base_ref=old["base_ref"],
                        task_id=task, pr_author=author,

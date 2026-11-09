@@ -283,7 +283,9 @@ def merge_with_bridge_receipt(
         carry_forward = deepcopy(carry_forward)
         carry_kwargs = dict(carry_forward=carry_forward, runner=run,
                             accepted_queue_checker=accepted_queue_checker)
-    snapshot_kwargs = {"require_ci_evidence": True} if carry_forward is not None else {}
+    # Both legacy apply and carry require the complete required-name/app/head
+    # inventory, initially and again after receipt creation. Rollup is additional.
+    snapshot_kwargs = {"require_ci_evidence": True} if apply or carry_forward is not None else {}
     snapshot_path = out_dir / "pr-status.json"
     receipt_dir = out_dir / "receipt"
 
@@ -349,7 +351,7 @@ def merge_with_bridge_receipt(
 
     command = _merge_command(
         pr_number=pr_number,
-        repo=f"github.com/{repo}" if carry_forward is not None else repo,
+        repo=f"github.com/{repo}" if apply or carry_forward is not None else repo,
         expected_head=expected_head,
         method=method,
     )
@@ -534,7 +536,7 @@ def merge_with_bridge_receipt(
 
     post_merge = _query_confirmed_merge(
         pr_number=pr_number,
-        repo=f"github.com/{repo}" if carry_forward is not None else repo,
+        repo=f"github.com/{repo}",
         expected_head=expected_head,
         expected_head_ref=str(verified_snapshot["head_ref"]),
         expected_base_ref=str(verified_snapshot["base_ref"]),

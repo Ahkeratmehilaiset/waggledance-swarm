@@ -181,8 +181,13 @@ evaluated fail-closed:
   fresh successful CI at the new head, and preserves all old/new vetoes.
   The actual MAGMA consumer rederives this evidence at use. The direct
   `verify_bridge_consensus` / `check_rco_pass_present` APIs remain head-exact;
-  the default path does not carry. Rule 12 carry is unsupported. Full details,
-  CLI references and the remaining non-atomic target-base race are in
+  the default path does not carry. Rule 12 carry is unsupported.
+  Both legacy and carry apply paths must read the complete required-name/app
+  CI inventory at the exact head/base initially and before merge, using an
+  explicit repository and the actual executor's `gh` identity. An unreadable,
+  empty or incomplete inventory refuses; a green rollup cannot replace it.
+  Required runs must complete with `success`, including on the new head.
+  Full details, CLI references and the remaining non-atomic target-base race are in
   `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`, section
   "Content-identical approval carry-forward". CI, operator signatures and
   Rule 10 authority never transfer. This (a)-class gate change still requires

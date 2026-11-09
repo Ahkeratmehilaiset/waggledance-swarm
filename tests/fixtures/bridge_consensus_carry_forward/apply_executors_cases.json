@@ -1,0 +1,250 @@
+{
+  "schema": "wd.fable5-carry-apply-executors.v1",
+  "request": "codex-lead-1 2026-11-09T11:28:00.0777536Z lead-carry-apply211-fable-20261109-v1",
+  "tools_head": "211490de981a43e2cf64c86297c4ca2b3b37bc20",
+  "corpus_base": "ed197d1efbe69fcf714a83e258ed5b3afa0db458",
+  "executors": {
+    "merge": "tools.merge_with_bridge_receipt:merge_with_bridge_receipt(apply=True, carry_forward, accepted_queue_checker): writes its own MAGMA receipt, fresh gate, verify_carry_forward_apply, then gh pr merge",
+    "idle": "tools.idle_consensus_auto_merge:evaluate_auto_merge_gate(apply=True, carry_forward, receipt_bundle_path): consumes a MAGMA receipt written by the actual writer, verify_carry_forward_apply, then gh pr merge"
+  },
+  "harness": "real git history on the allowlisted path of the receipt corpus MAGMA route; synthetic strict GitHub (no live call) with a base ref that can move for the late pre-effect read only; queue observation read at call time",
+  "verdicts": {
+    "merge": "exactly one gh pr merge, --match-head-commit at the proposed head, never the approved head; carry_apply_verification ok with atomic_base_guard false",
+    "refuse": "no gh pr merge command at all and a non-ok report or a raised refusal"
+  },
+  "when": {
+    "before": "merge executor: change applied before the executor runs; idle executor: change applied after the actual writer wrote the legit receipt and before the apply call",
+    "after_receipt": "merge executor: change applied right before its second snapshot read, after its receipt files exist; idle executor: as before",
+    "late_base": "the base ref moves only for the read inside verify_carry_forward_apply (isolates the late pre-effect check)"
+  },
+  "mutations": {
+    "none": "no change",
+    "old_head_objection": "recognized RCO changes_requested decision bound to the approved head",
+    "new_head_objection": "recognized RCO changes_requested decision bound to the proposed head",
+    "benign_note": "unrelated informational message under another task (must not refuse)",
+    "queue_incomplete": "accepted queue observation turns incomplete",
+    "ci_failed": "the bound app's unified run fails at the proposed head",
+    "late_base_moved": "base ref tip differs at the late pre-effect read",
+    "unbound_votes": "original votes carry no reviewed basis",
+    "votes_bound_to_consistent_live_base": "original votes bound to a basis whose base is the live base; merge-base(live base, approved head) is the old base, so diff and patch-id are unchanged (a truthful, git-consistent basis)",
+    "votes_bound_to_other_diff": "original votes bound to a basis with another diff digest and patch-id (resealed vote digest)",
+    "vote_pr_true": "original vote payload PR field JSON true for PR 1",
+    "vote_pr_float": "original vote payload PR field as a float"
+  },
+  "cases": {
+    "legit_control": {
+      "mutation": "none",
+      "when": "before",
+      "expect": "merge",
+      "executors": [
+        "merge",
+        "idle"
+      ]
+    },
+    "old_head_objection_before": {
+      "mutation": "old_head_objection",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ]
+    },
+    "new_head_objection_before": {
+      "mutation": "new_head_objection",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ]
+    },
+    "old_head_objection_after_receipt": {
+      "mutation": "old_head_objection",
+      "when": "after_receipt",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ]
+    },
+    "new_head_objection_after_receipt": {
+      "mutation": "new_head_objection",
+      "when": "after_receipt",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ]
+    },
+    "benign_note_after_receipt": {
+      "mutation": "benign_note",
+      "when": "after_receipt",
+      "expect": "merge",
+      "executors": [
+        "merge",
+        "idle"
+      ]
+    },
+    "queue_incomplete_before": {
+      "mutation": "queue_incomplete",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ]
+    },
+    "queue_incomplete_after_receipt": {
+      "mutation": "queue_incomplete",
+      "when": "after_receipt",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ]
+    },
+    "ci_failed_before": {
+      "mutation": "ci_failed",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ]
+    },
+    "ci_failed_after_receipt": {
+      "mutation": "ci_failed",
+      "when": "after_receipt",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ]
+    },
+    "late_base_moved": {
+      "mutation": "late_base_moved",
+      "when": "late_base",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ]
+    },
+    "unbound_original_votes": {
+      "mutation": "unbound_votes",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ]
+    },
+    "votes_bound_to_other_diff": {
+      "mutation": "votes_bound_to_other_diff",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ]
+    },
+    "votes_bound_to_consistent_live_base": {
+      "mutation": "votes_bound_to_consistent_live_base",
+      "when": "before",
+      "expect": "merge",
+      "executors": [
+        "merge"
+      ],
+      "note": "control; first run expected refuse, corrected: the bound basis is git-consistent (same merge-base, diff and patch-id), so carrying it is correct; on the idle path the receipt written before the change no longer rederives (refused, covered by the receipt route)"
+    },
+    "vote_pr_true_for_pr_one": {
+      "mutation": "vote_pr_true",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ],
+      "pr_one": true
+    },
+    "vote_pr_float": {
+      "mutation": "vote_pr_float",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ]
+    },
+    "executor_pr_number_true_for_pr_one": {
+      "mutation": "none",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ],
+      "pr_one": true,
+      "executor_pr_number_arg": "true"
+    },
+    "executor_pr_number_float": {
+      "mutation": "none",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ],
+      "executor_pr_number_arg": "float"
+    },
+    "empty_expected_base": {
+      "mutation": "none",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "merge",
+        "idle"
+      ],
+      "empty_expected_base": true,
+      "note": "RCO2 11:32Z: empty expected_base_sha refuses before any effect"
+    },
+    "foreign_valid_receipt": {
+      "mutation": "none",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "idle"
+      ],
+      "receipt": "foreign",
+      "note": "RCO2 11:32Z: a valid receipt from a different carry (other task and ledger) on the idle path"
+    },
+    "resealed_receipt_pr_float": {
+      "mutation": "none",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "idle"
+      ],
+      "reseal": "receipt_pr_float"
+    },
+    "resealed_payload_head_uppercase": {
+      "mutation": "none",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "idle"
+      ],
+      "reseal": "payload_head_uppercase"
+    },
+    "resealed_approved_base_to_live_base": {
+      "mutation": "none",
+      "when": "before",
+      "expect": "refuse",
+      "executors": [
+        "idle"
+      ],
+      "reseal": "approved_base_to_live_base"
+    }
+  }
+}

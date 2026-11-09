@@ -73,6 +73,7 @@ from tools.bridge_accepted_queue_preflight import (  # noqa: E402
 from tools.pr_status_snapshot import (  # noqa: E402
     PrStatusSnapshotError,
     build_pr_status_snapshot,
+    validate_required_ci_evidence,
 )
 from tools.check_standing_consensus_sign_class import (  # noqa: E402
     evaluate_standing_consensus_sign,
@@ -557,6 +558,13 @@ def evaluate_auto_merge_gate(
     )
 
     blockers: list[str] = []
+    if "ci_evidence" in pr_status and (not apply or carry_forward is not None):
+        try:
+            validate_required_ci_evidence(pr_status, expected_head=expected_head,
+                                          expected_base_sha=expected_base_sha, repo=repo)
+        except PrStatusSnapshotError as exc:
+            blockers.extend("required CI evidence refused: " + str(reason)
+                            for reason in exc.report.get("errors", ["invalid inventory"]))
     if carry_material is not None and not carry_still_valid:
         blockers.append("carry proof changed after its live snapshot/queue derivation")
     if author_resolution.get("ok") is not True:
@@ -725,7 +733,7 @@ def evaluate_auto_merge_gate(
     command = _merge_command(
         pr_number=pr_number,
         expected_head=expected_head,
-        repo=f"github.com/{repo}" if carry_forward is not None else repo,
+        repo=f"github.com/{repo}" if apply or carry_forward is not None else repo,
     )
     base = _base_report(
         pr_number=pr_number,
@@ -808,6 +816,23 @@ def evaluate_auto_merge_gate(
     if not apply:
         return report
 
+    if carry_forward is None:
+        # Reject known plan/peer/consensus blockers before I/O. Once otherwise
+        # eligible, validate live required CI before any receipt side effect.
+        try:
+            initial_snapshot = build_pr_status_snapshot(
+                pr_number=pr_number, repo=repo, receipt_verified=receipt_verified_value,
+                expected_base_sha=expected_base_sha, require_ci_evidence=True, runner=runner)
+            # Preserve requested metadata for the complete late drift check.
+            pr_status = dict(pr_status, ci_evidence=initial_snapshot["ci_evidence"])
+            validate_required_ci_evidence(pr_status, expected_head=expected_head,
+                                          expected_base_sha=expected_base_sha, repo=repo)
+        except PrStatusSnapshotError as exc:
+            return dict(report, ok=False, decision="operator_review_required", would_merge=False,
+                        operator_review_required=True, reasons=["initial required CI snapshot failed: "
+                        + "; ".join(exc.report.get("errors") or ["canonical snapshot failed"])],
+                        initial_snapshot=dict(exc.report))
+
     artifact_report: Mapping[str, Any] | None = None
     if artifact_writer is not None:
         artifact_report = _run_artifact_writer(artifact_writer)
@@ -823,7 +848,7 @@ def evaluate_auto_merge_gate(
             receipt_verified=True,
             expected_base_sha=expected_base_sha,
             runner=runner,
-            **({"require_ci_evidence": True} if carry_forward is not None else {}),
+            require_ci_evidence=True,
         )
     except PrStatusSnapshotError as exc:
         return {
@@ -929,7 +954,7 @@ def evaluate_auto_merge_gate(
             lambda number, head, repository: _query_pr_merge_state(
                 number,
                 head,
-                f"github.com/{repository}" if carry_forward is not None else repository,
+                f"github.com/{repository}",
                 runner=run,
             )
         )

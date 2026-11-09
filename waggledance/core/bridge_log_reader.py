@@ -147,7 +147,9 @@ def _bridge_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     for key, value in pairs:
         if not key.isascii():
             raise ValueError("JSON object property names must be ASCII")
-        folded = _ascii_fold_bridge_key(key)
+        # The ASCII check above makes lower() equivalent to the bridge's
+        # ASCII-only fold without a Python loop over each character.
+        folded = key.lower()
         if folded in normalized_keys:
             raise ValueError("duplicate or ASCII-case-colliding JSON key")
         normalized_keys.add(folded)

@@ -34,9 +34,9 @@
  },
  "entry_point_status": {
   "derive_content_identity": "named by Tools 2026-11-09T07:13:19Z: keyword-only (repo_root, old_base, old_head, new_base, new_head), ValueError on refusal",
-  "evaluate": "proposed by this corpus; Tools has not published a gate API yet",
+  "evaluate": "published by Tools at 95afd92f as evaluate_approval_carry_forward(evidence); evidence only, the real gate is not wired",
   "verify_content_identity": "named by Tools 2026-11-09T07:13:19Z: verify_content_identity(proof, same keyword tuple), ValueError on refusal",
-  "verify_receipt": "proposed by this corpus; Tools has not published a gate API yet"
+  "verify_receipt": "published by Tools at 95afd92f as verify_carry_forward_receipt(receipt, evidence)"
  },
  "entry_points": {
   "derive_content_identity": "tools.bridge_approval_carry_forward:derive_content_identity",
@@ -54,22 +54,22 @@
   "proposed": "head, base_sha, base_ref, pr_number, repository of the head to evaluate",
   "recognized_rco_agents": "agents whose rco_pass fills the RCO slot and whose veto blocks",
   "repo_path": "local git repository holding both heads and both base tips",
-  "roster": "caller-supplied agent name to agent_uuid; informational only, never identity authority",
+  "roster": "caller-supplied agent name to agent_uuid; must equal the whole canonical registry (Tools 95afd92f fails closed otherwise); never identity authority",
   "schema": "the evidence_schema value",
   "task_id": "canonical task id of the PR (branch name)"
  },
  "evidence_schema": "wd.bridge-approval-carry-forward-evidence.v1",
  "gate_reason_patterns": {
-  "approval": "approval",
-  "base": "base",
-  "block": "block",
-  "ci": "ci",
-  "content": "content",
-  "queue": "queue",
-  "schema": "schema",
-  "scope": "scope"
+  "approval": "(?i)approv|consensus|binding|roster|canonical|uuid",
+  "base": "(?i)base",
+  "block": "(?i)block|veto",
+  "ci": "(?i)\\bci\\b",
+  "content": "(?i)content|diff|patch.id|merge-base|object|identity",
+  "queue": "(?i)queue",
+  "schema": "(?i)schema|invalid",
+  "scope": "(?i)scope|origin|same PR/repository/base ref"
  },
- "gate_reason_patterns_note": "proposed reason classes; regexes over verdict reason; Tools may repoint them when the gate API is published",
+ "gate_reason_patterns_note": "case-insensitive regexes over verdict reason; repointed to the published wording of Tools evaluator 95afd92f (Lead 2026-11-09T08:05:42Z); verdicts unchanged",
  "git_authority": "content proofs run the physical git named by the anchored fleet (WD_BRIDGE_BUNDLE_ROOT generation folder, deployment-manifest.json pinned by WD_REBOOT_EXPECTED_MANIFEST_HASH, wd-fleet.json git_executable), Tools 60b50965; the corpus installs a wholly synthetic test-owned generation per test",
  "never_carried": [
   "ci",

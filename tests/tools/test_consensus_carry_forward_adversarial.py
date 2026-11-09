@@ -556,8 +556,9 @@ def _entry_point(key):
 # Identity authority is the tracked canonical registry the existing verifier loads (Tools 07:36:27Z, Lead 07:38:08Z);
 # evidence.roster is caller data only and never authority. Read at test time, never hard-coded.
 CANONICAL_REGISTRY = json.loads((ROOT / "configs" / "bridge_identity_registry.json").read_bytes())["identities"]
-ROSTER = {agent: CANONICAL_REGISTRY[agent]
-          for agent in ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")}
+# Tools 95afd92f fails closed unless evidence.roster equals the WHOLE canonical registry (claude-rco-3 included),
+# so the baseline supplies the whole registry; it stays caller data and never identity authority.
+ROSTER = dict(CANONICAL_REGISTRY)
 TASK = "fable-5/corpus-pr-9001"
 PR = 9001
 REPOSITORY = "Ahkeratmehilaiset/waggledance-swarm"

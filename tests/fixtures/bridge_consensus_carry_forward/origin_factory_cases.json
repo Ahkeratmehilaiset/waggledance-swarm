@@ -1,0 +1,168 @@
+{
+  "schema": "wd.fable5-carry-origin-factory-cases.v1",
+  "request": "codex-lead-1 2026-11-09T09:08:15.9670965Z lead-carry-origin-tests-fable-20261109-v1",
+  "corpus_base": "ec33fb6a95af179cb39ab4dad1c2003c10ab0a87",
+  "api_proposal": "codex-tools-1 2026-11-09T09:01:14.6897904Z (lead-consensus-carry-forward-tools-20261109-v1 payload); Tools may refine it, the test caller adapts here once published",
+  "factory": {
+    "target": "tools.bridge_approval_carry_forward:derive_live_carry_forward",
+    "parameters": [
+      "request",
+      "events_path",
+      "repo",
+      "pr_number",
+      "task_id",
+      "expected_head",
+      "expected_base_sha",
+      "runner",
+      "accepted_queue_checker"
+    ],
+    "request_fields": {
+      "approved_head": "the reviewed head",
+      "approved_base_sha": "optional assertion only, never adopted",
+      "repo_root": "pathlib.Path of the checkout holding both heads",
+      "origin_binding_event_sha256": "optional descriptor route"
+    },
+    "result": "mapping with carry (bool) and reason; a raised ValueError or PrStatusSnapshotError counts as a refusal with its text",
+    "request_adaptation": "descriptor route: origin_binding_event_sha256 names the single packaging event; descriptor path is relative to repo_root (fixture adaptation until Tools publishes)"
+  },
+  "review_basis": {
+    "schema": "wd.bridge-reviewed-basis.v1",
+    "fields": [
+      "repository",
+      "pr_number",
+      "task_id",
+      "base_ref",
+      "head",
+      "base_sha",
+      "merge_base",
+      "diff_sha256",
+      "patch_id"
+    ],
+    "digest": "review_basis_sha256 = sha256 of canonical JSON (sort_keys, separators , and :, ASCII) of the basis object (fixture adaptation until Tools publishes the digest rule)",
+    "direct_route": "each original non-author approval payload carries review_basis and review_basis_sha256",
+    "descriptor_route": "refined by Tools 2026-11-09T09:15:42Z (Lead 09:16:31Z): every carried original non-author vote carries its own payload.review_basis_sha256 commitment; ONE packaging decision review_basis_bound by an issuer (default codex-lead-1) carries payload.review_origin (schema wd.bridge-review-origin.v1) = descriptor {path relative to repo_root, bytes, sha256}, review_basis (preimage), review_basis_sha256, approval_event_sha256 (list of the exact original refs); the descriptor file (schema wd.bridge-review-snapshot.v1) carries the same basis and refs. The issuer only packages; it never stands in for a missing peer commitment",
+    "binding_event_type": "decision",
+    "binding_event_note": "Tools proposal 09:01:14Z: binding = decision with status review_basis_bound. Observed today (probe_binding_supersede_v1): verify_bridge_consensus reads a recognized RCO's later decision with that status as an RCO block on the head and drops its head-bound approval (lead and tools bindings are neutral; the same event as type message, or posted before the approval, is neutral). The valid descriptor case uses a lead issuer (neutral); an RCO issuer would void its own approval under today's reading, recorded by the control test; this key is the single adaptation point"
+  },
+  "reason_patterns": {
+    "origin": "(?i)basis|bases|\borigin\b|descriptor|binding|legacy|attest",
+    "content": "(?i)content|diff|patch.id|merge-base|identity",
+    "base": "(?i)base",
+    "ci": "(?i)\\bci\\b|check",
+    "same_head": "(?i)same head",
+    "approval": "(?i)approv|consensus"
+  },
+  "failure_classes": {
+    "missing_api": "failure text starts with 'RED: missing API:'; the factory or one of its parameters is not published yet; never verified behaviour",
+    "behaviour": "any other failure; the factory decided differently from the expectation recorded here"
+  },
+  "never": "no Tools source change, no live GitHub call, no claim that the real gate is green",
+  "cases": {
+    "valid_all_bound_direct": {
+      "expect": "carry",
+      "note": "lead, tools and RCO approvals at the approved head each carry the same historical basis"
+    },
+    "valid_bound_via_descriptor": {
+      "expect": "carry",
+      "note": "per-voter commitments in all three votes plus one packaging event by codex-lead-1"
+    },
+    "valid_author_waiver": {
+      "expect": "carry",
+      "note": "PR authored by codex-tools-1; lead and RCO bound; the waived slot needs no basis"
+    },
+    "valid_request_base_assertion_matches": {
+      "expect": "carry"
+    },
+    "missing_basis_one_approval": {
+      "expect": "refuse",
+      "reason": "origin"
+    },
+    "absent_legacy_anchor": {
+      "expect": "refuse",
+      "reason": "origin",
+      "note": "no approval carries a basis and no descriptor exists; refuses this carry only, exact-head rules untouched"
+    },
+    "mismatched_basis_diff": {
+      "expect": "refuse",
+      "reason": "origin"
+    },
+    "mismatched_basis_base": {
+      "expect": "refuse",
+      "reason": "origin"
+    },
+    "basis_digest_not_matching": {
+      "expect": "refuse",
+      "reason": "origin"
+    },
+    "basis_for_another_pr": {
+      "expect": "refuse",
+      "reason": "origin"
+    },
+    "basis_not_matching_git": {
+      "expect": "refuse",
+      "reason": "origin",
+      "note": "self-consistent basis whose diff digest is not the git diff of the approved head"
+    },
+    "descriptor_resealed_without_canonical_binding": {
+      "expect": "refuse",
+      "reason": "origin"
+    },
+    "descriptor_binding_event_not_in_ledger": {
+      "expect": "refuse",
+      "reason": "origin"
+    },
+    "single_voter_attests_another": {
+      "expect": "refuse",
+      "reason": "origin",
+      "note": "only the issuer committed; it packages both peers' uncommitted votes"
+    },
+    "proxy_missing_peer_commitment": {
+      "expect": "refuse",
+      "reason": "origin",
+      "note": "the tools vote carries no commitment; the issuer packages it"
+    },
+    "proxy_missing_rco_commitment": {
+      "expect": "refuse",
+      "reason": "origin",
+      "note": "the RCO vote carries no commitment; the issuer packages it"
+    },
+    "peer_commitment_differs": {
+      "expect": "refuse",
+      "reason": "origin",
+      "note": "the RCO committed to another digest than the packaged preimage"
+    },
+    "descriptor_preimage_not_matching_commitments": {
+      "expect": "refuse",
+      "reason": "origin",
+      "note": "file and packaging event agree; votes committed to another digest"
+    },
+    "request_base_assertion_contradicts_basis": {
+      "expect": "refuse",
+      "reason": "origin|base"
+    },
+    "side_base_substitution_live_base": {
+      "expect": "refuse",
+      "reason": "content"
+    },
+    "side_base_substitution_expected_base": {
+      "expect": "refuse",
+      "reason": "base"
+    },
+    "stacked_ancestry_rebased": {
+      "expect": "refuse",
+      "reason": "content"
+    },
+    "stacked_ancestry_merge_base_assertion": {
+      "expect": "refuse",
+      "reason": "origin|base"
+    },
+    "stacked_ancestry_no_rewrite": {
+      "expect": "refuse",
+      "reason": "same_head"
+    },
+    "strict_ci_failed_at_proposed_head": {
+      "expect": "refuse",
+      "reason": "ci"
+    }
+  }
+}

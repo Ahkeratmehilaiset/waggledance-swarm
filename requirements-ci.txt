@@ -11,6 +11,9 @@ aiosqlite>=0.20.0
 websockets>=13.0
 pyyaml>=6.0
 psutil>=5.9.0
+# Q4 exercises the real FAISS index; install an ABI-compatible wheel in CI.
+--only-binary=faiss-cpu
+faiss-cpu==1.13.2
 # chromadb intentionally absent (lead guidance 2026-08-26): the stable
 # Docker/CI input must omit it. Chroma-dependent tests import lazily and
 # skip when the package is missing; opt-in only via the [chroma] extra.

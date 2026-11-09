@@ -82,6 +82,34 @@ def checkpoint(fleet, index=-1):
     return Path(fleet["lanes"][index]["worktree"]) / ".codex-audit/wd-current-state.json"
 
 
+def repository_boundary_setup(boundary: Path) -> str:
+    """Model a separate filesystem in test-owned storage, retaining real .git checks."""
+    return r"""
+$script:fixtureRepositoryProbe = (Get-Command Test-BridgeRepositoryTopLevel).ScriptBlock
+$script:fixtureRepositoryBoundary = [IO.Path]::GetFullPath(BOUNDARY).Replace('\','/').TrimEnd('/')
+function Test-BridgeRepositoryTopLevel {
+    param([string]$Top)
+    $candidate = [IO.Path]::GetFullPath($Top).Replace('\','/').TrimEnd('/')
+    if (-not ($candidate.Equals($script:fixtureRepositoryBoundary, [StringComparison]::OrdinalIgnoreCase) -or
+        $candidate.StartsWith($script:fixtureRepositoryBoundary + '/', [StringComparison]::OrdinalIgnoreCase))) {
+        return $false
+    }
+    & $script:fixtureRepositoryProbe $Top
+}
+""".replace('BOUNDARY', quote(boundary))
+
+
+def status_with_repository_boundary(fleet, boundary: Path) -> Path:
+    """Copy only the script under test; installed/source helpers remain untouched."""
+    source = SCRIPT.read_text(encoding='utf-8').replace('$PSScriptRoot', quote(SCRIPT.parent))
+    anchor = ". (Join-Path $helperBin 'BridgeResourceScope.ps1')"
+    assert source.count(anchor) == 1, 'repository probe seam changed; inspect before adapting'
+    copied = fleet['root'] / 'isolated-repository-status.ps1'
+    copied.write_text(source.replace(anchor, anchor + '\n' + repository_boundary_setup(boundary)),
+                      encoding='utf-8')
+    return copied
+
+
 @pytest.mark.parametrize("relative_root", ["", "Python"])
 def test_installed_status_resolves_selected_bundle_from_shallow_root(fleet, monkeypatch, relative_root):
     """Exercise actual shallow-path resolution without writing machine files."""
@@ -97,16 +125,44 @@ def test_installed_status_resolves_selected_bundle_from_shallow_root(fleet, monk
     assert report["claim_observation"]["status"] == "observed"
 
 
+@pytest.mark.parametrize('layout', ['independent', 'nested', 'invalid', 'prefix_sibling'])
+def test_synthetic_repository_boundary_preserves_real_repository_checks(fleet, tmp_path, layout):
+    boundary = tmp_path / 'isolated'
+    boundary.mkdir()
+    top = boundary / 'claim'
+    if layout == 'prefix_sibling':
+        top = tmp_path / 'isolated-sibling' / 'claim'
+    for repo in ([boundary, top] if layout == 'nested' else [top]):
+        marker = repo / '.git'
+        for child in ('objects', 'refs'):
+            (marker / child).mkdir(parents=True)
+        if layout != 'invalid':
+            (marker / 'HEAD').write_text('ref: refs/heads/main\n', encoding='utf-8')
+    command = (
+        f". {quote(ROOT / '.agent-bridge/bin/BridgeResourceScope.ps1')}; "
+        + repository_boundary_setup(boundary)
+        + f"; try {{ Assert-BridgeRepositoryTopLevel {quote(top)}; 'accepted' }} "
+          "catch { $_.Exception.Message }"
+    )
+    result = subprocess.run([fleet['shell'], '-NoProfile', '-NonInteractive', '-Command', command],
+                            cwd=ROOT, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    if layout == 'independent':
+        assert result.stdout.strip() == 'accepted'
+    elif layout == 'nested':
+        assert 'repository nested inside another repository' in result.stdout
+    else:
+        assert 'not a repository top level' in result.stdout
+
+
 @pytest.mark.parametrize('case', ['local', 'source_overlap', 'expired', 'checkpoint_only', 'invalid', 'read_claim'])
 def test_conflicts_use_live_claim_resources_not_checkpoint_strings(fleet, case, tmp_path):
     scopes = ['.codex-audit/wd-current-state.json'] if case != 'source_overlap' else ['src/module.py']
     claims = fleet['root'] / 'work_queue/claims'
     claims.mkdir(parents=True)
-    # COMPOSE-F1: the fleet lives under ROOT (its lanes observe ROOT's HEAD), so a claim cwd there would be a repository
-    # nested inside ROOT, which the resolver rightly refuses (8c263635). The claiming cwds are separate top levels
-    # outside every repository; the status matches claims by agent and uses cwd only to resolve resources.
-    outer = [str(p) for p in (tmp_path, *tmp_path.parents) if (p / '.git').exists()]
-    assert outer == [], f"tmp_path must lie outside every repository for this fixture: {outer}"
+    # D15 may place tmp_path inside the source checkout. Model independent repositories
+    # below this test-owned boundary; real nested .git checks inside it stay enabled.
+    status_script = status_with_repository_boundary(fleet, tmp_path)
     for index in (0, 4):
         update(checkpoint(fleet, index), write_scope=scopes, status='completed')
         if case == 'checkpoint_only':
@@ -123,7 +179,7 @@ def test_conflicts_use_live_claim_resources_not_checkpoint_strings(fleet, case, 
                       last_heartbeat_utc=(now - timedelta(seconds=400 if case == 'expired' else 0)).isoformat(),
                       lease_seconds=300)
         (claims / f'{index}.json').write_text('{broken' if case == 'invalid' else json.dumps(record))
-    report = run_status(fleet)
+    report = run_status(fleet, script_path=status_script)
     assert report['summary']['scope_collisions'] == (1 if case == 'source_overlap' else 0)
     assert report['claim_observation']['status'] == ('unknown' if case == 'invalid' else 'observed')
 
@@ -246,7 +302,7 @@ def test_status_resolves_live_monitor_custom_state_without_guessing(fleet, case)
 
 
 def run_status(fleet, *, process="present", task="Ready", generation=GENERATION,
-               started=None, lane_processes=None, runtime_processes=None):
+               started=None, lane_processes=None, runtime_processes=None, script_path=None):
     before = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in fleet["root"].rglob("*") if p.is_file()}
     process_body = {
         "absent": "return",
@@ -268,7 +324,7 @@ function Set-Content { throw 'status attempted write' }
 function Enable-ScheduledTask { throw 'status attempted task enable' }
 & SCRIPT -ManifestPath MANIFEST POINTER -Json
 """.replace("LANE_PROCESS_BODY", "throw 'process query unavailable'" if process == "unknown" else
-             "foreach ($row in (ConvertFrom-Json -InputObject " + quote(json.dumps(lane_processes or [])) + ")) { $row }").replace("PROCESS_BODY", process_body).replace("TASK_BODY", task_body).replace("SCRIPT", quote(SCRIPT)).replace("MANIFEST", quote(fleet["manifest"])).replace("POINTER", "-CurrentStatePath " + quote(fleet["pointer"]))
+             "foreach ($row in (ConvertFrom-Json -InputObject " + quote(json.dumps(lane_processes or [])) + ")) { $row }").replace("PROCESS_BODY", process_body).replace("TASK_BODY", task_body).replace("SCRIPT", quote(script_path or SCRIPT)).replace("MANIFEST", quote(fleet["manifest"])).replace("POINTER", "-CurrentStatePath " + quote(fleet["pointer"]))
     result = subprocess.run([fleet["shell"], "-NoProfile", "-NonInteractive", "-Command", command], cwd=ROOT,
                             capture_output=True, text=True, timeout=45)
     assert result.returncode == 0, result.stderr

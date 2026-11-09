@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 from copy import deepcopy
+import hashlib
 import json
 import re
 import shutil
@@ -50,6 +51,161 @@ def _definition() -> dict:
 
 def _packaged_python() -> list[str]:
     return [entry for entry in _definition()["python_files"] if entry.endswith(".py")]
+
+
+@pytest.mark.parametrize("relative, schema", [
+    ("configs/mind/content_message_policy_v2.json", "wd.mind-content-policy.v1"),
+    ("configs/mind/content_non_review_policy_v2.json", "wd.q4-non-review-policy.v1"),
+])
+def test_opt_in_content_v2_policies_are_packaged_and_pinned_readable(tmp_path, relative, schema):
+    """The content producer can read explicit staged policy bytes under their source hash."""
+    from sandbox.mind.step2 import wd_q4_content_build_child as child
+
+    assert _definition()["python_files"].count(relative) == 1
+    source = REPO_ROOT / relative
+    staged = tmp_path / "tools-bootstrap" / relative
+    staged.parent.mkdir(parents=True)
+    shutil.copyfile(source, staged)
+    raw = source.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    assert child._read_pinned(str(staged), digest, 65536) == raw
+    document = json.loads(raw)
+    assert document["schema"] == schema
+    if schema == "wd.mind-content-policy.v2":
+        assert document["approved_source_refs"] == []
+    with pytest.raises(ValueError):
+        child._read_pinned(str(staged), "0" * 64, 65536)
+
+
+def test_fixed_peer_result_adapter_is_in_bundle_python_files():
+    assert "tools/wd_q4_fixed_result_adapter.py" in _packaged_python()
+
+
+def test_public_publisher_is_in_bundle_python_files():
+    assert "tools/wd_mind_public_publish_cli.py" in _packaged_python()
+
+
+def test_on_demand_capacity_reader_is_packaged_as_an_explicit_entrypoint():
+    definition = _definition()
+    assert "sandbox/mind/capture/capacity_read.py" in _packaged_python()
+    assert definition["python_entrypoints"]["mind_capacity_read"] == "sandbox/mind/capture/capacity_read.py"
+
+
+def test_opt_in_public_status_writer_ships_with_its_fixed_wrapper():
+    definition = _definition()
+    assert "tools/wd_mind_public_event_writer.py" in _packaged_python()
+    assert definition["python_entrypoints"]["mind_public_status"] == "tools/wd_mind_public_event_writer_cli.py"
+    assert "tools/wd_mind_public_event_writer_cli.py" in _packaged_python()
+    deployer = (OPS_ROOT / "Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+    assert "'Invoke-WdMindPublicStatus.ps1'," in deployer
+
+
+@pytest.mark.parametrize("path", [
+    "tools/wd_q4_descriptor_cli.py",
+    "tools/wd_q4_descriptor_materializer.py",
+    "tools/wd_q4_descriptor_pointer.py",
+    "tools/wd_q4_lane_binding_producer.py",
+    "tools/wd_q4_staged_composer.py",
+    "tools/wd_q4_staged_composer_cli.py",
+    "tools/wd_q4_status_prefix_recovery.py",
+    "tools/wd_q4_live_snapshot_publish.py",
+    "tools/wd_q4_lifecycle_v2.py",
+    "tools/wd_q4_live_update_once.py",
+    "tools/wd_q4_live_update_recovery.py",
+    "tools/wd_q4_live_update_bootstrap.py",
+    "tools/wd_q4_genesis_bootstrap.py",
+    "tools/wd_q4_genesis_cli.py",
+    "tools/wd_q4_production_continuation.py",
+    "tools/wd_q4_production_continuation_cli.py",
+    "tools/wd_q4_cutoff_watermark.py",
+    "tools/wd_q4_continuation_orchestrator.py",
+    "tools/wd_q4_continuation_adopt.py",
+    "tools/wd_q4_continuation_adopt_recovery.py",
+    "tools/wd_q4_continuation_adopt_recovery_cli.py",
+    "tools/wd_q4_continuation_adopt_recovery_bootstrap.py",
+    "tools/wd_q4_owned_recovery_parent.py",
+    "tools/wd_q4_owned_recovery_reader.py",
+    "tools/wd_q4_continuation_orchestrator_cli.py",
+    "tools/wd_q4_continuation_orchestrator_bootstrap.py",
+    "tools/wd_q4_continuation_runtime_bootstrap.py",
+    "tools/wd_q4_genesis_snapshot_prepare.py",
+    "tools/wd_q4_genesis_request_prepare.py",
+    "tools/wd_q4_genesis_to_composer_cli.py",
+    "tools/wd_q4_live_update_config_prepare.py",
+    "tools/wd_q4_canonical_ref_verifier.py",
+    "tools/wd_q4_shared_descriptor_producer.py",
+])
+def test_shared_descriptor_builder_is_packaged_with_internal_dependencies(path, monkeypatch):
+    packaged = _packaged_python()
+    assert packaged.count(path) == 1
+    monkeypatch.setitem(globals(), "INTERNAL_ROOTS", (*INTERNAL_ROOTS, "core"))
+    reached, unresolved = _closure([path])
+    assert not unresolved, unresolved
+    assert set(reached) <= set(packaged), sorted(set(reached) - set(packaged))
+
+
+def test_packaging_alone_does_not_activate_descriptor_or_provision_writers():
+    entries = _definition()["python_entrypoints"].values()
+    assert "tools/wd_q4_descriptor_cli.py" not in entries
+    # The fixed provision CLI is opt-in and remains OFF without --enable.
+    assert _definition()["python_entrypoints"]["q4_guard_provision"] == "tools/wd_q4_guard_state_provision_cli.py"
+    assert _definition()["python_entrypoints"]["q4_genesis_composer"] == "tools/wd_q4_genesis_to_composer_cli.py"
+    assert _definition()["python_entrypoints"]["q4_update_config_prepare"] == "tools/wd_q4_live_update_config_prepare.py"
+    deployer = (REPO_ROOT / "ops/windows/reboot/Deploy-WdRebootBundle.ps1").read_text(encoding="utf-8")
+    assert "'Invoke-WdQ4ProvisionGuard.ps1'," in deployer
+    assert "'Invoke-WdQ4GenesisWorker.ps1'," in deployer
+    assert "'Invoke-WdQ4Continuation.ps1'," in deployer
+    assert "'Invoke-WdQ4ContinuationWorker.ps1'," in deployer
+    assert "'Invoke-WdQ4ContinuationOrchestrator.ps1'," in deployer
+    assert "'Invoke-WdQ4AdoptRecovery.ps1'," in deployer
+
+
+def test_recovery_modules_are_in_import_smoke():
+    modules = _definition()['import_smoke']['package_modules']
+    for name in ('tools.wd_q4_continuation_adopt_recovery',
+                 'tools.wd_q4_continuation_adopt_recovery_cli',
+                 'tools.wd_q4_continuation_adopt_recovery_bootstrap',
+                 'tools.wd_q4_owned_recovery_parent',
+                 'tools.wd_q4_owned_recovery_reader'):
+        assert modules.count(name) == 1
+
+
+def test_staged_composer_command_is_packaged_and_explicitly_published():
+    definition = _definition()
+    assert definition['python_entrypoints']['q4_staged_composer'] == 'tools/wd_q4_staged_composer_cli.py'
+    assert 'tools.wd_q4_staged_composer_cli' in definition['import_smoke']['package_modules']
+
+
+def test_bound_lane_transport_is_in_bundle_python_files():
+    assert "tools/wd_q4_bound_lane_transport.py" in _packaged_python()
+
+
+def test_lane_session_client_is_in_bundle_python_files():
+    assert "tools/wd_q4_lane_session_client.py" in _packaged_python()
+
+
+def test_lane_caller_and_its_transitive_internal_imports_are_packaged(monkeypatch):
+    caller = "tools/wd_q4_lane_caller_adapter.py"
+    packaged = _packaged_python()
+    assert packaged.count(caller) == 1
+    # The caller's Mind chain also imports core.faiss_store; include that root
+    # in this focused check without changing the existing suite-wide policy.
+    monkeypatch.setitem(globals(), "INTERNAL_ROOTS", (*INTERNAL_ROOTS, "core"))
+    reached, unresolved = _closure([caller])
+    assert not unresolved, unresolved
+    assert set(reached) <= set(packaged), sorted(set(reached) - set(packaged))
+
+
+def test_lane_session_cli_is_in_bundle_python_files():
+    assert "tools/wd_q4_lane_session_cli.py" in _packaged_python()
+
+
+def test_snapshot_candidate_is_in_bundle_python_files():
+    assert "tools/wd_q4_snapshot_candidate.py" in _packaged_python()
+
+
+def test_snapshot_position_helper_and_reader_are_in_bundle_python_files():
+    assert {"tools/wd_q4_snapshot_lag.py", "waggledance/core/bridge_log_reader.py"} <= set(_packaged_python())
 
 
 def test_manual_capability_declares_only_the_two_existing_drivers_not_default_entrypoints():
@@ -328,6 +484,8 @@ def _published_gate_paths(definition: dict) -> set[str]:
 
 MIND_MODULES = (
     "tools.wd_bridge_mind",
+    "tools.wd_bridge_mind_lane_read",
+    "tools.wd_bridge_mind_session",
     "tools.bridge_mind_workspace",
     "tools.wd_bridge_mind_delta_push",
     "tools.wd_bridge_mind_rebuild",
@@ -336,7 +494,10 @@ MIND_MODULES = (
 MIND_CLI_MODULES = (
     "tools.bridge_mind_workspace",
     "tools.wd_bridge_mind_delta_push",
+    "tools.wd_bridge_mind_session",
 )
+MIND_SESSION_DEPS = frozenset({"tools/bridge_compact_view.py", "tools/bridge_next_action.py",
+                               "waggledance/core/bridge_log_reader.py"})
 
 
 def _assert_mind_delivery(definition: dict) -> None:
@@ -345,6 +506,11 @@ def _assert_mind_delivery(definition: dict) -> None:
     assert not missing_files, f"mind_file_drop: {sorted(missing_files)}"
     missing_smoke = set(MIND_MODULES) - set(definition["import_smoke"]["package_modules"])
     assert not missing_smoke, f"mind_smoke_drop: {sorted(missing_smoke)}"
+    missing_session_deps = MIND_SESSION_DEPS - set(definition["python_files"])
+    assert not missing_session_deps, f"mind_session_dependency_drop: {sorted(missing_session_deps)}"
+    assert definition["python_entrypoints"].get("mind_session") == "tools/wd_bridge_mind_session.py", (
+        "mind_entrypoint_drop: mind_session must name its exact session CLI"
+    )
     published = set(definition["python_entrypoints"].values())
     cli_paths = {module.replace(".", "/") + ".py" for module in MIND_CLI_MODULES}
     assert cli_paths <= published, f"mind_entrypoint_drop: {sorted(cli_paths - published)}"
@@ -366,6 +532,39 @@ def _assert_mind_delivery(definition: dict) -> None:
 def test_mind_family_is_packaged_smoke_checked_and_real_clis_are_published():
     """RCO2 closure finding: dormant source must reach the bundle before it can be used."""
     _assert_mind_delivery(_definition())
+
+
+@pytest.mark.parametrize("mutation", ("drop", "retarget", "renamed_alias"))
+def test_mind_session_entrypoint_cannot_be_dropped(mutation):
+    definition = _definition()
+    _assert_mind_delivery(definition)
+    mutant = deepcopy(definition)
+    if mutation == "retarget":
+        mutant["python_entrypoints"]["mind_session"] = "tools/wd_bridge_mind.py"
+    else:
+        path = mutant["python_entrypoints"].pop("mind_session")
+        if mutation == "renamed_alias":
+            mutant["python_entrypoints"]["other_session"] = path
+    with pytest.raises(AssertionError, match="mind_entrypoint_drop"):
+        _assert_mind_delivery(mutant)
+
+
+@pytest.mark.parametrize("path", sorted(MIND_SESSION_DEPS))
+def test_mind_session_dependencies_cannot_be_dropped(path):
+    definition = _definition()
+    _assert_mind_delivery(definition)
+    mutant = deepcopy(definition)
+    mutant["python_files"].remove(path)
+    with pytest.raises(AssertionError, match="mind_session_dependency_drop"):
+        _assert_mind_delivery(mutant)
+
+
+@pytest.mark.parametrize("launcher", ("start-wd-agent.ps1", "start-wd-tools-consumer.ps1"))
+def test_mind_session_remains_discoverable_to_both_launchers(launcher):
+    text = (OPS_ROOT / launcher).read_text(encoding="utf-8")
+    assert "tools/wd_bridge_mind_session.py" in text
+    assert "WD_BRIDGE_PYTHON_WRAPPER" in text
+    assert "WD_MIND_READ_ENABLED" in text
 
 
 @pytest.mark.parametrize("mutation,module", [
@@ -777,6 +976,345 @@ SHADOW_RELEASE_CLI = {
     "mind_join_turn": "sandbox/mind/join_turn.py",
 }
 
+# Read-only Q4 source may be delivered as code only. Its numerical runtime and
+# query entrypoint are not authorized by this source-file declaration.
+Q4_READONLY_FILES = frozenset({
+    "sandbox/mind/step2/cell.py", "sandbox/mind/step2/corpus.py",
+    "sandbox/mind/step2/encode.py", "sandbox/mind/step2/memory.py",
+    "sandbox/mind/step2/q4.py", "sandbox/mind/step2/q4_descriptor.py",
+    "sandbox/mind/step2/q4_controlled_imports.py", "sandbox/mind/step2/q4_namespace_origin.py",
+    "sandbox/mind/step2/q4_native_additions.py",
+    "sandbox/mind/step2/reader_slot.py", "sandbox/mind/step2/runtime_bootstrap.py",
+    "sandbox/mind/step2/interpreter_identity.py",
+    "sandbox/mind/step2/runtime_launcher.py", "sandbox/mind/step2/runtime_manifest.py",
+    "sandbox/mind/step2/shared_bridge_snapshot.py", "sandbox/mind/step2/shared_capture_adapter.py",
+    "sandbox/mind/step2/shared_projection.py", "sandbox/mind/step2/shared_index_checkpoint.py",
+    "sandbox/mind/step2/shared_index_pointer.py", "sandbox/mind/step2/shared_index_builder.py",
+    "sandbox/mind/step2/shared_history.py",
+    "sandbox/mind/step2/shared_producer.py",
+    "sandbox/mind/step2/shared_public_pointer_announce.py",
+    "sandbox/mind/step2/shared_public_producer.py",
+    "sandbox/mind/step2/shared_result_resolver.py",
+    "sandbox/mind/step2/status_metadata_producer.py",
+    "sandbox/mind/step2/wd_q4_private_read.py",
+    "sandbox/mind/step2/wd_q4_prefix_build_child.py",
+    "sandbox/mind/step2/wd_q4_content_build_child.py",
+})
+# Synthetic closed-card modules, code only (lead-mind-card-package-closure-fable-20261107-v1): the card route of
+# shared_result_resolver stays OFF unless its switch holds the card module itself, and neither the resolver nor
+# the resolved child imports it; never an entrypoint, manual capability or import-smoke module
+# (tests/tools/test_card_package_closure.py).
+CARD_PACKAGE_FILES = frozenset({
+    "sandbox/mind/step2/public_knowledge_card.py",
+    "sandbox/mind/step2/shared_card_projection.py",
+    "sandbox/mind/step2/shared_card_checkpoint.py",
+})
+# Useful content route B modules, code only (lead-q4-useful-work-content-fable-20261107-v1): the content branch of
+# shared_result_resolver stays OFF unless the caller passes a pinned, verified content route decision, and imports
+# content_memory only inside that branch; never an entrypoint, manual capability or import-smoke module
+# (tests/tools/test_content_package_closure.py).
+CONTENT_PACKAGE_FILES = frozenset({
+    "sandbox/mind/step2/content_memory.py",
+    "sandbox/mind/step2/content_identifier_policy.py",
+    "sandbox/mind/step2/shared_content_projection.py",
+    "sandbox/mind/step2/shared_doc_projection.py",
+})
+Q4_AGENT_API = "tools/wd_q4_agent_query.py"
+Q4_RESOLVED_CHILD = "tools/wd_q4_resolved_child.py"
+PUBLIC_STATUS_API = "tools/wd_mind_public_session.py"
+PUBLIC_STATUS_CLI = "tools/wd_mind_public_session_cli.py"
+Q4_PUBLIC_POINTER_RESOLVER = "tools/wd_q4_public_pointer_resolver.py"
+Q4_PUBLIC_POINTER_DEPS = frozenset({
+    "sandbox/mind/step2/shared_capture_adapter.py",
+    "sandbox/mind/step2/shared_index_checkpoint.py",
+})
+Q4_PUBLIC_QUERY = "tools/wd_q4_public_query.py"
+Q4_PUBLIC_QUERY_DEPS = frozenset({Q4_AGENT_API, Q4_PUBLIC_POINTER_RESOLVER})
+Q4_PUBLIC_OUTER = "tools/wd_q4_public_outer.py"
+Q4_LANE_LINK = "tools/wd_q4_lane_link.py"
+MIND_ANCHOR_ISSUER = "tools/wd_mind_anchor_issuer.py"
+MIND_ANCHOR_DEPS = frozenset({
+    "sandbox/mind/step2/shared_bridge_snapshot.py",
+    "sandbox/mind/step2/shared_capture_adapter.py",
+    "waggledance/core/bridge_log_reader.py",
+})
+Q4_PUBLIC_OUTER_DEPS = frozenset({
+    "tools/wd_q4_public_child.py", "tools/wd_q4_public_plan.py", Q4_PUBLIC_QUERY,
+    Q4_PUBLIC_POINTER_RESOLVER, Q4_AGENT_API,
+    "sandbox/mind/step2/shared_capture_adapter.py",
+    "sandbox/mind/step2/shared_index_checkpoint.py",
+    "sandbox/mind/step2/runtime_manifest.py",
+})
+Q4_PUBLIC_PRODUCER = "sandbox/mind/step2/shared_public_producer.py"
+Q4_PRODUCER_DEP = "sandbox/mind/step2/shared_producer.py"
+Q4_PUBLIC_SLICE = (
+    "tools/wd_q4_public_plan.py",
+    "tools/wd_q4_public_child.py",
+    "sandbox/mind/step2/shared_public_pointer_announce.py",
+)
+Q4_PUBLIC_SLICE_DEPS = frozenset({
+    Q4_AGENT_API,
+    "sandbox/mind/step2/shared_capture_adapter.py",
+    "sandbox/mind/step2/shared_projection.py",
+    Q4_PUBLIC_PRODUCER,
+})
+
+
+def _assert_public_outer_delivery(definition):
+    files = definition["python_files"]
+    assert files.count(Q4_PUBLIC_OUTER) == 1, "public_outer_drop_or_duplicate"
+    assert Q4_PUBLIC_OUTER_DEPS <= set(files), "public_outer_dependency_drop"
+    assert Q4_PUBLIC_OUTER not in definition["python_entrypoints"].values(), "public_outer_published"
+    assert Q4_PUBLIC_OUTER not in definition["manual_execution_capability"]["entrypoints"].values(), (
+        "public_outer_manual_published"
+    )
+    assert "tools.wd_q4_public_outer" not in definition["import_smoke"]["package_modules"], (
+        "public_outer_smoke_published"
+    )
+
+
+def _assert_q4_lane_link_delivery(definition):
+    assert definition["python_files"].count(Q4_LANE_LINK) == 1, "q4_lane_link_drop_or_duplicate"
+    assert Q4_LANE_LINK not in definition["python_entrypoints"].values(), "q4_lane_link_published"
+    assert Q4_LANE_LINK not in definition["manual_execution_capability"]["entrypoints"].values(), (
+        "q4_lane_link_manual_published"
+    )
+    assert "tools.wd_q4_lane_link" not in definition["import_smoke"]["package_modules"], (
+        "q4_lane_link_smoke_published"
+    )
+
+
+def _assert_mind_anchor_delivery(definition):
+    files = definition["python_files"]
+    assert files.count(MIND_ANCHOR_ISSUER) == 1, "mind_anchor_drop_or_duplicate"
+    assert MIND_ANCHOR_DEPS <= set(files), "mind_anchor_dependency_drop"
+    assert MIND_ANCHOR_ISSUER not in definition["python_entrypoints"].values(), "mind_anchor_published"
+    assert MIND_ANCHOR_ISSUER not in definition["manual_execution_capability"]["entrypoints"].values(), (
+        "mind_anchor_manual_published"
+    )
+    assert "tools.wd_mind_anchor_issuer" not in definition["import_smoke"]["package_modules"], (
+        "mind_anchor_smoke_published"
+    )
+
+
+@pytest.mark.parametrize("mutation", [None, "missing", "duplicate", "entrypoint", "manual", "smoke"])
+def test_mind_anchor_issuer_is_packaged_once_as_inert_library(mutation):
+    definition = _definition()
+    _assert_mind_anchor_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "missing":
+        mutant["python_files"].remove(MIND_ANCHOR_ISSUER)
+        reason = "mind_anchor_drop_or_duplicate"
+    elif mutation == "duplicate":
+        mutant["python_files"].append(MIND_ANCHOR_ISSUER)
+        reason = "mind_anchor_drop_or_duplicate"
+    elif mutation == "entrypoint":
+        mutant["python_entrypoints"]["unreviewed_mind_anchor"] = MIND_ANCHOR_ISSUER
+        reason = "mind_anchor_published"
+    elif mutation == "manual":
+        mutant["manual_execution_capability"]["entrypoints"]["unreviewed_mind_anchor"] = MIND_ANCHOR_ISSUER
+        reason = "mind_anchor_manual_published"
+    else:
+        mutant["import_smoke"]["package_modules"].append("tools.wd_mind_anchor_issuer")
+        reason = "mind_anchor_smoke_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_mind_anchor_delivery(mutant)
+
+
+@pytest.mark.parametrize("path", sorted(MIND_ANCHOR_DEPS))
+def test_mind_anchor_direct_dependencies_cannot_be_dropped(path):
+    definition = _definition()
+    _assert_mind_anchor_delivery(definition)
+    mutant = deepcopy(definition)
+    mutant["python_files"].remove(path)
+    with pytest.raises(AssertionError, match="mind_anchor_dependency_drop"):
+        _assert_mind_anchor_delivery(mutant)
+
+
+@pytest.mark.parametrize("mutation", [None, "missing", "duplicate", "entrypoint", "manual", "smoke"])
+def test_q4_lane_link_is_packaged_once_as_inert_library(mutation):
+    definition = _definition()
+    _assert_q4_lane_link_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "missing":
+        mutant["python_files"].remove(Q4_LANE_LINK)
+        reason = "q4_lane_link_drop_or_duplicate"
+    elif mutation == "duplicate":
+        mutant["python_files"].append(Q4_LANE_LINK)
+        reason = "q4_lane_link_drop_or_duplicate"
+    elif mutation == "entrypoint":
+        mutant["python_entrypoints"]["unreviewed_q4_lane_link"] = Q4_LANE_LINK
+        reason = "q4_lane_link_published"
+    elif mutation == "manual":
+        mutant["manual_execution_capability"]["entrypoints"]["unreviewed_q4_lane_link"] = Q4_LANE_LINK
+        reason = "q4_lane_link_manual_published"
+    else:
+        mutant["import_smoke"]["package_modules"].append("tools.wd_q4_lane_link")
+        reason = "q4_lane_link_smoke_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_q4_lane_link_delivery(mutant)
+
+
+@pytest.mark.parametrize("mutation", [None, "missing", "duplicate", "entrypoint", "manual", "smoke"])
+def test_public_outer_is_packaged_once_as_inert_library(mutation):
+    definition = _definition()
+    _assert_public_outer_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "missing":
+        mutant["python_files"].remove(Q4_PUBLIC_OUTER)
+        reason = "public_outer_drop_or_duplicate"
+    elif mutation == "duplicate":
+        mutant["python_files"].append(Q4_PUBLIC_OUTER)
+        reason = "public_outer_drop_or_duplicate"
+    elif mutation == "entrypoint":
+        mutant["python_entrypoints"]["unreviewed_public_outer"] = Q4_PUBLIC_OUTER
+        reason = "public_outer_published"
+    elif mutation == "manual":
+        mutant["manual_execution_capability"]["entrypoints"]["unreviewed_public_outer"] = Q4_PUBLIC_OUTER
+        reason = "public_outer_manual_published"
+    else:
+        mutant["import_smoke"]["package_modules"].append("tools.wd_q4_public_outer")
+        reason = "public_outer_smoke_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_outer_delivery(mutant)
+
+
+@pytest.mark.parametrize("path", sorted(Q4_PUBLIC_OUTER_DEPS))
+def test_public_outer_dependencies_cannot_be_dropped(path):
+    definition = _definition()
+    _assert_public_outer_delivery(definition)
+    mutant = deepcopy(definition)
+    mutant["python_files"].remove(path)
+    with pytest.raises(AssertionError, match="public_outer_dependency_drop"):
+        _assert_public_outer_delivery(mutant)
+
+
+def _assert_public_pointer_resolver_delivery(definition):
+    files = set(definition["python_files"])
+    assert Q4_PUBLIC_POINTER_RESOLVER in files, "public_pointer_resolver_drop"
+    assert Q4_PUBLIC_POINTER_DEPS <= files, "public_pointer_dependency_drop"
+    assert Q4_PUBLIC_POINTER_RESOLVER not in set(definition["python_entrypoints"].values()), (
+        "public_pointer_resolver_published"
+    )
+
+
+@pytest.mark.parametrize("mutation", [None, "resolver_drop", "adapter_drop", "checkpoint_drop", "published"])
+def test_public_pointer_resolver_is_delivered_only_as_a_library(mutation):
+    definition = _definition()
+    _assert_public_pointer_resolver_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "resolver_drop":
+        mutant["python_files"].remove(Q4_PUBLIC_POINTER_RESOLVER)
+        reason = "public_pointer_resolver_drop"
+    elif mutation in {"adapter_drop", "checkpoint_drop"}:
+        path = ("sandbox/mind/step2/shared_capture_adapter.py" if mutation == "adapter_drop"
+                else "sandbox/mind/step2/shared_index_checkpoint.py")
+        mutant["python_files"].remove(path)
+        reason = "public_pointer_dependency_drop"
+    else:
+        mutant["python_entrypoints"]["unreviewed_public_pointer"] = Q4_PUBLIC_POINTER_RESOLVER
+        reason = "public_pointer_resolver_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_pointer_resolver_delivery(mutant)
+
+
+def _assert_public_query_delivery(definition):
+    files = set(definition["python_files"])
+    assert Q4_PUBLIC_QUERY in files, "public_query_drop"
+    assert Q4_PUBLIC_QUERY_DEPS <= files, "public_query_dependency_drop"
+    assert Q4_PUBLIC_QUERY not in set(definition["python_entrypoints"].values()), "public_query_published"
+
+
+@pytest.mark.parametrize("mutation", [None, "query_drop", "agent_drop", "resolver_drop", "published"])
+def test_public_query_is_delivered_only_as_a_library(mutation):
+    definition = _definition()
+    _assert_public_query_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "query_drop":
+        mutant["python_files"].remove(Q4_PUBLIC_QUERY)
+        reason = "public_query_drop"
+    elif mutation in {"agent_drop", "resolver_drop"}:
+        mutant["python_files"].remove(Q4_AGENT_API if mutation == "agent_drop" else Q4_PUBLIC_POINTER_RESOLVER)
+        reason = "public_query_dependency_drop"
+    else:
+        mutant["python_entrypoints"]["unreviewed_public_query"] = Q4_PUBLIC_QUERY
+        reason = "public_query_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_query_delivery(mutant)
+
+
+def _assert_public_producer_delivery(definition):
+    files = set(definition["python_files"])
+    assert Q4_PUBLIC_PRODUCER in files, "public_producer_drop"
+    assert Q4_PRODUCER_DEP in files, "public_producer_dependency_drop"
+    published = set(definition["python_entrypoints"].values())
+    assert not {Q4_PUBLIC_PRODUCER, Q4_PRODUCER_DEP} & published, "public_producer_published"
+
+
+@pytest.mark.parametrize("mutation", [None, "producer_drop", "dependency_drop", "producer_entrypoint", "dependency_entrypoint"])
+def test_public_producer_and_dependency_are_delivered_only_as_libraries(mutation):
+    definition = _definition()
+    _assert_public_producer_delivery(definition)
+    if mutation is None:
+        return
+    mutant = deepcopy(definition)
+    if mutation == "producer_drop":
+        mutant["python_files"].remove(Q4_PUBLIC_PRODUCER)
+        reason = "public_producer_drop"
+    elif mutation == "dependency_drop":
+        mutant["python_files"].remove(Q4_PRODUCER_DEP)
+        reason = "public_producer_dependency_drop"
+    else:
+        mutant["python_entrypoints"]["unreviewed_public_producer"] = (
+            Q4_PUBLIC_PRODUCER if mutation == "producer_entrypoint" else Q4_PRODUCER_DEP
+        )
+        reason = "public_producer_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_producer_delivery(mutant)
+
+
+def _assert_public_slice_delivery(definition):
+    files = set(definition["python_files"])
+    assert set(Q4_PUBLIC_SLICE) <= files, "public_slice_drop"
+    assert Q4_PUBLIC_SLICE_DEPS <= files, "public_slice_dependency_drop"
+    assert not set(Q4_PUBLIC_SLICE) & set(definition["python_entrypoints"].values()), "public_slice_published"
+
+
+@pytest.mark.parametrize("path", Q4_PUBLIC_SLICE)
+@pytest.mark.parametrize("mutation", ["drop", "published"])
+def test_public_slice_modules_remain_delivery_only(path, mutation):
+    definition = _definition()
+    _assert_public_slice_delivery(definition)
+    mutant = deepcopy(definition)
+    if mutation == "drop":
+        mutant["python_files"].remove(path)
+        reason = "public_slice_drop"
+    else:
+        mutant["python_entrypoints"]["unreviewed_public_slice"] = path
+        reason = "public_slice_published"
+    with pytest.raises(AssertionError, match=reason):
+        _assert_public_slice_delivery(mutant)
+
+
+@pytest.mark.parametrize("path", sorted(Q4_PUBLIC_SLICE_DEPS))
+def test_public_slice_dependencies_cannot_be_dropped(path):
+    definition = _definition()
+    _assert_public_slice_delivery(definition)
+    mutant = deepcopy(definition)
+    mutant["python_files"].remove(path)
+    with pytest.raises(AssertionError, match="public_slice_dependency_drop"):
+        _assert_public_slice_delivery(mutant)
+
 
 def _assert_shadow_release_delivery(definition):
     _assert_mind_delivery(definition)  # Existing gates and manual capability stay unchanged.
@@ -787,12 +1325,27 @@ def _assert_shadow_release_delivery(definition):
     for name, path in SHADOW_RELEASE_CLI.items():
         assert definition["python_entrypoints"].get(name) == path, "shadow_entrypoint_drop"
     published = set(definition["python_entrypoints"].values())
+    assert Q4_AGENT_API in definition["python_files"], "q4_agent_api_drop"
+    assert Q4_AGENT_API not in published, "q4_agent_api_published"
+    assert Q4_RESOLVED_CHILD in definition["python_files"], "q4_resolved_child_drop"
+    assert Q4_RESOLVED_CHILD not in published, "q4_resolved_child_published"
+    assert PUBLIC_STATUS_API in definition["python_files"], "public_status_api_drop"
+    assert PUBLIC_STATUS_API not in published, "public_status_api_published"
+    assert PUBLIC_STATUS_CLI in definition["python_files"], "public_status_cli_drop"
+    assert definition["python_entrypoints"].get("mind_public_reader") == PUBLIC_STATUS_CLI, "public_status_cli_drop"
+    assert definition["python_entrypoints"].get("mind_public_publisher_v3") == "tools/wd_mind_public_publish_v3_cli.py", "public_status_v3_publisher_drop"
     assert not (required - set(SHADOW_RELEASE_CLI.values())) & published, "shadow_library_published"
     sandbox_files = {path for path in definition["python_files"] if path.startswith("sandbox/")}
-    # These two frozen files are delivery-only, never newly published CLIs or smoke imports.
-    assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES), "deferred_sandbox_file_published"
+    # Q4 files are delivery-only too: the existing CLI and smoke boundaries remain unchanged.
+    assert Q4_READONLY_FILES <= sandbox_files, "q4_file_drop"
+    assert sandbox_files <= required | set(M0_MEASUREMENT_TOOL_FILES) | Q4_READONLY_FILES | CARD_PACKAGE_FILES | CONTENT_PACKAGE_FILES | {
+        "sandbox/mind/capture/capacity_read.py",
+        "sandbox/mind/step2/prefix_private_state.py",
+        "sandbox/mind/step2/shared_prefix_public_producer.py",
+        "sandbox/mind/step2/shared_index_preflight.py",
+    }, "deferred_sandbox_file_published"
     sandbox_entrypoints = {path for path in published if path.startswith("sandbox/")}
-    assert sandbox_entrypoints <= set(SHADOW_RELEASE_CLI.values()), "deferred_shadow_entrypoint"
+    assert sandbox_entrypoints <= set(SHADOW_RELEASE_CLI.values()) | {"sandbox/mind/capture/capacity_read.py"}, "deferred_shadow_entrypoint"
     sandbox_smoke = {name for name in definition["import_smoke"]["package_modules"]
                      if name.startswith("sandbox.")}
     assert sandbox_smoke <= set(SHADOW_RELEASE_MODULES), "deferred_shadow_smoke"
@@ -802,7 +1355,10 @@ def _assert_shadow_release_delivery(definition):
 @pytest.mark.parametrize("mutation", [
     None, "shadow_file_drop", "shadow_smoke_drop", "shadow_entrypoint_drop",
     "shadow_library_published", "deferred_sandbox_file_published",
-    "deferred_shadow_entrypoint", "deferred_shadow_smoke",
+    "deferred_shadow_entrypoint", "deferred_shadow_smoke", "q4_file_drop", "q4_adapter_drop", "q4_slot_drop",
+    "q4_runtime_manifest_drop", "q4_runtime_bootstrap_drop", "q4_runtime_launcher_drop", "q4_projection_drop", "q4_descriptor_drop",
+    "q4_agent_api_drop", "q4_agent_api_published", "q4_resolved_child_drop", "q4_resolved_child_published",
+    "q4_resolver_drop", "q4_capture_drop", "q4_snapshot_drop", "q4_checkpoint_drop", "q4_pointer_drop", "q4_builder_drop",
 ])
 def test_shadow_release_delivery_contract_and_named_mutants(mutation):
     definition = _definition()
@@ -818,13 +1374,52 @@ def test_shadow_release_delivery_contract_and_named_mutants(mutation):
         mutant["python_entrypoints"].pop("mind_join_turn")
     elif mutation == "shadow_library_published":
         mutant["python_entrypoints"]["unreviewed_driver_cli"] = "sandbox/mind/mind_chain_driver.py"
+    elif mutation == "q4_file_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/q4.py")
+    elif mutation == "q4_descriptor_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/q4_descriptor.py")
+    elif mutation == "q4_adapter_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/wd_q4_private_read.py")
+    elif mutation == "q4_slot_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/reader_slot.py")
+    elif mutation == "q4_runtime_manifest_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/runtime_manifest.py")
+    elif mutation == "q4_runtime_bootstrap_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/runtime_bootstrap.py")
+    elif mutation == "q4_runtime_launcher_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/runtime_launcher.py")
+    elif mutation == "q4_projection_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/shared_projection.py")
+    elif mutation == "q4_resolver_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/shared_result_resolver.py")
+    elif mutation == "q4_capture_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/shared_capture_adapter.py")
+    elif mutation == "q4_snapshot_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/shared_bridge_snapshot.py")
+    elif mutation == "q4_checkpoint_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/shared_index_checkpoint.py")
+    elif mutation == "q4_pointer_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/shared_index_pointer.py")
+    elif mutation == "q4_builder_drop":
+        mutant["python_files"].remove("sandbox/mind/step2/shared_index_builder.py")
+    elif mutation == "q4_agent_api_drop":
+        mutant["python_files"].remove(Q4_AGENT_API)
+    elif mutation == "q4_agent_api_published":
+        mutant["python_entrypoints"]["unreviewed_q4_agent"] = Q4_AGENT_API
+    elif mutation == "q4_resolved_child_drop":
+        mutant["python_files"].remove(Q4_RESOLVED_CHILD)
+    elif mutation == "q4_resolved_child_published":
+        mutant["python_entrypoints"]["unreviewed_q4_resolved"] = Q4_RESOLVED_CHILD
     elif mutation == "deferred_shadow_entrypoint":
         mutant["python_entrypoints"]["unlisted_cli"] = "sandbox/mind/deferred_runner.py"
     elif mutation == "deferred_shadow_smoke":
         mutant["import_smoke"]["package_modules"].append("sandbox.mind.deferred_memory")
     else:
         mutant["python_files"].append("sandbox/mind/step1/run_parity_1b.py")
-    with pytest.raises(AssertionError, match=mutation):
+    with pytest.raises(AssertionError, match="q4_file_drop" if mutation in {
+            "q4_adapter_drop", "q4_slot_drop", "q4_runtime_manifest_drop", "q4_runtime_bootstrap_drop",
+            "q4_runtime_launcher_drop", "q4_projection_drop", "q4_resolver_drop", "q4_capture_drop", "q4_snapshot_drop",
+            "q4_checkpoint_drop", "q4_pointer_drop", "q4_builder_drop", "q4_descriptor_drop"} else mutation):
         _assert_shadow_release_delivery(mutant)
     _assert_shadow_release_delivery(definition)
 
@@ -1065,6 +1660,141 @@ M0_MEASUREMENT_TOOL_FILES = (
 )
 
 
+PREFIX_MIND_LIBRARY_FILES = (
+    "sandbox/mind/step2/prefix_private_state.py",
+    "sandbox/mind/step2/shared_prefix_public_producer.py",
+    "sandbox/mind/step2/shared_index_preflight.py",
+    "sandbox/mind/step2/wd_q4_prefix_build_child.py",
+    "tools/wd_mind_status_projection_v3.py",
+    "tools/wd_mind_status_approval_issuer.py",
+    "tools/wd_mind_status_reader_v3.py",
+    "tools/wd_mind_status_reader_v3_cli.py",
+    "tools/wd_mind_status_publish_once.py",
+    "tools/wd_q4_lane_binding.py",
+    "tools/wd_q4_agent_answer.py",
+    "tools/wd_q4_attributed_session_tuple.py",
+    "tools/wd_q4_lane_query.py",
+    "tools/wd_q4_prefix_public_query.py",
+    "tools/wd_q4_secure_transport.py",
+    "tools/wd_q4_fixed_parent_attestation.py",
+    "tools/wd_mind_live_reader.py",
+    "tools/wd_q4_roster_from_fleet.py",
+)
+
+
+def _assert_prefix_mind_library_only(definition, relative):
+    assert definition["python_files"].count(relative) == 1, "prefix_library_not_packaged_once"
+    assert relative not in definition["python_entrypoints"].values(), "prefix_entrypoint_not_authorized"
+    assert relative not in definition["manual_execution_capability"]["entrypoints"].values(), "prefix_manual_not_authorized"
+    assert relative[:-3].replace("/", ".") not in definition["import_smoke"]["package_modules"], "prefix_smoke_not_authorized"
+
+
+def test_fixed_transport_attestation_import_is_packaged():
+    source = (REPO_ROOT / "tools/wd_q4_secure_transport.py").read_text(encoding="utf-8")
+    assert "tools.wd_q4_fixed_parent_attestation" in _internal_imports(source, "tools")
+    _assert_prefix_mind_library_only(_definition(), "tools/wd_q4_fixed_parent_attestation.py")
+
+
+@pytest.mark.parametrize("relative", PREFIX_MIND_LIBRARY_FILES)
+def test_prefix_candidate_libraries_are_inert_and_present_once(relative):
+    _assert_prefix_mind_library_only(_definition(), relative)
+
+
+@pytest.mark.parametrize("relative", PREFIX_MIND_LIBRARY_FILES)
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "entrypoint", "manual", "smoke"])
+def test_prefix_candidate_libraries_reject_delivery_mutants(relative, mutation):
+    definition = deepcopy(_definition())
+    definition["python_files"] = [path for path in definition["python_files"] if path != relative] + [relative]
+    _assert_prefix_mind_library_only(definition, relative)
+    if mutation == "missing":
+        definition["python_files"].remove(relative)
+    elif mutation == "duplicate":
+        definition["python_files"].append(relative)
+    elif mutation == "entrypoint":
+        definition["python_entrypoints"]["not_approved"] = relative
+    elif mutation == "manual":
+        definition["manual_execution_capability"]["entrypoints"]["not_approved"] = relative
+    else:
+        definition["import_smoke"]["package_modules"].append(relative[:-3].replace("/", "."))
+    with pytest.raises(AssertionError):
+        _assert_prefix_mind_library_only(definition, relative)
+
+
+PREFIX_BUILD_CHILD = "sandbox/mind/step2/wd_q4_prefix_build_child.py"
+PREFIX_BUILD_DEPENDENCIES = frozenset({
+    "sandbox/mind/step2/encode.py",
+    "sandbox/mind/step2/shared_bridge_snapshot.py",
+    "sandbox/mind/step2/shared_capture_adapter.py",
+    "sandbox/mind/step2/shared_index_builder.py",
+    "sandbox/mind/step2/shared_index_checkpoint.py",
+    "sandbox/mind/step2/shared_prefix_public_producer.py",
+    "sandbox/mind/step2/shared_producer.py",
+    "sandbox/mind/step2/shared_public_producer.py",
+    "waggledance/core/bridge_log_reader.py",
+})
+
+
+def _assert_prefix_build_child_delivery(definition):
+    _assert_prefix_mind_library_only(definition, PREFIX_BUILD_CHILD)
+    source = (REPO_ROOT / PREFIX_BUILD_CHILD).read_text(encoding="utf-8")
+    modules = {_module_path(name) for name in _internal_imports(source, "sandbox.mind.step2")}
+    assert PREFIX_BUILD_DEPENDENCIES <= modules, "prefix_build_dependency_source_changed"
+    for dependency in modules - {None}:
+        assert definition["python_files"].count(dependency) == 1, "prefix_build_dependency_drop_or_duplicate"
+
+
+def test_prefix_build_child_is_inert_and_has_internal_imports():
+    _assert_prefix_build_child_delivery(_definition())
+
+
+@pytest.mark.parametrize("dependency", sorted(PREFIX_BUILD_DEPENDENCIES))
+def test_prefix_build_child_rejects_missing_internal_dependency(dependency):
+    definition = deepcopy(_definition())
+    definition["python_files"] = [p for p in definition["python_files"] if p != PREFIX_BUILD_CHILD]
+    definition["python_files"].append(PREFIX_BUILD_CHILD)
+    _assert_prefix_build_child_delivery(definition)
+    definition["python_files"].remove(dependency)
+    with pytest.raises(AssertionError, match="prefix_build_dependency_drop_or_duplicate"):
+        _assert_prefix_build_child_delivery(definition)
+
+
+INTERPRETER_IDENTITY = "sandbox/mind/step2/interpreter_identity.py"
+INTERPRETER_RUNTIME_DEPENDENCY = "sandbox/mind/step2/runtime_manifest.py"
+
+
+def _assert_interpreter_identity_delivery(definition):
+    _assert_prefix_mind_library_only(definition, INTERPRETER_IDENTITY)
+    assert definition["python_files"].count(INTERPRETER_RUNTIME_DEPENDENCY) == 1
+    source = (REPO_ROOT / INTERPRETER_IDENTITY).read_text(encoding="utf-8")
+    assert "sandbox.mind.step2.runtime_manifest" in _internal_imports(source, "sandbox.mind.step2")
+
+
+def test_interpreter_identity_is_delivered_inertly_with_runtime_manifest():
+    _assert_interpreter_identity_delivery(_definition())
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "dependency", "entrypoint", "manual", "smoke"])
+def test_interpreter_identity_delivery_rejects_missing_duplicate_or_activation(mutation):
+    definition = deepcopy(_definition())
+    definition["python_files"] = [p for p in definition["python_files"] if p != INTERPRETER_IDENTITY]
+    definition["python_files"].append(INTERPRETER_IDENTITY)
+    _assert_interpreter_identity_delivery(definition)
+    if mutation == "missing":
+        definition["python_files"].remove(INTERPRETER_IDENTITY)
+    elif mutation == "duplicate":
+        definition["python_files"].append(INTERPRETER_IDENTITY)
+    elif mutation == "dependency":
+        definition["python_files"].remove(INTERPRETER_RUNTIME_DEPENDENCY)
+    elif mutation == "entrypoint":
+        definition["python_entrypoints"]["not_approved"] = INTERPRETER_IDENTITY
+    elif mutation == "manual":
+        definition["manual_execution_capability"]["entrypoints"]["not_approved"] = INTERPRETER_IDENTITY
+    else:
+        definition["import_smoke"]["package_modules"].append(INTERPRETER_IDENTITY[:-3].replace("/", "."))
+    with pytest.raises(AssertionError):
+        _assert_interpreter_identity_delivery(definition)
+
+
 def _assert_m0_measurement_tool_delivery(definition, relative):
     assert definition["python_files"].count(relative) == 1, "m0_frozen_file_not_packaged_once"
     assert relative not in definition["python_entrypoints"].values(), "m0_entrypoint_not_authorized"
@@ -1104,3 +1834,113 @@ def test_m0_file_only_delivery_contract_refuses_each_boundary_mutant(relative, m
     with pytest.raises(AssertionError):
         _assert_m0_measurement_tool_delivery(mutant, relative)
     _assert_m0_measurement_tool_delivery(definition, relative)
+
+
+Q4_PROVISION_RUNNER_DEPENDENCIES = {
+    "tools/wd_q4_guard_state_provision.py": frozenset({
+        "tools/wd_q4_guard_state_binding.py",
+    }),
+    "tools/wd_q4_guard_state_provision_cli.py": frozenset({
+        "tools/wd_q4_guard_state_provision.py",
+        "tools/wd_q4_lane_caller_cli.py",
+    }),
+    "tools/wd_q4_status_prefix_runner.py": frozenset({
+        "tools/wd_q4_guard_state_binding.py",
+        "sandbox/mind/step2/shared_capture_adapter.py",
+        "sandbox/mind/step2/shared_producer.py",
+        "sandbox/mind/step2/wd_q4_prefix_build_child.py",
+        "waggledance/core/bridge_log_reader.py",
+    }),
+}
+
+
+def _assert_q4_provision_runner_delivery(definition, relative):
+    if relative == "tools/wd_q4_guard_state_provision_cli.py":
+        assert definition["python_files"].count(relative) == 1, "prefix_library_not_packaged_once"
+        entries = definition["python_entrypoints"]
+        assert entries.get("q4_guard_provision") == relative, "guard_entrypoint_missing"
+        assert list(entries.values()).count(relative) == 1, "guard_entrypoint_duplicate"
+        assert relative not in definition["manual_execution_capability"]["entrypoints"].values(), "prefix_manual_not_authorized"
+        assert relative[:-3].replace("/", ".") not in definition["import_smoke"]["package_modules"], "prefix_smoke_not_authorized"
+    else:
+        _assert_prefix_mind_library_only(definition, relative)
+    source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+    imports = {_module_path(name) for name in _internal_imports(source, "tools")}
+    assert Q4_PROVISION_RUNNER_DEPENDENCIES[relative] <= imports, "q4_runtime_import_contract_changed"
+    for dependency in imports - {None}:
+        assert definition["python_files"].count(dependency) == 1, "q4_runtime_dependency_missing"
+
+
+@pytest.mark.parametrize("relative", sorted(Q4_PROVISION_RUNNER_DEPENDENCIES))
+def test_q4_provision_and_runner_ship_as_inert_files_with_dependencies(relative):
+    _assert_q4_provision_runner_delivery(_definition(), relative)
+
+
+@pytest.mark.parametrize("relative", sorted(Q4_PROVISION_RUNNER_DEPENDENCIES))
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "dependency", "entrypoint", "manual", "smoke"])
+def test_q4_provision_runner_delivery_refuses_manifest_mutants(relative, mutation):
+    definition = deepcopy(_definition())
+    _assert_q4_provision_runner_delivery(definition, relative)
+    if mutation == "missing":
+        definition["python_files"].remove(relative)
+    elif mutation == "duplicate":
+        definition["python_files"].append(relative)
+    elif mutation == "dependency":
+        definition["python_files"].remove(sorted(Q4_PROVISION_RUNNER_DEPENDENCIES[relative])[0])
+    elif mutation == "entrypoint":
+        definition["python_entrypoints"]["not_approved"] = relative
+    elif mutation == "manual":
+        definition["manual_execution_capability"]["entrypoints"]["not_approved"] = relative
+    else:
+        definition["import_smoke"]["package_modules"].append(relative[:-3].replace("/", "."))
+    with pytest.raises(AssertionError):
+        _assert_q4_provision_runner_delivery(definition, relative)
+
+
+def test_staged_q4_provision_and_runner_import_and_stay_off(staged_mind_source):
+    # No installed bundle and no live guard: only copied allow-list bytes.
+    names = [path[:-3].replace("/", ".") for path in Q4_PROVISION_RUNNER_DEPENDENCIES]
+    names.append("sandbox.mind.step2.shared_index_preflight")
+    script = (
+        "import importlib, json, pathlib, sys\n"
+        "root = pathlib.Path(sys.argv[1]).resolve()\n"
+        "sys.path.insert(0, str(root))\n"
+        "names = json.loads(sys.argv[2])\n"
+        "loaded = {name: importlib.import_module(name) for name in names}\n"
+        "internal = {n: str(pathlib.Path(m.__file__).resolve()) for n, m in sys.modules.copy().items() "
+        "if n.split('.')[0] in ('tools','sandbox','waggledance') and getattr(m, '__file__', None)}\n"
+        "assert internal and all(pathlib.Path(p).is_relative_to(root) for p in internal.values()), internal\n"
+        "assert loaded['tools.wd_q4_guard_state_provision'].provision_guard_state() == {'status':'OFF'}\n"
+        "assert loaded['tools.wd_q4_guard_state_provision_cli'].provision_anchored() == {'status':'OFF'}\n"
+        "assert loaded['tools.wd_q4_status_prefix_runner'].run_once() == {'status':'OFF'}\n"
+        "print(json.dumps({'loaded': sorted(loaded), 'isolated': sys.flags.isolated, 'no_site': sys.flags.no_site}))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-B", "-c", script, str(staged_mind_source), json.dumps(names)],
+        cwd=staged_mind_source, capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    assert observed == {"loaded": sorted(names), "isolated": 1, "no_site": 1}
+
+
+def test_packaged_index_preflight_is_required_by_actual_q4_consumers():
+    relative = "sandbox/mind/step2/shared_index_preflight.py"
+    _assert_prefix_mind_library_only(_definition(), relative)
+    consumers = ("sandbox/mind/step2/shared_index_checkpoint.py", "tools/wd_q4_public_query.py",
+                 "tools/wd_q4_secure_transport.py")
+    for consumer in consumers:
+        source = (REPO_ROOT / consumer).read_text(encoding="utf-8")
+        assert "sandbox.mind.step2.shared_index_preflight" in _internal_imports(source, _package_of(consumer))
+
+
+def test_content_build_child_is_packaged_once_as_inert_source():
+    path = "sandbox/mind/step2/wd_q4_content_build_child.py"
+    dotted = path[:-3].replace("/", ".")
+    data = _definition()
+    assert data["python_files"].count(path) == 1
+    assert path in Q4_READONLY_FILES
+    assert path not in data["python_entrypoints"].values()
+    assert dotted not in data["import_smoke"]["package_modules"]
+    assert path not in json.dumps(data["manual_execution_capability"])
+    assert dotted not in json.dumps(data["manual_execution_capability"])

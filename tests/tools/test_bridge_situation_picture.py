@@ -1,0 +1,729 @@
+"""Synthetic situation-picture contract; no live bridge, Mind or provider calls."""
+import importlib
+import hashlib
+import json
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from tools.bridge_compact_view import event_id
+from waggledance.core import bridge_log_reader as reader
+
+T0 = datetime(2026, 11, 9, 0, 0, tzinfo=timezone.utc)
+LEAD, TOOLS, RCO = 'codex-lead-1', 'codex-tools-1', 'claude-rco-1'
+ROSTER = {
+    lane: {'agent_uuid': '0000000%d-0000-4000-8000-000000000000' % i,
+           'session_id': 'synthetic-session-%d' % i, 'run_id': 'synthetic-session-%d' % i}
+    for i, lane in enumerate([LEAD, TOOLS, RCO, 'claude-rco-2', 'fable-5', 'operator', 'capacity-observer'], 1)
+}
+
+
+def stamp(seconds=0):
+    return (T0 + timedelta(seconds=seconds)).isoformat()
+
+
+def row(agent=LEAD, seconds=0, **changes):
+    value = {'agent': agent, **ROSTER[agent], 'type': 'status', 'status': 'active',
+             'task_id': 'synthetic-work', 'ts_utc': stamp(seconds), 'to': TOOLS,
+             'message': 'Synthetic body is never part of the view.', 'payload': {}}
+    value.update(changes)
+    return value
+
+
+def write(path, rows, *, mode='w'):
+    with path.open(mode, encoding='utf-8', newline='\n') as stream:
+        for value in rows:
+            stream.write(json.dumps(value, sort_keys=True) + '\n')
+
+
+def picture(**kwargs):
+    module = importlib.import_module('tools.bridge_situation_picture')
+    return module.SituationPicture(roster=ROSTER, ttl_seconds=60, **kwargs)
+
+
+def test_existing_reader_control_is_cursor_neutral(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    write(path, [row()])
+    before = path.read_bytes()
+    result = reader.read_bridge_log(path)
+    assert result.status is reader.BridgeReadStatus.OK and result.rows[0]['task_id'] == 'synthetic-work'
+    assert result.candidate_cursor.offset == len(before)
+    assert path.read_bytes() == before and list(tmp_path.iterdir()) == [path]
+
+
+def test_event_reference_control_uses_entire_canonical_event():
+    value = row()
+    assert event_id(value) == event_id(json.loads(json.dumps(value)))
+    assert event_id(value) != event_id(dict(value, message='Different synthetic body.'))
+
+
+def test_fresh_metadata_has_source_age_without_free_text(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    event = row(payload={'head': 'a' * 40, 'secret': 'synthetic-sensitive-body'})
+    write(path, [event])
+    view = picture().update(path, now=stamp(10))
+    task = view['lanes'][LEAD]['task']
+    assert view['coverage'] == 'COMPLETE' and task['value'] == 'synthetic-work'
+    assert task['source_event_ref'] == event_id(event) and task['age_seconds'] == 10
+    assert view['lanes'][LEAD]['head']['value'] == 'a' * 40
+    assert 'synthetic-sensitive-body' not in json.dumps(view) and event['message'] not in json.dumps(view)
+
+
+@pytest.mark.parametrize('seconds, now', [(0, 61), (20, 10)])
+def test_stale_and_future_fields_are_unknown_with_evidence(tmp_path, seconds, now):
+    path = tmp_path / 'events.jsonl'
+    event = row(seconds=seconds)
+    write(path, [event])
+    value = picture().update(path, now=stamp(now))['lanes'][LEAD]['task']
+    assert value['state'] == 'UNKNOWN' and value['value'] is None
+    assert value['source_event_ref'] == event_id(event)
+
+
+def test_wrong_session_never_populates_a_lane(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    write(path, [row(session_id='retired-session')])
+    value = picture().update(path, now=stamp(10))['lanes'][LEAD]['task']
+    assert value['state'] == 'UNKNOWN' and value['value'] is None
+
+
+def test_incremental_delta_equals_complete_replay(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    write(path, [row()])
+    incremental = picture()
+    first = incremental.update(path, now=stamp(10))
+    write(path, [row(agent=TOOLS, seconds=11, task_id='synthetic-next')], mode='a')
+    second = incremental.update(path, now=stamp(20))
+    complete = picture().update(path, now=stamp(20))
+    assert second['cursor']['offset'] > first['cursor']['offset']
+    for field in ('lanes', 'waiting_for', 'prs_awaiting_rco', 'operator_directives', 'capacity', 'routing_suggestion'):
+        assert second[field] == complete[field]
+
+
+def test_partial_tail_is_incomplete_and_can_finish_without_replay(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    write(path, [row()])
+    view = picture()
+    view.update(path, now=stamp(10))
+    next_row = row(agent=TOOLS, seconds=11)
+    with path.open('ab') as stream:
+        stream.write(json.dumps(next_row).encode('utf-8'))
+    assert view.update(path, now=stamp(20))['coverage'] == 'UNKNOWN'
+    with path.open('ab') as stream:
+        stream.write(b'\n')
+    assert view.update(path, now=stamp(21))['lanes'][TOOLS]['task']['value'] == 'synthetic-work'
+
+
+@pytest.mark.parametrize('operation', ['rotate', 'truncate', 'rewrite_prefix'])
+def test_changed_history_requires_explicit_reset(tmp_path, operation):
+    path = tmp_path / 'events.jsonl'
+    write(path, [row()])
+    view = picture()
+    view.update(path, now=stamp(10))
+    if operation == 'rotate':
+        path.rename(tmp_path / 'old.jsonl')
+        write(path, [row(seconds=11)])
+    elif operation == 'truncate':
+        path.write_bytes(b'')
+    else:
+        raw = path.read_bytes()
+        assert b'synthetic-work' in raw
+        path.write_bytes(raw.replace(b'synthetic-work', b'synthetic-fake'))
+    report = view.update(path, now=stamp(20))
+    assert report['coverage'] == 'UNKNOWN' and report['lanes'][LEAD]['task']['state'] == 'UNKNOWN'
+    assert view.update(path, now=stamp(21))['reason'] == 'reset_required'
+    view.reset()
+    assert view.update(path, now=stamp(22))['coverage'] == 'COMPLETE'
+
+
+def request():
+    return row(type='message', request_id='synthetic-request', request_digest='b' * 64,
+               nonce='synthetic-nonce', expected_responders={TOOLS: ROSTER[TOOLS]})
+
+
+def reply(sent, **changes):
+    return row(agent=TOOLS, seconds=1, to=LEAD, type='message', status='answered',
+               in_reply_to_request_id=sent['request_id'], in_reply_to_request_digest=sent['request_digest'],
+               in_reply_to_requester={key: sent[key] for key in ('agent', 'agent_uuid', 'session_id', 'run_id')},
+               nonce='synthetic-nonce', payload={'result': {'status': 'done', 'head': 'c' * 40}}, **changes)
+
+
+@pytest.mark.parametrize('variant', ['wrong_nonce', 'wrong_session', 'ack', 'unknown_status', 'private_status', 'callback', 'valid'])
+def test_last_bound_reply_is_more_than_request_id_or_ack(tmp_path, variant):
+    path = tmp_path / 'events.jsonl'
+    sent = request()
+    answered = reply(sent)
+    if variant == 'wrong_nonce':
+        answered['nonce'] = 'wrong-nonce'
+    elif variant == 'wrong_session':
+        answered['session_id'] = 'retired-session'
+    elif variant == 'ack':
+        answered['status'] = 'received'
+        answered['payload'] = {}
+    elif variant == 'unknown_status':
+        answered['status'] = 'unknown-producer-state'
+    elif variant == 'private_status':
+        answered['status'] = 'synthetic-sensitive-status'
+    elif variant == 'callback':
+        answered['type'] = 'heartbeat'
+    write(path, [sent, answered])
+    value = picture().update(path, now=stamp(10))['lanes'][TOOLS]['last_bound_reply']
+    if variant == 'valid':
+        assert value['source_event_ref'] == event_id(answered)
+        assert value['value']['content_verified'] is False
+    else:
+        assert value['state'] == 'UNKNOWN'
+    assert 'synthetic-sensitive-status' not in json.dumps(value)
+
+
+def test_pending_rco_request_exposes_only_evidenced_dependency(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    event = row(type='peer_review_request', to=RCO, request_id='review-one', request_digest='d' * 64,
+                expected_responders={RCO: ROSTER[RCO]}, payload={'pr': 123, 'head': 'e' * 40})
+    write(path, [event])
+    report = picture().update(path, now=stamp(10))
+    assert report['waiting_for']['value'][0]['request_ref'] == event_id(event)
+    assert report['prs_awaiting_rco']['value'][0]['pr'] == 123
+    assert report['prs_awaiting_rco']['source_event_ref'] == event_id(event)
+
+
+def test_last_reply_uses_reply_position_across_overlapping_requests(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    first = request()
+    second = dict(request(), request_id='synthetic-request-two', ts_utc=stamp(1))
+    early = dict(reply(second), ts_utc=stamp(2))
+    late = dict(reply(first), ts_utc=stamp(3))
+    write(path, [first, second, early, late])
+    result = picture().update(path, now=stamp(10))
+    assert result['lanes'][TOOLS]['last_bound_reply']['source_event_ref'] == event_id(late)
+
+
+def test_exact_rco_pass_clears_review_wait_but_later_veto_reopens_it(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    sent = row(type='peer_review_request', to=RCO, request_id='review-one', request_digest='d' * 64,
+               nonce='synthetic-nonce', expected_responders={RCO: ROSTER[RCO]}, payload={'pr': 123, 'head': 'e' * 40})
+    passed = reply(sent)
+    passed.update(agent=RCO, **ROSTER[RCO], type='decision', status='rco_pass')
+    passed['payload'] = {'exact_head': 'e' * 40, 'result': {'status': 'rco_pass', 'head': 'e' * 40}}
+    write(path, [sent, passed])
+    view = picture()
+    result = view.update(path, now=stamp(10))
+    assert result['prs_awaiting_rco']['value'] == []
+    veto = dict(passed, type='finding', status='changes_requested', ts_utc=stamp(11),
+                payload={'result': {'status': 'changes_requested', 'head': 'e' * 40}})
+    write(path, [veto], mode='a')
+    assert view.update(path, now=stamp(20))['prs_awaiting_rco']['value'][0]['result_state'] == 'REPORTED_VETO'
+
+
+def test_pass_after_veto_does_not_retract_the_veto(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    sent = row(type='peer_review_request', to=RCO, request_id='review-one', request_digest='d' * 64,
+               nonce='synthetic-nonce', expected_responders={RCO: ROSTER[RCO]}, payload={'pr': 123, 'head': 'e' * 40})
+    veto = reply(sent)
+    veto.update(agent=RCO, **ROSTER[RCO], type='finding', status='changes_requested')
+    veto['payload']['result'] = {'status': 'changes_requested', 'head': 'e' * 40}
+    passed = dict(veto, type='decision', status='rco_pass', ts_utc=stamp(2),
+                  payload={'exact_head': 'e' * 40, 'result': {'status': 'rco_pass', 'head': 'e' * 40}})
+    write(path, [sent, veto, passed])
+    result = picture().update(path, now=stamp(10))
+    assert result['prs_awaiting_rco']['value'][0]['result_state'] == 'REPORTED_VETO'
+
+
+@pytest.mark.parametrize('include_retraction', [False, True])
+def test_veto_retraction_status_is_unknown_when_not_evaluated(tmp_path, include_retraction):
+    path = tmp_path / 'events.jsonl'
+    veto = row(agent=RCO, type='finding', status='changes_requested',
+               payload={'result': {'status': 'changes_requested', 'head': 'e' * 40}})
+    events = [veto]
+    if include_retraction:
+        events.append(row(agent=RCO, seconds=1, type='decision', status='retracted',
+                          payload={'head': 'e' * 40, 'source_event_ref': event_id(veto)}))
+    write(path, events)
+    result = picture().update(path, now=stamp(10))
+    observations = result['recognized_veto_observations']['value']
+    assert event_id(veto) in {item['source_event_ref'] for item in observations}
+    assert all(item['retracted'] is None for item in observations)
+    assert all(item['retraction_evaluated'] is False for item in observations)
+    assert result['merge_eligibility'] == 'NOT_EVALUATED'
+
+
+def test_binding_checks_are_indexed_by_target_and_request_id(tmp_path, monkeypatch):
+    path = tmp_path / 'events.jsonl'
+    module = importlib.import_module('tools.bridge_situation_picture')
+    check = module.reply_matches_request
+    calls = []
+    def counted(*args, **kwargs):
+        calls.append(None)
+        return check(*args, **kwargs)
+    monkeypatch.setattr(module, 'reply_matches_request', counted)
+    requests = [dict(request(), request_id='request-%d' % i, ts_utc=stamp(i)) for i in range(15)]
+    answers = [dict(reply(sent), ts_utc=stamp(15 + i)) for i, sent in enumerate(requests)]
+    write(path, requests + answers)
+    assert picture().update(path, now=stamp(45))['coverage'] == 'COMPLETE'
+    assert len(calls) <= 30
+
+
+def test_unverified_capacity_cannot_route_work(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    event = row(agent='capacity-observer', type='capacity_observation', payload={
+        'provider': 'codex', 'freshness': 'fresh', 'pool_identity_state': 'unknown',
+        'quota_state': 'observed_headroom', 'used_percent': 1})
+    write(path, [event])
+    report = picture().update(path, now=stamp(10))
+    assert report['capacity']['state'] == 'UNKNOWN' and report['routing_suggestion']['state'] == 'UNKNOWN'
+
+
+def test_operator_directive_metadata_has_source_without_body(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    event = row(agent='operator', type='decision', payload={'kind': 'operator_directive'})
+    write(path, [event])
+    report = picture().update(path, now=stamp(10))
+    assert report['operator_directives']['source_event_ref'] == event_id(event)
+    assert event['message'] not in json.dumps(report)
+
+
+def test_malformed_log_never_advances_cursor_or_presents_old_state_as_current(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    write(path, [row()])
+    view = picture()
+    initial = view.update(path, now=stamp(10))
+    with path.open('ab') as stream:
+        stream.write(b'{not-json}\n')
+    report = view.update(path, now=stamp(20))
+    assert report['coverage'] == 'UNKNOWN'
+    assert report['cursor'] is None or report['cursor']['offset'] == initial['cursor']['offset']
+    assert report['lanes'][LEAD]['task']['state'] == 'UNKNOWN'
+
+
+def test_snapshot_never_writes_log_or_generation_files(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    write(path, [row()])
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+    picture().update(path, now=stamp(10))
+    assert before == {p.name: p.read_bytes() for p in tmp_path.iterdir()}
+
+
+def test_open_wait_survives_ttl_but_answered_request_is_not_waiting(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    sent = request()
+    write(path, [sent])
+    view = picture()
+    result = view.update(path, now=stamp(120))
+    waiting = result['waiting_for']
+    assert waiting['state'] == 'OBSERVED'
+    assert waiting['value'][0]['requester'] == LEAD
+    assert waiting['value'][0]['age_seconds'] == 120
+    write(path, [dict(reply(sent), ts_utc=stamp(121))], mode='a')
+    assert view.update(path, now=stamp(122))['waiting_for']['value'] == []
+
+
+def test_multi_target_wait_keeps_only_unanswered_targets(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    sent = dict(request(), to=TOOLS + ',' + RCO, expected_responders={TOOLS: ROSTER[TOOLS], RCO: ROSTER[RCO]})
+    write(path, [sent, reply(sent)])
+    result = picture().update(path, now=stamp(120))
+    assert [item['responder'] for item in result['waiting_for']['value']] == [RCO]
+
+
+@pytest.mark.parametrize('variant', ['cancelled', 'superseded', 'ack', 'chatter', 'wrong_nonce'])
+def test_only_exact_requester_closeout_removes_an_open_wait(tmp_path, variant):
+    path = tmp_path / 'events.jsonl'
+    sent = request()
+    closed = dict(reply(sent), **{key: sent[key] for key in ('agent', 'agent_uuid', 'session_id', 'run_id')},
+                  to=TOOLS, status='cancelled', payload={})
+    if variant == 'superseded':
+        closed['status'] = 'superseded'
+    elif variant == 'ack':
+        closed['status'] = 'received'
+    elif variant == 'chatter':
+        closed['status'] = 'notice'
+    elif variant == 'wrong_nonce':
+        closed['nonce'] = 'wrong'
+    write(path, [sent, closed])
+    pending = picture().update(path, now=stamp(120))['waiting_for']['value']
+    assert len(pending) == (0 if variant in ('cancelled', 'superseded') else 1)
+
+
+def history_roster():
+    old = dict(ROSTER[LEAD], current=False, source_event_ref='1' * 64)
+    current = dict(ROSTER[LEAD], session_id='current-session', run_id='current-run',
+                   current=True, source_event_ref='2' * 64)
+    return dict(ROSTER, **{LEAD: [old, current]})
+
+
+def test_pinned_prior_session_survives_in_history_without_becoming_current(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    sent = request()
+    write(path, [sent])
+    module = importlib.import_module('tools.bridge_situation_picture')
+    result = module.SituationPicture(roster=history_roster(), ttl_seconds=60).update(path, now=stamp(120))
+    assert result['lanes'][LEAD]['task']['state'] == 'UNKNOWN'
+    history = result['lanes'][LEAD]['history']
+    assert history[0]['session_id'] == ROSTER[LEAD]['session_id']
+    assert history[0]['identity_source_ref'] == '1' * 64
+    assert history[0]['task']['source_event_ref'] == event_id(sent)
+    assert result['waiting_for']['value'][0]['request_ref'] == event_id(sent)
+
+
+@pytest.mark.parametrize('variant', ['missing_source', 'two_current', 'no_current', 'wrong_uuid'])
+def test_history_roster_rejects_ambiguous_or_unsourced_session_tuples(variant):
+    roster = history_roster()
+    if variant == 'missing_source':
+        roster[LEAD][0].pop('source_event_ref')
+    elif variant == 'two_current':
+        roster[LEAD][0]['current'] = True
+    elif variant == 'no_current':
+        roster[LEAD][1]['current'] = False
+    else:
+        roster[LEAD][0]['agent_uuid'] = ROSTER[TOOLS]['agent_uuid']
+    module = importlib.import_module('tools.bridge_situation_picture')
+    with pytest.raises(ValueError, match='roster'):
+        module.SituationPicture(roster=roster)
+
+
+def test_unapproved_history_session_still_cannot_populate_history(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    write(path, [row(session_id='injected-old-session'), row(session_id='current-session', run_id='current-run', seconds=1)])
+    module = importlib.import_module('tools.bridge_situation_picture')
+    view = module.SituationPicture(roster=history_roster()).update(path, now=stamp(10))
+    assert view['lanes'][LEAD]['task']['source_event_ref'] == event_id(row(session_id='current-session', run_id='current-run', seconds=1))
+    assert all(entry['session_id'] != 'injected-old-session' for entry in view['lanes'][LEAD]['history'])
+
+
+def test_real_review_message_without_pr_is_visible_without_inventing_pr(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    sent = row(type='message', request_id='real-shape-review', request_digest='d' * 64,
+               to=RCO, expected_responders={RCO: ROSTER[RCO]},
+               message='One requested review of Tools situation-picture head' + 'e' * 40 + ' (base ad58).')
+    write(path, [sent])
+    report = picture().update(path, now=stamp(120))
+    item = report['review_requests_awaiting_rco']['value'][0]
+    assert item['pr'] is None and item['pr_state'] == 'UNKNOWN'
+    assert item['last_referenced_head'] == 'e' * 40 and item['git_verified'] is False
+    assert item['request_ref'] == event_id(sent)
+    assert report['prs_awaiting_rco']['value'] == []
+
+
+@pytest.mark.parametrize('variant', ['scoped_safety_pass', 'conflicting_structured_head', 'two_prose_heads'])
+def test_real_review_metadata_cannot_infer_gate_approval_or_rescue_conflicts(tmp_path, variant):
+    path = tmp_path / 'events.jsonl'
+    sent = row(type='message', request_id='real-review', request_digest='d' * 64, nonce='synthetic-nonce',
+               to=RCO, expected_responders={RCO: ROSTER[RCO]}, payload={'pr_number': 123, 'head': 'e' * 40})
+    answered = reply(sent)
+    answered.update(agent=RCO, **ROSTER[RCO], status='done')
+    answered['payload']['result'] = {'status': 'PASS_SAFETY_SCOPE_FUNCTIONAL_GAPS_NOT_YET_MEETING_REQUIREMENTS', 'head': 'e' * 40}
+    if variant == 'conflicting_structured_head':
+        sent['payload']['exact_head'] = 'f' * 40
+        sent['message'] = 'head' + 'e' * 40
+    elif variant == 'two_prose_heads':
+        sent['payload'].pop('head')
+        sent['message'] = 'head' + 'e' * 40 + ' and head' + 'f' * 40
+    write(path, [sent, answered])
+    view = picture().update(path, now=stamp(10))
+    assert view['review_requests_awaiting_rco']['value'] == []
+    item = view['replied_without_gate_pass']['value'][0]
+    assert item['gate_pass_observed'] is False
+    if variant != 'scoped_safety_pass':
+        assert item['last_referenced_head'] is None
+
+
+def test_typed_gate_pass_is_distinct_from_a_scoped_bound_result(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    sent = row(type='message', request_id='typed-review', request_digest='d' * 64, nonce='synthetic-nonce',
+               to=RCO, expected_responders={RCO: ROSTER[RCO]}, payload={'pr_number': 123, 'head': 'e' * 40})
+    passed = reply(sent)
+    passed.update(agent=RCO, **ROSTER[RCO], type='decision', status='rco_pass')
+    passed['payload'] = {'pr_number': 123, 'head': 'e' * 40, 'exact_head': 'e' * 40,
+                         'result': {'status': 'rco_pass', 'head': 'e' * 40}}
+    write(path, [sent, passed])
+    assert picture().update(path, now=stamp(10))['review_requests_awaiting_rco']['value'] == []
+
+
+def test_selected_real_directive_relay_retains_actual_author_and_unknown_operator_origin(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    event = row(type='message', message='OPERATOR DIRECTIVE: synthetic content must stay out of the view.')
+    write(path, [event])
+    module = importlib.import_module('tools.bridge_situation_picture')
+    view = module.SituationPicture(roster=ROSTER, operator_relay_refs=[event_id(event)]).update(path, now=stamp(10))
+    item = view['operator_directives']['value'][0]
+    assert item['relay_author'] == LEAD and item['operator_origin_verified'] is False
+    assert item['source_event_ref'] == event_id(event)
+    assert event['message'] not in json.dumps(view)
+
+
+def test_prose_operator_mention_is_not_a_selected_directive(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    write(path, [row(message='OPERATOR DIRECTIVE: merely mentioning it is not provenance.')])
+    assert picture().update(path, now=stamp(10))['operator_directives']['state'] == 'UNKNOWN'
+
+
+def capacity_fixture(module, tmp_path, monkeypatch, *, fresh=True, verified_pool=False):
+    script = tmp_path / 'Get-WdCapacityStatus.ps1'
+    script.write_bytes(b'# synthetic verified reader, never executed')
+    digest = hashlib.sha256(script.read_bytes()).hexdigest()
+    monkeypatch.setattr(module, 'CAPACITY_READER', script, raising=False)
+    payload = {'schema': 'wd.capacity-status.v1', 'observed_at': stamp(),
+               'installation': {'source_verified': True, 'manifest_sha256': 'a' * 64},
+               'observations': [{'provider': 'codex', 'observed_at': stamp(0 if fresh else -120),
+                  'freshness': 'fresh', 'pool_identity_state': 'verified' if verified_pool else 'unverified_auth_context',
+                  'quota_state': 'observed_headroom', 'execution_allowed': False,
+                  'quota_windows': [{'limit_id': 'codex', 'name': 'primary', 'used_percent': 28}]}]}
+    calls = []
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        assert '-NoProfile' in argv and '-NonInteractive' in argv and '-File' in argv and '-Json' in argv
+        assert kwargs['cwd'] == module.ROOT
+        return type('Result', (), {'returncode': 0, 'stdout': json.dumps(payload), 'stderr': ''})()
+    monkeypatch.setattr(module, 'subprocess', importlib.import_module('subprocess'), raising=False)
+    monkeypatch.setattr(module.subprocess, 'run', fake_run)
+    return script, digest, calls
+
+
+def test_real_capacity_status_shape_exposes_quota_even_when_pool_identity_is_unknown(tmp_path, monkeypatch):
+    module = importlib.import_module('tools.bridge_situation_picture')
+    script, digest, calls = capacity_fixture(module, tmp_path, monkeypatch)
+    snapshot = module.read_capacity_status(reader_path=script, expected_sha256=digest)
+    path = tmp_path / 'events.jsonl'
+    write(path, [row()])
+    view = picture().update(path, now=stamp(10), capacity_snapshot=snapshot)
+    provider = view['capacity']['value']['codex']
+    assert provider['state'] == 'OBSERVED' and provider['value']['quota_windows'][0]['used_percent'] == 28
+    assert provider['source_ref']['reader_sha256'] == digest and provider['age_seconds'] == 10
+    assert view['routing_suggestion']['state'] == 'UNKNOWN'
+    assert len(calls) == 1
+
+
+def test_capacity_reader_pin_mismatch_never_starts_process(tmp_path, monkeypatch):
+    module = importlib.import_module('tools.bridge_situation_picture')
+    script, digest, calls = capacity_fixture(module, tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match='pin'):
+        module.read_capacity_status(reader_path=script, expected_sha256='b' * 64)
+    assert calls == []
+
+
+def test_stale_provider_timestamp_stays_unknown_despite_fresh_wrapper(tmp_path, monkeypatch):
+    module = importlib.import_module('tools.bridge_situation_picture')
+    script, digest, _ = capacity_fixture(module, tmp_path, monkeypatch, fresh=False)
+    snapshot = module.read_capacity_status(reader_path=script, expected_sha256=digest)
+    path = tmp_path / 'events.jsonl'
+    write(path, [row()])
+    view = picture().update(path, now=stamp(10), capacity_snapshot=snapshot)
+    assert view['capacity']['value']['codex']['state'] == 'UNKNOWN'
+
+
+def test_optional_capacity_reader_failure_never_blocks_the_bridge_view(tmp_path, monkeypatch, capsys):
+    module = importlib.import_module('tools.bridge_situation_picture')
+    path, roster = tmp_path / 'events.jsonl', tmp_path / 'roster.json'
+    write(path, [row()])
+    roster.write_text(json.dumps(ROSTER))
+    def unavailable(**kwargs):
+        raise ValueError('capacity_reader_unavailable')
+    monkeypatch.setattr(module, 'read_capacity_status', unavailable)
+    code = module.main(['--events', str(path), '--roster', str(roster), '--as-of', stamp(10), '--capacity-status'])
+    assert code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['coverage'] == 'COMPLETE' and result['lanes'][LEAD]['task']['state'] == 'OBSERVED'
+    assert result['capacity']['state'] == 'UNKNOWN'
+
+
+def test_cli_historical_roster_requires_and_checks_its_supplied_hash(tmp_path, capsys):
+    module = importlib.import_module('tools.bridge_situation_picture')
+    path, roster = tmp_path / 'events.jsonl', tmp_path / 'roster.json'
+    write(path, [row()])
+    roster.write_text(json.dumps(history_roster()))
+    argv = ['--events', str(path), '--roster', str(roster), '--as-of', stamp(10)]
+    assert module.main(argv) == 2
+    capsys.readouterr()
+    assert module.main(argv + ['--roster-sha256', 'f' * 64]) == 2
+    capsys.readouterr()
+    digest = hashlib.sha256(roster.read_bytes()).hexdigest()
+    assert module.main(argv + ['--roster-sha256', digest]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['roster_source_ref']['sha256'] == digest
+
+
+@pytest.mark.parametrize('agent', [None, {}, [], 'unregistered-agent'])
+def test_unrecognized_identity_shape_is_unknown_not_an_exception(tmp_path, agent):
+    path = tmp_path / 'events.jsonl'
+    event = row()
+    event['agent'] = agent
+    write(path, [event])
+    result = picture().update(path, now=stamp(10))
+    assert result['coverage'] == 'COMPLETE'
+    assert all(lane['task']['state'] == 'UNKNOWN' for lane in result['lanes'].values())
+
+
+# D1/R1/P1 class regressions: metadata only, no authority or live producers.
+@pytest.mark.parametrize("elapsed", [61, 3600, 86400])
+def test_directive_fact_does_not_expire_with_telemetry_ttl(tmp_path, elapsed):
+    path = tmp_path / 'events.jsonl'
+    event = row(type='message')
+    write(path, [event])
+    module = importlib.import_module('tools.bridge_situation_picture')
+    view = module.SituationPicture(roster=ROSTER, ttl_seconds=60,
+        operator_relay_refs=[event_id(event)]).update(path, now=stamp(elapsed))
+    field = view['operator_directives']
+    assert field['state'] == 'OBSERVED' and field['age_seconds'] == elapsed
+    assert field['value'][0]['state'] == 'OBSERVED'
+    assert field['value'][0]['age_seconds'] == elapsed
+    assert field['value'][0]['operator_origin_verified'] is False
+    assert field['value'][0]['operator_origin'] == 'UNKNOWN'
+
+
+def test_multiple_directives_keep_their_own_source_ages(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    rows = [row(type='message'), row(agent=TOOLS, type='message', seconds=120)]
+    write(path, rows)
+    module = importlib.import_module('tools.bridge_situation_picture')
+    view = module.SituationPicture(roster=ROSTER, ttl_seconds=60,
+        operator_relay_refs=[event_id(r) for r in rows]).update(path, now=stamp(3600))
+    assert view['operator_directives']['state'] == 'OBSERVED'
+    assert [r['age_seconds'] for r in view['operator_directives']['value']] == [3600, 3480]
+
+
+@pytest.mark.parametrize('timestamp', [None, 'not-a-time', stamp(100)])
+def test_persistent_directive_never_rescues_unverifiable_timestamp(tmp_path, timestamp):
+    path = tmp_path / 'events.jsonl'
+    event = row(type='message', ts_utc=timestamp)
+    write(path, [event])
+    module = importlib.import_module('tools.bridge_situation_picture')
+    value = module.SituationPicture(roster=ROSTER,
+        operator_relay_refs=[event_id(event)]).update(path, now=stamp(10))['operator_directives']
+    assert value['state'] == 'UNKNOWN' and value['value'] is None
+
+
+@pytest.mark.parametrize('variant', ['unanswered','ack','wrong_nonce','scoped','veto','pass','closed'])
+def test_rco_reply_state_and_gate_pass_are_separate_queues(tmp_path, variant):
+    path = tmp_path / 'events.jsonl'
+    sent = row(type='message', request_id='split-review', request_digest='d'*64,
+        nonce='synthetic-nonce', to=RCO, expected_responders={RCO: ROSTER[RCO]},
+        payload={'pr_number':123, 'head':'e'*40})
+    answered = reply(sent)
+    answered.update(agent=RCO, **ROSTER[RCO], status='done')
+    answered['payload']['result'] = {'status':'SCOPED_PASS_ONLY', 'head':'e'*40}
+    rows = [sent]
+    if variant != 'unanswered':
+        if variant == 'ack': answered.update(status='received')
+        elif variant == 'wrong_nonce': answered['nonce'] = 'wrong'
+        elif variant == 'veto': answered.update(type='finding', status='changes_requested')
+        elif variant == 'pass':
+            answered.update(type='decision', status='rco_pass')
+            answered['payload'] = {'head':'e'*40, 'exact_head':'e'*40, 'pr_number':123,
+                'result':{'status':'rco_pass','head':'e'*40}}
+        elif variant == 'closed':
+            answered = dict(reply(sent), **{key: sent[key] for key in ('agent','agent_uuid','session_id','run_id')},
+                to=RCO, status='cancelled', payload={})
+        rows.append(answered)
+    write(path, rows)
+    view = picture().update(path, now=stamp(120))
+    pending = view['awaiting_rco_reply']['value']
+    replied = view['replied_without_gate_pass']['value']
+    assert view['review_requests_awaiting_rco']['value'] == pending
+    assert len(pending) == (1 if variant in ('unanswered','ack','wrong_nonce') else 0)
+    assert len(replied) == (1 if variant in ('scoped','veto') else 0)
+    if replied:
+        assert replied[0]['reply_ref'] == event_id(answered)
+        assert replied[0]['review_state'] == 'REPLIED_WITHOUT_GATE_PASS'
+        assert replied[0]['merge_eligibility'] == 'NOT_EVALUATED'
+    if variant == 'veto':
+        assert view['recognized_veto_observations']['value']
+        assert replied[0]['veto_event_refs']
+
+
+def sourced_view(path, rows, *, roster=None, now=120, **kwargs):
+    write(path, rows)
+    supplied = json.loads(json.dumps(ROSTER if roster is None else roster))
+    if roster is None: supplied[LEAD]['source_event_ref'] = event_id(rows[0])
+    module = importlib.import_module('tools.bridge_situation_picture')
+    obj = module.SituationPicture(roster=supplied, ttl_seconds=60)
+    return obj, obj.update(path, now=stamp(now), **kwargs)
+
+
+def test_resolved_identity_source_is_persistent_content_binding_not_authentication(tmp_path):
+    event = row(message='synthetic-secret-body-must-not-appear')
+    _, view = sourced_view(tmp_path/'events.jsonl', [event])
+    lane = view['lanes'][LEAD]
+    assert lane['identity_verification'] == 'SOURCE_EVENT_IDENTITY_BOUND'
+    source = lane['identity_source']
+    assert source['state'] == 'OBSERVED' and source['source_event_ref'] == event_id(event)
+    assert source['age_seconds'] == 120 and source['writer_authentication'] == 'UNKNOWN'
+    assert view['authority'] == 'none' and view['merge_eligibility'] == 'NOT_EVALUATED'
+    assert event['message'] not in json.dumps(view)
+
+
+@pytest.mark.parametrize('variant', ['missing','actor','uuid','session','run','body','invalid_time','naive_time','future'])
+def test_unresolved_or_mismatched_identity_anchor_is_unknown(tmp_path, variant):
+    event = row()
+    roster = json.loads(json.dumps(ROSTER))
+    reference = event_id(event)
+    if variant == 'missing': rows = []
+    else:
+        if variant == 'actor': event['agent'] = TOOLS
+        elif variant == 'uuid': event['agent_uuid'] = ROSTER[TOOLS]['agent_uuid']
+        elif variant == 'session': event['session_id'] = 'different-session'
+        elif variant == 'run': event['run_id'] = 'different-run'
+        elif variant == 'body': event['message'] = 'different canonical body'
+        elif variant == 'invalid_time': event['ts_utc'] = 'not-a-time'
+        elif variant == 'naive_time': event['ts_utc'] = '2026-11-09T00:00:00'
+        elif variant == 'future': event['ts_utc'] = stamp(200)
+        rows = [event]
+    if variant in ('actor','uuid','session','run','invalid_time','naive_time','future'):
+        reference = event_id(event)
+    roster[LEAD]['source_event_ref'] = reference
+    _, view = sourced_view(tmp_path/'events.jsonl', rows, roster=roster)
+    assert view['lanes'][LEAD]['identity_verification'] == 'identity_source_unverified'
+    assert view['lanes'][LEAD]['identity_source']['state'] == 'UNKNOWN'
+
+
+@pytest.mark.parametrize('reference', [None, [], {}, 7, 'not-a-digest', 'F'*64])
+def test_optional_legacy_source_ref_is_never_a_lookup_error_or_verification(tmp_path, reference):
+    roster = json.loads(json.dumps(ROSTER))
+    if reference is not None: roster[LEAD]['source_event_ref'] = reference
+    _, view = sourced_view(tmp_path/'events.jsonl', [row()], roster=roster, now=10)
+    assert view['lanes'][LEAD]['task']['state'] == 'OBSERVED'
+    assert view['lanes'][LEAD]['identity_source']['state'] == 'UNKNOWN'
+    assert view['lanes'][LEAD]['identity_verification'] == 'identity_source_unverified'
+
+
+def test_current_and_historical_identity_sources_resolve_independently(tmp_path):
+    path = tmp_path/'events.jsonl'
+    old = row()
+    current = row(seconds=1, session_id='new-session', run_id='new-run')
+    roster = dict(ROSTER, **{LEAD:[dict(ROSTER[LEAD], current=False, source_event_ref=event_id(old)),
+        dict(ROSTER[LEAD], session_id='new-session',run_id='new-run',current=True,source_event_ref=event_id(current))]})
+    _, view = sourced_view(path, [old,current], roster=roster)
+    lane = view['lanes'][LEAD]
+    assert lane['identity_source']['source_event_ref'] == event_id(current)
+    assert lane['history'][0]['identity_source']['source_event_ref'] == event_id(old)
+    assert lane['history'][0]['identity_verification'] == lane['identity_verification'] == 'SOURCE_EVENT_IDENTITY_BOUND'
+
+
+def test_identity_source_in_later_chunk_resolves_without_replaying_or_trusting_partial_history(tmp_path):
+    path = tmp_path/'events.jsonl'
+    anchor = row(seconds=1)
+    roster = json.loads(json.dumps(ROSTER)); roster[LEAD]['source_event_ref'] = event_id(anchor)
+    write(path, [row(agent=TOOLS), anchor])
+    module = importlib.import_module('tools.bridge_situation_picture')
+    obj = module.SituationPicture(roster=roster)
+    first = obj.update(path, now=stamp(10), max_rows=1)
+    assert first['coverage'] == 'UNKNOWN'
+    assert first['lanes'][LEAD]['identity_source']['state'] == 'UNKNOWN'
+    second = obj.update(path, now=stamp(10), max_rows=1)
+    replay = module.SituationPicture(roster=roster).update(path, now=stamp(10))
+    assert second['lanes'] == replay['lanes']
+    assert second['lanes'][LEAD]['identity_verification'] == 'SOURCE_EVENT_IDENTITY_BOUND'
+
+
+@pytest.mark.parametrize('operation', ['rotate','truncate','rewrite'])
+def test_changed_history_and_reset_never_keep_prior_identity_verification(tmp_path, operation):
+    path=tmp_path/'events.jsonl'; anchor=row()
+    obj, view = sourced_view(path, [anchor], now=10)
+    assert view['lanes'][LEAD]['identity_source']['state'] == 'OBSERVED'
+    if operation == 'rotate': path.rename(tmp_path/'old.jsonl'); write(path,[row(seconds=1)])
+    elif operation == 'truncate': path.write_bytes(b'')
+    else: path.write_bytes(path.read_bytes().replace(b'synthetic-work',b'synthetic-fake'))
+    failed = obj.update(path, now=stamp(20))
+    assert failed['lanes'][LEAD]['identity_source']['state'] == 'UNKNOWN'
+    assert failed['lanes'][LEAD]['identity_verification'] == 'identity_source_unverified'
+    obj.reset()
+    reset = obj.update(path, now=stamp(21))
+    assert reset['lanes'][LEAD]['identity_source']['state'] == 'UNKNOWN'

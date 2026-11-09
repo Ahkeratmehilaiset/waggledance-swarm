@@ -36,6 +36,8 @@ UNIFIED_STEPS = [
     "Compile all Python files",
     "Run legacy tests (informational)",
     "Run pytest",
+    "Run synthetic Mind cell witnesses",
+    "Run portable Mind prefix witnesses",
     "Run benchmark baseline",
     "Upload benchmark artifacts",
 ]
@@ -72,6 +74,17 @@ def test_the_pytest_step_still_runs_the_whole_suite_and_can_fail():
     assert commands[1].strip().endswith(" -v --tb=short")
     assert "continue-on-error" not in step and "continue-on-error" not in job
     assert "if" not in step and "timeout-minutes" not in step
+
+
+def test_mind_witness_steps_keep_their_actual_commands():
+    job = _jobs()["unified"]
+    for name, command in (
+        ("Run synthetic Mind cell witnesses", "python -B tools/run_mind_cell_synthetic_ci.py"),
+        ("Run portable Mind prefix witnesses", "python -B tools/run_mind_prefix_portable_ci.py"),
+    ):
+        step = _step(job, name)
+        assert step["run"].strip() == command
+        assert "if" not in step and "continue-on-error" not in step
 
 
 def test_the_unified_budget_is_a_bounded_integer_above_the_measured_need():

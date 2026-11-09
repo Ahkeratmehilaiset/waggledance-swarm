@@ -1,0 +1,5 @@
+{
+  "schema": "wd.mind-public-status-policy.v1",
+  "public_tasks": ["mind-public-knowledge-v1"],
+  "public_types": ["status"]
+}

@@ -24,6 +24,8 @@ param(
   [string] $RunId = '',
   [string] $ExternalSessionsPath = '',
   [string] $ExternalSessionsHash = '',
+  [string] $Q4SharedDescriptorPath = '',
+  [string] $Q4SharedDescriptorSha256 = '',
   [ValidateRange(10, 300)]
   [int] $HandshakeTimeoutSeconds = 90,
   [switch] $SkipCliUpdate,
@@ -36,6 +38,47 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $script:WdGitExecutable = ''
+
+function Get-WdQ4SharedForwardingArguments {
+  param([string] $Path, [string] $Sha256)
+  $hasPath = -not [string]::IsNullOrEmpty($Path)
+  $hasHash = -not [string]::IsNullOrEmpty($Sha256)
+  if ($hasPath -ne $hasHash) { throw 'q4_shared_descriptor_pair_refused' }
+  if (-not $hasPath) { return [pscustomobject]@{ direct = @{}; native = @() } }
+  if ($Path.Length -gt 4096 -or $Path -cnotmatch '^[A-Za-z]:\\' -or
+      $Path.Substring(2).Contains(':') -or $Path.Contains('/') -or
+      $Path -match '[\x00-\x1f"*?<>|;]' -or $Sha256 -cnotmatch '^[0-9a-f]{64}$') {
+    throw 'q4_shared_descriptor_pair_refused'
+  }
+  foreach ($part in $Path.Substring(3).Split('\')) {
+    if (-not $part -or $part -in @('.', '..') -or $part.Length -gt 255 -or
+        $part.StartsWith(' ') -or $part.EndsWith(' ') -or $part.EndsWith('.') -or
+        $part -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$') {
+      throw 'q4_shared_descriptor_pair_refused'
+    }
+  }
+  return [pscustomobject]@{
+    direct = @{ Q4SharedDescriptorPath = $Path; Q4SharedDescriptorSha256 = $Sha256 }
+    native = @('-Q4SharedDescriptorPath', ('"{0}"' -f $Path), '-Q4SharedDescriptorSha256', $Sha256)
+  }
+}
+$q4SharedForward = Get-WdQ4SharedForwardingArguments -Path $Q4SharedDescriptorPath -Sha256 $Q4SharedDescriptorSha256
+$q4SharedDirect = $q4SharedForward.direct
+
+function Get-WdQ4DryRunStatus {
+  param([AllowEmptyString()][string] $Path, [AllowEmptyString()][string] $Sha256)
+  # Absence only describes the arguments reaching this launcher; the outer
+  # resolver may have omitted them for several reasons. No file is inspected.
+  $descriptor = if ([string]::IsNullOrEmpty($Path) -and [string]::IsNullOrEmpty($Sha256)) {
+    'OFF'
+  } else {
+    'UNKNOWN'
+  }
+  return [pscustomobject]@{
+    descriptor = $descriptor; runtime = 'UNKNOWN'; interpreter = 'UNKNOWN'
+    stdlib = 'UNKNOWN'; guards = 'UNKNOWN'; query = 'UNKNOWN'
+  }
+}
 
 function Start-WdBridgeConversationWindow {
   param(
@@ -3017,7 +3060,7 @@ foreach ($lane in @($manifest.lanes)) {
     # reservation or proof of a completed model turn.
     $admission = & $agentLauncherTarget -Agent ([string]$lane.agent) `
       -DryRun -CheckManagedAdmission -ExpectedManifestHash $bundleManifestAnchor `
-      -ExternalSessionsPath $ExternalSessionsPath -ExternalSessionsHash $ExternalSessionsHash
+      -ExternalSessionsPath $ExternalSessionsPath -ExternalSessionsHash $ExternalSessionsHash @q4SharedDirect
     if ($null -eq $admission -or -not [bool]$admission.dry_run -or
         [string]$admission.turn_mode -cne 'managed') {
       throw "managed admission preflight did not return a valid result for $($lane.agent)"
@@ -3026,9 +3069,12 @@ foreach ($lane in @($manifest.lanes)) {
   if ($bundleMode -ceq 'deployed' -and $laneTurnMode -ceq 'interactive' -and $live.Count -eq 0) {
     # Resolve saved provider conversations before updates, scheduler changes or
     # opening any terminals. Broken history must not become a partial restore.
-    $resumePlan = & $agentLauncherTarget -Agent ([string]$lane.agent) -DryRun `
+    # -CheckLaunchAvailability runs the lane launcher's native-process ancestry
+    # check (with its bounded recheck) here, so an unattributed claude/codex
+    # process fails the whole-fleet preflight once instead of every lane tab.
+    $resumePlan = & $agentLauncherTarget -Agent ([string]$lane.agent) -DryRun -CheckLaunchAvailability `
       -ExpectedManifestHash $bundleManifestAnchor `
-      -ExternalSessionsPath $ExternalSessionsPath -ExternalSessionsHash $ExternalSessionsHash
+      -ExternalSessionsPath $ExternalSessionsPath -ExternalSessionsHash $ExternalSessionsHash @q4SharedDirect
     if ($null -eq $resumePlan -or -not [bool]$resumePlan.dry_run -or
         [string]$resumePlan.agent -cne [string]$lane.agent) {
       throw "conversation resume preflight did not return a valid result for $($lane.agent)"
@@ -3408,7 +3454,7 @@ $toolsValidationOutput = @(
   & $toolsValidationLauncher `
     -ConfigPath $toolsValidationConfig `
     -Generation $bundleGeneration `
-    -ValidateOnly
+    -ValidateOnly @q4SharedDirect
 )
 $toolsValidation = @(
   $toolsValidationOutput |
@@ -3598,6 +3644,9 @@ Write-Host (
 
 if ($DryRun) {
   Assert-WdBridgeSafetyBaseline -Baseline $bridgeSafetyBaseline
+  $q4DryRunStatus = Get-WdQ4DryRunStatus -Path $Q4SharedDescriptorPath -Sha256 $Q4SharedDescriptorSha256
+  Write-Host ("  Q4 descriptor forwarded: {0} (OFF means no pair was forwarded; reason not determined)" -f $q4DryRunStatus.descriptor)
+  Write-Host '  Q4 runtime, interpreter, stdlib, guards and query: UNKNOWN (not checked)'
   if (-not $NoBridgeConversation) {
     Write-Host '  Bridge conversation: would open a deduplicated colored read-only window before restore; not a success indicator.'
   }
@@ -3959,6 +4008,7 @@ try {
       '-HandshakeDirectory', $handshakeDirectory,
       '-ExpectedManifestHash', $bundleManifestAnchor
     )
+    $wtArguments += $q4SharedForward.native
     Write-Host ("Launching {0}..." -f $state.lane.agent) -ForegroundColor Cyan
     if ($ExternalSessionsPath) {
       $wtArguments += @('-ExternalSessionsPath', ('"{0}"' -f $ExternalSessionsPath),

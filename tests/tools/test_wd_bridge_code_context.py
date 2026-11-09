@@ -40,6 +40,28 @@ def test_package_entrypoints_exist_and_include_release_helpers():
     assert "tools/agent_next_task.py" in definition["python_files"]
 
 
+SESSION_OUTER_FILES = (
+    "tools/wd_q4_allowed_records.py",
+    "tools/wd_q4_answer_validate.py",
+    "tools/wd_q4_session_outer_entry.py",
+    "tools/wd_q4_session_outer_synthetic.py",
+    "tools/wd_q4_session_tuple.py",
+)
+
+
+def test_session_outer_files_are_packaged_without_new_entrypoint():
+    definition = json.loads((REBOOT / "bridge-code-files.json").read_text(encoding="utf-8"))
+    assert set(SESSION_OUTER_FILES) <= set(definition["python_files"])
+    assert not set(SESSION_OUTER_FILES) & set(definition["python_entrypoints"].values())
+    # These dynamically loaded files cannot be discovered from the entry's AST.
+    dynamic = {"sandbox/mind/step2/runtime_manifest.py", "tools/wd_q4_public_outer.py",
+               "tools/wd_q4_public_child.py", "tools/wd_q4_public_query.py",
+               "tools/wd_q4_lane_session_cli.py"}
+    assert dynamic <= set(definition["python_files"])
+    closure, _ = _intra_repo_closure(SESSION_OUTER_FILES)
+    assert closure <= set(definition["python_files"]), sorted(closure - set(definition["python_files"]))
+
+
 @pytest.mark.skipif(
     PS is None or sys.platform != "win32",
     reason="Exercises the Windows-only fleet launcher's native path checks",
@@ -221,7 +243,7 @@ HAS_BRIDGE_PYTHON = Path(BRIDGE_PYTHON).is_file()
 
 
 def _is_repo_module(module: str) -> bool:
-    return (module.split(".")[0] in {"tools", "waggledance"}
+    return (module.split(".")[0] in {"core", "tools", "waggledance"}
             or module == "sandbox.mind" or module.startswith("sandbox.mind."))
 
 
@@ -276,6 +298,10 @@ def _intra_repo_closure(entrypoints):
                 prefix = "sandbox.mind.step1" if top.startswith("lane_view") else "sandbox.mind"
                 module = f"{prefix}.{module}"
                 top = "sandbox"
+            if relative.startswith("sandbox/mind/capture/") and top == "capacity_lens":
+                # The capture CLI intentionally imports its packaged sibling as a flat module.
+                module = f"sandbox.mind.capture.{module}"
+                top = "sandbox"
             if not _is_repo_module(module) and (ROOT / "tools" / f"{top}.py").is_file():
                 # A flat-layout fallback ("from bridge_capacity_advisor import ...") names a sibling
                 # tools module: it is intra-repo code and must be packaged, never a third-party name.
@@ -318,6 +344,21 @@ def test_mind_smoke_closure_follows_unlisted_transitive_and_flat_imports(tmp_pat
     assert _module_relative("sandbox.other.example") is None
 
 
+def test_mind_capture_flat_sibling_is_in_repo_not_third_party(tmp_path, monkeypatch):
+    sources = {
+        "sandbox/mind/capture/capacity_read.py": "import capacity_lens\n",
+        "sandbox/mind/capture/capacity_lens.py": "import jsonschema\n",
+    }
+    for relative, source in sources.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    closure, third_party = _intra_repo_closure(["sandbox/mind/capture/capacity_read.py"])
+    assert closure == set(sources)
+    assert third_party == {"jsonschema"}
+
+
 def test_package_closes_over_every_intra_repo_import_and_pins_its_third_party_closure():
     # Seed with every entrypoint AND every module the import smoke loads: the gate modules reach
     # jsonschema only through modules that no entrypoint imports.
@@ -327,7 +368,13 @@ def test_package_closes_over_every_intra_repo_import_and_pins_its_third_party_cl
     closure, third_party = _intra_repo_closure(seeds)
     packaged = set(DEFINITION["python_files"])
     assert closure <= packaged, sorted(closure - packaged)
-    assert third_party == {"pydantic", "jsonschema"}, sorted(third_party)
+    # Q4's numerical and model dependencies belong to its separate CPU runtime,
+    # while the bridge wrapper retains its independently pinned small closure.
+    assert third_party == {"pydantic", "jsonschema", "faiss", "numpy", "sentence_transformers", "torch"}, sorted(third_party)
+    q4_lock = (ROOT / "ops/windows/reboot/requirements-q4-cpu-windows.txt").read_text(encoding="utf-8")
+    for distribution in ("faiss_cpu", "numpy", "sentence_transformers", "torch"):
+        pattern = rf"(?m)^{re.escape(distribution)}==[^\s]+\s+--hash=sha256:[0-9a-f]{{64}}$"
+        assert re.search(pattern, q4_lock), distribution
     lock = (ROOT / "requirements.lock.txt").read_text(encoding="utf-8")
     pinned = {
         match.group(1).lower().replace("_", "-"): match.group(2)
@@ -575,6 +622,23 @@ $map | ConvertTo-Json -Depth 4 -Compress
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
     return bundle
+
+
+@pytest.mark.skipif(PWSH is None or not HAS_BRIDGE_PYTHON, reason="pinned bridge interpreter unavailable")
+def test_session_outer_staged_manifest_contains_exact_source_bytes(tmp_path):
+    # Bind this fixture to the real package definition before staging its five
+    # bytes; the fake wheel keeps this test offline and non-activating.
+    definition = json.loads((REBOOT / "bridge-code-files.json").read_text(encoding="utf-8"))
+    assert set(SESSION_OUTER_FILES) <= set(definition["python_files"])
+    bundle = _stage_fake_bundle(tmp_path, real_files=SESSION_OUTER_FILES)
+    manifest = json.loads((bundle / "deployment-manifest.json").read_text(encoding="utf-8"))
+    for relative in SESSION_OUTER_FILES:
+        source = (ROOT / relative).read_bytes()
+        staged = (bundle / "tools-bootstrap" / relative).read_bytes()
+        assert staged == source
+        assert manifest["files"]["tools-bootstrap/" + relative] == hashlib.sha256(source).hexdigest().upper()
+    staged_definition = json.loads((bundle / "bridge-code-files.json").read_text(encoding="utf-8"))
+    assert not set(SESSION_OUTER_FILES) & set(staged_definition["python_entrypoints"].values())
 
 
 @pytest.mark.skipif(
@@ -1330,3 +1394,22 @@ def test_wrapper_fixture_queue_shape_never_reaches_the_live_publication_mutex(
         bridge_root=absent_root, drain_script=missing_helper)
     assert twin["decision"] == "accepted_queue_absent", twin
     assert calls == ["queue_publication_mutex"], calls
+
+
+def test_package_closure_tracks_bundled_core_as_internal(tmp_path, monkeypatch):
+    sources = {
+        "tools/seed.py": "from core import faiss_store\n",
+        "core/__init__.py": "",
+        "core/faiss_store.py": "import numpy\nfrom core import runtime_helper\n",
+        "core/runtime_helper.py": "import json\n",
+    }
+    for relative, source in sources.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    closure, third_party = _intra_repo_closure(["tools/seed.py"])
+    assert closure == set(sources)
+    assert third_party == {"numpy"}
+    packaged = set(sources) - {"core/runtime_helper.py"}
+    assert closure - packaged == {"core/runtime_helper.py"}

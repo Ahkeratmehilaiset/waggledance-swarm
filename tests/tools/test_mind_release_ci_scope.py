@@ -1,7 +1,7 @@
 """The bounded Mind release is executed AND collected, never all of sandbox.
 
 Only parse workflow text here: no Mind import, dataset discovery or CLI launch.
-The final composition supplies the ten explicitly admitted synthetic test files.
+The final composition supplies 42 explicitly admitted synthetic test files.
 """
 from copy import deepcopy
 import os
@@ -28,6 +28,39 @@ MIND_TESTS = (
     "sandbox/mind/capture/test_capacity_lens.py",
     "sandbox/mind/capture/test_overlap_lens.py",
     "sandbox/mind/test_mind_chain_driver.py",
+    "sandbox/mind/step2/test_q4_readonly_port.py",
+    "sandbox/mind/step2/test_encode_identity_budget.py",
+    "sandbox/mind/step2/test_wd_q4_private_read.py",
+    "sandbox/mind/step2/test_interpreter_identity.py",
+    "sandbox/mind/step2/test_reader_slot.py",
+    "sandbox/mind/step2/test_runtime_manifest.py",
+    "sandbox/mind/step2/test_runtime_bootstrap.py",
+    "sandbox/mind/step2/test_runtime_builder.py",
+    "sandbox/mind/step2/test_runtime_launcher.py",
+    "sandbox/mind/step2/test_shared_projection.py",
+    "sandbox/mind/step2/test_shared_projection_q4_synthetic.py",
+    "sandbox/mind/step2/test_shared_result_resolver.py",
+    "sandbox/mind/step2/test_shared_capture_adapter.py",
+    "sandbox/mind/step2/test_shared_bridge_snapshot.py",
+    "sandbox/mind/step2/test_shared_index_checkpoint.py",
+    "sandbox/mind/step2/test_shared_index_checkpoint_snapshot.py",
+    "sandbox/mind/step2/test_shared_index_checkpoint_active_snapshot.py",
+    "sandbox/mind/step2/test_shared_index_builder.py",
+    "sandbox/mind/step2/test_shared_source_anchor.py",
+    "sandbox/mind/step2/test_shared_strict_chain.py",
+    "sandbox/mind/step2/test_shared_builder_e2e.py",
+    "sandbox/mind/step2/test_shared_history.py",
+    "sandbox/mind/step2/test_shared_index_watermark.py",
+    "sandbox/mind/step2/test_shared_index_history_commit.py",
+    "sandbox/mind/step2/test_status_metadata_producer.py",
+    "sandbox/mind/step2/test_status_public_filter.py",
+    "sandbox/mind/step2/test_shared_producer.py",
+    "sandbox/mind/step2/test_prefix_builder_v1.py",
+    "sandbox/mind/step2/test_prefix_checkpoint_v1.py",
+    "sandbox/mind/step2/test_shared_prefix_pin.py",
+    "sandbox/mind/step2/test_shared_prefix_public_producer.py",
+    "sandbox/mind/step2/test_prefix_private_state.py",
+    "sandbox/mind/test_mind_capture_producer_graphql.py",
 )
 
 
@@ -76,6 +109,58 @@ def test_unified_executes_the_existing_full_suite_then_exact_finite_mind_scope()
 
 def test_collection_covers_the_same_finite_scope_and_preserves_count_guards():
     _assert_collection(_workflow("ci.yml"))
+
+
+def _assert_synthetic_cell_runner(workflow, job):
+    step = _step(workflow, job, "Run synthetic Mind cell witnesses")
+    assert set(step) == {"name", "run"}
+    assert shlex.split(step["run"]) == ["python", "-B", "tools/run_mind_cell_synthetic_ci.py"]
+
+
+@pytest.mark.parametrize("filename,job", [("ci.yml", "test"), ("tests.yml", "unified")])
+def test_synthetic_cell_runner_is_unconditional_and_isolated(filename, job):
+    workflow = _workflow(filename)
+    _assert_synthetic_cell_runner(workflow, job)
+    mutant = deepcopy(workflow)
+    _step(mutant, job, "Run synthetic Mind cell witnesses")["if"] = "false"
+    with pytest.raises(AssertionError):
+        _assert_synthetic_cell_runner(mutant, job)
+    mutant = deepcopy(workflow)
+    _step(mutant, job, "Run synthetic Mind cell witnesses")["run"] = "python -m pytest tests/"
+    with pytest.raises(AssertionError):
+        _assert_synthetic_cell_runner(mutant, job)
+
+
+@pytest.mark.parametrize("filename,job,step,collection", [
+    ("ci.yml", "test", "Run tests", False),
+    ("tests.yml", "unified", "Run pytest", False),
+    ("ci.yml", "test", "Check test count", True),
+])
+def test_interpreter_identity_is_selected_once_for_each_mind_command(filename, job, step, collection):
+    text = _step(_workflow(filename), job, step)["run"]
+    if collection:
+        match = re.search(r'if ! MIND_OUT=\$\((python -m pytest [^\n]+) 2>/dev/null\); then', text)
+        assert match
+        command = match.group(1)
+    else:
+        command = text.strip().splitlines()[1]
+    assert shlex.split(command).count("sandbox/mind/step2/test_interpreter_identity.py") == 1
+
+
+@pytest.mark.parametrize("filename,job,step,collection", [
+    ("ci.yml", "test", "Run tests", False),
+    ("tests.yml", "unified", "Run pytest", False),
+    ("ci.yml", "test", "Check test count", True),
+])
+def test_active_snapshot_is_selected_once_for_each_mind_command(filename, job, step, collection):
+    text = _step(_workflow(filename), job, step)["run"]
+    if collection:
+        match = re.search(r'if ! MIND_OUT=\$\((python -m pytest [^\n]+) 2>/dev/null\); then', text)
+        assert match
+        command = match.group(1)
+    else:
+        command = text.strip().splitlines()[1]
+    assert shlex.split(command).count("sandbox/mind/step2/test_shared_index_checkpoint_active_snapshot.py") == 1
 
 
 def _assert_mind_entrypoint(workflow, step_name):
@@ -141,8 +226,8 @@ def test_mutant_whole_sandbox_collection_is_killed():
         _assert_collection(mutant)
 
 
-def test_scope_contains_only_ten_unique_explicit_python_test_files():
-    assert len(MIND_TESTS) == len(set(MIND_TESTS)) == 10
+def test_scope_contains_only_42_unique_explicit_python_test_files():
+    assert len(MIND_TESTS) == len(set(MIND_TESTS)) == 43
     assert all(p.startswith("sandbox/mind/") and Path(p).name.startswith("test_")
                and p.endswith(".py") and ".." not in Path(p).parts for p in MIND_TESTS)
     assert not any("remember" in p or "learn" in p or "run_" in Path(p).name for p in MIND_TESTS)
@@ -216,7 +301,7 @@ def test_native_bash_runs_both_scopes_and_stops_on_full_suite_failure(
         assert calls[1][len(mind_prefix):len(mind_prefix) + len(MIND_TESTS)] == list(MIND_TESTS)
 
 
-def test_native_bash_collection_passes_the_same_ten_paths(tmp_path):
+def test_native_bash_collection_passes_the_same_explicit_paths(tmp_path):
     done, calls = _run_block(tmp_path, _step(_workflow("ci.yml"), "test", "Check test count")["run"])
     assert done.returncode == 0, done.stdout + done.stderr
     assert calls == [["tests/", "--collect-only", "-q"], ["-m", "pytest", *MIND_TESTS, "--collect-only", "-q"]]

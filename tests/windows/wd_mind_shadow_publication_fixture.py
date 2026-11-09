@@ -22,14 +22,14 @@ from types import SimpleNamespace
 
 
 PINS = {
-    'producer_sha256': ('sandbox/mind/mind_capture_producer.py', '93edbaddc5b82abe8ed454db02f0668e281a586aa0c192bb026b50dc9f50ca9c'),
+    'producer_sha256': ('sandbox/mind/mind_capture_producer.py', '0b6dd73e2f2d3330fcacfd16cd163b6cd761c78b811f39e77258042c0218bc3b'),
     'core_sha256': ('tools/wd_bridge_mind.py', '83c1c43d4e6038711c7a7e90781693f27733d38ba0da51975a06af17599a8be1'),
 }
 # Only these two measured raw encodings of each immutable Git blob qualify.
 # Unknown/mixed encodings are NOT normalized into acceptance. Actual raw hashes
 # remain in the run binding; function segments use LF only after raw validation.
 CANONICAL_PINS = {
-    'producer_sha256': '299dce580d9d8fbdf3c5dbeb7fdc793c3d51ddb4913134a334456b7f282e8c61',
+    'producer_sha256': 'c8850e6374b9b259235695243f488e1542ee7433a7b2864ad95bf52611ebaecd',
     'core_sha256': '8555bd3fda512078ba61e3638af7f17ba3de55be11e126f6a7740ae140a67211',
 }
 OLD_POINTER = b'{"fixture":"A4","last_ok":"old.capture"}\n'

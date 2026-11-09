@@ -1,0 +1,5 @@
+{
+  "schema": "wd.mind-public-vocabulary.v1",
+  "components": ["mind", "bridge", "startup"],
+  "tags": []
+}

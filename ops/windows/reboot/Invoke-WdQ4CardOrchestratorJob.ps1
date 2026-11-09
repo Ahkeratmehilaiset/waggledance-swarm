@@ -1,0 +1,298 @@
+#requires -Version 5.1
+<# Fixed, opt-in staging entry. Job timeout covers the worker and its children;
+   this host's initial pin checks and Job compilation are outside that timeout.
+   No installation or pointer activation. UNKNOWN means do not retry blindly.
+   Pins are caller assertions, not authentication or hostile-user isolation. #>
+[CmdletBinding(PositionalBinding=$false)]
+param(
+    [switch]$Run,
+    [string]$BundleRoot='', [string]$ExpectedCommit='', [string]$ExpectedManifestSha256='',
+    [string]$RequestPath='', [string]$ExpectedRequestSha256='',
+    [string]$RuntimePath='', [string]$ExpectedRuntimeSha256='',
+    [string]$ScratchRoot='', [string]$ExpectedHostSha256='', [string]$ExpectedBridgePythonSha256='',
+    [string]$ReceiptPath='',
+    [ValidateRange(1,1800)][int]$TimeoutSeconds=1800
+)
+$ErrorActionPreference='Stop'
+if (-not $Run) { [Console]::Out.WriteLine('{"status":"OFF"}'); return }
+$entered=$false
+try {
+    if ($PSVersionTable.PSEdition -ceq 'Desktop') {
+        Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+    }
+    foreach ($pin in @($ExpectedManifestSha256,$ExpectedRequestSha256,$ExpectedRuntimeSha256,$ExpectedHostSha256,$ExpectedBridgePythonSha256)) {
+        if ($pin -cnotmatch '^[0-9a-f]{64}$') { throw 'pin' }
+    }
+    if ($ExpectedCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'commit' }
+    function CheckedPath([string]$Path,[bool]$Directory=$false) {
+        if ($Path -notmatch '^C:\\' -or $Path.Contains('%') -or $Path -match '(^|\\)\.\.?($|\\)') { throw 'path' }
+        $full=[IO.Path]::GetFullPath($Path)
+        $item=Get-Item -LiteralPath $full -Force -ErrorAction Stop
+        if ([bool]$item.PSIsContainer -ne $Directory) { throw 'type' }
+        $walk=$item
+        while ($null -ne $walk) {
+            if (($walk.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'link' }
+            if ($walk.PSIsContainer) { $walk=$walk.Parent } else { $walk=$walk.Directory }
+        }
+        return $full
+    }
+    function ExactHash([string]$Path,[string]$Pin) {
+        if ($Pin -cnotmatch '^[0-9a-fA-F]{64}$') { throw 'pin' }
+        $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        try { $h=[Security.Cryptography.SHA256]::Create(); try { $actual=[BitConverter]::ToString($h.ComputeHash($stream)).Replace('-','') } finally { $h.Dispose() } }
+        finally { $stream.Dispose() }
+        if ($actual -cne $Pin.ToUpperInvariant()) { throw 'hash' }
+    }
+    function PinnedBytes([string]$Path,[string]$Pin,[int]$Limit) {
+        if ($Pin -cnotmatch '^[0-9a-fA-F]{64}$') { throw 'pin' }
+        $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        try {
+            if ($stream.Length -le 0 -or $stream.Length -gt $Limit) { throw 'size' }
+            $bytes=New-Object byte[] ([int]$stream.Length); $offset=0
+            while ($offset -lt $bytes.Length) {
+                $n=$stream.Read($bytes,$offset,$bytes.Length-$offset); if ($n -le 0) { throw 'read' }; $offset+=$n
+            }
+            if ($stream.ReadByte() -ne -1) { throw 'size' }
+        } finally { $stream.Dispose() }
+        $h=[Security.Cryptography.SHA256]::Create()
+        try { $actual=[BitConverter]::ToString($h.ComputeHash($bytes)).Replace('-','') } finally { $h.Dispose() }
+        if ($actual -cne $Pin.ToUpperInvariant()) { throw 'hash' }
+        return ,$bytes
+    }
+    function PinnedJson([string]$Path,[string]$Pin,[int]$Limit) {
+        $bytes=PinnedBytes $Path $Pin $Limit
+        $text=[Text.UTF8Encoding]::new($false,$true).GetString($bytes)
+        return ($text | ConvertFrom-Json -ErrorAction Stop)
+    }
+    $bundle=CheckedPath $BundleRoot $true
+    $request=CheckedPath $RequestPath; $runtime=CheckedPath $RuntimePath
+    $manifest=CheckedPath (Join-Path $bundle 'deployment-manifest.json')
+    $bootstrap=CheckedPath (Join-Path $bundle 'tools-bootstrap\tools\wd_q4_card_orchestrator_runtime_bootstrap.py')
+    $wrapper=CheckedPath (Join-Path $bundle 'Invoke-WdBridgePython.ps1')
+    $context=CheckedPath (Join-Path $bundle 'BridgeCodeContext.ps1')
+    $fleet=CheckedPath (Join-Path $bundle 'wd-fleet.json')
+    $jobHelper=CheckedPath (Join-Path $bundle 'WdQ4ProcessJob.ps1')
+    $self=CheckedPath (Join-Path $bundle 'Invoke-WdQ4CardOrchestratorJob.ps1')
+    if (-not [IO.Path]::GetFullPath($PSCommandPath).Equals($self,[StringComparison]::OrdinalIgnoreCase)) { throw 'self' }
+    $m=PinnedJson $manifest $ExpectedManifestSha256 4194304
+    $r=PinnedJson $runtime $ExpectedRuntimeSha256 65536
+    $q=PinnedJson $request $ExpectedRequestSha256 1048576
+    if ([int]$m.schema_version -ne 1 -or [string]$m.source_commit -cne $ExpectedCommit -or
+        [string]$r.schema -cne 'wd.q4-card-orchestrator-runtime.v1' -or
+        [string]$q.schema -cne 'wd.q4-card-real-candidate-request.v1' -or
+        [string]$r.manifest_sha256 -cne $ExpectedManifestSha256 -or
+        -not [IO.Path]::GetFullPath([string]$r.bundle_root).Equals($bundle,[StringComparison]::OrdinalIgnoreCase)) { throw 'binding' }
+    foreach ($pair in @(@('Invoke-WdQ4CardOrchestratorJob.ps1',$self),@('Invoke-WdBridgePython.ps1',$wrapper),
+                         @('BridgeCodeContext.ps1',$context),
+                         @('tools-bootstrap/tools/wd_q4_card_orchestrator_runtime_bootstrap.py',$bootstrap))) {
+        ExactHash $pair[1] ([string]$m.files.PSObject.Properties[$pair[0]].Value)
+    }
+    $fleetData=PinnedJson $fleet ([string]$m.files.'wd-fleet.json') 1048576
+    $bridgePython=CheckedPath ([string]$fleetData.bridge_python.executable)
+    ExactHash $bridgePython $ExpectedBridgePythonSha256
+    $helperBytes=PinnedBytes $jobHelper ([string]$m.files.'WdQ4ProcessJob.ps1') 1048576
+    $helperText=[Text.UTF8Encoding]::new($false,$true).GetString($helperBytes)
+    $python=CheckedPath ([string]$r.interpreter_path)
+    $pythonPin=[string]$r.interpreter_sha256; ExactHash $python $pythonPin
+    $hostPath=CheckedPath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
+    ExactHash $hostPath $ExpectedHostSha256
+    $snapshot=CheckedPath ([string]$q.snapshot_template.path)
+    $decision=CheckedPath ([string]$q.decision.path)
+    $finish=CheckedPath ([string]$q.finish.path)
+    $snapshotData=PinnedJson $snapshot ([string]$q.snapshot_template.sha256) 1048576
+    $finishData=PinnedJson $finish ([string]$q.finish.sha256) 1048576
+    $decisionData=PinnedJson $decision ([string]$q.decision.sha256) 1048576
+    if ([string]$decisionData.source_mode -cne 'operator_authorized_source') { throw 'mode' }
+    $sharedStage=''; $sharedGeneration=''
+    if ($null -ne $finishData.composer_options.PSObject.Properties['shared_stage_root']) {
+        $sharedStage=CheckedPath ([string]$finishData.composer_options.shared_stage_root) $true
+        $sharedGeneration=[string]$finishData.composer_options.generation
+        if ($sharedGeneration -cnotmatch '^(?:[0-9a-f]{40}|[0-9a-f]{64})$') { throw 'generation' }
+    }
+    $scratch=CheckedPath $ScratchRoot $true
+    $receipt=''
+    if ($ReceiptPath) {
+        if ($ReceiptPath -notmatch '^C:\\' -or $ReceiptPath.Contains('%') -or
+            $ReceiptPath -match '(^|\\)\.\.?($|\\)') { throw 'receipt' }
+        $receipt=[IO.Path]::GetFullPath($ReceiptPath)
+        $parent=CheckedPath ([IO.Path]::GetDirectoryName($receipt)) $true
+        $leaf=[IO.Path]::GetFileName($receipt)
+        if (-not $parent.Equals($scratch,[StringComparison]::OrdinalIgnoreCase) -or
+            $leaf -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.json$' -or
+            (Test-Path -LiteralPath $receipt)) { throw 'receipt' }
+    }
+    if ($null -ne ('WdQ4CardJobPathsV1' -as [type])) { throw 'type' }
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+public static class WdQ4CardJobPathsV1 {
+ [StructLayout(LayoutKind.Sequential)] struct FileTime { public uint low,high; }
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern SafeFileHandle CreateFile(string n,uint a,uint s,IntPtr p,uint d,uint f,IntPtr t);
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandle(SafeFileHandle h,StringBuilder p,uint n,uint f);
+ [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetProcessTimes(IntPtr h,out FileTime c,out FileTime e,out FileTime k,out FileTime u);
+ public static long CreationFiletime() { FileTime c,e,k,u;
+  if(!GetProcessTimes(GetCurrentProcess(),out c,out e,out k,out u)) throw new Win32Exception(Marshal.GetLastWin32Error());
+  return unchecked((long)(((ulong)c.high<<32)|c.low)); }
+ public static string Final(string p) { using(var h=CreateFile(p,0,7,IntPtr.Zero,3,0x02000000,IntPtr.Zero)) {
+  if(h.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error()); var b=new StringBuilder(32768);
+  uint n=GetFinalPathNameByHandle(h,b,(uint)b.Capacity,0); if(n==0||n>=b.Capacity) throw new Win32Exception(Marshal.GetLastWin32Error()); return b.ToString().TrimEnd('\\'); } }
+}
+'@ -ErrorAction Stop
+    $scratchFinal=[WdQ4CardJobPathsV1]::Final($scratch)
+    $protected=@($bundle,(Split-Path -Parent $python),(Split-Path -Parent $bridgePython),(Split-Path -Parent $hostPath),$request,$runtime,$snapshot,$decision,$finish,
+        [string]$r.runtime_root,[string]$snapshotData.trusted_model_root,[string]$q.output_root,[string]$q.generation_root,
+        [string]$decisionData.source_path,(Split-Path -Parent ([string]$decisionData.source_path)),
+        [string]$decisionData.anchor.root,[string]$decisionData.git.repository,
+        [string]$finishData.composer_options.bundle_store_root,[string]$finishData.composer_options.active_bundle_root)
+    if ($sharedStage) { $protected+= $sharedStage }
+    foreach ($item in @($decisionData.inputs.PSObject.Properties)) { $protected+= [string]$item.Value.path }
+    foreach ($item in $protected) {
+        $checked=CheckedPath $item ([IO.Directory]::Exists($item))
+        $other=[WdQ4CardJobPathsV1]::Final($checked)
+        if ($scratchFinal.Equals($other,[StringComparison]::OrdinalIgnoreCase) -or
+            $scratchFinal.StartsWith($other+'\',[StringComparison]::OrdinalIgnoreCase) -or
+            $other.StartsWith($scratchFinal+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'scratch' }
+    }
+    . ([scriptblock]::Create($helperText))
+    function PSLiteral([string]$Value) {
+        if ($Value -match '[^\x20-\x7e]') { throw 'argument' }
+        return "'" + $Value.Replace("'","''") + "'"
+    }
+    foreach ($value in @($python,$bootstrap,$manifest,$request,$runtime,$wrapper,$bridgePython,$hostPath,$scratch)) {
+        [void](PSLiteral $value)
+    }
+    # Cooperative, one-attempt receipt. A same-user process can forge it;
+    # it is a guard against accidental direct invocation, not authentication.
+    $random=New-Object byte[] 32; $rng=[Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($random) } finally { $rng.Dispose() }
+    $nonce=[BitConverter]::ToString($random).Replace('-','').ToLowerInvariant()
+    $tokenPath=Join-Path $scratch ('wd-q4-card-'+$nonce.Substring(0,32)+'.json')
+    $creation=[long][WdQ4CardJobPathsV1]::CreationFiletime()
+    $tokenDoc=[ordered]@{schema='wd.q4-card-launch-token.v1';launcher_pid=[int]$PID;
+        launcher_creation_filetime=$creation;scratch_root=$scratch;nonce=$nonce;
+        manifest_sha256=$ExpectedManifestSha256;runtime_sha256=$ExpectedRuntimeSha256;request_sha256=$ExpectedRequestSha256}
+    $tokenRaw=[Text.UTF8Encoding]::new($false,$true).GetBytes(($tokenDoc | ConvertTo-Json -Compress))
+    $entered=$true
+    $tokenStream=[IO.File]::Open($tokenPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try { $tokenStream.Write($tokenRaw,0,$tokenRaw.Length); $tokenStream.Flush($true) } finally { $tokenStream.Dispose() }
+    $tokenHasher=[Security.Cryptography.SHA256]::Create()
+    try { $tokenPin=([BitConverter]::ToString($tokenHasher.ComputeHash($tokenRaw)).Replace('-','')).ToLowerInvariant() }
+    finally { $tokenHasher.Dispose() }
+    # A fixed worker program exists only inside this launch, after all scratch
+    # checks; the public script has no callable InternalWorker bypass. Values
+    # enter it solely as escaped literals and cannot select code or commands.
+    # This candidate bundle's wrapper pin is local to the Job child; the
+    # calling lane's inherited bridge pins are never modified.
+    $wrapperProgram="`$ErrorActionPreference='Stop'`n" +
+        "`$env:WD_REBOOT_EXPECTED_MANIFEST_HASH=$(PSLiteral $ExpectedManifestSha256)`n" +
+        "`$env:WD_BRIDGE_PYTHON_WRAPPER=$(PSLiteral $wrapper)`n" +
+        "`$env:WD_BRIDGE_PYTHON=$(PSLiteral $bridgePython)`n" +
+        "`$env:WD_BRIDGE_PYTHON_SHA256=$(PSLiteral $ExpectedBridgePythonSha256)`n" +
+        "`$env:WD_Q4_CARD_JOB_TOKEN_PATH=$(PSLiteral $tokenPath)`n" +
+        "`$env:WD_Q4_CARD_JOB_TOKEN_SHA256=$(PSLiteral $tokenPin)`n" +
+        "`$request=$(PSLiteral $request)`n`$requestPin=$(PSLiteral $ExpectedRequestSha256)`n" +
+        "`$runtime=$(PSLiteral $runtime)`n`$runtimePin=$(PSLiteral $ExpectedRuntimeSha256)`n"
+    $wrapperProgram+=@'
+$env:PSModulePath=Join-Path $PSHOME 'Modules'
+$env:PATH=(Join-Path $env:SystemRoot 'System32')+';'+$env:SystemRoot
+$env:PATHEXT='.COM;.EXE;.BAT;.CMD'
+$wrapperEntered=$false
+try {
+ $script:bytes=0
+ $wrapperEntered=$true
+ & $env:WD_BRIDGE_PYTHON_WRAPPER -VerifyPackage -Tool 'tools/wd_q4_card_orchestrator_runtime_bootstrap.py' `
+   --enable --request $request --request-sha256 $requestPin --manifest-sha256 $env:WD_REBOOT_EXPECTED_MANIFEST_HASH `
+   --runtime $runtime --runtime-sha256 $runtimePin | ForEach-Object {
+    $line=[string]$_; $script:bytes += [Text.Encoding]::UTF8.GetByteCount($line)+1
+    if($script:bytes -gt 4096) { throw 'output' }; [Console]::Out.WriteLine($line)
+   }
+ $code=$global:LASTEXITCODE; if($null -eq $code) { throw 'exit' }; exit $code
+} catch {
+ if(-not $wrapperEntered) { [Console]::Out.WriteLine('{"status":"REFUSED"}'); exit 2 }
+ [Console]::Out.WriteLine('{"status":"UNKNOWN"}'); exit 3
+}
+'@
+    $wrapperEncoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapperProgram))
+    $worker="`$python=$(PSLiteral $python)`n`$bootstrap=$(PSLiteral $bootstrap)`n" +
+        "`$manifest=$(PSLiteral $manifest)`n`$request=$(PSLiteral $request)`n`$runtime=$(PSLiteral $runtime)`n" +
+        "`$wrapper=$(PSLiteral $wrapper)`n`$bridgePython=$(PSLiteral $bridgePython)`n`$hostPath=$(PSLiteral $hostPath)`n" +
+        "`$wrapperEncoded=$(PSLiteral $wrapperEncoded)`n`$wrapperPin=$(PSLiteral ([string]$m.files.'Invoke-WdBridgePython.ps1'))`n" +
+        "`$bridgePythonPin=$(PSLiteral $ExpectedBridgePythonSha256)`n`$hostPin=$(PSLiteral $ExpectedHostSha256)`n" +
+        "`$pythonPin=$(PSLiteral $pythonPin)`n`$bootstrapPin=$(PSLiteral ([string]$m.files.'tools-bootstrap/tools/wd_q4_card_orchestrator_runtime_bootstrap.py'))`n" +
+        "`$manifestPin=$(PSLiteral $ExpectedManifestSha256)`n`$requestPin=$(PSLiteral $ExpectedRequestSha256)`n`$runtimePin=$(PSLiteral $ExpectedRuntimeSha256)`n"
+    $worker+=@'
+$ErrorActionPreference='Stop'
+function Exact([string]$p,[string]$expected) {
+ $s=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+ try { $h=[Security.Cryptography.SHA256]::Create(); try { $v=[BitConverter]::ToString($h.ComputeHash($s)).Replace('-','') } finally { $h.Dispose() } }
+ finally { $s.Dispose() }; if($v -cne $expected.ToUpperInvariant()) { throw 'pin' }
+}
+$proc=$null; $started=$false
+try {
+ Exact $manifest $manifestPin; Exact $bootstrap $bootstrapPin; Exact $python $pythonPin
+ Exact $request $requestPin; Exact $runtime $runtimePin; Exact $wrapper $wrapperPin
+ Exact $bridgePython $bridgePythonPin; Exact $hostPath $hostPin
+ $psi=[Diagnostics.ProcessStartInfo]::new(); $psi.FileName=$hostPath
+ $psi.Arguments='-NoProfile -NonInteractive -EncodedCommand '+$wrapperEncoded
+ $psi.UseShellExecute=$false; $psi.CreateNoWindow=$true; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true
+ $proc=[Diagnostics.Process]::new(); $proc.StartInfo=$psi
+ if(-not $proc.Start()) { throw 'start' }; $started=$true
+ $drain=$proc.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null)
+ $buffer=New-Object byte[] 1024; $total=0; $out=[Console]::OpenStandardOutput()
+ while(($n=$proc.StandardOutput.BaseStream.Read($buffer,0,$buffer.Length)) -gt 0) {
+  $total+=$n; if($total -gt 4096) { throw 'output' }; $out.Write($buffer,0,$n)
+ }
+ $proc.WaitForExit(); if(-not $drain.Wait(2000)) { throw 'stderr' }
+ $code=$proc.ExitCode; exit $code
+} catch { [Console]::Out.WriteLine('{"status":"UNKNOWN"}'); exit 3 }
+finally {
+ if($null -ne $proc) {
+  try { if($started -and -not $proc.HasExited) { $proc.Kill(); [void]$proc.WaitForExit(2000) } } catch { }
+  $proc.Dispose()
+ }
+}
+'@
+    $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($worker))
+    $args=@('-NoProfile','-NonInteractive','-EncodedCommand',$encoded)
+    $result=Invoke-WdQ4ProcessJob -Executable $hostPath -Arguments $args -WorkingDirectory $bundle `
+        -ScratchRoot $scratch -InputBytes ([byte[]]@()) -TimeoutSeconds $TimeoutSeconds -MaxOutputBytes 8192 -DetailedOutcome
+    if ([string]$result.Outcome -cne 'completed' -or [string]$result.Cleanup -cne 'confirmed' -or
+        $null -eq $result.ExitCode -or $null -eq $result.Stdout) { throw 'job' }
+    $text=[Text.UTF8Encoding]::new($false,$true).GetString([byte[]]$result.Stdout)
+    if ($result.ExitCode -eq 2 -and $text -cmatch '^\{"status":"REFUSED"\}\r?\n$') {
+        [Console]::Out.WriteLine('{"status":"REFUSED"}'); exit 2
+    }
+    if ($result.ExitCode -ne 0) { throw 'job' }
+    if ($text -cnotmatch '^\{"pointer_path":"(?:[^"\\\x00-\x1f]|\\.)*","pointer_sha256":"[0-9a-f]{64}","status":"PREPARED"\}\r?\n$') { throw 'output' }
+    $answer=$text | ConvertFrom-Json -ErrorAction Stop
+    $pointer=CheckedPath ([string]$answer.pointer_path)
+    ExactHash $request $ExpectedRequestSha256
+    ExactHash $finish ([string]$q.finish.sha256)
+    $expected=if ($sharedStage) {
+        Join-Path (CheckedPath $sharedStage $true) ('candidate-pointer-'+$sharedGeneration+'.json')
+    } else {
+        Join-Path (CheckedPath ([string]$q.generation_root) $true) 'stage\candidate-pointer.json'
+    }
+    if (-not $pointer.Equals($expected,[StringComparison]::OrdinalIgnoreCase)) { throw 'pointer' }
+    ExactHash $pointer ([string]$answer.pointer_sha256)
+    if ($receipt) {
+        $doc=[ordered]@{
+            schema='wd.q4-card-refresh-job.v1'; outcome='completed'; cleanup='confirmed'; exit_code=0
+            request=[ordered]@{path=$request;sha256=$ExpectedRequestSha256}
+            result=[ordered]@{pointer_path=[string]$answer.pointer_path;pointer_sha256=[string]$answer.pointer_sha256;status='PREPARED'}
+        }
+        $raw=[Text.UTF8Encoding]::new($false,$true).GetBytes(($doc | ConvertTo-Json -Depth 5 -Compress))
+        if ($raw.Length -gt 4096) { throw 'receipt' }
+        $stream=[IO.File]::Open($receipt,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+        try { $stream.Write($raw,0,$raw.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    }
+    [Console]::Out.Write($text)
+    exit 0
+} catch {
+    if ($entered) { [Console]::Out.WriteLine('{"status":"UNKNOWN"}'); exit 3 }
+    [Console]::Out.WriteLine('{"status":"REFUSED"}'); exit 2
+}

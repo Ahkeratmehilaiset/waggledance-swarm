@@ -1,0 +1,1229 @@
+"""Initial real P1 card input builder: default OFF, hash-pinned spec, exclusive audit outputs.
+
+Synthetic only: a throwaway local git repository, the tracked fleet and card configs copied into the test dir, and a
+synthetic prefix pin receipt. Nothing reads a bridge log, publishes a card or touches an installed bundle.
+"""
+import hashlib
+import importlib
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+NOW = "2026-11-07T14:00:00Z"
+UNTIL = "2026-11-08T14:00:00Z"
+UNTIL2 = "2026-11-08T15:00:00Z"
+_CONFIGS = {"policy": "shared_card_non_review_policy.json", "public_policy": "shared_card_public_status_policy.json",
+            "card_policy": "shared_card_writer_policy.json", "vocabulary": "shared_card_vocabulary.json",
+            "path_allowlist": "shared_card_paths.json"}
+
+
+def sha(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def write(path, value):
+    raw = value if isinstance(value, bytes) else json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return {"path": str(path), "sha256": sha(raw)}
+
+
+def tree(root):
+    return {str(p.relative_to(root)): (p.read_bytes() if p.is_file() else None) for p in sorted(Path(root).rglob("*"))}
+
+
+@pytest.fixture
+def tmp_path(tmp_path_factory):
+    root = tmp_path_factory.mktemp("initial-card-inputs") / ".codex-audit"
+    root.mkdir()
+    return root
+
+
+@pytest.fixture
+def mod():
+    return importlib.import_module("tools.wd_q4_initial_card_inputs")
+
+
+@pytest.fixture
+def repo(tmp_path):
+    """Synthetic repository: main = c1 <- c2 <- c3; side = c1 <- s1 (never reachable from c3)."""
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("git unavailable")
+    git = str(Path(git).resolve())
+    path = tmp_path / "repo"
+    path.mkdir()
+    env = {"GIT_AUTHOR_NAME": "synthetic", "GIT_AUTHOR_EMAIL": "synthetic.invalid", "GIT_COMMITTER_NAME": "synthetic",
+           "GIT_COMMITTER_EMAIL": "synthetic.invalid", "GIT_CONFIG_GLOBAL": "NUL", "GIT_CONFIG_NOSYSTEM": "1",
+           "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")}
+
+    def run(*args):
+        return subprocess.run([git, "-C", str(path), *args], env=env, check=True, capture_output=True,
+                              text=True).stdout.strip()
+    run("init", "-q", "-b", "main")
+    commits = []
+    for name in ("c1", "c2", "c3"):
+        run("commit", "-q", "--allow-empty", "-m", name)
+        commits.append(run("rev-parse", "HEAD"))
+    run("checkout", "-q", "-b", "side", commits[0])
+    run("commit", "-q", "--allow-empty", "-m", "s1")
+    side = run("rev-parse", "HEAD")
+    run("checkout", "-q", "-b", "side2", commits[0])
+    run("commit", "-q", "--allow-empty", "-m", "s2")
+    side2 = run("rev-parse", "HEAD")
+    run("checkout", "-q", "main")
+    return {"git": git, "path": path, "commits": commits, "side": side, "side2": side2}
+
+
+@pytest.fixture
+def base(tmp_path, repo):
+    configs = {name: write(tmp_path / "configs" / file, (ROOT / "configs/mind" / file).read_bytes())
+               for name, file in _CONFIGS.items()}
+    fleet = write(tmp_path / "fleet" / "wd-fleet.json", (ROOT / "ops/windows/reboot/wd-fleet.json").read_bytes())
+    git = {"executable": repo["git"], "sha256": sha(Path(repo["git"]).read_bytes()), "repository": str(repo["path"])}
+    return {"configs": configs, "fleet": fleet, "git": git, "repo": repo, "tmp": tmp_path}
+
+
+def publish_spec(base, **changes):
+    c1, c2, c3 = base["repo"]["commits"]
+    spec = {"schema": "wd.q4-initial-card-inputs-spec.v1", "phase": "publish", "now_utc": NOW,
+            "fleet": base["fleet"], "configs": base["configs"], "git": base["git"],
+            "anchor": {"ref": "refs/heads/main", "commit": c3},
+            "cards": [{"pr": 1951, "head": c2, "author": "codex-lead-1", "valid_until_utc": UNTIL},
+                      {"pr": 1950, "head": c1, "author": "codex-lead-1", "valid_until_utc": UNTIL}]}
+    spec.update(changes)
+    return spec
+
+
+def run_spec(mod, base, spec, name):
+    out = base["tmp"] / ("out-" + name)
+    out.mkdir()
+    pin = write(base["tmp"] / "specs" / (name + ".json"), spec)
+    return out, pin, lambda: mod.build(enabled=True, spec_path=pin["path"], spec_sha256=pin["sha256"], output_root=str(out))
+
+
+def test_off_touches_nothing(mod):
+    class Untouchable:
+        def __getattribute__(self, _):
+            raise AssertionError("OFF read an input")
+    assert mod.build(spec_path=Untouchable()) == {"status": "OFF"}
+    proc = subprocess.run([sys.executable, "-B", "-m", "tools.wd_q4_initial_card_inputs"], cwd=ROOT,
+                          capture_output=True, timeout=30)
+    assert proc.returncode == 0 and json.loads(proc.stdout) == {"status": "OFF"}
+
+
+DRAFTS = {"roster.json", "approved-git-anchors.json", "claim-draft-pr1951.json", "claim-draft-pr1950.json"}
+
+
+def test_publish_default_writes_only_unverified_drafts_never_a_publish_request(mod, base):
+    """Reachability from a pinned anchor commit proves neither a merge nor green checks, and no independently
+    verifiable authority for either exists here, so the default output is a non-publishable draft."""
+    from tools import wd_q4_public_card_publish_cli as publish_cli
+    assert not hasattr(mod, "_MERGED_GREEN_AUTHORITY")  # no seam: only validated evidence yields a request
+    out, _, build = run_spec(mod, base, publish_spec(base), "drafts")
+    result = build()
+    assert result["status"] == "WRITTEN" and result["phase"] == "publish"
+    files = tree(out)
+    manifest = json.loads(files["inputs-manifest.json"])
+    assert set(manifest["files"]) == DRAFTS and set(files) == DRAFTS | {"inputs-manifest.json"}
+    assert manifest["verified_claims"] == 0
+    draft = json.loads(files["claim-draft-pr1951.json"])
+    assert draft == {"schema": "wd.q4-initial-card-claim-draft.v1", "truth": "UNVERIFIED", "publishable": False,
+                     "pr": 1951, "head": base["repo"]["commits"][1], "author": "codex-lead-1",
+                     "valid_until_utc": UNTIL,
+                     "observed": {"anchor": {"refs/heads/main": base["repo"]["commits"][2]},
+                                  "head_reachable_from_anchor_commit": True},
+                     "missing_evidence": ["checks_green_by_verifiable_authority",
+                                          "pr_merged_by_verifiable_authority"]}
+    assert "claim" not in draft and b"green" not in files["claim-draft-pr1951.json"].replace(b"checks_green", b"")
+    with pytest.raises(publish_cli.Refused):
+        publish_cli.run(enabled=True, request_path=str(out / "claim-draft-pr1951.json"),
+                        request_sha256=manifest["files"]["claim-draft-pr1951.json"])
+
+
+CONTEXTS = ["lock-resolver-check", "security-scan", "test (3.11)", "test (3.12)", "test (3.13)", "unified"]
+OBSERVED = "2026-11-07T13:50:00Z"
+
+
+def gh_capture(pr, pr_head, merge, **changes):
+    """Synthetic capture in the exact shape of gh pr view --json baseRefName,headRefOid,mergeCommit,mergedAt,number,
+    state,statusCheckRollup (synthetic commits and URLs only)."""
+    checks = [{"__typename": "CheckRun", "completedAt": "2026-10-28T20:30:00Z", "conclusion": "SUCCESS",
+               "detailsUrl": "https://example.invalid/run/%d" % i, "name": name,
+               "startedAt": "2026-10-28T20:00:00Z", "status": "COMPLETED", "workflowName": "Tests"}
+              for i, name in enumerate(CONTEXTS)]
+    value = {"baseRefName": "main", "headRefOid": pr_head, "mergeCommit": {"oid": merge},
+             "mergedAt": "2026-10-28T21:00:00Z", "number": pr, "state": "MERGED", "statusCheckRollup": checks}
+    value.update(changes)
+    return value
+
+
+def check_runs(pr_head, **changes):
+    """Synthetic capture in the shape of the REST commits/{PR head}/check-runs answer (reduced app object)."""
+    runs = [{"id": 1000 + i, "name": name, "node_id": "synthetic-%d" % i, "head_sha": pr_head,
+             "external_id": "synthetic", "url": "https://example.invalid/check-runs/%d" % i,
+             "html_url": "https://example.invalid/html/%d" % i, "details_url": "https://example.invalid/d/%d" % i,
+             "status": "completed", "conclusion": "success", "started_at": "2026-10-28T20:00:00Z",
+             "completed_at": "2026-10-28T20:30:00Z",
+             "output": {"title": None, "summary": None, "text": None, "annotations_count": 0,
+                        "annotations_url": "https://example.invalid/a/%d" % i},
+             "check_suite": {"id": 7}, "app": {"id": 15368, "slug": "github-actions"}, "pull_requests": []}
+            for i, name in enumerate(CONTEXTS)]
+    value = {"total_count": len(runs), "check_runs": runs}
+    value.update(changes)
+    return value
+
+
+def evidence_spec(base, captures=None, runs=None):
+    tmp = base["tmp"]
+    captures, runs = captures or {}, runs or {}
+    spec = publish_spec(base)
+    for card, pr_head in zip(spec["cards"], (base["repo"]["side"], base["repo"]["side2"])):
+        view = captures.get(card["pr"], gh_capture(card["pr"], pr_head, card["head"]))
+        listed = runs.get(card["pr"], check_runs(pr_head))
+        card["evidence"] = {"pr_capture": write(tmp / "captures" / ("pr-%d.json" % card["pr"]), view),
+                            "check_runs": write(tmp / "captures" / ("check-runs-%d.json" % card["pr"]), listed),
+                            "observer": "codex-lead-1", "observed_at_utc": OBSERVED}
+    return spec
+
+
+def test_observed_evidence_binds_both_squash_prs_with_merge_commit_head_and_sidecar(mod, base, monkeypatch):
+    from tools import wd_q4_public_card_publish_cli as publish_cli
+    from tools import wd_q4_roster_from_fleet as roster_mod
+    c1, c2, c3 = base["repo"]["commits"]
+    side, side2 = base["repo"]["side"], base["repo"]["side2"]
+    git = [base["git"]["executable"], "-C", base["git"]["repository"], "merge-base", "--is-ancestor"]
+    assert subprocess.run(git + [side, c3]).returncode == 1 and subprocess.run(git + [side2, c3]).returncode == 1
+    spec = evidence_spec(base)
+    out, _, build = run_spec(mod, base, spec, "evidence")
+    result = build()
+    assert result["status"] == "WRITTEN" and result["phase"] == "publish"
+    files = tree(out)
+    manifest = json.loads(files["inputs-manifest.json"])
+    assert sha(files["inputs-manifest.json"]) == result["manifest_sha256"]
+    assert set(manifest["files"]) == {"roster.json", "approved-git-anchors.json",
+                                      "publish-request-pr1951.json", "publish-request-pr1950.json",
+                                      "card-evidence-pr1951.json", "card-evidence-pr1950.json"}
+    assert set(files) == set(manifest["files"]) | {"inputs-manifest.json"}
+    assert all(sha(files[name]) == pin for name, pin in manifest["files"].items())
+    assert manifest["verified_claims"] == 2
+    assert manifest["evidence_bindings"] == {"publish-request-pr1951.json": "card-evidence-pr1951.json",
+                                             "publish-request-pr1950.json": "card-evidence-pr1950.json"}
+    fleet_raw = Path(base["fleet"]["path"]).read_bytes()
+    assert files["roster.json"] == roster_mod.build_roster_snapshot(fleet_raw, sha(fleet_raw), enabled=True)[0]
+    assert json.loads(files["approved-git-anchors.json"]) == {
+        "schema": "wd.q4-approved-git-anchors.v1", "anchors": {"refs/heads/main": c3}}
+    request = json.loads(files["publish-request-pr1951.json"])
+    assert request["claim"] == {"v": "1", "kind": "merged", "subject": {"pr": 1951}, "outcome": "green", "next": "none",
+                                "valid_until_utc": UNTIL, "tags": [], "head": c2}
+    assert request["inputs"]["roster"] == {"path": str(out / "roster.json"), "sha256": manifest["files"]["roster.json"]}
+    sidecar = json.loads(files["card-evidence-pr1950.json"])
+    evidence = spec["cards"][1]["evidence"]
+    claim1950 = json.loads(files["publish-request-pr1950.json"])["claim"]
+    assert sidecar == {
+        "schema": "wd.q4-observed-gh-pr-evidence.v2", "pr": 1950, "pr_head": side2, "merge_commit": c1,
+        "card_head": c1, "base_ref": "refs/heads/main", "merged_at_utc": "2026-10-28T21:00:00Z",
+        "required_contexts": CONTEXTS, "contexts_on": "pr_head", "check_runs_head_sha": side2,
+        "captures": {"pr_view_sha256": evidence["pr_capture"]["sha256"],
+                     "check_runs_sha256": evidence["check_runs"]["sha256"], "observer": "codex-lead-1",
+                     "observed_at_utc": OBSERVED, "observed_at_authentication": "UNKNOWN",
+                     "observation": "lane_observed_github_api_capture"},
+        "merge_commit_reachable_from": {"refs/heads/main": c3},
+        "source_authentication": "UNKNOWN", "operator_attested": False, "cryptographic_proof": False,
+        "request_sha256": manifest["files"]["publish-request-pr1950.json"],
+        "claim_sha256": sha(json.dumps(claim1950, sort_keys=True, separators=(",", ":")).encode()),
+        "reader_truth": "UNVERIFIED", "evidence_link": "PENDING_PUBLICATION"}
+    assert b"example.invalid" not in b"".join(files.values())
+    seen = []
+    monkeypatch.setattr(publish_cli.publisher, "publish", lambda **kwargs: seen.append(kwargs) or {"status": "X"})
+    with pytest.raises(publish_cli.Unknown):  # shape accepted by the real CLI; the synthetic answer is not a receipt
+        publish_cli.run(enabled=True, request_path=str(out / "publish-request-pr1951.json"),
+                        request_sha256=manifest["files"]["publish-request-pr1951.json"])
+    assert seen[0]["claim"] == request["claim"] and seen[0]["roster_bytes"] == files["roster.json"]
+
+
+def test_card_without_evidence_stays_a_draft_next_to_an_evidenced_request(mod, base):
+    spec = evidence_spec(base)
+    del spec["cards"][1]["evidence"]
+    out, _, build = run_spec(mod, base, spec, "mixed")
+    build()
+    manifest = json.loads((out / "inputs-manifest.json").read_bytes())
+    assert set(manifest["files"]) == {"roster.json", "approved-git-anchors.json", "publish-request-pr1951.json",
+                                      "card-evidence-pr1951.json", "claim-draft-pr1950.json"}
+    assert manifest["verified_claims"] == 1
+
+
+def _bad_evidence(base, fault):
+    c1, c2, c3 = base["repo"]["commits"]
+    side, side2 = base["repo"]["side"], base["repo"]["side2"]
+    good = gh_capture(1951, side, c2)
+    checks = good["statusCheckRollup"]
+    listed = check_runs(side)
+    runs = listed["check_runs"]
+    captures, lists = {}, {}
+    if fault == "pr_mismatch":
+        captures[1951] = dict(good, number=1952)
+    elif fault == "number_not_int":
+        captures[1951] = dict(good, number="1951")
+    elif fault == "state_open":
+        captures[1951] = dict(good, state="OPEN")
+    elif fault == "base_mismatch":
+        captures[1951] = dict(good, baseRefName="develop")
+    elif fault == "card_head_is_pr_head":
+        captures[1951] = dict(good, mergeCommit={"oid": c3})
+    elif fault == "pr_head_short":
+        captures[1951] = dict(good, headRefOid=side[:12])
+    elif fault == "merge_commit_extra_key":
+        captures[1951] = dict(good, mergeCommit={"oid": c2, "url": "x"})
+    elif fault == "context_missing":
+        captures[1951] = dict(good, statusCheckRollup=checks[:5])
+    elif fault == "context_extra":
+        captures[1951] = dict(good, statusCheckRollup=checks + [dict(checks[0], name="lint")])
+    elif fault == "context_renamed":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], name="test (3.10)")] + checks[1:])
+    elif fault == "context_duplicate":
+        captures[1951] = dict(good, statusCheckRollup=checks + [checks[5]])
+    elif fault == "check_failed":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], conclusion="FAILURE")] + checks[1:])
+    elif fault == "check_skipped":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], conclusion="SKIPPED")] + checks[1:])
+    elif fault == "check_in_progress":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], status="IN_PROGRESS", conclusion="")]
+                              + checks[1:])
+    elif fault == "status_not_completed":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], status="QUEUED")] + checks[1:])
+    elif fault == "status_context":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], __typename="StatusContext")] + checks[1:])
+    elif fault == "check_extra_key":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], headSha=side)] + checks[1:])
+    elif fault == "merged_in_future":
+        captures[1951] = dict(good, mergedAt="2026-11-07T14:00:01Z")
+    elif fault == "check_after_merge":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], completedAt="2026-10-28T21:30:00Z")]
+                              + checks[1:])
+        lists[1951] = dict(listed, check_runs=[dict(runs[0], completed_at="2026-10-28T21:30:00Z")] + runs[1:])
+    elif fault == "check_started_after_completed":
+        captures[1951] = dict(good, statusCheckRollup=[dict(checks[0], startedAt="2026-10-28T20:45:00Z")]
+                              + checks[1:])
+        lists[1951] = dict(listed, check_runs=[dict(runs[0], started_at="2026-10-28T20:45:00Z")] + runs[1:])
+    elif fault == "time_format":
+        captures[1951] = dict(good, mergedAt="2026-10-28 21:00:00")
+    elif fault == "extra_top_key":
+        captures[1951] = dict(good, title="x")
+    elif fault == "missing_top_key":
+        captures[1951] = {k: v for k, v in good.items() if k != "mergedAt"}
+    elif fault == "runs_other_head":
+        lists[1951] = dict(listed, check_runs=[dict(runs[0], head_sha=side2)] + runs[1:])
+    elif fault == "runs_all_other_head":
+        lists[1951] = check_runs(side2)
+    elif fault == "runs_merge_commit_head":
+        lists[1951] = check_runs(c2)
+    elif fault == "runs_missing":
+        lists[1951] = dict(listed, total_count=5, check_runs=runs[:5])
+    elif fault == "runs_extra":
+        lists[1951] = dict(listed, total_count=7, check_runs=runs + [dict(runs[0], name="lint")])
+    elif fault == "runs_duplicate":
+        lists[1951] = dict(listed, total_count=7, check_runs=runs + [runs[5]])
+    elif fault == "runs_failed":
+        lists[1951] = dict(listed, check_runs=[dict(runs[0], conclusion="failure")] + runs[1:])
+    elif fault == "runs_not_completed":
+        lists[1951] = dict(listed, check_runs=[dict(runs[0], status="in_progress")] + runs[1:])
+    elif fault == "runs_count_mismatch":
+        lists[1951] = dict(listed, total_count=9)
+    elif fault == "runs_time_mismatch":
+        lists[1951] = dict(listed, check_runs=[dict(runs[0], completed_at="2026-10-28T20:31:00Z")] + runs[1:])
+    elif fault == "runs_field_missing":
+        lists[1951] = dict(listed, check_runs=[{k: v for k, v in runs[0].items() if k != "head_sha"}] + runs[1:])
+    elif fault == "runs_extra_top_key":
+        lists[1951] = dict(listed, message="x")
+    elif fault == "duplicate_json_key":
+        captures[1951] = None
+    spec = evidence_spec(base, {k: v for k, v in captures.items() if v is not None}, lists)
+    evidence = spec["cards"][0]["evidence"]
+    if fault == "duplicate_json_key":
+        raw = json.dumps(good, sort_keys=True).encode()
+        raw = raw[:-1] + b',"state":"MERGED"}'
+        evidence["pr_capture"] = write(base["tmp"] / "captures" / "dup.json", raw)
+    elif fault == "capture_pin":
+        evidence["pr_capture"] = dict(evidence["pr_capture"], sha256="0" * 64)
+    elif fault == "runs_pin":
+        evidence["check_runs"] = dict(evidence["check_runs"], sha256="0" * 64)
+    elif fault == "runs_missing_spec":
+        del evidence["check_runs"]
+    elif fault == "same_file_twice":
+        evidence["check_runs"] = dict(evidence["pr_capture"])
+    elif fault == "observer_unknown":
+        evidence["observer"] = "someone-else"
+    elif fault == "observer_missing":
+        del evidence["observer"]
+    elif fault == "observed_before_merge":
+        evidence["observed_at_utc"] = "2026-10-28T20:59:59Z"
+    elif fault == "observed_in_future":
+        evidence["observed_at_utc"] = "2026-11-07T14:00:01Z"
+    elif fault == "observed_bad_format":
+        evidence["observed_at_utc"] = "2026-11-07T13:50Z"
+    elif fault == "evidence_extra_key":
+        evidence["operator_attested"] = True
+    elif fault == "merge_unreachable":
+        spec["cards"][0]["head"] = side
+    return spec
+
+
+@pytest.mark.parametrize("fault", [
+    "pr_mismatch", "number_not_int", "state_open", "base_mismatch", "card_head_is_pr_head", "pr_head_short",
+    "merge_commit_extra_key", "context_missing", "context_extra", "context_renamed", "context_duplicate",
+    "check_failed", "check_skipped", "check_in_progress", "status_not_completed", "status_context",
+    "check_extra_key", "merged_in_future", "check_after_merge", "check_started_after_completed", "time_format",
+    "extra_top_key", "missing_top_key", "runs_other_head", "runs_all_other_head", "runs_merge_commit_head",
+    "runs_missing", "runs_extra", "runs_duplicate", "runs_failed", "runs_not_completed", "runs_count_mismatch",
+    "runs_time_mismatch", "runs_field_missing", "runs_extra_top_key", "duplicate_json_key", "capture_pin",
+    "runs_pin", "runs_missing_spec", "same_file_twice", "observer_unknown", "observer_missing",
+    "observed_before_merge", "observed_in_future", "observed_bad_format", "evidence_extra_key",
+    "merge_unreachable"])
+def test_bad_evidence_refuses_before_any_write(mod, base, fault):
+    out, _, build = run_spec(mod, base, _bad_evidence(base, fault), "ev-" + fault)
+    with pytest.raises(mod.Refused):
+        build()
+    assert list(out.iterdir()) == []
+
+
+# --- link phase: eventual card event ref -> sidecar, no live data -----------------------------------------------------
+
+@pytest.fixture
+def evidenced(mod, base):
+    out, _, build = run_spec(mod, base, evidence_spec(base), "evidenced")
+    assert build()["status"] == "WRITTEN"
+    manifest = json.loads((out / "inputs-manifest.json").read_bytes())
+    return {name: {"path": str(out / name), "sha256": pin} for name, pin in manifest["files"].items()}
+
+
+def publish_result(status="WRITTEN", **changes):
+    value = {"status": status, "delivery": "canonical" if status == "WRITTEN" else "queued",
+             "event_ref_sha256": "e" * 64, "truth": "UNVERIFIED", "source_authentication": "UNKNOWN",
+             "publisher_authentication": "UNKNOWN", "clock_authentication": "UNKNOWN"}
+    if status == "QUEUED":
+        value["retained_wal_sha256"] = "f" * 64
+    value.update(changes)
+    return value
+
+
+def link_spec(base, evidenced, pr=1951, result=None, **changes):
+    spec = {"schema": "wd.q4-initial-card-inputs-spec.v1", "phase": "link", "now_utc": NOW,
+            "request": evidenced["publish-request-pr%d.json" % pr],
+            "sidecar": evidenced["card-evidence-pr%d.json" % pr],
+            "publish_result": write(base["tmp"] / "results" / ("result-%d.json" % pr),
+                                    result if result is not None else publish_result()),
+            "observation": None}
+    spec.update(changes)
+    return spec
+
+
+def observe(base, evidenced, name, pr=1951, claim_changes=None, before=()):
+    """A synthetic bridge prefix holding the card event for the pinned request claim (never the real bridge)."""
+    from tools.bridge_compact_view import event_id
+    from waggledance.core import bridge_log_reader as bridge
+    request = json.loads(Path(evidenced["publish-request-pr%d.json" % pr]["path"]).read_bytes())
+    roster = json.loads(Path(request["inputs"]["roster"]["path"]).read_bytes())
+    uuid = {lane["agent"]: lane["agent_uuid"] for lane in roster["lanes"]}["codex-lead-1"]
+    claim = dict(request["claim"], **(claim_changes or {}))
+    event = {"ts_utc": NOW, "agent": "codex-lead-1", "agent_uuid": uuid, "type": "status",
+             "task_id": "mind-public-knowledge-v1", "status": "info", "to": "", "message": "", "paths": [],
+             "write_scope": [], "payload": {"public_knowledge": claim}}
+    root = base["tmp"] / ("bridge-" + name)
+    root.mkdir()
+    source, generation = root / "events.jsonl", root / "generation.json"
+    generation.write_bytes(json.dumps({"generation": "synthetic-g1"}).encode())
+    content = b"".join(json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+                       for row in (*before, event))
+    source.write_bytes(content)
+    cursor = bridge.read_bridge_log(str(source), generation_path=str(generation)).candidate_cursor
+    observation = {"source_path": str(source), "generation_path": str(generation),
+                   "cursor": {"offset": cursor.offset, "file_identity": cursor.file_identity,
+                              "generation": cursor.generation},
+                   "prefix_sha256": sha(content)}
+    return observation, event_id(event)
+
+
+@pytest.mark.parametrize("status", ["WRITTEN", "QUEUED"])
+def test_link_without_observation_stays_pending(mod, base, evidenced, status):
+    spec = link_spec(base, evidenced, result=publish_result(status))
+    out, _, build = run_spec(mod, base, spec, "pending-" + status)
+    result = build()
+    assert result["status"] == "WRITTEN" and result["phase"] == "link"
+    files = tree(out)
+    assert set(files) == {"card-evidence-pending-pr1951.json", "inputs-manifest.json"}
+    sidecar = json.loads(Path(spec["sidecar"]["path"]).read_bytes())
+    assert json.loads(files["card-evidence-pending-pr1951.json"]) == {
+        "schema": "wd.q4-card-evidence-pending.v1", "card_event_ref_sha256": "e" * 64,
+        "publish_delivery": "canonical" if status == "WRITTEN" else "queued",
+        "state": "PENDING_OBSERVATION" if status == "WRITTEN" else "PENDING_DELIVERY", "pr": 1951,
+        "card_head": base["repo"]["commits"][1], "request_sha256": spec["request"]["sha256"],
+        "claim_sha256": sidecar["claim_sha256"], "sidecar_sha256": spec["sidecar"]["sha256"],
+        "publish_result_sha256": spec["publish_result"]["sha256"], "reader_truth": "UNVERIFIED", "link": None}
+
+
+@pytest.mark.parametrize("status", ["WRITTEN", "QUEUED"])
+def test_link_for_independently_observed_canonical_card_event(mod, base, evidenced, status):
+    observation, ref = observe(base, evidenced, "link-" + status)
+    spec = link_spec(base, evidenced, result=publish_result(status, event_ref_sha256=ref), observation=observation)
+    out, _, build = run_spec(mod, base, spec, "link-" + status)
+    result = build()
+    assert result["status"] == "WRITTEN" and result["phase"] == "link"
+    files = tree(out)
+    manifest = json.loads(files["inputs-manifest.json"])
+    assert set(manifest["files"]) == {"card-evidence-link-pr1951.json", "card-evidence-link-publish-pr1951.json"}
+    sidecar = json.loads(Path(spec["sidecar"]["path"]).read_bytes())
+    link_raw = files["card-evidence-link-pr1951.json"]
+    link = json.loads(link_raw)
+    assert link == {
+        "schema": "wd.q4-card-evidence-link.v2", "card_event_ref_sha256": ref,
+        "publish_delivery": "canonical" if status == "WRITTEN" else "queued",
+        "canonical": "observed_within_pinned_prefix",
+        "observation": {"prefix_sha256": observation["prefix_sha256"], "cursor": observation["cursor"],
+                        "status": "MATCH_WITHIN_PREFIX", "completeness": "UNKNOWN", "predecessor_refs": [],
+                        "observed_at_utc": NOW},
+        "pr": 1951, "card_head": base["repo"]["commits"][1], "pr_head": base["repo"]["side"],
+        "merge_commit": base["repo"]["commits"][1], "base_ref": "refs/heads/main",
+        "request_sha256": spec["request"]["sha256"], "claim_sha256": sidecar["claim_sha256"],
+        "sidecar_sha256": spec["sidecar"]["sha256"], "publish_result_sha256": spec["publish_result"]["sha256"],
+        "pr_view_sha256": sidecar["captures"]["pr_view_sha256"],
+        "check_runs_sha256": sidecar["captures"]["check_runs_sha256"],
+        "reader_truth": "UNVERIFIED", "link_authentication": "UNKNOWN", "source_authentication": "UNKNOWN",
+        "pairing": "observed_event_payload_equals_request_claim"}
+    assert "source_path" not in link_raw.decode() and observation["source_path"].encode() not in link_raw
+    publish = json.loads(files["card-evidence-link-publish-pr1951.json"])
+    assert publish == {"schema": "wd.q4-card-evidence-link-publish-request.v1", "posted": False,
+                       "proposed_task_id": "mind-card-evidence-link-v1",
+                       "event": {"type": "status", "status": "info", "payload": {"card_evidence_link": link}},
+                       "link_sha256": sha(link_raw)}
+
+
+def _bad_link(base, evidenced, fault):
+    if fault == "other_pr_sidecar":
+        return link_spec(base, evidenced, sidecar=evidenced["card-evidence-pr1950.json"])
+    if fault == "other_pr_request":
+        return link_spec(base, evidenced, request=evidenced["publish-request-pr1950.json"])
+    if fault == "request_pin":
+        return link_spec(base, evidenced, request=dict(evidenced["publish-request-pr1951.json"], sha256="0" * 64))
+    if fault == "sidecar_pin":
+        return link_spec(base, evidenced, sidecar=dict(evidenced["card-evidence-pr1951.json"], sha256="0" * 64))
+    if fault == "claim_edited":
+        request = json.loads(Path(evidenced["publish-request-pr1951.json"]["path"]).read_bytes())
+        request["claim"]["outcome"] = "partial"
+        return link_spec(base, evidenced, request=write(base["tmp"] / "results" / "edited.json", request))
+    if fault == "sidecar_already_linked":
+        sidecar = json.loads(Path(evidenced["card-evidence-pr1951.json"]["path"]).read_bytes())
+        sidecar["evidence_link"] = "LINKED"
+        return link_spec(base, evidenced, sidecar=write(base["tmp"] / "results" / "linked.json", sidecar))
+    if fault == "sidecar_v1":
+        sidecar = json.loads(Path(evidenced["card-evidence-pr1951.json"]["path"]).read_bytes())
+        sidecar["schema"] = "wd.q4-observed-gh-pr-evidence.v1"
+        return link_spec(base, evidenced, sidecar=write(base["tmp"] / "results" / "v1.json", sidecar))
+    if fault in ("sidecar_request_digest", "sidecar_claim_digest", "sidecar_card_head", "sidecar_pr"):
+        sidecar = json.loads(Path(evidenced["card-evidence-pr1951.json"]["path"]).read_bytes())
+        key = {"sidecar_request_digest": "request_sha256", "sidecar_claim_digest": "claim_sha256",
+               "sidecar_card_head": "card_head", "sidecar_pr": "pr"}[fault]
+        sidecar[key] = 1950 if key == "pr" else ("a" * 40 if key == "card_head" else "a" * 64)
+        return link_spec(base, evidenced, sidecar=write(base["tmp"] / "results" / (fault + ".json"), sidecar))
+    if fault == "result_refused":
+        return link_spec(base, evidenced, result={"status": "REFUSED"})
+    if fault == "result_unknown":
+        return link_spec(base, evidenced, result=publish_result(status="UNKNOWN"))
+    if fault == "result_ref_short":
+        return link_spec(base, evidenced, result=publish_result(event_ref_sha256="e" * 63))
+    if fault == "result_extra_key":
+        return link_spec(base, evidenced, result=publish_result(note="x"))
+    if fault == "result_truth_claimed":
+        return link_spec(base, evidenced, result=publish_result(truth="VERIFIED"))
+    if fault == "queued_without_wal":
+        value = publish_result("QUEUED")
+        del value["retained_wal_sha256"]
+        return link_spec(base, evidenced, result=value)
+    if fault == "result_pin":
+        spec = link_spec(base, evidenced)
+        spec["publish_result"] = dict(spec["publish_result"], sha256="0" * 64)
+        return spec
+    if fault == "spec_extra_key":
+        return link_spec(base, evidenced, deploy=True)
+    if fault == "spec_missing_observation":
+        spec = link_spec(base, evidenced)
+        del spec["observation"]
+        return spec
+    if fault.startswith("observation_"):
+        observation, ref = observe(base, evidenced, fault)
+        result = publish_result(event_ref_sha256=ref)
+        if fault == "observation_other_event":
+            result = publish_result()
+        elif fault == "observation_claim_differs":
+            observation, ref = observe(base, evidenced, fault + "-2", claim_changes={"valid_until_utc": UNTIL2})
+            result = publish_result(event_ref_sha256=ref)
+        elif fault == "observation_prefix_pin":
+            observation["prefix_sha256"] = "0" * 64
+        elif fault == "observation_extra_key":
+            observation["note"] = "x"
+        elif fault == "observation_cursor_generation":
+            observation["cursor"]["generation"] = "synthetic-g2"
+        elif fault == "observation_cursor_extra_key":
+            observation["cursor"]["note"] = "x"
+        elif fault == "observation_cursor_offset":
+            observation["cursor"]["offset"] -= 1
+        elif fault == "observation_not_object":
+            observation = "synthetic"
+        elif fault == "observation_other_pr_request":
+            return link_spec(base, evidenced, request=evidenced["publish-request-pr1950.json"],
+                             result=result, observation=observation)
+        else:
+            raise AssertionError(fault)
+        return link_spec(base, evidenced, result=result, observation=observation)
+    raise AssertionError(fault)
+
+
+@pytest.mark.parametrize("fault", [
+    "other_pr_sidecar", "other_pr_request", "request_pin", "sidecar_pin", "claim_edited", "sidecar_already_linked",
+    "sidecar_v1", "sidecar_request_digest", "sidecar_claim_digest", "sidecar_card_head", "sidecar_pr",
+    "result_refused", "result_unknown", "result_ref_short", "result_extra_key", "result_truth_claimed",
+    "queued_without_wal", "result_pin", "spec_extra_key", "spec_missing_observation", "observation_other_event",
+    "observation_claim_differs", "observation_prefix_pin", "observation_extra_key", "observation_cursor_generation",
+    "observation_cursor_offset", "observation_not_object", "observation_other_pr_request",
+    "observation_cursor_extra_key"])
+def test_bad_link_refuses_before_any_write(mod, base, evidenced, fault):
+    out, _, build = run_spec(mod, base, _bad_link(base, evidenced, fault), "badlink-" + fault)
+    with pytest.raises(mod.Refused):
+        build()
+    assert list(out.iterdir()) == []
+
+
+@pytest.mark.parametrize("target", ["request", "sidecar", "publish_result"])
+def test_link_input_changed_after_first_write_is_unknown(mod, base, evidenced, monkeypatch, target):
+    spec = link_spec(base, evidenced)
+    path = Path(spec[target]["path"])
+    out, _, build = run_spec(mod, base, spec, "late-link-" + target)
+    failures = _mutate_after_first_write(mod, monkeypatch, lambda: path.write_bytes(path.read_bytes() + b" "))
+    with pytest.raises(mod.Unknown):
+        build()
+    assert failures == []
+
+
+@pytest.mark.parametrize("target", ["roster", "card_policy", "vocabulary"])
+def test_observed_link_policy_changed_after_first_write_is_unknown(mod, base, evidenced, monkeypatch, target):
+    observation, ref = observe(base, evidenced, "late-" + target)
+    spec = link_spec(base, evidenced, result=publish_result(event_ref_sha256=ref), observation=observation)
+    request = json.loads(Path(spec["request"]["path"]).read_bytes())
+    path = Path(request["inputs"][target]["path"])
+    out, _, build = run_spec(mod, base, spec, "late-observed-" + target)
+    failures = _mutate_after_first_write(mod, monkeypatch, lambda: path.write_bytes(path.read_bytes() + b" "))
+    with pytest.raises(mod.Unknown):
+        build()
+    assert failures == []
+
+
+# --- reader: a published link stays UNVERIFIED unless pinned captures match ------------------------------------------
+
+UNVERIFIED = {"status": "UNVERIFIED", "reader_truth": "UNVERIFIED", "authentication": "UNKNOWN"}
+
+
+@pytest.fixture
+def observed_link(mod, base, evidenced):
+    observation, ref = observe(base, evidenced, "reader")
+    spec = link_spec(base, evidenced, result=publish_result(event_ref_sha256=ref), observation=observation)
+    out, _, build = run_spec(mod, base, spec, "reader-link")
+    assert build()["status"] == "WRITTEN"
+    link = json.loads((out / "card-evidence-link-pr1951.json").read_bytes())
+    captures = base["tmp"] / "captures"
+    return {"ref": ref, "link": link, "pr_capture": str(captures / "pr-1951.json"),
+            "check_runs": str(captures / "check-runs-1951.json")}
+
+
+def read(mod, case, **changes):
+    args = {"enabled": True, "card_event_ref": case["ref"], "link": case["link"], "pr_capture": case["pr_capture"],
+            "check_runs": case["check_runs"], "now_utc": NOW}
+    args.update(changes)
+    return mod.read_card_evidence(**args)
+
+
+def test_reader_off_reads_nothing(mod):
+    assert mod.read_card_evidence() == {"status": "OFF"}
+
+
+def test_reader_matches_link_and_pinned_captures_with_unknown_authentication(mod, base, observed_link):
+    assert read(mod, observed_link) == {
+        "status": "MATCHED", "reader_truth": "MATCHED_PINNED_CAPTURES",
+        "card_event_ref_sha256": observed_link["ref"], "pr": 1951, "card_head": base["repo"]["commits"][1],
+        "pr_head": base["repo"]["side"], "canonical": "observed_within_pinned_prefix", "completeness": "UNKNOWN",
+        "authentication": "UNKNOWN", "source_authentication": "UNKNOWN", "link_authentication": "UNKNOWN"}
+
+
+@pytest.mark.parametrize("fault", ["other_ref", "pending_doc", "link_v1", "link_extra_key", "link_pr_head",
+                                   "link_card_head", "link_not_canonical", "link_observation_status",
+                                   "capture_edited", "runs_edited", "captures_swapped", "capture_missing",
+                                   "other_pr_capture", "now_before_merge", "not_enabled_true"])
+def test_reader_retains_unverified(mod, base, evidenced, observed_link, fault):
+    case = dict(observed_link, link=json.loads(json.dumps(observed_link["link"])))
+    changes = {}
+    link = case["link"]
+    if fault == "other_ref":
+        changes["card_event_ref"] = "e" * 64
+    elif fault == "pending_doc":
+        changes["link"] = {"schema": "wd.q4-card-evidence-pending.v1", "card_event_ref_sha256": case["ref"]}
+    elif fault == "link_v1":
+        link["schema"] = "wd.q4-card-evidence-link.v1"
+    elif fault == "link_extra_key":
+        link["verified"] = True
+    elif fault == "link_pr_head":
+        link["pr_head"] = base["repo"]["side2"]
+    elif fault == "link_card_head":
+        link["card_head"] = base["repo"]["commits"][0]
+    elif fault == "link_not_canonical":
+        link["canonical"] = "queued"
+    elif fault == "link_observation_status":
+        link["observation"]["status"] = "UNKNOWN"
+    elif fault in ("capture_edited", "runs_edited"):
+        key = "pr_capture" if fault == "capture_edited" else "check_runs"
+        path = Path(case[key])
+        copy = base["tmp"] / ("edited-" + path.name)
+        copy.write_bytes(path.read_bytes() + b" ")
+        changes[key] = str(copy)
+    elif fault == "captures_swapped":
+        changes.update(pr_capture=case["check_runs"], check_runs=case["pr_capture"])
+    elif fault == "capture_missing":
+        changes["pr_capture"] = str(base["tmp"] / "captures" / "absent.json")
+    elif fault == "other_pr_capture":
+        changes["pr_capture"] = str(base["tmp"] / "captures" / "pr-1950.json")
+    elif fault == "now_before_merge":
+        changes["now_utc"] = "2026-10-27T00:00:00Z"
+    elif fault == "not_enabled_true":
+        changes["enabled"] = 1
+    assert read(mod, case, **changes) == UNVERIFIED
+
+
+def _broken(base, fault):
+    c1, c2, c3 = base["repo"]["commits"]
+    spec = publish_spec(base)
+    card = spec["cards"][0]
+    if fault == "head_unreachable":
+        card["head"] = base["repo"]["side"]
+    elif fault == "head_absent":
+        card["head"] = "f" * 40
+    elif fault == "anchor_commit_absent":
+        spec["anchor"]["commit"] = "e" * 40
+    elif fault == "anchor_ref_only":
+        spec["anchor"] = {"ref": "refs/heads/main"}
+    elif fault == "anchor_bad_ref":
+        spec["anchor"]["ref"] = "main"
+    elif fault == "anchor_short_commit":
+        spec["anchor"]["commit"] = c3[:12]
+    elif fault == "git_pin":
+        spec["git"] = dict(spec["git"], sha256="0" * 64)
+    elif fault == "fleet_pin":
+        spec["fleet"] = dict(spec["fleet"], sha256="0" * 64)
+    elif fault == "config_pin":
+        spec["configs"] = dict(spec["configs"], vocabulary=dict(spec["configs"]["vocabulary"], sha256="0" * 64))
+    elif fault == "config_missing":
+        spec["configs"] = {k: v for k, v in spec["configs"].items() if k != "path_allowlist"}
+    elif fault == "author_not_writer":
+        card["author"] = "claude-rco-1"
+    elif fault == "author_unknown":
+        card["author"] = "someone-else"
+    elif fault == "duplicate_pr":
+        spec["cards"][1]["pr"] = 1951
+    elif fault == "no_cards":
+        spec["cards"] = []
+    elif fault == "five_cards":
+        spec["cards"] = [dict(card, pr=card["pr"] + i) for i in range(5)]
+    elif fault == "until_over_week":
+        card["valid_until_utc"] = "2026-11-15T14:00:00Z"
+    elif fault == "until_too_soon":
+        card["valid_until_utc"] = "2026-11-07T14:01:00Z"
+    elif fault == "until_not_minute":
+        card["valid_until_utc"] = "2026-11-08T14:00:30Z"
+    elif fault == "card_extra_key":
+        card["tags"] = ["mind"]
+    elif fault == "pr_not_int":
+        card["pr"] = "1951"
+    elif fault == "spec_extra_key":
+        spec["deploy"] = True
+    elif fault == "wrong_schema":
+        spec["schema"] = "wd.q4-initial-card-inputs-spec.v2"
+    elif fault == "now_not_minute":
+        spec["now_utc"] = "2026-11-07T14:00:01Z"
+    return spec
+
+
+@pytest.mark.parametrize("fault", ["head_unreachable", "head_absent", "anchor_commit_absent", "anchor_ref_only",
+                                   "anchor_bad_ref", "anchor_short_commit", "git_pin", "fleet_pin", "config_pin",
+                                   "config_missing", "author_not_writer", "author_unknown", "duplicate_pr", "no_cards",
+                                   "five_cards", "until_over_week", "until_too_soon", "until_not_minute",
+                                   "card_extra_key", "pr_not_int", "spec_extra_key", "wrong_schema", "now_not_minute"])
+def test_publish_phase_refuses_before_any_write(mod, base, fault):
+    out, _, build = run_spec(mod, base, _broken(base, fault), fault)
+    with pytest.raises(mod.Refused):
+        build()
+    assert list(out.iterdir()) == []
+
+
+@pytest.mark.parametrize("fault", ["not_audit", "nonempty", "missing", "spec_pin", "relative"])
+def test_output_root_and_spec_pin_refuse_before_any_write(mod, base, fault):
+    spec = publish_spec(base)
+    pin = write(base["tmp"] / "specs" / "output.json", spec)
+    out = base["tmp"] / "out-output"
+    out.mkdir()
+    if fault == "not_audit":
+        out = base["tmp"].parent / "plain-out"
+        out.mkdir()
+    if fault == "nonempty":
+        (out / "left.txt").write_bytes(b"x")
+    if fault == "missing":
+        out = base["tmp"] / "absent"
+    spec_pin = "0" * 64 if fault == "spec_pin" else pin["sha256"]
+    root = "relative-out" if fault == "relative" else str(out)
+    before = tree(out) if out.exists() else None
+    with pytest.raises(mod.Refused):
+        mod.build(enabled=True, spec_path=pin["path"], spec_sha256=spec_pin, output_root=root)
+    assert (tree(out) if out.exists() else None) == before
+
+
+def test_interrupt_after_first_write_is_unknown_and_dir_is_not_reused(mod, base, monkeypatch):
+    out, pin, build = run_spec(mod, base, publish_spec(base), "interrupt")
+    real = mod._write_new
+    calls = []
+
+    def flaky(path, data):
+        calls.append(path)
+        if len(calls) == 2:
+            raise KeyboardInterrupt()
+        return real(path, data)
+    monkeypatch.setattr(mod, "_write_new", flaky)
+    with pytest.raises(mod.Unknown):
+        build()
+    assert len(list(out.iterdir())) == 1
+    monkeypatch.setattr(mod, "_write_new", real)
+    with pytest.raises(mod.Refused):
+        build()
+
+
+def _mutate_after_first_write(mod, monkeypatch, action):
+    """Run the change once after the first output write; a failing change is recorded, never turned into UNKNOWN."""
+    real = mod._write_new
+    calls, failures = [], []
+
+    def first(path, data):
+        calls.append(path)
+        real(path, data)
+        if len(calls) == 1:
+            try:
+                action()
+            except BaseException as error:  # noqa: B036 - reported by the caller's assertion
+                failures.append(error)
+    monkeypatch.setattr(mod, "_write_new", first)
+    return failures
+
+
+def _junction_copy(directory):
+    """Replace a dir by a junction to a byte-identical copy: same bytes, but no longer the pinned plain path."""
+    copy = directory.parent / (directory.name + "-copy")
+    shutil.copytree(directory, copy)
+
+    def writable(func, path, _):  # git object files are read-only on Windows
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    shutil.rmtree(directory, **({"onexc": writable} if sys.version_info >= (3, 12) else {"onerror": writable}))
+    made = subprocess.run(["cmd", "/c", "mklink", "/J", str(directory), str(copy)], capture_output=True)
+    if made.returncode != 0:
+        pytest.skip("junction unavailable")
+
+
+@pytest.mark.parametrize("target", ["vocabulary", "policy", "fleet", "spec", "configs_junction", "repo_junction",
+                                    "extra_output"])
+def test_publish_input_changed_after_first_write_is_unknown(mod, base, monkeypatch, target):
+    out, pin, build = run_spec(mod, base, publish_spec(base), "late-" + target)
+    path = {"vocabulary": base["configs"]["vocabulary"]["path"], "policy": base["configs"]["policy"]["path"],
+            "fleet": base["fleet"]["path"], "spec": pin["path"]}.get(target)
+    if target == "configs_junction":
+        def action():
+            _junction_copy(Path(base["configs"]["vocabulary"]["path"]).parent)
+    elif target == "repo_junction":
+        def action():
+            _junction_copy(Path(base["git"]["repository"]))
+    elif target == "extra_output":
+        def action():
+            (out / "extra.json").write_bytes(b"{}")
+    else:
+        def action():
+            Path(path).write_bytes(Path(path).read_bytes() + b" ")
+    failures = _mutate_after_first_write(mod, monkeypatch, action)
+    with pytest.raises(mod.Unknown):
+        build()
+    assert failures == []
+
+
+def test_input_changed_before_first_write_refuses_with_nothing_written(mod, base, monkeypatch):
+    from tools import wd_q4_public_git_heads as heads
+    vocabulary = Path(base["configs"]["vocabulary"]["path"])
+    real = heads.observe
+
+    def mutating(**kwargs):  # runs after the inputs were read and before the pre-write recheck
+        vocabulary.write_bytes(vocabulary.read_bytes() + b" ")
+        return real(**kwargs)
+    monkeypatch.setattr(heads, "observe", mutating)
+    out, _, build = run_spec(mod, base, publish_spec(base), "early-change")
+    with pytest.raises(mod.Refused):
+        build()
+    assert list(out.iterdir()) == []
+
+
+@pytest.mark.parametrize("target", ["pr_capture", "check_runs", "capture_junction"])
+def test_evidence_changed_after_first_write_is_unknown(mod, base, monkeypatch, target):
+    spec = evidence_spec(base)
+    capture = Path(spec["cards"][0]["evidence"]["check_runs" if target == "check_runs" else "pr_capture"]["path"])
+    out, _, build = run_spec(mod, base, spec, "late-ev-" + target)
+    if target != "capture_junction":
+        def action():
+            capture.write_bytes(capture.read_bytes() + b" ")
+    else:
+        def action():
+            _junction_copy(capture.parent)
+    failures = _mutate_after_first_write(mod, monkeypatch, action)
+    with pytest.raises(mod.Unknown):
+        build()
+    assert failures == []
+
+
+# --- candidate phase ------------------------------------------------------------------------------------------------
+
+@pytest.fixture
+def published(mod, base):
+    out, _, build = run_spec(mod, base, publish_spec(base), "published")
+    assert build()["status"] == "WRITTEN"
+    manifest = json.loads((out / "inputs-manifest.json").read_bytes())
+    return {"roster": {"path": str(out / "roster.json"), "sha256": manifest["files"]["roster.json"]},
+            "anchors": {"path": str(out / "approved-git-anchors.json"),
+                        "sha256": manifest["files"]["approved-git-anchors.json"]}}
+
+
+def composer_options():
+    """The exact caller composer options: the orchestrator's nine keys minus the generation the builder adds."""
+    from tools import wd_q4_shared_descriptor_producer as shared
+    outer = {key: "e" * 64 for key in shared._OUTER_KEYS}
+    outer.update({"outer-path": "C:/synthetic/runtime/assets/code/tools/wd_q4_session_outer_synthetic.py",
+                  "runtime-root": "C:/synthetic/runtime", "runtime-generation": "f" * 64,
+                  "runtime-revision": "1" * 40})
+    descriptor = {"bundle_root": "C:/synthetic/bundle", "interpreter": "C:/synthetic/python.exe",
+                  "interpreter_sha256": "e" * 64, "interpreter_max_bytes": 64 * 1024 * 1024,
+                  "cwd": "C:/synthetic/bundle", "timeout_seconds": 600, "max_output_bytes": 65536,
+                  "runtime_manifest_path": "C:/synthetic/runtime-manifest.json", "runtime_manifest_sha256": "e" * 64,
+                  "outer": outer}
+    return {"expected_bundle": "C:/synthetic/bundle", "expected_commit": "2" * 40,
+            "expected_manifest_sha256": "A" * 64, "expected_host_sha256": "3" * 64,
+            "descriptor_options": descriptor, "bundle_store_root": "C:/synthetic/store",
+            "active_bundle_root": "C:/synthetic/active", "expected_state_sha256": "b" * 64}
+
+
+def orchestrator_option_keys():
+    """The option key set exactly as the orchestrator's _finish source spells it."""
+    import ast
+    import inspect
+    from tools import wd_q4_card_audit_orchestrator as orchestrator
+    found = [ast.literal_eval(node.value) for node in ast.walk(ast.parse(inspect.getsource(orchestrator._finish)))
+             if isinstance(node, ast.Assign) and [getattr(t, "id", None) for t in node.targets] == ["option_keys"]]
+    assert len(found) == 1
+    return set(found[0])
+
+
+def candidate_spec(base, published, parent, **changes):
+    from tools import wd_q4_lane_link as link
+    from sandbox.mind.step2 import shared_card_projection as projection
+    tmp = base["tmp"]
+    prefix = write(tmp / "pins" / "prefix-pin.json", {
+        "schema": "wd.q4-private-bridge-prefix-pin.v1", "cursor": {"offset": 4096, "file_identity": "synthetic-id",
+                                                                   "generation": None},
+        "prefix_sha256": "a" * 64, "source_authentication": "UNKNOWN", "freshness": "UNKNOWN",
+        "completeness": "UNKNOWN", "scope": "bounded_observed_prefix"})
+    plan = {key: "synthetic-" + key for key in link._PUBLIC_PLAN_SCHEMAS["wd.q4-public-wrapper-plan.v1"]}
+    plan["schema"] = "wd.q4-public-wrapper-plan.v1"
+    options = composer_options()
+    spec = {"schema": "wd.q4-initial-card-inputs-spec.v1", "phase": "candidate", "now_utc": NOW,
+            "configs": base["configs"], "roster": published["roster"], "approved_anchors": published["anchors"],
+            "git": base["git"], "source_path": str(tmp / "synthetic-source" / "events.jsonl"),
+            "prefix_pin": prefix,
+            "source_anchor": {"root": str(parent / ".codex-audit" / "anchors" / "a1"),
+                              "generation_sha256": "c" * 64, "binding_sha256": "d" * 64},
+            "expected_card_module_sha256": projection.module_sha256(),
+            "encoder": {"model": "synthetic"}, "trusted_model_root": str(tmp / "models"),
+            "base_plan": write(tmp / "plans" / "base-plan.json", plan),
+            "fixed_template": write(tmp / "plans" / "fixed-template.json", {"synthetic": True}),
+            "composer_options": write(tmp / "plans" / "composer-options.json", options),
+            "shared_stage_root": str(parent / "live"), "generation": "1" * 40,
+            "generation_root": str(parent / "run-1"),
+            "audit_output_root": str(parent / ".codex-audit" / "runs" / "run-1")}
+    spec.update(changes)
+    return spec
+
+
+@pytest.fixture
+def parent(tmp_path, monkeypatch):
+    from tools import wd_q4_card_audit_orchestrator as orchestrator
+    root = tmp_path / "generations"
+    monkeypatch.setattr(orchestrator, "_GENERATION_PARENT", root)
+    return root
+
+
+def test_candidate_phase_writes_orchestrator_shaped_requests(mod, base, published, parent):
+    from tools import wd_q4_real_card_decision_cli as dc
+    from tools import wd_q4_real_card_snapshot_cli as io
+    out, _, build = run_spec(mod, base, candidate_spec(base, published, parent), "candidate")
+    result = build()
+    assert result["status"] == "WRITTEN" and result["phase"] == "candidate"
+    files = tree(out)
+    manifest = json.loads(files["inputs-manifest.json"])
+    assert set(manifest["files"]) == {"decision-request.json", "snapshot-template.json", "finish-template.json",
+                                      "candidate-request.json"}
+    decision = json.loads(files["decision-request.json"])
+    template = json.loads(files["snapshot-template.json"])
+    finish = json.loads(files["finish-template.json"])
+    request = json.loads(files["candidate-request.json"])
+    assert set(decision) == dc._KEYS and decision["mode"] == "real"
+    assert decision["source_mode"] == template["source_mode"] == "operator_authorized_source"
+    assert set(decision["inputs"]) == dc._INPUTS
+    assert decision["inputs"]["roster"] == published["roster"] and decision["inputs"]["anchors"] == published["anchors"]
+    assert decision["cursor"] == {"offset": 4096, "file_identity": "synthetic-id", "generation": None}
+    assert decision["prefix_sha256"] == "a" * 64 and decision["anchor"]["root"] == str(parent / ".codex-audit/anchors/a1")
+    assert set(template) == io._KEYS and template["generation_name"] == "candidate"
+    for key in ("vocabulary", "path_allowlist", "policy", "roster", "card_policy"):
+        assert template["inputs"][key] == decision["inputs"][key]
+    assert "decision" not in template["inputs"]  # the orchestrator adds its own decision output
+    assert {k: template["git"][k] for k in ("executable", "sha256", "repository")} == decision["git"]
+    assert template["git"]["anchors"] == {"refs/heads/main": base["repo"]["commits"][2]}
+    assert template["source_path"] == decision["source_path"]
+    assert set(finish) == {"schema", "base_plan", "fixed_template", "composer_options"}
+    for key in ("policy", "roster", "public_policy"):
+        assert finish["base_plan"][key + "_path"] == decision["inputs"][key]["path"]
+        assert finish["base_plan"][key + "_sha256"] == decision["inputs"][key]["sha256"]
+    assert finish["composer_options"]["shared_stage_root"] == str(parent / "live")
+    assert finish["composer_options"]["generation"] == "1" * 40
+    assert set(finish["composer_options"]) == orchestrator_option_keys() | {"shared_stage_root"}
+    assert finish["composer_options"] == dict(composer_options(), shared_stage_root=str(parent / "live"),
+                                              generation="1" * 40)
+    assert set(request) == {"schema", "decision", "snapshot_template", "output_root", "finish", "generation_root"}
+    assert request["schema"] == "wd.q4-card-real-candidate-request.v1"
+    assert request["generation_root"] == str(parent / "run-1")
+    for key, name in (("decision", "decision-request.json"), ("snapshot_template", "snapshot-template.json"),
+                      ("finish", "finish-template.json")):
+        assert request[key] == {"path": str(out / name), "sha256": manifest["files"][name]}
+
+
+@pytest.mark.parametrize("fault", ["module_pin", "prefix_schema", "prefix_generation", "anchor_outside_anchors",
+                                   "anchor_dot_id", "run_dot", "run_outside_parent", "audit_not_under_parent_audit",
+                                   "audit_in_anchors", "shared_in_audit", "generation_bad", "options_preset_shared",
+                                   "options_missing_state", "plan_schema", "plan_extra_key", "roster_pin",
+                                   "anchors_doc_pin", "builder_output_in_audit", "audit_in_builder_output",
+                                   "source_relative", "encoder_not_object"])
+def test_candidate_phase_refuses_before_any_write(mod, base, published, parent, fault):
+    tmp = base["tmp"]
+    changes = {}
+    if fault == "module_pin":
+        changes["expected_card_module_sha256"] = "0" * 64
+    elif fault == "prefix_schema":
+        changes["prefix_pin"] = write(tmp / "pins" / "bad-prefix.json", {"schema": "other"})
+    elif fault == "prefix_generation":
+        raw = json.loads(Path(candidate_spec(base, published, parent)["prefix_pin"]["path"]).read_bytes())
+        raw["cursor"]["generation"] = "g1"
+        changes["prefix_pin"] = write(tmp / "pins" / "gen-prefix.json", raw)
+    elif fault == "anchor_outside_anchors":
+        changes["source_anchor"] = {"root": str(parent / ".codex-audit" / "other" / "a1"),
+                                    "generation_sha256": "c" * 64, "binding_sha256": "d" * 64}
+    elif fault == "anchor_dot_id":
+        changes["source_anchor"] = {"root": str(parent / ".codex-audit" / "anchors" / ".a1"),
+                                    "generation_sha256": "c" * 64, "binding_sha256": "d" * 64}
+    elif fault == "run_dot":
+        changes["generation_root"] = str(parent / ".run-1")
+    elif fault == "run_outside_parent":
+        changes["generation_root"] = str(tmp / "elsewhere" / "run-1")
+    elif fault == "audit_not_under_parent_audit":
+        changes["audit_output_root"] = str(parent / "run-audit")
+    elif fault == "audit_in_anchors":
+        changes["audit_output_root"] = str(parent / ".codex-audit" / "anchors" / "a1" / "out")
+    elif fault == "shared_in_audit":
+        changes["shared_stage_root"] = str(parent / ".codex-audit" / "live")
+    elif fault == "generation_bad":
+        changes["generation"] = "G" * 40
+    elif fault == "options_preset_shared":
+        options = json.loads(Path(candidate_spec(base, published, parent)["composer_options"]["path"]).read_bytes())
+        options["shared_stage_root"] = str(parent / "other-live")
+        changes["composer_options"] = write(tmp / "plans" / "preset-options.json", options)
+    elif fault == "options_missing_state":
+        options = json.loads(Path(candidate_spec(base, published, parent)["composer_options"]["path"]).read_bytes())
+        options.pop("expected_state_sha256")
+        changes["composer_options"] = write(tmp / "plans" / "short-options.json", options)
+    elif fault == "plan_schema":
+        plan = json.loads(Path(candidate_spec(base, published, parent)["base_plan"]["path"]).read_bytes())
+        plan["schema"] = "wd.q4-public-wrapper-plan.v3"
+        changes["base_plan"] = write(tmp / "plans" / "v3-plan.json", plan)
+    elif fault == "plan_extra_key":
+        plan = json.loads(Path(candidate_spec(base, published, parent)["base_plan"]["path"]).read_bytes())
+        plan["card_decision_path"] = "x"
+        changes["base_plan"] = write(tmp / "plans" / "extra-plan.json", plan)
+    elif fault == "roster_pin":
+        changes["roster"] = dict(published["roster"], sha256="0" * 64)
+    elif fault == "anchors_doc_pin":
+        changes["approved_anchors"] = dict(published["anchors"], sha256="0" * 64)
+    elif fault == "source_relative":
+        changes["source_path"] = "events.jsonl"
+    elif fault == "encoder_not_object":
+        changes["encoder"] = "synthetic"
+    spec = candidate_spec(base, published, parent, **changes)
+    if fault in ("builder_output_in_audit", "audit_in_builder_output"):
+        audit = Path(spec["audit_output_root"])
+        # Both are direct children of a .codex-audit dir, so only the overlap check can refuse them.
+        out = audit / ".codex-audit" / "builder" if fault == "builder_output_in_audit" else audit.parent
+        assert out.parent.name == ".codex-audit" and not audit.exists()
+        out.mkdir(parents=True)
+        pin = write(tmp / "specs" / "in-audit.json", spec)
+        with pytest.raises(mod.Refused):
+            mod.build(enabled=True, spec_path=pin["path"], spec_sha256=pin["sha256"], output_root=str(out))
+        assert list(out.iterdir()) == []
+        return
+    out, _, build = run_spec(mod, base, spec, "cand-" + fault)
+    with pytest.raises(mod.Refused):
+        build()
+    assert list(out.iterdir()) == []
+
+
+def test_builder_option_keys_are_the_orchestrator_keys(mod):
+    from tools import wd_q4_descriptor_cli as descriptor_cli
+    keys = orchestrator_option_keys()
+    assert len(keys) == 9 and set(mod._OPTION_KEYS) | {"generation"} == keys and "generation" not in mod._OPTION_KEYS
+    assert set(composer_options()) == set(mod._OPTION_KEYS)
+    assert (set(composer_options()["descriptor_options"]) | {"expected_binding", "public_plan"}
+            == descriptor_cli._DESCRIPTOR_KEYS)
+
+
+def _bad_options(fault):
+    options = composer_options()
+    descriptor = options["descriptor_options"]
+    if fault.startswith("missing_"):
+        options.pop(fault[len("missing_"):])
+    elif fault == "extra_key":
+        options["timeout_seconds"] = 60
+    elif fault == "mistyped_key":
+        options["expected_host_sha265"] = options.pop("expected_host_sha256")
+    elif fault == "preset_generation":
+        options["generation"] = "1" * 40
+    elif fault == "not_object":
+        return [options]
+    elif fault == "commit_upper":
+        options["expected_commit"] = "A" * 40
+    elif fault == "commit_short":
+        options["expected_commit"] = "2" * 39
+    elif fault == "manifest_lower":
+        options["expected_manifest_sha256"] = "a" * 64
+    elif fault == "host_upper":
+        options["expected_host_sha256"] = "C" * 64
+    elif fault == "state_short":
+        options["expected_state_sha256"] = "b" * 63
+    elif fault == "bundle_relative":
+        options["expected_bundle"] = "synthetic/bundle"
+    elif fault == "store_other_drive":
+        options["bundle_store_root"] = "D:/synthetic/store"
+    elif fault == "active_dotdot":
+        options["active_bundle_root"] = "C:/synthetic/../active"
+    elif fault == "bundle_non_ascii":
+        options["expected_bundle"] = "C:/synthetic/b\u00fcndle"
+    elif fault == "bundle_drive_relative":
+        options["expected_bundle"] = "C:synthetic/bundle"
+    elif fault == "bundle_not_string":
+        options["expected_bundle"] = 1
+    elif fault == "descriptor_not_object":
+        options["descriptor_options"] = []
+    elif fault == "descriptor_missing_outer":
+        descriptor.pop("outer")
+    elif fault == "descriptor_orchestrator_binding":
+        descriptor["expected_binding"] = {}
+    elif fault == "descriptor_mistyped_key":
+        descriptor["cwdir"] = descriptor.pop("cwd")
+    elif fault == "timeout_too_big":
+        descriptor["timeout_seconds"] = 601
+    elif fault == "timeout_bool":
+        descriptor["timeout_seconds"] = True
+    elif fault == "timeout_string":
+        descriptor["timeout_seconds"] = "60"
+    elif fault == "interpreter_cap_zero":
+        descriptor["interpreter_max_bytes"] = 0
+    elif fault == "interpreter_cap_too_big":
+        descriptor["interpreter_max_bytes"] = 64 * 1024 * 1024 + 1
+    elif fault == "output_too_big":
+        descriptor["max_output_bytes"] = 65537
+    elif fault == "outer_not_object":
+        descriptor["outer"] = "synthetic"
+    elif fault == "outer_missing_key":
+        descriptor["outer"].pop("worker-sha256")
+    elif fault == "outer_extra_key":
+        descriptor["outer"]["extra-sha256"] = "e" * 64
+    else:
+        raise AssertionError(fault)
+    return options
+
+
+_OPTION_FAULTS = ["missing_" + key for key in ("expected_bundle", "expected_commit", "expected_manifest_sha256",
+                                               "expected_host_sha256", "descriptor_options", "bundle_store_root",
+                                               "active_bundle_root", "expected_state_sha256")] + [
+    "extra_key", "mistyped_key", "preset_generation", "not_object", "commit_upper", "commit_short", "manifest_lower",
+    "host_upper", "state_short", "bundle_relative", "store_other_drive", "active_dotdot", "bundle_not_string",
+    "bundle_non_ascii", "bundle_drive_relative",
+    "descriptor_not_object", "descriptor_missing_outer", "descriptor_orchestrator_binding", "descriptor_mistyped_key",
+    "timeout_too_big", "timeout_bool", "timeout_string", "interpreter_cap_zero", "interpreter_cap_too_big",
+    "output_too_big", "outer_not_object", "outer_missing_key", "outer_extra_key"]
+
+
+@pytest.mark.parametrize("fault", _OPTION_FAULTS)
+def test_candidate_composer_options_refused_before_any_write(mod, base, published, parent, fault):
+    options = write(base["tmp"] / "plans" / ("options-" + fault + ".json"), _bad_options(fault))
+    out, _, build = run_spec(mod, base, candidate_spec(base, published, parent, composer_options=options),
+                             "opt-" + fault)
+    with pytest.raises(mod.Refused):
+        build()
+    assert list(out.iterdir()) == []
+
+
+def test_write_new_never_replaces_an_existing_file(mod, tmp_path):
+    target = tmp_path / "taken.json"
+    target.write_bytes(b"first")
+    with pytest.raises(FileExistsError):
+        mod._write_new(target, b"second")
+    assert target.read_bytes() == b"first"
+
+
+@pytest.mark.parametrize("target", ["roster", "approved_anchors", "prefix_pin", "base_plan", "fixed_template",
+                                    "composer_options", "card_policy"])
+def test_candidate_input_changed_after_first_write_is_unknown(mod, base, published, parent, monkeypatch, target):
+    spec = candidate_spec(base, published, parent)
+    path = Path((spec["configs"] if target == "card_policy" else spec)[target]["path"])
+    out, _, build = run_spec(mod, base, spec, "late-c-" + target)
+    failures = _mutate_after_first_write(mod, monkeypatch, lambda: path.write_bytes(path.read_bytes() + b" "))
+    with pytest.raises(mod.Unknown):
+        build()
+    assert failures == []
+
+
+def test_cli_maps_refusal_and_prints_only_sanitized_status(mod, base, tmp_path):
+    spec = publish_spec(base)
+    pin = write(tmp_path / "specs" / "cli.json", spec)
+    out = tmp_path / "out-cli"
+    out.mkdir()
+    proc = subprocess.run([sys.executable, "-B", "-m", "tools.wd_q4_initial_card_inputs", "--enabled", "--spec",
+                           pin["path"], "--spec-sha256", "0" * 64, "--output-root", str(out)], cwd=ROOT,
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 2 and proc.stdout == "" and json.loads(proc.stderr) == {"status": "REFUSED"}
+    proc = subprocess.run([sys.executable, "-B", "-m", "tools.wd_q4_initial_card_inputs", "--enabled", "--spec",
+                           pin["path"], "--spec-sha256", pin["sha256"], "--output-root", str(out)], cwd=ROOT,
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    value = json.loads(proc.stdout)
+    assert set(value) == {"status", "phase", "manifest_sha256"} and value["status"] == "WRITTEN"
+    assert str(tmp_path) not in proc.stdout + proc.stderr

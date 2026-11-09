@@ -5,6 +5,12 @@ delta pages, not total I/O or latency: the reader probes and rehashes accepted
 prefixes, and rendering scans retained metadata. Those costs are unmeasured.
 Coverage describes the reader's snapshot, not atomic current-path identity or
 writer authentication. No file persistence, service, tail fallback or eviction.
+
+Anchored paths are not resolved, reparse-checked or authenticated: the caller
+must establish the allowed source path. max_events limits retained metadata
+from caller-roster matches and reported RCO vetoes, not all raw rows. Overflow
+requires explicit reset; replay at the same insufficient capacity can overflow
+again. No source authentication or constant-cost processing is implied.
 """
 from __future__ import annotations
 
@@ -82,10 +88,15 @@ class SituationHost:
                 # Do not echo raw source, caller input, paths or exception text.
                 self._blocked = True
                 return self._unknown('host_update_failed', calls)
+            except BaseException:
+                # An interruption can leave core staging only partly committed.
+                self._blocked = True
+                raise
 
     def reset(self):
         """Explicitly discard in-memory history; the next tick starts at zero."""
         with self._lock:
+            # Also remains set if reset propagates a non-Exception interruption.
             self._blocked = True
             try:
                 self._picture.reset()

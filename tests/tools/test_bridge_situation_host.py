@@ -303,3 +303,77 @@ def test_tick_copy_and_reset_hold_one_serial_lock(tmp_path, monkeypatch):
     assert not first.is_alive() and not second.is_alive() and not errors
     assert reset_called.is_set() and len(results) == 2
     assert results['tick']['snapshot']['synthetic_extension'] == 'copied-under-lock'
+
+
+@pytest.mark.parametrize('abort_type', [KeyboardInterrupt, SystemExit, GeneratorExit])
+@pytest.mark.parametrize('stage', ['update', 'copy', 'reset'])
+def test_baseexception_propagates_unchanged_and_latches_every_mutable_stage(tmp_path, monkeypatch, abort_type, stage):
+    source = tmp_path / 'events.jsonl'
+    write(source, [row()])
+    host = make(source)
+    assert host.tick(now=stamp(10))['coverage'] == 'COMPLETE'
+    engine = host._picture
+    original_update, original_reset = engine.update, engine.reset
+    abort = abort_type('synthetic-interruption')
+    class InterruptedCopy:
+        def __deepcopy__(self, memo):
+            raise abort
+    def update(*args, **kwargs):
+        if stage == 'update':
+            raise abort
+        report = original_update(*args, **kwargs)
+        report['synthetic_extension'] = InterruptedCopy()
+        return report
+    def reset():
+        raise abort
+    if stage == 'reset':
+        monkeypatch.setattr(engine, 'reset', reset)
+        operation = host.reset
+    else:
+        monkeypatch.setattr(engine, 'update', update)
+        operation = lambda: host.tick(now=stamp(11))
+    with pytest.raises(abort_type) as caught:
+        operation()
+    assert caught.value is abort
+    assert host._lock.acquire(blocking=False)
+    host._lock.release()
+    monkeypatch.setattr(engine, 'update', original_update)
+    monkeypatch.setattr(engine, 'reset', original_reset)
+    blocked = host.tick(now=stamp(12))
+    unknown(blocked, 'reset_required')
+    assert blocked['snapshot'] is None and blocked['update_calls'] == 0
+    unknown(host.reset(), 'reset_not_read')
+    assert host.tick(now=stamp(13))['coverage'] == 'COMPLETE'
+    assert len(engine._events) == 1
+
+
+@pytest.mark.parametrize('abort_type', [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_interruption_between_staging_and_cursor_commit_cannot_duplicate_facts(tmp_path, abort_type):
+    source = tmp_path / 'events.jsonl'
+    sent, veto = request(), refused()
+    write(source, [sent, veto])
+    host = make(source)
+    abort = abort_type('synthetic-after-extend-before-cursor')
+    class InterruptedEvents(list):
+        armed = True
+        def extend(self, values):
+            super().extend(values)
+            if self.armed:
+                self.armed = False
+                raise abort
+    engine = host._picture
+    engine._events = InterruptedEvents()
+    with pytest.raises(abort_type) as caught:
+        host.tick(now=stamp(10))
+    assert caught.value is abort
+    assert engine._cursor is None and len(engine._events) == 2
+    blocked = host.tick(now=stamp(11))
+    assert len(engine._events) == 2, 'unlatched reuse duplicated partially staged events'
+    unknown(blocked, 'reset_required')
+    assert blocked['snapshot'] is None and blocked['update_calls'] == 0
+    unknown(host.reset(), 'reset_not_read')
+    report = host.tick(now=stamp(12))
+    assert report['coverage'] == 'COMPLETE'
+    assert [record[1] for record in engine._events] == [event_id(sent), event_id(veto)]
+    assert report['snapshot']['waiting_for']['value'][0]['request_ref'] == event_id(sent)
+    assert len(report['snapshot']['recognized_veto_observations']['value']) == 1

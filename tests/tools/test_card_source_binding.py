@@ -13,8 +13,9 @@ log, freshness beyond the prefix, and that the observed head set came from a tru
 """
 import importlib.util
 import json
+import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -277,3 +278,27 @@ def test_the_resolver_alone_verifies_the_decision_itself(tmp_path, monkeypatch, 
                                  query_utc='2026-11-02T00:00:00Z', policy_bytes=data['policy_bytes'],
                                  policy_sha256=data['policy_sha256'], roster_bytes=data['roster_bytes'],
                                  roster_sha256=data['roster_sha256'], **decision)
+
+
+# --- fixture binding on every CI platform (lead-ci-card-binding-fable-20261109-v1) ------------------------------------
+
+def test_the_synthetic_config_passes_the_real_binding_check_on_this_platform(tmp_path):
+    from tools import wd_q4_agent_query as q4
+    cfg = rt.config(tmp_path, '7' * 64)
+    q4._validate_config(cfg)  # the real check is unchanged: a refused tuple raises
+    if os.name == 'nt':
+        assert cfg.memory == str(tmp_path) and cfg.descriptor == str(tmp_path / 'descriptor.json')
+    else:
+        assert cfg.memory == rt.SYNTHETIC_MEMORY and cfg.descriptor == rt.SYNTHETIC_MEMORY + '\\descriptor.json'
+
+
+def test_off_windows_the_synthetic_config_carries_a_drive_letter_path_and_binds(monkeypatch):
+    from tools import wd_q4_agent_query as q4
+    monkeypatch.setattr(rt.os, 'name', 'posix')
+    posix_dir = PurePosixPath('/tmp/pytest-of-runner/pytest-0/test_without_an_observed_set_0')
+    cfg = rt.config(posix_dir, '7' * 64)
+    assert cfg.memory == rt.SYNTHETIC_MEMORY and cfg.descriptor == rt.SYNTHETIC_MEMORY + '\\descriptor.json'
+    q4._validate_config(cfg)
+    monkeypatch.setattr(rt.os, 'name', 'nt')
+    with pytest.raises(q4.QueryRefused, match='invalid_binding'):
+        q4._validate_config(rt.config(posix_dir, '7' * 64))  # a real POSIX string is still refused on Windows

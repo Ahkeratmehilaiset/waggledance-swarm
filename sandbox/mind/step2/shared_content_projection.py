@@ -493,7 +493,42 @@ def _eligible(event, policy, roster):
     return fields
 
 
-def _records(source_ref, fields, chunks):
+def recipient_label(event, lanes):
+    """The one build lane an eligible event is explicitly addressed to, else None (fail closed).
+
+    Only a top-level ``to`` string that is exactly one lane of the pinned policy counts. Any other routing key
+    anywhere in the event (recipient lists, aliases, cc, nested request targets) or a bound-responder set naming
+    anyone but that lane makes the recipient unclassifiable, which reads as None. Reviewer-addressed events never
+    reach here (``capture._exclude_rco_event`` drops them) and reviewer lanes cannot be in ``lanes`` (the policy
+    loader refuses them). The label is bound by the projection and collection hashes: it proves consistency with
+    the projected event, not authenticated delivery or sender authentication.
+    """
+    to = event.get("to") if type(event) is dict else None
+    if type(to) is not str or to not in lanes:
+        return None
+    stack = [(event, True)]
+    while stack:
+        value, top = stack.pop()
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if type(key) is not str:
+                    return None
+                normalized = key.lower().replace("-", "_")
+                if normalized == "expected_responders":
+                    if type(item) is not dict or set(item) != {to}:
+                        return None
+                elif normalized in capture._RECIPIENT_KEYS and not (top and key == "to"):
+                    return None
+                if isinstance(item, (dict, list)):
+                    stack.append((item, False))
+        elif isinstance(value, list):
+            stack.extend((item, False) for item in value if isinstance(item, (dict, list)))
+    return to
+
+
+def _records(source_ref, fields, chunks, recipient=None):
+    if recipient is not None and type(recipient) is not str:
+        raise ContentRefused("recipient_label_invalid")
     available = sp._available(fields["ts_utc"])
     out = []
     for index, text in enumerate(chunks):
@@ -501,7 +536,7 @@ def _records(source_ref, fields, chunks):
         out.append({"record_id": "content:" + ref, "kind": "event", "time_utc": fields["ts_utc"],
                     "available_utc": available, "stored_text": text, "summary": text,
                     "meta": {"agent": fields["agent"], "type": fields["type"], "task_id": fields["task_id"],
-                             "text_encoding": TEXT_ENCODING},
+                             "to": recipient, "text_encoding": TEXT_ENCODING},
                     "provenance": {"source_kind": SOURCE_KIND, "event_ref": ref, "ref_kind": REF_KIND,
                                    "canonical_event": False, "source_event_ref": source_ref,
                                    "chunk_index": index, "chunk_count": len(chunks),
@@ -556,7 +591,7 @@ def _build_core(rows, policy_bytes, policy_sha256, roster, identifier_policy_box
         if any(corpus_mod.ws._has_marker(text) for text in chunks):
             refused["sealed"] = refused.get("sealed", 0) + 1
             continue
-        records.extend(_records(ref, fields, chunks))
+        records.extend(_records(ref, fields, chunks, recipient_label(event, policy["lanes"])))
     records.sort(key=lambda record: (record["time_utc"], record["provenance"]["source_event_ref"],
                                      record["provenance"]["chunk_index"]))
     projection = {"schema": SCHEMA, "authority": "none", "scope": SCOPE, "policy_sha256": policy_sha256,

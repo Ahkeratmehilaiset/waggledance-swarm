@@ -29,17 +29,17 @@ def startup_origin_lane(situation):
     return match.group("lane") if match else None
 
 
-def origin_label(metadata, position):
-    """The projection-bound ``agent`` label of one collection row, or None when it cannot be read.
+def origin_label(metadata, position, key="agent"):
+    """The projection-bound ``agent`` (author) or ``to`` (recipient) label of one collection row, or None.
 
     The label comes from the receipt-hashed collection metadata (meta.json), so it proves consistency with the
-    projection, not authenticated authorship. Anything but a complete list of dicts with a string agent reads as
-    None, which a startup read rejects.
+    projection, not authenticated authorship or delivery. Anything but a complete list of dicts with a string
+    value under ``key`` reads as None, which a startup read rejects.
     """
     if not isinstance(metadata, (list, tuple)) or position >= len(metadata) or type(metadata[position]) is not dict:
         return None
-    agent = metadata[position].get("agent")
-    return agent if type(agent) is str else None
+    label = metadata[position].get(key)
+    return label if type(label) is str else None
 
 
 def valid_reference_metadata(kind, ref, ref_kind, canonical_event):
@@ -105,14 +105,17 @@ class Q4:
                 entry = rows.setdefault(record_id, {"cell": cell_id, "row": row})
                 entry[which] = vectors[position]
                 entry["origin_" + which] = origin_label(metadata, position)
+                entry["recipient_" + which] = origin_label(metadata, position, "to")
                 if which == "w":
                     entry["text"] = view.collection._texts[position]
         self.ids = sorted(record_id for record_id, entry in rows.items() if "w" in entry and "d" in entry)
         if len(self.ids) != len(rows):
             raise memory_mod.MemoryError_("record_view_missing")
         self.entries = [rows[record_id] for record_id in self.ids]
-        # One origin label per record, readable only when both of its rows carry the same label.
+        # One origin and one recipient label per record, readable only when both of its rows carry the same label.
         self.origin = [entry["origin_w"] if entry["origin_w"] == entry["origin_d"] else None for entry in self.entries]
+        self.recipient = [entry["recipient_w"] if entry["recipient_w"] == entry["recipient_d"] else None
+                          for entry in self.entries]
         dim = memory.memory["dim"]
         self.w = np.vstack([entry["w"] for entry in self.entries]) if self.entries else np.zeros((0, dim), np.float32)
         self.d = np.vstack([entry["d"] for entry in self.entries]) if self.entries else np.zeros((0, dim), np.float32)
@@ -204,8 +207,11 @@ class Q4:
         emptied_by_origin = False
         if origin_lane is not None:
             # After the full-set consensus, a startup own-task read keeps only the shown results whose
-            # projection-bound origin label is the named lane; it never adds, reorders or promotes a result.
-            kept = [result for i, result in zip(agreed, results) if self.origin[index[i]] == origin_lane]
+            # projection-bound origin (author) label or recipient label is the named lane; it never adds,
+            # reorders or promotes a result. Reviewer-authored and reviewer-addressed rows never enter the
+            # projection, and a recipient label is only ever a build lane of the pinned policy.
+            kept = [result for i, result in zip(agreed, results)
+                    if origin_lane in (self.origin[index[i]], self.recipient[index[i]])]
             telemetry["rejected_origin"] = len(results) - len(kept)
             emptied_by_origin = bool(results) and not kept
             results = kept

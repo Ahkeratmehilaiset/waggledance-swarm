@@ -273,3 +273,93 @@ def test_q4_reads_origin_through_the_snapshot_facade():
     view.collection = cell._ReadOnlySnapshotCollection(raw, verified_dim=2)
     answer = q4.Q4(memory, FakeEncoder()).ask(STARTUP % "fable-5", WHEN)
     assert answer["status"] == "ANSWER" and lanes_of(answer) == {"fable-5"}
+
+
+# --- recipient label: a result explicitly addressed to the named build lane is kept too -----------------------
+
+
+def addressed_memory(author, to, *, count=4, mismatch=None):
+    """Rows authored by ``author`` and addressed to ``to`` (a label, None, or a non-string), first in id order;
+    ``mismatch`` names the view ("w" or "d") whose rows carry a different recipient label."""
+    memory = lane_memory((author,), counts={author: count})
+    for position, meta in enumerate(memory.views["learning"].collection._metadata):
+        if to != "absent":
+            meta["to"] = to
+        if mismatch is not None and meta["view"] == mismatch:
+            meta["to"] = "someone-else"
+    return memory
+
+
+@pytest.mark.parametrize("lane", BUILD_LANES)
+def test_an_assignment_addressed_to_the_lane_is_kept_for_its_startup_read(lane):
+    author = next(other for other in BUILD_LANES if other != lane)
+    answer = q4.Q4(addressed_memory(author, lane), FakeEncoder()).ask(STARTUP % lane, WHEN)
+    assert answer["status"] == "ANSWER" and lanes_of(answer) == {author} and len(answer["results"]) == 3
+    assert answer["telemetry"]["rejected_origin"] == 0
+
+
+@pytest.mark.parametrize("lane", LANES)
+def test_an_assignment_addressed_to_another_lane_is_rejected(lane):
+    other = next(build for build in BUILD_LANES if build != lane)
+    author = next(build for build in BUILD_LANES if build not in (lane, other))
+    answer = q4.Q4(addressed_memory(author, other), FakeEncoder()).ask(STARTUP % lane, WHEN)
+    assert answer["status"] == "ABSTAIN" and answer["reason"] == "no_lane_origin_results"
+    assert answer["results"] == [] and answer["telemetry"]["rejected_origin"] == 3
+
+
+@pytest.mark.parametrize("to", ["absent", None, 5, ["fable-5"], "", "FABLE-5"])
+def test_unreadable_or_absent_recipient_labels_never_keep_a_result(to):
+    answer = q4.Q4(addressed_memory("codex-lead-1", to), FakeEncoder()).ask(STARTUP % "fable-5", WHEN)
+    assert answer["status"] == "ABSTAIN" and answer["results"] == []
+
+
+@pytest.mark.parametrize("view", ["w", "d"])
+def test_recipient_labels_must_agree_between_the_w_and_d_rows(view):
+    answer = q4.Q4(addressed_memory("codex-lead-1", "fable-5", mismatch=view), FakeEncoder()).ask(
+        STARTUP % "fable-5", WHEN)
+    assert answer["status"] == "ABSTAIN" and answer["results"] == []
+
+
+@pytest.mark.parametrize("lane", ("claude-rco-1", "claude-rco-2"))
+def test_a_forged_reviewer_recipient_label_is_the_only_way_a_reviewer_could_recall_and_it_is_upstream_impossible(lane):
+    # The projection never emits a reviewer recipient (policy lanes exclude reviewers; reviewer-addressed rows are
+    # dropped before projection), so this synthetic metadata cannot come from a built memory; the engine itself
+    # has no lane roles and would keep it. The guarantee is the pinned projection, stated here, not hidden.
+    answer = q4.Q4(addressed_memory("codex-lead-1", lane), FakeEncoder()).ask(STARTUP % lane, WHEN)
+    assert answer["status"] == "ANSWER"
+
+
+def test_recipient_labels_do_not_change_non_startup_answers():
+    memory = addressed_memory("codex-lead-1", "fable-5")
+    plain = addressed_memory("codex-lead-1", "absent")
+    for question in ("bound reply current task", "operator directive of the day", "fable-5 status today"):
+        assert strip_ms(q4.Q4(memory, FakeEncoder()).ask(question, WHEN)) == \
+            strip_ms(q4.Q4(plain, FakeEncoder()).ask(question, WHEN))
+
+
+def test_startup_filter_with_recipients_never_creates_an_answer_and_only_removes_shown_results():
+    rng = random.Random(20261110)
+    seen_answer = seen_abstain = seen_kept_by_recipient = 0
+    for _ in range(300):
+        memory, metas = random_memory(rng)
+        for meta in metas:
+            meta["to"] = rng.choice(BUILD_LANES + (None, "mallory"))
+        lane = rng.choice(LANES)
+        situation = STARTUP % lane + (" " + " ".join(rng.choice(VOCABULARY) for _ in range(rng.randint(0, 4))))
+        filtered = q4.Q4(memory, HashEncoder()).ask(situation, WHEN)
+        if filtered["status"] == "ANSWER":
+            own = {ref for ref in refs(filtered) if ref.startswith(lane + "-")}
+            seen_kept_by_recipient += len(own) < len(refs(filtered))
+        for meta in metas:
+            meta["agent"] = lane
+        baseline = q4.Q4(memory, HashEncoder()).ask(situation, WHEN)
+        assert set(refs(filtered)) <= set(refs(baseline))
+        assert refs(filtered) == [ref for ref in refs(baseline) if ref in set(refs(filtered))]
+        if baseline["status"] != "ANSWER":
+            assert strip_ms(filtered) == strip_ms(baseline)
+        else:
+            assert filtered["status"] in ("ANSWER", "ABSTAIN")
+            assert filtered["telemetry"]["rejected_origin"] == len(baseline["results"]) - len(filtered["results"])
+            seen_answer += filtered["status"] == "ANSWER"
+            seen_abstain += filtered["status"] == "ABSTAIN"
+    assert seen_answer and seen_abstain and seen_kept_by_recipient

@@ -32,3 +32,4 @@ configs/mind/content_message_policy_v1.json binary
 configs/mind/pilot_non_review_policy.json binary
 configs/mind/content_message_policy_v2.json binary
 configs/mind/content_non_review_policy_v2.json binary
+configs/mind/content_doc_policy_v1.json -text

@@ -10,6 +10,7 @@ POLICIES = (
     "configs/mind/pilot_non_review_policy.json",
     "configs/mind/content_message_policy_v2.json",
     "configs/mind/content_non_review_policy_v2.json",
+    "configs/mind/content_doc_policy_v1.json",
 )
 
 

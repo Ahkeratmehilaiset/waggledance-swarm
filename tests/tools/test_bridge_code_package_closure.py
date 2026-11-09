@@ -257,7 +257,8 @@ def test_staged_carry_cli_import_and_help_have_no_source_fallback(staged_mind_so
     script = (
         "import importlib, io, contextlib, json, pathlib, sys\n"
         "root=pathlib.Path(sys.argv[1]).resolve()\n"
-        "sys.path[:0]=[str(root), sys.argv[3]]\n"
+        "sys.path.insert(0, str(root))\n"
+        "sys.path.append(sys.argv[3])\n"
         "module=importlib.import_module(sys.argv[2])\n"
         "out=io.StringIO()\n"
         "with contextlib.redirect_stdout(out):\n"

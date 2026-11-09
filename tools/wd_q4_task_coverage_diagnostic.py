@@ -1,12 +1,12 @@
 """Per-task counts diagnostic for content memory build receipts.
 
-Counts diagnostic, not a coverage guarantee; a restricted receipt artifact, not a public card. The content projection
-receipt counts accepted records and refused rows for the whole build only, so an authorized task that contributed
-nothing is invisible there. This module makes such a task visible with counts and closed reason codes alone: it calls
-the unchanged public ``build_content_projection`` once per approved task on that task's rows, so every number is
-exactly what a full build counts for that task, and once more on all rows to show the per-task sums equal the full
-build (``match``). Nothing here reads a live source, writes a file, or touches a producer, policy, trust check or
-runtime path.
+Counts diagnostic, not a coverage guarantee; a receipt artifact for the build audience, not a public card. The content
+projection receipt counts accepted records and refused rows for the whole build only, so an authorized task that
+contributed nothing is invisible there. This module makes such a task visible with counts and closed reason codes
+alone: it calls the unchanged public ``build_content_projection`` once per approved task on that task's rows, so every
+number is exactly what a full build counts for that task, and once more on all rows to show the per-task sums equal
+the full build (``match``). Nothing here reads a live source, writes a file, or touches a producer, policy, trust
+check or runtime path.
 
 Disclosure rules. The report never carries event text, excerpts, event ids, source refs, offsets or timestamps, only
 task ids taken from the hash-pinned policy (never from caller input), integer counts and closed reason tokens. Per
@@ -18,11 +18,16 @@ projection emits that this module does not know is one ``unsupported`` count, an
 reviewer-addressed rows, review-signal typed rows) stay uncounted here too, because the public build never counts
 them. Rows whose task is not in the pinned policy are summed into one ``unapproved_rows`` bucket.
 
-``coverage_from_projection`` gives the record count per approved task from an already built projection, for receipts
-that exist today. Its task ids come from the hash-pinned policy, the projection must carry the projection schema,
-exactly the projection keys, the same policy pin and consistent counts, a record of a task outside the policy or of a
-review lane refuses the whole report, and ``source_integrity`` is ``UNKNOWN`` unless the caller also passes the
-pinned rows and roster and ``validate_content_projection`` re-derives the projection exactly (``VERIFIED``).
+Trust. Every input here is caller-supplied: rows, roster, policy bytes and projection. The module can therefore prove
+re-derivation only (``rederivation`` MATCH means the projection is exactly what the pinned rows, roster, policy and
+identifier-policy options rebuild), never source authenticity or freshness, which the report states as UNKNOWN. The
+``audience`` and ``access_control`` fields are labels: a label is not access control, and the caller must restrict
+distribution. ``coverage_from_projection`` refuses an unrederived projection (it may be fabricated and may carry
+review-lane records) unless the caller passes ``allow_untrusted=True``; the report is then marked ``trust``
+``untrusted``, labelled untrusted and ``distribution`` ``do_not_publish``. Identifier-policy options
+(``require_identifier_policy``, ``identifier_policy_binding``) are validated like the projection validates them and
+passed into every per-task build and into the re-derivation; a projection carrying the identifier hmac without a
+binding, or a binding for a projection built without one, refuses explicitly.
 """
 
 import re
@@ -30,12 +35,15 @@ import re
 from sandbox.mind.step2 import shared_content_projection as cp
 from sandbox.mind.step2 import shared_projection as sp
 
-SCHEMA = "wd.q4-task-counts-diagnostic.v2"
-PROJECTION_SCHEMA = "wd.q4-task-counts-from-projection.v2"
+SCHEMA = "wd.q4-task-counts-diagnostic.v3"
+PROJECTION_SCHEMA = "wd.q4-task-counts-from-projection.v3"
 LABEL = "counts diagnostic, not a coverage guarantee"
-AUDIENCE = "restricted: build receipt for operator and lead, not a public card"
+LABEL_UNTRUSTED = "untrusted counts diagnostic from an unrederived projection; not a coverage guarantee; do not publish"
+AUDIENCE = "build receipt for operator and lead, not a public card"
+ACCESS_CONTROL = "none; this label is not access control, the caller must restrict distribution"
 CONTENT_REFUSED = "content_refused"
 UNSUPPORTED = "unsupported"
+UNKNOWN = "UNKNOWN"
 MAX_TASKS = 4096
 MAX_RECORDS = 1_000_000
 PROJECTION_KEYS = frozenset({"schema", "authority", "scope", "policy_sha256", "text_encoding", "accepted", "refused",
@@ -78,12 +86,12 @@ def _counts(projection):
     return {"accepted": accepted, "refused": refused}, unsupported
 
 
-def _build(rows, policy_bytes, policy_sha256, roster):
+def _build(rows, policy_bytes, policy_sha256, roster, options):
     if not rows:
         return {"accepted": 0, "refused": {}}, False
     try:
         projection = cp.build_content_projection(enabled=True, rows=rows, policy_bytes=policy_bytes,
-                                                 policy_sha256=policy_sha256, roster=roster)
+                                                 policy_sha256=policy_sha256, roster=roster, **options)
     except cp.ContentRefused as exc:
         _refuse(str(exc))
     return _counts(projection)
@@ -93,6 +101,26 @@ def _add(total, part):
     total["accepted"] += part["accepted"]
     for token, count in part["refused"].items():
         total["refused"][token] = total["refused"].get(token, 0) + count
+
+
+def _identifier_options(require_identifier_policy, identifier_policy_binding):
+    """The identifier-policy options exactly as the projection validates them, or identifier_policy_refused."""
+    if type(require_identifier_policy) is not bool:
+        _refuse("identifier_policy_refused")
+    if require_identifier_policy:
+        binding = identifier_policy_binding
+        if (type(binding) is not tuple or len(binding) != 3 or type(binding[0]) is not bytes
+                or type(binding[1]) is not bytes or type(binding[2]) is not str or _HEX64.fullmatch(binding[2]) is None):
+            _refuse("identifier_policy_refused")
+        try:
+            from sandbox.mind.step2 import content_identifier_policy as ip
+            ip.load_policy(*binding)  # the bytes, key and tag must load before any build runs
+        except Exception:
+            _refuse("identifier_policy_refused")
+    elif identifier_policy_binding is not None:
+        _refuse("identifier_policy_refused")
+    return {"require_identifier_policy": require_identifier_policy,
+            "identifier_policy_binding": identifier_policy_binding}
 
 
 def _policy(policy_bytes, policy_sha256):
@@ -123,12 +151,19 @@ def _rows(rows):
             _refuse("rows_refused")
 
 
-def task_coverage(*, rows=None, policy_bytes=None, policy_sha256=None, roster=None, enabled=True):
+def _trust_fields():
+    return {"source_authenticity": UNKNOWN, "freshness": UNKNOWN, "audience": AUDIENCE,
+            "access_control": ACCESS_CONTROL}
+
+
+def task_coverage(*, rows=None, policy_bytes=None, policy_sha256=None, roster=None, enabled=True,
+                  require_identifier_policy=False, identifier_policy_binding=None):
     """Counts per approved task, one unapproved bucket, totals, zero-coverage tasks and the full-build match."""
     if enabled is False:
         return {"status": "OFF"}
     if enabled is not True:
         _refuse("enabled_invalid")
+    options = _identifier_options(require_identifier_policy, identifier_policy_binding)
     approved = _policy(policy_bytes, policy_sha256)
     _roster(roster)
     _rows(rows)
@@ -141,35 +176,46 @@ def task_coverage(*, rows=None, policy_bytes=None, policy_sha256=None, roster=No
     unsupported = False
     tasks = {}
     for task in sorted(buckets):
-        tasks[task], seen = _build(buckets[task], policy_bytes, policy_sha256, roster)
+        tasks[task], seen = _build(buckets[task], policy_bytes, policy_sha256, roster, options)
         unsupported = unsupported or seen
-    unapproved, seen = _build(other, policy_bytes, policy_sha256, roster)
+    unapproved, seen = _build(other, policy_bytes, policy_sha256, roster, options)
     unsupported = unsupported or seen
     totals = {"accepted": 0, "refused": {}}
     for part in list(tasks.values()) + [unapproved]:
         _add(totals, part)
     totals["refused"] = dict(sorted(totals["refused"].items()))
-    full, seen = _build(rows, policy_bytes, policy_sha256, roster)
+    full, seen = _build(rows, policy_bytes, policy_sha256, roster, options)
     unsupported = unsupported or seen
     if unsupported:
         match = "UNSUPPORTED"
     else:
         match = "MATCH" if totals == full else "MISMATCH"
-    return {"schema": SCHEMA, "label": LABEL, "audience": AUDIENCE, "policy_sha256": policy_sha256, "tasks": tasks,
-            "unapproved_rows": unapproved,
-            "zero_coverage_tasks": sorted(task for task, entry in tasks.items() if entry["accepted"] == 0),
-            "totals": totals, "unsupported_refusals": unsupported, "match": match}
+    report = {"schema": SCHEMA, "label": LABEL, "policy_sha256": policy_sha256,
+              "identifier_policy": "bound" if require_identifier_policy else "none", "tasks": tasks,
+              "unapproved_rows": unapproved,
+              "zero_coverage_tasks": sorted(task for task, entry in tasks.items() if entry["accepted"] == 0),
+              "totals": totals, "unsupported_refusals": unsupported, "match": match}
+    report.update(_trust_fields())
+    return report
 
 
-def coverage_from_projection(projection, *, policy_bytes=None, policy_sha256=None, rows=None, roster=None):
+def coverage_from_projection(projection, *, policy_bytes=None, policy_sha256=None, rows=None, roster=None,
+                             allow_untrusted=False, require_identifier_policy=False, identifier_policy_binding=None):
     """Record count per approved task of the hash-pinned policy from a built projection (or its ``messages``
-    wrapper). The projection is UNKNOWN unless ``rows`` and ``roster`` re-derive it exactly (then VERIFIED); any
-    record whose task is outside the policy or whose lane is a review lane refuses, and no caller label is echoed."""
+    wrapper). With ``rows`` and ``roster`` the projection must re-derive exactly (``rederivation`` MATCH, ``trust``
+    rederived); without them the projection is untrusted and refused unless ``allow_untrusted=True`` (then ``trust``
+    untrusted, ``distribution`` do_not_publish). Any record whose task is outside the policy, or whose lane or
+    recipient is a review lane, refuses; no caller label is echoed."""
+    if type(allow_untrusted) is not bool:
+        _refuse("options_refused")
+    options = _identifier_options(require_identifier_policy, identifier_policy_binding)
     approved = _policy(policy_bytes, policy_sha256)
     if type(projection) is dict and "records" not in projection and type(projection.get("messages")) is dict:
         projection = projection["messages"]
     if type(projection) is not dict or not PROJECTION_KEYS <= set(projection) <= PROJECTION_KEYS | OPTIONAL_PROJECTION_KEYS:
         _refuse("projection_refused")
+    if ("identifier_policy_hmac" in projection) is not require_identifier_policy:
+        _refuse("identifier_policy_refused")
     if projection["schema"] != cp.SCHEMA or projection["policy_sha256"] != policy_sha256:
         _refuse("projection_refused")
     if projection["review_signal_excluded"] is not True or type(projection["records"]) is not list:
@@ -185,11 +231,15 @@ def coverage_from_projection(projection, *, policy_bytes=None, policy_sha256=Non
         meta = record.get("meta") if type(record) is dict else None
         task = meta.get("task_id") if type(meta) is dict else None
         agent = meta.get("agent") if type(meta) is dict else None
-        if type(task) is not str or task not in per_task or type(agent) is not str or agent in sp.REVIEW_LANES:
+        to = meta.get("to") if type(meta) is dict else None
+        if (type(task) is not str or task not in per_task or type(agent) is not str or agent in sp.REVIEW_LANES
+                or (to is not None and (type(to) is not str or to in sp.REVIEW_LANES))):
             _refuse("projection_refused")
         per_task[task] += 1
     if rows is None and roster is None:
-        integrity = "UNKNOWN"
+        if allow_untrusted is not True:
+            _refuse("untrusted_refused")
+        trust, rederivation, label, distribution = "untrusted", "NONE", LABEL_UNTRUSTED, "do_not_publish"
     else:
         if rows is None or roster is None:
             _refuse("projection_refused")
@@ -197,12 +247,15 @@ def coverage_from_projection(projection, *, policy_bytes=None, policy_sha256=Non
         _rows(rows)
         try:
             cp.validate_content_projection(projection, rows=rows, policy_bytes=policy_bytes,
-                                           policy_sha256=policy_sha256, roster=roster)
+                                           policy_sha256=policy_sha256, roster=roster, **options)
         except cp.ContentRefused:
             _refuse("projection_refused")
-        integrity = "VERIFIED"
+        trust, rederivation, label, distribution = "rederived", "MATCH", LABEL, "receipt_only"
     per_task = dict(sorted(per_task.items()))
-    return {"schema": PROJECTION_SCHEMA, "label": LABEL, "audience": AUDIENCE, "policy_sha256": policy_sha256,
-            "source_integrity": integrity, "records_per_task": per_task,
-            "zero_coverage_tasks": sorted(task for task, count in per_task.items() if count == 0),
-            "accepted": len(records), "refused": counts["refused"], "unsupported_refusals": unsupported}
+    report = {"schema": PROJECTION_SCHEMA, "label": label, "policy_sha256": policy_sha256, "trust": trust,
+              "rederivation": rederivation, "distribution": distribution,
+              "identifier_policy": "bound" if require_identifier_policy else "none", "records_per_task": per_task,
+              "zero_coverage_tasks": sorted(task for task, count in per_task.items() if count == 0),
+              "accepted": len(records), "refused": counts["refused"], "unsupported_refusals": unsupported}
+    report.update(_trust_fields())
+    return report

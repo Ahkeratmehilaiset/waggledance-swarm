@@ -368,8 +368,20 @@ def _require_opt_in(key, fn):
 
 def _carry_opt_in(key, fn, history):
     name = _require_opt_in(key, fn)
-    return {name: {"approved_head": history.old, "approved_base_sha": history.old_base,
-                   "repo_root": Path(history.repo.path)}}
+    opt = {name: {"approved_head": history.old, "approved_base_sha": history.old_base,
+                  "repo_root": Path(history.repo.path)}}
+    if key == MERGE and "accepted_queue_checker" in inspect.signature(fn).parameters:
+        opt["accepted_queue_checker"] = _queue()  # 211490de: the carry merge executor takes the queue observation
+    return opt
+
+
+def _carry_merge_gh(h, *, changed_path=None):
+    """211490de: the carry merge executor reads strict required-CI evidence (require_ci_evidence) through its runner,
+    so carry merge tests use the synthetic strict GitHub instead of the plain legacy runner (invocation only)."""
+    gh = ci_harness.FakeGitHub(head=h.new, base=h.new_base, repo=REPO_NAME, pr=PR, branch=TASK,
+                               changed_path=changed_path or h.path, author_login="Ahkeratmehilaiset",
+                               merge_sha=MERGE_SHA)
+    return gh.calls, gh
 
 
 def _carry_records(node):
@@ -561,8 +573,8 @@ def test_carry_valid_carry_end_to_end_gate(tmp_path, histories):
 def test_carry_valid_carry_end_to_end_receipt_writer(tmp_path, histories):
     h = histories["legit_rebase"]
     opt = _carry_opt_in(MERGE, merge_with_bridge_receipt, h)
-    calls, run = _runner(head=h.new, base=h.new_base)
-    report = _merge(tmp_path, events_path=_events_file(tmp_path, _approvals(h.old)), runner=run, apply=False,
+    calls, run = _carry_merge_gh(h)
+    report = _merge(tmp_path, events_path=_events_file(tmp_path, _carry_events(h)), runner=run, apply=False,
                     expected_head=h.new, expected_base_sha=h.new_base, **opt)
     assert report["decision"] == "merge_receipt_ready", _reasons(report)
     assert _merge_calls(calls) == []
@@ -574,8 +586,8 @@ def test_carry_valid_carry_end_to_end_receipt_writer(tmp_path, histories):
 def test_carry_match_head_commit_is_the_proposed_head(tmp_path, histories):
     h = histories["legit_rebase"]
     opt = _carry_opt_in(MERGE, merge_with_bridge_receipt, h)
-    calls, run = _runner(head=h.new, base=h.new_base)
-    report = _merge(tmp_path, events_path=_events_file(tmp_path, _approvals(h.old)), runner=run, apply=True,
+    calls, run = _carry_merge_gh(h)
+    report = _merge(tmp_path, events_path=_events_file(tmp_path, _carry_events(h)), runner=run, apply=True,
                     expected_head=h.new, expected_base_sha=h.new_base, **opt)
     assert report["decision"] == "merge_executed_after_receipt", _reasons(report)
     merges = _merge_calls(calls)
@@ -637,11 +649,11 @@ def test_carry_fresh_apply_after_objection_append(tmp_path, histories, monkeypat
     unrelated ledger append between receipt and apply must NOT refuse (no full-ledger digest false refusal)."""
     h = histories["legit_rebase"]
     opt = _carry_opt_in(MERGE, merge_with_bridge_receipt, h)
-    events_path = _events_file(tmp_path, _approvals(h.old))
+    events_path = _events_file(tmp_path, _carry_events(h))
     appended = (_benign_note() if shape == "benign_message"
                 else _objection(h.old, task=DESCRIPTIVE_TASK, with_pr=OBJECTION_SHAPES[shape]))
     seen = _append_before_apply_snapshot(monkeypatch, events_path, appended)
-    calls, run = _runner(head=h.new, base=h.new_base)
+    calls, run = _carry_merge_gh(h)
     report = _merge(tmp_path, events_path=events_path, runner=run, apply=True,
                     expected_head=h.new, expected_base_sha=h.new_base, **opt)
     assert len(seen) == 2 and seen[1], "receipt must have been written before the append"
@@ -657,8 +669,8 @@ def test_carry_fresh_apply_after_objection_append(tmp_path, histories, monkeypat
 def test_carry_content_change_never_reaches_merge(tmp_path, histories):
     h = histories["content_changing_rebase"]
     opt = _carry_opt_in(MERGE, merge_with_bridge_receipt, h)
-    calls, run = _runner(head=h.new, base=h.new_base)
-    report = _merge(tmp_path, events_path=_events_file(tmp_path, _approvals(h.old)), runner=run, apply=True,
+    calls, run = _carry_merge_gh(h, changed_path=CHANGED_PATH)  # allowlisted path as before: only content may refuse
+    report = _merge(tmp_path, events_path=_events_file(tmp_path, _carry_events(h)), runner=run, apply=True,
                     expected_head=h.new, expected_base_sha=h.new_base, **opt)
     assert _refused(report), _reasons(report)
     assert _merge_calls(calls) == []
@@ -902,7 +914,7 @@ def test_strict_ci_carry_apply_drift(tmp_path, histories, monkeypatch):
     opt = _carry_opt_in(MERGE, merge_with_bridge_receipt, h)
     gh = _strict_gh(h, consistent=False)  # isolation: the refusal must come from the strict apply capture
     seen = _flip_unified_before_apply(monkeypatch, gh)
-    report = _merge_outcome(tmp_path, gh, h, events_path=_events_file(tmp_path, _approvals(h.old)), **opt)
+    report = _merge_outcome(tmp_path, gh, h, events_path=_events_file(tmp_path, _carry_events(h)), **opt)
     assert len(seen) == 2
     if _merge_calls(gh.calls) and not any(seen):
         _missing_wiring("carry merge path does not capture strict CI at apply")

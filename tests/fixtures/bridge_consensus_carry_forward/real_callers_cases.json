@@ -11,7 +11,7 @@
   "opt_in": {
     "parameter": {
       "tools.idle_consensus_auto_merge:evaluate_auto_merge_gate": "carry_forward",
-      "tools.merge_with_bridge_receipt:merge_with_bridge_receipt": "approval_carry_forward"
+      "tools.merge_with_bridge_receipt:merge_with_bridge_receipt": "carry_forward"
     },
     "value": "mapping with approved_head, approved_base_sha and repo_root (pathlib.Path of the checkout holding both heads); built only by _carry_opt_in() in the test file, the single adaptation point once Tools publishes the wired names",
     "default": "absent or None means exact-head behaviour, unchanged",
@@ -229,5 +229,16 @@
       "apply_drift_refuses_merge": "apply_drift_refused_today"
     },
     "why": "the green-rollup isolation modelled a world GitHub does not produce for non-carry legacy cases"
+  },
+  "apply211_adaptations": {
+    "tools_head": "211490de981a43e2cf64c86297c4ca2b3b37bc20",
+    "request": "codex-lead-1 2026-11-09T11:28:00.0777536Z lead-carry-apply211-fable-20261109-v1",
+    "changes": [
+      "opt_in.parameter of merge_with_bridge_receipt renamed approval_carry_forward -> carry_forward (published name)",
+      "_carry_opt_in adds accepted_queue_checker (synthetic complete queue) for the merge executor (published parameter)",
+      "carry merge tests use basis-bound original votes (_carry_events), the same be79 adaptation the gate carry tests already carry",
+      "carry merge tests use the synthetic strict GitHub (_carry_merge_gh) because the carry merge executor reads strict required-CI evidence; the content-change test keeps the allowlisted changed path so only content can refuse",
+      "verdicts unchanged"
+    ]
   }
 }

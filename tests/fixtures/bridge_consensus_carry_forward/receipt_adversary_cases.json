@@ -231,12 +231,13 @@
     "apply_gate_refuses_carry_apply": {
       "class": "apply",
       "expect": "refuse",
-      "note": "published, intentionally unavailable"
+      "note": "published; until a032f622 refused as intentionally unavailable; from 211490de carry apply is published and a placeholder path without a MAGMA carry receipt must still refuse with no merge"
     },
     "apply_merge_carry_input": {
       "class": "apply",
       "expect": "refuse",
-      "until_published": "missing_api"
+      "until_published": "missing_api",
+      "note": "published at 211490de (carry_forward); driven end to end by test_consensus_carry_forward_apply_executors.py"
     },
     "apply_magma_writer_carry_input": {
       "class": "apply",

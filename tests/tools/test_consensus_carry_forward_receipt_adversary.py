@@ -379,8 +379,10 @@ def test_receipt_prefix_truncated_harmless_tail(histories, tmp_path):
     assert verdict is (CASES["cases"]["prefix_truncated_harmless_tail"]["expect"] == "accept")
 
 
-def test_apply_gate_refuses_carry_apply(histories, tmp_path):
-    h = histories["legit"]
+def test_apply_gate_refuses_carry_apply(magma_history, tmp_path, monkeypatch):
+    # 211490de adaptation: the allowlisted MAGMA-route history, so the path gate cannot shadow the receipt refusal
+    monkeypatch.setattr(of, "CHANGED_PATH", MAGMA_PATH)
+    h = magma_history
     gh = of._gh(h)
     snapshot = build_pr_status_snapshot(pr_number=of.PR, repo=of.REPO_NAME, receipt_verified=True,
                                         expected_base_sha=h.live_base, runner=gh, require_ci_evidence=True)
@@ -390,8 +392,12 @@ def test_apply_gate_refuses_carry_apply(histories, tmp_path):
         bridge_task_id=of.TASK, repo=of.REPO_NAME, from_agent="codex-lead-1", require_bridge_consensus=True,
         accepted_queue_checker=of._queue(), runner=gh, apply=True,
         carry_forward={"approved_head": h.old, "repo_root": Path(h.repo.path)})
+    # Intended verdict unchanged: refuse, no merge. a032f622 refused with "carry apply requires the integrated
+    # semantic receipt consumer"; from 211490de carry apply is published and this placeholder path holds no MAGMA
+    # carry receipt, so the refusal must come from the receipt consumer (invocation adaptation of the reason only).
     assert report.get("ok") is not True and report.get("decision") == "operator_review_required", report
-    assert any("carry apply" in reason for reason in report.get("reasons", [])), report
+    reasons = json.dumps(report.get("reasons", []))
+    assert "carry apply" in reasons or "receipt" in reasons, report
     assert of._merge_calls(gh) == []
 
 
@@ -401,6 +407,8 @@ def test_apply_unpublished_carry_input(target):
     names = [p for p in CARRY_PARAMETERS if p in inspect.signature(target).parameters]
     if target is write_bridge_consensus_merge_receipt and names == ["carry_forward"]:
         return  # published at a032f622; every verdict case is driven through it by test_magma_writer_and_consumer
+    if target is merge_with_bridge_receipt and names == ["carry_forward"]:
+        return  # published at 211490de; driven end to end by tests/tools/test_consensus_carry_forward_apply_executors.py
     if not names:
         pytest.fail(f"RED: missing API: {target.__module__}.{target.__name__} has no carry input yet (intentionally "
                     f"unavailable at {CASES['tools_head']}; fixture interfaces)")

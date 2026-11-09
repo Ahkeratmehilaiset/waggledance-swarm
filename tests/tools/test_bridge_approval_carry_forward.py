@@ -701,7 +701,8 @@ def test_live_factory_refuses_unproven_original_or_current_facts(live_factory, f
 
 
 @pytest.mark.parametrize("fault", ["unbound", "forged_issuer", "wrong_refs", "tamper", "reseal", "outside_root",
-                                  "author_issuer", "wrong_binding_task", "body_wrong_basis", "contradicts_direct"])
+                                  "author_issuer", "wrong_binding_task", "body_wrong_basis", "contradicts_direct",
+                                  "typed_body", "typed_direct"])
 def test_live_factory_descriptor_requires_canonical_binding_and_immutable_bytes(live_factory, fault):
     c = live_factory
     path, binding = _descriptor_origin(c)
@@ -729,9 +730,13 @@ def test_live_factory_descriptor_requires_canonical_binding_and_immutable_bytes(
         body = json.loads(path.read_bytes())
         if fault == "body_wrong_basis":
             body["review_basis"]["base_sha"] = "0" * 40
+        elif fault == "typed_body":
+            body["review_basis"]["pr_number"] = float(c["pr"])
         else:
-            conflicting = dict(c["basis"], diff_sha256="0" * 64)
-            c["events"][3]["payload"].update(review_basis=conflicting, review_basis_sha256=_event_hash(conflicting))
+            conflicting = (dict(c["basis"], pr_number=float(c["pr"])) if fault == "typed_direct"
+                           else dict(c["basis"], diff_sha256="0" * 64))
+            c["events"][3]["payload"].update(review_basis=conflicting,
+                review_basis_sha256=_event_hash(c["basis"] if fault == "typed_direct" else conflicting))
             refs = [_event_hash(e) for e in c["events"][1:4]]
             origin["approval_event_sha256"] = refs
             body["approval_event_sha256"] = refs
@@ -882,3 +887,225 @@ def test_live_factory_preserves_the_existing_strict_rco_pass_shape(live_factory,
         c["events"].insert(3, valid)
     result = _run_live_factory(c)
     assert result["carry"] is (shape == "prose"), result.get("reason")
+
+
+def _receipt_material(context):
+    return _api().carry_forward_receipt_material(_run_live_factory(context))
+
+
+def _verify_live_material(context, material):
+    context["events_path"].write_text("\n".join(json.dumps(e) for e in context["events"]), encoding="utf-8")
+    return _api().verify_live_carry_forward_receipt(
+        material=material, request=context["request"], events_path=context["events_path"],
+        repo=context["repo"], pr_number=context["pr"], task_id=context["task"],
+        expected_head=context["pair"]["new_head"], expected_base_sha=context["pair"]["new_base"],
+        runner=context["runner"], accepted_queue_checker=lambda **_: dict(ok=True, complete=context["queue"]))
+
+
+@pytest.mark.parametrize("append", [False, True])
+def test_semantic_carry_material_roundtrip_and_harmless_append(live_factory, append):
+    c = live_factory
+    material = _receipt_material(c)
+    assert set(material) == {"schema", "approval_receipt", "review_origin", "ci_evidence"}
+    assert material["approval_receipt"]["proposed_head"] == c["pair"]["new_head"]
+    if append:
+        c["events"].append(dict(agent="unrelated", type="heartbeat", task_id="other"))
+    assert _verify_live_material(c, material)["ok"] is True
+
+
+@pytest.mark.parametrize("fault", ["old_head", "new_head", "old_base", "new_base", "patch", "raw_diff",
+                                  "approval_ref", "short_prefix", "origin", "ci_head", "ci_app", "extra_authority",
+                                  "typed_flag"])
+def test_semantic_carry_material_resealed_changes_refuse(live_factory, fault):
+    c = live_factory
+    m = _receipt_material(c)
+    proof = m["approval_receipt"]
+    if fault in {"old_head", "new_head", "old_base", "new_base"}:
+        field = {"old_head":"approved_head", "new_head":"proposed_head",
+                 "old_base":"approved_base_sha", "new_base":"proposed_base_sha"}[fault]
+        proof[field] = "0" * 40
+    elif fault == "patch":
+        proof["content_identity"]["new_patch_id"] = "0" * 40
+    elif fault == "raw_diff":
+        proof["content_identity"]["new_diff_sha256"] = "0" * 64
+    elif fault == "approval_ref":
+        proof["carried"][0]["event_sha256"] = "0" * 64
+    elif fault == "short_prefix":
+        proof["accepted_event_count"] = 1
+        proof["accepted_events_sha256"] = _event_hash(c["events"][:1])
+    elif fault == "origin":
+        m["review_origin"]["review_basis"]["base_sha"] = "0" * 40
+    elif fault == "ci_head":
+        m["ci_evidence"]["head_sha"] = "0" * 40
+    elif fault == "ci_app":
+        m["ci_evidence"]["required"][0]["app_id"] = 123
+    elif fault == "typed_flag":
+        proof["veto_scan_complete"] = 1
+    else:
+        m["operator_signature"] = dict(approved=True)
+    assert _verify_live_material(c, m)["ok"] is False
+
+
+@pytest.mark.parametrize("fault", ["old_veto", "new_veto", "ci_failed", "ci_old", "paths", "queue"])
+def test_semantic_carry_material_checks_live_changes(live_factory, fault):
+    c = live_factory
+    material = _receipt_material(c)
+    if fault.endswith("veto"):
+        ev = copy.deepcopy(c["events"][3])
+        ev.update(type="finding", status="changes_requested", message="late objection")
+        head = c["pair"]["old_head" if fault == "old_veto" else "new_head"]
+        ev["payload"] = dict(head=head, exact_head=head)
+        c["events"].append(ev)
+    elif fault == "queue":
+        c["queue"] = False
+    else:
+        c["fault"] = fault
+    assert _verify_live_material(c, material)["ok"] is False
+
+
+def _write_live_merge_bundle(c, out_dir):
+    from tools.write_bridge_consensus_merge_receipt import write_bridge_consensus_merge_receipt
+    fresh = _run_live_factory(c)
+    snapshot = dict(fresh["_fresh_snapshot"], receipt_verified=True)
+    # Spoofed caller metadata must not replace the writer's own live snapshot.
+    snapshot["diff_text"] = "caller stale metadata"
+    return write_bridge_consensus_merge_receipt(
+        pr_status=snapshot, events_path=c["events_path"], out_dir=out_dir,
+        expected_head=c["pair"]["new_head"], expected_base_sha=c["pair"]["new_base"],
+        consensus_proposal_id=c["task"], repo=c["repo"], from_agent="codex-lead-1", bridge_task_id=c["task"],
+        carry_forward=c["request"], runner=c["runner"],
+        accepted_queue_checker=lambda **_: dict(ok=True, complete=c["queue"]))
+
+
+def _verify_live_merge_bundle(c, manifest):
+    from tools.write_bridge_consensus_merge_receipt import verify_carry_forward_merge_receipt
+    c["events_path"].write_text("\n".join(json.dumps(e) for e in c["events"]), encoding="utf-8")
+    return verify_carry_forward_merge_receipt(
+        manifest_path=manifest, carry_forward=c["request"], events_path=c["events_path"],
+        repo=c["repo"], pr_number=c["pr"], task_id=c["task"], expected_head=c["pair"]["new_head"],
+        expected_base_sha=c["pair"]["new_base"], runner=c["runner"],
+        accepted_queue_checker=lambda **_: dict(ok=True, complete=c["queue"]))
+
+
+def test_actual_magma_writer_binds_carry_and_semantic_consumer(live_factory, tmp_path):
+    from pathlib import Path
+    from tools.verify_magma_receipt import verify_manifest
+    from waggledance.core.magma.canonical import sha256_digest
+    c = live_factory
+    result = _write_live_merge_bundle(c, tmp_path / "magma")
+    manifest = Path(result["receipt_bundle_path"])
+    assert verify_manifest(manifest)["ok"] is True
+    payload = json.loads((manifest.parent / "payload-001-merge.json").read_bytes())
+    assert payload["artifact_version"] == "wd.bridge_consensus_merge_receipt.v1"
+    assert payload["carry_forward"]["approval_receipt"]["approved_head"] == c["pair"]["old_head"]
+    assert payload["carry_forward"]["approval_receipt"]["proposed_head"] == c["pair"]["new_head"]
+    assert payload["diff_digest"] == sha256_digest(f"diff --git a/{c['path']} b/{c['path']}\n")
+    assert result["carry_semantic_verification"]["ok"] is True
+    assert _verify_live_merge_bundle(c, manifest)["ok"] is True
+    c["events"].append(dict(agent="unrelated", type="heartbeat", task_id="other"))
+    assert _verify_live_merge_bundle(c, manifest)["ok"] is True
+
+
+@pytest.mark.parametrize("fault", ["head", "base", "repo", "task", "pr", "proof", "vote", "paths", "missing",
+                                  "extra_payload_authority", "rco_gate", "bridge_flag", "type_confused_index"])
+def test_actual_magma_consumer_rejects_resealed_semantic_tamper(live_factory, tmp_path, fault):
+    from pathlib import Path
+    from datetime import datetime, timezone
+    import tools.write_bridge_consensus_merge_receipt as writer
+    from tools.verify_magma_receipt import verify_manifest
+    c = live_factory
+    first = _write_live_merge_bundle(c, tmp_path / "original")
+    original = Path(first["receipt_bundle_path"])
+    payload = json.loads((original.parent / "payload-001-merge.json").read_bytes())
+    if fault in {"head", "base", "repo", "task", "pr"}:
+        field = {"head":"head_sha", "base":"base_sha", "repo":"repo", "task":"task_id", "pr":"pr_number"}[fault]
+        payload[field] = 1 if fault == "pr" else "0" * 40
+    elif fault == "proof":
+        payload["carry_forward"]["approval_receipt"]["content_identity"]["new_diff_sha256"] = "0" * 64
+    elif fault == "vote":
+        payload["bridge_consensus"]["identities"]["rco"]["agent"] = "codex-lead-1"
+    elif fault == "paths":
+        payload["changed_paths"] = []
+    elif fault == "extra_payload_authority":
+        payload["operator_signature"] = dict(approved=True, head=c["pair"]["new_head"])
+    elif fault == "rco_gate":
+        payload["rco_pass_gate"]["satisfying_rco_agent"] = "codex-lead-1"
+    elif fault == "bridge_flag":
+        payload["bridge_consensus"]["ok"] = False
+    elif fault == "type_confused_index":
+        assert payload["bridge_consensus"]["identities"]["build_lead"]["approval_index"] == 1
+        payload["bridge_consensus"]["identities"]["build_lead"]["approval_index"] = True
+    else:
+        payload.pop("carry_forward")
+    bundle = writer._write_receipt_bundle(payload=payload, bridge_consensus=payload["bridge_consensus"],
+                                           out_dir=tmp_path / "resealed", now_utc=datetime.now(timezone.utc))
+    manifest = Path(bundle["manifest"])
+    assert verify_manifest(manifest)["ok"] is True  # integrity alone cannot establish authorization
+    assert _verify_live_merge_bundle(c, manifest)["ok"] is False
+
+
+@pytest.mark.parametrize("fault", ["late_veto", "ci_failed", "queue"])
+def test_actual_magma_consumer_refuses_stale_authority(live_factory, tmp_path, fault):
+    from pathlib import Path
+    c = live_factory
+    result = _write_live_merge_bundle(c, tmp_path / "magma")
+    if fault == "late_veto":
+        ev = copy.deepcopy(c["events"][3])
+        ev.update(type="finding", status="changes_requested", message="new objection")
+        c["events"].append(ev)
+    elif fault == "queue":
+        c["queue"] = False
+    else:
+        c["fault"] = fault
+    assert _verify_live_merge_bundle(c, Path(result["receipt_bundle_path"]))["ok"] is False
+
+
+@pytest.mark.parametrize("layout", ["traversal", "multiple_entries"])
+def test_actual_magma_consumer_rejects_manifest_layout_changes(live_factory, tmp_path, layout):
+    from pathlib import Path
+    c = live_factory
+    result = _write_live_merge_bundle(c, tmp_path / "magma")
+    path = Path(result["receipt_bundle_path"])
+    manifest = json.loads(path.read_bytes())
+    if layout == "traversal":
+        manifest["entries"][0]["payload"] = "../outside.json"
+    else:
+        manifest["entries"].append(dict(manifest["entries"][0]))
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert _verify_live_merge_bundle(c, path)["ok"] is False
+
+
+@pytest.mark.parametrize("form", ["rco1_heartbeat", "rco1_message", "rco2_heartbeat", "rco2_message"])
+def test_actual_magma_scoped_rco_chatter_does_not_expire_receipt(live_factory, tmp_path, form):
+    from pathlib import Path
+    from waggledance.core.bridge_identity_registry import load_bridge_identity_registry
+    c = live_factory
+    result = _write_live_merge_bundle(c, tmp_path / "magma")
+    event = copy.deepcopy(c["events"][3])
+    agent = "claude-rco-1" if form.startswith("rco1") else "claude-rco-2"
+    event.update(agent=agent, agent_uuid=load_bridge_identity_registry()[agent],
+                 type=form.split("_", 1)[1], status="in_progress", message="ordinary progress, no review change")
+    c["events"].append(event)
+    assert _verify_live_merge_bundle(c, Path(result["receipt_bundle_path"]))["ok"] is True
+
+
+@pytest.mark.parametrize("append_kind", ["chatter", "veto"])
+def test_actual_magma_emission_append_preserves_chatter_but_refuses_veto(live_factory, tmp_path, monkeypatch, append_kind):
+    import tools.write_bridge_consensus_merge_receipt as writer
+    c = live_factory
+    original = writer._receipt_payload
+    def append_after_plan(**kwargs):
+        payload = original(**kwargs)
+        event = copy.deepcopy(c["events"][3])
+        event.update(type="message" if append_kind == "chatter" else "finding",
+                     status="in_progress" if append_kind == "chatter" else "changes_requested",
+                     message="progress" if append_kind == "chatter" else "real objection")
+        c["events"].append(event)
+        c["events_path"].write_text("\n".join(json.dumps(e) for e in c["events"]), encoding="utf-8")
+        return payload
+    monkeypatch.setattr(writer, "_receipt_payload", append_after_plan)
+    if append_kind == "veto":
+        with pytest.raises(writer.BridgeConsensusMergeReceiptError):
+            _write_live_merge_bundle(c, tmp_path / "magma")
+    else:
+        assert _write_live_merge_bundle(c, tmp_path / "magma")["carry_semantic_verification"]["ok"] is True

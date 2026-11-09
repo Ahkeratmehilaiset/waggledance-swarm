@@ -10,6 +10,7 @@ capture does not bound peak stdout memory. The command timeout remains separate.
 from __future__ import annotations
 
 import base64
+from copy import deepcopy
 import hashlib
 import json
 import os
@@ -501,7 +502,12 @@ def verify_carry_forward_receipt(receipt: Mapping[str, Any], evidence: Mapping[s
     # above; every material field, including veto controls, remains exact.
     expected = dict(current["receipt"], accepted_event_count=count,
                     accepted_events_sha256=receipt["accepted_events_sha256"])
-    return dict(receipt) == expected
+    # Python value equality aliases booleans, integers and floats. Evidence is
+    # canonical JSON: a resealed type change is still a material change.
+    try:
+        return _canonical_sha(dict(receipt)) == _canonical_sha(expected)
+    except (ValueError, TypeError):
+        return False
 
 
 def _selected_original_events(original: Mapping, events: list) -> list[Mapping]:
@@ -553,7 +559,7 @@ def _bound_review_origin(*, request: Mapping, selected: list, events: list, regi
             _require(payload.get("review_basis_sha256") == _canonical_sha(basis),
                      "original approval reviewed-basis digest does not match")
             bases.append(basis)
-        _require(bool(bases) and all(basis == bases[0] for basis in bases),
+        _require(bool(bases) and all(_canonical_sha(basis) == _canonical_sha(bases[0]) for basis in bases),
                  "original approvals disagree on reviewed basis")
         return dict(schema="wd.bridge-bound-review-origin.v1", mode="direct", review_basis=bases[0],
                     approval_event_sha256=refs, authentication="canonical_registered_identity_binding")
@@ -594,7 +600,8 @@ def _bound_review_origin(*, request: Mapping, selected: list, events: list, regi
     body = json.loads(raw.decode("utf-8"), object_pairs_hook=_trusted_paths._pairs,
                       parse_constant=_trusted_paths._constant)
     _require(isinstance(body, Mapping) and body.get("schema") == "wd.bridge-review-snapshot.v1"
-             and body.get("review_basis") == basis and body.get("approval_event_sha256") == refs,
+             and _canonical_sha(body.get("review_basis")) == _canonical_sha(basis)
+             and body.get("approval_event_sha256") == refs,
              "original review snapshot does not bind the reviewed basis and approvals")
     # Each original voter commits to the same basis. The descriptor supplies
     # the preimage and references; its issuer cannot vouch for another voter.
@@ -604,7 +611,7 @@ def _bound_review_origin(*, request: Mapping, selected: list, events: list, regi
                  and fields.get("review_basis_sha256") == _canonical_sha(basis),
                  "original approval has no matching reviewed-basis commitment")
         if "review_basis" in fields:
-            _require(fields["review_basis"] == basis,
+            _require(_canonical_sha(fields["review_basis"]) == _canonical_sha(basis),
                      "original descriptor contradicts an approval's direct reviewed basis")
     return dict(schema="wd.bridge-bound-review-origin.v1", mode="descriptor", review_basis=basis,
                 approval_event_sha256=refs, binding_event_sha256=binding_ref, descriptor=dict(descriptor),
@@ -698,3 +705,46 @@ def derive_live_carry_forward(*, request: Mapping, events_path: Path, repo: str,
                     _fresh_snapshot=snapshot, _events=events, _evidence=evidence)
     except (ValueError, TypeError, KeyError, OSError) as exc:
         return dict(carry=False, reason=str(exc), carried=[], receipt=None, authority="no_carry")
+
+
+def carry_forward_receipt_material(derived: Mapping) -> dict:
+    """Serialize review evidence; this operation alone grants no authority."""
+    _require(isinstance(derived, Mapping) and derived.get("carry") is True,
+             "carry material needs a successful live derivation")
+    return deepcopy(dict(schema="wd.bridge-carry-forward-merge-proof.v1",
+                         approval_receipt=derived["receipt"], review_origin=derived["review_origin"],
+                         ci_evidence=derived["ci_evidence"]))
+
+
+def verify_live_carry_forward_receipt(*, material: Mapping, request: Mapping, events_path: Path,
+                                     repo: str, pr_number: int, task_id: str, expected_head: str,
+                                     expected_base_sha: str, runner=None, accepted_queue_checker=None) -> dict:
+    """Re-read all authorities; an offline integrity flag never authorizes carry.
+
+    Only the CI reader's observation timestamp is diagnostic. Check identities,
+    requirements, runs, response digests and the original reviewed basis remain
+    exact. The recorded event prefix may grow only by nonmaterial appends.
+    """
+    try:
+        _require(isinstance(material, Mapping) and set(material) == {
+            "schema", "approval_receipt", "review_origin", "ci_evidence"}
+            and material["schema"] == "wd.bridge-carry-forward-merge-proof.v1",
+            "carry merge proof is missing or malformed")
+        fresh = derive_live_carry_forward(request=request, events_path=events_path, repo=repo,
+                                         pr_number=pr_number, task_id=task_id, expected_head=expected_head,
+                                         expected_base_sha=expected_base_sha, runner=runner,
+                                         accepted_queue_checker=accepted_queue_checker)
+        _require(fresh.get("carry") is True, "fresh carry refused: " + fresh["reason"])
+        _require(verify_carry_forward_receipt(material["approval_receipt"], fresh["_evidence"]),
+                 "carry approval receipt does not rederive from current authorities")
+        _require(_canonical_sha(material["review_origin"]) == _canonical_sha(fresh["review_origin"]),
+                 "carry original reviewed basis or approval binding changed")
+        old_ci = material["ci_evidence"]
+        _require(isinstance(old_ci, Mapping), "carry CI proof is malformed")
+        ci_material = lambda value: {key: item for key, item in value.items() if key != "observed_at_utc"}
+        _require(_canonical_sha(ci_material(old_ci)) == _canonical_sha(ci_material(fresh["ci_evidence"])),
+                 "carry required exact-head CI evidence changed")
+        return dict(ok=True, decision="carry_merge_proof_rederived", material=deepcopy(dict(material)),
+                    _fresh=fresh, authority="review_proof_only_no_merge")
+    except (ValueError, TypeError, KeyError, OSError) as exc:
+        return dict(ok=False, decision="carry_merge_proof_refused", reasons=[str(exc)], authority="none")

@@ -225,3 +225,184 @@ def test_canonical_diff_ignores_repository_order_file(history):
     order.write_bytes(b"second.txt\nsample.txt\n")
     git("config", "diff.orderFile", str(order))
     assert _api().verify_content_identity(proof=proof, repo_root=root, **pair) == proof
+
+
+@pytest.fixture
+def approval_evidence(history):
+    from waggledance.core.bridge_identity_registry import load_bridge_identity_registry
+    root, _, pair = history
+    roster = load_bridge_identity_registry()
+    side = dict(repository="Ahkeratmehilaiset/waggledance-swarm", pr_number=9001, base_ref="main")
+    task = "fable-5/carry-fixture-9001"
+    events = [dict(agent=agent, agent_uuid=roster[agent], type="decision", status=status,
+                   task_id=task, ts_utc="2026-11-09T01:00:00Z", message="",
+                   payload=dict(head=pair["old_head"], pr=9001))
+              for agent, status in (("codex-lead-1", "build_consensus"),
+                                    ("codex-tools-1", "build_consensus"),
+                                    ("claude-rco-1", "rco_pass"))]
+    return dict(schema="wd.bridge-approval-carry-forward-evidence.v1", repo_path=str(root),
+                task_id=task, pr_author="fable-5", roster=roster,
+                recognized_rco_agents=["claude-rco-1", "claude-rco-2", "claude-rco-3"],
+                approved=dict(side, head=pair["old_head"], base_sha=pair["old_base"]),
+                proposed=dict(side, head=pair["new_head"], base_sha=pair["new_base"]),
+                events=events, accepted_queue_complete=True,
+                ci=dict(required=["unit", "lint"], runs=[dict(head=pair["new_head"], name=name,
+                        status="completed", conclusion="success") for name in ("unit", "lint")]))
+
+
+def _event_hash(event):
+    return hashlib.sha256(json.dumps(event, sort_keys=True, separators=(",", ":"),
+                                     ensure_ascii=True).encode("ascii")).hexdigest()
+
+
+def _veto(evidence, *, agent="claude-rco-2", head="old", status="changes_requested", kind="finding"):
+    return dict(agent=agent, agent_uuid=evidence["roster"][agent], type=kind, status=status,
+                task_id="descriptive-old-head-finding", ts_utc="2000-01-01T00:00:00Z", message="",
+                payload=dict(exact_head=evidence["approved" if head == "old" else "proposed"]["head"]))
+
+
+def test_approval_carry_binds_original_refs_and_new_ci(approval_evidence):
+    evidence = approval_evidence
+    result = _api().evaluate_approval_carry_forward(evidence)
+    assert result["carry"] is True
+    assert {row["kind"] for row in result["carried"]} == {"build_consensus", "rco_pass"}
+    assert {row["event_sha256"] for row in result["carried"]} == {_event_hash(e) for e in evidence["events"]}
+    assert all(row["approved_head"] == evidence["approved"]["head"] for row in result["carried"])
+    receipt = result["receipt"]
+    assert receipt["approved_head"] == evidence["approved"]["head"]
+    assert receipt["proposed_head"] == receipt["ci_head"] == evidence["proposed"]["head"]
+    assert receipt["veto_scan_complete"] is True
+    assert _api().verify_carry_forward_receipt(receipt, evidence) is True
+
+
+@pytest.mark.parametrize("fault", ["wrong_pr", "wrong_repository", "wrong_base_ref", "missing_build", "missing_rco",
+                                  "forged_uuid", "missing_uuid", "wrong_task", "wrong_roster", "author_rco",
+                                  "ci_old_head", "ci_red", "ci_pending", "ci_missing", "ci_empty_required",
+                                  "queue_partial", "queue_untyped", "wrong_schema"])
+def test_approval_carry_refuses_unproven_authority(approval_evidence, fault):
+    e = approval_evidence
+    if fault in {"wrong_pr", "wrong_repository", "wrong_base_ref"}:
+        key = {"wrong_pr": "pr_number", "wrong_repository": "repository", "wrong_base_ref": "base_ref"}[fault]
+        e["proposed"][key] = 9002 if key == "pr_number" else "other"
+    elif fault == "missing_build":
+        del e["events"][1]
+    elif fault == "missing_rco":
+        del e["events"][2]
+    elif fault == "forged_uuid":
+        e["events"][2]["agent_uuid"] = "00000000-0000-4000-8000-000000000000"
+    elif fault == "missing_uuid":
+        del e["events"][2]["agent_uuid"]
+    elif fault == "wrong_task":
+        e["events"][1]["task_id"] = "other-task"
+    elif fault == "wrong_roster":
+        e["roster"]["claude-rco-1"] = "00000000-0000-4000-8000-000000000000"
+    elif fault == "author_rco":
+        e["pr_author"] = "claude-rco-1"
+    elif fault == "ci_old_head":
+        e["ci"]["runs"][0]["head"] = e["approved"]["head"]
+    elif fault == "ci_red":
+        e["ci"]["runs"][0]["conclusion"] = "failure"
+    elif fault == "ci_pending":
+        e["ci"]["runs"][0]["status"] = "in_progress"
+    elif fault == "ci_missing":
+        e["ci"]["runs"].pop()
+    elif fault == "ci_empty_required":
+        e["ci"]["required"] = []
+    elif fault == "queue_partial":
+        e["accepted_queue_complete"] = False
+    elif fault == "queue_untyped":
+        e["accepted_queue_complete"] = 1
+    elif fault == "wrong_schema":
+        e["schema"] = "untrusted-schema"
+    result = _api().evaluate_approval_carry_forward(e)
+    assert result["carry"] is False
+    assert result["carried"] == []
+
+
+@pytest.mark.parametrize("head", ["old", "new"])
+@pytest.mark.parametrize("uuid_valid", [True, False])
+def test_approval_carry_preserves_head_scoped_vetoes(approval_evidence, head, uuid_valid):
+    e = approval_evidence
+    event = _veto(e, head=head)
+    if not uuid_valid:
+        event["agent_uuid"] = "00000000-0000-4000-8000-000000000000"
+    e["events"].append(event)
+    assert _api().evaluate_approval_carry_forward(e)["carry"] is False
+
+
+@pytest.mark.parametrize("clear", ["same_head", "wrong_head", "wrong_agent", "before_veto", "forged"])
+def test_approval_carry_explicit_clear_is_same_owner_scope_and_append_order(approval_evidence, clear):
+    e = approval_evidence
+    veto = _veto(e)
+    cleared = _veto(e, head="new" if clear == "wrong_head" else "old",
+                    agent="claude-rco-1" if clear == "wrong_agent" else "claude-rco-2",
+                    status="changes_requested_cleared", kind="decision")
+    if clear == "forged":
+        cleared["agent_uuid"] = "00000000-0000-4000-8000-000000000000"
+    e["events"].extend([cleared, veto] if clear == "before_veto" else [veto, cleared])
+    result = _api().evaluate_approval_carry_forward(e)
+    assert result["carry"] is (clear == "same_head"), result
+
+
+@pytest.mark.parametrize("author", ["codex-lead-1", "codex-tools-1"])
+def test_approval_carry_preserves_build_author_waiver_without_carrying_own_vote(approval_evidence, author):
+    e = approval_evidence
+    e["pr_author"] = author
+    e["events"] = [event for event in e["events"] if event["agent"] != author]
+    result = _api().evaluate_approval_carry_forward(e)
+    assert result["carry"] is True
+    assert author not in {row["agent"] for row in result["carried"]}
+    assert result["receipt"]["build_author_slot_waivers"] == [author]
+
+
+@pytest.mark.parametrize("field", ["approved_head", "proposed_head", "patch_id", "approval_event_sha256", "ci_head"])
+def test_carry_receipt_rederives_instead_of_trusting_resealed_fields(approval_evidence, field):
+    e = approval_evidence
+    result = _api().evaluate_approval_carry_forward(e)
+    receipt = copy.deepcopy(result["receipt"])
+    receipt[field] = ["0" * 64] if field == "approval_event_sha256" else "0" * 40
+    receipt["ok"] = receipt["carry"] = True  # these caller flags are not evidence
+    assert _api().verify_carry_forward_receipt(receipt, e) is False
+
+
+def test_carry_receipt_new_late_backdated_veto_invalidates_old_receipt(approval_evidence):
+    e = approval_evidence
+    receipt = _api().evaluate_approval_carry_forward(e)["receipt"]
+    e["events"].append(_veto(e))  # timestamp is deliberately older than every pass
+    assert _api().verify_carry_forward_receipt(receipt, e) is False
+
+
+def test_approval_carry_clear_does_not_reissue_same_reviewers_approval(approval_evidence):
+    e = approval_evidence
+    e["events"].extend([_veto(e, agent="claude-rco-1"),
+                        _veto(e, agent="claude-rco-1", kind="decision", status="changes_requested_cleared")])
+    # check_rco_pass_present requires a fresh pass after that same RCO's veto;
+    # transferring a pre-veto approval must not manufacture that fresh pass.
+    assert _api().evaluate_approval_carry_forward(e)["carry"] is False
+
+
+@pytest.mark.parametrize("form", ["prose_old", "prose_both", "structured_old"])
+def test_approval_carry_preserves_old_head_binding_without_counting_prose_twice(approval_evidence, form):
+    e = approval_evidence
+    old, new = e["approved"]["head"], e["proposed"]["head"]
+    if form != "structured_old":
+        e["events"][2]["payload"] = {}
+    e["events"][2]["message"] = old + (" and " + new if form == "prose_both" else "")
+    assert _api().evaluate_approval_carry_forward(e)["carry"] is (form != "prose_both")
+
+
+@pytest.mark.parametrize("status", ["operator_signature", "rule10_approval"])
+def test_approval_carry_never_transfers_operator_or_rule10_authority(approval_evidence, status):
+    e = approval_evidence
+    e["events"].append(dict(agent="operator", type="decision", status=status,
+                            task_id=e["task_id"], payload=dict(head=e["approved"]["head"])))
+    result = _api().evaluate_approval_carry_forward(e)
+    assert result["carry"] is True
+    assert {row["kind"] for row in result["carried"]} <= {"build_consensus", "rco_pass"}
+    assert "operator" not in {row["agent"] for row in result["carried"]}
+
+
+def test_approval_carry_plain_cleared_token_does_not_weaken_existing_taxonomy(approval_evidence):
+    e = approval_evidence
+    e["events"].extend([_veto(e), _veto(e, kind="decision", status="cleared")])
+    assert _api().evaluate_approval_carry_forward(e)["carry"] is False

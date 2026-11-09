@@ -154,6 +154,7 @@ def _git_reader(repo_root: Path):
     except (OSError, UnicodeError) as exc:
         raise ValueError("content identity repository unavailable") from exc
     read.authority = (executable, native_snapshot, authority)
+    read.git_prefix = tuple(command[1:])
     return read
 
 
@@ -231,6 +232,7 @@ def derive_content_identity(*, repo_root: Path, old_base: str, old_head: str,
     return dict(schema="wd.bridge-content-identity.v1", **values,
                 git_executable_path=str(executable), git_executable_sha256=native["sha256"],
                 git_executable_trust="anchored_fleet_path_measured_sha256", git_authority=authority,
+                diff_argv=[*read.git_prefix, "diff", *_DIFF_FLAGS],
                 old_merge_base=old_mb, new_merge_base=new_mb,
                 diff_flags=list(_DIFF_FLAGS), diff_bytes_b64=base64.b64encode(old_diff).decode("ascii"),
                 old_diff_sha256=hashlib.sha256(old_diff).hexdigest(),
@@ -247,3 +249,223 @@ def verify_content_identity(*, proof: Mapping[str, Any], repo_root: Path,
     if not isinstance(proof, Mapping) or dict(proof) != current:
         raise ValueError("content identity evidence failed re-derivation")
     return current
+
+
+def _require(condition: bool, reason: str) -> None:
+    if not condition:
+        raise ValueError(reason)
+
+
+def _canonical_sha(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                     ensure_ascii=True, allow_nan=False).encode("ascii")).hexdigest()
+
+
+def _side(value: Any) -> dict:
+    _require(isinstance(value, Mapping), "carry side is missing")
+    for field in ("head", "base_sha"):
+        _require(type(value.get(field)) is str and _SHA.fullmatch(value[field]) is not None,
+                 "carry side requires exact commit identities")
+    _require(type(value.get("pr_number")) is int and value["pr_number"] > 0, "carry PR is invalid")
+    _require(type(value.get("repository")) is str
+             and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", value["repository"]) is not None,
+             "carry repository is invalid")
+    _require(type(value.get("base_ref")) is str and bool(value["base_ref"])
+             and value["base_ref"] == value["base_ref"].strip(), "carry base ref is invalid")
+    return {key: value[key] for key in ("head", "base_sha", "pr_number", "repository", "base_ref")}
+
+
+def _ci_at_proposed_head(ci: Any, head: str) -> list[dict]:
+    _require(isinstance(ci, Mapping), "carry CI evidence is missing")
+    required, runs = ci.get("required"), ci.get("runs")
+    _require(type(required) is list and bool(required)
+             and all(type(name) is str and bool(name) and name == name.strip() for name in required)
+             and len(set(required)) == len(required), "carry required CI inventory is empty or ambiguous")
+    _require(type(runs) is list and all(isinstance(run, Mapping) for run in runs), "carry CI runs are invalid")
+    result = []
+    for name in sorted(required):
+        matches = [run for run in runs if run.get("name") == name]
+        _require(len(matches) == 1, "carry required CI check is missing or duplicated")
+        run = matches[0]
+        _require(run.get("head") == head and type(run.get("status")) is str
+                 and run["status"].lower() == "completed" and type(run.get("conclusion")) is str
+                 and run["conclusion"].lower() == "success", "carry CI is not green at proposed head")
+        result.append(dict(head=head, name=name, status="completed", conclusion="success"))
+    return result
+
+
+_HEAD_FIELDS = ("head", "head_sha", "expected_head", "exact_head", "head_oid", "head_commit")
+
+
+def _structured_heads(event: Mapping) -> set[str]:
+    payload = event.get("payload")
+    if not isinstance(payload, Mapping):
+        return set()
+    return {value.strip().lower() for key in _HEAD_FIELDS
+            if type(value := payload.get(key)) is str and _SHA.fullmatch(value.strip().lower())}
+
+
+def _review_control_scan(events: list, *, task_id: str, pr_number: int, author: str,
+                         old_head: str, new_head: str, registry: dict, rcos: tuple) -> dict:
+    """Use existing taxonomy, identity and scope rules; preserve append order.
+
+    A clear is scoped to its own identity and the same head. A recognized RCO's
+    unverified veto still blocks. Its clear is not a replacement RCO_PASS.
+    """
+    from tools import check_bridge_changes_requested as peer
+    from tools import check_rco_pass_present as rco_gate
+    from tools.bridge_rco_enrollment import rco_event_enrollment_matches
+    from waggledance.core.bridge_identity_registry import bridge_identity_binding_status
+
+    pending: dict[tuple[str, str], int] = {}
+    last_rco_veto: dict[str, int] = {}
+    controls = []
+    watched = set(rcos) | {"codex-lead-1", "codex-tools-1"}
+    for index, event in enumerate(events):
+        agent = event.get("agent")
+        if agent not in watched:
+            continue
+        heads = _structured_heads(event)
+        canonical_scope = peer._event_matches_scope(event, task_id=task_id, pr_number=pr_number,
+                                                    author_agent=author)
+        if not canonical_scope and not heads.intersection({old_head, new_head}):
+            continue
+        scopes = heads or {"canonical_task"}
+        status, typ = str(event.get("status", "")).lower(), str(event.get("type", "")).lower()
+        binding = bridge_identity_binding_status(event, registry=registry, restricted_agents=watched)
+        typed_block = typ in peer._TAXONOMY_BLOCK_BY_TYPE and (
+            typ not in peer._TAXONOMY_RCO_GATED_TYPES
+            or (agent in rcos and not peer._is_informational_finding_status(status)))
+        block = typed_block or peer._is_blocking_status(status, event_type=typ) or (
+            agent in rcos and rco_gate._is_rco_veto_event(event))
+        if block and (binding == "valid" or agent in rcos):
+            for scope in scopes:
+                pending[(agent, scope)] = index
+            if agent in rcos:
+                last_rco_veto[agent] = index
+            controls.append(dict(index=index, agent=agent, scopes=sorted(scopes), action="block",
+                                 event_sha256=_canonical_sha(event), identity_binding=binding))
+            continue
+        if binding != "valid":
+            continue
+        if agent == "claude-rco-3" and not rco_event_enrollment_matches(event):
+            continue
+        clear = typ in peer.RCO_RETRACTION_EVENT_TYPES and peer._is_clear_status(status)
+        if agent not in rcos:
+            # Existing build approvals can replace that build identity's block;
+            # a transferred RCO_PASS never acts as an explicit veto retraction.
+            clear = clear or (typ in {"decision", "rco_review"} and status in peer.APPROVAL_STATUSES)
+        if clear:
+            for scope in scopes:
+                pending.pop((agent, scope), None)
+            controls.append(dict(index=index, agent=agent, scopes=sorted(scopes), action="clear",
+                                 event_sha256=_canonical_sha(event), identity_binding=binding))
+    return dict(pending=[dict(agent=agent, scope=scope, index=index)
+                         for (agent, scope), index in sorted(pending.items())],
+                last_rco_veto=last_rco_veto, controls=controls)
+
+
+def evaluate_approval_carry_forward(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Re-derive Rule 9a carry evidence, never a merge authorization.
+
+    Production callers must construct the queue, original PR tuple and current
+    required-CI observations from their verified readers/snapshots. This pure
+    evaluator cannot authenticate a caller's dict. Merge/receipt consumers must
+    independently reconstruct those observations, not forward an input ok flag.
+    """
+    refused = dict(carry=False, carried=[], receipt=None, authority="evidence_only")
+    try:
+        from tools.idle_consensus_auto_merge import verify_bridge_consensus
+        from tools.check_rco_pass_present import DEFAULT_RCO_AGENTS
+        from waggledance.core.bridge_identity_registry import load_bridge_identity_registry
+
+        _require(isinstance(evidence, Mapping)
+                 and evidence.get("schema") == "wd.bridge-approval-carry-forward-evidence.v1",
+                 "carry evidence schema is invalid")
+        old, new = _side(evidence.get("approved")), _side(evidence.get("proposed"))
+        _require(all(old[key] == new[key] for key in ("pr_number", "repository", "base_ref")),
+                 "carry origin is not the same PR/repository/base ref")
+        _require(old["head"] != new["head"], "exact same head needs no carry")
+        task, author = evidence.get("task_id"), evidence.get("pr_author")
+        _require(type(task) is str and bool(task) and task == task.strip(), "carry task is invalid")
+        registry = load_bridge_identity_registry()
+        _require(evidence.get("roster") == registry, "carry roster is not the canonical registry")
+        _require(type(author) is str and author in registry, "carry author is not canonical")
+        requested = evidence.get("recognized_rco_agents")
+        _require(type(requested) is list and bool(requested)
+                 and all(type(agent) is str and agent in DEFAULT_RCO_AGENTS for agent in requested),
+                 "carry recognized RCO set is invalid")
+        # A caller cannot remove a canonical RCO's veto by supplying a subset.
+        rcos = tuple(DEFAULT_RCO_AGENTS)
+        events = evidence.get("events")
+        _require(type(events) is list and all(isinstance(event, Mapping) for event in events),
+                 "carry accepted events are invalid")
+        _require(evidence.get("accepted_queue_complete") is True, "carry accepted queue is incomplete")
+        ci_checks = _ci_at_proposed_head(evidence.get("ci"), new["head"])
+        scan = _review_control_scan(events, task_id=task, pr_number=old["pr_number"], author=author,
+                                    old_head=old["head"], new_head=new["head"], registry=registry, rcos=rcos)
+        _require(not scan["pending"], "review veto/block survives carry")
+        original = verify_bridge_consensus(events=events, task_id=task, head_sha=old["head"],
+                                           pr_number=old["pr_number"], author_agent=author)
+        _require(original.get("ok") is True, "original head has no valid Rule9a consensus")
+        carried = []
+        for role in ("build_lead", "build_tools", "rco"):
+            info = original["identities"][role]
+            if info.get("build_author_slot_waived") is True:
+                _require(info.get("build_author_slot_waiver_satisfied") is True, "author waiver is blocked")
+                continue
+            index = info.get("approval_index")
+            _require(type(index) is int and 0 <= index < len(events), "original approval index is missing")
+            event = events[index]
+            _require(event.get("agent") != author and info.get("approved") is True,
+                     "author or unapproved slot cannot carry authority")
+            payload = event.get("payload")
+            if isinstance(payload, Mapping):
+                for key in ("pr", "pr_number", "pull_request", "pull_request_number"):
+                    if key in payload:
+                        _require(payload[key] in (old["pr_number"], str(old["pr_number"])),
+                                 "original approval has conflicting PR binding")
+                for key in ("repository", "repo"):
+                    if key in payload:
+                        _require(payload[key] == old["repository"], "original approval has conflicting repository")
+            structured = _structured_heads(event)
+            _require(not structured or structured == {old["head"]}, "original approval head is ambiguous")
+            _require(not (new["head"] in str(event.get("message", "")).lower() and not structured),
+                     "prose mentioning both heads is not a carry binding")
+            if role == "rco":
+                _require(scan["last_rco_veto"].get(event["agent"], -1) < index,
+                         "a clear did not reissue this RCO approval after its veto")
+            carried.append(dict(agent=event["agent"], agent_uuid=event["agent_uuid"],
+                                kind="rco_pass" if role == "rco" else "build_consensus",
+                                approved_head=old["head"], event_sha256=_canonical_sha(event)))
+        _require(len({row["event_sha256"] for row in carried}) == len(carried),
+                 "one original event cannot fill two approval slots")
+        root = evidence.get("repo_path")
+        _require(type(root) is str and bool(root), "carry repository path is invalid")
+        proof = derive_content_identity(repo_root=Path(root), old_base=old["base_sha"], old_head=old["head"],
+                                        new_base=new["base_sha"], new_head=new["head"])
+        receipt = dict(schema="wd.bridge-approval-carry-forward-receipt.v1",
+                       repository=old["repository"], pr_number=old["pr_number"], base_ref=old["base_ref"],
+                       task_id=task, pr_author=author,
+                       approved_head=old["head"], proposed_head=new["head"],
+                       approved_base_sha=old["base_sha"], proposed_base_sha=new["base_sha"],
+                       approved_merge_base=proof["old_merge_base"], proposed_merge_base=proof["new_merge_base"],
+                       diff_argv=proof["diff_argv"], approved_diff_sha256=proof["old_diff_sha256"],
+                       proposed_diff_sha256=proof["new_diff_sha256"], patch_id=proof["old_patch_id"],
+                       content_identity=proof, approval_event_sha256=[row["event_sha256"] for row in carried],
+                       carried=carried, veto_scan_complete=True, veto_controls=scan["controls"],
+                       accepted_events_sha256=_canonical_sha(events), registry_sha256=_canonical_sha(registry),
+                       ci_head=new["head"], ci_checks=ci_checks,
+                       original_verdict_sha256=_canonical_sha(original),
+                       build_author_slot_waivers=original.get("build_author_slot_waivers", []))
+        return dict(carry=True, reason="content_identical_original_reviews_verified", carried=carried,
+                    receipt=receipt, original_verdict=original, authority="evidence_only")
+    except (ValueError, TypeError, KeyError, OSError) as exc:
+        return dict(refused, reason=str(exc))
+
+
+def verify_carry_forward_receipt(receipt: Mapping[str, Any], evidence: Mapping[str, Any]) -> bool:
+    """Re-read Git and re-derive reviews, queue controls and CI; flags do nothing."""
+    current = evaluate_approval_carry_forward(evidence)
+    return (current["carry"] is True and isinstance(receipt, Mapping)
+            and dict(receipt) == current["receipt"])

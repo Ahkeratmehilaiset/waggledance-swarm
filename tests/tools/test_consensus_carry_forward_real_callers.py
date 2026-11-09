@@ -667,14 +667,29 @@ def test_carry_content_change_never_reaches_merge(tmp_path, histories):
 # ==============================================================================================================
 # Strict required-CI evidence through the real callers (Lead 2026-11-09T08:40:02Z). The synthetic GitHub published
 # in test_consensus_carry_forward_ci_snapshot.py (loaded by path, one class, unchanged defaults) serves this
-# harness's real git heads; its statusCheckRollup stays all-SUCCESS in every strict case, so any refusal below can
-# only come from the strict evidence and never from the rollup the gate reads today.
+# harness's real git heads. Non-carry legacy cases (fable-5 investigation 2026-11-09T10:08:03Z) use a ROLLUP-CONSISTENT
+# synthetic GitHub (statusCheckRollup derived from the exact-head check runs, as GitHub derives it): failed/pending runs
+# and apply drift are refused by the legacy rollup rule today (green controls); a required check ABSENT at the exact
+# head and unreadable requirements are the legacy blind spot (RED wiring). Carry cases keep the all-SUCCESS rollup
+# isolation on purpose: there a refusal must come from the strict evidence the carry route reads.
 # ==============================================================================================================
 _CI_SPEC = importlib.util.spec_from_file_location(
     "fable5_carry_ci_snapshot_harness", ROOT / "tests" / "tools" / "test_consensus_carry_forward_ci_snapshot.py")
 ci_harness = importlib.util.module_from_spec(_CI_SPEC)
 _CI_SPEC.loader.exec_module(ci_harness)
 STRICT = CASES["strict_ci"]["cases"]
+
+
+class RollupConsistentGitHub(ci_harness.FakeGitHub):
+    """statusCheckRollup = every check run on the exact head (name, status, conclusion) and nothing else; like
+    gh pr view --json statusCheckRollup it carries no app identity, so the legacy rule cannot see the app."""
+
+    def _payload(self):
+        body = super()._payload()
+        body["statusCheckRollup"] = [
+            {"name": r["name"], "status": str(r["status"]).upper(), "conclusion": str(r["conclusion"] or "").upper()}
+            for r in self.runs if r["head_sha"] == self.head]
+        return body
 
 
 def _require_strict_ci():
@@ -687,13 +702,24 @@ def _missing_wiring(where):
     pytest.fail(f"RED: missing wiring: {where}")
 
 
-def _strict_gh(h, *, head=None, case=None):
-    gh = ci_harness.FakeGitHub(head=head or h.new, base=h.new_base, repo=REPO_NAME, pr=PR, branch=TASK,
-                               changed_path=CHANGED_PATH, author_login="Ahkeratmehilaiset", merge_sha=MERGE_SHA)
+def _strict_gh(h, *, head=None, case=None, consistent=True):
+    cls = RollupConsistentGitHub if consistent else ci_harness.FakeGitHub
+    gh = cls(head=head or h.new, base=h.new_base, repo=REPO_NAME, pr=PR, branch=TASK,
+             changed_path=CHANGED_PATH, author_login="Ahkeratmehilaiset", merge_sha=MERGE_SHA)
     if case is not None:
         ci_harness._setup(case, gh)
-    assert all(c["conclusion"] == "SUCCESS" for c in gh._payload()["statusCheckRollup"]), "rollup must stay green"
+    rollup = gh._payload()["statusCheckRollup"]
+    if not consistent:
+        assert all(c["conclusion"] == "SUCCESS" for c in rollup), "isolation rollup must stay green"
+    else:
+        assert len(rollup) == len([r for r in gh.runs if r["head_sha"] == gh.head])
     return gh
+
+
+def _rollup_green(gh):
+    """The legacy rollup rule (every entry passes, not empty) holds on this synthetic PR."""
+    rollup = gh._payload()["statusCheckRollup"]
+    return bool(rollup) and all(c["conclusion"] in ("SUCCESS", "SKIPPED", "NEUTRAL") for c in rollup)
 
 
 def _strict_snapshot(gh, base):
@@ -752,18 +778,25 @@ def test_strict_ci_control_exact_head_success_feeds_the_real_gate(tmp_path, hist
     assert report["decision"] == "auto_merge_plan_ready", _reasons(report)
 
 
-@pytest.mark.parametrize("ci_case", STRICT["non_green_with_green_rollup"]["ci_cases"])
-def test_strict_ci_non_green_with_green_rollup(tmp_path, histories, ci_case):
+@pytest.mark.parametrize("ci_case", STRICT["non_green_refused_today"]["ci_cases"])
+def test_strict_ci_non_green_refused_today(tmp_path, histories, ci_case):
+    """Green control: a failed or in-progress required run is in the real rollup, so the legacy gate and the legacy
+    merge driver refuse at the expected head today, and the strict evidence agrees."""
     _require_strict_ci()
     h = histories["legit_rebase"]
-    snapshot = _strict_snapshot(_strict_gh(h, case=ci_case), h.new_base)
+    gh = _strict_gh(h, case=ci_case)
+    assert not _rollup_green(gh)
+    snapshot = _strict_snapshot(gh, h.new_base)
     assert snapshot["ci_evidence"]["all_required_success"] is False
     assert snapshot["ci_evidence"]["head_sha"] == h.new
     report = _gate(tmp_path, pr_status=snapshot, expected_head=h.new, base=h.new_base, events=_approvals(h.new))
-    if not _refused(report):
-        _missing_wiring("evaluate_auto_merge_gate is ready although ci_evidence.all_required_success is false at "
-                        "the expected head (the gate reads only the green rollup)")
-    assert re.search(STRICT["non_green_with_green_rollup"]["reason"], _reasons(report)), _reasons(report)
+    assert _refused(report), _reasons(report)
+    assert re.search(STRICT["non_green_refused_today"]["reason"], _reasons(report)), _reasons(report)
+    gh2 = _strict_gh(h, case=ci_case)
+    (tmp_path / "merge").mkdir()
+    merged = _merge_outcome(tmp_path / "merge", gh2, h, events_path=_events_file(tmp_path, _approvals(h.new)))
+    assert _refused(merged), _reasons(merged)
+    assert _merge_calls(gh2.calls) == []
 
 
 @pytest.mark.parametrize("ci_case", STRICT["capture_refuses"]["ci_cases"])
@@ -785,16 +818,29 @@ def test_strict_ci_capture_refuses_snapshot_at_the_old_head(tmp_path, histories)
     assert _refused(report), _reasons(report)
 
 
-@pytest.mark.parametrize("ci_case", STRICT["merge_refuses_capture_failure"]["ci_cases"])
-def test_strict_ci_merge_refuses_capture_failure(tmp_path, histories, ci_case):
+def _legacy_blind_spot(tmp_path, histories, ci_case, what):
     _require_strict_ci()
     h = histories["legit_rebase"]
     gh = _strict_gh(h, case=ci_case)
+    assert _rollup_green(gh), "precondition: the rollup-consistent PR looks green to the legacy rule"
+    with pytest.raises(ci_harness.PrStatusSnapshotError):  # the strict capture already refuses this PR
+        _strict_snapshot(_strict_gh(h, case=ci_case), h.new_base)
     report = _merge_outcome(tmp_path, gh, h, events_path=_events_file(tmp_path, _approvals(h.new)))
     if _merge_calls(gh.calls) and not _strict_reads(gh):
-        _missing_wiring("merge_with_bridge_receipt merged without reading the required-CI evidence")
+        _missing_wiring(f"legacy merge_with_bridge_receipt issues gh pr merge although {what} (it never reads the "
+                        "required set or the app; GitHub branch protection is then the only layer)")
     assert _refused(report), _reasons(report)
     assert _merge_calls(gh.calls) == []
+
+
+@pytest.mark.parametrize("ci_case", STRICT["absent_required_check"]["ci_cases"])
+def test_strict_ci_absent_required_check(tmp_path, histories, ci_case):
+    _legacy_blind_spot(tmp_path, histories, ci_case, "a required check from the bound app is absent at the exact head")
+
+
+@pytest.mark.parametrize("ci_case", STRICT["requirements_unreadable"]["ci_cases"])
+def test_strict_ci_requirements_unreadable(tmp_path, histories, ci_case):
+    _legacy_blind_spot(tmp_path, histories, ci_case, "the required set cannot be read completely (fail closed)")
 
 
 def test_strict_ci_control_apply_without_drift_merges(tmp_path, histories, monkeypatch):
@@ -809,18 +855,17 @@ def test_strict_ci_control_apply_without_drift_merges(tmp_path, histories, monke
     assert len(merges) == 1 and f"--match-head-commit={h.new}" in merges[0]
 
 
-def test_strict_ci_apply_drift_refuses_merge(tmp_path, histories, monkeypatch):
-    _require_strict_ci()
+def test_strict_ci_apply_drift_refused_today(tmp_path, histories, monkeypatch):
+    """Green control: a required run turning failed after the receipt is in the apply rollup, so the legacy apply
+    recheck refuses on the checks drift today."""
     h = histories["legit_rebase"]
     gh = _strict_gh(h)
     seen = _flip_unified_before_apply(monkeypatch, gh)
     report = _merge_outcome(tmp_path, gh, h, events_path=_events_file(tmp_path, _approvals(h.new)))
     assert len(seen) == 2, "the hook must fire at the apply snapshot"
-    if _merge_calls(gh.calls) and not any(seen):
-        _missing_wiring("merge_with_bridge_receipt does not capture strict CI at apply (require_ci_evidence never "
-                        "passed), so a required run failing after the receipt still merges")
     assert _refused(report), _reasons(report)
     assert _merge_calls(gh.calls) == []
+    assert re.search(STRICT["apply_drift_refused_today"]["reason"], _reasons(report)), _reasons(report)
 
 
 def test_strict_ci_carry_success_at_proposed_head(tmp_path, histories):
@@ -855,7 +900,7 @@ def test_strict_ci_carry_apply_drift(tmp_path, histories, monkeypatch):
     _require_strict_ci()
     h = histories["legit_rebase"]
     opt = _carry_opt_in(MERGE, merge_with_bridge_receipt, h)
-    gh = _strict_gh(h)
+    gh = _strict_gh(h, consistent=False)  # isolation: the refusal must come from the strict apply capture
     seen = _flip_unified_before_apply(monkeypatch, gh)
     report = _merge_outcome(tmp_path, gh, h, events_path=_events_file(tmp_path, _approvals(h.old)), **opt)
     assert len(seen) == 2

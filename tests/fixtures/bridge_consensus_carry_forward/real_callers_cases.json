@@ -117,21 +117,21 @@
     "request": "codex-lead-1 2026-11-09T08:40:02.4592582Z lead-carry-strict-ci-callers-fable-20261109-v1",
     "api": "tools.pr_status_snapshot:build_pr_status_snapshot(require_ci_evidence=True), published by Tools at 556118c161dc92a19c70882fb1ae84189ba0aa4f",
     "synthetic_github": "FakeGitHub of tests/tools/test_consensus_carry_forward_ci_snapshot.py loaded by path and parameterized with this harness's real git heads; case setups reused from ci_snapshot_cases.json",
-    "rollup_isolation": "statusCheckRollup stays all-SUCCESS in every strict case, so a refusal can only come from the strict evidence",
-    "wiring_expectation": "a wired gate refuses unless ci_evidence.all_required_success is true at the expected head; a wired merge path captures strict CI at receipt and again at apply",
+    "rollup_isolation": "carry cases only: statusCheckRollup stays all-SUCCESS so a carry refusal can only come from the strict evidence the carry route reads",
+    "wiring_expectation": "a wired legacy path refuses, and never issues gh pr merge, when a required check of the bound app is absent at the exact head or the required set cannot be read completely; failed, pending and apply drift are refused today by the rollup rule",
     "cases": {
       "control_exact_head_success_feeds_the_real_gate": {
         "expect": "ready",
         "class": "green_control"
       },
-      "non_green_with_green_rollup": {
-        "expect": "refuse",
-        "reason": "(?i)ci|check",
+      "non_green_refused_today": {
+        "expect": "refuse at the gate and at the merge driver, no gh pr merge",
+        "reason": "(?i)status checks not green",
         "ci_cases": [
           "failed_required_check",
           "pending_required_check"
         ],
-        "until_wired": "missing_wiring"
+        "class": "green_control_refused_today"
       },
       "capture_refuses": {
         "expect": "PrStatusSnapshotError with the ci_snapshot_cases decision",
@@ -144,23 +144,42 @@
       "capture_refuses_snapshot_at_the_old_head": {
         "expect": "refuse"
       },
-      "merge_refuses_capture_failure": {
+      "absent_required_check": {
         "expect": "refuse, no gh pr merge",
         "ci_cases": [
           "stale_row_for_another_head",
           "rules_requirement_on_page_two_missing_run",
+          "missing_required_check",
+          "wrong_app_only"
+        ],
+        "shapes": {
+          "stale_row_for_another_head": "the required run exists only on an older head",
+          "rules_requirement_on_page_two_missing_run": "a ruleset-required check never ran",
+          "missing_required_check": "the required check never ran",
+          "wrong_app_only": "only a same-named run from another app"
+        },
+        "class": "legacy_blind_spot",
+        "until_wired": "missing_wiring",
+        "practical_note": "main requires six app-bound checks with strict and enforce_admins (Lead read-only 10:09:19Z); GitHub is then the only layer; no server bypass is claimed"
+      },
+      "requirements_unreadable": {
+        "expect": "refuse, no gh pr merge",
+        "ci_cases": [
           "rules_page_two_read_fails"
         ],
-        "until_wired": "missing_wiring"
+        "class": "fail_closed_expectation",
+        "until_wired": "missing_wiring",
+        "note": "not a bypass by itself: the six runs are green; a wired path fails closed"
       },
       "control_apply_without_drift_merges": {
         "expect": "merge_executed_after_receipt",
         "class": "green_control"
       },
-      "apply_drift_refuses_merge": {
+      "apply_drift_refused_today": {
         "expect": "refuse, no gh pr merge",
         "drift": "bound app unified run turns failed before the apply snapshot",
-        "until_wired": "missing_wiring"
+        "reason": "(?i)drift",
+        "class": "green_control_refused_today"
       },
       "carry_success_at_proposed_head": {
         "expect": "ready with carry record",
@@ -183,7 +202,8 @@
         "expect": "refuse, no gh pr merge",
         "until_wired": "missing_api"
       }
-    }
+    },
+    "rollup_consistency": "non-carry legacy cases: statusCheckRollup is derived from the exact-head check runs (name, status, conclusion; no app), as GitHub derives it (fable-5 investigation 2026-11-09T10:08:03Z, Lead correction 10:09:20Z)"
   },
   "carry_record_fields_published": {
     "approved_diff_sha256": "old_diff_sha256",
@@ -200,5 +220,14 @@
     "carry record fields are read from the published receipt and its content_identity (names mapped in carry_record_fields_published)",
     "the legit history changes the allowlisted CHANGED_PATH (the carry gate reads the live change set, which must equal git)",
     "old_head_objection reason accepts the published consensus wording, guarded by a no-objection differential"
-  ]
+  ],
+  "strict_ci_refinement": {
+    "request": "codex-lead-1 2026-11-09T10:09:34.3875168Z lead-carry-legacy-ci-corpus-fable-20261109-v1",
+    "superseded": {
+      "non_green_with_green_rollup": "non_green_refused_today",
+      "merge_refuses_capture_failure": "absent_required_check + requirements_unreadable",
+      "apply_drift_refuses_merge": "apply_drift_refused_today"
+    },
+    "why": "the green-rollup isolation modelled a world GitHub does not produce for non-carry legacy cases"
+  }
 }

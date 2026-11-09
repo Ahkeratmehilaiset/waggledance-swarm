@@ -473,3 +473,66 @@ def test_carry_receipt_cannot_reselect_a_new_original_approval(approval_evidence
     extra["ts_utc"] = "2026-11-09T02:00:00Z"
     e["events"].append(extra)
     assert _api().verify_carry_forward_receipt(receipt, e) is False
+
+
+def _reseal_prefix(receipt, events, count):
+    updated = copy.deepcopy(receipt)
+    updated["accepted_event_count"] = count
+    updated["accepted_events_sha256"] = _event_hash(events[:count])
+    return updated
+
+
+@pytest.mark.parametrize("excluded_agent", ["codex-lead-1", "codex-tools-1", "claude-rco-1"])
+def test_carry_receipt_resealed_prefix_must_contain_each_selected_approval(approval_evidence, excluded_agent):
+    e = approval_evidence
+    e["events"].sort(key=lambda event: event["agent"] == excluded_agent)
+    result = _api().evaluate_approval_carry_forward(e)
+    assert result["carry"] is True
+    receipt = _reseal_prefix(result["receipt"], e["events"], len(e["events"]) - 1)
+    assert _api().verify_carry_forward_receipt(receipt, e) is False
+
+
+@pytest.mark.parametrize("count", [3, 4])
+def test_carry_receipt_resealed_prefix_must_contain_each_review_control(approval_evidence, count):
+    e = approval_evidence
+    e["events"].extend([_veto(e), _veto(e, kind="decision", status="changes_requested_cleared")])
+    result = _api().evaluate_approval_carry_forward(e)
+    assert result["carry"] is True
+    assert len(result["receipt"]["veto_controls"]) == 2
+    # All three selected approvals are inside this shortened prefix, while one
+    # or both recorded review-control events lie outside it.
+    receipt = _reseal_prefix(result["receipt"], e["events"], count)
+    assert _api().verify_carry_forward_receipt(receipt, e) is False
+
+
+@pytest.mark.parametrize("author", ["codex-lead-1", "codex-tools-1"])
+def test_carry_receipt_prefix_coverage_respects_author_waiver_without_dropping_rco(approval_evidence, author):
+    e = approval_evidence
+    e["pr_author"] = author
+    e["events"] = [event for event in e["events"] if event["agent"] != author]
+    receipt = _api().evaluate_approval_carry_forward(e)["receipt"]
+    assert _api().verify_carry_forward_receipt(receipt, e) is True
+    assert receipt["accepted_event_count"] == 2
+    assert _api().verify_carry_forward_receipt(_reseal_prefix(receipt, e["events"], 1), e) is False
+
+
+def test_carry_receipt_prefix_cannot_use_an_inside_hash_for_an_outside_selected_duplicate(approval_evidence):
+    e = approval_evidence
+    receipt = _api().evaluate_approval_carry_forward(e)["receipt"]
+    e["events"].append(copy.deepcopy(e["events"][2]))
+    # The later selected occurrence has the same event digest. Its actual
+    # append index must still be within the receipt's recorded prefix.
+    current = _api().evaluate_approval_carry_forward(e)
+    assert current["carry"] is True
+    assert current["carried"] == receipt["carried"]
+    assert _api().verify_carry_forward_receipt(receipt, e) is False
+    assert _api().verify_carry_forward_receipt(current["receipt"], e) is True
+
+
+def test_carry_receipt_covered_controls_keep_harmless_append_valid(approval_evidence):
+    e = approval_evidence
+    e["events"].extend([_veto(e), _veto(e, kind="decision", status="changes_requested_cleared")])
+    receipt = _api().evaluate_approval_carry_forward(e)["receipt"]
+    assert _api().verify_carry_forward_receipt(receipt, e) is True
+    e["events"].append(dict(agent="fable-5", type="heartbeat", task_id="elsewhere"))
+    assert _api().verify_carry_forward_receipt(receipt, e) is True

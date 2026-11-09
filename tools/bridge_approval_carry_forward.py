@@ -295,6 +295,7 @@ def _ci_at_proposed_head(ci: Any, head: str) -> list[dict]:
 
 
 _HEAD_FIELDS = ("head", "head_sha", "expected_head", "exact_head", "head_oid", "head_commit")
+_CARRY_APPROVAL_ROLES = ("build_lead", "build_tools", "rco")
 
 
 def _structured_heads(event: Mapping) -> set[str]:
@@ -409,7 +410,7 @@ def evaluate_approval_carry_forward(evidence: Mapping[str, Any]) -> dict[str, An
                                            pr_number=old["pr_number"], author_agent=author)
         _require(original.get("ok") is True, "original head has no valid Rule9a consensus")
         carried = []
-        for role in ("build_lead", "build_tools", "rco"):
+        for role in _CARRY_APPROVAL_ROLES:
             info = original["identities"][role]
             if info.get("build_author_slot_waived") is True:
                 _require(info.get("build_author_slot_waiver_satisfied") is True, "author waiver is blocked")
@@ -486,6 +487,15 @@ def verify_carry_forward_receipt(receipt: Mapping[str, Any], evidence: Mapping[s
         return False
     current = evaluate_approval_carry_forward(evidence)
     if current["carry"] is not True:
+        return False
+    identities = current["original_verdict"]["identities"]
+    basis_indexes = [identities[role].get("approval_index") for role in _CARRY_APPROVAL_ROLES
+                     if identities[role].get("build_author_slot_waived") is not True]
+    basis_indexes.extend(control.get("index") for control in current["receipt"]["veto_controls"])
+    # A self-consistent shorter prefix must still contain the entire material
+    # basis. A duplicate event digest inside it cannot stand in for the actual
+    # selected occurrence outside it. Author waivers contribute no own vote.
+    if any(type(index) is not int or not 0 <= index < count for index in basis_indexes):
         return False
     # Only the observation length/hash may grow. The old prefix was verified
     # above; every material field, including veto controls, remains exact.

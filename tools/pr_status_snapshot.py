@@ -14,6 +14,8 @@ GitHub's ``baseRefOid`` is not the supplied current main SHA.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -92,6 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--require-ci-evidence", action="store_true",
+        help="Capture complete app-bound required checks and exact-head run identities from github.com.",
+    )
     return parser
 
 
@@ -104,6 +110,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             operator_approved=args.operator_approved,
             receipt_verified=args.receipt_verified,
             expected_base_sha=args.expected_base_sha,
+            require_ci_evidence=args.require_ci_evidence,
         )
         if args.out is not None:
             args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -139,15 +146,20 @@ def build_pr_status_snapshot(
     operator_approved: bool = False,
     receipt_verified: bool = False,
     expected_base_sha: str = "",
+    require_ci_evidence: bool = False,
     runner: Runner | None = None,
 ) -> dict[str, Any]:
     """Query GitHub through ``gh`` and normalize the PR status snapshot."""
     if type(pr_number) is not int or pr_number < 1:
         raise _invalid("invalid_pr_number", "pr_number must be positive")
+    if type(require_ci_evidence) is not bool:
+        raise _invalid("invalid_ci_evidence_option", "require_ci_evidence must be a boolean")
     if type(repo) is not str:
         raise _invalid("invalid_repo", "repo must be OWNER/NAME")
     if repo and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         raise _invalid("invalid_repo", "repo must be OWNER/NAME")
+    if require_ci_evidence and not repo:
+        raise _invalid("invalid_repo", "CI evidence requires an explicit repository")
     if type(expected_base_sha) is not str:
         raise _invalid(
             "invalid_expected_base_sha",
@@ -173,6 +185,8 @@ def build_pr_status_snapshot(
 
     command = _gh_pr_view_command(pr_number=pr_number, repo=repo)
     run = runner if runner is not None else _run_command
+    if require_ci_evidence:
+        run = _github_ci_runner(run, repo=repo)
     stdout = _run_gh_text(
         run,
         command,
@@ -202,6 +216,10 @@ def build_pr_status_snapshot(
             }
         )
 
+    ci_evidence = (
+        _fetch_required_ci_evidence(run=run, repo=repo, anchor=initial_anchor)
+        if require_ci_evidence else None
+    )
     file_records = _fetch_pr_file_records(
         run=run,
         repo=repo,
@@ -218,6 +236,10 @@ def build_pr_status_snapshot(
         label="gh pr diff",
     )
     _assert_no_private_markers_in_diff(diff_text)
+    if require_ci_evidence:
+        rechecked_ci = _fetch_required_ci_evidence(run=run, repo=repo, anchor=initial_anchor)
+        if ci_evidence != rechecked_ci:
+            raise _invalid("required_ci_drift", "required CI evidence changed during snapshot capture")
     verified_base_tip = _fetch_base_ref_tip(
         run=run,
         repo=repo,
@@ -251,7 +273,7 @@ def build_pr_status_snapshot(
     verify_anchor = _normalize_anchor(verify_raw, expected_pr_number=pr_number)
     _assert_anchor_stable(initial=initial_anchor, verified=verify_anchor)
     initial_anchor["base_tip_sha"] = initial_base_tip
-    return _normalize_snapshot(
+    snapshot = _normalize_snapshot(
         raw,
         anchor=initial_anchor,
         expected_pr_number=pr_number,
@@ -261,6 +283,173 @@ def build_pr_status_snapshot(
         changed_paths=changed_paths,
         diff_text=diff_text,
     )
+    if ci_evidence is not None:
+        snapshot["ci_evidence"] = dict(ci_evidence, observed_at_utc=datetime.now(timezone.utc).isoformat())
+    return snapshot
+
+
+def _github_ci_runner(run: Runner, *, repo: str) -> Runner:
+    """Keep all strict-snapshot reads on one explicit GitHub host/repository."""
+    def pinned_host(command: Sequence[str]) -> Any:
+        args = list(command)
+        if args[:2] == ["gh", "api"]:
+            args.extend(["--hostname", "github.com"])
+        elif args[:2] == ["gh", "pr"] and "--repo" in args:
+            args[args.index("--repo") + 1] = f"github.com/{repo}"
+        else:
+            raise _invalid("invalid_ci_command", "unexpected CI snapshot command")
+        return run(args)
+    return pinned_host
+
+
+# Unsupported rules refuse in the opt-in path instead of silently dropping a
+# future workflow/check requirement. These are known non-status-check rules;
+# this evidence does not claim to satisfy those separate server-side policies.
+_NON_CI_RULES = frozenset({
+    "creation", "update", "deletion", "required_linear_history", "required_deployments",
+    "required_signatures", "pull_request", "non_fast_forward", "commit_message_pattern",
+    "commit_author_email_pattern", "committer_email_pattern", "branch_name_pattern",
+    "tag_name_pattern", "file_path_restriction", "max_file_path_length",
+    "file_extension_restriction", "max_file_size", "merge_queue", "code_scanning",
+})
+_CI_PAGE_SIZE = 100
+_CI_MAX_PAGES = 20
+
+
+def _ci_sha(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                     ensure_ascii=True, allow_nan=False).encode("ascii")).hexdigest()
+
+
+def _ci_require(condition: bool, message: str) -> None:
+    if not condition:
+        raise _invalid("invalid_required_ci", message)
+
+
+def _ci_positive_int(value: Any) -> bool:
+    return type(value) is int and value > 0
+
+
+def _ci_api_json(run: Runner, endpoint: str, *, page: int | None = None,
+                 latest: bool = False) -> tuple[Any, dict[str, Any]]:
+    command = ["gh", "api", "--method", "GET", endpoint]
+    if page is not None:
+        command.extend(["-f", f"per_page={_CI_PAGE_SIZE}", "-f", f"page={page}"])
+    if latest:
+        command.extend(["-f", "filter=latest"])
+    raw = _run_gh_text(run, command, failure_decision="gh_required_ci_failed", label="required CI read")
+    _assert_no_private_markers(raw)
+    payload = _parse_json(raw, decision="invalid_required_ci_json")
+    return payload, dict(endpoint=endpoint, page=page, response_sha256=_ci_sha(payload))
+
+
+def _fetch_required_ci_evidence(*, run: Runner, repo: str, anchor: Mapping[str, Any]) -> dict[str, Any]:
+    """Read applicable requirements and complete exact-head check-run inventory.
+
+    App-unbound contexts, unsupported rules and incomplete API pages refuse.
+    Pending/failed/skipped required runs are recorded as non-green. The caller
+    brackets and repeats this read; a stored boolean is never live authority.
+    """
+    head, branch = anchor["head_sha"], anchor["base_ref"]
+    prefix = f"repos/{repo}"
+    protection, source = _ci_api_json(
+        run, f"{prefix}/branches/{quote(branch, safe='')}/protection/required_status_checks")
+    sources = [source]
+    _ci_require(isinstance(protection, Mapping) and type(protection.get("strict")) is bool,
+                "required status-check protection is missing or malformed")
+    checks, contexts = protection.get("checks"), protection.get("contexts")
+    _ci_require(type(checks) is list and type(contexts) is list
+                and all(type(c) is str and bool(c) and c == c.strip() for c in contexts)
+                and len(contexts) == len(set(contexts)), "required check contexts are incomplete or ambiguous")
+    required: set[tuple[str, int]] = set()
+
+    def add_check(value: Any, app_field: str, *, duplicate_allowed: bool) -> None:
+        _ci_require(isinstance(value, Mapping), "required check is not an object")
+        name, app = value.get("context"), value.get(app_field)
+        _ci_require(type(name) is str and bool(name) and name == name.strip()
+                    and _ci_positive_int(app), "required check name or bound app identity is missing")
+        pair = (name, app)
+        _ci_require(duplicate_allowed or pair not in required, "required check identity is duplicated")
+        required.add(pair)
+
+    for check in checks:
+        add_check(check, "app_id", duplicate_allowed=False)
+    _ci_require(set(contexts).issubset({name for name, _ in required}),
+                "legacy contexts name requirements missing from app-bound inventory")
+    rules_endpoint = f"{prefix}/rules/branches/{quote(branch, safe='')}"
+    for page in range(1, _CI_MAX_PAGES + 1):
+        rules, source = _ci_api_json(run, rules_endpoint, page=page)
+        sources.append(source)
+        _ci_require(type(rules) is list and len(rules) <= _CI_PAGE_SIZE, "invalid required branch-rules page")
+        for rule in rules:
+            _ci_require(isinstance(rule, Mapping) and type(rule.get("type")) is str,
+                        "branch rule type is missing")
+            if rule["type"] in _NON_CI_RULES:
+                continue
+            _ci_require(rule["type"] == "required_status_checks", "unsupported required branch-rule type")
+            parameters = rule.get("parameters")
+            _ci_require(isinstance(parameters, Mapping)
+                        and type(parameters.get("strict_required_status_checks_policy")) is bool
+                        and type(parameters.get("required_status_checks")) is list,
+                        "required branch-rule checks are malformed")
+            for check in parameters["required_status_checks"]:
+                add_check(check, "integration_id", duplicate_allowed=True)
+        if len(rules) < _CI_PAGE_SIZE:
+            break
+    else:
+        raise _invalid("invalid_required_ci", "branch-rules inventory exceeded the bounded page limit")
+    _ci_require(bool(required), "required CI inventory is empty")
+
+    runs_endpoint = f"{prefix}/commits/{head}/check-runs"
+    all_runs = []
+    total = None
+    seen_ids: set[int] = set()
+    for page in range(1, _CI_MAX_PAGES + 1):
+        payload, source = _ci_api_json(run, runs_endpoint, page=page, latest=True)
+        sources.append(source)
+        _ci_require(isinstance(payload, Mapping) and type(payload.get("total_count")) is int
+                    and 0 <= payload["total_count"] <= _CI_MAX_PAGES * _CI_PAGE_SIZE
+                    and type(payload.get("check_runs")) is list, "check-run inventory lacks complete counts")
+        if total is None:
+            total = payload["total_count"]
+        _ci_require(payload["total_count"] == total, "check-run total changed during pagination")
+        rows = payload["check_runs"]
+        _ci_require(len(rows) == min(_CI_PAGE_SIZE, max(0, total - len(all_runs))),
+                    "check-run page does not match its complete count")
+        for row in rows:
+            _ci_require(isinstance(row, Mapping), "check run is not an object")
+            run_id, app, suite = row.get("id"), row.get("app"), row.get("check_suite")
+            _ci_require(_ci_positive_int(run_id) and run_id not in seen_ids
+                        and isinstance(app, Mapping) and _ci_positive_int(app.get("id"))
+                        and isinstance(suite, Mapping) and _ci_positive_int(suite.get("id")),
+                        "check run/app/suite identity is missing or duplicated")
+            name, status, conclusion = row.get("name"), row.get("status"), row.get("conclusion")
+            _ci_require(row.get("head_sha") == head and type(name) is str and bool(name)
+                        and name == name.strip() and type(status) is str
+                        and status in {"queued", "in_progress", "completed", "waiting", "requested", "pending"}
+                        and (conclusion is None or type(conclusion) is str),
+                        "check run is not bound to the exact head or has malformed status")
+            expected_url = f"https://api.github.com/repos/{repo}/check-runs/{run_id}"
+            _ci_require(type(row.get("url")) is str and row["url"].casefold() == expected_url.casefold(),
+                        "check-run reference is not bound to this repository and run")
+            seen_ids.add(run_id)
+            all_runs.append(dict(id=run_id, name=name, head_sha=head, app_id=app["id"],
+                                 check_suite_id=suite["id"], status=status, conclusion=conclusion, url=row["url"]))
+        if len(all_runs) == total:
+            break
+    else:
+        raise _invalid("invalid_required_ci", "check-run inventory exceeded the bounded page limit")
+    selected = []
+    for name, app in sorted(required):
+        matches = [row for row in all_runs if row["name"] == name and row["app_id"] == app]
+        _ci_require(len(matches) == 1, "required check run is missing or ambiguous")
+        selected.append(matches[0])
+    return dict(schema="wd.github-required-ci.v1", host="github.com", repository=repo,
+                pr_number=anchor["number"], head_sha=head, base_ref=branch, base_sha=anchor["base_sha"],
+                required=[dict(name=name, app_id=app) for name, app in sorted(required)], runs=selected,
+                all_required_success=all(row["status"] == "completed" and row["conclusion"] == "success"
+                                         for row in selected), sources=sources,
+                strict_branch_protection=protection["strict"])
 
 
 def _gh_pr_view_command(*, pr_number: int, repo: str) -> list[str]:

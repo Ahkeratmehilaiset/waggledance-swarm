@@ -401,7 +401,8 @@ def test_real_review_metadata_cannot_infer_gate_approval_or_rescue_conflicts(tmp
         sent['message'] = 'head' + 'e' * 40 + ' and head' + 'f' * 40
     write(path, [sent, answered])
     view = picture().update(path, now=stamp(10))
-    item = view['review_requests_awaiting_rco']['value'][0]
+    assert view['review_requests_awaiting_rco']['value'] == []
+    item = view['replied_without_gate_pass']['value'][0]
     assert item['gate_pass_observed'] is False
     if variant != 'scoped_safety_pass':
         assert item['last_referenced_head'] is None
@@ -531,3 +532,180 @@ def test_unrecognized_identity_shape_is_unknown_not_an_exception(tmp_path, agent
     result = picture().update(path, now=stamp(10))
     assert result['coverage'] == 'COMPLETE'
     assert all(lane['task']['state'] == 'UNKNOWN' for lane in result['lanes'].values())
+
+
+# D1/R1/P1 class regressions: metadata only, no authority or live producers.
+@pytest.mark.parametrize("elapsed", [61, 3600, 86400])
+def test_directive_fact_does_not_expire_with_telemetry_ttl(tmp_path, elapsed):
+    path = tmp_path / 'events.jsonl'
+    event = row(type='message')
+    write(path, [event])
+    module = importlib.import_module('tools.bridge_situation_picture')
+    view = module.SituationPicture(roster=ROSTER, ttl_seconds=60,
+        operator_relay_refs=[event_id(event)]).update(path, now=stamp(elapsed))
+    field = view['operator_directives']
+    assert field['state'] == 'OBSERVED' and field['age_seconds'] == elapsed
+    assert field['value'][0]['state'] == 'OBSERVED'
+    assert field['value'][0]['age_seconds'] == elapsed
+    assert field['value'][0]['operator_origin_verified'] is False
+    assert field['value'][0]['operator_origin'] == 'UNKNOWN'
+
+
+def test_multiple_directives_keep_their_own_source_ages(tmp_path):
+    path = tmp_path / 'events.jsonl'
+    rows = [row(type='message'), row(agent=TOOLS, type='message', seconds=120)]
+    write(path, rows)
+    module = importlib.import_module('tools.bridge_situation_picture')
+    view = module.SituationPicture(roster=ROSTER, ttl_seconds=60,
+        operator_relay_refs=[event_id(r) for r in rows]).update(path, now=stamp(3600))
+    assert view['operator_directives']['state'] == 'OBSERVED'
+    assert [r['age_seconds'] for r in view['operator_directives']['value']] == [3600, 3480]
+
+
+@pytest.mark.parametrize('timestamp', [None, 'not-a-time', stamp(100)])
+def test_persistent_directive_never_rescues_unverifiable_timestamp(tmp_path, timestamp):
+    path = tmp_path / 'events.jsonl'
+    event = row(type='message', ts_utc=timestamp)
+    write(path, [event])
+    module = importlib.import_module('tools.bridge_situation_picture')
+    value = module.SituationPicture(roster=ROSTER,
+        operator_relay_refs=[event_id(event)]).update(path, now=stamp(10))['operator_directives']
+    assert value['state'] == 'UNKNOWN' and value['value'] is None
+
+
+@pytest.mark.parametrize('variant', ['unanswered','ack','wrong_nonce','scoped','veto','pass','closed'])
+def test_rco_reply_state_and_gate_pass_are_separate_queues(tmp_path, variant):
+    path = tmp_path / 'events.jsonl'
+    sent = row(type='message', request_id='split-review', request_digest='d'*64,
+        nonce='synthetic-nonce', to=RCO, expected_responders={RCO: ROSTER[RCO]},
+        payload={'pr_number':123, 'head':'e'*40})
+    answered = reply(sent)
+    answered.update(agent=RCO, **ROSTER[RCO], status='done')
+    answered['payload']['result'] = {'status':'SCOPED_PASS_ONLY', 'head':'e'*40}
+    rows = [sent]
+    if variant != 'unanswered':
+        if variant == 'ack': answered.update(status='received')
+        elif variant == 'wrong_nonce': answered['nonce'] = 'wrong'
+        elif variant == 'veto': answered.update(type='finding', status='changes_requested')
+        elif variant == 'pass':
+            answered.update(type='decision', status='rco_pass')
+            answered['payload'] = {'head':'e'*40, 'exact_head':'e'*40, 'pr_number':123,
+                'result':{'status':'rco_pass','head':'e'*40}}
+        elif variant == 'closed':
+            answered = dict(reply(sent), **{key: sent[key] for key in ('agent','agent_uuid','session_id','run_id')},
+                to=RCO, status='cancelled', payload={})
+        rows.append(answered)
+    write(path, rows)
+    view = picture().update(path, now=stamp(120))
+    pending = view['awaiting_rco_reply']['value']
+    replied = view['replied_without_gate_pass']['value']
+    assert view['review_requests_awaiting_rco']['value'] == pending
+    assert len(pending) == (1 if variant in ('unanswered','ack','wrong_nonce') else 0)
+    assert len(replied) == (1 if variant in ('scoped','veto') else 0)
+    if replied:
+        assert replied[0]['reply_ref'] == event_id(answered)
+        assert replied[0]['review_state'] == 'REPLIED_WITHOUT_GATE_PASS'
+        assert replied[0]['merge_eligibility'] == 'NOT_EVALUATED'
+    if variant == 'veto':
+        assert view['recognized_veto_observations']['value']
+        assert replied[0]['veto_event_refs']
+
+
+def sourced_view(path, rows, *, roster=None, now=120, **kwargs):
+    write(path, rows)
+    supplied = json.loads(json.dumps(ROSTER if roster is None else roster))
+    if roster is None: supplied[LEAD]['source_event_ref'] = event_id(rows[0])
+    module = importlib.import_module('tools.bridge_situation_picture')
+    obj = module.SituationPicture(roster=supplied, ttl_seconds=60)
+    return obj, obj.update(path, now=stamp(now), **kwargs)
+
+
+def test_resolved_identity_source_is_persistent_content_binding_not_authentication(tmp_path):
+    event = row(message='synthetic-secret-body-must-not-appear')
+    _, view = sourced_view(tmp_path/'events.jsonl', [event])
+    lane = view['lanes'][LEAD]
+    assert lane['identity_verification'] == 'SOURCE_EVENT_IDENTITY_BOUND'
+    source = lane['identity_source']
+    assert source['state'] == 'OBSERVED' and source['source_event_ref'] == event_id(event)
+    assert source['age_seconds'] == 120 and source['writer_authentication'] == 'UNKNOWN'
+    assert view['authority'] == 'none' and view['merge_eligibility'] == 'NOT_EVALUATED'
+    assert event['message'] not in json.dumps(view)
+
+
+@pytest.mark.parametrize('variant', ['missing','actor','uuid','session','run','body','invalid_time','naive_time','future'])
+def test_unresolved_or_mismatched_identity_anchor_is_unknown(tmp_path, variant):
+    event = row()
+    roster = json.loads(json.dumps(ROSTER))
+    reference = event_id(event)
+    if variant == 'missing': rows = []
+    else:
+        if variant == 'actor': event['agent'] = TOOLS
+        elif variant == 'uuid': event['agent_uuid'] = ROSTER[TOOLS]['agent_uuid']
+        elif variant == 'session': event['session_id'] = 'different-session'
+        elif variant == 'run': event['run_id'] = 'different-run'
+        elif variant == 'body': event['message'] = 'different canonical body'
+        elif variant == 'invalid_time': event['ts_utc'] = 'not-a-time'
+        elif variant == 'naive_time': event['ts_utc'] = '2026-11-09T00:00:00'
+        elif variant == 'future': event['ts_utc'] = stamp(200)
+        rows = [event]
+    if variant in ('actor','uuid','session','run','invalid_time','naive_time','future'):
+        reference = event_id(event)
+    roster[LEAD]['source_event_ref'] = reference
+    _, view = sourced_view(tmp_path/'events.jsonl', rows, roster=roster)
+    assert view['lanes'][LEAD]['identity_verification'] == 'identity_source_unverified'
+    assert view['lanes'][LEAD]['identity_source']['state'] == 'UNKNOWN'
+
+
+@pytest.mark.parametrize('reference', [None, [], {}, 7, 'not-a-digest', 'F'*64])
+def test_optional_legacy_source_ref_is_never_a_lookup_error_or_verification(tmp_path, reference):
+    roster = json.loads(json.dumps(ROSTER))
+    if reference is not None: roster[LEAD]['source_event_ref'] = reference
+    _, view = sourced_view(tmp_path/'events.jsonl', [row()], roster=roster, now=10)
+    assert view['lanes'][LEAD]['task']['state'] == 'OBSERVED'
+    assert view['lanes'][LEAD]['identity_source']['state'] == 'UNKNOWN'
+    assert view['lanes'][LEAD]['identity_verification'] == 'identity_source_unverified'
+
+
+def test_current_and_historical_identity_sources_resolve_independently(tmp_path):
+    path = tmp_path/'events.jsonl'
+    old = row()
+    current = row(seconds=1, session_id='new-session', run_id='new-run')
+    roster = dict(ROSTER, **{LEAD:[dict(ROSTER[LEAD], current=False, source_event_ref=event_id(old)),
+        dict(ROSTER[LEAD], session_id='new-session',run_id='new-run',current=True,source_event_ref=event_id(current))]})
+    _, view = sourced_view(path, [old,current], roster=roster)
+    lane = view['lanes'][LEAD]
+    assert lane['identity_source']['source_event_ref'] == event_id(current)
+    assert lane['history'][0]['identity_source']['source_event_ref'] == event_id(old)
+    assert lane['history'][0]['identity_verification'] == lane['identity_verification'] == 'SOURCE_EVENT_IDENTITY_BOUND'
+
+
+def test_identity_source_in_later_chunk_resolves_without_replaying_or_trusting_partial_history(tmp_path):
+    path = tmp_path/'events.jsonl'
+    anchor = row(seconds=1)
+    roster = json.loads(json.dumps(ROSTER)); roster[LEAD]['source_event_ref'] = event_id(anchor)
+    write(path, [row(agent=TOOLS), anchor])
+    module = importlib.import_module('tools.bridge_situation_picture')
+    obj = module.SituationPicture(roster=roster)
+    first = obj.update(path, now=stamp(10), max_rows=1)
+    assert first['coverage'] == 'UNKNOWN'
+    assert first['lanes'][LEAD]['identity_source']['state'] == 'UNKNOWN'
+    second = obj.update(path, now=stamp(10), max_rows=1)
+    replay = module.SituationPicture(roster=roster).update(path, now=stamp(10))
+    assert second['lanes'] == replay['lanes']
+    assert second['lanes'][LEAD]['identity_verification'] == 'SOURCE_EVENT_IDENTITY_BOUND'
+
+
+@pytest.mark.parametrize('operation', ['rotate','truncate','rewrite'])
+def test_changed_history_and_reset_never_keep_prior_identity_verification(tmp_path, operation):
+    path=tmp_path/'events.jsonl'; anchor=row()
+    obj, view = sourced_view(path, [anchor], now=10)
+    assert view['lanes'][LEAD]['identity_source']['state'] == 'OBSERVED'
+    if operation == 'rotate': path.rename(tmp_path/'old.jsonl'); write(path,[row(seconds=1)])
+    elif operation == 'truncate': path.write_bytes(b'')
+    else: path.write_bytes(path.read_bytes().replace(b'synthetic-work',b'synthetic-fake'))
+    failed = obj.update(path, now=stamp(20))
+    assert failed['lanes'][LEAD]['identity_source']['state'] == 'UNKNOWN'
+    assert failed['lanes'][LEAD]['identity_verification'] == 'identity_source_unverified'
+    obj.reset()
+    reset = obj.update(path, now=stamp(21))
+    assert reset['lanes'][LEAD]['identity_source']['state'] == 'UNKNOWN'

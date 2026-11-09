@@ -296,6 +296,21 @@ class SituationPicture:
     def _render(self):
         names = ('task', 'claim', 'last_bound_reply', 'head', 'last_referenced_head')
         lanes = {lane: {name: self._field() for name in names} for lane in LANES}
+        source_index = {record[1]: record for record in self._events}
+
+        def identity_source(lane, identity):
+            reference = identity.get('source_event_ref') if identity else None
+            valid_ref = isinstance(reference, str) and re.fullmatch(r'[0-9a-f]{64}', reference) is not None
+            record = source_index.get(reference) if valid_ref else None
+            matched = record is not None and record[0].get('agent') == lane and all(
+                record[0].get(key) == identity[key] for key in IDENTITY)
+            source = self._field('SOURCE_EVENT_IDENTITY_BOUND' if matched else None, record,
+                persistent=True, reason=None if matched else 'identity_source_unverified')
+            source['claimed_source_event_ref'] = reference if valid_ref else None
+            source['writer_authentication'] = 'UNKNOWN'
+            return {'identity_source': source,
+                'identity_verification': source['value'] if source['state'] == 'OBSERVED' else 'identity_source_unverified'}
+
         requests, duplicate_ids, reply_index, closure_index = {}, set(), {}, {}
         session_fields, gate_index, veto_records = {}, {}, []
         metadata_index, veto_task_index, veto_head_index = {}, {}, {}
@@ -346,7 +361,7 @@ class SituationPicture:
                 if (kind in ANSWER_TYPES and isinstance(status, str) and status.lower() in ANSWER_STATUSES
                         and isinstance(_payload(event).get('result'), dict)):
                     reply_index.setdefault((lane, reply_id), []).append(record)
-        waiting, reviews, pr_reviews, last_replies = [], [], [], {}
+        waiting, reviews, replied_reviews, pr_reviews, last_replies = [], [], [], [], {}
         for key, sent in requests.items():
             request, reference, position = sent
             if newest is None or position > newest[2]:
@@ -393,10 +408,11 @@ class SituationPicture:
                         review = {**item, 'pr': pr, 'pr_state': 'OBSERVED' if pr else 'UNKNOWN',
                             'head': head, 'last_referenced_head': request.get('_referenced_head'),
                             'git_verified': False, 'gate_pass_observed': False, 'merge_eligibility': 'NOT_EVALUATED',
+                            'review_state': 'REPLIED_WITHOUT_GATE_PASS' if answered else 'AWAITING_RCO_REPLY',
                             'metadata_source_refs': [reference] + [record[1] for record in linked],
                             'result_state': 'REPORTED_VETO' if vetoes else item['result_state'],
                             'veto_event_refs': [record[1] for record in vetoes]}
-                        reviews.append(review)
+                        (replied_reviews if answered else reviews).append(review)
                         if pr:
                             pr_reviews.append(review)
                 if newest is None or evidence[2] > newest[2]:
@@ -408,15 +424,17 @@ class SituationPicture:
             if answered[0]['_identity']['current']:
                 lanes[session_key[0]]['last_bound_reply'] = value
         for lane in LANES:
+            current = next((identity for identity in self._sessions.get(lane, ()) if identity['current']), None)
+            lanes[lane].update(identity_source(lane, current))
             lanes[lane]['history'] = [{'session_id': identity['session_id'], 'run_id': identity['run_id'],
-                'identity_source_ref': identity.get('source_event_ref'), 'identity_verification': 'explicit_caller_roster',
-                **session_fields[(lane, *(identity[name] for name in IDENTITY))]}
-                for identity in self._sessions.get(lane, ()) if not identity['current']
-                and (lane, *(identity[name] for name in IDENTITY)) in session_fields]
+                'identity_source_ref': identity.get('source_event_ref'), **identity_source(lane, identity),
+                **session_fields.get((lane, *(identity[name] for name in IDENTITY)),
+                    {name: self._field() for name in names})}
+                for identity in self._sessions.get(lane, ()) if not identity['current']]
         directives, operator_record = [], None
         for record in self._events:
             if record[1] in self._operator_relay_refs and record[0].get('_identity') is not None and record[0]['agent'] in LANES:
-                observed = self._field(True, record)
+                observed = self._field(True, record, persistent=True)
                 directives.append({'source_event_ref': record[1], 'age_seconds': observed['age_seconds'],
                     'state': observed['state'], 'relay_author': record[0]['agent'], 'operator_origin_verified': False,
                     'operator_origin': 'UNKNOWN', 'task': record[0].get('task_id') if _safe_task(record[0].get('task_id')) else None})
@@ -424,7 +442,7 @@ class SituationPicture:
         direct_labels = [record for record in self._events if record[0]['agent'] == 'operator']
         missing_relays = set(self._operator_relay_refs) - {item['source_event_ref'] for item in directives}
         directive_field = self._field(directives, operator_record,
-            reason='selected_relay_unavailable' if missing_relays else None)
+            persistent=True, reason='selected_relay_unavailable' if missing_relays else None)
         if not directives and direct_labels:
             directive_field = self._field(record=direct_labels[-1], reason='operator_origin_unverified')
         capacity, routing = self._capacity_fields()
@@ -439,6 +457,8 @@ class SituationPicture:
             'veto_scope': 'reported_observations_not_complete_gate_scan', 'merge_eligibility': 'NOT_EVALUATED',
             'waiting_for': self._field(waiting, newest, persistent=True, reason=ambiguity),
             'review_requests_awaiting_rco': self._field(reviews, newest, persistent=True, reason=ambiguity),
+            'awaiting_rco_reply': self._field(reviews, newest, persistent=True, reason=ambiguity),
+            'replied_without_gate_pass': self._field(replied_reviews, newest, persistent=True, reason=ambiguity),
             'prs_awaiting_rco': self._field(pr_reviews, newest, persistent=True, reason=ambiguity),
             'recognized_veto_observations': self._field(veto_items, veto_records[-1] if veto_records else newest, persistent=True),
             'operator_directives': directive_field, 'capacity': capacity, 'routing_suggestion': routing}

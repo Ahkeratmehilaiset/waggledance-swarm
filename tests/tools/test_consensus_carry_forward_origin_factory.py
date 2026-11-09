@@ -488,6 +488,21 @@ def test_factory_side_base_substitution_expected_base(histories, tmp_path):
                     _run(tmp_path, h, _all_bound(h), expected_base=h.side_base))
 
 
+def test_factory_expected_base_mismatch_isolated(histories, tmp_path):
+    """Isolated expected-base contract (Lead 09:25:34Z): valid fully bound votes, a true content-identical rebase
+    against the LIVE base, strict CI green, request without a base assertion; only expected_base_sha (the stale
+    reviewed base M0, a real commit) differs from the live PR base. No content, basis or CI check can refuse it, so
+    the refusal must come from enforcing the expected base. The published snapshot already enforces it
+    (stale_base_ref) when the factory passes expected_base_sha through; a factory check after that is defense in
+    depth with no separately observable outcome (fixture expected_base_note)."""
+    h = histories["legit"]
+    assert h.old_base != h.live_base
+    assert h.repo.identity(h.live_base, h.new)["diff_sha256"] == _basis(h)["diff_sha256"]  # content cannot refuse
+    out = _run(tmp_path, h, _all_bound(h), expected_base=h.old_base)
+    _assert_refused("expected_base_mismatch_isolated", out)
+    assert not re.search(CASES["reason_patterns"]["content"], out.text), out.text  # not masked by content
+
+
 def test_factory_stacked_ancestry_rebased(histories, tmp_path):
     h = histories["stacked_rebased"]
     _assert_refused("stacked_ancestry_rebased", _run(tmp_path, h, _all_bound(h)))

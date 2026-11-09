@@ -146,7 +146,13 @@
     },
     "side_base_substitution_expected_base": {
       "expect": "refuse",
-      "reason": "base"
+      "reason": "base",
+      "note": "not isolated: with the side commit as expected base the content against the live base also differs, so without expected-base enforcement it still refuses, only for a content reason (audit mutant M6 fails it on the reason class); expected_base_mismatch_isolated isolates the contract"
+    },
+    "expected_base_mismatch_isolated": {
+      "expect": "refuse",
+      "reason": "base",
+      "note": "legit rebase, content identical vs the live base, stale reviewed base as expected_base_sha; only the expected-base contract can refuse"
     },
     "stacked_ancestry_rebased": {
       "expect": "refuse",
@@ -164,5 +170,9 @@
       "expect": "refuse",
       "reason": "ci"
     }
+  },
+  "expected_base_note": "Lead 2026-11-09T09:25:34Z: the observable contract is that the factory refuses when expected_base_sha differs from the live PR base. The published build_pr_status_snapshot already raises stale_base_ref for that mismatch when it receives expected_base_sha, so a second comparison inside the factory has no separately observable outcome (audit mutant M5 removes only that second comparison and stays green); audit mutant M6 also stops passing expected_base_sha to the snapshot and is caught by expected_base_mismatch_isolated (a carry) and by side_base_substitution_expected_base (refused for content instead of base)",
+  "regressions": {
+    "test_control_binding_event_effect_on_exact_head_consensus_today": "a recognized RCO decision review_basis_bound after its own approval reads as an RCO block at that head today; lead or tools as issuer is neutral (probe_binding_supersede_v1)"
   }
 }

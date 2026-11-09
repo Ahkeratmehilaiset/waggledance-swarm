@@ -160,7 +160,8 @@ def anchored_fleet(tmp_path, monkeypatch):
     """Wholly synthetic, test-owned generation pinning the physical git (same model as the corpus fixture), so a
     wired carry proof runs on an anchored git; no installed pin is read or changed."""
     executable = _physical_git()
-    root = tmp_path / "anchored-bundle" / hashlib.sha1(b"fable-5 real callers generation").hexdigest()
+    label = hashlib.sha1(b"fable-5 real callers generation", usedforsecurity=False).hexdigest()
+    root = tmp_path / "anchored-bundle" / label
     root.mkdir(parents=True)
     fleet = json.dumps({"schema_version": 2, "git_executable": str(executable)}).encode("ascii")
     (root / "wd-fleet.json").write_bytes(fleet)

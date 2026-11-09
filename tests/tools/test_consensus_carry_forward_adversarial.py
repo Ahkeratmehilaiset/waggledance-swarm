@@ -270,7 +270,7 @@ def build_missing_object(tmp):
     repo.checkout("pr", main0)
     proposed = repo.commit(_pr_files(), "pr: add feature")
     # the approved head is a well-formed object name that this repository does not contain
-    absent = hashlib.sha1(b"corpus: approved head that was never fetched").hexdigest()
+    absent = hashlib.sha1(b"corpus: approved head that was never fetched", usedforsecurity=False).hexdigest()
     return repo, (absent, main0), (proposed, main0)
 
 
@@ -287,6 +287,7 @@ def _hostile_hiding_repo(tmp, mechanism):
         script.write_bytes(b"#!/bin/sh\necho 'diff --git a/src/secret.txt b/src/secret.txt'\n"
                            b"echo '--- a/src/secret.txt'\necho '+++ b/src/secret.txt'\n"
                            b"echo '@@ -0,0 +1 @@'\necho '+approved content'\n")
+        os.chmod(script, 0o755)  # git runs diff.external directly; Linux needs the exec bit
         repo.git("config", "diff.external", str(script).replace("\\", "/"))
     repo.checkout("pr", main0)
     approved = repo.commit({"src/secret.txt": b"approved content\n"}, "pr: add secret")
@@ -610,7 +611,7 @@ def _apply(evidence, mutation):
     """Structured synthetic mutations named in synthetic_cases.json (no free-form code in the fixture)."""
     ev = copy.deepcopy(evidence)
     old, new = ev["approved"]["head"], ev["proposed"]["head"]
-    third = hashlib.sha1(b"corpus: an unrelated third head").hexdigest()
+    third = hashlib.sha1(b"corpus: an unrelated third head", usedforsecurity=False).hexdigest()
     op = mutation["op"]
     if op == "none":
         pass
@@ -706,7 +707,7 @@ def anchored_fleet(tmp_path, monkeypatch):
     deployment-manifest.json pinning wd-fleet.json, whose git_executable is the physical git found for this test
     run. Only the two environment variables of this test process point at it; no installed pin is read or changed."""
     executable = _physical_git()
-    root = tmp_path / "anchored-bundle" / hashlib.sha1(b"fable-5 corpus generation").hexdigest()
+    root = tmp_path / "anchored-bundle" / hashlib.sha1(b"fable-5 corpus generation", usedforsecurity=False).hexdigest()
     root.mkdir(parents=True)
     fleet = json.dumps({"schema_version": 2, "git_executable": str(executable)}).encode("ascii")
     (root / "wd-fleet.json").write_bytes(fleet)

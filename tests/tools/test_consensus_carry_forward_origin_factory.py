@@ -97,7 +97,8 @@ def histories(tmp_path_factory):
 def anchored_fleet(tmp_path, monkeypatch):
     """Wholly synthetic, test-owned generation pinning the physical git (same model as the corpus fixture)."""
     executable = corpus._physical_git()
-    root = tmp_path / "anchored-bundle" / hashlib.sha1(b"fable-5 origin factory generation").hexdigest()
+    label = hashlib.sha1(b"fable-5 origin factory generation", usedforsecurity=False).hexdigest()
+    root = tmp_path / "anchored-bundle" / label
     root.mkdir(parents=True)
     fleet = json.dumps({"schema_version": 2, "git_executable": str(executable)}).encode("ascii")
     (root / "wd-fleet.json").write_bytes(fleet)

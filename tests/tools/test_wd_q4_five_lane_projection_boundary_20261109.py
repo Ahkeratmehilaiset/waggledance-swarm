@@ -149,6 +149,12 @@ def test_five_lanes_share_one_pinned_descriptor_but_reviewer_startup_abstains(ca
         startup = engine.ask(STARTUP % lane, WHEN)
         if lane in (RCO1, RCO2):
             assert startup["status"] == "ABSTAIN" and not startup["results"]
+            assert startup["reason"] == "no_lane_origin_results"
+            assert startup["telemetry"]["rejected_origin"] > 0
+        else:
+            assert startup["status"] == "ANSWER" and startup["results"]
+            assert any(lane in (by_id[hit["doc_id"]]["meta"].get("agent"),
+                                by_id[hit["doc_id"]]["meta"].get("to")) for hit in startup["results"])
         for hit in startup["results"]:
             record = by_id[hit["doc_id"]]
             assert lane in (record["meta"].get("agent"), record["meta"].get("to"))
@@ -177,6 +183,13 @@ def test_five_lanes_share_one_pinned_descriptor_but_reviewer_startup_abstains(ca
         assert "answer" not in withheld and "stored_text" not in raw
         assert all(item["stored_text"] not in raw for item in items)
     cli._require_current_snapshot(descriptor, binding, inputs)
+
+
+@pytest.mark.parametrize("recipient", (RCO1, RCO2))
+def test_reviewer_addressed_message_is_excluded_independently(recipient):
+    event = row("current task synthetic build update", agent=LEAD, to=recipient)
+    projection = build(rows_of(event))
+    assert projection["accepted"] == 0 and projection["records"] == []
 
 
 @pytest.mark.parametrize("lane", LANES)

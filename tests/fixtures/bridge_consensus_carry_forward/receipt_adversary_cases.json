@@ -20,7 +20,8 @@
     "append": "events appended to the ledger after the receipt",
     "stale": "CI or queue observation no longer current",
     "prefix": "accepted-event prefix count and digest",
-    "apply": "apply paths and writer"
+    "apply": "apply paths and writer",
+    "magma_payload": "MAGMA payload field outside the approval receipt, resealed through the writer's bundle step"
   },
   "cases": {
     "control_valid": {
@@ -171,6 +172,12 @@
       "note": "a later RCO pass is not a retraction of the same RCO veto",
       "reason": "(?i)veto/block survives"
     },
+    "append_rco_bound_pass_after_own_veto": {
+      "class": "append",
+      "expect": "refuse",
+      "note": "the same RCO re-posts a fully basis-bound pass at the approved head after its own objection; the refusal must come from the surviving objection, not from a missing basis",
+      "reason": "(?i)veto/block survives"
+    },
     "stale_queue_incomplete": {
       "class": "stale",
       "expect": "refuse",
@@ -234,8 +241,104 @@
     "apply_magma_writer_carry_input": {
       "class": "apply",
       "expect": "refuse",
-      "until_published": "missing_api"
+      "until_published": "missing_api",
+      "note": "published at a032f622 (carry_forward); the verdict cases run through it in the magma route"
+    },
+    "magma_payload_pr_number_float": {
+      "class": "magma_payload",
+      "expect": "refuse",
+      "note": "payload pr_number 9301.0"
+    },
+    "magma_payload_head_uppercase": {
+      "class": "magma_payload",
+      "expect": "refuse",
+      "note": "payload head_sha in upper case"
+    },
+    "magma_payload_review_origin_base_to_live_base": {
+      "class": "magma_payload",
+      "expect": "refuse",
+      "note": "review_origin basis base_sha set to the live base"
+    },
+    "magma_payload_ci_evidence_run_conclusion_case": {
+      "class": "magma_payload",
+      "expect": "refuse",
+      "note": "ci_evidence run conclusion SUCCESS instead of success"
     }
   },
-  "reason_rule": "for cases with a reason, the published evaluator must refuse the current evidence for that reason; for prefix cases the evaluator must still carry, so only the receipt prefix check refuses"
+  "reason_rule": "for cases with a reason, the published evaluator must refuse the current evidence for that reason; for prefix cases the evaluator must still carry, so only the receipt prefix check refuses",
+  "magma_route": {
+    "request": "codex-lead-1 2026-11-09T10:53:35.4334026Z lead-carry-receipt-writer-fable-20261109-v1",
+    "tools_head": "a032f622832bcfb335d902035e90b5d35f6b18c5",
+    "writer": "tools.write_bridge_consensus_merge_receipt:write_bridge_consensus_merge_receipt(carry_forward=request, runner, accepted_queue_checker)",
+    "consumer": "tools.write_bridge_consensus_merge_receipt:verify_carry_forward_merge_receipt (MAGMA files, then verify_live_carry_forward_receipt and the historical report rederivation)",
+    "changed_path": "tools/agent_next_task.py",
+    "route_meaning": {
+      "receipt": "writer emits the legit bundle; the attacker mutates payload carry_forward.approval_receipt with the same mutation as the direct route and reseals the MAGMA bundle; consumer verdict",
+      "payload": "writer emits the legit bundle; the attacker mutates a payload field and reseals; consumer verdict",
+      "ledger": "the change is applied to the ledger before a writer run (writer verdict) and after a legit writer run (consumer verdict)",
+      "ledger_after": "the ledger is rewritten after a legit writer run (reorder or insert inside the bound prefix); consumer verdict",
+      "env": "CI or queue observation changed before a writer run with a stale caller snapshot (writer verdict) and after a legit writer run (consumer verdict)",
+      "tail": "writer runs with a harmless tail event; the attacker truncates the receipt prefix by one and reseals; consumer verdict"
+    },
+    "adaptations": [
+      "changed path tools/agent_next_task.py on a real git history built like corpus build_legit_rebase: the origin-factory path src/feature.txt is refused by the unchanged writer path gate (paths not on allowlist), a correct refusal",
+      "module attribute CHANGED_PATH of the loaded origin-factory module is monkeypatched for the claim scope and the synthetic GitHub",
+      "the attacker reseal uses the writer's private _write_receipt_bundle step (as the Tools tests do) to model a party able to write an integrity-valid MAGMA bundle; verify_manifest still passes for every reseal",
+      "evidence_rco_subset_hides_later_veto: the writer and consumer take no caller RCO list, so only the hidden later RCO objection is expressible (appended to the ledger)",
+      "stale cases change the synthetic GitHub check runs or required set, or the queue checker result",
+      "writer verdict for ledger and env routes is taken with a caller snapshot read before the change"
+    ],
+    "routes": {
+      "control_valid": "receipt",
+      "control_reseal_is_faithful": "receipt",
+      "control_json_roundtrip": "receipt",
+      "control_key_order": "receipt",
+      "resealed_rco_identity_swapped": "receipt",
+      "resealed_event_digest_to_claim": "receipt",
+      "resealed_veto_controls_dropped": "receipt",
+      "resealed_content_identity_digests": "receipt",
+      "resealed_proposed_head": "receipt",
+      "resealed_approved_base_to_live_base": "receipt",
+      "resealed_task_id": "receipt",
+      "resealed_registry_digest": "receipt",
+      "resealed_forged_author_waiver": "receipt",
+      "resealed_ci_checks_from_approved_head": "receipt",
+      "extra_top_level_merge_authorization": "receipt",
+      "extra_operator_signature": "receipt",
+      "extra_carried_row": "receipt",
+      "extra_field_in_carried_row": "receipt",
+      "evidence_rco_subset_hides_later_veto": "ledger",
+      "alias_pr_number_float": "receipt",
+      "alias_pr_number_string": "receipt",
+      "alias_veto_scan_complete_one": "receipt",
+      "alias_control_index_float": "receipt",
+      "alias_event_count_bool": "receipt",
+      "alias_event_count_float": "receipt",
+      "alias_ci_conclusion_case": "receipt",
+      "alias_schema_trailing_space": "receipt",
+      "append_harmless_rco_diagnostic": "ledger",
+      "append_harmless_other_task_note": "ledger",
+      "append_rco_changes_requested_old_head": "ledger",
+      "append_rco_typed_block_new_head": "ledger",
+      "append_rco_veto_descriptive_task_head_bound": "ledger",
+      "append_build_lead_block": "ledger",
+      "append_rco_pass_after_own_veto": "ledger",
+      "append_rco_bound_pass_after_own_veto": "ledger",
+      "stale_queue_incomplete": "env",
+      "stale_ci_failed_at_proposed_head": "env",
+      "stale_ci_pending_at_proposed_head": "env",
+      "stale_ci_runs_at_approved_head": "env",
+      "stale_ci_required_set_grew": "env",
+      "prefix_truncated_excludes_rco_vote": "receipt",
+      "prefix_count_beyond_ledger": "receipt",
+      "prefix_count_zero": "receipt",
+      "prefix_reordered": "ledger_after",
+      "prefix_event_inserted_inside": "ledger_after",
+      "prefix_truncated_harmless_tail": "tail",
+      "magma_payload_pr_number_float": "payload",
+      "magma_payload_head_uppercase": "payload",
+      "magma_payload_review_origin_base_to_live_base": "payload",
+      "magma_payload_ci_evidence_run_conclusion_case": "payload"
+    }
+  }
 }

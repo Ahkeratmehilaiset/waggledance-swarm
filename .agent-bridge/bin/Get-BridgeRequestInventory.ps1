@@ -114,7 +114,7 @@ function Get-InventoryBindingKind {
 function Add-InventoryConflict {
     # FirstPosition: for an immutable-content conflict, the indexed position of the first
     # occurrence it conflicts with; $null for a row that is invalid on its own.
-    param([int] $Position, $Event, [string] $Kind, $FirstPosition = $null)
+    param([int] $Position, $Event, [string] $Kind, $FirstPosition = $null, $FirstEvent = $null)
     $script:conflictCount++
     if ($script:conflictListClosed) { return }
     $payloadProperty=$Event.PSObject.Properties['payload']
@@ -125,6 +125,38 @@ function Add-InventoryConflict {
         top_level_request_id=(Get-InventoryFieldText $Event 'request_id')
         payload_request_id=(Get-InventoryFieldText $payload 'request_id')
         top_level_agent=(Get-InventoryFieldText $Event 'agent'); payload_agent=(Get-InventoryFieldText $payload 'agent')
+    }
+    if ($Kind -ceq 'immutable_id_content_conflict' -and $null -ne $FirstEvent) {
+        # Positions are relative to the exact pinned reply-index snapshot, not
+        # bridge event-id hashes. Only binding field names and booleans leave
+        # this scope; neither values nor value hashes are exposed.
+        $differences=@(foreach ($name in @('request_id','agent','agent_uuid','session_id','run_id',
+                'task_id','to','type','status','expected_responders','request_digest','nonce','token','task_revision')) {
+            $beforeProperty=$FirstEvent.PSObject.Properties[$name]
+            $afterProperty=$Event.PSObject.Properties[$name]
+            # Direct assignment preserves empty and single-element arrays; an
+            # if-expression would enumerate them into null or a scalar.
+            $before=$null; if ($null -ne $beforeProperty) {$before=$beforeProperty.Value}
+            $after=$null; if ($null -ne $afterProperty) {$after=$afterProperty.Value}
+            $oldPayload=$FirstEvent.PSObject.Properties['payload']
+            $oldNested=if ($null -ne $oldPayload -and $null -ne $oldPayload.Value) {
+                $oldPayload.Value.PSObject.Properties[$name]
+            } else {$null}
+            $newNested=if ($null -ne $payload) {$payload.PSObject.Properties[$name]} else {$null}
+            $beforeNested=$null; if ($null -ne $oldNested) {$beforeNested=$oldNested.Value}
+            $afterNested=$null; if ($null -ne $newNested) {$afterNested=$newNested.Value}
+            if ((ConvertTo-BridgeContractJson $before) -cne (ConvertTo-BridgeContractJson $after) -or
+                (ConvertTo-BridgeContractJson $beforeNested) -cne (ConvertTo-BridgeContractJson $afterNested)) {
+                [pscustomobject][ordered]@{field=$name;different=$true}
+            }
+        })
+        $entry | Add-Member NoteProperty first_reference ([pscustomobject][ordered]@{
+            scheme='wd.reply-index-position.v1'; indexed_position=$FirstPosition; snapshot_sha256=$snapshot.prefix_sha256
+        })
+        $entry | Add-Member NoteProperty conflicting_reference ([pscustomobject][ordered]@{
+            scheme='wd.reply-index-position.v1'; indexed_position=$Position; snapshot_sha256=$snapshot.prefix_sha256
+        })
+        $entry | Add-Member NoteProperty differing_binding_fields $differences
     }
     $size=($entry | ConvertTo-Json -Depth 4 -Compress).Length
     if ($conflicts.Count -ge $maxConflicts -or $script:conflictChars+$size -gt $maxConflictChars) {
@@ -170,7 +202,7 @@ for ($position=0; $position -lt $rows.Count; $position++) {
         (Get-BridgeContractField $event 'request_digest') -cne (Get-BridgeContractField $first.event 'request_digest')) {
         if (-not $DiagnosticPartial) { throw "Conflicting content for immutable request ID $id" }
         Add-InventoryConflict -Position $position -Event $event -Kind 'immutable_id_content_conflict' `
-            -FirstPosition $first.first_position
+            -FirstPosition $first.first_position -FirstEvent $first.event
         [void]$conflictedIds.Add($id)   # the id is reported as a conflict, never inventoried as valid
         continue
     }
@@ -298,7 +330,7 @@ if ($DiagnosticPartial) {
     }
     # Only ids that are actually inventoried are counted: a conflicted id is listed, never inventoried.
     $diagnostic['request_count']=@($sessionOrder | Where-Object { -not $conflictedIds.Contains($_) }).Count
-    $diagnostic['note']='DIAGNOSTIC ONLY, never a complete inventory: conflicting own rows are listed with exact metadata and excluded; a row whose request_id is falsy is never inventoried, refused or listed; answer_state never evaluated.'
+    $diagnostic['note']='DIAGNOSTIC ONLY, never a complete inventory: conflicting own rows are listed with exact metadata and excluded; a row whose request_id is falsy is never inventoried, refused or listed; answer_state never evaluated. Binding differences compare raw top-level and payload locations; they are not binding verdicts.'
     $output=[pscustomobject]$diagnostic
 }
 $json=$output | ConvertTo-Json -Depth 64 -Compress

@@ -252,6 +252,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--json", action="store_true")
+    from tools.bridge_approval_carry_forward import add_carry_forward_arguments
+    add_carry_forward_arguments(parser)
     return parser
 
 
@@ -267,6 +269,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     try:
+        from tools.bridge_approval_carry_forward import carry_forward_request_from_args
+        try:
+            carry_request = carry_forward_request_from_args(args)
+        except ValueError as exc:
+            raise _invalid("invalid_input", str(exc)) from exc
         if (
             args.events is not None
             and not bridge_events_path_matches_root(
@@ -304,7 +311,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             standing_consensus_sign=args.standing_consensus_sign,
             allow_lead_stall_failover=args.allow_lead_stall_failover,
             accepted_queue_checker=accepted_queue_checker,
-            artifact_writer=_cli_artifact_writer(args, events_path),
+            artifact_writer=_cli_artifact_writer(args, events_path, carry_forward=carry_request),
+            **({"carry_forward": carry_request} if carry_request is not None else {}),
         )
     except (OSError, UnicodeError) as exc:
         report = {
@@ -320,7 +328,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = exc.report
         exit_code = int(report.get("exit_code", 2))
     else:
-        exit_code = 0
+        exit_code = 1 if carry_request is not None and report.get("ok") is not True else 0
 
     if args.json:
         print(json.dumps(report, sort_keys=True))
@@ -3673,7 +3681,11 @@ def _strict_json_loads(
 def _cli_artifact_writer(
     args: argparse.Namespace,
     events_path: Path,
+    *,
+    carry_forward: Mapping[str, Any] | None = None,
 ) -> ArtifactWriter | None:
+    if carry_forward is not None and args.artifact_out_dir is not None:
+        raise _invalid("invalid_input", "carry uses --receipt-out-dir; --artifact-out-dir is a legacy route")
     if not args.apply or args.receipt_out_dir is None:
         return None
 
@@ -3681,6 +3693,18 @@ def _cli_artifact_writer(
     now_utc = _parse_utc(args.now) if args.now else datetime.now(timezone.utc)
 
     def writer() -> Mapping[str, Any]:
+        if carry_forward is not None:
+            from tools.write_bridge_consensus_merge_receipt import write_bridge_consensus_merge_receipt
+            # The carry executor only accepts this real MAGMA proof layout.
+            # The legacy generic idle artifact is intentionally kept separate.
+            status = _strict_json_loads(args.pr_status_file.read_bytes().decode("utf-8-sig"),
+                                        decision="invalid_pr_status", context="carry PR status JSON")
+            return write_bridge_consensus_merge_receipt(
+                pr_status=status, events_path=events_path, out_dir=args.receipt_out_dir,
+                expected_head=args.expected_head, expected_base_sha=args.expected_base_sha,
+                consensus_proposal_id=args.consensus_proposal_id, repo=args.repo,
+                from_agent=args.from_agent, bridge_task_id=args.bridge_task_id,
+                now_utc=now_utc, carry_forward=carry_forward)
         return write_idle_consensus_artifact(
             events_path=events_path,
             out_dir=out_dir,

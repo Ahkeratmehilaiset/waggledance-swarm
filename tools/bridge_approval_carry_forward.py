@@ -25,6 +25,42 @@ from tools import bridge_rco_enrollment as _trusted_paths
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _MAX_BYTES = 32 * 1024 * 1024
 _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def add_carry_forward_arguments(parser) -> None:
+    """Expose references only; CLI flags cannot supply approval or CI verdicts."""
+    parser.add_argument("--carry-approved-head", default="",
+                        help="Opt-in Rule9a carry from this exact previously approved head.")
+    parser.add_argument("--carry-repo-root", type=Path, default=None,
+                        help="Absolute task Git repository used to rederive content identity.")
+    parser.add_argument("--carry-approved-base-sha", default="",
+                        help="Optional assertion of the original reviewed base; never proves it.")
+    parser.add_argument("--carry-origin-binding-event-sha256", default="",
+                        help="Optional canonical original-voter descriptor binding event reference.")
+
+
+def carry_forward_request_from_args(args) -> dict | None:
+    values = (args.carry_approved_head, args.carry_repo_root,
+              args.carry_approved_base_sha, args.carry_origin_binding_event_sha256)
+    if not any(values):
+        return None
+    head, root, base, origin = values
+    if type(head) is not str or _SHA.fullmatch(head) is None:
+        raise ValueError("carry needs a lowercase full approved head SHA")
+    if not isinstance(root, Path) or not root.is_absolute() or ".." in root.parts:
+        raise ValueError("carry needs an absolute unambiguous task repository root")
+    result = dict(approved_head=head, repo_root=root)
+    if base:
+        if type(base) is not str or _SHA.fullmatch(base) is None:
+            raise ValueError("carry original base assertion must be a full SHA")
+        result["approved_base_sha"] = base
+    if origin:
+        if type(origin) is not str or re.fullmatch(r"[0-9a-f]{64}", origin) is None:
+            raise ValueError("carry origin binding event must have a full lowercase SHA256")
+        result["origin_binding_event_sha256"] = origin
+    return result
+
+
 _DIFF_FLAGS = (
     "--no-color", "--no-ext-diff", "--no-textconv", "--binary", "--full-index",
     "--no-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/",

@@ -98,12 +98,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--operator-path-exception-json", default="",
                         help="Explicit operator invocation only: exact-bound grant JSON; not authentication.")
+    from tools.bridge_approval_carry_forward import add_carry_forward_arguments
+    add_carry_forward_arguments(parser)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        from tools.bridge_approval_carry_forward import carry_forward_request_from_args
+        carry_request = carry_forward_request_from_args(args)
         bridge_root = resolve_bridge_root(args.bridge_root)
         events_path = (
             args.events
@@ -138,6 +142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                      if args.operator_path_exception_json else None),
             review_policy=args.review_policy,
             grok_fallback=args.grok_fallback,
+            **({"carry_forward": carry_request} if carry_request is not None else {}),
         )
     except ValueError as exc:
         report = {

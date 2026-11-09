@@ -174,20 +174,20 @@ evaluated fail-closed:
   to `operator_review_required`.
 * **Head-exact binding** — all three approvals bind to the exact head SHA; any
   re-push that **changes content** invalidates all prior approvals and requires
-  re-consensus (PR #777 head-drift fail-close). **Carry-forward status
-  (doc↔code truth, corrected 2026-07-02):** the 2026-06-05 amendment specified
-  a carve-out where a **content-identical base rebase** (the PR's diff against
-  the new base byte-identical to its diff against the prior base — mechanically
-  verified, no conflict-edit) carries content-review approvals forward to the
-  new head (never CI, which must re-run green). **This carve-out is NOT
-  implemented in the gate code**: `verify_bridge_consensus` /
-  `check_rco_pass_present` bind strictly to the exact head, so in practice
-  EVERY re-push — rebase or not, content-identical or not — strands prior
-  approvals and requires re-posts at the new head (2026-07-02 bridge audit;
-  observed across all of that day's rebases). The code is the STRICTER of the
-  two and governs. If the carve-out is ever implemented, it lands as (a)-class
-  gate code with its own adversarial review; until then, plan on re-consensus
-  after any re-push.
+  re-consensus (PR #777 head-drift fail-close). **Carry-forward (2026-11-09):**
+  an explicit Rule 9a carry request may reuse original content-review approvals
+  only after the live adapter proves an identical stable patch-id **and** raw
+  diff bytes, authenticates each original voter's reviewed basis, requires
+  fresh successful CI at the new head, and preserves all old/new vetoes.
+  The actual MAGMA consumer rederives this evidence at use. The direct
+  `verify_bridge_consensus` / `check_rco_pass_present` APIs remain head-exact;
+  the default path does not carry. Rule 12 carry is unsupported. Full details,
+  CLI references and the remaining non-atomic target-base race are in
+  `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`, section
+  "Content-identical approval carry-forward". CI, operator signatures and
+  Rule 10 authority never transfer. This (a)-class gate change still requires
+  its final exact-head reviews, CI and operator signature; source packaging
+  alone does not install or activate it.
 * **MAGMA receipt** — the merge emits a MAGMA receipt recording the three
   identities (including **which** recognized RCO satisfied the RCO slot), the
   head SHA, and the `RCO_PASS` event reference; a consumer must be able to

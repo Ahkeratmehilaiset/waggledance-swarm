@@ -236,6 +236,51 @@ def test_every_packaged_python_file_exists():
     assert not missing, f"listed for packaging but absent from the repo: {missing}"
 
 
+def test_carry_forward_helper_is_packaged_and_smoke_checked_without_activation():
+    definition = _definition()
+    assert "tools/bridge_approval_carry_forward.py" in definition["python_files"]
+    assert "tools.bridge_approval_carry_forward" in definition["import_smoke"]["package_modules"]
+    assert "tools/bridge_approval_carry_forward.py" not in definition["python_entrypoints"].values()
+
+
+@pytest.mark.parametrize("module", ["tools.idle_consensus_auto_merge", "tools.merge_with_bridge_receipt",
+                                   "tools.write_bridge_consensus_merge_receipt"])
+@pytest.mark.parametrize("omit_helper", [False, True])
+def test_staged_carry_cli_import_and_help_have_no_source_fallback(staged_mind_source, module, omit_helper):
+    import jsonschema
+    staged = staged_mind_source
+    if omit_helper:
+        (staged / "tools/bridge_approval_carry_forward.py").unlink()
+    # Reuse the already approved, hash-verified test dependency site. Internal
+    # repository modules must all come from the staged manifest, never cwd.
+    dependency_site = str(Path(jsonschema.__file__).resolve().parent.parent)
+    script = (
+        "import importlib, io, contextlib, json, pathlib, sys\n"
+        "root=pathlib.Path(sys.argv[1]).resolve()\n"
+        "sys.path[:0]=[str(root), sys.argv[3]]\n"
+        "module=importlib.import_module(sys.argv[2])\n"
+        "out=io.StringIO()\n"
+        "with contextlib.redirect_stdout(out):\n"
+        " try: module.main(['--help'])\n"
+        " except SystemExit as exc: assert exc.code == 0, exc.code\n"
+        "assert '--carry-approved-head' in out.getvalue()\n"
+        "paths={n: str(pathlib.Path(m.__file__).resolve()) for n,m in sys.modules.copy().items() "
+        "if n.split('.')[0] in ('tools','waggledance') and getattr(m,'__file__',None)}\n"
+        "assert all(pathlib.Path(p).is_relative_to(root) for p in paths.values()), paths\n"
+        "print(json.dumps(dict(paths=paths, isolated=sys.flags.isolated, no_site=sys.flags.no_site)))\n"
+    )
+    result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", script, str(staged), module, dependency_site],
+                            cwd=staged, capture_output=True, text=True, encoding="utf-8", timeout=60)
+    if omit_helper:
+        assert result.returncode != 0
+        assert "bridge_approval_carry_forward" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        observed = json.loads(result.stdout)
+        assert observed["isolated"] == observed["no_site"] == 1
+        assert "tools.bridge_approval_carry_forward" in observed["paths"]
+
+
 def test_source_package_initializers_are_not_silently_replaced_by_namespaces():
     packaged = set(_packaged_python())
     initializers = {

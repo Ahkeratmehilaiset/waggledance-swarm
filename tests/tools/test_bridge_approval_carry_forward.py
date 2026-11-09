@@ -20,6 +20,109 @@ def _api():
     return bridge_approval_carry_forward
 
 
+_CARRY_CLIS = ("tools.idle_consensus_auto_merge", "tools.merge_with_bridge_receipt",
+               "tools.write_bridge_consensus_merge_receipt")
+
+
+def _carry_cli_context(tmp_path, monkeypatch, module_name):
+    import importlib
+    module = importlib.import_module(module_name)
+    bridge = tmp_path / "bridge"
+    (bridge / "shared").mkdir(parents=True)
+    status = tmp_path / "status.json"
+    status.write_text(json.dumps(dict(pr_number=9001)))
+    monkeypatch.setattr(module, "resolve_bridge_root", lambda _: bridge)
+    args = ["--repo", "example/carry", "--expected-head", "b" * 40,
+            "--expected-base-sha", "c" * 40, "--consensus-proposal-id", "fable-5/carry-cli", "--json"]
+    target = ("evaluate_auto_merge_gate" if "idle_consensus" in module_name else
+              "merge_with_bridge_receipt" if "merge_with" in module_name else "write_bridge_consensus_merge_receipt")
+    if "merge_with" in module_name:
+        args = ["9001", "--out-dir", str(tmp_path / "out"), *args]
+    else:
+        args += ["--pr-status-file", str(status)]
+        if "write_bridge" in module_name:
+            args += ["--out-dir", str(tmp_path / "out")]
+        else:
+            args += ["--require-bridge-consensus"]
+    calls = []
+    def receiver(**kwargs):
+        calls.append(kwargs)
+        return dict(ok=True, decision="prepared", receipt_bundle_path="fixture", exit_code=0)
+    monkeypatch.setattr(module, target, receiver)
+    return module, args, calls
+
+
+@pytest.mark.parametrize("module_name", _CARRY_CLIS)
+def test_carry_cli_default_is_off(tmp_path, monkeypatch, module_name):
+    module, args, calls = _carry_cli_context(tmp_path, monkeypatch, module_name)
+    assert module.main(args) == 0
+    assert len(calls) == 1 and "carry_forward" not in calls[0]
+
+
+@pytest.mark.parametrize("module_name", _CARRY_CLIS)
+def test_carry_cli_builds_reference_only_request(tmp_path, monkeypatch, module_name):
+    module, args, calls = _carry_cli_context(tmp_path, monkeypatch, module_name)
+    args += ["--carry-approved-head", "a" * 40, "--carry-repo-root", str(tmp_path),
+             "--carry-approved-base-sha", "d" * 40, "--carry-origin-binding-event-sha256", "e" * 64]
+    assert module.main(args) == 0
+    assert calls[0]["carry_forward"] == dict(approved_head="a" * 40, repo_root=tmp_path,
+                                             approved_base_sha="d" * 40, origin_binding_event_sha256="e" * 64)
+
+
+@pytest.mark.parametrize("module_name", _CARRY_CLIS)
+@pytest.mark.parametrize("fault", ["head_only", "root_only", "base_only", "origin_only", "bad_head", "bad_base", "bad_origin", "relative_root"])
+def test_carry_cli_refuses_incomplete_or_ambiguous_reference_before_work(tmp_path, monkeypatch, module_name, fault):
+    module, args, calls = _carry_cli_context(tmp_path, monkeypatch, module_name)
+    flags = dict(head_only=["--carry-approved-head", "a" * 40], root_only=["--carry-repo-root", str(tmp_path)],
+                 base_only=["--carry-approved-base-sha", "d" * 40], origin_only=["--carry-origin-binding-event-sha256", "e" * 64])
+    extra = flags.get(fault, ["--carry-approved-head", "a" * 40, "--carry-repo-root", str(tmp_path)])
+    if fault == "bad_head":
+        extra[1] = "A" * 40
+    elif fault == "bad_base":
+        extra += ["--carry-approved-base-sha", "x"]
+    elif fault == "bad_origin":
+        extra += ["--carry-origin-binding-event-sha256", "x"]
+    elif fault == "relative_root":
+        extra[-1] = "relative/repo"
+    assert module.main(args + extra) == 2
+    assert not calls
+
+
+def test_carry_idle_cli_writes_the_actual_magma_receipt(tmp_path, monkeypatch):
+    import tools.write_bridge_consensus_merge_receipt as writer
+    module, args, calls = _carry_cli_context(tmp_path, monkeypatch, _CARRY_CLIS[0])
+    writes = []
+    def write(**kwargs):
+        writes.append(kwargs)
+        return dict(ok=True, receipt_bundle_path="real-carry")
+    monkeypatch.setattr(writer, "write_bridge_consensus_merge_receipt", write)
+    def gate(**kwargs):
+        assert kwargs["artifact_writer"] is not None
+        assert kwargs["artifact_writer"]()["receipt_bundle_path"] == "real-carry"
+        return dict(ok=True, decision="prepared")
+    monkeypatch.setattr(module, "evaluate_auto_merge_gate", gate)
+    assert module.main(args + ["--apply", "--receipt-out-dir", str(tmp_path / "magma"),
+                                "--carry-approved-head", "a" * 40, "--carry-repo-root", str(tmp_path)]) == 0
+    assert writes[0]["carry_forward"] == dict(approved_head="a" * 40, repo_root=tmp_path)
+    assert writes[0]["expected_head"] == "b" * 40
+    assert writes[0]["expected_base_sha"] == "c" * 40
+
+
+def test_carry_idle_cli_refusal_is_nonzero(tmp_path, monkeypatch):
+    module, args, calls = _carry_cli_context(tmp_path, monkeypatch, _CARRY_CLIS[0])
+    monkeypatch.setattr(module, "evaluate_auto_merge_gate", lambda **_: dict(ok=False, decision="operator_review_required"))
+    assert module.main(args + ["--carry-approved-head", "a" * 40, "--carry-repo-root", str(tmp_path)]) == 1
+
+
+@pytest.mark.parametrize("apply", [False, True])
+def test_carry_idle_cli_refuses_legacy_artifact_destination(tmp_path, monkeypatch, apply):
+    module, args, calls = _carry_cli_context(tmp_path, monkeypatch, _CARRY_CLIS[0])
+    extra = ["--carry-approved-head", "a" * 40, "--carry-repo-root", str(tmp_path),
+             "--artifact-out-dir", str(tmp_path / "legacy"), "--receipt-out-dir", str(tmp_path / "magma")]
+    assert module.main(args + extra + (["--apply"] if apply else [])) == 2
+    assert not calls
+
+
 @pytest.fixture(autouse=True)
 def pinned_fleet(tmp_path, monkeypatch):
     """Synthetic launcher authority; never reads or changes installed pins."""

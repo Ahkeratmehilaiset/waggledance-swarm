@@ -283,6 +283,34 @@ $seen = @{ query = $query; switches = @($PSBoundParameters.Keys | Sort-Object); 
 if ($mode -eq 'hang') { Start-Sleep -Seconds 4; exit 0 }
 if ($mode -eq 'refuse') { if ($WithStatus) { [Console]::Error.WriteLine('{"status":"UNKNOWN","exit_code":3,"cleanup":"unknown"}') }; exit 3 }
 if ($mode -eq 'garbage') { [Console]::Out.Write('{"schema":"other"}' + "`n"); exit 0 }
+if ($mode -like 'withheld*') {
+  $descPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'descriptor.json'
+  $descriptor = Get-Content -LiteralPath $descPath -Raw | ConvertFrom-Json
+  $result = @{schema='wd.q4-lane-content-withheld.v1';status='CONTENT_WITHHELD';reason='SOURCE_FRESHNESS_UNVERIFIED';freshness='UNKNOWN';authority='none';
+    lane='LANE';lane_binding='DECLARED_CONSISTENT';lane_authentication='UNKNOWN';cleanup='chain_confirmed';identity_sha256=('9'*64);
+    descriptor_sha256=((Get-FileHash -LiteralPath $descPath -Algorithm SHA256).Hash.ToLowerInvariant());call_id=('e'*32);
+    original_inner_status='ANSWER';original_result_count=1;original_answer_sha256=('d'*64);binding=$descriptor.expected_binding;
+    trust=@{lane_authentication='UNKNOWN';freshness='UNKNOWN';publisher_authentication='UNKNOWN';projection_public_attestation='UNKNOWN';transport='caller_injected';projection='caller_pinned'};
+    original_result_refs=@(@{ref_sha256=('a'*64);doc_id_sha256=('b'*64)}) }
+  switch ($mode) {
+    'withheld_degraded' {$result.original_inner_status='DEGRADED'}
+    'withheld_multiple' {$result.original_result_count=2; $result.original_result_refs+=@{ref_sha256=('2'*64);doc_id_sha256=('3'*64)}}
+    'withheld_missing' {$result.Remove('authority')}
+    'withheld_extra' {$result['stored_text']='STORED-TEXT-SECRET'}
+    'withheld_wrong_lane' {$result.lane='wrong-lane'}
+    'withheld_wrong_descriptor' {$result.descriptor_sha256=('1'*64)}
+    'withheld_wrong_binding' {$result.binding.policy_sha256=('1'*64)}
+    'withheld_wrong_freshness' {$result.freshness='FRESH'}
+    'withheld_wrong_trust' {$result.trust.freshness='FRESH'}
+    'withheld_wrong_cleanup' {$result.cleanup='unknown'}
+    'withheld_wrong_count' {$result.original_result_count=2}
+    'withheld_bad_ref' {$result.original_result_refs[0].doc_id_sha256='invalid'}
+    'withheld_extra_ref' {$result.original_result_refs[0]['stored_text']='STORED-TEXT-SECRET'}
+  }
+  if ($WithStatus) { if ($mode -eq 'withheld_outer_unknown') { [Console]::Error.WriteLine('{"status":"UNKNOWN","exit_code":0,"cleanup":"UNKNOWN"}') } else { [Console]::Error.WriteLine('{"status":"EXITED","exit_code":0,"cleanup":"CONFIRMED"}') } }
+  [Console]::Out.Write(($result | ConvertTo-Json -Depth 8 -Compress) + "`n")
+  exit 0
+}
 if ($mode -eq 'orphan') {
   # a process started by the helper keeps the inherited stdout/stderr pipes open after the helper itself exited
   $shell = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
@@ -399,11 +427,35 @@ Clear-WdInheritedMindReadSettings
     assert json.loads(_run_powershell(script).stdout) == {"recall": False, "mind": False}
 
 
+
+@pytest.mark.parametrize("mode", ["withheld", "withheld_degraded", "withheld_multiple", "withheld_missing", "withheld_outer_unknown", "withheld_extra", "withheld_wrong_lane", "withheld_wrong_descriptor",
+    "withheld_wrong_binding", "withheld_wrong_freshness", "withheld_wrong_trust", "withheld_wrong_cleanup",
+    "withheld_wrong_count", "withheld_bad_ref", "withheld_extra_ref"])
+def test_withheld_content_metadata_is_strict_and_never_delivered(tmp_path, mode):
+    fx = startup_read_fixture(tmp_path, "codex-tools-1", mode=mode)
+    script = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
+    script += "\n$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n" + startup_read_call(fx, "codex-tools-1")
+    record = json.loads(_run_powershell(script).stdout.strip())
+    if mode in ("withheld", "withheld_degraded", "withheld_multiple"):
+        assert record["outcome"] == "unknown" and record["reason"] == "freshness_unverified"
+        assert record["refs"] == (["a" * 64, "2" * 64] if mode == "withheld_multiple" else ["a" * 64])
+        assert record["result_count"] == (2 if mode == "withheld_multiple" else 1)
+        assert record["inner_status"] == ("DEGRADED" if mode == "withheld_degraded" else "ANSWER")
+        assert record["answer_sha256"] == "d" * 64
+        assert record["call_id"] == "e" * 32 and record["cleanup"] == "CONFIRMED"
+    else:
+        assert record["outcome"] == "refused" and record["reason"] == "result_shape"
+        assert record["refs"] == [] and record["answer_sha256"] == ""
+    assert record["delivered_text"] == "" and record["delivered_items"] == 0
+    assert record["delivered_chars"] == 0 and record["delivered_sha256"] == ""
+    assert_no_secret(fx["record"].read_text(encoding="ascii"))
+
 def test_on_demand_prompt_does_not_treat_unknown_freshness_as_current():
     text = TOOLS.read_text(encoding="utf-8-sig")
     start = text.index("' Q4 on-demand recall:")
     block = text[start:text.index("\n)", start)]
     assert "Neither exit code 0 nor VALIDATED proves source freshness." in block
+    assert "CONTENT_WITHHELD is a validated hit whose text is withheld because freshness is unverified; check its references in the bridge." in block
     assert "UNKNOWN, STALE or missing freshness must not be presented as current state." in block
     assert "Verify current state independently against the live bridge before making a current claim." in block
 

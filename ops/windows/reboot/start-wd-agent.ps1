@@ -460,6 +460,82 @@ function Invoke-WdQ4StartupMindRead {
         if ($record.exit_code -eq 0) {
           try {
             $result = $stdoutText.Trim() | ConvertFrom-Json
+            if ($result -isnot [pscustomobject]) { throw 'result_shape' }
+            if ([string]$result.schema -ceq 'wd.q4-lane-content-withheld.v1') {
+              # The helper already validated the original response and withheld its text. Independently
+              # bind only the metadata to our descriptor and lane; it does not prove source freshness.
+              $fields = @('schema','status','reason','freshness','authority','lane','lane_binding',
+                'lane_authentication','cleanup','identity_sha256','descriptor_sha256','call_id',
+                'original_inner_status','original_result_count','original_answer_sha256','binding','trust','original_result_refs')
+              $names = @($result.PSObject.Properties | ForEach-Object { $_.Name })
+              if ($names.Count -ne $fields.Count) { throw 'result_shape' }
+              foreach ($key in $fields) { if ($names -cnotcontains $key) { throw 'result_shape' } }
+              foreach ($key in @('schema','status','reason','freshness','authority','lane','lane_binding',
+                  'lane_authentication','cleanup','identity_sha256','descriptor_sha256','call_id',
+                  'original_inner_status','original_answer_sha256')) {
+                if ($result.PSObject.Properties[$key].Value -isnot [string]) { throw 'result_shape' }
+              }
+              if ($result.status -cne 'CONTENT_WITHHELD' -or $result.reason -cne 'SOURCE_FRESHNESS_UNVERIFIED' -or
+                  $result.freshness -cne 'UNKNOWN' -or $result.authority -cne 'none' -or $result.lane -cne $Lane -or
+                  $result.lane_binding -cne 'DECLARED_CONSISTENT' -or $result.lane_authentication -cne 'UNKNOWN' -or
+                  $result.cleanup -cne 'chain_confirmed' -or $record.cleanup -cne 'CONFIRMED' -or
+                  $result.identity_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                  $result.descriptor_sha256 -cne $DescriptorSha256 -or $result.call_id -cnotmatch '^[0-9a-f]{32}$' -or
+                  @('ANSWER','DEGRADED') -cnotcontains $result.original_inner_status -or
+                  $result.original_answer_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                  ($result.original_result_count -isnot [int] -and $result.original_result_count -isnot [long]) -or
+                  $result.original_result_count -lt 1 -or $result.original_result_count -gt 100 -or
+                  $result.original_result_refs -isnot [array] -or
+                  @($result.original_result_refs).Count -ne $result.original_result_count -or
+                  $result.binding -isnot [pscustomobject] -or $result.trust -isnot [pscustomobject]) { throw 'result_shape' }
+              $trust = [ordered]@{lane_authentication='UNKNOWN';freshness='UNKNOWN';publisher_authentication='UNKNOWN';
+                projection_public_attestation='UNKNOWN';transport='caller_injected';projection='caller_pinned'}
+              $trustNames = @($result.trust.PSObject.Properties | ForEach-Object { $_.Name })
+              if ($trustNames.Count -ne $trust.Count) { throw 'result_shape' }
+              foreach ($key in $trust.Keys) {
+                if ($trustNames -cnotcontains $key -or $result.trust.PSObject.Properties[$key].Value -isnot [string] -or
+                    $result.trust.PSObject.Properties[$key].Value -cne $trust[$key]) { throw 'result_shape' }
+              }
+              $descriptorBytes = [IO.File]::ReadAllBytes($DescriptorPath)
+              $descriptorHash = [Security.Cryptography.SHA256]::Create()
+              try { $pin = [BitConverter]::ToString($descriptorHash.ComputeHash($descriptorBytes)).Replace('-','').ToLowerInvariant() }
+              finally { $descriptorHash.Dispose() }
+              if ($pin -cne $DescriptorSha256) { throw 'result_shape' }
+              $descriptorText = [Text.Encoding]::UTF8.GetString($descriptorBytes)
+              if ($descriptorText.Length -gt 0 -and $descriptorText[0] -eq [char]0xFEFF) { $descriptorText = $descriptorText.Substring(1) }
+              $expected = ($descriptorText | ConvertFrom-Json).expected_binding
+              if ($expected -isnot [pscustomobject]) { throw 'result_shape' }
+              $bindingNames = @($result.binding.PSObject.Properties | ForEach-Object { $_.Name })
+              $expectedNames = @($expected.PSObject.Properties | ForEach-Object { $_.Name })
+              $bindingKeys = @('encoder_sha256','policy_sha256','roster_sha256','content_decision_sha256',
+                'descriptor_sha256','memory_sha256','projection_sha256')
+              if ($bindingNames.Count -ne $bindingKeys.Count -or $expectedNames.Count -ne $bindingKeys.Count) { throw 'result_shape' }
+              foreach ($key in $bindingKeys) {
+                if ($bindingNames -cnotcontains $key -or $expectedNames -cnotcontains $key -or
+                    $result.binding.PSObject.Properties[$key].Value -isnot [string] -or
+                    $expected.PSObject.Properties[$key].Value -isnot [string] -or
+                    $result.binding.PSObject.Properties[$key].Value -cnotmatch '^[0-9a-f]{64}$' -or
+                    $result.binding.PSObject.Properties[$key].Value -cne $expected.PSObject.Properties[$key].Value) { throw 'result_shape' }
+              }
+              $refs = @()
+              foreach ($item in $result.original_result_refs) {
+                if ($item -isnot [pscustomobject]) { throw 'result_shape' }
+                $itemNames = @($item.PSObject.Properties | ForEach-Object { $_.Name })
+                if ($itemNames.Count -ne 2 -or $itemNames -cnotcontains 'ref_sha256' -or
+                    $itemNames -cnotcontains 'doc_id_sha256' -or $item.ref_sha256 -isnot [string] -or
+                    $item.doc_id_sha256 -isnot [string] -or $item.ref_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                    $item.doc_id_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'result_shape' }
+                $refs += $item.ref_sha256
+              }
+              $record.inner_status = $result.original_inner_status
+              $record.result_count = [int]$result.original_result_count
+              $record.answer_sha256 = $result.original_answer_sha256
+              $record.call_id = $result.call_id
+              $record.refs = @($refs)
+              $record.outcome = 'unknown'
+              $record.reason = 'freshness_unverified'
+              $record.note = 'Helper-validated metadata only; refs and original answer digest are caller-reported and require independent verification; no text was delivered and source freshness remains unknown.'
+            } else {
             if ([string]$result.schema -cne 'wd.q4-lane-caller-result.v1' -or [string]$result.status -cne 'VALIDATED' -or
                 [string]$result.lane -cne $Lane -or
                 @('ANSWER', 'ABSTAIN', 'DEGRADED') -cnotcontains [string]$result.inner_status -or
@@ -509,6 +585,7 @@ function Invoke-WdQ4StartupMindRead {
             } else {
               $record.outcome = 'empty'
               $record.reason = if ($record.inner_status -ceq 'ANSWER') { 'no_result' } else { $record.inner_status.ToLowerInvariant() }
+            }
             }
           } catch {
             $record.outcome = 'refused'
@@ -3113,6 +3190,7 @@ $startupPrompt += (
   'The helper forwards stdin through an OS pipe; do not pipe directly to the wrapper. Its successful output ' +
   'is direct stdout, not a PowerShell object; check $LASTEXITCODE and use only exit code 0 output. ' +
   'Neither exit code 0 nor VALIDATED proves source freshness. ' +
+  'CONTENT_WITHHELD is a validated hit whose text is withheld because freshness is unverified; check its references in the bridge. ' +
   'UNKNOWN, STALE or missing freshness must not be presented as current state. ' +
   'Verify current state independently against the live bridge before making a current claim. ' +
   'If pins or helper are missing or the call ' +

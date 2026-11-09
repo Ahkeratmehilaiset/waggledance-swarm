@@ -147,12 +147,18 @@ def _bridge_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     for key, value in pairs:
         if not key.isascii():
             raise ValueError("JSON object property names must be ASCII")
-        folded = _ascii_fold_bridge_key(key)
+        # The ASCII check above makes lower() equivalent to the bridge's
+        # ASCII-only fold without a Python loop over each character.
+        folded = key.lower()
         if folded in normalized_keys:
             raise ValueError("duplicate or ASCII-case-colliding JSON key")
         normalized_keys.add(folded)
         result[key] = value
     return result
+
+
+_LEXICAL_IN_STRING = re.compile('["\\\\\ud800-\udfff]')
+_LEXICAL_OUTSIDE_STRING = re.compile('["\\[\\]{}]')
 
 
 def _validate_json_lexical_contract(text: str) -> None:
@@ -167,6 +173,13 @@ def _validate_json_lexical_contract(text: str) -> None:
     in_string = False
     index = 0
     while index < len(text):
+        # Only these code points affect the lexical contract. Skipping runs
+        # of ordinary characters avoids a Python loop over every character;
+        # the JSON parser still checks the complete input afterwards.
+        match = (_LEXICAL_IN_STRING if in_string else _LEXICAL_OUTSIDE_STRING).search(text, index)
+        if match is None:
+            return
+        index = match.start()
         char = text[index]
         if in_string:
             if char == '"':
@@ -450,14 +463,17 @@ def _complete_prefix_length(payload: bytes, *, max_rows: int) -> int:
     """Return bytes through at most ``max_rows`` complete LF records."""
 
     rows = 0
-    for index, value in enumerate(payload):
-        if value != 0x0A:
-            continue
+    start = 0
+    last_lf = -1
+    while True:
+        index = payload.find(b"\n", start)
+        if index < 0:
+            return 0 if last_lf < 0 else last_lf + 1
         rows += 1
         if rows >= max_rows:
             return index + 1
-    last_lf = payload.rfind(b"\n")
-    return 0 if last_lf < 0 else last_lf + 1
+        last_lf = index
+        start = index + 1
 
 
 def read_bridge_log(

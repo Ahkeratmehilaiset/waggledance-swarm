@@ -426,6 +426,27 @@ def test_identifier_policy_binding_is_passed_into_the_rederivation():
     assert plain["identifier_policy"] == "none"
 
 
+def test_an_untrusted_projection_reports_the_binding_as_bound_unverified_after_a_constant_time_tag_check():
+    data = identifier_binding()
+    raw, pin, full = full_build(require_identifier_policy=True, identifier_policy_binding=data)
+    report = from_projection(full, allow_untrusted=True, require_identifier_policy=True, identifier_policy_binding=data)
+    assert report["identifier_policy"] == "bound_unverified"
+    assert report["trust"] == "untrusted" and report["distribution"] == "do_not_publish"
+    assert_trust_fields(report)
+    with pytest.raises(diag.CoverageRefused) as info:
+        from_projection(full, allow_untrusted=True, require_identifier_policy=True,
+                        identifier_policy_binding=identifier_binding("OtherName"))
+    assert str(info.value) == "identifier_policy_refused"
+    forged = dict(full, identifier_policy_hmac=7)
+    with pytest.raises(diag.CoverageRefused) as info:
+        from_projection(forged, allow_untrusted=True, require_identifier_policy=True, identifier_policy_binding=data)
+    assert str(info.value) == "identifier_policy_refused"
+    assert from_projection(full, allow_untrusted=True, require_identifier_policy=True,
+                           identifier_policy_binding=data)["rederivation"] == "NONE"
+    assert "bound_unverified" not in json.dumps(rederived(full, require_identifier_policy=True,
+                                                         identifier_policy_binding=data))
+
+
 def test_a_projection_carrying_an_identifier_hmac_without_a_binding_refuses_explicitly():
     raw, pin, full = full_build(require_identifier_policy=True, identifier_policy_binding=identifier_binding())
     for call in (lambda: from_projection(full, allow_untrusted=True), lambda: rederived(full)):
@@ -453,3 +474,102 @@ def test_report_is_canonical_json_serializable_and_deterministic():
     assert json.dumps(one, sort_keys=True) == json.dumps(two, sort_keys=True)
     digest = hashlib.sha256(json.dumps(one, sort_keys=True, separators=(",", ":")).encode("ascii")).hexdigest()
     assert len(digest) == 64
+
+
+# --- exception hygiene --------------------------------------------------------------------------------------------
+
+MARKER = b"synthetic-nonsecret-marker-key-0123456789"  # a synthetic marker standing in for a key; never a real key
+
+
+def marker_paths(exc):
+    """Frame locals and chained exceptions reachable from ``exc`` (below the test frame) that hold the marker."""
+    hits = []
+
+    def scan(value, path, seen, depth=0):
+        if depth > 6:
+            return
+        if isinstance(value, (bytes, bytearray)):
+            if MARKER in bytes(value):
+                hits.append(path)
+            return
+        if isinstance(value, str):
+            if MARKER.decode() in value:
+                hits.append(path)
+            return
+        if id(value) in seen:
+            return
+        seen.add(id(value))
+        if isinstance(value, dict):
+            for key, item in list(value.items()):
+                scan(item, path + "[" + repr(key)[:40] + "]", seen, depth + 1)
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            for index, item in enumerate(list(value)):
+                scan(item, path + "[" + str(index) + "]", seen, depth + 1)
+
+    chain = []
+    current = exc
+    while current is not None:
+        trace = current.__traceback__
+        while trace is not None:
+            name = trace.tb_frame.f_code.co_name
+            if not name.startswith("test_") and name != "<lambda>":
+                scan(dict(trace.tb_frame.f_locals), type(current).__name__ + ":" + name + ".locals", set())
+            trace = trace.tb_next
+        scan(list(current.args), type(current).__name__ + ".args", set())
+        chain.append(type(current).__name__)
+        current = current.__context__
+    return hits, chain
+
+
+def marker_bindings():
+    bad_doc = b"not an identifier policy"
+    good_doc = json.dumps({"schema": "wd.mind-identifier-policy.v1", "identifiers": [IDENTIFIER_NAME]}).encode()
+    return {
+        "bad_bytes": (bad_doc, MARKER, hmac.new(MARKER, bad_doc, hashlib.sha256).hexdigest()),
+        "bad_shape": (MARKER,),
+        "good": (good_doc, MARKER, hmac.new(MARKER, good_doc, hashlib.sha256).hexdigest()),
+    }
+
+
+def _retention_cases():
+    raw, pin = policy()
+    bindings = marker_bindings()
+    return [
+        ("task_coverage_bad_bytes", lambda: diag.task_coverage(
+            rows={}, policy_bytes=raw, policy_sha256=pin, roster=fx.ROSTER, require_identifier_policy=True,
+            identifier_policy_binding=bindings["bad_bytes"]), "identifier_policy_refused"),
+        ("task_coverage_bad_shape", lambda: diag.task_coverage(
+            rows={}, policy_bytes=raw, policy_sha256=pin, roster=fx.ROSTER, require_identifier_policy=True,
+            identifier_policy_binding=bindings["bad_shape"]), "identifier_policy_refused"),
+        ("task_coverage_later_refusal", lambda: diag.task_coverage(
+            rows={}, policy_bytes=raw, policy_sha256="0" * 64, roster=fx.ROSTER, require_identifier_policy=True,
+            identifier_policy_binding=bindings["good"]), "policy_refused"),
+        ("task_coverage_build_refusal", lambda: diag.task_coverage(
+            rows=rows(), policy_bytes=raw, policy_sha256=pin, roster=fx.ROSTER, require_identifier_policy=True,
+            identifier_policy_binding=bindings["good"][:2] + ("0" * 64,)), "identifier_policy_refused"),
+        ("from_projection_bad_bytes", lambda: diag.coverage_from_projection(
+            {}, policy_bytes=raw, policy_sha256=pin, require_identifier_policy=True,
+            identifier_policy_binding=bindings["bad_bytes"]), "identifier_policy_refused"),
+        ("from_projection_later_refusal", lambda: diag.coverage_from_projection(
+            {}, policy_bytes=raw, policy_sha256=pin, require_identifier_policy=True,
+            identifier_policy_binding=bindings["good"]), "projection_refused"),
+        ("from_projection_rederivation_refusal", lambda: diag.coverage_from_projection(
+            full_build()[2], policy_bytes=raw, policy_sha256=pin, rows=rows(), roster=fx.ROSTER,
+            require_identifier_policy=True, identifier_policy_binding=bindings["good"]), "identifier_policy_refused"),
+    ]
+
+
+@pytest.mark.parametrize("name, call, token", _retention_cases(), ids=lambda value: value if type(value) is str else "")
+def test_a_refused_call_leaves_no_binding_bytes_reachable_from_the_exception(name, call, token):
+    with pytest.raises(diag.CoverageRefused) as info:
+        call()
+    assert str(info.value) == token
+    hits, chain = marker_paths(info.value)
+    assert hits == [], hits
+    assert chain == ["CoverageRefused"], chain  # no chained cause carrying foreign frames
+
+
+def test_task_ids_are_documented_as_coming_from_caller_supplied_policy_bytes():
+    doc = (diag.__doc__ or "").lower()
+    assert "caller-supplied policy bytes" in doc and "not an authenticated authority" in doc
+    assert "never from caller input" not in doc

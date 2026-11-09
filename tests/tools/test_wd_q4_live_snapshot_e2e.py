@@ -246,14 +246,15 @@ def test_two_real_fenced_publications_are_selected_by_running_caller(tmp_path, m
                 assert answer['schema'] == 'wd.q4-lane-coverage-envelope.v1'
                 assert answer['coverage'] == answer['freshness'] == 'UNKNOWN'
                 answer = answer['result']
-            assert answer['status'] == 'VALIDATED' and answer['inner_status'] == 'ANSWER'
+            assert answer['status'] == 'CONTENT_WITHHELD' and answer['original_inner_status'] == 'ANSWER'
             assert answer['descriptor_sha256'] == candidate[1]
-            assert answer['answer']['binding']['pointer_sha256'] == result['pointer_sha256']
-            assert answer['answer']['trust']['freshness'] == 'UNKNOWN'
+            assert answer['binding']['pointer_sha256'] == result['pointer_sha256']
+            assert answer['trust']['freshness'] == 'UNKNOWN'
             records = json.loads(active['projection.json'])['records']
-            assert answer['answer']['results']
+            assert answer['original_result_count'] > 0 and answer['original_result_refs']
+            assert 'stored_text' not in json.dumps(answer)
             assert all(item['ref_sha256'] in {sha(r['provenance']['event_ref'].encode()) for r in records}
-                       for item in answer['answer']['results'])
+                       for item in answer['original_result_refs'])
             if envelope:
                 host=shutil.which('powershell.exe'); assert host
                 env=dict(os.environ)
@@ -265,7 +266,7 @@ def test_two_real_fenced_publications_are_selected_by_running_caller(tmp_path, m
                 outer=json.loads(call.stdout)
                 assert outer['schema']=='wd.q4-lane-coverage-envelope.v1'
                 assert outer['coverage']==outer['freshness']=='UNKNOWN'
-                assert outer['result']['answer']['binding']['pointer_sha256']==result['pointer_sha256']
+                assert outer['result']['binding']['pointer_sha256']==result['pointer_sha256']
             answers.append(answer)
         return result
 
@@ -275,6 +276,6 @@ def test_two_real_fenced_publications_are_selected_by_running_caller(tmp_path, m
     assert len(answers) == 2
     if fault == 'none':
         assert answers[0]['descriptor_sha256'] != answers[1]['descriptor_sha256']
-        assert answers[0]['answer']['binding']['pointer_sha256'] != answers[1]['answer']['binding']['pointer_sha256']
+        assert answers[0]['binding']['pointer_sha256'] != answers[1]['binding']['pointer_sha256']
     else:
         assert answers[1] is None

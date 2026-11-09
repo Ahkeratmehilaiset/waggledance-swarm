@@ -37,7 +37,8 @@ def staged(tmp_path):
         'Invoke-WdQ4Query.ps1':sha(wrapper.read_bytes())}}
     raw = json.dumps(manifest,sort_keys=True,separators=(',',':')).encode()
     (root/'deployment-manifest.json').write_bytes(raw)
-    plan = {'bundle_root':str(root),'bundle_commit':'a'*40,'deployment_manifest_sha256':sha(raw),
+    plan = {'backend':'staged-card-wrapper-v1',
+            'bundle_root':str(root),'bundle_commit':'a'*40,'deployment_manifest_sha256':sha(raw),
             'peer_code_sha256':sha(peer.read_bytes()),'backend_sha256':sha(helper.read_bytes()),
             'wrapper_path':str(wrapper),'wrapper_sha256':sha(wrapper.read_bytes())}
     runtime = tmp_path/'runtime'

@@ -420,6 +420,25 @@ def _output(result, lane, identity_pin, descriptor_pin, expected_binding, limit,
     # The closed schema and adapter's parent-resolved records exclude query
     # fields. Public record/metadata text may coincide with a query; tokens may not.
     _check(token.encode("utf-8", "strict") not in raw and _canon(token)[1:-1] not in raw)
+    if answer["results"]:
+        # Every accepted trust tuple currently has UNKNOWN source freshness.
+        # Keep the original result for final pin/card rechecks and guard release;
+        # expose only labelled provenance, never its unverified record text.
+        withheld = {
+            "schema": "wd.q4-lane-content-withheld.v1", "status": "CONTENT_WITHHELD",
+            "reason": "SOURCE_FRESHNESS_UNVERIFIED", "freshness": "UNKNOWN", "authority": "none",
+            **{key: result[key] for key in ("lane", "lane_binding", "lane_authentication", "cleanup",
+                                          "identity_sha256", "descriptor_sha256", "call_id")},
+            "original_inner_status": result["inner_status"],
+            "original_result_count": result["result_count"],
+            "original_answer_sha256": result["answer_sha256"],
+            "binding": answer["binding"], "trust": answer["trust"],
+            "original_result_refs": [{key: item[key] for key in ("ref_sha256", "doc_id_sha256")}
+                                     for item in answer["results"]],
+        }
+        raw = _canon(withheld) + b"\n"
+        _check(len(raw) <= limit)
+        _check(token.encode("utf-8", "strict") not in raw and _canon(token)[1:-1] not in raw)
     return raw.decode("ascii")
 
 
@@ -554,7 +573,7 @@ def main(argv=None):
                            inputs["max_output_bytes"], token)
         if coverage_mode == "1":
             # No independent coverage pin exists: never imply completeness.
-            # Keep the validated v1 result and its answer digest unchanged.
+            # Wrap the validated empty result or metadata-only withheld result.
             wrapped = _canon({"schema": "wd.q4-lane-coverage-envelope.v1",
                               "coverage": "UNKNOWN", "freshness": "UNKNOWN",
                               "result": json.loads(rendered)}) + b"\n"

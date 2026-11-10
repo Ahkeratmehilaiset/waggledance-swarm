@@ -1,5 +1,6 @@
 """Cross-recovery admission: isolated synthetic files, real pair locks."""
 import json
+import os
 from contextlib import contextmanager
 from pathlib import Path
 import pytest
@@ -9,6 +10,16 @@ from tools import wd_q4_live_update_recovery as live
 
 JOB='q4-adopt-recovery-job.pending.json'
 
+@pytest.mark.skipif(os.name == 'nt', reason='non-Windows refusal witness')
+def test_pair_state_refuses_non_windows_before_entry(tmp_path):
+    private, shared = tmp_path / 'private', tmp_path / 'shared'
+    private.mkdir(); shared.mkdir()
+    with pytest.raises(prefix_private_state.StateRefused):
+        with prefix_private_state.locked_state(private, shared, enabled=True):
+            pytest.fail('non-Windows pair lock was entered')
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='pair-state admission requires fixed Windows volumes')
 @pytest.mark.parametrize('late',[False,True])
 def test_prefix_completion_preserves_owned_markers_when_job_pending(tmp_path, monkeypatch, late):
     checkpoint,private,model,source,sidecar=[tmp_path/n for n in ('checkpoint','private','model','source','sidecar')]
@@ -23,12 +34,15 @@ def test_prefix_completion_preserves_owned_markers_when_job_pending(tmp_path, mo
     monkeypatch.setattr(prefix,'_verify_marker',lambda *a:checked.append(True))
     monkeypatch.setattr(prefix.checkpoint_mod,'read_verified_prefix_pointer',
                         lambda *a,**k: (_ for _ in ()).throw(ValueError('past admission')))
+    stages=[]
     if late:
         original=prefix_private_state._checkpoint_lock
         @contextmanager
         def arrival(root,timeout):
             with original(root,timeout):
+                stages.append('entered')
                 job.write_bytes(b'synthetic')
+                stages.append('injected')
                 yield
         monkeypatch.setattr(prefix_private_state,'_checkpoint_lock',arrival)
     with pytest.raises(ValueError):
@@ -39,10 +53,12 @@ def test_prefix_completion_preserves_owned_markers_when_job_pending(tmp_path, mo
             plan={'schema':'wd.q4-prefix-build-plan.v3','fenced':True,'expected_pointer_sha256':'a'*64},
             route={'policy_sha256':'b'*64,'roster_sha256':'c'*64,'public_policy_sha256':'e'*64},expected_route_sha256='d'*64,
             policy_bytes=b'policy',roster_bytes=b'roster')
+    if late: assert stages == ['entered', 'injected']
     assert not checked, 'recovery crossed job-pending gate'
     assert job.read_bytes()==b'synthetic' and all(p.read_bytes()==b'token' for p in marks)
     assert not list(private.glob('q4-status-result-*.json'))
 
+@pytest.mark.skipif(os.name != 'nt', reason='pair-state admission requires fixed Windows volumes')
 @pytest.mark.parametrize('late',[False,True])
 def test_live_recovery_wont_touch_own_marker_while_job_pending(tmp_path,monkeypatch,late):
     private,root=tmp_path/'private',tmp_path/'checkpoint'
@@ -69,16 +85,20 @@ def test_live_recovery_wont_touch_own_marker_while_job_pending(tmp_path,monkeypa
     monkeypatch.setattr(live.capture_adapter,'strict_pins',lambda *a:(frozenset(),{}))
     monkeypatch.setattr(live.live.pointer_io,'_chain',lambda *a:None)
     monkeypatch.setattr(live.live,'_read',lambda *a: calls.append(True) or b'{}')
+    stages=[]
     if late:
         original=prefix_private_state._checkpoint_lock
         @contextmanager
         def arrival(shared,timeout):
             with original(shared,timeout):
+                stages.append('entered')
                 job.write_bytes(b'synthetic')
+                stages.append('injected')
                 yield
         monkeypatch.setattr(prefix_private_state,'_checkpoint_lock',arrival)
     with pytest.raises((live.RecoveryOutcomeUnknown,live.RecoveryRefused)):
         live.recover(enabled=True,config_path='config',expected_config_sha256=pin,
                      expected_attempt=pin,expected_progress_sha256=pin)
+    if late: assert stages == ['entered', 'injected']
     assert not calls, 'live recovery read its own marker before checking job pending'
     assert job.read_bytes()==b'synthetic' and own.read_bytes()==b'synthetic live marker'

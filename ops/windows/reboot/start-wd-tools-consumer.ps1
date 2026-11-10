@@ -647,9 +647,6 @@ function Invoke-WdQ4StartupMindRead {
               }
               $utf8 = New-Object Text.UTF8Encoding($false, $true)
               $refs = @()
-              $lines = New-Object Collections.Generic.List[string]
-              $lines.Add('Mind recalled content; freshness UNKNOWN; index_age UNKNOWN; source references are caller-pinned, not authenticated.')
-              $index = 0
               foreach ($item in $answer.results) {
                 Assert-WdStartupContentObject $item @('stored_text','ref_sha256','doc_id_sha256')
                 if ($item.stored_text -isnot [string] -or [string]::IsNullOrWhiteSpace($item.stored_text) -or
@@ -657,10 +654,7 @@ function Invoke-WdQ4StartupMindRead {
                     $item.stored_text -cmatch '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]' -or
                     $item.ref_sha256 -isnot [string] -or $item.ref_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
                     $item.doc_id_sha256 -isnot [string] -or $item.doc_id_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'result_shape' }
-                $index += 1
                 $refs += $item.ref_sha256
-                $lines.Add('[' + $index.ToString([Globalization.CultureInfo]::InvariantCulture) + '] ' + $item.stored_text +
-                  ' [ref_sha256=' + $item.ref_sha256 + '; doc_id_sha256=' + $item.doc_id_sha256 + ']')
               }
               # Match the caller's canonical bytes, including ASCII Unicode escapes. This also refuses duplicate
               # fields instead of silently accepting the JSON parser's last value. Recompute the answer digest.
@@ -676,6 +670,17 @@ function Invoke-WdQ4StartupMindRead {
               $escapedToken = ConvertTo-WdStartupContentJson $ownerToken
               $escapedToken = $escapedToken.Substring(1, $escapedToken.Length - 2)
               if ($stdoutText.Contains($ownerToken) -or $stdoutText.Contains($escapedToken)) { throw 'result_shape' }
+              # Preserve and verify the original answer above. Only presentation is JSON-quoted:
+              # one item per line, with control, Unicode separator and bidi characters visible.
+              $lines = New-Object Collections.Generic.List[string]
+              $lines.Add('Mind recalled content; freshness UNKNOWN; index_age UNKNOWN; source references are caller-pinned, not authenticated.')
+              $index = 0
+              foreach ($item in $answer.results) {
+                $index += 1
+                $lines.Add('[' + $index.ToString([Globalization.CultureInfo]::InvariantCulture) + '] ' +
+                  (ConvertTo-WdStartupContentJson $item.stored_text) +
+                  ' [ref_sha256=' + $item.ref_sha256 + '; doc_id_sha256=' + $item.doc_id_sha256 + ']')
+              }
               $content = $lines -join "`n"
               if ($content.Length -gt 24000) { throw 'result_shape' }
               $digest = [Security.Cryptography.SHA256]::Create()

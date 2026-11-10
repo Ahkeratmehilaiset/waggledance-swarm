@@ -1,16 +1,18 @@
 """Synthetic RED contract for staged, nested native observation; not production."""
 import hashlib
+import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import types
+import uuid
 import pytest
 from sandbox.mind.step2 import q4_controlled_imports as controlled
 from sandbox.mind.step2 import q4_native_additions as additions
 
 
-@pytest.fixture
-def observed():
+def _observed():
     def check(value):
         if not value:
             raise ValueError('synthetic refusal')
@@ -21,6 +23,11 @@ def observed():
     registry = {name: module}
     tracker.bind({}, registry, set(), single_thread=True, known_objects=())
     return tracker, name, module, registry
+
+
+@pytest.fixture
+def observed():
+    return _observed()
 
 
 def begin(observed):
@@ -67,7 +74,7 @@ def test_ambiguous_segment_never_creates_completion(observed, case):
         tracker.accept(name, module, registry)
 
 
-def test_batch_failure_never_commits_an_earlier_module(observed):
+def _batch_failure_case(observed):
     tracker, name, module, registry = observed
     other = types.ModuleType('wd_other_native')
     other.original = object()
@@ -84,7 +91,7 @@ def test_batch_failure_never_commits_an_earlier_module(observed):
             tracker.accept(key, value, registry)
 
 
-def test_batch_interrupt_during_commit_invalidates_even_already_written_record(observed):
+def _batch_interrupt_case(observed):
     tracker, name, module, registry = observed
     other = types.ModuleType('wd_other_native')
     other.original = object()
@@ -105,6 +112,97 @@ def test_batch_interrupt_during_commit_invalidates_even_already_written_record(o
     for key, value in registry.items():
         with pytest.raises(ValueError):
             tracker.accept(key, value, registry)
+
+
+def _run_isolated_batch_case(case):
+    root = Path(__file__).resolve().parents[2]
+    hook_path = hook_digest = child_report = '-'
+    parent_report = os.environ.get('WD_D15_HOOK_REPORT')
+    if parent_report:
+        loaded_hook = sys.modules.get('hook_plugin_d15')
+        assert loaded_hook is not None, 'D15 report configured but hook is not loaded'
+        hook_path = str(Path(loaded_hook.__file__).resolve())
+        hook_digest = hashlib.sha256(Path(hook_path).read_bytes()).hexdigest()
+        child_report = str(Path(parent_report).with_name(
+            f'{Path(parent_report).name}.native-{case}-{uuid.uuid4().hex}.jsonl'))
+    probe = r'''
+import contextlib, hashlib, importlib.util, io, os, pathlib, sys, threading
+repo, test_file, case = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+hook_file, hook_sha, child_report = sys.argv[4:7]
+audit = None
+if hook_file != '-':
+    assert hashlib.sha256(pathlib.Path(hook_file).read_bytes()).hexdigest() == hook_sha
+    os.environ['WD_D15_HOOK_REPORT'] = child_report
+    hook_spec = importlib.util.spec_from_file_location('synthetic_child_d15', hook_file)
+    audit = importlib.util.module_from_spec(hook_spec)
+    hook_spec.loader.exec_module(audit)
+sys.path.insert(0, str(repo))
+def run():
+    spec = importlib.util.spec_from_file_location('synthetic_batch_cases', test_file)
+    cases = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cases)
+    assert len(sys._current_frames()) == 1, 'batch probe must start single-threaded'
+    observed = cases._observed()
+    if case == 'concurrent':
+        ready, stop = threading.Event(), threading.Event()
+        def hold():
+            ready.set()
+            stop.wait(30)
+        worker = threading.Thread(target=hold, name='synthetic-concurrent-negative')
+        worker.start()
+        try:
+            assert ready.wait(5)
+            assert len(sys._current_frames()) == 2
+            tracker, name, module, registry = observed
+            with cases.pytest.raises(ValueError, match='synthetic refusal'):
+                cases.controlled._NativeBatch(tracker, registry)
+        finally:
+            stop.set()
+            worker.join(5)
+            assert not worker.is_alive()
+        assert len(sys._current_frames()) == 1
+    else:
+        assert case in ('failure', 'interrupt')
+        function = cases._batch_failure_case if case == 'failure' else cases._batch_interrupt_case
+        function(observed)
+        assert len(sys._current_frames()) == 1
+try:
+    run()
+except BaseException:
+    if audit is not None:
+        audit.state['exit'] = 1
+    raise
+else:
+    if audit is not None:
+        audit.state['exit'] = 0
+finally:
+    if audit is not None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            audit.pytest_unconfigure(None)
+print('PASS')
+'''
+    completed = subprocess.run(
+        [sys.executable, '-I', '-B', '-c', probe, str(root), str(Path(__file__).resolve()),
+         case, hook_path, hook_digest, child_report],
+        capture_output=True, timeout=60)
+    assert completed.returncode == 0, completed.stderr.decode('utf-8', 'replace')
+    assert completed.stdout in (b'PASS\n', b'PASS\r\n')
+    if parent_report:
+        rows = [json.loads(line) for line in Path(child_report).read_text(encoding='utf-8').splitlines()]
+        assert rows and rows[-1]['kind'] == 'summary'
+        assert rows[-1]['exit'] == 0 and rows[-1]['refused'] == 0
+
+
+def test_batch_failure_never_commits_an_earlier_module():
+    _run_isolated_batch_case('failure')
+
+
+def test_batch_interrupt_during_commit_invalidates_even_already_written_record():
+    _run_isolated_batch_case('interrupt')
+
+
+def test_batch_rejects_real_concurrent_observation():
+    _run_isolated_batch_case('concurrent')
 
 
 @pytest.mark.parametrize('scenario', ('success', 'outer_failure', 'inner_failure_caught',

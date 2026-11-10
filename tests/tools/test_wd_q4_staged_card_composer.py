@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,8 @@ def test_staged_card_composer_defaults_off_without_touching_inputs():
 
 @pytest.fixture
 def materialize(staged_producer, tmp_path, monkeypatch):
+    if os.name != 'nt':
+        pytest.skip('staged card caller reads drive-absolute Windows paths')
     from tests.tools.test_wd_q4_shared_descriptor_producer import kwargs as descriptor_kwargs
     from tools import wd_q4_fixed_plan_producer as fixed_producer
     sha = lambda raw: hashlib.sha256(raw).hexdigest()

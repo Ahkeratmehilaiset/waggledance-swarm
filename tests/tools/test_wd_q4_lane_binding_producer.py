@@ -200,8 +200,8 @@ def test_content_binding_uses_seven_independent_pins_and_all_five_lanes(content_
 
 
 def test_content_fixture_preserves_a_bounded_timeout_ladder(content_case, tmp_path):
-    from tests.tools.test_wd_q4_shared_descriptor_producer import kwargs, build
-    kw = kwargs(tmp_path)
+    from tests.tools.test_wd_q4_shared_descriptor_producer import synthetic_kwargs, build
+    kw = synthetic_kwargs()  # build() never touches the paths
     kw['expected_binding'] = dict(content_case['expected_binding'])
     kw['timeout_seconds'] = 540
     descriptor = json.loads(build(kw)['descriptor_bytes'])

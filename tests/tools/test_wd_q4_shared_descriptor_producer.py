@@ -1,6 +1,8 @@
 """Synthetic pins only: the v2 shared-session descriptor producer against the existing PS validator.
 
-No launcher, query, live data or runtime. Paths point into pytest's tmp_path and need not exist.
+No launcher, query, live data or runtime. This file's cases use fixed synthetic Windows descriptor paths
+(synthetic_kwargs) that need not exist; only the validator's own fleet and descriptor files are written to
+pytest's tmp_path. Other test files import kwargs(tmp_path) and create files on its paths, so it stays in tmp_path.
 """
 import base64
 import builtins
@@ -9,7 +11,7 @@ import hashlib
 import inspect
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import subprocess
 
@@ -34,7 +36,7 @@ CONTENT_KEYS = ("encoder_sha256", "policy_sha256", "roster_sha256", "content_dec
 
 @pytest.mark.parametrize("lane", LANES)
 def test_content_descriptor_carries_exact_seven_pins_for_each_lane(tmp_path, lane):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     kw["lanes"] = [lane]
     kw["timeout_seconds"] = 540
     kw["expected_binding"] = {key: format(i + 1, "064x") for i, key in enumerate(CONTENT_KEYS)}
@@ -47,7 +49,7 @@ def test_content_descriptor_carries_exact_seven_pins_for_each_lane(tmp_path, lan
 
 @pytest.mark.parametrize("change", ["missing", "extra", "invalid"])
 def test_content_descriptor_rejects_missing_extra_or_invalid_pins(tmp_path, change):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     pins = {key: "a" * 64 for key in CONTENT_KEYS}
     if change == "missing":
         del pins["memory_sha256"]
@@ -78,13 +80,29 @@ def fleet_bytes():
                        "tools_supervisor": {"agent": "codex-tools-1"}, "other": {"kept": True}}).encode()
 
 
+# The producer accepts drive-letter Windows path syntax only and never touches these paths, so the positive and
+# refusal cases of THIS file use one fixed synthetic Windows root on every platform (a POSIX tmp_path would be
+# refused first). kwargs(tmp_path) keeps every path inside tmp_path: the staged card composer, staged binding chain,
+# staged descriptor and lane binding tests import it and create files on those paths, so a shared fixed root would
+# collide across tests (and leave files outside tmp_path).
+SYNTHETIC_ROOT = PureWindowsPath(r"C:\synthetic\q4-shared-descriptor")
+
+
 def kwargs(tmp_path):
+    return _kwargs_under(tmp_path)
+
+
+def synthetic_kwargs():
+    return _kwargs_under(SYNTHETIC_ROOT)
+
+
+def _kwargs_under(base):
     fleet = fleet_bytes()
-    root = tmp_path / "runtime"
+    root = base / "runtime"
     out = {"fleet_bytes": fleet, "expected_fleet_sha256": sha(fleet), "lanes": list(LANES),
-           "bundle_root": str(tmp_path / "bundle"), "public_plan": str(tmp_path / "public.json"),
-           "interpreter": str(tmp_path / "python.exe"), "interpreter_sha256": "a" * 64,
-           "interpreter_max_bytes": 10000, "cwd": str(tmp_path / "code"), "timeout_seconds": 30,
+           "bundle_root": str(base / "bundle"), "public_plan": str(base / "public.json"),
+           "interpreter": str(base / "python.exe"), "interpreter_sha256": "a" * 64,
+           "interpreter_max_bytes": 10000, "cwd": str(base / "code"), "timeout_seconds": 30,
            "max_output_bytes": 32000,
            "outer": {"outer-path": str(root / "assets" / "code" / "tools" / "wd_q4_session_outer_synthetic.py"),
                      "outer-sha256": "c" * 64, "runtime-root": str(root), "runtime-generation": "d" * 40,
@@ -92,7 +110,7 @@ def kwargs(tmp_path):
                      "public-child-sha256": "3" * 64, "public-query-sha256": "4" * 64, "worker-sha256": "5" * 64},
            "expected_binding": {key: format(i + 1, "064x") for i, key in enumerate(BINDING_KEYS)}}
     for i, name in enumerate(("binding", "fixed_plan", "snapshot", "runtime_manifest")):
-        out[name + "_path"] = str(tmp_path / (name + ".json"))
+        out[name + "_path"] = str(base / (name + ".json"))
         out[name + "_sha256"] = format(i + 6, "x") * 64
     return out
 
@@ -143,11 +161,11 @@ def test_disabled_returns_off_without_validating_anything():
 
 @pytest.mark.parametrize("enabled", [1, "true", "1", [True]])
 def test_only_the_exact_true_enables(tmp_path, enabled):
-    assert module().build_shared_descriptor(**{**kwargs(tmp_path), "enabled": enabled}) == {"status": "OFF"}
+    assert module().build_shared_descriptor(**{**synthetic_kwargs(), "enabled": enabled}) == {"status": "OFF"}
 
 
 def test_lanes_must_be_a_list(tmp_path):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     kw["lanes"] = tuple(LANES)
     refused("lanes_refused", lambda: build(kw))
 
@@ -168,7 +186,7 @@ def test_the_surface_is_explicit_keyword_only_pins_and_has_no_query():
 @needs_shell
 @pytest.mark.parametrize("lane", LANES)
 def test_the_existing_validator_accepts_the_produced_descriptor_for_every_lane(tmp_path, lane):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     result = build(kw)
     assert set(result) == {"descriptor_bytes", "descriptor_sha256"}
     checked = validate(tmp_path, result["descriptor_bytes"], kw, lane=lane,
@@ -184,7 +202,7 @@ def test_the_existing_validator_accepts_the_produced_descriptor_for_every_lane(t
 
 @needs_shell
 def test_a_one_lane_pilot_descriptor_admits_only_that_lane(tmp_path):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     kw["lanes"] = ["fable-5"]
     raw = build(kw)["descriptor_bytes"]
     assert validate(tmp_path, raw, kw, lane="fable-5")["ok"]
@@ -193,7 +211,7 @@ def test_a_one_lane_pilot_descriptor_admits_only_that_lane(tmp_path):
 
 @needs_shell
 def test_a_changed_byte_no_longer_matches_the_returned_pin(tmp_path):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     result = build(kw)
     raw = result["descriptor_bytes"].replace(b'"timeout_seconds":30', b'"timeout_seconds":31')
     assert raw != result["descriptor_bytes"]
@@ -204,7 +222,7 @@ def test_a_changed_byte_no_longer_matches_the_returned_pin(tmp_path):
 # 3 deterministic bytes -------------------------------------------------------------------------------------------
 
 def test_output_is_deterministic_canonical_ascii_json_with_its_own_sha256(tmp_path):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     first, second = build(kw), build(copy.deepcopy(kw))
     assert first == second
     raw = first["descriptor_bytes"]
@@ -215,7 +233,7 @@ def test_output_is_deterministic_canonical_ascii_json_with_its_own_sha256(tmp_pa
 
 
 def test_mapping_insertion_order_does_not_change_the_bytes(tmp_path):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     reordered = copy.deepcopy(kw)
     reordered["outer"] = dict(reversed(list(kw["outer"].items())))
     reordered["expected_binding"] = dict(reversed(list(kw["expected_binding"].items())))
@@ -223,23 +241,25 @@ def test_mapping_insertion_order_does_not_change_the_bytes(tmp_path):
 
 
 def test_the_caller_inputs_are_not_mutated(tmp_path):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     before = copy.deepcopy(kw)
     build(kw)
     assert kw == before
 
 
 def test_no_file_is_opened_or_stat_called(tmp_path, monkeypatch):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     module()
 
     def blocked(*args, **kwargs):
         raise AssertionError("filesystem access")
 
-    for owner, name in ((builtins, "open"), (os, "open"), (os, "stat"), (os, "lstat"), (os, "scandir")):
-        monkeypatch.setattr(owner, name, blocked)
-    result = build(kw)
-    monkeypatch.undo()
+    # The block is undone on every exit, including a raising build: pytest itself stats and opens files while it
+    # reports a failure, so a block left in place would abort the session instead of reporting the failure.
+    with monkeypatch.context() as blocked_filesystem:
+        for owner, name in ((builtins, "open"), (os, "open"), (os, "stat"), (os, "lstat"), (os, "scandir")):
+            blocked_filesystem.setattr(owner, name, blocked)
+        result = build(kw)
     assert result["descriptor_sha256"] == sha(result["descriptor_bytes"])
 
 
@@ -304,7 +324,7 @@ CASE_IDS = [f"{i:02d}-{reason}" for i, (reason, _) in enumerate(DOCUMENT_CASES)]
 
 @pytest.mark.parametrize("reason, change", DOCUMENT_CASES, ids=CASE_IDS)
 def test_an_invalid_pin_path_lane_limit_or_shape_refuses_with_a_closed_reason(tmp_path, reason, change):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     change(kw)
     refused(reason, lambda: build(kw))
 
@@ -312,7 +332,7 @@ def test_an_invalid_pin_path_lane_limit_or_shape_refuses_with_a_closed_reason(tm
 @needs_shell
 @pytest.mark.parametrize("reason, change", DOCUMENT_CASES, ids=CASE_IDS)
 def test_the_validator_also_refuses_each_refused_document(tmp_path, reason, change):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     change(kw)
     raw = json.dumps(document(kw), sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     assert validate(tmp_path, raw, kw) == {"ok": False, "reason": "q4_shared_session_config_refused"}
@@ -326,7 +346,7 @@ def test_the_validator_also_refuses_each_refused_document(tmp_path, reason, chan
     lambda kw: kw.update(fleet_bytes=b'{"lanes":[],"lanes":[]}', expected_fleet_sha256=sha(b'{"lanes":[],"lanes":[]}')),
 ], ids=["wrong-pin", "upper-pin", "text-not-bytes", "not-object", "duplicate-key"])
 def test_fleet_bytes_must_match_their_pin_and_parse_strictly(tmp_path, change):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     change(kw)
     refused("fleet_refused", lambda: build(kw))
 
@@ -346,7 +366,7 @@ def _fleet(lanes, tools="codex-tools-1", extra=""):
     _fleet(["codex-lead-1", "claude-rco-1", "claude-rco-2", "codex-tools-1"], tools="fable-5"),
 ], ids=["three-lanes", "wrong-tools", "duplicate-agent", "case-colliding-key", "five-lanes", "swapped-tools"])
 def test_a_fleet_the_validator_refuses_is_refused_before_any_descriptor(tmp_path, raw):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     kw.update(fleet_bytes=raw, expected_fleet_sha256=sha(raw))
     refused("fleet_refused", lambda: build(kw))
     doc = json.dumps(document(kw), sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
@@ -354,7 +374,7 @@ def test_a_fleet_the_validator_refuses_is_refused_before_any_descriptor(tmp_path
 
 
 def test_a_refusal_carries_no_caller_value(tmp_path):
-    kw = kwargs(tmp_path)
+    kw = synthetic_kwargs()
     kw["snapshot_path"] = "relative\\" + SENTINEL
     error = refused("path_refused", lambda: build(kw))
     assert SENTINEL not in repr(error) and SENTINEL not in str(error)

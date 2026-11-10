@@ -1062,3 +1062,85 @@ def test_admission_blocked_after_reservation_attempt_is_unknown(case, monkeypatc
         runner.run_once(**args())
     assert (checkpoint / runner._PENDING).exists() == (stage != 'before_write')
     assert (private / runner._PENDING).exists() == (stage in ('second_marker', 'child'))
+
+
+# Exact raw-byte anchor cases: candidate preparation is not deployment approval.
+_FLEET_COMPAT_ANCHORS = frozenset({
+    'b60bbfd5cfa28bb93053c9b7492378d19c0abb184bd2569398109c50ef24adcb',
+    'bded859e8ae0ffc42c5a56007883d30e0eb4fafd028da7ff8261ae3bbbf9aaf7',
+    '044531f7539741f82abfb1a378429cc9d5938ee87708c136583563e6bf9dc430',
+    '285d51ce240660f0c08859cfbc2636d1f2f944537af9fc1b499c1e6878ad4821',
+})
+_FLEET_CANDIDATE_ANCHORS = {
+    'lf': 'ed6f270b61d4c558bb9e94e8ed3aeb5faf83d69e5fb70d3fe97c62659c6cf402',
+    'crlf': '6ba0f0ea559ed9bd284d0e507cc71ffe01605ecbba168425209575d5eba3f45b',
+}
+_FLEET_GIT_PIN = '81ef35ae005ca9318018d18e3327578ce939fb99feaad6b2d7c8ab15f3de8db5'
+
+
+@pytest.fixture
+def candidate_fleet_bytes(tmp_path):
+    # Copy committed code/configuration into a test-owned input; never read a live fleet.
+    raw = (ROOT / 'ops/windows/reboot/wd-fleet.json').read_bytes().replace(b'\r\n', b'\n')
+    assert sha(raw) == _FLEET_CANDIDATE_ANCHORS['lf']
+    path = tmp_path / 'candidate-fleet.json'
+    path.write_bytes(raw)
+    return path.read_bytes()
+
+
+@pytest.mark.parametrize('form', ['lf', 'crlf'])
+def test_fixed_candidate_fleet_formats_require_exact_hash(runner, candidate_fleet_bytes, form):
+    raw = candidate_fleet_bytes if form == 'lf' else candidate_fleet_bytes.replace(b'\n', b'\r\n')
+    assert sha(raw) == _FLEET_CANDIDATE_ANCHORS[form]
+    assert runner._pinned(raw, sha(raw), runner._FLEET_SHA, limit=1024 * 1024) is None
+
+
+@pytest.mark.parametrize('form', ['lf', 'crlf'])
+def test_compat_fleet_formats_remain_accepted(runner, candidate_fleet_bytes, form):
+    line = ('  "git_sha256": "' + _FLEET_GIT_PIN + '",\n').encode('ascii')
+    assert candidate_fleet_bytes.count(line) == 1
+    raw = candidate_fleet_bytes.replace(line, b'', 1)
+    expected = '044531f7539741f82abfb1a378429cc9d5938ee87708c136583563e6bf9dc430'
+    if form == 'crlf':
+        raw = raw.replace(b'\n', b'\r\n')
+        expected = '285d51ce240660f0c08859cfbc2636d1f2f944537af9fc1b499c1e6878ad4821'
+    assert sha(raw) == expected
+    assert runner._pinned(raw, expected, runner._FLEET_SHA, limit=1024 * 1024) is None
+
+
+def test_fleet_anchor_set_preserves_compat_and_only_named_candidates(runner):
+    assert _FLEET_COMPAT_ANCHORS <= runner._FLEET_SHA
+    assert runner._FLEET_SHA == _FLEET_COMPAT_ANCHORS | set(_FLEET_CANDIDATE_ANCHORS.values())
+
+
+def test_same_roster_with_unlisted_metadata_remains_refused(runner, candidate_fleet_bytes):
+    raw = candidate_fleet_bytes
+    assert runner._pinned(raw, sha(raw), runner._FLEET_SHA, limit=1024 * 1024) is None
+    assert raw.startswith(b'{\n')
+    changed = raw.replace(b'{\n', b'{\n  "synthetic_unapproved": true,\n', 1)
+    before, after = json.loads(raw), json.loads(changed)
+    assert before['lanes'] == after['lanes'] and before['tools_supervisor'] == after['tools_supervisor']
+    assert sha(changed) not in runner._FLEET_SHA
+    with pytest.raises(ValueError):
+        runner._pinned(changed, sha(changed), runner._FLEET_SHA, limit=1024 * 1024)
+
+
+def test_changed_git_pin_with_same_roster_remains_refused(runner, candidate_fleet_bytes):
+    raw = candidate_fleet_bytes
+    assert runner._pinned(raw, sha(raw), runner._FLEET_SHA, limit=1024 * 1024) is None
+    needle = ('"git_sha256": "' + _FLEET_GIT_PIN + '"').encode('ascii')
+    assert raw.count(needle) == 1
+    changed = raw.replace(needle, ('"git_sha256": "' + '0' * 64 + '"').encode('ascii'), 1)
+    before, after = json.loads(raw), json.loads(changed)
+    assert before['lanes'] == after['lanes'] and before['tools_supervisor'] == after['tools_supervisor']
+    assert before['git_sha256'] != after['git_sha256']
+    assert sha(changed) not in runner._FLEET_SHA
+    with pytest.raises(ValueError):
+        runner._pinned(changed, sha(changed), runner._FLEET_SHA, limit=1024 * 1024)
+
+
+def test_wrong_expected_fleet_hash_remains_refused(runner, candidate_fleet_bytes):
+    raw = candidate_fleet_bytes
+    assert runner._pinned(raw, sha(raw), runner._FLEET_SHA, limit=1024 * 1024) is None
+    with pytest.raises(ValueError):
+        runner._pinned(raw, '0' * 64, runner._FLEET_SHA, limit=1024 * 1024)

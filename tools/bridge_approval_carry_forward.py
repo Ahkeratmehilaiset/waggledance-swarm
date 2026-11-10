@@ -71,6 +71,7 @@ _DIFF_FLAGS = (
     "-O" + os.devnull,
 )
 _CONFIG = (
+    "core.longpaths=true",
     "core.autocrlf=false", "core.fsmonitor=false", "core.quotePath=true",
     "core.attributesFile=" + os.devnull, "diff.noprefix=false",
     "diff.mnemonicPrefix=false", "color.ui=false", "diff.external=",
@@ -629,6 +630,157 @@ def _review_basis(value: Any, *, repo: str, pr_number: int, task_id: str,
     return basis
 
 
+def _legacy_repository_context(repo: str) -> dict:
+    """Bind absent legacy repo fields to the anchored fleet's primary repo.
+
+    This is an explicit historical ledger-scope assumption, not a claim that
+    an old voter supplied a repository or a modern basis digest.
+    """
+    authority = _fleet_git_authority()
+    bundle = Path(os.environ["WD_BRIDGE_BUNDLE_ROOT"])
+    raw, _ = _file_bytes(bundle / "wd-fleet.json", 1024 * 1024)
+    _require(hashlib.sha256(raw).hexdigest() == authority[2]["fleet_sha256"],
+             "legacy repository fleet configuration changed")
+    fleet = json.loads(raw.decode("utf-8"), object_pairs_hook=_trusted_paths._pairs,
+                       parse_constant=_trusted_paths._constant)
+    primary, runtime = fleet.get("primary_repo_root"), fleet.get("runtime_root")
+    _require(type(primary) is str and type(runtime) is str and bool(primary) and bool(runtime),
+             "legacy repository context is not configured")
+    primary_path, runtime_path = Path(primary), Path(runtime)
+    _require(primary_path.is_absolute() and runtime_path.is_absolute()
+             and ".." not in primary_path.parts and ".." not in runtime_path.parts,
+             "legacy repository context paths are invalid")
+    _trusted_paths._no_reparse(primary_path)
+    _trusted_paths._no_reparse(runtime_path)
+    inherited = os.environ.get("AGENT_BRIDGE_RUNTIME_ROOT")
+    _require(type(inherited) is str and bool(inherited)
+             and Path(inherited).resolve(strict=True) == runtime_path.resolve(strict=True),
+             "legacy repository runtime does not match anchored fleet")
+    read = _git_reader(primary_path)
+    remote = read("config", "--get", "remote.origin.url").decode("utf-8", "strict").strip()
+    _require(remote.casefold() in {f"https://github.com/{repo}".casefold(),
+                                  f"https://github.com/{repo}.git".casefold(),
+                                  f"git@github.com:{repo}.git".casefold()},
+             "legacy repository does not match configured primary origin")
+    _require(_fleet_git_authority() == authority, "legacy repository authority changed")
+    return dict(kind="anchored_primary_repository", repository=repo,
+                primary_repo_root=str(primary_path), runtime_root=str(runtime_path),
+                remote_origin=remote, fleet_sha256=authority[2]["fleet_sha256"],
+                assumption="Original legacy votes in this canonical bridge ledger refer to the configured primary repository; the votes did not explicitly assert a repository.")
+
+
+def _legacy_review_origin(*, selected: list, registry: dict, author: str, repo_root: Path,
+                          repo: str, pr_number: int, task_id: str, base_ref: str,
+                          old_head: str) -> dict:
+    from waggledance.core.bridge_identity_registry import bridge_identity_binding_status
+
+    _require(bool(selected), "legacy original approvals are missing")
+    voters, bases, needs_context = [], set(), False
+    for event in selected:
+        _require(event.get("agent") != author
+                 and bridge_identity_binding_status(event, registry=registry,
+                     restricted_agents=set(registry)) == "valid"
+                 and event.get("task_id") == task_id, "legacy original voter binding is invalid")
+        fields = event.get("payload")
+        _require(isinstance(fields, Mapping), "legacy original payload is missing")
+        _require("review_basis" not in fields and "review_basis_sha256" not in fields,
+                 "legacy origin cannot downgrade a modern basis")
+
+        def exact(aliases, expected, label):
+            values = [fields[key] for key in aliases if key in fields]
+            _require(bool(values) and all(type(value) is type(expected) and value == expected
+                                         for value in values), "legacy original " + label + " binding is invalid")
+
+        exact(("head", "exact_head", "head_sha"), old_head, "head")
+        exact(("pr", "pr_number"), pr_number, "PR")
+        for key in ("task_id", "canonical_task_id"):
+            _require(key not in fields or fields[key] == task_id, "legacy original task conflicts")
+        for key in ("base_ref",):
+            _require(key not in fields or fields[key] == base_ref, "legacy original base ref conflicts")
+        repo_keys = [key for key in ("repository", "repo") if key in fields]
+        if repo_keys:
+            exact(repo_keys, repo, "repository")
+        else:
+            needs_context = True
+        base_values = [fields[key] for key in ("base", "base_sha") if key in fields]
+        _require(bool(base_values) and all(type(value) is str and _SHA.fullmatch(value)
+                                         and value == base_values[0] for value in base_values),
+                 "legacy original base is missing, malformed or conflicting")
+        bases.add(base_values[0])
+        digests = [(key, fields[key]) for key in (
+            "net_diff_sha256", "raw_text_diff_sha256", "net_text_diff_sha256", "raw_diff_sha256", "diff_sha256") if key in fields]
+        _require(bool(digests) and all(type(value) is str and re.fullmatch(r"[0-9a-fA-F]{64}", value)
+                                      for _, value in digests), "legacy recorded diff digest is missing or malformed")
+        declared = fields.get("diff_recipe")
+        if "diff_recipe" in fields:
+            _require(type(declared) is str and declared in {
+                "canonical_binary_full_index", "wd-reference-diff-merge-base-to-head-v1",
+                *(f"text_abbrev_{width}" for width in range(7, 13))},
+                "legacy declared diff recipe is unsupported")
+        trees = [(key, fields[key]) for key in ("tree", "tree_sha") if key in fields]
+        _require(all(type(value) is str and _SHA.fullmatch(value) for _, value in trees),
+                 "legacy original tree binding is malformed")
+        voters.append(dict(recorded_recipe=declared, recorded_trees=trees,
+                           agent=event["agent"], event_sha256=_canonical_sha(event),
+                           base_sha=base_values[0], head=old_head, task_id=task_id,
+                           pr_number=pr_number, repository=repo,
+                           repository_binding="own_field" if repo_keys else "configured_ledger_context",
+                           digests=digests))
+    _require(len(bases) == 1 and len({v["agent"] for v in voters}) == len(voters),
+             "legacy voters disagree on original base or duplicate identities")
+    context = (_legacy_repository_context(repo) if needs_context else
+               dict(kind="per_voter_repository", repository=repo, assumption=None))
+    base = next(iter(bases))
+    read = _git_reader(repo_root)
+    _require(read("cat-file", "-t", base).strip() == b"commit", "legacy original base is not a commit")
+    try:
+        read("merge-base", "--is-ancestor", base, old_head)
+    except ValueError as exc:
+        raise ValueError("legacy original base must be an ancestor of approved head") from exc
+    head_tree = read("rev-parse", "--verify", old_head + "^{tree}").strip().decode("ascii", "strict")
+    _require(_SHA.fullmatch(head_tree) is not None, "legacy approved tree is invalid")
+    for voter in voters:
+        trees = voter.pop("recorded_trees")
+        _require(all(value == head_tree for _, value in trees), "legacy original tree does not match approved head")
+        voter["tree_checks"] = [dict(field=field, recorded_sha=value, head_tree_sha=head_tree)
+                                for field, value in trees]
+    proof = derive_content_identity(repo_root=repo_root, old_base=base, old_head=old_head,
+                                    new_base=base, new_head=old_head)
+    recipes = [("canonical_binary_full_index", _DIFF_FLAGS)]
+    text_flags = tuple(flag for flag in _DIFF_FLAGS if flag not in {"--binary", "--full-index"})
+    recipes += [(f"text_abbrev_{width}", (*text_flags, "--text", f"--abbrev={width}"))
+                for width in range(7, 13)]
+    # The independent reference recipe uses the indent heuristic. All other
+    # fixed settings stay explicit; receipt argv records the actual command.
+    recipes.append(("wd-reference-diff-merge-base-to-head-v1", tuple(
+        "--indent-heuristic" if flag == "--no-indent-heuristic" else flag for flag in _DIFF_FLAGS)))
+    measured = []
+    for name, flags in recipes:
+        raw = read("diff", *flags, base, old_head, "--")
+        measured.append((name, hashlib.sha256(raw).hexdigest(), dict(
+            recipe=name, argv=[*read.git_prefix, "diff", *flags, base, old_head, "--"], bytes=len(raw))))
+    for voter in voters:
+        declared = voter.pop("recorded_recipe")
+        checks = []
+        for field, value in voter.pop("digests"):
+            matches = [evidence for name, digest, evidence in measured
+                       if digest == value.lower() and (declared is None or name == declared)]
+            _require(bool(matches), "legacy recorded diff does not reproduce under its supported recipe")
+            checks.append(dict(field=field, recorded_sha256=value, **matches[0]))
+        voter["digest_checks"] = checks
+    _require(_fleet_git_authority() == read.authority, "legacy Git authority changed during derivation")
+    basis = dict(schema="wd.bridge-reviewed-basis.v1", repository=repo, pr_number=pr_number,
+                 task_id=task_id, base_ref=base_ref, head=old_head, base_sha=base,
+                 merge_base=proof["old_merge_base"], diff_sha256=proof["old_diff_sha256"],
+                 patch_id=proof["old_patch_id"])
+    return dict(schema="wd.bridge-bound-review-origin.v1", mode="legacy_tuple_rederived",
+                review_basis=basis, derived_basis_sha256=_canonical_sha(basis),
+                approval_event_sha256=[v["event_sha256"] for v in voters], legacy_voters=voters,
+                ancestor_verified=True, repository_binding=context,
+                authentication="canonical_registered_identity_binding",
+                provenance="Base/head and recorded digests come from each original vote; the canonical basis digest is derived now, never an original voter commitment.")
+
+
 def _bound_review_origin(*, request: Mapping, selected: list, events: list, registry: dict,
                          author: str, repo_root: Path, repo: str, pr_number: int,
                          task_id: str, base_ref: str, old_head: str) -> dict:
@@ -637,6 +789,13 @@ def _bound_review_origin(*, request: Mapping, selected: list, events: list, regi
     parse = lambda value: _review_basis(value, repo=repo, pr_number=pr_number, task_id=task_id,
                                         base_ref=base_ref, old_head=old_head)
     if binding_ref is None:
+        modern = any(isinstance(event.get("payload"), Mapping) and
+                     ("review_basis" in event["payload"] or "review_basis_sha256" in event["payload"])
+                     for event in selected)
+        if not modern:
+            return _legacy_review_origin(selected=selected, registry=registry, author=author,
+                repo_root=repo_root, repo=repo, pr_number=pr_number, task_id=task_id,
+                base_ref=base_ref, old_head=old_head)
         bases = []
         for event in selected:
             payload = event.get("payload")

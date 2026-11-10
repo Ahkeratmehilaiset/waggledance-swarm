@@ -143,13 +143,56 @@ not a Rule 12 adapter, an operator signature, or a Rule 10 authorization.
 
 The canonical accepted queue must be complete. The adapter reads the full
 ledger, resolves the PR author, registry identities and original non-author
-approvals, and preserves the existing build-author waiver. Every selected
-original voter must have committed to the same `wd.bridge-reviewed-basis.v1`
+approvals, and preserves the existing build-author waiver. For modern votes,
+every selected original voter must have committed to the same `wd.bridge-reviewed-basis.v1`
 digest: repository, PR, canonical task, base ref, approved head, original base,
 original unique merge-base, raw diff SHA256 and stable patch-id. A later Lead
-assertion cannot manufacture another voter's commitment. Old votes without
-this evidence refuse carry for that head; fresh exact-head review remains
-available.
+assertion cannot manufacture another voter's commitment. A present modern
+basis or digest selects this strict path for the entire approval set: a
+malformed or mixed set never downgrades into the legacy path below.
+
+Legacy votes can use `legacy_tuple_rederived` only when **every selected
+original non-author voter** has its own registry-bound canonical event with
+the same full 40-hex base and approved head, exact integer PR and canonical
+task. Missing, abbreviated, conflicting or non-commit bases refuse; no
+current target tip, merge parent, other voter or later descriptor fills them.
+This bounded form additionally requires that the original base is an ancestor
+of the approved head. The original review base is never inferred.
+
+Explicit repository fields must match the live PR repository. When an old
+vote lacks that field, the manifest-anchored fleet must name an absolute
+primary repository and the same runtime root inherited by the reader; its
+Git origin must match the requested repository. The receipt states the
+historical assumption that this canonical ledger's legacy votes concern that
+configured primary repository. Missing or mismatched configuration refuses.
+
+Each legacy voter must also bind at least one recorded diff SHA256. Every
+recorded digest must reproduce exactly using a closed recipe: the canonical
+binary/full-index flags, the fixed independent reference recipe
+`wd-reference-diff-merge-base-to-head-v1` with its indent heuristic, or the same
+fixed diff settings with text output and an explicit abbreviation width from
+7 through 12. `raw_diff_sha256` and the historical net/text digest fields use
+the same validation. An explicit `diff_recipe` must name a supported recipe
+and its digest must reproduce under that recipe; unknown, malformed or
+contradictory declarations refuse. Unlabelled historical hashes use only the
+closed recipe set. Any present `tree` or `tree_sha` must be a full hash of the
+approved commit's actual tree; malformed, conflicting or different bindings
+refuse. An absent tree is not invented as an original voter field.
+The receipt records each
+matching argv, byte count, field and digest. Abbreviation can vary with Git's
+object inventory; it is not a substitute for content equality. The canonical
+old and new raw bytes, stable patch-id and path/mode/blob identities must still
+match through the anchored reader, and all current CI, queue, identity, author,
+veto and MAGMA rederivation checks remain unchanged.
+
+The legacy receipt records original event references, bound base/head/task,
+repository context, ancestor check and `derived_basis_sha256`. This is
+a recomputation from original voter bindings; it never creates or claims an
+original `review_basis_sha256`, edits an old event or emits a new vote.
+Fresh exact-head review remains available when any legacy input is unknown.
+`core.longpaths=true` is explicit in the isolated Git command configuration;
+it does not enable inherited external configuration or remove the Windows
+CreateProcess working-directory limit for still longer roots.
 
 The basis can be present on each original vote, or supplied by an immutable
 `wd.bridge-review-snapshot.v1` descriptor referenced by an accepted original

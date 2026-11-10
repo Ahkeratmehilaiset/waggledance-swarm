@@ -1114,6 +1114,152 @@ def test_pure_carry_evidence_callers_are_reviewed():
     assert found == allowed, (found - allowed, allowed - found)
 
 
+def _legacy_tuple_votes(context, *, repository=True):
+    """Synthetic original voter attestations, not backfilled modern digests."""
+    from waggledance.core.bridge_identity_registry import load_bridge_identity_registry
+    second_rco = copy.deepcopy(context["events"][-1])
+    second_rco.update(agent="claude-rco-2", agent_uuid=load_bridge_identity_registry()["claude-rco-2"],
+                      ts_utc="2026-11-09T01:04:00Z")
+    context["events"].append(second_rco)
+    base, head = context["pair"]["old_base"], context["pair"]["old_head"]
+    raw = context["git"]("diff", "--no-color", "--no-ext-diff", "--no-textconv",
+                         "--text", "--abbrev=8", base, head)
+    for event in context["events"][1:]:
+        payload = event["payload"]
+        payload.pop("review_basis", None)
+        payload.pop("review_basis_sha256", None)
+        payload.update(base=base, net_diff_sha256=hashlib.sha256(raw).hexdigest())
+        if repository:
+            payload["repository"] = context["repo"]
+    return context
+
+
+def _legacy_configured_repository(context, pinned_fleet, monkeypatch):
+    bundle, _ = pinned_fleet
+    fleet = json.loads((bundle / "wd-fleet.json").read_text())
+    runtime = bundle / "runtime"
+    runtime.mkdir()
+    fleet.update(primary_repo_root=str(context["root"]), runtime_root=str(runtime))
+    raw = json.dumps(fleet).encode()
+    (bundle / "wd-fleet.json").write_bytes(raw)
+    manifest = json.loads((bundle / "deployment-manifest.json").read_text())
+    manifest["files"]["wd-fleet.json"] = hashlib.sha256(raw).hexdigest()
+    data = json.dumps(manifest).encode()
+    (bundle / "deployment-manifest.json").write_bytes(data)
+    monkeypatch.setenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", hashlib.sha256(data).hexdigest())
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(runtime))
+
+
+@pytest.mark.parametrize("repository", [True, False])
+def test_legacy_tuple_live_origin_is_rederived_and_receipt_verified(live_factory, pinned_fleet, monkeypatch, repository):
+    c = _legacy_tuple_votes(live_factory, repository=repository)
+    if not repository:
+        _legacy_configured_repository(c, pinned_fleet, monkeypatch)
+    result = _run_live_factory(c)
+    assert result["carry"] is True, result
+    origin = result["review_origin"]
+    assert origin["mode"] == "legacy_tuple_rederived"
+    assert origin["review_basis"] == c["basis"]
+    assert origin["ancestor_verified"] is True
+    assert len(origin["legacy_voters"]) == len(result["carried"])
+    assert all(v["digest_checks"][0]["recipe"] == "text_abbrev_8" for v in origin["legacy_voters"])
+    assert all("review_basis_sha256" not in e["payload"] for e in c["events"][1:])
+    material = _api().carry_forward_receipt_material(result)
+    verified = _api().verify_live_carry_forward_receipt(
+        material=material, request=c["request"], events_path=c["events_path"], repo=c["repo"],
+        pr_number=c["pr"], task_id=c["task"], expected_head=c["pair"]["new_head"],
+        expected_base_sha=c["pair"]["new_base"], runner=c["runner"],
+        accepted_queue_checker=lambda **_: dict(ok=True, complete=True))
+    assert verified["ok"] is True, verified
+    if not repository:
+        assert origin["repository_binding"]["assumption"]
+
+
+@pytest.mark.parametrize("fault", [
+    "missing_base", "short_base", "bool_base", "base_alias_conflict", "different_base",
+    "missing_head", "head_alias_conflict", "wrong_repo", "bool_pr", "missing_pr", "wrong_task",
+    "missing_digest", "wrong_digest", "digest_alias_conflict", "noncommit_base",
+    "unlisted_recipe", "foreign_identity", "author_vote", "mixed_modern", "malformed_modern",
+])
+def test_legacy_tuple_origin_refuses_each_binding_fault(live_factory, fault):
+    c = _legacy_tuple_votes(live_factory)
+    e = c["events"][1]
+    p = e["payload"]
+    if fault == "missing_base": p.pop("base")
+    elif fault == "short_base": p["base"] = p["base"][:8]
+    elif fault == "bool_base": p["base"] = True
+    elif fault == "base_alias_conflict": p["base_sha"] = "f" * 40
+    elif fault == "different_base": p["base"] = c["pair"]["old_head"]
+    elif fault == "missing_head": p.pop("head"); p.pop("exact_head")
+    elif fault == "head_alias_conflict": p["exact_head"] = "f" * 40
+    elif fault == "wrong_repo": p["repository"] = "other/repo"
+    elif fault == "bool_pr": p["pr"] = True
+    elif fault == "missing_pr": p.pop("pr")
+    elif fault == "wrong_task": e["task_id"] = "other/task"
+    elif fault == "missing_digest": p.pop("net_diff_sha256")
+    elif fault == "wrong_digest": p["net_diff_sha256"] = "f" * 64
+    elif fault == "digest_alias_conflict": p["raw_text_diff_sha256"] = "f" * 64
+    elif fault == "noncommit_base":
+        tree = c["git"]("rev-parse", c["pair"]["old_base"] + "^{tree}").decode().strip()
+        for vote in c["events"][1:]: vote["payload"]["base"] = tree
+    elif fault == "unlisted_recipe":
+        raw = c["git"]("diff", "--no-color", "--text", "--src-prefix=unlisted/", c["pair"]["old_base"], c["pair"]["old_head"])
+        p["net_diff_sha256"] = hashlib.sha256(raw).hexdigest()
+    elif fault == "foreign_identity": e["agent_uuid"] = "foreign"
+    elif fault == "author_vote": e["agent"] = "fable-5"
+    elif fault == "mixed_modern": p.update(review_basis=c["basis"], review_basis_sha256=_event_hash(c["basis"]))
+    else: p["review_basis"] = None
+    result = _run_live_factory(c)
+    assert result["carry"] is False, (fault, result)
+
+
+@pytest.mark.parametrize("fault", ["other_tree", "bool_tree", "tree_alias_conflict", "short_tree"])
+def test_legacy_tuple_bound_tree_must_match_commit(live_factory, fault):
+    c = _legacy_tuple_votes(live_factory)
+    clean = _run_live_factory(c)
+    assert clean["carry"] is True, clean
+    fields = c["events"][1]["payload"]
+    tree = c["git"]("rev-parse", c["pair"]["old_head"] + "^{tree}").decode().strip()
+    if fault == "other_tree":
+        fields["tree"] = c["git"]("rev-parse", c["pair"]["old_base"] + "^{tree}").decode().strip()
+        assert fields["tree"] != tree
+    elif fault == "bool_tree":
+        fields["tree"] = True
+    elif fault == "tree_alias_conflict":
+        fields.update(tree=tree, tree_sha="f" * 40)
+    else:
+        fields["tree"] = tree[:8]
+    refused = _run_live_factory(c)
+    assert refused["carry"] is False, (fault, refused)
+
+
+@pytest.mark.parametrize("fault", ["missing_config", "wrong_origin", "wrong_runtime"])
+def test_legacy_tuple_absent_repository_requires_anchored_context(live_factory, pinned_fleet, monkeypatch, fault):
+    c = _legacy_tuple_votes(live_factory, repository=False)
+    if fault != "missing_config":
+        _legacy_configured_repository(c, pinned_fleet, monkeypatch)
+    if fault == "wrong_origin": c["git"]("remote", "set-url", "origin", "https://github.com/other/repo.git")
+    elif fault == "wrong_runtime": monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(c["root"]))
+    assert _run_live_factory(c)["carry"] is False
+
+
+@pytest.mark.parametrize("fault", ["veto", "ci_failed", "whitespace"])
+def test_legacy_tuple_keeps_veto_ci_and_raw_bytes_required(live_factory, fault):
+    c = _legacy_tuple_votes(live_factory)
+    if fault == "ci_failed": c["fault"] = "ci_failed"
+    elif fault == "veto":
+        event = copy.deepcopy(c["events"][-1])
+        event.update(status="changes_requested", ts_utc="2026-11-09T01:20:00Z")
+        c["events"].append(event)
+    else:
+        target = c["root"] / c["path"]
+        target.write_bytes(b"alpha  gamma\n")
+        c["git"]("add", c["path"])
+        c["git"]("commit", "--quiet", "-m", "whitespace changes raw content")
+        c["pair"]["new_head"] = c["git"]("rev-parse", "HEAD").decode().strip()
+    assert _run_live_factory(c)["carry"] is False
+
+
 @pytest.mark.parametrize("relative,source,target", [
     ("tools/probe.py", "module.verify_carry_forward_receipt({}, {})", "verify_carry_forward_receipt"),
     ("tools/probe.py", "callback = module.verify_carry_forward_receipt", "verify_carry_forward_receipt"),

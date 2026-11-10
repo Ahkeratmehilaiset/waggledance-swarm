@@ -179,8 +179,8 @@ def _read(path_value, limit, expected):
     info = path.stat()
     _check(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= limit)
     with path.open("rb") as stream:
-        raw = stream.read(limit + 1)
-    _check(type(raw) is bytes and 0 < len(raw) <= limit)
+        raw = stream.read(info.st_size + 1)
+    _check(type(raw) is bytes and 0 < len(raw) <= limit and len(raw) == info.st_size)
     _same_digest(raw, pin)
     return raw
 

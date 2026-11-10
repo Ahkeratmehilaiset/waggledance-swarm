@@ -134,6 +134,70 @@ function Add-InventoryConflict {
     $script:conflictChars+=$size
     $conflicts.Add($entry)
 }
+# Reviewed historical immutable-ID conflicts, not an ID-only exemption. Each own codex-lead-1 request ID
+# below was published twice with different immutable content (append-only log, so the conflict is
+# permanent). A pinned pair is set aside only when EXACTLY its two rows are present, in this order, and
+# each row reproduces its full-event reference AND its stored and recomputed request digest. Any third,
+# repeated, missing, changed, reordered or foreign row still fails closed. The rows never enter requests,
+# sessions, cursors or successor views; no answer is inferred. Default mode only: -DiagnosticPartial
+# still lists them as conflicts. A new conflict is never added here without its own review.
+$historicalPins=[ordered]@{
+    'lead-mind-shared-index-fable-20261031-v2'=@(
+        @('24ad958a518d4d0aaac3ffbc8bf30c9fc14e96b9f421bafde2b2a346f7c45db5','3dd19b718f1829753c8cd86aee754eddc2ca8f10924aa590446c91a919123058'),
+        @('112488f88756d98430d7eb71c76fdccdec356b063ed10f29954c855230ea7e21','43e076ce3d49dd07ae4b9f76c4828878508e87211fac02430d097bbc0a5b3c45'))
+    'lead-postboot-mind-capacity-lens-fix-20261106-v1'=@(
+        @('2bac460a4dee943917fc306b1a06a130e9e9a0f0807c1ab6e6e30eca11935f3b','2063b0bc055fc85cbd6c76e8b378e4a4fcbd8c19a50e88501776a2179b331433'),
+        @('361260e109e587ba24a53bf4773f05560c9b27a83b3126d658ac8c02d037141d','fccb03c43168abda8170438e172edc0b7e7db22d9b2c83efde7b09dc576ed76d'))
+    'lead-mind-cell-age-review-rco2-20261110-v1'=@(
+        @('30f6a39fadca963de7e4497900c78df6226f6ad308b27cb504512fe92758e8d7','3d3659f54b1a1a06ff2f228ff797529a51c9a2706b869d7c940bc564d5ab3a35'),
+        @('0ce713e5d2a073fe5523f333f3d04d8f2cafad5e77d863d21bf5db83020071ca','f5c3e3ab2f3242dd83adef1d9f866dc28ebd18ebd7a0e6bbbde9bc98c64449d7'))
+}
+$historicalRows=[ordered]@{}
+foreach ($historicalId in $historicalPins.Keys) { $historicalRows[$historicalId]=[Collections.Generic.List[object]]::new() }
+$historicalConflicts=[Collections.Generic.List[object]]::new()
+function ConvertTo-InventoryReferenceJson {
+    # Event refs use bridge_compact_view.event_id: ordinal keys, UTF-8 JSON,
+    # unescaped Unicode/HTML punctuation. The request digest has its separate
+    # existing Get-BridgeRequestContent serialization and is checked below.
+    param($Value)
+    if ($null -eq $Value) { return 'null' }
+    if ($Value -is [string]) {
+        $text=New-Object Text.StringBuilder
+        [void]$text.Append('"')
+        foreach ($character in $Value.ToCharArray()) {
+            switch ([int]$character) {
+                34 { [void]$text.Append('\"'); break }
+                92 { [void]$text.Append('\\'); break }
+                8 { [void]$text.Append('\b'); break }
+                12 { [void]$text.Append('\f'); break }
+                10 { [void]$text.Append('\n'); break }
+                13 { [void]$text.Append('\r'); break }
+                9 { [void]$text.Append('\t'); break }
+                default {
+                    if ([int]$character -lt 32) { [void]$text.Append(('\u{0:x4}' -f [int]$character)) }
+                    else { [void]$text.Append($character) }
+                }
+            }
+        }
+        [void]$text.Append('"'); return $text.ToString()
+    }
+    if ($Value -is [bool]) { return $Value.ToString().ToLowerInvariant() }
+    if ($Value -is [int] -or $Value -is [long]) { return $Value.ToString([Globalization.CultureInfo]::InvariantCulture) }
+    if ($Value -is [Collections.IDictionary] -or $Value -is [pscustomobject]) {
+        [string[]]$names=if ($Value -is [Collections.IDictionary]) { @($Value.Keys) } else { @($Value.PSObject.Properties.Name) }
+        [Array]::Sort($names,[StringComparer]::Ordinal)
+        $parts=@(foreach ($name in $names) {
+            if ($Value -is [Collections.IDictionary]) { $item=$Value[$name] }
+            else { $item=$Value.PSObject.Properties[$name].Value }
+            (ConvertTo-InventoryReferenceJson $name)+':'+(ConvertTo-InventoryReferenceJson $item)
+        })
+        return '{'+($parts -join ',')+'}'
+    }
+    if ($Value -is [Collections.IEnumerable]) {
+        return '['+(@(foreach ($item in $Value) { ConvertTo-InventoryReferenceJson $item }) -join ',')+']'
+    }
+    throw 'Historical conflict reference contains an unsupported value type'
+}
 for ($position=0; $position -lt $rows.Count; $position++) {
     $event=$rows[$position]
     $id=Get-BridgeContractField $event 'request_id'
@@ -160,6 +224,10 @@ for ($position=0; $position -lt $rows.Count; $position++) {
             -Kind (Get-InventoryBindingKind $event 'request_id' 'request_id_binding_conflict' 'malformed_request_id')
         continue
     }
+    if (-not $DiagnosticPartial -and $Agent -ceq 'codex-lead-1' -and $historicalPins.Contains($id)) {
+        $historicalRows[$id].Add([pscustomobject]@{position=$position;event=$event})
+        continue   # never enter a request, session, cursor or successor inventory
+    }
     if (-not $byId.ContainsKey($id)) {
         $byId[$id]=[pscustomobject]@{first_position=$position;occurrences=1;event=$event}
         $order.Add($id)
@@ -175,6 +243,30 @@ for ($position=0; $position -lt $rows.Count; $position++) {
         continue
     }
     $first.occurrences++
+}
+foreach ($historicalId in $historicalPins.Keys) {
+    $found=$historicalRows[$historicalId]
+    if ($found.Count -eq 0) { continue }   # this log has no row of that pair (another runtime)
+    $pins=$historicalPins[$historicalId]
+    # Exact row count first: a byte-identical re-append of one pinned row is a third row, never a match.
+    if ($found.Count -ne $pins.Count) {
+        throw "Conflicting content for immutable request ID $historicalId; historical pair does not match (row count)"
+    }
+    for ($index=0; $index -lt $pins.Count; $index++) {
+        $event=$found[$index].event
+        $ref=(Get-BridgeReplyTextHash (ConvertTo-InventoryReferenceJson $event)).ToLowerInvariant()
+        if ($ref -cne $pins[$index][0] -or
+            (Get-BridgeContractField $event 'request_digest') -cne $pins[$index][1] -or
+            (Get-BridgeReplyTextHash (Get-BridgeRequestContent $event)).ToLowerInvariant() -cne $pins[$index][1]) {
+            throw "Conflicting content for immutable request ID $historicalId; historical pair does not match"
+        }
+    }
+    $historicalConflicts.Add([pscustomobject][ordered]@{
+        kind='known_historical_immutable_id_conflict'; request_id=$historicalId
+        event_refs=@($pins | ForEach-Object { $_[0] }); request_digests=@($pins | ForEach-Object { $_[1] })
+        indexed_positions=@($found | ForEach-Object { $_.position })
+        answer_state='not_evaluated'; authority_effect='none'
+    })
 }
 # -SessionId scopes the OUTPUT only. Every own row of every session went through the binding and
 # immutable-content checks above, so a session filter can never hide a conflicting row with the same
@@ -280,6 +372,11 @@ $output=[pscustomobject]@{
     answer_authority='Get-BridgeReplySnapshot.ps1 -RequestId <id> -Requester <requester>'
     note='Discovery only; answer_state never evaluated. HOLD/cancel/finding controls are separate. Re-read after append.'
     authority_effect='none'
+}
+if (-not $DiagnosticPartial) {
+    # Always present in the default v2 output, empty when no pinned pair is in this log, so a consumer
+    # that reads requests as complete can always see which reviewed IDs were set aside, never inventoried.
+    $output | Add-Member NoteProperty historical_conflicts @($historicalConflicts)
 }
 if ($DiagnosticPartial) {
     # A DIFFERENT typed schema, so no v2 consumer can mistake it for a complete inventory.

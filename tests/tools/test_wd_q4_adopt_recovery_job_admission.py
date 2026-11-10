@@ -21,7 +21,15 @@ def test_runner_rejects_job_pending_before_reservation(case, monkeypatch):
     runner, args, _, shared, private, _ = case
     marker=private/JOB; marker.write_bytes(b'synthetic pending')
     calls=[]; fake_child(monkeypatch, lambda **kw: calls.append(kw) or child_report())
+    original=prefix_private_state._checkpoint_lock; stages=[]
+    @contextmanager
+    def observe_lock(root, timeout):
+        with original(root, timeout):
+            stages.append('entered')
+            yield
+    monkeypatch.setattr(prefix_private_state, '_checkpoint_lock', observe_lock)
     with pytest.raises(runner.StatusRunnerRefused): runner.run_once(**args())
+    assert stages == ['entered']
     assert not calls and marker.read_bytes()==b'synthetic pending'
     assert not (private/runner._PENDING).exists() and not (shared/runner._PENDING).exists()
 

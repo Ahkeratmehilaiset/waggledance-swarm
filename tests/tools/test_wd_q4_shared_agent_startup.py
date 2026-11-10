@@ -1053,6 +1053,24 @@ def test_content_delivery_refuses_every_malformed_or_mismatched_envelope(tmp_pat
     assert_refused(fx, record)
 
 
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("case", ["malformed_doc_id", "too_many_items", "boolean_count", "float_count"])
+def test_content_delivery_refuses_invalid_identifiers_and_counts_on_each_host(tmp_path, shell, case):
+    envelope = delivery_envelope("codex-lead-1")
+    answer = envelope["answer"]
+    if case == "malformed_doc_id":
+        answer["results"][0]["doc_id_sha256"] = "z" * 64
+    elif case == "too_many_items":
+        answer["results"] = answer["results"] * 101
+        answer["result_count"] = 101
+    elif case == "boolean_count":
+        answer["result_count"] = True
+    else:
+        answer["result_count"] = 1.0
+    fx, record = run_delivery(tmp_path, "codex-lead-1", envelope, shell=shell)
+    assert_refused(fx, record)
+
+
 @pytest.mark.parametrize("case", ["tampered_text", "malformed_digest", "upper_digest"])
 def test_content_delivery_refuses_an_answer_digest_that_does_not_bind_the_delivered_bytes(tmp_path, case):
     envelope = delivery_envelope("claude-rco-2")

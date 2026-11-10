@@ -415,8 +415,17 @@ function Invoke-WdQ4StartupMindRead {
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     foreach ($name in @($childEnvironment.Keys)) { $start.EnvironmentVariables[$name] = [string]$childEnvironment[$name] }
-    $query = [Text.Encoding]::ASCII.GetBytes('{"situation":"' + $Lane +
-      ' startup read: own current task, last bound reply, operator directive of the day","time":"' +
+    # Review lanes: their authored and addressed rows never enter the projection, so the own-task form (which the
+    # engine and the caller adapter bind to the asking lane) would always abstain for them. They ask one fixed
+    # non-own-task question instead; build-lane question bytes are unchanged and no filter or check changes.
+    # The list is the full recognized RCO set (parity-pinned); claude-rco-3 is not a Mind lane and is refused by
+    # the shared session config before this read, so only claude-rco-1 and claude-rco-2 reach it today.
+    $situation = if (@('claude-rco-1', 'claude-rco-2', 'claude-rco-3') -ccontains $Lane) {
+      ' startup read: build-lane work in progress, last bound replies, operator directive of the day'
+    } else {
+      ' startup read: own current task, last bound reply, operator directive of the day'
+    }
+    $query = [Text.Encoding]::ASCII.GetBytes('{"situation":"' + $Lane + $situation + '","time":"' +
       [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ') + '"}')
     $process = $null
     # One wall-clock deadline over the complete operation: the start, the stdin write, the exit wait and the

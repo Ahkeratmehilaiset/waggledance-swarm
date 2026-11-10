@@ -466,41 +466,42 @@ def test_withheld_content_metadata_is_strict_and_never_delivered(tmp_path, mode)
 
 @pytest.mark.parametrize("mutation", ["none", "authority"])
 @_WINDOWS_HELPER_LAUNCH
-def test_real_producer_withheld_bytes_reach_startup_parser_without_text(tmp_path, mutation):
+def test_real_producer_content_bytes_reach_startup_parser_without_logging(tmp_path, mutation, lane):
     from tools import wd_q4_lane_caller_cli as producer
-    from tests.tools.test_wd_q4_ondemand_freshness_20261109 import result
-    lane = "codex-tools-1"
-    descriptor = json.dumps({"schema": "wd.q4-shared-session-config.v2", "expected_binding": CONTENT_BINDING}).encode()
-    descriptor_pin = hashlib.sha256(descriptor).hexdigest()
-    value = result(text="SYNTHETIC-PRODUCER-SECRET")
-    value["lane"] = value["answer"]["lane"] = lane
-    value["descriptor_sha256"] = descriptor_pin
-    value["answer"]["binding"] = dict(CONTENT_BINDING)
-    value["answer_sha256"] = hashlib.sha256(producer._canon(value["answer"])).hexdigest()
-    raw = producer._output(value, lane, value["identity_sha256"], descriptor_pin,
-                           CONTENT_BINDING, 65536, "synthetic-owner-token").encode("ascii")
-    assert b'"schema":"wd.q4-lane-content-withheld.v1"' in raw
-    assert b"SYNTHETIC-PRODUCER-SECRET" not in raw
+    from tools import wd_q4_lane_query
+    # Parent re-derivation and screening use only the existing synthetic sources,
+    # deterministic encoder and in-process transport; no live materializer runs.
+    answer = wd_q4_lane_query.query_public(**dict(lane["call"], lane="codex-tools-1"))
+    assert answer["status"] == "ANSWER" and answer["results"]
+    fx = startup_read_fixture(tmp_path, "codex-tools-1", mode="producer_bytes", binding=answer["binding"])
+    value = _content_delivery_packet(fx["descriptor_pin"])
+    value["answer"] = answer
+    value["answer_sha256"] = hashlib.sha256(producer._canon(answer)).hexdigest()
+    result = {key: value[key] for key in ("lane","lane_binding","lane_authentication","cleanup",
+               "identity_sha256","descriptor_sha256","call_id","answer_sha256","answer")}
+    result.update(schema="wd.q4-lane-caller-result.v1", status="VALIDATED", inner_status="ANSWER", result_count=answer["result_count"])
+    raw = producer._output(result, "codex-tools-1", value["identity_sha256"], fx["descriptor_pin"], answer["binding"], 65536, "synthetic-owner-token")
+    delivery = json.loads(raw)
+    assert delivery["schema"] == "wd.q4-lane-content-delivery.v1"
     if mutation == "authority":
-        assert raw.count(b'"authority":"none"') == 1
-        raw = raw.replace(b'"authority":"none"', b'"authority":"root"')
-    fx = startup_read_fixture(tmp_path, lane, mode="producer_bytes", producer_bytes=raw)
-    script = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
-    script += "\n$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n" + startup_read_call(fx, lane)
-    record = json.loads(_run_powershell(script).stdout.strip())
+        # An invented authority field must refuse, even when all pins still match.
+        delivery["authority"] = "root"
+        raw = producer._canon(delivery).decode("ascii") + "\n"
+    (fx["bundle"] / "producer-response.bin").write_bytes(raw.encode("ascii"))
+    fx["env_prelude"] += "\n$env:AGENT_BRIDGE_OWNER_TOKEN='synthetic-owner-token'\n$env:AGENT_BRIDGE_AGENT='codex-tools-1'"
+    observed = _content_observation(fx, LANE_TEST_SHELLS[0])
     if mutation == "none":
-        assert record["outcome"] == "unknown" and record["reason"] == "freshness_unverified"
-        assert record["refs"] == ["b" * 64] and record["answer_sha256"] == value["answer_sha256"]
-        assert record["result_count"] == 1 and record["inner_status"] == "ANSWER"
-        assert "caller-reported" in record["note"]
+        assert observed["outcome"] == "success" and observed["record_written"] is True
+        assert observed["has_freshness"] and observed["has_age"]
+        assert observed["refs"] == [item["ref_sha256"] for item in answer["results"]]
+        assert observed["delivered_items"] == answer["result_count"]
+        assert observed["delivered_sha256"] == observed["text_sha256"]
     else:
-        assert record["outcome"] == "refused" and record["reason"] == "result_shape"
-        assert record["refs"] == [] and record["answer_sha256"] == ""
-    assert record["delivered_text"] == "" and record["delivered_items"] == 0
-    assert record["delivered_chars"] == 0 and record["delivered_sha256"] == ""
+        assert observed["outcome"] == "refused" and observed["reason"] == "result_shape"
+        assert observed["text_length"] == observed["delivered_items"] == observed["delivered_chars"] == 0
+        assert observed["refs"] == [] and observed["answer_sha256"] == observed["delivered_sha256"] == ""
     stored = fx["record"].read_text(encoding="ascii")
-    assert "SYNTHETIC-PRODUCER-SECRET" not in stored
-    assert_no_secret(stored)
+    assert all(item["stored_text"] not in stored for item in answer["results"])
 
 
 def test_startup_record_note_shape_is_stable_across_outcomes(tmp_path):
@@ -810,3 +811,187 @@ def test_startup_delivery_guard_is_strict_mode_safe(tmp_path, case):
     observed = json.loads(result.stdout)
     assert observed["present"] is (case == "success")
     assert observed["value"] == (record["delivered_text"] if case == "success" else None)
+
+# Closed content-delivery envelope: synthetic text never enters test diagnostics.
+def _content_delivery_packet(descriptor_pin, *, text="SYNTHETIC-CONTENT-MARKER"):
+    answer = {
+        "schema": "wd.q4-lane-answer.v1", "lane": "codex-tools-1",
+        "status": "ANSWER", "reason": "", "result_count": 1,
+        "results": [{"stored_text": text, "ref_sha256": "a" * 64, "doc_id_sha256": "b" * 64}],
+        "binding": dict(CONTENT_BINDING),
+        "trust": {"lane_authentication": "UNKNOWN", "freshness": "UNKNOWN",
+                  "publisher_authentication": "UNKNOWN", "projection_public_attestation": "UNKNOWN",
+                  "transport": "caller_injected", "projection": "caller_pinned"},
+    }
+    return {
+        "schema": "wd.q4-lane-content-delivery.v1", "freshness": "UNKNOWN",
+        "index_age": {"status": "UNKNOWN", "seconds": None},
+        "lane": "codex-tools-1", "lane_binding": "DECLARED_CONSISTENT",
+        "lane_authentication": "UNKNOWN", "cleanup": "chain_confirmed",
+        "identity_sha256": "9" * 64, "descriptor_sha256": descriptor_pin,
+        "call_id": "e" * 32, "answer_sha256": "", "answer": answer,
+    }
+
+
+def _content_canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")
+
+
+def _content_observation(fx, ps):
+    script = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
+    script += "\n$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n"
+    script += startup_read_call(fx, "codex-tools-1").split("\nif ($null -eq $r)")[0]
+    # Assertions and retained stdout are metadata/booleans only, including on RED.
+    script += r'''
+$view=[ordered]@{}
+foreach($property in $r.PSObject.Properties){if($property.Name -cne 'delivered_text'){$view[$property.Name]=$property.Value}}
+$view.has_marker=$r.delivered_text.Contains('SYNTHETIC-CONTENT-MARKER')
+$view.has_freshness=$r.delivered_text.Contains('freshness UNKNOWN')
+$view.has_age=$r.delivered_text.Contains('index_age UNKNOWN')
+$view.has_ref=$r.delivered_text.Contains(('a'*64))
+$view.text_length=$r.delivered_text.Length
+$sha=[Security.Cryptography.SHA256]::Create()
+try{$view.text_sha256=[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($r.delivered_text))).Replace('-','').ToLowerInvariant()}
+finally{$sha.Dispose()}
+[pscustomobject]$view|ConvertTo-Json -Depth 6 -Compress
+'''
+    result = _run_powershell(script, executable=ps)
+    assert "SYNTHETIC-CONTENT-MARKER" not in result.stdout
+    assert "synthetic-owner-token" not in result.stdout and "synthetic-owner-token" not in result.stderr
+    return json.loads(result.stdout.strip())
+
+
+_CONTENT_CASES = [
+    "good", "multiple", "unicode", "byte_boundary", "missing", "extra", "schema",
+    "lane", "inner_lane", "identity", "descriptor", "binding_state", "authentication",
+    "cleanup", "outer_cleanup", "freshness", "age_status", "age_seconds", "age_extra",
+    "call_id", "answer_hash", "tampered_text", "answer_extra", "degraded", "abstain",
+    "empty", "count_bool", "count_mismatch", "result_object", "result_extra", "bad_ref",
+    "bad_doc_id", "text_null", "text_empty", "text_control", "text_bytes", "result_limit",
+    "presentation_limit", "binding_missing", "binding_extra", "binding_mismatch", "trust",
+    "token", "escaped_token", "descriptor_changed", "record_file", "record_replace",
+    "timestamp", "missing_token", "owner_lane",
+]
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("case", _CONTENT_CASES)
+@_WINDOWS_HELPER_LAUNCH
+def test_tools_content_delivery_closed_class(tmp_path, ps, case):
+    audit_case = "file" if case == "record_file" else "stale" if case == "record_replace" else "ok"
+    fx = startup_read_fixture(tmp_path, "codex-tools-1", mode="producer_bytes", audit_case=audit_case)
+    # Model the Tools launcher explicitly, independent of the invoking agent's environment.
+    fx["env_prelude"] += "\n$env:AGENT_BRIDGE_AGENT='codex-tools-1'"
+    value = _content_delivery_packet(fx["descriptor_pin"])
+    answer = value["answer"]
+    item = answer["results"][0]
+    if case == "multiple":
+        answer["results"].append(dict(item, stored_text="SECOND-SYNTHETIC-ITEM", ref_sha256="2"*64))
+        answer["result_count"] = 2
+    elif case == "unicode":
+        item["stored_text"] += " \u00e4\U0001f41d \"quote\" \\slash <&> '"
+    elif case == "byte_boundary":
+        item["stored_text"] += "x" * (320-len(item["stored_text"]))
+    elif case == "timestamp": item["stored_text"] = "2026-11-10T18:00:00Z"
+    elif case == "missing": del value["identity_sha256"]
+    elif case == "extra": value["extra"] = "not admitted"
+    elif case == "schema": value["schema"] = "wd.q4-lane-content-delivery.v2"
+    elif case == "lane": value["lane"] = "fable-5"
+    elif case == "inner_lane": answer["lane"] = "fable-5"
+    elif case == "identity": value["identity_sha256"] = "not-a-digest"
+    elif case == "descriptor": value["descriptor_sha256"] = "0" * 64
+    elif case == "binding_state": value["lane_binding"] = "AUTHENTICATED"
+    elif case == "authentication": value["lane_authentication"] = "VERIFIED"
+    elif case == "cleanup": value["cleanup"] = "unknown"
+    elif case == "freshness": value["freshness"] = "FRESH"
+    elif case == "age_status": value["index_age"]["status"] = "FRESH"
+    elif case == "age_seconds": value["index_age"]["seconds"] = 0
+    elif case == "age_extra": value["index_age"]["file_mtime"] = 0
+    elif case == "call_id": value["call_id"] = "bad"
+    elif case == "answer_extra": answer["query"] = "not admitted"
+    elif case == "degraded": answer["status"] = "DEGRADED"
+    elif case == "abstain": answer["status"] = "ABSTAIN"; answer["results"] = []; answer["result_count"] = 0
+    elif case == "empty": answer["results"] = []; answer["result_count"] = 0
+    elif case == "count_bool": answer["result_count"] = True
+    elif case == "count_mismatch": answer["result_count"] = 2
+    elif case == "result_object": answer["results"] = dict(item)
+    elif case == "result_extra": item["query"] = "not admitted"
+    elif case == "bad_ref": item["ref_sha256"] = "bad"
+    elif case == "bad_doc_id": item["doc_id_sha256"] = "bad"
+    elif case == "text_null": item["stored_text"] = None
+    elif case == "text_empty": item["stored_text"] = ""
+    elif case == "text_control": item["stored_text"] += "\u0000"
+    elif case == "text_bytes": item["stored_text"] = "\u00e4"*161
+    elif case == "result_limit": answer["results"] *= 101; answer["result_count"] = 101
+    elif case == "presentation_limit":
+        answer["results"] = [dict(item, stored_text="x"*320) for _ in range(100)]
+        answer["result_count"] = 100
+    elif case == "binding_missing": del answer["binding"]["memory_sha256"]
+    elif case == "binding_extra": answer["binding"]["pointer_sha256"] = "c"*64
+    elif case == "binding_mismatch": answer["binding"]["policy_sha256"] = "d"*64
+    elif case == "trust": answer["trust"]["freshness"] = "FRESH"
+    elif case == "token": item["stored_text"] = "synthetic-owner-token"
+    elif case == "escaped_token": item["stored_text"] = 'synthetic-owner-token-"quoted"'
+    value["answer_sha256"] = hashlib.sha256(_content_canonical(answer)).hexdigest()
+    if case == "answer_hash": value["answer_sha256"] = "0"*64
+    if case == "tampered_text": item["stored_text"] += " changed after hashing"
+    (fx["bundle"] / "producer-response.bin").write_bytes(_content_canonical(value)+b"\n")
+    token = 'synthetic-owner-token-"quoted"' if case == "escaped_token" else "synthetic-owner-token"
+    fx["env_prelude"] += "\n$env:AGENT_BRIDGE_OWNER_TOKEN=" + _quote(token)
+    if case == "missing_token": fx["env_prelude"] += "\n$env:AGENT_BRIDGE_OWNER_TOKEN=''"
+    if case == "owner_lane": fx["env_prelude"] += "\n$env:AGENT_BRIDGE_AGENT='fable-5'"
+    if case in ("outer_cleanup", "descriptor_changed"):
+        source = fx["helper"].read_text(encoding="utf-8")
+        if case == "outer_cleanup":
+            source = source.replace('"cleanup":"CONFIRMED"', '"cleanup":"UNKNOWN"')
+        else:
+            source = source.replace("if ($mode -eq 'producer_bytes') {", "if ($mode -eq 'producer_bytes') {\n[IO.File]::AppendAllText((Join-Path (Split-Path -Parent $PSScriptRoot) 'descriptor.json'),' ')")
+        fx["helper"].write_text(source,encoding="utf-8")
+        manifest = json.loads(fx["manifest"].read_bytes())
+        manifest["files"][fx["helper"].name] = hashlib.sha256(fx["helper"].read_bytes()).hexdigest().upper()
+        fx["manifest"].write_bytes(json.dumps(manifest).encode())
+        fx["manifest_pin"] = hashlib.sha256(fx["manifest"].read_bytes()).hexdigest()
+        fx["env_prelude"] += "\n$env:WD_REBOOT_EXPECTED_MANIFEST_HASH="+_quote(fx["manifest_pin"].upper())
+    observed = _content_observation(fx,ps)
+    admitted = case in ("good", "multiple", "unicode", "byte_boundary", "timestamp")
+    assert observed["outcome"] == ("success" if admitted else "unknown" if case.startswith("record_") else "refused")
+    if admitted:
+        assert observed["has_marker"] is (case != "timestamp")
+        assert observed["has_freshness"] and observed["has_age"] and observed["has_ref"]
+        assert observed["delivered_items"] == answer["result_count"]
+        assert observed["delivered_chars"] == observed["text_length"] > 0
+        assert observed["delivered_sha256"] == observed["text_sha256"]
+        assert observed["refs"] == [r["ref_sha256"] for r in answer["results"]]
+        assert observed["answer_sha256"] == value["answer_sha256"] and observed["record_written"] is True
+    else:
+        assert observed["text_length"] == observed["delivered_items"] == observed["delivered_chars"] == 0
+        assert observed["delivered_sha256"] == ""
+    if fx["record"].is_file():
+        stored = fx["record"].read_text(encoding="ascii")
+        assert "SYNTHETIC-CONTENT-MARKER" not in stored and "synthetic-owner-token" not in stored
+        assert "delivered_text" not in stored
+
+
+from tests.tools.test_wd_q4_content_lane_query import content, lane
+
+
+
+
+@pytest.mark.parametrize("excluded", ["sealed", "gold", "heldout", "judge", "credential", "personal", "rco_author", "rco_recipient"])
+def test_startup_content_screening_exclusions_are_preserved(excluded):
+    from sandbox.mind.step2 import test_shared_content_projection as projection_fixture
+    # The startup parser does not replace the parent projection's screening.
+    # Only assembled synthetic canaries are used; no operator data is read.
+    event = projection_fixture.row(message="Synthetic build finished", agent=projection_fixture.TOOLS)
+    if excluded in ("sealed", "gold", "heldout", "judge"):
+        event["message"] += " " + excluded
+    elif excluded == "credential":
+        event["message"] = "s" + "k-" + "Ab3d" * 8
+    elif excluded == "personal":
+        event["message"] = "someone" + chr(64) + "example.invalid"
+    elif excluded == "rco_author":
+        event = projection_fixture.row(agent=projection_fixture.RCO1)
+    else:
+        event["to"] = projection_fixture.RCO1
+    projected = projection_fixture.build(projection_fixture.rows_of(event))
+    assert projected["records"] == []

@@ -18,6 +18,7 @@ import importlib.util
 import inspect
 import io
 import json
+import os
 import re
 from pathlib import Path
 
@@ -61,6 +62,11 @@ def card_public(tmp_path, monkeypatch, *, heads=None):
     """A synthetic card generation under a public root. The checkpoint view is SUBSTITUTED (C2 is missing: the real
     read_verified_pointer validates v6 public histories only); everything after it is the real chain in process."""
     route = rt.make_route(tmp_path, monkeypatch, heads=heads)
+    if os.name != 'nt':
+        # The real checkpoint path below (_secure, also used by the resolver) supports fixed Windows volumes only and
+        # refuses every path elsewhere; only tests that take this real path are skipped there. The guard is unchanged
+        # and the resolver tests on the simulated seam stay portable.
+        pytest.skip('shared_index_checkpoint._secure supports fixed Windows volumes only')
     memory_dir = pointer_resolver.checkpoint._secure(route['dir'])
     root = memory_dir.parent
     (root / pointer_resolver.checkpoint.POINTER).write_bytes(POINTER)

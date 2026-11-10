@@ -236,10 +236,12 @@ def test_no_file_is_opened_or_stat_called(tmp_path, monkeypatch):
     def blocked(*args, **kwargs):
         raise AssertionError("filesystem access")
 
-    for owner, name in ((builtins, "open"), (os, "open"), (os, "stat"), (os, "lstat"), (os, "scandir")):
-        monkeypatch.setattr(owner, name, blocked)
-    result = build(kw)
-    monkeypatch.undo()
+    # The block is undone on every exit, including a raising build: pytest itself stats and opens files while it
+    # reports a failure, so a block left in place would abort the session instead of reporting the failure.
+    with monkeypatch.context() as blocked_filesystem:
+        for owner, name in ((builtins, "open"), (os, "open"), (os, "stat"), (os, "lstat"), (os, "scandir")):
+            blocked_filesystem.setattr(owner, name, blocked)
+        result = build(kw)
     assert result["descriptor_sha256"] == sha(result["descriptor_bytes"])
 
 

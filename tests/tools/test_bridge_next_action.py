@@ -28,6 +28,18 @@ def _isolate_lane_environment(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture
+def _synthetic_claim_repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Exercise real claim-scope validation in a test-owned Git topology."""
+    root = tmp_path / "claim-repo"
+    git = root / ".git"
+    (git / "objects").mkdir(parents=True)
+    (git / "refs").mkdir()
+    (git / "HEAD").write_text("ref: refs/heads/synthetic\n", encoding="ascii")
+    monkeypatch.chdir(root)
+    return root
+
+
 def _events_file(path: Path, events: list[dict[str, object]]) -> Path:
     events_path = path / "shared" / "events.jsonl"
     events_path.parent.mkdir(parents=True)
@@ -79,6 +91,7 @@ def _waive_bare_cr_row(
     )
 
 
+@pytest.mark.usefixtures("_synthetic_claim_repository")
 def test_recommends_continuing_own_claim_before_incoming_request(tmp_path: Path) -> None:
     bridge = tmp_path / ".agent-bridge"
     claim = claim_task(
@@ -143,6 +156,7 @@ def test_suppressed_unavailable_agent_does_not_claim_operator_follow_nudge() -> 
     assert report["suppression_reason"] == "operator reported fable lane unavailable"
 
 
+@pytest.mark.usefixtures("_synthetic_claim_repository")
 def test_merge_blocking_incoming_request_interrupts_own_claim(
     tmp_path: Path,
 ) -> None:
@@ -197,6 +211,7 @@ def test_merge_blocking_incoming_request_interrupts_own_claim(
         "rco_reemit_required",
     ],
 )
+@pytest.mark.usefixtures("_synthetic_claim_repository")
 def test_rco_reemit_request_interrupts_own_claim(
     tmp_path: Path,
     status: str,
@@ -236,6 +251,7 @@ def test_rco_reemit_request_interrupts_own_claim(
     assert report["open_incoming_count"] == 1
 
 
+@pytest.mark.usefixtures("_synthetic_claim_repository")
 def test_free_text_build_consensus_request_does_not_interrupt_own_claim(
     tmp_path: Path,
 ) -> None:
@@ -2224,6 +2240,7 @@ def test_ack_status_with_already_substring_is_not_open_request() -> None:
     assert report["open_incoming_count"] == 0
 
 
+@pytest.mark.usefixtures("_synthetic_claim_repository")
 def test_recommends_parallel_read_only_when_foreign_write_claim_exists(
     tmp_path: Path,
 ) -> None:
@@ -3089,6 +3106,7 @@ def test_wake_send_failure_changes_wake_delivery_escalation() -> None:
     assert "TitleMap" in wake["safe_next_action"]
 
 
+@pytest.mark.usefixtures("_synthetic_claim_repository")
 def test_wake_delivery_gap_does_not_interrupt_active_own_claim(
     tmp_path: Path,
 ) -> None:
@@ -3606,6 +3624,7 @@ def test_cli_outputs_json_recommendation(tmp_path: Path, capsys) -> None:
     assert report["action"] == "answer_incoming"
 
 
+@pytest.mark.usefixtures("_synthetic_claim_repository")
 def test_cli_defaults_to_runtime_bridge_root_env_for_claims(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

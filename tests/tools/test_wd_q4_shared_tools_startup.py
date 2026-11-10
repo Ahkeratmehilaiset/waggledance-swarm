@@ -1083,3 +1083,253 @@ def test_tools_content_presentation_expansion_stays_within_budget(tmp_path, ps):
     assert observed["outcome"] == "refused" and observed["reason"] == "result_shape"
     assert observed["text_length"] == observed["delivered_items"] == observed["delivered_chars"] == 0
     assert observed["answer_sha256"] == observed["delivered_sha256"] == ""
+
+# Synthetic v2 compatibility; the caller supplies observations, never freshness.
+from test_wd_q4_content_cell_age import content_case
+from test_wd_q4_lane_caller_cli import case
+
+
+def _age_v2_packet(pin):
+    value = _content_delivery_packet(pin)
+    value["schema"] = "wd.q4-lane-content-delivery.v2"
+    value["answer_sha256"] = hashlib.sha256(_content_canonical(value["answer"])).hexdigest()
+    value["index_age"] = {
+        "schema": "wd.q4-cell-build-age.v1", "status": "OBSERVED",
+        "basis": "hash_pinned_cell_receipts",
+        "observed_local_utc": "2026-01-01T00:00:05.000000Z",
+        "clock_authentication": "UNKNOWN", "source_freshness": "UNKNOWN",
+        "coverage_completeness": "UNKNOWN",
+        "oldest_cell_built_utc": "2025-12-31T23:58:20Z",
+        "newest_cell_built_utc": "2025-12-31T23:59:00Z",
+        "oldest_cell_age_seconds": 105, "newest_cell_age_seconds": 65,
+        "coverage_cutoff_utc": "2025-12-25T00:00:00Z", "coverage_age_seconds": 604805,
+    }
+    return value
+
+
+def _age_v2_text(value):
+    age = value["index_age"]
+    header = (
+        f"Mind recalled content; oldest cell build age {age['oldest_cell_age_seconds']} s "
+        f"({age['oldest_cell_built_utc']}); newest cell build age {age['newest_cell_age_seconds']} s "
+        f"({age['newest_cell_built_utc']}); content cutoff age {age['coverage_age_seconds']} s "
+        f"({age['coverage_cutoff_utc']}); observed local {age['observed_local_utc']}; "
+        "clock authentication UNKNOWN; freshness UNKNOWN; coverage completeness UNKNOWN; "
+        "source references are caller-pinned, not authenticated."
+    )
+    return "\n".join([header, *[
+        f"[{i}] " + _content_canonical(item["stored_text"]).decode("ascii") +
+        f" [ref_sha256={item['ref_sha256']}; doc_id_sha256={item['doc_id_sha256']}]"
+        for i, item in enumerate(value["answer"]["results"], 1)
+    ]])
+
+
+def _age_v2_fixture(tmp_path, **kwargs):
+    fx = startup_read_fixture(tmp_path, "codex-tools-1", mode="producer_bytes", **kwargs)
+    fx["env_prelude"] += (
+        "\n$env:AGENT_BRIDGE_AGENT='codex-tools-1'"
+        "\n$env:AGENT_BRIDGE_OWNER_TOKEN='synthetic-owner-token'"
+    )
+    return fx
+
+
+def _age_v2_observe(fx, ps, value):
+    (fx["bundle"]/"producer-response.bin").write_bytes(_content_canonical(value)+b"\n")
+    return _content_observation(fx, ps)
+
+
+def _age_v2_success(fx, observed, value):
+    assert observed["outcome"] == "success" and observed["record_written"] is True
+    expected = _age_v2_text(value).encode("utf-8")
+    assert observed["text_sha256"] == hashlib.sha256(expected).hexdigest()
+    assert observed["delivered_sha256"] == observed["text_sha256"]
+    assert observed["delivered_chars"] == observed["text_length"] == len(expected)
+    assert observed["delivered_items"] == value["answer"]["result_count"]
+    assert observed["answer_sha256"] == value["answer_sha256"]
+    assert observed["refs"] == [item["ref_sha256"] for item in value["answer"]["results"]]
+    stored = fx["record"].read_text(encoding="ascii")
+    assert "delivered_text" not in stored and "SYNTHETIC-CONTENT-MARKER" not in stored
+    assert "synthetic-owner-token" not in stored
+    assert "clock authentication UNKNOWN" in observed["note"]
+    assert "coverage completeness UNKNOWN" in observed["note"]
+    assert "index_age UNKNOWN" not in observed["note"]
+
+
+def _age_v2_refused(observed):
+    assert observed["outcome"] == "refused" and observed["reason"] == "result_shape"
+    assert observed["text_length"] == observed["delivered_items"] == observed["delivered_chars"] == 0
+    assert observed["refs"] == [] and observed["answer_sha256"] == observed["delivered_sha256"] == ""
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("variant", ["normal", "equal", "zero", "fractional", "large",
+                                    "independent_cutoff", "quoted_lines"])
+@_WINDOWS_HELPER_LAUNCH
+def test_age_v2_valid_observations_remain_separate_unknowns(tmp_path, ps, variant):
+    from datetime import datetime
+    fx = _age_v2_fixture(tmp_path)
+    value = _age_v2_packet(fx["descriptor_pin"])
+    age = value["index_age"]
+    if variant == "equal":
+        age["newest_cell_built_utc"] = age["oldest_cell_built_utc"]
+    elif variant == "zero":
+        for key in ("oldest_cell_built_utc", "newest_cell_built_utc", "coverage_cutoff_utc"):
+            age[key] = age["observed_local_utc"]
+    elif variant == "fractional":
+        age.update(observed_local_utc="2026-01-01T00:00:05.123456Z",
+                   oldest_cell_built_utc="2025-12-31T23:58:20.9Z",
+                   newest_cell_built_utc="2025-12-31T23:59:00.12345Z",
+                   coverage_cutoff_utc="2025-12-25T00:00:00.123456Z")
+    elif variant == "large":
+        age.update(observed_local_utc="9999-12-31T23:59:59.999999Z",
+                   oldest_cell_built_utc="0001-01-01T00:00:00Z",
+                   newest_cell_built_utc="0001-01-01T00:00:00.000001Z",
+                   coverage_cutoff_utc="0001-01-01T00:00:00.000001Z")
+    elif variant == "independent_cutoff":
+        # Independent clock observations: producer promises <= observed, not <= built.
+        age["coverage_cutoff_utc"] = "2026-01-01T00:00:04Z"
+    elif variant == "quoted_lines":
+        value["answer"]["results"][0]["stored_text"] = "Synthetic\n[2] forged\r\t\u2028\u202e"
+        value["answer_sha256"] = hashlib.sha256(_content_canonical(value["answer"])).hexdigest()
+    observed_at = datetime.fromisoformat(age["observed_local_utc"])
+    for stamp, seconds in (("oldest_cell_built_utc", "oldest_cell_age_seconds"),
+                           ("newest_cell_built_utc", "newest_cell_age_seconds"),
+                           ("coverage_cutoff_utc", "coverage_age_seconds")):
+        delta = observed_at-datetime.fromisoformat(age[stamp])
+        age[seconds] = delta.days*86400+delta.seconds
+    _age_v2_success(fx, _age_v2_observe(fx, ps, value), value)
+
+
+_AGE_V2_KEYS = tuple(_age_v2_packet("a"*64)["index_age"])
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("field", _AGE_V2_KEYS)
+@pytest.mark.parametrize("operation", ["missing", "wrong_type"])
+@_WINDOWS_HELPER_LAUNCH
+def test_age_v2_every_field_is_required_and_typed(tmp_path, ps, field, operation):
+    fx = _age_v2_fixture(tmp_path)
+    value = _age_v2_packet(fx["descriptor_pin"])
+    if operation == "missing": del value["index_age"][field]
+    else: value["index_age"][field] = None
+    _age_v2_refused(_age_v2_observe(fx, ps, value))
+
+
+_AGE_V2_BAD_VALUES = [
+    ("schema", "wd.q4-cell-build-age.v2"), ("status", "FRESH"), ("basis", "mtime"),
+    ("clock_authentication", "VERIFIED"), ("source_freshness", "FRESH"),
+    ("coverage_completeness", "COMPLETE"),
+]
+_AGE_V2_BAD_VALUES += [(field, bad)
+    for field in ("oldest_cell_age_seconds", "newest_cell_age_seconds", "coverage_age_seconds")
+    for bad in (True, 1.0, "1", -1, 2**63, 0, 106)]
+_AGE_V2_BAD_VALUES += [(field, bad)
+    for field in ("oldest_cell_built_utc", "newest_cell_built_utc",
+                  "coverage_cutoff_utc", "observed_local_utc")
+    for bad in ("2026-01-01", "2026-01-01T00:00:00+00:00", "2026-13-01T00:00:00Z",
+                "2026-01-01T00:00:00.1234567Z", "2026-01-01T00:00:00.Z",
+                "2026-01-01T00:00:00z", "2026-01-01T00:00:00Z\n",
+                "2026-01-01T00:00:06Z")]
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("field,bad", _AGE_V2_BAD_VALUES)
+@_WINDOWS_HELPER_LAUNCH
+def test_age_v2_adversarial_values_fail_closed(tmp_path, ps, field, bad):
+    fx = _age_v2_fixture(tmp_path)
+    value = _age_v2_packet(fx["descriptor_pin"])
+    value["index_age"][field] = bad
+    _age_v2_refused(_age_v2_observe(fx, ps, value))
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("bad", ["extra", "object", "array", "inverted", "subsecond_future",
+    "v1_observed", "v2_unknown", "unknown_schema", "binding", "answer_hash", "token_header"])
+@_WINDOWS_HELPER_LAUNCH
+def test_age_v2_closed_object_relationships_and_original_guards(tmp_path, ps, bad):
+    fx = _age_v2_fixture(tmp_path)
+    value = _age_v2_packet(fx["descriptor_pin"])
+    age = value["index_age"]
+    if bad == "extra": age["mtime"] = 0
+    elif bad == "object": value["index_age"] = "OBSERVED"
+    elif bad == "array": value["index_age"] = [age]
+    elif bad == "inverted":
+        age["oldest_cell_built_utc"], age["newest_cell_built_utc"] = age["newest_cell_built_utc"], age["oldest_cell_built_utc"]
+        age["oldest_cell_age_seconds"], age["newest_cell_age_seconds"] = age["newest_cell_age_seconds"], age["oldest_cell_age_seconds"]
+    elif bad == "subsecond_future":
+        age["newest_cell_built_utc"] = "2026-01-01T00:00:05.000001Z"
+        age["newest_cell_age_seconds"] = 0
+    elif bad == "v1_observed": value["schema"] = "wd.q4-lane-content-delivery.v1"
+    elif bad == "v2_unknown": value["index_age"] = {"status": "UNKNOWN", "seconds": None}
+    elif bad == "unknown_schema": value["schema"] = "wd.q4-lane-content-delivery.v3"
+    elif bad == "binding": value["answer"]["binding"]["memory_sha256"] = "0"*64
+    elif bad == "answer_hash": value["answer_sha256"] = "0"*64
+    elif bad == "token_header":
+        fx["env_prelude"] += "\n$env:AGENT_BRIDGE_OWNER_TOKEN='oldest cell build age'"
+    _age_v2_refused(_age_v2_observe(fx, ps, value))
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("audit_case", ["file", "stale"])
+@_WINDOWS_HELPER_LAUNCH
+def test_age_v2_record_failure_never_delivers(tmp_path, ps, audit_case):
+    fx = _age_v2_fixture(tmp_path, audit_case=audit_case)
+    observed = _age_v2_observe(fx, ps, _age_v2_packet(fx["descriptor_pin"]))
+    assert observed["outcome"] == "unknown" and observed["record_written"] is False
+    assert observed["text_length"] == observed["delivered_items"] == observed["delivered_chars"] == 0
+    assert observed["delivered_sha256"] == ""
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("fallback", [False, True])
+@_WINDOWS_HELPER_LAUNCH
+def test_age_v2_real_caller_main_synthetic_delivery(tmp_path, monkeypatch, capsys, content_case, ps, fallback):
+    from datetime import timedelta
+    from test_wd_q4_lane_caller_cli import NOW, invoke
+    c = content_case
+    c["clock"]["times"] = [NOW, NOW+timedelta(seconds=5)]
+    if fallback:
+        c["age_manifest"].pop("cells")
+        c["repin"]()
+    assert invoke(c, monkeypatch) == 0
+    produced = capsys.readouterr()
+    assert produced.err == ""
+    value = json.loads(produced.out)
+    assert produced.out.encode("ascii") == _content_canonical(value)+b"\n"
+    assert value["schema"] == "wd.q4-lane-content-delivery.v"+("1" if fallback else "2")
+    startup = tmp_path/"age-startup"
+    startup.mkdir()
+    fx = _age_v2_fixture(startup, binding=c["descriptor"]["expected_binding"])
+    fx["descriptor"].write_bytes(c["files"]["descriptor.json"].read_bytes())
+    fx["descriptor_pin"] = hashlib.sha256(fx["descriptor"].read_bytes()).hexdigest()
+    assert value["descriptor_sha256"] == fx["descriptor_pin"]
+    observed = _age_v2_observe(fx, ps, value)
+    if fallback:
+        assert observed["outcome"] == "success" and observed["has_age"]
+        assert observed["delivered_sha256"] == observed["text_sha256"]
+    else:
+        _age_v2_success(fx, observed, value)
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("version", ["1", "2"])
+@_WINDOWS_HELPER_LAUNCH
+def test_age_v2_presentation_token_guard_also_covers_v1(tmp_path, ps, version):
+    fx = _age_v2_fixture(tmp_path)
+    fx["env_prelude"] += "\n$env:AGENT_BRIDGE_OWNER_TOKEN='Mind recalled content'"
+    packet = (_content_delivery_packet if version == "1" else _age_v2_packet)(fx["descriptor_pin"])
+    packet["answer_sha256"] = hashlib.sha256(_content_canonical(packet["answer"])).hexdigest()
+    _age_v2_refused(_age_v2_observe(fx, ps, packet))
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("digits", [1, 2, 3, 4, 5, 6])
+@_WINDOWS_HELPER_LAUNCH
+def test_age_v2_accepts_each_supported_utc_precision(tmp_path, ps, digits):
+    fx = _age_v2_fixture(tmp_path)
+    value = _age_v2_packet(fx["descriptor_pin"])
+    fraction = "."+"1"*digits+"Z"
+    for field in ("oldest_cell_built_utc", "newest_cell_built_utc", "coverage_cutoff_utc"):
+        value["index_age"][field] = value["index_age"][field][:-1]+fraction
+    value["index_age"]["observed_local_utc"] = "2026-01-01T00:00:05"+fraction
+    _age_v2_success(fx, _age_v2_observe(fx, ps, value), value)

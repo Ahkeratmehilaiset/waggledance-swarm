@@ -89,10 +89,14 @@ def _read(path, expected, limit=_MAX):
         raise ValueError()
     with path.open('rb') as stream:
         opened = os.fstat(stream.fileno())
-        raw = stream.read(limit + 1)
+        read_size = min(limit, max(0, before.st_size)) + 1
+        raw = stream.read(read_size)
         after = os.fstat(stream.fileno())
+    final = path.stat()
     if (len(raw) != before.st_size or len(raw) > limit or not os.path.samestat(before, opened)
-            or not os.path.samestat(opened, after) or not os.path.samestat(after, path.stat())
+            or not os.path.samestat(opened, after) or not os.path.samestat(after, final)
+            or any(info.st_size != before.st_size or info.st_mtime_ns != before.st_mtime_ns
+                   for info in (opened, after, final))
             or not hmac.compare_digest(_sha(raw), expected)):
         raise ValueError()
     return raw

@@ -190,7 +190,13 @@ def test_reparse_ancestor_is_refused_without_replacing_the_real_reader(
 ):
     assert observe(observer, snapshot) == EXPECTED
     original_lstat = Path.lstat
+    original_derive = content.validate_content_snapshot
+    calls = []
     parent = snapshot["path"].parent
+
+    def record_derive(**kwargs):
+        calls.append("derive")
+        return original_derive(**kwargs)
 
     def reparse_parent(path, *args, **kwargs):
         original = original_lstat(path, *args, **kwargs)
@@ -201,7 +207,27 @@ def test_reparse_ancestor_is_refused_without_replacing_the_real_reader(
         return original
 
     monkeypatch.setattr(Path, "lstat", reparse_parent)
+    monkeypatch.setattr(content, "validate_content_snapshot", record_derive)
     assert observe(observer, snapshot) == {"status": "UNKNOWN"}
+    assert calls == []
+
+
+def test_prefix_mismatch_is_refused_before_content_derivation(
+    observer, snapshot, monkeypatch
+):
+    assert observe(observer, snapshot) == EXPECTED
+    raw = snapshot["path"].read_bytes()
+    snapshot["path"].write_bytes(b"x" * len(raw))
+    original_derive = content.validate_content_snapshot
+    calls = []
+
+    def record_derive(**kwargs):
+        calls.append("derive")
+        return original_derive(**kwargs)
+
+    monkeypatch.setattr(content, "validate_content_snapshot", record_derive)
+    assert observe(observer, snapshot) == {"status": "UNKNOWN"}
+    assert calls == []
 
 
 @pytest.mark.parametrize(

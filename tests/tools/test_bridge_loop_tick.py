@@ -64,6 +64,27 @@ def build_loop_tick(*args, **kwargs):
     return _build_loop_tick_impl(*args, **kwargs)
 
 
+# The fleet launcher exports the installed bundle's trust inputs. The RCO
+# enrollment loader behind the merge-ready evaluation reads them when no
+# context is passed, so an inherited value would make these synthetic cases
+# open the installed deployment manifest. Every case here runs without them:
+# the loader's own fail-closed path for a missing pin, never the live bundle.
+_INSTALLED_BUNDLE_TRUST_INPUTS = (
+    "WD_BRIDGE_BUNDLE_ROOT",
+    "WD_REBOOT_EXPECTED_MANIFEST_HASH",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_installed_bundle_trust_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in _INSTALLED_BUNDLE_TRUST_INPUTS:
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_installed_bundle_trust_inputs_are_not_inherited() -> None:
+    assert not [name for name in _INSTALLED_BUNDLE_TRUST_INPUTS if name in os.environ]
+
+
 def _with_agent_uuid(event: dict) -> dict:
     agent = str(event.get("agent", ""))
     if agent in AGENT_UUIDS:

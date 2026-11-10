@@ -103,6 +103,7 @@ def test_off_does_not_inspect_inputs(runner):
     assert runner.run_once(route_bytes=NoTouch()) == {"status": "OFF"}
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_verified_fleet_is_converted_to_the_binding_roster(case, monkeypatch):
     from tools import wd_q4_roster_from_fleet as roster_producer
     from tools import wd_q4_lane_binding as consumer
@@ -132,6 +133,7 @@ def test_verified_fleet_is_converted_to_the_binding_roster(case, monkeypatch):
 
 
 @pytest.mark.parametrize('renewable', [False, True])
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_runner_refuses_unresolved_adoption_before_creating_its_markers(case, monkeypatch, renewable):
     runner, args, _, checkpoint, private, _ = case
     marker = private / 'q4-continuation-adopt.pending.json'
@@ -194,6 +196,7 @@ def test_known_git_lf_and_windows_crlf_policy_pins(runner):
         assert {sha(blob), sha(blob.replace(b"\n", b"\r\n"))} <= allowed
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_exact_pins_and_one_child_call_return_unchanged(case):
     runner, args, route, checkpoint, private, monkeypatch = case
     calls = []
@@ -213,6 +216,7 @@ def test_exact_pins_and_one_child_call_return_unchanged(case):
     assert len(calls) == 1  # Both reservations remain until explicit reconciliation.
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_pinned_utc_cutoff_reaches_child_and_allows_partial_coverage(case):
     runner, args, route, _, _, monkeypatch = case
     route = dict(route, cutoff_utc="2026-10-31T13:00:00Z")
@@ -243,6 +247,7 @@ def test_cutoff_must_be_covered_by_route_pin(case):
         runner.run_once(**kw)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_batched_cutoff_is_explicitly_bound_and_forwarded(case):
     runner, args, route, _, _, monkeypatch = case
     base = args()
@@ -283,6 +288,7 @@ def test_batch_requires_child_that_explicitly_accepts_it(case):
 
 
 @pytest.mark.parametrize("schema", ["wd.q4-prefix-build-plan.v1", "wd.q4-prefix-build-plan.v3"])
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_continuation_propagates_exact_prefix_and_prior_pointer(case, schema):
     runner, args, route, _, _, monkeypatch = case
     kw = args()
@@ -327,6 +333,7 @@ def test_invalid_bounds_or_genesis_prefix_refused_before_child(case, field, valu
 
 
 @pytest.mark.parametrize("failure", ["exception", "interrupt", "malformed"])
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_unknown_retains_both_markers_and_blocks_retry(case, failure):
     runner, args, _, checkpoint, private, monkeypatch = case
     calls = []
@@ -348,6 +355,7 @@ def test_unknown_retains_both_markers_and_blocks_retry(case, failure):
     assert calls == [1]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_partial_reservation_fails_closed_before_child(case, monkeypatch):
     runner, args, _, checkpoint, private, _ = case
     original = runner._create
@@ -366,6 +374,7 @@ def test_partial_reservation_fails_closed_before_child(case, monkeypatch):
     assert calls == []
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_interrupt_after_child_return_keeps_both_markers(case, monkeypatch):
     runner, args, route, checkpoint, private, _ = case
     calls = []
@@ -383,6 +392,7 @@ def test_interrupt_after_child_return_keeps_both_markers(case, monkeypatch):
     assert calls == [1]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_changed_marker_is_never_removed(case, monkeypatch):
     runner, args, route, checkpoint, private, _ = case
     report = child_report()
@@ -397,6 +407,7 @@ def test_changed_marker_is_never_removed(case, monkeypatch):
     assert (private / runner._PENDING).is_file()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_model_root_replaced_during_child_is_unknown_and_quarantined(case, monkeypatch):
     runner, args, route, checkpoint, private, _ = case
     model = Path(route["trusted_model_root"])
@@ -412,6 +423,7 @@ def test_model_root_replaced_during_child_is_unknown_and_quarantined(case, monke
     assert (checkpoint / runner._PENDING).is_file() and (private / runner._PENDING).is_file()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_source_parent_replaced_during_child_is_unknown_and_quarantined(case, monkeypatch):
     runner, args, route, checkpoint, private, _ = case
     source_dir = Path(route["source"]).parent
@@ -427,6 +439,7 @@ def test_source_parent_replaced_during_child_is_unknown_and_quarantined(case, mo
     assert (checkpoint / runner._PENDING).is_file() and (private / runner._PENDING).is_file()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_sidecar_parent_replaced_during_child_is_unknown_and_quarantined(case, monkeypatch):
     runner, args, route, checkpoint, private, _ = case
     sidecar_dir = Path(route["source"]).parent.parent / "independent-sidecar"
@@ -517,6 +530,7 @@ def test_sidecar_parent_and_all_roots_must_be_disjoint(case, monkeypatch, field,
     assert not (checkpoint / runner._PENDING).exists() and not (private / runner._PENDING).exists()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_other_baseexception_is_not_swallowed_by_except_exception(case, monkeypatch):
     runner, args, _, checkpoint, private, _ = case
     class SyntheticStop(BaseException):
@@ -837,6 +851,7 @@ def skip_route(case, *, offset=7, prefix="d" * 64, receipt=None, write=True, ext
     return skipped, raw
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_genesis_skip_receipt_admits_a_nonzero_genesis_cursor(case):
     runner, args, _, checkpoint, private, monkeypatch = case
     route, raw = skip_route(case)
@@ -943,6 +958,7 @@ def test_genesis_skip_receipt_parser_is_strict_and_canonical(runner):
 
 
 @pytest.mark.parametrize('busy', ['private', 'checkpoint'])
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_busy_pair_lock_refuses_without_own_reservation(case, monkeypatch, busy):
     runner, args, _, checkpoint, private, _ = case
     lock = private / private_state._LOCK if busy == 'private' else checkpoint / checkpoint_mod.LOCK
@@ -966,6 +982,7 @@ def test_busy_pair_lock_refuses_without_own_reservation(case, monkeypatch, busy)
 
 
 @pytest.mark.parametrize('foreign', ['private', 'checkpoint'])
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_foreign_marker_between_preflight_and_lock_refuses_without_own_marker(case, monkeypatch, foreign):
     runner, args, _, checkpoint, private, _ = case
     marker = (private if foreign == 'private' else checkpoint) / runner._PENDING
@@ -991,6 +1008,7 @@ def test_foreign_marker_between_preflight_and_lock_refuses_without_own_marker(ca
 
 
 @pytest.mark.parametrize('fault', ['before_write', 'after_write', 'interrupt_after_write'])
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_attempted_first_marker_failure_remains_unknown(case, monkeypatch, fault):
     runner, args, _, checkpoint, private, _ = case
     original = runner._create
@@ -1009,6 +1027,7 @@ def test_attempted_first_marker_failure_remains_unknown(case, monkeypatch, fault
     assert not (private / runner._PENDING).exists()
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_runner_refusal_does_not_clear_or_retry_an_owned_cutoff_lease(genesis_synthetic, monkeypatch):
     pytest.importorskip('faiss')
     from tests.tools import test_wd_q4_genesis_bootstrap as base
@@ -1043,6 +1062,7 @@ def test_runner_refusal_does_not_clear_or_retry_an_owned_cutoff_lease(genesis_sy
 
 
 @pytest.mark.parametrize('stage', ['before_write', 'first_marker', 'second_marker', 'child'])
+@pytest.mark.skipif(sys.platform != "win32", reason="checkpoint admission lock requires Windows")
 def test_admission_blocked_after_reservation_attempt_is_unknown(case, monkeypatch, stage):
     runner, args, _, checkpoint, private, _ = case
     original = runner._create

@@ -68,6 +68,7 @@ def test_default_off_does_not_touch_input():
     assert s.compose() == {'status': 'OFF'}
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer caller requires drive-absolute Windows paths')
 def test_staged_composition_is_hash_bound_and_never_activates(tmp_path):
     from tools import wd_q4_staged_composer as s
     kw, source, stage = setup_case(tmp_path)
@@ -83,6 +84,7 @@ def test_staged_composition_is_hash_bound_and_never_activates(tmp_path):
     assert not list(tmp_path.rglob('WD_Q4_DESCRIPTOR_CURRENT.json'))
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer caller requires drive-absolute Windows paths')
 def test_refuses_changed_manifest_before_stage_write(tmp_path):
     from tools import wd_q4_staged_composer as s
     kw, _, stage = setup_case(tmp_path)
@@ -99,6 +101,7 @@ def test_refuses_nonempty_stage_without_overwrite(tmp_path):
     assert (stage / 'existing').read_bytes() == b'keep'
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer caller requires drive-absolute Windows paths')
 def test_refuses_public_plan_pin_mismatch(tmp_path):
     from tools import wd_q4_staged_composer as s
     kw, _, stage = setup_case(tmp_path)
@@ -107,6 +110,7 @@ def test_refuses_public_plan_pin_mismatch(tmp_path):
     assert not list(stage.iterdir())
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer caller requires drive-absolute Windows paths')
 def test_refuses_approved_tasks_that_do_not_match_snapshot_policy(tmp_path):
     from tools import wd_q4_staged_composer as s
     kw, _, stage = setup_case(tmp_path)
@@ -118,6 +122,7 @@ def test_refuses_approved_tasks_that_do_not_match_snapshot_policy(tmp_path):
     assert not list(stage.iterdir())
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer caller requires drive-absolute Windows paths')
 def test_failure_after_write_is_incomplete_and_never_retried(tmp_path, monkeypatch):
     from tools import wd_q4_staged_composer as s
     kw, _, stage = setup_case(tmp_path)
@@ -141,6 +146,7 @@ def test_refuses_stage_inside_bundle_before_any_write(tmp_path):
     assert not list(stage.iterdir())
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer caller requires drive-absolute Windows paths')
 def test_interruption_after_binding_has_no_receipt_and_no_automatic_retry(tmp_path, monkeypatch):
     from tools import wd_q4_staged_composer as s
     kw, _, stage = setup_case(tmp_path)
@@ -153,6 +159,7 @@ def test_interruption_after_binding_has_no_receipt_and_no_automatic_retry(tmp_pa
     with pytest.raises(s.ComposeRefused): s.compose(**kw)
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer caller requires drive-absolute Windows paths')
 def test_rejects_target_directory_mismatch_before_write(tmp_path):
     from tools import wd_q4_staged_composer as s
     kw, _, stage = setup_case(tmp_path)
@@ -164,6 +171,7 @@ def test_rejects_target_directory_mismatch_before_write(tmp_path):
     assert not list(stage.iterdir())
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer caller requires drive-absolute Windows paths')
 def test_copied_generation_cannot_be_activated_under_different_root(tmp_path):
     from tools import wd_q4_staged_composer as s
     from tools import wd_q4_descriptor_pointer as pointer
@@ -237,6 +245,7 @@ def test_refuses_stage_inside_active_bundle_outside_bundle_store(tmp_path):
     assert not list(stage.iterdir())
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer caller requires drive-absolute Windows paths')
 def test_refuses_active_root_different_from_pinned_current(tmp_path):
     from tools import wd_q4_staged_composer as s
     kw, _, stage = setup_case(tmp_path)
@@ -247,6 +256,7 @@ def test_refuses_active_root_different_from_pinned_current(tmp_path):
     assert not list(stage.iterdir())
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer caller requires drive-absolute Windows paths')
 def test_refuses_forged_current_digest_before_write(tmp_path):
     from tools import wd_q4_staged_composer as s
     kw, _, stage = setup_case(tmp_path)
@@ -255,6 +265,7 @@ def test_refuses_forged_current_digest_before_write(tmp_path):
     assert not list(stage.iterdir())
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer caller requires drive-absolute Windows paths')
 def test_refuses_pointer_changed_during_preparation(tmp_path, monkeypatch):
     from tools import wd_q4_staged_composer as s
     kw, _, stage = setup_case(tmp_path)
@@ -323,6 +334,7 @@ def test_active_bundle_junction_is_rejected_before_write(tmp_path):
     assert not list(stage.iterdir())
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer caller requires drive-absolute Windows paths')
 def test_bundle_store_must_be_current_bundle_parent(tmp_path):
     from tools import wd_q4_staged_composer as s
     kw, _, stage = setup_case(tmp_path)
@@ -333,6 +345,7 @@ def test_bundle_store_must_be_current_bundle_parent(tmp_path):
     assert not list(stage.iterdir())
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer caller requires drive-absolute Windows paths')
 def test_missing_current_pointer_refuses_before_write(tmp_path):
     from tools import wd_q4_staged_composer as s
     kw, _, stage = setup_case(tmp_path)
@@ -341,6 +354,7 @@ def test_missing_current_pointer_refuses_before_write(tmp_path):
     assert not list(stage.iterdir())
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer caller requires drive-absolute Windows paths')
 def test_case_colliding_current_keys_refused_even_when_hash_matches(tmp_path):
     from tools import wd_q4_staged_composer as s
     kw, _, stage = setup_case(tmp_path)

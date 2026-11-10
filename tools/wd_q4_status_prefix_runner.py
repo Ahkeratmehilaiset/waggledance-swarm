@@ -54,7 +54,10 @@ _FLEET_SHA = frozenset({"b60bbfd5cfa28bb93053c9b7492378d19c0abb184bd2569398109c5
                          "bded859e8ae0ffc42c5a56007883d30e0eb4fafd028da7ff8261ae3bbbf9aaf7",
                          # Current fleet adds disabled Mind configuration and pinned launch helpers.
                          "044531f7539741f82abfb1a378429cc9d5938ee87708c136583563e6bf9dc430",
-                         "285d51ce240660f0c08859cfbc2636d1f2f944537af9fc1b499c1e6878ad4821"})
+                         "285d51ce240660f0c08859cfbc2636d1f2f944537af9fc1b499c1e6878ad4821",
+                         # Fleet with the pinned Git executable, Git LF / Windows CRLF.
+                         "ed6f270b61d4c558bb9e94e8ed3aeb5faf83d69e5fb70d3fe97c62659c6cf402",
+                         "6ba0f0ea559ed9bd284d0e507cc71ffe01605ecbba168425209575d5eba3f45b"})
 _HEX = re.compile(r"[a-f0-9]{64}\Z")
 _GENERATION = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
 _IDENTITY = re.compile(r"(?:windows-v1:[0-9a-f]{8}:[0-9a-f]{16}|posix-v1:[0-9a-f]+:[0-9a-f]+)\Z")

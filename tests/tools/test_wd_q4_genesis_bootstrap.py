@@ -434,6 +434,8 @@ def test_partial_genesis_requires_explicit_cutoff_and_batch(synthetic):
 @pytest.mark.skipif(sys.platform != "win32", reason="real private checkpoint requires Windows fixed volume")
 def test_actual_producer_checkpoint_and_partial_continuation(synthetic, monkeypatch):
     """Real runner, child, producer, checkpoint and reader; synthetic encoder only."""
+    if sys.platform != "win32":  # the mark above does not reach direct calls from other modules' fixtures
+        pytest.skip("real private checkpoint requires Windows fixed volume")
     np = pytest.importorskip("numpy")
     pytest.importorskip("faiss")
     from sandbox.mind.step2 import shared_index_checkpoint as checkpoint_module
@@ -1091,6 +1093,8 @@ def test_interrupt_before_admission_is_not_converted_into_a_refusal(synthetic, m
 def test_late_skip_real_producer_publishes_every_public_row_after_the_skip(synthetic, monkeypatch):
     """Real pre-scan, skip receipts, runner, child, producer and checkpoint; only the encoder is synthetic. Every
     public row of the source is published once; no public row lies in the skipped prefix."""
+    if sys.platform != "win32":  # the mark above does not reach direct calls from other modules' fixtures
+        pytest.skip("real private checkpoint requires Windows fixed volume")
     import inspect
     np = pytest.importorskip("numpy")
     from sandbox.mind.step2 import shared_index_checkpoint as checkpoint_module

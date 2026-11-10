@@ -89,6 +89,7 @@ $script:fixtureRepositoryProbe = (Get-Command Test-BridgeRepositoryTopLevel).Scr
 $script:fixtureRepositoryBoundary = [IO.Path]::GetFullPath(BOUNDARY).Replace('\','/').TrimEnd('/')
 function Test-BridgeRepositoryTopLevel {
     param([string]$Top)
+    if ([string]::IsNullOrWhiteSpace($Top)) { return $false }
     $candidate = [IO.Path]::GetFullPath($Top).Replace('\','/').TrimEnd('/')
     if (-not ($candidate.Equals($script:fixtureRepositoryBoundary, [StringComparison]::OrdinalIgnoreCase) -or
         $candidate.StartsWith($script:fixtureRepositoryBoundary + '/', [StringComparison]::OrdinalIgnoreCase))) {
@@ -108,6 +109,19 @@ def status_with_repository_boundary(fleet, boundary: Path) -> Path:
     copied.write_text(source.replace(anchor, anchor + '\n' + repository_boundary_setup(boundary)),
                       encoding='utf-8')
     return copied
+
+
+def test_synthetic_repository_boundary_rejects_empty_ancestor(fleet, tmp_path):
+    """A POSIX root iteration can pass an empty ancestor to this test seam."""
+    command = (
+        f". {quote(ROOT / '.agent-bridge/bin/BridgeResourceScope.ps1')}; "
+        + repository_boundary_setup(tmp_path)
+        + "; try { Test-BridgeRepositoryTopLevel '' } catch { 'ERROR:' + $_.Exception.Message }"
+    )
+    result = subprocess.run([fleet['shell'], '-NoProfile', '-NonInteractive', '-Command', command],
+                            cwd=ROOT, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip().lower() == 'false'
 
 
 @pytest.mark.parametrize("relative_root", ["", "Python"])

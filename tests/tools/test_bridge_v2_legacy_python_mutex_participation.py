@@ -77,6 +77,13 @@ def bridge(tmp_path, monkeypatch):
     for name in [k for k in os.environ if k.upper().startswith(("AGENT_BRIDGE", "WD_"))]:
         monkeypatch.delenv(name)
     monkeypatch.setattr(wq_cli, "LOCK_TIMEOUT_SECONDS", 0.5, raising=False)
+    # Exercise the real claim-scope validator against a test-owned Git topology.
+    owned_repo = tmp_path / "scope-repo"
+    git = owned_repo / ".git"
+    (git / "objects").mkdir(parents=True)
+    (git / "refs").mkdir()
+    (git / "HEAD").write_text("ref: refs/heads/synthetic\n", encoding="ascii")
+    monkeypatch.chdir(owned_repo)
     root = tmp_path / "bridge"
     (root / "work_queue" / "claims").mkdir(parents=True)
     (root / "work_queue" / "done").mkdir(parents=True)
@@ -209,9 +216,9 @@ def test_a_relative_root_is_refused_for_writers_and_still_read(bridge, monkeypat
     assert wq_cli.main(["--bridge-root", bridge.name, "--json", *CLAIM]) == 2 and _claims(bridge) == []  # input error
     assert "runtime-root mutex: runtime root" in capsys.readouterr().out
     assert wq_cli.main(["--bridge-root", bridge.name, "--json", "list"]) == 0
-    # RS7 (legacy core): a claim cwd must be a repository top level, and tmp_path is none, so the absolute twin claims
-    # from REPO as every other claim in this file does; the twin is about the absolute root, not about the cwd.
-    monkeypatch.chdir(REPO)
+    # RS7 requires a repository top level. The absolute twin claims from the test-owned repo;
+    # it is about the absolute bridge root, not about the checkout containing the source.
+    monkeypatch.chdir(bridge.parent / "scope-repo")
     assert _cli(bridge, *CLAIM) == 0 and len(_claims(bridge)) == 1  # the absolute twin
 
 

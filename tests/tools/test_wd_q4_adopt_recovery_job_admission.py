@@ -1,5 +1,6 @@
 """Only synthetic job quarantine markers and pinned per-writer admission paths."""
 import json
+import os
 from contextlib import contextmanager
 from pathlib import Path
 import pytest
@@ -15,6 +16,7 @@ from tools import wd_q4_live_update_once as update
 
 JOB = 'q4-adopt-recovery-job.pending.json'
 
+@pytest.mark.skipif(os.name != 'nt', reason='pair-state admission requires fixed Windows volumes')
 def test_runner_rejects_job_pending_before_reservation(case, monkeypatch):
     runner, args, _, shared, private, _ = case
     marker=private/JOB; marker.write_bytes(b'synthetic pending')
@@ -23,18 +25,22 @@ def test_runner_rejects_job_pending_before_reservation(case, monkeypatch):
     assert not calls and marker.read_bytes()==b'synthetic pending'
     assert not (private/runner._PENDING).exists() and not (shared/runner._PENDING).exists()
 
+@pytest.mark.skipif(os.name != 'nt', reason='pair-state admission requires fixed Windows volumes')
 def test_runner_rechecks_job_marker_in_pair_lock(case, monkeypatch):
     runner, args, _, shared, private, _ = case
-    marker=private/JOB; calls=[]
+    marker=private/JOB; calls=[]; stages=[]
     fake_child(monkeypatch, lambda **kw: calls.append(kw) or child_report())
     original=prefix_private_state._checkpoint_lock
     @contextmanager
     def arrive_before_admission(root, timeout):
         with original(root, timeout):
+            stages.append('entered')
             marker.write_bytes(b'synthetic pending')
+            stages.append('injected')
             yield
     monkeypatch.setattr(prefix_private_state, '_checkpoint_lock', arrive_before_admission)
     with pytest.raises(runner.StatusRunnerRefused): runner.run_once(**args())
+    assert stages == ['entered', 'injected']
     assert not calls and marker.read_bytes()==b'synthetic pending'
     assert not (private/runner._PENDING).exists() and not (shared/runner._PENDING).exists()
 

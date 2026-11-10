@@ -541,9 +541,159 @@ function Invoke-WdQ4StartupMindRead {
                 }
                 if ($record.exit_code -eq 0) {
                     try {
-                        $result = $stdoutText.Trim() | ConvertFrom-Json
+                        $jsonOptions = @{}
+                        if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonOptions.DateKind = 'String' }
+                        $result = $stdoutText.Trim() | ConvertFrom-Json @jsonOptions
             if ($result -isnot [pscustomobject]) { throw 'result_shape' }
-            if ([string]$result.schema -ceq 'wd.q4-lane-content-withheld.v1') {
+            if ([string]$result.schema -ceq 'wd.q4-lane-content-delivery.v1') {
+              # The content caller is pinned by the manifest-verified helper. Independently validate its
+              # closed delivery contract; byte consistency is not authenticated identity or freshness.
+              function Assert-WdStartupContentObject($Value, [string[]]$Keys) {
+                if ($Value -isnot [pscustomobject]) { throw 'result_shape' }
+                $names = @($Value.PSObject.Properties | ForEach-Object { $_.Name })
+                if ($names.Count -ne $Keys.Count) { throw 'result_shape' }
+                foreach ($key in $Keys) { if ($names -cnotcontains $key) { throw 'result_shape' } }
+              }
+              function ConvertTo-WdStartupContentJson($Value) {
+                if ($null -eq $Value) { return 'null' }
+                if ($Value -is [string]) {
+                  $builder = New-Object Text.StringBuilder
+                  [void]$builder.Append('"')
+                  foreach ($character in $Value.ToCharArray()) {
+                    $code = [int]$character
+                    switch ($code) {
+                      34 { [void]$builder.Append('\"'); break }
+                      92 { [void]$builder.Append('\\'); break }
+                      8 { [void]$builder.Append('\b'); break }
+                      9 { [void]$builder.Append('\t'); break }
+                      10 { [void]$builder.Append('\n'); break }
+                      12 { [void]$builder.Append('\f'); break }
+                      13 { [void]$builder.Append('\r'); break }
+                      default {
+                        if ($code -lt 32 -or $code -gt 126) { [void]$builder.Append(('\u{0:x4}' -f $code)) }
+                        else { [void]$builder.Append($character) }
+                      }
+                    }
+                  }
+                  [void]$builder.Append('"')
+                  return $builder.ToString()
+                }
+                if ($Value -is [bool]) { return $Value.ToString().ToLowerInvariant() }
+                if ($Value -is [int] -or $Value -is [long]) { return $Value.ToString([Globalization.CultureInfo]::InvariantCulture) }
+                if ($Value -is [array]) {
+                  $parts = @(foreach ($element in $Value) { ConvertTo-WdStartupContentJson $element })
+                  return '[' + ($parts -join ',') + ']'
+                }
+                if ($Value -is [pscustomobject]) {
+                  [string[]]$keys = @($Value.PSObject.Properties | ForEach-Object { $_.Name })
+                  [Array]::Sort($keys, [StringComparer]::Ordinal)
+                  $parts = @(foreach ($key in $keys) {
+                    (ConvertTo-WdStartupContentJson $key) + ':' + (ConvertTo-WdStartupContentJson $Value.PSObject.Properties[$key].Value)
+                  })
+                  return '{' + ($parts -join ',') + '}'
+                }
+                throw 'result_shape'
+              }
+              Assert-WdStartupContentObject $result @('schema','freshness','index_age','lane','lane_binding',
+                'lane_authentication','cleanup','identity_sha256','descriptor_sha256','call_id','answer_sha256','answer')
+              foreach ($key in @('schema','freshness','lane','lane_binding','lane_authentication','cleanup',
+                  'identity_sha256','descriptor_sha256','call_id','answer_sha256')) {
+                if ($result.PSObject.Properties[$key].Value -isnot [string]) { throw 'result_shape' }
+              }
+              if ($result.freshness -cne 'UNKNOWN' -or $result.lane -cne $Lane -or
+                  $env:AGENT_BRIDGE_AGENT -cne $Lane -or $result.lane_binding -cne 'DECLARED_CONSISTENT' -or
+                  $result.lane_authentication -cne 'UNKNOWN' -or $result.cleanup -cne 'chain_confirmed' -or
+                  $record.cleanup -cne 'CONFIRMED' -or $result.identity_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                  $result.descriptor_sha256 -cne $DescriptorSha256 -or $result.call_id -cnotmatch '^[0-9a-f]{32}$' -or
+                  $result.answer_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'result_shape' }
+              Assert-WdStartupContentObject $result.index_age @('status','seconds')
+              if ($result.index_age.status -isnot [string] -or $result.index_age.status -cne 'UNKNOWN' -or
+                  $null -ne $result.index_age.seconds) { throw 'result_shape' }
+              $answer = $result.answer
+              Assert-WdStartupContentObject $answer @('schema','lane','status','reason','result_count','results','binding','trust')
+              foreach ($key in @('schema','lane','status','reason')) {
+                if ($answer.PSObject.Properties[$key].Value -isnot [string]) { throw 'result_shape' }
+              }
+              if ($answer.schema -cne 'wd.q4-lane-answer.v1' -or $answer.lane -cne $Lane -or
+                  $answer.status -cne 'ANSWER' -or $answer.reason -cne '' -or
+                  ($answer.result_count -isnot [int] -and $answer.result_count -isnot [long]) -or
+                  $answer.result_count -lt 1 -or $answer.result_count -gt 100 -or
+                  $answer.results -isnot [array] -or $answer.results.Count -ne $answer.result_count) { throw 'result_shape' }
+              $trust = [ordered]@{lane_authentication='UNKNOWN';freshness='UNKNOWN';publisher_authentication='UNKNOWN';
+                projection_public_attestation='UNKNOWN';transport='caller_injected';projection='caller_pinned'}
+              Assert-WdStartupContentObject $answer.trust @($trust.Keys)
+              foreach ($key in $trust.Keys) {
+                if ($answer.trust.PSObject.Properties[$key].Value -isnot [string] -or
+                    $answer.trust.PSObject.Properties[$key].Value -cne $trust[$key]) { throw 'result_shape' }
+              }
+              # Re-read the actual descriptor after the child exits; its expected content binding must match.
+              $descriptorBytes = [IO.File]::ReadAllBytes($DescriptorPath)
+              $digest = [Security.Cryptography.SHA256]::Create()
+              try { $actual = [BitConverter]::ToString($digest.ComputeHash($descriptorBytes)).Replace('-','').ToLowerInvariant() }
+              finally { $digest.Dispose() }
+              if ($actual -cne $DescriptorSha256) { throw 'result_shape' }
+              $descriptorText = [Text.Encoding]::UTF8.GetString($descriptorBytes)
+              if ($descriptorText.Length -gt 0 -and $descriptorText[0] -eq [char]0xFEFF) { $descriptorText = $descriptorText.Substring(1) }
+              $expected = ($descriptorText | ConvertFrom-Json).expected_binding
+              $bindingKeys = @('encoder_sha256','policy_sha256','roster_sha256','content_decision_sha256',
+                'descriptor_sha256','memory_sha256','projection_sha256')
+              Assert-WdStartupContentObject $answer.binding $bindingKeys
+              Assert-WdStartupContentObject $expected $bindingKeys
+              foreach ($key in $bindingKeys) {
+                $value = $answer.binding.PSObject.Properties[$key].Value
+                if ($value -isnot [string] -or $value -cnotmatch '^[0-9a-f]{64}$' -or
+                    $expected.PSObject.Properties[$key].Value -isnot [string] -or
+                    $value -cne $expected.PSObject.Properties[$key].Value) { throw 'result_shape' }
+              }
+              $utf8 = New-Object Text.UTF8Encoding($false, $true)
+              $refs = @()
+              $lines = New-Object Collections.Generic.List[string]
+              $lines.Add('Mind recalled content; freshness UNKNOWN; index_age UNKNOWN; source references are caller-pinned, not authenticated.')
+              $index = 0
+              foreach ($item in $answer.results) {
+                Assert-WdStartupContentObject $item @('stored_text','ref_sha256','doc_id_sha256')
+                if ($item.stored_text -isnot [string] -or [string]::IsNullOrWhiteSpace($item.stored_text) -or
+                    $utf8.GetByteCount($item.stored_text) -gt 320 -or
+                    $item.stored_text -cmatch '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]' -or
+                    $item.ref_sha256 -isnot [string] -or $item.ref_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                    $item.doc_id_sha256 -isnot [string] -or $item.doc_id_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'result_shape' }
+                $index += 1
+                $refs += $item.ref_sha256
+                $lines.Add('[' + $index.ToString([Globalization.CultureInfo]::InvariantCulture) + '] ' + $item.stored_text +
+                  ' [ref_sha256=' + $item.ref_sha256 + '; doc_id_sha256=' + $item.doc_id_sha256 + ']')
+              }
+              # Match the caller's canonical bytes, including ASCII Unicode escapes. This also refuses duplicate
+              # fields instead of silently accepting the JSON parser's last value. Recompute the answer digest.
+              if ($utf8.GetByteCount($stdoutText) -gt 65536 -or
+                  $stdoutText.Trim() -cne (ConvertTo-WdStartupContentJson $result)) { throw 'result_shape' }
+              $digest = [Security.Cryptography.SHA256]::Create()
+              try { $actual = [BitConverter]::ToString($digest.ComputeHash([Text.Encoding]::ASCII.GetBytes(
+                (ConvertTo-WdStartupContentJson $answer)))).Replace('-','').ToLowerInvariant() }
+              finally { $digest.Dispose() }
+              if ($actual -cne $result.answer_sha256) { throw 'result_shape' }
+              $ownerToken = [string]$env:AGENT_BRIDGE_OWNER_TOKEN
+              if ([string]::IsNullOrWhiteSpace($ownerToken)) { throw 'result_shape' }
+              $escapedToken = ConvertTo-WdStartupContentJson $ownerToken
+              $escapedToken = $escapedToken.Substring(1, $escapedToken.Length - 2)
+              if ($stdoutText.Contains($ownerToken) -or $stdoutText.Contains($escapedToken)) { throw 'result_shape' }
+              $content = $lines -join "`n"
+              if ($content.Length -gt 24000) { throw 'result_shape' }
+              $digest = [Security.Cryptography.SHA256]::Create()
+              try { $deliveryPin = [BitConverter]::ToString($digest.ComputeHash($utf8.GetBytes($content))).Replace('-','').ToLowerInvariant() }
+              finally { $digest.Dispose() }
+              $record.inner_status = 'ANSWER'
+              $record.result_count = [int]$answer.result_count
+              $record.answer_sha256 = $result.answer_sha256
+              $record.call_id = $result.call_id
+              $record.refs = @($refs)
+              $record.delivered_items = [int]$answer.result_count
+              $record.delivered_chars = $content.Length
+              $record.delivered_sha256 = $deliveryPin
+              $record.outcome = 'success'
+              $record.reason = 'content_delivered_unknown_freshness'
+              $record.note = 'Caller-pinned content delivered in memory only with source refs, freshness UNKNOWN and index_age UNKNOWN; identity and source freshness are unauthenticated; not a vote or gate input.'
+              $delivered = $content
+            } elseif ([string]$result.schema -ceq 'wd.q4-lane-content-withheld.v1') {
               # The helper already validated the original response and withheld its text. Independently
               # bind only the metadata to our descriptor and lane; it does not prove source freshness.
               $fields = @('schema','status','reason','freshness','authority','lane','lane_binding',

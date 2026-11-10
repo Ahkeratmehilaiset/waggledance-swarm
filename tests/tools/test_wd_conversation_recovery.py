@@ -24,6 +24,62 @@ def quote(value):
 
 
 @pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("case,accepted,reason", [
+    ("idle", True, ""),
+    ("owner_live", False, "still live"),
+    ("child_live", False, "still live"),
+    ("owner_reused", True, ""),
+    ("child_reused", True, ""),
+    ("owner_unknown_start", False, "cannot disambiguate"),
+    ("child_unknown_start", False, "cannot disambiguate"),
+    ("duplicate", False, "cannot prove old managed owner inactivity"),
+    ("negative", False, "cannot prove old managed owner inactivity"),
+])
+def test_retirement_snapshot_preserves_process_identity_controls(shell, case, accepted, reason):
+    """Exercise the actual owner guard with owned rows, including the PID-zero sentinel."""
+    command = f"""
+$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({quote(REBOOT / 'start-wd-agent.ps1')},[ref]$tokens,[ref]$errors)
+if ($errors.Count) {{ throw 'Recovery launcher source did not parse' }}
+$definition=$ast.Find({{param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Assert-WdManagedOwnerInactive'}},$true)
+if ($null -eq $definition) {{ throw 'Actual process-identity guard missing' }}
+. ([scriptblock]::Create($definition.Extent.Text))
+$owner=[pscustomobject]@{{pid=2147483000;process_start_utc='2026-09-14T08:00:00.0000000Z';
+    child_pid=2147483001;native_process_start_utc='2026-09-14T08:00:00.0000000Z'}}
+$idle=[pscustomobject]@{{ProcessId=0;CreationDate=$null}}
+$rows=@($idle)
+$case={quote(case)}
+if ($case -in @('owner_live','child_live','owner_reused','child_reused','owner_unknown_start','child_unknown_start')) {{
+    $selectedPid=if ($case.StartsWith('owner_')) {{2147483000}} else {{2147483001}}
+    $start=if ($case.EndsWith('_unknown_start')) {{$null}} elseif ($case.EndsWith('_reused')) {{
+        [datetimeoffset]'2026-09-14T08:00:01Z'
+    }} else {{[datetimeoffset]'2026-09-14T08:00:00Z'}}
+    $rows+=@([pscustomobject]@{{ProcessId=$selectedPid;CreationDate=$start}})
+}} elseif ($case -ceq 'duplicate') {{
+    $rows+=@([pscustomobject]@{{ProcessId=42;CreationDate=$null}},[pscustomobject]@{{ProcessId=42;CreationDate=$null}})
+}} elseif ($case -ceq 'negative') {{
+    $rows+=@([pscustomobject]@{{ProcessId=-1;CreationDate=$null}})
+}}
+$admitted=$false; $reason=''
+try {{ Assert-WdManagedOwnerInactive -Owner $owner -ProcessSnapshot $rows; $admitted=$true }}
+catch {{ $reason=$_.Exception.Message }}
+[pscustomobject]@{{accepted=$admitted;reason=$reason}} | ConvertTo-Json -Compress
+"""
+    result = subprocess.run(
+        [shell, "-NoProfile", "-NonInteractive", "-Command", command],
+        cwd=ROOT, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    observed = json.loads(result.stdout)
+    assert observed["accepted"] is accepted
+    if accepted:
+        assert observed["reason"] == ""
+    else:
+        assert reason in observed["reason"]
+
+
+@pytest.mark.parametrize("shell", SHELLS)
 def test_actual_hard_hold_retirement_starts_new_paused_owner(shell, tmp_path):
     """Real contained backend -> cold archive helpers -> real paused backend.
 
@@ -73,8 +129,10 @@ foreach ($name in @('Resolve-NormalizedPath','Assert-LanePathWithoutReparse','Re
 }}
 $lease=Enter-WdManagedAttemptLease -RuntimeRoot {quote(runtime)} -Agent codex-lead-1
 try {{
-    # Use the actual process snapshot, including Windows' PID-zero sentinel.
-    $evidence=Get-WdManagedAttemptEvidence -Agent codex-lead-1 -Worktree {quote(tmp_path)} -RuntimeRoot {quote(runtime)}
+    # The isolated fake backend has ended. Supply test-owned process evidence;
+    # the actual live/reused/ambiguous PID guard is covered separately above.
+    $processes=@([pscustomobject]@{{ProcessId=0;CreationDate=$null}})
+    $evidence=Get-WdManagedAttemptEvidence -Agent codex-lead-1 -Worktree {quote(tmp_path)} -RuntimeRoot {quote(runtime)} -ProcessSnapshot $processes
     Invoke-WdManagedAttemptRetirement -Evidence $evidence -ReviewedJournalDigest $evidence.digest -Reason 'Isolated regression: abandon uncertain fake-native attempt' | ConvertTo-Json -Depth 8 -Compress
 }} finally {{ $lease.Dispose() }}
 """

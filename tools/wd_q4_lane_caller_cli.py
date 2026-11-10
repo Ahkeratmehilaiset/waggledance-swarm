@@ -18,6 +18,16 @@ worktree. Its identity digest is SELF-COMPUTED. Same-user declarations and pins
 are not authentication: lane_authentication must remain UNKNOWN. Ancestor/path
 checks do not defeat hostile replacement after checking or same-user writers.
 
+Complete pinned content-cell receipts expose a separate v2 delivery envelope:
+index_age is wd.q4-cell-build-age.v1 with oldest/newest cell build UTC, floored
+integer age seconds, the pinned content cutoff and its age, and observed local
+UTC. Clock authentication, source freshness and coverage completeness remain
+UNKNOWN. It is not a whole-memory commit timestamp. Missing optional time fields
+preserve the exact legacy v1 UNKNOWN shape; malformed present metadata, unsafe
+paths, pin mismatch or future times refuse. Old launchers refuse the new v2
+shape: coordinated consumer changes are required before activation. No writer,
+rebuild, descriptor-schema change, or production activation is added here.
+
 Before entering a query and again before publishing its result, status/card plans
 must still match their pinned pointer. A content plan has no legacy pointer: it
 instead rechecks its exact plan, policy, roster, decision, descriptor, memory and
@@ -278,7 +288,7 @@ def _require_current_snapshot(descriptor, binding, inputs):
                and selected["encoder"]["revision"] == config["runtime_revision"]
                and manifest.get("projection_schema") == "wd.mind-content-memory-projection.v1"
                and manifest.get("projection_sha256") == binding["projection_sha256"])
-        return
+        return _content_cell_age_snapshot(memory, manifest)
     staged = "card_policy_sha256" in binding
     _check((public.get("schema") == "wd.q4-public-wrapper-plan.v3") == staged)
     if staged:
@@ -286,6 +296,118 @@ def _require_current_snapshot(descriptor, binding, inputs):
     else:
         root = _path(public["root"])
         _read(str(root / "q4-latest.json"), 16384, binding["pointer_sha256"])
+
+
+def _age_utc(value):
+    """Strict pinned UTC text, never a filesystem mtime or an authenticated clock."""
+    _check(type(value) is str and _UTC.fullmatch(value) is not None)
+    return datetime.fromisoformat(value[:-1] + "+00:00")
+
+
+def _content_cell_age_snapshot(memory, manifest):
+    """Read metadata only from the already selected, hash-pinned content memory.
+
+    Missing optional time fields mean no age capability, not an integrity waiver.
+    Every present cell receipt is still bounded and fully hash-verified. This is
+    not a replacement for the existing native/index/content verification chain.
+    """
+    cutoff = manifest.get("cutoff_utc")
+    if "cutoff_utc" in manifest:
+        _age_utc(cutoff)
+    if "cells" not in manifest:
+        return (cutoff, ()) if cutoff is not None else None
+    from waggledance.core.hex_cell_topology import ALL_CELLS
+    cells = manifest["cells"]
+    _check(manifest.get("schema") == "wd.bridge-mind-hex-memory-step2.v1"
+           and manifest.get("scope") == "wd.q4-shared-projected-events.v1"
+           and type(cells) is dict and len(cells) <= len(ALL_CELLS))
+    if not cells:
+        return cutoff, ()
+    captured = []
+    for cell_id, pointer in sorted(cells.items()):
+        _check(type(cell_id) is str and cell_id in ALL_CELLS and type(pointer) is dict
+               and frozenset(pointer) == frozenset({"generation", "seq", "receipt_sha256", "count"}))
+        generation = pointer["generation"]
+        _check(type(generation) is int and 0 <= generation <= 999999
+               and type(pointer["seq"]) is int and pointer["seq"] >= 0
+               and type(pointer["count"]) is int and pointer["count"] >= 0)
+        pin = _hex(pointer["receipt_sha256"])
+        # Closed cell names and a bounded integer derive this path. _read also
+        # refuses symlinks/reparse points at every ancestor and caps raw bytes.
+        receipt_path = memory / "cells" / cell_id / ("gen-%06d" % generation) / "receipt.json"
+        receipt = _json(_read(str(receipt_path), MAX_FLEET, pin))
+        content = receipt.get("content")
+        _check(receipt.get("schema") == "wd.bridge-mind-hex-cell.v1"
+               and receipt.get("authority") == "none" and receipt.get("scope") == manifest["scope"]
+               and type(content) is dict and content.get("cell_id") == cell_id
+               and type(content.get("count")) is int and content["count"] == pointer["count"]
+               and content.get("projection_sha256") == manifest["projection_sha256"])
+        cell_cutoff = content.get("cutoff_utc")
+        if "cutoff_utc" in content:
+            _age_utc(cell_cutoff)
+        if cutoff is not None:
+            _check(cell_cutoff == cutoff)
+        built = receipt.get("built_utc")
+        if "built_utc" in receipt:
+            _age_utc(built)
+        captured.append((cell_id, generation, pin, built, cell_cutoff))
+    return cutoff, tuple(captured)
+
+
+def _content_cell_age_value(snapshot, observed):
+    """Whole integer seconds, floored; local clock and source freshness UNKNOWN."""
+    if snapshot is None:
+        return {"status": "UNKNOWN", "seconds": None}
+    _check(type(observed) is datetime and observed.tzinfo is not None
+           and observed.utcoffset().total_seconds() == 0)
+    cutoff, cells = snapshot
+    dates = []
+    if cutoff is not None:
+        cutoff_time = _age_utc(cutoff)
+        _check(cutoff_time <= observed)
+    for _, _, _, built, cell_cutoff in cells:
+        if cell_cutoff is not None:
+            _check(_age_utc(cell_cutoff) <= observed)
+        if built is not None:
+            value = _age_utc(built)
+            _check(value <= observed)
+            dates.append((value, built))
+    # Check all available times before fallback: missing metadata cannot hide
+    # a future or malformed time on another cell. Never report a partial range.
+    if not cells or cutoff is None or len(dates) != len(cells):
+        return {"status": "UNKNOWN", "seconds": None}
+    oldest, newest = min(dates), max(dates)
+    def seconds(when):
+        delta = observed - when
+        return delta.days * 86400 + delta.seconds
+    return {"schema": "wd.q4-cell-build-age.v1", "status": "OBSERVED",
+            "basis": "hash_pinned_cell_receipts",
+            "observed_local_utc": observed.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+            "clock_authentication": "UNKNOWN", "source_freshness": "UNKNOWN",
+            "coverage_completeness": "UNKNOWN", "oldest_cell_built_utc": oldest[1],
+            "newest_cell_built_utc": newest[1], "oldest_cell_age_seconds": seconds(oldest[0]),
+            "newest_cell_age_seconds": seconds(newest[0]), "coverage_cutoff_utc": cutoff,
+            "coverage_age_seconds": seconds(cutoff_time)}
+
+
+def _with_content_cell_age(rendered, snapshot, observed, limit, token):
+    """Version the closed content envelope; old launchers must refuse v2.
+
+    Called only after the unchanged result/digest/cleanup validation, final pin
+    rechecks and clock check. Missing age capability preserves exact v1 UNKNOWN.
+    """
+    value = _json(rendered.encode("ascii"))
+    if value.get("schema") != "wd.q4-lane-content-delivery.v1":
+        return rendered
+    age = _content_cell_age_value(snapshot, observed)
+    if age["status"] == "UNKNOWN":
+        return rendered
+    value["schema"] = "wd.q4-lane-content-delivery.v2"
+    value["index_age"] = age
+    raw = _canon(value) + b"\n"
+    _check(len(raw) <= limit and token.encode("utf-8", "strict") not in raw
+           and _canon(token)[1:-1] not in raw)
+    return raw.decode("ascii")
 
 
 def _interrupted_baseline_marker(live, descriptor_path, baseline):
@@ -423,8 +545,8 @@ def _output(result, lane, identity_pin, descriptor_pin, expected_binding, limit,
     if (answer["status"] == "ANSWER" and answer["results"]
             and frozenset(expected_binding) == _CONTENT_BINDING_KEYS):
         # This is a caller-pinned content route, not authenticated freshness.
-        # The currently pinned memory does not attest an index build time; do
-        # not invent an age from a record timestamp or filesystem metadata.
+        # Age starts UNKNOWN here. Only final rechecked, complete cell receipts
+        # may version this envelope; no record timestamp or filesystem mtime.
         delivered = {
             "schema": "wd.q4-lane-content-delivery.v1", "freshness": "UNKNOWN",
             "index_age": {"status": "UNKNOWN", "seconds": None},
@@ -533,7 +655,7 @@ def main(argv=None):
             else:
                 live_publication = live.select(**selection)
                 descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs = live_publication["configuration"]
-        _require_current_snapshot(descriptor, binding, inputs)
+        age_snapshot = _require_current_snapshot(descriptor, binding, inputs)
         lane, identity_raw, token = _identity(fleet_raw, descriptor, descriptor_pin)
         identity_pin = _sha(identity_raw)
         # The fleet hash has already been checked against the independently
@@ -556,6 +678,7 @@ def main(argv=None):
             # away refuses. No clock authentication, no freshness claim.
             from tools import wd_q4_lane_query as lane_query
             when = lane_query.observed_lane_time(supplied, _utc_now())
+            _content_cell_age_value(age_snapshot, when)
         except Exception:
             # Nothing has been handed off and no owner has entered. This is a
             # distinct cancellation witness, never a cleanup witness.
@@ -609,7 +732,8 @@ def main(argv=None):
         witness = guard._registry._issue()
         guard.release(witness)
         guard_released = True
-        _require_current_snapshot(descriptor, binding, inputs)
+        age_rechecked = _require_current_snapshot(descriptor, binding, inputs)
+        _check(age_rechecked == age_snapshot)
         if interrupted_marker is not None:
             fresh = _configuration(_env("WD_Q4_SHARED_DESCRIPTOR_PATH"), descriptor_pin)
             _check(fresh == (descriptor, descriptor_raw, descriptor_pin, fleet_raw, binding, inputs))
@@ -619,7 +743,10 @@ def main(argv=None):
             live.recheck(live_publication["publication_path"], live_publication["publication_sha256"])
         # Last step before output: refuse a backward clock and any returned
         # card no longer CURRENT at the observed end (v6 is not rechecked).
-        lane_query.recheck_live_card_results(result["answer"]["results"], binding, when, _utc_now())
+        observed_end = _utc_now()
+        lane_query.recheck_live_card_results(result["answer"]["results"], binding, when, observed_end)
+        rendered = _with_content_cell_age(rendered, age_rechecked, observed_end,
+                                          inputs["max_output_bytes"], token)
         _write(rendered)
         return 0
     except (KeyboardInterrupt, SystemExit):

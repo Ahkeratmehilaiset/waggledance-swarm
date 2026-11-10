@@ -15,6 +15,7 @@ from test_check_rco_pass_present import (  # sibling test module: its constants 
     HEAD,
     OTHER_HEAD,
     TASK,
+    _isolate_installed_bundle_trust_inputs,  # noqa: F401  # pytest fixture
     _rco_event,
     check_rco_pass_present,
 )

@@ -34,6 +34,14 @@ from tools.write_bridge_consensus_merge_receipt import (
     write_bridge_consensus_merge_receipt,
 )
 
+
+@pytest.fixture(autouse=True)
+def _isolate_installed_bundle_trust_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Synthetic tests must not consult the running fleet's bundle."""
+    monkeypatch.delenv("WD_BRIDGE_BUNDLE_ROOT", raising=False)
+    monkeypatch.delenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", raising=False)
+
+
 HEAD = "1234567890abcdef1234567890abcdef12345678"
 OTHER_HEAD = "0123456789abcdef0123456789abcdef01234567"
 BASE = "abcdef1234567890abcdef1234567890abcdef12"

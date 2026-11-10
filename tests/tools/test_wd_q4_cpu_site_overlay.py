@@ -9,7 +9,9 @@ import pytest
 
 
 def _inputs(tmp_path):
-    base, cpu = tmp_path / "base", tmp_path / "cpu"
+    owned = tmp_path / ".codex-audit"
+    owned.mkdir()
+    base, cpu = owned / "base", owned / "cpu"
     base.mkdir()
     cpu.mkdir()
     (base / "a.py").write_bytes(b"base")
@@ -23,7 +25,7 @@ def _inputs(tmp_path):
         {"root": "cpu", "source": "b.py", "target": "pkg/b.py", "size": 3,
          "sha256": hashlib.sha256(b"cpu").hexdigest()},
     ]
-    return roots, pins, mapping, tmp_path / "overlay"
+    return roots, pins, mapping, owned / "overlay"
 
 
 def test_off_no_io(monkeypatch):
@@ -233,3 +235,33 @@ def test_mid_copy_disk_floor_is_unknown_and_keeps_partial(tmp_path, monkeypatch)
     assert len(calls) == 2
     assert (target / "pkg" / "a.py").exists()
     assert (target / "pkg" / "a.py").read_bytes() == b""
+
+@pytest.mark.parametrize("kind", ["base", "cpu", "output"])
+def test_fixture_owns_audit_child_for_all_synthetic_paths(tmp_path, kind):
+    # A surrounding D15 audit ancestor must not mask an invalid CI fixture.
+    roots, _, _, target = _inputs(tmp_path)
+    selected = target if kind == "output" else Path(roots[kind])
+    assert ".codex-audit" in tuple(part.casefold() for part in selected.relative_to(tmp_path).parts)
+
+
+def test_output_outside_audit_is_refused_without_mkdir(tmp_path, monkeypatch):
+    import uuid
+    overlay = importlib.import_module("tools.wd_q4_cpu_site_overlay")
+    roots, pins, mapping, _ = _inputs(tmp_path)
+    # Only read the canonical worktree parent; never create output outside audit.
+    target = Path.cwd() / ("cpu-overlay-rejected-" + uuid.uuid4().hex)
+    assert ".codex-audit" not in tuple(part.casefold() for part in target.parts)
+    assert not target.exists()
+    original = os.mkdir
+    attempts = []
+    def record(path, *args, **kwargs):
+        if Path(path) == target:
+            attempts.append(path)
+            pytest.fail("unapproved output creation attempted")
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(overlay.os, "mkdir", record)
+    with pytest.raises(overlay.OverlayRefused, match="^site_overlay_refused$"):
+        overlay.stage(enabled=True, roots=roots, root_pins=pins, mapping=mapping,
+                      output=str(target), max_bytes=100)
+    assert attempts == []
+    assert not target.exists()

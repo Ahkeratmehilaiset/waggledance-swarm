@@ -13,6 +13,10 @@ SUPERVISOR = REBOOT / "wd_supervisor.ps1"
 TOOLS = REBOOT / "start-wd-tools-consumer.ps1"
 HASH = "a" * 64
 
+_WINDOWS_HELPER_LAUNCH = pytest.mark.skipif(
+    os.name != "nt", reason="Windows helper launch uses pwsh.exe or powershell.exe"
+)
+
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 def test_bootstrap_forwards_only_complete_pair(ps):
@@ -413,6 +417,7 @@ def assert_no_secret(text):
 
 
 @pytest.mark.parametrize("mode", ["answer", "trust_unknown", "trust_stale", "trust_forged_fresh"])
+@_WINDOWS_HELPER_LAUNCH
 def test_tools_startup_read_never_delivers_unverified_freshness(tmp_path, mode):
     fx = startup_read_fixture(tmp_path, "codex-tools-1", mode=mode)
     script = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
@@ -438,6 +443,7 @@ Clear-WdInheritedMindReadSettings
 @pytest.mark.parametrize("mode", ["withheld", "withheld_degraded", "withheld_multiple", "withheld_missing", "withheld_outer_unknown", "withheld_extra", "withheld_wrong_lane", "withheld_wrong_descriptor",
     "withheld_wrong_binding", "withheld_wrong_freshness", "withheld_wrong_trust", "withheld_wrong_cleanup",
     "withheld_wrong_count", "withheld_bad_ref", "withheld_extra_ref"])
+@_WINDOWS_HELPER_LAUNCH
 def test_withheld_content_metadata_is_strict_and_never_delivered(tmp_path, mode):
     fx = startup_read_fixture(tmp_path, "codex-tools-1", mode=mode)
     script = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
@@ -459,6 +465,7 @@ def test_withheld_content_metadata_is_strict_and_never_delivered(tmp_path, mode)
 
 
 @pytest.mark.parametrize("mutation", ["none", "authority"])
+@_WINDOWS_HELPER_LAUNCH
 def test_real_producer_withheld_bytes_reach_startup_parser_without_text(tmp_path, mutation):
     from tools import wd_q4_lane_caller_cli as producer
     from tests.tools.test_wd_q4_ondemand_freshness_20261109 import result
@@ -522,6 +529,7 @@ def test_on_demand_prompt_does_not_treat_unknown_freshness_as_current():
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize("mode", ["answer", "abstain", "degraded", "zero", "refuse", "garbage"])
+@_WINDOWS_HELPER_LAUNCH
 def test_tools_startup_read_records_only_outcome_digests_and_refs(tmp_path, ps, mode):
     fx = startup_read_fixture(tmp_path, "codex-tools-1", mode=mode)
     script = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
@@ -559,6 +567,7 @@ def test_tools_startup_read_is_off_for_a_card_descriptor(tmp_path, ps):
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@_WINDOWS_HELPER_LAUNCH
 def test_tools_startup_read_survives_a_record_write_failure_and_sets_the_helper_environment(tmp_path, ps):
     """S3 + V1 on the Tools copy: no throw when the record directory is a file; the child gets the verified env."""
     fx = startup_read_fixture(tmp_path, "codex-tools-1", audit_case="file", env_case="unset")
@@ -595,6 +604,7 @@ def test_tools_consumer_runs_the_startup_read_after_the_export_and_never_in_vali
     assert "WaitAll(" in body and "io_timeout" in body and "output_over_budget" in body
 
 
+@_WINDOWS_HELPER_LAUNCH
 def test_startup_failed_record_replace_never_delivers_against_a_prior_receipt(tmp_path):
     """An old receipt is not the matching digest for this recall; no real ACL or startup is used."""
     fx = startup_read_fixture(tmp_path, "codex-tools-1", audit_case="stale")
@@ -618,7 +628,13 @@ def test_startup_missing_record_never_promises_digest_verification():
 
 
 
-@pytest.mark.parametrize("fault", ["own_session", "starter_refuses", "missing_identity", "wrong_lane", "outside_cwd"])
+@pytest.mark.parametrize("fault", [
+    pytest.param("own_session", marks=_WINDOWS_HELPER_LAUNCH),
+    "starter_refuses",
+    pytest.param("missing_identity", marks=_WINDOWS_HELPER_LAUNCH),
+    pytest.param("wrong_lane", marks=_WINDOWS_HELPER_LAUNCH),
+    pytest.param("outside_cwd", marks=_WINDOWS_HELPER_LAUNCH),
+])
 def test_startup_uses_its_own_session_and_native_worktree_in_real_statement_order(tmp_path, monkeypatch, fault):
     """Execute only the real session/recall statements, with an isolated session seam.
 

@@ -13,6 +13,21 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 LAUNCH = ROOT / 'ops/windows/reboot/Invoke-WdQ4Genesis.ps1'
+_PORTABLE_OFF_TESTS = frozenset((
+    'test_runtime_bootstrap_default_off_does_no_io',
+    'test_powershell_launcher_default_off_without_reading_inputs',
+))
+
+
+@pytest.fixture(autouse=True)
+def _require_supported_genesis_host(request):
+    if os.name == 'nt':
+        return
+    name = request.node.originalname
+    if name not in _PORTABLE_OFF_TESTS:
+        pytest.skip('genesis runtime requires Windows C: paths, PowerShell and kernel32')
+    if name == 'test_powershell_launcher_default_off_without_reading_inputs' and shutil.which('pwsh') is None:
+        pytest.skip('portable default-off check requires PowerShell 7 (pwsh)')
 
 
 def test_runtime_bootstrap_default_off_does_no_io(monkeypatch, capsys):
@@ -23,7 +38,8 @@ def test_runtime_bootstrap_default_off_does_no_io(monkeypatch, capsys):
 
 
 def test_powershell_launcher_default_off_without_reading_inputs():
-    run = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-File', str(LAUNCH)],
+    host = 'powershell' if os.name == 'nt' else 'pwsh'
+    run = subprocess.run([host, '-NoProfile', '-NonInteractive', '-File', str(LAUNCH)],
                          text=True, capture_output=True, timeout=20)
     assert run.returncode == 0
     assert json.loads(run.stdout) == {'status': 'OFF'}

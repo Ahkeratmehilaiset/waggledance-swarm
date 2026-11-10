@@ -420,7 +420,23 @@ def _output(result, lane, identity_pin, descriptor_pin, expected_binding, limit,
     # The closed schema and adapter's parent-resolved records exclude query
     # fields. Public record/metadata text may coincide with a query; tokens may not.
     _check(token.encode("utf-8", "strict") not in raw and _canon(token)[1:-1] not in raw)
-    if answer["results"]:
+    if (answer["status"] == "ANSWER" and answer["results"]
+            and frozenset(expected_binding) == _CONTENT_BINDING_KEYS):
+        # This is a caller-pinned content route, not authenticated freshness.
+        # The currently pinned memory does not attest an index build time; do
+        # not invent an age from a record timestamp or filesystem metadata.
+        delivered = {
+            "schema": "wd.q4-lane-content-delivery.v1", "freshness": "UNKNOWN",
+            "index_age": {"status": "UNKNOWN", "seconds": None},
+            **{key: result[key] for key in ("lane", "lane_binding", "lane_authentication", "cleanup",
+                                             "identity_sha256", "descriptor_sha256", "call_id",
+                                             "answer_sha256")},
+            "answer": answer,
+        }
+        raw = _canon(delivered) + b"\n"
+        _check(len(raw) <= limit)
+        _check(token.encode("utf-8", "strict") not in raw and _canon(token)[1:-1] not in raw)
+    elif answer["results"]:
         # Every accepted trust tuple currently has UNKNOWN source freshness.
         # Keep the original result for final pin/card rechecks and guard release;
         # expose only labelled provenance, never its unverified record text.

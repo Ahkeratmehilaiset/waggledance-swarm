@@ -46,12 +46,19 @@ def assert_withheld(out, original):
 
 
 @pytest.mark.parametrize("status", ["ANSWER", "DEGRADED"])
-def test_all_nonempty_statuses_withhold_content_without_mutating_original(status):
+def test_answer_is_labelled_and_degraded_is_withheld_without_mutating_original(status):
     value = result(status)
     before = copy.deepcopy(value)
     raw = render(value)
-    assert_withheld(json.loads(raw), before)
-    assert "synthetic-public-result" not in raw
+    out = json.loads(raw)
+    if status == "ANSWER":
+        assert out["schema"] == "wd.q4-lane-content-delivery.v1"
+        assert out["freshness"] == "UNKNOWN"
+        assert out["index_age"] == {"status": "UNKNOWN", "seconds": None}
+        assert out["answer"] == before["answer"] and out["answer_sha256"] == before["answer_sha256"]
+    else:
+        assert_withheld(out, before)
+        assert "synthetic-public-result" not in raw
     assert value == before
     assert raw == canon(json.loads(raw)).decode() + "\n"
 
@@ -83,8 +90,11 @@ def test_original_output_limit_still_applies_even_if_content_would_be_removed():
 
 def test_new_metadata_token_collision_refuses_instead_of_leaking_owner_token():
     value = result()
-    assert b"CONTENT_WITHHELD" not in canon(value)
-    with pytest.raises(ValueError): render(value, token="CONTENT_WITHHELD")
+    assert b"wd.q4-lane-content-delivery.v1" not in canon(value)
+    with pytest.raises(ValueError): render(value, token="wd.q4-lane-content-delivery.v1")
+    degraded = result("DEGRADED")
+    assert b"CONTENT_WITHHELD" not in canon(degraded)
+    with pytest.raises(ValueError): render(degraded, token="CONTENT_WITHHELD")
 
 
 @pytest.mark.parametrize("status", ["ANSWER", "DEGRADED"])

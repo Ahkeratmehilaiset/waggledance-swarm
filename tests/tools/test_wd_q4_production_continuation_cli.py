@@ -74,6 +74,8 @@ def digest(data):
 
 @pytest.fixture
 def synthetic_config(tmp_path, monkeypatch):
+    if os.name != "nt":
+        pytest.skip("real continuation config requires Windows C: path and identity checks")
     bundle = tmp_path / "bundle"
     code = bundle / "tools-bootstrap/tools"
     code.mkdir(parents=True)
@@ -111,6 +113,10 @@ def synthetic_config(tmp_path, monkeypatch):
         path = tmp_path / "config.json"
         path.write_bytes(raw)
         return str(path), digest(raw)
+    path, pin = write()
+    prepared = cli._prepare(path, pin)
+    assert prepared["expected_pointer_sha256"] == config["pointer_sha256"]
+    assert prepared["expected_tuple_sha256"] == config["tuple_sha256"]
     return config, write, tmp_path
 
 
@@ -139,6 +145,7 @@ def test_bad_independent_pin_refuses_before_continuation(synthetic_config, chang
     assert response(capsys) == {"status": "REFUSED"}
 
 
+@pytest.mark.skipif(os.name != "nt", reason="real continuation fixtures require Windows C: paths")
 def test_cli_reaches_real_continuation_once_with_synthetic_runner(synthetic, synthetic_config, monkeypatch, capsys):
     _, args, state, document, *_ = synthetic
     config, write, tmp = synthetic_config

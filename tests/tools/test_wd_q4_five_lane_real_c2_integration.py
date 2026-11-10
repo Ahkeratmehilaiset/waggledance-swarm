@@ -159,7 +159,7 @@ def read_as(route, lane, monkeypatch, *, when='2026-11-03T00:00:00Z', unknown=Fa
     identity = json.loads(identity)
     assert identity['agent_uuid'] == member['agent_uuid'] and identity['run_id'] == 'synthetic-' + lane
     plan = json.loads(Path(descriptor['public_plan']).read_bytes())
-    config = rt.config(Path(plan['config']['memory']), plan['config']['descriptor_sha256'])
+    config = rt.real_config(Path(plan['config']['memory']), plan['config']['descriptor_sha256'])
     calls = []
     monkeypatch.setattr(reader, 'ENCODER_FACTORY', lambda **_: rt.fx.Encoder())
     monkeypatch.setattr(reader, 'bind_runtime_encoder', lambda *a: None)

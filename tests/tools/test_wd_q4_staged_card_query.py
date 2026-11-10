@@ -24,7 +24,7 @@ def route(call, monkeypatch):
     pointer = json.loads(call["pointer_bytes"])
     directory = call["root"] / pointer["generation"]
     descriptor = json.loads((directory / "descriptor.json").read_bytes())
-    config = rt.config(directory, pointer["artifacts"]["descriptor.json"])
+    config = rt.real_config(directory, pointer["artifacts"]["descriptor.json"])
     args = dict(call, expected_source_sha256=pointer["source_prefix"]["sha256"],
                 expected_encoder_sha256=query._encoder_digest(descriptor["encoder"]))
     monkeypatch.setattr(reader, "ENCODER_FACTORY", lambda **kwargs: rt.fx.Encoder())
@@ -54,6 +54,30 @@ def run(route, stdin=None):
 def test_default_off_before_config_stdin_or_root():
     with pytest.raises(query.PublicQueryRefused, match="^disabled$"):
         query.query_staged_card_snapshot(object(), Unreadable(), root=object())
+
+
+def test_a_host_native_posix_path_is_refused_by_the_binding_rule_before_stdin_root_or_pointer(monkeypatch):
+    """Platform-independent contract: the staged route is Windows-only. A POSIX path in the config tuple is refused by
+    q4._validate_config (invalid_binding) with every pin well-formed and before stdin, root or pointer are touched;
+    the spy proves the refusal comes from that check and not from a later compare."""
+    seen = []
+    original = query.q4_query._validate_config
+
+    def spy(config):
+        try:
+            return original(config)
+        except query.q4_query.QueryRefused as exc:
+            seen.append(str(exc))
+            raise
+
+    monkeypatch.setattr(query.q4_query, "_validate_config", spy)
+    config = replace(rt.config(Path(rt.SYNTHETIC_MEMORY), "7" * 64),
+                     memory="/tmp/cards", descriptor="/tmp/cards/descriptor.json")
+    pins = dict(expected_pointer_sha256="1" * 64, expected_source_sha256="2" * 64, expected_encoder_sha256="3" * 64,
+                policy_sha256="4" * 64, roster_sha256="5" * 64, card_decision_sha256="6" * 64)
+    with pytest.raises(query.PublicQueryRefused, match="^staged_query_refused$"):
+        query.query_staged_card_snapshot(config, Unreadable(), root=object(), enabled=True, **pins)
+    assert seen == ["invalid_binding"]
 
 
 def test_actual_c3_c2_snapshot_query_answers_without_v6_history(route, monkeypatch):

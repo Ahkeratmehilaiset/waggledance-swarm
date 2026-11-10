@@ -76,7 +76,7 @@ def _read(value,pin,limit):
     path=_path(str(value));before=path.stat()
     if before.st_size>limit:raise ValueError()
     with path.open('rb') as stream:
-        opened=os.fstat(stream.fileno());raw=stream.read(limit+1);after=os.fstat(stream.fileno())
+        opened=os.fstat(stream.fileno());raw=stream.read(min(limit,max(0,before.st_size))+1);after=os.fstat(stream.fileno())
     if (len(raw)!=before.st_size or not os.path.samestat(before,opened) or not os.path.samestat(opened,after)
             or not os.path.samestat(after,path.stat()) or not hmac.compare_digest(_sha(raw),pin)):raise ValueError()
     return raw

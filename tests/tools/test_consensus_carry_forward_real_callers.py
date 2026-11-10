@@ -32,7 +32,7 @@ import os
 import re
 import shutil
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -56,6 +56,8 @@ AUTHOR = "claude-rco-2"
 CHANGED_PATH = "tools/agent_next_task.py"
 MERGE_SHA = "2222222222222222222222222222222222222222"
 NOW = datetime(2026, 11, 9, 8, 0, tzinfo=timezone.utc)
+MIDNIGHT = datetime(2026, 11, 10, 0, 0, tzinfo=timezone.utc)
+LAST_INSTANT = MIDNIGHT - timedelta(microseconds=1)
 GATE = "tools.idle_consensus_auto_merge:evaluate_auto_merge_gate"
 MERGE = "tools.merge_with_bridge_receipt:merge_with_bridge_receipt"
 DESCRIPTIVE_TASK = "rco1-review-real-callers-carry-descriptive"
@@ -170,6 +172,31 @@ def anchored_fleet(tmp_path, monkeypatch):
     (root / "deployment-manifest.json").write_bytes(manifest)
     monkeypatch.setenv("WD_BRIDGE_BUNDLE_ROOT", str(root))
     monkeypatch.setenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", hashlib.sha256(manifest).hexdigest())
+
+
+class _TrustedClock:
+    """Test-owned stand-in for the merge executor's trusted clock read: queued instants first, then NOW."""
+
+    def __init__(self):
+        self.queue = []
+        self.reads = []
+
+    def __call__(self):
+        value = self.queue.pop(0) if self.queue else NOW
+        self.reads.append(value)
+        return value
+
+
+@pytest.fixture(autouse=True)
+def trusted_clock(monkeypatch):
+    """UTC midnight fix (Lead 2026-11-10T00:55:24Z): merge_with_bridge_receipt refuses an apply whose now_utc is not on
+    the UTC date of its trusted clock, so with the wall clock every apply case here failed once UTC passed midnight
+    after NOW. Pinning the trusted clock read (the seam test_merge_with_bridge_receipt.py already uses) keeps the
+    synthetic events, git stamps, now_utc and the trusted clock on one date on every run. The production guard is
+    unchanged and is proven at the UTC midnight boundary by the midnight tests below."""
+    clock = _TrustedClock()
+    monkeypatch.setattr(merge_tool, "_utc_now", clock)
+    return clock
 
 
 # --------------------------------------------------------------------------------------------------------------
@@ -501,6 +528,50 @@ def test_control_exact_head_apply_merges_with_match_head_commit(tmp_path, histor
     report = _merge(tmp_path, events_path=_events_file(tmp_path, _approvals(h.new)), runner=run, apply=True,
                     expected_head=h.new, expected_base_sha=h.new_base)
     assert report["decision"] == "merge_executed_after_receipt", _reasons(report)
+    merges = _merge_calls(calls)
+    assert len(merges) == 1 and f"--match-head-commit={h.new}" in merges[0]
+
+
+# --------------------------------------------------------------------------------------------------------------
+# UTC midnight boundary (deterministic; the real production guard decides, only its clock read is test-owned)
+# --------------------------------------------------------------------------------------------------------------
+def test_midnight_apply_with_previous_day_now_is_refused_by_the_production_guard(tmp_path, histories, trusted_clock):
+    """The CI failure of 2026-11-10, reproduced on purpose: trusted clock at UTC midnight, now_utc on the previous
+    day. The guard refuses before any GitHub read or merge."""
+    h = histories["legit_rebase"]
+    trusted_clock.queue[:] = [MIDNIGHT]
+    calls, run = _runner(head=h.new, base=h.new_base)
+    with pytest.raises(ValueError, match="now_utc must use the current UTC date when apply is true"):
+        _merge(tmp_path, events_path=_events_file(tmp_path, _approvals(h.new)), runner=run, apply=True,
+               expected_head=h.new, expected_base_sha=h.new_base)
+    assert calls == [] and _merge_calls(calls) == []
+    assert trusted_clock.reads == [MIDNIGHT]
+
+
+def test_midnight_apply_at_the_last_instant_of_the_now_date_merges(tmp_path, histories, trusted_clock):
+    h = histories["legit_rebase"]
+    trusted_clock.queue[:] = [LAST_INSTANT]
+    calls, run = _runner(head=h.new, base=h.new_base)
+    report = _merge(tmp_path, events_path=_events_file(tmp_path, _approvals(h.new)), runner=run, apply=True,
+                    expected_head=h.new, expected_base_sha=h.new_base)
+    assert report["decision"] == "merge_executed_after_receipt", _reasons(report)
+    assert trusted_clock.reads[0] == LAST_INSTANT
+    merges = _merge_calls(calls)
+    assert len(merges) == 1 and f"--match-head-commit={h.new}" in merges[0]
+
+
+def test_midnight_crossed_during_one_apply_call_still_merges_on_the_first_trusted_read(tmp_path, histories,
+                                                                                        trusted_clock):
+    """The trusted clock crosses UTC midnight between the guard read and the later reads of the same call; the
+    guard and the receipt date bind the first read, so the call stays one decision on one date."""
+    h = histories["legit_rebase"]
+    trusted_clock.queue[:] = [LAST_INSTANT, MIDNIGHT, MIDNIGHT + timedelta(seconds=1)]
+    calls, run = _runner(head=h.new, base=h.new_base)
+    report = _merge(tmp_path, events_path=_events_file(tmp_path, _approvals(h.new)), runner=run, apply=True,
+                    expected_head=h.new, expected_base_sha=h.new_base)
+    assert report["decision"] == "merge_executed_after_receipt", _reasons(report)
+    assert trusted_clock.reads[0] == LAST_INSTANT and len(trusted_clock.reads) >= 2
+    assert trusted_clock.reads[1] >= MIDNIGHT
     merges = _merge_calls(calls)
     assert len(merges) == 1 and f"--match-head-commit={h.new}" in merges[0]
 

@@ -1,6 +1,7 @@
 """Synthetic generation selection; not a production or identity proof."""
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -616,6 +617,8 @@ def test_staged_publish_and_select_use_staged_producer_and_card_pointer(staged):
 
 @pytest.fixture
 def real_staged(case, staged_producer):
+    if os.name != 'nt':
+        pytest.skip('real staged producer requires Windows fixed-volume checkpoint reader')
     """Build C2 with the real synthetic producer and retain the real binding producer."""
     c, evidence = case, staged_producer
     plan_raw = evidence['public_plan_bytes']; plan = json.loads(plan_raw)

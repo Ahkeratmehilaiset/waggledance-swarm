@@ -21,6 +21,8 @@ def sha(value):
 
 @pytest.fixture
 def fixture(tmp_path):
+    if os.name != 'nt':
+        pytest.skip('synthetic checkpoint fixture requires fixed Windows volumes')
     from sandbox.mind.step2 import prefix_private_state as state
     from sandbox.mind.step2 import shared_index_checkpoint as cp
     from waggledance.core.bridge_log_reader import BridgeCursor, BridgePrefixPin

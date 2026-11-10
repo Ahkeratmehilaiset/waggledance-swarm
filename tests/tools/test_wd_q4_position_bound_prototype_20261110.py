@@ -6,9 +6,27 @@ tools.wd_q4_snapshot_lag.check_snapshot_position (before the query and right bef
 watermark. A bound is a statement about the observed log POSITION only:
 
 * it is not authenticated freshness, source authentication, coverage, a clock or a lease;
-* bytes appended after the watermark are counted but never bound by digest, so a same-length rewrite of the
-  unpinned suffix between the two instants is invisible (pinned below as a known limitation);
+* bytes appended after the watermark are counted but never bound by digest: the guard returns only lag_bytes, so
+  ANY rewrite of the unpinned suffix between the two instants whose length does not decrease (same length, or a
+  different and longer suffix of complete records within the budget) is invisible (pinned below as a known
+  limitation); binding the suffix would need the second observation pinned to the first observation's candidate
+  prefix, which is a guard change, not test-only;
 * any refusal of either observation, or a shrinking suffix between them, is UNKNOWN, never a weaker bound.
+
+Further gaps a wired version must close (recorded, not solved here):
+
+* cost and ceiling: every observation rehashes the whole pinned prefix (no cache, pinned below), so one bound costs
+  two full prefix reads; the guard refuses a prefix above max_prefix_bytes, itself capped at the reader's
+  MAX_PREFIX_BYTES (1 GiB), so once the log outgrows the ceiling every bound is UNKNOWN for good (pinned below);
+  a measured cost budget and a growth plan are prerequisites for wiring;
+* the window after the second instant: the bound is a statement about the two observation instants only; anything
+  between the second observation and the moment the answer is emitted or consumed is unbound (the guard is not a
+  lease); a wired version must say so and place the second instant as late as possible (pinned below);
+* snapshot binding: the guard bounds whatever valid prefix pin it is given; nothing here proves that the watermark
+  is the source prefix of the snapshot that produced the answer (pinned below); the caller must bind it to the
+  validated snapshot and descriptor, together with blocker 2;
+* the envelope helper below calls lane caller internals (_output, _TRUST, _sha, _canon): acceptable for evidence,
+  brittle against refactors.
 
 Two blockers for safe wiring are pinned as tests, not worked around:
 
@@ -22,6 +40,8 @@ Two blockers for safe wiring are pinned as tests, not worked around:
 import hashlib
 import json
 import re
+import shutil
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 
@@ -98,6 +118,13 @@ def test_complete_records_appended_between_instants_report_only_the_coarse_bucke
     assert bound["status"] == "BOUNDED_BY_LOG_POSITION" and bound["lag_bucket"] == 4096
 
 
+def test_the_largest_bucket_is_reached_and_not_exceeded(log):
+    big = b'{"event":"' + b"x" * 1000 + b'"}\n'
+    bound = two_instants(log, 65536, between=lambda: append(log[0], big * 5))  # about 5 KB, above 4096
+    assert bound["status"] == "BOUNDED_BY_LOG_POSITION" and bound["lag_bucket"] == 65536
+    assert two_instants(log, 65536, between=lambda: append(log[0], big * 66)) == {"status": "UNKNOWN"}  # > 64 KiB
+
+
 def test_append_beyond_the_budget_is_unknown_not_a_larger_bound(log):
     assert two_instants(log, 0, between=lambda: append(log[0], RECORD)) == {"status": "UNKNOWN"}
     assert two_instants(log, 4096, between=lambda: append(log[0], RECORD * 400)) == {"status": "UNKNOWN"}
@@ -141,14 +168,54 @@ def test_a_refused_first_instant_is_never_upgraded_by_a_later_one(log):
     assert two_instants(log, 0, watermark=replace(pin, sha256="0" * 64)) == {"status": "UNKNOWN"}
 
 
-def test_limitation_same_length_rewrite_of_the_unpinned_suffix_is_invisible(log):
-    """Position, not content: the appended suffix is counted, never hashed, so this stays bounded."""
+@pytest.mark.parametrize("rewrite", [b'{"event":"rewritten"}\n',
+                                     b'{"event":"a-different-and-longer-suffix"}\n' * 3])
+def test_limitation_any_non_shrinking_rewrite_of_the_unpinned_suffix_is_invisible(log, rewrite):
+    """Position, not content: the suffix is counted, never hashed, so a rewrite that does not shrink it stays bounded."""
     path = log[0]
     append(path, RECORD)
-    other = b'{"event":"rewritten"}\n'
-    assert len(other) == len(RECORD)
-    bound = two_instants(log, 4096, between=lambda: path.write_bytes(path.read_bytes()[:-len(RECORD)] + other))
+    assert len(rewrite) >= len(RECORD)
+    pre = observe(log, 4096)
+    path.write_bytes(path.read_bytes()[:-len(RECORD)] + rewrite)  # the first instant's suffix no longer exists
+    post = observe(log, 4096)
+    assert post["status"] == "BOUNDED_BY_LOG_POSITION" and post["lag_bytes"] == len(rewrite)
+    bound = compose(pre, post)
     assert bound["status"] == "BOUNDED_BY_LOG_POSITION" and bound["freshness"] == "UNKNOWN"
+
+
+def test_every_observation_rehashes_the_whole_prefix_and_the_ceiling_refuses(log, monkeypatch):
+    path, generation, pin = log
+    calls = []
+    real = guard.read_bridge_log
+
+    def counting(*args, **kwargs):
+        calls.append((kwargs["cursor"].offset, kwargs["expected_prefix_sha256"]))
+        return real(*args, **kwargs)
+    monkeypatch.setattr(guard, "read_bridge_log", counting)
+    assert two_instants(log, 0)["status"] == "BOUNDED_BY_LOG_POSITION"
+    assert calls == [(pin.cursor.offset, pin.sha256)] * 2  # two full prefix reads per bound, no cache
+    assert log_reader.MAX_PREFIX_BYTES == 1024 * 1024 * 1024
+    over = guard.check_snapshot_position(enabled=True, log_path=str(path), generation_path=str(generation),
+                                         watermark=pin, max_prefix_bytes=pin.cursor.offset - 1, max_lag_bytes=0)
+    assert over == {"status": "UNKNOWN"}  # a prefix above the configured ceiling is never bounded
+
+
+def test_gap_the_window_after_the_second_instant_is_unbound(log):
+    path = log[0]
+    bound = two_instants(log, 0)
+    path.write_bytes(b"x" + path.read_bytes()[1:])  # prefix rewritten right after the second instant
+    assert observe(log, 0) == {"status": "UNKNOWN"}  # only a new observation would notice
+    assert bound["status"] == "BOUNDED_BY_LOG_POSITION"  # the composed bound is a past statement, not a lease
+
+
+def test_gap_any_valid_prefix_pin_is_bounded_so_snapshot_binding_is_the_callers_duty(log):
+    path, _, pin = log
+    raw = path.read_bytes()
+    older = log_reader.BridgePrefixPin(
+        log_reader.BridgeCursor(len(RECORD), pin.cursor.file_identity, pin.cursor.generation),
+        hashlib.sha256(raw[:len(RECORD)]).hexdigest())
+    bound = two_instants(log, 4096, watermark=older)
+    assert bound["status"] == "BOUNDED_BY_LOG_POSITION" and bound["lag_bucket"] == 4096
 
 
 def withheld_envelope():
@@ -166,21 +233,58 @@ def withheld_envelope():
     return json.loads(raw)
 
 
-def _launcher_fields(relative):
+SHAPE_CHECK = re.compile(
+    r"(\$fields = @\(.*?\)\s*\n"
+    r"\s*\$names = @\(\$result\.PSObject\.Properties \| ForEach-Object \{ \$_\.Name \}\)\s*\n"
+    r"\s*if \(\$names\.Count -ne \$fields\.Count\) \{ throw 'result_shape' \}\s*\n"
+    r"\s*foreach \(\$key in \$fields\) \{ if \(\$names -cnotcontains \$key\) \{ throw 'result_shape' \} \})",
+    re.S)
+SHELL = shutil.which("pwsh") or shutil.which("powershell")
+
+
+def _launcher_shape_check(relative):
+    """The launcher's own key-count and containment lines for the withheld envelope, copied verbatim."""
     text = (ROOT / relative).read_text(encoding="utf-8")
     start = text.index("-ceq 'wd.q4-lane-content-withheld.v1'")
-    block = re.search(r"\$fields = @\((.*?)\)", text[start:], re.S).group(1)
+    found = SHAPE_CHECK.search(text, start)
+    assert found is not None and found.start() - start < 2000  # the check right after the schema branch
+    return found.group(1)
+
+
+def _launcher_fields(relative):
+    block = re.search(r"\$fields = @\((.*?)\)", _launcher_shape_check(relative), re.S).group(1)
     return frozenset(re.findall(r"'([a-z0-9_]+)'", block))
 
 
+def _run_shape_check(relative, document, tmp_path):
+    script = tmp_path / "shape_check.ps1"
+    script.write_text("$ErrorActionPreference = 'Stop'\n"
+                      "$result = [Console]::In.ReadToEnd().Trim() | ConvertFrom-Json\n"
+                      + _launcher_shape_check(relative) + "\n'shape_ok'\n", encoding="utf-8")
+    done = subprocess.run([SHELL, "-NoProfile", "-NonInteractive", "-File", str(script)],
+                          input=json.dumps(document), capture_output=True, text=True, timeout=120)
+    return done.returncode, done.stdout.strip(), done.stderr
+
+
 @pytest.mark.parametrize("launcher", LAUNCHERS)
-def test_blocker_launchers_pin_the_exact_withheld_keys_so_evidence_cannot_be_appended(launcher):
+def test_blocker_launchers_pin_the_exact_withheld_keys(launcher):
     envelope = withheld_envelope()
-    fields = _launcher_fields(launcher)
     assert envelope["status"] == "CONTENT_WITHHELD" and "stored_text" not in json.dumps(envelope)
-    assert frozenset(envelope) == fields
-    # Any added position field changes the key set the launcher compares, so the read would refuse.
-    assert frozenset(envelope) | {"position_bound"} != fields
+    assert frozenset(envelope) == _launcher_fields(launcher)
+
+
+@pytest.mark.skipif(SHELL is None, reason="PowerShell required to execute the launcher shape check")
+@pytest.mark.parametrize("launcher", LAUNCHERS)
+def test_blocker_the_launcher_shape_check_refuses_appended_or_substituted_evidence(launcher, tmp_path):
+    envelope = withheld_envelope()
+    assert _run_shape_check(launcher, envelope, tmp_path)[:2] == (0, "shape_ok")  # positive control
+    appended = dict(envelope, position_bound={"status": "BOUNDED_BY_LOG_POSITION", "lag_bucket": 0})
+    code, out, err = _run_shape_check(launcher, appended, tmp_path)
+    assert code != 0 and "shape_ok" not in out and "result_shape" in err  # key count differs
+    substituted = dict(appended)
+    del substituted["original_result_refs"]
+    code, out, err = _run_shape_check(launcher, substituted, tmp_path)
+    assert code != 0 and "shape_ok" not in out and "result_shape" in err  # same count, a required key missing
 
 
 def test_blocker_content_source_prefix_has_no_file_identity(log):

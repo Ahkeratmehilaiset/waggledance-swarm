@@ -329,3 +329,191 @@ def test_v2_bootstrap_keeps_external_config_hash(candidate):
     _p1_repin(candidate);candidate['config'].write_bytes(candidate['config'].read_bytes()+b' ')
     result=_p1_invoke(candidate,'update')
     assert result.returncode!=0 and not result.stdout
+
+
+@pytest.fixture
+def bounded_read_probe(tmp_path, monkeypatch):
+    import importlib
+    import stat
+    from types import SimpleNamespace
+
+    helper = importlib.import_module('tools.wd_q4_live_update_bootstrap')
+    path = tmp_path / 'bounded-read.bin'
+    state = SimpleNamespace(requests=[], before_size=None, identity_fault=None, after_read=None,
+                            path_fault=None, on_read=None, fstat_calls=0, stat_calls=0, fd=None)
+    original_open, original_stat, original_lstat = Path.open, Path.stat, Path.lstat
+    original_fstat = os.fstat
+
+    def changed(info, **updates):
+        values = {name: getattr(info, name) for name in
+                  ('st_mode', 'st_dev', 'st_ino', 'st_size', 'st_mtime_ns')}
+        values['st_file_attributes'] = getattr(info, 'st_file_attributes', 0)
+        values.update(updates)
+        return SimpleNamespace(**values)
+
+    class RecordingFile:
+        def __init__(self, stream):
+            self.stream = stream
+            state.fd = stream.fileno()
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def fileno(self):
+            return self.stream.fileno()
+
+        def read(self, size=-1):
+            state.requests.append(size)
+            if state.on_read is not None:
+                state.on_read()
+            value = self.stream.read(size)
+            if state.after_read is not None:
+                state.after_read()
+            return value
+
+    def opened(self, *args, **kwargs):
+        stream = original_open(self, *args, **kwargs)
+        if self == path and args == ('rb',):
+            return RecordingFile(stream)
+        return stream
+
+    def stated(self, *args, **kwargs):
+        info = original_stat(self, *args, **kwargs)
+        if self == path and kwargs.get('follow_symlinks', True):
+            state.stat_calls += 1
+            if state.stat_calls == 2 and state.before_size is not None:
+                return changed(info, st_size=state.before_size)
+            if state.stat_calls == 3 and state.identity_fault == 'path_after':
+                return changed(info, st_ino=info.st_ino ^ 1)
+        return info
+
+    def lstated(self, *args, **kwargs):
+        info = original_lstat(self, *args, **kwargs)
+        if self == path and state.path_fault == 'file_symlink':
+            return changed(info, st_mode=stat.S_IFLNK | 0o777)
+        if self == path.parent and state.path_fault == 'ancestor_reparse':
+            return changed(info, st_file_attributes=0x400)
+        return info
+
+    def fstated(fd):
+        info = original_fstat(fd)
+        if fd == state.fd:
+            state.fstat_calls += 1
+            if ((state.identity_fault == 'opened' and state.fstat_calls == 1) or
+                    (state.identity_fault == 'after' and state.fstat_calls == 2)):
+                return changed(info, st_ino=info.st_ino ^ 1)
+        return info
+
+    monkeypatch.setattr(Path, 'open', opened)
+    monkeypatch.setattr(Path, 'stat', stated)
+    monkeypatch.setattr(Path, 'lstat', lstated)
+    monkeypatch.setattr(os, 'fstat', fstated)
+    return helper, path, state
+
+
+@pytest.mark.parametrize('data,limit', [
+    (b'', 64), (b'x', 64), (b'abc', 64), (b'x' * 63, 64),
+    (b'x' * 64, 64), (b'abc', 65536), (b'abc', 1024 * 1024 * 1024),
+])
+def test_bounded_read_requests_only_observed_size_plus_sentinel(bounded_read_probe, data, limit):
+    helper, path, state = bounded_read_probe
+    path.write_bytes(data)
+    assert helper._read(path, sha(data), limit) == data
+    assert state.requests == [min(len(data), limit) + 1]
+    assert state.fstat_calls == 2
+
+
+@pytest.mark.parametrize('fault', [
+    'grow', 'grow_one', 'grow_over_limit', 'shrink', 'same_size_changed', 'wrong_digest',
+    'opened_identity', 'after_identity', 'path_after_identity',
+    'before_zero_size', 'before_negative_size',
+])
+def test_bounded_read_retains_changed_file_refusals(bounded_read_probe, fault):
+    helper, path, state = bounded_read_probe
+    data = b'abc'
+    path.write_bytes(data)
+    pin = sha(data)
+    expected_size = 4
+    if fault in ('grow', 'grow_one', 'grow_over_limit', 'shrink', 'same_size_changed'):
+        replacement = {'grow': b'abcdef', 'grow_one': b'abcd', 'grow_over_limit': b'x' * 100,
+                       'shrink': b'a', 'same_size_changed': b'xyz'}[fault]
+        state.on_read = lambda: path.write_bytes(replacement)
+    elif fault == 'wrong_digest':
+        pin = '0' * 64
+    elif fault.endswith('_identity'):
+        state.identity_fault = fault.removesuffix('_identity')
+    elif fault == 'before_zero_size':
+        state.before_size = 0
+        expected_size = 1
+    elif fault == 'before_negative_size':
+        state.before_size = -1
+        expected_size = 1
+    with pytest.raises(ValueError):
+        helper._read(path, pin, 64)
+    assert state.requests == [expected_size]
+
+
+def test_bounded_read_rejects_mtime_change_during_read(bounded_read_probe):
+    helper, path, state = bounded_read_probe
+    data = b'abc'
+    path.write_bytes(data)
+    original = path.stat()
+    state.stat_calls = 0
+    state.on_read = lambda: os.utime(path, ns=(original.st_mtime_ns + 1000000,
+                                             original.st_mtime_ns + 1000000))
+    with pytest.raises(ValueError):
+        helper._read(path, sha(data), 64)
+    assert state.requests == [4]
+    assert path.read_bytes() == data
+
+
+@pytest.mark.parametrize('fault', ['over_limit', 'negative_limit', 'directory',
+                                 'relative', 'traversal', 'file_symlink', 'ancestor_reparse'])
+def test_bounded_read_retains_preopen_refusals(bounded_read_probe, fault):
+    helper, path, state = bounded_read_probe
+    data, limit = b'abc', 64
+    target = path
+    if fault == 'over_limit':
+        data = b'x' * 65
+    if fault == 'negative_limit':
+        limit = -1
+    if fault == 'directory':
+        target = path.parent
+    if fault == 'relative':
+        target = Path('relative-bounded-read.bin')
+    if fault == 'traversal':
+        target = path.parent / '..' / path.parent.name / path.name
+    if fault in ('file_symlink', 'ancestor_reparse'):
+        state.path_fault = fault
+    path.write_bytes(data)
+    with pytest.raises(ValueError):
+        helper._read(target, sha(data), limit)
+    assert not state.requests
+
+
+@pytest.mark.parametrize('pin', [None, '', 'g' * 64, 'A' * 64, '0' * 63, '0' * 65])
+def test_bounded_read_retains_hash_syntax_refusal(bounded_read_probe, pin):
+    helper, path, state = bounded_read_probe
+    path.write_bytes(b'abc')
+    with pytest.raises(ValueError):
+        helper._read(path, pin, 64)
+    assert not state.requests
+
+
+def test_bounded_read_rejects_postread_growth(bounded_read_probe):
+    helper, path, state = bounded_read_probe
+    path.write_bytes(b'abc')
+    def append_after_read():
+        state.after_read = None
+        with path.open('ab') as stream:
+            stream.write(b'd')
+    state.after_read = append_after_read
+    with pytest.raises(ValueError):
+        helper._read(path, sha(b'abc'), 64)
+    assert state.requests == [4]
+    with path.open('r', encoding='ascii') as stream:
+        assert stream.read() == 'abcd'

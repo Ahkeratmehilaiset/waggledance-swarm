@@ -504,9 +504,12 @@ and 18:33:17Z):
 | before 18:33:17Z | Asked which rules, the operator selected all four offered changes: Mind PRs without a per-PR signature; Lead may deploy Mind; answer text on by default; a content-identical re-push needs no new review. |
 
 Success for Mind is INSTALLED + RUNNING + MEASURED. This rule removes the
-per-action operator steps on that path. Where it and an earlier rule disagree
-**for Mind-class changes**, this rule governs; Rule 12 stays in force for
-everything else.
+per-action operator steps on that path. It takes effect when this change is
+merged with the operator's signature at its exact head; the relay table above
+is the record of the decision, not that signature. It overrides earlier rules
+**only** in the four points 14a to 14d; every other part of Rules 6, 9a, 9b,
+10, 12 and 13 stays in force. Off-main code (for example the `edc18943` helper
+runtime) is never installed under this rule.
 
 **Mind-class** = a change whose every changed path, as a whole file, matches
 one of: `sandbox/mind/**`, `configs/mind/**`, `tools/wd_q4_*`,
@@ -520,7 +523,9 @@ any (a)-class path (this file, the charter and its loader,
 `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`, the gate code listed in
 Rule 9b, `.agent-bridge/bin/**`) or anything Stage-2 is **not** Mind-class,
 even where a pattern above would match. The gate checks this path list
-mechanically; prose never widens it. `tools/wd_q4_*` includes security-boundary
+mechanically once the gate PR in 14a is on `main`; until then the gate does
+not classify Mind-class at all, and no merge may be claimed under 14a. Prose
+never widens the list. `tools/wd_q4_*` includes security-boundary
 code (transport, attestation, quarantine), so the RCO review of a Mind-class PR
 stays at high effort.
 
@@ -535,25 +540,33 @@ stays at high effort.
 * Still PR-only (Rule 6); still `--match-head-commit`; never `--admin`,
   `--no-verify` or force-push.
 * Code status: the gate (`verify_bridge_consensus`) still requires both Codex
-  build approvals plus an RCO pass, so until a gate-code PR adds the Mind-class
-  lane, Tools also approves Mind PRs. That gate-code PR is (a)-class, with
-  dual-RCO review, and the operator signs it once.
+  build approvals plus an RCO pass at the exact head. Until a gate-code PR adds
+  the Mind-class lane, Mind PRs merge only on that unchanged gate result; a
+  missing approval blocks the merge and is never supplied pro forma. That
+  gate-code PR is (a)-class, with dual-RCO review, and the operator signs it
+  once.
 
 #### 14b. Lead deploys Mind
 
 * After a Mind-class PR is merged to `main`, Lead may build and install the
   Mind bundle, update the reboot state for it, and restart the lanes without a
-  per-deploy operator action, **only when** the diff between the installed
+  per-deploy operator action, **only when** the bundle is built from the exact
+  merged `main` commit in a clean tree (no off-main or uncommitted code), and
+  the diff between the installed
   bundle's source commit and the commit being deployed touches Mind-class paths
   only. If that diff contains any other path (non-Mind or (a)-class code merged
   since the last install), the deploy needs the operator as before.
 * Required every time: the pinned deploy route only; the previous bundle and
   state kept for rollback; a post-start check (every lane's startup Mind read
-  record and caller exit status); **automatic rollback** to the previous bundle
-  when the check fails; a bridge and MAGMA receipt with both bundle hashes.
+  record and caller exit status, with a time limit); **automatic rollback** of
+  both the bundle and the reboot state to the previous ones when a record is
+  missing, an exit status is bad or the time limit passes, followed by the same
+  check again; if that re-check also fails, Lead alerts the operator at once; a
+  bridge and MAGMA receipt with both bundle hashes.
 * Restarts go through the controlled launcher and shutdown path. Never kill a
   process; never auto-approve anything else on the operator's behalf.
-* The C: free-space floor stays; a deploy that would cross it does not start.
+* The C: free-space floor stays and counts both bundles (installed and
+  previous); a deploy that would cross it does not start.
 * A Mind deploy is not the Stage-2 atomic runtime flip
   (`docs/architecture/STAGE2_CUTOVER_RFC.md`): it never writes
   `control_plane.runtime_path_bindings` and never performs the cutover. Stage-2
@@ -570,6 +583,9 @@ stays at high effort.
 * The index-age label is a fact about the snapshot, not a claim of
   authenticated freshness; no answer may imply that freshness was verified.
 * Recall is context, never review evidence; reviews stay source-based.
+* Code status: the lane caller and the launcher still withhold answer text
+  (freshness unverified); the withholding stays until the Mind code PR that
+  implements 14c is merged.
 
 #### 14d. Content-identical re-push keeps its approvals
 
@@ -584,7 +600,8 @@ stays at high effort.
   approval without a recorded base does not carry.
 * An operator signature on an (a)-class head never carries forward; every new
   (a)-class head needs a fresh signature.
-* This is the intended behaviour behind the Rule 9a carry-forward note. Until
+* 14d is the one defined exception to exact-head binding; Rule 9a's text is
+  otherwise unchanged. Until
   the gate code implements it (an (a)-class PR with dual-RCO review, signed
   once by the operator), the strict code governs mechanically.
 

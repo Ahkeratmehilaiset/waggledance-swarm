@@ -140,6 +140,7 @@ def _lifecycle_binding(root):
     return raw, sha(raw)
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='selector replace uses MoveFileExW on Windows')
 def test_lifecycle_admission_allows_owned_publication(cas_case):
     from tools import wd_q4_lifecycle_v2 as lifecycle
     raw, digest = _lifecycle_binding(cas_case['root'])
@@ -194,6 +195,7 @@ def test_p1_requires_an_explicit_previous_selector_pin(cas_case):
     assert not (cas_case['root'] / 'q4-live-current.json').exists()
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='selector replace uses MoveFileExW on Windows')
 def test_p1_compare_and_swap_rejects_absent_and_stale_expectations(cas_case):
     result = _cas_publish(cas_case, expected_previous_selector_sha256=None)
     path = cas_case['root'] / 'q4-live-current.json'
@@ -222,6 +224,7 @@ def test_p1_uncertain_publish_blocks_writers_and_readers(cas_case, monkeypatch):
         do_select(cas_case)
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='selector replace uses MoveFileExW on Windows')
 def test_p1_simultaneous_first_publication_has_only_one_winner(cas_case, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
@@ -242,6 +245,7 @@ def test_p1_simultaneous_first_publication_has_only_one_winner(cas_case, monkeyp
     assert sorted(outcomes) == ['PUBLISHED', 'REFUSED']
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='selector replace uses MoveFileExW on Windows')
 def test_p1_replace_failure_keeps_pending_and_blocks_selection(cas_case, monkeypatch):
     actual = live.pointer_io._atomic_replace
     def fail_after_replace(*args):
@@ -313,6 +317,7 @@ def test_all_writers_respect_cross_process_publication_lock(cas_case, p1):
     assert child.exitcode == 0
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='selector replace uses MoveFileExW on Windows')
 def test_published_candidate_selects_same_real_binding_and_fixed_plan(case):
     result = do_publish(case)
     chosen = do_select(case)
@@ -336,12 +341,14 @@ def _external_baseline_plan(case, tmp_path):
     return external
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='selector replace uses MoveFileExW on Windows')
 def test_external_baseline_plan_can_publish_and_select_pinned_candidate(case, tmp_path):
     _external_baseline_plan(case, tmp_path)
     assert do_publish(case)['status'] == 'PUBLISHED'
     assert do_select(case)['configuration'][2] == case['candidate'][2]
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='selector replace uses MoveFileExW on Windows')
 def test_external_baseline_plan_tamper_is_not_accepted(case, tmp_path):
     external = _external_baseline_plan(case, tmp_path)
     assert do_publish(case)['status'] == 'PUBLISHED'
@@ -363,6 +370,7 @@ def test_candidate_plan_must_remain_in_candidate_generation(case, tmp_path):
     assert not (case['root'] / 'q4-live-current.json').exists()
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged composer uses Windows drive-absolute reader')
 def test_real_staged_composer_baseline_reaches_live_pointer_lookup(tmp_path, monkeypatch):
     from tests.tools.test_wd_q4_staged_composer import setup_case
     from tools import wd_q4_staged_composer as composer
@@ -389,6 +397,7 @@ def test_stale_index_cannot_be_published(case):
     assert not (case['root'] / 'q4-live-current.json').exists()
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='selector replace uses MoveFileExW on Windows')
 def test_missing_or_changed_pointer_refuses(case):
     with pytest.raises(live.LiveSnapshotRefused):
         do_select(case)
@@ -399,6 +408,7 @@ def test_missing_or_changed_pointer_refuses(case):
         live.recheck(chosen['publication_path'], chosen['publication_sha256'])
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='selector replace uses MoveFileExW on Windows')
 def test_select_refuses_when_index_has_advanced(case):
     do_publish(case)
     (case['index'] / 'q4-latest.json').write_bytes(b'synthetic-index-advanced')
@@ -501,6 +511,7 @@ def test_failed_atomic_replace_is_unknown(case, monkeypatch):
     assert not (case['root'] / 'q4-live-current.json').exists()
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='selector replace uses MoveFileExW on Windows')
 def test_failure_after_replace_never_claims_not_published(case, monkeypatch):
     replace = live.pointer_io._atomic_replace
     def commit_then_fail(*values):
@@ -604,6 +615,7 @@ def staged(case, monkeypatch):
     return case
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged v3 fixed plan requires C-drive paths')
 def test_staged_publish_and_select_use_staged_producer_and_card_pointer(staged):
     result = do_publish(staged)
     chosen = do_select(staged)
@@ -617,9 +629,9 @@ def test_staged_publish_and_select_use_staged_producer_and_card_pointer(staged):
 
 @pytest.fixture
 def real_staged(case, staged_producer):
+    """Build C2 with the real synthetic producer and retain the real binding producer."""
     if os.name != 'nt':
         pytest.skip('real staged producer requires Windows fixed-volume checkpoint reader')
-    """Build C2 with the real synthetic producer and retain the real binding producer."""
     c, evidence = case, staged_producer
     plan_raw = evidence['public_plan_bytes']; plan = json.loads(plan_raw)
     made = _REAL_STAGED_BINDING_PRODUCER(**evidence)
@@ -736,12 +748,14 @@ def test_real_staged_changed_evidence_before_query_output_refuses(real_staged, p
             live.recheck(selected['publication_path'], published['publication_sha256'])
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged v3 fixed plan requires C-drive paths')
 def test_staged_route_ignores_legacy_index_pointer(staged):
     (staged['index'] / 'q4-latest.json').write_bytes(b'unrelated legacy pointer')
     assert do_publish(staged)['status'] == 'PUBLISHED'
     assert do_select(staged)['status'] == 'SELECTED'
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged v3 fixed plan requires C-drive paths')
 def test_staged_card_pointer_advanced_after_publish_refuses_select(staged):
     do_publish(staged)
     (staged['index'] / 'card-pointer.json').write_bytes(b'{"synthetic":"card-pointer-2"}')
@@ -749,6 +763,7 @@ def test_staged_card_pointer_advanced_after_publish_refuses_select(staged):
         do_select(staged)
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged v3 fixed plan requires C-drive paths')
 def test_staged_card_pointer_changed_mid_publish_refuses(staged):
     staged['after_producer'] = lambda: (staged['index'] / 'card-pointer.json').write_bytes(b'{"mid":"query"}')
     with pytest.raises(live.LiveSnapshotRefused):
@@ -757,6 +772,7 @@ def test_staged_card_pointer_changed_mid_publish_refuses(staged):
 
 
 @pytest.mark.parametrize('name', [name for name, _ in _STAGED_FILES])
+@pytest.mark.skipif(os.name != 'nt', reason='staged v3 fixed plan requires C-drive paths')
 def test_staged_changed_plan_input_refuses(staged, name):
     path = staged['index'] / dict(_STAGED_FILES)[name]
     path.write_bytes(path.read_bytes() + b'changed')
@@ -789,6 +805,7 @@ def test_staged_and_legacy_generations_do_not_mix(staged):
                                          ('backend', 'public-snapshot-v1'), ('public_plan_sha256', '0' * 64),
                                          ('wrapper_sha256', '0' * 64), ('deployment_manifest_sha256', '0' * 64),
                                          ('bundle_commit', 'e' * 40)])
+@pytest.mark.skipif(os.name != 'nt', reason='staged v3 fixed plan requires C-drive paths')
 def test_staged_rehashed_fixed_plan_mismatch_refuses(staged, field, value):
     candidate = list(staged['candidate'])
     descriptor, inputs = dict(candidate[0]), dict(candidate[5])
@@ -806,7 +823,11 @@ def test_staged_rehashed_fixed_plan_mismatch_refuses(staged, field, value):
         do_publish(staged)
 
 
-@pytest.mark.parametrize('field', ['pointer_path', 'source_path', 'generation_path', 'card_policy_path', 'root'])
+@pytest.mark.parametrize('field', [
+    pytest.param('pointer_path', marks=pytest.mark.skipif(
+        os.name != 'nt', reason='staged v3 fixed plan requires C-drive paths')),
+    'source_path', 'generation_path', 'card_policy_path', 'root',
+])
 def test_staged_rehashed_plan_moving_stable_input_refuses(staged, field, tmp_path):
     gen = 'c' * 40
     directory = staged['root'] / gen
@@ -843,6 +864,7 @@ def test_staged_rehashed_plan_moving_stable_input_refuses(staged, field, tmp_pat
         do_publish(staged)
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged v3 fixed plan requires C-drive paths')
 def test_staged_plan_control_with_same_stable_inputs_publishes(staged):
     """Control for the moved-input test: rewriting the candidate plan with the same values still publishes."""
     gen = 'c' * 40
@@ -968,6 +990,7 @@ def test_p1_flag_requires_exact_bool(staged, flag):
 
 
 @pytest.mark.parametrize('field', ['interpreter','bootstrap','runtime_root','timeout'])
+@pytest.mark.skipif(os.name != 'nt', reason='staged v3 fixed plan requires C-drive paths')
 def test_staged_rehashed_config_drift_is_refused(staged, field):
     directory = staged['root'] / ('c'*40)
     base_directory = staged['root'] / ('b'*40)
@@ -1009,6 +1032,7 @@ def _rehash_fixed(c, gen, field, value):
 
 @pytest.mark.parametrize('field,value', [('wrapper_sha256', '0' * 64), ('deployment_manifest_sha256', '0' * 64),
                                          ('bundle_commit', 'e' * 40)])
+@pytest.mark.skipif(os.name != 'nt', reason='staged v3 fixed plan requires C-drive paths')
 def test_staged_both_generations_with_wrong_bundle_pins_refuse(staged, field, value):
     staged['base'] = _rehash_fixed(staged, 'b' * 40, field, value)
     staged['candidate'] = _rehash_fixed(staged, 'c' * 40, field, value)
@@ -1016,6 +1040,7 @@ def test_staged_both_generations_with_wrong_bundle_pins_refuse(staged, field, va
         do_publish(staged)
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged v3 fixed plan requires C-drive paths')
 def test_staged_both_generations_rehashed_control_publishes(staged):
     staged['base'] = _rehash_fixed(staged, 'b' * 40, 'host_sha256', '7' * 64)
     staged['candidate'] = _rehash_fixed(staged, 'c' * 40, 'host_sha256', '7' * 64)

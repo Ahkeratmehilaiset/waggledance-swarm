@@ -11,6 +11,9 @@ from test_wd_q4_default_descriptor_resolver import HELPER, SHELL
 from test_wd_startup_recovery import load, q
 
 
+# sc.run_v2 runs the Windows PowerShell helper via sc.SHELL; the defining module's pytestmark does not
+# reach importers, so this caller states the same prerequisite (sc.SHELL is None off Windows).
+@pytest.mark.skipif(not sc.SHELL, reason='Windows PowerShell required')
 @pytest.mark.parametrize('both', [True, False])
 def test_session_config_accepts_both_staged_pins_and_refuses_an_orphan(tmp_path, both):
     def mutate(doc):

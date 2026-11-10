@@ -288,3 +288,23 @@ def test_receipt_cutoff_without_memory_cutoff_is_still_validated(content_case, m
     c["rewrite"]()
     rejected(c, monkeypatch, capsys)
     assert c["calls"] == []
+
+
+def test_pointer_and_receipt_count_disagreement_refuses_before_adapter(content_case, monkeypatch, capsys):
+    c = content_case
+    c["age_manifest"]["cells"]["general"]["count"] = 2
+    c["repin"]()
+    rejected(c, monkeypatch, capsys)
+    assert c["calls"] == []
+
+
+def test_generation_pointer_checks_receipt_at_selected_generation(content_case, monkeypatch, capsys):
+    c = content_case
+    original_path, _ = c["receipts"]["general"]
+    other_path = original_path.parent.parent / "gen-000002" / "receipt.json"
+    other_path.parent.mkdir()
+    other_path.write_bytes(b"{}")
+    c["age_manifest"]["cells"]["general"]["generation"] = 2
+    c["repin"]()  # The pinned hash still names the generation-one receipt.
+    rejected(c, monkeypatch, capsys)
+    assert c["calls"] == []

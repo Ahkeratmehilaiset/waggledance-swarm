@@ -545,7 +545,8 @@ function Invoke-WdQ4StartupMindRead {
                         if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonOptions.DateKind = 'String' }
                         $result = $stdoutText.Trim() | ConvertFrom-Json @jsonOptions
             if ($result -isnot [pscustomobject]) { throw 'result_shape' }
-            if ([string]$result.schema -ceq 'wd.q4-lane-content-delivery.v1') {
+            if ([string]$result.schema -ceq 'wd.q4-lane-content-delivery.v1' -or
+                [string]$result.schema -ceq 'wd.q4-lane-content-delivery.v2') {
               # The content caller is pinned by the manifest-verified helper. Independently validate its
               # closed delivery contract; byte consistency is not authenticated identity or freshness.
               function Assert-WdStartupContentObject($Value, [string[]]$Keys) {
@@ -606,9 +607,55 @@ function Invoke-WdQ4StartupMindRead {
                   $record.cleanup -cne 'CONFIRMED' -or $result.identity_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
                   $result.descriptor_sha256 -cne $DescriptorSha256 -or $result.call_id -cnotmatch '^[0-9a-f]{32}$' -or
                   $result.answer_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'result_shape' }
-              Assert-WdStartupContentObject $result.index_age @('status','seconds')
-              if ($result.index_age.status -isnot [string] -or $result.index_age.status -cne 'UNKNOWN' -or
-                  $null -ne $result.index_age.seconds) { throw 'result_shape' }
+              $observedAge = $result.schema -ceq 'wd.q4-lane-content-delivery.v2'
+              if (-not $observedAge) {
+                Assert-WdStartupContentObject $result.index_age @('status','seconds')
+                if ($result.index_age.status -isnot [string] -or $result.index_age.status -cne 'UNKNOWN' -or
+                    $null -ne $result.index_age.seconds) { throw 'result_shape' }
+              } else {
+                # These are pinned local-clock observations, not freshness or authenticated time.
+                function ConvertTo-WdStartupContentUtc($Value) {
+                  if ($Value -isnot [string] -or $Value -cnotmatch
+                      '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z\z') { throw 'result_shape' }
+                  $stamp = [DateTimeOffset]::MinValue
+                  $formats = [string[]]@("yyyy-MM-dd'T'HH:mm:ss'Z'", "yyyy-MM-dd'T'HH:mm:ss.FFFFFF'Z'")
+                  $styles = [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+                  if (-not [DateTimeOffset]::TryParseExact($Value, $formats,
+                      [Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$stamp)) { throw 'result_shape' }
+                  return $stamp
+                }
+                function Get-WdStartupContentAgeSeconds($Observed, $Built) {
+                  $elapsed = $Observed - $Built
+                  # Integer components preserve floor semantics even near years 0001 and 9999.
+                  return ([long]$elapsed.Days * 86400 + [long]$elapsed.Hours * 3600 +
+                    [long]$elapsed.Minutes * 60 + [long]$elapsed.Seconds)
+                }
+                $age = $result.index_age
+                Assert-WdStartupContentObject $age @('schema','status','basis','observed_local_utc',
+                  'clock_authentication','source_freshness','coverage_completeness','oldest_cell_built_utc',
+                  'newest_cell_built_utc','oldest_cell_age_seconds','newest_cell_age_seconds',
+                  'coverage_cutoff_utc','coverage_age_seconds')
+                foreach ($key in @('schema','status','basis','observed_local_utc','clock_authentication',
+                    'source_freshness','coverage_completeness','oldest_cell_built_utc',
+                    'newest_cell_built_utc','coverage_cutoff_utc')) {
+                  if ($age.PSObject.Properties[$key].Value -isnot [string]) { throw 'result_shape' }
+                }
+                if ($age.schema -cne 'wd.q4-cell-build-age.v1' -or $age.status -cne 'OBSERVED' -or
+                    $age.basis -cne 'hash_pinned_cell_receipts' -or $age.clock_authentication -cne 'UNKNOWN' -or
+                    $age.source_freshness -cne 'UNKNOWN' -or $age.coverage_completeness -cne 'UNKNOWN') { throw 'result_shape' }
+                $observed = ConvertTo-WdStartupContentUtc $age.observed_local_utc
+                $oldest = ConvertTo-WdStartupContentUtc $age.oldest_cell_built_utc
+                $newest = ConvertTo-WdStartupContentUtc $age.newest_cell_built_utc
+                $cutoff = ConvertTo-WdStartupContentUtc $age.coverage_cutoff_utc
+                if ($oldest -gt $newest -or $newest -gt $observed -or $cutoff -gt $observed) { throw 'result_shape' }
+                # The producer does not order source cutoff time against independent build clocks.
+                foreach ($pair in @(@('oldest_cell_age_seconds',$oldest),
+                    @('newest_cell_age_seconds',$newest), @('coverage_age_seconds',$cutoff))) {
+                  $seconds = $age.PSObject.Properties[$pair[0]].Value
+                  if (($seconds -isnot [int] -and $seconds -isnot [long]) -or $seconds -lt 0 -or
+                      $seconds -ne (Get-WdStartupContentAgeSeconds $observed $pair[1])) { throw 'result_shape' }
+                }
+              }
               $answer = $result.answer
               Assert-WdStartupContentObject $answer @('schema','lane','status','reason','result_count','results','binding','trust')
               foreach ($key in @('schema','lane','status','reason')) {
@@ -673,7 +720,16 @@ function Invoke-WdQ4StartupMindRead {
               # Preserve and verify the original answer above. Only presentation is JSON-quoted:
               # one item per line, with control, Unicode separator and bidi characters visible.
               $lines = New-Object Collections.Generic.List[string]
-              $lines.Add('Mind recalled content; freshness UNKNOWN; index_age UNKNOWN; source references are caller-pinned, not authenticated.')
+              if ($observedAge) {
+                $invariant = [Globalization.CultureInfo]::InvariantCulture
+                $lines.Add('Mind recalled content; oldest cell build age ' + $age.oldest_cell_age_seconds.ToString($invariant) +
+                  ' s (' + $age.oldest_cell_built_utc + '); newest cell build age ' + $age.newest_cell_age_seconds.ToString($invariant) +
+                  ' s (' + $age.newest_cell_built_utc + '); content cutoff age ' + $age.coverage_age_seconds.ToString($invariant) +
+                  ' s (' + $age.coverage_cutoff_utc + '); observed local ' + $age.observed_local_utc +
+                  '; clock authentication UNKNOWN; freshness UNKNOWN; coverage completeness UNKNOWN; source references are caller-pinned, not authenticated.')
+              } else {
+                $lines.Add('Mind recalled content; freshness UNKNOWN; index_age UNKNOWN; source references are caller-pinned, not authenticated.')
+              }
               $index = 0
               foreach ($item in $answer.results) {
                 $index += 1
@@ -682,7 +738,8 @@ function Invoke-WdQ4StartupMindRead {
                   ' [ref_sha256=' + $item.ref_sha256 + '; doc_id_sha256=' + $item.doc_id_sha256 + ']')
               }
               $content = $lines -join "`n"
-              if ($content.Length -gt 24000) { throw 'result_shape' }
+              if ($content.Length -gt 24000 -or $content.Contains($ownerToken) -or
+                  $content.Contains($escapedToken)) { throw 'result_shape' }
               $digest = [Security.Cryptography.SHA256]::Create()
               try { $deliveryPin = [BitConverter]::ToString($digest.ComputeHash($utf8.GetBytes($content))).Replace('-','').ToLowerInvariant() }
               finally { $digest.Dispose() }
@@ -697,6 +754,9 @@ function Invoke-WdQ4StartupMindRead {
               $record.outcome = 'success'
               $record.reason = 'content_delivered_unknown_freshness'
               $record.note = 'Caller-pinned content delivered in memory only with source refs, freshness UNKNOWN and index_age UNKNOWN; identity and source freshness are unauthenticated; not a vote or gate input.'
+              if ($observedAge) {
+                $record.note = 'Caller-pinned content delivered in memory only with separate cell build age and content cutoff observations; clock authentication UNKNOWN, freshness UNKNOWN and coverage completeness UNKNOWN; not a vote or gate input.'
+              }
               $delivered = $content
             } elseif ([string]$result.schema -ceq 'wd.q4-lane-content-withheld.v1') {
               # The helper already validated the original response and withheld its text. Independently

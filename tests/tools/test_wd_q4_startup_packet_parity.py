@@ -119,8 +119,9 @@ finally{$h.Dispose()}
 def _expected_success(consumer, case):
     # Agent's observed timestamp requires six digits; Tools accepts 0..6.
     # Agent permits a missing owner token; Tools refuses it.
-    # Agent truncates the presentation at its budget; Tools refuses overflow.
-    if case in ("missing_owner_token", "presentation_budget"): return consumer == "agent"
+    # Both deliver bounded whole-item prefixes, retaining the entire answer's refs.
+    if case == "missing_owner_token": return consumer == "agent"
+    if case == "presentation_budget": return True
     if case in ("observed_no_fraction", "observed_one_fraction"): return consumer == "tools"
     return case in ("valid", "unicode_presentation", "replay", "clock_skew_past", "clock_skew_future")
 
@@ -160,7 +161,17 @@ def _assert_result(consumer, version, case, value, view, record):
             f"[{i}] " + agent.canon(r["stored_text"]).decode("ascii") +
             f" [ref_sha256={r['ref_sha256']}; doc_id_sha256={r['doc_id_sha256']}]"
             for i, r in enumerate(value["answer"]["results"], 1)]])
-        count = len(value["answer"]["results"])
+        if case == "presentation_budget":
+            lines = text.split("\n")
+            admitted = [lines[0]]
+            for line in lines[1:]:
+                if agent.u16("\n".join([*admitted, line])) > 24000: break
+                admitted.append(line)
+            text = "\n".join(admitted)
+            count = len(admitted) - 1
+            assert 0 < count < len(value["answer"]["results"])
+        else:
+            count = len(value["answer"]["results"])
     assert view["delivered_items"] == count
     assert view["delivered_chars"] == view["text_length"] == agent.u16(text)
     assert view["delivered_sha256"] == view["text_sha256"] == hashlib.sha256(text.encode("utf-8")).hexdigest()

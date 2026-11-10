@@ -953,12 +953,15 @@ def test_tools_content_delivery_closed_class(tmp_path, ps, case):
         fx["manifest_pin"] = hashlib.sha256(fx["manifest"].read_bytes()).hexdigest()
         fx["env_prelude"] += "\n$env:WD_REBOOT_EXPECTED_MANIFEST_HASH="+_quote(fx["manifest_pin"].upper())
     observed = _content_observation(fx,ps)
-    admitted = case in ("good", "multiple", "unicode", "byte_boundary", "timestamp")
+    admitted = case in ("good", "multiple", "unicode", "byte_boundary", "timestamp", "presentation_limit")
     assert observed["outcome"] == ("success" if admitted else "unknown" if case.startswith("record_") else "refused")
     if admitted:
-        assert observed["has_marker"] is (case != "timestamp")
+        assert observed["has_marker"] is (case not in ("timestamp", "presentation_limit"))
         assert observed["has_freshness"] and observed["has_age"] and observed["has_ref"]
-        assert observed["delivered_items"] == answer["result_count"]
+        if case == "presentation_limit":
+            assert 0 < observed["delivered_items"] < answer["result_count"]
+        else:
+            assert observed["delivered_items"] == answer["result_count"]
         assert observed["delivered_chars"] == observed["text_length"] > 0
         assert observed["delivered_sha256"] == observed["text_sha256"]
         assert observed["refs"] == [r["ref_sha256"] for r in answer["results"]]
@@ -1080,9 +1083,17 @@ def test_tools_content_presentation_expansion_stays_within_budget(tmp_path, ps):
     packet["answer_sha256"] = hashlib.sha256(_content_canonical(packet["answer"])).hexdigest()
     (fx["bundle"] / "producer-response.bin").write_bytes(_content_canonical(packet)+b"\n")
     observed = _content_observation(fx, ps)
-    assert observed["outcome"] == "refused" and observed["reason"] == "result_shape"
-    assert observed["text_length"] == observed["delivered_items"] == observed["delivered_chars"] == 0
-    assert observed["answer_sha256"] == observed["delivered_sha256"] == ""
+    assert observed["outcome"] == "success" and observed["reason"] == "content_delivered_unknown_freshness"
+    count = observed["delivered_items"]
+    assert 0 < count < packet["answer"]["result_count"]
+    lines = _large_recall_lines(packet)
+    shown = "\n".join(lines[:count + 1])
+    assert observed["delivered_chars"] == observed["text_length"] == len(shown) <= 24000
+    assert len("\n".join(lines[:count + 2])) > 24000
+    assert observed["delivered_sha256"] == observed["text_sha256"] == hashlib.sha256(shown.encode("utf-8")).hexdigest()
+    assert observed["result_count"] == packet["answer"]["result_count"]
+    assert observed["refs"] == [item["ref_sha256"] for item in packet["answer"]["results"]]
+    assert observed["answer_sha256"] == packet["answer_sha256"] == hashlib.sha256(_content_canonical(packet["answer"])).hexdigest()
 
 # Synthetic v2 compatibility; the caller supplies observations, never freshness.
 from test_wd_q4_content_cell_age import content_case
@@ -1333,3 +1344,107 @@ def test_age_v2_accepts_each_supported_utc_precision(tmp_path, ps, digits):
         value["index_age"][field] = value["index_age"][field][:-1]+fraction
     value["index_age"]["observed_local_utc"] = "2026-01-01T00:00:05"+fraction
     _age_v2_success(fx, _age_v2_observe(fx, ps, value), value)
+
+# Full-answer validation precedes presentation truncation. The record continues
+# to describe the original answer, while delivery fields describe a whole-item prefix.
+_LARGE_RECALL_CASES = (
+    "ascii", "quote_expansion", "unicode_expansion", "newline_expansion", "hundred_results",
+    "boundary23999", "boundary24000", "boundary24001", "tail_bad_ref", "tail_oversized",
+    "tail_token", "tail_escaped_token", "tail_whitespace", "tail_bad_shape", "bad_answer_digest", "tail_tampered",
+    "noncanonical", "record_file", "record_replace",
+)
+
+
+def _large_recall_lines(value):
+    if value["schema"].endswith(".v2"):
+        header = _age_v2_text(dict(value, answer=dict(value["answer"], results=[]))).split("\n")[0]
+    else:
+        header = "Mind recalled content; freshness UNKNOWN; index_age UNKNOWN; source references are caller-pinned, not authenticated."
+    return [header, *[
+        f"[{i}] " + _content_canonical(item["stored_text"]).decode("ascii") +
+        f" [ref_sha256={item['ref_sha256']}; doc_id_sha256={item['doc_id_sha256']}]"
+        for i, item in enumerate(value["answer"]["results"], 1)]]
+
+
+def _large_recall_packet(pin, version, case):
+    value = (_age_v2_packet if version == 2 else _content_delivery_packet)(pin)
+    texts = ["x" * 320] * 72
+    if case == "quote_expansion": texts = ['"' * 300] * 60
+    elif case == "unicode_expansion": texts = ["\u00e4" * 150] * 45
+    elif case == "newline_expansion": texts = ["X" + "\n" * 150] * 70
+    elif case == "hundred_results": texts = ["x" * 100] * 100
+    elif case.startswith("boundary"): texts = ["x"] * 60
+    value["answer"]["results"] = [
+        {"stored_text": text, "ref_sha256": format(i + 1, "064x"), "doc_id_sha256": format(i + 1001, "064x")}
+        for i, text in enumerate(texts)]
+    value["answer"]["result_count"] = len(texts)
+    if case.startswith("boundary"):
+        target = int(case.removeprefix("boundary"))
+        padding = target - len("\n".join(_large_recall_lines(value)))
+        assert 0 <= padding <= 319 * len(texts)
+        for item in value["answer"]["results"]:
+            extra = min(padding, 319)
+            item["stored_text"] += "x" * extra
+            padding -= extra
+        assert padding == 0 and len("\n".join(_large_recall_lines(value))) == target
+    tail = value["answer"]["results"][-1]
+    if case == "tail_bad_ref": tail["ref_sha256"] = "not-a-ref"
+    elif case == "tail_oversized": tail["stored_text"] = "x" * 321
+    elif case == "tail_token": tail["stored_text"] = "synthetic-owner-token"
+    elif case == "tail_escaped_token": tail["stored_text"] = 'synthetic-owner-token-"quoted"'
+    elif case == "tail_whitespace": tail["stored_text"] = "\n" * 150
+    elif case == "tail_bad_shape": tail["unexpected"] = "not-admitted"
+    value["answer_sha256"] = hashlib.sha256(_content_canonical(value["answer"])).hexdigest()
+    if case == "bad_answer_digest": value["answer_sha256"] = "f" * 64
+    elif case == "tail_tampered": tail["stored_text"] = "tampered after digest"
+    return value
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("case", _LARGE_RECALL_CASES)
+@_WINDOWS_HELPER_LAUNCH
+def test_large_recall_validates_entire_answer_then_delivers_bounded_prefix(tmp_path, ps, version, case):
+    audit = "file" if case == "record_file" else "stale" if case == "record_replace" else "ok"
+    fx = _age_v2_fixture(tmp_path, audit_case=audit)
+    value = _large_recall_packet(fx["descriptor_pin"], version, case)
+    token = 'synthetic-owner-token-"quoted"' if case == "tail_escaped_token" else "synthetic-owner-token"
+    fx["env_prelude"] += "\n$env:AGENT_BRIDGE_OWNER_TOKEN=" + _quote(token)
+    raw = _content_canonical(value) + b"\n"
+    if case == "noncanonical": raw = json.dumps(value, indent=2, ensure_ascii=True).encode("ascii") + b"\n"
+    assert len(raw) < 65536  # This is a presentation-budget class, not oversized transport input.
+    (fx["bundle"] / "producer-response.bin").write_bytes(raw)
+    observed = _content_observation(fx, ps)
+    invalid = case.startswith("tail_") or case in ("bad_answer_digest", "noncanonical")
+    if invalid or case.startswith("record_"):
+        assert observed["outcome"] == ("unknown" if case.startswith("record_") else "refused")
+        assert observed["delivered_items"] == observed["delivered_chars"] == observed["text_length"] == 0
+        assert observed["delivered_sha256"] == ""
+        if invalid:
+            assert observed["reason"] == "result_shape" and observed["refs"] == [] and observed["answer_sha256"] == ""
+        else:
+            assert observed["reason"] == "record_write" and observed["record_written"] is False
+        return
+    assert observed["outcome"] == "success" and observed["reason"] == "content_delivered_unknown_freshness"
+    assert observed["cleanup"] == "CONFIRMED" and observed["record_written"] is True
+    lines = _large_recall_lines(value)
+    admitted = [lines[0]]
+    for line in lines[1:]:
+        if len("\n".join([*admitted, line])) > 24000: break
+        admitted.append(line)
+    text = "\n".join(admitted)
+    assert 0 < observed["delivered_items"] == len(admitted) - 1
+    assert observed["delivered_chars"] == observed["text_length"] == len(text) <= 24000
+    assert observed["delivered_sha256"] == observed["text_sha256"] == hashlib.sha256(text.encode("utf-8")).hexdigest()
+    assert observed["result_count"] == value["answer"]["result_count"]
+    assert observed["refs"] == [item["ref_sha256"] for item in value["answer"]["results"]]
+    assert observed["answer_sha256"] == value["answer_sha256"] == hashlib.sha256(_content_canonical(value["answer"])).hexdigest()
+    if case in ("boundary23999", "boundary24000"):
+        assert observed["delivered_items"] == value["answer"]["result_count"]
+    else:
+        assert observed["delivered_items"] < value["answer"]["result_count"]
+    stored = fx["record"].read_text(encoding="ascii")
+    assert "delivered_text" not in stored and token not in stored
+    record = json.loads(stored)
+    for key in ("refs", "result_count", "answer_sha256", "delivered_items", "delivered_chars", "delivered_sha256"):
+        assert record[key] == observed[key]

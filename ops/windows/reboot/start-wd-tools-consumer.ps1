@@ -738,8 +738,14 @@ function Invoke-WdQ4StartupMindRead {
                   ' [ref_sha256=' + $item.ref_sha256 + '; doc_id_sha256=' + $item.doc_id_sha256 + ']')
               }
               $content = $lines -join "`n"
-              if ($content.Length -gt 24000 -or $content.Contains($ownerToken) -or
-                  $content.Contains($escapedToken)) { throw 'result_shape' }
+              if ($content.Contains($ownerToken) -or $content.Contains($escapedToken)) { throw 'result_shape' }
+              # Every item, reference, pin and token above is checked before dropping any presentation line.
+              # Keep the header plus a whole-item prefix; the receipt still names the full original answer.
+              while ($lines.Count -gt 1 -and $content.Length -gt 24000) {
+                $lines.RemoveAt($lines.Count - 1)
+                $content = $lines -join "`n"
+              }
+              if ($lines.Count -lt 2) { throw 'result_shape' }
               $digest = [Security.Cryptography.SHA256]::Create()
               try { $deliveryPin = [BitConverter]::ToString($digest.ComputeHash($utf8.GetBytes($content))).Replace('-','').ToLowerInvariant() }
               finally { $digest.Dispose() }
@@ -748,7 +754,7 @@ function Invoke-WdQ4StartupMindRead {
               $record.answer_sha256 = $result.answer_sha256
               $record.call_id = $result.call_id
               $record.refs = @($refs)
-              $record.delivered_items = [int]$answer.result_count
+              $record.delivered_items = $lines.Count - 1
               $record.delivered_chars = $content.Length
               $record.delivered_sha256 = $deliveryPin
               $record.outcome = 'success'

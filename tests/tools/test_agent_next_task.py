@@ -47,6 +47,26 @@ def _isolate_synthetic_claim_identity(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
+
+def _make_claim_repository(root: Path) -> Path:
+    """Owned Git topology for the real read-only scope validator; no Git process."""
+    git = root / ".git"
+    (git / "objects").mkdir(parents=True)
+    (git / "refs").mkdir()
+    (git / "HEAD").write_text("ref: refs/heads/synthetic\n", encoding="ascii")
+    return root
+
+
+@pytest.fixture
+def _synthetic_claim_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Write-claim tests use test data outside the source checkout's Git ancestry."""
+    root = _make_claim_repository(tmp_path / "claim-repo")
+    monkeypatch.chdir(root)
+    return root
+
+
 def _rco_lane_stall_event() -> dict:
     return {
         "ts_utc": "2026-05-20T11:20:00Z",
@@ -215,6 +235,7 @@ def test_invalid_agent_id_is_rejected(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_synthetic_claim_repository")
 def test_defers_when_agent_has_active_claim(tmp_path: Path) -> None:
     bridge, events_path, claims_dir = _empty_bridge(tmp_path)
     claim_task(
@@ -2139,6 +2160,7 @@ def test_agent_next_task_lifts_bridge_agent_profile_to_top_level(
     assert report["bridge_recommendation"]["agent_profile"] == report["agent_profile"]
 
 
+@pytest.mark.usefixtures("_synthetic_claim_repository")
 def test_picks_substrate_smoke_when_bridge_says_parallel_read_only(
     tmp_path: Path,
 ) -> None:
@@ -3020,6 +3042,7 @@ def test_cli_main_emits_json(tmp_path: Path, capsys: pytest.CaptureFixture) -> N
     assert parsed["candidate"]["kind"] == "run_substrate_smoke"
 
 
+@pytest.mark.usefixtures("_synthetic_claim_repository")
 def test_cli_infers_bridge_root_from_events_path_for_claims(
     tmp_path: Path, capsys: pytest.CaptureFixture
 ) -> None:
@@ -3053,6 +3076,7 @@ def test_cli_infers_bridge_root_from_events_path_for_claims(
     assert parsed["bridge_recommendation"]["task_id"] == "claude-real-bridge-root-claim"
 
 
+@pytest.mark.usefixtures("_synthetic_claim_repository")
 def test_cli_defaults_to_runtime_bridge_root_env(
     tmp_path: Path,
     capsys: pytest.CaptureFixture,
@@ -3237,6 +3261,7 @@ def test_bridge_root_is_authoritative_for_claims_not_some_external_dir(
     assert report["bridge_recommendation"]["active_claim_count"] == 0
 
 
+@pytest.mark.usefixtures("_synthetic_claim_repository")
 def test_active_claim_under_bridge_root_yields_continue_claim_regardless_of_external_dirs(
     tmp_path: Path,
 ) -> None:
@@ -3284,3 +3309,40 @@ def test_active_claim_under_bridge_root_yields_continue_claim_regardless_of_exte
     assert report["decision"] == "defer_to_bridge_next_action"
     assert report["bridge_recommendation"]["action"] == "continue_claim"
     assert report["bridge_recommendation"]["task_id"] == "claude-real-bridge-root-claim"
+
+
+def test_synthetic_write_claim_records_its_owned_repository(
+    tmp_path: Path, _synthetic_claim_repository: Path,
+) -> None:
+    bridge, _, _ = _empty_bridge(tmp_path)
+    claim = claim_task(
+        agent="claude", task_id="synthetic-owned-scope",
+        summary="real scope validation against owned Git topology",
+        mode="write", write_scope=["tools/foo.py"], bridge_root=bridge,
+    )
+    assert Path(claim.cwd) == _synthetic_claim_repository
+    assert claim.write_scope == ("tools/foo.py",)
+
+
+@pytest.mark.parametrize("invalid", ["missing_head", "nested_repository"])
+def test_synthetic_write_claim_keeps_invalid_repository_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    _synthetic_claim_repository: Path, invalid: str,
+) -> None:
+    bridge, events_path, claims_dir = _empty_bridge(tmp_path)
+    original = events_path.read_bytes()
+    if invalid == "missing_head":
+        (_synthetic_claim_repository / ".git" / "HEAD").unlink()
+        reason = "not a repository top level"
+    else:
+        nested = _make_claim_repository(_synthetic_claim_repository / "nested")
+        monkeypatch.chdir(nested)
+        reason = "repository nested inside another repository"
+    with pytest.raises(WorkQueueError, match=reason):
+        claim_task(
+            agent="claude", task_id="synthetic-invalid-scope",
+            summary="invalid repository must remain refused",
+            mode="write", write_scope=["tools/foo.py"], bridge_root=bridge,
+        )
+    assert list(claims_dir.iterdir()) == []
+    assert events_path.read_bytes() == original

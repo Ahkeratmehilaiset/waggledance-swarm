@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import zipfile
 
 import pytest
@@ -38,6 +39,24 @@ SHELLS = ("pwsh", "powershell")
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest().upper()
+
+
+
+def _fixture_python_pin() -> str:
+    """Consume a paired launcher descriptor; the real wrapper still verifies it."""
+    configured = os.environ.get("WD_BRIDGE_PYTHON", "")
+    pin = os.environ.get("WD_BRIDGE_PYTHON_SHA256", "")
+    expected = os.path.normcase(os.path.abspath(BRIDGE_PYTHON))
+    if configured or pin:
+        if (not os.path.isabs(configured)
+                or os.path.normcase(os.path.abspath(configured)) != expected
+                or len(pin) != 64 or any(c not in "0123456789abcdefABCDEF" for c in pin)):
+            raise AssertionError("fixture requires a complete matching launcher Python descriptor")
+        return pin.upper()
+    if os.path.normcase(os.path.abspath(sys.executable)) != expected:
+        raise AssertionError("external fixture Python requires a paired launcher descriptor")
+    # Standalone tests may hash their own interpreter, already inside its D15 prefix.
+    return _sha(Path(sys.executable))
 
 
 def _write(path: Path, value: dict) -> None:
@@ -163,7 +182,7 @@ def _invoke(shell, bundle: Path, tool=MERGE, args=None, *, anchor=True, agent="c
             environment[name] = value
     if python_pin:
         environment["WD_BRIDGE_PYTHON_SHA256"] = (
-            _sha(Path(BRIDGE_PYTHON)) if python_pin is True else python_pin)
+            _fixture_python_pin() if python_pin is True else python_pin)
     if anchor:
         environment["WD_REBOOT_EXPECTED_MANIFEST_HASH"] = (
             _sha(bundle / "deployment-manifest.json") if anchor is True else anchor)
@@ -480,3 +499,38 @@ def test_ordinary_diagnostic_still_launches_without_activation(shell, bundle):
     assert run.returncode == 0, run.stdout + run.stderr
     assert signal.exists()
     assert json.loads(run.stdout)["argv"] == ["--json"]
+
+
+@pytest.mark.parametrize("invalid", ["missing_path", "missing_pin", "foreign_path", "malformed_pin"])
+def test_launcher_python_descriptor_fails_closed_before_inert_driver(shell, bundle, monkeypatch, invalid):
+    monkeypatch.setenv("WD_BRIDGE_PYTHON", BRIDGE_PYTHON)
+    monkeypatch.setenv("WD_BRIDGE_PYTHON_SHA256", "A" * 64)
+    if invalid == "missing_path":
+        monkeypatch.delenv("WD_BRIDGE_PYTHON")
+    elif invalid == "missing_pin":
+        monkeypatch.delenv("WD_BRIDGE_PYTHON_SHA256")
+    elif invalid == "foreign_path":
+        monkeypatch.setenv("WD_BRIDGE_PYTHON", str(bundle.parent / "foreign-python.exe"))
+    else:
+        monkeypatch.setenv("WD_BRIDGE_PYTHON_SHA256", "not-a-sha256")
+    _anchor(bundle, _activation(bundle))
+    with pytest.raises(AssertionError, match="complete matching launcher Python descriptor"):
+        _invoke(shell, bundle)
+    assert not (bundle.parent / "driver-launched.txt").exists()
+
+
+def test_inherited_python_pin_is_verified_by_real_wrapper(shell, bundle, monkeypatch):
+    monkeypatch.setenv("WD_BRIDGE_PYTHON", BRIDGE_PYTHON)
+    monkeypatch.setenv("WD_BRIDGE_PYTHON_SHA256", "B" * 64)
+    _anchor(bundle, _activation(bundle))
+    run, signal = _invoke(shell, bundle)
+    assert run.returncode != 0 and not signal.exists()
+    assert "Python changed after the lane handshake" in run.stderr
+
+
+def test_external_python_without_launcher_descriptor_is_explicitly_refused(monkeypatch, tmp_path):
+    monkeypatch.delenv("WD_BRIDGE_PYTHON", raising=False)
+    monkeypatch.delenv("WD_BRIDGE_PYTHON_SHA256", raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "unrelated-python.exe"))
+    with pytest.raises(AssertionError, match="requires a paired launcher descriptor"):
+        _fixture_python_pin()

@@ -19,6 +19,13 @@ from tools.check_standing_consensus_sign_class import (
 from waggledance.core.idle_consensus_charter import evaluate_paths, load_charter
 
 
+@pytest.fixture(autouse=True)
+def _isolate_installed_bundle_trust_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Synthetic tests must not consult the running fleet's bundle."""
+    monkeypatch.delenv("WD_BRIDGE_BUNDLE_ROOT", raising=False)
+    monkeypatch.delenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", raising=False)
+
+
 # --- (a)-class: ALWAYS operator-explicit, never rides standing-sign ----------
 A_CLASS_PATHS = [
     "CLAUDE.md",

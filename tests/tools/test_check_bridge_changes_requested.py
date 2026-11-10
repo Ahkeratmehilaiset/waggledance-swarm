@@ -11,6 +11,13 @@ import sys
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_installed_bundle_trust_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Synthetic tests must not consult the running fleet's bundle."""
+    monkeypatch.delenv("WD_BRIDGE_BUNDLE_ROOT", raising=False)
+    monkeypatch.delenv("WD_REBOOT_EXPECTED_MANIFEST_HASH", raising=False)
+
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "check_bridge_changes_requested.py"
 

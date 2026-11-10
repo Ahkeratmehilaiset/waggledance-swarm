@@ -8,6 +8,7 @@ import pytest
 
 from tools import wd_q4_lane_caller_adapter as adapter
 from tools import wd_q4_lane_caller_cli as cli
+from tools import wd_q4_guard_completion as guard
 from tests.tools.test_wd_q4_lane_caller_owner_cli import NOW, setup_cli
 from tests.tools.test_wd_q4_content_release_contract import TEXT, result_for
 
@@ -60,6 +61,14 @@ def test_final_snapshot_failure_emits_no_content(content_main, monkeypatch):
 
 def test_unknown_cleanup_emits_no_content(content_main, monkeypatch):
     monkeypatch.setattr(adapter, "call_lane_session", lambda **kwargs: {"status": "UNKNOWN", "cleanup": "UNKNOWN"})
+    assert cli.main(["--enabled"]) != 0
+    assert content_main["writes"] == []
+
+
+def test_failed_guard_release_emits_no_content(content_main, monkeypatch):
+    def fail(*args):
+        raise guard.GuardCompletionUnavailable()
+    monkeypatch.setattr(guard._Guard, "release", fail)
     assert cli.main(["--enabled"]) != 0
     assert content_main["writes"] == []
 

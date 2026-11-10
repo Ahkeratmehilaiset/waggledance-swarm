@@ -81,6 +81,15 @@ def test_token_in_content_is_refused():
         emit(binding, text=TOKEN)
 
 
+def test_expanded_delivery_envelope_cannot_exceed_output_bound():
+    binding = {key: "2" * 64 for key in cli._CONTENT_BINDING_KEYS}
+    result = result_for(binding)
+    original_limit = len(cli._canon(result)) + 1
+    assert len(emit(binding).encode("ascii")) > original_limit
+    with pytest.raises(ValueError):
+        cli._output(result, LANE, IDENTITY, DESCRIPTOR, binding, original_limit, TOKEN)
+
+
 def test_degraded_content_does_not_silently_deliver_text():
     binding = {key: "2" * 64 for key in cli._CONTENT_BINDING_KEYS}
     result = result_for(binding)

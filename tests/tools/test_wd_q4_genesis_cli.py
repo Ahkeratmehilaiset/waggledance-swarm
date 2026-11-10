@@ -2,8 +2,31 @@
 import importlib
 import hashlib
 import json
+import os
 from pathlib import Path
 import pytest
+
+
+_PORTABLE_GENESIS_CLI_TESTS = frozenset((
+    'test_default_off_does_not_import_or_read',
+    'test_enabled_requires_exact_config_and_pin',
+    'test_output_never_contains_exception_or_config',
+    'test_one_call_and_post_admission_outcome',
+    'test_duplicate_config_keys_are_refused',
+    'test_config_pins_cutoff_batch_headroom_and_partial_and_reports_partial',
+    'test_machine_receipt_has_only_valid_public_hashes',
+    'test_default_config_without_the_key_calls_bootstrap_exactly_as_before',
+    'test_opt_in_reports_progress_only_after_verification',
+    'test_real_cli_progress_never_moves_past_a_changed_or_replaced_source',
+    'test_real_cli_unverifiable_progress_is_unknown',
+    'test_skip_progress_verification_checks_state_receipt_and_source',
+))
+
+
+@pytest.fixture(autouse=True)
+def _require_genesis_cli_host(request):
+    if os.name != 'nt' and request.node.originalname not in _PORTABLE_GENESIS_CLI_TESTS:
+        pytest.skip('genesis CLI preflight requires Windows C: paths and admission lock')
 
 
 def test_default_off_does_not_import_or_read(monkeypatch, capsys):

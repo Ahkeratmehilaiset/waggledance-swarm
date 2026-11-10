@@ -1,6 +1,7 @@
 """Synthetic pins only: the v2 shared-session descriptor producer against the existing PS validator.
 
-No launcher, query, live data or runtime. Paths point into pytest's tmp_path and need not exist.
+No launcher, query, live data or runtime. Descriptor paths are fixed synthetic Windows paths and need not exist;
+only the validator's own fleet and descriptor files are written to pytest's tmp_path.
 """
 import base64
 import builtins
@@ -9,7 +10,7 @@ import hashlib
 import inspect
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import shutil
 import subprocess
 
@@ -78,13 +79,19 @@ def fleet_bytes():
                        "tools_supervisor": {"agent": "codex-tools-1"}, "other": {"kept": True}}).encode()
 
 
+# The producer accepts drive-letter Windows path syntax only and never touches these paths, so the positive and
+# refusal cases use one fixed synthetic Windows root on every platform (a POSIX tmp_path would be refused first).
+SYNTHETIC_ROOT = PureWindowsPath(r"C:\synthetic\q4-shared-descriptor")
+
+
 def kwargs(tmp_path):
+    base = SYNTHETIC_ROOT
     fleet = fleet_bytes()
-    root = tmp_path / "runtime"
+    root = base / "runtime"
     out = {"fleet_bytes": fleet, "expected_fleet_sha256": sha(fleet), "lanes": list(LANES),
-           "bundle_root": str(tmp_path / "bundle"), "public_plan": str(tmp_path / "public.json"),
-           "interpreter": str(tmp_path / "python.exe"), "interpreter_sha256": "a" * 64,
-           "interpreter_max_bytes": 10000, "cwd": str(tmp_path / "code"), "timeout_seconds": 30,
+           "bundle_root": str(base / "bundle"), "public_plan": str(base / "public.json"),
+           "interpreter": str(base / "python.exe"), "interpreter_sha256": "a" * 64,
+           "interpreter_max_bytes": 10000, "cwd": str(base / "code"), "timeout_seconds": 30,
            "max_output_bytes": 32000,
            "outer": {"outer-path": str(root / "assets" / "code" / "tools" / "wd_q4_session_outer_synthetic.py"),
                      "outer-sha256": "c" * 64, "runtime-root": str(root), "runtime-generation": "d" * 40,
@@ -92,7 +99,7 @@ def kwargs(tmp_path):
                      "public-child-sha256": "3" * 64, "public-query-sha256": "4" * 64, "worker-sha256": "5" * 64},
            "expected_binding": {key: format(i + 1, "064x") for i, key in enumerate(BINDING_KEYS)}}
     for i, name in enumerate(("binding", "fixed_plan", "snapshot", "runtime_manifest")):
-        out[name + "_path"] = str(tmp_path / (name + ".json"))
+        out[name + "_path"] = str(base / (name + ".json"))
         out[name + "_sha256"] = format(i + 6, "x") * 64
     return out
 

@@ -266,6 +266,7 @@ def test_real_pinned_source_accepts_append_and_detects_changed_prefix(tmp_path, 
                                   'bad_headroom', 'boolean_headroom'])
 def test_real_preflight_refuses_changed_or_unbound_inputs(tmp_path, monkeypatch, case):
     cli, dirs, config, path, write = _fixture(tmp_path, monkeypatch)
+    assert cli._prepare(str(path), write())[0] == config
     if case == 'overlap': config['private_state_root'] = config['checkpoint_root']
     if case == 'unknown_key': config['unexpected'] = True
     if case == 'model_off_c': config['plan_template']['encoder']['model_dir'] = 'F:\\unbound'
@@ -354,6 +355,7 @@ def test_real_preflight_refuses_an_unbound_skip_opt_in(tmp_path, monkeypatch, ca
     _pin_runner(dirs, monkeypatch, config)
     config.update(cutoff_utc='2026-01-01T00:00:00Z', batch_rows=True, allow_partial_genesis=True,
                   resume_genesis_skip=True)
+    assert cli._prepare(str(path), write())[0] == config
     if case == 'not_boolean': config['resume_genesis_skip'] = 1
     if case == 'without_partial': config['allow_partial_genesis'] = False
     if case == 'runner_changed':

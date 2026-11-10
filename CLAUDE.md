@@ -508,14 +508,21 @@ per-action operator steps on that path. Where it and an earlier rule disagree
 **for Mind-class changes**, this rule governs; Rule 12 stays in force for
 everything else.
 
-**Mind-class** = a change whose every path is under `sandbox/mind/`,
-`configs/mind/`, `tools/wd_q4_*`, `tests/tools/test_wd_q4_*`, or is the Mind
-startup-read / Q4 section of `ops/windows/reboot/*.ps1` and its tests. A change
-that also touches any (a)-class path (this file, the charter and its loader,
+**Mind-class** = a change whose every changed path, as a whole file, matches
+one of: `sandbox/mind/**`, `configs/mind/**`, `tools/wd_q4_*`,
+`tests/tools/test_wd_q4_*`, `ops/windows/reboot/Get-WdQ4*.ps1`,
+`ops/windows/reboot/Invoke-WdQ4*.ps1`. Nothing is Mind-class by "section":
+multi-purpose launcher and installer files (`start-wd-agent.ps1`,
+`start-wd-tools-consumer.ps1`, `Deploy-WdRebootBundle.ps1` and every other
+`ops/windows/reboot` file not matching the two patterns above) stay outside
+Mind-class even when only their Mind part changes. A change that also touches
+any (a)-class path (this file, the charter and its loader,
 `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`, the gate code listed in
 Rule 9b, `.agent-bridge/bin/**`) or anything Stage-2 is **not** Mind-class,
 even where a pattern above would match. The gate checks this path list
-mechanically; prose never widens it.
+mechanically; prose never widens it. `tools/wd_q4_*` includes security-boundary
+code (transport, attestation, quarantine), so the RCO review of a Mind-class PR
+stays at high effort.
 
 #### 14a. Mind PRs merge without a per-PR operator signature
 
@@ -536,7 +543,10 @@ mechanically; prose never widens it.
 
 * After a Mind-class PR is merged to `main`, Lead may build and install the
   Mind bundle, update the reboot state for it, and restart the lanes without a
-  per-deploy operator action.
+  per-deploy operator action, **only when** the diff between the installed
+  bundle's source commit and the commit being deployed touches Mind-class paths
+  only. If that diff contains any other path (non-Mind or (a)-class code merged
+  since the last install), the deploy needs the operator as before.
 * Required every time: the pinned deploy route only; the previous bundle and
   state kept for rollback; a post-start check (every lane's startup Mind read
   record and caller exit status); **automatic rollback** to the previous bundle
@@ -544,9 +554,11 @@ mechanically; prose never widens it.
 * Restarts go through the controlled launcher and shutdown path. Never kill a
   process; never auto-approve anything else on the operator's behalf.
 * The C: free-space floor stays; a deploy that would cross it does not start.
-* A Mind deploy is not the Stage-2 atomic runtime flip. Stage-2 stays under
-  Rule 10, and every deploy PR states this boundary, its post-start check and
-  its rollback trigger.
+* A Mind deploy is not the Stage-2 atomic runtime flip
+  (`docs/architecture/STAGE2_CUTOVER_RFC.md`): it never writes
+  `control_plane.runtime_path_bindings` and never performs the cutover. Stage-2
+  stays under Rule 10, and every deploy PR states this boundary, its post-start
+  check and its rollback trigger.
 
 #### 14c. Mind answer text is on by default
 
@@ -567,6 +579,11 @@ mechanically; prose never widens it.
   never carries; it re-runs and must be green. A veto never lapses. The receipt
   records old head, new head, patch-id and diff digest, so the verdict can be
   re-derived.
+* The reviewed base is the base recorded in the approval event at review time;
+  it is never derived later from the current tip or supplied by the caller. An
+  approval without a recorded base does not carry.
+* An operator signature on an (a)-class head never carries forward; every new
+  (a)-class head needs a fresh signature.
 * This is the intended behaviour behind the Rule 9a carry-forward note. Until
   the gate code implements it (an (a)-class PR with dual-RCO review, signed
   once by the operator), the strict code governs mechanically.

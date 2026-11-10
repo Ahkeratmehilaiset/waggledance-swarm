@@ -214,6 +214,7 @@ def test_failure_after_first_attempt_is_incomplete_without_retry(materialize, mo
         composer.compose_staged_card(**materialize)
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged card caller reads drive-absolute Windows paths')
 def test_actual_c2_plan_builds_ten_pin_binding_without_legacy_snapshot(staged_producer, monkeypatch):
     def no_legacy(*unused, **ignored):
         pytest.fail('v3 must not decode a v6 fixed snapshot')
@@ -230,6 +231,7 @@ def test_actual_c2_plan_builds_ten_pin_binding_without_legacy_snapshot(staged_pr
     assert hashlib.sha256(bundle['projection']).hexdigest() == document['binding']['projection_sha256']
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='staged card caller reads drive-absolute Windows paths')
 def test_changed_memory_between_binding_and_bundle_refuses(staged_producer, monkeypatch):
     original = composer.binding_producer.build_staged_lane_binding
     def changed_after_binding(**kwargs):
@@ -243,7 +245,12 @@ def test_changed_memory_between_binding_and_bundle_refuses(staged_producer, monk
         composer._prepare_staged_card_binding(**args(staged_producer))
 
 
-@pytest.mark.parametrize('fault', ['plan_pin', 'pointer', 'card_policy', 'source', 'cursor', 'generation'])
+@pytest.mark.parametrize('fault', [
+    'plan_pin',
+    *[pytest.param(fault, marks=pytest.mark.skipif(
+        os.name != 'nt', reason='staged card caller reads drive-absolute Windows paths'))
+      for fault in ('pointer', 'card_policy', 'source', 'cursor', 'generation')],
+])
 def test_changed_or_mismatched_c2_evidence_refuses(staged_producer, fault):
     case = dict(staged_producer)
     plan = json.loads(case['public_plan_bytes'])

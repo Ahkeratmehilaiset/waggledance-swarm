@@ -396,6 +396,8 @@ def _with_content_cell_age(rendered, snapshot, observed, limit, token):
     Called only after the unchanged result/digest/cleanup validation, final pin
     rechecks and clock check. Missing age capability preserves exact v1 UNKNOWN.
     """
+    if snapshot is None:
+        return rendered
     value = _json(rendered.encode("ascii"))
     if value.get("schema") != "wd.q4-lane-content-delivery.v1":
         return rendered

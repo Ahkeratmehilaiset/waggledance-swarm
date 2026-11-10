@@ -20,6 +20,22 @@ _spec = importlib.util.spec_from_file_location("genesis_runtime_fixture",
 _fixture = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_fixture)
 candidate = _fixture.candidate
+_PORTABLE_TESTS = frozenset((
+    "test_default_off_does_not_read_inputs",
+    "test_launcher_default_off",
+    "test_launcher_does_not_use_powershell_automatic_args_variable",
+))
+
+
+@pytest.fixture(autouse=True)
+def _require_supported_continuation_host(request):
+    if os.name == "nt":
+        return
+    name = request.node.originalname
+    if name not in _PORTABLE_TESTS:
+        pytest.skip("continuation jobs require Windows C: paths, PowerShell and kernel32")
+    if name == "test_launcher_default_off" and shutil.which("pwsh") is None:
+        pytest.skip("portable default-off check requires PowerShell 7 (pwsh)")
 
 
 def test_default_off_does_not_read_inputs(monkeypatch, capsys):
@@ -30,7 +46,8 @@ def test_default_off_does_not_read_inputs(monkeypatch, capsys):
 
 
 def test_launcher_default_off():
-    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-File", str(LAUNCH)],
+    host = "powershell" if os.name == "nt" else "pwsh"
+    result = subprocess.run([host, "-NoProfile", "-NonInteractive", "-File", str(LAUNCH)],
                             text=True, capture_output=True, timeout=20)
     assert result.returncode == 0
     assert json.loads(result.stdout) == {"status": "OFF"}

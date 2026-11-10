@@ -20,7 +20,12 @@ def _probe(tmp_path, scenario):
     good = b'VALUE = 42\n'
     (site / 'wd_synthetic_good.py').write_bytes(good)
     if scenario in ('pyc', 'direct_pyc', 'loader_pyc'):
-        pyc = Path(importlib.util.cache_from_source(str(site / 'wd_synthetic_good.py')))
+        # The isolated child ignores PYTHONPYCACHEPREFIX. Construct the forged
+        # cache at the same test-owned location it would look at, regardless
+        # of the parent test runner's cache configuration.
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(sys, 'pycache_prefix', None)
+            pyc = Path(importlib.util.cache_from_source(str(site / 'wd_synthetic_good.py')))
         pyc.parent.mkdir()
         forged = compile('VALUE = 666\n', str(site / 'wd_synthetic_good.py'), 'exec')
         pyc.write_bytes(importlib._bootstrap_external._code_to_hash_pyc(
@@ -458,6 +463,16 @@ print('PASS')
     return subprocess.run([sys.executable, '-I', '-S', '-B', '-c', probe,
                            str(ROOT / 'tools' / 'wd_q4_secure_transport.py'), str(tmp_path), scenario],
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+
+
+def test_pyc_fixture_ignores_parent_cache_prefix(tmp_path, monkeypatch):
+    unrelated_cache = tmp_path / 'unrelated-cache'
+    monkeypatch.setattr(sys, 'pycache_prefix', str(unrelated_cache))
+    result = _probe(tmp_path, 'direct_pyc')
+    assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
+    assert not unrelated_cache.exists()
+    assert any((tmp_path / 'site' / '__pycache__').glob('*.pyc'))
+    assert sys.pycache_prefix == str(unrelated_cache)
 
 
 def test_controlled_imports_preserve_missing_semantics_and_reject_injections(tmp_path):

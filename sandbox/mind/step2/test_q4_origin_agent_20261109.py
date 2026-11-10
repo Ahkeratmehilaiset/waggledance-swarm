@@ -4,6 +4,7 @@ full-set consensus; every other question is untouched. Model-free synthetic memo
 import copy
 import hashlib
 import random
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -435,3 +436,26 @@ def test_uf2_narrow_cut_filter_is_monotone_against_the_unfiltered_agreement_set(
         else:
             seen += filtered["status"] == "ANSWER"
     assert seen
+
+
+# --- review lanes: a fixed startup question that is not the own-task form (lead-rco-startup-query-fable-20261110-v1)
+REVIEW_STARTUP = "%s startup read: build-lane work in progress, last bound replies, operator directive of the day"
+LAUNCHER_PATH = Path(__file__).resolve().parents[3] / "ops/windows/reboot/start-wd-agent.ps1"
+
+
+def test_the_launcher_carries_the_exact_review_lane_question():
+    source = LAUNCHER_PATH.read_text(encoding="utf-8-sig")
+    assert "' " + REVIEW_STARTUP.split("%s ", 1)[1] + "'" in source
+
+
+@pytest.mark.parametrize("lane", ("claude-rco-1", "claude-rco-2"))
+def test_reviewer_startup_question_skips_the_own_task_filter_and_answers_with_build_lane_records_only(lane):
+    situation = REVIEW_STARTUP % lane
+    assert q4.startup_origin_lane(situation) is None  # not the own-task form, so no origin filter applies
+    answer = q4.Q4(lane_memory(BUILD_LANES), FakeEncoder()).ask(situation, WHEN)
+    assert answer["status"] == "ANSWER" and answer["results"]
+    assert lanes_of(answer) <= set(BUILD_LANES) and not lanes_of(answer) & {"claude-rco-1", "claude-rco-2"}
+    assert answer["telemetry"].get("rejected_origin") is None
+    # The own-task form for the same reviewer still abstains: nothing upstream changed.
+    own = q4.Q4(lane_memory(BUILD_LANES), FakeEncoder()).ask(STARTUP % lane, WHEN)
+    assert own["status"] == "ABSTAIN" and own["reason"] == "no_lane_origin_results"

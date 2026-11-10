@@ -752,3 +752,35 @@ def test_startup_delivery_guard_is_strict_mode_safe(tmp_path, case):
     observed = json.loads(result.stdout)
     assert observed["present"] is (case == "success")
     assert observed["value"] == (record["delivered_text"] if case == "success" else None)
+
+
+# --- review lanes ask a fixed non-own-task startup question (lead-rco-startup-query-fable-20261110-v1) -------------
+OWN_TASK_QUESTION = "startup read: own current task, last bound reply, operator directive of the day"
+REVIEW_QUESTION = "startup read: build-lane work in progress, last bound replies, operator directive of the day"
+REVIEW_LANES = ("claude-rco-1", "claude-rco-2")
+
+
+@pytest.mark.parametrize("lane", LANES)
+def test_startup_question_is_own_task_for_build_lanes_and_fixed_build_lane_work_for_review_lanes(tmp_path, lane):
+    fx, record = run_startup_read(tmp_path, lane=lane)
+    assert record["lane"] == lane and record["route"] == "default_caller_cli"
+    seen = json.loads(fx["seen"].read_text(encoding="utf-8-sig"))
+    expected = lane + " " + (REVIEW_QUESTION if lane in REVIEW_LANES else OWN_TASK_QUESTION)
+    # Byte-exact query: unchanged shape and, for the build lanes, unchanged bytes.
+    assert re.fullmatch(r'\{"situation":"' + re.escape(expected) + r'","time":"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ"\}',
+                        seen["query"]), seen["query"]
+    assert_no_secret(fx["record"].read_text(encoding="ascii"))
+    assert "situation" not in json.dumps(record).lower()
+
+
+def test_review_lane_question_passes_the_caller_adapter_and_the_engine_without_the_own_task_filter():
+    pytest.importorskip("numpy")
+    from tools import wd_q4_lane_caller_adapter as adapter
+    from sandbox.mind.step2 import q4
+    for lane in REVIEW_LANES:
+        situation = lane + " " + REVIEW_QUESTION
+        assert adapter._STARTUP_OWN_TASK.match(situation) is None  # the adapter's own-task lane check does not apply
+        assert q4.startup_origin_lane(situation) is None
+        assert re.fullmatch(r"[A-Za-z0-9 ,:-]{1,4000}", situation)  # same character class as the own-task question
+    for lane in [x for x in LANES if x not in REVIEW_LANES]:
+        assert q4.startup_origin_lane(lane + " " + OWN_TASK_QUESTION) == lane

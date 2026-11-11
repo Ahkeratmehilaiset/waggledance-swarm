@@ -45,8 +45,13 @@ def _same_hash(data, expected):
 
 def _pairs(pairs):
     result = {}
+    folded = set()
     for key, value in pairs:
-        _require(key not in result)
+        # PowerShell's object conversion cannot represent case-colliding keys.
+        # Unicode casefold is intentionally conservative for all JSON objects.
+        normalized = key.casefold()
+        _require(normalized not in folded)
+        folded.add(normalized)
         result[key] = value
     return result
 

@@ -630,12 +630,16 @@ def test_native_object_later_registered_by_verified_source(scenario):
 
 
 def test_nested_interpreter_native_object_is_not_credited_to_manifest_native(tmp_path):
-    # Only synthetic callbacks execute: both .pyd paths are verified but never loaded.
+    # Only synthetic callbacks execute: neither extension path is actually loaded.
     probe = r'''
 import hashlib, importlib.machinery as mach, importlib.util as util, json, os, pathlib, sys, types
 workspace, root = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 spec = util.spec_from_file_location('q4_audit_helper', workspace/'sandbox/mind/step2/q4_controlled_imports.py')
 helper = util.module_from_spec(spec); spec.loader.exec_module(helper)
+nested_spec = util.find_spec('_socket')
+assert nested_spec is not None and isinstance(nested_spec.loader, mach.ExtensionFileLoader)
+nested_path = pathlib.Path(nested_spec.origin).resolve(strict=True)
+assert os.path.commonpath((os.path.normcase(str(nested_path)), os.path.normcase(os.path.realpath(sys.base_prefix)))) == os.path.normcase(os.path.realpath(sys.base_prefix))
 def check(value):
  if not value: raise ValueError('refused')
 def sha(value): return hashlib.sha256(value).hexdigest()
@@ -650,7 +654,7 @@ files = [{'path':p, 'size':len(b), 'sha256':sha(b)} for p,b in [('site/wd_produc
 manifest=root/'manifest.json'; raw=json.dumps({'files':files}).encode(); manifest.write_bytes(raw)
 def fake_exec(loader, module):
  if loader.name == 'wd_outer':
-  nested=mach.ExtensionFileLoader('trusted_nested', str(pathlib.Path(sys.base_prefix)/'DLLs'/'_socket.pyd'))
+  nested=mach.ExtensionFileLoader('trusted_nested', str(nested_path))
   nested.exec_module(types.ModuleType('trusted_nested'))
  else:
   sys.modules['__main__'].candidate=types.ModuleType('wd_outer.nested_alias')

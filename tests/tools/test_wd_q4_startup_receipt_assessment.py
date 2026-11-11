@@ -1,5 +1,6 @@
 """Synthetic startup receipt assessment; never starts, deploys or restores lanes."""
 import copy
+import os
 
 import pytest
 
@@ -21,7 +22,9 @@ def receipt(lane):
         "schema": "wd.mind-startup-read.v1", "lane": lane, "run_id": RUNS[lane],
         "expected_manifest_sha256": MANIFEST, "descriptor_sha256": DESCRIPTOR,
         "helper_sha256": HELPER, "helper_env": "verified", "helper_status": "EXITED",
-        "cleanup": "CONFIRMED", "reason": "content_delivered", "route": "default_caller_cli",
+        "cleanup": "CONFIRMED", "reason": ("content_delivered_unknown_freshness"
+                                              if lane == "codex-tools-1" else "content_delivered"),
+        "route": "default_caller_cli",
         "ts_utc": "2026-11-11T10:00:30Z", "outcome": "success", "exit_code": 0,
         "inner_status": "ANSWER", "delivered_items": 1, "delivered_chars": 5,
         "delivered_sha256": "c" * 64, "refs": ["d" * 64],
@@ -135,3 +138,82 @@ def test_unobserved_receipt_waits_then_requires_rollback():
 
 def test_second_precision_receipt_can_match_subsecond_start_anchor():
     assert assess(all_records(), started="2026-11-11T10:00:30.500000Z")["decision"] == "RECEIPTS_OK"
+
+
+def test_tools_accepts_its_actual_launcher_success_reason():
+    records = all_records()
+    records["codex-tools-1"]["reason"] = "content_delivered_unknown_freshness"
+    assert assess(records)["decision"] == "RECEIPTS_OK"
+
+
+def test_tools_does_not_accept_another_lanes_success_reason():
+    records = all_records()
+    records["codex-tools-1"]["reason"] = "content_delivered"
+    assert assess(records)["decision"] == "ROLLBACK_REQUIRED"
+
+
+@pytest.mark.parametrize("lane", ["codex-lead-1", "codex-tools-1"])
+@pytest.mark.skipif(os.name != "nt", reason="Synthetic launcher execution requires Windows PowerShell")
+def test_assessment_accepts_real_launcher_receipt_from_synthetic_content(tmp_path, monkeypatch, lane):
+    """Exercise launcher receipt format only; this is not evidence of a live startup."""
+    import hashlib
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    if lane == "codex-tools-1":
+        # The repository's tests directory is a namespace package; an unrelated
+        # installed ``tests`` package can otherwise shadow it on Windows.
+        import sys
+        import types
+        from pathlib import Path
+        tests_package = types.ModuleType("tests")
+        tests_package.__path__ = [str(Path(__file__).resolve().parents[1])]
+        tools_package = types.ModuleType("tests.tools")
+        tools_package.__path__ = [str(Path(__file__).resolve().parent)]
+        monkeypatch.setitem(sys.modules, "tests", tests_package)
+        monkeypatch.setitem(sys.modules, "tests.tools", tools_package)
+        import test_wd_q4_shared_tools_startup as launcher
+
+        fx = launcher.startup_read_fixture(tmp_path, lane, mode="producer_bytes")
+        packet = launcher._content_delivery_packet(fx["descriptor_pin"])
+        packet["answer_sha256"] = hashlib.sha256(launcher._content_canonical(packet["answer"])).hexdigest()
+        (fx["bundle"] / "producer-response.bin").write_bytes(launcher._content_canonical(packet) + b"\n")
+        fx["env_prelude"] += ("\n[Threading.Thread]::CurrentThread.CurrentCulture=[Globalization.CultureInfo]::GetCultureInfo('fi-FI');"
+                              "$env:AGENT_BRIDGE_AGENT='codex-tools-1';$env:AGENT_BRIDGE_OWNER_TOKEN='synthetic-owner-token'")
+        original = launcher.startup_read_call
+        monkeypatch.setattr(launcher, "startup_read_call", lambda *a, **kw:
+                            "[Threading.Thread]::CurrentThread.CurrentCulture=[Globalization.CultureInfo]::GetCultureInfo('fi-FI')\n" +
+                            original(*a, **kw).replace(" -TimeoutSeconds", " -StartupRunId 'run-20261111' -TimeoutSeconds", 1))
+        launcher._content_observation(fx, launcher.LANE_TEST_SHELLS[0])
+    else:
+        import test_wd_q4_shared_agent_startup as launcher
+
+        raw = launcher.delivery_bytes(launcher.delivery_envelope(lane, texts=("synthetic-content",)))
+        original = launcher.startup_read_call
+        monkeypatch.setattr(launcher, "startup_read_call", lambda *a, **kw:
+                            "[Threading.Thread]::CurrentThread.CurrentCulture=[Globalization.CultureInfo]::GetCultureInfo('fi-FI')\n" +
+                            original(*a, **kw).replace(" -TimeoutSeconds", " -StartupRunId 'run-20261111' -TimeoutSeconds", 1))
+        fx, _ = launcher.run_startup_read(tmp_path, lane=lane, mode="producer_bytes", producer_bytes=raw,
+                                          owner_token=launcher.OWNER_TOKEN)
+
+    import re
+    actual = json.loads(fx["record"].read_bytes())
+    seen = json.loads(fx["seen"].read_text(encoding="utf-8-sig"))
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", actual["ts_utc"]), actual["ts_utc"]
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", json.loads(seen["query"])["time"])
+    assert actual["outcome"] == "success"
+    now = datetime.now(timezone.utc)
+    stamp = lambda value: value.isoformat().replace("+00:00", "Z")
+    records = all_records()
+    for record in records.values():
+        record.update(ts_utc=actual["ts_utc"], expected_manifest_sha256=actual["expected_manifest_sha256"],
+                      descriptor_sha256=actual["descriptor_sha256"], helper_sha256=actual["helper_sha256"])
+    records[lane] = actual
+    from tools.wd_q4_startup_receipt_assessment import assess_startup_receipts
+    result = assess_startup_receipts(
+        expected_runs=RUNS, expected_manifest_sha256=actual["expected_manifest_sha256"],
+        expected_descriptor_sha256=actual["descriptor_sha256"], expected_helper_sha256=actual["helper_sha256"],
+        records=records, observed_at_utc={name: stamp(now) for name in LANES},
+        started_at_utc=stamp(now - timedelta(minutes=1)), deadline_utc=stamp(now + timedelta(minutes=1)), now_utc=stamp(now))
+    assert result["decision"] == "RECEIPTS_OK", result
+    assert result["agent_context_verified"] is False

@@ -92,7 +92,8 @@ def assess_startup_receipts(*, expected_runs, expected_manifest_sha256,
             and record.get("helper_env") == "verified"
             and record.get("helper_status") == "EXITED"
             and record.get("cleanup") == "CONFIRMED"
-            and record.get("reason") == "content_delivered"
+            and record.get("reason") == ("content_delivered_unknown_freshness"
+                                          if lane == "codex-tools-1" else "content_delivered")
             and record.get("route") == "default_caller_cli"
             and record.get("outcome") == "success"
             and type(record.get("exit_code")) is int and record["exit_code"] == 0

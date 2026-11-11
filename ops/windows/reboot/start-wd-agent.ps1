@@ -333,7 +333,7 @@ function Invoke-WdQ4StartupMindRead {
     lane = $Lane
     run_id = $StartupRunId
     expected_manifest_sha256 = $ExpectedManifestSha256.ToLowerInvariant()
-    ts_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+    ts_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture)
     route = 'default_caller_cli'
     descriptor_sha256 = $DescriptorSha256.ToLowerInvariant()
     helper_sha256 = ''
@@ -432,7 +432,7 @@ function Invoke-WdQ4StartupMindRead {
       ' startup read: own current task, last bound reply, operator directive of the day'
     }
     $query = [Text.Encoding]::ASCII.GetBytes('{"situation":"' + $Lane + $situation + '","time":"' +
-      [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ') + '"}')
+      [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture) + '"}')
     $process = $null
     # One wall-clock deadline over the complete operation: the start, the stdin write, the exit wait and the
     # output read. Whatever misses it is UNKNOWN: no kill, no retry, nothing parsed.

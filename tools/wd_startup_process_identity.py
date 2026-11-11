@@ -6,7 +6,6 @@ does not authenticate that source, verify executable bytes, prove agent
 context, confer rollback authority or establish future process liveness.
 This helper never starts, stops, or changes a process and performs no file I/O.
 """
-import ntpath
 import re
 import sys
 
@@ -20,14 +19,15 @@ def _windows():
 def _image_key(value):
     if type(value) is not str or not (1 <= len(value) <= 32767):
         raise ValueError('invalid image path')
-    if any(ord(char) < 32 or ord(char) >= 127 or char in '<>"|?*' for char in value):
+    if any(ord(char) < 32 or ord(char) >= 127 or char in '<>"|?*/' for char in value):
         raise ValueError('invalid image path')
-    text = value.replace('/', '\\')
+    text = value
     if not _DRIVE_PATH.fullmatch(text) or ':' in text[2:]:
         raise ValueError('invalid image path')
     if any(part in ('.', '..') or part.endswith(('.', ' ')) for part in text[3:].split('\\')):
         raise ValueError('invalid image path')
-    return ntpath.normcase(text)
+    # A Windows directory can be case-sensitive: do not fold or normalize.
+    return text
 
 
 class _WindowsApi:

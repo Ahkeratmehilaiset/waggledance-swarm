@@ -21,7 +21,9 @@ def test_output_without_audit_component_is_refused(tmp_path):
     if '.codex-audit' in tmp_path.parts:
         pytest.skip('negative case requires a temporary path outside .codex-audit')
     mod=importlib.import_module('tools.wd_q4_bridge_prefix_pin')
-    source,_,raw,generation=fixture(tmp_path)
+    source,audit_output,raw,generation=fixture(tmp_path)
+    accepted=mod.capture(enabled=True,source_path=str(source),generation_path=str(generation),output_root=str(audit_output))
+    assert accepted['status']=='PINNED' and source.read_bytes()==raw
     output=tmp_path/'private-audit';output.mkdir()
     with pytest.raises(mod.Refused):
         mod.capture(enabled=True,source_path=str(source),generation_path=str(generation),output_root=str(output))

@@ -142,9 +142,11 @@ function Write-WdRebootBackupInventory {
         [Parameter(Mandatory)] [string] $BackupRoot,
         [Parameter(Mandatory)] [string[]] $TransactionNames,
         [Parameter(Mandatory)] [hashtable] $OriginallyPresent,
-        [Parameter(Mandatory)] [string] $NewCommit
+        [Parameter(Mandatory)] [string] $NewCommit,
+        [Parameter(Mandatory)] [string] $NewManifestSha256
     )
     if ($NewCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'backup inventory commit invalid' }
+    if ($NewManifestSha256 -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'backup inventory new manifest hash invalid' }
     $machine = Resolve-FullPath $MachineRoot
     $backup = Resolve-FullPath $BackupRoot
     $expectedParent = Join-Path $machine 'wd-reboot-backups'
@@ -222,6 +224,7 @@ function Write-WdRebootBackupInventory {
                                   active_bundle = $oldRoot; manifest_sha256 = $oldHash }
     }
     $inventory = [ordered]@{ schema = 'wd.reboot-backup-inventory.v1'; new_commit = $NewCommit;
+                            new_manifest_sha256 = $NewManifestSha256.ToUpperInvariant();
                             machine_root = $machine; prior_state = $priorState; files = $files.ToArray() }
     $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($inventory | ConvertTo-Json -Depth 8 -Compress))
     $hasher = [Security.Cryptography.SHA256]::Create()
@@ -1907,7 +1910,8 @@ if (-not $backedUp) {
     $backedUp = $true
 }
 $backupInventory = Write-WdRebootBackupInventory -MachineRoot $machineFull -BackupRoot $backupRoot `
-    -TransactionNames $transactionNames -OriginallyPresent $originallyPresent -NewCommit $head
+    -TransactionNames $transactionNames -OriginallyPresent $originallyPresent -NewCommit $head `
+    -NewManifestSha256 $installedManifestHash
 Write-Host "Previous-state backup inventory SHA256: $($backupInventory.sha256)"
 
 $machineMutationStarted = $false

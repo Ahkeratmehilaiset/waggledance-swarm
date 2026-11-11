@@ -46,9 +46,10 @@ def scenario(tmp_path):
     return machine, backup, names
 
 
-def invoke(machine, backup, names, present):
+def invoke(machine, backup, names, present, new_manifest="d" * 64):
     env = dict(os.environ, TEST_MACHINE=str(machine), TEST_BACKUP=str(backup),
-               TEST_NAMES=json.dumps(names), TEST_PRESENT=json.dumps(present), TEST_SCRIPT=str(DEPLOY))
+               TEST_NAMES=json.dumps(names), TEST_PRESENT=json.dumps(present), TEST_SCRIPT=str(DEPLOY),
+               TEST_NEW_MANIFEST=new_manifest)
     script = r"""
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
@@ -65,7 +66,8 @@ $raw=$env:TEST_PRESENT | ConvertFrom-Json
 foreach($p in $raw.PSObject.Properties) { $presence[$p.Name]=[bool]$p.Value }
 [string[]]$names=(ConvertFrom-Json -InputObject $env:TEST_NAMES)
 Write-WdRebootBackupInventory -MachineRoot $env:TEST_MACHINE -BackupRoot $env:TEST_BACKUP `
-  -TransactionNames $names -OriginallyPresent $presence -NewCommit ('c' * 40) | ConvertTo-Json -Depth 12 -Compress
+  -TransactionNames $names -OriginallyPresent $presence -NewCommit ('c' * 40) `
+  -NewManifestSha256 $env:TEST_NEW_MANIFEST | ConvertTo-Json -Depth 12 -Compress
 """
     return subprocess.run([str(SHELL), "-NoProfile", "-NonInteractive", "-Command", script],
                           cwd=ROOT, env=env, text=True, capture_output=True, timeout=30)
@@ -103,6 +105,7 @@ def test_inventory_binds_present_absent_state_and_bundle(scenario):
     assert doc["prior_state"]["source_commit"] == commit
     assert doc["prior_state"]["manifest_sha256"] == manifest_sha
     assert doc["new_commit"] == "c" * 40
+    assert doc["new_manifest_sha256"] == "D" * 64
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows PowerShell")
@@ -143,6 +146,16 @@ def test_inventory_hash_detects_postwrite_change(scenario):
     expected = (backup / "rollback-inventory.sha256").read_text().strip()
     path.write_bytes(path.read_bytes() + b" ")
     assert sha(path.read_bytes()) != expected
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows PowerShell")
+@pytest.mark.parametrize("new_manifest", ["", "d" * 63, "g" * 64])
+def test_new_manifest_hash_must_be_exact_sha256(scenario, new_manifest):
+    machine, backup, names = scenario
+    presence, _, _, _ = seeded(scenario)
+    result = invoke(machine, backup, names, presence, new_manifest)
+    assert result.returncode != 0
+    assert not (backup / "rollback-inventory.json").exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows PowerShell")

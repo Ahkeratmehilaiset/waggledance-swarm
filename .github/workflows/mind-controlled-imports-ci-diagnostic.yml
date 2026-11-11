@@ -18,4 +18,4 @@ jobs:
         run: python -m pip install 'pytest>=9.0.3'
       - name: Test synthetic import isolation without network
         run: |
-          sudo unshare --net -- "$(command -v python)" -m pytest -q -p no:cacheprovider tests/tools/test_wd_q4_controlled_imports.py::test_main_alias_is_bound_to_bootstrap_and_verified_stdlib_source tests/tools/test_wd_q4_controlled_imports.py::test_posix_stdlib_alias_refuses_site_packages_search
+          sudo unshare --net -- "$(command -v python)" -m pytest -q -p no:cacheprovider tests/tools/test_wd_q4_controlled_imports.py::test_main_alias_is_bound_to_bootstrap_and_verified_stdlib_source tests/tools/test_wd_q4_controlled_imports.py::test_posix_stdlib_alias_refuses_site_packages_search tests/tools/test_wd_q4_controlled_imports.py::test_posix_site_exclusion_witness_detects_synthetic_mutant

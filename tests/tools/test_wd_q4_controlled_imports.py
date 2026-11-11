@@ -137,6 +137,12 @@ def _probe(tmp_path, scenario):
                       'sha256': hashlib.sha256(producer).hexdigest()})
     helper_relative = 'assets/code/sandbox/mind/step2/q4_controlled_imports.py'
     helper = (ROOT / 'sandbox/mind/step2/q4_controlled_imports.py').read_bytes()
+    if scenario == 'mp_site_path_mutant':
+        # Mutation affects only the test-owned, manifest-pinned helper copy.
+        original = b'_check(any(_under(resolved, allowed) for allowed in roots) and not _under(resolved, excluded))'
+        replacement = b'_check(any(_under(resolved, allowed) for allowed in roots))'
+        assert helper.count(original) == 1
+        helper = helper.replace(original, replacement, 1)
     helper_path = tmp_path.joinpath(*helper_relative.split('/'))
     helper_path.parent.mkdir(parents=True, exist_ok=True)
     helper_path.write_bytes(helper)
@@ -215,12 +221,20 @@ if scenario in ('badmanifest', 'helper_tamper', 'mp_foreign_preseed'):
  except ns['_Refused']: print('PASS'); raise SystemExit(0)
  raise AssertionError('bad manifest pin accepted')
 guard = ns['_install_controlled_imports'](root, manifest, pin)
-if scenario == 'mp_site_path':
+if scenario in ('mp_site_path', 'mp_site_path_mutant'):
  site_path = str(Path(sys.base_prefix) / 'Lib' / 'site-packages')
  resolved = ns['os'].path.normcase(ns['os'].path.realpath(site_path))
  assert any(ns['_under'](resolved, trusted) for trusted in ns['_interpreter_roots']())
+ name = 'wd_synthetic_site_packages_probe'
+ guard.check()
+ assert name not in sys.modules
+ try: importlib.import_module(name)
+ except ModuleNotFoundError as error: assert error.name == name
+ else: raise AssertionError('synthetic control module unexpectedly exists')
+ guard.check()
+ assert name not in sys.modules
  sys.path.insert(0, site_path)
- try: importlib.import_module('wd_synthetic_site_packages_probe')
+ try: importlib.import_module(name)
  except ns['_Refused']: print('PASS')
  else: raise AssertionError('site-packages search path accepted')
  raise SystemExit(0)
@@ -540,6 +554,14 @@ def test_posix_stdlib_alias_refuses_site_packages_search(tmp_path):
     result = _probe(tmp_path, 'mp_site_path')
     assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
     assert result.stdout in (b'PASS\r\n', b'PASS\n')
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='synthetic POSIX stdlib layout')
+def test_posix_site_exclusion_witness_detects_synthetic_mutant(tmp_path):
+    result = _probe(tmp_path, 'mp_site_path_mutant')
+    assert result.returncode != 0
+    assert b'ModuleNotFoundError' in result.stderr
+    assert b'wd_synthetic_site_packages_probe' in result.stderr
 
 
 @pytest.mark.parametrize('scenario', ('subclass_clean', 'subclass_preseed', 'subclass_swap',

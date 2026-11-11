@@ -3,6 +3,8 @@
 The caller supplies the independently selected hashes, transaction file names,
 and bytes. Matching them is evidence of consistency, not authentication or
 authority to restore. The original restore tool's Apply prohibition is unchanged.
+Same-commit reinstalls deliberately remain HOLD: this assessor is scoped to a
+prior different commit, and does not accept all inventories the writer emits.
 """
 
 import hashlib

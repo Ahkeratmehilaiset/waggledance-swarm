@@ -11,7 +11,7 @@ import sys
 import sysconfig
 import dataclasses
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -24,9 +24,26 @@ from tools import wd_q4_resolved_child as child
 from tools import wd_q4_public_child as public_child
 from tests.tools.test_wd_q4_real_card_snapshot_e2e import real_snapshot, real_fixture, rt
 
+_ORIGINAL_VALIDATE_CONFIG = q4._validate_config
+
 
 def sha(raw):
     return hashlib.sha256(raw).hexdigest()
+
+
+def _validate_posix_fixture_config(config, directory, validator):
+    """Validate Windows pins and bind only the two real POSIX fixture paths.
+
+    The production config contract remains Windows-only. C2 still opens and
+    validates the real fixture directory; this adapter is test-local and never
+    authorizes an installed launcher or a real session.
+    """
+    if (type(config) is not q4.VerifiedQ4Config or not isinstance(directory, PurePosixPath)
+            or not directory.is_absolute() or config.memory != str(directory)
+            or config.descriptor != str(directory / 'descriptor.json')):
+        raise q4.QueryRefused('invalid_binding')
+    return validator(replace(config, memory=r'C:\synthetic-c2\candidate',
+                             descriptor=r'C:\synthetic-c2\candidate\descriptor.json'))
 
 
 @pytest.fixture
@@ -36,6 +53,14 @@ def route(real_snapshot, monkeypatch):
     monkeypatch.setattr(reader, "ENCODER_FACTORY", lambda **kwargs: rt.fx.Encoder())
     monkeypatch.setattr(reader, "bind_runtime_encoder", lambda *a, **kw: None)
     monkeypatch.setattr(q4, "_utc_now", lambda: dt.datetime(2026, 11, 3, tzinfo=dt.timezone.utc))
+    if os.name != 'nt':
+        # The native temporary directory is required by actual C2 filesystem
+        # validation, while the real launcher config accepts Windows paths only.
+        # Scope the seam to this exact synthetic directory and retain the
+        # production validator for every other field and Windows-shaped controls.
+        validator = q4._validate_config
+        monkeypatch.setattr(q4, '_validate_config',
+                            lambda value: _validate_posix_fixture_config(value, directory, validator))
 
     def launcher(*, query, **kwargs):
         calls.append(True)
@@ -143,6 +168,22 @@ def direct_query(route, snapshot):
 
 def actual_tuple(route):
     return dict(route["snapshot"], generation_dir=route["directory"])
+
+
+def test_posix_fixture_adapter_keeps_windows_guard_and_exact_fixture_binding(route):
+    directory = PurePosixPath('/tmp/synthetic-c2/candidate')
+    config = replace(route['config'], memory=str(directory), descriptor=str(directory / 'descriptor.json'))
+    with pytest.raises(q4.QueryRefused, match='invalid_binding'):
+        _ORIGINAL_VALIDATE_CONFIG(config)
+    # The adapter must validate all non-fixture inputs through the original guard.
+    _validate_posix_fixture_config(config, directory, _ORIGINAL_VALIDATE_CONFIG)
+    with pytest.raises(q4.QueryRefused):
+        _validate_posix_fixture_config(replace(config, interpreter='/tmp/untrusted'), directory, _ORIGINAL_VALIDATE_CONFIG)
+    with pytest.raises(q4.QueryRefused):
+        _validate_posix_fixture_config(replace(config, memory='/tmp/other'), directory, _ORIGINAL_VALIDATE_CONFIG)
+    with pytest.raises(q4.QueryRefused):
+        _validate_posix_fixture_config(replace(config, descriptor='/tmp/other/descriptor.json'), directory,
+                                      _ORIGINAL_VALIDATE_CONFIG)
 
 
 def test_direct_query_actual_c2_tuple_answers(route):

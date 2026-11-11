@@ -846,15 +846,18 @@ def test_enabled_cli_and_real_adapter_parent_path_needs_no_model_import(case, mo
     monkeypatch.setenv("AGENT_BRIDGE_AGENT", lane)
     monkeypatch.setenv("AGENT_BRIDGE_AGENT_UUID", UUIDS[lane])
     monkeypatch.chdir(case["worktrees"][lane])
-    original_parts = real._parts
-    parts_refused = []
-    def observe_parts(value):
-        try:
-            return original_parts(value)
-        except ValueError:
-            parts_refused.append(value == str(case["worktrees"][lane]))
-            raise
-    monkeypatch.setattr(real, "_parts", observe_parts)
+    if os.name != "nt":
+        # The real adapter parses Windows worktrees; map only this lane's
+        # exact POSIX fixture path, leaving every other spelling fail-closed.
+        original_parts = real._parts
+        synthetic_worktree = str(case["worktrees"][lane])
+        synthetic_windows = "C:\\synthetic-worktree\\" + lane
+        def fixture_parts(value):
+            return original_parts(synthetic_windows if type(value) is str and value == synthetic_worktree else value)
+        monkeypatch.setattr(real, "_parts", fixture_parts)
+        assert real._parts(synthetic_worktree) == original_parts(synthetic_windows)
+        with pytest.raises(ValueError):
+            real._parts(synthetic_worktree + "/different")
     calls = []
     def fake_session(**kwargs):
         calls.append(kwargs["lane"])
@@ -891,7 +894,7 @@ def test_enabled_cli_and_real_adapter_parent_path_needs_no_model_import(case, mo
     monkeypatch.setattr(importlib, "import_module", guarded_module)
     code = invoke(case, monkeypatch)
     observed = capsys.readouterr()
-    assert code == 0 and observed.err == "", {"synthetic_worktree_refused": parts_refused}
+    assert code == 0 and observed.err == ""
     result = json.loads(observed.out)
     assert result["lane"] == lane and result["inner_status"] == "ABSTAIN"
     assert result["lane_authentication"] == "UNKNOWN" and calls == [lane]

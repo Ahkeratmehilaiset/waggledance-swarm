@@ -846,6 +846,15 @@ def test_enabled_cli_and_real_adapter_parent_path_needs_no_model_import(case, mo
     monkeypatch.setenv("AGENT_BRIDGE_AGENT", lane)
     monkeypatch.setenv("AGENT_BRIDGE_AGENT_UUID", UUIDS[lane])
     monkeypatch.chdir(case["worktrees"][lane])
+    original_parts = real._parts
+    parts_refused = []
+    def observe_parts(value):
+        try:
+            return original_parts(value)
+        except ValueError:
+            parts_refused.append(value == str(case["worktrees"][lane]))
+            raise
+    monkeypatch.setattr(real, "_parts", observe_parts)
     calls = []
     def fake_session(**kwargs):
         calls.append(kwargs["lane"])
@@ -882,7 +891,7 @@ def test_enabled_cli_and_real_adapter_parent_path_needs_no_model_import(case, mo
     monkeypatch.setattr(importlib, "import_module", guarded_module)
     code = invoke(case, monkeypatch)
     observed = capsys.readouterr()
-    assert code == 0 and observed.err == ""
+    assert code == 0 and observed.err == "", {"synthetic_worktree_refused": parts_refused}
     result = json.loads(observed.out)
     assert result["lane"] == lane and result["inner_status"] == "ABSTAIN"
     assert result["lane_authentication"] == "UNKNOWN" and calls == [lane]

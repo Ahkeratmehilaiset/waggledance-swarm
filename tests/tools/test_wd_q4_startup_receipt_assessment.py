@@ -27,7 +27,7 @@ def receipt(lane):
         "route": "default_caller_cli",
         "ts_utc": "2026-11-11T10:00:30Z", "outcome": "success", "exit_code": 0,
         "inner_status": "ANSWER", "result_count": 1, "answer_sha256": "f" * 64,
-        "call_id": "f" * 32, "delivered_items": 1, "delivered_chars": 5,
+        "call_id": "f" * 32, "delivered_items": 1, "delivered_chars": 100,
         "delivered_sha256": "c" * 64, "refs": ["d" * 64],
     }
 
@@ -176,6 +176,12 @@ def test_fractional_receipt_from_previous_second_is_not_a_valid_launcher_receipt
     observed = dict(OBSERVED)
     observed["codex-lead-1"] = "2026-11-11T10:00:30.900000Z"
     assert assess(records, started="2026-11-11T10:00:30.900000Z", observed=observed)["decision"] == "ROLLBACK_REQUIRED"
+
+
+def test_delivery_cannot_be_shorter_than_its_included_reference():
+    records = all_records()
+    records["codex-lead-1"]["delivered_chars"] = 63
+    assert assess(records)["decision"] == "ROLLBACK_REQUIRED"
 
 
 def test_tools_accepts_its_actual_launcher_success_reason():

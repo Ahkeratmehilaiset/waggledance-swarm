@@ -107,7 +107,9 @@ def assess_startup_receipts(*, expected_runs, expected_manifest_sha256,
             and _digest(record.get("answer_sha256"))
             and type(record.get("call_id")) is str and _CALL_ID.fullmatch(record["call_id"]) is not None
             and type(record.get("delivered_items")) is int and 1 <= record["delivered_items"] <= record["result_count"]
-            and type(record.get("delivered_chars")) is int and 1 <= record["delivered_chars"] <= 24000
+            # Each delivered item contains its 64-character reference in full.
+            and type(record.get("delivered_chars")) is int
+            and 64 * record["delivered_items"] <= record["delivered_chars"] <= 24000
             and _digest(record.get("delivered_sha256"))
             and type(refs) is list and len(refs) == record["result_count"] and all(_digest(ref) for ref in refs)
         )

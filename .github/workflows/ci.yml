@@ -204,17 +204,42 @@ jobs:
           try { $a=$positive.BeginConnect('140.82.114.4',443,$null,$null); if (-not $a.AsyncWaitHandle.WaitOne(5000)) { throw 'Positive network control timed out' }; $positive.EndConnect($a) } finally { $positive.Dispose() }
           Write-Output 'Host positive network control connected'
           $image = 'mcr.microsoft.com/windows/servercore@sha256:c622317822fefb54a056fd09ab51f5bb48390feb47abb2b8696b2c526bdce4ef'
-          docker pull $image
-          if ($LASTEXITCODE -ne 0) { throw 'Image unavailable' }
           $scratch = Join-Path $env:RUNNER_TEMP 'wd-synthetic-archive'
           New-Item -ItemType Directory -Path "$scratch\repo" -Force | Out-Null
           # Source-only subset used by the synthetic fixture. Never archive .git,
           # documents, runtime data or the host workspace outside tracked source.
-          $sourcePaths = @('pyproject.toml','tests/conftest.py','tests/tools/test_lane_card_decision_forward.py','tests/tools/test_shared_card_route.py',':(glob)tests/tools/test_wd_q4*.py',':(glob)tools/*.py',':(glob)tools/**/*.py',':(glob)sandbox/mind/step2/*.py',':(glob)sandbox/mind/step2/**/*.py',':(glob)waggledance/**/*.py',':(glob)core/*.py',':(glob)core/**/*.py',':(glob)ops/windows/reboot/*.ps1')
+          $sourcePaths = @('pyproject.toml','tests/conftest.py','tests/tools/test_card_source_binding.py','tests/tools/test_lane_card_decision_forward.py','tests/tools/test_public_card_decision_forward.py','tests/tools/test_shared_card_projection.py','tests/tools/test_shared_card_route.py',':(glob)tests/tools/test_wd_q4*.py',':(glob)tools/*.py',':(glob)tools/**/*.py',':(glob)sandbox/mind/step2/*.py',':(glob)sandbox/mind/step2/**/*.py',':(glob)waggledance/**/*.py',':(glob)core/*.py',':(glob)core/**/*.py',':(glob)ops/windows/reboot/*.ps1')
           git archive --format=tar --output "$scratch\repo.tar" HEAD -- $sourcePaths
           if ($LASTEXITCODE -ne 0) { throw 'Archive failed' }
           tar -xf "$scratch\repo.tar" -C "$scratch\repo"
           if ($LASTEXITCODE -ne 0) { throw 'Archive extraction failed' }
+          # Parse, never import, reachable fixture modules; check static imports and
+          # literal spec_from_file_location/with_name targets against the archive.
+          $closure = @'
+          import ast, pathlib, re, sys
+          root=pathlib.Path('tests/tools'); staged=pathlib.Path(sys.argv[1])/'tests/tools'
+          todo=['test_wd_q4_adopt_recovery_ps']; seen=set()
+          while todo:
+              name=todo.pop()
+              if name in seen: continue
+              seen.add(name); original=root/(name+'.py'); copy=staged/(name+'.py')
+              if not original.is_file() or not copy.is_file(): raise SystemExit('missing fixture: '+name)
+              tree=ast.parse(original.read_text(encoding='utf-8'))
+              for node in ast.walk(tree):
+                  if isinstance(node,ast.ImportFrom) and node.module:
+                      if node.module.startswith('tests.tools.test_'): todo.append(node.module.split('.')[2])
+                      if node.module=='tests.tools': todo.extend(a.name for a in node.names if a.name.startswith('test_'))
+                  if isinstance(node,ast.Import):
+                      todo.extend(a.name.split('.')[2] for a in node.names if a.name.startswith('tests.tools.test_'))
+                  if isinstance(node,ast.Constant) and isinstance(node.value,str):
+                      for dep in re.findall(r'(?:tests[/\\]tools[/\\])?(test_[a-zA-Z0-9_]+)\.py',node.value):
+                          if (root/(dep+'.py')).is_file(): todo.append(dep)
+          print('static fixture closure present:',len(seen))
+          '@
+          python -c $closure "$scratch\repo"
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture source closure incomplete' }
+          docker pull $image
+          if ($LASTEXITCODE -ne 0) { throw 'Image unavailable' }
           $pythonRoot = (& python -c 'import sys; print(sys.base_prefix)').Trim()
           $inner = @'
           $ErrorActionPreference = 'Stop'

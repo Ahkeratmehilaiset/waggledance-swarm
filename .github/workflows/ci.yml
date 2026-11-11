@@ -1,11 +1,11 @@
-name: Q4 PowerShell refusal phase diagnostic ONLY
+name: Q4 refusal minimal path RED GREEN diagnostic ONLY
 on:
   workflow_dispatch:
 permissions: {}
 jobs:
-  refusal-phase-probe:
+  refusal-red-green:
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v7
         env:
@@ -17,63 +17,51 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      - name: Probe encoded commands and flushed import markers
+      - name: Install synthetic test dependencies
+        run: python -m pip install pytest==9.0.3 faiss-cpu==1.13.2 numpy packaging jsonschema pydantic pyyaml psutil requests
+      - name: Run the same 20-second refusal before and after the minimal path change
         shell: pwsh
         timeout-minutes: 5
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not $IsWindows -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Expected GitHub-hosted Windows' }
-          $scratch = 'C:\wd-adopt-refusal-phase-' + $env:GITHUB_RUN_ID
-          if (Test-Path -LiteralPath $scratch) { throw 'Control temporary path already exists' }
+          $scratch = 'C:\wd-adopt-path-red-green-' + $env:GITHUB_RUN_ID
+          if (Test-Path -LiteralPath $scratch) { throw 'Synthetic path already exists' }
           New-Item -ItemType Directory -Path $scratch | Out-Null
-          $probe = @'
-          import base64, os, subprocess, time
-          from pathlib import Path
-          host = 'powershell'
-          base = [host, '-NoProfile', '-NonInteractive']
-          scratch = Path(os.environ['TEMP'])
-          def run(label, script, marker_names):
-              encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
-              args = base + ['-EncodedCommand', encoded]
-              started = time.monotonic()
-              wall_started = time.time()
-              p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-              try:
-                  p.communicate(timeout=20)
-                  state = 'completed'
-              except subprocess.TimeoutExpired:
-                  state = 'timeout'
-                  if p.poll() is None:
-                      p.kill()
-                  try:
-                      p.communicate(timeout=2)
-                  except subprocess.TimeoutExpired:
-                      print(label, 'pipe_remains_open_after_kill', flush=True)
-              marks = {}
-              for name in marker_names:
-                  path = scratch / name
-                  marks[name] = round(path.stat().st_mtime - wall_started, 3) if path.is_file() else None
-              print(label, state, 'returncode=', p.returncode, 'elapsed=', round(time.monotonic()-started, 3), 'marker_seconds=', marks, flush=True)
-          def mark(name):
-              return "[IO.File]::WriteAllText([IO.Path]::Combine($env:TEMP,'" + name + "'),'flushed'); "
-          join_script = (mark('join-before') + "$p=Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1'; " +
-                         mark('join-after') + "Import-Module -Name $p -ErrorAction Stop; " + mark('join-import-after'))
-          direct_script = (mark('direct-before') + "$p=[IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1'); " +
-                           mark('direct-path-after') + "Import-Module -Name $p -ErrorAction Stop; " + mark('direct-import-after'))
-          run('encoded_join_then_import', join_script, ['join-before','join-after','join-import-after'])
-          run('encoded_direct_then_import', direct_script, ['direct-before','direct-path-after','direct-import-after'])
-          '@
-          $psi = [System.Diagnostics.ProcessStartInfo]::new()
-          $psi.FileName = (Get-Command python -ErrorAction Stop).Source
-          $psi.UseShellExecute = $false
-          $psi.WorkingDirectory = (Get-Location).Path
-          $psi.Environment.Clear()
-          foreach ($key in @('SystemRoot','windir','SystemDrive','ComSpec','PATHEXT','PATH','PROCESSOR_ARCHITECTURE','NUMBER_OF_PROCESSORS')) {
-            $value = [Environment]::GetEnvironmentVariable($key)
-            if ($value) { $psi.Environment[$key] = $value }
+          $python = (Get-Command python -ErrorAction Stop).Source
+          function Run-CleanRefusal([string]$stage) {
+            $psi = [System.Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName = $python
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.WorkingDirectory = (Get-Location).Path
+            $psi.Environment.Clear()
+            foreach ($key in @('SystemRoot','windir','SystemDrive','ComSpec','PATHEXT','PATH','PROCESSOR_ARCHITECTURE','NUMBER_OF_PROCESSORS')) {
+              $value = [Environment]::GetEnvironmentVariable($key)
+              if ($value) { $psi.Environment[$key] = $value }
+            }
+            foreach ($entry in @{TEMP=$scratch; TMP=$scratch; USERPROFILE=$scratch; HOME=$scratch; PYTHONDONTWRITEBYTECODE='1'; PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'}.GetEnumerator()) { $psi.Environment[$entry.Key] = $entry.Value }
+            foreach ($arg in @('-m','pytest','tests/tools/test_wd_q4_adopt_recovery_ps.py::test_bad_pins_refuse_without_job','-q','-rs','-p','no:cacheprovider','--basetemp',"$scratch\$stage",'--junitxml',"$scratch\$stage.xml")) { [void]$psi.ArgumentList.Add($arg) }
+            $process = [System.Diagnostics.Process]::Start($psi)
+            $outTask = $process.StandardOutput.ReadToEndAsync()
+            $errTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(65000)) { $process.Kill($true); $process.WaitForExit(); throw 'Refusal test wrapper timed out' }
+            $output = $outTask.GetAwaiter().GetResult() + $errTask.GetAwaiter().GetResult()
+            [xml]$xml = Get-Content -Raw -LiteralPath "$scratch\$stage.xml"
+            $suite = $xml.testsuites.testsuite
+            if ($suite.tests -ne '1' -or $suite.skipped -ne '0') { throw 'Expected exactly one refusal test' }
+            return @{ code=$process.ExitCode; output=$output; failures=$suite.failures; errors=$suite.errors }
           }
-          foreach ($entry in @{TEMP=$scratch; TMP=$scratch; USERPROFILE=$scratch; HOME=$scratch; PYTHONDONTWRITEBYTECODE='1'}.GetEnumerator()) { $psi.Environment[$entry.Key] = $entry.Value }
-          foreach ($arg in @('-c',$probe)) { [void]$psi.ArgumentList.Add($arg) }
-          $process = [System.Diagnostics.Process]::Start($psi)
-          if (-not $process.WaitForExit(115000)) { $process.Kill($true); $process.WaitForExit(); throw 'Diagnostic probe timed out' }
-          if ($process.ExitCode -ne 0) { throw 'Diagnostic probe failed' }
+          $path = 'ops/windows/reboot/Invoke-WdQ4AdoptRecovery.ps1'
+          $old = "Import-Module -Name (Join-Path `$PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop"
+          $new = "Import-Module -Name ([IO.Path]::Combine(`$PSHOME, 'Modules', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop"
+          $text = [IO.File]::ReadAllText((Join-Path (Get-Location).Path $path))
+          if (($text.Split(@($old),[StringSplitOptions]::None).Count - 1) -ne 1) { throw 'Original import expression not unique' }
+          $red = Run-CleanRefusal 'red'
+          if ($red.code -ne 1 -or $red.failures -ne '1' -or $red.output -notmatch 'TimeoutExpired' -or $red.output -notmatch 'timed out after 20 seconds') { throw 'Baseline did not reproduce exact 20-second refusal timeout' }
+          Write-Host 'RED: original refusal test timed out at 20 seconds.'
+          [IO.File]::WriteAllText((Join-Path (Get-Location).Path $path),$text.Replace($old,$new),[Text.UTF8Encoding]::new($false))
+          $green = Run-CleanRefusal 'green'
+          if ($green.code -ne 0 -or $green.failures -ne '0' -or $green.errors -ne '0') { throw 'Minimal path change did not pass exact refusal test' }
+          Write-Host 'GREEN: same refusal test passed exactly once with only the path expression changed.'

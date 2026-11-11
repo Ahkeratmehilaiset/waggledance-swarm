@@ -321,6 +321,259 @@ def test_inventoried_row_naming_a_set_aside_id_as_p1_predecessor_refuses(tmp_pat
     assert [row["request_id"] for row in json.loads(listed.stdout)["requests"]] == ["unrelated-legacy-id"]
 
 
+P1_LINK = {"request_lifecycle": "wd.request-lifecycle.p1", "task_revision": 2, "action_required": True,
+           "fyi": False}
+
+
+def linked(request_id: str, where: str, fields: dict) -> dict:
+    row = request(request_id, 0, True)
+    (row["payload"] if where == "payload" else row).update(fields)
+    return seal(row)
+
+
+def listed_ids(result: subprocess.CompletedProcess[str]) -> list[str]:
+    assert result.returncode == 0, result.stderr
+    return [row["request_id"] for row in json.loads(result.stdout)["requests"]]
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("include_pairs", (True, False), ids=("pairs_present", "pairs_absent"))
+@pytest.mark.parametrize("where", ("payload", "top_level"))
+@pytest.mark.parametrize("marker", ("absent", "explicit_null"))
+def test_legacy_previous_request_id_naming_a_pinned_id_stays_inventoried(tmp_path: Path, shell: str,
+                                                                          include_pairs: bool, where: str,
+                                                                          marker: str) -> None:
+    # No lifecycle marker (or an explicit null one, which is not P1 either): the previous request ID field is
+    # legacy metadata, so the row is an ordinary request, with or without the set-aside pair in the log.
+    fields = {"previous_request_id": IDS[0]}
+    if marker == "explicit_null":
+        fields["request_lifecycle"] = None
+    legacy = linked("ordinary-legacy-id", where, fields)
+    by_id = pairs()
+    result = invoke(tmp_path, shell, (flat(by_id) if include_pairs else []) + [legacy], anchors=by_id)
+    assert listed_ids(result) == ["ordinary-legacy-id"]
+    historical = json.loads(result.stdout)["historical_conflicts"]
+    assert [row["request_id"] for row in historical] == (IDS if include_pairs else [])
+    assert "request_lifecycle" not in json.loads(result.stdout)["requests"][0]
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("where", ("payload", "top_level"))
+def test_p1_predecessor_naming_a_pinned_id_that_is_not_in_the_log_is_listed(tmp_path: Path, shell: str,
+                                                                             where: str) -> None:
+    # Nothing was set aside, so nothing is hidden: the P1 successor is listed as an ordinary P1 request.
+    successor = linked("unrelated-successor-id", where, {**P1_LINK, "previous_request_id": IDS[0]})
+    result = invoke(tmp_path, shell, [successor])
+    assert listed_ids(result) == ["unrelated-successor-id"]
+    assert json.loads(result.stdout)["requests"][0]["request_lifecycle"] == "wd.request-lifecycle.p1"
+    assert json.loads(result.stdout)["historical_conflicts"] == []
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("other", (1, 2), ids=("other_pair_1", "other_pair_2"))
+def test_p1_predecessor_onto_a_pinned_id_whose_pair_is_absent_while_others_are_set_aside(
+        tmp_path: Path, shell: str, other: int) -> None:
+    # Only an ACTUALLY set-aside ID refuses: IDS[0] is absent here, the other pairs are set aside.
+    kept = pairs([IDS[i] for i in range(len(IDS)) if i != 0])
+    successor = linked("unrelated-successor-id", "payload", {**P1_LINK, "previous_request_id": IDS[0]})
+    result = invoke(tmp_path, shell, flat(kept) + [successor], anchors=pairs())
+    assert listed_ids(result) == ["unrelated-successor-id"]
+    refused_case = linked("unrelated-successor-id", "payload", {**P1_LINK, "previous_request_id": IDS[other]})
+    result = invoke(tmp_path / "set_aside", shell, flat(kept) + [refused_case], anchors=pairs())
+    assert refused(result) and "P1" in result.stderr   # pwsh 7 wraps the long message
+
+
+MARKER_SHAPES = {"unknown_version": "wd.request-lifecycle.p2", "case_variant": "WD.REQUEST-LIFECYCLE.P1",
+                 "empty_string": "", "number": 1, "boolean": True, "object": {"v": "wd.request-lifecycle.p1"}}
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("include_pairs", (True, False), ids=("pairs_present", "pairs_absent"))
+@pytest.mark.parametrize("where", ("payload", "top_level"))
+@pytest.mark.parametrize("shape", [*MARKER_SHAPES, "conflicting_top_and_payload"])
+def test_unknown_or_malformed_marker_with_a_pinned_previous_id_still_refuses(tmp_path: Path, shell: str,
+                                                                            include_pairs: bool, where: str,
+                                                                            shape: str) -> None:
+    fields = {**P1_LINK, "previous_request_id": IDS[0]}
+    if shape == "conflicting_top_and_payload":
+        row = linked("odd-marker-id", where, fields)
+        (row if where == "payload" else row["payload"])["request_lifecycle"] = "wd.request-lifecycle.p2"
+        seal(row)
+    else:
+        row = linked("odd-marker-id", where, {**fields, "request_lifecycle": MARKER_SHAPES[shape]})
+    by_id = pairs()
+    result = invoke(tmp_path, shell, (flat(by_id) if include_pairs else []) + [row], anchors=by_id)
+    assert refused(result) and "P1 HOLD" in result.stderr
+
+
+def chosen(request_id: str = "ordinary-request") -> dict:
+    row = request(request_id, 1, False)
+    row["task_id"] = "chosen-task"
+    return seal(row)
+
+
+# Every output filter and pagination runs after the guard: each selects only the chosen row (newest, so a page of
+# one holds it alone), never the row that must refuse.
+FILTERS = {"unfiltered": (), "task": ("-TaskId", "chosen-task"), "request": ("-RequestId", "ordinary-request"),
+           "ts": ("-TsUtc", "2026-11-02T11:00:00.1234567Z"), "page_of_one": ("-PageSize", "1")}
+
+
+PREDECESSOR_SHAPES = ("conflicting_top_and_payload", "number", "object", "invalid_characters", "too_long")
+
+
+def predecessor_row(request_id: str, shape: str, *, p1: bool) -> dict:
+    fields = {**P1_LINK} if p1 else {}
+    if shape == "conflicting_top_and_payload":
+        row = linked(request_id, "payload", {**fields, "previous_request_id": IDS[0]})
+        row["previous_request_id"] = "different-predecessor"
+        return seal(row)
+    value = {"number": 7, "object": {"id": IDS[0]}, "invalid_characters": IDS[0] + " x",
+             "too_long": "a" * 129}[shape]
+    return linked(request_id, "payload", {**fields, "previous_request_id": value})
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("selection", FILTERS)
+@pytest.mark.parametrize("shape", PREDECESSOR_SHAPES)
+def test_p1_row_with_a_conflicting_or_invalid_predecessor_refuses_before_filters(tmp_path: Path, shell: str,
+                                                                                selection: str,
+                                                                                shape: str) -> None:
+    by_id = pairs()
+    args = FILTERS[selection]
+    rows = flat(by_id) + [predecessor_row("bad-p1-successor", shape, p1=True), chosen()]
+    result = invoke(tmp_path, shell, rows, *args, anchors=by_id)
+    assert refused(result) and "P1 HOLD" in result.stderr
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("selection", FILTERS)
+@pytest.mark.parametrize("previous", ("pinned_set_aside", "conflicting_naming_set_aside", "invalid"))
+def test_unknown_marker_on_a_row_whose_predecessor_touches_a_set_aside_id_refuses_before_filters(
+        tmp_path: Path, shell: str, selection: str, previous: str) -> None:
+    # Such a row cannot be classified, so its lineage onto the set-aside row cannot be evaluated.
+    fields = {**P1_LINK, "request_lifecycle": "wd.request-lifecycle.p2"}
+    if previous == "pinned_set_aside":
+        odd = linked("odd-marker-id", "payload", {**fields, "previous_request_id": IDS[0]})
+    elif previous == "conflicting_naming_set_aside":
+        odd = linked("odd-marker-id", "payload", {**fields, "previous_request_id": IDS[0]})
+        odd["previous_request_id"] = "different-predecessor"
+        seal(odd)
+    else:
+        odd = linked("odd-marker-id", "payload", {**fields, "previous_request_id": 7})
+    by_id = pairs()
+    result = invoke(tmp_path, shell, flat(by_id) + [odd, chosen()], *FILTERS[selection], anchors=by_id)
+    assert refused(result) and "P1 HOLD" in result.stderr
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("selection", FILTERS)
+@pytest.mark.parametrize("previous", ("none", "unrelated_valid"))
+def test_unrelated_unknown_marker_keeps_the_existing_selection_behaviour(tmp_path: Path, shell: str,
+                                                                         selection: str, previous: str) -> None:
+    # Characterization (Lead 01:20:56Z and 01:21:53Z): a row with an unknown marker whose predecessor field cannot
+    # touch a set-aside ID refuses only when it is listed, exactly as before; filters selecting another row list it.
+    fields = {**P1_LINK, "request_lifecycle": "wd.request-lifecycle.p2"}
+    if previous == "unrelated_valid":
+        fields["previous_request_id"] = "some-absent-id"
+    odd = linked("odd-marker-id", "payload", fields)
+    by_id = pairs()
+    result = invoke(tmp_path, shell, flat(by_id) + [odd, chosen()], *FILTERS[selection], anchors=by_id)
+    if selection == "unfiltered":
+        assert refused(result) and "P1 HOLD" in result.stderr
+    else:
+        assert listed_ids(result) == ["ordinary-request"]
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("selection", FILTERS)
+def test_p1_lineage_onto_a_set_aside_id_refuses_before_filters(tmp_path: Path, shell: str, selection: str) -> None:
+    by_id = pairs()
+    successor = linked("unrelated-successor-id", "payload", {**P1_LINK, "previous_request_id": IDS[1]})
+    args = FILTERS[selection]
+    result = invoke(tmp_path, shell, flat(by_id) + [successor, chosen()], *args, anchors=by_id)
+    assert refused(result) and "P1" in result.stderr
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("filtered", (False, True), ids=("unfiltered", "task_filter"))
+@pytest.mark.parametrize("shape", PREDECESSOR_SHAPES)
+def test_non_p1_row_with_a_conflicting_or_invalid_previous_field_stays_legacy(tmp_path: Path, shell: str,
+                                                                             filtered: bool, shape: str) -> None:
+    # No lifecycle marker: the field is legacy metadata whatever its shape, so the row is listed as before.
+    by_id = pairs()
+    legacy = predecessor_row("ordinary-legacy-id", shape, p1=False)
+    legacy["task_id"] = "chosen-task"
+    seal(legacy)
+    args = ("-TaskId", "chosen-task") if filtered else ()
+    result = invoke(tmp_path, shell, flat(by_id) + [legacy], *args, anchors=by_id)
+    assert listed_ids(result) == ["ordinary-legacy-id"]
+
+
+CASE_VARIANTS = {"upper": str.upper, "first_char_upper": lambda rid: rid[0].upper() + rid[1:],
+                 "version_letter_upper": lambda rid: rid[:-2] + rid[-2].upper() + rid[-1]}   # ...-v2 -> ...-V2
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("include_pairs", (True, False), ids=("pairs_present", "pairs_absent"))
+@pytest.mark.parametrize("variant", CASE_VARIANTS)
+@pytest.mark.parametrize("pair_index", range(len(IDS)))
+def test_own_case_variant_of_a_pinned_id_is_an_ordinary_request(tmp_path: Path, shell: str, include_pairs: bool,
+                                                                variant: str, pair_index: int) -> None:
+    # Request IDs are ordinal: a case variant never enters the pinned bucket (which would make a third row).
+    other = request(CASE_VARIANTS[variant](IDS[pair_index]), pair_index, False)
+    assert other["request_id"] != IDS[pair_index]
+    by_id = pairs()
+    result = invoke(tmp_path, shell, (flat(by_id) if include_pairs else []) + [other], anchors=by_id)
+    assert listed_ids(result) == [other["request_id"]]
+    historical = json.loads(result.stdout)["historical_conflicts"]
+    assert [row["request_id"] for row in historical] == (IDS if include_pairs else [])
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("include_pairs", (True, False), ids=("pairs_present", "pairs_absent"))
+@pytest.mark.parametrize("author", ("foreign", "unattributable"))
+def test_foreign_case_variant_of_a_pinned_id_does_not_count_as_a_pinned_row(tmp_path: Path, shell: str,
+                                                                            include_pairs: bool,
+                                                                            author: str) -> None:
+    # Only the EXACT pinned ID on another or unattributable author row refuses; a case variant is another ID.
+    other = request(IDS[0].upper(), 0, False, agent="codex-tools-1")
+    if author == "unattributable":
+        other["agent"] = 7
+        seal(other)
+    by_id = pairs()
+    result = invoke(tmp_path, shell, (flat(by_id) if include_pairs else []) + [other], anchors=by_id)
+    assert listed_ids(result) == []
+    historical = json.loads(result.stdout)["historical_conflicts"]
+    assert [row["request_id"] for row in historical] == (IDS if include_pairs else [])
+    exact = request(IDS[0], 0, False, agent="codex-tools-1")
+    if author == "unattributable":
+        exact["agent"] = 7
+        seal(exact)
+    result = invoke(tmp_path / "exact", shell, (flat(pairs()) if include_pairs else []) + [exact], anchors=by_id)
+    assert refused(result) and "another author" in result.stderr
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("selection", FILTERS)
+def test_selected_row_is_returned_when_nothing_refuses(tmp_path: Path, shell: str, selection: str) -> None:
+    # Control for the filter cases: the same filters return exactly the chosen row from a clean log.
+    by_id = pairs()
+    other = linked("unrelated-successor-id", "payload", {**P1_LINK, "previous_request_id": "some-absent-id"})
+    result = invoke(tmp_path, shell, flat(by_id) + [other, chosen()], *FILTERS[selection], anchors=by_id)
+    assert listed_ids(result)[0] == "ordinary-request"
+    assert listed_ids(result) == (["ordinary-request", "unrelated-successor-id"] if selection == "unfiltered"
+                                  else ["ordinary-request"])
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+def test_p1_predecessor_naming_a_case_variant_of_a_set_aside_id_is_listed(tmp_path: Path, shell: str) -> None:
+    # The set-aside set is ordinal too: lineage onto a case variant is lineage onto another (absent) ID.
+    by_id = pairs()
+    successor = linked("unrelated-successor-id", "payload", {**P1_LINK, "previous_request_id": IDS[0].upper()})
+    result = invoke(tmp_path, shell, flat(by_id) + [successor], anchors=by_id)
+    assert listed_ids(result) == ["unrelated-successor-id"]
+
+
 @pytest.mark.parametrize("shell", SHELLS, **shell_ids)
 def test_matching_event_ref_does_not_replace_content_digest_verification(tmp_path: Path, shell: str) -> None:
     by_id = pairs()

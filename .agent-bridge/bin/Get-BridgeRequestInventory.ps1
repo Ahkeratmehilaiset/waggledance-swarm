@@ -152,6 +152,8 @@ $historicalPins=[ordered]@{
         @('30f6a39fadca963de7e4497900c78df6226f6ad308b27cb504512fe92758e8d7','3d3659f54b1a1a06ff2f228ff797529a51c9a2706b869d7c940bc564d5ab3a35'),
         @('0ce713e5d2a073fe5523f333f3d04d8f2cafad5e77d863d21bf5db83020071ca','f5c3e3ab2f3242dd83adef1d9f866dc28ebd18ebd7a0e6bbbde9bc98c64449d7'))
 }
+# Request IDs are ordinal: [ordered] keys compare case-insensitively, so membership goes through this set only.
+$historicalPinIds=[Collections.Generic.HashSet[string]]::new([string[]]@($historicalPins.Keys),[StringComparer]::Ordinal)
 $historicalRows=[ordered]@{}
 foreach ($historicalId in $historicalPins.Keys) { $historicalRows[$historicalId]=[Collections.Generic.List[object]]::new() }
 $historicalConflicts=[Collections.Generic.List[object]]::new()
@@ -218,12 +220,12 @@ for ($position=0; $position -lt $rows.Count; $position++) {
             Add-InventoryConflict -Position $position -Event $event `
                 -Kind (Get-InventoryBindingKind $event 'agent' 'author_binding_conflict' 'malformed_author')
         }
-        if ($historicalActive -and $id -is [string] -and $historicalPins.Contains($id)) { [void]$historicalOtherRows.Add($id) }
+        if ($historicalActive -and $id -is [string] -and $historicalPinIds.Contains($id)) { [void]$historicalOtherRows.Add($id) }
         continue
     }
     if ($author -cne $Agent) {
         if ($id -is [string]) { [void]$foreignIds.Add($id) }
-        if ($historicalActive -and $id -is [string] -and $historicalPins.Contains($id)) { [void]$historicalOtherRows.Add($id) }
+        if ($historicalActive -and $id -is [string] -and $historicalPinIds.Contains($id)) { [void]$historicalOtherRows.Add($id) }
         continue
     }
     if ($id -isnot [string] -or $id -cnotmatch '^[A-Za-z0-9._:-]{1,128}$') {
@@ -232,7 +234,7 @@ for ($position=0; $position -lt $rows.Count; $position++) {
             -Kind (Get-InventoryBindingKind $event 'request_id' 'request_id_binding_conflict' 'malformed_request_id')
         continue
     }
-    if ($historicalActive -and $historicalPins.Contains($id)) {
+    if ($historicalActive -and $historicalPinIds.Contains($id)) {
         $historicalRows[$id].Add([pscustomobject]@{position=$position;event=$event})
         continue   # never enter a request, session, cursor or successor inventory
     }
@@ -283,14 +285,28 @@ foreach ($historicalId in $historicalPins.Keys) {
         answer_state='not_evaluated'; authority_effect='none'
     })
 }
-if ($historicalActive) {
-    # P1 lineage onto a set-aside row cannot be evaluated (that row is not inventoried): refuse instead of
-    # listing a successor whose predecessor is hidden. Legacy wording such as supersedes_request is not P1.
+$setAsideIds=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+foreach ($record in $historicalConflicts) { [void]$setAsideIds.Add($record.request_id) }
+if ($setAsideIds.Count -gt 0) {
+    # P1 lineage onto a row that WAS set aside cannot be evaluated (that row is not inventoried): refuse instead
+    # of listing a successor whose predecessor is hidden. Runs over every inventoried row BEFORE the output
+    # filters and pagination, so none of them can hide a row that refuses here. Only a row whose predecessor
+    # field names a set-aside ID, or is conflicting (top level versus payload) or malformed and so could name
+    # one, is classified here: Test-BridgeLifecycleP1 throws on an unknown, malformed or conflicting marker,
+    # returns false without a marker (the field is then legacy metadata, as is supersedes_request, and the row
+    # stays inventoried) and true for P1, which refuses. Any other row keeps the existing selection behaviour;
+    # the full envelope is still validated on every listed P1 row below.
     foreach ($inventoriedId in $order) {
-        $previousId=Get-BridgeContractField $byId[$inventoriedId].event 'previous_request_id'
-        if ($previousId -is [string] -and $historicalPins.Contains($previousId)) {
-            throw "Request $inventoriedId names set-aside historical request ID $previousId as its P1 predecessor; lineage cannot be evaluated"
+        $inventoriedEvent=$byId[$inventoriedId].event
+        $previousId=Get-BridgeContractField $inventoriedEvent 'previous_request_id'
+        if ($null -eq $previousId) { continue }
+        $wellFormed=($previousId -is [string] -and $previousId -cmatch '^[A-Za-z0-9._:-]{1,128}$')
+        if ($wellFormed -and -not $setAsideIds.Contains($previousId)) { continue }
+        if (-not (Test-BridgeLifecycleP1 $inventoriedEvent)) { continue }
+        if (-not $wellFormed) {
+            throw "P1 HOLD: request $inventoriedId has a conflicting or invalid previous_request_id while a historical pair is set aside"
         }
+        throw "Request $inventoriedId names set-aside historical request ID $previousId as its P1 predecessor; lineage cannot be evaluated"
     }
 }
 # -SessionId scopes the OUTPUT only. Every own row of every session went through the binding and

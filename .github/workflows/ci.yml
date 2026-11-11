@@ -137,3 +137,118 @@ jobs:
 
           echo "=== Checking for plaintext MQTT ==="
           grep -rn "port.*1883" --include="*.py" core/ waggledance/ | grep -v test | grep -v "# TLS" && exit 1 || echo "No hardcoded 1883"
+
+  adopt-platform-linux:
+    runs-on: ubuntu-latest
+    permissions: {}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install synthetic test dependencies
+        run: python -m pip install pytest==9.0.3 faiss-cpu==1.13.2 numpy packaging jsonschema pydantic pyyaml psutil requests
+      - name: Run portable adoption tests with no credentials or outbound network
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v pwsh
+          test "$RUNNER_OS" = Linux
+          scratch="$RUNNER_TEMP/wd-adopt-linux-$GITHUB_RUN_ID"
+          mkdir -p "$scratch/home" "$scratch/tmp"
+          rule="wd-adopt-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          cleanup() { sudo iptables -D OUTPUT -m comment --comment "$rule" -j REJECT; }
+          sudo iptables -I OUTPUT 1 -m comment --comment "$rule" -j REJECT
+          trap cleanup EXIT
+          sudo iptables -C OUTPUT -m comment --comment "$rule" -j REJECT
+          env -i PATH="$PATH" HOME="$scratch/home" TMPDIR="$scratch/tmp" python -c 'import socket; s=socket.socket(); s.settimeout(2); r=s.connect_ex(("1.1.1.1",443)); s.close(); assert r != 0, "outbound isolation probe connected"'
+          echo 'Outbound isolation active; portable tests start.'
+          env -i PATH="$PATH" HOME="$scratch/home" TMPDIR="$scratch/tmp" PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/tools/test_wd_q4_adopt_recovery_ps.py -q -rs -p no:cacheprovider --basetemp "$scratch/pytest" --junitxml "$scratch/results.xml"
+          env -i PATH="$PATH" HOME="$scratch/home" python -c 'import sys,xml.etree.ElementTree as E; s=E.parse(sys.argv[1]).getroot().find("testsuite"); c=s.findall("testcase"); passed={x.attrib["name"] for x in c if x.find("skipped") is None}; expected={"test_default_off","test_bad_pins_refuse_without_job","test_marker_window_starts_after_synthetic_preflight","test_preflight_and_marker_waits_remain_bounded[False]","test_preflight_and_marker_waits_remain_bounded[True]"}; assert len(c)==38 and passed==expected and s.attrib["skipped"]=="33" and s.attrib["failures"]=="0" and s.attrib["errors"]=="0", "portable test coverage mismatch"; print("portable coverage verified: 5 passed, 33 native or opt-in skipped")' "$scratch/results.xml"
+      - name: Ensure diagnostic outbound rule is removed
+        if: always()
+        shell: bash
+        run: |
+          rule="wd-adopt-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if sudo iptables -C OUTPUT -m comment --comment "$rule" -j REJECT 2>/dev/null; then
+            sudo iptables -D OUTPUT -m comment --comment "$rule" -j REJECT
+          fi
+          ! sudo iptables -C OUTPUT -m comment --comment "$rule" -j REJECT 2>/dev/null
+
+  adopt-platform-windows:
+    runs-on: windows-latest
+    permissions: {}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        env:
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: core.longpaths
+          GIT_CONFIG_VALUE_0: 'true'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install synthetic test dependencies
+        shell: pwsh
+        run: |
+          python -m pip install pytest==9.0.3 faiss-cpu==1.13.2 numpy packaging jsonschema pydantic pyyaml psutil requests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run Windows adoption tests with no credentials or outbound network
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $IsWindows -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Expected GitHub-hosted Windows' }
+          $rule = 'wd-adopt-deny-' + $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT
+          $scratch = 'C:\wd-adopt-ci-' + $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT
+          if (Test-Path -LiteralPath $scratch) { throw 'Synthetic temporary directory already exists' }
+          New-Item -ItemType Directory -Path $scratch | Out-Null
+          $python = (Get-Command python -ErrorAction Stop).Source
+          try {
+            New-NetFirewallRule -Name $rule -DisplayName $rule -Direction Outbound -Action Block -Enabled True -Profile Any -RemoteAddress Any | Out-Null
+            $check = Get-NetFirewallRule -Name $rule -ErrorAction Stop
+            if ($check.Enabled -ne 'True' -or $check.Direction -ne 'Outbound' -or $check.Action -ne 'Block') { throw 'Outbound isolation rule is not active' }
+            $socket = [System.Net.Sockets.TcpClient]::new()
+            try {
+              $connection = $socket.BeginConnect('1.1.1.1',443,$null,$null)
+              if ($connection.AsyncWaitHandle.WaitOne(2500) -and $socket.Connected) { throw 'Outbound isolation probe connected' }
+            } finally { $socket.Dispose() }
+            $psi = [System.Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName = $python
+            $psi.UseShellExecute = $false
+            $psi.WorkingDirectory = (Get-Location).Path
+            $psi.Environment.Clear()
+            foreach ($key in @('SystemRoot','windir','SystemDrive','ComSpec','PATHEXT','PATH','PROCESSOR_ARCHITECTURE','NUMBER_OF_PROCESSORS')) {
+              $value = [Environment]::GetEnvironmentVariable($key)
+              if ($value) { $psi.Environment[$key] = $value }
+            }
+            foreach ($entry in @{TEMP=$scratch; TMP=$scratch; USERPROFILE=$scratch; HOME=$scratch; PYTHONDONTWRITEBYTECODE='1'; PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'}.GetEnumerator()) { $psi.Environment[$entry.Key] = $entry.Value }
+            foreach ($arg in @('-m','pytest','tests/tools/test_wd_q4_adopt_recovery_ps.py','-q','-rs','-p','no:cacheprovider','--basetemp',"$scratch\pytest",'--junitxml',"$scratch\results.xml")) { [void]$psi.ArgumentList.Add($arg) }
+            Write-Host 'Outbound isolation active; Windows synthetic tests start with a clean environment.'
+            $process = [System.Diagnostics.Process]::Start($psi)
+            if (-not $process.WaitForExit(480000)) { $process.Kill($true); $process.WaitForExit(); throw 'Synthetic tests timed out' }
+            if ($process.ExitCode -ne 0) { throw 'Synthetic test process failed' }
+            [xml]$result = Get-Content -Raw -LiteralPath "$scratch\results.xml"
+            $suite = $result.testsuites.testsuite
+            $cases = @($suite.testcase)
+            $skipped = @($cases | Where-Object { $_.skipped })
+            $expected = @('test_real_job_finishes_proven_early_refusal','test_stdout_error_after_real_f3_mutation_is_unknown')
+            if ($cases.Count -ne 38 -or $skipped.Count -ne 2 -or @($skipped | Where-Object { $_.name -notin $expected }).Count -ne 0 -or $suite.failures -ne '0' -or $suite.errors -ne '0') { throw 'Windows synthetic test coverage mismatch' }
+            Write-Host 'Windows coverage verified: 36 passed, 2 explicit opt-in skipped.'
+          } finally {
+            Get-NetFirewallRule -Name $rule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+            if (Get-NetFirewallRule -Name $rule -ErrorAction SilentlyContinue) { throw 'Outbound firewall cleanup failed' }
+            Write-Host 'Outbound firewall rule removed.'
+          }
+      - name: Ensure diagnostic outbound rule is removed
+        if: always()
+        shell: pwsh
+        run: |
+          $rule = 'wd-adopt-deny-' + $env:GITHUB_RUN_ID + '-' + $env:GITHUB_RUN_ATTEMPT
+          Get-NetFirewallRule -Name $rule -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+          if (Get-NetFirewallRule -Name $rule -ErrorAction SilentlyContinue) { throw 'Outbound firewall cleanup failed' }

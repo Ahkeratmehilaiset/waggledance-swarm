@@ -12,6 +12,11 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Write-Output "OS=$([System.Environment]::OSVersion.VersionString)"
+          $dockerService = Get-Service -Name docker -ErrorAction SilentlyContinue
+          if ($null -eq $dockerService) { throw 'Docker service is not installed' }
+          Write-Output "DockerServiceBefore=$($dockerService.Status)"
+          if ($dockerService.Status -ne 'Running') { Start-Service -Name docker }
+          Write-Output "DockerServiceAfter=$((Get-Service -Name docker).Status)"
           docker version --format 'client={{.Client.Version}} server={{.Server.Version}} os={{.Server.Os}}'
           if ($LASTEXITCODE -ne 0) { throw 'Docker engine unavailable' }
           docker image ls --format '{{.Repository}}:{{.Tag}}'

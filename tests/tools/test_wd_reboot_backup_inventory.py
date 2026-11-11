@@ -1,16 +1,36 @@
 """Synthetic backup-inventory checks. Never invoke the installer or live paths."""
+import builtins
 import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
+import types
 
 import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "ops/windows/reboot/Deploy-WdRebootBundle.ps1"
-SHELL = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+SHELL = (Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+         if os.name == "nt" else None)
+
+
+def test_module_import_on_posix_without_systemroot():
+    """Exercise the complete module import with a synthetic POSIX os module."""
+    builtin = vars(builtins).copy()
+    original = builtin["__import__"]
+
+    def portable_import(name, *args, **kwargs):
+        if name == "os":
+            return types.SimpleNamespace(name="posix", environ={})
+        return original(name, *args, **kwargs)
+
+    builtin["__import__"] = portable_import
+    source = Path(__file__).read_text(encoding="utf-8")
+    namespace = {"__builtins__": builtin, "__name__": "synthetic_posix_import", "__file__": __file__}
+    exec(compile(source, __file__, "exec"), namespace)
+    assert namespace["SHELL"] is None
 
 
 def sha(data):

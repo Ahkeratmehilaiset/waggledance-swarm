@@ -18,6 +18,7 @@ def canonical(value):return json.dumps(value,sort_keys=True,separators=(',',':')
 @pytest.fixture
 def candidate(tmp_path):
     repo=Path(__file__).resolve().parents[2]
+    interpreter=str(Path(sys.executable).resolve(strict=True))
     bundle=tmp_path/'bundle';code=bundle/'tools-bootstrap'
     (code/'tools').mkdir(parents=True);(code/'sandbox/mind/step2').mkdir(parents=True)
     bootstrap=code/'tools/wd_q4_lane_caller_runtime_bootstrap.py'
@@ -44,7 +45,7 @@ def candidate(tmp_path):
     (runtime/'model').mkdir();(runtime/'model/synthetic.txt').write_bytes(b'synthetic')
     rt_manifest=tmp_path/'runtime-manifest.json'
     built=runtime_builder.build_runtime_manifest(runtime,rt_manifest,generation='a'*40,revision='b'*40)
-    fixed={'interpreter_sha256':sha(Path(sys.executable).read_bytes()),'runtime_root':str(runtime),
+    fixed={'interpreter_sha256':sha(Path(interpreter).read_bytes()),'runtime_root':str(runtime),
            'runtime_manifest_path':str(rt_manifest),'runtime_manifest_sha256':built['manifest_sha256'],
            'runtime_generation':'a'*40,'runtime_revision':'b'*40,'verifier_sha256':sha(verifier.read_bytes())}
     fixed_path=tmp_path/'fixed.json';fixed_path.write_bytes(canonical(fixed))
@@ -53,7 +54,7 @@ def candidate(tmp_path):
     snapshot_path=tmp_path/'snapshot.json';snapshot_path.write_bytes(b'{"synthetic":true}')
     public_plan=tmp_path/'public-plan.json';public_plan.write_bytes(b'{"synthetic":true}')
     descriptor={'schema':'wd.q4-shared-session-config.v2','bundle_root':str(bundle),
-        'interpreter':sys.executable,'interpreter_sha256':fixed['interpreter_sha256'],
+        'interpreter':interpreter,'interpreter_sha256':fixed['interpreter_sha256'],
         'interpreter_max_bytes':64*1024*1024,'runtime_manifest_path':str(rt_manifest),
         'runtime_manifest_sha256':fixed['runtime_manifest_sha256'],'fixed_plan_path':str(fixed_path),
         'fixed_plan_sha256':sha(fixed_path.read_bytes()),'fleet_sha256':sha(fleet),'lanes':['codex-lead-1'],
@@ -74,12 +75,13 @@ def candidate(tmp_path):
         AGENT_BRIDGE_AGENT='codex-lead-1',AGENT_BRIDGE_AGENT_UUID='synthetic-uuid',
         AGENT_BRIDGE_RUN_ID='synthetic-run',AGENT_BRIDGE_OWNER_TOKEN='synthetic-token')
     return {'bootstrap':bootstrap,'env':env,'runtime':runtime,'descriptor':descriptor_path,
-            'fixed':fixed_path,'manifest':manifest_path,'bundle_caller':caller,'cwd':tmp_path}
+            'fixed':fixed_path,'manifest':manifest_path,'bundle_caller':caller,'cwd':tmp_path,
+            'interpreter':interpreter}
 
 
 def execute(candidate,argv=('--enabled',),input=b'synthetic-query-canary',isolated=True):
     flags=['-I','-S','-B'] if isolated else ['-S','-B']
-    return subprocess.run([sys.executable,*flags,str(candidate['bootstrap']),*argv],input=input,
+    return subprocess.run([candidate['interpreter'],*flags,str(candidate['bootstrap']),*argv],input=input,
         cwd=candidate['cwd'],env=candidate['env'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
 
 
@@ -94,6 +96,23 @@ def test_exact_runtime_and_stdin_with_preserved_identity(candidate):
     assert b'synthetic-query-canary' not in result.stdout+result.stderr
 
 
+@pytest.mark.skipif(os.name=='nt',reason='synthetic POSIX interpreter symlink')
+def test_interpreter_symlink_still_refuses_before_consuming_stdin(candidate):
+    linked=candidate['cwd']/'synthetic-python-link'
+    linked.symlink_to(candidate['interpreter'])
+    descriptor=json.loads(candidate['descriptor'].read_bytes())
+    descriptor['interpreter']=str(linked)
+    candidate['descriptor'].write_bytes(canonical(descriptor))
+    candidate['env']['WD_Q4_SHARED_DESCRIPTOR_SHA256']=sha(candidate['descriptor'].read_bytes())
+    p=subprocess.Popen([str(linked),'-I','-S','-B',str(candidate['bootstrap']),'--enabled'],
+        cwd=candidate['cwd'],env=candidate['env'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    try:
+        p.wait(timeout=20);stdout,stderr=p.communicate(timeout=5)
+    finally:
+        if p.poll() is None:p.kill();p.wait(timeout=5)
+    assert p.returncode==2 and not stdout and b'synthetic-query-canary' not in stderr
+
+
 @pytest.mark.parametrize('fault',['descriptor','manifest','fixed','runtime_site','runtime_caller','bundle_caller','unlisted_argument'])
 def test_bad_pins_refuse_before_reading_stdin(candidate,fault):
     env=dict(candidate['env']);argv=['--enabled'];flags=['-I','-S','-B']
@@ -104,7 +123,7 @@ def test_bad_pins_refuse_before_reading_stdin(candidate,fault):
     if fault=='runtime_caller':(candidate['runtime']/'assets/code/tools/wd_q4_lane_caller_cli.py').write_bytes(b'changed')
     if fault=='bundle_caller':candidate['bundle_caller'].write_bytes(b'changed')
     if fault=='unlisted_argument':argv=['--module','os']
-    p=subprocess.Popen([sys.executable,*flags,str(candidate['bootstrap']),*argv],cwd=candidate['cwd'],env=env,
+    p=subprocess.Popen([candidate['interpreter'],*flags,str(candidate['bootstrap']),*argv],cwd=candidate['cwd'],env=env,
         stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     try:
         p.wait(timeout=20)
@@ -127,7 +146,7 @@ def test_wrapper_style_s_b_forwards_stdin_to_isolated_child(candidate):
 
 def test_wrapper_relay_child_preflight_refuses_without_consuming_stdin(candidate):
     (candidate['runtime']/'site/synthetic_pinned_dependency.py').write_bytes(b'changed')
-    p=subprocess.Popen([sys.executable,'-S','-B',str(candidate['bootstrap']),'--enabled'],cwd=candidate['cwd'],
+    p=subprocess.Popen([candidate['interpreter'],'-S','-B',str(candidate['bootstrap']),'--enabled'],cwd=candidate['cwd'],
         env=candidate['env'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     try:
         p.wait(timeout=20);stdout,stderr=p.communicate(timeout=5)
@@ -155,7 +174,7 @@ def test_consistent_runtime_with_different_caller_than_bundle_refuses(candidate)
 def test_preloaded_project_module_refuses(candidate):
     code=('import sys,types,runpy;sys.modules["tools"]=types.ModuleType("tools");'
           'sys.argv=[sys.argv[1],"--enabled"];runpy.run_path(sys.argv[0],run_name="__main__")')
-    p=subprocess.Popen([sys.executable,'-I','-S','-B','-c',code,str(candidate['bootstrap'])],
+    p=subprocess.Popen([candidate['interpreter'],'-I','-S','-B','-c',code,str(candidate['bootstrap'])],
         cwd=candidate['cwd'],env=candidate['env'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     try:
         p.wait(timeout=20);stdout,stderr=p.communicate(timeout=5)

@@ -108,5 +108,7 @@ def assess_startup_receipts(*, expected_runs, expected_manifest_sha256,
         "lanes": lanes,
         "process_liveness_verified": False,
         "agent_context_verified": False,
+        "source_refs_verified": False,
+        "observation_times_authenticated": False,
         "automatic_rollback_performed": False,
     }

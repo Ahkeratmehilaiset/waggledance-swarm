@@ -44,6 +44,8 @@ def test_five_current_receipts_pass_but_do_not_claim_context_consumption():
     result = assess(all_records())
     assert result["decision"] == "RECEIPTS_OK"
     assert result["agent_context_verified"] is False
+    assert result["source_refs_verified"] is False
+    assert result["observation_times_authenticated"] is False
     assert all(result["lanes"][lane] == "PASS" for lane in LANES)
 
 

@@ -133,6 +133,112 @@ function Assert-ChildPath {
     return $childFull
 }
 
+function Write-WdRebootBackupInventory {
+    <# Records the already copied machine-file transaction before replacement.
+       The sidecar detects corruption only when its digest is independently
+       preserved. It is not authentication or an automatic restore plan. #>
+    param(
+        [Parameter(Mandatory)] [string] $MachineRoot,
+        [Parameter(Mandatory)] [string] $BackupRoot,
+        [Parameter(Mandatory)] [string[]] $TransactionNames,
+        [Parameter(Mandatory)] [hashtable] $OriginallyPresent,
+        [Parameter(Mandatory)] [string] $NewCommit
+    )
+    if ($NewCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'backup inventory commit invalid' }
+    $machine = Resolve-FullPath $MachineRoot
+    $backup = Resolve-FullPath $BackupRoot
+    $expectedParent = Join-Path $machine 'wd-reboot-backups'
+    [void](Assert-ChildPath -Parent $expectedParent -Child $backup)
+    [void](Assert-WdPathWithoutReparse -Path $machine -TrustedRoot $machine -ExpectedType Directory)
+    [void](Assert-WdPathWithoutReparse -Path $backup -TrustedRoot $machine -ExpectedType Directory)
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $files = New-Object 'System.Collections.Generic.List[object]'
+    $stateDigest = $null
+    foreach ($name in $TransactionNames) {
+        if (-not $name -or $name -cne [IO.Path]::GetFileName($name) -or
+            $name -in @('rollback-inventory.json','rollback-inventory.sha256')) { throw 'backup inventory name invalid' }
+        if ($name -ieq 'WD_REBOOT_STATE_CURRENT.json' -and $name -cne 'WD_REBOOT_STATE_CURRENT.json') {
+            throw 'backup inventory state name must use canonical casing'
+        }
+        if (-not $seen.Add($name)) { throw 'backup inventory duplicate name' }
+        if (-not $OriginallyPresent.ContainsKey($name)) { throw "backup inventory presence missing: $name" }
+        if ($OriginallyPresent[$name] -isnot [bool]) { throw 'backup inventory presence invalid' }
+        $source = Assert-ChildPath -Parent $machine -Child (Join-Path $machine $name)
+        $copy = Assert-ChildPath -Parent $backup -Child (Join-Path $backup $name)
+        $present = [bool]$OriginallyPresent[$name]
+        $digest = $null
+        if ($present) {
+            [void](Assert-WdPathWithoutReparse -Path $source -TrustedRoot $machine -ExpectedType Leaf)
+            [void](Assert-WdPathWithoutReparse -Path $copy -TrustedRoot $backup -ExpectedType Leaf)
+            $digest = (Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash.ToUpperInvariant()
+            if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToUpperInvariant() -cne $digest) {
+                throw 'backup inventory source differs from copied bytes'
+            }
+        } elseif ((Test-Path -LiteralPath $source) -or (Test-Path -LiteralPath $copy)) {
+            throw 'backup inventory previously absent file appeared'
+        }
+        if ($name -ceq 'WD_REBOOT_STATE_CURRENT.json') { $stateDigest = $digest }
+        $files.Add([ordered]@{ name = $name; present = $present; sha256 = $digest })
+    }
+    if (-not $seen.Contains('WD_REBOOT_STATE_CURRENT.json')) { throw 'backup inventory needs the state entry' }
+    $priorState = $null
+    if ($null -ne $stateDigest) {
+        $statePath = Join-Path $backup 'WD_REBOOT_STATE_CURRENT.json'
+        if ((Get-Item -LiteralPath $statePath).Length -gt 65536) { throw 'backup inventory prior state too large' }
+        $stateBytes = [IO.File]::ReadAllBytes($statePath)
+        $stateHasher = [Security.Cryptography.SHA256]::Create()
+        try { $stateBytesHash = [BitConverter]::ToString($stateHasher.ComputeHash($stateBytes)).Replace('-', '') }
+        finally { $stateHasher.Dispose() }
+        if ($stateBytesHash -cne $stateDigest) { throw 'backup inventory prior state changed' }
+        try {
+            $stateText = (New-Object Text.UTF8Encoding($false, $true)).GetString($stateBytes).TrimStart([char]0xFEFF)
+            $state = $stateText | ConvertFrom-Json -ErrorAction Stop
+        }
+        catch { throw 'backup inventory prior state invalid' }
+        $oldCommit = [string]$state.source_commit
+        $oldHash = ([string]$state.manifest_sha256).ToUpperInvariant()
+        if ($oldCommit -cnotmatch '^[0-9a-f]{40}$' -or $oldHash -cnotmatch '^[0-9A-F]{64}$') {
+            throw 'backup inventory prior state binding invalid'
+        }
+        $oldRoot = Resolve-FullPath ([string]$state.active_bundle)
+        $expectedRoot = Resolve-FullPath (Join-Path $machine ('wd-reboot-bundles\' + $oldCommit))
+        if (-not $oldRoot.Equals($expectedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'backup inventory prior bundle path mismatch'
+        }
+        $manifest = Join-Path $oldRoot 'deployment-manifest.json'
+        [void](Assert-WdPathWithoutReparse -Path $manifest -TrustedRoot $machine -ExpectedType Leaf)
+        if ((Get-Item -LiteralPath $manifest).Length -gt 4194304) { throw 'backup inventory prior manifest too large' }
+        $manifestBytes = [IO.File]::ReadAllBytes($manifest)
+        $manifestHasher = [Security.Cryptography.SHA256]::Create()
+        try { $manifestBytesHash = [BitConverter]::ToString($manifestHasher.ComputeHash($manifestBytes)).Replace('-', '') }
+        finally { $manifestHasher.Dispose() }
+        if ($manifestBytesHash -cne $oldHash) {
+            throw 'backup inventory prior bundle hash mismatch'
+        }
+        $manifestText = (New-Object Text.UTF8Encoding($false, $true)).GetString($manifestBytes).TrimStart([char]0xFEFF)
+        $oldManifest = $manifestText | ConvertFrom-Json -ErrorAction Stop
+        if ([string]$oldManifest.source_commit -cne $oldCommit) { throw 'backup inventory prior commit mismatch' }
+        $priorState = [ordered]@{ state_sha256 = $stateDigest; source_commit = $oldCommit;
+                                  active_bundle = $oldRoot; manifest_sha256 = $oldHash }
+    }
+    $inventory = [ordered]@{ schema = 'wd.reboot-backup-inventory.v1'; new_commit = $NewCommit;
+                            machine_root = $machine; prior_state = $priorState; files = $files.ToArray() }
+    $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($inventory | ConvertTo-Json -Depth 8 -Compress))
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try { $hash = [BitConverter]::ToString($hasher.ComputeHash($bytes)).Replace('-', '') }
+    finally { $hasher.Dispose() }
+    foreach ($entry in @(
+        @{ Name = 'rollback-inventory.json'; Bytes = $bytes },
+        @{ Name = 'rollback-inventory.sha256'; Bytes = [Text.Encoding]::ASCII.GetBytes($hash) }
+    )) {
+        $path = Join-Path $backup $entry.Name
+        $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.Write($entry.Bytes, 0, $entry.Bytes.Length); $stream.Flush($true) }
+        finally { $stream.Dispose() }
+    }
+    return [pscustomobject]@{ path = (Join-Path $backup 'rollback-inventory.json'); sha256 = $hash }
+}
+
 function Write-Utf8NoBomAtomic {
     param(
         [Parameter(Mandatory)] [string] $Path,
@@ -1796,6 +1902,13 @@ foreach ($name in $transactionNames) {
         Copy-Item -LiteralPath $machinePath -Destination (Join-Path $backupRoot $name)
     }
 }
+if (-not $backedUp) {
+    [void](New-Item -ItemType Directory -Path $backupRoot -Force)
+    $backedUp = $true
+}
+$backupInventory = Write-WdRebootBackupInventory -MachineRoot $machineFull -BackupRoot $backupRoot `
+    -TransactionNames $transactionNames -OriginallyPresent $originallyPresent -NewCommit $head
+Write-Host "Previous-state backup inventory SHA256: $($backupInventory.sha256)"
 
 $machineMutationStarted = $false
 try {

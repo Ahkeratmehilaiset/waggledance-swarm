@@ -309,6 +309,11 @@ if ($mode -like 'withheld*') {
     'withheld_wrong_cleanup' {$result.cleanup='unknown'}
     'withheld_wrong_count' {$result.original_result_count=2}
     'withheld_bad_ref' {$result.original_result_refs[0].doc_id_sha256='invalid'}
+    'withheld_identity_lf' {$result.identity_sha256 += "`n"}
+    'withheld_call_id_lf' {$result.call_id += "`n"}
+    'withheld_answer_lf' {$result.original_answer_sha256 += "`n"}
+    'withheld_ref_lf' {$result.original_result_refs[0].ref_sha256 += "`n"}
+    'withheld_doc_id_lf' {$result.original_result_refs[0].doc_id_sha256 += "`n"}
     'withheld_extra_ref' {$result.original_result_refs[0]['stored_text']='STORED-TEXT-SECRET'}
   }
   if ($WithStatus) { if ($mode -eq 'withheld_outer_unknown') { [Console]::Error.WriteLine('{"status":"UNKNOWN","exit_code":0,"cleanup":"UNKNOWN"}') } else { [Console]::Error.WriteLine('{"status":"EXITED","exit_code":0,"cleanup":"CONFIRMED"}') } }
@@ -442,7 +447,8 @@ Clear-WdInheritedMindReadSettings
 
 @pytest.mark.parametrize("mode", ["withheld", "withheld_degraded", "withheld_multiple", "withheld_missing", "withheld_outer_unknown", "withheld_extra", "withheld_wrong_lane", "withheld_wrong_descriptor",
     "withheld_wrong_binding", "withheld_wrong_freshness", "withheld_wrong_trust", "withheld_wrong_cleanup",
-    "withheld_wrong_count", "withheld_bad_ref", "withheld_extra_ref"])
+    "withheld_wrong_count", "withheld_bad_ref", "withheld_extra_ref", "withheld_identity_lf",
+    "withheld_call_id_lf", "withheld_answer_lf", "withheld_ref_lf", "withheld_doc_id_lf"])
 @_WINDOWS_HELPER_LAUNCH
 def test_withheld_content_metadata_is_strict_and_never_delivered(tmp_path, mode):
     fx = startup_read_fixture(tmp_path, "codex-tools-1", mode=mode)
@@ -861,13 +867,35 @@ finally{$sha.Dispose()}
     return json.loads(result.stdout.strip())
 
 
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@_WINDOWS_HELPER_LAUNCH
+def test_tools_accepts_actual_caller_output_for_synthetic_content(tmp_path, ps):
+    from tools import wd_q4_lane_caller_cli as caller
+
+    fx = startup_read_fixture(tmp_path, "codex-tools-1", mode="producer_bytes")
+    value = _content_delivery_packet(fx["descriptor_pin"])
+    value["answer_sha256"] = hashlib.sha256(caller._canon(value["answer"])).hexdigest()
+    result = {key: value[key] for key in (
+        "lane", "lane_binding", "lane_authentication", "cleanup", "identity_sha256",
+        "descriptor_sha256", "call_id", "answer_sha256", "answer")}
+    result.update(schema="wd.q4-lane-caller-result.v1", status="VALIDATED", inner_status="ANSWER", result_count=1)
+    raw = caller._output(result, "codex-tools-1", value["identity_sha256"], fx["descriptor_pin"],
+                         value["answer"]["binding"], 65536, "synthetic-owner-token")
+    (fx["bundle"] / "producer-response.bin").write_bytes(raw.encode("ascii"))
+    fx["env_prelude"] += "\n$env:AGENT_BRIDGE_OWNER_TOKEN='synthetic-owner-token'\n$env:AGENT_BRIDGE_AGENT='codex-tools-1'"
+    observed = _content_observation(fx, ps)
+    assert observed["outcome"] == "success" and observed["record_written"] is True
+    assert observed["has_marker"] and observed["has_freshness"] and observed["has_ref"]
+    assert observed["answer_sha256"] == value["answer_sha256"]
+
+
 _CONTENT_CASES = [
     "good", "multiple", "unicode", "byte_boundary", "missing", "extra", "schema",
-    "lane", "inner_lane", "identity", "descriptor", "binding_state", "authentication",
+    "lane", "inner_lane", "identity", "identity_lf", "descriptor", "binding_state", "authentication",
     "cleanup", "outer_cleanup", "freshness", "age_status", "age_seconds", "age_extra",
-    "call_id", "answer_hash", "tampered_text", "answer_extra", "degraded", "abstain",
+    "call_id", "call_id_lf", "answer_hash", "tampered_text", "answer_extra", "degraded", "abstain",
     "empty", "count_bool", "count_mismatch", "result_object", "result_extra", "bad_ref",
-    "bad_doc_id", "text_null", "text_empty", "text_control", "text_bytes", "result_limit",
+    "bad_doc_id", "bad_ref_lf", "bad_doc_id_lf", "text_null", "text_empty", "text_control", "text_bytes", "result_limit",
     "presentation_limit", "binding_missing", "binding_extra", "binding_mismatch", "trust",
     "token", "escaped_token", "descriptor_changed", "record_file", "record_replace",
     "timestamp", "missing_token", "owner_lane",
@@ -899,6 +927,7 @@ def test_tools_content_delivery_closed_class(tmp_path, ps, case):
     elif case == "lane": value["lane"] = "fable-5"
     elif case == "inner_lane": answer["lane"] = "fable-5"
     elif case == "identity": value["identity_sha256"] = "not-a-digest"
+    elif case == "identity_lf": value["identity_sha256"] += "\n"
     elif case == "descriptor": value["descriptor_sha256"] = "0" * 64
     elif case == "binding_state": value["lane_binding"] = "AUTHENTICATED"
     elif case == "authentication": value["lane_authentication"] = "VERIFIED"
@@ -908,6 +937,7 @@ def test_tools_content_delivery_closed_class(tmp_path, ps, case):
     elif case == "age_seconds": value["index_age"]["seconds"] = 0
     elif case == "age_extra": value["index_age"]["file_mtime"] = 0
     elif case == "call_id": value["call_id"] = "bad"
+    elif case == "call_id_lf": value["call_id"] += "\n"
     elif case == "answer_extra": answer["query"] = "not admitted"
     elif case == "degraded": answer["status"] = "DEGRADED"
     elif case == "abstain": answer["status"] = "ABSTAIN"; answer["results"] = []; answer["result_count"] = 0
@@ -918,6 +948,8 @@ def test_tools_content_delivery_closed_class(tmp_path, ps, case):
     elif case == "result_extra": item["query"] = "not admitted"
     elif case == "bad_ref": item["ref_sha256"] = "bad"
     elif case == "bad_doc_id": item["doc_id_sha256"] = "bad"
+    elif case == "bad_ref_lf": item["ref_sha256"] += "\n"
+    elif case == "bad_doc_id_lf": item["doc_id_sha256"] += "\n"
     elif case == "text_null": item["stored_text"] = None
     elif case == "text_empty": item["stored_text"] = ""
     elif case == "text_control": item["stored_text"] += "\u0000"

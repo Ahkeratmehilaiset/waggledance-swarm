@@ -607,9 +607,9 @@ function Invoke-WdQ4StartupMindRead {
               if ($result.freshness -cne 'UNKNOWN' -or $result.lane -cne $Lane -or
                   $env:AGENT_BRIDGE_AGENT -cne $Lane -or $result.lane_binding -cne 'DECLARED_CONSISTENT' -or
                   $result.lane_authentication -cne 'UNKNOWN' -or $result.cleanup -cne 'chain_confirmed' -or
-                  $record.cleanup -cne 'CONFIRMED' -or $result.identity_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-                  $result.descriptor_sha256 -cne $DescriptorSha256 -or $result.call_id -cnotmatch '^[0-9a-f]{32}$' -or
-                  $result.answer_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'result_shape' }
+                  $record.cleanup -cne 'CONFIRMED' -or $result.identity_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
+                  $result.descriptor_sha256 -cne $DescriptorSha256 -or $result.call_id -cnotmatch '\A[0-9a-f]{32}\z' -or
+                  $result.answer_sha256 -cnotmatch '\A[0-9a-f]{64}\z') { throw 'result_shape' }
               $observedAge = $result.schema -ceq 'wd.q4-lane-content-delivery.v2'
               if (-not $observedAge) {
                 Assert-WdStartupContentObject $result.index_age @('status','seconds')
@@ -691,7 +691,7 @@ function Invoke-WdQ4StartupMindRead {
               Assert-WdStartupContentObject $expected $bindingKeys
               foreach ($key in $bindingKeys) {
                 $value = $answer.binding.PSObject.Properties[$key].Value
-                if ($value -isnot [string] -or $value -cnotmatch '^[0-9a-f]{64}$' -or
+                if ($value -isnot [string] -or $value -cnotmatch '\A[0-9a-f]{64}\z' -or
                     $expected.PSObject.Properties[$key].Value -isnot [string] -or
                     $value -cne $expected.PSObject.Properties[$key].Value) { throw 'result_shape' }
               }
@@ -702,8 +702,8 @@ function Invoke-WdQ4StartupMindRead {
                 if ($item.stored_text -isnot [string] -or [string]::IsNullOrWhiteSpace($item.stored_text) -or
                     $utf8.GetByteCount($item.stored_text) -gt 320 -or
                     $item.stored_text -cmatch '[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]' -or
-                    $item.ref_sha256 -isnot [string] -or $item.ref_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-                    $item.doc_id_sha256 -isnot [string] -or $item.doc_id_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'result_shape' }
+                    $item.ref_sha256 -isnot [string] -or $item.ref_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
+                    $item.doc_id_sha256 -isnot [string] -or $item.doc_id_sha256 -cnotmatch '\A[0-9a-f]{64}\z') { throw 'result_shape' }
                 $refs += $item.ref_sha256
               }
               # Match the caller's canonical bytes, including ASCII Unicode escapes. This also refuses duplicate
@@ -785,10 +785,10 @@ function Invoke-WdQ4StartupMindRead {
                   $result.freshness -cne 'UNKNOWN' -or $result.authority -cne 'none' -or $result.lane -cne $Lane -or
                   $result.lane_binding -cne 'DECLARED_CONSISTENT' -or $result.lane_authentication -cne 'UNKNOWN' -or
                   $result.cleanup -cne 'chain_confirmed' -or $record.cleanup -cne 'CONFIRMED' -or
-                  $result.identity_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-                  $result.descriptor_sha256 -cne $DescriptorSha256 -or $result.call_id -cnotmatch '^[0-9a-f]{32}$' -or
+                  $result.identity_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
+                  $result.descriptor_sha256 -cne $DescriptorSha256 -or $result.call_id -cnotmatch '\A[0-9a-f]{32}\z' -or
                   @('ANSWER','DEGRADED') -cnotcontains $result.original_inner_status -or
-                  $result.original_answer_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                  $result.original_answer_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
                   ($result.original_result_count -isnot [int] -and $result.original_result_count -isnot [long]) -or
                   $result.original_result_count -lt 1 -or $result.original_result_count -gt 100 -or
                   $result.original_result_refs -isnot [array] -or
@@ -820,7 +820,7 @@ function Invoke-WdQ4StartupMindRead {
                 if ($bindingNames -cnotcontains $key -or $expectedNames -cnotcontains $key -or
                     $result.binding.PSObject.Properties[$key].Value -isnot [string] -or
                     $expected.PSObject.Properties[$key].Value -isnot [string] -or
-                    $result.binding.PSObject.Properties[$key].Value -cnotmatch '^[0-9a-f]{64}$' -or
+                    $result.binding.PSObject.Properties[$key].Value -cnotmatch '\A[0-9a-f]{64}\z' -or
                     $result.binding.PSObject.Properties[$key].Value -cne $expected.PSObject.Properties[$key].Value) { throw 'result_shape' }
               }
               $refs = @()
@@ -829,8 +829,8 @@ function Invoke-WdQ4StartupMindRead {
                 $itemNames = @($item.PSObject.Properties | ForEach-Object { $_.Name })
                 if ($itemNames.Count -ne 2 -or $itemNames -cnotcontains 'ref_sha256' -or
                     $itemNames -cnotcontains 'doc_id_sha256' -or $item.ref_sha256 -isnot [string] -or
-                    $item.doc_id_sha256 -isnot [string] -or $item.ref_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-                    $item.doc_id_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'result_shape' }
+                    $item.doc_id_sha256 -isnot [string] -or $item.ref_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
+                    $item.doc_id_sha256 -cnotmatch '\A[0-9a-f]{64}\z') { throw 'result_shape' }
                 $refs += $item.ref_sha256
               }
               $record.inner_status = $result.original_inner_status
@@ -845,12 +845,12 @@ function Invoke-WdQ4StartupMindRead {
                         if ([string]$result.schema -cne 'wd.q4-lane-caller-result.v1' -or [string]$result.status -cne 'VALIDATED' -or
                                 [string]$result.lane -cne $Lane -or
                                 @('ANSWER', 'ABSTAIN', 'DEGRADED') -cnotcontains [string]$result.inner_status -or
-                                [string]$result.answer_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-                                [string]$result.call_id -cnotmatch '^[0-9a-f]{32}$' -or
+                                [string]$result.answer_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
+                                [string]$result.call_id -cnotmatch '\A[0-9a-f]{32}\z' -or
                                 ($result.result_count -isnot [int] -and $result.result_count -isnot [long])) { throw 'result_shape' }
                         $refs = @()
                         foreach ($item in @($result.answer.results)) {
-                            if ([string]$item.ref_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'result_shape' }
+                            if ([string]$item.ref_sha256 -cnotmatch '\A[0-9a-f]{64}\z') { throw 'result_shape' }
                             $refs += [string]$item.ref_sha256
                         }
                         if ($refs.Count -gt 100 -or $refs.Count -ne [int]$result.result_count) { throw 'result_shape' }

@@ -1,0 +1,21 @@
+name: Synthetic prefix pin Linux diagnostic
+on:
+  push:
+    branches: [diag/q4-prefix-pin-linux-20261111]
+permissions: {}
+jobs:
+  synthetic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install pytest
+        run: python -m pip install 'pytest>=9.0.3'
+      - name: Synthetic prefix fixture in isolated network namespace
+        run: |
+          sudo unshare --net -- env -i PATH="$PATH" HOME="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP" "$(command -v python)" -m pytest -q -p no:cacheprovider --basetemp "$RUNNER_TEMP/q4-prefix-fixture" tests/tools/test_wd_q4_bridge_prefix_pin.py

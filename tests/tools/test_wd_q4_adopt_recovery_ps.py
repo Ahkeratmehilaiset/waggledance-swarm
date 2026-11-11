@@ -5,11 +5,13 @@ from pathlib import Path
 SCRIPT=Path('ops/windows/reboot/Invoke-WdQ4AdoptRecovery.ps1').resolve()
 
 def test_default_off():
-    p=subprocess.run(['powershell','-NoProfile','-NonInteractive','-File',str(SCRIPT)],capture_output=True,text=True,timeout=20)
+    host = 'powershell' if os.name == 'nt' else 'pwsh'
+    p=subprocess.run([host,'-NoProfile','-NonInteractive','-File',str(SCRIPT)],capture_output=True,text=True,timeout=20)
     assert p.returncode==0 and json.loads(p.stdout)=={'status':'OFF'} and not p.stderr
 
 def test_bad_pins_refuse_without_job():
-    p=subprocess.run(['powershell','-NoProfile','-NonInteractive','-File',str(SCRIPT),'-Run'],capture_output=True,text=True,timeout=20)
+    host = 'powershell' if os.name == 'nt' else 'pwsh'
+    p=subprocess.run([host,'-NoProfile','-NonInteractive','-File',str(SCRIPT),'-Run'],capture_output=True,text=True,timeout=20)
     assert p.returncode==2 and json.loads(p.stdout)=={'status':'REFUSED'} and not p.stderr
 
 import hashlib
@@ -21,6 +23,36 @@ import time
 import pytest
 from tests.tools.test_wd_q4_adopt_recovery_job_e2e import prepared, launch, _available
 from tools import wd_q4_owned_recovery_parent, wd_q4_owned_recovery_reader
+
+# These cases exercise the actual Windows PowerShell host, kernel32 Job or
+# Windows byte-range locks. Keep portable checks and future test names running.
+_WINDOWS_JOB_TESTS = frozenset({
+    'test_owned_job_invokes_pinned_synthetic_recovery_cli',
+    'test_job_rejects_changed_receipt',
+    'test_existing_attempt_marker_blocks_new_job',
+    'test_wrong_parent_marker_identity_or_digest_stays_unknown',
+    'test_confirmed_no_mutation_refusal_finishes_owned_marker',
+    'test_mismatched_worker_host_pin_refuses_before_parent_reservation',
+    'test_bootstrap_independently_checks_forwarded_host_before_reservation',
+    'test_finalization_reuses_exact_prior_receipt_without_starting_job',
+    'test_unknown_child_keeps_marker_and_never_retries',
+    'test_crash_window_preserves_marker_for_new_launcher',
+    'test_concurrent_then_killed_launcher_never_restarts',
+    'test_private_root_cannot_overlap_the_bundle',
+    'test_recovery_job_does_not_admit_while_private_lock_is_held',
+    'test_recovery_job_refuses_foreign_runner_pending',
+    'test_each_competing_reservation_is_preserved_and_blocks_job',
+    'test_recovery_job_does_not_admit_while_checkpoint_lock_is_held',
+    'test_admission_locks_are_released_before_the_child',
+    'test_active_real_adoption_blocks_recovery_job',
+    'test_each_owner_lock_blocks_recovery_before_job_marker',
+})
+
+
+@pytest.fixture(autouse=True)
+def _require_windows_for_native_job(request):
+    if os.name != 'nt' and request.node.originalname in _WINDOWS_JOB_TESTS:
+        pytest.skip('synthetic Job and lock test requires native Windows')
 
 @pytest.mark.skipif(not _available(os.environ,sys.platform),reason='explicit synthetic Windows native-runtime opt-in required')
 def test_real_job_finishes_proven_early_refusal(prepared):

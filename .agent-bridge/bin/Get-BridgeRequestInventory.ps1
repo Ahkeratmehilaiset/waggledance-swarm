@@ -155,6 +155,10 @@ $historicalPins=[ordered]@{
 $historicalRows=[ordered]@{}
 foreach ($historicalId in $historicalPins.Keys) { $historicalRows[$historicalId]=[Collections.Generic.List[object]]::new() }
 $historicalConflicts=[Collections.Generic.List[object]]::new()
+# A pinned ID on any request-like row NOT authored by the requester (another agent, or an unattributable
+# author) makes that pair unverifiable as exactly two own rows: it is recorded here and refuses below.
+$historicalOtherRows=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$historicalActive=(-not $DiagnosticPartial -and $Agent -ceq 'codex-lead-1')
 function ConvertTo-InventoryReferenceJson {
     # Event refs use bridge_compact_view.event_id: ordinal keys, UTF-8 JSON,
     # unescaped Unicode/HTML punctuation. The request digest has its separate
@@ -212,10 +216,12 @@ for ($position=0; $position -lt $rows.Count; $position++) {
             Add-InventoryConflict -Position $position -Event $event `
                 -Kind (Get-InventoryBindingKind $event 'agent' 'author_binding_conflict' 'malformed_author')
         }
+        if ($historicalActive -and $id -is [string] -and $historicalPins.Contains($id)) { [void]$historicalOtherRows.Add($id) }
         continue
     }
     if ($author -cne $Agent) {
         if ($id -is [string]) { [void]$foreignIds.Add($id) }
+        if ($historicalActive -and $id -is [string] -and $historicalPins.Contains($id)) { [void]$historicalOtherRows.Add($id) }
         continue
     }
     if ($id -isnot [string] -or $id -cnotmatch '^[A-Za-z0-9._:-]{1,128}$') {
@@ -224,7 +230,7 @@ for ($position=0; $position -lt $rows.Count; $position++) {
             -Kind (Get-InventoryBindingKind $event 'request_id' 'request_id_binding_conflict' 'malformed_request_id')
         continue
     }
-    if (-not $DiagnosticPartial -and $Agent -ceq 'codex-lead-1' -and $historicalPins.Contains($id)) {
+    if ($historicalActive -and $historicalPins.Contains($id)) {
         $historicalRows[$id].Add([pscustomobject]@{position=$position;event=$event})
         continue   # never enter a request, session, cursor or successor inventory
     }
@@ -246,7 +252,10 @@ for ($position=0; $position -lt $rows.Count; $position++) {
 }
 foreach ($historicalId in $historicalPins.Keys) {
     $found=$historicalRows[$historicalId]
-    if ($found.Count -eq 0) { continue }   # this log has no row of that pair (another runtime)
+    if ($found.Count -eq 0 -and -not $historicalOtherRows.Contains($historicalId)) { continue }   # pair not in this log
+    if ($historicalOtherRows.Contains($historicalId)) {
+        throw "Conflicting content for immutable request ID $historicalId; historical pair does not match (row by another author)"
+    }
     $pins=$historicalPins[$historicalId]
     # Exact row count first: a byte-identical re-append of one pinned row is a third row, never a match.
     if ($found.Count -ne $pins.Count) {

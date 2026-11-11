@@ -200,8 +200,8 @@ def test_absent_pairs_add_no_record_and_a_present_one_is_still_exact(tmp_path: P
     assert json.loads(clean.stdout)["historical_conflicts"] == []
 
 
-VARIANTS = ("third_row", "identical_reappend", "one_row", "foreign_author", "timestamp", "message",
-            "payload", "stored_digest", "order_swapped")
+VARIANTS = ("third_row", "identical_reappend", "one_row", "foreign_author", "foreign_extra", "unattributed_extra",
+            "timestamp", "message", "payload", "stored_digest", "order_swapped")
 
 
 @pytest.mark.parametrize("shell", SHELLS, **shell_ids)
@@ -220,6 +220,12 @@ def test_every_unpinned_variant_fails_closed(tmp_path: Path, shell: str, pair_in
         rows.pop()
     elif change == "foreign_author":
         rows[1] = seal(dict(rows[1], agent="codex-tools-1"))
+    elif change == "foreign_extra":
+        # Both exact Lead rows stay; another agent publishes a third request row with the pinned ID
+        # (Lead review of d5866f13: this was accepted and silently omitted).
+        extra.append(request(rid, pair_index, False, agent="codex-tools-1"))
+    elif change == "unattributed_extra":
+        extra.append(seal(dict(deepcopy(rows[0]), agent=7, message=f"{SECRET_TEXT} unattributed")))
     elif change == "timestamp":
         rows[0]["ts_utc"] = "2026-11-01T10:00:00.1234568Z"
     elif change == "message":
@@ -236,6 +242,33 @@ def test_every_unpinned_variant_fails_closed(tmp_path: Path, shell: str, pair_in
     result = invoke(tmp_path, shell, log, anchors=pairs())
     assert refused(result), result.stdout
     assert "historical pair" in result.stderr or "Conflicting content" in result.stderr
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("where", ("before", "between", "after"))
+def test_foreign_row_with_a_pinned_id_refuses_wherever_it_is(tmp_path: Path, shell: str, where: str) -> None:
+    by_id = pairs()
+    rid = IDS[2]
+    first, second = by_id[rid]
+    foreign = request(rid, 2, True, agent="codex-tools-1")
+    others = [row for key, rows in by_id.items() if key != rid for row in rows]
+    order = {"before": [foreign, first, second], "between": [first, foreign, second],
+             "after": [first, second, foreign]}[where]
+    result = invoke(tmp_path, shell, others + order)
+    assert refused(result) and "another author" in result.stderr
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+def test_pinned_id_on_another_authors_row_refuses_even_without_the_pair(tmp_path: Path, shell: str) -> None:
+    rows = [request(IDS[1], 1, False, agent="codex-tools-1"), request("unrelated-current-id", 0, False)]
+    as_lead = invoke(tmp_path / "lead", shell, rows)
+    assert refused(as_lead) and "another author" in as_lead.stderr
+    as_tools = invoke(tmp_path / "tools", shell, rows, agent="codex-tools-1")
+    assert as_tools.returncode == 0, as_tools.stderr
+    assert [row["request_id"] for row in json.loads(as_tools.stdout)["requests"]] == [IDS[1]]
+    diagnostic = invoke(tmp_path / "diagnostic", shell, rows, "-DiagnosticPartial")
+    assert diagnostic.returncode == 0, diagnostic.stderr
+    assert json.loads(diagnostic.stdout)["conflict_count"] == 0
 
 
 @pytest.mark.parametrize("shell", SHELLS, **shell_ids)

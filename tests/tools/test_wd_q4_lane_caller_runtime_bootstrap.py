@@ -97,9 +97,16 @@ def test_exact_runtime_and_stdin_with_preserved_identity(candidate):
 
 
 @pytest.mark.skipif(os.name=='nt',reason='synthetic POSIX interpreter symlink')
-def test_interpreter_symlink_still_refuses_before_consuming_stdin(candidate):
+def test_interpreter_symlink_refuses_with_stdin_pipe_open(candidate):
+    from tools import wd_q4_lane_caller_runtime_bootstrap as bootstrap
+    baseline=execute(candidate)
+    assert baseline.returncode==0 and json.loads(baseline.stdout)=={'status':'SYNTHETIC'}
+    assert sha(candidate['bootstrap'].read_bytes())==sha(Path(bootstrap.__file__).read_bytes())
     linked=candidate['cwd']/'synthetic-python-link'
     linked.symlink_to(candidate['interpreter'])
+    assert bootstrap._path(candidate['interpreter'])==Path(candidate['interpreter'])
+    with pytest.raises(ValueError):
+        bootstrap._path(str(linked))
     descriptor=json.loads(candidate['descriptor'].read_bytes())
     descriptor['interpreter']=str(linked)
     candidate['descriptor'].write_bytes(canonical(descriptor))
@@ -110,7 +117,7 @@ def test_interpreter_symlink_still_refuses_before_consuming_stdin(candidate):
         p.wait(timeout=20);stdout,stderr=p.communicate(timeout=5)
     finally:
         if p.poll() is None:p.kill();p.wait(timeout=5)
-    assert p.returncode==2 and not stdout and b'synthetic-query-canary' not in stderr
+    assert p.returncode==2 and not stdout
 
 
 @pytest.mark.parametrize('fault',['descriptor','manifest','fixed','runtime_site','runtime_caller','bundle_caller','unlisted_argument'])

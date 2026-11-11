@@ -163,6 +163,12 @@ jobs:
           trap cleanup EXIT
           sudo iptables -C OUTPUT -m comment --comment "$rule" -j REJECT
           env -i PATH="$PATH" HOME="$scratch/home" TMPDIR="$scratch/tmp" python -c 'import socket; s=socket.socket(); s.settimeout(2); r=s.connect_ex(("1.1.1.1",443)); s.close(); assert r != 0'
+          mkdir -p "$scratch/source"
+          git archive --format=tar --output "$scratch/source.tar" HEAD -- 'pyproject.toml' 'tests/conftest.py' 'tests/tools/test_card_source_binding.py' 'tests/tools/test_lane_card_decision_forward.py' 'tests/tools/test_public_card_decision_forward.py' 'tests/tools/test_shared_card_projection.py' 'tests/tools/test_shared_card_route.py' ':(glob)tests/tools/test_wd_q4*.py' ':(glob)tools/*.py' ':(glob)tools/**/*.py' ':(glob)sandbox/mind/*.py' ':(glob)sandbox/mind/**/*.py' ':(glob)waggledance/**/*.py' ':(glob)core/*.py' ':(glob)core/**/*.py' ':(glob)ops/windows/reboot/*.ps1'
+          tar -xf "$scratch/source.tar" -C "$scratch/source"
+          ( cd "$scratch/source"; env -i PATH="$PATH" HOME="$scratch/home" TMPDIR="$scratch/tmp" PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/tools/test_wd_q4_adopt_recovery_ps.py --collect-only -q -p no:cacheprovider > "$scratch/collected.txt" )
+          cat "$scratch/collected.txt"
+          grep -E '^38 tests collected' "$scratch/collected.txt"
           env -i PATH="$PATH" HOME="$scratch/home" TMPDIR="$scratch/tmp" PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/tools/test_wd_q4_adopt_recovery_ps.py -q -rs -p no:cacheprovider --basetemp "$scratch/pytest" --junitxml "$scratch/results.xml"
           env -i PATH="$PATH" HOME="$scratch/home" python -c 'import sys,xml.etree.ElementTree as E; s=E.parse(sys.argv[1]).getroot().find("testsuite"); c=s.findall("testcase"); p={x.attrib["name"] for x in c if x.find("skipped") is None}; e={"test_default_off","test_bad_pins_refuse_without_job","test_marker_window_starts_after_synthetic_preflight","test_preflight_and_marker_waits_remain_bounded[False]","test_preflight_and_marker_waits_remain_bounded[True]"}; assert len(c)==38 and p==e and s.attrib["skipped"]=="33" and s.attrib["failures"]=="0" and s.attrib["errors"]=="0"; print("verified Linux: 5 passed, 33 skipped")' "$scratch/results.xml"
       - name: Cleanup firewall
@@ -208,7 +214,7 @@ jobs:
           New-Item -ItemType Directory -Path "$scratch\repo" -Force | Out-Null
           # Source-only subset used by the synthetic fixture. Never archive .git,
           # documents, runtime data or the host workspace outside tracked source.
-          $sourcePaths = @('pyproject.toml','tests/conftest.py','tests/tools/test_card_source_binding.py','tests/tools/test_lane_card_decision_forward.py','tests/tools/test_public_card_decision_forward.py','tests/tools/test_shared_card_projection.py','tests/tools/test_shared_card_route.py',':(glob)tests/tools/test_wd_q4*.py',':(glob)tools/*.py',':(glob)tools/**/*.py',':(glob)sandbox/mind/step2/*.py',':(glob)sandbox/mind/step2/**/*.py',':(glob)waggledance/**/*.py',':(glob)core/*.py',':(glob)core/**/*.py',':(glob)ops/windows/reboot/*.ps1')
+          $sourcePaths = @('pyproject.toml','tests/conftest.py','tests/tools/test_card_source_binding.py','tests/tools/test_lane_card_decision_forward.py','tests/tools/test_public_card_decision_forward.py','tests/tools/test_shared_card_projection.py','tests/tools/test_shared_card_route.py',':(glob)tests/tools/test_wd_q4*.py',':(glob)tools/*.py',':(glob)tools/**/*.py',':(glob)sandbox/mind/*.py',':(glob)sandbox/mind/**/*.py',':(glob)waggledance/**/*.py',':(glob)core/*.py',':(glob)core/**/*.py',':(glob)ops/windows/reboot/*.ps1')
           git archive --format=tar --output "$scratch\repo.tar" HEAD -- $sourcePaths
           if ($LASTEXITCODE -ne 0) { throw 'Archive failed' }
           tar -xf "$scratch\repo.tar" -C "$scratch\repo"

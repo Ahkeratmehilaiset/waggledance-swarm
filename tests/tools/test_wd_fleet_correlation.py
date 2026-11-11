@@ -278,7 +278,8 @@ $ok=$true;try {{ Assert-WdToolsProcessVisibility -Processes @($own) `
 @pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell path semantics')
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize('case', ['own', 'parent', 'hidden', 'empty_command', 'missing_name', 'missing_pid',
-                                  'duplicate_pid', 'conflicting_pid', 'empty_snapshot', 'known', 'no_own', 'cim_error'])
+                                  'missing_name_control', 'missing_pid_control', 'duplicate_pid', 'duplicate_pid_control',
+                                  'conflicting_pid', 'conflicting_pid_control', 'empty_snapshot', 'known', 'no_own', 'cim_error'])
 def test_raw_process_snapshot_reaches_visibility_without_losing_unknowns(ps, case):
     script = load(FLEET_SOURCE, 'Get-WdVisibilityProcessSnapshots') + load(FLEET_SOURCE, 'Assert-WdToolsProcessVisibility') + f"""
 $ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
@@ -287,12 +288,20 @@ function Test-WdPowerShellHostOptionToken {{ param($Token,$HostKind,$Name) retur
 function Get-CimInstance {{ param($ClassName,$ErrorAction)
   if ('{case}' -eq 'cim_error') {{ throw 'synthetic CIM denied' }}
   if ('{case}' -eq 'empty_snapshot') {{ return @() }}
-  if ('{case}' -eq 'missing_name') {{ return [pscustomobject]@{{ProcessId=3333;CommandLine='known'}} }}
-  if ('{case}' -eq 'missing_pid') {{ return [pscustomobject]@{{Name='powershell.exe';CommandLine='known'}} }}
-  if ('{case}' -eq 'duplicate_pid') {{ return @([pscustomobject]@{{Name='powershell.exe';ProcessId=3333;CommandLine='known'}},[pscustomobject]@{{Name='powershell.exe';ProcessId=3333;CommandLine='known'}}) }}
-  if ('{case}' -eq 'conflicting_pid') {{ return @([pscustomobject]@{{Name='powershell.exe';ProcessId=3333;CommandLine='known'}},[pscustomobject]@{{Name='notepad.exe';ProcessId=3333;CommandLine='notepad'}}) }}
-  if ('{case}' -eq 'own') {{ return [pscustomobject]@{{Name='powershell.exe';ProcessId=$PID;CommandLine='powershell.exe -EncodedCommand ZQ=='}} }}
   $own=[pscustomobject]@{{Name='powershell.exe';ProcessId=$PID;CommandLine='known'}}
+  $other=if ($PID -in @(3333,3334)) {{ 3335 }} else {{ 3333 }}
+  if ('{case}' -eq 'missing_name') {{ return @($own,[pscustomobject]@{{ProcessId=$other;CommandLine='notepad'}}) }}
+  if ('{case}' -eq 'missing_pid') {{ return @($own,[pscustomobject]@{{Name='notepad.exe';CommandLine='notepad'}}) }}
+  if ('{case}' -in @('missing_name_control','missing_pid_control')) {{ return @($own,[pscustomobject]@{{Name='notepad.exe';ProcessId=$other;CommandLine='notepad'}}) }}
+  if ('{case}' -in @('duplicate_pid','duplicate_pid_control')) {{
+    $second=if ('{case}' -eq 'duplicate_pid') {{ $other }} else {{ $other+1 }}
+    return @($own,[pscustomobject]@{{Name='notepad.exe';ProcessId=$other;CommandLine='notepad'}},[pscustomobject]@{{Name='notepad.exe';ProcessId=$second;CommandLine='notepad'}})
+  }}
+  if ('{case}' -in @('conflicting_pid','conflicting_pid_control')) {{
+    $second=if ('{case}' -eq 'conflicting_pid') {{ $other }} else {{ $other+1 }}
+    return @($own,[pscustomobject]@{{Name='powershell.exe';ProcessId=$other;CommandLine='known'}},[pscustomobject]@{{Name='notepad.exe';ProcessId=$second;CommandLine='notepad'}})
+  }}
+  if ('{case}' -eq 'own') {{ return [pscustomobject]@{{Name='powershell.exe';ProcessId=$PID;CommandLine='powershell.exe -EncodedCommand ZQ=='}} }}
   if ('{case}' -eq 'parent') {{ return @($own,[pscustomobject]@{{Name='powershell.exe';ProcessId=3333;CommandLine='powershell.exe -NoExit'}}) }}
   if ('{case}' -eq 'empty_command') {{ return @($own,[pscustomobject]@{{Name='powershell.exe';ProcessId=3333;CommandLine=''}}) }}
   if ('{case}' -eq 'known') {{ return $own }}
@@ -309,8 +318,9 @@ try {{ $snapshot=@(Get-WdVisibilityProcessSnapshots);$count=$snapshot.Count
 @{{ok=$ok;count=$count}} | ConvertTo-Json -Compress
 """
     out = json.loads(_run_powershell(script, executable=ps).stdout)
-    assert out['ok'] is (case == 'known')
-    assert out['count'] == (1 if case in ('own', 'known') else 2 if case in ('parent', 'hidden', 'empty_command') else -1)
+    assert out['ok'] is (case == 'known' or case.endswith('_control'))
+    assert out['count'] == (1 if case in ('own', 'known', 'missing_name_control', 'missing_pid_control', 'duplicate_pid_control')
+                            else 2 if case in ('parent', 'hidden', 'empty_command', 'conflicting_pid_control') else -1)
 
 
 def test_raw_process_snapshot_is_opt_in_before_and_after_fleet_mutex():

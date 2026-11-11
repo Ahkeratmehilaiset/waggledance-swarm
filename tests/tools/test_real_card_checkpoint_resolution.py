@@ -1,6 +1,7 @@
 """Fabricated real-format cards/local Git only; no live source or model."""
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -69,13 +70,55 @@ def test_real_results_deduplicate_after_verified_decision(snapshot):
     assert len(resolver.resolve_results(**snapshot["resolve"])) == 1
 
 
-def test_real_snapshot_reaches_actual_staged_pointer_resolver(snapshot):
+def _scope_posix_pointer_fixture(snapshot, monkeypatch, pointer_resolver):
+    if os.name != "nt":
+        # Only the existing synthetic generation is allowed; production's
+        # Windows fixed-volume guard remains unchanged outside this test.
+        from tests.tools.test_real_c2_enforcement import _secure_posix_fixture
+        directory = snapshot["directory"]
+        monkeypatch.setattr(pointer_resolver.checkpoint, "_secure",
+            lambda path, *, missing_leaf=False: _secure_posix_fixture(
+                path, directory, missing_leaf=missing_leaf))
+
+
+def test_real_snapshot_reaches_actual_staged_pointer_resolver(snapshot, monkeypatch):
     from tools import wd_q4_public_pointer_resolver as pointer_resolver
+    _scope_posix_pointer_fixture(snapshot, monkeypatch, pointer_resolver)
+    actual = checkpoint.validate_card_snapshot
+    checked = []
+    def observe(**kwargs):
+        result = actual(**kwargs)
+        checked.append(result)
+        return result
+    monkeypatch.setattr(checkpoint, "validate_card_snapshot", observe)
     call = snapshot["call"].copy()
     call["root"] = call.pop("generation_dir").parent
     call["card_decision_bytes"] = call.pop("decision_bytes")
     call["card_decision_sha256"] = call.pop("decision_sha256")
     assert pointer_resolver.resolve_card_snapshot_pointer(**call)["status"] == "VALIDATED_STAGED"
+    assert checked == [{"status": "VALIDATED_STAGED", "completeness": "UNKNOWN"}]
+
+
+def test_staged_pointer_refuses_changed_synthetic_source(snapshot, monkeypatch):
+    from tools import wd_q4_public_pointer_resolver as pointer_resolver
+    _scope_posix_pointer_fixture(snapshot, monkeypatch, pointer_resolver)
+    source = Path(snapshot["call"]["source_path"])
+    data = source.read_bytes()
+    source.write_bytes(b"!" + data[1:])
+    actual = checkpoint.validate_card_snapshot
+    checked = []
+    def observe(**kwargs):
+        result = actual(**kwargs)
+        checked.append(result)
+        return result
+    monkeypatch.setattr(checkpoint, "validate_card_snapshot", observe)
+    call = snapshot["call"].copy()
+    call["root"] = call.pop("generation_dir").parent
+    call["card_decision_bytes"] = call.pop("decision_bytes")
+    call["card_decision_sha256"] = call.pop("decision_sha256")
+    with pytest.raises(pointer_resolver.PublicPointerRefused):
+        pointer_resolver.resolve_card_snapshot_pointer(**call)
+    assert checked == [{"status": "INCOMPLETE"}]
 
 
 @pytest.mark.parametrize("field", ["decision_bytes", "decision_sha256", "policy_sha256", "roster_sha256"])

@@ -4,7 +4,12 @@ on:
 permissions: {}
 jobs:
   refusal-control:
+    name: refusal-control-${{ matrix.variant }}
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [base, ps_module_path, appdata, both]
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v7
@@ -38,6 +43,18 @@ jobs:
             if ($value) { $psi.Environment[$key] = $value }
           }
           foreach ($entry in @{TEMP=$scratch; TMP=$scratch; USERPROFILE=$scratch; HOME=$scratch; PYTHONDONTWRITEBYTECODE='1'; PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'}.GetEnumerator()) { $psi.Environment[$entry.Key] = $entry.Value }
+          $variant = '${{ matrix.variant }}'
+          if ($variant -in @('ps_module_path','both')) {
+            $psi.Environment['PSModulePath'] = $env:SystemRoot + '\System32\WindowsPowerShell\v1.0\Modules'
+          }
+          if ($variant -in @('appdata','both')) {
+            $app = Join-Path $scratch 'appdata'
+            $local = Join-Path $scratch 'localappdata'
+            New-Item -ItemType Directory -Path $app,$local | Out-Null
+            $psi.Environment['APPDATA'] = $app
+            $psi.Environment['LOCALAPPDATA'] = $local
+          }
+          Write-Host "Credentialless refusal control variant: $variant"
           foreach ($arg in @('-m','pytest','tests/tools/test_wd_q4_adopt_recovery_ps.py::test_bad_pins_refuse_without_job','-q','-rs','-p','no:cacheprovider','--basetemp',"$scratch\pytest",'--junitxml',"$scratch\results.xml")) { [void]$psi.ArgumentList.Add($arg) }
           $process = [System.Diagnostics.Process]::Start($psi)
           if (-not $process.WaitForExit(90000)) { $process.Kill($true); $process.WaitForExit(); throw 'Control timed out' }

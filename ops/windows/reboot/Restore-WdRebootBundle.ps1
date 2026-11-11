@@ -146,10 +146,10 @@ if ($null -eq $bundleItem -or -not $bundleItem.PSIsContainer -or ($bundleItem.At
 } elseif (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
     Add-Reason 'target_manifest_missing'
 } else {
-    $manifestHash = Get-Sha256Hex -Path $manifestPath
-    $plan['target_manifest_sha256'] = $manifestHash
-    if ($manifestHash -ne $ExpectedTargetManifestSha256.ToUpperInvariant()) { Add-Reason 'target_manifest_unanchored' }
     try {
+        $manifestHash = Get-Sha256Hex -Path $manifestPath
+        $plan['target_manifest_sha256'] = $manifestHash
+        if ($manifestHash -ne $ExpectedTargetManifestSha256.ToUpperInvariant()) { Add-Reason 'target_manifest_unanchored' }
         $manifest = Read-JsonFile -Path $manifestPath
         if ([string](Get-ExactField $manifest 'source_commit') -cne $TargetCommit) { Add-Reason 'target_manifest_commit_mismatch' }
         $files = Get-ExactField $manifest 'files'

@@ -7,6 +7,7 @@ tmp_path; each run asserts that no file under tmp_path changed.
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import hashlib
 import json
 import os
@@ -94,6 +95,36 @@ def test_a_compatible_anchored_bundle_is_planned(tmp_path, shell):
 def test_apply_is_refused(tmp_path, shell):
     code, plan = Fixture(tmp_path).run(shell, Apply=True)
     assert code == 3 and plan["reasons"] == ["apply_requires_signed_activation"] and plan["verdict"] == "hold"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_unreadable_manifest_produces_structured_hold(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+
+    @contextlib.contextmanager
+    def locked_manifest():
+        # Exclusive handle is confined to this test's synthetic manifest.
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        create = kernel32.CreateFileW
+        create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                           wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        create.restype = wintypes.HANDLE
+        close = kernel32.CloseHandle
+        close.argtypes = [wintypes.HANDLE]
+        close.restype = wintypes.BOOL
+        handle = create(str(fixture.bundle / 'deployment-manifest.json'), 0x80000000, 0, None, 3, 0, None)
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            yield
+        finally:
+            assert close(handle)
+
+    code, plan = fixture.run(shell, around=locked_manifest)
+    assert code == 2 and plan['verdict'] == 'hold'
+    assert 'target_manifest_unreadable' in plan['reasons']
+    assert plan['authority_effect'] == 'none' and plan['applied'] is False
 
 
 @pytest.mark.parametrize("shell", SHELLS)

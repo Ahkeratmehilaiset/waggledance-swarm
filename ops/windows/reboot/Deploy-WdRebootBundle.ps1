@@ -762,6 +762,7 @@ param([string] $PromptPath = '', [string] $TaskId = '', [switch] $Status,
 param(
     [string] $ManifestPath = '',
     [string] $RunId = '',
+    [switch] $RequireFreshLanes,
     [string] $ExternalSessionsPath = '',
     [string] $ExternalSessionsHash = '',
     [string] $Q4SharedDescriptorPath = '',
@@ -772,6 +773,7 @@ param(
     [switch] $NoBridgeConversation,
     [switch] $SupervisorOff,
     [switch] $Auto,
+    [switch] $BindFleetStartup,
     [switch] $Apply,
     [switch] $DryRun
 )
@@ -827,6 +829,8 @@ param(
     [string] $Generation,
     [string] $Q4SharedDescriptorPath = '',
     [string] $Q4SharedDescriptorSha256 = '',
+    [ValidatePattern('^$|^[A-Za-z0-9._-]{1,128}$')]
+    [string] $FleetStartupRunId = '',
     [switch] $ValidateOnly
 )
 '@
@@ -839,7 +843,9 @@ param(
     [string] $ConfigPath = '',
     [string] $LogPath = '',
     [string] $Q4SharedDescriptorPath = '',
-    [string] $Q4SharedDescriptorSha256 = ''
+    [string] $Q4SharedDescriptorSha256 = '',
+    [ValidatePattern('^$|^[A-Za-z0-9._-]{1,128}$')]
+    [string] $FleetStartupRunId = ''
 )
 '@
         }
@@ -850,6 +856,7 @@ param(
 if ($Auto -and ($Apply -or $DryRun)) {
     throw 'Auto cannot be combined with Apply or DryRun'
 }
+if ($BindFleetStartup -and -not $Auto) { throw 'fleet startup binding requires Auto' }
 if ([string]::IsNullOrWhiteSpace($Q4SharedDescriptorPath) -ne
         [string]::IsNullOrWhiteSpace($Q4SharedDescriptorSha256) -or
         ($Q4SharedDescriptorSha256 -and $Q4SharedDescriptorSha256 -cnotmatch '^[0-9a-f]{64}$')) {
@@ -857,9 +864,15 @@ if ([string]::IsNullOrWhiteSpace($Q4SharedDescriptorPath) -ne
 }
 $targetParameters = @{}
 foreach ($key in $PSBoundParameters.Keys) {
-    if ($key -notin @('Auto', 'Apply', 'DryRun')) {
+    if ($key -notin @('Auto', 'Apply', 'DryRun', 'BindFleetStartup')) {
         $targetParameters[$key] = $PSBoundParameters[$key]
     }
+}
+if ($BindFleetStartup) {
+    if (-not $RunId) { $RunId = 'wd-reboot-' + [guid]::NewGuid().ToString('N') }
+    if ($RunId -cnotmatch '^[A-Za-z0-9._-]{1,128}$') { throw 'fleet_startup_run_id_refused' }
+    $targetParameters['RunId'] = $RunId
+    Write-Warning 'Fleet startup correlation is not atomic: a race or later failure can leave some lanes running; no automatic rollback is performed.'
 }
 if ($Q4SharedDescriptorPath) {
     $targetParameters['Q4SharedDescriptorPath'] = $Q4SharedDescriptorPath
@@ -916,6 +929,7 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
             [void]$commandParts.Add((ConvertTo-WdSingleQuotedLiteral -Value ([string]$targetParameters[$name])))
         }
     }
+    if ($BindFleetStartup -or [bool]$targetParameters['RequireFreshLanes']) { [void]$commandParts.Add('-RequireFreshLanes') }
     if ($targetParameters.ContainsKey('HandshakeTimeoutSeconds')) {
         [void]$commandParts.Add('-HandshakeTimeoutSeconds')
         [void]$commandParts.Add(([int]$targetParameters['HandshakeTimeoutSeconds']).ToString(
@@ -1036,7 +1050,16 @@ if ($Auto -and -not (Test-WdWrapperAdministrator)) {
         -SupervisorScript (Join-Path (Split-Path -Parent $PSCommandPath) 'wd_supervisor.ps1') `
         -Q4SharedDescriptorPath $Q4SharedDescriptorPath `
         -Q4SharedDescriptorSha256 $Q4SharedDescriptorSha256 `
+        -FleetStartupRunId $(if ($BindFleetStartup) { [string]$targetParameters['RunId'] } else { '' }) `
         -HostPath $elevationHost
+    if ($BindFleetStartup) {
+        $wdBridgeResult | Add-Member -NotePropertyName correlation_authentication -NotePropertyValue 'UNKNOWN'
+        $wdBridgeResult | Add-Member -NotePropertyName mind_read_verified -NotePropertyValue $false
+        $wdBridgeResult | Add-Member -NotePropertyName atomic_startup_verified -NotePropertyValue $false
+        $wdBridgeResult | Add-Member -NotePropertyName tools_cold_visibility -NotePropertyValue 'UNKNOWN'
+        $wdBridgeResult | Add-Member -NotePropertyName full_fleet_startup_verified -NotePropertyValue $false
+        $wdBridgeResult | Add-Member -NotePropertyName production_decision_supported -NotePropertyValue $false
+    }
     Write-Host ($wdBridgeResult | ConvertTo-Json -Depth 6 -Compress)
     if (-not [bool]$wdBridgeResult.ok) {
         throw ('Bridge Limited bootstrap refused at stage {0}: {1}' -f

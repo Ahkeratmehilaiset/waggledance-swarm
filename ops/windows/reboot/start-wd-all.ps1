@@ -22,6 +22,7 @@
 param(
   [string] $ManifestPath = '',
   [string] $RunId = '',
+  [switch] $RequireFreshLanes,
   [string] $ExternalSessionsPath = '',
   [string] $ExternalSessionsHash = '',
   [string] $Q4SharedDescriptorPath = '',
@@ -37,6 +38,97 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+function Assert-WdFreshFleetLanes {
+  param([AllowEmptyCollection()] [object[]] $LaneStates)
+  $required = @('codex-lead-1', 'fable-5', 'claude-rco-1', 'claude-rco-2')
+  if (@($LaneStates).Count -ne $required.Count) { throw 'fleet_fresh_lane_set_refused' }
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+  foreach ($state in $LaneStates) {
+    $name = [string]$state.lane.agent
+    if ($name -cnotin $required -or -not $seen.Add($name)) { throw 'fleet_fresh_lane_set_refused' }
+    if (@($state.live).Count -ne 0) { throw 'fleet_fresh_lane_already_running' }
+  }
+}
+function Assert-WdFreshToolsState {
+  param([AllowNull()] [object] $ToolsState)
+  if ($null -eq $ToolsState) { throw 'fleet_fresh_tools_unknown' }
+  foreach ($name in @('current', 'starting', 'stale', 'legacy')) {
+    $property = $ToolsState.PSObject.Properties[$name]
+    if ($null -eq $property -or $property.Name -cne $name -or $null -eq $property.Value) {
+      throw 'fleet_fresh_tools_unknown'
+    }
+    if (@($property.Value).Count -ne 0) { throw 'fleet_fresh_tools_already_running' }
+  }
+}
+function Assert-WdToolsProcessVisibility {
+  param(
+    [AllowEmptyCollection()] [object[]] $Processes,
+    [string[]] $AllowedToolsLaunchers,
+    [scriptblock] $ParseInvocation = $null,
+    [string] $ParserSourcePath = '',
+    [switch] $AllowUnpinnedParser
+  )
+  if ($null -eq $Processes -or @($Processes).Count -eq 0) { throw 'fleet_tools_visibility_unknown' }
+  # The synthetic port is injected only by source tests. Runtime loads the
+  # same hash-checked supervisor parser as Get-LaneProcesses.
+  if ($null -eq $ParseInvocation) {
+    if (-not $ParserSourcePath) { throw 'fleet_tools_parser_unknown' }
+    $tokens = $null; $errors = $null
+    $manifestPath = Join-Path (Split-Path -Parent $ParserSourcePath) 'deployment-manifest.json'
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+      $manifestBytes = Read-Utf8FleetSnapshot -Path $manifestPath
+      if ([string]$manifestBytes.Hash -cne [string]$bundleManifestAnchor) { throw 'fleet parser manifest anchor mismatch' }
+      $deployment = $manifestBytes.Text | ConvertFrom-Json -ErrorAction Stop
+      $pin = $deployment.files.PSObject.Properties['wd_supervisor.ps1']
+      $source = Read-Utf8FleetSnapshot -Path $ParserSourcePath
+      if ($null -eq $pin -or [string]$source.Hash -cne [string]$pin.Value) { throw 'fleet parser source hash mismatch' }
+      $ast = [Management.Automation.Language.Parser]::ParseInput([string]$source.Text, [ref]$tokens, [ref]$errors)
+    } else {
+      if (-not $AllowUnpinnedParser) { throw 'fleet parser deployment manifest is missing' }
+      $ast = [Management.Automation.Language.Parser]::ParseFile($ParserSourcePath, [ref]$tokens, [ref]$errors)
+    }
+    if ($errors.Count) { throw 'fleet process parser source is invalid' }
+    foreach ($name in @('Initialize-WdSupervisorCommandLineParser', 'ConvertFrom-WdWindowsCommandLine',
+        'Test-WdPowerShellSwitchToken', 'Test-WdPowerShellHostOptionToken', 'Get-WdPowerShellHostKind',
+        'Test-WdPowerShellFileSwitchToken', 'Test-WdEncodedCommandValue', 'Get-WdPowerShellFileInvocation')) {
+      $definitions = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -ceq $name }, $true))
+      if ($definitions.Count -ne 1) { throw "fleet process parser missing or ambiguous: $name" }
+      . ([scriptblock]::Create($definitions[0].Extent.Text))
+    }
+    $ParseInvocation = { param($CommandLine, $HostKind)
+      Get-WdPowerShellFileInvocation -CommandLine $CommandLine -HostKind $HostKind }
+  }
+  foreach ($process in $Processes) {
+    if ([string]$process.Name -notmatch '^(?i:powershell|pwsh)\.exe$') { continue }
+    # Even our own host may predate a direct in-process invocation and could
+    # contain dot-sourced state. Do not assume its provenance from PID alone.
+    if ($null -eq $process.PSObject.Properties['CommandLine'] -or
+        [string]::IsNullOrWhiteSpace([string]$process.CommandLine)) { throw 'fleet_tools_visibility_unknown' }
+    $hostKind = if ([string]$process.Name -ieq 'powershell.exe') { 'WindowsPowerShell' } else { 'Pwsh' }
+    $invocation = & $ParseInvocation ([string]$process.CommandLine) $hostKind
+    if ($null -eq $invocation -or $null -eq $invocation.PSObject.Properties['script_path'] -or
+        [string]::IsNullOrWhiteSpace([string]$invocation.script_path)) { throw 'fleet_tools_visibility_unknown' }
+    if ($null -eq $invocation.PSObject.Properties['arguments'] -or
+        $null -eq $invocation.PSObject.Properties['file_index'] -or
+        $invocation.file_index -isnot [int] -or $invocation.file_index -lt 0 -or
+        $invocation.file_index -ge @($invocation.arguments).Count) { throw 'fleet_tools_visibility_unknown' }
+    for ($i = 1; $i -lt [int]$invocation.file_index; $i++) {
+      if (Test-WdPowerShellHostOptionToken -Token ([string]$invocation.arguments[$i]) `
+          -HostKind $hostKind -Name 'EncodedCommand') { throw 'fleet_tools_visibility_unknown' }
+    }
+    $path = [IO.Path]::GetFullPath([string]$invocation.script_path)
+    if ([IO.Path]::GetFileName($path) -ine 'start-wd-tools-consumer.ps1' -or
+        @($AllowedToolsLaunchers | Where-Object { $path.Equals([IO.Path]::GetFullPath($_), [StringComparison]::OrdinalIgnoreCase) }).Count -lt 1) {
+      # Another script can dot-source the Tools consumer. Its -File alone is
+      # not evidence that this PowerShell host cannot own a Tools process.
+      throw 'fleet_tools_host_unknown'
+    }
+  }
+}
+if ($RequireFreshLanes -and (-not $RunId -or $RunId -cnotmatch '^[A-Za-z0-9._-]{1,128}$')) {
+  throw 'fleet_fresh_run_id_refused'
+}
 $script:WdGitExecutable = ''
 
 function Get-WdQ4SharedForwardingArguments {
@@ -3115,6 +3207,7 @@ foreach ($lane in @($manifest.lanes)) {
       $live.Count
   )
 }
+if ($RequireFreshLanes) { Assert-WdFreshFleetLanes -LaneStates $laneStates }
 
 $codexPath = Resolve-ApplicationPath -Name 'codex.cmd'
 $claudePath = Resolve-ApplicationPath -Name 'claude.cmd'
@@ -3412,6 +3505,11 @@ $toolsProcessState = Get-ToolsProcessState `
   -Generation $bundleGeneration `
   -Processes $processes `
   -BundleLauncherScript $bundleToolsLauncher
+if ($RequireFreshLanes) { Assert-WdFreshToolsState -ToolsState $toolsProcessState }
+if ($RequireFreshLanes) {
+  Assert-WdToolsProcessVisibility -Processes $processes -AllowedToolsLaunchers @([string]$toolsConfig.launcher_script, $bundleToolsLauncher) `
+    -ParserSourcePath (Join-Path $PSScriptRoot 'wd_supervisor.ps1') -AllowUnpinnedParser:($bundleMode -ceq 'source' -and $DryRun)
+}
 $toolsLive = @($toolsProcessState.current)
 $toolsStarting = @($toolsProcessState.starting)
 $toolsStale = @($toolsProcessState.stale)
@@ -3693,6 +3791,11 @@ try {
       )) {
       throw "Tools process state changed after preflight: $category"
     }
+  }
+  if ($RequireFreshLanes) { Assert-WdFreshToolsState -ToolsState $lockedToolsState }
+  if ($RequireFreshLanes) {
+    Assert-WdToolsProcessVisibility -Processes $lockedProcesses -AllowedToolsLaunchers @([string]$toolsConfig.launcher_script, $bundleToolsLauncher) `
+      -ParserSourcePath (Join-Path $PSScriptRoot 'wd_supervisor.ps1') -AllowUnpinnedParser:($bundleMode -ceq 'source' -and $DryRun)
   }
   $lockedSupervisorTask = Get-WdSingleScheduledTask `
     -TaskName ([string]$toolsConfig.task_name)

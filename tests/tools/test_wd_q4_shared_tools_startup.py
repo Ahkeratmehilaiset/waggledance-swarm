@@ -636,7 +636,8 @@ def test_startup_missing_record_never_promises_digest_verification():
     pytest.param("wrong_lane", marks=_WINDOWS_HELPER_LAUNCH),
     pytest.param("outside_cwd", marks=_WINDOWS_HELPER_LAUNCH),
 ])
-def test_startup_uses_its_own_session_and_native_worktree_in_real_statement_order(tmp_path, monkeypatch, fault):
+@pytest.mark.parametrize("fleet_id", ["", "wd-reboot-synthetic-fleet"])
+def test_startup_uses_its_own_session_and_native_worktree_in_real_statement_order(tmp_path, monkeypatch, fault, fleet_id):
     """Execute only the real session/recall statements, with an isolated session seam.
 
     The seam uses the actual owner initializer and actual session assignments; it
@@ -692,7 +693,10 @@ function Assert-LanePathWithoutReparse {}
               "primaryRepo": tmp_path, "agent": lane, "runId": expected["run"], "runIdPrefix": "synthetic",
               "role": "tools-tests", "agentUuid": expected["uuid"], "starter": starter, "sessionScript": starter,
               "bootstrapRoot": fx["bundle"], "laneTrustedDrive": "C:\\", "fixedDeploymentManifest": fx["manifest"],
-              "toolsDeploymentManifestPath": fx["manifest"], "toolsExpectedManifestHash": fx["manifest_pin"]}
+              "toolsDeploymentManifestPath": fx["manifest"], "toolsExpectedManifestHash": fx["manifest_pin"],
+              # The extracted Tools statement runs under StrictMode without the
+              # actual script param block, so model its real off/on parameter.
+              "FleetStartupRunId": fleet_id}
     driver += "\n".join("$" + k + "=" + quote(v) for k, v in values.items())
     driver += "\n$script:LaneManifestAnchor=" + quote(fx["manifest_pin"])
     driver += "\n$env:WD_SYNTHETIC_STARTER_FAIL=" + quote("1" if starter_fails else "0")
@@ -743,6 +747,8 @@ $read=if($null -ne $startupMindRead){$startupMindRead}else{$toolsStartupMindRead
     assert result.returncode == 0, (result.stdout, result.stderr)
     observed = json.loads(result.stdout.strip())
     assert observed["starter_failed"] is starter_fails, observed["driver_error"]
+    if observed["read"] is not None and lane == 'codex-tools-1':
+        assert observed['read'].get('fleet_startup_run_id', '') == fleet_id
     if starter_fails:
         assert observed["read"] is None and not fx["seen"].exists() and not fx["record"].exists()
     elif fault in ("missing_identity", "wrong_lane", "outside_cwd"):

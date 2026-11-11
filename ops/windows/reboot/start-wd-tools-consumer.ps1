@@ -21,11 +21,15 @@ param(
     [string] $Generation,
     [string] $Q4SharedDescriptorPath = '',
     [string] $Q4SharedDescriptorSha256 = '',
+    [string] $FleetStartupRunId = '',
     [switch] $ValidateOnly
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($FleetStartupRunId -and $FleetStartupRunId -cnotmatch '^[A-Za-z0-9._-]{1,128}$') {
+    throw 'fleet_startup_run_id_refused'
+}
 
 # Inherited shell values are not an authorization or a deployment descriptor.
 # A future verified configuration source must set these after this scrub.
@@ -404,6 +408,7 @@ function Invoke-WdQ4StartupMindRead {
         [Parameter(Mandatory)] [string] $Lane,
         [Parameter(Mandatory)] [string] $Worktree,
         [ValidatePattern('^$|^[A-Za-z0-9._:-]{1,128}$')] [string] $StartupRunId = '',
+        [ValidatePattern('^$|^[A-Za-z0-9._-]{1,128}$')] [string] $FleetStartupRunId = '',
         [ValidateRange(1, 600)] [int] $TimeoutSeconds = 90,
         [ValidateRange(1, 600)] [int] $GraceSeconds = 30
     )
@@ -437,6 +442,7 @@ function Invoke-WdQ4StartupMindRead {
         delivered_sha256 = ''
         note = 'One bounded startup recall; the query and answer are not recorded or delivered while freshness is unverified; not proof of an installed or used Mind; not a vote or gate input.'
     }
+    if ($FleetStartupRunId) { $record['fleet_startup_run_id'] = $FleetStartupRunId }
     $isContent = $false
     try {
         $isContent = Test-WdQ4ContentDescriptorBinding -DescriptorPath $DescriptorPath -DescriptorSha256 $DescriptorSha256
@@ -4242,7 +4248,7 @@ $toolsStartupMindRead = $null
 if ($null -ne $toolsSharedQ4Values -and -not $ValidateOnly) {
     $toolsStartupMindRead = Invoke-WdQ4StartupMindRead -DescriptorPath ([string]$toolsSharedQ4Values.WD_Q4_SHARED_DESCRIPTOR_PATH) `
         -DescriptorSha256 ([string]$toolsSharedQ4Values.WD_Q4_SHARED_DESCRIPTOR_SHA256) -DeploymentManifestPath $toolsDeploymentManifestPath `
-        -ExpectedManifestSha256 $toolsExpectedManifestHash -BundleRoot $PSScriptRoot -Lane $agent -Worktree $worktree -StartupRunId $runId
+        -ExpectedManifestSha256 $toolsExpectedManifestHash -BundleRoot $PSScriptRoot -Lane $agent -Worktree $worktree -StartupRunId $runId -FleetStartupRunId $FleetStartupRunId
     if ($null -ne $toolsStartupMindRead) {
         $prompt += Get-WdMindStartupReadGuidance -RecordPath '.codex-audit/wd-mind-startup-read.json' -Outcome ([string]$toolsStartupMindRead.outcome) `
             -RecordWritten ([bool]$toolsStartupMindRead.record_written) -DeliveredChars ([int]$toolsStartupMindRead.delivered_chars) -DeliveredItems ([int]$toolsStartupMindRead.delivered_items)
@@ -4457,6 +4463,7 @@ if ($conversationSurface -cin @('local_window','native_terminal')) {
         bridge_python_wrapper = [string]$bridgeCodeContext.python_wrapper
         bridge_code_package_sha256 = [string]$bridgeCodeContext.definition_sha256
     }
+    if ($FleetStartupRunId) { $conversationReadinessBase['fleet_startup_run_id'] = $FleetStartupRunId }
     if ($null -ne $toolsSharedQ4Values) {
         # This attests only the validated launch-time configuration reference,
         # not a successful query or an authenticated caller.
@@ -4682,6 +4689,7 @@ $readinessRecord = [ordered]@{
     bridge_code_package_sha256 = [string]$bridgeCodeContext.definition_sha256
     ready_at_utc = [DateTime]::UtcNow.ToString('o')
 }
+if ($FleetStartupRunId) { $readinessRecord['fleet_startup_run_id'] = $FleetStartupRunId }
 $utf8NoBom = New-Object Text.UTF8Encoding($false)
 try {
     [IO.File]::WriteAllText(

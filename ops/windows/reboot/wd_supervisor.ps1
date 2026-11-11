@@ -20,11 +20,15 @@ param(
     [string] $ConfigPath = '',
     [string] $Q4SharedDescriptorPath = '',
     [string] $Q4SharedDescriptorSha256 = '',
+    [string] $FleetStartupRunId = '',
     [string] $LogPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($FleetStartupRunId -and $FleetStartupRunId -cnotmatch '^[A-Za-z0-9._-]{1,128}$') {
+    throw 'fleet_startup_run_id_refused'
+}
 if (($Q4SharedDescriptorPath -or $Q4SharedDescriptorSha256) -and
     (-not $Q4SharedDescriptorPath -or $Q4SharedDescriptorSha256 -cnotmatch '^[0-9a-f]{64}$')) {
     throw 'q4_shared_reference_refused'
@@ -1662,7 +1666,8 @@ function Test-ToolsWrapperReadiness {
         [Parameter(Mandatory)] [string] $Generation,
         [Parameter(Mandatory)] [string] $ConfigPath,
         [Parameter(Mandatory)] [string] $ReadinessPath,
-        [string] $ExpectedSharedDescriptorSha256 = ''
+        [string] $ExpectedSharedDescriptorSha256 = '',
+        [string] $ExpectedFleetStartupRunId = ''
     )
 
     try {
@@ -1671,6 +1676,12 @@ function Test-ToolsWrapperReadiness {
         }
         $record = Get-Content -LiteralPath $ReadinessPath -Raw -Encoding UTF8 |
             ConvertFrom-Json -ErrorAction Stop
+        if ($ExpectedFleetStartupRunId) {
+            $fleetRun = $record.PSObject.Properties['fleet_startup_run_id']
+            if ($ExpectedFleetStartupRunId -cnotmatch '^[A-Za-z0-9._-]{1,128}$' -or $null -eq $fleetRun -or
+                $fleetRun.Name -cne 'fleet_startup_run_id' -or $fleetRun.Value -isnot [string] -or
+                [string]$fleetRun.Value -cne $ExpectedFleetStartupRunId) { return $false }
+        }
         if ($ExpectedSharedDescriptorSha256) {
             $sharedDigest = $record.PSObject.Properties['q4_shared_descriptor_sha256']
             if ($ExpectedSharedDescriptorSha256 -cnotmatch '^[0-9a-f]{64}$' -or $null -eq $sharedDigest -or
@@ -3751,6 +3762,7 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         $toolsArguments += @('-Q4SharedDescriptorPath', $Q4SharedDescriptorPath,
             '-Q4SharedDescriptorSha256', $Q4SharedDescriptorSha256)
     }
+    if ($FleetStartupRunId) { $toolsArguments += @('-FleetStartupRunId', $FleetStartupRunId) }
 
     # Elevated shells are unreadable from this Limited task, so on an operator
     # desktop that runs elevated terminals several opaque hosts are normal. An
@@ -3811,6 +3823,14 @@ if ($toolsEnabled -and -not $watcherReconciliationBlocked) {
         $wrapperProcesses.Count -eq 1 -and
         $legacyConsumers.Count -eq 0) {
         # Healthy: readiness is bound to this PID, start time, and generation.
+        if ($FleetStartupRunId) {
+            $fleetReady = Test-ToolsWrapperReadiness -Process $readyWrapperProcesses[0] -Tools $tools `
+                -Validation $toolsValidation -Generation $toolsGeneration -ConfigPath $toolsConfig `
+                -ReadinessPath $readinessPath -ExpectedFleetStartupRunId $FleetStartupRunId
+            if (-not $fleetReady) {
+                $actions.Add('WARN Tools fleet startup correlation is not attested by existing readiness')
+            }
+        }
         if ($Q4SharedDescriptorPath) {
             $sharedReady = Test-ToolsWrapperReadiness -Process $readyWrapperProcesses[0] -Tools $tools `
                 -Validation $toolsValidation -Generation $toolsGeneration -ConfigPath $toolsConfig `

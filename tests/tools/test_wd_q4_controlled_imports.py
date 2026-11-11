@@ -182,6 +182,15 @@ def _probe(tmp_path, scenario):
 import hashlib, importlib, importlib.machinery, importlib.metadata, importlib.util, sys
 from pathlib import Path
 source, root, scenario = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+if scenario.startswith('mp_') and sys.platform != 'win32':
+ # The production guard identifies the pinned Windows interpreter's Lib
+ # tree. Reproduce that layout in this synthetic POSIX child while retaining
+ # the same real interpreter stdlib as the only trusted source.
+ import sysconfig
+ layout = root / 'interpreter-layout'
+ layout.mkdir()
+ (layout / 'Lib').symlink_to(Path(sysconfig.get_path('stdlib')), target_is_directory=True)
+ sys.base_prefix = str(layout)
 ns = {'__name__':'_wd_secure_child', '__file__':str(source)}
 exec(compile(source.read_bytes(), '<secure>', 'exec'), ns)
 manifest = root/'manifest.json'

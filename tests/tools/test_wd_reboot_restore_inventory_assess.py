@@ -68,6 +68,7 @@ def test_real_schema_synthetic_success_is_evidence_only():
     assert result["process_liveness_verified"] is False
     assert result["prior_wrapper_state_compatibility_verified"] is False
     assert result["transaction_file_set_verified"] is False
+    assert result["state_final_pair_consistent"] is True
     assert inputs == before
 
 
@@ -154,21 +155,32 @@ def test_unsafe_inventory_paths_fail_closed(field, value):
     assert assess(**inputs)["status"] == "HOLD"
 
 
-@pytest.mark.parametrize("final_pair", [None, {"final_commit": NEW, "final_manifest_sha256": "0" * 64}])
-def test_consistency_does_not_claim_old_wrapper_compatibility(final_pair):
+@pytest.mark.parametrize("damage", ["missing_both", "missing_commit", "missing_hash", "wrong_commit",
+                                    "wrong_hash", "uppercase_commit", "lowercase_hash", "lowercase_state_hash",
+                                    "nonstring_commit", "nonstring_hash", "duplicate_final_commit"])
+def test_invalid_state_final_pair_holds_even_when_backup_is_repinned(damage):
     inputs = example()
     state = json.loads(inputs["backup_bytes"]["WD_REBOOT_STATE_CURRENT.json"])
-    del state["final_commit"], state["final_manifest_sha256"]
-    if final_pair:
-        state.update(final_pair)
+    if damage in ("missing_both", "missing_commit"): del state["final_commit"]
+    if damage in ("missing_both", "missing_hash"): del state["final_manifest_sha256"]
+    if damage == "wrong_commit": state["final_commit"] = NEW
+    if damage == "wrong_hash": state["final_manifest_sha256"] = "0" * 64
+    if damage == "uppercase_commit": state["final_commit"] = OLD.upper()
+    if damage == "lowercase_hash": state["final_manifest_sha256"] = state["final_manifest_sha256"].lower()
+    if damage == "lowercase_state_hash": state["manifest_sha256"] = state["manifest_sha256"].lower()
+    if damage == "nonstring_commit": state["final_commit"] = 1
+    if damage == "nonstring_hash": state["final_manifest_sha256"] = 1
     raw = encoded(state)
+    if damage == "duplicate_final_commit":
+        raw = raw[:-1] + b',"final_commit":"' + OLD.encode() + b'"}'
     inputs["backup_bytes"]["WD_REBOOT_STATE_CURRENT.json"] = raw
     def update(d):
         d["prior_state"]["state_sha256"] = sha(raw)
         next(row for row in d["files"] if row["name"] == "WD_REBOOT_STATE_CURRENT.json")["sha256"] = sha(raw)
     change_inventory(inputs, update)
     result = assess(**inputs)
-    assert result["status"] == "BACKUP_CONSISTENT"
+    assert result["status"] == "HOLD", (damage, result)
+    assert result["state_final_pair_consistent"] is False
     assert result["prior_wrapper_state_compatibility_verified"] is False
     assert result["authority_effect"] == "none"
 

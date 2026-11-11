@@ -89,7 +89,7 @@ def assess_inventory(*, inventory_bytes, expected_inventory_sha256, expected_new
         'prior_bundle_files_verified': False, 'reparse_points_checked': False,
         'process_liveness_verified': False, 'anchors_authenticated': False,
         'backup_path_containment_verified': False, 'prior_wrapper_state_compatibility_verified': False,
-        'transaction_file_set_verified': False,
+        'transaction_file_set_verified': False, 'state_final_pair_consistent': False,
     }
     try:
         _require(_same_hash(inventory_bytes, expected_inventory_sha256))
@@ -130,8 +130,14 @@ def assess_inventory(*, inventory_bytes, expected_inventory_sha256, expected_new
         state_bytes = backup_bytes[_STATE_NAME]
         _require(_same_hash(state_bytes, prior['state_sha256']))
         state = _json(state_bytes)
-        _require(state.get('source_commit') == old and _hash(state.get('manifest_sha256')) == old_hash)
+        # Generated wrappers compare each field with PowerShell's case-sensitive
+        # -cne, including the uppercase manifest hash; normalized digest equality
+        # alone would accept a state those wrappers refuse.
+        _require(state.get('source_commit') == old and state.get('manifest_sha256') == old_hash)
+        _require(type(state.get('final_commit')) is str and state['final_commit'] == old)
+        _require(type(state.get('final_manifest_sha256')) is str and state['final_manifest_sha256'] == old_hash)
         _require(_path(state.get('active_bundle')) == bundle)
+        result['state_final_pair_consistent'] = True
         result['status'] = 'BACKUP_CONSISTENT'
     except (ValueError, TypeError, KeyError, UnicodeError, RecursionError, OverflowError):
         pass

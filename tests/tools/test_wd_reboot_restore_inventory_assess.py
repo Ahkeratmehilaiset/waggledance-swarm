@@ -185,6 +185,35 @@ def test_invalid_state_final_pair_holds_even_when_backup_is_repinned(damage):
     assert result["authority_effect"] == "none"
 
 
+@pytest.mark.parametrize("location", ["inventory", "prior_state", "file_row", "state", "manifest", "manifest_files"])
+def test_case_colliding_json_keys_hold_even_when_all_bytes_are_repinned(location):
+    inputs = example()
+    inventory = json.loads(inputs["inventory_bytes"])
+    state = json.loads(inputs["backup_bytes"]["WD_REBOOT_STATE_CURRENT.json"])
+    manifest = json.loads(inputs["prior_manifest_bytes"])
+    if location == "inventory": inventory["SCHEMA"] = inventory["schema"]
+    elif location == "prior_state": inventory["prior_state"]["SOURCE_COMMIT"] = OLD
+    elif location == "file_row": inventory["files"][0]["NAME"] = inventory["files"][0]["name"]
+    elif location == "state": state["FINAL_COMMIT"] = OLD
+    elif location == "manifest": manifest["SOURCE_COMMIT"] = OLD
+    elif location == "manifest_files": manifest["files"]["LAUNCHER.PS1"] = "D" * 64
+    if location in ("manifest", "manifest_files"):
+        manifest_bytes = encoded(manifest)
+        inputs["prior_manifest_bytes"] = manifest_bytes
+        inputs["expected_previous_manifest_sha256"] = sha(manifest_bytes)
+        inventory["prior_state"]["manifest_sha256"] = sha(manifest_bytes)
+        state["manifest_sha256"] = state["final_manifest_sha256"] = sha(manifest_bytes)
+    state_bytes = encoded(state)
+    inputs["backup_bytes"]["WD_REBOOT_STATE_CURRENT.json"] = state_bytes
+    inventory["prior_state"]["state_sha256"] = sha(state_bytes)
+    next(row for row in inventory["files"] if row["name"] == "WD_REBOOT_STATE_CURRENT.json")["sha256"] = sha(state_bytes)
+    inputs["inventory_bytes"] = encoded(inventory)
+    inputs["expected_inventory_sha256"] = sha(inputs["inventory_bytes"])
+    result = assess(**inputs)
+    assert result["status"] == "HOLD", (location, result)
+    assert result["authority_effect"] == "none" and result["state_final_pair_consistent"] is False
+
+
 def test_prior_manifest_and_state_allow_utf8_bom_without_changing_hashed_bytes():
     inputs = example()
     manifest = b"\xef\xbb\xbf" + inputs["prior_manifest_bytes"]

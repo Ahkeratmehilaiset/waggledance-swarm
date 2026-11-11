@@ -195,6 +195,54 @@ def test_prior_state_names_only_the_commit_addressed_bundle(scenario):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows PowerShell")
+def test_dangling_symlink_is_not_recorded_as_absent(scenario):
+    machine, backup, names = scenario
+    try:
+        (machine / names[0]).symlink_to(machine / "missing-target")
+    except OSError as error:
+        pytest.skip(f"synthetic symlink creation unavailable: {error.winerror}")
+    result = invoke(machine, backup, names, {name: False for name in names})
+    assert result.returncode != 0, "dangling reparse point was recorded as absent"
+    assert "backup inventory previously absent file appeared" in result.stderr, result.stderr
+    assert not (backup / "rollback-inventory.json").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows PowerShell")
+def test_real_backup_loop_refuses_dangling_symlink_before_copy(scenario):
+    machine, backup, names = scenario
+    try:
+        (machine / names[0]).symlink_to(machine / "missing-target")
+    except OSError as error:
+        pytest.skip(f"synthetic symlink creation unavailable: {error.winerror}")
+    env = dict(os.environ, TEST_SCRIPT=str(DEPLOY), TEST_MACHINE=str(machine), TEST_BACKUP=str(backup))
+    script = r"""
+$ErrorActionPreference='Stop'; $tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile($env:TEST_SCRIPT,[ref]$tokens,[ref]$errors)
+if ($errors.Count) { throw 'parse failure' }
+foreach($name in @('Resolve-FullPath','Assert-WdPathWithoutReparse','Assert-ChildPath')) {
+  $fn=$ast.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name},$true)
+  if(@($fn).Count -ne 1) { throw 'missing function' }
+  . ([scriptblock]::Create($fn[0].Extent.Text))
+}
+$text=[IO.File]::ReadAllText($env:TEST_SCRIPT)
+$at=$text.IndexOf('$backedUp = $false', $text.IndexOf('$transactionNames = @('))
+$end=$text.IndexOf('$backupInventory = Write-WdRebootBackupInventory', $at)
+if($at -lt 0 -or $end -le $at) { throw 'backup loop boundaries unavailable' }
+$machineFull=$env:TEST_MACHINE; $backupRoot=$env:TEST_BACKUP
+$transactionNames=@('start-wd-all.ps1'); $refused=$false
+try { . ([scriptblock]::Create($text.Substring($at,$end-$at))) } catch {
+  if ($_.Exception.Message -like '*reparse point*') { $refused=$true }
+}
+if(-not $refused -or (Test-Path -LiteralPath (Join-Path $backupRoot 'start-wd-all.ps1'))) {
+  throw 'real path checker did not refuse the synthetic dangling link before copy'
+}
+"""
+    result = subprocess.run([str(SHELL), "-NoProfile", "-NonInteractive", "-Command", script],
+                            cwd=ROOT, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows PowerShell")
 @pytest.mark.parametrize("reparse_kind", ["source", "backup_parent"])
 def test_prebackup_reparse_refuses_before_copy_or_directory_creation(reparse_kind):
     # Execute only the backup loop, with every filesystem operation replaced by

@@ -18,17 +18,20 @@ MAX_FILES = 4096
 MAX_FILE_BYTES = 128 * 1024 * 1024
 MAX_TOTAL_BYTES = 512 * 1024 * 1024
 MAX_RELATIVE_PATH = 2048
-_DEVICE = re.compile(r'^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$', re.IGNORECASE)
+MAX_PATH_COMPONENTS = 64
+_DEVICE = re.compile(r'^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9]|LPT[1-9])$', re.IGNORECASE)
 
 
 def _relative_name(value):
     _require(type(value) is str and 0 < len(value) <= MAX_RELATIVE_PATH)
     _require(all(32 <= ord(char) < 127 and char not in '<>:"|?*' for char in value))
     parts = value.replace('\\', '/').split('/')
+    _require(len(parts) <= MAX_PATH_COMPONENTS)
     _require(all(part and part not in ('.', '..') and len(part) <= 255
-                 and not part.endswith(('.', ' ')) and not _DEVICE.fullmatch(part) for part in parts))
+                 and not part.endswith(('.', ' '))
+                 and not _DEVICE.fullmatch(part.partition('.')[0].rstrip(' ')) for part in parts))
     normalized = '/'.join(parts).lower()
-    _require(normalized != 'deployment-manifest.json')
+    _require(normalized != 'deployment-manifest.json' and not normalized.startswith('deployment-manifest.json/'))
     return normalized
 
 
@@ -56,6 +59,11 @@ def assess_bundle_snapshot(*, manifest_bytes, expected_manifest_sha256, expected
             key = _relative_name(name)
             _require(key not in expected)
             expected[key] = _hash(expected_hash)
+        for name in expected:
+            ancestor = name
+            while '/' in ancestor:
+                ancestor = ancestor.rpartition('/')[0]
+                _require(ancestor not in expected)
         seen = set()
         total = 0
         for name, data in supplied_files.items():

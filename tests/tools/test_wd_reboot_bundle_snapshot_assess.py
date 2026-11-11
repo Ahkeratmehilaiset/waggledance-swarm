@@ -102,6 +102,60 @@ def test_case_and_separator_variation_matches_windows_file_identity():
     assert assess(inputs)['status'] == 'SUPPLIED_BYTES_MATCH'
 
 
+@pytest.mark.parametrize('name', ['CON .txt', 'NUL .log', 'CONIN$', 'CONOUT$', 'COM1 .txt',
+                                  'pkg/LPT9  .py', 'pkg/conin$.txt', 'pkg/CoNoUt$ .txt'])
+def test_windows_reserved_device_components_refuse_with_valid_manifest_pin(name):
+    inputs = sample()
+    inputs['supplied_files'][name] = b'synthetic'
+    rewrite_manifest(inputs, lambda doc: doc['files'].update({name: digest(b'synthetic')}))
+    assert assess(inputs)['status'] == 'HOLD'
+
+
+@pytest.mark.parametrize('name', ['CONSOLE.txt', 'CONNECT.py', 'COM10.txt', 'pkg/not_nul .py'])
+def test_non_device_components_are_not_refused_as_device_names(name):
+    inputs = sample()
+    inputs['supplied_files'][name] = b'synthetic'
+    rewrite_manifest(inputs, lambda doc: doc['files'].update({name: digest(b'synthetic')}))
+    assert assess(inputs)['status'] == 'SUPPLIED_BYTES_MATCH'
+
+
+@pytest.mark.parametrize('names', [('folder', 'folder/file'), ('folder/file', 'folder'),
+                                   ('FOLDER', 'folder/file'), ('folder/file', 'FOLDER')])
+def test_a_file_cannot_also_be_an_ancestor_directory(names):
+    inputs = sample()
+    for name in names:
+        inputs['supplied_files'][name] = b'synthetic'
+    rewrite_manifest(inputs, lambda doc: doc['files'].update({name:digest(b'synthetic') for name in names}))
+    result = assess(inputs)
+    assert result['status'] == 'HOLD'
+    assert result['filesystem_enumeration_verified'] is False
+
+
+def test_sibling_paths_under_a_shared_directory_are_allowed():
+    inputs = sample()
+    for name in ('folder/a', 'folder/b'):
+        inputs['supplied_files'][name] = b'synthetic'
+    rewrite_manifest(inputs, lambda doc: doc['files'].update({name:digest(b'synthetic') for name in ('folder/a','folder/b')}))
+    assert assess(inputs)['status'] == 'SUPPLIED_BYTES_MATCH'
+
+
+def test_manifest_file_cannot_also_be_a_directory():
+    inputs = sample()
+    name = 'DEPLOYMENT-MANIFEST.JSON/child.txt'
+    inputs['supplied_files'][name] = b'synthetic'
+    rewrite_manifest(inputs, lambda doc: doc['files'].update({name:digest(b'synthetic')}))
+    assert assess(inputs)['status'] == 'HOLD'
+
+
+def test_case_and_separator_aliases_refuse_even_with_matching_counts_and_hashes():
+    inputs = sample()
+    for name in ('a/b', 'A\\B'):
+        inputs['supplied_files'][name] = b'synthetic'
+    rewrite_manifest(inputs, lambda doc: doc['files'].update({name:digest(b'synthetic') for name in ('a/b', 'A\\B')}))
+    assert len(inputs['supplied_files']) == len(json.loads(inputs['manifest_bytes'])['files'])
+    assert assess(inputs)['status'] == 'HOLD'
+
+
 def test_hundreds_of_synthetic_files_fit_the_bounded_contract():
     files = {f'tools-bootstrap/pkg/item_{number}.py': str(number).encode() for number in range(600)}
     manifest = encoded({'schema_version': 1, 'source_commit': COMMIT,
@@ -116,6 +170,9 @@ def test_byte_and_file_count_limits_are_fail_closed(monkeypatch):
     monkeypatch.setattr(subject, 'MAX_FILES', 1)
     assert assess(inputs)['status'] == 'HOLD'
     monkeypatch.setattr(subject, 'MAX_FILES', 4)
+    monkeypatch.setattr(subject, 'MAX_PATH_COMPONENTS', 1)
+    assert assess(inputs)['status'] == 'HOLD'
+    monkeypatch.setattr(subject, 'MAX_PATH_COMPONENTS', 64)
     monkeypatch.setattr(subject, 'MAX_FILE_BYTES', 1)
     assert assess(inputs)['status'] == 'HOLD'
     monkeypatch.setattr(subject, 'MAX_FILE_BYTES', 100)

@@ -189,7 +189,9 @@ if scenario.startswith('mp_') and sys.platform != 'win32':
  import sysconfig
  layout = root / 'interpreter-layout'
  layout.mkdir()
- (layout / 'Lib').symlink_to(Path(sysconfig.get_path('stdlib')), target_is_directory=True)
+ stdlib_path = Path(sysconfig.get_path('stdlib')).resolve(strict=True)
+ (layout / 'Lib').symlink_to(stdlib_path, target_is_directory=True)
+ assert (layout / 'Lib').resolve(strict=True) == stdlib_path
  sys.base_prefix = str(layout)
 ns = {'__name__':'_wd_secure_child', '__file__':str(source)}
 exec(compile(source.read_bytes(), '<secure>', 'exec'), ns)
@@ -213,6 +215,15 @@ if scenario in ('badmanifest', 'helper_tamper', 'mp_foreign_preseed'):
  except ns['_Refused']: print('PASS'); raise SystemExit(0)
  raise AssertionError('bad manifest pin accepted')
 guard = ns['_install_controlled_imports'](root, manifest, pin)
+if scenario == 'mp_site_path':
+ site_path = str(Path(sys.base_prefix) / 'Lib' / 'site-packages')
+ resolved = ns['os'].path.normcase(ns['os'].path.realpath(site_path))
+ assert any(ns['_under'](resolved, trusted) for trusted in ns['_interpreter_roots']())
+ sys.path.insert(0, site_path)
+ try: importlib.import_module('wd_synthetic_site_packages_probe')
+ except ns['_Refused']: print('PASS')
+ else: raise AssertionError('site-packages search path accepted')
+ raise SystemExit(0)
 if scenario.startswith('mp_'):
  import types
  if scenario == 'mp_initial_same':
@@ -520,6 +531,13 @@ def test_verified_source_creation_witness(tmp_path, scenario):
                                       'mp_file_mutation', 'mp_spec_mutation'))
 def test_main_alias_is_bound_to_bootstrap_and_verified_stdlib_source(tmp_path, scenario):
     result = _probe(tmp_path, scenario)
+    assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
+    assert result.stdout in (b'PASS\r\n', b'PASS\n')
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='synthetic POSIX stdlib layout')
+def test_posix_stdlib_alias_refuses_site_packages_search(tmp_path):
+    result = _probe(tmp_path, 'mp_site_path')
     assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
     assert result.stdout in (b'PASS\r\n', b'PASS\n')
 

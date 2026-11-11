@@ -188,7 +188,7 @@ def _probe(tmp_path, scenario):
 import hashlib, importlib, importlib.machinery, importlib.metadata, importlib.util, sys
 from pathlib import Path
 source, root, scenario = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
-if scenario.startswith('mp_') and sys.platform != 'win32':
+if scenario.startswith(('mp_', 'inherited_')) and sys.platform != 'win32':
  # The production guard identifies the pinned Windows interpreter's Lib
  # tree. Reproduce that layout in this synthetic POSIX child while retaining
  # the same real interpreter stdlib as the only trusted source.

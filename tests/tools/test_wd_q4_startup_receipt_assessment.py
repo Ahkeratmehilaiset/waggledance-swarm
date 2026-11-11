@@ -163,10 +163,19 @@ def test_receipt_requires_complete_consistent_bounded_answer_metadata(field, val
     assert assess(records)["decision"] == "ROLLBACK_REQUIRED"
 
 
-def test_extreme_future_timestamp_is_a_refusal_not_an_exception():
+@pytest.mark.parametrize("timestamp", ["9999-12-31T23:59:59Z", "9999-12-31T23:59:59.999999Z"])
+def test_extreme_future_timestamp_is_a_refusal_not_an_exception(timestamp):
     records = all_records()
-    records["codex-lead-1"]["ts_utc"] = "9999-12-31T23:59:59.999999Z"
+    records["codex-lead-1"]["ts_utc"] = timestamp
     assert assess(records)["decision"] == "ROLLBACK_REQUIRED"
+
+
+def test_fractional_receipt_from_previous_second_is_not_a_valid_launcher_receipt():
+    records = all_records()
+    records["codex-lead-1"]["ts_utc"] = "2026-11-11T10:00:29.999999Z"
+    observed = dict(OBSERVED)
+    observed["codex-lead-1"] = "2026-11-11T10:00:30.900000Z"
+    assert assess(records, started="2026-11-11T10:00:30.900000Z", observed=observed)["decision"] == "ROLLBACK_REQUIRED"
 
 
 def test_tools_accepts_its_actual_launcher_success_reason():

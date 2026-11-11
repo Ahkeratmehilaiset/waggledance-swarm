@@ -15,6 +15,7 @@ LANES = (
 )
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _CALL_ID = re.compile(r"^[0-9a-f]{32}$")
+_RECEIPT_TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _RUN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
@@ -64,13 +65,16 @@ def assess_startup_receipts(*, expected_runs, expected_manifest_sha256,
             lanes[lane] = "PENDING"
             continue
         try:
-            recorded_at = _utc(record.get("ts_utc"))
+            receipt_time = record.get("ts_utc")
+            if type(receipt_time) is not str or _RECEIPT_TIME.fullmatch(receipt_time) is None:
+                raise ValueError("receipt timestamp must match launcher format")
+            recorded_at = _utc(receipt_time)
         except ValueError:
             lanes[lane] = "INVALID"
             continue
         # Launcher timestamps are truncated to seconds, so the same second
         # may legitimately begin just before a subsecond launch anchor.
-        if recorded_at < start and (start - recorded_at).total_seconds() >= 1:
+        if recorded_at < start.replace(microsecond=0):
             lanes[lane] = "PENDING"
             continue
         observed = observed_at_utc.get(lane)

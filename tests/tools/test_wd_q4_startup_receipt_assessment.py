@@ -7,6 +7,7 @@ import pytest
 LANES = ("codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2")
 MANIFEST = "a" * 64
 DESCRIPTOR = "b" * 64
+HELPER = "e" * 64
 RUNS = {lane: "run-20261111" for lane in LANES}
 START = "2026-11-11T10:00:00Z"
 BEFORE = "2026-11-11T10:01:00Z"
@@ -19,6 +20,8 @@ def receipt(lane):
     return {
         "schema": "wd.mind-startup-read.v1", "lane": lane, "run_id": RUNS[lane],
         "expected_manifest_sha256": MANIFEST, "descriptor_sha256": DESCRIPTOR,
+        "helper_sha256": HELPER, "helper_env": "verified", "helper_status": "EXITED",
+        "cleanup": "CONFIRMED", "reason": "content_delivered", "route": "default_caller_cli",
         "ts_utc": "2026-11-11T10:00:30Z", "outcome": "success", "exit_code": 0,
         "inner_status": "ANSWER", "delivered_items": 1, "delivered_chars": 5,
         "delivered_sha256": "c" * 64, "refs": ["d" * 64],
@@ -26,12 +29,12 @@ def receipt(lane):
 
 
 def assess(records, *, now=BEFORE, runs=RUNS, manifest=MANIFEST, descriptor=DESCRIPTOR,
-           observed=OBSERVED, started=START):
+           observed=OBSERVED, started=START, helper=HELPER):
     from tools.wd_q4_startup_receipt_assessment import assess_startup_receipts
 
     return assess_startup_receipts(
         expected_runs=runs, expected_manifest_sha256=manifest,
-        expected_descriptor_sha256=descriptor, records=records,
+        expected_descriptor_sha256=descriptor, expected_helper_sha256=helper, records=records,
         observed_at_utc=observed, started_at_utc=started, deadline_utc=DEADLINE, now_utc=now,
     )
 
@@ -70,6 +73,8 @@ def test_prior_boot_receipt_cannot_prove_current_start(field, old):
 @pytest.mark.parametrize("field,value", [
     ("schema", "other"), ("lane", "fable-5"), ("ts_utc", "invalid"),
     ("ts_utc", "2026-11-11T10:01:01Z"),
+    ("helper_sha256", "0" * 64), ("helper_env", "unknown"), ("helper_status", "UNKNOWN"),
+    ("cleanup", "UNKNOWN"), ("reason", "other"), ("route", "other"),
     ("expected_manifest_sha256", "0" * 64), ("descriptor_sha256", "0" * 64),
     ("outcome", "unknown"), ("exit_code", 1), ("exit_code", False),
     ("inner_status", "ABSTAIN"), ("delivered_items", 0), ("delivered_items", True),
@@ -97,6 +102,11 @@ def test_no_valid_first_page_or_unknown_lane_can_replace_all_five():
 def test_invalid_expectations_never_turn_into_a_pass(runs, manifest, descriptor):
     with pytest.raises(ValueError):
         assess(all_records(), runs=runs, manifest=manifest, descriptor=descriptor)
+
+
+def test_invalid_helper_expectation_never_turns_into_a_pass():
+    with pytest.raises(ValueError):
+        assess(all_records(), helper="invalid")
 
 
 def test_assessment_does_not_mutate_input_records():

@@ -34,7 +34,7 @@ def _utc(value):
 
 
 def assess_startup_receipts(*, expected_runs, expected_manifest_sha256,
-                            expected_descriptor_sha256, records,
+                            expected_descriptor_sha256, expected_helper_sha256, records,
                             observed_at_utc, started_at_utc, deadline_utc, now_utc):
     """Return RECEIPTS_OK, WAIT, or ROLLBACK_REQUIRED, never release approval.
 
@@ -49,6 +49,7 @@ def assess_startup_receipts(*, expected_runs, expected_manifest_sha256,
                    for run in expected_runs.values())
             or not _digest(expected_manifest_sha256)
             or not _digest(expected_descriptor_sha256)
+            or not _digest(expected_helper_sha256)
             or type(records) is not dict or type(observed_at_utc) is not dict):
         raise ValueError("invalid expected startup inputs")
     start, deadline, now = map(_utc, (started_at_utc, deadline_utc, now_utc))
@@ -87,6 +88,12 @@ def assess_startup_receipts(*, expected_runs, expected_manifest_sha256,
             and record.get("lane") == lane
             and record.get("expected_manifest_sha256") == expected_manifest_sha256
             and record.get("descriptor_sha256") == expected_descriptor_sha256
+            and record.get("helper_sha256") == expected_helper_sha256
+            and record.get("helper_env") == "verified"
+            and record.get("helper_status") == "EXITED"
+            and record.get("cleanup") == "CONFIRMED"
+            and record.get("reason") == "content_delivered"
+            and record.get("route") == "default_caller_cli"
             and record.get("outcome") == "success"
             and type(record.get("exit_code")) is int and record["exit_code"] == 0
             and record.get("inner_status") == "ANSWER"

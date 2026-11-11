@@ -208,7 +208,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Image unavailable' }
           $scratch = Join-Path $env:RUNNER_TEMP 'wd-synthetic-archive'
           New-Item -ItemType Directory -Path "$scratch\repo" -Force | Out-Null
-          git archive --format=tar --output "$scratch\repo.tar" HEAD
+          # Source-only subset used by the synthetic fixture. Never archive .git,
+          # documents, runtime data or the host workspace outside tracked source.
+          $sourcePaths = @('pyproject.toml','tests/conftest.py',':(glob)tests/tools/test_wd_q4*.py',':(glob)tools/*.py',':(glob)tools/**/*.py',':(glob)sandbox/mind/step2/*.py',':(glob)sandbox/mind/step2/**/*.py',':(glob)waggledance/**/*.py',':(glob)core/*.py',':(glob)core/**/*.py',':(glob)ops/windows/reboot/*.ps1')
+          git archive --format=tar --output "$scratch\repo.tar" HEAD -- $sourcePaths
           if ($LASTEXITCODE -ne 0) { throw 'Archive failed' }
           tar -xf "$scratch\repo.tar" -C "$scratch\repo"
           if ($LASTEXITCODE -ne 0) { throw 'Archive extraction failed' }
@@ -241,6 +244,8 @@ jobs:
           try {
             $network=docker inspect --format '{{.HostConfig.NetworkMode}}' $cid
             if ($network -ne 'none') { throw 'Container network not isolated' }
+            $mounts=docker inspect --format '{{json .Mounts}}' $cid
+            if ($mounts -notin @('[]','null')) { throw 'Unexpected container mounts' }
             docker cp "$pythonRoot\." "${cid}:C:\Python"
             if ($LASTEXITCODE -ne 0) { throw 'Python copy failed' }
             docker cp "$scratch\repo\." "${cid}:C:\work"

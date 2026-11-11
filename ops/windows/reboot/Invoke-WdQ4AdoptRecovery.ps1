@@ -16,7 +16,7 @@ $started=$false
 $pendingStream=$null
 try {
     if ($PSVersionTable.PSEdition -ceq 'Desktop') {
-        Import-Module -Name (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+        Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
     }
     foreach ($pin in @($ExpectedManifestSha256,$ExpectedConfigSha256,$ExpectedRuntimeSha256,$ExpectedHostSha256)) {
         if ($pin -cnotmatch '^[0-9a-f]{64}$') { throw 'pin' }

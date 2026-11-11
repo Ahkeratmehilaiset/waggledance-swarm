@@ -80,7 +80,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path C:\wdtmp -Force | Out-Null
           $env:TEMP='C:\wdtmp'; $env:TMP='C:\wdtmp'; $env:HOME='C:\wdtmp'; $env:USERPROFILE='C:\wdtmp'
-          $env:PATH='C:\Python;C:\Python\Scripts;C:\Windows\System32;C:\Windows'
+          $env:PATH='C:\Python;C:\Python\Scripts;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32;C:\Windows'
+          if (-not (Get-Command powershell.exe -ErrorAction SilentlyContinue)) { throw 'Windows PowerShell is not on PATH' }
           $env:PYTHONDONTWRITEBYTECODE='1'; $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'
           if (Get-ChildItem Env: | Where-Object { $_.Name -match '(?i)token|secret|password|credential|^GITHUB_' }) { throw 'Unexpected credential-like environment key' }
           if ($env:WD_Q4_ADOPT_JOB_E2E) { throw 'Live runtime opt-in present' }

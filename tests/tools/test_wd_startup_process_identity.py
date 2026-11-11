@@ -106,10 +106,16 @@ def test_invalid_expected_tuple_holds_without_opening(monkeypatch, field, value)
     assert result['status'] == 'HOLD' and not api.opened and result['authority_effect'] == 'none'
 
 
-def test_only_ascii_case_changes_in_image_path_are_accepted(monkeypatch):
+def test_image_path_case_difference_is_not_treated_as_exact(monkeypatch):
     api = FakeApi(); api.identity_values = [(PID, CREATED, IMAGE.upper())] * 2
     setup_fake(monkeypatch, api)
-    assert request()['status'] == 'PROCESS_INSTANCE_OBSERVED'
+    assert request()['status'] == 'HOLD'
+
+
+def test_image_path_separator_difference_is_not_treated_as_exact(monkeypatch):
+    api = FakeApi(); api.identity_values = [(PID, CREATED, IMAGE.replace('\\', '/'))] * 2
+    setup_fake(monkeypatch, api)
+    assert request()['status'] == 'HOLD'
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows kernel process-handle integration')

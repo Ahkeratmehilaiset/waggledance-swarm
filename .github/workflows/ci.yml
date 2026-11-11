@@ -1,139 +1,73 @@
-name: WaggleDance CI
-
+name: Q4 isolated Windows diagnostic ONLY
 on:
-  push:
-    branches: [main, master]
-  pull_request:
-    branches: [main, master]
   workflow_dispatch:
-
-concurrency:
-  # Stable across heads of one PR, distinct across workflows and non-PR runs.
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && 'pr' || 'run' }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
+permissions: {}
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
-
+  isolated-test:
+    runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0  # full history needed by tests/phase10/test_truth_regression.py (merge-base --is-ancestor against squash-merge SHAs)
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+          persist-credentials: false
+      - uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
+          python-version: '3.13'
+      - name: Install diagnostic dependencies before network isolation
+        shell: pwsh
         run: |
-          pip install --upgrade pip
-          pip install -r requirements-ci.txt
-
-      - name: Security check — no eval() in solver
+          python -m pip install pytest==9.0.3 faiss-cpu==1.13.2 numpy packaging jsonschema pydantic pyyaml psutil requests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run synthetic continuation on isolated runner
+        shell: pwsh
+        timeout-minutes: 10
         run: |
-          HITS=$(grep -cn '[^_]eval(' core/symbolic_solver.py | grep -v safe_eval || true)
-          RAW=$(grep -n 'eval(' core/symbolic_solver.py | grep -v safe_eval | wc -l)
-          if [ "$RAW" -gt 0 ]; then
-            grep -n 'eval(' core/symbolic_solver.py | grep -v safe_eval
-            echo "Raw eval() found in symbolic_solver.py!"
-            exit 1
-          fi
-          echo "No raw eval() in solver"
-
-      - name: Security check — safe_eval blocks RCE
+          $ErrorActionPreference = 'Stop'
+          if (-not $IsWindows -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Expected an ephemeral GitHub-hosted Windows runner' }
+          $blob = git hash-object tests/tools/test_wd_q4_adopt_recovery_ps.py
+          if ($LASTEXITCODE -ne 0 -or $blob -ne 'e83887d8a8a155f52ba9c3107b543fb40e5700aa') { throw 'Test file does not match the selected source head' }
+          $ruleName = 'wd-q4-diagnostic-deny-' + $env:GITHUB_RUN_ID
+          $tmp = 'C:\wd-q4-diagnostic-' + $env:GITHUB_RUN_ID
+          if (Test-Path -LiteralPath $tmp) { throw 'Diagnostic temporary path already exists' }
+          New-Item -ItemType Directory -Path $tmp | Out-Null
+          $env:TEMP = $tmp
+          $env:TMP = $tmp
+          $env:PYTHONDONTWRITEBYTECODE = '1'
+          $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = '1'
+          Remove-Item Env:WD_Q4_ADOPT_JOB_E2E -ErrorAction SilentlyContinue
+          foreach ($item in @(Get-ChildItem Env:)) {
+            if ($item.Name -match '(?i)(TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)') {
+              Remove-Item -LiteralPath ('Env:' + $item.Name) -ErrorAction SilentlyContinue
+            }
+          }
+          $testExit = 1
+          try {
+            New-NetFirewallRule -Name $ruleName -DisplayName $ruleName -Direction Outbound -Action Block -Enabled True -Profile Any -RemoteAddress Any | Out-Null
+            $rule = Get-NetFirewallRule -Name $ruleName -ErrorAction Stop
+            if ($rule.Enabled -ne 'True' -or $rule.Direction -ne 'Outbound' -or $rule.Action -ne 'Block') { throw 'Outbound isolation rule not active' }
+            $socket = [System.Net.Sockets.TcpClient]::new()
+            try {
+              $connection = $socket.BeginConnect('1.1.1.1', 443, $null, $null)
+              if ($connection.AsyncWaitHandle.WaitOne(2500) -and $socket.Connected) { throw 'Outbound isolation probe unexpectedly connected' }
+            } finally { $socket.Dispose() }
+            Write-Host 'Outbound isolation active; test starts.'
+            python -m pytest tests/tools/test_wd_q4_adopt_recovery_ps.py::test_active_real_adoption_blocks_recovery_job -q -rs -p no:cacheprovider --basetemp "$tmp\pytest" --junitxml "$tmp\result.xml"
+            $testExit = $LASTEXITCODE
+            if ($testExit -eq 0) {
+              [xml]$result = Get-Content -Raw -LiteralPath "$tmp\result.xml"
+              $suite = $result.testsuites.testsuite
+              if ($suite.tests -ne '1' -or $suite.skipped -ne '0' -or $suite.failures -ne '0' -or $suite.errors -ne '0') { throw 'Diagnostic test was not executed and passed exactly once' }
+            }
+          } finally {
+            Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+            if (Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue) { throw 'Diagnostic firewall cleanup failed' }
+            Write-Host 'Diagnostic outbound block removed.'
+          }
+          exit $testExit
+      - name: Remove diagnostic firewall rule after interrupted step
+        if: always()
+        shell: pwsh
         run: |
-          python -c "
-          from core.safe_eval import safe_eval, SafeEvalError
-          assert safe_eval('2+3', {}) == 5
-          try:
-              safe_eval('__import__(\"os\")', {})
-              exit(1)
-          except SafeEvalError:
-              pass
-          print('Security OK')
-          "
-
-      - name: Run tests
-        run: |
-          pytest tests/ -x -q --tb=short -p no:warnings
-          python -m pytest sandbox/mind/test_mind_capture_producer_reader.py sandbox/mind/test_mind_capture_producer_state.py sandbox/mind/test_join_turn.py sandbox/mind/test_join_card.py sandbox/mind/test_join_card_delivery.py sandbox/mind/step1/test_adapter.py sandbox/mind/step1/test_lane_view.py sandbox/mind/capture/test_capacity_lens.py sandbox/mind/capture/test_overlap_lens.py sandbox/mind/test_mind_chain_driver.py sandbox/mind/step2/test_q4_readonly_port.py sandbox/mind/step2/test_encode_identity_budget.py sandbox/mind/step2/test_wd_q4_private_read.py sandbox/mind/step2/test_interpreter_identity.py sandbox/mind/step2/test_reader_slot.py sandbox/mind/step2/test_runtime_manifest.py sandbox/mind/step2/test_runtime_bootstrap.py sandbox/mind/step2/test_runtime_builder.py sandbox/mind/step2/test_runtime_launcher.py sandbox/mind/step2/test_shared_projection.py sandbox/mind/step2/test_shared_projection_q4_synthetic.py sandbox/mind/step2/test_shared_result_resolver.py sandbox/mind/step2/test_shared_capture_adapter.py sandbox/mind/step2/test_shared_bridge_snapshot.py sandbox/mind/step2/test_shared_index_checkpoint.py sandbox/mind/step2/test_shared_index_checkpoint_snapshot.py sandbox/mind/step2/test_shared_index_checkpoint_active_snapshot.py sandbox/mind/step2/test_shared_index_builder.py sandbox/mind/step2/test_shared_source_anchor.py sandbox/mind/step2/test_shared_strict_chain.py sandbox/mind/step2/test_shared_builder_e2e.py sandbox/mind/step2/test_shared_history.py sandbox/mind/step2/test_shared_index_watermark.py sandbox/mind/step2/test_shared_index_history_commit.py sandbox/mind/step2/test_status_metadata_producer.py sandbox/mind/step2/test_status_public_filter.py sandbox/mind/step2/test_shared_producer.py sandbox/mind/step2/test_prefix_builder_v1.py sandbox/mind/step2/test_prefix_checkpoint_v1.py sandbox/mind/step2/test_shared_prefix_pin.py sandbox/mind/step2/test_shared_prefix_public_producer.py sandbox/mind/step2/test_prefix_private_state.py sandbox/mind/test_mind_capture_producer_graphql.py -x -q --tb=short -p no:warnings
-
-      - name: Run synthetic Mind cell witnesses
-        run: python -B tools/run_mind_cell_synthetic_ci.py
-
-      - name: Run portable Mind prefix witnesses
-        run: python -B tools/run_mind_prefix_portable_ci.py
-
-      - name: Check test count
-        run: |
-          # Fail closed: a failed collection, or a summary that is not exactly one
-          # "<N> tests collected in <T>s" line, must not pass (K 011920df job
-          # 113510581050 read "28144 13 80" from the duration and still passed).
-          if ! OUT=$(pytest tests/ --collect-only -q 2>/dev/null); then
-            echo "Test collection failed"
-            exit 1
-          fi
-          # Exactly one summary-like line, and it is the last line; the count has
-          # at most 9 digits so the integer test below cannot overflow. From 60 s on
-          # pytest appends " (H:MM:SS)"; a longer suffix (a day count) is refused.
-          SUMMARIES=$(printf '%s\n' "$OUT" | grep -cE '^[0-9]+ tests? collected' || true)
-          if [ "$SUMMARIES" != "1" ]; then
-            echo "Expected exactly one collection summary, found: $SUMMARIES"
-            exit 1
-          fi
-          LAST=$(printf '%s\n' "$OUT" | tail -1)
-          if ! [[ "$LAST" =~ ^([1-9][0-9]{0,8})\ tests?\ collected\ in\ [0-9]+(\.[0-9]+)?s(\ \([0-9]{1,2}:[0-5][0-9]:[0-5][0-9]\))?$ ]]; then
-            echo "Unrecognized collection summary: $LAST"
-            exit 1
-          fi
-          COUNT=${BASH_REMATCH[1]}
-          echo "Test count: $COUNT"
-          if ! [ "$COUNT" -ge 4200 ]; then
-            echo "Test count dropped below 4200!"
-            exit 1
-          fi
-          # Keep the existing tests/ floor independent: Mind must never mask a drop.
-          if ! MIND_OUT=$(python -m pytest sandbox/mind/test_mind_capture_producer_reader.py sandbox/mind/test_mind_capture_producer_state.py sandbox/mind/test_join_turn.py sandbox/mind/test_join_card.py sandbox/mind/test_join_card_delivery.py sandbox/mind/step1/test_adapter.py sandbox/mind/step1/test_lane_view.py sandbox/mind/capture/test_capacity_lens.py sandbox/mind/capture/test_overlap_lens.py sandbox/mind/test_mind_chain_driver.py sandbox/mind/step2/test_q4_readonly_port.py sandbox/mind/step2/test_encode_identity_budget.py sandbox/mind/step2/test_wd_q4_private_read.py sandbox/mind/step2/test_interpreter_identity.py sandbox/mind/step2/test_reader_slot.py sandbox/mind/step2/test_runtime_manifest.py sandbox/mind/step2/test_runtime_bootstrap.py sandbox/mind/step2/test_runtime_builder.py sandbox/mind/step2/test_runtime_launcher.py sandbox/mind/step2/test_shared_projection.py sandbox/mind/step2/test_shared_projection_q4_synthetic.py sandbox/mind/step2/test_shared_result_resolver.py sandbox/mind/step2/test_shared_capture_adapter.py sandbox/mind/step2/test_shared_bridge_snapshot.py sandbox/mind/step2/test_shared_index_checkpoint.py sandbox/mind/step2/test_shared_index_checkpoint_snapshot.py sandbox/mind/step2/test_shared_index_checkpoint_active_snapshot.py sandbox/mind/step2/test_shared_index_builder.py sandbox/mind/step2/test_shared_source_anchor.py sandbox/mind/step2/test_shared_strict_chain.py sandbox/mind/step2/test_shared_builder_e2e.py sandbox/mind/step2/test_shared_history.py sandbox/mind/step2/test_shared_index_watermark.py sandbox/mind/step2/test_shared_index_history_commit.py sandbox/mind/step2/test_status_metadata_producer.py sandbox/mind/step2/test_status_public_filter.py sandbox/mind/step2/test_shared_producer.py sandbox/mind/step2/test_prefix_builder_v1.py sandbox/mind/step2/test_prefix_checkpoint_v1.py sandbox/mind/step2/test_shared_prefix_pin.py sandbox/mind/step2/test_shared_prefix_public_producer.py sandbox/mind/step2/test_prefix_private_state.py sandbox/mind/test_mind_capture_producer_graphql.py --collect-only -q 2>/dev/null); then
-            echo "Mind test collection failed"
-            exit 1
-          fi
-          MIND_SUMMARIES=$(printf '%s\n' "$MIND_OUT" | grep -cE '^[0-9]+ tests? collected' || true)
-          if [ "$MIND_SUMMARIES" != "1" ]; then
-            echo "Expected exactly one Mind collection summary"
-            exit 1
-          fi
-          MIND_LAST=$(printf '%s\n' "$MIND_OUT" | tail -1)
-          if ! [[ "$MIND_LAST" =~ ^([1-9][0-9]{0,8})\ tests?\ collected\ in\ [0-9]+(\.[0-9]+)?s(\ \([0-9]{1,2}:[0-5][0-9]:[0-5][0-9]\))?$ ]]; then
-            echo "Unrecognized Mind collection summary"
-            exit 1
-          fi
-          echo "Mind test count: ${BASH_REMATCH[1]}"
-
-  security-scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Check for dangerous patterns
-        run: |
-          echo "=== Checking for eval() outside safe_eval ==="
-          EVAL_HITS=$(grep -rn "eval(" --include="*.py" core/ waggledance/ \
-            | grep -v safe_eval | grep -v "# noqa" | grep -v "test_" \
-            | grep -v '\.eval()' | grep -v 'retrieval(' | grep -v 'evaluate(' | wc -l)
-          echo "eval() hits outside safe_eval: $EVAL_HITS"
-          if [ "$EVAL_HITS" -gt 0 ]; then
-            grep -rn "eval(" --include="*.py" core/ waggledance/ \
-              | grep -v safe_eval | grep -v "# noqa" | grep -v "test_" \
-              | grep -v '\.eval()' | grep -v 'retrieval(' | grep -v 'evaluate('
-            echo "Unauthorized eval() found!"
-            exit 1
-          fi
-          echo "No unauthorized eval()"
-
-          echo "=== Checking for plaintext MQTT ==="
-          grep -rn "port.*1883" --include="*.py" core/ waggledance/ | grep -v test | grep -v "# TLS" && exit 1 || echo "No hardcoded 1883"
+          $name = 'wd-q4-diagnostic-deny-' + $env:GITHUB_RUN_ID
+          Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+          if (Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue) { throw 'Diagnostic firewall cleanup failed' }

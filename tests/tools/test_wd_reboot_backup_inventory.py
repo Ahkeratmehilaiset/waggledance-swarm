@@ -194,6 +194,46 @@ def test_prior_state_names_only_the_commit_addressed_bundle(scenario):
     assert not (backup / "rollback-inventory.json").exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows PowerShell")
+@pytest.mark.parametrize("reparse_kind", ["source", "backup_parent"])
+def test_prebackup_reparse_refuses_before_copy_or_directory_creation(reparse_kind):
+    # Execute only the backup loop, with every filesystem operation replaced by
+    # a stub. The synthetic refusal has no target outside this process.
+    env = dict(os.environ, TEST_SCRIPT=str(DEPLOY), TEST_REPARSE_KIND=reparse_kind)
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$text=[IO.File]::ReadAllText($env:TEST_SCRIPT)
+$at=$text.IndexOf('$backedUp = $false', $text.IndexOf('$transactionNames = @('))
+$end=$text.IndexOf('$backupInventory = Write-WdRebootBackupInventory', $at)
+if($at -lt 0 -or $end -le $at) { throw 'backup loop boundaries unavailable' }
+$fragment=$text.Substring($at, $end-$at)
+$machineFull='C:\synthetic-machine'; $backupRoot='C:\synthetic-machine\wd-reboot-backups\synthetic'
+$transactionNames=@('start-wd-all.ps1')
+$global:copies=0; $global:dirs=0
+function Assert-ChildPath { param($Parent,$Child) return $Child }
+function Test-Path { param($LiteralPath,$PathType) return ($PathType -eq 'Leaf') }
+function New-Item { param($ItemType,$Path,[switch]$Force) $global:dirs++ }
+function Copy-Item { param($LiteralPath,$Destination) $global:copies++ }
+function Assert-WdPathWithoutReparse {
+  param($Path,$TrustedRoot,$ExpectedType,[switch]$AllowMissing)
+  if ($env:TEST_REPARSE_KIND -eq 'source' -and $ExpectedType -eq 'Leaf') { throw 'synthetic source reparse' }
+  if ($env:TEST_REPARSE_KIND -eq 'backup_parent' -and $ExpectedType -eq 'Directory') { throw 'synthetic backup reparse' }
+  return $Path
+}
+$refused=$false
+try { . ([scriptblock]::Create($fragment)) } catch {
+  if ($_.Exception.Message -like 'synthetic * reparse') { $refused=$true }
+}
+if (-not $refused -or $global:copies -ne 0 -or
+    ($env:TEST_REPARSE_KIND -eq 'backup_parent' -and $global:dirs -ne 0)) {
+  throw 'not refused before mutation'
+}
+"""
+    result = subprocess.run([str(SHELL), "-NoProfile", "-NonInteractive", "-Command", script],
+                            cwd=ROOT, env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+
+
 def test_inventory_is_written_after_backup_and_before_machine_mutation():
     text = DEPLOY.read_text(encoding="utf-8")
     start = text.index("$transactionNames = @(")

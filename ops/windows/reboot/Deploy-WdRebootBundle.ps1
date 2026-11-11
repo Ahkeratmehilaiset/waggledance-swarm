@@ -1898,15 +1898,24 @@ foreach ($name in $transactionNames) {
     $present = Test-Path -LiteralPath $machinePath -PathType Leaf
     $originallyPresent[$name] = $present
     if ($present) {
+        [void](Assert-WdPathWithoutReparse -Path $machinePath -TrustedRoot $machineFull -ExpectedType Leaf)
         if (-not $backedUp) {
+            [void](Assert-WdPathWithoutReparse -Path (Split-Path -Parent $backupRoot) `
+                -TrustedRoot $machineFull -ExpectedType Directory -AllowMissing)
+            if (Test-Path -LiteralPath $backupRoot) { throw 'backup directory already exists' }
             [void](New-Item -ItemType Directory -Path $backupRoot -Force)
+            [void](Assert-WdPathWithoutReparse -Path $backupRoot -TrustedRoot $machineFull -ExpectedType Directory)
             $backedUp = $true
         }
         Copy-Item -LiteralPath $machinePath -Destination (Join-Path $backupRoot $name)
     }
 }
 if (-not $backedUp) {
+    [void](Assert-WdPathWithoutReparse -Path (Split-Path -Parent $backupRoot) `
+        -TrustedRoot $machineFull -ExpectedType Directory -AllowMissing)
+    if (Test-Path -LiteralPath $backupRoot) { throw 'backup directory already exists' }
     [void](New-Item -ItemType Directory -Path $backupRoot -Force)
+    [void](Assert-WdPathWithoutReparse -Path $backupRoot -TrustedRoot $machineFull -ExpectedType Directory)
     $backedUp = $true
 }
 $backupInventory = Write-WdRebootBackupInventory -MachineRoot $machineFull -BackupRoot $backupRoot `

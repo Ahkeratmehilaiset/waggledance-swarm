@@ -524,6 +524,13 @@ def test_main_alias_is_bound_to_bootstrap_and_verified_stdlib_source(tmp_path, s
     assert result.stdout in (b'PASS\r\n', b'PASS\n')
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='synthetic POSIX stdlib layout')
+def test_posix_stdlib_alias_refuses_site_packages_search(tmp_path):
+    result = _probe(tmp_path, 'mp_site_path')
+    assert result.returncode == 0, result.stderr.decode('utf-8', 'replace')
+    assert result.stdout in (b'PASS\r\n', b'PASS\n')
+
+
 @pytest.mark.parametrize('scenario', ('subclass_clean', 'subclass_preseed', 'subclass_swap',
                                       'subclass_instance_mutation', 'subclass_class_mutation', 'subclass_code_mutation'))
 def test_verified_source_created_module_subclass_is_bound(tmp_path, scenario):

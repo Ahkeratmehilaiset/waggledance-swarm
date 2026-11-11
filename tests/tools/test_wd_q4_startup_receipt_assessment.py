@@ -42,7 +42,7 @@ def all_records():
 
 def test_five_current_receipts_pass_but_do_not_claim_context_consumption():
     result = assess(all_records())
-    assert result["decision"] == "PASS"
+    assert result["decision"] == "RECEIPTS_OK"
     assert result["agent_context_verified"] is False
     assert all(result["lanes"][lane] == "PASS" for lane in LANES)
 
@@ -105,7 +105,7 @@ def test_assessment_does_not_mutate_input_records():
 
 
 def test_complete_receipts_written_before_deadline_remain_evaluable_after_it():
-    assert assess(all_records(), now=AFTER)["decision"] == "PASS"
+    assert assess(all_records(), now=AFTER)["decision"] == "RECEIPTS_OK"
 
 
 def test_start_timestamp_alone_cannot_prove_receipt_was_observed_before_deadline():
@@ -122,4 +122,4 @@ def test_unobserved_receipt_waits_then_requires_rollback():
 
 
 def test_second_precision_receipt_can_match_subsecond_start_anchor():
-    assert assess(all_records(), started="2026-11-11T10:00:30.500000Z")["decision"] == "PASS"
+    assert assess(all_records(), started="2026-11-11T10:00:30.500000Z")["decision"] == "RECEIPTS_OK"

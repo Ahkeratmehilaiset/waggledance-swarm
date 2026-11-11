@@ -36,7 +36,7 @@ def _utc(value):
 def assess_startup_receipts(*, expected_runs, expected_manifest_sha256,
                             expected_descriptor_sha256, records,
                             observed_at_utc, started_at_utc, deadline_utc, now_utc):
-    """Return a receipt-only PASS, WAIT, or ROLLBACK_REQUIRED decision.
+    """Return RECEIPTS_OK, WAIT, or ROLLBACK_REQUIRED, never release approval.
 
     ``expected_runs`` is supplied by the caller's independently pinned launch
     plan. The caller independently supplies when each receipt was observed;
@@ -102,7 +102,7 @@ def assess_startup_receipts(*, expected_runs, expected_manifest_sha256,
     elif "PENDING" in lanes.values():
         decision = "WAIT"
     else:
-        decision = "PASS"
+        decision = "RECEIPTS_OK"
     return {
         "decision": decision,
         "lanes": lanes,

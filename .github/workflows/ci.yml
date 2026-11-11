@@ -210,7 +210,7 @@ jobs:
           New-Item -ItemType Directory -Path "$scratch\repo" -Force | Out-Null
           # Source-only subset used by the synthetic fixture. Never archive .git,
           # documents, runtime data or the host workspace outside tracked source.
-          $sourcePaths = @('pyproject.toml','tests/conftest.py',':(glob)tests/tools/test_wd_q4*.py',':(glob)tools/*.py',':(glob)tools/**/*.py',':(glob)sandbox/mind/step2/*.py',':(glob)sandbox/mind/step2/**/*.py',':(glob)waggledance/**/*.py',':(glob)core/*.py',':(glob)core/**/*.py',':(glob)ops/windows/reboot/*.ps1')
+          $sourcePaths = @('pyproject.toml','tests/conftest.py','tests/tools/test_lane_card_decision_forward.py','tests/tools/test_shared_card_route.py',':(glob)tests/tools/test_wd_q4*.py',':(glob)tools/*.py',':(glob)tools/**/*.py',':(glob)sandbox/mind/step2/*.py',':(glob)sandbox/mind/step2/**/*.py',':(glob)waggledance/**/*.py',':(glob)core/*.py',':(glob)core/**/*.py',':(glob)ops/windows/reboot/*.ps1')
           git archive --format=tar --output "$scratch\repo.tar" HEAD -- $sourcePaths
           if ($LASTEXITCODE -ne 0) { throw 'Archive failed' }
           tar -xf "$scratch\repo.tar" -C "$scratch\repo"

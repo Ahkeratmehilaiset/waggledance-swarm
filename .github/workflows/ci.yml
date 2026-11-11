@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      - name: Probe startup, Utility import, and stdout capture separately
+      - name: Probe encoded commands and flushed import markers
         shell: pwsh
         timeout-minutes: 5
         run: |
@@ -27,35 +27,41 @@ jobs:
           if (Test-Path -LiteralPath $scratch) { throw 'Control temporary path already exists' }
           New-Item -ItemType Directory -Path $scratch | Out-Null
           $probe = @'
-          import subprocess, sys, time
+          import base64, os, subprocess, time
           from pathlib import Path
           host = 'powershell'
           base = [host, '-NoProfile', '-NonInteractive']
-          actual = str(Path('ops/windows/reboot/Invoke-WdQ4AdoptRecovery.ps1').resolve())
-          def run(label, args, capture):
+          scratch = Path(os.environ['TEMP'])
+          def run(label, script, marker_names):
+              encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+              args = base + ['-EncodedCommand', encoded]
               started = time.monotonic()
-              kw = {'stdout': subprocess.PIPE, 'stderr': subprocess.PIPE} if capture else {}
-              p = subprocess.Popen(args, **kw)
+              wall_started = time.time()
+              p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
               try:
-                  output, error = p.communicate(timeout=20)
-                  elapsed = time.monotonic() - started
-                  print(label, 'completed', 'returncode=', p.returncode, 'elapsed=', round(elapsed, 3),
-                        'before_marker=', bool(output and b'BEFORE_IMPORT' in output),
-                        'after_marker=', bool(output and b'AFTER_IMPORT' in output), flush=True)
-              except subprocess.TimeoutExpired as exc:
-                  print(label, 'timeout', 'elapsed=', round(time.monotonic()-started, 3), 'poll=', p.poll(),
-                        'before_marker=', bool(exc.output and b'BEFORE_IMPORT' in exc.output),
-                        'after_marker=', bool(exc.output and b'AFTER_IMPORT' in exc.output), flush=True)
+                  p.communicate(timeout=20)
+                  state = 'completed'
+              except subprocess.TimeoutExpired:
+                  state = 'timeout'
                   if p.poll() is None:
                       p.kill()
                   try:
                       p.communicate(timeout=2)
                   except subprocess.TimeoutExpired:
                       print(label, 'pipe_remains_open_after_kill', flush=True)
-          run('startup_capture', base + ['-Command', "[Console]::Out.WriteLine('STARTED')"], True)
-          run('utility_capture', base + ['-Command', "[Console]::Out.WriteLine('BEFORE_IMPORT'); Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop; [Console]::Out.WriteLine('AFTER_IMPORT')"], True)
-          run('actual_refusal_capture', base + ['-File', actual, '-Run'], True)
-          run('actual_refusal_inherited_streams', base + ['-File', actual, '-Run'], False)
+              marks = {}
+              for name in marker_names:
+                  path = scratch / name
+                  marks[name] = round(path.stat().st_mtime - wall_started, 3) if path.is_file() else None
+              print(label, state, 'returncode=', p.returncode, 'elapsed=', round(time.monotonic()-started, 3), 'marker_seconds=', marks, flush=True)
+          def mark(name):
+              return "[IO.File]::WriteAllText([IO.Path]::Combine($env:TEMP,'" + name + "'),'flushed'); "
+          join_script = (mark('join-before') + "$p=Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1'; " +
+                         mark('join-after') + "Import-Module -Name $p -ErrorAction Stop; " + mark('join-import-after'))
+          direct_script = (mark('direct-before') + "$p=[IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1'); " +
+                           mark('direct-path-after') + "Import-Module -Name $p -ErrorAction Stop; " + mark('direct-import-after'))
+          run('encoded_join_then_import', join_script, ['join-before','join-after','join-import-after'])
+          run('encoded_direct_then_import', direct_script, ['direct-before','direct-path-after','direct-import-after'])
           '@
           $psi = [System.Diagnostics.ProcessStartInfo]::new()
           $psi.FileName = (Get-Command python -ErrorAction Stop).Source

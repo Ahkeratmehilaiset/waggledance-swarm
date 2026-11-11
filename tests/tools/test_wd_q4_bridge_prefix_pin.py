@@ -13,8 +13,19 @@ def fixture(tmp_path):
     source=source_dir/'events.jsonl'
     raw=b'{"task_id":"synthetic-a","message":"private-canary"}\n{"task_id":"synthetic-b"}\n'
     source.write_bytes(raw)
-    output=tmp_path/'private-audit';output.mkdir()
+    output=tmp_path/'.codex-audit'/'private-audit';output.mkdir(parents=True)
     return source,output,raw,source_dir/'events.generation.json'
+
+
+def test_output_without_audit_component_is_refused(tmp_path):
+    if '.codex-audit' in tmp_path.parts:
+        pytest.skip('negative case requires a temporary path outside .codex-audit')
+    mod=importlib.import_module('tools.wd_q4_bridge_prefix_pin')
+    source,_,raw,generation=fixture(tmp_path)
+    output=tmp_path/'private-audit';output.mkdir()
+    with pytest.raises(mod.Refused):
+        mod.capture(enabled=True,source_path=str(source),generation_path=str(generation),output_root=str(output))
+    assert not list(output.iterdir()) and source.read_bytes()==raw
 
 
 def test_default_off_does_not_inspect_arguments():

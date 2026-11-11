@@ -1,16 +1,11 @@
-name: Q4 refusal Windows credentialless control ONLY
+name: Q4 PowerShell refusal phase diagnostic ONLY
 on:
   workflow_dispatch:
 permissions: {}
 jobs:
-  refusal-control:
-    name: refusal-control-${{ matrix.variant }}
+  refusal-phase-probe:
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [base, ps_module_path, appdata, both]
-    timeout-minutes: 12
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         env:
@@ -22,17 +17,46 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      - name: Install diagnostic test dependencies
-        run: python -m pip install pytest==9.0.3 faiss-cpu==1.13.2 numpy packaging jsonschema pydantic pyyaml psutil requests
-      - name: Run only empty-pin refusal without runner-wide firewall
+      - name: Probe startup, Utility import, and stdout capture separately
         shell: pwsh
         timeout-minutes: 5
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not $IsWindows -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Expected GitHub-hosted Windows' }
-          $scratch = 'C:\wd-adopt-refusal-control-' + $env:GITHUB_RUN_ID
+          $scratch = 'C:\wd-adopt-refusal-phase-' + $env:GITHUB_RUN_ID
           if (Test-Path -LiteralPath $scratch) { throw 'Control temporary path already exists' }
           New-Item -ItemType Directory -Path $scratch | Out-Null
+          $probe = @'
+          import subprocess, sys, time
+          from pathlib import Path
+          host = 'powershell'
+          base = [host, '-NoProfile', '-NonInteractive']
+          actual = str(Path('ops/windows/reboot/Invoke-WdQ4AdoptRecovery.ps1').resolve())
+          def run(label, args, capture):
+              started = time.monotonic()
+              kw = {'stdout': subprocess.PIPE, 'stderr': subprocess.PIPE} if capture else {}
+              p = subprocess.Popen(args, **kw)
+              try:
+                  output, error = p.communicate(timeout=20)
+                  elapsed = time.monotonic() - started
+                  print(label, 'completed', 'returncode=', p.returncode, 'elapsed=', round(elapsed, 3),
+                        'before_marker=', bool(output and b'BEFORE_IMPORT' in output),
+                        'after_marker=', bool(output and b'AFTER_IMPORT' in output), flush=True)
+              except subprocess.TimeoutExpired as exc:
+                  print(label, 'timeout', 'elapsed=', round(time.monotonic()-started, 3), 'poll=', p.poll(),
+                        'before_marker=', bool(exc.output and b'BEFORE_IMPORT' in exc.output),
+                        'after_marker=', bool(exc.output and b'AFTER_IMPORT' in exc.output), flush=True)
+                  if p.poll() is None:
+                      p.kill()
+                  try:
+                      p.communicate(timeout=2)
+                  except subprocess.TimeoutExpired:
+                      print(label, 'pipe_remains_open_after_kill', flush=True)
+          run('startup_capture', base + ['-Command', "[Console]::Out.WriteLine('STARTED')"], True)
+          run('utility_capture', base + ['-Command', "[Console]::Out.WriteLine('BEFORE_IMPORT'); Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop; [Console]::Out.WriteLine('AFTER_IMPORT')"], True)
+          run('actual_refusal_capture', base + ['-File', actual, '-Run'], True)
+          run('actual_refusal_inherited_streams', base + ['-File', actual, '-Run'], False)
+          '@
           $psi = [System.Diagnostics.ProcessStartInfo]::new()
           $psi.FileName = (Get-Command python -ErrorAction Stop).Source
           $psi.UseShellExecute = $false
@@ -42,23 +66,8 @@ jobs:
             $value = [Environment]::GetEnvironmentVariable($key)
             if ($value) { $psi.Environment[$key] = $value }
           }
-          foreach ($entry in @{TEMP=$scratch; TMP=$scratch; USERPROFILE=$scratch; HOME=$scratch; PYTHONDONTWRITEBYTECODE='1'; PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'}.GetEnumerator()) { $psi.Environment[$entry.Key] = $entry.Value }
-          $variant = '${{ matrix.variant }}'
-          if ($variant -in @('ps_module_path','both')) {
-            $psi.Environment['PSModulePath'] = $env:SystemRoot + '\System32\WindowsPowerShell\v1.0\Modules'
-          }
-          if ($variant -in @('appdata','both')) {
-            $app = Join-Path $scratch 'appdata'
-            $local = Join-Path $scratch 'localappdata'
-            New-Item -ItemType Directory -Path $app,$local | Out-Null
-            $psi.Environment['APPDATA'] = $app
-            $psi.Environment['LOCALAPPDATA'] = $local
-          }
-          Write-Host "Credentialless refusal control variant: $variant"
-          foreach ($arg in @('-m','pytest','tests/tools/test_wd_q4_adopt_recovery_ps.py::test_bad_pins_refuse_without_job','-q','-rs','-p','no:cacheprovider','--basetemp',"$scratch\pytest",'--junitxml',"$scratch\results.xml")) { [void]$psi.ArgumentList.Add($arg) }
+          foreach ($entry in @{TEMP=$scratch; TMP=$scratch; USERPROFILE=$scratch; HOME=$scratch; PYTHONDONTWRITEBYTECODE='1'}.GetEnumerator()) { $psi.Environment[$entry.Key] = $entry.Value }
+          foreach ($arg in @('-c',$probe)) { [void]$psi.ArgumentList.Add($arg) }
           $process = [System.Diagnostics.Process]::Start($psi)
-          if (-not $process.WaitForExit(90000)) { $process.Kill($true); $process.WaitForExit(); throw 'Control timed out' }
-          if ($process.ExitCode -ne 0) { throw 'Control test failed' }
-          [xml]$result = Get-Content -Raw -LiteralPath "$scratch\results.xml"
-          $suite = $result.testsuites.testsuite
-          if ($suite.tests -ne '1' -or $suite.skipped -ne '0' -or $suite.failures -ne '0' -or $suite.errors -ne '0') { throw 'Control did not pass exactly once' }
+          if (-not $process.WaitForExit(115000)) { $process.Kill($true); $process.WaitForExit(); throw 'Diagnostic probe timed out' }
+          if ($process.ExitCode -ne 0) { throw 'Diagnostic probe failed' }

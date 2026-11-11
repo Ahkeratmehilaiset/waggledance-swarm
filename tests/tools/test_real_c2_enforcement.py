@@ -46,10 +46,21 @@ def _validate_posix_fixture_config(config, directory, validator):
                              descriptor=r'C:\synthetic-c2\candidate\descriptor.json'))
 
 
+def _bind_posix_route_config(config, directory):
+    """Translate this fixture's validated Windows aliases to its POSIX files."""
+    if (type(config) is not q4.VerifiedQ4Config or not isinstance(directory, PurePosixPath)
+            or not directory.is_absolute() or config.memory != rt.SYNTHETIC_MEMORY
+            or config.descriptor != rt.SYNTHETIC_MEMORY + r'\descriptor.json'):
+        raise q4.QueryRefused('invalid_binding')
+    _ORIGINAL_VALIDATE_CONFIG(config)
+    return replace(config, memory=str(directory), descriptor=str(directory / 'descriptor.json'))
+
+
 @pytest.fixture
 def route(real_snapshot, monkeypatch):
     directory, built, _, snapshot, projection, args = real_snapshot
     calls = []
+    config = rt.config(directory, built['descriptor_sha256'])
     monkeypatch.setattr(reader, "ENCODER_FACTORY", lambda **kwargs: rt.fx.Encoder())
     monkeypatch.setattr(reader, "bind_runtime_encoder", lambda *a, **kw: None)
     monkeypatch.setattr(q4, "_utc_now", lambda: dt.datetime(2026, 11, 3, tzinfo=dt.timezone.utc))
@@ -58,6 +69,7 @@ def route(real_snapshot, monkeypatch):
         # validation, while the real launcher config accepts Windows paths only.
         # Scope the seam to this exact synthetic directory and retain the
         # production validator for every other field and Windows-shaped controls.
+        config = _bind_posix_route_config(config, directory)
         validator = q4._validate_config
         monkeypatch.setattr(q4, '_validate_config',
                             lambda value: _validate_posix_fixture_config(value, directory, validator))
@@ -76,7 +88,7 @@ def route(real_snapshot, monkeypatch):
         card_decision_sha256=args["decision_sha256"],
         **{k: args[k] for k in ("policy_bytes", "policy_sha256", "roster_bytes", "roster_sha256")})
     return dict(directory=directory, built=built, snapshot=snapshot, args=args, data=data, projection=projection,
-                config=rt.config(directory, built["descriptor_sha256"]), calls=calls)
+                config=config, calls=calls)
 
 
 def question():
@@ -170,6 +182,21 @@ def actual_tuple(route):
     return dict(route["snapshot"], generation_dir=route["directory"])
 
 
+def test_linux_route_binds_the_actual_fixture_directory_after_windows_control(route):
+    directory = PurePosixPath('/tmp/synthetic-c2/candidate')
+    config = replace(route['config'], memory=rt.SYNTHETIC_MEMORY,
+                     descriptor=rt.SYNTHETIC_MEMORY + r'\descriptor.json')
+    _ORIGINAL_VALIDATE_CONFIG(config)
+    bound = _bind_posix_route_config(config, directory)
+    assert bound.memory == str(directory)
+    assert bound.descriptor == str(directory / 'descriptor.json')
+    with pytest.raises(q4.QueryRefused, match='invalid_binding'):
+        _ORIGINAL_VALIDATE_CONFIG(bound)
+    _validate_posix_fixture_config(bound, directory, _ORIGINAL_VALIDATE_CONFIG)
+    with pytest.raises(q4.QueryRefused):
+        _bind_posix_route_config(replace(config, memory=r'C:\other'), directory)
+
+
 def test_posix_fixture_adapter_keeps_windows_guard_and_exact_fixture_binding(route):
     directory = PurePosixPath('/tmp/synthetic-c2/candidate')
     config = replace(route['config'], memory=str(directory), descriptor=str(directory / 'descriptor.json'))
@@ -187,6 +214,17 @@ def test_posix_fixture_adapter_keeps_windows_guard_and_exact_fixture_binding(rou
 
 
 def test_direct_query_actual_c2_tuple_answers(route):
+    # Synthetic-only diagnostic checkpoints: no contents or raw inputs are printed.
+    q4._validate_config(route['config'])
+    snapshot = actual_tuple(route)
+    from sandbox.mind.step2 import shared_card_checkpoint
+    assert shared_card_checkpoint.validate_card_snapshot(enabled=True, **snapshot) == {
+        'status': 'VALIDATED_STAGED', 'completeness': 'UNKNOWN'}
+    q4._check_real_card_snapshot(snapshot, route['config'], route['data']['memory_manifest_bytes'],
+        route['data']['projection_bytes'], route['data']['expected_memory_sha256'],
+        route['data']['card_decision_bytes'], route['data']['card_decision_sha256'],
+        route['data']['policy_bytes'], route['data']['policy_sha256'],
+        route['data']['roster_bytes'], route['data']['roster_sha256'])
     assert direct_query(route, actual_tuple(route))["status"] == "ANSWER"
 
 

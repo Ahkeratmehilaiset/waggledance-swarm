@@ -14,6 +14,7 @@ concurrency:
 
 jobs:
   test:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -115,7 +116,41 @@ jobs:
           fi
           echo "Mind test count: ${BASH_REMATCH[1]}"
 
+  c2-diagnostic-only:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install diagnostic dependencies
+        run: python -m pip install -r requirements-ci.txt
+      - name: Verify Linux and exact diagnostic head
+        run: |
+          test "$RUNNER_OS" = Linux
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor 13b25b0443ae14912fcefa6fccfa2a623906177e HEAD
+          printf 'diagnostic_head=%s runner_os=%s\n' "$(git rev-parse HEAD)" "$RUNNER_OS"
+      - name: Confirm baseline fails and candidate passes on Linux
+        shell: bash
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/c2-base" 13b25b0443ae14912fcefa6fccfa2a623906177e
+          test "$(git -C "$RUNNER_TEMP/c2-base" rev-parse HEAD)" = 13b25b0443ae14912fcefa6fccfa2a623906177e
+          set +e
+          (cd "$RUNNER_TEMP/c2-base" && python -m pytest tests/tools/test_real_c2_enforcement.py::test_direct_query_actual_c2_tuple_answers -q --tb=short) > "$RUNNER_TEMP/c2-baseline.log" 2>&1
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/c2-baseline.log"
+          test "$status" -eq 1
+          grep -F 'QueryRefused: resolution_refused' "$RUNNER_TEMP/c2-baseline.log"
+          python -m pytest tests/tools/test_real_c2_enforcement.py::test_direct_query_actual_c2_tuple_answers -q --tb=short
+
   security-scan:
+    if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

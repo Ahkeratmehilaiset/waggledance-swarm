@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import sysconfig
@@ -25,6 +26,7 @@ from tools import wd_q4_public_child as public_child
 from tests.tools.test_wd_q4_real_card_snapshot_e2e import real_snapshot, real_fixture, rt
 
 _ORIGINAL_VALIDATE_CONFIG = q4._validate_config
+_ORIGINAL_CHECKPOINT_SECURE = pointers.checkpoint._secure
 
 
 def sha(raw):
@@ -56,6 +58,24 @@ def _bind_posix_route_config(config, directory):
     return replace(config, memory=str(directory), descriptor=str(directory / 'descriptor.json'))
 
 
+def _secure_posix_fixture(path, directory, *, missing_leaf=False):
+    """Permit only the existing synthetic C2 root and its generation files."""
+    path = Path(path)
+    if (not isinstance(directory, PurePosixPath) or not directory.is_absolute()
+            or not path.is_absolute() or missing_leaf is not False
+            or '..' in path.parts
+            or (path != directory.parent and path != directory and directory not in path.parents)):
+        raise pointers.checkpoint.CheckpointRefused('invalid_fixture_path')
+    for current in (path, *path.parents):
+        try:
+            info = current.lstat()
+        except OSError:
+            raise pointers.checkpoint.CheckpointRefused('invalid_fixture_path') from None
+        if stat.S_ISLNK(info.st_mode):
+            raise pointers.checkpoint.CheckpointRefused('invalid_fixture_path')
+    return path
+
+
 @pytest.fixture
 def route(real_snapshot, monkeypatch):
     directory, built, _, snapshot, projection, args = real_snapshot
@@ -73,6 +93,11 @@ def route(real_snapshot, monkeypatch):
         validator = q4._validate_config
         monkeypatch.setattr(q4, '_validate_config',
                             lambda value: _validate_posix_fixture_config(value, directory, validator))
+        # The staged resolver's native root guard is Windows-only; keep this
+        # fixture's POSIX seam bound to the actual synthetic generation.
+        monkeypatch.setattr(pointers.checkpoint, '_secure',
+                            lambda path, *, missing_leaf=False:
+                            _secure_posix_fixture(path, directory, missing_leaf=missing_leaf))
 
     def launcher(*, query, **kwargs):
         calls.append(True)
@@ -271,6 +296,28 @@ def staged_args(route):
     return dict(args, enabled=True)
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX fixture-only root adapter')
+def test_staged_posix_fixture_root_keeps_native_guard_and_rejects_escapes(route, tmp_path):
+    directory = route['directory']
+    root = directory.parent
+    with pytest.raises(pointers.checkpoint.CheckpointRefused):
+        _ORIGINAL_CHECKPOINT_SECURE(root)
+    assert _secure_posix_fixture(root, directory) == root
+    assert _secure_posix_fixture(directory / 'descriptor.json', directory) == directory / 'descriptor.json'
+    for path in (root.parent, root / 'other', directory / '..' / 'other',
+                 directory / 'missing.json', Path('relative')):
+        with pytest.raises(pointers.checkpoint.CheckpointRefused):
+            _secure_posix_fixture(path, directory)
+    with pytest.raises(pointers.checkpoint.CheckpointRefused):
+        _secure_posix_fixture(directory / 'missing.json', directory, missing_leaf=True)
+    outside = tmp_path / 'outside-synthetic.json'
+    outside.write_bytes(b'not part of fixture')
+    link = directory / 'outside-link'
+    link.symlink_to(outside)
+    with pytest.raises(pointers.checkpoint.CheckpointRefused):
+        _secure_posix_fixture(link, directory)
+
+
 def test_staged_query_actual_c2_valid_real_still_answers(route):
     answer = public.query_staged_card_snapshot(route["config"], question(), **staged_args(route))
     assert answer["status"] == "ANSWER" and route["calls"] == [True]
@@ -281,6 +328,14 @@ def test_staged_query_actual_c2_rejects_changed_source_before_query(route):
     with pytest.raises(public.PublicQueryRefused):
         public.query_staged_card_snapshot(route["config"], question(), **staged_args(route))
     assert route["calls"] == []
+
+
+def test_staged_query_actual_c2_rejects_changed_projection_before_query(route):
+    projection = route['directory'] / 'projection.json'
+    projection.write_bytes(projection.read_bytes() + b' ')
+    with pytest.raises(public.PublicQueryRefused):
+        public.query_staged_card_snapshot(route['config'], question(), **staged_args(route))
+    assert route['calls'] == []
 
 
 _STAGED_PROCESS = r'''

@@ -25,3 +25,4 @@ jobs:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
         run: |
           python -m pytest tests/tools/test_real_c2_enforcement.py::test_staged_query_actual_c2_valid_real_still_answers -q --tb=short -p no:cacheprovider
+          python -m pytest tests/tools/test_real_c2_enforcement.py -q --tb=short -p no:cacheprovider

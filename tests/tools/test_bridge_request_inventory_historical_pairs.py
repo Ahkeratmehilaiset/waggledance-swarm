@@ -138,16 +138,23 @@ def test_getter_pins_exactly_the_reviewed_pairs() -> None:
         assert text.count(f"'{rid}'") == 1
 
 
-@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
-def test_reference_serializer_matches_canonical_json(tmp_path: Path, shell: str) -> None:
-    event = {"empty": [], "nested": {"number": 7, "flag": True, "large": 9007199254740993},
+RICH_EVENT = {"empty": [], "nested": {"number": 7, "flag": True, "large": 9007199254740993},
              "text": "ääkkönen\n\t\"\\ \u0001", "nothing": None, "date": "2026-11-10T20:42:46.6659706Z", "list": [1, "two", {"b": 1, "a": 2}], "single": ["only"], "single_object": [{"k": []}],
+             "empty_object": {}, "nested_empty": {"inner": {}, "list": [{}]},
              "Upper": 1, "lower": 2, "_under": 3, "html": "'<>&"}
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("event", (RICH_EVENT, {}), ids=("rich", "empty_top_level"))
+def test_reference_serializer_matches_canonical_json(tmp_path: Path, shell: str, event: dict) -> None:
+    # Run as the getter runs it: StrictMode Latest and ErrorAction Stop (an empty object once threw here).
     source = tmp_path / "event.json"
     source.write_text(canonical(event), encoding="utf-8")
     inventory = str(INVENTORY).replace("'", "''")
     file = str(source).replace("'", "''")
     script = f"""
+Set-StrictMode -Version Latest
+$ErrorActionPreference='Stop'
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile('{inventory}',[ref]$tokens,[ref]$errors)
 if($errors.Count) {{ throw 'parse failure' }}
@@ -269,6 +276,49 @@ def test_pinned_id_on_another_authors_row_refuses_even_without_the_pair(tmp_path
     diagnostic = invoke(tmp_path / "diagnostic", shell, rows, "-DiagnosticPartial")
     assert diagnostic.returncode == 0, diagnostic.stderr
     assert json.loads(diagnostic.stdout)["conflict_count"] == 0
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("pair_index", range(len(IDS)))
+@pytest.mark.parametrize("row_index", (0, 1))
+@pytest.mark.parametrize("where", ("payload", "top_level"))
+def test_set_aside_row_with_a_p1_lifecycle_marker_refuses(tmp_path: Path, shell: str, pair_index: int,
+                                                          row_index: int, where: str) -> None:
+    # The pins match exactly (anchors are these rows), so only the P1 rule can refuse: a set-aside row
+    # never enters successor scanning, so a P1 row may not be set aside at all.
+    by_id = pairs()
+    row = by_id[IDS[pair_index]][row_index]
+    if where == "payload":
+        row["payload"]["request_lifecycle"] = "wd.request-lifecycle.p1"
+    else:
+        row["request_lifecycle"] = "wd.request-lifecycle.p1"
+    seal(row)
+    result = invoke(tmp_path, shell, flat(by_id), anchors=by_id)
+    assert refused(result) and "P1" in result.stderr
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("where", ("payload", "top_level"))
+def test_inventoried_row_naming_a_set_aside_id_as_p1_predecessor_refuses(tmp_path: Path, shell: str,
+                                                                           where: str) -> None:
+    by_id = pairs()
+    successor = request("unrelated-successor-id", 0, True)
+    link = {"request_lifecycle": "wd.request-lifecycle.p1", "task_revision": 2,
+            "previous_request_id": IDS[0], "previous_request_digest": by_id[IDS[0]][1]["request_digest"],
+            "action_required": True, "fyi": False}
+    if where == "payload":
+        successor["payload"].update(link)
+    else:
+        successor.update(link)
+    seal(successor)
+    result = invoke(tmp_path, shell, flat(by_id) + [successor])
+    assert refused(result) and "P1" in result.stderr
+    legacy = request("unrelated-legacy-id", 0, True)
+    legacy["payload"]["supersedes_request"] = IDS[0]   # legacy wording, not P1 lineage: still listed
+    seal(legacy)
+    listed = invoke(tmp_path / "legacy", shell, flat(pairs()) + [legacy])
+    assert listed.returncode == 0, listed.stderr
+    assert [row["request_id"] for row in json.loads(listed.stdout)["requests"]] == ["unrelated-legacy-id"]
 
 
 @pytest.mark.parametrize("shell", SHELLS, **shell_ids)

@@ -188,7 +188,9 @@ function ConvertTo-InventoryReferenceJson {
     if ($Value -is [bool]) { return $Value.ToString().ToLowerInvariant() }
     if ($Value -is [int] -or $Value -is [long]) { return $Value.ToString([Globalization.CultureInfo]::InvariantCulture) }
     if ($Value -is [Collections.IDictionary] -or $Value -is [pscustomobject]) {
-        [string[]]$names=if ($Value -is [Collections.IDictionary]) { @($Value.Keys) } else { @($Value.PSObject.Properties.Name) }
+        # Assign inside each branch: an if-expression yielding an empty array unrolls to $null.
+        if ($Value -is [Collections.IDictionary]) { [string[]]$names=@($Value.Keys) }
+        else { [string[]]$names=@($Value.PSObject.Properties | ForEach-Object { $_.Name }) }
         [Array]::Sort($names,[StringComparer]::Ordinal)
         $parts=@(foreach ($name in $names) {
             if ($Value -is [Collections.IDictionary]) { $item=$Value[$name] }
@@ -269,6 +271,10 @@ foreach ($historicalId in $historicalPins.Keys) {
             (Get-BridgeReplyTextHash (Get-BridgeRequestContent $event)).ToLowerInvariant() -cne $pins[$index][1]) {
             throw "Conflicting content for immutable request ID $historicalId; historical pair does not match"
         }
+        # A set-aside row never enters P1 successor scanning, so a P1 row is never set aside.
+        if ($null -ne (Get-BridgeContractField $event 'request_lifecycle')) {
+            throw "Conflicting content for immutable request ID $historicalId; historical pair does not match (P1 lifecycle row)"
+        }
     }
     $historicalConflicts.Add([pscustomobject][ordered]@{
         kind='known_historical_immutable_id_conflict'; request_id=$historicalId
@@ -276,6 +282,16 @@ foreach ($historicalId in $historicalPins.Keys) {
         indexed_positions=@($found | ForEach-Object { $_.position })
         answer_state='not_evaluated'; authority_effect='none'
     })
+}
+if ($historicalActive) {
+    # P1 lineage onto a set-aside row cannot be evaluated (that row is not inventoried): refuse instead of
+    # listing a successor whose predecessor is hidden. Legacy wording such as supersedes_request is not P1.
+    foreach ($inventoriedId in $order) {
+        $previousId=Get-BridgeContractField $byId[$inventoriedId].event 'previous_request_id'
+        if ($previousId -is [string] -and $historicalPins.Contains($previousId)) {
+            throw "Request $inventoriedId names set-aside historical request ID $previousId as its P1 predecessor; lineage cannot be evaluated"
+        }
+    }
 }
 # -SessionId scopes the OUTPUT only. Every own row of every session went through the binding and
 # immutable-content checks above, so a session filter can never hide a conflicting row with the same

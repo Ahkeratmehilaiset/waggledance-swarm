@@ -341,6 +341,11 @@ if ($mode -eq 'trust_forged_fresh') { $answer.trust = @{ freshness = 'FRESH' } }
 $result = @{ schema = 'wd.q4-lane-caller-result.v1'; status = 'VALIDATED'; lane = 'LANE'; inner_status = $innerStatus
   answer = $answer; answer_sha256 = ('d' * 64); call_id = ('e' * 32); result_count = $results.Count; descriptor_sha256 = ('f' * 64)
   cleanup = 'chain_confirmed' }
+switch ($mode) {
+  'legacy_answer_lf' {$result.answer_sha256 += "`n"}
+  'legacy_call_id_lf' {$result.call_id += "`n"}
+  'legacy_ref_lf' {$result.answer.results[0].ref_sha256 += "`n"}
+}
 if ($WithStatus) { [Console]::Error.WriteLine('{"status":"OK","exit_code":0,"cleanup":"chain_confirmed"}') }
 [Console]::Out.Write(($result | ConvertTo-Json -Depth 6 -Compress) + "`n")
 exit 0
@@ -445,16 +450,17 @@ Clear-WdInheritedMindReadSettings
 
 
 
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
 @pytest.mark.parametrize("mode", ["withheld", "withheld_degraded", "withheld_multiple", "withheld_missing", "withheld_outer_unknown", "withheld_extra", "withheld_wrong_lane", "withheld_wrong_descriptor",
     "withheld_wrong_binding", "withheld_wrong_freshness", "withheld_wrong_trust", "withheld_wrong_cleanup",
     "withheld_wrong_count", "withheld_bad_ref", "withheld_extra_ref", "withheld_identity_lf",
     "withheld_call_id_lf", "withheld_answer_lf", "withheld_ref_lf", "withheld_doc_id_lf"])
 @_WINDOWS_HELPER_LAUNCH
-def test_withheld_content_metadata_is_strict_and_never_delivered(tmp_path, mode):
+def test_withheld_content_metadata_is_strict_and_never_delivered(tmp_path, mode, ps):
     fx = startup_read_fixture(tmp_path, "codex-tools-1", mode=mode)
     script = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
     script += "\n$ErrorActionPreference='Stop';Set-StrictMode -Version Latest\n" + startup_read_call(fx, "codex-tools-1")
-    record = json.loads(_run_powershell(script).stdout.strip())
+    record = json.loads(_run_powershell(script, executable=ps).stdout.strip())
     if mode in ("withheld", "withheld_degraded", "withheld_multiple"):
         assert record["outcome"] == "unknown" and record["reason"] == "freshness_unverified"
         assert record["refs"] == (["a" * 64, "2" * 64] if mode == "withheld_multiple" else ["a" * 64])
@@ -535,7 +541,8 @@ def test_on_demand_prompt_does_not_treat_unknown_freshness_as_current():
 
 
 @pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
-@pytest.mark.parametrize("mode", ["answer", "abstain", "degraded", "zero", "refuse", "garbage"])
+@pytest.mark.parametrize("mode", ["answer", "abstain", "degraded", "zero", "refuse", "garbage",
+                                  "legacy_answer_lf", "legacy_call_id_lf", "legacy_ref_lf"])
 @_WINDOWS_HELPER_LAUNCH
 def test_tools_startup_read_records_only_outcome_digests_and_refs(tmp_path, ps, mode):
     fx = startup_read_fixture(tmp_path, "codex-tools-1", mode=mode)

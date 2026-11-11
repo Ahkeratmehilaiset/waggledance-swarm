@@ -214,6 +214,47 @@ def test_case_colliding_json_keys_hold_even_when_all_bytes_are_repinned(location
     assert result["authority_effect"] == "none" and result["state_final_pair_consistent"] is False
 
 
+@pytest.mark.parametrize("location", ["state", "state_array", "manifest", "manifest_files"])
+def test_empty_json_key_holds_even_when_all_bytes_are_repinned(location):
+    inputs = example()
+    inventory = json.loads(inputs["inventory_bytes"])
+    state = json.loads(inputs["backup_bytes"]["WD_REBOOT_STATE_CURRENT.json"])
+    manifest = json.loads(inputs["prior_manifest_bytes"])
+    if location == "state": state[""] = "synthetic"
+    elif location == "state_array": state["unused"] = [{"": "synthetic"}]
+    elif location == "manifest": manifest[""] = "synthetic"
+    elif location == "manifest_files": manifest["files"][""] = "D" * 64
+    if location in ("manifest", "manifest_files"):
+        manifest_bytes = encoded(manifest)
+        inputs["prior_manifest_bytes"] = manifest_bytes
+        inputs["expected_previous_manifest_sha256"] = sha(manifest_bytes)
+        inventory["prior_state"]["manifest_sha256"] = sha(manifest_bytes)
+        state["manifest_sha256"] = state["final_manifest_sha256"] = sha(manifest_bytes)
+    state_bytes = encoded(state)
+    inputs["backup_bytes"]["WD_REBOOT_STATE_CURRENT.json"] = state_bytes
+    inventory["prior_state"]["state_sha256"] = sha(state_bytes)
+    next(row for row in inventory["files"] if row["name"] == "WD_REBOOT_STATE_CURRENT.json")["sha256"] = sha(state_bytes)
+    inputs["inventory_bytes"] = encoded(inventory)
+    inputs["expected_inventory_sha256"] = sha(inputs["inventory_bytes"])
+    result = assess(**inputs)
+    assert result["status"] == "HOLD", (location, result)
+    assert result["authority_effect"] == "none" and result["state_final_pair_consistent"] is False
+
+
+def test_unicode_casefold_collision_is_a_conservative_refusal():
+    inputs = example()
+    state = json.loads(inputs["backup_bytes"]["WD_REBOOT_STATE_CURRENT.json"])
+    state.update({"ss": 1, "ß": 2})
+    raw = encoded(state)
+    inputs["backup_bytes"]["WD_REBOOT_STATE_CURRENT.json"] = raw
+    def update(d):
+        d["prior_state"]["state_sha256"] = sha(raw)
+        next(row for row in d["files"] if row["name"] == "WD_REBOOT_STATE_CURRENT.json")["sha256"] = sha(raw)
+    change_inventory(inputs, update)
+    result = assess(**inputs)
+    assert result["status"] == "HOLD" and result["authority_effect"] == "none"
+
+
 def test_prior_manifest_and_state_allow_utf8_bom_without_changing_hashed_bytes():
     inputs = example()
     manifest = b"\xef\xbb\xbf" + inputs["prior_manifest_bytes"]

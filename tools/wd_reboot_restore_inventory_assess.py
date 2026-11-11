@@ -49,6 +49,7 @@ def _pairs(pairs):
     for key, value in pairs:
         # PowerShell's object conversion cannot represent case-colliding keys.
         # Unicode casefold is intentionally conservative for all JSON objects.
+        _require(key != '')  # Windows PowerShell 5.1 rejects empty member names.
         normalized = key.casefold()
         _require(normalized not in folded)
         folded.add(normalized)

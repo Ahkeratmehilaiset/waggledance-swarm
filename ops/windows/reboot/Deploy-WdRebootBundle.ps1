@@ -17,6 +17,9 @@
 param(
     [string] $MachineRoot = 'C:\Python',
     [string] $BundleStore = 'C:\Python\wd-reboot-bundles',
+    # When switching stores, explicitly name the store containing the previous
+    # generation. Omitted means the configured BundleStore; not an authenticity claim.
+    [string] $PreviousBundleStore = '',
     [switch] $SkipTaskRegistration,
     [switch] $SkipGrokResolve,
     # Optional offline wheel directory; every wheel is still hash-verified.
@@ -143,12 +146,21 @@ function Write-WdRebootBackupInventory {
         [Parameter(Mandatory)] [string[]] $TransactionNames,
         [Parameter(Mandatory)] [hashtable] $OriginallyPresent,
         [Parameter(Mandatory)] [string] $NewCommit,
-        [Parameter(Mandatory)] [string] $NewManifestSha256
+        [Parameter(Mandatory)] [string] $NewManifestSha256,
+        [Parameter(Mandatory)] [string] $PreviousBundleStore
     )
     if ($NewCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'backup inventory commit invalid' }
     if ($NewManifestSha256 -cnotmatch '^[0-9A-Fa-f]{64}$') { throw 'backup inventory new manifest hash invalid' }
+    if ($PreviousBundleStore -cnotmatch '^[Cc]:[\\/]' -or
+        $PreviousBundleStore -match '(^|[\\/])\.\.?(?=[\\/]|$)') {
+        throw 'backup inventory prior store must be an absolute canonical C-drive path'
+    }
     $machine = Resolve-FullPath $MachineRoot
     $backup = Resolve-FullPath $BackupRoot
+    $previousStore = Resolve-FullPath $PreviousBundleStore
+    if ([IO.Path]::GetPathRoot($previousStore).TrimEnd('\') -ine 'C:') {
+        throw 'backup inventory prior store must be on C drive'
+    }
     $expectedParent = Join-Path $machine 'wd-reboot-backups'
     [void](Assert-ChildPath -Parent $expectedParent -Child $backup)
     [void](Assert-WdPathWithoutReparse -Path $machine -TrustedRoot $machine -ExpectedType Directory)
@@ -202,13 +214,17 @@ function Write-WdRebootBackupInventory {
         if ($oldCommit -cnotmatch '^[0-9a-f]{40}$' -or $oldHash -cnotmatch '^[0-9A-F]{64}$') {
             throw 'backup inventory prior state binding invalid'
         }
-        $oldRoot = Resolve-FullPath ([string]$state.active_bundle)
-        $expectedRoot = Resolve-FullPath (Join-Path $machine ('wd-reboot-bundles\' + $oldCommit))
+        $oldPath = [string]$state.active_bundle
+        if ($oldPath -cnotmatch '^[Cc]:[\\/]' -or $oldPath -match '(^|[\\/])\.\.?(?=[\\/]|$)') {
+            throw 'backup inventory prior bundle path invalid'
+        }
+        $oldRoot = Resolve-FullPath $oldPath
+        $expectedRoot = Resolve-FullPath (Join-Path $previousStore $oldCommit)
         if (-not $oldRoot.Equals($expectedRoot, [StringComparison]::OrdinalIgnoreCase)) {
             throw 'backup inventory prior bundle path mismatch'
         }
         $manifest = Join-Path $oldRoot 'deployment-manifest.json'
-        [void](Assert-WdPathWithoutReparse -Path $manifest -TrustedRoot $machine -ExpectedType Leaf)
+        [void](Assert-WdPathWithoutReparse -Path $manifest -TrustedRoot 'C:\' -ExpectedType Leaf)
         if ((Get-Item -LiteralPath $manifest).Length -gt 4194304) { throw 'backup inventory prior manifest too large' }
         $manifestBytes = [IO.File]::ReadAllBytes($manifest)
         $manifestHasher = [Security.Cryptography.SHA256]::Create()
@@ -221,7 +237,7 @@ function Write-WdRebootBackupInventory {
         $oldManifest = $manifestText | ConvertFrom-Json -ErrorAction Stop
         if ([string]$oldManifest.source_commit -cne $oldCommit) { throw 'backup inventory prior commit mismatch' }
         $priorState = [ordered]@{ state_sha256 = $stateDigest; source_commit = $oldCommit;
-                                  active_bundle = $oldRoot; manifest_sha256 = $oldHash }
+                                  bundle_store = $previousStore; active_bundle = $oldRoot; manifest_sha256 = $oldHash }
     }
     $inventory = [ordered]@{ schema = 'wd.reboot-backup-inventory.v1'; new_commit = $NewCommit;
                             new_manifest_sha256 = $NewManifestSha256.ToUpperInvariant();
@@ -1634,6 +1650,7 @@ if (-not $SkipTaskRegistration -and -not $StageOnly) {
 
 if ($DryRun) {
     Write-Host 'DRY RUN: no files, tasks, caches, or processes will be changed.'
+    Write-Host '  Previous bundle store is NOT_CHECKED until a final install.'
     if ($Q4DefaultPointerPath) {
         Write-Host '  Q4 default NOT_CHECKED: pointer and binding are verified only during final staged install.'
     }
@@ -1787,6 +1804,7 @@ if ($StageOnly) {
     Write-Host ('  deployment manifest sha256: {0}' -f $installedManifestHash)
     Write-Host ('  final pair to pin (an operator input, not a signature): -ExpectedFinalCommit {0} -ExpectedFinalManifestHash {1}' -f $head, $installedManifestHash)
     Write-Host '  untouched: machine wrappers, data copies, reboot state pointers, integrity files, Grok resolution, scheduled tasks, live supervisor, watchers and sessions.'
+    Write-Host '  Previous bundle store is NOT_CHECKED until a final install.'
     Write-Host '  activation is a separate cold switch: run this installer without -StageOnly only after the supervisor task is disabled and its invocation has exited.'
     return
 }
@@ -1805,6 +1823,15 @@ if (
         'match this install (commit {2}, manifest sha256 {3}); nothing on the machine was changed'
     ) -f $ExpectedFinalCommit, $ExpectedFinalManifestHash, $head, $installedManifestHash)
 }
+$previousStoreFull = $storeFull
+if ($PreviousBundleStore) {
+    if ($PreviousBundleStore -cnotmatch '^[Cc]:[\\/]' -or
+        $PreviousBundleStore -match '(^|[\\/])\.\.?(?=[\\/]|$)') {
+        throw 'previous bundle store must be an absolute canonical C-drive path'
+    }
+    $previousStoreFull = Resolve-FullPath $PreviousBundleStore
+}
+[void](Assert-WdPathWithoutReparse -Path $previousStoreFull -TrustedRoot 'C:\' -ExpectedType Directory -AllowMissing)
 $q4PointerText = ''
 if ($Q4DefaultPointerPath) {
     # The expected pointer digest is an independent install input, not a hash
@@ -1920,7 +1947,7 @@ if (-not $backedUp) {
 }
 $backupInventory = Write-WdRebootBackupInventory -MachineRoot $machineFull -BackupRoot $backupRoot `
     -TransactionNames $transactionNames -OriginallyPresent $originallyPresent -NewCommit $head `
-    -NewManifestSha256 $installedManifestHash
+    -NewManifestSha256 $installedManifestHash -PreviousBundleStore $previousStoreFull
 Write-Host "Previous-state backup inventory SHA256: $($backupInventory.sha256)"
 
 $machineMutationStarted = $false

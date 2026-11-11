@@ -46,10 +46,11 @@ def scenario(tmp_path):
     return machine, backup, names
 
 
-def invoke(machine, backup, names, present, new_manifest="d" * 64):
+def invoke(machine, backup, names, present, new_manifest="d" * 64, previous_store=None):
     env = dict(os.environ, TEST_MACHINE=str(machine), TEST_BACKUP=str(backup),
                TEST_NAMES=json.dumps(names), TEST_PRESENT=json.dumps(present), TEST_SCRIPT=str(DEPLOY),
-               TEST_NEW_MANIFEST=new_manifest)
+               TEST_NEW_MANIFEST=new_manifest,
+               TEST_PREVIOUS_STORE=str(previous_store or machine / "wd-reboot-bundles"))
     script = r"""
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
@@ -65,18 +66,19 @@ $presence=@{}
 $raw=$env:TEST_PRESENT | ConvertFrom-Json
 foreach($p in $raw.PSObject.Properties) { $presence[$p.Name]=[bool]$p.Value }
 [string[]]$names=(ConvertFrom-Json -InputObject $env:TEST_NAMES)
-Write-WdRebootBackupInventory -MachineRoot $env:TEST_MACHINE -BackupRoot $env:TEST_BACKUP `
-  -TransactionNames $names -OriginallyPresent $presence -NewCommit ('c' * 40) `
-  -NewManifestSha256 $env:TEST_NEW_MANIFEST | ConvertTo-Json -Depth 12 -Compress
+$params=@{MachineRoot=$env:TEST_MACHINE; BackupRoot=$env:TEST_BACKUP; TransactionNames=$names;
+          OriginallyPresent=$presence; NewCommit=('c'*40); NewManifestSha256=$env:TEST_NEW_MANIFEST;
+          PreviousBundleStore=$env:TEST_PREVIOUS_STORE}
+Write-WdRebootBackupInventory @params | ConvertTo-Json -Depth 12 -Compress
 """
     return subprocess.run([str(SHELL), "-NoProfile", "-NonInteractive", "-Command", script],
                           cwd=ROOT, env=env, text=True, capture_output=True, timeout=30)
 
 
-def seeded(scenario):
+def seeded(scenario, previous_store=None):
     machine, backup, names = scenario
     commit = "a" * 40
-    old_bundle = machine / "wd-reboot-bundles" / commit
+    old_bundle = (previous_store or machine / "wd-reboot-bundles") / commit
     old_bundle.mkdir(parents=True)
     manifest = b'{"source_commit":"' + commit.encode() + b'"}'
     (old_bundle / "deployment-manifest.json").write_bytes(manifest)
@@ -104,8 +106,72 @@ def test_inventory_binds_present_absent_state_and_bundle(scenario):
     assert doc["prior_state"]["state_sha256"] == state_sha
     assert doc["prior_state"]["source_commit"] == commit
     assert doc["prior_state"]["manifest_sha256"] == manifest_sha
+    assert Path(doc["prior_state"]["bundle_store"]) == machine / "wd-reboot-bundles"
     assert doc["new_commit"] == "c" * 40
     assert doc["new_manifest_sha256"] == "D" * 64
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows PowerShell")
+def test_prior_bundle_may_use_explicit_separate_store(scenario):
+    machine, backup, names = scenario
+    store = machine.parent / "separate-previous-store"
+    presence, state_sha, manifest_sha, commit = seeded(scenario, store)
+    result = invoke(machine, backup, names, presence, previous_store=store)
+    assert result.returncode == 0, result.stderr
+    doc = json.loads((backup / "rollback-inventory.json").read_bytes())
+    assert doc["prior_state"]["state_sha256"] == state_sha
+    assert Path(doc["prior_state"]["bundle_store"]) == store
+    assert Path(doc["prior_state"]["active_bundle"]) == store / commit
+    assert doc["prior_state"]["manifest_sha256"] == manifest_sha
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows PowerShell")
+@pytest.mark.parametrize("mismatch", ["wrong_store", "escaping_path", "non_c_store"])
+def test_prior_store_requires_explicit_matching_c_path(scenario, mismatch):
+    machine, backup, names = scenario
+    store = machine.parent / "separate-previous-store"
+    presence, _, _, commit = seeded(scenario, store)
+    approved = store
+    if mismatch == "wrong_store":
+        approved = machine.parent / "not-the-previous-store"
+    elif mismatch == "non_c_store":
+        approved = r"D:\unapproved-synthetic-store"
+    else:
+        state_path = machine / names[2]
+        state = json.loads(state_path.read_bytes())
+        state["active_bundle"] = str(store / ".." / "outside" / commit)
+        changed = json.dumps(state, separators=(",", ":")).encode()
+        state_path.write_bytes(changed)
+        (backup / names[2]).write_bytes(changed)
+    result = invoke(machine, backup, names, presence, previous_store=approved)
+    assert result.returncode != 0
+    expected_error = ("absolute canonical C-drive" if mismatch == "non_c_store" else
+                      "prior bundle path invalid" if mismatch == "escaping_path" else
+                      "prior bundle path mismatch")
+    assert expected_error in result.stderr, result.stderr
+    assert not (backup / "rollback-inventory.json").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows PowerShell")
+def test_separate_store_reparse_is_rejected(scenario):
+    machine, backup, names = scenario
+    real_store = machine.parent / "real-store"
+    alias_store = machine.parent / "alias-store"
+    presence, _, _, commit = seeded(scenario, real_store)
+    try:
+        alias_store.symlink_to(real_store, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"synthetic symlink creation unavailable: {error.winerror}")
+    state_path = machine / names[2]
+    state = json.loads(state_path.read_bytes())
+    state["active_bundle"] = str(alias_store / commit)
+    changed = json.dumps(state, separators=(",", ":")).encode()
+    state_path.write_bytes(changed)
+    (backup / names[2]).write_bytes(changed)
+    result = invoke(machine, backup, names, presence, previous_store=alias_store)
+    assert result.returncode != 0
+    assert "reparse point" in result.stderr, result.stderr
+    assert not (backup / "rollback-inventory.json").exists()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows PowerShell")
@@ -288,3 +354,17 @@ def test_inventory_is_written_after_backup_and_before_machine_mutation():
     call = text.index("Write-WdRebootBackupInventory -MachineRoot", start)
     assert text.index("Copy-Item -LiteralPath $machinePath", start) < call
     assert call < text.index("$machineMutationStarted = $false", call)
+
+
+def test_dryrun_and_stageonly_do_not_resolve_or_read_previous_store():
+    text = DEPLOY.read_text(encoding="utf-8")
+    dry = text.index("Write-Host 'DRY RUN: no files, tasks, caches, or processes will be changed.'")
+    dry_return = text.index("    return", dry)
+    stage = text.index("Write-Host 'STAGE ONLY: commit-addressed bundle verified and left staged.")
+    stage_return = text.index("    return", stage)
+    prior = text.index("$previousStoreFull = $storeFull", stage_return)
+    migration = text.index("# Migration is explicit", prior)
+    assert dry < dry_return < stage < stage_return < prior < migration
+    assert "Previous bundle store is NOT_CHECKED until a final install." in text[dry:dry_return]
+    assert "Previous bundle store is NOT_CHECKED until a final install." in text[stage:stage_return]
+    assert "-PreviousBundleStore $previousStoreFull" in text[migration:]

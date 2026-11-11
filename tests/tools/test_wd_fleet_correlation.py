@@ -1,4 +1,5 @@
 """Synthetic opt-in correlation through the fleet/Tools launch boundaries."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -272,6 +273,99 @@ $ok=$true;try {{ Assert-WdToolsProcessVisibility -Processes @($own) `
 @{{ok=$ok}} | ConvertTo-Json -Compress
 """
     assert json.loads(_run_powershell(script, executable=ps).stdout)['ok'] is False
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell path semantics')
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['own', 'parent', 'hidden', 'empty_command', 'missing_name', 'missing_pid',
+                                  'duplicate_pid', 'conflicting_pid', 'empty_snapshot', 'known', 'no_own', 'cim_error'])
+def test_raw_process_snapshot_reaches_visibility_without_losing_unknowns(ps, case):
+    script = load(FLEET_SOURCE, 'Get-WdVisibilityProcessSnapshots') + load(FLEET_SOURCE, 'Assert-WdToolsProcessVisibility') + f"""
+$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
+if (-not (Get-Command Get-WdVisibilityProcessSnapshots -ErrorAction SilentlyContinue)) {{ throw 'raw collector unavailable' }}
+function Test-WdPowerShellHostOptionToken {{ param($Token,$HostKind,$Name) return $false }}
+function Get-CimInstance {{ param($ClassName,$ErrorAction)
+  if ('{case}' -eq 'cim_error') {{ throw 'synthetic CIM denied' }}
+  if ('{case}' -eq 'empty_snapshot') {{ return @() }}
+  if ('{case}' -eq 'missing_name') {{ return [pscustomobject]@{{ProcessId=3333;CommandLine='known'}} }}
+  if ('{case}' -eq 'missing_pid') {{ return [pscustomobject]@{{Name='powershell.exe';CommandLine='known'}} }}
+  if ('{case}' -eq 'duplicate_pid') {{ return @([pscustomobject]@{{Name='powershell.exe';ProcessId=3333;CommandLine='known'}},[pscustomobject]@{{Name='powershell.exe';ProcessId=3333;CommandLine='known'}}) }}
+  if ('{case}' -eq 'conflicting_pid') {{ return @([pscustomobject]@{{Name='powershell.exe';ProcessId=3333;CommandLine='known'}},[pscustomobject]@{{Name='notepad.exe';ProcessId=3333;CommandLine='notepad'}}) }}
+  if ('{case}' -eq 'own') {{ return [pscustomobject]@{{Name='powershell.exe';ProcessId=$PID;CommandLine='powershell.exe -EncodedCommand ZQ=='}} }}
+  $own=[pscustomobject]@{{Name='powershell.exe';ProcessId=$PID;CommandLine='known'}}
+  if ('{case}' -eq 'parent') {{ return @($own,[pscustomobject]@{{Name='powershell.exe';ProcessId=3333;CommandLine='powershell.exe -NoExit'}}) }}
+  if ('{case}' -eq 'empty_command') {{ return @($own,[pscustomobject]@{{Name='powershell.exe';ProcessId=3333;CommandLine=''}}) }}
+  if ('{case}' -eq 'known') {{ return $own }}
+  if ('{case}' -eq 'no_own') {{ return [pscustomobject]@{{Name='powershell.exe';ProcessId=3333;CommandLine='known'}} }}
+  return @($own,[pscustomobject]@{{Name='powershell.exe';ProcessId=3333;CommandLine=$null}})
+}}
+$parse={{param($CommandLine,$HostKind)
+ if ($CommandLine -ceq 'known') {{ return [pscustomobject]@{{script_path='C:\\Python\\start-wd-tools-consumer.ps1';arguments=@('powershell.exe','-File','C:\\Python\\start-wd-tools-consumer.ps1');file_index=1}} }}
+ return $null}}
+$ok=$true; $count=-1
+try {{ $snapshot=@(Get-WdVisibilityProcessSnapshots);$count=$snapshot.Count
+ Assert-WdToolsProcessVisibility -Processes $snapshot -AllowedToolsLaunchers @('C:\\Python\\start-wd-tools-consumer.ps1') `
+ -ParseInvocation $parse }} catch {{ $ok=$false }}
+@{{ok=$ok;count=$count}} | ConvertTo-Json -Compress
+"""
+    out = json.loads(_run_powershell(script, executable=ps).stdout)
+    assert out['ok'] is (case == 'known')
+    assert out['count'] == (1 if case in ('own', 'known') else 2 if case in ('parent', 'hidden', 'empty_command') else -1)
+
+
+def test_raw_process_snapshot_is_opt_in_before_and_after_fleet_mutex():
+    source = FLEET_SOURCE.read_text(encoding='utf-8-sig')
+    assert source.count('Get-WdVisibilityProcessSnapshots') >= 3
+    assert source.count('Assert-WdToolsProcessVisibility -Processes @(Get-WdVisibilityProcessSnapshots)') == 2
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='native Windows argv parser')
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['own_encoded', 'parent_wrapper', 'hidden'])
+def test_raw_cim_to_real_parser_holds_for_actual_uac_tree_shapes(ps, case):
+    parser_path = str(SUPERVISOR).replace("'", "''")
+    script = load(FLEET_SOURCE, 'Get-WdVisibilityProcessSnapshots') + load(FLEET_SOURCE, 'Assert-WdToolsProcessVisibility') + f"""
+$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
+function Get-CimInstance {{ param($ClassName,$ErrorAction)
+ if ('{case}' -eq 'own_encoded') {{ return [pscustomobject]@{{Name='powershell.exe';ProcessId=$PID;CommandLine='powershell.exe -EncodedCommand ZQ=='}} }}
+ $own=[pscustomobject]@{{Name='powershell.exe';ProcessId=$PID;CommandLine='powershell.exe -File C:\\Python\\start-wd-tools-consumer.ps1'}}
+ if ('{case}' -eq 'parent_wrapper') {{ return @($own,[pscustomobject]@{{Name='powershell.exe';ProcessId=3333;CommandLine='powershell.exe -File C:\\Python\\start-wd-all.ps1 -Auto'}}) }}
+ return @($own,[pscustomobject]@{{Name='powershell.exe';ProcessId=3333;CommandLine=$null}})
+}}
+$ok=$true;try {{ Assert-WdToolsProcessVisibility -Processes @(Get-WdVisibilityProcessSnapshots) `
+ -AllowedToolsLaunchers @('C:\\Python\\start-wd-tools-consumer.ps1') `
+ -ParserSourcePath '{parser_path}' -AllowUnpinnedParser }} catch {{ $ok=$false }}
+@{{ok=$ok}} | ConvertTo-Json -Compress
+"""
+    assert json.loads(_run_powershell(script, executable=ps).stdout)['ok'] is False
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='native Windows argv parser')
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@pytest.mark.parametrize('case', ['known', 'hidden', 'source_tamper', 'manifest_tamper'])
+def test_raw_cim_uses_exact_manifest_pinned_supervisor_parser(tmp_path, ps, case):
+    original = SUPERVISOR.read_bytes()
+    parser = tmp_path / 'wd_supervisor.ps1'
+    parser.write_bytes(original + (b'\n# tamper\n' if case == 'source_tamper' else b''))
+    manifest = json.dumps({'files': {'wd_supervisor.ps1': hashlib.sha256(original).hexdigest().upper()}},
+                          separators=(',', ':')).encode()
+    (tmp_path / 'deployment-manifest.json').write_bytes(manifest)
+    anchor = '0'*64 if case == 'manifest_tamper' else hashlib.sha256(manifest).hexdigest().upper()
+    parser_path = str(parser).replace("'", "''")
+    script = (load(FLEET_SOURCE, 'Read-Utf8FleetSnapshot') + load(FLEET_SOURCE, 'Get-WdVisibilityProcessSnapshots')
+              + load(FLEET_SOURCE, 'Assert-WdToolsProcessVisibility') + f"""
+$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
+$bundleManifestAnchor='{anchor}'
+function Get-CimInstance {{ param($ClassName,$ErrorAction)
+ $command='powershell.exe -File "C:\\Python\\start-wd-tools-consumer.ps1"'
+ if ('{case}' -eq 'hidden') {{ $command=$null }}
+ return [pscustomobject]@{{Name='powershell.exe';ProcessId=$PID;CommandLine=$command}}
+}}
+$ok=$true;try {{ Assert-WdToolsProcessVisibility -Processes @(Get-WdVisibilityProcessSnapshots) `
+ -AllowedToolsLaunchers @('C:\\Python\\start-wd-tools-consumer.ps1') -ParserSourcePath '{parser_path}' }} catch {{ $ok=$false }}
+@{{ok=$ok}} | ConvertTo-Json -Compress
+""")
+    assert json.loads(_run_powershell(script, executable=ps).stdout)['ok'] is (case == 'known')
 
 
 def test_agent_and_tools_producers_keep_correlation_and_tools_native_run_distinct():

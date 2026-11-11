@@ -60,6 +60,34 @@ function Assert-WdFreshToolsState {
     if (@($property.Value).Count -ne 0) { throw 'fleet_fresh_tools_already_running' }
   }
 }
+function Get-WdVisibilityProcessSnapshots {
+  # Unlike the legacy discovery snapshot, retain this process and unreadable
+  # command lines. Any incomplete or inconsistent CIM snapshot is UNKNOWN.
+  $items = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+  if ($items.Count -eq 0) { throw 'fleet_tools_visibility_unknown' }
+  $seen = New-Object 'System.Collections.Generic.HashSet[uint64]'
+  $visible = New-Object 'System.Collections.Generic.List[object]'
+  $ownHostSeen = $false
+  foreach ($item in $items) {
+    if ($null -eq $item) { throw 'fleet_tools_visibility_unknown' }
+    $name = $item.PSObject.Properties['Name']
+    $identity = $item.PSObject.Properties['ProcessId']
+    if ($null -eq $name -or $name.Name -cne 'Name' -or $name.Value -isnot [string] -or
+        [string]::IsNullOrWhiteSpace([string]$name.Value) -or $null -eq $identity -or
+        $identity.Name -cne 'ProcessId' -or
+        ($identity.Value -isnot [int] -and $identity.Value -isnot [uint32] -and
+         $identity.Value -isnot [long] -and $identity.Value -isnot [uint64])) { throw 'fleet_tools_visibility_unknown' }
+    if ($identity.Value -lt 0 -or $identity.Value -gt [int]::MaxValue -or
+        -not $seen.Add([uint64]$identity.Value)) { throw 'fleet_tools_visibility_unknown' }
+    if ([string]$name.Value -match '^(?i:powershell|pwsh)\.exe$') {
+      if ($identity.Value -eq 0) { throw 'fleet_tools_visibility_unknown' }
+      if ($identity.Value -eq $PID) { $ownHostSeen = $true }
+      $visible.Add($item)
+    }
+  }
+  if (-not $ownHostSeen) { throw 'fleet_tools_visibility_unknown' }
+  return $visible.ToArray()
+}
 function Assert-WdToolsProcessVisibility {
   param(
     [AllowEmptyCollection()] [object[]] $Processes,
@@ -3507,7 +3535,7 @@ $toolsProcessState = Get-ToolsProcessState `
   -BundleLauncherScript $bundleToolsLauncher
 if ($RequireFreshLanes) { Assert-WdFreshToolsState -ToolsState $toolsProcessState }
 if ($RequireFreshLanes) {
-  Assert-WdToolsProcessVisibility -Processes $processes -AllowedToolsLaunchers @([string]$toolsConfig.launcher_script, $bundleToolsLauncher) `
+  Assert-WdToolsProcessVisibility -Processes @(Get-WdVisibilityProcessSnapshots) -AllowedToolsLaunchers @([string]$toolsConfig.launcher_script, $bundleToolsLauncher) `
     -ParserSourcePath (Join-Path $PSScriptRoot 'wd_supervisor.ps1') -AllowUnpinnedParser:($bundleMode -ceq 'source' -and $DryRun)
 }
 $toolsLive = @($toolsProcessState.current)
@@ -3794,7 +3822,7 @@ try {
   }
   if ($RequireFreshLanes) { Assert-WdFreshToolsState -ToolsState $lockedToolsState }
   if ($RequireFreshLanes) {
-    Assert-WdToolsProcessVisibility -Processes $lockedProcesses -AllowedToolsLaunchers @([string]$toolsConfig.launcher_script, $bundleToolsLauncher) `
+    Assert-WdToolsProcessVisibility -Processes @(Get-WdVisibilityProcessSnapshots) -AllowedToolsLaunchers @([string]$toolsConfig.launcher_script, $bundleToolsLauncher) `
       -ParserSourcePath (Join-Path $PSScriptRoot 'wd_supervisor.ps1') -AllowUnpinnedParser:($bundleMode -ceq 'source' -and $DryRun)
   }
   $lockedSupervisorTask = Get-WdSingleScheduledTask `

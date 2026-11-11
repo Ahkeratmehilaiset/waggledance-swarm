@@ -1448,3 +1448,43 @@ def test_large_recall_validates_entire_answer_then_delivers_bounded_prefix(tmp_p
     record = json.loads(stored)
     for key in ("refs", "result_count", "answer_sha256", "delivered_items", "delivered_chars", "delivered_sha256"):
         assert record[key] == observed[key]
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+@_WINDOWS_HELPER_LAUNCH
+def test_tools_startup_receipt_binds_run_and_expected_bundle_manifest(tmp_path, ps):
+    fx = startup_read_fixture(tmp_path, "codex-tools-1", mode="answer")
+    functions = "\n".join(load(TOOLS, name) for name in STARTUP_READ_FUNCTIONS)
+    call = startup_read_call(fx, "codex-tools-1").replace(
+        " -TimeoutSeconds", " -StartupRunId 'synthetic-tools-001' -TimeoutSeconds", 1
+    )
+    result = _run_powershell(
+        functions + "\n$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest\n" + call,
+        executable=ps,
+    )
+    record = json.loads(result.stdout.strip())
+    stored = json.loads(fx["record"].read_bytes())
+    for item in (record, stored):
+        assert item["run_id"] == "synthetic-tools-001"
+        assert item["expected_manifest_sha256"] == fx["manifest_pin"].lower()
+    assert_no_secret(fx["record"].read_text(encoding="ascii"))
+
+
+@pytest.mark.parametrize("ps", LANE_TEST_SHELLS, ids=lambda p: Path(p).stem)
+def test_tools_launcher_passes_its_run_and_manifest_into_startup_read(ps):
+    script = f"""
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({_quote(TOOLS)},[ref]$tokens,[ref]$errors)
+if($errors.Count) {{ throw 'parse error' }}
+$nodes=@($ast.FindAll({{param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Invoke-WdQ4StartupMindRead'}},$true))
+if($nodes.Count -ne 1) {{ throw 'unexpected startup read count' }}
+function Invoke-WdQ4StartupMindRead {{ param($DescriptorPath,$DescriptorSha256,$DeploymentManifestPath,$ExpectedManifestSha256,$BundleRoot,$Lane,$Worktree,$StartupRunId)
+  return @{{ run=$StartupRunId; manifest=$ExpectedManifestSha256 }}
+}}
+$toolsSharedQ4Values=[pscustomobject]@{{WD_Q4_SHARED_DESCRIPTOR_PATH='descriptor';WD_Q4_SHARED_DESCRIPTOR_SHA256='d'}}
+$toolsDeploymentManifestPath='manifest';$toolsExpectedManifestHash='expected-anchor';$agent='codex-tools-1';$worktree='worktree';$runId='synthetic-tools-run'
+$r=. ([scriptblock]::Create($nodes[0].Extent.Text))
+$r | ConvertTo-Json -Compress
+"""
+    result = json.loads(_run_powershell(script, executable=ps).stdout.strip())
+    assert result == {"run": "synthetic-tools-run", "manifest": "expected-anchor"}

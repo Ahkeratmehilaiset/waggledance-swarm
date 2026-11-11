@@ -1344,3 +1344,48 @@ def test_content_delivery_record_write_or_replace_failure_clears_content_and_sta
         for leftover in (fx["worktree"] / ".codex-audit").iterdir():
             text = leftover.read_text(encoding="ascii", errors="replace")
             assert "STORED-TEXT-SECRET" not in text and OWNER_TOKEN not in text
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("lane", [x for x in LANES if x != "codex-tools-1"])
+def test_startup_receipt_binds_run_and_expected_bundle_manifest(tmp_path, shell, lane):
+    from test_wd_startup_recovery import load
+    from test_wd_reboot_bundle import _run_powershell
+
+    fx = startup_read_fixture(tmp_path, lane, mode="answer")
+    functions = "\n".join(load(LAUNCHER, name) for name in STARTUP_READ_FUNCTIONS)
+    call = startup_read_call(fx, lane).replace(
+        " -TimeoutSeconds", " -StartupRunId 'synthetic-startup-001' -TimeoutSeconds", 1
+    )
+    result = _run_powershell(
+        functions + "\n$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest\n" + call,
+        executable=shell,
+    )
+    record = json.loads(result.stdout.strip())
+    stored = json.loads(fx["record"].read_bytes())
+    for item in (record, stored):
+        assert item["run_id"] == "synthetic-startup-001"
+        assert item["expected_manifest_sha256"] == fx["manifest_pin"].lower()
+    assert_no_secret(fx["record"].read_text(encoding="ascii"))
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_agent_launcher_passes_its_run_and_manifest_into_startup_read(shell):
+    from test_wd_reboot_bundle import _run_powershell
+
+    script = f"""
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({q(LAUNCHER)},[ref]$tokens,[ref]$errors)
+if($errors.Count) {{ throw 'parse error' }}
+$nodes=@($ast.FindAll({{param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Invoke-WdQ4StartupMindRead'}},$true))
+if($nodes.Count -ne 1) {{ throw 'unexpected startup read count' }}
+function Invoke-WdQ4StartupMindRead {{ param($DescriptorPath,$DescriptorSha256,$DeploymentManifestPath,$ExpectedManifestSha256,$BundleRoot,$Lane,$Worktree,$StartupRunId)
+  return @{{ run=$StartupRunId; manifest=$ExpectedManifestSha256 }}
+}}
+$q4SharedValues=[pscustomobject]@{{WD_Q4_SHARED_DESCRIPTOR_PATH='descriptor';WD_Q4_SHARED_DESCRIPTOR_SHA256='d'}}
+$fixedDeploymentManifest='manifest';$script:LaneManifestAnchor='expected-anchor';$Agent='codex-lead-1';$worktree='worktree';$RunId='synthetic-actual-run'
+$r=. ([scriptblock]::Create($nodes[0].Extent.Text))
+$r | ConvertTo-Json -Compress
+"""
+    result = json.loads(_run_powershell(script, executable=shell).stdout.strip())
+    assert result == {"run": "synthetic-actual-run", "manifest": "expected-anchor"}

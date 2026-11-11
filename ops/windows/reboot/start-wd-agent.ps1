@@ -321,6 +321,7 @@ function Invoke-WdQ4StartupMindRead {
     [Parameter(Mandatory)] [string] $BundleRoot,
     [Parameter(Mandatory)] [string] $Lane,
     [Parameter(Mandatory)] [string] $Worktree,
+    [ValidatePattern('^$|^[A-Za-z0-9._:-]{1,128}$')] [string] $StartupRunId = '',
     [ValidateRange(1, 600)] [int] $TimeoutSeconds = 90,
     [ValidateRange(1, 600)] [int] $GraceSeconds = 30
   )
@@ -330,6 +331,8 @@ function Invoke-WdQ4StartupMindRead {
   $record = [ordered]@{
     schema = 'wd.mind-startup-read.v1'
     lane = $Lane
+    run_id = $StartupRunId
+    expected_manifest_sha256 = $ExpectedManifestSha256.ToLowerInvariant()
     ts_utc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
     route = 'default_caller_cli'
     descriptor_sha256 = $DescriptorSha256.ToLowerInvariant()
@@ -3823,7 +3826,7 @@ $startupMindRead = $null
 if ($null -ne $q4SharedValues) {
   $startupMindRead = Invoke-WdQ4StartupMindRead -DescriptorPath ([string]$q4SharedValues.WD_Q4_SHARED_DESCRIPTOR_PATH) `
     -DescriptorSha256 ([string]$q4SharedValues.WD_Q4_SHARED_DESCRIPTOR_SHA256) -DeploymentManifestPath $fixedDeploymentManifest `
-    -ExpectedManifestSha256 $script:LaneManifestAnchor -BundleRoot $PSScriptRoot -Lane $Agent -Worktree $worktree
+    -ExpectedManifestSha256 $script:LaneManifestAnchor -BundleRoot $PSScriptRoot -Lane $Agent -Worktree $worktree -StartupRunId $RunId
   if ($null -ne $startupMindRead) {
     $startupMindReadGuidance = Get-WdMindStartupReadGuidance -RecordPath '.codex-audit/wd-mind-startup-read.json' -Outcome ([string]$startupMindRead.outcome) `
       -RecordWritten ([bool]$startupMindRead.record_written) -DeliveredChars ([int]$startupMindRead.delivered_chars) -DeliveredItems ([int]$startupMindRead.delivered_items)

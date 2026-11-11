@@ -190,10 +190,15 @@ $relayItem = Get-Item -LiteralPath $relaySource -Force -ErrorAction SilentlyCont
 # A missing, linked, non-file or oversized relay source is an unknown contract.
 if ($null -ne $relayItem -and -not $relayItem.PSIsContainer -and
     ($relayItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and $relayItem.Length -le 4194304) {
-    $pattern = "wd\.native-tools-wake\.v1' -or \`$previous\.status -cnotin @\(([^)]*)\)"
-    $match = [regex]::Match([IO.File]::ReadAllText($relayItem.FullName), $pattern)
-    if ($match.Success) {
-        $accepted = @([regex]::Matches($match.Groups[1].Value, "'([a-z_]+)'") | ForEach-Object { $_.Groups[1].Value })
+    try {
+        $pattern = "wd\.native-tools-wake\.v1' -or \`$previous\.status -cnotin @\(([^)]*)\)"
+        $match = [regex]::Match([IO.File]::ReadAllText($relayItem.FullName), $pattern)
+        if ($match.Success) {
+            $accepted = @([regex]::Matches($match.Groups[1].Value, "'([a-z_]+)'") | ForEach-Object { $_.Groups[1].Value })
+        }
+    } catch {
+        # Failure to inspect the relay contract is unknown, never permission to proceed.
+        $accepted = @()
     }
 }
 $plan['target_relay_statuses'] = @($accepted)

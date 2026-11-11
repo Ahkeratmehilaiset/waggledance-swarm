@@ -98,6 +98,36 @@ def test_apply_is_refused(tmp_path, shell):
 
 
 @pytest.mark.parametrize("shell", SHELLS)
+def test_unreadable_relay_contract_produces_structured_hold(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+
+    @contextlib.contextmanager
+    def locked_relay():
+        # Hold only this fixture's relay source; never lock the installed bundle.
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        create = kernel32.CreateFileW
+        create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                           wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        create.restype = wintypes.HANDLE
+        close = kernel32.CloseHandle
+        close.argtypes = [wintypes.HANDLE]
+        close.restype = wintypes.BOOL
+        handle = create(str(fixture.bundle / 'start-wd-tools-consumer.ps1'), 0x80000000, 0, None, 3, 0, None)
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            yield
+        finally:
+            assert close(handle)
+
+    code, plan = fixture.run(shell, around=locked_relay)
+    assert code == 2 and plan['verdict'] == 'hold'
+    assert 'target_relay_contract_unknown' in plan['reasons']
+    assert plan['authority_effect'] == 'none' and plan['applied'] is False
+
+
+@pytest.mark.parametrize("shell", SHELLS)
 def test_unreadable_manifest_produces_structured_hold(tmp_path, shell):
     fixture = Fixture(tmp_path)
 

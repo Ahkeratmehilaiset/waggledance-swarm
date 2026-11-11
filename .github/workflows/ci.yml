@@ -5,7 +5,7 @@ permissions: {}
 jobs:
   probe:
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - name: Inspect container host without starting tests
         shell: pwsh
@@ -21,3 +21,26 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Docker engine unavailable' }
           docker image ls --format '{{.Repository}}:{{.Tag}}'
           if ($LASTEXITCODE -ne 0) { throw 'Docker image inventory failed' }
+      - name: Verify container-wide network isolation without project code
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $socket = [Net.Sockets.TcpClient]::new()
+          try {
+            $pending = $socket.BeginConnect('140.82.114.4', 443, $null, $null)
+            if (-not $pending.AsyncWaitHandle.WaitOne(5000)) { throw 'Host positive network control timed out' }
+            $socket.EndConnect($pending)
+            Write-Output 'Host network positive control: connected'
+          } finally { $socket.Dispose() }
+          docker pull mcr.microsoft.com/windows/servercore:ltsc2025
+          if ($LASTEXITCODE -ne 0) { throw 'Image provisioning failed' }
+          $inner = '$s=[Net.Sockets.TcpClient]::new();try{$a=$s.BeginConnect("140.82.114.4",443,$null,$null);if($a.AsyncWaitHandle.WaitOne(5000)){$s.EndConnect($a);exit 23};Write-Output "isolated: denied";exit 0}catch{Write-Output "isolated: denied";exit 0}finally{$s.Dispose()}'
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($inner))
+          $cid = docker create --network none mcr.microsoft.com/windows/servercore:ltsc2025 powershell.exe -NoProfile -NonInteractive -EncodedCommand $encoded
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot create isolated container' }
+          try {
+            $network = docker inspect --format '{{.HostConfig.NetworkMode}}' $cid
+            if ($network -ne 'none') { throw "Unexpected network mode: $network" }
+            docker start -a $cid
+            if ($LASTEXITCODE -ne 0) { throw 'Isolated network check failed' }
+          } finally { docker rm -f $cid }

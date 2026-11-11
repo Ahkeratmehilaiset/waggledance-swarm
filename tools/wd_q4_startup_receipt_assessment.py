@@ -6,7 +6,7 @@ PASS here does not prove that an agent consumed recalled text.  This pure
 assessment does not install, restart, access files, or execute a rollback.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import re
 
 
@@ -14,6 +14,7 @@ LANES = (
     "codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2",
 )
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_CALL_ID = re.compile(r"^[0-9a-f]{32}$")
 _RUN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
@@ -69,7 +70,7 @@ def assess_startup_receipts(*, expected_runs, expected_manifest_sha256,
             continue
         # Launcher timestamps are truncated to seconds, so the same second
         # may legitimately begin just before a subsecond launch anchor.
-        if recorded_at + timedelta(seconds=1) <= start:
+        if recorded_at < start and (start - recorded_at).total_seconds() >= 1:
             lanes[lane] = "PENDING"
             continue
         observed = observed_at_utc.get(lane)
@@ -83,7 +84,7 @@ def assess_startup_receipts(*, expected_runs, expected_manifest_sha256,
             continue
         refs = record.get("refs")
         valid = (
-            recorded_at <= observed_at <= now and observed_at <= deadline
+            start <= observed_at and recorded_at <= observed_at <= now and observed_at <= deadline
             and record.get("schema") == "wd.mind-startup-read.v1"
             and record.get("lane") == lane
             and record.get("expected_manifest_sha256") == expected_manifest_sha256
@@ -98,10 +99,13 @@ def assess_startup_receipts(*, expected_runs, expected_manifest_sha256,
             and record.get("outcome") == "success"
             and type(record.get("exit_code")) is int and record["exit_code"] == 0
             and record.get("inner_status") == "ANSWER"
-            and type(record.get("delivered_items")) is int and record["delivered_items"] > 0
-            and type(record.get("delivered_chars")) is int and record["delivered_chars"] > 0
+            and type(record.get("result_count")) is int and 1 <= record["result_count"] <= 100
+            and _digest(record.get("answer_sha256"))
+            and type(record.get("call_id")) is str and _CALL_ID.fullmatch(record["call_id"]) is not None
+            and type(record.get("delivered_items")) is int and 1 <= record["delivered_items"] <= record["result_count"]
+            and type(record.get("delivered_chars")) is int and 1 <= record["delivered_chars"] <= 24000
             and _digest(record.get("delivered_sha256"))
-            and type(refs) is list and bool(refs) and all(_digest(ref) for ref in refs)
+            and type(refs) is list and len(refs) == record["result_count"] and all(_digest(ref) for ref in refs)
         )
         lanes[lane] = "PASS" if valid else "INVALID"
 

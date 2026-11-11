@@ -26,7 +26,8 @@ def receipt(lane):
                                               if lane == "codex-tools-1" else "content_delivered"),
         "route": "default_caller_cli",
         "ts_utc": "2026-11-11T10:00:30Z", "outcome": "success", "exit_code": 0,
-        "inner_status": "ANSWER", "delivered_items": 1, "delivered_chars": 5,
+        "inner_status": "ANSWER", "result_count": 1, "answer_sha256": "f" * 64,
+        "call_id": "f" * 32, "delivered_items": 1, "delivered_chars": 5,
         "delivered_sha256": "c" * 64, "refs": ["d" * 64],
     }
 
@@ -138,6 +139,34 @@ def test_unobserved_receipt_waits_then_requires_rollback():
 
 def test_second_precision_receipt_can_match_subsecond_start_anchor():
     assert assess(all_records(), started="2026-11-11T10:00:30.500000Z")["decision"] == "RECEIPTS_OK"
+
+
+@pytest.mark.parametrize("observation,expected", [
+    ("2026-11-11T10:00:30.500000Z", "ROLLBACK_REQUIRED"),
+    ("2026-11-11T10:00:30.900000Z", "RECEIPTS_OK"),
+])
+def test_observation_must_not_precede_precise_launch_start(observation, expected):
+    observed = dict(OBSERVED)
+    observed["codex-lead-1"] = observation
+    assert assess(all_records(), started="2026-11-11T10:00:30.900000Z", observed=observed)["decision"] == expected
+
+
+@pytest.mark.parametrize("field,value", [
+    ("result_count", None), ("result_count", True), ("result_count", 0), ("result_count", 2),
+    ("result_count", 101), ("answer_sha256", None), ("answer_sha256", "invalid"),
+    ("call_id", None), ("call_id", "invalid"), ("delivered_items", 2),
+    ("delivered_chars", 24001),
+])
+def test_receipt_requires_complete_consistent_bounded_answer_metadata(field, value):
+    records = all_records()
+    records["codex-lead-1"][field] = value
+    assert assess(records)["decision"] == "ROLLBACK_REQUIRED"
+
+
+def test_extreme_future_timestamp_is_a_refusal_not_an_exception():
+    records = all_records()
+    records["codex-lead-1"]["ts_utc"] = "9999-12-31T23:59:59.999999Z"
+    assert assess(records)["decision"] == "ROLLBACK_REQUIRED"
 
 
 def test_tools_accepts_its_actual_launcher_success_reason():

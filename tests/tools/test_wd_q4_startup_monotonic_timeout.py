@@ -144,3 +144,56 @@ if ($null -eq $fn) {{ throw 'missing_function' }}
         assert result["reason"] == "timeout" and result["cleanup"] == "unknown"
     if mode == "refuse":
         assert result["reason"] == "cleanup_unknown"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell required")
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("source", SOURCES, ids=["agent", "tools"])
+@pytest.mark.parametrize("elapsed,expected_wait", [(0, 120000), (60000, 60000), (119999, 1), (120000, 0)])
+def test_unfinished_stdin_uses_remaining_budget_and_returns_unknown(shell, source, elapsed, expected_wait):
+    """Execute actual stdin and timeout branches against inert fake task/process objects."""
+    if not shell:
+        pytest.skip("PowerShell host unavailable")
+    quoted = "'" + str(source).replace("'", "''") + "'"
+    script = rf"""
+$ErrorActionPreference='Stop'
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({quoted},[ref]$tokens,[ref]$errors)
+if ($errors.Count) {{ throw 'source_parse' }}
+$helpers=@($ast.FindAll({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Get-WdQ4RemainingWaitMilliseconds'}},$true))
+if ($helpers.Count -ne 1) {{ throw 'missing_budget_function' }}
+. ([scriptblock]::Create($helpers[0].Extent.Text))
+$readers=@($ast.FindAll({{param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Invoke-WdQ4StartupMindRead'}},$true))
+if ($readers.Count -ne 1) {{ throw 'reader_scope' }}
+$startCount=([regex]::Matches($readers[0].Extent.Text,'\[Diagnostics\.Process\]::Start\(')).Count
+$killCount=([regex]::Matches($readers[0].Extent.Text,'\.Kill\s*\(')).Count
+$stdinBranches=@($readers[0].FindAll({{param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Extent.Text.StartsWith('if ($stdinTask.Wait(')}},$true))
+$exitBranches=@($readers[0].FindAll({{param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $n.Extent.Text.StartsWith('if ((Get-WdQ4RemainingWaitMilliseconds') -and $n.Extent.Text.Contains('$process.WaitForExit(')}},$true) | Sort-Object {{ $_.Extent.Text.Length }})
+if ($stdinBranches.Count -ne 1 -or $exitBranches.Count -ne 1) {{ throw 'branch_scope' }}
+$stdinBranch=[scriptblock]::Create($stdinBranches[0].Extent.Text)
+$exitPredicate=[scriptblock]::Create($exitBranches[0].Clauses[0].Item1.Extent.Text)
+$body=$exitBranches[0].Clauses[0].Item2.Extent.Text
+$timeoutBody=[scriptblock]::Create($body.Substring(1,$body.Length-2))
+$waitBudgetMilliseconds=120000
+$waitClock=[pscustomobject]@{{ElapsedMilliseconds={elapsed}}}
+$stdinTask=[pscustomobject]@{{clock=$waitClock;calls=0;waitMs=-1}}
+$stdinTask | Add-Member ScriptMethod Wait {{param([int]$ms) $this.calls++; $this.waitMs=$ms; $this.clock.ElapsedMilliseconds += $ms; return $false}}
+$inputStream=[pscustomobject]@{{closed=0}}
+$inputStream | Add-Member ScriptMethod Close {{ $this.closed++ }}
+$process=[pscustomobject]@{{waitCalls=0;killCalls=0;StandardInput=$inputStream}}
+$process | Add-Member ScriptMethod WaitForExit {{param([int]$ms) $this.waitCalls++; return $true}}
+$process | Add-Member ScriptMethod Kill {{ $this.killCalls++ }}
+$record=[ordered]@{{outcome='initial';reason='';cleanup=''}}
+& $stdinBranch
+$expired=& $exitPredicate
+if ($expired) {{ & $timeoutBody }}
+@{{waitMs=$stdinTask.waitMs;stdinCalls=$stdinTask.calls;closed=$inputStream.closed;expired=$expired;waitCalls=$process.waitCalls;killCalls=$process.killCalls;startCount=$startCount;killCount=$killCount;outcome=$record.outcome;reason=$record.reason;cleanup=$record.cleanup}} | ConvertTo-Json -Compress
+"""
+    proc = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == {
+        "waitMs": expected_wait, "stdinCalls": 1, "closed": 0, "expired": True,
+        "waitCalls": 0, "killCalls": 0, "startCount": 1, "killCount": 0,
+        "outcome": "unknown", "reason": "timeout", "cleanup": "unknown",
+    }

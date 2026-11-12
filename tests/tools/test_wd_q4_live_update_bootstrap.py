@@ -23,6 +23,9 @@ def sha(value):
 @pytest.fixture
 def candidate(tmp_path):
     repo = Path(__file__).resolve().parents[2]
+    # CI may launch Python via a symlink. Pin and execute its resolved binary;
+    # the bootstrap itself continues to reject symlinked path components.
+    interpreter = str(Path(sys.executable).resolve(strict=True))
     bundle = tmp_path / 'bundle'
     code = bundle / 'tools-bootstrap'
     (code / 'tools').mkdir(parents=True)
@@ -45,12 +48,12 @@ def candidate(tmp_path):
     (runtime / 'assets' / 'code' / 'synthetic.txt').write_text('code', encoding='ascii')
     runtime_manifest = tmp_path / 'runtime-manifest.json'
     built = runtime_builder.build_runtime_manifest(runtime, runtime_manifest, generation='a' * 40, revision='b' * 40)
-    fixed = {'interpreter_sha256': sha(Path(sys.executable).read_bytes()), 'runtime_root': str(runtime),
+    fixed = {'interpreter_sha256': sha(Path(interpreter).read_bytes()), 'runtime_root': str(runtime),
         'runtime_manifest_path': str(runtime_manifest), 'runtime_manifest_sha256': built['manifest_sha256'],
         'runtime_generation': 'a' * 40, 'runtime_revision': 'b' * 40, 'verifier_sha256': sha(verifier.read_bytes())}
     fixed_path = tmp_path / 'fixed.json'
     fixed_path.write_bytes(encode(fixed))
-    baseline = {'interpreter': sys.executable, 'interpreter_sha256': fixed['interpreter_sha256'],
+    baseline = {'interpreter': interpreter, 'interpreter_sha256': fixed['interpreter_sha256'],
         'runtime_manifest_path': str(runtime_manifest), 'runtime_manifest_sha256': fixed['runtime_manifest_sha256'],
         'fixed_plan_path': str(fixed_path), 'fixed_plan_sha256': sha(fixed_path.read_bytes())}
     base_path = tmp_path / 'descriptor.json'
@@ -66,13 +69,13 @@ def candidate(tmp_path):
     config = tmp_path / 'config.json'
     config.write_bytes(encode({'schema': 'wd.q4-live-update-once.v1', 'baseline_path': str(base_path),
         'baseline_sha256': sha(base_path.read_bytes()), 'manifest_sha256': manifest_sha}))
-    return {'bootstrap': bootstrap, 'config': config, 'config_sha': sha(config.read_bytes()),
+    return {'bootstrap': bootstrap, 'config': config, 'config_sha': sha(config.read_bytes()), 'interpreter': interpreter,
             'manifest_sha': manifest_sha, 'runtime': runtime, 'bundle': bundle}
 
 
 def execute(candidate):
     env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha'])
-    return subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']),
+    return subprocess.run([candidate['interpreter'], '-I', '-S', '-B', str(candidate['bootstrap']),
         '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
         '--manifest-sha256', candidate['manifest_sha']], capture_output=True, text=True, timeout=30, env=env)
 
@@ -84,7 +87,7 @@ def test_isolated_process_imports_only_verified_runtime_site(candidate):
 
 def test_isolated_bootstrap_forwards_exact_host_attempt(candidate):
     env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha'])
-    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']),
+    result = subprocess.run([candidate['interpreter'], '-I', '-S', '-B', str(candidate['bootstrap']),
         '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
         '--manifest-sha256', candidate['manifest_sha'], '--host-attempt', 'b' * 64],
         capture_output=True, text=True, timeout=30, env=env)
@@ -93,7 +96,7 @@ def test_isolated_bootstrap_forwards_exact_host_attempt(candidate):
 
 def test_explicit_manifest_pin_works_without_inherited_wd_environment(candidate):
     env = {key: value for key, value in os.environ.items() if not key.startswith('WD_')}
-    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']),
+    result = subprocess.run([candidate['interpreter'], '-I', '-S', '-B', str(candidate['bootstrap']),
         '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
         '--manifest-sha256', candidate['manifest_sha']], capture_output=True, text=True, timeout=30, env=env)
     assert result.returncode == 0 and result.stdout.strip() == 'pinned-site-loaded'
@@ -101,7 +104,7 @@ def test_explicit_manifest_pin_works_without_inherited_wd_environment(candidate)
 
 def test_mismatching_inherited_manifest_still_refuses(candidate):
     env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH='0' * 64)
-    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']),
+    result = subprocess.run([candidate['interpreter'], '-I', '-S', '-B', str(candidate['bootstrap']),
         '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
         '--manifest-sha256', candidate['manifest_sha']], capture_output=True, text=True, timeout=30, env=env)
     assert result.returncode != 0 and not result.stdout
@@ -176,15 +179,28 @@ def test_interpreter_pin_mismatch_refuses(candidate):
     assert result.returncode != 0 and not result.stdout
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX interpreter symlink regression')
+def test_symlinked_interpreter_path_is_still_refused(tmp_path):
+    from tools import wd_q4_live_update_bootstrap as bootstrap
+
+    link = tmp_path / 'synthetic-python-link'
+    target = Path(sys.executable).resolve(strict=True)
+    bootstrap._checked_path(str(target))
+    link.symlink_to(target)
+    assert link.is_symlink()
+    with pytest.raises(ValueError):
+        bootstrap._checked_path(str(link))
+
+
 def test_no_arbitrary_module_or_command_argument(candidate):
-    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']), '--module', 'os'],
+    result = subprocess.run([candidate['interpreter'], '-I', '-S', '-B', str(candidate['bootstrap']), '--module', 'os'],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode != 0 and not result.stdout
 
 
 def test_fixed_recovery_route_runs_only_with_pinned_attempt_and_progress(candidate):
     env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha'])
-    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
+    result = subprocess.run([candidate['interpreter'], '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
         '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
         '--manifest-sha256', candidate['manifest_sha'], '--attempt', 'a' * 64, '--progress-sha256', 'b' * 64],
         capture_output=True, text=True, timeout=30, env=env)
@@ -193,7 +209,7 @@ def test_fixed_recovery_route_runs_only_with_pinned_attempt_and_progress(candida
 
 def test_fixed_recovery_route_accepts_pinned_runner_receipt_and_pointer(candidate):
     env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha'])
-    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
+    result = subprocess.run([candidate['interpreter'], '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
         '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
         '--manifest-sha256', candidate['manifest_sha'], '--attempt', 'a' * 64,
         '--runner-receipt-sha256', 'b' * 64, '--pointer-sha256', 'c' * 64],
@@ -203,7 +219,7 @@ def test_fixed_recovery_route_accepts_pinned_runner_receipt_and_pointer(candidat
 
 def test_fixed_recovery_route_forwards_pinned_job_receipt_and_pointer(candidate):
     env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha'])
-    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
+    result = subprocess.run([candidate['interpreter'], '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
         '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
         '--manifest-sha256', candidate['manifest_sha'], '--attempt', 'a' * 64,
         '--job-receipt-sha256', 'b' * 64, '--pointer-sha256', 'c' * 64],
@@ -219,7 +235,7 @@ def test_fixed_recovery_route_forwards_pinned_job_receipt_and_pointer(candidate)
 ])
 def test_bootstrap_refuses_invalid_or_mixed_job_evidence(candidate, evidence):
     env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha'])
-    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
+    result = subprocess.run([candidate['interpreter'], '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
         '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
         '--manifest-sha256', candidate['manifest_sha'], '--attempt', 'a' * 64, *evidence],
         capture_output=True, text=True, timeout=30, env=env)
@@ -228,7 +244,7 @@ def test_bootstrap_refuses_invalid_or_mixed_job_evidence(candidate, evidence):
 
 def test_recovery_route_rejects_extra_command(candidate):
     env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha'])
-    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
+    result = subprocess.run([candidate['interpreter'], '-I', '-S', '-B', str(candidate['bootstrap']), '--recover',
         '--config', str(candidate['config']), '--sha256', candidate['config_sha'],
         '--manifest-sha256', candidate['manifest_sha'], '--attempt', 'a' * 64, '--progress-sha256', 'b' * 64,
         '--module', 'os'], capture_output=True, text=True, timeout=30, env=env)
@@ -269,7 +285,7 @@ def test_explicit_audit_runtime_loads_actual_pinned_dependencies(candidate):
     config_path.write_bytes(encode(config))
     candidate['config_sha'] = sha(config_path.read_bytes())
     env = {key: os.environ[key] for key in ('SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP') if key in os.environ}
-    result = subprocess.run([sys.executable, '-I', '-S', '-B', str(candidate['bootstrap']),
+    result = subprocess.run([candidate['interpreter'], '-I', '-S', '-B', str(candidate['bootstrap']),
         '--config', str(config_path), '--sha256', candidate['config_sha'], '--manifest-sha256', candidate['manifest_sha']],
         capture_output=True, text=True, timeout=600, env=env)
     assert result.returncode == 0 and result.stdout.strip() == 'pinned-dependencies-loaded', result.stderr
@@ -291,7 +307,7 @@ def _p1_invoke(candidate,mode):
         args=['--recover',*args,'--attempt','a'*64]
         if mode=='progress':args+=['--progress-sha256','b'*64]
         else:args+=['--'+mode+'-receipt-sha256','b'*64,'--pointer-sha256','c'*64]
-    return subprocess.run([sys.executable,'-I','-S','-B',str(candidate['bootstrap']),*args],
+    return subprocess.run([candidate['interpreter'],'-I','-S','-B',str(candidate['bootstrap']),*args],
         env=dict(os.environ,WD_REBOOT_EXPECTED_MANIFEST_HASH=candidate['manifest_sha']),
         capture_output=True,text=True,timeout=30)
 

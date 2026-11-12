@@ -2746,6 +2746,29 @@ function Test-WdMindCommandLineFits {
     $length = $CliPath.Length + 2 + 1 + (($quoted -join ' ').Length) + 1
     return $length -le 32767
 }
+function Invoke-WdMindNativeInteractiveCli {
+    param([string]$CliPath, [string[]]$Arguments, [string]$Worktree)
+    # PowerShell 5's native call operator drops embedded quotes. Pass the exact
+    # Windows argv encoding directly without a shell; keep the inherited console.
+    $quoted = foreach ($value in $Arguments) {
+        if ($value -and $value -notmatch '[\s"]') { $value; continue }
+        $escaped = [regex]::Replace($value, '(\\*)"', '$1$1\"')
+        $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+        '"' + $escaped + '"'
+    }
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $CliPath
+    $info.Arguments = $quoted -join ' '
+    $info.WorkingDirectory = $Worktree
+    $info.UseShellExecute = $false
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $info
+    try {
+        if (-not $process.Start()) { throw 'Interactive lane process did not start' }
+        $process.WaitForExit()
+        return [int]$process.ExitCode
+    } finally { $process.Dispose() }
+}
 Remove-Item Env:WD_MIND_STARTUP_VIEW, Env:WD_MIND_STARTUP_VIEW_SHA256 -ErrorAction SilentlyContinue
 # Optional direct status projection, after DryRun and identity/bootstrap completion.
 $mindStartupRead = [pscustomobject]@{outcome='refused';reason='startup_helper_refused';record_written=$false}
@@ -3165,8 +3188,12 @@ try {
     $cliExitCode = 0
   } else {
     $ErrorActionPreference = 'Continue'
-    & $cliPath @launchArguments
-    $cliExitCode = $LASTEXITCODE
+    if ($cliName -ieq 'claude.cmd') {
+      $cliExitCode = Invoke-WdMindNativeInteractiveCli -CliPath $cliPath -Arguments $launchArguments -Worktree $worktree
+    } else {
+      & $cliPath @launchArguments
+      $cliExitCode = $LASTEXITCODE
+    }
   }
 } finally {
   $ErrorActionPreference = $previousPreference

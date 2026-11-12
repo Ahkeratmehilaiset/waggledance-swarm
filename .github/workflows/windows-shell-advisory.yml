@@ -138,6 +138,10 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
+        env:
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: core.longpaths
+          GIT_CONFIG_VALUE_0: 'true'
         with:
           ref: 0a6d6d5dbd2c35d4932bb6e777d17d216bcd6136
           persist-credentials: false

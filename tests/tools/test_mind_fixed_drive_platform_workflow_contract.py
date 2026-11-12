@@ -142,7 +142,8 @@ def _probe_source(name):
 
 
 def _execute_probe(name, optimize, *, drive_type=3, os_name='nt', network_result=1,
-                   manifest=None, runtime_optimize=0, trace=None):
+                   manifest=None, runtime_optimize=0, trace=None,
+                   environment=None, observed_environments=None):
     import builtins
     import io
     import sys
@@ -151,6 +152,7 @@ def _execute_probe(name, optimize, *, drive_type=3, os_name='nt', network_result
     if manifest is None:
         manifest = json.loads(MANIFEST.read_bytes())
     calls = [] if trace is None else trace
+    probe_environment = {'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1', **(environment or {})}
 
     def drive(path):
         calls.append(('drive', path))
@@ -162,6 +164,8 @@ def _execute_probe(name, optimize, *, drive_type=3, os_name='nt', network_result
 
     def run_module(module, **kwargs):
         calls.append(('run_module', module, kwargs))
+        if observed_environments is not None:
+            observed_environments.append(dict(probe_environment))
         return {}
 
     fake_socket = SimpleNamespace(settimeout=lambda timeout: None,
@@ -169,7 +173,7 @@ def _execute_probe(name, optimize, *, drive_type=3, os_name='nt', network_result
     modules = {
         'ctypes': SimpleNamespace(WinDLL=lambda *args, **kwargs: SimpleNamespace(GetDriveTypeW=drive),
                                   c_wchar_p=object(), c_uint=object()),
-        'os': SimpleNamespace(name=os_name),
+        'os': SimpleNamespace(name=os_name, environ=probe_environment),
         'socket': SimpleNamespace(socket=lambda: fake_socket),
         'sys': SimpleNamespace(flags=SimpleNamespace(optimize=runtime_optimize), exit=sys.exit),
         'runpy': SimpleNamespace(run_module=run_module),
@@ -273,3 +277,34 @@ def test_inner_python_invocations_ignore_environment_and_disable_bytecode():
         assert '-E -B -c $' + name in inner
     assert '-m pytest' not in inner
     assert '-c $pytestProbe @fixedDriveTests' in inner
+
+
+
+@pytest.mark.parametrize('optimize', [0, 1, 2])
+@pytest.mark.parametrize('poison', ['plugins', 'options', 'both', 'casefold', 'debug', 'current', 'unknown', 'autoload', 'combined'])
+def test_pytest_entry_removes_inherited_plugin_and_option_channels(optimize, poison):
+    poisons = {
+        'plugins': {'PYTEST_PLUGINS': 'synthetic_untrusted_plugin'},
+        'options': {'PYTEST_ADDOPTS': '-p synthetic_untrusted_plugin --assert=plain'},
+        'both': {'PYTEST_PLUGINS': 'synthetic_untrusted_plugin', 'PYTEST_ADDOPTS': '--assert=plain'},
+        'casefold': {'PyTeSt_PlUgInS': 'synthetic_untrusted_plugin', 'pytest_addopts': '--assert=plain'},
+        'debug': {'PYTEST_DEBUG': '1'},
+        'current': {'PYTEST_CURRENT_TEST': 'synthetic_fake_test (call)'},
+        'unknown': {'PYTEST_FUTURE_CONTROL': 'synthetic_unreviewed_value'},
+        'autoload': {'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '0'},
+    }
+    poisons['combined'] = {key: value for group in list(poisons.values()) for key, value in group.items()}
+    observations = []
+    calls = _execute_probe('pytestProbe', optimize, environment=poisons[poison], observed_environments=observations)
+    assert calls == [('run_module', 'pytest', {'run_name': '__main__', 'alter_sys': True})]
+    assert len(observations) == 1
+    assert {key: value for key, value in observations[0].items() if key.upper().startswith('PYTEST_')} == {'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1'}
+
+
+@pytest.mark.parametrize('optimize', [0, 1, 2])
+def test_pytest_environment_sanitizer_preserves_non_pytest_windows_inputs(optimize):
+    benign = {'PATH': 'synthetic-path', 'SystemRoot': 'synthetic-windows', 'TEMP': 'synthetic-temp', 'TMP': 'synthetic-temp'}
+    observations = []
+    _execute_probe('pytestProbe', optimize, environment=benign, observed_environments=observations)
+    assert len(observations) == 1
+    assert observations[0] == {**benign, 'PYTEST_DISABLE_PLUGIN_AUTOLOAD': '1'}

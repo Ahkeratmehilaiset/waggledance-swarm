@@ -107,7 +107,7 @@ jobs:
           $fixedDriveTests = @($manifest.nodeids)
           if (@($fixedDriveTests | Where-Object { $_ -isnot [string] -or $_ -cnotmatch '^tests/tools/test_wd_q4_[a-z_]+\.py::test_[^\r\n]+$' }).Count -ne 0) { throw 'Non-nodeid selector refused' }
           # Check optimization in the process that actually runs pytest.
-          $pytestProbe = 'import runpy,sys; (sys.flags.optimize==0) or sys.exit(''Optimized pytest refused''); runpy.run_module(''pytest'',run_name=''__main__'',alter_sys=True)'
+          $pytestProbe = 'import os,runpy,sys; (sys.flags.optimize==0) or sys.exit(''Optimized pytest refused''); [os.environ.pop(k) for k in tuple(os.environ) if k.upper().startswith(''PYTEST_'')]; os.environ[''PYTEST_DISABLE_PLUGIN_AUTOLOAD'']=''1''; runpy.run_module(''pytest'',run_name=''__main__'',alter_sys=True)'
           & C:\Python\python.exe -E -B -c $pytestProbe @fixedDriveTests -q -rs -p no:cacheprovider --basetemp "$testRoot\pytest" --junitxml "$testRoot\results.xml"
           if ($LASTEXITCODE -ne 0) { throw 'Fixed-drive synthetic tests failed' }
           [xml]$result = Get-Content -Raw "$testRoot\results.xml"

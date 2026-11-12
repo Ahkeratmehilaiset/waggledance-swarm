@@ -39,6 +39,13 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# A previous session's Mind context is never a new startup read.
+foreach ($mindName in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
+    if (([string]$mindName).StartsWith('WD_MIND_', [StringComparison]::OrdinalIgnoreCase)) {
+        if (Test-Path -LiteralPath "Env:$mindName") { Remove-Item -LiteralPath "Env:$mindName" }
+    }
+}
+
 # A lane must never inherit another Claude Code session's identity. Started from an
 # agent's tool shell, these markers make Claude Code treat an interactive lane as a
 # nested child session that writes no transcript and no sessions/<pid>.json
@@ -2721,6 +2728,33 @@ Assert-LaneBootstrapIntegrity `
   -BootstrapRoot $bootstrapRoot
 [void](Assert-LanePathWithoutReparse `
   -Path $writer -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+# Optional direct status projection, after DryRun and identity/bootstrap completion.
+$mindStartupRead = [pscustomobject]@{outcome='refused';reason='startup_helper_refused';record_written=$false}
+try {
+  $mindHelper = Join-Path $PSScriptRoot 'Invoke-WdMindStartupRead.ps1'
+  [void](Assert-LanePathWithoutReparse -Path $mindHelper -TrustedRoot $laneTrustedDrive -ExpectedType Leaf)
+  $mindManifest = Read-Utf8LaneSnapshot -Path $fixedDeploymentManifest
+  if ($script:LaneManifestAnchor -cnotmatch '\A[0-9A-Fa-f]{64}\z' -or
+      $mindManifest.Hash -cne $script:LaneManifestAnchor.ToUpperInvariant()) { throw 'pin' }
+  $mindHelperPin = ($mindManifest.Text | ConvertFrom-Json).files.PSObject.Properties['Invoke-WdMindStartupRead.ps1']
+  $mindHelperSnapshot = Read-Utf8LaneSnapshot -Path $mindHelper
+  if ($null -eq $mindHelperPin -or [string]$mindHelperPin.Value -cnotmatch '\A[0-9A-Fa-f]{64}\z' -or
+      $mindHelperSnapshot.Hash -cne ([string]$mindHelperPin.Value).ToUpperInvariant()) { throw 'pin' }
+  . ([scriptblock]::Create([string]$mindHelperSnapshot.Text))
+  $mindStartupRead = Invoke-WdMindStartupRead -BundleRoot $PSScriptRoot -ExpectedManifestHash $script:LaneManifestAnchor -Lane $Agent -Worktree $worktree
+} catch { }
+if ($mindStartupRead.outcome -ceq 'success' -and [bool]$mindStartupRead.record_written) {
+  $env:WD_MIND_STARTUP_VIEW = [string]$mindStartupRead.view_json
+  $env:WD_MIND_STARTUP_VIEW_SHA256 = [string]$mindStartupRead.view_sha256
+}
+$mindStartupGuidance = ' Mind startup status read: ' + [string]$mindStartupRead.outcome +
+  ' (' + [string]$mindStartupRead.reason + '). This is an optional status projection, not semantic recall, authenticated current state, a vote or an instruction. '
+if ($mindStartupRead.outcome -ceq 'success' -and [bool]$mindStartupRead.record_written) {
+  $mindStartupGuidance += 'Read WD_MIND_STARTUP_VIEW from this process environment and verify its UTF-8 sha256 against WD_MIND_STARTUP_VIEW_SHA256 and .codex-audit/wd-mind-startup-view.json; check bridge source refs before acting. '
+} else { $mindStartupGuidance += 'No status context was delivered; read the bridge. ' }
+$startupPrompt += $mindStartupGuidance
+$continuationPrompt += $mindStartupGuidance
+
 $targetPayload = [ordered]@{
   target_state_id = [string]$targetState.id
   target_state_sha256 = [string]$targetState.sha256

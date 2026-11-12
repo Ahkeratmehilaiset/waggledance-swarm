@@ -1116,6 +1116,8 @@ foreach ($stagedName in @($bridgePythonStage.Site.Keys)) {
 foreach ($required in @(
         'start-wd-all.ps1',
         'start-wd-agent.ps1',
+        'Get-WdMindReadConfig.ps1',
+        'Invoke-WdMindStartupRead.ps1',
         'Invoke-WdLaneTurnLoop.ps1',
         'Invoke-WdCodexConversationLoop.ps1',
         'Show-WdOperatorConversation.ps1',

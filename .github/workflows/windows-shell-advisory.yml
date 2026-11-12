@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   windows-shell-advisory:
-    if: ${{ inputs.head != 'ac3c8c2834b1fcc8a43b0d4af15789c06d28f8ac' }}
+    if: ${{ inputs.head != 'b097113f0299bcf35253da5e21083324a257fcea' }}
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -91,14 +91,14 @@ jobs:
   # Diagnostic branch only: execute the exact candidate's existing, reviewed
   # offline jobs, not arbitrary workflow input. No required branch check changes.
   continuation-offline-linux:
-    if: ${{ inputs.head == 'ac3c8c2834b1fcc8a43b0d4af15789c06d28f8ac' }}
+    if: ${{ inputs.head == 'b097113f0299bcf35253da5e21083324a257fcea' }}
     permissions: {}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ac3c8c2834b1fcc8a43b0d4af15789c06d28f8ac
+          ref: b097113f0299bcf35253da5e21083324a257fcea
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
@@ -108,24 +108,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          unset PYTHONOPTIMIZE
+          python -c 'import sys; sys.exit(1 if sys.flags.optimize != 0 else 0)'
           python - <<'PY'
           import hashlib, os, pathlib, subprocess, yaml
-          expected_head='ac3c8c2834b1fcc8a43b0d4af15789c06d28f8ac'
-          assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==expected_head
+          expected_head='b097113f0299bcf35253da5e21083324a257fcea'
+          if subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()!=expected_head: raise SystemExit('candidate head mismatch')
           raw=subprocess.check_output(['git','show','HEAD:.github/workflows/mind-adopt-platform-coverage.yml'])
-          assert hashlib.sha256(raw).hexdigest()=='01286bd90835469e147a83a52d17ab2e497e6d825fbaa1068e90e9c293930b1f'
+          if hashlib.sha256(raw).hexdigest()!='c352a52ada03aa90e5f620b966d58b835268e24308ebdea1e3f676f36b400527': raise SystemExit('workflow hash mismatch')
           workflow=yaml.safe_load(raw)
           steps=workflow['jobs']['adopt-platform-linux']['steps']
           script=next(step['run'] for step in steps if step.get('name')=='Portable tests with outbound denial')
           data=script.encode('utf-8')
-          assert hashlib.sha256(data).hexdigest()=='8e02269ada2d24e907b106e699092b0e6e6c3ac4402875e9a53174db5668639a'
+          if hashlib.sha256(data).hexdigest()!='60854bfd0d3c719ab4c7451228957d1b2620b005c32f12717c3a16c81cdd087f': raise SystemExit('Linux step hash mismatch')
           cleanup=next(step['run'] for step in steps if step.get('name')=='Cleanup firewall')
-          assert hashlib.sha256(cleanup.encode('utf-8')).hexdigest()=='70e0e87a773e68107226224d6ddafbfbe9c3f943df29886e86e455a3f9b4daf8'
+          if hashlib.sha256(cleanup.encode('utf-8')).hexdigest()!='644fc72788e65af8ed2b51fb82f59bdb7c77f2b564bb4bcf2c22daef32755376': raise SystemExit('Linux cleanup hash mismatch')
           path=pathlib.Path(os.environ['RUNNER_TEMP'])/'wd-continuation-linux-advisory.sh'
           path.write_bytes(data)
           subprocess.run(['bash',str(path)],check=True)
           PY
-      # Candidate Cleanup firewall step UTF-8 SHA256: 70e0e87a773e68107226224d6ddafbfbe9c3f943df29886e86e455a3f9b4daf8.
+      # Candidate Cleanup firewall step UTF-8 SHA256: 644fc72788e65af8ed2b51fb82f59bdb7c77f2b564bb4bcf2c22daef32755376.
       # Inline so cleanup remains available when checkout or dependency setup fails.
       - name: Remove temporary outbound denial even on failure
         if: always()
@@ -133,17 +135,24 @@ jobs:
         run: |
           if [ "${RUNNER_ENVIRONMENT:-}" != 'github-hosted' ]; then echo 'Expected disposable hosted Linux' >&2; exit 1; fi
           rule="wd-adopt-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          if ! remaining="$(sudo iptables -S OUTPUT)"; then echo 'Firewall inspection failed' >&2; exit 1; fi
-          case "$remaining" in
-            *"$rule"*)
-              if ! sudo iptables -D OUTPUT -m comment --comment "$rule" -j REJECT; then echo 'Firewall rule removal failed' >&2; exit 1; fi
-              if ! remaining="$(sudo iptables -S OUTPUT)"; then echo 'Firewall inspection failed' >&2; exit 1; fi
-              case "$remaining" in *"$rule"*) echo 'Firewall rule remains' >&2; exit 1 ;; esac
-              ;;
-          esac
+          cleanup() {
+            local tool remaining failed=0
+            for tool in iptables ip6tables; do
+              if ! remaining="$(sudo "$tool" -S OUTPUT)"; then echo "$tool inspection failed" >&2; failed=1; continue; fi
+              case "$remaining" in
+                *"$rule"*)
+                  if ! sudo "$tool" -D OUTPUT -m comment --comment "$rule" -j REJECT; then echo "$tool rule removal failed" >&2; failed=1; continue; fi
+                  if ! remaining="$(sudo "$tool" -S OUTPUT)"; then echo "$tool inspection failed" >&2; failed=1; continue; fi
+                  case "$remaining" in *"$rule"*) echo "$tool rule remains" >&2; failed=1 ;; esac
+                  ;;
+              esac
+            done
+            return "$failed"
+          }
+          cleanup || exit 1
 
   continuation-offline-windows:
-    if: ${{ inputs.head == 'ac3c8c2834b1fcc8a43b0d4af15789c06d28f8ac' }}
+    if: ${{ inputs.head == 'b097113f0299bcf35253da5e21083324a257fcea' }}
     permissions: {}
     runs-on: windows-latest
     timeout-minutes: 40
@@ -154,7 +163,7 @@ jobs:
           GIT_CONFIG_KEY_0: core.longpaths
           GIT_CONFIG_VALUE_0: 'true'
         with:
-          ref: ac3c8c2834b1fcc8a43b0d4af15789c06d28f8ac
+          ref: b097113f0299bcf35253da5e21083324a257fcea
           persist-credentials: false
       - uses: actions/setup-python@v6
         with:
@@ -169,17 +178,20 @@ jobs:
         timeout-minutes: 30
         run: |
           $ErrorActionPreference='Stop'
+          Remove-Item Env:PYTHONOPTIMIZE -ErrorAction SilentlyContinue
+          python -c "import sys; sys.exit(1 if sys.flags.optimize != 0 else 0)"
+          if ($LASTEXITCODE -ne 0) { throw 'Optimized Python is not allowed' }
           $extract=@'
           import hashlib, os, pathlib, subprocess, yaml
-          expected_head='ac3c8c2834b1fcc8a43b0d4af15789c06d28f8ac'
-          assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==expected_head
+          expected_head='b097113f0299bcf35253da5e21083324a257fcea'
+          if subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()!=expected_head: raise SystemExit('candidate head mismatch')
           raw=subprocess.check_output(['git','show','HEAD:.github/workflows/mind-adopt-platform-coverage.yml'])
-          assert hashlib.sha256(raw).hexdigest()=='01286bd90835469e147a83a52d17ab2e497e6d825fbaa1068e90e9c293930b1f'
+          if hashlib.sha256(raw).hexdigest()!='c352a52ada03aa90e5f620b966d58b835268e24308ebdea1e3f676f36b400527': raise SystemExit('workflow hash mismatch')
           workflow=yaml.safe_load(raw)
           steps=workflow['jobs']['adopt-platform-windows']['steps']
           script=next(step['run'] for step in steps if step.get('name')=='Run exact synthetic coverage in offline Windows container')
           data=script.encode('utf-8')
-          assert hashlib.sha256(data).hexdigest()=='011cb040d5ddfb582e3f8e52d904d00a1373102b365eac3370975d8fffb80eb3'
+          if hashlib.sha256(data).hexdigest()!='2740a54d8d80013b7ab547def75c35019b48ee2a630a6ed74022d678be1ad40b': raise SystemExit('Windows step hash mismatch')
           path=pathlib.Path(os.environ['RUNNER_TEMP'])/'wd-continuation-windows-advisory.ps1'
           path.write_bytes(data)
           '@

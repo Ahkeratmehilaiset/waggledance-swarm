@@ -122,7 +122,7 @@ jobs:
           New-Item -ItemType Directory -Path "$scratch\repo" -Force | Out-Null
           # Source-only subset used by the synthetic fixture. Never archive .git,
           # documents, runtime data or the host workspace outside tracked source.
-          $sourcePaths = @('pyproject.toml','tests/conftest.py','tests/tools/test_card_source_binding.py','tests/tools/test_lane_card_decision_forward.py','tests/tools/test_public_card_decision_forward.py','tests/tools/test_shared_card_projection.py','tests/tools/test_shared_card_route.py',':(glob)tests/tools/test_wd_q4*.py',':(glob)tools/*.py',':(glob)tools/**/*.py',':(glob)sandbox/mind/*.py',':(glob)sandbox/mind/**/*.py',':(glob)waggledance/**/*.py',':(glob)core/*.py',':(glob)core/**/*.py',':(glob)ops/windows/reboot/*.ps1')
+          $sourcePaths = @('pyproject.toml','tests/conftest.py','tests/tools/test_card_source_binding.py','tests/tools/test_lane_card_decision_forward.py','tests/tools/test_public_card_decision_forward.py','tests/tools/test_shared_card_projection.py','tests/tools/test_shared_card_route.py','tests/tools/test_wd_mind_public_status_wrapper.py',':(glob)tests/tools/test_wd_q4*.py',':(glob)tools/*.py',':(glob)tools/**/*.py',':(glob)sandbox/mind/*.py',':(glob)sandbox/mind/**/*.py',':(glob)waggledance/**/*.py',':(glob)core/*.py',':(glob)core/**/*.py',':(glob)ops/windows/reboot/*.ps1')
           git archive --format=tar --output "$scratch\repo.tar" HEAD -- $sourcePaths
           if ($LASTEXITCODE -ne 0) { throw 'Archive failed' }
           tar -xf "$scratch\repo.tar" -C "$scratch\repo"
@@ -163,7 +163,13 @@ jobs:
           $env:TEMP='C:\wdtmp'; $env:TMP='C:\wdtmp'; $env:HOME='C:\wdtmp'; $env:USERPROFILE='C:\wdtmp'
           $env:PATH='C:\Python;C:\Python\Scripts;C:\Windows\System32\WindowsPowerShell\v1.0;C:\Windows\System32;C:\Windows'
           if (-not (Get-Command powershell.exe -ErrorAction SilentlyContinue)) { throw 'Windows PowerShell is not on PATH' }
-          $env:PYTHONDONTWRITEBYTECODE='1'; $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'
+          # Do not let inherited pytest/plugin or Python startup inputs alter tests.
+          $inheritedPythonInputs=@(Get-ChildItem Env: | Where-Object { $_.Name -match '^(?i:PYTEST_|PYTHON)' })
+          foreach ($pythonInputVariable in $inheritedPythonInputs) { Remove-Item -LiteralPath ('Env:' + $pythonInputVariable.Name) -ErrorAction Stop }
+          if (@(Get-ChildItem Env: | Where-Object { $_.Name -match '^(?i:PYTEST_|PYTHON)' }).Count -ne 0) {
+            throw 'Inherited pytest or Python environment could not be removed'
+          }
+          $env:PYTHONDONTWRITEBYTECODE='1'; $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'; $env:PYTHONNOUSERSITE='1'
           Remove-Item Env:PYTHONOPTIMIZE -ErrorAction SilentlyContinue
           & C:\Python\python.exe -c "import sys; sys.exit(0 if sys.flags.optimize == 0 else 1)"
           if ($LASTEXITCODE -ne 0) { throw 'Optimized Python is not allowed' }
@@ -209,6 +215,42 @@ jobs:
           if ($cases.Count -ne 12 -or @($cases | Where-Object {$null -ne $_.SelectSingleNode('skipped') -or $null -ne $_.SelectSingleNode('failure') -or $null -ne $_.SelectSingleNode('error') -or $_.name -notin $expected}).Count -ne 0 -or
               @($cases.name | Sort-Object -Unique).Count -ne 12 -or $suite.failures -ne '0' -or $suite.errors -ne '0') { throw 'Continuation Windows coverage mismatch' }
           Write-Output 'Continuation Windows coverage: all 12 named cases passed'
+          # These five functions yield exactly twelve synthetic cases. The separate
+          # real-writer test in the same file is intentionally never selected here.
+          $publicStatusTests=@(
+            'tests/tools/test_wd_mind_public_status_wrapper.py::test_default_off_without_any_pins',
+            'tests/tools/test_wd_mind_public_status_wrapper.py::test_separate_candidate_and_active_anchors_reach_fixed_entrypoint',
+            'tests/tools/test_wd_mind_public_status_wrapper.py::test_launcher_copy_outside_candidate_refuses_before_entrypoint',
+            'tests/tools/test_wd_mind_public_status_wrapper.py::test_wrong_or_changed_anchor_refuses_before_entrypoint',
+            'tests/tools/test_wd_mind_public_status_wrapper.py::test_entered_outcome_is_not_retried_or_mistaken_for_canonical'
+          )
+          & C:\Python\python.exe -m pytest @publicStatusTests -q -rs -p no:cacheprovider --basetemp C:\wdtmp\public-status-pytest --junitxml C:\wdtmp\public-status-results.xml
+          if ($LASTEXITCODE -ne 0) { throw 'Public status synthetic tests failed' }
+          [xml]$publicStatusResult=Get-Content -Raw C:\wdtmp\public-status-results.xml
+          $publicStatusSuite=$publicStatusResult.testsuites.testsuite
+          $publicStatusCases=@($publicStatusSuite.testcase)
+          $publicStatusExpected=@(
+            'test_default_off_without_any_pins',
+            'test_separate_candidate_and_active_anchors_reach_fixed_entrypoint',
+            'test_launcher_copy_outside_candidate_refuses_before_entrypoint',
+            'test_wrong_or_changed_anchor_refuses_before_entrypoint[active_pin]',
+            'test_wrong_or_changed_anchor_refuses_before_entrypoint[candidate_pin]',
+            'test_wrong_or_changed_anchor_refuses_before_entrypoint[active_helper]',
+            'test_wrong_or_changed_anchor_refuses_before_entrypoint[candidate_wrapper]',
+            'test_wrong_or_changed_anchor_refuses_before_entrypoint[candidate_launcher]',
+            'test_wrong_or_changed_anchor_refuses_before_entrypoint[candidate_code]',
+            'test_wrong_or_changed_anchor_refuses_before_entrypoint[candidate_fleet]',
+            'test_entered_outcome_is_not_retried_or_mistaken_for_canonical[unknown]',
+            'test_entered_outcome_is_not_retried_or_mistaken_for_canonical[queued]'
+          )
+          if ($publicStatusCases.Count -ne 12 -or @($publicStatusCases.name | Sort-Object -Unique).Count -ne 12 -or
+              @($publicStatusCases | Where-Object { $_.classname -cne 'tests.tools.test_wd_mind_public_status_wrapper' -or
+                $_.name -cnotin $publicStatusExpected -or $null -ne $_.SelectSingleNode('skipped') -or
+                $null -ne $_.SelectSingleNode('failure') -or $null -ne $_.SelectSingleNode('error') }).Count -ne 0 -or
+              $publicStatusSuite.skipped -ne '0' -or $publicStatusSuite.failures -ne '0' -or $publicStatusSuite.errors -ne '0') {
+            throw 'Public status exact coverage mismatch'
+          }
+          Write-Output 'Public status Windows coverage: all 12 named synthetic cases passed'
           '@
           $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($inner))
           $cid = docker create --network none --workdir C:\work $image powershell.exe -NoProfile -NonInteractive -EncodedCommand $encoded

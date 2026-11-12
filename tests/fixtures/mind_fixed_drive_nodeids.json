@@ -1,0 +1,33 @@
+{
+  "schema": "wd.fixed-drive-tests.v1",
+  "audited_source_head": "d43d612796cc8a0b6c82ba9aaab257ee2ab98c70",
+  "nodeids_sha256": "46b5e238d56e576f5d53716732ce6760a6e60059b060e924e3da142560054d50",
+  "nodeids": [
+    "tests/tools/test_wd_q4_production_continuation.py::test_fresh_anchor_and_actual_pointer_retain_pinned_controls",
+    "tests/tools/test_wd_q4_production_continuation.py::test_unwatermarked_continuation_does_not_advance_after_interrupted_adoption",
+    "tests/tools/test_wd_q4_production_continuation.py::test_unwatermarked_continuation_checks_adoption_after_acquiring_owner_lock",
+    "tests/tools/test_wd_q4_production_continuation.py::test_next_explicit_call_uses_new_pointer_and_stops_at_cutoff",
+    "tests/tools/test_wd_q4_production_continuation.py::test_pending_or_changed_state_or_typed_prewrite_refusal_never_retries[refused]",
+    "tests/tools/test_wd_q4_production_continuation.py::test_uncertain_runner_result_is_sanitized_and_never_retried[unknown]",
+    "tests/tools/test_wd_q4_production_continuation.py::test_uncertain_runner_result_is_sanitized_and_never_retried[interrupt]",
+    "tests/tools/test_wd_q4_production_continuation.py::test_postwrite_verification_failure_stays_unknown[anchor]",
+    "tests/tools/test_wd_q4_production_continuation.py::test_postwrite_verification_failure_stays_unknown[nonadvancing]",
+    "tests/tools/test_wd_q4_production_continuation.py::test_postwrite_verification_failure_stays_unknown[identity]",
+    "tests/tools/test_wd_q4_production_continuation.py::test_postwrite_verification_failure_stays_unknown[source]",
+    "tests/tools/test_wd_q4_production_continuation.py::test_empty_no_change_is_deferred_without_another_runner_call",
+    "tests/tools/test_wd_q4_production_continuation.py::test_unbatched_route_preserves_absence_of_batch_option",
+    "tests/tools/test_wd_q4_production_continuation.py::test_explicit_cutoff_defers_then_publishes_with_private_route_evidence",
+    "tests/tools/test_wd_q4_staged_binding_scan_scope.py::test_one_binding_scans_once_and_preserves_two_resolutions",
+    "tests/tools/test_wd_q4_staged_binding_scan_scope.py::test_binding_bytes_equal_with_and_without_scope",
+    "tests/tools/test_wd_q4_staged_binding_scan_scope.py::test_binding_keeps_enclosing_scope_unmodified",
+    "tests/tools/test_wd_q4_staged_binding_scan_scope.py::test_interruption_restores_enclosing_scope",
+    "tests/tools/test_wd_q4_staged_binding_scan_scope.py::test_pinned_source_rechecked_between_resolutions[rewrite]",
+    "tests/tools/test_wd_q4_staged_binding_scan_scope.py::test_pinned_source_rechecked_between_resolutions[replace]",
+    "tests/tools/test_wd_q4_staged_binding_scan_scope.py::test_pinned_source_rechecked_between_resolutions[generation]",
+    "tests/tools/test_wd_q4_staged_binding_scan_scope.py::test_pinned_source_rechecked_between_resolutions[projection]",
+    "tests/tools/test_wd_q4_staged_binding_scan_scope.py::test_pinned_source_rechecked_between_resolutions[pointer]",
+    "tests/tools/test_wd_q4_staged_binding_scan_scope.py::test_pinned_source_rechecked_between_resolutions[append]",
+    "tests/tools/test_wd_q4_staged_lane_query.py::test_real_synthetic_staged_snapshot_produces_ten_pin_binding",
+    "tests/tools/test_wd_q4_staged_lane_query.py::test_staged_producer_accepts_append_after_frozen_prefix_without_claiming_freshness"
+  ]
+}

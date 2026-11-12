@@ -1,0 +1,143 @@
+name: Mind fixed-drive platform coverage
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && 'pr' || 'run' }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  fixed-drive-windows:
+    permissions: {}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        env:
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: core.longpaths
+          GIT_CONFIG_VALUE_0: 'true'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Prepare dependencies before offline container
+        shell: pwsh
+        run: |
+          python -m pip install pytest==9.0.3 faiss-cpu==1.13.2 numpy packaging jsonschema pydantic pyyaml psutil requests
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency setup failed' }
+      - name: Run isolated fixed-drive cases
+        shell: pwsh
+        timeout-minutes: 25
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $IsWindows -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Expected disposable hosted Windows' }
+          $service = Get-Service -Name docker -ErrorAction Stop
+          if ($service.Status -ne 'Running') { Start-Service docker }
+          $positive = [Net.Sockets.TcpClient]::new()
+          try {
+            $connection = $positive.BeginConnect('140.82.114.4',443,$null,$null)
+            if (-not $connection.AsyncWaitHandle.WaitOne(5000)) { throw 'Positive network control timed out' }
+            $positive.EndConnect($connection)
+          } finally { $positive.Dispose() }
+          $image = 'mcr.microsoft.com/windows/servercore@sha256:c622317822fefb54a056fd09ab51f5bb48390feb47abb2b8696b2c526bdce4ef'
+          $scratch = Join-Path $env:RUNNER_TEMP 'wd-fixed-drive-source'
+          New-Item -ItemType Directory -Path "$scratch\repo" -Force | Out-Null
+          # Copy tracked source only; no host workspace mounts or live inputs.
+          $sourcePaths = @('pyproject.toml','tests/conftest.py','tests/fixtures/mind_fixed_drive_nodeids.json','tests/tools/test_card_source_binding.py','tests/tools/test_lane_card_decision_forward.py','tests/tools/test_public_card_decision_forward.py','tests/tools/test_shared_card_projection.py','tests/tools/test_shared_card_route.py',':(glob)tests/tools/test_wd_q4*.py',':(glob)tools/*.py',':(glob)tools/**/*.py',':(glob)sandbox/mind/*.py',':(glob)sandbox/mind/**/*.py',':(glob)waggledance/**/*.py',':(glob)core/*.py',':(glob)core/**/*.py')
+          git archive --format=tar --output "$scratch\repo.tar" HEAD -- $sourcePaths
+          if ($LASTEXITCODE -ne 0) { throw 'Source archive failed' }
+          tar -xf "$scratch\repo.tar" -C "$scratch\repo"
+          if ($LASTEXITCODE -ne 0) { throw 'Source extraction failed' }
+          # Parse fixture imports without importing or executing a fixture.
+          $closure = @'
+          import ast, pathlib, re, sys
+          root=pathlib.Path('tests/tools'); staged=pathlib.Path(sys.argv[1])/'tests/tools'
+          todo=['test_wd_q4_production_continuation','test_wd_q4_staged_binding_scan_scope','test_wd_q4_staged_lane_query']; seen=set()
+          while todo:
+              name=todo.pop()
+              if name in seen: continue
+              seen.add(name); original=root/(name+'.py'); copy=staged/(name+'.py')
+              if not original.is_file() or not copy.is_file(): raise SystemExit('missing fixture: '+name)
+              tree=ast.parse(original.read_text(encoding='utf-8'))
+              for node in ast.walk(tree):
+                  if isinstance(node,ast.ImportFrom) and node.module:
+                      if node.module.startswith('tests.tools.test_'): todo.append(node.module.split('.')[2])
+                      if node.module=='tests.tools': todo.extend(a.name for a in node.names if a.name.startswith('test_'))
+                  if isinstance(node,ast.Import):
+                      todo.extend(a.name.split('.')[2] for a in node.names if a.name.startswith('tests.tools.test_'))
+                  if isinstance(node,ast.Constant) and isinstance(node.value,str):
+                      for dep in re.findall(r'(?:tests[/\\]tools[/\\])?(test_[a-zA-Z0-9_]+)\.py',node.value):
+                          if (root/(dep+'.py')).is_file(): todo.append(dep)
+          print('static fixture closure present:',len(seen))
+          '@
+          python -c $closure "$scratch\repo"
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture source closure incomplete' }
+          docker pull $image
+          if ($LASTEXITCODE -ne 0) { throw 'Image unavailable' }
+          $pythonRoot = (& python -c 'import sys; print(sys.base_prefix)').Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Python prefix lookup failed' }
+          $inner = @'
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path Env:PYTHONOPTIMIZE) { throw 'Python optimization environment refused' }
+          $driveProbe = 'import ctypes,os,sys; (os.name==''nt'') or sys.exit(''Windows required''); drive=ctypes.WinDLL(''kernel32'',use_last_error=True).GetDriveTypeW; drive.argtypes=(ctypes.c_wchar_p,); drive.restype=ctypes.c_uint; (drive(''C:'' + chr(92))==3) or sys.exit(''C drive is not DRIVE_FIXED'')'
+          & C:\Python\python.exe -E -B -c $driveProbe
+          if ($LASTEXITCODE -ne 0) { throw 'Native C drive is not DRIVE_FIXED' }
+          $testRoot = 'C:\wdtmp\.codex-audit\fixed-drive'
+          New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+          $env:TEMP=$testRoot; $env:TMP=$testRoot; $env:HOME=$testRoot; $env:USERPROFILE=$testRoot
+          $env:PATH='C:\Python;C:\Python\Scripts;C:\Windows\System32;C:\Windows'
+          $env:PYTHONDONTWRITEBYTECODE='1'; $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'
+          if (Get-ChildItem Env: | Where-Object { $_.Name -match '(?i)token|secret|password|credential|^GITHUB_' }) { throw 'Unexpected credential-like environment key' }
+          if (Get-ChildItem Env: | Where-Object { $_.Name -match '^(WD_|AGENT_BRIDGE_)' }) { throw 'Unexpected live runtime environment key' }
+          $networkProbe = 'import socket,sys; s=socket.socket(); s.settimeout(3); result=s.connect_ex((''140.82.114.4'',443)); s.close(); (type(result) is int and result != 0) or sys.exit(''Network isolation not proven'')'
+          & C:\Python\python.exe -E -B -c $networkProbe
+          if ($LASTEXITCODE -ne 0) { throw 'Container network connected' }
+          Set-Location C:\work
+          $manifestProbe = 'import hashlib,json,sys; d=json.load(open(''tests/fixtures/mind_fixed_drive_nodeids.json'',encoding=''utf-8'')); (isinstance(d,dict) and d.get(''schema'')==''wd.fixed-drive-tests.v1'') or sys.exit(''Unknown selector schema''); n=d.get(''nodeids''); (isinstance(n,list) and len(n)==26 and all(type(x) is str for x in n) and len(set(n))==26) or sys.exit(''Invalid selector identities''); raw=json.dumps(n,separators=('','', '':''),ensure_ascii=True).encode(''ascii''); (hashlib.sha256(raw).hexdigest()==d.get(''nodeids_sha256'')==''46b5e238d56e576f5d53716732ce6760a6e60059b060e924e3da142560054d50'') or sys.exit(''Selector digest mismatch'')'
+          & C:\Python\python.exe -E -B -c $manifestProbe
+          if ($LASTEXITCODE -ne 0) { throw 'Reviewed selector manifest mismatch' }
+          $manifest = Get-Content -Raw tests/fixtures/mind_fixed_drive_nodeids.json | ConvertFrom-Json
+          $fixedDriveTests = @($manifest.nodeids)
+          if (@($fixedDriveTests | Where-Object { $_ -isnot [string] -or $_ -cnotmatch '^tests/tools/test_wd_q4_[a-z_]+\.py::test_[^\r\n]+$' }).Count -ne 0) { throw 'Non-nodeid selector refused' }
+          # Check optimization in the process that actually runs pytest.
+          $pytestProbe = 'import runpy,sys; (sys.flags.optimize==0) or sys.exit(''Optimized pytest refused''); runpy.run_module(''pytest'',run_name=''__main__'',alter_sys=True)'
+          & C:\Python\python.exe -E -B -c $pytestProbe @fixedDriveTests -q -rs -p no:cacheprovider --basetemp "$testRoot\pytest" --junitxml "$testRoot\results.xml"
+          if ($LASTEXITCODE -ne 0) { throw 'Fixed-drive synthetic tests failed' }
+          [xml]$result = Get-Content -Raw "$testRoot\results.xml"
+          $suites = @($result.SelectNodes('/testsuites/testsuite'))
+          $cases = @($result.SelectNodes('/testsuites/testsuite/testcase'))
+          $actual = @()
+          foreach ($case in $cases) {
+            if ($case.SelectSingleNode('skipped') -or $case.SelectSingleNode('failure') -or $case.SelectSingleNode('error')) { throw 'Fixed-drive coverage mismatch' }
+            $nodeid = ($case.classname -replace '\.', '/') + '.py::' + $case.name
+            if ($nodeid -cnotin $fixedDriveTests) { throw 'Fixed-drive coverage mismatch' }
+            $actual += $nodeid
+          }
+          $actual = @($actual | Sort-Object -Unique)
+          if ($suites.Count -ne 1 -or $cases.Count -ne 26 -or $actual.Count -ne 26 -or $suites[0].failures -ne '0' -or $suites[0].errors -ne '0' -or $suites[0].skipped -ne '0') { throw 'Fixed-drive coverage mismatch' }
+          Write-Output 'Fixed-drive Windows coverage: all 26 exact nodes passed'
+          '@
+          $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($inner))
+          $cid = docker create --network none --workdir C:\work $image powershell.exe -NoProfile -NonInteractive -EncodedCommand $encoded
+          if ($LASTEXITCODE -ne 0) { throw 'Offline container creation failed' }
+          try {
+            $network = docker inspect --format '{{.HostConfig.NetworkMode}}' $cid
+            if ($LASTEXITCODE -ne 0 -or $network -ne 'none') { throw 'Container network not isolated' }
+            $mounts = docker inspect --format '{{json .Mounts}}' $cid
+            if ($LASTEXITCODE -ne 0 -or $mounts -notin @('[]','null')) { throw 'Unexpected container mounts' }
+            docker cp "$pythonRoot\." "${cid}:C:\Python"
+            if ($LASTEXITCODE -ne 0) { throw 'Python copy failed' }
+            docker cp "$scratch\repo\." "${cid}:C:\work"
+            if ($LASTEXITCODE -ne 0) { throw 'Source copy failed' }
+            docker start -a $cid
+            if ($LASTEXITCODE -ne 0) { throw 'Offline container test failed' }
+            $code = docker inspect --format '{{.State.ExitCode}}' $cid
+            if ($LASTEXITCODE -ne 0 -or $code -ne '0') { throw 'Offline container exit was not successful' }
+          } finally { docker rm -f $cid }

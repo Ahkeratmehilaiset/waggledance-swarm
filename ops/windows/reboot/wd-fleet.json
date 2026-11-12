@@ -5,6 +5,10 @@
   "primary_repo_root": "C:\\Python\\project2",
   "repo_common_git_dir": "C:\\Python\\project2\\.git",
   "runtime_root": "C:\\Python\\project2-master\\.agent-bridge",
+  "mind_read": {
+    "enabled": true,
+    "live_dir_mode": "shared_runtime_audit"
+  },
   "external_native_runners": [
     {
       "name": "pythonw3.13.exe",

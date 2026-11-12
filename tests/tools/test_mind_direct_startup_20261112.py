@@ -127,6 +127,10 @@ def test_package_contains_direct_session_and_unchanged_core_interfaces():
     package = json.loads((REBOOT / 'bridge-code-files.json').read_bytes())
     for name in ['tools/wd_bridge_mind.py', 'tools/wd_bridge_mind_lane_read.py', 'tools/wd_bridge_mind_session.py']:
         assert name in package['python_files']
+    missing = {'tools/wd_mind_content_prefix_readonly.py'} - set(package['python_files'])
+    missing |= {'tools.wd_bridge_mind_lane_read', 'tools.wd_bridge_mind_session',
+                'tools.wd_mind_content_prefix_readonly'} - set(package['import_smoke']['package_modules'])
+    assert not missing, f'missing packaged modules: {sorted(missing)}'
     assert 'tools/wd_bridge_mind_session.py' in package['python_entrypoints'].values()
     assert 'tools/wd_q4_lane_caller_cli.py' not in package['python_files']
 

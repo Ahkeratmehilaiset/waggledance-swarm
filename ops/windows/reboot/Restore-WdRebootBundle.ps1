@@ -297,8 +297,14 @@ foreach ($journal in $LaneJournals) {
         @($recordErrors | Where-Object { $_.Exception -isnot [Management.Automation.ItemNotFoundException] }).Count -eq 0
     if ($null -ne $recordItem) {
         try {
-            $status = [string](Get-ExactField (Read-JsonFile -Path $record -Limit 32768) 'status')
-            if ($accepted.Count -gt 0 -and $accepted -cnotcontains $status) { Add-Reason ('relay_state_incompatible:' + $journal + ':' + $status) }
+            $recordState = Read-JsonFile -Path $record -Limit 32768
+            $schema = Get-ExactField $recordState 'schema'
+            if ($schema -isnot [string] -or $schema -cne 'wd.native-tools-wake.v1') {
+                Add-Reason ('relay_state_schema_invalid:' + $journal)
+            } else {
+                $status = [string](Get-ExactField $recordState 'status')
+                if ($accepted.Count -gt 0 -and $accepted -cnotcontains $status) { Add-Reason ('relay_state_incompatible:' + $journal + ':' + $status) }
+            }
         } catch {
             Add-Reason ('relay_state_unreadable:' + $journal)
         }

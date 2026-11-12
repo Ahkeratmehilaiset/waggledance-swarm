@@ -184,6 +184,29 @@ def test_a_relay_state_the_legacy_target_cannot_own_holds(tmp_path, shell):
 
 
 @pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("record", [
+    {"schema": "wd.other.v1", "status": "queued"},
+    {"status": "queued"},
+    {"schema": None, "status": "queued"},
+    {"schema": ["wd.native-tools-wake.v1"], "status": "queued"},
+    {"schema": "WD.NATIVE-TOOLS-WAKE.V1", "status": "queued"},
+])
+def test_a_relay_record_with_invalid_schema_is_a_hold(tmp_path, shell, record):
+    fixture = Fixture(tmp_path)
+    (fixture.journal / "native-bridge-wake.json").write_text(json.dumps(record), encoding="utf-8")
+    code, plan = fixture.run(shell)
+    assert code == 2 and plan["verdict"] == "hold", plan
+    assert "relay_state_schema_invalid:" + str(fixture.journal) in plan["reasons"]
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_relay_record_with_exact_schema_and_accepted_status_is_planned(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    code, plan = fixture.run(shell)
+    assert code == 0 and plan["verdict"] == "plan" and plan["reasons"] == [], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
 def test_a_named_snapshot_target_accepts_its_own_statuses_and_legacy_set_asides_are_ignored(tmp_path, shell):
     fixture = Fixture(tmp_path, relay=NAMED_RELAY, status="rejected")
     (fixture.journal / ("native-bridge-wake.json.wake." + "b" * 32)).write_text("{}", encoding="utf-8")

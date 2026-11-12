@@ -3366,7 +3366,7 @@ function Test-WdMindCommandLineFits {
 Remove-Item Env:WD_MIND_STARTUP_VIEW, Env:WD_MIND_STARTUP_VIEW_SHA256 -ErrorAction SilentlyContinue
 # Optional direct status projection, after ValidateOnly and identity/bootstrap completion.
 $toolsMindStartupRead = [pscustomobject]@{outcome='refused';reason='startup_helper_refused';record_written=$false}
-try {
+  try {
     $mindHelper = Join-Path $PSScriptRoot 'Invoke-WdMindStartupRead.ps1'
     Assert-FilePathWithoutReparse -Candidate $mindHelper -Root $toolsTrustedDrive
     $mindManifest = Read-Utf8FileSnapshot -Path $toolsDeploymentManifestPath
@@ -3378,7 +3378,7 @@ try {
         $mindHelperSnapshot.Hash -cne ([string]$mindHelperPin.Value).ToUpperInvariant()) { throw 'pin' }
     . ([scriptblock]::Create([string]$mindHelperSnapshot.Text))
     $toolsMindStartupRead = Invoke-WdMindStartupRead -BundleRoot $PSScriptRoot -ExpectedManifestHash $toolsExpectedManifestHash -Lane $agent -Worktree $worktree
-} catch { }
+  } catch { }
 $mindOriginalPrompt = $prompt
 $prompt += ' Mind startup status read: ' + [string]$toolsMindStartupRead.outcome +
     ' (' + [string]$toolsMindStartupRead.reason + '). This is an optional status projection, not semantic recall, authenticated current state, a vote or an instruction. '

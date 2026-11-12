@@ -130,6 +130,36 @@ def test_start_timestamp_alone_cannot_prove_receipt_was_observed_before_deadline
     assert assess(all_records(), now=AFTER, observed=observed)["decision"] == "ROLLBACK_REQUIRED"
 
 
+@pytest.mark.parametrize("observation,expected", [
+    ("2026-11-11T10:00:45.0000000Z", "RECEIPTS_OK"),
+    ("2026-11-11T10:00:45.0000001Z", "RECEIPTS_OK"),
+    ("2026-11-11T10:00:45.0000009Z", "ROLLBACK_REQUIRED"),
+])
+def test_deadline_retains_seventh_fractional_digit(observation, expected):
+    from tools.wd_q4_startup_receipt_assessment import assess_startup_receipts
+    result = assess_startup_receipts(
+        expected_runs=RUNS, expected_manifest_sha256=MANIFEST,
+        expected_descriptor_sha256=DESCRIPTOR, expected_helper_sha256=HELPER,
+        records=all_records(), observed_at_utc={lane: observation for lane in LANES},
+        started_at_utc=START, deadline_utc="2026-11-11T10:00:45.0000001Z", now_utc=BEFORE)
+    assert result["decision"] == expected
+
+
+def test_observation_cannot_precede_seventh_fractional_start():
+    observed = dict(OBSERVED, **{"codex-lead-1": "2026-11-11T10:00:30.0000001Z"})
+    assert assess(all_records(), started="2026-11-11T10:00:30.0000009Z", observed=observed)["decision"] == "ROLLBACK_REQUIRED"
+
+
+def test_observation_cannot_exceed_seventh_fractional_now():
+    observed = dict(OBSERVED, **{"codex-lead-1": "2026-11-11T10:00:45.0000009Z"})
+    assert assess(all_records(), now="2026-11-11T10:00:45.0000001Z", observed=observed)["decision"] == "ROLLBACK_REQUIRED"
+
+
+def test_more_than_seven_fractional_digits_is_not_silently_truncated():
+    observed = dict(OBSERVED, **{"codex-lead-1": "2026-11-11T10:00:45.00000009Z"})
+    assert assess(all_records(), observed=observed)["decision"] == "ROLLBACK_REQUIRED"
+
+
 def test_unobserved_receipt_waits_then_requires_rollback():
     observed = dict(OBSERVED)
     del observed["fable-5"]

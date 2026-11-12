@@ -17,6 +17,8 @@ _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _CALL_ID = re.compile(r"^[0-9a-f]{32}$")
 _RECEIPT_TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _RUN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_FRACTION = re.compile(r"[.,]([0-9]+)Z\Z")
+_TICKS_PER_SECOND = 10_000_000
 
 
 def _digest(value):
@@ -26,13 +28,18 @@ def _digest(value):
 def _utc(value):
     if type(value) is not str or not value.endswith("Z"):
         raise ValueError("UTC timestamp required")
+    fraction_match = _FRACTION.search(value)
+    fraction = fraction_match.group(1) if fraction_match else ""
+    if len(fraction) > 7:
+        raise ValueError("timestamp precision exceeds 100 ns")
     try:
         result = datetime.fromisoformat(value[:-1] + "+00:00")
     except ValueError as exc:
         raise ValueError("invalid UTC timestamp") from exc
     if result.tzinfo != timezone.utc:
         raise ValueError("UTC timestamp required")
-    return result
+    seconds = ((result.toordinal() * 24 + result.hour) * 60 + result.minute) * 60 + result.second
+    return seconds * _TICKS_PER_SECOND + result.microsecond * 10 + (int(fraction[6]) if len(fraction) == 7 else 0)
 
 
 def assess_startup_receipts(*, expected_runs, expected_manifest_sha256,
@@ -74,7 +81,7 @@ def assess_startup_receipts(*, expected_runs, expected_manifest_sha256,
             continue
         # Launcher timestamps are truncated to seconds, so the same second
         # may legitimately begin just before a subsecond launch anchor.
-        if recorded_at < start.replace(microsecond=0):
+        if recorded_at < start // _TICKS_PER_SECOND * _TICKS_PER_SECOND:
             lanes[lane] = "PENDING"
             continue
         observed = observed_at_utc.get(lane)

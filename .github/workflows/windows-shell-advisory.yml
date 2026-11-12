@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   windows-shell-advisory:
+    if: ${{ inputs.head != '6f1dcf541e862646a414cc1347227fd2c15c1c5a' }}
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -86,3 +87,122 @@ jobs:
           name: windows-shell-advisory-${{ inputs.head }}-${{ github.run_id }}
           path: .codex-audit/windows-shell-advisory
           if-no-files-found: warn
+
+  # Manual diagnostic only. This runs a single synthetic test file from an
+  # exact tracked source archive; it does not install or activate Mind.
+  realcard-offline-linux:
+    if: ${{ inputs.head == '6f1dcf541e862646a414cc1347227fd2c15c1c5a' }}
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 6f1dcf541e862646a414cc1347227fd2c15c1c5a
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install synthetic test dependencies before network denial
+        run: python -m pip install pytest==9.0.3 faiss-cpu==1.13.2 numpy packaging jsonschema pydantic pyyaml psutil requests
+      - name: Verify exact source and run synthetic tests offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != 'github-hosted' ]; then echo 'Expected disposable hosted Linux' >&2; exit 1; fi
+          test "$(git rev-parse HEAD)" = '6f1dcf541e862646a414cc1347227fd2c15c1c5a'
+          test "$(git show HEAD:tests/tools/test_wd_q4_real_card_decision_cli.py | sha256sum | cut -d ' ' -f 1)" = 'aa9720fdfc776c069d47dc5956a790b8f46b86f92a8fe76c2a6aab9fd90a273b'
+          scratch="$RUNNER_TEMP/wd-realcard-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$scratch"
+          mkdir -p "$scratch/home" "$scratch/tmp" "$scratch/source" "$scratch/no-hooks" "$scratch/no-template"
+          rule="wd-realcard-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          cleanup_firewall() {
+            local table remaining failure=0
+            for table in iptables ip6tables; do
+              if ! remaining="$(sudo "$table" -S OUTPUT)"; then echo "$table inspection failed" >&2; failure=1; continue; fi
+              case "$remaining" in
+                *"$rule"*)
+                  if ! sudo "$table" -D OUTPUT -m comment --comment "$rule" -j REJECT; then echo "$table removal failed" >&2; failure=1; continue; fi
+                  if ! remaining="$(sudo "$table" -S OUTPUT)"; then echo "$table reinspection failed" >&2; failure=1; continue; fi
+                  case "$remaining" in *"$rule"*) echo "$table rule remains" >&2; failure=1 ;; esac
+                  ;;
+              esac
+            done
+            return "$failure"
+          }
+          trap 'cleanup_firewall || exit 1' EXIT
+          sudo iptables -I OUTPUT 1 -m comment --comment "$rule" -j REJECT
+          sudo ip6tables -I OUTPUT 1 -m comment --comment "$rule" -j REJECT
+          sudo iptables -C OUTPUT -m comment --comment "$rule" -j REJECT
+          sudo ip6tables -C OUTPUT -m comment --comment "$rule" -j REJECT
+          python_bin="$(command -v python)"
+          python_dir="$(dirname "$python_bin")"
+          test_path="/usr/bin:/bin:$python_dir"
+          env -i PATH="$test_path" HOME="$scratch/home" TMPDIR="$scratch/tmp" "$python_bin" - <<'PY'
+          import socket
+          for family, target in ((socket.AF_INET, ('1.1.1.1', 443)), (socket.AF_INET6, ('2606:4700:4700::1111', 443))):
+              sock = socket.socket(family)
+              try:
+                  sock.settimeout(2)
+                  assert sock.connect_ex(target) != 0, 'outbound network connected'
+              finally:
+                  sock.close()
+          PY
+          git archive --format=tar --output "$scratch/source.tar" HEAD -- 'pyproject.toml' 'tests/conftest.py' 'tests/tools/test_card_source_binding.py' 'tests/tools/test_lane_card_decision_forward.py' 'tests/tools/test_public_card_decision_forward.py' 'tests/tools/test_shared_card_projection.py' 'tests/tools/test_shared_card_route.py' ':(glob)tests/tools/test_wd_q4*.py' ':(glob)tools/*.py' ':(glob)tools/**/*.py' ':(glob)sandbox/mind/*.py' ':(glob)sandbox/mind/**/*.py' ':(glob)waggledance/**/*.py' ':(glob)core/*.py' ':(glob)core/**/*.py' ':(glob)ops/windows/reboot/*.ps1'
+          tar -xf "$scratch/source.tar" -C "$scratch/source"
+          test ! -e "$scratch/source/.git"
+          test -z "$(ls -A "$scratch/no-hooks")"
+          test -z "$(ls -A "$scratch/no-template")"
+          env -i PATH="$test_path" HOME="$scratch/home" TMPDIR="$scratch/tmp" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TEMPLATE_DIR="$scratch/no-template" GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$scratch/no-hooks" GIT_TERMINAL_PROMPT=0 GIT_NO_LAZY_FETCH=1 "$python_bin" - <<'PY'
+          import os, pathlib, shutil, subprocess
+          assert os.path.realpath(shutil.which('git')) == '/usr/bin/git'
+          assert pathlib.Path(os.environ['GIT_TEMPLATE_DIR']).is_dir()
+          assert pathlib.Path(os.environ['GIT_CONFIG_VALUE_0']).is_dir()
+          assert not list(pathlib.Path(os.environ['GIT_TEMPLATE_DIR']).iterdir())
+          assert not list(pathlib.Path(os.environ['GIT_CONFIG_VALUE_0']).iterdir())
+          actual = subprocess.check_output(['/usr/bin/git', 'config', '--get', 'core.hooksPath'], text=True).strip()
+          assert actual == os.environ['GIT_CONFIG_VALUE_0']
+          PY
+          ( cd "$scratch/source"; env -i PATH="$test_path" HOME="$scratch/home" TMPDIR="$scratch/tmp" PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TEMPLATE_DIR="$scratch/no-template" GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0="$scratch/no-hooks" GIT_TERMINAL_PROMPT=0 GIT_NO_LAZY_FETCH=1 "$python_bin" -m pytest tests/tools/test_wd_q4_real_card_decision_cli.py -q -rs -p no:cacheprovider --basetemp "$scratch/pytest" --junitxml "$scratch/results.xml" )
+          env -i PATH="$test_path" HOME="$scratch/home" "$python_bin" -c 'import sys,xml.etree.ElementTree as E; s=E.parse(sys.argv[1]).getroot().find("testsuite"); c=s.findall("testcase"); assert len(c)==14 and s.attrib["skipped"]=="0" and s.attrib["failures"]=="0" and s.attrib["errors"]=="0"; print("verified synthetic Linux: 14 passed")' "$scratch/results.xml"
+          env -i PATH="$test_path" HOME="$scratch/home" "$python_bin" - "$scratch/pytest" <<'PY'
+          import configparser, pathlib, sys
+          base = pathlib.Path(sys.argv[1]).resolve(strict=True)
+          cases = [p for p in base.iterdir() if p.is_dir() and not p.is_symlink()]
+          configs = [p / '.codex-audit/synthetic-git/.git/config' for p in cases
+                     if (p / '.codex-audit/synthetic-git/.git/config').is_file()]
+          assert len(configs) == 13, f'expected 13 synthetic Git repos, found {len(configs)}'
+          for config in configs:
+              repo = config.parent.parent
+              gitdir = repo / '.git'
+              assert not config.is_symlink() and not repo.is_symlink() and not gitdir.is_symlink()
+              assert gitdir.is_dir()
+              assert repo.resolve(strict=True).is_relative_to(base)
+              parsed = configparser.ConfigParser(interpolation=None)
+              parsed.read_string(config.read_text(encoding='utf-8'))
+              assert parsed.sections() == ['core'], parsed.sections()
+              assert set(parsed['core']).issubset({'repositoryformatversion','filemode','bare','logallrefupdates'})
+              alternates = repo / '.git/objects/info/alternates'
+              assert not alternates.exists() and not alternates.is_symlink()
+              hooks = repo / '.git/hooks'
+              assert not hooks.is_symlink() and (not hooks.exists() or (hooks.is_dir() and not list(hooks.iterdir())))
+          print('verified 13 fixture Git repos have only local core settings, no alternates, no hooks')
+          PY
+      - name: Confirm dual-stack firewall cleanup even on failure
+        if: always()
+        shell: bash
+        run: |
+          if [ "${RUNNER_ENVIRONMENT:-}" != 'github-hosted' ]; then echo 'Expected disposable hosted Linux' >&2; exit 1; fi
+          rule="wd-realcard-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          failure=0
+          for table in iptables ip6tables; do
+            if ! remaining="$(sudo "$table" -S OUTPUT)"; then echo "$table inspection failed" >&2; failure=1; continue; fi
+            case "$remaining" in
+              *"$rule"*)
+                if ! sudo "$table" -D OUTPUT -m comment --comment "$rule" -j REJECT; then echo "$table removal failed" >&2; failure=1; continue; fi
+                if ! remaining="$(sudo "$table" -S OUTPUT)"; then echo "$table reinspection failed" >&2; failure=1; continue; fi
+                case "$remaining" in *"$rule"*) echo "$table rule remains" >&2; failure=1 ;; esac
+                ;;
+            esac
+          done
+          exit "$failure"

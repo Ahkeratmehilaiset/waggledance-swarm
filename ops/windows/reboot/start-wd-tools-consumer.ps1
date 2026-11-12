@@ -407,6 +407,11 @@ function Invoke-WdQ4StartupMindRead {
         [ValidateRange(1, 600)] [int] $TimeoutSeconds = 90,
         [ValidateRange(1, 600)] [int] $GraceSeconds = 30
     )
+    function Get-WdQ4RemainingWaitMilliseconds {
+        param([long] $BudgetMilliseconds, [long] $ElapsedMilliseconds)
+        if ($BudgetMilliseconds -le 0 -or $ElapsedMilliseconds -lt 0 -or $ElapsedMilliseconds -ge $BudgetMilliseconds) { return 0 }
+        return [int]($BudgetMilliseconds - $ElapsedMilliseconds)
+    }
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
     $delivered = ''
     $childEnvironment = $null
@@ -504,22 +509,26 @@ function Invoke-WdQ4StartupMindRead {
             ' startup read: own current task, last bound reply, operator directive of the day","time":"' +
             [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ', [Globalization.CultureInfo]::InvariantCulture) + '"}')
         $process = $null
-        # One wall-clock deadline over the complete operation: the start, the stdin write, the exit wait and the
-        # output read. Whatever misses it is UNKNOWN: no kill, no retry, nothing parsed.
-        $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds + $GraceSeconds)
+        # One monotonic budget covers the start, stdin write, exit wait and output read. Process.Start itself
+        # remains synchronous and cannot be interrupted here; late completion is UNKNOWN, no kill or retry.
+        $waitBudgetMilliseconds = ([long]$TimeoutSeconds + [long]$GraceSeconds) * 1000
+        $waitClock = [Diagnostics.Stopwatch]::StartNew()
         try {
             $process = [Diagnostics.Process]::Start($start)
             if ($null -eq $process) { throw 'start' }
             $stdoutTask = $process.StandardOutput.ReadToEndAsync()
             $stderrTask = $process.StandardError.ReadToEndAsync()
             $stdinTask = $process.StandardInput.BaseStream.WriteAsync($query, 0, $query.Length)
-            if ($stdinTask.Wait([Math]::Max(1, [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds))) { $process.StandardInput.Close() }
-            if (-not $process.WaitForExit([Math]::Max(1, [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds))) {
+            if ($stdinTask.Wait((Get-WdQ4RemainingWaitMilliseconds -BudgetMilliseconds $waitBudgetMilliseconds -ElapsedMilliseconds $waitClock.ElapsedMilliseconds))) { $process.StandardInput.Close() }
+            if ((Get-WdQ4RemainingWaitMilliseconds -BudgetMilliseconds $waitBudgetMilliseconds -ElapsedMilliseconds $waitClock.ElapsedMilliseconds) -eq 0 -or
+                -not $process.WaitForExit((Get-WdQ4RemainingWaitMilliseconds -BudgetMilliseconds $waitBudgetMilliseconds -ElapsedMilliseconds $waitClock.ElapsedMilliseconds))) {
                 # UNKNOWN: the helper or its worker is still running. No kill, no retry, never reported as success.
                 $record.outcome = 'unknown'
                 $record.reason = 'timeout'
                 $record.cleanup = 'unknown'
-            } elseif (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), [Math]::Max(1, [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds))) {
+            } elseif ((Get-WdQ4RemainingWaitMilliseconds -BudgetMilliseconds $waitBudgetMilliseconds -ElapsedMilliseconds $waitClock.ElapsedMilliseconds) -eq 0 -or
+                -not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), (Get-WdQ4RemainingWaitMilliseconds -BudgetMilliseconds $waitBudgetMilliseconds -ElapsedMilliseconds $waitClock.ElapsedMilliseconds)) -or
+                (Get-WdQ4RemainingWaitMilliseconds -BudgetMilliseconds $waitBudgetMilliseconds -ElapsedMilliseconds $waitClock.ElapsedMilliseconds) -eq 0) {
                 # The helper exited but its output pipes stay open (a process it started still holds them): the complete
                 # operation missed the deadline. UNKNOWN, nothing parsed.
                 $record.exit_code = [int]$process.ExitCode

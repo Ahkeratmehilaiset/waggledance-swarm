@@ -194,6 +194,18 @@ def test_a_named_snapshot_target_accepts_its_own_statuses_and_legacy_set_asides_
 
 
 @pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("pointer", [{}, {"final_commit": None}, {"final_commit": 7},
+                                     {"final_commit": "7" * 39}, {"final_commit": "7" * 40 + "\n"}])
+def test_invalid_current_pointer_commit_holds(tmp_path, shell, pointer):
+    fixture = Fixture(tmp_path)
+    fixture.pointer.write_text(json.dumps(pointer), encoding="utf-8")
+    code, plan = fixture.run(shell)
+    assert code == 2 and plan["verdict"] == "hold"
+    assert "state_pointer_commit_invalid" in plan["reasons"]
+    assert plan["authority_effect"] == "none" and plan["applied"] is False
+
+
+@pytest.mark.parametrize("shell", SHELLS)
 def test_other_holds(tmp_path, shell):
     fixture = Fixture(tmp_path)
     fixture.pointer.write_text(json.dumps({"final_commit": TARGET}), encoding="utf-8")

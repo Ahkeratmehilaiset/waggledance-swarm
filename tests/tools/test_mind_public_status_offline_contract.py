@@ -136,4 +136,3 @@ def test_environment_scrub_with_fake_pytest_inputs(host):
     assert result.returncode == 0, result.stderr
     values = json.loads(result.stdout)
     assert sorted(values) == ['PYTEST_DISABLE_PLUGIN_AUTOLOAD', 'PYTHONDONTWRITEBYTECODE', 'PYTHONNOUSERSITE']
-

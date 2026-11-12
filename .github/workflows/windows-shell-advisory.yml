@@ -9,12 +9,21 @@ on:
         description: Exact 40-character source commit to test (not a branch)
         required: true
         type: string
+      mode:
+        description: Windows shell advisory or Linux Python path observation
+        required: false
+        default: windows-shell
+        type: choice
+        options:
+          - windows-shell
+          - linux-python-path
 
 permissions:
   contents: read
 
 jobs:
   windows-shell-advisory:
+    if: ${{ inputs.mode == 'windows-shell' }}
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -86,3 +95,58 @@ jobs:
           name: windows-shell-advisory-${{ inputs.head }}-${{ github.run_id }}
           path: .codex-audit/windows-shell-advisory
           if-no-files-found: warn
+
+  linux-python-path:
+    # This is a separate host observation, not a recreation of the old CI VM.
+    # No checkout, test execution, runtime update, or credentials are needed.
+    if: ${{ inputs.mode == 'linux-python-path' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Set up the previously observed Python version
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13.18'
+
+      - name: Observe executable and ancestor path components
+        shell: bash
+        env:
+          CONTEXT_HEAD: ${{ inputs.head }}
+        run: |
+          set -euo pipefail
+          [[ "$CONTEXT_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          python -I -S -B - <<'PY'
+          import json
+          import os
+          import stat
+          import sys
+          from pathlib import Path
+
+          def components(value):
+              path = Path(os.path.abspath(value))
+              result = []
+              for item in (path, *path.parents):
+                  info = os.lstat(item)
+                  linked = stat.S_ISLNK(info.st_mode)
+                  result.append({'path': str(item), 'symlink': linked,
+                                 'target': os.readlink(item) if linked else None})
+              return result
+
+          lexical = components(sys.executable)
+          resolved_path = os.path.realpath(sys.executable, strict=True)
+          resolved = components(resolved_path)
+          print(json.dumps({
+              'schema': 'wd.python-executable-path-advisory.v1',
+              'scope': 'current ephemeral runner only; not the prior CI host',
+              'context_head': os.environ['CONTEXT_HEAD'],
+              'dispatch_sha': os.environ.get('GITHUB_SHA', ''),
+              'python_version': sys.version.split()[0],
+              'executable': sys.executable,
+              'resolved_executable': resolved_path,
+              'lexical_components': lexical,
+              'resolved_components': resolved,
+              'lexical_contains_symlink': any(row['symlink'] for row in lexical),
+              'proves_prior_ci_cause': False,
+          }, sort_keys=True))
+          PY

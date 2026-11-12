@@ -20,9 +20,14 @@ def _assert_advisory(workflow):
     assert set(workflow[True]) == {"workflow_dispatch"}, "MUTANT_ADD_PR_REQUIRED_CONTEXT"
     head = workflow[True]["workflow_dispatch"]["inputs"]["head"]
     assert head["type"] == "string" and head["required"] is True
+    mode = workflow[True]["workflow_dispatch"]["inputs"]["mode"]
+    assert mode == {"description": "Windows shell advisory or Linux Python path observation",
+                    "required": False, "default": "windows-shell", "type": "choice",
+                    "options": ["windows-shell", "linux-python-path"]}
     assert workflow["permissions"] == {"contents": "read"}
-    assert set(workflow["jobs"]) == {"windows-shell-advisory"}
+    assert set(workflow["jobs"]) == {"windows-shell-advisory", "linux-python-path"}
     job = workflow["jobs"]["windows-shell-advisory"]
+    assert job["if"] == "${{ inputs.mode == 'windows-shell' }}"
     assert job["runs-on"] == "windows-latest", "MUTANT_KEEP_UBUNTU_ONLY"
     assert job["timeout-minutes"] == 20
     assert "continue-on-error" not in job  # advisory failures stay visible, not false green
@@ -44,6 +49,23 @@ def _assert_advisory(workflow):
     upload = next(s for s in steps if s.get("uses") == "actions/upload-artifact@v7")
     assert upload["if"] == "always()" and upload["with"]["path"] == ".codex-audit/windows-shell-advisory"
     assert "${{ inputs.head }}" not in "\n".join(s.get("run", "") for s in steps), "MUTANT_INTERPOLATE_HEAD_IN_SHELL"
+    diagnostic = workflow["jobs"]["linux-python-path"]
+    assert diagnostic["if"] == "${{ inputs.mode == 'linux-python-path' }}"
+    assert diagnostic["runs-on"] == "ubuntu-latest" and diagnostic["timeout-minutes"] == 5
+    assert diagnostic["permissions"] == {} and "continue-on-error" not in diagnostic
+    linux_steps = diagnostic["steps"]
+    assert len(linux_steps) == 2
+    assert linux_steps[0]["uses"] == "actions/setup-python@v6"
+    assert linux_steps[0]["with"] == {"python-version": "3.13.18"}
+    assert linux_steps[1]["shell"] == "bash"
+    assert linux_steps[1]["env"] == {"CONTEXT_HEAD": "${{ inputs.head }}"}
+    script = linux_steps[1]["run"]
+    assert "${{ inputs.head }}" not in script and "secrets." not in script
+    assert '[[ "$CONTEXT_HEAD" =~ ^[0-9a-f]{40}$ ]]' in script
+    assert "python -I -S -B - <<'PY'" in script
+    assert "os.lstat(item)" in script and "os.readlink(item)" in script
+    assert "'proves_prior_ci_cause': False" in script
+    assert all("checkout" not in step.get("uses", "") for step in linux_steps)
 
 
 def test_manual_advisory_pins_head_and_reports_real_distinct_engines():
@@ -54,7 +76,8 @@ def test_manual_advisory_pins_head_and_reports_real_distinct_engines():
 @pytest.mark.parametrize("mutant", [
     "MUTANT_ADD_PR_REQUIRED_CONTEXT", "MUTANT_KEEP_UBUNTU_ONLY",
     "MUTANT_PERSIST_CHECKOUT_CREDENTIALS", "MUTANT_SKIP_ENGINE_PROOF",
-    "MUTANT_FALSE_GREEN_ON_TEST_FAILURE",
+    "MUTANT_FALSE_GREEN_ON_TEST_FAILURE", "MUTANT_LINUX_ALWAYS_RUNS",
+    "MUTANT_LINUX_PERMISSIONS", "MUTANT_LINUX_CHECKOUT",
 ])
 def test_named_advisory_mutants_are_rejected(mutant):
     changed = deepcopy(_workflow())
@@ -67,6 +90,12 @@ def test_named_advisory_mutants_are_rejected(mutant):
         next(s for s in job["steps"] if s.get("uses") == "actions/checkout@v7")["with"]["persist-credentials"] = True
     elif mutant == "MUTANT_SKIP_ENGINE_PROOF":
         next(s for s in job["steps"] if s.get("name") == "Verify exact checkout and distinct PS5/PS7")["run"] = "echo ok"
+    elif mutant == "MUTANT_LINUX_ALWAYS_RUNS":
+        changed["jobs"]["linux-python-path"]["if"] = "always()"
+    elif mutant == "MUTANT_LINUX_PERMISSIONS":
+        changed["jobs"]["linux-python-path"]["permissions"] = {"contents": "write"}
+    elif mutant == "MUTANT_LINUX_CHECKOUT":
+        changed["jobs"]["linux-python-path"]["steps"].append({"uses": "actions/checkout@v7"})
     else:
         job["continue-on-error"] = True
     with pytest.raises(AssertionError):

@@ -1,20 +1,65 @@
 """Synthetic pins only: the default-off ``wd.q4-fixed-plan.v2`` producer against the existing parser.
 
 No file, interpreter, runtime tree, model, bundle or peer is read or spawned. Every pin is a caller
-argument; the parser under test is ``tools.wd_q4_secure_transport._fixed_plan`` exactly as the
-parent and the child run it.
+argument. The parser under test is ``tools.wd_q4_secure_transport._fixed_plan``; on POSIX tests
+its module-local path operations simulate Windows. This does not prove a POSIX runtime path.
 """
 import builtins
 import copy
 import hashlib
 import inspect
 import json
+import ntpath
 import os
+import posixpath
 import sys
+import types
 
 import pytest
 
 from tools import wd_q4_secure_transport as transport
+
+
+class _WindowsPathOs:
+    """Delegate OS operations while scoping Windows path semantics to this module."""
+
+    path = ntpath
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+
+@pytest.fixture(autouse=True)
+def _windows_parser_paths(monkeypatch):
+    # The producer and staged transport consume Windows C: paths. Model the
+    # Windows parser on POSIX CI without replacing the process-wide os.path.
+    # On Windows, exercise the native parser unchanged.
+    if os.name != "nt":
+        monkeypatch.setattr(transport, "os", _WindowsPathOs())
+
+
+def test_windows_path_simulation_is_scoped_to_transport(monkeypatch):
+    original_os_path = os.path
+    # The Windows-only producer yields a C: spelling, which POSIX path rules
+    # correctly refuse. This proxy never changes the real process os.path.
+    monkeypatch.setattr(transport, "os", types.SimpleNamespace(path=posixpath))
+    with pytest.raises(transport._Refused):
+        transport._fixed_plan(build()["plan_bytes"])
+    monkeypatch.setattr(transport, "os", _WindowsPathOs())
+    assert transport.os.path is ntpath
+    assert os.path is original_os_path
+    assert transport._fixed_plan(build()["plan_bytes"])["runtime_root"] == ROOT
+
+
+def test_posix_fixture_installs_only_the_transport_path_proxy(monkeypatch):
+    native_os = os
+    native_path = native_os.path
+    # Drive the POSIX fixture branch even when this regression runs on Windows.
+    monkeypatch.setattr(sys.modules[__name__], "os", types.SimpleNamespace(name="posix"))
+    _windows_parser_paths.__wrapped__(monkeypatch)
+    assert transport.os.path is ntpath
+    assert native_os.path is native_path
+    assert transport._fixed_plan(build()["plan_bytes"])["runtime_root"] == ROOT
 
 
 def test_content_v4_fixed_backend_preserves_exact_seven_public_pins():

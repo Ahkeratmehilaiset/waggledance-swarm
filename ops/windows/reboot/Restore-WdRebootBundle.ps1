@@ -127,6 +127,36 @@ function Get-CheckedBundlesRoot {
     return $full
 }
 
+function Get-CheckedStateDirectory {
+    # Inspect each component before opening the next. This does not prevent a
+    # same-user replacement between inspection and later use.
+    param([string] $Path)
+    try {
+        $provider = $null
+        $drive = $null
+        $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path, [ref]$provider, [ref]$drive)
+        if ($null -eq $provider -or $provider.Name -cne 'FileSystem') { throw 'not filesystem' }
+        $full = [IO.Path]::GetFullPath($full)
+        $root = [IO.Path]::GetPathRoot($full)
+        if ([string]::IsNullOrEmpty($root)) { throw 'no filesystem root' }
+        $current = $root
+        $components = @($full.Substring($root.Length).Split([char[]]@('\', '/'), [StringSplitOptions]::RemoveEmptyEntries))
+        foreach ($component in @('') + $components) {
+            if ($component) { $current = Join-Path $current $component }
+            try { $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop }
+            catch [Management.Automation.ItemNotFoundException] { return [pscustomobject]@{ status = 'missing'; path = $null } }
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'reparse point' }
+            if (-not $item.PSIsContainer) {
+                $status = if ([string]::Equals($current.TrimEnd('\'), $full.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) { 'not_directory' } else { 'missing' }
+                return [pscustomobject]@{ status = $status; path = $null }
+            }
+        }
+        return [pscustomobject]@{ status = 'ok'; path = $full }
+    } catch {
+        return [pscustomobject]@{ status = 'untrusted'; path = $null }
+    }
+}
+
 function Get-ListedFileIssue {
     # Inspect each lexical component before opening the file. The check is not
     # handle-bound: a same-user replacement after inspection is still a race.
@@ -286,8 +316,10 @@ $plan['target_relay_statuses'] = @($accepted)
 if ($accepted.Count -eq 0) { Add-Reason 'target_relay_contract_unknown' }
 if ($LaneJournals.Count -eq 0) { Add-Reason 'lane_journals_not_given' }
 foreach ($journal in $LaneJournals) {
-    if (-not (Test-Path -LiteralPath $journal -PathType Container)) { Add-Reason ('lane_journal_missing:' + $journal); continue }
-    $record = Join-Path $journal 'native-bridge-wake.json'
+    $checkedJournal = Get-CheckedStateDirectory -Path $journal
+    if ($checkedJournal.status -in @('missing', 'not_directory')) { Add-Reason ('lane_journal_missing:' + $journal); continue }
+    if ($checkedJournal.status -cne 'ok') { Add-Reason ('lane_journal_untrusted:' + $journal); continue }
+    $record = Join-Path $checkedJournal.path 'native-bridge-wake.json'
     # Anything at the record path is read as a regular non-link file or is unreadable state: a folder or a
     # link there is unknown, never 'no record' (claude-rco-1 F28-2). Only a provably absent record (every
     # lookup error is ItemNotFound) means 'no record'; an access failure is unknown, never a missing record.
@@ -313,7 +345,7 @@ foreach ($journal in $LaneJournals) {
     }
     $legacyOnly = $accepted -cnotcontains 'claiming'
     # A journal the plan cannot list is unknown state: a HOLD with its reason, never a crash without a plan.
-    try { $journalFiles = @(Get-ChildItem -LiteralPath $journal -Force -File -ErrorAction Stop) }
+    try { $journalFiles = @(Get-ChildItem -LiteralPath $checkedJournal.path -Force -File -ErrorAction Stop) }
     catch { Add-Reason ('lane_journal_unreadable:' + $journal); continue }
     foreach ($item in $journalFiles) {
         $name = $item.Name
@@ -330,12 +362,12 @@ foreach ($journal in $LaneJournals) {
 if (-not $IntentDirectory) {
     Add-Reason 'intent_directory_not_given'
 } else {
-    $intentItem = Get-Item -LiteralPath $IntentDirectory -Force -ErrorAction SilentlyContinue
-    if ($null -eq $intentItem) {
+    $checkedIntent = Get-CheckedStateDirectory -Path $IntentDirectory
+    if ($checkedIntent.status -ceq 'missing') {
         Add-Reason 'intent_directory_missing'
-    } elseif ($intentItem.PSIsContainer -and ($intentItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+    } elseif ($checkedIntent.status -ceq 'ok') {
         try {
-            $intentEntries = @(Get-WdTreeEntry -Root $IntentDirectory)
+            $intentEntries = @(Get-WdTreeEntry -Root $checkedIntent.path)
             if (@($intentEntries | Where-Object { $_.IsLink -or -not $_.IsDirectory }).Count -gt 0) { Add-Reason 'outstanding_intents' }
         } catch {
             Add-Reason 'intent_directory_invalid'

@@ -275,6 +275,36 @@ def junction(link: Path, target: Path) -> None:
 
 
 @pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("kind", ["journal-root", "journal-ancestor", "intent-ancestor"])
+def test_journal_or_intent_junction_ancestor_is_untrusted(tmp_path, shell, kind):
+    fixture = Fixture(tmp_path)
+    link = tmp_path / "synthetic-state-alias"
+    if kind == "journal-root":
+        junction(link, fixture.journal)
+        overrides = {"LaneJournals": link}
+        expected = "lane_journal_untrusted:" + str(link)
+    elif kind == "journal-ancestor":
+        junction(link, fixture.journal.parent)
+        target = link / fixture.journal.name
+        overrides = {"LaneJournals": target}
+        expected = "lane_journal_untrusted:" + str(target)
+    else:
+        (fixture.intents / "synthetic-intent.json").write_text("{}", encoding="utf-8")
+        junction(link, tmp_path)
+        overrides = {"IntentDirectory": link / fixture.intents.name}
+        expected = "intent_directory_invalid"
+    try:
+        code, plan = fixture.run(shell, **overrides)
+    finally:
+        os.rmdir(link)  # remove only this synthetic junction, never its target
+    assert code == 2 and plan["verdict"] == "hold", plan
+    assert expected in plan["reasons"], plan
+    if kind == "intent-ancestor":
+        assert "outstanding_intents" not in plan["reasons"]
+    assert plan["applied"] is False and plan["authority_effect"] == "none"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
 @pytest.mark.parametrize("link_position", ["root", "ancestor"])
 def test_bundle_root_and_ancestor_junctions_hold(tmp_path, shell, link_position):
     fixture = Fixture(tmp_path)
@@ -615,6 +645,10 @@ _SHIM = r"""
 function global:Get-Item {
     [CmdletBinding()]
     param([Parameter(ValueFromPipeline = $true)] [string[]] $Path, [string[]] $LiteralPath, [switch] $Force)
+    if ($LiteralPath -and $env:WD_TEST_FORBIDDEN_DESCENDANT -and
+        $LiteralPath[0].StartsWith($env:WD_TEST_FORBIDDEN_DESCENDANT, [StringComparison]::OrdinalIgnoreCase)) {
+        [Console]::Error.WriteLine('WD_TEST_FORBIDDEN_DESCENDANT_INSPECTED')
+    }
     if ($LiteralPath -and $env:WD_TEST_FORBIDDEN_RELAY -and
         [IO.Path]::GetFileName($LiteralPath[0]) -ieq 'start-wd-tools-consumer.ps1') {
         [Console]::Error.WriteLine('WD_TEST_FORBIDDEN_RELAY_INSPECTED')
@@ -631,6 +665,10 @@ function global:Get-ChildItem {
     [CmdletBinding()]
     param([string[]] $Path, [string[]] $LiteralPath, [switch] $Force, [switch] $File, [switch] $Directory,
           [switch] $Recurse)
+    if ($LiteralPath -and $env:WD_TEST_FORBIDDEN_DESCENDANT -and
+        $LiteralPath[0].StartsWith($env:WD_TEST_FORBIDDEN_DESCENDANT, [StringComparison]::OrdinalIgnoreCase)) {
+        [Console]::Error.WriteLine('WD_TEST_FORBIDDEN_DESCENDANT_INSPECTED')
+    }
     if ($LiteralPath -and $LiteralPath[0] -eq $env:WD_TEST_LIST_DENIED) {
         throw [UnauthorizedAccessException]::new('injected: list denied')
     }
@@ -644,7 +682,7 @@ def _quote(value) -> str:
 
 
 def run_shimmed(fixture: Fixture, shell: str, list_denied=None, inspect_denied=None, location=None,
-                forbid_relay=None, **overrides):
+                forbid_relay=None, forbid_descendant=None, **overrides):
     params = {"TargetCommit": TARGET, "ExpectedTargetManifestSha256": fixture.manifest_sha,
               "BundlesRoot": fixture.bundles, "StatePointerPath": fixture.pointer, "LaneJournals": fixture.journal,
               "IntentDirectory": fixture.intents}
@@ -654,16 +692,75 @@ def run_shimmed(fixture: Fixture, shell: str, list_denied=None, inspect_denied=N
     location_setup = "\nSet-Location -LiteralPath " + _quote(location) if location is not None else ""
     command = _SHIM + location_setup + "\n& " + _quote(SCRIPT) + " " + call + "\nexit $LASTEXITCODE\n"
     env = dict(os.environ, WD_TEST_LIST_DENIED=str(list_denied or ""), WD_TEST_INSPECT_DENIED=str(inspect_denied or ""),
-               WD_TEST_FORBIDDEN_RELAY=str(forbid_relay or ""))
+               WD_TEST_FORBIDDEN_RELAY=str(forbid_relay or ""),
+               WD_TEST_FORBIDDEN_DESCENDANT=str(forbid_descendant or ""))
     argv = [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command]
     before = fixture.snapshot()
     result = subprocess.run(argv, capture_output=True, text=True, timeout=120, env=env)
     assert fixture.snapshot() == before, "the dry plan must not change any file"
     if forbid_relay is not None:
         assert 'WD_TEST_FORBIDDEN_RELAY_INSPECTED' not in result.stderr, result.stderr
+    if forbid_descendant is not None:
+        assert 'WD_TEST_FORBIDDEN_DESCENDANT_INSPECTED' not in result.stderr, result.stderr
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     assert len(lines) == 1, result.stdout + result.stderr   # one JSON line, never a crash without a plan
     return result.returncode, json.loads(lines[0])
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("kind", ["journal-root", "journal-ancestor", "intent-ancestor"])
+def test_state_junction_is_rejected_before_planner_inspects_descendants(tmp_path, shell, kind):
+    fixture = Fixture(tmp_path)
+    link = tmp_path / "synthetic-state-alias"
+    if kind == "journal-root":
+        junction(link, fixture.journal)
+        overrides = {"LaneJournals": link}
+        forbidden = link / "native-bridge-wake.json"
+    elif kind == "journal-ancestor":
+        junction(link, fixture.journal.parent)
+        overrides = {"LaneJournals": link / fixture.journal.name}
+        forbidden = link / fixture.journal.name
+    else:
+        junction(link, tmp_path)
+        overrides = {"IntentDirectory": link / fixture.intents.name}
+        forbidden = link / fixture.intents.name
+    try:
+        code, plan = run_shimmed(fixture, shell, forbid_descendant=forbidden, **overrides)
+    finally:
+        os.rmdir(link)
+    assert code == 2 and plan["verdict"] == "hold" and plan["applied"] is False, plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("kind", ["journal", "intent"])
+def test_state_directory_inspection_denial_is_not_missing(tmp_path, shell, kind):
+    fixture = Fixture(tmp_path)
+    denied = fixture.journal if kind == "journal" else fixture.intents
+    expected = "lane_journal_untrusted:" + str(denied) if kind == "journal" else "intent_directory_invalid"
+    code, plan = run_shimmed(fixture, shell, inspect_denied=denied)
+    assert code == 2 and expected in plan["reasons"], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("kind", ["journal", "intent"])
+def test_non_directory_state_ancestor_remains_missing(tmp_path, shell, kind):
+    fixture = Fixture(tmp_path)
+    parent_file = tmp_path / "synthetic-not-directory"
+    parent_file.write_text("not a folder", encoding="utf-8")
+    child = parent_file / "child"
+    overrides = {"LaneJournals": child} if kind == "journal" else {"IntentDirectory": child}
+    expected = "lane_journal_missing:" + str(child) if kind == "journal" else "intent_directory_missing"
+    code, plan = run_shimmed(fixture, shell, **overrides)
+    assert code == 2 and expected in plan["reasons"], plan
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_state_directories_accept_relative_paths_at_powershell_location(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    code, plan = run_shimmed(fixture, shell, location=tmp_path,
+                             LaneJournals=fixture.journal.relative_to(tmp_path),
+                             IntentDirectory=fixture.intents.relative_to(tmp_path))
+    assert code == 0 and plan["verdict"] == "plan", plan
 
 
 @pytest.mark.parametrize("shell", SHELLS)

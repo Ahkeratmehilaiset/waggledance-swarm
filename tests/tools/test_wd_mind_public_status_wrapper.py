@@ -61,6 +61,7 @@ def invoke(item, *, candidate_pin=None, active_pin=None):
         capture_output=True, text=True, timeout=30, env=env)
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='requires Windows PowerShell and C: path semantics')
 def test_default_off_without_any_pins():
     result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-File", str(SCRIPT)],
                             capture_output=True, text=True, timeout=20)
@@ -68,6 +69,7 @@ def test_default_off_without_any_pins():
     assert json.loads(result.stdout) == {"status": "OFF"}
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='requires Windows PowerShell and C: path semantics')
 def test_separate_candidate_and_active_anchors_reach_fixed_entrypoint(bundles):
     assert bundles["active_pin"] != bundles["candidate_pin"]
     result = invoke(bundles)
@@ -76,6 +78,7 @@ def test_separate_candidate_and_active_anchors_reach_fixed_entrypoint(bundles):
     assert bundles["marker"].read_text() == "x"
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='requires Windows PowerShell and C: path semantics')
 def test_launcher_copy_outside_candidate_refuses_before_entrypoint(bundles, tmp_path):
     copied = tmp_path / "unbound-launcher.ps1"
     copied.write_bytes(SCRIPT.read_bytes())
@@ -89,6 +92,7 @@ def test_launcher_copy_outside_candidate_refuses_before_entrypoint(bundles, tmp_
 
 
 @pytest.mark.parametrize("fault", ["active_pin", "candidate_pin", "active_helper", "candidate_wrapper", "candidate_launcher", "candidate_code", "candidate_fleet"])
+@pytest.mark.skipif(os.name != 'nt', reason='requires Windows PowerShell and C: path semantics')
 def test_wrong_or_changed_anchor_refuses_before_entrypoint(bundles, fault):
     kwargs = {}
     if fault == "active_pin": kwargs["active_pin"] = "0" * 64
@@ -106,6 +110,7 @@ def test_wrong_or_changed_anchor_refuses_before_entrypoint(bundles, fault):
 
 
 @pytest.mark.parametrize("outcome", ["unknown", "queued"])
+@pytest.mark.skipif(os.name != 'nt', reason='requires Windows PowerShell and C: path semantics')
 def test_entered_outcome_is_not_retried_or_mistaken_for_canonical(bundles, outcome):
     marker = str(bundles["marker"]).replace("'", "''")
     if outcome == "unknown":

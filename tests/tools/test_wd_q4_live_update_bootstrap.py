@@ -184,8 +184,11 @@ def test_symlinked_interpreter_path_is_still_refused(tmp_path):
     from tools import wd_q4_live_update_bootstrap as bootstrap
 
     link = tmp_path / 'synthetic-python-link'
+    regular = tmp_path / 'synthetic-regular-file'
     target = Path(sys.executable).resolve(strict=True)
     bootstrap._checked_path(str(target))
+    regular.write_bytes(b'synthetic')
+    bootstrap._checked_path(str(regular))
     link.symlink_to(target)
     assert link.is_symlink()
     with pytest.raises(ValueError):

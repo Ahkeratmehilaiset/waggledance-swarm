@@ -200,7 +200,9 @@ $bundle = Join-Path $BundlesRoot $TargetCommit
 $plan['target_bundle'] = $bundle
 $manifestPath = Join-Path $bundle 'deployment-manifest.json'
 $bundleItem = Get-Item -LiteralPath $bundle -Force -ErrorAction SilentlyContinue
-if ($null -eq $bundleItem -or -not $bundleItem.PSIsContainer -or ($bundleItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+$bundleValid = $null -ne $bundleItem -and $bundleItem.PSIsContainer -and
+    ($bundleItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0
+if (-not $bundleValid) {
     Add-Reason 'target_bundle_missing'
 } else {
     # Inspect the link itself, before any Test-Path or hash operation can follow it.
@@ -259,8 +261,13 @@ if ($null -eq $bundleItem -or -not $bundleItem.PSIsContainer -or ($bundleItem.At
 
 # 4. State compatibility: the target relay's OWN accepted statuses, read from its source.
 $accepted = @()
-$relaySource = Join-Path $bundle 'start-wd-tools-consumer.ps1'
-$relayItem = Get-Item -LiteralPath $relaySource -Force -ErrorAction SilentlyContinue
+$relayItem = $null
+# An invalid or linked bundle is already a HOLD. Do not inspect its relay path
+# through that bundle; the relay contract must remain unknown.
+if ($bundleValid) {
+    $relaySource = Join-Path $bundle 'start-wd-tools-consumer.ps1'
+    $relayItem = Get-Item -LiteralPath $relaySource -Force -ErrorAction SilentlyContinue
+}
 # A missing, linked, non-file or oversized relay source is an unknown contract.
 if ($null -ne $relayItem -and -not $relayItem.PSIsContainer -and
     ($relayItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and $relayItem.Length -le 4194304) {

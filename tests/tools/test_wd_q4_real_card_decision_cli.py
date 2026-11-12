@@ -12,6 +12,14 @@ from tests.tools.test_wd_q4_real_card_decision_prepare import arguments
 from waggledance.core.bridge_log_reader import BridgeCursor
 
 
+@pytest.fixture
+def tmp_path(tmp_path_factory):
+    """Keep the CLI and its inherited synthetic Git/source fixture under audit."""
+    root = tmp_path_factory.mktemp('real-card-decision-cli') / '.codex-audit'
+    root.mkdir()
+    return root
+
+
 def sha(raw):return hashlib.sha256(raw).hexdigest()
 
 

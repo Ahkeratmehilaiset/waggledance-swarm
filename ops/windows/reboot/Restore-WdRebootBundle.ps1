@@ -130,8 +130,10 @@ if ($reasons.Count -gt 0) { $plan['reasons'] = @($reasons); Write-Plan $plan 2 }
 # 2. The current pointer: only to refuse a rollback onto the running pair.
 try {
     $pointer = Read-JsonFile -Path $StatePointerPath -Limit 65536
-    $current = [string](Get-ExactField $pointer 'final_commit')
-    if ($current -ceq $TargetCommit) { Add-Reason 'target_is_current' }
+    $current = Get-ExactField $pointer 'final_commit'
+    if ($current -isnot [string] -or $current -cnotmatch '\A[0-9a-f]{40}\z') {
+        Add-Reason 'state_pointer_commit_invalid'
+    } elseif ($current -ceq $TargetCommit) { Add-Reason 'target_is_current' }
 } catch {
     Add-Reason 'state_pointer_unreadable'
 }

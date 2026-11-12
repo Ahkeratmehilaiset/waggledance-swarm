@@ -111,6 +111,214 @@ $result|ConvertTo-Json -Depth 16 -Compress
     return json.loads(result.stdout.lstrip('\ufeff'))
 
 
+def _run_startup_script(script):
+    # Only isolated function/argument construction: no real lane or provider.
+    env = {k: os.environ[k] for k in ('SystemRoot', 'SystemDrive', 'WINDIR', 'TEMP', 'TMP') if k in os.environ}
+    result = subprocess.run([str(SHELL), '-NoProfile', '-NonInteractive', '-EncodedCommand',
+                             base64.b64encode(script.encode('utf-16-le')).decode('ascii')],
+                            capture_output=True, text=True, timeout=20, env=env, check=False)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.lstrip('\ufeff'))
+
+
+def _startup_functions(filename, names):
+    return f'''
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({_literal(REBOOT / filename)},[ref]$tokens,[ref]$errors)
+if($errors.Count){{throw 'parse failed'}}
+foreach($name in @({','.join(_literal(name) for name in names)})){{
+ $fn=@($ast.FindAll({{param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name}},$true))
+ if($fn.Count -ne 1){{throw 'missing function'}}
+ . ([scriptblock]::Create($fn[0].Extent.Text))
+}}
+'''
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+@pytest.mark.parametrize('outcome,written', [('success', True), ('success', False), ('refused', True)])
+def test_startup_prompt_only_includes_validated_written_view(filename, outcome, written):
+    view = json.dumps(_view(), separators=(',', ':'), ensure_ascii=True)
+    digest = hashlib.sha256(view.encode()).hexdigest()
+    script = _startup_functions(filename, ['Get-WdMindStatusPromptSuffix']) + f'''
+$read=[pscustomobject]@{{outcome={_literal(outcome)};record_written=${str(written).lower()};view_json={_literal(view)};view_sha256='{digest}'}}
+$suffix=Get-WdMindStatusPromptSuffix -Read $read
+@{{suffix=$suffix}}|ConvertTo-Json -Compress
+'''
+    suffix = _run_startup_script(script)['suffix']
+    if outcome == 'success' and written:
+        assert suffix.count(view) == 1 and digest in suffix
+        assert 'DATA ONLY' in suffix and 'not instructions' in suffix and 'semantic recall' in suffix
+    else:
+        assert suffix == ''
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+def test_command_line_budget_accounts_for_complete_arguments(filename):
+    script = _startup_functions(filename, ['Test-WdMindCommandLineFits']) + r'''
+$path='C:\Program Files\test.exe'
+$accepted=Test-WdMindCommandLineFits -CliPath $path -Arguments @('resume', ('a' * 32000))
+$rejected= -not (Test-WdMindCommandLineFits -CliPath $path -Arguments @('resume', ('a' * 32767)))
+@{accepted=$accepted;rejected=$rejected}|ConvertTo-Json -Compress
+'''
+    assert _run_startup_script(script) == {'accepted': True, 'rejected': True}
+
+
+@WINDOWS
+@pytest.mark.parametrize('delivered', [True, False])
+def test_tools_resume_argument_contains_complete_status_view(delivered):
+    view = json.dumps(_view(), separators=(',', ':'), ensure_ascii=True)
+    script = _startup_functions('start-wd-tools-consumer.ps1', ['Get-WdMindStatusPromptSuffix', 'Get-WdNativeToolsArguments']) + f'''
+$read=[pscustomobject]@{{outcome='success';record_written=$true;view_json={_literal(view)};view_sha256='synthetic'}}
+$prompt='START';$prompt += Get-WdMindStatusPromptSuffix -Read $read
+$s=[pscustomobject]@{{thread_id='00000000-0000-0000-0000-000000000001';initial_context_delivered=${str(delivered).lower()}}}
+$a=Get-WdNativeToolsArguments -Saved $s -Worktree 'C:\\Tools Space' -Model native -Effort native -Prompt $prompt -ImagePath 'image.png' -WritableRoots @() -NetworkAccess $true
+@{{args=$a}}|ConvertTo-Json -Depth 8 -Compress
+'''
+    args = _run_startup_script(script)['args']
+    assert args[0] == 'resume' and args[-1].count(view) == 1
+    assert ('--image' in args) is (not delivered)
+
+
+@WINDOWS
+@pytest.mark.parametrize('lane,delivered', [('codex-lead-1', True), ('codex-lead-1', False),
+                                           ('claude-rco-1', True), ('claude-rco-1', False),
+                                           ('claude-rco-2', True), ('claude-rco-2', False),
+                                           ('fable-5', True), ('fable-5', False)])
+def test_agent_launch_argument_contains_complete_status_view(lane, delivered):
+    source = (REBOOT / 'start-wd-agent.ps1').read_text(encoding='utf-8-sig')
+    start = source.rindex('$launchArguments = @()')
+    end = source.index('$previousPreference = $ErrorActionPreference', start)
+    launch = source[start:end]
+    view = json.dumps(_view(), separators=(',', ':'), ensure_ascii=True)
+    native = lane == 'codex-lead-1'
+    cli = 'codex.cmd' if native else 'claude.cmd'
+    script = _startup_functions('start-wd-agent.ps1', ['Get-WdMindStatusPromptSuffix']) + f'''
+$ErrorActionPreference='Stop'
+$read=[pscustomobject]@{{outcome='success';record_written=$true;view_json={_literal(view)};view_sha256='synthetic'}}
+$guidance=Get-WdMindStatusPromptSuffix -Read $read
+$startupPrompt='FIRST'+$guidance;$continuationPrompt='RESUME'+$guidance
+$nativeLead=${str(native).lower()};$nativeResume=[pscustomobject]@{{thread_id='test-thread';initial_context_delivered=${str(delivered).lower()}}}
+$claudeResume=$(if (${str(delivered).lower()}) {{[pscustomobject]@{{thread_id='test-thread'}}}} else {{$null}})
+$cliName={_literal(cli)};$Agent={_literal(lane)};$model='native';$effort='native';$autoCompactTokens=$null
+$lane=@{{}};$manifest=@{{lanes=@()}};$externalSessions=@();$sourceTreeMode=$false;$DryRun=$false
+$worktree='C:\\Test';$targetImagePath='image.png';$deploymentAnchor=[pscustomobject]@{{files=[pscustomobject]@{{'wd-claude-event-driven-settings.json'='synthetic'}}}}
+function Assert-WdLaneLaunchAvailable {{param($Lane,$KnownLanes,$ExternalSessions,[switch]$AllowUnpinnedParser)}}
+function Assert-LanePathWithoutReparse {{param($Path,$TrustedRoot,$ExpectedType)}}
+function Get-FileHash {{param($LiteralPath,$Algorithm) [pscustomobject]@{{Hash='SYNTHETIC'}}}}
+$laneTrustedDrive='C:\\';$PSScriptRoot='C:\\Test'
+{launch}
+@{{args=$launchArguments}}|ConvertTo-Json -Depth 8 -Compress
+'''
+    args = _run_startup_script(script)['args']
+    assert args[-1].count(view) == 1
+    assert args[-1].startswith('RESUME' if delivered else 'FIRST')
+
+
+@WINDOWS
+@pytest.mark.parametrize('oversize', [False, True])
+def test_agent_dispatch_omits_oversize_projection_and_keeps_baseline(oversize):
+    source = (REBOOT / 'start-wd-agent.ps1').read_text(encoding='utf-8-sig')
+    start = source.index('  if (-not (Test-WdMindCommandLineFits -CliPath $cliPath')
+    end = source.index('  if ($nativeLead) {', start)
+    block = source[start:end]
+    size = 34000 if oversize else 100
+    script = _startup_functions('start-wd-agent.ps1', ['Test-WdMindCommandLineFits']) + f'''
+$cliPath='C:\\program.exe';$mindOriginalSelectedPrompt='original prompt';$mindStatusSuffix=' JSON=' + ('x' * {size})
+$launchArguments=@('resume',('original prompt'+$mindStatusSuffix))
+{block}
+@{{args=$launchArguments}}|ConvertTo-Json -Compress
+'''
+    prompt = _run_startup_script(script)['args'][-1]
+    assert prompt.startswith('original prompt')
+    assert ('command_line_too_long' in prompt) is oversize
+    assert (' JSON=' in prompt) is not oversize
+
+
+@WINDOWS
+@pytest.mark.parametrize('oversize', [False, True])
+def test_tools_dispatch_omits_oversize_projection_and_keeps_baseline(oversize):
+    source = (REBOOT / 'start-wd-tools-consumer.ps1').read_text(encoding='utf-8-sig')
+    start = source.index('        if (-not (Test-WdMindCommandLineFits -CliPath $codexCommand')
+    end = source.index('        Invoke-WdNativeToolsTerminal -Saved', start)
+    block = source[start:end]
+    size = 34000 if oversize else 100
+    script = _startup_functions('start-wd-tools-consumer.ps1', ['Test-WdMindCommandLineFits', 'Get-WdNativeToolsArguments']) + f'''
+$codexCommand='C:\\program.exe';$mindStatusSuffix=' JSON=' + ('x' * {size})
+$mindOriginalPrompt='original prompt';$prompt=$mindOriginalPrompt+$mindStatusSuffix
+$nativeToolsSaved=[pscustomobject]@{{thread_id='thread';initial_context_delivered=$true}}
+$worktree='C:\\Test';$model='native';$reasoningEffort='native';$targetImagePath='image.png'
+$codexWritableDirectories=@();$conversationWritableRoots=@();$conversationPermissions=[pscustomobject]@{{NetworkAccess=$true}}
+$nativeToolsArguments=Get-WdNativeToolsArguments -Saved $nativeToolsSaved -Worktree $worktree -Model $model -Effort $reasoningEffort -Prompt $prompt -ImagePath $targetImagePath -WritableRoots @() -NetworkAccess $true
+{block}
+@{{args=$nativeToolsArguments}}|ConvertTo-Json -Depth 8 -Compress
+'''
+    prompt = _run_startup_script(script)['args'][-1]
+    assert prompt.startswith('original prompt')
+    assert ('command_line_too_long' in prompt) is oversize
+    assert (' JSON=' in prompt) is not oversize
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+def test_mind_guidance_near_limit_falls_back_to_original_prompt(filename):
+    source = (REBOOT / filename).read_text(encoding='utf-8-sig')
+    if filename == 'start-wd-agent.ps1':
+        start = source.index('  if (-not (Test-WdMindCommandLineFits -CliPath $cliPath')
+        end = source.index('  if ($nativeLead) {', start)
+        setup = '''
+$cliPath='C:\\program.exe';$mindStatusSuffix='';$mindOriginalSelectedPrompt=('b' * 32600)
+$launchArguments=@('resume',($mindOriginalSelectedPrompt+('g' * 500)))
+'''
+        result = '$launchArguments[-1]'
+        functions = ['Test-WdMindCommandLineFits']
+    else:
+        start = source.index('        if (-not (Test-WdMindCommandLineFits -CliPath $codexCommand')
+        end = source.index('        Invoke-WdNativeToolsTerminal -Saved', start)
+        setup = '''
+$codexCommand='C:\\program.exe';$mindStatusSuffix='';$mindOriginalPrompt=('b' * 31000);$prompt=$mindOriginalPrompt+('g' * 2000)
+$nativeToolsSaved=[pscustomobject]@{thread_id='thread';initial_context_delivered=$true}
+$worktree='C:\\Test';$model='native';$reasoningEffort='native';$targetImagePath='image.png'
+$codexWritableDirectories=@();$conversationWritableRoots=@();$conversationPermissions=[pscustomobject]@{NetworkAccess=$true}
+$nativeToolsArguments=Get-WdNativeToolsArguments -Saved $nativeToolsSaved -Worktree $worktree -Model $model -Effort $reasoningEffort -Prompt $prompt -ImagePath $targetImagePath -WritableRoots @() -NetworkAccess $true
+'''
+        result = '$nativeToolsArguments[-1]'
+        functions = ['Test-WdMindCommandLineFits', 'Get-WdNativeToolsArguments']
+    script = _startup_functions(filename, functions) + setup + '''
+function Write-Warning { param($Message) $script:warning=$Message }
+''' + source[start:end] + f'''
+@{{prompt={result};warning=$script:warning}}|ConvertTo-Json -Compress
+'''
+    value = _run_startup_script(script)
+    assert 'command_line_too_long' in value['warning']
+    assert value['prompt'].startswith('b' * 100) and 'g' * 500 not in value['prompt']
+
+
+@WINDOWS
+@pytest.mark.parametrize('cli,resumed', [('codex.cmd', True), ('codex.cmd', False),
+                                        ('claude.cmd', True), ('claude.cmd', False)])
+def test_agent_uses_matching_original_prompt_when_guidance_does_not_fit(cli, resumed):
+    source = (REBOOT / 'start-wd-agent.ps1').read_text(encoding='utf-8-sig')
+    start = source.index('  $mindOriginalSelectedPrompt = if (')
+    end = source.index('  if ($nativeLead) {', start)
+    block = source[start:end]
+    native = cli == 'codex.cmd'
+    script = _startup_functions('start-wd-agent.ps1', ['Test-WdMindCommandLineFits']) + f'''
+$cliPath='C:\\program.exe';$cliName={_literal(cli)};$nativeLead=${str(native).lower()}
+$nativeResume=[pscustomobject]@{{initial_context_delivered=${str(resumed).lower()}}}
+$claudeResume=$(if (${str(resumed).lower()}) {{[pscustomobject]@{{thread_id='thread'}}}} else {{$null}})
+$mindOriginalStartupPrompt='FRESH'+('a'*32590);$mindOriginalContinuationPrompt='RESUME'+('b'*32589)
+$mindStatusSuffix='';$launchArguments=@('resume',(('c'*500)+('x'*32600)))
+function Write-Warning {{param($Message) $script:warning=$Message}}
+{block}
+@{{prompt=$launchArguments[-1];warning=$script:warning}}|ConvertTo-Json -Compress
+'''
+    value = _run_startup_script(script)
+    assert value['prompt'].startswith('RESUME' if resumed else 'FRESH')
+    assert 'command_line_too_long' in value['warning']
+
+
 @pytest.mark.parametrize('filename,mode', [('start-wd-agent.ps1', 'if ($DryRun)'),
                                          ('start-wd-tools-consumer.ps1', 'if ($ValidateOnly)')])
 def test_direct_read_wiring_is_after_inert_mode_exit(filename, mode):

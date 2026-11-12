@@ -160,6 +160,51 @@ def test_more_than_seven_fractional_digits_is_not_silently_truncated():
     assert assess(all_records(), observed=observed)["decision"] == "ROLLBACK_REQUIRED"
 
 
+def _synthetic_time_arguments():
+    return dict(expected_runs=RUNS, expected_manifest_sha256=MANIFEST,
+                expected_descriptor_sha256=DESCRIPTOR, expected_helper_sha256=HELPER,
+                records=all_records(), observed_at_utc=OBSERVED.copy(),
+                started_at_utc=START, deadline_utc=DEADLINE, now_utc=BEFORE)
+
+
+@pytest.mark.parametrize("observation,expected", [
+    ("2026-11-11T10:00:45.9999999Z", "RECEIPTS_OK"),
+    ("2026-11-11T10:00:46.0000000Z", "RECEIPTS_OK"),
+    ("2026-11-11T10:00:46.0000001Z", "ROLLBACK_REQUIRED"),
+])
+def test_hundred_ns_comparisons_across_second_boundary(observation, expected):
+    from tools.wd_q4_startup_receipt_assessment import assess_startup_receipts
+    arguments = _synthetic_time_arguments()
+    arguments.update(observed_at_utc={lane: observation for lane in LANES},
+                     deadline_utc="2026-11-11T10:00:46.0000000Z",
+                     now_utc="2026-11-11T10:00:46.0000001Z")
+    assert assess_startup_receipts(**arguments)["decision"] == expected
+
+
+def test_deadline_equal_to_start_is_rejected():
+    from tools.wd_q4_startup_receipt_assessment import assess_startup_receipts
+    arguments = _synthetic_time_arguments()
+    arguments.update(started_at_utc="2026-11-11T10:00:00.0000001Z",
+                     deadline_utc="2026-11-11T10:00:00.0000001Z")
+    with pytest.raises(ValueError):
+        assess_startup_receipts(**arguments)
+
+
+@pytest.mark.parametrize("field", ["started_at_utc", "deadline_utc", "now_utc"])
+@pytest.mark.parametrize("invalid", ["2026-11-11T10:00:45+02:00", "2026-11-11T10:00:45.00000001Z"])
+def test_invalid_timezone_or_excess_precision_in_control_time_is_rejected(field, invalid):
+    from tools.wd_q4_startup_receipt_assessment import assess_startup_receipts
+    arguments = _synthetic_time_arguments()
+    arguments[field] = invalid
+    with pytest.raises(ValueError):
+        assess_startup_receipts(**arguments)
+
+
+def test_non_utc_observation_requires_rollback():
+    observed = dict(OBSERVED, **{"codex-lead-1": "2026-11-11T12:00:45+02:00"})
+    assert assess(all_records(), observed=observed)["decision"] == "ROLLBACK_REQUIRED"
+
+
 def test_unobserved_receipt_waits_then_requires_rollback():
     observed = dict(OBSERVED)
     del observed["fable-5"]

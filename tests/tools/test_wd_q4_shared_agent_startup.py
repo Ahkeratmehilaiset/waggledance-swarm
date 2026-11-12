@@ -586,7 +586,17 @@ def test_launcher_runs_the_startup_read_after_dry_run_returns_and_before_the_cli
     assert "' -WithStatus'" in body and "-Runtime" not in body and "-Live" not in body and "-WithCoverage" not in body
     assert "wd_q4_lane_caller_cli" not in body  # the route is the helper default, never a direct wrapper call
     assert "WaitAll(" in body and "io_timeout" in body and "output_over_budget" in body
-    assert "$deadline" in body and ".BaseStream.Write($query" not in body
+    assert "$waitClock = [Diagnostics.Stopwatch]::StartNew()" in body
+    assert "$waitBudgetMilliseconds" in body and "Get-WdQ4RemainingWaitMilliseconds" in body
+    assert ".BaseStream.Write($query" not in body
+    timeout_start = body.index("-not $process.WaitForExit(")
+    io_timeout_start = body.index("} elseif (", timeout_start)
+    timeout_branch = body[timeout_start:io_timeout_start]
+    io_timeout_branch = body[io_timeout_start:body.index("$stdoutText = [string]$stdoutTask.Result", io_timeout_start)]
+    for branch, reason in ((timeout_branch, "timeout"), (io_timeout_branch, "io_timeout")):
+        assert "$record.outcome = 'unknown'" in branch
+        assert f"$record.reason = '{reason}'" in branch
+        assert "$record.cleanup = 'unknown'" in branch
 
 
 def test_startup_failed_record_replace_never_delivers_against_a_prior_receipt(tmp_path):

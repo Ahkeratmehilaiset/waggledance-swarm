@@ -12,7 +12,7 @@ from tests.tools.test_wd_q4_real_card_generation import real_fixture
 def fixture(tmp_path):
     source_dir=tmp_path/'source';source_dir.mkdir()
     source=source_dir/'synthetic-events.jsonl';source.write_bytes(b'{"task_id":"synthetic"}\n')
-    output=tmp_path/'anchor';output.mkdir()
+    output=tmp_path/'.codex-audit'/'anchor';output.mkdir(parents=True)
     result=bridge.read_bridge_log(source)
     assert result.candidate_cursor.generation is None
     raw=source.read_bytes()
@@ -24,6 +24,11 @@ def test_default_off_no_input_access():
     class Untouchable:
         def __getattribute__(self,_):raise AssertionError('OFF input touched')
     assert mod.prepare(enabled=False,source_path=Untouchable())=={'status':'OFF'}
+
+
+def test_fixture_output_contains_its_own_audit_directory(tmp_path):
+    _, output, _, _ = fixture(tmp_path)
+    assert '.codex-audit' in output.relative_to(tmp_path).parts
 
 
 def test_external_sidecar_is_usable_by_existing_prefix_reader(tmp_path):
@@ -57,7 +62,7 @@ def test_external_anchor_connects_to_real_decision_preparer(real_fixture,tmp_pat
     args=arguments(real_fixture)
     Path(args['generation_path']).unlink()  # synthetic fixture only
     old=args['end_cursor'];original=bridge.BridgeCursor(old.offset,old.file_identity,None)
-    output=tmp_path/'external-anchor';output.mkdir()
+    output=tmp_path/'.codex-audit'/'external-anchor';output.mkdir(parents=True)
     result=mod.prepare(enabled=True,source_path=args['source_path'],original_cursor=original,
                        expected_prefix_sha256=args['expected_prefix_sha256'],output_root=str(output))
     args['generation_path']=str(output/'generation.json')

@@ -28,6 +28,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ "${RUNNER_ENVIRONMENT:-}" != 'github-hosted' ]; then echo 'Expected disposable hosted Linux' >&2; exit 1; fi
           command -v pwsh
           scratch="$RUNNER_TEMP/wd-adopt-$GITHUB_RUN_ID"
           mkdir -p "$scratch/home" "$scratch/tmp"
@@ -43,14 +44,15 @@ jobs:
           ( cd "$scratch/source"; env -i PATH="$PATH" HOME="$scratch/home" TMPDIR="$scratch/tmp" PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/tools/test_wd_q4_adopt_recovery_ps.py --collect-only -q -p no:cacheprovider > "$scratch/collected.txt" )
           cat "$scratch/collected.txt"
           grep -E '^38 tests collected' "$scratch/collected.txt"
-          env -i PATH="$PATH" HOME="$scratch/home" TMPDIR="$scratch/tmp" PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/tools/test_wd_q4_adopt_recovery_ps.py -q -rs -p no:cacheprovider --basetemp "$scratch/pytest" --junitxml "$scratch/results.xml"
+          ( cd "$scratch/source"; env -i PATH="$PATH" HOME="$scratch/home" TMPDIR="$scratch/tmp" PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/tools/test_wd_q4_adopt_recovery_ps.py -q -rs -p no:cacheprovider --basetemp "$scratch/pytest" --junitxml "$scratch/results.xml" )
           env -i PATH="$PATH" HOME="$scratch/home" python -c 'import sys,xml.etree.ElementTree as E; s=E.parse(sys.argv[1]).getroot().find("testsuite"); c=s.findall("testcase"); p={x.attrib["name"] for x in c if x.find("skipped") is None}; e={"test_default_off","test_bad_pins_refuse_without_job","test_marker_window_starts_after_synthetic_preflight","test_preflight_and_marker_waits_remain_bounded[False]","test_preflight_and_marker_waits_remain_bounded[True]"}; assert len(c)==38 and p==e and s.attrib["skipped"]=="33" and s.attrib["failures"]=="0" and s.attrib["errors"]=="0"; print("verified Linux: 5 passed, 33 skipped")' "$scratch/results.xml"
-          env -i PATH="$PATH" HOME="$scratch/home" TMPDIR="$scratch/tmp" PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -rs -p no:cacheprovider --basetemp "$scratch/continuation-pytest" --junitxml "$scratch/continuation-results.xml" tests/tools/test_wd_q4_continuation_orchestrator.py::test_anchored_template_validates_real_synthetic_files_and_pinned_script tests/tools/test_wd_q4_continuation_orchestrator.py::test_tampered_tuple_is_refused_before_attempt tests/tools/test_wd_q4_continuation_orchestrator.py::test_fixed_process_invokes_real_job_bootstrap_and_cli_with_synthetic_continuation tests/tools/test_wd_q4_continuation_orchestrator_cli.py::test_real_config_and_template_are_both_hash_bound tests/tools/test_wd_q4_continuation_job_v3.py tests/tools/test_wd_q4_continuation_orchestrator_job.py
+          ( cd "$scratch/source"; env -i PATH="$PATH" HOME="$scratch/home" TMPDIR="$scratch/tmp" PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -rs -p no:cacheprovider --basetemp "$scratch/continuation-pytest" --junitxml "$scratch/continuation-results.xml" tests/tools/test_wd_q4_continuation_orchestrator.py::test_anchored_template_validates_real_synthetic_files_and_pinned_script tests/tools/test_wd_q4_continuation_orchestrator.py::test_tampered_tuple_is_refused_before_attempt tests/tools/test_wd_q4_continuation_orchestrator.py::test_fixed_process_invokes_real_job_bootstrap_and_cli_with_synthetic_continuation tests/tools/test_wd_q4_continuation_orchestrator_cli.py::test_real_config_and_template_are_both_hash_bound tests/tools/test_wd_q4_continuation_job_v3.py tests/tools/test_wd_q4_continuation_orchestrator_job.py )
           env -i PATH="$PATH" HOME="$scratch/home" python -c 'import sys,xml.etree.ElementTree as E; s=E.parse(sys.argv[1]).getroot().find("testsuite"); c=s.findall("testcase"); p={x.attrib["name"] for x in c if x.find("skipped") is None}; e={"test_launcher_default_off","test_launcher_refuses_invalid_config_without_starting_job"}; assert len(c)==12 and p==e and s.attrib["skipped"]=="10" and s.attrib["failures"]=="0" and s.attrib["errors"]=="0"; print("verified Linux continuation: 2 passed, 10 Windows-only skipped")' "$scratch/continuation-results.xml"
       - name: Cleanup firewall
         if: always()
         shell: bash
         run: |
+          if [ "${RUNNER_ENVIRONMENT:-}" != 'github-hosted' ]; then echo 'Expected disposable hosted Linux' >&2; exit 1; fi
           rule="wd-adopt-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           if sudo iptables -C OUTPUT -m comment --comment "$rule" -j REJECT 2>/dev/null; then sudo iptables -D OUTPUT -m comment --comment "$rule" -j REJECT; fi
           ! sudo iptables -C OUTPUT -m comment --comment "$rule" -j REJECT 2>/dev/null

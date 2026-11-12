@@ -121,8 +121,21 @@ def test_exit_trap_confirms_removal_and_inspection(tmp_path, mode, ok, after):
     begin = script.index('cleanup() {')
     end = script.index('\n}', begin) + len('\n}')
     function = script[begin:end]
-    probe = 'rule="wd-adopt-42-7"\n' + function + '\ncleanup'
+    trap = next(line for line in script.splitlines() if line.startswith('trap '))
+    assert trap == "trap 'cleanup || exit 1' EXIT"
+    probe = 'rule="wd-adopt-42-7"\n' + function + '\n' + trap + '\nexit 0'
     result, state, calls = _run_fake_cleanup(tmp_path, probe, mode=mode, initial='present')
     assert (result.returncode == 0) is ok
     assert state == after
+    assert 'iptables -D OUTPUT' in calls
+
+
+def test_exit_trap_preserves_body_failure_after_successful_cleanup(tmp_path):
+    script = _linux_steps()['Portable tests with outbound denial']
+    begin = script.index('cleanup() {')
+    end = script.index('\n}', begin) + len('\n}')
+    trap = next(line for line in script.splitlines() if line.startswith('trap '))
+    probe = 'rule="wd-adopt-42-7"\n' + script[begin:end] + '\n' + trap + '\nexit 9'
+    result, state, calls = _run_fake_cleanup(tmp_path, probe, mode='normal', initial='present')
+    assert result.returncode == 9 and state == 'absent'
     assert 'iptables -D OUTPUT' in calls

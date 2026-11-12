@@ -15,6 +15,7 @@ permissions:
 
 jobs:
   windows-shell-advisory:
+    if: ${{ inputs.head != '0a6d6d5dbd2c35d4932bb6e777d17d216bcd6136' }}
     runs-on: windows-latest
     timeout-minutes: 20
     env:
@@ -86,3 +87,88 @@ jobs:
           name: windows-shell-advisory-${{ inputs.head }}-${{ github.run_id }}
           path: .codex-audit/windows-shell-advisory
           if-no-files-found: warn
+
+  # Diagnostic branch only: execute the exact candidate's existing, reviewed
+  # offline jobs, not arbitrary workflow input. No required branch check changes.
+  continuation-offline-linux:
+    if: ${{ inputs.head == '0a6d6d5dbd2c35d4932bb6e777d17d216bcd6136' }}
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 0a6d6d5dbd2c35d4932bb6e777d17d216bcd6136
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - run: python -m pip install pytest==9.0.3 faiss-cpu==1.13.2 numpy packaging jsonschema pydantic pyyaml psutil requests
+      - name: Verify pins and run candidate Linux offline step
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, os, pathlib, subprocess, yaml
+          expected_head='0a6d6d5dbd2c35d4932bb6e777d17d216bcd6136'
+          assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==expected_head
+          raw=subprocess.check_output(['git','show','HEAD:.github/workflows/mind-adopt-platform-coverage.yml'])
+          assert hashlib.sha256(raw).hexdigest()=='4f29a42c0916a14ffb308b70cf02a7c88ecb6edcdfb84ba6fdaf684f2eeaa23d'
+          workflow=yaml.safe_load(raw)
+          steps=workflow['jobs']['adopt-platform-linux']['steps']
+          script=next(step['run'] for step in steps if step.get('name')=='Portable tests with outbound denial')
+          data=script.encode('utf-8')
+          assert hashlib.sha256(data).hexdigest()=='45fa7a02d928ae916d526a5bcd5c668fc57691be13a47975bd0117c65effe9d2'
+          path=pathlib.Path(os.environ['RUNNER_TEMP'])/'wd-continuation-linux-advisory.sh'
+          path.write_bytes(data)
+          subprocess.run(['bash',str(path)],check=True)
+          PY
+      - name: Remove temporary outbound denial even on failure
+        if: always()
+        shell: bash
+        run: |
+          rule="wd-adopt-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if sudo iptables -C OUTPUT -m comment --comment "$rule" -j REJECT 2>/dev/null; then sudo iptables -D OUTPUT -m comment --comment "$rule" -j REJECT; fi
+          ! sudo iptables -C OUTPUT -m comment --comment "$rule" -j REJECT 2>/dev/null
+
+  continuation-offline-windows:
+    if: ${{ inputs.head == '0a6d6d5dbd2c35d4932bb6e777d17d216bcd6136' }}
+    permissions: {}
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 0a6d6d5dbd2c35d4932bb6e777d17d216bcd6136
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Prepare dependencies before offline container
+        shell: pwsh
+        run: |
+          python -m pip install pytest==9.0.3 faiss-cpu==1.13.2 numpy packaging jsonschema pydantic pyyaml psutil requests
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency setup failed' }
+      - name: Verify pins and run candidate Windows offline step
+        shell: pwsh
+        timeout-minutes: 30
+        run: |
+          $ErrorActionPreference='Stop'
+          $extract=@'
+          import hashlib, os, pathlib, subprocess, yaml
+          expected_head='0a6d6d5dbd2c35d4932bb6e777d17d216bcd6136'
+          assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==expected_head
+          raw=subprocess.check_output(['git','show','HEAD:.github/workflows/mind-adopt-platform-coverage.yml'])
+          assert hashlib.sha256(raw).hexdigest()=='4f29a42c0916a14ffb308b70cf02a7c88ecb6edcdfb84ba6fdaf684f2eeaa23d'
+          workflow=yaml.safe_load(raw)
+          steps=workflow['jobs']['adopt-platform-windows']['steps']
+          script=next(step['run'] for step in steps if step.get('name')=='Run exact synthetic coverage in offline Windows container')
+          data=script.encode('utf-8')
+          assert hashlib.sha256(data).hexdigest()=='011cb040d5ddfb582e3f8e52d904d00a1373102b365eac3370975d8fffb80eb3'
+          path=pathlib.Path(os.environ['RUNNER_TEMP'])/'wd-continuation-windows-advisory.ps1'
+          path.write_bytes(data)
+          '@
+          python -c $extract
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned advisory extraction failed' }
+          & pwsh -NoProfile -NonInteractive -File (Join-Path $env:RUNNER_TEMP 'wd-continuation-windows-advisory.ps1')
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned Windows offline step failed' }

@@ -337,6 +337,80 @@ def test_a_link_inside_the_bundle_holds_and_is_never_followed(tmp_path, shell):
 
 
 @pytest.mark.parametrize("shell", SHELLS)
+def test_manifest_listed_junction_target_is_not_hashed(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    outside = tmp_path / "synthetic-outside"
+    outside.mkdir()
+    (outside / "input.bin").write_bytes(b"synthetic target\n")
+    link = fixture.bundle / "synthetic-link"
+    junction(link, outside)
+    manifest_path = fixture.bundle / "deployment-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    # A changed-hash reason proves the target was opened and read, not just inspected.
+    manifest["files"]["synthetic-link/input.bin"] = "0" * 64
+    raw = json.dumps(manifest, indent=2).encode("utf-8")
+    manifest_path.write_bytes(raw)
+    fixture.manifest_sha = sha(raw)
+    try:
+        code, plan = fixture.run(shell)
+    finally:
+        os.rmdir(link)
+    assert code == 2 and plan["verdict"] == "hold", plan
+    assert "bundle_reparse:synthetic-link" in plan["reasons"], plan
+    assert "bundle_file_changed:synthetic-link/input.bin" not in plan["reasons"], plan
+    assert plan["applied"] is False and plan["authority_effect"] == "none"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_linked_manifest_is_not_hashed(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    manifest = fixture.bundle / "deployment-manifest.json"
+    outside = tmp_path / "synthetic-manifest.json"
+    outside.write_bytes(manifest.read_bytes())
+    manifest.unlink()
+    try:
+        try:
+            os.symlink(outside, manifest)
+        except OSError as exc:
+            pytest.skip(f"file symlinks unavailable: {exc}")
+        code, plan = fixture.run(shell)
+    finally:
+        if manifest.is_symlink():
+            manifest.unlink()
+    assert code == 2 and plan["verdict"] == "hold", plan
+    assert plan["target_manifest_sha256"] is None, plan
+    assert "target_manifest_unreadable" in plan["reasons"], plan
+    assert plan["applied"] is False and plan["authority_effect"] == "none"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_manifest_listed_file_symlink_target_is_not_hashed(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    outside = tmp_path / "synthetic-outside.bin"
+    outside.write_bytes(b"synthetic target\n")
+    link = fixture.bundle / "synthetic-file-link.bin"
+    try:
+        try:
+            os.symlink(outside, link)
+        except OSError as exc:
+            pytest.skip(f"file symlinks unavailable: {exc}")
+        manifest_path = fixture.bundle / "deployment-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"][link.name] = "0" * 64
+        raw = json.dumps(manifest, indent=2).encode("utf-8")
+        manifest_path.write_bytes(raw)
+        fixture.manifest_sha = sha(raw)
+        code, plan = fixture.run(shell)
+    finally:
+        if link.is_symlink():
+            link.unlink()
+    assert code == 2 and plan["verdict"] == "hold", plan
+    assert "bundle_reparse:synthetic-file-link.bin" in plan["reasons"], plan
+    assert "bundle_file_changed:synthetic-file-link.bin" not in plan["reasons"], plan
+    assert plan["applied"] is False and plan["authority_effect"] == "none"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
 def test_an_intent_in_a_subfolder_holds_and_an_empty_folder_tree_does_not(tmp_path, shell):
     fixture = Fixture(tmp_path)
     (fixture.intents / "lane-a" / "deeper").mkdir(parents=True)
@@ -576,6 +650,25 @@ def test_bundle_root_inspection_denial_holds_on_every_host(tmp_path, shell):
     assert code == 2 and plan["verdict"] == "hold", plan
     assert plan["reasons"] == ["bundle_root_untrusted"], plan
     assert plan["target_bundle"] is None and plan["applied"] is False
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_manifest_inspection_denial_is_unreadable_before_hash(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    manifest = fixture.bundle / "deployment-manifest.json"
+    code, plan = run_shimmed(fixture, shell, inspect_denied=manifest)
+    assert code == 2 and plan["verdict"] == "hold", plan
+    assert plan["reasons"] == ["target_manifest_unreadable"], plan
+    assert plan["target_manifest_sha256"] is None and plan["applied"] is False
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_listed_component_inspection_denial_is_not_reported_missing(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    code, plan = run_shimmed(fixture, shell, inspect_denied=fixture.bundle / "tools-bootstrap")
+    assert code == 2 and plan["verdict"] == "hold", plan
+    assert plan["reasons"] == ["bundle_file_uninspectable:tools-bootstrap/a.txt"], plan
+    assert plan["applied"] is False
 
 
 @pytest.mark.parametrize("shell", SHELLS)

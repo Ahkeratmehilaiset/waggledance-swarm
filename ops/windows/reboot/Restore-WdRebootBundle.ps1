@@ -127,6 +127,31 @@ function Get-CheckedBundlesRoot {
     return $full
 }
 
+function Get-ListedFileIssue {
+    # Inspect each lexical component before opening the file. The check is not
+    # handle-bound: a same-user replacement after inspection is still a race.
+    param([string] $BundleFull, [string] $FileFull, [string] $EntryName)
+    $parts = @($FileFull.Substring($BundleFull.Length).Split([char[]]@('\', '/'), [StringSplitOptions]::RemoveEmptyEntries))
+    $current = $BundleFull.TrimEnd('\')
+    $relative = @()
+    for ($index = 0; $index -lt $parts.Count; $index++) {
+        $relative += $parts[$index]
+        $current = Join-Path $current $parts[$index]
+        try { $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop }
+        catch [Management.Automation.ItemNotFoundException] { return ('bundle_file_missing:' + $EntryName) }
+        catch { return ('bundle_file_uninspectable:' + $EntryName) }
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            return ('bundle_reparse:' + ($relative -join '/'))
+        }
+        if (($index -lt ($parts.Count - 1) -and -not $item.PSIsContainer) -or
+            ($index -eq ($parts.Count - 1) -and $item.PSIsContainer)) {
+            return ('bundle_file_missing:' + $EntryName)
+        }
+    }
+    if ($parts.Count -eq 0) { return ('bundle_file_missing:' + $EntryName) }
+    return ''
+}
+
 $plan = [ordered]@{
     schema = 'wd.bundle-rollback-plan.v1'
     authority_effect = 'none'
@@ -177,10 +202,19 @@ $manifestPath = Join-Path $bundle 'deployment-manifest.json'
 $bundleItem = Get-Item -LiteralPath $bundle -Force -ErrorAction SilentlyContinue
 if ($null -eq $bundleItem -or -not $bundleItem.PSIsContainer -or ($bundleItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
     Add-Reason 'target_bundle_missing'
-} elseif (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-    Add-Reason 'target_manifest_missing'
 } else {
-    try {
+    # Inspect the link itself, before any Test-Path or hash operation can follow it.
+    $manifestErrors = $null
+    $manifestItem = Get-Item -LiteralPath $manifestPath -Force -ErrorAction SilentlyContinue -ErrorVariable manifestErrors
+    $manifestAbsent = $null -eq $manifestItem -and @($manifestErrors).Count -gt 0 -and
+        @($manifestErrors | Where-Object { $_.Exception -isnot [Management.Automation.ItemNotFoundException] }).Count -eq 0
+    if ($null -eq $manifestItem) {
+        if ($manifestAbsent) { Add-Reason 'target_manifest_missing' } else { Add-Reason 'target_manifest_unreadable' }
+    } elseif ($manifestItem.PSIsContainer -or ($manifestItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $manifestItem.Length -gt 4194304) {
+        Add-Reason 'target_manifest_unreadable'
+    } else {
+      try {
         $manifestHash = Get-Sha256Hex -Path $manifestPath
         $plan['target_manifest_sha256'] = $manifestHash
         if ($manifestHash -ne $ExpectedTargetManifestSha256.ToUpperInvariant()) { Add-Reason 'target_manifest_unanchored' }
@@ -196,7 +230,8 @@ if ($null -eq $bundleItem -or -not $bundleItem.PSIsContainer -or ($bundleItem.At
                 $file = [IO.Path]::GetFullPath((Join-Path $bundle $entry.Name))
                 [void]$listed.Add($file)
                 if (-not $file.StartsWith($bundleFull, [StringComparison]::OrdinalIgnoreCase)) { Add-Reason ('bundle_file_outside:' + $entry.Name); continue }
-                if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { Add-Reason ('bundle_file_missing:' + $entry.Name); continue }
+                $issue = Get-ListedFileIssue -BundleFull $bundleFull -FileFull $file -EntryName $entry.Name
+                if ($issue) { Add-Reason $issue; continue }
                 if ((Get-Sha256Hex -Path $file) -ne ([string]$entry.Value).ToUpperInvariant()) {
                     Add-Reason ('bundle_file_changed:' + $entry.Name)
                 }
@@ -204,7 +239,11 @@ if ($null -eq $bundleItem -or -not $bundleItem.PSIsContainer -or ($bundleItem.At
             # Nothing unlisted and no link anywhere in the bundle; the walk never follows a link.
             try {
                 foreach ($node in @(Get-WdTreeEntry -Root $bundle)) {
-                    if ($node.IsLink) { Add-Reason ('bundle_reparse:' + $node.Relative); continue }
+                    if ($node.IsLink) {
+                        $linkReason = 'bundle_reparse:' + $node.Relative
+                        if (-not $reasons.Contains($linkReason)) { Add-Reason $linkReason }
+                        continue
+                    }
                     if ($node.IsDirectory -or $node.Relative -eq 'deployment-manifest.json') { continue }
                     if (-not $listed.Contains($node.Full)) { Add-Reason ('bundle_file_unexpected:' + $node.Relative) }
                 }
@@ -212,8 +251,9 @@ if ($null -eq $bundleItem -or -not $bundleItem.PSIsContainer -or ($bundleItem.At
                 Add-Reason 'bundle_unenumerable'
             }
         }
-    } catch {
-        Add-Reason 'target_manifest_unreadable'
+      } catch {
+          Add-Reason 'target_manifest_unreadable'
+      }
     }
 }
 

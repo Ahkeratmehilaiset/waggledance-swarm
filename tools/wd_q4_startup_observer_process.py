@@ -6,7 +6,6 @@ subprocess timeout does not bound operating-system process creation or cleanup.
 """
 
 import json
-import math
 import os
 from pathlib import Path
 import subprocess
@@ -48,8 +47,8 @@ def observe_synthetic_process(*, enabled=False, fixture=None, timeout_seconds=2)
     }
     if enabled is not True:
         return result
-    if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
-            or not 0.05 <= timeout_seconds <= 10 or type(fixture) is not dict
+    if (type(timeout_seconds) not in (int, float) or not 0.05 <= timeout_seconds <= 10
+            or type(fixture) is not dict
             or set(fixture) != {'plan', 'receipts', 'handshakes', 'processes', 'ready', 'now', 'stall'}
             or type(fixture['stall']) is not bool):
         return result
@@ -67,7 +66,7 @@ def observe_synthetic_process(*, enabled=False, fixture=None, timeout_seconds=2)
         env['SystemRoot'] = os.environ['SystemRoot']
     root = str(Path(__file__).resolve().parent.parent)
     try:
-        completed = subprocess.run([sys.executable, '-I', '-S', '-c', _CHILD, root],
+        completed = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', _CHILD, root],
             input=data, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             timeout=timeout_seconds, check=False, env=env)
         if completed.returncode != 0 or len(completed.stdout) > 65536:

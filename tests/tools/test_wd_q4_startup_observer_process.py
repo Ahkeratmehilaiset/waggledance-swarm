@@ -54,7 +54,7 @@ def test_stalled_synthetic_child_is_terminated_without_rollback():
     assert out['rollback_performed'] is False
 
 
-@pytest.mark.parametrize('timeout', [True, 0, -1, 11, float('nan'), float('inf'), '1'])
+@pytest.mark.parametrize('timeout', [True, 0, -1, 11, 10**1000, float('nan'), float('inf'), '1'])
 def test_invalid_timeout_refuses_before_launch(timeout, monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError('unexpected subprocess')
@@ -65,6 +65,7 @@ def test_invalid_timeout_refuses_before_launch(timeout, monkeypatch):
 def test_child_process_receives_no_ambient_secrets(monkeypatch):
     seen = {}
     def fake_run(argv, **kwargs):
+        seen['argv'] = argv
         seen.update(kwargs)
         return subprocess.CompletedProcess(argv, 1, b'')
     monkeypatch.setenv('SYNTHETIC_SECRET_FOR_TEST', 'not-for-child')
@@ -73,3 +74,20 @@ def test_child_process_receives_no_ambient_secrets(monkeypatch):
     assert out['reason'] == 'child_failed'
     assert 'SYNTHETIC_SECRET_FOR_TEST' not in seen['env']
     assert 'PYTHONPATH' not in seen['env']
+    assert seen['argv'][1:4] == ['-I', '-S', '-B']
+
+
+def test_malformed_child_output_refuses(monkeypatch):
+    def malformed(argv, **kwargs):
+        return subprocess.CompletedProcess(argv, 0, b'{not-json')
+    monkeypatch.setattr(subprocess, 'run', malformed)
+    out = observe_synthetic_process(enabled=True, fixture=sample())
+    assert out['status'] == 'HOLD' and out['reason'] == 'child_failed'
+
+
+def test_process_start_error_refuses(monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise OSError('synthetic process start failure')
+    monkeypatch.setattr(subprocess, 'run', unavailable)
+    out = observe_synthetic_process(enabled=True, fixture=sample())
+    assert out['status'] == 'HOLD' and out['reason'] == 'child_failed'

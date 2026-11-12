@@ -56,6 +56,18 @@ def test_pyproject_forces_full(tmp_path):
     assert select_affected_tests(["pyproject.toml"], tmp_path)["full_suite"] is True
 
 
+@pytest.mark.parametrize("source", [
+    "ops/windows/reboot/start-wd-agent.ps1",
+    "ops/windows/reboot/start-wd-tools-consumer.ps1",
+])
+def test_broad_startup_launchers_require_full_suite(source):
+    # Use the actual repository: fake fixtures populated from the mapping can
+    # silently miss new callers and therefore cannot demonstrate fail-safety.
+    result = select_affected_tests([source], ROOT)
+    assert result["full_suite"] is True, result
+    assert "broad-impact" in result["reason"]
+
+
 def test_charter_change_forces_full(tmp_path):
     _mkrepo(tmp_path)
     assert (
@@ -237,6 +249,11 @@ ACTUAL_EIGHT = (
     "ops/windows/reboot/Deploy-WdRebootBundle.ps1",
 )
 
+NARROW_BRIDGE_PATHS = tuple(path for path in ACTUAL_EIGHT if path not in {
+    "ops/windows/reboot/start-wd-agent.ps1",
+    "ops/windows/reboot/start-wd-tools-consumer.ps1",
+})
+
 
 def _bridge_candidate_fixture(tmp_path):
     root = _mkrepo(tmp_path)
@@ -247,11 +264,11 @@ def _bridge_candidate_fixture(tmp_path):
     return root
 
 
-def test_actual_eight_integration_paths_narrow_to_reviewed_bridge_tests(tmp_path):
+def test_narrow_bridge_paths_select_reviewed_bridge_tests(tmp_path):
     root = _bridge_candidate_fixture(tmp_path)
-    result = select_affected_tests(ACTUAL_EIGHT, root)
+    result = select_affected_tests(NARROW_BRIDGE_PATHS, root)
     assert result["full_suite"] is False, result
-    assert set(result["tests"]) == bridge_test_closure(set().union(*(BRIDGE_EXPLICIT_TESTS[path] for path in ACTUAL_EIGHT)))
+    assert set(result["tests"]) == bridge_test_closure(set().union(*(BRIDGE_EXPLICIT_TESTS[path] for path in NARROW_BRIDGE_PATHS)))
     assert {
         "tests/tools/test_wd_native_tools_wake.py",
         "tests/tools/test_wd_lead_reply_delivery.py",
@@ -262,12 +279,19 @@ def test_actual_eight_integration_paths_narrow_to_reviewed_bridge_tests(tmp_path
     assert all(test.startswith("tests/tools/") for test in result["tests"])
 
 
-def test_actual_eight_missing_one_required_test_fails_closed(tmp_path):
+def test_narrow_bridge_paths_missing_one_required_test_fails_closed(tmp_path):
     root = _bridge_candidate_fixture(tmp_path)
     (root / "tests/tools/test_wd_native_tools_wake.py").unlink()
-    result = select_affected_tests(ACTUAL_EIGHT, root)
+    result = select_affected_tests(NARROW_BRIDGE_PATHS, root)
     assert result["full_suite"] is True
     assert "missing" in result["reason"]
+
+
+def test_actual_eight_fail_closed_for_broad_launchers(tmp_path):
+    root = _bridge_candidate_fixture(tmp_path)
+    result = select_affected_tests(ACTUAL_EIGHT, root)
+    assert result["full_suite"] is True
+    assert "broad-impact" in result["reason"]
 
 
 def test_shared_native_wake_fixture_only_includes_transitive_consumers(tmp_path):

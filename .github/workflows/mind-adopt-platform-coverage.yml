@@ -45,6 +45,8 @@ jobs:
           grep -E '^38 tests collected' "$scratch/collected.txt"
           env -i PATH="$PATH" HOME="$scratch/home" TMPDIR="$scratch/tmp" PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest tests/tools/test_wd_q4_adopt_recovery_ps.py -q -rs -p no:cacheprovider --basetemp "$scratch/pytest" --junitxml "$scratch/results.xml"
           env -i PATH="$PATH" HOME="$scratch/home" python -c 'import sys,xml.etree.ElementTree as E; s=E.parse(sys.argv[1]).getroot().find("testsuite"); c=s.findall("testcase"); p={x.attrib["name"] for x in c if x.find("skipped") is None}; e={"test_default_off","test_bad_pins_refuse_without_job","test_marker_window_starts_after_synthetic_preflight","test_preflight_and_marker_waits_remain_bounded[False]","test_preflight_and_marker_waits_remain_bounded[True]"}; assert len(c)==38 and p==e and s.attrib["skipped"]=="33" and s.attrib["failures"]=="0" and s.attrib["errors"]=="0"; print("verified Linux: 5 passed, 33 skipped")' "$scratch/results.xml"
+          env -i PATH="$PATH" HOME="$scratch/home" TMPDIR="$scratch/tmp" PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q -rs -p no:cacheprovider --basetemp "$scratch/continuation-pytest" --junitxml "$scratch/continuation-results.xml" tests/tools/test_wd_q4_continuation_orchestrator.py::test_anchored_template_validates_real_synthetic_files_and_pinned_script tests/tools/test_wd_q4_continuation_orchestrator.py::test_tampered_tuple_is_refused_before_attempt tests/tools/test_wd_q4_continuation_orchestrator.py::test_fixed_process_invokes_real_job_bootstrap_and_cli_with_synthetic_continuation tests/tools/test_wd_q4_continuation_orchestrator_cli.py::test_real_config_and_template_are_both_hash_bound tests/tools/test_wd_q4_continuation_job_v3.py tests/tools/test_wd_q4_continuation_orchestrator_job.py
+          env -i PATH="$PATH" HOME="$scratch/home" python -c 'import sys,xml.etree.ElementTree as E; s=E.parse(sys.argv[1]).getroot().find("testsuite"); c=s.findall("testcase"); p={x.attrib["name"] for x in c if x.find("skipped") is None}; e={"test_launcher_default_off","test_launcher_refuses_invalid_config_without_starting_job"}; assert len(c)==12 and p==e and s.attrib["skipped"]=="10" and s.attrib["failures"]=="0" and s.attrib["errors"]=="0"; print("verified Linux continuation: 2 passed, 10 Windows-only skipped")' "$scratch/continuation-results.xml"
       - name: Cleanup firewall
         if: always()
         shell: bash
@@ -98,7 +100,9 @@ jobs:
           $closure = @'
           import ast, pathlib, re, sys
           root=pathlib.Path('tests/tools'); staged=pathlib.Path(sys.argv[1])/'tests/tools'
-          todo=['test_wd_q4_adopt_recovery_ps']; seen=set()
+          todo=['test_wd_q4_adopt_recovery_ps','test_wd_q4_continuation_orchestrator',
+                'test_wd_q4_continuation_orchestrator_cli','test_wd_q4_continuation_job_v3',
+                'test_wd_q4_continuation_orchestrator_job']; seen=set()
           while todo:
               name=todo.pop()
               if name in seen: continue
@@ -142,6 +146,34 @@ jobs:
           $expected=@('test_real_job_finishes_proven_early_refusal','test_stdout_error_after_real_f3_mutation_is_unknown')
           if ($cases.Count -ne 38 -or $skipped.Count -ne 2 -or @($skipped | Where-Object {$_.name -notin $expected}).Count -ne 0 -or $suite.failures -ne '0' -or $suite.errors -ne '0') { throw 'Coverage mismatch' }
           Write-Output 'Windows coverage: 36 passed and two opt-in skipped'
+          # The Linux suite skips only these Windows-host / JobObject cases. Run
+          # every such case here with the same offline, unmounted synthetic tree.
+          $continuationTests=@(
+            'tests/tools/test_wd_q4_continuation_orchestrator.py::test_anchored_template_validates_real_synthetic_files_and_pinned_script',
+            'tests/tools/test_wd_q4_continuation_orchestrator.py::test_tampered_tuple_is_refused_before_attempt',
+            'tests/tools/test_wd_q4_continuation_orchestrator.py::test_fixed_process_invokes_real_job_bootstrap_and_cli_with_synthetic_continuation',
+            'tests/tools/test_wd_q4_continuation_orchestrator_cli.py::test_real_config_and_template_are_both_hash_bound',
+            'tests/tools/test_wd_q4_continuation_job_v3.py',
+            'tests/tools/test_wd_q4_continuation_orchestrator_job.py'
+          )
+          & C:\Python\python.exe -m pytest @continuationTests -q -rs -p no:cacheprovider --basetemp C:\wdtmp\continuation-pytest --junitxml C:\wdtmp\continuation-results.xml
+          if ($LASTEXITCODE -ne 0) { throw 'Continuation synthetic tests failed' }
+          [xml]$continuation = Get-Content -Raw C:\wdtmp\continuation-results.xml
+          $suite=$continuation.testsuites.testsuite; $cases=@($suite.testcase)
+          $expected=@('test_anchored_template_validates_real_synthetic_files_and_pinned_script',
+            'test_tampered_tuple_is_refused_before_attempt',
+            'test_fixed_process_invokes_real_job_bootstrap_and_cli_with_synthetic_continuation',
+            'test_real_config_and_template_are_both_hash_bound',
+            'test_actual_cli_through_real_job_with_synthetic_continuation',
+            'test_actual_cli_job_refuses_changed_record',
+            'test_launcher_default_off', 'test_launcher_refuses_invalid_config_without_starting_job',
+            'test_real_job_bootstrap_cli_twice_with_synthetic_orchestrator',
+            'test_real_nested_windows_jobs_use_actual_fixed_call',
+            'test_interruption_is_unknown_and_pending_survives_a_second_invocation',
+            'test_landed_result_with_mismatched_record_is_unknown')
+          if ($cases.Count -ne 12 -or @($cases | Where-Object {$_.skipped -or $_.name -notin $expected}).Count -ne 0 -or
+              @($cases.name | Sort-Object -Unique).Count -ne 12 -or $suite.failures -ne '0' -or $suite.errors -ne '0') { throw 'Continuation Windows coverage mismatch' }
+          Write-Output 'Continuation Windows coverage: all 12 named cases passed'
           '@
           $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($inner))
           $cid = docker create --network none --workdir C:\work $image powershell.exe -NoProfile -NonInteractive -EncodedCommand $encoded

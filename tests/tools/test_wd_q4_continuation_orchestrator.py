@@ -148,6 +148,8 @@ def test_interrupt_is_not_swallowed_by_ordinary_exception_handler(real_synthetic
 
 @pytest.fixture
 def anchored_template(tmp_path):
+    if os.name != 'nt':
+        pytest.skip('anchor validation requires the Windows PowerShell host')
     from tools import wd_q4_continuation_orchestrator as module
     bundle, scratch = tmp_path / 'bundle', tmp_path / 'scratch'
     bundle.mkdir()
@@ -199,6 +201,7 @@ def test_tampered_tuple_is_refused_before_attempt(anchored_template):
         module.run_once(enabled=True, cutoff_utc='2026-10-31T13:01:00Z', **inputs)
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows Job and PowerShell host required')
 def test_fixed_process_invokes_real_job_bootstrap_and_cli_with_synthetic_continuation(job):
     from tools import wd_q4_continuation_orchestrator as module
     expected, _ = real_cli_with_synthetic_continuation(job)

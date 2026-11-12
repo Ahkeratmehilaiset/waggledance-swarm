@@ -1,10 +1,15 @@
 """Real Job/bootstrap/CLI, with a synthetic continuation and synthetic data."""
 import base64
 import json
+import os
 from pathlib import Path
 import shutil
 
+import pytest
+
 from tests.tools.test_wd_q4_continuation_runtime_bootstrap import candidate, job, v3_job, run_job, repin, encode, sha
+
+pytestmark = pytest.mark.skipif(os.name != 'nt', reason='Windows Job and PowerShell host required')
 
 
 def real_cli_with_synthetic_continuation(item):

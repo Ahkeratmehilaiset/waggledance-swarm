@@ -6,6 +6,8 @@ from pathlib import Path
 import shutil
 import subprocess
 
+import pytest
+
 from tests.tools.test_wd_q4_continuation_runtime_bootstrap import candidate, job, v3_job, encode, sha
 from tests.tools import test_wd_q4_continuation_runtime_bootstrap as job_fixtures
 from tests.tools.test_wd_q4_continuation_job_v3 import real_cli_with_synthetic_continuation
@@ -14,15 +16,19 @@ ROOT = Path(__file__).resolve().parents[2]
 LAUNCH = ROOT / 'ops/windows/reboot/Invoke-WdQ4ContinuationOrchestrator.ps1'
 
 
+@pytest.mark.skipif(os.name != 'nt' and shutil.which('pwsh') is None, reason='PowerShell host required')
 def test_launcher_default_off():
-    result = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-File', str(LAUNCH)],
+    host = 'powershell' if os.name == 'nt' else 'pwsh'
+    result = subprocess.run([host, '-NoProfile', '-NonInteractive', '-File', str(LAUNCH)],
                             capture_output=True, text=True, timeout=20)
     assert result.returncode == 0
     assert json.loads(result.stdout) == {'status': 'OFF'}
 
 
+@pytest.mark.skipif(os.name != 'nt' and shutil.which('pwsh') is None, reason='PowerShell host required')
 def test_launcher_refuses_invalid_config_without_starting_job():
-    result = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-File', str(LAUNCH), '-Run'],
+    host = 'powershell' if os.name == 'nt' else 'pwsh'
+    result = subprocess.run([host, '-NoProfile', '-NonInteractive', '-File', str(LAUNCH), '-Run'],
                             capture_output=True, text=True, timeout=20)
     assert result.returncode == 2
     assert json.loads(result.stdout) == {'status': 'REFUSED'}
@@ -124,6 +130,7 @@ def run_synthetic_job(item):
     return subprocess.run(command, capture_output=True, text=True, timeout=45)
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows Job and PowerShell host required')
 def test_real_job_bootstrap_cli_twice_with_synthetic_orchestrator(job):
     item = prepare_synthetic_orchestrator_job(job)
     first = run_synthetic_job(item)
@@ -146,6 +153,7 @@ def test_real_job_bootstrap_cli_twice_with_synthetic_orchestrator(job):
     assert len(list(private.glob('q4-orchestrator-job-result-*.json'))) == 2
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows Job and PowerShell host required')
 def test_real_nested_windows_jobs_use_actual_fixed_call(job, tmp_path):
     inner_root = tmp_path / 'inner'
     inner_root.mkdir()
@@ -159,6 +167,7 @@ def test_real_nested_windows_jobs_use_actual_fixed_call(job, tmp_path):
     assert json.loads(result.stdout)['status'] == 'DEFERRED'
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows Job and PowerShell host required')
 def test_interruption_is_unknown_and_pending_survives_a_second_invocation(job):
     item = prepare_synthetic_orchestrator_job(job, interrupt=True)
     pending = item['bundle'].parent / 'private/q4-continuation-orchestrator.pending.json'
@@ -171,6 +180,7 @@ def test_interruption_is_unknown_and_pending_survives_a_second_invocation(job):
         assert outer_pending.exists()
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows Job and PowerShell host required')
 def test_landed_result_with_mismatched_record_is_unknown(job):
     item = prepare_synthetic_orchestrator_job(job, wrong_receipt=True)
     result = run_synthetic_job(item)

@@ -1,8 +1,11 @@
 """Offline CI must not run untrusted source or alter a persistent host firewall."""
 from pathlib import Path
 import os
+import re
 import shutil
 import subprocess
+import sys
+import xml.etree.ElementTree as ET
 
 import pytest
 import yaml
@@ -16,6 +19,85 @@ def _linux_steps():
     workflow = yaml.safe_load(WORKFLOW.read_bytes())
     return {step['name']: step['run'] for step in workflow['jobs']['adopt-platform-linux']['steps']
             if 'name' in step and 'run' in step}
+
+
+def _windows_script():
+    workflow = yaml.safe_load(WORKFLOW.read_bytes())
+    return next(step['run'] for step in workflow['jobs']['adopt-platform-windows']['steps']
+                if step.get('name') == 'Run exact synthetic coverage in offline Windows container')
+
+
+def _isolated_python(code, optimized, *args):
+    env = {'PATH': '', 'PYTHONDONTWRITEBYTECODE': '1'}
+    if os.name == 'nt':
+        env['SystemRoot'] = os.environ['SystemRoot']
+    command = [sys.executable, '-S']
+    if optimized:
+        command.append('-O')
+        env['PYTHONOPTIMIZE'] = '1'
+    return subprocess.run(command + ['-c', code, *map(str, args)], env=env, capture_output=True, text=True, timeout=10)
+
+
+@pytest.mark.parametrize(('connected', 'optimized'), [(True, False), (True, True), (False, False), (False, True)])
+def test_windows_network_probe_cannot_be_disabled_by_optimization(connected, optimized):
+    line = next(line.strip() for line in _windows_script().splitlines()
+                if 'python.exe -c' in line and 'connect_ex' in line)
+    probe = re.search(r' -c "(.*)"$', line).group(1)
+    # Fake socket never calls the network; 0 emulates an unexpected connection.
+    fake = '''import sys,types\nclass FakeSocket:\n def settimeout(self,*a): pass\n def connect_ex(self,*a): return %d\n def close(self): pass\nmodule=types.ModuleType("socket"); module.socket=FakeSocket; sys.modules["socket"]=module\n''' % (0 if connected else 1)
+    result = _isolated_python(fake + probe, optimized)
+    assert (result.returncode != 0) is connected
+
+
+def test_windows_pytest_rejects_optimized_interpreter():
+    script = _windows_script()
+    unset = script.index('Remove-Item Env:PYTHONOPTIMIZE -ErrorAction SilentlyContinue')
+    line = next(line.strip() for line in script.splitlines() if 'python.exe -c' in line and 'sys.flags.optimize' in line)
+    check = re.search(r' -c "(.*)"$', line).group(1)
+    assert _isolated_python(check, optimized=True).returncode != 0
+    assert _isolated_python(check, optimized=False).returncode == 0
+    assert unset < script.index(line) < script.index('python.exe -m pytest')
+    assert "if ($LASTEXITCODE -ne 0) { throw 'Optimized Python is not allowed' }" in script
+
+
+@pytest.mark.parametrize(('connected', 'optimized'), [(True, False), (True, True), (False, False), (False, True)])
+def test_linux_network_probe_cannot_be_disabled_by_optimization(connected, optimized):
+    script = _linux_steps()['Portable tests with outbound denial']
+    line = next(line.strip() for line in script.splitlines() if 'python -c' in line and 'connect_ex' in line)
+    probe = re.search(r"python -c '(.*)'$", line).group(1)
+    fake = '''import sys,types\nclass FakeSocket:\n def settimeout(self,*a): pass\n def connect_ex(self,*a): return %d\n def close(self): pass\nmodule=types.ModuleType("socket"); module.socket=FakeSocket; sys.modules["socket"]=module\n''' % (0 if connected else 1)
+    result = _isolated_python(fake + probe, optimized)
+    assert (result.returncode != 0) is connected
+
+
+def test_linux_pytest_uses_unoptimized_clean_environment():
+    script = _linux_steps()['Portable tests with outbound denial']
+    line = next(line.strip() for line in script.splitlines() if 'python -c' in line and 'sys.flags.optimize' in line)
+    check = re.search(r"python -c '(.*)'$", line).group(1)
+    assert _isolated_python(check, optimized=True).returncode != 0
+    assert _isolated_python(check, optimized=False).returncode == 0
+    assert line.startswith('env -i ') and script.index(line) < script.index('python -m pytest')
+
+
+@pytest.mark.parametrize(('index', 'optimized', 'valid'), [(i, o, v) for i in range(2) for o in (False, True) for v in (False, True)])
+def test_linux_coverage_checks_cannot_be_disabled_by_optimization(tmp_path, index, optimized, valid):
+    script = _linux_steps()['Portable tests with outbound denial']
+    lines = [line.strip() for line in script.splitlines() if 'python -c' in line and 'xml.etree' in line]
+    check = re.search(r"python -c '(.*)' \"\$scratch/[^\"]+\"$", lines[index]).group(1)
+    passed = (['test_default_off', 'test_bad_pins_refuse_without_job', 'test_marker_window_starts_after_synthetic_preflight',
+               'test_preflight_and_marker_waits_remain_bounded[False]', 'test_preflight_and_marker_waits_remain_bounded[True]']
+              if index == 0 else ['test_launcher_default_off', 'test_launcher_refuses_invalid_config_without_starting_job'])
+    skipped = 33 if index == 0 else 10
+    root = ET.Element('testsuites'); suite = ET.SubElement(root, 'testsuite', skipped=str(skipped), failures='0', errors='0')
+    if valid:
+        for name in passed:
+            ET.SubElement(suite, 'testcase', name=name)
+        for number in range(skipped):
+            ET.SubElement(ET.SubElement(suite, 'testcase', name='skip-' + str(number)), 'skipped')
+    path = tmp_path / 'synthetic-junit.xml'
+    ET.ElementTree(root).write(path, encoding='utf-8')
+    result = _isolated_python(check, optimized, path)
+    assert (result.returncode == 0) is valid
 
 
 def _assert_hosted_before_firewall(script):

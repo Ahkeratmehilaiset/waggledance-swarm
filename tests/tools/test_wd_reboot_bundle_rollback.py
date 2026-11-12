@@ -194,7 +194,30 @@ def test_a_named_snapshot_target_accepts_its_own_statuses_and_legacy_set_asides_
 
 
 @pytest.mark.parametrize("shell", SHELLS)
+def test_valid_lowercase_manifest_and_pointer_are_accepted(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    fixture.pointer.write_text(json.dumps({"final_commit": "abcdef" * 6 + "abcd"}), encoding="utf-8")
+    code, plan = fixture.run(shell, ExpectedTargetManifestSha256=fixture.manifest_sha.lower())
+    assert code == 0 and plan["verdict"] == "plan"
+    assert plan["target_manifest_sha256"] == fixture.manifest_sha
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("field,reason", [("TargetCommit", "target_commit_invalid"),
+                                         ("ExpectedTargetManifestSha256", "target_manifest_digest_invalid")])
+def test_input_digest_trailing_newline_holds(tmp_path, shell, field, reason):
+    fixture = Fixture(tmp_path)
+    value = TARGET if field == "TargetCommit" else fixture.manifest_sha
+    code, plan = fixture.run(shell, **{field: value + "\n"})
+    assert code == 2 and plan["verdict"] == "hold"
+    assert plan["reasons"] == [reason]
+    assert plan["authority_effect"] == "none" and plan["applied"] is False
+
+
+@pytest.mark.parametrize("shell", SHELLS)
 @pytest.mark.parametrize("pointer", [{}, {"final_commit": None}, {"final_commit": 7},
+                                     {"final_commit": True}, {"final_commit": ["7" * 40]},
+                                     {"Final_Commit": "7" * 40}, {"final_commit": "A" * 40},
                                      {"final_commit": "7" * 39}, {"final_commit": "7" * 40 + "\n"}])
 def test_invalid_current_pointer_commit_holds(tmp_path, shell, pointer):
     fixture = Fixture(tmp_path)

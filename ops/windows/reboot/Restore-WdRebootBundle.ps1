@@ -123,8 +123,8 @@ $reasons = New-Object System.Collections.Generic.List[string]
 function Add-Reason([string] $Reason) { if ($reasons.Count -lt $MaxListedReasons) { $reasons.Add($Reason) } }
 
 # 1. Inputs.
-if ($TargetCommit -cnotmatch '^[0-9a-f]{40}$') { Add-Reason 'target_commit_invalid' }
-if ($ExpectedTargetManifestSha256 -notmatch '^[0-9A-Fa-f]{64}$') { Add-Reason 'target_manifest_digest_invalid' }
+if ($TargetCommit -cnotmatch '\A[0-9a-f]{40}\z') { Add-Reason 'target_commit_invalid' }
+if ($ExpectedTargetManifestSha256 -notmatch '\A[0-9A-Fa-f]{64}\z') { Add-Reason 'target_manifest_digest_invalid' }
 if ($reasons.Count -gt 0) { $plan['reasons'] = @($reasons); Write-Plan $plan 2 }
 
 # 2. The current pointer: only to refuse a rollback onto the running pair.

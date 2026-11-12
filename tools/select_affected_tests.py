@@ -61,7 +61,14 @@ BROAD_IMPACT_BASENAMES = frozenset(
 BROAD_IMPACT_SUBSTRINGS = ("requirements",)
 # Gate-critical / charter source: a change here can alter merge behavior broadly.
 BROAD_IMPACT_PATHS = frozenset(
-    {"waggledance/core/idle_consensus_charter.py"}
+    {
+        "waggledance/core/idle_consensus_charter.py",
+        # Both launchers orchestrate broad, dynamically selected startup paths.
+        # Their historical explicit Bridge maps omit real startup consumers, so
+        # they cannot safely narrow until a complete closure is established.
+        "ops/windows/reboot/start-wd-agent.ps1",
+        "ops/windows/reboot/start-wd-tools-consumer.ps1",
+    }
 )
 SOURCE_PREFIXES = ("waggledance/", "tools/")
 TEST_PREFIXES = ("tests/",)

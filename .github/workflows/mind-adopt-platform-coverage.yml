@@ -33,9 +33,14 @@ jobs:
           scratch="$RUNNER_TEMP/wd-adopt-$GITHUB_RUN_ID"
           mkdir -p "$scratch/home" "$scratch/tmp"
           rule="wd-adopt-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          cleanup() { sudo iptables -D OUTPUT -m comment --comment "$rule" -j REJECT; }
+          cleanup() {
+            if ! sudo iptables -D OUTPUT -m comment --comment "$rule" -j REJECT; then echo 'Firewall rule removal failed' >&2; return 1; fi
+            local remaining
+            if ! remaining="$(sudo iptables -S OUTPUT)"; then echo 'Firewall inspection failed' >&2; return 1; fi
+            case "$remaining" in *"$rule"*) echo 'Firewall rule remains' >&2; return 1 ;; esac
+          }
           sudo iptables -I OUTPUT 1 -m comment --comment "$rule" -j REJECT
-          trap cleanup EXIT
+          trap 'cleanup || exit 1' EXIT
           sudo iptables -C OUTPUT -m comment --comment "$rule" -j REJECT
           env -i PATH="$PATH" HOME="$scratch/home" TMPDIR="$scratch/tmp" python -c 'import socket; s=socket.socket(); s.settimeout(2); r=s.connect_ex(("1.1.1.1",443)); s.close(); assert r != 0'
           mkdir -p "$scratch/source"
@@ -54,8 +59,14 @@ jobs:
         run: |
           if [ "${RUNNER_ENVIRONMENT:-}" != 'github-hosted' ]; then echo 'Expected disposable hosted Linux' >&2; exit 1; fi
           rule="wd-adopt-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          if sudo iptables -C OUTPUT -m comment --comment "$rule" -j REJECT 2>/dev/null; then sudo iptables -D OUTPUT -m comment --comment "$rule" -j REJECT; fi
-          ! sudo iptables -C OUTPUT -m comment --comment "$rule" -j REJECT 2>/dev/null
+          if ! remaining="$(sudo iptables -S OUTPUT)"; then echo 'Firewall inspection failed' >&2; exit 1; fi
+          case "$remaining" in
+            *"$rule"*)
+              if ! sudo iptables -D OUTPUT -m comment --comment "$rule" -j REJECT; then echo 'Firewall rule removal failed' >&2; exit 1; fi
+              if ! remaining="$(sudo iptables -S OUTPUT)"; then echo 'Firewall inspection failed' >&2; exit 1; fi
+              case "$remaining" in *"$rule"*) echo 'Firewall rule remains' >&2; exit 1 ;; esac
+              ;;
+          esac
   adopt-platform-windows:
     permissions: {}
     runs-on: windows-latest

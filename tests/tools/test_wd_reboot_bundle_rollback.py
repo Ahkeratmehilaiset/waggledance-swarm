@@ -252,6 +252,40 @@ def junction(link: Path, target: Path) -> None:
 
 
 @pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("link_position", ["root", "ancestor"])
+def test_bundle_root_and_ancestor_junctions_hold(tmp_path, shell, link_position):
+    fixture = Fixture(tmp_path)
+    # All objects, including the junction target, stay inside this synthetic fixture.
+    link = tmp_path / "synthetic-alias"
+    if link_position == "root":
+        junction(link, fixture.bundles)
+        alternate_root = link
+    else:
+        junction(link, tmp_path)
+        alternate_root = link / "bundles"
+    try:
+        code, plan = fixture.run(shell, BundlesRoot=alternate_root)
+    finally:
+        os.rmdir(link)
+    assert code == 2 and plan["verdict"] == "hold", plan
+    assert plan["reasons"] == ["bundle_root_untrusted"], plan
+    assert plan["applied"] is False and plan["authority_effect"] == "none"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("kind", ["missing", "file"])
+def test_uninspectable_bundle_root_holds_before_target_reads(tmp_path, shell, kind):
+    fixture = Fixture(tmp_path)
+    path = tmp_path / "not-a-bundle-root"
+    if kind == "file":
+        path.write_text("not a directory", encoding="utf-8")
+    code, plan = fixture.run(shell, BundlesRoot=path)
+    assert code == 2 and plan["verdict"] == "hold", plan
+    assert plan["reasons"] == ["bundle_root_untrusted"], plan
+    assert plan["target_bundle"] is None and plan["applied"] is False
+
+
+@pytest.mark.parametrize("shell", SHELLS)
 def test_no_lane_journal_is_a_hold_even_for_a_known_relay_contract(tmp_path, shell):
     code, plan = Fixture(tmp_path).run(shell, LaneJournals=None)
     assert code == 2 and plan["reasons"] == ["lane_journals_not_given"], plan
@@ -508,14 +542,15 @@ def _quote(value) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def run_shimmed(fixture: Fixture, shell: str, list_denied=None, inspect_denied=None, **overrides):
+def run_shimmed(fixture: Fixture, shell: str, list_denied=None, inspect_denied=None, location=None, **overrides):
     params = {"TargetCommit": TARGET, "ExpectedTargetManifestSha256": fixture.manifest_sha,
               "BundlesRoot": fixture.bundles, "StatePointerPath": fixture.pointer, "LaneJournals": fixture.journal,
               "IntentDirectory": fixture.intents}
     params.update(overrides)
     call = " ".join(("-" + name) if value is True else ("-" + name + " " + _quote(value))
                     for name, value in params.items() if value is not None)
-    command = _SHIM + "\n& " + _quote(SCRIPT) + " " + call + "\nexit $LASTEXITCODE\n"
+    location_setup = "\nSet-Location -LiteralPath " + _quote(location) if location is not None else ""
+    command = _SHIM + location_setup + "\n& " + _quote(SCRIPT) + " " + call + "\nexit $LASTEXITCODE\n"
     env = dict(os.environ, WD_TEST_LIST_DENIED=str(list_denied or ""), WD_TEST_INSPECT_DENIED=str(inspect_denied or ""))
     argv = [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command]
     before = fixture.snapshot()
@@ -524,6 +559,23 @@ def run_shimmed(fixture: Fixture, shell: str, list_denied=None, inspect_denied=N
     lines = [line for line in result.stdout.splitlines() if line.strip()]
     assert len(lines) == 1, result.stdout + result.stderr   # one JSON line, never a crash without a plan
     return result.returncode, json.loads(lines[0])
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_relative_bundle_root_uses_powershell_location(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    code, plan = run_shimmed(fixture, shell, location=tmp_path, BundlesRoot="bundles")
+    assert code == 0 and plan["verdict"] == "plan", plan
+    assert plan["target_bundle"] == str(fixture.bundle) and plan["applied"] is False
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_bundle_root_inspection_denial_holds_on_every_host(tmp_path, shell):
+    fixture = Fixture(tmp_path)
+    code, plan = run_shimmed(fixture, shell, inspect_denied=fixture.bundles)
+    assert code == 2 and plan["verdict"] == "hold", plan
+    assert plan["reasons"] == ["bundle_root_untrusted"], plan
+    assert plan["target_bundle"] is None and plan["applied"] is False
 
 
 @pytest.mark.parametrize("shell", SHELLS)

@@ -12,7 +12,8 @@
       equal -TargetCommit. The current pointer is read only to refuse a no-op rollback.
     * integrity: every file the target manifest lists must exist in the bundle with its hash,
       no other file may be in the bundle (deployment-manifest.json aside), and nothing in the
-      bundle may be a reparse point; the walk never follows a link.
+      bundle may be a reparse point; the walk never follows a link. Every existing component of
+      the bundles root is also inspected and a link or uninspectable component is a HOLD.
     * state compatibility: the target relay's own accepted relay statuses are read from the
       target bundle's start-wd-tools-consumer.ps1 (a regular file of at most 4 MiB); every lane
       journal given with -LaneJournals must hold a relay record the target accepts, and no
@@ -100,6 +101,32 @@ function Get-ExactField {
     return $null
 }
 
+function Get-CheckedBundlesRoot {
+    # Inspect from the filesystem root to the requested directory. This is a read-only
+    # preflight, not a handle-bound proof against a later same-user replacement.
+    param([string] $Path)
+    # PowerShell's provider location may differ from the process current directory.
+    # Resolve lexically through the provider, without following existing junctions.
+    $provider = $null
+    $drive = $null
+    $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path, [ref]$provider, [ref]$drive)
+    if ($null -eq $provider -or $provider.Name -cne 'FileSystem') { throw 'bundle root is not a filesystem path' }
+    $full = [IO.Path]::GetFullPath($full)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrEmpty($root)) { throw 'bundle root has no filesystem root' }
+    $current = $root
+    $components = @($full.Substring($root.Length).Split([char[]]@('\', '/'), [StringSplitOptions]::RemoveEmptyEntries))
+    foreach ($component in @('') + $components) {
+        if ($component) { $current = Join-Path $current $component }
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'bundle root ancestor is a reparse point'
+        }
+        if (-not $item.PSIsContainer) { throw 'bundle root ancestor is not a directory' }
+    }
+    return $full
+}
+
 $plan = [ordered]@{
     schema = 'wd.bundle-rollback-plan.v1'
     authority_effect = 'none'
@@ -126,6 +153,11 @@ function Add-Reason([string] $Reason) { if ($reasons.Count -lt $MaxListedReasons
 if ($TargetCommit -cnotmatch '\A[0-9a-f]{40}\z') { Add-Reason 'target_commit_invalid' }
 if ($ExpectedTargetManifestSha256 -notmatch '\A[0-9A-Fa-f]{64}\z') { Add-Reason 'target_manifest_digest_invalid' }
 if ($reasons.Count -gt 0) { $plan['reasons'] = @($reasons); Write-Plan $plan 2 }
+
+# A lexical prefix does not expose a junction in an ancestor of the final bundle.
+# Refuse before reading the target if any ancestor cannot be inspected as a directory.
+try { $BundlesRoot = Get-CheckedBundlesRoot -Path $BundlesRoot }
+catch { $plan['reasons'] = @('bundle_root_untrusted'); Write-Plan $plan 2 }
 
 # 2. The current pointer: only to refuse a rollback onto the running pair.
 try {

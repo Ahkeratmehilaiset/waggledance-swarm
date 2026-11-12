@@ -15,10 +15,11 @@
       bundle may be a reparse point; the walk never follows a link. Every existing component of
       the bundles root is also inspected and a link or uninspectable component is a HOLD.
     * state compatibility: the target relay's own accepted relay statuses are read from the
-      target bundle's start-wd-tools-consumer.ps1 (a regular file of at most 4 MiB); every lane
-      journal given with -LaneJournals must hold a relay record the target accepts, and no
-      named wake snapshot or refusal receipt that a legacy relay cannot own. Unknown means
-      HOLD: an unrecognized relay contract, no -LaneJournals at all, anything at a journal's
+      target bundle's start-wd-tools-consumer.ps1 (a regular file of at most 4 MiB); existing
+      lane relay records are checked for schema and status, but their agent and thread identity
+      is not verified. A plan is conditional, not proof that the target relay will accept it.
+      No journal may contain a named wake snapshot or refusal receipt that a legacy relay cannot own. The following
+      state inspection failures are HOLD: an unrecognized relay contract, no -LaneJournals at all, anything at a journal's
       record path that is not a regular non-link file or that cannot be inspected (only a provably
       absent record means no record; relay_state_unreadable), or a journal that cannot be listed
       (lane_journal_unreadable) is a HOLD.
@@ -162,6 +163,7 @@ $plan = [ordered]@{
     target_bundle = $null
     target_manifest_sha256 = $null
     target_relay_statuses = @()
+    relay_identity_verification = 'unknown'
     actions = @()
     never = @('restore old runtime data', 'touch a lane worktree or its WIP', 'remove any bundle',
               'enable WD-Supervisor or release the merge-driver HOLD', 'retry a failed rollback')
@@ -350,6 +352,7 @@ if ($reasons.Count -gt 0) { Write-Plan $plan 2 }
 
 $plan['verdict'] = 'plan'
 $plan['actions'] = @(
+    'Verify each relay identity against an independently trusted lane, agent and thread binding; this plan does not authenticate those identities.',
     'Obtain the operator signature for the exact pair (target commit, target manifest sha256); an approval of another pair never carries over.',
     'Fence every lane (cold switch): no lane may keep running with the current generation pins while the pointer changes.',
     ('Reinstall from a worktree at ' + $TargetCommit + ' with Deploy-WdRebootBundle.ps1 -ExpectedFinalCommit ' + $TargetCommit + ' -ExpectedFinalManifestHash ' + $plan['target_manifest_sha256'] + ' (machine wrappers and the state pointer only).'),

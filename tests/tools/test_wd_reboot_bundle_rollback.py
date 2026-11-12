@@ -207,6 +207,29 @@ def test_a_relay_record_with_exact_schema_and_accepted_status_is_planned(tmp_pat
 
 
 @pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("record_kind", ["present", "absent", "invalid", "mismatch"])
+def test_plan_reports_relay_identity_as_unknown_without_authorizing_deployment(tmp_path, shell, record_kind):
+    fixture = Fixture(tmp_path)
+    record = fixture.journal / "native-bridge-wake.json"
+    if record_kind == "absent":
+        record.unlink()
+    elif record_kind == "invalid":
+        record.write_text('{"schema":"wrong","status":"queued"}', encoding="utf-8")
+    elif record_kind == "mismatch":
+        record.write_text(json.dumps({"schema": "wd.native-tools-wake.v1", "status": "queued",
+                                      "thread_id": "11111111-1111-1111-1111-111111111111",
+                                      "agent": "wrong-agent"}), encoding="utf-8")
+    code, plan = fixture.run(shell)
+    assert plan["relay_identity_verification"] == "unknown", plan
+    assert plan["authority_effect"] == "none" and plan["applied"] is False
+    if record_kind == "invalid":
+        assert code == 2 and plan["verdict"] == "hold"
+    else:
+        assert code == 0 and plan["verdict"] == "plan"
+        assert any("relay identity" in action.lower() for action in plan["actions"])
+
+
+@pytest.mark.parametrize("shell", SHELLS)
 def test_a_named_snapshot_target_accepts_its_own_statuses_and_legacy_set_asides_are_ignored(tmp_path, shell):
     fixture = Fixture(tmp_path, relay=NAMED_RELAY, status="rejected")
     (fixture.journal / ("native-bridge-wake.json.wake." + "b" * 32)).write_text("{}", encoding="utf-8")

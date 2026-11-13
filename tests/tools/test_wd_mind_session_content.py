@@ -165,11 +165,20 @@ def test_existing_status_cli_stays_status_only(monkeypatch, capsys, tmp_path, di
     monkeypatch.setattr(session.bridge_compact_view, "_read_view_rows", lambda *args: ([], "synthetic-cursor", None))
     expected = {"schema": "synthetic-status-projection", "authority": "none", "lane": agent}
     monkeypatch.setattr(session.lane_reader, "lane_read", lambda **kwargs: expected)
-    result = session.main(["--latest", str(tmp_path / "synthetic-latest"),
-                           "--audit-root", str(tmp_path / "synthetic-audit"),
+    audit_root = tmp_path / ".codex-audit"
+    latest = audit_root / "mind-live" / "latest.json"
+    latest.parent.mkdir(parents=True)
+    latest.write_text("{}", encoding="utf-8")
+    result = session.main(["--latest", str(latest),
+                           "--audit-root", str(audit_root),
                            "--fleet", str(tmp_path / "synthetic-fleet"), "--fleet-sha256", "0" * 64])
     captured = capsys.readouterr()
-    assert result == 0 and captured.err == "" and json.loads(captured.out) == expected
+    assert result == 0 and captured.err == ""
+    output = json.loads(captured.out)
+    assert (output["schema"], output["authority"], output["lane"]) == ("synthetic-status-projection", "none", agent)
+    assert output["fleet_sha256"] == "0" * 64 and output["source_event_refs"] == []
+    assert output["status_observation"]["schema"] == "wd.mind-direct-status.v1"
+    assert output["status_observation"]["observation_status"] == "UNKNOWN"
     assert dispatch == []
 
 

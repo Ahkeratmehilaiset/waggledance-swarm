@@ -752,3 +752,423 @@ def test_non_true_enable_never_reads_source(reader, tmp_path, monkeypatch, enabl
         pytest.fail("disabled verifier reached source I/O")
     monkeypatch.setattr(prefix, "read_prefix_rows", no_read)
     _refused(reader, lambda: _check(reader, snapshot))
+
+
+# Synthetic semantic contract addition. The only real policy metadata below is
+# the independently frozen public eight-task list; events/identities/assets,
+# index data, query and providers are synthetic. This is not runtime authority.
+import io
+import struct
+
+OPERATOR_TASK_BYTES = b'[\n  "lead-mind-4h-fable-memory-20261108-v1",\n  "lead-mind-4h-integration-tools-20261108-v1",\n  "lead-mind-4h-live-anchor-fable-20261108-v1",\n  "lead-mind-4h-package-20261108",\n  "lead-mind-4h-tools-package-20261108-v1",\n  "lead-mind-current-recall-policy-fable-20261108-v1",\n  "lead-mind-final-head-memory-fable-20261108-v1",\n  "lead-mind-production-20261031"\n]\n'
+SEMANTIC_SCHEMA = "wd.q4-content-snapshot-query.v2"
+SEMANTIC_DIM = 384
+SEMANTIC_TEXTS = (
+    "network retry network retry network retry",
+    "RCO review discussed network retry adapter",
+    "network retry restored transport",
+    "network retry restored channel",
+)
+
+
+class _ObservedStream(io.BytesIO):
+    def __init__(self, raw):
+        super().__init__(raw)
+        self.reads = 0
+
+    def read(self, size=-1):
+        self.reads += 1
+        return super().read(size)
+
+
+class _SyntheticEncoder:
+    def __init__(self, identity):
+        self.identity = copy.deepcopy(identity)
+        self.calls = []
+        self.on_query = None
+
+    def query(self, text):
+        self.calls.append("query: " + text[:2000])
+        if self.on_query:
+            self.on_query()
+        return (1.0,) + (0.0,) * (SEMANTIC_DIM - 1)
+
+
+class _SyntheticFlatIP:
+    metric_type = 0  # FAISS METRIC_INNER_PRODUCT
+
+    def __init__(self, vectors):
+        self.d = SEMANTIC_DIM
+        self.ntotal = len(vectors)
+        self._vectors = tuple(tuple(row) for row in vectors)
+
+    def reconstruct_n(self, start, count):
+        return self._vectors[start:start + count]
+
+
+class _SyntheticIndexProvider:
+    def __init__(self, identity, indices):
+        self.identity = copy.deepcopy(identity)
+        self.indices = indices
+        self.calls = []
+        self.on_load = None
+
+    def load(self, index_bytes):
+        self.calls.append(index_bytes)
+        assert index_bytes in self.indices, "only the verified synthetic index may be decoded"
+        index = _SyntheticFlatIP(self.indices[index_bytes])
+        if self.on_load:
+            self.on_load(index)
+        return index
+
+
+def _semantic_projection(case, rows):
+    projection = _golden_projection(case, rows[0])
+    records = [_golden_projection(case, row)["messages"]["records"][0] for row in rows]
+    records.sort(key=lambda item: (item["time_utc"], item["provenance"]["source_event_ref"],
+                                  item["provenance"]["chunk_index"]))
+    projection["messages"].update(accepted=len(records), records=records)
+    return projection
+
+
+def _semantic_cell(records, cell_id, index_bytes, vectors, encoder_identity, projection_sha256):
+    ids, texts, provenance = [], [], []
+    for record in records:
+        for view in ("w", "d"):
+            doc_id = record["record_id"] + "#" + view
+            ids.append(doc_id)
+            texts.append(record["stored_text"])
+            provenance.append({"record_id": doc_id, "kind": "event", "time_utc": record["time_utc"],
+                "cell_id": cell_id, "provenance": dict(record["provenance"], record=record["record_id"],
+                    view=view, ref_kind="sha256_of_projected_metadata", canonical_event=False)})
+    vector_bytes = b"".join(struct.pack("<" + "f" * SEMANTIC_DIM, *row) for row in vectors)
+    pairs = b"".join(doc_id.encode() + b"\0" + struct.pack("<" + "f" * SEMANTIC_DIM, *row)
+                     for doc_id, row in zip(ids, vectors))
+    artifacts = {"index": index_bytes, "vectors": vector_bytes,
+        "meta": _raw({"dim": SEMANTIC_DIM, "doc_ids": ids, "texts": texts, "metadata": [{} for _ in ids]}),
+        "provenance": b"".join(_raw(row) + b"\n" for row in provenance)}
+    content = {"cell_id": cell_id, "count": len(ids), "dim": SEMANTIC_DIM,
+        "cutoff_utc": AVAILABLE, "encoder": encoder_identity,
+        "projection_sha256": projection_sha256, "projection_schema": SCHEMA,
+        "files": {name: _sha(raw) for name, raw in artifacts.items()},
+        "ids_sha256": _sha("\n".join(ids).encode()), "pairs_sha256": _sha(pairs)}
+    artifacts["receipt"] = _raw({"schema": "wd.bridge-mind-hex-cell.v1", "authority": "none",
+        "scope": ROUTE_SCOPE, "content": content, "content_sha256": _sha(_raw(content))})
+    receipt_sha = _sha(artifacts["receipt"])
+    pointer = {"generation": 1, "seq": 1, "receipt_sha256": receipt_sha}
+    log = dict(pointer, schema="wd.bridge-mind-hex-cell-log.v1", prev_line_sha256="0" * 64)
+    return {"pointer": _raw(pointer), "log": _raw(log) + b"\n", "artifacts": artifacts}, pointer
+
+
+def _semantic_case(reader, tmp_path, *, count=4):
+    tasks = json.loads(OPERATOR_TASK_BYTES)
+    assert _sha(OPERATOR_TASK_BYTES) == REQUIRED_RELEASE_TASK_LIST_SHA256
+    rows = [_row(text, task_id=tasks[0], type="message" if i < 2 else "done")
+            for i, text in enumerate(SEMANTIC_TEXTS[:count])]
+    case = _case(reader, tmp_path, rows)
+    policy = json.loads(case["policy_bytes"])
+    policy["approved_tasks"] = tasks
+    case.update(policy_bytes=_raw(policy), policy_sha256=_sha(_raw(policy)),
+                approved_tasks_bytes=OPERATOR_TASK_BYTES, approved_tasks_sha256=_sha(OPERATOR_TASK_BYTES))
+    message_policy = json.loads(case["messages"]["policy_bytes"])
+    message_policy["approved_tasks"] = tasks
+    case["messages"].update(policy_bytes=_raw(message_policy), policy_sha256=_sha(_raw(message_policy)))
+    _edit_decision(case, nonreview_policy_sha256=case["policy_sha256"],
+                   message_policy_sha256=case["messages"]["policy_sha256"],
+                   approved_tasks_sha256=case["approved_tasks_sha256"])
+    projection = _semantic_projection(case, rows)
+    snapshot = _snapshot(case, projection)
+    # Same-fixture positive control: a broken source fixture must not masquerade
+    # as a missing semantic feature or a valid negative pin test.
+    assert _check(reader, snapshot)["status"] == "MATCH"
+    identity = {"model": "intfloat/multilingual-e5-small", "revision": "synthetic-revision-v1",
+                "weights_sha256": _sha(b"synthetic-weights-no-real-model")}
+    encoder_binding = {"schema": "wd.mind-readonly-encoder-binding.v1", "encoder": identity,
+        "code_sha256": _sha(b"synthetic-encoder-code"), "query_policy": {
+            "prefix": "query: ", "truncate_chars": 2000, "normalize": True, "dtype": "float32", "dim": SEMANTIC_DIM}}
+    index_binding = {"schema": "wd.mind-readonly-index-binding.v1", "index_type": "IndexFlatIP",
+        "metric_type": 0, "code_sha256": _sha(b"synthetic-index-reader-code")}
+    encoder = _SyntheticEncoder(encoder_binding)
+    cells, pointers, indices = {}, {}, {}
+    for cell_id, records in (("general", [record for record in projection["messages"]["records"]
+                                         if record["meta"]["type"] == "message"]),
+                             ("system", [record for record in projection["messages"]["records"]
+                                         if record["meta"]["type"] == "done"])):
+        if not records:
+            continue
+        vectors = []
+        for record in records:
+            # The strongest lexical record is orthogonal to the query. A
+            # keyword-only implementation therefore disagrees with this case.
+            head = (0.0, 1.0) if record["stored_text"] == SEMANTIC_TEXTS[0] else (1.0, 0.0)
+            vector = head + (0.0,) * (SEMANTIC_DIM - 2)
+            vectors.extend((vector, vector))
+        index_bytes = b"synthetic-faiss-flat-ip:" + cell_id.encode()
+        indices[index_bytes] = vectors
+        cells[cell_id], pointers[cell_id] = _semantic_cell(
+            records, cell_id, index_bytes, vectors, identity, snapshot["projection_sha256"])
+        pointers[cell_id]["count"] = len(vectors)
+    manifest = {"schema": "wd.bridge-mind-hex-memory-step2.v1", "authority": "none", "scope": ROUTE_SCOPE,
+        "dim": SEMANTIC_DIM, "encoder": identity, "projection_schema": SCHEMA,
+        "cutoff_utc": AVAILABLE,
+        "projection_sha256": snapshot["projection_sha256"], "cells": pointers,
+        "records": count, "views": ["w", "d"], "independent_views": False}
+    memory_bytes = _raw(manifest)
+    descriptor = {"schema": "wd.bridge-mind-q4-memory-descriptor.v2", "scope": ROUTE_SCOPE,
+                  "memory_sha256": _sha(memory_bytes), "dim": SEMANTIC_DIM, "encoder": identity}
+    return dict(snapshot, descriptor_bytes=_raw(descriptor), descriptor_sha256=_sha(_raw(descriptor)),
+        memory_bytes=memory_bytes, memory_sha256=_sha(memory_bytes), cell_snapshots=cells,
+        encoder_sha256=_sha(_raw(identity)), runtime_revision=identity["revision"],
+        encoder_provider=encoder, encoder_binding_bytes=_raw(encoder_binding),
+        encoder_binding_sha256=_sha(_raw(encoder_binding)),
+        index_provider=_SyntheticIndexProvider(index_binding, indices),
+        index_binding_bytes=_raw(index_binding), index_binding_sha256=_sha(_raw(index_binding)),
+        stream=_ObservedStream(_raw({"situation": "retry network outage", "time": QUERY_TIME})))
+
+
+def _semantic_entry(reader, case):
+    entry = getattr(reader, "query_content_snapshot", None)
+    assert callable(entry), "frozen messages-only semantic query is not implemented"
+    return entry(**case)
+
+
+def _semantic_refuses_without_callbacks(reader, case):
+    encoder, index, stream = case["encoder_provider"], case["index_provider"], case["stream"]
+    _refused(reader, lambda: _semantic_entry(reader, case))
+    assert stream.reads == 0 and encoder.calls == [] and index.calls == []
+
+
+def test_semantic_query_uses_both_vector_views_and_lexical_agreement(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path)
+    out = _semantic_entry(reader, case)
+    assert out["schema"] == SEMANTIC_SCHEMA and out["rule"] == "q4-rule-v1.2"
+    assert out["status"] == "ANSWER" and 1 <= len(out["results"]) <= 3
+    assert all(hit["stored_text"] != SEMANTIC_TEXTS[0] for hit in out["results"])
+    assert case["encoder_provider"].calls == ["query: retry network outage"]
+    assert len(case["index_provider"].calls) == len(case["cell_snapshots"])
+    projection = json.loads(case["projection_bytes"])
+    records = projection["messages"]["records"]
+    allowed = {(_sha(row["provenance"]["event_ref"].encode()), _sha(row["record_id"].encode())): row for row in records}
+    for hit in out["results"]:
+        row = allowed[(hit["ref_sha256"], hit["doc_id_sha256"])]
+        assert hit["ref_kind"] == "sha256_of_projected_metadata" and hit["canonical_event"] is False
+        assert hit["stored_text"] == row["stored_text"]
+        assert hit["source_reference"] == {"sha256": row["provenance"]["source_event_ref"],
+            "kind": "sha256_of_canonical_event_json", "verified": "MATCH_WITHIN_PREFIX", "sender_authentication": "UNKNOWN"}
+    assert out["binding"]["memory_sha256"] == case["memory_sha256"]
+    assert out["binding"]["encoder_sha256"] == case["encoder_sha256"]
+    assert out["binding"]["approved_tasks_sha256"] == REQUIRED_RELEASE_TASK_LIST_SHA256
+    assert out["publisher_authentication"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("count", [1, 3])
+def test_semantic_low_candidate_count_abstains_without_encoder(reader, tmp_path, count):
+    case = _semantic_case(reader, tmp_path, count=count)
+    out = _semantic_entry(reader, case)
+    assert out["status"] == "ABSTAIN" and out["results"] == []
+    assert case["encoder_provider"].calls == []
+
+
+@pytest.mark.parametrize("enabled", [False, None, 1, "true"])
+def test_semantic_query_is_default_closed_before_input_or_providers(reader, tmp_path, enabled):
+    case = _semantic_case(reader, tmp_path)
+    case["enabled"] = enabled
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("field", ["descriptor_sha256", "memory_sha256", "projection_sha256", "policy_sha256",
+    "roster_sha256", "decision_sha256", "approved_tasks_sha256", "encoder_sha256", "encoder_binding_sha256", "index_binding_sha256"])
+@pytest.mark.parametrize("bad", [None, "f" * 64])
+def test_semantic_missing_or_wrong_pin_refuses_before_input_or_providers(reader, tmp_path, field, bad):
+    case = _semantic_case(reader, tmp_path)
+    case[field] = bad
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("field,value", [("dim", 383), ("scope", "other"),
+    ("schema", "wd.bridge-mind-q4-memory-descriptor.v1"), ("memory_sha256", "f" * 64)])
+def test_semantic_rehashed_descriptor_mismatch_refuses_before_callbacks(reader, tmp_path, field, value):
+    case = _semantic_case(reader, tmp_path)
+    descriptor = json.loads(case["descriptor_bytes"])
+    descriptor[field] = value
+    case.update(descriptor_bytes=_raw(descriptor), descriptor_sha256=_sha(_raw(descriptor)))
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("field", ["revision", "weights_sha256", "model"])
+def test_semantic_provider_identity_mismatch_refuses_before_callbacks(reader, tmp_path, field):
+    case = _semantic_case(reader, tmp_path)
+    case["encoder_provider"].identity["encoder"][field] = "unbound"
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+def test_semantic_runtime_revision_mismatch_refuses_before_callbacks(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path)
+    case["runtime_revision"] = "other-revision"
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("artifact", ["index", "meta", "provenance", "vectors"])
+def test_semantic_second_cell_tampering_prevents_any_index_decode(reader, tmp_path, artifact):
+    case = _semantic_case(reader, tmp_path)
+    case["cell_snapshots"]["system"]["artifacts"][artifact] += b"synthetic-tamper"
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+def test_semantic_coherently_repinned_same_tasks_require_original_operator_bytes(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path)
+    compact = _raw(json.loads(OPERATOR_TASK_BYTES))
+    assert _sha(compact) != REQUIRED_RELEASE_TASK_LIST_SHA256
+    case.update(approved_tasks_bytes=compact, approved_tasks_sha256=_sha(compact))
+    _edit_decision(case, approved_tasks_sha256=_sha(compact))
+    source_keys = ("enabled", "messages", "documents", "decision_bytes", "decision_sha256", "policy_bytes",
+        "policy_sha256", "roster_bytes", "roster_sha256", "approved_tasks_bytes", "approved_tasks_sha256",
+        "identifier_policy_binding", "projection_bytes", "projection_sha256")
+    report = _check(reader, {name: case[name] for name in source_keys})
+    assert report["status"] == "MATCH" and report["operator_scope_authorization"] == "UNKNOWN"
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+def _semantic_repin_cell(case, cell_id):
+    cell = case["cell_snapshots"][cell_id]
+    data = cell["artifacts"]
+    receipt = json.loads(data["receipt"])
+    meta = json.loads(data["meta"])
+    pairs = b"".join(doc_id.encode() + b"\0" + vector for doc_id, vector in zip(
+        meta["doc_ids"], (data["vectors"][i:i + 4 * SEMANTIC_DIM]
+                         for i in range(0, len(data["vectors"]), 4 * SEMANTIC_DIM))))
+    receipt["content"].update(files={name: _sha(raw) for name, raw in data.items() if name != "receipt"},
+        ids_sha256=_sha("\n".join(meta["doc_ids"]).encode()), pairs_sha256=_sha(pairs))
+    receipt["content_sha256"] = _sha(_raw(receipt["content"]))
+    data["receipt"] = _raw(receipt)
+    digest = _sha(data["receipt"])
+    pointer, log = json.loads(cell["pointer"]), json.loads(cell["log"])
+    pointer["receipt_sha256"] = log["receipt_sha256"] = digest
+    cell.update(pointer=_raw(pointer), log=_raw(log) + b"\n")
+    manifest = json.loads(case["memory_bytes"])
+    manifest["cells"][cell_id]["receipt_sha256"] = digest
+    case.update(memory_bytes=_raw(manifest), memory_sha256=_sha(_raw(manifest)))
+    descriptor = json.loads(case["descriptor_bytes"])
+    descriptor["memory_sha256"] = case["memory_sha256"]
+    case.update(descriptor_bytes=_raw(descriptor), descriptor_sha256=_sha(_raw(descriptor)))
+
+
+def test_semantic_fully_rehashed_foreign_record_refuses_before_index_decode(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path)
+    data = case["cell_snapshots"]["system"]["artifacts"]
+    rows = [json.loads(line) for line in data["provenance"].splitlines()]
+    meta = json.loads(data["meta"])
+    for i, view in enumerate(("w", "d")):
+        forged = "content:" + _sha(b"outside-approved-projection")
+        rows[i]["record_id"] = meta["doc_ids"][i] = forged + "#" + view
+        rows[i]["provenance"].update(record=forged, event_ref=_sha(b"outside-chunk"))
+    data.update(meta=_raw(meta), provenance=b"".join(_raw(row) + b"\n" for row in rows))
+    _semantic_repin_cell(case, "system")
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("fault", ["dimension", "count", "metric", "pairs"])
+def test_semantic_decoded_index_must_match_verified_metadata_before_query(reader, tmp_path, fault):
+    case = _semantic_case(reader, tmp_path)
+    def corrupt(index):
+        if fault == "dimension":
+            index.d += 1
+        elif fault == "count":
+            index.ntotal -= 1
+        elif fault == "metric":
+            index.metric_type = 1
+        else:
+            index._vectors = tuple((0.0,) * SEMANTIC_DIM for _ in index._vectors)
+    case["index_provider"].on_load = corrupt
+    _refused(reader, lambda: _semantic_entry(reader, case))
+    assert case["index_provider"].calls
+    assert case["encoder_provider"].calls == [] and case["stream"].reads == 0
+
+
+def test_semantic_time_guard_abstains_at_exact_one_second_boundary(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path)
+    case["stream"] = _ObservedStream(_raw({"situation": "retry network outage", "time": "2026-01-01T00:01:01Z"}))
+    out = _semantic_entry(reader, case)
+    assert out["status"] == "ABSTAIN" and out["results"] == []
+    assert case["encoder_provider"].calls == []
+
+
+def test_semantic_source_change_during_query_refuses_final_output(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path)
+    path = Path(case["messages"]["source_path"])
+    original = path.read_bytes()
+    case["encoder_provider"].on_query = lambda: path.write_bytes(b" " + original[1:])
+    _refused(reader, lambda: _semantic_entry(reader, case))
+    assert case["encoder_provider"].calls == ["query: retry network outage"]
+
+
+def test_semantic_query_leaves_environment_and_owned_input_files_unchanged(reader, tmp_path):
+    import os
+    case = _semantic_case(reader, tmp_path)
+    before_env = dict(os.environ)
+    before_files = {str(path): _sha(path.read_bytes()) for path in tmp_path.rglob("*") if path.is_file()}
+    out = _semantic_entry(reader, case)
+    assert out["status"] == "ANSWER"
+    assert dict(os.environ) == before_env
+    assert {str(path): _sha(path.read_bytes()) for path in tmp_path.rglob("*") if path.is_file()} == before_files
+
+
+
+def test_semantic_fixture_query_avoids_short_query_self_match():
+    import re
+    joined = [" " + " ".join(re.findall(r"[^\W_]+", text.lower())) + " " for text in SEMANTIC_TEXTS]
+    assert all(" network retry " in text for text in joined)
+    assert any(" retry network " in text for text in joined)
+    assert all(" retry network outage " not in text for text in joined)
+    assert all("outage" not in text.split() for text in joined)
+
+
+def test_semantic_verbatim_short_query_self_match_abstains_without_encoder(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path)
+    case["stream"] = _ObservedStream(_raw({"situation": "network retry", "time": QUERY_TIME}))
+    out = _semantic_entry(reader, case)
+    assert out["status"] == "ABSTAIN" and out["results"] == []
+    assert case["encoder_provider"].calls == []
+
+
+def _semantic_schema_preflight(reader, case, location, schema):
+    """Repin controls coherently so a digest mismatch cannot mask schema checks."""
+    if location == "memory":
+        manifest = json.loads(case["memory_bytes"])
+        manifest["projection_schema"] = schema
+        case.update(memory_bytes=_raw(manifest), memory_sha256=_sha(_raw(manifest)))
+        descriptor = json.loads(case["descriptor_bytes"])
+        descriptor["memory_sha256"] = case["memory_sha256"]
+        case.update(descriptor_bytes=_raw(descriptor), descriptor_sha256=_sha(_raw(descriptor)))
+        return reader._q4_controls(case)[1]
+    cell = case["cell_snapshots"][location]
+    receipt = json.loads(cell["artifacts"]["receipt"])
+    receipt["content"]["projection_schema"] = schema
+    receipt["content_sha256"] = _sha(_raw(receipt["content"]))
+    cell["artifacts"]["receipt"] = _raw(receipt)
+    _semantic_repin_cell(case, location)
+    manifest = json.loads(case["memory_bytes"])
+    records = {row["record_id"]: row for row in json.loads(case["projection_bytes"])["messages"]["records"]}
+    return reader._q4_cell_controls(location, cell, manifest["cells"][location], manifest, records)[1]
+
+
+@pytest.mark.parametrize("location", ["memory", "general", "system"])
+def test_semantic_preflight_requires_content_projection_schema(reader, tmp_path, location):
+    case = _semantic_case(reader, tmp_path)
+    content = _semantic_schema_preflight(reader, case, location, SCHEMA)
+    assert content["projection_schema"] == SCHEMA
+    assert case["stream"].reads == 0
+    assert not case["encoder_provider"].calls and not case["index_provider"].calls
+
+
+@pytest.mark.parametrize("location", ["memory", "general", "system"])
+@pytest.mark.parametrize("schema", [
+    "wd.mind-identifier-policy.v1", MESSAGE_SCHEMA, DECISION_SCHEMA, None, {"schema": SCHEMA},
+], ids=["identifier-policy", "message-projection", "route-decision", "missing", "object"])
+def test_semantic_preflight_rejects_other_schema_domains(reader, tmp_path, location, schema):
+    case = _semantic_case(reader, tmp_path)
+    token = "invalid_memory" if location == "memory" else "invalid_cell_receipt"
+    with pytest.raises(ValueError, match="^" + token + "$"):
+        _semantic_schema_preflight(reader, case, location, schema)
+    assert case["stream"].reads == 0
+    assert not case["encoder_provider"].calls and not case["index_provider"].calls

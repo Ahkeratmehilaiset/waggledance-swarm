@@ -1,7 +1,7 @@
-"""Opt-in messages-only source verification and result resolution, read-only.
+"""Opt-in messages-only source verification and frozen semantic query, read-only.
 
-This module has no CLI, encoder, native backend, builder, writer or runtime
-activation. All inputs are explicit caller bindings. Hashes and HMACs prove
+This module has no CLI, encoder construction, native import, builder, writer or
+runtime activation. All inputs are explicit caller bindings. Hashes and HMACs prove
 consistency, not operator authority, source authentication, freshness or
 same-user ABA resistance. Defaults refuse. No live tuple is provisioned here.
 
@@ -9,8 +9,9 @@ The v2 schemas deliberately admit operator-approved build-lane review
 discussion while retaining RCO author/recipient and content exclusions.
 Historical v1 projections/decisions are not upgraded. Screening primitives
 are extracted from d108d5fc; record/hash/visibility rules derive from 30fc2dbc.
-Semantic memory/descriptor/encoder query support is a separate unfinished
-slice. This verifier alone does not implement semantic recall.
+The frozen semantic API uses caller-established providers. Validation uses
+synthetic providers; real-provider provenance, native numerical parity,
+runtime authority and installed delivery are separate unproven boundaries.
 """
 from __future__ import annotations
 
@@ -912,6 +913,416 @@ def rederive_message_projection(**inputs):
         pass
     inputs = None
     if not succeeded:
+        _deny()
+    return output
+
+
+# Synthetic-first frozen semantic boundary. Providers are established by the
+# caller; identity metadata is consistency evidence, not loaded-code authority.
+# This module never constructs an encoder, imports a native backend or writes
+# cache/lock/scratch state. Native/provider/runtime adoption requires its own
+# independently authorized tuple.
+_Q4_SOURCE_KEYS = _INPUT_KEYS | {"projection_bytes", "projection_sha256"}
+_Q4_KEYS = _Q4_SOURCE_KEYS | {
+    "descriptor_bytes", "descriptor_sha256", "memory_bytes", "memory_sha256",
+    "cell_snapshots", "encoder_sha256", "runtime_revision", "encoder_provider",
+    "encoder_binding_bytes", "encoder_binding_sha256", "index_provider",
+    "index_binding_bytes", "index_binding_sha256", "stream",
+}
+_Q4_CELLS = frozenset(("general", "thermal", "energy", "safety", "seasonal", "math", "system", "learning"))
+_Q4_PLACEMENT = {"message": "general", "milestone": "general", "progress": "general",
+                 "status": "system", "wake_request": "system", "handoff": "system",
+                 "claim": "system", "release": "system", "done": "system", "test": "learning"}
+_Q4_DIM = 384
+_Q4_MAX_ROWS = 20000  # Additional availability bound, not a native allocation guarantee.
+_Q4_TOTAL_BYTES = 512 * 1024 * 1024
+_Q4_ARTIFACT_BYTES = 16 * 1024 * 1024
+_Q4_TOKEN = re.compile(r"[^\W_]{2,}", re.UNICODE)
+_Q4_WORD = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def _q4_identity(value):
+    if (type(value) is not dict or set(value) != {"model", "revision", "weights_sha256"}
+            or value["model"] != "intfloat/multilingual-e5-small"
+            or type(value["revision"]) is not str or not value["revision"]
+            or len(value["revision"]) > 256 or not _hex(value["weights_sha256"])):
+        raise ValueError("invalid_encoder_identity")
+    return value
+
+
+def _q4_controls(values):
+    if type(values) is not dict or set(values) != _Q4_KEYS or values["enabled"] is not True:
+        raise ValueError("invalid_semantic_inputs")
+    # Independently enforce the exact operator list bytes, not a digest derived
+    # from the same untrusted document or merely an equivalent set of task IDs.
+    tasks = values["approved_tasks_bytes"]
+    if (type(tasks) is not bytes or not 0 < len(tasks) <= _MAX_CONTROL_BYTES
+            or values["approved_tasks_sha256"] != _RELEASE_TASK_LIST_SHA256
+            or not hmac.compare_digest(_sha(tasks), _RELEASE_TASK_LIST_SHA256)):
+        raise ValueError("operator_task_list_mismatch")
+    descriptor = _pinned(values["descriptor_bytes"], values["descriptor_sha256"])
+    memory = _pinned(values["memory_bytes"], values["memory_sha256"], limit=1024 * 1024)
+    encoder_binding = _pinned(values["encoder_binding_bytes"], values["encoder_binding_sha256"])
+    index_binding = _pinned(values["index_binding_bytes"], values["index_binding_sha256"])
+    if (type(descriptor) is not dict
+            or set(descriptor) != {"schema", "scope", "memory_sha256", "dim", "encoder"}
+            or descriptor["schema"] != "wd.bridge-mind-q4-memory-descriptor.v2"
+            or descriptor["scope"] != "wd.q4-shared-projected-events.v1"
+            or type(descriptor["dim"]) is not int or descriptor["dim"] != _Q4_DIM
+            or descriptor["memory_sha256"] != values["memory_sha256"]):
+        raise ValueError("invalid_descriptor")
+    identity = _q4_identity(descriptor["encoder"])
+    if (not _hex(values["encoder_sha256"])
+            or not hmac.compare_digest(_sha(_canonical(identity)), values["encoder_sha256"])
+            or type(values["runtime_revision"]) is not str
+            or values["runtime_revision"] != identity["revision"]):
+        raise ValueError("encoder_binding_mismatch")
+    expected_policy = {"prefix": "query: ", "truncate_chars": 2000, "normalize": True,
+                       "dtype": "float32", "dim": _Q4_DIM}
+    if (type(encoder_binding) is not dict
+            or set(encoder_binding) != {"schema", "encoder", "code_sha256", "query_policy"}
+            or encoder_binding["schema"] != "wd.mind-readonly-encoder-binding.v1"
+            or encoder_binding["encoder"] != identity
+            or not _hex(encoder_binding["code_sha256"])
+            or encoder_binding["query_policy"] != expected_policy
+            or type(encoder_binding["query_policy"]) is not dict
+            or type(encoder_binding["query_policy"].get("normalize")) is not bool
+            or type(encoder_binding["query_policy"].get("dim")) is not int):
+        raise ValueError("invalid_encoder_binding")
+    if (type(index_binding) is not dict
+            or set(index_binding) != {"schema", "index_type", "metric_type", "code_sha256"}
+            or index_binding["schema"] != "wd.mind-readonly-index-binding.v1"
+            or index_binding["index_type"] != "IndexFlatIP"
+            or type(index_binding["metric_type"]) is not int or index_binding["metric_type"] != 0
+            or not _hex(index_binding["code_sha256"])):
+        raise ValueError("invalid_index_binding")
+    if (type(memory) is not dict or memory.get("schema") != "wd.bridge-mind-hex-memory-step2.v1"
+            or memory.get("scope") != descriptor["scope"]
+            or type(memory.get("dim")) is not int or memory["dim"] != _Q4_DIM
+            or memory.get("encoder") != identity or memory.get("projection_schema") != _COMBINED_SCHEMA
+            or memory.get("projection_sha256") != values["projection_sha256"]
+            or type(memory.get("cells")) is not dict or not memory["cells"]
+            or not set(memory["cells"]) <= _Q4_CELLS
+            or type(values["cell_snapshots"]) is not dict
+            or set(values["cell_snapshots"]) != set(memory["cells"])):
+        raise ValueError("invalid_memory")
+    return descriptor, memory, encoder_binding, index_binding
+
+
+def _q4_provider_identity(provider, expected, method):
+    # Calling arbitrary in-process objects is an explicit caller trust boundary.
+    # Matching this metadata cannot authenticate their implementation or globals.
+    identity = getattr(provider, "identity", None)
+    if (type(identity) is not dict or _canonical(identity) != _canonical(expected)
+            or not callable(getattr(provider, method, None))):
+        raise ValueError("invalid_provider")
+
+
+def _q4_cell_controls(cell_id, item, bound, memory, records):
+    if (type(item) is not dict or set(item) != {"pointer", "log", "artifacts"}
+            or type(bound) is not dict or type(bound.get("generation")) is not int
+            or bound["generation"] < 0 or not _hex(bound.get("receipt_sha256"))
+            or not set(bound) <= {"generation", "seq", "receipt_sha256", "count"}):
+        raise ValueError("invalid_cell")
+    pointer_bytes, log_bytes, data = item["pointer"], item["log"], item["artifacts"]
+    if (type(pointer_bytes) is not bytes or not 0 < len(pointer_bytes) <= 65536
+            or type(log_bytes) is not bytes or not 0 < len(log_bytes) <= _Q4_ARTIFACT_BYTES
+            or type(data) is not dict
+            or not {"receipt", "index", "meta", "provenance"} <= set(data)
+            or not set(data) <= {"receipt", "index", "meta", "provenance", "vectors"}
+            or any(type(raw) is not bytes for raw in data.values())):
+        raise ValueError("invalid_cell_bytes")
+    data = dict(data)  # Capture immutable bytes before any provider is invoked.
+    pointer = json.loads(pointer_bytes, object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
+    if (type(pointer) is not dict or set(pointer) != {"generation", "seq", "receipt_sha256"}
+            or type(pointer["generation"]) is not int or pointer["generation"] != bound["generation"]
+            or type(pointer["seq"]) is not int or pointer["seq"] < 1
+            or pointer["receipt_sha256"] != bound["receipt_sha256"]):
+        raise ValueError("invalid_cell_pointer")
+    if "seq" in bound and (type(bound["seq"]) is not int or bound["seq"] != pointer["seq"]):
+        raise ValueError("cell_sequence_mismatch")
+    lines = log_bytes.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()
+    if not lines or len(lines) > 100000:
+        raise ValueError("invalid_cell_log")
+    previous = "0" * 64
+    found = None
+    for number, raw in enumerate(lines, 1):
+        line = json.loads(raw, object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
+        if (type(line) is not dict or line.get("schema") != "wd.bridge-mind-hex-cell-log.v1"
+                or type(line.get("seq")) is not int or line["seq"] != number
+                or line.get("prev_line_sha256") != previous):
+            raise ValueError("invalid_cell_log")
+        previous = _sha(raw)
+        if number == pointer["seq"]:
+            found = line
+    if (found is None or type(found.get("generation")) is not int
+            or found["generation"] != pointer["generation"]
+            or found.get("receipt_sha256") != pointer["receipt_sha256"]):
+        raise ValueError("cell_log_binding_mismatch")
+    receipt = _pinned(data["receipt"], bound["receipt_sha256"], limit=1024 * 1024)
+    content = receipt.get("content") if type(receipt) is dict else None
+    if (type(receipt) is not dict or receipt.get("schema") != "wd.bridge-mind-hex-cell.v1"
+            or receipt.get("scope") != memory["scope"] or type(content) is not dict
+            or receipt.get("content_sha256") != _sha(_canonical(content))
+            or content.get("cell_id") != cell_id or type(content.get("count")) is not int
+            or not 0 < content["count"] <= _Q4_MAX_ROWS or content["count"] % 2
+            or type(content.get("dim")) is not int or content["dim"] != _Q4_DIM
+            or content.get("encoder") != memory["encoder"]
+            or content.get("projection_schema") != _COMBINED_SCHEMA
+            or content.get("projection_sha256") != memory["projection_sha256"]
+            or not _hex(content.get("ids_sha256")) or not _hex(content.get("pairs_sha256"))
+            or type(content.get("files")) is not dict):
+        raise ValueError("invalid_cell_receipt")
+    if "count" in bound and (type(bound["count"]) is not int or bound["count"] != content["count"]):
+        raise ValueError("cell_count_mismatch")
+    if content.get("cutoff_utc") != memory.get("cutoff_utc"):
+        raise ValueError("cell_cutoff_mismatch")
+    files = content["files"]
+    if (not {"index", "meta", "provenance"} <= set(files)
+            or not set(files) <= {"index", "meta", "provenance", "vectors"}
+            or any(not _hex(pin) for pin in files.values())
+            or len(data["index"]) > 256 * 1024 * 1024):
+        raise ValueError("invalid_cell_artifacts")
+    for name in ("index", "meta", "provenance", "vectors"):
+        if name in data:
+            if name not in files or not hmac.compare_digest(_sha(data[name]), files[name]):
+                raise ValueError("cell_artifact_mismatch")
+            if name in ("meta", "provenance") and len(data[name]) > _Q4_ARTIFACT_BYTES:
+                raise ValueError("cell_artifact_over_budget")
+    meta = _pinned(data["meta"], files["meta"], limit=_Q4_ARTIFACT_BYTES)
+    count = content["count"]
+    if (type(meta) is not dict or set(meta) != {"dim", "doc_ids", "texts", "metadata"}
+            or type(meta["dim"]) is not int or meta["dim"] != _Q4_DIM
+            or any(type(meta[name]) is not list or len(meta[name]) != count
+                   for name in ("doc_ids", "texts", "metadata"))
+            or any(type(value) is not str for value in meta["doc_ids"])
+            or len(set(meta["doc_ids"])) != count
+            or content["ids_sha256"] != _sha("\n".join(meta["doc_ids"]).encode())
+            or any(type(value) is not dict for value in meta["metadata"])):
+        raise ValueError("invalid_cell_meta")
+    raw_rows = data["provenance"].splitlines()
+    if len(raw_rows) != count:
+        raise ValueError("invalid_cell_rows")
+    rows, seen = [], set()
+    cutoff = _utc(content.get("cutoff_utc"))
+    for position, raw in enumerate(raw_rows):
+        row = json.loads(raw, object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
+        provenance = row.get("provenance") if type(row) is dict else None
+        if (type(row) is not dict or type(provenance) is not dict or row.get("kind") != "event"
+                or row.get("cell_id") != cell_id or row.get("record_id") != meta["doc_ids"][position]
+                or _utc(row.get("time_utc")) >= cutoff):
+            raise ValueError("invalid_cell_row")
+        record_id, view = provenance.get("record"), provenance.get("view")
+        record = records.get(record_id) if type(record_id) is str else None
+        if (record is None or view not in ("w", "d") or (record_id, view) in seen
+                or row["record_id"] != record_id + "#" + view
+                or row["time_utc"] != record["time_utc"]
+                or _Q4_PLACEMENT.get(record["meta"]["type"]) != cell_id
+                or meta["texts"][position] != decode_text(record["stored_text"])
+                or provenance != dict(record["provenance"], record=record_id, view=view,
+                                      ref_kind="sha256_of_projected_metadata", canonical_event=False)):
+            raise ValueError("cell_source_binding_mismatch")
+        seen.add((record_id, view))
+        rows.append((record_id, view))
+    if any((record_id, other) not in seen for record_id, _ in seen for other in ("w", "d")):
+        raise ValueError("cell_view_missing")
+    if "vectors" in data and len(data["vectors"]) != count * _Q4_DIM * 4:
+        raise ValueError("invalid_retained_vectors")
+    return data, content, meta, rows
+
+
+def _q4_vector(raw):
+    import math
+    if len(raw) != _Q4_DIM:
+        raise ValueError("invalid_vector_dimension")
+    vector = []
+    for value in raw:
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError("invalid_vector")
+        vector.append(float(value))
+    norm = math.sqrt(sum(value * value for value in vector))
+    if not math.isfinite(norm) or abs(norm - 1.0) > 0.001:
+        raise ValueError("vector_not_normalized")
+    return tuple(vector)
+
+
+def _q4_decode_cells(captured, provider, records):
+    import struct
+    entries = {}
+    for cell_id, (data, content, meta, rows) in captured.items():
+        index = provider.load(data["index"])
+        if (type(getattr(index, "d", None)) is not int or index.d != _Q4_DIM
+                or type(getattr(index, "ntotal", None)) is not int or index.ntotal != content["count"]
+                or type(getattr(index, "metric_type", None)) is not int or index.metric_type != 0
+                or not callable(getattr(index, "reconstruct_n", None))):
+            raise ValueError("invalid_decoded_index")
+        vectors = index.reconstruct_n(0, content["count"])
+        if len(vectors) != content["count"]:
+            raise ValueError("invalid_decoded_count")
+        pairs = hashlib.sha256()
+        for position, (record_id, view) in enumerate(rows):
+            vector = _q4_vector(vectors[position])
+            raw = struct.pack("<" + "f" * _Q4_DIM, *vector)
+            pairs.update(meta["doc_ids"][position].encode() + b"\x00" + raw)
+            if "vectors" in data and data["vectors"][position * _Q4_DIM * 4:(position + 1) * _Q4_DIM * 4] != raw:
+                raise ValueError("retained_vector_mismatch")
+            entry = entries.setdefault(record_id, {})
+            if view in entry:
+                raise ValueError("duplicate_memory_view")
+            entry[view] = vector
+        if not hmac.compare_digest(pairs.hexdigest(), content["pairs_sha256"]):
+            raise ValueError("decoded_pairs_mismatch")
+    if set(entries) != set(records) or any(set(entry) != {"w", "d"} for entry in entries.values()):
+        raise ValueError("incomplete_memory")
+    return entries
+
+
+def _q4_self_match(query, text):
+    words = _Q4_WORD.findall(query.lower())
+    content = _Q4_WORD.findall(text.lower())
+    if not words:
+        return False
+    if len(words) < 8:
+        return (" " + " ".join(words) + " ") in (" " + " ".join(content) + " ")
+    wanted = {" ".join(words[i:i + 8]) for i in range(len(words) - 7)}
+    stored = {" ".join(content[i:i + 8]) for i in range(len(content) - 7)}
+    return len(wanted & stored) >= 0.5 * len(wanted)
+
+
+def _q4_rank(records, entries, encoder, query, when):
+    import math
+    from collections import Counter
+    ordered = sorted(records)
+    texts = {key: decode_text(records[key]["stored_text"]) for key in ordered}
+    limit = when - dt.timedelta(seconds=1)
+    eligible = []
+    for key in ordered:
+        provenance = records[key]["provenance"]
+        if _utc(provenance["available_utc"]) >= limit or _q4_self_match(query, texts[key]):
+            continue
+        if "valid_until_utc" in provenance and when >= _utc(provenance["valid_until_utc"]):
+            continue
+        eligible.append(key)
+    if len(eligible) <= 3:
+        return []
+    vector = _q4_vector(encoder.query(query))
+    scores = {view: {key: sum(a * b for a, b in zip(entries[key][view], vector))
+                     for key in eligible} for view in ("w", "d")}
+    tokens = {key: Counter(_Q4_TOKEN.findall(texts[key].lower())) for key in ordered}
+    lengths = {key: sum(tokens[key].values()) for key in ordered}
+    average = sum(lengths.values()) / len(ordered)
+    lexical = {key: 0.0 for key in eligible}
+    for token in sorted(set(_Q4_TOKEN.findall(query.lower()))):
+        frequency = sum(token in tokens[key] for key in ordered)
+        if not frequency:
+            continue
+        idf = math.log(1.0 + (len(ordered) - frequency + 0.5) / (frequency + 0.5))
+        for key in eligible:
+            count = tokens[key][token]
+            if count:
+                norm = count + 1.2 * (1.0 - 0.75 + 0.75 * lengths[key] / average)
+                lexical[key] += idf * count * 2.2 / norm
+    scores["b"] = lexical
+    ranks = {}
+    for view, values in scores.items():
+        ranks[view] = {key: number for number, key in enumerate(
+            sorted(eligible, key=lambda key: (-values[key], key)), 1)}
+        if view == "b":
+            for key in eligible:
+                if values[key] <= 0.0:
+                    ranks[view][key] = max(len(eligible), 3) + 1
+    agreed = [key for key in eligible if all(ranks[view][key] <= 3 for view in ("w", "d", "b"))]
+    return sorted(agreed, key=lambda key: (
+        -sum(1.0 / (60 + ranks[view][key]) for view in ("w", "d", "b")), key))[:3]
+
+
+def _query_content_snapshot(values):
+    descriptor, memory, encoder_binding, index_binding = _q4_controls(values)
+    snapshot = {key: values[key] for key in _Q4_SOURCE_KEYS}
+    projection, context, initial_report = _verified(snapshot)
+    record_list = projection["messages"]["records"]
+    records = {record["record_id"]: record for record in record_list}
+    if not records or len(records) != len(record_list) or len(records) * 2 > _Q4_MAX_ROWS:
+        raise ValueError("invalid_memory_record_count")
+    if (type(memory.get("records")) is not int or memory["records"] != len(records)
+            or memory.get("views") != ["w", "d"] or memory.get("independent_views") is not False
+            or memory.get("cutoff_utc") != max(record["available_utc"] for record in record_list)):
+        raise ValueError("memory_record_binding_mismatch")
+    captured, total = {}, len(values["memory_bytes"]) + len(values["projection_bytes"])
+    for cell_id in sorted(memory["cells"]):
+        item = values["cell_snapshots"][cell_id]
+        # All cells' bounded controls, bytes, hashes and source metadata are
+        # checked before the separate decoder loop or any query input read.
+        data, content, meta, rows = _q4_cell_controls(cell_id, item, memory["cells"][cell_id], memory, records)
+        total += len(item["pointer"]) + len(item["log"]) + sum(map(len, data.values()))
+        if total > _Q4_TOTAL_BYTES:
+            raise ValueError("memory_over_budget")
+        captured[cell_id] = data, content, meta, rows
+    pairs = [pair for _, _, _, rows in captured.values() for pair in rows]
+    expected_pairs = {(key, view) for key in records for view in ("w", "d")}
+    if len(pairs) != len(expected_pairs) or set(pairs) != expected_pairs:
+        raise ValueError("incomplete_memory")
+    encoder, index_provider = values["encoder_provider"], values["index_provider"]
+    _q4_provider_identity(encoder, encoder_binding, "query")
+    _q4_provider_identity(index_provider, index_binding, "load")
+    entries = _q4_decode_cells(captured, index_provider, records)
+    raw = values["stream"].read(65537)
+    if type(raw) is not bytes or not 0 < len(raw) <= 65536:
+        raise ValueError("invalid_query_bytes")
+    query = json.loads(raw, object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
+    if (type(query) is not dict or set(query) != {"situation", "time"}
+            or type(query["situation"]) is not str or not query["situation"].strip()
+            or len(query["situation"]) > 4000):
+        raise ValueError("invalid_query")
+    when = _utc(query["time"])
+    selected = _q4_rank(records, entries, encoder, query["situation"], when)
+    hits = [{"ref_sha256": _sha(records[key]["provenance"]["event_ref"].encode()),
+             "doc_id_sha256": _sha(key.encode()), "ref_kind": "sha256_of_projected_metadata",
+             "canonical_event": False} for key in selected]
+    resolved = resolve_content_results(hits, query["time"], **snapshot)
+    _, _, final_report = _verified(snapshot)
+    if initial_report != final_report:
+        raise ValueError("source_changed")
+    _q4_provider_identity(encoder, encoder_binding, "query")
+    _q4_provider_identity(index_provider, index_binding, "load")
+    output = {"schema": "wd.q4-content-snapshot-query.v2", "status": "ANSWER" if resolved else "ABSTAIN",
+        "rule": "q4-rule-v1.2", "results": resolved, "binding": {
+            "descriptor_sha256": values["descriptor_sha256"], "memory_sha256": values["memory_sha256"],
+            "projection_sha256": values["projection_sha256"], "encoder_sha256": values["encoder_sha256"],
+            "encoder_binding_sha256": values["encoder_binding_sha256"],
+            "index_binding_sha256": values["index_binding_sha256"], "policy_sha256": values["policy_sha256"],
+            "roster_sha256": values["roster_sha256"], "decision_sha256": values["decision_sha256"],
+            "approved_tasks_sha256": _RELEASE_TASK_LIST_SHA256},
+        "authority": "none", "publisher_authentication": "UNKNOWN", "provider_authentication": "UNKNOWN",
+        "source_filter_attestation": "UNKNOWN", "freshness": "UNKNOWN", "same_user_aba": "UNKNOWN"}
+    if len(_canonical(output)) > 1024 * 1024:
+        raise ValueError("query_output_over_budget")
+    return output
+
+
+def query_content_snapshot(**inputs):
+    """Explicit frozen query; no provider construction, native import or writes.
+
+    This implements the mathematical Q4 v1.2 rule over verified index-provider
+    reconstructions, using Python scalar arithmetic. Native float32 numerical
+    parity, actual provider/code/assets authenticity, isolation and deployment
+    remain unproven. Metadata identity is not authentication. The caller must
+    supply only independently authorized providers and runtime inputs. Provider
+    methods are synchronous; the caller owns external deadlines and memory
+    controls. This API installs no process watchdog.
+    """
+    output = None
+    succeeded = False
+    try:
+        output = _query_content_snapshot(inputs)
+        succeeded = True
+    except Exception:
+        pass
+    inputs = None
+    if not succeeded:
+        output = None
         _deny()
     return output
 

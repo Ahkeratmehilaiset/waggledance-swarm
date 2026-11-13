@@ -35,7 +35,7 @@ def test_candidate_fleet_has_one_common_enabled_read_mode_for_five_lanes():
     assert len(set(identifiers)) == 5
 
 
-def test_absent_publication_refuses_for_all_synthetic_lanes(tmp_path, monkeypatch, capsys):
+def test_absent_publication_returns_direct_status_for_all_synthetic_lanes(tmp_path, monkeypatch, capsys):
     # Only the intended mode is copied. Fleet paths, roster and publication
     # bytes here are synthetic, not copied from the installed configuration.
     mode = json.loads(FLEET.read_text(encoding="utf-8"))["mind_read"]
@@ -52,11 +52,18 @@ def test_absent_publication_refuses_for_all_synthetic_lanes(tmp_path, monkeypatc
     raw = json.dumps(synthetic, sort_keys=True).encode("utf-8")
     fleet = tmp_path / "synthetic-fleet.json"
     fleet.write_bytes(raw)
+    # Track both directory entries and bytes to catch any writer or pointer creation.
+    def runtime_snapshot():
+        return {str(path.relative_to(runtime)): path.read_bytes() if path.is_file() else None
+                for path in runtime.rglob("*")}
+
+    before = runtime_snapshot()
+    fleet_hash = hashlib.sha256(raw).hexdigest()
     system_root = os.environ["SystemRoot"]
     env = {"SystemRoot": system_root, "WINDIR": system_root, "PATH": str(Path(system_root) / "System32"),
            "TEMP": str(tmp_path), "TMP": str(tmp_path), "USERPROFILE": str(tmp_path),
            "WD_TEST_HELPER": str(HELPER), "WD_TEST_FLEET": str(fleet),
-           "WD_TEST_DIGEST": hashlib.sha256(raw).hexdigest()}
+           "WD_TEST_DIGEST": fleet_hash}
     script = r'''
 $ErrorActionPreference='Stop'
 . $env:WD_TEST_HELPER
@@ -69,6 +76,7 @@ ConvertTo-Json -InputObject $value -Compress
     assert process.returncode == 0 and not process.stderr, process.stderr
     derived = json.loads(process.stdout)
     assert derived["WD_MIND_READ_ENABLED"] == "1"
+    assert derived["WD_MIND_FLEET_SHA256"] == fleet_hash
     assert Path(derived["WD_MIND_LATEST"]) == audit / "mind-live" / "latest.json"
     assert not Path(derived["WD_MIND_LATEST"]).exists()
     for key, value in derived.items():
@@ -79,8 +87,20 @@ ConvertTo-Json -InputObject $value -Compress
     for agent in LANES:
         monkeypatch.setenv("AGENT_BRIDGE_AGENT", agent)
         monkeypatch.setenv("AGENT_BRIDGE_AGENT_UUID", UUIDS[agent])
-        assert session.main(args) == 2
+        assert session.main(args) == 0
         captured = capsys.readouterr()
-        assert not captured.out
-        assert json.loads(captured.err)["error"] == "pointer_invalid"
-    assert fleet.read_bytes() == raw and not Path(derived["WD_MIND_LATEST"]).exists()
+        assert not captured.err
+        result = json.loads(captured.out)
+        assert set(result) == {"schema", "authority", "scope", "lane", "fleet_sha256", "coverage",
+                               "generation", "continuity", "sender_authentication", "as_of_utc",
+                               "observation_status", "facts"}
+        assert result["schema"] == "wd.mind-direct-status.v1"
+        assert result["authority"] == "none" and result["scope"] == "bounded_bridge_status_not_gate"
+        assert result["lane"] == agent and result["fleet_sha256"] == fleet_hash
+        assert result["coverage"] == "bounded_tail"
+        assert result["generation"] == result["continuity"] == result["sender_authentication"] == "UNKNOWN"
+        # The lone heartbeat has no roster-bound identity and is not a fact.
+        assert result["facts"] == []
+        assert result["observation_status"] == "UNKNOWN"
+    assert fleet.read_bytes() == raw and runtime_snapshot() == before
+    assert not Path(derived["WD_MIND_LATEST"]).exists()

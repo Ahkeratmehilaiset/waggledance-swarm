@@ -62,6 +62,56 @@ function Invoke-WdMindStartupRead {
              ($Integer -or $Value -isnot [double])) -or $Value -lt 0 -or
             [double]::IsNaN([double]$Value) -or [double]::IsInfinity([double]$Value)) { throw 'shape' }
     }
+    function Assert-WdMindDirectStatus($View, [string] $ExpectedLane, [string] $FleetHash, $Fleet) {
+        # This is a separate observational schema; it cannot impersonate a
+        # verified publication or carry free-form event bodies into prompts.
+        Assert-WdMindObject $View @('schema','authority','scope','lane','fleet_sha256','coverage','generation','continuity','sender_authentication','as_of_utc','observation_status','facts')
+        foreach ($name in @('schema','authority','scope','lane','fleet_sha256','coverage','generation','continuity','sender_authentication','as_of_utc','observation_status')) {
+            if ($View.PSObject.Properties[$name].Value -isnot [string]) { throw 'shape' }
+        }
+        if ($View.schema -cne 'wd.mind-direct-status.v1' -or $View.authority -cne 'none' -or
+            $View.scope -cne 'bounded_bridge_status_not_gate' -or $View.lane -cne $ExpectedLane -or
+            $View.fleet_sha256 -cne $FleetHash -or $View.coverage -cne 'bounded_tail' -or
+            $View.generation -cne 'UNKNOWN' -or $View.continuity -cne 'UNKNOWN' -or
+            $View.sender_authentication -cne 'UNKNOWN' -or
+            $View.facts -isnot [array] -or $View.facts.Count -gt 1) { throw 'shape' }
+        Assert-WdMindString $View.fleet_sha256 '\A[0-9a-f]{64}\z'
+        Assert-WdMindString $View.as_of_utc '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z\z'
+        $asOf=[DateTimeOffset]::MinValue
+        if (-not [DateTimeOffset]::TryParse($View.as_of_utc, [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::None, [ref]$asOf) -or $asOf.Offset -ne [TimeSpan]::Zero) { throw 'shape' }
+        if (@('OBSERVED','UNKNOWN') -cnotcontains $View.observation_status -or
+            ($View.facts.Count -eq 0 -and $View.observation_status -cne 'UNKNOWN')) { throw 'shape' }
+        if ($Fleet -isnot [pscustomobject] -or $Fleet.lanes -isnot [array] -or
+            $Fleet.tools_supervisor -isnot [pscustomobject]) { throw 'shape' }
+        $knownLanes=@('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')
+        $roster=@($Fleet.lanes) + @($Fleet.tools_supervisor)
+        $agents=@()
+        foreach ($entry in $roster) {
+            if ($entry -isnot [pscustomobject] -or $entry.agent -isnot [string] -or
+                $knownLanes -cnotcontains $entry.agent -or $agents -ccontains $entry.agent) { throw 'shape' }
+            $agents+=@($entry.agent)
+        }
+        if ($agents.Count -ne $knownLanes.Count -or $agents -cnotcontains $ExpectedLane) { throw 'shape' }
+        foreach ($fact in $View.facts) {
+            Assert-WdMindObject $fact @('agent','event_type','observed_utc','event_ref','age_seconds')
+            foreach ($name in @('agent','event_type','observed_utc','event_ref')) {
+                if ($fact.PSObject.Properties[$name].Value -isnot [string]) { throw 'shape' }
+            }
+            if ($fact.agent -cne $ExpectedLane -or $agents -cnotcontains $fact.agent -or
+                @('heartbeat','liveness') -cnotcontains $fact.event_type) { throw 'shape' }
+            Assert-WdMindString $fact.observed_utc '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,7})?(?:Z|\+00:00)\z'
+            $observed=[DateTimeOffset]::MinValue
+            if (-not [DateTimeOffset]::TryParse($fact.observed_utc, [Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::None, [ref]$observed) -or $observed.Offset -ne [TimeSpan]::Zero) { throw 'shape' }
+            Assert-WdMindString $fact.event_ref '\A[0-9a-f]{64}\z'
+            Assert-WdMindNumber $fact.age_seconds -Integer
+            $calculatedAge=($asOf-$observed).TotalSeconds
+            if ($calculatedAge -lt 0 -or [Math]::Abs($calculatedAge-[double]$fact.age_seconds) -gt 1 -or
+                ($calculatedAge -le 900 -and $View.observation_status -cne 'OBSERVED') -or
+                ($calculatedAge -gt 900 -and $View.observation_status -cne 'UNKNOWN')) { throw 'shape' }
+        }
+    }
     function Assert-WdMindNestedView($View) {
         $lanes=@('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')
         $identity='\A(?:windows-v1:[0-9a-f]{8}:[0-9a-f]{16}|posix-v1:[0-9a-f]{1,16}:[0-9a-f]{1,16})\z'
@@ -285,8 +335,19 @@ function Invoke-WdMindStartupRead {
                     $jsonArgs=@{InputObject=$json;ErrorAction='Stop'}
                     if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonArgs.DateKind='String' }
                     $view=ConvertFrom-Json @jsonArgs
+                    if ($view -isnot [pscustomobject]) { throw 'shape' }
+                    if ($view.PSObject.Properties['schema'] -and $view.schema -ceq 'wd.mind-direct-status.v1') {
+                        $fleet = $snapshots['wd-fleet.json'].Text | ConvertFrom-Json -ErrorAction Stop
+                        Assert-WdMindDirectStatus $view $Lane $snapshots['wd-fleet.json'].Hash $fleet
+                    } else {
                     $keys=@('schema','authority','scope','lane','as_of_utc','binding','pointer','freshness',
                         'identity','source','lanes','prs','refusal')
+                    $extraKeys=@('fleet_sha256','source_event_refs','status_observation')
+                    $presentExtra=@($extraKeys | Where-Object { $null -ne $view.PSObject.Properties[$_] })
+                    if ($presentExtra.Count -ne 0) {
+                        if ($presentExtra.Count -ne $extraKeys.Count) { throw 'shape' }
+                        $keys += $extraKeys
+                    }
                     if ($view -isnot [pscustomobject] -or @($view.PSObject.Properties).Count -ne $keys.Count -or
                         @($view.PSObject.Properties.Name | Where-Object {$_ -cnotin $keys}).Count -ne 0 -or
                         $view.schema -cne 'wd.bridge-mind-lane-read.v1' -or $view.authority -cne 'none' -or
@@ -299,12 +360,26 @@ function Invoke-WdMindStartupRead {
                         if ($view.PSObject.Properties[$name].Value -isnot [pscustomobject]) { throw 'shape' }
                     }
                     Assert-WdMindNestedView $view
+                    if ($presentExtra.Count -ne 0) {
+                        $fleet = $snapshots['wd-fleet.json'].Text | ConvertFrom-Json -ErrorAction Stop
+                        Assert-WdMindDirectStatus $view.status_observation $Lane $snapshots['wd-fleet.json'].Hash $fleet
+                        $nestedRefs=@($view.status_observation.facts | ForEach-Object { $_.event_ref })
+                        if ($view.fleet_sha256 -isnot [string] -or
+                            $view.fleet_sha256 -cne $view.status_observation.fleet_sha256 -or
+                            $view.source_event_refs -isnot [array] -or
+                            $view.source_event_refs.Count -ne $nestedRefs.Count) { throw 'shape' }
+                        for ($i=0; $i -lt $nestedRefs.Count; $i++) {
+                            if ($view.source_event_refs[$i] -isnot [string] -or
+                                $view.source_event_refs[$i] -cne $nestedRefs[$i]) { throw 'shape' }
+                        }
+                    }
                     $age=$view.freshness.age_seconds;$maxAge=$view.freshness.max_age_seconds
                     if (($age -isnot [int] -and $age -isnot [long] -and $age -isnot [double]) -or
                         ($maxAge -isnot [int] -and $maxAge -isnot [long] -and $maxAge -isnot [double]) -or
                         $view.freshness.status -cne 'fresh' -or $age -lt 0 -or $maxAge -le 0 -or
                         $maxAge -gt 900 -or $age -gt $maxAge -or [double]::IsNaN([double]$age) -or
                         [double]::IsNaN([double]$maxAge)) { throw 'shape' }
+                    }
                     # Forward only the validated object. The original text can
                     # retain duplicate members that the parser already discarded.
                     $json=ConvertTo-Json -InputObject $view -Depth 16 -Compress
@@ -333,6 +408,15 @@ function Invoke-WdMindStartupRead {
             $record=[ordered]@{schema=$result.schema;lane=$Lane;outcome=$result.outcome;reason=$result.reason;
                 authority='none';view_sha256=$result.view_sha256;cleanup=$result.cleanup;
                 manifest_sha256=$ExpectedManifestHash.ToLowerInvariant();observed_utc=[DateTime]::UtcNow.ToString('o')}
+            if ($result.outcome -ceq 'success' -and $view.schema -ceq 'wd.mind-direct-status.v1') {
+                $record.fleet_sha256=$view.fleet_sha256
+                $record.source_event_refs=@($view.facts | ForEach-Object { $_.event_ref })
+                $record.observation_status=$view.observation_status
+            } elseif ($result.outcome -ceq 'success' -and $null -ne $view.PSObject.Properties['status_observation']) {
+                $record.fleet_sha256=$view.fleet_sha256
+                $record.source_event_refs=@($view.source_event_refs)
+                $record.observation_status=$view.status_observation.observation_status
+            }
             $temp=$path+'.'+[Guid]::NewGuid().ToString('N')+'.tmp'
             $stream=[IO.File]::Open($temp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
             try {

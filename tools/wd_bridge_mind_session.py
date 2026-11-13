@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: BUSL-1.1
-"""Read an existing Mind publication for the current agent session.
+"""Read session status from a Mind publication or an in-memory bridge observation.
 
 This command does not start or install a producer and cannot authenticate an
 agent. The compact cursor is read by this invocation from the session's bridge
 root. The fleet hash is caller supplied and is not an authority check.
-Only the lane reader's allowlisted projection is printed.  Any refusal is a
-fixed token, never raw input, paths, capture rows, or a partial projection.
+Only allowlisted projections are printed. Heartbeat or bootstrap-liveness
+references in the optional status observation identify those events alone, not the
+publication's other facts. Any refusal is a fixed token, never raw input,
+paths, capture rows, or a partial projection.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 
 try:
@@ -27,6 +30,8 @@ except ImportError:
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _FLEET_LIMIT = 1024 * 1024
+_DIRECT_TAIL_ROWS = 5000
+_UTC_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?Z\Z")
 
 
 def _bounded_json(path: Path, limit: int) -> tuple[object, bytes]:
@@ -60,6 +65,84 @@ def _fleet_roster(path: Path, expected_sha256: str) -> dict[str, str]:
     if set(roster) != set(lane_reader.LANES):
         raise ValueError("fleet_invalid")
     return roster
+
+
+def _latest_missing(path: Path, audit_root: Path) -> bool:
+    """Only absence selects direct status; inaccessible or broken links do not."""
+    path, root = Path(path).absolute(), Path(audit_root).absolute()
+    if (".." in path.parts or ".." in root.parts or root.name != ".codex-audit"
+            or path == root or not path.is_relative_to(root) or not root.is_dir()):
+        raise ValueError("audit_path_refused")
+    missing = False
+    for component in (path, *path.parents):
+        try:
+            info = component.lstat()
+        except FileNotFoundError:
+            if component == root:
+                raise ValueError("audit_path_refused") from None
+            missing = True
+        else:
+            reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            if stat.S_ISLNK(info.st_mode) or reparse:
+                raise ValueError("audit_path_refused")
+        if component == root:
+            break
+    return missing
+
+
+def _direct_status(*, rows: list, agent: str, roster: dict[str, str],
+                   fleet_sha256: str, as_of: datetime) -> dict:
+    """Select the latest own-lane heartbeat or bootstrap liveness without its body.
+
+    The bounded tail and roster UUID are observations, not completeness,
+    rotation continuity, current liveness, or sender authentication.
+    """
+    as_of = as_of.astimezone(timezone.utc)
+    selected = None
+    for row in rows:
+        if (not isinstance(row, dict) or row.get("type") not in {"heartbeat", "liveness"}
+                or row.get("agent") != agent or not isinstance(row.get("agent_uuid"), str)
+                or row["agent_uuid"].lower() != roster[agent].lower()
+                or row.get("to") not in (None, "", [])):
+            continue
+        if row["type"] == "liveness":
+            task = row.get("task_id")
+            if (not isinstance(task, str) or not re.fullmatch(
+                    re.escape(agent) + r"-session-bootstrap-\d{4}-\d{2}-\d{2}", task)):
+                continue
+        timestamp = row.get("ts_utc")
+        if not isinstance(timestamp, str) or not _UTC_TIMESTAMP.fullmatch(timestamp):
+            continue
+        try:
+            observed = datetime.fromisoformat(timestamp[:-1] + "+00:00")
+        except ValueError:
+            continue
+        # Windows bridge timestamps can carry a seventh fractional digit.
+        # datetime truncates it, so preserve the extra 100ns for freshness and
+        # ordering rather than rounding a stale observation into the window.
+        fraction = timestamp[:-1].partition(".")[2]
+        extra_tick = int(fraction[6]) if len(fraction) == 7 else 0
+        age = as_of - observed
+        age_ticks = ((age.days * 86400 + age.seconds) * 10000000
+                     + age.microseconds * 10 - extra_tick)
+        if age_ticks < 0:
+            continue
+        if selected is None or age_ticks <= selected[0]:
+            selected = (age_ticks, row, timestamp)
+    facts = []
+    observation_status = "UNKNOWN"
+    if selected is not None:
+        age_ticks, row, timestamp = selected
+        age_seconds = age_ticks // 10000000
+        observation_status = "OBSERVED" if age_ticks <= 900 * 10000000 else "UNKNOWN"
+        facts.append({"agent": agent, "event_type": row["type"], "observed_utc": timestamp,
+                      "event_ref": bridge_compact_view.event_id(row), "age_seconds": age_seconds})
+    return {"schema": "wd.mind-direct-status.v1", "authority": "none",
+            "scope": "bounded_bridge_status_not_gate", "lane": agent,
+            "fleet_sha256": fleet_sha256, "coverage": "bounded_tail",
+            "generation": "UNKNOWN", "continuity": "UNKNOWN",
+            "sender_authentication": "UNKNOWN", "as_of_utc": as_of.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "observation_status": observation_status, "facts": facts}
 
 
 class MindContentSessionRefused(ValueError):
@@ -188,11 +271,27 @@ def main(argv: list[str] | None = None) -> int:
         bridge_root = os.environ.get("AGENT_BRIDGE_RUNTIME_ROOT")
         if not bridge_root or not Path(bridge_root).is_absolute():
             raise ValueError("bridge_root_unavailable")
-        rows, cursor, _ = bridge_compact_view._read_view_rows(Path(bridge_root) / "shared" / "events.jsonl", 1, "")
-        del rows  # Event contents are never returned or written by this command.
-        view = {"schema": lane_reader.VIEW_SCHEMA, "authority": "none", "cursor": cursor}
-        result = lane_reader.lane_read(latest_path=args.latest, audit_root=args.audit_root,
-                                       lane=agent, as_of=datetime.now(timezone.utc), binding=view, roster=roster)
+        log = Path(bridge_root) / "shared" / "events.jsonl"
+        if _latest_missing(args.latest, args.audit_root):
+            rows, _, _ = bridge_compact_view._read_view_rows(log, _DIRECT_TAIL_ROWS, "")
+            now = datetime.now(timezone.utc)
+            result = _direct_status(rows=rows, agent=agent, roster=roster,
+                                    fleet_sha256=args.fleet_sha256.lower(), as_of=now)
+            if not _latest_missing(args.latest, args.audit_root):
+                raise ValueError("pointer_changed")
+        else:
+            rows, cursor, _ = bridge_compact_view._read_view_rows(log, _DIRECT_TAIL_ROWS, "")
+            now = datetime.now(timezone.utc)
+            view = {"schema": lane_reader.VIEW_SCHEMA, "authority": "none", "cursor": cursor}
+            result = lane_reader.lane_read(latest_path=args.latest, audit_root=args.audit_root,
+                                           lane=agent, as_of=now, binding=view, roster=roster)
+            # Keep every publication check above. Attach only the same narrowly
+            # allowlisted independent observation used when no pointer exists.
+            observation = _direct_status(rows=rows, agent=agent, roster=roster,
+                                         fleet_sha256=args.fleet_sha256.lower(), as_of=now)
+            result["fleet_sha256"] = observation["fleet_sha256"]
+            result["source_event_refs"] = [fact["event_ref"] for fact in observation["facts"]]
+            result["status_observation"] = observation
         print(json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=True))
         return 0
     except lane_reader.LaneReadRefused as exc:

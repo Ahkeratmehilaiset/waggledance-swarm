@@ -62,6 +62,52 @@ def _fleet_roster(path: Path, expected_sha256: str) -> dict[str, str]:
     return roster
 
 
+class MindContentSessionRefused(ValueError):
+    """Fixed-token refusal from the opt-in in-process content session boundary."""
+
+
+def query_content_session(*, enabled=False, inputs=None, providers=None):
+    """Read frozen content using explicit caller-owned bindings and providers.
+
+    This API is disabled by default and ignores environment enable flags. It
+    does not change the status CLI, construct providers or select source paths.
+    Inputs are the existing query reader's complete input set except its two
+    providers, supplied separately as an explicit (encoder, index_reader) tuple.
+    That reader retains all source/privacy/provenance/numeric validation.
+
+    Provider identity metadata is not authentication. Callers must independently
+    authorize and establish their provider objects, code/assets and source
+    bindings. Provider callbacks are synchronous; deadlines and isolation remain
+    caller-owned. This seam alone neither activates a runtime nor delivers
+    context to a live agent. There is no write, cache, retry or fallback path.
+    """
+    output, values = None, None
+    succeeded = False
+    try:
+        if (enabled is not True or type(inputs) is not dict
+                or inputs.get("enabled") is not True
+                or type(providers) is not tuple or len(providers) != 2
+                or providers[0] is None or providers[1] is None):
+            raise ValueError("invalid_content_session_inputs")
+        # Lazy import keeps the existing status-only startup path unchanged.
+        from tools import wd_mind_content_query_readonly as content_reader
+        required = content_reader._Q4_KEYS - {"encoder_provider", "index_provider"}
+        if len(inputs) != len(required) or set(inputs) != required:
+            raise ValueError("incomplete_content_session_inputs")
+        values = dict(inputs)
+        values["encoder_provider"], values["index_provider"] = providers
+        output = content_reader.query_content_snapshot(**values)
+        succeeded = True
+    except Exception:
+        pass
+    inputs = providers = values = None
+    if not succeeded:
+        output = None
+        # Outside except: upstream/private exception details are not chained.
+        raise MindContentSessionRefused("mind_session_content_refused") from None
+    return output
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--latest", required=True, type=Path)

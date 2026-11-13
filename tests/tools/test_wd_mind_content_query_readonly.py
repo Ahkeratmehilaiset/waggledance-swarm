@@ -1172,3 +1172,429 @@ def test_semantic_preflight_rejects_other_schema_domains(reader, tmp_path, locat
         _semantic_schema_preflight(reader, case, location, schema)
     assert case["stream"].reads == 0
     assert not case["encoder_provider"].calls and not case["index_provider"].calls
+
+
+# Provider ABI class contract: fake float32 objects only; no NumPy/native/model.
+import struct as _provider_struct
+
+
+def _provider_f32(value):
+    return _provider_struct.unpack("<f", _provider_struct.pack("<f", value))[0]
+
+
+class _ProviderDtype:
+    def __init__(self, text="<f4"):
+        self.str = text
+
+
+class _ProviderScalar32:
+    def __init__(self, value):
+        self.value = _provider_f32(value)
+        self.dtype = _ProviderDtype()
+        self.shape = ()
+
+    def item(self):
+        return self.value
+
+    def tobytes(self):
+        return _provider_struct.pack("<f", self.value)
+
+    def __float__(self):
+        raise AssertionError("generic float coercion must never run")
+
+
+class _ProviderArray32:
+    def __init__(self, values, *, matrix=False):
+        self.matrix = matrix
+        self.values = (tuple(tuple(_provider_f32(v) for v in row) for row in values) if matrix
+                       else tuple(_provider_f32(v) for v in values))
+        self.shape = ((len(self.values), len(self.values[0]) if self.values else SEMANTIC_DIM) if matrix
+                      else (len(self.values),))
+        self.dtype = _ProviderDtype()
+        self.bytes_override = None
+        self.calls = []
+
+    def tolist(self):
+        self.calls.append("tolist")
+        return [list(row) for row in self.values] if self.matrix else list(self.values)
+
+    def tobytes(self):
+        self.calls.append("tobytes")
+        if self.bytes_override is not None:
+            return self.bytes_override
+        flat = [v for row in self.values for v in row] if self.matrix else self.values
+        return _provider_struct.pack("<" + "f" * len(flat), *flat)
+
+
+def _provider_surface(values, mode, *, matrix=False):
+    if mode == "array":
+        return _ProviderArray32(values, matrix=matrix)
+    if mode == "scalars":
+        return (tuple(tuple(_ProviderScalar32(v) for v in row) for row in values) if matrix
+                else tuple(_ProviderScalar32(v) for v in values))
+    return values
+
+
+class _ProviderNativeEncoder:
+    def __init__(self, mode):
+        self.vector = (1.0,) + (0.0,) * (SEMANTIC_DIM - 1)
+        self.mode = mode
+        self.result = None
+        self.error = None
+        self.calls = []
+
+    def query(self, text):
+        self.calls.append(text)
+        if self.error is not None:
+            raise self.error
+        return self.result if self.result is not None else _provider_surface(self.vector, self.mode)
+
+
+class _ProviderNativeIndex:
+    metric_type = 0
+
+    def __init__(self, rows, mode):
+        self.d = SEMANTIC_DIM
+        self.ntotal = len(rows)
+        self.rows = rows
+        self.mode = mode
+        self.result = None
+        self.error = None
+        self.calls = []
+
+    def reconstruct_n(self, start, count):
+        self.calls.append((start, count))
+        if self.error is not None:
+            raise self.error
+        return self.result if self.result is not None else _provider_surface(
+            self.rows[start:start + count], self.mode, matrix=True)
+
+
+def _provider_objects(case, mode="array"):
+    encoder = _ProviderNativeEncoder(mode)
+    state = {"calls": [], "indices": [], "on_decode": None, "error": None}
+    vectors = case["index_provider"].indices
+
+    def decode(raw):
+        state["calls"].append(raw)
+        if state["error"] is not None:
+            raise state["error"]
+        index = _ProviderNativeIndex(vectors[raw], mode)
+        state["indices"].append(index)
+        if state["on_decode"] is not None:
+            state["on_decode"](index)
+        return index
+
+    return encoder, decode, state
+
+
+def _provider_arguments(case, encoder, decode):
+    return dict(encoder=encoder, index_decoder=decode,
+        encoder_binding_bytes=case["encoder_binding_bytes"],
+        encoder_binding_sha256=case["encoder_binding_sha256"],
+        index_binding_bytes=case["index_binding_bytes"],
+        index_binding_sha256=case["index_binding_sha256"],
+        index_sha256s=tuple(_sha(cell["artifacts"]["index"]) for cell in case["cell_snapshots"].values()))
+
+
+def _provider_adapt(reader, arguments):
+    entry = getattr(reader, "adapt_readonly_providers", None)
+    assert callable(entry), "read-only native provider ABI adapter is not implemented"
+    result = entry(**arguments)
+    assert type(result) is tuple and len(result) == 2
+    return result
+
+
+def test_provider_adapter_fixture_is_float32_bit_exact():
+    values = (0.6, 0.8, -0.0) + (0.0,) * (SEMANTIC_DIM - 3)
+    raw = _provider_struct.pack("<" + "f" * SEMANTIC_DIM, *values)
+    array = _ProviderArray32(values)
+    assert array.tobytes() == raw
+    assert _provider_struct.pack("<" + "f" * SEMANTIC_DIM, *array.tolist()) == raw
+    scalar = _ProviderScalar32(0.6)
+    assert scalar.item() != 0.6
+    assert _provider_struct.pack("<f", scalar.item()) == scalar.tobytes()
+
+
+@pytest.mark.parametrize("mode", ["array", "scalars", "plain"])
+def test_provider_adapter_queries_frozen_sources_with_all_numeric_surfaces(reader, tmp_path, mode):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, state = _provider_objects(case, mode)
+    args = _provider_arguments(case, encoder, decode)
+    case["encoder_provider"], case["index_provider"] = _provider_adapt(reader, args)
+    assert encoder.calls == [] and state["calls"] == []
+    out = _semantic_entry(reader, case)
+    assert out["status"] == "ANSWER" and out["results"]
+    assert out["provider_authentication"] == "UNKNOWN"
+    assert encoder.calls == ["retry network outage"]
+    assert len(state["calls"]) == len(case["cell_snapshots"])
+    assert all(type(raw) is bytes for raw in state["calls"])
+
+
+@pytest.mark.parametrize("mode", ["array", "scalars"])
+def test_provider_adapter_preserves_nontrivial_float32_and_negative_zero(reader, tmp_path, mode):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, _ = _provider_objects(case, mode)
+    encoder.vector = (0.6, 0.8, -0.0) + (0.0,) * (SEMANTIC_DIM - 3)
+    wrapped, _ = _provider_adapt(reader, _provider_arguments(case, encoder, decode))
+    out = wrapped.query("synthetic bounded query")
+    assert type(out) is tuple and all(type(v) is float for v in out)
+    assert _provider_struct.pack("<" + "f" * SEMANTIC_DIM, *out) == _provider_struct.pack(
+        "<" + "f" * SEMANTIC_DIM, *encoder.vector)
+
+
+@pytest.mark.parametrize("direction", ["encoder", "index"])
+@pytest.mark.parametrize("dtype", ["<f8", ">f4", "<i4", "|O"])
+def test_provider_adapter_rejects_other_numeric_formats(reader, tmp_path, direction, dtype):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, state = _provider_objects(case)
+    wrapped, loader = _provider_adapt(reader, _provider_arguments(case, encoder, decode))
+    if direction == "encoder":
+        raw = _ProviderArray32(encoder.vector)
+        raw.dtype.str = dtype
+        encoder.result = raw
+        _refused(reader, lambda: wrapped.query("synthetic query"))
+    else:
+        state["on_decode"] = lambda index: setattr(index, "result", _ProviderArray32(index.rows, matrix=True))
+        index = loader.load(next(iter(case["index_provider"].indices)))
+        raw = state["indices"][-1].result
+        raw.dtype.str = dtype
+        _refused(reader, lambda: index.reconstruct_n(0, index.ntotal))
+    assert raw.calls == []
+
+
+@pytest.mark.parametrize("direction", ["encoder", "index"])
+@pytest.mark.parametrize("fault", ["shape", "short_bytes", "different_bits"])
+def test_provider_adapter_checks_float32_shape_and_bytes(reader, tmp_path, direction, fault):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, state = _provider_objects(case)
+    wrapped, loader = _provider_adapt(reader, _provider_arguments(case, encoder, decode))
+    if direction == "encoder":
+        raw = _ProviderArray32(encoder.vector)
+        encoder.result = raw
+        action = lambda: wrapped.query("synthetic query")
+    else:
+        state["on_decode"] = lambda index: setattr(index, "result", _ProviderArray32(index.rows, matrix=True))
+        index = loader.load(next(iter(case["index_provider"].indices)))
+        raw = state["indices"][-1].result
+        action = lambda: index.reconstruct_n(0, index.ntotal)
+    if fault == "shape":
+        raw.shape = (1,)
+    else:
+        data = raw.tobytes()
+        raw.bytes_override = data[:-1] if fault == "short_bytes" else bytes([data[0] ^ 1]) + data[1:]
+        raw.calls.clear()
+    _refused(reader, action)
+
+
+@pytest.mark.parametrize("fault", ["short", "long", "nan", "inf", "zero", "norm", "bool"])
+def test_provider_adapter_retains_vector_numeric_bounds(reader, tmp_path, fault):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, _ = _provider_objects(case, "plain")
+    wrapped, _ = _provider_adapt(reader, _provider_arguments(case, encoder, decode))
+    value = list(encoder.vector)
+    if fault == "short":
+        value.pop()
+    elif fault == "long":
+        value.append(0.0)
+    elif fault == "zero":
+        value = [0.0] * SEMANTIC_DIM
+    else:
+        value[0] = {"nan": float("nan"), "inf": float("inf"), "norm": 2.0, "bool": True}[fault]
+    encoder.result = value
+    _refused(reader, lambda: wrapped.query("synthetic query"))
+
+
+@pytest.mark.parametrize("raw", [b"", b"not-approved", bytearray(b"x"), memoryview(b"x")])
+def test_provider_adapter_rejects_unverified_index_before_decoder(reader, tmp_path, raw):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, state = _provider_objects(case)
+    _, loader = _provider_adapt(reader, _provider_arguments(case, encoder, decode))
+    _refused(reader, lambda: loader.load(raw))
+    assert state["calls"] == []
+
+
+@pytest.mark.parametrize("fault", ["encoder_pin", "index_pin", "encoder_extra", "model", "prefix",
+                                  "index_type", "metric_bool", "empty_index_pins", "bad_index_pin"])
+def test_provider_adapter_factory_is_closed_before_any_callback(reader, tmp_path, fault):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, state = _provider_objects(case)
+    arguments = _provider_arguments(case, encoder, decode)
+    if fault.endswith("_pin") and fault in ("encoder_pin", "index_pin"):
+        arguments[fault.removesuffix("_pin") + "_binding_sha256"] = "f" * 64
+    elif fault in ("empty_index_pins", "bad_index_pin"):
+        arguments["index_sha256s"] = () if fault == "empty_index_pins" else ("bad",)
+    else:
+        role = "encoder" if fault in ("encoder_extra", "model", "prefix") else "index"
+        value = json.loads(arguments[role + "_binding_bytes"])
+        if fault == "encoder_extra":
+            value["unexpected"] = True
+        elif fault == "model":
+            value["encoder"]["model"] = "other"
+        elif fault == "prefix":
+            value["query_policy"]["prefix"] = "passage: "
+        elif fault == "index_type":
+            value["index_type"] = "other"
+        else:
+            value["metric_type"] = False
+        arguments[role + "_binding_bytes"] = _raw(value)
+        arguments[role + "_binding_sha256"] = _sha(_raw(value))
+    _refused(reader, lambda: _provider_adapt(reader, arguments))
+    assert encoder.calls == [] and state["calls"] == []
+
+
+@pytest.mark.parametrize("fault", ["dimension", "count", "metric", "matrix_count", "matrix_dimension",
+                                  "dimension_type", "count_type", "metric_bool"])
+def test_provider_adapter_retains_decoded_index_controls_before_query(reader, tmp_path, fault):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, state = _provider_objects(case)
+
+    def change(index):
+        if fault == "dimension":
+            index.d -= 1
+        elif fault == "count":
+            index.ntotal += 1
+        elif fault == "metric":
+            index.metric_type = 1
+        elif fault == "dimension_type":
+            index.d = float(SEMANTIC_DIM)
+        elif fault == "count_type":
+            index.ntotal = float(index.ntotal)
+        elif fault == "metric_bool":
+            index.metric_type = False
+        elif fault == "matrix_count":
+            index.result = _ProviderArray32(index.rows[:-1], matrix=True)
+        else:
+            index.result = _ProviderArray32([row[:-1] for row in index.rows], matrix=True)
+
+    state["on_decode"] = change
+    case["encoder_provider"], case["index_provider"] = _provider_adapt(
+        reader, _provider_arguments(case, encoder, decode))
+    _refused(reader, lambda: _semantic_entry(reader, case))
+    assert state["calls"] and encoder.calls == []
+
+
+@pytest.mark.parametrize("direction", ["encoder", "decoder"])
+def test_provider_adapter_contains_underlying_exception_without_echo(reader, tmp_path, direction):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, state = _provider_objects(case)
+    wrapped, loader = _provider_adapt(reader, _provider_arguments(case, encoder, decode))
+    error = RuntimeError("synthetic-private-provider-detail")
+    if direction == "encoder":
+        encoder.error = error
+        _refused(reader, lambda: wrapped.query("synthetic query"))
+    else:
+        state["error"] = error
+        _refused(reader, lambda: loader.load(next(iter(case["index_provider"].indices))))
+
+
+def test_provider_adapter_never_coerces_arbitrary_float_like_objects(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, _ = _provider_objects(case, "plain")
+    calls = []
+
+    class FloatLike:
+        def __float__(self):
+            calls.append(True)
+            return 1.0
+
+    wrapped, _ = _provider_adapt(reader, _provider_arguments(case, encoder, decode))
+    encoder.result = [FloatLike()] + [0.0] * (SEMANTIC_DIM - 1)
+    _refused(reader, lambda: wrapped.query("synthetic query"))
+    assert calls == []
+
+
+def test_provider_adapter_identity_is_an_immutable_copy_not_authentication(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, _ = _provider_objects(case)
+    wrapped, loader = _provider_adapt(reader, _provider_arguments(case, encoder, decode))
+    identity = wrapped.identity
+    identity["encoder"]["revision"] = "mutated"
+    assert wrapped.identity == json.loads(case["encoder_binding_bytes"])
+    with pytest.raises((AttributeError, TypeError)):
+        wrapped.identity = identity
+    with pytest.raises((AttributeError, TypeError)):
+        loader.identity = {}
+
+
+def test_provider_adapter_preserves_all_cell_preflight_before_decode(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, state = _provider_objects(case)
+    case["encoder_provider"], case["index_provider"] = _provider_adapt(
+        reader, _provider_arguments(case, encoder, decode))
+    case["cell_snapshots"]["system"]["artifacts"]["index"] += b"tampered"
+    _refused(reader, lambda: _semantic_entry(reader, case))
+    assert state["calls"] == [] and encoder.calls == [] and case["stream"].reads == 0
+
+
+@pytest.mark.parametrize("fault", ["dtype", "shape", "bits", "item_bool"])
+def test_provider_adapter_validates_native_scalar_protocol(reader, tmp_path, fault):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, _ = _provider_objects(case, "scalars")
+    wrapped, _ = _provider_adapt(reader, _provider_arguments(case, encoder, decode))
+    values = [_ProviderScalar32(v) for v in encoder.vector]
+    scalar = values[0]
+    if fault == "dtype":
+        scalar.dtype.str = "<f8"
+    elif fault == "shape":
+        scalar.shape = (1,)
+    elif fault == "bits":
+        scalar.tobytes = lambda: b"\0" * 4
+    else:
+        scalar.value = True
+    encoder.result = values
+    _refused(reader, lambda: wrapped.query("synthetic query"))
+
+
+@pytest.mark.parametrize("fault", ["negative", "count_bool", "start_bool", "too_many", "partial"])
+def test_provider_adapter_reconstruction_is_bounded_before_callback(reader, tmp_path, fault):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, state = _provider_objects(case)
+    _, loader = _provider_adapt(reader, _provider_arguments(case, encoder, decode))
+    index = loader.load(next(iter(case["index_provider"].indices)))
+    start, count = 0, index.ntotal
+    if fault == "negative":
+        start = -1
+    elif fault == "count_bool":
+        count = True
+    elif fault == "start_bool":
+        start = False
+    elif fault == "too_many":
+        count += 1
+    else:
+        count -= 1
+    _refused(reader, lambda: index.reconstruct_n(start, count))
+    assert state["indices"][-1].calls == []
+
+
+@pytest.mark.parametrize("fault", ["bool", "nan", "zero", "norm"])
+def test_provider_adapter_applies_numeric_controls_to_index_rows(reader, tmp_path, fault):
+    case = _semantic_case(reader, tmp_path)
+    encoder, decode, state = _provider_objects(case, "plain")
+
+    def change(index):
+        rows = [list(row) for row in index.rows]
+        if fault == "zero":
+            rows[0] = [0.0] * SEMANTIC_DIM
+        else:
+            rows[0][0] = {"bool": True, "nan": float("nan"), "norm": 2.0}[fault]
+        index.result = rows
+
+    state["on_decode"] = change
+    case["encoder_provider"], case["index_provider"] = _provider_adapt(
+        reader, _provider_arguments(case, encoder, decode))
+    _refused(reader, lambda: _semantic_entry(reader, case))
+    assert state["calls"] and encoder.calls == []
+
+
+def test_provider_adapter_does_not_change_environment_or_input_files(reader, tmp_path):
+    import os
+    case = _semantic_case(reader, tmp_path)
+    before_env = dict(os.environ)
+    before_files = {str(path): _sha(path.read_bytes()) for path in tmp_path.rglob("*") if path.is_file()}
+    encoder, decode, _ = _provider_objects(case)
+    case["encoder_provider"], case["index_provider"] = _provider_adapt(
+        reader, _provider_arguments(case, encoder, decode))
+    assert _semantic_entry(reader, case)["status"] == "ANSWER"
+    assert dict(os.environ) == before_env
+    assert {str(path): _sha(path.read_bytes()) for path in tmp_path.rglob("*") if path.is_file()} == before_files

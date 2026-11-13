@@ -950,6 +950,33 @@ def _q4_identity(value):
     return value
 
 
+def _q4_bindings(encoder_binding, index_binding, identity=None):
+    if type(encoder_binding) is not dict:
+        raise ValueError("invalid_encoder_binding")
+    own_identity = _q4_identity(encoder_binding.get("encoder"))
+    if identity is None:
+        identity = own_identity
+    expected_policy = {"prefix": "query: ", "truncate_chars": 2000, "normalize": True,
+                       "dtype": "float32", "dim": _Q4_DIM}
+    if (type(encoder_binding) is not dict
+            or set(encoder_binding) != {"schema", "encoder", "code_sha256", "query_policy"}
+            or encoder_binding["schema"] != "wd.mind-readonly-encoder-binding.v1"
+            or encoder_binding["encoder"] != identity
+            or not _hex(encoder_binding["code_sha256"])
+            or encoder_binding["query_policy"] != expected_policy
+            or type(encoder_binding["query_policy"]) is not dict
+            or type(encoder_binding["query_policy"].get("normalize")) is not bool
+            or type(encoder_binding["query_policy"].get("dim")) is not int):
+        raise ValueError("invalid_encoder_binding")
+    if (type(index_binding) is not dict
+            or set(index_binding) != {"schema", "index_type", "metric_type", "code_sha256"}
+            or index_binding["schema"] != "wd.mind-readonly-index-binding.v1"
+            or index_binding["index_type"] != "IndexFlatIP"
+            or type(index_binding["metric_type"]) is not int or index_binding["metric_type"] != 0
+            or not _hex(index_binding["code_sha256"])):
+        raise ValueError("invalid_index_binding")
+
+
 def _q4_controls(values):
     if type(values) is not dict or set(values) != _Q4_KEYS or values["enabled"] is not True:
         raise ValueError("invalid_semantic_inputs")
@@ -977,25 +1004,7 @@ def _q4_controls(values):
             or type(values["runtime_revision"]) is not str
             or values["runtime_revision"] != identity["revision"]):
         raise ValueError("encoder_binding_mismatch")
-    expected_policy = {"prefix": "query: ", "truncate_chars": 2000, "normalize": True,
-                       "dtype": "float32", "dim": _Q4_DIM}
-    if (type(encoder_binding) is not dict
-            or set(encoder_binding) != {"schema", "encoder", "code_sha256", "query_policy"}
-            or encoder_binding["schema"] != "wd.mind-readonly-encoder-binding.v1"
-            or encoder_binding["encoder"] != identity
-            or not _hex(encoder_binding["code_sha256"])
-            or encoder_binding["query_policy"] != expected_policy
-            or type(encoder_binding["query_policy"]) is not dict
-            or type(encoder_binding["query_policy"].get("normalize")) is not bool
-            or type(encoder_binding["query_policy"].get("dim")) is not int):
-        raise ValueError("invalid_encoder_binding")
-    if (type(index_binding) is not dict
-            or set(index_binding) != {"schema", "index_type", "metric_type", "code_sha256"}
-            or index_binding["schema"] != "wd.mind-readonly-index-binding.v1"
-            or index_binding["index_type"] != "IndexFlatIP"
-            or type(index_binding["metric_type"]) is not int or index_binding["metric_type"] != 0
-            or not _hex(index_binding["code_sha256"])):
-        raise ValueError("invalid_index_binding")
+    _q4_bindings(encoder_binding, index_binding, identity)
     if (type(memory) is not dict or memory.get("schema") != "wd.bridge-mind-hex-memory-step2.v1"
             or memory.get("scope") != descriptor["scope"]
             or type(memory.get("dim")) is not int or memory["dim"] != _Q4_DIM
@@ -1146,6 +1155,206 @@ def _q4_vector(raw):
     if not math.isfinite(norm) or abs(norm - 1.0) > 0.001:
         raise ValueError("vector_not_normalized")
     return tuple(vector)
+
+
+def _provider_result(operation):
+    # Leave the except block before denying: no provider exception is chained.
+    succeeded, output = False, None
+    try:
+        output = operation()
+        succeeded = True
+    except Exception:
+        pass
+    operation = None
+    if not succeeded:
+        _deny()
+    return output
+
+
+def _provider_float32_scalar(value):
+    import struct
+    if type(value) in (int, float):
+        return value
+    if (getattr(getattr(value, "dtype", None), "str", None) != "<f4"
+            or type(getattr(value, "shape", None)) is not tuple or value.shape != ()
+            or not callable(getattr(value, "item", None))
+            or not callable(getattr(value, "tobytes", None))):
+        raise ValueError("invalid_float32_scalar")
+    number, raw = value.item(), value.tobytes()
+    if (type(number) not in (int, float) or type(raw) is not bytes or len(raw) != 4
+            or struct.pack("<f", number) != raw):
+        raise ValueError("invalid_float32_scalar_bits")
+    return struct.unpack("<f", raw)[0]
+
+
+def _provider_float32_array(value, shape):
+    # Inspect bounded dimensions and dtype before asking a native object to copy.
+    actual = getattr(value, "shape", None)
+    if (getattr(getattr(value, "dtype", None), "str", None) != "<f4"
+            or type(actual) is not tuple or len(actual) != len(shape)
+            or any(type(n) is not int for n in actual)
+            or actual != shape or not callable(getattr(value, "tolist", None))
+            or not callable(getattr(value, "tobytes", None))):
+        raise ValueError("invalid_float32_array")
+    values, raw = value.tolist(), value.tobytes()
+    size = 4
+    for dimension in shape:
+        size *= dimension
+    if type(values) is not list or type(raw) is not bytes or len(raw) != size:
+        raise ValueError("invalid_float32_array_bytes")
+    return values, raw
+
+
+def _provider_vector(value):
+    import struct
+    raw = None
+    if type(value) not in (tuple, list):
+        value, raw = _provider_float32_array(value, (_Q4_DIM,))
+    if len(value) != _Q4_DIM:
+        raise ValueError("invalid_vector_dimension")
+    vector = _q4_vector(tuple(_provider_float32_scalar(number) for number in value))
+    if raw is not None and struct.pack("<" + "f" * _Q4_DIM, *vector) != raw:
+        raise ValueError("invalid_float32_array_bits")
+    return _q4_vector(struct.unpack("<" + "f" * _Q4_DIM, raw)) if raw is not None else vector
+
+
+def _provider_matrix(value, count):
+    import struct
+    raw = None
+    if type(value) not in (tuple, list):
+        value, raw = _provider_float32_array(value, (count, _Q4_DIM))
+    if len(value) != count:
+        raise ValueError("invalid_matrix_count")
+    rows = tuple(_provider_vector(row) for row in value)
+    if raw is not None:
+        # Compare per row without constructing a second full matrix buffer.
+        width = _Q4_DIM * 4
+        converted = []
+        for position, row in enumerate(rows):
+            if struct.pack("<" + "f" * _Q4_DIM, *row) != raw[position * width:(position + 1) * width]:
+                raise ValueError("invalid_float32_matrix_bits")
+            converted.append(_q4_vector(struct.unpack(
+                "<" + "f" * _Q4_DIM, raw[position * width:(position + 1) * width])))
+        rows = tuple(converted)
+    return rows
+
+
+def _provider_index_controls(index):
+    dimension, count, metric = (getattr(index, name, None) for name in ("d", "ntotal", "metric_type"))
+    if (type(dimension) is not int or dimension != _Q4_DIM
+            or type(count) is not int or not 0 < count <= _Q4_MAX_ROWS
+            or type(metric) is not int or metric != 0
+            or not callable(getattr(index, "reconstruct_n", None))):
+        raise ValueError("invalid_decoded_index")
+    return dimension, count, metric
+
+
+class _ReadonlyEncoderAdapter:
+    __slots__ = ("_encoder", "_identity_bytes")
+
+    def __init__(self, encoder, binding):
+        self._encoder, self._identity_bytes = encoder, _canonical(binding)
+
+    @property
+    def identity(self):
+        return json.loads(self._identity_bytes)
+
+    def _query(self, text):
+        if type(text) is not str or not 0 < len(text) <= 4000:
+            raise ValueError("invalid_query")
+        # The trusted encoder owns the approved query prefix and normalization.
+        # Passing raw text avoids adding the E5 prefix twice.
+        return _provider_vector(self._encoder.query(text))
+
+    def query(self, text):
+        return _provider_result(lambda: self._query(text))
+
+
+class _ReadonlyDecodedIndex:
+    __slots__ = ("_index", "_controls")
+
+    def __init__(self, index):
+        self._controls = _provider_index_controls(index)
+        self._index = index
+
+    @property
+    def d(self):
+        return self._controls[0]
+
+    @property
+    def ntotal(self):
+        return self._controls[1]
+
+    @property
+    def metric_type(self):
+        return self._controls[2]
+
+    def _reconstruct(self, start, count):
+        if (type(start) is not int or type(count) is not int
+                or start != 0 or count != self.ntotal
+                or _provider_index_controls(self._index) != self._controls):
+            raise ValueError("invalid_reconstruction_range")
+        rows = _provider_matrix(self._index.reconstruct_n(start, count), count)
+        if _provider_index_controls(self._index) != self._controls:
+            raise ValueError("decoded_index_changed")
+        return rows
+
+    def reconstruct_n(self, start, count):
+        return _provider_result(lambda: self._reconstruct(start, count))
+
+
+class _ReadonlyIndexAdapter:
+    __slots__ = ("_decoder", "_identity_bytes", "_index_sha256s")
+
+    def __init__(self, decoder, binding, index_sha256s):
+        self._decoder, self._identity_bytes = decoder, _canonical(binding)
+        self._index_sha256s = frozenset(index_sha256s)
+
+    @property
+    def identity(self):
+        return json.loads(self._identity_bytes)
+
+    def _load(self, raw):
+        if (type(raw) is not bytes or not 0 < len(raw) <= 256 * 1024 * 1024
+                or _sha(raw) not in self._index_sha256s):
+            raise ValueError("unverified_index_bytes")
+        return _ReadonlyDecodedIndex(self._decoder(raw))
+
+    def load(self, raw):
+        return _provider_result(lambda: self._load(raw))
+
+
+def _adapt_readonly_providers(encoder, index_decoder, encoder_binding_bytes, encoder_binding_sha256,
+                             index_binding_bytes, index_binding_sha256, index_sha256s):
+    encoder_binding = _pinned(encoder_binding_bytes, encoder_binding_sha256)
+    index_binding = _pinned(index_binding_bytes, index_binding_sha256)
+    _q4_bindings(encoder_binding, index_binding)
+    if (isinstance(encoder, type) or not callable(getattr(encoder, "query", None))
+            or isinstance(index_decoder, type) or not callable(index_decoder)
+            or type(index_sha256s) not in (tuple, list, set, frozenset)
+            or not 0 < len(index_sha256s) <= len(_Q4_CELLS)
+            or any(not _hex(digest) for digest in index_sha256s)):
+        raise ValueError("invalid_provider_inputs")
+    return (_ReadonlyEncoderAdapter(encoder, encoder_binding),
+            _ReadonlyIndexAdapter(index_decoder, index_binding, index_sha256s))
+
+
+def adapt_readonly_providers(*, encoder, index_decoder, encoder_binding_bytes, encoder_binding_sha256,
+                            index_binding_bytes, index_binding_sha256, index_sha256s):
+    """Adapt caller-trusted objects to the strict read-only semantic ABI.
+
+    No encoder/index provider is constructed here. The supplied query object and
+    byte-only decoder execute caller-trusted code; protocol, metadata and hashes
+    prove consistency, never object/code authentication or execution isolation.
+    Only little-endian float32 arrays/scalars with exact shape and byte roundtrip
+    are converted. Builtin sequences retain the reader's finite/norm/size checks.
+    No casting, normalization, native imports, model load or fallback is added.
+    Use the existing query_content_snapshot boundary for source/provenance
+    validation; these facades alone do not authorize any source or runtime use.
+    """
+    return _provider_result(lambda: _adapt_readonly_providers(
+        encoder, index_decoder, encoder_binding_bytes, encoder_binding_sha256,
+        index_binding_bytes, index_binding_sha256, index_sha256s))
 
 
 def _q4_decode_cells(captured, provider, records):

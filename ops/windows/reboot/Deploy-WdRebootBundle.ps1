@@ -983,6 +983,7 @@ $archivePath = Join-Path $materializationRoot 'head.zip'
 $archiveProbe = Invoke-GitCapture `
     -Worktree $gitRoot `
     -ArgumentList (@(
+        '-c', 'core.autocrlf=false',
         'archive',
         '--format=zip',
         "--output=$archivePath",

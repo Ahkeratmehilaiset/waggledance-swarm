@@ -987,6 +987,9 @@ _Q4_PLACEMENT = {"message": "general", "milestone": "general", "progress": "gene
                  "claim": "system", "release": "system", "done": "system", "test": "learning"}
 _Q4_DIM = 384
 _Q4_MAX_ROWS = 20000  # Additional availability bound, not a native allocation guarantee.
+_Q4_BOUNDED_V3_MAX_ROWS = 65536
+_Q4_BOUNDED_CHUNK_ROWS = 128
+_Q4_BOUNDED_VECTOR_BYTES = 256 * 1024 * 1024
 _Q4_TOTAL_BYTES = 512 * 1024 * 1024
 _Q4_ARTIFACT_BYTES = 16 * 1024 * 1024
 _Q4_TOKEN = re.compile(r"[^\W_]{2,}", re.UNICODE)
@@ -1139,7 +1142,9 @@ def _q4_cell_controls(cell_id, item, bound, memory, records):
             or receipt.get("scope") != memory["scope"] or type(content) is not dict
             or receipt.get("content_sha256") != _sha(_canonical(content))
             or content.get("cell_id") != cell_id or type(content.get("count")) is not int
-            or not 0 < content["count"] <= _Q4_MAX_ROWS or content["count"] % 2
+            or not 0 < content["count"] <= (
+                _Q4_BOUNDED_V3_MAX_ROWS if memory["scope"] == _ALL_TASK_ROUTE_SCOPE else _Q4_MAX_ROWS)
+            or content["count"] % 2
             or type(content.get("dim")) is not int or content["dim"] != _Q4_DIM
             or content.get("encoder") != memory["encoder"]
             or content.get("projection_schema") != memory["projection_schema"]
@@ -1302,10 +1307,12 @@ def _provider_matrix(value, count):
     return rows
 
 
-def _provider_index_controls(index):
+def _provider_index_controls(index, max_rows=None):
+    if max_rows is None:
+        max_rows = _Q4_MAX_ROWS
     dimension, count, metric = (getattr(index, name, None) for name in ("d", "ntotal", "metric_type"))
     if (type(dimension) is not int or dimension != _Q4_DIM
-            or type(count) is not int or not 0 < count <= _Q4_MAX_ROWS
+            or type(count) is not int or not 0 < count <= max_rows
             or type(metric) is not int or metric != 0
             or not callable(getattr(index, "reconstruct_n", None))):
         raise ValueError("invalid_decoded_index")
@@ -1334,10 +1341,12 @@ class _ReadonlyEncoderAdapter:
 
 
 class _ReadonlyDecodedIndex:
-    __slots__ = ("_index", "_controls")
+    __slots__ = ("_index", "_controls", "_allow_bounded_v3")
 
-    def __init__(self, index):
-        self._controls = _provider_index_controls(index)
+    def __init__(self, index, allow_bounded_v3=False):
+        self._allow_bounded_v3 = allow_bounded_v3
+        maximum = _Q4_BOUNDED_V3_MAX_ROWS if allow_bounded_v3 else None
+        self._controls = _provider_index_controls(index, maximum)
         self._index = index
 
     @property
@@ -1353,25 +1362,41 @@ class _ReadonlyDecodedIndex:
         return self._controls[2]
 
     def _reconstruct(self, start, count):
+        maximum = _Q4_BOUNDED_V3_MAX_ROWS if self._allow_bounded_v3 else None
         if (type(start) is not int or type(count) is not int
-                or start != 0 or count != self.ntotal
-                or _provider_index_controls(self._index) != self._controls):
+                or start != 0 or count != self.ntotal or count > _Q4_MAX_ROWS
+                or _provider_index_controls(self._index, maximum) != self._controls):
             raise ValueError("invalid_reconstruction_range")
         rows = _provider_matrix(self._index.reconstruct_n(start, count), count)
-        if _provider_index_controls(self._index) != self._controls:
+        if _provider_index_controls(self._index, maximum) != self._controls:
             raise ValueError("decoded_index_changed")
         return rows
 
     def reconstruct_n(self, start, count):
         return _provider_result(lambda: self._reconstruct(start, count))
 
+    def _reconstruct_chunk(self, start, count):
+        if (self._allow_bounded_v3 is not True or type(start) is not int or type(count) is not int
+                or start < 0 or not 0 < count <= _Q4_BOUNDED_CHUNK_ROWS
+                or start + count > self.ntotal
+                or _provider_index_controls(self._index, _Q4_BOUNDED_V3_MAX_ROWS) != self._controls):
+            raise ValueError("invalid_reconstruction_range")
+        rows = _provider_matrix(self._index.reconstruct_n(start, count), count)
+        if _provider_index_controls(self._index, _Q4_BOUNDED_V3_MAX_ROWS) != self._controls:
+            raise ValueError("decoded_index_changed")
+        return rows
+
+    def reconstruct_chunk(self, start, count):
+        return _provider_result(lambda: self._reconstruct_chunk(start, count))
+
 
 class _ReadonlyIndexAdapter:
-    __slots__ = ("_decoder", "_identity_bytes", "_index_sha256s")
+    __slots__ = ("_decoder", "_identity_bytes", "_index_sha256s", "_allow_bounded_v3")
 
-    def __init__(self, decoder, binding, index_sha256s):
+    def __init__(self, decoder, binding, index_sha256s, allow_bounded_v3=False):
         self._decoder, self._identity_bytes = decoder, _canonical(binding)
         self._index_sha256s = frozenset(index_sha256s)
+        self._allow_bounded_v3 = allow_bounded_v3
 
     @property
     def identity(self):
@@ -1381,14 +1406,14 @@ class _ReadonlyIndexAdapter:
         if (type(raw) is not bytes or not 0 < len(raw) <= 256 * 1024 * 1024
                 or _sha(raw) not in self._index_sha256s):
             raise ValueError("unverified_index_bytes")
-        return _ReadonlyDecodedIndex(self._decoder(raw))
+        return _ReadonlyDecodedIndex(self._decoder(raw), self._allow_bounded_v3)
 
     def load(self, raw):
         return _provider_result(lambda: self._load(raw))
 
 
 def _adapt_readonly_providers(encoder, index_decoder, encoder_binding_bytes, encoder_binding_sha256,
-                             index_binding_bytes, index_binding_sha256, index_sha256s):
+                             index_binding_bytes, index_binding_sha256, index_sha256s, allow_bounded_v3):
     encoder_binding = _pinned(encoder_binding_bytes, encoder_binding_sha256)
     index_binding = _pinned(index_binding_bytes, index_binding_sha256)
     _q4_bindings(encoder_binding, index_binding)
@@ -1396,14 +1421,15 @@ def _adapt_readonly_providers(encoder, index_decoder, encoder_binding_bytes, enc
             or isinstance(index_decoder, type) or not callable(index_decoder)
             or type(index_sha256s) not in (tuple, list, set, frozenset)
             or not 0 < len(index_sha256s) <= len(_Q4_CELLS)
-            or any(not _hex(digest) for digest in index_sha256s)):
+            or any(not _hex(digest) for digest in index_sha256s)
+            or type(allow_bounded_v3) is not bool):
         raise ValueError("invalid_provider_inputs")
     return (_ReadonlyEncoderAdapter(encoder, encoder_binding),
-            _ReadonlyIndexAdapter(index_decoder, index_binding, index_sha256s))
+            _ReadonlyIndexAdapter(index_decoder, index_binding, index_sha256s, allow_bounded_v3))
 
 
 def adapt_readonly_providers(*, encoder, index_decoder, encoder_binding_bytes, encoder_binding_sha256,
-                            index_binding_bytes, index_binding_sha256, index_sha256s):
+                            index_binding_bytes, index_binding_sha256, index_sha256s, allow_bounded_v3=False):
     """Adapt caller-trusted objects to the strict read-only semantic ABI.
 
     No encoder/index provider is constructed here. The supplied query object and
@@ -1412,12 +1438,15 @@ def adapt_readonly_providers(*, encoder, index_decoder, encoder_binding_bytes, e
     Only little-endian float32 arrays/scalars with exact shape and byte roundtrip
     are converted. Builtin sequences retain the reader's finite/norm/size checks.
     No casting, normalization, native imports, model load or fallback is added.
+    ``allow_bounded_v3=True`` enables the separate chunk ABI and its larger,
+    hard-bounded index ceiling. Default and legacy full-reconstruction semantics
+    do not change; native providers may still allocate independently.
     Use the existing query_content_snapshot boundary for source/provenance
     validation; these facades alone do not authorize any source or runtime use.
     """
     return _provider_result(lambda: _adapt_readonly_providers(
         encoder, index_decoder, encoder_binding_bytes, encoder_binding_sha256,
-        index_binding_bytes, index_binding_sha256, index_sha256s))
+        index_binding_bytes, index_binding_sha256, index_sha256s, allow_bounded_v3))
 
 
 def _q4_decode_cells(captured, provider, records):
@@ -1451,6 +1480,55 @@ def _q4_decode_cells(captured, provider, records):
     return entries
 
 
+def _q4_decode_cells_bounded_v3(captured, provider, records):
+    """Validate all index rows first and retain bounded exact Python-float bytes.
+
+    Provider callbacks remain caller-trusted and can allocate independently.
+    The stored float64 values preserve the previous dot-product inputs; float32
+    bytes are still used for the independently pinned pair and retained-vector
+    checks. No result is returned until all cells and pairs are verified.
+    """
+    import struct
+    if len(records) * 2 * _Q4_DIM * 8 > _Q4_BOUNDED_VECTOR_BYTES:
+        raise ValueError("decoded_vector_budget")
+    entries = {}
+    for cell_id, (data, content, meta, rows) in captured.items():
+        index = provider.load(data["index"])
+        controls = _provider_index_controls(index, _Q4_BOUNDED_V3_MAX_ROWS)
+        if controls[1] != content["count"]:
+            raise ValueError("invalid_decoded_index")
+        reconstruct = getattr(index, "reconstruct_chunk", None)
+        if not callable(reconstruct):
+            reconstruct = index.reconstruct_n
+        pairs = hashlib.sha256()
+        for start in range(0, content["count"], _Q4_BOUNDED_CHUNK_ROWS):
+            count = min(_Q4_BOUNDED_CHUNK_ROWS, content["count"] - start)
+            if _provider_index_controls(index, _Q4_BOUNDED_V3_MAX_ROWS) != controls:
+                raise ValueError("decoded_index_changed")
+            vectors = reconstruct(start, count)
+            if (type(vectors) not in (tuple, list) or len(vectors) != count
+                    or _provider_index_controls(index, _Q4_BOUNDED_V3_MAX_ROWS) != controls):
+                raise ValueError("invalid_decoded_count")
+            for relative, raw_vector in enumerate(vectors):
+                position = start + relative
+                record_id, view = rows[position]
+                vector = _q4_vector(raw_vector)
+                raw32 = struct.pack("<" + "f" * _Q4_DIM, *vector)
+                pairs.update(meta["doc_ids"][position].encode() + b"\x00" + raw32)
+                if ("vectors" in data and
+                        data["vectors"][position * _Q4_DIM * 4:(position + 1) * _Q4_DIM * 4] != raw32):
+                    raise ValueError("retained_vector_mismatch")
+                entry = entries.setdefault(record_id, {})
+                if view in entry:
+                    raise ValueError("duplicate_memory_view")
+                entry[view] = struct.pack("<" + "d" * _Q4_DIM, *vector)
+        if not hmac.compare_digest(pairs.hexdigest(), content["pairs_sha256"]):
+            raise ValueError("decoded_pairs_mismatch")
+    if set(entries) != set(records) or any(set(entry) != {"w", "d"} for entry in entries.values()):
+        raise ValueError("incomplete_memory")
+    return entries
+
+
 def _q4_self_match(query, text):
     words = _Q4_WORD.findall(query.lower())
     content = _Q4_WORD.findall(text.lower())
@@ -1465,6 +1543,7 @@ def _q4_self_match(query, text):
 
 def _q4_rank(records, entries, encoder, query, when):
     import math
+    import struct
     from collections import Counter
     ordered = sorted(records)
     texts = {key: decode_text(records[key]["stored_text"]) for key in ordered}
@@ -1480,7 +1559,14 @@ def _q4_rank(records, entries, encoder, query, when):
     if len(eligible) <= 3:
         return []
     vector = _q4_vector(encoder.query(query))
-    scores = {view: {key: sum(a * b for a, b in zip(entries[key][view], vector))
+    def decoded(entry):
+        if type(entry) is bytes:
+            if len(entry) != _Q4_DIM * 8:
+                raise ValueError("invalid_decoded_vector_bytes")
+            return struct.unpack("<" + "d" * _Q4_DIM, entry)
+        return entry
+
+    scores = {view: {key: sum(a * b for a, b in zip(decoded(entries[key][view]), vector))
                      for key in eligible} for view in ("w", "d")}
     tokens = {key: Counter(_Q4_TOKEN.findall(texts[key].lower())) for key in ordered}
     lengths = {key: sum(tokens[key].values()) for key in ordered}
@@ -1516,13 +1602,42 @@ def _query_content_snapshot(values):
     projection, context, initial_report = _verified(snapshot)
     record_list = projection["messages"]["records"]
     records = {record["record_id"]: record for record in record_list}
-    if not records or len(records) != len(record_list) or len(records) * 2 > _Q4_MAX_ROWS:
+    bounded_v3 = descriptor["scope"] == _ALL_TASK_ROUTE_SCOPE and len(records) * 2 > _Q4_MAX_ROWS
+    maximum_rows = _Q4_BOUNDED_V3_MAX_ROWS if bounded_v3 else _Q4_MAX_ROWS
+    if (not records or len(records) != len(record_list) or len(records) * 2 > maximum_rows
+            or (bounded_v3 and len(records) * 2 * _Q4_DIM * 8 > _Q4_BOUNDED_VECTOR_BYTES)):
         raise ValueError("invalid_memory_record_count")
     if (type(memory.get("records")) is not int or memory["records"] != len(records)
             or memory.get("views") != ["w", "d"] or memory.get("independent_views") is not False
             or memory.get("cutoff_utc") != max(record["available_utc"] for record in record_list)):
         raise ValueError("memory_record_binding_mismatch")
     captured, total = {}, len(values["memory_bytes"]) + len(values["projection_bytes"])
+    if bounded_v3:
+        # Check aggregate bytes and pinned receipt row counts before expanding
+        # any cell metadata. The full cell checks below are still mandatory.
+        declared_rows = 0
+        for cell_id, item in values["cell_snapshots"].items():
+            if (type(item) is not dict or type(item.get("pointer")) is not bytes
+                    or type(item.get("log")) is not bytes or type(item.get("artifacts")) is not dict
+                    or any(type(raw) is not bytes for raw in item["artifacts"].values())):
+                raise ValueError("invalid_cell_bytes")
+            total += len(item["pointer"]) + len(item["log"]) + sum(map(len, item["artifacts"].values()))
+            if total > _Q4_TOTAL_BYTES:
+                raise ValueError("memory_over_budget")
+            bound = memory["cells"][cell_id]
+            if type(bound) is not dict or not _hex(bound.get("receipt_sha256")):
+                raise ValueError("invalid_cell")
+            receipt = _pinned(item["artifacts"]["receipt"], bound["receipt_sha256"], limit=1024 * 1024)
+            content = receipt.get("content") if type(receipt) is dict else None
+            count = content.get("count") if type(content) is dict else None
+            if type(count) is not int or not 0 < count <= _Q4_BOUNDED_V3_MAX_ROWS or count % 2:
+                raise ValueError("invalid_cell_receipt")
+            declared_rows += count
+            if declared_rows > len(records) * 2:
+                raise ValueError("memory_row_budget")
+        if declared_rows != len(records) * 2:
+            raise ValueError("incomplete_memory")
+        total = len(values["memory_bytes"]) + len(values["projection_bytes"])
     for cell_id in sorted(memory["cells"]):
         item = values["cell_snapshots"][cell_id]
         # All cells' bounded controls, bytes, hashes and source metadata are
@@ -1539,7 +1654,8 @@ def _query_content_snapshot(values):
     encoder, index_provider = values["encoder_provider"], values["index_provider"]
     _q4_provider_identity(encoder, encoder_binding, "query")
     _q4_provider_identity(index_provider, index_binding, "load")
-    entries = _q4_decode_cells(captured, index_provider, records)
+    entries = (_q4_decode_cells_bounded_v3(captured, index_provider, records) if bounded_v3
+               else _q4_decode_cells(captured, index_provider, records))
     raw = values["stream"].read(65537)
     if type(raw) is not bytes or not 0 < len(raw) <= 65536:
         raise ValueError("invalid_query_bytes")

@@ -181,3 +181,115 @@ def test_timestamp_refuses_non_bridge_utc_or_unbounded_fraction(config, event, t
 def test_timestamp_accepts_bridge_utc_with_bounded_fraction(config, event, timestamp):
     event["ts_utc"] = timestamp
     assert subject.screen_line(line(event), **config)["status"] == "accepted"
+
+
+@pytest.fixture
+def fleet_config(config):
+    fleet = {"schema_version": 2, "lanes": [
+        {"agent": name, "agent_uuid": ROSTER[name], "worktree": "C:\\Work\\" + name}
+        for name in sorted(set(ROSTER) - {"codex-tools-1"})],
+        "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": ROSTER["codex-tools-1"],
+                             "worktree": "C:\\Work\\codex-tools-1"}}
+    fleet_bytes = raw(fleet)
+    return dict(config, fleet_bytes=fleet_bytes, fleet_sha256=digest(fleet_bytes))
+
+
+@pytest.mark.parametrize("agent", ["codex-lead-1", "codex-tools-1", "fable-5"])
+def test_pinned_exact_build_lane_worktree_preserves_line_and_reference(fleet_config, event, agent):
+    event.update(agent=agent, agent_uuid=ROSTER[agent], cwd="C:\\Work\\" + agent)
+    source = line(event)
+    result = subject.screen_line(source, **fleet_config)
+    assert result["status"] == "accepted"
+    assert result["line"] == source and result["source_event_ref"] == digest(raw(event))
+    assert result["authority"] == "none" and result["source_membership"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("cwd", ["C:\\Work\\fable-5", "C:\\Work\\codex-lead-1\\child",
+                                   "c:\\Work\\codex-lead-1", "C:/Work/codex-lead-1",
+                                   "C:\\Work\\.\\codex-lead-1", "https://example.invalid/cwd",
+                                   "", "cwd", "C:\\Work\\..\\Work\\codex-lead-1"])
+def test_unmatched_cwd_never_uses_fleet_exception(fleet_config, event, cwd):
+    event["cwd"] = cwd
+    result = subject.screen_line(line(event), **fleet_config)
+    assert result["status"] == "excluded" and "line" not in result
+
+
+def test_cwd_exception_requires_fleet_and_independent_digest(config, fleet_config, event):
+    event["cwd"] = "C:\\Work\\codex-lead-1"
+    assert subject.screen_line(line(event), **config)["status"] == "excluded"
+    with pytest.raises(subject.SourceScreenRefused):
+        subject.screen_line(line(event), **dict(fleet_config, fleet_sha256="0" * 64))
+    with pytest.raises(subject.SourceScreenRefused):
+        subject.screen_line(line(event), **dict(fleet_config, fleet_sha256=None))
+    event["cwd"] = "cwd"
+    assert subject.screen_line(line(event), **config)["status"] == "excluded"
+
+
+@pytest.mark.parametrize("mutation", ["duplicate", "uuid", "unknown_lane", "invalid_schema", "no_worktree"])
+def test_fleet_must_match_independent_roster_and_schema(fleet_config, event, mutation):
+    event["cwd"] = "C:\\Work\\codex-lead-1"
+    fleet = json.loads(fleet_config["fleet_bytes"])
+    if mutation == "duplicate": fleet["lanes"].append(dict(fleet["lanes"][0]))
+    elif mutation == "uuid": fleet["lanes"][0]["agent_uuid"] = "00000000-0000-4000-8000-000000000099"
+    elif mutation == "unknown_lane": fleet["lanes"][0]["agent"] = "untrusted"
+    elif mutation == "invalid_schema": fleet["schema_version"] = 1
+    elif mutation == "no_worktree": del fleet["lanes"][0]["worktree"]
+    bad = raw(fleet)
+    with pytest.raises(subject.SourceScreenRefused):
+        subject.screen_line(line(event), **dict(fleet_config, fleet_bytes=bad, fleet_sha256=digest(bad)))
+
+
+@pytest.mark.parametrize("path", ["C:\\Work\\Synthetic Private Person", "C:\\Work\\sealed",
+                                    "C:\\Work\\sk-123456789abcdef", "https://example.invalid/cwd",
+                                    "C:\\Work\\abcdefghijklmnop", "C:\\Work\\0123456789abcdef0123456789abcdef"])
+def test_content_unsafe_or_url_fleet_worktree_never_accepted(fleet_config, event, path):
+    fleet = json.loads(fleet_config["fleet_bytes"])
+    entry = next(item for item in fleet["lanes"] if item["agent"] == event["agent"])
+    entry["worktree"] = path
+    event["cwd"] = path
+    bad = raw(fleet)
+    try:
+        result = subject.screen_line(line(event), **dict(fleet_config, fleet_bytes=bad, fleet_sha256=digest(bad)))
+        assert result["status"] == "excluded" and "line" not in result
+    except subject.SourceScreenRefused:
+        pass
+
+
+@pytest.mark.parametrize("field", ["message", "task_id", "run_id", "role", "session_id", "paths", "write_scope"])
+def test_fleet_exception_never_covers_other_fields(fleet_config, event, field):
+    value = "C:\\Work\\codex-lead-1"
+    event["cwd"] = value
+    event[field] = [value] if field in ("paths", "write_scope") else value
+    result = subject.screen_line(line(event), **fleet_config)
+    assert result["status"] == "excluded" and "line" not in result
+
+
+def test_fleet_exception_never_covers_nested_payload(fleet_config, event):
+    event["cwd"] = "C:\\Work\\codex-lead-1"
+    event["payload"] = {"summary": "C:\\Work\\codex-lead-1"}
+    assert subject.screen_line(line(event), **fleet_config)["status"] == "excluded"
+
+
+def test_rco_authored_or_addressed_rows_remain_excluded(fleet_config, event):
+    event.update(agent="claude-rco-1", agent_uuid=ROSTER["claude-rco-1"], cwd="C:\\Work\\claude-rco-1")
+    assert subject.screen_line(line(event), **fleet_config)["status"] == "excluded"
+    event.update(agent="codex-lead-1", agent_uuid=ROSTER["codex-lead-1"], cwd="C:\\Work\\codex-lead-1",
+                 to="claude-rco-1")
+    assert subject.screen_line(line(event), **fleet_config)["status"] == "excluded"
+
+
+def test_fleet_bound_screen_remains_in_memory(fleet_config, event, monkeypatch):
+    import builtins
+    import pathlib
+    import socket
+    import subprocess
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("I/O attempted")
+
+    event["cwd"] = "C:\\Work\\codex-lead-1"
+    monkeypatch.setattr(builtins, "open", forbidden)
+    monkeypatch.setattr(pathlib.Path, "open", forbidden)
+    monkeypatch.setattr(socket, "socket", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    assert subject.screen_line(line(event), **fleet_config)["status"] == "accepted"

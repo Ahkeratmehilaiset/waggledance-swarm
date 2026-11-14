@@ -23,6 +23,7 @@ from waggledance.core import bridge_log_reader as bridge
 MAX_LINE_BYTES = 4 * 1024 * 1024
 MAX_VALUE_NODES = 65536
 MAX_DEPTH = 32
+MAX_FLEET_BYTES = 65536
 _REQUIRED = frozenset(("ts_utc", "agent", "agent_uuid", "type", "task_id", "message"))
 _OPTIONAL = frozenset(("status", "severity", "to", "paths", "write_scope", "run_id", "pid",
                        "cwd", "payload", "role", "session_id", "capabilities"))
@@ -85,7 +86,53 @@ def _payload_safe(value, private):
     return True
 
 
-def _event_safe(event, policy, roster, private, excluded_tasks, ref):
+def _fleet_worktrees(fleet_bytes, fleet_sha256, roster):
+    """Bind exact lane strings to caller-pinned fleet bytes and the roster.
+
+    The caller must independently establish the fleet pin and approve its
+    contents. This proves consistency only, not sender or fleet authenticity.
+    """
+    if fleet_bytes is None and fleet_sha256 is None:
+        return {}
+    fleet = content._pinned(fleet_bytes, fleet_sha256, limit=MAX_FLEET_BYTES)
+    if (type(fleet) is not dict or type(fleet.get("schema_version")) is not int
+            or fleet["schema_version"] != 2 or type(fleet.get("lanes")) is not list
+            or len(fleet["lanes"]) != 4 or type(fleet.get("tools_supervisor")) is not dict):
+        raise ValueError("invalid_fleet")
+    entries = fleet["lanes"] + [fleet["tools_supervisor"]]
+    worktrees = {}
+    for entry in entries:
+        if type(entry) is not dict:
+            raise ValueError("invalid_fleet")
+        agent, identity, path = entry.get("agent"), entry.get("agent_uuid"), entry.get("worktree")
+        if (type(agent) is not str or agent not in roster or agent in worktrees
+                or identity != roster[agent] or type(path) is not str
+                or not re.fullmatch(r"[A-Za-z]:\\(?:[A-Za-z0-9_.-]+\\)*[A-Za-z0-9_.-]+", path)
+                or any(part in (".", "..") or part.endswith(".") for part in path[3:].split("\\"))):
+            raise ValueError("invalid_fleet")
+        worktrees[agent] = path
+    if (set(worktrees) != set(roster) or fleet["tools_supervisor"].get("agent") != "codex-tools-1"
+            or len({path.casefold() for path in worktrees.values()}) != len(worktrees)):
+        raise ValueError("invalid_fleet")
+    return worktrees
+
+
+def _safe_exact_cwd(value, agent, worktrees, private):
+    """Except only the exact pinned worktree, retaining other content checks."""
+    if agent not in _BUILD_LANES or type(value) is not str or value != worktrees.get(agent):
+        return False
+    try:
+        if content._normalize(value, content.MAX_MESSAGE_CHARS) != value:
+            return False
+        # The exception is for location syntax alone; still reject credentials,
+        # private identifiers, sealed material and other unsafe path components.
+        content._screen(value, identifier_policy=private)
+        return all(_unchanged_text(part, private) for part in value[3:].split("\\"))
+    except Exception:
+        return False
+
+
+def _event_safe(event, policy, roster, private, excluded_tasks, ref, worktrees):
     if type(event) is not dict or not _REQUIRED <= set(event) or not set(event) <= _REQUIRED | _OPTIONAL:
         return False
     if type(event["ts_utc"]) is not str or not _BRIDGE_UTC.fullmatch(event["ts_utc"]):
@@ -109,7 +156,9 @@ def _event_safe(event, policy, roster, private, excluded_tasks, ref):
             return False
     if "payload" in event and (type(event["payload"]) is not dict or not _payload_safe(event["payload"], private)):
         return False
-    for key in ("severity", "run_id", "cwd", "role", "session_id"):
+    if "cwd" in event and not _safe_exact_cwd(event["cwd"], event["agent"], worktrees, private):
+        return False
+    for key in ("severity", "run_id", "role", "session_id"):
         if key in event and not _unchanged_text(event[key], private, empty=True):
             return False
     for key in ("paths", "write_scope", "capabilities"):
@@ -123,7 +172,7 @@ def _event_safe(event, policy, roster, private, excluded_tasks, ref):
 
 def screen_line(line, *, enabled=False, roster_bytes=None, roster_sha256=None,
                 policy_bytes=None, policy_sha256=None, identifier_policy_binding=None,
-                excluded_tasks=None):
+                excluded_tasks=None, fleet_bytes=None, fleet_sha256=None):
     """Screen one original JSONL line; return its exact bytes only on acceptance.
 
     All controls are explicit in-memory inputs. Their matching digests are not
@@ -139,6 +188,7 @@ def screen_line(line, *, enabled=False, roster_bytes=None, roster_sha256=None,
         if content._canonical(roster_document) != roster_bytes:
             raise ValueError("config")
         roster = content._roster(roster_document)
+        worktrees = _fleet_worktrees(fleet_bytes, fleet_sha256, roster)
         policy = content._message_policy(content._pinned(policy_bytes, policy_sha256), None)
         if type(identifier_policy_binding) is not tuple or len(identifier_policy_binding) != 3:
             raise ValueError("config")
@@ -154,7 +204,7 @@ def screen_line(line, *, enabled=False, roster_bytes=None, roster_sha256=None,
             return _excluded()
         event = rows[0]
         ref = hashlib.sha256(content._canonical(event)).hexdigest()
-        if not _event_safe(event, policy, roster, private, excluded_tasks, ref):
+        if not _event_safe(event, policy, roster, private, excluded_tasks, ref, worktrees):
             return _excluded()
         return {"status": "accepted", "authority": "none", "line": line, "source_event_ref": ref,
                 "privacy_coverage": "UNKNOWN", "source_membership": "UNKNOWN",

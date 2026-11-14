@@ -641,6 +641,14 @@ def advance(state, seeded=None):
         "detail_calls": sum(1 for row in fetched if row["source"] == "detail")}
 
 
+def provenance_object(cursor, source):
+    """The capture's provenance: the compact position cursor the cycle commits in its state and the bridge log
+    identity and generation that cursor names (``cursor_source``), as the shadow re-decodes and compares them. A
+    null log generation is carried as null: the shadow reports it UNKNOWN and nothing here invents one."""
+    return {"reader_cursor": cursor, "file_identity": source["file_identity"],
+            "log_generation": source["log_generation"]}
+
+
 def capture_object(rows):
     """The cycle's capture and its detail manifest (ref, canonical row sha256, source per row, in window order),
     whose sha256 is the capture's reader_stdout_sha256."""
@@ -1094,8 +1102,10 @@ def prewrite(capture, manifest, context, state):
     if context is not None:
         payloads["context.json"] = canonical(context)
     try:
-        shadow.read_capture(parse_bridge_json_object(payloads["capture.json"].decode("utf-8")))
+        read_back = shadow.read_capture(parse_bridge_json_object(payloads["capture.json"].decode("utf-8")))
         ok = verify_state(parse_bridge_json_object(payloads["state.json"].decode("ascii")), state["generation"])
+        # the capture's provenance must be the very cursor and bridge log identity the state commits
+        ok = ok and read_back.get("provenance") == provenance_object(state["cursor"], state["source"])
         if context is not None:
             ok = ok and ws.read_context(parse_bridge_json_object(payloads["context.json"].decode("ascii")),
                                         ws.parse_time(context["observed_utc"]))[1] is None
@@ -1251,6 +1261,7 @@ def candidate_cycle(rec, last_ok, seeded):
     rows, cursor, source, rec["read"] = advance(state, seeded)
     next_state = state_envelope(1 if state is None else state["generation"] + 1, cursor, source, rows)
     capture, manifest = capture_object(rows)
+    capture["provenance"] = provenance_object(cursor, source)
     capture_ms = round((time.perf_counter() - started) * 1000)
     context, rec["context"] = pr_context(live / "files-cache", snapshot_prs(capture))
     payloads = prewrite(capture, manifest, context, next_state)

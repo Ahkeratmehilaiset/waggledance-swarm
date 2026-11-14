@@ -73,25 +73,17 @@ def test_situation_session_default_off_and_ignores_environment(monkeypatch, enab
     _situation_refused(lambda: session.project_situation_session(enabled=enabled, inputs=inputs))
 
 
-def test_situation_session_uses_real_pinned_projection_with_refs_and_unknown():
-    inputs, ref = _situation_inputs()
+def test_situation_session_refuses_even_well_formed_inputs_until_trust_is_established():
+    inputs, _ = _situation_inputs()
     original = dict(inputs)
-    result = session.project_situation_session(enabled=True, inputs=inputs)
-    assert result["schema"] == "wd.mind-situation-observations.v1"
-    assert result["authority"] == "none"
-    assert result["source"]["sender_authentication"] == "UNKNOWN"
-    assert result["lanes"]["codex-lead-1"]["latest_claim_event"]["event_ref"] == ref
-    assert result["lanes"]["codex-lead-1"]["current_task"] == "UNKNOWN"
+    _situation_refused(lambda: session.project_situation_session(enabled=True, inputs=inputs))
     assert inputs == original
 
 
-def test_situation_session_stale_event_keeps_ref_but_is_unknown():
-    inputs, ref = _situation_inputs()
+def test_situation_session_does_not_return_stale_untrusted_input():
+    inputs, _ = _situation_inputs()
     inputs["as_of_utc"] = "2026-11-14T06:00:00Z"
-    result = session.project_situation_session(enabled=True, inputs=inputs)
-    observation = result["lanes"]["codex-lead-1"]["latest_claim_event"]
-    assert observation["event_ref"] == ref
-    assert observation["status"] == observation["task_id"] == "UNKNOWN"
+    _situation_refused(lambda: session.project_situation_session(enabled=True, inputs=inputs))
 
 
 @pytest.mark.parametrize("fault", ["missing", "extra", "bad_pin"])
@@ -112,6 +104,19 @@ def test_situation_session_missing_packaged_module_is_refused(monkeypatch):
         return original(name, globals, locals, fromlist, level)
     monkeypatch.setattr(builtins, "__import__", no_projection)
     _situation_refused(lambda: session.project_situation_session(enabled=True, inputs=inputs))
+
+
+def test_situation_session_refuses_preloaded_fake_module(monkeypatch):
+    import tools
+    calls = []
+    fake = SimpleNamespace(project_situation=lambda **kwargs: calls.append(kwargs) or {
+        "schema": "wd.mind-situation-observations.v1", "authority": "none",
+        "scope": "bounded_tail_not_current_state_or_gate"})
+    monkeypatch.setitem(sys.modules, "tools.wd_mind_situation_view", fake)
+    monkeypatch.setattr(tools, "wd_mind_situation_view", fake, raising=False)
+    inputs, _ = _situation_inputs()
+    _situation_refused(lambda: session.project_situation_session(enabled=True, inputs=inputs))
+    assert calls == []
 
 
 def _entry():

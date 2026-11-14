@@ -28,7 +28,7 @@
   },
   "ollama": {
     "command_present": true,
-    "command_path": "/c/Users/mfi0jjko/AppData/Local/Programs/Ollama/ollama",
+    "command_path": "<user-home>/AppData/Local/Programs/Ollama/ollama",
     "version": "0.22.1",
     "models_installed_count": 22,
     "models_running_count": 0,

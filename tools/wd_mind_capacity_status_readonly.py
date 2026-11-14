@@ -21,6 +21,12 @@ MAX_INPUT_BYTES = 2 * 1024 * 1024
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,63}\Z")
+_TIMESTAMP = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.([0-9]{1,9}))?(?:Z|[+-][0-9]{2}:[0-9]{2})\Z"
+)
+_EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
+_NANOSECONDS = 1_000_000_000
 _LANES = ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
 _KNOWN_LANES = frozenset(_LANES + ("claude-rco-3",))
 _SOURCES = {"codex": "codex_native_rollout", "claude": "claude_native_hook"}
@@ -52,17 +58,31 @@ def _bad_constant(_):
     raise ValueError("constant")
 
 
+def _ticks(value):
+    delta = value - _EPOCH
+    return (delta.days * 86400 + delta.seconds) * _NANOSECONDS + delta.microseconds * 1000
+
+
 def _time(value):
     if type(value) is not str or len(value) > 50:
         raise ValueError("time")
+    match = _TIMESTAMP.fullmatch(value)
+    if match is None:
+        raise ValueError("timestamp_precision")
     parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("naive")
-    return parsed.astimezone(dt.timezone.utc)
+    # datetime truncates beyond six fractional digits. Retain the remaining
+    # nanoseconds so a future or cross-process timestamp cannot round valid.
+    fraction = int((match.group(1) or "").ljust(9, "0"))
+    return _ticks(parsed.astimezone(dt.timezone.utc)) + fraction % 1000
 
 
 def _text(value):
-    return value.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    seconds, nanoseconds = divmod(value, _NANOSECONDS)
+    stamp = (_EPOCH + dt.timedelta(seconds=seconds)).isoformat(timespec="seconds")
+    fraction = f"{nanoseconds:09d}".rstrip("0").ljust(6, "0")
+    return stamp.removesuffix("+00:00") + "." + fraction + "Z"
 
 
 def _field(value="UNKNOWN", observed=None, age=None, source=None, reason=None):
@@ -83,12 +103,12 @@ def _quota(row, now, snapshot_fresh):
     try:
         stamp = _time(row.get("quota_observed_at"))
         process_start = _time(row.get("native_process_start_utc"))
-        age = (now - stamp).total_seconds()
+        age = (_ticks(now) - stamp) / _NANOSECONDS
         state = row.get("observed_quota_state")
         windows = row.get("quota_windows")
         if (not snapshot_fresh or row.get("provider") != "codex"
                 or row.get("identity_state") != "observed_process_ancestry"
-                or not process_start <= stamp <= now
+                or not process_start <= stamp <= _ticks(now)
                 or row.get("quota_freshness") != "fresh" or not 0 <= age <= 300
                 or state not in ("observed_headroom", "exhausted")
                 or type(windows) is not list or not 1 <= len(windows) <= 16):
@@ -129,7 +149,7 @@ def _row(row, now, snapshot_fresh):
     try:
         process_start = _time(row.get("native_process_start_utc"))
         activity_stamp = _time(row.get("observed_at"))
-        valid = valid and process_start <= activity_stamp <= now
+        valid = valid and process_start <= activity_stamp <= _ticks(now)
     except (ValueError, TypeError, OverflowError):
         process_start, activity_stamp, valid = None, None, False
     result = {}
@@ -147,7 +167,7 @@ def _row(row, now, snapshot_fresh):
             time_key = None
         try:
             stamp = _time(row.get(time_key)) if time_key else None
-            age = (now - stamp).total_seconds() if stamp is not None else None
+            age = (_ticks(now) - stamp) / _NANOSECONDS if stamp is not None else None
         except (ValueError, TypeError, OverflowError):
             stamp, age = None, None
         fresh = (snapshot_fresh and valid and row.get("freshness") == "fresh"
@@ -169,6 +189,8 @@ def normalize(*, enabled=False, observer_source_bytes=None, expected_observer_sh
     ``now_utc`` must be supplied by the trusted caller after observer execution.
     Unavailable, future, stale, contradictory or out-of-process observations
     remain UNKNOWN. Missing process-start evidence cannot establish freshness.
+    RFC3339 timestamps retain up to nine fractional digits; comparisons do not
+    round them to the microsecond resolution of the caller's ``now_utc``.
     A fresh quota observation is shown separately from its always-UNKNOWN
     lane/pool attribution; it is not a readiness or execution claim.
     """
@@ -196,7 +218,7 @@ def normalize(*, enabled=False, observer_source_bytes=None, expected_observer_sh
                 or not hmac.compare_digest(installation["manifest_sha256"].lower(), expected_manifest_sha256)):
             raise ValueError("installation")
         summary_time = _time(doc["observed_at"])
-        summary_age = (now_utc - summary_time).total_seconds()
+        summary_age = (_ticks(now_utc) - summary_time) / _NANOSECONDS
         snapshot_fresh = 0 <= summary_age <= 300
         rows = {}
         for row in doc["agents"]:
@@ -216,6 +238,6 @@ def normalize(*, enabled=False, observer_source_bytes=None, expected_observer_sh
                 "observer_manifest_sha256": expected_manifest_sha256,
                 "summary_sha256": hashlib.sha256(summary_bytes).hexdigest(),
                 "summary_ref_kind": "sha256_of_caller_supplied_summary",
-                "summary_observed_at_utc": _text(summary_time), "as_of_utc": _text(now_utc), "lanes": lanes}
+                "summary_observed_at_utc": _text(summary_time), "as_of_utc": _text(_ticks(now_utc)), "lanes": lanes}
     except Exception:
         _deny()

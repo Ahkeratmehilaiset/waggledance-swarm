@@ -333,3 +333,77 @@ def test_independent_quota_may_be_newer_than_activity_and_store_snapshot():
     assert result["quota"]["value"] == "observed_headroom"
     assert result["quota"]["age_seconds"] == 4
     assert result["quota"]["pool_binding"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("fraction", ["0000001", "000000001"])
+@pytest.mark.parametrize("suffix", ["Z", "+00:00", "+02:00"])
+def test_submicrosecond_future_quota_is_unknown(fraction, suffix):
+    doc = summary()
+    hour = "09" if suffix == "+02:00" else "07"
+    doc["agents"][0]["quota_observed_at"] = "2026-11-14T" + hour + ":28:35." + fraction + suffix
+    quota = lane(normalize(doc))["quota"]
+    assert quota["value"] == "UNKNOWN"
+    assert quota["windows"] == []
+
+
+@pytest.mark.parametrize("key,value,field", [
+    ("last_successful_turn_at", "authenticated_at_successful_turn", "auth"),
+    ("last_successful_turn_at", "successful_turn_observed", "availability"),
+    ("first_error_at", "auth_required", "auth"),
+    ("first_error_at", "rate_limited", "availability"),
+])
+def test_submicrosecond_state_after_activity_is_unknown(key, value, field):
+    doc = summary()
+    row = doc["agents"][0]
+    row[key] = "2026-11-14T07:28:29.0000001Z"
+    row["auth_state" if field == "auth" else "availability_state"] = value
+    assert lane(normalize(doc))[field]["value"] == "UNKNOWN"
+
+
+def test_submicrosecond_process_start_after_observation_is_unknown():
+    doc = summary()
+    doc["agents"][0]["native_process_start_utc"] = "2026-11-14T07:28:29.0000001Z"
+    result = lane(normalize(doc))
+    assert result["activity"]["value"] == "UNKNOWN"
+    assert result["quota"]["value"] == "UNKNOWN"
+
+
+def test_submicrosecond_future_snapshot_hides_all_fields():
+    doc = summary()
+    doc["observed_at"] = "2026-11-14T07:28:35.0000001Z"
+    result = lane(normalize(doc))
+    assert result["activity"]["value"] == "UNKNOWN"
+    assert result["quota"]["value"] == "UNKNOWN"
+
+
+def test_submicrosecond_age_over_five_minutes_is_stale():
+    doc = summary()
+    row = doc["agents"][0]
+    row.update(observed_at="2026-11-14T07:23:34.9999999Z",
+               quota_observed_at="2026-11-14T07:23:34.9999999Z")
+    result = lane(normalize(doc))
+    assert result["activity"]["value"] == "UNKNOWN"
+    assert result["quota"]["value"] == "UNKNOWN"
+
+
+def test_submicrosecond_timestamp_is_preserved_without_rounding():
+    doc = summary()
+    doc["agents"][0]["quota_observed_at"] = "2026-11-14T07:28:29.1234567Z"
+    quota = lane(normalize(doc))["quota"]
+    assert quota["value"] == "observed_headroom"
+    assert quota["observed_at_utc"] == "2026-11-14T07:28:29.1234567Z"
+    assert quota["age_seconds"] == pytest.approx(5.8765433)
+
+
+def test_offset_conversion_preserves_submicrosecond_timestamp():
+    doc = summary()
+    doc["agents"][0]["quota_observed_at"] = "2026-11-14T09:28:29.1234567+02:00"
+    quota = lane(normalize(doc))["quota"]
+    assert quota["observed_at_utc"] == "2026-11-14T07:28:29.1234567Z"
+    assert quota["age_seconds"] == pytest.approx(5.8765433)
+
+
+def test_submicrosecond_future_activity_is_unknown():
+    doc = summary()
+    doc["agents"][0]["observed_at"] = "2026-11-14T07:28:35.0000001Z"
+    assert lane(normalize(doc))["activity"]["value"] == "UNKNOWN"

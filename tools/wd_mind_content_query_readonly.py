@@ -457,6 +457,14 @@ _COMBINED_SCHEMA = "wd.mind-content-memory-projection.v2"
 _MESSAGE_SCHEMA = "wd.bridge-mind-content-projection.v2"
 _DECISION_SCHEMA = "wd.mind-content-route-decision.v2"
 _ROUTE_SCOPE = "wd.q4-shared-projected-events.v1"
+_ALL_TASK_SCOPE_SCHEMA = "wd.mind-task-scope.v1"
+_ALL_TASK_DECISION_SCHEMA = "wd.mind-content-route-decision.v3"
+_ALL_TASK_COMBINED_SCHEMA = "wd.mind-content-memory-projection.v3"
+_ALL_TASK_MESSAGE_SCHEMA = "wd.bridge-mind-content-projection.v3"
+_ALL_TASK_ROUTE_SCOPE = "wd.mind-all-task-projected-events.v1"
+_ALL_TASK_MAX_PREFIX_BYTES = 1024 * 1024 * 1024
+_ALL_TASK_MAX_RECORDS = 65536
+_ALL_TASK_MAX_RECORD_BYTES = 32 * 1024 * 1024
 _RELEASE_TASK_LIST_SHA256 = "40e04e7002050b66085f8eff5723feb73e5f62a26910fe73405ab59e5ee5b765"
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}\Z")
@@ -486,7 +494,7 @@ _REQUIRED_CODE = {
     "tools/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "tools/wd_bridge_mind.py": "8555bd3fda512078ba61e3638af7f17ba3de55be11e126f6a7740ae140a67211",
     "waggledance/core/bridge_log_reader.py": "1949e26526153363d8c19f5051f636a646bb6839758d779c904f1eab72c5f49e",
-    "tools/wd_mind_content_prefix_readonly.py": "2928e877f48229fd75e9a98d00cb180aec22b46608f197337274a4f26ae46424",
+    "tools/wd_mind_content_prefix_readonly.py": "49953f7aa07d565f379388d08eca182b47f78d6a58227392a07d5a4b560cdca0",
     "tools/bridge_compact_view.py": "c808da1b1dd8f4e0220f8ffce730963455d0a706c2b4f1dd6387e450d5c84c83",
     "waggledance/__init__.py": "a48c64790f6d239f53960e5011fe87129555d7978197e9f0d0b43ef3b93d5e82",
     "waggledance/core/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -651,18 +659,27 @@ def _message_policy(document, tasks):
     if type(document) is not dict:
         raise ValueError("invalid_message_policy")
     schema = document.get("schema")
-    keys = (_POLICY_KEYS if schema == "wd.mind-content-policy.v1" else
-            _POLICY_KEYS | {"approved_source_refs"} if schema == "wd.mind-content-policy.v2" else None)
-    if keys is None or set(document) != keys:
+    all_tasks = tasks is None
+    all_keys = (_POLICY_KEYS - {"approved_tasks"}) | {"task_scope"}
+    keys = (_POLICY_KEYS if schema == "wd.mind-content-policy.v1" and not all_tasks else
+            _POLICY_KEYS | {"approved_source_refs"} if schema == "wd.mind-content-policy.v2" and not all_tasks else
+            all_keys if schema == "wd.mind-content-policy.v3" and all_tasks else None)
+    if (keys is None or (set(document) != keys and
+            not (all_tasks and set(document) == keys | {"approved_source_refs"}))):
         raise ValueError("invalid_message_policy")
     result = {
         "lanes": _strings(document["lanes"], lambda lane: lane in _BUILD_LANES, minimum=1, maximum=3),
         "types": _strings(document["types"], lambda kind: kind in _TYPES, minimum=1, maximum=len(_TYPES)),
-        "approved_tasks": _strings(document["approved_tasks"], _task, minimum=1, maximum=8),
         "removed_source_refs": _strings(document["removed_source_refs"], _hex),
     }
-    if not result["approved_tasks"] <= tasks:
-        raise ValueError("task_widening")
+    if all_tasks:
+        if document["task_scope"] != "all_tasks":
+            raise ValueError("invalid_task_scope")
+        result["task_scope"] = "all_tasks"
+    else:
+        result["approved_tasks"] = _strings(document["approved_tasks"], _task, minimum=1, maximum=8)
+        if not result["approved_tasks"] <= tasks:
+            raise ValueError("task_widening")
     for name, low, high in (("max_message_chars", 1, MAX_MESSAGE_CHARS),
                             ("max_chunk_chars", MIN_CHUNK_CHARS, MAX_CHUNK_CHARS)):
         if type(document[name]) is not int or not low <= document[name] <= high:
@@ -678,12 +695,23 @@ def _inputs(values):
     # required private policy. Unknown fields or missing evidence refuse.
     if set(values) != _INPUT_KEYS or values["enabled"] is not True or values["documents"] is not None:
         raise ValueError("invalid_inputs")
-    tasks = _strings(_pinned(values["approved_tasks_bytes"], values["approved_tasks_sha256"]),
-                     _task, minimum=8, maximum=8)
+    task_document = _pinned(values["approved_tasks_bytes"], values["approved_tasks_sha256"])
+    all_tasks = (type(task_document) is dict and task_document ==
+                 {"schema": _ALL_TASK_SCOPE_SCHEMA, "mode": "all_tasks"})
+    if all_tasks:
+        if _canonical(task_document) != values["approved_tasks_bytes"]:
+            raise ValueError("noncanonical_task_scope")
+        tasks = None
+    else:
+        tasks = _strings(task_document, _task, minimum=8, maximum=8)
     policy = _pinned(values["policy_bytes"], values["policy_sha256"])
-    if (type(policy) is not dict or set(policy) != {"schema", "approved_tasks"}
-            or policy["schema"] != "wd.q4-non-review-policy.v1"
-            or _strings(policy["approved_tasks"], _task, minimum=8, maximum=8) != tasks):
+    if all_tasks:
+        policy_valid = policy == {"schema": "wd.q4-non-review-policy.v2", "task_scope": "all_tasks"}
+    else:
+        policy_valid = (type(policy) is dict and set(policy) == {"schema", "approved_tasks"}
+                        and policy["schema"] == "wd.q4-non-review-policy.v1"
+                        and _strings(policy["approved_tasks"], _task, minimum=8, maximum=8) == tasks)
+    if not policy_valid:
         raise ValueError("invalid_task_policy")
     roster_document = _pinned(values["roster_bytes"], values["roster_sha256"])
     roster = _roster(roster_document)
@@ -700,9 +728,11 @@ def _inputs(values):
     decision = _pinned(values["decision_bytes"], values["decision_sha256"])
     if (type(decision) is not dict or set(decision) != _DECISION_KEYS
             or _canonical(decision) != values["decision_bytes"]
-            or decision["schema"] != _DECISION_SCHEMA or decision["decision"] != "enable_content_route"
-            or decision["projection_schema"] != _COMBINED_SCHEMA or decision["scope"] != _ROUTE_SCOPE
-            or decision["message_projection_schema"] != _MESSAGE_SCHEMA
+            or decision["schema"] != (_ALL_TASK_DECISION_SCHEMA if all_tasks else _DECISION_SCHEMA)
+            or decision["decision"] != "enable_content_route"
+            or decision["projection_schema"] != (_ALL_TASK_COMBINED_SCHEMA if all_tasks else _COMBINED_SCHEMA)
+            or decision["scope"] != (_ALL_TASK_ROUTE_SCOPE if all_tasks else _ROUTE_SCOPE)
+            or decision["message_projection_schema"] != (_ALL_TASK_MESSAGE_SCHEMA if all_tasks else _MESSAGE_SCHEMA)
             or decision["review_signal_excluded"] is not False or decision["doc_policy_sha256"] is not None):
         raise ValueError("invalid_decision")
     pins = dict(module_sha256s(), nonreview_policy_sha256=values["policy_sha256"],
@@ -714,7 +744,7 @@ def _inputs(values):
     anchored = decision["source_prefix"]
     if (type(anchored) is not dict or set(anchored) != {"sha256", "offset", "generation"}
             or not _hex(anchored["sha256"]) or type(anchored["offset"]) is not int
-            or not 0 < anchored["offset"] <= 256 * 1024 * 1024
+            or not 0 < anchored["offset"] <= (_ALL_TASK_MAX_PREFIX_BYTES if all_tasks else 256 * 1024 * 1024)
             or type(anchored["generation"]) is not str or _GENERATION.fullmatch(anchored["generation"]) is None):
         raise ValueError("invalid_anchor")
     _check_code()
@@ -807,7 +837,9 @@ def _fields(event, policy, roster):
         return "agent_identity_mismatch"
     if type(event.get("type")) is not str or event["type"] not in policy["types"]:
         return "type_not_allowed"
-    if type(event.get("task_id")) is not str or event["task_id"] not in policy["approved_tasks"]:
+    task = event.get("task_id")
+    if (type(task) is not str or not _task(task) or
+            (policy.get("task_scope") != "all_tasks" and task not in policy["approved_tasks"])):
         return "task_not_approved"
     status = event.get("status")
     if status not in (None, "") and (type(status) is not str or status not in _STATUSES):
@@ -817,7 +849,8 @@ def _fields(event, policy, roster):
         available = when + dt.timedelta(seconds=60)
     except (ValueError, TypeError, OverflowError):
         return "time_invalid"
-    return {"agent": agent, "type": event["type"], "task_id": event["task_id"],
+    visible_task = ("sha256:" + _sha(task.encode("utf-8")) if policy.get("task_scope") == "all_tasks" else task)
+    return {"agent": agent, "type": event["type"], "task_id": visible_task,
             "ts_utc": _utc_text(when), "available": _utc_text(available)}
 
 
@@ -838,9 +871,14 @@ def _projection(context):
     prefix = _pinned_dependency("tools.wd_mind_content_prefix_readonly", "tools/wd_mind_content_prefix_readonly.py",
                                 ("read_prefix_rows",))
     source, policy = context["messages"], context["policy"]
-    rows = prefix.read_prefix_rows(source["source_path"], source["generation_path"], source["end_cursor"],
-                                  context["decision"]["source_prefix"]["sha256"], set(policy["approved_tasks"]))
-    records, refused = [], {}
+    all_tasks = policy.get("task_scope") == "all_tasks"
+    if all_tasks:
+        rows = prefix.read_prefix_rows(source["source_path"], source["generation_path"], source["end_cursor"],
+                                      context["decision"]["source_prefix"]["sha256"], None, scope="all_tasks_v1")
+    else:
+        rows = prefix.read_prefix_rows(source["source_path"], source["generation_path"], source["end_cursor"],
+                                      context["decision"]["source_prefix"]["sha256"], set(policy["approved_tasks"]))
+    records, refused, record_bytes = [], {}, 0
     for ref in sorted(rows):
         event = rows[ref]
         if not _hex(ref) or type(event) is not dict or not hmac.compare_digest(_sha(_canonical(event)), ref):
@@ -868,15 +906,23 @@ def _projection(context):
         if not chunks or any(_OUTPUT.fullmatch(text) is None or _has_marker(text) for text in chunks):
             refused["encoding"] = refused.get("encoding", 0) + 1
             continue
-        records.extend(_record(ref, fields, chunks, index) for index in range(len(chunks)))
+        for index in range(len(chunks)):
+            record = _record(ref, fields, chunks, index)
+            if all_tasks:
+                record_bytes += len(_canonical(record))
+                if len(records) >= _ALL_TASK_MAX_RECORDS or record_bytes > _ALL_TASK_MAX_RECORD_BYTES:
+                    raise ValueError("projection_limit")
+            records.append(record)
     records.sort(key=lambda item: (item["time_utc"], item["provenance"]["source_event_ref"],
                                    item["provenance"]["chunk_index"]))
-    messages = {"schema": _MESSAGE_SCHEMA, "authority": "none", "scope": "shared_content_projection_not_gate",
+    messages = {"schema": _ALL_TASK_MESSAGE_SCHEMA if all_tasks else _MESSAGE_SCHEMA,
+                "authority": "none", "scope": "shared_content_projection_not_gate",
                 "policy_sha256": source["policy_sha256"], "text_encoding": "wd.content-text.v1",
                 "accepted": len(records), "refused": dict(sorted(refused.items())), "records": records,
                 "authorship": "declared_roster_consistent", "review_signal_excluded": False,
                 "identifier_policy_hmac": context["identifier_tag"]}
-    return {"schema": _COMBINED_SCHEMA, "authority": "none", "scope": "wd.mind-content-events.v1",
+    return {"schema": _ALL_TASK_COMBINED_SCHEMA if all_tasks else _COMBINED_SCHEMA,
+            "authority": "none", "scope": "wd.mind-content-events.v1",
             "messages": messages, "documents": None}
 
 
@@ -894,7 +940,8 @@ def _verified(snapshot):
     # this fixed digest, plus its other authority and runtime tuple conditions.
     report = {"status": "MATCH", "projection_sha256": digest, "decision_sha256": context["decision_sha256"],
               "source_prefix": dict(context["decision"]["source_prefix"]), "doc_commit": None,
-              "operator_scope_authorization": "UNKNOWN", "required_release_task_list_sha256": _RELEASE_TASK_LIST_SHA256}
+              "operator_scope_authorization": "UNKNOWN", "required_release_task_list_sha256":
+                  None if context["policy"].get("task_scope") == "all_tasks" else _RELEASE_TASK_LIST_SHA256}
     return projection, context, report
 
 

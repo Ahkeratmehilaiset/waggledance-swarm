@@ -20,6 +20,15 @@ PAGE_BYTES = 4 * 1024 * 1024
 MAX_SOURCE_ROWS = 4096
 MAX_ROW_BYTES = 65536
 MAX_PAGE_ROWS = 100000
+MAX_ALL_TASK_PREFIX_BYTES = 1024 * 1024 * 1024
+MAX_ALL_TASK_ROWS = 131072
+MAX_ALL_TASK_RETAINED_BYTES = 256 * 1024 * 1024
+MAX_ALL_TASK_ROW_BYTES = 4 * 1024 * 1024
+# A coarse prefilter, not a substitute for content, identity, route or policy
+# screening. Keep this set in sync with the content reader's accepted domain.
+ALL_TASK_BUILD_LANES = frozenset(('codex-lead-1', 'codex-tools-1', 'fable-5'))
+ALL_TASK_TYPES = frozenset(('message', 'wake_request', 'handoff', 'test', 'claim',
+                            'release', 'done', 'milestone', 'status', 'progress'))
 
 
 def _hash_prefix(stream, length):
@@ -35,24 +44,30 @@ def _hash_prefix(stream, length):
     return digest
 
 
-def read_prefix_rows(source_path, generation_path, end_cursor, expected_prefix_sha256, tasks):
+def read_prefix_rows(source_path, generation_path, end_cursor, expected_prefix_sha256, tasks, *,
+                     scope='approved_tasks_v1'):
     """Return approved task rows only after the entire anchored prefix verifies.
 
     No rows escape on any error. Read-time hashes bind the exact bytes parsed,
     with each prefix checked again from the same handle before proceeding.
     """
+    if (scope not in ('approved_tasks_v1', 'all_tasks_v1')
+            or (scope == 'approved_tasks_v1' and
+                (type(tasks) not in (set, frozenset) or any(type(task) is not str for task in tasks)))
+            or (scope == 'all_tasks_v1' and tasks is not None)):
+        raise ValueError('invalid_prefix_input')
+    max_prefix = MAX_PREFIX_BYTES if scope == 'approved_tasks_v1' else MAX_ALL_TASK_PREFIX_BYTES
     if (type(source_path) is not str or not os.path.isabs(source_path)
             or type(generation_path) is not str or not os.path.isabs(generation_path)
             or type(end_cursor) is not bridge.BridgeCursor or bridge._validate_cursor(end_cursor)
             or type(end_cursor.generation) is not str or not end_cursor.generation
-            or type(end_cursor.offset) is not int or not 0 < end_cursor.offset <= MAX_PREFIX_BYTES
+            or type(end_cursor.offset) is not int or not 0 < end_cursor.offset <= max_prefix
             or type(expected_prefix_sha256) is not str
-            or re.fullmatch(r'[0-9a-f]{64}', expected_prefix_sha256) is None
-            or type(tasks) not in (set, frozenset) or any(type(task) is not str for task in tasks)):
+            or re.fullmatch(r'[0-9a-f]{64}', expected_prefix_sha256) is None):
         raise ValueError('invalid_prefix_input')
 
     path, generation = Path(source_path), Path(generation_path)
-    rows, offset, pages = {}, 0, 0
+    rows, offset, pages, retained_bytes = {}, 0, 0, 0
     prior_hash = hashlib.sha256(b'').hexdigest()
     try:
         with bridge._open_log(path) as stream:
@@ -61,7 +76,7 @@ def read_prefix_rows(source_path, generation_path, end_cursor, expected_prefix_s
                 raise ValueError('identity_mismatch')
             while offset < end_cursor.offset:
                 pages += 1
-                if pages > MAX_PREFIX_BYTES // PAGE_BYTES + 2:
+                if pages > max_prefix // PAGE_BYTES + 2:
                     raise ValueError('page_limit')
                 before_generation = bridge._read_generation(generation)
                 if before_generation != end_cursor.generation:
@@ -95,13 +110,30 @@ def read_prefix_rows(source_path, generation_path, end_cursor, expected_prefix_s
                         or bridge._read_generation(generation) != before_generation):
                     raise ValueError('source_changed')
                 for event in page_rows:
-                    if type(event) is not dict or type(event.get('task_id')) is not str or event['task_id'] not in tasks:
+                    if (type(event) is not dict or type(event.get('task_id')) is not str
+                            or (scope == 'approved_tasks_v1' and event['task_id'] not in tasks)
+                            or (scope == 'all_tasks_v1' and
+                                (type(event.get('agent')) is not str
+                                 or event['agent'] not in ALL_TASK_BUILD_LANES
+                                 or type(event.get('type')) is not str
+                                 or event['type'] not in ALL_TASK_TYPES))):
                         continue
                     encoded = json.dumps(event, sort_keys=True, ensure_ascii=False, separators=(',', ':'),
                                          allow_nan=False).encode('utf-8')
-                    if len(encoded) > MAX_ROW_BYTES or len(rows) >= MAX_SOURCE_ROWS:
-                        raise ValueError('row_limit')
-                    rows[event_id(event)] = event
+                    if scope == 'approved_tasks_v1':
+                        if len(encoded) > MAX_ROW_BYTES or len(rows) >= MAX_SOURCE_ROWS:
+                            raise ValueError('row_limit')
+                        rows[event_id(event)] = event
+                    else:
+                        ref = event_id(event)
+                        if len(encoded) > MAX_ALL_TASK_ROW_BYTES:
+                            raise ValueError('row_limit')
+                        if ref not in rows:
+                            if (len(rows) >= MAX_ALL_TASK_ROWS
+                                    or retained_bytes + len(encoded) > MAX_ALL_TASK_RETAINED_BYTES):
+                                raise ValueError('row_limit')
+                            retained_bytes += len(encoded)
+                            rows[ref] = event
                 offset, prior_hash = next_offset, state.hexdigest()
             if offset != end_cursor.offset or not hmac.compare_digest(prior_hash, expected_prefix_sha256):
                 raise ValueError('prefix_mismatch')

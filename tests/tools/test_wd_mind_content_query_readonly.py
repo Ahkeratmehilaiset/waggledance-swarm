@@ -1823,3 +1823,239 @@ def test_provider_adapter_does_not_change_environment_or_input_files(reader, tmp
     assert _semantic_entry(reader, case)["status"] == "ANSWER"
     assert dict(os.environ) == before_env
     assert {str(path): _sha(path.read_bytes()) for path in tmp_path.rglob("*") if path.is_file()} == before_files
+
+
+def test_semantic_v3_bounded_decoding_preserves_query_result(reader, tmp_path, monkeypatch):
+    """Use a small threshold to exercise the large-v3 path on complete fixtures."""
+    (tmp_path / "original").mkdir()
+    (tmp_path / "candidate").mkdir()
+    original = _semantic_case(reader, tmp_path / "original", all_tasks=True)
+    expected = _semantic_entry(reader, original)
+    candidate = _semantic_case(reader, tmp_path / "candidate", all_tasks=True)
+    # The independent v3 cap remains higher; v2's historical threshold is only
+    # lowered to force this tiny fixture through bounded reconstruction.
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    monkeypatch.setattr(reader, "_Q4_BOUNDED_CHUNK_ROWS", 2, raising=False)
+    observed = _semantic_entry(reader, candidate)
+    assert observed == expected
+
+
+def test_semantic_v3_corrupt_last_cell_never_reads_query(reader, tmp_path, monkeypatch):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    last_cell = sorted(case["cell_snapshots"])[-1]
+    index_bytes = case["cell_snapshots"][last_cell]["artifacts"]["index"]
+    # Remains a finite normalized vector, so integrity/pair checks must catch it.
+    case["index_provider"].indices[index_bytes][-1] = (0.0, 1.0) + (0.0,) * (SEMANTIC_DIM - 2)
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    monkeypatch.setattr(reader, "_Q4_BOUNDED_CHUNK_ROWS", 2, raising=False)
+    _refused(reader, lambda: _semantic_entry(reader, case))
+    assert len(case["index_provider"].calls) == len(case["cell_snapshots"])
+    assert case["encoder_provider"].calls == [] and case["stream"].reads == 0
+
+
+def test_bounded_v3_adapter_preserves_legacy_full_only_surface(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    encoder, decode, state = _provider_objects(case)
+    args = _provider_arguments(case, encoder, decode)
+    args["allow_bounded_v3"] = True
+    _, loader = _provider_adapt(reader, args)
+    index = loader.load(next(iter(case["index_provider"].indices)))
+    _refused(reader, lambda: index.reconstruct_n(0, index.ntotal - 1))
+    assert state["indices"][-1].calls == []
+    chunk = index.reconstruct_chunk(0, 1)
+    assert len(chunk) == 1 and state["indices"][-1].calls == [(0, 1)]
+
+
+def test_bounded_v3_query_uses_opt_in_native_chunks_before_encoder(reader, tmp_path, monkeypatch):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    encoder, decode, state = _provider_objects(case)
+    args = _provider_arguments(case, encoder, decode)
+    args["allow_bounded_v3"] = True
+    case["encoder_provider"], case["index_provider"] = _provider_adapt(reader, args)
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    monkeypatch.setattr(reader, "_Q4_BOUNDED_CHUNK_ROWS", 2)
+    observed = _semantic_entry(reader, case)
+    assert observed["status"] == "ANSWER"
+    assert encoder.calls == ["retry network outage"]
+    assert state["indices"] and all(index.calls == [(0, 2), (2, 2)] for index in state["indices"])
+
+
+def test_bounded_v3_bad_native_dtype_refuses_before_query(reader, tmp_path, monkeypatch):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    encoder, decode, state = _provider_objects(case)
+
+    def change(index):
+        index.result = _ProviderArray32(index.rows[:2], matrix=True)
+        index.result.dtype.str = "<f8"
+
+    state["on_decode"] = change
+    args = _provider_arguments(case, encoder, decode)
+    args["allow_bounded_v3"] = True
+    case["encoder_provider"], case["index_provider"] = _provider_adapt(reader, args)
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    monkeypatch.setattr(reader, "_Q4_BOUNDED_CHUNK_ROWS", 2)
+    _refused(reader, lambda: _semantic_entry(reader, case))
+    assert state["calls"] and encoder.calls == [] and case["stream"].reads == 0
+
+
+@pytest.mark.parametrize("start,count", [(-1, 1), (False, 1), (0, True), (0, 0), (1, 99), (99, 1)])
+def test_bounded_v3_adapter_rejects_bad_chunk_before_decoder(reader, tmp_path, start, count):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    encoder, decode, state = _provider_objects(case)
+    args = _provider_arguments(case, encoder, decode)
+    args["allow_bounded_v3"] = True
+    _, loader = _provider_adapt(reader, args)
+    index = loader.load(next(iter(case["index_provider"].indices)))
+    _refused(reader, lambda: index.reconstruct_chunk(start, count))
+    assert state["indices"][-1].calls == []
+
+
+def test_default_adapter_refuses_v3_chunk_without_opt_in(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    encoder, decode, state = _provider_objects(case)
+    _, loader = _provider_adapt(reader, _provider_arguments(case, encoder, decode))
+    index = loader.load(next(iter(case["index_provider"].indices)))
+    _refused(reader, lambda: index.reconstruct_chunk(0, 1))
+    assert state["indices"][-1].calls == []
+
+
+def test_bounded_v3_large_adapter_requires_opt_in_and_never_full_reconstructs(reader):
+    class LargeIndex:
+        d, ntotal, metric_type = SEMANTIC_DIM, 20002, 0
+        calls = []
+
+        def reconstruct_n(self, start, count):
+            self.calls.append((start, count))
+            return [(1.0,) + (0.0,) * (SEMANTIC_DIM - 1)] * count
+
+    native = LargeIndex()
+    with pytest.raises(ValueError):
+        reader._ReadonlyDecodedIndex(native)
+    index = reader._ReadonlyDecodedIndex(native, True)
+    _refused(reader, lambda: index.reconstruct_n(0, index.ntotal))
+    assert native.calls == []
+    assert len(index.reconstruct_chunk(20001, 1)) == 1
+    assert native.calls == [(20001, 1)]
+
+
+def test_bounded_v3_adapter_rejects_index_control_changes_after_chunk(reader):
+    class MutableIndex:
+        d, ntotal, metric_type = SEMANTIC_DIM, 4, 0
+
+        def reconstruct_n(self, start, count):
+            self.ntotal -= 1
+            return [(1.0,) + (0.0,) * (SEMANTIC_DIM - 1)] * count
+
+    index = reader._ReadonlyDecodedIndex(MutableIndex(), True)
+    _refused(reader, lambda: index.reconstruct_chunk(0, 1))
+
+
+def test_semantic_legacy_row_limit_remains_unchanged(reader, tmp_path, monkeypatch):
+    case = _semantic_case(reader, tmp_path)
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("control", ["global_rows", "vector_bytes", "total_bytes"])
+def test_semantic_v3_bounded_preflight_refuses_before_provider(reader, tmp_path, monkeypatch, control):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    if control == "global_rows":
+        monkeypatch.setattr(reader, "_Q4_BOUNDED_V3_MAX_ROWS", 6)
+    elif control == "vector_bytes":
+        monkeypatch.setattr(reader, "_Q4_BOUNDED_VECTOR_BYTES", 8 * 384 * 8 - 1)
+    else:
+        monkeypatch.setattr(reader, "_Q4_TOTAL_BYTES", 1)
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+def test_semantic_v3_bounded_all_cell_metadata_precedes_provider(reader, tmp_path, monkeypatch):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    case["cell_snapshots"][sorted(case["cell_snapshots"])[-1]]["artifacts"]["index"] += b"changed"
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+def test_bounded_v3_rejects_aggregate_rows_before_expanding_cells(reader, tmp_path, monkeypatch):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    cell = case["cell_snapshots"]["general"]
+    receipt = json.loads(cell["artifacts"]["receipt"])
+    receipt["content"]["count"] += 2
+    receipt["content_sha256"] = _sha(_raw(receipt["content"]))
+    cell["artifacts"]["receipt"] = _raw(receipt)
+    _semantic_repin_cell(case, "general")
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    expanded = []
+    original = reader._q4_cell_controls
+
+    def observe(*args):
+        expanded.append(True)
+        return original(*args)
+
+    monkeypatch.setattr(reader, "_q4_cell_controls", observe)
+    _semantic_refuses_without_callbacks(reader, case)
+    assert expanded == []
+
+
+def test_bounded_rank_preserves_double_precision_values(reader, tmp_path):
+    import math
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    projection = json.loads(case["projection_bytes"])
+    records = {record["record_id"]: record for record in projection["messages"]["records"]}
+    for record in records.values():
+        record["stored_text"] = "synthetic network retry candidate"
+    exact, compact, rounded = {}, {}, {}
+    for number, key in enumerate(sorted(records)):
+        # Some values have the same float32 representation but different
+        # float64 values. Packing only float32 would lose ranking information.
+        x = 0.5 + number * 1e-9
+        vector = (x, math.sqrt(1.0 - x * x)) + (0.0,) * (SEMANTIC_DIM - 2)
+        exact[key] = {view: vector for view in ("w", "d")}
+        compact[key] = {view: struct.pack("<" + "d" * SEMANTIC_DIM, *vector) for view in ("w", "d")}
+        f32 = struct.unpack("<" + "f" * SEMANTIC_DIM, struct.pack("<" + "f" * SEMANTIC_DIM, *vector))
+        rounded[key] = {view: f32 for view in ("w", "d")}
+    time = reader._utc(QUERY_TIME)
+    expected = reader._q4_rank(records, exact, _SyntheticEncoder({}), "retry network outage", time)
+    observed = reader._q4_rank(records, compact, _SyntheticEncoder({}), "retry network outage", time)
+    assert expected and observed == expected
+    assert reader._q4_rank(records, rounded, _SyntheticEncoder({}), "retry network outage", time) != expected
+
+
+def test_bounded_decode_large_synthetic_row_count_uses_small_chunks(reader, monkeypatch):
+    # Exercise the diagnosed row scale cheaply; the real dimension and float64
+    # byte ceiling are verified separately without creating a production index.
+    monkeypatch.setattr(reader, "_Q4_DIM", 4)
+    count = 31600
+    keys = ["synthetic-" + str(i) for i in range(count)]
+    rows = [(key, view) for key in keys for view in ("w", "d")]
+    ids = [key + "#" + view for key, view in rows]
+    vector = (1.0, 0.0, 0.0, 0.0)
+    packed = struct.pack("<4f", *vector)
+    pairs = hashlib.sha256()
+    for doc_id in ids:
+        pairs.update(doc_id.encode() + b"\x00" + packed)
+
+    class Index:
+        d, ntotal, metric_type = 4, len(rows), 0
+        calls = []
+
+        def reconstruct_n(self, start, size):
+            self.calls.append((start, size))
+            assert 0 < size <= reader._Q4_BOUNDED_CHUNK_ROWS
+            return [vector] * size
+
+    class Provider:
+        index = Index()
+
+        def load(self, raw):
+            assert raw == b"synthetic-index"
+            return self.index
+
+    provider = Provider()
+    captured = {"general": ({"index": b"synthetic-index"},
+        {"count": len(rows), "pairs_sha256": pairs.hexdigest()}, {"doc_ids": ids}, rows)}
+    entries = reader._q4_decode_cells_bounded_v3(captured, provider, dict.fromkeys(keys))
+    assert len(entries) == count
+    assert sum(size for _, size in provider.index.calls) == len(rows)
+    assert all(type(entries[key][view]) is bytes and len(entries[key][view]) == 4 * 8
+               for key in keys for view in ("w", "d"))

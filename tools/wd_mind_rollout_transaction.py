@@ -278,6 +278,9 @@ def _check_lanes(cfg, roots, trusted, closure, directory, pointer, phase, deadli
         env.update(WD_ROLLOUT_EXPECTED=_json_bytes(expected).decode("utf-8"),
                    WD_ROLLOUT_RECEIPT=str(receipt), WD_ROLLOUT_POINTER=str(pointer), PYTHONDONTWRITEBYTECODE="1")
         started_ns = time.time_ns()
+        # Validation and environment preparation may consume the remaining budget.
+        if time.monotonic() >= deadline:
+            return False, ()
         child = subprocess.Popen(launch["argv"], cwd=directory, env=env, stdin=subprocess.DEVNULL,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, shell=False)
         active.append(child)  # Track before any fallible journal/receipt operation.

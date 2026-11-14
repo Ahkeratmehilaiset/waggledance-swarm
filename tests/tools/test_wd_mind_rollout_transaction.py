@@ -492,3 +492,90 @@ def test_root_reparse_is_rejected_without_following(setup, position):
             else:
                 link.unlink()
     assert target.is_dir() and observed_files(config) == original
+
+
+def observe_deadline_callers(module, config, monkeypatch, phase, stage, offset):
+    clock = [0.0]
+    calls, children = [], []
+    validations = 0
+    deadline = config["attempt_timeout_seconds"] + (config["recovery_timeout_seconds"] if phase == "previous" else 0)
+    real_validate, real_encode, real_popen = module._validate_launch, module._json_bytes, module.subprocess.Popen
+
+    def validate(launch):
+        nonlocal validations
+        real_validate(launch)
+        validations += 1
+        if stage == "validation" and validations == (7 if phase == "previous" else 6):
+            clock[0] = deadline + offset
+
+    def encode(value):
+        result = real_encode(value)
+        if stage == "environment" and isinstance(value, dict) and value.get("phase") == phase and "lane" in value:
+            clock[0] = deadline + offset
+        return result
+
+    def start(argv, *args, **kwargs):
+        child = real_popen(argv, *args, **kwargs)
+        expected = (kwargs.get("env") or {}).get("WD_ROLLOUT_EXPECTED")
+        if expected:
+            row = json.loads(expected)
+            limit = config["attempt_timeout_seconds"] + (config["recovery_timeout_seconds"] if row["phase"] == "previous" else 0)
+            calls.append({"phase": row["phase"], "lane": row["lane"], "pid": child.pid,
+                          "clock": clock[0], "deadline": limit})
+            children.append(child)
+        return child
+
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module, "_validate_launch", validate)
+    monkeypatch.setattr(module, "_json_bytes", encode)
+    monkeypatch.setattr(module.subprocess, "Popen", start)
+    return calls, children
+
+
+def retain_deadline_observations(config, calls, children, result):
+    for child in children:
+        child.wait(timeout=5)  # Owned synthetic children finish naturally, including on RED.
+    row = {"schema": "wd.synthetic-deadline-proof.v1", "synthetic": True,
+           "clock_kind": "controlled_monotonic_not_performance_measurement",
+           "status": result.status if result else None, "calls": calls,
+           "terminal_exits": [{"pid": child.pid, "exit_code": child.poll()} for child in children]}
+    (Path(config["machine_root"]).parent / "deadline-observed.json").write_text(json.dumps(row))
+
+
+@pytest.mark.parametrize("phase,stage", [("candidate", "validation"), ("candidate", "environment"),
+                                         ("previous", "validation")])
+@pytest.mark.parametrize("offset", [0.0, 1.0])
+def test_expired_phase_deadline_does_not_start_caller(setup, monkeypatch, phase, stage, offset):
+    module, config, behavior, original = setup
+    if phase == "previous":
+        behavior.write_text(json.dumps({"candidate": "missing", "previous": "ok"}))
+    calls, children = observe_deadline_callers(module, config, monkeypatch, phase, stage, offset)
+    result = None
+    try:
+        result = module.run_transaction(config)
+        assert all(row["clock"] < row["deadline"] for row in calls)
+        assert not any(row["phase"] == phase for row in calls)
+        assert result.pending == () and observed_files(config) == original
+        lock = Path(config["machine_root"]) / ".wd-mind-rollout.lock"
+        if phase == "candidate":
+            assert result.status == "ROLLED_BACK" and not lock.exists()
+            assert len(calls) == 5 and all(row["phase"] == "previous" for row in calls)
+        else:
+            assert result.status == "ROLLBACK_FAILED_HOLD" and lock.exists()
+            assert len(calls) == 1 and calls[0]["phase"] == "candidate"
+    finally:
+        retain_deadline_observations(config, calls, children, result)
+
+
+@pytest.mark.parametrize("stage", ["validation", "environment"])
+def test_preparation_within_deadline_still_checks_five_real_callers(setup, monkeypatch, stage):
+    module, config, behavior, original = setup
+    calls, children = observe_deadline_callers(module, config, monkeypatch, "candidate", stage, -0.5)
+    result = None
+    try:
+        result = module.run_transaction(config)
+        assert result.status == "COMMITTED" and result.pending == ()
+        assert len(calls) == 5 and all(row["phase"] == "candidate" and row["clock"] < row["deadline"] for row in calls)
+        assert all(row["ok"] for row in journal(result)["checks"])
+    finally:
+        retain_deadline_observations(config, calls, children, result)

@@ -33,12 +33,19 @@ def candidate(tmp_path):
     manifest.write_bytes(data)
     interpreter = tmp_path / "synthetic-interpreter.exe"
     bootstrap = tmp_path / "synthetic-bootstrap.py"
-    verifier = tmp_path / "synthetic-verifier.py"
+    bundle = tmp_path / "synthetic-bundle"
+    verifier = bundle / "tools-bootstrap/tools/wd_mind_runtime_manifest.py"
+    verifier.parent.mkdir(parents=True)
     interpreter.write_bytes(b"synthetic interpreter, never execute")
     bootstrap.write_bytes(b"raise AssertionError('must never run')\n")
     verifier.write_bytes((Path(__file__).resolve().parents[2] / "tools/wd_mind_runtime_manifest.py").read_bytes())
+    deployment = json.dumps({"schema_version": 1, "files": {
+        "tools-bootstrap/tools/wd_mind_runtime_manifest.py": _hash(verifier.read_bytes()).upper()}},
+        sort_keys=True).encode()
+    (bundle / "deployment-manifest.json").write_bytes(deployment)
     return {"interpreter": interpreter, "interpreter_sha256": _hash(interpreter.read_bytes()),
             "bootstrap": bootstrap, "bootstrap_sha256": _hash(bootstrap.read_bytes()),
+            "bundle_root": bundle, "deployment_manifest_sha256": _hash(deployment),
             "verifier": verifier, "verifier_sha256": _hash(verifier.read_bytes()),
             "runtime_root": root, "runtime_manifest": manifest, "runtime_manifest_sha256": _hash(data),
             "generation": generation, "revision": revision}
@@ -65,7 +72,7 @@ def test_verified_preflight_never_runs_process_opens_network_or_loads_model(cand
     assert files_before == {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
 
-@pytest.mark.parametrize("key", ["interpreter_sha256", "bootstrap_sha256", "verifier_sha256",
+@pytest.mark.parametrize("key", ["interpreter_sha256", "bootstrap_sha256", "verifier_sha256", "deployment_manifest_sha256",
                                   "runtime_manifest_sha256", "generation", "revision"])
 def test_wrong_independently_pinned_value_fails_closed(candidate, monkeypatch, key):
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("process started"))
@@ -87,6 +94,44 @@ def test_unapproved_verifier_import_never_executes(candidate, tmp_path, monkeypa
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("process started"))
     _refuses(candidate)
     assert not marker.exists()
+
+
+def test_self_pinned_unapproved_verifier_still_never_executes(candidate, tmp_path, monkeypatch):
+    marker = tmp_path / "must-not-exist"
+    malicious = ("from pathlib import Path\nPath(%r).write_text('unauthorized')\n" % str(marker)).encode()
+    candidate["verifier"].write_bytes(malicious)
+    # Matching attacker-supplied bytes and digest are not a trust anchor.
+    candidate["verifier_sha256"] = _hash(malicious)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("process started"))
+    _refuses(candidate)
+    assert not marker.exists()
+
+
+def test_self_pinned_manifest_and_verifier_still_refuse_unapproved_code(candidate, tmp_path):
+    marker = tmp_path / "must-not-exist"
+    malicious = ("from pathlib import Path\nPath(%r).write_text('unauthorized')\n" % str(marker)).encode()
+    candidate["verifier"].write_bytes(malicious)
+    candidate["verifier_sha256"] = _hash(malicious)
+    manifest = json.dumps({"schema_version": 1, "files": {
+        "tools-bootstrap/tools/wd_mind_runtime_manifest.py": _hash(malicious)}}, sort_keys=True).encode()
+    (candidate["bundle_root"] / "deployment-manifest.json").write_bytes(manifest)
+    candidate["deployment_manifest_sha256"] = _hash(manifest)
+    _refuses(candidate)
+    assert not marker.exists()
+
+
+def test_verifier_outside_pinned_bundle_is_refused(candidate, tmp_path):
+    outsider = tmp_path / "outside-verifier.py"
+    outsider.write_bytes(candidate["verifier"].read_bytes())
+    candidate["verifier"] = outsider
+    _refuses(candidate)
+
+
+def test_duplicate_deployment_manifest_keys_refuse(candidate):
+    manifest = b'{"schema_version":1,"schema_version":1,"files":{}}'
+    (candidate["bundle_root"] / "deployment-manifest.json").write_bytes(manifest)
+    candidate["deployment_manifest_sha256"] = _hash(manifest)
+    _refuses(candidate)
 
 
 @pytest.mark.parametrize("mutation", ["missing", "changed", "extra"])

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 from pathlib import Path
 import re
@@ -30,6 +31,10 @@ _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_CODE = 2 * 1024 * 1024
 _MAX_INTERPRETER = 512 * 1024 * 1024
 _DEVICE = re.compile(r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?\Z", re.IGNORECASE)
+# SHA256 of the packaged e98-derived verifier. This file and its constant must
+# themselves be covered by an independently anchored bundle manifest.
+_PACKAGED_VERIFIER_SHA256 = "d488a8495f0ee89aebc26d2d1345878d26e5a6c85b228e2c10086f4134680a64"
+_VERIFIER_RELATIVE = "tools-bootstrap/tools/wd_mind_runtime_manifest.py"
 
 
 class RuntimePreflightRefused(ValueError):
@@ -86,8 +91,18 @@ def _read_pinned_file(value, pin, *, limit, retain=False):
     return b"".join(blocks) if retain else None
 
 
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_manifest_key")
+        result[key] = value
+    return result
+
+
 def verify_runtime_process_preflight(*, interpreter, interpreter_sha256, bootstrap, bootstrap_sha256,
-                                     verifier, verifier_sha256, runtime_root, runtime_manifest,
+                                     bundle_root, deployment_manifest_sha256, verifier, verifier_sha256,
+                                     runtime_root, runtime_manifest,
                                      runtime_manifest_sha256, generation, revision):
     """Verify external pins and runtime tree; return evidence, not permission to run.
 
@@ -97,6 +112,24 @@ def verify_runtime_process_preflight(*, interpreter, interpreter_sha256, bootstr
     """
     result = None
     try:
+        bundle = Path(bundle_root)
+        if not bundle.is_absolute() or ".." in bundle.parts:
+            raise ValueError("bundle")
+        manifest_bytes = _read_pinned_file(bundle / "deployment-manifest.json", deployment_manifest_sha256,
+                                           limit=4 * 1024 * 1024, retain=True)
+        manifest = json.loads(manifest_bytes.decode("utf-8-sig"), object_pairs_hook=_unique_json_object,
+                              parse_constant=lambda _: (_ for _ in ()).throw(ValueError("constant")))
+        if (type(manifest) is not dict or manifest.get("schema_version") != 1
+                or type(manifest.get("files")) is not dict
+                or type(manifest["files"].get(_VERIFIER_RELATIVE)) is not str
+                or manifest["files"][_VERIFIER_RELATIVE].lower() != _PACKAGED_VERIFIER_SHA256):
+            raise ValueError("verifier_not_manifest_bound")
+        packaged_verifier = bundle.joinpath(*_VERIFIER_RELATIVE.split("/"))
+        if os.path.normcase(os.path.abspath(os.fspath(verifier))) != os.path.normcase(os.path.abspath(packaged_verifier)):
+            raise ValueError("verifier_not_packaged")
+        if (type(verifier_sha256) is not str or
+                not hmac.compare_digest(verifier_sha256, _PACKAGED_VERIFIER_SHA256)):
+            raise ValueError("unapproved_verifier")
         # Wrong bootstrap/interpreter/verifier pins refuse before verifier code.
         _read_pinned_file(interpreter, interpreter_sha256, limit=_MAX_INTERPRETER)
         _read_pinned_file(bootstrap, bootstrap_sha256, limit=_MAX_CODE)
@@ -115,6 +148,7 @@ def verify_runtime_process_preflight(*, interpreter, interpreter_sha256, bootstr
         result = {"schema": "wd.mind-runtime-process-preflight.v1", "status": "VERIFIED_PREFLIGHT_ONLY",
                   "process_started": False, "model_loaded": False, "network_isolation": "UNKNOWN",
                   "native_closure": "UNKNOWN", "same_user_race": "UNKNOWN",
+                  "deployment_manifest_sha256": deployment_manifest_sha256,
                   "runtime_manifest_sha256": runtime_manifest_sha256,
                   "generation": generation, "revision": revision,
                   "file_count": evidence["file_count"], "total_bytes": evidence["total_bytes"]}

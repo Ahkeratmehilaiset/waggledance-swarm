@@ -14,13 +14,25 @@ grants no capability.
    asks the operator for a per-PR signature. A merge needs, at the exact head:
    an approval from the model family opposite to the implementer (GPT:
    `codex-lead-1`, `codex-tools-1`; Claude: `fable-5`, `claude-rco-1`,
-   `claude-rco-2`; or Grok as in rule 5); `RCO_PASS` from every eligible
-   recognized RCO; all required CI green; no unretracted RCO veto or finding;
-   the charter checks; and a MAGMA receipt naming every approver.
-2. **Gate truth.** The merge-gate code is unchanged. It still requires
-   `codex-lead-1` and `codex-tools-1` build consensus plus a recognized-RCO
-   `RCO_PASS` at the exact head, has no Grok slot, and fails closed where it
-   did. A merge the gate refuses stays refused; no lane works around the gate.
+   `claude-rco-2`, `claude-rco-3`; or Grok as in rule 5); `RCO_PASS` from two
+   distinct recognized RCOs when at least two are eligible (not the author or
+   a concept, design or measurement source of the change), otherwise from the
+   one that is, with a Grok fallback for the RCO slot only when none is
+   eligible or present; all required CI green; no unretracted RCO veto or
+   finding from any recognized RCO; the charter checks; and a MAGMA receipt
+   naming every slot holder. The operator may add stricter exact-head
+   conditions to a named PR (for example an exact-head signature for class (a)
+   paths); such conditions add to the gate and never replace it, and the RCO
+   veto stays absolute whatever else is satisfied.
+2. **Gate truth.** On its default route (`review_policy=bridge_consensus_v1`)
+   the merge-gate code still requires `codex-lead-1` and `codex-tools-1` build
+   consensus plus a recognized-RCO `RCO_PASS` at the exact head, and fails
+   closed where it did. The `rule12` route is selected per run, never by
+   default; inside it a Grok fallback may occupy only the RCO slot, and only
+   behind the opt-in `grok_fallback` switch (default off, not passed by the
+   runbook driver, not activated); any other Grok fill is report-only and
+   approves nothing. A merge the gate refuses stays refused; no lane works
+   around the gate.
 3. **Unchanged invariants.** The RCO veto is absolute and outranks any pass;
    author is never reviewer; approvals bind to the exact head and merges use
    `gh pr merge --match-head-commit`; never `--admin`, `--no-verify` or
@@ -36,7 +48,9 @@ grants no capability.
    bypass the single-flight lock, and never restart or duplicate a running
    attempt. A late answer is checked against the current work and a real
    defect it shows is fixed as a follow-up.
-5. **Grok is never a gate and never `RCO_PASS`.** A missing, late, failed or
+5. **Grok is never a gate.** Grok never posts an `RCO_PASS` event; the only
+   way a Grok answer can stand in the RCO slot is the opt-in `rule12`
+   fallback of rule 2, which is off. A missing, late, failed or
    rate-limited answer blocks nothing. Grok may act as review authority only
    when the other reviewers are absent or ineligible, recorded on the bridge
    (for example no answer within 60 minutes of a bound review request at that

@@ -54,11 +54,21 @@ def _sha(data: bytes) -> str:
 def _root(value) -> Path:
     if not isinstance(value, str) or not value or not Path(value).is_absolute():
         raise policy.Refused("An explicit absolute root is required")
+    if (re.match(r"^[\\/]{2}[?.][\\/]", value)
+            or any(part in (".", "..") or part.endswith((".", " ")) for part in re.split(r"[\\/]", value))):
+        raise policy.Refused("Ambiguous root spelling or device namespace")
     path = Path(value).absolute()
+    # Refuse reparse ancestors before resolving: never follow a link to accept a root.
     policy._unlinked(path)
     if not path.is_dir():
         raise policy.Refused("Root is not a directory")
-    return path
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise policy.Refused("Root cannot be resolved") from error
+    if resolved != path:
+        raise policy.Refused("Root resolves through a physical alias")
+    return resolved
 
 
 def _overlap(a: Path, b: Path) -> bool:

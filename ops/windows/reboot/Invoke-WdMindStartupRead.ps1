@@ -112,6 +112,84 @@ function Invoke-WdMindStartupRead {
                 ($calculatedAge -gt 900 -and $View.observation_status -cne 'UNKNOWN')) { throw 'shape' }
         }
     }
+    function Assert-WdMindContentEnvelope($View, [string] $ExpectedLane, [string] $FleetHash, $Fleet) {
+        # The Python reader must perform source and policy verification; these
+        # closed-shape checks do not authenticate its publisher or its sender.
+        Assert-WdMindObject $View @('schema','authority','lane','fleet_sha256','status','content')
+        if ($View.schema -cne 'wd.mind-startup-envelope.v1' -or $View.authority -cne 'none' -or
+            $View.lane -cne $ExpectedLane -or $View.fleet_sha256 -cne $FleetHash) { throw 'shape' }
+        Assert-WdMindDirectStatus $View.status $ExpectedLane $FleetHash $Fleet
+        $statusNow=[DateTimeOffset]::UtcNow
+        $statusAsOf=[DateTimeOffset]::Parse([string]$View.status.as_of_utc,[Globalization.CultureInfo]::InvariantCulture)
+        if ($statusAsOf.Offset -ne [TimeSpan]::Zero -or $statusAsOf -gt $statusNow) { throw 'shape' }
+        if ($View.status.observation_status -ceq 'OBSERVED') {
+            foreach ($fact in $View.status.facts) {
+                $observed=[DateTimeOffset]::Parse([string]$fact.observed_utc,[Globalization.CultureInfo]::InvariantCulture)
+                $statusAge=($statusNow-$observed).TotalSeconds
+                if ($observed.Offset -ne [TimeSpan]::Zero -or $statusAge -lt 0 -or $statusAge -ge 900) { throw 'shape' }
+            }
+        }
+        $content=$View.content
+        Assert-WdMindObject $content @('schema','authority','as_of_utc','publisher_authentication','provider_authentication',
+            'sender_authentication','source_filter_attestation','same_user_aba','index_freshness','text_encoding','results')
+        if ($content.schema -cne 'wd.mind-startup-content.v1' -or $content.authority -cne 'none' -or
+            $content.text_encoding -cne 'wd.content-text.v1') { throw 'shape' }
+        foreach ($name in @('publisher_authentication','provider_authentication','sender_authentication',
+                             'source_filter_attestation','same_user_aba','index_freshness')) {
+            if ($content.PSObject.Properties[$name].Value -cne 'UNKNOWN') { throw 'shape' }
+        }
+        Assert-WdMindString $content.as_of_utc '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,7})?Z\z'
+        $asOf=[DateTimeOffset]::MinValue
+        if (-not [DateTimeOffset]::TryParse($content.as_of_utc,[Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::None,[ref]$asOf) -or $asOf.Offset -ne [TimeSpan]::Zero) { throw 'shape' }
+        $now=[DateTimeOffset]::UtcNow
+        if ($asOf -gt $now -or $content.results -isnot [array] -or
+            $content.results.Count -lt 1 -or $content.results.Count -gt 3) { throw 'shape' }
+        foreach ($hit in $content.results) {
+            Assert-WdMindObject $hit @('ref_sha256','doc_id_sha256','ref_kind','canonical_event','stored_text',
+                'source_reference','event_time_utc_floor','event_age_seconds_upper_bound','index_freshness','display_text')
+            foreach ($key in @('ref_sha256','doc_id_sha256')) { Assert-WdMindString $hit.PSObject.Properties[$key].Value '\A[0-9a-f]{64}\z' }
+            if ($hit.ref_kind -cne 'sha256_of_projected_metadata' -or $hit.canonical_event -isnot [bool] -or
+                $hit.canonical_event -ne $false -or $hit.index_freshness -cne 'UNKNOWN') { throw 'shape' }
+            Assert-WdMindString $hit.stored_text '\A[A-Za-z0-9._: -]{1,320}\z'
+            Assert-WdMindString $hit.display_text '\A[^\p{C}]{1,320}\z'
+            # Reproduce the canonical wd.content-text.v1 decoder. This verifies
+            # that human-readable text is exactly the previously verified text.
+            $decoded=New-Object Text.StringBuilder
+            for ($i=0; $i -lt $hit.stored_text.Length; $i++) {
+                $ch=$hit.stored_text[$i]
+                if ($ch -cne '_') { [void]$decoded.Append($ch); continue }
+                if ($i+4 -ge $hit.stored_text.Length) { throw 'shape' }
+                $hex=$hit.stored_text.Substring($i+1,4)
+                if ($hex -cnotmatch '\A[0-9a-f]{4}\z') { throw 'shape' }
+                $code=[Convert]::ToInt32($hex,16)
+                if ($code -ge 0xD800 -and $code -le 0xDFFF) { throw 'shape' }
+                $value=[char]$code
+                if ([string]$value -cmatch '\A[A-Za-z0-9.: -]\z') { throw 'shape' }
+                [void]$decoded.Append($value)
+                $i+=4
+            }
+            if (-not [string]::Equals($decoded.ToString(),[string]$hit.display_text,[StringComparison]::Ordinal)) { throw 'shape' }
+            Assert-WdMindObject $hit.source_reference @('sha256','kind','verified','sender_authentication')
+            Assert-WdMindString $hit.source_reference.sha256 '\A[0-9a-f]{64}\z'
+            if ($hit.source_reference.kind -cne 'sha256_of_canonical_event_json' -or
+                $hit.source_reference.verified -cne 'MATCH_WITHIN_PREFIX' -or
+                $hit.source_reference.sender_authentication -cne 'UNKNOWN') { throw 'shape' }
+            Assert-WdMindString $hit.event_time_utc_floor '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:00(?:\.0{1,6})?Z\z'
+            $eventTime=[DateTimeOffset]::MinValue
+            if (-not [DateTimeOffset]::TryParse($hit.event_time_utc_floor,[Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::None,[ref]$eventTime) -or $eventTime.Offset -ne [TimeSpan]::Zero) { throw 'shape' }
+            Assert-WdMindNumber $hit.event_age_seconds_upper_bound -Integer
+            $ageAtAsOf=($asOf-$eventTime).TotalSeconds
+            # The reported upper bound must agree with the re-derived minute,
+            # and its age must still be under 900 seconds at transport time.
+            if ($ageAtAsOf -lt 0 -or $hit.event_age_seconds_upper_bound -ge 900 -or
+                [Math]::Ceiling($ageAtAsOf) -ne $hit.event_age_seconds_upper_bound -or
+                [Math]::Ceiling(($now-$eventTime).TotalSeconds) -ge 900) { throw 'shape' }
+        }
+        $text=ConvertTo-Json -InputObject $content -Depth 16 -Compress
+        if ([Text.Encoding]::UTF8.GetByteCount($text) -gt 8192) { throw 'output' }
+    }
     function Assert-WdMindNestedView($View) {
         $lanes=@('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')
         $identity='\A(?:windows-v1:[0-9a-f]{8}:[0-9a-f]{16}|posix-v1:[0-9a-f]{1,16}:[0-9a-f]{1,16})\z'
@@ -336,7 +414,10 @@ function Invoke-WdMindStartupRead {
                     if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonArgs.DateKind='String' }
                     $view=ConvertFrom-Json @jsonArgs
                     if ($view -isnot [pscustomobject]) { throw 'shape' }
-                    if ($view.PSObject.Properties['schema'] -and $view.schema -ceq 'wd.mind-direct-status.v1') {
+                    if ($view.PSObject.Properties['schema'] -and $view.schema -ceq 'wd.mind-startup-envelope.v1') {
+                        $fleet = $snapshots['wd-fleet.json'].Text | ConvertFrom-Json -ErrorAction Stop
+                        Assert-WdMindContentEnvelope $view $Lane $snapshots['wd-fleet.json'].Hash $fleet
+                    } elseif ($view.PSObject.Properties['schema'] -and $view.schema -ceq 'wd.mind-direct-status.v1') {
                         $fleet = $snapshots['wd-fleet.json'].Text | ConvertFrom-Json -ErrorAction Stop
                         Assert-WdMindDirectStatus $view $Lane $snapshots['wd-fleet.json'].Hash $fleet
                     } else {
@@ -387,7 +468,8 @@ function Invoke-WdMindStartupRead {
                     $sha=[Security.Cryptography.SHA256]::Create()
                     try {$result.view_sha256=[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($json))).Replace('-','').ToLowerInvariant()}
                     finally {$sha.Dispose()}
-                    $result.view_json=$json;$result.outcome='success';$result.reason='status_projection'
+                    $result.view_json=$json;$result.outcome='success'
+                    $result.reason=if ($view.schema -ceq 'wd.mind-startup-envelope.v1') { 'content_projection' } else { 'status_projection' }
                 }
             }
         }
@@ -408,7 +490,15 @@ function Invoke-WdMindStartupRead {
             $record=[ordered]@{schema=$result.schema;lane=$Lane;outcome=$result.outcome;reason=$result.reason;
                 authority='none';view_sha256=$result.view_sha256;cleanup=$result.cleanup;
                 manifest_sha256=$ExpectedManifestHash.ToLowerInvariant();observed_utc=[DateTime]::UtcNow.ToString('o')}
-            if ($result.outcome -ceq 'success' -and $view.schema -ceq 'wd.mind-direct-status.v1') {
+            if ($result.outcome -ceq 'success' -and $view.schema -ceq 'wd.mind-startup-envelope.v1') {
+                $record.fleet_sha256=$view.fleet_sha256
+                $record.source_event_refs=@($view.status.facts | ForEach-Object { $_.event_ref })
+                $record.content_source_event_refs=@($view.content.results | ForEach-Object { $_.source_reference.sha256 })
+                $record.observation_status=$view.status.observation_status
+                # This receipt is written before the launcher decides whether
+                # the data can be delivered; it is not proof of session context.
+                $record.session_context_delivery='NOT_PROVEN'
+            } elseif ($result.outcome -ceq 'success' -and $view.schema -ceq 'wd.mind-direct-status.v1') {
                 $record.fleet_sha256=$view.fleet_sha256
                 $record.source_event_refs=@($view.facts | ForEach-Object { $_.event_ref })
                 $record.observation_status=$view.observation_status

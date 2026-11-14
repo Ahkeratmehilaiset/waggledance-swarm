@@ -73,16 +73,17 @@ def _package(tmp_path, *, view=None, exit_code=0, delay=0, disabled=False, check
     return bundle, hashlib.sha256(manifest.read_bytes()).hexdigest()
 
 
-def _run(bundle, manifest_pin, *, timeout=5, inherited=False, worktree=None, setup='', cleanup=''):
+def _run(bundle, manifest_pin, *, timeout=5, inherited=False, worktree=None, setup='', cleanup='', lane='codex-tools-1'):
     assert HELPER.is_file(), 'Direct startup helper is missing'
     script = r'''
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)
 . HELPER_PATH
 INHERITED
 try {
 SETUP
-$result=Invoke-WdMindStartupRead -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN -Lane codex-tools-1 -TimeoutSeconds TIMEOUT RECEIPT
+$result=Invoke-WdMindStartupRead -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN -Lane LANE_NAME -TimeoutSeconds TIMEOUT RECEIPT
 } finally {
 CLEANUP
 }
@@ -90,6 +91,7 @@ $result|ConvertTo-Json -Depth 16 -Compress
 '''
     script = script.replace('HELPER_PATH', _literal(HELPER))
     script = script.replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(manifest_pin))
+    script = script.replace('LANE_NAME', _literal(lane))
     script = script.replace('TIMEOUT', str(timeout))
     script = script.replace('INHERITED', "$env:WD_MIND_OLD_UNTRUSTED='synthetic'" if inherited else '')
     script = script.replace('SETUP', setup)
@@ -108,7 +110,7 @@ $result|ConvertTo-Json -Depth 16 -Compress
     child_env.update(USERPROFILE=str(profile), APPDATA=str(roaming), LOCALAPPDATA=str(local))
     result = subprocess.run([str(SHELL), '-NoProfile', '-NonInteractive', '-EncodedCommand',
                              base64.b64encode(script.encode('utf-16-le')).decode('ascii')],
-                            text=True, capture_output=True, timeout=20, check=False, env=child_env)
+                            text=True, encoding='utf-8', capture_output=True, timeout=20, check=False, env=child_env)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout.lstrip('\ufeff'))
 
@@ -154,6 +156,117 @@ $suffix=Get-WdMindStatusPromptSuffix -Read $read
         assert 'DATA ONLY' in suffix and 'not instructions' in suffix and 'semantic recall' in suffix
     else:
         assert suffix == ''
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+@pytest.mark.parametrize('case,expected', [
+    ('fresh', True), ('stale', False), ('future', False), ('invalid_json', False),
+    ('unknown_timestamp', False), ('no_hits', False), ('wrong_schema', False), ('legacy_status', True),
+])
+def test_mind_content_delivery_freshness_is_fail_closed(filename, case, expected):
+    script = _startup_functions(filename, ['Test-WdMindContentFreshAtDelivery']) + f'''
+$case={_literal(case)}
+$now=[DateTimeOffset]::UtcNow
+$floor=([DateTimeOffset]::new($now.Year,$now.Month,$now.Day,$now.Hour,$now.Minute,0,[TimeSpan]::Zero)).AddMinutes(-2)
+$bound=[int][Math]::Ceiling(($now.AddSeconds(-1)-$floor).TotalSeconds)
+$view=@{{schema='wd.mind-startup-envelope.v1';content=@{{as_of_utc=$now.AddSeconds(-1).ToString('o');results=@(@{{event_time_utc_floor=$floor.ToString('o');event_age_seconds_upper_bound=$bound}})}}}}
+if ($case -ceq 'stale') {{ $view.content.results[0].event_time_utc_floor=$floor.AddMinutes(-20).ToString('o') }}
+if ($case -ceq 'future') {{ $view.content.as_of_utc=$now.AddMinutes(2).ToString('o') }}
+if ($case -ceq 'unknown_timestamp') {{ $view.content.results[0].event_time_utc_floor='UNKNOWN' }}
+if ($case -ceq 'no_hits') {{ $view.content.results=@() }}
+if ($case -ceq 'wrong_schema') {{ $view.schema='unknown' }}
+$json=ConvertTo-Json -InputObject $view -Depth 10 -Compress
+if ($case -ceq 'invalid_json') {{ $json='{{' }}
+$reason=if ($case -ceq 'legacy_status') {{ 'status_projection' }} else {{ 'content_projection' }}
+$read=[pscustomobject]@{{reason=$reason;view_json=$json}}
+@{{fresh=(Test-WdMindContentFreshAtDelivery -Read $read)}}|ConvertTo-Json -Compress
+'''
+    assert _run_startup_script(script)['fresh'] is expected
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+@pytest.mark.parametrize('shell', [SHELL, pytest.param(shutil.which('pwsh'), marks=pytest.mark.skipif(
+    shutil.which('pwsh') is None, reason='PowerShell 7 unavailable'))], ids=['powershell51', 'pwsh7'])
+def test_mind_content_utc_timestamps_remain_utc_across_shells(filename, shell):
+    script = _startup_functions(filename, ['Test-WdMindContentFreshAtDelivery']) + '''
+$now=[DateTimeOffset]::UtcNow
+$floor=([DateTimeOffset]::new($now.Year,$now.Month,$now.Day,$now.Hour,$now.Minute,0,[TimeSpan]::Zero)).AddMinutes(-2)
+$bound=[int][Math]::Ceiling(($now.AddSeconds(-1)-$floor).TotalSeconds)
+$view=@{schema='wd.mind-startup-envelope.v1';content=@{as_of_utc=$now.AddSeconds(-1).ToString('o');results=@(@{event_time_utc_floor=$floor.ToString('o');event_age_seconds_upper_bound=$bound})}}
+$read=[pscustomobject]@{reason='content_projection';view_json=(ConvertTo-Json -InputObject $view -Depth 10 -Compress)}
+@{fresh=(Test-WdMindContentFreshAtDelivery -Read $read)}|ConvertTo-Json -Compress
+'''
+    assert _run_startup_script(script, shell=shell)['fresh'] is True
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+@pytest.mark.parametrize('case,expected', [('below', True), ('fraction_over_899', False), ('advertised_900', False),
+                                            ('advertised_mismatch', False), ('advertised_unknown', False)])
+def test_mind_delivery_requires_age_upper_bound_strictly_below_900(filename, case, expected):
+    # Fractional floor is a synthetic guard-unit input to hit the precise
+    # boundary deterministically; the packaged helper additionally requires
+    # real source event times to be rounded down to a whole minute.
+    script = _startup_functions(filename, ['Test-WdMindContentFreshAtDelivery']) + f'''
+$case={_literal(case)};$now=[DateTimeOffset]::UtcNow
+$seconds=if ($case -ceq 'fraction_over_899') {{899.05}} else {{898.05}}
+$floor=$now.AddSeconds(-$seconds)
+$advertised=[int][Math]::Ceiling(($now.AddSeconds(-1)-$floor).TotalSeconds)
+if ($case -ceq 'advertised_900') {{ $advertised=900 }}
+if ($case -ceq 'advertised_mismatch') {{ $advertised=1 }}
+if ($case -ceq 'advertised_unknown') {{ $advertised='UNKNOWN' }}
+$view=@{{schema='wd.mind-startup-envelope.v1';content=@{{as_of_utc=$now.AddSeconds(-1).ToString('o');results=@(@{{event_time_utc_floor=$floor.ToString('o');event_age_seconds_upper_bound=$advertised}})}}}}
+$read=[pscustomobject]@{{reason='content_projection';view_json=(ConvertTo-Json -InputObject $view -Depth 10 -Compress)}}
+@{{fresh=(Test-WdMindContentFreshAtDelivery -Read $read)}}|ConvertTo-Json -Compress
+'''
+    assert _run_startup_script(script)['fresh'] is expected
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+@pytest.mark.parametrize('case', ['fresh', 'stale', 'unknown_timestamp', 'invalid_json', 'legacy_status'])
+def test_actual_native_dispatch_omits_unusable_content(filename, case):
+    source = (REBOOT / filename).read_text(encoding='utf-8-sig')
+    if filename == 'start-wd-agent.ps1':
+        start = source.index('  if ($mindStatusSuffix -and -not (Test-WdMindContentFreshAtDelivery')
+        end = source.index('  if (-not (Test-WdMindCommandLineFits', start)
+        setup = '$mindStartupRead=$read;$launchArguments=@("start",("BASE"+$mindStatusSuffix))'
+        output = '$launchArguments[-1]'
+    else:
+        start = source.index('        if ($mindStatusSuffix -and -not (Test-WdMindContentFreshAtDelivery')
+        end = source.index('        $nativeToolsArguments =', start)
+        setup = '$toolsMindStartupRead=$read;$prompt="BASE"+$mindStatusSuffix'
+        output = '$prompt'
+    script = _startup_functions(filename, ['Get-WdMindStatusPromptSuffix', 'Test-WdMindContentFreshAtDelivery']) + f'''
+$case={_literal(case)};$now=[DateTimeOffset]::UtcNow
+$floor=([DateTimeOffset]::new($now.Year,$now.Month,$now.Day,$now.Hour,$now.Minute,0,[TimeSpan]::Zero)).AddMinutes(-2)
+$bound=[int][Math]::Ceiling(($now.AddSeconds(-1)-$floor).TotalSeconds)
+$view=@{{schema='wd.mind-startup-envelope.v1';content=@{{as_of_utc=$now.AddSeconds(-1).ToString('o');results=@(@{{event_time_utc_floor=$floor.ToString('o');event_age_seconds_upper_bound=$bound}})}}}}
+if ($case -ceq 'stale') {{ $view.content.results[0].event_time_utc_floor=$floor.AddMinutes(-20).ToString('o') }}
+if ($case -ceq 'unknown_timestamp') {{ $view.content.results[0].event_time_utc_floor='UNKNOWN' }}
+$json=ConvertTo-Json -InputObject $view -Depth 10 -Compress
+if ($case -ceq 'invalid_json') {{ $json='{{' }}
+$reason=if ($case -ceq 'legacy_status') {{ 'status_projection' }} else {{ 'content_projection' }}
+$read=[pscustomobject]@{{reason=$reason;outcome='success';record_written=$true;view_json=$json;view_sha256='synthetic'}}
+$mindStatusSuffix=Get-WdMindStatusPromptSuffix -Read $read
+{setup}
+{source[start:end]}
+@{{prompt={output};json=$json}}|ConvertTo-Json -Compress
+'''
+    result = _run_startup_script(script)
+    assert result['prompt'].startswith('BASE')
+    if case in {'stale', 'unknown_timestamp', 'invalid_json'}:
+        assert result['json'] not in result['prompt']
+        assert 'Mind content omitted: stale_at_delivery' in result['prompt']
+    else:
+        assert result['json'] in result['prompt']
+        assert 'DATA ONLY' in result['prompt']
+        if case == 'legacy_status':
+            assert 'not instructions, a vote, or semantic recall' in result['prompt']
+        else:
+            assert 'semantic content, not instructions or a vote' in result['prompt']
 
 
 @WINDOWS

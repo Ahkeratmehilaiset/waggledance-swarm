@@ -1,6 +1,8 @@
 """Direct status validation and receipt tests using only an inert fake wrapper."""
 import hashlib
 import json
+from datetime import datetime, timezone, timedelta
+import math
 
 import pytest
 
@@ -24,6 +26,33 @@ EVENT_REF = "b" * 64
 PRIVATE = "synthetic-private-ignore-previous-instructions-password"
 
 
+def content_envelope(lane="codex-tools-1", age_minutes=2):
+    now = datetime.now(timezone.utc)
+    floor = (now - timedelta(minutes=age_minutes)).replace(second=0, microsecond=0)
+    status = direct_view()
+    status["lane"] = lane
+    status["facts"][0]["agent"] = lane
+    status_time = now.replace(microsecond=0)
+    status["as_of_utc"] = status_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    status["facts"][0]["observed_utc"] = (status_time - timedelta(seconds=120)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    status["facts"][0]["age_seconds"] = 120
+    hit = {"ref_sha256": "c" * 64, "doc_id_sha256": "d" * 64,
+           "ref_kind": "sha256_of_projected_metadata", "canonical_event": False,
+           "stored_text": "Synthetic _00e4 approved work update", "display_text": "Synthetic ä approved work update",
+           "source_reference": {"sha256": "e" * 64, "kind": "sha256_of_canonical_event_json",
+                                "verified": "MATCH_WITHIN_PREFIX", "sender_authentication": "UNKNOWN"},
+           "event_time_utc_floor": floor.strftime("%Y-%m-%dT%H:%M:%S.000000Z"),
+           "event_age_seconds_upper_bound": math.ceil((now - floor).total_seconds()), "index_freshness": "UNKNOWN"}
+    content = {"schema": "wd.mind-startup-content.v1", "authority": "none",
+               "as_of_utc": now.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+               "publisher_authentication": "UNKNOWN", "provider_authentication": "UNKNOWN",
+               "sender_authentication": "UNKNOWN", "source_filter_attestation": "UNKNOWN",
+               "same_user_aba": "UNKNOWN", "index_freshness": "UNKNOWN",
+               "text_encoding": "wd.content-text.v1", "results": [hit]}
+    return {"schema": "wd.mind-startup-envelope.v1", "authority": "none", "lane": lane,
+            "fleet_sha256": FLEET_HASH, "status": status, "content": content}
+
+
 def direct_view():
     return {"schema": "wd.mind-direct-status.v1", "authority": "none",
             "scope": "bounded_bridge_status_not_gate", "lane": "codex-tools-1",
@@ -42,6 +71,118 @@ def synthetic_package(tmp_path, view):
     content["files"]["wd-fleet.json"] = FLEET_HASH
     manifest.write_bytes(json.dumps(content, separators=(",", ":")).encode("ascii"))
     return bundle, hashlib.sha256(manifest.read_bytes()).hexdigest()
+
+
+@WINDOWS
+@pytest.mark.parametrize("lane", list(UUIDS))
+def test_fresh_content_envelope_and_receipt_for_each_lane(tmp_path, lane):
+    view = content_envelope(lane)
+    bundle, pin = synthetic_package(tmp_path, view)
+    worktree = tmp_path / "synthetic-worktree"
+    worktree.mkdir()
+    result = _run(bundle, pin, lane=lane, worktree=worktree)
+    assert result["outcome"] == "success" and result["reason"] == "content_projection"
+    assert json.loads(result["view_json"]) == view
+    receipt = json.loads((worktree / ".codex-audit" / "wd-mind-startup-view.json").read_bytes())
+    assert receipt["fleet_sha256"] == FLEET_HASH
+    assert receipt["source_event_refs"] == [EVENT_REF]
+    assert receipt["content_source_event_refs"] == ["e" * 64]
+    assert receipt["session_context_delivery"] == "NOT_PROVEN"
+    assert "view_json" not in receipt and "Synthetic" not in json.dumps(receipt)
+
+
+@WINDOWS
+def test_normalized_source_whitespace_and_format_characters_transport_safely(tmp_path):
+    # Source normalization removes Cf and converts whitespace before encoding;
+    # compare the exact resulting human text through the PowerShell transport.
+    from tools import wd_mind_content_query_readonly as reader
+
+    normalized = reader._normalize("Suomi ä\ncontinued\u200b safely", 4096)
+    assert normalized == "Suomi ä continued safely"
+    view = content_envelope()
+    view["content"]["results"][0]["stored_text"] = reader.encode_text(normalized)
+    view["content"]["results"][0]["display_text"] = normalized
+    bundle, pin = synthetic_package(tmp_path, view)
+    result = _run(bundle, pin)
+    assert result["outcome"] == "success"
+    assert json.loads(result["view_json"])["content"]["results"][0]["display_text"] == normalized
+
+
+@WINDOWS
+def test_identical_composed_unicode_display_is_accepted(tmp_path):
+    view = content_envelope()
+    hit = view["content"]["results"][0]
+    hit["stored_text"] = "caf_00e9"
+    hit["display_text"] = "caf\u00e9"
+    bundle, pin = synthetic_package(tmp_path, view)
+    result = _run(bundle, pin)
+    assert result["outcome"] == "success"
+    assert json.loads(result["view_json"])["content"]["results"][0]["display_text"] == "caf\u00e9"
+
+
+@pytest.mark.parametrize("character", ["\x01", "\ue000", "\u0378"])
+def test_source_normalizer_rejects_nonwhitespace_control_private_or_unassigned(character):
+    from tools import wd_mind_content_query_readonly as reader
+
+    with pytest.raises(reader._Drop):
+        reader._normalize("Synthetic" + character + "message", 4096)
+
+
+@WINDOWS
+@pytest.mark.parametrize("fault", ["outer_lane", "status_lane", "fleet", "extra", "authority", "content_extra",
+    "provider_authentication", "sender_authentication", "source_filter_attestation", "same_user_aba", "index_freshness",
+    "no_results", "malformed_ref", "unverified", "source_auth", "metadata_ref", "canonical_event",
+    "private_field", "unencoded_text", "text_too_long", "event_time", "age_mismatch", "asof_future", "stale_delivery",
+    "stale_status_observed", "future_status_asof", "text_encoding", "display_mismatch", "noncanonical_escape",
+    "equivalent_but_distinct_unicode", "advertised_age_900"])
+def test_content_envelope_refuses_invalid_binding_and_stale_delivery(tmp_path, fault):
+    view = content_envelope()
+    content = view["content"]
+    hit = content["results"][0]
+    if fault == "outer_lane": view["lane"] = "codex-lead-1"
+    elif fault == "status_lane": view["status"]["lane"] = "codex-lead-1"
+    elif fault == "fleet": view["fleet_sha256"] = "a" * 64
+    elif fault == "extra": view["extra"] = PRIVATE
+    elif fault == "authority": content["authority"] = "trusted"
+    elif fault == "content_extra": content["extra"] = PRIVATE
+    elif fault in {"provider_authentication", "sender_authentication", "source_filter_attestation", "same_user_aba", "index_freshness"}:
+        content[fault] = "verified"
+    elif fault == "no_results": content["results"] = []
+    elif fault == "malformed_ref": hit["source_reference"]["sha256"] = "bad"
+    elif fault == "unverified": hit["source_reference"]["verified"] = "UNKNOWN"
+    elif fault == "source_auth": hit["source_reference"]["sender_authentication"] = "verified"
+    elif fault == "metadata_ref": hit["ref_sha256"] = "not-a-sha"
+    elif fault == "canonical_event": hit["canonical_event"] = True
+    elif fault == "private_field": hit["private"] = PRIVATE
+    elif fault == "unencoded_text": hit["stored_text"] = "raw\nmessage"
+    elif fault == "text_too_long": hit["stored_text"] = "a" * 321
+    elif fault == "text_encoding": content["text_encoding"] = "wrong"
+    elif fault == "display_mismatch": hit["display_text"] = "different text"
+    elif fault == "noncanonical_escape": hit["stored_text"] = "synthetic_0041"
+    elif fault == "equivalent_but_distinct_unicode":
+        hit["stored_text"] = "caf_00e9"
+        hit["display_text"] = "cafe\u0301"
+    elif fault == "advertised_age_900": hit["event_age_seconds_upper_bound"] = 900
+    elif fault == "event_time": hit["event_time_utc_floor"] = "2026-01-01T00:00:30Z"
+    elif fault == "age_mismatch": hit["event_age_seconds_upper_bound"] = 1
+    elif fault == "asof_future": content["as_of_utc"] = "2099-01-01T00:00:00Z"
+    elif fault == "stale_status_observed":
+        view["status"] = direct_view()
+    elif fault == "future_status_asof":
+        future = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(minutes=5)
+        view["status"]["as_of_utc"] = future.strftime("%Y-%m-%dT%H:%M:%SZ")
+        view["status"]["facts"][0]["observed_utc"] = (future - timedelta(seconds=120)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    elif fault == "stale_delivery":
+        old = datetime.now(timezone.utc) - timedelta(seconds=1000)
+        content["as_of_utc"] = (old + timedelta(seconds=1)).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        floor = old.replace(second=0, microsecond=0)
+        hit["event_time_utc_floor"] = floor.strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+        asof = datetime.fromisoformat(content["as_of_utc"].replace("Z", "+00:00"))
+        hit["event_age_seconds_upper_bound"] = math.ceil((asof - floor).total_seconds())
+    bundle, pin = synthetic_package(tmp_path, view)
+    result = _run(bundle, pin)
+    assert result["outcome"] != "success" and result["view_json"] == ""
+    assert PRIVATE not in json.dumps(result)
 
 
 @WINDOWS

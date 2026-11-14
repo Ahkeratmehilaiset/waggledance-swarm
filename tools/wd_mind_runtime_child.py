@@ -12,13 +12,17 @@ mutation, reparse changes, native DLL substitution, or file-check/use races.
 The manifest verifier, caller, actual ACLs, network isolation and all runtime
 assets must be independently trusted.  No caller identity is authenticated.
 
-The watchdog bounds the launched job after the process starts, including
+The legacy watchdog bounds the launched job after the process starts, including
 bootstrap execution and retained stdout. Hash preflight, Windows process
 creation and job assignment are synchronous and can block outside that bound;
 this function does NOT prove a hard wall-clock bound for the whole call. A
 separately supervised process with independently verified containment is needed
 before claiming such a bound. Output is an intentionally lossy projection; even
 hex digests and status values are data channels, not a full privacy guarantee.
+
+start_e5_worker_graceful is a separate, default-off cooperative path. Its Job
+does not kill on close; a pinned non-daemon owner retains a timed-out child in
+HOLD. This bounds pipe waits, not the lifetime of a stuck native operation.
 """
 
 import ctypes
@@ -160,7 +164,7 @@ class _ExtendedLimit(ctypes.Structure):
 
 
 class _Job:
-    def __init__(self):
+    def __init__(self, *, kill_on_close=True):
         if os.name != "nt":
             raise LaunchRefused("windows_job_required")
         api = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -178,7 +182,8 @@ class _Job:
         if not self.handle:
             raise LaunchRefused("job_unavailable")
         limits = _ExtendedLimit()
-        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        self.kill_on_close = kill_on_close
+        limits.basic.flags = 0x2000 if kill_on_close else 0  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         if not api.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
             self.close()
             raise LaunchRefused("job_unavailable")
@@ -193,7 +198,9 @@ class _Job:
 
     def close(self):
         if self.handle:
-            self.api.CloseHandle(self.handle)
+            closed = self.api.CloseHandle(self.handle)
+            if self.kill_on_close is False and not closed:
+                raise LaunchRefused("job_close_failed")
             self.handle = None
 
 
@@ -521,11 +528,33 @@ def start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, int
     schedule/supervise this as prestart work. Network and native isolation and
     same-user races remain UNKNOWN.
     """
-    job = process = None
+    return _start_e5_worker(bundle_root=bundle_root, deployment_manifest_sha256=deployment_manifest_sha256,
+        interpreter=interpreter, interpreter_sha256=interpreter_sha256, interpreter_root=interpreter_root,
+        tuple_args=tuple_args, timeout=timeout, scratch_root=scratch_root, cooperative=False)
+
+
+def start_e5_worker_graceful(*, enabled=False, **options):
+    """Explicit opt-in; requires a separately supplied pin for the new owner code.
+
+    READY returns client and owner. A post-creation refusal returns client=None,
+    owner and a visible HOLD/REFUSED status. Keep the owner session alive while
+    HOLD persists; its non-daemon keeper intentionally prevents ordinary Python
+    exit. No restart or termination is attempted. Prestart refusals raise the
+    fixed LaunchRefused token. Existing deployed bundles are not upgraded here.
+    """
+    if enabled is not True or "cooperative" in options:
+        raise LaunchRefused("mind_e5_start_refused")
+    return _start_e5_worker(cooperative=True, **options)
+
+
+def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, interpreter_sha256,
+                     interpreter_root, tuple_args, timeout, scratch_root=None, cooperative):
+    job = process = owner = None
     try:
         if (type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 1800
                 or type(tuple_args) is not dict or set(tuple_args) != set(_PUBLIC_KEYS)):
             raise ValueError("request")
+        deadline = time.monotonic() + timeout
         _require_safe_writer_scope(tuple_args["lock-file"], scratch_root)
         from tools import wd_mind_runtime_process as anchored
         bundle = Path(bundle_root)
@@ -556,11 +585,15 @@ def start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, int
         child_path, _, _ = pin("tools-bootstrap/tools/wd_mind_runtime_child.py")
         process_path, _, _ = pin("tools-bootstrap/tools/wd_mind_runtime_process.py")
         identity_path, _, _ = pin("tools-bootstrap/tools/wd_mind_interpreter_identity.py")
+        lifecycle_path = pin("tools-bootstrap/tools/wd_mind_e5_lifecycle.py")[0] if cooperative else None
         if not same_path(__file__, child_path) or not same_path(anchored.__file__, process_path):
             raise ValueError("unpackaged_process_code")
-        for name, expected in (("tools.wd_mind_interpreter_identity", identity_path),
+        origins = [("tools.wd_mind_interpreter_identity", identity_path),
                                ("tools.wd_mind_runtime_manifest", verifier),
-                               ("tools.wd_mind_e5_client", client_path)):
+                               ("tools.wd_mind_e5_client", client_path)]
+        if cooperative:
+            origins.append(("tools.wd_mind_e5_lifecycle", lifecycle_path))
+        for name, expected in origins:
             loaded = sys.modules.get(name)
             origin = getattr(loaded, "__file__", None) if loaded is not None else None
             if loaded is None:
@@ -620,18 +653,54 @@ def start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, int
         for name in ("HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE", "HF_ASSETS_CACHE",
                      "SENTENCE_TRANSFORMERS_HOME", "TORCH_HOME", "XDG_CACHE_HOME", "CUDA_CACHE_PATH"):
             env[name] = os.devnull
-        job = _Job()
-        process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        if cooperative:
+            lifecycle = importlib.import_module("tools.wd_mind_e5_lifecycle")
+            if time.monotonic() >= deadline:
+                raise ValueError("deadline")
+            owner = lifecycle.reserve(enabled=True)
+            job = _Job(kill_on_close=False)
+            owner.set_job(job)
+            if time.monotonic() >= deadline:
+                raise ValueError("deadline")
+        else:
+            job = _Job()
+        process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE if cooperative else subprocess.DEVNULL,
                                    cwd=str(bootstrap.parent), env=env, creationflags=subprocess.CREATE_NO_WINDOW)
+        if cooperative:
+            owner.bind(process)
+            if time.monotonic() >= deadline:
+                raise ValueError("deadline")
         job.attach(process)
-        process.stdin.write(b"\0")
-        process.stdin.flush()
-        client = client_module.E5WorkerClient(process, job, timeout=timeout,
+        if cooperative:
+            owner.write(b"\0", deadline)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError("deadline")
+            client = client_module.GracefulE5WorkerClient(owner, timeout=remaining,
+                                                         encoder_binding_sha256=binding_sha)
+            owner.mark_ready()
+        else:
+            process.stdin.write(b"\0")
+            process.stdin.flush()
+            client = client_module.E5WorkerClient(process, job, timeout=timeout,
                                                encoder_binding_sha256=binding_sha)
-        return {"client": client, "encoder_binding_bytes": binding_bytes, "encoder_binding_sha256": binding_sha,
+        result = {"client": client, "encoder_binding_bytes": binding_bytes, "encoder_binding_sha256": binding_sha,
                 "authority": "none", "network_isolation": "UNKNOWN", "native_closure": "UNKNOWN",
                 "same_user_race": "UNKNOWN", "source_binding": "NOT_PROVEN"}
+        if cooperative:
+            result.update(status="READY", owner=owner, lifecycle=owner.status())
+        return result
     except Exception:
+        if cooperative:
+            if owner is not None:
+                if process is None:
+                    owner.cancel_unstarted()
+                else:
+                    status = owner.shutdown(timeout=0)
+                    return {"status": "HOLD" if status["owned"] else "REFUSED", "client": None,
+                            "owner": owner, "lifecycle": status, "authority": "none"}
+            raise LaunchRefused("mind_e5_start_refused") from None
         if job is not None:
             try:
                 job.terminate()

@@ -35,6 +35,48 @@ class Process:
     def wait(self, timeout): return 0
 
 
+def test_cooperative_client_close_uses_eof_owner_and_retains_hold():
+    from test_wd_mind_e5_lifecycle import Process as OwnedProcess, bind, finish
+    process = OwnedProcess(response(0, 0), on_eof=False)
+    owner, job = bind(process)
+    try:
+        subject = client.GracefulE5WorkerClient(owner, timeout=0.1)
+        status = subject.close(timeout=0.02)
+        assert status["state"] == "HOLD" and status["owned"] and not job.closed
+        assert subject.close(timeout=0)["owned"]
+    finally:
+        finish(owner, process)
+
+
+def test_cooperative_client_preserves_nonce_pair_and_float32_bytes(monkeypatch):
+    from test_wd_mind_e5_lifecycle import Process as OwnedProcess, bind, finish
+    request = supervised("query", "d" * 64, texts="query: invented amber lantern")
+    frame = response(1, 1, nonce=bytes.fromhex(request["nonce"]), digest=bytes.fromhex(request["request_sha256"]))
+    process = OwnedProcess(response(0, 0) + frame)
+    owner, _ = bind(process)
+    try:
+        subject = client.GracefulE5WorkerClient(owner, timeout=1, encoder_binding_sha256="c" * 64)
+        result = subject.encode_supervised(request)
+        assert result["nonce"] == request["nonce"] and result["request_sha256"] == request["request_sha256"]
+        assert result["vector_bytes"] == struct.pack("<384f", 1.0, *([0.0] * 383))
+        assert subject.close(timeout=2)["state"] == "EXITED"
+    finally:
+        finish(owner, process)
+
+
+@pytest.mark.parametrize("bad", [b"", response(4, 0), response(0, 0, magic=b"BAD!"), struct.pack("<I", 65537)])
+def test_cooperative_bad_handshake_requests_eof_without_termination(bad):
+    from test_wd_mind_e5_lifecycle import Process as OwnedProcess, bind, finish
+    process = OwnedProcess(bad, on_eof=False)
+    owner, job = bind(process)
+    try:
+        with pytest.raises(client.E5ClientRefused):
+            client.GracefulE5WorkerClient(owner, timeout=0.02)
+        assert owner.status()["owned"] and not job.closed
+    finally:
+        finish(owner, process)
+
+
 def test_batches_exact_prefixed_inputs_and_returns_builtin_float32_vectors(monkeypatch):
     monkeypatch.setattr(client.E5WorkerClient, "_direct_binding", staticmethod(lambda *args: ("a" * 64, "b" * 64)))
     responses = response(0, 0) + response(1, 4) + response(2, 4) + response(3, 1) + response(4, 1)

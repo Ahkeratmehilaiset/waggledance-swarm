@@ -7,6 +7,7 @@ from pathlib import Path
 import stat
 import struct
 import subprocess
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -323,3 +324,144 @@ def test_e5_wrong_pins_refuse_before_process_creation(staged_e5, monkeypatch, fa
     options = {key: value for key, value in staged_e5.items() if key != "query"}
     with pytest.raises(child.LaunchRefused, match="mind_e5_start_refused"):
         child.start_e5_worker(**options)
+
+
+@pytest.fixture
+def staged_graceful(staged_e5, monkeypatch):
+    from tools import wd_mind_e5_lifecycle as lifecycle
+    bundle = staged_e5["bundle_root"]
+    relative = "tools-bootstrap/tools/wd_mind_e5_lifecycle.py"
+    source = Path(__file__).resolve().parents[2] / "tools/wd_mind_e5_lifecycle.py"
+    path = bundle / relative
+    path.write_bytes(source.read_bytes())
+    deployment = bundle / "deployment-manifest.json"
+    manifest = json.loads(deployment.read_bytes())
+    manifest["files"][relative] = digest(path.read_bytes())
+    deployment.write_text(json.dumps(manifest, sort_keys=True))
+    staged_e5["deployment_manifest_sha256"] = digest(deployment.read_bytes())
+    monkeypatch.setattr(lifecycle, "__file__", str(path))
+    monkeypatch.setattr(child, "_require_safe_writer_scope", lambda *args: None)
+    return {key: value for key, value in staged_e5.items() if key != "query"}
+
+
+def test_graceful_default_does_not_read_pins_or_create_job(staged_e5, monkeypatch):
+    monkeypatch.setattr(anchor, "_read_pinned_file", lambda *a, **k: pytest.fail("read before opt in"))
+    monkeypatch.setattr(child, "_Job", lambda *a, **k: pytest.fail("job before opt in"))
+    with pytest.raises(child.LaunchRefused):
+        child.start_e5_worker_graceful(**{k: v for k, v in staged_e5.items() if k != "query"})
+
+
+@pytest.mark.parametrize("fault", ["missing_pin", "lifecycle", "origin", "worker", "binding", "weights", "bootstrap", "identity"])
+def test_graceful_all_pins_before_spawn(staged_graceful, monkeypatch, fault):
+    from tools import wd_mind_e5_lifecycle as lifecycle
+    bundle = staged_graceful["bundle_root"]
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("process before pins"))
+    if fault == "missing_pin":
+        deployment = bundle / "deployment-manifest.json"
+        manifest = json.loads(deployment.read_bytes())
+        del manifest["files"]["tools-bootstrap/tools/wd_mind_e5_lifecycle.py"]
+        deployment.write_text(json.dumps(manifest, sort_keys=True))
+        staged_graceful["deployment_manifest_sha256"] = digest(deployment.read_bytes())
+    elif fault == "origin":
+        monkeypatch.setattr(lifecycle, "__file__", str(bundle / "wrong.py"))
+    else:
+        paths = {"lifecycle": bundle / "tools-bootstrap/tools/wd_mind_e5_lifecycle.py",
+                 "worker": bundle / "tools-bootstrap/tools/wd_mind_e5_worker.py",
+                 "binding": bundle / "wd-mind-e5-encoder-binding.json",
+                 "weights": Path(staged_graceful["tuple_args"]["runtime-root"]) / "model/model.safetensors",
+                 "bootstrap": bundle / "tools-bootstrap/tools/wd_mind_runtime_bootstrap.py",
+                 "identity": bundle / "wd-mind-interpreter-identity.json"}
+        paths[fault].write_bytes(b"tampered")
+    with pytest.raises(child.LaunchRefused):
+        child.start_e5_worker_graceful(enabled=True, **staged_graceful)
+
+
+@pytest.mark.parametrize("fault", [None, "attach", "handshake", "late_spawn"])
+def test_graceful_launch_retains_owner_on_post_spawn_failure(staged_graceful, monkeypatch, fault):
+    from test_wd_mind_e5_lifecycle import Job as OwnedJob, Process as OwnedProcess, finish
+    from test_wd_mind_e5_client import response
+    calls = []
+    process = OwnedProcess(response(0, 0) if fault != "handshake" else b"", on_eof=False)
+    clock = [time.monotonic()]
+    monkeypatch.setattr(child, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    class Job(OwnedJob):
+        def __init__(self, *, kill_on_close):
+            assert kill_on_close is False
+            super().__init__()
+            calls.append("job")
+
+        def attach(self, value):
+            assert value is process
+            calls.append("attach")
+            if fault == "attach":
+                raise ValueError("synthetic private failure")
+
+    def popen(args, **kwargs):
+        calls.append("spawn")
+        assert kwargs["stderr"] == subprocess.PIPE
+        assert kwargs["env"]["HF_HUB_OFFLINE"] == "1"
+        assert args[1:4] == ["-I", "-S", "-B"]
+        if fault == "late_spawn":
+            clock[0] += 2
+        return process
+
+    monkeypatch.setattr(child, "_Job", Job)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    staged_graceful["timeout"] = 0.03 if fault == "handshake" else 1
+    result = child.start_e5_worker_graceful(enabled=True, **staged_graceful)
+    owner = result["owner"]
+    try:
+        assert calls[:2] == ["job", "spawn"]
+        assert owner._process is process and result["authority"] == "none"
+        if fault is None:
+            assert result["status"] == "READY" and process.written == b"\0"
+            assert result["client"].close(timeout=0.02)["owned"]
+        else:
+            assert result["status"] == "HOLD" and result["client"] is None
+            assert owner.status()["owned"] and not owner._job.closed
+            if fault in ("attach", "late_spawn"):
+                assert process.written == b""
+    finally:
+        finish(owner, process)
+
+
+def test_graceful_expired_preflight_never_spawns(staged_graceful, monkeypatch):
+    clock = [time.monotonic()]
+    monkeypatch.setattr(child, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    original = anchor.verify_runtime_process_preflight
+
+    def verify(**kwargs):
+        original(**kwargs)
+        clock[0] += 100
+
+    monkeypatch.setattr(anchor, "verify_runtime_process_preflight", verify)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("late spawn"))
+    with pytest.raises(child.LaunchRefused):
+        child.start_e5_worker_graceful(enabled=True, **staged_graceful)
+
+
+def test_graceful_spawn_failure_closes_only_unstarted_job(staged_graceful, monkeypatch):
+    from test_wd_mind_e5_lifecycle import Job
+    from tools import wd_mind_e5_lifecycle as lifecycle
+    job = Job()
+    monkeypatch.setattr(child, "_Job", lambda **kwargs: job)
+
+    def unavailable(*args, **kwargs):
+        raise OSError("private synthetic path")
+
+    monkeypatch.setattr(subprocess, "Popen", unavailable)
+    with pytest.raises(child.LaunchRefused, match="^mind_e5_start_refused$"):
+        child.start_e5_worker_graceful(enabled=True, **staged_graceful)
+    assert job.closed
+    owner = lifecycle.reserve(enabled=True)
+    owner.cancel_unstarted()
+
+
+def test_cooperative_job_close_failure_retains_actual_handle():
+    job = object.__new__(child._Job)
+    job.handle, job.kill_on_close = 123, False
+    job.api = SimpleNamespace(CloseHandle=lambda handle: 0)
+    with pytest.raises(child.LaunchRefused, match="^job_close_failed$"):
+        job.close()
+    assert job.handle == 123

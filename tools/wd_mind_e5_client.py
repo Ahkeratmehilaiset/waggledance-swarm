@@ -233,3 +233,45 @@ class E5WorkerClient:
                            "op": operation, "texts": list(texts)},
                           sort_keys=True, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
         return nonce, hashlib.sha256(body).hexdigest()
+
+
+class _OwnedPipes:
+    """The existing codec sees pipes; actual I/O stays in three fixed pumps."""
+
+    def __init__(self, owner):
+        self.owner, self.deadline = owner, 0
+        self.stdin = self.stdout = self
+
+    def read(self, size):
+        return self.owner.read(size, self.deadline)
+
+    def write(self, packet):
+        return self.owner.write(packet, self.deadline)
+
+    def flush(self):
+        pass  # owner.write acknowledges only after its pump flushes.
+
+
+class GracefulE5WorkerClient(E5WorkerClient):
+    """Explicit cooperative alternative; never terminates or releases a live child.
+
+    close(timeout=...) returns a status including HOLD and retained ownership.
+    Protocol refusals request EOF without extending an expired request deadline.
+    The caller can inspect owner.status() after a refusal and wait again later.
+    Existing frame, nonce, digest, batching and float32 checks are unchanged.
+    """
+
+    def __init__(self, owner, *, timeout, encoder_binding_sha256=None):
+        self.owner = owner
+        self._transport = _OwnedPipes(owner)
+        super().__init__(self._transport, None, timeout=timeout, encoder_binding_sha256=encoder_binding_sha256)
+
+    def _bounded(self, operation, deadline):
+        self._transport.deadline = deadline
+        if time.monotonic() >= deadline:
+            raise ValueError("deadline")
+        return operation()
+
+    def close(self, *, timeout=0):
+        self._closed = True
+        return self.owner.shutdown(timeout=timeout)

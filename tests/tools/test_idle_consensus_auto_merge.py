@@ -151,6 +151,9 @@ def _canonical_apply_runner(
     def runner(command: list[str]) -> SimpleNamespace:
         command = list(command)
         calls.append(command)
+        ci_response = _required_ci_api_response(command)
+        if ci_response is not None:
+            return ci_response
         if command[:3] == ["gh", "pr", "merge"]:
             return SimpleNamespace(
                 returncode=merge_returncode,
@@ -218,6 +221,128 @@ def _canonical_apply_runner(
         raise AssertionError(f"unexpected command: {command}")
 
     return runner
+
+
+def _required_ci_api_response(command, fault="success"):
+    """Complete synthetic required-set/app/head inventory; never a live gh call."""
+    if command[:2] != ["gh", "api"]:
+        return None
+    endpoint = command[4]
+    if endpoint.endswith("/protection/required_status_checks"):
+        if fault in {"403", "404"}:
+            return SimpleNamespace(returncode=1, stdout="", stderr="HTTP " + fault)
+        body = {"strict": True, "contexts": ["unified"],
+                "checks": [{"context": "unified", "app_id": 15368}]}
+        if fault == "empty":
+            body.update(contexts=[], checks=[])
+    elif "/rules/branches/" in endpoint:
+        body = {} if fault == "malformed_rules" else []
+    elif endpoint.endswith("/check-runs"):
+        row = {"id": 101, "name": "unified", "head_sha": HEAD,
+               "app": {"id": 15368}, "check_suite": {"id": 201},
+               "status": "completed", "conclusion": "success",
+               "url": "https://api.github.com/" + endpoint.split("/commits/")[0] + "/check-runs/101"}
+        if fault == "wrong_app":
+            row["app"]["id"] = 42
+        if fault == "stale_head":
+            row["head_sha"] = "f" * 40
+        if fault in {"failure", "skipped", "neutral"}:
+            row["conclusion"] = fault
+        rows = [] if fault == "missing_run" else [row]
+        body = {"total_count": len(rows), "check_runs": rows}
+    else:
+        return None
+    return SimpleNamespace(returncode=0, stdout=json.dumps(body), stderr="")
+
+
+@pytest.mark.parametrize("fault", ["success", "missing_run", "wrong_app", "stale_head",
+                                    "403", "404", "empty", "malformed_rules",
+                                    "failure", "skipped", "neutral"])
+@pytest.mark.parametrize("phase", ["initial", "pre_effect"])
+def test_legacy_apply_requires_complete_ci_at_both_boundaries(tmp_path, monkeypatch, fault, phase):
+    import tools.idle_consensus_auto_merge as idle
+    calls = []
+    delegate = _canonical_apply_runner(calls)
+    state = {"fault": fault if phase == "initial" else "success"}
+    reads = []
+    real_snapshot = idle.build_pr_status_snapshot
+
+    def snapshot(**kwargs):
+        reads.append(kwargs.get("require_ci_evidence"))
+        if phase == "pre_effect" and len(reads) == 2:
+            state["fault"] = fault
+        return real_snapshot(**kwargs)
+
+    def runner(command):
+        result = _required_ci_api_response(list(command), state["fault"])
+        if result is not None:
+            calls.append(list(command))
+            return result
+        return delegate(command)
+
+    monkeypatch.setattr(idle, "build_pr_status_snapshot", snapshot)
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(), expected_head=HEAD, expected_base_sha=BASE,
+        consensus_proposal_id="idle-consensus-001", repo="example/repo",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]),
+        bridge_task_id="idle-consensus-001", apply=True, runner=runner)
+    merges = [c for c in calls if c[:3] == ["gh", "pr", "merge"]]
+    if fault == "success":
+        assert report["decision"] == "auto_merged", report
+        assert len(merges) == 1 and f"--match-head-commit={HEAD}" in merges[0]
+        assert merges[0][merges[0].index("--repo") + 1] == "github.com/example/repo"
+        assert reads == [True, True]
+    else:
+        assert report["ok"] is False, report
+        assert not merges
+        assert reads and all(value is True for value in reads)
+        if phase == "initial":
+            assert len(reads) == 1
+        else:
+            assert len(reads) == 2
+
+
+@pytest.mark.parametrize("fault", ["missing", "false", "truthy", "head", "base", "repo", "pr",
+                                    "branch", "empty", "wrong_app", "wrong_run_head", "skipped",
+                                    "missing_run", "duplicate_run", "forged_boolean"])
+def test_legacy_plan_rejects_malformed_or_non_green_ci_evidence(tmp_path, fault):
+    ci = {"schema": "wd.github-required-ci.v1", "host": "github.com", "repository": "example/repo",
+          "pr_number": 477, "head_sha": HEAD, "base_ref": "main", "base_sha": BASE,
+          "required": [{"name": "unified", "app_id": 15368}], "all_required_success": True,
+          "runs": [{"id": 101, "name": "unified", "head_sha": HEAD, "app_id": 15368,
+                    "check_suite_id": 201, "status": "completed", "conclusion": "success",
+                    "url": "https://api.github.com/repos/example/repo/check-runs/101"}],
+          "sources": [{"endpoint": "repos/example/repo/commits/" + HEAD + "/check-runs",
+                       "page": 1, "response_sha256": "a" * 64}], "strict_branch_protection": True}
+    if fault == "missing":
+        ci = None
+    elif fault in {"false", "truthy"}:
+        ci["all_required_success"] = False if fault == "false" else 1
+    elif fault in {"head", "base", "repo", "pr", "branch"}:
+        key = {"head": "head_sha", "base": "base_sha", "repo": "repository",
+               "pr": "pr_number", "branch": "base_ref"}[fault]
+        ci[key] = 478 if fault == "pr" else "wrong"
+    elif fault == "empty":
+        ci["required"] = []
+        ci["runs"] = []
+    elif fault == "missing_run":
+        ci["runs"] = []
+    elif fault == "duplicate_run":
+        ci["runs"] *= 2
+    elif fault == "wrong_app":
+        ci["runs"][0]["app_id"] = 42
+    elif fault == "wrong_run_head":
+        ci["runs"][0]["head_sha"] = "f" * 40
+    elif fault in {"skipped", "forged_boolean"}:
+        ci["runs"][0]["conclusion"] = "skipped" if fault == "skipped" else "failure"
+    report = evaluate_auto_merge_gate(
+        pr_status=_status(ci_evidence=ci), expected_head=HEAD, expected_base_sha=BASE,
+        repo="example/repo", consensus_proposal_id="idle-consensus-001",
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, [_rco_pass()]))
+    assert report["ok"] is False, report
+    assert any("required CI" in reason for reason in report["reasons"]), report
 
 
 def _events_path(
@@ -350,6 +475,7 @@ def test_apply_invokes_exact_head_merge_command(tmp_path: Path) -> None:
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
+        repo="example/repo",
         apply=True,
         runner=runner,
     )
@@ -421,6 +547,7 @@ def test_fresh_apply_recheck_sees_new_accepted_queue_item(
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
+        repo="example/repo",
         apply=True,
         runner=runner,
         accepted_queue_checker=accepted_queue_checker,
@@ -448,6 +575,7 @@ def test_apply_accepts_utf8_bom_events_file(tmp_path: Path) -> None:
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=events_path,
         bridge_task_id="idle-consensus-001",
+        repo="example/repo",
         apply=True,
         runner=runner,
     )
@@ -484,11 +612,12 @@ def test_apply_runs_artifact_hook_before_exact_head_merge(tmp_path: Path) -> Non
         consensus_proposal_id="idle-consensus-001",
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
+        repo="example/repo",
         apply=True,
         runner=runner,
         artifact_writer=artifact_writer,
     )
-    assert events[0] == "artifact"
+    assert events[0] == "recheck"  # Initial strict CI read precedes artifact writes.
     assert events.count("merge") == 1
     assert events.index("artifact") < events.index("merge")
     assert report["decision"] == "auto_merged"
@@ -512,6 +641,7 @@ def test_apply_rechecks_full_snapshot_before_merge(tmp_path: Path) -> None:
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
+        repo="example/repo",
         apply=True,
         runner=runner,
     )
@@ -538,6 +668,7 @@ def test_zero_exit_without_confirmed_merged_state_fails_closed(
             receipt_bundle_path="docs/receipts/manifest.json",
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
+            repo="example/repo",
             apply=True,
             runner=runner,
         )
@@ -558,6 +689,7 @@ def test_head_mismatch_blocks_without_runner() -> None:
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
+        repo="example/repo",
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -603,6 +735,7 @@ def test_apply_requires_expected_base_sha_before_runner(tmp_path: Path) -> None:
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path),
         bridge_task_id="idle-consensus-001",
+        repo="example/repo",
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -623,6 +756,7 @@ def test_expected_base_mismatch_blocks_without_runner(tmp_path: Path) -> None:
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path),
         bridge_task_id="idle-consensus-001",
+        repo="example/repo",
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -645,6 +779,7 @@ def test_expected_base_requires_snapshot_base_sha(tmp_path: Path) -> None:
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path),
         bridge_task_id="idle-consensus-001",
+        repo="example/repo",
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -677,6 +812,7 @@ def test_denylisted_changed_path_blocks_without_runner() -> None:
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
+        repo="example/repo",
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -698,6 +834,7 @@ def test_code_pattern_denylist_blocks_without_runner() -> None:
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
+        repo="example/repo",
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -753,6 +890,7 @@ def test_daily_rate_limit_blocks_without_runner(
             [_auto_merge_event(index) for index in range(1, 6)],
         ),
         utc_date="2026-05-18",
+        repo="example/repo",
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -877,6 +1015,7 @@ def test_quota_date_requires_exact_iso_calendar_date(
             consensus_proposal_id="idle-consensus-001",
             receipt_bundle_path="docs/receipts/manifest.json",
             utc_date=utc_date,
+            repo="example/repo",
             apply=True,
             runner=lambda command: calls.append(list(command)),
         )
@@ -908,6 +1047,7 @@ def test_apply_rejects_historical_quota_date_before_runner(
                 ],
             ),
             utc_date="2026-07-23",
+            repo="example/repo",
             apply=True,
             runner=lambda command: calls.append(list(command)),
         )
@@ -957,6 +1097,7 @@ def test_bridge_peer_block_blocks_automerge_without_runner(tmp_path: Path) -> No
         ),
         from_agent="claude",
         bridge_task_id="rule9-task",
+        repo="example/repo",
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -980,6 +1121,7 @@ def test_exact_head_rco_pass_required_when_bridge_events_checked(
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path),
         bridge_task_id="idle-consensus-001",
+        repo="example/repo",
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -1030,6 +1172,7 @@ def test_operator_merge_required_rco_status_does_not_satisfy_merge_gate(
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path, [rco]),
         bridge_task_id="idle-consensus-001",
+        repo="example/repo",
         apply=True,
         runner=lambda command: pytest.fail(f"merge runner called: {command}"),
     )
@@ -1060,6 +1203,7 @@ def test_pending_ci_rco_status_with_non_green_ci_refuses_merge_gate(
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path, [rco]),
         bridge_task_id="idle-consensus-001",
+        repo="example/repo",
         apply=True,
         runner=lambda command: pytest.fail(f"merge runner called: {command}"),
     )
@@ -2710,6 +2854,7 @@ def test_bridge_peer_block_runs_before_artifact_writer(tmp_path: Path) -> None:
         ),
         from_agent="claude",
         bridge_task_id="rule9-task",
+        repo="example/repo",
         apply=True,
         runner=lambda command: calls.append("merge"),
         artifact_writer=artifact_writer,
@@ -2741,6 +2886,7 @@ def test_bridge_peer_block_matches_pr_number_when_task_id_differs(
         events_path=_events_path(tmp_path, [event]),
         from_agent="claude",
         bridge_task_id="implementation-task-without-pr-number",
+        repo="example/repo",
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -2757,6 +2903,7 @@ def test_apply_requires_bridge_events_path() -> None:
         expected_base_sha=BASE,
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
+        repo="example/repo",
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -2775,6 +2922,7 @@ def test_apply_requires_explicit_bridge_task_id(tmp_path: Path) -> None:
         consensus_proposal_id="idle-consensus-001",
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path),
+        repo="example/repo",
         apply=True,
         runner=lambda command: calls.append(list(command)),
     )
@@ -3060,6 +3208,7 @@ def test_runner_failure_fails_closed_without_stderr_echo(tmp_path: Path) -> None
             receipt_bundle_path="docs/receipts/manifest.json",
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
+            repo="example/repo",
             apply=True,
             runner=runner,
         )
@@ -3094,6 +3243,7 @@ def test_idle_merge_result_requires_exact_integer_returncode(
             receipt_bundle_path="docs/receipts/manifest.json",
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
+            repo="example/repo",
             apply=True,
             runner=runner,
         )
@@ -3136,6 +3286,7 @@ def test_missing_merge_returncode_recovers_then_reports_unknown_effect(
             receipt_bundle_path="docs/receipts/manifest.json",
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
+            repo="example/repo",
             apply=True,
             runner=runner,
         )
@@ -3166,6 +3317,7 @@ def test_malformed_merge_result_recovers_confirmed_exact_merge(
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
+        repo="example/repo",
         apply=True,
         runner=runner,
     )
@@ -3201,6 +3353,7 @@ def test_merge_runner_exception_after_dispatch_reports_unknown_effect(
             receipt_bundle_path="docs/receipts/manifest.json",
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
+            repo="example/repo",
             apply=True,
             runner=runner,
         )
@@ -3244,6 +3397,7 @@ def test_merge_returncode_property_exception_is_recovered(
             receipt_bundle_path="docs/receipts/manifest.json",
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
+            repo="example/repo",
             apply=True,
             runner=runner,
         )
@@ -3277,6 +3431,7 @@ def test_merge_runner_exception_recovers_confirmed_exact_merge(
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
+        repo="example/repo",
         apply=True,
         runner=runner,
     )
@@ -3304,6 +3459,7 @@ def test_post_dispatch_private_verifier_state_is_controlled(
             receipt_bundle_path="docs/receipts/manifest.json",
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
+            repo="example/repo",
             apply=True,
             runner=runner,
             merge_verifier=lambda *_args: {
@@ -3343,6 +3499,7 @@ def test_post_dispatch_hostile_verifier_mapping_is_not_invoked(
             receipt_bundle_path="docs/receipts/manifest.json",
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
+            repo="example/repo",
             apply=True,
             runner=runner,
             merge_verifier=lambda *_args: HostileMapping(),
@@ -3418,6 +3575,7 @@ def test_falsey_callable_idle_runner_is_used_without_default_fallback(
         receipt_bundle_path="docs/receipts/manifest.json",
         events_path=_events_path(tmp_path, [_rco_pass()]),
         bridge_task_id="idle-consensus-001",
+        repo="example/repo",
         apply=True,
         runner=FalseyRunner(),
     )
@@ -3604,6 +3762,7 @@ def test_runner_failure_still_fails_when_merge_verifier_disagrees(
             receipt_bundle_path="docs/receipts/manifest.json",
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
+            repo="example/repo",
             apply=True,
             runner=runner,
             merge_verifier=verifier,
@@ -3760,11 +3919,13 @@ def test_artifact_hook_failure_blocks_merge_without_runner(tmp_path: Path) -> No
             consensus_proposal_id="idle-consensus-001",
             events_path=_events_path(tmp_path, [_rco_pass()]),
             bridge_task_id="idle-consensus-001",
+            repo="example/repo",
             apply=True,
-            runner=lambda command: calls.append(list(command)),
+            runner=_canonical_apply_runner(calls),
             artifact_writer=artifact_writer,
         )
-    assert calls == []
+    assert calls  # Initial CI reads occur, but the failed artifact prevents merge.
+    assert not any(command[:3] == ["gh", "pr", "merge"] for command in calls)
     assert excinfo.value.report["decision"] == "artifact_receipt_failed"
 
 

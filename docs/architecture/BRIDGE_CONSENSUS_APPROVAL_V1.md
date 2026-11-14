@@ -131,6 +131,139 @@ missing, duplicated, forged, or stale signal fails closed to
    must be able to **re-derive** the verdict from those fields; trusting a bare
    `ok` flag is forbidden (fail-open-recurs).
 
+## Content-identical approval carry-forward
+
+The 2026-11-09 operator directive implements section 6 through an explicit,
+default-off **Rule 9a** adapter. The direct consensus and RCO checkers still
+require an exact head. Only a successful live derivation lets the merge gate
+use the historical approved head for those two content-review checks. This is
+not a Rule 12 adapter, an operator signature, or a Rule 10 authorization.
+
+### Original review and Git identity
+
+The canonical accepted queue must be complete. The adapter reads the full
+ledger, resolves the PR author, registry identities and original non-author
+approvals, and preserves the existing build-author waiver. Every selected
+original voter must have committed to the same `wd.bridge-reviewed-basis.v1`
+digest: repository, PR, canonical task, base ref, approved head, original base,
+original unique merge-base, raw diff SHA256 and stable patch-id. A later Lead
+assertion cannot manufacture another voter's commitment. Old votes without
+this evidence refuse carry for that head; fresh exact-head review remains
+available.
+
+The basis can be present on each original vote, or supplied by an immutable
+`wd.bridge-review-snapshot.v1` descriptor referenced by an accepted original
+non-author voter binding event (`wd.bridge-review-origin.v1`). Each original
+vote still commits to that basis digest. The descriptor binds its full SHA256,
+byte count and original event references, and must be in an admitted physical
+audit/shared location without reparse or traversal substitutions. It supplies
+the preimage, not a proxy approval. Canonical JSON comparisons distinguish
+integers, booleans and floats; PR aliases accept an exact integer or its exact
+decimal string. Malformed veto evidence is not silently discarded.
+
+The evidence-only evaluator also checks expanded voter bases when present:
+each selected vote must bind the same basis, and its base, unique merge-base,
+raw diff digest and patch-id must match the Git derivation. Without expanded
+bases this helper remains diagnostic and cannot authenticate caller evidence;
+the live adapter still requires the complete direct or descriptor origin.
+The proposed base must be an ancestor of or equal to the locally named
+`refs/heads/<base_ref>` tip, observed through anchored Git and rechecked for
+drift. A missing or stale local ref refuses carry; fetch it before retrying
+with a newly bound tuple. A caller-owned repository/ref is not an authenticated
+GitHub source, and this local constraint does not eliminate the documented
+server-side base movement race.
+
+The Git repository must match the PR's GitHub origin. A launcher-anchored native
+Git executable rederives both heads and their unique merge-bases from real
+objects. Stable patch-id equality alone is insufficient: deterministic binary,
+full-index raw diff bytes and their SHA256 must also match, including paths,
+modes and blob identities. Whitespace patch-id collisions, conflict edits,
+missing objects and ambiguous merge-bases refuse. In particular, the original
+reviewed base is not inferred from today's merge-base after part of a stacked
+change has landed. If the hash-pinned fleet contains `git_sha256`, it must be a
+64-hex string (case-insensitive) matching the measured launcher digest before a
+Git child starts and on authority recheck. A malformed or mismatching present
+value refuses; an absent key retains the explicitly measured-only legacy path.
+The public proof format and conservative trust label do not change. Neither
+mode attests the downstream Git executable, loaded DLLs or helpers; the
+accepted-output limit does not bound peak PIPE capture memory.
+
+### Current CI, vetoes and actual receipt consumption
+
+CI never transfers. The strict reader owns fresh `github.com` PR/head/base,
+target-tip, protection/rules and complete check-run observations. Every required
+run must have succeeded at the proposed head. Missing, pending, failed,
+wrong-head, incomplete or drifting evidence refuses. Both apply executors
+(`merge_with_bridge_receipt` and `idle_consensus_auto_merge`) require this
+inventory initially and immediately before merge, with or without carry.
+An explicit repository is required. Required checks must be completed with
+`success`; `skipped` and `neutral` do not satisfy a requirement. The rollup
+remains an additional check, never a substitute for missing required runs or
+their bound app identities. A standalone non-carry snapshot/plan may still be
+diagnostic without strict evidence; it cannot authorize apply. Present strict
+evidence is validated even for plans. Protection/rules API denial (including
+403/404), empty or unsupported requirements, malformed or incomplete pages and
+unreadable evidence fail closed. Availability must be observed using the actual
+executor's `gh` identity; another connector's authentication is not evidence of
+executor access. This code change supplies no credentials or access grant.
+
+All recognized RCOs' objections are scanned at both heads over the complete
+current ledger, including later or backdated appends. Carry neither expires a
+veto nor turns a later pass into a veto clearance. Existing identity, scope and
+explicit clearance rules remain in force. Only build consensus and qualifying
+RCO content-review approvals carry; author votes, CI, operator signatures and
+Stage-2 permissions do not.
+
+The actual writer emits `wd.bridge_consensus_merge_receipt.v1` with a
+`wd.bridge-carry-forward-merge-proof.v1` payload. It records both heads/bases and
+merge-bases, diff/patch proof, immutable original approval references, original
+review binding, historical verdicts, accepted-prefix proof, veto controls and
+new-head CI evidence. The consumer verifies the fixed MAGMA file layout and
+integrity, then rederives the origin, Git proof, queue, full current ledger and
+required CI. A resealed receipt or offline `ok` flag grants no authority.
+Harmless appends may preserve a receipt; prefix truncation cannot remove a
+selected approval or review control.
+
+Both merge executors retain their full fresh path/signature/author/charter
+gates. Immediately before the effect they consume the real MAGMA proof again
+and observe the target branch tip. Merge and post-merge queries use the same
+explicit `github.com` repository, with the exact proposed-head match guard.
+The final base read and GitHub merge are **not atomic**: the target can still
+move between them. This residual race remains explicit in the apply report;
+`--match-head-commit` protects the PR head and does not prove an atomic base
+guard. Post-merge confirmation and existing unknown-effect handling remain.
+
+### Explicit invocation and delivery
+
+The merge, receipt and idle-gate CLIs accept these common reference arguments:
+
+| Argument | Meaning |
+| --- | --- |
+| `--carry-approved-head` | Full lowercase SHA of the originally approved head. |
+| `--carry-repo-root` | Absolute persistent task Git repository; paired with the approved head. |
+| `--carry-approved-base-sha` | Optional assertion checked against the authenticated original basis. |
+| `--carry-origin-binding-event-sha256` | Optional full canonical descriptor-binding event reference. |
+
+Omitting all four keeps the existing exact-head path. Partial or malformed
+references refuse before work. These flags cannot supply queue, approval, CI
+or signature verdicts. For example, add the first two flags to the normal
+`tools/merge_with_bridge_receipt.py` invocation while retaining the exact new
+`--expected-head`, `--expected-base-sha`, repository and task arguments. The
+default remains a plan; only explicit `--apply` can request an effect.
+
+For idle apply, `--receipt-out-dir` writes the real carry MAGMA bundle rather
+than the legacy generic idle artifact. An existing `--receipt-bundle-path`
+must pass the same live semantic consumer. `--artifact-out-dir` belongs to the
+legacy generic-artifact route and is rejected for carry. A refused carry CLI
+returns a nonzero exit.
+
+`tools/bridge_approval_carry_forward.py` is listed in the reboot package and
+import smoke. It is not a new default entrypoint. Packaging is source delivery,
+not installation or activation; installed generation pins are not changed by
+this code. Final-head CI, independent required reviews and the operator's
+exact-head signature remain required for this (a)-class change. Canonical
+bridge identity binding is not a cryptographic signature.
+
 ## Enforcement of backup-RCO co-authority (2026-06-05 amendment)
 
 The recognized-RCO-set semantics above require these enforcement changes

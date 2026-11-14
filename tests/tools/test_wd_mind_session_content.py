@@ -8,6 +8,7 @@ This seam is an in-process API, not provider startup or live context delivery.
 from __future__ import annotations
 
 import hashlib
+import builtins
 import importlib.util
 import json
 import os
@@ -19,11 +20,98 @@ import pytest
 
 from tools import wd_bridge_mind_session as session
 from tools import wd_mind_content_query_readonly as content
+from tools import bridge_compact_view
 
 
 PROVIDER_KEYS = {"encoder_provider", "index_provider"}
 INPUT_KEYS = content._Q4_KEYS - PROVIDER_KEYS
 TOKEN = "mind_session_content_refused"
+
+
+def _situation_inputs():
+    def raw(value):
+        return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    def digest(value):
+        return hashlib.sha256(value).hexdigest()
+    lanes = ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
+    uuids = {lane: f"{i:08x}-1111-4111-8111-111111111111" for i, lane in enumerate(lanes, 1)}
+    fleet = raw({"lanes": [{"agent": lane, "agent_uuid": uuids[lane]} for lane in lanes
+                           if lane != "codex-tools-1"],
+                 "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": uuids["codex-tools-1"]}})
+    commit = "a" * 40
+    manifest = raw({"schema_version": 1, "source_commit": commit,
+                    "files": {"wd-fleet.json": digest(fleet)}})
+    pointer = raw({"schema_version": 1, "source_commit": commit, "final_commit": commit,
+                   "active_bundle": "C:\\Python\\wd-reboot-bundles\\" + commit,
+                   "manifest_sha256": digest(manifest), "final_manifest_sha256": digest(manifest)})
+    event = {"agent": "codex-lead-1", "agent_uuid": uuids["codex-lead-1"], "type": "claim",
+             "ts_utc": "2026-11-14T05:29:00Z", "task_id": "lead-synthetic-20261114"}
+    ref = bridge_compact_view.event_id(event)
+    snapshot = raw([{"ref": ref, "event": event}])
+    return {"snapshot_bytes": snapshot, "snapshot_sha256": digest(snapshot),
+            "fleet_bytes": fleet, "fleet_sha256": digest(fleet),
+            "pointer_bytes": pointer, "pointer_sha256": digest(pointer),
+            "manifest_bytes": manifest, "manifest_sha256": digest(manifest),
+            "pointer_observed_utc": "2026-11-14T05:29:30Z", "as_of_utc": "2026-11-14T05:30:00Z",
+            "ttl_seconds": 900}, ref
+
+
+def _situation_refused(operation):
+    with pytest.raises(ValueError) as caught:
+        operation()
+    assert type(caught.value).__name__ == "MindSituationSessionRefused"
+    assert str(caught.value) == "mind_session_situation_refused"
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("enabled", [None, False, 1, "1"])
+def test_situation_session_default_off_and_ignores_environment(monkeypatch, enabled):
+    monkeypatch.setenv("WD_MIND_READ_ENABLED", "1")
+    monkeypatch.setenv("WD_MIND_SITUATION_ENABLED", "1")
+    inputs, _ = _situation_inputs()
+    _situation_refused(lambda: session.project_situation_session(inputs=inputs))
+    _situation_refused(lambda: session.project_situation_session(enabled=enabled, inputs=inputs))
+
+
+def test_situation_session_uses_real_pinned_projection_with_refs_and_unknown():
+    inputs, ref = _situation_inputs()
+    original = dict(inputs)
+    result = session.project_situation_session(enabled=True, inputs=inputs)
+    assert result["schema"] == "wd.mind-situation-observations.v1"
+    assert result["authority"] == "none"
+    assert result["source"]["sender_authentication"] == "UNKNOWN"
+    assert result["lanes"]["codex-lead-1"]["latest_claim_event"]["event_ref"] == ref
+    assert result["lanes"]["codex-lead-1"]["current_task"] == "UNKNOWN"
+    assert inputs == original
+
+
+def test_situation_session_stale_event_keeps_ref_but_is_unknown():
+    inputs, ref = _situation_inputs()
+    inputs["as_of_utc"] = "2026-11-14T06:00:00Z"
+    result = session.project_situation_session(enabled=True, inputs=inputs)
+    observation = result["lanes"]["codex-lead-1"]["latest_claim_event"]
+    assert observation["event_ref"] == ref
+    assert observation["status"] == observation["task_id"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("fault", ["missing", "extra", "bad_pin"])
+def test_situation_session_rejects_incomplete_or_bad_pins(fault):
+    inputs, _ = _situation_inputs()
+    if fault == "missing": inputs.pop("fleet_sha256")
+    if fault == "extra": inputs["allow_missing_bundle"] = True
+    if fault == "bad_pin": inputs["snapshot_sha256"] = "0" * 64
+    _situation_refused(lambda: session.project_situation_session(enabled=True, inputs=inputs))
+
+
+def test_situation_session_missing_packaged_module_is_refused(monkeypatch):
+    inputs, _ = _situation_inputs()
+    original = builtins.__import__
+    def no_projection(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "tools" and "wd_mind_situation_view" in fromlist:
+            raise ImportError("synthetic private module path")
+        return original(name, globals, locals, fromlist, level)
+    monkeypatch.setattr(builtins, "__import__", no_projection)
+    _situation_refused(lambda: session.project_situation_session(enabled=True, inputs=inputs))
 
 
 def _entry():

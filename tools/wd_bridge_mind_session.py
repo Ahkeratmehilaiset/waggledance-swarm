@@ -149,6 +149,46 @@ class MindContentSessionRefused(ValueError):
     """Fixed-token refusal from the opt-in in-process content session boundary."""
 
 
+class MindSituationSessionRefused(ValueError):
+    """Fixed-token refusal from the opt-in in-process situation boundary."""
+
+
+def project_situation_session(*, enabled=False, inputs=None):
+    """Project explicit, caller-pinned bytes without I/O or startup activation.
+
+    The caller owns acquisition and trust of every byte and expected hash.
+    Hashes do not authenticate event senders or prove snapshot completeness.
+    This opt-in seam neither selects an import root nor changes the status CLI.
+    The caller must ensure an isolated, verified package import root; the
+    projector must be present in the trusted packaged code for deployment;
+    an unavailable module is a refusal, never a successful fallback. A caller
+    must supply the current bundle pointer and manifest, not historical mode.
+    """
+    result = None
+    succeeded = False
+    try:
+        required = {"snapshot_bytes", "snapshot_sha256", "fleet_bytes", "fleet_sha256",
+                    "pointer_bytes", "pointer_sha256", "manifest_bytes", "manifest_sha256",
+                    "pointer_observed_utc", "as_of_utc", "ttl_seconds"}
+        if enabled is not True or type(inputs) is not dict or set(inputs) != required:
+            raise ValueError("invalid_situation_session_inputs")
+        # Caller must invoke from an externally verified, complete package.
+        from tools import wd_mind_situation_view as situation_reader
+        result = situation_reader.project_situation(**inputs, allow_missing_bundle=False)
+        if (type(result) is not dict or result.get("schema") != "wd.mind-situation-observations.v1"
+                or result.get("authority") != "none"
+                or result.get("scope") != "bounded_tail_not_current_state_or_gate"):
+            raise ValueError("invalid_situation_result")
+        succeeded = True
+    except Exception:
+        pass
+    inputs = None
+    if not succeeded:
+        result = None
+        raise MindSituationSessionRefused("mind_session_situation_refused") from None
+    return result
+
+
 def query_content_session(*, enabled=False, inputs=None, providers=None):
     """Read frozen content using explicit caller-owned bindings and providers.
 

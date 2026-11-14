@@ -293,3 +293,168 @@ def test_fleet_bound_screen_remains_in_memory(fleet_config, event, monkeypatch):
     monkeypatch.setattr(socket, "socket", forbidden)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     assert subject.screen_line(line(event), **fleet_config)["status"] == "accepted"
+
+
+@pytest.fixture
+def reviewed_fleet(config, monkeypatch):
+    from pathlib import Path
+    common = "waggledance-agent-worktrees"
+    tools_name = "codex-tools-1-post-reboot-tools-sandbox-followup-20260731"
+    fable_name = "fable-5-hex-capability-probe-v1-20260730"
+    paths = {"codex-lead-1": "C:\\Public\\lead", "codex-tools-1": "C:\\Public\\" + common + "\\" + tools_name,
+             "fable-5": "C:\\Public\\" + common + "\\" + fable_name,
+             "claude-rco-1": "C:\\Public\\rco1", "claude-rco-2": "C:\\Public\\rco2"}
+    fleet = {"schema_version": 2, "lanes": [
+        {"agent": name, "agent_uuid": ROSTER[name], "worktree": paths[name]}
+        for name in sorted(set(ROSTER) - {"codex-tools-1"})],
+        "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": ROSTER["codex-tools-1"],
+                             "worktree": paths["codex-tools-1"]}}
+    fleet_bytes = raw(fleet)
+    # Test replaces the trusted source constant, never an API caller's claimed hash.
+    monkeypatch.setattr(subject, "_REVIEWED_FLEET_SHA256", digest(fleet_bytes), raising=False)
+    monkeypatch.setattr(subject, "_REVIEWED_WORKTREES", {name: paths[name] for name in ("codex-tools-1", "fable-5")}, raising=False)
+    source = Path(subject.content.__file__).read_bytes()
+    assert digest(source) == subject._REVIEWED_CONTENT_SOURCE_SHA256
+    return dict(config, fleet_bytes=fleet_bytes, fleet_sha256=digest(fleet_bytes),
+                reviewed_policy="wd.mind-reviewed-fleet-cwd.v1", reviewed_detector_source=source), paths
+
+
+@pytest.mark.parametrize("agent", ["codex-tools-1", "fable-5"])
+def test_reviewed_fleet_literal_preserves_original_event(reviewed_fleet, event, agent):
+    cfg, paths = reviewed_fleet
+    event.update(agent=agent, agent_uuid=ROSTER[agent], cwd=paths[agent])
+    original = line(event)
+    result = subject.screen_line(original, **cfg)
+    assert result["status"] == "accepted"
+    assert result["line"] == original and result["source_event_ref"] == digest(raw(event))
+    assert result["authority"] == "none" and result["source_membership"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("mutant", ["different_lane", "prefix", "suffix", "case", "separator", "component_offset"])
+def test_reviewed_literals_not_a_general_path_or_length_exception(reviewed_fleet, event, mutant):
+    cfg, paths = reviewed_fleet
+    event.update(agent="fable-5", agent_uuid=ROSTER["fable-5"], cwd=paths["fable-5"])
+    if mutant == "different_lane": event.update(agent="codex-tools-1", agent_uuid=ROSTER["codex-tools-1"])
+    elif mutant == "prefix": event["cwd"] = event["cwd"].replace("fable-5-hex", "xfable-5-hex")
+    elif mutant == "suffix": event["cwd"] += "x"
+    elif mutant == "case": event["cwd"] = event["cwd"].replace("fable-5-hex", "Fable-5-hex")
+    elif mutant == "separator": event["cwd"] = event["cwd"].replace("\\", "/")
+    elif mutant == "component_offset": event["cwd"] = event["cwd"].replace("C:\\Public\\", "C:\\")
+    assert subject.screen_line(line(event), **cfg)["status"] == "excluded"
+
+
+def test_caller_repinned_changed_fleet_does_not_grant_exception(reviewed_fleet, event):
+    cfg, paths = reviewed_fleet
+    event.update(agent="fable-5", agent_uuid=ROSTER["fable-5"], cwd=paths["fable-5"])
+    fleet = json.loads(cfg["fleet_bytes"])
+    fleet["extra"] = "unapproved new fleet"
+    changed = raw(fleet)
+    result = subject.screen_line(line(event), **dict(cfg, fleet_bytes=changed, fleet_sha256=digest(changed)))
+    assert result["status"] == "excluded" and "line" not in result
+
+
+@pytest.mark.parametrize("change", [
+    {"reviewed_policy": None}, {"reviewed_policy": "wd.mind-reviewed-fleet-cwd.v2"},
+    {"reviewed_detector_source": None}, {"reviewed_detector_source": b"wrong source"},
+    {"reviewed_detector_source": ["not bytes"]}, {"reviewed_detector_source": b"x" * (2 * 1024 * 1024 + 1)},
+])
+def test_reviewed_exception_requires_exact_policy_and_detector_source(reviewed_fleet, event, change):
+    cfg, paths = reviewed_fleet
+    event.update(agent="fable-5", agent_uuid=ROSTER["fable-5"], cwd=paths["fable-5"])
+    result = subject.screen_line(line(event), **dict(cfg, **change))
+    assert result["status"] == "excluded" and "line" not in result
+
+
+def test_reviewed_exception_rejects_changed_loaded_screen_code(reviewed_fleet, event, monkeypatch):
+    cfg, paths = reviewed_fleet
+    event.update(agent="fable-5", agent_uuid=ROSTER["fable-5"], cwd=paths["fable-5"])
+    monkeypatch.setattr(subject.content, "_screen", lambda *args, **kwargs: None)
+    result = subject.screen_line(line(event), **cfg)
+    assert result["status"] == "excluded" and "line" not in result
+
+
+def test_reviewed_exception_rejects_same_code_with_foreign_globals(reviewed_fleet, event, monkeypatch):
+    import types
+    cfg, paths = reviewed_fleet
+    event.update(agent="fable-5", agent_uuid=ROSTER["fable-5"], cwd=paths["fable-5"])
+    original = subject.content._screen
+    forged = types.FunctionType(original.__code__, dict(original.__globals__), original.__name__,
+                                original.__defaults__, original.__closure__)
+    forged.__kwdefaults__ = original.__kwdefaults__
+    monkeypatch.setattr(subject.content, "_screen", forged)
+    result = subject.screen_line(line(event), **cfg)
+    assert result["status"] == "excluded" and "line" not in result
+
+
+@pytest.mark.parametrize("detector", ["credential", "personal", "identifier", "sealed", "script", "other_phone"])
+def test_reviewed_fable_never_skips_other_raw_content_detectors(reviewed_fleet, event, monkeypatch, detector):
+    import re
+    cfg, paths = reviewed_fleet
+    event.update(agent="fable-5", agent_uuid=ROSTER["fable-5"], cwd=paths["fable-5"])
+    c = subject.content
+    if detector == "credential": monkeypatch.setattr(c, "_CREDENTIAL", c._CREDENTIAL + (re.compile("fable-5-hex"),))
+    elif detector == "personal": monkeypatch.setattr(c, "_PERSONAL", c._PERSONAL + (re.compile("fable-5-hex"),))
+    elif detector == "identifier":
+        identifiers = raw({"schema": "wd.mind-identifier-policy.v1", "identifiers": ["fable-5-hex"]})
+        key = b"synthetic-test-key-00000000000000000"
+        cfg = dict(cfg, identifier_policy_binding=(identifiers, key, hmac.new(key, identifiers, hashlib.sha256).hexdigest()))
+    elif detector == "sealed": monkeypatch.setattr(c, "_has_marker", lambda value: "fable-5-hex" in value)
+    elif detector == "script":
+        original = c._script
+        def check(value):
+            if "fable-5-hex" in value: raise c._Drop("mixed_script")
+            return original(value)
+        monkeypatch.setattr(c, "_script", check)
+    elif detector == "other_phone": monkeypatch.setattr(c, "_PHONE_RE", re.compile(r"1-20260730|20260730"))
+    result = subject.screen_line(line(event), **cfg)
+    assert result["status"] == "excluded" and "line" not in result
+
+
+def test_reviewed_literal_does_not_exempt_other_fields_or_rco(reviewed_fleet, event):
+    cfg, paths = reviewed_fleet
+    event.update(agent="fable-5", agent_uuid=ROSTER["fable-5"], cwd=paths["fable-5"], message=paths["fable-5"])
+    assert subject.screen_line(line(event), **cfg)["status"] == "excluded"
+    event.update(agent="claude-rco-1", agent_uuid=ROSTER["claude-rco-1"], cwd=paths["claude-rco-1"], message="Review")
+    assert subject.screen_line(line(event), **cfg)["status"] == "excluded"
+
+
+@pytest.mark.parametrize("message", ["sk-123456789abcdef", "sealed material", "Synthetic Private Person",
+                                      "https://example.invalid/path", "0123456789abcdef0123456789abcdef"])
+def test_reviewed_cwd_does_not_exempt_other_field_policy(reviewed_fleet, event, message):
+    cfg, paths = reviewed_fleet
+    event.update(agent="fable-5", agent_uuid=ROSTER["fable-5"], cwd=paths["fable-5"], message=message)
+    result = subject.screen_line(line(event), **cfg)
+    assert result["status"] == "excluded" and "line" not in result
+
+
+def test_fable_exception_does_not_modify_shared_phone_detector(reviewed_fleet, event):
+    cfg, paths = reviewed_fleet
+    event.update(agent="fable-5", agent_uuid=ROSTER["fable-5"], cwd=paths["fable-5"])
+    phone = subject.content._PHONE_RE
+    private = subject.content._load_identifier_policy(*cfg["identifier_policy_binding"])
+    with pytest.raises(subject.content._Drop) as before:
+        subject.content._screen(event["cwd"], identifier_policy=private)
+    assert before.value.token == "personal"
+    assert subject.screen_line(line(event), **cfg)["status"] == "accepted"
+    assert subject.content._PHONE_RE is phone
+    with pytest.raises(subject.content._Drop) as after:
+        subject.content._screen(event["cwd"], identifier_policy=private)
+    assert after.value.token == "personal"
+
+
+def test_reviewed_exception_runs_without_file_or_network_io(reviewed_fleet, event, monkeypatch):
+    import builtins
+    import pathlib
+    import socket
+    import subprocess
+
+    cfg, paths = reviewed_fleet
+    event.update(agent="fable-5", agent_uuid=ROSTER["fable-5"], cwd=paths["fable-5"])
+    subject._reviewed_screen_code.cache_clear()
+    def forbidden(*args, **kwargs):
+        raise AssertionError("I/O attempted")
+    monkeypatch.setattr(builtins, "open", forbidden)
+    monkeypatch.setattr(pathlib.Path, "open", forbidden)
+    monkeypatch.setattr(socket, "socket", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    assert subject.screen_line(line(event), **cfg)["status"] == "accepted"

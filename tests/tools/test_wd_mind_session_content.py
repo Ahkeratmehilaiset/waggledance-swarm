@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import builtins
+import base64
 from datetime import datetime, timezone
 import importlib.util
 import json
@@ -156,6 +157,14 @@ def _situation_live_cli_args(tmp_path):
     return args, log, event
 
 
+def _situation_cursor(log):
+    from waggledance.core import bridge_log_reader
+    with bridge_log_reader._open_log(log) as stream:
+        identity = bridge_log_reader._file_identity(stream)
+    data = {"offset": log.stat().st_size, "file_identity": identity, "generation": None}
+    return "bc1." + base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
+
+
 def test_situation_live_uses_canonical_reader_without_raw_leak_or_file_writes(tmp_path, capsys):
     args, log, event = _situation_live_cli_args(tmp_path)
     before = {str(path.relative_to(tmp_path)): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -236,8 +245,9 @@ def test_situation_live_refuses_malformed_rotation_and_oversize(tmp_path, capsys
         monkeypatch.setattr(session.bridge_compact_view, "_read_view_rows", fail)
     if fault == "oversize":
         event["message"] = "x" * (8 * 1024 * 1024)
+        cursor = _situation_cursor(log)
         monkeypatch.setattr(session.bridge_compact_view, "_read_view_rows",
-                            lambda *unused: ([event], "bc1.synthetic", {"unconsumed_bytes": 0}))
+                            lambda *unused: ([event], cursor, {"unconsumed_bytes": 0}))
     assert session.main(args) == 2
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -245,13 +255,14 @@ def test_situation_live_refuses_malformed_rotation_and_oversize(tmp_path, capsys
 
 
 def test_situation_live_uses_last_5000_rows_and_reads_clock_after_snapshot(tmp_path, capsys, monkeypatch):
-    args, _, event = _situation_live_cli_args(tmp_path)
+    args, log, event = _situation_live_cli_args(tmp_path)
     old = dict(event, task_id="lead-older-20261114")
     rows = [old] + [event] * 5000
     read_done = []
+    cursor = _situation_cursor(log)
     def reader(*unused):
         read_done.append(True)
-        return rows, "bc1.synthetic", {"unconsumed_bytes": 0}
+        return rows, cursor, {"unconsumed_bytes": 0}
     class Clock(datetime):
         @classmethod
         def now(cls, tz=None):
@@ -270,6 +281,69 @@ def test_situation_live_refuses_canonical_reader_rotation(tmp_path, capsys, monk
     monkeypatch.setattr(bridge_log_reader, "read_bridge_log_tail_lines",
                         lambda *unused, **kwargs: bridge_log_reader.BridgeLineReadResult(
                             bridge_log_reader.BridgeReadStatus.RETRY, "file_identity_changed_during_read"))
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and json.loads(captured.err)["error"] == "mind_session_situation_refused"
+
+
+def test_situation_live_refuses_real_path_rotation_during_open_read(tmp_path, capsys, monkeypatch):
+    from waggledance.core import bridge_log_reader
+    args, log, event = _situation_live_cli_args(tmp_path)
+    original_open = bridge_log_reader._open_log
+    rotated = []
+    def open_then_rotate(path):
+        handle = original_open(path)
+        if not rotated:
+            rotated.append(True)
+            log.rename(log.with_name("synthetic-prior-events.jsonl"))
+            replacement = dict(event, task_id="lead-synthetic-replacement")
+            log.write_bytes(json.dumps(replacement, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+        return handle
+    monkeypatch.setattr(bridge_log_reader, "_open_log", open_then_rotate)
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and json.loads(captured.err)["error"] == "mind_session_situation_refused"
+
+
+def test_situation_live_allows_same_file_append_during_read(tmp_path, capsys, monkeypatch):
+    from waggledance.core import bridge_log_reader
+    args, log, event = _situation_live_cli_args(tmp_path)
+    original_identity = bridge_log_reader._file_identity
+    calls = []
+    def append_on_second_identity(handle):
+        result = original_identity(handle)
+        calls.append(True)
+        if len(calls) == 2:
+            appended = dict(event, task_id="lead-synthetic-appended")
+            with log.open("ab") as stream:
+                stream.write(json.dumps(appended, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+        return result
+    monkeypatch.setattr(bridge_log_reader, "_file_identity", append_on_second_identity)
+    assert session.main(args) == 0
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["current_state"] == envelope["continuity"] == "UNKNOWN"
+
+
+def test_situation_live_refuses_unavailable_post_read_identity(tmp_path, capsys, monkeypatch):
+    from waggledance.core import bridge_log_reader
+    args, _, _ = _situation_live_cli_args(tmp_path)
+    original_identity = bridge_log_reader._file_identity
+    calls = []
+    def fail_third_identity(handle):
+        calls.append(True)
+        if len(calls) == 3: raise OSError("synthetic private path")
+        return original_identity(handle)
+    monkeypatch.setattr(bridge_log_reader, "_file_identity", fail_third_identity)
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and "synthetic private path" not in captured.err
+    assert json.loads(captured.err)["error"] == "mind_session_situation_refused"
+
+
+def test_situation_live_refuses_malformed_cursor(tmp_path, capsys, monkeypatch):
+    args, _, event = _situation_live_cli_args(tmp_path)
+    monkeypatch.setattr(session.bridge_compact_view, "_read_view_rows",
+                        lambda *unused: ([event], "bc1.invalid", {"unconsumed_bytes": 0}))
     assert session.main(args) == 2
     captured = capsys.readouterr()
     assert captured.out == "" and json.loads(captured.err)["error"] == "mind_session_situation_refused"

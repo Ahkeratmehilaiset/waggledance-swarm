@@ -12,6 +12,7 @@ paths, capture rows, or a partial projection.
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -180,6 +181,29 @@ def _situation_checked_path(path):
         if stat.S_ISLNK(info.st_mode) or reparse:
             raise ValueError("reparse")
     return source
+
+
+def _situation_check_live_log_identity(path, cursor):
+    """Reject a pathname replacement observable after the bounded tail read.
+
+    This compares two file handles at separate times. It does not establish
+    uninterrupted continuity or exclude same-user ABA and later replacement.
+    """
+    if type(cursor) is not str or len(cursor) > 2048 or not re.fullmatch(r"bc1\.[A-Za-z0-9_-]+", cursor):
+        raise ValueError("invalid_cursor")
+    encoded = cursor[4:]
+    data = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+    if (type(data) is not dict or set(data) != {"offset", "file_identity", "generation"}
+            or type(data["offset"]) is not int or data["offset"] < 0
+            or type(data["file_identity"]) is not str
+            or not re.fullmatch(r"(?:windows-v1:[0-9a-f]{8}:[0-9a-f]{16}|posix-v1:[0-9a-f]{1,16}:[0-9a-f]{1,16})",
+                                data["file_identity"])):
+        raise ValueError("invalid_cursor")
+    from waggledance.core.bridge_log_reader import _file_identity, _open_log
+    current_path = _situation_checked_path(path)
+    with _open_log(current_path) as stream:
+        if _file_identity(stream) != data["file_identity"]:
+            raise ValueError("log_identity_changed")
 
 
 def _situation_read_pinned(path, digest, limit):
@@ -438,6 +462,7 @@ def _situation_live_cli(argv):
                 or type(stats) is not dict or type(stats.get("unconsumed_bytes")) is not int
                 or stats["unconsumed_bytes"] < 0):
             raise ValueError("incomplete_snapshot")
+        _situation_check_live_log_identity(log, cursor)
         # One historical LF row can decode to multiple events. Bound the
         # projected event count independently of the reader's physical rows.
         envelopes = [{"ref": bridge_compact_view.event_id(row), "event": row}

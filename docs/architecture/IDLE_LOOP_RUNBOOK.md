@@ -277,7 +277,7 @@ runs a merge command) and reports an ordered worklist:
    (Idle-consensus-protocol PRs instead go through
    `idle_consensus_auto_merge.py --apply --require-bridge-consensus
    --expected-base-sha <fresh-current-main-sha>`, which adds the consensus +
-   MAGMA receipt + 5/day gates. `bridge_loop_tick` is a read-only detector; it
+   MAGMA receipt + UTC-day merge-cap gates, the cap being `waggledance.core.idle_consensus_charter.DEFAULT_DAILY_QUOTA` as documented in `docs/architecture/IDLE_AUTONOMY_CHARTER.md`. The installed bundle enforces the value of its own generation. `bridge_loop_tick` is a read-only detector; it
    does not authorize direct peer-RCO merges.)
 3. **Surface operator packs** — each `open_operator_packs` entry is a
    charter-gated decision needing a one-step operator sign-off

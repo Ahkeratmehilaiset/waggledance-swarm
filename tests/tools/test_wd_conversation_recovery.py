@@ -23,6 +23,147 @@ def quote(value):
     return "'" + str(value).replace("'", "''") + "'"
 
 
+GUARD_PRELUDE = """
+$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
+$tokens=$null; $errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({launcher},[ref]$tokens,[ref]$errors)
+if ($errors.Count) {{ throw 'Recovery launcher source did not parse' }}
+$definition=$ast.Find({{param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Assert-WdManagedOwnerInactive'}},$true)
+if ($null -eq $definition) {{ throw 'Actual process-identity guard missing' }}
+. ([scriptblock]::Create($definition.Extent.Text))
+function Test-Guard($Owner, $Rows) {{
+    $admitted=$false; $reason=''
+    try {{ Assert-WdManagedOwnerInactive -Owner $Owner -ProcessSnapshot $Rows; $admitted=$true }}
+    catch {{ $reason=$_.Exception.Message }}
+    [pscustomobject]@{{accepted=$admitted;reason=$reason}} | ConvertTo-Json -Compress
+}}
+"""
+
+
+def _guard(shell, body):
+    command = GUARD_PRELUDE.format(launcher=quote(REBOOT / "start-wd-agent.ps1")) + body
+    result = subprocess.run(
+        [shell, "-NoProfile", "-NonInteractive", "-Command", command],
+        cwd=ROOT, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+# Recorded starts are written from Get-Process StartTime in round-trip form (100 ns ticks); Win32_Process
+# CreationDate carries microseconds, truncated (observed live: recorded ...7199 vs CreationDate ...7190).
+RECORDED = "2026-09-14T08:00:00.1234567Z"
+PRECISION_CASES = {
+    # case: (owner pid, owner recorded start, child pid, child recorded start, row pid, row CreationDate, verdict)
+    "owner_same_process_microsecond_row": (2147483000, RECORDED, None, None,
+                                           2147483000, "2026-09-14T08:00:00.1234560Z", "still live"),
+    "child_same_process_microsecond_row": (2147483000, RECORDED, 2147483001, RECORDED,
+                                           2147483001, "2026-09-14T08:00:00.1234560Z", "still live"),
+    "owner_same_process_nine_ticks_apart": (2147483000, "2026-09-14T08:00:00.1234569Z", None, None,
+                                            2147483000, "2026-09-14T08:00:00.1234560Z", "still live"),
+    "owner_same_process_row_later_by_nine": (2147483000, "2026-09-14T08:00:00.1234560Z", None, None,
+                                             2147483000, "2026-09-14T08:00:00.1234569Z", "still live"),
+    "owner_exact_ticks": (2147483000, RECORDED, None, None, 2147483000, RECORDED, "still live"),
+    "child_exact_ticks": (2147483000, RECORDED, 2147483001, RECORDED, 2147483001, RECORDED, "still live"),
+    "owner_next_microsecond_bucket_is_reuse": (2147483000, "2026-09-14T08:00:00.1234570Z", None, None,
+                                               2147483000, "2026-09-14T08:00:00.1234560Z", ""),
+    "child_next_microsecond_bucket_is_reuse": (2147483000, RECORDED, 2147483001, "2026-09-14T08:00:00.1234570Z",
+                                               2147483001, "2026-09-14T08:00:00.1234560Z", ""),
+    # Deliberately stricter than equal microsecond buckets: under one microsecond apart across a bucket edge
+    # stays live (fail closed); a truncated or rounded CreationDate of the same process never lands here.
+    "owner_under_one_microsecond_across_bucket_edge": (2147483000, "2026-09-14T08:00:00.1234561Z", None, None,
+                                                       2147483000, "2026-09-14T08:00:00.1234559Z", "still live"),
+    "owner_recorded_with_offset": (2147483000, "2026-09-14T11:00:00.1234567+03:00", None, None,
+                                   2147483000, "2026-09-14T08:00:00.1234560Z", "still live"),
+    "child_row_with_offset": (2147483000, RECORDED, 2147483001, RECORDED,
+                              2147483001, "2026-09-14T10:00:00.1234560+02:00", "still live"),
+    "child_reuse_with_offset": (2147483000, RECORDED, 2147483001, RECORDED,
+                                2147483001, "2026-09-14T10:00:01.1234560+02:00", ""),
+    "owner_one_microsecond_apart_is_reuse": (2147483000, "2026-09-14T08:00:00.1234560Z", None, None,
+                                             2147483000, "2026-09-14T08:00:00.1234570Z", ""),
+    "owner_genuine_pid_reuse": (2147483000, RECORDED, None, None, 2147483000, "2026-09-14T08:00:01.1234560Z", ""),
+    "child_genuine_pid_reuse": (2147483000, RECORDED, 2147483001, RECORDED,
+                                2147483001, "2026-09-14T08:00:01.1234560Z", ""),
+    "owner_reuse_started_earlier": (2147483000, RECORDED, None, None,
+                                    2147483000, "2026-09-14T07:59:59.1234560Z", ""),
+    "owner_unknown_row_start": (2147483000, RECORDED, None, None, 2147483000, None, "cannot disambiguate"),
+    "child_unknown_row_start": (2147483000, RECORDED, 2147483001, RECORDED, 2147483001, None, "cannot disambiguate"),
+    "owner_blank_recorded_start": (2147483000, "", None, None, 2147483000, RECORDED, "cannot disambiguate"),
+    "child_blank_recorded_start": (2147483000, RECORDED, 2147483001, " ", 2147483001, RECORDED,
+                                   "cannot disambiguate"),
+    "owner_malformed_recorded_start": (2147483000, "2026-09-14 08:00:00", None, None, 2147483000, RECORDED,
+                                       "cannot parse managed owner creation time"),
+    "child_malformed_recorded_start": (2147483000, RECORDED, 2147483001, "not-a-time", 2147483001, RECORDED,
+                                       "cannot parse managed native child creation time"),
+    "owner_absent_from_snapshot": (2147483000, RECORDED, 2147483001, RECORDED, 42, RECORDED, ""),
+    "owner_pid_missing": (None, RECORDED, None, None, 42, RECORDED, "managed owner PID is missing"),
+}
+
+
+def _ps_value(value):
+    return "$null" if value is None else quote(value)
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("case", sorted(PRECISION_CASES))
+def test_owner_guard_compares_starts_at_the_common_process_time_precision(shell, case):
+    """The actual guard, synthetic snapshots: a 100 ns recorded start and a microsecond CreationDate of the same
+    process are one identity (refused as live); a start one microsecond or more apart is genuine PID reuse."""
+    owner_pid, owner_start, child_pid, child_start, row_pid, row_start, verdict = PRECISION_CASES[case]
+    row_start_ps = "$null" if row_start is None else f"[datetimeoffset]{quote(row_start)}"
+    observed = _guard(shell, f"""
+$owner=[pscustomobject]@{{pid={_ps_value(owner_pid)};process_start_utc={_ps_value(owner_start)};
+    child_pid={_ps_value(child_pid)};native_process_start_utc={_ps_value(child_start)}}}
+$rows=@([pscustomobject]@{{ProcessId=0;CreationDate=$null}},[pscustomobject]@{{ProcessId={row_pid};CreationDate={row_start_ps}}})
+Test-Guard $owner $rows
+""")
+    if verdict:
+        assert observed["accepted"] is False, observed
+        assert verdict in observed["reason"], observed
+    else:
+        assert observed == {"accepted": True, "reason": ""}, observed
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("case,rows,reason", [
+    ("idle_only", "@($idle)", ""),
+    ("duplicate_pid", "@($idle,[pscustomobject]@{ProcessId=42;CreationDate=$null},"
+                      "[pscustomobject]@{ProcessId=42;CreationDate=$null})", "cannot prove old managed owner inactivity"),
+    ("negative_pid", "@($idle,[pscustomobject]@{ProcessId=-1;CreationDate=$null})",
+     "cannot prove old managed owner inactivity"),
+])
+def test_owner_guard_snapshot_negative_controls(shell, case, rows, reason):
+    observed = _guard(shell, f"""
+$idle=[pscustomobject]@{{ProcessId=0;CreationDate=$null}}
+$owner=[pscustomobject]@{{pid=2147483000;process_start_utc={quote(RECORDED)};child_pid=$null;native_process_start_utc=''}}
+Test-Guard $owner {rows}
+""")
+    if reason:
+        assert observed["accepted"] is False and reason in observed["reason"], observed
+    else:
+        assert observed == {"accepted": True, "reason": ""}, observed
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("role", ["owner", "child"])
+def test_owner_guard_refuses_a_real_live_process_recorded_as_the_launcher_records_it(shell, role):
+    """Real identity, no fixture times: this live shell process is recorded exactly as the turn loops record an
+    owner or native child (Get-Process StartTime, round-trip form) and judged against the real Win32_Process
+    snapshot. It must be refused as live; before the fix it was usually admitted as a reused PID."""
+    observed = _guard(shell, f"""
+$start=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
+$owner=if ({quote(role)} -ceq 'owner') {{
+    [pscustomobject]@{{pid=$PID;process_start_utc=$start;child_pid=$null;native_process_start_utc=''}}
+}} else {{
+    [pscustomobject]@{{pid=2147483000;process_start_utc={quote(RECORDED)};child_pid=$PID;native_process_start_utc=$start}}
+}}
+Test-Guard $owner @(Get-CimInstance Win32_Process -ErrorAction Stop)
+""")
+    label = "managed owner" if role == "owner" else "managed native child"
+    assert observed["accepted"] is False, observed
+    assert f"{label} PID" in observed["reason"] and "still live" in observed["reason"], observed
+
+
 @pytest.mark.parametrize("shell", SHELLS)
 def test_actual_hard_hold_retirement_starts_new_paused_owner(shell, tmp_path):
     """Real contained backend -> cold archive helpers -> real paused backend.

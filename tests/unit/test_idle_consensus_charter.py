@@ -135,6 +135,21 @@ def test_charter_loads_from_default_path() -> None:
     assert len(charter.operator_quotes) >= 4
 
 
+def test_daily_quota_is_ten_in_code_and_charter_text() -> None:
+    # Operator directive 2026-10-25 (merge cap): the UTC-day autonomous merge
+    # cap is 10. The loader does not parse the number out of the charter, so
+    # the constant, the loaded value and the charter prose are pinned together.
+    assert DEFAULT_DAILY_QUOTA == 10
+    assert load_charter().daily_quota == 10
+    charter_text = (ROOT / "docs" / "architecture" / "IDLE_AUTONOMY_CHARTER.md").read_text(
+        encoding="utf-8"
+    )
+    assert "`DEFAULT_DAILY_QUOTA = 10`" in charter_text
+    assert "**10 autonomous merges per UTC day**" in charter_text
+    assert "5 autonomous merges per UTC day" not in charter_text
+    assert "DEFAULT_MAX_AUTONOMOUS_MERGES_PER_DAY" not in charter_text
+
+
 def test_charter_allowlist_contains_known_substrate_paths() -> None:
     charter = load_charter()
     assert "tools/**" in charter.allowlist

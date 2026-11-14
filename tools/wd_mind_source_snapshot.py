@@ -15,6 +15,7 @@ particular, a clean message does not exempt a nested payload from screening.
 from __future__ import annotations
 
 import hashlib
+import re
 
 from tools import wd_mind_content_query_readonly as content
 from waggledance.core import bridge_log_reader as bridge
@@ -27,6 +28,10 @@ _OPTIONAL = frozenset(("status", "severity", "to", "paths", "write_scope", "run_
                        "cwd", "payload", "role", "session_id", "capabilities"))
 _PAYLOAD_KEYS = frozenset(("summary", "detail", "notes", "items", "metadata"))
 _BUILD_LANES = frozenset(("codex-lead-1", "codex-tools-1", "fable-5"))
+_BRIDGE_UTC = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,7})?(?:Z|\+00:00)\Z"
+)
 
 
 class SourceScreenRefused(ValueError):
@@ -39,12 +44,12 @@ def _excluded():
             "evaluation_exclusion_completeness": "UNKNOWN"}
 
 
-def _unchanged_text(value, private, *, empty=False):
+def _unchanged_text(value, private, *, empty=False, limit=content.MAX_MESSAGE_CHARS):
     if type(value) is not str:
         return False
     if value == "":
         return empty
-    verdict, encoded = content._classify_with_policy(value, content.MAX_MESSAGE_CHARS, private)
+    verdict, encoded = content._classify_with_policy(value, limit, private)
     if verdict != "KEEP":
         return False
     try:
@@ -83,6 +88,8 @@ def _payload_safe(value, private):
 def _event_safe(event, policy, roster, private, excluded_tasks, ref):
     if type(event) is not dict or not _REQUIRED <= set(event) or not set(event) <= _REQUIRED | _OPTIONAL:
         return False
+    if type(event["ts_utc"]) is not str or not _BRIDGE_UTC.fullmatch(event["ts_utc"]):
+        return False
     if event.get("task_id") in excluded_tasks or ref in policy["removed_source_refs"]:
         return False
     if "approved_source_refs" in policy and ref not in policy["approved_source_refs"]:
@@ -90,7 +97,8 @@ def _event_safe(event, policy, roster, private, excluded_tasks, ref):
     fields = content._fields(event, policy, roster)
     if type(fields) is not dict:
         return False
-    if not _unchanged_text(event["message"], private) or not _unchanged_text(event["task_id"], private):
+    if (not _unchanged_text(event["message"], private, limit=policy["max_message_chars"])
+            or not _unchanged_text(event["task_id"], private)):
         return False
     if "to" in event:
         recipients = event["to"]

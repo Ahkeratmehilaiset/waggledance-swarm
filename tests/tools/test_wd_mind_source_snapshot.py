@@ -146,3 +146,38 @@ def test_screen_is_in_memory_only(config, event, monkeypatch):
     monkeypatch.setattr(socket, "socket", forbidden)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     assert subject.screen_line(line(event), **config)["status"] == "accepted"
+
+
+def test_exact_message_policy_limit_applies_to_message_only(config, event):
+    policy = json.loads(config["policy_bytes"])
+    policy["max_message_chars"] = 8
+    policy_bytes = raw(policy)
+    bound = dict(config, policy_bytes=policy_bytes, policy_sha256=digest(policy_bytes))
+    event["message"] = "Fix pass"  # exactly eight, payload text remains independently screened
+    assert subject.screen_line(line(event), **bound)["status"] == "accepted"
+    event["message"] = "Fixed bug"  # nine characters
+    result = subject.screen_line(line(event), **bound)
+    assert result["status"] == "excluded"
+    assert "line" not in result
+
+
+@pytest.mark.parametrize("timestamp", [
+    "2026-01-01T00:00:00.12345678Z",
+    "2026-01-01T00:00:00,123Z",
+    "2026-01-01 00:00:00Z",
+    "2026-01-01T00:00:00+01:00",
+])
+def test_timestamp_refuses_non_bridge_utc_or_unbounded_fraction(config, event, timestamp):
+    event["ts_utc"] = timestamp
+    assert subject.screen_line(line(event), **config)["status"] == "excluded"
+
+
+@pytest.mark.parametrize("timestamp", [
+    "2026-01-01T00:00:00Z",
+    "2026-01-01T00:00:00.1Z",
+    "2026-01-01T00:00:00.1234567Z",
+    "2026-01-01T00:00:00+00:00",
+])
+def test_timestamp_accepts_bridge_utc_with_bounded_fraction(config, event, timestamp):
+    event["ts_utc"] = timestamp
+    assert subject.screen_line(line(event), **config)["status"] == "accepted"

@@ -98,12 +98,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--operator-path-exception-json", default="",
                         help="Explicit operator invocation only: exact-bound grant JSON; not authentication.")
+    from tools.bridge_approval_carry_forward import add_carry_forward_arguments
+    add_carry_forward_arguments(parser)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        from tools.bridge_approval_carry_forward import carry_forward_request_from_args
+        carry_request = carry_forward_request_from_args(args)
         bridge_root = resolve_bridge_root(args.bridge_root)
         events_path = (
             args.events
@@ -138,6 +142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                                      if args.operator_path_exception_json else None),
             review_policy=args.review_policy,
             grok_fallback=args.grok_fallback,
+            **({"carry_forward": carry_request} if carry_request is not None else {}),
         )
     except ValueError as exc:
         report = {
@@ -189,6 +194,8 @@ def merge_with_bridge_receipt(
     review_policy: str = REVIEW_POLICY_LEGACY,
     grok_fallback: bool = False,
     _grok_reports_root: Path | None = None,
+    carry_forward: Mapping[str, Any] | None = None,
+    accepted_queue_checker: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Run snapshot + receipt preflight, then optionally merge exact head.
 
@@ -269,6 +276,16 @@ def merge_with_bridge_receipt(
 
     operator_path_exception = deepcopy(operator_path_exception)
     run = runner if runner is not None else _run_command
+    carry_kwargs: dict[str, Any] = {}
+    if carry_forward is not None:
+        if review_policy != REVIEW_POLICY_LEGACY:
+            raise ValueError("carry-forward requires legacy Rule9a; Rule12 carry is unsupported")
+        carry_forward = deepcopy(carry_forward)
+        carry_kwargs = dict(carry_forward=carry_forward, runner=run,
+                            accepted_queue_checker=accepted_queue_checker)
+    # Both legacy apply and carry require the complete required-name/app/head
+    # inventory, initially and again after receipt creation. Rollup is additional.
+    snapshot_kwargs = {"require_ci_evidence": True} if apply or carry_forward is not None else {}
     snapshot_path = out_dir / "pr-status.json"
     receipt_dir = out_dir / "receipt"
 
@@ -279,6 +296,7 @@ def merge_with_bridge_receipt(
             receipt_verified=True,
             expected_base_sha=expected_base_sha,
             runner=run,
+            **snapshot_kwargs,
         )
     except PrStatusSnapshotError as exc:
         return _blocked(
@@ -319,6 +337,7 @@ def merge_with_bridge_receipt(
             now_utc=effective_now_utc,
             operator_path_exception=operator_path_exception,
             review_policy=review_policy,
+            **carry_kwargs,
             **grok_kwargs,
         )
     except BridgeConsensusMergeReceiptError as exc:
@@ -332,7 +351,7 @@ def merge_with_bridge_receipt(
 
     command = _merge_command(
         pr_number=pr_number,
-        repo=repo,
+        repo=f"github.com/{repo}" if apply or carry_forward is not None else repo,
         expected_head=expected_head,
         method=method,
     )
@@ -360,6 +379,7 @@ def merge_with_bridge_receipt(
             receipt_verified=True,
             expected_base_sha=expected_base_sha,
             runner=run,
+            **snapshot_kwargs,
         )
     except PrStatusSnapshotError as exc:
         return _blocked(
@@ -410,6 +430,7 @@ def merge_with_bridge_receipt(
             bridge_task_id=bridge_task_id,
             apply=False,
             require_bridge_consensus=True,
+            **carry_kwargs,
             **fresh_rule12_kwargs,
             **grok_kwargs,
         )
@@ -479,6 +500,17 @@ def merge_with_bridge_receipt(
             },
         )
 
+    if carry_forward is not None:
+        from tools.write_bridge_consensus_merge_receipt import verify_carry_forward_apply
+        verification = verify_carry_forward_apply(
+            manifest_path=Path(receipt_report["receipt_bundle_path"]), carry_forward=carry_forward,
+            events_path=events_path, repo=repo, pr_number=pr_number,
+            task_id=bridge_task_id or consensus_proposal_id, expected_head=expected_head,
+            expected_base_sha=expected_base_sha, runner=run, accepted_queue_checker=accepted_queue_checker)
+        ready_report["carry_apply_verification"] = verification
+        if verification.get("ok") is not True:
+            return _blocked(decision="carry_apply_refused", errors=verification.get("errors", ["carry verification refused"]),
+                            stage="apply_recheck", pr_number=pr_number, extra=ready_report)
     try:
         merge_result = run(command)
         return_code = getattr(merge_result, "returncode", None)
@@ -504,7 +536,7 @@ def merge_with_bridge_receipt(
 
     post_merge = _query_confirmed_merge(
         pr_number=pr_number,
-        repo=repo,
+        repo=f"github.com/{repo}",
         expected_head=expected_head,
         expected_head_ref=str(verified_snapshot["head_ref"]),
         expected_base_ref=str(verified_snapshot["base_ref"]),

@@ -30,6 +30,7 @@
     "tools/__init__.py",
     "tools/agent_next_task.py",
     "tools/bridge_accepted_queue_preflight.py",
+    "tools/bridge_approval_carry_forward.py",
     "tools/bridge_capacity_advisor.py",
     "tools/bridge_capacity_attribution.py",
     "tools/bridge_capacity_collector.py",
@@ -239,6 +240,7 @@
   "import_smoke": {
     "third_party_module": "pydantic",
     "package_modules": [
+      "tools.bridge_approval_carry_forward",
       "sandbox.mind.capture.capacity_lens",
       "sandbox.mind.capture.overlap_lens",
       "sandbox.mind.join_card",

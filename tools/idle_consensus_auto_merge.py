@@ -73,6 +73,7 @@ from tools.bridge_accepted_queue_preflight import (  # noqa: E402
 from tools.pr_status_snapshot import (  # noqa: E402
     PrStatusSnapshotError,
     build_pr_status_snapshot,
+    validate_required_ci_evidence,
 )
 from tools.check_standing_consensus_sign_class import (  # noqa: E402
     evaluate_standing_consensus_sign,
@@ -252,6 +253,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--json", action="store_true")
+    from tools.bridge_approval_carry_forward import add_carry_forward_arguments
+    add_carry_forward_arguments(parser)
     return parser
 
 
@@ -267,6 +270,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     try:
+        from tools.bridge_approval_carry_forward import carry_forward_request_from_args
+        try:
+            carry_request = carry_forward_request_from_args(args)
+        except ValueError as exc:
+            raise _invalid("invalid_input", str(exc)) from exc
         if (
             args.events is not None
             and not bridge_events_path_matches_root(
@@ -304,7 +312,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             standing_consensus_sign=args.standing_consensus_sign,
             allow_lead_stall_failover=args.allow_lead_stall_failover,
             accepted_queue_checker=accepted_queue_checker,
-            artifact_writer=_cli_artifact_writer(args, events_path),
+            artifact_writer=_cli_artifact_writer(args, events_path, carry_forward=carry_request),
+            **({"carry_forward": carry_request} if carry_request is not None else {}),
         )
     except (OSError, UnicodeError) as exc:
         report = {
@@ -320,7 +329,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = exc.report
         exit_code = int(report.get("exit_code", 2))
     else:
-        exit_code = 0
+        exit_code = 1 if carry_request is not None and report.get("ok") is not True else 0
 
     if args.json:
         print(json.dumps(report, sort_keys=True))
@@ -361,6 +370,7 @@ def evaluate_auto_merge_gate(
     now_utc: datetime | None = None,
     grok_fallback: bool = False,
     _grok_reports_root: Path | None = None,
+    carry_forward: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate and optionally apply the final idle auto-merge gate.
 
@@ -399,6 +409,30 @@ def evaluate_auto_merge_gate(
         review_policy=review_policy,
         now_utc=now_utc,
     )
+    carry_material: dict[str, Any] | None = None
+    if carry_forward is not None:
+        if review_policy != REVIEW_POLICY_LEGACY or require_bridge_consensus is not True:
+            return dict(ok=False, decision="operator_review_required", would_merge=False,
+                        operator_review_required=True,
+                        reasons=["carry-forward requires complete legacy Rule9a consensus; Rule12 carry is unsupported"])
+        from copy import deepcopy
+        carry_forward = deepcopy(carry_forward)
+        from tools.bridge_approval_carry_forward import derive_live_carry_forward
+        carry_material = derive_live_carry_forward(
+            request=carry_forward, events_path=events_path, repo=repo,
+            pr_number=_require_int(pr_status.get("pr_number"), "pr_number"),
+            task_id=bridge_task_id if bridge_task_id != "" else consensus_proposal_id,
+            expected_head=expected_head, expected_base_sha=expected_base_sha,
+            runner=runner, accepted_queue_checker=accepted_queue_checker,
+        )
+        if carry_material.get("carry") is not True:
+            return dict(ok=False, decision="operator_review_required", would_merge=False,
+                        operator_review_required=True, reasons=["carry refused: " + carry_material["reason"]],
+                        carry_forward={key: value for key, value in carry_material.items() if not key.startswith("_")})
+        # The caller's snapshot cannot hide paths, CI or tuple drift. Existing
+        # receipt_verified remains legacy plan metadata, never a carry proof.
+        # Apply separately consumes the actual MAGMA files before any effect.
+        pr_status = dict(carry_material["_fresh_snapshot"], receipt_verified=pr_status.get("receipt_verified", False))
     diff_text = _diff_text(pr_status)
     diff_marker = find_diff_private_marker(diff_text)
     if diff_marker is not None:
@@ -428,6 +462,12 @@ def evaluate_auto_merge_gate(
         checker=accepted_queue_checker,
     )
     events = _read_bridge_events(events_path) if events_path is not None else []
+    carry_still_valid = False
+    if carry_material is not None:
+        from tools.bridge_approval_carry_forward import verify_carry_forward_receipt
+        refreshed = dict(carry_material["_evidence"], events=events, accepted_queue_complete=(
+            accepted_queue_preflight.get("ok") is True and accepted_queue_preflight.get("complete") is True))
+        carry_still_valid = verify_carry_forward_receipt(carry_material["receipt"], refreshed)
     pr_number = _require_int(pr_status.get("pr_number"), "pr_number")
     bridge_gate_task_id = (
         bridge_task_id if bridge_task_id != "" else consensus_proposal_id
@@ -512,12 +552,21 @@ def evaluate_auto_merge_gate(
         events=events,
         task_id=bridge_gate_task_id,
         pr_number=pr_number,
-        head_sha=head_sha,
+        head_sha=carry_material["receipt"]["approved_head"] if carry_still_valid else head_sha,
         author_agent=author_agent,
         checked=events_path is not None,
     )
 
     blockers: list[str] = []
+    if "ci_evidence" in pr_status and (not apply or carry_forward is not None):
+        try:
+            validate_required_ci_evidence(pr_status, expected_head=expected_head,
+                                          expected_base_sha=expected_base_sha, repo=repo)
+        except PrStatusSnapshotError as exc:
+            blockers.extend("required CI evidence refused: " + str(reason)
+                            for reason in exc.report.get("errors", ["invalid inventory"]))
+    if carry_material is not None and not carry_still_valid:
+        blockers.append("carry proof changed after its live snapshot/queue derivation")
     if author_resolution.get("ok") is not True:
         reasons = author_resolution.get("reasons") or [
             "PR author could not be resolved"
@@ -596,7 +645,7 @@ def evaluate_auto_merge_gate(
             events=events,
             events_path=events_path,
             task_id=bridge_gate_task_id,
-            head_sha=head_sha,
+            head_sha=carry_material["receipt"]["approved_head"] if carry_still_valid else head_sha,
             pr_number=pr_number,
             author_agent=author_agent,
             charter_path=charter_path,
@@ -684,7 +733,7 @@ def evaluate_auto_merge_gate(
     command = _merge_command(
         pr_number=pr_number,
         expected_head=expected_head,
-        repo=repo,
+        repo=f"github.com/{repo}" if apply or carry_forward is not None else repo,
     )
     base = _base_report(
         pr_number=pr_number,
@@ -706,6 +755,15 @@ def evaluate_auto_merge_gate(
     )
     base["author_resolution"] = author_resolution
     base["review_policy"] = review_policy
+    if carry_material is not None:
+        base["carry_forward"] = {key: value for key, value in carry_material.items() if not key.startswith("_")}
+        base["carry_forward"]["current_ledger_reverified"] = carry_still_valid
+        if carry_still_valid:
+            # Keep the actual original approval head visible. No event is
+            # rewritten into a new-head vote and CI/signatures never transfer.
+            for verdict in (base["rco_pass_gate"], base["bridge_consensus"]):
+                verdict["carried_from_head"] = carry_material["receipt"]["approved_head"]
+                verdict["carried_to_head"] = head_sha
     if pool_rco_slot_lift is not None:
         # Only present under rule12, so legacy reports stay unchanged.
         base["pool_rco_slot_lift"] = pool_rco_slot_lift
@@ -758,6 +816,23 @@ def evaluate_auto_merge_gate(
     if not apply:
         return report
 
+    if carry_forward is None:
+        # Reject known plan/peer/consensus blockers before I/O. Once otherwise
+        # eligible, validate live required CI before any receipt side effect.
+        try:
+            initial_snapshot = build_pr_status_snapshot(
+                pr_number=pr_number, repo=repo, receipt_verified=receipt_verified_value,
+                expected_base_sha=expected_base_sha, require_ci_evidence=True, runner=runner)
+            # Preserve requested metadata for the complete late drift check.
+            pr_status = dict(pr_status, ci_evidence=initial_snapshot["ci_evidence"])
+            validate_required_ci_evidence(pr_status, expected_head=expected_head,
+                                          expected_base_sha=expected_base_sha, repo=repo)
+        except PrStatusSnapshotError as exc:
+            return dict(report, ok=False, decision="operator_review_required", would_merge=False,
+                        operator_review_required=True, reasons=["initial required CI snapshot failed: "
+                        + "; ".join(exc.report.get("errors") or ["canonical snapshot failed"])],
+                        initial_snapshot=dict(exc.report))
+
     artifact_report: Mapping[str, Any] | None = None
     if artifact_writer is not None:
         artifact_report = _run_artifact_writer(artifact_writer)
@@ -773,6 +848,7 @@ def evaluate_auto_merge_gate(
             receipt_verified=True,
             expected_base_sha=expected_base_sha,
             runner=runner,
+            require_ci_evidence=True,
         )
     except PrStatusSnapshotError as exc:
         return {
@@ -827,6 +903,7 @@ def evaluate_auto_merge_gate(
             now_utc=gate_now,
             grok_fallback=grok_fallback,
             _grok_reports_root=_grok_reports_root,
+            **({"carry_forward": carry_forward, "runner": runner} if carry_forward is not None else {}),
         )
         apply_recheck["fresh_gate"] = fresh_gate
         if fresh_gate.get("ok") is not True:
@@ -877,11 +954,22 @@ def evaluate_auto_merge_gate(
             lambda number, head, repository: _query_pr_merge_state(
                 number,
                 head,
-                repository,
+                f"github.com/{repository}",
                 runner=run,
             )
         )
     )
+    if carry_forward is not None:
+        from tools.write_bridge_consensus_merge_receipt import verify_carry_forward_apply
+        verification = verify_carry_forward_apply(
+            manifest_path=Path(receipt_bundle_path), carry_forward=carry_forward,
+            events_path=events_path, repo=repo, pr_number=pr_number, task_id=bridge_gate_task_id,
+            expected_head=expected_head, expected_base_sha=expected_base_sha,
+            runner=run, accepted_queue_checker=accepted_queue_checker)
+        report["carry_apply_verification"] = verification
+        if verification.get("ok") is not True:
+            return dict(report, ok=False, decision="operator_review_required", would_merge=False,
+                        operator_review_required=True, reasons=verification.get("errors", ["carry verification refused"]))
     attempted_failure = {
         **base,
         "dry_run": False,
@@ -3618,7 +3706,11 @@ def _strict_json_loads(
 def _cli_artifact_writer(
     args: argparse.Namespace,
     events_path: Path,
+    *,
+    carry_forward: Mapping[str, Any] | None = None,
 ) -> ArtifactWriter | None:
+    if carry_forward is not None and args.artifact_out_dir is not None:
+        raise _invalid("invalid_input", "carry uses --receipt-out-dir; --artifact-out-dir is a legacy route")
     if not args.apply or args.receipt_out_dir is None:
         return None
 
@@ -3626,6 +3718,18 @@ def _cli_artifact_writer(
     now_utc = _parse_utc(args.now) if args.now else datetime.now(timezone.utc)
 
     def writer() -> Mapping[str, Any]:
+        if carry_forward is not None:
+            from tools.write_bridge_consensus_merge_receipt import write_bridge_consensus_merge_receipt
+            # The carry executor only accepts this real MAGMA proof layout.
+            # The legacy generic idle artifact is intentionally kept separate.
+            status = _strict_json_loads(args.pr_status_file.read_bytes().decode("utf-8-sig"),
+                                        decision="invalid_pr_status", context="carry PR status JSON")
+            return write_bridge_consensus_merge_receipt(
+                pr_status=status, events_path=events_path, out_dir=args.receipt_out_dir,
+                expected_head=args.expected_head, expected_base_sha=args.expected_base_sha,
+                consensus_proposal_id=args.consensus_proposal_id, repo=args.repo,
+                from_agent=args.from_agent, bridge_task_id=args.bridge_task_id,
+                now_utc=now_utc, carry_forward=carry_forward)
         return write_idle_consensus_artifact(
             events_path=events_path,
             out_dir=out_dir,

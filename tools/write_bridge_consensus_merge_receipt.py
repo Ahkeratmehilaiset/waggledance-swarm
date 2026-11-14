@@ -53,6 +53,14 @@ class BridgeConsensusMergeReceiptError(ValueError):
         self.report = report
 
 
+_CARRY_PAYLOAD_KEYS = frozenset({
+    "artifact_version", "created_at_utc", "repo", "pr_number", "pr_title", "task_id", "head_sha", "base_sha",
+    "merge_command", "gate_decision", "gate_reasons", "path_gate", "operator_path_exception", "original_gate",
+    "diff_gate", "base_gate", "receipt_gate", "rco_pass_gate", "bridge_peer_gate", "bridge_consensus", "rate_gate",
+    "checks", "changed_paths", "diff_digest", "receipt_manifest_planned", "carry_forward",
+})
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Write a verified MAGMA receipt for a bridge-consensus merge.",
@@ -91,12 +99,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--json", action="store_true")
+    from tools.bridge_approval_carry_forward import add_carry_forward_arguments
+    add_carry_forward_arguments(parser)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        from tools.bridge_approval_carry_forward import carry_forward_request_from_args
+        carry_request = carry_forward_request_from_args(args)
         bridge_root = resolve_bridge_root(args.bridge_root)
         events_path = (
             args.events
@@ -128,6 +140,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             now_utc=now_utc,
             review_policy=args.review_policy,
             grok_fallback=args.grok_fallback,
+            **({"carry_forward": carry_request} if carry_request is not None else {}),
         )
     except BridgeConsensusMergeReceiptError as exc:
         report = exc.report
@@ -170,6 +183,9 @@ def write_bridge_consensus_merge_receipt(
     grok_fallback: bool = False,
     _grok_reports_root: Path | None = None,
     rco_enrollment_context: Mapping[str, Any] | None = None,
+    carry_forward: Mapping[str, Any] | None = None,
+    runner=None,
+    accepted_queue_checker=None,
 ) -> dict[str, Any]:
     """Write after unchanged gate checks; optionally inject a loader-issued context.
 
@@ -201,6 +217,20 @@ def write_bridge_consensus_merge_receipt(
             }
         )
     manifest_path = out_dir / "manifest.json"
+    carry_kwargs: dict[str, Any] = {}
+    if carry_forward is not None:
+        from tools.bridge_approval_carry_forward import derive_live_carry_forward
+        live = derive_live_carry_forward(
+            request=carry_forward, events_path=events_path, repo=repo, pr_number=pr_status.get("pr_number"),
+            task_id=bridge_task_id or consensus_proposal_id, expected_head=expected_head,
+            expected_base_sha=expected_base_sha, runner=runner, accepted_queue_checker=accepted_queue_checker)
+        if live.get("carry") is not True:
+            raise BridgeConsensusMergeReceiptError(dict(ok=False, decision="carry_receipt_refused",
+                                                        errors=[live["reason"]], exit_code=2))
+        # The caller's paths/checks/diff cannot be copied into a carry receipt.
+        pr_status = dict(live["_fresh_snapshot"], receipt_verified=pr_status.get("receipt_verified") is True)
+        carry_kwargs = dict(carry_forward=carry_forward, runner=runner,
+                            accepted_queue_checker=accepted_queue_checker)
     enrollment_scope = (
         nullcontext() if rco_enrollment_context is None
         else using_rco_enrollment_context(rco_enrollment_context)
@@ -220,6 +250,7 @@ def write_bridge_consensus_merge_receipt(
             review_policy=review_policy,
             grok_fallback=grok_fallback,
             grok_reports_root=_grok_reports_root,
+            **carry_kwargs,
         )
     gate_report = apply_operator_path_exception(
         gate_report, grant=operator_path_exception, pr_status=pr_status,
@@ -259,18 +290,33 @@ def write_bridge_consensus_merge_receipt(
         manifest_path=manifest_path,
         now_utc=now,
     )
+    if carry_forward is not None:
+        from tools.idle_consensus_auto_merge import _read_bridge_events
+        payload.update(_historical_carry_verdicts(payload["carry_forward"], _read_bridge_events(events_path)))
+        bridge_consensus = payload["bridge_consensus"]
     receipt_bundle = _write_receipt_bundle(
         payload=payload,
         bridge_consensus=bridge_consensus,
         out_dir=out_dir,
         now_utc=now,
     )
+    semantic = None
+    if carry_forward is not None:
+        semantic = verify_carry_forward_merge_receipt(
+            manifest_path=Path(receipt_bundle["manifest"]), carry_forward=carry_forward,
+            events_path=events_path, repo=repo, pr_number=pr_status["pr_number"],
+            task_id=bridge_task_id or consensus_proposal_id, expected_head=expected_head,
+            expected_base_sha=expected_base_sha, runner=runner, accepted_queue_checker=accepted_queue_checker)
+        if semantic.get("ok") is not True:
+            raise BridgeConsensusMergeReceiptError(dict(ok=False, decision="carry_receipt_semantics_refused",
+                                                        errors=semantic["errors"], exit_code=2))
     return {
         "decision": "bridge_consensus_merge_receipt_written",
         "ok": True,
         "receipt_bundle_path": receipt_bundle["manifest"],
         "receipt_bundle": receipt_bundle,
         "gate_report": gate_report,
+        **({"carry_semantic_verification": semantic} if semantic is not None else {}),
     }
 
 
@@ -315,6 +361,9 @@ def _merge_plan_report(
     review_policy: str = REVIEW_POLICY_LEGACY,
     grok_fallback: bool = False,
     grok_reports_root: Path | None = None,
+    carry_forward: Mapping[str, Any] | None = None,
+    runner=None,
+    accepted_queue_checker=None,
 ) -> dict[str, Any]:
     rule12_kwargs: dict[str, Any] = (
         {"review_policy": review_policy, "now_utc": now_utc}
@@ -325,6 +374,9 @@ def _merge_plan_report(
         rule12_kwargs["grok_fallback"] = True
         if grok_reports_root is not None:
             rule12_kwargs["_grok_reports_root"] = grok_reports_root
+    if carry_forward is not None:
+        rule12_kwargs.update(carry_forward=carry_forward, runner=runner,
+                             accepted_queue_checker=accepted_queue_checker)
     try:
         return evaluate_auto_merge_gate(
             pr_status=pr_status,
@@ -384,6 +436,10 @@ def _receipt_payload(
         "diff_digest": sha256_digest(str(pr_status.get("diff_text", ""))),
         "receipt_manifest_planned": str(manifest_path),
     }
+    if gate_report.get("carry_forward") is not None:
+        from tools.bridge_approval_carry_forward import carry_forward_receipt_material
+        payload["artifact_version"] = "wd.bridge_consensus_merge_receipt.v1"
+        payload["carry_forward"] = carry_forward_receipt_material(gate_report["carry_forward"])
     if _is_rule12(bridge_consensus):
         # Rule 12 receipts name the policy and keep the evaluator report so a
         # consumer can re-derive the slot holders; legacy payloads are unchanged.
@@ -405,6 +461,127 @@ def _receipt_payload(
             # reproduce (operator 2026-10-10 06:56Z pool fallback).
             payload["rule12_review"]["pool_rco_fallback"] = dict(pool_evidence)
     return payload
+
+
+def _historical_carry_verdicts(material: Mapping, events: list) -> dict:
+    """Rebuild full historical reports from the bound prefix, not latest chatter.
+
+    This does not validate current authority. The caller separately requires
+    full live proof verification, including every later veto and current CI.
+    """
+    from tools.bridge_approval_carry_forward import _canonical_sha
+    from tools.idle_consensus_auto_merge import verify_bridge_consensus
+    from tools.check_rco_pass_present import DEFAULT_RCO_AGENTS, check_rco_pass_present
+    proof = material["approval_receipt"]
+    count = proof["accepted_event_count"]
+    if (type(count) is not int or not 0 < count <= len(events)
+            or _canonical_sha(events[:count]) != proof["accepted_events_sha256"]):
+        raise ValueError("historical review report prefix is missing or changed")
+    prefix = events[:count]
+    consensus = verify_bridge_consensus(events=prefix, task_id=proof["task_id"],
+        head_sha=proof["approved_head"], pr_number=proof["pr_number"], author_agent=proof["pr_author"])
+    rco = check_rco_pass_present(events=prefix, task_id=proof["task_id"], head=proof["approved_head"],
+        rco_agent=DEFAULT_RCO_AGENTS, author_agent=proof["pr_author"])
+    if consensus.get("ok") is not True or rco.get("ok") is not True:
+        raise ValueError("historical review report has no qualifying original approvals")
+    heads = dict(carried_from_head=proof["approved_head"], carried_to_head=proof["proposed_head"])
+    return dict(bridge_consensus=dict(consensus, required=True, **heads), rco_pass_gate=dict(rco, **heads))
+
+
+def verify_carry_forward_merge_receipt(*, manifest_path: Path, carry_forward: Mapping,
+                                      events_path: Path, repo: str, pr_number: int, task_id: str,
+                                      expected_head: str, expected_base_sha: str,
+                                      runner=None, accepted_queue_checker=None) -> dict[str, Any]:
+    """Verify the actual MAGMA files and rederive their live carry semantics.
+
+    This is review/receipt evidence, not permission to merge. An executor must
+    still run its whole fresh gate, signature/path policy and late base check.
+    The reader accepts only this writer's single-entry fixed file layout.
+    """
+    from tools.bridge_approval_carry_forward import (
+        _file_bytes, _trusted_paths, verify_live_carry_forward_receipt,
+    )
+    try:
+        def require(value, reason):
+            if not value:
+                raise ValueError(reason)
+        require(isinstance(manifest_path, Path) and manifest_path.is_absolute()
+                and manifest_path.name == "manifest.json" and ".." not in manifest_path.parts,
+                "carry receipt manifest must be an absolute fixed-layout path")
+        paths = [manifest_path] + [manifest_path.parent / name for name in (
+            "payload-001-merge.json", "evaluation-001-merge.json", "receipt-001-merge.json")]
+        snapshots = {path: _file_bytes(path, 32 * 1024 * 1024) for path in paths}
+        parse = lambda path: json.loads(snapshots[path][0].decode("utf-8"),
+                                        object_pairs_hook=_trusted_paths._pairs,
+                                        parse_constant=_trusted_paths._constant)
+        manifest = parse(manifest_path)
+        require(isinstance(manifest, Mapping) and set(manifest) == {"chain_id", "entries"}
+                and manifest.get("entries") == [dict(
+            payload=paths[1].name, evaluation_result=paths[2].name, receipt=paths[3].name)],
+            "carry receipt manifest is not the writer's single-entry layout")
+        require(verify_manifest(manifest_path).get("ok") is True, "MAGMA receipt integrity verification failed")
+        payload = parse(paths[1])
+        require(isinstance(payload, Mapping) and set(payload) == _CARRY_PAYLOAD_KEYS
+                and payload.get("artifact_version") == "wd.bridge_consensus_merge_receipt.v1",
+                "carry receipt payload schema is missing")
+        expected = dict(repo=repo, pr_number=pr_number, task_id=task_id,
+                        head_sha=expected_head, base_sha=expected_base_sha)
+        require(type(payload.get("pr_number")) is int
+                and all(payload.get(key) == value for key, value in expected.items()),
+                "carry receipt belongs to another repository/PR/task/head/base")
+        semantic = verify_live_carry_forward_receipt(
+            material=payload.get("carry_forward"), request=carry_forward, events_path=events_path,
+            repo=repo, pr_number=pr_number, task_id=task_id, expected_head=expected_head,
+            expected_base_sha=expected_base_sha, runner=runner, accepted_queue_checker=accepted_queue_checker)
+        require(semantic.get("ok") is True, "; ".join(semantic.get("reasons", [])) or "live carry proof refused")
+        fresh = semantic["_fresh"]
+        snapshot = fresh["_fresh_snapshot"]
+        require(sha256_digest(payload.get("changed_paths")) == sha256_digest(snapshot["changed_paths"])
+                and sha256_digest(payload.get("checks")) == sha256_digest(snapshot["checks"])
+                and payload.get("diff_digest") == sha256_digest(str(snapshot["diff_text"])),
+                "carry receipt paths/checks/diff do not match current snapshot")
+        historical = _historical_carry_verdicts(payload["carry_forward"], fresh["_events"])
+        for field, expected_report in historical.items():
+            require(sha256_digest(payload.get(field)) == sha256_digest(expected_report),
+                    "carry receipt original review report differs from its bound historical prefix")
+        require(all(_file_bytes(path, 32 * 1024 * 1024) == before for path, before in snapshots.items()),
+                "carry receipt files changed during verification")
+        return dict(ok=True, decision="carry_merge_receipt_rederived", head=expected_head, base_ref=snapshot["base_ref"],
+                    approved_head=fresh["receipt"]["approved_head"], authority="receipt_evidence_only_no_merge")
+    except (ValueError, TypeError, KeyError, OSError) as exc:
+        return dict(ok=False, decision="carry_merge_receipt_refused", errors=[str(exc)], authority="none")
+
+
+def verify_carry_forward_apply(*, manifest_path: Path, carry_forward: Mapping,
+                               events_path: Path, repo: str, pr_number: int, task_id: str,
+                               expected_head: str, expected_base_sha: str,
+                               runner=None, accepted_queue_checker=None) -> dict[str, Any]:
+    """Reconsume the real proof and observe the target tip immediately pre-effect.
+
+    The caller must already have passed its full fresh merge gate. GitHub's
+    match-head flag protects the PR head, not the base: this late read narrows
+    but cannot eliminate the remaining server-side base movement race.
+    """
+    from tools.pr_status_snapshot import PrStatusSnapshotError, _fetch_base_ref_tip, _github_ci_runner, _run_command
+    semantic = verify_carry_forward_merge_receipt(
+        manifest_path=manifest_path, carry_forward=carry_forward, events_path=events_path,
+        repo=repo, pr_number=pr_number, task_id=task_id, expected_head=expected_head,
+        expected_base_sha=expected_base_sha, runner=runner, accepted_queue_checker=accepted_queue_checker)
+    if semantic.get("ok") is not True:
+        return semantic
+    try:
+        # The actual consumer returns its freshly derived target ref, not a
+        # caller hint or a second, unverified read of the on-disk payload.
+        base_ref = semantic["base_ref"]
+        base = _fetch_base_ref_tip(run=_github_ci_runner(runner or _run_command, repo=repo),
+                                   repo=repo, base_ref_name=base_ref)
+        if base != expected_base_sha:
+            raise ValueError("target base moved after semantic receipt verification")
+        return dict(ok=True, decision="carry_apply_reverified", semantic=semantic,
+                    target_base_observed=base, atomic_base_guard=False,
+                    limitation="target base can still move between this read and GitHub merge")
+    except (PrStatusSnapshotError, ValueError, TypeError, KeyError, OSError) as exc:
+        return dict(ok=False, decision="carry_apply_refused", errors=[str(exc)])
 
 
 def _pool_evidence(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:

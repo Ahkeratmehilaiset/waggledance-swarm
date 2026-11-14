@@ -25,7 +25,9 @@ param(
     # and the loop below skips it: [] reads as $null there, and Test-BridgeRequestLikeEvent reads any
     # other falsy request_id beside a non-null in_reply_to_request_id as a reply (RCO2 a621 docs nit).
     # Get-BridgeContractField also unrolls a one-element array, so ["x"] reads as "x" in both modes.
-    [switch] $DiagnosticPartial
+    [switch] $DiagnosticPartial,
+    # Explicit, read-only exact-request recovery; never a complete inventory or veto scan.
+    [switch] $ExactRequestDiagnostic
 )
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
@@ -41,6 +43,11 @@ if (-not $fullyQualified) {
 . (Join-Path $PSScriptRoot 'BridgeEventClassifier.ps1')
 . (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
 . (Join-Path $PSScriptRoot 'BridgeReplyIndex.ps1')
+if ($ExactRequestDiagnostic) {
+    if (-not $RequestId) { throw '-ExactRequestDiagnostic requires -RequestId' }
+    $DiagnosticPartial=$true
+    $IncludeRequest=$true
+}
 if ($IncludeRequest -and -not ($RequestId -or ($TaskId -and $TsUtc))) {
     throw '-IncludeRequest requires -RequestId or both -TaskId and -TsUtc'
 }
@@ -61,6 +68,7 @@ $cursorFields=[ordered]@{
 # Only the opt-in diagnostic adds a discriminator: a DEFAULT seed, and so every default cursor, stays
 # byte-identical to the pre-diagnostic getter, while default and diagnostic cursors never cross.
 if ($DiagnosticPartial) { $cursorFields['diagnostic_partial']=$true }
+if ($ExactRequestDiagnostic) { $cursorFields['exact_request_diagnostic']=$true }
 $cursorSeed=$cursorFields | ConvertTo-Json -Depth 8 -Compress
 $cursorHasher=[Security.Cryptography.SHA256]::Create()
 try {
@@ -70,6 +78,8 @@ $rows=@($snapshot.rows)
 $byId=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
 $order=[Collections.Generic.List[string]]::new()
 $foreignIds=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$foreignInvalidBindingCouldNameRequest=$false
+$foreignInvalidAuthorBindingCouldNameRequest=$false
 # -DiagnosticPartial only: every invalid OWN request-like row the reply index kept is counted and
 # listed, never silently dropped here (a falsy-id row is never listed: see the -DiagnosticPartial LIMIT).
 # The list is bounded (at most 50 entries AND 30000 JSON characters, always a prefix in indexed
@@ -81,6 +91,43 @@ $maxConflicts=50
 $conflictChars=0
 $maxConflictChars=30000
 $conflictListClosed=$false
+function Test-InventoryCouldNameRequest {
+    # If an invalid binding can name the requested ID, it cannot be returned as
+    # an unambiguous exact match. Unknown non-string forms also fail closed.
+    param($Event, [string] $RequestedId)
+    $containers=@($Event)
+    $payloadProperty=$Event.PSObject.Properties['payload']
+    if ($null -ne $payloadProperty -and $null -ne $payloadProperty.Value) { $containers+=@($payloadProperty.Value) }
+    foreach ($container in $containers) {
+        $property=$container.PSObject.Properties['request_id']
+        if ($null -eq $property -or $null -eq $property.Value) { continue }
+        if ($property.Value -isnot [string] -or [StringComparer]::OrdinalIgnoreCase.Equals($property.Value, $RequestedId)) { return $true }
+    }
+    return $false
+}
+function Test-InventoryStringCouldNameRequest {
+    # A foreign conflicting binding is relevant only if a raw string side can name this ID.
+    param($Event, [string] $RequestedId)
+    $containers=@($Event)
+    $payloadProperty=$Event.PSObject.Properties['payload']
+    if ($null -ne $payloadProperty -and $null -ne $payloadProperty.Value) { $containers+=@($payloadProperty.Value) }
+    foreach ($container in $containers) {
+        $property=$container.PSObject.Properties['request_id']
+        if ($null -ne $property -and $property.Value -is [string] -and
+            [StringComparer]::OrdinalIgnoreCase.Equals($property.Value, $RequestedId)) { return $true }
+    }
+    return $false
+}
+function Test-InventoryForeignAuthorBindingConflict {
+    # An indexed request has two conflicting string authors, with a foreign top-level author.
+    param($Event, [string] $RequestedAgent)
+    $direct=$Event.PSObject.Properties['agent']
+    $payload=$Event.PSObject.Properties['payload']
+    if ($null -eq $direct -or $direct.Value -isnot [string] -or $direct.Value -ceq $RequestedAgent -or
+        $null -eq $payload -or $null -eq $payload.Value) { return $false }
+    $nested=$payload.Value.PSObject.Properties['agent']
+    return ($null -ne $nested -and $nested.Value -is [string] -and $nested.Value -cne $direct.Value)
+}
 function Get-InventoryFieldText {
     # The raw text of one field (top-level or payload), at most 160 UTF-16 units and never
     # cut inside a surrogate pair, or $null. A non-string value is shown as canonical JSON.
@@ -140,6 +187,11 @@ for ($position=0; $position -lt $rows.Count; $position++) {
     if ($null -eq $id -or -not (Test-BridgeRequestLikeEvent $event)) { continue }
     $author=Get-BridgeContractField $event 'agent'
     if ($author -isnot [string]) {
+        if ($ExactRequestDiagnostic -and (Test-BridgeContractFieldConflict $event 'agent') -and
+            (Test-InventoryForeignAuthorBindingConflict $event $Agent) -and
+            (Test-InventoryStringCouldNameRequest $event $RequestId)) {
+            $foreignInvalidAuthorBindingCouldNameRequest=$true
+        }
         # Pre-existing, both modes: under StrictMode, ANY indexed request-like row (of any requester) with no
         # top-level agent and an absent or non-string payload agent throws here on $event.agent (fail-closed,
         # generic). Skipping such an unattributable row instead is an unresolved policy choice.
@@ -147,17 +199,27 @@ for ($position=0; $position -lt $rows.Count; $position++) {
             if (-not $DiagnosticPartial) { throw "Malformed request author binding at indexed position $position" }
             Add-InventoryConflict -Position $position -Event $event `
                 -Kind (Get-InventoryBindingKind $event 'agent' 'author_binding_conflict' 'malformed_author')
+            if ($ExactRequestDiagnostic -and (Test-InventoryCouldNameRequest $event $RequestId)) {
+                [void]$conflictedIds.Add($RequestId)
+            }
         }
         continue
     }
     if ($author -cne $Agent) {
         if ($id -is [string]) { [void]$foreignIds.Add($id) }
+        elseif ($ExactRequestDiagnostic -and (Test-BridgeContractFieldConflict $event 'request_id') -and
+            (Test-InventoryStringCouldNameRequest $event $RequestId)) {
+            $foreignInvalidBindingCouldNameRequest=$true
+        }
         continue
     }
     if ($id -isnot [string] -or $id -cnotmatch '^[A-Za-z0-9._:-]{1,128}$') {
         if (-not $DiagnosticPartial) { throw "Malformed request_id at indexed position $position; inventory is incomplete" }
         Add-InventoryConflict -Position $position -Event $event `
             -Kind (Get-InventoryBindingKind $event 'request_id' 'request_id_binding_conflict' 'malformed_request_id')
+        if ($ExactRequestDiagnostic -and (Test-InventoryCouldNameRequest $event $RequestId)) {
+            [void]$conflictedIds.Add($RequestId)
+        }
         continue
     }
     if (-not $byId.ContainsKey($id)) {
@@ -211,7 +273,7 @@ for ($i=$sessionOrder.Count-1; $i -ge 0; $i--) {
     if ($TsUtc -and [string]$event.ts_utc -cne $TsUtc) { continue }
     $matched.Add([pscustomobject]@{request_id=$id;entry=$entry})
 }
-if ($IncludeRequest -and $matched.Count -ne 1) {
+if ($IncludeRequest -and $matched.Count -ne 1 -and -not ($ExactRequestDiagnostic -and $matched.Count -eq 0)) {
     throw '-IncludeRequest requires exactly one matched request; narrow the exact filters'
 }
 $eligible=@($matched | Where-Object {
@@ -299,6 +361,41 @@ if ($DiagnosticPartial) {
     # Only ids that are actually inventoried are counted: a conflicted id is listed, never inventoried.
     $diagnostic['request_count']=@($sessionOrder | Where-Object { -not $conflictedIds.Contains($_) }).Count
     $diagnostic['note']='DIAGNOSTIC ONLY, never a complete inventory: conflicting own rows are listed with exact metadata and excluded; a row whose request_id is falsy is never inventoried, refused or listed; answer_state never evaluated.'
+    if ($ExactRequestDiagnostic) {
+        $diagnostic['inventory_coverage']='incomplete_or_unknown'
+        $diagnostic['veto_coverage']='not_evaluated'
+        # Exact diagnostics must consider own IDs before -SessionId filtering and
+        # case variants owned by another requester. Preserve the existing record flags.
+        $ownCaseVariantAnySession=$false
+        foreach ($candidateId in $order) {
+            if ($candidateId -cne $RequestId -and [StringComparer]::OrdinalIgnoreCase.Equals($candidateId, $RequestId)) {
+                $ownCaseVariantAnySession=$true; break
+            }
+        }
+        $foreignRequesterCaseVariant=$false
+        foreach ($candidateId in $foreignIds) {
+            if ($candidateId -cne $RequestId -and [StringComparer]::OrdinalIgnoreCase.Equals($candidateId, $RequestId)) {
+                $foreignRequesterCaseVariant=$true; break
+            }
+        }
+        $ambiguous=($requests.Count -eq 1 -and ($requests[0].id_also_used_by_other_requester -or
+            $requests[0].case_variant_id -or $ownCaseVariantAnySession -or $foreignRequesterCaseVariant -or
+            $foreignInvalidBindingCouldNameRequest -or $foreignInvalidAuthorBindingCouldNameRequest))
+        if ($ambiguous) {
+            $diagnostic['exact_request_ambiguity']=[ordered]@{
+                id_also_used_by_other_requester=[bool]$requests[0].id_also_used_by_other_requester
+                case_variant_id=[bool]$requests[0].case_variant_id
+                own_case_variant_any_session=[bool]$ownCaseVariantAnySession
+                foreign_requester_case_variant=[bool]$foreignRequesterCaseVariant
+                foreign_requester_invalid_binding=[bool]$foreignInvalidBindingCouldNameRequest
+                foreign_requester_invalid_author_binding=[bool]$foreignInvalidAuthorBindingCouldNameRequest
+            }
+            $diagnostic['requests']=@()
+            $diagnostic['returned_count']=0
+        }
+        $diagnostic['exact_request_state']=if ($requests.Count -eq 1 -and -not $ambiguous) { 'available_not_validated' } else { 'not_available' }
+        $diagnostic['note']+=' no_conflict_observed only describes invalid own-row conflicts; it does not rule out ID ambiguity.'
+    }
     $output=[pscustomobject]$diagnostic
 }
 $json=$output | ConvertTo-Json -Depth 64 -Compress

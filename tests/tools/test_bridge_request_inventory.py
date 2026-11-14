@@ -9,6 +9,7 @@ the exact request, and Get-BridgeReplySnapshot must still resolve the answer.
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -179,6 +180,105 @@ def test_identical_duplicate_counts_once_and_conflict_fails_closed(tmp_path: Pat
     assert process.returncode != 0
     assert "Conflicting content for immutable request ID retry-v1" in process.stderr
     assert process.stdout.strip() == ""
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_exact_diagnostic_exposes_historical_conflict_without_claiming_coverage(tmp_path: Path, shell: str) -> None:
+    old, _ = _bound("historical-v1")
+    conflict = deepcopy(old)
+    conflict["message"] = "synthetic immutable request conflict"
+    target, _ = _bound("target-v1")
+    _write(tmp_path, [old, conflict, target])
+
+    default = _run(shell, INVENTORY, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache")
+    assert default.returncode != 0
+    assert "Conflicting content for immutable request ID historical-v1" in default.stderr
+
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["schema"] == "wd.request-inventory-diagnostic.v1"
+    assert result["complete"] is False and result["status"] == "partial_unknown"
+    assert result["inventory_coverage"] == "incomplete_or_unknown"
+    assert result["veto_coverage"] == "not_evaluated"
+    assert result["conflict_count"] == 1
+    assert result["conflicts"][0]["kind"] == "immutable_id_content_conflict"
+    assert result["conflicts"][0]["top_level_request_id"] == "historical-v1"
+    assert result["exact_request_state"] == "available_not_validated"
+    [record] = result["requests"]
+    assert record["request_id"] == "target-v1" and record["request"] == target
+    assert record["answer_state"] == "not_evaluated"
+
+    unavailable = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "historical-v1", "-NoCache",
+                             "-ExactRequestDiagnostic")
+    assert unavailable["complete"] is False and unavailable["veto_coverage"] == "not_evaluated"
+    assert unavailable["conflict_count"] == 1 and unavailable["exact_request_state"] == "not_available"
+    assert unavailable["requests"] == []
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_exact_diagnostic_requires_id_and_never_proves_veto_or_absence(tmp_path: Path, shell: str) -> None:
+    target, _ = _bound("target-v1")
+    _write(tmp_path, [target])
+    missing_id = _run(shell, INVENTORY, tmp_path, "-Agent", "codex-lead-1", "-NoCache", "-ExactRequestDiagnostic")
+    assert missing_id.returncode != 0 and missing_id.stdout.strip() == ""
+    assert "requires -RequestId" in missing_id.stderr
+
+    clean = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                       "-ExactRequestDiagnostic")
+    assert clean["status"] == "no_conflict_observed" and clean["conflict_count"] == 0
+    assert clean["complete"] is False and clean["inventory_coverage"] == "incomplete_or_unknown"
+    assert clean["veto_coverage"] == "not_evaluated" and clean["exact_request_state"] == "available_not_validated"
+
+    missing = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "absent-v1", "-NoCache",
+                         "-ExactRequestDiagnostic")
+    assert missing["complete"] is False and missing["exact_request_state"] == "not_available"
+    assert missing["veto_coverage"] == "not_evaluated" and missing["requests"] == []
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("invalid_field", ["request_id", "agent"])
+def test_exact_diagnostic_suppresses_target_with_invalid_binding_and_rejects_bad_cursor(
+    tmp_path: Path, shell: str, invalid_field: str
+) -> None:
+    target, _ = _bound("target-v1")
+    bad = deepcopy(target)
+    if invalid_field == "request_id":
+        bad["payload"]["request_id"] = "different-v1"
+    else:
+        bad["payload"]["agent"] = "different-agent"
+    _write(tmp_path, [target, bad])
+
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["status"] == "partial_unknown"
+    assert result["conflict_count"] == 1 and result["exact_request_state"] == "not_available"
+    assert result["requests"] == [] and result["veto_coverage"] == "not_evaluated"
+    assert result["conflicts"][0]["kind"] == f"{invalid_field if invalid_field == 'request_id' else 'author'}_binding_conflict"
+
+    cursor = _run(shell, INVENTORY, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                  "-ExactRequestDiagnostic", "-Cursor", "1:1:0000000000000000")
+    assert cursor.returncode != 0 and cursor.stdout.strip() == ""
+    assert "Inventory cursor does not match" in cursor.stderr
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_exact_diagnostic_never_claims_available_when_cursor_excludes_the_only_match(tmp_path: Path, shell: str) -> None:
+    target, _ = _bound("target-v1")
+    _write(tmp_path, [target])
+    args = ("-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache", "-ExactRequestDiagnostic")
+    first = _inventory(shell, tmp_path, *args)
+    seed = {
+        "snapshot": first["snapshot_cursor"], "prefix_sha256": first["snapshot_identity"]["prefix_sha256"],
+        "agent": "codex-lead-1", "session_id": "", "request_id": "target-v1", "task_id": "", "ts_utc": "",
+        "order": "first_indexed_position_desc", "page_size": 50, "include_request": True,
+        "diagnostic_partial": True, "exact_request_diagnostic": True,
+    }
+    digest = hashlib.sha256(json.dumps(seed, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()[:16].upper()
+    cursor = f'{first["snapshot_bytes"]}:0:{digest}'
+    page = _inventory(shell, tmp_path, *args, "-Cursor", cursor)
+    assert page["matched_count"] == 1 and page["requests"] == []
+    assert page["exact_request_state"] == "not_available"
+    assert page["complete"] is False and page["veto_coverage"] == "not_evaluated"
 
 
 @pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
@@ -365,3 +465,167 @@ def test_other_requesters_malformed_row_does_not_blind_the_inventory(tmp_path: P
     _write(tmp_path, [theirs, mine])
     result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-NoCache")
     assert [entry["request_id"] for entry in result["requests"]] == ["mine-v1"]
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("collision", ("foreign_requester", "case_variant", "both"))
+def test_exact_diagnostic_does_not_claim_available_for_id_collisions(tmp_path: Path, shell: str, collision: str) -> None:
+    target, _ = _bound("target-v1")
+    rows = [target]
+    if collision in ("foreign_requester", "both"):
+        other, _ = _bound("target-v1", agent="codex-tools-1", to="codex-lead-1")
+        rows.append(other)
+    if collision in ("case_variant", "both"):
+        other, _ = _bound("TARGET-v1")
+        rows.append(other)
+    _write(tmp_path, rows)
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    assert result["exact_request_state"] == "not_available" and result["requests"] == []
+    assert result["matched_count"] == 1 and result["returned_count"] == 0
+    assert result["exact_request_ambiguity"] == {
+        "id_also_used_by_other_requester": collision in ("foreign_requester", "both"),
+        "case_variant_id": collision in ("case_variant", "both"),
+        "own_case_variant_any_session": collision in ("case_variant", "both"),
+        "foreign_requester_case_variant": False,
+        "foreign_requester_invalid_binding": False,
+        "foreign_requester_invalid_author_binding": False,
+    }
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("variant_side", ("top", "payload"))
+def test_exact_diagnostic_suppresses_case_variant_invalid_id_binding(tmp_path: Path, shell: str, variant_side: str) -> None:
+    target, _ = _bound("target-v1")
+    bad, _ = _bound("TARGET-v1" if variant_side == "top" else "other-v1")
+    bad["payload"]["request_id"] = "other-v1" if variant_side == "top" else "TARGET-v1"
+    _write(tmp_path, [target, bad])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    assert result["conflict_count"] == 1
+    assert result["conflicts"][0]["kind"] == "request_id_binding_conflict"
+    assert result["exact_request_state"] == "not_available" and result["requests"] == []
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+def test_exact_diagnostic_suppresses_target_for_non_string_request_id(tmp_path: Path, shell: str) -> None:
+    target, _ = _bound("target-v1")
+    bad, _ = _bound("bad-v1")
+    bad["request_id"] = 123
+    _write(tmp_path, [target, bad])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    assert result["conflict_count"] == 1
+    assert result["conflicts"][0]["kind"] == "malformed_request_id"
+    assert result["exact_request_state"] == "not_available" and result["requests"] == []
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("case", ("foreign_case_variant", "other_session_case_variant"))
+def test_exact_diagnostic_suppresses_case_variants_outside_session_scope(tmp_path: Path, shell: str, case: str) -> None:
+    target, _ = _bound("target-v1")
+    if case == "foreign_case_variant":
+        other, _ = _bound("TARGET-v1", agent="codex-tools-1", to="codex-lead-1")
+    else:
+        other, _ = _bound("TARGET-v1", session_id="other-session")
+    _write(tmp_path, [target, other])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-SessionId", "lead-session",
+                        "-RequestId", "target-v1", "-NoCache", "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    assert result["exact_request_state"] == "not_available" and result["requests"] == []
+    assert result["matched_count"] == 1 and result["returned_count"] == 0
+    reasons = result["exact_request_ambiguity"]
+    assert reasons["id_also_used_by_other_requester"] is False and reasons["case_variant_id"] is False
+    assert reasons["foreign_requester_case_variant"] is (case == "foreign_case_variant")
+    assert reasons["own_case_variant_any_session"] is (case == "other_session_case_variant")
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("case", ("foreign_unrelated", "other_session_unrelated"))
+def test_exact_diagnostic_does_not_confuse_unrelated_ids(tmp_path: Path, shell: str, case: str) -> None:
+    target, _ = _bound("target-v1")
+    if case == "foreign_unrelated":
+        other, _ = _bound("TARGET-v10", agent="codex-tools-1", to="codex-lead-1")
+    else:
+        other, _ = _bound("TARGET-v10", session_id="other-session")
+    _write(tmp_path, [target, other])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-SessionId", "lead-session",
+                        "-RequestId", "target-v1", "-NoCache", "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    assert result["exact_request_state"] == "available_not_validated"
+    assert result["requests"][0]["request"] == target
+    assert result["requests"][0]["id_also_used_by_other_requester"] is False
+    assert result["requests"][0]["case_variant_id"] is False
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("case", ("top_equal", "payload_equal", "top_variant", "payload_variant", "unrelated"))
+def test_exact_diagnostic_handles_foreign_conflicting_id_bindings(tmp_path: Path, shell: str, case: str) -> None:
+    target, _ = _bound("target-v1")
+    values = {
+        "top_equal": ("target-v1", "other-v1"),
+        "payload_equal": ("other-v1", "target-v1"),
+        "top_variant": ("TARGET-v1", "other-v1"),
+        "payload_variant": ("other-v1", "TARGET-v1"),
+        "unrelated": ("other-v1", "another-v1"),
+    }
+    direct, nested = values[case]
+    foreign, _ = _bound(direct, agent="codex-tools-1", to="codex-lead-1")
+    foreign["payload"]["request_id"] = nested
+    _write(tmp_path, [target, foreign])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    if case == "unrelated":
+        assert result["exact_request_state"] == "available_not_validated"
+        assert result["requests"][0]["request"] == target
+    else:
+        assert result["exact_request_state"] == "not_available" and result["requests"] == []
+        assert result["exact_request_ambiguity"]["foreign_requester_invalid_binding"] is True
+        assert result["returned_count"] == 0
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("foreign_id", ("target-v1", "TARGET-v1"))
+def test_exact_diagnostic_detects_foreign_payload_only_valid_id(tmp_path: Path, shell: str, foreign_id: str) -> None:
+    target, _ = _bound("target-v1")
+    foreign, _ = _bound(foreign_id, agent="codex-tools-1", to="codex-lead-1")
+    del foreign["request_id"]
+    foreign["payload"]["request_id"] = foreign_id
+    _write(tmp_path, [target, foreign])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    assert result["exact_request_state"] == "not_available" and result["requests"] == []
+    assert result["returned_count"] == 0
+    reasons = result["exact_request_ambiguity"]
+    assert reasons["id_also_used_by_other_requester"] is (foreign_id == "target-v1")
+    assert reasons["foreign_requester_case_variant"] is (foreign_id == "TARGET-v1")
+
+
+@pytest.mark.parametrize("shell", SHELLS, ids=lambda value: Path(value).stem)
+@pytest.mark.parametrize("case", ("matching_id", "case_variant_id", "payload_only_id", "dual_binding", "unrelated_id", "foreign_authors", "foreign_authors_variant", "foreign_authors_unrelated_id"))
+def test_exact_diagnostic_handles_foreign_conflicting_author_binding(tmp_path: Path, shell: str, case: str) -> None:
+    target, _ = _bound("target-v1")
+    foreign_id = "other-v1" if case in ("unrelated_id", "dual_binding", "foreign_authors_unrelated_id") else "TARGET-v1" if case in ("case_variant_id", "foreign_authors_variant") else "target-v1"
+    foreign, _ = _bound(foreign_id, agent="codex-tools-1", to="codex-lead-1")
+    foreign["payload"]["agent"] = "fable-5" if case.startswith("foreign_authors") else "codex-lead-1"
+    if case == "payload_only_id":
+        del foreign["request_id"]
+        foreign["payload"]["request_id"] = foreign_id
+    elif case == "dual_binding":
+        foreign["payload"]["request_id"] = "TARGET-v1"
+    _write(tmp_path, [target, foreign])
+    result = _inventory(shell, tmp_path, "-Agent", "codex-lead-1", "-RequestId", "target-v1", "-NoCache",
+                        "-ExactRequestDiagnostic")
+    assert result["complete"] is False and result["veto_coverage"] == "not_evaluated"
+    if case in ("unrelated_id", "foreign_authors_unrelated_id"):
+        assert result["exact_request_state"] == "available_not_validated"
+        assert result["requests"][0]["request"] == target
+    else:
+        assert result["exact_request_state"] == "not_available" and result["requests"] == []
+        assert result["returned_count"] == 0
+        assert result["exact_request_ambiguity"]["foreign_requester_invalid_author_binding"] is True

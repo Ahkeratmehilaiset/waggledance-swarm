@@ -1110,6 +1110,18 @@ def _q4_json_budget(raw, max_nodes):
     characters cannot contain an ASCII quote or backslash byte. This is only an
     allocation preflight, not a replacement JSON syntax/duplicate-key check.
     """
+    import codecs
+    # json.loads(bytes) also accepts UTF-16/32, whose code units can hide ASCII
+    # punctuation from this UTF-8 scanner. Raw NUL is never valid JSON text.
+    if b"\x00" in raw:
+        raise ValueError("cell_json_encoding")
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    try:
+        for start in range(0, len(raw), 65536):
+            decoder.decode(raw[start:start + 65536], final=False)
+        decoder.decode(b"", final=True)
+    except UnicodeError:
+        raise ValueError("cell_json_encoding") from None
     nodes = depth = 0
     quoted = escaped = atom = False
     for byte in raw:
@@ -1245,6 +1257,10 @@ def _q4_cell_controls(cell_id, item, bound, memory, records):
     rows, seen = [], set()
     cutoff = _utc(content.get("cutoff_utc"))
     for position, raw in enumerate(raw_rows):
+        if memory["scope"] == _ALL_TASK_ROUTE_SCOPE:
+            # Match the preflight's encoding; never let the parser auto-detect
+            # a different encoding from these immutable bytes.
+            raw = raw.decode("utf-8")
         row = json.loads(raw, object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
         provenance = row.get("provenance") if type(row) is dict else None
         if (type(row) is not dict or type(provenance) is not dict or row.get("kind") != "event"

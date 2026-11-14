@@ -2252,3 +2252,77 @@ def test_v3_provenance_blank_line_bomb_refuses_before_split_or_parse(reader, tmp
     with pytest.raises(ValueError, match="^cell_json_line_budget$"):
         reader._query_content_snapshot(case)
     assert case["index_provider"].calls == [] and case["stream"].reads == 0
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+def test_v3_provenance_rejects_encoding_autodetection_before_json_parser(
+        reader, tmp_path, monkeypatch, encoding, all_tasks):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    data = case["cell_snapshots"]["general"]["artifacts"]
+    lines = data["provenance"].splitlines()
+    row = json.loads(lines[0])
+    # U+0122 includes an ASCII quote byte in UTF-16/32. A UTF-8 byte scanner
+    # could mistake it for a string delimiter and hide the following nodes.
+    row["!"] = {"marker": "\u0122", "values": [0] * 1000}
+    target = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(encoding)
+    assert len(json.loads(target)["!"]["values"]) == 1000
+    lines[0] = target
+    data["provenance"] = b"\n".join(lines) + b"\n"
+    _semantic_repin_cell(case, "general")
+    parsed = []
+    original = reader.json.loads
+
+    def observe(raw, *args, **kwargs):
+        if raw == target:
+            parsed.append(True)
+        return original(raw, *args, **kwargs)
+
+    monkeypatch.setattr(reader.json, "loads", observe)
+    if all_tasks:
+        _semantic_refuses_without_callbacks(reader, case)
+        assert parsed == []
+    else:
+        assert _semantic_entry(reader, case)["status"] == "ANSWER"
+        assert parsed
+
+
+@pytest.mark.parametrize("escaped", [False, True])
+def test_v3_provenance_parses_only_utf8_text_with_unicode_and_escapes(reader, tmp_path, monkeypatch, escaped):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    data = case["cell_snapshots"]["general"]["artifacts"]
+    lines = data["provenance"].splitlines()
+    row = json.loads(lines[0])
+    row["!"] = {"marker": '\u0122\u2603\U0001f600 \\"{}[]', "values": [0, 1]}
+    text = json.dumps(row, ensure_ascii=escaped, sort_keys=True, separators=(",", ":"))
+    lines[0] = text.encode("utf-8")
+    data["provenance"] = b"\n".join(lines) + b"\n"
+    _semantic_repin_cell(case, "general")
+    parsed = []
+    original = reader.json.loads
+
+    def observe(raw, *args, **kwargs):
+        if raw == text or raw == text.encode("utf-8"):
+            parsed.append(type(raw))
+        return original(raw, *args, **kwargs)
+
+    monkeypatch.setattr(reader.json, "loads", observe)
+    assert _semantic_entry(reader, case)["status"] == "ANSWER"
+    assert parsed == [str]
+
+
+@pytest.mark.parametrize("bad", [b"\xff", b"\xc0\x80", b"\xed\xa0\x80", b"\xf4\x90\x80\x80", b"\xe2", b"\x00"])
+def test_v3_json_budget_refuses_invalid_utf8_or_raw_nul_before_scanning(reader, bad):
+    with pytest.raises(ValueError, match="^cell_json_encoding$"):
+        reader._q4_json_budget(b'{"a":"' + bad + b'"}', 3)
+
+
+def test_v3_json_utf8_validation_preserves_split_multibyte_character(reader):
+    raw = b'{"a":"' + b"x" * 65529 + "\u2603".encode("utf-8") + b'"}'
+    assert raw[65535:65538] == "\u2603".encode("utf-8")
+    reader._q4_json_budget(raw, 3)
+
+
+def test_v3_json_utf8_validation_flushes_incomplete_final_character(reader):
+    with pytest.raises(ValueError, match="^cell_json_encoding$"):
+        reader._q4_json_budget(b'{"a":"ok"}' + b"\xe2", 100)

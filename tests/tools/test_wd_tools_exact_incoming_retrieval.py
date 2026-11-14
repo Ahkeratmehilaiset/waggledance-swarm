@@ -273,9 +273,17 @@ def test_legacy_request_without_id_hidden_by_noise_is_blocked_not_invented(tmp_p
     routing = _route(rows)
     assert routing["action"] == "answer_incoming" and routing["incoming"]["request_id"] is None
     assert _retrieve(tmp_path, shell, rows, routing) == {"status": "blocked", "reason": "legacy_request_not_in_recent_view"}
-    # Visible in the recent view, the legacy request is still selected exactly.
-    visible = _retrieve(tmp_path / "visible", shell, [*_noise(60), legacy], _route([*_noise(60), legacy]))
+    # Visible in the recent view, the legacy request is still selected exactly: it sits mid-window (neither the
+    # first nor the last recent row), and the last row is a decoy with the same agent, task_id and target but
+    # another ts_utc and message, so neither position nor a partial key can stand in for the exact selection.
+    noise = _noise(60)
+    decoy = dict(legacy, ts_utc="2026-09-29T09:56:00Z", type="message", status="reported", message="decoy")
+    window = [*noise[:40], legacy, *noise[40:], decoy]
+    window_routing = _route(window)
+    assert window_routing["incoming"]["ts_utc"] == legacy["ts_utc"]
+    visible = _retrieve(tmp_path / "visible", shell, window, window_routing)
     assert visible["status"] == "ok" and visible["path"] == "recent_view"
+    assert json.loads(visible["request_json"]) == legacy  # the legacy row's own body, not another recent row
 
 
 def _legacy_routing() -> tuple[dict, dict]:

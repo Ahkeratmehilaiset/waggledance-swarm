@@ -186,6 +186,69 @@ def test_situation_cli_keeps_review_unknown_for_generic_request(tmp_path, capsys
     assert view["request_observations"][0]["requested_review"] == "UNKNOWN"
 
 
+def test_situation_cli_refuses_older_event_as_latest(tmp_path, capsys, monkeypatch):
+    from tools import wd_mind_situation_view as projection
+    args, _ = _situation_cli_args(tmp_path)
+    path = Path(args[args.index("--snapshot") + 1])
+    records = json.loads(path.read_bytes())
+    event = dict(records[0]["event"], type="done", ts_utc="2026-11-14T05:29:30Z")
+    records.append({"ref": bridge_compact_view.event_id(event), "event": event})
+    snapshot = json.dumps(records, sort_keys=True, separators=(",", ":")).encode()
+    path.write_bytes(snapshot)
+    args[args.index("--snapshot-sha256") + 1] = hashlib.sha256(snapshot).hexdigest()
+    original = projection.project_situation
+    def wrong_latest(**kwargs):
+        view = original(**kwargs)
+        lane = view["lanes"]["codex-lead-1"]
+        lane["latest_work_event"] = dict(lane["latest_claim_event"])
+        return view
+    monkeypatch.setattr(projection, "project_situation", wrong_latest)
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err)["error"] == "mind_session_situation_refused"
+
+
+def test_situation_cli_stale_latest_keeps_real_reference(tmp_path, capsys):
+    args, ref = _situation_cli_args(tmp_path)
+    args[args.index("--as-of-utc") + 1] = "2026-11-14T06:00:00Z"
+    assert session.main(args) == 0
+    observation = json.loads(capsys.readouterr().out)["lanes"]["codex-lead-1"]["latest_work_event"]
+    assert observation["event_ref"] == ref
+    assert observation["status"] == observation["event_type"] == "UNKNOWN"
+
+
+def test_situation_cli_equal_time_uses_last_snapshot_event(tmp_path, capsys):
+    args, _ = _situation_cli_args(tmp_path)
+    path = Path(args[args.index("--snapshot") + 1])
+    records = json.loads(path.read_bytes())
+    event = dict(records[0]["event"], type="done")
+    ref = bridge_compact_view.event_id(event)
+    records.append({"ref": ref, "event": event})
+    snapshot = json.dumps(records, sort_keys=True, separators=(",", ":")).encode()
+    path.write_bytes(snapshot)
+    args[args.index("--snapshot-sha256") + 1] = hashlib.sha256(snapshot).hexdigest()
+    assert session.main(args) == 0
+    observation = json.loads(capsys.readouterr().out)["lanes"]["codex-lead-1"]["latest_work_event"]
+    assert observation["event_ref"] == ref and observation["event_type"] == "done"
+
+
+def test_situation_cli_orders_seventh_fractional_digit(tmp_path, capsys):
+    args, _ = _situation_cli_args(tmp_path)
+    path = Path(args[args.index("--snapshot") + 1])
+    records = json.loads(path.read_bytes())
+    newer = dict(records[0]["event"], type="done", ts_utc="2026-11-14T05:29:00.0000002Z")
+    older = dict(records[0]["event"], ts_utc="2026-11-14T05:29:00.0000001Z")
+    newest_ref = bridge_compact_view.event_id(newer)
+    records = [{"ref": newest_ref, "event": newer}, {"ref": bridge_compact_view.event_id(older), "event": older}]
+    snapshot = json.dumps(records, sort_keys=True, separators=(",", ":")).encode()
+    path.write_bytes(snapshot)
+    args[args.index("--snapshot-sha256") + 1] = hashlib.sha256(snapshot).hexdigest()
+    assert session.main(args) == 0
+    observation = json.loads(capsys.readouterr().out)["lanes"]["codex-lead-1"]["latest_work_event"]
+    assert observation["event_ref"] == newest_ref
+
+
 @pytest.mark.parametrize("fault", ["invented_ref", "wrong_time", "raw_task", "extra_payload", "wrong_bundle_age"])
 def test_situation_cli_refuses_projection_with_unbound_or_unfiltered_data(tmp_path, capsys, monkeypatch, fault):
     from tools import wd_mind_situation_view as projection

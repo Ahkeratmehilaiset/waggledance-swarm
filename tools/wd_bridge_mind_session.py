@@ -291,10 +291,34 @@ def _situation_validate_output(view, inputs):
     lane_event_types = {"latest_work_event": {"claim", "release", "done", "handoff"},
                         "latest_claim_event": {"claim", "release"},
                         "latest_done_event": {"done"}, "latest_handoff_event": {"handoff"}}
+    latest = {lane: {} for lane in lanes}
+    for record in records:
+        event = record["event"]
+        agent, uuid, kind = event.get("agent"), event.get("agent_uuid"), event.get("type")
+        if agent not in roster or type(uuid) is not str or uuid.lower() != roster[agent]:
+            continue
+        categories = [key for key, event_types in lane_event_types.items() if kind in event_types]
+        if not categories:
+            continue
+        observed, observed_tick = ticks(event.get("ts_utc"))
+        delta = as_of - observed
+        age = ((delta.days * 86400 + delta.seconds) * 10000000
+               + delta.microseconds * 10 + as_of_tick - observed_tick)
+        if age < 0:
+            raise ValueError("future_event")
+        for key in categories:
+            previous = latest[agent].get(key)
+            if previous is None or age <= previous[0]:
+                latest[agent][key] = (age, record["ref"])
     for lane_name, lane in view["lanes"].items():
         if type(lane) is not dict or set(lane) != lane_fields or lane["current_task"] != "UNKNOWN":
             raise ValueError("lane")
         for key in lane_fields - {"current_task"}:
+            expected = latest[lane_name].get(key)
+            if expected is None:
+                if lane[key] != "UNKNOWN": raise ValueError("unexpected_lane_event")
+            elif type(lane[key]) is not dict or lane[key].get("event_ref") != expected[1]:
+                raise ValueError("not_latest_lane_event")
             if lane[key] != "UNKNOWN":
                 observation(lane[key], set(), lane_name)
                 if refs[lane[key]["event_ref"]].get("type") not in lane_event_types[key]:

@@ -2130,3 +2130,125 @@ def test_v3_larger_last_cell_corruption_refuses_before_provider(reader, tmp_path
     cell["artifacts"][artifact] += b" " * (reader._Q4_ARTIFACT_BYTES + 1)
     # The artifact is intentionally not repinned.
     _semantic_refuses_without_callbacks(reader, case)
+
+
+def _synthetic_json_extra(case, artifact, value):
+    data = case["cell_snapshots"]["general"]["artifacts"]
+    if artifact == "meta":
+        parsed = json.loads(data[artifact])
+        parsed["metadata"][0] = {"extra": value}
+        data[artifact] = _raw(parsed)
+        target = data[artifact]
+    else:
+        lines = data[artifact].splitlines()
+        parsed = json.loads(lines[0])
+        parsed["extra"] = value
+        target = lines[0] = _raw(parsed)
+        data[artifact] = b"\n".join(lines) + b"\n"
+    _semantic_repin_cell(case, "general")
+    return target
+
+
+@pytest.mark.parametrize("artifact", ["meta", "provenance"])
+@pytest.mark.parametrize("shape", ["containers", "scalars", "members", "depth"])
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+def test_v3_json_expansion_refuses_before_parsing_without_changing_v2(
+        reader, tmp_path, monkeypatch, artifact, shape, all_tasks):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    if shape == "containers":
+        value = [{} for _ in range(1000)]
+    elif shape == "scalars":
+        value = [None, True, False, 0, -1.25e3] * 200
+    elif shape == "members":
+        value = {str(number): None for number in range(1000)}
+    else:
+        value = None
+        for _ in range(32):
+            value = [value]
+    target = _synthetic_json_extra(case, artifact, value)
+    expanded = []
+    original = reader.json.loads
+
+    def observe(raw, *args, **kwargs):
+        if raw == target or raw == target.decode("utf-8"):
+            expanded.append(True)
+        return original(raw, *args, **kwargs)
+
+    monkeypatch.setattr(reader.json, "loads", observe)
+    if all_tasks:
+        _semantic_refuses_without_callbacks(reader, case)
+        assert expanded == []
+    else:
+        assert _semantic_entry(reader, case)["status"] == "ANSWER"
+        assert expanded
+
+
+@pytest.mark.parametrize("artifact", ["meta", "provenance"])
+def test_v3_json_budget_ignores_escaped_structure_in_unicode_strings(reader, tmp_path, artifact):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    value = {"quoted\"key\\": "snowman \u2603 and \U0001f600 []{}:\"\\" * 500,
+             "scalars": [None, True, False, 0, -1.25e3]}
+    _synthetic_json_extra(case, artifact, value)
+    assert _semantic_entry(reader, case)["status"] == "ANSWER"
+
+
+def test_v3_json_node_budget_counts_keys_scalars_and_empty_containers(reader):
+    raw = b'{"\\u0061":[null,true,false,0,-2.5e+3,{},[],"escaped \\" {[ ]} \\\\ \\u2603"]}'
+    assert json.loads(raw)["a"][-1] == 'escaped " {[ ]} \\ \u2603'
+    reader._q4_json_budget(raw, 11)
+    with pytest.raises(ValueError, match="^cell_json_node_budget$"):
+        reader._q4_json_budget(raw, 10)
+
+
+def test_v3_json_depth_budget_checks_container_boundary(reader):
+    depth = reader._Q4_V3_JSON_MAX_DEPTH
+    reader._q4_json_budget(b"[" * depth + b"0" + b"]" * depth, depth + 1)
+    with pytest.raises(ValueError, match="^cell_json_depth_budget$"):
+        reader._q4_json_budget(b"[" * (depth + 1) + b"0" + b"]" * (depth + 1), depth + 2)
+
+
+@pytest.mark.parametrize("slashes", range(6))
+def test_v3_json_budget_escape_parity_cannot_hide_following_nodes(reader, slashes):
+    raw = _raw({"a": "\\" * slashes + '\"{}[] snowman \u2603', "z": [0]})
+    reader._q4_json_budget(raw, 6)
+    with pytest.raises(ValueError, match="^cell_json_node_budget$"):
+        reader._q4_json_budget(raw, 5)
+
+
+@pytest.mark.parametrize("raw", [b'{"a":[1,]}', b'{"a":"unterminated}', b'{"a":1} []', b'{"a":"\\q"}'])
+def test_v3_json_budget_leaves_malformed_syntax_rejection_to_parser(reader, raw):
+    reader._q4_json_budget(raw, 100)
+    with pytest.raises(ValueError):
+        reader._pinned(raw, _sha(raw))
+
+
+@pytest.mark.parametrize("separator", [b"\n", b"\r\n", b"\r"])
+def test_v3_provenance_json_budget_preserves_line_endings(reader, tmp_path, separator):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    data = case["cell_snapshots"]["general"]["artifacts"]
+    data["provenance"] = separator.join(data["provenance"].splitlines()) + separator
+    _semantic_repin_cell(case, "general")
+    assert _semantic_entry(reader, case)["status"] == "ANSWER"
+
+
+@pytest.mark.parametrize("fault", ["duplicate_key", "nonfinite"])
+def test_v3_json_budget_preserves_strict_parser_rejections(reader, tmp_path, fault):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    data = case["cell_snapshots"]["general"]["artifacts"]
+    if fault == "duplicate_key":
+        data["meta"] = data["meta"].replace(b'"dim":384', b'"dim":384,"dim":384', 1)
+    else:
+        _synthetic_json_extra(case, "meta", None)
+        data["meta"] = data["meta"].replace(b'"extra":null', b'"extra":NaN', 1)
+    _semantic_repin_cell(case, "general")
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+def test_v3_provenance_blank_line_bomb_refuses_before_split_or_parse(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    data = case["cell_snapshots"]["general"]["artifacts"]
+    data["provenance"] += b"\n" * 1000
+    _semantic_repin_cell(case, "general")
+    with pytest.raises(ValueError, match="^cell_json_line_budget$"):
+        reader._query_content_snapshot(case)
+    assert case["index_provider"].calls == [] and case["stream"].reads == 0

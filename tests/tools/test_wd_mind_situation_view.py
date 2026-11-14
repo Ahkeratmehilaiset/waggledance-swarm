@@ -30,7 +30,8 @@ def inputs(events):
     fleet = raw({"lanes": [{"agent": lane, "agent_uuid": UUIDS[lane]}
                            for lane in view.LANES if lane != "codex-tools-1"],
                  "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": UUIDS["codex-tools-1"]}})
-    manifest = raw({"schema_version": 1, "files": {"wd-fleet.json": pin(fleet).upper()}})
+    manifest = raw({"schema_version": 1, "source_commit": "a" * 40,
+                    "files": {"wd-fleet.json": pin(fleet).upper()}})
     manifest_sha = pin(manifest)
     commit = "a" * 40
     pointer = raw({"schema_version": 1, "source_commit": commit, "final_commit": commit,
@@ -91,6 +92,20 @@ def test_request_observed_but_open_and_approval_never_inferred_from_tail():
     assert obs["requested_review"] is True and obs["pr"] == 2134 and obs["head"] == "b" * 40
 
 
+def test_generic_request_does_not_prove_review_absent():
+    request = event("codex-lead-1", "request", request_id="request-generic", to="claude-rco-1",
+                    status="request", payload={"pr": 2134, "head": "b" * 40})
+    obs = view.project_situation(**inputs([request]))["request_observations"][0]
+    assert obs["requested_review"] == "UNKNOWN"
+
+
+def test_well_formed_task_id_can_still_contain_personal_data():
+    task = "codex-lead-1/customer-jane-doe-0401234567-20261114"
+    result = view.project_situation(**inputs([event("codex-lead-1", "claim", task=task)]))
+    assert task not in json.dumps(result)
+    assert result["lanes"]["codex-lead-1"]["latest_claim_event"]["task_id"] == "sha256:" + pin(task.encode())
+
+
 def test_conflicting_heads_remain_unknown_and_multi_recipient_request_is_preserved():
     request = event("codex-lead-1", "request", request_id="request-2",
                     to="claude-rco-1, claude-rco-2", payload={"head": "b" * 40, "exact_head": "c" * 40})
@@ -126,6 +141,24 @@ def test_wrong_pointer_manifest_pair_refused():
     with pytest.raises(view.SituationRefused): view.project_situation(**args)
 
 
+@pytest.mark.parametrize("manifest_commit", [None, "b" * 40, "not-a-commit", True])
+def test_manifest_commit_must_match_pointer_even_with_valid_hashes(manifest_commit):
+    args = inputs([])
+    manifest = json.loads(args["manifest_bytes"])
+    if manifest_commit is None:
+        manifest.pop("source_commit")
+    else:
+        manifest["source_commit"] = manifest_commit
+    args["manifest_bytes"] = raw(manifest)
+    args["manifest_sha256"] = pin(args["manifest_bytes"])
+    pointer = json.loads(args["pointer_bytes"])
+    pointer["manifest_sha256"] = pointer["final_manifest_sha256"] = args["manifest_sha256"]
+    args["pointer_bytes"] = raw(pointer)
+    args["pointer_sha256"] = pin(args["pointer_bytes"])
+    with pytest.raises(view.SituationRefused, match="^mind_situation_refused$"):
+        view.project_situation(**args)
+
+
 def test_pointer_cannot_name_another_bundle():
     args = inputs([])
     pointer = json.loads(args["pointer_bytes"])
@@ -153,7 +186,7 @@ def test_fleet_must_be_pinned_by_active_bundle_manifest():
     args = inputs([])
     for fleet_entry in (None, "0" * 64, True):
         altered = dict(args)
-        data = {"schema_version": 1, "files": {}}
+        data = {"schema_version": 1, "source_commit": "a" * 40, "files": {}}
         if fleet_entry is not None:
             data["files"]["wd-fleet.json"] = fleet_entry
         altered["manifest_bytes"] = raw(data)
@@ -177,10 +210,10 @@ def test_path_or_synthetic_secret_never_returned_in_identifiers(value):
     assert result["request_observations"][0]["request_id"] == "sha256:" + pin(value.encode())
 
 
-def test_recognized_lane_task_identifier_remains_readable():
+def test_recognized_lane_task_identifier_remains_correlatable():
     task = "codex-lead-1/mind-direct-integration-20261112"
     result = view.project_situation(**inputs([event("codex-lead-1", "claim", task=task)]))
-    assert result["lanes"]["codex-lead-1"]["latest_claim_event"]["task_id"] == task
+    assert result["lanes"]["codex-lead-1"]["latest_claim_event"]["task_id"] == "sha256:" + pin(task.encode())
 
 
 def test_historical_missing_bundle_explicit_opt_in_keeps_pinned_bridge_observation():

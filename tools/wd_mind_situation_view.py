@@ -26,10 +26,6 @@ UNKNOWN = "UNKNOWN"
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z")
-_SAFE_TASK = re.compile(r"(?:(?:codex-lead-1|codex-tools-1|claude-rco-1|claude-rco-2|fable-5)/|(?:lead|tools|fable|mind)-)[a-z0-9][a-z0-9-]{2,100}-20[0-9]{6}\Z")
-_SENSITIVE_TASK = re.compile(r"(?:secret|password|credential|private|token|bearer|api-?key|github-pat|ghp-|sk-)", re.I)
-_LONG_TASK_SEGMENT = re.compile(r"[a-z0-9]{24,}", re.I)
-_HEX_TASK_SEGMENT = re.compile(r"(?:^|[-/])[a-f0-9]{16,}(?:-|$)", re.I)
 _UUID = re.compile(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\Z")
 _TIMESTAMP = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,7})?Z\Z")
 _LIMIT = 8 * 1024 * 1024
@@ -100,9 +96,7 @@ def _event_observation(ref, event, now, ttl):
     fresh = ticks < ttl * 10000000
     task = event.get("task_id")
     if type(task) is str and _TOKEN.fullmatch(task):
-        task = (task if _SAFE_TASK.fullmatch(task) and not _SENSITIVE_TASK.search(task)
-                and not _LONG_TASK_SEGMENT.search(task) and not _HEX_TASK_SEGMENT.search(task)
-                else "sha256:" + hashlib.sha256(task.encode("utf-8")).hexdigest())
+        task = "sha256:" + hashlib.sha256(task.encode("utf-8")).hexdigest()
     else:
         task = UNKNOWN
     return {"status": "OBSERVED" if fresh else UNKNOWN, "event_ref": ref,
@@ -169,6 +163,10 @@ def project_situation(*, snapshot_bytes, snapshot_sha256, fleet_bytes, fleet_sha
             if (type(manifest) is not dict or type(manifest.get("schema_version")) is not int
                     or manifest["schema_version"] != 1 or type(manifest.get("files")) is not dict):
                 raise ValueError("manifest_schema")
+            source_commit = manifest.get("source_commit")
+            if (type(source_commit) is not str or not _COMMIT.fullmatch(source_commit)
+                    or source_commit != pointer.get("source_commit")):
+                raise ValueError("manifest_commit")
             declared_fleet = manifest["files"].get("wd-fleet.json")
             if (type(declared_fleet) is not str or not _HEX.fullmatch(declared_fleet.lower())
                     or declared_fleet.lower() != fleet_sha256):
@@ -222,7 +220,8 @@ def project_situation(*, snapshot_bytes, snapshot_sha256, fleet_bytes, fleet_sha
                 request_ref = "sha256:" + hashlib.sha256(request_id.encode("utf-8")).hexdigest()
                 obs.update(request_id=request_ref if obs["status"] == "OBSERVED" else UNKNOWN,
                            recipients=targets if obs["status"] == "OBSERVED" else UNKNOWN,
-                           requested_review=(event.get("status") == "review_requested") if obs["status"] == "OBSERVED" else UNKNOWN,
+                           requested_review=True if (obs["status"] == "OBSERVED"
+                                                    and event.get("status") == "review_requested") else UNKNOWN,
                            pr=pr if obs["status"] == "OBSERVED" and type(pr) is int and pr > 0 else UNKNOWN,
                            head=head if obs["status"] == "OBSERVED" else UNKNOWN,
                            resolution=UNKNOWN, approval=UNKNOWN, binding_valid=UNKNOWN)

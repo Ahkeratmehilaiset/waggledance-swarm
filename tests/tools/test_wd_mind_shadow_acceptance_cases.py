@@ -1316,6 +1316,22 @@ def test_member_children_are_the_fixed_preregistered_tree(member_rows):
     assert rows["children_A6/inherited_handles_root"]["result"] == []
 
 
+def _contains_synthetic_member_refusal(stderr):
+    # Windows PowerShell may wrap its formatted error at whitespace.
+    return "refused: the synthetic member runs only on an explicit opt-in" in " ".join(stderr.split())
+
+
+@pytest.mark.parametrize("stderr,expected", [
+    ("refused: the synthetic member runs only on an explicit opt-in", True),
+    ("refused: \r\nthe synthetic member runs only on an explicit opt-in", True),
+    ("refused: the synthetic member runs only on an explicit\r\n    opt-in", True),
+    ("refused: the synthetic member runs without an explicit opt-in", False),
+    ("unrelated error", False),
+])
+def test_synthetic_member_refusal_accepts_only_whitespace_wrapping(stderr, expected):
+    assert _contains_synthetic_member_refusal(stderr) is expected
+
+
 @WINDOWS_ONLY
 @pytest.mark.parametrize("switch,opt_in", [(False, False), (True, False), (False, True)])
 def test_member_default_invocation_refuses_before_any_witness(member_rows, switch, opt_in):
@@ -1329,7 +1345,7 @@ def test_member_default_invocation_refuses_before_any_witness(member_rows, switc
                           ["-LaunchId", LT_LAUNCH, "-Member", "root", "-Subcase", "A2/survivors", "-WitnessDirectory",
                            directory, "-LifetimeSeconds", "5"], capture_output=True, text=True, timeout=120, env=env)
     assert done.returncode == 3, (done.returncode, done.stderr[-2000:])
-    assert "refused: the synthetic member runs only on an explicit opt-in" in done.stderr
+    assert _contains_synthetic_member_refusal(done.stderr)
     assert sorted(os.listdir(directory)) == ["members.registration"]
 
 

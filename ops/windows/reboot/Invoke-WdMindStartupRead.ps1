@@ -11,6 +11,7 @@ function Invoke-WdMindStartupRead {
         [Parameter(Mandatory)] [string] $ExpectedManifestHash,
         [Parameter(Mandatory)] [string] $Lane,
         [string] $Worktree = '',
+        [switch] $SituationLive,
         [ValidateRange(1, 90)] [int] $TimeoutSeconds = 15
     )
     $result = [ordered]@{schema='wd.mind-startup-status.v1';outcome='refused';reason='package_refused';
@@ -46,6 +47,22 @@ function Invoke-WdMindStartupRead {
         return [pscustomobject]@{Text=$utf8.GetString($bytes).TrimStart([char]0xFEFF);Hash=$digest}
     }
     function ConvertTo-WdMindLiteral([string] $Value) { return "'" + $Value.Replace("'","''") + "'" }
+    function Read-WdMindCanonicalPointer {
+        # The pointer is observational, not an operator signature.  The caller
+        # cannot redirect this read; the session checks it against the anchored
+        # manifest and fleet and labels its authentication UNKNOWN.
+        $path='C:\Python\WD_REBOOT_STATE_CURRENT.json'
+        $current=$path
+        while ($current) {
+            if (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'path' }
+            $parent=[IO.Path]::GetDirectoryName($current)
+            if (-not $parent -or $parent -ceq $current) { break }
+            $current=$parent
+        }
+        $pin=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $snapshot=Read-WdMindPinnedSnapshot -Path $path -Pin $pin
+        return [pscustomobject]@{Path=$path;Hash=$snapshot.Hash;ObservedUtc=[DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.ffffffZ',[Globalization.CultureInfo]::InvariantCulture)}
+    }
     # Closed shapes apply recursively: a known outer object is not permission to
     # forward arbitrary nested message/payload fields or free-form strings.
     function Assert-WdMindObject($Value, [string[]] $Required, [string[]] $Optional=@()) {
@@ -61,6 +78,97 @@ function Invoke-WdMindStartupRead {
         if (($Value -isnot [int] -and $Value -isnot [long] -and
              ($Integer -or $Value -isnot [double])) -or $Value -lt 0 -or
             [double]::IsNaN([double]$Value) -or [double]::IsInfinity([double]$Value)) { throw 'shape' }
+    }
+    function ConvertFrom-WdMindSituationTime($Value) {
+        Assert-WdMindString $Value '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,7})?Z\z'
+        $time=[DateTimeOffset]::MinValue
+        if (-not [DateTimeOffset]::TryParse($Value,[Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::None,[ref]$time) -or $time.Offset -ne [TimeSpan]::Zero) { throw 'shape' }
+        return $time
+    }
+    function Assert-WdMindSituationObservation($Observation, [DateTimeOffset] $AsOf, [string[]] $AllowedTypes, [switch] $Request) {
+        if ($Observation -is [string] -and $Observation -ceq 'UNKNOWN') { return }
+        $keys=@('status','event_ref','observed_utc','age_seconds_upper_bound','event_type','task_id','sender_authentication')
+        if ($Request) { $keys+=@('request_id','recipients','requested_review','pr','head','resolution','approval','binding_valid') }
+        Assert-WdMindObject $Observation $keys
+        Assert-WdMindString $Observation.event_ref '\A[0-9a-f]{64}\z'
+        Assert-WdMindNumber $Observation.age_seconds_upper_bound -Integer
+        if ($Observation.sender_authentication -cne 'UNKNOWN') { throw 'shape' }
+        $observed=ConvertFrom-WdMindSituationTime $Observation.observed_utc
+        $ticks=$AsOf.UtcDateTime.Ticks-$observed.UtcDateTime.Ticks
+        if ($ticks -lt 0 -or [long][Math]::Ceiling($ticks/10000000.0) -ne [long]$Observation.age_seconds_upper_bound) { throw 'shape' }
+        $fresh=$ticks -lt 9000000000
+        if ($fresh) {
+            if ($Observation.status -cne 'OBSERVED' -or $AllowedTypes -cnotcontains $Observation.event_type) { throw 'shape' }
+            Assert-WdMindString $Observation.task_id '\A(?:UNKNOWN|sha256:[0-9a-f]{64})\z'
+        } else {
+            if ($Observation.status -cne 'UNKNOWN' -or $Observation.event_type -cne 'UNKNOWN' -or
+                $Observation.task_id -cne 'UNKNOWN') { throw 'shape' }
+        }
+        if ($Request) {
+            foreach ($name in @('resolution','approval','binding_valid')) { if ($Observation.$name -cne 'UNKNOWN') { throw 'shape' } }
+            if ($fresh) {
+                Assert-WdMindString $Observation.request_id '\Asha256:[0-9a-f]{64}\z'
+                if ($Observation.recipients -isnot [array] -or $Observation.recipients.Count -lt 1 -or
+                    $Observation.recipients.Count -gt 5) { throw 'shape' }
+                $lanes=@('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')
+                foreach ($recipient in $Observation.recipients) { if ($lanes -cnotcontains $recipient) { throw 'shape' } }
+                if (($Observation.requested_review -isnot [bool] -or -not $Observation.requested_review) -and
+                    $Observation.requested_review -cne 'UNKNOWN') { throw 'shape' }
+                if ($Observation.pr -cne 'UNKNOWN') { Assert-WdMindNumber $Observation.pr -Integer; if ($Observation.pr -lt 1) { throw 'shape' } }
+                Assert-WdMindString $Observation.head '\A(?:UNKNOWN|[0-9a-f]{40})\z'
+            } else {
+                foreach ($name in @('request_id','recipients','requested_review','pr','head')) {
+                    if ($Observation.$name -cne 'UNKNOWN') { throw 'shape' }
+                }
+            }
+        }
+    }
+    function Assert-WdMindSituationLive($Envelope, [string] $FleetHash, [string] $ManifestHash,
+            [string] $SourceCommit, [string] $PointerHash, [string] $PointerObservedUtc) {
+        $lanes=@('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')
+        Assert-WdMindObject $Envelope @('schema','authority','scope','partial_final_record','current_state','continuity','view')
+        if ($Envelope.schema -cne 'wd.mind-situation-live.v1' -or $Envelope.authority -cne 'none' -or
+            $Envelope.scope -cne 'bounded_complete_records_not_current_state_or_gate' -or
+            $Envelope.partial_final_record -isnot [bool] -or $Envelope.current_state -cne 'UNKNOWN' -or
+            $Envelope.continuity -cne 'UNKNOWN') { throw 'shape' }
+        $view=$Envelope.view
+        Assert-WdMindObject $view @('schema','authority','scope','as_of_utc','source','bundle','lanes','request_observations')
+        if ($view.schema -cne 'wd.mind-situation-observations.v1' -or $view.authority -cne 'none' -or
+            $view.scope -cne 'bounded_tail_not_current_state_or_gate') { throw 'shape' }
+        $asOf=ConvertFrom-WdMindSituationTime $view.as_of_utc
+        Assert-WdMindObject $view.source @('snapshot_sha256','fleet_sha256','coverage','sender_authentication','fleet_manifest_binding')
+        Assert-WdMindString $view.source.snapshot_sha256 '\A[0-9a-f]{64}\z'
+        if ($view.source.fleet_sha256 -cne $FleetHash -or $view.source.coverage -cne 'bounded_tail' -or
+            $view.source.sender_authentication -cne 'UNKNOWN' -or $view.source.fleet_manifest_binding -cne 'MATCH') { throw 'shape' }
+        $bundle=$view.bundle
+        Assert-WdMindObject $bundle @('status','source_kind','observed_utc','age_seconds_upper_bound','source_commit',
+            'manifest_sha256','pointer_authentication','pointer_sha256')
+        if ($bundle.source_kind -cne 'local_pointer_and_manifest_bytes' -or $bundle.pointer_authentication -cne 'UNKNOWN' -or
+            $bundle.pointer_sha256 -cne $PointerHash -or $bundle.observed_utc -cne $PointerObservedUtc) { throw 'shape' }
+        Assert-WdMindNumber $bundle.age_seconds_upper_bound -Integer
+        $observed=ConvertFrom-WdMindSituationTime $bundle.observed_utc
+        $ticks=$asOf.UtcDateTime.Ticks-$observed.UtcDateTime.Ticks
+        if ($ticks -lt 0 -or [long][Math]::Ceiling($ticks/10000000.0) -ne [long]$bundle.age_seconds_upper_bound) { throw 'shape' }
+        if ($ticks -lt 9000000000) {
+            if ($bundle.status -cne 'OBSERVED' -or $bundle.source_commit -cne $SourceCommit -or
+                $bundle.manifest_sha256 -cne $ManifestHash.ToLowerInvariant()) { throw 'shape' }
+        } elseif ($bundle.status -cne 'UNKNOWN' -or $bundle.source_commit -cne 'UNKNOWN' -or
+                  $bundle.manifest_sha256 -cne 'UNKNOWN') { throw 'shape' }
+        Assert-WdMindObject $view.lanes $lanes
+        foreach ($lane in $lanes) {
+            $row=$view.lanes.PSObject.Properties[$lane].Value
+            Assert-WdMindObject $row @('current_task','latest_work_event','latest_claim_event','latest_done_event','latest_handoff_event')
+            if ($row.current_task -cne 'UNKNOWN') { throw 'shape' }
+            Assert-WdMindSituationObservation $row.latest_work_event $asOf @('claim','release','done','handoff')
+            Assert-WdMindSituationObservation $row.latest_claim_event $asOf @('claim','release')
+            Assert-WdMindSituationObservation $row.latest_done_event $asOf @('done')
+            Assert-WdMindSituationObservation $row.latest_handoff_event $asOf @('handoff')
+        }
+        if ($view.request_observations -isnot [array] -or $view.request_observations.Count -gt 50) { throw 'shape' }
+        foreach ($request in $view.request_observations) {
+            Assert-WdMindSituationObservation $request $asOf @('message','request','wake_request') -Request
+        }
     }
     function Assert-WdMindDirectStatus($View, [string] $ExpectedLane, [string] $FleetHash, $Fleet) {
         # This is a separate observational schema; it cannot impersonate a
@@ -240,6 +348,7 @@ function Invoke-WdMindStartupRead {
         $deployment = $manifest.Text | ConvertFrom-Json -ErrorAction Stop
         $paths = @('wd-fleet.json','Get-WdMindReadConfig.ps1','Invoke-WdBridgePython.ps1',
             'tools-bootstrap/tools/wd_bridge_mind_session.py')
+        if ($SituationLive) { $paths += 'tools-bootstrap/tools/wd_mind_situation_view.py' }
         $snapshots = @{}
         foreach ($relative in $paths) {
             $pin = $deployment.files.PSObject.Properties[$relative]
@@ -258,16 +367,39 @@ function Invoke-WdMindStartupRead {
                 [string]$settings.WD_MIND_FLEET_SHA256 -cne $snapshots['wd-fleet.json'].Hash) { throw 'config' }
             $wrapper = Join-Path $root 'Invoke-WdBridgePython.ps1'
             $wrapperPin = $snapshots['Invoke-WdBridgePython.ps1'].Hash
+            $situationPointer=$null
+            $situationRefs=@()
+            $situationObserved=$false
+            if ($SituationLive) {
+                Assert-WdMindString $deployment.source_commit '\A[0-9a-f]{40}\z'
+                $fleet=$snapshots['wd-fleet.json'].Text | ConvertFrom-Json -ErrorAction Stop
+                if ($fleet.runtime_root -isnot [string] -or -not [IO.Path]::IsPathRooted($fleet.runtime_root)) { throw 'runtime_root' }
+                $bridgeRoot=[IO.Path]::GetFullPath($fleet.runtime_root).TrimEnd('\')
+                Assert-WdMindReceiptDirectory $bridgeRoot
+                $situationPointer=Read-WdMindCanonicalPointer
+            }
             # Recheck the external manifest anchor before crossing into another process.
             [void](Read-WdMindPinnedSnapshot -Path $manifestPath -Pin $ExpectedManifestHash -Limit 4194304)
             $command = '$ErrorActionPreference="Stop"; if((Get-FileHash -LiteralPath ' +
                 (ConvertTo-WdMindLiteral $wrapper) + ' -Algorithm SHA256).Hash.ToLowerInvariant() -cne ' +
                 (ConvertTo-WdMindLiteral $wrapperPin) + '){exit 2}; $global:LASTEXITCODE=0; & ' +
-                (ConvertTo-WdMindLiteral $wrapper) + ' tools/wd_bridge_mind_session.py -VerifyPackage --latest ' +
-                (ConvertTo-WdMindLiteral ([string]$settings.WD_MIND_LATEST)) + ' --audit-root ' +
-                (ConvertTo-WdMindLiteral ([string]$settings.WD_MIND_AUDIT_ROOT)) + ' --fleet ' +
-                (ConvertTo-WdMindLiteral $fleetPath) + ' --fleet-sha256 ' +
-                (ConvertTo-WdMindLiteral $snapshots['wd-fleet.json'].Hash) + '; exit $LASTEXITCODE'
+                (ConvertTo-WdMindLiteral $wrapper) + ' tools/wd_bridge_mind_session.py -VerifyPackage '
+            if ($SituationLive) {
+                $command += '--situation-live --bridge-root ' + (ConvertTo-WdMindLiteral $bridgeRoot) +
+                    ' --fleet ' + (ConvertTo-WdMindLiteral $fleetPath) + ' --fleet-sha256 ' +
+                    (ConvertTo-WdMindLiteral $snapshots['wd-fleet.json'].Hash) + ' --pointer ' +
+                    (ConvertTo-WdMindLiteral $situationPointer.Path) + ' --pointer-sha256 ' +
+                    (ConvertTo-WdMindLiteral $situationPointer.Hash) + ' --pointer-observed-utc ' +
+                    (ConvertTo-WdMindLiteral $situationPointer.ObservedUtc) + ' --manifest ' +
+                    (ConvertTo-WdMindLiteral $manifestPath) + ' --manifest-sha256 ' +
+                    (ConvertTo-WdMindLiteral $manifest.Hash) + ' --ttl-seconds 900'
+            } else {
+                $command += '--latest ' + (ConvertTo-WdMindLiteral ([string]$settings.WD_MIND_LATEST)) +
+                    ' --audit-root ' + (ConvertTo-WdMindLiteral ([string]$settings.WD_MIND_AUDIT_ROOT)) +
+                    ' --fleet ' + (ConvertTo-WdMindLiteral $fleetPath) + ' --fleet-sha256 ' +
+                    (ConvertTo-WdMindLiteral $snapshots['wd-fleet.json'].Hash)
+            }
+            $command += '; exit $LASTEXITCODE'
             $start = New-Object Diagnostics.ProcessStartInfo
             $shell = if ($PSVersionTable.PSEdition -ceq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
             $start.FileName = Join-Path $PSHOME $shell
@@ -336,7 +468,26 @@ function Invoke-WdMindStartupRead {
                     if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonArgs.DateKind='String' }
                     $view=ConvertFrom-Json @jsonArgs
                     if ($view -isnot [pscustomobject]) { throw 'shape' }
-                    if ($view.PSObject.Properties['schema'] -and $view.schema -ceq 'wd.mind-direct-status.v1') {
+                    if ($SituationLive) {
+                        Assert-WdMindSituationLive $view $snapshots['wd-fleet.json'].Hash $manifest.Hash `
+                            $deployment.source_commit $situationPointer.Hash $situationPointer.ObservedUtc
+                        $refs=New-Object 'Collections.Generic.List[string]'
+                        foreach ($laneName in @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')) {
+                            $row=$view.view.lanes.PSObject.Properties[$laneName].Value
+                            foreach ($field in @('latest_work_event','latest_claim_event','latest_done_event','latest_handoff_event')) {
+                                $observation=$row.PSObject.Properties[$field].Value
+                                if ($observation -is [pscustomobject]) {
+                                    if (-not $refs.Contains([string]$observation.event_ref)) { $refs.Add([string]$observation.event_ref) }
+                                    if ($observation.status -ceq 'OBSERVED') { $situationObserved=$true }
+                                }
+                            }
+                        }
+                        foreach ($observation in $view.view.request_observations) {
+                            if (-not $refs.Contains([string]$observation.event_ref)) { $refs.Add([string]$observation.event_ref) }
+                            if ($observation.status -ceq 'OBSERVED') { $situationObserved=$true }
+                        }
+                        $situationRefs=@($refs.ToArray())
+                    } elseif ($view.PSObject.Properties['schema'] -and $view.schema -ceq 'wd.mind-direct-status.v1') {
                         $fleet = $snapshots['wd-fleet.json'].Text | ConvertFrom-Json -ErrorAction Stop
                         Assert-WdMindDirectStatus $view $Lane $snapshots['wd-fleet.json'].Hash $fleet
                     } else {
@@ -408,7 +559,11 @@ function Invoke-WdMindStartupRead {
             $record=[ordered]@{schema=$result.schema;lane=$Lane;outcome=$result.outcome;reason=$result.reason;
                 authority='none';view_sha256=$result.view_sha256;cleanup=$result.cleanup;
                 manifest_sha256=$ExpectedManifestHash.ToLowerInvariant();observed_utc=[DateTime]::UtcNow.ToString('o')}
-            if ($result.outcome -ceq 'success' -and $view.schema -ceq 'wd.mind-direct-status.v1') {
+            if ($result.outcome -ceq 'success' -and $SituationLive) {
+                $record.fleet_sha256=$view.view.source.fleet_sha256
+                $record.source_event_refs=@($situationRefs)
+                $record.observation_status=if ($situationObserved) { 'OBSERVED' } else { 'UNKNOWN' }
+            } elseif ($result.outcome -ceq 'success' -and $view.schema -ceq 'wd.mind-direct-status.v1') {
                 $record.fleet_sha256=$view.fleet_sha256
                 $record.source_event_refs=@($view.facts | ForEach-Object { $_.event_ref })
                 $record.observation_status=$view.observation_status

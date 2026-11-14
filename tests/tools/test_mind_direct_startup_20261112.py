@@ -21,6 +21,145 @@ HELPER = REBOOT / 'Invoke-WdMindStartupRead.ps1'
 SHELL = Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
 WINDOWS = pytest.mark.skipif(os.name != 'nt', reason='synthetic Windows PowerShell startup guard')
 
+LANES = ['codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5']
+
+
+def _situation_live_view():
+    def observation(ref, kind='claim'):
+        return dict(status='OBSERVED', event_ref=ref, observed_utc='__POINTER_TIME__',
+                    age_seconds_upper_bound=1, event_type=kind,
+                    task_id='sha256:' + 'b' * 64, sender_authentication='UNKNOWN')
+    lanes = {}
+    for i, lane in enumerate(LANES, 1):
+        ref = f'{i:064x}'
+        lanes[lane] = dict(current_task='UNKNOWN', latest_work_event=observation(ref),
+                           latest_claim_event=observation(ref), latest_done_event='UNKNOWN',
+                           latest_handoff_event='UNKNOWN')
+    request = observation('c' * 64, 'wake_request')
+    request.update(request_id='sha256:' + 'd' * 64, recipients=['codex-tools-1'],
+                   requested_review='UNKNOWN', pr=2132, head='a' * 40,
+                   resolution='UNKNOWN', approval='UNKNOWN', binding_valid='UNKNOWN')
+    return dict(schema='wd.mind-situation-live.v1', authority='none',
+                scope='bounded_complete_records_not_current_state_or_gate', partial_final_record=False,
+                current_state='UNKNOWN', continuity='UNKNOWN',
+                view=dict(schema='wd.mind-situation-observations.v1', authority='none',
+                          scope='bounded_tail_not_current_state_or_gate', as_of_utc='__AS_OF__',
+                          source=dict(snapshot_sha256='e' * 64, fleet_sha256='__FLEET_HASH__',
+                                      coverage='bounded_tail', sender_authentication='UNKNOWN',
+                                      fleet_manifest_binding='MATCH'),
+                          bundle=dict(status='OBSERVED', source_kind='local_pointer_and_manifest_bytes',
+                                      observed_utc='__POINTER_TIME__', age_seconds_upper_bound=1,
+                                      source_commit='a' * 40, manifest_sha256='__MANIFEST_HASH__',
+                                      pointer_authentication='UNKNOWN', pointer_sha256='__POINTER_HASH__'),
+                          lanes=lanes, request_observations=[request]))
+
+
+def _situation_package(tmp_path, *, view=None, missing_module=False, mismatch_pointer=False):
+    bundle, _ = _package(tmp_path)
+    bridge = tmp_path / 'synthetic-bridge'
+    bridge.mkdir()
+    pointer = tmp_path / 'synthetic-pointer.json'
+    pointer.write_text('{"synthetic":true}', encoding='ascii')
+    fleet = dict(runtime_root=str(bridge), lanes=[dict(agent=lane) for lane in LANES if lane != 'codex-tools-1'],
+                 tools_supervisor=dict(agent='codex-tools-1'))
+    (bundle / 'wd-fleet.json').write_text(json.dumps(fleet), encoding='utf-8')
+    projector = bundle / 'tools-bootstrap/tools/wd_mind_situation_view.py'
+    projector.write_bytes(b'# synthetic manifest-pinned module; never executed\n')
+    payload = json.dumps(_situation_live_view() if view is None else view, separators=(',', ':'))
+    wrapper = r'''$all=@($args)
+if ($all -cnotcontains '-VerifyPackage' -or $all -cnotcontains '--situation-live') {exit 9}
+function val([string]$key) { $i=[Array]::IndexOf($all,$key); if($i -lt 0 -or $i+1 -ge $all.Count){throw 'missing'}; return [string]$all[$i+1] }
+if ((val '--bridge-root') -cne BRIDGE_LITERAL -or (val '--pointer') -cne POINTER_LITERAL -or
+    (val '--manifest-sha256') -ine $env:WD_REBOOT_EXPECTED_MANIFEST_HASH) {exit 10}
+$observed=val '--pointer-observed-utc'
+$asof=([DateTimeOffset]::Parse($observed)).AddSeconds(1).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ss.ffffffZ',[Globalization.CultureInfo]::InvariantCulture)
+$json=PAYLOAD
+$json=$json.Replace('__POINTER_TIME__',$observed).Replace('__AS_OF__',$asof).Replace('__FLEET_HASH__',(val '--fleet-sha256')).Replace('__MANIFEST_HASH__',(val '--manifest-sha256')).Replace('__POINTER_HASH__',(val '--pointer-sha256'))
+if (MISMATCH) {$json=$json.Replace((val '--pointer-sha256'),('0'*64))}
+[Console]::Out.Write($json); exit 0
+'''.replace('BRIDGE_LITERAL', _literal(bridge)).replace('POINTER_LITERAL', _literal(pointer)).replace('MISMATCH', '$true' if mismatch_pointer else '$false').replace('PAYLOAD', _literal(payload))
+    (bundle / 'Invoke-WdBridgePython.ps1').write_text(wrapper, encoding='utf-8')
+    manifest_path = bundle / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest.update(schema_version=1, source_commit='a' * 40)
+    for relative in ('wd-fleet.json', 'Invoke-WdBridgePython.ps1', 'tools-bootstrap/tools/wd_mind_situation_view.py'):
+        manifest['files'][relative] = hashlib.sha256((bundle / relative).read_bytes()).hexdigest()
+    if missing_module:
+        del manifest['files']['tools-bootstrap/tools/wd_mind_situation_view.py']
+    manifest_path.write_bytes(json.dumps(manifest, separators=(',', ':')).encode('ascii'))
+    return bundle, hashlib.sha256(manifest_path.read_bytes()).hexdigest(), pointer
+
+
+def _run_situation(bundle, pin, pointer, lane, *, worktree=None, enabled=True):
+    # Test-only dependency injection: the actual helper source retains the fixed
+    # production pointer. Only this in-memory synthetic copy is substituted.
+    source = HELPER.read_text(encoding='utf-8-sig')
+    canonical = "'C:\\Python\\WD_REBOOT_STATE_CURRENT.json'"
+    assert source.count(canonical) == 1
+    source = source.replace(canonical, _literal(pointer))
+    encoded_source = base64.b64encode(source.encode('utf-8')).decode('ascii')
+    script = r'''
+$ErrorActionPreference='Stop'; Set-StrictMode -Version Latest
+$source=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(SOURCE))
+. ([scriptblock]::Create($source))
+$result=Invoke-WdMindStartupRead -BundleRoot BUNDLE -ExpectedManifestHash PIN -Lane LANE -TimeoutSeconds 10 OPTIN RECEIPT
+$result|ConvertTo-Json -Depth 20 -Compress
+'''.replace('BUNDLE', _literal(bundle)).replace('PIN', _literal(pin))
+    script = script.replace('LANE', _literal(lane)).replace('OPTIN', '-SituationLive' if enabled else '')
+    script = script.replace('RECEIPT', '-Worktree ' + _literal(worktree) if worktree is not None else '')
+    script = script.replace('SOURCE', _literal(encoded_source))
+    env = {key: os.environ[key] for key in ['SystemRoot', 'SystemDrive', 'WINDIR', 'TEMP', 'TMP'] if key in os.environ}
+    windows = Path(env.get('SystemRoot', 'C:/Windows'))
+    env['PATH'] = str(SHELL.parent) + os.pathsep + str(windows / 'System32')
+    env['PSModulePath'] = str(SHELL.parent / 'Modules')
+    result = subprocess.run([str(SHELL), '-NoProfile', '-NonInteractive', '-Command', '-'],
+                            input=script, text=True, capture_output=True, timeout=30, check=False, env=env)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout.lstrip('\ufeff'))
+
+
+@WINDOWS
+@pytest.mark.parametrize('lane', LANES)
+def test_opt_in_situation_live_for_each_lane(tmp_path, lane):
+    view = _situation_live_view()
+    view['partial_final_record'] = True
+    bundle, pin, pointer = _situation_package(tmp_path, view=view)
+    worktree = tmp_path / 'worktree'
+    worktree.mkdir()
+    result = _run_situation(bundle, pin, pointer, lane, worktree=worktree)
+    assert result['outcome'] == 'success', result
+    assert result['reason'] == 'status_projection'
+    output = json.loads(result['view_json'])
+    assert output['partial_final_record'] is True
+    assert output['continuity'] == 'UNKNOWN'
+    assert output['authority'] == 'none'
+    receipt = json.loads((worktree / '.codex-audit' / 'wd-mind-startup-view.json').read_bytes())
+    assert result['record_written'] is True
+    assert receipt['fleet_sha256'] == output['view']['source']['fleet_sha256']
+    assert f'{LANES.index(lane)+1:064x}' in receipt['source_event_refs']
+    assert 'view_json' not in receipt
+
+
+@WINDOWS
+@pytest.mark.parametrize('case', ['schema', 'authority', 'partial', 'fleet', 'manifest', 'event_ref',
+                                  'rco_text', 'approval', 'age', 'missing_module', 'pointer'])
+def test_opt_in_situation_live_refuses_invalid_inputs(tmp_path, case):
+    view = _situation_live_view()
+    if case == 'schema': view['schema'] = 'other'
+    if case == 'authority': view['authority'] = 'trusted'
+    if case == 'partial': view['partial_final_record'] = 'true'
+    if case == 'fleet': view['view']['source']['fleet_sha256'] = 'f' * 64
+    if case == 'manifest': view['view']['bundle']['manifest_sha256'] = 'f' * 64
+    if case == 'event_ref': view['view']['lanes']['codex-lead-1']['latest_claim_event']['event_ref'] = 'invalid'
+    if case == 'rco_text': view['view']['lanes']['claude-rco-1']['latest_claim_event']['body'] = 'SECRET_TEXT'
+    if case == 'approval': view['view']['request_observations'][0]['approval'] = 'pass'
+    if case == 'age': view['view']['lanes']['codex-lead-1']['latest_claim_event']['age_seconds_upper_bound'] = 0
+    bundle, pin, pointer = _situation_package(tmp_path, view=view, missing_module=(case == 'missing_module'), mismatch_pointer=(case == 'pointer'))
+    result = _run_situation(bundle, pin, pointer, 'codex-lead-1')
+    assert result['outcome'] == 'refused'
+    assert result['view_json'] == ''
+    assert 'SECRET_TEXT' not in json.dumps(result)
+
 
 def _literal(text):
     return "'" + str(text).replace("'", "''") + "'"

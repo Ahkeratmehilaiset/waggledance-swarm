@@ -992,6 +992,10 @@ _Q4_BOUNDED_CHUNK_ROWS = 128
 _Q4_BOUNDED_VECTOR_BYTES = 256 * 1024 * 1024
 _Q4_TOTAL_BYTES = 512 * 1024 * 1024
 _Q4_ARTIFACT_BYTES = 16 * 1024 * 1024
+# Applies only to v3 meta/provenance, not logs or legacy v2. JSON expansion can
+# consume substantially more memory than these byte counts; the aggregate and
+# global row budgets are checked before v3 cell metadata is expanded.
+_Q4_BOUNDED_V3_ARTIFACT_BYTES = 48 * 1024 * 1024
 _Q4_TOKEN = re.compile(r"[^\W_]{2,}", re.UNICODE)
 _Q4_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
@@ -1094,6 +1098,8 @@ def _q4_provider_identity(provider, expected, method):
 
 
 def _q4_cell_controls(cell_id, item, bound, memory, records):
+    artifact_limit = (_Q4_BOUNDED_V3_ARTIFACT_BYTES
+                      if memory["scope"] == _ALL_TASK_ROUTE_SCOPE else _Q4_ARTIFACT_BYTES)
     if (type(item) is not dict or set(item) != {"pointer", "log", "artifacts"}
             or type(bound) is not dict or type(bound.get("generation")) is not int
             or bound["generation"] < 0 or not _hex(bound.get("receipt_sha256"))
@@ -1166,9 +1172,9 @@ def _q4_cell_controls(cell_id, item, bound, memory, records):
         if name in data:
             if name not in files or not hmac.compare_digest(_sha(data[name]), files[name]):
                 raise ValueError("cell_artifact_mismatch")
-            if name in ("meta", "provenance") and len(data[name]) > _Q4_ARTIFACT_BYTES:
+            if name in ("meta", "provenance") and len(data[name]) > artifact_limit:
                 raise ValueError("cell_artifact_over_budget")
-    meta = _pinned(data["meta"], files["meta"], limit=_Q4_ARTIFACT_BYTES)
+    meta = _pinned(data["meta"], files["meta"], limit=artifact_limit)
     count = content["count"]
     if (type(meta) is not dict or set(meta) != {"dim", "doc_ids", "texts", "metadata"}
             or type(meta["dim"]) is not int or meta["dim"] != _Q4_DIM
@@ -1612,7 +1618,7 @@ def _query_content_snapshot(values):
             or memory.get("cutoff_utc") != max(record["available_utc"] for record in record_list)):
         raise ValueError("memory_record_binding_mismatch")
     captured, total = {}, len(values["memory_bytes"]) + len(values["projection_bytes"])
-    if bounded_v3:
+    if descriptor["scope"] == _ALL_TASK_ROUTE_SCOPE:
         # Check aggregate bytes and pinned receipt row counts before expanding
         # any cell metadata. The full cell checks below are still mandatory.
         declared_rows = 0

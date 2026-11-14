@@ -2059,3 +2059,74 @@ def test_bounded_decode_large_synthetic_row_count_uses_small_chunks(reader, monk
     assert sum(size for _, size in provider.index.calls) == len(rows)
     assert all(type(entries[key][view]) is bytes and len(entries[key][view]) == 4 * 8
                for key in keys for view in ("w", "d"))
+
+
+def _pad_synthetic_cell(case, name, size):
+    """Add JSON whitespace without changing the parsed synthetic cell."""
+    cell = case["cell_snapshots"]["general"]
+    raw = cell["artifacts"][name]
+    assert len(raw) <= size
+    if name == "meta":
+        cell["artifacts"][name] = raw + b" " * (size - len(raw))
+    else:
+        first, rest = raw.split(b"\n", 1)
+        cell["artifacts"][name] = first + b" " * (size - len(raw)) + b"\n" + rest
+    _semantic_repin_cell(case, "general")
+
+
+@pytest.mark.parametrize("artifact", ["meta", "provenance"])
+def test_v3_cell_accepts_over_legacy_budget_without_weakening_pins(reader, tmp_path, artifact):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    _pad_synthetic_cell(case, artifact, reader._Q4_ARTIFACT_BYTES + 1)
+    assert _semantic_entry(reader, case)["status"] == "ANSWER"
+
+
+@pytest.mark.parametrize("artifact", ["meta", "provenance"])
+def test_v2_cell_retains_legacy_artifact_limit(reader, tmp_path, artifact):
+    case = _semantic_case(reader, tmp_path)
+    _pad_synthetic_cell(case, artifact, reader._Q4_ARTIFACT_BYTES + 1)
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+def test_v3_cell_log_keeps_legacy_artifact_limit(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    cell = case["cell_snapshots"]["general"]
+    cell["log"] += b" " * (reader._Q4_ARTIFACT_BYTES + 1)
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("artifact", ["meta", "provenance"])
+@pytest.mark.parametrize("delta", [-1, 0, 1])
+def test_v3_cell_artifact_budget_boundary(reader, tmp_path, monkeypatch, artifact, delta):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    budget = 8192
+    _pad_synthetic_cell(case, artifact, budget + delta)
+    monkeypatch.setattr(reader, "_Q4_BOUNDED_V3_ARTIFACT_BYTES", budget, raising=False)
+    if delta > 0:
+        _semantic_refuses_without_callbacks(reader, case)
+    else:
+        assert _semantic_entry(reader, case)["status"] == "ANSWER"
+
+
+def test_v3_small_query_checks_total_budget_before_cell_expansion(reader, tmp_path, monkeypatch):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    monkeypatch.setattr(reader, "_Q4_TOTAL_BYTES", 1)
+    expanded = []
+    original = reader._q4_cell_controls
+
+    def observe(*args):
+        expanded.append(True)
+        return original(*args)
+
+    monkeypatch.setattr(reader, "_q4_cell_controls", observe)
+    _semantic_refuses_without_callbacks(reader, case)
+    assert expanded == []
+
+
+@pytest.mark.parametrize("artifact", ["meta", "provenance"])
+def test_v3_larger_last_cell_corruption_refuses_before_provider(reader, tmp_path, artifact):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    cell = case["cell_snapshots"][sorted(case["cell_snapshots"])[-1]]
+    cell["artifacts"][artifact] += b" " * (reader._Q4_ARTIFACT_BYTES + 1)
+    # The artifact is intentionally not repinned.
+    _semantic_refuses_without_callbacks(reader, case)

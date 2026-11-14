@@ -20,6 +20,7 @@ def summary():
                          "source_verified": True, "agent_quota_binding": "unverified"},
         "agents": [{"agent": "codex-lead-1", "provider": "codex",
                     "identity_state": "observed_process_ancestry", "auth_state": "unknown",
+                    "native_process_start_utc": "2026-11-14T07:00:00Z",
                     "activity_state": "turn_started", "availability_state": "unknown",
                     "observed_at": "2026-11-14T07:28:29Z", "freshness": "fresh",
                     "source": "codex_native_rollout", "quota_observed_at": "2026-11-14T07:28:29Z",
@@ -222,3 +223,113 @@ def test_stale_snapshot_hides_all_independently_fresh_fields():
     for name in ("activity", "auth", "availability", "quota"):
         assert result[name]["value"] == "UNKNOWN"
     assert result["quota"]["windows"] == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("auth", "authenticated_at_successful_turn"),
+    ("availability", "successful_turn_observed"),
+])
+def test_success_after_activity_observation_is_unknown(field, value):
+    doc = summary()
+    row = doc["agents"][0]
+    row.update(auth_state="authenticated_at_successful_turn",
+               availability_state="successful_turn_observed",
+               last_successful_turn_at="2026-11-14T07:28:30Z")
+    result = lane(normalize(doc))
+    assert result["activity"]["value"] == "turn_started"
+    assert result[field]["value"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("auth", "auth_required"),
+    ("availability", "auth_required"),
+    ("availability", "rate_limited"),
+    ("availability", "access_denied"),
+    ("availability", "account_on_hold"),
+])
+def test_error_after_activity_observation_is_unknown(field, value):
+    doc = summary()
+    doc["agents"][0].update(
+        first_error_at="2026-11-14T07:28:30Z",
+        **{("auth_state" if field == "auth" else "availability_state"): value},
+    )
+    assert lane(normalize(doc))[field]["value"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("origin", ["last_successful_turn_at", "first_error_at"])
+def test_state_origin_before_process_start_is_unknown(origin):
+    doc = summary()
+    row = doc["agents"][0]
+    row.update(native_process_start_utc="2026-11-14T07:28:20Z")
+    if origin == "last_successful_turn_at":
+        row.update(auth_state="authenticated_at_successful_turn",
+                   availability_state="successful_turn_observed")
+    else:
+        row.update(auth_state="auth_required", availability_state="rate_limited")
+    row[origin] = "2026-11-14T07:28:19Z"
+    result = lane(normalize(doc))
+    assert result["activity"]["value"] == "turn_started"
+    assert result["auth"]["value"] == "UNKNOWN"
+    assert result["availability"]["value"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("stamp", [None, "not-a-timestamp", "2026-11-14T07:28:36Z"])
+def test_missing_invalid_or_future_process_start_is_unknown(stamp):
+    doc = summary()
+    doc["agents"][0].update(
+        native_process_start_utc=stamp,
+        auth_state="authenticated_at_successful_turn",
+        availability_state="successful_turn_observed",
+        last_successful_turn_at="2026-11-14T07:28:29Z",
+    )
+    result = lane(normalize(doc))
+    for name in ("activity", "auth", "availability", "quota"):
+        assert result[name]["value"] == "UNKNOWN"
+    assert result["quota"]["windows"] == []
+
+
+def test_observations_before_current_process_start_are_unknown():
+    doc = summary()
+    doc["agents"][0].update(native_process_start_utc="2026-11-14T07:28:30Z")
+    result = lane(normalize(doc))
+    assert result["activity"]["value"] == "UNKNOWN"
+    assert result["quota"]["value"] == "UNKNOWN"
+    assert result["quota"]["windows"] == []
+
+
+def test_success_without_activity_timestamp_is_unknown():
+    doc = summary()
+    doc["agents"][0].update(
+        observed_at=None,
+        auth_state="authenticated_at_successful_turn",
+        availability_state="successful_turn_observed",
+        last_successful_turn_at="2026-11-14T07:28:29Z",
+    )
+    result = lane(normalize(doc))
+    assert result["auth"]["value"] == "UNKNOWN"
+    assert result["availability"]["value"] == "UNKNOWN"
+    assert result["quota"]["value"] == "observed_headroom"
+
+
+def test_process_start_equal_to_observation_is_valid():
+    doc = summary()
+    doc["agents"][0].update(
+        native_process_start_utc="2026-11-14T07:28:29Z",
+        auth_state="authenticated_at_successful_turn",
+        availability_state="successful_turn_observed",
+        last_successful_turn_at="2026-11-14T07:28:29Z",
+    )
+    result = lane(normalize(doc))
+    assert result["activity"]["value"] == "turn_started"
+    assert result["auth"]["value"] == "authenticated_at_successful_turn"
+    assert result["availability"]["value"] == "successful_turn_observed"
+    assert result["quota"]["value"] == "observed_headroom"
+
+
+def test_independent_quota_may_be_newer_than_activity_and_store_snapshot():
+    doc = summary()
+    doc["agents"][0]["quota_observed_at"] = "2026-11-14T07:28:31Z"
+    result = lane(normalize(doc))
+    assert result["quota"]["value"] == "observed_headroom"
+    assert result["quota"]["age_seconds"] == 4
+    assert result["quota"]["pool_binding"] == "UNKNOWN"

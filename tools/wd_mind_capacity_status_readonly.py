@@ -82,11 +82,13 @@ def _quota(row, now, snapshot_fresh):
         return result
     try:
         stamp = _time(row.get("quota_observed_at"))
+        process_start = _time(row.get("native_process_start_utc"))
         age = (now - stamp).total_seconds()
         state = row.get("observed_quota_state")
         windows = row.get("quota_windows")
         if (not snapshot_fresh or row.get("provider") != "codex"
                 or row.get("identity_state") != "observed_process_ancestry"
+                or not process_start <= stamp <= now
                 or row.get("quota_freshness") != "fresh" or not 0 <= age <= 300
                 or state not in ("observed_headroom", "exhausted")
                 or type(windows) is not list or not 1 <= len(windows) <= 16):
@@ -124,6 +126,12 @@ def _row(row, now, snapshot_fresh):
                 "quota": _quota(None, now, snapshot_fresh)}
     provider = row["provider"]
     valid = row.get("identity_state") == "observed_process_ancestry" and row.get("source") == _SOURCES[provider]
+    try:
+        process_start = _time(row.get("native_process_start_utc"))
+        activity_stamp = _time(row.get("observed_at"))
+        valid = valid and process_start <= activity_stamp <= now
+    except (ValueError, TypeError, OverflowError):
+        process_start, activity_stamp, valid = None, None, False
     result = {}
     for name, key in (("activity", "activity_state"), ("auth", "auth_state"), ("availability", "availability_state")):
         value = row.get(key)
@@ -143,7 +151,8 @@ def _row(row, now, snapshot_fresh):
         except (ValueError, TypeError, OverflowError):
             stamp, age = None, None
         fresh = (snapshot_fresh and valid and row.get("freshness") == "fresh"
-                 and age is not None and 0 <= age <= 300)
+                 and age is not None and 0 <= age <= 300
+                 and process_start <= stamp <= activity_stamp)
         if fresh and type(value) is str and value in _VALUES[name]:
             result[name] = _field(value, _text(stamp), age, _SOURCES[provider], None)
         else:
@@ -158,7 +167,8 @@ def normalize(*, enabled=False, observer_source_bytes=None, expected_observer_sh
     """Return non-authoritative values and independent snapshot digest, or refuse.
 
     ``now_utc`` must be supplied by the trusted caller after observer execution.
-    Unavailable, future, stale or ambiguous observations remain UNKNOWN.
+    Unavailable, future, stale, contradictory or out-of-process observations
+    remain UNKNOWN. Missing process-start evidence cannot establish freshness.
     A fresh quota observation is shown separately from its always-UNKNOWN
     lane/pool attribution; it is not a readiness or execution claim.
     """

@@ -466,6 +466,8 @@ _ALL_TASK_MAX_PREFIX_BYTES = 1024 * 1024 * 1024
 _ALL_TASK_MAX_RECORDS = 65536
 _ALL_TASK_MAX_RECORD_BYTES = 32 * 1024 * 1024
 _RELEASE_TASK_LIST_SHA256 = "40e04e7002050b66085f8eff5723feb73e5f62a26910fe73405ab59e5ee5b765"
+_ALL_TASK_SCOPE_BYTES = b'{"mode":"all_tasks","schema":"wd.mind-task-scope.v1"}'
+_ALL_TASK_SCOPE_SHA256 = "ddd82fe77e79d296aa084eea19200a600442aa4462633648c946465713bc8425"
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}\Z")
 _GENERATION = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
@@ -1027,12 +1029,23 @@ def _q4_bindings(encoder_binding, index_binding, identity=None):
 def _q4_controls(values):
     if type(values) is not dict or set(values) != _Q4_KEYS or values["enabled"] is not True:
         raise ValueError("invalid_semantic_inputs")
-    # Independently enforce the exact operator list bytes, not a digest derived
-    # from the same untrusted document or merely an equivalent set of task IDs.
+    # Both supported scopes are bound to independent fixed digests, rather than
+    # trusting a self-reported hash or accepting an equivalent JSON document.
+    # The decision, policy and module pins are independently checked by _inputs.
     tasks = values["approved_tasks_bytes"]
-    if (type(tasks) is not bytes or not 0 < len(tasks) <= _MAX_CONTROL_BYTES
-            or values["approved_tasks_sha256"] != _RELEASE_TASK_LIST_SHA256
-            or not hmac.compare_digest(_sha(tasks), _RELEASE_TASK_LIST_SHA256)):
+    digest = values["approved_tasks_sha256"]
+    if type(tasks) is not bytes or not 0 < len(tasks) <= _MAX_CONTROL_BYTES:
+        raise ValueError("operator_task_list_mismatch")
+    if digest == _RELEASE_TASK_LIST_SHA256 and hmac.compare_digest(_sha(tasks), digest):
+        scope = _ROUTE_SCOPE
+        descriptor_schema = "wd.bridge-mind-q4-memory-descriptor.v2"
+        projection_schema = _COMBINED_SCHEMA
+    elif (digest == _ALL_TASK_SCOPE_SHA256 and tasks == _ALL_TASK_SCOPE_BYTES
+          and hmac.compare_digest(_sha(tasks), _ALL_TASK_SCOPE_SHA256)):
+        scope = _ALL_TASK_ROUTE_SCOPE
+        descriptor_schema = "wd.bridge-mind-q4-memory-descriptor.v3"
+        projection_schema = _ALL_TASK_COMBINED_SCHEMA
+    else:
         raise ValueError("operator_task_list_mismatch")
     descriptor = _pinned(values["descriptor_bytes"], values["descriptor_sha256"])
     memory = _pinned(values["memory_bytes"], values["memory_sha256"], limit=1024 * 1024)
@@ -1040,8 +1053,8 @@ def _q4_controls(values):
     index_binding = _pinned(values["index_binding_bytes"], values["index_binding_sha256"])
     if (type(descriptor) is not dict
             or set(descriptor) != {"schema", "scope", "memory_sha256", "dim", "encoder"}
-            or descriptor["schema"] != "wd.bridge-mind-q4-memory-descriptor.v2"
-            or descriptor["scope"] != "wd.q4-shared-projected-events.v1"
+            or descriptor["schema"] != descriptor_schema
+            or descriptor["scope"] != scope
             or type(descriptor["dim"]) is not int or descriptor["dim"] != _Q4_DIM
             or descriptor["memory_sha256"] != values["memory_sha256"]):
         raise ValueError("invalid_descriptor")
@@ -1055,7 +1068,7 @@ def _q4_controls(values):
     if (type(memory) is not dict or memory.get("schema") != "wd.bridge-mind-hex-memory-step2.v1"
             or memory.get("scope") != descriptor["scope"]
             or type(memory.get("dim")) is not int or memory["dim"] != _Q4_DIM
-            or memory.get("encoder") != identity or memory.get("projection_schema") != _COMBINED_SCHEMA
+            or memory.get("encoder") != identity or memory.get("projection_schema") != projection_schema
             or memory.get("projection_sha256") != values["projection_sha256"]
             or type(memory.get("cells")) is not dict or not memory["cells"]
             or not set(memory["cells"]) <= _Q4_CELLS
@@ -1126,7 +1139,7 @@ def _q4_cell_controls(cell_id, item, bound, memory, records):
             or not 0 < content["count"] <= _Q4_MAX_ROWS or content["count"] % 2
             or type(content.get("dim")) is not int or content["dim"] != _Q4_DIM
             or content.get("encoder") != memory["encoder"]
-            or content.get("projection_schema") != _COMBINED_SCHEMA
+            or content.get("projection_schema") != memory["projection_schema"]
             or content.get("projection_sha256") != memory["projection_sha256"]
             or not _hex(content.get("ids_sha256")) or not _hex(content.get("pairs_sha256"))
             or type(content.get("files")) is not dict):
@@ -1543,14 +1556,16 @@ def _query_content_snapshot(values):
         raise ValueError("source_changed")
     _q4_provider_identity(encoder, encoder_binding, "query")
     _q4_provider_identity(index_provider, index_binding, "load")
-    output = {"schema": "wd.q4-content-snapshot-query.v2", "status": "ANSWER" if resolved else "ABSTAIN",
+    all_tasks = descriptor["scope"] == _ALL_TASK_ROUTE_SCOPE
+    output = {"schema": "wd.q4-content-snapshot-query.v3" if all_tasks else "wd.q4-content-snapshot-query.v2",
+        "status": "ANSWER" if resolved else "ABSTAIN",
         "rule": "q4-rule-v1.2", "results": resolved, "binding": {
             "descriptor_sha256": values["descriptor_sha256"], "memory_sha256": values["memory_sha256"],
             "projection_sha256": values["projection_sha256"], "encoder_sha256": values["encoder_sha256"],
             "encoder_binding_sha256": values["encoder_binding_sha256"],
             "index_binding_sha256": values["index_binding_sha256"], "policy_sha256": values["policy_sha256"],
             "roster_sha256": values["roster_sha256"], "decision_sha256": values["decision_sha256"],
-            "approved_tasks_sha256": _RELEASE_TASK_LIST_SHA256},
+            ("task_scope_sha256" if all_tasks else "approved_tasks_sha256"): values["approved_tasks_sha256"]},
         "authority": "none", "publisher_authentication": "UNKNOWN", "provider_authentication": "UNKNOWN",
         "source_filter_attestation": "UNKNOWN", "freshness": "UNKNOWN", "same_user_aba": "UNKNOWN"}
     if len(_canonical(output)) > 1024 * 1024:

@@ -883,7 +883,8 @@ def _semantic_projection(case, rows):
     return projection
 
 
-def _semantic_cell(records, cell_id, index_bytes, vectors, encoder_identity, projection_sha256):
+def _semantic_cell(records, cell_id, index_bytes, vectors, encoder_identity, projection_sha256,
+                   *, scope=ROUTE_SCOPE, projection_schema=SCHEMA):
     ids, texts, provenance = [], [], []
     for record in records:
         for view in ("w", "d"):
@@ -901,34 +902,45 @@ def _semantic_cell(records, cell_id, index_bytes, vectors, encoder_identity, pro
         "provenance": b"".join(_raw(row) + b"\n" for row in provenance)}
     content = {"cell_id": cell_id, "count": len(ids), "dim": SEMANTIC_DIM,
         "cutoff_utc": AVAILABLE, "encoder": encoder_identity,
-        "projection_sha256": projection_sha256, "projection_schema": SCHEMA,
+        "projection_sha256": projection_sha256, "projection_schema": projection_schema,
         "files": {name: _sha(raw) for name, raw in artifacts.items()},
         "ids_sha256": _sha("\n".join(ids).encode()), "pairs_sha256": _sha(pairs)}
     artifacts["receipt"] = _raw({"schema": "wd.bridge-mind-hex-cell.v1", "authority": "none",
-        "scope": ROUTE_SCOPE, "content": content, "content_sha256": _sha(_raw(content))})
+        "scope": scope, "content": content, "content_sha256": _sha(_raw(content))})
     receipt_sha = _sha(artifacts["receipt"])
     pointer = {"generation": 1, "seq": 1, "receipt_sha256": receipt_sha}
     log = dict(pointer, schema="wd.bridge-mind-hex-cell-log.v1", prev_line_sha256="0" * 64)
     return {"pointer": _raw(pointer), "log": _raw(log) + b"\n", "artifacts": artifacts}, pointer
 
 
-def _semantic_case(reader, tmp_path, *, count=4):
+def _semantic_case(reader, tmp_path, *, count=4, all_tasks=False):
     tasks = json.loads(OPERATOR_TASK_BYTES)
     assert _sha(OPERATOR_TASK_BYTES) == REQUIRED_RELEASE_TASK_LIST_SHA256
-    rows = [_row(text, task_id=tasks[0], type="message" if i < 2 else "done")
+    rows = [_row(text, task_id=f"synthetic-other-task-{i}" if all_tasks else tasks[0],
+                 type="message" if i < 2 else "done")
             for i, text in enumerate(SEMANTIC_TEXTS[:count])]
-    case = _case(reader, tmp_path, rows)
-    policy = json.loads(case["policy_bytes"])
-    policy["approved_tasks"] = tasks
-    case.update(policy_bytes=_raw(policy), policy_sha256=_sha(_raw(policy)),
-                approved_tasks_bytes=OPERATOR_TASK_BYTES, approved_tasks_sha256=_sha(OPERATOR_TASK_BYTES))
-    message_policy = json.loads(case["messages"]["policy_bytes"])
-    message_policy["approved_tasks"] = tasks
-    case["messages"].update(policy_bytes=_raw(message_policy), policy_sha256=_sha(_raw(message_policy)))
-    _edit_decision(case, nonreview_policy_sha256=case["policy_sha256"],
-                   message_policy_sha256=case["messages"]["policy_sha256"],
-                   approved_tasks_sha256=case["approved_tasks_sha256"])
+    if all_tasks:
+        case = _all_tasks_case(reader, tmp_path, rows)
+    else:
+        case = _case(reader, tmp_path, rows)
+        policy = json.loads(case["policy_bytes"])
+        policy["approved_tasks"] = tasks
+        case.update(policy_bytes=_raw(policy), policy_sha256=_sha(_raw(policy)),
+                    approved_tasks_bytes=OPERATOR_TASK_BYTES, approved_tasks_sha256=_sha(OPERATOR_TASK_BYTES))
+        message_policy = json.loads(case["messages"]["policy_bytes"])
+        message_policy["approved_tasks"] = tasks
+        case["messages"].update(policy_bytes=_raw(message_policy), policy_sha256=_sha(_raw(message_policy)))
+        _edit_decision(case, nonreview_policy_sha256=case["policy_sha256"],
+                       message_policy_sha256=case["messages"]["policy_sha256"],
+                       approved_tasks_sha256=case["approved_tasks_sha256"])
     projection = _semantic_projection(case, rows)
+    scope = "wd.mind-all-task-projected-events.v1" if all_tasks else ROUTE_SCOPE
+    projection_schema = "wd.mind-content-memory-projection.v3" if all_tasks else SCHEMA
+    if all_tasks:
+        projection["schema"] = projection_schema
+        projection["messages"]["schema"] = "wd.bridge-mind-content-projection.v3"
+        for record in projection["messages"]["records"]:
+            record["meta"]["task_id"] = "sha256:" + _sha(record["meta"]["task_id"].encode())
     snapshot = _snapshot(case, projection)
     # Same-fixture positive control: a broken source fixture must not masquerade
     # as a missing semantic feature or a valid negative pin test.
@@ -958,15 +970,17 @@ def _semantic_case(reader, tmp_path, *, count=4):
         index_bytes = b"synthetic-faiss-flat-ip:" + cell_id.encode()
         indices[index_bytes] = vectors
         cells[cell_id], pointers[cell_id] = _semantic_cell(
-            records, cell_id, index_bytes, vectors, identity, snapshot["projection_sha256"])
+            records, cell_id, index_bytes, vectors, identity, snapshot["projection_sha256"],
+            scope=scope, projection_schema=projection_schema)
         pointers[cell_id]["count"] = len(vectors)
-    manifest = {"schema": "wd.bridge-mind-hex-memory-step2.v1", "authority": "none", "scope": ROUTE_SCOPE,
-        "dim": SEMANTIC_DIM, "encoder": identity, "projection_schema": SCHEMA,
+    manifest = {"schema": "wd.bridge-mind-hex-memory-step2.v1", "authority": "none", "scope": scope,
+        "dim": SEMANTIC_DIM, "encoder": identity, "projection_schema": projection_schema,
         "cutoff_utc": AVAILABLE,
         "projection_sha256": snapshot["projection_sha256"], "cells": pointers,
         "records": count, "views": ["w", "d"], "independent_views": False}
     memory_bytes = _raw(manifest)
-    descriptor = {"schema": "wd.bridge-mind-q4-memory-descriptor.v2", "scope": ROUTE_SCOPE,
+    descriptor = {"schema": ("wd.bridge-mind-q4-memory-descriptor.v3" if all_tasks else
+                             "wd.bridge-mind-q4-memory-descriptor.v2"), "scope": scope,
                   "memory_sha256": _sha(memory_bytes), "dim": SEMANTIC_DIM, "encoder": identity}
     return dict(snapshot, descriptor_bytes=_raw(descriptor), descriptor_sha256=_sha(_raw(descriptor)),
         memory_bytes=memory_bytes, memory_sha256=_sha(memory_bytes), cell_snapshots=cells,
@@ -988,6 +1002,19 @@ def _semantic_refuses_without_callbacks(reader, case):
     encoder, index, stream = case["encoder_provider"], case["index_provider"], case["stream"]
     _refused(reader, lambda: _semantic_entry(reader, case))
     assert stream.reads == 0 and encoder.calls == [] and index.calls == []
+
+
+def test_semantic_all_tasks_query_returns_source_ref_and_scope_pin(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    result = _semantic_entry(reader, case)
+    assert result["schema"] == "wd.q4-content-snapshot-query.v3"
+    assert result["status"] == "ANSWER" and result["authority"] == "none"
+    assert result["binding"]["task_scope_sha256"] == _sha(case["approved_tasks_bytes"])
+    source_refs = {_sha(_raw(_row(text, task_id=f"synthetic-other-task-{index}",
+                                  type="message" if index < 2 else "done")))
+                   for index, text in enumerate(SEMANTIC_TEXTS)}
+    assert result["results"] and all(hit["source_reference"]["sha256"] in source_refs
+                                     for hit in result["results"])
 
 
 def test_semantic_query_uses_both_vector_views_and_lexical_agreement(reader, tmp_path):
@@ -1022,8 +1049,9 @@ def test_semantic_low_candidate_count_abstains_without_encoder(reader, tmp_path,
 
 
 @pytest.mark.parametrize("enabled", [False, None, 1, "true"])
-def test_semantic_query_is_default_closed_before_input_or_providers(reader, tmp_path, enabled):
-    case = _semantic_case(reader, tmp_path)
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+def test_semantic_query_is_default_closed_before_input_or_providers(reader, tmp_path, enabled, all_tasks):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
     case["enabled"] = enabled
     _semantic_refuses_without_callbacks(reader, case)
 
@@ -1031,8 +1059,9 @@ def test_semantic_query_is_default_closed_before_input_or_providers(reader, tmp_
 @pytest.mark.parametrize("field", ["descriptor_sha256", "memory_sha256", "projection_sha256", "policy_sha256",
     "roster_sha256", "decision_sha256", "approved_tasks_sha256", "encoder_sha256", "encoder_binding_sha256", "index_binding_sha256"])
 @pytest.mark.parametrize("bad", [None, "f" * 64])
-def test_semantic_missing_or_wrong_pin_refuses_before_input_or_providers(reader, tmp_path, field, bad):
-    case = _semantic_case(reader, tmp_path)
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+def test_semantic_missing_or_wrong_pin_refuses_before_input_or_providers(reader, tmp_path, field, bad, all_tasks):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
     case[field] = bad
     _semantic_refuses_without_callbacks(reader, case)
 
@@ -1105,6 +1134,123 @@ def _semantic_repin_cell(case, cell_id):
     case.update(descriptor_bytes=_raw(descriptor), descriptor_sha256=_sha(_raw(descriptor)))
 
 
+def _semantic_repin_memory(case, memory):
+    case.update(memory_bytes=_raw(memory), memory_sha256=_sha(_raw(memory)))
+    descriptor = json.loads(case["descriptor_bytes"])
+    descriptor["memory_sha256"] = case["memory_sha256"]
+    case.update(descriptor_bytes=_raw(descriptor), descriptor_sha256=_sha(_raw(descriptor)))
+
+
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+@pytest.mark.parametrize("field", ["schema", "scope"])
+def test_semantic_cross_version_descriptor_refuses_even_with_matching_pin(reader, tmp_path, all_tasks, field):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    descriptor = json.loads(case["descriptor_bytes"])
+    other = {"schema": "wd.bridge-mind-q4-memory-descriptor.v2" if all_tasks
+             else "wd.bridge-mind-q4-memory-descriptor.v3",
+             "scope": ROUTE_SCOPE if all_tasks else "wd.mind-all-task-projected-events.v1"}
+    descriptor[field] = other[field]
+    case.update(descriptor_bytes=_raw(descriptor), descriptor_sha256=_sha(_raw(descriptor)))
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+@pytest.mark.parametrize("field", ["scope", "projection_schema"])
+def test_semantic_cross_version_memory_refuses_even_when_repinned(reader, tmp_path, all_tasks, field):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    memory = json.loads(case["memory_bytes"])
+    other = {"scope": ROUTE_SCOPE if all_tasks else "wd.mind-all-task-projected-events.v1",
+             "projection_schema": SCHEMA if all_tasks else "wd.mind-content-memory-projection.v3"}
+    memory[field] = other[field]
+    _semantic_repin_memory(case, memory)
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+@pytest.mark.parametrize("field", ["schema", "scope", "projection_schema", "message_projection_schema"])
+def test_semantic_cross_version_decision_refuses_even_when_repinned(reader, tmp_path, all_tasks, field):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    other = {
+        "schema": DECISION_SCHEMA if all_tasks else "wd.mind-content-route-decision.v3",
+        "scope": ROUTE_SCOPE if all_tasks else "wd.mind-all-task-projected-events.v1",
+        "projection_schema": SCHEMA if all_tasks else "wd.mind-content-memory-projection.v3",
+        "message_projection_schema": MESSAGE_SCHEMA if all_tasks else "wd.bridge-mind-content-projection.v3",
+    }
+    _edit_decision(case, **{field: other[field]})
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+@pytest.mark.parametrize("field", ["policy", "message_policy"])
+def test_semantic_cross_version_policy_refuses_even_when_repinned(reader, tmp_path, all_tasks, field):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    if field == "policy":
+        policy = ({"schema": "wd.q4-non-review-policy.v1", "approved_tasks": json.loads(OPERATOR_TASK_BYTES)}
+                  if all_tasks else {"schema": "wd.q4-non-review-policy.v2", "task_scope": "all_tasks"})
+        raw = _raw(policy)
+        case.update(policy_bytes=raw, policy_sha256=_sha(raw))
+        _edit_decision(case, nonreview_policy_sha256=case["policy_sha256"])
+    else:
+        policy = json.loads(case["messages"]["policy_bytes"])
+        if all_tasks:
+            policy.pop("task_scope")
+            policy.update(schema="wd.mind-content-policy.v1", approved_tasks=json.loads(OPERATOR_TASK_BYTES))
+        else:
+            policy.pop("approved_tasks")
+            policy.update(schema="wd.mind-content-policy.v3", task_scope="all_tasks")
+        raw = _raw(policy)
+        case["messages"].update(policy_bytes=raw, policy_sha256=_sha(raw))
+        _edit_decision(case, message_policy_sha256=case["messages"]["policy_sha256"])
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+@pytest.mark.parametrize("field", ["scope", "projection_schema"])
+def test_semantic_cross_version_cell_refuses_even_when_repinned(reader, tmp_path, all_tasks, field):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    data = case["cell_snapshots"]["general"]["artifacts"]
+    receipt = json.loads(data["receipt"])
+    if field == "scope":
+        receipt["scope"] = ROUTE_SCOPE if all_tasks else "wd.mind-all-task-projected-events.v1"
+    else:
+        receipt["content"]["projection_schema"] = SCHEMA if all_tasks else "wd.mind-content-memory-projection.v3"
+    data["receipt"] = _raw(receipt)
+    _semantic_repin_cell(case, "general")
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+def test_semantic_all_tasks_rehashed_noncanonical_scope_refuses_before_callbacks(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    noncanonical = json.dumps(json.loads(case["approved_tasks_bytes"]), indent=1).encode()
+    assert noncanonical != case["approved_tasks_bytes"]
+    case.update(approved_tasks_bytes=noncanonical, approved_tasks_sha256=_sha(noncanonical))
+    _edit_decision(case, approved_tasks_sha256=_sha(noncanonical))
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+@pytest.mark.parametrize("field", ["schema", "message_schema"])
+def test_semantic_cross_version_projection_refuses_even_when_repinned(reader, tmp_path, all_tasks, field):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    projection = json.loads(case["projection_bytes"])
+    if field == "schema":
+        projection["schema"] = SCHEMA if all_tasks else "wd.mind-content-memory-projection.v3"
+    else:
+        projection["messages"]["schema"] = MESSAGE_SCHEMA if all_tasks else "wd.bridge-mind-content-projection.v3"
+    raw = _serialized(projection)
+    case.update(projection_bytes=raw, projection_sha256=_sha(raw))
+    memory = json.loads(case["memory_bytes"])
+    memory["projection_sha256"] = case["projection_sha256"]
+    _semantic_repin_memory(case, memory)
+    for cell_id, cell in case["cell_snapshots"].items():
+        data = cell["artifacts"]
+        receipt = json.loads(data["receipt"])
+        receipt["content"]["projection_sha256"] = case["projection_sha256"]
+        data["receipt"] = _raw(receipt)
+        _semantic_repin_cell(case, cell_id)
+    _semantic_refuses_without_callbacks(reader, case)
+
+
 def test_semantic_fully_rehashed_foreign_record_refuses_before_index_decode(reader, tmp_path):
     case = _semantic_case(reader, tmp_path)
     data = case["cell_snapshots"]["system"]["artifacts"]
@@ -1145,8 +1291,9 @@ def test_semantic_time_guard_abstains_at_exact_one_second_boundary(reader, tmp_p
     assert case["encoder_provider"].calls == []
 
 
-def test_semantic_source_change_during_query_refuses_final_output(reader, tmp_path):
-    case = _semantic_case(reader, tmp_path)
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+def test_semantic_source_change_during_query_refuses_final_output(reader, tmp_path, all_tasks):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
     path = Path(case["messages"]["source_path"])
     original = path.read_bytes()
     case["encoder_provider"].on_query = lambda: path.write_bytes(b" " + original[1:])

@@ -510,11 +510,15 @@ def test_an_entry_without_identity_fields_or_with_non_text_identity_is_unbound()
         paced = copy.deepcopy(PACED)
         paced["codex/codex/primary"].pop("identities")
         paced["codex/codex/primary"].update(change)
-        assert evidence(paced=paced)["reasons"] == ["window_unbound:codex/codex/primary"], change
+        record = evidence(paced=paced)
+        assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None), change
+        assert record["reasons"] == ["window_unbound:codex/codex/primary"], change
     paced = copy.deepcopy(PACED)
     paced["codex/codex/primary"].pop("identities")
     paced["codex/codex/primary"].pop("subject")
-    assert evidence(paced=paced)["reasons"] == ["window_unbound:codex/codex/primary"]
+    record = evidence(paced=paced)
+    assert (record["verdict"], record["capacity"]) == (rc.UNKNOWN, None)
+    assert record["reasons"] == ["window_unbound:codex/codex/primary"]
 
 
 def test_two_index_series_naming_this_rows_pair_are_ambiguous_and_never_read():
@@ -588,6 +592,7 @@ def test_an_unbound_newest_series_never_hides_the_own_series():
     unbound = samples(windows=OTHER_WINDOWS, identity=(None, None), ages=(30, 0))
     record = evidence(paced=pace_windows(samples() + unbound, now=NOW))
     assert (record["verdict"], record["reasons"]) == (rc.KNOWN, [])
+    assert record["capacity"] == evidence()["capacity"]
 
 
 def test_an_old_pool_series_of_the_same_subject_is_not_the_new_pools_series():

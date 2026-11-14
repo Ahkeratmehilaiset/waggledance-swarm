@@ -87,10 +87,13 @@ function Invoke-WdMindStartupRead {
         return $time
     }
     function Assert-WdMindSituationObservation($Observation, [DateTimeOffset] $AsOf, [string[]] $AllowedTypes, [switch] $Request) {
-        if ($Observation -is [string] -and $Observation -ceq 'UNKNOWN') { return }
+        if ($Observation -is [string] -and $Observation -ceq 'UNKNOWN' -and -not $Request) { return }
         $keys=@('status','event_ref','observed_utc','age_seconds_upper_bound','event_type','task_id','sender_authentication')
         if ($Request) { $keys+=@('request_id','recipients','requested_review','pr','head','resolution','approval','binding_valid') }
         Assert-WdMindObject $Observation $keys
+        foreach ($name in @('status','event_ref','observed_utc','event_type','task_id','sender_authentication')) {
+            if ($Observation.$name -isnot [string]) { throw 'shape' }
+        }
         Assert-WdMindString $Observation.event_ref '\A[0-9a-f]{64}\z'
         Assert-WdMindNumber $Observation.age_seconds_upper_bound -Integer
         if ($Observation.sender_authentication -cne 'UNKNOWN') { throw 'shape' }
@@ -106,20 +109,27 @@ function Invoke-WdMindStartupRead {
                 $Observation.task_id -cne 'UNKNOWN') { throw 'shape' }
         }
         if ($Request) {
+            foreach ($name in @('resolution','approval','binding_valid','request_id','head')) {
+                if ($Observation.$name -isnot [string]) { throw 'shape' }
+            }
             foreach ($name in @('resolution','approval','binding_valid')) { if ($Observation.$name -cne 'UNKNOWN') { throw 'shape' } }
             if ($fresh) {
                 Assert-WdMindString $Observation.request_id '\Asha256:[0-9a-f]{64}\z'
                 if ($Observation.recipients -isnot [array] -or $Observation.recipients.Count -lt 1 -or
                     $Observation.recipients.Count -gt 5) { throw 'shape' }
                 $lanes=@('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')
-                foreach ($recipient in $Observation.recipients) { if ($lanes -cnotcontains $recipient) { throw 'shape' } }
-                if (($Observation.requested_review -isnot [bool] -or -not $Observation.requested_review) -and
-                    $Observation.requested_review -cne 'UNKNOWN') { throw 'shape' }
-                if ($Observation.pr -cne 'UNKNOWN') { Assert-WdMindNumber $Observation.pr -Integer; if ($Observation.pr -lt 1) { throw 'shape' } }
+                foreach ($recipient in $Observation.recipients) {
+                    if ($recipient -isnot [string] -or $lanes -cnotcontains $recipient) { throw 'shape' }
+                }
+                if (-not (($Observation.requested_review -is [bool] -and $Observation.requested_review) -or
+                    ($Observation.requested_review -is [string] -and $Observation.requested_review -ceq 'UNKNOWN'))) { throw 'shape' }
+                if (-not ($Observation.pr -is [string] -and $Observation.pr -ceq 'UNKNOWN')) {
+                    Assert-WdMindNumber $Observation.pr -Integer; if ($Observation.pr -lt 1) { throw 'shape' }
+                }
                 Assert-WdMindString $Observation.head '\A(?:UNKNOWN|[0-9a-f]{40})\z'
             } else {
                 foreach ($name in @('request_id','recipients','requested_review','pr','head')) {
-                    if ($Observation.$name -cne 'UNKNOWN') { throw 'shape' }
+                    if ($Observation.$name -isnot [string] -or $Observation.$name -cne 'UNKNOWN') { throw 'shape' }
                 }
             }
         }
@@ -128,22 +138,32 @@ function Invoke-WdMindStartupRead {
             [string] $SourceCommit, [string] $PointerHash, [string] $PointerObservedUtc) {
         $lanes=@('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')
         Assert-WdMindObject $Envelope @('schema','authority','scope','partial_final_record','current_state','continuity','view')
+        foreach ($name in @('schema','authority','scope','current_state','continuity')) {
+            if ($Envelope.$name -isnot [string]) { throw 'shape' }
+        }
         if ($Envelope.schema -cne 'wd.mind-situation-live.v1' -or $Envelope.authority -cne 'none' -or
             $Envelope.scope -cne 'bounded_complete_records_not_current_state_or_gate' -or
             $Envelope.partial_final_record -isnot [bool] -or $Envelope.current_state -cne 'UNKNOWN' -or
             $Envelope.continuity -cne 'UNKNOWN') { throw 'shape' }
         $view=$Envelope.view
         Assert-WdMindObject $view @('schema','authority','scope','as_of_utc','source','bundle','lanes','request_observations')
+        foreach ($name in @('schema','authority','scope','as_of_utc')) { if ($view.$name -isnot [string]) { throw 'shape' } }
         if ($view.schema -cne 'wd.mind-situation-observations.v1' -or $view.authority -cne 'none' -or
             $view.scope -cne 'bounded_tail_not_current_state_or_gate') { throw 'shape' }
         $asOf=ConvertFrom-WdMindSituationTime $view.as_of_utc
         Assert-WdMindObject $view.source @('snapshot_sha256','fleet_sha256','coverage','sender_authentication','fleet_manifest_binding')
+        foreach ($name in @('snapshot_sha256','fleet_sha256','coverage','sender_authentication','fleet_manifest_binding')) {
+            if ($view.source.$name -isnot [string]) { throw 'shape' }
+        }
         Assert-WdMindString $view.source.snapshot_sha256 '\A[0-9a-f]{64}\z'
         if ($view.source.fleet_sha256 -cne $FleetHash -or $view.source.coverage -cne 'bounded_tail' -or
             $view.source.sender_authentication -cne 'UNKNOWN' -or $view.source.fleet_manifest_binding -cne 'MATCH') { throw 'shape' }
         $bundle=$view.bundle
         Assert-WdMindObject $bundle @('status','source_kind','observed_utc','age_seconds_upper_bound','source_commit',
             'manifest_sha256','pointer_authentication','pointer_sha256')
+        foreach ($name in @('status','source_kind','observed_utc','source_commit','manifest_sha256','pointer_authentication','pointer_sha256')) {
+            if ($bundle.$name -isnot [string]) { throw 'shape' }
+        }
         if ($bundle.source_kind -cne 'local_pointer_and_manifest_bytes' -or $bundle.pointer_authentication -cne 'UNKNOWN' -or
             $bundle.pointer_sha256 -cne $PointerHash -or $bundle.observed_utc -cne $PointerObservedUtc) { throw 'shape' }
         Assert-WdMindNumber $bundle.age_seconds_upper_bound -Integer
@@ -159,7 +179,7 @@ function Invoke-WdMindStartupRead {
         foreach ($lane in $lanes) {
             $row=$view.lanes.PSObject.Properties[$lane].Value
             Assert-WdMindObject $row @('current_task','latest_work_event','latest_claim_event','latest_done_event','latest_handoff_event')
-            if ($row.current_task -cne 'UNKNOWN') { throw 'shape' }
+            if ($row.current_task -isnot [string] -or $row.current_task -cne 'UNKNOWN') { throw 'shape' }
             Assert-WdMindSituationObservation $row.latest_work_event $asOf @('claim','release','done','handoff')
             Assert-WdMindSituationObservation $row.latest_claim_event $asOf @('claim','release')
             Assert-WdMindSituationObservation $row.latest_done_event $asOf @('done')

@@ -142,7 +142,8 @@ def test_opt_in_situation_live_for_each_lane(tmp_path, lane):
 
 @WINDOWS
 @pytest.mark.parametrize('case', ['schema', 'authority', 'partial', 'fleet', 'manifest', 'event_ref',
-                                  'rco_text', 'approval', 'age', 'missing_module', 'pointer'])
+                                  'rco_text', 'approval', 'age', 'scalar_array', 'review_array', 'pr_array',
+                                  'unknown_request', 'missing_module', 'pointer'])
 def test_opt_in_situation_live_refuses_invalid_inputs(tmp_path, case):
     view = _situation_live_view()
     if case == 'schema': view['schema'] = 'other'
@@ -154,6 +155,10 @@ def test_opt_in_situation_live_refuses_invalid_inputs(tmp_path, case):
     if case == 'rco_text': view['view']['lanes']['claude-rco-1']['latest_claim_event']['body'] = 'SECRET_TEXT'
     if case == 'approval': view['view']['request_observations'][0]['approval'] = 'pass'
     if case == 'age': view['view']['lanes']['codex-lead-1']['latest_claim_event']['age_seconds_upper_bound'] = 0
+    if case == 'scalar_array': view['authority'] = ['none']
+    if case == 'review_array': view['view']['request_observations'][0]['requested_review'] = ['UNKNOWN']
+    if case == 'pr_array': view['view']['request_observations'][0]['pr'] = ['UNKNOWN']
+    if case == 'unknown_request': view['view']['request_observations'][0] = 'UNKNOWN'
     bundle, pin, pointer = _situation_package(tmp_path, view=view, missing_module=(case == 'missing_module'), mismatch_pointer=(case == 'pointer'))
     result = _run_situation(bundle, pin, pointer, 'codex-lead-1')
     assert result['outcome'] == 'refused'

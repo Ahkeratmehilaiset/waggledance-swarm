@@ -51,6 +51,48 @@ def read_prefix_rows(source_path, generation_path, end_cursor, expected_prefix_s
     No rows escape on any error. Read-time hashes bind the exact bytes parsed,
     with each prefix checked again from the same handle before proceeding.
     """
+    return _read_prefix(source_path, generation_path, end_cursor, expected_prefix_sha256, tasks, scope=scope)
+
+
+class _PrefixProof:
+    """Internal in-process evidence, never source or caller authorization."""
+    __slots__ = ('binding', 'pages')
+
+    def __init__(self, binding, pages):
+        self.binding, self.pages = binding, tuple(pages)
+
+
+def _proof_binding(source_path, generation_path, cursor, digest, tasks, scope):
+    return (source_path, generation_path, cursor.offset, cursor.file_identity, cursor.generation, digest,
+            None if tasks is None else frozenset(tasks), scope,
+            (MAX_PREFIX_BYTES, PAGE_BYTES, MAX_SOURCE_ROWS, MAX_ROW_BYTES, MAX_PAGE_ROWS,
+             MAX_ALL_TASK_PREFIX_BYTES, MAX_ALL_TASK_ROWS, MAX_ALL_TASK_RETAINED_BYTES,
+             MAX_ALL_TASK_ROW_BYTES, ALL_TASK_BUILD_LANES, ALL_TASK_TYPES))
+
+
+def _capture_prefix_proof(source_path, generation_path, end_cursor, expected_prefix_sha256, tasks, *,
+                          scope='approved_tasks_v1'):
+    """Run the complete existing parser/row-budget path before issuing evidence."""
+    return _read_prefix(source_path, generation_path, end_cursor, expected_prefix_sha256, tasks,
+                        scope=scope, capture=True)
+
+
+def _recheck_prefix(proof, source_path, generation_path, end_cursor, expected_prefix_sha256, tasks, *,
+                    scope='approved_tasks_v1'):
+    """Skip only parsing/row retention for identical previously validated pages.
+
+    All original reads, boundaries and pre/post hash, identity, generation,
+    length and cursor checks still run in their original relative order. This
+    does not make I/O linear and does not close same-user ABA races.
+    """
+    if type(proof) is not _PrefixProof:
+        raise ValueError('invalid_prefix_proof')
+    _read_prefix(source_path, generation_path, end_cursor, expected_prefix_sha256, tasks,
+                 scope=scope, proof=proof)
+
+
+def _read_prefix(source_path, generation_path, end_cursor, expected_prefix_sha256, tasks, *,
+                 scope, capture=False, proof=None):
     if (scope not in ('approved_tasks_v1', 'all_tasks_v1')
             or (scope == 'approved_tasks_v1' and
                 (type(tasks) not in (set, frozenset) or any(type(task) is not str for task in tasks)))
@@ -66,6 +108,10 @@ def read_prefix_rows(source_path, generation_path, end_cursor, expected_prefix_s
             or re.fullmatch(r'[0-9a-f]{64}', expected_prefix_sha256) is None):
         raise ValueError('invalid_prefix_input')
 
+    binding = _proof_binding(source_path, generation_path, end_cursor, expected_prefix_sha256, tasks, scope)
+    if proof is not None and proof.binding != binding:
+        raise ValueError('prefix_proof_binding_changed')
+    page_proofs = []
     path, generation = Path(source_path), Path(generation_path)
     rows, offset, pages, retained_bytes = {}, 0, 0, 0
     prior_hash = hashlib.sha256(b'').hexdigest()
@@ -100,7 +146,19 @@ def read_prefix_rows(source_path, generation_path, end_cursor, expected_prefix_s
                 if consumed <= 0:
                     raise ValueError('incomplete_record')
                 parsed_bytes = data[:consumed]
-                page_rows = bridge._parse_rows(parsed_bytes, starts_at_zero=(offset == 0))
+                if proof is None:
+                    page_rows = bridge._parse_rows(parsed_bytes, starts_at_zero=(offset == 0))
+                    if capture:
+                        page_proofs.append((offset, requested, consumed, hashlib.sha256(parsed_bytes).hexdigest()))
+                else:
+                    # Do not skip the original parse position on a new page or
+                    # a new boundary, even if a later whole-prefix check would
+                    # reject it. Evidence was issued only after complete parse
+                    # and row-limit validation of these exact bytes/controls.
+                    page = (offset, requested, consumed, hashlib.sha256(parsed_bytes).hexdigest())
+                    if pages > len(proof.pages) or page != proof.pages[pages - 1]:
+                        raise ValueError('prefix_page_changed')
+                    page_rows = ()
                 state.update(parsed_bytes)
                 next_offset = offset + consumed
                 if not hmac.compare_digest(state.hexdigest(), _hash_prefix(stream, next_offset).hexdigest()):
@@ -145,4 +203,6 @@ def read_prefix_rows(source_path, generation_path, end_cursor, expected_prefix_s
                 raise ValueError('generation_mismatch')
     except (OSError, bridge._GenerationError, UnicodeError, RecursionError) as exc:
         raise ValueError('source_unavailable') from exc
-    return rows
+    if proof is not None and pages != len(proof.pages):
+        raise ValueError('prefix_page_count_changed')
+    return _PrefixProof(binding, page_proofs) if capture else rows

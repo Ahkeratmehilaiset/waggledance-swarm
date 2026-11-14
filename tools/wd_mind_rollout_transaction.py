@@ -370,6 +370,12 @@ def run_transaction(config: dict) -> Outcome:
                 return finish("ROLLBACK_FAILED_HOLD", live())
             if live():
                 return finish("HOLD_ACTIVE_CALLER", live())
+            hashes = ({name: _digest(data) for name, data in desired.items()}
+                      if status == "COMMITTED" else cfg["previous_hashes"])
+            for name in targets:
+                path = _location(roots["machine_root"], name)
+                if _digest(_existing(path)) != hashes[name]:
+                    raise policy.Refused("Terminal file state changed after caller validation")
             _state(journal, record, cfg["nonce"], status)
             lock.unlink()
         else:

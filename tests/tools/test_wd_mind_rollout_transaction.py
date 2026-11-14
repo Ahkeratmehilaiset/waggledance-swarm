@@ -359,3 +359,52 @@ def test_digest_case_does_not_change_the_reviewed_previous_bytes(setup):
     result = module.run_transaction(config)
     assert result.status == "COMMITTED" and result.pending == ()
     assert len(journal(result)["checks"]) == 5
+
+
+def install_final_caller_mutation(config, phase, target):
+    caller = Path(config["launches"][LANES[0]]["argv"][-1])
+    source = CALLER.replace("import datetime, json, os, pathlib, sys, time",
+                            "import datetime, json, os, pathlib, sys, time, hashlib")
+    mutation = (
+        "reader=pathlib.Path(os.environ['WD_ROLLOUT_POINTER']).with_name('reader.py')\n"
+        "if hashlib.sha256(reader.read_bytes()).hexdigest()!=expected['reader_sha256']:\n"
+        "    sys.exit(42)\n"
+        f"if expected['phase']=={phase!r} and expected['lane']=='fable-5':\n"
+        f"    reader.with_name({target!r}).write_bytes(b'CHANGED AFTER VERIFIED READ\\n')\n"
+        "receipt.write_text(text)"
+    )
+    source = source.replace("receipt.write_text(text)", mutation)
+    caller.write_text(source)
+    for launch in config["launches"].values():
+        launch["files"][str(caller)] = sha(caller.read_bytes())
+
+
+@pytest.mark.parametrize("target", ["reader.py", "new.py", "deleted.py", "current.json"])
+def test_final_caller_mutation_requires_candidate_rollback(setup, target):
+    module, config, behavior, original = setup
+    install_final_caller_mutation(config, "candidate", target)
+    result = module.run_transaction(config)
+    rows = journal(result)
+    candidate = [row for row in rows["checks"] if row["phase"] == "candidate"]
+    assert len(candidate) == 5 and all(row["ok"] for row in candidate)
+    assert result.status == "ROLLED_BACK" and result.pending == ()
+    assert observed_files(config) == original
+    assert rows["writes"][-1] == {"phase": "restore", "path": "current.json"}
+    assert sum(row["phase"] == "previous" and row["ok"] for row in rows["checks"]) == 5
+    assert "COMMITTED" not in rows["states"]
+    assert not (Path(config["machine_root"]) / ".wd-mind-rollout.lock").exists()
+
+
+@pytest.mark.parametrize("target", ["reader.py", "new.py", "deleted.py", "current.json"])
+def test_final_caller_mutation_prevents_previous_terminal_success(setup, target):
+    module, config, behavior, original = setup
+    behavior.write_text(json.dumps({"candidate": "missing", "previous": "ok"}))
+    install_final_caller_mutation(config, "previous", target)
+    result = module.run_transaction(config)
+    rows = journal(result)
+    previous = [row for row in rows["checks"] if row["phase"] == "previous"]
+    assert len(previous) == 5 and all(row["ok"] for row in previous)
+    assert result.status == "ROLLBACK_FAILED_HOLD" and result.pending == ()
+    assert "ROLLED_BACK" not in rows["states"] and "COMMITTED" not in rows["states"]
+    assert observed_files(config)[target] == b"CHANGED AFTER VERIFIED READ\n"
+    assert (Path(config["machine_root"]) / ".wd-mind-rollout.lock").exists()

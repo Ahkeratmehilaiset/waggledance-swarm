@@ -7,6 +7,8 @@ Uses FastAPI TestClient — no actual server needed.
 import asyncio
 import unittest
 
+import pytest
+
 
 class TestStubSmoke(unittest.TestCase):
     """Stub-mode smoke tests via TestClient."""
@@ -67,6 +69,13 @@ class TestStubSmoke(unittest.TestCase):
 
 class TestNonStubContainer(unittest.TestCase):
     """Non-stub Container validation (no HTTP calls — just construction)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_bridge_runtime_root(self, tmp_path, monkeypatch):
+        """D15 test isolation: the non-stub container constructs BridgeLLMClient.default(), whose TelemetryLogger
+        creates its parent directory under AGENT_BRIDGE_RUNTIME_ROOT; point that at this test's tmp_path so the real
+        container construction never touches the live bridge directory."""
+        monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(tmp_path))
 
     def test_non_stub_uses_chroma_memory_repository(self):
         """Container(stub=False).memory_repository honors the chroma default (R-4).

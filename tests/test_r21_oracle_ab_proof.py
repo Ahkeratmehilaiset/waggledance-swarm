@@ -14,6 +14,15 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 
+@pytest.fixture(autouse=True)
+def _isolated_bridge_runtime_root(tmp_path, monkeypatch):
+    """D15 test isolation: BridgeLLMClient's TelemetryLogger appends under AGENT_BRIDGE_RUNTIME_ROOT when no
+    logger is injected (waggledance/core/bridge_llm/telemetry.py). The real client, harness and logger stay in
+    place; only the destination is this test's own tmp_path, so a session that carries the live bridge root
+    never receives test telemetry (PR1960 D15 map: these tests wrote to the live bridge directory)."""
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(tmp_path))
+
+
 # ─── Oracle loader ───────────────────────────────────────────────
 
 def test_load_oracle_corpus_returns_routable_files():

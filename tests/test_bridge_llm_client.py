@@ -297,9 +297,10 @@ def test_ollama_provider_honors_max_retries_budget(monkeypatch):
 
 # ─── BridgeLLMClient end-to-end ──────────────────────────────────
 
-def test_client_disabled_short_circuits_to_heuristic():
+def test_client_disabled_short_circuits_to_heuristic(tmp_path, monkeypatch):
     """Profile S contract: BridgeLLMClient.disabled() never imports
     any LLM library and always returns a heuristic response."""
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(tmp_path))  # D15: telemetry stays in tmp_path
     from waggledance.core.bridge_llm import BridgeLLMClient, LLMRequest, FallbackLevel
     client = BridgeLLMClient.disabled(reason="profile_s")
     assert not client.is_enabled()
@@ -583,7 +584,8 @@ def test_client_degrades_to_heuristic_when_budget_exhausted(tmp_path, monkeypatc
 
 # ─── Provider plugin registry ────────────────────────────────────
 
-def test_register_provider_makes_plugin_globally_visible():
+def test_register_provider_makes_plugin_globally_visible(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(tmp_path))  # D15: telemetry stays in tmp_path
     from waggledance.core.bridge_llm.providers.base import (
         ProviderPlugin, register_provider, get_provider,
     )
@@ -641,10 +643,11 @@ def test_default_client_wires_anthropic_as_cloud_tier(monkeypatch):
     assert client.providers["cloud"].__class__.__name__ != "CloudStubProvider"
 
 
-def test_client_cloud_tier_falls_through_to_heuristic_when_redactor_fails(monkeypatch):
+def test_client_cloud_tier_falls_through_to_heuristic_when_redactor_fails(tmp_path, monkeypatch):
     """Security fall-through: when the cloud tier is reached but redaction
     fails, the provider raises ProviderError and the chain degrades to the
     local heuristic tier WITHOUT contacting the cloud."""
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(tmp_path))  # D15: telemetry stays in tmp_path
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
     from waggledance.core.bridge_llm import BridgeLLMClient, LLMRequest, FallbackLevel
     from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
@@ -684,9 +687,10 @@ def test_client_cloud_tier_falls_through_to_heuristic_when_redactor_fails(monkey
     assert response.success is True
 
 
-def test_client_skips_cloud_tier_when_no_api_key(monkeypatch):
+def test_client_skips_cloud_tier_when_no_api_key(tmp_path, monkeypatch):
     """No ANTHROPIC_API_KEY -> cloud tier reports unavailable -> the chain
     skips it cleanly and serves heuristic (no fake cloud serving)."""
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(tmp_path))  # D15: telemetry stays in tmp_path
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     from waggledance.core.bridge_llm import BridgeLLMClient, LLMRequest, FallbackLevel
     from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider
@@ -730,12 +734,13 @@ def test_llm_request_defaults_deny_cloud():
     assert req.allows_cloud() is False
 
 
-def test_client_does_not_dispatch_cloud_when_allow_cloud_false(monkeypatch):
+def test_client_does_not_dispatch_cloud_when_allow_cloud_false(tmp_path, monkeypatch):
     """#1449 review repro: a request that opts OUT of cloud must never reach
     a CLOUD_LLM-tier provider, even when that tier is available (key +
     redactor present). The chain skips it and serves heuristic;
     cloud_calls == 0. Covers BOTH explicit allow_cloud=False AND the bare
     (default-deny) request."""
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(tmp_path))  # D15: telemetry stays in tmp_path
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
     from waggledance.core.bridge_llm import BridgeLLMClient, LLMRequest, FallbackLevel
     from waggledance.core.bridge_llm.providers.base import ProviderPlugin
@@ -781,11 +786,12 @@ def test_client_does_not_dispatch_cloud_when_allow_cloud_false(monkeypatch):
     assert spy.calls == 0
 
 
-def test_client_dispatches_and_redacts_cloud_when_allow_cloud_true(monkeypatch):
+def test_client_dispatches_and_redacts_cloud_when_allow_cloud_true(tmp_path, monkeypatch):
     """allow_cloud=True (with key + working redactor): the chain DOES
     dispatch to the cloud tier, and the payload that reaches the SDK is
     redacted — proving the gate opens only on opt-in and the redaction
     boundary still holds end-to-end through the client."""
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(tmp_path))  # D15: telemetry stays in tmp_path
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-stub-key")
     from waggledance.core.bridge_llm import BridgeLLMClient, LLMRequest, FallbackLevel
     from waggledance.core.bridge_llm.providers.anthropic import AnthropicProvider

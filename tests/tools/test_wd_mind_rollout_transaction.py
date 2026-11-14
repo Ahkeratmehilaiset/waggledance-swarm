@@ -4,8 +4,10 @@ from __future__ import annotations
 from copy import deepcopy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import types
 import uuid
@@ -408,3 +410,85 @@ def test_final_caller_mutation_prevents_previous_terminal_success(setup, target)
     assert "ROLLED_BACK" not in rows["states"] and "COMMITTED" not in rows["states"]
     assert observed_files(config)[target] == b"CHANGED AFTER VERIFIED READ\n"
     assert (Path(config["machine_root"]) / ".wd-mind-rollout.lock").exists()
+
+
+ROOT_KEYS = ("machine_root", "evidence_root", "installed_root", "source_root")
+
+
+@pytest.mark.parametrize("key", ROOT_KEYS)
+@pytest.mark.parametrize("spelling", ["dot", "dotdot", "trailing_dot", "trailing_space"])
+def test_root_alias_spelling_is_refused(setup, key, spelling):
+    module, config, behavior, original = setup
+    root = Path(config[key])
+    if spelling == "dot":
+        alias = str(root.parent) + os.sep + "." + os.sep + root.name
+    elif spelling == "dotdot":
+        sibling = root.parent / "root-alias"
+        sibling.mkdir()
+        alias = str(sibling) + os.sep + ".." + os.sep + root.name
+    else:
+        alias = str(root) + ("." if spelling == "trailing_dot" else " ")
+        if os.name != "nt":
+            Path(alias).mkdir()  # Existent POSIX name with an ambiguous Windows spelling.
+    with pytest.raises(module.policy.Refused):
+        module._root(alias)
+    assert observed_files(config) == original
+
+
+def test_root_alias_cannot_hide_machine_evidence_overlap(setup):
+    module, config, behavior, original = setup
+    sibling = Path(config["machine_root"]).parent / "root-alias"
+    sibling.mkdir()
+    config["evidence_root"] = str(sibling) + os.sep + ".." + os.sep + "machine"
+    with pytest.raises(module.policy.Refused):
+        module.run_transaction(config)
+    assert observed_files(config) == original
+    assert not (Path(config["machine_root"]) / ".wd-mind-rollout.lock").exists()
+
+
+def test_root_alias_device_namespace_is_refused(setup):
+    module, config, behavior, original = setup
+    alias = os.sep * 2 + "?" + os.sep + config["machine_root"]
+    with pytest.raises(module.policy.Refused):
+        module._root(alias)
+    assert observed_files(config) == original
+
+
+@pytest.mark.parametrize("key", ROOT_KEYS)
+def test_canonical_root_is_accepted(setup, key):
+    module, config, behavior, original = setup
+    assert module._root(config[key]) == Path(config[key]).resolve(strict=True)
+    assert observed_files(config) == original
+
+
+@pytest.mark.parametrize("position", ["direct", "ancestor"])
+def test_root_reparse_is_rejected_without_following(setup, position):
+    module, config, behavior, original = setup
+    target = Path(config["machine_root"])
+    link = target.parent / "root-link"
+    if position == "ancestor":
+        (target / "nested").mkdir()
+    created = False
+    try:
+        if os.name == "nt":
+            command = Path(os.environ["SystemRoot"]) / "System32/cmd.exe"
+            subprocess.run([str(command), "/d", "/c", "mklink", "/J", str(link), str(target)],
+                           check=True, capture_output=True, timeout=10,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+            created = True
+            assert link.lstat().st_file_attributes & 0x400
+        else:
+            link.symlink_to(target, target_is_directory=True)
+            created = True
+            assert link.is_symlink()
+        path = link if position == "direct" else link / "nested"
+        with pytest.raises(module.policy.Refused):
+            module._root(str(path))
+        assert observed_files(config) == original
+    finally:
+        if created:
+            if os.name == "nt":
+                link.rmdir()  # Remove only this junction, never recurse into the target.
+            else:
+                link.unlink()
+    assert target.is_dir() and observed_files(config) == original

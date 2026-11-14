@@ -53,6 +53,57 @@ def content_envelope(lane="codex-tools-1", age_minutes=2):
             "fleet_sha256": FLEET_HASH, "status": status, "content": content}
 
 
+NO_GENERATION_FIELDS = ("generation", "continuity", "source_authentication", "event_time_authentication")
+
+
+def no_generation_envelope(lane="codex-tools-1"):
+    view = content_envelope(lane)
+    view["content"]["schema"] = "wd.mind-no-generation-memory-content.v1"
+    view["content"].update({name: "UNKNOWN" for name in NO_GENERATION_FIELDS})
+    return view
+
+
+@WINDOWS
+@pytest.mark.parametrize("lane", list(UUIDS))
+def test_no_generation_content_envelope_and_receipt_for_each_lane(tmp_path, lane):
+    view = no_generation_envelope(lane)
+    bundle, pin = synthetic_package(tmp_path, view)
+    worktree = tmp_path / "synthetic-worktree"
+    worktree.mkdir()
+    result = _run(bundle, pin, lane=lane, worktree=worktree)
+    assert result["outcome"] == "success" and result["reason"] == "content_projection"
+    assert json.loads(result["view_json"]) == view
+    receipt = json.loads((worktree / ".codex-audit" / "wd-mind-startup-view.json").read_bytes())
+    assert receipt["fleet_sha256"] == FLEET_HASH
+    assert receipt["source_event_refs"] == [EVENT_REF]
+    assert receipt["content_source_event_refs"] == ["e" * 64]
+    assert receipt["session_context_delivery"] == "NOT_PROVEN"
+    assert "view_json" not in receipt and "Synthetic" not in json.dumps(receipt)
+
+
+@WINDOWS
+@pytest.mark.parametrize("name", NO_GENERATION_FIELDS)
+@pytest.mark.parametrize("fault", ["missing", "forged"])
+def test_no_generation_content_rejects_missing_or_forged_unknown_field(tmp_path, name, fault):
+    view = no_generation_envelope()
+    if fault == "missing":
+        del view["content"][name]
+    else:
+        view["content"][name] = "VERIFIED"
+    bundle, pin = synthetic_package(tmp_path, view)
+    result = _run(bundle, pin)
+    assert result["outcome"] != "success" and result["view_json"] == ""
+
+
+@WINDOWS
+def test_legacy_content_schema_does_not_accept_new_schema_only_fields(tmp_path):
+    view = content_envelope()
+    view["content"].update({name: "UNKNOWN" for name in NO_GENERATION_FIELDS})
+    bundle, pin = synthetic_package(tmp_path, view)
+    result = _run(bundle, pin)
+    assert result["outcome"] != "success" and result["view_json"] == ""
+
+
 def direct_view():
     return {"schema": "wd.mind-direct-status.v1", "authority": "none",
             "scope": "bounded_bridge_status_not_gate", "lane": "codex-tools-1",

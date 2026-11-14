@@ -130,12 +130,18 @@ function Invoke-WdMindStartupRead {
             }
         }
         $content=$View.content
-        Assert-WdMindObject $content @('schema','authority','as_of_utc','publisher_authentication','provider_authentication',
+        $contentKeys=@('schema','authority','as_of_utc','publisher_authentication','provider_authentication',
             'sender_authentication','source_filter_attestation','same_user_aba','index_freshness','text_encoding','results')
-        if ($content.schema -cne 'wd.mind-startup-content.v1' -or $content.authority -cne 'none' -or
-            $content.text_encoding -cne 'wd.content-text.v1') { throw 'shape' }
-        foreach ($name in @('publisher_authentication','provider_authentication','sender_authentication',
-                             'source_filter_attestation','same_user_aba','index_freshness')) {
+        $unknownKeys=@('publisher_authentication','provider_authentication','sender_authentication',
+            'source_filter_attestation','same_user_aba','index_freshness')
+        if ($content -isnot [pscustomobject] -or $content.schema -isnot [string]) { throw 'shape' }
+        if ($content.schema -ceq 'wd.mind-no-generation-memory-content.v1') {
+            $contentKeys+=@('generation','continuity','source_authentication','event_time_authentication')
+            $unknownKeys+=@('generation','continuity','source_authentication','event_time_authentication')
+        } elseif ($content.schema -cne 'wd.mind-startup-content.v1') { throw 'shape' }
+        Assert-WdMindObject $content $contentKeys
+        if ($content.authority -cne 'none' -or $content.text_encoding -cne 'wd.content-text.v1') { throw 'shape' }
+        foreach ($name in $unknownKeys) {
             if ($content.PSObject.Properties[$name].Value -cne 'UNKNOWN') { throw 'shape' }
         }
         Assert-WdMindString $content.as_of_utc '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,7})?Z\z'

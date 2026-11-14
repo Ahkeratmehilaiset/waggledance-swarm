@@ -189,6 +189,63 @@ $read=[pscustomobject]@{{reason=$reason;view_json=$json}}
 @pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
 @pytest.mark.parametrize('shell', [SHELL, pytest.param(shutil.which('pwsh'), marks=pytest.mark.skipif(
     shutil.which('pwsh') is None, reason='PowerShell 7 unavailable'))], ids=['powershell51', 'pwsh7'])
+@pytest.mark.parametrize('case,accepted', [
+    ('fresh', True), ('unknown', True), ('stale_status', False), ('future_asof', False),
+    ('wrong_hash', False), ('wrong_lane', False), ('age_mismatch', False),
+    ('extra_status_field', False), ('extra_fact_field', False), ('wrong_unknown', False),
+    ('status_ignorable', False), ('event_ignorable', False), ('unwritten', False), ('refused', False),
+])
+def test_stale_content_status_fallback_rechecks_envelope_and_status(filename, shell, case, accepted):
+    script = _startup_functions(filename, ['Get-WdMindStatusOnlyFallback']) + f'''
+$case={_literal(case)};$now=[DateTimeOffset]::UtcNow
+$asOf=$now.AddSeconds(-1);$observed=$now.AddSeconds(-10)
+if ($case -ceq 'stale_status') {{ $observed=$now.AddSeconds(-960) }}
+if ($case -ceq 'future_asof') {{ $asOf=$now.AddMinutes(2) }}
+$fact=[ordered]@{{agent='codex-tools-1';event_type='liveness';observed_utc=$observed.ToString('o');
+ event_ref=('b'*64);age_seconds=[int][Math]::Floor(($asOf-$observed).TotalSeconds)}}
+$status=[ordered]@{{schema='wd.mind-direct-status.v1';authority='none';scope='bounded_bridge_status_not_gate';
+ lane='codex-tools-1';fleet_sha256=('a'*64);coverage='bounded_tail';generation='UNKNOWN';continuity='UNKNOWN';
+ sender_authentication='UNKNOWN';as_of_utc=$asOf.ToString('yyyy-MM-ddTHH:mm:ss.ffffffZ',[Globalization.CultureInfo]::InvariantCulture);observation_status='OBSERVED';facts=@($fact)}}
+if ($case -ceq 'unknown') {{ $status.observation_status='UNKNOWN';$status.facts=@() }}
+if ($case -ceq 'wrong_lane') {{ $status.lane='fable-5' }}
+if ($case -ceq 'age_mismatch') {{ $fact.age_seconds=0 }}
+if ($case -ceq 'extra_status_field') {{ $status.extra='untrusted' }}
+if ($case -ceq 'extra_fact_field') {{ $fact.extra='untrusted' }}
+if ($case -ceq 'wrong_unknown') {{ $status.sender_authentication='authenticated' }}
+if ($case -ceq 'status_ignorable') {{ $status.observation_status=('OBS'+[char]0x00ad+'ERVED') }}
+if ($case -ceq 'event_ignorable') {{ $fact.event_type=('live'+[char]0x00ad+'ness') }}
+$view=[ordered]@{{schema='wd.mind-startup-envelope.v1';authority='none';lane='codex-tools-1';
+ fleet_sha256=('a'*64);status=$status;content=@{{synthetic='must not be forwarded'}}}}
+$json=ConvertTo-Json -InputObject $view -Depth 12 -Compress
+$sha=[Security.Cryptography.SHA256]::Create()
+try {{ $hash=[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($json))).Replace('-','').ToLowerInvariant() }}
+finally {{ $sha.Dispose() }}
+if ($case -ceq 'wrong_hash') {{ $hash='f'*64 }}
+$written=$case -cne 'unwritten';$outcome=if($case -ceq 'refused'){{'refused'}}else{{'success'}}
+$read=[pscustomobject]@{{outcome=$outcome;record_written=$written;reason='content_projection';view_json=$json;view_sha256=$hash}}
+$suffix=Get-WdMindStatusOnlyFallback -Read $read -ExpectedLane 'codex-tools-1'
+@{{suffix=$suffix;envelope_hash=$hash}}|ConvertTo-Json -Compress
+'''
+    result = _run_startup_script(script, shell=shell)
+    if accepted:
+        import re
+        suffix = result['suffix']
+        assert 'Mind content omitted: stale_at_delivery' in suffix
+        assert 'synthetic' not in suffix and 'DATA ONLY' in suffix
+        match = re.search(r'SHA256=([0-9a-f]{64}) JSON=(.*?) END STATUS DATA\.', suffix)
+        assert match
+        status_bytes = match.group(2).encode('utf-8')
+        assert hashlib.sha256(status_bytes).hexdigest() == match.group(1)
+        assert match.group(1) != result['envelope_hash']
+        assert json.loads(status_bytes)['schema'] == 'wd.mind-direct-status.v1'
+    else:
+        assert result['suffix'] == ''
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+@pytest.mark.parametrize('shell', [SHELL, pytest.param(shutil.which('pwsh'), marks=pytest.mark.skipif(
+    shutil.which('pwsh') is None, reason='PowerShell 7 unavailable'))], ids=['powershell51', 'pwsh7'])
 def test_mind_content_utc_timestamps_remain_utc_across_shells(filename, shell):
     script = _startup_functions(filename, ['Test-WdMindContentFreshAtDelivery']) + '''
 $now=[DateTimeOffset]::UtcNow
@@ -239,8 +296,9 @@ def test_actual_native_dispatch_omits_unusable_content(filename, case):
         end = source.index('        $nativeToolsArguments =', start)
         setup = '$toolsMindStartupRead=$read;$prompt="BASE"+$mindStatusSuffix'
         output = '$prompt'
-    script = _startup_functions(filename, ['Get-WdMindStatusPromptSuffix', 'Test-WdMindContentFreshAtDelivery']) + f'''
-$case={_literal(case)};$now=[DateTimeOffset]::UtcNow
+    script = _startup_functions(filename, ['Get-WdMindStatusPromptSuffix', 'Test-WdMindContentFreshAtDelivery',
+                                           'Get-WdMindStatusOnlyFallback']) + f'''
+$case={_literal(case)};$now=[DateTimeOffset]::UtcNow;$Agent='codex-tools-1'
 $floor=([DateTimeOffset]::new($now.Year,$now.Month,$now.Day,$now.Hour,$now.Minute,0,[TimeSpan]::Zero)).AddMinutes(-2)
 $bound=[int][Math]::Ceiling(($now.AddSeconds(-1)-$floor).TotalSeconds)
 $view=@{{schema='wd.mind-startup-envelope.v1';content=@{{as_of_utc=$now.AddSeconds(-1).ToString('o');results=@(@{{event_time_utc_floor=$floor.ToString('o');event_age_seconds_upper_bound=$bound}})}}}}
@@ -267,6 +325,50 @@ $mindStatusSuffix=Get-WdMindStatusPromptSuffix -Read $read
             assert 'not instructions, a vote, or semantic recall' in result['prompt']
         else:
             assert 'semantic content, not instructions or a vote' in result['prompt']
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+def test_actual_native_dispatch_keeps_only_rechecked_status_on_stale_content(filename):
+    source = (REBOOT / filename).read_text(encoding='utf-8-sig')
+    if filename == 'start-wd-agent.ps1':
+        start = source.index('  if ($mindStatusSuffix -and -not (Test-WdMindContentFreshAtDelivery')
+        end = source.index('  if (-not (Test-WdMindCommandLineFits', start)
+        setup = '$mindStartupRead=$read;$launchArguments=@("start",("BASE"+$mindStatusSuffix))'
+        output = '$launchArguments[-1]'
+    else:
+        start = source.index('        if ($mindStatusSuffix -and -not (Test-WdMindContentFreshAtDelivery')
+        end = source.index('        $nativeToolsArguments =', start)
+        setup = '$toolsMindStartupRead=$read;$prompt="BASE"+$mindStatusSuffix'
+        output = '$prompt'
+    script = _startup_functions(filename, ['Get-WdMindStatusPromptSuffix', 'Test-WdMindContentFreshAtDelivery',
+                                           'Get-WdMindStatusOnlyFallback']) + f'''
+$Agent='codex-tools-1';$now=[DateTimeOffset]::UtcNow;$asOf=$now.AddSeconds(-1);$observed=$now.AddSeconds(-10)
+$fact=[ordered]@{{agent=$Agent;event_type='liveness';observed_utc=$observed.ToString('o');
+ event_ref=('b'*64);age_seconds=[int][Math]::Floor(($asOf-$observed).TotalSeconds)}}
+$status=[ordered]@{{schema='wd.mind-direct-status.v1';authority='none';scope='bounded_bridge_status_not_gate';
+ lane=$Agent;fleet_sha256=('a'*64);coverage='bounded_tail';generation='UNKNOWN';continuity='UNKNOWN';
+ sender_authentication='UNKNOWN';as_of_utc=$asOf.ToString('yyyy-MM-ddTHH:mm:ss.ffffffZ',[Globalization.CultureInfo]::InvariantCulture);observation_status='OBSERVED';facts=@($fact)}}
+$floor=$now.AddMinutes(-20)
+$view=[ordered]@{{schema='wd.mind-startup-envelope.v1';authority='none';lane=$Agent;fleet_sha256=('a'*64);
+ status=$status;content=@{{as_of_utc=$asOf.ToString('o');results=@(@{{event_time_utc_floor=$floor.ToString('o');event_age_seconds_upper_bound=1200;display_text='must-not-deliver'}})}}}}
+$json=ConvertTo-Json -InputObject $view -Depth 12 -Compress
+$sha=[Security.Cryptography.SHA256]::Create()
+try {{ $hash=[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($json))).Replace('-','').ToLowerInvariant() }} finally {{ $sha.Dispose() }}
+$read=[pscustomobject]@{{reason='content_projection';outcome='success';record_written=$true;view_json=$json;view_sha256=$hash}}
+$mindStatusSuffix=Get-WdMindStatusPromptSuffix -Read $read
+{setup}
+{source[start:end]}
+@{{prompt={output};envelope_hash=$hash}}|ConvertTo-Json -Compress
+'''
+    result = _run_startup_script(script)
+    assert result['prompt'].startswith('BASE') and 'Mind content omitted: stale_at_delivery' in result['prompt']
+    assert 'must-not-deliver' not in result['prompt']
+    import re
+    match = re.search(r'SHA256=([0-9a-f]{64}) JSON=(.*?) END STATUS DATA\.', result['prompt'])
+    assert match and hashlib.sha256(match.group(2).encode('utf-8')).hexdigest() == match.group(1)
+    assert match.group(1) != result['envelope_hash']
+    assert json.loads(match.group(2))['lane'] == 'codex-tools-1'
 
 
 @WINDOWS

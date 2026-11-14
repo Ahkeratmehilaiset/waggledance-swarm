@@ -996,6 +996,11 @@ _Q4_ARTIFACT_BYTES = 16 * 1024 * 1024
 # consume substantially more memory than these byte counts; the aggregate and
 # global row budgets are checked before v3 cell metadata is expanded.
 _Q4_BOUNDED_V3_ARTIFACT_BYTES = 48 * 1024 * 1024
+# Count containers, object keys and scalar values before JSON allocates them.
+# The aggregate row preflight also bounds their sum across cells. Byte and node
+# budgets bound inputs/objects, not total process RSS or provider allocations.
+_Q4_V3_JSON_NODES_PER_ROW = 64
+_Q4_V3_JSON_MAX_DEPTH = 16
 _Q4_TOKEN = re.compile(r"[^\W_]{2,}", re.UNICODE)
 _Q4_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
@@ -1097,6 +1102,60 @@ def _q4_provider_identity(provider, expected, method):
         raise ValueError("invalid_provider")
 
 
+def _q4_json_budget(raw, max_nodes):
+    """Scan UTF-8 JSON/JSONL bytes in constant space; parsing stays authoritative.
+
+    Every valid JSON container, key and scalar starts one counted token. Escaped
+    quotes/backslashes keep punctuation inside strings inert; UTF-8 multibyte
+    characters cannot contain an ASCII quote or backslash byte. This is only an
+    allocation preflight, not a replacement JSON syntax/duplicate-key check.
+    """
+    import codecs
+    # json.loads(bytes) also accepts UTF-16/32, whose code units can hide ASCII
+    # punctuation from this UTF-8 scanner. Raw NUL is never valid JSON text.
+    if b"\x00" in raw:
+        raise ValueError("cell_json_encoding")
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    try:
+        for start in range(0, len(raw), 65536):
+            decoder.decode(raw[start:start + 65536], final=False)
+        decoder.decode(b"", final=True)
+    except UnicodeError:
+        raise ValueError("cell_json_encoding") from None
+    nodes = depth = 0
+    quoted = escaped = atom = False
+    for byte in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif byte == 92:  # backslash
+                escaped = True
+            elif byte == 34:  # quote
+                quoted = False
+            continue
+        if byte in b" \t\r\n,:":
+            atom = False
+            continue
+        if byte in (125, 93):  # object/array end
+            depth -= 1
+            atom = False
+            continue
+        if byte == 34:
+            quoted, atom = True, False
+            nodes += 1
+        elif byte in (123, 91):  # object/array start
+            depth += 1
+            atom = False
+            nodes += 1
+            if depth > _Q4_V3_JSON_MAX_DEPTH:
+                raise ValueError("cell_json_depth_budget")
+        elif not atom:
+            atom = True
+            nodes += 1
+        if nodes > max_nodes:
+            raise ValueError("cell_json_node_budget")
+
+
 def _q4_cell_controls(cell_id, item, bound, memory, records):
     artifact_limit = (_Q4_BOUNDED_V3_ARTIFACT_BYTES
                       if memory["scope"] == _ALL_TASK_ROUTE_SCOPE else _Q4_ARTIFACT_BYTES)
@@ -1174,8 +1233,15 @@ def _q4_cell_controls(cell_id, item, bound, memory, records):
                 raise ValueError("cell_artifact_mismatch")
             if name in ("meta", "provenance") and len(data[name]) > artifact_limit:
                 raise ValueError("cell_artifact_over_budget")
-    meta = _pinned(data["meta"], files["meta"], limit=artifact_limit)
     count = content["count"]
+    if memory["scope"] == _ALL_TASK_ROUTE_SCOPE:
+        # Valid JSONL has at most one CRLF (or CR/LF) separator per row.
+        # Check before splitlines can allocate a list for millions of blanks.
+        if data["provenance"].count(b"\n") + data["provenance"].count(b"\r") > 2 * count:
+            raise ValueError("cell_json_line_budget")
+        for name in ("meta", "provenance"):
+            _q4_json_budget(data[name], 16 + _Q4_V3_JSON_NODES_PER_ROW * count)
+    meta = _pinned(data["meta"], files["meta"], limit=artifact_limit)
     if (type(meta) is not dict or set(meta) != {"dim", "doc_ids", "texts", "metadata"}
             or type(meta["dim"]) is not int or meta["dim"] != _Q4_DIM
             or any(type(meta[name]) is not list or len(meta[name]) != count
@@ -1191,6 +1257,10 @@ def _q4_cell_controls(cell_id, item, bound, memory, records):
     rows, seen = [], set()
     cutoff = _utc(content.get("cutoff_utc"))
     for position, raw in enumerate(raw_rows):
+        if memory["scope"] == _ALL_TASK_ROUTE_SCOPE:
+            # Match the preflight's encoding; never let the parser auto-detect
+            # a different encoding from these immutable bytes.
+            raw = raw.decode("utf-8")
         row = json.loads(raw, object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
         provenance = row.get("provenance") if type(row) is dict else None
         if (type(row) is not dict or type(provenance) is not dict or row.get("kind") != "event"

@@ -4,6 +4,12 @@
 . (Join-Path $PSScriptRoot 'BridgeIncrementalReader.ps1')
 . (Join-Path $PSScriptRoot 'BridgeRequestContract.ps1')
 
+function Get-BridgeReplyCacheMaxBytes {
+    # Explicit Source policy for the serialized UTF-8 envelope, including JSON
+    # escaping. The reader and writer must admit exactly the same 64 MiB bound.
+    return [int64]67108864
+}
+
 function Get-BridgeReplyTextHash {
     param([string]$Text)
     $sha=[Security.Cryptography.SHA256]::Create()
@@ -146,6 +152,7 @@ function Read-BridgeReplyIndex {
     $lock=$null
     $cache=$null
     $cacheStatus='disabled'
+    $cacheMaxBytes=Get-BridgeReplyCacheMaxBytes
     $parserStamp='date-strings-v1:'+ $PSVersionTable.PSVersion.ToString()
     if (-not $NoCache) {
         # A different JSON parser must neither overwrite nor lock our cache.
@@ -163,7 +170,7 @@ function Read-BridgeReplyIndex {
                 $lock=[IO.File]::Open(($CachePath+'.lock'),[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
                 $cacheStatus='rebuilt'
                 if (Test-Path -LiteralPath $CachePath -PathType Leaf) {
-                    if ((Get-Item -LiteralPath $CachePath).Length -gt 33554432) { throw 'oversized derived index' }
+                    if ((Get-Item -LiteralPath $CachePath).Length -gt $cacheMaxBytes) { throw 'oversized derived index' }
                     $envelope=ConvertFrom-BridgeReplyCacheJson ([IO.File]::ReadAllText($CachePath))
                     if ($envelope.schema -cne 'wd.reply-index-envelope.v1' -or
                         (Get-BridgeReplyTextHash $envelope.content) -cne $envelope.sha256) { throw 'damaged derived index' }
@@ -224,14 +231,20 @@ function Read-BridgeReplyIndex {
                 cursor=$snapshot.candidate_cursor;snapshot_length=$snapshot.snapshot_length;prefix_sha256=$prefixHash;
                 row_count=$rows.Count;rows=@($rows)} | ConvertTo-Json -Depth 64 -Compress
             $envelope=@{schema='wd.reply-index-envelope.v1';content=$content;sha256=(Get-BridgeReplyTextHash $content)} | ConvertTo-Json -Compress
-            $temporary=$CachePath+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
-            try {
-                [IO.File]::WriteAllText($temporary,$envelope,(New-Object Text.UTF8Encoding($false)))
-                if (Test-Path -LiteralPath $CachePath) { [IO.File]::Replace($temporary,$CachePath,[NullString]::Value) }
-                else { [IO.File]::Move($temporary,$CachePath) }
-            } catch {
-                $cacheStatus='write_failed_snapshot_valid'
-            } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary } }
+            if ([Text.Encoding]::UTF8.GetByteCount($envelope) -gt $cacheMaxBytes) {
+                # Keep the canonical snapshot valid, but never publish a cache
+                # this same reader would refuse on its next query.
+                $cacheStatus='not_cacheable_envelope_exceeds_bounds_snapshot_valid'
+            } else {
+                $temporary=$CachePath+'.'+[guid]::NewGuid().ToString('N')+'.tmp'
+                try {
+                    [IO.File]::WriteAllText($temporary,$envelope,(New-Object Text.UTF8Encoding($false)))
+                    if (Test-Path -LiteralPath $CachePath) { [IO.File]::Replace($temporary,$CachePath,[NullString]::Value) }
+                    else { [IO.File]::Move($temporary,$CachePath) }
+                } catch {
+                    $cacheStatus='write_failed_snapshot_valid'
+                } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary } }
+            }
         }
         [pscustomobject]@{rows=@($rows);candidate_cursor=$snapshot.candidate_cursor;snapshot_length=$snapshot.snapshot_length;
             cache_status=$cacheStatus;cache_path=$(if ($NoCache) {$null} else {$CachePath});parsed_rows=$parsedRows;prefix_sha256=$prefixHash}

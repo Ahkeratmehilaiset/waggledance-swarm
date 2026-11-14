@@ -362,6 +362,32 @@ def test_all_task_large_event_still_uses_content_screening(reader, tmp_path):
     assert 'synthetic-private-value' not in json.dumps(projection)
 
 
+def test_all_task_record_budget_covers_measured_scale_but_stays_bounded(reader):
+    # The wide-policy diagnostic accumulated 35,195,141 canonical record
+    # bytes before refusal. This is scale evidence, not a real-data fixture or
+    # proof of the final operator policy, query row capacity, or latency.
+    assert reader._ALL_TASK_MAX_RECORD_BYTES == 40 * 1024 * 1024
+    assert reader._ALL_TASK_MAX_RECORD_BYTES >= 35_195_141
+    assert reader._ALL_TASK_MAX_RECORD_BYTES < reader._MAX_PROJECTION_BYTES
+    assert reader._ALL_TASK_MAX_RECORDS == 65_536
+    assert reader._MAX_PROJECTION_BYTES == 64 * 1024 * 1024
+
+
+def test_all_task_record_budget_boundary_refuses_instead_of_truncating(reader, tmp_path, monkeypatch):
+    rows = [_row("bounded synthetic first", task_id="synthetic-budget-a"),
+            _row("bounded synthetic second", task_id="synthetic-budget-b")]
+    case = _all_tasks_case(reader, tmp_path, rows)
+    expected = _derive(reader, case)
+    assert len(expected["messages"]["records"]) == 2
+    exact = sum(len(_raw(record)) for record in expected["messages"]["records"])
+    monkeypatch.setattr(reader, "_ALL_TASK_MAX_RECORD_BYTES", exact + 1)
+    assert _derive(reader, case) == expected
+    monkeypatch.setattr(reader, "_ALL_TASK_MAX_RECORD_BYTES", exact)
+    assert _derive(reader, case) == expected
+    monkeypatch.setattr(reader, "_ALL_TASK_MAX_RECORD_BYTES", exact - 1)
+    _refused(reader, lambda: _derive(reader, case))
+
+
 def test_allowed_build_lane_review_discussion_matches_independent_projection(reader, tmp_path):
     case = _case(reader, tmp_path)
     assert _derive(reader, case) == _golden_projection(case)

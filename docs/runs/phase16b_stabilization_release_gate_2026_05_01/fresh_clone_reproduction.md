@@ -11,13 +11,13 @@ This document records two reproduction passes:
 
 | field | value |
 |---|---|
-| temp clone directory | `C:/Users/mfi0jjko/AppData/Local/Temp/wd-p16b-localclone-Ci8wRb` |
+| temp clone directory | `<user-home>/AppData/Local/Temp/wd-p16b-localclone-Ci8wRb` |
 | `git clone` source | local file path `C:/python/project2-master` |
 | `git clone --no-local` | yes (avoids hardlinks; produces a real copy) |
 | branch checked out | `phase16b/stabilization-release-gate` |
 | HEAD SHA inside clone | `d18e1dad32b998ba446290cafdb26b21be9adeb1` (Phase 16A merge of PR #63) |
 | `git config --get remote.origin.url` inside clone | `C:/python/project2-master` (local path — **NOT a GitHub HTTPS URL**) |
-| `python -c "import waggledance; print(waggledance.__file__)"` inside clone | `C:\Users\mfi0jjko\AppData\Local\Temp\wd-p16b-localclone-Ci8wRb\waggledance\__init__.py` (proves import path is in clone, not in source worktree) |
+| `python -c "import waggledance; print(waggledance.__file__)"` inside clone | `<user-home>\AppData\Local\Temp\wd-p16b-localclone-Ci8wRb\waggledance\__init__.py` (proves import path is in clone, not in source worktree) |
 | Python | system 3.13.7 (no fresh venv created — out of session budget; uses already-installed deps) |
 | tags visible after `git fetch --tags`: | `v3.6.0`, `v3.6.1-substrate`, `v3.7.0-autogrowth-alpha`, `v3.7.1-autoloop-alpha`, `v3.7.2-runtime-harvest-alpha`, `v3.7.3-hotpath-alpha`, `v3.7.4-runtime-hint-alpha`, `v3.7.5-upstream-runtime-alpha` |
 | temp clone created during this session | yes |

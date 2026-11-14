@@ -34,7 +34,7 @@ Phase 17D must NOT modify any of those four prior tags.
 
 ```
 $ command -v ollama
-/c/Users/mfi0jjko/AppData/Local/Programs/Ollama/ollama
+<user-home>/AppData/Local/Programs/Ollama/ollama
 
 $ ollama --version
 ollama version is 0.22.1

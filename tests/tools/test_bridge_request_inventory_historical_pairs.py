@@ -278,6 +278,50 @@ def test_pinned_id_on_another_authors_row_refuses_even_without_the_pair(tmp_path
     assert json.loads(diagnostic.stdout)["conflict_count"] == 0
 
 
+OTHER_AUTHORS = {"another_agent": "codex-tools-1", "unattributable": 7}
+# How a row can hold an ID while its request_id does not read as that plain string through the field reader
+# (a top-level/payload conflict reads as an invalid_binding object, an array stays an array):
+# (top-level request_id, payload request_id); None leaves the payload side out.
+HELD_ID_SHAPES = {
+    "top_level_beside_other_payload": lambda held: (held, "other-id"),
+    "payload_beside_other_top_level": lambda held: ("other-id", held),
+    "single_array": lambda held: ([held], None),
+    "array_of_two": lambda held: (["other-id", held], None),
+    "nested_array": lambda held: ([["other-id", [held]]], None),
+    "object_value": lambda held: ({"id": held}, None),
+    "payload_array_beside_other_top_level": lambda held: ("other-id", [held]),
+}
+
+
+def held_id_row(held: str, shape: str, author) -> dict:
+    row = request("other-id", 0, True, agent="codex-tools-1")
+    row["request_id"], nested = HELD_ID_SHAPES[shape](held)
+    if nested is not None:
+        row["payload"]["request_id"] = nested
+    row["agent"] = author
+    return seal(row)
+
+
+@pytest.mark.parametrize("shell", SHELLS, **shell_ids)
+@pytest.mark.parametrize("author", OTHER_AUTHORS)
+@pytest.mark.parametrize("shape", HELD_ID_SHAPES)
+def test_other_authors_row_holding_a_pinned_id_on_a_raw_request_id_side_refuses(tmp_path: Path, shell: str,
+                                                                               author: str, shape: str) -> None:
+    # Lead's independent review of c4503741: such a row was never recorded as a row by another author, so
+    # both exact Lead rows of the pair were still set aside beside it.
+    by_id = pairs()
+    row = held_id_row(IDS[1], shape, OTHER_AUTHORS[author])
+    result = invoke(tmp_path, shell, flat(by_id) + [row])
+    assert refused(result) and "another author" in result.stderr
+    # The same row holding an unpinned ID is part of no pair: it is skipped as before and nothing refuses.
+    control = held_id_row("unpinned-id", shape, OTHER_AUTHORS[author])
+    listed = invoke(tmp_path / "control", shell, flat(by_id) + [control])
+    assert listed.returncode == 0, listed.stderr
+    data = json.loads(listed.stdout)
+    assert [item["request_id"] for item in data["historical_conflicts"]] == IDS
+    assert data["requests"] == []
+
+
 @pytest.mark.parametrize("shell", SHELLS, **shell_ids)
 @pytest.mark.parametrize("pair_index", range(len(IDS)))
 @pytest.mark.parametrize("row_index", (0, 1))

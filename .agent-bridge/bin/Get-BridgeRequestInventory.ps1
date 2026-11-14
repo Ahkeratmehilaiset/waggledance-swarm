@@ -161,6 +161,33 @@ $historicalConflicts=[Collections.Generic.List[object]]::new()
 # author) makes that pair unverifiable as exactly two own rows: it is recorded here and refuses below.
 $historicalOtherRows=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 $historicalActive=(-not $DiagnosticPartial -and $Agent -ceq 'codex-lead-1')
+function Add-InventoryHistoricalOtherRow {
+    # Records every pinned ID that such a row holds as a string on either RAW request_id side (top level or
+    # payload), at any depth. Get-BridgeContractField alone is not enough: it reads a top-level/payload
+    # conflict as a non-string invalid_binding object and returns an array as an array, so a pinned ID on
+    # one side or inside an array was never recorded and the pair was still set aside. Iterative: a deeply
+    # nested value cannot exhaust the call depth.
+    param($Event)
+    $pending=[Collections.Generic.Stack[object]]::new()
+    $direct=$Event.PSObject.Properties['request_id']
+    if ($null -ne $direct) { $pending.Push($direct.Value) }
+    $payloadProperty=$Event.PSObject.Properties['payload']
+    if ($null -ne $payloadProperty -and $null -ne $payloadProperty.Value) {
+        $nested=$payloadProperty.Value.PSObject.Properties['request_id']
+        if ($null -ne $nested) { $pending.Push($nested.Value) }
+    }
+    while ($pending.Count -gt 0) {
+        $value=$pending.Pop()
+        if ($null -eq $value -or $value -is [ValueType]) { continue }
+        if ($value -is [string]) {
+            if ($historicalPinIds.Contains($value)) { [void]$historicalOtherRows.Add($value) }
+            continue
+        }
+        if ($value -is [Collections.IDictionary]) { foreach ($item in $value.Values) { $pending.Push($item) }; continue }
+        if ($value -is [Collections.IEnumerable]) { foreach ($item in $value) { $pending.Push($item) }; continue }
+        if ($value -is [pscustomobject]) { foreach ($property in $value.PSObject.Properties) { $pending.Push($property.Value) } }
+    }
+}
 function ConvertTo-InventoryReferenceJson {
     # Event refs use bridge_compact_view.event_id: ordinal keys, UTF-8 JSON,
     # unescaped Unicode/HTML punctuation. The request digest has its separate
@@ -220,12 +247,12 @@ for ($position=0; $position -lt $rows.Count; $position++) {
             Add-InventoryConflict -Position $position -Event $event `
                 -Kind (Get-InventoryBindingKind $event 'agent' 'author_binding_conflict' 'malformed_author')
         }
-        if ($historicalActive -and $id -is [string] -and $historicalPinIds.Contains($id)) { [void]$historicalOtherRows.Add($id) }
+        if ($historicalActive) { Add-InventoryHistoricalOtherRow $event }
         continue
     }
     if ($author -cne $Agent) {
         if ($id -is [string]) { [void]$foreignIds.Add($id) }
-        if ($historicalActive -and $id -is [string] -and $historicalPinIds.Contains($id)) { [void]$historicalOtherRows.Add($id) }
+        if ($historicalActive) { Add-InventoryHistoricalOtherRow $event }
         continue
     }
     if ($id -isnot [string] -or $id -cnotmatch '^[A-Za-z0-9._:-]{1,128}$') {

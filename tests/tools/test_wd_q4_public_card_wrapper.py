@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -21,6 +22,20 @@ _INPUTS = ("policy", "public_policy", "card_policy", "roster", "vocabulary", "pa
 _REF = "e" * 64
 _WAL = "a" * 64
 _SECRET = "synthetic-claim-text-never-echoed"
+_PORTABLE_OFF_TESTS = frozenset((
+    "test_default_off_without_any_pins",
+    "test_default_off_ignores_every_other_argument",
+))
+
+
+@pytest.fixture(autouse=True)
+def _require_supported_wrapper_host(request):
+    if os.name == "nt":
+        return
+    if request.node.originalname not in _PORTABLE_OFF_TESTS:
+        pytest.skip("wrapper -Run requires Windows C: paths and kernel32 Job objects")
+    if shutil.which("pwsh") is None:
+        pytest.skip("portable default-off check requires PowerShell 7 (pwsh)")
 
 
 def sha(data):
@@ -162,14 +177,16 @@ def _refused_before_child(item, result):
 
 
 def test_default_off_without_any_pins():
-    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-File", str(SCRIPT)],
+    host = "powershell" if os.name == "nt" else "pwsh"
+    result = subprocess.run([host, "-NoProfile", "-NonInteractive", "-File", str(SCRIPT)],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0
     assert json.loads(result.stdout) == {"status": "OFF"}
 
 
 def test_default_off_ignores_every_other_argument(bundles):
-    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-File", str(bundles["candidate"] / SCRIPT.name),
+    host = "powershell" if os.name == "nt" else "pwsh"
+    result = subprocess.run([host, "-NoProfile", "-NonInteractive", "-File", str(bundles["candidate"] / SCRIPT.name),
                              "-CandidateBundle", str(bundles["candidate"]), "-CardRequest", str(bundles["request"])],
                             capture_output=True, text=True, timeout=30)
     assert result.returncode == 0 and json.loads(result.stdout) == {"status": "OFF"}

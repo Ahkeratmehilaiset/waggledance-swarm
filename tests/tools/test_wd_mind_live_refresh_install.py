@@ -1,6 +1,10 @@
 """Passive synthetic installer tests. Never Apply/register/enable/launch."""
 import json,os,pathlib,secrets,subprocess,sys
 import pytest
+pytestmark = pytest.mark.skipif(
+    os.name != "nt",
+    reason="installer plans require Windows PowerShell, Windows paths and WindowsIdentity",
+)
 REPO=pathlib.Path(__file__).resolve().parents[2]
 @pytest.fixture
 def tmp_path(tmp_path_factory):

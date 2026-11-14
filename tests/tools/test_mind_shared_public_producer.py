@@ -502,6 +502,7 @@ def test_repeated_empty_delta_is_a_verified_no_change_not_a_refusal_and_not_a_pu
 from tests.tools.test_wd_q4_genesis_bootstrap import synthetic as genesis_synthetic
 
 
+@WINDOWS_ONLY
 def test_cutoff_caught_up_at_eof_preserves_pointer_and_cutoff_watermark(genesis_synthetic, monkeypatch):
     from pathlib import Path
     from tests.tools import test_wd_q4_genesis_bootstrap as base

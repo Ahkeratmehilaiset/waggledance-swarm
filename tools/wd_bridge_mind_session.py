@@ -170,10 +170,7 @@ class _SituationArgumentParser(argparse.ArgumentParser):
         raise ValueError("invalid_situation_arguments")
 
 
-def _situation_read_pinned(path, digest, limit):
-    """Read explicit caller-selected bytes; no publisher trust is inferred."""
-    if type(digest) is not str or not _SHA256.fullmatch(digest):
-        raise ValueError("invalid_pin")
+def _situation_checked_path(path):
     source = Path(path)
     if not source.is_absolute() or ".." in source.parts:
         raise ValueError("invalid_path")
@@ -182,6 +179,14 @@ def _situation_read_pinned(path, digest, limit):
         reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         if stat.S_ISLNK(info.st_mode) or reparse:
             raise ValueError("reparse")
+    return source
+
+
+def _situation_read_pinned(path, digest, limit):
+    """Read explicit caller-selected bytes; no publisher trust is inferred."""
+    if type(digest) is not str or not _SHA256.fullmatch(digest):
+        raise ValueError("invalid_pin")
+    source = _situation_checked_path(path)
     with source.open("rb") as stream:
         data = stream.read(limit + 1)
     if len(data) > limit or hashlib.sha256(data).hexdigest() != digest:
@@ -402,6 +407,71 @@ def _situation_cli(argv):
         return 2
 
 
+def _situation_live_cli(argv):
+    """Read a bounded canonical bridge tail entirely in memory.
+
+    The authenticated package boundary is the external wrapper, not this
+    mode, its arguments or environment. Snapshot completeness and sender
+    authentication remain unknown. No bridge queue or cursor is mutated.
+    """
+    try:
+        parser = _SituationArgumentParser(add_help=False)
+        parser.add_argument("--bridge-root", required=True)
+        for name in ("fleet", "pointer", "manifest"):
+            parser.add_argument("--" + name, required=True)
+            parser.add_argument("--" + name + "-sha256", required=True)
+        parser.add_argument("--pointer-observed-utc", required=True)
+        parser.add_argument("--ttl-seconds", required=True, type=int)
+        if any(argv.count(option) != 1 for option in parser._option_string_actions):
+            raise ValueError("ambiguous_arguments")
+        args = parser.parse_args(argv)
+        root = _situation_checked_path(args.bridge_root)
+        log = _situation_checked_path(root / "shared" / "events.jsonl")
+        inputs = {}
+        for name in ("fleet", "pointer", "manifest"):
+            digest = getattr(args, name + "_sha256")
+            limit = 8 * 1024 * 1024 if name == "manifest" else 1024 * 1024
+            inputs[name + "_bytes"] = _situation_read_pinned(getattr(args, name), digest, limit)
+            inputs[name + "_sha256"] = digest
+        rows, cursor, stats = bridge_compact_view._read_view_rows(log, _DIRECT_TAIL_ROWS, "")
+        if (type(rows) is not list or type(cursor) is not str or not cursor.startswith("bc1.")
+                or type(stats) is not dict or type(stats.get("unconsumed_bytes")) is not int
+                or stats["unconsumed_bytes"] < 0):
+            raise ValueError("incomplete_snapshot")
+        # One historical LF row can decode to multiple events. Bound the
+        # projected event count independently of the reader's physical rows.
+        envelopes = [{"ref": bridge_compact_view.event_id(row), "event": row}
+                     for row in rows[-_DIRECT_TAIL_ROWS:]]
+        encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        snapshot = bytearray()
+        for part in encoder.iterencode(envelopes):
+            fragment = part.encode("utf-8")
+            if len(snapshot) + len(fragment) > 8 * 1024 * 1024:
+                raise ValueError("snapshot_too_large")
+            snapshot.extend(fragment)
+        del rows, envelopes
+        data = bytes(snapshot)
+        inputs.update(snapshot_bytes=data, snapshot_sha256=hashlib.sha256(data).hexdigest(),
+                      pointer_observed_utc=args.pointer_observed_utc,
+                      as_of_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                      ttl_seconds=args.ttl_seconds)
+        from tools import wd_mind_situation_view as situation_reader
+        view = situation_reader.project_situation(**inputs, allow_missing_bundle=False)
+        _situation_validate_output(view, inputs)
+        envelope = {"schema": "wd.mind-situation-live.v1", "authority": "none",
+                    "scope": "bounded_complete_records_not_current_state_or_gate",
+                    "partial_final_record": stats["unconsumed_bytes"] > 0,
+                    "current_state": "UNKNOWN", "continuity": "UNKNOWN", "view": view}
+        output = json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        if len(output.encode("ascii")) > 65536:
+            raise ValueError("output")
+        print(output)
+        return 0
+    except Exception:
+        print('{"error":"mind_session_situation_refused","authority":"none"}', file=sys.stderr)
+        return 2
+
+
 def query_content_session(*, enabled=False, inputs=None, providers=None):
     """Read frozen content using explicit caller-owned bindings and providers.
 
@@ -508,6 +578,8 @@ def query_content_prompt_fragment(*, enabled=False, inputs=None, providers=None)
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "--situation-live":
+        return _situation_live_cli(argv[1:])
     if argv and argv[0] == "--situation":
         return _situation_cli(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import builtins
+from datetime import datetime, timezone
 import importlib.util
 import json
 import os
@@ -130,6 +131,161 @@ def _situation_cli_args(tmp_path):
     args += ["--pointer-observed-utc", inputs["pointer_observed_utc"], "--as-of-utc", inputs["as_of_utc"],
              "--ttl-seconds", str(inputs["ttl_seconds"])]
     return args, ref
+
+
+def _situation_live_cli_args(tmp_path):
+    inputs, _ = _situation_inputs()
+    root = tmp_path / "runtime"
+    log = root / "shared" / "events.jsonl"
+    log.parent.mkdir(parents=True)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    event = json.loads(inputs["snapshot_bytes"])[0]["event"]
+    event["ts_utc"] = now
+    fleet = json.loads(inputs["fleet_bytes"])
+    rco = next(entry for entry in fleet["lanes"] if entry["agent"] == "claude-rco-1")
+    rco_event = dict(event, agent="claude-rco-1", agent_uuid=rco["agent_uuid"],
+                     message="synthetic-private-rco-text", payload={"private": "synthetic-private-rco-text"})
+    log.write_bytes(b"".join(json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+                             for row in (event, rco_event)))
+    args = ["--situation-live", "--bridge-root", str(root)]
+    for name in ("fleet", "pointer", "manifest"):
+        path = tmp_path / (name + ".json")
+        path.write_bytes(inputs[name + "_bytes"])
+        args += ["--" + name, str(path), "--" + name + "-sha256", inputs[name + "_sha256"]]
+    args += ["--pointer-observed-utc", now, "--ttl-seconds", "900"]
+    return args, log, event
+
+
+def test_situation_live_uses_canonical_reader_without_raw_leak_or_file_writes(tmp_path, capsys):
+    args, log, event = _situation_live_cli_args(tmp_path)
+    before = {str(path.relative_to(tmp_path)): hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in tmp_path.rglob("*") if path.is_file()}
+    assert session.main(args) == 0
+    captured = capsys.readouterr()
+    assert captured.err == "" and "synthetic-private-rco-text" not in captured.out
+    envelope = json.loads(captured.out)
+    assert envelope["schema"] == "wd.mind-situation-live.v1" and envelope["partial_final_record"] is False
+    assert envelope["current_state"] == envelope["continuity"] == "UNKNOWN"
+    view = envelope["view"]
+    assert view["authority"] == "none" and view["source"]["sender_authentication"] == "UNKNOWN"
+    assert view["lanes"]["codex-lead-1"]["latest_work_event"]["event_ref"] == bridge_compact_view.event_id(event)
+    after = {str(path.relative_to(tmp_path)): hashlib.sha256(path.read_bytes()).hexdigest()
+             for path in tmp_path.rglob("*") if path.is_file()}
+    assert before == after and log.exists()
+
+
+def test_situation_live_runs_as_separate_synthetic_process(tmp_path):
+    args, _, event = _situation_live_cli_args(tmp_path)
+    result = subprocess.run([sys.executable, "-B", "-m", "tools.wd_bridge_mind_session", *args],
+                            cwd=str(Path(session.__file__).resolve().parents[1]),
+                            capture_output=True, text=True, check=False)
+    assert result.returncode == 0 and result.stderr == "" and "synthetic-private-rco-text" not in result.stdout
+    envelope = json.loads(result.stdout)
+    assert envelope["partial_final_record"] is False
+    view = envelope["view"]
+    assert view["lanes"]["codex-lead-1"]["latest_work_event"]["event_ref"] == bridge_compact_view.event_id(event)
+
+
+@pytest.mark.parametrize("fault", ["missing_pin", "bad_manifest_pin", "duplicate_option", "missing_log"])
+def test_situation_live_refuses_missing_or_unpinned_inputs(tmp_path, capsys, fault):
+    args, log, _ = _situation_live_cli_args(tmp_path)
+    if fault == "missing_pin":
+        index = args.index("--pointer-sha256")
+        del args[index:index + 2]
+    if fault == "bad_manifest_pin": args[args.index("--manifest-sha256") + 1] = "0" * 64
+    if fault == "duplicate_option": args += ["--ttl-seconds", "900"]
+    if fault == "missing_log": log.unlink()
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {"error": "mind_session_situation_refused", "authority": "none"}
+
+
+def test_situation_live_marks_partial_final_record_without_including_it(tmp_path, capsys):
+    args, log, event = _situation_live_cli_args(tmp_path)
+    with log.open("ab") as stream: stream.write(b'{"type":"synthetic-private-incomplete"')
+    before = log.read_bytes()
+    assert session.main(args) == 0
+    captured = capsys.readouterr()
+    assert captured.err == "" and "synthetic-private-incomplete" not in captured.out
+    envelope = json.loads(captured.out)
+    assert envelope["partial_final_record"] is True
+    assert envelope["current_state"] == envelope["continuity"] == "UNKNOWN"
+    assert envelope["view"]["lanes"]["codex-lead-1"]["latest_work_event"]["event_ref"] == bridge_compact_view.event_id(event)
+    assert log.read_bytes() == before
+
+
+def test_situation_live_only_partial_record_returns_unknown_state(tmp_path, capsys):
+    args, log, _ = _situation_live_cli_args(tmp_path)
+    log.write_bytes(b'{"type":"synthetic-private-incomplete"')
+    assert session.main(args) == 0
+    captured = capsys.readouterr()
+    assert "synthetic-private-incomplete" not in captured.out
+    envelope = json.loads(captured.out)
+    assert envelope["partial_final_record"] is True and envelope["current_state"] == "UNKNOWN"
+    assert envelope["view"]["lanes"]["codex-lead-1"]["latest_work_event"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("fault", ["malformed", "reader_failure", "oversize"])
+def test_situation_live_refuses_malformed_rotation_and_oversize(tmp_path, capsys, monkeypatch, fault):
+    args, log, event = _situation_live_cli_args(tmp_path)
+    if fault == "malformed":
+        with log.open("ab") as stream: stream.write(b'{malformed}\n')
+    if fault == "reader_failure":
+        def fail(*unused): raise bridge_compact_view.CompactViewError("generation_changed_during_read")
+        monkeypatch.setattr(session.bridge_compact_view, "_read_view_rows", fail)
+    if fault == "oversize":
+        event["message"] = "x" * (8 * 1024 * 1024)
+        monkeypatch.setattr(session.bridge_compact_view, "_read_view_rows",
+                            lambda *unused: ([event], "bc1.synthetic", {"unconsumed_bytes": 0}))
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {"error": "mind_session_situation_refused", "authority": "none"}
+
+
+def test_situation_live_uses_last_5000_rows_and_reads_clock_after_snapshot(tmp_path, capsys, monkeypatch):
+    args, _, event = _situation_live_cli_args(tmp_path)
+    old = dict(event, task_id="lead-older-20261114")
+    rows = [old] + [event] * 5000
+    read_done = []
+    def reader(*unused):
+        read_done.append(True)
+        return rows, "bc1.synthetic", {"unconsumed_bytes": 0}
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert read_done
+            return datetime.now(tz)
+    monkeypatch.setattr(session.bridge_compact_view, "_read_view_rows", reader)
+    monkeypatch.setattr(session, "datetime", Clock)
+    assert session.main(args) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["view"]["lanes"]["codex-lead-1"]["latest_work_event"]["event_ref"] == bridge_compact_view.event_id(event)
+
+
+def test_situation_live_refuses_canonical_reader_rotation(tmp_path, capsys, monkeypatch):
+    from waggledance.core import bridge_log_reader
+    args, _, _ = _situation_live_cli_args(tmp_path)
+    monkeypatch.setattr(bridge_log_reader, "read_bridge_log_tail_lines",
+                        lambda *unused, **kwargs: bridge_log_reader.BridgeLineReadResult(
+                            bridge_log_reader.BridgeReadStatus.RETRY, "file_identity_changed_during_read"))
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and json.loads(captured.err)["error"] == "mind_session_situation_refused"
+
+
+def test_situation_live_real_bounded_tail_selects_newest_event(tmp_path, capsys):
+    args, log, event = _situation_live_cli_args(tmp_path)
+    with log.open("wb") as stream:
+        for index in range(5002):
+            row = dict(event, task_id=f"lead-synthetic-{index}")
+            stream.write(json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+    assert session.main(args) == 0
+    view = json.loads(capsys.readouterr().out)["view"]
+    last = dict(event, task_id="lead-synthetic-5001")
+    assert view["source"]["coverage"] == "bounded_tail"
+    assert view["lanes"]["codex-lead-1"]["latest_work_event"]["event_ref"] == bridge_compact_view.event_id(last)
 
 
 def test_situation_cli_separate_process_yields_data_only_source_ref(tmp_path):

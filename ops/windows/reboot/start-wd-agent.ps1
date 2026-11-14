@@ -1118,7 +1118,9 @@ function Assert-WdManagedOwnerInactive {
     } catch {
       throw "cannot parse $($binding.Label) creation time for PID $boundPid"
     }
-    if ($recordedStart.Ticks -eq $observedStart.Ticks) {
+    # Owner records keep Get-Process StartTime (100 ns ticks); Win32_Process CreationDate keeps microseconds
+    # (truncated). Starts less than one microsecond apart are the same process, so fail closed as live.
+    if ([Math]::Abs($recordedStart.UtcTicks - $observedStart.UtcTicks) -lt 10) {
       throw "$($binding.Label) PID $boundPid is still live"
     }
   }

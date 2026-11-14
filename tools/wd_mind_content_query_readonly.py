@@ -464,7 +464,10 @@ _ALL_TASK_MESSAGE_SCHEMA = "wd.bridge-mind-content-projection.v3"
 _ALL_TASK_ROUTE_SCOPE = "wd.mind-all-task-projected-events.v1"
 _ALL_TASK_MAX_PREFIX_BYTES = 1024 * 1024 * 1024
 _ALL_TASK_MAX_RECORDS = 65536
-_ALL_TASK_MAX_RECORD_BYTES = 32 * 1024 * 1024
+# Separate from the serialized-projection and semantic-query limits below.
+# The bounded increase covers the 35,195,141-byte wide-policy diagnostic;
+# different source snapshots and operator policies may still refuse.
+_ALL_TASK_MAX_RECORD_BYTES = 40 * 1024 * 1024
 _RELEASE_TASK_LIST_SHA256 = "40e04e7002050b66085f8eff5723feb73e5f62a26910fe73405ab59e5ee5b765"
 _ALL_TASK_SCOPE_BYTES = b'{"mode":"all_tasks","schema":"wd.mind-task-scope.v1"}'
 _ALL_TASK_SCOPE_SHA256 = "ddd82fe77e79d296aa084eea19200a600442aa4462633648c946465713bc8425"

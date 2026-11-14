@@ -192,7 +192,7 @@ def query_content_session(*, enabled=False, inputs=None, providers=None):
 
 
 def query_content_prompt_fragment(*, enabled=False, inputs=None, providers=None):
-    """Format a verified answer as bounded untrusted data, or return no content.
+    """Format a verified v2/v3 answer as bounded untrusted data, or no content.
 
     This opt-in API does not load providers, launch a process or deliver a
     prompt. Source matching is not publisher or provider authentication. Its
@@ -203,14 +203,19 @@ def query_content_prompt_fragment(*, enabled=False, inputs=None, providers=None)
         return None
     try:
         result = query_content_session(enabled=True, inputs=inputs, providers=providers)
+        if type(result) is not dict or type(result.get("schema")) is not str:
+            return None
+        scope_key = {"wd.q4-content-snapshot-query.v2": "approved_tasks_sha256",
+                     "wd.q4-content-snapshot-query.v3": "task_scope_sha256"}.get(result["schema"])
+        if scope_key is None:
+            return None
         result_keys = {"schema", "status", "rule", "results", "binding", "authority",
                        "publisher_authentication", "provider_authentication", "source_filter_attestation",
                        "freshness", "same_user_aba"}
         binding_keys = {"descriptor_sha256", "memory_sha256", "projection_sha256", "encoder_sha256",
                         "encoder_binding_sha256", "index_binding_sha256", "policy_sha256", "roster_sha256",
-                        "decision_sha256", "approved_tasks_sha256"}
-        if (type(result) is not dict or set(result) != result_keys
-                or result["schema"] != "wd.q4-content-snapshot-query.v2"
+                        "decision_sha256", scope_key}
+        if (set(result) != result_keys
                 or result["status"] != "ANSWER" or result["rule"] != "q4-rule-v1.2"
                 or result["authority"] != "none"
                 or any(result[key] != "UNKNOWN" for key in (

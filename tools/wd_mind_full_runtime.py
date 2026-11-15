@@ -486,13 +486,14 @@ class _PrivateParentStream:
 
 class _ParentControlBuffer:
     """Receive MCT1 in a private buffer; caller retains I/O and deadline."""
-    __slots__ = ('__stream', '__data', '__length', '__state')
+    __slots__ = ('__stream', '__data', '__length', '__state', '__lock')
 
     def __init__(self, stream, *, prefix_budget=0):
         if type(prefix_budget) is not int or prefix_budget not in (0, 133):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         self.__stream, self.__data = stream, bytearray(136 + 65536 + 1 + prefix_budget)
         self.__length, self.__state = 0, 'NEW'
+        self.__lock = threading.Lock()
 
     def __repr__(self):
         return '<PrivateMindParentControlBuffer>'
@@ -541,6 +542,13 @@ class _ParentControlBuffer:
         if self.__state != 'SEALED':
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         return bytes(memoryview(self.__data)[:self.__length])
+
+    def take_snapshot(self):
+        with self.__lock:
+            if self.__state != 'SEALED':
+                raise FullRuntimeRefused('mind_full_runtime_refused') from None
+            self.__state = 'CONSUMED'
+            return bytes(memoryview(self.__data)[:self.__length])
 
 
 class _ParentBootstrap:
@@ -643,7 +651,7 @@ def _parse_parent_control(*, enabled=False, control_buffer=None, expected_manife
     try:
         if enabled is not True or type(control_buffer) is not _ParentControlBuffer:
             raise ValueError('input')
-        output = _parse_parent_control_bytes(enabled=True, control_bytes=control_buffer.snapshot(),
+        output = _parse_parent_control_bytes(enabled=True, control_bytes=control_buffer.take_snapshot(),
             expected_manifest_sha256=expected_manifest_sha256,
             expected_identifier_policy_sha256=expected_identifier_policy_sha256)
     except KeyboardInterrupt:

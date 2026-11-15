@@ -194,6 +194,28 @@ def test_parent_control_buffer_refuses_oversize_and_accepts_partial_reads():
     assert private.snapshot() == b'ab'
 
 
+def test_parent_control_buffer_only_one_concurrent_consumer():
+    import io
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+    private = runtime._ParentControlBuffer(runtime._PrivateParentStream(io.BytesIO(b'synthetic')))
+    private.read_from(enabled=True)
+    barrier, results = threading.Barrier(3), []
+    def consume():
+        barrier.wait()
+        try:
+            private.take_snapshot()
+            results.append('accepted')
+        except runtime.FullRuntimeRefused:
+            results.append('refused')
+    threads = [threading.Thread(target=consume) for _ in range(2)]
+    for thread in threads: thread.start()
+    barrier.wait()
+    for thread in threads: thread.join(timeout=5)
+    assert all(not thread.is_alive() for thread in threads)
+    assert sorted(results) == ['accepted', 'refused']
+
+
 def test_manifest_policy_candidate_requires_pinned_descriptor_and_is_not_approval(tmp_path):
     from tools import wd_mind_full_runtime as runtime
     descriptor = canonical({'schema':'wd.mind-identifier-policy-approval.v1',

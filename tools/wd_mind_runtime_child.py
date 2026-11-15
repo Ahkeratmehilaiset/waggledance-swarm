@@ -409,7 +409,7 @@ def _derive_parent_child_controls(*, enabled=False, control_buffer=None, expecte
         if enabled is not True or type(control_buffer) is not runtime._ParentControlBuffer:
             raise ValueError('input')
         _require_verified_parent_spawn()
-        output = _derive_parent_child_controls_bytes(control_buffer.snapshot(), expected_manifest_sha256)
+        output = _derive_parent_child_controls_bytes(control_buffer.take_snapshot(), expected_manifest_sha256)
     except KeyboardInterrupt:
         cancelled_type, output = KeyboardInterrupt, None
     except GeneratorExit:

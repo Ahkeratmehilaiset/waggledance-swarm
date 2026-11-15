@@ -71,24 +71,6 @@ def staged(candidate, tmp_path, monkeypatch):
             "timeout": 5, "scratch_root": None}
 
 
-@pytest.mark.parametrize("failure", ["manifest_pin", "bootstrap", "verifier", "mutex", "runtime_manifest",
-                                      "runtime_tree", "identity_descriptor", "interpreter", "unpackaged_module"])
-def test_wrong_anchor_refuses_before_process_creation(staged, monkeypatch, failure):
-    # Isolate anchor checks; real write-scope gate is covered separately below.
-    monkeypatch.setattr(child, "_require_safe_writer_scope", lambda *args: None)
-    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("native process started"))
-    bundle = staged["bundle_root"]
-    if failure == "manifest_pin": staged["deployment_manifest_sha256"] = "0" * 64
-    elif failure == "bootstrap": (bundle / "tools-bootstrap/tools/wd_mind_runtime_bootstrap.py").write_bytes(b"bad")
-    elif failure == "verifier": (bundle / "tools-bootstrap/tools/wd_mind_runtime_manifest.py").write_bytes(b"bad")
-    elif failure == "mutex": (bundle / "tools-bootstrap/tools/wd_mind_runtime_mutex.py").write_bytes(b"bad")
-    elif failure == "runtime_manifest": (bundle / "wd-mind-runtime-manifest.json").write_bytes(b"{}")
-    elif failure == "runtime_tree": (Path(staged["tuple_args"]["runtime-root"]) / "model/config.json").write_bytes(b"[]")
-    elif failure == "identity_descriptor": (bundle / "wd-mind-interpreter-identity.json").write_bytes(b"{}")
-    elif failure == "interpreter": staged["interpreter"].write_bytes(b"tampered")
-    else: monkeypatch.setattr(identity, "__file__", str(bundle / "wrong.py"))
-    with pytest.raises(child.LaunchRefused):
-        child.launch(**staged)
 
 
 class SyntheticStdin:
@@ -114,70 +96,10 @@ class SyntheticProcess:
     def kill(self): pytest.fail("unexpected kill")
 
 
-@pytest.mark.parametrize("timeout", [False, True])
-def test_anchored_chain_uses_isolated_stdin_and_job_watchdog(staged, monkeypatch, timeout):
-    # Synthetic transport only: no actual file lock or native process runs.
-    monkeypatch.setattr(child, "_require_safe_writer_scope", lambda *args: None)
-    calls = {}
-    process = SyntheticProcess(timeout=timeout)
-    class Job:
-        def attach(self, value): calls["attached"] = value
-        def terminate(self): calls["terminated"] = calls.get("terminated", 0) + 1
-        def close(self): calls["closed"] = True
-    def popen(args, **kwargs):
-        calls["args"], calls["env"] = args, kwargs["env"]
-        return process
-    monkeypatch.setattr(child, "_Job", Job)
-    monkeypatch.setenv("TEMP", "synthetic-inherited-temp-must-not-be-used")
-    monkeypatch.setenv("TMP", "synthetic-inherited-temp-must-not-be-used")
-    monkeypatch.setattr(subprocess, "Popen", popen)
-    if timeout:
-        with pytest.raises(child.LaunchRefused, match="watchdog_timeout"):
-            child.launch(**staged)
-    else:
-        result = child.launch(**staged)
-        assert result["status"] == "REFUSED"  # synthetic reader, not E5
-        assert result["authority"] == "none" and result["source_binding"] == "NOT_PROVEN"
-        assert result["native_closure"] == result["network_isolation"] == "UNKNOWN"
-    assert calls["args"][1:4] == ["-I", "-S", "-B"]
-    mutex_path = staged["bundle_root"] / "tools-bootstrap/tools/wd_mind_runtime_mutex.py"
-    assert calls["args"][calls["args"].index("--mutex-sha256") + 1] == digest(mutex_path.read_bytes())
-    assert all("synthetic-private" not in arg for arg in calls["args"])
-    assert calls["env"]["HF_HUB_OFFLINE"] == calls["env"]["TRANSFORMERS_OFFLINE"] == "1"
-    assert calls["env"]["TEMP"] == calls["env"]["TMP"] == os.devnull
-    assert calls["env"]["TORCH_HOME"] == calls["env"]["HF_HOME"] == os.devnull
-    assert "PYTHONPATH" not in calls["env"]
-    assert calls["attached"] is process and calls["terminated"] and calls["closed"]
-    assert process.stdin.contents == b"\0" + staged["query"]
 
 
-def test_process_creation_error_refuses_without_leaking_details(staged, monkeypatch):
-    monkeypatch.setattr(child, "_require_safe_writer_scope", lambda *args: None)
-    class Job:
-        def terminate(self): pass
-        def close(self): pass
-    monkeypatch.setattr(child, "_Job", Job)
-    def fail(*args, **kwargs): raise OSError("synthetic-private-process-path")
-    monkeypatch.setattr(subprocess, "Popen", fail)
-    with pytest.raises(child.LaunchRefused, match="^launcher_unavailable$") as exc:
-        child.launch(**staged)
-    assert "synthetic-private" not in str(exc.value)
 
 
-def test_output_over_budget_is_refused_and_job_is_terminated(staged, monkeypatch):
-    monkeypatch.setattr(child, "_require_safe_writer_scope", lambda *args: None)
-    calls = []
-    process = SyntheticProcess()
-    process.stdout = io.BytesIO(b"x" * (child._MAX_OUTPUT + 1))
-    class Job:
-        def attach(self, value): pass
-        def terminate(self): calls.append("terminate")
-        def close(self): calls.append("close")
-    monkeypatch.setattr(child, "_Job", Job)
-    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: process)
-    with pytest.raises(child.LaunchRefused, match="^output_limit$"):
-        child.launch(**staged)
-    assert "terminate" in calls and "close" in calls
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job API requires Windows")
@@ -238,18 +160,6 @@ def test_validated_audit_scope_does_not_create_file_or_scratch(audit_scope):
     assert not lock.exists() and not any(scratch.iterdir())
 
 
-def test_public_launch_rejects_live_lock_before_process_or_any_write(staged, audit_scope, tmp_path, monkeypatch):
-    _, _, scratch = audit_scope
-    live = tmp_path / "live"
-    live.mkdir()
-    staged["tuple_args"]["lock-file"] = str(live / "q4-reader.lock")
-    staged["scratch_root"] = None
-    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("native process started"))
-    before = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
-    with pytest.raises(child.LaunchRefused, match="^audit_write_scope_refused$"):
-        child.launch(**staged)
-    assert before == sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
-    assert not any(live.iterdir()) and not any(scratch.iterdir())
 
 
 @pytest.fixture
@@ -286,45 +196,8 @@ def staged_e5(staged, monkeypatch):
     return staged
 
 
-def test_e5_start_validates_anchors_before_private_handshake(staged_e5, monkeypatch):
-    monkeypatch.setattr(child, "_require_safe_writer_scope", lambda *args: None)
-    calls = {}
-    class Input(io.BytesIO):
-        def flush(self): pass
-    class Job:
-        def attach(self, value): calls["attached"] = value
-        def terminate(self): calls["terminated"] = True
-        def close(self): calls["closed"] = True
-    handshake = e5_client._RESPONSE.pack(b"ME5R", 0, 0, 0, b"\0" * 32, b"\0" * 32)
-    process = SimpleNamespace(stdin=Input(), stdout=io.BytesIO(struct.pack("<I", len(handshake)) + handshake),
-                              wait=lambda timeout: 0)
-    def popen(args, **kwargs):
-        calls["args"], calls["env"] = args, kwargs["env"]
-        return process
-    monkeypatch.setattr(child, "_Job", Job)
-    monkeypatch.setattr(subprocess, "Popen", popen)
-    options = {key: value for key, value in staged_e5.items() if key != "query"}
-    result = child.start_e5_worker(**options)
-    assert result["encoder_binding_sha256"] == result["client"]._binding_sha256
-    assert calls["attached"] is process and process.stdin.getvalue() == b"\0"
-    assert calls["args"][1:4] == ["-I", "-S", "-B"] and "--worker-sha256" in calls["args"]
-    assert calls["env"]["HF_HUB_OFFLINE"] == calls["env"]["TRANSFORMERS_OFFLINE"] == "1"
-    assert "PYTHONPATH" not in calls["env"]
-    assert result["network_isolation"] == result["native_closure"] == "UNKNOWN"
-    result["client"].close()
 
 
-@pytest.mark.parametrize("fault", ["worker", "binding", "model"])
-def test_e5_wrong_pins_refuse_before_process_creation(staged_e5, monkeypatch, fault):
-    monkeypatch.setattr(child, "_require_safe_writer_scope", lambda *args: None)
-    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("process started"))
-    bundle = staged_e5["bundle_root"]
-    if fault == "worker": (bundle / "tools-bootstrap/tools/wd_mind_e5_worker.py").write_bytes(b"tampered")
-    elif fault == "binding": (bundle / "wd-mind-e5-encoder-binding.json").write_bytes(b"{}")
-    else: (Path(staged_e5["tuple_args"]["runtime-root"]) / "model/model.safetensors").write_bytes(b"tampered")
-    options = {key: value for key, value in staged_e5.items() if key != "query"}
-    with pytest.raises(child.LaunchRefused, match="mind_e5_start_refused"):
-        child.start_e5_worker(**options)
 
 
 @pytest.fixture
@@ -1129,3 +1002,21 @@ def test_source_gate_worker_propagates_only_sanitized_builtin_cancellation(signa
     assert all(repr(fake_secret) not in value for frame in frames for value in (frame.locals or {}).values())
     assert holder.status() == {'state':'HOLD','worker_active':False}
     holder.close()
+
+
+def test_deferred_historical_launch_never_spawns_or_terminates(staged, staged_e5, monkeypatch):
+    calls = []
+    monkeypatch.setattr(child, '_require_safe_writer_scope', lambda *args: None)
+    def spawn(*args, **kwargs):
+        calls.append('spawn')
+        raise OSError('synthetic')
+    monkeypatch.setattr(subprocess, 'Popen', spawn)
+    for fn, options in ((child.launch, staged), (child.start_e5_worker, {k:v for k,v in staged_e5.items() if k != 'query'})):
+        with pytest.raises(child.LaunchRefused): fn(**options)
+    assert calls == []
+
+
+def test_job_refuses_kill_on_close_before_native_calls(monkeypatch):
+    monkeypatch.setattr(child.ctypes, 'WinDLL', lambda *args, **kwargs: pytest.fail('native call forbidden'))
+    with pytest.raises(child.LaunchRefused): child._Job(kill_on_close=True)
+    assert not hasattr(child._Job, 'terminate')

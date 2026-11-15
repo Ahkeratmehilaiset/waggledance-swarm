@@ -850,6 +850,52 @@ def _run_parent_consumer(*, enabled=False, open_export=None, open_candidate=None
     return output
 
 
+def _consumer_child_entry(*, control_stream=None, export_stream=None, output_stream=None,
+                          bundle_root=None, expected_manifest_sha256=None,
+                          expected_identifier_policy_sha256=None, expected_approval_reference_sha256=None,
+                          expected_nonce=None, expected_lane=None, max_total_bytes=None,
+                          max_wire_bytes=None, deadline_monotonic=None):
+    """Run one consumer when a trusted parent is available; currently refused.
+
+    The caller must supply separately authorized anchors and retain both child
+    and synchronous I/O through any uncertain deadline. This is not a public
+    authorization provider and does not establish handle provenance.
+    """
+    control = result = encoded = None
+    try:
+        _require_trusted_consumer_parent()
+        control = _read_parent_consumer_control(enabled=True, stream=control_stream,
+            expected_manifest_sha256=expected_manifest_sha256,
+            expected_identifier_policy_sha256=expected_identifier_policy_sha256,
+            expected_approval_reference_sha256=expected_approval_reference_sha256,
+            expected_lane=expected_lane, deadline_monotonic=deadline_monotonic)
+        result = _run_parent_consumer(enabled=True, open_export=lambda: export_stream,
+            open_candidate=lambda: control_stream, control=control, bundle_root=bundle_root,
+            expected_manifest_sha256=expected_manifest_sha256,
+            expected_identifier_policy_sha256=expected_identifier_policy_sha256,
+            expected_approval_reference_sha256=expected_approval_reference_sha256,
+            expected_nonce=expected_nonce, lane=expected_lane, max_total_bytes=max_total_bytes,
+            max_wire_bytes=max_wire_bytes, deadline_monotonic=deadline_monotonic)
+        encoded = json.dumps(result, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
+        if not 0 < len(encoded) <= 16384 or not callable(getattr(output_stream, 'write', None)):
+            raise ValueError('result')
+        offset = 0
+        while offset < len(encoded):
+            if time.monotonic() >= deadline_monotonic:
+                raise ValueError('deadline')
+            count = output_stream.write(encoded[offset:])
+            if type(count) is not int or not 0 < count <= len(encoded)-offset:
+                raise ValueError('write')
+            offset += count
+        if time.monotonic() >= deadline_monotonic:
+            raise ValueError('deadline')
+        return 0
+    except BaseException:
+        return 2
+    finally:
+        control = result = encoded = control_stream = export_stream = output_stream = None
+
+
 def query_content_session(*, enabled=False, inputs=None, providers=None):
     """Read frozen content using explicit caller-owned bindings and providers.
 

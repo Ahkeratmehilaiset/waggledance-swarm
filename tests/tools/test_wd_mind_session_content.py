@@ -542,6 +542,39 @@ def test_parent_consumer_control_requires_separate_anchors_and_keeps_mcr_unread(
         assert repr(key) not in repr(box)
 
 
+@pytest.mark.parametrize('fault', ['none', 'nonce', 'candidate'])
+def test_consumer_child_entry_fixtures_never_publish_unverified_content(flat_consumer_case, monkeypatch, fault):
+    _, owner, proposals, snapshot, _, response = flat_consumer_case
+    meta, blocks = _export_fixture(owner, snapshot)
+    key = b'B'*32
+    wire = _synthetic_export_wire(meta, blocks, key)
+    policy = content._sha(snapshot['identifier_policy_binding'][0])
+    lane = b'codex-lead-1'
+    frame = json.loads(response())
+    frame['scope'] = 'own'
+    if fault == 'candidate': frame['candidates'][0]['source_event_sha256'] = '0'*64
+    payload = json.dumps(frame, separators=(',', ':')).encode()
+    control = (b'MCC1' + bytes.fromhex(owner._pin) + bytes.fromhex(policy) + bytes.fromhex('3'*64)
+        + bytes.fromhex('1'*64) + key + bytes([len(lane)]) + lane
+        + struct.pack('>4sI', b'MCR1', len(payload)) + payload)
+    input_stream, output = io.BytesIO(control), io.BytesIO()
+    args = dict(control_stream=input_stream, export_stream=io.BytesIO(wire), output_stream=output,
+        bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+        expected_identifier_policy_sha256=policy, expected_approval_reference_sha256='3'*64,
+        expected_nonce=('2' if fault == 'nonce' else '1')*64, expected_lane=lane.decode(),
+        max_total_bytes=64*1024*1024, max_wire_bytes=64*1024*1024, deadline_monotonic=time.monotonic()+30)
+    assert session._consumer_child_entry(**args) == 2
+    assert input_stream.tell() == 0 and output.getvalue() == b''
+    monkeypatch.setattr(session, '_require_trusted_consumer_parent', lambda: None)
+    code = session._consumer_child_entry(**args)
+    if fault == 'none':
+        result = json.loads(output.getvalue())
+        assert code == 0 and result['authority'] == 'none'
+        assert [r['source_event_sha256'] for r in result['results']] == [p['source_event_sha256'] for p in proposals]
+    else:
+        assert code == 2 and output.getvalue() == b''
+
+
 @pytest.mark.parametrize('mismatch', ['none', 'nonce', 'lane', 'manifest', 'policy', 'approval'])
 def test_parent_consumer_pipeline_is_private_gate_only(flat_consumer_case, monkeypatch, mismatch):
     _, owner, proposals, snapshot, _, response = flat_consumer_case

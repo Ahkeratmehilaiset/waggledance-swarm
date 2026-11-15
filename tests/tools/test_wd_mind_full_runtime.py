@@ -931,6 +931,83 @@ def test_single_owner_does_not_adopt_another_builders_source_verifier(tmp_path, 
         release.set(); thread.join(5)
 
 
+@pytest.mark.parametrize('mode', ['group', 'unknown', 'oversized'])
+def test_single_owner_close_preserves_grouped_verifier_cancellation(tmp_path, monkeypatch, mode):
+    import traceback
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    state = {'raise':False}
+    class SyntheticWatcher:
+        def alive(self):
+            if not state['raise']: return False
+            if mode == 'unknown': raise runtime.FullRuntimeCancellationUnknown()
+            if mode == 'oversized':
+                raise BaseExceptionGroup('synthetic-secret-marker',
+                    [ValueError('discard') for _ in range(1024)] + [GeneratorExit('discard')])
+            raise BaseExceptionGroup('synthetic-secret-marker',
+                                     [ValueError('discard'), GeneratorExit('discard')])
+    watcher = SyntheticWatcher()
+    def build(handler):
+        handler._watcher_lease._capture(watcher)
+        raise runtime.FullRuntimeSnapshotHold('mind_full_runtime_snapshot_hold')
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', build)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start()['state'] == 'HOLD'
+    state['raise'] = True
+    expected = BaseExceptionGroup if mode == 'group' else runtime.FullRuntimeCancellationUnknown
+    with pytest.raises(expected) as caught: owner.close()
+    assert owner._state == 'HOLD'
+    assert 'synthetic-secret-marker' not in ''.join(traceback.format_exception(caught.value))
+    if mode == 'group':
+        assert len(caught.value.exceptions) == 1 and type(caught.value.exceptions[0]) is GeneratorExit
+    else:
+        assert caught.value.args == ('mind_full_runtime_cancellation_unknown',)
+    state['raise'] = False
+    assert owner.close()['state'] == 'STOPPED'
+
+
+@pytest.mark.parametrize(('verifier', 'expected_owned'), [('alive', True), ('unknown', None)])
+def test_single_owner_close_reports_verifier_ownership_when_worker_exited(tmp_path, monkeypatch, verifier, expected_owned):
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    class SyntheticWatcher:
+        def alive(self):
+            if verifier == 'unknown': raise ValueError('synthetic uncertainty')
+            return True
+    def build(handler):
+        handler._watcher_lease._capture(SyntheticWatcher())
+        raise runtime.FullRuntimeSnapshotHold('mind_full_runtime_snapshot_hold')
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', build)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start()['state'] == 'HOLD'
+    monkeypatch.setattr(owner._owner, 'status', lambda: {'state':'EXITED', 'owned':False})
+    assert owner.status() == {'state':'HOLD', 'owned':expected_owned, 'authority':'none'}
+    assert owner.close() == {'state':'HOLD', 'owned':expected_owned, 'authority':'none'}
+
+
+@pytest.mark.parametrize('mode', ['group', 'unknown'])
+def test_single_owner_worker_close_cancellation_preserves_hold(tmp_path, monkeypatch, mode):
+    import traceback
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start()['state'] == 'READY'
+    def cancelled(*, timeout):
+        if mode == 'unknown': raise runtime.FullRuntimeCancellationUnknown()
+        raise BaseExceptionGroup('synthetic-secret-marker', [ValueError('discard'), GeneratorExit('discard')])
+    monkeypatch.setattr(owner._client, 'close', cancelled)
+    expected = BaseExceptionGroup if mode == 'group' else runtime.FullRuntimeCancellationUnknown
+    with pytest.raises(expected) as caught: owner.close()
+    assert owner._state == 'HOLD'
+    assert 'synthetic-secret-marker' not in ''.join(traceback.format_exception(caught.value))
+    if mode == 'group':
+        assert len(caught.value.exceptions) == 1 and type(caught.value.exceptions[0]) is GeneratorExit
+    else:
+        assert caught.value.args == ('mind_full_runtime_cancellation_unknown',)
+
+
 def test_foreign_global_verifier_reservation_is_not_captured_by_new_owner():
     import threading
     from tools import wd_mind_content_snapshot_package as package, wd_mind_full_runtime as runtime

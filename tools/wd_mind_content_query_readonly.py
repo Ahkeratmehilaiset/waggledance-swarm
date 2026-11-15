@@ -26,7 +26,7 @@ import os
 import re
 import unicodedata
 from pathlib import Path
-from types import FunctionType, ModuleType
+from types import FunctionType, MappingProxyType, ModuleType
 
 SEALED_MARKERS = ("sealed", "gold", "heldout", "judge")
 
@@ -2376,7 +2376,8 @@ def _query_complete_content_snapshot(values, *, _narrow=None):
                 or any(values[key] is not callbacks[key] for key in callback_keys)
                 or _q4_freeze_complete_cells(values["cell_snapshots"]) != frozen_cells):
             raise ValueError("snapshot_changed")
-        _, _, current = verifier(snapshot)
+        _, _, current = (verifier(snapshot) if _narrow is None else
+                         _narrow.verify_snapshot(snapshot, _return_projection=False))
         if current != initial_report:
             raise ValueError("source_changed")
         if _narrow is not None:
@@ -2499,6 +2500,23 @@ def _narrow_row_index(context, references):
     return entries
 
 
+def _freeze_json(value):
+    """Retain validated JSON without exposing mutable cached containers."""
+    if type(value) is dict:
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if type(value) is list:
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def _thaw_json(value):
+    if type(value) is MappingProxyType:
+        return {key: _thaw_json(item) for key, item in value.items()}
+    if type(value) is tuple:
+        return [_thaw_json(item) for item in value]
+    return value
+
+
 class _NarrowReadGate:
     """One opt-in read bound to a separately pinned deployment manifest.
 
@@ -2514,32 +2532,41 @@ class _NarrowReadGate:
         self._descriptor = values['descriptor_sha256']
         self._memory = values['memory_sha256']
         self._selection = None
+        self._deployment_raw = self._manifest_raw = self._projection_raw = None
+        self._deployment = self._manifest_value = self._projection_value = None
+        self._coverage = None
 
     def _manifest(self):
         _, absent = _narrow_dependencies()
         absent._plain(self._root, directory=True)
         raw = absent._read_pinned(self._root / 'deployment-manifest.json', self._pin, 4 * 1024 * 1024)
-        deployment = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
-        if (type(deployment) is not dict or type(deployment.get('schema_version')) is not int
-                or deployment['schema_version'] != 1 or type(deployment.get('files')) is not dict):
-            raise ValueError('deployment_manifest')
+        if self._deployment_raw is None or not hmac.compare_digest(raw, self._deployment_raw):
+            deployment = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
+            if (type(deployment) is not dict or type(deployment.get('schema_version')) is not int
+                    or deployment['schema_version'] != 1 or type(deployment.get('files')) is not dict):
+                raise ValueError('deployment_manifest')
+            self._deployment_raw, self._deployment = raw, _freeze_json(deployment)
+        deployment = self._deployment
         digest = deployment['files'].get(_NARROW_MANIFEST_NAME)
         if not _hex(digest):
             raise ValueError('manifest_not_anchored')
         path = self._root / _NARROW_MANIFEST_NAME
         size = os.lstat(path).st_size
         raw = absent._read_pinned(path, digest, size)
-        manifest = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
-        if (type(manifest) is not dict or _canonical(manifest) != raw
-                or set(manifest) != {'schema', 'authority', 'source_prefix', 'source_locations', 'projection_sha256',
-                                     'decision_sha256', 'descriptor_sha256', 'memory_sha256', 'entries'}
-                or manifest['schema'] != _NARROW_SCHEMA or manifest['authority'] != 'none'
-                or manifest['descriptor_sha256'] != self._descriptor or manifest['memory_sha256'] != self._memory
-                or type(manifest['entries']) is not dict):
-            raise ValueError('narrow_manifest')
-        return manifest
+        if self._manifest_raw is None or not hmac.compare_digest(raw, self._manifest_raw):
+            manifest = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
+            if (type(manifest) is not dict or _canonical(manifest) != raw
+                    or set(manifest) != {'schema', 'authority', 'source_prefix', 'source_locations', 'projection_sha256',
+                                         'decision_sha256', 'descriptor_sha256', 'memory_sha256', 'entries'}
+                    or manifest['schema'] != _NARROW_SCHEMA or manifest['authority'] != 'none'
+                    or manifest['descriptor_sha256'] != self._descriptor or manifest['memory_sha256'] != self._memory
+                    or type(manifest['entries']) is not dict):
+                raise ValueError('narrow_manifest')
+            self._manifest_raw, self._manifest_value = raw, _freeze_json(manifest)
+            self._coverage = None
+        return self._manifest_value
 
-    def verify_snapshot(self, snapshot):
+    def verify_snapshot(self, snapshot, *, _return_projection=True):
         if type(snapshot) is not dict:
             raise ValueError('snapshot')
         inputs = dict(snapshot)
@@ -2547,13 +2574,17 @@ class _NarrowReadGate:
         if type(raw) is not bytes or not raw or not _hex(digest) or not hmac.compare_digest(_sha(raw), digest):
             raise ValueError('projection_pin')
         context = _inputs(inputs, complete_source=True)
-        projection = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
-        if (_serialized(projection) != raw or type(projection) is not dict
-                or projection.get('schema') != _ALL_TASK_COMBINED_SCHEMA
-                or type(projection.get('messages')) is not dict
-                or projection['messages'].get('schema') != _ALL_TASK_MESSAGE_SCHEMA
-                or type(projection['messages'].get('records')) is not list):
-            raise ValueError('projection_schema')
+        if self._projection_raw is None or not hmac.compare_digest(raw, self._projection_raw):
+            projection = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
+            if (_serialized(projection) != raw or type(projection) is not dict
+                    or projection.get('schema') != _ALL_TASK_COMBINED_SCHEMA
+                    or type(projection.get('messages')) is not dict
+                    or projection['messages'].get('schema') != _ALL_TASK_MESSAGE_SCHEMA
+                    or type(projection['messages'].get('records')) is not list):
+                raise ValueError('projection_schema')
+            self._projection_raw, self._projection_value = raw, _freeze_json(projection)
+            self._coverage = None
+        projection = self._projection_value
         manifest = self._manifest()
         cursor = context['messages']['end_cursor']
         anchored = dict(context['decision']['source_prefix'], file_identity=cursor.file_identity)
@@ -2562,15 +2593,19 @@ class _NarrowReadGate:
                 or manifest['projection_sha256'] != digest
                 or manifest['decision_sha256'] != context['decision_sha256']):
             raise ValueError('manifest_binding')
-        refs = {record['provenance']['source_event_ref'] for record in projection['messages']['records']}
-        if (set(manifest['entries']) != refs or any(not _hex(ref) for ref in refs)):
-            raise ValueError('manifest_coverage')
-        for entry in manifest['entries'].values():
-            if (type(entry) is not dict or set(entry) != {'offset', 'length', 'raw_sha256'}
-                    or type(entry['offset']) is not int or type(entry['length']) is not int
-                    or entry['offset'] < 0 or not 0 < entry['length'] <= 4 * 1024 * 1024
-                    or entry['offset'] + entry['length'] > cursor.offset or not _hex(entry['raw_sha256'])):
-                raise ValueError('entry_bounds')
+        cacheable_manifest = type(manifest) is MappingProxyType and self._manifest_raw is not None
+        if not cacheable_manifest or self._coverage != (id(self._projection_raw), id(self._manifest_raw), cursor.offset):
+            refs = {record['provenance']['source_event_ref'] for record in projection['messages']['records']}
+            if (set(manifest['entries']) != refs or any(not _hex(ref) for ref in refs)):
+                raise ValueError('manifest_coverage')
+            for entry in manifest['entries'].values():
+                if (type(entry) not in (dict, MappingProxyType) or set(entry) != {'offset', 'length', 'raw_sha256'}
+                        or type(entry['offset']) is not int or type(entry['length']) is not int
+                        or entry['offset'] < 0 or not 0 < entry['length'] <= 4 * 1024 * 1024
+                        or entry['offset'] + entry['length'] > cursor.offset or not _hex(entry['raw_sha256'])):
+                    raise ValueError('entry_bounds')
+            self._coverage = ((id(self._projection_raw), id(self._manifest_raw), cursor.offset)
+                              if cacheable_manifest else None)
         bridge, absent = _narrow_dependencies()
         source, sidecar = Path(context['messages']['source_path']), Path(context['messages']['generation_path'])
         with bridge._open_log(source) as stream:
@@ -2578,7 +2613,7 @@ class _NarrowReadGate:
         report = {'status': 'MATCH', 'projection_sha256': digest, 'decision_sha256': context['decision_sha256'],
                   'source_prefix': dict(context['decision']['source_prefix']), 'doc_commit': None,
                   'operator_scope_authorization': 'UNKNOWN', 'required_release_task_list_sha256': None}
-        return projection, context, report
+        return (_thaw_json(projection) if _return_projection else projection), context, report
 
     def _resolve(self, results, query_utc, snapshot):
         when = _utc(query_utc) - dt.timedelta(seconds=1)

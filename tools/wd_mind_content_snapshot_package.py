@@ -65,7 +65,10 @@ MAX_ARTIFACT_BYTES = 2 * 1024 * 1024
 MAX_PACKAGE_BYTES = 8 * 1024 * 1024
 PASSAGE_BATCH = 16
 _WATCH_INTERVAL_SECONDS = 1.0
-_WATCH_JOIN_TIMEOUT_SECONDS = 2.0
+# The full-prefix verifier has measured runs above two minutes on the target
+# host. This is a bounded close wait, not a deadline for synchronous providers.
+_WATCH_JOIN_TIMEOUT_SECONDS = 180.0
+_WATCH_JOIN_MAX_SECONDS = 600.0
 _ROW = struct.Struct("<384f")
 _PACKAGE_INTERNAL_HOLD = object()
 
@@ -240,11 +243,11 @@ class _SourceWatcher:
     def alive(self):
         return self.thread is not None and self.thread.is_alive()
 
-    def stop(self):
+    def stop(self, timeout=None):
         self.stop_event.set()
         if self.thread is not None and self.thread.ident is not None and not self.join_attempted:
             self.join_attempted = True
-            self.thread.join(_WATCH_JOIN_TIMEOUT_SECONDS)
+            self.thread.join(_WATCH_JOIN_TIMEOUT_SECONDS if timeout is None else timeout)
         if self.alive():
             raise SnapshotPackageHold("content_snapshot_watcher_hold")
         if self.failed.is_set():
@@ -414,10 +417,15 @@ def _cell(records, cell_id, vector_rows, identity, projection_sha, cutoff, seria
 
 def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder_binding_bytes,
              encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity=None,
-             source_verification=None):
+             source_verification=None, watcher_join_timeout_seconds=None):
     if source_verification is not None and (source_verification != "verified_immutable_snapshot_v1"
             or type(source_verification) is not str or capacity != {"streamed": True}):
         raise ValueError("invalid_source_verification")
+    if watcher_join_timeout_seconds is not None and (
+            source_verification is None or type(watcher_join_timeout_seconds) not in (int, float)
+            or not math.isfinite(watcher_join_timeout_seconds)
+            or not 0 < watcher_join_timeout_seconds <= _WATCH_JOIN_MAX_SECONDS):
+        raise ValueError("invalid_watcher_join_timeout")
     watcher, output, problem, cleanup_problem = None, None, None, None
     held = False
     try:
@@ -429,13 +437,14 @@ def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder
                 held = True
         if not held:
             output = _package_inner(snapshot, passage_encoder, index_serializer, index_decoder, encoder_binding_bytes,
-                encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity, watcher)
+                encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity, watcher,
+                watcher_join_timeout_seconds)
     except BaseException as exc:
         problem = exc
     finally:
         if watcher is not None:
             try:
-                watcher.stop()
+                watcher.stop(watcher_join_timeout_seconds)
             except SnapshotPackageHold:
                 held = True
             except BaseException as exc:
@@ -461,7 +470,8 @@ def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder
 
 
 def _package_inner(snapshot, passage_encoder, index_serializer, index_decoder, encoder_binding_bytes,
-                   encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity, watcher):
+                   encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity, watcher,
+                   watcher_join_timeout_seconds):
     full = capacity is not None and capacity.get("streamed") is True
     frozen = _snapshot(snapshot, capacity)
     encoder_binding = reader._pinned(encoder_binding_bytes, encoder_binding_sha256)
@@ -600,7 +610,9 @@ def _package_inner(snapshot, passage_encoder, index_serializer, index_decoder, e
         reader._q4_decode_cells_bounded_v3(captured, provider, record_map)
     checkpoint()
     if watcher is not None:
-        watcher.stop()
+        # Keep the final full check after the owned verifier has finished:
+        # verifying concurrently would leave a gap before publication.
+        watcher.stop(watcher_join_timeout_seconds)
         _unchanged(snapshot, frozen, report, complete=True)
         if (reader._sha(immutable_prefix) != report["source_prefix"]["sha256"]
                 or reader._serialized(projection) != frozen["projection_bytes"]):
@@ -1015,7 +1027,7 @@ def create_consumer_flat_source_owner(*, enabled=False, bundle_root=None, expect
 def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=None, index_serializer=None,
                              index_decoder=None, encoder_binding_bytes=None, encoder_binding_sha256=None,
                              index_binding_bytes=None, index_binding_sha256=None, capacity_profile=None,
-                             source_verification=None):
+                             source_verification=None, watcher_join_timeout_seconds=None):
     """Return detached v3 query artifact arguments or a fixed refusal.
 
     Only ``enabled is True`` opts in. Snapshot paths remain caller-supplied and
@@ -1037,6 +1049,8 @@ def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=No
     A stuck verifier raises SnapshotPackageHold and retains interpreter-local
     ownership until it finishes. The non-daemon verifier can prevent process
     exit; this mechanism does not survive a process restart.
+    The optional watcher_join_timeout_seconds sets a bounded verifier close
+    wait (maximum 600 s); it is not a deadline for the synchronous build.
     """
     output, problem, held = None, None, False
     succeeded = False
@@ -1046,7 +1060,7 @@ def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=No
         capacity = _capacity(capacity_profile)
         output = _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder_binding_bytes,
                           encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity,
-                          source_verification)
+                          source_verification, watcher_join_timeout_seconds)
         if output is _PACKAGE_INTERNAL_HOLD:
             output, held = None, True
         else:

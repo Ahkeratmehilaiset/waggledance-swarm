@@ -631,6 +631,147 @@ def test_narrow_selected_row_is_rechecked_after_provider_callback(package, fixtu
         run()
 
 
+def test_narrow_read_full_snapshot_validation_is_not_per_reconstruct(package, fixtures, tmp_path, monkeypatch):
+    _, _, _, snapshot, _, deploy, narrow, run = _narrow_fixture(package, fixtures, tmp_path)
+    calls, parsed = [], []
+    original = reader._NarrowReadGate.verify_snapshot
+    original_json = reader.json.loads
+    observed = {snapshot['projection_bytes'].decode('utf-8'), narrow['manifest_bytes'].decode('utf-8'),
+                deploy.decode('utf-8-sig')}
+
+    def counted(self, snapshot, **kwargs):
+        calls.append(None)
+        return original(self, snapshot, **kwargs)
+
+    def counted_json(raw, *args, **kwargs):
+        if type(raw) is str and raw in observed:
+            parsed.append(raw)
+        return original_json(raw, *args, **kwargs)
+
+    monkeypatch.setattr(reader._NarrowReadGate, 'verify_snapshot', counted)
+    monkeypatch.setattr(reader.json, 'loads', counted_json)
+    assert run()['results']
+    assert len(calls) > 4  # every provider callback still rechecks all pins
+    assert all(parsed.count(raw) == 1 for raw in observed)
+
+
+def test_narrow_gate_synthetic_2000_record_revalidation(package, fixtures, tmp_path):
+    import inspect
+    import time
+    _, _, output, snapshot, bundle, _, narrow, _ = _narrow_fixture(package, fixtures, tmp_path)
+    projection = json.loads(snapshot['projection_bytes'])
+    template = projection['messages']['records'][0]
+    records = []
+    for number in range(2000):
+        record = json.loads(json.dumps(template))
+        record['record_id'] = f'synthetic-record-{number}'
+        record['provenance']['source_event_ref'] = f'{number:064x}'
+        records.append(record)
+    projection['messages']['records'] = records
+    snapshot['projection_bytes'] = reader._serialized(projection)
+    snapshot['projection_sha256'] = reader._sha(snapshot['projection_bytes'])
+    manifest = json.loads(narrow['manifest_bytes'])
+    entry = next(iter(manifest['entries'].values()))
+    manifest['entries'] = {record['provenance']['source_event_ref']: entry for record in records}
+    manifest['projection_sha256'] = snapshot['projection_sha256']
+    manifest_raw = reader._canonical(manifest)
+    (bundle / 'wd-mind-narrow-source-manifest.json').write_bytes(manifest_raw)
+    deployment = fixtures._raw({'schema_version': 1, 'files': {
+        'wd-mind-narrow-source-manifest.json': reader._sha(manifest_raw)}})
+    (bundle / 'deployment-manifest.json').write_bytes(deployment)
+    values = {'descriptor_sha256': output['descriptor_sha256'], 'memory_sha256': output['memory_sha256']}
+    gate = reader._NarrowReadGate(str(bundle), reader._sha(deployment), values)
+    gate.verify_snapshot(snapshot)
+    kwargs = ({'_return_projection': False} if '_return_projection' in
+              inspect.signature(gate.verify_snapshot).parameters else {})
+    start = time.perf_counter()
+    reports = [gate.verify_snapshot(snapshot, **kwargs)[2] for _ in range(8)]
+    cached = time.perf_counter() - start
+    start = time.perf_counter()
+    fresh = [reader._NarrowReadGate(str(bundle), reader._sha(deployment), values).verify_snapshot(
+        snapshot, **kwargs)[2] for _ in range(8)]
+    reparsed = time.perf_counter() - start
+    assert reports == fresh
+    print(f'synthetic_gate_records=2000 checks=8 cached_s={cached:.3f} fresh_s={reparsed:.3f}')
+
+
+@pytest.mark.parametrize('damage', ['deployment', 'narrow_manifest', 'generation'])
+def test_narrow_read_revalidates_controls_changed_by_provider(package, fixtures, tmp_path, damage):
+    case, _, _, _, bundle, _, _, run = _narrow_fixture(package, fixtures, tmp_path)
+
+    def mutate():
+        if damage == 'generation':
+            Path(case['messages']['generation_path']).write_bytes(b'{"generation":"changed"}')
+        else:
+            name = 'deployment-manifest.json' if damage == 'deployment' else 'wd-mind-narrow-source-manifest.json'
+            path = bundle / name
+            path.write_bytes(path.read_bytes() + b' ')
+
+    case['encoder_provider'].on_query = mutate
+    with pytest.raises(reader.ContentQueryRefused):
+        run()
+
+
+def test_narrow_read_rejects_projection_control_replacement_during_provider(package, fixtures, tmp_path):
+    case, codec, output, snapshot, bundle, deploy, _, _ = _narrow_fixture(package, fixtures, tmp_path)
+    encoder, index = reader.adapt_complete_readonly_providers(
+        encoder=case['encoder_provider'], index_decoder=codec.decode,
+        **{key: output[key] for key in ('encoder_binding_bytes', 'encoder_binding_sha256',
+                                       'index_binding_bytes', 'index_binding_sha256')})
+    stream = fixtures._ObservedStream(fixtures._raw(
+        {'situation': 'retry network outage', 'time': fixtures.QUERY_TIME}))
+    values = {**snapshot, **output, 'encoder_provider': encoder, 'index_provider': index, 'stream': stream}
+    gate = reader._NarrowReadGate(str(bundle), fixtures._sha(deploy), values)
+    def mutate():
+        values['projection_bytes'] += b' '
+    case['encoder_provider'].on_query = mutate
+    with pytest.raises(reader.ContentQueryRefused):
+        reader._provider_result(lambda: reader._query_complete_content_snapshot(values, _narrow=gate))
+
+
+@pytest.mark.parametrize('damage', ['deployment', 'narrow_manifest', 'projection', 'policy_pin'])
+def test_narrow_refuses_callback_tampering_before_later_restore(package, fixtures, tmp_path, damage):
+    case, codec, output, snapshot, bundle, deploy, _, _ = _narrow_fixture(package, fixtures, tmp_path)
+    restored = []
+    values = None
+
+    def decode(raw):
+        index = codec.decode(raw)
+        if damage in ('deployment', 'narrow_manifest'):
+            name = 'deployment-manifest.json' if damage == 'deployment' else 'wd-mind-narrow-source-manifest.json'
+            path = bundle / name
+            original = path.read_bytes()
+            path.write_bytes(original + b' ')
+            def restore(): path.write_bytes(original)
+        elif damage == 'projection':
+            original = values['projection_bytes']
+            values['projection_bytes'] += b' '
+            def restore(): values['projection_bytes'] = original
+        else:
+            original = values['messages']['policy_sha256']
+            values['messages']['policy_sha256'] = '0' * 64
+            def restore(): values['messages']['policy_sha256'] = original
+        reconstruct = index.reconstruct_n
+        def later_restore(start, count):
+            restored.append(True)
+            restore()
+            return reconstruct(start, count)
+        index.reconstruct_n = later_restore
+        return index
+
+    encoder, index = reader.adapt_complete_readonly_providers(
+        encoder=case['encoder_provider'], index_decoder=decode,
+        **{key: output[key] for key in ('encoder_binding_bytes', 'encoder_binding_sha256',
+                                       'index_binding_bytes', 'index_binding_sha256')})
+    stream = fixtures._ObservedStream(fixtures._raw(
+        {'situation': 'retry network outage', 'time': fixtures.QUERY_TIME}))
+    values = {**snapshot, **output, 'encoder_provider': encoder, 'index_provider': index, 'stream': stream}
+    gate = reader._NarrowReadGate(str(bundle), fixtures._sha(deploy), values)
+    with pytest.raises(reader.ContentQueryRefused):
+        reader._provider_result(lambda: reader._query_complete_content_snapshot(values, _narrow=gate))
+    assert not restored
+
+
 @pytest.mark.parametrize('fault', ['append', 'sidecar', 'selected'])
 def test_narrow_generationless_checks_sidecar_and_selected_row(package, fixtures, tmp_path, fault):
     case, _, _, _, _, _, _, run = _narrow_fixture(package, fixtures, tmp_path, generationless=True)
@@ -689,6 +830,116 @@ def test_immutable_build_profile_is_explicit_and_verifies_initial_and_final_sour
         source_verification='verified_immutable_snapshot_v1')
     assert json.loads(output['memory_bytes'])['records'] > 0
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize('succeeds', [True, False])
+def test_immutable_build_waits_for_running_long_verification(package, fixtures, tmp_path, monkeypatch, succeeds):
+    import time
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    entered, finished = threading.Event(), threading.Event()
+    verify = reader._verified_complete
+
+    def slow_verify(snapshot):
+        if threading.current_thread().name == 'mind-source-verifier':
+            entered.set()
+            time.sleep(2.2)
+            if not succeeds:
+                finished.set()
+                raise RuntimeError('synthetic verifier failure')
+            result = verify(snapshot)
+            finished.set()
+            return result
+        return verify(snapshot)
+
+    def encode(batch):
+        assert entered.wait(5)
+        return codec.passage(batch)
+
+    monkeypatch.setattr(package, '_WATCH_INTERVAL_SECONDS', 0.001)
+    monkeypatch.setattr(reader, '_verified_complete', slow_verify)
+    args['passage_encoder'] = encode
+    try:
+        if not succeeds:
+            with pytest.raises(package.SnapshotPackageRefused):
+                package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+            assert finished.is_set()
+            assert package.snapshot_build_watcher_status() == {'state': 'idle'}
+            return
+        output = package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+        assert finished.is_set()
+        assert json.loads(output['memory_bytes'])['records'] > 0
+        assert package.snapshot_build_watcher_status() == {'state': 'idle'}
+    finally:
+        for thread in threading.enumerate():
+            if thread.name == 'mind-source-verifier':
+                thread.join(10)
+
+
+@pytest.mark.parametrize('timeout', [True, 0, -1, 601, float('nan'), float('inf'), '5'])
+def test_watcher_close_wait_rejects_invalid_timeouts(package, timeout):
+    with pytest.raises(package.SnapshotPackageRefused):
+        package.package_content_snapshot(enabled=True, capacity_profile=FULL_PREFIX_PROFILE,
+            source_verification='verified_immutable_snapshot_v1', watcher_join_timeout_seconds=timeout)
+
+
+@pytest.mark.parametrize('source_valid', [True, False])
+def test_long_watcher_join_precedes_final_source_check_and_publication(
+        package, fixtures, tmp_path, monkeypatch, source_valid):
+    import time
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    entered, finished = threading.Event(), threading.Event()
+    sequence = []
+    verify, final_check = reader._verified_complete, package._unchanged
+    source = Path(case['messages']['source_path'])
+
+    def slow_verify(snapshot):
+        if threading.current_thread().name == 'mind-source-verifier':
+            entered.set()
+            time.sleep(2.2)
+            result = verify(snapshot)
+            sequence.append('watcher_completed')
+            finished.set()
+            return result
+        return verify(snapshot)
+
+    def checked_final(original, frozen, report, **kwargs):
+        assert finished.is_set()
+        assert not any(thread.name == 'mind-source-verifier' for thread in threading.enumerate())
+        sequence.append('final_check_started')
+        if not source_valid:
+            old = source.read_bytes()
+            source.write_bytes(old[:-2] + b'X\n')
+        result = final_check(original, frozen, report, **kwargs)
+        sequence.append('final_check_passed')
+        return result
+
+    def encode(batch):
+        assert entered.wait(5)
+        return codec.passage(batch)
+
+    monkeypatch.setattr(package, '_WATCH_INTERVAL_SECONDS', 0.001)
+    monkeypatch.setattr(reader, '_verified_complete', slow_verify)
+    monkeypatch.setattr(package, '_unchanged', checked_final)
+    args['passage_encoder'] = encode
+    try:
+        if source_valid:
+            output = package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+            sequence.append('published')
+            assert json.loads(output['memory_bytes'])['records'] > 0
+            assert sequence == ['watcher_completed', 'final_check_started', 'final_check_passed', 'published']
+        else:
+            with pytest.raises(package.SnapshotPackageRefused):
+                package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+            assert sequence == ['watcher_completed', 'final_check_started']
+        assert package.snapshot_build_watcher_status() == {'state': 'idle'}
+    finally:
+        for thread in threading.enumerate():
+            if thread.name == 'mind-source-verifier':
+                thread.join(10)
 
 
 def test_immutable_build_refuses_permanent_source_change_after_callback(package, fixtures, tmp_path):
@@ -830,13 +1081,13 @@ def test_immutable_build_stuck_watcher_returns_hold_and_keeps_ownership(package,
         return codec.passage(batch)
 
     monkeypatch.setattr(package, '_WATCH_INTERVAL_SECONDS', 0.01)
-    monkeypatch.setattr(package, '_WATCH_JOIN_TIMEOUT_SECONDS', 0.05)
     monkeypatch.setattr(reader, '_verified_complete', watched_verify)
     monkeypatch.setattr(threading.Thread, 'join', join_once)
     args['passage_encoder'] = encode
     try:
         with pytest.raises(package.SnapshotPackageHold, match='content_snapshot_watcher_hold'):
-            package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+            package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1',
+                                             watcher_join_timeout_seconds=0.05)
         assert joins == [0.05]  # finally must not start a second timeout.
         assert package.snapshot_build_watcher_status() == {'state': 'watcher_stopping'}
         with pytest.raises(package.SnapshotPackageHold, match='content_snapshot_watcher_hold'):

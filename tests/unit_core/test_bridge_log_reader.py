@@ -709,3 +709,59 @@ def test_public_bridge_object_parser_enforces_canonical_contract(
 ) -> None:
     with pytest.raises(ValueError):
         reader.parse_bridge_json_object(raw)
+
+
+def test_accelerated_json_lexical_scan_matches_original_contract() -> None:
+    """Escapes, surrogate units and nesting retain their prior behavior."""
+    import random
+
+    def original(text: str) -> None:
+        depth = 0
+        in_string = False
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if in_string:
+                if char == '"':
+                    in_string = False
+                elif char == "\\":
+                    if index + 1 >= len(text):
+                        return
+                    escape = text[index + 1]
+                    if escape == "u" and index + 5 < len(text):
+                        digits = text[index + 2:index + 6]
+                        if all(digit in "0123456789abcdefABCDEF" for digit in digits):
+                            if 0xD800 <= int(digits, 16) <= 0xDFFF:
+                                raise ValueError("JSON UTF-16 surrogate escapes are forbidden")
+                            index += 5
+                        else:
+                            index += 1
+                    else:
+                        index += 1
+                elif 0xD800 <= ord(char) <= 0xDFFF:
+                    raise ValueError("unpaired Unicode surrogate")
+            else:
+                if char == '"':
+                    in_string = True
+                elif char in "[{":
+                    depth += 1
+                    if depth > 32:
+                        raise ValueError("JSON nesting exceeds contract limit")
+                elif char in "]}":
+                    depth -= 1
+            index += 1
+
+    def outcome(scan, value):
+        try:
+            scan(value)
+        except ValueError as error:
+            return str(error)
+        return None
+
+    rng = random.Random(829451)
+    alphabet = 'abc0123uUdDeEfF89"\\{}[] ,:\n\t' + chr(0xD800) + chr(0xDFFF) + '😀'
+    samples = ['"\\ud800"', '"\\uDFFF"', '"\\\\ud800"', '"' + chr(0xD800) + '"',
+               '[' * 33, '"' + '\\' * 301 + '"', '{"text":"' + 'a' * 50000 + '"}']
+    samples.extend(''.join(rng.choice(alphabet) for _ in range(rng.randrange(200))) for _ in range(15000))
+    for value in samples:
+        assert outcome(reader._validate_json_lexical_contract, value) == outcome(original, value)

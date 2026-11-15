@@ -26,6 +26,7 @@ _MAX_GENERATION_BYTES = 512
 _MAX_JSON_NESTING_DEPTH = 32
 _MAX_SAFE_JSON_INTEGER = 9_007_199_254_740_991
 _GENERATION_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+_JSON_LEXICAL_SPECIAL = re.compile(r'["\\{}\[\]\ud800-\udfff]')
 _UTF8_BOM = b"\xef\xbb\xbf"
 
 
@@ -133,7 +134,11 @@ def _validate_json_lexical_contract(text: str) -> None:
     depth = 0
     in_string = False
     index = 0
-    while index < len(text):
+    while True:
+        match = _JSON_LEXICAL_SPECIAL.search(text, index)
+        if match is None:
+            return
+        index = match.start()
         char = text[index]
         if in_string:
             if char == '"':

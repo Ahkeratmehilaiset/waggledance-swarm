@@ -7,6 +7,10 @@ serializer and policy. Hashes and response echoes are consistency checks, not
 proof of model execution, client identity, sender authority or absence of races.
 In particular, IPC sub-batches here are not source checkpoints: the existing
 producer verifies its frozen source after its whole B16 callback returns.
+
+The single-worker package deliberately defers the unpublished rotating-client
+adapter API and its rotating-worker dependencies. Unmerged callers of that
+API must be adapted separately before their modules are packaged.
 """
 from __future__ import annotations
 
@@ -135,15 +139,11 @@ def create_adapter(*, enabled=False, client=None, encoder_binding_bytes=None, en
     return _run(create)
 
 
-def _flat_bundle_bindings(bundle_root, expected_manifest_sha256, *, single_worker=False):
+def _flat_bundle_bindings(bundle_root, expected_manifest_sha256):
     """Derive the read-only query binding solely from the pinned runtime one."""
     from tools import wd_mind_absent_generation_prefix_readonly as prefix
     from tools import wd_mind_e5_lifecycle as lifecycle
     from tools import wd_mind_e5_client as e5_client
-    if type(single_worker) is not bool:
-        raise ValueError('mode')
-    if not single_worker:
-        from tools import wd_mind_e5_rotating_client as rotating
     if (type(bundle_root) is not str or not Path(bundle_root).is_absolute()
             or '..' in Path(bundle_root).parts or type(expected_manifest_sha256) is not str
             or re.fullmatch(r'[0-9a-fA-F]{64}', expected_manifest_sha256) is None):
@@ -164,8 +164,6 @@ def _flat_bundle_bindings(bundle_root, expected_manifest_sha256, *, single_worke
                              (prefix, 'wd_mind_absent_generation_prefix_readonly.py'),
                              (lifecycle, 'wd_mind_e5_lifecycle.py'),
                              (e5_client, 'wd_mind_e5_client.py'))
-    if not single_worker:
-        modules += ((rotating, 'wd_mind_e5_rotating_client.py'),)
     for module, filename in modules:
         origin = getattr(module, '__file__', None)
         if type(origin) is not str:
@@ -198,13 +196,19 @@ def _flat_bundle_bindings(bundle_root, expected_manifest_sha256, *, single_worke
     return query_raw, hashlib.sha256(runtime_raw).hexdigest()
 
 
-class _FlatAdapter(_Adapter):
-    __slots__ = ('_bundle', '_manifest', '_query_binding', '_runtime_hash')
+class _SingleFlatAdapter(_Adapter):
+    """One caller-owned graceful worker; this object never starts a process."""
+    __slots__ = ('_bundle', '_manifest', '_query_binding', '_runtime_hash',
+                 '_owner', '_owned_process', '_owned_job', '_call_state')
 
     def __init__(self, client, bundle, manifest, query_binding, runtime_hash):
         super().__init__(client, runtime_hash)
         self._bundle, self._manifest = bundle, manifest
         self._query_binding, self._runtime_hash = query_binding, runtime_hash
+        self._owner = client.owner
+        self._owned_process = self._owner.resources.process
+        self._owned_job = self._owner.resources.job
+        self._call_state = threading.local()
 
     @property
     def encoder_binding_bytes(self):
@@ -218,50 +222,11 @@ class _FlatAdapter(_Adapter):
     def runtime_binding_sha256(self):
         return self._runtime_hash
 
-    def _check(self):
-        from tools import wd_mind_e5_rotating_client as rotating
-        if (type(self._client) is not rotating.RotatingGracefulE5Client
-                or self._client._binding != self._runtime_hash
-                or self._client._bulk_contract_sha256 != rotating.BULK_CONTRACT_SHA256
-                or self._client._failed is not False or self._client._closed is not False
-                or _flat_bundle_bindings(self._bundle, self._manifest) != (self._query_binding, self._runtime_hash)):
-            raise ValueError('flat_binding_changed')
-
     def _request(self, operation, texts):
         self._check()
         output = super()._request(operation, texts)
         self._check()
         return output
-
-
-def create_flat_adapter(*, enabled=False, bundle_root=None, expected_manifest_sha256=None, client=None):
-    """Construct an opt-in flat E5 adapter, without any FAISS/index binding.
-
-    The caller must independently authorize the manifest hash and keep the
-    supervised bulk rotator and its owner alive through HOLD. Pinned bytes and
-    transport echoes do not authenticate model execution, source, or callers.
-    """
-    def create():
-        from tools import wd_mind_e5_rotating_client as rotating
-        if enabled is not True or type(client) is not rotating.RotatingGracefulE5Client:
-            raise ValueError('disabled_or_client')
-        query_raw, runtime_hash = _flat_bundle_bindings(bundle_root, expected_manifest_sha256)
-        result = _FlatAdapter(client, bundle_root, expected_manifest_sha256, query_raw, runtime_hash)
-        result._check()
-        return result
-    return _run(create)
-
-
-class _SingleFlatAdapter(_FlatAdapter):
-    """One caller-owned graceful worker; this object never starts a process."""
-    __slots__ = ('_owner', '_owned_process', '_owned_job', '_call_state')
-
-    def __init__(self, client, bundle, manifest, query_binding, runtime_hash):
-        super().__init__(client, bundle, manifest, query_binding, runtime_hash)
-        self._owner = client.owner
-        self._owned_process = self._owner.resources.process
-        self._owned_job = self._owner.resources.job
-        self._call_state = threading.local()
 
     def _require_deadline(self):
         deadline = getattr(self._call_state, 'deadline', None)
@@ -302,7 +267,7 @@ class _SingleFlatAdapter(_FlatAdapter):
                 or client._bulk_contract_sha256 != e5_client.BULK_CONTRACT_SHA256
                 or self._owner._bulk_contract_sha256 != e5_client.BULK_CONTRACT_SHA256
                 or client._closed is not False
-                or _flat_bundle_bindings(self._bundle, self._manifest, single_worker=True)
+                or _flat_bundle_bindings(self._bundle, self._manifest)
                    != (self._query_binding, self._runtime_hash)):
             raise ValueError('single_flat_binding_changed')
         status = self._owner.status()
@@ -356,7 +321,7 @@ def create_single_flat_adapter(*, enabled=False, bundle_root=None, expected_mani
         from tools import wd_mind_e5_client as e5_client
         if enabled is not True or type(client) is not e5_client.GracefulE5WorkerClient:
             raise ValueError('disabled_or_client')
-        query_raw, runtime_hash = _flat_bundle_bindings(bundle_root, expected_manifest_sha256, single_worker=True)
+        query_raw, runtime_hash = _flat_bundle_bindings(bundle_root, expected_manifest_sha256)
         result = _SingleFlatAdapter(client, bundle_root, expected_manifest_sha256, query_raw, runtime_hash)
         result._check()
         return result

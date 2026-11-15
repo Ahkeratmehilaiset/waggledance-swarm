@@ -217,14 +217,14 @@ $owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedMan
     -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -ApprovalReferenceSha256 ('c'*64) -Lane 'codex-lead-1' -TimeoutSeconds 5
 if((Wait-WdMindParentBootstrap -Owner $owner).State -cne 'EXITED'){throw 'synthetic_parent_not_exited'}
 $r=[Text.Encoding]::UTF8.GetString($global:WdMindParentBootstrapIO[$owner.Token].OutBytes.ToArray()) | ConvertFrom-Json
-[pscustomobject]@{state=$owner.State;child_exit=$global:WdMindParentBootstrapProcesses[$owner.Token].Process.ExitCode;is_redirected=$r.is_redirected;
+[pscustomobject]@{state=$owner.State;approval=$owner.Approval;authority=$owner.Authority;child_exit=$global:WdMindParentBootstrapProcesses[$owner.Token].Process.ExitCode;is_redirected=$r.is_redirected;
   command_has_key=$r.command_has_key;environment_has_key=$r.environment_has_key;
   secret_env_present=$r.secret_env_present;policy_length=$r.policy_length;
   policy_hash_ok=$r.policy_hash_ok;manifest_ok=$r.manifest_ok;independent_random=$r.independent_random} |
   ConvertTo-Json -Compress
 '''.replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin)).replace('POLICY_PIN', _literal(policy_pin))
     result = _run_startup_script(script)
-    assert result == {'state':'EXITED', 'child_exit':0, 'is_redirected':True,
+    assert result == {'state':'EXITED', 'approval':'UNVERIFIED', 'authority':'none', 'child_exit':0, 'is_redirected':True,
                       'command_has_key':False, 'environment_has_key':False,
                       'secret_env_present':False, 'policy_length':len(policy),
                       'policy_hash_ok':True, 'manifest_ok':True, 'independent_random':True}

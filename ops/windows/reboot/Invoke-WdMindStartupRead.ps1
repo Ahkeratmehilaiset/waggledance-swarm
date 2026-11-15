@@ -356,7 +356,7 @@ namespace WaggleDance {
             $process=New-Object Diagnostics.Process
             $process.StartInfo=$start
             $token=[Guid]::NewGuid().ToString('N')
-            $owner=[pscustomobject]@{State='HOLD';Token=$token;
+            $owner=[pscustomobject]@{State='HOLD';Token=$token;Approval='UNVERIFIED';Authority='none';
                 Clock=$clock;TimeoutMilliseconds=([long]$TimeoutSeconds*1000)}
             # The process and any pending write remain strongly owned on every
             # post-reservation failure; no process termination is attempted.

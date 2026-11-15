@@ -612,3 +612,50 @@ def test_single_b16_last_frame_check_timeout_keeps_owner(b16_worker, monkeypatch
     with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
         single.passage(tuple(texts))
     assert len(checks) == 9 and client.owner is owner and owner.status()['owned'] is True
+
+
+@pytest.mark.parametrize('phase', ['precheck', 'postcheck', 'vector_validation'])
+def test_single_b16_total_deadline_covers_adapter_checks_and_vectors(b16_worker, monkeypatch, phase):
+    import time
+    from tools import wd_mind_content_query_readonly as reader
+    single, client, owner, _, texts, _ = b16_worker
+    client._timeout = 0.15
+    calls, checks, vectors = [], [], []
+    def immediate(request, **kwargs):
+        calls.append(1)
+        return {'nonce': request['nonce'], 'request_sha256': request['request_sha256'],
+                'vector_bytes': ROW * len(request['passages'])}
+    original_check = type(single)._check
+    def delayed_check(adapter):
+        original_check(adapter)
+        checks.append(1)
+        if (phase == 'precheck' and len(checks) == 1) or (phase == 'postcheck' and len(checks) == 2):
+            time.sleep(0.25)
+    original_vector = reader._q4_vector
+    def delayed_vector(row):
+        vectors.append(1)
+        if phase == 'vector_validation' and len(vectors) == 1:
+            time.sleep(0.25)
+        return original_vector(row)
+    monkeypatch.setattr(client, 'encode_supervised', immediate)
+    monkeypatch.setattr(type(single), '_check', delayed_check)
+    monkeypatch.setattr(reader, '_q4_vector', delayed_vector)
+    with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+        single.passage(tuple(texts))
+    assert len(calls) == (0 if phase == 'precheck' else 1)
+    assert client.owner is owner and owner.status()['owned'] is True
+
+
+def test_single_b16_forwards_remaining_deadline_to_client(b16_worker, monkeypatch):
+    import time
+    single, client, _, _, texts, _ = b16_worker
+    client._timeout = 0.5
+    seen = []
+    def immediate(request, *, frame_check, call_deadline):
+        assert callable(frame_check)
+        seen.append(call_deadline - time.monotonic())
+        return {'nonce': request['nonce'], 'request_sha256': request['request_sha256'],
+                'vector_bytes': ROW * len(request['passages'])}
+    monkeypatch.setattr(client, 'encode_supervised', immediate)
+    assert len(single.passage(tuple(texts))) == 16 * 1536
+    assert len(seen) == 1 and 0 < seen[0] <= 0.5

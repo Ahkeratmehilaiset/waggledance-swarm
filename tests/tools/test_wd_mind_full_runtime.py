@@ -148,6 +148,52 @@ def test_parent_control_parser_interruptions_never_expose_raw_control():
     assert len(observed) >= 5
 
 
+def test_parent_control_buffer_interruptions_never_expose_raw_control():
+    import dis
+    import io
+    import sys
+    import traceback
+    from tools import wd_mind_full_runtime as runtime
+    control = b'synthetic-private-marker-52' * 10
+    code = runtime._ParentControlBuffer.read_from.__code__
+    observed = []
+    for line in sorted(set(line for _, line in dis.findlinestarts(code) if line is not None)):
+        box = runtime._ParentControlBuffer(runtime._PrivateParentStream(io.BytesIO(control)))
+        def trace(frame, event, arg):
+            if frame.f_code is code and event == 'line' and frame.f_lineno == line:
+                observed.append(line)
+                raise KeyboardInterrupt()
+            return trace
+        sys.settrace(trace)
+        try:
+            box.read_from(enabled=True)
+        except BaseException as error:
+            frames = traceback.TracebackException.from_exception(error, capture_locals=True).stack
+            for frame in frames:
+                if frame.name in ('read_from', 'readinto'):
+                    assert 'synthetic-private-marker-52' not in repr(frame.locals)
+        finally:
+            sys.settrace(None)
+    assert len(observed) >= 8
+
+
+def test_parent_control_buffer_refuses_oversize_and_accepts_partial_reads():
+    import io
+    from tools import wd_mind_full_runtime as runtime
+    private = runtime._ParentControlBuffer(runtime._PrivateParentStream(io.BytesIO(b'x' * (136 + 65536 + 1))))
+    with pytest.raises(runtime.FullRuntimeRefused): private.read_from(enabled=True)
+    with pytest.raises(runtime.FullRuntimeRefused): private.snapshot()
+    class PartialStream:
+        def __init__(self): self.parts = [b'a', b'b', b'']
+        def readinto(self, view):
+            chunk = self.parts.pop(0)
+            view[:len(chunk)] = chunk
+            return len(chunk)
+    private = runtime._ParentControlBuffer(runtime._PrivateParentStream(PartialStream()))
+    private.read_from(enabled=True)
+    assert private.snapshot() == b'ab'
+
+
 def test_parent_bootstrap_interrupted_take_does_not_leak_values_in_traceback():
     import traceback
     from tools import wd_mind_full_runtime as runtime

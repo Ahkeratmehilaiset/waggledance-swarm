@@ -408,7 +408,7 @@ class _OwnedSnapshotWatcher:
 
     def _capture(self, watcher):
         with self._lock:
-            if self._closed or (self._watcher is not None and self._held_unlocked()):
+            if self._closed or (self._watcher is not None and self._held_unlocked() is not False):
                 raise ValueError('watcher_already_owned_or_closed')
             self._watcher = watcher
 
@@ -430,12 +430,19 @@ class _OwnedSnapshotWatcher:
     def _held_unlocked(self):
         if self._watcher is None:
             return False
+        pending_cancel = None
         try:
-            return self._watcher.alive() is not False
+            observed = self._watcher.alive()
+            return observed if type(observed) is bool else None
         except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
             raise
+        except (BaseExceptionGroup, FullRuntimeCancellationUnknown) as exc:
+            pending_cancel = _flat_cancellation(exc)
         except BaseException:
-            return True
+            return None
+        if pending_cancel is not None:
+            raise pending_cancel from None
+        return None
 
 
 def _reserve_owned_snapshot_watcher(package, lease):
@@ -1990,22 +1997,42 @@ class _SingleManifestOwner:
             self._state = 'HOLD'
             return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
         if self._owner is None:
-            return {'state': self._state, 'owned': False if self._state == 'NEW' else None,
-                    'authority': 'none'}
-        try:
-            current = self._owner.status()
-            owned = current.get('owned') if type(current) is dict else None
-            if type(owned) is not bool:
-                owned = None
-            if self._state == 'READY' and (owned is not True or current.get('state') != 'RUNNING'):
+            owned = False if self._state == 'NEW' else None
+        else:
+            try:
+                current = self._owner.status()
+                owned = current.get('owned') if type(current) is dict else None
+                if type(owned) is not bool:
+                    owned = None
+                if self._state == 'READY' and (owned is not True or current.get('state') != 'RUNNING'):
+                    self._state = 'HOLD'
+            except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
                 self._state = 'HOLD'
+                raise
+            except BaseException:
+                owned = None
+                if self._state == 'READY':
+                    self._state = 'HOLD'
+        pending_cancel = None
+        try:
+            watcher_owned = self._watcher_lease._held()
         except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
             self._state = 'HOLD'
             raise
+        except (BaseExceptionGroup, FullRuntimeCancellationUnknown) as exc:
+            self._state = 'HOLD'
+            watcher_owned = None
+            pending_cancel = _flat_cancellation(exc)
         except BaseException:
-            owned = None
-            if self._state == 'READY':
-                self._state = 'HOLD'
+            self._state = 'HOLD'
+            watcher_owned = None
+        if pending_cancel is not None:
+            raise pending_cancel from None
+        if watcher_owned is True:
+            self._state, owned = 'HOLD', True
+        elif watcher_owned is None:
+            self._state = 'HOLD'
+            owned = True if owned is True else None
         return {'state': self._state, 'owned': owned, 'authority': 'none'}
 
     def status(self):
@@ -2182,15 +2209,25 @@ class _SingleManifestOwner:
         if not self._lock.acquire(blocking=False):
             return {'state': 'BUSY', 'owned': None, 'authority': 'none'}
         try:
+            pending_cancel = None
+            watcher_check_failed = False
             try:
-                if self._watcher_lease._begin_close():
+                if self._watcher_lease._begin_close() is not False:
                     self._state = 'HOLD'
                     return self._status()
             except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
                 self._state = 'HOLD'
                 raise
+            except (BaseExceptionGroup, FullRuntimeCancellationUnknown) as exc:
+                self._state = 'HOLD'
+                watcher_check_failed = True
+                pending_cancel = _flat_cancellation(exc)
             except BaseException:
                 self._state = 'HOLD'
+                return self._status()
+            if pending_cancel is not None:
+                raise pending_cancel from None
+            if watcher_check_failed:
                 return self._status()
             if self._state == 'NEW':
                 self._state = 'STOPPED'
@@ -2204,6 +2241,7 @@ class _SingleManifestOwner:
             if self._owner is None:
                 self._state = 'HOLD'
                 return self._status()
+            worker_cancel = None
             try:
                 if self._client is not None:
                     result = self._client.close(timeout=self._timeout)
@@ -2216,8 +2254,13 @@ class _SingleManifestOwner:
             except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
                 self._state = 'HOLD'
                 raise
+            except (BaseExceptionGroup, FullRuntimeCancellationUnknown) as exc:
+                self._state = 'HOLD'
+                worker_cancel = _flat_cancellation(exc)
             except Exception:
                 pass
+            if worker_cancel is not None:
+                raise worker_cancel from None
             self._state = 'HOLD'
             return self._status()
         finally:

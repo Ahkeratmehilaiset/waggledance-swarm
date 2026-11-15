@@ -169,6 +169,41 @@ sys.exit(0)
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize('window', ['final_session_pin', 'final_encoder_pin'])
+def test_flat_consumer_rechecks_source_after_final_pins(flat_consumer_case, monkeypatch, window):
+    _, owner, proposals, snapshot, _, response = flat_consumer_case
+    source = Path(snapshot['messages']['source_path'])
+    calls = []
+    def mutate_selected_row():
+        rows = source.read_bytes().splitlines(keepends=True)
+        index = next(i for i, row in enumerate(rows)
+                     if content._sha(content._canonical(json.loads(row))) == proposals[0]['source_event_sha256'])
+        changed = rows[index].replace(b'"message":', b'"messagE":', 1)
+        assert changed != rows[index] and len(changed) == len(rows[index])
+        rows[index] = changed
+        source.write_bytes(b''.join(rows))
+    if window == 'final_session_pin':
+        def pin(root, digest):
+            calls.append(1)
+            if len(calls) == 2: mutate_selected_row()
+        monkeypatch.setattr(session, '_pin_flat_session', pin)
+    else:
+        original = type(owner._gate)._check_delivery_binding
+        def encoder_check(gate):
+            result = original(gate)
+            calls.append(1)
+            # The first resolve checks the encoder twice; the session's final
+            # explicit E5 check is the third invocation.
+            if len(calls) == 3: mutate_selected_row()
+            return result
+        monkeypatch.setattr(type(owner._gate), '_check_delivery_binding', encoder_check)
+    with pytest.raises(session.MindContentSessionRefused, match='^mind_session_content_refused$'):
+        session.query_flat_source_candidates(enabled=True, owner=owner, ipc_bytes=response(),
+            bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+            expected_nonce='1' * 64, lane='codex-lead-1', scope='shared')
+    assert len(calls) >= (2 if window == 'final_session_pin' else 3)
+
+
 
 def _entry():
     result = getattr(session, "query_content_session", None)

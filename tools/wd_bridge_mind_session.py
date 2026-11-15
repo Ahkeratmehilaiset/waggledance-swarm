@@ -221,6 +221,7 @@ def query_flat_source_candidates(*, enabled=False, owner=None, ipc_bytes=None, b
             if triple in seen:
                 raise ValueError('duplicate')
             seen.add(triple)
+        frozen_candidates = reader._canonical(frame['candidates'])
         resolved = owner.resolve(proposals=frame['candidates'], lane=lane, scope=scope)
         if (type(resolved) is not dict or set(resolved) !=
                 {'authority','sender_authentication','same_user_aba','index_match','results'}
@@ -232,6 +233,25 @@ def query_flat_source_candidates(*, enabled=False, owner=None, ipc_bytes=None, b
         if package._consumer_bundle_controls(bundle_root, expected_manifest_sha256) != controls:
             raise ValueError('controls_changed')
         owner._gate._check_delivery_binding()
+        if reader._canonical(frame['candidates']) != frozen_candidates:
+            raise ValueError('candidates_changed')
+        # The source can change while the final session/fleet/E5 pins are being
+        # checked. Independently resolve the selected rows again afterwards;
+        # only their age may legitimately advance between the two observations.
+        final = owner.resolve(proposals=json.loads(frozen_candidates.decode('utf-8')),
+                              lane=lane, scope=scope)
+        if (type(final) is not dict or set(final) != set(resolved)
+                or any(final[key] != resolved[key] for key in
+                       ('authority','sender_authentication','same_user_aba','index_match'))
+                or type(final['results']) is not list or len(final['results']) != len(resolved['results'])):
+            raise ValueError('final_resolve')
+        for before, after in zip(resolved['results'], final['results']):
+            if (type(before) is not dict or type(after) is not dict
+                    or set(before) != set(after)
+                    or {key: value for key, value in before.items() if key != 'event_age_seconds_upper_bound'} !=
+                       {key: value for key, value in after.items() if key != 'event_age_seconds_upper_bound'}):
+                raise ValueError('source_changed')
+        resolved = final
         finished = datetime.now(timezone.utc)
         results = []
         for proposal, hit in zip(frame['candidates'], resolved['results']):

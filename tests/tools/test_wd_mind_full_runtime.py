@@ -218,6 +218,33 @@ def test_manifest_policy_candidate_requires_pinned_descriptor_and_is_not_approva
             expected_manifest_sha256=pin)
 
 
+def test_export_sender_interrupted_after_lock_acquisition_releases_lock():
+    import inspect
+    import sys
+    import threading
+    import time
+    from tools import wd_mind_full_runtime as runtime
+    owner = object.__new__(runtime._SingleManifestOwner)
+    owner._lock, owner._state = threading.Lock(), 'READY'
+    prepared = runtime._PrivateConsumerExport(b'm', (), 1, owner, object())
+    lines, start = inspect.getsourcelines(runtime._PrivateConsumerExport._send_parent_stream_inner)
+    target = start + next(i for i, line in enumerate(lines) if line.strip() == 'if not acquired:')
+    def trace(frame, event, arg):
+        if (frame.f_code is runtime._PrivateConsumerExport._send_parent_stream_inner.__code__
+                and event == 'line' and frame.f_lineno == target):
+            raise KeyboardInterrupt()
+        return trace
+    sys.settrace(trace)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            prepared._send_parent_stream_inner(None, ('a', b'n'*32, b'k'*32, 'b', b'p'),
+                                               1000, time.monotonic() + 5)
+    finally:
+        sys.settrace(None)
+    assert not owner._lock.locked()
+    assert owner._state == 'HOLD'
+
+
 def test_parent_bootstrap_interrupted_take_does_not_leak_values_in_traceback():
     import traceback
     from tools import wd_mind_full_runtime as runtime

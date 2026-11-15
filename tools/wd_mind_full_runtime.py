@@ -1408,10 +1408,13 @@ class _PrivateConsumerExport:
             raise ValueError('input')
         manifest, nonce, channel_key, policy_sha, policy = credentials
         owner, memory = self.__owner, self.__memory
-        if type(owner) is not _SingleManifestOwner or not owner._lock.acquire(blocking=False):
+        if type(owner) is not _SingleManifestOwner:
             raise ValueError('owner')
-        succeeded = False
+        succeeded = acquired = False
         try:
+            acquired = owner._lock.acquire(blocking=False)
+            if not acquired:
+                raise ValueError('owner_busy')
             if (owner._state != 'READY' or owner._handler is None or owner._handler._memory is not memory
                     or type(nonce) is not bytes or len(nonce) != 32
                     or type(channel_key) is not bytes or len(channel_key) != 32
@@ -1469,19 +1472,20 @@ class _PrivateConsumerExport:
             succeeded = True
             return {'status':'SENT', 'authority':'none', 'receiver_authentication':'UNKNOWN'}
         finally:
-            self.discard()
-            if not succeeded:
-                owner._state = 'HOLD'
-            try:
+            if acquired:
+                self.discard()
                 if not succeeded:
-                    try:
-                        stream.close()
-                    except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
-                        raise
-                    except Exception:
-                        pass  # HOLD remains; closure is unproven.
-            finally:
-                owner._lock.release()
+                    owner._state = 'HOLD'
+                try:
+                    if not succeeded:
+                        try:
+                            stream.close()
+                        except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+                            raise
+                        except Exception:
+                            pass  # HOLD remains; closure is unproven.
+                finally:
+                    owner._lock.release()
 
 
 class _PrivateExportStream:

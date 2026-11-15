@@ -820,3 +820,40 @@ sys.stdout.buffer.flush()
         for process in (owner, consumer):
             if process is not None and process.poll() is None:
                 process.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows handle inheritance test')
+def test_windows_handle_list_excludes_unrelated_inheritable_handle():
+    """Probe in an isolated synthetic parent, without mutating fleet handles."""
+    import sys
+    probe = r'''
+import ctypes,msvcrt,os,struct,subprocess,sys
+read_fd,write_fd=os.pipe()
+handle=msvcrt.get_osfhandle(read_fd)
+os.set_handle_inheritable(handle,True)
+child=r"""
+import ctypes,struct,sys
+value=struct.unpack('<Q',sys.stdin.buffer.read(8))[0]
+kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+kernel.GetFileType.argtypes=[ctypes.c_void_p]
+kernel.GetFileType.restype=ctypes.c_ulong
+kind=kernel.GetFileType(ctypes.c_void_p(value))
+error=ctypes.get_last_error()
+assert kind==0 and error==6
+sys.stdout.write('excluded\\n')
+"""
+try:
+    worker=subprocess.Popen([sys.executable,'-I','-S','-B','-c',child],stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE,stderr=subprocess.PIPE,close_fds=True,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
+    result,error=worker.communicate(struct.pack('<Q',handle),timeout=10)
+    assert worker.returncode==0 and result==b'excluded\\n'
+    print('isolated-handle-exclusion-ok')
+finally:
+    os.close(read_fd)
+    os.close(write_fd)
+'''
+    result = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', probe],
+        capture_output=True, timeout=20, creationflags=subprocess.CREATE_NO_WINDOW)
+    assert result.returncode == 0, 'isolated handle exclusion probe failed'
+    assert result.stdout.strip() == b'isolated-handle-exclusion-ok'

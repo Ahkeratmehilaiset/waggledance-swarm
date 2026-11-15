@@ -61,7 +61,7 @@ def _identity_narrow_fixture(tmp_path):
     return suite, package, case
 
 
-@pytest.mark.parametrize('variant', ['same_object', 'equal_copy', 'changed_copy'])
+@pytest.mark.parametrize('variant', ['same_object', 'same_object_wrong_pin', 'equal_copy', 'changed_copy'])
 def test_narrow_projection_same_object_skips_only_redundant_byte_compare(tmp_path, monkeypatch, variant):
     suite, _, (_, _, output, snapshot, bundle, deployment, _, _) = _identity_narrow_fixture(tmp_path)
     candidate_reader = suite.reader
@@ -69,10 +69,11 @@ def test_narrow_projection_same_object_skips_only_redundant_byte_compare(tmp_pat
     gate = candidate_reader._NarrowReadGate(str(bundle), candidate_reader._sha(deployment), values)
     gate.verify_snapshot(snapshot, _return_projection=False)
     original = snapshot['projection_bytes']
-    raw = original if variant == 'same_object' else bytes(bytearray(original))
+    raw = original if variant in ('same_object', 'same_object_wrong_pin') else bytes(bytearray(original))
     if variant == 'changed_copy': raw += b' '
-    if variant != 'same_object': assert raw is not original
-    candidate = dict(snapshot, projection_bytes=raw, projection_sha256=candidate_reader._sha(raw))
+    if variant not in ('same_object', 'same_object_wrong_pin'): assert raw is not original
+    digest = '0' * 64 if variant == 'same_object_wrong_pin' else candidate_reader._sha(raw)
+    candidate = dict(snapshot, projection_bytes=raw, projection_sha256=digest)
     comparisons, hashes = [], []
     compare, sha = candidate_reader.hmac.compare_digest, candidate_reader._sha
     def counted_compare(left, right):
@@ -83,12 +84,15 @@ def test_narrow_projection_same_object_skips_only_redundant_byte_compare(tmp_pat
         return sha(data)
     monkeypatch.setattr(candidate_reader.hmac, 'compare_digest', counted_compare)
     monkeypatch.setattr(candidate_reader, '_sha', counted_sha)
-    if variant == 'changed_copy':
+    if variant == 'same_object_wrong_pin':
+        with pytest.raises(ValueError, match='projection_pin'):
+            gate.verify_snapshot(candidate, _return_projection=False)
+    elif variant == 'changed_copy':
         with pytest.raises(ValueError): gate.verify_snapshot(candidate, _return_projection=False)
     else:
         assert gate.verify_snapshot(candidate, _return_projection=False)[2]['status'] == 'MATCH'
     assert hashes  # The SHA pin remains checked on every invocation.
-    assert len(comparisons) == (0 if variant == 'same_object' else 1)
+    assert len(comparisons) == (0 if variant in ('same_object', 'same_object_wrong_pin') else 1)
 
 
 @pytest.mark.parametrize('damage', ['projection', 'policy_pin'])

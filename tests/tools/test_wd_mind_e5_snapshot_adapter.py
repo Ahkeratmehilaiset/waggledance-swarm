@@ -166,124 +166,25 @@ def test_runtime_and_query_bindings_must_match_before_client(fault):
 @pytest.fixture
 def flat_bundle(tmp_path, monkeypatch):
     from tools import (wd_mind_e5_snapshot_adapter as adapter, wd_mind_content_query_readonly as reader,
-        wd_mind_absent_generation_prefix_readonly as prefix, wd_mind_e5_rotating_client as rotating,
-        wd_mind_e5_lifecycle as lifecycle, wd_mind_e5_client as client_module)
+        wd_mind_absent_generation_prefix_readonly as prefix, wd_mind_e5_lifecycle as lifecycle,
+        wd_mind_e5_client as client_module)
     bundle = tmp_path / 'bundle'; bundle.mkdir()
     files = {}
-    for module in (adapter,reader,prefix,rotating,lifecycle,client_module):
+    for module in (adapter, reader, prefix, lifecycle, client_module):
         relative = 'tools-bootstrap/tools/' + Path(module.__file__).name
-        path = bundle / relative; path.parent.mkdir(parents=True,exist_ok=True)
+        path = bundle / relative; path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(Path(module.__file__).read_bytes())
         files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
-        monkeypatch.setattr(module,'__file__',str(path))
-    worker = bundle/'tools-bootstrap/tools/wd_mind_e5_worker.py'
+        monkeypatch.setattr(module, '__file__', str(path))
+    worker = bundle / 'tools-bootstrap/tools/wd_mind_e5_worker.py'
     worker.write_bytes(b'synthetic pinned worker only; no native code')
     files['tools-bootstrap/tools/wd_mind_e5_worker.py'] = hashlib.sha256(worker.read_bytes()).hexdigest()
     data = json.loads(_runtime_binding()['runtime_binding_bytes'])
     data['code_sha256'] = files['tools-bootstrap/tools/wd_mind_e5_worker.py']
-    raw = _json(data); path=bundle/'wd-mind-e5-encoder-binding.json';path.write_bytes(raw)
-    files[path.name]=hashlib.sha256(raw).hexdigest()
-    manifest=_json({'schema_version':1,'files':files}); (bundle/'deployment-manifest.json').write_bytes(manifest)
-    class SyntheticBulkRotator:
-        def __init__(self):
-            self._binding=hashlib.sha256(raw).hexdigest()
-            self._bulk_contract_sha256=lifecycle.BULK_CONTRACT_SHA256
-            self._failed=self._closed=False
-            self.calls=[]
-        def encode_supervised(self, request):
-            self.calls.append(request)
-            assert request['encoder_binding_sha256'] == self._binding
-            assert request['request_sha256'] == hashlib.sha256(_json(
-                {k:v for k,v in request.items() if k != 'request_sha256'})).hexdigest()
-            data = (b''.join(_passage_row(text) for text in request['passages'])
-                    if request['operation'] == 'refresh' else ROW)
-            return {'nonce':request['nonce'],'request_sha256':request['request_sha256'],'vector_bytes':data}
-    monkeypatch.setattr(rotating,'RotatingGracefulE5Client',SyntheticBulkRotator)
-    return bundle, hashlib.sha256(manifest).hexdigest(), SyntheticBulkRotator(), data
-
-
-def test_flat_adapter_uses_pinned_runtime_and_no_index_binding(flat_bundle):
-    from tools import wd_mind_e5_snapshot_adapter as adapter
-    bundle,pin,client,runtime=flat_bundle
-    result=adapter.create_flat_adapter(enabled=True,bundle_root=str(bundle),expected_manifest_sha256=pin,client=client)
-    query_binding=json.loads(result.encoder_binding_bytes)
-    assert query_binding['encoder'] == runtime['encoder'] and query_binding['code_sha256'] == runtime['code_sha256']
-    assert query_binding['query_policy'] == runtime['query_policy']
-    assert result.encoder_binding_sha256 == hashlib.sha256(result.encoder_binding_bytes).hexdigest()
-    assert result.passage(('passage: synthetic 1','passage: synthetic 2')) == _passage_row('passage: synthetic 1')+_passage_row('passage: synthetic 2')
-    assert struct.pack('<384f',*result.query('sample')) == ROW
-    assert all(call['encoder_binding_sha256'] == client._binding for call in client.calls)
-
-
-@pytest.mark.parametrize('fault',['default_off','manifest','runtime','worker','rotator_binding','not_bulk','wrong_client'])
-def test_flat_adapter_refuses_untrusted_bindings_without_calls(flat_bundle, fault):
-    from tools import wd_mind_e5_snapshot_adapter as adapter
-    bundle,pin,client,_=flat_bundle
-    if fault == 'manifest': pin='0'*64
-    if fault == 'runtime': (bundle/'wd-mind-e5-encoder-binding.json').write_bytes(b'{}')
-    if fault == 'worker': (bundle/'tools-bootstrap/tools/wd_mind_e5_worker.py').write_bytes(b'tampered')
-    if fault == 'rotator_binding': client._binding='0'*64
-    if fault == 'not_bulk': client._bulk_contract_sha256=None
-    if fault == 'wrong_client': client=FakeClient()
-    with pytest.raises(ValueError): adapter.create_flat_adapter(
-        enabled=fault != 'default_off',bundle_root=str(bundle),expected_manifest_sha256=pin,client=client)
-    assert client.calls == [] if hasattr(client,'calls') else client.requests == []
-
-
-@pytest.mark.parametrize('fault',['schema','worker','query','query_bool','passage','model','revision','weights'])
-def test_flat_adapter_rejects_repinned_invalid_runtime_policy(flat_bundle, fault):
-    from tools import wd_mind_e5_snapshot_adapter as adapter
-    bundle,_,client,runtime=flat_bundle
-    if fault == 'schema': runtime['schema']='other'
-    if fault == 'worker': runtime['code_sha256']='f'*64
-    if fault == 'query': runtime['query_policy']['prefix']='passage: '
-    if fault == 'query_bool': runtime['query_policy']['dim']=True
-    if fault == 'passage': runtime['passage_policy']['truncate_chars']=100
-    if fault == 'model': runtime['encoder']['model']='other'
-    if fault == 'revision': runtime['encoder']['revision']=''
-    if fault == 'weights': runtime['encoder']['weights_sha256']='not-a-hash'
-    raw=_json(runtime); (bundle/'wd-mind-e5-encoder-binding.json').write_bytes(raw)
-    manifest_path=bundle/'deployment-manifest.json'; manifest=json.loads(manifest_path.read_bytes())
-    manifest['files']['wd-mind-e5-encoder-binding.json']=hashlib.sha256(raw).hexdigest()
-    manifest_bytes=_json(manifest); manifest_path.write_bytes(manifest_bytes)
-    client._binding=hashlib.sha256(raw).hexdigest()
-    with pytest.raises(ValueError): adapter.create_flat_adapter(enabled=True,bundle_root=str(bundle),
-        expected_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),client=client)
-    assert not client.calls
-
-
-@pytest.mark.parametrize('fault',['runtime_bytes','bulk_contract','closed','binding'])
-def test_flat_adapter_detects_changes_after_callback_without_partial_data(flat_bundle, fault, capsys):
-    from tools import wd_mind_e5_snapshot_adapter as adapter
-    bundle,pin,client,_=flat_bundle
-    flat=adapter.create_flat_adapter(enabled=True,bundle_root=str(bundle),expected_manifest_sha256=pin,client=client)
-    original=client.encode_supervised
-    def mutate(request):
-        result=original(request)
-        if fault == 'runtime_bytes': (bundle/'wd-mind-e5-encoder-binding.json').write_bytes(b'changed')
-        if fault == 'bulk_contract': client._bulk_contract_sha256='0'*64
-        if fault == 'closed': client._closed=True
-        if fault == 'binding': client._binding='0'*64
-        return result
-    client.encode_supervised=mutate
-    with pytest.raises(ValueError,match='^mind_e5_snapshot_adapter_refused$'):
-        flat.passage(('passage: synthetic',))
-    assert capsys.readouterr() == ('','')
-
-
-def test_flat_adapter_refuses_even_pinned_wrong_module_origin(flat_bundle, monkeypatch):
-    from tools import wd_mind_e5_snapshot_adapter as adapter, wd_mind_content_query_readonly as reader
-    bundle,_,client,_=flat_bundle
-    alias=bundle/'tools-bootstrap/tools/reader_alias.py'
-    alias.write_bytes(Path(reader.__file__).read_bytes())
-    monkeypatch.setattr(reader,'__file__',str(alias))
-    manifest_path=bundle/'deployment-manifest.json';manifest=json.loads(manifest_path.read_bytes())
-    manifest['files']['tools-bootstrap/tools/reader_alias.py']=hashlib.sha256(alias.read_bytes()).hexdigest()
-    raw=_json(manifest);manifest_path.write_bytes(raw)
-    with pytest.raises(ValueError):
-        adapter.create_flat_adapter(enabled=True,bundle_root=str(bundle),
-            expected_manifest_sha256=hashlib.sha256(raw).hexdigest(),client=client)
-    assert not client.calls
+    raw = _json(data); path = bundle / 'wd-mind-e5-encoder-binding.json'; path.write_bytes(raw)
+    files[path.name] = hashlib.sha256(raw).hexdigest()
+    manifest = _json({'schema_version': 1, 'files': files}); (bundle / 'deployment-manifest.json').write_bytes(manifest)
+    return bundle, hashlib.sha256(manifest).hexdigest(), FakeClient(), data
 
 
 def test_single_worker_adapter_is_default_off_and_rejects_non_graceful(flat_bundle):
@@ -294,7 +195,7 @@ def test_single_worker_adapter_is_default_off_and_rejects_non_graceful(flat_bund
     with pytest.raises(ValueError):
         adapter.create_single_flat_adapter(enabled=True, bundle_root=str(bundle), expected_manifest_sha256=pin,
                                            client=client)
-    assert client.calls == []
+    assert client.requests == []
 
 
 def test_single_worker_adapter_real_graceful_transport_and_close(flat_bundle, monkeypatch):
@@ -336,7 +237,7 @@ def single_worker(flat_bundle, monkeypatch):
     # A single-worker bundle does not contain the deferred rotating client.
     manifest_path = bundle / 'deployment-manifest.json'
     manifest = json.loads(manifest_path.read_bytes())
-    del manifest['files']['tools-bootstrap/tools/wd_mind_e5_rotating_client.py']
+    assert 'tools-bootstrap/tools/wd_mind_e5_rotating_client.py' not in manifest['files']
     manifest_raw = _json(manifest)
     manifest_path.write_bytes(manifest_raw)
     pin = hashlib.sha256(manifest_raw).hexdigest()
@@ -400,6 +301,51 @@ def test_single_worker_nonce_budget_refuses_without_restarting(single_worker):
     assert bytes(process.written) == before and client.owner is owner
 
 
+@pytest.mark.parametrize('fault', ['schema', 'worker', 'query', 'query_bool', 'passage', 'model', 'revision', 'weights'])
+def test_single_worker_rejects_repinned_invalid_runtime_policy(single_worker, fault):
+    from tools import wd_mind_e5_snapshot_adapter as adapter
+    _, client, owner, process, bundle = single_worker
+    runtime_path = bundle / 'wd-mind-e5-encoder-binding.json'
+    data = json.loads(runtime_path.read_bytes())
+    if fault == 'schema': data['schema'] = 'other'
+    if fault == 'worker': data['code_sha256'] = 'f' * 64
+    if fault == 'query': data['query_policy']['prefix'] = 'passage: '
+    if fault == 'query_bool': data['query_policy']['dim'] = True
+    if fault == 'passage': data['passage_policy']['truncate_chars'] = 100
+    if fault == 'model': data['encoder']['model'] = 'other'
+    if fault == 'revision': data['encoder']['revision'] = ''
+    if fault == 'weights': data['encoder']['weights_sha256'] = 'not-a-hash'
+    raw = _json(data)
+    runtime_path.write_bytes(raw)
+    manifest_path = bundle / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest['files'][runtime_path.name] = hashlib.sha256(raw).hexdigest()
+    manifest_raw = _json(manifest)
+    manifest_path.write_bytes(manifest_raw)
+    client._binding_sha256 = hashlib.sha256(raw).hexdigest()
+    with pytest.raises(ValueError):
+        adapter.create_single_flat_adapter(enabled=True, bundle_root=str(bundle),
+            expected_manifest_sha256=hashlib.sha256(manifest_raw).hexdigest(), client=client)
+    assert bytes(process.written) == b'' and client.owner is owner
+
+
+def test_single_worker_refuses_wrong_module_origin(single_worker, monkeypatch):
+    from tools import wd_mind_e5_snapshot_adapter as adapter, wd_mind_content_query_readonly as reader
+    _, client, owner, process, bundle = single_worker
+    alias = bundle / 'tools-bootstrap/tools/reader_alias.py'
+    alias.write_bytes(Path(reader.__file__).read_bytes())
+    monkeypatch.setattr(reader, '__file__', str(alias))
+    manifest_path = bundle / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest['files']['tools-bootstrap/tools/reader_alias.py'] = hashlib.sha256(alias.read_bytes()).hexdigest()
+    manifest_raw = _json(manifest)
+    manifest_path.write_bytes(manifest_raw)
+    with pytest.raises(ValueError):
+        adapter.create_single_flat_adapter(enabled=True, bundle_root=str(bundle),
+            expected_manifest_sha256=hashlib.sha256(manifest_raw).hexdigest(), client=client)
+    assert bytes(process.written) == b'' and client.owner is owner
+
+
 @pytest.mark.parametrize('fault', ['binding', 'worker', 'owner_hold'])
 def test_single_worker_change_during_callback_never_returns_result(single_worker, fault, monkeypatch, capsys):
     single, client, owner, _, bundle = single_worker
@@ -448,7 +394,7 @@ def b16_worker(flat_bundle, monkeypatch, request):
     bundle, _, _, _ = flat_bundle
     manifest_path = bundle / 'deployment-manifest.json'
     manifest = json.loads(manifest_path.read_bytes())
-    del manifest['files']['tools-bootstrap/tools/wd_mind_e5_rotating_client.py']
+    assert 'tools-bootstrap/tools/wd_mind_e5_rotating_client.py' not in manifest['files']
     manifest_raw = _json(manifest)
     manifest_path.write_bytes(manifest_raw)
     pin = hashlib.sha256(manifest_raw).hexdigest()

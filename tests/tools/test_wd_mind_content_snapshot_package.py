@@ -187,6 +187,32 @@ def test_capacity_profile_limits_are_fixed_and_disjoint_from_default(package):
             package.PASSAGE_BATCH) == (256, 4194304, 2097152, 524288, 2097152, 8388608, 16)
 
 
+@pytest.mark.parametrize("fault", ["depth", "nodes", "utf8", "nul", "size"])
+def test_capacity_projection_allocation_refusals_precede_json_parse(package, fixtures, tmp_path, monkeypatch, fault):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    if fault == "depth":
+        raw = b"[" * 17 + b"0" + b"]" * 17
+    elif fault == "nodes":
+        raw = b"[[]" + b",[]" * (256 + 64 * 32768) + b"]"
+    elif fault == "utf8":
+        raw = b'{"invalid":"\xff"}'
+    elif fault == "nul":
+        raw = '{"invalid":0}'.encode("utf-16-le")
+    else:
+        raw = b"x" * (67108864 + 1)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, CAPACITY_PROFILE)
+    args["snapshot"].update(projection_bytes=raw, projection_sha256=reader._sha(raw))
+    original = reader._pinned
+    def pinned(data, *values, **kwargs):
+        if data is raw:
+            pytest.fail("projection reached JSON parser before allocation guard")
+        return original(data, *values, **kwargs)
+    monkeypatch.setattr(reader, "_pinned", pinned)
+    _refuses(package, args)
+    assert codec.passages == codec.serialized == codec.decoded == []
+
+
 @pytest.mark.parametrize("count", [32768, 32769])
 @pytest.mark.parametrize("cell_count", [1, 3])
 def test_capacity_record_limit_is_global_before_metadata_allocation(package, monkeypatch, count, cell_count):
@@ -206,6 +232,51 @@ def test_capacity_record_limit_is_global_before_metadata_allocation(package, mon
         assert set(package._capacity_preflight(cells, count, 0, capacity)) == set(cells)
         assert sum(calls) == 32768
     # This is preflight arithmetic coverage, not a full-scale source/model run.
+
+
+def test_capacity_projection_budget_accepts_real_32768_record_source_shape(package, fixtures, tmp_path):
+    # This validates the genuinely source-derived maximum-count projection,
+    # not 2048 passage callbacks or a full-scale index/model build.
+    rows = [fixtures._row("synthetic work", task_id=f"synthetic-task-{i}") for i in range(32768)]
+    source = fixtures._all_tasks_case(reader, tmp_path, rows)
+    projection = reader.rederive_message_projection(**source)
+    assert len(projection["messages"]["records"]) == 32768
+    snapshot = fixtures._snapshot(source, projection)
+    assert 2097152 < len(snapshot["projection_bytes"]) <= 67108864
+    assert package._snapshot(snapshot, package._capacity(CAPACITY_PROFILE)) == snapshot
+    assert reader.validate_content_snapshot(**snapshot)["status"] == "MATCH"
+
+
+def test_capacity_projection_grammar_still_uses_authoritative_parser(package, fixtures, tmp_path, monkeypatch):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, CAPACITY_PROFILE)
+    raw = b'{"messages":[}'
+    args["snapshot"].update(projection_bytes=raw, projection_sha256=reader._sha(raw))
+    original, parsed = reader._pinned, []
+    def pinned(data, *values, **kwargs):
+        if data is raw:
+            parsed.append(True)
+        return original(data, *values, **kwargs)
+    def forbidden(*values):
+        pytest.fail("malformed projection reached source derivation")
+    monkeypatch.setattr(reader, "_pinned", pinned)
+    monkeypatch.setattr(reader, "_projection", forbidden)
+    _refuses(package, args)
+    assert parsed == [True] and codec.passages == codec.serialized == codec.decoded == []
+
+
+def test_capacity_projection_pin_precedes_scan_and_default_does_not_add_scan(package, fixtures, tmp_path, monkeypatch):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, CAPACITY_PROFILE)
+    def forbidden(*values):
+        pytest.fail("unexpected projection scan")
+    monkeypatch.setattr(reader, "_q4_json_budget", forbidden)
+    assert package._snapshot(args["snapshot"]) == args["snapshot"]
+    args["snapshot"]["projection_sha256"] = "0" * 64
+    _refuses(package, args)
+    assert codec.passages == codec.serialized == codec.decoded == []
 
 
 def test_capacity_prefix_limit_is_checked_before_source_access(package, fixtures, tmp_path, monkeypatch):

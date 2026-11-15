@@ -76,6 +76,15 @@ def _snapshot(value, capacity=None):
             or value.get("approved_tasks_bytes") != reader._ALL_TASK_SCOPE_BYTES
             or value.get("approved_tasks_sha256") != reader._ALL_TASK_SCOPE_SHA256):
         raise ValueError("invalid_snapshot")
+    if capacity is not None:
+        raw, digest = value["projection_bytes"], value.get("projection_sha256")
+        if not reader._hex(digest) or not reader.hmac.compare_digest(reader._sha(raw), digest):
+            raise ValueError("invalid_projection_pin")
+        # A valid source-derived record has fewer than 64 JSON nodes; the
+        # outer projection/refusal summary fits the fixed 256-node allowance.
+        # Bound expansion before _verified's authoritative JSON parse. The
+        # same immutable bytes are still fully verified at every checkpoint.
+        reader._q4_json_budget(raw, 256 + 64 * capacity["records"])
     frozen = dict(value, messages=dict(value["messages"]))
     decision = reader._pinned(frozen["decision_bytes"], frozen["decision_sha256"])
     prefix = decision.get("source_prefix")

@@ -41,6 +41,13 @@ from __future__ import annotations
 import hashlib
 import io
 import struct
+import hmac
+import json
+import math
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+import sys
 
 from tools import wd_mind_content_query_readonly as reader
 
@@ -438,6 +445,173 @@ def build_narrow_source_manifest(*, enabled=False, snapshot=None, descriptor_byt
                     'memory_sha256': memory_sha256, 'entries': entries}
         raw = reader._canonical(manifest)
         output = {'manifest_bytes': raw, 'manifest_sha256': reader._sha(raw)}
+    except Exception:
+        pass
+    if output is None:
+        raise SnapshotPackageRefused('content_snapshot_package_refused') from None
+    return output
+
+
+def _consumer_bundle_controls(bundle_root, manifest_pin):
+    """Read code, fleet and policy from one independently pinned bundle."""
+    bridge, absent = reader._narrow_dependencies()
+    root = Path(bundle_root)
+    if not root.is_absolute() or '..' in root.parts or not reader._hex(manifest_pin):
+        raise ValueError('bundle')
+    manifest_raw = absent._read_pinned(root / 'deployment-manifest.json', manifest_pin, 4 * 1024 * 1024)
+    manifest = json.loads(manifest_raw.decode('utf-8-sig'), object_pairs_hook=reader._unique_pairs,
+                          parse_constant=reader._bad_constant)
+    if (type(manifest) is not dict or type(manifest.get('schema_version')) is not int
+            or manifest['schema_version'] != 1 or type(manifest.get('files')) is not dict):
+        raise ValueError('manifest')
+    files = manifest['files']
+    modules = ((sys.modules[__name__], 'tools-bootstrap/tools/wd_mind_content_snapshot_package.py'),
+               (reader, 'tools-bootstrap/tools/wd_mind_content_query_readonly.py'),
+               (absent, 'tools-bootstrap/tools/wd_mind_absent_generation_prefix_readonly.py'),
+               (bridge, 'tools-bootstrap/waggledance/core/bridge_log_reader.py'))
+    for module, relative in modules:
+        path = root.joinpath(*relative.split('/'))
+        origin = getattr(module, '__file__', None)
+        if (type(origin) is not str or os.path.normcase(os.path.abspath(origin)) !=
+                os.path.normcase(os.path.abspath(path))):
+            raise ValueError('origin')
+        absent._read_pinned(path, files.get(relative), 8 * 1024 * 1024)
+    source, sidecar, fleet_pin = absent._deployment_source(bundle_root, manifest_pin)
+    fleet_raw = absent._read_pinned(root / 'wd-fleet.json', fleet_pin, 1024 * 1024)
+    policy_raw = absent._read_pinned(root / 'wd-mind-message-policy.json',
+                                     files.get('wd-mind-message-policy.json'), 65536)
+    fleet = json.loads(fleet_raw.decode('utf-8-sig'), object_pairs_hook=reader._unique_pairs,
+                       parse_constant=reader._bad_constant)
+    policy = json.loads(policy_raw.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                        parse_constant=reader._bad_constant)
+    if type(fleet) is not dict or type(fleet.get('lanes')) is not list or type(fleet.get('tools_supervisor')) is not dict:
+        raise ValueError('fleet')
+    lanes, supervisor = fleet['lanes'], fleet['tools_supervisor']
+    if any(type(item) is not dict or type(item.get('agent')) is not str or type(item.get('agent_uuid')) is not str
+           for item in lanes + [supervisor]):
+        raise ValueError('roster')
+    roster = {'schema': 'wd.q4-roster-snapshot.v1',
+              'lanes': sorted(({'agent': item['agent'], 'agent_uuid': item['agent_uuid']} for item in lanes),
+                              key=lambda item: item['agent']),
+              'tools_supervisor': {'agent': supervisor['agent'], 'agent_uuid': supervisor['agent_uuid']}}
+    reader._roster(roster)
+    reader._message_policy(policy, None)
+    return str(source), str(sidecar), fleet_pin, reader._canonical(roster), policy_raw
+
+
+class _ConsumerOwnedGate(reader._NarrowReadGate):
+    """Gate whose manifest was built locally after complete source verification."""
+    def __init__(self, bundle_root, manifest_pin, values, owned_manifest):
+        super().__init__(bundle_root, manifest_pin, values)
+        self._owned_manifest = owned_manifest
+        self._owned_digest = reader._sha(owned_manifest)
+
+    def _manifest(self):
+        if not hmac.compare_digest(reader._sha(self._owned_manifest), self._owned_digest):
+            raise ValueError('owned_manifest_changed')
+        value = json.loads(self._owned_manifest.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                           parse_constant=reader._bad_constant)
+        if (type(value) is not dict or reader._canonical(value) != self._owned_manifest
+                or set(value) != {'schema', 'authority', 'source_prefix', 'source_locations', 'projection_sha256',
+                                  'decision_sha256', 'descriptor_sha256', 'memory_sha256', 'entries'}
+                or value['schema'] != reader._NARROW_SCHEMA or value['authority'] != 'none'
+                or value['descriptor_sha256'] != self._descriptor or value['memory_sha256'] != self._memory
+                or type(value['entries']) is not dict):
+            raise ValueError('owned_manifest')
+        return value
+
+
+class _ConsumerSourceOwner:
+    """Local source owner; proposals are untrusted, and this is not an IPC API."""
+    __slots__ = ('_root', '_pin', '_controls', '_snapshot', '_gate')
+
+    def __init__(self, root, pin, controls, snapshot, gate):
+        self._root, self._pin, self._controls = root, pin, controls
+        self._snapshot, self._gate = snapshot, gate
+
+    def resolve(self, *, proposals, lane, scope):
+        output = None
+        try:
+            if (_consumer_bundle_controls(self._root, self._pin) != self._controls
+                    or lane not in reader._LANES or scope not in ('own', 'shared')
+                    or type(proposals) is not list or not 1 <= len(proposals) <= 3):
+                raise ValueError('request')
+            candidates = []
+            for item in proposals:
+                if (type(item) is not dict or set(item) != {'ref_sha256','doc_id_sha256','source_event_sha256'}
+                        or any(not reader._hex(value) for value in item.values())):
+                    raise ValueError('proposal')
+                candidates.append({'ref_sha256': item['ref_sha256'], 'doc_id_sha256': item['doc_id_sha256'],
+                                   'ref_kind': 'sha256_of_projected_metadata', 'canonical_event': False})
+            now = datetime.now(timezone.utc)
+            resolved = self._gate._resolve(candidates, reader._utc_text(now), self._snapshot)
+            if len(resolved) != len(proposals):
+                raise ValueError('candidate_count')
+            projection = json.loads(self._snapshot['projection_bytes'].decode('utf-8'),
+                                    object_pairs_hook=reader._unique_pairs, parse_constant=reader._bad_constant)
+            records = {(reader._sha(row['provenance']['event_ref'].encode()),
+                        reader._sha(row['record_id'].encode())): row
+                       for row in projection['messages']['records']}
+            hits = []
+            for proposal, item in zip(proposals, resolved):
+                record = records[(item['ref_sha256'], item['doc_id_sha256'])]
+                source_ref = item['source_reference']['sha256']
+                if (not hmac.compare_digest(source_ref, proposal['source_event_sha256'])
+                        or (scope == 'own' and record['meta']['agent'] != lane)):
+                    raise ValueError('source')
+                floor = reader._utc(record['time_utc'])
+                age = (datetime.now(timezone.utc) - floor).total_seconds()
+                if age < 0 or math.ceil(age) >= 900 or reader._utc(record['available_utc']) > datetime.now(timezone.utc):
+                    raise ValueError('stale')
+                hits.append({'text': item['stored_text'], 'source_event_sha256': source_ref,
+                             'event_time_utc_floor': record['time_utc'], 'source_agent': record['meta']['agent']})
+            if _consumer_bundle_controls(self._root, self._pin) != self._controls:
+                raise ValueError('controls_changed')
+            # A response cannot carry partial output or stale material at return.
+            finished = datetime.now(timezone.utc)
+            for hit in hits:
+                age = (finished - reader._utc(hit['event_time_utc_floor'])).total_seconds()
+                if age < 0 or math.ceil(age) >= 900:
+                    raise ValueError('delivery_stale')
+                hit['event_age_seconds_upper_bound'] = math.ceil(age)
+            output = {'authority': 'none', 'sender_authentication': 'UNKNOWN',
+                      'same_user_aba': 'UNKNOWN', 'index_match': 'UNKNOWN', 'results': hits}
+        except Exception:
+            pass
+        if output is None:
+            raise SnapshotPackageRefused('content_snapshot_package_refused') from None
+        return output
+
+
+def create_consumer_source_owner(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
+                                 snapshot=None, descriptor_bytes=None, descriptor_sha256=None,
+                                 memory_bytes=None, memory_sha256=None):
+    """Build a process-local anchor after complete independent source checks.
+
+    The manifest pin must come from an independently trusted caller. No pipe
+    peer, supplied content or supplied source hash is an authorization source.
+    Startup/IPC delivery and ongoing background verification are not provided.
+    """
+    output = None
+    try:
+        if enabled is not True or type(bundle_root) is not str or type(snapshot) is not dict:
+            raise ValueError('input')
+        controls = _consumer_bundle_controls(bundle_root, expected_manifest_sha256)
+        frozen = dict(snapshot, messages=dict(snapshot['messages']))
+        source, sidecar, _, roster, policy = controls
+        if (os.path.normcase(os.path.abspath(frozen['messages']['source_path'])) != os.path.normcase(os.path.abspath(source))
+                or os.path.normcase(os.path.abspath(frozen['messages']['generation_path'])) != os.path.normcase(os.path.abspath(sidecar))
+                or frozen['roster_bytes'] != roster or frozen['messages']['policy_bytes'] != policy):
+            raise ValueError('source_controls')
+        built = build_narrow_source_manifest(enabled=True, snapshot=frozen,
+            descriptor_bytes=descriptor_bytes, descriptor_sha256=descriptor_sha256,
+            memory_bytes=memory_bytes, memory_sha256=memory_sha256)
+        values = {'descriptor_sha256': descriptor_sha256, 'memory_sha256': memory_sha256}
+        gate = _ConsumerOwnedGate(bundle_root, expected_manifest_sha256, values, built['manifest_bytes'])
+        gate.verify_snapshot(frozen)
+        if _consumer_bundle_controls(bundle_root, expected_manifest_sha256) != controls:
+            raise ValueError('controls_changed')
+        output = _ConsumerSourceOwner(bundle_root, expected_manifest_sha256, controls, frozen, gate)
     except Exception:
         pass
     if output is None:

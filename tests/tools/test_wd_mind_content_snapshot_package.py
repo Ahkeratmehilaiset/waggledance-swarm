@@ -93,6 +93,114 @@ def _narrow_fixture(package, fixtures, tmp_path, *, generationless=False, rows=N
     return case, codec, output, snapshot, bundle, deploy, narrow, run
 
 
+def _consumer_owner_fixture(package, fixtures, tmp_path, monkeypatch):
+    """Exercise the real row resolver with synthetic deployment controls."""
+    from datetime import datetime, timezone
+    case, codec, output, snapshot, bundle, deploy, narrow, run = _narrow_fixture(package, fixtures, tmp_path)
+    controls = (snapshot['messages']['source_path'], snapshot['messages']['generation_path'],
+                'a' * 64, snapshot['roster_bytes'], snapshot['messages']['policy_bytes'])
+    monkeypatch.setattr(package, '_consumer_bundle_controls', lambda root, pin: controls)
+    class Clock(datetime):
+        value = datetime(2026, 1, 1, 0, 2, tzinfo=timezone.utc)
+        @classmethod
+        def now(cls, tz=None):
+            return cls.value
+    monkeypatch.setattr(package, 'datetime', Clock)
+    owner = package.create_consumer_source_owner(enabled=True, bundle_root=str(bundle),
+        expected_manifest_sha256='b' * 64, snapshot=snapshot,
+        **{key: output[key] for key in ('descriptor_bytes','descriptor_sha256','memory_bytes','memory_sha256')})
+    hits = run()['results']
+    proposals = [{'ref_sha256': hit['ref_sha256'], 'doc_id_sha256': hit['doc_id_sha256'],
+                  'source_event_sha256': hit['source_reference']['sha256']} for hit in hits]
+    return owner, proposals, snapshot, Clock
+
+
+def test_consumer_owner_independently_resolves_source_rows(package, fixtures, tmp_path, monkeypatch):
+    owner, proposals, _, _ = _consumer_owner_fixture(package, fixtures, tmp_path, monkeypatch)
+    answer = owner.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
+    assert answer['authority'] == 'none' and answer['sender_authentication'] == 'UNKNOWN'
+    assert answer['index_match'] == 'UNKNOWN' and answer['same_user_aba'] == 'UNKNOWN'
+    assert [hit['source_event_sha256'] for hit in answer['results']] == [row['source_event_sha256'] for row in proposals]
+
+
+@pytest.mark.parametrize('fault', ['reference', 'doc', 'source', 'stale', 'row', 'scope', 'controls'])
+def test_consumer_owner_refuses_untrusted_or_stale_proposals(package, fixtures, tmp_path, monkeypatch, fault):
+    from datetime import timedelta
+    owner, proposals, snapshot, clock = _consumer_owner_fixture(package, fixtures, tmp_path, monkeypatch)
+    if fault == 'reference': proposals[0]['ref_sha256'] = '0' * 64
+    elif fault == 'doc': proposals[0]['doc_id_sha256'] = '0' * 64
+    elif fault == 'source': proposals[0]['source_event_sha256'] = '0' * 64
+    elif fault == 'stale': clock.value += timedelta(minutes=20)
+    elif fault == 'row':
+        path = Path(snapshot['messages']['source_path'])
+        lines = path.read_bytes().splitlines(keepends=True)
+        selected = next(i for i, line in enumerate(lines)
+                        if reader._sha(reader._canonical(json.loads(line))) == proposals[0]['source_event_sha256'])
+        original = lines[selected]
+        lines[selected] = original.replace(b'"message":', b'"messagE":', 1)
+        assert lines[selected] != original and len(lines[selected]) == len(original)
+        path.write_bytes(b''.join(lines))
+    elif fault == 'controls': monkeypatch.setattr(package, '_consumer_bundle_controls', lambda root, pin: None)
+    lane = 'claude-rco-1' if fault == 'scope' else 'codex-lead-1'
+    scope = 'own' if fault == 'scope' else 'shared'
+    with pytest.raises(package.SnapshotPackageRefused, match='^content_snapshot_package_refused$'):
+        owner.resolve(proposals=proposals, lane=lane, scope=scope)
+
+
+def test_consumer_owner_is_default_off(package):
+    with pytest.raises(package.SnapshotPackageRefused):
+        package.create_consumer_source_owner()
+
+
+@pytest.mark.parametrize('fault', ['none', 'manifest', 'fleet', 'policy', 'code', 'wrong_origin'])
+def test_consumer_bundle_controls_pin_own_code_fleet_and_policy(package, fixtures, tmp_path, monkeypatch, fault):
+    from tools import wd_mind_absent_generation_prefix_readonly as absent
+    from waggledance.core import bridge_log_reader as bridge
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    bundle = tmp_path / 'verified-bundle'
+    bundle.mkdir()
+    runtime = tmp_path / 'runtime'
+    shared = runtime / 'shared'
+    shared.mkdir(parents=True)
+    (shared / 'events.jsonl').write_bytes(b'{}\n')
+    roster = json.loads(case['roster_bytes'])
+    fleet = reader._canonical({'schema_version': 2, 'runtime_root': str(runtime),
+                               'lanes': roster['lanes'], 'tools_supervisor': roster['tools_supervisor']})
+    policy = case['messages']['policy_bytes']
+    files = {}
+    for name, data in [('wd-fleet.json', fleet), ('wd-mind-message-policy.json', policy)]:
+        (bundle / name).write_bytes(data)
+        files[name] = reader._sha(data)
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    monkeypatch.setattr(reader, '_narrow_dependencies', lambda: (bridge, absent))
+    modules = ((package, 'tools-bootstrap/tools/wd_mind_content_snapshot_package.py'),
+               (reader, 'tools-bootstrap/tools/wd_mind_content_query_readonly.py'),
+               (absent, 'tools-bootstrap/tools/wd_mind_absent_generation_prefix_readonly.py'),
+               (bridge, 'tools-bootstrap/waggledance/core/bridge_log_reader.py'))
+    for module, relative in modules:
+        data = Path(module.__file__).read_bytes()
+        dest = bundle.joinpath(*relative.split('/'))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        files[relative] = reader._sha(data)
+        monkeypatch.setattr(module, '__file__', str(dest))
+    raw = reader._canonical({'schema_version': 1, 'files': files})
+    (bundle / 'deployment-manifest.json').write_bytes(raw)
+    pin = reader._sha(raw)
+    if fault == 'manifest': pin = '0' * 64
+    elif fault == 'fleet': (bundle / 'wd-fleet.json').write_bytes(b'{}')
+    elif fault == 'policy': (bundle / 'wd-mind-message-policy.json').write_bytes(b'{}')
+    elif fault == 'code': (bundle / modules[0][1]).write_bytes(b'# altered')
+    elif fault == 'wrong_origin': monkeypatch.setattr(package, '__file__', str(bundle / 'elsewhere.py'))
+    if fault == 'none':
+        controls = package._consumer_bundle_controls(str(bundle), pin)
+        assert controls == (str(shared / 'events.jsonl'), str(shared / 'events.generation.json'),
+                            reader._sha(fleet), case['roster_bytes'], policy)
+    else:
+        with pytest.raises((ValueError, OSError)):
+            package._consumer_bundle_controls(str(bundle), pin)
+
+
 @pytest.mark.parametrize('selected', [False, True])
 def test_narrow_read_checks_selected_rows_but_allows_unselected_corruption(package, fixtures, tmp_path, selected):
     case, codec, output, _, _, _, _, run = _narrow_fixture(package, fixtures, tmp_path)

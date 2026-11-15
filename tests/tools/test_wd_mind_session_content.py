@@ -8,10 +8,14 @@ This seam is an in-process API, not provider startup or live context delivery.
 from __future__ import annotations
 
 import hashlib
+import builtins
+import base64
+from datetime import datetime, timezone
 import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -19,11 +23,481 @@ import pytest
 
 from tools import wd_bridge_mind_session as session
 from tools import wd_mind_content_query_readonly as content
+from tools import bridge_compact_view
 
 
 PROVIDER_KEYS = {"encoder_provider", "index_provider"}
 INPUT_KEYS = content._Q4_KEYS - PROVIDER_KEYS
 TOKEN = "mind_session_content_refused"
+
+
+def _situation_inputs():
+    def raw(value):
+        return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    def digest(value):
+        return hashlib.sha256(value).hexdigest()
+    lanes = ("codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5")
+    uuids = {lane: f"{i:08x}-1111-4111-8111-111111111111" for i, lane in enumerate(lanes, 1)}
+    fleet = raw({"lanes": [{"agent": lane, "agent_uuid": uuids[lane]} for lane in lanes
+                           if lane != "codex-tools-1"],
+                 "tools_supervisor": {"agent": "codex-tools-1", "agent_uuid": uuids["codex-tools-1"]}})
+    commit = "a" * 40
+    manifest = raw({"schema_version": 1, "source_commit": commit,
+                    "files": {"wd-fleet.json": digest(fleet)}})
+    pointer = raw({"schema_version": 1, "source_commit": commit, "final_commit": commit,
+                   "active_bundle": "C:\\Python\\wd-reboot-bundles\\" + commit,
+                   "manifest_sha256": digest(manifest), "final_manifest_sha256": digest(manifest)})
+    event = {"agent": "codex-lead-1", "agent_uuid": uuids["codex-lead-1"], "type": "claim",
+             "ts_utc": "2026-11-14T05:29:00Z", "task_id": "lead-synthetic-20261114"}
+    ref = bridge_compact_view.event_id(event)
+    snapshot = raw([{"ref": ref, "event": event}])
+    return {"snapshot_bytes": snapshot, "snapshot_sha256": digest(snapshot),
+            "fleet_bytes": fleet, "fleet_sha256": digest(fleet),
+            "pointer_bytes": pointer, "pointer_sha256": digest(pointer),
+            "manifest_bytes": manifest, "manifest_sha256": digest(manifest),
+            "pointer_observed_utc": "2026-11-14T05:29:30Z", "as_of_utc": "2026-11-14T05:30:00Z",
+            "ttl_seconds": 900}, ref
+
+
+def _situation_refused(operation):
+    with pytest.raises(ValueError) as caught:
+        operation()
+    assert type(caught.value).__name__ == "MindSituationSessionRefused"
+    assert str(caught.value) == "mind_session_situation_refused"
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("enabled", [None, False, 1, "1"])
+def test_situation_session_default_off_and_ignores_environment(monkeypatch, enabled):
+    monkeypatch.setenv("WD_MIND_READ_ENABLED", "1")
+    monkeypatch.setenv("WD_MIND_SITUATION_ENABLED", "1")
+    inputs, _ = _situation_inputs()
+    _situation_refused(lambda: session.project_situation_session(inputs=inputs))
+    _situation_refused(lambda: session.project_situation_session(enabled=enabled, inputs=inputs))
+
+
+def test_situation_session_refuses_even_well_formed_inputs_until_trust_is_established():
+    inputs, _ = _situation_inputs()
+    original = dict(inputs)
+    _situation_refused(lambda: session.project_situation_session(enabled=True, inputs=inputs))
+    assert inputs == original
+
+
+def test_situation_session_does_not_return_stale_untrusted_input():
+    inputs, _ = _situation_inputs()
+    inputs["as_of_utc"] = "2026-11-14T06:00:00Z"
+    _situation_refused(lambda: session.project_situation_session(enabled=True, inputs=inputs))
+
+
+@pytest.mark.parametrize("fault", ["missing", "extra", "bad_pin"])
+def test_situation_session_rejects_incomplete_or_bad_pins(fault):
+    inputs, _ = _situation_inputs()
+    if fault == "missing": inputs.pop("fleet_sha256")
+    if fault == "extra": inputs["allow_missing_bundle"] = True
+    if fault == "bad_pin": inputs["snapshot_sha256"] = "0" * 64
+    _situation_refused(lambda: session.project_situation_session(enabled=True, inputs=inputs))
+
+
+def test_situation_session_missing_packaged_module_is_refused(monkeypatch):
+    inputs, _ = _situation_inputs()
+    original = builtins.__import__
+    def no_projection(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "tools" and "wd_mind_situation_view" in fromlist:
+            raise ImportError("synthetic private module path")
+        return original(name, globals, locals, fromlist, level)
+    monkeypatch.setattr(builtins, "__import__", no_projection)
+    _situation_refused(lambda: session.project_situation_session(enabled=True, inputs=inputs))
+
+
+def test_situation_session_refuses_preloaded_fake_module(monkeypatch):
+    import tools
+    calls = []
+    fake = SimpleNamespace(project_situation=lambda **kwargs: calls.append(kwargs) or {
+        "schema": "wd.mind-situation-observations.v1", "authority": "none",
+        "scope": "bounded_tail_not_current_state_or_gate"})
+    monkeypatch.setitem(sys.modules, "tools.wd_mind_situation_view", fake)
+    monkeypatch.setattr(tools, "wd_mind_situation_view", fake, raising=False)
+    inputs, _ = _situation_inputs()
+    _situation_refused(lambda: session.project_situation_session(enabled=True, inputs=inputs))
+    assert calls == []
+
+
+def _situation_cli_args(tmp_path):
+    inputs, ref = _situation_inputs()
+    args = ["--situation"]
+    for name in ("snapshot", "fleet", "pointer", "manifest"):
+        path = tmp_path / (name + ".json")
+        path.write_bytes(inputs[name + "_bytes"])
+        args += ["--" + name, str(path), "--" + name + "-sha256", inputs[name + "_sha256"]]
+    args += ["--pointer-observed-utc", inputs["pointer_observed_utc"], "--as-of-utc", inputs["as_of_utc"],
+             "--ttl-seconds", str(inputs["ttl_seconds"])]
+    return args, ref
+
+
+def _situation_live_cli_args(tmp_path):
+    inputs, _ = _situation_inputs()
+    root = tmp_path / "runtime"
+    log = root / "shared" / "events.jsonl"
+    log.parent.mkdir(parents=True)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    event = json.loads(inputs["snapshot_bytes"])[0]["event"]
+    event["ts_utc"] = now
+    fleet = json.loads(inputs["fleet_bytes"])
+    rco = next(entry for entry in fleet["lanes"] if entry["agent"] == "claude-rco-1")
+    rco_event = dict(event, agent="claude-rco-1", agent_uuid=rco["agent_uuid"],
+                     message="synthetic-private-rco-text", payload={"private": "synthetic-private-rco-text"})
+    log.write_bytes(b"".join(json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+                             for row in (event, rco_event)))
+    args = ["--situation-live", "--bridge-root", str(root)]
+    for name in ("fleet", "pointer", "manifest"):
+        path = tmp_path / (name + ".json")
+        path.write_bytes(inputs[name + "_bytes"])
+        args += ["--" + name, str(path), "--" + name + "-sha256", inputs[name + "_sha256"]]
+    args += ["--pointer-observed-utc", now, "--ttl-seconds", "900"]
+    return args, log, event
+
+
+def _situation_cursor(log):
+    from waggledance.core import bridge_log_reader
+    with bridge_log_reader._open_log(log) as stream:
+        identity = bridge_log_reader._file_identity(stream)
+    data = {"offset": log.stat().st_size, "file_identity": identity, "generation": None}
+    return "bc1." + base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
+
+
+def test_situation_live_uses_canonical_reader_without_raw_leak_or_file_writes(tmp_path, capsys):
+    args, log, event = _situation_live_cli_args(tmp_path)
+    before = {str(path.relative_to(tmp_path)): hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in tmp_path.rglob("*") if path.is_file()}
+    assert session.main(args) == 0
+    captured = capsys.readouterr()
+    assert captured.err == "" and "synthetic-private-rco-text" not in captured.out
+    envelope = json.loads(captured.out)
+    assert envelope["schema"] == "wd.mind-situation-live.v1" and envelope["partial_final_record"] is False
+    assert envelope["current_state"] == envelope["continuity"] == "UNKNOWN"
+    view = envelope["view"]
+    assert view["authority"] == "none" and view["source"]["sender_authentication"] == "UNKNOWN"
+    assert view["lanes"]["codex-lead-1"]["latest_work_event"]["event_ref"] == bridge_compact_view.event_id(event)
+    after = {str(path.relative_to(tmp_path)): hashlib.sha256(path.read_bytes()).hexdigest()
+             for path in tmp_path.rglob("*") if path.is_file()}
+    assert before == after and log.exists()
+
+
+def test_situation_live_runs_as_separate_synthetic_process(tmp_path):
+    args, _, event = _situation_live_cli_args(tmp_path)
+    result = subprocess.run([sys.executable, "-B", "-m", "tools.wd_bridge_mind_session", *args],
+                            cwd=str(Path(session.__file__).resolve().parents[1]),
+                            capture_output=True, text=True, check=False)
+    assert result.returncode == 0 and result.stderr == "" and "synthetic-private-rco-text" not in result.stdout
+    envelope = json.loads(result.stdout)
+    assert envelope["partial_final_record"] is False
+    view = envelope["view"]
+    assert view["lanes"]["codex-lead-1"]["latest_work_event"]["event_ref"] == bridge_compact_view.event_id(event)
+
+
+@pytest.mark.parametrize("fault", ["missing_pin", "bad_manifest_pin", "duplicate_option", "missing_log"])
+def test_situation_live_refuses_missing_or_unpinned_inputs(tmp_path, capsys, fault):
+    args, log, _ = _situation_live_cli_args(tmp_path)
+    if fault == "missing_pin":
+        index = args.index("--pointer-sha256")
+        del args[index:index + 2]
+    if fault == "bad_manifest_pin": args[args.index("--manifest-sha256") + 1] = "0" * 64
+    if fault == "duplicate_option": args += ["--ttl-seconds", "900"]
+    if fault == "missing_log": log.unlink()
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {"error": "mind_session_situation_refused", "authority": "none"}
+
+
+def test_situation_live_marks_partial_final_record_without_including_it(tmp_path, capsys):
+    args, log, event = _situation_live_cli_args(tmp_path)
+    with log.open("ab") as stream: stream.write(b'{"type":"synthetic-private-incomplete"')
+    before = log.read_bytes()
+    assert session.main(args) == 0
+    captured = capsys.readouterr()
+    assert captured.err == "" and "synthetic-private-incomplete" not in captured.out
+    envelope = json.loads(captured.out)
+    assert envelope["partial_final_record"] is True
+    assert envelope["current_state"] == envelope["continuity"] == "UNKNOWN"
+    assert envelope["view"]["lanes"]["codex-lead-1"]["latest_work_event"]["event_ref"] == bridge_compact_view.event_id(event)
+    assert log.read_bytes() == before
+
+
+def test_situation_live_only_partial_record_returns_unknown_state(tmp_path, capsys):
+    args, log, _ = _situation_live_cli_args(tmp_path)
+    log.write_bytes(b'{"type":"synthetic-private-incomplete"')
+    assert session.main(args) == 0
+    captured = capsys.readouterr()
+    assert "synthetic-private-incomplete" not in captured.out
+    envelope = json.loads(captured.out)
+    assert envelope["partial_final_record"] is True and envelope["current_state"] == "UNKNOWN"
+    assert envelope["view"]["lanes"]["codex-lead-1"]["latest_work_event"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("fault", ["malformed", "reader_failure", "oversize"])
+def test_situation_live_refuses_malformed_rotation_and_oversize(tmp_path, capsys, monkeypatch, fault):
+    args, log, event = _situation_live_cli_args(tmp_path)
+    if fault == "malformed":
+        with log.open("ab") as stream: stream.write(b'{malformed}\n')
+    if fault == "reader_failure":
+        def fail(*unused): raise bridge_compact_view.CompactViewError("generation_changed_during_read")
+        monkeypatch.setattr(session.bridge_compact_view, "_read_view_rows", fail)
+    if fault == "oversize":
+        event["message"] = "x" * (8 * 1024 * 1024)
+        cursor = _situation_cursor(log)
+        monkeypatch.setattr(session.bridge_compact_view, "_read_view_rows",
+                            lambda *unused: ([event], cursor, {"unconsumed_bytes": 0}))
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {"error": "mind_session_situation_refused", "authority": "none"}
+
+
+def test_situation_live_uses_last_5000_rows_and_reads_clock_after_snapshot(tmp_path, capsys, monkeypatch):
+    args, log, event = _situation_live_cli_args(tmp_path)
+    old = dict(event, task_id="lead-older-20261114")
+    rows = [old] + [event] * 5000
+    read_done = []
+    cursor = _situation_cursor(log)
+    def reader(*unused):
+        read_done.append(True)
+        return rows, cursor, {"unconsumed_bytes": 0}
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert read_done
+            return datetime.now(tz)
+    monkeypatch.setattr(session.bridge_compact_view, "_read_view_rows", reader)
+    monkeypatch.setattr(session, "datetime", Clock)
+    assert session.main(args) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["view"]["lanes"]["codex-lead-1"]["latest_work_event"]["event_ref"] == bridge_compact_view.event_id(event)
+
+
+def test_situation_live_refuses_canonical_reader_rotation(tmp_path, capsys, monkeypatch):
+    from waggledance.core import bridge_log_reader
+    args, _, _ = _situation_live_cli_args(tmp_path)
+    monkeypatch.setattr(bridge_log_reader, "read_bridge_log_tail_lines",
+                        lambda *unused, **kwargs: bridge_log_reader.BridgeLineReadResult(
+                            bridge_log_reader.BridgeReadStatus.RETRY, "file_identity_changed_during_read"))
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and json.loads(captured.err)["error"] == "mind_session_situation_refused"
+
+
+def test_situation_live_refuses_real_path_rotation_during_open_read(tmp_path, capsys, monkeypatch):
+    from waggledance.core import bridge_log_reader
+    args, log, event = _situation_live_cli_args(tmp_path)
+    original_open = bridge_log_reader._open_log
+    rotated = []
+    def open_then_rotate(path):
+        handle = original_open(path)
+        if not rotated:
+            rotated.append(True)
+            log.rename(log.with_name("synthetic-prior-events.jsonl"))
+            replacement = dict(event, task_id="lead-synthetic-replacement")
+            log.write_bytes(json.dumps(replacement, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+        return handle
+    monkeypatch.setattr(bridge_log_reader, "_open_log", open_then_rotate)
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and json.loads(captured.err)["error"] == "mind_session_situation_refused"
+
+
+def test_situation_live_allows_same_file_append_during_read(tmp_path, capsys, monkeypatch):
+    from waggledance.core import bridge_log_reader
+    args, log, event = _situation_live_cli_args(tmp_path)
+    original_identity = bridge_log_reader._file_identity
+    calls = []
+    def append_on_second_identity(handle):
+        result = original_identity(handle)
+        calls.append(True)
+        if len(calls) == 2:
+            appended = dict(event, task_id="lead-synthetic-appended")
+            with log.open("ab") as stream:
+                stream.write(json.dumps(appended, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+        return result
+    monkeypatch.setattr(bridge_log_reader, "_file_identity", append_on_second_identity)
+    assert session.main(args) == 0
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["current_state"] == envelope["continuity"] == "UNKNOWN"
+
+
+def test_situation_live_refuses_unavailable_post_read_identity(tmp_path, capsys, monkeypatch):
+    from waggledance.core import bridge_log_reader
+    args, _, _ = _situation_live_cli_args(tmp_path)
+    original_identity = bridge_log_reader._file_identity
+    calls = []
+    def fail_third_identity(handle):
+        calls.append(True)
+        if len(calls) == 3: raise OSError("synthetic private path")
+        return original_identity(handle)
+    monkeypatch.setattr(bridge_log_reader, "_file_identity", fail_third_identity)
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and "synthetic private path" not in captured.err
+    assert json.loads(captured.err)["error"] == "mind_session_situation_refused"
+
+
+def test_situation_live_refuses_malformed_cursor(tmp_path, capsys, monkeypatch):
+    args, _, event = _situation_live_cli_args(tmp_path)
+    monkeypatch.setattr(session.bridge_compact_view, "_read_view_rows",
+                        lambda *unused: ([event], "bc1.invalid", {"unconsumed_bytes": 0}))
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and json.loads(captured.err)["error"] == "mind_session_situation_refused"
+
+
+def test_situation_live_real_bounded_tail_selects_newest_event(tmp_path, capsys):
+    args, log, event = _situation_live_cli_args(tmp_path)
+    with log.open("wb") as stream:
+        for index in range(5002):
+            row = dict(event, task_id=f"lead-synthetic-{index}")
+            stream.write(json.dumps(row, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+    assert session.main(args) == 0
+    view = json.loads(capsys.readouterr().out)["view"]
+    last = dict(event, task_id="lead-synthetic-5001")
+    assert view["source"]["coverage"] == "bounded_tail"
+    assert view["lanes"]["codex-lead-1"]["latest_work_event"]["event_ref"] == bridge_compact_view.event_id(last)
+
+
+def test_situation_cli_separate_process_yields_data_only_source_ref(tmp_path):
+    args, ref = _situation_cli_args(tmp_path)
+    result = subprocess.run([sys.executable, "-B", "-m", "tools.wd_bridge_mind_session", *args],
+                            cwd=str(Path(session.__file__).resolve().parents[1]),
+                            capture_output=True, text=True, check=False)
+    assert result.returncode == 0 and result.stderr == ""
+    view = json.loads(result.stdout)
+    assert view["schema"] == "wd.mind-situation-observations.v1" and view["authority"] == "none"
+    assert view["source"]["sender_authentication"] == "UNKNOWN"
+    assert view["lanes"]["codex-lead-1"]["latest_claim_event"]["event_ref"] == ref
+
+
+@pytest.mark.parametrize("fault", ["missing_argument", "bad_manifest_anchor", "bad_snapshot_pin", "duplicate_argument"])
+def test_situation_cli_refuses_missing_and_mismatched_pins(tmp_path, capsys, fault):
+    args, _ = _situation_cli_args(tmp_path)
+    if fault == "missing_argument": args = args[:-2]
+    if fault == "bad_manifest_anchor": args[args.index("--manifest-sha256") + 1] = "0" * 64
+    if fault == "bad_snapshot_pin": args[args.index("--snapshot-sha256") + 1] = "0" * 64
+    if fault == "duplicate_argument": args += ["--ttl-seconds", "900"]
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {"error": "mind_session_situation_refused", "authority": "none"}
+
+
+def test_situation_cli_refuses_missing_projector_module(tmp_path, capsys, monkeypatch):
+    args, _ = _situation_cli_args(tmp_path)
+    original = builtins.__import__
+    def no_projection(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "tools" and "wd_mind_situation_view" in fromlist:
+            raise ImportError("synthetic private module path")
+        return original(name, globals, locals, fromlist, level)
+    monkeypatch.setattr(builtins, "__import__", no_projection)
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and "synthetic private" not in captured.err
+    assert json.loads(captured.err)["error"] == "mind_session_situation_refused"
+
+
+def test_situation_cli_keeps_review_unknown_for_generic_request(tmp_path, capsys):
+    args, _ = _situation_cli_args(tmp_path)
+    path = Path(args[args.index("--snapshot") + 1])
+    records = json.loads(path.read_bytes())
+    event = dict(records[0]["event"], type="request", status="request", request_id="synthetic-request",
+                 to="claude-rco-1", payload={"pr": 2137, "head": "b" * 40})
+    records.append({"ref": bridge_compact_view.event_id(event), "event": event})
+    snapshot = json.dumps(records, sort_keys=True, separators=(",", ":")).encode()
+    path.write_bytes(snapshot)
+    args[args.index("--snapshot-sha256") + 1] = hashlib.sha256(snapshot).hexdigest()
+    assert session.main(args) == 0
+    view = json.loads(capsys.readouterr().out)
+    assert view["request_observations"][0]["requested_review"] == "UNKNOWN"
+
+
+def test_situation_cli_refuses_older_event_as_latest(tmp_path, capsys, monkeypatch):
+    from tools import wd_mind_situation_view as projection
+    args, _ = _situation_cli_args(tmp_path)
+    path = Path(args[args.index("--snapshot") + 1])
+    records = json.loads(path.read_bytes())
+    event = dict(records[0]["event"], type="done", ts_utc="2026-11-14T05:29:30Z")
+    records.append({"ref": bridge_compact_view.event_id(event), "event": event})
+    snapshot = json.dumps(records, sort_keys=True, separators=(",", ":")).encode()
+    path.write_bytes(snapshot)
+    args[args.index("--snapshot-sha256") + 1] = hashlib.sha256(snapshot).hexdigest()
+    original = projection.project_situation
+    def wrong_latest(**kwargs):
+        view = original(**kwargs)
+        lane = view["lanes"]["codex-lead-1"]
+        lane["latest_work_event"] = dict(lane["latest_claim_event"])
+        return view
+    monkeypatch.setattr(projection, "project_situation", wrong_latest)
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err)["error"] == "mind_session_situation_refused"
+
+
+def test_situation_cli_stale_latest_keeps_real_reference(tmp_path, capsys):
+    args, ref = _situation_cli_args(tmp_path)
+    args[args.index("--as-of-utc") + 1] = "2026-11-14T06:00:00Z"
+    assert session.main(args) == 0
+    observation = json.loads(capsys.readouterr().out)["lanes"]["codex-lead-1"]["latest_work_event"]
+    assert observation["event_ref"] == ref
+    assert observation["status"] == observation["event_type"] == "UNKNOWN"
+
+
+def test_situation_cli_equal_time_uses_last_snapshot_event(tmp_path, capsys):
+    args, _ = _situation_cli_args(tmp_path)
+    path = Path(args[args.index("--snapshot") + 1])
+    records = json.loads(path.read_bytes())
+    event = dict(records[0]["event"], type="done")
+    ref = bridge_compact_view.event_id(event)
+    records.append({"ref": ref, "event": event})
+    snapshot = json.dumps(records, sort_keys=True, separators=(",", ":")).encode()
+    path.write_bytes(snapshot)
+    args[args.index("--snapshot-sha256") + 1] = hashlib.sha256(snapshot).hexdigest()
+    assert session.main(args) == 0
+    observation = json.loads(capsys.readouterr().out)["lanes"]["codex-lead-1"]["latest_work_event"]
+    assert observation["event_ref"] == ref and observation["event_type"] == "done"
+
+
+def test_situation_cli_orders_seventh_fractional_digit(tmp_path, capsys):
+    args, _ = _situation_cli_args(tmp_path)
+    path = Path(args[args.index("--snapshot") + 1])
+    records = json.loads(path.read_bytes())
+    newer = dict(records[0]["event"], type="done", ts_utc="2026-11-14T05:29:00.0000002Z")
+    older = dict(records[0]["event"], ts_utc="2026-11-14T05:29:00.0000001Z")
+    newest_ref = bridge_compact_view.event_id(newer)
+    records = [{"ref": newest_ref, "event": newer}, {"ref": bridge_compact_view.event_id(older), "event": older}]
+    snapshot = json.dumps(records, sort_keys=True, separators=(",", ":")).encode()
+    path.write_bytes(snapshot)
+    args[args.index("--snapshot-sha256") + 1] = hashlib.sha256(snapshot).hexdigest()
+    assert session.main(args) == 0
+    observation = json.loads(capsys.readouterr().out)["lanes"]["codex-lead-1"]["latest_work_event"]
+    assert observation["event_ref"] == newest_ref
+
+
+@pytest.mark.parametrize("fault", ["invented_ref", "wrong_time", "raw_task", "extra_payload", "wrong_bundle_age"])
+def test_situation_cli_refuses_projection_with_unbound_or_unfiltered_data(tmp_path, capsys, monkeypatch, fault):
+    from tools import wd_mind_situation_view as projection
+    args, _ = _situation_cli_args(tmp_path)
+    original = projection.project_situation
+    def untrusted(**kwargs):
+        view = original(**kwargs)
+        observation = view["lanes"]["codex-lead-1"]["latest_claim_event"]
+        if fault == "invented_ref": observation["event_ref"] = "0" * 64
+        if fault == "wrong_time": observation["observed_utc"] = "2026-11-14T05:29:01Z"
+        if fault == "raw_task": observation["task_id"] = "customer-private-data"
+        if fault == "extra_payload": observation["raw_message"] = "synthetic-private-message"
+        if fault == "wrong_bundle_age": view["bundle"]["age_seconds_upper_bound"] = 0
+        return view
+    monkeypatch.setattr(projection, "project_situation", untrusted)
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and "synthetic-private-message" not in captured.err
+    assert json.loads(captured.err)["error"] == "mind_session_situation_refused"
 
 
 def _entry():

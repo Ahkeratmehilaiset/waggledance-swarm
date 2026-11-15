@@ -12,6 +12,7 @@ paths, capture rows, or a partial projection.
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -149,6 +150,353 @@ class MindContentSessionRefused(ValueError):
     """Fixed-token refusal from the opt-in in-process content session boundary."""
 
 
+class MindSituationSessionRefused(ValueError):
+    """Fixed-token refusal from the opt-in in-process situation boundary."""
+
+
+def project_situation_session(*, enabled=False, inputs=None):
+    """Refuse until independently anchored, isolated execution is available.
+
+    An import from this interpreter cannot prove its module, preloaded
+    dependencies, trusted manifest anchor, or file identity across reads.
+    Neither caller-supplied bytes nor a self-described schema supplies that
+    proof. Do not import or call a projector here, even when enabled. This
+    reserved seam does not change the existing status CLI.
+    """
+    raise MindSituationSessionRefused("mind_session_situation_refused") from None
+
+
+class _SituationArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError("invalid_situation_arguments")
+
+
+def _situation_checked_path(path):
+    source = Path(path)
+    if not source.is_absolute() or ".." in source.parts:
+        raise ValueError("invalid_path")
+    for component in (source, *source.parents):
+        info = component.lstat()
+        reparse = getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if stat.S_ISLNK(info.st_mode) or reparse:
+            raise ValueError("reparse")
+    return source
+
+
+def _situation_check_live_log_identity(path, cursor):
+    """Reject a pathname replacement observable after the bounded tail read.
+
+    This compares two file handles at separate times. It does not establish
+    uninterrupted continuity or exclude same-user ABA and later replacement.
+    """
+    if type(cursor) is not str or len(cursor) > 2048 or not re.fullmatch(r"bc1\.[A-Za-z0-9_-]+", cursor):
+        raise ValueError("invalid_cursor")
+    encoded = cursor[4:]
+    data = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+    if (type(data) is not dict or set(data) != {"offset", "file_identity", "generation"}
+            or type(data["offset"]) is not int or data["offset"] < 0
+            or type(data["file_identity"]) is not str
+            or not re.fullmatch(r"(?:windows-v1:[0-9a-f]{8}:[0-9a-f]{16}|posix-v1:[0-9a-f]{1,16}:[0-9a-f]{1,16})",
+                                data["file_identity"])):
+        raise ValueError("invalid_cursor")
+    from waggledance.core.bridge_log_reader import _file_identity, _open_log
+    current_path = _situation_checked_path(path)
+    with _open_log(current_path) as stream:
+        if _file_identity(stream) != data["file_identity"]:
+            raise ValueError("log_identity_changed")
+
+
+def _situation_read_pinned(path, digest, limit):
+    """Read explicit caller-selected bytes; no publisher trust is inferred."""
+    if type(digest) is not str or not _SHA256.fullmatch(digest):
+        raise ValueError("invalid_pin")
+    source = _situation_checked_path(path)
+    with source.open("rb") as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit or hashlib.sha256(data).hexdigest() != digest:
+        raise ValueError("pin_mismatch")
+    return data
+
+
+def _situation_validate_output(view, inputs):
+    """Check the bounded wire shape and link each observation to input bytes."""
+    lanes = {"codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"}
+    if (type(view) is not dict or set(view) != {"schema", "authority", "scope", "as_of_utc", "source",
+                                               "bundle", "lanes", "request_observations"}
+            or view["schema"] != "wd.mind-situation-observations.v1" or view["authority"] != "none"
+            or view["scope"] != "bounded_tail_not_current_state_or_gate"
+            or view["as_of_utc"] != inputs["as_of_utc"]):
+        raise ValueError("view")
+    source = view["source"]
+    if (type(source) is not dict or set(source) != {"snapshot_sha256", "fleet_sha256", "coverage",
+                                                   "sender_authentication", "fleet_manifest_binding"}
+            or source["snapshot_sha256"] != inputs["snapshot_sha256"]
+            or source["fleet_sha256"] != inputs["fleet_sha256"] or source["coverage"] != "bounded_tail"
+            or source["sender_authentication"] != "UNKNOWN" or source["fleet_manifest_binding"] != "MATCH"):
+        raise ValueError("source")
+    bundle = view["bundle"]
+    pointer = json.loads(inputs["pointer_bytes"].decode("utf-8-sig"))
+    if (type(bundle) is not dict or set(bundle) != {"status", "source_kind", "observed_utc", "age_seconds_upper_bound",
+                                                   "source_commit", "manifest_sha256", "pointer_authentication", "pointer_sha256"}
+            or bundle["status"] not in ("OBSERVED", "UNKNOWN")
+            or bundle["source_kind"] != "local_pointer_and_manifest_bytes"
+            or bundle["observed_utc"] != inputs["pointer_observed_utc"]
+            or type(bundle["age_seconds_upper_bound"]) is not int or bundle["age_seconds_upper_bound"] < 0
+            or bundle["pointer_authentication"] != "UNKNOWN" or bundle["pointer_sha256"] != inputs["pointer_sha256"]
+            or (bundle["status"] == "OBSERVED" and (bundle["manifest_sha256"] != inputs["manifest_sha256"]
+                or type(bundle["source_commit"]) is not str or not re.fullmatch(r"[0-9a-f]{40}", bundle["source_commit"])
+                or bundle["source_commit"] != pointer.get("source_commit")))
+            or (bundle["status"] == "UNKNOWN" and (bundle["manifest_sha256"] != "UNKNOWN"
+                or bundle["source_commit"] != "UNKNOWN"))):
+        raise ValueError("bundle")
+    records = json.loads(inputs["snapshot_bytes"].decode("utf-8-sig"))
+    if type(records) is not list or len(records) > 5000:
+        raise ValueError("records")
+    refs = {}
+    for record in records:
+        if (type(record) is not dict or set(record) != {"ref", "event"} or type(record["ref"]) is not str
+                or not _SHA256.fullmatch(record["ref"]) or type(record["event"]) is not dict
+                or bridge_compact_view.event_id(record["event"]) != record["ref"]):
+            raise ValueError("event_ref")
+        refs[record["ref"]] = record["event"]
+    fleet = json.loads(inputs["fleet_bytes"].decode("utf-8-sig"))
+    roster = {entry["agent"]: entry["agent_uuid"].lower()
+              for entry in [*fleet["lanes"], fleet["tools_supervisor"]] if entry["agent"] in lanes}
+    if set(roster) != lanes:
+        raise ValueError("roster")
+    def ticks(text):
+        if type(text) is not str or not _UTC_TIMESTAMP.fullmatch(text):
+            raise ValueError("time")
+        value = datetime.fromisoformat(text[:-1] + "+00:00")
+        fraction = text[:-1].partition(".")[2]
+        return value, (int(fraction[6]) if len(fraction) == 7 else 0)
+    as_of, as_of_tick = ticks(inputs["as_of_utc"])
+    pointer_time, pointer_tick = ticks(inputs["pointer_observed_utc"])
+    pointer_delta = as_of - pointer_time
+    pointer_age = ((pointer_delta.days * 86400 + pointer_delta.seconds) * 10000000
+                   + pointer_delta.microseconds * 10 + as_of_tick - pointer_tick)
+    if (pointer_age < 0 or bundle["age_seconds_upper_bound"] != (pointer_age + 9999999) // 10000000
+            or bundle["status"] != ("OBSERVED" if pointer_age < inputs["ttl_seconds"] * 10000000 else "UNKNOWN")):
+        raise ValueError("bundle_age")
+    basic = {"status", "event_ref", "observed_utc", "age_seconds_upper_bound", "event_type", "task_id", "sender_authentication"}
+    def observation(item, extra, expected_lane=None):
+        if (type(item) is not dict or set(item) != basic | extra or item["status"] not in ("OBSERVED", "UNKNOWN")
+                or item["event_ref"] not in refs or type(item["observed_utc"]) is not str
+                or not _UTC_TIMESTAMP.fullmatch(item["observed_utc"])
+                or type(item["age_seconds_upper_bound"]) is not int or item["age_seconds_upper_bound"] < 0
+                or item["sender_authentication"] != "UNKNOWN"):
+            raise ValueError("observation")
+        event = refs[item["event_ref"]]
+        agent = event.get("agent")
+        if (agent not in roster or type(event.get("agent_uuid")) is not str
+                or event["agent_uuid"].lower() != roster[agent]
+                or (expected_lane is not None and agent != expected_lane)
+                or item["observed_utc"] != event.get("ts_utc")):
+            raise ValueError("observation_binding")
+        observed, observed_tick = ticks(item["observed_utc"])
+        delta = as_of - observed
+        age_ticks = ((delta.days * 86400 + delta.seconds) * 10000000
+                     + delta.microseconds * 10 + as_of_tick - observed_tick)
+        if (age_ticks < 0 or item["age_seconds_upper_bound"] != (age_ticks + 9999999) // 10000000
+                or item["status"] != ("OBSERVED" if age_ticks < inputs["ttl_seconds"] * 10000000 else "UNKNOWN")):
+            raise ValueError("observation_age")
+        if item["status"] == "OBSERVED":
+            if (item["event_type"] not in {"claim", "release", "done", "handoff", "message", "request", "wake_request"}
+                    or item["event_type"] != event.get("type")
+                    or (item["task_id"] != "UNKNOWN" and (type(item["task_id"]) is not str
+                        or not re.fullmatch(r"sha256:[0-9a-f]{64}", item["task_id"])) )):
+                raise ValueError("observation_content")
+            task = event.get("task_id")
+            expected_task = ("sha256:" + hashlib.sha256(task.encode("utf-8")).hexdigest()
+                             if type(task) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", task)
+                             else "UNKNOWN")
+            if item["task_id"] != expected_task:
+                raise ValueError("task_binding")
+        elif item["event_type"] != "UNKNOWN" or item["task_id"] != "UNKNOWN":
+            raise ValueError("stale")
+    if type(view["lanes"]) is not dict or set(view["lanes"]) != lanes:
+        raise ValueError("lanes")
+    lane_fields = {"current_task", "latest_work_event", "latest_claim_event", "latest_done_event", "latest_handoff_event"}
+    lane_event_types = {"latest_work_event": {"claim", "release", "done", "handoff"},
+                        "latest_claim_event": {"claim", "release"},
+                        "latest_done_event": {"done"}, "latest_handoff_event": {"handoff"}}
+    latest = {lane: {} for lane in lanes}
+    for record in records:
+        event = record["event"]
+        agent, uuid, kind = event.get("agent"), event.get("agent_uuid"), event.get("type")
+        if agent not in roster or type(uuid) is not str or uuid.lower() != roster[agent]:
+            continue
+        categories = [key for key, event_types in lane_event_types.items() if kind in event_types]
+        if not categories:
+            continue
+        observed, observed_tick = ticks(event.get("ts_utc"))
+        delta = as_of - observed
+        age = ((delta.days * 86400 + delta.seconds) * 10000000
+               + delta.microseconds * 10 + as_of_tick - observed_tick)
+        if age < 0:
+            raise ValueError("future_event")
+        for key in categories:
+            previous = latest[agent].get(key)
+            if previous is None or age <= previous[0]:
+                latest[agent][key] = (age, record["ref"])
+    for lane_name, lane in view["lanes"].items():
+        if type(lane) is not dict or set(lane) != lane_fields or lane["current_task"] != "UNKNOWN":
+            raise ValueError("lane")
+        for key in lane_fields - {"current_task"}:
+            expected = latest[lane_name].get(key)
+            if expected is None:
+                if lane[key] != "UNKNOWN": raise ValueError("unexpected_lane_event")
+            elif type(lane[key]) is not dict or lane[key].get("event_ref") != expected[1]:
+                raise ValueError("not_latest_lane_event")
+            if lane[key] != "UNKNOWN":
+                observation(lane[key], set(), lane_name)
+                if refs[lane[key]["event_ref"]].get("type") not in lane_event_types[key]:
+                    raise ValueError("lane_event_type")
+    requests = view["request_observations"]
+    request_fields = {"request_id", "recipients", "requested_review", "pr", "head", "resolution", "approval", "binding_valid"}
+    if type(requests) is not list or len(requests) > 50:
+        raise ValueError("requests")
+    for item in requests:
+        observation(item, request_fields)
+        if any(item[key] != "UNKNOWN" for key in ("resolution", "approval", "binding_valid")):
+            raise ValueError("request_authority")
+        if item["status"] == "UNKNOWN":
+            if any(item[key] != "UNKNOWN" for key in ("request_id", "recipients", "requested_review", "pr", "head")):
+                raise ValueError("stale_request")
+        elif (type(item["request_id"]) is not str or not re.fullmatch(r"sha256:[0-9a-f]{64}", item["request_id"])
+              or type(item["recipients"]) is not list or not item["recipients"]
+              or any(recipient not in lanes for recipient in item["recipients"])
+              or (item["requested_review"] is not True and item["requested_review"] != "UNKNOWN")
+              or (item["pr"] != "UNKNOWN" and (type(item["pr"]) is not int or item["pr"] < 1))
+              or (item["head"] != "UNKNOWN" and (type(item["head"]) is not str
+                  or not re.fullmatch(r"[0-9a-f]{40}", item["head"])))):
+            raise ValueError("request_content")
+        if item["status"] == "OBSERVED":
+            event = refs[item["event_ref"]]
+            payload = event.get("payload") if type(event.get("payload")) is dict else {}
+            request_id = event.get("request_id") if event.get("request_id") is not None else payload.get("request_id")
+            target = event.get("to")
+            targets = [part.strip() for part in target.split(",")] if type(target) is str else target
+            heads = [payload[key] for key in ("head", "head_sha", "exact_head") if key in payload]
+            expected_head = (heads[0] if heads and all(type(head) is str and re.fullmatch(r"[0-9a-f]{40}", head)
+                                                       for head in heads) and len(set(heads)) == 1 else "UNKNOWN")
+            pr = payload.get("pr")
+            expected_pr = pr if type(pr) is int and pr > 0 else "UNKNOWN"
+            expected_review = True if event.get("status") == "review_requested" else "UNKNOWN"
+            if (event.get("type") not in {"message", "request", "wake_request"}
+                    or type(request_id) is not str or item["request_id"] != "sha256:" + hashlib.sha256(request_id.encode()).hexdigest()
+                    or (event.get("request_id") is not None and payload.get("request_id") is not None
+                        and event["request_id"] != payload["request_id"])
+                    or item["recipients"] != targets or item["requested_review"] != expected_review
+                    or item["head"] != expected_head or item["pr"] != expected_pr):
+                raise ValueError("request_binding")
+
+
+def _situation_cli(argv):
+    """Opt-in data-only CLI. Trust comes from the externally anchored wrapper.
+
+    Caller-selected hashes prove matching bytes, not an authenticated anchor.
+    Direct invocation, environment labels and output schema do not establish
+    package or publisher trust. The caller owns source selection and timing.
+    """
+    try:
+        parser = _SituationArgumentParser(add_help=False)
+        for name in ("snapshot", "fleet", "pointer", "manifest"):
+            parser.add_argument("--" + name, required=True)
+            parser.add_argument("--" + name + "-sha256", required=True)
+        parser.add_argument("--pointer-observed-utc", required=True)
+        parser.add_argument("--as-of-utc", required=True)
+        parser.add_argument("--ttl-seconds", required=True, type=int)
+        if any(argv.count(option) != 1 for option in parser._option_string_actions):
+            raise ValueError("ambiguous_arguments")
+        args = parser.parse_args(argv)
+        inputs = {}
+        for name in ("snapshot", "fleet", "pointer", "manifest"):
+            digest = getattr(args, name + "_sha256")
+            limit = 8 * 1024 * 1024 if name in ("snapshot", "manifest") else 1024 * 1024
+            inputs[name + "_bytes"] = _situation_read_pinned(getattr(args, name), digest, limit)
+            inputs[name + "_sha256"] = digest
+        inputs.update(pointer_observed_utc=args.pointer_observed_utc, as_of_utc=args.as_of_utc,
+                      ttl_seconds=args.ttl_seconds)
+        from tools import wd_mind_situation_view as situation_reader
+        view = situation_reader.project_situation(**inputs, allow_missing_bundle=False)
+        _situation_validate_output(view, inputs)
+        output = json.dumps(view, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        if len(output.encode("ascii")) > 65536:
+            raise ValueError("output")
+        print(output)
+        return 0
+    except Exception:
+        print('{"error":"mind_session_situation_refused","authority":"none"}', file=sys.stderr)
+        return 2
+
+
+def _situation_live_cli(argv):
+    """Read a bounded canonical bridge tail entirely in memory.
+
+    The authenticated package boundary is the external wrapper, not this
+    mode, its arguments or environment. Snapshot completeness and sender
+    authentication remain unknown. No bridge queue or cursor is mutated.
+    """
+    try:
+        parser = _SituationArgumentParser(add_help=False)
+        parser.add_argument("--bridge-root", required=True)
+        for name in ("fleet", "pointer", "manifest"):
+            parser.add_argument("--" + name, required=True)
+            parser.add_argument("--" + name + "-sha256", required=True)
+        parser.add_argument("--pointer-observed-utc", required=True)
+        parser.add_argument("--ttl-seconds", required=True, type=int)
+        if any(argv.count(option) != 1 for option in parser._option_string_actions):
+            raise ValueError("ambiguous_arguments")
+        args = parser.parse_args(argv)
+        root = _situation_checked_path(args.bridge_root)
+        log = _situation_checked_path(root / "shared" / "events.jsonl")
+        inputs = {}
+        for name in ("fleet", "pointer", "manifest"):
+            digest = getattr(args, name + "_sha256")
+            limit = 8 * 1024 * 1024 if name == "manifest" else 1024 * 1024
+            inputs[name + "_bytes"] = _situation_read_pinned(getattr(args, name), digest, limit)
+            inputs[name + "_sha256"] = digest
+        rows, cursor, stats = bridge_compact_view._read_view_rows(log, _DIRECT_TAIL_ROWS, "")
+        if (type(rows) is not list or type(cursor) is not str or not cursor.startswith("bc1.")
+                or type(stats) is not dict or type(stats.get("unconsumed_bytes")) is not int
+                or stats["unconsumed_bytes"] < 0):
+            raise ValueError("incomplete_snapshot")
+        _situation_check_live_log_identity(log, cursor)
+        # One historical LF row can decode to multiple events. Bound the
+        # projected event count independently of the reader's physical rows.
+        envelopes = [{"ref": bridge_compact_view.event_id(row), "event": row}
+                     for row in rows[-_DIRECT_TAIL_ROWS:]]
+        encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        snapshot = bytearray()
+        for part in encoder.iterencode(envelopes):
+            fragment = part.encode("utf-8")
+            if len(snapshot) + len(fragment) > 8 * 1024 * 1024:
+                raise ValueError("snapshot_too_large")
+            snapshot.extend(fragment)
+        del rows, envelopes
+        data = bytes(snapshot)
+        inputs.update(snapshot_bytes=data, snapshot_sha256=hashlib.sha256(data).hexdigest(),
+                      pointer_observed_utc=args.pointer_observed_utc,
+                      as_of_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                      ttl_seconds=args.ttl_seconds)
+        from tools import wd_mind_situation_view as situation_reader
+        view = situation_reader.project_situation(**inputs, allow_missing_bundle=False)
+        _situation_validate_output(view, inputs)
+        envelope = {"schema": "wd.mind-situation-live.v1", "authority": "none",
+                    "scope": "bounded_complete_records_not_current_state_or_gate",
+                    "partial_final_record": stats["unconsumed_bytes"] > 0,
+                    "current_state": "UNKNOWN", "continuity": "UNKNOWN", "view": view}
+        output = json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        if len(output.encode("ascii")) > 65536:
+            raise ValueError("output")
+        print(output)
+        return 0
+    except Exception:
+        print('{"error":"mind_session_situation_refused","authority":"none"}', file=sys.stderr)
+        return 2
+
+
 def query_content_session(*, enabled=False, inputs=None, providers=None):
     """Read frozen content using explicit caller-owned bindings and providers.
 
@@ -254,6 +602,11 @@ def query_content_prompt_fragment(*, enabled=False, inputs=None, providers=None)
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "--situation-live":
+        return _situation_live_cli(argv[1:])
+    if argv and argv[0] == "--situation":
+        return _situation_cli(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--latest", required=True, type=Path)
     parser.add_argument("--audit-root", required=True, type=Path)

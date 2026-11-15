@@ -1679,7 +1679,8 @@ def _q4_rank(records, entries, encoder, query, when):
             for key in eligible:
                 if values[key] <= 0.0:
                     ranks[view][key] = max(len(eligible), 3) + 1
-    agreed = [key for key in eligible if all(ranks[view][key] <= 3 for view in ("w", "d", "b"))]
+    agreed = [key for key in eligible if all(ranks[view][key] <= 3 for view in ("w", "d", "b"))
+              and scores["w"][key] > 0.0 and scores["d"][key] > 0.0]
     return sorted(agreed, key=lambda key: (
         -sum(1.0 / (60 + ranks[view][key]) for view in ("w", "d", "b")), key))[:3]
 

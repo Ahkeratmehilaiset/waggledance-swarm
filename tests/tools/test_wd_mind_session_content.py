@@ -507,6 +507,35 @@ def test_flat_consumer_is_default_off_before_any_ipc(flat_consumer_case):
             expected_manifest_sha256=owner._pin, expected_nonce='1' * 64, lane='codex-lead-1', scope='shared')
 
 
+def test_consumer_child_cli_refuses_before_access(monkeypatch, capsys):
+    monkeypatch.setattr(session.sys, 'stdin', SimpleNamespace(read=lambda *a: pytest.fail('unexpected read')))
+    assert session.main(['--mind-consumer-child']) == 2
+    out = capsys.readouterr()
+    assert out.out == '' and out.err == ''
+
+
+def test_parent_consumer_pipeline_is_private_gate_only(flat_consumer_case, monkeypatch):
+    _, owner, proposals, snapshot, _, response = flat_consumer_case
+    meta, blocks = _export_fixture(owner, snapshot)
+    wire = _synthetic_export_wire(meta, blocks, b'B'*32)
+    frame = json.loads(response())
+    frame['scope'] = 'own'
+    payload = json.dumps(frame, separators=(',', ':')).encode()
+    args = dict(enabled=True, open_export=lambda: io.BytesIO(wire),
+        open_candidate=lambda: io.BytesIO(struct.pack('>4sI', b'MCR1', len(payload)) + payload),
+        channel_key=b'B'*32, bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+        expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]),
+        expected_nonce='1'*64, lane='codex-lead-1', max_total_bytes=64*1024*1024,
+        max_wire_bytes=64*1024*1024, deadline_monotonic=time.monotonic()+30)
+    with pytest.raises(session.MindContentSessionRefused):
+        session._run_parent_consumer(**args)
+    # No production-provider injection: this replacement exists only in the fixture.
+    monkeypatch.setattr(session, '_require_trusted_consumer_parent', lambda: None)
+    result = session._run_parent_consumer(**args)
+    assert result['authority'] == 'none' and result['sender_authentication'] == 'UNKNOWN'
+    assert [r['source_event_sha256'] for r in result['results']] == [p['source_event_sha256'] for p in proposals]
+
+
 @pytest.mark.parametrize('fault', ['none', 'disabled', 'nonce', 'oversize', 'empty', 'late', 'close', 'magic', 'truncated', 'trailing'])
 def test_candidate_stream_uses_local_gate_and_refuses_partial_or_untrusted_data(flat_consumer_case, fault):
     _, owner, proposals, _, _, response = flat_consumer_case

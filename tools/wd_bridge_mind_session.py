@@ -698,6 +698,55 @@ def resolve_flat_candidate_stream(*, enabled=False, owner=None, open_read=None, 
     return output
 
 
+def _require_trusted_consumer_parent():
+    # No production provider exists for the inherited-control provenance yet.
+    raise MindContentSessionRefused('mind_session_content_refused') from None
+
+
+def _run_parent_consumer(*, enabled=False, open_export=None, open_candidate=None, channel_key=None,
+                         bundle_root=None, expected_manifest_sha256=None,
+                         expected_identifier_policy_sha256=None, expected_nonce=None, lane=None,
+                         max_total_bytes=None, max_wire_bytes=None, deadline_monotonic=None):
+    """Prepare one parent-bound read; production gate intentionally refuses.
+
+    This pipeline does not establish parent provenance, authenticate a peer,
+    or make synchronous I/O interruptible. It must run under an owner that
+    retains the whole operation and its handles until completion or HOLD.
+    """
+    output = authorization = owner = interrupted = None
+    try:
+        if enabled is not True:
+            raise ValueError('disabled')
+        _require_trusted_consumer_parent()
+        if (type(deadline_monotonic) not in (int, float) or not math.isfinite(deadline_monotonic)
+                or not 0 < deadline_monotonic - time.monotonic() <= 840):
+            raise ValueError('deadline')
+        authorization = create_flat_export_authorization(enabled=True, expected_nonce=expected_nonce,
+            expected_identifier_policy_sha256=expected_identifier_policy_sha256)
+        owner = read_flat_owner_stream(enabled=True, authorization=authorization, open_read=open_export,
+            channel_key=channel_key, bundle_root=bundle_root, expected_manifest_sha256=expected_manifest_sha256,
+            max_total_bytes=max_total_bytes, max_wire_bytes=max_wire_bytes,
+            timeout_seconds=deadline_monotonic-time.monotonic())
+        output = resolve_flat_candidate_stream(enabled=True, owner=owner, open_read=open_candidate,
+            bundle_root=bundle_root, expected_manifest_sha256=expected_manifest_sha256,
+            expected_nonce=expected_nonce, lane=lane, scope='own', deadline_monotonic=deadline_monotonic)
+    except KeyboardInterrupt:
+        interrupted, output = KeyboardInterrupt, None
+    except GeneratorExit:
+        interrupted, output = GeneratorExit, None
+    except asyncio.CancelledError:
+        interrupted, output = asyncio.CancelledError, None
+    except BaseException:
+        output = None
+    finally:
+        authorization = owner = channel_key = open_export = open_candidate = None
+    if interrupted is not None:
+        raise interrupted() from None
+    if output is None:
+        raise MindContentSessionRefused('mind_session_content_refused') from None
+    return output
+
+
 def query_content_session(*, enabled=False, inputs=None, providers=None):
     """Read frozen content using explicit caller-owned bindings and providers.
 
@@ -803,6 +852,12 @@ def query_content_prompt_fragment(*, enabled=False, inputs=None, providers=None)
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    if '--mind-consumer-child' in argv:
+        # The reserved stderr handle is input, not diagnostics. Never read or
+        # write either inherited handle until parent authority is implemented.
+        return 2
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--latest", required=True, type=Path)
     parser.add_argument("--audit-root", required=True, type=Path)

@@ -365,6 +365,42 @@ class FullRuntimeCancellationUnknown(BaseException):
         super().__init__('mind_full_runtime_cancellation_unknown')
 
 
+class _OwnedSnapshotWatcher:
+    """Retain only the verifier reserved for this owner, including on HOLD."""
+    __slots__ = ('_watcher',)
+
+    def __init__(self):
+        self._watcher = None
+
+    def _capture(self, watcher):
+        if self._watcher is not None and self._held():
+            raise ValueError('watcher_already_owned')
+        self._watcher = watcher
+
+    def _held(self):
+        if self._watcher is None:
+            return False
+        try:
+            return self._watcher.alive() is not False
+        except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+            raise
+        except BaseException:
+            return True
+
+
+def _reserve_owned_snapshot_watcher(package, lease):
+    """Capture the specific reservation before it can start a verifier."""
+    registry = package._WATCHER_REGISTRY
+    with registry['lock']:
+        current = registry['owner']
+        if current is not None and not (current.finished.is_set() and not current.alive()):
+            raise package.SnapshotPackageHold('content_snapshot_watcher_hold')
+        watcher = package._SourceWatcher()
+        lease._capture(watcher)
+        registry['owner'] = watcher
+        return watcher
+
+
 class _PrivateBinding:
     __slots__ = ('__snapshot', '__bundle', '__manifest', '__controls', '__args')
     authority = 'none'
@@ -965,7 +1001,7 @@ def _flat_hashes(ids, vectors):
 
 
 def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
-                                 encoder_binding_sha256, watcher_join_timeout_seconds):
+                                 encoder_binding_sha256, watcher_join_timeout_seconds, watcher_lease):
     """Use the pinned immutable snapshot helper and retain watcher ownership on HOLD.
 
     This captures the full prefix as immutable bytes and can use substantial RAM;
@@ -981,7 +1017,8 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
     watcher, output, problem, cleanup_problem, held = None, None, None, None, False
     try:
         try:
-            watcher = package._reserve_watcher()
+            watcher = (package._reserve_watcher() if watcher_lease is None else
+                       _reserve_owned_snapshot_watcher(package, watcher_lease))
         except package.SnapshotPackageHold:
             held = True
         if not held:
@@ -1033,6 +1070,10 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
     except BaseException as exc:
         problem = exc
     finally:
+        if watcher is None and watcher_lease is not None:
+            # A cancellation can arrive after reservation but before the
+            # returned watcher is stored in this frame.
+            watcher = watcher_lease._watcher
         if watcher is not None:
             try:
                 watcher.stop(watcher_join_timeout_seconds)
@@ -1089,7 +1130,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
 
 def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
                       encoder_binding_bytes=None, encoder_binding_sha256=None,
-                      source_verification=None, watcher_join_timeout_seconds=None):
+                      source_verification=None, watcher_join_timeout_seconds=None, _watcher_lease=None):
     """Build one memory-only float32 vector per screened, source-bound record.
 
     Provider identity and supplied encoder metadata are caller-trusted; this
@@ -1098,14 +1139,15 @@ def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
     result = None
     try:
         if (enabled is not True or type(binding) is not _PrivateBinding
-                or not callable(passage_encoder) or isinstance(passage_encoder, type)):
+                or not callable(passage_encoder) or isinstance(passage_encoder, type)
+                or (_watcher_lease is not None and type(_watcher_lease) is not _OwnedSnapshotWatcher)):
             raise ValueError('input')
         _checked_encoder_binding(encoder_binding_bytes, encoder_binding_sha256)
         if source_verification is not None:
             if type(source_verification) is not str or source_verification != 'verified_immutable_snapshot_v1':
                 raise ValueError('source_verification')
             return _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
-                                                encoder_binding_sha256, watcher_join_timeout_seconds)
+                                                encoder_binding_sha256, watcher_join_timeout_seconds, _watcher_lease)
         if watcher_join_timeout_seconds is not None:
             raise ValueError('unexpected_join_timeout')
         snapshot = binding.snapshot_for_query()
@@ -1341,15 +1383,16 @@ class _FlatRequestHandler:
     """In-process owner; caller retains this object through any HOLD."""
     __slots__ = ('_binding', '_snapshot', '_lane', '_lanes', '_rotator', '_adapter', '_memory',
                  '_frozen_flat', '_closed', '_failed', '_lock', '_factory', '_timeout', '_bulk', '_pending_rotator',
-                 '_refresh_controller')
+                 '_refresh_controller', '_watcher_lease')
 
-    def __init__(self, binding, snapshot, lane, lanes, rotator, adapter, factory, timeout, bulk):
+    def __init__(self, binding, snapshot, lane, lanes, rotator, adapter, factory, timeout, bulk, watcher_lease=None):
         self._binding, self._snapshot, self._lane = binding, snapshot, lane
         self._lanes = frozenset(lanes)
         self._rotator, self._adapter = rotator, adapter
         self._memory = self._frozen_flat = None
         self._factory, self._timeout, self._bulk, self._pending_rotator = factory, timeout, bulk, None
         self._refresh_controller = None
+        self._watcher_lease = watcher_lease
         self._closed = self._failed = False
         self._lock = threading.Lock()
 
@@ -1374,7 +1417,7 @@ class _FlatRequestHandler:
                 raise ValueError('state')
             memory = build_flat_memory(enabled=True, binding=self._binding, passage_encoder=self._adapter.passage,
                 encoder_binding_bytes=self._adapter.encoder_binding_bytes,
-                encoder_binding_sha256=self._adapter.encoder_binding_sha256)
+                encoder_binding_sha256=self._adapter.encoder_binding_sha256, _watcher_lease=self._watcher_lease)
             self._memory = memory
             self._frozen_flat = (memory.manifest, memory.ids, memory.vectors, memory.encoder_binding)
             self._source_check()
@@ -1852,7 +1895,8 @@ class _SingleManifestOwner:
     """
     __slots__ = ('_binding', '_snapshot', '_lane', '_lanes', '_factory', '_factory_anchor', '_factory_bytes', '_timeout',
                  '_state', '_launch', '_owner', '_client', '_adapter', '_handler', '_lock',
-                 '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts')
+                 '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts',
+                 '_watcher_lease')
 
     def __init__(self, binding, snapshot, lane, lanes, factory, timeout):
         self._binding, self._snapshot, self._lane = binding, snapshot, lane
@@ -1865,6 +1909,7 @@ class _SingleManifestOwner:
         self._launch_done, self._launch_cancel = threading.Event(), threading.Event()
         self._launch_error = None
         self._owner_conflicts = []
+        self._watcher_lease = _OwnedSnapshotWatcher()
 
     def _capture_owner(self, owner):
         # The launch thread records the reservation before any native spawn.
@@ -1987,7 +2032,8 @@ class _SingleManifestOwner:
                 self._adapter = adapter_module.create_single_flat_adapter(enabled=True, bundle_root=str(bundle),
                     expected_manifest_sha256=manifest, client=self._client)
                 self._handler = _FlatRequestHandler(self._binding, self._snapshot, self._lane, self._lanes,
-                    self._client, self._adapter, self._factory, self._timeout, self._factory._bulk)
+                    self._client, self._adapter, self._factory, self._timeout, self._factory._bulk,
+                    self._watcher_lease)
                 result = self._handler.build()
                 if result != {'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'}:
                     raise ValueError('build')
@@ -2110,6 +2156,16 @@ class _SingleManifestOwner:
         if not self._lock.acquire(blocking=False):
             return {'state': 'BUSY', 'owned': None, 'authority': 'none'}
         try:
+            try:
+                if self._watcher_lease._held():
+                    self._state = 'HOLD'
+                    return self._status()
+            except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+                self._state = 'HOLD'
+                raise
+            except BaseException:
+                self._state = 'HOLD'
+                return self._status()
             if self._state == 'NEW':
                 self._state = 'STOPPED'
                 return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}

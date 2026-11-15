@@ -359,6 +359,12 @@ class FullRuntimeSnapshotHold(FullRuntimeRefused):
     """A source verifier remains owned; no memory was returned."""
 
 
+class FullRuntimeCancellationUnknown(BaseException):
+    """A bounded cancellation inspection could not establish all group leaves."""
+    def __init__(self):
+        super().__init__('mind_full_runtime_cancellation_unknown')
+
+
 class _PrivateBinding:
     __slots__ = ('__snapshot', '__bundle', '__manifest', '__controls', '__args')
     authority = 'none'
@@ -1039,7 +1045,30 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
     def cancellation(exc):
         kind = type(exc)
         if issubclass(kind, BaseExceptionGroup):
-            return _fixed_group_cancellation(exc)
+            # Do not treat an oversized or unreadable group as a normal
+            # refusal: it could contain a cancellation beyond the budget.
+            # The fixed signal contains no original group text or leaves.
+            pending, found, visited = [exc], [], 0
+            try:
+                while pending:
+                    visited += 1
+                    if visited > 1024 or len(pending) + len(found) > 1024:
+                        return FullRuntimeCancellationUnknown()
+                    item = pending.pop()
+                    item_type = type(item)
+                    if issubclass(item_type, BaseExceptionGroup):
+                        children = BaseExceptionGroup.exceptions.__get__(item)
+                        if len(pending) + len(found) + len(children) > 1024:
+                            return FullRuntimeCancellationUnknown()
+                        pending.extend(reversed(children))
+                    else:
+                        for signal_type in (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+                            if issubclass(item_type, signal_type):
+                                found.append(signal_type())
+                                break
+                return BaseExceptionGroup('provider_cancelled', found) if found else None
+            except BaseException:
+                return FullRuntimeCancellationUnknown()
         for signal_type in (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
             if issubclass(kind, signal_type):
                 return signal_type()

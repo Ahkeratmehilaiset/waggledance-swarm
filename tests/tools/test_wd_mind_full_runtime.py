@@ -1588,7 +1588,7 @@ try:
                 package._SourceWatcher.stop = changed_after_join
         if mode in ('package_immutable_hold', 'package_immutable_cancel_hold',
                     'package_immutable_generator_hold', 'package_immutable_async_hold',
-                    'package_immutable_group_hold'):
+                    'package_immutable_group_hold', 'package_immutable_oversized_group_hold'):
             import asyncio, threading
             from tools import wd_mind_content_snapshot_package as package
             entered, release = threading.Event(), threading.Event()
@@ -1607,17 +1607,24 @@ try:
                 if mode == 'package_immutable_async_hold': raise asyncio.CancelledError('synthetic cancellation')
                 if mode == 'package_immutable_group_hold':
                     raise BaseExceptionGroup('synthetic', [ValueError('discard'), GeneratorExit('discard')])
+                if mode == 'package_immutable_oversized_group_hold':
+                    raise BaseExceptionGroup('synthetic-secret-marker',
+                        [ValueError('synthetic-secret-marker') for _ in range(1024)] + [GeneratorExit('discard')])
                 return row * len(texts)
             try:
                 runtime.build_flat_memory(enabled=True, binding=binding, passage_encoder=passage,
                     encoder_binding_bytes=encoder_binding, encoder_binding_sha256=sha(encoder_binding), **options)
                 raise AssertionError('must not publish')
             except (runtime.FullRuntimeSnapshotHold, KeyboardInterrupt, GeneratorExit, asyncio.CancelledError,
-                    BaseExceptionGroup) as exc:
+                    BaseExceptionGroup, getattr(runtime, 'FullRuntimeCancellationUnknown', GeneratorExit)) as exc:
                 signal = type(exc).__name__
                 clean = (not isinstance(exc, BaseExceptionGroup) or
                          (len(exc.exceptions) == 1 and type(exc.exceptions[0]) is GeneratorExit
                           and not exc.exceptions[0].args))
+                if isinstance(exc, getattr(runtime, 'FullRuntimeCancellationUnknown', GeneratorExit)):
+                    import traceback
+                    clean = (exc.args == ('mind_full_runtime_cancellation_unknown',) and
+                             'synthetic-secret-marker' not in ''.join(traceback.format_exception(exc)))
                 held = package.snapshot_build_watcher_status()['state'] != 'idle'
                 try:
                     runtime.build_flat_memory(enabled=True, binding=binding, passage_encoder=passage,
@@ -1877,7 +1884,8 @@ def test_immutable_snapshot_final_verification_follows_verifier_join(synthetic_b
                                                   ('package_immutable_cancel_hold', 'KeyboardInterrupt'),
                                                   ('package_immutable_generator_hold', 'GeneratorExit'),
                                                   ('package_immutable_async_hold', 'CancelledError'),
-                                                  ('package_immutable_group_hold', 'BaseExceptionGroup')])
+                                                  ('package_immutable_group_hold', 'BaseExceptionGroup'),
+                                                  ('package_immutable_oversized_group_hold', 'FullRuntimeCancellationUnknown')])
 def test_immutable_snapshot_hold_retains_verifier_until_exit(synthetic_bundle, scenario, signal):
     assert invoke(synthetic_bundle, scenario) == {'result':'hold', 'signal':signal, 'held':True,
                                                    'retry_held':True, 'released':True, 'clean':True}

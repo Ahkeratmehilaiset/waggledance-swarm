@@ -407,7 +407,9 @@ class _PrivateBinding:
         controls.pop('projection_sha256')
         context = reader._inputs(controls, complete_source=True)
         if (context['decision']['source_prefix']['sha256'] != args['expected_prefix_sha256']
-                or context['messages']['end_cursor'] != cursor):
+                or context['messages']['end_cursor'] != cursor
+                or not startup._same_path(Path(context['messages']['source_path']), source)
+                or not startup._same_path(Path(context['messages']['generation_path']), sidecar)):
             raise ValueError('anchor_changed')
         with bridge._open_log(source) as stream:
             length = prefix._fence(stream, source, sidecar, cursor.file_identity, cursor.offset)
@@ -1034,7 +1036,15 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                 cleanup_problem = exc
             finally:
                 package._release_watcher(watcher)
-    signals = [reader._provider_cancellation(exc) for exc in (problem, cleanup_problem) if exc is not None]
+    def cancellation(exc):
+        kind = type(exc)
+        if issubclass(kind, BaseExceptionGroup):
+            return _fixed_group_cancellation(exc)
+        for signal_type in (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+            if issubclass(kind, signal_type):
+                return signal_type()
+        return None
+    signals = [cancellation(exc) for exc in (problem, cleanup_problem) if exc is not None]
     signals = [signal for signal in signals if signal is not None]
     if signals:
         problem = cleanup_problem = None

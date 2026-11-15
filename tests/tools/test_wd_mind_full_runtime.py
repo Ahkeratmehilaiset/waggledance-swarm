@@ -1142,6 +1142,16 @@ try:
         def mutate(stage):
             if mode == 'package_source_' + stage:
                 path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
+            if mode == 'package_immutable_source_' + stage:
+                path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
+            if mode == 'package_immutable_generation_' + stage:
+                pathlib.Path(sys.argv[3]).with_name('events.generation.json').write_bytes(b'{}')
+            if mode == 'package_immutable_provider_' + stage:
+                raise RuntimeError('synthetic provider failure')
+            if mode == 'package_immutable_helper_' + stage:
+                (pathlib.Path(sys.argv[1]) / 'tools-bootstrap/tools/wd_mind_content_snapshot_package.py').write_bytes(b'changed')
+            if mode == 'package_immutable_bundle_' + stage:
+                (pathlib.Path(sys.argv[1]) / 'wd-mind-message-policy.json').write_bytes(b'{}')
             if mode == 'package_bundle_' + stage:
                 (pathlib.Path(sys.argv[1]) / 'wd-mind-message-policy.json').write_bytes(b'{}')
             if mode == 'package_provider_' + stage: raise RuntimeError('synthetic provider failure')
@@ -1539,8 +1549,77 @@ try:
                               'agents':[hit['source_agent'] for hit in response['result']['results']],
                               'latest':response['result']['own_latest_task']}))
             sys.exit(0)
-        product = runtime.build_flat_memory(enabled=True, binding=(object() if mode == 'package_fake_binding' else binding),
-            passage_encoder=passage, encoder_binding_bytes=encoder_binding, encoder_binding_sha256=sha(encoder_binding))
+        options = {'source_verification':'verified_immutable_snapshot_v1'} if mode.startswith('package_immutable') else {}
+        if mode == 'package_immutable_invalid_optin': options['source_verification'] = 'unverified'
+        if mode == 'package_immutable_bad_timeout': options['watcher_join_timeout_seconds'] = 601
+        if mode == 'package_immutable_forged_hold':
+            from tools import wd_mind_content_snapshot_package as package
+            def passage(texts): raise package.SnapshotPackageHold('synthetic forged hold')
+        if mode == 'package_immutable_source_before':
+            path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
+        if mode == 'package_immutable_generation_before':
+            pathlib.Path(sys.argv[3]).with_name('events.generation.json').write_bytes(b'{}')
+        if mode in ('package_immutable_background', 'package_immutable_after_join'):
+            from tools import wd_mind_content_snapshot_package as package
+            audit = {'detected':False, 'joined':False}
+            if mode == 'package_immutable_background':
+                package._WATCH_INTERVAL_SECONDS = .001
+                def passage(texts):
+                    path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
+                    owner = package._WATCHER_REGISTRY['owner']
+                    audit['detected'] = owner.failed.wait(10)
+                    return row * len(texts)
+            else:
+                package._WATCH_INTERVAL_SECONDS = 60
+                original_stop = package._SourceWatcher.stop
+                def changed_after_join(self, timeout=None):
+                    original_stop(self, timeout)
+                    audit['joined'] = True
+                    path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
+                package._SourceWatcher.stop = changed_after_join
+        if mode in ('package_immutable_hold', 'package_immutable_cancel_hold'):
+            import threading
+            from tools import wd_mind_content_snapshot_package as package
+            entered, release = threading.Event(), threading.Event()
+            original = reader._verified_complete
+            def blocked(*args, **kwargs):
+                if threading.current_thread().name == 'mind-source-verifier':
+                    entered.set(); release.wait(10)
+                return original(*args, **kwargs)
+            reader._verified_complete = blocked
+            package._WATCH_INTERVAL_SECONDS = .001
+            options['watcher_join_timeout_seconds'] = .01
+            def passage(texts):
+                assert entered.wait(10)
+                if mode == 'package_immutable_cancel_hold': raise KeyboardInterrupt('synthetic cancellation')
+                return row * len(texts)
+            try:
+                runtime.build_flat_memory(enabled=True, binding=binding, passage_encoder=passage,
+                    encoder_binding_bytes=encoder_binding, encoder_binding_sha256=sha(encoder_binding), **options)
+                raise AssertionError('must not publish')
+            except (runtime.FullRuntimeSnapshotHold, KeyboardInterrupt) as exc:
+                signal = type(exc).__name__
+                held = package.snapshot_build_watcher_status()['state'] != 'idle'
+                try:
+                    runtime.build_flat_memory(enabled=True, binding=binding, passage_encoder=passage,
+                        encoder_binding_bytes=encoder_binding, encoder_binding_sha256=sha(encoder_binding), **options)
+                    retry_held = False
+                except runtime.FullRuntimeSnapshotHold:
+                    retry_held = True
+                finally:
+                    release.set()
+                    owner = package._WATCHER_REGISTRY['owner']
+                    if owner is not None and owner.thread is not None: owner.thread.join(10)
+                print(json.dumps({'result':'hold','signal':signal,'held':held,'retry_held':retry_held,
+                                  'released':package.snapshot_build_watcher_status()['state'] == 'idle'}))
+                sys.exit(0)
+        try:
+            product = runtime.build_flat_memory(enabled=True, binding=(object() if mode == 'package_fake_binding' else binding),
+                passage_encoder=passage, encoder_binding_bytes=encoder_binding, encoder_binding_sha256=sha(encoder_binding), **options)
+        except Exception:
+            if mode in ('package_immutable_background', 'package_immutable_after_join'):
+                print(json.dumps({'result':'refused', **audit})); sys.exit(0)
+            raise
         def encode_query(text):
             mutate('query')
             if mode == 'package_orthogonal': return (0.0, 1.0) + (0.0,) * 382
@@ -1721,6 +1800,36 @@ def test_synthetic_private_binding_build_package_and_query(synthetic_bundle):
     assert result['relevance'] == 'UNVERIFIED' and result['hits'] > 0
     assert set(result['agents']) == {'codex-lead-1'} and result['refs']
     assert result['latest'] == 'UNKNOWN' and result['index_match'] == 'NOT_APPLICABLE'
+
+
+def test_immutable_snapshot_build_returns_verified_synthetic_results(synthetic_bundle):
+    result = invoke(synthetic_bundle, 'package_immutable')
+    assert result['result'] == 'ok' and result['status'] == 'SEMANTIC_CANDIDATE'
+    assert result['hits'] > 0 and result['refs']
+
+
+@pytest.mark.parametrize('fault', ['source_before', 'generation_before', 'source_passage',
+                                   'generation_passage', 'provider_passage', 'bundle_passage',
+                                   'helper_passage', 'invalid_optin', 'bad_timeout', 'forged_hold'])
+def test_immutable_snapshot_refuses_synthetic_source_or_provider_fault(synthetic_bundle, fault):
+    assert invoke(synthetic_bundle, 'package_immutable_' + fault) == {'result': 'refused'}
+
+
+def test_immutable_snapshot_background_failure_refuses(synthetic_bundle):
+    result = invoke(synthetic_bundle, 'package_immutable_background')
+    assert result == {'result':'refused', 'detected':True, 'joined':False}
+
+
+def test_immutable_snapshot_final_verification_follows_verifier_join(synthetic_bundle):
+    result = invoke(synthetic_bundle, 'package_immutable_after_join')
+    assert result == {'result':'refused', 'detected':False, 'joined':True}
+
+
+@pytest.mark.parametrize(('scenario', 'signal'), [('package_immutable_hold', 'FullRuntimeSnapshotHold'),
+                                                  ('package_immutable_cancel_hold', 'KeyboardInterrupt')])
+def test_immutable_snapshot_hold_retains_verifier_until_exit(synthetic_bundle, scenario, signal):
+    assert invoke(synthetic_bundle, scenario) == {'result':'hold', 'signal':signal, 'held':True,
+                                                   'retry_held':True, 'released':True}
 
 
 @pytest.mark.parametrize('scenario', ['package_rco', 'package_other'])

@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import importlib
+import importlib.util
 import json
 import math
 import os
@@ -353,6 +355,10 @@ class FullRuntimeRefused(ValueError):
     """Fixed refusal without source paths, contents or key material."""
 
 
+class FullRuntimeSnapshotHold(FullRuntimeRefused):
+    """A source verifier remains owned; no memory was returned."""
+
+
 class _PrivateBinding:
     __slots__ = ('__snapshot', '__bundle', '__manifest', '__controls', '__args')
     authority = 'none'
@@ -378,6 +384,60 @@ class _PrivateBinding:
         if result is None:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         return result
+
+    def _immutable_checkpoint(self, frozen):
+        """Check controls and source identity without rehashing the prefix."""
+        if self.__snapshot != frozen or _bundle_inputs(self.__bundle, self.__manifest) != self.__controls:
+            raise ValueError('binding_changed')
+        source, sidecar, _ = prefix._deployment_source(str(self.__bundle), self.__manifest)
+        args = self.__args
+        if (set(args) != {'enabled', 'bundle_root', 'expected_manifest_sha256', 'source_path',
+                          'generation_path', 'cursor', 'expected_prefix_sha256'}
+                or args['enabled'] is not True or type(args['bundle_root']) is not str
+                or not startup._same_path(Path(args['bundle_root']), self.__bundle)
+                or args['expected_manifest_sha256'] != self.__manifest):
+            raise ValueError('startup_binding_changed')
+        cursor = args['cursor']
+        if (not startup._same_path(source, Path(args['source_path']))
+                or not startup._same_path(sidecar, Path(args['generation_path']))
+                or cursor.generation is not None):
+            raise ValueError('source_changed')
+        controls = dict(frozen)
+        controls.pop('projection_bytes')
+        controls.pop('projection_sha256')
+        context = reader._inputs(controls, complete_source=True)
+        if (context['decision']['source_prefix']['sha256'] != args['expected_prefix_sha256']
+                or context['messages']['end_cursor'] != cursor):
+            raise ValueError('anchor_changed')
+        with bridge._open_log(source) as stream:
+            length = prefix._fence(stream, source, sidecar, cursor.file_identity, cursor.offset)
+            stream.seek(cursor.offset - 1)
+            if stream.read(1) != b'\n':
+                raise ValueError('incomplete_cursor')
+            prefix._fence(stream, source, sidecar, cursor.file_identity, length)
+        if _bundle_inputs(self.__bundle, self.__manifest) != self.__controls:
+            raise ValueError('binding_changed')
+
+    def _snapshot_support(self):
+        """Load the watcher helper only from the manifest-pinned bundle."""
+        raw = prefix._read_pinned(self.__bundle / 'deployment-manifest.json', self.__manifest,
+                                  prefix.MAX_CONTROL_BYTES)
+        manifest = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=prefix._unique_object,
+                              parse_constant=reader._bad_constant)
+        relative = 'tools-bootstrap/tools/wd_mind_content_snapshot_package.py'
+        path = self.__bundle.joinpath(*relative.split('/'))
+        digest = manifest['files'].get(relative)
+        prefix._read_pinned(path, digest, 8 * 1024 * 1024)
+        name = 'tools.wd_mind_content_snapshot_package'
+        spec = importlib.util.find_spec(name)
+        if spec is None or type(spec.origin) is not str or not startup._same_path(Path(spec.origin), path):
+            raise ValueError('watcher_origin')
+        module = importlib.import_module(name)
+        if (type(getattr(module, '__file__', None)) is not str
+                or not startup._same_path(Path(module.__file__), path) or module.reader is not reader):
+            raise ValueError('watcher_origin')
+        prefix._read_pinned(path, digest, 8 * 1024 * 1024)
+        return module
 
 
 def _bundle_inputs(bundle, expected_manifest):
@@ -896,8 +956,101 @@ def _flat_hashes(ids, vectors):
             'vectors_sha256': reader._sha(vectors), 'pairs_sha256': pairs.hexdigest()}
 
 
+def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
+                                 encoder_binding_sha256, watcher_join_timeout_seconds):
+    """Use the pinned immutable snapshot helper and retain watcher ownership on HOLD.
+
+    This captures the full prefix as immutable bytes and can use substantial RAM;
+    neither its size nor process memory is bounded by an IPC transfer limit.
+    """
+    if watcher_join_timeout_seconds is not None and (
+            type(watcher_join_timeout_seconds) not in (int, float)
+            or not math.isfinite(watcher_join_timeout_seconds)
+            or not 0 < watcher_join_timeout_seconds <= 600):
+        raise ValueError('invalid_join_timeout')
+    snapshot = binding.snapshot_for_query()
+    package = binding._snapshot_support()
+    watcher, output, problem, cleanup_problem, held = None, None, None, None, False
+    try:
+        try:
+            watcher = package._reserve_watcher()
+        except package.SnapshotPackageHold:
+            held = True
+        if not held:
+            frozen = package._snapshot(snapshot, {'streamed': True})
+            projection, context, report = reader._verified_complete(frozen)
+            immutable_prefix = package._immutable_prefix(context)
+            projection = json.loads(frozen['projection_bytes'].decode('utf-8'),
+                                    object_pairs_hook=reader._unique_pairs, parse_constant=reader._bad_constant)
+            if reader._serialized(projection) != frozen['projection_bytes']:
+                raise ValueError('projection_changed')
+            watcher.start(frozen, report)
+            records = projection['messages']['records']
+            by_id = {record['record_id']: record for record in records}
+            if not records or len(by_id) != len(records):
+                raise ValueError('records')
+            ids, vectors = tuple(sorted(by_id)), []
+
+            def checkpoint():
+                watcher.check()
+                if snapshot != frozen or binding._snapshot_support() is not package:
+                    raise ValueError('snapshot_changed')
+                binding._immutable_checkpoint(frozen)
+                _checked_encoder_binding(encoder_binding_bytes, encoder_binding_sha256)
+
+            for start in range(0, len(ids), 16):
+                chosen = ids[start:start + 16]
+                texts = tuple('passage: ' + reader.decode_text(by_id[key]['stored_text'])[:2000] for key in chosen)
+                checkpoint()
+                raw = passage_encoder(texts)
+                checkpoint()
+                if type(raw) is not bytes or len(raw) != len(chosen) * 1536:
+                    raise ValueError('passage')
+                for index in range(len(chosen)):
+                    reader._q4_vector(struct.unpack('<384f', raw[index * 1536:(index + 1) * 1536]))
+                vectors.append(raw)
+            vectors = b''.join(vectors)
+            manifest = {'schema': 'wd.mind-flat-f32-memory.v1', 'authority': 'none',
+                        'projection_sha256': snapshot['projection_sha256'], 'records': len(ids),
+                        'encoder_binding_sha256': encoder_binding_sha256, **_flat_hashes(ids, vectors)}
+            checkpoint()
+            watcher.stop(watcher_join_timeout_seconds)
+            package._unchanged(snapshot, frozen, report, complete=True)
+            _flat_snapshot(binding, frozen)
+            if (reader._sha(immutable_prefix) != report['source_prefix']['sha256']
+                    or reader._serialized(projection) != frozen['projection_bytes']):
+                raise ValueError('immutable_snapshot_changed')
+            output = _PrivateFlatMemory(binding, frozen, reader._canonical(manifest), ids, vectors,
+                                        encoder_binding_bytes)
+    except BaseException as exc:
+        problem = exc
+    finally:
+        if watcher is not None:
+            try:
+                watcher.stop(watcher_join_timeout_seconds)
+            except package.SnapshotPackageHold:
+                held = True
+            except BaseException as exc:
+                cleanup_problem = exc
+            finally:
+                package._release_watcher(watcher)
+    signals = [reader._provider_cancellation(exc) for exc in (problem, cleanup_problem) if exc is not None]
+    signals = [signal for signal in signals if signal is not None]
+    if signals:
+        problem = cleanup_problem = None
+        if len(signals) == 1:
+            raise signals[0] from None
+        raise BaseExceptionGroup('provider_cancelled', signals) from None
+    if held:
+        raise FullRuntimeSnapshotHold('mind_full_runtime_snapshot_hold') from None
+    if cleanup_problem is not None or problem is not None:
+        raise ValueError('snapshot_build_refused') from None
+    return output
+
+
 def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
-                      encoder_binding_bytes=None, encoder_binding_sha256=None):
+                      encoder_binding_bytes=None, encoder_binding_sha256=None,
+                      source_verification=None, watcher_join_timeout_seconds=None):
     """Build one memory-only float32 vector per screened, source-bound record.
 
     Provider identity and supplied encoder metadata are caller-trusted; this
@@ -909,6 +1062,13 @@ def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
                 or not callable(passage_encoder) or isinstance(passage_encoder, type)):
             raise ValueError('input')
         _checked_encoder_binding(encoder_binding_bytes, encoder_binding_sha256)
+        if source_verification is not None:
+            if type(source_verification) is not str or source_verification != 'verified_immutable_snapshot_v1':
+                raise ValueError('source_verification')
+            return _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes,
+                                                encoder_binding_sha256, watcher_join_timeout_seconds)
+        if watcher_join_timeout_seconds is not None:
+            raise ValueError('unexpected_join_timeout')
         snapshot = binding.snapshot_for_query()
         projection = _flat_snapshot(binding, snapshot)
         records = projection['messages']['records']
@@ -935,6 +1095,8 @@ def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
         _flat_snapshot(binding, snapshot)
         result = _PrivateFlatMemory(binding, snapshot, reader._canonical(manifest), ids, vectors,
                                     encoder_binding_bytes)
+    except FullRuntimeSnapshotHold:
+        raise
     except Exception:
         pass
     if result is None:

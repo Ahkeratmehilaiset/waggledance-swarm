@@ -310,6 +310,58 @@ def _refused(reader, operation):
     assert str(caught.value) == "content_query_refused"
 
 
+def _all_tasks_case(reader, tmp_path, rows):
+    case = _case(reader, tmp_path, rows)
+    scope = _raw({"schema": "wd.mind-task-scope.v1", "mode": "all_tasks"})
+    policy = _raw({"schema": "wd.q4-non-review-policy.v2", "task_scope": "all_tasks"})
+    message_policy = json.loads(case["messages"]["policy_bytes"])
+    message_policy.pop("approved_tasks")
+    message_policy.update(schema="wd.mind-content-policy.v3", task_scope="all_tasks")
+    message_policy = _raw(message_policy)
+    case.update(approved_tasks_bytes=scope, approved_tasks_sha256=_sha(scope),
+                policy_bytes=policy, policy_sha256=_sha(policy))
+    case["messages"].update(policy_bytes=message_policy, policy_sha256=_sha(message_policy))
+    _edit_decision(case, schema="wd.mind-content-route-decision.v3",
+        projection_schema="wd.mind-content-memory-projection.v3",
+        message_projection_schema="wd.bridge-mind-content-projection.v3",
+        scope="wd.mind-all-task-projected-events.v1",
+        approved_tasks_sha256=_sha(scope), nonreview_policy_sha256=_sha(policy),
+        message_policy_sha256=_sha(message_policy))
+    return case
+
+
+def test_versioned_all_tasks_admits_other_build_work_but_preserves_privacy(reader, tmp_path):
+    task = "synthetic-customer-jane-doe-0401234567-20261114"
+    allowed = _row("RCO review discussed bounded parser fix", task_id=task)
+    rco = _row("RCO secret review text", agent=LANES[3], agent_uuid=ROSTER[LANES[3]], task_id=task)
+    addressed = _row("Build work addressed to review", to=LANES[3], task_id=task)
+    secret = _row("password = synthetic-private-value", task_id=task)
+    case = _all_tasks_case(reader, tmp_path, [allowed, rco, addressed, secret])
+    projection = _derive(reader, case)
+    assert projection["schema"] == "wd.mind-content-memory-projection.v3"
+    assert projection["messages"]["schema"] == "wd.bridge-mind-content-projection.v3"
+    assert projection["messages"]["accepted"] == 1
+    assert projection["messages"]["records"][0]["meta"]["task_id"] == "sha256:" + _sha(task.encode())
+    text = json.dumps(projection)
+    assert task not in text and "synthetic-private-value" not in text and "secret review text" not in text
+
+
+def test_all_task_mode_cannot_be_mixed_with_legacy_decision(reader, tmp_path):
+    case = _all_tasks_case(reader, tmp_path, [_row(task_id="synthetic-task-other")])
+    _edit_decision(case, schema=DECISION_SCHEMA, projection_schema=SCHEMA,
+        message_projection_schema=MESSAGE_SCHEMA, scope=ROUTE_SCOPE)
+    _refused(reader, lambda: _derive(reader, case))
+
+
+def test_all_task_large_event_still_uses_content_screening(reader, tmp_path):
+    good = _row('bounded work completed', task_id='other-task', payload={'padding': 'x' * 70000})
+    secret = _row('password = synthetic-private-value', task_id='other-task',
+                  payload={'padding': 'x' * 70000})
+    projection = _derive(reader, _all_tasks_case(reader, tmp_path, [good, secret]))
+    assert projection['messages']['accepted'] == 1
+    assert 'synthetic-private-value' not in json.dumps(projection)
+
+
 def test_allowed_build_lane_review_discussion_matches_independent_projection(reader, tmp_path):
     case = _case(reader, tmp_path)
     assert _derive(reader, case) == _golden_projection(case)

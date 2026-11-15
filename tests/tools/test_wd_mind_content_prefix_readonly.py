@@ -31,6 +31,59 @@ def test_expected_rows_and_digest(source):
     assert next(iter(rows.values()))['message'] == 'alpha'
 
 
+def test_all_task_scope_explicitly_selects_outside_legacy_list(source):
+    path, generation, _, end = source
+    raw = (b'{"task_id":"one","agent":"codex-lead-1","type":"message"}\n'
+           b'{"task_id":"two","agent":"fable-5","type":"message"}\n'
+           b'{"task_id":"three","agent":"claude-rco-1","type":"message"}\n'
+           b'{"task_id":"four","agent":"codex-lead-1","type":"liveness"}\n')
+    path.write_bytes(raw)
+    end = bridge.BridgeCursor(len(raw), end.file_identity, end.generation)
+    rows = reader.read_prefix_rows(str(path), str(generation), end,
+        hashlib.sha256(raw).hexdigest(), None, scope='all_tasks_v1')
+    assert {row['task_id'] for row in rows.values()} == {'one', 'two'}
+    assert reader.MAX_ALL_TASK_PREFIX_BYTES > reader.MAX_PREFIX_BYTES
+    assert reader.MAX_ALL_TASK_ROWS > reader.MAX_SOURCE_ROWS
+
+
+@pytest.mark.parametrize('tasks,scope', [(None, 'approved_tasks_v1'), ({'one'}, 'all_tasks_v1'),
+                                         (None, 'unknown')])
+def test_all_task_scope_requires_explicit_unambiguous_binding(source, tasks, scope):
+    path, generation, raw, end = source
+    with pytest.raises(ValueError):
+        reader.read_prefix_rows(str(path), str(generation), end, hashlib.sha256(raw).hexdigest(), tasks, scope=scope)
+
+
+def test_all_task_aggregate_memory_budget_fails_closed(source, monkeypatch):
+    path, generation, _, end = source
+    raw = b'{"task_id":"one","agent":"codex-lead-1","type":"message"}\n'
+    path.write_bytes(raw)
+    end = bridge.BridgeCursor(len(raw), end.file_identity, end.generation)
+    monkeypatch.setattr(reader, 'MAX_ALL_TASK_RETAINED_BYTES', 1)
+    with pytest.raises(ValueError, match='row_limit'):
+        reader.read_prefix_rows(str(path), str(generation), end,
+            hashlib.sha256(raw).hexdigest(), None, scope='all_tasks_v1')
+
+
+def test_all_task_prefilter_never_excludes_a_supported_lane_or_type():
+    from tools import wd_mind_content_query_readonly as query
+    assert reader.ALL_TASK_BUILD_LANES == query._BUILD_LANES
+    assert reader.ALL_TASK_TYPES == query._TYPES
+
+
+@pytest.mark.parametrize('limit', ['MAX_ALL_TASK_ROWS', 'MAX_ALL_TASK_ROW_BYTES'])
+def test_all_task_over_budget_refuses_without_truncation(source, monkeypatch, limit):
+    path, generation, _, end = source
+    raw = (b'{"task_id":"one","agent":"codex-lead-1","type":"message"}\n'
+           b'{"task_id":"two","agent":"fable-5","type":"message"}\n')
+    path.write_bytes(raw)
+    end = bridge.BridgeCursor(len(raw), end.file_identity, end.generation)
+    monkeypatch.setattr(reader, limit, 1)
+    with pytest.raises(ValueError, match='row_limit'):
+        reader.read_prefix_rows(str(path), str(generation), end,
+            hashlib.sha256(raw).hexdigest(), None, scope='all_tasks_v1')
+
+
 def test_bad_digest_refuses(source):
     with pytest.raises(ValueError):
         read(source, digest='0' * 64)

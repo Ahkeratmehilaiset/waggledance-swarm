@@ -454,6 +454,10 @@ def test_graceful_spawn_failure_closes_only_unstarted_job(staged_graceful, monke
     monkeypatch.setattr(subprocess, "Popen", unavailable)
     result = child.start_e5_worker_graceful(enabled=True, **staged_graceful)
     assert result["client"] is None and result["owner"]._job is job
+    assert result["owner"].status()["launch_pending"] and not job.closed
+    # This fixture knows its fake creator never made a process. A native Popen
+    # exception by itself would not permit this declaration.
+    result["owner"].finish_launch()
     assert not result["owner"].shutdown(timeout=2)["owned"] and job.closed
     owner = lifecycle.reserve(enabled=True)
     owner.cancel_unstarted()
@@ -566,7 +570,9 @@ def test_review_spawn_and_job_close_failure_return_owner_without_raw_error(stage
     try:
         result = child.start_e5_worker_graceful(enabled=True, **staged_graceful)
         owner = result["owner"]
-        assert result["status"] == "HOLD" and failed.wait(2)
+        assert result["status"] == "HOLD" and owner.status()["launch_pending"]
+        owner.finish_launch()  # The fake creator above is known to make no child.
+        assert failed.wait(2)
         assert owner.status()["owned"] and owner._job is job and owner._process is None
         assert "private" not in repr(result["lifecycle"]) and "private" not in repr(owner.status())
         assert owner._keeper.is_alive() and not owner._keeper.daemon
@@ -575,6 +581,7 @@ def test_review_spawn_and_job_close_failure_return_owner_without_raw_error(stage
     finally:
         allow_close.set()
         if lifecycle._active is not None:
+            lifecycle._active.finish_launch()  # Synthetic no-child proof.
             assert not lifecycle._active.shutdown(timeout=2)["owned"]
 
 
@@ -650,17 +657,21 @@ def test_shutdown_during_popen_keeps_slot_until_creation_is_resolved(staged_grac
         unblock.set()
         caller.join(timeout=2)
         assert not caller.is_alive() and not errors and len(results) == 1
-        assert results[0]["owner"] is owner and not owner.status()["launch_pending"]
+        assert results[0]["owner"] is owner
         if outcome == "process":
+            assert not owner.status()["launch_pending"]
             assert results[0]["status"] == "HOLD" and owner.status()["owned"]
             assert owner._process is process and not job.closed and process.written == b""
         else:
+            assert owner.status()["launch_pending"] and owner.status()["owned"]
+            owner.finish_launch()  # Only the fixture can prove its fake made no child.
             assert not owner.shutdown(timeout=2)["owned"] and job.closed
     finally:
         unblock.set()
         caller.join(timeout=2)
         process.finish()
         if lifecycle._active is not None:
+            lifecycle._active.finish_launch()  # Both fake outcomes are now resolved.
             assert not lifecycle._active.shutdown(timeout=2)["owned"]
 
 
@@ -755,3 +766,33 @@ def test_launch_guard_covers_pending_attachment_even_after_child_exit(staged_gra
         process.finish()
         if lifecycle._active is not None:
             assert not lifecycle._active.shutdown(timeout=2)["owned"]
+
+
+def test_popen_exception_after_birth_does_not_certify_child_absence(staged_graceful, monkeypatch):
+    from test_wd_mind_e5_lifecycle import Job, Process
+    from tools import wd_mind_e5_lifecycle as lifecycle
+    process, job = Process(on_eof=False), Job()
+    monkeypatch.setattr(child, "_Job", lambda **kwargs: job)
+
+    def created_then_failed(*args, **kwargs):
+        # A fake child exists, but the process constructor never returns it.
+        raise OSError("synthetic post-create cleanup error")
+
+    monkeypatch.setattr(subprocess, "Popen", created_then_failed)
+    owner = None
+    try:
+        result = child.start_e5_worker_graceful(enabled=True, **staged_graceful)
+        owner = result["owner"]
+        status = owner.shutdown(timeout=0.03)
+        assert status["owned"] and status["launch_pending"] and not job.closed
+        assert status["reason"] == "creation_outcome_unknown"
+        assert owner._process is None and process.poll() is None
+        with pytest.raises(lifecycle.LifecycleRefused):
+            lifecycle.reserve(enabled=True)
+    finally:
+        # Only this synthetic fixture has the otherwise unavailable child.
+        process.finish()
+        if owner is not None:
+            owner.resources.process = process
+            owner.finish_launch()
+            assert not owner.shutdown(timeout=2)["owned"]

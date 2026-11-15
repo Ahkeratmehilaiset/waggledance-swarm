@@ -46,8 +46,9 @@ def _duration(value):
 def reserve(*, enabled=False, launch_pending=False):
     """Reserve one slot; declare launch_pending before calling native creators.
 
-    A launcher must finish_launch only after creation/attachment has returned or
-    failed, or mark_ready on success. Cancellation never resolves that question.
+    A launcher must finish_launch only after retaining the returned child or
+    proving no child was created, with no attachment still pending. A bare
+    constructor exception is not that proof. Cancellation never resolves it.
     The default supports adoption of resources whose creation already finished.
     """
     global _active
@@ -115,7 +116,7 @@ class _Owner:
             self._condition.notify_all()
 
     def finish_launch(self):
-        """Creator-only checkpoint: no creation/attachment call remains pending."""
+        """Trusted creator resolved child/no-child and all pending native calls."""
         with self._condition:
             self._launch_pending = False
             self._condition.notify_all()

@@ -550,7 +550,9 @@ def start_e5_worker_graceful(*, enabled=False, **options):
     cleanup returns the owner and HOLD/REFUSED status. Existing deployed bundles
     are not upgraded here. A concurrent shutdown keeps launch_pending=True until
     the creator has resolved any native creation/attachment call; pid=None alone
-    never proves that no child can still arrive.
+    never proves that no child can still arrive. Popen can fail after native
+    creation; an exception without a returned process retains an unresolved
+    HOLD rather than certifying absence. This path has no automatic recovery.
     """
     if enabled is not True or "cooperative" in options:
         raise LaunchRefused("mind_e5_start_refused")
@@ -560,6 +562,7 @@ def start_e5_worker_graceful(*, enabled=False, **options):
 def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, interpreter_sha256,
                      interpreter_root, tuple_args, timeout, scratch_root=None, cooperative):
     job = process = owner = None
+    spawn_attempted = False
     try:
         if (type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 1800
                 or type(tuple_args) is not dict or set(tuple_args) != set(_PUBLIC_KEYS)):
@@ -674,6 +677,7 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
                 raise ValueError("deadline")
         else:
             job = _Job()
+        spawn_attempted = True
         process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE if cooperative else subprocess.DEVNULL,
                                    cwd=str(bootstrap.parent), env=env, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -706,7 +710,13 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
     except Exception:
         if cooperative:
             if owner is not None:
-                owner.finish_launch()
+                if not spawn_attempted or process is not None:
+                    owner.finish_launch()
+                else:
+                    # CPython's Windows Popen still performs fallible cleanup
+                    # after CreateProcess. A raised constructor alone cannot
+                    # prove that no child exists or release this reservation.
+                    owner._fault("creation_outcome_unknown")
                 status = owner.shutdown(timeout=0)
                 return {"status": "HOLD" if status["owned"] else "REFUSED", "client": None,
                         "owner": owner, "lifecycle": status, "authority": "none"}

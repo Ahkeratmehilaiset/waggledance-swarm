@@ -364,3 +364,43 @@ def test_review_successful_pump_cannot_hide_late_caller_acknowledgment(monkeypat
         assert owner.status()["owned"] and not job.closed
     finally:
         finish(owner, process)
+
+
+@pytest.mark.parametrize("stream", ["stdin", "stdout", "stderr"])
+@pytest.mark.parametrize("failure", ["raises", "still_open"])
+def test_failed_pipe_close_retains_owner_until_verified_close(stream, failure):
+    process = Process(on_eof=False)
+    process.code = 0
+    failed, allow_close = threading.Event(), threading.Event()
+
+    class PipeAtEOF:
+        closed = False
+
+        def read1(self, size):
+            return b""
+
+        def close(self):
+            if not allow_close.is_set():
+                failed.set()
+                if failure == "raises":
+                    raise OSError("synthetic private close failure")
+                return
+            self.closed = True
+
+    process.stdout.close()
+    process.stderr.close()
+    setattr(process, stream, PipeAtEOF())
+    owner, job = bind(process)
+    try:
+        assert failed.wait(2)
+        status = owner.shutdown(timeout=0.03)
+        assert status["owned"] and status["state"] == "HOLD"
+        assert status["reason"] == stream + "_close" and not job.closed
+        assert stream not in owner._done and len(owner._pumps) == 3
+        assert "private" not in repr(status)
+        with pytest.raises(lifecycle.LifecycleRefused):
+            lifecycle.reserve(enabled=True)
+    finally:
+        allow_close.set()
+        finish(owner, process)
+    assert job.closed and all(getattr(process, name).closed for name in ("stdin", "stdout", "stderr"))

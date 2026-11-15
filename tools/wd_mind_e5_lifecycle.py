@@ -43,15 +43,20 @@ def _duration(value):
     return float(value)
 
 
-def reserve(*, enabled=False):
-    """Reserve before creating a child. HOLD also occupies this single slot."""
+def reserve(*, enabled=False, launch_pending=False):
+    """Reserve one slot; declare launch_pending before calling native creators.
+
+    A launcher must finish_launch only after creation/attachment has returned or
+    failed, or mark_ready on success. Cancellation never resolves that question.
+    The default supports adoption of resources whose creation already finished.
+    """
     global _active
-    if enabled is not True:
+    if enabled is not True or type(launch_pending) is not bool:
         raise LifecycleRefused("mind_e5_lifecycle_refused")
     with _slot_lock:
         if _active is not None:
             raise LifecycleRefused("mind_e5_lifecycle_refused")
-        owner = _Owner()
+        owner = _Owner(launch_pending=launch_pending)
         _active = owner
         try:
             # Start the lifetime keeper BEFORE any native process can exist.
@@ -63,11 +68,12 @@ def reserve(*, enabled=False):
 
 
 class _Owner:
-    def __init__(self):
+    def __init__(self, *, launch_pending=False):
         self._condition = threading.Condition()
         self.resources = _Resources()
         self._state, self._reason, self._code = "STARTING", None, None
         self._owned, self._closing, self._eof = True, False, False
+        self._launch_pending = launch_pending
         self._output = bytearray()
         self._counts = {"stdout": 0, "stderr": 0}
         self._done = set()
@@ -105,12 +111,21 @@ class _Owner:
             if not self._owned or self._closing or self._reason is not None:
                 raise LifecycleRefused("mind_e5_lifecycle_refused")
             self._state = "RUNNING"
+            self._launch_pending = False
+            self._condition.notify_all()
+
+    def finish_launch(self):
+        """Creator-only checkpoint: no creation/attachment call remains pending."""
+        with self._condition:
+            self._launch_pending = False
+            self._condition.notify_all()
 
     def status(self):
         with self._condition:
             return {"state": self._state, "owned": self._owned,
                     "pid": None if self._process is None else self._process.pid,
-                    "exit_code": self._code, "eof_sent": self._eof, "reason": self._reason}
+                    "exit_code": self._code, "eof_sent": self._eof, "reason": self._reason,
+                    "launch_pending": self._launch_pending}
 
     def _release(self, state):
         global _active
@@ -211,13 +226,27 @@ class _Owner:
         except Exception:
             self._fault(name + "_pipe")
         finally:
+            self._close_pipe(stream, name)
+
+    def _close_pipe(self, stream, name):
+        # Only the existing pump touches its own possibly locked pipe. A failed
+        # close is not completion, even after process exit. Retain this pump and
+        # its owner until a later successful close also confirms closed=True.
+        while True:
             try:
-                stream.close()  # Only this pump closes its own possibly locked pipe.
+                stream.close()
+                if stream.closed is not True:
+                    raise ValueError("pipe_not_closed")
             except Exception:
                 self._fault(name + "_close")
+                time.sleep(0.01)
+                continue
             with self._condition:
+                if name == "stdin":
+                    self._eof = True
                 self._done.add(name)
                 self._condition.notify_all()
+            return
 
     def _writer(self):
         try:
@@ -247,19 +276,11 @@ class _Owner:
         except Exception:
             self._fault("stdin_pipe")
         finally:
-            try:
-                self._process.stdin.close()
-                with self._condition:
-                    self._eof = True
-            except Exception:
-                self._fault("stdin_close")
-            with self._condition:
-                self._done.add("stdin")
-                self._condition.notify_all()
+            self._close_pipe(self._process.stdin, "stdin")
 
     def _keep(self):
         with self._condition:
-            while self._owned and self._process is None and not self._closing:
+            while self._owned and self._process is None and (not self._closing or self._launch_pending):
                 self._condition.wait()
             if not self._owned:
                 return
@@ -293,7 +314,8 @@ class _Owner:
                     if type(code) is int:
                         self._code, self._closing = code, True
                         self._condition.notify_all()
-                        ready = self._done == {"stdin", "stdout", "stderr"} and all(not p.is_alive() for p in self._pumps)
+                        ready = (not self._launch_pending and self._done == {"stdin", "stdout", "stderr"}
+                                 and all(not p.is_alive() for p in self._pumps))
                 if ready:
                     if self._process.wait(timeout=0) != code:
                         raise ValueError("exit")

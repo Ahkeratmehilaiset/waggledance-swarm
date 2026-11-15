@@ -608,3 +608,150 @@ def test_review_partial_job_constructor_failure_retains_created_handle(staged_gr
         allow_close.set()
         if lifecycle._active is not None:
             assert not lifecycle._active.shutdown(timeout=2)["owned"]
+
+
+@pytest.mark.parametrize("outcome", ["process", "failure"])
+def test_shutdown_during_popen_keeps_slot_until_creation_is_resolved(staged_graceful, monkeypatch, outcome):
+    from test_wd_mind_e5_lifecycle import Job, Process
+    from tools import wd_mind_e5_lifecycle as lifecycle
+    process, job = Process(on_eof=False), Job()
+    entered, unblock = threading.Event(), threading.Event()
+    observed, results, errors = [], [], []
+
+    def make_job(**kwargs):
+        observed.append(kwargs["_owner"])
+        return job
+
+    def popen(*args, **kwargs):
+        entered.set()
+        unblock.wait()
+        if outcome == "failure":
+            raise OSError("synthetic creation failure without child")
+        return process
+
+    def launch():
+        try:
+            results.append(child.start_e5_worker_graceful(enabled=True, **staged_graceful))
+        except Exception as exc:
+            errors.append(type(exc).__name__)
+
+    monkeypatch.setattr(child, "_Job", make_job)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    caller = threading.Thread(target=launch, daemon=True)
+    try:
+        caller.start()
+        assert entered.wait(2) and len(observed) == 1
+        owner = observed[0]
+        status = owner.shutdown(timeout=0.03)
+        assert status["owned"] and status["state"] == "HOLD" and not job.closed
+        assert status["launch_pending"] and status["pid"] is None
+        with pytest.raises(lifecycle.LifecycleRefused):
+            lifecycle.reserve(enabled=True)
+        unblock.set()
+        caller.join(timeout=2)
+        assert not caller.is_alive() and not errors and len(results) == 1
+        assert results[0]["owner"] is owner and not owner.status()["launch_pending"]
+        if outcome == "process":
+            assert results[0]["status"] == "HOLD" and owner.status()["owned"]
+            assert owner._process is process and not job.closed and process.written == b""
+        else:
+            assert not owner.shutdown(timeout=2)["owned"] and job.closed
+    finally:
+        unblock.set()
+        caller.join(timeout=2)
+        process.finish()
+        if lifecycle._active is not None:
+            assert not lifecycle._active.shutdown(timeout=2)["owned"]
+
+
+def test_shutdown_during_job_creation_waits_before_closing_job(staged_graceful, monkeypatch):
+    from test_wd_mind_e5_lifecycle import Job
+    from tools import wd_mind_e5_lifecycle as lifecycle
+    job = Job()
+    entered, unblock = threading.Event(), threading.Event()
+    observed, results, errors = [], [], []
+
+    def make_job(**kwargs):
+        owner = kwargs["_owner"]
+        owner.resources.job = job
+        observed.append(owner)
+        entered.set()
+        unblock.wait()
+        return job
+
+    def launch():
+        try:
+            results.append(child.start_e5_worker_graceful(enabled=True, **staged_graceful))
+        except Exception as exc:
+            errors.append(type(exc).__name__)
+
+    monkeypatch.setattr(child, "_Job", make_job)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("spawn after cancellation"))
+    caller = threading.Thread(target=launch, daemon=True)
+    try:
+        caller.start()
+        assert entered.wait(2)
+        owner = observed[0]
+        status = owner.shutdown(timeout=0.03)
+        assert status["owned"] and status["launch_pending"] and not job.closed
+        unblock.set()
+        caller.join(timeout=2)
+        assert not caller.is_alive() and not errors and len(results) == 1
+        assert results[0]["owner"] is owner and not owner.shutdown(timeout=2)["owned"]
+        assert job.closed and owner._process is None
+    finally:
+        unblock.set()
+        caller.join(timeout=2)
+        if lifecycle._active is not None:
+            assert not lifecycle._active.shutdown(timeout=2)["owned"]
+
+
+def test_launch_guard_covers_pending_attachment_even_after_child_exit(staged_graceful, monkeypatch):
+    from test_wd_mind_e5_lifecycle import Job, Process
+    from tools import wd_mind_e5_lifecycle as lifecycle
+    process, job = Process(), Job()
+    entered, unblock, exited = threading.Event(), threading.Event(), threading.Event()
+    observed, results, errors = [], [], []
+    original_finish = process.finish
+
+    def finished(code=0):
+        original_finish(code)
+        exited.set()
+
+    def attach(value):
+        assert value is process
+        entered.set()
+        unblock.wait()
+
+    def make_job(**kwargs):
+        observed.append(kwargs["_owner"])
+        return job
+
+    def launch():
+        try:
+            results.append(child.start_e5_worker_graceful(enabled=True, **staged_graceful))
+        except Exception as exc:
+            errors.append(type(exc).__name__)
+
+    process.finish, job.attach = finished, attach
+    monkeypatch.setattr(child, "_Job", make_job)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: process)
+    caller = threading.Thread(target=launch, daemon=True)
+    try:
+        caller.start()
+        assert entered.wait(2)
+        owner = observed[0]
+        status = owner.shutdown(timeout=0.03)
+        assert exited.wait(2) and status["owned"] and status["launch_pending"]
+        assert not job.closed and process.poll() == 0
+        unblock.set()
+        caller.join(timeout=2)
+        assert not caller.is_alive() and not errors and len(results) == 1
+        assert results[0]["owner"] is owner
+        assert not owner.shutdown(timeout=2)["owned"] and job.closed
+    finally:
+        unblock.set()
+        caller.join(timeout=2)
+        process.finish()
+        if lifecycle._active is not None:
+            assert not lifecycle._active.shutdown(timeout=2)["owned"]

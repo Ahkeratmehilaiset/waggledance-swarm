@@ -548,7 +548,9 @@ def start_e5_worker_graceful(*, enabled=False, **options):
     exit. No restart or termination is attempted. Refusals before reserving an
     owner raise the fixed LaunchRefused token. After reservation, even Job-only
     cleanup returns the owner and HOLD/REFUSED status. Existing deployed bundles
-    are not upgraded here.
+    are not upgraded here. A concurrent shutdown keeps launch_pending=True until
+    the creator has resolved any native creation/attachment call; pid=None alone
+    never proves that no child can still arrive.
     """
     if enabled is not True or "cooperative" in options:
         raise LaunchRefused("mind_e5_start_refused")
@@ -665,7 +667,7 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
             lifecycle = importlib.import_module("tools.wd_mind_e5_lifecycle")
             if time.monotonic() >= deadline:
                 raise ValueError("deadline")
-            owner = lifecycle.reserve(enabled=True)
+            owner = lifecycle.reserve(enabled=True, launch_pending=True)
             owner.resources.job = job = _Job(kill_on_close=False, _owner=owner)
             owner.set_job(job)
             if time.monotonic() >= deadline:
@@ -704,6 +706,7 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
     except Exception:
         if cooperative:
             if owner is not None:
+                owner.finish_launch()
                 status = owner.shutdown(timeout=0)
                 return {"status": "HOLD" if status["owned"] else "REFUSED", "client": None,
                         "owner": owner, "lifecycle": status, "authority": "none"}

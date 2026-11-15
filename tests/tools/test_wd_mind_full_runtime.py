@@ -407,7 +407,8 @@ def test_single_adapter_symbol_and_manifest_pins_without_rotator(synthetic_bundl
     event_sha = hashlib.sha256(canonical(rows[0])).hexdigest()
     path = bundle / 'deployment-manifest.json'
     manifest = json.loads(path.read_bytes())
-    manifest['files'].pop('tools-bootstrap/tools/wd_mind_e5_rotating_client.py')
+    legacy_rel = 'tools-bootstrap/tools/wd_mind_e5_rotating_client.py'
+    assert legacy_rel not in manifest['files'] and not bundle.joinpath(*legacy_rel.split('/')).exists()
     fixture_policy = b'{"identifiers":["synthetic-private-marker-52"],"schema":"wd.mind-identifier-policy.v1"}'
     descriptor = canonical({'schema':'wd.mind-identifier-policy-approval.v1',
         'identifier_policy_sha256':hashlib.sha256(fixture_policy).hexdigest(),
@@ -617,28 +618,14 @@ print('synthetic_adapter_manifest_verified')
     assert proc.stdout.strip() == 'synthetic_adapter_manifest_verified'
 
 
-@pytest.fixture
-def synthetic_single_owner_bundle(request, monkeypatch):
-    """Supply only the old fixture's unused legacy placeholder, never shipped code."""
-    legacy = ROOT / 'tools' / 'wd_mind_e5_rotating_client.py'
-    if not legacy.exists():
-        read_bytes = Path.read_bytes
-        def read_synthetic_legacy(path):
-            if path == legacy:
-                return b'# fixture-only placeholder; removed from the tested manifest\n'
-            return read_bytes(path)
-        monkeypatch.setattr(Path, 'read_bytes', read_synthetic_legacy)
-    return request.getfixturevalue('synthetic_bundle')
-
-
 @pytest.mark.parametrize(('lane_name', 'expected_scope'), [
     ('codex-lead-1', 'own'), ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
 ])
-def test_owner_child_role_runs_in_separate_synthetic_process(synthetic_single_owner_bundle, lane_name, expected_scope):
+def test_owner_child_role_runs_in_separate_synthetic_process(synthetic_bundle, lane_name, expected_scope):
     """Real role + pinned snapshot; model, parent trust and worker are fixtures."""
     import datetime
     import struct
-    bundle, source = synthetic_single_owner_bundle['bundle'], synthetic_single_owner_bundle['source']
+    bundle, source = synthetic_bundle['bundle'], synthetic_bundle['source']
     rows = [json.loads(row) for row in source.read_bytes().splitlines()]
     for row in rows:
         row['ts_utc'] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=2)).isoformat().replace('+00:00', 'Z')
@@ -652,11 +639,7 @@ def test_owner_child_role_runs_in_separate_synthetic_process(synthetic_single_ow
     manifest_path = bundle / 'deployment-manifest.json'
     manifest = json.loads(manifest_path.read_bytes())
     legacy_rel = 'tools-bootstrap/tools/wd_mind_e5_rotating_client.py'
-    manifest['files'].pop(legacy_rel)
     legacy_fixture = bundle.joinpath(*legacy_rel.split('/'))
-    if not (ROOT / 'tools' / 'wd_mind_e5_rotating_client.py').exists():
-        assert legacy_fixture.read_bytes() == b'# fixture-only placeholder; removed from the tested manifest\n'
-    legacy_fixture.unlink()
     assert legacy_rel not in manifest['files'] and not legacy_fixture.exists()
     manifest['files']['wd-mind-identifier-policy-approval.json'] = hashlib.sha256(descriptor).hexdigest()
     manifest_raw = canonical(manifest)
@@ -744,7 +727,8 @@ def test_retained_parent_pair_wires_control_relay_and_two_synthetic_children(syn
     (bundle / 'wd-mind-identifier-policy-approval.json').write_bytes(descriptor)
     manifest_path = bundle / 'deployment-manifest.json'
     manifest = json.loads(manifest_path.read_bytes())
-    manifest['files'].pop('tools-bootstrap/tools/wd_mind_e5_rotating_client.py')
+    legacy_rel = 'tools-bootstrap/tools/wd_mind_e5_rotating_client.py'
+    assert legacy_rel not in manifest['files'] and not bundle.joinpath(*legacy_rel.split('/')).exists()
     manifest['files']['wd-mind-identifier-policy-approval.json'] = hashlib.sha256(descriptor).hexdigest()
     manifest_raw = canonical(manifest)
     manifest_path.write_bytes(manifest_raw)
@@ -1002,7 +986,7 @@ def synthetic_bundle(tmp_path):
     code_paths = set(reader._REQUIRED_CODE) | {'tools/wd_mind_content_query_readonly.py',
         'tools/wd_mind_startup_content.py', 'tools/wd_mind_full_runtime.py',
         'tools/wd_mind_content_snapshot_package.py', 'tools/wd_mind_e5_client.py',
-        'tools/wd_mind_e5_lifecycle.py', 'tools/wd_mind_e5_rotating_client.py',
+        'tools/wd_mind_e5_lifecycle.py',
         'tools/wd_mind_e5_snapshot_adapter.py', 'tools/wd_mind_e5_worker.py',
         'tools/wd_mind_runtime_manifest.py', 'tools/wd_mind_interpreter_identity.py',
         'tools/wd_mind_runtime_child.py', 'tools/wd_mind_runtime_process.py',

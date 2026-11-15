@@ -849,6 +849,81 @@ def _single_owner_synthetic(monkeypatch, tmp_path):
     return runtime, adapter_module, binding, factory, calls
 
 
+@pytest.mark.parametrize('mode', ['timeout', 'cancel'])
+def test_single_owner_retains_its_live_source_verifier_on_close_and_retry(tmp_path, monkeypatch, mode):
+    import threading
+    runtime, adapter_module, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    release = threading.Event()
+    thread = threading.Thread(target=release.wait)
+    class SyntheticWatcher:
+        def alive(self): return thread.is_alive()
+    watcher = SyntheticWatcher()
+    class Adapter:
+        encoder_binding_bytes, encoder_binding_sha256 = b'synthetic', 'a' * 64
+        def passage(self, texts): return b'synthetic'
+    monkeypatch.setattr(adapter_module, 'create_single_flat_adapter', lambda **kwargs: Adapter())
+    def build(**kwargs):
+        kwargs['_watcher_lease']._capture(watcher)
+        if mode == 'cancel': raise KeyboardInterrupt()
+        raise runtime.FullRuntimeSnapshotHold('mind_full_runtime_snapshot_hold')
+    monkeypatch.setattr(runtime, 'build_flat_memory', build)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    thread.start()
+    try:
+        if mode == 'cancel':
+            with pytest.raises(KeyboardInterrupt): owner.start()
+        else:
+            assert owner.start()['state'] == 'HOLD'
+        assert owner.close()['state'] == 'HOLD'
+        assert owner.close()['state'] == 'HOLD'
+        release.set(); thread.join(5)
+        assert not thread.is_alive()
+        assert owner.close()['state'] == 'STOPPED'
+    finally:
+        release.set(); thread.join(5)
+
+
+def test_single_owner_does_not_adopt_another_builders_source_verifier(tmp_path, monkeypatch):
+    import threading
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    release = threading.Event()
+    thread = threading.Thread(target=release.wait)
+    class SyntheticWatcher:
+        def alive(self): return thread.is_alive()
+    foreign = SyntheticWatcher()
+    def foreign_hold(handler):
+        assert foreign.alive()
+        raise runtime.FullRuntimeSnapshotHold('mind_full_runtime_snapshot_hold')
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', foreign_hold)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    thread.start()
+    try:
+        assert owner.start()['state'] == 'HOLD'
+        assert owner.close()['state'] == 'STOPPED'
+        assert foreign.alive()
+    finally:
+        release.set(); thread.join(5)
+
+
+def test_foreign_global_verifier_reservation_is_not_captured_by_new_owner():
+    import threading
+    from tools import wd_mind_content_snapshot_package as package, wd_mind_full_runtime as runtime
+    release = threading.Event()
+    foreign = package._reserve_watcher()
+    foreign.thread = threading.Thread(target=release.wait)
+    lease = runtime._OwnedSnapshotWatcher()
+    foreign.thread.start()
+    try:
+        with pytest.raises(package.SnapshotPackageHold):
+            runtime._reserve_owned_snapshot_watcher(package, lease)
+        assert lease._watcher is None and not lease._held()
+        assert package._WATCHER_REGISTRY['owner'] is foreign
+    finally:
+        release.set(); foreign.thread.join(5); package._release_watcher(foreign)
+
+
 def test_single_manifest_owner_ready_and_close_are_explicit(tmp_path, monkeypatch):
     runtime, _, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
@@ -1564,6 +1639,31 @@ try:
         if mode == 'package_immutable_forged_hold':
             from tools import wd_mind_content_snapshot_package as package
             def passage(texts): raise package.SnapshotPackageHold('synthetic forged hold')
+        if mode == 'package_immutable_reserve_cancel':
+            import inspect
+            from tools import wd_mind_content_snapshot_package as package
+            lease = runtime._OwnedSnapshotWatcher()
+            options['_watcher_lease'] = lease
+            lines, first = inspect.getsourcelines(runtime._reserve_owned_snapshot_watcher)
+            target = first + next(i for i, line in enumerate(lines) if line.strip() == 'return watcher')
+            def interrupt(frame, event, arg):
+                if (frame.f_code is runtime._reserve_owned_snapshot_watcher.__code__
+                        and event == 'line' and frame.f_lineno == target):
+                    sys.settrace(None)
+                    raise KeyboardInterrupt('synthetic cancellation')
+                return interrupt
+            sys.settrace(interrupt)
+            try:
+                runtime.build_flat_memory(enabled=True, binding=binding, passage_encoder=passage,
+                    encoder_binding_bytes=encoder_binding, encoder_binding_sha256=sha(encoder_binding), **options)
+            except KeyboardInterrupt:
+                sys.settrace(None)
+                print(json.dumps({'result':'cancelled', 'retained':lease._watcher is not None,
+                    'held':lease._held(), 'registry_idle':package.snapshot_build_watcher_status()['state'] == 'idle'}))
+                sys.exit(0)
+            finally:
+                sys.settrace(None)
+            raise AssertionError('synthetic interruption did not fire')
         if mode == 'package_immutable_source_before':
             path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
         if mode == 'package_immutable_generation_before':
@@ -1588,7 +1688,8 @@ try:
                 package._SourceWatcher.stop = changed_after_join
         if mode in ('package_immutable_hold', 'package_immutable_cancel_hold',
                     'package_immutable_generator_hold', 'package_immutable_async_hold',
-                    'package_immutable_group_hold', 'package_immutable_oversized_group_hold'):
+                    'package_immutable_group_hold', 'package_immutable_oversized_group_hold',
+                    'package_immutable_owned_hold', 'package_immutable_owned_cancel_hold'):
             import asyncio, threading
             from tools import wd_mind_content_snapshot_package as package
             entered, release = threading.Event(), threading.Event()
@@ -1600,9 +1701,14 @@ try:
             reader._verified_complete = blocked
             package._WATCH_INTERVAL_SECONDS = .001
             options['watcher_join_timeout_seconds'] = .01
+            lease = None
+            if mode.startswith('package_immutable_owned'):
+                lease = runtime._OwnedSnapshotWatcher()
+                options['_watcher_lease'] = lease
             def passage(texts):
                 assert entered.wait(10)
-                if mode == 'package_immutable_cancel_hold': raise KeyboardInterrupt('synthetic cancellation')
+                if mode in ('package_immutable_cancel_hold', 'package_immutable_owned_cancel_hold'):
+                    raise KeyboardInterrupt('synthetic cancellation')
                 if mode == 'package_immutable_generator_hold': raise GeneratorExit('synthetic cancellation')
                 if mode == 'package_immutable_async_hold': raise asyncio.CancelledError('synthetic cancellation')
                 if mode == 'package_immutable_group_hold':
@@ -1626,6 +1732,8 @@ try:
                     clean = (exc.args == ('mind_full_runtime_cancellation_unknown',) and
                              'synthetic-secret-marker' not in ''.join(traceback.format_exception(exc)))
                 held = package.snapshot_build_watcher_status()['state'] != 'idle'
+                captured = (lease is None or
+                            (lease._watcher is package._WATCHER_REGISTRY['owner'] and lease._held()))
                 try:
                     runtime.build_flat_memory(enabled=True, binding=binding, passage_encoder=passage,
                         encoder_binding_bytes=encoder_binding, encoder_binding_sha256=sha(encoder_binding), **options)
@@ -1637,7 +1745,8 @@ try:
                     owner = package._WATCHER_REGISTRY['owner']
                     if owner is not None and owner.thread is not None: owner.thread.join(10)
                 print(json.dumps({'result':'hold','signal':signal,'held':held,'retry_held':retry_held,
-                                  'released':package.snapshot_build_watcher_status()['state'] == 'idle','clean':clean}))
+                                  'released':package.snapshot_build_watcher_status()['state'] == 'idle','clean':clean,
+                                  'captured':captured}))
                 sys.exit(0)
         try:
             product = runtime.build_flat_memory(enabled=True, binding=(object() if mode == 'package_fake_binding' else binding),
@@ -1880,15 +1989,22 @@ def test_immutable_snapshot_final_verification_follows_verifier_join(synthetic_b
     assert result == {'result':'refused', 'detected':False, 'joined':True}
 
 
+def test_owned_snapshot_reservation_interrupt_keeps_identity_and_releases_idle_registry(synthetic_bundle):
+    assert invoke(synthetic_bundle, 'package_immutable_reserve_cancel') == {
+        'result':'cancelled', 'retained':True, 'held':False, 'registry_idle':True}
+
+
 @pytest.mark.parametrize(('scenario', 'signal'), [('package_immutable_hold', 'FullRuntimeSnapshotHold'),
                                                   ('package_immutable_cancel_hold', 'KeyboardInterrupt'),
                                                   ('package_immutable_generator_hold', 'GeneratorExit'),
                                                   ('package_immutable_async_hold', 'CancelledError'),
                                                   ('package_immutable_group_hold', 'BaseExceptionGroup'),
-                                                  ('package_immutable_oversized_group_hold', 'FullRuntimeCancellationUnknown')])
+                                                  ('package_immutable_oversized_group_hold', 'FullRuntimeCancellationUnknown'),
+                                                  ('package_immutable_owned_hold', 'FullRuntimeSnapshotHold'),
+                                                  ('package_immutable_owned_cancel_hold', 'KeyboardInterrupt')])
 def test_immutable_snapshot_hold_retains_verifier_until_exit(synthetic_bundle, scenario, signal):
     assert invoke(synthetic_bundle, scenario) == {'result':'hold', 'signal':signal, 'held':True,
-                                                   'retry_held':True, 'released':True, 'clean':True}
+                                                   'retry_held':True, 'released':True, 'clean':True, 'captured':True}
 
 
 @pytest.mark.parametrize('scenario', ['package_rco', 'package_other'])

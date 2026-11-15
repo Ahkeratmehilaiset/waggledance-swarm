@@ -575,6 +575,42 @@ def test_consumer_child_entry_fixtures_never_publish_unverified_content(flat_con
         assert code == 2 and output.getvalue() == b''
 
 
+@pytest.mark.parametrize('lane_name', ['claude-rco-1', 'claude-rco-2'])
+@pytest.mark.parametrize('fault', ['none', 'nonce', 'candidate', 'scope'])
+def test_rco_consumer_reads_only_verified_build_lane_content(flat_consumer_case, monkeypatch, lane_name, fault):
+    """Fixture-only parent trust; scope changes never establish real parent provenance."""
+    _, owner, proposals, snapshot, _, response = flat_consumer_case
+    meta, blocks = _export_fixture(owner, snapshot)
+    key = b'B' * 32
+    wire = _synthetic_export_wire(meta, blocks, key)
+    policy = content._sha(snapshot['identifier_policy_binding'][0])
+    lane = lane_name.encode('ascii')
+    frame = json.loads(response())
+    frame['lane'] = lane_name
+    frame['scope'] = 'own' if fault == 'scope' else 'shared'
+    if fault == 'candidate':
+        frame['candidates'][0]['source_event_sha256'] = '0' * 64
+    payload = json.dumps(frame, separators=(',', ':')).encode()
+    control = (b'MCC1' + bytes.fromhex(owner._pin) + bytes.fromhex(policy) + bytes.fromhex('3' * 64)
+        + bytes.fromhex('1' * 64) + key + bytes([len(lane)]) + lane
+        + struct.pack('>4sI', b'MCR1', len(payload)) + payload)
+    source, output = io.BytesIO(control), io.BytesIO()
+    args = dict(control_stream=source, export_stream=io.BytesIO(wire), output_stream=output,
+        bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+        expected_identifier_policy_sha256=policy, expected_approval_reference_sha256='3' * 64,
+        expected_nonce=('2' if fault == 'nonce' else '1') * 64, expected_lane=lane_name,
+        max_total_bytes=64*1024*1024, max_wire_bytes=64*1024*1024, deadline_monotonic=time.monotonic()+30)
+    monkeypatch.setattr(session, '_require_trusted_consumer_parent', lambda: None)
+    code = session._consumer_child_entry(**args)
+    if fault == 'none':
+        result = json.loads(output.getvalue())
+        assert code == 0 and result['authority'] == 'none' and result['lane'] == lane_name
+        assert all(hit['source_agent'] in content._BUILD_LANES for hit in result['results'])
+        assert [hit['source_event_sha256'] for hit in result['results']] == [p['source_event_sha256'] for p in proposals]
+    else:
+        assert code == 2 and output.getvalue() == b''
+
+
 @pytest.mark.parametrize('mismatch', ['none', 'nonce', 'lane', 'manifest', 'policy', 'approval'])
 def test_parent_consumer_pipeline_is_private_gate_only(flat_consumer_case, monkeypatch, mismatch):
     _, owner, proposals, snapshot, _, response = flat_consumer_case

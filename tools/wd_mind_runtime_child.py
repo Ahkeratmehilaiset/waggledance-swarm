@@ -742,6 +742,17 @@ def _wait_for_owner_close(owner):
         time.sleep(0.25)
 
 
+def _startup_scope_for_lane(lane):
+    """Keep build lanes own-scoped and let RCO lanes read allowed build rows."""
+    if type(lane) is not str:
+        raise ValueError('lane')
+    if lane in ('claude-rco-1', 'claude-rco-2'):
+        return 'shared'
+    if lane in ('codex-lead-1', 'codex-tools-1', 'fable-5'):
+        return 'own'
+    raise ValueError('lane')
+
+
 def _owner_child_entry(*, control_stream, data_stream, candidate_stream,
                        bundle_root, expected_manifest_sha256):
     """Run one retained owner role; trusted-parent gate is currently closed.
@@ -774,7 +785,8 @@ def _owner_child_entry(*, control_stream, data_stream, candidate_stream,
         if type(started) is not dict or started.get('state') != 'READY' or started.get('owned') is not True:
             raise ValueError('owner_start')
         candidate = owner.candidates({'schema':'wd.mind-pipe-request.v1',
-            'query_id':'startup_work_overview', 'nonce':nonce, 'lane':lane, 'scope':'own'})
+            'query_id':'startup_work_overview', 'nonce':nonce, 'lane':lane,
+            'scope':_startup_scope_for_lane(lane)})
         candidate_bytes = runtime.reader._canonical(candidate)
         if not 1 <= len(candidate_bytes) <= 2048:
             raise ValueError('candidate_size')

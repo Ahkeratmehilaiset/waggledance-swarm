@@ -617,11 +617,28 @@ print('synthetic_adapter_manifest_verified')
     assert proc.stdout.strip() == 'synthetic_adapter_manifest_verified'
 
 
-def test_owner_child_role_runs_in_separate_synthetic_process(synthetic_bundle):
+@pytest.fixture
+def synthetic_single_owner_bundle(request, monkeypatch):
+    """Supply only the old fixture's unused legacy placeholder, never shipped code."""
+    legacy = ROOT / 'tools' / 'wd_mind_e5_rotating_client.py'
+    if not legacy.exists():
+        read_bytes = Path.read_bytes
+        def read_synthetic_legacy(path):
+            if path == legacy:
+                return b'# fixture-only placeholder; removed from the tested manifest\n'
+            return read_bytes(path)
+        monkeypatch.setattr(Path, 'read_bytes', read_synthetic_legacy)
+    return request.getfixturevalue('synthetic_bundle')
+
+
+@pytest.mark.parametrize(('lane_name', 'expected_scope'), [
+    ('codex-lead-1', 'own'), ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
+])
+def test_owner_child_role_runs_in_separate_synthetic_process(synthetic_single_owner_bundle, lane_name, expected_scope):
     """Real role + pinned snapshot; model, parent trust and worker are fixtures."""
     import datetime
     import struct
-    bundle, source = synthetic_bundle['bundle'], synthetic_bundle['source']
+    bundle, source = synthetic_single_owner_bundle['bundle'], synthetic_single_owner_bundle['source']
     rows = [json.loads(row) for row in source.read_bytes().splitlines()]
     for row in rows:
         row['ts_utc'] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=2)).isoformat().replace('+00:00', 'Z')
@@ -634,12 +651,18 @@ def test_owner_child_role_runs_in_separate_synthetic_process(synthetic_bundle):
     (bundle / 'wd-mind-identifier-policy-approval.json').write_bytes(descriptor)
     manifest_path = bundle / 'deployment-manifest.json'
     manifest = json.loads(manifest_path.read_bytes())
-    manifest['files'].pop('tools-bootstrap/tools/wd_mind_e5_rotating_client.py')
+    legacy_rel = 'tools-bootstrap/tools/wd_mind_e5_rotating_client.py'
+    manifest['files'].pop(legacy_rel)
+    legacy_fixture = bundle.joinpath(*legacy_rel.split('/'))
+    if not (ROOT / 'tools' / 'wd_mind_e5_rotating_client.py').exists():
+        assert legacy_fixture.read_bytes() == b'# fixture-only placeholder; removed from the tested manifest\n'
+    legacy_fixture.unlink()
+    assert legacy_rel not in manifest['files'] and not legacy_fixture.exists()
     manifest['files']['wd-mind-identifier-policy-approval.json'] = hashlib.sha256(descriptor).hexdigest()
     manifest_raw = canonical(manifest)
     manifest_path.write_bytes(manifest_raw)
     pin, nonce, channel = hashlib.sha256(manifest_raw).hexdigest(), b'n'*32, b'k'*32
-    lane = b'codex-lead-1'
+    lane = lane_name.encode('ascii')
     mct = struct.pack('>4sI', b'MCT1', len(policy)) + bytes.fromhex(pin) + nonce + channel + bytes.fromhex(policy_sha) + policy
     control = b'MCO1' + bytes.fromhex(pin) + bytes.fromhex(policy_sha) + bytes.fromhex('b'*64) + bytes([len(lane)]) + lane + mct
     script = r'''
@@ -683,9 +706,30 @@ raise SystemExit(child._fixed_child_main(['--mind-owner-child']))
     assert proc.returncode == 0, 'synthetic owner process failed'
     assert proc.stdout.startswith(b'MEX1')
     candidate = json.loads(proc.stderr)
-    assert candidate['nonce'] == nonce.hex() and candidate['lane'] == lane.decode() and candidate['scope'] == 'own'
+    assert candidate['nonce'] == nonce.hex() and candidate['lane'] == lane.decode() and candidate['scope'] == expected_scope
     assert candidate['status'] == 'CANDIDATES'
     assert candidate['candidates'][0]['source_event_sha256'] == event_sha
+    excluded = {hashlib.sha256(canonical(row)).hexdigest() for row in rows[2:]}
+    assert all(item['source_event_sha256'] not in excluded for item in candidate['candidates'])
+
+
+@pytest.mark.parametrize(('lane', 'scope'), [
+    ('codex-lead-1', 'own'), ('codex-tools-1', 'own'), ('fable-5', 'own'),
+    ('claude-rco-1', 'shared'), ('claude-rco-2', 'shared'),
+])
+def test_startup_scope_is_fixed_by_recognized_lane(lane, scope):
+    from tools import wd_bridge_mind_session as session, wd_mind_runtime_child as child
+    assert child._startup_scope_for_lane(lane) == scope
+    assert session._startup_scope_for_lane(lane) == scope
+
+
+@pytest.mark.parametrize('lane', ['', 'claude-rco-3', 'CLAUDE-RCO-1', None, 1])
+def test_startup_scope_rejects_unrecognized_lane(lane):
+    from tools import wd_bridge_mind_session as session, wd_mind_runtime_child as child
+    with pytest.raises(ValueError):
+        child._startup_scope_for_lane(lane)
+    with pytest.raises(ValueError):
+        session._startup_scope_for_lane(lane)
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows standard-handle control pipe')

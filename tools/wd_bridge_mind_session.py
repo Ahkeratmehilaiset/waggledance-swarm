@@ -796,6 +796,17 @@ def _read_parent_consumer_control(*, enabled=False, stream=None, expected_manife
     return output
 
 
+def _startup_scope_for_lane(lane):
+    """Match the fixed owner scope; this does not authenticate the lane."""
+    if type(lane) is not str:
+        raise ValueError('lane')
+    if lane in ('claude-rco-1', 'claude-rco-2'):
+        return 'shared'
+    if lane in ('codex-lead-1', 'codex-tools-1', 'fable-5'):
+        return 'own'
+    raise ValueError('lane')
+
+
 def _run_parent_consumer(*, enabled=False, open_export=None, open_candidate=None, control=None,
                          bundle_root=None, expected_manifest_sha256=None,
                          expected_identifier_policy_sha256=None, expected_approval_reference_sha256=None,
@@ -832,7 +843,8 @@ def _run_parent_consumer(*, enabled=False, open_export=None, open_candidate=None
             timeout_seconds=deadline_monotonic-time.monotonic())
         output = resolve_flat_candidate_stream(enabled=True, owner=owner, open_read=open_candidate,
             bundle_root=bundle_root, expected_manifest_sha256=expected_manifest_sha256,
-            expected_nonce=expected_nonce, lane=lane, scope='own', deadline_monotonic=deadline_monotonic)
+            expected_nonce=expected_nonce, lane=lane, scope=_startup_scope_for_lane(lane),
+            deadline_monotonic=deadline_monotonic)
     except KeyboardInterrupt:
         interrupted, output = KeyboardInterrupt, None
     except GeneratorExit:

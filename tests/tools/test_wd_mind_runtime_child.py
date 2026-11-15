@@ -904,6 +904,27 @@ def test_parent_pair_timeout_sets_abort_and_retains_running_worker(monkeypatch):
         pair._thread.join(timeout=5)
 
 
+def test_parent_pair_interrupted_close_never_reuses_uncertain_fd(monkeypatch):
+    controls = child._PrivatePairControls(b'owner', b'consumer', {'manifest_sha256':'a'*64})
+    monkeypatch.setattr(child, '_require_verified_parent_spawn', lambda: None)
+    pair = child.create_retained_parent_pair(enabled=True, bundle_root='C:\\synthetic',
+        expected_manifest_sha256='a'*64, controls=controls, deadline_monotonic=time.monotonic()+5)
+    read_fd, write_fd = os.pipe()
+    pair._fds.update((read_fd, write_fd))
+    real_close = os.close
+    def interrupt_after_close(fd):
+        real_close(fd)
+        raise KeyboardInterrupt()
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(child.os, 'close', interrupt_after_close)
+            with pytest.raises(KeyboardInterrupt): pair._close_fd(read_fd)
+        assert read_fd not in pair._fds
+        assert pair._fd_inflight == read_fd
+    finally:
+        real_close(write_fd)
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows handle inheritance test')
 def test_windows_handle_list_excludes_unrelated_inheritable_handle():
     """Probe in an isolated synthetic parent, without mutating fleet handles."""

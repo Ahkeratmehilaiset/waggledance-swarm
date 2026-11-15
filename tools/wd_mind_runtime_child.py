@@ -450,13 +450,15 @@ def _derive_parent_child_controls_bytes(raw, expected_manifest_sha256):
 class _RetainedParentPair:
     """Own the actual fixed child launch/pipe graph until both exits are proven."""
     __slots__ = ('_bundle', '_manifest', '_controls', '_metadata', '_deadline', '_owner', '_consumer',
-                 '_thread', '_done', '_abort', '_result', '_token', '_fds', '_streams', '_start_confirmed')
+                 '_thread', '_done', '_abort', '_result', '_token', '_fds', '_streams', '_fd_inflight',
+                 '_start_confirmed')
 
     def __init__(self, bundle, manifest, controls, deadline):
         self._bundle, self._manifest, self._controls = bundle, manifest, controls
         self._metadata, self._deadline = controls.metadata(), deadline
         self._owner = self._consumer = self._thread = self._result = self._token = None
         self._done, self._abort, self._fds, self._streams = threading.Event(), threading.Event(), set(), []
+        self._fd_inflight = None
         self._start_confirmed = False
 
     def __repr__(self): return '<PrivateMindRetainedParentPair>'
@@ -464,18 +466,41 @@ class _RetainedParentPair:
     def status(self):
         return {'state':'HOLD', 'owner':None if self._owner is None else self._owner.status(),
                 'consumer':None if self._consumer is None else self._consumer.status(),
+                'fd_ownership':'UNKNOWN' if self._fd_inflight is not None else 'TRACKED',
                 'worker_active':None if self._thread is not None and not self._start_confirmed and not self._done.is_set()
                                 else self._thread is not None and self._thread.is_alive()}
 
     def _pipe(self):
         self._check_continue()
-        read_fd, write_fd = os.pipe()
+        if self._fd_inflight is not None:
+            raise ValueError('fd_uncertain')
+        self._fd_inflight = 'PIPE_CREATION'
+        try:
+            read_fd, write_fd = os.pipe()
+        except OSError:
+            self._fd_inflight = None
+            raise
         self._fds.update((read_fd, write_fd))
+        self._fd_inflight = None
         return read_fd, write_fd
 
     def _close_fd(self, fd):
-        os.close(fd)
+        if self._fd_inflight is not None or fd not in self._fds:
+            raise ValueError('fd_uncertain')
+        self._fd_inflight = fd
         self._fds.remove(fd)
+        os.close(fd)
+        self._fd_inflight = None
+
+    def _transfer_fd(self, fd, mode):
+        if self._fd_inflight is not None or fd not in self._fds:
+            raise ValueError('fd_uncertain')
+        self._fd_inflight = fd
+        self._fds.remove(fd)
+        stream = os.fdopen(fd, mode, buffering=0)
+        self._streams.append(stream)
+        self._fd_inflight = None
+        return stream
 
     def _write_fd(self, fd, value):
         offset = 0
@@ -570,12 +595,8 @@ class _RetainedParentPair:
         self._write_fd(owner_w, owner_control)
         self._close_fd(owner_w)
         self._write_fd(control_w, consumer_control)
-        source = os.fdopen(candidate_r, 'rb', buffering=0)
-        self._fds.remove(candidate_r)
-        self._streams.append(source)
-        destination = os.fdopen(control_w, 'wb', buffering=0)
-        self._fds.remove(control_w)
-        self._streams.append(destination)
+        source = self._transfer_fd(candidate_r, 'rb')
+        destination = self._transfer_fd(control_w, 'wb')
         relay_parent_candidates(enabled=True, source=_PrivateCandidateInput(source),
             destination=_PrivateCandidateOutput(destination), deadline_monotonic=self._deadline)
         self._check_continue()
@@ -614,12 +635,17 @@ class _RetainedParentPair:
             self.cancel()
             self._result = None
         finally:
-            for stream in self._streams:
-                try: stream.close()
-                except BaseException: pass
-            for fd in tuple(self._fds):
-                try: self._close_fd(fd)
-                except BaseException: pass
+            if self._fd_inflight is None:
+                for stream in self._streams:
+                    try: stream.close()
+                    except BaseException: pass
+                for fd in tuple(self._fds):
+                    try: self._close_fd(fd)
+                    except BaseException: break
+            while self._fd_inflight is not None:
+                # A close, transfer or pipe-creation result is unknown. Never
+                # retry the numeric descriptor: it may already be reused.
+                time.sleep(0.25)
             self._release_children()
             self._done.set()
 

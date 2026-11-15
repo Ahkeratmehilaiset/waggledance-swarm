@@ -437,3 +437,102 @@ def test_single_worker_resource_replacement_during_callback_refuses(single_worke
             single.query('sample')
     finally:
         setattr(owner.resources, resource_name, resource)
+
+
+@pytest.fixture
+def b16_worker(flat_bundle, monkeypatch, request):
+    from test_wd_mind_e5_lifecycle import Process, Job, finish
+    from test_wd_mind_e5_client import response, supervised
+    from tools import (wd_mind_e5_snapshot_adapter as adapter, wd_mind_e5_client as client_module,
+                       wd_mind_e5_lifecycle as lifecycle)
+    bundle, _, _, _ = flat_bundle
+    manifest_path = bundle / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    del manifest['files']['tools-bootstrap/tools/wd_mind_e5_rotating_client.py']
+    manifest_raw = _json(manifest)
+    manifest_path.write_bytes(manifest_raw)
+    pin = hashlib.sha256(manifest_raw).hexdigest()
+    runtime_hash = hashlib.sha256((bundle / 'wd-mind-e5-encoder-binding.json').read_bytes()).hexdigest()
+    nonce = 'd' * 64
+    texts = [f'passage: synthetic {i}' for i in range(16)]
+    binding = supervised('refresh', nonce, binding=runtime_hash, texts=texts)
+    fault = getattr(request, 'param', None)
+    frames = []
+    for i in range(1, 5):
+        number = 3 if fault == 'frame_order' and i == 2 else i
+        digest = bytes.fromhex('0' * 64 if fault == 'digest' and i == 2 else binding['request_sha256'])
+        status = 1 if fault == 'mid_frame' and i == 2 else 0
+        vector = [0.0] * 384
+        vector[i - 1] = 1.0
+        frames.append(response(number, 4, vector=vector, status=status, nonce=bytes.fromhex(nonce), digest=digest))
+    process = Process(response(0, 0) + b''.join(frames), on_eof=False)
+    owner = lifecycle.reserve(enabled=True, bulk_contract_sha256=client_module.BULK_CONTRACT_SHA256)
+    owner.set_job(Job())
+    owner.bind(process)
+    try:
+        client = client_module.GracefulE5WorkerClient(owner, timeout=1, encoder_binding_sha256=runtime_hash,
+                                                      bulk_contract_sha256=client_module.BULK_CONTRACT_SHA256)
+        owner.mark_ready()
+        monkeypatch.setattr(adapter.secrets, 'token_hex', lambda _: nonce)
+        single = adapter.create_single_flat_adapter(enabled=True, bundle_root=str(bundle),
+                                                     expected_manifest_sha256=pin, client=client)
+        yield single, client, owner, process, texts, binding
+    finally:
+        finish(owner, process)
+
+
+def test_single_b16_one_nonce_four_ordered_frames(b16_worker):
+    single, client, _, process, texts, binding = b16_worker
+    result = single.passage(tuple(texts))
+    rows = [struct.unpack_from('<384f', result, i * 1536) for i in range(16)]
+    assert [row.index(1.0) for row in rows] == [0] * 4 + [1] * 4 + [2] * 4 + [3] * 4
+    raw = bytes(process.written)
+    frames = []
+    while raw:
+        size = struct.unpack('<I', raw[:4])[0]
+        frames.append(json.loads(raw[4:4 + size]))
+        raw = raw[4 + size:]
+    assert [frame['id'] for frame in frames] == [1, 2, 3, 4]
+    assert [text for frame in frames for text in frame['texts']] == texts
+    assert all(frame['nonce'] == binding['nonce'] and frame['request_sha256'] == binding['request_sha256']
+               for frame in frames)
+    assert client._used_nonces == {binding['nonce']}
+
+
+@pytest.mark.parametrize('b16_worker', ['frame_order', 'digest', 'mid_frame'], indirect=True)
+def test_single_b16_refuses_bad_intermediate_frame_and_keeps_hold(b16_worker):
+    single, client, owner, _, texts, _ = b16_worker
+    with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+        single.passage(tuple(texts))
+    assert client.owner is owner and owner.status()['owned'] is True
+    assert single.close(timeout=0)['state'] == 'HOLD'
+
+
+def test_single_b16_replay_refuses_without_second_output(b16_worker):
+    single, client, owner, process, texts, binding = b16_worker
+    assert len(single.passage(tuple(texts))) == 16 * 1536
+    before = bytes(process.written)
+    with pytest.raises(ValueError):
+        single.passage(tuple(texts))
+    assert bytes(process.written) == before and client.owner is owner
+    assert client._used_nonces == {binding['nonce']}
+
+
+def test_single_b16_nonce_budget_refuses_before_any_packet(b16_worker):
+    single, client, owner, process, texts, _ = b16_worker
+    assert client._nonce_limit == 8192
+    client._used_nonces.update(f'{i:064x}' for i in range(8192))
+    with pytest.raises(ValueError):
+        single.passage(tuple(texts))
+    assert bytes(process.written) == b'' and client.owner is owner
+
+
+def test_single_b16_keeps_bulk_contract_frame_and_output_limits():
+    from tools import (wd_mind_e5_client as client, wd_mind_e5_lifecycle as lifecycle,
+                       wd_mind_e5_worker as worker)
+    assert lifecycle.BULK_STDOUT_BYTES == 64 * 1024 * 1024
+    assert lifecycle.MAX_STDOUT_BUFFER == lifecycle.MAX_PACKET == 65540
+    assert client._MAX_BATCH == worker.MAX_BATCH == 4
+    assert client.BULK_CONTRACT_SHA256 == lifecycle.BULK_CONTRACT_SHA256 == worker.BULK_CONTRACT_SHA256
+    assert hashlib.sha256(lifecycle.BULK_CONTRACT).hexdigest() == lifecycle.BULK_CONTRACT_SHA256
+    assert worker._nonce_budget(worker.BULK_CONTRACT_SHA256) == 8192

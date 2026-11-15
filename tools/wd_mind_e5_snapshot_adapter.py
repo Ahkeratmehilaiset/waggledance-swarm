@@ -276,6 +276,16 @@ class _SingleFlatAdapter(_FlatAdapter):
                 or status.get('owned') is not True or status.get('reason') is not None):
             raise ValueError('single_flat_owner_unavailable')
 
+    def _passage(self, texts):
+        # One bounded B16 request has one nonce/digest. The existing client
+        # sends up to four transport frames with the same binding, retaining
+        # request ordering and all 4-record frame/output limits.
+        if (type(texts) not in (tuple, list) or not 1 <= len(texts) <= _MAX_PASSAGES
+                or any(type(text) is not str or not text.startswith('passage: ')
+                       or not text[9:].strip() or len(text) > 2009 or '\x00' in text for text in texts)):
+            raise ValueError('passage')
+        return self._request('refresh', tuple(texts))
+
     def close(self, *, timeout=0):
         """Request cooperative EOF; a HOLD keeps the owner and handles reachable."""
         import math

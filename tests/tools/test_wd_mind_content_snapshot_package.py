@@ -792,6 +792,64 @@ def test_watcher_close_wait_rejects_invalid_timeouts(package, timeout):
             source_verification='verified_immutable_snapshot_v1', watcher_join_timeout_seconds=timeout)
 
 
+@pytest.mark.parametrize('source_valid', [True, False])
+def test_long_watcher_join_precedes_final_source_check_and_publication(
+        package, fixtures, tmp_path, monkeypatch, source_valid):
+    import time
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    entered, finished = threading.Event(), threading.Event()
+    sequence = []
+    verify, final_check = reader._verified_complete, package._unchanged
+    source = Path(case['messages']['source_path'])
+
+    def slow_verify(snapshot):
+        if threading.current_thread().name == 'mind-source-verifier':
+            entered.set()
+            time.sleep(2.2)
+            result = verify(snapshot)
+            sequence.append('watcher_completed')
+            finished.set()
+            return result
+        return verify(snapshot)
+
+    def checked_final(original, frozen, report, **kwargs):
+        assert finished.is_set()
+        assert not any(thread.name == 'mind-source-verifier' for thread in threading.enumerate())
+        sequence.append('final_check_started')
+        if not source_valid:
+            old = source.read_bytes()
+            source.write_bytes(old[:-2] + b'X\n')
+        result = final_check(original, frozen, report, **kwargs)
+        sequence.append('final_check_passed')
+        return result
+
+    def encode(batch):
+        assert entered.wait(5)
+        return codec.passage(batch)
+
+    monkeypatch.setattr(package, '_WATCH_INTERVAL_SECONDS', 0.001)
+    monkeypatch.setattr(reader, '_verified_complete', slow_verify)
+    monkeypatch.setattr(package, '_unchanged', checked_final)
+    args['passage_encoder'] = encode
+    try:
+        if source_valid:
+            output = package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+            sequence.append('published')
+            assert json.loads(output['memory_bytes'])['records'] > 0
+            assert sequence == ['watcher_completed', 'final_check_started', 'final_check_passed', 'published']
+        else:
+            with pytest.raises(package.SnapshotPackageRefused):
+                package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+            assert sequence == ['watcher_completed', 'final_check_started']
+        assert package.snapshot_build_watcher_status() == {'state': 'idle'}
+    finally:
+        for thread in threading.enumerate():
+            if thread.name == 'mind-source-verifier':
+                thread.join(10)
+
+
 def test_immutable_build_refuses_permanent_source_change_after_callback(package, fixtures, tmp_path):
     case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
     codec = Codec(fixtures)

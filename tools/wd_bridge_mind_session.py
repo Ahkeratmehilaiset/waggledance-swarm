@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import builtins
 from datetime import datetime, timezone
 import hashlib
 import hmac
@@ -179,8 +180,8 @@ _EXPORT_BLOCK_NAMES = ('message_policy', 'decision', 'nonreview_policy', 'roster
                        'identifier_policy', 'identifier_key', 'projection', 'flat_manifest', 'ids',
                        'vectors', 'encoder_binding')
 _EXPORT_LIMIT = 64 * 1024 * 1024
-_EXPORT_USED_NONCES = set()
-_EXPORT_NONCE_LOCK = threading.Lock()
+_EXPORT_NONCE_STATE = vars(builtins).setdefault('_wd_mind_flat_export_nonce_registry_v1',
+                                                 {'lock':threading.Lock(), 'used':set()})
 _EXPORT_NONCE_LIMIT = 8192
 
 
@@ -226,10 +227,15 @@ def create_flat_export_authorization(*, enabled=False, expected_nonce=None,
             or type(expected_identifier_policy_sha256) is not str
             or not _SHA256.fullmatch(expected_identifier_policy_sha256)):
         raise MindContentSessionRefused('mind_session_content_refused') from None
-    with _EXPORT_NONCE_LOCK:
-        if expected_nonce in _EXPORT_USED_NONCES or len(_EXPORT_USED_NONCES) >= _EXPORT_NONCE_LIMIT:
+    if (type(_EXPORT_NONCE_STATE) is not dict or set(_EXPORT_NONCE_STATE) != {'lock', 'used'}
+            or type(_EXPORT_NONCE_STATE['used']) is not set
+            or type(_EXPORT_NONCE_STATE['lock']) is not type(threading.Lock())):
+        raise MindContentSessionRefused('mind_session_content_refused') from None
+    with _EXPORT_NONCE_STATE['lock']:
+        if (expected_nonce in _EXPORT_NONCE_STATE['used']
+                or len(_EXPORT_NONCE_STATE['used']) >= _EXPORT_NONCE_LIMIT):
             raise MindContentSessionRefused('mind_session_content_refused') from None
-        _EXPORT_USED_NONCES.add(expected_nonce)
+        _EXPORT_NONCE_STATE['used'].add(expected_nonce)
     return _FlatExportAuthorization(expected_nonce, expected_identifier_policy_sha256)
 
 

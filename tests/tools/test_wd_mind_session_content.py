@@ -10,7 +10,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import asyncio
+import builtins
 from concurrent.futures import ThreadPoolExecutor
+import threading
 import importlib.util
 import json
 import os
@@ -31,7 +33,9 @@ TOKEN = "mind_session_content_refused"
 
 @pytest.fixture
 def flat_consumer_case(source_fixtures, tmp_path, monkeypatch):
-    monkeypatch.setattr(session, '_EXPORT_USED_NONCES', set(), raising=False)
+    state = {'lock': threading.Lock(), 'used': set()}
+    monkeypatch.setitem(vars(builtins), '_wd_mind_flat_export_nonce_registry_v1', state)
+    monkeypatch.setattr(session, '_EXPORT_NONCE_STATE', state, raising=False)
     from tools import wd_mind_content_snapshot_package as package
     path = Path(__file__).with_name('test_wd_mind_content_snapshot_package.py')
     spec = importlib.util.spec_from_file_location('flat_consumer_package_fixtures', path)
@@ -225,7 +229,7 @@ def test_flat_export_failed_validation_consumes_lease(flat_consumer_case):
 
 
 def test_flat_export_nonce_reservation_is_atomic_and_bounded(monkeypatch):
-    monkeypatch.setattr(session, '_EXPORT_USED_NONCES', set())
+    monkeypatch.setattr(session, '_EXPORT_NONCE_STATE', {'lock':threading.Lock(), 'used':set()})
     monkeypatch.setattr(session, '_EXPORT_NONCE_LIMIT', 1)
     def reserve():
         try:
@@ -238,6 +242,22 @@ def test_flat_export_nonce_reservation_is_atomic_and_bounded(monkeypatch):
         assert sorted(pool.map(lambda _: reserve(), range(2))) == [False, True]
     with pytest.raises(session.MindContentSessionRefused):
         session.create_flat_export_authorization(enabled=True, expected_nonce='2'*64,
+            expected_identifier_policy_sha256='a'*64)
+
+
+def test_flat_export_alias_imports_share_one_nonce_registry(monkeypatch):
+    state = {'lock': threading.Lock(), 'used': set()}
+    monkeypatch.setitem(vars(builtins), '_wd_mind_flat_export_nonce_registry_v1', state)
+    modules = []
+    for name in ('session_alias_a', 'session_alias_b'):
+        spec = importlib.util.spec_from_file_location(name, session.__file__)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        modules.append(module)
+    modules[0].create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
+        expected_identifier_policy_sha256='a'*64)
+    with pytest.raises(modules[1].MindContentSessionRefused):
+        modules[1].create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
             expected_identifier_policy_sha256='a'*64)
 
 

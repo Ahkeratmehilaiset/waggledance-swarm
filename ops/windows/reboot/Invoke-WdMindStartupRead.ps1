@@ -67,20 +67,20 @@ function Invoke-WdMindStartupRead {
             $count=$io.OutRead.GetAwaiter().GetResult()
             if($count -eq 0){$io.OutDone=$true}
             else{
-                if($io.OutText.Length+$count -gt 65536){$Owner.State='HOLD';return $false}
-                [void]$io.OutText.Append($io.OutBuffer,0,$count)
+                if($io.OutBytes.Length+$count -gt 65536){$Owner.State='HOLD';return $false}
+                $io.OutBytes.Write($io.OutBuffer,0,$count)
                 [Array]::Clear($io.OutBuffer,0,$io.OutBuffer.Length)
-                $io.OutRead=$process.StandardOutput.ReadAsync($io.OutBuffer,0,$io.OutBuffer.Length)
+                $io.OutRead=$process.StandardOutput.BaseStream.ReadAsync($io.OutBuffer,0,$io.OutBuffer.Length)
             }
         }
         if(-not $io.ErrDone -and $io.ErrRead.IsCompleted){
             $count=$io.ErrRead.GetAwaiter().GetResult()
             if($count -eq 0){$io.ErrDone=$true}
             else{
-                $io.ErrChars+=$count
+                $io.ErrBytes+=$count
                 [Array]::Clear($io.ErrBuffer,0,$io.ErrBuffer.Length)
-                if($io.ErrChars -gt 4096){$Owner.State='HOLD';return $false}
-                $io.ErrRead=$process.StandardError.ReadAsync($io.ErrBuffer,0,$io.ErrBuffer.Length)
+                if($io.ErrBytes -gt 4096){$Owner.State='HOLD';return $false}
+                $io.ErrRead=$process.StandardError.BaseStream.ReadAsync($io.ErrBuffer,0,$io.ErrBuffer.Length)
             }
         }
         return $true
@@ -139,7 +139,7 @@ function Invoke-WdMindStartupRead {
             $wrapperPin.Value -isnot [string] -or $entryPin.Value -isnot [string]) { throw 'mind_parent_bootstrap_refused' }
         [void](Read-WdMindPinnedSnapshot -Path $wrapperPath -Pin $wrapperPin.Value -Limit 8388608)
         [void](Read-WdMindPinnedSnapshot -Path $entryPath -Pin $entryPin.Value -Limit 8388608)
-        $command='$ErrorActionPreference="Stop"; if((Get-FileHash -LiteralPath ' +
+        $command='$ErrorActionPreference="Stop"; $ProgressPreference="SilentlyContinue"; if((Get-FileHash -LiteralPath ' +
             (ConvertTo-WdMindLiteral $wrapperPath) + ' -Algorithm SHA256).Hash.ToLowerInvariant() -cne ' +
             (ConvertTo-WdMindLiteral $wrapperPin.Value.ToLowerInvariant()) + '){exit 2}; $global:LASTEXITCODE=0; & ' +
             (ConvertTo-WdMindLiteral $wrapperPath) + ' tools/wd_mind_runtime_child.py -VerifyPackage --parent-control; exit $LASTEXITCODE'
@@ -150,8 +150,6 @@ function Invoke-WdMindStartupRead {
             [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
         $start.WorkingDirectory=$root;$start.UseShellExecute=$false;$start.CreateNoWindow=$true
         $start.RedirectStandardInput=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
-        $start.StandardOutputEncoding=New-Object Text.UTF8Encoding($false,$true)
-        $start.StandardErrorEncoding=New-Object Text.UTF8Encoding($false,$true)
         $environmentAllow=@('SYSTEMROOT','SYSTEMDRIVE','WINDIR','PATH','PATHEXT','TEMP','TMP',
                             'USERPROFILE','LOCALAPPDATA','APPDATA')
         foreach($name in @($start.EnvironmentVariables.Keys)){
@@ -208,12 +206,14 @@ function Invoke-WdMindStartupRead {
                 $process.StandardInput.Close()
                 return $owner
             }
-            $io=@{OutBuffer=(New-Object char[] 4096);ErrBuffer=(New-Object char[] 4096);
-                OutRead=$null;ErrRead=$null;OutDone=$false;ErrDone=$false;ErrChars=0;
-                OutText=(New-Object Text.StringBuilder)}
+            # Output remains in private same-runspace memory for later separate
+            # validation; this is not a memory-wipe or same-user isolation claim.
+            $io=@{OutBuffer=(New-Object byte[] 4096);ErrBuffer=(New-Object byte[] 4096);
+                OutRead=$null;ErrRead=$null;OutDone=$false;ErrDone=$false;ErrBytes=0;
+                OutBytes=(New-Object IO.MemoryStream)}
             $global:WdMindParentBootstrapIO[$token]=$io
-            $io.OutRead=$process.StandardOutput.ReadAsync($io.OutBuffer,0,$io.OutBuffer.Length)
-            $io.ErrRead=$process.StandardError.ReadAsync($io.ErrBuffer,0,$io.ErrBuffer.Length)
+            $io.OutRead=$process.StandardOutput.BaseStream.ReadAsync($io.OutBuffer,0,$io.OutBuffer.Length)
+            $io.ErrRead=$process.StandardError.BaseStream.ReadAsync($io.ErrBuffer,0,$io.ErrBuffer.Length)
             $writeTask=$process.StandardInput.BaseStream.WriteAsync($control,0,$control.Length)
             $global:WdMindParentBootstrapProcesses[$token].WriteTask=$writeTask
             while(-not $writeTask.IsCompleted -and $clock.ElapsedMilliseconds -lt ([long]$TimeoutSeconds*1000)){

@@ -203,7 +203,7 @@ $env:AGENT_BRIDGE_OWNER_TOKEN='synthetic-only-owner-sentinel'
 $owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
     -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 5
 if((Wait-WdMindParentBootstrap -Owner $owner).State -cne 'EXITED'){throw 'synthetic_parent_not_exited'}
-$r=$global:WdMindParentBootstrapIO[$owner.Token].OutText.ToString() | ConvertFrom-Json
+$r=[Text.Encoding]::UTF8.GetString($global:WdMindParentBootstrapIO[$owner.Token].OutBytes.ToArray()) | ConvertFrom-Json
 [pscustomobject]@{state=$owner.State;child_exit=$global:WdMindParentBootstrapProcesses[$owner.Token].Process.ExitCode;is_redirected=$r.is_redirected;
   command_has_key=$r.command_has_key;environment_has_key=$r.environment_has_key;
   secret_env_present=$r.secret_env_present;policy_length=$r.policy_length;
@@ -347,15 +347,15 @@ def test_parent_bootstrap_over_budget_output_stays_in_hold(channel):
     script = functions + r'''
 $token='synthetic'
 $owner=[pscustomobject]@{Token=$token;State='BOOTSTRAP_SENT';Process=$null}
-$out=New-Object Text.StringBuilder
-if(CHANNEL -ceq 'stdout'){[void]$out.Append(('x' * 65536))}
+$out=New-Object IO.MemoryStream
+if(CHANNEL -ceq 'stdout'){$out.SetLength(65536)}
 $outTask=[Threading.Tasks.Task[int]]::FromResult($(if(CHANNEL -ceq 'stdout'){1}else{0}))
 $errTask=[Threading.Tasks.Task[int]]::FromResult($(if(CHANNEL -ceq 'stderr'){1}else{0}))
 $global:WdMindParentBootstrapIO=@{}
 $global:WdMindParentBootstrapProcesses=@{$token=@{Process=$null;WriteTask=$null}}
-$global:WdMindParentBootstrapIO[$token]=@{OutBuffer=(New-Object char[] 4096);ErrBuffer=(New-Object char[] 4096);
+$global:WdMindParentBootstrapIO[$token]=@{OutBuffer=(New-Object byte[] 4096);ErrBuffer=(New-Object byte[] 4096);
  OutRead=$outTask;ErrRead=$errTask;OutDone=$false;ErrDone=$false;
- ErrChars=$(if(CHANNEL -ceq 'stderr'){4096}else{0});OutText=$out}
+ ErrBytes=$(if(CHANNEL -ceq 'stderr'){4096}else{0});OutBytes=$out}
 $ok=Update-WdMindParentBootstrapPumps -Owner $owner
 [pscustomobject]@{ok=$ok;state=$owner.State} | ConvertTo-Json -Compress
 '''.replace('CHANNEL', _literal(channel))
@@ -430,6 +430,49 @@ $serialized=$owner | ConvertTo-Json -Depth 4 -Compress
 '''.replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin)).replace('POLICY_PIN', _literal(policy_pin)).replace('HELPER_PATH', _literal(HELPER))
     assert _run_startup_script(script) == {'state':'EXITED', 'contains_policy':False,
                                            'exposes_process':False, 'exposes_write':False, 'retained':True}
+
+
+@WINDOWS
+@pytest.mark.parametrize('channel, count, expected', [
+    ('stdout', 15000, 'EXITED'), ('stdout', 17000, 'HOLD'),
+    ('stderr', 1000, 'EXITED'), ('stderr', 1025, 'HOLD')])
+def test_parent_bootstrap_limits_utf8_output_by_bytes(tmp_path, channel, count, expected):
+    """The four-byte codepoint must count as four bytes, not two UTF-16 units."""
+    bundle, _ = _package(tmp_path)
+    wrapper = bundle / 'Invoke-WdBridgePython.ps1'
+    wrapper.write_text(r'''
+$s=[Console]::OpenStandardInput();$b=New-Object byte[] 4096
+while($s.Read($b,0,$b.Length) -gt 0){}
+[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false)
+[Console]::STREAM.Write(([char]::ConvertFromUtf32(0x1F680) * COUNT));[Console]::STREAM.Flush()
+'''.replace('COUNT', str(count)).replace('STREAM', 'Out' if channel == 'stdout' else 'Error'), encoding='utf-8')
+    entry = bundle / 'tools-bootstrap/tools/wd_mind_runtime_child.py'
+    entry.write_bytes(b'# synthetic fixture\n')
+    manifest = bundle / 'deployment-manifest.json'
+    doc = json.loads(manifest.read_text(encoding='utf-8'))
+    for relative in ('Invoke-WdBridgePython.ps1', 'tools-bootstrap/tools/wd_mind_runtime_child.py'):
+        doc['files'][relative] = hashlib.sha256((bundle / relative).read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(doc, separators=(',', ':')), encoding='utf-8')
+    pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    policy_pin = hashlib.sha256(b'synthetic-policy').hexdigest()
+    functions = _startup_functions('Invoke-WdMindStartupRead.ps1',
+        ['Read-WdMindPinnedSnapshot', 'ConvertTo-WdMindLiteral', 'Update-WdMindParentBootstrapPumps',
+         'Wait-WdMindParentBootstrap', 'Start-WdMindParentBootstrap'])
+    script = functions + r'''
+$policy=[Text.Encoding]::UTF8.GetBytes('synthetic-policy')
+$owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
+    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 5
+$owner=Wait-WdMindParentBootstrap -Owner $owner
+$state=$owner.State
+$owned=$global:WdMindParentBootstrapProcesses[$owner.Token]
+if($state -ceq 'HOLD'){
+  $drain=$owned.Process.OUTPUT_STREAM.BaseStream.CopyToAsync([IO.Stream]::Null)
+  [void]$owned.Process.WaitForExit(8000);[void]$drain.Wait(8000)
+}
+[pscustomobject]@{state=$state;exited=$owned.Process.HasExited} | ConvertTo-Json -Compress
+'''.replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin)).replace('POLICY_PIN', _literal(policy_pin))
+    script = script.replace('OUTPUT_STREAM', 'StandardOutput' if channel == 'stdout' else 'StandardError')
+    assert _run_startup_script(script) == {'state':expected, 'exited':True}
 
 
 def _startup_functions(filename, names):

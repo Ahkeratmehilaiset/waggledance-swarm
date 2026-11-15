@@ -367,17 +367,35 @@ class FullRuntimeCancellationUnknown(BaseException):
 
 class _OwnedSnapshotWatcher:
     """Retain only the verifier reserved for this owner, including on HOLD."""
-    __slots__ = ('_watcher',)
+    __slots__ = ('_watcher', '_lock', '_closed')
 
     def __init__(self):
         self._watcher = None
+        self._lock = threading.Lock()
+        self._closed = False
 
     def _capture(self, watcher):
-        if self._watcher is not None and self._held():
-            raise ValueError('watcher_already_owned')
-        self._watcher = watcher
+        with self._lock:
+            if self._closed or (self._watcher is not None and self._held_unlocked()):
+                raise ValueError('watcher_already_owned_or_closed')
+            self._watcher = watcher
 
     def _held(self):
+        with self._lock:
+            return self._held_unlocked()
+
+    def _begin_close(self):
+        with self._lock:
+            # Seal before testing liveness so no later reservation can race a
+            # STOPPED result. A held verifier remains retained for retry.
+            self._closed = True
+            return self._held_unlocked()
+
+    def _current(self):
+        with self._lock:
+            return self._watcher
+
+    def _held_unlocked(self):
         if self._watcher is None:
             return False
         try:
@@ -1073,7 +1091,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
         if watcher is None and watcher_lease is not None:
             # A cancellation can arrive after reservation but before the
             # returned watcher is stored in this frame.
-            watcher = watcher_lease._watcher
+            watcher = watcher_lease._current()
         if watcher is not None:
             try:
                 watcher.stop(watcher_join_timeout_seconds)
@@ -2157,7 +2175,7 @@ class _SingleManifestOwner:
             return {'state': 'BUSY', 'owned': None, 'authority': 'none'}
         try:
             try:
-                if self._watcher_lease._held():
+                if self._watcher_lease._begin_close():
                     self._state = 'HOLD'
                     return self._status()
             except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):

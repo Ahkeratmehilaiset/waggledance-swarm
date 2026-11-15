@@ -879,6 +879,9 @@ def test_single_owner_retains_its_live_source_verifier_on_close_and_retry(tmp_pa
         assert owner.close()['state'] == 'HOLD'
         release.set(); thread.join(5)
         assert not thread.is_alive()
+        # A close request seals this owner's lease even while it waits for the
+        # first verifier; no later builder may attach a new verifier to it.
+        with pytest.raises(ValueError): owner._watcher_lease._capture(SyntheticWatcher())
         assert owner.close()['state'] == 'STOPPED'
     finally:
         release.set(); thread.join(5)

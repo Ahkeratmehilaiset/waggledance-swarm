@@ -38,6 +38,7 @@ helper does not authenticate callbacks, models, sources or publish anything.
 """
 from __future__ import annotations
 
+import builtins
 import hashlib
 import io
 import json
@@ -57,11 +58,47 @@ MAX_ARTIFACT_BYTES = 2 * 1024 * 1024
 MAX_PACKAGE_BYTES = 8 * 1024 * 1024
 PASSAGE_BATCH = 16
 _WATCH_INTERVAL_SECONDS = 1.0
+_WATCH_JOIN_TIMEOUT_SECONDS = 2.0
 _ROW = struct.Struct("<384f")
+
+# Separate imports of this module share the owner within the interpreter.
+# A live non-daemon thread can still keep its process alive after a refusal.
+_WATCHER_REGISTRY = vars(builtins).setdefault(
+    "_wd_mind_snapshot_build_watcher_registry_v1", {"lock": threading.Lock(), "owner": None})
 
 
 class SnapshotPackageRefused(ValueError):
     """Fixed-token refusal without source paths, content or callback details."""
+
+
+class SnapshotPackageHold(SnapshotPackageRefused):
+    """An opt-in verifier is still owned; no package has been published."""
+
+
+def snapshot_build_watcher_status():
+    """Return process-local watcher state without source or policy data."""
+    with _WATCHER_REGISTRY["lock"]:
+        owner = _WATCHER_REGISTRY["owner"]
+        if owner is None or (owner.finished.is_set() and not owner.alive()):
+            return {"state": "idle"}
+        return {"state": "watcher_stopping" if owner.finished.is_set() else "building"}
+
+
+def _reserve_watcher():
+    with _WATCHER_REGISTRY["lock"]:
+        owner = _WATCHER_REGISTRY["owner"]
+        if owner is not None and not (owner.finished.is_set() and not owner.alive()):
+            raise SnapshotPackageHold("content_snapshot_watcher_hold")
+        watcher = _SourceWatcher()
+        _WATCHER_REGISTRY["owner"] = watcher
+        return watcher
+
+
+def _release_watcher(watcher):
+    with _WATCHER_REGISTRY["lock"]:
+        watcher.finished.set()
+        if _WATCHER_REGISTRY["owner"] is watcher and not watcher.alive():
+            _WATCHER_REGISTRY["owner"] = None
 
 
 def _capacity(profile):
@@ -172,7 +209,9 @@ class _SourceWatcher:
     def __init__(self):
         self.stop_event = threading.Event()
         self.failed = threading.Event()
+        self.finished = threading.Event()
         self.thread = None
+        self.join_attempted = False
 
     def start(self, frozen, report):
         def run():
@@ -190,10 +229,16 @@ class _SourceWatcher:
         if self.failed.is_set() or self.thread is None or not self.thread.is_alive():
             raise ValueError("source_watcher_failed")
 
+    def alive(self):
+        return self.thread is not None and self.thread.is_alive()
+
     def stop(self):
         self.stop_event.set()
-        if self.thread is not None:
-            self.thread.join()
+        if self.thread is not None and self.thread.ident is not None and not self.join_attempted:
+            self.join_attempted = True
+            self.thread.join(_WATCH_JOIN_TIMEOUT_SECONDS)
+        if self.alive():
+            raise SnapshotPackageHold("content_snapshot_watcher_hold")
         if self.failed.is_set():
             raise ValueError("source_watcher_failed")
 
@@ -365,13 +410,16 @@ def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder
     if source_verification is not None and (source_verification != "verified_immutable_snapshot_v1"
             or type(source_verification) is not str or capacity != {"streamed": True}):
         raise ValueError("invalid_source_verification")
-    watcher = _SourceWatcher() if source_verification is not None else None
+    watcher = _reserve_watcher() if source_verification is not None else None
     try:
         return _package_inner(snapshot, passage_encoder, index_serializer, index_decoder, encoder_binding_bytes,
             encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity, watcher)
     finally:
         if watcher is not None:
-            watcher.stop()
+            try:
+                watcher.stop()
+            finally:
+                _release_watcher(watcher)
 
 
 def _package_inner(snapshot, passage_encoder, index_serializer, index_decoder, encoder_binding_bytes,
@@ -544,6 +592,9 @@ def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=No
     use the immutable, SHA-bound screened projection. Changes restored between
     scans may go unnoticed. This is not continuous source authentication, a
     live index publisher, or a guarantee about what happens after return.
+    A stuck verifier raises SnapshotPackageHold and retains interpreter-local
+    ownership until it finishes. The non-daemon verifier can prevent process
+    exit; this mechanism does not survive a process restart.
     """
     output = None
     succeeded = False
@@ -555,6 +606,8 @@ def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=No
                           encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity,
                           source_verification)
         succeeded = True
+    except SnapshotPackageHold:
+        raise
     except Exception:
         pass
     if not succeeded:

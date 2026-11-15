@@ -147,6 +147,99 @@ def test_immutable_build_callback_error_joins_watcher(package, fixtures, tmp_pat
     assert not any(t.name == 'mind-source-verifier' for t in threading.enumerate())
 
 
+def test_immutable_build_stuck_watcher_returns_hold_and_keeps_ownership(package, fixtures, tmp_path, monkeypatch):
+    assert hasattr(package, 'SnapshotPackageHold')
+    assert package.snapshot_build_watcher_status() == {'state': 'idle'}
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    entered, release = threading.Event(), threading.Event()
+    verify = reader._verified_complete
+    original_join, joins = threading.Thread.join, []
+
+    def watched_verify(snapshot):
+        if threading.current_thread().name == 'mind-source-verifier':
+            entered.set()
+            if not release.wait(15):
+                raise RuntimeError('fixture watchdog timeout')
+        return verify(snapshot)
+
+    def join_once(thread, timeout=None):
+        if thread.name == 'mind-source-verifier':
+            joins.append(timeout)
+        return original_join(thread, timeout)
+
+    def encode(batch):
+        assert entered.wait(5)
+        return codec.passage(batch)
+
+    monkeypatch.setattr(package, '_WATCH_INTERVAL_SECONDS', 0.01)
+    monkeypatch.setattr(package, '_WATCH_JOIN_TIMEOUT_SECONDS', 0.05)
+    monkeypatch.setattr(reader, '_verified_complete', watched_verify)
+    monkeypatch.setattr(threading.Thread, 'join', join_once)
+    args['passage_encoder'] = encode
+    try:
+        with pytest.raises(package.SnapshotPackageHold, match='content_snapshot_watcher_hold'):
+            package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+        assert joins == [0.05]  # finally must not start a second timeout.
+        assert package.snapshot_build_watcher_status() == {'state': 'watcher_stopping'}
+        with pytest.raises(package.SnapshotPackageHold, match='content_snapshot_watcher_hold'):
+            package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+        # A fresh module import in the same interpreter shares ownership.
+        spec = importlib.util.spec_from_file_location('snapshot_package_another_import',
+            ROOT / 'tools/wd_mind_content_snapshot_package.py')
+        another = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(another)
+        assert another.snapshot_build_watcher_status() == {'state': 'watcher_stopping'}
+        with pytest.raises(another.SnapshotPackageHold, match='content_snapshot_watcher_hold'):
+            another.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+        assert package.snapshot_build_watcher_status() == {'state': 'watcher_stopping'}
+        # Strict verification remains available while the opt-in watcher is held.
+        args['passage_encoder'] = codec.passage
+        assert json.loads(package.package_content_snapshot(**args)['memory_bytes'])['records'] > 0
+    finally:
+        release.set()
+        for thread in threading.enumerate():
+            if thread.name == 'mind-source-verifier':
+                original_join(thread, 10)
+    assert package.snapshot_build_watcher_status() == {'state': 'idle'}
+    assert json.loads(package.package_content_snapshot(**args,
+        source_verification='verified_immutable_snapshot_v1')['memory_bytes'])['records'] > 0
+
+
+def test_immutable_build_simultaneous_opt_in_reserves_only_one_owner(package, fixtures, tmp_path, monkeypatch):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    entered, release, outcome = threading.Event(), threading.Event(), []
+    def wait_callback(batch):
+        entered.set()
+        if not release.wait(10):
+            raise RuntimeError('fixture watchdog timeout')
+        return codec.passage(batch)
+    args['passage_encoder'] = wait_callback
+    def first_build():
+        try:
+            outcome.append(package.package_content_snapshot(**args,
+                source_verification='verified_immutable_snapshot_v1'))
+        except Exception as error:
+            outcome.append(error)
+    monkeypatch.setattr(package, '_WATCH_INTERVAL_SECONDS', 60)
+    builder = threading.Thread(target=first_build)
+    builder.start()
+    try:
+        assert entered.wait(5)
+        assert package.snapshot_build_watcher_status() == {'state': 'building'}
+        with pytest.raises(package.SnapshotPackageHold, match='content_snapshot_watcher_hold'):
+            package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+    finally:
+        release.set()
+        builder.join(10)
+    assert not builder.is_alive()
+    assert len(outcome) == 1 and type(outcome[0]) is dict
+    assert package.snapshot_build_watcher_status() == {'state': 'idle'}
+
+
 def test_immutable_build_accepted_transient_aba_is_not_claimed_detected(package, fixtures, tmp_path, monkeypatch):
     # Operator accepted a transient in-place mutation that is restored between
     # the full scans may go unnoticed. This test exhibits that exact limit.

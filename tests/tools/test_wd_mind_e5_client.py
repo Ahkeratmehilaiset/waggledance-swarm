@@ -170,6 +170,36 @@ def supervised(operation, nonce, *, binding="c" * 64, texts=None):
     return request
 
 
+@pytest.mark.parametrize('phase', ['middle_postcheck', 'last_postcheck', 'before_return'])
+def test_supervised_frame_checks_never_return_after_deadline(monkeypatch, phase):
+    texts = [f'passage: synthetic {i}' for i in range(16)]
+    request = supervised('refresh', 'd' * 64, texts=texts)
+    frames = [response(i, 4, nonce=bytes.fromhex(request['nonce']),
+                       digest=bytes.fromhex(request['request_sha256'])) for i in range(1, 5)]
+    process, job = Process(response(0, 0) + b''.join(frames)), Job()
+    subject = client.E5WorkerClient(process, job, timeout=1, encoder_binding_sha256='c' * 64)
+    state = {'checks': 0, 'last_reads': 0}
+    def now():
+        if phase == 'middle_postcheck' and state['checks'] >= 2:
+            return 2.0
+        if phase == 'last_postcheck' and state['checks'] >= 8:
+            return 2.0
+        if phase == 'before_return' and state['checks'] >= 8:
+            state['last_reads'] += 1
+            return 0.0 if state['last_reads'] == 1 else 2.0
+        return 0.0
+    def check():
+        state['checks'] += 1
+    monkeypatch.setattr(client, 'time', SimpleNamespace(monotonic=now))
+    with pytest.raises(client.E5ClientRefused, match='^mind_e5_worker_refused$'):
+        subject.encode_supervised(request, frame_check=check)
+    if phase == 'middle_postcheck':
+        assert state['checks'] == 2  # Do not begin the following frame's check.
+    else:
+        assert state['checks'] == 8
+    assert job.terminated and job.closed
+
+
 def test_supervised_batches_preserve_raw_bytes_order_and_bindings():
     refresh = supervised("refresh", "a" * 64, texts=[f"passage: {i}" for i in range(9)])
     query = supervised("query", "b" * 64)

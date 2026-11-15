@@ -961,7 +961,7 @@ def test_generation_delivery_refusal_locals_do_not_expose_snapshot_policy_or_key
         if fault == 'ordinary_group': raise ExceptionGroup('synthetic', [ValueError('discard')])
         if fault == 'unknown': raise runtime.FullRuntimeCancellationUnknown()
         if fault == 'hold': raise runtime.FullRuntimeSnapshotHold('mind_full_runtime_snapshot_hold')
-        raise ValueError('synthetic refusal')
+        raise runtime._GenerationInputRefused('mind_full_runtime_refused')
     monkeypatch.setattr(runtime, '_prepare_generation_delivery', reject)
     expected = {'cancel':KeyboardInterrupt, 'generator':GeneratorExit, 'async':asyncio.CancelledError,
                 'group':BaseExceptionGroup, 'oversized':runtime.FullRuntimeCancellationUnknown,
@@ -972,7 +972,7 @@ def test_generation_delivery_refusal_locals_do_not_expose_snapshot_policy_or_key
     frame = next(item for item in trace.stack if item.name == '_prepare_consistent_delivery')
     shown = ' '.join((frame.locals or {}).values())
     assert policy_marker.decode() not in shown and key_marker.decode() not in shown
-    assert owner._state == ('READY' if fault in ('refused', 'ordinary_group') else 'HOLD')
+    assert owner._state == ('READY' if fault == 'refused' else 'HOLD')
 
 
 def test_generation_refresh_refuses_policy_bytes_with_valid_hmac_but_wrong_independent_pin(monkeypatch, tmp_path):
@@ -1499,7 +1499,7 @@ if mode in ('rewrite', 'rotation'):
             os.replace(replacement, path)
         return result
     prefix.observe_prefix = changed
-if mode == 'refresh_real_delivery':
+if mode in ('refresh_real_delivery', 'refresh_real_delivery_error_adapter'):
     import datetime
     path = pathlib.Path(sys.argv[3]); rows = path.read_bytes().splitlines()
     event = json.loads(rows[0])
@@ -1598,6 +1598,62 @@ try:
                                                      worker_factory=factory, shutdown_timeout=0)
         if owner.start()['state'] != 'READY': raise ValueError('synthetic owner not ready')
         old = (owner._binding, owner._snapshot, owner._handler._memory)
+        if mode.startswith('refresh_real_delivery_error_'):
+            import traceback
+            fault = mode.removeprefix('refresh_real_delivery_error_')
+            nonce = 'd' * 64
+            request = {'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',
+                       'nonce':nonce,'lane':'codex-lead-1','scope':'own'}
+            limit = 64 * 1024 * 1024
+            if fault == 'source':
+                path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
+            elif fault == 'manifest': (root / 'deployment-manifest.json').write_bytes(b'{}')
+            elif fault == 'adapter':
+                def fail_query(text): raise ValueError('synthetic-secret-marker')
+                owner._adapter.query = fail_query
+            elif fault == 'bad_request': request['schema'] = 'wd.synthetic-invalid.v1'
+            elif fault == 'size': limit = 1
+            try:
+                owner._prepare_consistent_delivery(enabled=True, request=request, expected_nonce=nonce,
+                    expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest(), max_total_bytes=limit)
+                print(json.dumps({'result':'unexpected_success'})); sys.exit(0)
+            except runtime.FullRuntimeRefused as exc:
+                trace = traceback.TracebackException.from_exception(exc, capture_locals=True)
+                frame = next(item for item in trace.stack if item.name == '_prepare_consistent_delivery')
+                shown = ' '.join((frame.locals or {}).values())
+                private_policy, private_key, _ = owner._snapshot['identifier_policy_binding']
+                clean = repr(private_policy) not in shown and repr(private_key) not in shown
+                print(json.dumps({'result':'refused','state':owner._state,'clean':clean})); sys.exit(0)
+        if mode.startswith('refresh_real_worker_'):
+            import traceback
+            calls = {'count':0}
+            def worker_status():
+                calls['count'] += 1
+                if calls['count'] == 1 and mode != 'refresh_real_worker_exit_before':
+                    return {'state':'RUNNING','owned':True}
+                if mode == 'refresh_real_worker_cancel': raise KeyboardInterrupt('synthetic')
+                if mode == 'refresh_real_worker_group':
+                    raise BaseExceptionGroup('synthetic', [ValueError('discard'), GeneratorExit('discard')])
+                if mode == 'refresh_real_worker_unknown': raise runtime.FullRuntimeCancellationUnknown()
+                return {'state':'EXITED','owned':False}
+            worker.status = worker_status
+            nonce = 'd' * 64
+            request = {'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',
+                       'nonce':nonce,'lane':'codex-lead-1','scope':'own'}
+            try:
+                owner._prepare_consistent_delivery(enabled=True, request=request, expected_nonce=nonce,
+                    expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest(), max_total_bytes=64*1024*1024)
+                print(json.dumps({'result':'unexpected_success'})); sys.exit(0)
+            except (runtime.FullRuntimeRefused, KeyboardInterrupt, BaseExceptionGroup,
+                    runtime.FullRuntimeCancellationUnknown) as exc:
+                signal = type(exc).__name__
+                trace = traceback.TracebackException.from_exception(exc, capture_locals=True)
+                frame = next(item for item in trace.stack if item.name == '_prepare_consistent_delivery')
+                shown = ' '.join((frame.locals or {}).values())
+                private_policy, private_key, _ = owner._snapshot['identifier_policy_binding']
+                clean = repr(private_policy) not in shown and repr(private_key) not in shown
+                print(json.dumps({'result':'refused','signal':signal,'hold':owner._state == 'HOLD',
+                                  'clean':clean, 'calls':calls['count']})); sys.exit(0)
         if mode == 'refresh_real_delivery':
             nonce = 'd' * 64
             request = {'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',
@@ -2408,6 +2464,23 @@ def test_generation_refresh_rederives_appended_synthetic_source(synthetic_bundle
 def test_generation_delivery_real_synthetic_bundle_matches_export_and_refuses_stale(synthetic_bundle):
     assert invoke(synthetic_bundle, 'refresh_real_delivery') == {
         'result':'ok', 'same':True, 'refs':True, 'cap_refused':True, 'stale_refused':True, 'ready':True}
+
+
+@pytest.mark.parametrize(('fault','signal'), [('exit_before','FullRuntimeRefused'),
+    ('exit_during','FullRuntimeRefused'), ('cancel','KeyboardInterrupt'),
+    ('group','BaseExceptionGroup'), ('unknown','FullRuntimeCancellationUnknown')])
+def test_generation_delivery_real_worker_failure_preserves_hold_and_private_locals(synthetic_bundle, fault, signal):
+    result = invoke(synthetic_bundle, 'refresh_real_worker_' + fault)
+    assert result['result'] == 'refused' and result['signal'] == signal
+    assert result['hold'] is True and result['clean'] is True
+    assert result['calls'] >= 1
+
+
+@pytest.mark.parametrize(('fault','state'), [('source','HOLD'), ('manifest','HOLD'), ('adapter','HOLD'),
+                                            ('bad_request','READY'), ('size','READY')])
+def test_generation_delivery_integrity_failure_differs_from_user_refusal(synthetic_bundle, fault, state):
+    assert invoke(synthetic_bundle, 'refresh_real_delivery_error_' + fault) == {
+        'result':'refused', 'state':state, 'clean':True}
 
 
 def test_immutable_snapshot_build_returns_verified_synthetic_results(synthetic_bundle):

@@ -355,6 +355,14 @@ class FullRuntimeRefused(ValueError):
     """Fixed refusal without source paths, contents or key material."""
 
 
+class _GenerationInputRefused(FullRuntimeRefused):
+    """A generation-delivery request is invalid before any provider call."""
+
+
+class _GenerationSizeRefused(FullRuntimeRefused):
+    """A verified export exceeds the caller's existing size limit."""
+
+
 class FullRuntimeSnapshotHold(FullRuntimeRefused):
     """A source verifier remains owned; no memory was returned."""
 
@@ -1988,11 +1996,18 @@ def _validate_refresh_generation(owner, staged):
 
 def _prepare_generation_delivery(owner, request, expected_nonce, policy_pin, max_total_bytes):
     """Prepare reference candidates and an untransmitted export under owner lock."""
-    if (type(request) is not dict or type(expected_nonce) is not str or not reader._hex(expected_nonce)
-            or request.get('nonce') != expected_nonce or type(policy_pin) is not str
+    if (type(request) is not dict
+            or set(request) != {'schema', 'query_id', 'nonce', 'lane', 'scope'}
+            or any(type(request[key]) is not str for key in request)
+            or request['schema'] != 'wd.mind-pipe-request.v1'
+            or request['query_id'] != 'startup_work_overview'
+            or request['lane'] not in owner._lanes or request['lane'] not in reader._LANES
+            or request['scope'] not in ('own', 'shared')
+            or type(expected_nonce) is not str or not reader._hex(expected_nonce)
+            or request['nonce'] != expected_nonce or type(policy_pin) is not str
             or not reader._hex(policy_pin) or policy_pin != owner._binding._PrivateBinding__policy_pin
             or type(max_total_bytes) is not int or not 0 < max_total_bytes <= 64 * 1024 * 1024):
-        raise ValueError('delivery_input')
+        raise _GenerationInputRefused('mind_full_runtime_refused') from None
     owner._check_factory_or_hold()
     candidates = map_pipe_candidates(enabled=True, handler=owner._handler, request=request)
     if len(reader._canonical(candidates)) > 2048:
@@ -2114,7 +2129,8 @@ class _SingleManifestOwner:
         except BaseException as exc:
             result = None
             pending = _flat_cancellation(exc)
-            if pending is not None or issubclass(type(exc), FullRuntimeSnapshotHold):
+            if (pending is not None or
+                    not isinstance(exc, (_GenerationInputRefused, _GenerationSizeRefused))):
                 self._state = 'HOLD'
         finally:
             generation = None
@@ -2333,6 +2349,7 @@ class _SingleManifestOwner:
         A trusted, separately inherited channel is required before any export.
         """
         result = None
+        size_refused = False
         checking_integrity = False
         cancelled_type = None
         try:
@@ -2379,6 +2396,7 @@ class _SingleManifestOwner:
             total = len(metadata) + sum(len(value) for _, value in blocks)
             if total > max_total_bytes:
                 checking_integrity = False
+                size_refused = True
                 raise ValueError('export_size')
             _flat_check(memory)
             self._check_factory()
@@ -2405,6 +2423,8 @@ class _SingleManifestOwner:
         if cancelled_type is not None:
             raise cancelled_type() from None
         if result is None:
+            if size_refused:
+                raise _GenerationSizeRefused('mind_full_runtime_refused') from None
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         return result
 

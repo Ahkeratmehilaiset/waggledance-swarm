@@ -122,6 +122,29 @@ def _encode_export_frame(*, enabled=False, channel_key=None, nonce=None, kind=No
     return result
 
 
+def _export_wire_size(*, enabled=False, metadata_length=None, block_lengths=None, max_wire_bytes=None):
+    """Preflight the complete MEX1 wire size without reading any block."""
+    result = None
+    try:
+        if (enabled is not True or type(metadata_length) is not int or not 0 < metadata_length <= 65488
+                or type(block_lengths) is not tuple or len(block_lengths) != 12
+                or any(type(length) is not int or not 0 <= length < 2**63 for length in block_lengths)
+                or type(max_wire_bytes) is not int or not 0 < max_wire_bytes < 2**63):
+            raise ValueError('wire_budget')
+        data_frames = sum((length + 65487) // 65488 for length in block_lengths)
+        if data_frames > 0xfffffffe:
+            raise ValueError('wire_sequence')
+        total = metadata_length + sum(block_lengths) + 48 * (data_frames + 2) + 44
+        if total >= 2**63 or total > max_wire_bytes:
+            raise ValueError('wire_budget')
+        result = total
+    except Exception:
+        pass
+    if result is None:
+        raise LaunchRefused('mind_e5_start_refused') from None
+    return result
+
+
 def _path(value):
     try:
         path = Path(value)

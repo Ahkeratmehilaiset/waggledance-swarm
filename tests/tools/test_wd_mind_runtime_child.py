@@ -886,3 +886,18 @@ def test_export_frame_refusal_never_exposes_keys_in_traceback():
     assert frames
     assert all(repr(secret) not in value for secret in (channel_key, payload)
                for frame in frames for value in (frame.locals or {}).values())
+
+
+def test_export_wire_budget_counts_metadata_all_blocks_headers_and_final():
+    lengths = (1, 65488, 65489, 0, 32, 100, 200, 300, 400, 500, 600, 700)
+    data_frames = sum((length + 65487) // 65488 for length in lengths)
+    expected = 123 + sum(lengths) + 48 * (1 + data_frames + 1) + 44
+    assert child._export_wire_size(enabled=True, metadata_length=123, block_lengths=lengths,
+                                   max_wire_bytes=expected) == expected
+    with pytest.raises(child.LaunchRefused):
+        child._export_wire_size(enabled=True, metadata_length=123, block_lengths=lengths,
+                                max_wire_bytes=expected-1)
+    for bad in ((), lengths[:-1], (True,) + lengths[1:], (-1,) + lengths[1:]):
+        with pytest.raises(child.LaunchRefused):
+            child._export_wire_size(enabled=True, metadata_length=123, block_lengths=bad,
+                                    max_wire_bytes=2**63-1)

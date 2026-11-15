@@ -319,6 +319,7 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
     of approval or of a trusted parent channel.
     """
     result = None
+    cancelled_type = None
     try:
         if (enabled is not True or type(bundle_root) is not str or not Path(bundle_root).is_absolute()
                 or '..' in Path(bundle_root).parts or type(expected_manifest_sha256) is not str
@@ -385,8 +386,20 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
         startup.bind_startup_source(**args)
         reader._verified_complete(snapshot)
         result = _PrivateBinding(snapshot, bundle, expected_manifest_sha256, controls, args)
-    except Exception:
+    except KeyboardInterrupt:
+        cancelled_type, result = KeyboardInterrupt, None
+    except GeneratorExit:
+        cancelled_type, result = GeneratorExit, None
+    except asyncio.CancelledError:
+        cancelled_type, result = asyncio.CancelledError, None
+    except BaseException:
         pass
+    finally:
+        identifier_policy_bytes = identifier = key = tag = controls = observed = meta = None
+        inputs = projection = projection_bytes = snapshot = decision = decision_bytes = None
+        message_policy = roster_bytes = nonreview = scope = bound = args = None
+    if cancelled_type is not None:
+        raise cancelled_type() from None
     if result is None:
         raise FullRuntimeRefused('mind_full_runtime_refused') from None
     return result

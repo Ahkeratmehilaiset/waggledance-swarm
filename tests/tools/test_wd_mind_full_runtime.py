@@ -36,6 +36,35 @@ def test_runtime_requires_independently_pinned_identifier_policy_before_source_r
             expected_identifier_policy_sha256=pin)
 
 
+@pytest.mark.parametrize('signal', ['error', 'keyboard', 'generator', 'async', 'group'])
+def test_runtime_cancellation_does_not_expose_policy_or_hmac_key_in_traceback(tmp_path, monkeypatch, signal):
+    import asyncio
+    import traceback
+    from tools import wd_mind_full_runtime as runtime
+    policy = b'{"identifiers":["synthetic-private-marker-52"],"schema":"wd.mind-identifier-policy.v1"}'
+    key = b'synthetic-private-hmac-key-12345'
+    assert len(key) == 32
+    monkeypatch.setattr(runtime.secrets, 'token_bytes', lambda _: key)
+    def interrupt(*args, **kwargs):
+        if signal == 'keyboard': raise KeyboardInterrupt()
+        if signal == 'generator': raise GeneratorExit()
+        if signal == 'async': raise asyncio.CancelledError()
+        if signal == 'group': raise BaseExceptionGroup('synthetic-private-detail', [KeyboardInterrupt()])
+        raise RuntimeError('synthetic-private-detail')
+    monkeypatch.setattr(runtime, '_bundle_inputs', interrupt)
+    expected = {'keyboard': KeyboardInterrupt, 'generator': GeneratorExit,
+                'async': asyncio.CancelledError}.get(signal, runtime.FullRuntimeRefused)
+    with pytest.raises(expected) as caught:
+        runtime.assemble_full_runtime(enabled=True, bundle_root=str(tmp_path),
+            expected_manifest_sha256='a' * 64, identifier_policy_bytes=policy,
+            expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest())
+    stack = traceback.TracebackException.from_exception(caught.value, capture_locals=True).stack
+    frame = next(frame for frame in stack if frame.name == 'assemble_full_runtime')
+    assert 'synthetic-private-marker-52' not in repr(frame.locals)
+    assert 'synthetic-private-hmac-key-12345' not in repr(frame.locals)
+    assert caught.value.__context__ is None
+
+
 @pytest.mark.parametrize('fault', ['vectors', 'policy_pin'])
 def test_single_adapter_symbol_and_manifest_pins_without_rotator(synthetic_bundle, fault):
     """Import real bundle bytes; no model process or fake adapter is started."""

@@ -1222,6 +1222,19 @@ class _SingleManifestOwner:
                 or not hmac.compare_digest(self._factory_snapshot(self._factory), self._factory_bytes)):
             raise ValueError('factory_changed')
 
+    def _check_factory_or_hold(self):
+        accepted = False
+        try:
+            self._check_factory()
+            accepted = True
+        except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+            self._state = 'HOLD'
+            raise
+        except BaseException:
+            self._state = 'HOLD'
+        if not accepted:
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+
     def _status(self):
         if self._owner is None:
             return {'state': self._state, 'owned': False if self._state == 'NEW' else None,
@@ -1299,10 +1312,10 @@ class _SingleManifestOwner:
         try:
             if self._state != 'READY' or self._handler is None:
                 raise FullRuntimeRefused('mind_full_runtime_refused') from None
-            self._check_factory()
+            self._check_factory_or_hold()
             # Pipe candidates contain references only, not the message body.
             response = map_pipe_candidates(enabled=True, handler=self._handler, request=request)
-            self._check_factory()
+            self._check_factory_or_hold()
             return response
         finally:
             self._lock.release()

@@ -187,6 +187,27 @@ def test_single_manifest_owner_keeps_owner_if_factory_retargets_during_launch(tm
     assert owner._owner is not None and calls == [True]
 
 
+@pytest.mark.parametrize('phase', ['before', 'during'])
+def test_single_manifest_owner_holds_and_never_returns_retargeted_candidates(tmp_path, monkeypatch, phase):
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'})
+    calls = []
+    def candidates(**kwargs):
+        calls.append(True)
+        if phase == 'during': factory._manifest = '0' * 64
+        return {'synthetic': 'must not escape'}
+    monkeypatch.setattr(runtime, 'map_pipe_candidates', candidates)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start() == {'state': 'READY', 'owned': True, 'authority': 'none'}
+    if phase == 'before': factory._manifest = '0' * 64
+    with pytest.raises(runtime.FullRuntimeRefused, match='^mind_full_runtime_refused$'):
+        owner.candidates({'synthetic': 'request'})
+    assert owner.status() == {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+    assert calls == ([] if phase == 'before' else [True])
+
+
 def test_single_manifest_owner_never_reports_ready_when_owner_status_raises(tmp_path, monkeypatch):
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {

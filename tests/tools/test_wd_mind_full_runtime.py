@@ -911,6 +911,70 @@ def test_generation_refresh_publishes_binding_and_memory_together(monkeypatch, t
     assert owner._state == 'READY' and owner._handler._memory.binding is owner._binding
 
 
+@pytest.mark.parametrize('fault', ['refused', 'cancel', 'generator', 'async', 'group', 'unknown', 'hold'])
+def test_generation_refresh_refusal_locals_do_not_expose_snapshot_policy_or_key(monkeypatch, tmp_path, fault):
+    import asyncio
+    import traceback
+    runtime, owner, old, new = _refresh_generation_test_owner(monkeypatch, tmp_path)
+    policy_marker = b'SYNTHETIC_POLICY_LOCAL_MARKER_ONLY'
+    key_marker = b'SYNTHETIC_KEY_LOCAL_MARKER_ONLY'
+    old[1]['identifier_policy_binding'] = (policy_marker, key_marker, 'synthetic')
+    new[1]['identifier_policy_binding'] = (policy_marker, key_marker, 'synthetic')
+    monkeypatch.setattr(runtime, '_stage_refresh_generation',
+                        lambda current_owner: _test_staged_refresh(runtime, current_owner, new), raising=False)
+    def reject(current_owner, staged):
+        if fault == 'cancel': raise KeyboardInterrupt('synthetic')
+        if fault == 'generator': raise GeneratorExit('synthetic')
+        if fault == 'async': raise asyncio.CancelledError('synthetic')
+        if fault == 'group': raise BaseExceptionGroup('synthetic', [ValueError('discard'), GeneratorExit('discard')])
+        if fault == 'unknown': raise runtime.FullRuntimeCancellationUnknown()
+        if fault == 'hold': raise runtime.FullRuntimeSnapshotHold('mind_full_runtime_snapshot_hold')
+        raise ValueError('synthetic refusal')
+    monkeypatch.setattr(runtime, '_validate_refresh_generation', reject)
+    expected = {'cancel':KeyboardInterrupt, 'generator':GeneratorExit, 'async':asyncio.CancelledError,
+                'group':BaseExceptionGroup, 'unknown':runtime.FullRuntimeCancellationUnknown}.get(
+                    fault, runtime.FullRuntimeRefused)
+    with pytest.raises(expected) as caught: owner._refresh_generation(enabled=True)
+    trace = traceback.TracebackException.from_exception(caught.value, capture_locals=True)
+    frame = next(item for item in trace.stack if item.name == '_refresh_generation')
+    shown = ' '.join((frame.locals or {}).values())
+    assert policy_marker.decode() not in shown and key_marker.decode() not in shown
+    assert _test_generation_view(owner) == old and owner._state == 'HOLD'
+
+
+@pytest.mark.parametrize('fault', ['refused', 'ordinary_group', 'cancel', 'generator', 'async',
+                                   'group', 'oversized', 'unknown', 'hold'])
+def test_generation_delivery_refusal_locals_do_not_expose_snapshot_policy_or_key(monkeypatch, tmp_path, fault):
+    import asyncio
+    import traceback
+    runtime, owner, old, _ = _refresh_generation_test_owner(monkeypatch, tmp_path)
+    policy_marker = b'SYNTHETIC_POLICY_LOCAL_MARKER_ONLY'
+    key_marker = b'SYNTHETIC_KEY_LOCAL_MARKER_ONLY'
+    old[1]['identifier_policy_binding'] = (policy_marker, key_marker, 'synthetic')
+    def reject(*args):
+        if fault == 'cancel': raise KeyboardInterrupt('synthetic')
+        if fault == 'generator': raise GeneratorExit('synthetic')
+        if fault == 'async': raise asyncio.CancelledError('synthetic')
+        if fault == 'group': raise BaseExceptionGroup('synthetic', [ValueError('discard'), GeneratorExit('discard')])
+        if fault == 'oversized':
+            raise BaseExceptionGroup('synthetic', [ValueError('discard') for _ in range(1024)] + [GeneratorExit()])
+        if fault == 'ordinary_group': raise ExceptionGroup('synthetic', [ValueError('discard')])
+        if fault == 'unknown': raise runtime.FullRuntimeCancellationUnknown()
+        if fault == 'hold': raise runtime.FullRuntimeSnapshotHold('mind_full_runtime_snapshot_hold')
+        raise ValueError('synthetic refusal')
+    monkeypatch.setattr(runtime, '_prepare_generation_delivery', reject)
+    expected = {'cancel':KeyboardInterrupt, 'generator':GeneratorExit, 'async':asyncio.CancelledError,
+                'group':BaseExceptionGroup, 'oversized':runtime.FullRuntimeCancellationUnknown,
+                'unknown':runtime.FullRuntimeCancellationUnknown}.get(fault, runtime.FullRuntimeRefused)
+    with pytest.raises(expected) as caught:
+        owner._prepare_consistent_delivery(enabled=True, max_total_bytes=64 * 1024 * 1024)
+    trace = traceback.TracebackException.from_exception(caught.value, capture_locals=True)
+    frame = next(item for item in trace.stack if item.name == '_prepare_consistent_delivery')
+    shown = ' '.join((frame.locals or {}).values())
+    assert policy_marker.decode() not in shown and key_marker.decode() not in shown
+    assert owner._state == ('READY' if fault in ('refused', 'ordinary_group') else 'HOLD')
+
+
 def test_generation_refresh_refuses_policy_bytes_with_valid_hmac_but_wrong_independent_pin(monkeypatch, tmp_path):
     import hmac
     from tools import wd_mind_full_runtime as runtime

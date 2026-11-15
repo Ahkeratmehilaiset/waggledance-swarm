@@ -2068,7 +2068,7 @@ class _SingleManifestOwner:
         """Explicit in-process refresh; no scheduling, publishing or activation."""
         if enabled is not True or not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
-        previous, accepted, pending = self._generation, False, None
+        previous, staged, generation, accepted, pending = self._generation, None, None, False, None
         try:
             if self._state != 'READY':
                 raise ValueError('owner_not_ready')
@@ -2084,6 +2084,9 @@ class _SingleManifestOwner:
             self._state = 'HOLD'
             pending = _flat_cancellation(exc)
         finally:
+            # These objects may contain identifier-policy and HMAC key bytes.
+            # Keep them out of this frame before any refusal or cancellation.
+            previous = staged = generation = None
             self._lock.release()
         if pending is not None:
             raise pending from None
@@ -2098,7 +2101,7 @@ class _SingleManifestOwner:
                 or not 0 < max_total_bytes <= 64 * 1024 * 1024
                 or not self._lock.acquire(blocking=False)):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
-        result, pending = None, None
+        result, pending, generation = None, None, None
         try:
             if self._state != 'READY' or self._handler is None:
                 raise ValueError('owner_not_ready')
@@ -2111,7 +2114,10 @@ class _SingleManifestOwner:
         except BaseException as exc:
             result = None
             pending = _flat_cancellation(exc)
+            if pending is not None or issubclass(type(exc), FullRuntimeSnapshotHold):
+                self._state = 'HOLD'
         finally:
+            generation = None
             self._lock.release()
         if pending is not None:
             raise pending from None

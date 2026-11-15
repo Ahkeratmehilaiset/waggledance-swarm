@@ -632,18 +632,67 @@ def test_narrow_selected_row_is_rechecked_after_provider_callback(package, fixtu
 
 
 def test_narrow_read_full_snapshot_validation_is_not_per_reconstruct(package, fixtures, tmp_path, monkeypatch):
-    _, _, _, _, _, _, _, run = _narrow_fixture(package, fixtures, tmp_path)
-    calls = []
+    _, _, _, snapshot, _, deploy, narrow, run = _narrow_fixture(package, fixtures, tmp_path)
+    calls, parsed = [], []
     original = reader._NarrowReadGate.verify_snapshot
+    original_json = reader.json.loads
+    observed = {snapshot['projection_bytes'].decode('utf-8'), narrow['manifest_bytes'].decode('utf-8'),
+                deploy.decode('utf-8-sig')}
 
-    def counted(self, snapshot):
+    def counted(self, snapshot, **kwargs):
         calls.append(None)
-        return original(self, snapshot)
+        return original(self, snapshot, **kwargs)
+
+    def counted_json(raw, *args, **kwargs):
+        if type(raw) is str and raw in observed:
+            parsed.append(raw)
+        return original_json(raw, *args, **kwargs)
 
     monkeypatch.setattr(reader._NarrowReadGate, 'verify_snapshot', counted)
+    monkeypatch.setattr(reader.json, 'loads', counted_json)
     assert run()['results']
-    # Complete validation remains at the read's trust boundaries, not per vector batch.
-    assert len(calls) <= 4
+    assert len(calls) > 4  # every provider callback still rechecks all pins
+    assert all(parsed.count(raw) == 1 for raw in observed)
+
+
+def test_narrow_gate_synthetic_2000_record_revalidation(package, fixtures, tmp_path):
+    import inspect
+    import time
+    _, _, output, snapshot, bundle, _, narrow, _ = _narrow_fixture(package, fixtures, tmp_path)
+    projection = json.loads(snapshot['projection_bytes'])
+    template = projection['messages']['records'][0]
+    records = []
+    for number in range(2000):
+        record = json.loads(json.dumps(template))
+        record['record_id'] = f'synthetic-record-{number}'
+        record['provenance']['source_event_ref'] = f'{number:064x}'
+        records.append(record)
+    projection['messages']['records'] = records
+    snapshot['projection_bytes'] = reader._serialized(projection)
+    snapshot['projection_sha256'] = reader._sha(snapshot['projection_bytes'])
+    manifest = json.loads(narrow['manifest_bytes'])
+    entry = next(iter(manifest['entries'].values()))
+    manifest['entries'] = {record['provenance']['source_event_ref']: entry for record in records}
+    manifest['projection_sha256'] = snapshot['projection_sha256']
+    manifest_raw = reader._canonical(manifest)
+    (bundle / 'wd-mind-narrow-source-manifest.json').write_bytes(manifest_raw)
+    deployment = fixtures._raw({'schema_version': 1, 'files': {
+        'wd-mind-narrow-source-manifest.json': reader._sha(manifest_raw)}})
+    (bundle / 'deployment-manifest.json').write_bytes(deployment)
+    values = {'descriptor_sha256': output['descriptor_sha256'], 'memory_sha256': output['memory_sha256']}
+    gate = reader._NarrowReadGate(str(bundle), reader._sha(deployment), values)
+    gate.verify_snapshot(snapshot)
+    kwargs = ({'_return_projection': False} if '_return_projection' in
+              inspect.signature(gate.verify_snapshot).parameters else {})
+    start = time.perf_counter()
+    reports = [gate.verify_snapshot(snapshot, **kwargs)[2] for _ in range(8)]
+    cached = time.perf_counter() - start
+    start = time.perf_counter()
+    fresh = [reader._NarrowReadGate(str(bundle), reader._sha(deployment), values).verify_snapshot(
+        snapshot, **kwargs)[2] for _ in range(8)]
+    reparsed = time.perf_counter() - start
+    assert reports == fresh
+    print(f'synthetic_gate_records=2000 checks=8 cached_s={cached:.3f} fresh_s={reparsed:.3f}')
 
 
 @pytest.mark.parametrize('damage', ['deployment', 'narrow_manifest', 'generation'])
@@ -678,6 +727,49 @@ def test_narrow_read_rejects_projection_control_replacement_during_provider(pack
     case['encoder_provider'].on_query = mutate
     with pytest.raises(reader.ContentQueryRefused):
         reader._provider_result(lambda: reader._query_complete_content_snapshot(values, _narrow=gate))
+
+
+@pytest.mark.parametrize('damage', ['deployment', 'narrow_manifest', 'projection', 'policy_pin'])
+def test_narrow_refuses_callback_tampering_before_later_restore(package, fixtures, tmp_path, damage):
+    case, codec, output, snapshot, bundle, deploy, _, _ = _narrow_fixture(package, fixtures, tmp_path)
+    restored = []
+    values = None
+
+    def decode(raw):
+        index = codec.decode(raw)
+        if damage in ('deployment', 'narrow_manifest'):
+            name = 'deployment-manifest.json' if damage == 'deployment' else 'wd-mind-narrow-source-manifest.json'
+            path = bundle / name
+            original = path.read_bytes()
+            path.write_bytes(original + b' ')
+            def restore(): path.write_bytes(original)
+        elif damage == 'projection':
+            original = values['projection_bytes']
+            values['projection_bytes'] += b' '
+            def restore(): values['projection_bytes'] = original
+        else:
+            original = values['messages']['policy_sha256']
+            values['messages']['policy_sha256'] = '0' * 64
+            def restore(): values['messages']['policy_sha256'] = original
+        reconstruct = index.reconstruct_n
+        def later_restore(start, count):
+            restored.append(True)
+            restore()
+            return reconstruct(start, count)
+        index.reconstruct_n = later_restore
+        return index
+
+    encoder, index = reader.adapt_complete_readonly_providers(
+        encoder=case['encoder_provider'], index_decoder=decode,
+        **{key: output[key] for key in ('encoder_binding_bytes', 'encoder_binding_sha256',
+                                       'index_binding_bytes', 'index_binding_sha256')})
+    stream = fixtures._ObservedStream(fixtures._raw(
+        {'situation': 'retry network outage', 'time': fixtures.QUERY_TIME}))
+    values = {**snapshot, **output, 'encoder_provider': encoder, 'index_provider': index, 'stream': stream}
+    gate = reader._NarrowReadGate(str(bundle), fixtures._sha(deploy), values)
+    with pytest.raises(reader.ContentQueryRefused):
+        reader._provider_result(lambda: reader._query_complete_content_snapshot(values, _narrow=gate))
+    assert not restored
 
 
 @pytest.mark.parametrize('fault', ['append', 'sidecar', 'selected'])

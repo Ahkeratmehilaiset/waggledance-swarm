@@ -762,3 +762,62 @@ def test_single_owner_caller_interrupt_keeps_real_launch_owner_during_spawn(stag
         release.set()
         if owner._launch_thread is not None: owner._launch_thread.join(timeout=5)
         if owner._owner is not None: finish(owner._owner, process)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows handle inheritance test')
+def test_windows_two_synthetic_children_receive_separate_bootstrap_channels():
+    """No model, secrets in argv/env, files, shell, or non-test processes."""
+    import hmac, secrets, sys
+    channel_key = secrets.token_bytes(32)
+    owner_read, owner_write = os.pipe()
+    consumer_read, consumer_write = os.pipe()
+    data_read, data_write = os.pipe()
+    fds = {owner_read, owner_write, consumer_read, consumer_write, data_read, data_write}
+    owner = consumer = None
+    owner_code = r'''
+import hashlib,hmac,sys
+key = sys.stdin.buffer.read(32)
+assert len(key) == 32
+sys.stdout.buffer.write(hmac.new(key,b'synthetic-data',hashlib.sha256).digest())
+sys.stdout.buffer.flush()
+'''
+    consumer_code = r'''
+import ctypes,hashlib,hmac,sys
+kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+kernel.GetStdHandle.argtypes=[ctypes.c_ulong]
+kernel.GetStdHandle.restype=ctypes.c_void_p
+kernel.ReadFile.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_ulong,ctypes.POINTER(ctypes.c_ulong),ctypes.c_void_p]
+kernel.ReadFile.restype=ctypes.c_int
+handle=kernel.GetStdHandle((-12) & 0xffffffff)
+buffer=ctypes.create_string_buffer(32)
+received=ctypes.c_ulong()
+assert kernel.ReadFile(handle,buffer,32,ctypes.byref(received),None) and received.value == 32
+key=buffer.raw
+actual=sys.stdin.buffer.read(32)
+assert len(actual)==32 and hmac.compare_digest(actual,hmac.new(key,b'synthetic-data',hashlib.sha256).digest())
+sys.stdout.buffer.write(b'synthetic-ok\n')
+sys.stdout.buffer.flush()
+'''
+    try:
+        owner = subprocess.Popen([sys.executable, '-I', '-S', '-B', '-c', owner_code],
+            stdin=owner_read, stdout=data_write, stderr=subprocess.DEVNULL,
+            close_fds=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        consumer = subprocess.Popen([sys.executable, '-I', '-S', '-B', '-c', consumer_code],
+            stdin=data_read, stdout=subprocess.PIPE, stderr=consumer_read,
+            close_fds=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        for descriptor in (owner_read, data_write, data_read, consumer_read):
+            os.close(descriptor)
+            fds.remove(descriptor)
+        assert os.write(owner_write, channel_key) == 32
+        assert os.write(consumer_write, channel_key) == 32
+        os.close(owner_write); fds.remove(owner_write)
+        os.close(consumer_write); fds.remove(consumer_write)
+        out, _ = consumer.communicate(timeout=10)
+        assert consumer.returncode == 0 and out == b'synthetic-ok\n'
+        assert owner.wait(timeout=10) == 0
+    finally:
+        for descriptor in fds: os.close(descriptor)
+        for process in (owner, consumer):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)

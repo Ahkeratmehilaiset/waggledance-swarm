@@ -351,8 +351,8 @@ def read_flat_owner_stream(*, enabled=False, authorization=None, open_read=None,
     The caller must derive authorization and the key independently from the
     peer, and keep ``open_read`` private to the trusted parent. This API is not
     wired to the launcher or an authenticated IPC channel. The stream's read
-    and close methods are synchronous: elapsed time is checked before and after
-    calls, but a blocked call cannot be interrupted by this function.
+    open, read and close methods are synchronous: elapsed time is checked before
+    and after calls, but a blocked call cannot be interrupted by this function.
     The limits bound protocol bytes, not total memory or allocations already
     made by the trusted stream implementation.
     """
@@ -375,7 +375,11 @@ def read_flat_owner_stream(*, enabled=False, authorization=None, open_read=None,
         from tools import wd_mind_content_snapshot_package as package
         _pin_flat_session(bundle_root, expected_manifest_sha256)
         controls = package._consumer_bundle_controls(bundle_root, expected_manifest_sha256)
+        if time.monotonic() >= deadline:
+            raise ValueError('deadline')
         stream = open_read()
+        if time.monotonic() >= deadline:
+            raise ValueError('deadline')
         if stream is None or not callable(getattr(stream, 'read', None)):
             raise ValueError('stream')
         wire_used = 0

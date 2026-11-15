@@ -432,6 +432,35 @@ def test_flat_export_stream_elapsed_deadline_cannot_interrupt_blocked_sync_read(
     assert not worker.is_alive() and result == ['refused']
 
 
+@pytest.mark.parametrize('late', ['preflight', 'open'])
+def test_flat_export_stream_checks_deadline_before_and_after_open(flat_consumer_case, monkeypatch, late):
+    _, owner, _, snapshot, _, _ = flat_consumer_case
+    meta, blocks = _export_fixture(owner, snapshot)
+    key = b'B'*32
+    wire = _synthetic_export_wire(meta, blocks, key)
+    clock, opened, reads = [0.0], [], []
+    monkeypatch.setattr(session.time, 'monotonic', lambda: clock[0])
+    def pin(root, pin):
+        if late == 'preflight': clock[0] = 2.0
+    monkeypatch.setattr(session, '_pin_flat_session', pin)
+    class Stream(io.BytesIO):
+        def read(self, size=-1):
+            reads.append(size)
+            return super().read(size)
+    def open_read():
+        opened.append(True)
+        if late == 'open': clock[0] = 2.0
+        return Stream(wire)
+    authorization = session.create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
+        expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]))
+    with pytest.raises(session.MindContentSessionRefused):
+        session.read_flat_owner_stream(enabled=True, authorization=authorization, open_read=open_read,
+            channel_key=key, bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+            max_total_bytes=64*1024*1024, max_wire_bytes=64*1024*1024, timeout_seconds=1)
+    assert opened == ([] if late == 'preflight' else [True])
+    assert reads == []
+
+
 @pytest.mark.parametrize('phase', ['read', 'close'])
 def test_flat_export_stream_cancellation_scrubs_key_and_preserves_signal(flat_consumer_case, phase):
     _, owner, _, snapshot, _, _ = flat_consumer_case

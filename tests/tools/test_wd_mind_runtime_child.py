@@ -1032,3 +1032,61 @@ def test_pipe_cancel_uses_retained_thread_handle_not_recycled_native_id(monkeypa
     finally:
         os.close(write_fd)
         os.close(read_fd)
+
+
+def test_source_gate_timeout_retains_late_worker_and_discards_result():
+    started, release = threading.Event(), threading.Event()
+    def blocked_gate():
+        started.set()
+        assert release.wait(5)
+        return object()
+    holder = child.create_retained_source_gate_call(enabled=True, callback=blocked_gate,
+                                                     deadline_monotonic=time.monotonic()+0.1)
+    try:
+        holder.start()
+        assert started.wait(1)
+        with pytest.raises(child.LaunchRefused): holder.wait()
+        assert holder.status() == {'state':'HOLD', 'worker_active':True}
+        with pytest.raises(child.LaunchRefused): holder.close()
+        release.set()
+        holder._thread.join(timeout=2)
+        assert not holder._thread.is_alive()
+        with pytest.raises(child.LaunchRefused): holder.wait()
+        assert holder._result is None and holder.status()['state'] == 'HOLD'
+        holder.close()
+        assert holder.status()['state'] == 'DETACHED'
+    finally:
+        release.set()
+        if holder._thread is not None: holder._thread.join(timeout=2)
+
+
+def test_source_gate_success_is_one_shot_and_default_off():
+    value = object()
+    with pytest.raises(child.LaunchRefused):
+        child.create_retained_source_gate_call(callback=lambda: value, deadline_monotonic=time.monotonic()+2)
+    holder = child.create_retained_source_gate_call(enabled=True, callback=lambda: value,
+                                                     deadline_monotonic=time.monotonic()+2)
+    holder.start()
+    assert holder.wait() is value and holder.status() == {'state':'SUCCEEDED','worker_active':False}
+    with pytest.raises(child.LaunchRefused): holder.wait()
+    holder.close()
+    assert holder.status()['state'] == 'DETACHED'
+
+
+def test_source_gate_interrupted_start_never_releases_uncertain_worker(monkeypatch):
+    class DelayedStart:
+        def __init__(self, *args, **kwargs): self.finished = False
+        def start(self): raise KeyboardInterrupt()
+        def is_alive(self): return False
+        def join(self, timeout=None):
+            if not self.finished: raise RuntimeError('unresolved')
+    holder = child.create_retained_source_gate_call(enabled=True, callback=lambda: object(),
+                                                     deadline_monotonic=time.monotonic()+2)
+    monkeypatch.setattr(child.threading, 'Thread', DelayedStart)
+    with pytest.raises(KeyboardInterrupt): holder.start()
+    assert holder.status() == {'state':'HOLD','worker_active':None}
+    with pytest.raises(child.LaunchRefused): holder.close()
+    holder._thread.finished = True
+    holder._done.set()
+    holder.close()
+    assert holder.status()['state'] == 'DETACHED'

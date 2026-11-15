@@ -334,6 +334,133 @@ def create_cancelable_pipe_reader(*, enabled=False, handle=None, deadline_monoto
     return result
 
 
+class _RetainedSourceGateCall:
+    """Retain one decoder/source-gate worker through timeout or uncertainty."""
+    __slots__ = ('_callback', '_deadline', '_lock', '_result_lock', '_done', '_thread',
+                 '_start_confirmed', '_abandoned', '_result', '_state')
+
+    def __init__(self, callback, deadline):
+        self._callback, self._deadline = callback, deadline
+        self._lock, self._result_lock, self._done = threading.Lock(), threading.Lock(), threading.Event()
+        self._thread, self._result = None, None
+        self._start_confirmed, self._abandoned, self._state = False, False, 'NEW'
+
+    def __repr__(self):
+        return '<PrivateMindRetainedSourceGateCall>'
+
+    def status(self):
+        active = (None if self._thread is not None and not self._start_confirmed and not self._done.is_set()
+                  else self._thread is not None and self._thread.is_alive())
+        return {'state': self._state, 'worker_active': active}
+
+    def _abandon(self):
+        self._state = 'HOLD'
+        with self._result_lock:
+            self._abandoned, self._result = True, None
+
+    def _run(self):
+        value = None
+        try:
+            value = self._callback()
+        except BaseException:
+            pass
+        finally:
+            with self._result_lock:
+                if not self._abandoned:
+                    self._result = value
+            value = None
+            self._done.set()
+
+    def start(self):
+        if not self._lock.acquire(blocking=False):
+            raise LaunchRefused('mind_e5_start_refused') from None
+        cancelled_type = None
+        try:
+            if self._state != 'NEW' or time.monotonic() >= self._deadline:
+                raise ValueError('source_gate_start')
+            self._state = 'STARTING'
+            self._thread = threading.Thread(target=self._run, name='mind-source-gate', daemon=False)
+            self._thread.start()
+            self._start_confirmed = True
+        except KeyboardInterrupt:
+            self._abandon(); cancelled_type = KeyboardInterrupt
+        except GeneratorExit:
+            self._abandon(); cancelled_type = GeneratorExit
+        except asyncio.CancelledError:
+            self._abandon(); cancelled_type = asyncio.CancelledError
+        except BaseException:
+            self._abandon()
+        finally:
+            self._lock.release()
+        if cancelled_type is not None:
+            raise cancelled_type() from None
+        if self._state != 'STARTING':
+            raise LaunchRefused('mind_e5_start_refused') from None
+
+    def wait(self):
+        if not self._lock.acquire(blocking=False):
+            raise LaunchRefused('mind_e5_start_refused') from None
+        result = None
+        cancelled_type = None
+        try:
+            if self._state != 'STARTING' or not self._done.wait(max(0, self._deadline-time.monotonic())):
+                raise ValueError('source_gate_deadline')
+            self._thread.join(timeout=max(0, self._deadline-time.monotonic()))
+            if self._thread.is_alive() or time.monotonic() >= self._deadline or self._result is None:
+                raise ValueError('source_gate_incomplete')
+            result, self._result, self._state = self._result, None, 'SUCCEEDED'
+        except KeyboardInterrupt:
+            self._abandon(); cancelled_type = KeyboardInterrupt
+        except GeneratorExit:
+            self._abandon(); cancelled_type = GeneratorExit
+        except asyncio.CancelledError:
+            self._abandon(); cancelled_type = asyncio.CancelledError
+        except BaseException:
+            self._abandon()
+        finally:
+            self._lock.release()
+        if cancelled_type is not None:
+            raise cancelled_type() from None
+        if result is None:
+            raise LaunchRefused('mind_e5_start_refused') from None
+        return result
+
+    def close(self):
+        if not self._lock.acquire(blocking=False):
+            raise LaunchRefused('mind_e5_start_refused') from None
+        try:
+            if self._thread is not None:
+                if not self._done.is_set():
+                    self._abandon()
+                    raise LaunchRefused('mind_e5_start_refused') from None
+                try:
+                    self._thread.join(timeout=0)
+                    if self._thread.is_alive():
+                        raise ValueError('source_gate_active')
+                except BaseException:
+                    self._abandon()
+                    raise LaunchRefused('mind_e5_start_refused') from None
+            self._callback, self._result, self._state = None, None, 'DETACHED'
+        finally:
+            self._lock.release()
+
+
+def create_retained_source_gate_call(*, enabled=False, callback=None, deadline_monotonic=None):
+    """Prepare an inert owner; caller must retain it before calling start()."""
+    result = None
+    try:
+        if (enabled is not True or not callable(callback) or isinstance(callback, type)
+                or type(deadline_monotonic) not in (int, float) or not math.isfinite(deadline_monotonic)
+                or not time.monotonic() < deadline_monotonic <= time.monotonic() + 1800):
+            raise ValueError('source_gate')
+        result = _RetainedSourceGateCall(callback, float(deadline_monotonic))
+    except Exception:
+        pass
+    if result is None:
+        raise LaunchRefused('mind_e5_start_refused') from None
+    return result
+
+
 def _path(value):
     try:
         path = Path(value)

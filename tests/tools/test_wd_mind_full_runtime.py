@@ -595,6 +595,77 @@ print('synthetic_adapter_manifest_verified')
     assert proc.stdout.strip() == 'synthetic_adapter_manifest_verified'
 
 
+def test_owner_child_role_runs_in_separate_synthetic_process(synthetic_bundle):
+    """Real role + pinned snapshot; model, parent trust and worker are fixtures."""
+    import datetime
+    import struct
+    bundle, source = synthetic_bundle['bundle'], synthetic_bundle['source']
+    rows = [json.loads(row) for row in source.read_bytes().splitlines()]
+    for row in rows:
+        row['ts_utc'] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=2)).isoformat().replace('+00:00', 'Z')
+    source.write_bytes(b''.join(canonical(row) + b'\n' for row in rows))
+    event_sha = hashlib.sha256(canonical(rows[0])).hexdigest()
+    policy = b'{"identifiers":["synthetic-private-marker-52"],"schema":"wd.mind-identifier-policy.v1"}'
+    policy_sha = hashlib.sha256(policy).hexdigest()
+    descriptor = canonical({'schema':'wd.mind-identifier-policy-approval.v1',
+                            'identifier_policy_sha256':policy_sha, 'approval_reference_sha256':'b'*64})
+    (bundle / 'wd-mind-identifier-policy-approval.json').write_bytes(descriptor)
+    manifest_path = bundle / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest['files'].pop('tools-bootstrap/tools/wd_mind_e5_rotating_client.py')
+    manifest['files']['wd-mind-identifier-policy-approval.json'] = hashlib.sha256(descriptor).hexdigest()
+    manifest_raw = canonical(manifest)
+    manifest_path.write_bytes(manifest_raw)
+    pin, nonce, channel = hashlib.sha256(manifest_raw).hexdigest(), b'n'*32, b'k'*32
+    lane = b'codex-lead-1'
+    mct = struct.pack('>4sI', b'MCT1', len(policy)) + bytes.fromhex(pin) + nonce + channel + bytes.fromhex(policy_sha) + policy
+    control = b'MCO1' + bytes.fromhex(pin) + bytes.fromhex(policy_sha) + bytes.fromhex('b'*64) + bytes([len(lane)]) + lane + mct
+    script = r'''
+import hashlib, os, pathlib, struct, sys, types
+root, pin = pathlib.Path(sys.argv[1]), sys.argv[2]
+sys.path.insert(0, str(root / 'tools-bootstrap'))
+from tools import wd_mind_runtime_child as child, wd_mind_full_runtime as runtime
+from tools import wd_mind_e5_client as client_module, wd_mind_e5_lifecycle as lifecycle
+owner = lifecycle._Owner(client_module.BULK_CONTRACT_SHA256)
+owner.resources.process = types.SimpleNamespace(pid=1)
+owner.resources.job = object()
+owner._state = 'RUNNING'
+binding_hash = hashlib.sha256((root / 'wd-mind-e5-encoder-binding.json').read_bytes()).hexdigest()
+handshake = client_module._RESPONSE.pack(b'ME5R', 0, 0, 0, b'\0' * 32, b'\0' * 32)
+owner._output.extend(client_module._LENGTH.pack(len(handshake)) + handshake)
+client = client_module.GracefulE5WorkerClient(owner, timeout=1, encoder_binding_sha256=binding_hash,
+                                             bulk_contract_sha256=client_module.BULK_CONTRACT_SHA256)
+vector = struct.pack('<384f', 1.0, *([0.0] * 383))
+def encode(payload, **kwargs):
+    check = kwargs.get('frame_check')
+    if check is not None: check()
+    count = len(payload['passages']) if payload['operation'] == 'refresh' else 1
+    return {'nonce':payload['nonce'], 'request_sha256':payload['request_sha256'], 'vector_bytes':vector * count}
+client.encode_supervised = encode
+client.close = lambda **kwargs: {'state':'EXITED', 'owned':False}
+factory = runtime._ManifestWorkerFactory(str(root), pin, {}, root / 'synthetic-lock', 1, 0,
+                                         client_module.BULK_CONTRACT_SHA256)
+def launch(self, *, owner_sink):
+    owner_sink(owner)
+    return {'status':'READY', 'client':client, 'owner':owner, 'lifecycle':owner.status(), 'authority':'none'}
+runtime._ManifestWorkerFactory.__call__ = launch
+runtime.create_manifest_worker_factory = lambda **kwargs: factory
+runtime._require_trusted_parent_export = lambda **kwargs: None  # Synthetic fixture only.
+child._require_verified_parent_spawn = lambda: None  # Synthetic fixture only.
+os.environ['WD_REBOOT_EXPECTED_MANIFEST_HASH'] = pin
+raise SystemExit(child._fixed_child_main(['--mind-owner-child']))
+'''
+    proc = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', script, str(bundle), pin],
+                          cwd=bundle, input=control, capture_output=True, timeout=30,
+                          creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+    assert proc.returncode == 0, 'synthetic owner process failed'
+    assert proc.stdout.startswith(b'MEX1')
+    candidate = json.loads(proc.stderr)
+    assert candidate['nonce'] == nonce.hex() and candidate['lane'] == lane.decode() and candidate['scope'] == 'own'
+    assert candidate['status'] == 'CANDIDATES'
+    assert candidate['candidates'][0]['source_event_sha256'] == event_sha
+
+
 def test_single_manifest_owner_retains_failed_launch_owner(tmp_path, monkeypatch):
     """A post-reservation HOLD must stay reachable without an extra worker."""
     from tools import wd_mind_full_runtime as runtime

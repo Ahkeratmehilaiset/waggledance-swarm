@@ -106,6 +106,22 @@ info = prepared.status()
 assert info['state'] == 'PREPARED_LOCAL_ONLY' and info['authority'] == 'none'
 assert info['receiver_authentication'] == 'UNKNOWN' and info['transmission'] == 'NOT_AVAILABLE'
 assert info['block_count'] == 12 and info['total_bytes'] > 0
+import json
+metadata_raw = prepared._PrivateConsumerExport__metadata
+metadata = json.loads(metadata_raw)
+blocks = prepared._PrivateConsumerExport__blocks
+assert metadata['schema'] == 'wd.mind-owner-export.v1' and metadata['authority'] == 'none'
+assert metadata['nonce'] == 'e'*64
+assert [item['name'] for item in metadata['blocks']] == [name for name, value in blocks]
+assert all(item['length'] == len(value) for item, (_, value) in zip(metadata['blocks'], blocks))
+assert info['total_bytes'] == len(metadata_raw) + sum(len(value) for _, value in blocks)
+export = dict(blocks)
+assert export['identifier_key'] == binding._PrivateBinding__snapshot['identifier_policy_binding'][1]
+assert export['projection'] == binding._PrivateBinding__snapshot['projection_bytes']
+assert export['flat_manifest'] == wrapper._handler._memory.manifest
+assert export['vectors'] == wrapper._handler._memory.vectors
+assert export['ids'] == runtime.reader._canonical(list(wrapper._handler._memory.ids))
+assert export['identifier_key'] not in metadata_raw
 assert binding._PrivateBinding__snapshot['identifier_policy_binding'][1].hex() not in repr(prepared)
 class UntrustedDestination:
     calls = 0

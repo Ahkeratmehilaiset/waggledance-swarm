@@ -245,6 +245,43 @@ def test_export_sender_interrupted_after_lock_acquisition_releases_lock():
     assert owner._state == 'HOLD'
 
 
+def test_export_sender_acquire_return_interruption_cannot_report_ready():
+    import dis
+    import sys
+    import threading
+    import time
+    from tools import wd_mind_full_runtime as runtime
+    if not hasattr(sys, 'monitoring'):
+        pytest.skip('instruction monitoring needs Python 3.12+')
+    owner = object.__new__(runtime._SingleManifestOwner)
+    owner._lock, owner._state = threading.Lock(), 'READY'
+    prepared = runtime._PrivateConsumerExport(b'm', (), 1, owner, object())
+    code = runtime._PrivateConsumerExport._send_parent_stream_inner.__code__
+    instructions = list(dis.get_instructions(code))
+    # Select the store immediately after the acquire call.
+    target = next(item.offset for index, item in enumerate(instructions)
+                  if item.opname == 'STORE_FAST' and item.argval == 'acquired'
+                  and index and instructions[index-1].opname.startswith('CALL'))
+    tool_id = 5
+    sys.monitoring.use_tool_id(tool_id, 'mind-lock-interrupt-test')
+    def interrupt(code_obj, offset):
+        if code_obj is code and offset == target:
+            raise KeyboardInterrupt()
+    try:
+        sys.monitoring.register_callback(tool_id, sys.monitoring.events.INSTRUCTION, interrupt)
+        sys.monitoring.set_local_events(tool_id, code, sys.monitoring.events.INSTRUCTION)
+        with pytest.raises(KeyboardInterrupt):
+            prepared._send_parent_stream_inner(None, ('a', b'n'*32, b'k'*32, 'b', b'p'),
+                                               1000, time.monotonic()+5)
+    finally:
+        sys.monitoring.set_local_events(tool_id, code, 0)
+        sys.monitoring.register_callback(tool_id, sys.monitoring.events.INSTRUCTION, None)
+        sys.monitoring.free_tool_id(tool_id)
+    locked = owner._lock.locked()
+    if locked: owner._lock.release()  # Synthetic test cleanup only.
+    assert owner._state == 'HOLD'
+
+
 def test_export_sender_write_failure_closes_stream_and_retains_hold(monkeypatch):
     import threading
     import time
@@ -266,7 +303,7 @@ def test_export_sender_write_failure_closes_stream_and_retains_hold(monkeypatch)
         def write(self, data): raise OSError('synthetic write failure')
         def close(self): self.closed = True
     sink = FailingSink()
-    monkeypatch.setattr(runtime, '_require_trusted_parent_export', lambda: None)
+    monkeypatch.setattr(runtime, '_require_trusted_parent_export', lambda **_: None)
     monkeypatch.setattr(runtime, '_flat_check', lambda _: None)
     monkeypatch.setattr(runtime._SingleManifestOwner, '_check_factory', lambda _: None)
     with pytest.raises(runtime.FullRuntimeRefused):
@@ -336,6 +373,12 @@ def test_single_adapter_symbol_and_manifest_pins_without_rotator(synthetic_bundl
     path = bundle / 'deployment-manifest.json'
     manifest = json.loads(path.read_bytes())
     manifest['files'].pop('tools-bootstrap/tools/wd_mind_e5_rotating_client.py')
+    fixture_policy = b'{"identifiers":["synthetic-private-marker-52"],"schema":"wd.mind-identifier-policy.v1"}'
+    descriptor = canonical({'schema':'wd.mind-identifier-policy-approval.v1',
+        'identifier_policy_sha256':hashlib.sha256(fixture_policy).hexdigest(),
+        'approval_reference_sha256':'b'*64})
+    (bundle / 'wd-mind-identifier-policy-approval.json').write_bytes(descriptor)
+    manifest['files']['wd-mind-identifier-policy-approval.json'] = hashlib.sha256(descriptor).hexdigest()
     raw = canonical(manifest)
     path.write_bytes(raw)
     pin = hashlib.sha256(raw).hexdigest()
@@ -439,7 +482,7 @@ try:
 except runtime.FullRuntimeRefused:
     pass
 assert destination.calls == 0
-import hmac, time
+import hmac, io, time
 class Sink:
     def __init__(self): self.data, self.closed = bytearray(), False
     def write(self, data):
@@ -448,19 +491,31 @@ class Sink:
         return count
     def close(self): self.closed = True
 sink = Sink()
-credential_values = (pin, bytes.fromhex('e'*64), b'k'*32, policy_pin, policy)
+candidate = runtime.inspect_manifest_policy_candidate(enabled=True, bundle_root=str(root), expected_manifest_sha256=pin)
+assert candidate.status()['identifier_policy_sha256'] == policy_pin
+assert candidate.status()['approval'] == 'UNVERIFIED'
+control = struct.pack('>4sI', b'MCT1', len(policy)) + bytes.fromhex(pin) + bytes.fromhex('e'*64) + b'k'*32 + bytes.fromhex(policy_pin) + policy
+control_buffer = runtime._ParentControlBuffer(runtime._PrivateParentStream(io.BytesIO(control)))
+control_buffer.read_from(enabled=True)
+bootstrap = runtime._parse_parent_control(enabled=True, control_buffer=control_buffer,
+    expected_manifest_sha256=pin, expected_identifier_policy_sha256=policy_pin)
+parent_stream = runtime._PrivateExportStream(sink)
 try:
-    prepared._send_parent_stream(enabled=True, stream=runtime._PrivateExportStream(sink),
-        bootstrap=runtime._ParentBootstrap(credential_values), max_wire_bytes=20000000,
+    prepared._send_parent_stream(enabled=True, stream=parent_stream,
+        bootstrap=bootstrap, max_wire_bytes=20000000,
         deadline_monotonic=time.monotonic()+30)
     raise AssertionError('production authorization must refuse')
 except runtime.FullRuntimeRefused:
     pass
 assert not sink.data and not sink.closed
-# Test-only provider injection; production exposes no provider argument.
-runtime._require_trusted_parent_export = lambda: None
-sent = prepared._send_parent_stream(enabled=True, stream=runtime._PrivateExportStream(sink),
-    bootstrap=runtime._ParentBootstrap(credential_values), max_wire_bytes=20000000,
+# Test-only provider checks synthetic pinned metadata and exact control handles;
+# production has no provider argument and still refuses.
+def synthetic_parent_provider(*, owner, stream, bootstrap: object):
+    assert owner is wrapper and stream is parent_stream and bootstrap is globals()['bootstrap']
+    assert candidate.status()['identifier_policy_sha256'] == hashlib.sha256(policy).hexdigest()
+runtime._require_trusted_parent_export = synthetic_parent_provider
+sent = prepared._send_parent_stream(enabled=True, stream=parent_stream,
+    bootstrap=bootstrap, max_wire_bytes=20000000,
     deadline_monotonic=time.monotonic()+30)
 assert sent == {'status':'SENT','authority':'none','receiver_authentication':'UNKNOWN'} and sink.closed
 wire, seq, payloads, final = bytes(sink.data), 0, [], None

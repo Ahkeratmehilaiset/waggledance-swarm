@@ -1377,7 +1377,7 @@ class _PrivateConsumerExport:
             if (enabled is not True or type(stream) is not _PrivateExportStream
                     or type(bootstrap) is not _ParentBootstrap):
                 raise ValueError('input')
-            _require_trusted_parent_export()
+            _require_trusted_parent_export(owner=self.__owner, stream=stream, bootstrap=bootstrap)
             result = self._send_parent_stream_inner(stream, bootstrap.take(), max_wire_bytes,
                                                     deadline_monotonic)
         except KeyboardInterrupt:
@@ -1410,12 +1410,18 @@ class _PrivateConsumerExport:
         owner, memory = self.__owner, self.__memory
         if type(owner) is not _SingleManifestOwner:
             raise ValueError('owner')
+        if owner._state != 'READY':
+            raise ValueError('owner_not_ready')
+        # Conservatively fence the owner before acquiring. If interruption
+        # lands after the native acquire but before Python stores its return,
+        # the lock may stay held, but the owner cannot report READY.
+        owner._state = 'HOLD'
         succeeded = acquired = False
         try:
             acquired = owner._lock.acquire(blocking=False)
             if not acquired:
                 raise ValueError('owner_busy')
-            if (owner._state != 'READY' or owner._handler is None or owner._handler._memory is not memory
+            if (owner._state != 'HOLD' or owner._handler is None or owner._handler._memory is not memory
                     or type(nonce) is not bytes or len(nonce) != 32
                     or type(channel_key) is not bytes or len(channel_key) != 32
                     or type(policy) is not bytes or reader._sha(policy) != policy_sha
@@ -1470,6 +1476,7 @@ class _PrivateConsumerExport:
             if time.monotonic() >= deadline:
                 raise ValueError('deadline')
             succeeded = True
+            owner._state = 'READY'
             return {'status':'SENT', 'authority':'none', 'receiver_authentication':'UNKNOWN'}
         finally:
             if acquired:
@@ -1505,7 +1512,7 @@ class _PrivateExportStream:
         return self.__stream.close()
 
 
-def _require_trusted_parent_export():
+def _require_trusted_parent_export(*, owner, stream, bootstrap):
     # There is no proved production parent/control/approval provider yet.
     raise FullRuntimeRefused('mind_full_runtime_refused') from None
 

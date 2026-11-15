@@ -54,15 +54,21 @@ def test_full_prefix_profile_is_explicit_and_retains_other_profiles(package):
     assert package._capacity(FULL_PREFIX_PROFILE) == {"streamed": True}
 
 
-def test_full_prefix_refuses_before_callbacks_when_reader_contract_missing(package, monkeypatch):
-    monkeypatch.delattr(reader, "_open_full_prefix_producer_v1", raising=False)
+def test_full_prefix_refuses_before_callbacks_when_reader_contract_missing(package, fixtures, tmp_path, monkeypatch):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    arguments = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    # Establish that the same inputs really exercise a successful full-prefix
+    # build before removing the reader entry point used by the producer.
+    assert package.package_content_snapshot(**arguments)
+    monkeypatch.delattr(reader, "_verified_complete")
     calls = []
     def forbidden(*args, **kwargs):
         calls.append(True)
         raise AssertionError("provider must not run")
+    arguments.update(passage_encoder=forbidden, index_serializer=forbidden, index_decoder=forbidden)
     with pytest.raises(package.SnapshotPackageRefused):
-        package.package_content_snapshot(enabled=True, capacity_profile=FULL_PREFIX_PROFILE,
-            snapshot={}, passage_encoder=forbidden, index_serializer=forbidden, index_decoder=forbidden)
+        package.package_content_snapshot(**arguments)
     assert calls == []
 
 
@@ -71,7 +77,6 @@ def test_full_prefix_does_not_accept_invalid_reader_result(package, fixtures, tm
     def fake_reader(*args, **kwargs):
         calls.append(True)
         raise ValueError('synthetic verification failure')
-    monkeypatch.setattr(reader, "_open_full_prefix_producer_v1", fake_reader, raising=False)
     monkeypatch.setattr(reader, "_verified_complete", fake_reader, raising=False)
     case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
     codec = Codec(fixtures)

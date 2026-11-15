@@ -114,6 +114,7 @@ def test_complete_generationless_cursor_rejects_mutation_during_scan(full_fixtur
     _, shared, source, _, _ = full_fixture
     cursor, digest = _anchored_cursor(source), hashlib.sha256(source.read_bytes()).hexdigest()
     original = module._scan
+    rotation = {'succeeded': False, 'denied': False}
     def mutate(*args):
         out = original(*args)
         if fault == 'rewrite': source.write_bytes(source.read_bytes().replace(b'synthetic-task-0', b'synthetic-task-Z', 1))
@@ -122,13 +123,22 @@ def test_complete_generationless_cursor_rejects_mutation_during_scan(full_fixtur
         if fault == 'rotate':
             replacement = source.with_name('synthetic-replacement')
             replacement.write_bytes(source.read_bytes())
-            os.replace(replacement, source)
+            try:
+                os.replace(replacement, source)
+            except PermissionError:
+                rotation['denied'] = True
+                raise
+            rotation['succeeded'] = True
         if fault == 'memory': raise MemoryError('synthetic allocation failure')
         return out
     monkeypatch.setattr(module, '_scan', mutate)
     with pytest.raises(ValueError):
         module.read_complete_generationless_prefix_rows(str(source), str(shared / 'events.generation.json'),
                                                         cursor, digest)
+    if fault == 'rotate':
+        if rotation['denied']:
+            pytest.skip('platform refused replacement while source handle was open')
+        assert rotation['succeeded'], 'rotation must actually occur before testing its detection'
 
 
 def test_complete_generationless_sidecar_permission_error_is_not_absence(full_fixture, monkeypatch):

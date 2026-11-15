@@ -12,14 +12,21 @@ paths, capture rows, or a partial projection.
 from __future__ import annotations
 
 import argparse
+import asyncio
+import builtins
 from datetime import datetime, timezone
 import hashlib
+import hmac
 import json
+import math
 import os
 from pathlib import Path
 import re
 import stat
+import struct
 import sys
+import threading
+import time
 
 try:
     from tools import bridge_compact_view, wd_bridge_mind_lane_read as lane_reader
@@ -147,6 +154,471 @@ def _direct_status(*, rows: list, agent: str, roster: dict[str, str],
 
 class MindContentSessionRefused(ValueError):
     """Fixed-token refusal from the opt-in in-process content session boundary."""
+
+
+def _pin_flat_session(bundle_root, expected_manifest_sha256):
+    """Check this module's actual file against a separately supplied anchor."""
+    from tools import wd_mind_absent_generation_prefix_readonly as absent
+    from tools import wd_mind_content_query_readonly as reader
+    if (type(bundle_root) is not str or not Path(bundle_root).is_absolute()
+            or '..' in Path(bundle_root).parts or type(expected_manifest_sha256) is not str
+            or not _SHA256.fullmatch(expected_manifest_sha256)):
+        raise ValueError('anchor')
+    root = Path(bundle_root)
+    raw = absent._read_pinned(root / 'deployment-manifest.json', expected_manifest_sha256, 4 * 1024 * 1024)
+    manifest = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=reader._unique_pairs,
+                          parse_constant=reader._bad_constant)
+    if (type(manifest) is not dict or type(manifest.get('schema_version')) is not int
+            or manifest['schema_version'] != 1 or type(manifest.get('files')) is not dict):
+        raise ValueError('manifest')
+    relative = 'tools-bootstrap/tools/wd_bridge_mind_session.py'
+    expected = root.joinpath(*relative.split('/'))
+    if os.path.normcase(os.path.abspath(__file__)) != os.path.normcase(os.path.abspath(expected)):
+        raise ValueError('origin')
+    absent._read_pinned(expected, manifest['files'].get(relative), 8 * 1024 * 1024)
+
+
+_EXPORT_BLOCK_NAMES = ('message_policy', 'decision', 'nonreview_policy', 'roster', 'task_scope',
+                       'identifier_policy', 'identifier_key', 'projection', 'flat_manifest', 'ids',
+                       'vectors', 'encoder_binding')
+_EXPORT_LIMIT = 64 * 1024 * 1024
+_EXPORT_NONCE_STATE = vars(builtins).setdefault('_wd_mind_flat_export_nonce_registry_v1',
+                                                 {'lock':threading.Lock(), 'used':set()})
+_EXPORT_NONCE_LIMIT = 8192
+
+
+class _FlatExportLease:
+    __slots__ = ('_lock', '_nonce', '_policy_pin', '_taken')
+
+    def __init__(self, nonce, policy_pin):
+        self._lock, self._nonce, self._policy_pin, self._taken = threading.Lock(), nonce, policy_pin, False
+
+    def _take(self):
+        with self._lock:
+            if self._taken:
+                raise MindContentSessionRefused('mind_session_content_refused') from None
+            self._taken = True
+            return self._nonce, self._policy_pin
+
+
+class _FlatExportAuthorization:
+    __slots__ = ('_lock', '_nonce', '_policy_pin', '_begun')
+
+    def __init__(self, nonce, policy_pin):
+        self._lock, self._nonce, self._policy_pin, self._begun = threading.Lock(), nonce, policy_pin, False
+
+    def begin(self):
+        """Consume this authorization before opening any future transport."""
+        with self._lock:
+            if self._begun:
+                raise MindContentSessionRefused('mind_session_content_refused') from None
+            self._begun = True
+            return _FlatExportLease(self._nonce, self._policy_pin)
+
+
+def create_flat_export_authorization(*, enabled=False, expected_nonce=None,
+                                     expected_identifier_policy_sha256=None):
+    """Reserve a process-local nonce and trusted caller-supplied policy pin.
+
+    A future caller must derive the pin from an independently authorized,
+    separately protected source, never an IPC peer. This does not establish
+    that provenance. Nonces are retained up to the fixed limit for this process;
+    a process restart cannot prove replay protection across lifetimes.
+    """
+    if (enabled is not True or type(expected_nonce) is not str or not _SHA256.fullmatch(expected_nonce)
+            or type(expected_identifier_policy_sha256) is not str
+            or not _SHA256.fullmatch(expected_identifier_policy_sha256)):
+        raise MindContentSessionRefused('mind_session_content_refused') from None
+    if (type(_EXPORT_NONCE_STATE) is not dict or set(_EXPORT_NONCE_STATE) != {'lock', 'used'}
+            or type(_EXPORT_NONCE_STATE['used']) is not set
+            or type(_EXPORT_NONCE_STATE['lock']) is not type(threading.Lock())):
+        raise MindContentSessionRefused('mind_session_content_refused') from None
+    with _EXPORT_NONCE_STATE['lock']:
+        if (expected_nonce in _EXPORT_NONCE_STATE['used']
+                or len(_EXPORT_NONCE_STATE['used']) >= _EXPORT_NONCE_LIMIT):
+            raise MindContentSessionRefused('mind_session_content_refused') from None
+        _EXPORT_NONCE_STATE['used'].add(expected_nonce)
+    return _FlatExportAuthorization(expected_nonce, expected_identifier_policy_sha256)
+
+
+def prepare_flat_source_owner_from_export(*, enabled=False, metadata_bytes=None, blocks=None, lease=None,
+                                          bundle_root=None, expected_manifest_sha256=None,
+                                          max_total_bytes=None):
+    """Validate detached in-memory data against an independently pinned source.
+
+    This is not a stream, handle, launcher, peer authentication, replay guard,
+    or proof of index selection. The caller must authorize the manifest anchor
+    and reserve a fresh nonce and policy pin independently before any future
+    transport; no IPC data supplies either.
+    Raw blocks and the identifier key must never be logged or persisted.
+    """
+    output = None
+    interrupted = None
+    try:
+        if type(lease) is not _FlatExportLease:
+            raise ValueError('lease')
+        expected_nonce, expected_policy_pin = lease._take()
+        if (enabled is not True or type(metadata_bytes) is not bytes
+                or not 0 < len(metadata_bytes) <= 65536 or type(blocks) is not tuple
+                or type(max_total_bytes) is not int or not 0 < max_total_bytes <= _EXPORT_LIMIT):
+            raise ValueError('input')
+        from waggledance.core import bridge_log_reader as bridge
+        from tools import wd_mind_content_query_readonly as reader
+        from tools import wd_mind_content_snapshot_package as package
+        _pin_flat_session(bundle_root, expected_manifest_sha256)
+        meta = json.loads(metadata_bytes.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                          parse_constant=reader._bad_constant)
+        if (type(meta) is not dict or reader._canonical(meta) != metadata_bytes
+                or set(meta) != {'schema','authority','nonce','source_path','generation_path','cursor',
+                                  'identifier_policy_tag','blocks'}
+                or meta['schema'] != 'wd.mind-owner-export.v1' or meta['authority'] != 'none'
+                or type(meta['nonce']) is not str or not hmac.compare_digest(meta['nonce'], expected_nonce)
+                or type(meta['source_path']) is not str or type(meta['generation_path']) is not str
+                or not reader._hex(meta['identifier_policy_tag']) or type(meta['blocks']) is not list
+                or len(meta['blocks']) != len(_EXPORT_BLOCK_NAMES) or len(blocks) != len(_EXPORT_BLOCK_NAMES)):
+            raise ValueError('metadata')
+        cursor = meta['cursor']
+        if (type(cursor) is not dict or set(cursor) != {'offset','file_identity','generation'}
+                or type(cursor['offset']) is not int or cursor['offset'] < 0
+                or type(cursor['file_identity']) is not str
+                or (cursor['generation'] is not None and type(cursor['generation']) is not str)):
+            raise ValueError('cursor')
+        data = {}
+        total = len(metadata_bytes)
+        for expected, descriptor, item in zip(_EXPORT_BLOCK_NAMES, meta['blocks'], blocks):
+            if (type(descriptor) is not dict or set(descriptor) != {'name','length'}
+                    or descriptor['name'] != expected or type(descriptor['length']) is not int
+                    or descriptor['length'] < 0 or type(item) is not tuple or len(item) != 2
+                    or item[0] != expected or type(item[1]) is not bytes or len(item[1]) != descriptor['length']):
+                raise ValueError('block')
+            total += len(item[1])
+            if total > max_total_bytes:
+                raise ValueError('size')
+            data[expected] = item[1]
+        if len(data['identifier_key']) != 32:
+            raise ValueError('identifier_key')
+        if not hmac.compare_digest(hashlib.sha256(data['identifier_policy']).hexdigest(), expected_policy_pin):
+            raise ValueError('identifier_policy_pin')
+        ids = json.loads(data['ids'].decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                         parse_constant=reader._bad_constant)
+        if (type(ids) is not list or any(type(item) is not str for item in ids)
+                or reader._canonical(ids) != data['ids']):
+            raise ValueError('ids')
+        sha = lambda value: hashlib.sha256(value).hexdigest()
+        snapshot = {'enabled': True, 'documents': None,
+            'messages': {'source_path': meta['source_path'], 'generation_path': meta['generation_path'],
+                         'end_cursor': bridge.BridgeCursor(cursor['offset'], cursor['file_identity'], cursor['generation']),
+                         'policy_bytes': data['message_policy'], 'policy_sha256': sha(data['message_policy'])},
+            'decision_bytes': data['decision'], 'decision_sha256': sha(data['decision']),
+            'policy_bytes': data['nonreview_policy'], 'policy_sha256': sha(data['nonreview_policy']),
+            'roster_bytes': data['roster'], 'roster_sha256': sha(data['roster']),
+            'approved_tasks_bytes': data['task_scope'], 'approved_tasks_sha256': sha(data['task_scope']),
+            'identifier_policy_binding': (data['identifier_policy'], data['identifier_key'], meta['identifier_policy_tag']),
+            'projection_bytes': data['projection'], 'projection_sha256': sha(data['projection'])}
+        output = package.create_consumer_flat_source_owner(enabled=True, bundle_root=bundle_root,
+            expected_manifest_sha256=expected_manifest_sha256, snapshot=snapshot,
+            flat_manifest_bytes=data['flat_manifest'], flat_manifest_sha256=sha(data['flat_manifest']),
+            ids=tuple(ids), vectors=data['vectors'], encoder_binding_bytes=data['encoder_binding'])
+        _pin_flat_session(bundle_root, expected_manifest_sha256)
+        if not hmac.compare_digest(hashlib.sha256(data['identifier_policy']).hexdigest(), expected_policy_pin):
+            raise ValueError('identifier_policy_changed')
+    except KeyboardInterrupt:
+        interrupted = KeyboardInterrupt
+        output = None
+    except GeneratorExit:
+        interrupted = GeneratorExit
+        output = None
+    except asyncio.CancelledError:
+        interrupted = asyncio.CancelledError
+        output = None
+    except BaseException:
+        output = None
+    finally:
+        # Captured tracebacks must not retain input content or the identifier key.
+        metadata_bytes = blocks = meta = cursor = descriptor = item = data = ids = snapshot = None
+    if interrupted is not None:
+        raise interrupted() from None
+    if output is None:
+        raise MindContentSessionRefused('mind_session_content_refused') from None
+    return output
+
+
+def read_flat_owner_stream(*, enabled=False, authorization=None, open_read=None, channel_key=None,
+                           bundle_root=None, expected_manifest_sha256=None, max_total_bytes=None,
+                           max_wire_bytes=None, timeout_seconds=None):
+    """Decode one bounded MEX1 export before invoking the local source gate.
+
+    The caller must derive authorization and the key independently from the
+    peer, and keep ``open_read`` private to the trusted parent. This API is not
+    wired to the launcher or an authenticated IPC channel. The stream's read
+    open, read and close methods are synchronous: elapsed time is checked before
+    and after calls, but a blocked call cannot be interrupted by this function.
+    The limits bound protocol bytes, not total memory or allocations already
+    made by the trusted stream implementation.
+    """
+    output = stream = lease = metadata = meta = blocks = buffer = payload = header = mac = deadline = None
+    part = final = None
+    interrupted = None
+    try:
+        if (enabled is not True or type(authorization) is not _FlatExportAuthorization
+                or not callable(open_read) or type(channel_key) is not bytes or len(channel_key) != 32
+                or type(max_total_bytes) is not int or not 0 < max_total_bytes <= _EXPORT_LIMIT
+                or type(max_wire_bytes) is not int or not 0 < max_wire_bytes <= _EXPORT_LIMIT
+                or type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
+                or not 0 < timeout_seconds <= 840):
+            raise ValueError('input')
+        started = time.monotonic()
+        deadline = started + timeout_seconds
+        nonce = authorization._nonce
+        lease = authorization.begin()  # reserve before opening any future channel
+        from tools import wd_mind_content_query_readonly as reader
+        from tools import wd_mind_content_snapshot_package as package
+        _pin_flat_session(bundle_root, expected_manifest_sha256)
+        controls = package._consumer_bundle_controls(bundle_root, expected_manifest_sha256)
+        if time.monotonic() >= deadline:
+            raise ValueError('deadline')
+        stream = open_read()
+        if time.monotonic() >= deadline:
+            raise ValueError('deadline')
+        if stream is None or not callable(getattr(stream, 'read', None)):
+            raise ValueError('stream')
+        wire_used = 0
+
+        def check_time():
+            if time.monotonic() >= deadline:
+                raise ValueError('deadline')
+
+        def exact(count):
+            nonlocal wire_used
+            if type(count) is not int or not 0 <= count <= 65488 or wire_used + count > max_wire_bytes:
+                raise ValueError('wire_budget')
+            wire_used += count  # reserve before asking the stream to allocate/read
+            result = bytearray()
+            while len(result) < count:
+                check_time()
+                value = stream.read(count - len(result))
+                check_time()
+                if type(value) is not bytes or not value or len(value) > count - len(result):
+                    raise ValueError('short_read')
+                result.extend(value)
+            return bytes(result)
+
+        sequence = 0
+        payload_total = 0
+        data_count = 0
+        digest = hashlib.sha256()
+
+        def frame(expected_kind, maximum):
+            nonlocal sequence
+            head = exact(16)
+            magic, kind, number, length = struct.unpack('>4sB3xII', head)
+            if (magic != b'MEX1' or head[5:8] != b'\0\0\0' or kind != ord(expected_kind)
+                    or number != sequence or length > min(65488, maximum)
+                    or (expected_kind == 'D' and length == 0)
+                    or wire_used + length + 32 > max_wire_bytes):
+                raise ValueError('frame')
+            value = exact(length)
+            supplied = exact(32)
+            expected = hmac.new(channel_key, b'wd.mind-export-frame.v1\0' + bytes.fromhex(nonce)
+                                + head + value, hashlib.sha256).digest()
+            if not hmac.compare_digest(supplied, expected):
+                raise ValueError('frame_mac')
+            sequence += 1
+            return value
+
+        metadata = frame('M', min(65488, max_total_bytes))
+        if not metadata:
+            raise ValueError('metadata')
+        meta = json.loads(metadata.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                          parse_constant=reader._bad_constant)
+        if (type(meta) is not dict or reader._canonical(meta) != metadata
+                or set(meta) != {'schema','authority','nonce','source_path','generation_path','cursor',
+                                  'identifier_policy_tag','blocks'}
+                or meta['schema'] != 'wd.mind-owner-export.v1' or meta['authority'] != 'none'
+                or type(meta['nonce']) is not str or not hmac.compare_digest(meta['nonce'], nonce)
+                or type(meta['source_path']) is not str or type(meta['generation_path']) is not str
+                or os.path.normcase(os.path.abspath(meta['source_path'])) != os.path.normcase(os.path.abspath(controls[0]))
+                or os.path.normcase(os.path.abspath(meta['generation_path'])) != os.path.normcase(os.path.abspath(controls[1]))
+                or type(meta.get('blocks')) is not list or len(meta['blocks']) != len(_EXPORT_BLOCK_NAMES)):
+            raise ValueError('metadata')
+        total = len(metadata)
+        for name, descriptor in zip(_EXPORT_BLOCK_NAMES, meta['blocks']):
+            if (type(descriptor) is not dict or set(descriptor) != {'name','length'}
+                    or descriptor['name'] != name or type(descriptor['length']) is not int
+                    or descriptor['length'] < 0 or total + descriptor['length'] > max_total_bytes):
+                raise ValueError('block_budget')
+            total += descriptor['length']
+        digest.update(metadata)
+        payload_total = len(metadata)
+        blocks = []
+        for name, descriptor in zip(_EXPORT_BLOCK_NAMES, meta['blocks']):
+            buffer = bytearray()
+            while len(buffer) < descriptor['length']:
+                part = frame('D', descriptor['length'] - len(buffer))
+                buffer.extend(part)
+                digest.update(part)
+                payload_total += len(part)
+                data_count += 1
+            blocks.append((name, bytes(buffer)))
+            if (name == 'identifier_policy' and not hmac.compare_digest(
+                    hashlib.sha256(blocks[-1][1]).hexdigest(), authorization._policy_pin)):
+                raise ValueError('identifier_policy_pin')
+            buffer = part = None
+        final = frame('F', 44)
+        if len(final) != 44:
+            raise ValueError('final')
+        declared_count, declared_total, declared_digest = struct.unpack('>IQ32s', final)
+        if (declared_count != data_count or declared_total != payload_total or payload_total != total
+                or not hmac.compare_digest(declared_digest, digest.digest())):
+            raise ValueError('final')
+        if wire_used + 1 > max_wire_bytes:
+            raise ValueError('wire_budget')
+        check_time()
+        tail = stream.read(1)
+        check_time()
+        if type(tail) is not bytes or tail != b'':
+            raise ValueError('trailing')
+        output = prepare_flat_source_owner_from_export(enabled=True, metadata_bytes=metadata, blocks=tuple(blocks),
+            lease=lease, bundle_root=bundle_root, expected_manifest_sha256=expected_manifest_sha256,
+            max_total_bytes=max_total_bytes)
+        check_time()
+    except KeyboardInterrupt:
+        interrupted = KeyboardInterrupt
+        output = None
+    except GeneratorExit:
+        interrupted = GeneratorExit
+        output = None
+    except asyncio.CancelledError:
+        interrupted = asyncio.CancelledError
+        output = None
+    except BaseException:
+        output = None
+    finally:
+        if stream is not None:
+            try:
+                stream.close()
+            except KeyboardInterrupt:
+                interrupted = KeyboardInterrupt
+                output = None
+            except GeneratorExit:
+                interrupted = GeneratorExit
+                output = None
+            except asyncio.CancelledError:
+                interrupted = asyncio.CancelledError
+                output = None
+            except BaseException:
+                output = None
+        if output is not None and (deadline is None or time.monotonic() >= deadline):
+            output = None
+        stream = open_read = channel_key = metadata = meta = blocks = buffer = payload = header = mac = part = final = None
+    if interrupted is not None:
+        raise interrupted() from None
+    if output is None:
+        raise MindContentSessionRefused('mind_session_content_refused') from None
+    return output
+
+
+def query_flat_source_candidates(*, enabled=False, owner=None, ipc_bytes=None, bundle_root=None,
+                                 expected_manifest_sha256=None, expected_nonce=None, lane=None, scope=None):
+    """Resolve untrusted pipe references through a local, previously verified owner.
+
+    The caller must independently authorize the deployment anchor and establish
+    the owner locally with ``create_consumer_flat_source_owner``. Neither a pipe
+    peer nor a matching hash authenticates a sender or proves index selection.
+    This default-off API does not construct an owner, connect IPC, write files,
+    enable the CLI, or prove startup delivery; same-user ABA remains unknown.
+    """
+    output = None
+    try:
+        if (enabled is not True or type(ipc_bytes) is not bytes or not 0 < len(ipc_bytes) <= 2048
+                or type(expected_nonce) is not str or not _SHA256.fullmatch(expected_nonce)
+                or type(lane) is not str or type(scope) is not str or scope not in ('own', 'shared')):
+            raise ValueError('input')
+        from tools import wd_mind_content_query_readonly as reader
+        from tools import wd_mind_content_snapshot_package as package
+        if lane not in reader._LANES:
+            raise ValueError('lane')
+        _pin_flat_session(bundle_root, expected_manifest_sha256)
+        if (type(owner) is not package._ConsumerSourceOwner or type(owner._gate) is not package._ConsumerFlatGate
+                or type(owner._root) is not str or type(bundle_root) is not str
+                or os.path.normcase(os.path.abspath(owner._root)) != os.path.normcase(os.path.abspath(bundle_root))
+                or owner._pin != expected_manifest_sha256 or owner._gate._manifest_pin != expected_manifest_sha256
+                or os.path.normcase(os.path.abspath(owner._gate._bundle_root)) !=
+                   os.path.normcase(os.path.abspath(bundle_root))):
+            raise ValueError('owner')
+        controls = package._consumer_bundle_controls(bundle_root, expected_manifest_sha256)
+        if controls != owner._controls or type(controls) is not tuple or not reader._hex(controls[2]):
+            raise ValueError('controls')
+        frame = json.loads(ipc_bytes.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                           parse_constant=reader._bad_constant)
+        if (type(frame) is not dict or set(frame) != {'schema','nonce','lane','scope','status','candidates'}
+                or frame['schema'] != 'wd.mind-pipe-candidates.v1'
+                or type(frame['nonce']) is not str or not hmac.compare_digest(frame['nonce'], expected_nonce)
+                or frame['lane'] != lane or frame['scope'] != scope or frame['status'] != 'CANDIDATES'
+                or type(frame['candidates']) is not list or not 1 <= len(frame['candidates']) <= 3):
+            raise ValueError('frame')
+        seen = set()
+        for candidate in frame['candidates']:
+            if (type(candidate) is not dict or set(candidate) != {'ref_sha256','doc_id_sha256','source_event_sha256'}
+                    or any(not reader._hex(item) for item in candidate.values())):
+                raise ValueError('candidate')
+            triple = tuple(candidate[key] for key in ('ref_sha256','doc_id_sha256','source_event_sha256'))
+            if triple in seen:
+                raise ValueError('duplicate')
+            seen.add(triple)
+        frozen_candidates = reader._canonical(frame['candidates'])
+        resolved = owner.resolve(proposals=frame['candidates'], lane=lane, scope=scope)
+        if (type(resolved) is not dict or set(resolved) !=
+                {'authority','sender_authentication','same_user_aba','index_match','results'}
+                or resolved['authority'] != 'none' or resolved['sender_authentication'] != 'UNKNOWN'
+                or resolved['same_user_aba'] != 'UNKNOWN' or resolved['index_match'] != 'UNKNOWN'
+                or type(resolved['results']) is not list or len(resolved['results']) != len(frame['candidates'])):
+            raise ValueError('result')
+        _pin_flat_session(bundle_root, expected_manifest_sha256)
+        if package._consumer_bundle_controls(bundle_root, expected_manifest_sha256) != controls:
+            raise ValueError('controls_changed')
+        owner._gate._check_delivery_binding()
+        if reader._canonical(frame['candidates']) != frozen_candidates:
+            raise ValueError('candidates_changed')
+        # The source can change while the final session/fleet/E5 pins are being
+        # checked. Independently resolve the selected rows again afterwards;
+        # only their age may legitimately advance between the two observations.
+        final = owner.resolve(proposals=json.loads(frozen_candidates.decode('utf-8')),
+                              lane=lane, scope=scope)
+        if (type(final) is not dict or set(final) != set(resolved)
+                or any(final[key] != resolved[key] for key in
+                       ('authority','sender_authentication','same_user_aba','index_match'))
+                or type(final['results']) is not list or len(final['results']) != len(resolved['results'])):
+            raise ValueError('final_resolve')
+        for before, after in zip(resolved['results'], final['results']):
+            if (type(before) is not dict or type(after) is not dict
+                    or set(before) != set(after)
+                    or {key: value for key, value in before.items() if key != 'event_age_seconds_upper_bound'} !=
+                       {key: value for key, value in after.items() if key != 'event_age_seconds_upper_bound'}):
+                raise ValueError('source_changed')
+        resolved = final
+        finished = datetime.now(timezone.utc)
+        results = []
+        for proposal, hit in zip(frame['candidates'], resolved['results']):
+            if (type(hit) is not dict or set(hit) != {'text','source_event_sha256','event_time_utc_floor',
+                                                       'source_agent','event_age_seconds_upper_bound'}
+                    or type(hit['text']) is not str or hit['source_agent'] not in reader._BUILD_LANES
+                    or not hmac.compare_digest(hit['source_event_sha256'], proposal['source_event_sha256'])
+                    or type(hit['event_age_seconds_upper_bound']) is not int):
+                raise ValueError('hit')
+            age = (finished - reader._utc(hit['event_time_utc_floor'])).total_seconds()
+            if age < 0 or math.ceil(age) >= 900:
+                raise ValueError('stale')
+            results.append(dict(hit, event_age_seconds_upper_bound=math.ceil(age)))
+        output = {'schema':'wd.mind-flat-verified-session.v1', 'authority':'none', 'lane':lane,
+                  'fleet_sha256':controls[2], 'sender_authentication':'UNKNOWN', 'index_match':'UNKNOWN',
+                  'same_user_aba':'UNKNOWN', 'results':results}
+    except Exception:
+        pass
+    if output is None:
+        raise MindContentSessionRefused('mind_session_content_refused') from None
+    return output
+
 
 
 def query_content_session(*, enabled=False, inputs=None, providers=None):

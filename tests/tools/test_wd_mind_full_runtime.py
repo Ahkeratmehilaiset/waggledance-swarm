@@ -849,6 +849,120 @@ def _single_owner_synthetic(monkeypatch, tmp_path):
     return runtime, adapter_module, binding, factory, calls
 
 
+def _refresh_generation_test_owner(monkeypatch, tmp_path):
+    """Synthetic orchestration only; this fixture does not verify source pins."""
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start()['state'] == 'READY'
+    old_snapshot = owner._snapshot
+    old_memory = runtime._PrivateFlatMemory(binding, old_snapshot, b'old', (), b'', b'encoder')
+    owner._handler._memory = old_memory
+    owner._handler._frozen_flat = (old_memory.manifest, old_memory.ids, old_memory.vectors, old_memory.encoder_binding)
+    new_snapshot = {'projection_sha256':'c' * 64}
+    new_binding = runtime._PrivateBinding(new_snapshot, tmp_path, 'a' * 64, binding._PrivateBinding__controls, {})
+    new_memory = runtime._PrivateFlatMemory(new_binding, new_snapshot, b'new', (), b'', b'encoder')
+    return runtime, owner, (binding, old_snapshot, old_memory), (new_binding, new_snapshot, new_memory)
+
+
+def _test_generation_view(owner):
+    """Inspect all published members together under the same owner lock."""
+    with owner._lock:
+        return owner._binding, owner._snapshot, owner._handler._memory
+
+
+def test_generation_refresh_is_default_off_and_does_not_stage(monkeypatch, tmp_path):
+    runtime, owner, old, _ = _refresh_generation_test_owner(monkeypatch, tmp_path)
+    calls = []
+    monkeypatch.setattr(runtime, '_stage_refresh_generation', lambda *args: calls.append(True), raising=False)
+    with pytest.raises(runtime.FullRuntimeRefused):
+        owner._refresh_generation(enabled=False)
+    assert calls == [] and _test_generation_view(owner) == old
+    with pytest.raises(runtime.FullRuntimeRefused): owner._handler.refresh()
+
+
+def test_generation_refresh_publishes_binding_and_memory_together(monkeypatch, tmp_path):
+    runtime, owner, old, new = _refresh_generation_test_owner(monkeypatch, tmp_path)
+    observed = []
+    def stage(current_owner):
+        # Refresh holds the owner lock here. No candidate is yet published.
+        observed.append((current_owner._binding, current_owner._snapshot, current_owner._handler._memory))
+        return {'binding':new[0], 'snapshot':new[1], 'memory':new[2]}
+    monkeypatch.setattr(runtime, '_stage_refresh_generation', stage, raising=False)
+    owner._refresh_generation(enabled=True)
+    assert observed == [old]
+    assert _test_generation_view(owner) == new
+    assert owner._state == 'READY' and owner._handler._memory.binding is owner._binding
+
+
+@pytest.mark.parametrize('fault', ['source_changed', 'failure', 'cancel', 'group', 'hold'])
+def test_generation_refresh_never_publishes_partial_candidate(monkeypatch, tmp_path, fault):
+    runtime, owner, old, new = _refresh_generation_test_owner(monkeypatch, tmp_path)
+    def stage(current_owner):
+        assert (current_owner._binding, current_owner._snapshot, current_owner._handler._memory) == old
+        if fault == 'cancel': raise KeyboardInterrupt('synthetic')
+        if fault == 'group': raise BaseExceptionGroup('synthetic', [ValueError('discard'), GeneratorExit('discard')])
+        if fault == 'hold': raise runtime.FullRuntimeSnapshotHold('mind_full_runtime_snapshot_hold')
+        if fault == 'source_changed':
+            # The candidate itself is inconsistent; verification must reject it.
+            return {'binding':new[0], 'snapshot':old[1], 'memory':new[2]}
+        raise ValueError('synthetic staging failure')
+    monkeypatch.setattr(runtime, '_stage_refresh_generation', stage, raising=False)
+    if fault == 'cancel': expected = KeyboardInterrupt
+    elif fault == 'group': expected = BaseExceptionGroup
+    else: expected = runtime.FullRuntimeRefused
+    with pytest.raises(expected): owner._refresh_generation(enabled=True)
+    assert _test_generation_view(owner) == old
+    assert owner._state == 'HOLD'
+
+
+def test_generation_delivery_rejects_export_from_previous_generation(monkeypatch, tmp_path):
+    runtime, owner, old, new = _refresh_generation_test_owner(monkeypatch, tmp_path)
+    old_export = runtime._PrivateConsumerExport(b'synthetic', (), 0, owner, old[2])
+    monkeypatch.setattr(runtime, '_stage_refresh_generation',
+                        lambda current_owner: {'binding':new[0], 'snapshot':new[1], 'memory':new[2]}, raising=False)
+    owner._refresh_generation(enabled=True)
+    # This is an in-process generation check, not a parent-channel or wire test.
+    with pytest.raises(runtime.FullRuntimeRefused):
+        owner._check_generation_export(enabled=True, export=old_export)
+    assert _test_generation_view(owner) == new
+
+
+def test_generation_delivery_never_mixes_candidates_and_export_during_refresh(monkeypatch, tmp_path):
+    import threading
+    runtime, owner, old, new = _refresh_generation_test_owner(monkeypatch, tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    errors = []
+    def stage(current_owner):
+        entered.set()
+        if not release.wait(10): raise ValueError('synthetic timeout')
+        return {'binding':new[0], 'snapshot':new[1], 'memory':new[2]}
+    def prepare(current_owner):
+        return {'candidate_generation':current_owner._snapshot['projection_sha256'],
+                'export_generation':current_owner._handler._memory.snapshot['projection_sha256']}
+    monkeypatch.setattr(runtime, '_stage_refresh_generation', stage, raising=False)
+    monkeypatch.setattr(runtime, '_prepare_generation_delivery', prepare, raising=False)
+    def refresh():
+        try: owner._refresh_generation(enabled=True)
+        except BaseException as exc: errors.append(type(exc).__name__)
+    thread = threading.Thread(target=refresh)
+    thread.start()
+    try:
+        assert entered.wait(2), f'refresh did not stage: {errors}'
+        try:
+            during = owner._prepare_consistent_delivery(enabled=True)
+            assert during['candidate_generation'] == during['export_generation'] == old[1]['projection_sha256']
+        except runtime.FullRuntimeRefused:
+            pass  # BUSY/refusal is also safe; no mixed output is returned.
+    finally:
+        release.set(); thread.join(10)
+    assert not thread.is_alive() and errors == []
+    after = owner._prepare_consistent_delivery(enabled=True)
+    assert after['candidate_generation'] == after['export_generation'] == new[1]['projection_sha256']
+
+
 @pytest.mark.parametrize('mode', ['timeout', 'cancel', 'group', 'unknown',
                                   'group_unknown', 'group_oversized', 'group_no_cancel'])
 def test_single_owner_retains_its_live_source_verifier_on_close_and_retry(tmp_path, monkeypatch, mode):
@@ -1336,6 +1450,62 @@ try:
     policy = b'{"identifiers":[],"schema":"wd.mind-identifier-policy.v2"}'
     binding = runtime.assemble_full_runtime(enabled=(mode != 'disabled'), bundle_root=sys.argv[1], expected_manifest_sha256=sys.argv[2],
         identifier_policy_bytes=policy, expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest())
+    if mode.startswith('refresh_real_'):
+        # Synthetic bundle and worker; the source, policy and manifest checks
+        # use their real implementations and real temporary fixture bytes.
+        if not hasattr(runtime._SingleManifestOwner, '_refresh_generation'):
+            print(json.dumps({'result':'missing_refresh'})); sys.exit(0)
+        from tools import wd_mind_e5_client as client_module, wd_mind_e5_snapshot_adapter as adapter_module
+        root = pathlib.Path(sys.argv[1])
+        runtime_binding = json.loads((root / 'wd-mind-e5-encoder-binding.json').read_bytes())
+        encoder_binding = json.dumps({'schema':'wd.mind-readonly-encoder-binding.v1',
+            'encoder':runtime_binding['encoder'], 'code_sha256':runtime_binding['code_sha256'],
+            'query_policy':{'prefix':'query: ','truncate_chars':2000,'normalize':True,'dtype':'float32','dim':384}},
+            sort_keys=True,separators=(',', ':')).encode()
+        class SyntheticOwner:
+            def status(self): return {'state':'RUNNING','owned':True}
+            def shutdown(self, *, timeout): return {'state':'EXITED','owned':False}
+        class SyntheticClient:
+            def __init__(self, owner): self.owner=owner
+            def close(self, *, timeout): return {'state':'EXITED','owned':False}
+        class SyntheticAdapter:
+            encoder_binding_bytes = encoder_binding
+            encoder_binding_sha256 = hashlib.sha256(encoder_binding).hexdigest()
+            def passage(self, values): return struct.pack('<384f', 1.0, *([0.0]*383)) * len(values)
+        worker = SyntheticOwner(); fake_client = SyntheticClient(worker)
+        def fake_factory(self, *, owner_sink):
+            owner_sink(worker)
+            return {'status':'READY','owner':worker,'client':fake_client}
+        runtime._ManifestWorkerFactory.__call__ = fake_factory
+        adapter_module.create_single_flat_adapter = lambda **kwargs: SyntheticAdapter()
+        factory = runtime._ManifestWorkerFactory(str(root), sys.argv[2], {}, root / 'synthetic.lock', 5, 0,
+                                                  client_module.BULK_CONTRACT_SHA256)
+        owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane='codex-lead-1',
+                                                     worker_factory=factory, shutdown_timeout=0)
+        if owner.start()['state'] != 'READY': raise ValueError('synthetic owner not ready')
+        old = (owner._binding, owner._snapshot, owner._handler._memory)
+        if mode == 'refresh_real_appended':
+            path = pathlib.Path(sys.argv[3]); event = json.loads(path.read_bytes().splitlines()[0])
+            event['message'] = 'synthetic new build-lane work'
+            with path.open('ab') as output:
+                output.write(json.dumps(event, sort_keys=True, separators=(',', ':')).encode() + b'\n')
+            owner._refresh_generation(enabled=True)
+            projection = json.loads(owner._snapshot['projection_bytes'])
+            records = projection['messages']['records']
+            found = [item for item in records if reader.decode_text(item['stored_text']) == event['message']]
+            print(json.dumps({'result':'ok','new_binding':owner._binding is not old[0],
+                'new_memory':owner._handler._memory is not old[2], 'hold':owner._state != 'READY',
+                'source_ref':bool(found and found[0]['provenance']['source_event_ref'])})); sys.exit(0)
+        if mode == 'refresh_real_source_changed':
+            path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
+        elif mode == 'refresh_real_policy_changed':
+            (root / 'wd-mind-message-policy.json').write_bytes(b'{}')
+        try:
+            owner._refresh_generation(enabled=True)
+        except runtime.FullRuntimeRefused:
+            print(json.dumps({'result':'refused', 'unchanged':(owner._binding,owner._snapshot,owner._handler._memory)==old,
+                              'hold':owner._state == 'HOLD'})); sys.exit(0)
+        print(json.dumps({'result':'unexpected_success'})); sys.exit(0)
     if mode.startswith(('package', 'handler')):
         def canonical(obj): return json.dumps(obj, sort_keys=True, separators=(',', ':')).encode()
         def sha(raw): return hashlib.sha256(raw).hexdigest()
@@ -2068,6 +2238,19 @@ def test_synthetic_private_binding_build_package_and_query(synthetic_bundle):
     assert result['relevance'] == 'UNVERIFIED' and result['hits'] > 0
     assert set(result['agents']) == {'codex-lead-1'} and result['refs']
     assert result['latest'] == 'UNKNOWN' and result['index_match'] == 'NOT_APPLICABLE'
+
+
+@pytest.mark.parametrize('fault', ['source_changed', 'policy_changed'])
+def test_generation_refresh_rechecks_real_synthetic_source_and_policy(synthetic_bundle, fault):
+    # Unlike the orchestration-double tests, these cases use actual pinned
+    # reader, source and manifest checks against a synthetic temporary bundle.
+    assert invoke(synthetic_bundle, 'refresh_real_' + fault) == {
+        'result':'refused', 'unchanged':True, 'hold':True}
+
+
+def test_generation_refresh_rederives_appended_synthetic_source(synthetic_bundle):
+    assert invoke(synthetic_bundle, 'refresh_real_appended') == {
+        'result':'ok', 'new_binding':True, 'new_memory':True, 'hold':False, 'source_ref':True}
 
 
 def test_immutable_snapshot_build_returns_verified_synthetic_results(synthetic_bundle):

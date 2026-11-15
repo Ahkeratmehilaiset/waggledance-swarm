@@ -381,6 +381,67 @@ def _decode_owner_control_bytes(raw, expected_manifest_sha256):
     return manifest_sha, policy_sha, approval_sha, lane, nonce, buffer
 
 
+class _PrivatePairControls:
+    """Opaque, one-use pair of owner and consumer control frames."""
+    __slots__ = ('__bootstrap',)
+
+    def __init__(self, owner_control, consumer_control):
+        from tools import wd_mind_full_runtime as runtime
+        self.__bootstrap = runtime._ParentBootstrap((owner_control, consumer_control))
+
+    def __repr__(self): return '<PrivateMindPairControls>'
+
+    def take(self):
+        try:
+            return self.__bootstrap.take()
+        except Exception:
+            raise LaunchRefused('mind_e5_start_refused') from None
+
+
+def _derive_parent_child_controls(*, enabled=False, control_buffer=None, expected_manifest_sha256=None):
+    """Bind MCP1 to MCO1/MCC1; parent origin and operator approval remain separate."""
+    output = cancelled_type = None
+    try:
+        from tools import wd_mind_full_runtime as runtime
+        if enabled is not True or type(control_buffer) is not runtime._ParentControlBuffer:
+            raise ValueError('input')
+        _require_verified_parent_spawn()
+        output = _derive_parent_child_controls_bytes(control_buffer.snapshot(), expected_manifest_sha256)
+    except KeyboardInterrupt:
+        cancelled_type, output = KeyboardInterrupt, None
+    except GeneratorExit:
+        cancelled_type, output = GeneratorExit, None
+    except asyncio.CancelledError:
+        cancelled_type, output = asyncio.CancelledError, None
+    except BaseException:
+        output = None
+    finally:
+        control_buffer = None
+    if cancelled_type is not None:
+        raise cancelled_type() from None
+    if output is None:
+        raise LaunchRefused('mind_e5_start_refused') from None
+    return output
+
+
+def _derive_parent_child_controls_bytes(raw, expected_manifest_sha256):
+    from tools import wd_mind_full_runtime as runtime
+    if type(raw) is not bytes or raw[:4] != b'MCP1':
+        raise ValueError('parent_control')
+    owner_control = b'MCO1' + raw[4:]
+    manifest, policy_sha, approval_sha, lane, nonce, mct = _decode_owner_control_bytes(
+        owner_control, expected_manifest_sha256)
+    bootstrap = runtime._parse_parent_control(enabled=True, control_buffer=mct,
+        expected_manifest_sha256=manifest, expected_identifier_policy_sha256=policy_sha)
+    bound_manifest, bound_nonce, channel_key, bound_policy, _ = bootstrap.take()
+    if (bound_manifest != manifest or bound_nonce.hex() != nonce or bound_policy != policy_sha):
+        raise ValueError('control_binding')
+    lane_bytes = lane.encode('ascii')
+    consumer_control = (b'MCC1' + bytes.fromhex(manifest) + bytes.fromhex(policy_sha)
+        + bytes.fromhex(approval_sha) + bound_nonce + channel_key + bytes([len(lane_bytes)]) + lane_bytes)
+    return _PrivatePairControls(owner_control, consumer_control)
+
+
 def _wait_for_owner_close(owner):
     """Keep this child alive while its owned worker cannot be closed safely."""
     while True:

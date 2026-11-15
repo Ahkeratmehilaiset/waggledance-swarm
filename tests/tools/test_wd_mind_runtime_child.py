@@ -859,6 +859,26 @@ def test_parent_candidate_relay_rejects_oversized_input_before_output(monkeypatc
     assert not sink.data and sink.closed
 
 
+def test_parent_control_derives_distinct_child_controls_from_bound_input(monkeypatch):
+    from tools import wd_mind_full_runtime as runtime
+    policy = b'{"identifiers":[],"schema":"wd.mind-identifier-policy.v2"}'
+    manifest, nonce, key = b'a'*32, b'n'*32, b'k'*32
+    policy_sha, approval_sha, lane = hashlib.sha256(policy).digest(), b'b'*32, b'codex-lead-1'
+    mct = struct.pack('>4sI', b'MCT1', len(policy)) + manifest + nonce + key + policy_sha + policy
+    raw = b'MCP1' + manifest + policy_sha + approval_sha + bytes([len(lane)]) + lane + mct
+    monkeypatch.setattr(child, '_require_verified_parent_spawn', lambda: None)
+    buffer = runtime._ParentControlBuffer(runtime._PrivateParentStream(io.BytesIO(raw)), prefix_budget=133)
+    buffer.read_from(enabled=True)
+    controls = child._derive_parent_child_controls(enabled=True, control_buffer=buffer,
+                                                    expected_manifest_sha256=manifest.hex())
+    assert 'synthetic' not in repr(controls)
+    owner_control, consumer_control = controls.take()
+    assert owner_control == b'MCO1' + raw[4:]
+    assert consumer_control == (b'MCC1' + manifest + policy_sha + approval_sha + nonce + key
+                                + bytes([len(lane)]) + lane)
+    with pytest.raises(child.LaunchRefused): controls.take()
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows handle inheritance test')
 def test_windows_handle_list_excludes_unrelated_inheritable_handle():
     """Probe in an isolated synthetic parent, without mutating fleet handles."""

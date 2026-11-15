@@ -23,6 +23,45 @@ def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):
     assert calls == []
 
 
+def test_single_adapter_symbol_and_manifest_pins_without_rotator(synthetic_bundle):
+    """Import real bundle bytes; no model process or fake adapter is started."""
+    bundle = synthetic_bundle['bundle']
+    path = bundle / 'deployment-manifest.json'
+    manifest = json.loads(path.read_bytes())
+    manifest['files'].pop('tools-bootstrap/tools/wd_mind_e5_rotating_client.py')
+    raw = canonical(manifest)
+    path.write_bytes(raw)
+    pin = hashlib.sha256(raw).hexdigest()
+    script = r'''
+import hashlib, pathlib, sys, types
+root, pin = pathlib.Path(sys.argv[1]), sys.argv[2]
+sys.path.insert(0, str(root / 'tools-bootstrap'))
+from tools import wd_mind_e5_snapshot_adapter as adapter
+from tools import wd_mind_e5_lifecycle as lifecycle
+from tools import wd_mind_e5_client as client_module
+assert pathlib.Path(adapter.__file__).resolve() == (root / 'tools-bootstrap/tools/wd_mind_e5_snapshot_adapter.py').resolve()
+assert callable(adapter.create_single_flat_adapter)
+binding_hash = hashlib.sha256((root / 'wd-mind-e5-encoder-binding.json').read_bytes()).hexdigest()
+owner = lifecycle._Owner(client_module.BULK_CONTRACT_SHA256)
+owner.resources.process = types.SimpleNamespace(pid=1)
+owner.resources.job = object()
+owner._state = 'RUNNING'
+handshake = client_module._RESPONSE.pack(b'ME5R', 0, 0, 0, b'\0' * 32, b'\0' * 32)
+owner._output.extend(client_module._LENGTH.pack(len(handshake)) + handshake)
+client = client_module.GracefulE5WorkerClient(owner, timeout=1, encoder_binding_sha256=binding_hash,
+                                             bulk_contract_sha256=client_module.BULK_CONTRACT_SHA256)
+single = adapter.create_single_flat_adapter(enabled=True, bundle_root=str(root),
+                                            expected_manifest_sha256=pin, client=client)
+assert type(single) is adapter._SingleFlatAdapter
+assert 'tools.wd_mind_e5_rotating_client' not in sys.modules
+print('synthetic_adapter_manifest_verified')
+'''
+    proc = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', script, str(bundle), pin],
+                          cwd=bundle, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == 'synthetic_adapter_manifest_verified'
+
+
 def test_single_manifest_owner_retains_failed_launch_owner(tmp_path, monkeypatch):
     """A post-reservation HOLD must stay reachable without an extra worker."""
     from tools import wd_mind_full_runtime as runtime

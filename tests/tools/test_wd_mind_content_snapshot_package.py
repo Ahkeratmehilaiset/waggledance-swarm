@@ -12,6 +12,7 @@ from tools import wd_mind_content_query_readonly as reader
 
 
 ROOT = Path(__file__).resolve().parents[2]
+CAPACITY_PROFILE = "bounded_v3_capacity_v1"
 
 
 @pytest.fixture(scope="module")
@@ -106,6 +107,235 @@ def _chunk_case(fixtures, tmp_path, count=65, *, three_cells=False):
     return case
 
 
+def test_named_capacity_profile_accepts_257_records_without_changing_b16(package, fixtures, tmp_path):
+    case = _chunk_case(fixtures, tmp_path, 257)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec)
+    _refuses(package, args)
+    assert codec.passages == codec.serialized == codec.decoded == []
+    output = package.package_content_snapshot(**args, capacity_profile=CAPACITY_PROFILE)
+    assert json.loads(output["memory_bytes"])["records"] == 257
+    assert list(map(len, codec.passages)) == [16] * 16 + [1]
+    assert _query(case, output, Codec(fixtures))["status"] == "ANSWER"
+
+
+def test_capacity_builds_over_2mib_cell_and_supports_small_query_full_abi(package, fixtures, tmp_path):
+    case = _chunk_case(fixtures, tmp_path, 683)
+    codec = ChunkCodec(fixtures)
+    output = package.package_content_snapshot(**_arguments(case, codec, CAPACITY_PROFILE))
+    cell = output["cell_snapshots"]["general"]["artifacts"]
+    assert len(cell["vectors"]) == 683 * 2 * 1536 > 2097152
+    assert len(cell["index"]) > 2097152
+    assert max(count for _, _, count in codec.reconstructions) == 128
+    assert [len(batch) for batch in codec.passages] == [16] * 42 + [11]
+    query_codec, calls = Codec(fixtures), []
+    original = query_codec.decode
+    def decoded(raw):
+        index = original(raw)
+        reconstruct = index.reconstruct_n
+        def observed(start, count):
+            calls.append((start, count))
+            return reconstruct(start, count)
+        index.reconstruct_n = observed
+        return index
+    query_codec.decode = decoded
+    assert _query(case, output, query_codec)["status"] == "ANSWER"
+    assert calls == [(0, 1366)]  # Existing query threshold is unchanged.
+
+
+def test_capacity_accepts_verified_prefix_over_default_4mib(package, fixtures, tmp_path):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    rows = [fixtures._row("synthetic network retry", task_id=f"synthetic-task-{i}",
+                           payload={"padding": "x" * (3 * 1024 * 1024)}) for i in range(2)]
+    source = fixtures._all_tasks_case(reader, tmp_path, rows)
+    case.update(fixtures._snapshot(source, reader.rederive_message_projection(**source)))
+    assert 4194304 < case["messages"]["end_cursor"].offset < 268435456
+    codec = Codec(fixtures)
+    _refuses(package, _arguments(case, codec))
+    assert codec.passages == []
+    output = package.package_content_snapshot(**_arguments(case, codec, CAPACITY_PROFILE))
+    assert json.loads(output["memory_bytes"])["records"] == 2
+    assert [len(batch) for batch in codec.passages] == [2]
+
+
+@pytest.mark.parametrize("profile", [False, True, 0, 1, "", "large", "bounded_v3", [], {}])
+def test_unknown_capacity_profiles_refuse_before_source_or_providers(package, monkeypatch, profile):
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid profile touched source or provider")
+    monkeypatch.setattr(package, "_snapshot", forbidden)
+    _refuses(package, dict(enabled=True, capacity_profile=profile, snapshot=object(),
+                           passage_encoder=forbidden, index_serializer=forbidden, index_decoder=forbidden))
+
+
+def test_capacity_profile_must_be_exact_builtin_string(package, monkeypatch):
+    class Derived(str):
+        pass
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid profile touched source")
+    monkeypatch.setattr(package, "_snapshot", forbidden)
+    _refuses(package, dict(enabled=True, capacity_profile=Derived(CAPACITY_PROFILE), snapshot=object()))
+
+
+def test_capacity_profile_limits_are_fixed_and_disjoint_from_default(package):
+    assert package._capacity(None) is None
+    assert package._capacity(CAPACITY_PROFILE) == {
+        "records": 32768, "prefix": 268435456, "projection": 67108864,
+        "text": 9830400, "artifact": 50331648, "package": 536870912,
+        "index_overhead": 65536, "control": 65536}
+    assert (package.MAX_RECORDS, package.MAX_PREFIX_BYTES, package.MAX_PROJECTION_BYTES,
+            package.MAX_TEXT_BYTES, package.MAX_ARTIFACT_BYTES, package.MAX_PACKAGE_BYTES,
+            package.PASSAGE_BATCH) == (256, 4194304, 2097152, 524288, 2097152, 8388608, 16)
+
+
+@pytest.mark.parametrize("count", [32768, 32769])
+@pytest.mark.parametrize("cell_count", [1, 3])
+def test_capacity_record_limit_is_global_before_metadata_allocation(package, monkeypatch, count, cell_count):
+    calls = []
+    def metadata(records, cell_id, limit):
+        calls.append(len(records))
+        return [], b"", b""
+    monkeypatch.setattr(package, "_cell_metadata", metadata)
+    sizes = [count // cell_count + (i < count % cell_count) for i in range(cell_count)]
+    cells = {key: [None] * size for key, size in zip(("general", "learning", "system"), sizes)}
+    capacity = package._capacity(CAPACITY_PROFILE)
+    if count == 32769:
+        with pytest.raises(ValueError, match="invalid_cell_records"):
+            package._capacity_preflight(cells, count, 0, capacity)
+        assert calls == []
+    else:
+        assert set(package._capacity_preflight(cells, count, 0, capacity)) == set(cells)
+        assert sum(calls) == 32768
+    # This is preflight arithmetic coverage, not a full-scale source/model run.
+
+
+def test_capacity_prefix_limit_is_checked_before_source_access(package, fixtures, tmp_path, monkeypatch):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    snapshot = _arguments(case, Codec(fixtures))["snapshot"]
+    capacity = package._capacity(CAPACITY_PROFILE)
+    for offset in (268435456, 268435457):
+        decision = json.loads(snapshot["decision_bytes"])
+        decision["source_prefix"]["offset"] = offset
+        snapshot["decision_bytes"] = fixtures._raw(decision)
+        snapshot["decision_sha256"] = reader._sha(snapshot["decision_bytes"])
+        if offset == 268435456:
+            assert package._snapshot(snapshot, capacity) == snapshot
+        else:
+            def forbidden(*args):
+                pytest.fail("oversized prefix reached source verification")
+            monkeypatch.setattr(reader, "_verified", forbidden)
+            codec = Codec(fixtures)
+            args = _arguments(case, codec)
+            args.update(snapshot=snapshot, capacity_profile=CAPACITY_PROFILE)
+            _refuses(package, args)
+            assert codec.passages == codec.serialized == codec.decoded == []
+
+
+def test_capacity_metadata_counts_utf8_and_preserves_exact_bytes(package, fixtures, tmp_path):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    record = json.loads(case["projection_bytes"])["messages"]["records"][0]
+    record["stored_text"] = reader.encode_text('synthetic r\u00e9seau "quoted" \\ path {brackets}')
+    ids, meta, provenance = package._cell_metadata([record], "general", 50331648)
+    assert meta == reader._canonical({"dim": 384, "doc_ids": ids,
+        "texts": [reader.decode_text(record["stored_text"])] * 2, "metadata": [{}, {}]})
+    row = struct.pack("<384f", 0.6, 0.8, -0.0, *([0.0] * 381))
+    codec = Codec(fixtures)
+    old, _ = package._cell([record], "general", {record["record_id"]: row},
+        json.loads(case["encoder_binding_bytes"])["encoder"], case["projection_sha256"],
+        fixtures.AVAILABLE, codec.serialize, lambda: None)
+    assert (meta, provenance) == (old["artifacts"]["meta"], old["artifacts"]["provenance"])
+    exact = max(len(meta), len(provenance))
+    assert package._cell_metadata([record], "general", exact) == (ids, meta, provenance)
+    with pytest.raises(ValueError, match="artifact_over_budget"):
+        package._cell_metadata([record], "general", exact - 1)
+
+
+def test_capacity_48mib_append_boundary_does_not_allocate_over_budget(package):
+    class Counter:
+        def __init__(self, size):
+            self.size, self.writes = size, []
+        def tell(self):
+            return self.size
+        def write(self, raw):
+            self.writes.append(raw)
+            self.size += len(raw)
+    limit = 50331648
+    exact = Counter(limit - 2)
+    package._append_bounded(exact, "\u00e4".encode(), limit)
+    assert exact.size == limit
+    too_large = Counter(limit - 1)
+    with pytest.raises(ValueError, match="artifact_over_budget"):
+        package._append_bounded(too_large, "\u00e4".encode(), limit)
+    assert too_large.writes == []
+
+
+@pytest.mark.parametrize("fault", ["artifact", "aggregate"])
+def test_capacity_last_cell_budget_refuses_before_first_provider(package, fixtures, tmp_path, monkeypatch, fault):
+    case = _chunk_case(fixtures, tmp_path, three_cells=True)
+    records = json.loads(case["projection_bytes"])["messages"]["records"]
+    cells = {}
+    for record in records:
+        cells.setdefault(reader._Q4_PLACEMENT[record["meta"]["type"]], []).append(record)
+    capacity = package._capacity(CAPACITY_PROFILE)
+    original = package._cell_metadata
+    prepared = {key: original(rows, key, capacity["artifact"]) for key, rows in cells.items()}
+    if fault == "artifact":
+        capacity["artifact"] = max(len(raw) for key in ("general", "learning") for raw in prepared[key][1:])
+    else:
+        base = len(case["projection_bytes"]) + len(case["encoder_binding_bytes"]) + len(case["index_binding_bytes"])
+        reserved = base + capacity["control"] + sum(
+            len(rows) * 2 * 1536 * 2 + capacity["index_overhead"] + capacity["control"]
+            + sum(map(len, prepared[key][1:])) for key, rows in cells.items())
+        capacity["package"] = reserved
+        assert set(package._capacity_preflight(cells, len(records), base, capacity)) == set(cells)
+        capacity["package"] = reserved - 1
+    visited = []
+    def observed(rows, key, limit):
+        visited.append(key)
+        return original(rows, key, limit)
+    monkeypatch.setattr(package, "_capacity", lambda profile: capacity)
+    monkeypatch.setattr(package, "_cell_metadata", observed)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec)
+    args["capacity_profile"] = CAPACITY_PROFILE
+    _refuses(package, args)
+    assert visited == ["general", "learning", "system"]
+    assert codec.passages == codec.serialized == codec.decoded == []
+
+
+@pytest.mark.parametrize("extra", [0, 1])
+def test_capacity_actual_index_size_must_fit_row_based_reservation(package, fixtures, tmp_path, extra):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec)
+    def serialized(raw, dim):
+        codec.serialized.append(raw)
+        return raw + b"x" * (65536 + extra)
+    def decoded(raw):
+        codec.decoded.append(raw)
+        return fixtures._SyntheticFlatIP(list(struct.iter_unpack("<384f", raw[:-65536])))
+    args.update(capacity_profile=CAPACITY_PROFILE, index_serializer=serialized, index_decoder=decoded)
+    if extra:
+        _refuses(package, args)
+        assert codec.decoded == []
+    else:
+        output = package.package_content_snapshot(**args)
+        assert len(output["cell_snapshots"]) == 2
+        assert len(codec.decoded) == 2
+
+
+def test_capacity_keeps_full_semantic_source_recheck_after_callback(package, fixtures, tmp_path, monkeypatch):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec)
+    def changed(texts):
+        result = codec.passage(texts)
+        monkeypatch.setattr(reader, "_ALL_TASK_MAX_RECORDS", 0)
+        return result
+    args.update(capacity_profile=CAPACITY_PROFILE, passage_encoder=changed)
+    _refuses(package, args)
+    assert codec.passages and codec.serialized == codec.decoded == []
+
+
 @pytest.mark.parametrize("count", [1, 64, 65, 128, 256])
 def test_producer_reconstructs_v3_in_exact_bounded_ranges(package, fixtures, tmp_path, count):
     case = _chunk_case(fixtures, tmp_path, count)
@@ -124,7 +354,8 @@ def test_producer_reconstructs_v3_in_exact_bounded_ranges(package, fixtures, tmp
 
 @pytest.mark.parametrize("fault", ["last_bits", "negative_zero", "nan", "norm", "dimension",
                                   "short", "long", "controls", "exception"])
-def test_last_cell_last_chunk_refuses_without_partial_package(package, fixtures, tmp_path, capsys, fault):
+@pytest.mark.parametrize("capacity_profile", [None, CAPACITY_PROFILE])
+def test_last_cell_last_chunk_refuses_without_partial_package(package, fixtures, tmp_path, capsys, fault, capacity_profile):
     case = _chunk_case(fixtures, tmp_path, three_cells=True)
 
     def corrupt(cell_number, index, start, count, rows):
@@ -153,7 +384,7 @@ def test_last_cell_last_chunk_refuses_without_partial_package(package, fixtures,
         return rows[:-1] + (tuple(last),)
 
     codec = ChunkCodec(fixtures, fault=corrupt)
-    args = _arguments(case, codec)
+    args = _arguments(case, codec, capacity_profile)
     row = struct.pack("<384f", 1.0, 0.0, -0.0, *([0.0] * 381))
     args["passage_encoder"] = lambda texts: row * len(texts)
     _refuses(package, args)
@@ -162,7 +393,8 @@ def test_last_cell_last_chunk_refuses_without_partial_package(package, fixtures,
 
 
 @pytest.mark.parametrize("mutation", ["source", "generation", "input"])
-def test_last_reconstruction_source_mutation_is_checked_before_return(package, fixtures, tmp_path, mutation):
+@pytest.mark.parametrize("capacity_profile", [None, CAPACITY_PROFILE])
+def test_last_reconstruction_source_mutation_is_checked_before_return(package, fixtures, tmp_path, mutation, capacity_profile):
     case = _chunk_case(fixtures, tmp_path, three_cells=True)
 
     def change(cell_number, index, start, count, rows):
@@ -177,12 +409,13 @@ def test_last_reconstruction_source_mutation_is_checked_before_return(package, f
         return rows
 
     codec = ChunkCodec(fixtures, fault=change)
-    args = _arguments(case, codec)
+    args = _arguments(case, codec, capacity_profile)
     _refuses(package, args)
     assert codec.reconstructions[-1] == (3, 128, 2)
 
 
-def test_last_cell_pair_digest_checked_even_when_retained_bytes_match(package, fixtures, tmp_path, monkeypatch):
+@pytest.mark.parametrize("capacity_profile", [None, CAPACITY_PROFILE])
+def test_last_cell_pair_digest_checked_even_when_retained_bytes_match(package, fixtures, tmp_path, monkeypatch, capacity_profile):
     case = _chunk_case(fixtures, tmp_path, three_cells=True)
     codec = ChunkCodec(fixtures)
     original = reader._q4_cell_controls
@@ -195,11 +428,12 @@ def test_last_cell_pair_digest_checked_even_when_retained_bytes_match(package, f
         return checked
 
     monkeypatch.setattr(reader, "_q4_cell_controls", changed)
-    _refuses(package, _arguments(case, codec))
+    _refuses(package, _arguments(case, codec, capacity_profile))
     assert codec.reconstructions[-1] == (3, 128, 2)
 
 
-def test_last_cell_preflight_still_precedes_every_decoder(package, fixtures, tmp_path, monkeypatch):
+@pytest.mark.parametrize("capacity_profile", [None, CAPACITY_PROFILE])
+def test_last_cell_preflight_still_precedes_every_decoder(package, fixtures, tmp_path, monkeypatch, capacity_profile):
     case = _chunk_case(fixtures, tmp_path, three_cells=True)
     codec = ChunkCodec(fixtures)
     original = package._cell
@@ -211,11 +445,12 @@ def test_last_cell_preflight_still_precedes_every_decoder(package, fixtures, tmp
         return item, pointer
 
     monkeypatch.setattr(package, "_cell", tampered)
-    _refuses(package, _arguments(case, codec))
+    _refuses(package, _arguments(case, codec, capacity_profile))
     assert len(codec.serialized) == 3 and codec.decoded == []
 
 
-def test_full_only_decoder_has_no_large_reconstruction_fallback(package, fixtures, tmp_path):
+@pytest.mark.parametrize("capacity_profile", [None, CAPACITY_PROFILE])
+def test_full_only_decoder_has_no_large_reconstruction_fallback(package, fixtures, tmp_path, capacity_profile):
     case = _chunk_case(fixtures, tmp_path)
     codec = Codec(fixtures)
     calls = []
@@ -233,10 +468,39 @@ def test_full_only_decoder_has_no_large_reconstruction_fallback(package, fixture
         index.reconstruct_n = reconstruct
         return index
 
-    args = _arguments(case, codec)
+    args = _arguments(case, codec, capacity_profile)
     args["index_decoder"] = full_only
     _refuses(package, args)
     assert calls == [(0, 128)]
+
+
+def test_capacity_profile_preserves_small_artifacts_and_every_checkpoint(package, fixtures, tmp_path, monkeypatch):
+    case = _chunk_case(fixtures, tmp_path, three_cells=True)
+    original = reader._verified
+    events = []
+    def verified(*args):
+        events.append("verified")
+        return original(*args)
+    monkeypatch.setattr(reader, "_verified", verified)
+    outputs, traces = [], []
+    for options in ({}, {"capacity_profile": None}, {"capacity_profile": CAPACITY_PROFILE}):
+        events.clear()
+        codec = Codec(fixtures)
+        args = _arguments(case, codec)
+        args.update(options)
+        for name in ("passage_encoder", "index_serializer", "index_decoder"):
+            callback = args[name]
+            def observed(*values, callback=callback, name=name):
+                events.append(name)
+                return callback(*values)
+            args[name] = observed
+        outputs.append(package.package_content_snapshot(**args))
+        traces.append(list(events))
+    assert outputs[0] == outputs[1] == outputs[2]
+    assert traces[0] == traces[1] == traces[2]
+    assert traces[0].count("verified") == 16
+    assert traces[0].count("passage_encoder") == 5
+    assert traces[0].count("index_serializer") == traces[0].count("index_decoder") == 3
 
 
 def test_bounded_decode_preserves_artifacts_and_source_checkpoint_order(package, fixtures, tmp_path, monkeypatch):
@@ -278,9 +542,10 @@ def test_bounded_decode_preserves_artifacts_and_source_checkpoint_order(package,
     assert bounded_events.count("verified") == 16
 
 
-def _arguments(case, codec):
+def _arguments(case, codec, capacity_profile=None):
     return dict(enabled=True, snapshot={key: case[key] for key in reader._Q4_SOURCE_KEYS},
                 passage_encoder=codec.passage, index_serializer=codec.serialize, index_decoder=codec.decode,
+                **({"capacity_profile": capacity_profile} if capacity_profile is not None else {}),
                 **{key: case[key] for key in ("encoder_binding_bytes", "encoder_binding_sha256",
                                              "index_binding_bytes", "index_binding_sha256")})
 
@@ -347,10 +612,11 @@ def test_default_closed_before_snapshot_or_callbacks(package, enabled, monkeypat
 
 @pytest.mark.parametrize("fault", ["source", "generation", "projection_pin", "foreign_projection", "v2",
                                   "decision_schema", "scope_pin", "encoder_binding", "index_binding"])
-def test_source_and_version_refusal_precedes_all_callbacks(package, fixtures, tmp_path, fault):
+@pytest.mark.parametrize("capacity_profile", [None, CAPACITY_PROFILE])
+def test_source_and_version_refusal_precedes_all_callbacks(package, fixtures, tmp_path, fault, capacity_profile):
     case = fixtures._semantic_case(reader, tmp_path, all_tasks=fault != "v2")
     codec = Codec(fixtures)
-    args = _arguments(case, codec)
+    args = _arguments(case, codec, capacity_profile)
     snapshot = args["snapshot"]
     if fault == "source":
         path = Path(snapshot["messages"]["source_path"])
@@ -383,10 +649,11 @@ def test_source_and_version_refusal_precedes_all_callbacks(package, fixtures, tm
 
 @pytest.mark.parametrize("phase", ["passage", "serialize", "decode"])
 @pytest.mark.parametrize("mutation", ["source", "generation", "input"])
-def test_callback_changes_refuse_without_output(package, fixtures, tmp_path, phase, mutation):
+@pytest.mark.parametrize("capacity_profile", [None, CAPACITY_PROFILE])
+def test_callback_changes_refuse_without_output(package, fixtures, tmp_path, phase, mutation, capacity_profile):
     case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
     codec = Codec(fixtures)
-    args = _arguments(case, codec)
+    args = _arguments(case, codec, capacity_profile)
     field = {"passage": "passage_encoder", "serialize": "index_serializer", "decode": "index_decoder"}[phase]
     original = args[field]
     def changed(*values):
@@ -491,7 +758,8 @@ def test_callback_exceptions_have_no_private_context(package, fixtures, tmp_path
     assert capsys.readouterr() == ("", "")
 
 
-def test_only_screened_source_text_reaches_passage_and_artifacts(package, fixtures, tmp_path):
+@pytest.mark.parametrize("capacity_profile", [None, CAPACITY_PROFILE])
+def test_only_screened_source_text_reaches_passage_and_artifacts(package, fixtures, tmp_path, capacity_profile):
     case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
     rows = [fixtures._row(text, type="message" if i < 2 else "done", task_id=f"synthetic-task-{i}")
             for i, text in enumerate(fixtures.SEMANTIC_TEXTS)]
@@ -502,7 +770,7 @@ def test_only_screened_source_text_reaches_passage_and_artifacts(package, fixtur
     projection = reader.rederive_message_projection(**source)
     case.update(fixtures._snapshot(source, projection))
     codec = Codec(fixtures)
-    output = package.package_content_snapshot(**_arguments(case, codec))
+    output = package.package_content_snapshot(**_arguments(case, codec, capacity_profile))
     passages = [text for batch in codec.passages for text in batch]
     expected = ["passage: " + reader.decode_text(record["stored_text"])[:2000]
                 for record in projection["messages"]["records"]]
@@ -567,10 +835,11 @@ def test_tampered_package_is_refused_by_current_query(package, fixtures, tmp_pat
     assert codec.decoded == [] and case["encoder_provider"].calls == []
 
 
-def test_success_and_refusal_do_not_write_or_load_native_runtime(package, fixtures, tmp_path, monkeypatch):
+@pytest.mark.parametrize("capacity_profile", [None, CAPACITY_PROFILE])
+def test_success_and_refusal_do_not_write_or_load_native_runtime(package, fixtures, tmp_path, monkeypatch, capacity_profile):
     case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
     codec = Codec(fixtures)
-    args = _arguments(case, codec)
+    args = _arguments(case, codec, capacity_profile)
     before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     modules = set(sys.modules)
     original_open = builtins.open

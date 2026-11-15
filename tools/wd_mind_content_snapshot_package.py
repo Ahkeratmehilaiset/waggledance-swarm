@@ -21,13 +21,18 @@ or install a deadline. Source consistency is not operator authorization; output
 creates no publication authority. Same-user source ABA remains unproven.
 
 The initial 256-record / 4 MiB anchored-prefix / 2 MiB projection ceiling is
-deliberately much smaller than v3 query capacity. This does NOT implement the
-full-log production goal or establish a hard bound on process memory. Only the
-two producer files are new; internal reader helpers retain the exact existing
-source, JSON, receipt, pair and vector checks rather than duplicating them.
+the default. Only capacity_profile="bounded_v3_capacity_v1" selects the fixed
+256 MiB prefix / 32768-record profile, subject to every reader limit as well.
+It preflights all cells before passage calls; batches remain 16 and every source
+checkpoint remains. The profile neither establishes a hard process-memory bound
+nor solves the cost of repeated full source verification. A source may exceed
+its finite caps. Internal reader helpers retain the existing source, JSON,
+receipt, pair and vector checks rather than duplicating them.
 """
 from __future__ import annotations
 
+import hashlib
+import io
 import struct
 
 from tools import wd_mind_content_query_readonly as reader
@@ -47,11 +52,27 @@ class SnapshotPackageRefused(ValueError):
     """Fixed-token refusal without source paths, content or callback details."""
 
 
-def _snapshot(value):
+def _capacity(profile):
+    if profile is None:
+        return None
+    if type(profile) is not str or profile != "bounded_v3_capacity_v1":
+        raise ValueError("invalid_capacity_profile")
+    # A fixed, per-call profile; callers cannot supply arbitrary numeric caps.
+    return {"records": 32768, "prefix": 256 * 1024 * 1024,
+            "projection": 64 * 1024 * 1024, "text": 32768 * 300,
+            "artifact": 48 * 1024 * 1024, "package": 512 * 1024 * 1024,
+            "index_overhead": 65536, "control": 65536}
+
+
+def _cap(capacity, name, default):
+    return default if capacity is None else capacity[name]
+
+
+def _snapshot(value, capacity=None):
     if (type(value) is not dict or set(value) != reader._Q4_SOURCE_KEYS
             or type(value.get("messages")) is not dict
             or type(value.get("projection_bytes")) is not bytes
-            or not 0 < len(value["projection_bytes"]) <= MAX_PROJECTION_BYTES
+            or not 0 < len(value["projection_bytes"]) <= _cap(capacity, "projection", MAX_PROJECTION_BYTES)
             or value.get("approved_tasks_bytes") != reader._ALL_TASK_SCOPE_BYTES
             or value.get("approved_tasks_sha256") != reader._ALL_TASK_SCOPE_SHA256):
         raise ValueError("invalid_snapshot")
@@ -59,7 +80,7 @@ def _snapshot(value):
     decision = reader._pinned(frozen["decision_bytes"], frozen["decision_sha256"])
     prefix = decision.get("source_prefix")
     if (type(prefix) is not dict or type(prefix.get("offset")) is not int
-            or not 0 < prefix["offset"] <= MAX_PREFIX_BYTES):
+            or not 0 < prefix["offset"] <= _cap(capacity, "prefix", MAX_PREFIX_BYTES)):
         raise ValueError("source_over_budget")
     return frozen
 
@@ -74,9 +95,65 @@ def _unchanged(original, frozen, report):
         raise ValueError("source_changed")
 
 
-def _cell(records, cell_id, vector_rows, identity, projection_sha, cutoff, serialize, checkpoint):
+def _append_bounded(stream, raw, limit):
+    if stream.tell() + len(raw) > limit:
+        raise ValueError("artifact_over_budget")
+    stream.write(raw)
+
+
+def _cell_metadata(records, cell_id, limit):
+    """Exact canonical bytes without a second full JSON string or row list."""
+    ids = [record["record_id"] + "#" + view for record in records for view in ("w", "d")]
+    meta, provenance = io.BytesIO(), io.BytesIO()
+    put = lambda raw: _append_bounded(meta, raw, limit)
+    put(b'{"dim":384,"doc_ids":[')
+    for position, doc_id in enumerate(ids):
+        put((b"," if position else b"") + reader._canonical(doc_id))
+    put(b'],"metadata":[')
+    for position in range(len(ids)):
+        put(b",{}" if position else b"{}")
+    put(b'],"texts":[')
+    for position, record in enumerate(records):
+        text = reader._canonical(reader.decode_text(record["stored_text"]))
+        put((b"," if position else b"") + text + b"," + text)
+        for view in ("w", "d"):
+            row = {"record_id": record["record_id"] + "#" + view, "kind": "event",
+                "time_utc": record["time_utc"], "cell_id": cell_id,
+                "provenance": dict(record["provenance"], record=record["record_id"], view=view,
+                                   ref_kind="sha256_of_projected_metadata", canonical_event=False)}
+            _append_bounded(provenance, reader._canonical(row) + b"\n", limit)
+    put(b"]}")
+    return ids, meta.getvalue(), provenance.getvalue()
+
+
+def _capacity_preflight(cells, record_count, base_bytes, capacity):
+    """Reserve every cell before providers; serialized indexes are still checked."""
+    if (type(record_count) is not int or not 0 < record_count <= capacity["records"]
+            or not 0 < len(cells) <= 3 or not set(cells) <= {"general", "system", "learning"}
+            or any(not items for items in cells.values())
+            or sum(map(len, cells.values())) != record_count):
+        raise ValueError("invalid_cell_records")
+    # One fixed reservation covers memory+descriptor; each cell reserves its
+    # receipt+pointer+single log line separately. Actual controls must fit too.
+    total, prepared = base_bytes + capacity["control"], {}
+    for cell_id, records in sorted(cells.items()):
+        vector_bytes = len(records) * 2 * _ROW.size
+        index_limit = vector_bytes + capacity["index_overhead"]
+        total += vector_bytes + index_limit + capacity["control"]
+        if total > capacity["package"]:
+            raise ValueError("package_over_budget")
+        item = _cell_metadata(records, cell_id, capacity["artifact"])
+        total += len(item[1]) + len(item[2])
+        if total > capacity["package"]:
+            raise ValueError("package_over_budget")
+        prepared[cell_id] = item
+    return prepared
+
+
+def _cell(records, cell_id, vector_rows, identity, projection_sha, cutoff, serialize, checkpoint,
+          *, capacity=None, prepared=None):
     ids, texts, provenance, chunks = [], [], [], []
-    for record in records:
+    for record in records if prepared is None else ():
         text = reader.decode_text(record["stored_text"])
         for view in ("w", "d"):
             doc_id = record["record_id"] + "#" + view
@@ -87,35 +164,47 @@ def _cell(records, cell_id, vector_rows, identity, projection_sha, cutoff, seria
                 "time_utc": record["time_utc"], "cell_id": cell_id,
                 "provenance": dict(record["provenance"], record=record["record_id"], view=view,
                                    ref_kind="sha256_of_projected_metadata", canonical_event=False)}) + b"\n")
+    if prepared is not None:
+        ids, meta_bytes, provenance_bytes = prepared
+        chunks = [vector_rows[record["record_id"]] for record in records for _ in ("w", "d")]
     vectors = b"".join(chunks)
     index = serialize(vectors, reader._Q4_DIM)
     checkpoint()
-    if type(index) is not bytes or not 0 < len(index) <= MAX_ARTIFACT_BYTES:
+    index_limit = MAX_ARTIFACT_BYTES if capacity is None else len(records) * 2 * _ROW.size + capacity["index_overhead"]
+    if type(index) is not bytes or not 0 < len(index) <= index_limit:
         raise ValueError("invalid_serialized_index")
     artifacts = {"index": index, "vectors": vectors,
-        "meta": reader._canonical({"dim": reader._Q4_DIM, "doc_ids": ids, "texts": texts,
-                                   "metadata": [{} for _ in ids]}),
-        "provenance": b"".join(provenance)}
-    if any(len(raw) > MAX_ARTIFACT_BYTES for raw in artifacts.values()):
+        "meta": meta_bytes if prepared is not None else reader._canonical(
+            {"dim": reader._Q4_DIM, "doc_ids": ids, "texts": texts, "metadata": [{} for _ in ids]}),
+        "provenance": provenance_bytes if prepared is not None else b"".join(provenance)}
+    if capacity is None and any(len(raw) > MAX_ARTIFACT_BYTES for raw in artifacts.values()):
         raise ValueError("artifact_over_budget")
-    pairs = b"".join(doc_id.encode("utf-8") + b"\0" + row for doc_id, row in zip(ids, chunks))
+    if capacity is not None and (len(vectors) != len(records) * 2 * _ROW.size
+            or any(len(artifacts[name]) > capacity["artifact"] for name in ("meta", "provenance"))):
+        raise ValueError("artifact_over_budget")
+    pairs = hashlib.sha256()
+    for doc_id, row in zip(ids, chunks):
+        pairs.update(doc_id.encode("utf-8") + b"\0" + row)
     content = {"cell_id": cell_id, "count": len(ids), "dim": reader._Q4_DIM,
         "cutoff_utc": cutoff, "encoder": identity,
         "projection_sha256": projection_sha, "projection_schema": reader._ALL_TASK_COMBINED_SCHEMA,
         "files": {name: reader._sha(raw) for name, raw in artifacts.items()},
-        "ids_sha256": reader._sha("\n".join(ids).encode("utf-8")), "pairs_sha256": reader._sha(pairs)}
+        "ids_sha256": reader._sha("\n".join(ids).encode("utf-8")), "pairs_sha256": pairs.hexdigest()}
     artifacts["receipt"] = reader._canonical({"schema": "wd.bridge-mind-hex-cell.v1", "authority": "none",
         "scope": reader._ALL_TASK_ROUTE_SCOPE, "content": content,
         "content_sha256": reader._sha(reader._canonical(content))})
     pointer = {"generation": 1, "seq": 1, "receipt_sha256": reader._sha(artifacts["receipt"])}
     log = dict(pointer, schema="wd.bridge-mind-hex-cell-log.v1", prev_line_sha256="0" * 64)
-    return {"pointer": reader._canonical(pointer), "log": reader._canonical(log) + b"\n",
-            "artifacts": artifacts}, dict(pointer, count=len(ids))
+    item = {"pointer": reader._canonical(pointer), "log": reader._canonical(log) + b"\n", "artifacts": artifacts}
+    if capacity is not None and (len(item["pointer"]) + len(item["log"])
+                                + len(artifacts["receipt"]) > capacity["control"]):
+        raise ValueError("control_over_budget")
+    return item, dict(pointer, count=len(ids))
 
 
 def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder_binding_bytes,
-             encoder_binding_sha256, index_binding_bytes, index_binding_sha256):
-    frozen = _snapshot(snapshot)
+             encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity=None):
+    frozen = _snapshot(snapshot, capacity)
     encoder_binding = reader._pinned(encoder_binding_bytes, encoder_binding_sha256)
     index_binding = reader._pinned(index_binding_bytes, index_binding_sha256)
     reader._q4_bindings(encoder_binding, index_binding)
@@ -125,17 +214,20 @@ def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder
     projection, _, report = reader._verified(frozen)
     records = projection["messages"]["records"]
     if (projection["schema"] != reader._ALL_TASK_COMBINED_SCHEMA
-            or not 0 < len(records) <= MAX_RECORDS
+            or not 0 < len(records) <= _cap(capacity, "records", MAX_RECORDS)
             or len({record["record_id"] for record in records}) != len(records)):
         raise ValueError("invalid_records")
     texts = [reader.decode_text(record["stored_text"]) for record in records]
-    if sum(len(text.encode("utf-8")) for text in texts) > MAX_TEXT_BYTES:
+    if sum(len(text.encode("utf-8")) for text in texts) > _cap(capacity, "text", MAX_TEXT_BYTES):
         raise ValueError("text_over_budget")
     cells = {}
     for record in records:
         cell_id = reader._Q4_PLACEMENT[record["meta"]["type"]]
         cells.setdefault(cell_id, []).append(record)
     checkpoint = lambda: _unchanged(snapshot, frozen, report)
+    base_bytes = len(frozen["projection_bytes"]) + len(encoder_binding_bytes) + len(index_binding_bytes)
+    prepared = (_capacity_preflight(cells, len(records), base_bytes, capacity)
+                if capacity is not None else {})
     vectors = {}
     for start in range(0, len(records), PASSAGE_BATCH):
         batch = tuple("passage: " + text[:2000] for text in texts[start:start + PASSAGE_BATCH])
@@ -150,15 +242,18 @@ def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder
     identity = encoder_binding["encoder"]
     cutoff = max(record["available_utc"] for record in records)
     snapshots, pointers = {}, {}
-    artifact_total = len(frozen["projection_bytes"]) + len(encoder_binding_bytes) + len(index_binding_bytes)
+    artifact_total = base_bytes
     for cell_id, items in sorted(cells.items()):
         snapshots[cell_id], pointers[cell_id] = _cell(
             items, cell_id, vectors, identity, frozen["projection_sha256"], cutoff,
-            index_serializer, checkpoint)
+            index_serializer, checkpoint, capacity=capacity, prepared=prepared.pop(cell_id, None))
         item = snapshots[cell_id]
         artifact_total += len(item["pointer"]) + len(item["log"]) + sum(map(len, item["artifacts"].values()))
-        if artifact_total > MAX_PACKAGE_BYTES:
+        if artifact_total > _cap(capacity, "package", MAX_PACKAGE_BYTES):
             raise ValueError("package_over_budget")
+        if capacity is not None:
+            for record in items:
+                del vectors[record["record_id"]]
     memory = {"schema": "wd.bridge-mind-hex-memory-step2.v1", "authority": "none",
         "scope": reader._ALL_TASK_ROUTE_SCOPE, "dim": reader._Q4_DIM, "encoder": identity,
         "projection_schema": reader._ALL_TASK_COMBINED_SCHEMA,
@@ -168,6 +263,8 @@ def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder
     descriptor = {"schema": "wd.bridge-mind-q4-memory-descriptor.v3", "scope": reader._ALL_TASK_ROUTE_SCOPE,
                   "memory_sha256": reader._sha(memory_bytes), "dim": reader._Q4_DIM, "encoder": identity}
     descriptor_bytes = reader._canonical(descriptor)
+    if capacity is not None and len(memory_bytes) + len(descriptor_bytes) > capacity["control"]:
+        raise ValueError("control_over_budget")
     output = {"descriptor_bytes": descriptor_bytes, "descriptor_sha256": reader._sha(descriptor_bytes),
         "memory_bytes": memory_bytes, "memory_sha256": reader._sha(memory_bytes), "cell_snapshots": snapshots,
         "encoder_sha256": reader._sha(reader._canonical(identity)), "runtime_revision": identity["revision"],
@@ -179,7 +276,7 @@ def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder
     record_map = {record["record_id"]: record for record in records}
     for cell_id, item in snapshots.items():
         total += len(item["pointer"]) + len(item["log"]) + sum(map(len, item["artifacts"].values()))
-        if total > MAX_PACKAGE_BYTES:
+        if total > _cap(capacity, "package", MAX_PACKAGE_BYTES):
             raise ValueError("package_over_budget")
         captured[cell_id] = reader._q4_cell_controls(cell_id, item, pointers[cell_id], memory, record_map)
     # All cells' controls precede any decoder. Reconstruction is verified with
@@ -200,7 +297,7 @@ def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder
 
 def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=None, index_serializer=None,
                              index_decoder=None, encoder_binding_bytes=None, encoder_binding_sha256=None,
-                             index_binding_bytes=None, index_binding_sha256=None):
+                             index_binding_bytes=None, index_binding_sha256=None, capacity_profile=None):
     """Return detached v3 query artifact arguments or a fixed refusal.
 
     Only ``enabled is True`` opts in. Snapshot paths remain caller-supplied and
@@ -209,14 +306,19 @@ def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=No
     Caller-owned providers, source inputs and query stream remain separate from
     the returned artifact arguments. A consumer must use query_content_snapshot
     to re-verify this package at use time; build success grants no authority.
+    ``capacity_profile=None`` keeps the original small limits. The exact named
+    v3 capacity profile expands only finite capacity, never the B16 passage or
+    source-checkpoint protocol. Its index allowance is float32 rows plus 64 KiB;
+    a serializer exceeding that allowance refuses without a fallback.
     """
     output = None
     succeeded = False
     try:
         if enabled is not True:
             raise ValueError("disabled")
+        capacity = _capacity(capacity_profile)
         output = _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder_binding_bytes,
-                          encoder_binding_sha256, index_binding_bytes, index_binding_sha256)
+                          encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity)
         succeeded = True
     except Exception:
         pass

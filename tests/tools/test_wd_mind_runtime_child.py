@@ -909,7 +909,7 @@ def test_cancelable_pipe_read_interrupts_blocked_native_read_without_termination
     read_fd, write_fd = os.pipe()
     reader = None
     try:
-        reader = child.create_cancelable_pipe_reader(enabled=True, handle=msvcrt.get_osfhandle(read_fd), timeout_seconds=0.2)
+        reader = child.create_cancelable_pipe_reader(enabled=True, handle=msvcrt.get_osfhandle(read_fd), deadline_monotonic=time.monotonic()+0.2)
         with pytest.raises(child.LaunchRefused): reader.read(1)
         status = reader.status()
         assert status['state'] == 'HOLD' and status['worker_active'] is False
@@ -926,7 +926,7 @@ def test_failed_pipe_cancellation_retains_live_thread_and_handle(monkeypatch):
     read_fd, write_fd = os.pipe()
     reader = None
     try:
-        reader = child.create_cancelable_pipe_reader(enabled=True, handle=msvcrt.get_osfhandle(read_fd), timeout_seconds=0.05)
+        reader = child.create_cancelable_pipe_reader(enabled=True, handle=msvcrt.get_osfhandle(read_fd), deadline_monotonic=time.monotonic()+0.05)
         monkeypatch.setattr(child._CancelablePipeReader, '_cancel_worker', lambda self: False)
         with pytest.raises(child.LaunchRefused): reader.read(1)
         status = reader.status()
@@ -950,7 +950,7 @@ def test_cancelable_pipe_reader_reads_bytes_and_borrows_original_handle():
     read_fd, write_fd = os.pipe()
     reader = None
     try:
-        reader = child.create_cancelable_pipe_reader(enabled=True, handle=msvcrt.get_osfhandle(read_fd), timeout_seconds=2)
+        reader = child.create_cancelable_pipe_reader(enabled=True, handle=msvcrt.get_osfhandle(read_fd), deadline_monotonic=time.monotonic()+2)
         assert os.write(write_fd, b'abc') == 3
         assert reader.read(3) == b'abc'
         os.close(write_fd)
@@ -961,4 +961,74 @@ def test_cancelable_pipe_reader_reads_bytes_and_borrows_original_handle():
         assert msvcrt.get_osfhandle(read_fd) != -1
     finally:
         if write_fd is not None: os.close(write_fd)
+        os.close(read_fd)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows pipe cancellation')
+def test_cancelable_pipe_reader_uses_one_absolute_deadline_across_reads():
+    import msvcrt
+    read_fd, write_fd = os.pipe()
+    reader = None
+    try:
+        deadline = time.monotonic() + 0.2
+        reader = child.create_cancelable_pipe_reader(enabled=True, handle=msvcrt.get_osfhandle(read_fd),
+                                                      deadline_monotonic=deadline)
+        assert os.write(write_fd, b'a') == 1 and reader.read(1) == b'a'
+        time.sleep(max(0, deadline - time.monotonic()) + 0.05)
+        before = time.monotonic()
+        with pytest.raises(child.LaunchRefused): reader.read(1)
+        assert time.monotonic() - before < 0.1
+        assert reader.status()['state'] == 'HOLD' and reader.status()['worker_active'] is False
+    finally:
+        if reader is not None: reader.close()
+        os.close(write_fd)
+        os.close(read_fd)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows pipe cancellation')
+def test_interrupted_thread_start_never_detaches_unresolved_worker(monkeypatch):
+    import msvcrt
+    read_fd, write_fd = os.pipe()
+    class DelayedStart:
+        def __init__(self, *args, **kwargs): self.finished = False
+        def start(self): raise KeyboardInterrupt()
+        def is_alive(self): return False
+        def join(self, timeout=None):
+            if not self.finished: raise RuntimeError('start unresolved')
+    reader = child.create_cancelable_pipe_reader(enabled=True, handle=msvcrt.get_osfhandle(read_fd),
+                                                  deadline_monotonic=time.monotonic()+2)
+    monkeypatch.setattr(child.threading, 'Thread', DelayedStart)
+    try:
+        with pytest.raises(KeyboardInterrupt): reader.read(1)
+        assert reader.status()['state'] == 'HOLD' and reader.status()['worker_active'] is None
+        with pytest.raises(child.LaunchRefused): reader.close()
+        reader._thread.finished = True
+        reader._done.set()
+        reader.close()
+        assert reader.status()['state'] == 'DETACHED'
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows pipe cancellation')
+def test_pipe_cancel_uses_retained_thread_handle_not_recycled_native_id(monkeypatch):
+    import msvcrt
+    read_fd, write_fd = os.pipe()
+    original = child._CancelablePipeReader._cancel_worker
+    observed = []
+    def cancel(reader):
+        observed.append(reader._thread_handle.value)
+        reader._thread._native_id = 0x7fffffff  # Synthetic stale/reused identity value.
+        return original(reader)
+    monkeypatch.setattr(child._CancelablePipeReader, '_cancel_worker', cancel)
+    reader = child.create_cancelable_pipe_reader(enabled=True, handle=msvcrt.get_osfhandle(read_fd),
+                                                  deadline_monotonic=time.monotonic()+0.2)
+    try:
+        with pytest.raises(child.LaunchRefused): reader.read(1)
+        assert observed and observed[0] is not None
+        assert reader.status() == {'state':'HOLD','worker_active':False,'cancellation':'CONFIRMED'}
+        reader.close()
+    finally:
+        os.close(write_fd)
         os.close(read_fd)

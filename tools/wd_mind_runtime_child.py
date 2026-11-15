@@ -148,24 +148,37 @@ def _export_wire_size(*, enabled=False, metadata_length=None, block_lengths=None
 
 class _CancelablePipeReader:
     """Borrow the parent's retained pipe; retain a blocked read thread on HOLD."""
-    __slots__ = ('_api', '_handle', '_timeout', '_lock', '_result_lock', '_thread', '_done', '_buffer',
+    __slots__ = ('_api', '_handle', '_deadline', '_lock', '_result_lock', '_thread', '_thread_handle', '_start_confirmed', '_done', '_buffer',
                  '_result', '_error', '_abandoned', '_state', '_cancellation')
 
-    def __init__(self, api, handle, timeout):
-        self._api, self._handle, self._timeout = api, handle, timeout
+    def __init__(self, api, handle, deadline):
+        self._api, self._handle, self._deadline = api, handle, deadline
         self._lock, self._result_lock, self._done = threading.Lock(), threading.Lock(), threading.Event()
         self._thread = self._buffer = self._result = self._error = None
+        self._thread_handle = wintypes.HANDLE()
+        self._start_confirmed = False
         self._abandoned, self._state, self._cancellation = False, 'IDLE', 'NOT_REQUESTED'
 
     def __repr__(self):
         return '<PrivateMindCancelablePipeReader>'
 
     def status(self):
-        active = self._thread is not None and self._thread.is_alive()
+        active = (None if self._thread is not None and not self._start_confirmed and not self._done.is_set()
+                  else self._thread is not None and self._thread.is_alive())
         return {'state': self._state, 'worker_active': active, 'cancellation': self._cancellation}
 
     def _read_worker(self, size):
         try:
+            current = self._api.GetCurrentProcess()
+            # Duplicate the current thread's pseudo-handle inside the worker;
+            # an integer native_id may already be recycled when cancel runs.
+            if not self._api.DuplicateHandle(current, self._api.GetCurrentThread(), current,
+                    ctypes.byref(self._thread_handle), 0, False, 2):
+                raise ValueError('thread_handle')
+            with self._result_lock:
+                if self._abandoned:
+                    self._error = 995
+                    return
             received = wintypes.DWORD()
             ok = self._api.ReadFile(self._handle, self._buffer, size, ctypes.byref(received), None)
             error = 0 if ok else ctypes.get_last_error()
@@ -182,18 +195,18 @@ class _CancelablePipeReader:
             self._done.set()
 
     def _cancel_worker(self):
-        thread = self._thread
-        if thread is None or thread.native_id is None:
+        native_thread = self._thread_handle.value
+        if native_thread is None:
             return False
         # Windows requires THREAD_TERMINATE to call CancelSynchronousIo; no
         # thread or process termination function is invoked.
-        native_thread = self._api.OpenThread(0x0001, False, thread.native_id)
-        if not native_thread:
-            return False
-        try:
-            return bool(self._api.CancelSynchronousIo(native_thread))
-        finally:
-            self._api.CloseHandle(native_thread)
+        return bool(self._api.CancelSynchronousIo(native_thread))
+
+    def _release_thread_handle(self):
+        if self._thread_handle.value is not None:
+            if not self._api.CloseHandle(self._thread_handle):
+                raise ValueError('thread_handle_close')
+            self._thread_handle.value = None
 
     def _hold_and_cancel(self):
         self._state = 'HOLD'
@@ -219,14 +232,19 @@ class _CancelablePipeReader:
         try:
             if self._state != 'IDLE' or type(size) is not int or not 0 < size <= 65536:
                 raise ValueError('pipe_read')
+            if time.monotonic() >= self._deadline:
+                self._state = 'HOLD'
+                raise ValueError('pipe_deadline')
             self._done.clear()
             self._result, self._error, self._abandoned = None, None, False
             self._buffer = ctypes.create_string_buffer(size)
             self._state = 'READING'
-            deadline = time.monotonic() + self._timeout
+            deadline = self._deadline
             self._thread = threading.Thread(target=self._read_worker, args=(size,),
                                             name='mind-owned-pipe-read', daemon=False)
+            self._start_confirmed = False
             self._thread.start()
+            self._start_confirmed = True
             if not self._done.wait(max(0, deadline - time.monotonic())) or time.monotonic() >= deadline:
                 self._hold_and_cancel()
                 raise ValueError('pipe_deadline')
@@ -234,6 +252,7 @@ class _CancelablePipeReader:
             if self._thread.is_alive() or type(self._result) is not bytes or time.monotonic() >= deadline:
                 self._hold_and_cancel()
                 raise ValueError('pipe_incomplete')
+            self._release_thread_handle()
             result, self._result = self._result, None
             self._buffer, self._state = None, 'IDLE'
         except KeyboardInterrupt:
@@ -260,7 +279,20 @@ class _CancelablePipeReader:
         if not self._lock.acquire(blocking=False):
             raise LaunchRefused('mind_e5_start_refused') from None
         try:
-            if self._thread is not None and self._thread.is_alive():
+            if self._thread is not None:
+                if not self._done.is_set():
+                    self._state = 'HOLD'
+                    raise LaunchRefused('mind_e5_start_refused') from None
+                try:
+                    self._thread.join(timeout=0)
+                    if self._thread.is_alive():
+                        raise ValueError('thread_active')
+                except BaseException:
+                    self._state = 'HOLD'
+                    raise LaunchRefused('mind_e5_start_refused') from None
+            try:
+                self._release_thread_handle()
+            except Exception:
                 self._state = 'HOLD'
                 raise LaunchRefused('mind_e5_start_refused') from None
             # Detach only. The caller retains and closes the original handle.
@@ -271,25 +303,30 @@ class _CancelablePipeReader:
             self._lock.release()
 
 
-def create_cancelable_pipe_reader(*, enabled=False, handle=None, timeout_seconds=None):
-    """Borrow a parent-retained Windows pipe read handle; start no child."""
+def create_cancelable_pipe_reader(*, enabled=False, handle=None, deadline_monotonic=None):
+    """Borrow a retained pipe and use one parent-provided absolute deadline."""
     result = None
     try:
         if (enabled is not True or os.name != 'nt' or type(handle) is not int or handle <= 0
-                or type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
-                or not 0 < timeout_seconds <= 1800):
+                or type(deadline_monotonic) not in (int, float) or not math.isfinite(deadline_monotonic)
+                or not time.monotonic() < deadline_monotonic <= time.monotonic() + 1800):
             raise ValueError('pipe')
         api = ctypes.WinDLL('kernel32', use_last_error=True)
+        api.GetCurrentProcess.argtypes, api.GetCurrentProcess.restype = [], wintypes.HANDLE
+        api.GetCurrentThread.argtypes, api.GetCurrentThread.restype = [], wintypes.HANDLE
         api.GetFileType.argtypes, api.GetFileType.restype = [wintypes.HANDLE], wintypes.DWORD
+        api.DuplicateHandle.argtypes = [wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE,
+                                        ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD, wintypes.BOOL,
+                                        wintypes.DWORD]
+        api.DuplicateHandle.restype = wintypes.BOOL
         api.ReadFile.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
                                  ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
         api.ReadFile.restype = wintypes.BOOL
-        api.OpenThread.argtypes, api.OpenThread.restype = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE
         api.CancelSynchronousIo.argtypes, api.CancelSynchronousIo.restype = [wintypes.HANDLE], wintypes.BOOL
         api.CloseHandle.argtypes, api.CloseHandle.restype = [wintypes.HANDLE], wintypes.BOOL
         if api.GetFileType(handle) != 3:  # FILE_TYPE_PIPE
             raise ValueError('pipe_type')
-        result = _CancelablePipeReader(api, handle, float(timeout_seconds))
+        result = _CancelablePipeReader(api, handle, float(deadline_monotonic))
     except Exception:
         pass
     if result is None:

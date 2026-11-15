@@ -158,6 +158,35 @@ def test_single_manifest_owner_rechecks_source_before_spawn(tmp_path, monkeypatc
     assert calls == []
 
 
+@pytest.mark.parametrize('fault', ['bundle', 'manifest', 'bulk', 'location'])
+def test_single_manifest_owner_rejects_factory_retarget_before_spawn(tmp_path, monkeypatch, fault):
+    runtime, _, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    if fault == 'bundle': factory._bundle = str(tmp_path / 'foreign')
+    elif fault == 'manifest': factory._manifest = '0' * 64
+    elif fault == 'bulk': factory._bulk = '0' * 64
+    else: factory._location['runtime_revision'] = 'changed'
+    assert owner.start() == {'state': 'HOLD', 'owned': None, 'authority': 'none'}
+    assert calls == []
+
+
+def test_single_manifest_owner_keeps_owner_if_factory_retargets_during_launch(tmp_path, monkeypatch):
+    runtime, _, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
+    original = runtime._ManifestWorkerFactory.__call__
+    def retarget(self):
+        result = original(self)
+        self._manifest = '0' * 64
+        return result
+    monkeypatch.setattr(runtime._ManifestWorkerFactory, '__call__', retarget)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'})
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start() == {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+    assert owner._owner is not None and calls == [True]
+
+
 def test_single_manifest_owner_never_reports_ready_when_owner_status_raises(tmp_path, monkeypatch):
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {

@@ -1197,18 +1197,30 @@ class _SingleManifestOwner:
     The caller must retain this object through HOLD. This is not an IPC server,
     an authenticated lane, an installed startup path, or an automatic refresh.
     """
-    __slots__ = ('_binding', '_snapshot', '_lane', '_lanes', '_factory', '_timeout',
+    __slots__ = ('_binding', '_snapshot', '_lane', '_lanes', '_factory', '_factory_anchor', '_factory_bytes', '_timeout',
                  '_state', '_launch', '_owner', '_client', '_adapter', '_handler', '_lock')
 
     def __init__(self, binding, snapshot, lane, lanes, factory, timeout):
         self._binding, self._snapshot, self._lane = binding, snapshot, lane
         self._lanes, self._factory, self._timeout = frozenset(lanes), factory, timeout
+        self._factory_anchor, self._factory_bytes = factory, self._factory_snapshot(factory)
         self._state, self._launch, self._owner = 'NEW', None, None
         self._client = self._adapter = self._handler = None
         self._lock = threading.Lock()
 
     def __repr__(self):
         return '<PrivateMindSingleManifestOwner>'
+
+    @staticmethod
+    def _factory_snapshot(factory):
+        return reader._canonical({'bundle': factory._bundle, 'manifest': factory._manifest,
+            'location': factory._location, 'lock': str(factory._lock), 'timeout': factory._timeout,
+            'lock_timeout': factory._lock_timeout, 'bulk': factory._bulk})
+
+    def _check_factory(self):
+        if (self._factory is not self._factory_anchor
+                or not hmac.compare_digest(self._factory_snapshot(self._factory), self._factory_bytes)):
+            raise ValueError('factory_changed')
 
     def _status(self):
         if self._owner is None:
@@ -1246,6 +1258,7 @@ class _SingleManifestOwner:
                 raise FullRuntimeRefused('mind_full_runtime_refused') from None
             self._state = 'STARTING'
             try:
+                self._check_factory()
                 _flat_snapshot(self._binding, self._snapshot)
                 launched = self._factory()
                 # Retain the entire factory result before any fallible binding
@@ -1254,6 +1267,7 @@ class _SingleManifestOwner:
                 if type(launched) is not dict:
                     raise ValueError('launch')
                 self._owner, self._client = launched.get('owner'), launched.get('client')
+                self._check_factory()
                 if (launched.get('status') != 'READY' or self._owner is None
                         or self._client is None or getattr(self._client, 'owner', None) is not self._owner):
                     raise ValueError('launch_not_ready')
@@ -1266,6 +1280,7 @@ class _SingleManifestOwner:
                 result = self._handler.build()
                 if result != {'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'}:
                     raise ValueError('build')
+                self._check_factory()
                 self._state = 'READY'
             except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
                 self._state = 'HOLD'
@@ -1284,8 +1299,11 @@ class _SingleManifestOwner:
         try:
             if self._state != 'READY' or self._handler is None:
                 raise FullRuntimeRefused('mind_full_runtime_refused') from None
+            self._check_factory()
             # Pipe candidates contain references only, not the message body.
-            return map_pipe_candidates(enabled=True, handler=self._handler, request=request)
+            response = map_pipe_candidates(enabled=True, handler=self._handler, request=request)
+            self._check_factory()
+            return response
         finally:
             self._lock.release()
 

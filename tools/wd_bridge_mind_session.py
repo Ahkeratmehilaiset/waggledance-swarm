@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import hmac
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -147,6 +149,111 @@ def _direct_status(*, rows: list, agent: str, roster: dict[str, str],
 
 class MindContentSessionRefused(ValueError):
     """Fixed-token refusal from the opt-in in-process content session boundary."""
+
+
+def _pin_flat_session(bundle_root, expected_manifest_sha256):
+    """Check this module's actual file against a separately supplied anchor."""
+    from tools import wd_mind_absent_generation_prefix_readonly as absent
+    from tools import wd_mind_content_query_readonly as reader
+    if (type(bundle_root) is not str or not Path(bundle_root).is_absolute()
+            or '..' in Path(bundle_root).parts or type(expected_manifest_sha256) is not str
+            or not _SHA256.fullmatch(expected_manifest_sha256)):
+        raise ValueError('anchor')
+    root = Path(bundle_root)
+    raw = absent._read_pinned(root / 'deployment-manifest.json', expected_manifest_sha256, 4 * 1024 * 1024)
+    manifest = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=reader._unique_pairs,
+                          parse_constant=reader._bad_constant)
+    if (type(manifest) is not dict or type(manifest.get('schema_version')) is not int
+            or manifest['schema_version'] != 1 or type(manifest.get('files')) is not dict):
+        raise ValueError('manifest')
+    relative = 'tools-bootstrap/tools/wd_bridge_mind_session.py'
+    expected = root.joinpath(*relative.split('/'))
+    if os.path.normcase(os.path.abspath(__file__)) != os.path.normcase(os.path.abspath(expected)):
+        raise ValueError('origin')
+    absent._read_pinned(expected, manifest['files'].get(relative), 8 * 1024 * 1024)
+
+
+def query_flat_source_candidates(*, enabled=False, owner=None, ipc_bytes=None, bundle_root=None,
+                                 expected_manifest_sha256=None, expected_nonce=None, lane=None, scope=None):
+    """Resolve untrusted pipe references through a local, previously verified owner.
+
+    The caller must independently authorize the deployment anchor and establish
+    the owner locally with ``create_consumer_flat_source_owner``. Neither a pipe
+    peer nor a matching hash authenticates a sender or proves index selection.
+    This default-off API does not construct an owner, connect IPC, write files,
+    enable the CLI, or prove startup delivery; same-user ABA remains unknown.
+    """
+    output = None
+    try:
+        if (enabled is not True or type(ipc_bytes) is not bytes or not 0 < len(ipc_bytes) <= 2048
+                or type(expected_nonce) is not str or not _SHA256.fullmatch(expected_nonce)
+                or type(lane) is not str or type(scope) is not str or scope not in ('own', 'shared')):
+            raise ValueError('input')
+        from tools import wd_mind_content_query_readonly as reader
+        from tools import wd_mind_content_snapshot_package as package
+        if lane not in reader._LANES:
+            raise ValueError('lane')
+        _pin_flat_session(bundle_root, expected_manifest_sha256)
+        if (type(owner) is not package._ConsumerSourceOwner or type(owner._gate) is not package._ConsumerFlatGate
+                or type(owner._root) is not str or type(bundle_root) is not str
+                or os.path.normcase(os.path.abspath(owner._root)) != os.path.normcase(os.path.abspath(bundle_root))
+                or owner._pin != expected_manifest_sha256 or owner._gate._manifest_pin != expected_manifest_sha256
+                or os.path.normcase(os.path.abspath(owner._gate._bundle_root)) !=
+                   os.path.normcase(os.path.abspath(bundle_root))):
+            raise ValueError('owner')
+        controls = package._consumer_bundle_controls(bundle_root, expected_manifest_sha256)
+        if controls != owner._controls or type(controls) is not tuple or not reader._hex(controls[2]):
+            raise ValueError('controls')
+        frame = json.loads(ipc_bytes.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                           parse_constant=reader._bad_constant)
+        if (type(frame) is not dict or set(frame) != {'schema','nonce','lane','scope','status','candidates'}
+                or frame['schema'] != 'wd.mind-pipe-candidates.v1'
+                or type(frame['nonce']) is not str or not hmac.compare_digest(frame['nonce'], expected_nonce)
+                or frame['lane'] != lane or frame['scope'] != scope or frame['status'] != 'CANDIDATES'
+                or type(frame['candidates']) is not list or not 1 <= len(frame['candidates']) <= 3):
+            raise ValueError('frame')
+        seen = set()
+        for candidate in frame['candidates']:
+            if (type(candidate) is not dict or set(candidate) != {'ref_sha256','doc_id_sha256','source_event_sha256'}
+                    or any(not reader._hex(item) for item in candidate.values())):
+                raise ValueError('candidate')
+            triple = tuple(candidate[key] for key in ('ref_sha256','doc_id_sha256','source_event_sha256'))
+            if triple in seen:
+                raise ValueError('duplicate')
+            seen.add(triple)
+        resolved = owner.resolve(proposals=frame['candidates'], lane=lane, scope=scope)
+        if (type(resolved) is not dict or set(resolved) !=
+                {'authority','sender_authentication','same_user_aba','index_match','results'}
+                or resolved['authority'] != 'none' or resolved['sender_authentication'] != 'UNKNOWN'
+                or resolved['same_user_aba'] != 'UNKNOWN' or resolved['index_match'] != 'UNKNOWN'
+                or type(resolved['results']) is not list or len(resolved['results']) != len(frame['candidates'])):
+            raise ValueError('result')
+        _pin_flat_session(bundle_root, expected_manifest_sha256)
+        if package._consumer_bundle_controls(bundle_root, expected_manifest_sha256) != controls:
+            raise ValueError('controls_changed')
+        owner._gate._check_delivery_binding()
+        finished = datetime.now(timezone.utc)
+        results = []
+        for proposal, hit in zip(frame['candidates'], resolved['results']):
+            if (type(hit) is not dict or set(hit) != {'text','source_event_sha256','event_time_utc_floor',
+                                                       'source_agent','event_age_seconds_upper_bound'}
+                    or type(hit['text']) is not str or hit['source_agent'] not in reader._BUILD_LANES
+                    or not hmac.compare_digest(hit['source_event_sha256'], proposal['source_event_sha256'])
+                    or type(hit['event_age_seconds_upper_bound']) is not int):
+                raise ValueError('hit')
+            age = (finished - reader._utc(hit['event_time_utc_floor'])).total_seconds()
+            if age < 0 or math.ceil(age) >= 900:
+                raise ValueError('stale')
+            results.append(dict(hit, event_age_seconds_upper_bound=math.ceil(age)))
+        output = {'schema':'wd.mind-flat-verified-session.v1', 'authority':'none', 'lane':lane,
+                  'fleet_sha256':controls[2], 'sender_authentication':'UNKNOWN', 'index_match':'UNKNOWN',
+                  'same_user_aba':'UNKNOWN', 'results':results}
+    except Exception:
+        pass
+    if output is None:
+        raise MindContentSessionRefused('mind_session_content_refused') from None
+    return output
+
 
 
 def query_content_session(*, enabled=False, inputs=None, providers=None):

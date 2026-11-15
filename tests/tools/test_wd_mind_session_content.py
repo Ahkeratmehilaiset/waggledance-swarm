@@ -26,6 +26,150 @@ INPUT_KEYS = content._Q4_KEYS - PROVIDER_KEYS
 TOKEN = "mind_session_content_refused"
 
 
+@pytest.fixture
+def flat_consumer_case(source_fixtures, tmp_path, monkeypatch):
+    from tools import wd_mind_content_snapshot_package as package
+    path = Path(__file__).with_name('test_wd_mind_content_snapshot_package.py')
+    spec = importlib.util.spec_from_file_location('flat_consumer_package_fixtures', path)
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    owner, proposals, snapshot, clock = helper._flat_owner_fixture(package, source_fixtures, tmp_path, monkeypatch)
+    monkeypatch.setattr(session, 'datetime', clock)
+    # This fixture exercises the real source/row gate with synthetic controls;
+    # independent code-pin behavior is covered separately below.
+    monkeypatch.setattr(session, '_pin_flat_session', lambda root, pin: None, raising=False)
+    def response():
+        return json.dumps({'schema': 'wd.mind-pipe-candidates.v1', 'nonce': '1' * 64,
+            'lane': 'codex-lead-1', 'scope': 'shared', 'status': 'CANDIDATES',
+            'candidates': proposals}, separators=(',', ':')).encode()
+    return package, owner, proposals, snapshot, clock, response
+
+
+def test_flat_consumer_is_default_off_before_any_ipc(flat_consumer_case):
+    _, owner, _, _, _, response = flat_consumer_case
+    with pytest.raises(session.MindContentSessionRefused):
+        session.query_flat_source_candidates(owner=owner, ipc_bytes=response(), bundle_root=owner._root,
+            expected_manifest_sha256=owner._pin, expected_nonce='1' * 64, lane='codex-lead-1', scope='shared')
+
+
+@pytest.mark.parametrize('turn', ['first', 'resume'])
+def test_flat_consumer_resolves_source_as_untrusted_data(flat_consumer_case, turn):
+    _, owner, proposals, _, _, response = flat_consumer_case
+    def run():
+        return session.query_flat_source_candidates(enabled=True, owner=owner, ipc_bytes=response(),
+            bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+            expected_nonce='1' * 64, lane='codex-lead-1', scope='shared')
+    if turn == 'resume': run()
+    result = run()
+    assert result['authority'] == 'none' and result['sender_authentication'] == 'UNKNOWN'
+    assert result['index_match'] == 'UNKNOWN' and result['fleet_sha256'] == 'a' * 64
+    assert [item['source_event_sha256'] for item in result['results']] == [p['source_event_sha256'] for p in proposals]
+    assert all(item['event_age_seconds_upper_bound'] < 900 for item in result['results'])
+
+
+@pytest.mark.parametrize('fault', ['ref', 'source', 'nonce', 'lane', 'scope', 'duplicate', 'oversize',
+                                   'duplicate_json_key', 'stale', 'row', 'fleet', 'encoder'])
+def test_flat_consumer_refuses_untrusted_or_changed_inputs(flat_consumer_case, monkeypatch, fault):
+    from datetime import timedelta
+    package, owner, proposals, snapshot, clock, response = flat_consumer_case
+    value = json.loads(response())
+    if fault == 'ref': value['candidates'][0]['ref_sha256'] = '0' * 64
+    if fault == 'source': value['candidates'][0]['source_event_sha256'] = '0' * 64
+    if fault == 'nonce': value['nonce'] = '2' * 64
+    if fault == 'lane': value['lane'] = 'fable-5'
+    if fault == 'scope': value['scope'] = 'own'
+    if fault == 'duplicate': value['candidates'].append(dict(value['candidates'][0]))
+    if fault == 'stale': clock.value += timedelta(minutes=20)
+    if fault == 'row':
+        path = Path(snapshot['messages']['source_path'])
+        rows = path.read_bytes().splitlines(keepends=True)
+        index = next(i for i, row in enumerate(rows)
+                     if content._sha(content._canonical(json.loads(row))) == proposals[0]['source_event_sha256'])
+        rows[index] = rows[index].replace(b'"message":', b'"messagE":', 1)
+        path.write_bytes(b''.join(rows))
+    if fault == 'fleet': monkeypatch.setattr(package, '_consumer_bundle_controls', lambda root, pin: None)
+    if fault == 'encoder': monkeypatch.setattr(package, '_consumer_flat_encoder', lambda root, pin: b'changed')
+    raw = json.dumps(value, separators=(',', ':')).encode()
+    if fault == 'oversize': raw += b' ' * 2049
+    if fault == 'duplicate_json_key': raw = b'{"nonce":"1","nonce":"2"}'
+    with pytest.raises(session.MindContentSessionRefused):
+        session.query_flat_source_candidates(enabled=True, owner=owner, ipc_bytes=raw,
+            bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+            expected_nonce='1' * 64, lane='codex-lead-1', scope='shared')
+
+
+@pytest.mark.parametrize('fault', ['none', 'manifest', 'session_code', 'origin'])
+def test_flat_consumer_independently_checks_pinned_session_code(tmp_path, monkeypatch, fault):
+    root = tmp_path / 'bundle'
+    source = root / 'tools-bootstrap' / 'tools' / 'wd_bridge_mind_session.py'
+    source.parent.mkdir(parents=True)
+    source.write_bytes(Path(session.__file__).read_bytes())
+    manifest = {'schema_version': 1, 'files': {'tools-bootstrap/tools/wd_bridge_mind_session.py':
+                hashlib.sha256(source.read_bytes()).hexdigest()}}
+    raw = json.dumps(manifest, separators=(',', ':')).encode()
+    (root / 'deployment-manifest.json').write_bytes(raw)
+    pin = hashlib.sha256(raw).hexdigest()
+    monkeypatch.setattr(session, '__file__', str(source if fault != 'origin' else root / 'other.py'))
+    if fault == 'manifest': pin = '0' * 64
+    if fault == 'session_code': source.write_bytes(b'# changed')
+    if fault == 'none':
+        session._pin_flat_session(str(root), pin)
+    else:
+        with pytest.raises((ValueError, OSError)):
+            session._pin_flat_session(str(root), pin)
+
+
+@pytest.mark.parametrize('fault', ['none', 'manifest', 'fleet', 'policy', 'session', 'gate', 'encoder', 'worker'])
+def test_flat_consumer_synthetic_bundle_chain_keeps_pins(tmp_path, fault):
+    """The actual pinned gate and session run together in a synthetic bundle."""
+    import ast
+    import subprocess
+    gate_test = Path(__file__).with_name('test_wd_mind_content_snapshot_package.py')
+    tree = ast.parse(gate_test.read_text(encoding='utf-8'))
+    function = next(item for item in tree.body if isinstance(item, ast.FunctionDef)
+                    and item.name == 'test_consumer_owner_real_synthetic_bundle_chain')
+    assignment = next(item for item in function.body if isinstance(item, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == 'script' for target in item.targets))
+    script = ast.literal_eval(assignment.value)
+    def replace_once(old, new):
+        nonlocal script
+        assert script.count(old) == 1
+        script = script.replace(old, new)
+    replace_once("paths = ['tools/__init__.py', ",
+                 "paths = ['tools/wd_bridge_mind_session.py', 'tools/wd_bridge_mind_lane_read.py', 'tools/__init__.py', ")
+    replace_once('from tools import wd_mind_content_snapshot_package as package\n',
+                 'from tools import wd_mind_content_snapshot_package as package\nfrom tools import wd_bridge_mind_session as session\n')
+    replace_once('package.datetime = Clock\n', 'package.datetime = Clock\nsession.datetime = Clock\n')
+    probe = r'''
+fault = sys.argv[3]
+frame = reader._canonical({'schema':'wd.mind-pipe-candidates.v1', 'nonce':'1'*64,
+    'lane':'codex-lead-1', 'scope':'shared', 'status':'CANDIDATES', 'candidates':proposals})
+pins = {'fleet':bundle/'wd-fleet.json', 'policy':bundle/'wd-mind-message-policy.json',
+        'session':bootstrap/'tools/wd_bridge_mind_session.py',
+        'gate':bootstrap/'tools/wd_mind_content_snapshot_package.py',
+        'encoder':bundle/'wd-mind-e5-encoder-binding.json', 'worker':worker}
+if fault in pins: pins[fault].write_bytes(b'# changed')
+pin = '0'*64 if fault == 'manifest' else reader._sha(manifest)
+try:
+    found = session.query_flat_source_candidates(enabled=True, owner=flat, ipc_bytes=frame,
+        bundle_root=str(bundle), expected_manifest_sha256=pin, expected_nonce='1'*64,
+        lane='codex-lead-1', scope='shared')
+    assert fault == 'none' and found['results'] and found['authority'] == 'none'
+    assert found['index_match'] == 'UNKNOWN' and found['sender_authentication'] == 'UNKNOWN'
+    assert found['fleet_sha256'] == reader._sha(fleet)
+    assert all(hit['event_age_seconds_upper_bound'] < 900 for hit in found['results'])
+except session.MindContentSessionRefused:
+    assert fault != 'none'
+sys.exit(0)
+'''
+    replace_once("flat_result = flat.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')\n",
+                 probe + "\nflat_result = flat.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')\n")
+    result = subprocess.run([sys.executable, '-I', '-B', '-c', script, str(Path(__file__).resolve().parents[2]),
+                             str(tmp_path), fault], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+
+
+
 def _entry():
     result = getattr(session, "query_content_session", None)
     assert callable(result), "default-off content session seam is not implemented"

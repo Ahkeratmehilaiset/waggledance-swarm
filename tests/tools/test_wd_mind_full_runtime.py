@@ -212,6 +212,17 @@ def test_manifest_policy_candidate_requires_pinned_descriptor_and_is_not_approva
         'identifier_policy_sha256':'a' * 64, 'approval_reference_sha256':'b' * 64}
     with pytest.raises(runtime.FullRuntimeRefused):
         runtime.start_manifest_bound_owner(enabled=True, policy_anchor=candidate)
+    args = dict(bundle_root=str(tmp_path), expected_manifest_sha256=pin,
+                operator_policy_sha256='a' * 64, operator_approval_reference_sha256='b' * 64)
+    with pytest.raises(runtime.FullRuntimeRefused): runtime.create_operator_pinned_policy_anchor(**args)
+    for changes in ({'operator_policy_sha256':'c'*64}, {'operator_approval_reference_sha256':'c'*64},
+                    {'expected_manifest_sha256':'c'*64}):
+        with pytest.raises(runtime.FullRuntimeRefused):
+            runtime.create_operator_pinned_policy_anchor(enabled=True, **(args | changes))
+    anchor = runtime.create_operator_pinned_policy_anchor(enabled=True, **args)
+    assert type(anchor) is runtime._TrustedManifestPolicyAnchor
+    assert anchor.status() == {'policy_binding':'MATCH', 'approval_reference_binding':'MATCH',
+        'authorization_source':'operator_supplied_pins', 'operator_authentication':'UNKNOWN'}
     path.write_bytes(b'{}')
     with pytest.raises(runtime.FullRuntimeRefused):
         runtime.inspect_manifest_policy_candidate(enabled=True, bundle_root=str(tmp_path),

@@ -52,6 +52,10 @@ class _TrustedManifestPolicyAnchor:
     def __new__(cls, *args, **kwargs):
         raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
+    def status(self):
+        return {'policy_binding':'MATCH', 'approval_reference_binding':'MATCH',
+                'authorization_source':'operator_supplied_pins', 'operator_authentication':'UNKNOWN'}
+
 
 def inspect_manifest_policy_candidate(*, enabled=False, bundle_root=None, expected_manifest_sha256=None):
     """Inspect proposed descriptor in a pinned bundle, without voting approval.
@@ -89,6 +93,40 @@ def inspect_manifest_policy_candidate(*, enabled=False, bundle_root=None, expect
             raise ValueError('changed')
         result = _ManifestPolicyCandidate(descriptor['identifier_policy_sha256'],
                                           descriptor['approval_reference_sha256'])
+    except Exception:
+        pass
+    if result is None:
+        raise FullRuntimeRefused('mind_full_runtime_refused') from None
+    return result
+
+
+def create_operator_pinned_policy_anchor(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
+                                         operator_policy_sha256=None,
+                                         operator_approval_reference_sha256=None):
+    """Bind independently operator-supplied pins to a pinned bundle descriptor.
+
+    The caller must obtain the two operator inputs from the existing manual
+    operator channel, independently of the bundle and MCT1 bytes. Equality of
+    hashes does not cryptographically authenticate a human or that channel.
+    This creates no trusted parent/handle authority and does not enable export.
+    """
+    result = None
+    try:
+        if (enabled is not True or type(operator_policy_sha256) is not str
+                or not reader._hex(operator_policy_sha256)
+                or type(operator_approval_reference_sha256) is not str
+                or not reader._hex(operator_approval_reference_sha256)):
+            raise ValueError('operator_pins')
+        candidate = inspect_manifest_policy_candidate(enabled=True, bundle_root=bundle_root,
+            expected_manifest_sha256=expected_manifest_sha256).status()
+        if (not hmac.compare_digest(candidate['identifier_policy_sha256'], operator_policy_sha256)
+                or not hmac.compare_digest(candidate['approval_reference_sha256'],
+                                           operator_approval_reference_sha256)):
+            raise ValueError('operator_pin_mismatch')
+        anchor = object.__new__(_TrustedManifestPolicyAnchor)
+        anchor.bundle_root, anchor.manifest_sha256 = bundle_root, expected_manifest_sha256
+        anchor.policy_sha256, anchor.approval_reference_sha256 = operator_policy_sha256, operator_approval_reference_sha256
+        result = anchor
     except Exception:
         pass
     if result is None:

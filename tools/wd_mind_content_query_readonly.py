@@ -48,7 +48,7 @@ MAX_CHUNK_CHARS = 300
 
 MIN_CHUNK_CHARS = 16
 
-DROP_TOKENS = frozenset({"credential", "identifier", "personal", "sealed", "mixed_script", "encoding", "empty",
+DROP_TOKENS = frozenset({"credential", "identifier", "personal", "sealed", "rco_address", "mixed_script", "encoding", "empty",
                          "oversize", "unknown"})
 
 _VERBATIM = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.:- ")
@@ -108,6 +108,16 @@ _PERSONAL_CONTEXT_V1 = (
     re.compile(r"(?i)\b[\w'-]+\s+lives\s+at\s+\d{1,5}[a-z]?\s+(?:[\w'-]+\s+){1,4}"
                r"(?:way|street|road|rd|avenue|lane|drive|boulevard|court)\b"),
     re.compile(r"(?i)\b[\w'-]+\s+asuu\s+osoitteessa\s+(?:[\w'-]+\s+){1,4}\d{1,5}[a-z]?\b"),
+)
+
+# Narrow unquoted message-opening salutations, not a general review mention
+# ban or a complete detector of indirect/mid-message RCO addresses.
+_RCO_ADDRESS_NAME = r"(?:claude-rco-[12]|rco[- ]?[12])"
+_RCO_DIRECT_ADDRESS = re.compile(
+    r"(?i)^(?:(?:dear|hello|hi|hei|moi)\s+)?(?:"
+    r"@" + _RCO_ADDRESS_NAME + r"(?:\s*[:,]|\s+)"
+    r"|" + _RCO_ADDRESS_NAME + r"(?:\s*[:,]|\s+(?:please|could you|can you|would you)\b))"
+    r"(?=\s*\S)"
 )
 
 # Additive, closed-vocabulary cases; keep the old rules and technical exception.
@@ -347,6 +357,8 @@ def _screen(text, *, redact_hex=False, identifier_policy=None, health_line_conte
                 or any(pattern.search(text) for pattern in _PERSONAL_HEALTH_CONTEXT)
                 or health_line_context):
             raise _Drop("personal")
+        if _RCO_DIRECT_ADDRESS.search(text):
+            raise _Drop("rco_address")
         if redact_hex:
             text = _redact_sensitive_runs(text)
         lowered = text.lower()

@@ -7,6 +7,63 @@ from tools import wd_mind_content_query_readonly as reader
 from tools import wd_mind_content_snapshot_package as producer
 
 
+@pytest.mark.parametrize('text', [
+    'claude-rco-1, please review this synthetic parser change.',
+    '@claude-rco-2 please review this synthetic parser change.',
+    'Dear claude-rco-1: please check this synthetic parser change.',
+    'RCO1, please review this synthetic parser change.',
+    'CLAUDE-RCO-2: please review this synthetic parser change.',
+    'claude-rco-1 please review this synthetic parser change.',
+    '\u200b＠ｃｌａｕｄｅ－ｒｃｏ－１ please review this synthetic parser change.',
+])
+def test_direct_rco_address_is_not_projected(tmp_path, text):
+    row = fixture._row(text, task_id='synthetic-direct-address',
+                       status='review_requested', to='codex-tools-1')
+    projection = reader.rederive_message_projection(**fixture._all_tasks_case(reader, tmp_path, [row]))
+    assert projection['messages']['records'] == []
+    assert projection['messages']['refused'] == {'rco_address': 1}
+
+
+@pytest.mark.parametrize('text', [
+    'RCO review discussed the synthetic parser fix.',
+    'Build note: claude-rco-1 said the synthetic parser passed.',
+    'Quoted prior note: "claude-rco-1, please review the synthetic patch."',
+    '"RCO1, please review the synthetic patch."',
+    'claude-rco-1 said the synthetic parser passed.',
+])
+def test_review_mentions_and_explicit_quotes_still_project(tmp_path, text):
+    row = fixture._row(text, task_id='synthetic-quoted-review',
+                       status='review_requested', to='codex-tools-1')
+    projection = reader.rederive_message_projection(**fixture._all_tasks_case(reader, tmp_path, [row]))
+    records = projection['messages']['records']
+    assert len(records) == 1
+    assert reader.decode_text(records[0]['stored_text']) == text
+    assert records[0]['provenance']['source_event_ref'] == fixture._sha(fixture._raw(row))
+
+
+@pytest.mark.parametrize('prefix,reason', [
+    ('password = synthetic-private-value. ', 'credential'),
+    ('Synthetic Private Operator. ', 'identifier'),
+    ('sealed synthetic fixture. ', 'sealed'),
+])
+def test_rco_address_change_preserves_existing_content_screening(prefix, reason):
+    text = prefix + 'claude-rco-1, please review the synthetic change.'
+    policy = reader.IdentifierPolicy(('synthetic private operator',))
+    assert reader._classify_with_policy(text, 4096, policy) == ('DROP', reason)
+
+
+@pytest.mark.parametrize('suffix,reason', [
+    (' password = synthetic-private-value.', 'credential'),
+    (' Synthetic Private Operator.', 'identifier'),
+    (' sealed synthetic fixture.', 'sealed'),
+    (' The operator has a serious illness.', 'personal'),
+])
+def test_direct_rco_address_preserves_existing_drop_priority(suffix, reason):
+    text = 'claude-rco-1, please review this synthetic change.' + suffix
+    policy = reader.IdentifierPolicy(('synthetic private operator',))
+    assert reader._classify_with_policy(text, 4096, policy) == ('DROP', reason)
+
+
 @pytest.mark.parametrize('case,text,options,expected', [
     ('health_en', 'The operator has a serious illness', {}, False),
     ('health_en_punctuation', 'The operator has a serious, chronic illness', {}, False),

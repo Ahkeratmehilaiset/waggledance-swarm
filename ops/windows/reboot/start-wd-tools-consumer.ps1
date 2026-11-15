@@ -3508,7 +3508,7 @@ function Test-WdMindContentFreshAtDelivery {
         foreach ($category in @('latest_event','decision','next_action')) {
             $item=$v.PSObject.Properties[$category].Value
             if ($item -is [string] -and $item -ceq 'UNKNOWN') { continue }
-            if ($ExpectedLane -cin @('claude-rco-1','claude-rco-2') -or
+            if ($ExpectedLane -cin @('claude-rco-1','claude-rco-2','claude-rco-3') -or
                 -not (Test-FlatKeys $item @('source_event_ref','observed_utc','age_seconds','event_type','task_id_sha256','text')) -or
                 $item.source_event_ref -isnot [string] -or $item.source_event_ref -cnotmatch '\A[0-9a-f]{64}\z' -or
                 $item.task_id_sha256 -isnot [string] -or $item.task_id_sha256 -cnotmatch '\Asha256:[0-9a-f]{64}\z' -or

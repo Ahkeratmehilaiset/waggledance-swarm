@@ -2574,7 +2574,8 @@ class _NarrowReadGate:
         if type(raw) is not bytes or not raw or not _hex(digest) or not hmac.compare_digest(_sha(raw), digest):
             raise ValueError('projection_pin')
         context = _inputs(inputs, complete_source=True)
-        if self._projection_raw is None or not hmac.compare_digest(raw, self._projection_raw):
+        if (self._projection_raw is None or
+                (raw is not self._projection_raw and not hmac.compare_digest(raw, self._projection_raw))):
             projection = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
             if (_serialized(projection) != raw or type(projection) is not dict
                     or projection.get('schema') != _ALL_TASK_COMBINED_SCHEMA

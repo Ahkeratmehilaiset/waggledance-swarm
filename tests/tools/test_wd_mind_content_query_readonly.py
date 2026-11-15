@@ -48,6 +48,57 @@ SCHEMA = "wd.mind-content-memory-projection.v2"
 MESSAGE_SCHEMA = "wd.bridge-mind-content-projection.v2"
 DECISION_SCHEMA = "wd.mind-content-route-decision.v2"
 REQUIRED_RELEASE_TASK_LIST_SHA256 = "40e04e7002050b66085f8eff5723feb73e5f62a26910fe73405ab59e5ee5b765"
+
+
+def _identity_narrow_fixture(tmp_path):
+    """Use the existing synthetic narrow dataset; never access the live log."""
+    from tools import wd_mind_content_snapshot_package as package
+    path = ROOT / 'tests/tools/test_wd_mind_content_snapshot_package.py'
+    spec = importlib.util.spec_from_file_location('identity_narrow_synthetic_fixture', path)
+    suite = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(suite)
+    case = suite._narrow_fixture(package, sys.modules[__name__], tmp_path)
+    return suite, package, case
+
+
+@pytest.mark.parametrize('variant', ['same_object', 'equal_copy', 'changed_copy'])
+def test_narrow_projection_same_object_skips_only_redundant_byte_compare(tmp_path, monkeypatch, variant):
+    suite, _, (_, _, output, snapshot, bundle, deployment, _, _) = _identity_narrow_fixture(tmp_path)
+    candidate_reader = suite.reader
+    values = {'descriptor_sha256': output['descriptor_sha256'], 'memory_sha256': output['memory_sha256']}
+    gate = candidate_reader._NarrowReadGate(str(bundle), candidate_reader._sha(deployment), values)
+    gate.verify_snapshot(snapshot, _return_projection=False)
+    original = snapshot['projection_bytes']
+    raw = original if variant == 'same_object' else bytes(bytearray(original))
+    if variant == 'changed_copy': raw += b' '
+    if variant != 'same_object': assert raw is not original
+    candidate = dict(snapshot, projection_bytes=raw, projection_sha256=candidate_reader._sha(raw))
+    comparisons, hashes = [], []
+    compare, sha = candidate_reader.hmac.compare_digest, candidate_reader._sha
+    def counted_compare(left, right):
+        if left is raw and right is original: comparisons.append(True)
+        return compare(left, right)
+    def counted_sha(data):
+        if data is raw: hashes.append(True)
+        return sha(data)
+    monkeypatch.setattr(candidate_reader.hmac, 'compare_digest', counted_compare)
+    monkeypatch.setattr(candidate_reader, '_sha', counted_sha)
+    if variant == 'changed_copy':
+        with pytest.raises(ValueError): gate.verify_snapshot(candidate, _return_projection=False)
+    else:
+        assert gate.verify_snapshot(candidate, _return_projection=False)[2]['status'] == 'MATCH'
+    assert hashes  # The SHA pin remains checked on every invocation.
+    assert len(comparisons) == (0 if variant == 'same_object' else 1)
+
+
+@pytest.mark.parametrize('damage', ['projection', 'policy_pin'])
+def test_narrow_projection_provider_tamper_cannot_be_restored_later(tmp_path, damage):
+    suite, package, _ = _identity_narrow_fixture(tmp_path)
+    # The existing synthetic scenario verifies detection before its later
+    # reconstruction callback can restore the changed projection or control.
+    (tmp_path / 'case').mkdir()
+    suite.test_narrow_refuses_callback_tampering_before_later_restore(
+        package, sys.modules[__name__], tmp_path / 'case', damage)
 ROUTE_SCOPE = "wd.q4-shared-projected-events.v1"
 TASKS = [f"synthetic-approved-task-{number}" for number in range(8)]
 LANES = ("codex-lead-1", "codex-tools-1", "fable-5", "claude-rco-1", "claude-rco-2")

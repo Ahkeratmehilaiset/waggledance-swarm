@@ -491,7 +491,7 @@ _BUILD_LANES = _LANES - {"claude-rco-1", "claude-rco-2"}
 _TYPES = frozenset(("message", "wake_request", "handoff", "test", "claim", "release", "done", "milestone",
                     "status", "progress"))
 _STATUSES = frozenset(("none", "requested", "answered", "milestone", "info", "in_progress", "handoff", "done",
-                       "active", "delivered", "blocked", "released"))
+                       "active", "delivered", "blocked", "released", "review_requested"))
 _ROUTING_KEYS = frozenset(("to", "to_list", "recipient", "recipients", "recipient_agent", "target", "target_agent",
                          "target_agents", "destination", "destinations", "audience", "reply_to", "expected_responders",
                          "responders", "targets", "target_list", "recipient_agents", "recipient_list", "cc", "bcc",

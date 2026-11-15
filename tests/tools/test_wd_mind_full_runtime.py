@@ -26,6 +26,13 @@ def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):
 def test_single_adapter_symbol_and_manifest_pins_without_rotator(synthetic_bundle):
     """Import real bundle bytes; no model process or fake adapter is started."""
     bundle = synthetic_bundle['bundle']
+    import datetime
+    source = synthetic_bundle['source']
+    rows = [json.loads(row) for row in source.read_bytes().splitlines()]
+    for row in rows:
+        row['ts_utc'] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=2)).isoformat().replace('+00:00', 'Z')
+    source.write_bytes(b''.join(canonical(row) + b'\n' for row in rows))
+    event_sha = hashlib.sha256(canonical(rows[0])).hexdigest()
     path = bundle / 'deployment-manifest.json'
     manifest = json.loads(path.read_bytes())
     manifest['files'].pop('tools-bootstrap/tools/wd_mind_e5_rotating_client.py')
@@ -61,16 +68,28 @@ factory = runtime._ManifestWorkerFactory(str(root), pin, {}, root / 'synthetic-l
                                          client_module.BULK_CONTRACT_SHA256)
 runtime._ManifestWorkerFactory.__call__ = lambda self, **kwargs: {
     'status':'READY', 'client':client, 'owner':owner, 'lifecycle':owner.status(), 'authority':'none'}
-runtime._FlatRequestHandler.build = lambda self: {
-    'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'}
+# Synthetic encoder responses, but real snapshot, adapter and flat-memory build.
+import struct
+vector = struct.pack('<384f', 1.0, *([0.0] * 383))
+def encode(payload, **kwargs):
+    check = kwargs.get('frame_check')
+    if check is not None: check()
+    count = len(payload['passages']) if payload['operation'] == 'refresh' else 1
+    return {'nonce':payload['nonce'], 'request_sha256':payload['request_sha256'], 'vector_bytes':vector * count}
+client.encode_supervised = encode
 wrapper = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane='codex-lead-1',
     worker_factory=factory, shutdown_timeout=0)
 assert wrapper.start() == {'state':'READY','owned':True,'authority':'none'}
 assert type(wrapper._adapter) is adapter._SingleFlatAdapter and wrapper._client is client
+assert wrapper._handler._memory is not None and wrapper._handler._memory.binding is binding
+response = wrapper.candidates({'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',
+    'nonce':'d'*64,'lane':'codex-lead-1','scope':'own'})
+assert response['status'] == 'CANDIDATES' and len(response['candidates']) == 1, repr(response)
+assert response['candidates'][0]['source_event_sha256'] == sys.argv[3]
 assert 'tools.wd_mind_e5_rotating_client' not in sys.modules
 print('synthetic_adapter_manifest_verified')
 '''
-    proc = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', script, str(bundle), pin],
+    proc = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', script, str(bundle), pin, event_sha],
                           cwd=bundle, capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == 'synthetic_adapter_manifest_verified'
@@ -1643,3 +1662,4 @@ def test_single_owner_interrupt_during_spawn_preserves_owned_hold(tmp_path, monk
         release.set()
         if getattr(owner, '_launch_thread', None) is not None:
             owner._launch_thread.join(timeout=2)
+

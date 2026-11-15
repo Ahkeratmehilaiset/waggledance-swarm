@@ -108,6 +108,22 @@ def test_parent_control_requires_independent_pins_and_exact_length():
     with pytest.raises(runtime.FullRuntimeRefused): bootstrap.take()
 
 
+def test_parent_bootstrap_interrupted_take_does_not_leak_values_in_traceback():
+    import traceback
+    from tools import wd_mind_full_runtime as runtime
+    class InterruptLock:
+        def __enter__(self): return self
+        def __exit__(self, *args): raise KeyboardInterrupt()
+    bootstrap = runtime._ParentBootstrap((b'synthetic-bootstrap-secret-52',))
+    bootstrap._ParentBootstrap__lock = InterruptLock()
+    with pytest.raises(KeyboardInterrupt) as caught:
+        bootstrap.take()
+    stack = traceback.TracebackException.from_exception(caught.value, capture_locals=True).stack
+    frame = next(frame for frame in stack if frame.name == 'take')
+    assert 'synthetic-bootstrap-secret-52' not in repr(frame.locals)
+    assert caught.value.__context__ is None
+
+
 @pytest.mark.parametrize('fault', ['vectors', 'policy_pin'])
 def test_single_adapter_symbol_and_manifest_pins_without_rotator(synthetic_bundle, fault):
     """Import real bundle bytes; no model process or fake adapter is started."""

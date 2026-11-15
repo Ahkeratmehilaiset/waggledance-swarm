@@ -1473,3 +1473,28 @@ def test_export_cancellation_subclass_constructor_never_runs_again(tmp_path, mon
     assert type(captured.value) is base and calls == [True]
     assert captured.value.args == () and captured.value.__context__ is None
     assert owner.status()['state'] == 'HOLD'
+
+
+@pytest.mark.parametrize('signal_name', ['keyboard','cancelled','generator'])
+def test_export_cancellation_never_touches_untrusted_signal_attributes(tmp_path, monkeypatch, signal_name):
+    import asyncio
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema':'wd.mind-flat-owner-build.v1','status':'BUILT_IN_MEMORY','authority':'none'})
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start()['state'] == 'READY'
+    base = {'keyboard':KeyboardInterrupt, 'cancelled':asyncio.CancelledError, 'generator':GeneratorExit}[signal_name]
+    class UntrustedSignal(base):
+        def __setattr__(self, name, value):
+            if name in ('__traceback__', '__context__', '__cause__'):
+                raise RuntimeError('synthetic private failure')
+            return super().__setattr__(name, value)
+    event = UntrustedSignal()
+    def interrupted(memory): raise event
+    monkeypatch.setattr(runtime, '_flat_check', interrupted)
+    with pytest.raises(base) as captured:
+        owner.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=1000)
+    assert type(captured.value) is base
+    assert captured.value.args == () and captured.value.__context__ is None
+    assert owner.status()['state'] == 'HOLD'

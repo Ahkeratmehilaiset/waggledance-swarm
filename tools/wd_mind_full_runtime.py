@@ -1244,19 +1244,15 @@ class _SingleManifestOwner:
             self._check_factory()
             self._handler._running_owner()
             result = _PrivateConsumerExport(metadata, blocks, total)
-        except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError) as cancellation:
+        except KeyboardInterrupt:
             self._state = 'HOLD'
-            # Validation frames can contain the policy binding. Preserve the
-            # cancellation type, but not its object, arguments or inner frames.
-            if isinstance(cancellation, KeyboardInterrupt):
-                cancelled_type = KeyboardInterrupt
-            elif isinstance(cancellation, GeneratorExit):
-                cancelled_type = GeneratorExit
-            else:
-                cancelled_type = asyncio.CancelledError
-            cancellation.__traceback__ = None
-            cancellation.__context__ = None
-            cancellation.__cause__ = None
+            cancelled_type = KeyboardInterrupt
+        except GeneratorExit:
+            self._state = 'HOLD'
+            cancelled_type = GeneratorExit
+        except asyncio.CancelledError:
+            self._state = 'HOLD'
+            cancelled_type = asyncio.CancelledError
         except Exception:
             if checking_integrity:
                 self._state = 'HOLD'

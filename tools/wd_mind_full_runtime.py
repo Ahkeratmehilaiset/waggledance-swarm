@@ -352,6 +352,77 @@ class _BootstrapValues:
         return self.__values
 
 
+class _PrivateParentStream:
+    """Hide the retained input object from ordinary traceback-local repr."""
+    __slots__ = ('__stream',)
+
+    def __init__(self, stream):
+        self.__stream = stream
+
+    def __repr__(self):
+        return '<PrivateMindParentStream>'
+
+    def readinto(self, view):
+        return self.__stream.readinto(view)
+
+
+class _ParentControlBuffer:
+    """Receive MCT1 in a private buffer; caller retains I/O and deadline."""
+    __slots__ = ('__stream', '__data', '__length', '__state')
+
+    def __init__(self, stream):
+        self.__stream, self.__data = stream, bytearray(136 + 65536 + 1)
+        self.__length, self.__state = 0, 'NEW'
+
+    def __repr__(self):
+        return '<PrivateMindParentControlBuffer>'
+
+    def read_from(self, *, enabled=False):
+        cancelled_type = cancellation_group = view = None
+        success = False
+        try:
+            if enabled is not True or type(self.__stream) is not _PrivateParentStream or self.__state != 'NEW':
+                raise ValueError('input')
+            self.__state = 'READING'
+            while self.__length < len(self.__data):
+                view = memoryview(self.__data)[self.__length:]
+                count = self.__stream.readinto(view)
+                view = None
+                if type(count) is not int or not 0 <= count <= len(self.__data) - self.__length:
+                    raise ValueError('read')
+                if count == 0:
+                    self.__state, success = 'SEALED', True
+                    break
+                self.__length += count
+            if not success:
+                raise ValueError('too_large')
+        except KeyboardInterrupt:
+            cancelled_type = KeyboardInterrupt
+        except GeneratorExit:
+            cancelled_type = GeneratorExit
+        except asyncio.CancelledError:
+            cancelled_type = asyncio.CancelledError
+        except BaseExceptionGroup as group:
+            cancellation_group = _fixed_group_cancellation(group)
+        except BaseException:
+            pass
+        finally:
+            view = None
+            if not success:
+                self.__state = 'FAILED'
+        if cancelled_type is not None:
+            raise cancelled_type() from None
+        if cancellation_group is not None:
+            raise cancellation_group from None
+        if not success:
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+
+    def snapshot(self):
+        if self.__state != 'SEALED':
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        return bytes(memoryview(self.__data)[:self.__length])
+
+
 class _ParentBootstrap:
     """Single-use in-memory MCT1 values; possession is not parent proof."""
     __slots__ = ('__values', '__lock')
@@ -391,8 +462,8 @@ class _ParentBootstrap:
             values = None
 
 
-def _parse_parent_control(*, enabled=False, control_bytes=None, expected_manifest_sha256=None,
-                          expected_identifier_policy_sha256=None):
+def _parse_parent_control_bytes(*, enabled=False, control_bytes=None, expected_manifest_sha256=None,
+                                expected_identifier_policy_sha256=None):
     """Parse exact MCT1 bytes with independent pins, without opening a handle.
 
     A caller must prove the trusted parent and source both pins independently.
@@ -436,6 +507,37 @@ def _parse_parent_control(*, enabled=False, control_bytes=None, expected_manifes
         output = None
     finally:
         control_bytes = manifest = nonce = channel = policy_sha = policy = validation_key = tag = None
+    if cancelled_type is not None:
+        raise cancelled_type() from None
+    if cancellation_group is not None:
+        raise cancellation_group from None
+    if output is None:
+        raise FullRuntimeRefused('mind_full_runtime_refused') from None
+    return output
+
+
+def _parse_parent_control(*, enabled=False, control_buffer=None, expected_manifest_sha256=None,
+                          expected_identifier_policy_sha256=None):
+    """Isolate parsing from raw control bytes and provider tracebacks."""
+    output = cancelled_type = cancellation_group = None
+    try:
+        if enabled is not True or type(control_buffer) is not _ParentControlBuffer:
+            raise ValueError('input')
+        output = _parse_parent_control_bytes(enabled=True, control_bytes=control_buffer.snapshot(),
+            expected_manifest_sha256=expected_manifest_sha256,
+            expected_identifier_policy_sha256=expected_identifier_policy_sha256)
+    except KeyboardInterrupt:
+        cancelled_type, output = KeyboardInterrupt, None
+    except GeneratorExit:
+        cancelled_type, output = GeneratorExit, None
+    except asyncio.CancelledError:
+        cancelled_type, output = asyncio.CancelledError, None
+    except BaseExceptionGroup as group:
+        cancellation_group, output = _fixed_group_cancellation(group), None
+    except BaseException:
+        output = None
+    finally:
+        control_buffer = None
     if cancelled_type is not None:
         raise cancelled_type() from None
     if cancellation_group is not None:

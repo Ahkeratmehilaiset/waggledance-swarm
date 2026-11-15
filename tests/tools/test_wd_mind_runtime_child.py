@@ -1090,3 +1090,16 @@ def test_source_gate_interrupted_start_never_releases_uncertain_worker(monkeypat
     holder._done.set()
     holder.close()
     assert holder.status()['state'] == 'DETACHED'
+
+
+def test_source_gate_factory_refusal_scrubs_callback_from_traceback():
+    import traceback
+    fake_secret = 'synthetic-private-callback-value'
+    class PrivateCallback:
+        def __call__(self): return None
+        def __repr__(self): return fake_secret
+    with pytest.raises(child.LaunchRefused) as raised:
+        child.create_retained_source_gate_call(enabled=True, callback=PrivateCallback(), deadline_monotonic=False)
+    trace = traceback.TracebackException.from_exception(raised.value, capture_locals=True)
+    frames = [frame for frame in trace.stack if frame.name == 'create_retained_source_gate_call']
+    assert frames and all(fake_secret not in value for frame in frames for value in (frame.locals or {}).values())

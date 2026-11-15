@@ -456,6 +456,8 @@ def create_retained_source_gate_call(*, enabled=False, callback=None, deadline_m
         result = _RetainedSourceGateCall(callback, float(deadline_monotonic))
     except Exception:
         pass
+    finally:
+        callback = None
     if result is None:
         raise LaunchRefused('mind_e5_start_refused') from None
     return result

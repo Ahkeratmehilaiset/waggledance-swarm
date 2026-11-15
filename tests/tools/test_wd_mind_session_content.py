@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import asyncio
 import builtins
+import io
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import importlib.util
@@ -18,6 +19,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import struct
 from types import SimpleNamespace
 
 import pytest
@@ -259,6 +261,213 @@ def test_flat_export_alias_imports_share_one_nonce_registry(monkeypatch):
     with pytest.raises(modules[1].MindContentSessionRefused):
         modules[1].create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
             expected_identifier_policy_sha256='a'*64)
+
+
+def _synthetic_export_wire(meta, blocks, key, *, omit_final=False):
+    nonce = bytes.fromhex(meta['nonce'])
+    digest = hashlib.sha256()
+    sequence = 0
+    chunks = []
+    data_count = 0
+    payload_total = 0
+    def frame(kind, payload):
+        nonlocal sequence
+        header = struct.pack('>4sB3xII', b'MEX1', ord(kind), sequence, len(payload))
+        mac = hmac.new(key, b'wd.mind-export-frame.v1\0' + nonce + header + payload, hashlib.sha256).digest()
+        sequence += 1
+        chunks.append(header + payload + mac)
+    metadata = content._canonical(meta)
+    digest.update(metadata)
+    payload_total += len(metadata)
+    frame('M', metadata)
+    for _, block in blocks:
+        for pos in range(0, len(block), 97):
+            value = block[pos:pos+97]
+            frame('D', value)
+            digest.update(value)
+            payload_total += len(value)
+            data_count += 1
+    if not omit_final:
+        frame('F', struct.pack('>IQ32s', data_count, payload_total, digest.digest()))
+    return b''.join(chunks)
+
+
+def _rewrite_signed_export_frame(wire, index, key, nonce, *, sequence=None, reserved=None, payload_edit=None):
+    offset = 0
+    for _ in range(index):
+        length = struct.unpack('>I', wire[offset+12:offset+16])[0]
+        offset += 16 + length + 32
+    header = bytearray(wire[offset:offset+16])
+    length = struct.unpack('>I', header[12:16])[0]
+    value = bytearray(wire[offset+16:offset+16+length])
+    if sequence is not None: header[8:12] = struct.pack('>I', sequence)
+    if reserved is not None: header[5] = reserved
+    if payload_edit is not None: value[payload_edit] ^= 1
+    raw_header, raw_value = bytes(header), bytes(value)
+    mac = hmac.new(key, b'wd.mind-export-frame.v1\0' + bytes.fromhex(nonce) + raw_header + raw_value,
+                   hashlib.sha256).digest()
+    return wire[:offset] + raw_header + raw_value + mac + wire[offset+16+length+32:]
+
+
+@pytest.mark.parametrize('fault', ['none','off','mac','truncated','missing_final','trailing',
+                                   'header_length','wire_budget','metadata_budget','timeout'])
+def test_flat_export_stream_framing_fails_closed(flat_consumer_case, monkeypatch, fault):
+    _, owner, proposals, snapshot, _, response = flat_consumer_case
+    meta, blocks = _export_fixture(owner, snapshot)
+    key = b'B'*32
+    wire = _synthetic_export_wire(meta, blocks, key, omit_final=fault == 'missing_final')
+    if fault == 'mac': wire = wire[:-1] + bytes([wire[-1] ^ 1])
+    if fault == 'truncated': wire = wire[:-4]
+    if fault == 'trailing': wire += b'x'
+    if fault == 'header_length': wire = wire[:12] + struct.pack('>I', 0xffffffff) + wire[16:]
+    opened, requests = [], []
+    class Stream(io.BytesIO):
+        def read(self, n=-1):
+            requests.append(n)
+            assert 0 <= n <= 65488
+            return super().read(n)
+    def open_read():
+        opened.append(True)
+        return Stream(wire)
+    if fault == 'timeout':
+        ticks = iter([0.0, 0.0, 2.0])
+        monkeypatch.setattr(session.time, 'monotonic', lambda: next(ticks, 2.0))
+    authorization = session.create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
+        expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]))
+    arguments = dict(enabled=fault != 'off', authorization=authorization, open_read=open_read, channel_key=key,
+        bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+        max_total_bytes=1 if fault == 'metadata_budget' else 64*1024*1024,
+        max_wire_bytes=1 if fault == 'wire_budget' else 64*1024*1024, timeout_seconds=1)
+    if fault != 'none':
+        with pytest.raises(session.MindContentSessionRefused): session.read_flat_owner_stream(**arguments)
+        if fault == 'off': assert not opened
+        if fault == 'header_length': assert requests == [16]
+        if fault == 'wire_budget': assert requests == []
+        return
+    rebuilt = session.read_flat_owner_stream(**arguments)
+    result = session.query_flat_source_candidates(enabled=True, owner=rebuilt, ipc_bytes=response(),
+        bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+        expected_nonce='1'*64, lane='codex-lead-1', scope='shared')
+    assert result['authority'] == 'none' and result['index_match'] == 'UNKNOWN'
+    assert [item['source_event_sha256'] for item in result['results']] == [p['source_event_sha256'] for p in proposals]
+
+
+@pytest.mark.parametrize('fault', ['sequence','reserved','final_digest','policy','reuse','close_timeout'])
+def test_flat_export_stream_signed_frames_and_lifecycle(flat_consumer_case, monkeypatch, fault):
+    _, owner, _, snapshot, _, _ = flat_consumer_case
+    identifier = content._canonical({'schema':'wd.mind-identifier-policy.v2', 'identifiers':[]})
+    meta, blocks = _export_fixture(owner, snapshot, identifier_override=identifier if fault == 'policy' else None)
+    key = b'B'*32
+    wire = _synthetic_export_wire(meta, blocks, key)
+    if fault == 'sequence': wire = _rewrite_signed_export_frame(wire, 1, key, meta['nonce'], sequence=77)
+    if fault == 'reserved': wire = _rewrite_signed_export_frame(wire, 0, key, meta['nonce'], reserved=1)
+    if fault == 'final_digest':
+        position = 0
+        count = 0
+        while position < len(wire):
+            length = struct.unpack('>I', wire[position+12:position+16])[0]
+            position += 16 + length + 32
+            count += 1
+        wire = _rewrite_signed_export_frame(wire, count-1, key, meta['nonce'], payload_edit=12)
+    clock = [0.0]
+    class Stream(io.BytesIO):
+        def close(self):
+            if fault == 'close_timeout': clock[0] = 2.0
+            super().close()
+    if fault == 'close_timeout': monkeypatch.setattr(session.time, 'monotonic', lambda: clock[0])
+    opened = []
+    def open_read():
+        opened.append(True)
+        return Stream(wire)
+    authorization = session.create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
+        expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]))
+    arguments = dict(enabled=True, authorization=authorization, open_read=open_read, channel_key=key,
+        bundle_root=owner._root, expected_manifest_sha256=owner._pin, max_total_bytes=64*1024*1024,
+        max_wire_bytes=64*1024*1024, timeout_seconds=1)
+    if fault == 'reuse':
+        session.read_flat_owner_stream(**arguments)
+        with pytest.raises(session.MindContentSessionRefused): session.read_flat_owner_stream(**arguments)
+        assert len(opened) == 1
+    else:
+        with pytest.raises(session.MindContentSessionRefused): session.read_flat_owner_stream(**arguments)
+
+
+def test_flat_export_stream_elapsed_deadline_cannot_interrupt_blocked_sync_read(flat_consumer_case):
+    """The sync reader stays blocked until released, then refuses its late result.
+
+    This is not an I/O cancellation, process cleanup, or owner-release proof.
+    A real Windows caller must arrange cancellable I/O or retain the owner in HOLD.
+    """
+    _, owner, _, snapshot, _, _ = flat_consumer_case
+    meta, blocks = _export_fixture(owner, snapshot)
+    key = b'B'*32
+    wire = _synthetic_export_wire(meta, blocks, key)
+    entered, release, done = threading.Event(), threading.Event(), threading.Event()
+    class BlockingStream(io.BytesIO):
+        def read(self, count=-1):
+            entered.set()
+            assert release.wait(5)
+            return super().read(count)
+    authorization = session.create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
+        expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]))
+    result = []
+    def run():
+        try:
+            session.read_flat_owner_stream(enabled=True, authorization=authorization,
+                open_read=lambda: BlockingStream(wire), channel_key=key, bundle_root=owner._root,
+                expected_manifest_sha256=owner._pin, max_total_bytes=64*1024*1024,
+                max_wire_bytes=64*1024*1024, timeout_seconds=0.05)
+        except session.MindContentSessionRefused:
+            result.append('refused')
+        finally:
+            done.set()
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        assert not done.wait(0.15)
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive() and result == ['refused']
+
+
+@pytest.mark.parametrize('phase', ['read', 'close'])
+def test_flat_export_stream_cancellation_scrubs_key_and_preserves_signal(flat_consumer_case, phase):
+    _, owner, _, snapshot, _, _ = flat_consumer_case
+    meta, blocks = _export_fixture(owner, snapshot)
+    key = b'B'*32
+    wire = _synthetic_export_wire(meta, blocks, key)
+    class HostileCancel(asyncio.CancelledError):
+        constructions = 0
+        def __new__(cls, *args):
+            cls.constructions += 1
+            if cls.constructions > 1: raise RuntimeError('unexpected signal constructor')
+            return super().__new__(cls)
+    signal = HostileCancel()
+    class Stream(io.BytesIO):
+        def read(self, size=-1):
+            if phase == 'read': raise signal
+            return super().read(size)
+        def close(self):
+            super().close()
+            if phase == 'close': raise signal
+    authorization = session.create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
+        expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]))
+    try:
+        session.read_flat_owner_stream(enabled=True, authorization=authorization, open_read=lambda: Stream(wire),
+            channel_key=key, bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+            max_total_bytes=64*1024*1024, max_wire_bytes=64*1024*1024, timeout_seconds=5)
+    except asyncio.CancelledError as error:
+        assert type(error) is asyncio.CancelledError and error.__context__ is None
+        trace = error.__traceback__
+        frames = []
+        while trace:
+            if trace.tb_frame.f_code.co_filename == session.__file__: frames.append(trace.tb_frame)
+            trace = trace.tb_next
+        assert frames and all(repr(key) not in repr(frame.f_locals) for frame in frames)
+    else:
+        pytest.fail('expected cancellation')
 
 
 def test_flat_consumer_is_default_off_before_any_ipc(flat_consumer_case):

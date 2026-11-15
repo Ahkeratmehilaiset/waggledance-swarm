@@ -23,8 +23,10 @@ import os
 from pathlib import Path
 import re
 import stat
+import struct
 import sys
 import threading
+import time
 
 try:
     from tools import bridge_compact_view, wd_bridge_mind_lane_read as lane_reader
@@ -334,6 +336,177 @@ def prepare_flat_source_owner_from_export(*, enabled=False, metadata_bytes=None,
     finally:
         # Captured tracebacks must not retain input content or the identifier key.
         metadata_bytes = blocks = meta = cursor = descriptor = item = data = ids = snapshot = None
+    if interrupted is not None:
+        raise interrupted() from None
+    if output is None:
+        raise MindContentSessionRefused('mind_session_content_refused') from None
+    return output
+
+
+def read_flat_owner_stream(*, enabled=False, authorization=None, open_read=None, channel_key=None,
+                           bundle_root=None, expected_manifest_sha256=None, max_total_bytes=None,
+                           max_wire_bytes=None, timeout_seconds=None):
+    """Decode one bounded MEX1 export before invoking the local source gate.
+
+    The caller must derive authorization and the key independently from the
+    peer, and keep ``open_read`` private to the trusted parent. This API is not
+    wired to the launcher or an authenticated IPC channel. The stream's read
+    and close methods are synchronous: elapsed time is checked before and after
+    calls, but a blocked call cannot be interrupted by this function.
+    The limits bound protocol bytes, not total memory or allocations already
+    made by the trusted stream implementation.
+    """
+    output = stream = lease = metadata = meta = blocks = buffer = payload = header = mac = deadline = None
+    part = final = None
+    interrupted = None
+    try:
+        if (enabled is not True or type(authorization) is not _FlatExportAuthorization
+                or not callable(open_read) or type(channel_key) is not bytes or len(channel_key) != 32
+                or type(max_total_bytes) is not int or not 0 < max_total_bytes <= _EXPORT_LIMIT
+                or type(max_wire_bytes) is not int or not 0 < max_wire_bytes <= _EXPORT_LIMIT
+                or type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
+                or not 0 < timeout_seconds <= 840):
+            raise ValueError('input')
+        started = time.monotonic()
+        deadline = started + timeout_seconds
+        nonce = authorization._nonce
+        lease = authorization.begin()  # reserve before opening any future channel
+        from tools import wd_mind_content_query_readonly as reader
+        from tools import wd_mind_content_snapshot_package as package
+        _pin_flat_session(bundle_root, expected_manifest_sha256)
+        controls = package._consumer_bundle_controls(bundle_root, expected_manifest_sha256)
+        stream = open_read()
+        if stream is None or not callable(getattr(stream, 'read', None)):
+            raise ValueError('stream')
+        wire_used = 0
+
+        def check_time():
+            if time.monotonic() >= deadline:
+                raise ValueError('deadline')
+
+        def exact(count):
+            nonlocal wire_used
+            if type(count) is not int or not 0 <= count <= 65488 or wire_used + count > max_wire_bytes:
+                raise ValueError('wire_budget')
+            wire_used += count  # reserve before asking the stream to allocate/read
+            result = bytearray()
+            while len(result) < count:
+                check_time()
+                value = stream.read(count - len(result))
+                check_time()
+                if type(value) is not bytes or not value or len(value) > count - len(result):
+                    raise ValueError('short_read')
+                result.extend(value)
+            return bytes(result)
+
+        sequence = 0
+        payload_total = 0
+        data_count = 0
+        digest = hashlib.sha256()
+
+        def frame(expected_kind, maximum):
+            nonlocal sequence
+            head = exact(16)
+            magic, kind, number, length = struct.unpack('>4sB3xII', head)
+            if (magic != b'MEX1' or head[5:8] != b'\0\0\0' or kind != ord(expected_kind)
+                    or number != sequence or length > min(65488, maximum)
+                    or (expected_kind == 'D' and length == 0)
+                    or wire_used + length + 32 > max_wire_bytes):
+                raise ValueError('frame')
+            value = exact(length)
+            supplied = exact(32)
+            expected = hmac.new(channel_key, b'wd.mind-export-frame.v1\0' + bytes.fromhex(nonce)
+                                + head + value, hashlib.sha256).digest()
+            if not hmac.compare_digest(supplied, expected):
+                raise ValueError('frame_mac')
+            sequence += 1
+            return value
+
+        metadata = frame('M', min(65488, max_total_bytes))
+        if not metadata:
+            raise ValueError('metadata')
+        meta = json.loads(metadata.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                          parse_constant=reader._bad_constant)
+        if (type(meta) is not dict or reader._canonical(meta) != metadata
+                or set(meta) != {'schema','authority','nonce','source_path','generation_path','cursor',
+                                  'identifier_policy_tag','blocks'}
+                or meta['schema'] != 'wd.mind-owner-export.v1' or meta['authority'] != 'none'
+                or type(meta['nonce']) is not str or not hmac.compare_digest(meta['nonce'], nonce)
+                or type(meta['source_path']) is not str or type(meta['generation_path']) is not str
+                or os.path.normcase(os.path.abspath(meta['source_path'])) != os.path.normcase(os.path.abspath(controls[0]))
+                or os.path.normcase(os.path.abspath(meta['generation_path'])) != os.path.normcase(os.path.abspath(controls[1]))
+                or type(meta.get('blocks')) is not list or len(meta['blocks']) != len(_EXPORT_BLOCK_NAMES)):
+            raise ValueError('metadata')
+        total = len(metadata)
+        for name, descriptor in zip(_EXPORT_BLOCK_NAMES, meta['blocks']):
+            if (type(descriptor) is not dict or set(descriptor) != {'name','length'}
+                    or descriptor['name'] != name or type(descriptor['length']) is not int
+                    or descriptor['length'] < 0 or total + descriptor['length'] > max_total_bytes):
+                raise ValueError('block_budget')
+            total += descriptor['length']
+        digest.update(metadata)
+        payload_total = len(metadata)
+        blocks = []
+        for name, descriptor in zip(_EXPORT_BLOCK_NAMES, meta['blocks']):
+            buffer = bytearray()
+            while len(buffer) < descriptor['length']:
+                part = frame('D', descriptor['length'] - len(buffer))
+                buffer.extend(part)
+                digest.update(part)
+                payload_total += len(part)
+                data_count += 1
+            blocks.append((name, bytes(buffer)))
+            if (name == 'identifier_policy' and not hmac.compare_digest(
+                    hashlib.sha256(blocks[-1][1]).hexdigest(), authorization._policy_pin)):
+                raise ValueError('identifier_policy_pin')
+            buffer = part = None
+        final = frame('F', 44)
+        if len(final) != 44:
+            raise ValueError('final')
+        declared_count, declared_total, declared_digest = struct.unpack('>IQ32s', final)
+        if (declared_count != data_count or declared_total != payload_total or payload_total != total
+                or not hmac.compare_digest(declared_digest, digest.digest())):
+            raise ValueError('final')
+        if wire_used + 1 > max_wire_bytes:
+            raise ValueError('wire_budget')
+        check_time()
+        tail = stream.read(1)
+        check_time()
+        if type(tail) is not bytes or tail != b'':
+            raise ValueError('trailing')
+        output = prepare_flat_source_owner_from_export(enabled=True, metadata_bytes=metadata, blocks=tuple(blocks),
+            lease=lease, bundle_root=bundle_root, expected_manifest_sha256=expected_manifest_sha256,
+            max_total_bytes=max_total_bytes)
+        check_time()
+    except KeyboardInterrupt:
+        interrupted = KeyboardInterrupt
+        output = None
+    except GeneratorExit:
+        interrupted = GeneratorExit
+        output = None
+    except asyncio.CancelledError:
+        interrupted = asyncio.CancelledError
+        output = None
+    except BaseException:
+        output = None
+    finally:
+        if stream is not None:
+            try:
+                stream.close()
+            except KeyboardInterrupt:
+                interrupted = KeyboardInterrupt
+                output = None
+            except GeneratorExit:
+                interrupted = GeneratorExit
+                output = None
+            except asyncio.CancelledError:
+                interrupted = asyncio.CancelledError
+                output = None
+            except BaseException:
+                output = None
+        if output is not None and (deadline is None or time.monotonic() >= deadline):
+            output = None
+        stream = open_read = channel_key = metadata = meta = blocks = buffer = payload = header = mac = part = final = None
     if interrupted is not None:
         raise interrupted() from None
     if output is None:

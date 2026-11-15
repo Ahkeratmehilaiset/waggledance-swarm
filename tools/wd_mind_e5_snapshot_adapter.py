@@ -1,0 +1,241 @@
+# SPDX-License-Identifier: BUSL-1.1
+"""Opt-in data-format adapter for a caller-supplied supervised E5 client.
+
+This module neither starts a client nor attaches itself to snapshot/query flows.
+The caller owns the trusted client, source and binding selection, lifecycle,
+serializer and policy. Hashes and response echoes are consistency checks, not
+proof of model execution, client identity, sender authority or absence of races.
+In particular, IPC sub-batches here are not source checkpoints: the existing
+producer verifies its frozen source after its whole B16 callback returns.
+"""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import secrets
+import struct
+import os
+from pathlib import Path
+import re
+import sys
+
+from tools import wd_mind_content_query_readonly as reader
+
+_ROW = struct.Struct('<384f')
+_BATCH = 4
+_MAX_PASSAGES = 16
+
+
+class SnapshotAdapterRefused(ValueError):
+    """Fixed refusal without caller text or provider exception details."""
+
+
+def _run(operation):
+    try:
+        return operation()
+    except Exception:
+        pass
+    raise SnapshotAdapterRefused('mind_e5_snapshot_adapter_refused') from None
+
+
+class _Adapter:
+    __slots__ = ('_client', '_binding_sha256')
+
+    def __init__(self, client, binding_sha256):
+        self._client = client
+        self._binding_sha256 = binding_sha256
+
+    def _request(self, operation, texts):
+        nonce = secrets.token_hex(32)
+        field = 'passages' if operation == 'refresh' else 'query'
+        payload = {'schema': 'wd.mind-supervised-e5-request.v1', 'operation': operation,
+                   'nonce': nonce, 'encoder_binding_sha256': self._binding_sha256,
+                   field: list(texts) if operation == 'refresh' else texts[0]}
+        raw = json.dumps(payload, sort_keys=True, ensure_ascii=False,
+                         separators=(',', ':'), allow_nan=False).encode('utf-8')
+        digest = hashlib.sha256(raw).hexdigest()
+        payload['request_sha256'] = digest
+        response = self._client.encode_supervised(payload)
+        if (type(response) is not dict or set(response) != {'nonce', 'request_sha256', 'vector_bytes'}
+                or type(response['nonce']) is not str or not hmac.compare_digest(response['nonce'], nonce)
+                or type(response['request_sha256']) is not str
+                or not hmac.compare_digest(response['request_sha256'], digest)):
+            raise ValueError('binding')
+        vectors = response['vector_bytes']
+        if type(vectors) is not bytes or len(vectors) != len(texts) * _ROW.size:
+            raise ValueError('vector_bytes')
+        for offset in range(0, len(vectors), _ROW.size):
+            reader._q4_vector(_ROW.unpack_from(vectors, offset))
+        return vectors
+
+    def passage(self, texts):
+        return _run(lambda: self._passage(texts))
+
+    def _passage(self, texts):
+        if (type(texts) not in (tuple, list) or not 1 <= len(texts) <= _MAX_PASSAGES
+                or any(type(text) is not str or not text.startswith('passage: ')
+                       or not text[9:].strip() or len(text) > 2009 or '\x00' in text for text in texts)):
+            raise ValueError('passage')
+        frozen = tuple(texts)
+        chunks = []
+        for start in range(0, len(frozen), _BATCH):
+            chunks.append(self._request('refresh', frozen[start:start + _BATCH]))
+        return b''.join(chunks)
+
+    def query(self, text):
+        return _run(lambda: self._query(text))
+
+    def _query(self, text):
+        if type(text) is not str or not 0 < len(text) <= 4000 or '\x00' in text or not text[:2000].strip():
+            raise ValueError('query')
+        raw = self._request('query', ('query: ' + text[:2000],))
+        return _ROW.unpack(raw)
+
+
+def create_adapter(*, enabled=False, client=None, encoder_binding_bytes=None, encoder_binding_sha256=None,
+                   index_binding_bytes=None, index_binding_sha256=None,
+                   runtime_binding_bytes=None, runtime_binding_sha256=None):
+    """Build only an adapter; callers must independently establish trust and own all I/O."""
+    def create():
+        if enabled is not True or client is None or isinstance(client, type):
+            raise ValueError('disabled')
+        encoder = reader._pinned(encoder_binding_bytes, encoder_binding_sha256)
+        index = reader._pinned(index_binding_bytes, index_binding_sha256)
+        reader._q4_bindings(encoder, index)
+        worker_binding_sha256 = encoder_binding_sha256
+        if runtime_binding_bytes is not None or runtime_binding_sha256 is not None:
+            runtime = reader._pinned(runtime_binding_bytes, runtime_binding_sha256)
+            expected = {'prefix': 'query: ', 'truncate_chars': 2000,
+                        'normalize': True, 'dtype': 'float32', 'dim': 384}
+            if (type(runtime) is not dict
+                    or set(runtime) != {'schema', 'encoder', 'code_sha256', 'passage_policy', 'query_policy'}
+                    or runtime['schema'] != 'wd.mind-memory-encoder-binding.v1'
+                    or runtime['encoder'] != encoder['encoder']
+                    or runtime['code_sha256'] != encoder['code_sha256']
+                    or runtime['query_policy'] != expected
+                    or encoder['query_policy'] != expected
+                    or runtime['passage_policy'] != dict(expected, prefix='passage: ')
+                    or any(type(policy.get('normalize')) is not bool
+                           or type(policy.get('truncate_chars')) is not int
+                           or type(policy.get('dim')) is not int
+                           for policy in (runtime['query_policy'], runtime['passage_policy'],
+                                          encoder['query_policy']))):
+                raise ValueError('runtime_binding_mismatch')
+            worker_binding_sha256 = runtime_binding_sha256
+        if not callable(getattr(client, 'encode_supervised', None)):
+            raise ValueError('client')
+        return _Adapter(client, worker_binding_sha256)
+    return _run(create)
+
+
+def _flat_bundle_bindings(bundle_root, expected_manifest_sha256):
+    """Derive the read-only query binding solely from the pinned runtime one."""
+    from tools import wd_mind_absent_generation_prefix_readonly as prefix
+    from tools import wd_mind_e5_rotating_client as rotating
+    from tools import wd_mind_e5_lifecycle as lifecycle
+    from tools import wd_mind_e5_client as e5_client
+    if (type(bundle_root) is not str or not Path(bundle_root).is_absolute()
+            or '..' in Path(bundle_root).parts or type(expected_manifest_sha256) is not str
+            or re.fullmatch(r'[0-9a-fA-F]{64}', expected_manifest_sha256) is None):
+        raise ValueError('bundle')
+    bundle = Path(bundle_root)
+    manifest_raw = prefix._read_pinned(bundle/'deployment-manifest.json', expected_manifest_sha256, 4*1024*1024)
+    manifest = json.loads(manifest_raw.decode('utf-8-sig'), object_pairs_hook=prefix._unique_object,
+                          parse_constant=reader._bad_constant)
+    if (type(manifest) is not dict or type(manifest.get('schema_version')) is not int
+            or manifest['schema_version'] != 1 or type(manifest.get('files')) is not dict):
+        raise ValueError('manifest')
+    files = manifest['files']
+    def pinned(relative, limit):
+        pin = files.get(relative)
+        return prefix._read_pinned(bundle.joinpath(*relative.split('/')), pin, limit)
+    for module, filename in ((sys.modules[__name__], 'wd_mind_e5_snapshot_adapter.py'),
+                             (reader, 'wd_mind_content_query_readonly.py'),
+                             (prefix, 'wd_mind_absent_generation_prefix_readonly.py'),
+                             (rotating, 'wd_mind_e5_rotating_client.py'),
+                             (lifecycle, 'wd_mind_e5_lifecycle.py'),
+                             (e5_client, 'wd_mind_e5_client.py')):
+        origin = getattr(module, '__file__', None)
+        if type(origin) is not str:
+            raise ValueError('code_origin')
+        relative = 'tools-bootstrap/tools/' + filename
+        expected = bundle.joinpath(*relative.split('/'))
+        if os.path.normcase(os.path.abspath(origin)) != os.path.normcase(os.path.abspath(expected)):
+            raise ValueError('code_origin')
+        pinned(relative, 8*1024*1024)
+    worker = 'tools-bootstrap/tools/wd_mind_e5_worker.py'
+    pinned(worker, 8*1024*1024)
+    runtime_raw = pinned('wd-mind-e5-encoder-binding.json', 65536)
+    runtime = json.loads(runtime_raw.decode('utf-8'), object_pairs_hook=prefix._unique_object,
+                         parse_constant=reader._bad_constant)
+    policy = {'prefix':'query: ', 'truncate_chars':2000, 'normalize':True, 'dtype':'float32', 'dim':384}
+    if (type(runtime) is not dict
+            or set(runtime) != {'schema','encoder','code_sha256','query_policy','passage_policy'}
+            or runtime['schema'] != 'wd.mind-memory-encoder-binding.v1'
+            or type(files.get(worker)) is not str
+            or runtime['code_sha256'] != files[worker].lower()
+            or runtime['query_policy'] != policy or runtime['passage_policy'] != dict(policy,prefix='passage: ')
+            or any(type(item.get('normalize')) is not bool or type(item.get('truncate_chars')) is not int
+                   or type(item.get('dim')) is not int
+                   for item in (runtime['query_policy'], runtime['passage_policy']))):
+        raise ValueError('runtime_binding')
+    reader._q4_identity(runtime['encoder'])
+    query = {'schema':'wd.mind-readonly-encoder-binding.v1', 'encoder':runtime['encoder'],
+             'code_sha256':runtime['code_sha256'], 'query_policy':runtime['query_policy']}
+    query_raw = reader._canonical(query)
+    return query_raw, hashlib.sha256(runtime_raw).hexdigest()
+
+
+class _FlatAdapter(_Adapter):
+    __slots__ = ('_bundle', '_manifest', '_query_binding', '_runtime_hash')
+
+    def __init__(self, client, bundle, manifest, query_binding, runtime_hash):
+        super().__init__(client, runtime_hash)
+        self._bundle, self._manifest = bundle, manifest
+        self._query_binding, self._runtime_hash = query_binding, runtime_hash
+
+    @property
+    def encoder_binding_bytes(self):
+        return self._query_binding
+
+    @property
+    def encoder_binding_sha256(self):
+        return hashlib.sha256(self._query_binding).hexdigest()
+
+    @property
+    def runtime_binding_sha256(self):
+        return self._runtime_hash
+
+    def _check(self):
+        from tools import wd_mind_e5_rotating_client as rotating
+        if (type(self._client) is not rotating.RotatingGracefulE5Client
+                or self._client._binding != self._runtime_hash
+                or self._client._bulk_contract_sha256 != rotating.BULK_CONTRACT_SHA256
+                or self._client._failed is not False or self._client._closed is not False
+                or _flat_bundle_bindings(self._bundle, self._manifest) != (self._query_binding, self._runtime_hash)):
+            raise ValueError('flat_binding_changed')
+
+    def _request(self, operation, texts):
+        self._check()
+        output = super()._request(operation, texts)
+        self._check()
+        return output
+
+
+def create_flat_adapter(*, enabled=False, bundle_root=None, expected_manifest_sha256=None, client=None):
+    """Construct an opt-in flat E5 adapter, without any FAISS/index binding.
+
+    The caller must independently authorize the manifest hash and keep the
+    supervised bulk rotator and its owner alive through HOLD. Pinned bytes and
+    transport echoes do not authenticate model execution, source, or callers.
+    """
+    def create():
+        from tools import wd_mind_e5_rotating_client as rotating
+        if enabled is not True or type(client) is not rotating.RotatingGracefulE5Client:
+            raise ValueError('disabled_or_client')
+        query_raw, runtime_hash = _flat_bundle_bindings(bundle_root, expected_manifest_sha256)
+        result = _FlatAdapter(client, bundle_root, expected_manifest_sha256, query_raw, runtime_hash)
+        result._check()
+        return result
+    return _run(create)

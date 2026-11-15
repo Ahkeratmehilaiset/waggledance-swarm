@@ -85,17 +85,135 @@ _IBAN_LENGTHS = dict((code[:2], int(code[2:])) for code in (
     "LU20 LV21 LY25 MC27 MD24 ME22 MK19 MR27 MT31 MU30 NL18 NO15 PK24 PL28 PS29 PT25 QA29 RO24 RS22 SA24 SC31 SE24 "
     "SI19 SK24 SM27 ST25 SV28 TL23 TN24 TR26 UA29 VA22 VG24 XK20").split())
 
-_IBAN_CANDIDATE = re.compile(r"(?i)\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}\b")
+_IBAN_CANDIDATE = re.compile(r"(?i)\b[A-Z]{2}\d{2}(?:[ ./-]*[A-Z0-9]){11,30}\b")
 
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w.+-]+")
 
 _CREDIT_CARD_RE = re.compile(r"\b\d{13,19}\b")
 
-_HETU_RE = re.compile(r"\b[0-3]\d[01]\d\d{2}[+\-A-FYXWVU]\d{3}[0-9A-Y]\b")
+_HETU_RE = re.compile(r"(?<!\d)[0-3]\d[01]\d\d{2}[ ./]*[+\-A-FYXWVU][ ./]*\d{3}[0-9A-Y](?!\d)")
 
 _Y_TUNNUS_RE = re.compile(r"\b\d{7}-\d\b")
 
-_PHONE_RE = re.compile(r"\+?\d[\d\s-]{8,}")
+# Count digits, rather than separators: the former expression counted spaces
+# and dashes, so e.g. a sequence of five one-digit build counters was treated
+# as a phone number. Shorter candidates remain protected when explicitly
+# labeled as a phone or when they have an international '+' prefix.
+_PHONE_RE = re.compile(
+    r"(?i)(?:\+\d(?:[\s-]*\d){5,}"
+    r"|(?<!\w)(?:phone|tel(?:ephone)?|puhelin)(?!\w)\s*"
+    r"(?:[:=#]|\bis\b|\bon\b)?\s*\+?\d(?:[\s-]*\d){4,}"
+    r"|\d(?:[\s-]*\d){6,})"
+)
+
+# Task/branch identifiers and CI run numbers are not themselves phone fields.
+# Mask them only for phone detection; all secret, HETU, email and IBAN checks
+# still see the original text. A labeled or international phone is checked
+# first, including when its spelling resembles an identifier.
+_PHONE_EXPLICIT_RE = re.compile(
+    r"(?i)(?:\+\d(?:[\s./()-]*\d){5,}"
+    r"|(?<!\w)(?:phone|tel(?:ephone)?|puhelin)(?!\w)\s*"
+    r"(?:[:=#-]|\bis\b|\bon\b)?\s*\+?\d(?:[\s./()-]*\d){4,})"
+)
+_NUMERIC_IDENTIFIER_RE = re.compile(
+    r"(?i)\b(?:task(?:_id)?|branch(?:_name)?)(?!\w)\s*[:=#]?\s*"
+    r"[A-Za-z][A-Za-z0-9]*(?:[-_/][A-Za-z0-9]+)+\b"
+)
+# An unlabelled task identifier may carry a compact date, e.g. build-fix-20261214.
+# Exempt only the date-shaped component in an identifier with an alphabetic
+# prefix. Explicit phone fields and all other structured detectors still check
+# the original text; the exempted digits are removed from retained text below.
+_DATED_TASK_IDENTIFIER_RE = re.compile(
+    r"(?i)(?<!\w)(?P<prefix>[a-z][a-z0-9]*[-_/](?:[a-z0-9]+[-_/])*)"
+    r"(?P<date>(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))"
+    r"(?P<suffix>[-_/]\d{1,6}(?!\d))?"
+    r"(?=$|[-_/]|\W)"
+)
+# Apply the more expensive identifier pattern only to individual words that
+# contain a date candidate. An adversarial separator chain would otherwise
+# cause repeated backtracking; refuse such a candidate rather than weaken the
+# phone or secret checks or return a partial projection.
+_DATED_TASK_DATE_RE = re.compile(
+    r"(?<!\d)(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?!\d)"
+)
+_DATED_TASK_MAX_SEPARATORS = 64
+# Only these fixed public terms can be reconstructed from an otherwise
+# redacted dated identifier. Unknown segments are never emitted: an arbitrary
+# prefix may contain a credential even when it has no recognizable key prefix.
+_DATED_TASK_SAFE_WORDS = frozenset({
+    'agent', 'audit', 'bridge', 'build', 'codex', 'content', 'event', 'fix',
+    'index', 'lane', 'lead', 'memory', 'mind', 'numeric', 'owner', 'policy',
+    'production', 'projection', 'query', 'reader', 'reboot', 'release', 'run',
+    'runtime', 'semantic', 'source', 'startup', 'synthetic', 'task', 'thin',
+    'tools', 'validate', 'work',
+})
+
+
+def _safe_dated_task_words(match):
+    parts = re.findall(r'[A-Za-z0-9]+', match.group('prefix'))
+    safe = [part.lower() for part in parts if part.lower() in _DATED_TASK_SAFE_WORDS]
+    if len(safe) != len(parts):
+        safe.append('token-redacted')
+    safe.append('date-redacted')
+    return ' '.join(safe)
+
+
+def _dated_task_candidate(word):
+    if _DATED_TASK_DATE_RE.search(word) is None:
+        return False
+    if sum(word.count(separator) for separator in '-_/') > _DATED_TASK_MAX_SEPARATORS:
+        raise _Drop('oversize')
+    return True
+
+
+def _redact_dated_task_tokens(text):
+    # A match can be embedded in a larger token. Reconstruct the entire token
+    # from the fixed vocabulary so an unknown prefix or suffix cannot escape
+    # the long-token redactor after the dated portion has been split up.
+    def replace(word):
+        value = word.group()
+        if not _dated_task_candidate(value):
+            return value
+        match = _DATED_TASK_IDENTIFIER_RE.search(value)
+        return _safe_dated_task_words(match) if match is not None else value
+    return re.sub(r'\S+', replace, text)
+
+
+def _mask_dated_tasks_for_phone(text):
+    def replace(word):
+        value = word.group()
+        if not _dated_task_candidate(value):
+            return value
+        return _DATED_TASK_IDENTIFIER_RE.sub(lambda match: match.group('prefix') + 'date-redacted', value)
+    return re.sub(r'\S+', replace, text)
+
+
+_CI_RUN_RE = re.compile(r"(?i)\b(?:ci\s+)?run\s*(?:(?:id|number)\s*)?[:=#]?\s*(?:[1-9]\d{10,11}|1\d{9})\b")
+_LOCAL_PHONE_RE = re.compile(r"(?<!\d)0(?:[\s_-]*\d){8,}")
+_LOCAL_SEPARATED_PHONE_RE = re.compile(r"(?<!\d)0(?:[\s_./()-]*\d){8,}")
+_TECH_DOTTED_VERSION_RE = re.compile(
+    r"(?i)(?<!\w)(?:v|version\s*[:=]?\s*v?)\d+(?:\.\d+){2,}\b"
+)
+_PHONE_FIELD_RE = re.compile(r"(?i)\b(?:phone|tel(?:ephone)?|puhelin)\s*[:=#]")
+
+
+def _contains_phone(text):
+    if _PHONE_EXPLICIT_RE.search(text) or _LOCAL_PHONE_RE.search(text):
+        return True
+    # A version-labeled dotted identifier is still redacted from retained text
+    # below; skipping it only here avoids classifying technical versions as a
+    # newly introduced dotted local phone. Existing phone checks stay intact.
+    if _LOCAL_SEPARATED_PHONE_RE.search(_TECH_DOTTED_VERSION_RE.sub(' version ', text)):
+        return True
+    # An explicitly named phone field retains its whole value for detection,
+    # even if it contains what otherwise looks like a task or branch label.
+    for field in _PHONE_FIELD_RE.finditer(text):
+        if _PHONE_RE.search(text[field.end():]):
+            return True
+    without_ids = _NUMERIC_IDENTIFIER_RE.sub(" identifier ", text)
+    without_ids = _mask_dated_tasks_for_phone(without_ids)
+    without_ids = _CI_RUN_RE.sub(" run identifier ", without_ids)
+    return _PHONE_RE.search(without_ids) is not None
 
 _PERSONAL = (_EMAIL_RE, _CREDIT_CARD_RE, _HETU_RE, _Y_TUNNUS_RE)
 
@@ -225,11 +343,27 @@ def _redact_sensitive_runs(text, *, include_urls=False):
     out.append(text[position:])
     return "".join(out)
 
+def _redact_context_numbers(text):
+    """Remove ambiguous numeric components from the actual retained text.
+
+    Applied only after original-text credential, identifier, sealed, personal,
+    explicit phone and route screening. CI's narrow 10-digit exception starts
+    with 1; other ambiguous values remain refused rather than reclassified.
+    """
+    def redact(match):
+        return re.sub(r"\d(?:[\s_-]*\d){6,}", "number-redacted", match.group(0))
+    text = _redact_dated_task_tokens(text)
+    text = _NUMERIC_IDENTIFIER_RE.sub(redact, text)
+    text = _CI_RUN_RE.sub(redact, text)
+    return _TECH_DOTTED_VERSION_RE.sub(
+        lambda match: _LOCAL_SEPARATED_PHONE_RE.sub('number-redacted', match.group(0)), text)
+
+
 def _iban(text):
     """An IBAN of a registered country at exactly its ISO 13616 length with a valid mod-97 sum. The greedy candidate
     may run into the next words, so only its country-length prefix is checked."""
     for match in _IBAN_CANDIDATE.finditer(text):
-        value = match.group(0).replace(" ", "").upper()
+        value = re.sub(r"[ ./-]+", "", match.group(0)).upper()
         size = _IBAN_LENGTHS.get(value[:2])
         if size is not None and len(value) >= size:
             candidate = value[:size]
@@ -273,7 +407,7 @@ def _screen(text, *, redact_hex=False, identifier_policy=None):
             raise _Drop("sealed")
         phone_text = _CREDENTIAL[-1].sub("hex-redacted", text) if redact_hex else text
         if (any(pattern.search(text) for pattern in _PERSONAL) or _iban(text)
-                or _PHONE_RE.search(_ISO_TIME.sub(" ", phone_text))):
+                or _contains_phone(_ISO_TIME.sub(" ", phone_text))):
             raise _Drop("personal")
         if redact_hex:
             text = _redact_sensitive_runs(text)
@@ -281,7 +415,7 @@ def _screen(text, *, redact_hex=False, identifier_policy=None):
         if _UUID.search(text) or identifier_policy.contains(text):
             raise _Drop("identifier")
         if (any(pattern.search(text) for pattern in _PERSONAL) or _iban(text)
-                or _PHONE_RE.search(_ISO_TIME.sub(" ", text))):
+                or _contains_phone(_ISO_TIME.sub(" ", text))):
             raise _Drop("personal")
         if any(marker in lowered for marker in SEALED_MARKERS) or _has_marker(text):
             raise _Drop("sealed")
@@ -304,6 +438,7 @@ def _classify_with_policy(raw_text, limit, policy):
         if not text:
             raise _Drop("empty")
         _screen(text, redact_hex=True, identifier_policy=policy)
+        text = _redact_context_numbers(text)
         text = _redact_sensitive_runs(text, include_urls=True)
         text = _replace_locations(text)
         if not text:
@@ -414,11 +549,12 @@ class IdentifierPolicy:
         finally:
             self = text = normalized = value = None
 
-def _load_identifier_policy(policy_bytes, key, expected_tag):
-    """Validate caller-supplied private policy bytes and their keyed HMAC-SHA256."""
+def _load_identifier_policy(policy_bytes, key, expected_tag, *, allow_empty_v2=False):
+    """Validate the pinned private policy; v2 is complete-all-tasks only."""
     document = values = item = normalized = actual = None
     try:
-        if (type(policy_bytes) is not bytes or not 0 < len(policy_bytes) <= 65536
+        if (type(allow_empty_v2) is not bool
+                or type(policy_bytes) is not bytes or not 0 < len(policy_bytes) <= 65536
                 or type(key) is not bytes or not 32 <= len(key) <= 1024
                 or type(expected_tag) is not str or _TAG.fullmatch(expected_tag) is None):
             _identifier_refuse()
@@ -427,8 +563,12 @@ def _load_identifier_policy(policy_bytes, key, expected_tag):
             _identifier_refuse()
         document = json.loads(policy_bytes.decode("utf-8"), object_pairs_hook=_unique_pairs)
         if (type(document) is not dict or set(document) != {"schema", "identifiers"}
-                or document["schema"] != _SCHEMA or type(document["identifiers"]) is not list
-                or not 1 <= len(document["identifiers"]) <= 256):
+                or type(document["identifiers"]) is not list):
+            _identifier_refuse()
+        v1 = document["schema"] == _SCHEMA and 1 <= len(document["identifiers"]) <= 256
+        v2 = (allow_empty_v2 and document["schema"] == "wd.mind-identifier-policy.v2"
+              and document["identifiers"] == [])
+        if not (v1 or v2):
             _identifier_refuse()
         values = []
         for item in document["identifiers"]:
@@ -457,7 +597,20 @@ _COMBINED_SCHEMA = "wd.mind-content-memory-projection.v2"
 _MESSAGE_SCHEMA = "wd.bridge-mind-content-projection.v2"
 _DECISION_SCHEMA = "wd.mind-content-route-decision.v2"
 _ROUTE_SCOPE = "wd.q4-shared-projected-events.v1"
+_ALL_TASK_SCOPE_SCHEMA = "wd.mind-task-scope.v1"
+_ALL_TASK_DECISION_SCHEMA = "wd.mind-content-route-decision.v3"
+_ALL_TASK_COMBINED_SCHEMA = "wd.mind-content-memory-projection.v3"
+_ALL_TASK_MESSAGE_SCHEMA = "wd.bridge-mind-content-projection.v3"
+_ALL_TASK_ROUTE_SCOPE = "wd.mind-all-task-projected-events.v1"
+_ALL_TASK_MAX_PREFIX_BYTES = 1024 * 1024 * 1024
+_ALL_TASK_MAX_RECORDS = 65536
+# Separate from the serialized-projection and semantic-query limits below.
+# The bounded increase covers the 35,195,141-byte wide-policy diagnostic;
+# different source snapshots and operator policies may still refuse.
+_ALL_TASK_MAX_RECORD_BYTES = 40 * 1024 * 1024
 _RELEASE_TASK_LIST_SHA256 = "40e04e7002050b66085f8eff5723feb73e5f62a26910fe73405ab59e5ee5b765"
+_ALL_TASK_SCOPE_BYTES = b'{"mode":"all_tasks","schema":"wd.mind-task-scope.v1"}'
+_ALL_TASK_SCOPE_SHA256 = "ddd82fe77e79d296aa084eea19200a600442aa4462633648c946465713bc8425"
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 _TASK = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}\Z")
 _GENERATION = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
@@ -467,6 +620,17 @@ _TYPES = frozenset(("message", "wake_request", "handoff", "test", "claim", "rele
                     "status", "progress"))
 _STATUSES = frozenset(("none", "requested", "answered", "milestone", "info", "in_progress", "handoff", "done",
                        "active", "delivered", "blocked", "released"))
+_ALL_TASK_ADDITIONAL_STATUSES = frozenset(("completed", "open", "superseded", "cancelled", "fyi"))
+# Known bridge decision vocabulary is observational content only, not a gate
+# verdict or proof of approver authority. It applies solely to all-task build
+# lane decisions; routing and content/privacy screens still run independently.
+_ALL_TASK_DECISION_STATUSES = frozenset((
+    "build_consensus_pass", "approved", "rejected", "approved_ci_green", "build_consensus",
+    "concur", "concurred", "agree", "agreed", "rco_pass", "rco_pass_pending_ci",
+    "no_changes_requested", "operator_sign", "changes_requested", "finding", "veto", "hold",
+    "changes_requested_resolved", "changes_requested_cleared", "changes_requested_retracted",
+    "block_retracted", "received", "concurrence", "acknowledged",
+))
 _ROUTING_KEYS = frozenset(("to", "to_list", "recipient", "recipients", "recipient_agent", "target", "target_agent",
                          "target_agents", "destination", "destinations", "audience", "reply_to", "expected_responders",
                          "responders", "targets", "target_list", "recipient_agents", "recipient_list", "cc", "bcc",
@@ -485,8 +649,9 @@ _DECISION_KEYS = frozenset(("schema", "decision", "projection_schema", "scope", 
 _REQUIRED_CODE = {
     "tools/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "tools/wd_bridge_mind.py": "8555bd3fda512078ba61e3638af7f17ba3de55be11e126f6a7740ae140a67211",
-    "waggledance/core/bridge_log_reader.py": "1949e26526153363d8c19f5051f636a646bb6839758d779c904f1eab72c5f49e",
-    "tools/wd_mind_content_prefix_readonly.py": "2928e877f48229fd75e9a98d00cb180aec22b46608f197337274a4f26ae46424",
+    "waggledance/core/bridge_log_reader.py": "7137ae5da42af39177407722f6f2978f7fc41a41682a7a2cd7964aff6378d190",
+    "tools/wd_mind_content_prefix_readonly.py": "264696c1c315e0a87304330fd83829f3bf102ca2c538a69656e193aa127a4dd3",
+    "tools/wd_mind_absent_generation_prefix_readonly.py": "1eba6403ac12765110c22cd06d2cf3cb1b9bb97e73474d35d9d899d1d4ecb5e9",
     "tools/bridge_compact_view.py": "c808da1b1dd8f4e0220f8ffce730963455d0a706c2b4f1dd6387e450d5c84c83",
     "waggledance/__init__.py": "a48c64790f6d239f53960e5011fe87129555d7978197e9f0d0b43ef3b93d5e82",
     "waggledance/core/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -651,18 +816,28 @@ def _message_policy(document, tasks):
     if type(document) is not dict:
         raise ValueError("invalid_message_policy")
     schema = document.get("schema")
-    keys = (_POLICY_KEYS if schema == "wd.mind-content-policy.v1" else
-            _POLICY_KEYS | {"approved_source_refs"} if schema == "wd.mind-content-policy.v2" else None)
-    if keys is None or set(document) != keys:
+    all_tasks = tasks is None
+    all_keys = (_POLICY_KEYS - {"approved_tasks"}) | {"task_scope"}
+    keys = (_POLICY_KEYS if schema == "wd.mind-content-policy.v1" and not all_tasks else
+            _POLICY_KEYS | {"approved_source_refs"} if schema == "wd.mind-content-policy.v2" and not all_tasks else
+            all_keys if schema == "wd.mind-content-policy.v3" and all_tasks else None)
+    if (keys is None or (set(document) != keys and
+            not (all_tasks and set(document) == keys | {"approved_source_refs"}))):
         raise ValueError("invalid_message_policy")
     result = {
         "lanes": _strings(document["lanes"], lambda lane: lane in _BUILD_LANES, minimum=1, maximum=3),
-        "types": _strings(document["types"], lambda kind: kind in _TYPES, minimum=1, maximum=len(_TYPES)),
-        "approved_tasks": _strings(document["approved_tasks"], _task, minimum=1, maximum=8),
+        "types": _strings(document["types"], lambda kind: kind in (_TYPES | {"decision"} if all_tasks else _TYPES),
+                          minimum=1, maximum=len(_TYPES) + (1 if all_tasks else 0)),
         "removed_source_refs": _strings(document["removed_source_refs"], _hex),
     }
-    if not result["approved_tasks"] <= tasks:
-        raise ValueError("task_widening")
+    if all_tasks:
+        if document["task_scope"] != "all_tasks":
+            raise ValueError("invalid_task_scope")
+        result["task_scope"] = "all_tasks"
+    else:
+        result["approved_tasks"] = _strings(document["approved_tasks"], _task, minimum=1, maximum=8)
+        if not result["approved_tasks"] <= tasks:
+            raise ValueError("task_widening")
     for name, low, high in (("max_message_chars", 1, MAX_MESSAGE_CHARS),
                             ("max_chunk_chars", MIN_CHUNK_CHARS, MAX_CHUNK_CHARS)):
         if type(document[name]) is not int or not low <= document[name] <= high:
@@ -673,17 +848,30 @@ def _message_policy(document, tasks):
     return result
 
 
-def _inputs(values):
+def _inputs(values, *, complete_source=False):
     # All policy/decision pins are checked before source prefix I/O, including
     # required private policy. Unknown fields or missing evidence refuse.
     if set(values) != _INPUT_KEYS or values["enabled"] is not True or values["documents"] is not None:
         raise ValueError("invalid_inputs")
-    tasks = _strings(_pinned(values["approved_tasks_bytes"], values["approved_tasks_sha256"]),
-                     _task, minimum=8, maximum=8)
+    task_document = _pinned(values["approved_tasks_bytes"], values["approved_tasks_sha256"])
+    all_tasks = (type(task_document) is dict and task_document ==
+                 {"schema": _ALL_TASK_SCOPE_SCHEMA, "mode": "all_tasks"})
+    if complete_source and not all_tasks:
+        raise ValueError("complete_scope_required")
+    if all_tasks:
+        if _canonical(task_document) != values["approved_tasks_bytes"]:
+            raise ValueError("noncanonical_task_scope")
+        tasks = None
+    else:
+        tasks = _strings(task_document, _task, minimum=8, maximum=8)
     policy = _pinned(values["policy_bytes"], values["policy_sha256"])
-    if (type(policy) is not dict or set(policy) != {"schema", "approved_tasks"}
-            or policy["schema"] != "wd.q4-non-review-policy.v1"
-            or _strings(policy["approved_tasks"], _task, minimum=8, maximum=8) != tasks):
+    if all_tasks:
+        policy_valid = policy == {"schema": "wd.q4-non-review-policy.v2", "task_scope": "all_tasks"}
+    else:
+        policy_valid = (type(policy) is dict and set(policy) == {"schema", "approved_tasks"}
+                        and policy["schema"] == "wd.q4-non-review-policy.v1"
+                        and _strings(policy["approved_tasks"], _task, minimum=8, maximum=8) == tasks)
+    if not policy_valid:
         raise ValueError("invalid_task_policy")
     roster_document = _pinned(values["roster_bytes"], values["roster_sha256"])
     roster = _roster(roster_document)
@@ -696,13 +884,15 @@ def _inputs(values):
     binding = values["identifier_policy_binding"]
     if type(binding) is not tuple or len(binding) != 3:
         raise ValueError("missing_identifier_policy")
-    private = _load_identifier_policy(*binding)
+    private = _load_identifier_policy(*binding, allow_empty_v2=complete_source and all_tasks)
     decision = _pinned(values["decision_bytes"], values["decision_sha256"])
     if (type(decision) is not dict or set(decision) != _DECISION_KEYS
             or _canonical(decision) != values["decision_bytes"]
-            or decision["schema"] != _DECISION_SCHEMA or decision["decision"] != "enable_content_route"
-            or decision["projection_schema"] != _COMBINED_SCHEMA or decision["scope"] != _ROUTE_SCOPE
-            or decision["message_projection_schema"] != _MESSAGE_SCHEMA
+            or decision["schema"] != (_ALL_TASK_DECISION_SCHEMA if all_tasks else _DECISION_SCHEMA)
+            or decision["decision"] != "enable_content_route"
+            or decision["projection_schema"] != (_ALL_TASK_COMBINED_SCHEMA if all_tasks else _COMBINED_SCHEMA)
+            or decision["scope"] != (_ALL_TASK_ROUTE_SCOPE if all_tasks else _ROUTE_SCOPE)
+            or decision["message_projection_schema"] != (_ALL_TASK_MESSAGE_SCHEMA if all_tasks else _MESSAGE_SCHEMA)
             or decision["review_signal_excluded"] is not False or decision["doc_policy_sha256"] is not None):
         raise ValueError("invalid_decision")
     pins = dict(module_sha256s(), nonreview_policy_sha256=values["policy_sha256"],
@@ -714,8 +904,12 @@ def _inputs(values):
     anchored = decision["source_prefix"]
     if (type(anchored) is not dict or set(anchored) != {"sha256", "offset", "generation"}
             or not _hex(anchored["sha256"]) or type(anchored["offset"]) is not int
-            or not 0 < anchored["offset"] <= 256 * 1024 * 1024
-            or type(anchored["generation"]) is not str or _GENERATION.fullmatch(anchored["generation"]) is None):
+            or anchored["offset"] <= 0
+            or (not complete_source and anchored["offset"] >
+                (_ALL_TASK_MAX_PREFIX_BYTES if all_tasks else 256 * 1024 * 1024))
+            or not ((complete_source and anchored["generation"] is None)
+                    or (type(anchored["generation"]) is str
+                        and _GENERATION.fullmatch(anchored["generation"]) is not None))):
         raise ValueError("invalid_anchor")
     _check_code()
     # Imports only after the pinned dependency byte check. No native/model
@@ -807,18 +1001,28 @@ def _fields(event, policy, roster):
         return "agent_identity_mismatch"
     if type(event.get("type")) is not str or event["type"] not in policy["types"]:
         return "type_not_allowed"
-    if type(event.get("task_id")) is not str or event["task_id"] not in policy["approved_tasks"]:
+    task = event.get("task_id")
+    if (type(task) is not str or not _task(task) or
+            (policy.get("task_scope") != "all_tasks" and task not in policy["approved_tasks"])):
         return "task_not_approved"
     status = event.get("status")
-    if status not in (None, "") and (type(status) is not str or status not in _STATUSES):
+    all_tasks = policy.get("task_scope") == "all_tasks"
+    decision_status = (all_tasks and event["type"] == "decision" and type(status) is str
+                       and status in _ALL_TASK_DECISION_STATUSES)
+    if status not in (None, "") and (type(status) is not str or (status not in _STATUSES
+            and not (all_tasks and status in _ALL_TASK_ADDITIONAL_STATUSES) and not decision_status)):
         return "status_not_allowed"
     try:
         when = _utc(event.get("ts_utc")).replace(second=0, microsecond=0)
         available = when + dt.timedelta(seconds=60)
     except (ValueError, TypeError, OverflowError):
         return "time_invalid"
-    return {"agent": agent, "type": event["type"], "task_id": event["task_id"],
-            "ts_utc": _utc_text(when), "available": _utc_text(available)}
+    visible_task = ("sha256:" + _sha(task.encode("utf-8")) if policy.get("task_scope") == "all_tasks" else task)
+    fields = {"agent": agent, "type": event["type"], "task_id": visible_task,
+              "ts_utc": _utc_text(when), "available": _utc_text(available)}
+    if (all_tasks and status in _ALL_TASK_ADDITIONAL_STATUSES) or decision_status:
+        fields["declared_status"] = status
+    return fields
 
 
 def _record(source_ref, fields, chunks, index):
@@ -826,21 +1030,34 @@ def _record(source_ref, fields, chunks, index):
     ref = _sha(_canonical({"text": text, "source": source_ref, "chunk": index}))
     return {"record_id": "content:" + ref, "kind": "event", "time_utc": fields["ts_utc"],
             "available_utc": fields["available"], "stored_text": text, "summary": text,
-            "meta": {"agent": fields["agent"], "type": fields["type"], "task_id": fields["task_id"],
-                     "text_encoding": "wd.content-text.v1"},
+             "meta": {"agent": fields["agent"], "type": fields["type"], "task_id": fields["task_id"],
+                      "text_encoding": "wd.content-text.v1",
+                      **({"declared_status": fields["declared_status"]} if "declared_status" in fields else {})},
             "provenance": {"source_kind": "bridge_message", "event_ref": ref,
                            "ref_kind": "sha256_of_content_chunk_and_source", "canonical_event": False,
                            "source_event_ref": source_ref, "chunk_index": index, "chunk_count": len(chunks),
                            "tier": {"source_type": "bridge_event"}, "available_utc": fields["available"]}}
 
 
-def _projection(context):
+def _projection(context, *, complete_records=False):
     prefix = _pinned_dependency("tools.wd_mind_content_prefix_readonly", "tools/wd_mind_content_prefix_readonly.py",
-                                ("read_prefix_rows",))
+                                ("read_prefix_rows", "read_complete_prefix_rows"))
     source, policy = context["messages"], context["policy"]
-    rows = prefix.read_prefix_rows(source["source_path"], source["generation_path"], source["end_cursor"],
-                                  context["decision"]["source_prefix"]["sha256"], set(policy["approved_tasks"]))
-    records, refused = [], {}
+    all_tasks = policy.get("task_scope") == "all_tasks"
+    if all_tasks and complete_records and source["end_cursor"].generation is None:
+        absent = _pinned_dependency("tools.wd_mind_absent_generation_prefix_readonly",
+                                    "tools/wd_mind_absent_generation_prefix_readonly.py",
+                                    ("read_complete_generationless_prefix_rows",))
+        rows = absent.read_complete_generationless_prefix_rows(
+            source["source_path"], source["generation_path"], source["end_cursor"],
+            context["decision"]["source_prefix"]["sha256"])
+    elif all_tasks:
+        rows = prefix.read_prefix_rows(source["source_path"], source["generation_path"], source["end_cursor"],
+                                      context["decision"]["source_prefix"]["sha256"], None, scope="all_tasks_v1")
+    else:
+        rows = prefix.read_prefix_rows(source["source_path"], source["generation_path"], source["end_cursor"],
+                                      context["decision"]["source_prefix"]["sha256"], set(policy["approved_tasks"]))
+    records, refused, record_bytes = [], {}, 0
     for ref in sorted(rows):
         event = rows[ref]
         if not _hex(ref) or type(event) is not dict or not hmac.compare_digest(_sha(_canonical(event)), ref):
@@ -868,15 +1085,23 @@ def _projection(context):
         if not chunks or any(_OUTPUT.fullmatch(text) is None or _has_marker(text) for text in chunks):
             refused["encoding"] = refused.get("encoding", 0) + 1
             continue
-        records.extend(_record(ref, fields, chunks, index) for index in range(len(chunks)))
+        for index in range(len(chunks)):
+            record = _record(ref, fields, chunks, index)
+            if all_tasks and not complete_records:
+                record_bytes += len(_canonical(record))
+                if len(records) >= _ALL_TASK_MAX_RECORDS or record_bytes > _ALL_TASK_MAX_RECORD_BYTES:
+                    raise ValueError("projection_limit")
+            records.append(record)
     records.sort(key=lambda item: (item["time_utc"], item["provenance"]["source_event_ref"],
                                    item["provenance"]["chunk_index"]))
-    messages = {"schema": _MESSAGE_SCHEMA, "authority": "none", "scope": "shared_content_projection_not_gate",
+    messages = {"schema": _ALL_TASK_MESSAGE_SCHEMA if all_tasks else _MESSAGE_SCHEMA,
+                "authority": "none", "scope": "shared_content_projection_not_gate",
                 "policy_sha256": source["policy_sha256"], "text_encoding": "wd.content-text.v1",
                 "accepted": len(records), "refused": dict(sorted(refused.items())), "records": records,
                 "authorship": "declared_roster_consistent", "review_signal_excluded": False,
                 "identifier_policy_hmac": context["identifier_tag"]}
-    return {"schema": _COMBINED_SCHEMA, "authority": "none", "scope": "wd.mind-content-events.v1",
+    return {"schema": _ALL_TASK_COMBINED_SCHEMA if all_tasks else _COMBINED_SCHEMA,
+            "authority": "none", "scope": "wd.mind-content-events.v1",
             "messages": messages, "documents": None}
 
 
@@ -894,7 +1119,34 @@ def _verified(snapshot):
     # this fixed digest, plus its other authority and runtime tuple conditions.
     report = {"status": "MATCH", "projection_sha256": digest, "decision_sha256": context["decision_sha256"],
               "source_prefix": dict(context["decision"]["source_prefix"]), "doc_commit": None,
-              "operator_scope_authorization": "UNKNOWN", "required_release_task_list_sha256": _RELEASE_TASK_LIST_SHA256}
+              "operator_scope_authorization": "UNKNOWN", "required_release_task_list_sha256":
+                  None if context["policy"].get("task_scope") == "all_tasks" else _RELEASE_TASK_LIST_SHA256}
+    return projection, context, report
+
+
+def _verified_complete(snapshot):
+    """Re-derive and compare an explicit all-tasks snapshot without count caps.
+
+    This is an in-memory consistency check, not sender authentication. A
+    missing generation remains unknown; the pinned generationless reader
+    checks sidecar absence rather than asserting continuity. Allocation errors
+    and any difference refuse the complete result.
+    """
+    if type(snapshot) is not dict:
+        raise ValueError("invalid_snapshot")
+    inputs = dict(snapshot)
+    raw = inputs.pop("projection_bytes", None)
+    digest = inputs.pop("projection_sha256", None)
+    if type(raw) is not bytes or not raw or not _hex(digest) or not hmac.compare_digest(_sha(raw), digest):
+        raise ValueError("invalid_projection_pin")
+    context = _inputs(inputs, complete_source=True)
+    projection = _projection(context, complete_records=True)
+    if not hmac.compare_digest(_serialized(projection), raw):
+        raise ValueError("snapshot_mismatch")
+    report = {"status": "MATCH", "projection_sha256": digest,
+              "decision_sha256": context["decision_sha256"],
+              "source_prefix": dict(context["decision"]["source_prefix"]), "doc_commit": None,
+              "operator_scope_authorization": "UNKNOWN", "required_release_task_list_sha256": None}
     return projection, context, report
 
 
@@ -917,6 +1169,27 @@ def rederive_message_projection(**inputs):
     return output
 
 
+def rederive_complete_message_projection(**inputs):
+    """Screen a complete pinned prefix in memory without a fixed record count.
+
+    This is only a source-derived projection. It does not create or publish an
+    index, load a model, authenticate senders or deliver startup context. All
+    results are held in memory, so allocation failure refuses the entire result.
+    The caller must use the explicit all-tasks policy and pinned route decision.
+    """
+    output = None
+    succeeded = False
+    try:
+        output = _projection(_inputs(inputs, complete_source=True), complete_records=True)
+        succeeded = True
+    except Exception:
+        pass
+    inputs = None
+    if not succeeded:
+        _deny()
+    return output
+
+
 # Synthetic-first frozen semantic boundary. Providers are established by the
 # caller; identity metadata is consistency evidence, not loaded-code authority.
 # This module never constructs an encoder, imports a native backend or writes
@@ -930,13 +1203,25 @@ _Q4_KEYS = _Q4_SOURCE_KEYS | {
     "index_binding_bytes", "index_binding_sha256", "stream",
 }
 _Q4_CELLS = frozenset(("general", "thermal", "energy", "safety", "seasonal", "math", "system", "learning"))
-_Q4_PLACEMENT = {"message": "general", "milestone": "general", "progress": "general",
+_Q4_PLACEMENT = {"message": "general", "milestone": "general", "progress": "general", "decision": "general",
                  "status": "system", "wake_request": "system", "handoff": "system",
                  "claim": "system", "release": "system", "done": "system", "test": "learning"}
 _Q4_DIM = 384
 _Q4_MAX_ROWS = 20000  # Additional availability bound, not a native allocation guarantee.
+_Q4_BOUNDED_V3_MAX_ROWS = 65536
+_Q4_BOUNDED_CHUNK_ROWS = 128
+_Q4_BOUNDED_VECTOR_BYTES = 256 * 1024 * 1024
 _Q4_TOTAL_BYTES = 512 * 1024 * 1024
 _Q4_ARTIFACT_BYTES = 16 * 1024 * 1024
+# Applies only to v3 meta/provenance, not logs or legacy v2. JSON expansion can
+# consume substantially more memory than these byte counts; the aggregate and
+# global row budgets are checked before v3 cell metadata is expanded.
+_Q4_BOUNDED_V3_ARTIFACT_BYTES = 48 * 1024 * 1024
+# Count containers, object keys and scalar values before JSON allocates them.
+# The aggregate row preflight also bounds their sum across cells. Byte and node
+# budgets bound inputs/objects, not total process RSS or provider allocations.
+_Q4_V3_JSON_NODES_PER_ROW = 64
+_Q4_V3_JSON_MAX_DEPTH = 16
 _Q4_TOKEN = re.compile(r"[^\W_]{2,}", re.UNICODE)
 _Q4_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
@@ -980,12 +1265,23 @@ def _q4_bindings(encoder_binding, index_binding, identity=None):
 def _q4_controls(values):
     if type(values) is not dict or set(values) != _Q4_KEYS or values["enabled"] is not True:
         raise ValueError("invalid_semantic_inputs")
-    # Independently enforce the exact operator list bytes, not a digest derived
-    # from the same untrusted document or merely an equivalent set of task IDs.
+    # Both supported scopes are bound to independent fixed digests, rather than
+    # trusting a self-reported hash or accepting an equivalent JSON document.
+    # The decision, policy and module pins are independently checked by _inputs.
     tasks = values["approved_tasks_bytes"]
-    if (type(tasks) is not bytes or not 0 < len(tasks) <= _MAX_CONTROL_BYTES
-            or values["approved_tasks_sha256"] != _RELEASE_TASK_LIST_SHA256
-            or not hmac.compare_digest(_sha(tasks), _RELEASE_TASK_LIST_SHA256)):
+    digest = values["approved_tasks_sha256"]
+    if type(tasks) is not bytes or not 0 < len(tasks) <= _MAX_CONTROL_BYTES:
+        raise ValueError("operator_task_list_mismatch")
+    if digest == _RELEASE_TASK_LIST_SHA256 and hmac.compare_digest(_sha(tasks), digest):
+        scope = _ROUTE_SCOPE
+        descriptor_schema = "wd.bridge-mind-q4-memory-descriptor.v2"
+        projection_schema = _COMBINED_SCHEMA
+    elif (digest == _ALL_TASK_SCOPE_SHA256 and tasks == _ALL_TASK_SCOPE_BYTES
+          and hmac.compare_digest(_sha(tasks), _ALL_TASK_SCOPE_SHA256)):
+        scope = _ALL_TASK_ROUTE_SCOPE
+        descriptor_schema = "wd.bridge-mind-q4-memory-descriptor.v3"
+        projection_schema = _ALL_TASK_COMBINED_SCHEMA
+    else:
         raise ValueError("operator_task_list_mismatch")
     descriptor = _pinned(values["descriptor_bytes"], values["descriptor_sha256"])
     memory = _pinned(values["memory_bytes"], values["memory_sha256"], limit=1024 * 1024)
@@ -993,8 +1289,8 @@ def _q4_controls(values):
     index_binding = _pinned(values["index_binding_bytes"], values["index_binding_sha256"])
     if (type(descriptor) is not dict
             or set(descriptor) != {"schema", "scope", "memory_sha256", "dim", "encoder"}
-            or descriptor["schema"] != "wd.bridge-mind-q4-memory-descriptor.v2"
-            or descriptor["scope"] != "wd.q4-shared-projected-events.v1"
+            or descriptor["schema"] != descriptor_schema
+            or descriptor["scope"] != scope
             or type(descriptor["dim"]) is not int or descriptor["dim"] != _Q4_DIM
             or descriptor["memory_sha256"] != values["memory_sha256"]):
         raise ValueError("invalid_descriptor")
@@ -1008,7 +1304,7 @@ def _q4_controls(values):
     if (type(memory) is not dict or memory.get("schema") != "wd.bridge-mind-hex-memory-step2.v1"
             or memory.get("scope") != descriptor["scope"]
             or type(memory.get("dim")) is not int or memory["dim"] != _Q4_DIM
-            or memory.get("encoder") != identity or memory.get("projection_schema") != _COMBINED_SCHEMA
+            or memory.get("encoder") != identity or memory.get("projection_schema") != projection_schema
             or memory.get("projection_sha256") != values["projection_sha256"]
             or type(memory.get("cells")) is not dict or not memory["cells"]
             or not set(memory["cells"]) <= _Q4_CELLS
@@ -1027,7 +1323,74 @@ def _q4_provider_identity(provider, expected, method):
         raise ValueError("invalid_provider")
 
 
-def _q4_cell_controls(cell_id, item, bound, memory, records):
+def _q4_json_budget(raw, max_nodes):
+    """Scan UTF-8 JSON/JSONL bytes in constant space; parsing stays authoritative.
+
+    Every valid JSON container, key and scalar starts one counted token. Escaped
+    quotes/backslashes keep punctuation inside strings inert; UTF-8 multibyte
+    characters cannot contain an ASCII quote or backslash byte. This is only an
+    allocation preflight, not a replacement JSON syntax/duplicate-key check.
+    """
+    import codecs
+    # json.loads(bytes) also accepts UTF-16/32, whose code units can hide ASCII
+    # punctuation from this UTF-8 scanner. Raw NUL is never valid JSON text.
+    if b"\x00" in raw:
+        raise ValueError("cell_json_encoding")
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    try:
+        for start in range(0, len(raw), 65536):
+            decoder.decode(raw[start:start + 65536], final=False)
+        decoder.decode(b"", final=True)
+    except UnicodeError:
+        raise ValueError("cell_json_encoding") from None
+    nodes = depth = 0
+    quoted = escaped = atom = False
+    for byte in raw:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif byte == 92:  # backslash
+                escaped = True
+            elif byte == 34:  # quote
+                quoted = False
+            continue
+        if byte in b" \t\r\n,:":
+            atom = False
+            continue
+        if byte in (125, 93):  # object/array end
+            depth -= 1
+            atom = False
+            continue
+        if byte == 34:
+            quoted, atom = True, False
+            nodes += 1
+        elif byte in (123, 91):  # object/array start
+            depth += 1
+            atom = False
+            nodes += 1
+            if depth > _Q4_V3_JSON_MAX_DEPTH:
+                raise ValueError("cell_json_depth_budget")
+        elif not atom:
+            atom = True
+            nodes += 1
+        if nodes > max_nodes:
+            raise ValueError("cell_json_node_budget")
+
+
+def _q4_cell_controls(cell_id, item, bound, memory, records, *, complete_limits=None):
+    complete = complete_limits is not None
+    artifact_limit = (_Q4_BOUNDED_V3_ARTIFACT_BYTES
+                      if memory["scope"] == _ALL_TASK_ROUTE_SCOPE else _Q4_ARTIFACT_BYTES)
+    if complete:
+        wanted = sum(1 for record in records.values() if _Q4_PLACEMENT.get(record["meta"]["type"]) == cell_id) * 2
+        if (type(complete_limits) is not dict
+                or set(complete_limits) != {"count", "meta", "provenance", "index", "vectors"}
+                or any(type(value) is not int or value <= 0 for value in complete_limits.values())
+                or complete_limits["count"] != wanted or wanted <= 0
+                or complete_limits["vectors"] != wanted * _Q4_DIM * 4
+                or complete_limits["index"] != complete_limits["vectors"] + 65536):
+            raise ValueError("invalid_complete_limits")
+        artifact_limit = max(complete_limits["meta"], complete_limits["provenance"])
     if (type(item) is not dict or set(item) != {"pointer", "log", "artifacts"}
             or type(bound) is not dict or type(bound.get("generation")) is not int
             or bound["generation"] < 0 or not _hex(bound.get("receipt_sha256"))
@@ -1076,10 +1439,12 @@ def _q4_cell_controls(cell_id, item, bound, memory, records):
             or receipt.get("scope") != memory["scope"] or type(content) is not dict
             or receipt.get("content_sha256") != _sha(_canonical(content))
             or content.get("cell_id") != cell_id or type(content.get("count")) is not int
-            or not 0 < content["count"] <= _Q4_MAX_ROWS or content["count"] % 2
+            or not 0 < content["count"] <= (complete_limits["count"] if complete else
+                _Q4_BOUNDED_V3_MAX_ROWS if memory["scope"] == _ALL_TASK_ROUTE_SCOPE else _Q4_MAX_ROWS)
+            or content["count"] % 2
             or type(content.get("dim")) is not int or content["dim"] != _Q4_DIM
             or content.get("encoder") != memory["encoder"]
-            or content.get("projection_schema") != _COMBINED_SCHEMA
+            or content.get("projection_schema") != memory["projection_schema"]
             or content.get("projection_sha256") != memory["projection_sha256"]
             or not _hex(content.get("ids_sha256")) or not _hex(content.get("pairs_sha256"))
             or type(content.get("files")) is not dict):
@@ -1092,16 +1457,28 @@ def _q4_cell_controls(cell_id, item, bound, memory, records):
     if (not {"index", "meta", "provenance"} <= set(files)
             or not set(files) <= {"index", "meta", "provenance", "vectors"}
             or any(not _hex(pin) for pin in files.values())
-            or len(data["index"]) > 256 * 1024 * 1024):
+            or len(data["index"]) > (complete_limits["index"] if complete else 256 * 1024 * 1024)):
         raise ValueError("invalid_cell_artifacts")
     for name in ("index", "meta", "provenance", "vectors"):
         if name in data:
             if name not in files or not hmac.compare_digest(_sha(data[name]), files[name]):
                 raise ValueError("cell_artifact_mismatch")
-            if name in ("meta", "provenance") and len(data[name]) > _Q4_ARTIFACT_BYTES:
+            if name in ("meta", "provenance") and len(data[name]) > artifact_limit:
                 raise ValueError("cell_artifact_over_budget")
-    meta = _pinned(data["meta"], files["meta"], limit=_Q4_ARTIFACT_BYTES)
     count = content["count"]
+    if complete and (count != complete_limits["count"]
+                     or len(data["meta"]) != complete_limits["meta"]
+                     or len(data["provenance"]) != complete_limits["provenance"]
+                     or "vectors" not in data or len(data["vectors"]) != complete_limits["vectors"]):
+        raise ValueError("complete_cell_size_mismatch")
+    if memory["scope"] == _ALL_TASK_ROUTE_SCOPE:
+        # Valid JSONL has at most one CRLF (or CR/LF) separator per row.
+        # Check before splitlines can allocate a list for millions of blanks.
+        if data["provenance"].count(b"\n") + data["provenance"].count(b"\r") > 2 * count:
+            raise ValueError("cell_json_line_budget")
+        for name in ("meta", "provenance"):
+            _q4_json_budget(data[name], 16 + _Q4_V3_JSON_NODES_PER_ROW * count)
+    meta = _pinned(data["meta"], files["meta"], limit=artifact_limit)
     if (type(meta) is not dict or set(meta) != {"dim", "doc_ids", "texts", "metadata"}
             or type(meta["dim"]) is not int or meta["dim"] != _Q4_DIM
             or any(type(meta[name]) is not list or len(meta[name]) != count
@@ -1117,6 +1494,10 @@ def _q4_cell_controls(cell_id, item, bound, memory, records):
     rows, seen = [], set()
     cutoff = _utc(content.get("cutoff_utc"))
     for position, raw in enumerate(raw_rows):
+        if memory["scope"] == _ALL_TASK_ROUTE_SCOPE:
+            # Match the preflight's encoding; never let the parser auto-detect
+            # a different encoding from these immutable bytes.
+            raw = raw.decode("utf-8")
         row = json.loads(raw, object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
         provenance = row.get("provenance") if type(row) is dict else None
         if (type(row) is not dict or type(provenance) is not dict or row.get("kind") != "event"
@@ -1140,6 +1521,42 @@ def _q4_cell_controls(cell_id, item, bound, memory, records):
     if "vectors" in data and len(data["vectors"]) != count * _Q4_DIM * 4:
         raise ValueError("invalid_retained_vectors")
     return data, content, meta, rows
+
+
+def _q4_complete_cell_controls(cell_id, item, bound, memory, records, limits):
+    # Explicit wrapper prevents missing/false capacity from selecting legacy mode.
+    if (type(limits) is not dict or set(limits) != {"count", "meta", "provenance", "index", "vectors"}
+            or any(type(value) is not int or value <= 0 for value in limits.values())):
+        raise ValueError("invalid_complete_limits")
+    return _q4_cell_controls(cell_id, item, bound, memory, records, complete_limits=limits)
+
+
+def _q4_complete_source_limits(records):
+    """Derive exact cell metadata sizes from already re-derived source records."""
+    cells = {}
+    for record in records.values():
+        cell_id = _Q4_PLACEMENT.get(record["meta"]["type"])
+        if cell_id not in _Q4_CELLS:
+            raise ValueError("invalid_complete_placement")
+        cells.setdefault(cell_id, []).append(record)
+    result = {}
+    for cell_id, items in cells.items():
+        ids, texts, provenance_size = [], [], 0
+        for record in items:
+            for view in ("w", "d"):
+                doc_id = record["record_id"] + "#" + view
+                ids.append(doc_id)
+                texts.append(decode_text(record["stored_text"]))
+                row = {"record_id": doc_id, "kind": "event", "time_utc": record["time_utc"],
+                       "cell_id": cell_id, "provenance": dict(record["provenance"],
+                           record=record["record_id"], view=view,
+                           ref_kind="sha256_of_projected_metadata", canonical_event=False)}
+                provenance_size += len(_canonical(row)) + 1
+        meta = _canonical({"dim": _Q4_DIM, "doc_ids": ids, "texts": texts, "metadata": [{} for _ in ids]})
+        count = len(ids)
+        result[cell_id] = {"count": count, "meta": len(meta), "provenance": provenance_size,
+                           "vectors": count * _Q4_DIM * 4, "index": count * _Q4_DIM * 4 + 65536}
+    return result
 
 
 def _q4_vector(raw):
@@ -1239,10 +1656,12 @@ def _provider_matrix(value, count):
     return rows
 
 
-def _provider_index_controls(index):
+def _provider_index_controls(index, max_rows=None):
+    if max_rows is None:
+        max_rows = _Q4_MAX_ROWS
     dimension, count, metric = (getattr(index, name, None) for name in ("d", "ntotal", "metric_type"))
     if (type(dimension) is not int or dimension != _Q4_DIM
-            or type(count) is not int or not 0 < count <= _Q4_MAX_ROWS
+            or type(count) is not int or not 0 < count <= max_rows
             or type(metric) is not int or metric != 0
             or not callable(getattr(index, "reconstruct_n", None))):
         raise ValueError("invalid_decoded_index")
@@ -1271,10 +1690,12 @@ class _ReadonlyEncoderAdapter:
 
 
 class _ReadonlyDecodedIndex:
-    __slots__ = ("_index", "_controls")
+    __slots__ = ("_index", "_controls", "_allow_bounded_v3")
 
-    def __init__(self, index):
-        self._controls = _provider_index_controls(index)
+    def __init__(self, index, allow_bounded_v3=False):
+        self._allow_bounded_v3 = allow_bounded_v3
+        maximum = _Q4_BOUNDED_V3_MAX_ROWS if allow_bounded_v3 else None
+        self._controls = _provider_index_controls(index, maximum)
         self._index = index
 
     @property
@@ -1290,25 +1711,41 @@ class _ReadonlyDecodedIndex:
         return self._controls[2]
 
     def _reconstruct(self, start, count):
+        maximum = _Q4_BOUNDED_V3_MAX_ROWS if self._allow_bounded_v3 else None
         if (type(start) is not int or type(count) is not int
-                or start != 0 or count != self.ntotal
-                or _provider_index_controls(self._index) != self._controls):
+                or start != 0 or count != self.ntotal or count > _Q4_MAX_ROWS
+                or _provider_index_controls(self._index, maximum) != self._controls):
             raise ValueError("invalid_reconstruction_range")
         rows = _provider_matrix(self._index.reconstruct_n(start, count), count)
-        if _provider_index_controls(self._index) != self._controls:
+        if _provider_index_controls(self._index, maximum) != self._controls:
             raise ValueError("decoded_index_changed")
         return rows
 
     def reconstruct_n(self, start, count):
         return _provider_result(lambda: self._reconstruct(start, count))
 
+    def _reconstruct_chunk(self, start, count):
+        if (self._allow_bounded_v3 is not True or type(start) is not int or type(count) is not int
+                or start < 0 or not 0 < count <= _Q4_BOUNDED_CHUNK_ROWS
+                or start + count > self.ntotal
+                or _provider_index_controls(self._index, _Q4_BOUNDED_V3_MAX_ROWS) != self._controls):
+            raise ValueError("invalid_reconstruction_range")
+        rows = _provider_matrix(self._index.reconstruct_n(start, count), count)
+        if _provider_index_controls(self._index, _Q4_BOUNDED_V3_MAX_ROWS) != self._controls:
+            raise ValueError("decoded_index_changed")
+        return rows
+
+    def reconstruct_chunk(self, start, count):
+        return _provider_result(lambda: self._reconstruct_chunk(start, count))
+
 
 class _ReadonlyIndexAdapter:
-    __slots__ = ("_decoder", "_identity_bytes", "_index_sha256s")
+    __slots__ = ("_decoder", "_identity_bytes", "_index_sha256s", "_allow_bounded_v3")
 
-    def __init__(self, decoder, binding, index_sha256s):
+    def __init__(self, decoder, binding, index_sha256s, allow_bounded_v3=False):
         self._decoder, self._identity_bytes = decoder, _canonical(binding)
         self._index_sha256s = frozenset(index_sha256s)
+        self._allow_bounded_v3 = allow_bounded_v3
 
     @property
     def identity(self):
@@ -1318,14 +1755,98 @@ class _ReadonlyIndexAdapter:
         if (type(raw) is not bytes or not 0 < len(raw) <= 256 * 1024 * 1024
                 or _sha(raw) not in self._index_sha256s):
             raise ValueError("unverified_index_bytes")
-        return _ReadonlyDecodedIndex(self._decoder(raw))
+        return _ReadonlyDecodedIndex(self._decoder(raw), self._allow_bounded_v3)
 
     def load(self, raw):
         return _provider_result(lambda: self._load(raw))
 
 
+class _CompleteDecodedIndex:
+    """Full-profile chunked decoder with an exact source-derived row count."""
+    __slots__ = ("_index", "_controls", "_rows")
+
+    def __init__(self, index, rows):
+        if type(rows) is not int or rows <= 0:
+            raise ValueError("invalid_complete_rows")
+        self._rows = rows
+        self._controls = _provider_index_controls(index, rows)
+        if self._controls[1] != rows:
+            raise ValueError("invalid_complete_rows")
+        self._index = index
+
+    @property
+    def d(self): return self._controls[0]
+
+    @property
+    def ntotal(self): return self._controls[1]
+
+    @property
+    def metric_type(self): return self._controls[2]
+
+    def reconstruct_n(self, start, count):
+        if (type(start) is not int or type(count) is not int or start < 0
+                or not 0 < count <= _Q4_BOUNDED_CHUNK_ROWS or start + count > self._rows
+                or _provider_index_controls(self._index, self._rows) != self._controls):
+            raise ValueError("invalid_complete_reconstruction")
+        rows = _provider_matrix(self._index.reconstruct_n(start, count), count)
+        if _provider_index_controls(self._index, self._rows) != self._controls:
+            raise ValueError("decoded_index_changed")
+        return rows
+
+
+class _CompleteIndexAdapter:
+    __slots__ = ("_decoder", "_by_hash")
+
+    def __init__(self, decoder, source_limits):
+        if (type(source_limits) is not dict or not source_limits
+                or any(not _hex(key) or type(value) is not int or value <= 0
+                       for key, value in source_limits.items())):
+            raise ValueError("invalid_complete_index_limits")
+        self._decoder, self._by_hash = decoder, dict(source_limits)
+
+    def load(self, raw):
+        if type(raw) is not bytes or not raw:
+            raise ValueError("invalid_complete_index")
+        rows = self._by_hash.get(_sha(raw))
+        if rows is None or len(raw) > rows * _Q4_DIM * 4 + 65536:
+            raise ValueError("invalid_complete_index")
+        return _CompleteDecodedIndex(self._decoder(raw), rows)
+
+
+class _CompleteQueryIndexProvider:
+    __slots__ = ("_decoder", "_identity_bytes")
+
+    def __init__(self, decoder, binding):
+        self._decoder, self._identity_bytes = decoder, _canonical(binding)
+
+    @property
+    def identity(self):
+        return json.loads(self._identity_bytes)
+
+    def load(self, raw):
+        return _provider_result(lambda: self._decoder(raw))
+
+
+def adapt_complete_readonly_providers(*, encoder, index_decoder, encoder_binding_bytes, encoder_binding_sha256,
+                                      index_binding_bytes, index_binding_sha256):
+    """Format caller-trusted providers for the opt-in complete query only.
+
+    Binding metadata does not authenticate provider code, assets or computation.
+    The complete query derives each decoder budget from its verified source.
+    """
+    def adapt():
+        encoder_binding = _pinned(encoder_binding_bytes, encoder_binding_sha256)
+        index_binding = _pinned(index_binding_bytes, index_binding_sha256)
+        _q4_bindings(encoder_binding, index_binding)
+        if (isinstance(encoder, type) or not callable(getattr(encoder, "query", None))
+                or isinstance(index_decoder, type) or not callable(index_decoder)):
+            raise ValueError("invalid_provider_inputs")
+        return _ReadonlyEncoderAdapter(encoder, encoder_binding), _CompleteQueryIndexProvider(index_decoder, index_binding)
+    return _provider_result(adapt)
+
+
 def _adapt_readonly_providers(encoder, index_decoder, encoder_binding_bytes, encoder_binding_sha256,
-                             index_binding_bytes, index_binding_sha256, index_sha256s):
+                             index_binding_bytes, index_binding_sha256, index_sha256s, allow_bounded_v3):
     encoder_binding = _pinned(encoder_binding_bytes, encoder_binding_sha256)
     index_binding = _pinned(index_binding_bytes, index_binding_sha256)
     _q4_bindings(encoder_binding, index_binding)
@@ -1333,14 +1854,15 @@ def _adapt_readonly_providers(encoder, index_decoder, encoder_binding_bytes, enc
             or isinstance(index_decoder, type) or not callable(index_decoder)
             or type(index_sha256s) not in (tuple, list, set, frozenset)
             or not 0 < len(index_sha256s) <= len(_Q4_CELLS)
-            or any(not _hex(digest) for digest in index_sha256s)):
+            or any(not _hex(digest) for digest in index_sha256s)
+            or type(allow_bounded_v3) is not bool):
         raise ValueError("invalid_provider_inputs")
     return (_ReadonlyEncoderAdapter(encoder, encoder_binding),
-            _ReadonlyIndexAdapter(index_decoder, index_binding, index_sha256s))
+            _ReadonlyIndexAdapter(index_decoder, index_binding, index_sha256s, allow_bounded_v3))
 
 
 def adapt_readonly_providers(*, encoder, index_decoder, encoder_binding_bytes, encoder_binding_sha256,
-                            index_binding_bytes, index_binding_sha256, index_sha256s):
+                            index_binding_bytes, index_binding_sha256, index_sha256s, allow_bounded_v3=False):
     """Adapt caller-trusted objects to the strict read-only semantic ABI.
 
     No encoder/index provider is constructed here. The supplied query object and
@@ -1349,12 +1871,15 @@ def adapt_readonly_providers(*, encoder, index_decoder, encoder_binding_bytes, e
     Only little-endian float32 arrays/scalars with exact shape and byte roundtrip
     are converted. Builtin sequences retain the reader's finite/norm/size checks.
     No casting, normalization, native imports, model load or fallback is added.
+    ``allow_bounded_v3=True`` enables the separate chunk ABI and its larger,
+    hard-bounded index ceiling. Default and legacy full-reconstruction semantics
+    do not change; native providers may still allocate independently.
     Use the existing query_content_snapshot boundary for source/provenance
     validation; these facades alone do not authorize any source or runtime use.
     """
     return _provider_result(lambda: _adapt_readonly_providers(
         encoder, index_decoder, encoder_binding_bytes, encoder_binding_sha256,
-        index_binding_bytes, index_binding_sha256, index_sha256s))
+        index_binding_bytes, index_binding_sha256, index_sha256s, allow_bounded_v3))
 
 
 def _q4_decode_cells(captured, provider, records):
@@ -1388,6 +1913,107 @@ def _q4_decode_cells(captured, provider, records):
     return entries
 
 
+def _q4_decode_cells_bounded_v3(captured, provider, records):
+    """Validate all index rows first and retain bounded exact Python-float bytes.
+
+    Provider callbacks remain caller-trusted and can allocate independently.
+    The stored float64 values preserve the previous dot-product inputs; float32
+    bytes are still used for the independently pinned pair and retained-vector
+    checks. No result is returned until all cells and pairs are verified.
+    """
+    import struct
+    if len(records) * 2 * _Q4_DIM * 8 > _Q4_BOUNDED_VECTOR_BYTES:
+        raise ValueError("decoded_vector_budget")
+    entries = {}
+    for cell_id, (data, content, meta, rows) in captured.items():
+        index = provider.load(data["index"])
+        controls = _provider_index_controls(index, _Q4_BOUNDED_V3_MAX_ROWS)
+        if controls[1] != content["count"]:
+            raise ValueError("invalid_decoded_index")
+        reconstruct = getattr(index, "reconstruct_chunk", None)
+        if not callable(reconstruct):
+            reconstruct = index.reconstruct_n
+        pairs = hashlib.sha256()
+        for start in range(0, content["count"], _Q4_BOUNDED_CHUNK_ROWS):
+            count = min(_Q4_BOUNDED_CHUNK_ROWS, content["count"] - start)
+            if _provider_index_controls(index, _Q4_BOUNDED_V3_MAX_ROWS) != controls:
+                raise ValueError("decoded_index_changed")
+            vectors = reconstruct(start, count)
+            if (type(vectors) not in (tuple, list) or len(vectors) != count
+                    or _provider_index_controls(index, _Q4_BOUNDED_V3_MAX_ROWS) != controls):
+                raise ValueError("invalid_decoded_count")
+            for relative, raw_vector in enumerate(vectors):
+                position = start + relative
+                record_id, view = rows[position]
+                vector = _q4_vector(raw_vector)
+                raw32 = struct.pack("<" + "f" * _Q4_DIM, *vector)
+                pairs.update(meta["doc_ids"][position].encode() + b"\x00" + raw32)
+                if ("vectors" in data and
+                        data["vectors"][position * _Q4_DIM * 4:(position + 1) * _Q4_DIM * 4] != raw32):
+                    raise ValueError("retained_vector_mismatch")
+                entry = entries.setdefault(record_id, {})
+                if view in entry:
+                    raise ValueError("duplicate_memory_view")
+                entry[view] = struct.pack("<" + "d" * _Q4_DIM, *vector)
+        if not hmac.compare_digest(pairs.hexdigest(), content["pairs_sha256"]):
+            raise ValueError("decoded_pairs_mismatch")
+    if set(entries) != set(records) or any(set(entry) != {"w", "d"} for entry in entries.values()):
+        raise ValueError("incomplete_memory")
+    return entries
+
+
+def _q4_decode_cells_complete_v1(captured, provider, records, *, retain=False):
+    """Verify every source-derived pair without retaining a second vector copy.
+
+    Counts and limits must already have been derived from the verified source
+    and checked by _q4_complete_cell_controls. Allocation is still in memory;
+    this does not guarantee RAM availability or prevent process-level OOM.
+    Retained ranking inputs are canonicalized from the verified float32 bytes;
+    the legacy bounded profile retains its original Python-float semantics.
+    """
+    import struct
+    if type(retain) is not bool:
+        raise ValueError("invalid_complete_retention")
+    seen = {record_id: 0 for record_id in records}
+    entries = {} if retain else None
+    for cell_id, (data, content, meta, rows) in captured.items():
+        count = content["count"]
+        index = provider.load(data["index"])
+        controls = _provider_index_controls(index, count)
+        if controls[1] != count or len(rows) != count:
+            raise ValueError("invalid_decoded_index")
+        pairs = hashlib.sha256()
+        for start in range(0, count, _Q4_BOUNDED_CHUNK_ROWS):
+            length = min(_Q4_BOUNDED_CHUNK_ROWS, count - start)
+            if _provider_index_controls(index, count) != controls:
+                raise ValueError("decoded_index_changed")
+            vectors = index.reconstruct_n(start, length)
+            if (type(vectors) not in (tuple, list) or len(vectors) != length
+                    or _provider_index_controls(index, count) != controls):
+                raise ValueError("invalid_decoded_count")
+            for relative, value in enumerate(vectors):
+                position = start + relative
+                record_id, view = rows[position]
+                if record_id not in seen or view not in ("w", "d"):
+                    raise ValueError("invalid_memory_view")
+                flag = 1 if view == "w" else 2
+                if seen[record_id] & flag:
+                    raise ValueError("duplicate_memory_view")
+                seen[record_id] |= flag
+                raw = struct.pack("<" + "f" * _Q4_DIM, *_q4_vector(value))
+                pairs.update(meta["doc_ids"][position].encode() + b"\x00" + raw)
+                if data["vectors"][position * _Q4_DIM * 4:(position + 1) * _Q4_DIM * 4] != raw:
+                    raise ValueError("retained_vector_mismatch")
+                if retain:
+                    canonical = struct.unpack("<" + "f" * _Q4_DIM, raw)
+                    entries.setdefault(record_id, {})[view] = struct.pack("<" + "d" * _Q4_DIM, *canonical)
+        if not hmac.compare_digest(pairs.hexdigest(), content["pairs_sha256"]):
+            raise ValueError("decoded_pairs_mismatch")
+    if any(mask != 3 for mask in seen.values()):
+        raise ValueError("incomplete_memory")
+    return entries
+
+
 def _q4_self_match(query, text):
     words = _Q4_WORD.findall(query.lower())
     content = _Q4_WORD.findall(text.lower())
@@ -1402,6 +2028,7 @@ def _q4_self_match(query, text):
 
 def _q4_rank(records, entries, encoder, query, when):
     import math
+    import struct
     from collections import Counter
     ordered = sorted(records)
     texts = {key: decode_text(records[key]["stored_text"]) for key in ordered}
@@ -1417,7 +2044,14 @@ def _q4_rank(records, entries, encoder, query, when):
     if len(eligible) <= 3:
         return []
     vector = _q4_vector(encoder.query(query))
-    scores = {view: {key: sum(a * b for a, b in zip(entries[key][view], vector))
+    def decoded(entry):
+        if type(entry) is bytes:
+            if len(entry) != _Q4_DIM * 8:
+                raise ValueError("invalid_decoded_vector_bytes")
+            return struct.unpack("<" + "d" * _Q4_DIM, entry)
+        return entry
+
+    scores = {view: {key: sum(a * b for a, b in zip(decoded(entries[key][view]), vector))
                      for key in eligible} for view in ("w", "d")}
     tokens = {key: Counter(_Q4_TOKEN.findall(texts[key].lower())) for key in ordered}
     lengths = {key: sum(tokens[key].values()) for key in ordered}
@@ -1447,19 +2081,105 @@ def _q4_rank(records, entries, encoder, query, when):
         -sum(1.0 / (60 + ranks[view][key]) for view in ("w", "d", "b")), key))[:3]
 
 
+def _q4_complete_semantic_candidates(records, entries, encoder, query, when):
+    """Suggest source-bound candidates, not verified semantic relevance.
+
+    The two vector views are not claimed to be independent. The minimum
+    cosine is a conservative initial operating choice, not a calibrated
+    relevance guarantee. Original temporal and self-match gates still apply.
+    """
+    import math
+    import struct
+    from collections import Counter
+    ordered = sorted(records)
+    texts = {key: decode_text(records[key]["stored_text"]) for key in ordered}
+    limit = when - dt.timedelta(seconds=1)
+    eligible = []
+    for key in ordered:
+        provenance = records[key]["provenance"]
+        if _utc(provenance["available_utc"]) >= limit or _q4_self_match(query, texts[key]):
+            continue
+        if "valid_until_utc" in provenance and when >= _utc(provenance["valid_until_utc"]):
+            continue
+        eligible.append(key)
+    if len(eligible) <= 3:
+        return []
+    vector = _q4_vector(encoder.query(query))
+    def decoded(value):
+        if type(value) is bytes:
+            if len(value) != _Q4_DIM * 8:
+                raise ValueError("invalid_decoded_vector_bytes")
+            return struct.unpack("<" + "d" * _Q4_DIM, value)
+        return value
+    scores = {view: {key: sum(a * b for a, b in zip(decoded(entries[key][view]), vector))
+                     for key in eligible} for view in ("w", "d")}
+    ranks = {view: {key: number for number, key in enumerate(
+        sorted(eligible, key=lambda key: (-scores[view][key], key)), 1)} for view in ("w", "d")}
+    tokens = {key: Counter(_Q4_TOKEN.findall(texts[key].lower())) for key in ordered}
+    lengths = {key: sum(tokens[key].values()) for key in ordered}
+    average = sum(lengths.values()) / len(ordered)
+    lexical = {key: 0.0 for key in eligible}
+    for token in sorted(set(_Q4_TOKEN.findall(query.lower()))):
+        frequency = sum(token in tokens[key] for key in ordered)
+        if not frequency:
+            continue
+        idf = math.log(1.0 + (len(ordered) - frequency + 0.5) / (frequency + 0.5))
+        for key in eligible:
+            count = tokens[key][token]
+            if count:
+                norm = count + 1.2 * (1.0 - 0.75 + 0.75 * lengths[key] / average)
+                lexical[key] += idf * count * 2.2 / norm
+    lexical_rank = {key: number for number, key in enumerate(
+        sorted(eligible, key=lambda key: (-lexical[key], key)), 1)}
+    candidates = [key for key in eligible if all(
+        ranks[view][key] <= 3 and scores[view][key] >= 0.55 for view in ("w", "d"))]
+    return sorted(candidates, key=lambda key: (
+        -(sum(1.0 / (60 + ranks[view][key]) for view in ("w", "d"))
+          + (1.0 / (60 + lexical_rank[key]) if lexical[key] > 0.0 else 0.0)), key))[:3]
+
+
 def _query_content_snapshot(values):
     descriptor, memory, encoder_binding, index_binding = _q4_controls(values)
     snapshot = {key: values[key] for key in _Q4_SOURCE_KEYS}
     projection, context, initial_report = _verified(snapshot)
     record_list = projection["messages"]["records"]
     records = {record["record_id"]: record for record in record_list}
-    if not records or len(records) != len(record_list) or len(records) * 2 > _Q4_MAX_ROWS:
+    bounded_v3 = descriptor["scope"] == _ALL_TASK_ROUTE_SCOPE and len(records) * 2 > _Q4_MAX_ROWS
+    maximum_rows = _Q4_BOUNDED_V3_MAX_ROWS if bounded_v3 else _Q4_MAX_ROWS
+    if (not records or len(records) != len(record_list) or len(records) * 2 > maximum_rows
+            or (bounded_v3 and len(records) * 2 * _Q4_DIM * 8 > _Q4_BOUNDED_VECTOR_BYTES)):
         raise ValueError("invalid_memory_record_count")
     if (type(memory.get("records")) is not int or memory["records"] != len(records)
             or memory.get("views") != ["w", "d"] or memory.get("independent_views") is not False
             or memory.get("cutoff_utc") != max(record["available_utc"] for record in record_list)):
         raise ValueError("memory_record_binding_mismatch")
     captured, total = {}, len(values["memory_bytes"]) + len(values["projection_bytes"])
+    if descriptor["scope"] == _ALL_TASK_ROUTE_SCOPE:
+        # Check aggregate bytes and pinned receipt row counts before expanding
+        # any cell metadata. The full cell checks below are still mandatory.
+        declared_rows = 0
+        for cell_id, item in values["cell_snapshots"].items():
+            if (type(item) is not dict or type(item.get("pointer")) is not bytes
+                    or type(item.get("log")) is not bytes or type(item.get("artifacts")) is not dict
+                    or any(type(raw) is not bytes for raw in item["artifacts"].values())):
+                raise ValueError("invalid_cell_bytes")
+            total += len(item["pointer"]) + len(item["log"]) + sum(map(len, item["artifacts"].values()))
+            if total > _Q4_TOTAL_BYTES:
+                raise ValueError("memory_over_budget")
+            bound = memory["cells"][cell_id]
+            if type(bound) is not dict or not _hex(bound.get("receipt_sha256")):
+                raise ValueError("invalid_cell")
+            receipt = _pinned(item["artifacts"]["receipt"], bound["receipt_sha256"], limit=1024 * 1024)
+            content = receipt.get("content") if type(receipt) is dict else None
+            count = content.get("count") if type(content) is dict else None
+            if type(count) is not int or not 0 < count <= _Q4_BOUNDED_V3_MAX_ROWS or count % 2:
+                raise ValueError("invalid_cell_receipt")
+            declared_rows += count
+            if declared_rows > len(records) * 2:
+                raise ValueError("memory_row_budget")
+        if declared_rows != len(records) * 2:
+            raise ValueError("incomplete_memory")
+        total = len(values["memory_bytes"]) + len(values["projection_bytes"])
     for cell_id in sorted(memory["cells"]):
         item = values["cell_snapshots"][cell_id]
         # All cells' bounded controls, bytes, hashes and source metadata are
@@ -1476,7 +2196,8 @@ def _query_content_snapshot(values):
     encoder, index_provider = values["encoder_provider"], values["index_provider"]
     _q4_provider_identity(encoder, encoder_binding, "query")
     _q4_provider_identity(index_provider, index_binding, "load")
-    entries = _q4_decode_cells(captured, index_provider, records)
+    entries = (_q4_decode_cells_bounded_v3(captured, index_provider, records) if bounded_v3
+               else _q4_decode_cells(captured, index_provider, records))
     raw = values["stream"].read(65537)
     if type(raw) is not bytes or not 0 < len(raw) <= 65536:
         raise ValueError("invalid_query_bytes")
@@ -1496,19 +2217,187 @@ def _query_content_snapshot(values):
         raise ValueError("source_changed")
     _q4_provider_identity(encoder, encoder_binding, "query")
     _q4_provider_identity(index_provider, index_binding, "load")
-    output = {"schema": "wd.q4-content-snapshot-query.v2", "status": "ANSWER" if resolved else "ABSTAIN",
+    all_tasks = descriptor["scope"] == _ALL_TASK_ROUTE_SCOPE
+    output = {"schema": "wd.q4-content-snapshot-query.v3" if all_tasks else "wd.q4-content-snapshot-query.v2",
+        "status": "ANSWER" if resolved else "ABSTAIN",
         "rule": "q4-rule-v1.2", "results": resolved, "binding": {
             "descriptor_sha256": values["descriptor_sha256"], "memory_sha256": values["memory_sha256"],
             "projection_sha256": values["projection_sha256"], "encoder_sha256": values["encoder_sha256"],
             "encoder_binding_sha256": values["encoder_binding_sha256"],
             "index_binding_sha256": values["index_binding_sha256"], "policy_sha256": values["policy_sha256"],
             "roster_sha256": values["roster_sha256"], "decision_sha256": values["decision_sha256"],
-            "approved_tasks_sha256": _RELEASE_TASK_LIST_SHA256},
+            ("task_scope_sha256" if all_tasks else "approved_tasks_sha256"): values["approved_tasks_sha256"]},
         "authority": "none", "publisher_authentication": "UNKNOWN", "provider_authentication": "UNKNOWN",
         "source_filter_attestation": "UNKNOWN", "freshness": "UNKNOWN", "same_user_aba": "UNKNOWN"}
     if len(_canonical(output)) > 1024 * 1024:
         raise ValueError("query_output_over_budget")
     return output
+
+
+class _CompleteCheckedQueryIndex:
+    __slots__ = ("_index", "_checkpoint")
+
+    def __init__(self, index, checkpoint):
+        self._index, self._checkpoint = index, checkpoint
+
+    @property
+    def d(self): return self._index.d
+
+    @property
+    def ntotal(self): return self._index.ntotal
+
+    @property
+    def metric_type(self): return self._index.metric_type
+
+    def reconstruct_n(self, start, count):
+        rows = self._index.reconstruct_n(start, count)
+        self._checkpoint()
+        return rows
+
+
+class _CompleteCheckedQueryEncoder:
+    __slots__ = ("_encoder", "_checkpoint", "_text", "_vector")
+
+    def __init__(self, encoder, checkpoint):
+        self._encoder, self._checkpoint = encoder, checkpoint
+        self._text = self._vector = None
+
+    def query(self, text):
+        if self._vector is None:
+            vector = _q4_vector(self._encoder.query(text))
+            self._text, self._vector = text, vector
+        elif text != self._text:
+            raise ValueError("query_changed")
+        self._checkpoint()
+        return self._vector
+
+
+def _q4_freeze_complete_cells(cells):
+    """Capture only immutable cell bytes and exact built-in container shapes."""
+    if type(cells) is not dict or any(type(key) is not str for key in cells):
+        raise ValueError("invalid_cell_snapshot")
+    frozen = {}
+    for cell_id, item in cells.items():
+        if (type(item) is not dict or set(item) != {"pointer", "log", "artifacts"}
+                or type(item["pointer"]) is not bytes or type(item["log"]) is not bytes
+                or type(item["artifacts"]) is not dict
+                or any(type(name) is not str or type(raw) is not bytes
+                       for name, raw in item["artifacts"].items())):
+            raise ValueError("invalid_cell_snapshot")
+        frozen[cell_id] = {"pointer": item["pointer"], "log": item["log"],
+                           "artifacts": dict(item["artifacts"])}
+    return frozen
+
+
+def _query_complete_content_snapshot(values):
+    descriptor, memory, encoder_binding, index_binding = _q4_controls(values)
+    if descriptor["scope"] != _ALL_TASK_ROUTE_SCOPE:
+        raise ValueError("complete_scope_required")
+    snapshot = {key: values[key] for key in _Q4_SOURCE_KEYS}
+    if type(snapshot.get("messages")) is not dict:
+        raise ValueError("invalid_snapshot")
+    snapshot["messages"] = dict(snapshot["messages"])
+    projection, _, initial_report = _verified_complete(snapshot)
+    # Capture independent immutable values, including the validated cursor's
+    # fields, before any caller-provided provider or stream callback runs.
+    cursor = snapshot["messages"]["end_cursor"]
+    snapshot["messages"]["end_cursor"] = type(cursor)(cursor.offset, cursor.file_identity, cursor.generation)
+    frozen_cells = _q4_freeze_complete_cells(values["cell_snapshots"])
+    callback_keys = {"encoder_provider", "index_provider", "stream"}
+    scalar_keys = _Q4_KEYS - _Q4_SOURCE_KEYS - callback_keys - {"cell_snapshots"}
+    frozen_scalars = {key: values[key] for key in scalar_keys}
+    callbacks = {key: values[key] for key in callback_keys}
+    record_list = projection["messages"]["records"]
+    records = {record["record_id"]: record for record in record_list}
+    if (not records or len(records) != len(record_list) or type(memory.get("records")) is not int
+            or memory["records"] != len(records) or memory.get("views") != ["w", "d"]
+            or memory.get("independent_views") is not False
+            or memory.get("cutoff_utc") != max(record["available_utc"] for record in record_list)):
+        raise ValueError("memory_record_binding_mismatch")
+    limits = _q4_complete_source_limits(records)
+    if set(limits) != set(memory["cells"]):
+        raise ValueError("incomplete_memory")
+    captured, index_limits = {}, {}
+    for cell_id in sorted(memory["cells"]):
+        item = frozen_cells[cell_id]
+        captured[cell_id] = _q4_complete_cell_controls(
+            cell_id, item, memory["cells"][cell_id], memory, records, limits[cell_id])
+        digest = _sha(captured[cell_id][0]["index"])
+        count = limits[cell_id]["count"]
+        if digest in index_limits and index_limits[digest] != count:
+            raise ValueError("conflicting_index_counts")
+        index_limits[digest] = count
+    encoder, index_provider = values["encoder_provider"], values["index_provider"]
+    _q4_provider_identity(encoder, encoder_binding, "query")
+    _q4_provider_identity(index_provider, index_binding, "load")
+
+    def checkpoint():
+        if (type(values) is not dict or set(values) != _Q4_KEYS
+                or any(type(values[key]) is not type(snapshot[key]) or values[key] != snapshot[key]
+                       for key in _Q4_SOURCE_KEYS)
+                or any(type(values[key]) is not type(frozen_scalars[key]) or values[key] != frozen_scalars[key]
+                       for key in scalar_keys)
+                or any(values[key] is not callbacks[key] for key in callback_keys)
+                or _q4_freeze_complete_cells(values["cell_snapshots"]) != frozen_cells):
+            raise ValueError("snapshot_changed")
+        _, _, current = _verified_complete(snapshot)
+        if current != initial_report:
+            raise ValueError("source_changed")
+
+    checkpoint()
+    def load(raw):
+        index = index_provider.load(raw)
+        checkpoint()
+        return _CompleteCheckedQueryIndex(index, checkpoint)
+
+    provider = _CompleteIndexAdapter(load, index_limits)
+    entries = _q4_decode_cells_complete_v1(captured, provider, records, retain=True)
+    raw = values["stream"].read(65537)
+    checkpoint()
+    if type(raw) is not bytes or not 0 < len(raw) <= 65536:
+        raise ValueError("invalid_query_bytes")
+    query = json.loads(raw, object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
+    if (type(query) is not dict or set(query) != {"situation", "time"}
+            or type(query["situation"]) is not str or not query["situation"].strip()
+            or len(query["situation"]) > 4000):
+        raise ValueError("invalid_query")
+    when = _utc(query["time"])
+    checked_encoder = _CompleteCheckedQueryEncoder(encoder, checkpoint)
+    selected = _q4_rank(records, entries, checked_encoder, query["situation"], when)
+    candidate = not selected
+    if candidate:
+        selected = _q4_complete_semantic_candidates(records, entries, checked_encoder, query["situation"], when)
+    hits = [{"ref_sha256": _sha(records[key]["provenance"]["event_ref"].encode()),
+             "doc_id_sha256": _sha(key.encode()), "ref_kind": "sha256_of_projected_metadata",
+             "canonical_event": False} for key in selected]
+    resolved = resolve_content_results(hits, query["time"], _complete=True, **snapshot)
+    checkpoint()
+    _q4_provider_identity(encoder, encoder_binding, "query")
+    _q4_provider_identity(index_provider, index_binding, "load")
+    checkpoint()
+    output = {"schema": "wd.q4-content-snapshot-query.v3", "status": "ANSWER" if resolved else "ABSTAIN",
+        "rule": "q4-rule-v1.2", "results": resolved, "binding": {
+            "descriptor_sha256": values["descriptor_sha256"], "memory_sha256": values["memory_sha256"],
+            "projection_sha256": values["projection_sha256"], "encoder_sha256": values["encoder_sha256"],
+            "encoder_binding_sha256": values["encoder_binding_sha256"],
+            "index_binding_sha256": values["index_binding_sha256"], "policy_sha256": values["policy_sha256"],
+            "roster_sha256": values["roster_sha256"], "decision_sha256": values["decision_sha256"],
+            "task_scope_sha256": values["approved_tasks_sha256"]}, "authority": "none",
+        "publisher_authentication": "UNKNOWN", "provider_authentication": "UNKNOWN",
+        "source_filter_attestation": "UNKNOWN", "freshness": "UNKNOWN", "same_user_aba": "UNKNOWN"}
+    if candidate and resolved:
+        output["status"] = "SEMANTIC_CANDIDATE"
+        output["rule"] = "q4-complete-semantic-candidate-v1"
+        output["relevance"] = "UNVERIFIED"
+    if len(_canonical(output)) > 1024 * 1024:
+        raise ValueError("query_output_over_budget")
+    checkpoint()
+    return output
+
+
+def query_complete_content_snapshot(**inputs):
+    """Opt-in complete-source query; materializes data and grants no authority."""
+    return _provider_result(lambda: _query_complete_content_snapshot(inputs))
 
 
 def query_content_snapshot(**inputs):
@@ -1552,7 +2441,7 @@ def validate_content_snapshot(**snapshot):
     return report
 
 
-def resolve_content_results(results, query_utc, **snapshot):
+def resolve_content_results(results, query_utc, *, _complete=False, **snapshot):
     """Revalidate, resolve exact visible hash pairs, rescreen and recheck source.
 
     The source_reference names canonical event JSON, never the raw JSONL line
@@ -1565,7 +2454,9 @@ def resolve_content_results(results, query_utc, **snapshot):
         when = _utc(query_utc) - dt.timedelta(seconds=1)
         if type(results) is not list or len(results) > 100:
             raise ValueError("invalid_results")
-        projection, context, report = _verified(snapshot)
+        if type(_complete) is not bool:
+            raise ValueError("invalid_complete_mode")
+        projection, context, report = (_verified_complete(snapshot) if _complete else _verified(snapshot))
         matches = {}
         for record in projection["messages"]["records"]:
             key = (_sha(record["provenance"]["event_ref"].encode()), _sha(record["record_id"].encode()))
@@ -1595,7 +2486,7 @@ def resolve_content_results(results, query_utc, **snapshot):
                 seen.add(key)
         # Do not let a source/generation change after MATCH turn a stale hit
         # into a fresh claim. Same-user ABA and publisher authority stay unknown.
-        _, final_context, final_report = _verified(snapshot)
+        _, final_context, final_report = (_verified_complete(snapshot) if _complete else _verified(snapshot))
         if report != final_report:
             raise ValueError("source_changed")
         context = final_context = projection = matches = None

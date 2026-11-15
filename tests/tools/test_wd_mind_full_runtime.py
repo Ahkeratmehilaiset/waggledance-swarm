@@ -1048,7 +1048,8 @@ if mode.startswith(('package', 'handler')):
     path = pathlib.Path(sys.argv[3])
     row = json.loads(path.read_bytes().splitlines()[0])
     with path.open('ab') as output:
-        for number in range(25 if mode in ('handler_fast_multibatch','handler_fast_rebind') else 4):
+        for number in range(25 if mode in ('handler_fast_multibatch','handler_fast_rebind',
+                                          'package_immutable_multibatch') else 4):
             row['message'] = 'synthetic additional working item ' + str(number)
             if mode.startswith('handler') and not mode.startswith('handler_historical'):
                 import datetime
@@ -1550,6 +1551,14 @@ try:
                               'latest':response['result']['own_latest_task']}))
             sys.exit(0)
         options = {'source_verification':'verified_immutable_snapshot_v1'} if mode.startswith('package_immutable') else {}
+        if mode == 'package_immutable_multibatch':
+            import threading
+            full_checks = {'main':0}
+            original_verify = reader._verified_complete
+            def counted(*args, **kwargs):
+                if threading.current_thread() is threading.main_thread(): full_checks['main'] += 1
+                return original_verify(*args, **kwargs)
+            reader._verified_complete = counted
         if mode == 'package_immutable_invalid_optin': options['source_verification'] = 'unverified'
         if mode == 'package_immutable_bad_timeout': options['watcher_join_timeout_seconds'] = 601
         if mode == 'package_immutable_forged_hold':
@@ -1577,8 +1586,10 @@ try:
                     audit['joined'] = True
                     path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
                 package._SourceWatcher.stop = changed_after_join
-        if mode in ('package_immutable_hold', 'package_immutable_cancel_hold'):
-            import threading
+        if mode in ('package_immutable_hold', 'package_immutable_cancel_hold',
+                    'package_immutable_generator_hold', 'package_immutable_async_hold',
+                    'package_immutable_group_hold'):
+            import asyncio, threading
             from tools import wd_mind_content_snapshot_package as package
             entered, release = threading.Event(), threading.Event()
             original = reader._verified_complete
@@ -1592,13 +1603,21 @@ try:
             def passage(texts):
                 assert entered.wait(10)
                 if mode == 'package_immutable_cancel_hold': raise KeyboardInterrupt('synthetic cancellation')
+                if mode == 'package_immutable_generator_hold': raise GeneratorExit('synthetic cancellation')
+                if mode == 'package_immutable_async_hold': raise asyncio.CancelledError('synthetic cancellation')
+                if mode == 'package_immutable_group_hold':
+                    raise BaseExceptionGroup('synthetic', [ValueError('discard'), GeneratorExit('discard')])
                 return row * len(texts)
             try:
                 runtime.build_flat_memory(enabled=True, binding=binding, passage_encoder=passage,
                     encoder_binding_bytes=encoder_binding, encoder_binding_sha256=sha(encoder_binding), **options)
                 raise AssertionError('must not publish')
-            except (runtime.FullRuntimeSnapshotHold, KeyboardInterrupt) as exc:
+            except (runtime.FullRuntimeSnapshotHold, KeyboardInterrupt, GeneratorExit, asyncio.CancelledError,
+                    BaseExceptionGroup) as exc:
                 signal = type(exc).__name__
+                clean = (not isinstance(exc, BaseExceptionGroup) or
+                         (len(exc.exceptions) == 1 and type(exc.exceptions[0]) is GeneratorExit
+                          and not exc.exceptions[0].args))
                 held = package.snapshot_build_watcher_status()['state'] != 'idle'
                 try:
                     runtime.build_flat_memory(enabled=True, binding=binding, passage_encoder=passage,
@@ -1611,7 +1630,7 @@ try:
                     owner = package._WATCHER_REGISTRY['owner']
                     if owner is not None and owner.thread is not None: owner.thread.join(10)
                 print(json.dumps({'result':'hold','signal':signal,'held':held,'retry_held':retry_held,
-                                  'released':package.snapshot_build_watcher_status()['state'] == 'idle'}))
+                                  'released':package.snapshot_build_watcher_status()['state'] == 'idle','clean':clean}))
                 sys.exit(0)
         try:
             product = runtime.build_flat_memory(enabled=True, binding=(object() if mode == 'package_fake_binding' else binding),
@@ -1620,6 +1639,8 @@ try:
             if mode in ('package_immutable_background', 'package_immutable_after_join'):
                 print(json.dumps({'result':'refused', **audit})); sys.exit(0)
             raise
+        if mode == 'package_immutable_multibatch':
+            print(json.dumps({'result':'ok', 'records':len(product.ids), 'full_checks':full_checks['main']})); sys.exit(0)
         def encode_query(text):
             mutate('query')
             if mode == 'package_orthogonal': return (0.0, 1.0) + (0.0,) * 382
@@ -1808,6 +1829,33 @@ def test_immutable_snapshot_build_returns_verified_synthetic_results(synthetic_b
     assert result['hits'] > 0 and result['refs']
 
 
+def test_immutable_snapshot_multiple_batches_do_not_repeat_full_source_check(synthetic_bundle):
+    result = invoke(synthetic_bundle, 'package_immutable_multibatch')
+    assert result['result'] == 'ok' and result['records'] > 16
+    assert result['full_checks'] <= 6
+
+
+@pytest.mark.parametrize('field', ['source_path', 'generation_path'])
+def test_immutable_checkpoint_rejects_reader_source_path_mismatch(monkeypatch, tmp_path, field):
+    from tools import wd_mind_full_runtime as runtime
+    source, sidecar = tmp_path / 'events.jsonl', tmp_path / 'events.generation.json'
+    cursor = runtime.bridge.BridgeCursor(1, 'synthetic-identity', None)
+    frozen = {'messages':{}, 'projection_bytes':b'{}', 'projection_sha256':'a' * 64}
+    controls = ('synthetic',)
+    args = {'enabled':True, 'bundle_root':str(tmp_path), 'expected_manifest_sha256':'b' * 64,
+            'source_path':str(source), 'generation_path':str(sidecar), 'cursor':cursor,
+            'expected_prefix_sha256':'c' * 64}
+    context = {'decision':{'source_prefix':{'sha256':'c' * 64}},
+               'messages':{'source_path':str(source), 'generation_path':str(sidecar), 'end_cursor':cursor}}
+    context['messages'][field] = str(tmp_path / 'different')
+    monkeypatch.setattr(runtime, '_bundle_inputs', lambda *args: controls)
+    monkeypatch.setattr(runtime.prefix, '_deployment_source', lambda *args: (source, sidecar, 'd' * 64))
+    monkeypatch.setattr(runtime.reader, '_inputs', lambda *args, **kwargs: context)
+    binding = runtime._PrivateBinding(frozen, tmp_path, 'b' * 64, controls, args)
+    with pytest.raises(ValueError, match='anchor_changed'):
+        binding._immutable_checkpoint(frozen)
+
+
 @pytest.mark.parametrize('fault', ['source_before', 'generation_before', 'source_passage',
                                    'generation_passage', 'provider_passage', 'bundle_passage',
                                    'helper_passage', 'invalid_optin', 'bad_timeout', 'forged_hold'])
@@ -1826,10 +1874,13 @@ def test_immutable_snapshot_final_verification_follows_verifier_join(synthetic_b
 
 
 @pytest.mark.parametrize(('scenario', 'signal'), [('package_immutable_hold', 'FullRuntimeSnapshotHold'),
-                                                  ('package_immutable_cancel_hold', 'KeyboardInterrupt')])
+                                                  ('package_immutable_cancel_hold', 'KeyboardInterrupt'),
+                                                  ('package_immutable_generator_hold', 'GeneratorExit'),
+                                                  ('package_immutable_async_hold', 'CancelledError'),
+                                                  ('package_immutable_group_hold', 'BaseExceptionGroup')])
 def test_immutable_snapshot_hold_retains_verifier_until_exit(synthetic_bundle, scenario, signal):
     assert invoke(synthetic_bundle, scenario) == {'result':'hold', 'signal':signal, 'held':True,
-                                                   'retry_held':True, 'released':True}
+                                                   'retry_held':True, 'released':True, 'clean':True}
 
 
 @pytest.mark.parametrize('scenario', ['package_rco', 'package_other'])

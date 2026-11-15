@@ -1081,7 +1081,7 @@ if mode == 'policy_during':
     reader.rederive_complete_message_projection = changed_projection
 try:
     if mode.startswith('factory'):
-        from tools import wd_mind_runtime_child as child, wd_mind_e5_rotating_client as rotating
+        from tools import wd_mind_runtime_child as child, wd_mind_e5_client as worker_client
         synthetic_audit = pathlib.Path(sys.argv[1]).parent / 'synthetic-audit'
         (synthetic_audit / 'wd-mind-runtime').mkdir(parents=True)
         child._AUDIT_ROOT = synthetic_audit  # Synthetic fixture; never change the host audit policy.
@@ -1098,7 +1098,7 @@ try:
                 bundle_root=sys.argv[1], expected_manifest_sha256=sys.argv[2],
                 worker_timeout_seconds=0 if mode == 'factory_bad_timeout' else 5,
                 lock_timeout_seconds=-1 if mode == 'factory_bad_lock_timeout' else 1,
-                bulk_contract_sha256=('0'*64 if mode == 'factory_bad_bulk' else rotating.BULK_CONTRACT_SHA256))
+                bulk_contract_sha256=('0'*64 if mode == 'factory_bad_bulk' else worker_client.BULK_CONTRACT_SHA256))
             if mode == 'factory_asset_mutation':
                 location = json.loads((pathlib.Path(sys.argv[1]) / 'wd-mind-runtime-location.json').read_bytes())
                 (pathlib.Path(location['runtime_root']) / 'model/model.safetensors').write_bytes(b'changed')

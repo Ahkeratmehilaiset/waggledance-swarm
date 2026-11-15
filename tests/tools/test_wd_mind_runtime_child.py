@@ -711,3 +711,54 @@ def test_graceful_launch_preserves_owner_after_spawn_interruption(staged_gracefu
     finally:
         if captured:
             finish(captured[0], process)
+
+
+def test_single_owner_caller_interrupt_keeps_real_launch_owner_during_spawn(staged_graceful, monkeypatch, tmp_path):
+    from test_wd_mind_e5_lifecycle import Job as OwnedJob, Process as OwnedProcess, finish
+    from test_wd_mind_e5_client import response
+    from tools import wd_mind_e5_client, wd_mind_full_runtime as runtime
+    process = OwnedProcess(response(0, 0), on_eof=False)
+    entered, release = threading.Event(), threading.Event()
+    class Job(OwnedJob):
+        def __init__(self, *, kill_on_close, _owner=None):
+            assert kill_on_close is False
+            super().__init__()
+        def attach(self, value): assert value is process
+    def spawn(*args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return process
+    monkeypatch.setattr(child, '_Job', Job)
+    monkeypatch.setattr(subprocess, 'Popen', spawn)
+    fleet = json.dumps({'lanes':[{'agent':'codex-lead-1'}],
+                        'tools_supervisor':{'agent':'codex-tools-1'}}, sort_keys=True).encode()
+    snapshot = {'projection_sha256':'b'*64}
+    binding = runtime._PrivateBinding(snapshot, tmp_path, 'a'*64, (fleet,), {})
+    factory = runtime._ManifestWorkerFactory(str(tmp_path), 'a'*64, {}, tmp_path/'lock', 5, 0,
+                                             wd_mind_e5_client.BULK_CONTRACT_SHA256)
+    monkeypatch.setattr(runtime._PrivateBinding, 'snapshot_for_query', lambda self: snapshot)
+    monkeypatch.setattr(runtime, '_flat_snapshot', lambda candidate, frozen: frozen)
+    def launch(self, *, owner_sink):
+        return child.start_e5_worker_graceful(enabled=True, owner_sink=owner_sink, **staged_graceful)
+    def interrupt(self):
+        assert entered.wait(2)
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(runtime._ManifestWorkerFactory, '__call__', launch)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_wait_for_launch', interrupt)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    try:
+        with pytest.raises(KeyboardInterrupt): owner.start()
+        held = owner._owner
+        assert held is not None and held.status()['owned'] is True
+        assert owner.status() == {'state':'HOLD', 'owned':True, 'authority':'none'}
+        assert owner.close() == {'state':'HOLD', 'owned':True, 'authority':'none'}
+        release.set()
+        owner._launch_thread.join(timeout=5)
+        assert not owner._launch_thread.is_alive()
+        assert held._process is process and process.poll() is None
+        assert owner.status() == {'state':'HOLD', 'owned':True, 'authority':'none'}
+    finally:
+        release.set()
+        if owner._launch_thread is not None: owner._launch_thread.join(timeout=5)
+        if owner._owner is not None: finish(owner._owner, process)

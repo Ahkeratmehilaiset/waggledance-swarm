@@ -129,12 +129,15 @@ def create_adapter(*, enabled=False, client=None, encoder_binding_bytes=None, en
     return _run(create)
 
 
-def _flat_bundle_bindings(bundle_root, expected_manifest_sha256):
+def _flat_bundle_bindings(bundle_root, expected_manifest_sha256, *, single_worker=False):
     """Derive the read-only query binding solely from the pinned runtime one."""
     from tools import wd_mind_absent_generation_prefix_readonly as prefix
-    from tools import wd_mind_e5_rotating_client as rotating
     from tools import wd_mind_e5_lifecycle as lifecycle
     from tools import wd_mind_e5_client as e5_client
+    if type(single_worker) is not bool:
+        raise ValueError('mode')
+    if not single_worker:
+        from tools import wd_mind_e5_rotating_client as rotating
     if (type(bundle_root) is not str or not Path(bundle_root).is_absolute()
             or '..' in Path(bundle_root).parts or type(expected_manifest_sha256) is not str
             or re.fullmatch(r'[0-9a-fA-F]{64}', expected_manifest_sha256) is None):
@@ -150,12 +153,14 @@ def _flat_bundle_bindings(bundle_root, expected_manifest_sha256):
     def pinned(relative, limit):
         pin = files.get(relative)
         return prefix._read_pinned(bundle.joinpath(*relative.split('/')), pin, limit)
-    for module, filename in ((sys.modules[__name__], 'wd_mind_e5_snapshot_adapter.py'),
+    modules = ((sys.modules[__name__], 'wd_mind_e5_snapshot_adapter.py'),
                              (reader, 'wd_mind_content_query_readonly.py'),
                              (prefix, 'wd_mind_absent_generation_prefix_readonly.py'),
-                             (rotating, 'wd_mind_e5_rotating_client.py'),
                              (lifecycle, 'wd_mind_e5_lifecycle.py'),
-                             (e5_client, 'wd_mind_e5_client.py')):
+                             (e5_client, 'wd_mind_e5_client.py'))
+    if not single_worker:
+        modules += ((rotating, 'wd_mind_e5_rotating_client.py'),)
+    for module, filename in modules:
         origin = getattr(module, '__file__', None)
         if type(origin) is not str:
             raise ValueError('code_origin')
@@ -236,6 +241,63 @@ def create_flat_adapter(*, enabled=False, bundle_root=None, expected_manifest_sh
             raise ValueError('disabled_or_client')
         query_raw, runtime_hash = _flat_bundle_bindings(bundle_root, expected_manifest_sha256)
         result = _FlatAdapter(client, bundle_root, expected_manifest_sha256, query_raw, runtime_hash)
+        result._check()
+        return result
+    return _run(create)
+
+
+class _SingleFlatAdapter(_FlatAdapter):
+    """One caller-owned graceful worker; this object never starts a process."""
+    __slots__ = ('_owner',)
+
+    def __init__(self, client, bundle, manifest, query_binding, runtime_hash):
+        super().__init__(client, bundle, manifest, query_binding, runtime_hash)
+        self._owner = client.owner
+
+    def _check(self):
+        from tools import wd_mind_e5_client as e5_client, wd_mind_e5_lifecycle as lifecycle
+        client = self._client
+        if (type(client) is not e5_client.GracefulE5WorkerClient
+                or type(self._owner) is not lifecycle._Owner or client.owner is not self._owner
+                or client._process is not client._transport or client._transport.owner is not self._owner
+                or client._binding_sha256 != self._runtime_hash
+                or client._bulk_contract_sha256 != e5_client.BULK_CONTRACT_SHA256
+                or self._owner._bulk_contract_sha256 != e5_client.BULK_CONTRACT_SHA256
+                or client._closed is not False
+                or _flat_bundle_bindings(self._bundle, self._manifest, single_worker=True)
+                   != (self._query_binding, self._runtime_hash)):
+            raise ValueError('single_flat_binding_changed')
+        status = self._owner.status()
+        if (type(status) is not dict or status.get('state') != 'RUNNING'
+                or status.get('owned') is not True or status.get('reason') is not None):
+            raise ValueError('single_flat_owner_unavailable')
+
+    def close(self, *, timeout=0):
+        """Request cooperative EOF; a HOLD keeps the owner and handles reachable."""
+        import math
+        def close_owned():
+            if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 <= timeout <= 30:
+                raise ValueError('timeout')
+            from tools import wd_mind_e5_client as e5_client
+            if type(self._client) is not e5_client.GracefulE5WorkerClient or self._client.owner is not self._owner:
+                raise ValueError('owner_changed')
+            return self._client.close(timeout=timeout)
+        return _run(close_owned)
+
+
+def create_single_flat_adapter(*, enabled=False, bundle_root=None, expected_manifest_sha256=None, client=None):
+    """Bind one already-owned worker, without rotation or an independent supervisor.
+
+    The caller independently authorizes the manifest, process and model, retains
+    the adapter/owner through HOLD, and controls the source and launch lifecycle.
+    The binding proves consistency only, not execution or sender authentication.
+    """
+    def create():
+        from tools import wd_mind_e5_client as e5_client
+        if enabled is not True or type(client) is not e5_client.GracefulE5WorkerClient:
+            raise ValueError('disabled_or_client')
+        query_raw, runtime_hash = _flat_bundle_bindings(bundle_root, expected_manifest_sha256, single_worker=True)
+        result = _SingleFlatAdapter(client, bundle_root, expected_manifest_sha256, query_raw, runtime_hash)
         result._check()
         return result
     return _run(create)

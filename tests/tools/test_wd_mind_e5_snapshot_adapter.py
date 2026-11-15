@@ -284,3 +284,117 @@ def test_flat_adapter_refuses_even_pinned_wrong_module_origin(flat_bundle, monke
         adapter.create_flat_adapter(enabled=True,bundle_root=str(bundle),
             expected_manifest_sha256=hashlib.sha256(raw).hexdigest(),client=client)
     assert not client.calls
+
+
+def test_single_worker_adapter_is_default_off_and_rejects_non_graceful(flat_bundle):
+    from tools import wd_mind_e5_snapshot_adapter as adapter
+    bundle, pin, client, _ = flat_bundle
+    with pytest.raises(ValueError):
+        adapter.create_single_flat_adapter(bundle_root=str(bundle), expected_manifest_sha256=pin, client=client)
+    with pytest.raises(ValueError):
+        adapter.create_single_flat_adapter(enabled=True, bundle_root=str(bundle), expected_manifest_sha256=pin,
+                                           client=client)
+    assert client.calls == []
+
+
+def test_single_worker_adapter_real_graceful_transport_and_close(flat_bundle, monkeypatch):
+    from test_wd_mind_e5_lifecycle import Process, Job, finish
+    from test_wd_mind_e5_client import response, supervised
+    from tools import (wd_mind_e5_snapshot_adapter as adapter, wd_mind_e5_client as client_module,
+                       wd_mind_e5_lifecycle as lifecycle)
+    bundle, pin, _, _ = flat_bundle
+    runtime_hash = hashlib.sha256((bundle / 'wd-mind-e5-encoder-binding.json').read_bytes()).hexdigest()
+    nonce = 'd' * 64
+    req = supervised('query', nonce, binding=runtime_hash)
+    process = Process(response(0, 0) + response(1, 1, nonce=bytes.fromhex(nonce),
+                       digest=bytes.fromhex(req['request_sha256'])))
+    owner = lifecycle.reserve(enabled=True, bulk_contract_sha256=client_module.BULK_CONTRACT_SHA256)
+    owner.set_job(Job())
+    owner.bind(process)
+    try:
+        client = client_module.GracefulE5WorkerClient(owner, timeout=1, encoder_binding_sha256=runtime_hash,
+                                                      bulk_contract_sha256=client_module.BULK_CONTRACT_SHA256)
+        owner.mark_ready()
+        monkeypatch.setattr(adapter.secrets, 'token_hex', lambda _: nonce)
+        single = adapter.create_single_flat_adapter(enabled=True, bundle_root=str(bundle),
+                                                     expected_manifest_sha256=pin, client=client)
+        assert single.query('sample')[0] == 1.0
+        assert single.close(timeout=2)['state'] == 'EXITED'
+        with pytest.raises(ValueError):
+            single.query('after close')
+    finally:
+        finish(owner, process)
+
+
+@pytest.fixture
+def single_worker(flat_bundle, monkeypatch):
+    from test_wd_mind_e5_lifecycle import Process, Job, finish
+    from test_wd_mind_e5_client import response, supervised
+    from tools import (wd_mind_e5_snapshot_adapter as adapter, wd_mind_e5_client as client_module,
+                       wd_mind_e5_lifecycle as lifecycle)
+    bundle, _, _, _ = flat_bundle
+    # A single-worker bundle does not contain the deferred rotating client.
+    manifest_path = bundle / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    del manifest['files']['tools-bootstrap/tools/wd_mind_e5_rotating_client.py']
+    manifest_raw = _json(manifest)
+    manifest_path.write_bytes(manifest_raw)
+    pin = hashlib.sha256(manifest_raw).hexdigest()
+    runtime_hash = hashlib.sha256((bundle / 'wd-mind-e5-encoder-binding.json').read_bytes()).hexdigest()
+    nonce = 'd' * 64
+    req = supervised('query', nonce, binding=runtime_hash)
+    process = Process(response(0, 0) + response(1, 1, nonce=bytes.fromhex(nonce),
+                       digest=bytes.fromhex(req['request_sha256'])), on_eof=False)
+    owner = lifecycle.reserve(enabled=True, bulk_contract_sha256=client_module.BULK_CONTRACT_SHA256)
+    owner.set_job(Job())
+    owner.bind(process)
+    try:
+        client = client_module.GracefulE5WorkerClient(owner, timeout=1, encoder_binding_sha256=runtime_hash,
+                                                      bulk_contract_sha256=client_module.BULK_CONTRACT_SHA256)
+        owner.mark_ready()
+        monkeypatch.setattr(adapter.secrets, 'token_hex', lambda _: nonce)
+        single = adapter.create_single_flat_adapter(enabled=True, bundle_root=str(bundle),
+                                                     expected_manifest_sha256=pin, client=client)
+        yield single, client, owner, process, bundle
+    finally:
+        finish(owner, process)
+
+
+def test_single_worker_requires_no_rotator_and_preserves_hold(single_worker):
+    single, client, owner, process, _ = single_worker
+    assert single.query('sample')[0] == 1.0
+    status = single.close(timeout=0)
+    assert status['state'] == 'HOLD' and status['owned'] is True
+    assert client.owner is owner and owner.resources.process is process
+    with pytest.raises(ValueError):
+        single.query('after close')
+
+
+@pytest.mark.parametrize('fault', ['runtime', 'binding', 'bulk', 'closed', 'owner'])
+def test_single_worker_changed_binding_refuses_without_partial_data(single_worker, fault):
+    single, client, owner, process, bundle = single_worker
+    if fault == 'runtime':
+        (bundle / 'wd-mind-e5-encoder-binding.json').write_bytes(b'changed')
+    elif fault == 'binding':
+        client._binding_sha256 = '0' * 64
+    elif fault == 'bulk':
+        client._bulk_contract_sha256 = '0' * 64
+    elif fault == 'closed':
+        client._closed = True
+    else:
+        client.owner = object()
+    before = bytes(process.written)
+    with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+        single.query('sample')
+    assert bytes(process.written) == before
+    client.owner = owner
+
+
+def test_single_worker_nonce_budget_refuses_without_restarting(single_worker):
+    single, client, owner, process, _ = single_worker
+    client._nonce_limit = 1  # Small synthetic limit exercises the actual client guard.
+    assert single.query('sample')[0] == 1.0
+    before = bytes(process.written)
+    with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+        single.query('sample')
+    assert bytes(process.written) == before and client.owner is owner

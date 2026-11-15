@@ -218,11 +218,50 @@ def _situation_read_pinned(path, digest, limit):
     return data
 
 
+def _situation_v2_inputs(inputs):
+    """Verify byte pins and parse independently of the supplied v2 projector.
+
+    These are the existing CLI byte caps, not a bound on JSON object memory.
+    Pins establish equality to caller-selected bytes, not sender authority.
+    """
+    limits = (("pointer", _FLEET_LIMIT), ("fleet", _FLEET_LIMIT),
+              ("manifest", 8 * 1024 * 1024), ("snapshot", 8 * 1024 * 1024))
+    for name, limit in limits:
+        raw, pin = inputs.get(name + "_bytes"), inputs.get(name + "_sha256")
+        if (type(raw) is not bytes or len(raw) > limit or type(pin) is not str
+                or not _SHA256.fullmatch(pin) or hashlib.sha256(raw).hexdigest() != pin):
+            raise ValueError("input_pin")
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("input_json")
+            result[key] = value
+        return result
+
+    def constant(_):
+        raise ValueError("input_json")
+
+    parsed = {}
+    for name, _ in limits:
+        try:
+            value = json.loads(inputs[name + "_bytes"].decode("utf-8-sig"),
+                               object_pairs_hook=unique, parse_constant=constant)
+        except (UnicodeError, ValueError, RecursionError):
+            raise ValueError("input_json") from None
+        if name != "manifest":
+            parsed[name] = value
+        del value
+    return parsed
+
+
 def _situation_validate_output(view, inputs):
     """Check the bounded wire shape and link each observation to input bytes."""
     task_events = inputs.get("include_task_events", False)
     if type(task_events) is not bool:
         raise ValueError("task_events_opt_in")
+    parsed = _situation_v2_inputs(inputs) if task_events else None
     expected_schema = "wd.mind-situation-observations.v2" if task_events else "wd.mind-situation-observations.v1"
     lanes = {"codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"}
     if (type(view) is not dict or set(view) != {"schema", "authority", "scope", "as_of_utc", "source",
@@ -239,7 +278,7 @@ def _situation_validate_output(view, inputs):
             or source["sender_authentication"] != "UNKNOWN" or source["fleet_manifest_binding"] != "MATCH"):
         raise ValueError("source")
     bundle = view["bundle"]
-    pointer = json.loads(inputs["pointer_bytes"].decode("utf-8-sig"))
+    pointer = parsed["pointer"] if task_events else json.loads(inputs["pointer_bytes"].decode("utf-8-sig"))
     if (type(bundle) is not dict or set(bundle) != {"status", "source_kind", "observed_utc", "age_seconds_upper_bound",
                                                    "source_commit", "manifest_sha256", "pointer_authentication", "pointer_sha256"}
             or bundle["status"] not in ("OBSERVED", "UNKNOWN")
@@ -253,7 +292,7 @@ def _situation_validate_output(view, inputs):
             or (bundle["status"] == "UNKNOWN" and (bundle["manifest_sha256"] != "UNKNOWN"
                 or bundle["source_commit"] != "UNKNOWN"))):
         raise ValueError("bundle")
-    records = json.loads(inputs["snapshot_bytes"].decode("utf-8-sig"))
+    records = parsed["snapshot"] if task_events else json.loads(inputs["snapshot_bytes"].decode("utf-8-sig"))
     if type(records) is not list or len(records) > 5000:
         raise ValueError("records")
     refs = {}
@@ -263,7 +302,7 @@ def _situation_validate_output(view, inputs):
                 or bridge_compact_view.event_id(record["event"]) != record["ref"]):
             raise ValueError("event_ref")
         refs[record["ref"]] = record["event"]
-    fleet = json.loads(inputs["fleet_bytes"].decode("utf-8-sig"))
+    fleet = parsed["fleet"] if task_events else json.loads(inputs["fleet_bytes"].decode("utf-8-sig"))
     roster = {entry["agent"]: entry["agent_uuid"].lower()
               for entry in [*fleet["lanes"], fleet["tools_supervisor"]] if entry["agent"] in lanes}
     if set(roster) != lanes:

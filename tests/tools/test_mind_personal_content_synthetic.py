@@ -8,6 +8,12 @@ from tools import wd_mind_content_query_readonly as reader
 @pytest.mark.parametrize('case,text,options,expected', [
     ('health_en', 'The operator has a serious illness', {}, False),
     ('health_en_punctuation', 'The operator has a serious, chronic illness', {}, False),
+    ('health_spaced_hyphen', 'The operator has a serious illness - classifier discussion', {}, False),
+    ('health_left_spaced_hyphen', 'The operator has a serious illness -classifier discussion', {}, False),
+    ('health_right_spaced_hyphen', 'The operator has a serious illness- classifier discussion', {}, False),
+    ('health_double_hyphen', 'The operator has a serious illness--classifier discussion', {}, False),
+    ('health_en_dash', 'The operator has a serious illness – classifier discussion', {}, False),
+    ('health_em_dash', 'The operator has a serious illness — classifier discussion', {}, False),
     ('health_fi', 'Operaattorilla on vakava sairaus', {}, False),
     ('health_fi_punctuation', 'Operaattorilla on vakava, krooninen sairaus', {}, False),
     ('health_fi_past', 'Operaattorilla oli vakava sairaus', {}, False),
@@ -41,4 +47,4 @@ def test_synthetic_personal_content(case, text, options, expected, tmp_path):
         # Existing 16-character token masking remains in force.
         assert actual == ['RCO review: the operator has an token-redacted']
         return
-    assert (text in actual) is expected, case
+    assert actual == ([text] if expected else []), case

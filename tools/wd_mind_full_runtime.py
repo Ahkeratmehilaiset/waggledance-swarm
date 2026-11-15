@@ -310,6 +310,34 @@ def _bundle_inputs(bundle, expected_manifest):
     return fleet_bytes, roster_bytes, policy_bytes
 
 
+def _fixed_group_cancellation(group):
+    """Copy bounded builtin cancellation signals without provider hooks/data."""
+    pending, signals, current, children, visited = [group], [], None, None, 0
+    try:
+        while pending:
+            visited += 1
+            if visited > 1024 or len(pending) + len(signals) > 1024:
+                return None
+            current = pending.pop()
+            kind = type(current)
+            if issubclass(kind, BaseExceptionGroup):
+                children = BaseExceptionGroup.exceptions.__get__(current)
+                if len(pending) + len(signals) + len(children) > 1024:
+                    return None
+                pending.extend(reversed(children))
+            elif issubclass(kind, KeyboardInterrupt):
+                signals.append(KeyboardInterrupt())
+            elif issubclass(kind, GeneratorExit):
+                signals.append(GeneratorExit())
+            elif issubclass(kind, asyncio.CancelledError):
+                signals.append(asyncio.CancelledError())
+        return BaseExceptionGroup('provider_cancelled', signals) if signals else None
+    except BaseException:
+        return None
+    finally:
+        group = current = pending = children = None
+
+
 def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
                           identifier_policy_bytes=None, expected_identifier_policy_sha256=None):
     """Build a private snapshot using a separately anchored identifier policy.
@@ -319,7 +347,7 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
     of approval or of a trusted parent channel.
     """
     result = None
-    cancelled_type = None
+    cancelled_type = cancellation_group = None
     try:
         if (enabled is not True or type(bundle_root) is not str or not Path(bundle_root).is_absolute()
                 or '..' in Path(bundle_root).parts or type(expected_manifest_sha256) is not str
@@ -392,6 +420,8 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
         cancelled_type, result = GeneratorExit, None
     except asyncio.CancelledError:
         cancelled_type, result = asyncio.CancelledError, None
+    except BaseExceptionGroup as group:
+        cancellation_group, result = _fixed_group_cancellation(group), None
     except BaseException:
         pass
     finally:
@@ -400,6 +430,8 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
         message_policy = roster_bytes = nonreview = scope = bound = args = None
     if cancelled_type is not None:
         raise cancelled_type() from None
+    if cancellation_group is not None:
+        raise cancellation_group from None
     if result is None:
         raise FullRuntimeRefused('mind_full_runtime_refused') from None
     return result

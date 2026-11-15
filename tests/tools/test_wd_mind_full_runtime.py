@@ -53,7 +53,7 @@ def test_runtime_cancellation_does_not_expose_policy_or_hmac_key_in_traceback(tm
         raise RuntimeError('synthetic-private-detail')
     monkeypatch.setattr(runtime, '_bundle_inputs', interrupt)
     expected = {'keyboard': KeyboardInterrupt, 'generator': GeneratorExit,
-                'async': asyncio.CancelledError}.get(signal, runtime.FullRuntimeRefused)
+                'async': asyncio.CancelledError, 'group': BaseExceptionGroup}.get(signal, runtime.FullRuntimeRefused)
     with pytest.raises(expected) as caught:
         runtime.assemble_full_runtime(enabled=True, bundle_root=str(tmp_path),
             expected_manifest_sha256='a' * 64, identifier_policy_bytes=policy,
@@ -63,6 +63,28 @@ def test_runtime_cancellation_does_not_expose_policy_or_hmac_key_in_traceback(tm
     assert 'synthetic-private-marker-52' not in repr(frame.locals)
     assert 'synthetic-private-hmac-key-12345' not in repr(frame.locals)
     assert caught.value.__context__ is None
+    if signal == 'group':
+        assert type(caught.value) is BaseExceptionGroup
+        assert str(caught.value).startswith('provider_cancelled')
+        assert type(caught.value.exceptions[0]) is KeyboardInterrupt
+
+
+def test_owner_group_cancellation_avoids_provider_exception_hooks():
+    from tools import wd_mind_full_runtime as runtime
+    class HostileKeyboard(KeyboardInterrupt):
+        def __init__(self): raise AssertionError('constructor called')
+    class HostileGroup(BaseExceptionGroup):
+        def __getattribute__(self, name): raise AssertionError('group attribute read')
+        def __setattr__(self, name, value): raise AssertionError('group attribute write')
+    original = HostileGroup('private provider detail', [KeyboardInterrupt.__new__(HostileKeyboard)])
+    def deny_read(self, name): raise AssertionError('attribute read')
+    def deny_write(self, name, value): raise AssertionError('attribute write')
+    HostileKeyboard.__getattribute__ = deny_read
+    HostileKeyboard.__setattr__ = deny_write
+    sanitized = runtime._fixed_group_cancellation(original)
+    assert type(sanitized) is BaseExceptionGroup
+    assert type(sanitized.exceptions[0]) is KeyboardInterrupt
+    assert 'private provider detail' not in str(sanitized)
 
 
 @pytest.mark.parametrize('fault', ['vectors', 'policy_pin'])

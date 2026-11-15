@@ -302,6 +302,141 @@ def _v2_validator_case(events, **options):
     return result, source
 
 
+def _validator_input_case():
+    source, _ = _situation_inputs()
+    event = dict(json.loads(source['snapshot_bytes'])[0]['event'], type='status', status='in_progress')
+    return _v2_validator_case([event])
+
+
+def _bind_validator_input(result, source, name, raw, pin=None):
+    source[name + '_bytes'] = raw
+    source[name + '_sha256'] = hashlib.sha256(raw).hexdigest() if pin is None else pin
+    group = 'source' if name in ('snapshot', 'fleet') else 'bundle'
+    result[group][name + '_sha256'] = source[name + '_sha256']
+
+
+@pytest.mark.parametrize('name', ['snapshot', 'fleet', 'pointer', 'manifest'])
+def test_situation_v2_input_hashes_checked_before_any_parse(monkeypatch, name):
+    result, source = _validator_input_case()
+    _bind_validator_input(result, source, name, source[name + '_bytes'], '0' * 64)
+    with pytest.raises(ValueError):
+        session._situation_validate_output(result, source)
+    monkeypatch.setattr(session.json, 'loads', lambda *a, **k: pytest.fail('parsed before checking all byte pins'))
+    with pytest.raises(ValueError):
+        session._situation_validate_output(result, source)
+
+
+@pytest.mark.parametrize('name', ['snapshot', 'fleet', 'pointer', 'manifest'])
+def test_situation_v2_input_duplicate_keys_refused_with_correct_hash(monkeypatch, name):
+    result, source = _validator_input_case()
+    raw = source[name + '_bytes']
+    before, after = {
+        'snapshot': (b'"type":"status"', b'"type":"claim","type":"status"'),
+        'fleet': (b'"lanes":', b'"lanes":[],"lanes":'),
+        'pointer': (b'"schema_version":1', b'"schema_version":0,"schema_version":1'),
+        'manifest': (b'"schema_version":1', b'"schema_version":0,"schema_version":1'),
+    }[name]
+    assert raw.count(before) == 1
+    changed = raw.replace(before, after)
+    assert json.loads(changed) == json.loads(raw)
+    _bind_validator_input(result, source, name, changed)
+    monkeypatch.setattr(bridge_compact_view, 'event_id', lambda *a: pytest.fail('rederived event before strict input parsing'))
+    with pytest.raises(ValueError):
+        session._situation_validate_output(result, source)
+
+
+@pytest.mark.parametrize('token', [b'NaN', b'Infinity', b'-Infinity'])
+@pytest.mark.parametrize('name', ['snapshot', 'fleet', 'pointer', 'manifest'])
+def test_situation_v2_input_nonfinite_constants_refused_before_events(monkeypatch, name, token):
+    result, source = _validator_input_case()
+    raw = source[name + '_bytes']
+    marker = b'"event":{' if name == 'snapshot' else b'{'
+    changed = raw.replace(marker, marker + b'"invented_unused":' + token + b',', 1)
+    _bind_validator_input(result, source, name, changed)
+    monkeypatch.setattr(bridge_compact_view, 'event_id', lambda *a: pytest.fail('rederived event before strict input parsing'))
+    with pytest.raises(ValueError):
+        session._situation_validate_output(result, source)
+
+
+@pytest.mark.parametrize('raw', [b'{"invented":', b'{"invented":"\xff"}'])
+def test_situation_v2_input_manifest_syntax_checked_before_events(monkeypatch, raw):
+    result, source = _validator_input_case()
+    _bind_validator_input(result, source, 'manifest', raw)
+    monkeypatch.setattr(bridge_compact_view, 'event_id', lambda *a: pytest.fail('rederived event before manifest parsing'))
+    with pytest.raises(ValueError):
+        session._situation_validate_output(result, source)
+
+
+@pytest.mark.parametrize('name,limit', [('snapshot', 8 * 1024 * 1024), ('manifest', 8 * 1024 * 1024),
+                                      ('fleet', 1024 * 1024), ('pointer', 1024 * 1024)])
+def test_situation_v2_input_direct_byte_caps_checked_before_parse(monkeypatch, name, limit):
+    result, source = _validator_input_case()
+    _bind_validator_input(result, source, name, source[name + '_bytes'].ljust(limit + 1, b' '))
+    monkeypatch.setattr(session.json, 'loads', lambda *a, **k: pytest.fail('parsed oversized bytes'))
+    with pytest.raises(ValueError):
+        session._situation_validate_output(result, source)
+
+
+@pytest.mark.parametrize('raw', ['[]', bytearray(b'[]'), memoryview(b'[]')])
+def test_situation_v2_input_requires_exact_bytes_before_parse(monkeypatch, raw):
+    result, source = _validator_input_case()
+    source['snapshot_bytes'] = raw
+    monkeypatch.setattr(session.json, 'loads', lambda *a, **k: pytest.fail('parsed non-bytes'))
+    with pytest.raises(ValueError):
+        session._situation_validate_output(result, source)
+
+
+def test_situation_v2_input_fake_projector_duplicate_event_refused(tmp_path, capsys, monkeypatch):
+    from tools import wd_mind_situation_view as projection
+    args, _ = _progress_snapshot_cli_args(tmp_path)
+    assert session.main(args + ['--task-events-v2']) == 0
+    assert capsys.readouterr().err == ''
+    path = Path(args[args.index('--snapshot') + 1])
+    raw = path.read_bytes().replace(b'"type":"status"', b'"type":"claim","type":"status"')
+    path.write_bytes(raw)
+    args[args.index('--snapshot-sha256') + 1] = hashlib.sha256(raw).hexdigest()
+    original = projection.project_situation
+    calls = []
+    def permissive_projector(**kwargs):
+        calls.append(True)
+        clean = json.dumps(json.loads(kwargs['snapshot_bytes']), sort_keys=True, separators=(',', ':')).encode()
+        parsed_inputs = dict(kwargs, snapshot_bytes=clean, snapshot_sha256=hashlib.sha256(clean).hexdigest())
+        result = original(**parsed_inputs)
+        result['source']['snapshot_sha256'] = kwargs['snapshot_sha256']
+        return result
+    monkeypatch.setattr(projection, 'project_situation', permissive_projector)
+    assert session.main(args + ['--task-events-v2']) == 2
+    assert calls == [True]
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert captured.err == '{"error":"mind_session_situation_refused","authority":"none"}\n'
+
+
+@pytest.mark.parametrize('task_events', [False, True])
+def test_situation_v2_input_bom_unicode_and_legacy_still_validate(task_events):
+    from tools import wd_mind_situation_view as projection
+    source, _ = _situation_inputs()
+    def raw(value):
+        return b'\xef\xbb\xbf' + json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    fleet = raw(json.loads(source['fleet_bytes']))
+    manifest = json.loads(source['manifest_bytes'])
+    manifest['files']['wd-fleet.json'] = hashlib.sha256(fleet).hexdigest()
+    manifest = raw(manifest)
+    pointer = json.loads(source['pointer_bytes'])
+    pointer['manifest_sha256'] = pointer['final_manifest_sha256'] = hashlib.sha256(manifest).hexdigest()
+    event = dict(json.loads(source['snapshot_bytes'])[0]['event'], message='invented ää雪 {} "quoted"')
+    values = {'fleet': fleet, 'manifest': manifest, 'pointer': raw(pointer),
+              'snapshot': raw([{'ref': bridge_compact_view.event_id(event), 'event': event}])}
+    for name, data in values.items():
+        source[name + '_bytes'] = data
+        source[name + '_sha256'] = hashlib.sha256(data).hexdigest()
+    source['include_task_events'] = task_events
+    result = projection.project_situation(**source)
+    session._situation_validate_output(result, source)
+    assert result['schema'] == 'wd.mind-situation-observations.v' + ('2' if task_events else '1')
+    assert ('latest_observed_task' in result['lanes']['codex-lead-1']) is task_events
+
+
 @pytest.mark.parametrize('fault', ['tie_done', 'tie_release', 'invalid_newest', 'message_progress', 'newer_other_task'])
 @pytest.mark.parametrize('reverse', [False, True])
 def test_situation_v2_validator_rederives_full_candidate_set(fault, reverse):

@@ -555,7 +555,7 @@ try {
     script = script.replace('POLICY_PIN', _literal(policy_pin)).replace('APPROVAL_PIN', _literal(approval))
     script = script.replace('POLICY_BASE64', _literal(base64.b64encode(policy).decode('ascii'))).replace('HELPER_PATH', _literal(HELPER))
     result = _run_startup_script(script)
-    assert result == {'state':'MATCH' if fault == 'none' else 'refused', 'operator_authentication':'UNKNOWN',
+    assert result == {'state':'PINS_MATCH_POLICY_SCHEMA_UNVERIFIED' if fault == 'none' else 'refused', 'operator_authentication':'UNKNOWN',
                       'route_outcome':'refused', 'route_reason':'parent_content_unavailable' if fault == 'none' else 'parent_approval_refused',
                       'route_view':''}
 

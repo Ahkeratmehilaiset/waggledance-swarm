@@ -63,7 +63,8 @@ function Invoke-WdMindStartupRead {
     function Test-WdMindParentAdmission {
         <# Compare operator-supplied independent pins to one pinned descriptor.
            A match is not cryptographic proof of operator identity, a parent
-           handle, an approved child result, or permission to start a process. #>
+           handle, policy schema validity, an approved child result, or
+           permission to start a process. #>
         [CmdletBinding()]
         param(
             [switch] $Enabled,
@@ -123,7 +124,7 @@ function Invoke-WdMindStartupRead {
             [void]$PSBoundParameters.Remove('ApprovedPolicyBytes')
         }
         if(-not $matched){throw 'mind_parent_admission_refused'}
-        return [pscustomobject]@{state='MATCH';authority='none';operator_authentication='UNKNOWN'}
+        return [pscustomobject]@{state='PINS_MATCH_POLICY_SCHEMA_UNVERIFIED';authority='none';operator_authentication='UNKNOWN'}
     }
     function ConvertTo-WdMindLiteral([string] $Value) { return "'" + $Value.Replace("'","''") + "'" }
     function Update-WdMindParentBootstrapPumps {

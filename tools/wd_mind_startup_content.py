@@ -274,6 +274,8 @@ def project_lane_situation(*, enabled=False, binding=None, bundle_root=None, exp
     """
     output = None
     try:
+        if enabled is not True:
+            raise ValueError('invalid_input')
         supplied_identifier = identifier_policy_bytes is not None or expected_identifier_policy_sha256 is not None
         if binding is None or supplied_identifier:
             if (type(identifier_policy_bytes) is not bytes or not 0 < len(identifier_policy_bytes) <= 65536

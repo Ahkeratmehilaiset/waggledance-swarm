@@ -122,14 +122,16 @@ class _ParentChildLaunch:
     killed or assumed absent. The caller owns the pipe endpoints independently.
     """
     __slots__ = ('_command', '_role', '_bundle', '_manifest', '_fds', '_deadline', '_process',
-                 '_thread', '_done', '_state', '_start_confirmed', '_init_confirmed', '_abandoned', '_lock')
+                 '_thread', '_done', '_state', '_start_confirmed', '_init_confirmed', '_abandoned',
+                 '_adoption_token', '_lock')
 
     def __init__(self, command, role, bundle, manifest, fds, deadline):
         self._command, self._role, self._bundle, self._manifest = command, role, bundle, manifest
         self._fds, self._deadline = fds, deadline
         self._process = self._thread = None
         self._done, self._lock = threading.Event(), threading.Lock()
-        self._state, self._start_confirmed, self._init_confirmed, self._abandoned = 'NEW', False, False, False
+        self._state, self._start_confirmed, self._init_confirmed, self._abandoned = 'NEW', False, False, True
+        self._adoption_token = None
 
     def __repr__(self):
         return '<PrivateMindParentChildLaunch>'
@@ -168,26 +170,46 @@ class _ParentChildLaunch:
                 raise ValueError('parent_start')
             # Fence before Thread.start: an uncertain start cannot claim absence.
             self._state = 'HOLD'
+            self._adoption_token = object()
             self._thread = threading.Thread(target=self._run, name='mind-parent-child', daemon=False)
             self._thread.start()
             self._start_confirmed = True
         except KeyboardInterrupt:
-            self._abandoned, self._state = True, 'HOLD'
+            self._abandoned, self._state, self._adoption_token = True, 'HOLD', None
             cancelled_type = KeyboardInterrupt
         except GeneratorExit:
-            self._abandoned, self._state = True, 'HOLD'
+            self._abandoned, self._state, self._adoption_token = True, 'HOLD', None
             cancelled_type = GeneratorExit
         except asyncio.CancelledError:
-            self._abandoned, self._state = True, 'HOLD'
+            self._abandoned, self._state, self._adoption_token = True, 'HOLD', None
             cancelled_type = asyncio.CancelledError
         except BaseException:
-            self._abandoned, self._state = True, 'HOLD'
+            self._abandoned, self._state, self._adoption_token = True, 'HOLD', None
         finally:
             self._lock.release()
         if cancelled_type is not None:
             raise cancelled_type() from None
         if not self._start_confirmed:
             raise LaunchRefused('mind_e5_start_refused') from None
+        return self._adoption_token
+
+    def confirm_started(self, token):
+        """Adopt only after the caller received its one-use start token."""
+        if not self._lock.acquire(blocking=False):
+            raise LaunchRefused('mind_e5_start_refused') from None
+        try:
+            if (token is None or token is not self._adoption_token or not self._start_confirmed
+                    or not self._done.is_set() or not self._init_confirmed or time.monotonic() >= self._deadline):
+                raise ValueError('adoption')
+            self._thread.join(timeout=0)
+            if self._thread.is_alive() or self._process.poll() is not None:
+                raise ValueError('not_running')
+            self._adoption_token, self._abandoned, self._state = None, False, 'SPAWNED_UNVERIFIED'
+        except Exception:
+            self._state = 'HOLD'
+            raise LaunchRefused('mind_e5_start_refused') from None
+        finally:
+            self._lock.release()
 
     def status(self):
         if self._thread is not None and not self._start_confirmed and not self._done.is_set():

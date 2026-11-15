@@ -750,6 +750,37 @@ def test_parent_child_interrupted_thread_start_remains_hold_after_late_spawn(mon
     with pytest.raises(child.LaunchRefused): launch.close()
 
 
+def test_parent_child_late_constructor_cannot_self_adopt_after_start_cancellation(monkeypatch):
+    import inspect, sys
+    entered, release = threading.Event(), threading.Event()
+    class DelayedPopen:
+        def __new__(cls, *args, **kwargs): return object.__new__(cls)
+        def __init__(self, *args, **kwargs): entered.set(); release.wait(5)
+        def poll(self): return None
+    monkeypatch.setattr(child, '_require_verified_parent_spawn', lambda: None)
+    monkeypatch.setattr(child, '_verified_parent_child_command', lambda **_: ('synthetic-interpreter',))
+    monkeypatch.setattr(child, '_validate_parent_pipe_fds', lambda *_: None)
+    monkeypatch.setattr(child.subprocess, 'Popen', DelayedPopen)
+    launch = child.create_parent_child_launch(enabled=True, role='owner', bundle_root='C:\\synthetic',
+        expected_manifest_sha256='a'*64, stdin_fd=0, stdout_fd=1, stderr_fd=2,
+        deadline_monotonic=time.monotonic()+5)
+    lines, first = inspect.getsourcelines(child._ParentChildLaunch.start)
+    target = first + next(i for i, line in enumerate(lines) if line.strip() == 'if cancelled_type is not None:')
+    def trace(frame, event, arg):
+        if frame.f_code is child._ParentChildLaunch.start.__code__ and event == 'line' and frame.f_lineno == target:
+            raise KeyboardInterrupt()
+        return trace
+    sys.settrace(trace)
+    try:
+        with pytest.raises(KeyboardInterrupt): launch.start()
+    finally:
+        sys.settrace(None)
+        release.set()
+    launch._thread.join(timeout=5)
+    assert entered.is_set()
+    assert launch.status() == {'state':'HOLD', 'owned':True, 'worker_active':False}
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows handle inheritance test')
 def test_windows_handle_list_excludes_unrelated_inheritable_handle():
     """Probe in an isolated synthetic parent, without mutating fleet handles."""

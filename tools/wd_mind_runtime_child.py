@@ -28,6 +28,7 @@ import hashlib
 import hmac
 import importlib
 import importlib.util
+import io
 import json
 import math
 import os
@@ -263,6 +264,105 @@ def create_parent_child_launch(*, enabled=False, role=None, bundle_root=None, ex
     if result is None:
         raise LaunchRefused('mind_e5_start_refused') from None
     return result
+
+
+def _decode_owner_control_bytes(raw, expected_manifest_sha256):
+    """Parse MCO1 in the isolated owner; parent provenance is separate."""
+    from tools import wd_mind_full_runtime as runtime
+    if (type(raw) is not bytes or len(raw) < 101 + 1 + 136
+            or len(raw) > 101 + 32 + 136 + 65536 or raw[:4] != b'MCO1'):
+        raise ValueError('owner_control')
+    manifest_sha, policy_sha, approval_sha = raw[4:36].hex(), raw[36:68].hex(), raw[68:100].hex()
+    lane_length = raw[100]
+    if not 1 <= lane_length <= 32 or len(raw) < 101 + lane_length + 136:
+        raise ValueError('owner_lane')
+    lane = raw[101:101 + lane_length].decode('ascii')
+    if lane not in runtime.reader._LANES or manifest_sha != expected_manifest_sha256:
+        raise ValueError('owner_binding')
+    mct = raw[101 + lane_length:]
+    if len(mct) < 136 or mct[:4] != b'MCT1':
+        raise ValueError('owner_mct')
+    nonce = mct[40:72].hex()
+    buffer = runtime._ParentControlBuffer(runtime._PrivateParentStream(io.BytesIO(mct)))
+    buffer.read_from(enabled=True)
+    return manifest_sha, policy_sha, approval_sha, lane, nonce, buffer
+
+
+def _wait_for_owner_close(owner):
+    """Keep this child alive while its owned worker cannot be closed safely."""
+    while True:
+        try:
+            result = owner.close()
+            if (type(result) is dict and result.get('state') == 'STOPPED'
+                    and result.get('owned') is False):
+                return
+        except BaseException:
+            pass  # The process remains the retained owner; no forced stop.
+        time.sleep(0.25)
+
+
+def _owner_child_entry(*, control_stream, data_stream, candidate_stream,
+                       bundle_root, expected_manifest_sha256):
+    """Run one retained owner role; trusted-parent gate is currently closed.
+
+    stdin is the parent-created MCO1 control, stdout carries MEX1, and stderr
+    is a reference-only candidate pipe, not a diagnostic or logging channel.
+    Parent owns the process and all I/O through timeout/HOLD. No traceback or
+    raw input is deliberately written on either output path.
+    """
+    owner = None
+    success = False
+    try:
+        _require_verified_parent_spawn()
+        from tools import wd_mind_full_runtime as runtime
+        from tools import wd_mind_e5_client as client
+        raw = control_stream.read(101 + 32 + 136 + 65536 + 1)
+        manifest, policy_sha, approval_sha, lane, nonce, control = _decode_owner_control_bytes(
+            raw, expected_manifest_sha256)
+        raw = None
+        anchor = runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=bundle_root,
+            expected_manifest_sha256=manifest, operator_policy_sha256=policy_sha,
+            operator_approval_reference_sha256=approval_sha)
+        entry = runtime.prepare_manifest_bound_owner(enabled=True, policy_anchor=anchor, control_buffer=control,
+            bundle_root=bundle_root, expected_manifest_sha256=manifest, lane=lane,
+            worker_timeout_seconds=300, lock_timeout_seconds=0, shutdown_timeout=5,
+            bulk_contract_sha256=client.BULK_CONTRACT_SHA256)
+        owner = entry['owner']  # Retain before any worker launch.
+        bootstrap = entry['bootstrap']
+        started = owner.start()
+        if type(started) is not dict or started.get('state') != 'READY' or started.get('owned') is not True:
+            raise ValueError('owner_start')
+        candidate = owner.candidates({'schema':'wd.mind-pipe-request.v1',
+            'query_id':'startup_work_overview', 'nonce':nonce, 'lane':lane, 'scope':'own'})
+        candidate_bytes = runtime.reader._canonical(candidate)
+        if not 1 <= len(candidate_bytes) <= 2048:
+            raise ValueError('candidate_size')
+        offset = 0
+        while offset < len(candidate_bytes):
+            count = candidate_stream.write(memoryview(candidate_bytes)[offset:])
+            if type(count) is not int or not 0 < count <= len(candidate_bytes) - offset:
+                raise ValueError('candidate_write')
+            offset += count
+        candidate_stream.close()  # EOF separates this reference stream.
+        prepared = owner.prepare_consumer_export(enabled=True, expected_nonce=nonce,
+            expected_identifier_policy_sha256=policy_sha, max_total_bytes=64 * 1024 * 1024)
+        outcome = prepared._send_parent_stream(enabled=True, stream=runtime._PrivateExportStream(data_stream),
+            bootstrap=bootstrap, max_wire_bytes=64 * 1024 * 1024, deadline_monotonic=time.monotonic()+300)
+        if type(outcome) is not dict or outcome.get('status') != 'SENT':
+            raise ValueError('export')
+        success = True
+    except BaseException:
+        success = False
+    finally:
+        # Output cleanup never emits error details; failed close is unproven.
+        for stream in (candidate_stream, data_stream):
+            try:
+                stream.close()
+            except BaseException:
+                pass
+        if owner is not None:
+            _wait_for_owner_close(owner)
+    return 0 if success else 2
 
 
 def _encode_export_frame(*, enabled=False, channel_key=None, nonce=None, kind=None,
@@ -1097,3 +1197,23 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
                         "owner": owner, "lifecycle": status, "authority": "none"}
             raise LaunchRefused("mind_e5_start_refused") from None
     raise LaunchRefused("mind_e5_start_refused") from None
+
+
+def _fixed_child_main(argv):
+    """Only the fixed owner flag is routed here; all other inputs refuse."""
+    if argv != ['--mind-owner-child']:
+        return 2
+    try:
+        expected = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
+        if not _HEX.fullmatch(expected):
+            return 2
+        bundle = str(Path(__file__).resolve().parents[2])
+        return _owner_child_entry(control_stream=sys.stdin.buffer, data_stream=sys.stdout.buffer,
+                                  candidate_stream=sys.stderr.buffer, bundle_root=bundle,
+                                  expected_manifest_sha256=expected)
+    except BaseException:
+        return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(_fixed_child_main(sys.argv[1:]))

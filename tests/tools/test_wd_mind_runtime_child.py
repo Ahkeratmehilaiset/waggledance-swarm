@@ -805,6 +805,18 @@ def test_parent_child_requires_one_use_adoption_before_spawned_status(monkeypatc
     assert launch.status() == {'state':'EXITED', 'owned':False, 'worker_active':False}
 
 
+def test_owner_child_fixed_cli_refuses_without_trusted_parent():
+    import sys
+    script = Path(child.__file__).resolve()
+    env = os.environ.copy()
+    env['WD_REBOOT_EXPECTED_MANIFEST_HASH'] = 'a' * 64
+    proc = subprocess.run([sys.executable, '-B', str(script), '--mind-owner-child'],
+                          input=b'synthetic-private-owner-control', capture_output=True, timeout=10,
+                          env=env,
+                          creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+    assert proc.returncode == 2 and proc.stdout == b'' and proc.stderr == b''
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows handle inheritance test')
 def test_windows_handle_list_excludes_unrelated_inheritable_handle():
     """Probe in an isolated synthetic parent, without mutating fleet handles."""

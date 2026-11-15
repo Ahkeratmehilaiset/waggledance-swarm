@@ -488,8 +488,10 @@ class _ParentControlBuffer:
     """Receive MCT1 in a private buffer; caller retains I/O and deadline."""
     __slots__ = ('__stream', '__data', '__length', '__state')
 
-    def __init__(self, stream):
-        self.__stream, self.__data = stream, bytearray(136 + 65536 + 1)
+    def __init__(self, stream, *, prefix_budget=0):
+        if type(prefix_budget) is not int or prefix_budget not in (0, 133):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        self.__stream, self.__data = stream, bytearray(136 + 65536 + 1 + prefix_budget)
         self.__length, self.__state = 0, 'NEW'
 
     def __repr__(self):

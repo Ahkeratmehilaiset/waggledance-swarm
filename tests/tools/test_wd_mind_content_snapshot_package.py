@@ -64,6 +64,220 @@ class Codec:
         return self.fixtures._SyntheticFlatIP(vectors)
 
 
+class ChunkCodec(Codec):
+    """Fake native index that refuses an unbounded reconstruction request."""
+    def __init__(self, fixtures, *, fault=None):
+        super().__init__(fixtures)
+        self.reconstructions = []
+        self.fault = fault
+
+    def decode(self, raw):
+        index = super().decode(raw)
+        cell_number, reconstruct = len(self.decoded), index.reconstruct_n
+
+        def bounded(start, count):
+            self.reconstructions.append((cell_number, start, count))
+            if count > 128:
+                raise ValueError("synthetic full reconstruction refused")
+            rows = reconstruct(start, count)
+            if self.fault is not None:
+                rows = self.fault(cell_number, index, start, count, rows)
+            return rows
+
+        index.reconstruct_n = bounded
+        return index
+
+
+def _chunk_case(fixtures, tmp_path, count=65, *, three_cells=False):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    rows = [fixtures._row("synthetic network retry", task_id=f"synthetic-task-{i}",
+                          type="done" if three_cells else "message") for i in range(count)]
+    if three_cells:
+        rows.extend((fixtures._row("synthetic general record", type="message"),
+                     fixtures._row("synthetic learning record", type="test")))
+    source = fixtures._all_tasks_case(reader, tmp_path, rows)
+    if three_cells:
+        policy = json.loads(source["messages"]["policy_bytes"])
+        policy["types"].append("test")
+        raw = fixtures._raw(policy)
+        source["messages"].update(policy_bytes=raw, policy_sha256=reader._sha(raw))
+        fixtures._edit_decision(source, message_policy_sha256=reader._sha(raw))
+    case.update(fixtures._snapshot(source, reader.rederive_message_projection(**source)))
+    return case
+
+
+@pytest.mark.parametrize("count", [1, 64, 65, 128, 256])
+def test_producer_reconstructs_v3_in_exact_bounded_ranges(package, fixtures, tmp_path, count):
+    case = _chunk_case(fixtures, tmp_path, count)
+    codec = ChunkCodec(fixtures)
+    output = package.package_content_snapshot(**_arguments(case, codec))
+    assert json.loads(output["memory_bytes"])["records"] == count
+    assert codec.reconstructions == [(1, start, min(128, count * 2 - start))
+                                     for start in range(0, count * 2, 128)]
+    if count == 65:
+        # The unchanged reader uses full reconstruction below its v3 size
+        # threshold, so its provider must support that ABI as well as chunks.
+        result = _query(case, output, Codec(fixtures))
+        assert result["status"] == "ANSWER"
+        assert result["schema"] == "wd.q4-content-snapshot-query.v3"
+
+
+@pytest.mark.parametrize("fault", ["last_bits", "negative_zero", "nan", "norm", "dimension",
+                                  "short", "long", "controls", "exception"])
+def test_last_cell_last_chunk_refuses_without_partial_package(package, fixtures, tmp_path, capsys, fault):
+    case = _chunk_case(fixtures, tmp_path, three_cells=True)
+
+    def corrupt(cell_number, index, start, count, rows):
+        if cell_number != 3 or start != 128:
+            return rows
+        if fault == "exception":
+            raise MemoryError("synthetic-private-provider-error")
+        if fault == "controls":
+            index.ntotal += 1
+            return rows
+        if fault == "short":
+            return rows[:-1]
+        if fault == "long":
+            return rows + rows[:1]
+        last = list(rows[-1])
+        if fault == "last_bits":
+            last[0], last[1] = 0.0, 1.0
+        elif fault == "negative_zero":
+            last[2] = 0.0
+        elif fault == "nan":
+            last[0] = float("nan")
+        elif fault == "norm":
+            last[0] = 2.0
+        else:
+            last.pop()
+        return rows[:-1] + (tuple(last),)
+
+    codec = ChunkCodec(fixtures, fault=corrupt)
+    args = _arguments(case, codec)
+    row = struct.pack("<384f", 1.0, 0.0, -0.0, *([0.0] * 381))
+    args["passage_encoder"] = lambda texts: row * len(texts)
+    _refuses(package, args)
+    assert codec.reconstructions == [(1, 0, 2), (2, 0, 2), (3, 0, 128), (3, 128, 2)]
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("mutation", ["source", "generation", "input"])
+def test_last_reconstruction_source_mutation_is_checked_before_return(package, fixtures, tmp_path, mutation):
+    case = _chunk_case(fixtures, tmp_path, three_cells=True)
+
+    def change(cell_number, index, start, count, rows):
+        if cell_number == 3 and start == 128:
+            if mutation == "source":
+                path = Path(case["messages"]["source_path"])
+                path.write_bytes(path.read_bytes().replace(b"network retry", b"changed retry", 1))
+            elif mutation == "generation":
+                Path(case["messages"]["generation_path"]).write_bytes(b'{"generation":"synthetic-g2"}')
+            else:
+                args["snapshot"]["decision_sha256"] = "0" * 64
+        return rows
+
+    codec = ChunkCodec(fixtures, fault=change)
+    args = _arguments(case, codec)
+    _refuses(package, args)
+    assert codec.reconstructions[-1] == (3, 128, 2)
+
+
+def test_last_cell_pair_digest_checked_even_when_retained_bytes_match(package, fixtures, tmp_path, monkeypatch):
+    case = _chunk_case(fixtures, tmp_path, three_cells=True)
+    codec = ChunkCodec(fixtures)
+    original = reader._q4_cell_controls
+
+    def changed(*args, **kwargs):
+        checked = original(*args, **kwargs)
+        if args[0] == "system":
+            # Isolate the decoded-pair check from the retained-byte check.
+            checked[1]["pairs_sha256"] = "0" * 64
+        return checked
+
+    monkeypatch.setattr(reader, "_q4_cell_controls", changed)
+    _refuses(package, _arguments(case, codec))
+    assert codec.reconstructions[-1] == (3, 128, 2)
+
+
+def test_last_cell_preflight_still_precedes_every_decoder(package, fixtures, tmp_path, monkeypatch):
+    case = _chunk_case(fixtures, tmp_path, three_cells=True)
+    codec = ChunkCodec(fixtures)
+    original = package._cell
+
+    def tampered(*args, **kwargs):
+        item, pointer = original(*args, **kwargs)
+        if args[1] == "system":
+            item["artifacts"]["provenance"] += b"synthetic-tamper"
+        return item, pointer
+
+    monkeypatch.setattr(package, "_cell", tampered)
+    _refuses(package, _arguments(case, codec))
+    assert len(codec.serialized) == 3 and codec.decoded == []
+
+
+def test_full_only_decoder_has_no_large_reconstruction_fallback(package, fixtures, tmp_path):
+    case = _chunk_case(fixtures, tmp_path)
+    codec = Codec(fixtures)
+    calls = []
+
+    def full_only(raw):
+        index = codec.decode(raw)
+        original = index.reconstruct_n
+
+        def reconstruct(start, count):
+            calls.append((start, count))
+            if start != 0 or count != index.ntotal:
+                raise ValueError("synthetic full-only provider")
+            return original(start, count)
+
+        index.reconstruct_n = reconstruct
+        return index
+
+    args = _arguments(case, codec)
+    args["index_decoder"] = full_only
+    _refuses(package, args)
+    assert calls == [(0, 128)]
+
+
+def test_bounded_decode_preserves_artifacts_and_source_checkpoint_order(package, fixtures, tmp_path, monkeypatch):
+    case = _chunk_case(fixtures, tmp_path, three_cells=True)
+    events = []
+    original = reader._verified
+
+    def verified(*args):
+        events.append("verified")
+        return original(*args)
+
+    monkeypatch.setattr(reader, "_verified", verified)
+
+    def build(codec):
+        args = _arguments(case, codec)
+        for name in ("passage_encoder", "index_serializer", "index_decoder"):
+            callback = args[name]
+
+            def observed(*values, callback=callback, name=name):
+                events.append(name)
+                return callback(*values)
+
+            args[name] = observed
+        return package.package_content_snapshot(**args)
+
+    codec = ChunkCodec(fixtures)
+    bounded = build(codec)
+    bounded_events = list(events)
+    assert codec.reconstructions == [(1, 0, 2), (2, 0, 2), (3, 0, 128), (3, 128, 2)]
+    events.clear()
+    # Same verified source/artifacts through the previous validation routine.
+    monkeypatch.setattr(reader, "_q4_decode_cells_bounded_v3", reader._q4_decode_cells)
+    legacy = build(Codec(fixtures))
+    assert legacy == bounded
+    expected = (["verified"] + ["passage_encoder", "verified"] * 5
+                + ["index_serializer", "verified"] * 3
+                + ["verified", "index_decoder", "verified"] * 3 + ["verified"])
+    assert events == bounded_events == expected
+    assert bounded_events.count("verified") == 16
+
+
 def _arguments(case, codec):
     return dict(enabled=True, snapshot={key: case[key] for key in reader._Q4_SOURCE_KEYS},
                 passage_encoder=codec.passage, index_serializer=codec.serialize, index_decoder=codec.decode,

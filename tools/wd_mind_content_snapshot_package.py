@@ -10,8 +10,10 @@ Passage callbacks receive tuples of at most 16 already screened strings with
 the fixed E5 ``passage: `` prefix and 2000-character truncation, and must return
 exact little-endian float32 bytes. Serializers receive immutable vector bytes
 and dimension 384, returning index bytes. Decoders use the existing read-only
-adapter protocol. No model/native module is imported, no casting or additional
-normalization is performed, and provider exceptions never leave this boundary.
+v3 adapter protocol: reconstruct_n must accept ranges of at most 128 rows;
+there is no full-cell fallback. No model/native module is imported, no casting
+or additional normalization is performed, and provider exceptions never leave
+this boundary.
 
 These are caller-trusted synchronous callbacks: their metadata/code digests
 do not authenticate code, computation or assets, constrain provider allocation,
@@ -189,8 +191,9 @@ def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder
         return index
 
     provider = reader._ReadonlyIndexAdapter(checked_decoder, index_binding,
-        [reader._sha(item["artifacts"]["index"]) for item in snapshots.values()])
-    reader._q4_decode_cells(captured, provider, record_map)
+        [reader._sha(item["artifacts"]["index"]) for item in snapshots.values()],
+        allow_bounded_v3=True)
+    reader._q4_decode_cells_bounded_v3(captured, provider, record_map)
     checkpoint()
     return output
 

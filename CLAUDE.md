@@ -514,10 +514,20 @@ runtime) is never installed under this rule.
 **Mind-class** = a change whose every changed path, as a whole file, matches
 one of: `sandbox/mind/**`, `configs/mind/**`, `tools/wd_q4_*`,
 `tests/tools/test_wd_q4_*`, `ops/windows/reboot/Get-WdQ4*.ps1`,
-`ops/windows/reboot/Invoke-WdQ4*.ps1`. Nothing is Mind-class by "section":
+`ops/windows/reboot/Invoke-WdQ4*.ps1`, and, added by the operator's decision
+of 2026-11-14 (decision 1 of that day, given to codex-lead-1 and relayed on
+the bridge at 19:23:06Z): `tools/wd_mind_*`, `tools/wd_bridge_mind*`,
+`tools/bridge_mind_workspace.py`, `tests/tools/test_wd_mind_*`,
+`tests/tools/test_wd_bridge_mind*`, `tests/tools/test_mind_*`,
+`tests/tools/test_bridge_mind_workspace.py`, `tests/windows/wd_mind_*`,
+`ops/windows/reboot/Get-WdMind*.ps1`, `ops/windows/reboot/Invoke-WdMind*.ps1`,
+`ops/windows/reboot/Start-WdMind*.ps1`. The patterns added on 2026-11-14 take
+effect when the change that adds them is merged with the operator's signature
+at its exact head. Nothing is Mind-class by "section":
 multi-purpose launcher and installer files (`start-wd-agent.ps1`,
-`start-wd-tools-consumer.ps1`, `Deploy-WdRebootBundle.ps1` and every other
-`ops/windows/reboot` file not matching the two patterns above) stay outside
+`start-wd-tools-consumer.ps1`, `Deploy-WdRebootBundle.ps1`, the bundle file
+list `bridge-code-files.json` and every other `ops/windows/reboot` file not
+matching the `ops/windows/reboot` patterns above) stay outside
 Mind-class even when only their Mind part changes. A change that also touches
 any (a)-class path (this file, the charter and its loader,
 `docs/architecture/BRIDGE_CONSENSUS_APPROVAL_V1.md`, the gate code listed in

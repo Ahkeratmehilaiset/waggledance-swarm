@@ -631,6 +631,55 @@ def test_narrow_selected_row_is_rechecked_after_provider_callback(package, fixtu
         run()
 
 
+def test_narrow_read_full_snapshot_validation_is_not_per_reconstruct(package, fixtures, tmp_path, monkeypatch):
+    _, _, _, _, _, _, _, run = _narrow_fixture(package, fixtures, tmp_path)
+    calls = []
+    original = reader._NarrowReadGate.verify_snapshot
+
+    def counted(self, snapshot):
+        calls.append(None)
+        return original(self, snapshot)
+
+    monkeypatch.setattr(reader._NarrowReadGate, 'verify_snapshot', counted)
+    assert run()['results']
+    # Complete validation remains at the read's trust boundaries, not per vector batch.
+    assert len(calls) <= 4
+
+
+@pytest.mark.parametrize('damage', ['deployment', 'narrow_manifest', 'generation'])
+def test_narrow_read_revalidates_controls_changed_by_provider(package, fixtures, tmp_path, damage):
+    case, _, _, _, bundle, _, _, run = _narrow_fixture(package, fixtures, tmp_path)
+
+    def mutate():
+        if damage == 'generation':
+            Path(case['messages']['generation_path']).write_bytes(b'{"generation":"changed"}')
+        else:
+            name = 'deployment-manifest.json' if damage == 'deployment' else 'wd-mind-narrow-source-manifest.json'
+            path = bundle / name
+            path.write_bytes(path.read_bytes() + b' ')
+
+    case['encoder_provider'].on_query = mutate
+    with pytest.raises(reader.ContentQueryRefused):
+        run()
+
+
+def test_narrow_read_rejects_projection_control_replacement_during_provider(package, fixtures, tmp_path):
+    case, codec, output, snapshot, bundle, deploy, _, _ = _narrow_fixture(package, fixtures, tmp_path)
+    encoder, index = reader.adapt_complete_readonly_providers(
+        encoder=case['encoder_provider'], index_decoder=codec.decode,
+        **{key: output[key] for key in ('encoder_binding_bytes', 'encoder_binding_sha256',
+                                       'index_binding_bytes', 'index_binding_sha256')})
+    stream = fixtures._ObservedStream(fixtures._raw(
+        {'situation': 'retry network outage', 'time': fixtures.QUERY_TIME}))
+    values = {**snapshot, **output, 'encoder_provider': encoder, 'index_provider': index, 'stream': stream}
+    gate = reader._NarrowReadGate(str(bundle), fixtures._sha(deploy), values)
+    def mutate():
+        values['projection_bytes'] += b' '
+    case['encoder_provider'].on_query = mutate
+    with pytest.raises(reader.ContentQueryRefused):
+        reader._provider_result(lambda: reader._query_complete_content_snapshot(values, _narrow=gate))
+
+
 @pytest.mark.parametrize('fault', ['append', 'sidecar', 'selected'])
 def test_narrow_generationless_checks_sidecar_and_selected_row(package, fixtures, tmp_path, fault):
     case, _, _, _, _, _, _, run = _narrow_fixture(package, fixtures, tmp_path, generationless=True)

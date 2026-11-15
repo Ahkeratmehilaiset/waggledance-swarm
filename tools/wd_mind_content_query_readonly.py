@@ -2367,7 +2367,7 @@ def _query_complete_content_snapshot(values, *, _narrow=None):
     _q4_provider_identity(encoder, encoder_binding, "query")
     _q4_provider_identity(index_provider, index_binding, "load")
 
-    def checkpoint():
+    def checkpoint(*, final=False):
         if (type(values) is not dict or set(values) != _Q4_KEYS
                 or any(type(values[key]) is not type(snapshot[key]) or values[key] != snapshot[key]
                        for key in _Q4_SOURCE_KEYS)
@@ -2376,11 +2376,19 @@ def _query_complete_content_snapshot(values, *, _narrow=None):
                 or any(values[key] is not callbacks[key] for key in callback_keys)
                 or _q4_freeze_complete_cells(values["cell_snapshots"]) != frozen_cells):
             raise ValueError("snapshot_changed")
-        _, _, current = verifier(snapshot)
-        if current != initial_report:
-            raise ValueError("source_changed")
-        if _narrow is not None:
-            _narrow.recheck_selection(snapshot)
+        if _narrow is None or final:
+            _, _, current = verifier(snapshot)
+            if current != initial_report:
+                raise ValueError("source_changed")
+            if _narrow is not None:
+                _narrow.recheck_selection(snapshot)
+        else:
+            # The caller-facing values and immutable bytes remain checked at
+            # every callback. Source identity/length/generation get a cheap
+            # fence here; full manifest and projection validation runs at the
+            # beginning and before returning, and each returned row is read
+            # and validated again against its source.
+            _narrow.fence()
 
     checkpoint()
     def load(raw):
@@ -2430,7 +2438,7 @@ def _query_complete_content_snapshot(values, *, _narrow=None):
         output["relevance"] = "UNVERIFIED"
     if len(_canonical(output)) > 1024 * 1024:
         raise ValueError("query_output_over_budget")
-    checkpoint()
+    checkpoint(final=True)
     return output
 
 
@@ -2514,6 +2522,7 @@ class _NarrowReadGate:
         self._descriptor = values['descriptor_sha256']
         self._memory = values['memory_sha256']
         self._selection = None
+        self._fence_fields = None
 
     def _manifest(self):
         _, absent = _narrow_dependencies()
@@ -2575,10 +2584,19 @@ class _NarrowReadGate:
         source, sidecar = Path(context['messages']['source_path']), Path(context['messages']['generation_path'])
         with bridge._open_log(source) as stream:
             _narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+        self._fence_fields = (source, sidecar, cursor)
         report = {'status': 'MATCH', 'projection_sha256': digest, 'decision_sha256': context['decision_sha256'],
                   'source_prefix': dict(context['decision']['source_prefix']), 'doc_commit': None,
                   'operator_scope_authorization': 'UNKNOWN', 'required_release_task_list_sha256': None}
         return projection, context, report
+
+    def fence(self):
+        if self._fence_fields is None:
+            raise ValueError('snapshot_not_verified')
+        source, sidecar, cursor = self._fence_fields
+        bridge, absent = _narrow_dependencies()
+        with bridge._open_log(source) as stream:
+            _narrow_fence(stream, source, sidecar, cursor, bridge, absent)
 
     def _resolve(self, results, query_utc, snapshot):
         when = _utc(query_utc) - dt.timedelta(seconds=1)

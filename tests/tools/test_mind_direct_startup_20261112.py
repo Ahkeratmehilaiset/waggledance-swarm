@@ -124,6 +124,28 @@ def _run_startup_script(script, shell=SHELL):
     return json.loads(result.stdout.lstrip('\ufeff'))
 
 
+@WINDOWS
+@pytest.mark.parametrize('lane', ['codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5'])
+def test_parent_content_startup_refuses_before_any_io_or_process(tmp_path, lane):
+    """No content delivery is possible until a pinned parent channel exists."""
+    worktree = tmp_path / ('never-created-' + lane)
+    script = r'''
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+. HELPER_PATH
+$global:ProbeCalls = 0
+function Get-WdMindReadConfig { $global:ProbeCalls += 1; throw 'unexpected_io' }
+$r = Invoke-WdMindStartupRead -BundleRoot 'Z:\not-a-bundle' -ExpectedManifestHash 'not-a-pin' `
+    -Lane LANE_VALUE -Worktree WORKTREE_PATH -ParentBoundContent
+[pscustomobject]@{outcome=$r.outcome;reason=$r.reason;authority=$r.authority;
+    view=$r.view_json;record_written=$r.record_written;probe_calls=$global:ProbeCalls;
+    worktree_created=(Test-Path -LiteralPath WORKTREE_PATH)} | ConvertTo-Json -Compress
+'''.replace('HELPER_PATH', _literal(HELPER)).replace('WORKTREE_PATH', _literal(worktree)).replace('LANE_VALUE', _literal(lane))
+    result = _run_startup_script(script)
+    assert result == {'outcome':'refused', 'reason':'parent_content_unavailable', 'authority':'none',
+                      'view':'', 'record_written':False, 'probe_calls':0, 'worktree_created':False}
+
+
 def _startup_functions(filename, names):
     return f'''
 $tokens=$null;$errors=$null

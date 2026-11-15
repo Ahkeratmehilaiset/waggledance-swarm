@@ -11,8 +11,18 @@ function Invoke-WdMindStartupRead {
         [Parameter(Mandatory)] [string] $ExpectedManifestHash,
         [Parameter(Mandatory)] [string] $Lane,
         [string] $Worktree = '',
-        [ValidateRange(1, 90)] [int] $TimeoutSeconds = 15
+        [ValidateRange(1, 90)] [int] $TimeoutSeconds = 15,
+        [switch] $ParentBoundContent
     )
+    if ($ParentBoundContent) {
+        # Parent-controlled bootstrap, an independently approved policy pin,
+        # retained HOLD ownership and one-shot inherited handles are not yet
+        # available. Refuse before any I/O or child process, including receipts.
+        return [pscustomobject][ordered]@{
+            schema='wd.mind-startup-status.v1';outcome='refused';reason='parent_content_unavailable'
+            authority='none';view_json='';view_sha256='';cleanup='not_started';record_written=$false
+        }
+    }
     $result = [ordered]@{schema='wd.mind-startup-status.v1';outcome='refused';reason='package_refused';
         authority='none';view_json='';view_sha256='';cleanup='not_started';record_written=$false}
     $process = $null

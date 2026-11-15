@@ -25,6 +25,77 @@ from tools import wd_mind_startup_content as startup
 from waggledance.core import bridge_log_reader as bridge
 
 _POLICY = 'wd-mind-message-policy.json'
+_POLICY_APPROVAL_DESCRIPTOR = 'wd-mind-identifier-policy-approval.json'
+
+
+class _ManifestPolicyCandidate:
+    """Manifest-bound metadata, not verified operator approval."""
+    __slots__ = ('_policy_sha256', '_approval_reference_sha256')
+
+    def __init__(self, policy_sha256, approval_reference_sha256):
+        self._policy_sha256, self._approval_reference_sha256 = policy_sha256, approval_reference_sha256
+
+    def __repr__(self):
+        return '<PrivateMindManifestPolicyCandidate>'
+
+    def status(self):
+        return {'state':'CANDIDATE', 'approval':'UNVERIFIED', 'authority':'none',
+                'identifier_policy_sha256':self._policy_sha256,
+                'approval_reference_sha256':self._approval_reference_sha256}
+
+
+class _TrustedManifestPolicyAnchor:
+    """Reserved type; no trusted approval provider is implemented yet."""
+    def __new__(cls, *args, **kwargs):
+        raise FullRuntimeRefused('mind_full_runtime_refused') from None
+
+
+def inspect_manifest_policy_candidate(*, enabled=False, bundle_root=None, expected_manifest_sha256=None):
+    """Inspect proposed descriptor in a pinned bundle, without voting approval.
+
+    The descriptor path is a proposal, absent from the current installed bundle.
+    Provisioning it requires a future operator-approved deployment manifest; a
+    hash field alone never authenticates an operator or enables execution.
+    """
+    result = None
+    try:
+        if (enabled is not True or type(bundle_root) is not str or not Path(bundle_root).is_absolute()
+                or '..' in Path(bundle_root).parts or type(expected_manifest_sha256) is not str
+                or not reader._hex(expected_manifest_sha256)):
+            raise ValueError('input')
+        bundle = Path(bundle_root)
+        manifest_raw = prefix._read_pinned(bundle / 'deployment-manifest.json', expected_manifest_sha256,
+                                           prefix.MAX_CONTROL_BYTES)
+        manifest = json.loads(manifest_raw.decode('utf-8-sig'), object_pairs_hook=prefix._unique_object,
+                              parse_constant=reader._bad_constant)
+        if (type(manifest) is not dict or type(manifest.get('schema_version')) is not int
+                or manifest['schema_version'] != 1 or type(manifest.get('files')) is not dict):
+            raise ValueError('manifest')
+        descriptor_sha = manifest['files'].get(_POLICY_APPROVAL_DESCRIPTOR)
+        raw = prefix._read_pinned(bundle / _POLICY_APPROVAL_DESCRIPTOR, descriptor_sha, 65536)
+        descriptor = json.loads(raw.decode('utf-8'), object_pairs_hook=prefix._unique_object,
+                                parse_constant=reader._bad_constant)
+        if (type(descriptor) is not dict or set(descriptor) != {'schema','identifier_policy_sha256',
+                'approval_reference_sha256'} or descriptor['schema'] != 'wd.mind-identifier-policy-approval.v1'
+                or not reader._hex(descriptor['identifier_policy_sha256'])
+                or not reader._hex(descriptor['approval_reference_sha256'])):
+            raise ValueError('descriptor')
+        if (prefix._read_pinned(bundle / 'deployment-manifest.json', expected_manifest_sha256,
+                               prefix.MAX_CONTROL_BYTES) != manifest_raw
+                or prefix._read_pinned(bundle / _POLICY_APPROVAL_DESCRIPTOR, descriptor_sha, 65536) != raw):
+            raise ValueError('changed')
+        result = _ManifestPolicyCandidate(descriptor['identifier_policy_sha256'],
+                                          descriptor['approval_reference_sha256'])
+    except Exception:
+        pass
+    if result is None:
+        raise FullRuntimeRefused('mind_full_runtime_refused') from None
+    return result
+
+
+def start_manifest_bound_owner(*, enabled=False, policy_anchor: _TrustedManifestPolicyAnchor | None = None):
+    """Refuse until a trusted approval provider and parent transport exist."""
+    raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
 
 def resolve_manifest_runtime_location(*, enabled=False, bundle_root=None, expected_manifest_sha256=None):

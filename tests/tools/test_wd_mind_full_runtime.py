@@ -194,6 +194,30 @@ def test_parent_control_buffer_refuses_oversize_and_accepts_partial_reads():
     assert private.snapshot() == b'ab'
 
 
+def test_manifest_policy_candidate_requires_pinned_descriptor_and_is_not_approval(tmp_path):
+    from tools import wd_mind_full_runtime as runtime
+    descriptor = canonical({'schema':'wd.mind-identifier-policy-approval.v1',
+                            'identifier_policy_sha256':'a' * 64,
+                            'approval_reference_sha256':'b' * 64})
+    path = tmp_path / 'wd-mind-identifier-policy-approval.json'
+    path.write_bytes(descriptor)
+    manifest = canonical({'schema_version':1, 'files':{path.name:hashlib.sha256(descriptor).hexdigest()}})
+    (tmp_path / 'deployment-manifest.json').write_bytes(manifest)
+    pin = hashlib.sha256(manifest).hexdigest()
+    with pytest.raises(runtime.FullRuntimeRefused):
+        runtime.inspect_manifest_policy_candidate(bundle_root=str(tmp_path), expected_manifest_sha256=pin)
+    candidate = runtime.inspect_manifest_policy_candidate(enabled=True, bundle_root=str(tmp_path),
+        expected_manifest_sha256=pin)
+    assert candidate.status() == {'state':'CANDIDATE', 'approval':'UNVERIFIED', 'authority':'none',
+        'identifier_policy_sha256':'a' * 64, 'approval_reference_sha256':'b' * 64}
+    with pytest.raises(runtime.FullRuntimeRefused):
+        runtime.start_manifest_bound_owner(enabled=True, policy_anchor=candidate)
+    path.write_bytes(b'{}')
+    with pytest.raises(runtime.FullRuntimeRefused):
+        runtime.inspect_manifest_policy_candidate(enabled=True, bundle_root=str(tmp_path),
+            expected_manifest_sha256=pin)
+
+
 def test_parent_bootstrap_interrupted_take_does_not_leak_values_in_traceback():
     import traceback
     from tools import wd_mind_full_runtime as runtime

@@ -1993,6 +1993,7 @@ class _SingleManifestOwner:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
     def _status(self):
+        worker_cancel = None
         if self._owner_conflicts:
             self._state = 'HOLD'
             return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
@@ -2009,10 +2010,16 @@ class _SingleManifestOwner:
             except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
                 self._state = 'HOLD'
                 raise
+            except (BaseExceptionGroup, FullRuntimeCancellationUnknown) as exc:
+                self._state = 'HOLD'
+                owned = None
+                worker_cancel = _flat_cancellation(exc)
             except BaseException:
                 owned = None
                 if self._state == 'READY':
                     self._state = 'HOLD'
+        if worker_cancel is not None:
+            raise worker_cancel from None
         pending_cancel = None
         try:
             watcher_owned = self._watcher_lease._held()

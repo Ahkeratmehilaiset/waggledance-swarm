@@ -1008,6 +1008,36 @@ def test_single_owner_worker_close_cancellation_preserves_hold(tmp_path, monkeyp
         assert caught.value.args == ('mind_full_runtime_cancellation_unknown',)
 
 
+@pytest.mark.parametrize('mode', ['group', 'unknown', 'oversized', 'ordinary_group'])
+def test_single_owner_worker_status_cancellation_preserves_hold(tmp_path, monkeypatch, mode):
+    import traceback
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start()['state'] == 'READY'
+    def cancelled():
+        if mode == 'unknown': raise runtime.FullRuntimeCancellationUnknown()
+        if mode == 'oversized':
+            raise BaseExceptionGroup('synthetic-secret-marker',
+                                     [ValueError('discard') for _ in range(1024)] + [GeneratorExit('discard')])
+        if mode == 'ordinary_group': raise ExceptionGroup('synthetic-secret-marker', [ValueError('discard')])
+        raise BaseExceptionGroup('synthetic-secret-marker', [ValueError('discard'), GeneratorExit('discard')])
+    monkeypatch.setattr(owner._owner, 'status', cancelled)
+    if mode == 'ordinary_group':
+        assert owner.status() == {'state':'HOLD', 'owned':None, 'authority':'none'}
+        return
+    expected = BaseExceptionGroup if mode == 'group' else runtime.FullRuntimeCancellationUnknown
+    with pytest.raises(expected) as caught: owner.status()
+    assert owner._state == 'HOLD'
+    assert 'synthetic-secret-marker' not in ''.join(traceback.format_exception(caught.value))
+    if mode == 'group':
+        assert len(caught.value.exceptions) == 1 and type(caught.value.exceptions[0]) is GeneratorExit
+    else:
+        assert caught.value.args == ('mind_full_runtime_cancellation_unknown',)
+
+
 def test_foreign_global_verifier_reservation_is_not_captured_by_new_owner():
     import threading
     from tools import wd_mind_content_snapshot_package as package, wd_mind_full_runtime as runtime

@@ -1,6 +1,7 @@
 """Cooperative ownership tests: every process and pipe below is synthetic."""
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -272,5 +273,94 @@ def test_consumed_stdout_still_counts_against_session_budget(monkeypatch):
             owner.read(1, time.monotonic() + 2)
         assert owner.status()["reason"] == "stdout_budget"
         assert len(owner._output) == 0
+    finally:
+        finish(owner, process)
+
+
+@pytest.mark.parametrize("operation", ["write", "flush"])
+def test_review_late_write_or_flush_never_returns_success(monkeypatch, operation):
+    process = Process(on_eof=False)
+    clock = [0.0]
+    monkeypatch.setattr(lifecycle, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=time.sleep))
+    original = getattr(process.stdin, operation)
+
+    def late(*args):
+        result = original(*args)
+        clock[0] = 11.0
+        return result
+
+    setattr(process.stdin, operation, late)
+    owner, job = bind(process)
+    try:
+        with pytest.raises(lifecycle.LifecycleRefused):
+            owner.write(b"invented", deadline=10.0)
+        assert owner.status()["reason"] == "write_deadline"
+        assert owner.status()["owned"] and not job.closed
+    finally:
+        finish(owner, process)
+
+
+@pytest.mark.parametrize("operation", ["job", "handle", "wait", "unstarted_job"])
+def test_review_blocked_cleanup_does_not_hold_shutdown_condition(operation):
+    process = None if operation == "unstarted_job" else Process()
+    if process is None:
+        owner, job = lifecycle.reserve(enabled=True), Job()
+        owner.set_job(job)
+    else:
+        owner, job = bind(process)
+    entered, unblock = threading.Event(), threading.Event()
+    original = job.close if operation in ("job", "unstarted_job") else (process.wait if operation == "wait" else lambda: None)
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        unblock.wait()
+        return original(*args, **kwargs)
+
+    if operation in ("job", "unstarted_job"):
+        job.close = blocked
+    elif operation == "wait":
+        process.wait = blocked
+    else:
+        process._handle = SimpleNamespace(Close=blocked)
+    results = []
+    close = owner.cancel_unstarted if operation == "unstarted_job" else owner.shutdown
+    caller = threading.Thread(target=lambda: results.append(close(timeout=0.02)), daemon=True)
+    try:
+        caller.start()
+        assert entered.wait(2)
+        caller.join(timeout=0.3)
+        assert not caller.is_alive(), "cleanup held the caller beyond its deadline"
+        assert results[0]["state"] == "HOLD" and results[0]["owned"]
+        assert owner.status()["owned"]  # Also remains inspectable during blocked close.
+        with pytest.raises(lifecycle.LifecycleRefused):
+            lifecycle.reserve(enabled=True)
+    finally:
+        unblock.set()
+        caller.join(timeout=2)
+        if process is not None:
+            finish(owner, process)
+        else:
+            assert not owner.shutdown(timeout=2)["owned"]
+
+
+def test_review_successful_pump_cannot_hide_late_caller_acknowledgment(monkeypatch):
+    process = Process(on_eof=False)
+    clock = [0.0]
+    monkeypatch.setattr(lifecycle, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=time.sleep))
+    owner, job = bind(process)
+    caller, original_wait = threading.current_thread(), owner._condition.wait
+
+    def delayed_wait(timeout=None):
+        result = original_wait(timeout)
+        if threading.current_thread() is caller and process.written and not owner._writing:
+            clock[0] = 11.0
+        return result
+
+    monkeypatch.setattr(owner._condition, "wait", delayed_wait)
+    try:
+        with pytest.raises(lifecycle.LifecycleRefused):
+            owner.write(b"invented", deadline=10.0)
+        assert process.written == b"invented" and owner.status()["reason"] == "write_deadline"
+        assert owner.status()["owned"] and not job.closed
     finally:
         finish(owner, process)

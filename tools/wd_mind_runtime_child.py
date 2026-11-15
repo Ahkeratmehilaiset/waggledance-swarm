@@ -164,7 +164,13 @@ class _ExtendedLimit(ctypes.Structure):
 
 
 class _Job:
-    def __init__(self, *, kill_on_close=True):
+    def __init__(self, *, kill_on_close=True, _owner=None):
+        self.handle, self.kill_on_close = None, kill_on_close
+        if _owner is not None:
+            if kill_on_close is not False:
+                raise LaunchRefused("job_ownership_refused")
+            # Retain even a partially initialized Job before allocating a handle.
+            _owner.resources.job = self
         if os.name != "nt":
             raise LaunchRefused("windows_job_required")
         api = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -182,10 +188,10 @@ class _Job:
         if not self.handle:
             raise LaunchRefused("job_unavailable")
         limits = _ExtendedLimit()
-        self.kill_on_close = kill_on_close
         limits.basic.flags = 0x2000 if kill_on_close else 0  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         if not api.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
-            self.close()
+            if _owner is None:
+                self.close()
             raise LaunchRefused("job_unavailable")
 
     def attach(self, process):
@@ -539,8 +545,10 @@ def start_e5_worker_graceful(*, enabled=False, **options):
     READY returns client and owner. A post-creation refusal returns client=None,
     owner and a visible HOLD/REFUSED status. Keep the owner session alive while
     HOLD persists; its non-daemon keeper intentionally prevents ordinary Python
-    exit. No restart or termination is attempted. Prestart refusals raise the
-    fixed LaunchRefused token. Existing deployed bundles are not upgraded here.
+    exit. No restart or termination is attempted. Refusals before reserving an
+    owner raise the fixed LaunchRefused token. After reservation, even Job-only
+    cleanup returns the owner and HOLD/REFUSED status. Existing deployed bundles
+    are not upgraded here.
     """
     if enabled is not True or "cooperative" in options:
         raise LaunchRefused("mind_e5_start_refused")
@@ -658,7 +666,7 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
             if time.monotonic() >= deadline:
                 raise ValueError("deadline")
             owner = lifecycle.reserve(enabled=True)
-            job = _Job(kill_on_close=False)
+            owner.resources.job = job = _Job(kill_on_close=False, _owner=owner)
             owner.set_job(job)
             if time.monotonic() >= deadline:
                 raise ValueError("deadline")
@@ -668,6 +676,8 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
                                    stderr=subprocess.PIPE if cooperative else subprocess.DEVNULL,
                                    cwd=str(bootstrap.parent), env=env, creationflags=subprocess.CREATE_NO_WINDOW)
         if cooperative:
+            # Store the returned process before calling the fallible bind hook.
+            owner.resources.process = process
             owner.bind(process)
             if time.monotonic() >= deadline:
                 raise ValueError("deadline")
@@ -694,12 +704,9 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
     except Exception:
         if cooperative:
             if owner is not None:
-                if process is None:
-                    owner.cancel_unstarted()
-                else:
-                    status = owner.shutdown(timeout=0)
-                    return {"status": "HOLD" if status["owned"] else "REFUSED", "client": None,
-                            "owner": owner, "lifecycle": status, "authority": "none"}
+                status = owner.shutdown(timeout=0)
+                return {"status": "HOLD" if status["owned"] else "REFUSED", "client": None,
+                        "owner": owner, "lifecycle": status, "authority": "none"}
             raise LaunchRefused("mind_e5_start_refused") from None
         if job is not None:
             try:

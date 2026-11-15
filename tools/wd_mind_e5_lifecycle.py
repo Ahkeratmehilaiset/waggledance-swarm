@@ -25,6 +25,18 @@ class LifecycleRefused(ValueError):
     """Fixed refusal, with no pipe contents or native exception text."""
 
 
+class _Resources:
+    """Supervisor-owned references, stored before fallible registration hooks.
+
+    The trusted launcher writes each returned native resource here immediately.
+    Registration validates it; registration is not the act of taking ownership.
+    """
+    __slots__ = ("job", "process")
+
+    def __init__(self):
+        self.job = self.process = None
+
+
 def _duration(value):
     if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1800:
         raise LifecycleRefused("mind_e5_lifecycle_refused")
@@ -53,7 +65,7 @@ def reserve(*, enabled=False):
 class _Owner:
     def __init__(self):
         self._condition = threading.Condition()
-        self._process = self._job = None
+        self.resources = _Resources()
         self._state, self._reason, self._code = "STARTING", None, None
         self._owned, self._closing, self._eof = True, False, False
         self._output = bytearray()
@@ -64,18 +76,28 @@ class _Owner:
         self._pumps = []
         self._keeper = threading.Thread(target=self._keep, name="mind-e5-owner", daemon=False)
 
+    @property
+    def _process(self):
+        return self.resources.process
+
+    @property
+    def _job(self):
+        return self.resources.job
+
     def set_job(self, job):
         with self._condition:
-            if not self._owned or self._job is not None or self._process is not None or job.kill_on_close is not False:
+            if (not self._owned or self._closing or (self._job is not None and self._job is not job)
+                    or self._process is not None or job.kill_on_close is not False):
                 raise LifecycleRefused("mind_e5_lifecycle_refused")
-            self._job = job
+            self.resources.job = job
 
     def bind(self, process):
         """Retain the actual process immediately after Popen, before attachment."""
         with self._condition:
-            if not self._owned or self._process is not None or self._job is None:
+            if (not self._owned or self._closing or (self._process is not None and self._process is not process)
+                    or self._job is None):
                 raise LifecycleRefused("mind_e5_lifecycle_refused")
-            self._process = process
+            self.resources.process = process
             self._condition.notify_all()
 
     def mark_ready(self):
@@ -99,14 +121,12 @@ class _Owner:
         self._owned, self._state = False, state
         self._condition.notify_all()
 
-    def cancel_unstarted(self):
+    def cancel_unstarted(self, *, timeout=2):
+        """Bounded cancellation; even a Job-only HOLD retains its owner channel."""
         with self._condition:
             if self._process is not None:
                 raise LifecycleRefused("mind_e5_lifecycle_refused")
-            if self._owned:
-                if self._job is not None:
-                    self._job.close()
-                self._release("CANCELLED")
+        return self.shutdown(timeout=timeout)
 
     def _fault(self, reason):
         with self._condition:
@@ -120,17 +140,14 @@ class _Owner:
         """Request EOF and wait at most timeout; HOLD retains every handle."""
         deadline = time.monotonic() + _duration(timeout)
         with self._condition:
-            if self._process is None:
-                self.cancel_unstarted()
-            else:
-                self._closing = True
-                if self._owned and self._state != "HOLD":
-                    self._state = "DRAINING"
-                self._condition.notify_all()
-                while self._owned and time.monotonic() < deadline:
-                    self._condition.wait(max(0, deadline - time.monotonic()))
-                if self._owned:
-                    self._fault("shutdown_deadline")
+            self._closing = True
+            if self._owned and self._state != "HOLD":
+                self._state = "DRAINING"
+            self._condition.notify_all()
+            while self._owned and time.monotonic() < deadline:
+                self._condition.wait(max(0, deadline - time.monotonic()))
+            if self._owned:
+                self._fault("shutdown_deadline")
             return self.status()
 
     def read(self, size, deadline):
@@ -150,6 +167,7 @@ class _Owner:
             return result
 
     def write(self, packet, deadline):
+        """Refuse late completion; bytes already written cannot be withdrawn."""
         if type(packet) is not bytes or not 0 < len(packet) <= MAX_PACKET:
             raise LifecycleRefused("mind_e5_lifecycle_refused")
         request = [packet, False, False, deadline]
@@ -164,6 +182,8 @@ class _Owner:
                     self._fault("write_deadline")
                     break
                 self._condition.wait(remaining)
+            if time.monotonic() >= deadline:
+                self._fault("write_deadline")
             if not request[1] or not request[2] or self._reason is not None:
                 raise LifecycleRefused("mind_e5_lifecycle_refused")
             return len(packet)
@@ -217,6 +237,9 @@ class _Owner:
                 self._process.stdin.flush()
                 with self._condition:
                     self._writing = False
+                    if time.monotonic() >= request[3]:
+                        success = False
+                        self._fault("write_deadline")
                     request[1], request[2] = True, success
                     self._condition.notify_all()
                 if not success:
@@ -236,10 +259,23 @@ class _Owner:
 
     def _keep(self):
         with self._condition:
-            while self._owned and self._process is None:
+            while self._owned and self._process is None and not self._closing:
                 self._condition.wait()
             if not self._owned:
                 return
+        if self._process is None:
+            # No native cleanup runs with the condition held, or on the caller.
+            # A failing/blocked close leaves the same owner and slot in place.
+            while True:
+                try:
+                    if self._job is not None:
+                        self._job.close()
+                    with self._condition:
+                        self._release("CANCELLED")
+                    return
+                except Exception:
+                    self._fault("cleanup_failed")
+                    time.sleep(0.01)
         try:
             for name in ("stdin", "stdout", "stderr"):
                 target = self._writer if name == "stdin" else lambda name=name: self._reader(name)
@@ -252,20 +288,24 @@ class _Owner:
         while True:
             try:
                 code = self._process.poll()
+                ready = False
                 with self._condition:
                     if type(code) is int:
                         self._code, self._closing = code, True
                         self._condition.notify_all()
-                        if self._done == {"stdin", "stdout", "stderr"} and all(not p.is_alive() for p in self._pumps):
-                            if self._process.wait(timeout=0) != code:
-                                raise ValueError("exit")
-                            self._job.close()
-                            handle = getattr(self._process, "_handle", None)
-                            if handle is not None:
-                                handle.Close()
-                            self._output.clear()
-                            self._release("EXITED" if code == 0 and self._reason is None else "FAILED")
-                            return
+                        ready = self._done == {"stdin", "stdout", "stderr"} and all(not p.is_alive() for p in self._pumps)
+                if ready:
+                    if self._process.wait(timeout=0) != code:
+                        raise ValueError("exit")
+                    self._job.close()
+                    handle = getattr(self._process, "_handle", None)
+                    if handle is not None:
+                        handle.Close()
+                    with self._condition:
+                        self._output.clear()
+                        self._release("EXITED" if code == 0 and self._reason is None else "FAILED")
+                    return
+                with self._condition:
                     self._condition.wait(0.01)
             except Exception:
                 self._fault("exit_verification")

@@ -108,11 +108,18 @@ assert info['state'] == 'PREPARED_LOCAL_ONLY' and info['authority'] == 'none'
 assert info['receiver_authentication'] == 'UNKNOWN' and info['transmission'] == 'NOT_AVAILABLE'
 assert info['block_count'] == 12 and info['total_bytes'] > 0
 assert binding._PrivateBinding__snapshot['identifier_policy_binding'][1].hex() not in repr(prepared)
+class UntrustedDestination:
+    calls = 0
+    def write(self, value):
+        self.calls += 1
+        raise AssertionError('private bytes escaped')
+destination = UntrustedDestination()
 try:
-    prepared.write_to_handle(None)
+    prepared.write_to_handle(destination)
     raise AssertionError('unverified export must refuse')
 except runtime.FullRuntimeRefused:
     pass
+assert destination.calls == 0
 prepared.discard()
 assert prepared.status()['state'] == 'DISCARDED' and prepared.status()['total_bytes'] == 0
 response = wrapper.candidates({'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',

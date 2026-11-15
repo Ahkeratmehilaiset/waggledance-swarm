@@ -99,6 +99,17 @@ _PHONE_RE = re.compile(r"\+?\d[\d\s-]{8,}")
 
 _PERSONAL = (_EMAIL_RE, _CREDIT_CARD_RE, _HETU_RE, _Y_TUNNUS_RE)
 
+# Narrow FI/EN personal-content patterns; v1 is not comprehensive PII detection.
+# Match on normalized original text before location/token redaction.
+_PERSONAL_CONTEXT_V1 = (
+    re.compile(r"(?i)\boperator\s+(?:has|had)\s+(?:[\w'-]+\s+){0,4}(?:illness|disease|diagnosis)\b"
+               r"(?!\s+(?:classifier|detector|model|parser)\b)"),
+    re.compile(r"(?i)\boperaattorilla\s+on\s+(?:[\w'-]+\s+){0,4}(?:sairaus|tauti|diagnoosi)\b"),
+    re.compile(r"(?i)\b[\w'-]+\s+lives\s+at\s+\d{1,5}\s+(?:[\w'-]+\s+){1,4}"
+               r"(?:way|street|road|avenue|lane|drive|boulevard|court)\b"),
+    re.compile(r"(?i)\b[\w'-]+\s+asuu\s+osoitteessa\s+(?:[\w'-]+\s+){1,4}\d{1,5}\b"),
+)
+
 _URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://\S+")
 
 _LOCAL_PATH = (re.compile(r"[A-Za-z]:[\\/][^\s:]*(?:[ \t][^\s\\/:]+)+[\\/][^\s]*"),
@@ -273,7 +284,8 @@ def _screen(text, *, redact_hex=False, identifier_policy=None):
             raise _Drop("sealed")
         phone_text = _CREDENTIAL[-1].sub("hex-redacted", text) if redact_hex else text
         if (any(pattern.search(text) for pattern in _PERSONAL) or _iban(text)
-                or _PHONE_RE.search(_ISO_TIME.sub(" ", phone_text))):
+                or _PHONE_RE.search(_ISO_TIME.sub(" ", phone_text))
+                or any(pattern.search(text) for pattern in _PERSONAL_CONTEXT_V1)):
             raise _Drop("personal")
         if redact_hex:
             text = _redact_sensitive_runs(text)

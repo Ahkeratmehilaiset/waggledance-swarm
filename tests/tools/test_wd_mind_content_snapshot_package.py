@@ -18,6 +18,91 @@ CAPACITY_PROFILE = "bounded_v3_capacity_v1"
 FULL_PREFIX_PROFILE = "full_prefix_stream_v1"
 
 
+def _flat_owner_fixture(package, fixtures, tmp_path, monkeypatch, fault=None):
+    from datetime import datetime, timezone
+    case, codec, output, snapshot, bundle, deploy, narrow, run = _narrow_fixture(package, fixtures, tmp_path)
+    controls = (snapshot['messages']['source_path'], snapshot['messages']['generation_path'],
+                'a' * 64, snapshot['roster_bytes'], snapshot['messages']['policy_bytes'])
+    monkeypatch.setattr(package, '_consumer_bundle_controls', lambda root, pin: controls)
+    class Clock(datetime):
+        value = datetime(2026, 1, 1, 0, 2, tzinfo=timezone.utc)
+        @classmethod
+        def now(cls, tz=None): return cls.value
+    monkeypatch.setattr(package, 'datetime', Clock)
+    projection = json.loads(snapshot['projection_bytes'])
+    ids = tuple(sorted(row['record_id'] for row in projection['messages']['records']))
+    vector = struct.pack('<384f', 1.0, *([0.0] * 383))
+    vectors = vector * len(ids)
+    pairs = hashlib.sha256()
+    for record_id in ids:
+        pairs.update(record_id.encode() + b'\0' + vector)
+    encoder = output['encoder_binding_bytes']
+    monkeypatch.setattr(package, '_consumer_flat_encoder', lambda root, pin: encoder)
+    manifest = {'schema':'wd.mind-flat-f32-memory.v1', 'authority':'none',
+                'projection_sha256': snapshot['projection_sha256'], 'records': len(ids),
+                'encoder_binding_sha256': reader._sha(encoder), 'ids_sha256': reader._sha(reader._canonical(list(ids))),
+                'vectors_sha256': reader._sha(vectors), 'pairs_sha256': pairs.hexdigest()}
+    if fault == 'schema': manifest['schema'] = 'wd.bridge-mind-hex-memory-step2.v1'
+    if fault == 'projection': manifest['projection_sha256'] = '0' * 64
+    if fault == 'vector': vectors = b'\0' * len(vectors)
+    if fault == 'ids': ids = ids[::-1]
+    manifest_bytes = reader._canonical(manifest)
+    owner = package.create_consumer_flat_source_owner(enabled=True, bundle_root=str(bundle),
+        expected_manifest_sha256='b' * 64, snapshot=snapshot, flat_manifest_bytes=manifest_bytes,
+        flat_manifest_sha256=reader._sha(manifest_bytes), ids=ids, vectors=vectors,
+        encoder_binding_bytes=encoder)
+    hits = run()['results']
+    proposals = [{'ref_sha256': hit['ref_sha256'], 'doc_id_sha256': hit['doc_id_sha256'],
+                  'source_event_sha256': hit['source_reference']['sha256']} for hit in hits]
+    return owner, proposals, snapshot, Clock
+
+
+def test_flat_consumer_owner_resolves_actual_source(package, fixtures, tmp_path, monkeypatch):
+    owner, proposals, _, _ = _flat_owner_fixture(package, fixtures, tmp_path, monkeypatch)
+    result = owner.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
+    assert result['authority'] == 'none' and result['index_match'] == 'UNKNOWN' and result['results']
+
+
+@pytest.mark.parametrize('fault', ['schema','projection','vector','ids'])
+def test_flat_consumer_owner_rejects_bad_format_or_memory(package, fixtures, tmp_path, monkeypatch, fault):
+    with pytest.raises(package.SnapshotPackageRefused):
+        _flat_owner_fixture(package, fixtures, tmp_path, monkeypatch, fault)
+
+
+@pytest.mark.parametrize('fault', ['reference','stale','row','scope','controls','encoder_controls'])
+def test_flat_consumer_owner_rejects_untrusted_proposal(package, fixtures, tmp_path, monkeypatch, fault):
+    from datetime import timedelta
+    owner, proposals, snapshot, clock = _flat_owner_fixture(package, fixtures, tmp_path, monkeypatch)
+    if fault == 'reference': proposals[0]['source_event_sha256'] = '0' * 64
+    elif fault == 'stale': clock.value += timedelta(minutes=20)
+    elif fault == 'row':
+        path = Path(snapshot['messages']['source_path'])
+        lines = path.read_bytes().splitlines(keepends=True)
+        index = next(i for i, line in enumerate(lines)
+                     if reader._sha(reader._canonical(json.loads(line))) == proposals[0]['source_event_sha256'])
+        old = lines[index]; lines[index] = old.replace(b'"message":', b'"messagE":', 1)
+        assert lines[index] != old and len(lines[index]) == len(old)
+        path.write_bytes(b''.join(lines))
+    elif fault == 'controls': monkeypatch.setattr(package, '_consumer_bundle_controls', lambda root, pin: None)
+    elif fault == 'encoder_controls': monkeypatch.setattr(package, '_consumer_flat_encoder', lambda root, pin: b'changed')
+    with pytest.raises(package.SnapshotPackageRefused):
+        owner.resolve(proposals=proposals, lane='claude-rco-1' if fault == 'scope' else 'codex-lead-1',
+                      scope='own' if fault == 'scope' else 'shared')
+
+
+@pytest.mark.parametrize('micros,accepted', [(899000000, True), (899000001, False), (900000000, False)])
+def test_flat_consumer_owner_enforces_strict_delivery_age(package, fixtures, tmp_path, monkeypatch, micros, accepted):
+    from datetime import datetime, timedelta, timezone
+    owner, proposals, _, clock = _flat_owner_fixture(package, fixtures, tmp_path, monkeypatch)
+    clock.value = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=micros)
+    if accepted:
+        result = owner.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
+        assert all(hit['event_age_seconds_upper_bound'] == 899 for hit in result['results'])
+    else:
+        with pytest.raises(package.SnapshotPackageRefused):
+            owner.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
+
+
 @pytest.mark.parametrize('optimized', [False, True])
 def test_provider_cannot_forge_watcher_hold_or_leak_message(package, fixtures, tmp_path, optimized):
     case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)

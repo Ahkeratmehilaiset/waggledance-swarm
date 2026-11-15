@@ -823,6 +823,189 @@ def create_consumer_source_owner(*, enabled=False, bundle_root=None, expected_ma
     return output
 
 
+def _consumer_flat_encoder(bundle_root, manifest_pin):
+    """Derive flat query binding from the caller-pinned worker and policy."""
+    _, absent = reader._narrow_dependencies()
+    root = Path(bundle_root)
+    manifest_raw = absent._read_pinned(root / 'deployment-manifest.json', manifest_pin, 4 * 1024 * 1024)
+    manifest = json.loads(manifest_raw.decode('utf-8-sig'), object_pairs_hook=reader._unique_pairs,
+                          parse_constant=reader._bad_constant)
+    files = manifest['files']
+    binding_raw = absent._read_pinned(root / 'wd-mind-e5-encoder-binding.json',
+                                      files.get('wd-mind-e5-encoder-binding.json'), 65536)
+    binding = json.loads(binding_raw.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                         parse_constant=reader._bad_constant)
+    worker = 'tools-bootstrap/tools/wd_mind_e5_worker.py'
+    absent._read_pinned(root.joinpath(*worker.split('/')), files.get(worker), 8 * 1024 * 1024)
+    query = {'prefix': 'query: ', 'truncate_chars': 2000, 'normalize': True, 'dtype': 'float32', 'dim': 384}
+    if (type(binding) is not dict
+            or set(binding) != {'schema', 'encoder', 'code_sha256', 'query_policy', 'passage_policy'}
+            or binding['schema'] != 'wd.mind-memory-encoder-binding.v1'
+            or binding['code_sha256'] != files[worker].lower()
+            or binding['query_policy'] != query or binding['passage_policy'] != dict(query, prefix='passage: ')
+            or any(type(policy.get('normalize')) is not bool or type(policy.get('dim')) is not int
+                   or type(policy.get('truncate_chars')) is not int
+                   for policy in (binding['query_policy'], binding['passage_policy']))):
+        raise ValueError('encoder')
+    reader._q4_identity(binding['encoder'])
+    return reader._canonical({'schema': 'wd.mind-readonly-encoder-binding.v1', 'encoder': binding['encoder'],
+                              'code_sha256': binding['code_sha256'], 'query_policy': query})
+
+
+def _verified_flat_manifest(raw, digest, snapshot, projection, ids, vectors, encoder, *, check_vectors):
+    """Validate the distinct flat memory format against locally derived rows."""
+    if (type(raw) is not bytes or not reader._hex(digest) or not hmac.compare_digest(reader._sha(raw), digest)
+            or type(ids) is not tuple or type(vectors) is not bytes or type(encoder) is not bytes
+            or type(check_vectors) is not bool):
+        raise ValueError('flat_inputs')
+    manifest = json.loads(raw.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                          parse_constant=reader._bad_constant)
+    if (type(manifest) is not dict or reader._canonical(manifest) != raw
+            or set(manifest) != {'schema','authority','projection_sha256','records','encoder_binding_sha256',
+                                 'ids_sha256','vectors_sha256','pairs_sha256'}
+            or manifest['schema'] != 'wd.mind-flat-f32-memory.v1' or manifest['authority'] != 'none'
+            or manifest['projection_sha256'] != snapshot['projection_sha256']
+            or type(manifest['records']) is not int or manifest['records'] <= 0
+            or manifest['records'] != len(ids) or len(vectors) != len(ids) * _ROW.size
+            or manifest['encoder_binding_sha256'] != reader._sha(encoder)):
+        raise ValueError('flat_manifest')
+    records = projection['messages']['records']
+    record_ids = [record['record_id'] for record in records]
+    if (any(type(item) is not str for item in ids) or len(set(record_ids)) != len(record_ids)
+            or ids != tuple(sorted(record_ids))
+            or manifest['ids_sha256'] != reader._sha(reader._canonical(list(ids)))
+            or manifest['vectors_sha256'] != reader._sha(vectors)):
+        raise ValueError('flat_records')
+    pairs = hashlib.sha256()
+    for index, record_id in enumerate(ids):
+        vector = vectors[index * _ROW.size:(index + 1) * _ROW.size]
+        if check_vectors:
+            reader._q4_vector(_ROW.unpack(vector))
+        pairs.update(record_id.encode('utf-8') + b'\0' + vector)
+    if manifest['pairs_sha256'] != pairs.hexdigest():
+        raise ValueError('flat_pairs')
+    return manifest
+
+
+class _ConsumerFlatGate(reader._NarrowReadGate):
+    """Locally built flat-schema row map; the pipe peer supplies no trust pin."""
+    def __init__(self, bundle_root, manifest_pin, raw_map, flat_raw, flat_digest, ids, vectors, encoder):
+        self._bundle_root, self._manifest_pin = bundle_root, manifest_pin
+        self._raw_map, self._map_digest = raw_map, reader._sha(raw_map)
+        self._flat_raw, self._flat_digest = flat_raw, flat_digest
+        self._ids, self._vectors, self._encoder = ids, vectors, encoder
+
+    def _manifest(self):
+        if not hmac.compare_digest(reader._sha(self._raw_map), self._map_digest):
+            raise ValueError('flat_source_map')
+        value = json.loads(self._raw_map.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                           parse_constant=reader._bad_constant)
+        if (type(value) is not dict or reader._canonical(value) != self._raw_map
+                or set(value) != {'schema','authority','source_prefix','source_locations','projection_sha256',
+                                  'decision_sha256','flat_memory_sha256','entries'}
+                or value['schema'] != 'wd.mind-flat-source-map.v1' or value['authority'] != 'none'
+                or value['flat_memory_sha256'] != self._flat_digest or type(value['entries']) is not dict):
+            raise ValueError('flat_source_map')
+        return value
+
+    def verify_snapshot(self, snapshot):
+        if (type(snapshot) is not dict
+                or _consumer_flat_encoder(self._bundle_root, self._manifest_pin) != self._encoder):
+            raise ValueError('snapshot')
+        inputs = dict(snapshot)
+        raw, digest = inputs.pop('projection_bytes', None), inputs.pop('projection_sha256', None)
+        if type(raw) is not bytes or not raw or not reader._hex(digest) or not hmac.compare_digest(reader._sha(raw), digest):
+            raise ValueError('projection')
+        context = reader._inputs(inputs, complete_source=True)
+        projection = json.loads(raw.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                                parse_constant=reader._bad_constant)
+        if (reader._serialized(projection) != raw or type(projection) is not dict
+                or projection.get('schema') != reader._ALL_TASK_COMBINED_SCHEMA
+                or type(projection.get('messages')) is not dict
+                or projection['messages'].get('schema') != reader._ALL_TASK_MESSAGE_SCHEMA
+                or type(projection['messages'].get('records')) is not list):
+            raise ValueError('projection_schema')
+        value = self._manifest()
+        cursor = context['messages']['end_cursor']
+        anchored = dict(context['decision']['source_prefix'], file_identity=cursor.file_identity)
+        locations = {'log': context['messages']['source_path'], 'generation': context['messages']['generation_path']}
+        if (value['source_prefix'] != anchored or value['source_locations'] != locations
+                or value['projection_sha256'] != digest or value['decision_sha256'] != context['decision_sha256']):
+            raise ValueError('source_binding')
+        _verified_flat_manifest(self._flat_raw, self._flat_digest, snapshot, projection,
+                                self._ids, self._vectors, self._encoder, check_vectors=False)
+        refs = {record['provenance']['source_event_ref'] for record in projection['messages']['records']}
+        if set(value['entries']) != refs or any(not reader._hex(ref) for ref in refs):
+            raise ValueError('coverage')
+        for entry in value['entries'].values():
+            if (type(entry) is not dict or set(entry) != {'offset','length','raw_sha256'}
+                    or type(entry['offset']) is not int or type(entry['length']) is not int
+                    or entry['offset'] < 0 or not 0 < entry['length'] <= 4 * 1024 * 1024
+                    or entry['offset'] + entry['length'] > cursor.offset or not reader._hex(entry['raw_sha256'])):
+                raise ValueError('row_bounds')
+        bridge, absent = reader._narrow_dependencies()
+        source, sidecar = Path(context['messages']['source_path']), Path(context['messages']['generation_path'])
+        with bridge._open_log(source) as stream:
+            reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+        report = {'status':'MATCH', 'projection_sha256':digest, 'decision_sha256':context['decision_sha256'],
+                  'source_prefix':dict(context['decision']['source_prefix']), 'doc_commit':None,
+                  'operator_scope_authorization':'UNKNOWN', 'required_release_task_list_sha256':None}
+        return projection, context, report
+
+
+def create_consumer_flat_source_owner(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
+                                      snapshot=None, flat_manifest_bytes=None, flat_manifest_sha256=None,
+                                      ids=None, vectors=None, encoder_binding_bytes=None):
+    """Independently build a process-local flat source gate; never trust IPC pins.
+
+    Full source verification occurs while constructing this owner. Peer identity,
+    index selection, continuous monitoring, same-user ABA and startup delivery
+    remain unproven; query proposals are treated as untrusted references only.
+    """
+    output = None
+    try:
+        if enabled is not True or type(bundle_root) is not str or type(snapshot) is not dict:
+            raise ValueError('input')
+        controls = _consumer_bundle_controls(bundle_root, expected_manifest_sha256)
+        encoder = _consumer_flat_encoder(bundle_root, expected_manifest_sha256)
+        if encoder_binding_bytes != encoder:
+            raise ValueError('encoder_binding')
+        frozen = dict(snapshot, messages=dict(snapshot['messages']))
+        source, sidecar, _, roster, policy = controls
+        if (os.path.normcase(os.path.abspath(frozen['messages']['source_path'])) != os.path.normcase(os.path.abspath(source))
+                or os.path.normcase(os.path.abspath(frozen['messages']['generation_path'])) != os.path.normcase(os.path.abspath(sidecar))
+                or frozen['roster_bytes'] != roster or frozen['messages']['policy_bytes'] != policy):
+            raise ValueError('source_controls')
+        projection, context, before = reader._verified_complete(frozen)
+        _verified_flat_manifest(flat_manifest_bytes, flat_manifest_sha256, frozen, projection,
+                                ids, vectors, encoder, check_vectors=True)
+        references = {row['provenance']['source_event_ref'] for row in projection['messages']['records']}
+        if not references or any(not reader._hex(ref) for ref in references):
+            raise ValueError('references')
+        entries = reader._narrow_row_index(context, references)
+        _, _, after = reader._verified_complete(frozen)
+        if before != after:
+            raise ValueError('source_changed')
+        cursor = context['messages']['end_cursor']
+        source_map = {'schema':'wd.mind-flat-source-map.v1', 'authority':'none',
+            'source_prefix':dict(context['decision']['source_prefix'], file_identity=cursor.file_identity),
+            'source_locations':{'log':context['messages']['source_path'], 'generation':context['messages']['generation_path']},
+            'projection_sha256':frozen['projection_sha256'], 'decision_sha256':context['decision_sha256'],
+            'flat_memory_sha256':flat_manifest_sha256, 'entries':entries}
+        gate = _ConsumerFlatGate(bundle_root, expected_manifest_sha256, reader._canonical(source_map), flat_manifest_bytes, flat_manifest_sha256,
+                                 ids, vectors, encoder)
+        gate.verify_snapshot(frozen)
+        if (_consumer_bundle_controls(bundle_root, expected_manifest_sha256) != controls
+                or _consumer_flat_encoder(bundle_root, expected_manifest_sha256) != encoder):
+            raise ValueError('controls_changed')
+        output = _ConsumerSourceOwner(bundle_root, expected_manifest_sha256, controls, frozen, gate)
+    except Exception:
+        pass
+    if output is None:
+        raise SnapshotPackageRefused('content_snapshot_package_refused') from None
+    return output
+
+
 def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=None, index_serializer=None,
                              index_decoder=None, encoder_binding_bytes=None, encoder_binding_sha256=None,
                              index_binding_bytes=None, index_binding_sha256=None, capacity_profile=None,

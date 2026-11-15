@@ -679,3 +679,35 @@ def test_review_partial_job_constructor_failure_retains_created_handle(staged_gr
         allow_close.set()
         if lifecycle._active is not None:
             assert not lifecycle._active.shutdown(timeout=2)["owned"]
+
+
+@pytest.mark.parametrize('signal_name', ['keyboard', 'cancelled'])
+def test_graceful_launch_preserves_owner_after_spawn_interruption(staged_graceful, monkeypatch, signal_name):
+    import asyncio
+    from test_wd_mind_e5_lifecycle import Job as OwnedJob, Process as OwnedProcess, finish
+    from tools import wd_mind_e5_lifecycle as lifecycle
+    signal = KeyboardInterrupt if signal_name == 'keyboard' else asyncio.CancelledError
+    process, captured, calls = OwnedProcess(on_eof=False), [], []
+    class Job(OwnedJob):
+        def __init__(self, *, kill_on_close, _owner=None):
+            assert kill_on_close is False
+            super().__init__()
+        def attach(self, value):
+            assert value is process
+            assert captured and captured[0]._process is process
+            raise signal()
+    def spawn(*args, **kwargs):
+        assert len(captured) == 1 and captured[0]._process is None
+        calls.append('spawn')
+        return process
+    monkeypatch.setattr(child, '_Job', Job)
+    monkeypatch.setattr(subprocess, 'Popen', spawn)
+    try:
+        with pytest.raises(signal):
+            child.start_e5_worker_graceful(enabled=True, owner_sink=captured.append, **staged_graceful)
+        assert calls == ['spawn'] and captured[0] is lifecycle._active
+        assert captured[0]._process is process and captured[0].status()['owned'] is True
+        assert process.poll() is None and not captured[0]._job.closed
+    finally:
+        if captured:
+            finish(captured[0], process)

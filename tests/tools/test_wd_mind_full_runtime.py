@@ -23,7 +23,8 @@ def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):
     assert calls == []
 
 
-def test_single_adapter_symbol_and_manifest_pins_without_rotator(synthetic_bundle):
+@pytest.mark.parametrize('fault', ['vectors', 'policy_pin'])
+def test_single_adapter_symbol_and_manifest_pins_without_rotator(synthetic_bundle, fault):
     """Import real bundle bytes; no model process or fake adapter is started."""
     bundle = synthetic_bundle['bundle']
     import datetime
@@ -84,9 +85,10 @@ wrapper = runtime.create_single_manifest_owner(enabled=True, binding=binding, la
 assert wrapper.start() == {'state':'READY','owned':True,'authority':'none'}
 assert type(wrapper._adapter) is adapter._SingleFlatAdapter and wrapper._client is client
 assert wrapper._handler._memory is not None and wrapper._handler._memory.binding is binding
-for bad in ({}, {'enabled':True,'expected_nonce':'x'*64,'max_total_bytes':10000000},
-            {'enabled':True,'expected_nonce':'e'*64,'max_total_bytes':1},
-            {'enabled':True,'expected_nonce':'e'*64,'max_total_bytes':True}):
+policy_pin = hashlib.sha256(binding._PrivateBinding__snapshot['identifier_policy_binding'][0]).hexdigest()
+for bad in ({}, {'enabled':True,'expected_nonce':'x'*64,'expected_identifier_policy_sha256':policy_pin,'max_total_bytes':10000000},
+            {'enabled':True,'expected_nonce':'e'*64,'expected_identifier_policy_sha256':policy_pin,'max_total_bytes':1},
+            {'enabled':True,'expected_nonce':'e'*64,'expected_identifier_policy_sha256':policy_pin,'max_total_bytes':True}):
     try:
         wrapper.prepare_consumer_export(**bad)
         raise AssertionError('bad export input accepted')
@@ -95,13 +97,13 @@ for bad in ({}, {'enabled':True,'expected_nonce':'x'*64,'max_total_bytes':100000
 import traceback
 synthetic_private_key = binding._PrivateBinding__snapshot['identifier_policy_binding'][1]
 try:
-    wrapper.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=1)
+    wrapper.prepare_consumer_export(enabled=True, expected_nonce='e'*64, expected_identifier_policy_sha256=policy_pin, max_total_bytes=1)
     raise AssertionError('size limit accepted')
 except runtime.FullRuntimeRefused as exc:
     captured = traceback.TracebackException.from_exception(exc, capture_locals=True)
     frames = [frame for frame in captured.stack if frame.name == 'prepare_consumer_export']
     assert frames and all(repr(synthetic_private_key) not in value for frame in frames for value in (frame.locals or {}).values()), 'traceback locals exposed identifier key'
-prepared = wrapper.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=10000000)
+prepared = wrapper.prepare_consumer_export(enabled=True, expected_nonce='e'*64, expected_identifier_policy_sha256=policy_pin, max_total_bytes=10000000)
 info = prepared.status()
 assert info['state'] == 'PREPARED_LOCAL_ONLY' and info['authority'] == 'none'
 assert info['receiver_authentication'] == 'UNKNOWN' and info['transmission'] == 'NOT_AVAILABLE'
@@ -142,18 +144,20 @@ response = wrapper.candidates({'schema':'wd.mind-pipe-request.v1','query_id':'st
 assert response['status'] == 'CANDIDATES' and len(response['candidates']) == 1, repr(response)
 assert response['candidates'][0]['source_event_sha256'] == sys.argv[3]
 memory = wrapper._handler._memory
-original_vectors = memory.vectors
-memory.vectors = b'\0' * len(original_vectors)
+if sys.argv[4] == 'vectors':
+    memory.vectors = b'\0' * len(memory.vectors)
+else:
+    policy_pin = '0'*64
 try:
-    wrapper.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=10000000)
-    raise AssertionError('modified flat vectors accepted')
+    wrapper.prepare_consumer_export(enabled=True, expected_nonce='e'*64, expected_identifier_policy_sha256=policy_pin, max_total_bytes=10000000)
+    raise AssertionError('altered vectors or policy pin accepted')
 except runtime.FullRuntimeRefused:
     pass
 assert wrapper.status()['state'] == 'HOLD'
 assert 'tools.wd_mind_e5_rotating_client' not in sys.modules
 print('synthetic_adapter_manifest_verified')
 '''
-    proc = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', script, str(bundle), pin, event_sha],
+    proc = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', script, str(bundle), pin, event_sha, fault],
                           cwd=bundle, capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == 'synthetic_adapter_manifest_verified'
@@ -1441,7 +1445,7 @@ def test_export_cancellation_never_exposes_inner_secret_traceback(tmp_path, monk
             raise signal(fake_key)
     monkeypatch.setattr(runtime, '_flat_check', interrupted)
     with pytest.raises(signal) as captured:
-        owner.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=1000)
+        owner.prepare_consumer_export(enabled=True, expected_nonce='e'*64, expected_identifier_policy_sha256='a'*64, max_total_bytes=1000)
     trace = traceback.TracebackException.from_exception(captured.value, capture_locals=True)
     owned_frames = [frame for frame in trace.stack if frame.name != 'test_export_cancellation_never_exposes_inner_secret_traceback']
     assert owned_frames
@@ -1469,7 +1473,7 @@ def test_export_cancellation_subclass_constructor_never_runs_again(tmp_path, mon
     def interrupted(memory): raise event
     monkeypatch.setattr(runtime, '_flat_check', interrupted)
     with pytest.raises(base) as captured:
-        owner.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=1000)
+        owner.prepare_consumer_export(enabled=True, expected_nonce='e'*64, expected_identifier_policy_sha256='a'*64, max_total_bytes=1000)
     assert type(captured.value) is base and calls == [True]
     assert captured.value.args == () and captured.value.__context__ is None
     assert owner.status()['state'] == 'HOLD'
@@ -1494,7 +1498,7 @@ def test_export_cancellation_never_touches_untrusted_signal_attributes(tmp_path,
     def interrupted(memory): raise event
     monkeypatch.setattr(runtime, '_flat_check', interrupted)
     with pytest.raises(base) as captured:
-        owner.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=1000)
+        owner.prepare_consumer_export(enabled=True, expected_nonce='e'*64, expected_identifier_policy_sha256='a'*64, max_total_bytes=1000)
     assert type(captured.value) is base
     assert captured.value.args == () and captured.value.__context__ is None
     assert owner.status()['state'] == 'HOLD'

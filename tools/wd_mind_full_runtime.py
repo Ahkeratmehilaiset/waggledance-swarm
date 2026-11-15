@@ -1187,10 +1187,12 @@ class _SingleManifestOwner:
         finally:
             self._lock.release()
 
-    def prepare_consumer_export(self, *, enabled=False, expected_nonce=None, max_total_bytes=None):
+    def prepare_consumer_export(self, *, enabled=False, expected_nonce=None,
+                                expected_identifier_policy_sha256=None, max_total_bytes=None):
         """Prepare pinned snapshot/flat data in memory; never transfer it.
 
-        The caller-provided nonce is correlation data, not receiver authority.
+        The caller must independently obtain the policy pin from an approved
+        launcher context. The nonce is correlation data, not receiver authority.
         A trusted, separately inherited channel is required before any export.
         """
         if not self._lock.acquire(blocking=False):
@@ -1201,6 +1203,8 @@ class _SingleManifestOwner:
         try:
             if (enabled is not True or self._state != 'READY' or self._handler is None
                     or type(expected_nonce) is not str or not reader._hex(expected_nonce)
+                    or type(expected_identifier_policy_sha256) is not str
+                    or not reader._hex(expected_identifier_policy_sha256)
                     or type(max_total_bytes) is not int or not 0 < max_total_bytes < 2**63):
                 raise ValueError('export_input')
             checking_integrity = True
@@ -1215,6 +1219,7 @@ class _SingleManifestOwner:
             identifier, key, tag = snapshot['identifier_policy_binding']
             cursor = messages['end_cursor']
             if (type(identifier) is not bytes or type(key) is not bytes or len(key) != 32
+                    or not hmac.compare_digest(reader._sha(identifier), expected_identifier_policy_sha256)
                     or type(tag) is not str or not reader._hex(tag)
                     or not hmac.compare_digest(hmac.new(key, identifier, hashlib.sha256).hexdigest(), tag)
                     or type(cursor) is not bridge.BridgeCursor or type(cursor.offset) is not int

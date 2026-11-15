@@ -222,7 +222,9 @@ def test_manifest_policy_candidate_requires_pinned_descriptor_and_is_not_approva
     anchor = runtime.create_operator_pinned_policy_anchor(enabled=True, **args)
     assert type(anchor) is runtime._TrustedManifestPolicyAnchor
     assert anchor.status() == {'policy_binding':'MATCH', 'approval_reference_binding':'MATCH',
-        'authorization_source':'operator_supplied_pins', 'operator_authentication':'UNKNOWN'}
+        'authorization_source':'operator_supplied_pins', 'operator_authentication':'UNKNOWN',
+        'observation':'observed_at_creation', 'reaudit_required':True}
+    with pytest.raises(AttributeError): anchor.policy_sha256 = 'c' * 64
     path.write_bytes(b'{}')
     with pytest.raises(runtime.FullRuntimeRefused):
         runtime.inspect_manifest_policy_candidate(enabled=True, bundle_root=str(tmp_path),

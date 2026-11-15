@@ -52,9 +52,13 @@ class _TrustedManifestPolicyAnchor:
     def __new__(cls, *args, **kwargs):
         raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
+    def __setattr__(self, name, value):
+        raise AttributeError('immutable')
+
     def status(self):
         return {'policy_binding':'MATCH', 'approval_reference_binding':'MATCH',
-                'authorization_source':'operator_supplied_pins', 'operator_authentication':'UNKNOWN'}
+                'authorization_source':'operator_supplied_pins', 'operator_authentication':'UNKNOWN',
+                'observation':'observed_at_creation', 'reaudit_required':True}
 
 
 def inspect_manifest_policy_candidate(*, enabled=False, bundle_root=None, expected_manifest_sha256=None):
@@ -124,8 +128,10 @@ def create_operator_pinned_policy_anchor(*, enabled=False, bundle_root=None, exp
                                            operator_approval_reference_sha256)):
             raise ValueError('operator_pin_mismatch')
         anchor = object.__new__(_TrustedManifestPolicyAnchor)
-        anchor.bundle_root, anchor.manifest_sha256 = bundle_root, expected_manifest_sha256
-        anchor.policy_sha256, anchor.approval_reference_sha256 = operator_policy_sha256, operator_approval_reference_sha256
+        object.__setattr__(anchor, 'bundle_root', bundle_root)
+        object.__setattr__(anchor, 'manifest_sha256', expected_manifest_sha256)
+        object.__setattr__(anchor, 'policy_sha256', operator_policy_sha256)
+        object.__setattr__(anchor, 'approval_reference_sha256', operator_approval_reference_sha256)
         result = anchor
     except Exception:
         pass

@@ -92,16 +92,6 @@ for bad in ({}, {'enabled':True,'expected_nonce':'x'*64,'max_total_bytes':100000
         raise AssertionError('bad export input accepted')
     except runtime.FullRuntimeRefused:
         pass
-memory = wrapper._handler._memory
-original_vectors = memory.vectors
-memory.vectors = b'\0' * len(original_vectors)
-try:
-    wrapper.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=10000000)
-    raise AssertionError('modified flat vectors accepted')
-except runtime.FullRuntimeRefused:
-    pass
-finally:
-    memory.vectors = original_vectors
 prepared = wrapper.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=10000000)
 info = prepared.status()
 assert info['state'] == 'PREPARED_LOCAL_ONLY' and info['authority'] == 'none'
@@ -126,6 +116,15 @@ response = wrapper.candidates({'schema':'wd.mind-pipe-request.v1','query_id':'st
     'nonce':'d'*64,'lane':'codex-lead-1','scope':'own'})
 assert response['status'] == 'CANDIDATES' and len(response['candidates']) == 1, repr(response)
 assert response['candidates'][0]['source_event_sha256'] == sys.argv[3]
+memory = wrapper._handler._memory
+original_vectors = memory.vectors
+memory.vectors = b'\0' * len(original_vectors)
+try:
+    wrapper.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=10000000)
+    raise AssertionError('modified flat vectors accepted')
+except runtime.FullRuntimeRefused:
+    pass
+assert wrapper.status()['state'] == 'HOLD'
 assert 'tools.wd_mind_e5_rotating_client' not in sys.modules
 print('synthetic_adapter_manifest_verified')
 '''

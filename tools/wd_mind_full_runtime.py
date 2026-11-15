@@ -1196,11 +1196,13 @@ class _SingleManifestOwner:
         if not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         result = None
+        checking_integrity = False
         try:
             if (enabled is not True or self._state != 'READY' or self._handler is None
                     or type(expected_nonce) is not str or not reader._hex(expected_nonce)
                     or type(max_total_bytes) is not int or not 0 < max_total_bytes < 2**63):
                 raise ValueError('export_input')
+            checking_integrity = True
             self._check_factory()
             self._handler._running_owner()
             memory = self._handler._memory
@@ -1235,6 +1237,7 @@ class _SingleManifestOwner:
                 'blocks':[{'name':name,'length':len(value)} for name, value in blocks]})
             total = len(metadata) + sum(len(value) for _, value in blocks)
             if total > max_total_bytes:
+                checking_integrity = False
                 raise ValueError('export_size')
             _flat_check(memory)
             self._check_factory()
@@ -1244,7 +1247,8 @@ class _SingleManifestOwner:
             self._state = 'HOLD'
             raise
         except Exception:
-            pass
+            if checking_integrity:
+                self._state = 'HOLD'
         finally:
             self._lock.release()
         if result is None:

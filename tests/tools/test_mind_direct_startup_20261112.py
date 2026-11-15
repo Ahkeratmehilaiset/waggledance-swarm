@@ -194,23 +194,24 @@ foreach($v in [Environment]::GetEnvironmentVariables().Values){
     policy = b'{"schema":"synthetic"}'
     policy_pin = hashlib.sha256(policy).hexdigest()
     functions = _startup_functions('Invoke-WdMindStartupRead.ps1',
-        ['Read-WdMindPinnedSnapshot', 'ConvertTo-WdMindLiteral', 'Start-WdMindParentBootstrap'])
+        ['Read-WdMindPinnedSnapshot', 'ConvertTo-WdMindLiteral', 'Update-WdMindParentBootstrapPumps',
+         'Wait-WdMindParentBootstrap', 'Start-WdMindParentBootstrap'])
     script = functions + r'''
 $policy=[Text.Encoding]::UTF8.GetBytes('{"schema":"synthetic"}')
 $env:OPENAI_API_KEY='synthetic-only-env-sentinel'
 $env:AGENT_BRIDGE_OWNER_TOKEN='synthetic-only-owner-sentinel'
 $owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
     -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 5
-if(-not $owner.Process.WaitForExit(5000)){throw 'synthetic_parent_not_exited'}
-$r=$owner.Process.StandardOutput.ReadToEnd() | ConvertFrom-Json
-[pscustomobject]@{state=$owner.State;child_exit=$owner.Process.ExitCode;is_redirected=$r.is_redirected;
+if((Wait-WdMindParentBootstrap -Owner $owner).State -cne 'EXITED'){throw 'synthetic_parent_not_exited'}
+$r=$global:WdMindParentBootstrapIO[$owner.Token].OutText.ToString() | ConvertFrom-Json
+[pscustomobject]@{state=$owner.State;child_exit=$global:WdMindParentBootstrapProcesses[$owner.Token].Process.ExitCode;is_redirected=$r.is_redirected;
   command_has_key=$r.command_has_key;environment_has_key=$r.environment_has_key;
   secret_env_present=$r.secret_env_present;policy_length=$r.policy_length;
   policy_hash_ok=$r.policy_hash_ok;manifest_ok=$r.manifest_ok;independent_random=$r.independent_random} |
   ConvertTo-Json -Compress
 '''.replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin)).replace('POLICY_PIN', _literal(policy_pin))
     result = _run_startup_script(script)
-    assert result == {'state':'BOOTSTRAP_SENT', 'child_exit':0, 'is_redirected':True,
+    assert result == {'state':'EXITED', 'child_exit':0, 'is_redirected':True,
                       'command_has_key':False, 'environment_has_key':False,
                       'secret_env_present':False, 'policy_length':len(policy),
                       'policy_hash_ok':True, 'manifest_ok':True, 'independent_random':True}
@@ -237,7 +238,8 @@ def test_parent_bootstrap_refuses_before_process_on_untrusted_inputs(tmp_path, f
     if fault == 'wrapper': wrapper.write_text('# tampered', encoding='utf-8')
     if fault == 'entry': entry.write_text('# tampered', encoding='utf-8')
     functions = _startup_functions('Invoke-WdMindStartupRead.ps1',
-        ['Read-WdMindPinnedSnapshot', 'ConvertTo-WdMindLiteral', 'Start-WdMindParentBootstrap'])
+        ['Read-WdMindPinnedSnapshot', 'ConvertTo-WdMindLiteral', 'Update-WdMindParentBootstrapPumps',
+         'Wait-WdMindParentBootstrap', 'Start-WdMindParentBootstrap'])
     enabled = '' if fault == 'disabled' else '-Enabled'
     script = functions + r'''
 $policy=[Text.Encoding]::UTF8.GetBytes('synthetic-policy')
@@ -246,7 +248,7 @@ try { Start-WdMindParentBootstrap ENABLED -BundleRoot BUNDLE_PATH -ExpectedManif
     -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 2 | Out-Null }
 catch { $caught=$true }
 [pscustomobject]@{refused=$caught;marker=(Test-Path -LiteralPath MARKER_PATH);
-    retained=(Test-Path variable:script:WdMindParentBootstrapOwners)} | ConvertTo-Json -Compress
+    retained=(Test-Path variable:global:WdMindParentBootstrapOwners)} | ConvertTo-Json -Compress
 '''.replace('ENABLED', enabled).replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin))
     script = script.replace('POLICY_PIN', _literal(policy_pin)).replace('MARKER_PATH', _literal(marker))
     assert _run_startup_script(script) == {'refused':True, 'marker':False, 'retained':False}
@@ -271,24 +273,163 @@ while($s.Read($b,0,$b.Length) -gt 0){}
     pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
     policy_pin = hashlib.sha256(b'A' * 65536).hexdigest()
     functions = _startup_functions('Invoke-WdMindStartupRead.ps1',
-        ['Read-WdMindPinnedSnapshot', 'ConvertTo-WdMindLiteral', 'Start-WdMindParentBootstrap'])
+        ['Read-WdMindPinnedSnapshot', 'ConvertTo-WdMindLiteral', 'Update-WdMindParentBootstrapPumps',
+         'Wait-WdMindParentBootstrap', 'Start-WdMindParentBootstrap'])
     script = functions + r'''
 $policy=New-Object byte[] 65536;for($i=0;$i -lt $policy.Length;$i++){$policy[$i]=65}
 $owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
     -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 1
-$held=($owner.State -ceq 'HOLD' -and -not $owner.Process.HasExited -and
-       $script:WdMindParentBootstrapOwners.Contains($owner) -and
-       $script:WdMindParentBootstrapBuffers.ContainsKey($owner.Token))
-$completed=$owner.WriteTask.Wait(8000)
-if($completed){$owner.Process.StandardInput.Close()}
-$exited=$owner.Process.WaitForExit(8000)
-if($script:WdMindParentBootstrapBuffers.ContainsKey($owner.Token)){
-  $buffer=$script:WdMindParentBootstrapBuffers[$owner.Token];[Array]::Clear($buffer,0,$buffer.Length)
-  $script:WdMindParentBootstrapBuffers.Remove($owner.Token)
+$owned=$global:WdMindParentBootstrapProcesses[$owner.Token]
+$held=($owner.State -ceq 'HOLD' -and -not $owned.Process.HasExited -and
+       $global:WdMindParentBootstrapOwners.Contains($owner) -and
+       $global:WdMindParentBootstrapBuffers.ContainsKey($owner.Token))
+$completed=$owned.WriteTask.Wait(8000)
+if($completed){$owned.Process.StandardInput.Close()}
+$exited=$owned.Process.WaitForExit(8000)
+if($global:WdMindParentBootstrapBuffers.ContainsKey($owner.Token)){
+  $buffer=$global:WdMindParentBootstrapBuffers[$owner.Token];[Array]::Clear($buffer,0,$buffer.Length)
+  $global:WdMindParentBootstrapBuffers.Remove($owner.Token)
 }
 [pscustomobject]@{held=$held;write_finished=$completed;child_exited=$exited} | ConvertTo-Json -Compress
 '''.replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin)).replace('POLICY_PIN', _literal(policy_pin))
     assert _run_startup_script(script) == {'held':True, 'write_finished':True, 'child_exited':True}
+
+
+@WINDOWS
+def test_parent_bootstrap_drains_bounded_output_while_control_is_written(tmp_path):
+    """Synthetic child fills stdout before reading; parent must avoid pipe deadlock."""
+    bundle, _ = _package(tmp_path)
+    wrapper = bundle / 'Invoke-WdBridgePython.ps1'
+    wrapper.write_text(r'''
+[Console]::Out.Write(('x' * 45000));[Console]::Out.Flush()
+$s=[Console]::OpenStandardInput();$b=New-Object byte[] 4096
+while($s.Read($b,0,$b.Length) -gt 0){}
+''', encoding='utf-8')
+    entry = bundle / 'tools-bootstrap/tools/wd_mind_runtime_child.py'
+    entry.write_bytes(b'# synthetic fixture\n')
+    manifest = bundle / 'deployment-manifest.json'
+    doc = json.loads(manifest.read_text(encoding='utf-8'))
+    for relative in ('Invoke-WdBridgePython.ps1', 'tools-bootstrap/tools/wd_mind_runtime_child.py'):
+        doc['files'][relative] = hashlib.sha256((bundle / relative).read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(doc, separators=(',', ':')), encoding='utf-8')
+    pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    policy_pin = hashlib.sha256(b'A' * 65536).hexdigest()
+    functions = _startup_functions('Invoke-WdMindStartupRead.ps1',
+        ['Read-WdMindPinnedSnapshot', 'ConvertTo-WdMindLiteral', 'Update-WdMindParentBootstrapPumps',
+         'Wait-WdMindParentBootstrap', 'Start-WdMindParentBootstrap'])
+    script = functions + r'''
+$policy=New-Object byte[] 65536;for($i=0;$i -lt $policy.Length;$i++){$policy[$i]=65}
+$owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
+    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 2
+$owned=$global:WdMindParentBootstrapProcesses[$owner.Token]
+$sent=($owner.State -ceq 'BOOTSTRAP_SENT')
+if(-not $sent){
+  $end=[DateTime]::UtcNow.AddSeconds(8)
+  while(-not $owned.WriteTask.IsCompleted -and [DateTime]::UtcNow -lt $end){
+    [void](Update-WdMindParentBootstrapPumps -Owner $owner);[Threading.Thread]::Sleep(5)
+  }
+  if($owned.WriteTask.IsCompleted){$owned.Process.StandardInput.Close()}
+}
+$exited=$owned.Process.WaitForExit(8000)
+if($global:WdMindParentBootstrapBuffers.ContainsKey($owner.Token)){
+  $buffer=$global:WdMindParentBootstrapBuffers[$owner.Token];[Array]::Clear($buffer,0,$buffer.Length)
+  $global:WdMindParentBootstrapBuffers.Remove($owner.Token)
+}
+[pscustomobject]@{sent=$sent;child_exited=$exited} | ConvertTo-Json -Compress
+'''.replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin)).replace('POLICY_PIN', _literal(policy_pin))
+    assert _run_startup_script(script) == {'sent':True, 'child_exited':True}
+
+
+@WINDOWS
+@pytest.mark.parametrize('channel', ['stdout', 'stderr'])
+def test_parent_bootstrap_over_budget_output_stays_in_hold(channel):
+    functions = _startup_functions('Invoke-WdMindStartupRead.ps1', ['Update-WdMindParentBootstrapPumps'])
+    script = functions + r'''
+$token='synthetic'
+$owner=[pscustomobject]@{Token=$token;State='BOOTSTRAP_SENT';Process=$null}
+$out=New-Object Text.StringBuilder
+if(CHANNEL -ceq 'stdout'){[void]$out.Append(('x' * 65536))}
+$outTask=[Threading.Tasks.Task[int]]::FromResult($(if(CHANNEL -ceq 'stdout'){1}else{0}))
+$errTask=[Threading.Tasks.Task[int]]::FromResult($(if(CHANNEL -ceq 'stderr'){1}else{0}))
+$global:WdMindParentBootstrapIO=@{}
+$global:WdMindParentBootstrapProcesses=@{$token=@{Process=$null;WriteTask=$null}}
+$global:WdMindParentBootstrapIO[$token]=@{OutBuffer=(New-Object char[] 4096);ErrBuffer=(New-Object char[] 4096);
+ OutRead=$outTask;ErrRead=$errTask;OutDone=$false;ErrDone=$false;
+ ErrChars=$(if(CHANNEL -ceq 'stderr'){4096}else{0});OutText=$out}
+$ok=Update-WdMindParentBootstrapPumps -Owner $owner
+[pscustomobject]@{ok=$ok;state=$owner.State} | ConvertTo-Json -Compress
+'''.replace('CHANNEL', _literal(channel))
+    assert _run_startup_script(script) == {'ok':False, 'state':'HOLD'}
+
+
+@WINDOWS
+def test_parent_bootstrap_reports_nonzero_exit_separately(tmp_path):
+    bundle, _ = _package(tmp_path)
+    wrapper = bundle / 'Invoke-WdBridgePython.ps1'
+    wrapper.write_text("$s=[Console]::OpenStandardInput();$b=New-Object byte[] 4096;"
+                       "while($s.Read($b,0,$b.Length) -gt 0){};exit 9", encoding='utf-8')
+    entry = bundle / 'tools-bootstrap/tools/wd_mind_runtime_child.py'
+    entry.write_bytes(b'# synthetic fixture\n')
+    manifest = bundle / 'deployment-manifest.json'
+    doc = json.loads(manifest.read_text(encoding='utf-8'))
+    for relative in ('Invoke-WdBridgePython.ps1', 'tools-bootstrap/tools/wd_mind_runtime_child.py'):
+        doc['files'][relative] = hashlib.sha256((bundle / relative).read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(doc, separators=(',', ':')), encoding='utf-8')
+    pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    policy_pin = hashlib.sha256(b'synthetic-policy').hexdigest()
+    functions = _startup_functions('Invoke-WdMindStartupRead.ps1',
+        ['Read-WdMindPinnedSnapshot', 'ConvertTo-WdMindLiteral', 'Update-WdMindParentBootstrapPumps',
+         'Wait-WdMindParentBootstrap', 'Start-WdMindParentBootstrap'])
+    script = functions + r'''
+$policy=[Text.Encoding]::UTF8.GetBytes('synthetic-policy')
+$owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
+    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 5
+$owner=Wait-WdMindParentBootstrap -Owner $owner
+[pscustomobject]@{state=$owner.State;exit_code=$global:WdMindParentBootstrapProcesses[$owner.Token].Process.ExitCode} | ConvertTo-Json -Compress
+'''.replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin)).replace('POLICY_PIN', _literal(policy_pin))
+    assert _run_startup_script(script) == {'state':'EXIT_FAILED', 'exit_code':9}
+
+
+@WINDOWS
+def test_parent_bootstrap_never_returns_echoed_policy_and_survives_scope_exit(tmp_path):
+    """Synthetic peer echoes policy on both outputs; returned ticket stays opaque."""
+    bundle, _ = _package(tmp_path)
+    wrapper = bundle / 'Invoke-WdBridgePython.ps1'
+    wrapper.write_text(r'''
+$s=[Console]::OpenStandardInput();$m=New-Object IO.MemoryStream;$b=New-Object byte[] 4096
+while(($n=$s.Read($b,0,$b.Length)) -gt 0){$m.Write($b,0,$n)}
+$bytes=$m.ToArray();$policy=[Text.Encoding]::UTF8.GetString($bytes,136,$bytes.Length-136)
+[Console]::Out.Write($policy);[Console]::Error.Write($policy)
+''', encoding='utf-8')
+    entry = bundle / 'tools-bootstrap/tools/wd_mind_runtime_child.py'
+    entry.write_bytes(b'# synthetic fixture\n')
+    manifest = bundle / 'deployment-manifest.json'
+    doc = json.loads(manifest.read_text(encoding='utf-8'))
+    for relative in ('Invoke-WdBridgePython.ps1', 'tools-bootstrap/tools/wd_mind_runtime_child.py'):
+        doc['files'][relative] = hashlib.sha256((bundle / relative).read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(doc, separators=(',', ':')), encoding='utf-8')
+    pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    marker = 'synthetic-private-policy-sentinel'
+    policy_pin = hashlib.sha256(marker.encode()).hexdigest()
+    functions = _startup_functions('Invoke-WdMindStartupRead.ps1',
+        ['Read-WdMindPinnedSnapshot', 'ConvertTo-WdMindLiteral', 'Update-WdMindParentBootstrapPumps',
+         'Wait-WdMindParentBootstrap', 'Start-WdMindParentBootstrap'])
+    script = functions + r'''
+$owner=& {
+ $policy=[Text.Encoding]::UTF8.GetBytes('synthetic-private-policy-sentinel')
+ Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
+  -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 5
+}
+& { . HELPER_PATH }
+$owner=Wait-WdMindParentBootstrap -Owner $owner
+$serialized=$owner | ConvertTo-Json -Depth 4 -Compress
+[pscustomobject]@{state=$owner.State;contains_policy=$serialized.Contains('synthetic-private-policy-sentinel');
+ exposes_process=($null -ne $owner.PSObject.Properties['Process']);
+ exposes_write=($null -ne $owner.PSObject.Properties['WriteTask']);
+ retained=$global:WdMindParentBootstrapProcesses.ContainsKey($owner.Token)} | ConvertTo-Json -Compress
+'''.replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin)).replace('POLICY_PIN', _literal(policy_pin)).replace('HELPER_PATH', _literal(HELPER))
+    assert _run_startup_script(script) == {'state':'EXITED', 'contains_policy':False,
+                                           'exposes_process':False, 'exposes_write':False, 'retained':True}
 
 
 def _startup_functions(filename, names):

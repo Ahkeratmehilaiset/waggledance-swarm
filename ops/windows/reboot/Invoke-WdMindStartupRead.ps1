@@ -56,6 +56,56 @@ function Invoke-WdMindStartupRead {
         return [pscustomobject]@{Text=$utf8.GetString($bytes).TrimStart([char]0xFEFF);Hash=$digest}
     }
     function ConvertTo-WdMindLiteral([string] $Value) { return "'" + $Value.Replace("'","''") + "'" }
+    function Update-WdMindParentBootstrapPumps {
+        param([Parameter(Mandatory)] $Owner)
+        if(-not (Test-Path variable:global:WdMindParentBootstrapIO) -or
+           -not $global:WdMindParentBootstrapIO.ContainsKey($Owner.Token) -or
+           -not $global:WdMindParentBootstrapProcesses.ContainsKey($Owner.Token)){throw 'mind_parent_bootstrap_refused'}
+        $io=$global:WdMindParentBootstrapIO[$Owner.Token]
+        $process=$global:WdMindParentBootstrapProcesses[$Owner.Token].Process
+        if(-not $io.OutDone -and $io.OutRead.IsCompleted){
+            $count=$io.OutRead.GetAwaiter().GetResult()
+            if($count -eq 0){$io.OutDone=$true}
+            else{
+                if($io.OutText.Length+$count -gt 65536){$Owner.State='HOLD';return $false}
+                [void]$io.OutText.Append($io.OutBuffer,0,$count)
+                [Array]::Clear($io.OutBuffer,0,$io.OutBuffer.Length)
+                $io.OutRead=$process.StandardOutput.ReadAsync($io.OutBuffer,0,$io.OutBuffer.Length)
+            }
+        }
+        if(-not $io.ErrDone -and $io.ErrRead.IsCompleted){
+            $count=$io.ErrRead.GetAwaiter().GetResult()
+            if($count -eq 0){$io.ErrDone=$true}
+            else{
+                $io.ErrChars+=$count
+                [Array]::Clear($io.ErrBuffer,0,$io.ErrBuffer.Length)
+                if($io.ErrChars -gt 4096){$Owner.State='HOLD';return $false}
+                $io.ErrRead=$process.StandardError.ReadAsync($io.ErrBuffer,0,$io.ErrBuffer.Length)
+            }
+        }
+        return $true
+    }
+    function Wait-WdMindParentBootstrap {
+        <# Drain within the original budget. Output is private and is not a
+           validated Mind result. No resource is released on HOLD or exit. #>
+        param([Parameter(Mandatory)] $Owner)
+        try {
+            if($Owner.State -cne 'BOOTSTRAP_SENT'){return $Owner}
+            while($Owner.Clock.ElapsedMilliseconds -lt $Owner.TimeoutMilliseconds){
+                if(-not (Update-WdMindParentBootstrapPumps -Owner $Owner)){return $Owner}
+                if($Owner.Clock.ElapsedMilliseconds -ge $Owner.TimeoutMilliseconds){break}
+                $io=$global:WdMindParentBootstrapIO[$Owner.Token]
+                $process=$global:WdMindParentBootstrapProcesses[$Owner.Token].Process
+                if($io.OutDone -and $io.ErrDone -and $process.HasExited){
+                    $Owner.State=if($process.ExitCode -eq 0){'EXITED'}else{'EXIT_FAILED'}
+                    return $Owner
+                }
+                [Threading.Thread]::Sleep(5)
+            }
+        } catch { }
+        $Owner.State='HOLD'
+        return $Owner
+    }
     function Start-WdMindParentBootstrap {
         <# Default-off primitive: a caller must independently authorize the
            policy hash. This does not establish a parent entrypoint, prove a
@@ -100,6 +150,8 @@ function Invoke-WdMindStartupRead {
             [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
         $start.WorkingDirectory=$root;$start.UseShellExecute=$false;$start.CreateNoWindow=$true
         $start.RedirectStandardInput=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
+        $start.StandardOutputEncoding=New-Object Text.UTF8Encoding($false,$true)
+        $start.StandardErrorEncoding=New-Object Text.UTF8Encoding($false,$true)
         $environmentAllow=@('SYSTEMROOT','SYSTEMDRIVE','WINDIR','PATH','PATHEXT','TEMP','TMP',
                             'USERPROFILE','LOCALAPPDATA','APPDATA')
         foreach($name in @($start.EnvironmentVariables.Keys)){
@@ -127,37 +179,54 @@ function Invoke-WdMindStartupRead {
             [void](Read-WdMindPinnedSnapshot -Path $wrapperPath -Pin $wrapperPin.Value -Limit 8388608)
             [void](Read-WdMindPinnedSnapshot -Path $entryPath -Pin $entryPin.Value -Limit 8388608)
             if($clock.ElapsedMilliseconds -ge ([long]$TimeoutSeconds*1000)){throw 'mind_parent_bootstrap_refused'}
-            if(-not (Test-Path variable:script:WdMindParentBootstrapOwners)){
-                $script:WdMindParentBootstrapOwners=New-Object Collections.ArrayList
+            if(-not (Test-Path variable:global:WdMindParentBootstrapOwners)){
+                $global:WdMindParentBootstrapOwners=New-Object Collections.ArrayList
             }
-            if(-not (Test-Path variable:script:WdMindParentBootstrapBuffers)){
-                $script:WdMindParentBootstrapBuffers=@{}
+            if(-not (Test-Path variable:global:WdMindParentBootstrapBuffers)){
+                $global:WdMindParentBootstrapBuffers=@{}
+            }
+            if(-not (Test-Path variable:global:WdMindParentBootstrapIO)){
+                $global:WdMindParentBootstrapIO=@{}
+            }
+            if(-not (Test-Path variable:global:WdMindParentBootstrapProcesses)){
+                $global:WdMindParentBootstrapProcesses=@{}
             }
             $process=New-Object Diagnostics.Process
             $process.StartInfo=$start
             $token=[Guid]::NewGuid().ToString('N')
-            $owner=[pscustomobject]@{State='HOLD';Process=$process;WriteTask=$null;Token=$token}
+            $owner=[pscustomobject]@{State='HOLD';Token=$token;
+                Clock=$clock;TimeoutMilliseconds=([long]$TimeoutSeconds*1000)}
             # The process and any pending write remain strongly owned on every
             # post-reservation failure; no process termination is attempted.
-            [void]$script:WdMindParentBootstrapOwners.Add($owner)
-            $script:WdMindParentBootstrapBuffers[$token]=$control
+            [void]$global:WdMindParentBootstrapOwners.Add($owner)
+            $global:WdMindParentBootstrapBuffers[$token]=$control
+            $global:WdMindParentBootstrapProcesses[$token]=@{Process=$process;WriteTask=$null}
             if(-not $process.Start()){return $owner}
             if($clock.ElapsedMilliseconds -ge ([long]$TimeoutSeconds*1000)){
                 [Array]::Clear($control,0,$control.Length)
-                $script:WdMindParentBootstrapBuffers.Remove($token)
+                $global:WdMindParentBootstrapBuffers.Remove($token)
                 $process.StandardInput.Close()
                 return $owner
             }
-            $owner.WriteTask=$process.StandardInput.BaseStream.WriteAsync($control,0,$control.Length)
-            while(-not $owner.WriteTask.IsCompleted -and $clock.ElapsedMilliseconds -lt ([long]$TimeoutSeconds*1000)){
+            $io=@{OutBuffer=(New-Object char[] 4096);ErrBuffer=(New-Object char[] 4096);
+                OutRead=$null;ErrRead=$null;OutDone=$false;ErrDone=$false;ErrChars=0;
+                OutText=(New-Object Text.StringBuilder)}
+            $global:WdMindParentBootstrapIO[$token]=$io
+            $io.OutRead=$process.StandardOutput.ReadAsync($io.OutBuffer,0,$io.OutBuffer.Length)
+            $io.ErrRead=$process.StandardError.ReadAsync($io.ErrBuffer,0,$io.ErrBuffer.Length)
+            $writeTask=$process.StandardInput.BaseStream.WriteAsync($control,0,$control.Length)
+            $global:WdMindParentBootstrapProcesses[$token].WriteTask=$writeTask
+            while(-not $writeTask.IsCompleted -and $clock.ElapsedMilliseconds -lt ([long]$TimeoutSeconds*1000)){
+                if(-not (Update-WdMindParentBootstrapPumps -Owner $owner)){return $owner}
                 [Threading.Thread]::Sleep(5)
             }
-            if(-not $owner.WriteTask.IsCompleted -or $clock.ElapsedMilliseconds -ge ([long]$TimeoutSeconds*1000)){
+            if(-not (Update-WdMindParentBootstrapPumps -Owner $owner)){return $owner}
+            if(-not $writeTask.IsCompleted -or $clock.ElapsedMilliseconds -ge ([long]$TimeoutSeconds*1000)){
                 return $owner
             }
-            $owner.WriteTask.GetAwaiter().GetResult()
+            [void]$writeTask.GetAwaiter().GetResult()
             [Array]::Clear($control,0,$control.Length)
-            $script:WdMindParentBootstrapBuffers.Remove($token)
+            $global:WdMindParentBootstrapBuffers.Remove($token)
             $process.StandardInput.Close()
             if($clock.ElapsedMilliseconds -ge ([long]$TimeoutSeconds*1000)){return $owner}
             $owner.State='BOOTSTRAP_SENT'

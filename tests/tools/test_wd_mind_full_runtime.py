@@ -1280,12 +1280,12 @@ def test_deferred_legacy_rotator_routes_refuse_without_starting_a_worker(monkeyp
 
 
 def test_single_owner_package_has_unchanged_static_closure_without_rotator():
-    from test_bridge_code_package_closure import _closure, _packaged_python
+    from test_bridge_code_package_closure import _closure, _packaged_python, _definition
     omitted = 'tools/wd_mind_e5_rotating_client.py'
     entries = _packaged_python()
-    assert omitted in entries
-    seeds = [entry for entry in entries if entry != omitted]
-    gaps, unresolved = _closure(seeds)
+    assert omitted not in entries
+    assert 'mind_guardian' not in _definition()['python_entrypoints']
+    gaps, unresolved = _closure(entries)
     assert not gaps, gaps
     assert not unresolved, unresolved
 
@@ -1325,3 +1325,36 @@ def test_single_owner_retains_conflicting_sink_owners(tmp_path, monkeypatch):
     assert owner.start() == {'state':'HOLD','owned':None,'authority':'none'}
     assert owner._owner is first and owner._owner_conflicts == [second]
     assert owner.close() == {'state':'HOLD','owned':None,'authority':'none'}
+
+
+def test_cancelled_single_owner_retains_later_conflicting_factory_owner(tmp_path, monkeypatch):
+    import threading
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    class Owner:
+        def status(self): return {'state':'RUNNING','owned':True}
+        def shutdown(self, *, timeout): return {'state':'EXITED','owned':False}
+    first, second = Owner(), Owner()
+    def launch(self, *, owner_sink):
+        owner_sink(first)
+        entered.set()
+        assert release.wait(5)
+        return {'status':'READY', 'owner':second, 'client':None}
+    def interrupt(self):
+        assert entered.wait(2)
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(runtime._ManifestWorkerFactory, '__call__', launch)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_wait_for_launch', interrupt)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    try:
+        with pytest.raises(KeyboardInterrupt): owner.start()
+        release.set()
+        owner._launch_thread.join(timeout=5)
+        assert not owner._launch_thread.is_alive()
+        assert owner._owner is first and owner._launch['owner'] is second
+        assert second in owner._owner_conflicts
+        assert owner.close() == {'state':'HOLD','owned':None,'authority':'none'}
+    finally:
+        release.set()
+        if owner._launch_thread is not None: owner._launch_thread.join(timeout=5)

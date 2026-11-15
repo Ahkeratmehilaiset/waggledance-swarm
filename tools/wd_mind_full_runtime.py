@@ -1031,10 +1031,15 @@ class _SingleManifestOwner:
     def _run_launch(self):
         try:
             self._launch = self._factory(owner_sink=self._capture_owner)
+            # This runs even when the original caller has already cancelled.
+            # Retain both possible owners before publishing launch completion.
+            if (type(self._launch) is dict and
+                    (self._owner is None or self._launch.get('owner') is not self._owner)):
+                self._owner_conflicts.append(self._launch.get('owner'))
         except BaseException as error:
             self._launch_error = error
         finally:
-            if self._launch_cancel.is_set() and self._owner is not None:
+            if self._launch_cancel.is_set() and self._owner is not None and not self._owner_conflicts:
                 try:
                     self._owner.shutdown(timeout=0)
                 except BaseException:

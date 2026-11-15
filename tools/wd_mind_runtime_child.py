@@ -77,6 +77,166 @@ _TRAMPOLINE = ("import sys,runpy; "
                "assert sys.stdin.buffer.read(1)==b'\\0'; "
                "sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name='__main__')")
 
+_PARENT_CHILD_TRAMPOLINE = ("import runpy,sys; root,tool=sys.argv[1:3]; "
+    "sys.path.insert(0,root); sys.argv=[tool]+sys.argv[3:]; runpy.run_path(tool,run_name='__main__')")
+
+
+def _require_verified_parent_spawn():
+    # A real inherited parent-control provider has not yet been proved.
+    raise LaunchRefused('mind_e5_start_refused') from None
+
+
+def _validate_parent_pipe_fds(*fds):
+    if (len(fds) != 3 or any(type(fd) is not int or fd < 0 for fd in fds)
+            or any(not stat.S_ISFIFO(os.fstat(fd).st_mode) for fd in fds)):
+        raise ValueError('parent_pipe')
+
+
+def _verified_parent_child_command(*, role, bundle_root, expected_manifest_sha256):
+    """Resolve only fixed package entries and a manifest-pinned interpreter."""
+    from tools import wd_mind_full_runtime as runtime
+    if role not in ('owner', 'consumer') or type(bundle_root) is not str:
+        raise ValueError('parent_role')
+    root = Path(bundle_root)
+    runtime._bundle_inputs(root, expected_manifest_sha256)
+    location = runtime.resolve_manifest_runtime_location(enabled=True, bundle_root=bundle_root,
+                                                        expected_manifest_sha256=expected_manifest_sha256)
+    manifest_raw = runtime.prefix._read_pinned(root / 'deployment-manifest.json', expected_manifest_sha256,
+                                               runtime.prefix.MAX_CONTROL_BYTES)
+    manifest = json.loads(manifest_raw.decode('utf-8-sig'), object_pairs_hook=runtime.prefix._unique_object,
+                          parse_constant=runtime.reader._bad_constant)
+    relative = ('tools-bootstrap/tools/wd_mind_runtime_child.py' if role == 'owner'
+                else 'tools-bootstrap/tools/wd_bridge_mind_session.py')
+    runtime.prefix._read_pinned(root.joinpath(*relative.split('/')), manifest['files'].get(relative), 8 * 1024 * 1024)
+    entry = root.joinpath(*relative.split('/'))
+    flag = '--mind-owner-child' if role == 'owner' else '--mind-consumer-child'
+    return (location['interpreter'], '-I', '-S', '-B', '-c', _PARENT_CHILD_TRAMPOLINE,
+            str(root / 'tools-bootstrap'), str(entry), flag)
+
+
+class _ParentChildLaunch:
+    """Retain a native launch reservation and its worker through uncertainty.
+
+    A successful spawn is not a startup receipt or authenticated peer. A failed
+    or interrupted Popen constructor remains HOLD/owned UNKNOWN; it is never
+    killed or assumed absent. The caller owns the pipe endpoints independently.
+    """
+    __slots__ = ('_command', '_role', '_bundle', '_manifest', '_fds', '_deadline', '_process',
+                 '_thread', '_done', '_state', '_start_confirmed', '_init_confirmed', '_lock')
+
+    def __init__(self, command, role, bundle, manifest, fds, deadline):
+        self._command, self._role, self._bundle, self._manifest = command, role, bundle, manifest
+        self._fds, self._deadline = fds, deadline
+        self._process = self._thread = None
+        self._done, self._lock = threading.Event(), threading.Lock()
+        self._state, self._start_confirmed, self._init_confirmed = 'NEW', False, False
+
+    def __repr__(self):
+        return '<PrivateMindParentChildLaunch>'
+
+    def _run(self):
+        try:
+            if time.monotonic() >= self._deadline:
+                raise ValueError('deadline')
+            if _verified_parent_child_command(role=self._role, bundle_root=self._bundle,
+                                              expected_manifest_sha256=self._manifest) != self._command:
+                raise ValueError('pin_changed')
+            _validate_parent_pipe_fds(*self._fds)
+            startup = subprocess.STARTUPINFO()
+            startup.lpAttributeList = {'handle_list': []}
+            # Retain the Popen instance before its constructor can spawn. If the
+            # constructor is interrupted, native process ownership is UNKNOWN.
+            self._process = subprocess.Popen.__new__(subprocess.Popen)
+            subprocess.Popen.__init__(self._process, self._command, stdin=self._fds[0], stdout=self._fds[1],
+                stderr=self._fds[2], close_fds=True, startupinfo=startup,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            self._init_confirmed = True
+            self._state = 'SPAWNED_UNVERIFIED'
+        except BaseException:
+            self._state = 'HOLD'
+        finally:
+            self._done.set()
+
+    def start(self):
+        if not self._lock.acquire(blocking=False):
+            raise LaunchRefused('mind_e5_start_refused') from None
+        cancelled_type = None
+        try:
+            if self._state != 'NEW' or time.monotonic() >= self._deadline:
+                raise ValueError('parent_start')
+            # Fence before Thread.start: an uncertain start cannot claim absence.
+            self._state = 'HOLD'
+            self._thread = threading.Thread(target=self._run, name='mind-parent-child', daemon=False)
+            self._thread.start()
+            self._start_confirmed = True
+        except KeyboardInterrupt:
+            cancelled_type = KeyboardInterrupt
+        except GeneratorExit:
+            cancelled_type = GeneratorExit
+        except asyncio.CancelledError:
+            cancelled_type = asyncio.CancelledError
+        except BaseException:
+            pass
+        finally:
+            self._lock.release()
+        if cancelled_type is not None:
+            raise cancelled_type() from None
+        if not self._start_confirmed:
+            raise LaunchRefused('mind_e5_start_refused') from None
+
+    def status(self):
+        if self._thread is not None and not self._start_confirmed and not self._done.is_set():
+            active = None
+        else:
+            active = self._thread is not None and self._thread.is_alive()
+        if not self._init_confirmed:
+            return {'state':self._state, 'owned':False if self._state == 'NEW' else None,
+                    'worker_active':active}
+        try:
+            exited = self._process.poll() is not None
+        except BaseException:
+            self._state = 'HOLD'
+            return {'state':'HOLD', 'owned':None, 'worker_active':active}
+        return {'state':'EXITED' if exited else self._state, 'owned':not exited, 'worker_active':active}
+
+    def close(self):
+        # No kill/terminate, and no release while an uncertain constructor can run.
+        if not self._done.is_set() or self._thread is None:
+            raise LaunchRefused('mind_e5_start_refused') from None
+        self._thread.join(timeout=0)
+        if self._thread.is_alive() or not self._init_confirmed:
+            self._state = 'HOLD'
+            raise LaunchRefused('mind_e5_start_refused') from None
+        try:
+            if self._process.poll() is None:
+                self._state = 'HOLD'
+                raise ValueError('running')
+        except Exception:
+            raise LaunchRefused('mind_e5_start_refused') from None
+        self._state = 'EXITED'
+
+
+def create_parent_child_launch(*, enabled=False, role=None, bundle_root=None, expected_manifest_sha256=None,
+                               stdin_fd=None, stdout_fd=None, stderr_fd=None, deadline_monotonic=None):
+    """Create an inert retained child owner; production authorization refuses."""
+    result = None
+    try:
+        if (enabled is not True or role not in ('owner', 'consumer') or type(deadline_monotonic) not in (int, float)
+                or not math.isfinite(deadline_monotonic)
+                or not time.monotonic() < deadline_monotonic <= time.monotonic() + 1800):
+            raise ValueError('input')
+        _require_verified_parent_spawn()
+        _validate_parent_pipe_fds(stdin_fd, stdout_fd, stderr_fd)
+        command = _verified_parent_child_command(role=role, bundle_root=bundle_root,
+                                                  expected_manifest_sha256=expected_manifest_sha256)
+        result = _ParentChildLaunch(command, role, bundle_root, expected_manifest_sha256,
+                                    (stdin_fd, stdout_fd, stderr_fd), float(deadline_monotonic))
+    except Exception:
+        pass
+    if result is None:
+        raise LaunchRefused('mind_e5_start_refused') from None
+    return result
+
 
 def _encode_export_frame(*, enabled=False, channel_key=None, nonce=None, kind=None,
                          sequence=None, payload=None):

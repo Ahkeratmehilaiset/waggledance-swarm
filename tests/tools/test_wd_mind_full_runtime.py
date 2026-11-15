@@ -92,6 +92,15 @@ for bad in ({}, {'enabled':True,'expected_nonce':'x'*64,'max_total_bytes':100000
         raise AssertionError('bad export input accepted')
     except runtime.FullRuntimeRefused:
         pass
+import traceback
+synthetic_private_key = binding._PrivateBinding__snapshot['identifier_policy_binding'][1]
+try:
+    wrapper.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=1)
+    raise AssertionError('size limit accepted')
+except runtime.FullRuntimeRefused as exc:
+    captured = traceback.TracebackException.from_exception(exc, capture_locals=True)
+    frames = [frame for frame in captured.stack if frame.name == 'prepare_consumer_export']
+    assert frames and all(repr(synthetic_private_key) not in value for frame in frames for value in (frame.locals or {}).values()), 'traceback locals exposed identifier key'
 prepared = wrapper.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=10000000)
 info = prepared.status()
 assert info['state'] == 'PREPARED_LOCAL_ONLY' and info['authority'] == 'none'
@@ -1395,3 +1404,31 @@ def test_cancelled_single_owner_retains_later_conflicting_factory_owner(tmp_path
     finally:
         release.set()
         if owner._launch_thread is not None: owner._launch_thread.join(timeout=5)
+
+
+@pytest.mark.parametrize('signal_name', ['keyboard','cancelled'])
+def test_export_cancellation_never_exposes_inner_secret_traceback(tmp_path, monkeypatch, signal_name):
+    import asyncio, traceback
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema':'wd.mind-flat-owner-build.v1','status':'BUILT_IN_MEMORY','authority':'none'})
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start()['state'] == 'READY'
+    signal = KeyboardInterrupt if signal_name == 'keyboard' else asyncio.CancelledError
+    fake_key = b'synthetic-policy-key-32-bytes!!!'
+    def interrupted(memory):
+        inner_private = fake_key
+        try:
+            raise ValueError(fake_key)
+        except ValueError:
+            raise signal(fake_key)
+    monkeypatch.setattr(runtime, '_flat_check', interrupted)
+    with pytest.raises(signal) as captured:
+        owner.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=1000)
+    trace = traceback.TracebackException.from_exception(captured.value, capture_locals=True)
+    owned_frames = [frame for frame in trace.stack if frame.name != 'test_export_cancellation_never_exposes_inner_secret_traceback']
+    assert owned_frames
+    assert captured.value.__context__ is None and captured.value.args == ()
+    assert all(repr(fake_key) not in value for frame in owned_frames for value in (frame.locals or {}).values())
+    assert owner.status()['state'] == 'HOLD'

@@ -1197,6 +1197,7 @@ class _SingleManifestOwner:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         result = None
         checking_integrity = False
+        cancelled_type = None
         try:
             if (enabled is not True or self._state != 'READY' or self._handler is None
                     or type(expected_nonce) is not str or not reader._hex(expected_nonce)
@@ -1243,14 +1244,26 @@ class _SingleManifestOwner:
             self._check_factory()
             self._handler._running_owner()
             result = _PrivateConsumerExport(metadata, blocks, total)
-        except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+        except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError) as cancellation:
             self._state = 'HOLD'
-            raise
+            # Validation frames can contain the policy binding. Preserve the
+            # cancellation type, but not its object, arguments or inner frames.
+            cancelled_type = type(cancellation)
+            cancellation.__traceback__ = None
+            cancellation.__context__ = None
+            cancellation.__cause__ = None
         except Exception:
             if checking_integrity:
                 self._state = 'HOLD'
+        except BaseException:
+            self._state = 'HOLD'
         finally:
+            # Refusals can be inspected with capture_locals=True.
+            key = identifier = tag = blocks = snapshot = messages = None
+            metadata = memory = cursor = None
             self._lock.release()
+        if cancelled_type is not None:
+            raise cancelled_type() from None
         if result is None:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         return result

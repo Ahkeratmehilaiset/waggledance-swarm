@@ -428,17 +428,119 @@ def _flat_hashes(ids, vectors):
             'vectors_sha256': reader._sha(vectors), 'pairs_sha256': pairs.hexdigest()}
 
 
+class FlatBuildHold(FullRuntimeRefused):
+    """A source verifier is still owned; no built memory was returned."""
+
+
+_flat_watch_lock = threading.Lock()
+_flat_watch_owner = None
+_FLAT_WATCH_JOIN_SECONDS = 60
+
+
+class _FlatBuildWatcher:
+    """Check a frozen source in background while an opt-in build is active."""
+    def __init__(self, binding, frozen):
+        self.binding, self.frozen = binding, frozen
+        self.bundle = binding._PrivateBinding__bundle
+        self.manifest = binding._PrivateBinding__manifest
+        self.controls = binding._PrivateBinding__controls
+        self.args = dict(binding._PrivateBinding__args)
+        self.stop_event, self.started, self.finished, self.failed = (threading.Event() for _ in range(4))
+        self.thread = threading.Thread(target=self._run, name='mind-flat-source-verifier', daemon=False)
+
+    def _run(self):
+        try:
+            while not self.stop_event.is_set():
+                self.started.set()
+                _flat_snapshot(self.binding, self.frozen)
+                if self.stop_event.wait(0.05):
+                    break
+        except BaseException:
+            self.failed.set()
+        finally:
+            self.finished.set()
+
+    def close(self):
+        self.stop_event.set()
+        self.thread.join(_FLAT_WATCH_JOIN_SECONDS)
+        if self.thread.is_alive():
+            raise FlatBuildHold('mind_flat_verifier_hold')
+        if self.failed.is_set():
+            raise ValueError('source_verifier_failed')
+
+
+def _start_flat_watcher(binding, frozen):
+    global _flat_watch_owner
+    with _flat_watch_lock:
+        if _flat_watch_owner is not None:
+            previous = _flat_watch_owner
+            if not previous.finished.is_set() or previous.thread.is_alive():
+                raise FlatBuildHold('mind_flat_verifier_hold')
+        owner = _FlatBuildWatcher(binding, frozen)
+        _flat_watch_owner = owner
+        try:
+            owner.thread.start()
+        except BaseException:
+            _flat_watch_owner = None
+            raise
+        if not owner.started.wait(5):
+            owner.stop_event.set()
+            raise FlatBuildHold('mind_flat_verifier_hold')
+        return owner
+
+
+def _flat_local_fence(binding, frozen, watcher):
+    """Check binding, policy, source identity and cursor without rehashing the log."""
+    if watcher.failed.is_set() or watcher.finished.is_set():
+        raise ValueError('source_verifier_stopped')
+    if binding._PrivateBinding__snapshot != frozen:
+        raise ValueError('snapshot_changed')
+    bundle, manifest, controls, args = watcher.bundle, watcher.manifest, watcher.controls, watcher.args
+    if (binding._PrivateBinding__bundle != bundle or binding._PrivateBinding__manifest != manifest
+            or binding._PrivateBinding__controls != controls or binding._PrivateBinding__args != args):
+        raise ValueError('binding_changed')
+    if _bundle_inputs(bundle, manifest) != controls:
+        raise ValueError('bundle_changed')
+    inputs = dict(frozen)
+    raw, digest = inputs.pop('projection_bytes'), inputs.pop('projection_sha256')
+    if type(raw) is not bytes or not hmac.compare_digest(reader._sha(raw), digest):
+        raise ValueError('projection_changed')
+    reader._inputs(inputs, complete_source=True)
+    source, sidecar, fleet = prefix._deployment_source(str(bundle), manifest)
+    cursor = frozen['messages']['end_cursor']
+    if (not startup._same_path(source, Path(args['source_path']))
+            or not startup._same_path(sidecar, Path(args['generation_path']))
+            or fleet != reader._sha(controls[0]) or cursor != args['cursor']):
+        raise ValueError('source_changed')
+    prefix._plain(source, directory=False)
+    prefix._sidecar_absent(sidecar)
+    with bridge._open_log(source) as stream:
+        if bridge._file_identity(stream) != cursor.file_identity:
+            raise ValueError('identity_changed')
+        size = prefix._fence(stream, source, sidecar, cursor.file_identity, cursor.offset)
+        stream.seek(cursor.offset - 1)
+        if stream.read(1) != b'\n':
+            raise ValueError('boundary_changed')
+        prefix._fence(stream, source, sidecar, cursor.file_identity, size)
+
+
 def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
-                      encoder_binding_bytes=None, encoder_binding_sha256=None):
+                      encoder_binding_bytes=None, encoder_binding_sha256=None,
+                      source_verification='strict'):
     """Build one memory-only float32 vector per screened, source-bound record.
 
     Provider identity and supplied encoder metadata are caller-trusted; this
-    format makes no FAISS, model-authentication or cross-process claim.
+    format makes no FAISS, model-authentication or cross-process claim. The
+    explicit background profile rechecks the original source at start, end and
+    in a thread during the build; a mutation restored between checks can be
+    missed. It is not continuous authentication or post-build monitoring.
     """
-    result = None
+    result, watcher = None, None
     try:
         if (enabled is not True or type(binding) is not _PrivateBinding
-                or not callable(passage_encoder) or isinstance(passage_encoder, type)):
+                or not callable(passage_encoder) or isinstance(passage_encoder, type)
+                or type(source_verification) is not str
+                or source_verification not in ('strict', 'background_verified_snapshot')):
             raise ValueError('input')
         _checked_encoder_binding(encoder_binding_bytes, encoder_binding_sha256)
         snapshot = binding.snapshot_for_query()
@@ -447,14 +549,18 @@ def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
         by_id = {record['record_id']: record for record in records}
         if not records or len(by_id) != len(records):
             raise ValueError('records')
+        if source_verification == 'background_verified_snapshot':
+            snapshot = dict(snapshot)
+            snapshot['messages'] = dict(snapshot['messages'])
+            watcher = _start_flat_watcher(binding, snapshot)
         ids = tuple(sorted(by_id))
         vectors = []
         for start in range(0, len(ids), 16):
             chosen = ids[start:start + 16]
             texts = tuple('passage: ' + reader.decode_text(by_id[key]['stored_text'])[:2000] for key in chosen)
-            _flat_snapshot(binding, snapshot)
+            (_flat_local_fence(binding, snapshot, watcher) if watcher is not None else _flat_snapshot(binding, snapshot))
             raw = passage_encoder(texts)
-            _flat_snapshot(binding, snapshot)
+            (_flat_local_fence(binding, snapshot, watcher) if watcher is not None else _flat_snapshot(binding, snapshot))
             if type(raw) is not bytes or len(raw) != len(chosen) * 1536:
                 raise ValueError('passage')
             for index in range(len(chosen)):
@@ -464,11 +570,25 @@ def build_flat_memory(*, enabled=False, binding=None, passage_encoder=None,
         manifest = {'schema': 'wd.mind-flat-f32-memory.v1', 'authority': 'none',
                     'projection_sha256': snapshot['projection_sha256'], 'records': len(ids),
                     'encoder_binding_sha256': encoder_binding_sha256, **_flat_hashes(ids, vectors)}
+        if watcher is not None:
+            closing = watcher
+            watcher = None
+            closing.close()
         _flat_snapshot(binding, snapshot)
         result = _PrivateFlatMemory(binding, snapshot, reader._canonical(manifest), ids, vectors,
                                     encoder_binding_bytes)
+    except FlatBuildHold:
+        raise
     except Exception:
         pass
+    finally:
+        if watcher is not None:
+            try:
+                watcher.close()
+            except FlatBuildHold:
+                raise
+            except Exception:
+                result = None
     if result is None:
         raise FullRuntimeRefused('mind_full_runtime_refused') from None
     return result

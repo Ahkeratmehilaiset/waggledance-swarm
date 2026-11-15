@@ -105,7 +105,7 @@ if mode.startswith(('package', 'handler')):
     path = pathlib.Path(sys.argv[3])
     row = json.loads(path.read_bytes().splitlines()[0])
     with path.open('ab') as output:
-        for number in range(25 if mode in ('handler_fast_multibatch','handler_fast_rebind') else 4):
+        for number in range(33 if mode in ('package_bg_count', 'package_bg_strict_count') else (25 if mode in ('handler_fast_multibatch','handler_fast_rebind') else 4)):
             row['message'] = 'synthetic additional working item ' + str(number)
             if mode.startswith('handler') and not mode.startswith('handler_historical'):
                 import datetime
@@ -213,6 +213,20 @@ try:
             'normalize':True, 'dtype':'float32', 'dim':384}})
         row = struct.pack('<384f', 1.0, *([0.0]*383))
         def mutate(stage):
+            if stage == 'passage' and mode.startswith('package_bg_'):
+                source = pathlib.Path(sys.argv[3])
+                if mode == 'package_bg_source':
+                    source.write_bytes(source.read_bytes().replace(b'ordinary', b'Ordinary'))
+                if mode == 'package_bg_sidecar':
+                    source.with_name('events.generation.json').write_bytes(b'{}')
+                if mode == 'package_bg_identity':
+                    replacement = source.with_suffix('.replacement')
+                    replacement.write_bytes(source.read_bytes())
+                    os.replace(replacement, source)
+                if mode == 'package_bg_policy':
+                    (pathlib.Path(sys.argv[1]) / 'wd-mind-message-policy.json').write_bytes(b'{}')
+                if mode == 'package_bg_provider':
+                    raise ValueError('synthetic provider failure')
             if mode == 'package_source_' + stage:
                 path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
             if mode == 'package_bundle_' + stage:
@@ -226,6 +240,7 @@ try:
                 product.manifest = canonical(changed)
         def passage(texts):
             mutate('passage')
+            if mode == 'package_bg_vector': return b'bad'
             if mode == 'package_general':
                 other = struct.pack('<384f', 0.0, 1.0, *([0.0]*382))
                 return b''.join(row if 'synthetic external note' in text else other for text in texts)
@@ -612,8 +627,24 @@ try:
                               'agents':[hit['source_agent'] for hit in response['result']['results']],
                               'latest':response['result']['own_latest_task']}))
             sys.exit(0)
+        if mode.startswith('package_bg_'):
+            import threading
+            call_counts = {'main': 0, 'background': 0}
+            original_snapshot = runtime._flat_snapshot
+            def counted_snapshot(*args):
+                call_counts['main' if threading.current_thread() is threading.main_thread() else 'background'] += 1
+                if mode == 'package_bg_final' and threading.current_thread() is threading.main_thread() and call_counts['main'] == 2:
+                    path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
+                if mode == 'package_bg_background' and threading.current_thread() is not threading.main_thread():
+                    raise ValueError('synthetic verifier failure')
+                return original_snapshot(*args)
+            runtime._flat_snapshot = counted_snapshot
+        extra = ({'source_verification': ('strict' if mode == 'package_bg_strict_count' else 'background_verified_snapshot')}
+                 if mode.startswith('package_bg_') else {})
         product = runtime.build_flat_memory(enabled=True, binding=(object() if mode == 'package_fake_binding' else binding),
-            passage_encoder=passage, encoder_binding_bytes=encoder_binding, encoder_binding_sha256=sha(encoder_binding))
+            passage_encoder=passage, encoder_binding_bytes=encoder_binding, encoder_binding_sha256=sha(encoder_binding), **extra)
+        if mode in ('package_bg_count', 'package_bg_strict_count'):
+            print(json.dumps({'result':'ok', 'records':len(product.ids), 'counts':call_counts})); sys.exit(0)
         def encode_query(text):
             mutate('query')
             if mode == 'package_orthogonal': return (0.0, 1.0) + (0.0,) * 382
@@ -940,6 +971,53 @@ def test_handler_uses_owner_clock_and_abstains_for_future_or_stale_events(synthe
 def test_flat_query_abstains_on_orthogonal_or_stale_hits(synthetic_bundle, scenario):
     result = invoke(synthetic_bundle, scenario)
     assert result['status'] == 'ABSTAIN' and result['hits'] == 0
+
+
+def test_opt_in_background_snapshot_avoids_per_batch_full_source_checks(synthetic_bundle):
+    result = invoke(synthetic_bundle, 'package_bg_count')
+    assert result['result'] == 'ok' and result['records'] > 32
+    assert result['counts']['main'] <= 3 and result['counts']['background'] >= 1
+
+
+def test_strict_flat_build_still_checks_before_and_after_each_batch(synthetic_bundle):
+    result = invoke(synthetic_bundle, 'package_bg_strict_count')
+    assert result['result'] == 'ok' and result['records'] > 32
+    assert result['counts']['main'] >= 8 and result['counts']['background'] == 0
+
+
+@pytest.mark.parametrize('scenario', ['package_bg_source', 'package_bg_sidecar', 'package_bg_identity',
+    'package_bg_policy', 'package_bg_provider', 'package_bg_vector', 'package_bg_final', 'package_bg_background'])
+def test_opt_in_background_snapshot_refuses_detected_changes(synthetic_bundle, scenario):
+    assert invoke(synthetic_bundle, scenario) == {'result': 'refused'}
+
+
+def test_flat_watcher_hold_retains_owner_until_blocked_verifier_finishes(monkeypatch):
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+
+    entered, release = threading.Event(), threading.Event()
+    def blocked(*unused):
+        entered.set()
+        assert release.wait(5)
+    binding = object.__new__(runtime._PrivateBinding)
+    binding._PrivateBinding__bundle = Path('synthetic')
+    binding._PrivateBinding__manifest = 'a' * 64
+    binding._PrivateBinding__controls = (b'fleet', b'roster', b'policy')
+    binding._PrivateBinding__args = {}
+    monkeypatch.setattr(runtime, '_flat_watch_owner', None)
+    monkeypatch.setattr(runtime, '_flat_snapshot', blocked)
+    monkeypatch.setattr(runtime, '_FLAT_WATCH_JOIN_SECONDS', 0.01)
+    watcher = runtime._start_flat_watcher(binding, {})
+    try:
+        assert entered.wait(1)
+        with pytest.raises(runtime.FlatBuildHold):
+            watcher.close()
+        with pytest.raises(runtime.FlatBuildHold):
+            runtime._start_flat_watcher(binding, {})
+    finally:
+        release.set()
+        watcher.thread.join(2)
+    assert watcher.finished.is_set() and not watcher.thread.is_alive()
 
 
 @pytest.mark.parametrize('fault', ['package_fake_binding', 'package_source_passage', 'package_bundle_passage',

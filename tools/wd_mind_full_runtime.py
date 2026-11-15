@@ -459,12 +459,13 @@ def _reserve_owned_snapshot_watcher(package, lease):
 
 
 class _PrivateBinding:
-    __slots__ = ('__snapshot', '__bundle', '__manifest', '__controls', '__args')
+    __slots__ = ('__snapshot', '__bundle', '__manifest', '__controls', '__args', '__policy_pin')
     authority = 'none'
 
-    def __init__(self, snapshot, bundle, manifest, controls, args):
+    def __init__(self, snapshot, bundle, manifest, controls, args, policy_pin=None):
         self.__snapshot = snapshot
         self.__bundle, self.__manifest, self.__controls, self.__args = bundle, manifest, controls, args
+        self.__policy_pin = policy_pin
 
     def __repr__(self):
         return '<PrivateMindFullRuntimeBinding>'
@@ -981,7 +982,8 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
             raise ValueError('bundle_changed')
         startup.bind_startup_source(**args)
         reader._verified_complete(snapshot)
-        result = _PrivateBinding(snapshot, bundle, expected_manifest_sha256, controls, args)
+        result = _PrivateBinding(snapshot, bundle, expected_manifest_sha256, controls, args,
+                                 expected_identifier_policy_sha256)
     except KeyboardInterrupt:
         cancelled_type, result = KeyboardInterrupt, None
     except GeneratorExit:
@@ -1913,23 +1915,114 @@ def _require_trusted_parent_export(*, owner, stream, bootstrap):
     raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
 
+def _refresh_handler_matches_owner(owner, handler):
+    return (type(handler) is _FlatRequestHandler and handler._lane == owner._lane
+            and handler._lanes == owner._lanes and handler._rotator is owner._client
+            and handler._adapter is owner._adapter and handler._factory is owner._factory
+            and handler._timeout == owner._timeout and handler._bulk == owner._factory._bulk
+            and handler._watcher_lease is owner._watcher_lease
+            and handler._closed is False and handler._failed is False)
+
+
+def _verify_refresh_basis(owner):
+    """Recheck the original caller-supplied policy pin and current generation."""
+    binding, snapshot, handler = owner._generation
+    if type(binding) is not _PrivateBinding or not _refresh_handler_matches_owner(owner, handler):
+        raise ValueError('refresh_binding')
+    pin = binding._PrivateBinding__policy_pin
+    current = binding.snapshot_for_query()
+    if (current != snapshot or handler._binding is not binding or handler._snapshot != snapshot
+            or type(handler._memory) is not _PrivateFlatMemory or handler._memory.binding is not binding
+            or handler._memory.snapshot != snapshot or not reader._hex(pin)
+            or handler._frozen_flat != (handler._memory.manifest, handler._memory.ids,
+                                        handler._memory.vectors, handler._memory.encoder_binding)):
+        raise ValueError('refresh_binding')
+    policy, key, tag = snapshot['identifier_policy_binding']
+    if type(policy) is not bytes or not hmac.compare_digest(reader._sha(policy), pin):
+        raise ValueError('refresh_policy_pin')
+    reader._load_identifier_policy(policy, key, tag, allow_empty_v2=True)
+    _flat_check(handler._memory)
+    owner._check_factory()
+    handler._running_owner()
+    return str(binding._PrivateBinding__bundle), binding._PrivateBinding__manifest, policy, pin
+
+
+def _stage_refresh_generation(owner):
+    bundle, manifest, policy, policy_pin = _verify_refresh_basis(owner)
+    binding = assemble_full_runtime(enabled=True, bundle_root=bundle, expected_manifest_sha256=manifest,
+        identifier_policy_bytes=policy, expected_identifier_policy_sha256=policy_pin)
+    snapshot = binding.snapshot_for_query()
+    handler = _FlatRequestHandler(binding, snapshot, owner._lane, owner._lanes, owner._client,
+        owner._adapter, owner._factory, owner._timeout, owner._factory._bulk, owner._watcher_lease)
+    handler.build()
+    return {'binding':binding, 'snapshot':snapshot, 'memory':handler._memory, 'handler':handler}
+
+
+def _validate_refresh_generation(owner, staged):
+    if (type(staged) is not dict or set(staged) != {'binding', 'snapshot', 'memory', 'handler'}
+            or type(staged['binding']) is not _PrivateBinding
+            or type(staged['handler']) is not _FlatRequestHandler
+            or type(staged['memory']) is not _PrivateFlatMemory):
+        raise ValueError('refresh_candidate')
+    binding, snapshot, memory, handler = (staged[k] for k in ('binding', 'snapshot', 'memory', 'handler'))
+    old = owner._binding
+    if (binding._PrivateBinding__bundle != old._PrivateBinding__bundle
+            or binding._PrivateBinding__manifest != old._PrivateBinding__manifest
+            or binding._PrivateBinding__controls != old._PrivateBinding__controls
+            or binding._PrivateBinding__policy_pin != old._PrivateBinding__policy_pin
+            or not _refresh_handler_matches_owner(owner, handler)
+            or binding.snapshot_for_query() != snapshot or handler._binding is not binding
+            or handler._snapshot != snapshot or handler._memory is not memory
+            or memory.binding is not binding or memory.snapshot != snapshot
+            or handler._frozen_flat != (memory.manifest, memory.ids, memory.vectors, memory.encoder_binding)):
+        raise ValueError('refresh_candidate')
+    _flat_check(memory)
+    handler._running_owner()
+    owner._check_factory()
+    _verify_refresh_basis(owner)
+    _flat_check(memory)
+    if binding.snapshot_for_query() != snapshot:
+        raise ValueError('refresh_candidate_changed')
+    return binding, snapshot, handler
+
+
+def _prepare_generation_delivery(owner, request, expected_nonce, policy_pin, max_total_bytes):
+    """Prepare reference candidates and an untransmitted export under owner lock."""
+    if (type(request) is not dict or type(expected_nonce) is not str or not reader._hex(expected_nonce)
+            or request.get('nonce') != expected_nonce or type(policy_pin) is not str
+            or not reader._hex(policy_pin) or policy_pin != owner._binding._PrivateBinding__policy_pin
+            or type(max_total_bytes) is not int or not 0 < max_total_bytes <= 64 * 1024 * 1024):
+        raise ValueError('delivery_input')
+    owner._check_factory_or_hold()
+    candidates = map_pipe_candidates(enabled=True, handler=owner._handler, request=request)
+    if len(reader._canonical(candidates)) > 2048:
+        raise ValueError('candidate_size')
+    prepared = owner._prepare_consumer_export_locked(enabled=True, expected_nonce=expected_nonce,
+        expected_identifier_policy_sha256=policy_pin, max_total_bytes=max_total_bytes)
+    owner._check_factory_or_hold()
+    return {'schema':'wd.mind-generation-delivery.v1', 'authority':'none',
+            'generation_sha256':owner._snapshot['projection_sha256'],
+            'candidates':candidates, 'export':prepared}
+
+
 class _SingleManifestOwner:
     """Own one graceful worker and an optional in-process flat handler.
 
     The caller must retain this object through HOLD. This is not an IPC server,
     an authenticated lane, an installed startup path, or an automatic refresh.
     """
-    __slots__ = ('_binding', '_snapshot', '_lane', '_lanes', '_factory', '_factory_anchor', '_factory_bytes', '_timeout',
-                 '_state', '_launch', '_owner', '_client', '_adapter', '_handler', '_lock',
+    __slots__ = ('_generation', '_lane', '_lanes', '_factory', '_factory_anchor', '_factory_bytes', '_timeout',
+                 '_state', '_launch', '_owner', '_client', '_adapter', '_lock',
                  '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts',
                  '_watcher_lease')
 
     def __init__(self, binding, snapshot, lane, lanes, factory, timeout):
-        self._binding, self._snapshot, self._lane = binding, snapshot, lane
+        self._generation = (binding, snapshot, None)
+        self._lane = lane
         self._lanes, self._factory, self._timeout = frozenset(lanes), factory, timeout
         self._factory_anchor, self._factory_bytes = factory, self._factory_snapshot(factory)
         self._state, self._launch, self._owner = 'NEW', None, None
-        self._client = self._adapter = self._handler = None
+        self._client = self._adapter = None
         self._lock = threading.Lock()
         self._launch_thread = None
         self._launch_done, self._launch_cancel = threading.Event(), threading.Event()
@@ -1937,12 +2030,116 @@ class _SingleManifestOwner:
         self._owner_conflicts = []
         self._watcher_lease = _OwnedSnapshotWatcher()
 
+    @property
+    def _binding(self):
+        return self._generation[0]
+
+    @_binding.setter
+    def _binding(self, value):
+        generation = getattr(self, '_generation', (None, None, None))
+        self._generation = (value, generation[1], generation[2])
+
+    @property
+    def _snapshot(self):
+        return self._generation[1]
+
+    @_snapshot.setter
+    def _snapshot(self, value):
+        generation = getattr(self, '_generation', (None, None, None))
+        self._generation = (generation[0], value, generation[2])
+
+    @property
+    def _handler(self):
+        return self._generation[2]
+
+    @_handler.setter
+    def _handler(self, value):
+        generation = getattr(self, '_generation', (None, None, None))
+        self._generation = (generation[0], generation[1], value)
+
     def _capture_owner(self, owner):
         # The launch thread records the reservation before any native spawn.
         if self._owner is not None:
             self._owner_conflicts.append(owner)
             raise ValueError('multiple_launch_owners')
         self._owner = owner
+
+    def _refresh_generation(self, *, enabled=False):
+        """Explicit in-process refresh; no scheduling, publishing or activation."""
+        if enabled is not True or not self._lock.acquire(blocking=False):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        previous, accepted, pending = self._generation, False, None
+        try:
+            if self._state != 'READY':
+                raise ValueError('owner_not_ready')
+            self._state = 'HOLD'
+            _verify_refresh_basis(self)
+            staged = _stage_refresh_generation(self)
+            generation = _validate_refresh_generation(self, staged)
+            self._generation = generation
+            self._state = 'READY'
+            accepted = True
+        except BaseException as exc:
+            self._generation = previous
+            self._state = 'HOLD'
+            pending = _flat_cancellation(exc)
+        finally:
+            self._lock.release()
+        if pending is not None:
+            raise pending from None
+        if not accepted:
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        return {'schema':'wd.mind-flat-owner-refresh.v1', 'status':'REFRESHED', 'authority':'none'}
+
+    def _prepare_consistent_delivery(self, *, enabled=False, request=None, expected_nonce=None,
+                                     expected_identifier_policy_sha256=None, max_total_bytes=None):
+        """Return one generation's candidates and prepared export, never transmit."""
+        if (enabled is not True or type(max_total_bytes) is not int
+                or not 0 < max_total_bytes <= 64 * 1024 * 1024
+                or not self._lock.acquire(blocking=False)):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        result, pending = None, None
+        try:
+            if self._state != 'READY' or self._handler is None:
+                raise ValueError('owner_not_ready')
+            generation = self._generation
+            result = _prepare_generation_delivery(self, request, expected_nonce,
+                expected_identifier_policy_sha256, max_total_bytes)
+            if self._generation is not generation or self._state != 'READY':
+                self._state = 'HOLD'
+                raise ValueError('generation_changed')
+        except BaseException as exc:
+            result = None
+            pending = _flat_cancellation(exc)
+        finally:
+            self._lock.release()
+        if pending is not None:
+            raise pending from None
+        if result is None:
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        return result
+
+    def _check_generation_export(self, *, enabled=False, export=None):
+        if enabled is not True or not self._lock.acquire(blocking=False):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        accepted = False
+        try:
+            if (self._state != 'READY' or type(export) is not _PrivateConsumerExport
+                    or export._PrivateConsumerExport__owner is not self
+                    or not export._PrivateConsumerExport__active
+                    or export._PrivateConsumerExport__memory is not self._handler._memory):
+                raise ValueError('stale_export')
+            self._check_factory()
+            self._handler._running_owner()
+            _flat_check(self._handler._memory)
+            accepted = True
+        except Exception:
+            pass
+        finally:
+            self._lock.release()
+        if not accepted:
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        return True
 
     def _run_launch(self):
         try:
@@ -2113,14 +2310,22 @@ class _SingleManifestOwner:
 
     def prepare_consumer_export(self, *, enabled=False, expected_nonce=None,
                                 expected_identifier_policy_sha256=None, max_total_bytes=None):
+        if not self._lock.acquire(blocking=False):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        try:
+            return self._prepare_consumer_export_locked(enabled=enabled, expected_nonce=expected_nonce,
+                expected_identifier_policy_sha256=expected_identifier_policy_sha256, max_total_bytes=max_total_bytes)
+        finally:
+            self._lock.release()
+
+    def _prepare_consumer_export_locked(self, *, enabled=False, expected_nonce=None,
+                                        expected_identifier_policy_sha256=None, max_total_bytes=None):
         """Prepare pinned snapshot/flat data in memory; never transfer it.
 
         The caller must independently obtain the policy pin from an approved
         launcher context. The nonce is correlation data, not receiver authority.
         A trusted, separately inherited channel is required before any export.
         """
-        if not self._lock.acquire(blocking=False):
-            raise FullRuntimeRefused('mind_full_runtime_refused') from None
         result = None
         checking_integrity = False
         cancelled_type = None
@@ -2191,7 +2396,6 @@ class _SingleManifestOwner:
             # Refusals can be inspected with capture_locals=True.
             key = identifier = tag = blocks = snapshot = messages = None
             metadata = memory = cursor = None
-            self._lock.release()
         if cancelled_type is not None:
             raise cancelled_type() from None
         if result is None:

@@ -864,7 +864,21 @@ def _refresh_generation_test_owner(monkeypatch, tmp_path):
     new_snapshot = {'projection_sha256':'c' * 64}
     new_binding = runtime._PrivateBinding(new_snapshot, tmp_path, 'a' * 64, binding._PrivateBinding__controls, {})
     new_memory = runtime._PrivateFlatMemory(new_binding, new_snapshot, b'new', (), b'', b'encoder')
+    # Orchestration seam only. The separate real-bundle tests keep these checks.
+    monkeypatch.setattr(runtime, '_verify_refresh_basis', lambda current_owner: None)
+    monkeypatch.setattr(runtime, '_flat_check', lambda memory: None)
+    monkeypatch.setattr(runtime._PrivateBinding, 'snapshot_for_query',
+                        lambda self: self._PrivateBinding__snapshot)
     return runtime, owner, (binding, old_snapshot, old_memory), (new_binding, new_snapshot, new_memory)
+
+
+def _test_staged_refresh(runtime, owner, new, snapshot=None):
+    handler = runtime._FlatRequestHandler(new[0], new[1], owner._lane, owner._lanes,
+        owner._client, owner._adapter, owner._factory, owner._timeout, owner._factory._bulk, owner._watcher_lease)
+    handler._memory = new[2]
+    handler._frozen_flat = (new[2].manifest, new[2].ids, new[2].vectors, new[2].encoder_binding)
+    return {'binding':new[0], 'snapshot':new[1] if snapshot is None else snapshot,
+            'memory':new[2], 'handler':handler}
 
 
 def _test_generation_view(owner):
@@ -889,7 +903,7 @@ def test_generation_refresh_publishes_binding_and_memory_together(monkeypatch, t
     def stage(current_owner):
         # Refresh holds the owner lock here. No candidate is yet published.
         observed.append((current_owner._binding, current_owner._snapshot, current_owner._handler._memory))
-        return {'binding':new[0], 'snapshot':new[1], 'memory':new[2]}
+        return _test_staged_refresh(runtime, current_owner, new)
     monkeypatch.setattr(runtime, '_stage_refresh_generation', stage, raising=False)
     owner._refresh_generation(enabled=True)
     assert observed == [old]
@@ -897,7 +911,24 @@ def test_generation_refresh_publishes_binding_and_memory_together(monkeypatch, t
     assert owner._state == 'READY' and owner._handler._memory.binding is owner._binding
 
 
-@pytest.mark.parametrize('fault', ['source_changed', 'failure', 'cancel', 'group', 'hold'])
+def test_generation_refresh_refuses_policy_bytes_with_valid_hmac_but_wrong_independent_pin(monkeypatch, tmp_path):
+    import hmac
+    from tools import wd_mind_full_runtime as runtime
+    real_basis = runtime._verify_refresh_basis
+    _, owner, old, _ = _refresh_generation_test_owner(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime, '_verify_refresh_basis', real_basis)
+    approved = b'{"identifiers":[],"schema":"wd.mind-identifier-policy.v2"}'
+    other = b'{"identifiers": [],"schema":"wd.mind-identifier-policy.v2"}'
+    key = b's' * 32
+    owner._binding._PrivateBinding__policy_pin = hashlib.sha256(approved).hexdigest()
+    owner._snapshot['identifier_policy_binding'] = (other, key, hmac.new(key, other, hashlib.sha256).hexdigest())
+    with pytest.raises(runtime.FullRuntimeRefused): owner._refresh_generation(enabled=True)
+    assert _test_generation_view(owner) == old and owner._state == 'HOLD'
+
+
+@pytest.mark.parametrize('fault', ['source_changed', 'policy_pin_changed', 'worker_changed',
+                                   'adapter_changed', 'lease_changed', 'failed_handler',
+                                   'failure', 'cancel', 'group', 'hold'])
 def test_generation_refresh_never_publishes_partial_candidate(monkeypatch, tmp_path, fault):
     runtime, owner, old, new = _refresh_generation_test_owner(monkeypatch, tmp_path)
     def stage(current_owner):
@@ -907,7 +938,18 @@ def test_generation_refresh_never_publishes_partial_candidate(monkeypatch, tmp_p
         if fault == 'hold': raise runtime.FullRuntimeSnapshotHold('mind_full_runtime_snapshot_hold')
         if fault == 'source_changed':
             # The candidate itself is inconsistent; verification must reject it.
-            return {'binding':new[0], 'snapshot':old[1], 'memory':new[2]}
+            return _test_staged_refresh(runtime, current_owner, new, snapshot=old[1])
+        if fault == 'policy_pin_changed':
+            new[0]._PrivateBinding__policy_pin = 'f' * 64
+            return _test_staged_refresh(runtime, current_owner, new)
+        if fault in ('worker_changed', 'adapter_changed', 'lease_changed', 'failed_handler'):
+            staged = _test_staged_refresh(runtime, current_owner, new)
+            handler = staged['handler']
+            if fault == 'worker_changed': handler._rotator = object()
+            elif fault == 'adapter_changed': handler._adapter = object()
+            elif fault == 'lease_changed': handler._watcher_lease = None
+            else: handler._failed = True
+            return staged
         raise ValueError('synthetic staging failure')
     monkeypatch.setattr(runtime, '_stage_refresh_generation', stage, raising=False)
     if fault == 'cancel': expected = KeyboardInterrupt
@@ -922,7 +964,7 @@ def test_generation_delivery_rejects_export_from_previous_generation(monkeypatch
     runtime, owner, old, new = _refresh_generation_test_owner(monkeypatch, tmp_path)
     old_export = runtime._PrivateConsumerExport(b'synthetic', (), 0, owner, old[2])
     monkeypatch.setattr(runtime, '_stage_refresh_generation',
-                        lambda current_owner: {'binding':new[0], 'snapshot':new[1], 'memory':new[2]}, raising=False)
+                        lambda current_owner: _test_staged_refresh(runtime, current_owner, new), raising=False)
     owner._refresh_generation(enabled=True)
     # This is an in-process generation check, not a parent-channel or wire test.
     with pytest.raises(runtime.FullRuntimeRefused):
@@ -938,8 +980,8 @@ def test_generation_delivery_never_mixes_candidates_and_export_during_refresh(mo
     def stage(current_owner):
         entered.set()
         if not release.wait(10): raise ValueError('synthetic timeout')
-        return {'binding':new[0], 'snapshot':new[1], 'memory':new[2]}
-    def prepare(current_owner):
+        return _test_staged_refresh(runtime, current_owner, new)
+    def prepare(current_owner, request, nonce, policy_pin, max_total_bytes):
         return {'candidate_generation':current_owner._snapshot['projection_sha256'],
                 'export_generation':current_owner._handler._memory.snapshot['projection_sha256']}
     monkeypatch.setattr(runtime, '_stage_refresh_generation', stage, raising=False)
@@ -952,14 +994,14 @@ def test_generation_delivery_never_mixes_candidates_and_export_during_refresh(mo
     try:
         assert entered.wait(2), f'refresh did not stage: {errors}'
         try:
-            during = owner._prepare_consistent_delivery(enabled=True)
+            during = owner._prepare_consistent_delivery(enabled=True, max_total_bytes=64 * 1024 * 1024)
             assert during['candidate_generation'] == during['export_generation'] == old[1]['projection_sha256']
         except runtime.FullRuntimeRefused:
             pass  # BUSY/refusal is also safe; no mixed output is returned.
     finally:
         release.set(); thread.join(10)
     assert not thread.is_alive() and errors == []
-    after = owner._prepare_consistent_delivery(enabled=True)
+    after = owner._prepare_consistent_delivery(enabled=True, max_total_bytes=64 * 1024 * 1024)
     assert after['candidate_generation'] == after['export_generation'] == new[1]['projection_sha256']
 
 
@@ -1393,6 +1435,13 @@ if mode in ('rewrite', 'rotation'):
             os.replace(replacement, path)
         return result
     prefix.observe_prefix = changed
+if mode == 'refresh_real_delivery':
+    import datetime
+    path = pathlib.Path(sys.argv[3]); rows = path.read_bytes().splitlines()
+    event = json.loads(rows[0])
+    event['ts_utc'] = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=1)).isoformat()
+    rows[0] = json.dumps(event, sort_keys=True, separators=(',', ':')).encode()
+    path.write_bytes(b'\n'.join(rows) + b'\n')
 if mode == 'policy_during':
     original = reader.rederive_complete_message_projection
     def changed_projection(**kwargs):
@@ -1472,6 +1521,7 @@ try:
             encoder_binding_bytes = encoder_binding
             encoder_binding_sha256 = hashlib.sha256(encoder_binding).hexdigest()
             def passage(self, values): return struct.pack('<384f', 1.0, *([0.0]*383)) * len(values)
+            def query(self, text): return (1.0,) + (0.0,) * 383
         worker = SyntheticOwner(); fake_client = SyntheticClient(worker)
         def fake_factory(self, *, owner_sink):
             owner_sink(worker)
@@ -1484,6 +1534,31 @@ try:
                                                      worker_factory=factory, shutdown_timeout=0)
         if owner.start()['state'] != 'READY': raise ValueError('synthetic owner not ready')
         old = (owner._binding, owner._snapshot, owner._handler._memory)
+        if mode == 'refresh_real_delivery':
+            nonce = 'd' * 64
+            request = {'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',
+                       'nonce':nonce,'lane':'codex-lead-1','scope':'own'}
+            delivery = owner._prepare_consistent_delivery(enabled=True, request=request, expected_nonce=nonce,
+                expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest(), max_total_bytes=64*1024*1024)
+            exported = delivery['export']
+            same = (delivery['generation_sha256'] == owner._snapshot['projection_sha256'] and
+                    exported._PrivateConsumerExport__memory is owner._handler._memory and
+                    owner._check_generation_export(enabled=True, export=exported) is True)
+            refs = delivery['candidates']['status'] == 'CANDIDATES' and bool(delivery['candidates']['candidates'])
+            try:
+                owner._prepare_consistent_delivery(enabled=True, request=request, expected_nonce=nonce,
+                    expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest(), max_total_bytes=1)
+                cap_refused = False
+            except runtime.FullRuntimeRefused: cap_refused = True
+            path = pathlib.Path(sys.argv[3]); event = json.loads(path.read_bytes().splitlines()[0])
+            event['message'] = 'synthetic new build-lane work'
+            with path.open('ab') as output:
+                output.write(json.dumps(event, sort_keys=True, separators=(',', ':')).encode() + b'\n')
+            owner._refresh_generation(enabled=True)
+            try: owner._check_generation_export(enabled=True, export=exported); stale_refused = False
+            except runtime.FullRuntimeRefused: stale_refused = True
+            print(json.dumps({'result':'ok','same':same,'refs':refs,'cap_refused':cap_refused,
+                              'stale_refused':stale_refused,'ready':owner._state == 'READY'})); sys.exit(0)
         if mode == 'refresh_real_appended':
             path = pathlib.Path(sys.argv[3]); event = json.loads(path.read_bytes().splitlines()[0])
             event['message'] = 'synthetic new build-lane work'
@@ -1496,6 +1571,18 @@ try:
             print(json.dumps({'result':'ok','new_binding':owner._binding is not old[0],
                 'new_memory':owner._handler._memory is not old[2], 'hold':owner._state != 'READY',
                 'source_ref':bool(found and found[0]['provenance']['source_event_ref'])})); sys.exit(0)
+        if mode == 'refresh_real_policy_anchor_changed':
+            owner._binding._PrivateBinding__policy_pin = '0' * 64
+        if mode in ('refresh_real_stage_source_changed', 'refresh_real_stage_policy_changed'):
+            original_stage = runtime._stage_refresh_generation
+            def mutate_after_stage(current_owner):
+                staged = original_stage(current_owner)
+                if mode == 'refresh_real_stage_source_changed':
+                    path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
+                else:
+                    (root / 'wd-mind-message-policy.json').write_bytes(b'{}')
+                return staged
+            runtime._stage_refresh_generation = mutate_after_stage
         if mode == 'refresh_real_source_changed':
             path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
         elif mode == 'refresh_real_policy_changed':
@@ -2240,7 +2327,8 @@ def test_synthetic_private_binding_build_package_and_query(synthetic_bundle):
     assert result['latest'] == 'UNKNOWN' and result['index_match'] == 'NOT_APPLICABLE'
 
 
-@pytest.mark.parametrize('fault', ['source_changed', 'policy_changed'])
+@pytest.mark.parametrize('fault', ['source_changed', 'policy_changed', 'policy_anchor_changed',
+                                   'stage_source_changed', 'stage_policy_changed'])
 def test_generation_refresh_rechecks_real_synthetic_source_and_policy(synthetic_bundle, fault):
     # Unlike the orchestration-double tests, these cases use actual pinned
     # reader, source and manifest checks against a synthetic temporary bundle.
@@ -2251,6 +2339,11 @@ def test_generation_refresh_rechecks_real_synthetic_source_and_policy(synthetic_
 def test_generation_refresh_rederives_appended_synthetic_source(synthetic_bundle):
     assert invoke(synthetic_bundle, 'refresh_real_appended') == {
         'result':'ok', 'new_binding':True, 'new_memory':True, 'hold':False, 'source_ref':True}
+
+
+def test_generation_delivery_real_synthetic_bundle_matches_export_and_refuses_stale(synthetic_bundle):
+    assert invoke(synthetic_bundle, 'refresh_real_delivery') == {
+        'result':'ok', 'same':True, 'refs':True, 'cap_refused':True, 'stale_refused':True, 'ready':True}
 
 
 def test_immutable_snapshot_build_returns_verified_synthetic_results(synthetic_bundle):

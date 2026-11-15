@@ -8,6 +8,7 @@ This seam is an in-process API, not provider startup or live context delivery.
 from __future__ import annotations
 
 import hashlib
+import copy
 import builtins
 import base64
 from datetime import datetime, timezone
@@ -306,6 +307,84 @@ def _validator_input_case():
     source, _ = _situation_inputs()
     event = dict(json.loads(source['snapshot_bytes'])[0]['event'], type='status', status='in_progress')
     return _v2_validator_case([event])
+
+
+@pytest.mark.parametrize('fault', [
+    'pointer_schema', 'pointer_final_commit', 'pointer_path', 'pointer_manifest',
+    'pointer_final_manifest', 'manifest_schema', 'manifest_commit', 'manifest_files',
+    'manifest_fleet', 'fleet_schema', 'fleet_duplicate',
+])
+def test_v2_validator_rederives_bundle_chain_against_fake_projector(tmp_path, capsys, monkeypatch, fault):
+    from tools import wd_mind_situation_view as projection
+    args, _ = _progress_snapshot_cli_args(tmp_path)
+    args += ['--task-events-v2']
+    assert session.main(args) == 0
+    good_view = json.loads(capsys.readouterr().out)
+    pointer_path = Path(args[args.index('--pointer') + 1])
+    manifest_path = Path(args[args.index('--manifest') + 1])
+    fleet_path = Path(args[args.index('--fleet') + 1])
+    pointer = json.loads(pointer_path.read_bytes())
+    manifest = json.loads(manifest_path.read_bytes())
+    fleet = json.loads(fleet_path.read_bytes())
+    if fault == 'pointer_schema': pointer['schema_version'] = 2
+    if fault == 'pointer_final_commit': pointer['final_commit'] = 'b' * 40
+    if fault == 'pointer_path': pointer['active_bundle'] += '-wrong'
+    if fault == 'manifest_schema': manifest['schema_version'] = 2
+    if fault == 'manifest_commit': manifest['source_commit'] = 'b' * 40
+    if fault == 'manifest_files': manifest['files'] = []
+    if fault == 'manifest_fleet': manifest['files']['wd-fleet.json'] = 'b' * 64
+    if fault == 'fleet_schema': fleet['lanes'] = {}
+    if fault == 'fleet_duplicate': fleet['lanes'].append(fleet['lanes'][0])
+    raw_fleet = json.dumps(fleet, sort_keys=True, separators=(',', ':')).encode()
+    fleet_path.write_bytes(raw_fleet)
+    fleet_hash = hashlib.sha256(raw_fleet).hexdigest()
+    args[args.index('--fleet-sha256') + 1] = fleet_hash
+    if fault in ('fleet_schema', 'fleet_duplicate'):
+        manifest['files']['wd-fleet.json'] = fleet_hash
+    raw_manifest = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode()
+    manifest_path.write_bytes(raw_manifest)
+    manifest_hash = hashlib.sha256(raw_manifest).hexdigest()
+    args[args.index('--manifest-sha256') + 1] = manifest_hash
+    pointer['manifest_sha256'] = 'b' * 64 if fault == 'pointer_manifest' else manifest_hash
+    pointer['final_manifest_sha256'] = 'b' * 64 if fault == 'pointer_final_manifest' else manifest_hash
+    raw_pointer = json.dumps(pointer, sort_keys=True, separators=(',', ':')).encode()
+    pointer_path.write_bytes(raw_pointer)
+    pointer_hash = hashlib.sha256(raw_pointer).hexdigest()
+    args[args.index('--pointer-sha256') + 1] = pointer_hash
+
+    def fake_projector(**kwargs):
+        forged = copy.deepcopy(good_view)
+        forged['source']['fleet_sha256'] = fleet_hash
+        forged['bundle']['pointer_sha256'] = pointer_hash
+        forged['bundle']['manifest_sha256'] = manifest_hash
+        return forged
+    monkeypatch.setattr(projection, 'project_situation', fake_projector)
+    assert session.main(args) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert captured.err == '{"error":"mind_session_situation_refused","authority":"none"}\n'
+
+
+def test_v2_chain_accepts_valid_inputs_and_v1_default(tmp_path, capsys):
+    args, _ = _progress_snapshot_cli_args(tmp_path)
+    for extra, schema in (([], 'wd.mind-situation-observations.v1'),
+                          (['--task-events-v2'], 'wd.mind-situation-observations.v2')):
+        assert session.main(args + extra) == 0
+        captured = capsys.readouterr()
+        assert captured.err == ''
+        assert json.loads(captured.out)['schema'] == schema
+
+
+def test_situation_projector_historical_missing_bundle_contract_unchanged():
+    from tools import wd_mind_situation_view as projection
+    source, _ = _situation_inputs()
+    for name in ('pointer_bytes', 'pointer_sha256', 'manifest_bytes', 'manifest_sha256', 'pointer_observed_utc'):
+        source[name] = None
+    source['allow_missing_bundle'] = True
+    for flag in (False, True):
+        result = projection.project_situation(**source, include_task_events=flag)
+        assert result['bundle'] == 'UNKNOWN'
+        assert result['source']['fleet_manifest_binding'] == 'UNKNOWN'
 
 
 def _bind_validator_input(result, source, name, raw, pin=None):

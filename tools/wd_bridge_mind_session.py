@@ -16,6 +16,7 @@ import base64
 from datetime import datetime, timezone
 import hashlib
 import json
+import ntpath
 import os
 from pathlib import Path
 import re
@@ -250,9 +251,47 @@ def _situation_v2_inputs(inputs):
                                object_pairs_hook=unique, parse_constant=constant)
         except (UnicodeError, ValueError, RecursionError):
             raise ValueError("input_json") from None
-        if name != "manifest":
-            parsed[name] = value
+        parsed[name] = value
         del value
+    pointer, manifest, fleet = parsed["pointer"], parsed["manifest"], parsed["fleet"]
+    if (type(pointer) is not dict or type(pointer.get("schema_version")) is not int
+            or pointer["schema_version"] != 1):
+        raise ValueError("input_pointer")
+    commit = pointer.get("source_commit")
+    if (type(commit) is not str or re.fullmatch(r"[0-9a-f]{40}", commit) is None
+            or pointer.get("final_commit") != commit):
+        raise ValueError("input_pointer")
+    active = pointer.get("active_bundle")
+    if (type(active) is not str or ntpath.normpath(active) != active
+            or ntpath.normcase(active) != ntpath.normcase(ntpath.join(r"C:\Python\wd-reboot-bundles", commit))):
+        raise ValueError("input_pointer")
+    if any(type(pointer.get(key)) is not str or pointer[key].lower() != inputs["manifest_sha256"]
+           for key in ("manifest_sha256", "final_manifest_sha256")):
+        raise ValueError("input_pointer_manifest")
+    if (type(manifest) is not dict or type(manifest.get("schema_version")) is not int
+            or manifest["schema_version"] != 1 or type(manifest.get("files")) is not dict
+            or manifest.get("source_commit") != commit):
+        raise ValueError("input_manifest")
+    declared_fleet = manifest["files"].get("wd-fleet.json")
+    if (type(declared_fleet) is not str or _SHA256.fullmatch(declared_fleet.lower()) is None
+            or declared_fleet.lower() != inputs["fleet_sha256"]):
+        raise ValueError("input_fleet_manifest")
+    if (type(fleet) is not dict or type(fleet.get("lanes")) is not list
+            or type(fleet.get("tools_supervisor")) is not dict):
+        raise ValueError("input_fleet")
+    lanes = {"codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"}
+    roster = {}
+    for item in [*fleet["lanes"], fleet["tools_supervisor"]]:
+        if type(item) is not dict:
+            raise ValueError("input_fleet")
+        agent, identity = item.get("agent"), item.get("agent_uuid")
+        if type(agent) is str and agent in lanes:
+            if (agent in roster or type(identity) is not str
+                    or re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", identity) is None):
+                raise ValueError("input_fleet")
+            roster[agent] = identity.lower()
+    if set(roster) != lanes or len(set(roster.values())) != len(lanes):
+        raise ValueError("input_fleet")
     return parsed
 
 

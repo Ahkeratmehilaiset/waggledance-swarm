@@ -882,6 +882,28 @@ def test_parent_control_derives_distinct_child_controls_from_bound_input(monkeyp
     with pytest.raises(child.LaunchRefused): controls.take()
 
 
+def test_parent_pair_timeout_sets_abort_and_retains_running_worker(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    controls = child._PrivatePairControls(b'owner', b'consumer', {'manifest_sha256':'a'*64})
+    monkeypatch.setattr(child, '_require_verified_parent_spawn', lambda: None)
+    def delayed(self):
+        entered.set()
+        release.wait(5)
+        assert self._abort.is_set()
+        return b'late-result'
+    monkeypatch.setattr(child._RetainedParentPair, '_run_pipeline', delayed)
+    pair = child.create_retained_parent_pair(enabled=True, bundle_root='C:\\synthetic',
+        expected_manifest_sha256='a'*64, controls=controls, deadline_monotonic=time.monotonic()+0.2)
+    try:
+        token = pair.start()
+        assert entered.wait(2)
+        with pytest.raises(child.LaunchRefused): pair.wait(token)
+        assert pair._abort.is_set() and pair.status()['worker_active'] is True
+    finally:
+        release.set()
+        pair._thread.join(timeout=5)
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows handle inheritance test')
 def test_windows_handle_list_excludes_unrelated_inheritable_handle():
     """Probe in an isolated synthetic parent, without mutating fleet handles."""

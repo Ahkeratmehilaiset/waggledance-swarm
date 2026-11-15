@@ -450,13 +450,13 @@ def _derive_parent_child_controls_bytes(raw, expected_manifest_sha256):
 class _RetainedParentPair:
     """Own the actual fixed child launch/pipe graph until both exits are proven."""
     __slots__ = ('_bundle', '_manifest', '_controls', '_metadata', '_deadline', '_owner', '_consumer',
-                 '_thread', '_done', '_result', '_token', '_fds', '_streams', '_start_confirmed')
+                 '_thread', '_done', '_abort', '_result', '_token', '_fds', '_streams', '_start_confirmed')
 
     def __init__(self, bundle, manifest, controls, deadline):
         self._bundle, self._manifest, self._controls = bundle, manifest, controls
         self._metadata, self._deadline = controls.metadata(), deadline
         self._owner = self._consumer = self._thread = self._result = self._token = None
-        self._done, self._fds, self._streams = threading.Event(), set(), []
+        self._done, self._abort, self._fds, self._streams = threading.Event(), threading.Event(), set(), []
         self._start_confirmed = False
 
     def __repr__(self): return '<PrivateMindRetainedParentPair>'
@@ -468,6 +468,7 @@ class _RetainedParentPair:
                                 else self._thread is not None and self._thread.is_alive()}
 
     def _pipe(self):
+        self._check_continue()
         read_fd, write_fd = os.pipe()
         self._fds.update((read_fd, write_fd))
         return read_fd, write_fd
@@ -479,16 +480,23 @@ class _RetainedParentPair:
     def _write_fd(self, fd, value):
         offset = 0
         while offset < len(value):
-            if time.monotonic() >= self._deadline:
-                raise ValueError('deadline')
+            self._check_continue()
             count = os.write(fd, memoryview(value)[offset:])
             if type(count) is not int or not 0 < count <= len(value) - offset:
                 raise ValueError('write')
             offset += count
-        if time.monotonic() >= self._deadline:
-            raise ValueError('deadline')
+        self._check_continue()
+
+    def _check_continue(self):
+        if self._abort.is_set() or time.monotonic() >= self._deadline:
+            raise ValueError('parent_aborted')
+
+    def cancel(self):
+        # Do not interrupt native I/O or terminate children; retain ownership.
+        self._abort.set()
 
     def _launch(self, role, fds):
+        self._check_continue()
         launch = create_parent_child_launch(enabled=True, role=role, bundle_root=self._bundle,
             expected_manifest_sha256=self._manifest, stdin_fd=fds[0], stdout_fd=fds[1], stderr_fd=fds[2],
             deadline_monotonic=self._deadline)
@@ -499,16 +507,15 @@ class _RetainedParentPair:
         if not launch._done.wait(remaining):
             raise ValueError('launch_timeout')
         launch._thread.join(timeout=max(0, self._deadline - time.monotonic()))
+        self._check_continue()
         launch.confirm_started(token)
 
     def _read_result(self, fd):
         result = bytearray()
         while len(result) <= 16384:
-            if time.monotonic() >= self._deadline:
-                raise ValueError('deadline')
+            self._check_continue()
             part = os.read(fd, min(4096, 16385 - len(result)))
-            if time.monotonic() >= self._deadline:
-                raise ValueError('deadline')
+            self._check_continue()
             if not part:
                 break
             result.extend(part)
@@ -539,6 +546,7 @@ class _RetainedParentPair:
 
     def _run_pipeline(self):
         from tools import wd_mind_full_runtime as runtime
+        self._check_continue()
         controls = runtime._bundle_inputs(Path(self._bundle), self._manifest)
         fleet_sha = hashlib.sha256(controls[0]).hexdigest()
         roster = json.loads(controls[1].decode('utf-8'), object_pairs_hook=runtime.prefix._unique_object)
@@ -554,6 +562,7 @@ class _RetainedParentPair:
         candidate_r, candidate_w = self._pipe()
         result_r, result_w = self._pipe()
         self._launch('owner', (owner_r, data_w, candidate_w))
+        self._check_continue()
         self._launch('consumer', (data_r, result_w, control_r))
         for fd in (owner_r, data_w, candidate_w, data_r, result_w, control_r):
             self._close_fd(fd)
@@ -569,6 +578,7 @@ class _RetainedParentPair:
         self._streams.append(destination)
         relay_parent_candidates(enabled=True, source=_PrivateCandidateInput(source),
             destination=_PrivateCandidateOutput(destination), deadline_monotonic=self._deadline)
+        self._check_continue()
         source.close()
         raw_result = self._read_result(result_r)
         self._close_fd(result_r)
@@ -597,8 +607,11 @@ class _RetainedParentPair:
 
     def _run(self):
         try:
-            self._result = self._run_pipeline()
+            value = self._run_pipeline()
+            if not self._abort.is_set():
+                self._result = value
         except BaseException:
+            self.cancel()
             self._result = None
         finally:
             for stream in self._streams:
@@ -615,17 +628,23 @@ class _RetainedParentPair:
             raise LaunchRefused('mind_e5_start_refused') from None
         self._token = object()
         self._thread = threading.Thread(target=self._run, name='mind-parent-pair', daemon=False)
-        self._thread.start()
-        self._start_confirmed = True
+        try:
+            self._thread.start()
+            self._start_confirmed = True
+        except BaseException:
+            self.cancel()
+            raise
         return self._token
 
     def wait(self, token):
         if token is None or token is not self._token or not self._start_confirmed:
             raise LaunchRefused('mind_e5_start_refused') from None
         if not self._done.wait(max(0, self._deadline-time.monotonic())):
+            self.cancel()
             raise LaunchRefused('mind_e5_start_refused') from None
         self._thread.join(timeout=max(0, self._deadline-time.monotonic()))
-        if self._thread.is_alive() or self._result is None or time.monotonic() >= self._deadline:
+        if self._thread.is_alive() or self._result is None or self._abort.is_set() or time.monotonic() >= self._deadline:
+            self.cancel()
             raise LaunchRefused('mind_e5_start_refused') from None
         self._token = None
         return self._result
@@ -1599,6 +1618,8 @@ def _parent_control_entry(*, control_stream, output_stream, bundle_root, expecte
             raise ValueError('deadline')
         return 0
     except BaseException:
+        if pair is not None:
+            pair.cancel()
         return 2
     finally:
         # A still-running thread retains this process and both child owners.

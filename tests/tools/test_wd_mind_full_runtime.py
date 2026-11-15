@@ -53,6 +53,20 @@ client = client_module.GracefulE5WorkerClient(owner, timeout=1, encoder_binding_
 single = adapter.create_single_flat_adapter(enabled=True, bundle_root=str(root),
                                             expected_manifest_sha256=pin, client=client)
 assert type(single) is adapter._SingleFlatAdapter
+# This part uses the real bundled runtime, source binding and adapter. Only
+# process launch and vector construction are synthetic; no model is started.
+from tools import wd_mind_full_runtime as runtime
+binding = runtime.assemble_full_runtime(enabled=True, bundle_root=str(root), expected_manifest_sha256=pin)
+factory = runtime._ManifestWorkerFactory(str(root), pin, {}, root / 'synthetic-lock', 1, 0,
+                                         client_module.BULK_CONTRACT_SHA256)
+runtime._ManifestWorkerFactory.__call__ = lambda self: {
+    'status':'READY', 'client':client, 'owner':owner, 'lifecycle':owner.status(), 'authority':'none'}
+runtime._FlatRequestHandler.build = lambda self: {
+    'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'}
+wrapper = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane='codex-lead-1',
+    worker_factory=factory, shutdown_timeout=0)
+assert wrapper.start() == {'state':'READY','owned':True,'authority':'none'}
+assert type(wrapper._adapter) is adapter._SingleFlatAdapter and wrapper._client is client
 assert 'tools.wd_mind_e5_rotating_client' not in sys.modules
 print('synthetic_adapter_manifest_verified')
 '''

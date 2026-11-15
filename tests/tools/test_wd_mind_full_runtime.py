@@ -465,24 +465,6 @@ if mode == 'policy_during':
         return result
     reader.rederive_complete_message_projection = changed_projection
 try:
-    if mode.startswith('owner_preflight_'):
-        from tools import wd_mind_runtime_child as child, wd_mind_runtime_process as process
-        synthetic_audit = pathlib.Path(sys.argv[1]).parent / 'synthetic-owner-audit'
-        (synthetic_audit / 'wd-mind-runtime').mkdir(parents=True)
-        child._AUDIT_ROOT = synthetic_audit
-        runtime._fixed_worker_audit_lock = lambda: synthetic_audit / 'wd-mind-runtime' / 'q4-reader.lock'
-        calls = []
-        class SyntheticNative:
-            def __init__(self): self.handles, self.allocations = [], []
-            def logon_sid(self, *, require_non_elevated):
-                calls.append(require_non_elevated)
-                if mode == 'owner_preflight_admin': raise ValueError('synthetic elevated')
-                return 'S-1-5-5-1-2'
-        process._PipeNative = SyntheticNative
-        if mode == 'owner_preflight_bad_pin':
-            (pathlib.Path(sys.argv[1]) / 'wd-mind-message-policy.json').write_bytes(b'{}')
-        ok = runtime._owner_preflight(bundle_root=sys.argv[1], manifest_sha256=sys.argv[2])
-        print(json.dumps({'result':'ok', 'accepted':ok, 'token_calls':calls})); sys.exit(0)
     if mode.startswith('factory'):
         from tools import wd_mind_runtime_child as child, wd_mind_e5_rotating_client as rotating
         synthetic_audit = pathlib.Path(sys.argv[1]).parent / 'synthetic-audit'
@@ -1223,30 +1205,15 @@ def test_manifest_pinned_invalid_content_policy_is_not_accepted(synthetic_bundle
 
 
 
-@pytest.mark.parametrize('elevated', [False, True])
-def test_owner_preflight_explicit_limited_token_branch(monkeypatch, elevated):
+def test_deferred_owner_preflight_refuses_before_access(monkeypatch):
     from tools import wd_mind_full_runtime as runtime
-    from tools import wd_mind_runtime_process as process
-    calls = []
-    class FakeNative:
-        def __init__(self): self.handles, self.allocations = [], []
-        def logon_sid(self, *, require_non_elevated):
-            calls.append(require_non_elevated)
-            if elevated: raise ValueError('synthetic elevated')
-            return 'S-1-5-5-1-2'
-    monkeypatch.setattr(runtime, '_bundle_inputs', lambda *args: None)
-    monkeypatch.setattr(runtime, 'resolve_manifest_runtime_location', lambda **kw: None)
-    monkeypatch.setattr(runtime, '_worker_factory_preflight', lambda *args: None)
-    monkeypatch.setattr(process, '_PipeNative', FakeNative)
-    assert runtime._owner_preflight(bundle_root=str(Path.cwd()), manifest_sha256='a'*64) is (not elevated)
-    assert calls == [True]
-
-
-@pytest.mark.parametrize('scenario,accepted,calls', [
-    ('owner_preflight_limited',True,[True]), ('owner_preflight_admin',False,[True]),
-    ('owner_preflight_bad_pin',False,[])])
-def test_owner_preflight_synthetic_pinned_bundle(synthetic_bundle, scenario, accepted, calls):
-    assert invoke(synthetic_bundle, scenario) == {'result':'ok','accepted':accepted,'token_calls':calls}
+    def forbidden(*args, **kwargs):
+        raise AssertionError('deferred preflight must not access resources')
+    monkeypatch.setattr(runtime, '_bundle_inputs', forbidden)
+    monkeypatch.setattr(runtime, 'resolve_manifest_runtime_location', forbidden)
+    monkeypatch.setattr(runtime, '_worker_factory_preflight', forbidden)
+    with pytest.raises(runtime.FullRuntimeRefused, match='^mind_full_runtime_refused$'):
+        runtime._owner_preflight(bundle_root=str(Path.cwd()), manifest_sha256='a'*64)
 
 
 

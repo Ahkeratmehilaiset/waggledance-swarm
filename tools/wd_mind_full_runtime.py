@@ -1648,32 +1648,8 @@ def create_manifest_coordinator(*, enabled=False, bundle_root=None, expected_man
 
 
 def _owner_preflight(*, bundle_root, manifest_sha256):
-    """Revalidate pinned origin/descriptors and the real limited logon token."""
-    native = None
-    try:
-        if type(bundle_root) is not str or not Path(bundle_root).is_absolute() or not reader._hex(manifest_sha256):
-            raise ValueError('input')
-        bundle = Path(bundle_root)
-        _bundle_inputs(bundle, manifest_sha256)
-        resolve_manifest_runtime_location(enabled=True, bundle_root=bundle_root, expected_manifest_sha256=manifest_sha256)
-        _worker_factory_preflight(bundle_root, manifest_sha256, _fixed_worker_audit_lock())
-        from tools import wd_mind_runtime_process as process
-        native = process._PipeNative()
-        native.logon_sid(require_non_elevated=True)
-        if native.handles or native.allocations:
-            raise ValueError('native_resources')
-        return True
-    except Exception:
-        if native is not None:
-            for pointer in tuple(native.allocations):
-                try: native.free(pointer)
-                except Exception: pass
-            for handle in tuple(native.handles):
-                try:
-                    native.close(handle)
-                    native.handles.remove(handle)
-                except Exception: pass
-        return False
+    """Refuse the deferred legacy owner path before accessing resources."""
+    raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
 
 def _run_owner_loop(coordinator, stdin, stdout):

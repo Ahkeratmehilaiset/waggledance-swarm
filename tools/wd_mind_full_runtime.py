@@ -6,6 +6,7 @@ The HMAC key lives only in this process and is not a cross-restart key store.
 """
 from __future__ import annotations
 
+import builtins
 import hashlib
 import hmac
 import json
@@ -432,8 +433,10 @@ class FlatBuildHold(FullRuntimeRefused):
     """A source verifier is still owned; no built memory was returned."""
 
 
-_flat_watch_lock = threading.Lock()
-_flat_watch_owner = None
+# Alias imports in the same interpreter share a retained HOLD owner. This is
+# not a cross-process lock, durable lease or proof of safe process shutdown.
+_FLAT_WATCH_REGISTRY = vars(builtins).setdefault(
+    '_wd_mind_flat_build_watcher_registry_v1', {'lock': threading.Lock(), 'owner': None})
 _FLAT_WATCH_JOIN_SECONDS = 60
 
 
@@ -470,18 +473,17 @@ class _FlatBuildWatcher:
 
 
 def _start_flat_watcher(binding, frozen):
-    global _flat_watch_owner
-    with _flat_watch_lock:
-        if _flat_watch_owner is not None:
-            previous = _flat_watch_owner
+    with _FLAT_WATCH_REGISTRY['lock']:
+        if _FLAT_WATCH_REGISTRY['owner'] is not None:
+            previous = _FLAT_WATCH_REGISTRY['owner']
             if not previous.finished.is_set() or previous.thread.is_alive():
                 raise FlatBuildHold('mind_flat_verifier_hold')
         owner = _FlatBuildWatcher(binding, frozen)
-        _flat_watch_owner = owner
+        _FLAT_WATCH_REGISTRY['owner'] = owner
         try:
             owner.thread.start()
         except BaseException:
-            _flat_watch_owner = None
+            _FLAT_WATCH_REGISTRY['owner'] = None
             raise
         if not owner.started.wait(5):
             owner.stop_event.set()

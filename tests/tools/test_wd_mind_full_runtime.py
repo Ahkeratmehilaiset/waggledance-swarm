@@ -1004,7 +1004,7 @@ def test_flat_watcher_hold_retains_owner_until_blocked_verifier_finishes(monkeyp
     binding._PrivateBinding__manifest = 'a' * 64
     binding._PrivateBinding__controls = (b'fleet', b'roster', b'policy')
     binding._PrivateBinding__args = {}
-    monkeypatch.setattr(runtime, '_flat_watch_owner', None)
+    monkeypatch.setitem(runtime._FLAT_WATCH_REGISTRY, 'owner', None)
     monkeypatch.setattr(runtime, '_flat_snapshot', blocked)
     monkeypatch.setattr(runtime, '_FLAT_WATCH_JOIN_SECONDS', 0.01)
     watcher = runtime._start_flat_watcher(binding, {})
@@ -1018,6 +1018,42 @@ def test_flat_watcher_hold_retains_owner_until_blocked_verifier_finishes(monkeyp
         release.set()
         watcher.thread.join(2)
     assert watcher.finished.is_set() and not watcher.thread.is_alive()
+
+
+def test_flat_watcher_hold_cannot_be_bypassed_by_second_import(monkeypatch):
+    import importlib.util
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+
+    spec = importlib.util.spec_from_file_location('synthetic_second_mind_runtime', runtime.__file__)
+    other = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(other)
+    entered, release = threading.Event(), threading.Event()
+    def blocked(*unused):
+        entered.set()
+        assert release.wait(5)
+    binding = object.__new__(runtime._PrivateBinding)
+    binding._PrivateBinding__bundle = Path('synthetic')
+    binding._PrivateBinding__manifest = 'a' * 64
+    binding._PrivateBinding__controls = (b'fleet', b'roster', b'policy')
+    binding._PrivateBinding__args = {}
+    monkeypatch.setattr(runtime, '_flat_snapshot', blocked)
+    monkeypatch.setattr(other, '_flat_snapshot', blocked)
+    monkeypatch.setattr(runtime, '_FLAT_WATCH_JOIN_SECONDS', 0.01)
+    first = runtime._start_flat_watcher(binding, {})
+    second = None
+    try:
+        assert entered.wait(1)
+        with pytest.raises(runtime.FlatBuildHold):
+            first.close()
+        with pytest.raises(other.FlatBuildHold):
+            second = other._start_flat_watcher(binding, {})
+    finally:
+        release.set()
+        first.thread.join(2)
+        if second is not None:
+            second.stop_event.set()
+            second.thread.join(2)
 
 
 @pytest.mark.parametrize('fault', ['package_fake_binding', 'package_source_passage', 'package_bundle_passage',

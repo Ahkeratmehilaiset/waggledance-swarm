@@ -46,6 +46,9 @@ class _Adapter:
         self._client = client
         self._binding_sha256 = binding_sha256
 
+    def _encode_supervised(self, payload):
+        return self._client.encode_supervised(payload)
+
     def _request(self, operation, texts):
         nonce = secrets.token_hex(32)
         field = 'passages' if operation == 'refresh' else 'query'
@@ -56,7 +59,7 @@ class _Adapter:
                          separators=(',', ':'), allow_nan=False).encode('utf-8')
         digest = hashlib.sha256(raw).hexdigest()
         payload['request_sha256'] = digest
-        response = self._client.encode_supervised(payload)
+        response = self._encode_supervised(payload)
         if (type(response) is not dict or set(response) != {'nonce', 'request_sha256', 'vector_bytes'}
                 or type(response['nonce']) is not str or not hmac.compare_digest(response['nonce'], nonce)
                 or type(response['request_sha256']) is not str
@@ -285,6 +288,11 @@ class _SingleFlatAdapter(_FlatAdapter):
                        or not text[9:].strip() or len(text) > 2009 or '\x00' in text for text in texts)):
             raise ValueError('passage')
         return self._request('refresh', tuple(texts))
+
+    def _encode_supervised(self, payload):
+        # Recheck every independently transported group, not merely the
+        # enclosing B16, while the existing client owns the request lock.
+        return self._client.encode_supervised(payload, frame_check=self._check)
 
     def close(self, *, timeout=0):
         """Request cooperative EOF; a HOLD keeps the owner and handles reachable."""

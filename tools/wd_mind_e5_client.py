@@ -189,7 +189,7 @@ class E5WorkerClient:
         finally:
             self._mutex.release()
 
-    def encode_supervised(self, request):
+    def encode_supervised(self, request, *, frame_check=None):
         """Echo one supervisor binding with original float32 payload bytes.
 
         The supervisor validates source and caller authority independently.
@@ -199,6 +199,8 @@ class E5WorkerClient:
             raise E5ClientRefused("mind_e5_worker_refused")
         deadline = time.monotonic() + self._timeout
         try:
+            if frame_check is not None and (not callable(frame_check) or isinstance(frame_check, type)):
+                raise ValueError("frame_check")
             if type(request) is not dict or request.get("operation") not in ("refresh", "query"):
                 raise ValueError("request")
             field = "passages" if request["operation"] == "refresh" else "query"
@@ -221,8 +223,12 @@ class E5WorkerClient:
             operation = "passage" if field == "passages" else "query"
             frames = []
             for index in range(0, len(texts), _MAX_BATCH):
+                if frame_check is not None:
+                    frame_check()
                 _, vector_bytes = self._request(operation, texts[index:index + _MAX_BATCH],
                                                 request["nonce"], request["request_sha256"], deadline)
+                if frame_check is not None:
+                    frame_check()
                 frames.append(vector_bytes)
             return {"nonce": request["nonce"], "request_sha256": request["request_sha256"],
                     "vector_bytes": b"".join(frames)}

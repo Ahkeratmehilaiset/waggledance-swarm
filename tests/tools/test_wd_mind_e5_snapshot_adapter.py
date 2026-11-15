@@ -404,8 +404,8 @@ def test_single_worker_nonce_budget_refuses_without_restarting(single_worker):
 def test_single_worker_change_during_callback_never_returns_result(single_worker, fault, monkeypatch, capsys):
     single, client, owner, _, bundle = single_worker
     encode = client.encode_supervised
-    def changed_after_response(request):
-        output = encode(request)
+    def changed_after_response(request, **kwargs):
+        output = encode(request, **kwargs)
         if fault == 'binding':
             client._binding_sha256 = '0' * 64
         elif fault == 'worker':
@@ -427,8 +427,8 @@ def test_single_worker_resource_replacement_during_callback_refuses(single_worke
         def __getattr__(self, name):
             return getattr(resource, name)
     encode = client.encode_supervised
-    def replace_after_response(request):
-        output = encode(request)
+    def replace_after_response(request, **kwargs):
+        output = encode(request, **kwargs)
         setattr(owner.resources, resource_name, Proxy())
         return output
     monkeypatch.setattr(client, 'encode_supervised', replace_after_response)
@@ -481,8 +481,14 @@ def b16_worker(flat_bundle, monkeypatch, request):
         finish(owner, process)
 
 
-def test_single_b16_one_nonce_four_ordered_frames(b16_worker):
+def test_single_b16_one_nonce_four_ordered_frames(b16_worker, monkeypatch):
     single, client, _, process, texts, binding = b16_worker
+    original_check = type(single)._check
+    checks = []
+    def counted_check(adapter):
+        original_check(adapter)
+        checks.append(1)
+    monkeypatch.setattr(type(single), '_check', counted_check)
     result = single.passage(tuple(texts))
     rows = [struct.unpack_from('<384f', result, i * 1536) for i in range(16)]
     assert [row.index(1.0) for row in rows] == [0] * 4 + [1] * 4 + [2] * 4 + [3] * 4
@@ -497,6 +503,7 @@ def test_single_b16_one_nonce_four_ordered_frames(b16_worker):
     assert all(frame['nonce'] == binding['nonce'] and frame['request_sha256'] == binding['request_sha256']
                for frame in frames)
     assert client._used_nonces == {binding['nonce']}
+    assert len(checks) == 10  # Outer pre/post plus four frames, each pre/post.
 
 
 @pytest.mark.parametrize('b16_worker', ['frame_order', 'digest', 'mid_frame'], indirect=True)
@@ -536,3 +543,54 @@ def test_single_b16_keeps_bulk_contract_frame_and_output_limits():
     assert client.BULK_CONTRACT_SHA256 == lifecycle.BULK_CONTRACT_SHA256 == worker.BULK_CONTRACT_SHA256
     assert hashlib.sha256(lifecycle.BULK_CONTRACT).hexdigest() == lifecycle.BULK_CONTRACT_SHA256
     assert worker._nonce_budget(worker.BULK_CONTRACT_SHA256) == 8192
+
+
+@pytest.mark.parametrize('fault', ['runtime', 'process', 'job'])
+def test_single_b16_refuses_binding_changed_after_first_frame(b16_worker, fault, monkeypatch):
+    single, client, owner, process, texts, _ = b16_worker
+    real_process, real_job = owner.resources.process, owner.resources.job
+    bundle = Path(single._bundle)
+    original_request = client._request
+    calls = []
+    class Proxy:
+        def __init__(self, target): self.target = target
+        def __getattr__(self, name): return getattr(self.target, name)
+    def mutate_after_frame(*args, **kwargs):
+        result = original_request(*args, **kwargs)
+        calls.append(1)
+        if len(calls) == 1:
+            if fault == 'runtime':
+                (bundle / 'wd-mind-e5-encoder-binding.json').write_bytes(b'changed')
+            else:
+                setattr(owner.resources, fault, Proxy(getattr(owner.resources, fault)))
+        return result
+    monkeypatch.setattr(client, '_request', mutate_after_frame)
+    try:
+        with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+            single.passage(tuple(texts))
+        raw = bytes(process.written)
+        size = struct.unpack('<I', raw[:4])[0]
+        assert len(raw) == 4 + size and len(calls) == 1
+        assert client.owner is owner and owner.status()['owned'] is True
+    finally:
+        owner.resources.process, owner.resources.job = real_process, real_job
+
+
+def test_single_b16_checks_again_before_next_frame(b16_worker, monkeypatch):
+    single, client, owner, process, texts, _ = b16_worker
+    original = type(single)._check
+    calls = []
+    bundle = Path(single._bundle)
+    def mutate_after_first_postcheck(adapter):
+        original(adapter)
+        calls.append(1)
+        # The outer B16 check is call 1, then frame 1 pre/post are calls 2/3.
+        if len(calls) == 3:
+            (bundle / 'wd-mind-e5-encoder-binding.json').write_bytes(b'changed')
+    monkeypatch.setattr(type(single), '_check', mutate_after_first_postcheck)
+    with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+        single.passage(tuple(texts))
+    raw = bytes(process.written)
+    size = struct.unpack('<I', raw[:4])[0]
+    assert len(raw) == 4 + size and len(calls) == 3
+    assert client.owner is owner and owner.status()['owned'] is True

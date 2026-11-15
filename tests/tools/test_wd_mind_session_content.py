@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
 import os
@@ -30,6 +31,7 @@ TOKEN = "mind_session_content_refused"
 
 @pytest.fixture
 def flat_consumer_case(source_fixtures, tmp_path, monkeypatch):
+    monkeypatch.setattr(session, '_EXPORT_USED_NONCES', set(), raising=False)
     from tools import wd_mind_content_snapshot_package as package
     path = Path(__file__).with_name('test_wd_mind_content_snapshot_package.py')
     spec = importlib.util.spec_from_file_location('flat_consumer_package_fixtures', path)
@@ -47,10 +49,10 @@ def flat_consumer_case(source_fixtures, tmp_path, monkeypatch):
     return package, owner, proposals, snapshot, clock, response
 
 
-def _export_fixture(owner, snapshot):
+def _export_fixture(owner, snapshot, *, identifier_override=None):
     gate = owner._gate
     message = snapshot['messages']
-    identifier = snapshot['identifier_policy_binding'][0]
+    identifier = snapshot['identifier_policy_binding'][0] if identifier_override is None else identifier_override
     key = b'A' * 32  # Match the production export contract, not the generic fixture key.
     tag = hmac.new(key, identifier, hashlib.sha256).hexdigest()
     decision = json.loads(snapshot['decision_bytes'])
@@ -97,9 +99,12 @@ def test_flat_export_reconstructs_only_independently_verified_owner(flat_consume
     if fault == 'length': meta['blocks'][0]['length'] += 1
     raw = content._canonical(meta)
     if fault == 'noncanonical': raw += b' '
-    arguments = dict(enabled=fault != 'off', metadata_bytes=raw, blocks=tuple(blocks),
+    authorization = session.create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
+        expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]))
+    lease = authorization.begin()
+    arguments = dict(enabled=fault != 'off', metadata_bytes=raw, blocks=tuple(blocks), lease=lease,
                      bundle_root=owner._root, expected_manifest_sha256=owner._pin,
-                     expected_nonce='1'*64, max_total_bytes=1 if fault == 'size' else 64*1024*1024)
+                     max_total_bytes=1 if fault == 'size' else 64*1024*1024)
     if fault != 'none':
         with pytest.raises(session.MindContentSessionRefused):
             session.prepare_flat_source_owner_from_export(**arguments)
@@ -126,10 +131,12 @@ def test_flat_export_refusal_and_cancellation_do_not_keep_key_in_session_traceba
         def fail(**kwargs):
             raise exception_type('synthetic sensitive exception detail')
         monkeypatch.setattr(package, 'create_consumer_flat_source_owner', fail)
+    authorization = session.create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
+        expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]))
     try:
         session.prepare_flat_source_owner_from_export(enabled=True, metadata_bytes=content._canonical(meta),
-            blocks=blocks, bundle_root=owner._root, expected_manifest_sha256=owner._pin,
-            expected_nonce='1'*64, max_total_bytes=64*1024*1024)
+            blocks=blocks, lease=authorization.begin(), bundle_root=owner._root,
+            expected_manifest_sha256=owner._pin, max_total_bytes=64*1024*1024)
     except exception_type as error:
         assert 'synthetic sensitive exception detail' not in str(error)
         frames = []
@@ -143,6 +150,95 @@ def test_flat_export_refusal_and_cancellation_do_not_keep_key_in_session_traceba
         assert error.__context__ is None
     else:
         pytest.fail('expected fixed refusal or cancellation')
+
+
+@pytest.mark.parametrize('base', [KeyboardInterrupt, GeneratorExit, asyncio.CancelledError])
+def test_flat_export_sanitizes_hostile_cancellation_subclasses(flat_consumer_case, monkeypatch, base):
+    package, owner, _, snapshot, _, _ = flat_consumer_case
+    meta, blocks = _export_fixture(owner, snapshot)
+    class Hostile(base):
+        count = 0
+        def __new__(cls, *args):
+            cls.count += 1
+            if cls.count > 1:
+                raise RuntimeError('untrusted constructor called again')
+            return super().__new__(cls)
+        def __getattribute__(self, name):
+            raise RuntimeError('untrusted attribute read')
+        def __setattr__(self, name, value):
+            raise RuntimeError('untrusted attribute write')
+    signal = Hostile()
+    def fail(**kwargs):
+        raise signal
+    monkeypatch.setattr(package, 'create_consumer_flat_source_owner', fail)
+    authorization = session.create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
+        expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]))
+    with pytest.raises(base) as caught:
+        session.prepare_flat_source_owner_from_export(enabled=True, metadata_bytes=content._canonical(meta),
+            blocks=blocks, lease=authorization.begin(), bundle_root=owner._root,
+            expected_manifest_sha256=owner._pin, max_total_bytes=64*1024*1024)
+    assert type(caught.value) is base
+    assert caught.value.__context__ is None
+
+
+def test_flat_export_rejects_consistent_peer_policy_substitution(flat_consumer_case):
+    _, owner, _, snapshot, _, _ = flat_consumer_case
+    private = content._canonical({'schema':'wd.mind-identifier-policy.v2', 'identifiers':[]})
+    assert private != snapshot['identifier_policy_binding'][0]
+    meta, blocks = _export_fixture(owner, snapshot, identifier_override=private)
+    authorization = session.create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
+        expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]))
+    with pytest.raises(session.MindContentSessionRefused):
+        session.prepare_flat_source_owner_from_export(enabled=True, metadata_bytes=content._canonical(meta),
+            blocks=blocks, lease=authorization.begin(), bundle_root=owner._root,
+            expected_manifest_sha256=owner._pin, max_total_bytes=64*1024*1024)
+
+
+def test_flat_export_nonce_lease_is_single_use_even_on_refusal(flat_consumer_case):
+    _, owner, _, snapshot, _, _ = flat_consumer_case
+    meta, blocks = _export_fixture(owner, snapshot)
+    authorization = session.create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
+        expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]))
+    lease = authorization.begin()
+    arguments = dict(enabled=True, metadata_bytes=content._canonical(meta), blocks=blocks, lease=lease,
+        bundle_root=owner._root, expected_manifest_sha256=owner._pin, max_total_bytes=64*1024*1024)
+    session.prepare_flat_source_owner_from_export(**arguments)
+    with pytest.raises(session.MindContentSessionRefused): session.prepare_flat_source_owner_from_export(**arguments)
+    with pytest.raises(session.MindContentSessionRefused): authorization.begin()
+    with pytest.raises(session.MindContentSessionRefused):
+        session.create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
+            expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]))
+
+
+def test_flat_export_failed_validation_consumes_lease(flat_consumer_case):
+    _, owner, _, snapshot, _, _ = flat_consumer_case
+    meta, blocks = _export_fixture(owner, snapshot)
+    authorization = session.create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
+        expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]))
+    lease = authorization.begin()
+    arguments = dict(enabled=True, metadata_bytes=content._canonical(dict(meta, nonce='2'*64)),
+        blocks=blocks, lease=lease, bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+        max_total_bytes=64*1024*1024)
+    with pytest.raises(session.MindContentSessionRefused): session.prepare_flat_source_owner_from_export(**arguments)
+    arguments['metadata_bytes'] = content._canonical(meta)
+    with pytest.raises(session.MindContentSessionRefused): session.prepare_flat_source_owner_from_export(**arguments)
+
+
+def test_flat_export_nonce_reservation_is_atomic_and_bounded(monkeypatch):
+    monkeypatch.setattr(session, '_EXPORT_USED_NONCES', set())
+    monkeypatch.setattr(session, '_EXPORT_NONCE_LIMIT', 1)
+    def reserve():
+        try:
+            session.create_flat_export_authorization(enabled=True, expected_nonce='1'*64,
+                expected_identifier_policy_sha256='a'*64)
+            return True
+        except session.MindContentSessionRefused:
+            return False
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(lambda _: reserve(), range(2))) == [False, True]
+    with pytest.raises(session.MindContentSessionRefused):
+        session.create_flat_export_authorization(enabled=True, expected_nonce='2'*64,
+            expected_identifier_policy_sha256='a'*64)
 
 
 def test_flat_consumer_is_default_off_before_any_ipc(flat_consumer_case):

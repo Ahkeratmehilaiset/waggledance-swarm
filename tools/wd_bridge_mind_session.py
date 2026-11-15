@@ -23,6 +23,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import threading
 
 try:
     from tools import bridge_compact_view, wd_bridge_mind_lane_read as lane_reader
@@ -178,24 +179,79 @@ _EXPORT_BLOCK_NAMES = ('message_policy', 'decision', 'nonreview_policy', 'roster
                        'identifier_policy', 'identifier_key', 'projection', 'flat_manifest', 'ids',
                        'vectors', 'encoder_binding')
 _EXPORT_LIMIT = 64 * 1024 * 1024
+_EXPORT_USED_NONCES = set()
+_EXPORT_NONCE_LOCK = threading.Lock()
+_EXPORT_NONCE_LIMIT = 8192
 
 
-def prepare_flat_source_owner_from_export(*, enabled=False, metadata_bytes=None, blocks=None,
+class _FlatExportLease:
+    __slots__ = ('_lock', '_nonce', '_policy_pin', '_taken')
+
+    def __init__(self, nonce, policy_pin):
+        self._lock, self._nonce, self._policy_pin, self._taken = threading.Lock(), nonce, policy_pin, False
+
+    def _take(self):
+        with self._lock:
+            if self._taken:
+                raise MindContentSessionRefused('mind_session_content_refused') from None
+            self._taken = True
+            return self._nonce, self._policy_pin
+
+
+class _FlatExportAuthorization:
+    __slots__ = ('_lock', '_nonce', '_policy_pin', '_begun')
+
+    def __init__(self, nonce, policy_pin):
+        self._lock, self._nonce, self._policy_pin, self._begun = threading.Lock(), nonce, policy_pin, False
+
+    def begin(self):
+        """Consume this authorization before opening any future transport."""
+        with self._lock:
+            if self._begun:
+                raise MindContentSessionRefused('mind_session_content_refused') from None
+            self._begun = True
+            return _FlatExportLease(self._nonce, self._policy_pin)
+
+
+def create_flat_export_authorization(*, enabled=False, expected_nonce=None,
+                                     expected_identifier_policy_sha256=None):
+    """Reserve a process-local nonce and trusted caller-supplied policy pin.
+
+    A future caller must derive the pin from an independently authorized,
+    separately protected source, never an IPC peer. This does not establish
+    that provenance. Nonces are retained up to the fixed limit for this process;
+    a process restart cannot prove replay protection across lifetimes.
+    """
+    if (enabled is not True or type(expected_nonce) is not str or not _SHA256.fullmatch(expected_nonce)
+            or type(expected_identifier_policy_sha256) is not str
+            or not _SHA256.fullmatch(expected_identifier_policy_sha256)):
+        raise MindContentSessionRefused('mind_session_content_refused') from None
+    with _EXPORT_NONCE_LOCK:
+        if expected_nonce in _EXPORT_USED_NONCES or len(_EXPORT_USED_NONCES) >= _EXPORT_NONCE_LIMIT:
+            raise MindContentSessionRefused('mind_session_content_refused') from None
+        _EXPORT_USED_NONCES.add(expected_nonce)
+    return _FlatExportAuthorization(expected_nonce, expected_identifier_policy_sha256)
+
+
+def prepare_flat_source_owner_from_export(*, enabled=False, metadata_bytes=None, blocks=None, lease=None,
                                           bundle_root=None, expected_manifest_sha256=None,
-                                          expected_nonce=None, max_total_bytes=None):
+                                          max_total_bytes=None):
     """Validate detached in-memory data against an independently pinned source.
 
     This is not a stream, handle, launcher, peer authentication, replay guard,
     or proof of index selection. The caller must authorize the manifest anchor
-    and arrange a fresh nonce independently; no IPC data supplies either.
+    and reserve a fresh nonce and policy pin independently before any future
+    transport; no IPC data supplies either.
     Raw blocks and the identifier key must never be logged or persisted.
     """
     output = None
     interrupted = None
     try:
+        if type(lease) is not _FlatExportLease:
+            raise ValueError('lease')
+        expected_nonce, expected_policy_pin = lease._take()
         if (enabled is not True or type(metadata_bytes) is not bytes
                 or not 0 < len(metadata_bytes) <= 65536 or type(blocks) is not tuple
-                or type(expected_nonce) is not str or not _SHA256.fullmatch(expected_nonce)
                 or type(max_total_bytes) is not int or not 0 < max_total_bytes <= _EXPORT_LIMIT):
             raise ValueError('input')
         from waggledance.core import bridge_log_reader as bridge
@@ -233,6 +289,8 @@ def prepare_flat_source_owner_from_export(*, enabled=False, metadata_bytes=None,
             data[expected] = item[1]
         if len(data['identifier_key']) != 32:
             raise ValueError('identifier_key')
+        if not hmac.compare_digest(hashlib.sha256(data['identifier_policy']).hexdigest(), expected_policy_pin):
+            raise ValueError('identifier_policy_pin')
         ids = json.loads(data['ids'].decode('utf-8'), object_pairs_hook=reader._unique_pairs,
                          parse_constant=reader._bad_constant)
         if (type(ids) is not list or any(type(item) is not str for item in ids)
@@ -254,8 +312,16 @@ def prepare_flat_source_owner_from_export(*, enabled=False, metadata_bytes=None,
             flat_manifest_bytes=data['flat_manifest'], flat_manifest_sha256=sha(data['flat_manifest']),
             ids=tuple(ids), vectors=data['vectors'], encoder_binding_bytes=data['encoder_binding'])
         _pin_flat_session(bundle_root, expected_manifest_sha256)
-    except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError) as error:
-        interrupted = type(error)
+        if not hmac.compare_digest(hashlib.sha256(data['identifier_policy']).hexdigest(), expected_policy_pin):
+            raise ValueError('identifier_policy_changed')
+    except KeyboardInterrupt:
+        interrupted = KeyboardInterrupt
+        output = None
+    except GeneratorExit:
+        interrupted = GeneratorExit
+        output = None
+    except asyncio.CancelledError:
+        interrupted = asyncio.CancelledError
         output = None
     except BaseException:
         output = None

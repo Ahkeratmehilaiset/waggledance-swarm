@@ -12,9 +12,13 @@ function Invoke-WdMindStartupRead {
         [Parameter(Mandatory)] [string] $Lane,
         [string] $Worktree = '',
         [ValidateRange(1, 90)] [int] $TimeoutSeconds = 15,
-        [switch] $ParentBoundContent
+        [switch] $ParentBoundContent,
+        [string] $OperatorPolicySha256 = '',
+        [string] $OperatorApprovalReferenceSha256 = '',
+        [byte[]] $ApprovedIdentifierPolicyBytes = $null
     )
-    if ($ParentBoundContent) {
+    if ($ParentBoundContent -and ([string]::IsNullOrEmpty($OperatorPolicySha256) -or
+        [string]::IsNullOrEmpty($OperatorApprovalReferenceSha256) -or $null -eq $ApprovedIdentifierPolicyBytes)) {
         # Parent-controlled bootstrap, an independently approved policy pin,
         # retained HOLD ownership and one-shot inherited handles are not yet
         # available. Refuse before any I/O or child process, including receipts.
@@ -54,6 +58,66 @@ function Invoke-WdMindStartupRead {
         if ($digest -cne $Pin.ToLowerInvariant()) { throw 'pin' }
         $utf8 = New-Object Text.UTF8Encoding($false,$true)
         return [pscustomobject]@{Text=$utf8.GetString($bytes).TrimStart([char]0xFEFF);Hash=$digest}
+    }
+    function Test-WdMindParentAdmission {
+        <# Compare operator-supplied independent pins to one pinned descriptor.
+           A match is not cryptographic proof of operator identity, a parent
+           handle, an approved child result, or permission to start a process. #>
+        [CmdletBinding()]
+        param(
+            [switch] $Enabled,
+            [string] $BundleRoot,
+            [string] $ExpectedManifestHash,
+            [string] $OperatorPolicySha256,
+            [string] $OperatorApprovalReferenceSha256,
+            [byte[]] $ApprovedPolicyBytes
+        )
+        $matched=$false
+        try {
+            if(-not $Enabled -or [string]::IsNullOrEmpty($BundleRoot) -or
+               $BundleRoot -match '(^|[\\/])\.\.([\\/]|$)' -or
+               $ExpectedManifestHash -cnotmatch '\A[0-9a-fA-F]{64}\z' -or
+               $OperatorPolicySha256 -cnotmatch '\A[0-9a-fA-F]{64}\z' -or
+               $OperatorApprovalReferenceSha256 -cnotmatch '\A[0-9a-fA-F]{64}\z' -or
+               $null -eq $ApprovedPolicyBytes -or $ApprovedPolicyBytes.Length -lt 1 -or
+               $ApprovedPolicyBytes.Length -gt 65536){throw 'input'}
+            $root=[IO.Path]::GetFullPath($BundleRoot).TrimEnd('\')
+            $manifestPath=Join-Path $root 'deployment-manifest.json'
+            $manifest=Read-WdMindPinnedSnapshot -Path $manifestPath -Pin $ExpectedManifestHash -Limit 4194304
+            $deployment=$manifest.Text | ConvertFrom-Json -ErrorAction Stop
+            if($deployment.schema_version -ne 1 -or $null -eq $deployment.files){throw 'manifest'}
+            $name='wd-mind-identifier-policy-approval.json'
+            $pin=$deployment.files.PSObject.Properties[$name]
+            if($null -eq $pin -or $pin.Value -isnot [string]){throw 'descriptor'}
+            $descriptor=Read-WdMindPinnedSnapshot -Path (Join-Path $root $name) -Pin $pin.Value -Limit 65536
+            $expected='{"approval_reference_sha256":"' + $OperatorApprovalReferenceSha256.ToLowerInvariant() +
+                '","identifier_policy_sha256":"' + $OperatorPolicySha256.ToLowerInvariant() +
+                '","schema":"wd.mind-identifier-policy-approval.v1"}'
+            # Exact canonical text prevents duplicate keys and unreviewed fields.
+            if($descriptor.Text -cne $expected){throw 'descriptor'}
+            $sha=[Security.Cryptography.SHA256]::Create()
+            try {$policyHash=[BitConverter]::ToString($sha.ComputeHash($ApprovedPolicyBytes)).Replace('-','').ToLowerInvariant()}
+            finally {$sha.Dispose()}
+            if($policyHash -cne $OperatorPolicySha256.ToLowerInvariant()){throw 'policy'}
+            foreach($relative in @('Invoke-WdBridgePython.ps1', 'tools-bootstrap/tools/wd_mind_runtime_child.py',
+                'tools-bootstrap/tools/wd_mind_full_runtime.py', 'tools-bootstrap/tools/wd_bridge_mind_session.py')){
+                $entryPin=$deployment.files.PSObject.Properties[$relative]
+                if($null -eq $entryPin -or $entryPin.Value -isnot [string]){throw 'entry'}
+                [void](Read-WdMindPinnedSnapshot -Path (Join-Path $root $relative) -Pin $entryPin.Value -Limit 8388608)
+            }
+            [void](Read-WdMindPinnedSnapshot -Path $manifestPath -Pin $ExpectedManifestHash -Limit 4194304)
+            [void](Read-WdMindPinnedSnapshot -Path (Join-Path $root $name) -Pin $pin.Value -Limit 65536)
+            $sha=[Security.Cryptography.SHA256]::Create()
+            try {$lastHash=[BitConverter]::ToString($sha.ComputeHash($ApprovedPolicyBytes)).Replace('-','').ToLowerInvariant()}
+            finally {$sha.Dispose()}
+            if($lastHash -cne $policyHash){throw 'policy_changed'}
+            $matched=$true
+        } catch { } finally {
+            $ApprovedPolicyBytes=$null
+            [void]$PSBoundParameters.Remove('ApprovedPolicyBytes')
+        }
+        if(-not $matched){throw 'mind_parent_admission_refused'}
+        return [pscustomobject]@{state='MATCH';authority='none';operator_authentication='UNKNOWN'}
     }
     function ConvertTo-WdMindLiteral([string] $Value) { return "'" + $Value.Replace("'","''") + "'" }
     function Update-WdMindParentBootstrapPumps {
@@ -431,6 +495,23 @@ function Invoke-WdMindStartupRead {
         $directory=[IO.Path]::GetFullPath($Path)
         Assert-WdMindReceiptDirectory $directory
         return Join-Path $directory '.codex-audit'
+    }
+    if ($ParentBoundContent) {
+        # A matching operator-supplied manifest/approval pair is a necessary
+        # admission check, not proof of parent provenance or a live route.
+        $result.reason='parent_approval_refused'
+        try {
+            if (@('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5') -cnotcontains $Lane) {
+                throw 'lane'
+            }
+            [void](Test-WdMindParentAdmission -Enabled -BundleRoot $BundleRoot -ExpectedManifestHash $ExpectedManifestHash `
+                -OperatorPolicySha256 $OperatorPolicySha256 -OperatorApprovalReferenceSha256 $OperatorApprovalReferenceSha256 `
+                -ApprovedPolicyBytes $ApprovedIdentifierPolicyBytes)
+            $result.reason='parent_content_unavailable'
+        } catch { }
+        $ApprovedIdentifierPolicyBytes=$null
+        [void]$PSBoundParameters.Remove('ApprovedIdentifierPolicyBytes')
+        return [pscustomobject]$result
     }
     try {
         if ($Worktree) { [void](Get-WdMindReceiptAudit $Worktree) }

@@ -496,6 +496,64 @@ if($state -ceq 'HOLD'){
     assert _run_startup_script(script) == {'state':expected, 'exited':True}
 
 
+@WINDOWS
+@pytest.mark.parametrize('fault', ['none','policy_pin','approval_ref','policy_bytes','descriptor',
+                                   'descriptor_shape','manifest','missing_entry','entry_tampered'])
+def test_parent_admission_requires_independent_operator_pins_and_pinned_entries(tmp_path, fault):
+    """Synthetic approval comparison only: never an authenticated operator or spawn."""
+    bundle, _ = _package(tmp_path)
+    policy = b'{"schema":"synthetic-private-policy"}'
+    policy_pin, approval = hashlib.sha256(policy).hexdigest(), 'a'*64
+    descriptor = bundle / 'wd-mind-identifier-policy-approval.json'
+    descriptor.write_text(json.dumps({'schema':'wd.mind-identifier-policy-approval.v1',
+        'identifier_policy_sha256':policy_pin, 'approval_reference_sha256':approval},
+        sort_keys=True, separators=(',', ':')), encoding='utf-8')
+    manifest = bundle / 'deployment-manifest.json'
+    doc = json.loads(manifest.read_text(encoding='utf-8'))
+    doc['schema_version'] = 1
+    for relative in ('tools-bootstrap/tools/wd_mind_runtime_child.py', 'tools-bootstrap/tools/wd_mind_full_runtime.py'):
+        path = bundle / relative
+        path.write_bytes(b'# synthetic pin target\n')
+        doc['files'][relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    doc['files']['wd-mind-identifier-policy-approval.json'] = hashlib.sha256(descriptor.read_bytes()).hexdigest()
+    if fault == 'missing_entry': doc['files'].pop('tools-bootstrap/tools/wd_mind_full_runtime.py')
+    if fault == 'descriptor_shape':
+        descriptor.write_text('{"approval_reference_sha256":"' + approval + '","identifier_policy_sha256":"' +
+                              policy_pin + '","schema":"wd.mind-identifier-policy-approval.v1","extra":0}', encoding='utf-8')
+        doc['files']['wd-mind-identifier-policy-approval.json'] = hashlib.sha256(descriptor.read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(doc, separators=(',', ':')), encoding='utf-8')
+    manifest_pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    if fault == 'descriptor': descriptor.write_bytes(b'{}')
+    if fault == 'entry_tampered': (bundle / 'tools-bootstrap/tools/wd_mind_full_runtime.py').write_bytes(b'tampered')
+    if fault == 'manifest': manifest_pin = 'b'*64
+    if fault == 'policy_pin': policy_pin = 'b'*64
+    if fault == 'approval_ref': approval = 'b'*64
+    if fault == 'policy_bytes': policy = b'different-synthetic-policy'
+    functions = _startup_functions('Invoke-WdMindStartupRead.ps1',
+        ['Read-WdMindPinnedSnapshot', 'Test-WdMindParentAdmission'])
+    script = functions + r'''
+$policy=[Convert]::FromBase64String(POLICY_BASE64)
+$state='refused';$operatorAuthentication='UNKNOWN'
+try {
+  $r=Test-WdMindParentAdmission -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
+      -OperatorPolicySha256 POLICY_PIN -OperatorApprovalReferenceSha256 APPROVAL_PIN -ApprovedPolicyBytes $policy
+  $state=$r.state;$operatorAuthentication=$r.operator_authentication
+} catch {}
+ . HELPER_PATH
+ $route=Invoke-WdMindStartupRead -ParentBoundContent -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
+     -Lane codex-lead-1 -OperatorPolicySha256 POLICY_PIN -OperatorApprovalReferenceSha256 APPROVAL_PIN `
+     -ApprovedIdentifierPolicyBytes $policy
+[pscustomobject]@{state=$state;operator_authentication=$operatorAuthentication;
+ route_outcome=$route.outcome;route_reason=$route.reason;route_view=$route.view_json} | ConvertTo-Json -Compress
+'''.replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(manifest_pin))
+    script = script.replace('POLICY_PIN', _literal(policy_pin)).replace('APPROVAL_PIN', _literal(approval))
+    script = script.replace('POLICY_BASE64', _literal(base64.b64encode(policy).decode('ascii'))).replace('HELPER_PATH', _literal(HELPER))
+    result = _run_startup_script(script)
+    assert result == {'state':'MATCH' if fault == 'none' else 'refused', 'operator_authentication':'UNKNOWN',
+                      'route_outcome':'refused', 'route_reason':'parent_content_unavailable' if fault == 'none' else 'parent_approval_refused',
+                      'route_view':''}
+
+
 def _startup_functions(filename, names):
     return f'''
 $tokens=$null;$errors=$null

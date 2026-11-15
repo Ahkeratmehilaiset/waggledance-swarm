@@ -15,6 +15,8 @@ there is no full-cell fallback. No model/native module is imported, no casting
 or additional normalization is performed. Provider failures are converted to a
 fixed refusal. Keyboard and asyncio cancellation signals propagate without
 provider-supplied details; cancellation groups are flattened and sanitized.
+If the caller is already handling an exception, Python can retain that
+caller-owned exception in ``__context__``; it is suppressed in the traceback.
 
 These are caller-trusted synchronous callbacks: their metadata/code digests
 do not authenticate code, computation or assets, constrain provider allocation,

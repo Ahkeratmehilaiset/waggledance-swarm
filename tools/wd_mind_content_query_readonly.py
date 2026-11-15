@@ -1603,8 +1603,9 @@ def _provider_cancellation(error):
 
 
 def _provider_result(operation):
-    # Leave the except block before denying or propagating a cancellation, so
-    # the original provider exception is never attached as implicit context.
+    # Leave our except block before denying or propagating a cancellation.
+    # Python may still attach an exception already active in the caller as
+    # __context__; `from None` suppresses that context from the traceback.
     succeeded, output, problem = False, None, None
     try:
         output = operation()

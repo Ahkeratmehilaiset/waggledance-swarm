@@ -2060,6 +2060,44 @@ def test_query_provider_cancellation_tree_is_preserved_without_detail(reader, tm
     assert capsys.readouterr() == ("", "")
 
 
+@pytest.mark.parametrize("kind", ["system_exit", "cancelled", "mixed_group"])
+@pytest.mark.parametrize("mode", ["adapter", "legacy_query", "complete_query"])
+def test_provider_refusal_suppresses_already_active_caller_context(reader, tmp_path, capsys, kind, mode):
+    import asyncio
+    import traceback
+
+    marker = "synthetic-caller-provider-detail"
+    problem = SystemExit(marker) if kind == "system_exit" else _provider_abort_problem(kind, marker)
+    case = None if mode == "adapter" else _semantic_case(reader, tmp_path, all_tasks=mode == "complete_query")
+    calls = []
+    try:
+        raise problem
+    except BaseException as active:
+        def fail(*unused):
+            calls.append(True)
+            raise active
+        if mode == "adapter":
+            operation = lambda: reader._provider_result(fail)
+        else:
+            case["encoder_provider"].on_query = fail
+            entry = reader.query_complete_content_snapshot if mode == "complete_query" else reader.query_content_snapshot
+            operation = lambda: entry(**case)
+        with pytest.raises(BaseException) as caught:
+            operation()
+        result = caught.value
+        if kind == "system_exit":
+            assert type(result) is reader.ContentQueryRefused
+        elif kind == "cancelled":
+            assert type(result) is asyncio.CancelledError
+        else:
+            assert type(result) is BaseExceptionGroup
+            assert [type(item) for item in result.exceptions] == [KeyboardInterrupt, asyncio.CancelledError]
+        assert result.__context__ is active and result.__cause__ is None and result.__suppress_context__
+        assert marker not in "".join(traceback.format_exception(result))
+        assert calls == [True]
+    assert capsys.readouterr() == ("", "")
+
+
 def test_provider_adapter_never_coerces_arbitrary_float_like_objects(reader, tmp_path):
     case = _semantic_case(reader, tmp_path)
     encoder, decode, _ = _provider_objects(case, "plain")

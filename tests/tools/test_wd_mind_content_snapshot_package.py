@@ -1292,6 +1292,39 @@ def test_snapshot_provider_cancellation_tree_is_preserved_without_detail(package
     assert capsys.readouterr() == ("", "")
 
 
+@pytest.mark.parametrize("kind", ["system_exit", "cancelled", "mixed_group"])
+def test_snapshot_refusal_suppresses_already_active_caller_context(package, fixtures, tmp_path, capsys, kind):
+    import asyncio
+    import traceback
+
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    args = _arguments(case, Codec(fixtures), FULL_PREFIX_PROFILE)
+    marker = "synthetic-caller-provider-detail"
+    problem = SystemExit(marker) if kind == "system_exit" else fixtures._provider_abort_problem(kind, marker)
+    calls = []
+    try:
+        raise problem
+    except BaseException as active:
+        def fail(*unused):
+            calls.append(True)
+            raise active
+        args["passage_encoder"] = fail
+        with pytest.raises(BaseException) as caught:
+            package.package_content_snapshot(**args)
+        result = caught.value
+        if kind == "system_exit":
+            assert type(result) is package.SnapshotPackageRefused
+        elif kind == "cancelled":
+            assert type(result) is asyncio.CancelledError
+        else:
+            assert type(result) is BaseExceptionGroup
+            assert [type(item) for item in result.exceptions] == [KeyboardInterrupt, asyncio.CancelledError]
+        assert result.__context__ is active and result.__cause__ is None and result.__suppress_context__
+        assert marker not in "".join(traceback.format_exception(result))
+        assert calls == [True]
+    assert capsys.readouterr() == ("", "")
+
+
 @pytest.mark.parametrize("capacity_profile", [None, CAPACITY_PROFILE])
 def test_only_screened_source_text_reaches_passage_and_artifacts(package, fixtures, tmp_path, capacity_profile):
     case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)

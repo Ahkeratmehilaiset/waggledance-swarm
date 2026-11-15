@@ -819,5 +819,4 @@ sys.stdout.buffer.flush()
         for descriptor in fds: os.close(descriptor)
         for process in (owner, consumer):
             if process is not None and process.poll() is None:
-                process.kill()
                 process.wait(timeout=5)

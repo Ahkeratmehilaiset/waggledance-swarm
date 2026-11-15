@@ -57,7 +57,8 @@ function Invoke-WdMindStartupRead {
         finally { $sha.Dispose() }
         if ($digest -cne $Pin.ToLowerInvariant()) { throw 'pin' }
         $utf8 = New-Object Text.UTF8Encoding($false,$true)
-        return [pscustomobject]@{Text=$utf8.GetString($bytes).TrimStart([char]0xFEFF);Hash=$digest}
+        return [pscustomobject]@{Text=$utf8.GetString($bytes).TrimStart([char]0xFEFF);Hash=$digest;
+            HasUtf8Bom=($bytes.Length -ge 3 -and $bytes[0] -eq 0xef -and $bytes[1] -eq 0xbb -and $bytes[2] -eq 0xbf)}
     }
     function Test-WdMindParentAdmission {
         <# Compare operator-supplied independent pins to one pinned descriptor.
@@ -85,7 +86,8 @@ function Invoke-WdMindStartupRead {
             $manifestPath=Join-Path $root 'deployment-manifest.json'
             $manifest=Read-WdMindPinnedSnapshot -Path $manifestPath -Pin $ExpectedManifestHash -Limit 4194304
             $deployment=$manifest.Text | ConvertFrom-Json -ErrorAction Stop
-            if($deployment.schema_version -ne 1 -or $null -eq $deployment.files){throw 'manifest'}
+            if(($deployment.schema_version -isnot [int] -and $deployment.schema_version -isnot [long]) -or
+                $deployment.schema_version -ne 1 -or $null -eq $deployment.files){throw 'manifest'}
             $name='wd-mind-identifier-policy-approval.json'
             $pin=$deployment.files.PSObject.Properties[$name]
             if($null -eq $pin -or $pin.Value -isnot [string]){throw 'descriptor'}
@@ -94,7 +96,11 @@ function Invoke-WdMindStartupRead {
                 '","identifier_policy_sha256":"' + $OperatorPolicySha256.ToLowerInvariant() +
                 '","schema":"wd.mind-identifier-policy-approval.v1"}'
             # Exact canonical text prevents duplicate keys and unreviewed fields.
-            if($descriptor.Text -cne $expected){throw 'descriptor'}
+            if($descriptor.HasUtf8Bom -or $descriptor.Text -cne $expected){throw 'descriptor'}
+            if($ApprovedPolicyBytes.Length -ge 3 -and $ApprovedPolicyBytes[0] -eq 0xef -and
+                $ApprovedPolicyBytes[1] -eq 0xbb -and $ApprovedPolicyBytes[2] -eq 0xbf){throw 'policy'}
+            $utf8=New-Object Text.UTF8Encoding($false,$true)
+            [void]$utf8.GetCharCount($ApprovedPolicyBytes)
             $sha=[Security.Cryptography.SHA256]::Create()
             try {$policyHash=[BitConverter]::ToString($sha.ComputeHash($ApprovedPolicyBytes)).Replace('-','').ToLowerInvariant()}
             finally {$sha.Dispose()}

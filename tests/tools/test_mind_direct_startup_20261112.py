@@ -498,11 +498,14 @@ if($state -ceq 'HOLD'){
 
 @WINDOWS
 @pytest.mark.parametrize('fault', ['none','policy_pin','approval_ref','policy_bytes','descriptor',
-                                   'descriptor_shape','manifest','missing_entry','entry_tampered'])
+                                   'descriptor_shape','descriptor_bom','manifest','schema_string','schema_float','schema_bool',
+                                   'policy_bom','policy_invalid_utf8','missing_entry','entry_tampered'])
 def test_parent_admission_requires_independent_operator_pins_and_pinned_entries(tmp_path, fault):
     """Synthetic approval comparison only: never an authenticated operator or spawn."""
     bundle, _ = _package(tmp_path)
     policy = b'{"schema":"synthetic-private-policy"}'
+    if fault == 'policy_bom': policy = b'\xef\xbb\xbf' + policy
+    if fault == 'policy_invalid_utf8': policy = b'\xff'
     policy_pin, approval = hashlib.sha256(policy).hexdigest(), 'a'*64
     descriptor = bundle / 'wd-mind-identifier-policy-approval.json'
     descriptor.write_text(json.dumps({'schema':'wd.mind-identifier-policy-approval.v1',
@@ -510,12 +513,15 @@ def test_parent_admission_requires_independent_operator_pins_and_pinned_entries(
         sort_keys=True, separators=(',', ':')), encoding='utf-8')
     manifest = bundle / 'deployment-manifest.json'
     doc = json.loads(manifest.read_text(encoding='utf-8'))
-    doc['schema_version'] = 1
+    doc['schema_version'] = {'schema_string':'1', 'schema_float':1.0, 'schema_bool':True}.get(fault, 1)
     for relative in ('tools-bootstrap/tools/wd_mind_runtime_child.py', 'tools-bootstrap/tools/wd_mind_full_runtime.py'):
         path = bundle / relative
         path.write_bytes(b'# synthetic pin target\n')
         doc['files'][relative] = hashlib.sha256(path.read_bytes()).hexdigest()
     doc['files']['wd-mind-identifier-policy-approval.json'] = hashlib.sha256(descriptor.read_bytes()).hexdigest()
+    if fault == 'descriptor_bom':
+        descriptor.write_bytes(b'\xef\xbb\xbf' + descriptor.read_bytes())
+        doc['files']['wd-mind-identifier-policy-approval.json'] = hashlib.sha256(descriptor.read_bytes()).hexdigest()
     if fault == 'missing_entry': doc['files'].pop('tools-bootstrap/tools/wd_mind_full_runtime.py')
     if fault == 'descriptor_shape':
         descriptor.write_text('{"approval_reference_sha256":"' + approval + '","identifier_policy_sha256":"' +

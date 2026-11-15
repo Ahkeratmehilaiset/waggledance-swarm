@@ -398,3 +398,22 @@ def test_single_worker_nonce_budget_refuses_without_restarting(single_worker):
     with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
         single.query('sample')
     assert bytes(process.written) == before and client.owner is owner
+
+
+@pytest.mark.parametrize('fault', ['binding', 'worker', 'owner_hold'])
+def test_single_worker_change_during_callback_never_returns_result(single_worker, fault, monkeypatch, capsys):
+    single, client, owner, _, bundle = single_worker
+    encode = client.encode_supervised
+    def changed_after_response(request):
+        output = encode(request)
+        if fault == 'binding':
+            client._binding_sha256 = '0' * 64
+        elif fault == 'worker':
+            (bundle / 'tools-bootstrap/tools/wd_mind_e5_worker.py').write_bytes(b'changed')
+        else:
+            owner._fault('synthetic_hold')
+        return output
+    monkeypatch.setattr(client, 'encode_supervised', changed_after_response)
+    with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+        single.query('sample')
+    assert capsys.readouterr() == ('', '') and client.owner is owner

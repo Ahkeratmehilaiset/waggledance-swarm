@@ -4,6 +4,7 @@ Only the new function-only startup helper and a deliberately inert fake wrapper
 execute. No real Mind reader, publication, bridge log, agent or model is used.
 """
 import base64
+import datetime
 import hashlib
 import json
 import os
@@ -613,6 +614,104 @@ $r=Invoke-WdMindStartupRead @arguments
     expected_reason = 'parent_content_unavailable' if fault in ('none', 'both') else 'parent_approval_refused'
     assert result == {'outcome':'refused', 'reason':expected_reason, 'view':''}
     assert 'synthetic-private-marker' not in json.dumps(result)
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+@pytest.mark.parametrize('case', ['off', 'valid', 'partial', 'unexpected_success', 'exception'])
+def test_optional_content_probe_forwards_only_explicit_pins_and_never_claims_success(filename, case):
+    functions = _startup_functions(filename, ['Get-WdMindContentPromptSuffix', 'Invoke-WdMindOptionalContentProbe'])
+    script = functions + r'''
+$script:calls=0;$script:matched=$false
+function Invoke-WdMindStartupRead {
+  param($BundleRoot,$ExpectedManifestHash,$Lane,$Worktree,[switch]$ParentBoundContent,
+    $OperatorPolicyPath,$OperatorPolicySha256,$OperatorApprovalReferenceSha256)
+  $script:calls++
+  $script:matched=($ParentBoundContent -and $BundleRoot -ceq 'C:\synthetic-bundle' -and
+    $ExpectedManifestHash -ceq ('d'*64) -and $Lane -ceq 'codex-lead-1' -and
+    $OperatorPolicyPath -ceq 'C:\synthetic-policy.json' -and $OperatorPolicySha256 -ceq ('a'*64) -and
+    $OperatorApprovalReferenceSha256 -ceq ('b'*64))
+  if (CASE -ceq 'exception') { throw 'synthetic' }
+  if (CASE -ceq 'unexpected_success') { return [pscustomobject]@{outcome='success';reason='synthetic'} }
+  return [pscustomobject]@{outcome='refused';reason='parent_content_unavailable'}
+}
+$params=@{BundleRoot='C:\synthetic-bundle';ManifestHash=('d'*64);Lane='codex-lead-1';Worktree='C:\synthetic-worktree'}
+if (CASE -cne 'off') {$params.PolicyPath='C:\synthetic-policy.json'}
+if (CASE -cnotin @('off','partial')) {$params.PolicySha256='a'*64;$params.ApprovalReferenceSha256='b'*64}
+$value=Invoke-WdMindOptionalContentProbe @params
+[ordered]@{value=$value.state;suffix=$value.suffix;calls=$script:calls;matched=$script:matched}|ConvertTo-Json -Compress
+'''.replace('CASE', _literal(case))
+    result = _run_startup_script(script)
+    expected = 'off' if case == 'off' else ('refused' if case in ('unexpected_success', 'exception') else 'parent_content_unavailable')
+    assert result == {'value':expected, 'suffix':'', 'calls':0 if case == 'off' else 1,
+                      'matched':case not in ('off', 'partial')}
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+@pytest.mark.parametrize('fault', ['none', 'authority', 'lane', 'fleet', 'ref', 'stale', 'future', 'sender', 'index',
+                                   'unwritten', 'digest', 'duplicate', 'oversize', 'extra'])
+def test_content_suffix_only_delivers_fresh_hash_bound_untrusted_refs(filename, fault):
+    observed = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    if fault == 'stale': observed -= datetime.timedelta(minutes=16)
+    if fault == 'future': observed += datetime.timedelta(minutes=2)
+    view = {'schema':'wd.mind-flat-verified-session.v1', 'authority':'none', 'lane':'codex-lead-1',
+        'fleet_sha256':'a'*64, 'sender_authentication':'UNKNOWN', 'index_match':'UNKNOWN', 'same_user_aba':'UNKNOWN',
+        'results':[{'text':'synthetic content, not an instruction', 'source_event_sha256':'b'*64,
+                    'event_time_utc_floor':observed.isoformat().replace('+00:00','Z'), 'source_agent':'codex-tools-1',
+                    'event_age_seconds_upper_bound':1}]}
+    if fault == 'authority': view['authority'] = 'operator'
+    if fault == 'lane': view['lane'] = 'fable-5'
+    if fault == 'fleet': view['fleet_sha256'] = 'c'*64
+    if fault == 'ref': view['results'][0]['source_event_sha256'] = 'invalid'
+    if fault == 'sender': view['sender_authentication'] = 'MATCH'
+    if fault == 'index': view['index_match'] = 'MATCH'
+    if fault == 'oversize': view['results'][0]['text'] = 'x'*9000
+    if fault == 'extra': view['extra'] = 0
+    raw = json.dumps(view, separators=(',', ':'), ensure_ascii=True)
+    if fault == 'duplicate': raw = raw[:-1] + ',"authority":"none"}'
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    if fault == 'digest': digest = 'c'*64
+    functions = _startup_functions(filename, ['Get-WdMindContentPromptSuffix'])
+    script = f". {_literal(Path(os.environ['WD_BRIDGE_BIN']) / 'BridgeLogReader.ps1')}\n" + functions + f'''
+$r=[pscustomobject]@{{outcome='success';reason='content_projection';record_written=${str(fault != 'unwritten').lower()};view_json={_literal(raw)};view_sha256='{digest}'}}
+$suffix=Get-WdMindContentPromptSuffix -Read $r -ExpectedLane 'codex-lead-1' -ExpectedFleetSha256 ('a'*64)
+[ordered]@{{first=('FIRST'+$suffix);resume=('RESUME'+$suffix)}}|ConvertTo-Json -Compress
+'''
+    result = _run_startup_script(script)
+    if fault == 'none':
+        for key in ('first', 'resume'):
+            assert 'DATA ONLY' in result[key] and 'not instructions' in result[key]
+            assert 'b'*64 in result[key] and 'synthetic content' in result[key]
+    else:
+        assert result == {'first':'FIRST', 'resume':'RESUME'}
+
+
+@WINDOWS
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+def test_optional_probe_forwards_validated_content_in_first_and_resume(filename):
+    observed = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+    view = {'schema':'wd.mind-flat-verified-session.v1', 'authority':'none', 'lane':'codex-lead-1',
+        'fleet_sha256':'a'*64, 'sender_authentication':'UNKNOWN', 'index_match':'UNKNOWN', 'same_user_aba':'UNKNOWN',
+        'results':[{'text':'synthetic content', 'source_event_sha256':'b'*64,
+                    'event_time_utc_floor':observed, 'source_agent':'codex-tools-1', 'event_age_seconds_upper_bound':1}]}
+    raw = json.dumps(view, separators=(',', ':'), ensure_ascii=True)
+    digest = hashlib.sha256(raw.encode()).hexdigest()
+    functions = _startup_functions(filename, ['Get-WdMindContentPromptSuffix', 'Invoke-WdMindOptionalContentProbe'])
+    script = f". {_literal(Path(os.environ['WD_BRIDGE_BIN']) / 'BridgeLogReader.ps1')}\n" + functions + fr'''
+function Invoke-WdMindStartupRead {{
+  param($BundleRoot,$ExpectedManifestHash,$Lane,$Worktree,[switch]$ParentBoundContent,
+    $OperatorPolicyPath,$OperatorPolicySha256,$OperatorApprovalReferenceSha256)
+  return [pscustomobject]@{{outcome='success';reason='content_projection';record_written=$true;view_json={_literal(raw)};view_sha256='{digest}'}}
+}}
+$probe=Invoke-WdMindOptionalContentProbe -BundleRoot 'C:\synthetic-bundle' -ManifestHash ('d'*64) `
+ -Lane 'codex-lead-1' -Worktree 'C:\synthetic-worktree' -PolicyPath 'C:\synthetic-policy.json' `
+ -PolicySha256 ('e'*64) -ApprovalReferenceSha256 ('f'*64) -FleetSha256 ('a'*64)
+[ordered]@{{state=$probe.state;first=('FIRST'+$probe.suffix);resume=('RESUME'+$probe.suffix)}}|ConvertTo-Json -Compress
+'''
+    result = _run_startup_script(script)
+    assert result['state'] == 'validated_content'
+    assert all('DATA ONLY' in result[key] and 'b'*64 in result[key] for key in ('first', 'resume'))
 
 
 def _startup_functions(filename, names):

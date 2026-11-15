@@ -8,6 +8,8 @@ This seam is an in-process API, not provider startup or live context delivery.
 from __future__ import annotations
 
 import hashlib
+import hmac
+import asyncio
 import importlib.util
 import json
 import os
@@ -43,6 +45,104 @@ def flat_consumer_case(source_fixtures, tmp_path, monkeypatch):
             'lane': 'codex-lead-1', 'scope': 'shared', 'status': 'CANDIDATES',
             'candidates': proposals}, separators=(',', ':')).encode()
     return package, owner, proposals, snapshot, clock, response
+
+
+def _export_fixture(owner, snapshot):
+    gate = owner._gate
+    message = snapshot['messages']
+    identifier = snapshot['identifier_policy_binding'][0]
+    key = b'A' * 32  # Match the production export contract, not the generic fixture key.
+    tag = hmac.new(key, identifier, hashlib.sha256).hexdigest()
+    decision = json.loads(snapshot['decision_bytes'])
+    decision['identifier_policy_hmac'] = tag
+    decision_bytes = content._canonical(decision)
+    updated = dict(snapshot, identifier_policy_binding=(identifier, key, tag),
+                   decision_bytes=decision_bytes, decision_sha256=content._sha(decision_bytes))
+    inputs = {name: value for name, value in updated.items()
+              if name not in ('projection_bytes', 'projection_sha256')}
+    projection_bytes = content._serialized(content.rederive_complete_message_projection(**inputs))
+    flat_manifest = json.loads(gate._flat_raw)
+    flat_manifest['projection_sha256'] = content._sha(projection_bytes)
+    blocks = (
+        ('message_policy', message['policy_bytes']), ('decision', decision_bytes),
+        ('nonreview_policy', snapshot['policy_bytes']), ('roster', snapshot['roster_bytes']),
+        ('task_scope', snapshot['approved_tasks_bytes']), ('identifier_policy', identifier),
+        ('identifier_key', key), ('projection', projection_bytes),
+        ('flat_manifest', content._canonical(flat_manifest)), ('ids', content._canonical(list(gate._ids))),
+        ('vectors', gate._vectors), ('encoder_binding', gate._encoder),
+    )
+    cursor = message['end_cursor']
+    meta = {'schema':'wd.mind-owner-export.v1', 'authority':'none', 'nonce':'1'*64,
+        'source_path':message['source_path'], 'generation_path':message['generation_path'],
+        'cursor':{'offset':cursor.offset, 'file_identity':cursor.file_identity, 'generation':cursor.generation},
+        'identifier_policy_tag':tag, 'blocks':[{'name':name, 'length':len(value)} for name,value in blocks]}
+    return meta, blocks
+
+
+@pytest.mark.parametrize('fault', ['none','off','nonce','path','policy','encoder','vector','ids',
+                                   'unknown','size','order','length','noncanonical'])
+def test_flat_export_reconstructs_only_independently_verified_owner(flat_consumer_case, fault):
+    package, owner, proposals, snapshot, clock, response = flat_consumer_case
+    meta, blocks = _export_fixture(owner, snapshot)
+    blocks = list(blocks)
+    if fault == 'nonce': meta['nonce'] = '2'*64
+    if fault == 'path': meta['source_path'] += '.unexpected'
+    if fault in {'policy','encoder','vector','ids'}:
+        name = {'policy':'message_policy','encoder':'encoder_binding','vector':'vectors','ids':'ids'}[fault]
+        index = next(i for i, block in enumerate(blocks) if block[0] == name)
+        value = blocks[index][1]
+        blocks[index] = (name, bytes([value[0] ^ 1]) + value[1:])
+    if fault == 'unknown': meta['unexpected'] = True
+    if fault == 'order': blocks[0], blocks[1] = blocks[1], blocks[0]
+    if fault == 'length': meta['blocks'][0]['length'] += 1
+    raw = content._canonical(meta)
+    if fault == 'noncanonical': raw += b' '
+    arguments = dict(enabled=fault != 'off', metadata_bytes=raw, blocks=tuple(blocks),
+                     bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+                     expected_nonce='1'*64, max_total_bytes=1 if fault == 'size' else 64*1024*1024)
+    if fault != 'none':
+        with pytest.raises(session.MindContentSessionRefused):
+            session.prepare_flat_source_owner_from_export(**arguments)
+        return
+    rebuilt = session.prepare_flat_source_owner_from_export(**arguments)
+    result = session.query_flat_source_candidates(enabled=True, owner=rebuilt, ipc_bytes=response(),
+        bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+        expected_nonce='1'*64, lane='codex-lead-1', scope='shared')
+    assert result['authority'] == 'none' and result['sender_authentication'] == 'UNKNOWN'
+    assert result['index_match'] == 'UNKNOWN'
+    assert [item['source_event_sha256'] for item in result['results']] == [p['source_event_sha256'] for p in proposals]
+
+
+@pytest.mark.parametrize('fault', ['refusal', 'interrupt', 'cancel'])
+def test_flat_export_refusal_and_cancellation_do_not_keep_key_in_session_traceback(flat_consumer_case, monkeypatch, fault):
+    package, owner, _, snapshot, _, _ = flat_consumer_case
+    meta, blocks = _export_fixture(owner, snapshot)
+    secret = b'A' * 32
+    if fault == 'refusal':
+        meta['nonce'] = '2' * 64
+        exception_type = session.MindContentSessionRefused
+    else:
+        exception_type = KeyboardInterrupt if fault == 'interrupt' else asyncio.CancelledError
+        def fail(**kwargs):
+            raise exception_type('synthetic sensitive exception detail')
+        monkeypatch.setattr(package, 'create_consumer_flat_source_owner', fail)
+    try:
+        session.prepare_flat_source_owner_from_export(enabled=True, metadata_bytes=content._canonical(meta),
+            blocks=blocks, bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+            expected_nonce='1'*64, max_total_bytes=64*1024*1024)
+    except exception_type as error:
+        assert 'synthetic sensitive exception detail' not in str(error)
+        frames = []
+        trace = error.__traceback__
+        while trace:
+            if trace.tb_frame.f_code.co_filename == session.__file__:
+                frames.append(trace.tb_frame)
+            trace = trace.tb_next
+        assert frames
+        assert all(repr(secret) not in repr(frame.f_locals) for frame in frames)
+        assert error.__context__ is None
+    else:
+        pytest.fail('expected fixed refusal or cancellation')
 
 
 def test_flat_consumer_is_default_off_before_any_ipc(flat_consumer_case):

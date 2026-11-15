@@ -122,14 +122,14 @@ class _ParentChildLaunch:
     killed or assumed absent. The caller owns the pipe endpoints independently.
     """
     __slots__ = ('_command', '_role', '_bundle', '_manifest', '_fds', '_deadline', '_process',
-                 '_thread', '_done', '_state', '_start_confirmed', '_init_confirmed', '_lock')
+                 '_thread', '_done', '_state', '_start_confirmed', '_init_confirmed', '_abandoned', '_lock')
 
     def __init__(self, command, role, bundle, manifest, fds, deadline):
         self._command, self._role, self._bundle, self._manifest = command, role, bundle, manifest
         self._fds, self._deadline = fds, deadline
         self._process = self._thread = None
         self._done, self._lock = threading.Event(), threading.Lock()
-        self._state, self._start_confirmed, self._init_confirmed = 'NEW', False, False
+        self._state, self._start_confirmed, self._init_confirmed, self._abandoned = 'NEW', False, False, False
 
     def __repr__(self):
         return '<PrivateMindParentChildLaunch>'
@@ -151,9 +151,11 @@ class _ParentChildLaunch:
                 stderr=self._fds[2], close_fds=True, startupinfo=startup,
                 creationflags=subprocess.CREATE_NO_WINDOW)
             self._init_confirmed = True
-            self._state = 'SPAWNED_UNVERIFIED'
+            with self._lock:
+                self._state = ('SPAWNED_UNVERIFIED' if self._start_confirmed and not self._abandoned else 'HOLD')
         except BaseException:
-            self._state = 'HOLD'
+            with self._lock:
+                self._state = 'HOLD'
         finally:
             self._done.set()
 
@@ -170,13 +172,16 @@ class _ParentChildLaunch:
             self._thread.start()
             self._start_confirmed = True
         except KeyboardInterrupt:
+            self._abandoned, self._state = True, 'HOLD'
             cancelled_type = KeyboardInterrupt
         except GeneratorExit:
+            self._abandoned, self._state = True, 'HOLD'
             cancelled_type = GeneratorExit
         except asyncio.CancelledError:
+            self._abandoned, self._state = True, 'HOLD'
             cancelled_type = asyncio.CancelledError
         except BaseException:
-            pass
+            self._abandoned, self._state = True, 'HOLD'
         finally:
             self._lock.release()
         if cancelled_type is not None:

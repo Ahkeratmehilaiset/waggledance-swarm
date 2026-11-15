@@ -15,10 +15,13 @@ function Invoke-WdMindStartupRead {
         [switch] $ParentBoundContent,
         [string] $OperatorPolicySha256 = '',
         [string] $OperatorApprovalReferenceSha256 = '',
+        [string] $OperatorPolicyPath = '',
         [byte[]] $ApprovedIdentifierPolicyBytes = $null
     )
     if ($ParentBoundContent -and ([string]::IsNullOrEmpty($OperatorPolicySha256) -or
-        [string]::IsNullOrEmpty($OperatorApprovalReferenceSha256) -or $null -eq $ApprovedIdentifierPolicyBytes)) {
+        [string]::IsNullOrEmpty($OperatorApprovalReferenceSha256) -or
+        ($null -eq $ApprovedIdentifierPolicyBytes -and [string]::IsNullOrEmpty($OperatorPolicyPath)) -or
+        ($null -ne $ApprovedIdentifierPolicyBytes -and -not [string]::IsNullOrEmpty($OperatorPolicyPath)))) {
         # Parent-controlled bootstrap, an independently approved policy pin,
         # retained HOLD ownership and one-shot inherited handles are not yet
         # available. Refuse before any I/O or child process, including receipts.
@@ -125,6 +128,76 @@ function Invoke-WdMindStartupRead {
         }
         if(-not $matched){throw 'mind_parent_admission_refused'}
         return [pscustomobject]@{state='PINS_MATCH_POLICY_SCHEMA_UNVERIFIED';authority='none';operator_authentication='UNKNOWN'}
+    }
+    function Read-WdMindOperatorPolicySnapshot {
+        <# The selected path is operator input, never inferred from a bundle.
+           Returns private bytes only in process memory; this is not a proof of
+           operator identity, same-user race resistance, or restart durability. #>
+        param([string] $Path, [string] $ExpectedSha256)
+        if ($Path -cnotmatch '\A[Cc]:\\' -or $ExpectedSha256 -cnotmatch '\A[0-9A-Fa-f]{64}\z') { throw 'policy_input' }
+        foreach ($part in $Path.Substring(3).Split('\')) {
+            if (-not $part -or $part -in @('.', '..') -or $part -match '[<>:"|?*\x00-\x1f]' -or
+                $part.EndsWith('.') -or $part.EndsWith(' ') -or
+                $part -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$') { throw 'policy_path' }
+        }
+        $full = [IO.Path]::GetFullPath($Path)
+        $current = $full
+        while ($current) {
+            if (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'policy_path' }
+            $parent = [IO.Path]::GetDirectoryName($current)
+            if (-not $parent -or $parent -ceq $current) { break }
+            $current = $parent
+        }
+        $stream = [IO.File]::Open($full, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            if (-not ('WaggleDance.WdMindDescriptorFileV1' -as [type])) {
+                Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+namespace WaggleDance {
+    public static class WdMindDescriptorFileV1 {
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+        private static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, StringBuilder path, uint length, uint flags);
+        public static string FinalPath(SafeFileHandle handle) {
+            var path = new StringBuilder(32768);
+            uint length = GetFinalPathNameByHandleW(handle, path, (uint)path.Capacity, 0);
+            if (length == 0 || length >= path.Capacity) throw new IOException("Mind policy handle unavailable");
+            return path.ToString();
+        }
+    }
+}
+'@
+            }
+            $opened = [WaggleDance.WdMindDescriptorFileV1]::FinalPath($stream.SafeFileHandle)
+            if (-not $opened.Equals(('\\?\' + $full), [StringComparison]::OrdinalIgnoreCase)) { throw 'policy_handle' }
+            if ($stream.Length -lt 1 -or $stream.Length -gt 65536) { throw 'policy_size' }
+            $bytes = New-Object byte[] ([int]$stream.Length)
+            $offset = 0
+            while ($offset -lt $bytes.Length) {
+                $count = $stream.Read($bytes, $offset, $bytes.Length-$offset)
+                if ($count -le 0) { throw 'policy_read' }
+                $offset += $count
+            }
+            if ($stream.ReadByte() -ne -1) { throw 'policy_changed' }
+            if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xef -and $bytes[1] -eq 0xbb -and $bytes[2] -eq 0xbf) { throw 'policy_encoding' }
+            $utf8 = New-Object Text.UTF8Encoding($false, $true)
+            [void]$utf8.GetCharCount($bytes)
+            $sha = [Security.Cryptography.SHA256]::Create()
+            try { $hash = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
+            finally { $sha.Dispose() }
+            if ($hash -cne $ExpectedSha256.ToLowerInvariant()) { throw 'policy_hash' }
+            $current = $full
+            while ($current) {
+                if (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'policy_path' }
+                $parent = [IO.Path]::GetDirectoryName($current)
+                if (-not $parent -or $parent -ceq $current) { break }
+                $current = $parent
+            }
+            return [pscustomobject]@{Bytes=$bytes;Hash=$hash}
+        } finally { $stream.Dispose() }
     }
     function ConvertTo-WdMindLiteral([string] $Value) { return "'" + $Value.Replace("'","''") + "'" }
     function Update-WdMindParentBootstrapPumps {
@@ -507,16 +580,25 @@ function Invoke-WdMindStartupRead {
         # A matching operator-supplied manifest/approval pair is a necessary
         # admission check, not proof of parent provenance or a live route.
         $result.reason='parent_approval_refused'
+        $operatorPolicySnapshot=$null
         try {
             if (@('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5') -cnotcontains $Lane) {
                 throw 'lane'
             }
+            if (-not [string]::IsNullOrEmpty($OperatorPolicyPath)) {
+                $operatorPolicySnapshot=Read-WdMindOperatorPolicySnapshot -Path $OperatorPolicyPath -ExpectedSha256 $OperatorPolicySha256
+                $ApprovedIdentifierPolicyBytes=$operatorPolicySnapshot.Bytes
+            }
             [void](Test-WdMindParentAdmission -Enabled -BundleRoot $BundleRoot -ExpectedManifestHash $ExpectedManifestHash `
                 -OperatorPolicySha256 $OperatorPolicySha256 -OperatorApprovalReferenceSha256 $OperatorApprovalReferenceSha256 `
                 -ApprovedPolicyBytes $ApprovedIdentifierPolicyBytes)
+            if ($null -ne $operatorPolicySnapshot) {
+                [void](Read-WdMindOperatorPolicySnapshot -Path $OperatorPolicyPath -ExpectedSha256 $OperatorPolicySha256)
+            }
             $result.reason='parent_content_unavailable'
         } catch { }
         $ApprovedIdentifierPolicyBytes=$null
+        $operatorPolicySnapshot=$null
         [void]$PSBoundParameters.Remove('ApprovedIdentifierPolicyBytes')
         return [pscustomobject]$result
     }

@@ -560,6 +560,61 @@ try {
                       'route_view':''}
 
 
+@WINDOWS
+@pytest.mark.parametrize('fault', ['none', 'missing', 'hash', 'ref', 'bom', 'invalid_utf8', 'oversize', 'relative', 'reparse', 'both'])
+def test_parent_content_operator_policy_path_is_pinned_and_never_published(tmp_path, fault):
+    bundle, _ = _package(tmp_path)
+    policy_path = tmp_path / 'operator-selected-synthetic-policy.json'
+    policy = b'{"schema":"synthetic-policy","value":"synthetic-private-marker"}'
+    if fault == 'bom': policy = b'\xef\xbb\xbf' + policy
+    if fault == 'invalid_utf8': policy = b'\xff'
+    if fault == 'oversize': policy = b'x' * 65537
+    policy_path.write_bytes(policy)
+    policy_pin = hashlib.sha256(policy).hexdigest()
+    approval = 'a'*64
+    descriptor = bundle / 'wd-mind-identifier-policy-approval.json'
+    descriptor.write_text(json.dumps({'schema':'wd.mind-identifier-policy-approval.v1',
+        'identifier_policy_sha256':policy_pin, 'approval_reference_sha256':approval},
+        sort_keys=True, separators=(',', ':')), encoding='utf-8')
+    manifest = bundle / 'deployment-manifest.json'
+    doc = json.loads(manifest.read_text(encoding='utf-8'))
+    doc['schema_version'] = 1
+    for relative in ('tools-bootstrap/tools/wd_mind_runtime_child.py', 'tools-bootstrap/tools/wd_mind_full_runtime.py'):
+        path = bundle / relative
+        path.write_bytes(b'# synthetic pin target\n')
+        doc['files'][relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    doc['files'][descriptor.name] = hashlib.sha256(descriptor.read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(doc, separators=(',', ':')), encoding='utf-8')
+    manifest_pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    if fault == 'missing': policy_path.unlink()
+    if fault == 'hash': policy_pin = 'b'*64
+    if fault == 'ref': approval = 'b'*64
+    path_arg = 'relative-policy.json' if fault == 'relative' else str(policy_path)
+    if fault == 'reparse':
+        link = tmp_path / 'synthetic-reparse'
+        try:
+            os.symlink(tmp_path, link, target_is_directory=True)
+        except OSError:
+            pytest.skip('directory symlink creation unavailable')
+        path_arg = str(link / policy_path.name)
+    script = r'''
+. HELPER_PATH
+$arguments=@{ParentBoundContent=$true;BundleRoot=BUNDLE_PATH;ExpectedManifestHash=MANIFEST_PIN;
+  Lane='codex-lead-1';OperatorPolicyPath=POLICY_PATH;OperatorPolicySha256=POLICY_PIN;
+  OperatorApprovalReferenceSha256=APPROVAL_PIN}
+if (BOTH) {$arguments.ApprovedIdentifierPolicyBytes=[byte[]](123,125)}
+$r=Invoke-WdMindStartupRead @arguments
+[ordered]@{outcome=$r.outcome;reason=$r.reason;view=$r.view_json}|ConvertTo-Json -Compress
+'''.replace('HELPER_PATH', _literal(HELPER)).replace('BUNDLE_PATH', _literal(bundle))
+    script = script.replace('MANIFEST_PIN', _literal(manifest_pin)).replace('POLICY_PATH', _literal(path_arg))
+    script = script.replace('POLICY_PIN', _literal(policy_pin)).replace('APPROVAL_PIN', _literal(approval))
+    script = script.replace('BOTH', '$true' if fault == 'both' else '$false')
+    result = _run_startup_script(script)
+    expected_reason = 'parent_content_unavailable' if fault in ('none', 'both') else 'parent_approval_refused'
+    assert result == {'outcome':'refused', 'reason':expected_reason, 'view':''}
+    assert 'synthetic-private-marker' not in json.dumps(result)
+
+
 def _startup_functions(filename, names):
     return f'''
 $tokens=$null;$errors=$null

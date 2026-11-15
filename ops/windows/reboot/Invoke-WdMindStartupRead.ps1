@@ -63,26 +63,34 @@ function Invoke-WdMindStartupRead {
            -not $global:WdMindParentBootstrapProcesses.ContainsKey($Owner.Token)){throw 'mind_parent_bootstrap_refused'}
         $io=$global:WdMindParentBootstrapIO[$Owner.Token]
         $process=$global:WdMindParentBootstrapProcesses[$Owner.Token].Process
-        if(-not $io.OutDone -and $io.OutRead.IsCompleted){
+        if(-not $io.ContainsKey('OutBlocked')){$io.OutBlocked=$false}
+        if(-not $io.ContainsKey('ErrBlocked')){$io.ErrBlocked=$false}
+        $overflow=($io.OutBlocked -or $io.ErrBlocked)
+        if(-not $io.OutDone -and -not $io.OutBlocked -and $io.OutRead.IsCompleted){
             $count=$io.OutRead.GetAwaiter().GetResult()
             if($count -eq 0){$io.OutDone=$true}
             else{
-                if($io.OutBytes.Length+$count -gt 65536){$Owner.State='HOLD';return $false}
-                $io.OutBytes.Write($io.OutBuffer,0,$count)
-                [Array]::Clear($io.OutBuffer,0,$io.OutBuffer.Length)
-                $io.OutRead=$process.StandardOutput.BaseStream.ReadAsync($io.OutBuffer,0,$io.OutBuffer.Length)
+                if($io.OutBytes.Length+$count -gt 65536){
+                    [Array]::Clear($io.OutBuffer,0,$io.OutBuffer.Length)
+                    $io.OutBlocked=$true;$overflow=$true
+                } else {
+                    $io.OutBytes.Write($io.OutBuffer,0,$count)
+                    [Array]::Clear($io.OutBuffer,0,$io.OutBuffer.Length)
+                    $io.OutRead=$process.StandardOutput.BaseStream.ReadAsync($io.OutBuffer,0,$io.OutBuffer.Length)
+                }
             }
         }
-        if(-not $io.ErrDone -and $io.ErrRead.IsCompleted){
+        if(-not $io.ErrDone -and -not $io.ErrBlocked -and $io.ErrRead.IsCompleted){
             $count=$io.ErrRead.GetAwaiter().GetResult()
             if($count -eq 0){$io.ErrDone=$true}
             else{
                 $io.ErrBytes+=$count
                 [Array]::Clear($io.ErrBuffer,0,$io.ErrBuffer.Length)
-                if($io.ErrBytes -gt 4096){$Owner.State='HOLD';return $false}
-                $io.ErrRead=$process.StandardError.BaseStream.ReadAsync($io.ErrBuffer,0,$io.ErrBuffer.Length)
+                if($io.ErrBytes -gt 4096){$io.ErrBlocked=$true;$overflow=$true}
+                else {$io.ErrRead=$process.StandardError.BaseStream.ReadAsync($io.ErrBuffer,0,$io.ErrBuffer.Length)}
             }
         }
+        if($overflow){$Owner.State='HOLD';return $false}
         return $true
     }
     function Wait-WdMindParentBootstrap {

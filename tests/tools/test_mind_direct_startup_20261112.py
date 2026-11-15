@@ -363,6 +363,27 @@ $ok=Update-WdMindParentBootstrapPumps -Owner $owner
 
 
 @WINDOWS
+def test_parent_bootstrap_stdout_overflow_still_consumes_ready_stderr():
+    """Overflow must not skip an already completed bounded stderr read."""
+    functions = _startup_functions('Invoke-WdMindStartupRead.ps1', ['Update-WdMindParentBootstrapPumps'])
+    script = functions + r'''
+$token='synthetic';$owner=[pscustomobject]@{Token=$token;State='BOOTSTRAP_SENT'}
+$out=New-Object IO.MemoryStream;$out.SetLength(65536)
+$errStream=New-Object IO.MemoryStream
+$process=[pscustomobject]@{StandardError=[pscustomobject]@{BaseStream=$errStream}}
+$global:WdMindParentBootstrapProcesses=@{$token=@{Process=$process;WriteTask=$null}}
+$global:WdMindParentBootstrapIO=@{}
+$global:WdMindParentBootstrapIO[$token]=@{OutBuffer=(New-Object byte[] 4096);ErrBuffer=(New-Object byte[] 4096);
+ OutRead=[Threading.Tasks.Task[int]]::FromResult(1);ErrRead=[Threading.Tasks.Task[int]]::FromResult(1);
+ OutDone=$false;ErrDone=$false;ErrBytes=0;OutBytes=$out}
+$ok=Update-WdMindParentBootstrapPumps -Owner $owner
+[pscustomobject]@{ok=$ok;state=$owner.State;stderr_bytes=$global:WdMindParentBootstrapIO[$token].ErrBytes} |
+ ConvertTo-Json -Compress
+'''
+    assert _run_startup_script(script) == {'ok':False, 'state':'HOLD', 'stderr_bytes':1}
+
+
+@WINDOWS
 def test_parent_bootstrap_reports_nonzero_exit_separately(tmp_path):
     bundle, _ = _package(tmp_path)
     wrapper = bundle / 'Invoke-WdBridgePython.ps1'

@@ -1099,16 +1099,59 @@ function Write-Warning {{param($Message) $script:warning=$Message}}
     assert 'command_line_too_long' in value['warning']
 
 
-@pytest.mark.parametrize('filename,mode', [('start-wd-agent.ps1', 'if ($DryRun)'),
-                                         ('start-wd-tools-consumer.ps1', 'if ($ValidateOnly)')])
-def test_direct_read_wiring_is_after_inert_mode_exit(filename, mode):
-    text = (REBOOT / filename).read_text(encoding='utf-8-sig')
-    call = text.index('Invoke-WdMindStartupRead -BundleRoot')
-    assert text.index(mode) < call
-    assert text.index("'Invoke-WdMindStartupRead.ps1'") < call
+def _assert_direct_read_wiring(text, filename):
+    # The optional-content function contains a call in its definition. It is
+    # not the direct startup invocation, and is executed only after pinning.
+    needle = 'Invoke-WdMindStartupRead -BundleRoot'
+    assert text.count(needle) == 2
+    optional = text.index('function Invoke-WdMindOptionalContentProbe {')
+    definition_call = text.index(needle)
+    direct_name = '$mindStartupRead' if filename == 'start-wd-agent.ps1' else '$toolsMindStartupRead'
+    direct = text.index(direct_name + ' = ' + needle + ' $PSScriptRoot')
+    helper = text.index("$mindHelper = Join-Path $PSScriptRoot 'Invoke-WdMindStartupRead.ps1'")
+    helper_pin = text.index("$mindHelperPin = ($mindManifest.Text | ConvertFrom-Json).files.PSObject.Properties['Invoke-WdMindStartupRead.ps1']", helper)
+    snapshot = text.index('$mindHelperSnapshot = ', helper_pin)
+    verify = text.index('$mindHelperSnapshot.Hash -cne ([string]$mindHelperPin.Value).ToUpperInvariant()) { throw \'pin\' }', snapshot)
+    dot_source = text.index('. ([scriptblock]::Create([string]$mindHelperSnapshot.Text))', verify)
+    optional_call = text.index('$mindContentProbe = Invoke-WdMindOptionalContentProbe -BundleRoot $PSScriptRoot', direct)
+    assert optional < definition_call < helper < helper_pin < snapshot < verify < dot_source < direct < optional_call
+    if filename == 'start-wd-agent.ps1':
+        inert = text.index('\nif ($DryRun) {\n')
+        returned = text.index("\n  Write-Host '  DRY RUN: bridge bootstrap, handshake write, and CLI launch suppressed.'\n  try {\n    return [pscustomobject]@{", inert)
+    else:
+        inert = text.index('\nif ($ValidateOnly) {\n    $validation\n    return\n}')
+        returned = inert + len('\nif ($ValidateOnly) {\n    $validation\n    return')
+    assert inert < returned < optional
     assert 'WD_MIND_STARTUP_VIEW' in text
     assert "outcome -ceq 'success'" in text
     assert 'wd_q4_lane_caller_cli.py' not in text
+
+
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+def test_direct_read_wiring_is_after_inert_mode_exit(filename):
+    _assert_direct_read_wiring((REBOOT / filename).read_text(encoding='utf-8-sig'), filename)
+
+
+@pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
+@pytest.mark.parametrize('fault', ['inert_return', 'helper_pin', 'dot_source', 'early_call'])
+def test_direct_read_wiring_rejects_broken_order(filename, fault):
+    text = (REBOOT / filename).read_text(encoding='utf-8-sig')
+    if fault == 'inert_return':
+        target = ("  Write-Host '  DRY RUN: bridge bootstrap, handshake write, and CLI launch suppressed.'\n  try {\n    return [pscustomobject]@{"
+                  if filename == 'start-wd-agent.ps1' else '    $validation\n    return\n}')
+        replacement = target.replace('return ', '', 1) if filename == 'start-wd-agent.ps1' else '    $validation\n}'
+    elif fault == 'helper_pin':
+        target = "$mindHelperSnapshot.Hash -cne ([string]$mindHelperPin.Value).ToUpperInvariant()) { throw 'pin' }"
+        replacement = "$mindHelperSnapshot.Hash -cne ([string]$mindHelperPin.Value).ToUpperInvariant()) { }"
+    elif fault == 'dot_source':
+        target = '. ([scriptblock]::Create([string]$mindHelperSnapshot.Text))'
+        replacement = '# synthetic missing dot-source'
+    else:
+        target = 'function Invoke-WdMindOptionalContentProbe {'
+        replacement = 'Invoke-WdMindStartupRead -BundleRoot $PSScriptRoot\n' + target
+    assert target in text
+    with pytest.raises((AssertionError, ValueError)):
+        _assert_direct_read_wiring(text.replace(target, replacement, 1), filename)
 
 
 def test_package_contains_direct_session_and_unchanged_core_interfaces():

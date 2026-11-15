@@ -119,6 +119,20 @@ def test_single_manifest_owner_rechecks_source_before_spawn(tmp_path, monkeypatc
     assert calls == []
 
 
+def test_single_manifest_owner_never_reports_ready_when_owner_status_raises(tmp_path, monkeypatch):
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'})
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start() == {'state': 'READY', 'owned': True, 'authority': 'none'}
+    held = owner._owner
+    def failed_status(): raise ValueError('synthetic private owner detail')
+    monkeypatch.setattr(held, 'status', failed_status)
+    assert owner.status() == {'state': 'HOLD', 'owned': None, 'authority': 'none'}
+    assert owner._owner is held
+
+
 @pytest.mark.parametrize('signal_name', ['keyboard', 'cancelled'])
 def test_single_manifest_owner_retains_worker_when_adapter_is_cancelled(tmp_path, monkeypatch, signal_name):
     import asyncio

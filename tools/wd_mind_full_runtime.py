@@ -1221,8 +1221,13 @@ class _SingleManifestOwner:
                 owned = None
             if self._state == 'READY' and (owned is not True or current.get('state') != 'RUNNING'):
                 self._state = 'HOLD'
-        except Exception:
+        except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+            self._state = 'HOLD'
+            raise
+        except BaseException:
             owned = None
+            if self._state == 'READY':
+                self._state = 'HOLD'
         return {'state': self._state, 'owned': owned, 'authority': 'none'}
 
     def status(self):

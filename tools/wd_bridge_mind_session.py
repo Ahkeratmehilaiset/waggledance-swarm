@@ -147,10 +147,6 @@ def _direct_status(*, rows: list, agent: str, roster: dict[str, str],
             "observation_status": observation_status, "facts": facts}
 
 
-class MindFlatNoCandidates(ValueError):
-    """Both valid retrieval scopes abstained; no source result was selected."""
-
-
 class MindContentSessionRefused(ValueError):
     """Fixed-token refusal from the opt-in in-process content session boundary."""
 
@@ -324,6 +320,10 @@ def _content_startup_envelope(enabled, inputs, providers, lane, fleet_sha256, st
     if (enabled is not True or type(complete) is not bool or type(retained) is not bool
             or type(inputs) is not dict or (retained and not complete)):
         raise ValueError("content_startup_disabled")
+    # The retained/flat provider is not part of this bundle. Never invoke a
+    # partially packaged provider: the opt-in seam must refuse until installed.
+    if retained:
+        raise ValueError("retained_content_unavailable")
     from tools import wd_mind_content_query_readonly as reader
     if retained:
         required = reader._Q4_SOURCE_KEYS | {'enabled','descriptor_bytes','descriptor_sha256',
@@ -362,8 +362,7 @@ def _content_startup_envelope(enabled, inputs, providers, lane, fleet_sha256, st
         if not 0 <= (query_now - query_time).total_seconds() <= 5:
             raise ValueError('retained_query_clock_mismatch')
         max_age = requested['max_age_seconds']
-        from tools import wd_mind_retained_query as retained_reader
-        result = retained_reader.query_retained_content_snapshot(**frozen, encoder_provider=providers[0])
+        raise ValueError('retained_content_unavailable')
     else:
         result = query_content_session(enabled=True, inputs=frozen, providers=providers, complete=complete)
     required_result = {"schema", "status", "rule", "results", "binding", "authority",
@@ -530,7 +529,7 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("bridge_root_unavailable")
         log = Path(bridge_root) / "shared" / "events.jsonl"
         if args.flat_content:
-            result = _flat_cli_candidate(args=args, agent=agent)
+            raise ValueError("flat_content_unavailable")
         elif args.bundle_root is not None or args.deployment_manifest_sha256 is not None:
             raise ValueError("flat_options_without_opt_in")
         elif _latest_missing(args.latest, args.audit_root):
@@ -555,9 +554,6 @@ def main(argv: list[str] | None = None) -> int:
             result["status_observation"] = observation
         print(json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=True))
         return 0
-    except MindFlatNoCandidates:
-        print('{"error":"mind_session_flat_abstain","authority":"none"}', file=sys.stderr)
-        return 3
     except lane_reader.LaneReadRefused as exc:
         print(json.dumps({"error": str(exc), "authority": "none"}, separators=(",", ":")), file=sys.stderr)
         return 2
@@ -566,255 +562,6 @@ def main(argv: list[str] | None = None) -> int:
         print('{"error":"mind_session_read_refused","authority":"none"}', file=sys.stderr)
         return 2
 
-
-
-def validate_flat_startup_candidate(*, enabled=False, binding=None, bundle_root=None,
-                                    expected_manifest_sha256=None, fleet_sha256=None,
-                                    lane=None, candidate=None, max_age_seconds=899, ref_only=False):
-    """Re-derive a candidate from an independently supplied, pinned binding.
-
-    The trusted in-process caller obtains binding and manifest/fleet pins itself;
-    none may come from the IPC payload. Lane only correlates a local request and
-    does not authenticate a sender. This function is not an IPC transport.
-    The current verified bridge-message projection does not preserve or support
-    source-declared expiry; only the bounded event-age rule is enforced.
-    """
-    output = None
-    try:
-        from tools import wd_mind_full_runtime as runtime
-        from tools import wd_mind_content_query_readonly as reader
-        from tools import wd_mind_startup_content as startup
-        from tools import wd_mind_absent_generation_prefix_readonly as prefix
-        if (enabled is not True or type(binding) is not runtime._PrivateBinding
-                or type(bundle_root) is not str or not Path(bundle_root).is_absolute()
-                or '..' in Path(bundle_root).parts or type(expected_manifest_sha256) is not str
-                or not _SHA256.fullmatch(expected_manifest_sha256)
-                or type(fleet_sha256) is not str or not _SHA256.fullmatch(fleet_sha256)
-                or type(lane) is not str or lane not in reader._LANES
-                or type(max_age_seconds) is not int or not 1 <= max_age_seconds <= 899
-                or type(ref_only) is not bool):
-            raise ValueError('candidate_arguments')
-        bundle = Path(bundle_root)
-        if (not startup._same_path(bundle, binding._PrivateBinding__bundle)
-                or binding._PrivateBinding__manifest != expected_manifest_sha256):
-            raise ValueError('candidate_bundle')
-        # The receiver's own validator must come from the pinned bundle too.
-        manifest_raw = prefix._read_pinned(bundle / 'deployment-manifest.json', expected_manifest_sha256,
-                                           prefix.MAX_CONTROL_BYTES)
-        manifest = json.loads(manifest_raw.decode('utf-8-sig'), object_pairs_hook=prefix._unique_object,
-                              parse_constant=reader._bad_constant)
-        own_rel = 'tools-bootstrap/tools/wd_bridge_mind_session.py'
-        own_path = bundle.joinpath(*own_rel.split('/'))
-        if not startup._same_path(Path(__file__), own_path):
-            raise ValueError('candidate_code_origin')
-        prefix._read_pinned(own_path, manifest['files'][own_rel], 8 * 1024 * 1024)
-        if hashlib.sha256(binding._PrivateBinding__controls[0]).hexdigest() != fleet_sha256:
-            raise ValueError('candidate_fleet')
-        if type(candidate) is not dict:
-            raise ValueError('candidate_shape')
-        encoded = json.dumps(candidate, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8')
-        if len(encoded) > 65536:
-            raise ValueError('candidate_size')
-        request = json.loads(encoded, object_pairs_hook=reader._unique_pairs, parse_constant=reader._bad_constant)
-        if ref_only:
-            if (set(request) != {'schema','lane','status','results'}
-                    or request['schema'] != 'wd.mind-flat-candidate-refs.v1' or request['lane'] != lane
-                    or request['status'] != 'SEMANTIC_CANDIDATE'
-                    or type(request['results']) is not list or not 1 <= len(request['results']) <= 3):
-                raise ValueError('candidate_refs_request')
-            candidate_hits = request['results']
-        else:
-            if (set(request) != {'schema', 'lane', 'result'}
-                    or request['schema'] != 'wd.mind-flat-candidate-delivery.v1' or request['lane'] != lane):
-                raise ValueError('candidate_request')
-            result = request['result']
-            required = {'schema','status','relevance','authority','index_match','own_latest_task','results',
-                        'provider_authentication','source_authentication','continuity','same_user_aba'}
-            if (type(result) is not dict or set(result) != required
-                    or result['schema'] != 'wd.mind-flat-f32-query.v1'
-                    or result['status'] != 'SEMANTIC_CANDIDATE' or result['relevance'] != 'UNVERIFIED'
-                    or result['authority'] != 'none' or result['index_match'] != 'NOT_APPLICABLE'
-                    or any(result[k] != 'UNKNOWN' for k in ('own_latest_task','provider_authentication',
-                        'source_authentication','continuity','same_user_aba'))
-                    or type(result['results']) is not list or not 1 <= len(result['results']) <= 3):
-                raise ValueError('candidate_result')
-            candidate_hits = result['results']
-        snapshot = binding.snapshot_for_query()
-        args = binding._PrivateBinding__args
-        messages = snapshot['messages']
-        if (messages['source_path'] != args['source_path']
-                or messages['generation_path'] != args['generation_path']
-                or messages['end_cursor'] != args['cursor']):
-            raise ValueError('candidate_source_binding')
-        decision = json.loads(snapshot['decision_bytes'], object_pairs_hook=reader._unique_pairs,
-                              parse_constant=reader._bad_constant)
-        if decision['source_prefix']['sha256'] != args['expected_prefix_sha256']:
-            raise ValueError('candidate_prefix')
-        projection, _, report = reader._verified_complete(snapshot)
-        if report['status'] != 'MATCH':
-            raise ValueError('candidate_projection')
-        records = projection['messages']['records']
-        lookup = {}
-        for record in records:
-            key = (hashlib.sha256(record['provenance']['event_ref'].encode()).hexdigest(),
-                   hashlib.sha256(record['record_id'].encode()).hexdigest())
-            if key in lookup:
-                raise ValueError('candidate_projection_duplicate')
-            lookup[key] = record
-        now = datetime.now(timezone.utc)
-        hits, seen, expiries = [], set(), []
-        for hit in candidate_hits:
-            if ref_only:
-                if (type(hit) is not dict or set(hit) != {'ref_sha256','doc_id_sha256','source_event_sha256'}
-                        or any(type(hit[k]) is not str or not _SHA256.fullmatch(hit[k])
-                               for k in ('ref_sha256','doc_id_sha256','source_event_sha256'))):
-                    raise ValueError('candidate_ref_shape')
-                key = hit['ref_sha256'], hit['doc_id_sha256']
-                if key in seen or key not in lookup:
-                    raise ValueError('candidate_unknown_or_duplicate')
-                record = lookup[key]
-                if hit['source_event_sha256'] != record['provenance']['source_event_ref']:
-                    raise ValueError('candidate_source_ref')
-                hit = {'ref_sha256':key[0], 'doc_id_sha256':key[1],
-                       'ref_kind':'sha256_of_projected_metadata', 'canonical_event':False,
-                       'stored_text':record['stored_text'],
-                       'source_reference':{'sha256':record['provenance']['source_event_ref'],
-                           'kind':'sha256_of_canonical_event_json', 'verified':'MATCH_WITHIN_PREFIX',
-                           'sender_authentication':'UNKNOWN'},
-                       'source_agent':record['meta']['agent'], 'source_time_utc':record['time_utc']}
-            fields = {'ref_sha256','doc_id_sha256','ref_kind','canonical_event','stored_text',
-                      'source_reference','source_agent','source_time_utc'}
-            if (type(hit) is not dict or set(hit) != fields or hit['ref_kind'] != 'sha256_of_projected_metadata'
-                    or hit['canonical_event'] is not False
-                    or any(type(hit[k]) is not str or not _SHA256.fullmatch(hit[k])
-                           for k in ('ref_sha256','doc_id_sha256'))):
-                raise ValueError('candidate_hit')
-            key = hit['ref_sha256'], hit['doc_id_sha256']
-            if key in seen or key not in lookup:
-                raise ValueError('candidate_unknown_or_duplicate')
-            record = lookup[key]
-            expected_ref = {'sha256': record['provenance']['source_event_ref'],
-                            'kind':'sha256_of_canonical_event_json', 'verified':'MATCH_WITHIN_PREFIX',
-                            'sender_authentication':'UNKNOWN'}
-            if (hit['source_reference'] != expected_ref or hit['stored_text'] != record['stored_text']
-                    or hit['source_agent'] != record['meta']['agent']
-                    or hit['source_time_utc'] != record['time_utc']):
-                raise ValueError('candidate_unmatched')
-            floor = reader._utc(record['time_utc'])
-            age_micros = (now - floor).days * 86400000000 + (now - floor).seconds * 1000000 + (now - floor).microseconds
-            upper = (age_micros + 999999) // 1000000
-            if (age_micros < 0 or upper > max_age_seconds or upper >= 900
-                    or reader._utc(record['available_utc']) > now
-                    or ('valid_until_utc' in record['provenance']
-                        and now >= reader._utc(record['provenance']['valid_until_utc']))):
-                raise ValueError('candidate_age')
-            display = reader.decode_text(record['stored_text'])
-            if not 1 <= len(display) <= 320 or any(unicodedata.category(c).startswith('C') for c in display):
-                raise ValueError('candidate_display')
-            hits.append(dict(hit, display_text=display, event_time_utc_floor=record['time_utc'],
-                             event_age_seconds_upper_bound=upper, index_freshness='UNKNOWN'))
-            seen.add(key)
-            expiry = record['provenance'].get('valid_until_utc')
-            expiries.append(reader._utc(expiry) if expiry is not None else None)
-        # Re-check all roots/pins and snapshot immediately before returning.
-        if binding.snapshot_for_query() != snapshot:
-            raise ValueError('candidate_changed')
-        finished = datetime.now(timezone.utc)
-        for hit, expiry in zip(hits, expiries):
-            age = (finished - reader._utc(hit['event_time_utc_floor'])).total_seconds()
-            if (age < 0 or math.ceil(age) > max_age_seconds or math.ceil(age) >= 900
-                    or (expiry is not None and finished >= expiry)):
-                raise ValueError('candidate_delivery_stale')
-            hit['event_age_seconds_upper_bound'] = math.ceil(age)
-        output = {'schema':'wd.mind-flat-startup-envelope.v1', 'authority':'none', 'lane':lane,
-                  'fleet_sha256':fleet_sha256, 'lane_authentication':'UNKNOWN', 'sender_authentication':'UNKNOWN',
-                  'content':{'schema':'wd.mind-flat-startup-content.v1', 'authority':'none',
-                    'relevance':'UNVERIFIED', 'index_match':'NOT_APPLICABLE', 'provider_authentication':'UNKNOWN',
-                    'source_authentication':'UNKNOWN', 'sender_authentication':'UNKNOWN',
-                    'event_time_authentication':'UNKNOWN', 'continuity':'UNKNOWN', 'same_user_aba':'UNKNOWN',
-                    'as_of_utc':finished.strftime('%Y-%m-%dT%H:%M:%S.%fZ'), 'results':hits}}
-        if len(json.dumps(output, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode()) > 65536:
-            raise ValueError('candidate_output_size')
-    except Exception:
-        pass
-    if output is None:
-        raise MindContentSessionRefused('mind_session_content_refused') from None
-    return output
-
-
-def _flat_cli_candidate(*, args, agent):
-    """Fetch untrusted refs only; independently bind and rederive their source."""
-    from tools import wd_mind_full_runtime as runtime
-    from tools import wd_mind_runtime_process as process
-    from tools import wd_mind_absent_generation_prefix_readonly as prefix
-    from tools import wd_mind_startup_content as startup
-    from tools import wd_mind_content_query_readonly as reader
-    if (args.bundle_root is None or not args.bundle_root.is_absolute() or '..' in args.bundle_root.parts
-            or type(args.deployment_manifest_sha256) is not str
-            or not _SHA256.fullmatch(args.deployment_manifest_sha256)
-            or not startup._same_path(args.fleet, args.bundle_root / 'wd-fleet.json')):
-        raise ValueError('flat_cli_binding')
-    root = args.bundle_root
-    manifest_raw = prefix._read_pinned(root / 'deployment-manifest.json', args.deployment_manifest_sha256,
-                                       prefix.MAX_CONTROL_BYTES)
-    manifest = json.loads(manifest_raw.decode('utf-8-sig'), object_pairs_hook=prefix._unique_object,
-                          parse_constant=reader._bad_constant)
-    process_path = root / 'tools-bootstrap' / 'tools' / 'wd_mind_runtime_process.py'
-    if not startup._same_path(Path(process.__file__), process_path):
-        raise ValueError('flat_cli_process_origin')
-    prefix._read_pinned(process_path, manifest['files']['tools-bootstrap/tools/wd_mind_runtime_process.py'],
-                        8 * 1024 * 1024)
-    binding = runtime.assemble_full_runtime(enabled=True, bundle_root=str(root),
-                                            expected_manifest_sha256=args.deployment_manifest_sha256)
-    if hashlib.sha256(binding._PrivateBinding__controls[0]).hexdigest() != args.fleet_sha256.lower():
-        raise ValueError('flat_cli_fleet')
-    def add_situation(result):
-        now = datetime.now(timezone.utc)
-        policy_sha = hashlib.sha256(binding._PrivateBinding__controls[2]).hexdigest()
-        situation = startup.project_lane_situation(enabled=True, binding=binding, bundle_root=str(root),
-            expected_manifest_sha256=args.deployment_manifest_sha256, expected_policy_sha256=policy_sha,
-            lane=agent, as_of_utc=now.strftime('%Y-%m-%dT%H:%M:%S.%fZ'), max_age_seconds=899)
-        finished = datetime.now(timezone.utc)
-        for name in ('latest_event', 'decision', 'next_action'):
-            item = situation[name]
-            if item != 'UNKNOWN':
-                age = (finished - datetime.fromisoformat(item['observed_utc'].replace('Z', '+00:00'))).total_seconds()
-                if age < 0 or math.ceil(age) >= 900:
-                    raise ValueError('situation_delivery_stale')
-        if result is None:
-            result = {'schema':'wd.mind-situation-startup-envelope.v1', 'authority':'none', 'lane':agent,
-                'fleet_sha256':args.fleet_sha256.lower(), 'lane_authentication':'UNKNOWN',
-                'sender_authentication':'UNKNOWN', 'semantic_status':'ABSTAIN'}
-        else:
-            result['schema'] = 'wd.mind-flat-startup-envelope.v2'
-        result['situation'] = situation
-        if len(json.dumps(result, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode()) > 65536:
-            raise ValueError('situation_output_size')
-        return result
-    # Scope and lane are retrieval selectors, not authenticated peer identity.
-    # Only a valid own-scope ABSTAIN permits the shared query; transport,
-    # source, schema, or binding failures refuse without a fallback query.
-    for scope in ('own', 'shared'):
-        binding.snapshot_for_query()
-        reply = process.query_candidate_pipe(enabled=True, bundle_root=str(root),
-            deployment_manifest_sha256=args.deployment_manifest_sha256, lane=agent, scope=scope,
-            timeout=process._CANDIDATE_QUERY_TIMEOUT_SECONDS)
-        process._pipe_validate(reply, response=True)
-        if reply['lane'] != agent or reply['scope'] != scope:
-            raise ValueError('flat_cli_scope')
-        if reply['status'] == 'ABSTAIN':
-            continue
-        if reply['status'] != 'CANDIDATES':
-            raise ValueError('flat_cli_status')
-        candidate = {'schema':'wd.mind-flat-candidate-refs.v1', 'lane':agent,
-                     'status':'SEMANTIC_CANDIDATE', 'results':reply['candidates']}
-        result = validate_flat_startup_candidate(enabled=True, ref_only=True, binding=binding,
-            bundle_root=str(root), expected_manifest_sha256=args.deployment_manifest_sha256,
-            fleet_sha256=args.fleet_sha256.lower(), lane=agent, candidate=candidate)
-        if scope == 'own' and any(hit['source_agent'] != agent for hit in result['content']['results']):
-            raise ValueError('flat_cli_own_scope')
-        return add_situation(result)
-    return add_situation(None)
 
 
 if __name__ == "__main__":

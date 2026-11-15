@@ -182,6 +182,29 @@ def test_existing_status_cli_stays_status_only(monkeypatch, capsys, tmp_path, di
     assert dispatch == []
 
 
+def test_flat_cli_refuses_explicit_opt_in_without_packaged_provider(monkeypatch, capsys, tmp_path, dispatch):
+    agent, uuid = "codex-tools-1", "00000000-0000-4000-8000-000000000002"
+    monkeypatch.setenv("WD_MIND_READ_ENABLED", "1")
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT", agent)
+    monkeypatch.setenv("AGENT_BRIDGE_AGENT_UUID", uuid)
+    monkeypatch.setenv("AGENT_BRIDGE_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setattr(session, "_fleet_roster", lambda *args: {agent: uuid})
+    result = session.main(["--latest", str(tmp_path / "latest.json"),
+                           "--audit-root", str(tmp_path), "--fleet", str(tmp_path / "fleet"),
+                           "--fleet-sha256", "0" * 64, "--flat-content",
+                           "--bundle-root", str(tmp_path), "--deployment-manifest-sha256", "0" * 64])
+    captured = capsys.readouterr()
+    assert result == 2 and captured.out == ""
+    assert json.loads(captured.err) == {"error": "mind_session_read_refused", "authority": "none"}
+    assert dispatch == []
+
+
+def test_retained_startup_refuses_without_calling_providers(dispatch):
+    _refused(lambda: session.query_content_startup_envelope(
+        enabled=True, inputs={}, providers=_providers(), complete=True, retained=True))
+    assert dispatch == []
+
+
 @pytest.fixture(scope="module")
 def source_fixtures():
     # Reuse the existing independently constructed fixture, not the production

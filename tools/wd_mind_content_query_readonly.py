@@ -110,6 +110,25 @@ _PERSONAL_CONTEXT_V1 = (
     re.compile(r"(?i)\b[\w'-]+\s+asuu\s+osoitteessa\s+(?:[\w'-]+\s+){1,4}\d{1,5}[a-z]?\b"),
 )
 
+# Additive, closed-vocabulary cases; keep the old rules and technical exception.
+# A terminal noun excludes technical continuations such as diagnosis.json and
+# sairaus-malli. These rules are not a general health/PII classifier.
+_HEALTH_CLAUSE_END = r"\b(?=\s*(?:[.!?;](?:\s|$)|$))"
+_PERSONAL_HEALTH_CONTEXT = (
+    re.compile(r"(?i)\boperator\s+(?:has|had)\s+(?:[\w'-]+[,\.]?\s+){0,4}"
+               r"(?:illness|disease|diagnosis)(?:\s+|-)(?:classifier|detector|model|parser)\b"
+               r"(?:\s*,\s*|\s+)and\s+(?:also\s+)?(?:(?:has|had)\s+)?(?:(?:a|an|the)\s+)?"
+               r"(?:(?:serious|chronic|persistent|severe|mild|acute|long-term)\s+)*"
+               r"(?:illness|disease|diagnosis)" + _HEALTH_CLAUSE_END),
+    # Repetition is bounded by the existing input limit, not an arbitrary larger
+    # generic prefix count that would newly reject named technical examples.
+    re.compile(r"(?i)\boperaattorilla\s+(?:on|oli)\s+"
+               r"(?:(?:jo|pitkään|tutkimuksissa|aiemmin|toistuvasti|havaittu|todettu|vakava|lievä|krooninen|pitkäaikainen),?\s+){5,}"
+               r"(?:sairaus|tauti|diagnoosi)" + _HEALTH_CLAUSE_END),
+)
+_HEALTH_LINE_END = re.compile(r"(?i)\b(?:illness|disease|diagnosis)[.!?;]?$")
+_HEALTH_HEADING = re.compile(r"(?i)^(?:classifier|detector|model|parser)\s*:")
+
 _URL = re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://\S+")
 
 _LOCAL_PATH = (re.compile(r"[A-Za-z]:[\\/][^\s:]*(?:[ \t][^\s\\/:]+)+[\\/][^\s]*"),
@@ -196,6 +215,32 @@ def _normalize(text, limit):
             chars.append(char)
     return " ".join("".join(chars).split())
 
+def _health_heading_after_line(raw_text, limit):
+    """Preserve a hard line boundary lost by normalization; input is validated first.
+
+    An assertion followed by a technical heading is ambiguous and fails closed.
+    Ordinary wrapped technical phrases without a heading colon remain allowed.
+    """
+    previous = line = raw_line = None
+    lines = []
+    try:
+        for raw_line in raw_text.splitlines():
+            line = _normalize(raw_line, limit)
+            if not line:
+                continue
+            if lines and _HEALTH_HEADING.match(line):
+                # The assertion itself may wrap. Join only at a heading, never
+                # beyond the already validated input's length bound.
+                previous = " ".join(lines)
+                if (_HEALTH_LINE_END.search(previous)
+                        and _PERSONAL_CONTEXT_V1[0].search(previous)):
+                    return True
+            lines.append(line)
+        return False
+    finally:
+        raw_text = previous = line = raw_line = lines = None
+
+
 def _base64_secret(text):
     for match in _BASE64_RUN.finditer(text):
         run = match.group(0)
@@ -265,7 +310,7 @@ def _script(text):
     if other:
         raise _Drop("mixed_script" if latin else "encoding")
 
-def _screen(text, *, redact_hex=False, identifier_policy=None):
+def _screen(text, *, redact_hex=False, identifier_policy=None, health_line_context=False):
     """The detectors, in order, on one normalized text; raises ``_Drop`` with the first matching class."""
     path_text = lowered = phone_text = None
     try:
@@ -285,7 +330,9 @@ def _screen(text, *, redact_hex=False, identifier_policy=None):
         phone_text = _CREDENTIAL[-1].sub("hex-redacted", text) if redact_hex else text
         if (any(pattern.search(text) for pattern in _PERSONAL) or _iban(text)
                 or _PHONE_RE.search(_ISO_TIME.sub(" ", phone_text))
-                or any(pattern.search(text) for pattern in _PERSONAL_CONTEXT_V1)):
+                or any(pattern.search(text) for pattern in _PERSONAL_CONTEXT_V1)
+                or any(pattern.search(text) for pattern in _PERSONAL_HEALTH_CONTEXT)
+                or health_line_context):
             raise _Drop("personal")
         if redact_hex:
             text = _redact_sensitive_runs(text)
@@ -310,12 +357,13 @@ def _replace_locations(text):
     return " ".join(text.split())
 
 def _classify_with_policy(raw_text, limit, policy):
-    token = encoded = text = None
+    token = encoded = text = health_line_context = None
     try:
         text = _normalize(raw_text, limit)
         if not text:
             raise _Drop("empty")
-        _screen(text, redact_hex=True, identifier_policy=policy)
+        health_line_context = _health_heading_after_line(raw_text, limit)
+        _screen(text, redact_hex=True, identifier_policy=policy, health_line_context=health_line_context)
         text = _redact_sensitive_runs(text, include_urls=True)
         text = _replace_locations(text)
         if not text:
@@ -331,7 +379,7 @@ def _classify_with_policy(raw_text, limit, policy):
     except Exception:
         token = "unknown"
     finally:
-        raw_text = text = policy = None
+        raw_text = text = policy = health_line_context = None
     if token is not None:
         return "DROP", token
     return "KEEP", encoded

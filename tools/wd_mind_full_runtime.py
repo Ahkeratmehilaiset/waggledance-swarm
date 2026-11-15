@@ -6,6 +6,7 @@ The HMAC key lives only in this process and is not a cross-restart key store.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -212,8 +213,10 @@ def create_manifest_worker_factory(*, enabled=False, bundle_root=None, expected_
                 or type(lock_timeout_seconds) not in (int, float) or not math.isfinite(lock_timeout_seconds)
                 or not 0 <= lock_timeout_seconds <= 30):
             raise ValueError('timeout')
-        from tools import wd_mind_e5_rotating_client as rotating
-        if bulk_contract_sha256 != rotating.BULK_CONTRACT_SHA256:
+        # The pinned worker contract is shared by the single-worker route.
+        # Preparing a factory must not require or start the optional rotator.
+        from tools import wd_mind_e5_client as worker_client
+        if bulk_contract_sha256 != worker_client.BULK_CONTRACT_SHA256:
             raise ValueError('bulk')
         location = resolve_manifest_runtime_location(enabled=True, bundle_root=bundle_root,
                                                       expected_manifest_sha256=expected_manifest_sha256)
@@ -1186,6 +1189,163 @@ class _FlatLaneView:
 
     def handle(self, request):
         return self.__handler._handle_for_lane(request, self.__lane)
+
+
+class _SingleManifestOwner:
+    """Own one graceful worker and an optional in-process flat handler.
+
+    The caller must retain this object through HOLD. This is not an IPC server,
+    an authenticated lane, an installed startup path, or an automatic refresh.
+    """
+    __slots__ = ('_binding', '_snapshot', '_lane', '_lanes', '_factory', '_timeout',
+                 '_state', '_launch', '_owner', '_client', '_adapter', '_handler', '_lock')
+
+    def __init__(self, binding, snapshot, lane, lanes, factory, timeout):
+        self._binding, self._snapshot, self._lane = binding, snapshot, lane
+        self._lanes, self._factory, self._timeout = frozenset(lanes), factory, timeout
+        self._state, self._launch, self._owner = 'NEW', None, None
+        self._client = self._adapter = self._handler = None
+        self._lock = threading.Lock()
+
+    def __repr__(self):
+        return '<PrivateMindSingleManifestOwner>'
+
+    def _status(self):
+        if self._owner is None:
+            return {'state': self._state, 'owned': False if self._state == 'NEW' else None,
+                    'authority': 'none'}
+        try:
+            current = self._owner.status()
+            owned = current.get('owned') if type(current) is dict else None
+            if type(owned) is not bool:
+                owned = None
+            if self._state == 'READY' and (owned is not True or current.get('state') != 'RUNNING'):
+                self._state = 'HOLD'
+        except Exception:
+            owned = None
+        return {'state': self._state, 'owned': owned, 'authority': 'none'}
+
+    def status(self):
+        if not self._lock.acquire(blocking=False):
+            return {'state': 'BUSY', 'owned': None, 'authority': 'none'}
+        try:
+            return self._status()
+        finally:
+            self._lock.release()
+
+    def start(self):
+        if not self._lock.acquire(blocking=False):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        try:
+            if self._state != 'NEW':
+                raise FullRuntimeRefused('mind_full_runtime_refused') from None
+            self._state = 'STARTING'
+            try:
+                _flat_snapshot(self._binding, self._snapshot)
+                launched = self._factory()
+                # Retain the entire factory result before any fallible binding
+                # or model work, including the owner on a returned HOLD.
+                self._launch = launched
+                if type(launched) is not dict:
+                    raise ValueError('launch')
+                self._owner, self._client = launched.get('owner'), launched.get('client')
+                if (launched.get('status') != 'READY' or self._owner is None
+                        or self._client is None or getattr(self._client, 'owner', None) is not self._owner):
+                    raise ValueError('launch_not_ready')
+                from tools import wd_mind_e5_snapshot_adapter as adapter_module
+                bundle, manifest = self._binding._PrivateBinding__bundle, self._binding._PrivateBinding__manifest
+                self._adapter = adapter_module.create_single_flat_adapter(enabled=True, bundle_root=str(bundle),
+                    expected_manifest_sha256=manifest, client=self._client)
+                self._handler = _FlatRequestHandler(self._binding, self._snapshot, self._lane, self._lanes,
+                    self._client, self._adapter, self._factory, self._timeout, self._factory._bulk)
+                result = self._handler.build()
+                if result != {'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'}:
+                    raise ValueError('build')
+                self._state = 'READY'
+            except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+                self._state = 'HOLD'
+                raise
+            except BaseException:
+                # Unknown post-launch states are never declared exited. The
+                # saved owner (if present) remains reachable for explicit EOF.
+                self._state = 'HOLD'
+            return self._status()
+        finally:
+            self._lock.release()
+
+    def candidates(self, request):
+        if not self._lock.acquire(blocking=False):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        try:
+            if self._state != 'READY' or self._handler is None:
+                raise FullRuntimeRefused('mind_full_runtime_refused') from None
+            # Pipe candidates contain references only, not the message body.
+            return map_pipe_candidates(enabled=True, handler=self._handler, request=request)
+        finally:
+            self._lock.release()
+
+    def close(self):
+        if not self._lock.acquire(blocking=False):
+            return {'state': 'BUSY', 'owned': None, 'authority': 'none'}
+        try:
+            if self._state == 'NEW':
+                self._state = 'STOPPED'
+                return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
+            if self._owner is None:
+                self._state = 'HOLD'
+                return self._status()
+            try:
+                if self._client is not None:
+                    result = self._client.close(timeout=self._timeout)
+                else:
+                    result = self._owner.shutdown(timeout=self._timeout)
+                if (type(result) is dict and result.get('state') == 'EXITED'
+                        and result.get('owned') is False):
+                    self._state = 'STOPPED'
+                    return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
+            except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+                self._state = 'HOLD'
+                raise
+            except Exception:
+                pass
+            self._state = 'HOLD'
+            return self._status()
+        finally:
+            self._lock.release()
+
+
+def create_single_manifest_owner(*, enabled=False, binding=None, lane=None, worker_factory=None,
+                                 shutdown_timeout=None):
+    """Create an inert single-worker owner, retaining it through any HOLD.
+
+    The manifest and lane must already be independently bound. No worker is
+    launched until start(); no rotation, guardian, listener or refresh is added.
+    """
+    result = None
+    try:
+        from tools import wd_mind_e5_client as worker_client
+        if (enabled is not True or type(binding) is not _PrivateBinding
+                or type(worker_factory) is not _ManifestWorkerFactory or type(lane) is not str
+                or lane not in reader._LANES or type(shutdown_timeout) not in (int, float)
+                or not math.isfinite(shutdown_timeout) or not 0 <= shutdown_timeout <= 15):
+            raise ValueError('input')
+        bundle, manifest = binding._PrivateBinding__bundle, binding._PrivateBinding__manifest
+        if (worker_factory._bundle != str(bundle) or worker_factory._manifest != manifest
+                or worker_factory._bulk != worker_client.BULK_CONTRACT_SHA256):
+            raise ValueError('factory_binding')
+        snapshot = binding.snapshot_for_query()
+        _flat_snapshot(binding, snapshot)
+        fleet = json.loads(binding._PrivateBinding__controls[0].decode('utf-8'),
+                           object_pairs_hook=prefix._unique_object, parse_constant=reader._bad_constant)
+        names = {entry['agent'] for entry in fleet['lanes']} | {fleet['tools_supervisor']['agent']}
+        if lane not in names:
+            raise ValueError('lane')
+        result = _SingleManifestOwner(binding, snapshot, lane, names, worker_factory, float(shutdown_timeout))
+    except Exception:
+        pass
+    if result is None:
+        raise FullRuntimeRefused('mind_full_runtime_refused') from None
+    return result
 
 
 def create_flat_request_handler(*, enabled=False, binding=None, lane=None, worker_factory=None,

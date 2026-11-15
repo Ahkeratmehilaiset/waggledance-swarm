@@ -13,6 +13,52 @@ from tools import wd_mind_content_query_readonly as reader
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):
+    """Constructing a disabled/default owner must not start a worker."""
+    from tools import wd_mind_full_runtime as runtime
+    calls = []
+    monkeypatch.setattr(runtime._ManifestWorkerFactory, '__call__', lambda self: calls.append('spawn'))
+    with pytest.raises(runtime.FullRuntimeRefused):
+        runtime.create_single_manifest_owner()
+    assert calls == []
+
+
+def test_single_manifest_owner_retains_failed_launch_owner(tmp_path, monkeypatch):
+    """A post-reservation HOLD must stay reachable without an extra worker."""
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_e5_client
+    fleet = canonical({'lanes': [{'agent': 'codex-lead-1'}],
+                       'tools_supervisor': {'agent': 'codex-tools-1'}})
+    snapshot = {'projection_sha256': 'b' * 64}
+    binding = runtime._PrivateBinding(snapshot, tmp_path, 'a' * 64, (fleet,), {})
+    factory = runtime._ManifestWorkerFactory(str(tmp_path), 'a' * 64, {}, tmp_path / 'lock', 5, 0,
+                                             wd_mind_e5_client.BULK_CONTRACT_SHA256)
+    monkeypatch.setattr(runtime._PrivateBinding, 'snapshot_for_query', lambda self: snapshot)
+    monkeypatch.setattr(runtime, '_flat_snapshot', lambda candidate, frozen: frozen)
+
+    class Owner:
+        def status(self):
+            return {'state': 'HOLD', 'owned': True}
+        def shutdown(self, *, timeout):
+            return {'state': 'HOLD', 'owned': True}
+
+    held = Owner()
+    calls = []
+    def start(self):
+        calls.append(True)
+        return {'status': 'HOLD', 'client': None, 'owner': held,
+                'lifecycle': held.status(), 'authority': 'none'}
+    monkeypatch.setattr(runtime._ManifestWorkerFactory, '__call__', start)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert calls == []
+    assert owner.start() == {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+    assert owner.close() == {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+    with pytest.raises(runtime.FullRuntimeRefused):
+        owner.start()
+    assert calls == [True]
+
+
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
 

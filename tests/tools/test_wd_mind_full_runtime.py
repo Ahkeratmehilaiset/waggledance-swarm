@@ -849,7 +849,8 @@ def _single_owner_synthetic(monkeypatch, tmp_path):
     return runtime, adapter_module, binding, factory, calls
 
 
-@pytest.mark.parametrize('mode', ['timeout', 'cancel'])
+@pytest.mark.parametrize('mode', ['timeout', 'cancel', 'group', 'unknown',
+                                  'group_unknown', 'group_oversized', 'group_no_cancel'])
 def test_single_owner_retains_its_live_source_verifier_on_close_and_retry(tmp_path, monkeypatch, mode):
     import threading
     runtime, adapter_module, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
@@ -865,6 +866,17 @@ def test_single_owner_retains_its_live_source_verifier_on_close_and_retry(tmp_pa
     def build(**kwargs):
         kwargs['_watcher_lease']._capture(watcher)
         if mode == 'cancel': raise KeyboardInterrupt()
+        if mode == 'group':
+            raise BaseExceptionGroup('synthetic-secret-marker',
+                                     [ValueError('synthetic-secret-marker'), GeneratorExit('discard')])
+        if mode == 'group_unknown':
+            raise BaseExceptionGroup('synthetic-secret-marker',
+                                     [ValueError('discard'), runtime.FullRuntimeCancellationUnknown()])
+        if mode == 'group_oversized':
+            raise BaseExceptionGroup('synthetic-secret-marker',
+                                     [ValueError('discard') for _ in range(1024)] + [GeneratorExit('discard')])
+        if mode == 'group_no_cancel': raise ExceptionGroup('synthetic-secret-marker', [ValueError('discard')])
+        if mode == 'unknown': raise runtime.FullRuntimeCancellationUnknown()
         raise runtime.FullRuntimeSnapshotHold('mind_full_runtime_snapshot_hold')
     monkeypatch.setattr(runtime, 'build_flat_memory', build)
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
@@ -873,6 +885,15 @@ def test_single_owner_retains_its_live_source_verifier_on_close_and_retry(tmp_pa
     try:
         if mode == 'cancel':
             with pytest.raises(KeyboardInterrupt): owner.start()
+        elif mode in ('group', 'group_unknown'):
+            import traceback
+            with pytest.raises(BaseExceptionGroup) as caught: owner.start()
+            expected = GeneratorExit if mode == 'group' else runtime.FullRuntimeCancellationUnknown
+            assert len(caught.value.exceptions) == 1 and type(caught.value.exceptions[0]) is expected
+            assert 'synthetic-secret-marker' not in ''.join(traceback.format_exception(caught.value))
+        elif mode in ('unknown', 'group_oversized'):
+            with pytest.raises(runtime.FullRuntimeCancellationUnknown) as caught: owner.start()
+            assert caught.value.args == ('mind_full_runtime_cancellation_unknown',)
         else:
             assert owner.start()['state'] == 'HOLD'
         assert owner.close()['state'] == 'HOLD'

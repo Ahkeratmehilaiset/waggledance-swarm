@@ -87,6 +87,27 @@ def test_owner_group_cancellation_avoids_provider_exception_hooks():
     assert 'private provider detail' not in str(sanitized)
 
 
+def test_parent_control_requires_independent_pins_and_exact_length():
+    import struct
+    from tools import wd_mind_full_runtime as runtime
+    policy = b'{"identifiers":["synthetic-private-marker-52"],"schema":"wd.mind-identifier-policy.v1"}'
+    manifest, nonce, channel = bytes.fromhex('aa' * 32), b'n' * 32, b'k' * 32
+    policy_sha = hashlib.sha256(policy).digest()
+    control = struct.pack('>4sI', b'MCT1', len(policy)) + manifest + nonce + channel + policy_sha + policy
+    pins = {'expected_manifest_sha256': manifest.hex(), 'expected_identifier_policy_sha256': policy_sha.hex()}
+    with pytest.raises(runtime.FullRuntimeRefused):
+        runtime._parse_parent_control(control_bytes=control, **pins)
+    for bad, override in [(control[:-1], {}), (control + b'x', {}), (b'BAD!' + control[4:], {}),
+                          (control, {'expected_manifest_sha256': 'b' * 64}),
+                          (control, {'expected_identifier_policy_sha256': 'b' * 64})]:
+        with pytest.raises(runtime.FullRuntimeRefused):
+            runtime._parse_parent_control(enabled=True, control_bytes=bad, **(pins | override))
+    bootstrap = runtime._parse_parent_control(enabled=True, control_bytes=control, **pins)
+    assert 'synthetic-private-marker-52' not in repr(bootstrap)
+    assert bootstrap.take() == (manifest.hex(), nonce, channel, policy_sha.hex(), policy)
+    with pytest.raises(runtime.FullRuntimeRefused): bootstrap.take()
+
+
 @pytest.mark.parametrize('fault', ['vectors', 'policy_pin'])
 def test_single_adapter_symbol_and_manifest_pins_without_rotator(synthetic_bundle, fault):
     """Import real bundle bytes; no model process or fake adapter is started."""

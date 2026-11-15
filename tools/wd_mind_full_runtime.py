@@ -338,6 +338,78 @@ def _fixed_group_cancellation(group):
         group = current = pending = children = None
 
 
+class _ParentBootstrap:
+    """Single-use in-memory MCT1 values; possession is not parent proof."""
+    __slots__ = ('__values', '__lock')
+
+    def __init__(self, values):
+        self.__values, self.__lock = values, threading.Lock()
+
+    def __repr__(self):
+        return '<PrivateMindParentBootstrap>'
+
+    def take(self):
+        with self.__lock:
+            values, self.__values = self.__values, None
+        if values is None:
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        return values
+
+
+def _parse_parent_control(*, enabled=False, control_bytes=None, expected_manifest_sha256=None,
+                          expected_identifier_policy_sha256=None):
+    """Parse exact MCT1 bytes with independent pins, without opening a handle.
+
+    A caller must prove the trusted parent and source both pins independently.
+    This parser alone does not authenticate a sender, enforce deadlines, prove
+    EOF, or prevent replay; the complete bounded input must include EOF proof.
+    """
+    output = cancelled_type = cancellation_group = None
+    try:
+        if (enabled is not True or type(control_bytes) is not bytes
+                or not 137 <= len(control_bytes) <= 136 + 65536
+                or type(expected_manifest_sha256) is not str
+                or not reader._hex(expected_manifest_sha256)
+                or type(expected_identifier_policy_sha256) is not str
+                or not reader._hex(expected_identifier_policy_sha256)):
+            raise ValueError('input')
+        magic, policy_length = struct.unpack('>4sI', control_bytes[:8])
+        if magic != b'MCT1' or not 1 <= policy_length <= 65536 or len(control_bytes) != 136 + policy_length:
+            raise ValueError('shape')
+        manifest, nonce, channel, policy_sha, policy = (control_bytes[8:40], control_bytes[40:72],
+            control_bytes[72:104], control_bytes[104:136], control_bytes[136:])
+        if (not hmac.compare_digest(manifest.hex(), expected_manifest_sha256)
+                or not hmac.compare_digest(policy_sha.hex(), expected_identifier_policy_sha256)
+                or not hmac.compare_digest(hashlib.sha256(policy).digest(), policy_sha)
+                or hmac.compare_digest(nonce, channel)):
+            raise ValueError('pin')
+        # This HMAC permits schema validation only; the independent SHA is the
+        # policy anchor and this fixed validation key authenticates nothing.
+        validation_key = bytes(32)
+        tag = hmac.new(validation_key, policy, hashlib.sha256).hexdigest()
+        reader._load_identifier_policy(policy, validation_key, tag, allow_empty_v2=True)
+        output = _ParentBootstrap((manifest.hex(), nonce, channel, policy_sha.hex(), policy))
+    except KeyboardInterrupt:
+        cancelled_type, output = KeyboardInterrupt, None
+    except GeneratorExit:
+        cancelled_type, output = GeneratorExit, None
+    except asyncio.CancelledError:
+        cancelled_type, output = asyncio.CancelledError, None
+    except BaseExceptionGroup as group:
+        cancellation_group, output = _fixed_group_cancellation(group), None
+    except BaseException:
+        output = None
+    finally:
+        control_bytes = manifest = nonce = channel = policy_sha = policy = validation_key = tag = None
+    if cancelled_type is not None:
+        raise cancelled_type() from None
+    if cancellation_group is not None:
+        raise cancellation_group from None
+    if output is None:
+        raise FullRuntimeRefused('mind_full_runtime_refused') from None
+    return output
+
+
 def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
                           identifier_policy_bytes=None, expected_identifier_policy_sha256=None):
     """Build a private snapshot using a separately anchored identifier policy.

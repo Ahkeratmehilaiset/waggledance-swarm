@@ -338,12 +338,26 @@ def _fixed_group_cancellation(group):
         group = current = pending = children = None
 
 
+class _BootstrapValues:
+    """Keep tuple values out of frame-local repr during transfer."""
+    __slots__ = ('__values',)
+
+    def __init__(self, values):
+        self.__values = values
+
+    def __repr__(self):
+        return '<PrivateMindBootstrapValues>'
+
+    def reveal(self):
+        return self.__values
+
+
 class _ParentBootstrap:
     """Single-use in-memory MCT1 values; possession is not parent proof."""
     __slots__ = ('__values', '__lock')
 
     def __init__(self, values):
-        self.__values, self.__lock = values, threading.Lock()
+        self.__values, self.__lock = _BootstrapValues(values), threading.Lock()
 
     def __repr__(self):
         return '<PrivateMindParentBootstrap>'
@@ -351,28 +365,28 @@ class _ParentBootstrap:
     def take(self):
         values = cancelled_type = cancellation_group = None
         try:
-            with self.__lock:
-                values, self.__values = self.__values, None
+            try:
+                with self.__lock:
+                    values, self.__values = self.__values, None
+                if values is None:
+                    raise ValueError('consumed')
+            except KeyboardInterrupt:
+                cancelled_type, values = KeyboardInterrupt, None
+            except GeneratorExit:
+                cancelled_type, values = GeneratorExit, None
+            except asyncio.CancelledError:
+                cancelled_type, values = asyncio.CancelledError, None
+            except BaseExceptionGroup as group:
+                cancellation_group, values = _fixed_group_cancellation(group), None
+            except BaseException:
+                values = None
+            if cancelled_type is not None:
+                raise cancelled_type() from None
+            if cancellation_group is not None:
+                raise cancellation_group from None
             if values is None:
-                raise ValueError('consumed')
-        except KeyboardInterrupt:
-            cancelled_type, values = KeyboardInterrupt, None
-        except GeneratorExit:
-            cancelled_type, values = GeneratorExit, None
-        except asyncio.CancelledError:
-            cancelled_type, values = asyncio.CancelledError, None
-        except BaseExceptionGroup as group:
-            cancellation_group, values = _fixed_group_cancellation(group), None
-        except BaseException:
-            values = None
-        if cancelled_type is not None:
-            raise cancelled_type() from None
-        if cancellation_group is not None:
-            raise cancellation_group from None
-        if values is None:
-            raise FullRuntimeRefused('mind_full_runtime_refused') from None
-        try:
-            return values
+                raise FullRuntimeRefused('mind_full_runtime_refused') from None
+            return values.reveal()
         finally:
             values = None
 

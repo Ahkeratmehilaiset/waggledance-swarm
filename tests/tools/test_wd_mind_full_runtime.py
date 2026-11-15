@@ -124,6 +124,35 @@ def test_parent_bootstrap_interrupted_take_does_not_leak_values_in_traceback():
     assert caught.value.__context__ is None
 
 
+def test_parent_bootstrap_take_traced_interrupts_never_expose_values():
+    import dis
+    import sys
+    import traceback
+    from tools import wd_mind_full_runtime as runtime
+    code = runtime._ParentBootstrap.take.__code__
+    candidate_lines = sorted(set(line for _, line in dis.findlinestarts(code) if line is not None))
+    observed = []
+    for candidate in candidate_lines:
+        bootstrap = runtime._ParentBootstrap((b'synthetic-bootstrap-secret-52',))
+        def trace(frame, event, arg):
+            if (frame.f_code is code and event == 'line' and frame.f_lineno == candidate
+                    and frame.f_locals.get('values') is not None):
+                observed.append(candidate)
+                raise KeyboardInterrupt()
+            return trace
+        sys.settrace(trace)
+        try:
+            bootstrap.take()
+        except KeyboardInterrupt as error:
+            stack = traceback.TracebackException.from_exception(error, capture_locals=True).stack
+            for frame in stack:
+                if frame.name == 'take':
+                    assert 'synthetic-bootstrap-secret-52' not in repr(frame.locals)
+        finally:
+            sys.settrace(None)
+    assert len(observed) >= 3
+
+
 @pytest.mark.parametrize('fault', ['vectors', 'policy_pin'])
 def test_single_adapter_symbol_and_manifest_pins_without_rotator(synthetic_bundle, fault):
     """Import real bundle bytes; no model process or fake adapter is started."""

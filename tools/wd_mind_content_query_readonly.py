@@ -22,6 +22,7 @@ import hmac
 import importlib
 import importlib.util
 import json
+import os
 import re
 import unicodedata
 from pathlib import Path
@@ -2323,7 +2324,7 @@ def _q4_freeze_complete_cells(cells):
     return frozen
 
 
-def _query_complete_content_snapshot(values):
+def _query_complete_content_snapshot(values, *, _narrow=None):
     descriptor, memory, encoder_binding, index_binding = _q4_controls(values)
     if descriptor["scope"] != _ALL_TASK_ROUTE_SCOPE:
         raise ValueError("complete_scope_required")
@@ -2331,7 +2332,8 @@ def _query_complete_content_snapshot(values):
     if type(snapshot.get("messages")) is not dict:
         raise ValueError("invalid_snapshot")
     snapshot["messages"] = dict(snapshot["messages"])
-    projection, _, initial_report = _verified_complete(snapshot)
+    verifier = _verified_complete if _narrow is None else _narrow.verify_snapshot
+    projection, _, initial_report = verifier(snapshot)
     # Capture independent immutable values, including the validated cursor's
     # fields, before any caller-provided provider or stream callback runs.
     cursor = snapshot["messages"]["end_cursor"]
@@ -2374,9 +2376,11 @@ def _query_complete_content_snapshot(values):
                 or any(values[key] is not callbacks[key] for key in callback_keys)
                 or _q4_freeze_complete_cells(values["cell_snapshots"]) != frozen_cells):
             raise ValueError("snapshot_changed")
-        _, _, current = _verified_complete(snapshot)
+        _, _, current = verifier(snapshot)
         if current != initial_report:
             raise ValueError("source_changed")
+        if _narrow is not None:
+            _narrow.recheck_selection(snapshot)
 
     checkpoint()
     def load(raw):
@@ -2404,7 +2408,8 @@ def _query_complete_content_snapshot(values):
     hits = [{"ref_sha256": _sha(records[key]["provenance"]["event_ref"].encode()),
              "doc_id_sha256": _sha(key.encode()), "ref_kind": "sha256_of_projected_metadata",
              "canonical_event": False} for key in selected]
-    resolved = resolve_content_results(hits, query["time"], _complete=True, **snapshot)
+    resolved = (resolve_content_results(hits, query["time"], _complete=True, **snapshot)
+                if _narrow is None else _narrow.resolve(hits, query["time"], snapshot))
     checkpoint()
     _q4_provider_identity(encoder, encoder_binding, "query")
     _q4_provider_identity(index_provider, index_binding, "load")
@@ -2427,6 +2432,244 @@ def _query_complete_content_snapshot(values):
         raise ValueError("query_output_over_budget")
     checkpoint()
     return output
+
+
+_NARROW_MANIFEST_NAME = 'wd-mind-narrow-source-manifest.json'
+_NARROW_SCHEMA = 'wd.mind-narrow-source-manifest.v1'
+
+
+def _narrow_dependencies():
+    bridge = _pinned_dependency('waggledance.core.bridge_log_reader', 'waggledance/core/bridge_log_reader.py',
+                                ('_open_log', '_file_identity', '_parse_rows', '_read_generation'))
+    absent = _pinned_dependency('tools.wd_mind_absent_generation_prefix_readonly',
+                               'tools/wd_mind_absent_generation_prefix_readonly.py',
+                               ('_plain', '_sidecar_absent', '_read_pinned'))
+    return bridge, absent
+
+
+def _narrow_fence(stream, source, sidecar, cursor, bridge, absent):
+    """Fence the frozen prefix's identity, minimum length and generation."""
+    absent._plain(source, directory=False)
+    if cursor.generation is None:
+        if sidecar != source.with_name('events.generation.json'):
+            raise ValueError('sidecar_path')
+        absent._sidecar_absent(sidecar)
+    else:
+        absent._plain(sidecar, directory=False)
+        if bridge._read_generation(sidecar) != cursor.generation:
+            raise ValueError('generation_changed')
+    if bridge._file_identity(stream) != cursor.file_identity or os.fstat(stream.fileno()).st_size < cursor.offset:
+        raise ValueError('source_changed')
+    with bridge._open_log(source) as current:
+        if bridge._file_identity(current) != cursor.file_identity or os.fstat(current.fileno()).st_size < cursor.offset:
+            raise ValueError('source_replaced')
+    if cursor.generation is None:
+        absent._sidecar_absent(sidecar)
+    elif bridge._read_generation(sidecar) != cursor.generation:
+        raise ValueError('generation_changed')
+
+
+def _narrow_row_index(context, references):
+    """Scan and hash the entire prefix during build; retain only row locations."""
+    bridge, absent = _narrow_dependencies()
+    source = Path(context['messages']['source_path'])
+    sidecar = Path(context['messages']['generation_path'])
+    cursor = context['messages']['end_cursor']
+    expected = context['decision']['source_prefix']['sha256']
+    entries, digest, offset = {}, hashlib.sha256(), 0
+    with bridge._open_log(source) as stream:
+        _narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+        while offset < cursor.offset:
+            remaining = cursor.offset - offset
+            line = stream.readline(min(remaining, 4 * 1024 * 1024) + 1)
+            if (not line or len(line) > remaining or len(line) > 4 * 1024 * 1024
+                    or not line.endswith(b'\n')):
+                raise ValueError('row_bounds')
+            parsed = bridge._parse_rows(line, starts_at_zero=(offset == 0))
+            if len(parsed) != 1:
+                raise ValueError('row_count')
+            ref = _sha(_canonical(parsed[0]))
+            if ref in references and ref not in entries:
+                entries[ref] = {'offset': offset, 'length': len(line), 'raw_sha256': _sha(line)}
+            digest.update(line)
+            offset += len(line)
+        _narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+    if offset != cursor.offset or not hmac.compare_digest(digest.hexdigest(), expected) or set(entries) != references:
+        raise ValueError('source_index_mismatch')
+    return entries
+
+
+class _NarrowReadGate:
+    """One opt-in read bound to a separately pinned deployment manifest.
+
+    The caller must independently authorize the deployment-manifest SHA. This
+    gate proves consistency with that pin, not publisher or sender identity.
+    The deployment process must include the generated narrow manifest itself.
+    """
+    def __init__(self, bundle_root, expected_manifest, values):
+        if (type(bundle_root) is not str or not Path(bundle_root).is_absolute()
+                or not _hex(expected_manifest)):
+            raise ValueError('deployment_anchor')
+        self._root, self._pin = Path(bundle_root), expected_manifest
+        self._descriptor = values['descriptor_sha256']
+        self._memory = values['memory_sha256']
+        self._selection = None
+
+    def _manifest(self):
+        _, absent = _narrow_dependencies()
+        absent._plain(self._root, directory=True)
+        raw = absent._read_pinned(self._root / 'deployment-manifest.json', self._pin, 4 * 1024 * 1024)
+        deployment = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
+        if (type(deployment) is not dict or type(deployment.get('schema_version')) is not int
+                or deployment['schema_version'] != 1 or type(deployment.get('files')) is not dict):
+            raise ValueError('deployment_manifest')
+        digest = deployment['files'].get(_NARROW_MANIFEST_NAME)
+        if not _hex(digest):
+            raise ValueError('manifest_not_anchored')
+        path = self._root / _NARROW_MANIFEST_NAME
+        size = os.lstat(path).st_size
+        raw = absent._read_pinned(path, digest, size)
+        manifest = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
+        if (type(manifest) is not dict or _canonical(manifest) != raw
+                or set(manifest) != {'schema', 'authority', 'source_prefix', 'source_locations', 'projection_sha256',
+                                     'decision_sha256', 'descriptor_sha256', 'memory_sha256', 'entries'}
+                or manifest['schema'] != _NARROW_SCHEMA or manifest['authority'] != 'none'
+                or manifest['descriptor_sha256'] != self._descriptor or manifest['memory_sha256'] != self._memory
+                or type(manifest['entries']) is not dict):
+            raise ValueError('narrow_manifest')
+        return manifest
+
+    def verify_snapshot(self, snapshot):
+        if type(snapshot) is not dict:
+            raise ValueError('snapshot')
+        inputs = dict(snapshot)
+        raw, digest = inputs.pop('projection_bytes', None), inputs.pop('projection_sha256', None)
+        if type(raw) is not bytes or not raw or not _hex(digest) or not hmac.compare_digest(_sha(raw), digest):
+            raise ValueError('projection_pin')
+        context = _inputs(inputs, complete_source=True)
+        projection = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
+        if (_serialized(projection) != raw or type(projection) is not dict
+                or projection.get('schema') != _ALL_TASK_COMBINED_SCHEMA
+                or type(projection.get('messages')) is not dict
+                or projection['messages'].get('schema') != _ALL_TASK_MESSAGE_SCHEMA
+                or type(projection['messages'].get('records')) is not list):
+            raise ValueError('projection_schema')
+        manifest = self._manifest()
+        cursor = context['messages']['end_cursor']
+        anchored = dict(context['decision']['source_prefix'], file_identity=cursor.file_identity)
+        locations = {'log': context['messages']['source_path'], 'generation': context['messages']['generation_path']}
+        if (manifest['source_prefix'] != anchored or manifest['source_locations'] != locations
+                or manifest['projection_sha256'] != digest
+                or manifest['decision_sha256'] != context['decision_sha256']):
+            raise ValueError('manifest_binding')
+        refs = {record['provenance']['source_event_ref'] for record in projection['messages']['records']}
+        if (set(manifest['entries']) != refs or any(not _hex(ref) for ref in refs)):
+            raise ValueError('manifest_coverage')
+        for entry in manifest['entries'].values():
+            if (type(entry) is not dict or set(entry) != {'offset', 'length', 'raw_sha256'}
+                    or type(entry['offset']) is not int or type(entry['length']) is not int
+                    or entry['offset'] < 0 or not 0 < entry['length'] <= 4 * 1024 * 1024
+                    or entry['offset'] + entry['length'] > cursor.offset or not _hex(entry['raw_sha256'])):
+                raise ValueError('entry_bounds')
+        bridge, absent = _narrow_dependencies()
+        source, sidecar = Path(context['messages']['source_path']), Path(context['messages']['generation_path'])
+        with bridge._open_log(source) as stream:
+            _narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+        report = {'status': 'MATCH', 'projection_sha256': digest, 'decision_sha256': context['decision_sha256'],
+                  'source_prefix': dict(context['decision']['source_prefix']), 'doc_commit': None,
+                  'operator_scope_authorization': 'UNKNOWN', 'required_release_task_list_sha256': None}
+        return projection, context, report
+
+    def _resolve(self, results, query_utc, snapshot):
+        when = _utc(query_utc) - dt.timedelta(seconds=1)
+        if type(results) is not list or len(results) > 100:
+            raise ValueError('results')
+        projection, context, _ = self.verify_snapshot(snapshot)
+        manifest = self._manifest()
+        matches = {}
+        for record in projection['messages']['records']:
+            key = (_sha(record['provenance']['event_ref'].encode()), _sha(record['record_id'].encode()))
+            matches.setdefault(key, []).append(record)
+        bridge, absent = _narrow_dependencies()
+        source, sidecar = Path(context['messages']['source_path']), Path(context['messages']['generation_path'])
+        cursor, policy = context['messages']['end_cursor'], context['policy']
+        output, seen = [], set()
+        with bridge._open_log(source) as stream:
+            _narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+            for item in results:
+                if (type(item) is not dict or set(item) != {'ref_sha256', 'doc_id_sha256', 'ref_kind', 'canonical_event'}
+                        or not _hex(item['ref_sha256']) or not _hex(item['doc_id_sha256'])
+                        or item['ref_kind'] != 'sha256_of_projected_metadata' or item['canonical_event'] is not False):
+                    raise ValueError('result')
+                key = item['ref_sha256'], item['doc_id_sha256']
+                records = matches.get(key, [])
+                if len(records) != 1:
+                    raise ValueError('unresolved')
+                record = records[0]
+                if _utc(record['provenance']['available_utc']) >= when:
+                    raise ValueError('not_visible')
+                ref = record['provenance']['source_event_ref']
+                entry = manifest['entries'][ref]
+                if entry['offset']:
+                    stream.seek(entry['offset'] - 1)
+                    if stream.read(1) != b'\n':
+                        raise ValueError('line_start')
+                stream.seek(entry['offset'])
+                line = stream.read(entry['length'])
+                if (len(line) != entry['length'] or not line.endswith(b'\n') or b'\n' in line[:-1]
+                        or not hmac.compare_digest(_sha(line), entry['raw_sha256'])):
+                    raise ValueError('row_changed')
+                rows = bridge._parse_rows(line, starts_at_zero=(entry['offset'] == 0))
+                if len(rows) != 1 or not hmac.compare_digest(_sha(_canonical(rows[0])), ref):
+                    raise ValueError('event_ref')
+                row = rows[0]
+                fields = _fields(row, policy, context['roster'])
+                if (type(fields) is not dict or ref in policy['removed_source_refs']
+                        or ('approved_source_refs' in policy and ref not in policy['approved_source_refs'])):
+                    raise ValueError('policy')
+                verdict, screened = _classify_with_policy(row.get('message'), policy['max_message_chars'], context['private'])
+                if verdict != 'KEEP':
+                    raise ValueError('screen')
+                chunks = chunk(screened, policy['max_chunk_chars'])
+                index = record['provenance']['chunk_index']
+                if type(index) is not int or not 0 <= index < len(chunks) or _record(ref, fields, chunks, index) != record:
+                    raise ValueError('chunk_changed')
+                decoded = decode_text(record['stored_text'])
+                verdict, text = _classify_with_policy(decoded, MAX_MESSAGE_CHARS, context['private'])
+                if verdict != 'KEEP' or text != record['stored_text']:
+                    raise ValueError('result_screen')
+                if key not in seen:
+                    output.append(dict(item, stored_text=text, source_reference={
+                        'sha256': ref, 'kind': 'sha256_of_canonical_event_json',
+                        'verified': 'MATCH_SELECTED_ROW', 'sender_authentication': 'UNKNOWN'}))
+                    seen.add(key)
+            _narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+        return output
+
+    def resolve(self, results, query_utc, snapshot):
+        output = self._resolve(results, query_utc, snapshot)
+        self._selection = (_canonical(results), query_utc, _canonical(output))
+        return output
+
+    def recheck_selection(self, snapshot):
+        if self._selection is not None:
+            raw, query_utc, expected = self._selection
+            results = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_pairs, parse_constant=_bad_constant)
+            if not hmac.compare_digest(_canonical(self._resolve(results, query_utc, snapshot)), expected):
+                raise ValueError('selected_result_changed')
+
+
+def query_narrow_content_snapshot(*, bundle_root=None, expected_deployment_manifest_sha256=None, **inputs):
+    """Opt in to selected-row source checks with an independently trusted deployment pin.
+
+    The pin must be supplied by a separately authorized caller; an arbitrary
+    manifest and its self-reported hash do not establish operator authority.
+    Unselected source corruption may be detected only by the next full build.
+    """
+    def run():
+        gate = _NarrowReadGate(bundle_root, expected_deployment_manifest_sha256, inputs)
+        return _query_complete_content_snapshot(inputs, _narrow=gate)
+    return _provider_result(run)
 
 
 def query_complete_content_snapshot(**inputs):

@@ -417,3 +417,23 @@ def test_single_worker_change_during_callback_never_returns_result(single_worker
     with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
         single.query('sample')
     assert capsys.readouterr() == ('', '') and client.owner is owner
+
+
+@pytest.mark.parametrize('resource_name', ['process', 'job'])
+def test_single_worker_resource_replacement_during_callback_refuses(single_worker, resource_name, monkeypatch):
+    single, client, owner, _, _ = single_worker
+    resource = getattr(owner.resources, resource_name)
+    class Proxy:
+        def __getattr__(self, name):
+            return getattr(resource, name)
+    encode = client.encode_supervised
+    def replace_after_response(request):
+        output = encode(request)
+        setattr(owner.resources, resource_name, Proxy())
+        return output
+    monkeypatch.setattr(client, 'encode_supervised', replace_after_response)
+    try:
+        with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+            single.query('sample')
+    finally:
+        setattr(owner.resources, resource_name, resource)

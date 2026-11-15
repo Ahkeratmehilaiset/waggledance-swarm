@@ -1065,133 +1065,46 @@ def test_general_query_reports_own_task_unknown_for_another_lanes_hit(synthetic_
     assert result['latest'] == 'UNKNOWN' and result['refs']
 
 
-def test_in_process_handler_binds_lane_source_and_cooperative_close(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'handler')
-    assert result['result'] == 'ok' and result['status'] == 'SEMANTIC_CANDIDATE' and result['expiry']
-    assert result['lane'] == 'codex-lead-1' and result['scope'] == 'own'
-    assert result['owned'] is False and result['state'] == 'EXITED' and result['closed_rejected']
-    assert result['expiry_scope'] == 'record_age_only' and result['snapshot_freshness'] == 'UNKNOWN'
 
 
-@pytest.mark.parametrize('scenario', ['handler_wrong_lane', 'handler_extra', 'handler_source_mutation',
-    'handler_source_after_build', 'handler_request_mutation', 'handler_owner_hold', 'handler_binding_mutation',
-    'handler_wrong_schema', 'handler_wrong_scope', 'handler_abstain_hold', 'handler_time_injection'])
-def test_in_process_handler_refuses_wrong_lane_shape_or_source_change(synthetic_bundle, scenario):
-    assert invoke(synthetic_bundle, scenario) == {'result': 'refused'}
 
 
-def test_in_process_handler_retains_hold_and_rejects_new_requests(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'handler_hold')
-    assert result['state'] == 'HOLD' and result['owned'] is True and result['closed_rejected'] is True
 
 
-def test_failed_build_keeps_hold_owner_reachable(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'handler_build_hold')
-    assert result == {'result':'ok', 'state':'HOLD', 'owned':True,
-                      'inspection':{'state':'HOLD', 'owned':True}}
 
 
-def test_inconsistent_factory_owner_is_unknown_and_client_owner_retained(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'handler_missing_factory_owner')
-    assert result == {'result':'ok', 'inspection':{'state':'UNKNOWN','owned':None},
-                      'retained_owned':True, 'close':{'state':'UNKNOWN','owned':None}}
 
 
-def test_request_mutation_at_freeze_boundary_is_refused(synthetic_bundle):
-    assert invoke(synthetic_bundle, 'handler_input_race') == {'result':'refused'}
 
 
-def test_five_lane_views_share_one_build_and_reject_claimed_lane_spoof(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'handler_five')
-    assert result['result'] == 'ok' and result['forged_rejected'] and result['closed'] == 'EXITED'
-    assert result['starts'] == 1
-    assert result['states'] == {'codex-lead-1':'SEMANTIC_CANDIDATE', 'fable-5':'SEMANTIC_CANDIDATE',
-        'codex-tools-1':'ABSTAIN', 'claude-rco-1':'ABSTAIN', 'claude-rco-2':'ABSTAIN'}
 
 
-def test_refresh_indexes_appended_event_after_complete_success(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'handler_refresh')
-    assert result == {'result':'ok', 'refresh':'REFRESHED', 'found':True, 'starts':2, 'closed':'EXITED'}
 
 
-def test_refresh_replay_without_append_does_not_restart_worker(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'handler_refresh_unchanged')
-    assert result == {'result':'ok', 'refresh':'UNCHANGED', 'starts':1, 'closed':'EXITED'}
 
 
-def test_refresh_concurrency_refuses_without_starting_worker(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'handler_refresh_concurrent')
-    assert result == {'result':'ok', 'concurrent':['refused'], 'starts':1, 'closed':'EXITED'}
 
 
-def test_auto_refresh_is_default_off(synthetic_bundle):
-    assert invoke(synthetic_bundle, 'handler_auto_disabled') == {'result':'ok', 'closed':'EXITED', 'starts':1}
 
 
-def test_auto_refresh_reserves_one_controller_until_explicit_stop(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'handler_auto_duplicate')
-    assert result == {'result':'ok','duplicate_rejected':True,'close_while_reserved':'BUSY',
-                      'first':'STOPPED','second':'STOPPED','closed':'EXITED'}
 
 
-def test_auto_refresh_observes_append_and_stops_explicitly(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'handler_auto')
-    assert result == {'result':'ok', 'state':'STOPPED', 'found':True, 'starts':2, 'closed':'EXITED'}
 
 
-def test_auto_refresh_retains_hold_without_new_worker(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'handler_auto_hold')
-    assert result == {'result':'ok', 'state':'REFUSED', 'owner':{'state':'HOLD','owned':True}, 'starts':1}
 
 
-def test_auto_refresh_stop_retains_active_worker_until_callback_returns(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'handler_auto_busy')
-    assert result == {'result':'ok','first':'BUSY','second':'STOPPED','starts':2,'closed':'EXITED'}
 
 
-@pytest.mark.parametrize('scenario,starts', [('handler_refresh_hold', 1), ('handler_refresh_failure', 2),
-                                             ('handler_refresh_failure_hold', 2), ('handler_refresh_mutation', 2)])
-def test_refresh_failure_retains_old_memory_and_never_reports_it_as_fresh(synthetic_bundle, scenario, starts):
-    result = invoke(synthetic_bundle, scenario)
-    assert result['result'] == 'ok' and result['refused'] and result['retained'] and result['starts'] == starts
-    if scenario in ('handler_refresh_hold', 'handler_refresh_failure_hold'):
-        assert result['inspection'] == {'state':'HOLD', 'owned':True}
 
 
-def test_in_process_handler_does_not_fabricate_rco_content(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'handler_rco')
-    assert result['status'] == 'ABSTAIN' and result['expiry'] is False and result['lane'] == 'claude-rco-1'
 
 
-def test_rco_shared_query_keeps_original_authorship_and_unknown_own_task(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'handler_rco_shared')
-    assert result['status'] == 'SEMANTIC_CANDIDATE' and result['scope'] == 'shared'
-    assert result['agents'] and set(result['agents']) <= {'codex-lead-1', 'codex-tools-1', 'fable-5'}
-    assert result['latest'] == 'UNKNOWN'
 
 
-@pytest.mark.parametrize('scenario,status,lane,scope', [
-    ('handler_mapper','CANDIDATES','codex-lead-1','own'),
-    ('handler_mapper_rco_own','ABSTAIN','claude-rco-1','own'),
-    ('handler_mapper_rco_shared','CANDIDATES','claude-rco-1','shared')])
-def test_pipe_mapper_returns_only_exact_handler_source_refs(synthetic_bundle, scenario, status, lane, scope):
-    result = invoke(synthetic_bundle, scenario)
-    assert result == {'result':'ok','status':status,'safe':True,'matches':True,'nonce':True,
-                      'lane':lane,'scope':scope,'closed':'EXITED'}
 
 
-@pytest.mark.parametrize('scenario', ['handler_mapper_disabled','handler_mapper_bad_schema','handler_mapper_bad_nonce',
-    'handler_mapper_bad_query','handler_mapper_bad_lane','handler_mapper_bad_scope','handler_mapper_extra',
-    'handler_mapper_hold','handler_mapper_mutation'])
-def test_pipe_mapper_refuses_unbound_or_mutated_requests(synthetic_bundle, scenario):
-    assert invoke(synthetic_bundle, scenario) == {'result':'refused'}
 
 
-@pytest.mark.parametrize('scenario', ['handler_future_time', 'handler_stale_time'])
-def test_handler_uses_owner_clock_and_abstains_for_future_or_stale_events(synthetic_bundle, scenario):
-    result = invoke(synthetic_bundle, scenario)
-    assert result['status'] == 'ABSTAIN' and result['expiry'] is False
-    assert result['expiry_scope'] == 'record_age_only' and result['snapshot_freshness'] == 'UNKNOWN'
 
 
 @pytest.mark.parametrize('scenario', ['package_orthogonal', 'package_stale'])
@@ -1228,149 +1141,16 @@ def test_manifest_pinned_invalid_content_policy_is_not_accepted(synthetic_bundle
 
 
 
-def test_coordinator_builds_before_service_and_retains_hold(monkeypatch):
-    from tools import wd_mind_full_runtime as runtime
-    from tools import wd_mind_runtime_process as process
-    trace = []
-    class Handler:
-        def build(self):
-            trace.append('build')
-            return {'schema':'wd.mind-flat-owner-build.v1','status':'BUILT_IN_MEMORY','authority':'none'}
-        def owner_status(self): return {'state':'RUNNING','owned':True}
-        def close(self): trace.append('close'); return {'state':'EXITED','owned':False}
-    class Controller:
-        def start(self): trace.append('refresh_start')
-        def status(self): return {'state':'RUNNING','last_result':None, 'owner':{'state':'RUNNING','owned':True}}
-        def stop(self, *, timeout=0): trace.append('refresh_stop'); return {'state':'STOPPED'}
-    class Service:
-        def start(self): trace.append('service_start'); return {'state':'STARTING','owned':True}
-        def status(self): return {'state':'RECEIVING','owned':True,'callback_pending':False,'io_pending':True}
-        def stop(self, *, timeout=0): trace.append('service_stop'); return {'state':'HOLD','owned':True}
-    monkeypatch.setattr(runtime, 'assemble_full_runtime', lambda **kw: object())
-    monkeypatch.setattr(runtime, 'create_manifest_worker_factory', lambda **kw: object())
-    monkeypatch.setattr(runtime, 'create_flat_request_handler', lambda **kw: Handler())
-    monkeypatch.setattr(runtime, 'create_flat_auto_refresh', lambda **kw: Controller())
-    def service(**kw):
-        trace.append('service_create')
-        assert 'build' in trace
-        assert kw['receive_timeout'] == kw['reply_timeout'] == 5
-        assert kw['callback_timeout'] == process._CANDIDATE_CALLBACK_TIMEOUT_SECONDS
-        return Service()
-    monkeypatch.setattr(process, 'create_candidate_service', service)
-    c = runtime.create_manifest_coordinator(enabled=True, bundle_root='synthetic', expected_manifest_sha256='a'*64,
-        lane='codex-lead-1', worker_timeout_seconds=5, lock_timeout_seconds=1,
-        shutdown_timeout=1, refresh_interval_seconds=10, bulk_contract_sha256='b'*64)
-    assert trace == []
-    c.start()
-    assert trace.index('build') < trace.index('service_create') < trace.index('service_start')
-    assert c.status()['state'] == 'READY'
-    assert c.stop(timeout=0)['state'] == 'HOLD'
-    assert 'close' not in trace and 'refresh_stop' not in trace
 
 
-@pytest.mark.parametrize('scenario', ['normal', 'starting', 'idle_hold', 'build_failure', 'controller_hold', 'callback'])
-def test_coordinator_state_and_callback_synthetic(monkeypatch, scenario):
-    from tools import wd_mind_full_runtime as runtime
-    from tools import wd_mind_runtime_process as process
-    trace = []
-    class Handler:
-        def build(self):
-            trace.append('build')
-            if scenario == 'build_failure': raise ValueError('synthetic')
-            return {'schema':'wd.mind-flat-owner-build.v1','status':'BUILT_IN_MEMORY','authority':'none'}
-        def owner_status(self): return {'state':'RUNNING','owned':True}
-        def close(self): trace.append('close'); return {'state':'EXITED','owned':False}
-    class Controller:
-        def start(self): trace.append('controller_start')
-        def status(self): return {'state':'RUNNING'}
-        def stop(self, *, timeout=0):
-            trace.append('controller_stop')
-            return {'state':'BUSY' if scenario == 'controller_hold' else 'STOPPED'}
-    class Service:
-        def __init__(self, cb): self.cb = cb
-        def start(self): trace.append('service_start')
-        def status(self):
-            return {'state':('STARTING' if scenario == 'starting' else 'HOLD' if scenario == 'idle_hold' else 'RECEIVING'), 'owned':True}
-        def stop(self, *, timeout=0): trace.append('service_stop'); return {'state':'STOPPED','owned':False}
-    monkeypatch.setattr(runtime, 'assemble_full_runtime', lambda **kw: object())
-    monkeypatch.setattr(runtime, 'create_manifest_worker_factory', lambda **kw: object())
-    monkeypatch.setattr(runtime, 'create_flat_request_handler', lambda **kw: Handler())
-    monkeypatch.setattr(runtime, 'create_flat_auto_refresh', lambda **kw: Controller())
-    monkeypatch.setattr(process, 'create_candidate_service', lambda **kw: Service(kw['handler']))
-    expected = [{'ref_sha256':'1'*64,'doc_id_sha256':'2'*64,'source_event_sha256':'3'*64}]
-    def mapper(**kw):
-        assert kw['handler'] is c._handler and kw['request'] == {'schema':'synthetic'}
-        return {'candidates':expected}
-    monkeypatch.setattr(runtime, 'map_pipe_candidates', mapper)
-    c = runtime.create_manifest_coordinator(enabled=True, bundle_root='synthetic', expected_manifest_sha256='a'*64,
-        lane='codex-lead-1', worker_timeout_seconds=5, lock_timeout_seconds=1,
-        shutdown_timeout=1, refresh_interval_seconds=10, bulk_contract_sha256='b'*64)
-    if scenario == 'build_failure':
-        with pytest.raises(runtime.FullRuntimeRefused): c.start()
-        assert c.status()['state'] == 'HOLD' and 'service_start' not in trace
-    else:
-        c.start()
-        assert c.status()['state'] == ('STARTING' if scenario == 'starting' else 'HOLD' if scenario == 'idle_hold' else 'READY')
-        if scenario == 'callback': assert c._service.cb({'schema':'synthetic'}) == expected
-        with pytest.raises(runtime.FullRuntimeRefused): c.start()
-        assert c.status()['state'] == ('STARTING' if scenario == 'starting' else 'HOLD' if scenario == 'idle_hold' else 'READY')
-    result = c.stop(timeout=0)
-    if scenario == 'controller_hold':
-        assert result['state'] == 'HOLD' and 'close' not in trace
-    else:
-        assert result['state'] == 'STOPPED' and trace[-1] == 'close'
-        if 'service_stop' in trace: assert trace.index('service_stop') < trace.index('controller_stop') < trace.index('close')
 
 
-def test_coordinator_is_default_off_and_rejects_bad_arguments():
-    from tools import wd_mind_full_runtime as runtime
-    with pytest.raises(runtime.FullRuntimeRefused): runtime.create_manifest_coordinator()
-    with pytest.raises(runtime.FullRuntimeRefused):
-        runtime.create_manifest_coordinator(enabled=True, bundle_root='synthetic', expected_manifest_sha256='a'*64,
-            lane=[], worker_timeout_seconds=5, lock_timeout_seconds=1, shutdown_timeout=1,
-            refresh_interval_seconds=10, bulk_contract_sha256='b'*64)
 
 
-def test_coordinator_synthetic_build_and_actual_mapper(synthetic_bundle):
-    assert invoke(synthetic_bundle, 'handler_coordinator') == {
-        'result':'ok','status':'READY','safe':True,'closed':'STOPPED','starts':1}
 
 
-def test_owner_loop_stop_retains_coordinator_until_start_completes():
-    import io, threading
-    from tools import wd_mind_full_runtime as runtime
-    ready, release, finished = threading.Event(), threading.Event(), threading.Event()
-    class Owner:
-        def start(self): ready.set(); assert release.wait(2); finished.set()
-        def status(self): return {'state':'READY'}
-        def stop(self, *, timeout):
-            assert finished.is_set()
-            return {'state':'STOPPED'}
-    class Commands:
-        def readline(self):
-            assert ready.wait(2)
-            return 'STOP\n'
-    class Output(io.StringIO):
-        def write(self, text):
-            result = super().write(text)
-            if json.loads(text)['state'] == 'HOLD': release.set()
-            return result
-    output = Output()
-    assert runtime._run_owner_loop(Owner(), Commands(), output) == 0
-    rows = [json.loads(line) for line in output.getvalue().splitlines()]
-    assert [row['state'] for row in rows] == ['STARTING', 'HOLD']
-    assert all(set(row) == {'schema','state'} for row in rows)
 
 
-def test_owner_entrypoint_non_elevated_check_precedes_coordinator(monkeypatch):
-    import io
-    from tools import wd_mind_full_runtime as runtime
-    calls = []
-    monkeypatch.setattr(runtime, '_owner_preflight', lambda **kw: calls.append('preflight') or False, raising=False)
-    monkeypatch.setattr(runtime, 'create_manifest_coordinator', lambda **kw: calls.append('coordinator'))
-    result = runtime._owner_entrypoint(['--owner','--bundle-root',r'C:\synthetic',
-        '--deployment-manifest-sha256','a'*64], io.StringIO(''), io.StringIO())
-    assert result != 0 and calls == ['preflight']
 
 
 @pytest.mark.parametrize('elevated', [False, True])
@@ -1399,237 +1179,48 @@ def test_owner_preflight_synthetic_pinned_bundle(synthetic_bundle, scenario, acc
     assert invoke(synthetic_bundle, scenario) == {'result':'ok','accepted':accepted,'token_calls':calls}
 
 
-def test_owner_isolated_bootstrap_imports_only_bundle_code_synthetic(synthetic_bundle):
-    bootstrap = str(synthetic_bundle['bundle'] / 'tools-bootstrap')
-    script = ('import sys,runpy; sys.path.insert(0,sys.argv.pop(1)); '
-              "runpy.run_module('tools.wd_mind_full_runtime',run_name='__main__')")
-    proc = subprocess.run([sys.executable, '-I', '-S', '-B', '-c', script, bootstrap],
-                          cwd=synthetic_bundle['bundle'], capture_output=True, text=True, timeout=15)
-    assert proc.returncode == 1, proc.stderr
-    assert json.loads(proc.stdout) == {'schema':'wd.mind-owner-status.v1','state':'HOLD'}
 
 
-def test_historical_query_separate_from_startup_age_limit(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'package_historical')
-    assert result == {'result':'ok','status':'SEMANTIC_CANDIDATE','scope':'historical',
-                      'age_ok':True,'hits':3,'startup':'ABSTAIN','authority':'none',
-                      'freshness':'UNKNOWN','latest':'UNKNOWN','refs':True,'safe':True}
 
 
-@pytest.mark.parametrize('scenario',['package_historical_disabled','package_historical_mutation',
-    'package_historical_provider_error'])
-def test_historical_query_refuses_without_protection(synthetic_bundle, scenario):
-    assert invoke(synthetic_bundle, scenario) == {'result':'refused'}
 
 
-def test_historical_query_orthogonal_abstains(synthetic_bundle):
-    result = invoke(synthetic_bundle, 'package_historical_orthogonal')
-    assert result['status'] == 'ABSTAIN' and result['hits'] == 0 and result['startup'] == 'ABSTAIN'
 
 
-@pytest.mark.parametrize('scenario', ['handler_historical_untrusted','handler_historical_disabled'])
-def test_historical_public_route_refuses_untrusted_or_disabled(synthetic_bundle, scenario):
-    assert invoke(synthetic_bundle, scenario) == {'result':'refused'}
 
 
-def test_historical_public_route_uses_bound_synthetic_owner(synthetic_bundle):
-    assert invoke(synthetic_bundle, 'handler_historical') == {'result':'ok','status':'SEMANTIC_CANDIDATE',
-        'scope':'historical','old':True,'safe':True,'closed':'EXITED'}
 
 
-@pytest.mark.parametrize('scenario', ['handler_historical_source_mutation',
-    'handler_historical_provider_error', 'handler_historical_bundle_mutation'])
-def test_historical_public_route_refuses_mid_query_mutation(synthetic_bundle, scenario):
-    assert invoke(synthetic_bundle, scenario) == {'result':'refused'}
 
 
-def test_fast_fenced_build_uses_bound_synthetic_worker(synthetic_bundle):
-    assert invoke(synthetic_bundle, 'handler_fast') == {'result':'ok','build':'BUILT_IN_MEMORY',
-        'owner':'RUNNING','closed':'EXITED','starts':1}
 
 
-def test_fast_fenced_build_is_default_off(synthetic_bundle):
-    assert invoke(synthetic_bundle, 'handler_fast_disabled') == {'result':'refused'}
 
 
-def test_fast_fenced_build_multiple_batches(synthetic_bundle):
-    assert invoke(synthetic_bundle, 'handler_fast_multibatch') == {'result':'ok','build':'BUILT_IN_MEMORY',
-        'owner':'RUNNING','closed':'EXITED','starts':1}
 
 
-@pytest.mark.parametrize('scenario', ['handler_fast_untrusted','handler_fast_source_mutation',
-    'handler_fast_bundle_mutation','handler_fast_snapshot_mutation','handler_fast_request_mutation',
-    'handler_fast_provider_error'])
-def test_fast_fenced_build_refuses_mutation_or_untrusted_provider(synthetic_bundle, scenario):
-    assert invoke(synthetic_bundle, scenario) == {'result':'refused'}
 
 
-def test_fast_batch_fence_checks_order_nonce_and_after_bytes():
-    from types import SimpleNamespace
-    from tools import wd_mind_full_runtime as runtime
-    from tools import wd_mind_content_query_readonly as reader
-    fence=object.__new__(runtime._FastBuildFence)
-    fence.pending=None; fence.position=0; fence.chunks=(); fence.nonces=set()
-    fence.rows=tuple((str(i),'passage: synthetic '+str(i)) for i in range(5))
-    fence.handler=SimpleNamespace(_adapter=SimpleNamespace(runtime_binding_sha256='b'*64),
-                                  _rotator=SimpleNamespace(_build_rows=fence.rows))
-    fence.consumed=0;fence.batch=()
-    fence.set_batch(tuple('passage: synthetic '+str(i) for i in range(5)))
-    def payload(values, nonce):
-        item={'schema':'wd.mind-supervised-e5-request.v1','operation':'refresh','nonce':nonce,
-              'encoder_binding_sha256':'b'*64,'passages':list(values)}
-        item['request_sha256']=reader._sha(reader._canonical(item))
-        return reader._canonical(item)
-    first=payload(fence.chunks[0], '1'*64)
-    second=payload(fence.chunks[1], '2'*64)
-    with pytest.raises(ValueError): fence.request('before',second)
-    fence.request('before',first)
-    with pytest.raises(ValueError): fence.request('after',second)
-    fence.request('after',first)
-    with pytest.raises(ValueError): fence.request('before',payload(fence.chunks[1], '1'*64))
-    fence.request('before',second);fence.request('after',second)
-    assert fence.position == 2 and fence.pending is None
 
 
-def test_fast_build_hold_retains_owner_without_publishing_partial(synthetic_bundle):
-    assert invoke(synthetic_bundle, 'handler_fast_hold') == {'result':'ok','owner':'HOLD','owned':True,
-        'close':'HOLD','no_partial':True,'failed':True}
 
 
-def test_fast_build_final_failure_does_not_leave_partial_memory(synthetic_bundle):
-    assert invoke(synthetic_bundle, 'handler_fast_postvalidation') == {'result':'ok','owner':'RUNNING',
-        'owned':True,'close':'EXITED','no_partial':True,'failed':True}
 
 
-def test_fast_batch_fence_rejects_foreign_batch_before_provider():
-    from tools import wd_mind_full_runtime as runtime
-    fence=object.__new__(runtime._FastBuildFence)
-    fence.pending=None; fence.position=0; fence.chunks=(); fence.nonces=set()
-    fence.rows=(('record-one','passage: screened'),)
-    fence.consumed=0; fence.batch=()
-    with pytest.raises(ValueError): fence.set_batch(('passage: foreign',))
 
 
-def test_fast_fence_mid_hash_write_refused_before_provider(synthetic_bundle):
-    assert invoke(synthetic_bundle, 'handler_fast_mid_hash') == {'result':'refused','starts':0,
-        'provider_calls':0,'changed':True,'foreign_calls':0,'no_partial':True}
 
 
-def test_fast_fence_rows_rebind_never_delivers_foreign_passages(synthetic_bundle):
-    assert invoke(synthetic_bundle, 'handler_fast_rebind') == {'result':'refused','starts':1,
-        'provider_calls':1,'changed':False,'foreign_calls':0,'no_partial':True}
 
 
-def test_coordinator_fast_build_requires_explicit_opt_in(monkeypatch):
-    from tools import wd_mind_full_runtime as runtime
-    from tools import wd_mind_runtime_process as process
-    trace=[]
-    class Handler:
-        def build(self):
-            trace.append('legacy')
-            return {'schema':'wd.mind-flat-owner-build.v1','status':'BUILT_IN_MEMORY','authority':'none'}
-        def owner_status(self): return {'state':'RUNNING','owned':True}
-        def close(self): return {'state':'EXITED','owned':False}
-    class Controller:
-        def start(self): pass
-        def status(self): return {'state':'RUNNING'}
-        def stop(self,*,timeout=0): return {'state':'STOPPED'}
-    class Service:
-        def start(self): pass
-        def status(self): return {'state':'RECEIVING','owned':True}
-        def stop(self,*,timeout=0): return {'state':'STOPPED','owned':False}
-    monkeypatch.setattr(runtime,'assemble_full_runtime',lambda **kw:object())
-    monkeypatch.setattr(runtime,'create_manifest_worker_factory',lambda **kw:object())
-    monkeypatch.setattr(runtime,'create_flat_request_handler',lambda **kw:Handler())
-    monkeypatch.setattr(runtime,'create_flat_auto_refresh',lambda **kw:Controller())
-    monkeypatch.setattr(process,'create_candidate_service',lambda **kw:Service())
-    def fast(**kw):
-        trace.append('fast')
-        assert kw['enabled'] is True and type(kw['handler']) is Handler
-        return {'schema':'wd.mind-flat-owner-build.v1','status':'BUILT_IN_MEMORY','authority':'none'}
-    monkeypatch.setattr(runtime,'build_fast_fenced_owner',fast)
-    common=dict(enabled=True,bundle_root='synthetic',expected_manifest_sha256='a'*64,lane='codex-lead-1',
-        worker_timeout_seconds=5,lock_timeout_seconds=1,shutdown_timeout=1,refresh_interval_seconds=10,
-        bulk_contract_sha256='b'*64)
-    first=runtime.create_manifest_coordinator(**common)
-    first.start();first.stop(timeout=0)
-    second=runtime.create_manifest_coordinator(**common,fast_build=True)
-    second.start();second.stop(timeout=0)
-    assert trace == ['legacy','fast']
-    with pytest.raises(runtime.FullRuntimeRefused): runtime.create_manifest_coordinator(**common,fast_build=1)
 
 
-def test_coordinator_fast_opt_in_with_bound_synthetic_owner(synthetic_bundle):
-    assert invoke(synthetic_bundle, 'handler_coordinator_fast') == {
-        'result':'ok','status':'READY','safe':True,'closed':'STOPPED','starts':1}
 
 
-def test_owner_entrypoint_fast_option_is_explicit(monkeypatch):
-    import io
-    from tools import wd_mind_full_runtime as runtime
-    calls=[]
-    monkeypatch.setattr(runtime,'_owner_preflight',lambda **kw:True)
-    monkeypatch.setattr(runtime,'_owner_fast_release',lambda **kw:b'synthetic-pinned-release')
-    monkeypatch.setattr(runtime,'create_manifest_coordinator',lambda **kw:calls.append(kw) or object())
-    monkeypatch.setattr(runtime,'_run_owner_loop',lambda *args:0)
-    args=['--owner','--bundle-root',r'C:\synthetic','--deployment-manifest-sha256','a'*64]
-    assert runtime._owner_entrypoint(args,io.StringIO(''),io.StringIO()) == 0
-    assert runtime._owner_entrypoint(args+['--fast-build'],io.StringIO(''),io.StringIO()) == 0
-    assert runtime._owner_entrypoint(args+['--fast-build','--fast-build'],io.StringIO(''),io.StringIO()) != 0
-    assert [call['fast_build'] for call in calls] == [False,True]
 
 
-@pytest.mark.parametrize('case,allowed', [
-    ('valid',True),('valid_long',True),('absent',False),('v1',False),('extra',False),('false',False),
-    ('integer',False),('wrong_entrypoint',False),('wrong_timeout',False),('bad_pin',False),('swap',False),
-    ('disabled',False),('missing_field',False),('wrong_schema',False),('duplicate_key',False)])
-def test_owner_fast_cli_requires_exact_manifest_release_binding(tmp_path,monkeypatch,case,allowed):
-    import io
-    from tools import wd_mind_full_runtime as runtime
-    config={'schema':'wd.mind-startup-guardian.v2','enabled':True,'entrypoint':'tools/wd_mind_runtime_process.py',
-            'ready_timeout_seconds':15,'fast_build':True}
-    if case=='valid_long': config['ready_timeout_seconds']=600
-    if case=='v1': config={'schema':'wd.mind-startup-guardian.v1','enabled':True,
-        'entrypoint':'tools/wd_mind_runtime_process.py','ready_timeout_seconds':15}
-    if case=='extra': config['extra']=True
-    if case=='false': config['fast_build']=False
-    if case=='integer': config['fast_build']=1
-    if case=='wrong_entrypoint': config['entrypoint']='tools/other.py'
-    if case=='wrong_timeout': config['ready_timeout_seconds']=601
-    if case=='disabled': config['enabled']=False
-    if case=='missing_field': del config['fast_build']
-    if case=='wrong_schema': config['schema']='wd.mind-startup-guardian.v3'
-    manifest={'schema_version':1}
-    if case!='absent': manifest['mind_startup_guardian']=config
-    raw=canonical(manifest)
-    if case=='duplicate_key': raw=raw.replace(b'"schema_version":1',b'"schema_version":1,"schema_version":1')
-    (tmp_path/'deployment-manifest.json').write_bytes(raw)
-    digest='0'*64 if case=='bad_pin' else hashlib.sha256(raw).hexdigest()
-    calls=[]
-    def preflight(**kwargs):
-        if case=='swap': (tmp_path/'deployment-manifest.json').write_bytes(b'{}')
-        return True
-    monkeypatch.setattr(runtime,'_owner_preflight',preflight)
-    monkeypatch.setattr(runtime,'create_manifest_coordinator',lambda **kwargs:calls.append(kwargs) or object())
-    monkeypatch.setattr(runtime,'_run_owner_loop',lambda *args:0)
-    code=runtime._owner_entrypoint(['--owner','--bundle-root',str(tmp_path),
-        '--deployment-manifest-sha256',digest,'--fast-build'],io.StringIO(),io.StringIO())
-    assert (code==0) is allowed
-    assert len(calls) == int(allowed)
 
 
-def test_owner_legacy_cli_does_not_require_guardian_fast_release(monkeypatch):
-    import io
-    from tools import wd_mind_full_runtime as runtime
-    calls=[]
-    monkeypatch.setattr(runtime,'_owner_preflight',lambda **kw:True)
-    def never(**kwargs): raise AssertionError('legacy must not read fast release')
-    monkeypatch.setattr(runtime,'_owner_fast_release',never)
-    monkeypatch.setattr(runtime,'create_manifest_coordinator',lambda **kw:calls.append(kw) or object())
-    monkeypatch.setattr(runtime,'_run_owner_loop',lambda *args:0)
-    assert runtime._owner_entrypoint(['--owner','--bundle-root',r'C:\synthetic',
-        '--deployment-manifest-sha256','a'*64],io.StringIO(),io.StringIO())==0
-    assert calls[0]['fast_build'] is False
 
 
 def test_single_owner_interrupt_during_spawn_preserves_owned_hold(tmp_path, monkeypatch):
@@ -1663,3 +1254,33 @@ def test_single_owner_interrupt_during_spawn_preserves_owned_hold(tmp_path, monk
         if getattr(owner, '_launch_thread', None) is not None:
             owner._launch_thread.join(timeout=2)
 
+
+
+@pytest.mark.parametrize('entrypoint', ['handler', 'refresh', 'fast', 'coordinator', 'entrypoint'])
+def test_deferred_legacy_rotator_routes_refuse_without_starting_a_worker(monkeypatch, entrypoint):
+    from tools import wd_mind_full_runtime as runtime
+    if entrypoint == 'entrypoint':
+        import io
+        output = io.StringIO()
+        assert runtime._owner_entrypoint([], io.StringIO(), output) != 0
+        assert 'READY' not in output.getvalue()
+        return
+    if entrypoint == 'handler': call = lambda: runtime.create_flat_request_handler(enabled=True)
+    elif entrypoint == 'fast': call = lambda: runtime.build_fast_fenced_owner(enabled=True)
+    elif entrypoint == 'coordinator': call = lambda: runtime.create_manifest_coordinator(enabled=True)
+    else:
+        handler = object.__new__(runtime._FlatRequestHandler)
+        call = handler.refresh
+    with pytest.raises(runtime.FullRuntimeRefused, match='^mind_full_runtime_refused$'):
+        call()
+
+
+def test_single_owner_package_has_unchanged_static_closure_without_rotator():
+    from test_bridge_code_package_closure import _closure, _packaged_python
+    omitted = 'tools/wd_mind_e5_rotating_client.py'
+    entries = _packaged_python()
+    assert omitted in entries
+    seeds = [entry for entry in entries if entry != omitted]
+    gaps, unresolved = _closure(seeds)
+    assert not gaps, gaps
+    assert not unresolved, unresolved

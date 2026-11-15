@@ -721,70 +721,7 @@ class _FlatRequestHandler:
         raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
     def refresh(self):
-        """Rebind a longer prefix; publish the replacement only after full build.
-
-        Failure preserves the old memory object but refuses requests. A pending
-        cooperative owner remains reachable until close proves it has exited.
-        """
-        if not self._lock.acquire(blocking=False):
-            raise FullRuntimeRefused('mind_full_runtime_refused') from None
-        try:
-            if self._closed or self._failed or self._memory is None or self._pending_rotator is not None:
-                raise ValueError('state')
-            self._running_owner()
-            self._source_check()
-            bundle = self._binding._PrivateBinding__bundle
-            manifest = self._binding._PrivateBinding__manifest
-            candidate = assemble_full_runtime(enabled=True, bundle_root=str(bundle), expected_manifest_sha256=manifest)
-            snapshot = candidate.snapshot_for_query()
-            old_cursor, new_cursor = (self._snapshot['messages']['end_cursor'], snapshot['messages']['end_cursor'])
-            if old_cursor.file_identity != new_cursor.file_identity or new_cursor.offset < old_cursor.offset:
-                raise ValueError('source_replaced')
-            if new_cursor.offset == old_cursor.offset:
-                self._source_check()
-                return {'schema': 'wd.mind-flat-owner-refresh.v1', 'status': 'UNCHANGED', 'authority': 'none'}
-            closed = self._rotator.close()
-            if (type(closed) is not dict or closed.get('state') != 'EXITED'
-                    or closed.get('owned') is not False or closed.get('exit_code') != 0):
-                raise ValueError('owner_retained')
-            from tools import wd_mind_e5_rotating_client as rotating
-            from tools import wd_mind_e5_snapshot_adapter as adapter_module
-            current_manifest = prefix._read_pinned(bundle / 'deployment-manifest.json', manifest,
-                                                    prefix.MAX_CONTROL_BYTES)
-            document = json.loads(current_manifest.decode('utf-8-sig'), object_pairs_hook=prefix._unique_object,
-                                  parse_constant=reader._bad_constant)
-            runtime_pin = document['files']['wd-mind-e5-encoder-binding.json']
-            raw = prefix._read_pinned(bundle / 'wd-mind-e5-encoder-binding.json', runtime_pin, 65536)
-            def source_check():
-                if self._pending_rotator is rotator:
-                    _flat_snapshot(candidate, snapshot)
-                    return snapshot['projection_sha256']
-                if self._rotator is rotator:
-                    return self._source_check()
-                raise ValueError('owner_changed')
-            rotator = rotating.RotatingGracefulE5Client(factory=self._factory,
-                encoder_binding_sha256=reader._sha(raw), snapshot_sha256=snapshot['projection_sha256'],
-                source_check=source_check, shutdown_timeout=self._timeout, bulk_contract_sha256=self._bulk)
-            self._pending_rotator = rotator  # Retain before any callback can create a child.
-            adapter = adapter_module.create_flat_adapter(enabled=True, bundle_root=str(bundle),
-                expected_manifest_sha256=manifest, client=rotator)
-            memory = build_flat_memory(enabled=True, binding=candidate, passage_encoder=adapter.passage,
-                encoder_binding_bytes=adapter.encoder_binding_bytes,
-                encoder_binding_sha256=adapter.encoder_binding_sha256)
-            source_check()
-            owner = rotator.owner
-            status = owner.status() if owner is not None else None
-            if type(status) is not dict or status.get('state') != 'RUNNING' or status.get('owned') is not True:
-                raise ValueError('owner')
-            self._binding, self._snapshot, self._rotator, self._adapter, self._memory = (
-                candidate, snapshot, rotator, adapter, memory)
-            self._frozen_flat = (memory.manifest, memory.ids, memory.vectors, memory.encoder_binding)
-            self._pending_rotator = None
-            return {'schema': 'wd.mind-flat-owner-refresh.v1', 'status': 'REFRESHED', 'authority': 'none'}
-        except Exception:
-            self._failed = True
-        finally:
-            self._lock.release()
+        # Deferred: rotation/refresh is outside the single-owner slice.
         raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
     def handle(self, request):
@@ -904,49 +841,8 @@ class _FlatRequestHandler:
 
 
 def query_historical_flat_memory(*, enabled=False, handler=None, lane=None, own_lane_only=False, query=None):
-    """Historical, in-process eval via the bound local supervised E5 owner.
-
-    Screened text is returned only in process; callers must not log, persist,
-    send to bridge/named pipe, or index evaluation questions or answers.
-    """
-    if enabled is not True or type(handler) is not _FlatRequestHandler:
-        raise FullRuntimeRefused('mind_full_runtime_refused') from None
-    if not handler._lock.acquire(blocking=False):
-        raise FullRuntimeRefused('mind_full_runtime_refused') from None
-    result = None
-    try:
-        from tools import wd_mind_e5_snapshot_adapter as adapter_module
-        if (handler._closed or handler._failed or handler._memory is None
-                or type(handler._factory) is not _ManifestWorkerFactory
-                or handler._rotator._factory is not handler._factory
-                or type(handler._adapter) is not adapter_module._FlatAdapter
-                or handler._adapter._client is not handler._rotator):
-            raise ValueError('owner')
-        factory = handler._factory
-        bundle = str(handler._binding._PrivateBinding__bundle)
-        manifest = handler._binding._PrivateBinding__manifest
-        if (factory._bundle != bundle or factory._manifest != manifest
-                or handler._adapter.encoder_binding_bytes != handler._memory.encoder_binding):
-            raise ValueError('binding')
-        def checkpoint():
-            if resolve_manifest_runtime_location(enabled=True, bundle_root=bundle,
-                    expected_manifest_sha256=manifest) != factory._location:
-                raise ValueError('location')
-            _worker_factory_preflight(bundle, manifest, factory._lock)
-            handler._source_check()
-            handler._running_owner()
-            handler._adapter._check()
-        checkpoint()
-        result = _query_historical_flat_memory(enabled=True, memory=handler._memory, lane=lane,
-            own_lane_only=own_lane_only, query=query, query_encoder=handler._adapter.query)
-        checkpoint()
-    except Exception:
-        result = None
-    finally:
-        handler._lock.release()
-    if result is None:
-        raise FullRuntimeRefused('mind_full_runtime_refused') from None
-    return result
+    # Deferred: the single-owner slice provides no legacy rotator or guardian.
+    raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
 
 class _FastBuildFence:
@@ -1084,96 +980,8 @@ class _FastBuildFence:
 
 
 def build_fast_fenced_owner(*, enabled=False, handler=None):
-    """Opt-in internal build; all checkpoints hash source, full derivation at ends.
-
-    A provider must be the bound local manifest-worker rotator and adapter.
-    The distinct profile does not claim continuous same-user ABA detection,
-    authenticated senders, bounded memory, or a measured latency target.
-    """
-    if enabled is not True or type(handler) is not _FlatRequestHandler:
-        raise FullRuntimeRefused('mind_full_runtime_refused') from None
-    if not handler._lock.acquire(blocking=False):
-        raise FullRuntimeRefused('mind_full_runtime_refused') from None
-    result, candidate, armed = None, None, False
-    try:
-        from tools import wd_mind_e5_snapshot_adapter as adapter_module
-        from tools import wd_mind_e5_rotating_client as rotating
-        rotator = handler._rotator
-        if (handler._closed or handler._failed or handler._memory is not None
-                or handler._pending_rotator is not None or type(handler._factory) is not _ManifestWorkerFactory
-                or type(rotator) is not rotating.RotatingGracefulE5Client or rotator._factory is not handler._factory
-                or type(handler._adapter) is not adapter_module._FlatAdapter or handler._adapter._client is not rotator
-                or rotator._client is not None or rotator.owner is not None):
-            raise ValueError('owner')
-        factory, binding, snapshot = handler._factory, handler._binding, handler._snapshot
-        if (factory._bundle != str(binding._PrivateBinding__bundle)
-                or factory._manifest != binding._PrivateBinding__manifest):
-            raise ValueError('binding')
-        _worker_factory_preflight(factory._bundle, factory._manifest, factory._lock)
-        if resolve_manifest_runtime_location(enabled=True, bundle_root=factory._bundle,
-                expected_manifest_sha256=factory._manifest) != factory._location:
-            raise ValueError('runtime')
-        projection = _flat_snapshot(binding, snapshot)
-        fence = _FastBuildFence(handler, snapshot, projection['messages']['records'])
-        if not fence.rows:
-            raise ValueError('records')
-        encoder_bytes = handler._adapter.encoder_binding_bytes
-        encoder_sha = handler._adapter.encoder_binding_sha256
-        _checked_encoder_binding(encoder_bytes, encoder_sha)
-        rotator.arm_build_fence(enabled=True, source_check=fence.check, request_fence=fence.request)
-        armed = True
-        anchor = rotator._build_rows
-        if type(anchor) is not tuple or anchor != fence.rows:
-            raise ValueError('anchor')
-        vectors = []
-        for start in range(0, len(anchor), 16):
-            batch = anchor[start:start+16]
-            fence.set_batch(tuple(text for _, text in batch))
-            fence.check()
-            raw = handler._adapter.passage(fence.batch)
-            fence.check()
-            if (fence.pending is not None or fence.position != len(fence.chunks)
-                    or type(raw) is not bytes or len(raw) != len(batch) * 1536):
-                raise ValueError('batch_result')
-            for index in range(len(batch)):
-                reader._q4_vector(struct.unpack('<384f', raw[index*1536:(index+1)*1536]))
-            vectors.append(raw)
-        if (fence.pending is not None or fence.position != len(fence.chunks)
-                or fence.consumed + len(fence.batch) != len(anchor)
-                or rotator._build_rows is not anchor or rotator._build_index != len(anchor)):
-            raise ValueError('incomplete_build')
-        ids = tuple(key for key, _ in anchor)
-        vectors = b''.join(vectors)
-        manifest = {'schema':'wd.mind-flat-f32-memory.v1','authority':'none',
-                    'projection_sha256':snapshot['projection_sha256'],'records':len(ids),
-                    'encoder_binding_sha256':encoder_sha, **_flat_hashes(ids,vectors)}
-        final_projection = _flat_snapshot(binding, snapshot)
-        if tuple(sorted((r['record_id'], 'passage: ' + reader.decode_text(r['stored_text'])[:2000])
-                        for r in final_projection['messages']['records'])) != anchor:
-            raise ValueError('projection_changed')
-        rotator.disarm_build_fence(enabled=True)
-        armed = False
-        candidate = _PrivateFlatMemory(binding, snapshot, reader._canonical(manifest), ids, vectors, encoder_bytes)
-        handler._source_check()
-        _flat_check(candidate)
-        handler._running_owner()
-        handler._memory = candidate
-        handler._frozen_flat = (candidate.manifest, candidate.ids, candidate.vectors, candidate.encoder_binding)
-        result = {'schema':'wd.mind-flat-owner-build.v1','status':'BUILT_IN_MEMORY','authority':'none'}
-    except BaseException:
-        if candidate is not None and handler._memory is candidate:
-            handler._memory = handler._frozen_flat = None
-        handler._failed = True
-    finally:
-        if armed:
-            try: handler._rotator.disarm_build_fence(enabled=True)
-            except Exception:
-                handler._failed = True
-                result = None
-        handler._lock.release()
-    if result is None:
-        raise FullRuntimeRefused('mind_full_runtime_refused') from None
-    return result
+    # Deferred: the single-owner slice provides no legacy rotator or guardian.
+    raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
 
 class _FlatLaneView:
@@ -1420,53 +1228,8 @@ def create_single_manifest_owner(*, enabled=False, binding=None, lane=None, work
 
 def create_flat_request_handler(*, enabled=False, binding=None, lane=None, worker_factory=None,
                                 shutdown_timeout=None, bulk_contract_sha256=None):
-    """Construct an inert in-process owner before any worker or model starts.
-
-    Caller owns factory authority, lane authentication, non-elevation and IPC.
-    No network listener or child process is created here. Keep the returned
-    handler alive even after a refused build until close establishes exit.
-    """
-    result = None
-    try:
-        if (enabled is not True or type(binding) is not _PrivateBinding or type(lane) is not str
-                or lane not in reader._LANES or not callable(worker_factory) or isinstance(worker_factory, type)):
-            raise ValueError('input')
-        snapshot = binding.snapshot_for_query()
-        bundle, manifest = binding._PrivateBinding__bundle, binding._PrivateBinding__manifest
-        fleet = json.loads(binding._PrivateBinding__controls[0].decode('utf-8'),
-                           object_pairs_hook=prefix._unique_object, parse_constant=reader._bad_constant)
-        names = {entry['agent'] for entry in fleet['lanes']} | {fleet['tools_supervisor']['agent']}
-        if lane not in names:
-            raise ValueError('lane')
-        manifest_raw = prefix._read_pinned(bundle / 'deployment-manifest.json', manifest, prefix.MAX_CONTROL_BYTES)
-        document = json.loads(manifest_raw.decode('utf-8-sig'), object_pairs_hook=prefix._unique_object,
-                              parse_constant=reader._bad_constant)
-        digest = document['files']['wd-mind-e5-encoder-binding.json']
-        raw = prefix._read_pinned(bundle / 'wd-mind-e5-encoder-binding.json', digest, 65536)
-        from tools import wd_mind_e5_rotating_client as rotating
-        from tools import wd_mind_e5_snapshot_adapter as adapter_module
-        if bulk_contract_sha256 != rotating.BULK_CONTRACT_SHA256:
-            raise ValueError('bulk_contract')
-        holder = {}
-        def source_check():
-            handler = holder.get('handler')
-            if handler is None:
-                _flat_snapshot(binding, snapshot)
-                return snapshot['projection_sha256']
-            return handler._source_check()
-        rotator = rotating.RotatingGracefulE5Client(factory=worker_factory,
-            encoder_binding_sha256=reader._sha(raw), snapshot_sha256=snapshot['projection_sha256'],
-            source_check=source_check, shutdown_timeout=shutdown_timeout, bulk_contract_sha256=bulk_contract_sha256)
-        adapter = adapter_module.create_flat_adapter(enabled=True, bundle_root=str(bundle),
-            expected_manifest_sha256=manifest, client=rotator)
-        result = _FlatRequestHandler(binding, snapshot, lane, names, rotator, adapter,
-                                     worker_factory, shutdown_timeout, bulk_contract_sha256)
-        holder['handler'] = result
-    except Exception:
-        pass
-    if result is None:
-        raise FullRuntimeRefused('mind_full_runtime_refused') from None
-    return result
+    # Deferred: the single-owner slice provides no legacy rotator or guardian.
+    raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
 
 _STARTUP_PIPE_QUERY = 'current task active work next step recent status'
@@ -1621,21 +1384,8 @@ class _FlatAutoRefresh:
 
 
 def create_flat_auto_refresh(*, enabled=False, handler=None, interval_seconds=None):
-    """Create a dormant controller; there is no thread or worker before start."""
-    if (enabled is not True or type(handler) is not _FlatRequestHandler
-            or type(interval_seconds) not in (int, float) or not math.isfinite(interval_seconds)
-            or not 0.05 <= interval_seconds <= 3600):
-        raise FullRuntimeRefused('mind_full_runtime_refused') from None
-    if not handler._lock.acquire(blocking=False):
-        raise FullRuntimeRefused('mind_full_runtime_refused') from None
-    try:
-        if handler._closed or handler._failed or handler._memory is None or handler._refresh_controller is not None:
-            raise FullRuntimeRefused('mind_full_runtime_refused') from None
-        controller = _FlatAutoRefresh(handler, float(interval_seconds))
-        handler._refresh_controller = controller
-        return controller
-    finally:
-        handler._lock.release()
+    # Deferred: the single-owner slice provides no legacy rotator or guardian.
+    raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
 
 class _ManifestCoordinator:
@@ -1761,23 +1511,8 @@ def create_manifest_coordinator(*, enabled=False, bundle_root=None, expected_man
                                 lane=None, worker_timeout_seconds=None, lock_timeout_seconds=None,
                                 shutdown_timeout=None, refresh_interval_seconds=None, bulk_contract_sha256=None,
                                 fast_build=False):
-    """Return an inert owner; explicit start creates workers and the service.
-
-    Caller must ensure non-elevation and retain this object through all failures.
-    Descriptor, source, and worker verification is delegated to pinned components.
-    """
-    if (enabled is not True or type(fast_build) is not bool or type(bundle_root) is not str or not bundle_root
-            or not reader._hex(expected_manifest_sha256) or type(lane) is not str or lane not in reader._LANES
-            or not reader._hex(bulk_contract_sha256)
-            or any(type(x) not in (int, float) or not math.isfinite(x) for x in
-                   (worker_timeout_seconds, lock_timeout_seconds, shutdown_timeout, refresh_interval_seconds))
-            or not 0 < worker_timeout_seconds <= 1800 or not 0 <= lock_timeout_seconds <= 30
-            or not 0 <= shutdown_timeout <= 15 or not 0.05 <= refresh_interval_seconds <= 3600):
-        raise FullRuntimeRefused('mind_full_runtime_refused') from None
-    return _ManifestCoordinator({'bundle_root':bundle_root, 'expected_manifest_sha256':expected_manifest_sha256,
-        'lane':lane, 'worker_timeout_seconds':worker_timeout_seconds, 'lock_timeout_seconds':lock_timeout_seconds,
-        'shutdown_timeout':shutdown_timeout, 'refresh_interval_seconds':refresh_interval_seconds,
-        'bulk_contract_sha256':bulk_contract_sha256, 'fast_build':fast_build})
+    # Deferred: the single-owner slice provides no legacy rotator or guardian.
+    raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
 
 def _owner_preflight(*, bundle_root, manifest_sha256):
@@ -1898,36 +1633,8 @@ def _owner_fast_release(*, bundle_root, manifest_sha256):
 
 
 def _owner_entrypoint(argv, stdin, stdout):
-    """Explicit opt-in with no user-chosen timeout, source or provider."""
-    try:
-        if type(argv) is not list or argv.count('--fast-build') > 1:
-            raise ValueError('arguments')
-        fast_build = '--fast-build' in argv
-        argv = [item for item in argv if item != '--fast-build']
-        if (len(argv) != 5 or argv.count('--owner') != 1 or argv.count('--bundle-root') != 1
-                or argv.count('--deployment-manifest-sha256') != 1):
-            raise ValueError('arguments')
-        i, j = argv.index('--bundle-root'), argv.index('--deployment-manifest-sha256')
-        if i + 1 >= len(argv) or j + 1 >= len(argv) or len({argv.index('--owner'),i,i+1,j,j+1}) != 5:
-            raise ValueError('arguments')
-        bundle, digest = argv[i+1], argv[j+1]
-        release = _owner_fast_release(bundle_root=bundle, manifest_sha256=digest) if fast_build else None
-        if _owner_preflight(bundle_root=bundle, manifest_sha256=digest) is not True:
-            raise ValueError('preflight')
-        if fast_build and _owner_fast_release(bundle_root=bundle, manifest_sha256=digest) != release:
-            raise ValueError('fast_release_changed')
-        from tools import wd_mind_e5_rotating_client as rotating
-        coordinator = create_manifest_coordinator(enabled=True, bundle_root=bundle, expected_manifest_sha256=digest,
-            lane='codex-lead-1', worker_timeout_seconds=120, lock_timeout_seconds=5, shutdown_timeout=5,
-            refresh_interval_seconds=300, bulk_contract_sha256=rotating.BULK_CONTRACT_SHA256,
-            fast_build=fast_build)
-        return _run_owner_loop(coordinator, stdin, stdout)
-    except Exception:
-        try:
-            stdout.write('{"schema":"wd.mind-owner-status.v1","state":"HOLD"}\n')
-            stdout.flush()
-        except Exception: pass
-        return 1
+    # Deferred: the single-owner slice provides no legacy rotator or guardian.
+    return 2
 
 
 if __name__ == '__main__':

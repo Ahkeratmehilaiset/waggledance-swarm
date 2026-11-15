@@ -1912,6 +1912,64 @@ def test_provider_adapter_contains_underlying_exception_without_echo(reader, tmp
         _refused(reader, lambda: loader.load(next(iter(case["index_provider"].indices))))
 
 
+@pytest.mark.parametrize("exception", [SystemExit, GeneratorExit])
+@pytest.mark.parametrize("phase", ["encoder", "index"])
+@pytest.mark.parametrize("complete", [False, True])
+def test_query_provider_termination_has_fixed_refusal_without_private_context(
+        reader, tmp_path, capsys, exception, phase, complete):
+    import traceback
+
+    case = _semantic_case(reader, tmp_path, all_tasks=complete)
+    marker = "synthetic-provider-private-detail"
+    calls = []
+
+    def fail(*unused):
+        calls.append(phase)
+        raise exception(marker)
+
+    if phase == "encoder":
+        case["encoder_provider"].on_query = fail
+    else:
+        case["index_provider"].on_load = fail
+    entry = reader.query_complete_content_snapshot if complete else reader.query_content_snapshot
+    with pytest.raises(reader.ContentQueryRefused, match="^content_query_refused$") as caught:
+        entry(**case)
+    assert calls == [phase]
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert marker not in "".join(traceback.format_exception(caught.value))
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("phase", ["encoder", "index"])
+@pytest.mark.parametrize("complete", [False, True])
+def test_query_provider_keyboard_interrupt_remains_interrupt(reader, tmp_path, phase, complete):
+    case = _semantic_case(reader, tmp_path, all_tasks=complete)
+    calls = []
+
+    def interrupt(*unused):
+        calls.append(phase)
+        raise KeyboardInterrupt()
+
+    if phase == "encoder":
+        case["encoder_provider"].on_query = interrupt
+    else:
+        case["index_provider"].on_load = interrupt
+    entry = reader.query_complete_content_snapshot if complete else reader.query_content_snapshot
+    with pytest.raises(KeyboardInterrupt):
+        entry(**case)
+    assert calls == [phase]
+
+
+@pytest.mark.parametrize("exception", [SystemExit, GeneratorExit])
+def test_provider_result_contains_termination_without_chaining(reader, exception):
+    def fail():
+        raise exception("synthetic-provider-private-detail")
+
+    with pytest.raises(reader.ContentQueryRefused, match="^content_query_refused$") as caught:
+        reader._provider_result(fail)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+
+
 def test_provider_adapter_never_coerces_arbitrary_float_like_objects(reader, tmp_path):
     case = _semantic_case(reader, tmp_path)
     encoder, decode, _ = _provider_objects(case, "plain")

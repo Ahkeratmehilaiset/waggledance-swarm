@@ -1212,6 +1212,43 @@ def test_callback_exceptions_have_no_private_context(package, fixtures, tmp_path
     assert capsys.readouterr() == ("", "")
 
 
+@pytest.mark.parametrize("phase", ["passage_encoder", "index_serializer", "index_decoder"])
+@pytest.mark.parametrize("exception", [SystemExit, GeneratorExit])
+@pytest.mark.parametrize("profile", [None, FULL_PREFIX_PROFILE])
+def test_provider_termination_is_fixed_refusal_without_private_context(
+        package, fixtures, tmp_path, capsys, phase, exception, profile):
+    import traceback
+
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, profile)
+    marker = "synthetic-provider-private-detail"
+
+    def fail(*unused):
+        raise exception(marker)
+
+    args[phase] = fail
+    with pytest.raises(package.SnapshotPackageRefused, match="^content_snapshot_package_refused$") as caught:
+        package.package_content_snapshot(**args)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert marker not in "".join(traceback.format_exception(caught.value))
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("phase", ["passage_encoder", "index_serializer", "index_decoder"])
+@pytest.mark.parametrize("profile", [None, FULL_PREFIX_PROFILE])
+def test_provider_keyboard_interrupt_remains_interrupt(package, fixtures, tmp_path, phase, profile):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    args = _arguments(case, Codec(fixtures), profile)
+
+    def interrupt(*unused):
+        raise KeyboardInterrupt()
+
+    args[phase] = interrupt
+    with pytest.raises(KeyboardInterrupt):
+        package.package_content_snapshot(**args)
+
+
 @pytest.mark.parametrize("capacity_profile", [None, CAPACITY_PROFILE])
 def test_only_screened_source_text_reaches_passage_and_artifacts(package, fixtures, tmp_path, capacity_profile):
     case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)

@@ -422,7 +422,7 @@ def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=No
         output = _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder_binding_bytes,
                           encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity)
         succeeded = True
-    except Exception:
+    except (Exception, SystemExit, GeneratorExit):
         pass
     if not succeeded:
         raise SnapshotPackageRefused("content_snapshot_package_refused") from None

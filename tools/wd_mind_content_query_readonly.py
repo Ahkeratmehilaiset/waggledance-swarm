@@ -1580,7 +1580,7 @@ def _provider_result(operation):
     try:
         output = operation()
         succeeded = True
-    except Exception:
+    except (Exception, SystemExit, GeneratorExit):
         pass
     operation = None
     if not succeeded:
@@ -2416,7 +2416,7 @@ def query_content_snapshot(**inputs):
     try:
         output = _query_content_snapshot(inputs)
         succeeded = True
-    except Exception:
+    except (Exception, SystemExit, GeneratorExit):
         pass
     inputs = None
     if not succeeded:

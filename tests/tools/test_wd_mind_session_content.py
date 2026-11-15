@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import sys
 import struct
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -504,6 +505,72 @@ def test_flat_consumer_is_default_off_before_any_ipc(flat_consumer_case):
     with pytest.raises(session.MindContentSessionRefused):
         session.query_flat_source_candidates(owner=owner, ipc_bytes=response(), bundle_root=owner._root,
             expected_manifest_sha256=owner._pin, expected_nonce='1' * 64, lane='codex-lead-1', scope='shared')
+
+
+@pytest.mark.parametrize('fault', ['none', 'disabled', 'nonce', 'oversize', 'empty', 'late', 'close'])
+def test_candidate_stream_uses_local_gate_and_refuses_partial_or_untrusted_data(flat_consumer_case, fault):
+    _, owner, proposals, _, _, response = flat_consumer_case
+    raw = response()
+    if fault == 'oversize': raw += b' ' * 2049
+    if fault == 'empty': raw = b''
+    class Stream(io.BytesIO):
+        def read(self, n=-1):
+            assert 0 < n <= 2049  # the limit is set before requesting bytes
+            return super().read(min(n, 17))
+        def close(self):
+            super().close()
+            if fault == 'close': raise ValueError('synthetic')
+    opened = []
+    def open_stream():
+        stream = Stream(raw)
+        opened.append(stream)
+        return stream
+    kwargs = dict(enabled=fault != 'disabled', owner=owner, open_read=open_stream,
+        bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+        expected_nonce=('2' if fault == 'nonce' else '1') * 64, lane='codex-lead-1', scope='shared',
+        deadline_monotonic=time.monotonic() + (-1 if fault == 'late' else 5))
+    if fault == 'none':
+        result = session.resolve_flat_candidate_stream(**kwargs)
+        assert result['authority'] == 'none' and result['sender_authentication'] == 'UNKNOWN'
+        assert result['index_match'] == 'UNKNOWN'
+        assert [r['source_event_sha256'] for r in result['results']] == [p['source_event_sha256'] for p in proposals]
+    else:
+        with pytest.raises(session.MindContentSessionRefused):
+            session.resolve_flat_candidate_stream(**kwargs)
+    if fault in ('disabled', 'late'):
+        assert not opened
+    else:
+        assert opened and opened[0].closed
+
+
+@pytest.mark.parametrize('phase', ['open', 'read', 'gate', 'close'])
+def test_candidate_stream_refuses_late_return_without_claiming_interruptibility(flat_consumer_case, monkeypatch, phase):
+    _, owner, _, _, _, response = flat_consumer_case
+    clock = SimpleNamespace(value=0.0)
+    monkeypatch.setattr(session, 'time', SimpleNamespace(monotonic=lambda: clock.value))
+    original_gate = session.query_flat_source_candidates
+    def gate(**kwargs):
+        result = original_gate(**kwargs)
+        if phase == 'gate': clock.value = 2.0
+        return result
+    monkeypatch.setattr(session, 'query_flat_source_candidates', gate)
+    class Stream(io.BytesIO):
+        def read(self, n=-1):
+            value = super().read(n)
+            if phase == 'read': clock.value = 2.0
+            return value
+        def close(self):
+            super().close()
+            if phase == 'close': clock.value = 2.0
+    stream = Stream(response())
+    def open_stream():
+        if phase == 'open': clock.value = 2.0
+        return stream
+    with pytest.raises(session.MindContentSessionRefused):
+        session.resolve_flat_candidate_stream(enabled=True, owner=owner, open_read=open_stream,
+            bundle_root=owner._root, expected_manifest_sha256=owner._pin, expected_nonce='1'*64,
+            lane='codex-lead-1', scope='shared', deadline_monotonic=1.0)
+    assert stream.closed
 
 
 @pytest.mark.parametrize('turn', ['first', 'resume'])

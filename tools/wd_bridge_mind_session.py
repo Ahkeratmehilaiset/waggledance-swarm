@@ -621,6 +621,77 @@ def query_flat_source_candidates(*, enabled=False, owner=None, ipc_bytes=None, b
 
 
 
+def resolve_flat_candidate_stream(*, enabled=False, owner=None, open_read=None, bundle_root=None,
+                                  expected_manifest_sha256=None, expected_nonce=None, lane=None,
+                                  scope=None, deadline_monotonic=None):
+    """Read one bounded candidate frame, then resolve it through the local source gate.
+
+    ``open_read`` and the nonce must come from an independently trusted parent;
+    this function does not establish handle provenance or peer authentication.
+    Synchronous open/read/close and the local gate can block past the deadline;
+    an outer retained owner must supervise them and HOLD on uncertainty.
+    """
+    stream = chunk = payload = output = None
+    interrupted = None
+    try:
+        if (enabled is not True or not callable(open_read)
+                or type(deadline_monotonic) not in (int, float)
+                or not math.isfinite(deadline_monotonic) or time.monotonic() >= deadline_monotonic):
+            raise ValueError('input')
+        stream = open_read()
+        if time.monotonic() >= deadline_monotonic or not callable(getattr(stream, 'read', None)):
+            raise ValueError('deadline_or_stream')
+        payload = bytearray()
+        while True:
+            if time.monotonic() >= deadline_monotonic:
+                raise ValueError('deadline')
+            remaining = 2049 - len(payload)
+            chunk = stream.read(remaining)
+            if (time.monotonic() >= deadline_monotonic or type(chunk) is not bytes
+                    or len(chunk) > remaining):
+                raise ValueError('read')
+            if not chunk:
+                break
+            payload.extend(chunk)
+            if len(payload) > 2048:
+                raise ValueError('candidate_budget')
+        if not payload:
+            raise ValueError('empty')
+        output = query_flat_source_candidates(enabled=True, owner=owner, ipc_bytes=bytes(payload),
+            bundle_root=bundle_root, expected_manifest_sha256=expected_manifest_sha256,
+            expected_nonce=expected_nonce, lane=lane, scope=scope)
+        if time.monotonic() >= deadline_monotonic:
+            raise ValueError('deadline')
+    except KeyboardInterrupt:
+        interrupted, output = KeyboardInterrupt, None
+    except GeneratorExit:
+        interrupted, output = GeneratorExit, None
+    except asyncio.CancelledError:
+        interrupted, output = asyncio.CancelledError, None
+    except BaseException:
+        output = None
+    finally:
+        if stream is not None:
+            try:
+                stream.close()
+            except KeyboardInterrupt:
+                interrupted, output = KeyboardInterrupt, None
+            except GeneratorExit:
+                interrupted, output = GeneratorExit, None
+            except asyncio.CancelledError:
+                interrupted, output = asyncio.CancelledError, None
+            except BaseException:
+                output = None
+        if output is not None and time.monotonic() >= deadline_monotonic:
+            output = None
+        stream = chunk = payload = open_read = None
+    if interrupted is not None:
+        raise interrupted() from None
+    if output is None:
+        raise MindContentSessionRefused('mind_session_content_refused') from None
+    return output
+
+
 def query_content_session(*, enabled=False, inputs=None, providers=None):
     """Read frozen content using explicit caller-owned bindings and providers.
 

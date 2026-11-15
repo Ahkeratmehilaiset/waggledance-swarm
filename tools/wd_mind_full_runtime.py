@@ -1007,7 +1007,7 @@ class _SingleManifestOwner:
     """
     __slots__ = ('_binding', '_snapshot', '_lane', '_lanes', '_factory', '_factory_anchor', '_factory_bytes', '_timeout',
                  '_state', '_launch', '_owner', '_client', '_adapter', '_handler', '_lock',
-                 '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error')
+                 '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts')
 
     def __init__(self, binding, snapshot, lane, lanes, factory, timeout):
         self._binding, self._snapshot, self._lane = binding, snapshot, lane
@@ -1019,9 +1019,13 @@ class _SingleManifestOwner:
         self._launch_thread = None
         self._launch_done, self._launch_cancel = threading.Event(), threading.Event()
         self._launch_error = None
+        self._owner_conflicts = []
 
     def _capture_owner(self, owner):
         # The launch thread records the reservation before any native spawn.
+        if self._owner is not None:
+            self._owner_conflicts.append(owner)
+            raise ValueError('multiple_launch_owners')
         self._owner = owner
 
     def _run_launch(self):
@@ -1068,6 +1072,9 @@ class _SingleManifestOwner:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
     def _status(self):
+        if self._owner_conflicts:
+            self._state = 'HOLD'
+            return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
         if self._owner is None:
             return {'state': self._state, 'owned': False if self._state == 'NEW' else None,
                     'authority': 'none'}
@@ -1117,7 +1124,10 @@ class _SingleManifestOwner:
                 self._launch = launched
                 if type(launched) is not dict:
                     raise ValueError('launch')
-                self._owner, self._client = launched.get('owner'), launched.get('client')
+                if self._owner is None or launched.get('owner') is not self._owner:
+                    self._owner_conflicts.append(launched.get('owner'))
+                    raise ValueError('launch_owner_changed')
+                self._client = launched.get('client')
                 self._check_factory()
                 if (launched.get('status') != 'READY' or self._owner is None
                         or self._client is None or getattr(self._client, 'owner', None) is not self._owner):
@@ -1167,6 +1177,9 @@ class _SingleManifestOwner:
                 self._state = 'STOPPED'
                 return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
             if self._launch_thread is not None and self._launch_thread.is_alive():
+                self._state = 'HOLD'
+                return self._status()
+            if self._owner_conflicts:
                 self._state = 'HOLD'
                 return self._status()
             if self._owner is None:

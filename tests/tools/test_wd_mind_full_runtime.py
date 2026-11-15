@@ -66,8 +66,10 @@ from tools import wd_mind_full_runtime as runtime
 binding = runtime.assemble_full_runtime(enabled=True, bundle_root=str(root), expected_manifest_sha256=pin)
 factory = runtime._ManifestWorkerFactory(str(root), pin, {}, root / 'synthetic-lock', 1, 0,
                                          client_module.BULK_CONTRACT_SHA256)
-runtime._ManifestWorkerFactory.__call__ = lambda self, **kwargs: {
-    'status':'READY', 'client':client, 'owner':owner, 'lifecycle':owner.status(), 'authority':'none'}
+def launch(self, *, owner_sink):
+    owner_sink(owner)
+    return {'status':'READY', 'client':client, 'owner':owner, 'lifecycle':owner.status(), 'authority':'none'}
+runtime._ManifestWorkerFactory.__call__ = launch
 # Synthetic encoder responses, but real snapshot, adapter and flat-memory build.
 import struct
 vector = struct.pack('<384f', 1.0, *([0.0] * 383))
@@ -118,6 +120,7 @@ def test_single_manifest_owner_retains_failed_launch_owner(tmp_path, monkeypatch
     calls = []
     def start(self, **kwargs):
         calls.append(True)
+        kwargs['owner_sink'](held)
         return {'status': 'HOLD', 'client': None, 'owner': held,
                 'lifecycle': held.status(), 'authority': 'none'}
     monkeypatch.setattr(runtime._ManifestWorkerFactory, '__call__', start)
@@ -157,6 +160,7 @@ def _single_owner_synthetic(monkeypatch, tmp_path):
     calls = []
     def start(self, **kwargs):
         calls.append(True)
+        kwargs['owner_sink'](held)
         return {'status': 'READY', 'client': client, 'owner': held,
                 'lifecycle': held.status(), 'authority': 'none'}
     monkeypatch.setattr(runtime._ManifestWorkerFactory, '__call__', start)
@@ -1284,3 +1288,40 @@ def test_single_owner_package_has_unchanged_static_closure_without_rotator():
     gaps, unresolved = _closure(seeds)
     assert not gaps, gaps
     assert not unresolved, unresolved
+
+
+def test_single_owner_retains_both_owners_on_mismatched_launch_result(tmp_path, monkeypatch):
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    class Owner:
+        def status(self): return {'state':'RUNNING','owned':True}
+        def shutdown(self, *, timeout): return {'state':'HOLD','owned':True}
+    sink_owner, returned_owner = Owner(), Owner()
+    class Client:
+        owner = returned_owner
+    def launch(self, *, owner_sink):
+        owner_sink(sink_owner)
+        return {'status':'READY', 'client':Client(), 'owner':returned_owner}
+    monkeypatch.setattr(runtime._ManifestWorkerFactory, '__call__', launch)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start() == {'state':'HOLD','owned':None,'authority':'none'}
+    assert owner.close() == {'state':'HOLD','owned':None,'authority':'none'}
+    assert owner._owner is sink_owner and owner._launch['owner'] is returned_owner
+    assert owner._client is None
+
+
+def test_single_owner_retains_conflicting_sink_owners(tmp_path, monkeypatch):
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    class Owner:
+        def status(self): return {'state':'RUNNING','owned':True}
+    first, second = Owner(), Owner()
+    def launch(self, *, owner_sink):
+        owner_sink(first)
+        owner_sink(second)
+        pytest.fail('duplicate owner must refuse')
+    monkeypatch.setattr(runtime._ManifestWorkerFactory, '__call__', launch)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start() == {'state':'HOLD','owned':None,'authority':'none'}
+    assert owner._owner is first and owner._owner_conflicts == [second]
+    assert owner.close() == {'state':'HOLD','owned':None,'authority':'none'}

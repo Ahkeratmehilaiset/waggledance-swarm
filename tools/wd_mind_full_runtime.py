@@ -18,6 +18,7 @@ import secrets
 import struct
 import sys
 import threading
+import time
 
 from tools import wd_mind_absent_generation_prefix_readonly as prefix
 from tools import wd_mind_content_query_readonly as reader
@@ -1339,10 +1340,11 @@ class _FlatLaneView:
 
 class _PrivateConsumerExport:
     """Opaque in-process preparation only; live handle export is unavailable."""
-    __slots__ = ('__metadata', '__blocks', '__total', '__active')
+    __slots__ = ('__metadata', '__blocks', '__total', '__active', '__owner', '__memory')
 
-    def __init__(self, metadata, blocks, total):
+    def __init__(self, metadata, blocks, total, owner, memory):
         self.__metadata, self.__blocks, self.__total = metadata, blocks, total
+        self.__owner, self.__memory = owner, memory
         self.__active = True
 
     def __repr__(self):
@@ -1362,6 +1364,146 @@ class _PrivateConsumerExport:
     def write_to_handle(self, handle):
         # No receiver provenance has yet been proved for any inherited handle.
         raise FullRuntimeRefused('mind_full_runtime_refused') from None
+
+    def _send_parent_stream(self, *, enabled=False, stream=None, bootstrap=None,
+                            max_wire_bytes=None, deadline_monotonic=None):
+        """Guarded sender; the production parent authorization currently refuses.
+
+        The caller must run this synchronous operation under retained ownership:
+        a deadline check cannot interrupt a blocked write, close, or source gate.
+        """
+        result = cancelled_type = cancellation_group = None
+        try:
+            if (enabled is not True or type(stream) is not _PrivateExportStream
+                    or type(bootstrap) is not _ParentBootstrap):
+                raise ValueError('input')
+            _require_trusted_parent_export()
+            result = self._send_parent_stream_inner(stream, bootstrap.take(), max_wire_bytes,
+                                                    deadline_monotonic)
+        except KeyboardInterrupt:
+            cancelled_type, result = KeyboardInterrupt, None
+        except GeneratorExit:
+            cancelled_type, result = GeneratorExit, None
+        except asyncio.CancelledError:
+            cancelled_type, result = asyncio.CancelledError, None
+        except BaseExceptionGroup as group:
+            cancellation_group, result = _fixed_group_cancellation(group), None
+        except BaseException:
+            result = None
+        finally:
+            stream = bootstrap = None
+        if cancelled_type is not None:
+            raise cancelled_type() from None
+        if cancellation_group is not None:
+            raise cancellation_group from None
+        if result is None:
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        return result
+
+    def _send_parent_stream_inner(self, stream, credentials, max_wire_bytes, deadline):
+        from tools import wd_mind_runtime_child as child
+        if (type(credentials) is not tuple or len(credentials) != 5
+                or type(deadline) not in (int, float) or not math.isfinite(deadline)
+                or type(max_wire_bytes) is not int or not self.__active):
+            raise ValueError('input')
+        manifest, nonce, channel_key, policy_sha, policy = credentials
+        owner, memory = self.__owner, self.__memory
+        if type(owner) is not _SingleManifestOwner or not owner._lock.acquire(blocking=False):
+            raise ValueError('owner')
+        succeeded = False
+        try:
+            if (owner._state != 'READY' or owner._handler is None or owner._handler._memory is not memory
+                    or type(nonce) is not bytes or len(nonce) != 32
+                    or type(channel_key) is not bytes or len(channel_key) != 32
+                    or type(policy) is not bytes or reader._sha(policy) != policy_sha
+                    or owner._binding._PrivateBinding__manifest != manifest
+                    or owner._binding.snapshot_for_query()['identifier_policy_binding'][0] != policy
+                    or json.loads(self.__metadata.decode('utf-8'))['nonce'] != nonce.hex()):
+                raise ValueError('binding')
+            def check_source():
+                if owner._handler._memory is not memory or memory.binding is not owner._binding:
+                    raise ValueError('memory')
+                owner._check_factory()
+                owner._handler._running_owner()
+                _flat_check(memory)
+                if owner._binding.snapshot_for_query() != memory.snapshot:
+                    raise ValueError('snapshot')
+            check_source()
+            child._export_wire_size(enabled=True, metadata_length=len(self.__metadata),
+                block_lengths=tuple(len(value) for _, value in self.__blocks), max_wire_bytes=max_wire_bytes)
+            digest = hashlib.sha256()
+            sequence = data_count = total = 0
+            def send(kind, payload):
+                nonlocal sequence
+                if time.monotonic() >= deadline:
+                    raise ValueError('deadline')
+                frame = child._encode_export_frame(enabled=True, channel_key=channel_key,
+                    nonce=nonce, kind=kind, sequence=sequence, payload=payload)
+                offset = 0
+                while offset < len(frame):
+                    if time.monotonic() >= deadline:
+                        raise ValueError('deadline')
+                    count = stream.write(memoryview(frame)[offset:])
+                    if type(count) is not int or not 0 < count <= len(frame) - offset:
+                        raise ValueError('write')
+                    offset += count
+                if time.monotonic() >= deadline:
+                    raise ValueError('deadline')
+                sequence += 1
+            digest.update(self.__metadata)
+            total += len(self.__metadata)
+            send(b'M', self.__metadata)
+            for _, block in self.__blocks:
+                digest.update(block)
+                total += len(block)
+                for offset in range(0, len(block), 65488):
+                    send(b'D', block[offset:offset + 65488])
+                    data_count += 1
+            if total != self.__total:
+                raise ValueError('total')
+            check_source()
+            send(b'F', struct.pack('>IQ32s', data_count, total, digest.digest()))
+            stream.close()
+            if time.monotonic() >= deadline:
+                raise ValueError('deadline')
+            succeeded = True
+            return {'status':'SENT', 'authority':'none', 'receiver_authentication':'UNKNOWN'}
+        finally:
+            self.discard()
+            if not succeeded:
+                owner._state = 'HOLD'
+            try:
+                if not succeeded:
+                    try:
+                        stream.close()
+                    except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+                        raise
+                    except Exception:
+                        pass  # HOLD remains; closure is unproven.
+            finally:
+                owner._lock.release()
+
+
+class _PrivateExportStream:
+    """Opaque retained write endpoint; provenance is checked separately."""
+    __slots__ = ('__stream',)
+
+    def __init__(self, stream):
+        self.__stream = stream
+
+    def __repr__(self):
+        return '<PrivateMindExportStream>'
+
+    def write(self, data):
+        return self.__stream.write(data)
+
+    def close(self):
+        return self.__stream.close()
+
+
+def _require_trusted_parent_export():
+    # There is no proved production parent/control/approval provider yet.
+    raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
 
 class _SingleManifestOwner:
@@ -1586,7 +1728,7 @@ class _SingleManifestOwner:
             _flat_check(memory)
             self._check_factory()
             self._handler._running_owner()
-            result = _PrivateConsumerExport(metadata, blocks, total)
+            result = _PrivateConsumerExport(metadata, blocks, total, self, memory)
         except KeyboardInterrupt:
             self._state = 'HOLD'
             cancelled_type = KeyboardInterrupt

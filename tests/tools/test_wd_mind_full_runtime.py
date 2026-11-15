@@ -380,7 +380,48 @@ try:
 except runtime.FullRuntimeRefused:
     pass
 assert destination.calls == 0
-prepared.discard()
+import hmac, time
+class Sink:
+    def __init__(self): self.data, self.closed = bytearray(), False
+    def write(self, data):
+        count = min(37, len(data))
+        self.data.extend(data[:count])
+        return count
+    def close(self): self.closed = True
+sink = Sink()
+credential_values = (pin, bytes.fromhex('e'*64), b'k'*32, policy_pin, policy)
+try:
+    prepared._send_parent_stream(enabled=True, stream=runtime._PrivateExportStream(sink),
+        bootstrap=runtime._ParentBootstrap(credential_values), max_wire_bytes=20000000,
+        deadline_monotonic=time.monotonic()+30)
+    raise AssertionError('production authorization must refuse')
+except runtime.FullRuntimeRefused:
+    pass
+assert not sink.data and not sink.closed
+# Test-only provider injection; production exposes no provider argument.
+runtime._require_trusted_parent_export = lambda: None
+sent = prepared._send_parent_stream(enabled=True, stream=runtime._PrivateExportStream(sink),
+    bootstrap=runtime._ParentBootstrap(credential_values), max_wire_bytes=20000000,
+    deadline_monotonic=time.monotonic()+30)
+assert sent == {'status':'SENT','authority':'none','receiver_authentication':'UNKNOWN'} and sink.closed
+wire, seq, payloads, final = bytes(sink.data), 0, [], None
+while wire:
+    head, wire = wire[:16], wire[16:]
+    magic, kind, number, length = struct.unpack('>4sB3xII', head)
+    body, mac, wire = wire[:length], wire[length:length+32], wire[length+32:]
+    assert magic == b'MEX1' and number == seq and len(body) == length
+    assert hmac.compare_digest(mac, hmac.new(b'k'*32, b'wd.mind-export-frame.v1\0' + bytes.fromhex('e'*64) + head + body, hashlib.sha256).digest())
+    seq += 1
+    if kind == ord('F'):
+        final = body
+        assert not wire
+    else:
+        assert kind == (ord('M') if seq == 1 else ord('D'))
+        payloads.append(body)
+count, total, digest = struct.unpack('>IQ32s', final)
+expected = metadata_raw + b''.join(value for _, value in blocks)
+assert count == len(payloads)-1 and total == len(expected) and digest == hashlib.sha256(expected).digest()
+assert b''.join(payloads) == expected
 assert prepared.status()['state'] == 'DISCARDED' and prepared.status()['total_bytes'] == 0
 response = wrapper.candidates({'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',
     'nonce':'d'*64,'lane':'codex-lead-1','scope':'own'})

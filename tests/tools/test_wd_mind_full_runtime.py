@@ -686,7 +686,7 @@ def test_retained_parent_pair_wires_control_relay_and_two_synthetic_children(syn
     mct = struct.pack('>4sI', b'MCT1', len(policy)) + bytes.fromhex(pin) + nonce + key + bytes.fromhex(policy_sha) + policy
     raw = b'MCP1' + bytes.fromhex(pin) + bytes.fromhex(policy_sha) + bytes.fromhex('b'*64) + bytes([len(lane)]) + lane + mct
     script = r'''
-import io, pathlib, sys, time
+import io, os, pathlib, sys, time
 root,pin = pathlib.Path(sys.argv[1]),sys.argv[2]
 sys.path.insert(0, str(root / 'tools-bootstrap'))
 from tools import wd_mind_runtime_child as child, wd_mind_full_runtime as runtime
@@ -713,15 +713,8 @@ sys.stdout.write(json.dumps(result))
 """
 child._require_verified_parent_spawn=lambda:None
 child._verified_parent_child_command=lambda **kw: (sys.executable,'-I','-S','-B','-c',owner_code) if kw['role']=='owner' else (sys.executable,'-I','-S','-B','-c',consumer_code,str(root/'wd-fleet.json'))
-box=runtime._ParentControlBuffer(runtime._PrivateParentStream(io.BytesIO(sys.stdin.buffer.read())),prefix_budget=133)
-box.read_from(enabled=True)
-controls=child._derive_parent_child_controls(enabled=True,control_buffer=box,expected_manifest_sha256=pin)
-pair=child.create_retained_parent_pair(enabled=True,bundle_root=str(root),expected_manifest_sha256=pin,
-    controls=controls,deadline_monotonic=time.monotonic()+20)
-token=pair.start()
-result=pair.wait(token)
-assert pair.status()['owner']['state']=='EXITED' and pair.status()['consumer']['state']=='EXITED'
-sys.stdout.buffer.write(result)
+os.environ['WD_REBOOT_EXPECTED_MANIFEST_HASH']=pin
+raise SystemExit(child._fixed_child_main(['--parent-control']))
 '''
     proc = subprocess.Popen([sys.executable, '-I', '-S', '-B', '-c', script, str(bundle), pin], cwd=bundle,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

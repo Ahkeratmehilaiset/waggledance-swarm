@@ -1562,15 +1562,62 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
     raise LaunchRefused("mind_e5_start_refused") from None
 
 
+_PARENT_ACTIVE = None
+
+
+def _parent_control_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256):
+    """Own the parent/child graph; authorization remains refused by default."""
+    global _PARENT_ACTIVE
+    pair = None
+    try:
+        if _PARENT_ACTIVE is not None:
+            raise ValueError('parent_busy')
+        _require_verified_parent_spawn()
+        from tools import wd_mind_full_runtime as runtime
+        deadline = time.monotonic() + 300
+        buffer = runtime._ParentControlBuffer(runtime._PrivateParentStream(control_stream), prefix_budget=133)
+        buffer.read_from(enabled=True)
+        if time.monotonic() >= deadline:
+            raise ValueError('deadline')
+        controls = _derive_parent_child_controls(enabled=True, control_buffer=buffer,
+                                                  expected_manifest_sha256=expected_manifest_sha256)
+        pair = create_retained_parent_pair(enabled=True, bundle_root=bundle_root,
+            expected_manifest_sha256=expected_manifest_sha256, controls=controls, deadline_monotonic=deadline)
+        _PARENT_ACTIVE = pair  # Retain before any potentially interrupted start.
+        token = pair.start()
+        result = pair.wait(token)
+        offset = 0
+        while offset < len(result):
+            if time.monotonic() >= deadline:
+                raise ValueError('deadline')
+            count = output_stream.write(memoryview(result)[offset:])
+            if type(count) is not int or not 0 < count <= len(result) - offset:
+                raise ValueError('write')
+            offset += count
+        output_stream.flush()
+        if time.monotonic() >= deadline:
+            raise ValueError('deadline')
+        return 0
+    except BaseException:
+        return 2
+    finally:
+        # A still-running thread retains this process and both child owners.
+        if pair is not None and pair._done.is_set() and pair._thread is not None and not pair._thread.is_alive():
+            _PARENT_ACTIVE = None
+
+
 def _fixed_child_main(argv):
-    """Only the fixed owner flag is routed here; all other inputs refuse."""
-    if argv != ['--mind-owner-child']:
+    """Route only the fixed parent and owner flags; all other inputs refuse."""
+    if argv not in (['--mind-owner-child'], ['--parent-control']):
         return 2
     try:
         expected = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
         if not _HEX.fullmatch(expected):
             return 2
         bundle = str(Path(__file__).resolve().parents[2])
+        if argv == ['--parent-control']:
+            return _parent_control_entry(control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
+                                         bundle_root=bundle, expected_manifest_sha256=expected)
         return _owner_child_entry(control_stream=sys.stdin.buffer, data_stream=sys.stdout.buffer,
                                   candidate_stream=sys.stderr.buffer, bundle_root=bundle,
                                   expected_manifest_sha256=expected)

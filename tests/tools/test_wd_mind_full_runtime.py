@@ -59,6 +59,82 @@ def test_single_manifest_owner_retains_failed_launch_owner(tmp_path, monkeypatch
     assert calls == [True]
 
 
+def _single_owner_synthetic(monkeypatch, tmp_path):
+    from tools import wd_mind_full_runtime as runtime
+    from tools import wd_mind_e5_client
+    from tools import wd_mind_e5_snapshot_adapter as adapter_module
+    fleet = canonical({'lanes': [{'agent': 'codex-lead-1'}],
+                       'tools_supervisor': {'agent': 'codex-tools-1'}})
+    snapshot = {'projection_sha256': 'b' * 64}
+    binding = runtime._PrivateBinding(snapshot, tmp_path, 'a' * 64, (fleet,), {})
+    factory = runtime._ManifestWorkerFactory(str(tmp_path), 'a' * 64, {}, tmp_path / 'lock', 5, 0,
+                                             wd_mind_e5_client.BULK_CONTRACT_SHA256)
+    monkeypatch.setattr(runtime._PrivateBinding, 'snapshot_for_query', lambda self: snapshot)
+    monkeypatch.setattr(runtime, '_flat_snapshot', lambda candidate, frozen: frozen)
+
+    class Owner:
+        def status(self): return {'state': 'RUNNING', 'owned': True}
+        def shutdown(self, *, timeout): return {'state': 'HOLD', 'owned': True}
+    class Client:
+        def __init__(self, owner): self.owner = owner
+        def close(self, *, timeout): return {'state': 'EXITED', 'owned': False, 'exit_code': 0}
+    class Adapter:
+        def passage(self, values): return b'synthetic'
+    held = Owner()
+    client = Client(held)
+    calls = []
+    def start(self):
+        calls.append(True)
+        return {'status': 'READY', 'client': client, 'owner': held,
+                'lifecycle': held.status(), 'authority': 'none'}
+    monkeypatch.setattr(runtime._ManifestWorkerFactory, '__call__', start)
+    monkeypatch.setattr(adapter_module, 'create_single_flat_adapter', lambda **kwargs: Adapter(), raising=False)
+    return runtime, adapter_module, binding, factory, calls
+
+
+def test_single_manifest_owner_ready_and_close_are_explicit(tmp_path, monkeypatch):
+    runtime, _, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'})
+    expected = {'schema': 'synthetic-refs-only', 'authority': 'none', 'results': []}
+    monkeypatch.setattr(runtime, 'map_pipe_candidates', lambda **kwargs: expected)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert calls == []
+    assert owner.start() == {'state': 'READY', 'owned': True, 'authority': 'none'}
+    assert owner.candidates({'synthetic': 'request'}) == expected
+    assert owner.close() == {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
+    with pytest.raises(runtime.FullRuntimeRefused):
+        owner.candidates({'synthetic': 'request'})
+    assert calls == [True]
+
+
+def test_single_manifest_owner_rechecks_source_before_spawn(tmp_path, monkeypatch):
+    runtime, _, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    def changed(*args): raise ValueError('synthetic source changed')
+    monkeypatch.setattr(runtime, '_flat_snapshot', changed)
+    assert owner.start() == {'state': 'HOLD', 'owned': None, 'authority': 'none'}
+    assert calls == []
+
+
+@pytest.mark.parametrize('signal_name', ['keyboard', 'cancelled'])
+def test_single_manifest_owner_retains_worker_when_adapter_is_cancelled(tmp_path, monkeypatch, signal_name):
+    import asyncio
+    runtime, adapter_module, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
+    signal = KeyboardInterrupt if signal_name == 'keyboard' else asyncio.CancelledError
+    def interrupt(**kwargs): raise signal()
+    monkeypatch.setattr(adapter_module, 'create_single_flat_adapter', interrupt, raising=False)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    with pytest.raises(signal):
+        owner.start()
+    assert owner.status() == {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+    assert owner.close() == {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
+    assert calls == [True]
+
+
 def canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()
 

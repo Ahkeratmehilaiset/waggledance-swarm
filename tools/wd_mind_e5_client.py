@@ -194,6 +194,8 @@ class E5WorkerClient:
 
         The supervisor validates source and caller authority independently.
         The echo binds routing only; it does not prove model computation.
+        Synchronous frame checks cannot be interrupted by this deadline; a
+        late check or a late return is refused once control returns here.
         """
         if self._closed or not self._mutex.acquire(blocking=False):
             raise E5ClientRefused("mind_e5_worker_refused")
@@ -225,13 +227,20 @@ class E5WorkerClient:
             for index in range(0, len(texts), _MAX_BATCH):
                 if frame_check is not None:
                     frame_check()
+                    if time.monotonic() >= deadline:
+                        raise ValueError("deadline")
                 _, vector_bytes = self._request(operation, texts[index:index + _MAX_BATCH],
                                                 request["nonce"], request["request_sha256"], deadline)
                 if frame_check is not None:
                     frame_check()
+                    if time.monotonic() >= deadline:
+                        raise ValueError("deadline")
                 frames.append(vector_bytes)
-            return {"nonce": request["nonce"], "request_sha256": request["request_sha256"],
-                    "vector_bytes": b"".join(frames)}
+            result = {"nonce": request["nonce"], "request_sha256": request["request_sha256"],
+                      "vector_bytes": b"".join(frames)}
+            if time.monotonic() >= deadline:
+                raise ValueError("deadline")
+            return result
         except Exception:
             self.close()
             raise E5ClientRefused("mind_e5_worker_refused") from None

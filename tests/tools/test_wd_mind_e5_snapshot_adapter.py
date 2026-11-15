@@ -594,3 +594,21 @@ def test_single_b16_checks_again_before_next_frame(b16_worker, monkeypatch):
     size = struct.unpack('<I', raw[:4])[0]
     assert len(raw) == 4 + size and len(calls) == 3
     assert client.owner is owner and owner.status()['owned'] is True
+
+
+def test_single_b16_last_frame_check_timeout_keeps_owner(b16_worker, monkeypatch):
+    import time
+    single, client, owner, _, texts, _ = b16_worker
+    client._timeout = 0.5
+    original = type(single)._check
+    checks = []
+    def slow_last_check(adapter):
+        original(adapter)
+        checks.append(1)
+        # Outer pre-check followed by four frame pre/post checks.
+        if len(checks) == 9:
+            time.sleep(0.65)
+    monkeypatch.setattr(type(single), '_check', slow_last_check)
+    with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+        single.passage(tuple(texts))
+    assert len(checks) == 9 and client.owner is owner and owner.status()['owned'] is True

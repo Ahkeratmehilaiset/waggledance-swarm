@@ -310,14 +310,32 @@ def _bundle_inputs(bundle, expected_manifest):
     return fleet_bytes, roster_bytes, policy_bytes
 
 
-def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_sha256=None):
-    """Return a private verified snapshot; never accept caller-selected log paths."""
+def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
+                          identifier_policy_bytes=None, expected_identifier_policy_sha256=None):
+    """Build a private snapshot using a separately anchored identifier policy.
+
+    The caller must obtain the policy bytes and its approved SHA independently
+    of the owner export. A matching caller-supplied pair alone is not evidence
+    of approval or of a trusted parent channel.
+    """
     result = None
     try:
         if (enabled is not True or type(bundle_root) is not str or not Path(bundle_root).is_absolute()
                 or '..' in Path(bundle_root).parts or type(expected_manifest_sha256) is not str
-                or not reader._hex(expected_manifest_sha256)):
+                or not reader._hex(expected_manifest_sha256)
+                or type(identifier_policy_bytes) is not bytes
+                or not 0 < len(identifier_policy_bytes) <= 65536
+                or type(expected_identifier_policy_sha256) is not str
+                or not reader._hex(expected_identifier_policy_sha256)
+                or not hmac.compare_digest(reader._sha(identifier_policy_bytes),
+                                           expected_identifier_policy_sha256)):
             raise ValueError('input')
+        identifier = identifier_policy_bytes
+        key = secrets.token_bytes(32)
+        if type(key) is not bytes or len(key) != 32:
+            raise ValueError('key')
+        tag = hmac.new(key, identifier, hashlib.sha256).hexdigest()
+        reader._load_identifier_policy(identifier, key, tag, allow_empty_v2=True)
         bundle = Path(bundle_root)
         controls = _bundle_inputs(bundle, expected_manifest_sha256)
         observed = prefix.observe_prefix(enabled=True, bundle_root=bundle_root,
@@ -338,11 +356,6 @@ def assemble_full_runtime(*, enabled=False, bundle_root=None, expected_manifest_
         bound = startup.bind_startup_source(**args)
         scope = reader._ALL_TASK_SCOPE_BYTES
         nonreview = reader._canonical({'schema': 'wd.q4-non-review-policy.v2', 'task_scope': 'all_tasks'})
-        identifier = reader._canonical({'schema': 'wd.mind-identifier-policy.v2', 'identifiers': []})
-        key = secrets.token_bytes(32)
-        if type(key) is not bytes or len(key) != 32:
-            raise ValueError('key')
-        tag = hmac.new(key, identifier, hashlib.sha256).hexdigest()
         roster_bytes, message_policy = controls[1], controls[2]
         sha = lambda data: hashlib.sha256(data).hexdigest()
         decision = dict(reader.module_sha256s(), schema=reader._ALL_TASK_DECISION_SCHEMA,

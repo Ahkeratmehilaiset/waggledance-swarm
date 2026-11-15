@@ -23,6 +23,19 @@ def test_single_manifest_owner_defaults_off_and_is_inert(tmp_path, monkeypatch):
     assert calls == []
 
 
+@pytest.mark.parametrize('policy,pin', [(None, None), (b'{}', '0' * 64), (b'{}', None),
+                                        (b'{}', hashlib.sha256(b'{}').hexdigest())])
+def test_runtime_requires_independently_pinned_identifier_policy_before_source_read(tmp_path, monkeypatch, policy, pin):
+    from tools import wd_mind_full_runtime as runtime
+    def forbidden(*args, **kwargs):
+        raise AssertionError('unapproved policy must not read source')
+    monkeypatch.setattr(runtime, '_bundle_inputs', forbidden)
+    with pytest.raises(runtime.FullRuntimeRefused):
+        runtime.assemble_full_runtime(enabled=True, bundle_root=str(tmp_path),
+            expected_manifest_sha256='a' * 64, identifier_policy_bytes=policy,
+            expected_identifier_policy_sha256=pin)
+
+
 @pytest.mark.parametrize('fault', ['vectors', 'policy_pin'])
 def test_single_adapter_symbol_and_manifest_pins_without_rotator(synthetic_bundle, fault):
     """Import real bundle bytes; no model process or fake adapter is started."""
@@ -64,7 +77,10 @@ assert type(single) is adapter._SingleFlatAdapter
 # This part uses the real bundled runtime, source binding and adapter. Only
 # process launch and vector construction are synthetic; no model is started.
 from tools import wd_mind_full_runtime as runtime
-binding = runtime.assemble_full_runtime(enabled=True, bundle_root=str(root), expected_manifest_sha256=pin)
+policy = b'{"identifiers":["synthetic-private-marker-52"],"schema":"wd.mind-identifier-policy.v1"}'
+binding = runtime.assemble_full_runtime(enabled=True, bundle_root=str(root), expected_manifest_sha256=pin,
+    identifier_policy_bytes=policy, expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest())
+assert binding._PrivateBinding__snapshot['identifier_policy_binding'][0] == policy
 factory = runtime._ManifestWorkerFactory(str(root), pin, {}, root / 'synthetic-lock', 1, 0,
                                          client_module.BULK_CONTRACT_SHA256)
 def launch(self, *, owner_sink):
@@ -511,7 +527,9 @@ try:
                           'interpreter_name':pathlib.Path(resolved['interpreter']).name,
                           'verified':resolved['runtime_status'] == resolved['interpreter_status'] == 'VERIFIED'}))
         sys.exit(0)
-    binding = runtime.assemble_full_runtime(enabled=(mode != 'disabled'), bundle_root=sys.argv[1], expected_manifest_sha256=sys.argv[2])
+    policy = b'{"identifiers":[],"schema":"wd.mind-identifier-policy.v2"}'
+    binding = runtime.assemble_full_runtime(enabled=(mode != 'disabled'), bundle_root=sys.argv[1], expected_manifest_sha256=sys.argv[2],
+        identifier_policy_bytes=policy, expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest())
     if mode.startswith(('package', 'handler')):
         def canonical(obj): return json.dumps(obj, sort_keys=True, separators=(',', ':')).encode()
         def sha(raw): return hashlib.sha256(raw).hexdigest()
@@ -978,7 +996,8 @@ try:
         path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
     snapshot = binding.snapshot_for_query()
     if mode == 'ephemeral':
-        other = runtime.assemble_full_runtime(enabled=True, bundle_root=sys.argv[1], expected_manifest_sha256=sys.argv[2])
+        other = runtime.assemble_full_runtime(enabled=True, bundle_root=sys.argv[1], expected_manifest_sha256=sys.argv[2],
+            identifier_policy_bytes=policy, expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest())
         print(json.dumps({'result':'ok', 'fresh': snapshot['identifier_policy_binding'][2] !=
                           other.snapshot_for_query()['identifier_policy_binding'][2]}))
         sys.exit(0)

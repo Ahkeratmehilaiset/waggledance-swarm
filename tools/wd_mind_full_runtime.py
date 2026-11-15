@@ -180,7 +180,7 @@ class _ManifestWorkerFactory:
     def __repr__(self):
         return '<PrivateMindManifestWorkerFactory>'
 
-    def __call__(self):
+    def __call__(self, *, owner_sink=None):
         try:
             current = resolve_manifest_runtime_location(enabled=True, bundle_root=self._bundle,
                                                          expected_manifest_sha256=self._manifest)
@@ -199,7 +199,7 @@ class _ManifestWorkerFactory:
             deployment_manifest_sha256=self._manifest, interpreter=current['interpreter'],
             interpreter_sha256=current['interpreter_sha256'], interpreter_root=current['interpreter_root'],
             tuple_args=args, timeout=self._timeout, scratch_root=None, worker_only=True,
-            bulk_contract_sha256=self._bulk)
+            bulk_contract_sha256=self._bulk, owner_sink=owner_sink)
 
 
 def create_manifest_worker_factory(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
@@ -1198,7 +1198,8 @@ class _SingleManifestOwner:
     an authenticated lane, an installed startup path, or an automatic refresh.
     """
     __slots__ = ('_binding', '_snapshot', '_lane', '_lanes', '_factory', '_factory_anchor', '_factory_bytes', '_timeout',
-                 '_state', '_launch', '_owner', '_client', '_adapter', '_handler', '_lock')
+                 '_state', '_launch', '_owner', '_client', '_adapter', '_handler', '_lock',
+                 '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error')
 
     def __init__(self, binding, snapshot, lane, lanes, factory, timeout):
         self._binding, self._snapshot, self._lane = binding, snapshot, lane
@@ -1207,6 +1208,29 @@ class _SingleManifestOwner:
         self._state, self._launch, self._owner = 'NEW', None, None
         self._client = self._adapter = self._handler = None
         self._lock = threading.Lock()
+        self._launch_thread = None
+        self._launch_done, self._launch_cancel = threading.Event(), threading.Event()
+        self._launch_error = None
+
+    def _capture_owner(self, owner):
+        # The launch thread records the reservation before any native spawn.
+        self._owner = owner
+
+    def _run_launch(self):
+        try:
+            self._launch = self._factory(owner_sink=self._capture_owner)
+        except BaseException as error:
+            self._launch_error = error
+        finally:
+            if self._launch_cancel.is_set() and self._owner is not None:
+                try:
+                    self._owner.shutdown(timeout=0)
+                except BaseException:
+                    pass
+            self._launch_done.set()
+
+    def _wait_for_launch(self):
+        self._launch_done.wait()
 
     def __repr__(self):
         return '<PrivateMindSingleManifestOwner>'
@@ -1273,7 +1297,13 @@ class _SingleManifestOwner:
             try:
                 self._check_factory()
                 _flat_snapshot(self._binding, self._snapshot)
-                launched = self._factory()
+                self._launch_thread = threading.Thread(target=self._run_launch,
+                    name='mind-e5-launch', daemon=False)
+                self._launch_thread.start()
+                self._wait_for_launch()
+                if self._launch_error is not None:
+                    raise self._launch_error
+                launched = self._launch
                 # Retain the entire factory result before any fallible binding
                 # or model work, including the owner on a returned HOLD.
                 self._launch = launched
@@ -1296,6 +1326,7 @@ class _SingleManifestOwner:
                 self._check_factory()
                 self._state = 'READY'
             except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+                self._launch_cancel.set()
                 self._state = 'HOLD'
                 raise
             except BaseException:
@@ -1327,6 +1358,9 @@ class _SingleManifestOwner:
             if self._state == 'NEW':
                 self._state = 'STOPPED'
                 return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
+            if self._launch_thread is not None and self._launch_thread.is_alive():
+                self._state = 'HOLD'
+                return self._status()
             if self._owner is None:
                 self._state = 'HOLD'
                 return self._status()

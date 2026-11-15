@@ -59,7 +59,7 @@ from tools import wd_mind_full_runtime as runtime
 binding = runtime.assemble_full_runtime(enabled=True, bundle_root=str(root), expected_manifest_sha256=pin)
 factory = runtime._ManifestWorkerFactory(str(root), pin, {}, root / 'synthetic-lock', 1, 0,
                                          client_module.BULK_CONTRACT_SHA256)
-runtime._ManifestWorkerFactory.__call__ = lambda self: {
+runtime._ManifestWorkerFactory.__call__ = lambda self, **kwargs: {
     'status':'READY', 'client':client, 'owner':owner, 'lifecycle':owner.status(), 'authority':'none'}
 runtime._FlatRequestHandler.build = lambda self: {
     'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'}
@@ -97,7 +97,7 @@ def test_single_manifest_owner_retains_failed_launch_owner(tmp_path, monkeypatch
 
     held = Owner()
     calls = []
-    def start(self):
+    def start(self, **kwargs):
         calls.append(True)
         return {'status': 'HOLD', 'client': None, 'owner': held,
                 'lifecycle': held.status(), 'authority': 'none'}
@@ -136,7 +136,7 @@ def _single_owner_synthetic(monkeypatch, tmp_path):
     held = Owner()
     client = Client(held)
     calls = []
-    def start(self):
+    def start(self, **kwargs):
         calls.append(True)
         return {'status': 'READY', 'client': client, 'owner': held,
                 'lifecycle': held.status(), 'authority': 'none'}
@@ -188,8 +188,8 @@ def test_single_manifest_owner_rejects_factory_retarget_before_spawn(tmp_path, m
 def test_single_manifest_owner_keeps_owner_if_factory_retargets_during_launch(tmp_path, monkeypatch):
     runtime, _, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
     original = runtime._ManifestWorkerFactory.__call__
-    def retarget(self):
-        result = original(self)
+    def retarget(self, **kwargs):
+        result = original(self, **kwargs)
         self._manifest = '0' * 64
         return result
     monkeypatch.setattr(runtime._ManifestWorkerFactory, '__call__', retarget)
@@ -1611,3 +1611,35 @@ def test_owner_legacy_cli_does_not_require_guardian_fast_release(monkeypatch):
     assert runtime._owner_entrypoint(['--owner','--bundle-root',r'C:\synthetic',
         '--deployment-manifest-sha256','a'*64],io.StringIO(),io.StringIO())==0
     assert calls[0]['fast_build'] is False
+
+
+def test_single_owner_interrupt_during_spawn_preserves_owned_hold(tmp_path, monkeypatch):
+    import threading
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    class Held:
+        def status(self): return {'state': 'RUNNING', 'owned': True}
+        def shutdown(self, *, timeout): return {'state': 'HOLD', 'owned': True}
+    held = Held()
+    def launch(self, *, owner_sink):
+        owner_sink(held)
+        entered.set()
+        assert release.wait(5)
+        return {'status': 'HOLD', 'client': None, 'owner': held}
+    def interrupt(self):
+        assert entered.wait(2)
+        raise KeyboardInterrupt()
+    monkeypatch.setattr(runtime._ManifestWorkerFactory, '__call__', launch)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_wait_for_launch', interrupt, raising=False)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            owner.start()
+        assert owner.status() == {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+        assert owner._owner is held
+        assert owner.close() == {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+    finally:
+        release.set()
+        if getattr(owner, '_launch_thread', None) is not None:
+            owner._launch_thread.join(timeout=2)

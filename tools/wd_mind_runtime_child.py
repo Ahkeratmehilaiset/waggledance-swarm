@@ -560,7 +560,7 @@ def start_e5_worker_graceful(*, enabled=False, **options):
 
 def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, interpreter_sha256,
                      interpreter_root, tuple_args, timeout, scratch_root=None, cooperative,
-                     bulk_contract_sha256=None, worker_only=False):
+                     bulk_contract_sha256=None, worker_only=False, owner_sink=None):
     job = process = owner = None
     try:
         if (type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 1800
@@ -569,6 +569,7 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
                      or bulk_contract_sha256 != BULK_CONTRACT_SHA256
                      or hashlib.sha256(BULK_CONTRACT).hexdigest() != BULK_CONTRACT_SHA256))
                 or type(worker_only) is not bool or (worker_only and not cooperative)
+                or (owner_sink is not None and (not cooperative or not callable(owner_sink)))
                 or type(tuple_args) is not dict
                 or set(tuple_args) != set(_WORKER_ONLY_KEYS if worker_only else _PUBLIC_KEYS)):
             raise ValueError("request")
@@ -689,6 +690,8 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
                 owner = lifecycle.reserve(enabled=True, bulk_contract_sha256=bulk_contract_sha256)
             else:
                 owner = lifecycle.reserve(enabled=True)
+            if owner_sink is not None:
+                owner_sink(owner)
             owner.resources.job = job = _Job(kill_on_close=False, _owner=owner)
             owner.set_job(job)
             if time.monotonic() >= deadline:

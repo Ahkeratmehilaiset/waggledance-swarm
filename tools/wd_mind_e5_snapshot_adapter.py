@@ -248,11 +248,13 @@ def create_flat_adapter(*, enabled=False, bundle_root=None, expected_manifest_sh
 
 class _SingleFlatAdapter(_FlatAdapter):
     """One caller-owned graceful worker; this object never starts a process."""
-    __slots__ = ('_owner',)
+    __slots__ = ('_owner', '_owned_process', '_owned_job')
 
     def __init__(self, client, bundle, manifest, query_binding, runtime_hash):
         super().__init__(client, bundle, manifest, query_binding, runtime_hash)
         self._owner = client.owner
+        self._owned_process = self._owner.resources.process
+        self._owned_job = self._owner.resources.job
 
     def _check(self):
         from tools import wd_mind_e5_client as e5_client, wd_mind_e5_lifecycle as lifecycle
@@ -260,6 +262,8 @@ class _SingleFlatAdapter(_FlatAdapter):
         if (type(client) is not e5_client.GracefulE5WorkerClient
                 or type(self._owner) is not lifecycle._Owner or client.owner is not self._owner
                 or client._process is not client._transport or client._transport.owner is not self._owner
+                or self._owned_process is None or self._owner.resources.process is not self._owned_process
+                or self._owned_job is None or self._owner.resources.job is not self._owned_job
                 or client._binding_sha256 != self._runtime_hash
                 or client._bulk_contract_sha256 != e5_client.BULK_CONTRACT_SHA256
                 or self._owner._bulk_contract_sha256 != e5_client.BULK_CONTRACT_SHA256
@@ -279,7 +283,9 @@ class _SingleFlatAdapter(_FlatAdapter):
             if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 <= timeout <= 30:
                 raise ValueError('timeout')
             from tools import wd_mind_e5_client as e5_client
-            if type(self._client) is not e5_client.GracefulE5WorkerClient or self._client.owner is not self._owner:
+            if (type(self._client) is not e5_client.GracefulE5WorkerClient or self._client.owner is not self._owner
+                    or self._owner.resources.process is not self._owned_process
+                    or self._owner.resources.job is not self._owned_job):
                 raise ValueError('owner_changed')
             return self._client.close(timeout=timeout)
         return _run(close_owned)
@@ -290,7 +296,8 @@ def create_single_flat_adapter(*, enabled=False, bundle_root=None, expected_mani
 
     The caller independently authorizes the manifest, process and model, retains
     the adapter/owner through HOLD, and controls the source and launch lifecycle.
-    The binding proves consistency only, not execution or sender authentication.
+    The binding proves consistency only, not execution, sender authentication,
+    or resistance to changes reverted between checks (same-user ABA).
     """
     def create():
         from tools import wd_mind_e5_client as e5_client

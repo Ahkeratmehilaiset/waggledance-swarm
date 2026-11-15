@@ -201,6 +201,93 @@ def test_consumer_bundle_controls_pin_own_code_fleet_and_policy(package, fixture
             package._consumer_bundle_controls(str(bundle), pin)
 
 
+def test_consumer_owner_real_synthetic_bundle_chain(tmp_path):
+    """Import pinned files from a synthetic bundle and check the whole chain.
+
+    The subprocess is isolated from the already-imported repository modules.
+    Every source path and byte belongs to this fixture, never the live bundle.
+    """
+    import subprocess
+    script = r'''
+import hashlib, json, shutil, sys
+from pathlib import Path
+from datetime import datetime, timezone
+
+repo, test_root = Path(sys.argv[1]), Path(sys.argv[2])
+bundle, runtime = test_root / 'bundle', test_root / 'runtime'
+bootstrap, shared = bundle / 'tools-bootstrap', runtime / 'shared'
+bootstrap.mkdir(parents=True); shared.mkdir(parents=True)
+paths = ['tools/__init__.py', 'tools/wd_bridge_mind.py', 'waggledance/core/bridge_log_reader.py',
+         'tools/wd_mind_content_prefix_readonly.py', 'tools/wd_mind_absent_generation_prefix_readonly.py',
+         'tools/bridge_compact_view.py', 'waggledance/__init__.py', 'waggledance/core/__init__.py',
+         'tools/wd_mind_content_query_readonly.py', 'tools/wd_mind_content_snapshot_package.py']
+for path in paths:
+    dest = bootstrap / path; dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(repo / path, dest)
+sys.path.insert(0, str(bootstrap)); sys.path.insert(1, str(repo / 'tests' / 'tools'))
+from tools import wd_mind_content_query_readonly as reader
+from tools import wd_mind_content_snapshot_package as package
+from waggledance.core.bridge_log_reader import BridgeCursor
+import test_wd_mind_content_query_readonly as fixtures
+import test_wd_mind_content_snapshot_package as helpers
+
+case = fixtures._semantic_case(reader, shared, all_tasks=True)
+source = shared / 'events.jsonl'
+Path(case['messages']['source_path']).rename(source)
+Path(case['messages']['generation_path']).unlink()
+cursor = case['messages']['end_cursor']
+case['messages'].update(source_path=str(source), generation_path=str(shared / 'events.generation.json'),
+                        end_cursor=BridgeCursor(cursor.offset, cursor.file_identity, None))
+decision = json.loads(case['decision_bytes']); decision['source_prefix']['generation'] = None
+case['decision_bytes'] = fixtures._raw(decision); case['decision_sha256'] = reader._sha(case['decision_bytes'])
+source_input = {key: case[key] for key in reader._INPUT_KEYS}
+case.update(fixtures._snapshot(source_input, reader.rederive_complete_message_projection(**source_input)))
+codec = helpers.Codec(fixtures)
+output = package.package_content_snapshot(**helpers._arguments(case, codec, helpers.FULL_PREFIX_PROFILE))
+snapshot = {key: case[key] for key in reader._Q4_SOURCE_KEYS}
+roster = json.loads(snapshot['roster_bytes'])
+fleet = reader._canonical({'schema_version': 2, 'runtime_root': str(runtime),
+                           'lanes': roster['lanes'], 'tools_supervisor': roster['tools_supervisor']})
+policy = snapshot['messages']['policy_bytes']
+(bundle / 'wd-fleet.json').write_bytes(fleet); (bundle / 'wd-mind-message-policy.json').write_bytes(policy)
+files = {'wd-fleet.json': reader._sha(fleet), 'wd-mind-message-policy.json': reader._sha(policy)}
+for path in paths: files['tools-bootstrap/' + path] = reader._sha((bootstrap / path).read_bytes())
+manifest = reader._canonical({'schema_version': 1, 'files': files})
+(bundle / 'deployment-manifest.json').write_bytes(manifest)
+class Clock(datetime):
+    value = datetime(2026, 1, 1, 0, 2, tzinfo=timezone.utc)
+    @classmethod
+    def now(cls, tz=None): return cls.value
+package.datetime = Clock
+inputs = {key: output[key] for key in ('descriptor_bytes', 'descriptor_sha256', 'memory_bytes', 'memory_sha256')}
+owner = package.create_consumer_source_owner(enabled=True, bundle_root=str(bundle),
+    expected_manifest_sha256=reader._sha(manifest), snapshot=snapshot, **inputs)
+encoder, index = reader.adapt_complete_readonly_providers(encoder=case['encoder_provider'], index_decoder=codec.decode,
+    **{key: output[key] for key in ('encoder_binding_bytes','encoder_binding_sha256','index_binding_bytes','index_binding_sha256')})
+stream = fixtures._ObservedStream(fixtures._raw({'situation':'retry network outage','time':fixtures.QUERY_TIME}))
+answer = reader.query_complete_content_snapshot(**snapshot, **output, encoder_provider=encoder, index_provider=index, stream=stream)
+proposals = [{'ref_sha256': hit['ref_sha256'], 'doc_id_sha256': hit['doc_id_sha256'],
+              'source_event_sha256':hit['source_reference']['sha256']} for hit in answer['results']]
+result = owner.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
+assert result['authority'] == 'none' and result['index_match'] == 'UNKNOWN' and result['results']
+before = source.read_bytes(); lines = before.splitlines(keepends=True)
+selected = next(i for i, line in enumerate(lines) if reader._sha(reader._canonical(json.loads(line))) == proposals[0]['source_event_sha256'])
+lines[selected] = lines[selected].replace(b'"message":', b'"messagE":', 1)
+assert b''.join(lines) != before and len(b''.join(lines)) == len(before)
+source.write_bytes(b''.join(lines))
+try:
+    owner.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
+    raise AssertionError('changed selected source row accepted')
+except package.SnapshotPackageRefused:
+    pass
+print('synthetic bundle control and selected-row verification passed')
+'''
+    result = subprocess.run([sys.executable, '-I', '-B', '-c', script, str(ROOT), str(tmp_path)],
+                            text=True, capture_output=True, timeout=60, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'synthetic bundle control and selected-row verification passed'
+
+
 @pytest.mark.parametrize('selected', [False, True])
 def test_narrow_read_checks_selected_rows_but_allows_unselected_corruption(package, fixtures, tmp_path, selected):
     case, codec, output, _, _, _, _, run = _narrow_fixture(package, fixtures, tmp_path)

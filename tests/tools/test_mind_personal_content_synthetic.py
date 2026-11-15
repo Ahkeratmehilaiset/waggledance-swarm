@@ -7,6 +7,51 @@ from tools import wd_mind_content_query_readonly as reader
 from tools import wd_mind_content_snapshot_package as producer
 
 
+@pytest.mark.parametrize('changes', [
+    {'to': 'ｃｌａｕｄｅ－ｒｃｏ－１'},
+    {'to': 'claude-r\u200bco-1'},
+    {'payload': {'recipient': 'ｃｌａｕｄｅ－ｒｃｏ－１'}},
+    {'payload': {'nested': {'recipient-agent': 'claude-r\u200bco-2'}}},
+    {'payload': {'nested': {'targets': ['codex-tools-1', 'ｃｌａｕｄｅ－ｒｃｏ－２']}}},
+    {'payload': {'nested': [{'cc': ['fable-5', 'r\u200bco-1']}]}},
+])
+def test_noncanonical_rco_recipient_values_are_never_projected(tmp_path, changes):
+    row = fixture._row('Synthetic review update.', task_id='synthetic-recipient-policy',
+                       status='info', **changes)
+    projection = reader.rederive_message_projection(**fixture._all_tasks_case(reader, tmp_path, [row]))
+    assert projection['messages']['records'] == []
+
+
+@pytest.mark.parametrize('changes', [
+    {'to': 'codex-tools-1', 'payload': {'recipient': 'fable-5'}},
+    {'to': 'codex-tools-1', 'payload': {'recipients': ['codex-tools-1', 'fable-5']}},
+    {'to': 'codex-tools-1', 'payload': {'nested': {'target-agent': 'fable-5'}}},
+])
+def test_canonical_build_recipient_values_and_review_mentions_still_project(tmp_path, changes):
+    row = fixture._row('RCO review discussed a synthetic parser fix.', task_id='synthetic-recipient-policy',
+                       status='review_requested', **changes)
+    projection = reader.rederive_message_projection(**fixture._all_tasks_case(reader, tmp_path, [row]))
+    records = projection['messages']['records']
+    assert len(records) == 1
+    assert reader.decode_text(records[0]['stored_text']) == row['message']
+    assert records[0]['provenance']['source_event_ref'] == fixture._sha(fixture._raw(row))
+
+
+def test_normalization_does_not_authorize_noncanonical_build_identity(tmp_path):
+    row = fixture._row('Synthetic review update.', task_id='synthetic-recipient-policy',
+                       status='review_requested', to='ｃｏｄｅｘ－ｔｏｏｌｓ－１')
+    projection = reader.rederive_message_projection(**fixture._all_tasks_case(reader, tmp_path, [row]))
+    assert projection['messages']['records'] == []
+
+
+@pytest.mark.parametrize('key', ['ｒｅｃｉｐｉｅｎｔ', 'recipient\u200b'])
+def test_nonascii_json_keys_still_refuse_the_complete_source(tmp_path, key):
+    row = fixture._row('Synthetic review update.', task_id='synthetic-recipient-policy',
+                       status='info', payload={'nested': {key: 'claude-rco-1'}})
+    with pytest.raises(reader.ContentQueryRefused):
+        reader.rederive_message_projection(**fixture._all_tasks_case(reader, tmp_path, [row]))
+
+
 @pytest.mark.parametrize('text', [
     'claude-rco-1, please review this synthetic parser change.',
     '@claude-rco-2 please review this synthetic parser change.',

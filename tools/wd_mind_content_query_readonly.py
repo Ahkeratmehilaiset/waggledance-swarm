@@ -852,11 +852,20 @@ def _inputs(values):
             "identifier_tag": binding[2], "decision": decision, "decision_sha256": values["decision_sha256"]}
 
 
+def _rco_recipient_name(value):
+    # Normalize only to detect an excluded RCO; never authorize this spelling
+    # or alter the event/ref used for provenance.
+    text = ''.join(char for char in value if unicodedata.category(char) != 'Cf')
+    text = unicodedata.normalize('NFKC', text)
+    text = ''.join(char for char in text if unicodedata.category(char) != 'Cf')
+    return _RCO_NAME.search(text) is not None
+
+
 def _unsafe_recipient(value):
     if type(value) is str:
-        return _RCO_NAME.search(value) is not None
+        return _rco_recipient_name(value)
     if type(value) is list:
-        return any(type(item) is not str or _RCO_NAME.search(item) is not None for item in value)
+        return any(type(item) is not str or _rco_recipient_name(item) for item in value)
     return True
 
 

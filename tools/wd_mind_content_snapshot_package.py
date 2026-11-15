@@ -771,6 +771,8 @@ class _ConsumerSourceOwner:
                              'event_time_utc_floor': record['time_utc'], 'source_agent': record['meta']['agent']})
             if _consumer_bundle_controls(self._root, self._pin) != self._controls:
                 raise ValueError('controls_changed')
+            if type(self._gate) is _ConsumerFlatGate:
+                self._gate._check_delivery_binding()
             # A response cannot carry partial output or stale material at return.
             finished = datetime.now(timezone.utc)
             for hit in hits:
@@ -908,10 +910,14 @@ class _ConsumerFlatGate(reader._NarrowReadGate):
             raise ValueError('flat_source_map')
         return value
 
+    def _check_delivery_binding(self):
+        if _consumer_flat_encoder(self._bundle_root, self._manifest_pin) != self._encoder:
+            raise ValueError('encoder_changed')
+
     def verify_snapshot(self, snapshot):
-        if (type(snapshot) is not dict
-                or _consumer_flat_encoder(self._bundle_root, self._manifest_pin) != self._encoder):
+        if type(snapshot) is not dict:
             raise ValueError('snapshot')
+        self._check_delivery_binding()
         inputs = dict(snapshot)
         raw, digest = inputs.pop('projection_bytes', None), inputs.pop('projection_sha256', None)
         if type(raw) is not bytes or not raw or not reader._hex(digest) or not hmac.compare_digest(reader._sha(raw), digest):

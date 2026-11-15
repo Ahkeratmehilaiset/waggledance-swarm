@@ -112,6 +112,18 @@ def test_flat_consumer_owner_enforces_strict_delivery_age(package, fixtures, tmp
             owner.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
 
 
+def test_flat_consumer_rechecks_encoder_after_source_resolve(package, fixtures, tmp_path, monkeypatch):
+    owner, proposals, _, _ = _flat_owner_fixture(package, fixtures, tmp_path, monkeypatch)
+    fence = reader._narrow_fence
+    def change_after_source_fence(*args, **kwargs):
+        result = fence(*args, **kwargs)
+        monkeypatch.setattr(package, '_consumer_flat_encoder', lambda root, pin: b'changed-binding')
+        return result
+    monkeypatch.setattr(reader, '_narrow_fence', change_after_source_fence)
+    with pytest.raises(package.SnapshotPackageRefused):
+        owner.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
+
+
 @pytest.mark.parametrize('optimized', [False, True])
 def test_provider_cannot_forge_watcher_hold_or_leak_message(package, fixtures, tmp_path, optimized):
     case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
@@ -450,6 +462,20 @@ try:
 except package.SnapshotPackageRefused:
     pass
 worker.write_bytes(worker_raw)
+original_fence = reader._narrow_fence
+def change_worker_during_source_check(*args, **kwargs):
+    value = original_fence(*args, **kwargs)
+    worker.write_bytes(b'# worker changed after first E5-pin check\n')
+    return value
+reader._narrow_fence = change_worker_during_source_check
+try:
+    flat.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
+    raise AssertionError('mid-query E5 worker change accepted')
+except package.SnapshotPackageRefused:
+    pass
+finally:
+    reader._narrow_fence = original_fence
+    worker.write_bytes(worker_raw)
 before = source.read_bytes(); lines = before.splitlines(keepends=True)
 selected = next(i for i, line in enumerate(lines) if reader._sha(reader._canonical(json.loads(line))) == proposals[0]['source_event_sha256'])
 lines[selected] = lines[selected].replace(b'"message":', b'"messagE":', 1)

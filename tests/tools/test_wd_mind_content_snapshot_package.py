@@ -346,7 +346,7 @@ def test_consumer_owner_real_synthetic_bundle_chain(tmp_path):
     """
     import subprocess
     script = r'''
-import hashlib, json, shutil, sys
+import hashlib, json, shutil, struct, sys
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -389,6 +389,19 @@ policy = snapshot['messages']['policy_bytes']
 (bundle / 'wd-fleet.json').write_bytes(fleet); (bundle / 'wd-mind-message-policy.json').write_bytes(policy)
 files = {'wd-fleet.json': reader._sha(fleet), 'wd-mind-message-policy.json': reader._sha(policy)}
 for path in paths: files['tools-bootstrap/' + path] = reader._sha((bootstrap / path).read_bytes())
+worker_relative = 'tools-bootstrap/tools/wd_mind_e5_worker.py'
+worker = bundle.joinpath(*worker_relative.split('/'))
+worker.write_bytes(b'# synthetic pinned worker; not executed\n')
+files[worker_relative] = reader._sha(worker.read_bytes())
+flat_encoder = json.loads(output['encoder_binding_bytes'])
+flat_encoder['code_sha256'] = files[worker_relative]
+flat_encoder_raw = reader._canonical(flat_encoder)
+runtime_binding = reader._canonical({'schema':'wd.mind-memory-encoder-binding.v1',
+    'encoder':flat_encoder['encoder'], 'code_sha256':files[worker_relative],
+    'query_policy':flat_encoder['query_policy'],
+    'passage_policy':dict(flat_encoder['query_policy'], prefix='passage: ')})
+(bundle / 'wd-mind-e5-encoder-binding.json').write_bytes(runtime_binding)
+files['wd-mind-e5-encoder-binding.json'] = reader._sha(runtime_binding)
 manifest = reader._canonical({'schema_version': 1, 'files': files})
 (bundle / 'deployment-manifest.json').write_bytes(manifest)
 class Clock(datetime):
@@ -407,6 +420,27 @@ proposals = [{'ref_sha256': hit['ref_sha256'], 'doc_id_sha256': hit['doc_id_sha2
               'source_event_sha256':hit['source_reference']['sha256']} for hit in answer['results']]
 result = owner.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
 assert result['authority'] == 'none' and result['index_match'] == 'UNKNOWN' and result['results']
+ids = tuple(sorted(row['record_id'] for row in json.loads(snapshot['projection_bytes'])['messages']['records']))
+vector = struct.pack('<384f', 1.0, *([0.0] * 383)); vectors = vector * len(ids)
+pairs = hashlib.sha256()
+for record_id in ids: pairs.update(record_id.encode() + b'\0' + vector)
+flat_raw = reader._canonical({'schema':'wd.mind-flat-f32-memory.v1', 'authority':'none',
+    'projection_sha256':snapshot['projection_sha256'], 'records':len(ids),
+    'encoder_binding_sha256':reader._sha(flat_encoder_raw), 'ids_sha256':reader._sha(reader._canonical(list(ids))),
+    'vectors_sha256':reader._sha(vectors), 'pairs_sha256':pairs.hexdigest()})
+flat = package.create_consumer_flat_source_owner(enabled=True, bundle_root=str(bundle),
+    expected_manifest_sha256=reader._sha(manifest), snapshot=snapshot,
+    flat_manifest_bytes=flat_raw, flat_manifest_sha256=reader._sha(flat_raw),
+    ids=ids, vectors=vectors, encoder_binding_bytes=flat_encoder_raw)
+flat_result = flat.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
+assert flat_result['results'] and flat_result['index_match'] == 'UNKNOWN'
+worker_raw = worker.read_bytes(); worker.write_bytes(b'# modified worker\n')
+try:
+    flat.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
+    raise AssertionError('changed pinned E5 worker accepted')
+except package.SnapshotPackageRefused:
+    pass
+worker.write_bytes(worker_raw)
 before = source.read_bytes(); lines = before.splitlines(keepends=True)
 selected = next(i for i, line in enumerate(lines) if reader._sha(reader._canonical(json.loads(line))) == proposals[0]['source_event_sha256'])
 lines[selected] = lines[selected].replace(b'"message":', b'"messagE":', 1)
@@ -415,6 +449,11 @@ source.write_bytes(b''.join(lines))
 try:
     owner.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
     raise AssertionError('changed selected source row accepted')
+except package.SnapshotPackageRefused:
+    pass
+try:
+    flat.resolve(proposals=proposals, lane='codex-lead-1', scope='shared')
+    raise AssertionError('changed flat selected row accepted')
 except package.SnapshotPackageRefused:
     pass
 print('synthetic bundle control and selected-row verification passed')

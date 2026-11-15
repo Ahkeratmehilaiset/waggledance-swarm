@@ -270,10 +270,14 @@ namespace WaggleDance {
             [Parameter(Mandatory)] [string] $ExpectedManifestHash,
             [Parameter(Mandatory)] [byte[]] $ApprovedPolicyBytes,
             [Parameter(Mandatory)] [string] $ApprovedPolicySha256,
+            [Parameter(Mandatory)] [string] $ApprovalReferenceSha256,
+            [Parameter(Mandatory)] [string] $Lane,
             [ValidateRange(1,90)] [int] $TimeoutSeconds=15
         )
         if (-not $Enabled -or $ApprovedPolicyBytes.Length -lt 1 -or $ApprovedPolicyBytes.Length -gt 65536 -or
-            $ApprovedPolicySha256 -cnotmatch '\A[0-9a-fA-F]{64}\z') { throw 'mind_parent_bootstrap_refused' }
+            $ApprovedPolicySha256 -cnotmatch '\A[0-9a-fA-F]{64}\z' -or
+            $ApprovalReferenceSha256 -cnotmatch '\A[0-9a-fA-F]{64}\z' -or
+            $Lane -cnotin @('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5')) { throw 'mind_parent_bootstrap_refused' }
         $clock=[Diagnostics.Stopwatch]::StartNew()
         $sha=[Security.Cryptography.SHA256]::Create()
         try { $policyHash=[BitConverter]::ToString($sha.ComputeHash($ApprovedPolicyBytes)).Replace('-','').ToLowerInvariant() }
@@ -310,21 +314,29 @@ namespace WaggleDance {
             }
         }
         $start.EnvironmentVariables['WD_REBOOT_EXPECTED_MANIFEST_HASH']=$ExpectedManifestHash.ToUpperInvariant()
-        $control=New-Object byte[] (136+$ApprovedPolicyBytes.Length)
+        $laneBytes=[Text.Encoding]::ASCII.GetBytes($Lane)
+        $innerOffset=101+$laneBytes.Length
+        $control=New-Object byte[] ($innerOffset+136+$ApprovedPolicyBytes.Length)
         $nonce=New-Object byte[] 32;$key=New-Object byte[] 32;$owner=$null
         try {
             $rng=[Security.Cryptography.RandomNumberGenerator]::Create()
             try { $rng.GetBytes($nonce);$rng.GetBytes($key) } finally { $rng.Dispose() }
-            [Array]::Copy([Text.Encoding]::ASCII.GetBytes('MCT1'),0,$control,0,4)
+            [Array]::Copy([Text.Encoding]::ASCII.GetBytes('MCP1'),0,$control,0,4)
+            $control[100]=[byte]$laneBytes.Length
+            [Array]::Copy($laneBytes,0,$control,101,$laneBytes.Length)
+            [Array]::Copy([Text.Encoding]::ASCII.GetBytes('MCT1'),0,$control,$innerOffset,4)
             $length=[BitConverter]::GetBytes([uint32]$ApprovedPolicyBytes.Length)
             if([BitConverter]::IsLittleEndian){[Array]::Reverse($length)}
-            [Array]::Copy($length,0,$control,4,4)
+            [Array]::Copy($length,0,$control,($innerOffset+4),4)
             for($i=0;$i -lt 32;$i++){
-                $control[8+$i]=[Convert]::ToByte($ExpectedManifestHash.Substring(2*$i,2),16)
-                $control[104+$i]=[Convert]::ToByte($ApprovedPolicySha256.Substring(2*$i,2),16)
+                $manifestByte=[Convert]::ToByte($ExpectedManifestHash.Substring(2*$i,2),16)
+                $policyByte=[Convert]::ToByte($ApprovedPolicySha256.Substring(2*$i,2),16)
+                $control[4+$i]=$manifestByte;$control[36+$i]=$policyByte
+                $control[68+$i]=[Convert]::ToByte($ApprovalReferenceSha256.Substring(2*$i,2),16)
+                $control[$innerOffset+8+$i]=$manifestByte;$control[$innerOffset+104+$i]=$policyByte
             }
-            [Array]::Copy($nonce,0,$control,40,32);[Array]::Copy($key,0,$control,72,32)
-            [Array]::Copy($ApprovedPolicyBytes,0,$control,136,$ApprovedPolicyBytes.Length)
+            [Array]::Copy($nonce,0,$control,($innerOffset+40),32);[Array]::Copy($key,0,$control,($innerOffset+72),32)
+            [Array]::Copy($ApprovedPolicyBytes,0,$control,($innerOffset+136),$ApprovedPolicyBytes.Length)
             [void](Read-WdMindPinnedSnapshot -Path $manifestPath -Pin $ExpectedManifestHash -Limit 4194304)
             [void](Read-WdMindPinnedSnapshot -Path $wrapperPath -Pin $wrapperPin.Value -Limit 8388608)
             [void](Read-WdMindPinnedSnapshot -Path $entryPath -Pin $entryPin.Value -Limit 8388608)

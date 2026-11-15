@@ -158,7 +158,17 @@ $m=New-Object IO.MemoryStream
 $buf=New-Object byte[] 4096
 while(($n=$s.Read($buf,0,$buf.Length)) -gt 0){$m.Write($buf,0,$n)}
 $bytes=$m.ToArray()
-if($bytes.Length -lt 137 -or [Text.Encoding]::ASCII.GetString($bytes,0,4) -cne 'MCT1'){exit 4}
+if($bytes.Length -lt 239 -or [Text.Encoding]::ASCII.GetString($bytes,0,4) -cne 'MCP1'){exit 4}
+$outerManifest=New-Object byte[] 32;[Array]::Copy($bytes,4,$outerManifest,0,32)
+$outerPolicyHash=New-Object byte[] 32;[Array]::Copy($bytes,36,$outerPolicyHash,0,32)
+$outerApproval=New-Object byte[] 32;[Array]::Copy($bytes,68,$outerApproval,0,32)
+$laneLen=[int]$bytes[100];if($laneLen -lt 1 -or $laneLen -gt 32){exit 6}
+$lane=[Text.Encoding]::ASCII.GetString($bytes,101,$laneLen)
+$innerOffset=101+$laneLen
+if($lane -cne 'codex-lead-1' -or $bytes.Length -le ($innerOffset+136) -or
+ [BitConverter]::ToString($outerApproval).Replace('-','') -cne ('C'*64)){exit 7}
+$bytes=[byte[]]$bytes[$innerOffset..($bytes.Length-1)]
+if([Text.Encoding]::ASCII.GetString($bytes,0,4) -cne 'MCT1'){exit 8}
 $lenBytes=New-Object byte[] 4;[Array]::Copy($bytes,4,$lenBytes,0,4)
 if([BitConverter]::IsLittleEndian){[Array]::Reverse($lenBytes)}
 $policyLen=[BitConverter]::ToUInt32($lenBytes,0)
@@ -171,7 +181,9 @@ $policy=New-Object byte[] $policyLen;[Array]::Copy($bytes,136,$policy,0,$policyL
 $sha=[Security.Cryptography.SHA256]::Create()
 try {$actualPolicyHash=$sha.ComputeHash($policy)} finally {$sha.Dispose()}
 $policyHashOk=([BitConverter]::ToString($policyHash) -ceq [BitConverter]::ToString($actualPolicyHash))
-$manifestOk=([BitConverter]::ToString($manifest).Replace('-','') -ceq $env:WD_REBOOT_EXPECTED_MANIFEST_HASH)
+$manifestOk=([BitConverter]::ToString($manifest).Replace('-','') -ceq $env:WD_REBOOT_EXPECTED_MANIFEST_HASH -and
+ [BitConverter]::ToString($outerManifest) -ceq [BitConverter]::ToString($manifest) -and
+ [BitConverter]::ToString($outerPolicyHash) -ceq [BitConverter]::ToString($policyHash))
 $independentRandom=([BitConverter]::ToString($key) -cne [BitConverter]::ToString($nonce))
 $keyHex=[BitConverter]::ToString($key).Replace('-','')
 $commandHasKey=[Environment]::CommandLine.IndexOf($keyHex,[StringComparison]::OrdinalIgnoreCase) -ge 0
@@ -202,7 +214,7 @@ $policy=[Text.Encoding]::UTF8.GetBytes('{"schema":"synthetic"}')
 $env:OPENAI_API_KEY='synthetic-only-env-sentinel'
 $env:AGENT_BRIDGE_OWNER_TOKEN='synthetic-only-owner-sentinel'
 $owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
-    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 5
+    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -ApprovalReferenceSha256 ('c'*64) -Lane 'codex-lead-1' -TimeoutSeconds 5
 if((Wait-WdMindParentBootstrap -Owner $owner).State -cne 'EXITED'){throw 'synthetic_parent_not_exited'}
 $r=[Text.Encoding]::UTF8.GetString($global:WdMindParentBootstrapIO[$owner.Token].OutBytes.ToArray()) | ConvertFrom-Json
 [pscustomobject]@{state=$owner.State;child_exit=$global:WdMindParentBootstrapProcesses[$owner.Token].Process.ExitCode;is_redirected=$r.is_redirected;
@@ -219,7 +231,67 @@ $r=[Text.Encoding]::UTF8.GetString($global:WdMindParentBootstrapIO[$owner.Token]
 
 
 @WINDOWS
-@pytest.mark.parametrize('fault', ['disabled', 'policy', 'manifest', 'wrapper', 'entry'])
+def test_parent_bootstrap_mcp1_is_accepted_by_actual_owner_parser(tmp_path):
+    """Exercise real 604 parser, with its production parent guard patched only in fixture."""
+    bundle, _ = _package(tmp_path)
+    probe = tmp_path / 'synthetic-parent-parser.py'
+    probe.write_text(f'''
+import os, sys
+sys.path.insert(0, {str(ROOT)!r})
+from tools import wd_mind_runtime_child as child, wd_mind_full_runtime as runtime
+try:
+    child._require_verified_parent_spawn = lambda: None  # Synthetic fixture only.
+    box = runtime._ParentControlBuffer(runtime._PrivateParentStream(sys.stdin.buffer), prefix_budget=133)
+    box.read_from(enabled=True)
+    pair = child._derive_parent_child_controls(enabled=True, control_buffer=box,
+        expected_manifest_sha256=os.environ['WD_REBOOT_EXPECTED_MANIFEST_HASH'].lower())
+    meta = pair.metadata()
+    assert meta['lane'] == 'codex-lead-1' and meta['approval_reference_sha256'] == 'c'*64
+    sys.stdout.write('{{"parsed":true}}')
+except BaseException as exc:
+    os.write(1, ('synthetic_failure:' + type(exc).__name__).encode('ascii'))
+    os._exit(7)
+''', encoding='utf-8')
+    wrapper = bundle / 'Invoke-WdBridgePython.ps1'
+    wrapper.write_text(r'''
+$info=New-Object Diagnostics.ProcessStartInfo
+$info.FileName=PYTHON_PATH
+$info.Arguments='-I -S -B ' + '"' + PROBE_PATH + '"'
+$info.UseShellExecute=$false;$info.CreateNoWindow=$true
+$info.RedirectStandardInput=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
+$process=New-Object Diagnostics.Process;$process.StartInfo=$info
+if (-not $process.Start()) { exit 9 }
+[Console]::OpenStandardInput().CopyTo($process.StandardInput.BaseStream)
+$process.StandardInput.Close()
+$out=$process.StandardOutput.ReadToEnd();$process.WaitForExit()
+if($process.ExitCode -ne 0){[Console]::Out.Write($out);exit 8};[Console]::Out.Write($out)
+'''.replace('PYTHON_PATH', _literal(sys.executable)).replace('PROBE_PATH', _literal(probe)), encoding='utf-8')
+    entry = bundle / 'tools-bootstrap/tools/wd_mind_runtime_child.py'
+    entry.write_bytes(b'# synthetic pinned entry\n')
+    manifest = bundle / 'deployment-manifest.json'
+    doc = json.loads(manifest.read_text(encoding='utf-8'))
+    for relative in ('Invoke-WdBridgePython.ps1', 'tools-bootstrap/tools/wd_mind_runtime_child.py'):
+        doc['files'][relative] = hashlib.sha256((bundle / relative).read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(doc, separators=(',', ':')), encoding='utf-8')
+    pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    policy = b'{"schema":"wd.mind-identifier-policy.v1","identifiers":["synthetic-id"]}'
+    functions = _startup_functions('Invoke-WdMindStartupRead.ps1',
+        ['Read-WdMindPinnedSnapshot', 'ConvertTo-WdMindLiteral', 'Update-WdMindParentBootstrapPumps',
+         'Wait-WdMindParentBootstrap', 'Start-WdMindParentBootstrap'])
+    script = functions + r'''
+$policy=[Text.Encoding]::UTF8.GetBytes('{"schema":"wd.mind-identifier-policy.v1","identifiers":["synthetic-id"]}')
+$owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
+ -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -ApprovalReferenceSha256 ('c'*64) -Lane 'codex-lead-1' -TimeoutSeconds 15
+$owner=Wait-WdMindParentBootstrap -Owner $owner
+$out=[Text.Encoding]::UTF8.GetString($global:WdMindParentBootstrapIO[$owner.Token].OutBytes.ToArray())
+[ordered]@{state=$owner.State;output=$out}|ConvertTo-Json -Compress
+'''.replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin))
+    script = script.replace('POLICY_PIN', _literal(hashlib.sha256(policy).hexdigest()))
+    assert _run_startup_script(script) == {'state':'EXITED', 'output':'{"parsed":true}'}
+
+
+@WINDOWS
+@pytest.mark.parametrize('fault', ['disabled', 'policy', 'manifest', 'wrapper', 'entry', 'approval', 'lane'])
 def test_parent_bootstrap_refuses_before_process_on_untrusted_inputs(tmp_path, fault):
     bundle, _ = _package(tmp_path)
     marker = tmp_path / 'not-created-marker'
@@ -246,12 +318,14 @@ def test_parent_bootstrap_refuses_before_process_on_untrusted_inputs(tmp_path, f
 $policy=[Text.Encoding]::UTF8.GetBytes('synthetic-policy')
 $caught=$false
 try { Start-WdMindParentBootstrap ENABLED -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
-    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 2 | Out-Null }
+    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -ApprovalReferenceSha256 APPROVAL_VALUE -Lane LANE_VALUE -TimeoutSeconds 2 | Out-Null }
 catch { $caught=$true }
 [pscustomobject]@{refused=$caught;marker=(Test-Path -LiteralPath MARKER_PATH);
     retained=(Test-Path variable:global:WdMindParentBootstrapOwners)} | ConvertTo-Json -Compress
 '''.replace('ENABLED', enabled).replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin))
     script = script.replace('POLICY_PIN', _literal(policy_pin)).replace('MARKER_PATH', _literal(marker))
+    script = script.replace('APPROVAL_VALUE', _literal('bad' if fault == 'approval' else 'c'*64))
+    script = script.replace('LANE_VALUE', _literal('not-a-lane' if fault == 'lane' else 'codex-lead-1'))
     assert _run_startup_script(script) == {'refused':True, 'marker':False, 'retained':False}
 
 
@@ -279,7 +353,7 @@ while($s.Read($b,0,$b.Length) -gt 0){}
     script = functions + r'''
 $policy=New-Object byte[] 65536;for($i=0;$i -lt $policy.Length;$i++){$policy[$i]=65}
 $owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
-    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 1
+    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -ApprovalReferenceSha256 ('c'*64) -Lane 'codex-lead-1' -TimeoutSeconds 1
 $owned=$global:WdMindParentBootstrapProcesses[$owner.Token]
 $held=($owner.State -ceq 'HOLD' -and -not $owned.Process.HasExited -and
        $global:WdMindParentBootstrapOwners.Contains($owner) -and
@@ -321,7 +395,7 @@ while($s.Read($b,0,$b.Length) -gt 0){}
     script = functions + r'''
 $policy=New-Object byte[] 65536;for($i=0;$i -lt $policy.Length;$i++){$policy[$i]=65}
 $owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
-    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 2
+    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -ApprovalReferenceSha256 ('c'*64) -Lane 'codex-lead-1' -TimeoutSeconds 2
 $owned=$global:WdMindParentBootstrapProcesses[$owner.Token]
 $sent=($owner.State -ceq 'BOOTSTRAP_SENT')
 if(-not $sent){
@@ -405,7 +479,7 @@ def test_parent_bootstrap_reports_nonzero_exit_separately(tmp_path):
     script = functions + r'''
 $policy=[Text.Encoding]::UTF8.GetBytes('synthetic-policy')
 $owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
-    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 5
+    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -ApprovalReferenceSha256 ('c'*64) -Lane 'codex-lead-1' -TimeoutSeconds 5
 $owner=Wait-WdMindParentBootstrap -Owner $owner
 [pscustomobject]@{state=$owner.State;exit_code=$global:WdMindParentBootstrapProcesses[$owner.Token].Process.ExitCode} | ConvertTo-Json -Compress
 '''.replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin)).replace('POLICY_PIN', _literal(policy_pin))
@@ -420,7 +494,8 @@ def test_parent_bootstrap_never_returns_echoed_policy_and_survives_scope_exit(tm
     wrapper.write_text(r'''
 $s=[Console]::OpenStandardInput();$m=New-Object IO.MemoryStream;$b=New-Object byte[] 4096
 while(($n=$s.Read($b,0,$b.Length)) -gt 0){$m.Write($b,0,$n)}
-$bytes=$m.ToArray();$policy=[Text.Encoding]::UTF8.GetString($bytes,136,$bytes.Length-136)
+$bytes=$m.ToArray();$offset=101+[int]$bytes[100]+136
+$policy=[Text.Encoding]::UTF8.GetString($bytes,$offset,$bytes.Length-$offset)
 [Console]::Out.Write($policy);[Console]::Error.Write($policy)
 ''', encoding='utf-8')
     entry = bundle / 'tools-bootstrap/tools/wd_mind_runtime_child.py'
@@ -440,7 +515,7 @@ $bytes=$m.ToArray();$policy=[Text.Encoding]::UTF8.GetString($bytes,136,$bytes.Le
 $owner=& {
  $policy=[Text.Encoding]::UTF8.GetBytes('synthetic-private-policy-sentinel')
  Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
-  -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 5
+  -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -ApprovalReferenceSha256 ('c'*64) -Lane 'codex-lead-1' -TimeoutSeconds 5
 }
 & { . HELPER_PATH }
 $owner=Wait-WdMindParentBootstrap -Owner $owner
@@ -483,7 +558,7 @@ while($s.Read($b,0,$b.Length) -gt 0){}
     script = functions + r'''
 $policy=[Text.Encoding]::UTF8.GetBytes('synthetic-policy')
 $owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
-    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 5
+    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -ApprovalReferenceSha256 ('c'*64) -Lane 'codex-lead-1' -TimeoutSeconds 5
 $owner=Wait-WdMindParentBootstrap -Owner $owner
 $state=$owner.State
 $owned=$global:WdMindParentBootstrapProcesses[$owner.Token]

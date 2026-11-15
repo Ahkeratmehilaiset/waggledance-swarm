@@ -135,7 +135,8 @@ def _export_wire_size(*, enabled=False, metadata_length=None, block_lengths=None
         if data_frames > 0xfffffffe:
             raise ValueError('wire_sequence')
         total = metadata_length + sum(block_lengths) + 48 * (data_frames + 2) + 44
-        if total >= 2**63 or total > max_wire_bytes:
+        # Reserve one byte for the receiver's trailing-EOF probe.
+        if total >= 2**63 or total >= max_wire_bytes:
             raise ValueError('wire_budget')
         result = total
     except Exception:

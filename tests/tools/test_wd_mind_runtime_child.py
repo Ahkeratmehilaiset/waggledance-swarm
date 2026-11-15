@@ -893,10 +893,10 @@ def test_export_wire_budget_counts_metadata_all_blocks_headers_and_final():
     data_frames = sum((length + 65487) // 65488 for length in lengths)
     expected = 123 + sum(lengths) + 48 * (1 + data_frames + 1) + 44
     assert child._export_wire_size(enabled=True, metadata_length=123, block_lengths=lengths,
-                                   max_wire_bytes=expected) == expected
+                                   max_wire_bytes=expected+1) == expected
     with pytest.raises(child.LaunchRefused):
         child._export_wire_size(enabled=True, metadata_length=123, block_lengths=lengths,
-                                max_wire_bytes=expected-1)
+                                max_wire_bytes=expected)
     for bad in ((), lengths[:-1], (True,) + lengths[1:], (-1,) + lengths[1:]):
         with pytest.raises(child.LaunchRefused):
             child._export_wire_size(enabled=True, metadata_length=123, block_lengths=bad,

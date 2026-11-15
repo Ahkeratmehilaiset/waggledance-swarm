@@ -1994,6 +1994,28 @@ def _validate_refresh_generation(owner, staged):
     return binding, snapshot, handler
 
 
+def _local_generation_policy_pin(owner):
+    """Check the retained policy bytes and independent pin without reading the log."""
+    original = current = policy = key = tag = None
+    try:
+        binding = owner._binding
+        if type(binding) is not _PrivateBinding or type(owner._snapshot) is not dict:
+            raise ValueError('policy_binding')
+        original = binding._PrivateBinding__snapshot['identifier_policy_binding']
+        current = owner._snapshot['identifier_policy_binding']
+        pin = binding._PrivateBinding__policy_pin
+        if (type(original) is not tuple or len(original) != 3 or type(current) is not tuple
+                or len(current) != 3 or original != current or not reader._hex(pin)):
+            raise ValueError('policy_binding')
+        policy, key, tag = original
+        if type(policy) is not bytes or not hmac.compare_digest(reader._sha(policy), pin):
+            raise ValueError('policy_binding')
+        reader._load_identifier_policy(policy, key, tag, allow_empty_v2=True)
+        return pin
+    finally:
+        original = current = policy = key = tag = None
+
+
 def _prepare_generation_delivery(owner, request, expected_nonce, policy_pin, max_total_bytes):
     """Prepare reference candidates and an untransmitted export under owner lock."""
     if (type(request) is not dict
@@ -2005,8 +2027,10 @@ def _prepare_generation_delivery(owner, request, expected_nonce, policy_pin, max
             or request['scope'] not in ('own', 'shared')
             or type(expected_nonce) is not str or not reader._hex(expected_nonce)
             or request['nonce'] != expected_nonce or type(policy_pin) is not str
-            or not reader._hex(policy_pin) or policy_pin != owner._binding._PrivateBinding__policy_pin
+            or not reader._hex(policy_pin)
             or type(max_total_bytes) is not int or not 0 < max_total_bytes <= 64 * 1024 * 1024):
+        raise _GenerationInputRefused('mind_full_runtime_refused') from None
+    if not hmac.compare_digest(policy_pin, _local_generation_policy_pin(owner)):
         raise _GenerationInputRefused('mind_full_runtime_refused') from None
     owner._check_factory_or_hold()
     candidates = map_pipe_candidates(enabled=True, handler=owner._handler, request=request)

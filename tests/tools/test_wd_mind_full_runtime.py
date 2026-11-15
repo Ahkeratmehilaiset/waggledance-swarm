@@ -1605,6 +1605,7 @@ try:
             request = {'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',
                        'nonce':nonce,'lane':'codex-lead-1','scope':'own'}
             limit = 64 * 1024 * 1024
+            caller_pin = hashlib.sha256(policy).hexdigest()
             if fault == 'source':
                 path = pathlib.Path(sys.argv[3]); path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
             elif fault == 'manifest': (root / 'deployment-manifest.json').write_bytes(b'{}')
@@ -1613,9 +1614,14 @@ try:
                 owner._adapter.query = fail_query
             elif fault == 'bad_request': request['schema'] = 'wd.synthetic-invalid.v1'
             elif fault == 'size': limit = 1
+            elif fault == 'wrong_policy_pin': caller_pin = '0' * 64
+            elif fault == 'internal_pin': owner._binding._PrivateBinding__policy_pin = '0' * 64
+            elif fault == 'internal_policy':
+                _, key, tag = owner._binding._PrivateBinding__snapshot['identifier_policy_binding']
+                owner._binding._PrivateBinding__snapshot['identifier_policy_binding'] = (b'{}', key, tag)
             try:
                 owner._prepare_consistent_delivery(enabled=True, request=request, expected_nonce=nonce,
-                    expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest(), max_total_bytes=limit)
+                    expected_identifier_policy_sha256=caller_pin, max_total_bytes=limit)
                 print(json.dumps({'result':'unexpected_success'})); sys.exit(0)
             except runtime.FullRuntimeRefused as exc:
                 trace = traceback.TracebackException.from_exception(exc, capture_locals=True)
@@ -2477,7 +2483,8 @@ def test_generation_delivery_real_worker_failure_preserves_hold_and_private_loca
 
 
 @pytest.mark.parametrize(('fault','state'), [('source','HOLD'), ('manifest','HOLD'), ('adapter','HOLD'),
-                                            ('bad_request','READY'), ('size','READY')])
+    ('internal_pin','HOLD'), ('internal_policy','HOLD'), ('wrong_policy_pin','READY'),
+    ('bad_request','READY'), ('size','READY')])
 def test_generation_delivery_integrity_failure_differs_from_user_refusal(synthetic_bundle, fault, state):
     assert invoke(synthetic_bundle, 'refresh_real_delivery_error_' + fault) == {
         'result':'refused', 'state':state, 'clean':True}

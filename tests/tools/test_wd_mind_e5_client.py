@@ -200,6 +200,17 @@ def test_supervised_frame_checks_never_return_after_deadline(monkeypatch, phase)
     assert job.terminated and job.closed
 
 
+@pytest.mark.parametrize('deadline', [-1, float('nan'), True])
+def test_supervised_rejects_bad_call_deadline_before_packet(monkeypatch, deadline):
+    request = supervised('refresh', 'd' * 64)
+    process, job = Process(response(0, 0)), Job()
+    subject = client.E5WorkerClient(process, job, timeout=1, encoder_binding_sha256='c' * 64)
+    monkeypatch.setattr(client, 'time', SimpleNamespace(monotonic=lambda: 0.0))
+    with pytest.raises(client.E5ClientRefused, match='^mind_e5_worker_refused$'):
+        subject.encode_supervised(request, call_deadline=deadline)
+    assert process.stdin.getvalue() == b'' and job.terminated and job.closed
+
+
 def test_supervised_batches_preserve_raw_bytes_order_and_bindings():
     refresh = supervised("refresh", "a" * 64, texts=[f"passage: {i}" for i in range(9)])
     query = supervised("query", "b" * 64)

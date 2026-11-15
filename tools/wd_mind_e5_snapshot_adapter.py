@@ -16,6 +16,9 @@ import json
 import secrets
 import struct
 import os
+import math
+import threading
+import time
 from pathlib import Path
 import re
 import sys
@@ -251,15 +254,43 @@ def create_flat_adapter(*, enabled=False, bundle_root=None, expected_manifest_sh
 
 class _SingleFlatAdapter(_FlatAdapter):
     """One caller-owned graceful worker; this object never starts a process."""
-    __slots__ = ('_owner', '_owned_process', '_owned_job')
+    __slots__ = ('_owner', '_owned_process', '_owned_job', '_call_state')
 
     def __init__(self, client, bundle, manifest, query_binding, runtime_hash):
         super().__init__(client, bundle, manifest, query_binding, runtime_hash)
         self._owner = client.owner
         self._owned_process = self._owner.resources.process
         self._owned_job = self._owner.resources.job
+        self._call_state = threading.local()
+
+    def _require_deadline(self):
+        deadline = getattr(self._call_state, 'deadline', None)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ValueError('deadline')
+        return deadline
+
+    def _timed_call(self, operation):
+        if getattr(self._call_state, 'deadline', None) is not None:
+            raise ValueError('reentrant_call')
+        timeout = self._client._timeout
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 1800:
+            raise ValueError('timeout')
+        self._call_state.deadline = time.monotonic() + float(timeout)
+        try:
+            result = operation()
+            self._require_deadline()
+            return result
+        finally:
+            del self._call_state.deadline
+
+    def passage(self, texts):
+        return _run(lambda: self._timed_call(lambda: super(_SingleFlatAdapter, self).passage(texts)))
+
+    def query(self, text):
+        return _run(lambda: self._timed_call(lambda: super(_SingleFlatAdapter, self).query(text)))
 
     def _check(self):
+        self._require_deadline()
         from tools import wd_mind_e5_client as e5_client, wd_mind_e5_lifecycle as lifecycle
         client = self._client
         if (type(client) is not e5_client.GracefulE5WorkerClient
@@ -278,6 +309,7 @@ class _SingleFlatAdapter(_FlatAdapter):
         if (type(status) is not dict or status.get('state') != 'RUNNING'
                 or status.get('owned') is not True or status.get('reason') is not None):
             raise ValueError('single_flat_owner_unavailable')
+        self._require_deadline()
 
     def _passage(self, texts):
         # One bounded B16 request has one nonce/digest. The existing client
@@ -292,11 +324,13 @@ class _SingleFlatAdapter(_FlatAdapter):
     def _encode_supervised(self, payload):
         # Recheck every independently transported group, not merely the
         # enclosing B16, while the existing client owns the request lock.
-        return self._client.encode_supervised(payload, frame_check=self._check)
+        deadline = self._require_deadline()
+        if deadline is None:
+            raise ValueError('missing_call_deadline')
+        return self._client.encode_supervised(payload, frame_check=self._check, call_deadline=deadline)
 
     def close(self, *, timeout=0):
         """Request cooperative EOF; a HOLD keeps the owner and handles reachable."""
-        import math
         def close_owned():
             if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 <= timeout <= 30:
                 raise ValueError('timeout')
@@ -316,6 +350,7 @@ def create_single_flat_adapter(*, enabled=False, bundle_root=None, expected_mani
     the adapter/owner through HOLD, and controls the source and launch lifecycle.
     The binding proves consistency only, not execution, sender authentication,
     or resistance to changes reverted between checks (same-user ABA).
+    Its deadline rejects a late return but cannot interrupt a blocked check.
     """
     def create():
         from tools import wd_mind_e5_client as e5_client

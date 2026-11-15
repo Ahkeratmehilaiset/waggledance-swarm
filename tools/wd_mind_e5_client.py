@@ -189,7 +189,7 @@ class E5WorkerClient:
         finally:
             self._mutex.release()
 
-    def encode_supervised(self, request, *, frame_check=None):
+    def encode_supervised(self, request, *, frame_check=None, call_deadline=None):
         """Echo one supervisor binding with original float32 payload bytes.
 
         The supervisor validates source and caller authority independently.
@@ -201,6 +201,12 @@ class E5WorkerClient:
             raise E5ClientRefused("mind_e5_worker_refused")
         deadline = time.monotonic() + self._timeout
         try:
+            if call_deadline is not None:
+                if type(call_deadline) not in (int, float) or not math.isfinite(call_deadline):
+                    raise ValueError("deadline")
+                deadline = min(deadline, float(call_deadline))
+                if time.monotonic() >= deadline:
+                    raise ValueError("deadline")
             if frame_check is not None and (not callable(frame_check) or isinstance(frame_check, type)):
                 raise ValueError("frame_check")
             if type(request) is not dict or request.get("operation") not in ("refresh", "query"):

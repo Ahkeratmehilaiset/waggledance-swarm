@@ -507,12 +507,15 @@ def test_flat_consumer_is_default_off_before_any_ipc(flat_consumer_case):
             expected_manifest_sha256=owner._pin, expected_nonce='1' * 64, lane='codex-lead-1', scope='shared')
 
 
-@pytest.mark.parametrize('fault', ['none', 'disabled', 'nonce', 'oversize', 'empty', 'late', 'close'])
+@pytest.mark.parametrize('fault', ['none', 'disabled', 'nonce', 'oversize', 'empty', 'late', 'close', 'magic', 'truncated', 'trailing'])
 def test_candidate_stream_uses_local_gate_and_refuses_partial_or_untrusted_data(flat_consumer_case, fault):
     _, owner, proposals, _, _, response = flat_consumer_case
     raw = response()
-    if fault == 'oversize': raw += b' ' * 2049
     if fault == 'empty': raw = b''
+    declared = 2049 if fault == 'oversize' else len(raw)
+    raw = struct.pack('>4sI', b'BAD1' if fault == 'magic' else b'MCR1', declared) + raw
+    if fault == 'truncated': raw = raw[:-1]
+    if fault == 'trailing': raw += b'X'
     class Stream(io.BytesIO):
         def read(self, n=-1):
             assert 0 < n <= 2049  # the limit is set before requesting bytes
@@ -562,7 +565,8 @@ def test_candidate_stream_refuses_late_return_without_claiming_interruptibility(
         def close(self):
             super().close()
             if phase == 'close': clock.value = 2.0
-    stream = Stream(response())
+    payload = response()
+    stream = Stream(struct.pack('>4sI', b'MCR1', len(payload)) + payload)
     def open_stream():
         if phase == 'open': clock.value = 2.0
         return stream
@@ -571,6 +575,29 @@ def test_candidate_stream_refuses_late_return_without_claiming_interruptibility(
             bundle_root=owner._root, expected_manifest_sha256=owner._pin, expected_nonce='1'*64,
             lane='codex-lead-1', scope='shared', deadline_monotonic=1.0)
     assert stream.closed
+
+
+@pytest.mark.parametrize('phase', ['read', 'gate', 'close'])
+@pytest.mark.parametrize('signal', [KeyboardInterrupt, asyncio.CancelledError])
+def test_candidate_stream_preserves_cancellation_and_closes(flat_consumer_case, monkeypatch, phase, signal):
+    _, owner, _, _, _, response = flat_consumer_case
+    payload = response()
+    class Stream(io.BytesIO):
+        def read(self, n=-1):
+            if phase == 'read': raise signal()
+            return super().read(n)
+        def close(self):
+            super().close()
+            if phase == 'close': raise signal()
+    stream = Stream(struct.pack('>4sI', b'MCR1', len(payload)) + payload)
+    if phase == 'gate':
+        def interrupted(**kwargs): raise signal()
+        monkeypatch.setattr(session, 'query_flat_source_candidates', interrupted)
+    with pytest.raises(signal) as error:
+        session.resolve_flat_candidate_stream(enabled=True, owner=owner, open_read=lambda: stream,
+            bundle_root=owner._root, expected_manifest_sha256=owner._pin, expected_nonce='1'*64,
+            lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+5)
+    assert type(error.value) is signal and error.value.__context__ is None and stream.closed
 
 
 @pytest.mark.parametrize('turn', ['first', 'resume'])

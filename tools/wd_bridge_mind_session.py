@@ -624,14 +624,14 @@ def query_flat_source_candidates(*, enabled=False, owner=None, ipc_bytes=None, b
 def resolve_flat_candidate_stream(*, enabled=False, owner=None, open_read=None, bundle_root=None,
                                   expected_manifest_sha256=None, expected_nonce=None, lane=None,
                                   scope=None, deadline_monotonic=None):
-    """Read one bounded candidate frame, then resolve it through the local source gate.
+    """Read one MCR1 candidate segment, then resolve it through the local source gate.
 
     ``open_read`` and the nonce must come from an independently trusted parent;
     this function does not establish handle provenance or peer authentication.
     Synchronous open/read/close and the local gate can block past the deadline;
     an outer retained owner must supervise them and HOLD on uncertainty.
     """
-    stream = chunk = payload = output = None
+    stream = chunk = payload = header = output = None
     interrupted = None
     try:
         if (enabled is not True or not callable(open_read)
@@ -641,22 +641,28 @@ def resolve_flat_candidate_stream(*, enabled=False, owner=None, open_read=None, 
         stream = open_read()
         if time.monotonic() >= deadline_monotonic or not callable(getattr(stream, 'read', None)):
             raise ValueError('deadline_or_stream')
-        payload = bytearray()
-        while True:
-            if time.monotonic() >= deadline_monotonic:
-                raise ValueError('deadline')
-            remaining = 2049 - len(payload)
-            chunk = stream.read(remaining)
-            if (time.monotonic() >= deadline_monotonic or type(chunk) is not bytes
-                    or len(chunk) > remaining):
-                raise ValueError('read')
-            if not chunk:
-                break
-            payload.extend(chunk)
-            if len(payload) > 2048:
-                raise ValueError('candidate_budget')
-        if not payload:
-            raise ValueError('empty')
+        def exact(size):
+            result = bytearray()
+            while len(result) < size:
+                if time.monotonic() >= deadline_monotonic:
+                    raise ValueError('deadline')
+                remaining = size - len(result)
+                part = stream.read(remaining)
+                if (time.monotonic() >= deadline_monotonic or type(part) is not bytes
+                        or not part or len(part) > remaining):
+                    raise ValueError('read')
+                result.extend(part)
+            return bytes(result)
+        header = exact(8)
+        magic, length = struct.unpack('>4sI', header)
+        if magic != b'MCR1' or not 0 < length <= 2048:
+            raise ValueError('candidate_budget')
+        payload = exact(length)
+        if time.monotonic() >= deadline_monotonic:
+            raise ValueError('deadline')
+        chunk = stream.read(1)
+        if time.monotonic() >= deadline_monotonic or type(chunk) is not bytes or chunk != b'':
+            raise ValueError('trailing')
         output = query_flat_source_candidates(enabled=True, owner=owner, ipc_bytes=bytes(payload),
             bundle_root=bundle_root, expected_manifest_sha256=expected_manifest_sha256,
             expected_nonce=expected_nonce, lane=lane, scope=scope)
@@ -684,7 +690,7 @@ def resolve_flat_candidate_stream(*, enabled=False, owner=None, open_read=None, 
                 output = None
         if output is not None and time.monotonic() >= deadline_monotonic:
             output = None
-        stream = chunk = payload = open_read = None
+        stream = chunk = payload = header = open_read = None
     if interrupted is not None:
         raise interrupted() from None
     if output is None:

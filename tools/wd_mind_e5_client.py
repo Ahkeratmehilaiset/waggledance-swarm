@@ -75,6 +75,20 @@ class E5WorkerClient:
         except Exception:
             pass
 
+    def _interrupt_cleanup(self):
+        # Legacy clients cannot cooperatively drain an independently owned
+        # process. Keep their references and do not force termination here.
+        self._closed = True
+
+    def _retire_on_interrupt(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._interrupt_cleanup()
+        except BaseException:
+            pass  # Preserve the original cancellation and retained owner.
+
     def _bounded(self, operation, deadline):
         result = queue.Queue(maxsize=1)
         def run():
@@ -159,6 +173,11 @@ class E5WorkerClient:
         except Exception:
             self.close()
             raise E5ClientRefused("mind_e5_worker_refused") from None
+        except BaseException:
+            # A partial multi-frame operation must never be resumed. Preserve
+            # the original cancellation even if cooperative cleanup fails.
+            self._retire_on_interrupt()
+            raise
         finally:
             self._mutex.release()
 
@@ -250,6 +269,9 @@ class E5WorkerClient:
         except Exception:
             self.close()
             raise E5ClientRefused("mind_e5_worker_refused") from None
+        except BaseException:
+            self._retire_on_interrupt()
+            raise
         finally:
             self._mutex.release()
 
@@ -305,3 +327,15 @@ class GracefulE5WorkerClient(E5WorkerClient):
     def close(self, *, timeout=0):
         self._closed = True
         return self.owner.shutdown(timeout=timeout)
+
+    def _interrupt_cleanup(self):
+        try:
+            self.close(timeout=0)
+        except BaseException:
+            # If shutdown itself fails, retain the actual owner and request a
+            # non-terminating HOLD before preserving the original interrupt.
+            try:
+                self.owner._fault('client_interrupt_cleanup_failed')
+            except BaseException:
+                pass
+            raise

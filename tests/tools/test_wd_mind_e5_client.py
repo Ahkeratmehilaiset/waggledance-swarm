@@ -1,5 +1,6 @@
 """Private-pipe client tests with fake model responses and no real process."""
 import io
+import asyncio
 import hashlib
 import json
 import struct
@@ -209,6 +210,106 @@ def test_supervised_rejects_bad_call_deadline_before_packet(monkeypatch, deadlin
     with pytest.raises(client.E5ClientRefused, match='^mind_e5_worker_refused$'):
         subject.encode_supervised(request, call_deadline=deadline)
     assert process.stdin.getvalue() == b'' and job.terminated and job.closed
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, asyncio.CancelledError])
+@pytest.mark.parametrize('cleanup_fails', [False, True])
+def test_interrupted_partial_b16_retires_client_and_retains_owner(monkeypatch, signal_type, cleanup_fails):
+    from test_wd_mind_e5_lifecycle import Process as OwnedProcess, Job as OwnedJob, finish
+    from tools import wd_mind_e5_lifecycle as lifecycle
+    texts = [f'passage: synthetic {i}' for i in range(16)]
+    request = supervised('refresh', 'd' * 64, texts=texts)
+    frames = [response(i, 4, nonce=bytes.fromhex(request['nonce']),
+                       digest=bytes.fromhex(request['request_sha256'])) for i in range(1, 5)]
+    process = OwnedProcess(response(0, 0) + b''.join(frames), on_eof=False)
+    owner = lifecycle.reserve(enabled=True, bulk_contract_sha256=client.BULK_CONTRACT_SHA256)
+    job = OwnedJob()
+    owner.set_job(job)
+    owner.bind(process)
+    shutdown = owner.shutdown
+    signal = signal_type('synthetic interrupt')
+    checks = []
+    def stop_after_first_frame():
+        checks.append(1)
+        if len(checks) == 2:
+            raise signal
+    try:
+        subject = client.GracefulE5WorkerClient(owner, timeout=1, encoder_binding_sha256='c' * 64,
+                                                bulk_contract_sha256=client.BULK_CONTRACT_SHA256)
+        owner.mark_ready()
+        if cleanup_fails:
+            def failed_shutdown(*, timeout=0):
+                raise RuntimeError('synthetic cleanup failure')
+            monkeypatch.setattr(owner, 'shutdown', failed_shutdown)
+        with pytest.raises(signal_type) as caught:
+            subject.encode_supervised(request, frame_check=stop_after_first_frame)
+        assert caught.value is signal and len(checks) == 2
+        raw = bytes(process.written)
+        first_size = struct.unpack('<I', raw[:4])[0]
+        assert len(raw) == first_size + 4
+        assert subject._closed is True and subject.owner is owner
+        assert owner.resources.process is process and owner.resources.job is job and owner.status()['owned'] is True
+        assert owner.status()['state'] == 'HOLD'
+        with pytest.raises(client.E5ClientRefused):
+            subject.encode_supervised(supervised('refresh', 'e' * 64))
+        assert bytes(process.written) == raw
+    finally:
+        owner.shutdown = shutdown
+        finish(owner, process)
+
+
+@pytest.mark.parametrize('signal_type', [KeyboardInterrupt, asyncio.CancelledError])
+def test_interrupted_inner_frame_closes_graceful_owner_once(monkeypatch, signal_type):
+    from test_wd_mind_e5_lifecycle import Process as OwnedProcess, Job as OwnedJob, finish
+    from tools import wd_mind_e5_lifecycle as lifecycle
+    request = supervised('refresh', 'd' * 64, texts=[f'passage: {i}' for i in range(16)])
+    frame = response(1, 4, nonce=bytes.fromhex(request['nonce']), digest=bytes.fromhex(request['request_sha256']))
+    process = OwnedProcess(response(0, 0) + frame, on_eof=False)
+    owner = lifecycle.reserve(enabled=True, bulk_contract_sha256=client.BULK_CONTRACT_SHA256)
+    job = OwnedJob()
+    owner.set_job(job)
+    owner.bind(process)
+    shutdown = owner.shutdown
+    calls = []
+    signal = signal_type('synthetic interrupt')
+    try:
+        subject = client.GracefulE5WorkerClient(owner, timeout=1, encoder_binding_sha256='c' * 64,
+                                                bulk_contract_sha256=client.BULK_CONTRACT_SHA256)
+        owner.mark_ready()
+        original_response = subject._response
+        def interrupted_response(request_id, *args):
+            if request_id == 2:
+                raise signal
+            return original_response(request_id, *args)
+        def counted_shutdown(*, timeout=0):
+            calls.append(timeout)
+            return shutdown(timeout=timeout)
+        monkeypatch.setattr(subject, '_response', interrupted_response)
+        monkeypatch.setattr(owner, 'shutdown', counted_shutdown)
+        with pytest.raises(signal_type) as caught:
+            subject.encode_supervised(request)
+        assert caught.value is signal and calls == [0]
+        assert subject._closed and owner.status()['state'] == 'HOLD' and owner.status()['owned'] is True
+        assert owner.resources.process is process and owner.resources.job is job
+    finally:
+        owner.shutdown = shutdown
+        finish(owner, process)
+
+
+def test_legacy_interrupted_client_retains_handles_without_forced_termination():
+    request = supervised('refresh', 'd' * 64, texts=[f'passage: {i}' for i in range(16)])
+    frame = response(1, 4, nonce=bytes.fromhex(request['nonce']), digest=bytes.fromhex(request['request_sha256']))
+    process, job = Process(response(0, 0) + frame), Job()
+    subject = client.E5WorkerClient(process, job, timeout=1, encoder_binding_sha256='c' * 64)
+    calls = []
+    def interrupt():
+        calls.append(1)
+        if len(calls) == 2:
+            raise KeyboardInterrupt()
+    with pytest.raises(KeyboardInterrupt):
+        subject.encode_supervised(request, frame_check=interrupt)
+    assert subject._closed and subject._process is process and subject._job is job
+    assert not job.terminated and not job.closed
 
 
 def test_supervised_batches_preserve_raw_bytes_order_and_bindings():

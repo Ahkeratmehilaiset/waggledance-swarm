@@ -409,6 +409,16 @@ def test_situation_default_off():
         project_lane_situation()
 
 
+def test_situation_default_off_does_not_hash_identifier_policy(monkeypatch):
+    from tools import wd_mind_startup_content as module
+    def forbidden(*args, **kwargs):
+        pytest.fail('disabled situation must not hash identifier policy')
+    monkeypatch.setattr(module.hashlib, 'sha256', forbidden)
+    with pytest.raises(module.StartupSourceRefused):
+        module.project_lane_situation(identifier_policy_bytes=b'synthetic',
+                                      expected_identifier_policy_sha256='a' * 64)
+
+
 def test_situation_screening_excludes_secret_and_rco_routes(synthetic_bundle):
     from tools import bridge_compact_view
     fleet = json.loads((synthetic_bundle['bundle'] / 'wd-fleet.json').read_bytes())

@@ -245,6 +245,38 @@ def test_export_sender_interrupted_after_lock_acquisition_releases_lock():
     assert owner._state == 'HOLD'
 
 
+def test_export_sender_write_failure_closes_stream_and_retains_hold(monkeypatch):
+    import threading
+    import time
+    import types
+    from tools import wd_mind_full_runtime as runtime
+    policy, nonce, key = b'policy', b'n' * 32, b'k' * 32
+    snapshot = {'identifier_policy_binding': (policy, b'z' * 32, 'a' * 64)}
+    binding = types.SimpleNamespace(_PrivateBinding__manifest='a' * 64,
+                                    snapshot_for_query=lambda: snapshot)
+    memory = types.SimpleNamespace(binding=binding, snapshot=snapshot)
+    handler = types.SimpleNamespace(_memory=memory, _running_owner=lambda: None)
+    owner = object.__new__(runtime._SingleManifestOwner)
+    owner._lock, owner._state, owner._handler, owner._binding = threading.Lock(), 'READY', handler, binding
+    metadata = canonical({'nonce':nonce.hex()})
+    blocks = tuple((str(i), b'') for i in range(12))
+    prepared = runtime._PrivateConsumerExport(metadata, blocks, len(metadata), owner, memory)
+    class FailingSink:
+        closed = False
+        def write(self, data): raise OSError('synthetic write failure')
+        def close(self): self.closed = True
+    sink = FailingSink()
+    monkeypatch.setattr(runtime, '_require_trusted_parent_export', lambda: None)
+    monkeypatch.setattr(runtime, '_flat_check', lambda _: None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_factory', lambda _: None)
+    with pytest.raises(runtime.FullRuntimeRefused):
+        prepared._send_parent_stream(enabled=True, stream=runtime._PrivateExportStream(sink),
+            bootstrap=runtime._ParentBootstrap(('a' * 64, nonce, key, hashlib.sha256(policy).hexdigest(), policy)),
+            max_wire_bytes=10000, deadline_monotonic=time.monotonic()+5)
+    assert sink.closed and not owner._lock.locked() and owner._state == 'HOLD'
+    assert prepared.status()['state'] == 'DISCARDED'
+
+
 def test_parent_bootstrap_interrupted_take_does_not_leak_values_in_traceback():
     import traceback
     from tools import wd_mind_full_runtime as runtime

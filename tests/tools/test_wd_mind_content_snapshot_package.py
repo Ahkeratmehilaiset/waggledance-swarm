@@ -740,6 +740,58 @@ def test_immutable_build_profile_is_explicit_and_verifies_initial_and_final_sour
     assert len(calls) == 2
 
 
+@pytest.mark.parametrize('succeeds', [True, False])
+def test_immutable_build_waits_for_running_long_verification(package, fixtures, tmp_path, monkeypatch, succeeds):
+    import time
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    entered, finished = threading.Event(), threading.Event()
+    verify = reader._verified_complete
+
+    def slow_verify(snapshot):
+        if threading.current_thread().name == 'mind-source-verifier':
+            entered.set()
+            time.sleep(2.2)
+            if not succeeds:
+                finished.set()
+                raise RuntimeError('synthetic verifier failure')
+            result = verify(snapshot)
+            finished.set()
+            return result
+        return verify(snapshot)
+
+    def encode(batch):
+        assert entered.wait(5)
+        return codec.passage(batch)
+
+    monkeypatch.setattr(package, '_WATCH_INTERVAL_SECONDS', 0.001)
+    monkeypatch.setattr(reader, '_verified_complete', slow_verify)
+    args['passage_encoder'] = encode
+    try:
+        if not succeeds:
+            with pytest.raises(package.SnapshotPackageRefused):
+                package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+            assert finished.is_set()
+            assert package.snapshot_build_watcher_status() == {'state': 'idle'}
+            return
+        output = package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+        assert finished.is_set()
+        assert json.loads(output['memory_bytes'])['records'] > 0
+        assert package.snapshot_build_watcher_status() == {'state': 'idle'}
+    finally:
+        for thread in threading.enumerate():
+            if thread.name == 'mind-source-verifier':
+                thread.join(10)
+
+
+@pytest.mark.parametrize('timeout', [True, 0, -1, 601, float('nan'), float('inf'), '5'])
+def test_watcher_close_wait_rejects_invalid_timeouts(package, timeout):
+    with pytest.raises(package.SnapshotPackageRefused):
+        package.package_content_snapshot(enabled=True, capacity_profile=FULL_PREFIX_PROFILE,
+            source_verification='verified_immutable_snapshot_v1', watcher_join_timeout_seconds=timeout)
+
+
 def test_immutable_build_refuses_permanent_source_change_after_callback(package, fixtures, tmp_path):
     case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
     codec = Codec(fixtures)
@@ -879,13 +931,13 @@ def test_immutable_build_stuck_watcher_returns_hold_and_keeps_ownership(package,
         return codec.passage(batch)
 
     monkeypatch.setattr(package, '_WATCH_INTERVAL_SECONDS', 0.01)
-    monkeypatch.setattr(package, '_WATCH_JOIN_TIMEOUT_SECONDS', 0.05)
     monkeypatch.setattr(reader, '_verified_complete', watched_verify)
     monkeypatch.setattr(threading.Thread, 'join', join_once)
     args['passage_encoder'] = encode
     try:
         with pytest.raises(package.SnapshotPackageHold, match='content_snapshot_watcher_hold'):
-            package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+            package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1',
+                                             watcher_join_timeout_seconds=0.05)
         assert joins == [0.05]  # finally must not start a second timeout.
         assert package.snapshot_build_watcher_status() == {'state': 'watcher_stopping'}
         with pytest.raises(package.SnapshotPackageHold, match='content_snapshot_watcher_hold'):

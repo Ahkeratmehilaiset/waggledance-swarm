@@ -447,11 +447,33 @@ def _derive_parent_child_controls_bytes(raw, expected_manifest_sha256):
         'lane':lane, 'nonce':nonce})
 
 
+class _TrackedParentStream:
+    """Keep uncertain close operations from retrying a possibly reused FD."""
+    __slots__ = ('__parent', '__fd', '__stream', '__closed')
+
+    def __init__(self, parent, fd, stream):
+        self.__parent, self.__fd, self.__stream, self.__closed = parent, fd, stream, False
+
+    def __repr__(self): return '<PrivateMindTrackedParentStream>'
+    def readinto(self, view): return self.__stream.readinto(view)
+    def write(self, view): return self.__stream.write(view)
+
+    def close(self):
+        if self.__closed:
+            return
+        if self.__parent._fd_inflight is not None:
+            raise ValueError('fd_uncertain')
+        self.__parent._fd_inflight = self.__fd
+        self.__stream.close()
+        self.__closed = True
+        self.__parent._fd_inflight = None
+
+
 class _RetainedParentPair:
     """Own the actual fixed child launch/pipe graph until both exits are proven."""
     __slots__ = ('_bundle', '_manifest', '_controls', '_metadata', '_deadline', '_owner', '_consumer',
                  '_thread', '_done', '_abort', '_result', '_token', '_fds', '_streams', '_fd_inflight',
-                 '_start_confirmed')
+                 '_stream_cleanup_pending', '_start_confirmed')
 
     def __init__(self, bundle, manifest, controls, deadline):
         self._bundle, self._manifest, self._controls = bundle, manifest, controls
@@ -459,6 +481,7 @@ class _RetainedParentPair:
         self._owner = self._consumer = self._thread = self._result = self._token = None
         self._done, self._abort, self._fds, self._streams = threading.Event(), threading.Event(), set(), []
         self._fd_inflight = None
+        self._stream_cleanup_pending = False
         self._start_confirmed = False
 
     def __repr__(self): return '<PrivateMindRetainedParentPair>'
@@ -466,7 +489,7 @@ class _RetainedParentPair:
     def status(self):
         return {'state':'HOLD', 'owner':None if self._owner is None else self._owner.status(),
                 'consumer':None if self._consumer is None else self._consumer.status(),
-                'fd_ownership':'UNKNOWN' if self._fd_inflight is not None else 'TRACKED',
+                'fd_ownership':'UNKNOWN' if self._fd_inflight is not None or self._stream_cleanup_pending else 'TRACKED',
                 'worker_active':None if self._thread is not None and not self._start_confirmed and not self._done.is_set()
                                 else self._thread is not None and self._thread.is_alive()}
 
@@ -497,7 +520,7 @@ class _RetainedParentPair:
             raise ValueError('fd_uncertain')
         self._fd_inflight = fd
         self._fds.remove(fd)
-        stream = os.fdopen(fd, mode, buffering=0)
+        stream = _TrackedParentStream(self, fd, os.fdopen(fd, mode, buffering=0))
         self._streams.append(stream)
         self._fd_inflight = None
         return stream
@@ -637,12 +660,22 @@ class _RetainedParentPair:
         finally:
             if self._fd_inflight is None:
                 for stream in self._streams:
-                    try: stream.close()
-                    except BaseException: pass
-                for fd in tuple(self._fds):
-                    try: self._close_fd(fd)
-                    except BaseException: break
-            while self._fd_inflight is not None:
+                    self._stream_cleanup_pending = True
+                    try:
+                        stream.close()
+                    except BaseException:
+                        self.cancel()
+                        self._result = None
+                        break
+                    self._stream_cleanup_pending = False
+                if self._fd_inflight is None and not self._stream_cleanup_pending:
+                    for fd in tuple(self._fds):
+                        try: self._close_fd(fd)
+                        except BaseException:
+                            self.cancel()
+                            self._result = None
+                            break
+            while self._fd_inflight is not None or self._stream_cleanup_pending:
                 # A close, transfer or pipe-creation result is unknown. Never
                 # retry the numeric descriptor: it may already be reused.
                 time.sleep(0.25)
@@ -1610,6 +1643,20 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
 _PARENT_ACTIVE = None
 
 
+def _wait_parent_pair_release(pair):
+    """Do not let an uncertain parent process abandon retained child owners."""
+    if pair._thread is None:
+        return
+    while True:
+        try:
+            if pair._done.is_set() and not pair._thread.is_alive():
+                return
+            time.sleep(0.25)
+        except BaseException:
+            # Uncertain cleanup is held; no process termination is attempted.
+            pass
+
+
 def _parent_control_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256):
     """Own the parent/child graph; authorization remains refused by default."""
     global _PARENT_ACTIVE
@@ -1646,6 +1693,7 @@ def _parent_control_entry(*, control_stream, output_stream, bundle_root, expecte
     except BaseException:
         if pair is not None:
             pair.cancel()
+            _wait_parent_pair_release(pair)
         return 2
     finally:
         # A still-running thread retains this process and both child owners.

@@ -928,6 +928,34 @@ def test_parent_pair_interrupted_close_never_reuses_uncertain_fd(monkeypatch):
         real_close(write_fd)
 
 
+def test_parent_pair_failed_stream_close_stays_held_and_never_retries(monkeypatch):
+    controls = child._PrivatePairControls(b'owner', b'consumer', {'manifest_sha256':'a'*64})
+    monkeypatch.setattr(child, '_require_verified_parent_spawn', lambda: None)
+    pair = child.create_retained_parent_pair(enabled=True, bundle_root='C:\\synthetic',
+        expected_manifest_sha256='a'*64, controls=controls, deadline_monotonic=time.monotonic()+5)
+    attempted = threading.Event()
+    class FailingClose:
+        calls = 0
+        def close(self):
+            self.calls += 1
+            attempted.set()
+            raise OSError('synthetic close uncertainty')
+    raw_stream = FailingClose()
+    pair._streams.append(child._TrackedParentStream(pair, 123, raw_stream))
+    monkeypatch.setattr(child._RetainedParentPair, '_run_pipeline', lambda self: b'synthetic-result')
+    try:
+        pair.start()
+        assert attempted.wait(2)
+        time.sleep(0.05)
+        assert pair._thread.is_alive() and pair.status()['fd_ownership'] == 'UNKNOWN'
+        assert pair._result is None and raw_stream.calls == 1
+    finally:
+        # Synthetic uncertainty is explicitly resolved only for fixture cleanup.
+        pair._fd_inflight = None
+        pair._stream_cleanup_pending = False
+        pair._thread.join(timeout=5)
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows handle inheritance test')
 def test_windows_handle_list_excludes_unrelated_inheritable_handle():
     """Probe in an isolated synthetic parent, without mutating fleet handles."""

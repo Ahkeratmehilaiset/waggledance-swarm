@@ -47,3 +47,62 @@ def test_review_status_does_not_bypass_existing_exclusions(tmp_path, changes):
     assert projection["messages"]["records"] == []
     assert event["message"] not in json.dumps(projection)
 
+
+@pytest.mark.parametrize("changes", [
+    {"type": "done"},
+    {"to": "operator"},
+    {"to": "external-consumer"},
+    {"to": ""},
+    {"to": "codex-tools-1,"},
+    {"payload": {"nested": {"recipients": []}}},
+    {"payload": {"nested": {"recipients": ["codex-tools-1", "external-consumer"]}}},
+    {"payload": {"nested": [{"target-agent": "claude-rco-2"}]}},
+    {"payload": {"nested": {"expected_responders": {}}}},
+    {"payload": {"nested": {"expected_responders": {"codex-tools-1": {
+        "agent_uuid": "00000000-0000-4000-8000-000000000099", "run_id": "run", "session_id": "session"}}}}},
+])
+def test_review_requested_requires_message_and_only_explicit_build_recipients(tmp_path, changes):
+    event = _row(**changes)
+    assert _project(tmp_path, event)["messages"]["records"] == []
+
+
+def test_review_requested_missing_to_refuses_even_with_nested_recipient(tmp_path):
+    event = _row(payload={"recipient": "codex-tools-1"})
+    del event["to"]
+    assert _project(tmp_path, event)["messages"]["records"] == []
+
+
+@pytest.mark.parametrize("key", sorted(reader._ROUTING_KEYS))
+def test_each_known_nested_routing_field_refuses_an_external_recipient(tmp_path, key):
+    event = _row(payload={"nested": [{key: "external-consumer"}]})
+    assert _project(tmp_path, event)["messages"]["records"] == []
+
+
+@pytest.mark.parametrize("target", [None, 42, [], ["codex-tools-1", None], "codex-tools-1,,fable-5"])
+def test_review_requested_refuses_malformed_nested_recipients(tmp_path, target):
+    event = _row(payload={"nested": {"recipient-list": target}})
+    assert _project(tmp_path, event)["messages"]["records"] == []
+
+
+@pytest.mark.parametrize("changes", [
+    {"to": "codex-tools-1, fable-5"},
+    {"payload": {"nested": {"recipients": ["codex-tools-1", "fable-5"]}}},
+    {"payload": {"nested": {"expected_responders": {"codex-tools-1": {
+        "agent_uuid": fixture.ROSTER["codex-tools-1"], "run_id": "run", "session_id": "session"}}}}},
+])
+def test_review_requested_allows_only_bound_build_recipients(tmp_path, changes):
+    event = _row(**changes)
+    projection = _project(tmp_path, event)
+    records = projection["messages"]["records"]
+    assert len(records) == 1
+    assert records[0]["provenance"]["source_event_ref"] == fixture._sha(fixture._raw(event))
+
+
+@pytest.mark.parametrize("changes", [
+    {"status": "in_progress", "to": "external-consumer"},
+    {"status": "in_progress", "type": "done", "to": "external-consumer"},
+    {"status": "requested", "to": ""},
+])
+def test_other_existing_statuses_keep_their_previous_scope(tmp_path, changes):
+    assert len(_project(tmp_path, _row(**changes))["messages"]["records"]) == 1
+

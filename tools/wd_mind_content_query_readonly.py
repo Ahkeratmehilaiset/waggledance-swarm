@@ -831,6 +831,48 @@ def _excluded_route(event):
     return False
 
 
+def _review_destinations(value):
+    """Require explicit, nonempty build-lane recipients without widening other statuses."""
+    values = [value] if type(value) is str else value
+    if type(values) is not list or not values:
+        return False
+    for item in values:
+        if type(item) is not str:
+            return False
+        lanes = [lane.strip() for lane in item.split(",")]
+        if not lanes or any(lane not in _BUILD_LANES for lane in lanes):
+            return False
+    return True
+
+
+def _review_request_route_allowed(event, roster):
+    if event.get("type") != "message" or not _review_destinations(event.get("to")):
+        return False
+    stack, count = [event], 0
+    while stack:
+        value = stack.pop()
+        count += 1
+        if count > 65536:
+            return False
+        if type(value) is dict:
+            for key, item in value.items():
+                if type(key) is not str:
+                    return False
+                normalized = key.lower().replace("-", "_")
+                if normalized == "expected_responders":
+                    if _unsafe_responders(item) or any(
+                            identity["agent_uuid"].lower() != roster[lane].lower()
+                            for lane, identity in item.items()):
+                        return False
+                elif normalized in _ROUTING_KEYS and not _review_destinations(item):
+                    return False
+                if type(item) in (dict, list):
+                    stack.append(item)
+        elif type(value) is list:
+            stack.extend(item for item in value if type(item) in (dict, list))
+    return True
+
+
 def _utc(value):
     if type(value) is not str:
         raise ValueError("invalid_time")
@@ -846,6 +888,8 @@ def _utc_text(value):
 
 def _fields(event, policy, roster):
     if _excluded_route(event):
+        return None
+    if event.get("status") == "review_requested" and not _review_request_route_allowed(event, roster):
         return None
     agent = event.get("agent")
     if agent not in policy["lanes"]:

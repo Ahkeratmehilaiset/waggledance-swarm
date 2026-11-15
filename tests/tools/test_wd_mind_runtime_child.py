@@ -857,3 +857,32 @@ finally:
         capture_output=True, timeout=20, creationflags=subprocess.CREATE_NO_WINDOW)
     assert result.returncode == 0, 'isolated handle exclusion probe failed'
     assert result.stdout.strip() == b'isolated-handle-exclusion-ok'
+
+
+def test_export_frame_codec_is_default_off_bounded_and_keyed():
+    import hmac
+    key, nonce, payload = b'k' * 32, b'n' * 32, b'synthetic-payload'
+    with pytest.raises(child.LaunchRefused):
+        child._encode_export_frame(channel_key=key, nonce=nonce, kind=b'M', sequence=0, payload=payload)
+    frame = child._encode_export_frame(enabled=True, channel_key=key, nonce=nonce, kind=b'M', sequence=0, payload=payload)
+    header = struct.pack('>4sB3xII', b'MEX1', ord('M'), 0, len(payload))
+    tag = hmac.new(key, b'wd.mind-export-frame.v1\0' + nonce + header + payload, hashlib.sha256).digest()
+    assert frame == header + payload + tag and len(frame) <= 65536
+    for change in ({'sequence': True}, {'kind':b'D','sequence':0}, {'payload':b'x'*65489},
+                   {'channel_key':b'x'}, {'nonce':b'x'}, {'kind':b'X'}):
+        values = dict(enabled=True, channel_key=key, nonce=nonce, kind=b'M', sequence=0, payload=payload)
+        values.update(change)
+        with pytest.raises(child.LaunchRefused): child._encode_export_frame(**values)
+
+
+def test_export_frame_refusal_never_exposes_keys_in_traceback():
+    import traceback
+    channel_key, payload = b'k'*32, b'synthetic-private-payload'
+    with pytest.raises(child.LaunchRefused) as raised:
+        child._encode_export_frame(enabled=True, channel_key=channel_key, nonce=b'n'*32,
+                                   kind=b'D', sequence=0, payload=payload)
+    trace = traceback.TracebackException.from_exception(raised.value, capture_locals=True)
+    frames = [frame for frame in trace.stack if frame.name == '_encode_export_frame']
+    assert frames
+    assert all(repr(secret) not in value for secret in (channel_key, payload)
+               for frame in frames for value in (frame.locals or {}).values())

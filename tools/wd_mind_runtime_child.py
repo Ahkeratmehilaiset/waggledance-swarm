@@ -25,9 +25,11 @@ does not kill on close; a pinned non-daemon owner retains a timed-out child in
 HOLD. This bounds pipe waits, not the lifetime of a stuck native operation.
 """
 
+import asyncio
 import ctypes
 from ctypes import wintypes
 import hashlib
+import hmac
 import importlib
 import importlib.util
 import json
@@ -38,6 +40,7 @@ import re
 import subprocess
 import sys
 import stat
+import struct
 import threading
 import time
 
@@ -77,6 +80,46 @@ _READER_REFUSALS = frozenset({
 _TRAMPOLINE = ("import sys,runpy; "
                "assert sys.stdin.buffer.read(1)==b'\\0'; "
                "sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name='__main__')")
+
+
+def _encode_export_frame(*, enabled=False, channel_key=None, nonce=None, kind=None,
+                         sequence=None, payload=None):
+    """Construct one in-memory MEX1 frame; this function performs no I/O.
+
+    Frame MAC authenticates possession of the channel key, not peer identity.
+    The production handle export remains disabled until launcher provenance is
+    independently established. Callers own the aggregate wire-byte limit.
+    """
+    result = None
+    cancelled_type = None
+    try:
+        if (enabled is not True or type(channel_key) is not bytes or len(channel_key) != 32
+                or type(nonce) is not bytes or len(nonce) != 32
+                or type(kind) is not bytes or kind not in (b'M', b'D', b'F')
+                or type(sequence) is not int or not 0 <= sequence <= 0xffffffff
+                or (kind == b'M' and sequence != 0) or (kind != b'M' and sequence == 0)
+                or type(payload) is not bytes or not 0 < len(payload) <= 65488
+                or (kind == b'F' and len(payload) != 44)):
+            raise ValueError('frame')
+        header = struct.pack('>4sB3xII', b'MEX1', kind[0], sequence, len(payload))
+        tag = hmac.new(channel_key, b'wd.mind-export-frame.v1\0' + nonce + header + payload,
+                       hashlib.sha256).digest()
+        result = header + payload + tag
+    except KeyboardInterrupt:
+        cancelled_type = KeyboardInterrupt
+    except GeneratorExit:
+        cancelled_type = GeneratorExit
+    except asyncio.CancelledError:
+        cancelled_type = asyncio.CancelledError
+    except BaseException:
+        pass
+    finally:
+        channel_key = nonce = payload = header = tag = None
+    if cancelled_type is not None:
+        raise cancelled_type() from None
+    if result is None:
+        raise LaunchRefused('mind_e5_start_refused') from None
+    return result
 
 
 def _path(value):

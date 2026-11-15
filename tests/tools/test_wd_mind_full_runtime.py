@@ -84,6 +84,24 @@ wrapper = runtime.create_single_manifest_owner(enabled=True, binding=binding, la
 assert wrapper.start() == {'state':'READY','owned':True,'authority':'none'}
 assert type(wrapper._adapter) is adapter._SingleFlatAdapter and wrapper._client is client
 assert wrapper._handler._memory is not None and wrapper._handler._memory.binding is binding
+for bad in ({}, {'enabled':True,'expected_nonce':'x'*64,'max_total_bytes':10000000},
+            {'enabled':True,'expected_nonce':'e'*64,'max_total_bytes':1},
+            {'enabled':True,'expected_nonce':'e'*64,'max_total_bytes':True}):
+    try:
+        wrapper.prepare_consumer_export(**bad)
+        raise AssertionError('bad export input accepted')
+    except runtime.FullRuntimeRefused:
+        pass
+memory = wrapper._handler._memory
+original_vectors = memory.vectors
+memory.vectors = b'\0' * len(original_vectors)
+try:
+    wrapper.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=10000000)
+    raise AssertionError('modified flat vectors accepted')
+except runtime.FullRuntimeRefused:
+    pass
+finally:
+    memory.vectors = original_vectors
 prepared = wrapper.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=10000000)
 info = prepared.status()
 assert info['state'] == 'PREPARED_LOCAL_ONLY' and info['authority'] == 'none'
@@ -95,6 +113,8 @@ try:
     raise AssertionError('unverified export must refuse')
 except runtime.FullRuntimeRefused:
     pass
+prepared.discard()
+assert prepared.status()['state'] == 'DISCARDED' and prepared.status()['total_bytes'] == 0
 response = wrapper.candidates({'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',
     'nonce':'d'*64,'lane':'codex-lead-1','scope':'own'})
 assert response['status'] == 'CANDIDATES' and len(response['candidates']) == 1, repr(response)

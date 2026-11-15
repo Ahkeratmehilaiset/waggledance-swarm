@@ -21,6 +21,7 @@ from pathlib import Path
 import sys
 import struct
 import time
+import traceback
 from types import SimpleNamespace
 
 import pytest
@@ -521,9 +522,11 @@ def test_parent_consumer_pipeline_is_private_gate_only(flat_consumer_case, monke
     frame = json.loads(response())
     frame['scope'] = 'own'
     payload = json.dumps(frame, separators=(',', ':')).encode()
+    control = session._ConsumerKeyBox()
+    control._key = b'B'*32
     args = dict(enabled=True, open_export=lambda: io.BytesIO(wire),
         open_candidate=lambda: io.BytesIO(struct.pack('>4sI', b'MCR1', len(payload)) + payload),
-        channel_key=b'B'*32, bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+        control=control, bundle_root=owner._root, expected_manifest_sha256=owner._pin,
         expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]),
         expected_nonce='1'*64, lane='codex-lead-1', max_total_bytes=64*1024*1024,
         max_wire_bytes=64*1024*1024, deadline_monotonic=time.monotonic()+30)
@@ -534,6 +537,58 @@ def test_parent_consumer_pipeline_is_private_gate_only(flat_consumer_case, monke
     result = session._run_parent_consumer(**args)
     assert result['authority'] == 'none' and result['sender_authentication'] == 'UNKNOWN'
     assert [r['source_event_sha256'] for r in result['results']] == [p['source_event_sha256'] for p in proposals]
+
+
+def test_parent_consumer_first_line_interrupt_does_not_render_key_in_traceback():
+    secret = b'synthetic-trace-key-32-bytes!!!!'
+    control = session._ConsumerKeyBox()
+    control._key = secret
+    def trace(frame, event, arg):
+        if frame.f_code is session._run_parent_consumer.__code__ and event == 'line':
+            sys.settrace(None)
+            raise KeyboardInterrupt()
+        return trace
+    try:
+        sys.settrace(trace)
+        session._run_parent_consumer(enabled=True, control=control)
+    except KeyboardInterrupt as exc:
+        sys.settrace(None)
+        captured = traceback.TracebackException.from_exception(exc, capture_locals=True)
+        target = [frame for frame in captured.stack if frame.name == '_run_parent_consumer']
+        assert target and all(repr(secret) not in value for frame in target for value in (frame.locals or {}).values())
+    else:
+        pytest.fail('expected interruption')
+    finally:
+        sys.settrace(None)
+
+
+def test_parent_consumer_decoder_first_line_interrupt_does_not_render_key(flat_consumer_case, monkeypatch):
+    _, owner, _, snapshot, _, _ = flat_consumer_case
+    control = session._ConsumerKeyBox()
+    control._key = b'synthetic-key-32-synthetic-key!!'
+    secret = control._key
+    monkeypatch.setattr(session, '_require_trusted_consumer_parent', lambda: None)
+    def trace(frame, event, arg):
+        if frame.f_code is session.read_flat_owner_stream.__code__ and event == 'line':
+            sys.settrace(None)
+            raise KeyboardInterrupt()
+        return trace
+    try:
+        sys.settrace(trace)
+        session._run_parent_consumer(enabled=True, control=control, open_export=lambda: io.BytesIO(b''),
+            open_candidate=lambda: io.BytesIO(b''), bundle_root=owner._root, expected_manifest_sha256=owner._pin,
+            expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]),
+            expected_nonce='1'*64, lane='codex-lead-1', max_total_bytes=1024, max_wire_bytes=1024,
+            deadline_monotonic=time.monotonic()+5)
+    except KeyboardInterrupt as exc:
+        sys.settrace(None)
+        captured = traceback.TracebackException.from_exception(exc, capture_locals=True)
+        target = [frame for frame in captured.stack if frame.name in ('_run_parent_consumer', 'read_flat_owner_stream')]
+        assert target and all(repr(secret) not in value for frame in target for value in (frame.locals or {}).values())
+    else:
+        pytest.fail('expected interruption')
+    finally:
+        sys.settrace(None)
 
 
 @pytest.mark.parametrize('fault', ['none', 'disabled', 'nonce', 'oversize', 'empty', 'late', 'close', 'magic', 'truncated', 'trailing'])

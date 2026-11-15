@@ -703,7 +703,18 @@ def _require_trusted_consumer_parent():
     raise MindContentSessionRefused('mind_session_content_refused') from None
 
 
-def _run_parent_consumer(*, enabled=False, open_export=None, open_candidate=None, channel_key=None,
+class _ConsumerKeyBox:
+    """Opaque handle for a future controlled bootstrap; not memory isolation."""
+    __slots__ = ('_key',)
+
+    def __init__(self):
+        self._key = None
+
+    def __repr__(self):
+        return '<PrivateMindConsumerKey>'
+
+
+def _run_parent_consumer(*, enabled=False, open_export=None, open_candidate=None, control=None,
                          bundle_root=None, expected_manifest_sha256=None,
                          expected_identifier_policy_sha256=None, expected_nonce=None, lane=None,
                          max_total_bytes=None, max_wire_bytes=None, deadline_monotonic=None):
@@ -718,13 +729,14 @@ def _run_parent_consumer(*, enabled=False, open_export=None, open_candidate=None
         if enabled is not True:
             raise ValueError('disabled')
         _require_trusted_consumer_parent()
-        if (type(deadline_monotonic) not in (int, float) or not math.isfinite(deadline_monotonic)
+        if (type(control) is not _ConsumerKeyBox or type(control._key) is not bytes or len(control._key) != 32
+                or type(deadline_monotonic) not in (int, float) or not math.isfinite(deadline_monotonic)
                 or not 0 < deadline_monotonic - time.monotonic() <= 840):
             raise ValueError('deadline')
         authorization = create_flat_export_authorization(enabled=True, expected_nonce=expected_nonce,
             expected_identifier_policy_sha256=expected_identifier_policy_sha256)
         owner = read_flat_owner_stream(enabled=True, authorization=authorization, open_read=open_export,
-            channel_key=channel_key, bundle_root=bundle_root, expected_manifest_sha256=expected_manifest_sha256,
+            channel_key=control._key, bundle_root=bundle_root, expected_manifest_sha256=expected_manifest_sha256,
             max_total_bytes=max_total_bytes, max_wire_bytes=max_wire_bytes,
             timeout_seconds=deadline_monotonic-time.monotonic())
         output = resolve_flat_candidate_stream(enabled=True, owner=owner, open_read=open_candidate,
@@ -739,7 +751,7 @@ def _run_parent_consumer(*, enabled=False, open_export=None, open_candidate=None
     except BaseException:
         output = None
     finally:
-        authorization = owner = channel_key = open_export = open_candidate = None
+        authorization = owner = control = open_export = open_candidate = None
     if interrupted is not None:
         raise interrupted() from None
     if output is None:

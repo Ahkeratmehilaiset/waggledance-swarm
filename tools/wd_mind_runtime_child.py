@@ -146,6 +146,157 @@ def _export_wire_size(*, enabled=False, metadata_length=None, block_lengths=None
     return result
 
 
+class _CancelablePipeReader:
+    """Borrow the parent's retained pipe; retain a blocked read thread on HOLD."""
+    __slots__ = ('_api', '_handle', '_timeout', '_lock', '_result_lock', '_thread', '_done', '_buffer',
+                 '_result', '_error', '_abandoned', '_state', '_cancellation')
+
+    def __init__(self, api, handle, timeout):
+        self._api, self._handle, self._timeout = api, handle, timeout
+        self._lock, self._result_lock, self._done = threading.Lock(), threading.Lock(), threading.Event()
+        self._thread = self._buffer = self._result = self._error = None
+        self._abandoned, self._state, self._cancellation = False, 'IDLE', 'NOT_REQUESTED'
+
+    def __repr__(self):
+        return '<PrivateMindCancelablePipeReader>'
+
+    def status(self):
+        active = self._thread is not None and self._thread.is_alive()
+        return {'state': self._state, 'worker_active': active, 'cancellation': self._cancellation}
+
+    def _read_worker(self, size):
+        try:
+            received = wintypes.DWORD()
+            ok = self._api.ReadFile(self._handle, self._buffer, size, ctypes.byref(received), None)
+            error = 0 if ok else ctypes.get_last_error()
+            with self._result_lock:
+                if not self._abandoned:
+                    if ok:
+                        self._result = self._buffer.raw[:received.value]
+                    elif error == 109:  # ERROR_BROKEN_PIPE: ordinary EOF.
+                        self._result = b''
+                self._error = error
+        except BaseException:
+            self._error = -1
+        finally:
+            self._done.set()
+
+    def _cancel_worker(self):
+        thread = self._thread
+        if thread is None or thread.native_id is None:
+            return False
+        # Windows requires THREAD_TERMINATE to call CancelSynchronousIo; no
+        # thread or process termination function is invoked.
+        native_thread = self._api.OpenThread(0x0001, False, thread.native_id)
+        if not native_thread:
+            return False
+        try:
+            return bool(self._api.CancelSynchronousIo(native_thread))
+        finally:
+            self._api.CloseHandle(native_thread)
+
+    def _hold_and_cancel(self):
+        self._state = 'HOLD'
+        with self._result_lock:
+            self._abandoned = True
+            self._result = None
+        cancelled = False
+        try:
+            if self._thread is not None:
+                cancelled = self._cancel_worker()
+                self._thread.join(timeout=0.25)
+        except BaseException:
+            pass
+        active = self._thread is not None and self._thread.is_alive()
+        self._cancellation = ('CONFIRMED' if cancelled and not active and self._error == 995
+                              else 'UNCONFIRMED')
+
+    def read(self, size):
+        if not self._lock.acquire(blocking=False):
+            raise LaunchRefused('mind_e5_start_refused') from None
+        result = None
+        cancelled_type = None
+        try:
+            if self._state != 'IDLE' or type(size) is not int or not 0 < size <= 65536:
+                raise ValueError('pipe_read')
+            self._done.clear()
+            self._result, self._error, self._abandoned = None, None, False
+            self._buffer = ctypes.create_string_buffer(size)
+            self._state = 'READING'
+            deadline = time.monotonic() + self._timeout
+            self._thread = threading.Thread(target=self._read_worker, args=(size,),
+                                            name='mind-owned-pipe-read', daemon=False)
+            self._thread.start()
+            if not self._done.wait(max(0, deadline - time.monotonic())) or time.monotonic() >= deadline:
+                self._hold_and_cancel()
+                raise ValueError('pipe_deadline')
+            self._thread.join(timeout=0.25)
+            if self._thread.is_alive() or type(self._result) is not bytes or time.monotonic() >= deadline:
+                self._hold_and_cancel()
+                raise ValueError('pipe_incomplete')
+            result, self._result = self._result, None
+            self._buffer, self._state = None, 'IDLE'
+        except KeyboardInterrupt:
+            self._hold_and_cancel()
+            cancelled_type = KeyboardInterrupt
+        except GeneratorExit:
+            self._hold_and_cancel()
+            cancelled_type = GeneratorExit
+        except asyncio.CancelledError:
+            self._hold_and_cancel()
+            cancelled_type = asyncio.CancelledError
+        except BaseException:
+            if self._state == 'READING':
+                self._abandoned, self._state = True, 'HOLD'
+        finally:
+            self._lock.release()
+        if cancelled_type is not None:
+            raise cancelled_type() from None
+        if result is None:
+            raise LaunchRefused('mind_e5_start_refused') from None
+        return result
+
+    def close(self):
+        if not self._lock.acquire(blocking=False):
+            raise LaunchRefused('mind_e5_start_refused') from None
+        try:
+            if self._thread is not None and self._thread.is_alive():
+                self._state = 'HOLD'
+                raise LaunchRefused('mind_e5_start_refused') from None
+            # Detach only. The caller retains and closes the original handle.
+            self._handle = None
+            self._buffer = self._result = None
+            self._state = 'DETACHED'
+        finally:
+            self._lock.release()
+
+
+def create_cancelable_pipe_reader(*, enabled=False, handle=None, timeout_seconds=None):
+    """Borrow a parent-retained Windows pipe read handle; start no child."""
+    result = None
+    try:
+        if (enabled is not True or os.name != 'nt' or type(handle) is not int or handle <= 0
+                or type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
+                or not 0 < timeout_seconds <= 1800):
+            raise ValueError('pipe')
+        api = ctypes.WinDLL('kernel32', use_last_error=True)
+        api.GetFileType.argtypes, api.GetFileType.restype = [wintypes.HANDLE], wintypes.DWORD
+        api.ReadFile.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+                                 ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+        api.ReadFile.restype = wintypes.BOOL
+        api.OpenThread.argtypes, api.OpenThread.restype = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE
+        api.CancelSynchronousIo.argtypes, api.CancelSynchronousIo.restype = [wintypes.HANDLE], wintypes.BOOL
+        api.CloseHandle.argtypes, api.CloseHandle.restype = [wintypes.HANDLE], wintypes.BOOL
+        if api.GetFileType(handle) != 3:  # FILE_TYPE_PIPE
+            raise ValueError('pipe_type')
+        result = _CancelablePipeReader(api, handle, float(timeout_seconds))
+    except Exception:
+        pass
+    if result is None:
+        raise LaunchRefused('mind_e5_start_refused') from None
+    return result
+
+
 def _path(value):
     try:
         path = Path(value)

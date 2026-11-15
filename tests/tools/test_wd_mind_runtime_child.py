@@ -901,3 +901,64 @@ def test_export_wire_budget_counts_metadata_all_blocks_headers_and_final():
         with pytest.raises(child.LaunchRefused):
             child._export_wire_size(enabled=True, metadata_length=123, block_lengths=bad,
                                     max_wire_bytes=2**63-1)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows pipe cancellation')
+def test_cancelable_pipe_read_interrupts_blocked_native_read_without_termination():
+    import msvcrt
+    read_fd, write_fd = os.pipe()
+    reader = None
+    try:
+        reader = child.create_cancelable_pipe_reader(enabled=True, handle=msvcrt.get_osfhandle(read_fd), timeout_seconds=0.2)
+        with pytest.raises(child.LaunchRefused): reader.read(1)
+        status = reader.status()
+        assert status['state'] == 'HOLD' and status['worker_active'] is False
+        assert status['cancellation'] == 'CONFIRMED'
+    finally:
+        if reader is not None: reader.close()
+        os.close(write_fd)
+        os.close(read_fd)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows pipe cancellation')
+def test_failed_pipe_cancellation_retains_live_thread_and_handle(monkeypatch):
+    import msvcrt
+    read_fd, write_fd = os.pipe()
+    reader = None
+    try:
+        reader = child.create_cancelable_pipe_reader(enabled=True, handle=msvcrt.get_osfhandle(read_fd), timeout_seconds=0.05)
+        monkeypatch.setattr(child._CancelablePipeReader, '_cancel_worker', lambda self: False)
+        with pytest.raises(child.LaunchRefused): reader.read(1)
+        status = reader.status()
+        assert status == {'state':'HOLD','worker_active':True,'cancellation':'UNCONFIRMED'}
+        with pytest.raises(child.LaunchRefused): reader.close()
+        assert reader.status()['worker_active'] is True
+        assert os.write(write_fd,b'x') == 1
+        reader._thread.join(timeout=2)
+        assert not reader._thread.is_alive() and reader._result is None
+        assert reader.status()['state'] == 'HOLD'
+        reader.close()
+        assert reader.status()['state'] == 'DETACHED'
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows pipe cancellation')
+def test_cancelable_pipe_reader_reads_bytes_and_borrows_original_handle():
+    import msvcrt
+    read_fd, write_fd = os.pipe()
+    reader = None
+    try:
+        reader = child.create_cancelable_pipe_reader(enabled=True, handle=msvcrt.get_osfhandle(read_fd), timeout_seconds=2)
+        assert os.write(write_fd, b'abc') == 3
+        assert reader.read(3) == b'abc'
+        os.close(write_fd)
+        write_fd = None
+        assert reader.read(1) == b''
+        reader.close()
+        assert reader.status()['state'] == 'DETACHED'
+        assert msvcrt.get_osfhandle(read_fd) != -1
+    finally:
+        if write_fd is not None: os.close(write_fd)
+        os.close(read_fd)

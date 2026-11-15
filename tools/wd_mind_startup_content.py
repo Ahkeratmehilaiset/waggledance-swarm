@@ -260,16 +260,28 @@ def project_lane_metadata(*, enabled=False, binding=None, as_of_utc=None, max_ag
 
 def project_lane_situation(*, enabled=False, binding=None, bundle_root=None, expected_manifest_sha256=None,
                            expected_policy_sha256=None, lane=None, as_of_utc=None,
-                           max_age_seconds=900):
+                           max_age_seconds=900, identifier_policy_bytes=None,
+                           expected_identifier_policy_sha256=None):
     """Derive bounded own-lane observations from a manifest-pinned screened projection.
 
-    A policy digest is an explicit caller pin, not proof of operator approval.
+    Policy digests are explicit caller pins, not proof of operator approval.
+    A new binding requires independently supplied identifier policy bytes and
+    digest. A prebound binding can be reused without repeating them; when
+    supplied, the complete pair must match the binding exactly.
     Event times and declared senders are observations, not authenticated facts.
     Only explicit single-chunk ``next_action:`` messages are presented as next
     actions; no action or current claim is inferred from ordinary prose.
     """
     output = None
     try:
+        supplied_identifier = identifier_policy_bytes is not None or expected_identifier_policy_sha256 is not None
+        if binding is None or supplied_identifier:
+            if (type(identifier_policy_bytes) is not bytes or not 0 < len(identifier_policy_bytes) <= 65536
+                    or type(expected_identifier_policy_sha256) is not str
+                    or not re.fullmatch(r'[0-9a-f]{64}', expected_identifier_policy_sha256)
+                    or not hmac.compare_digest(hashlib.sha256(identifier_policy_bytes).hexdigest(),
+                                               expected_identifier_policy_sha256)):
+                raise ValueError('identifier_policy_pin')
         if (enabled is not True or type(bundle_root) is not str or lane not in _LANES
                 or type(lane) is not str or type(expected_policy_sha256) is not str
                 or not re.fullmatch(r'[0-9a-f]{64}', expected_policy_sha256)
@@ -280,12 +292,19 @@ def project_lane_situation(*, enabled=False, binding=None, bundle_root=None, exp
         from tools import wd_mind_content_query_readonly as reader
         if binding is None:
             binding = runtime.assemble_full_runtime(enabled=True, bundle_root=bundle_root,
-                                                    expected_manifest_sha256=expected_manifest_sha256)
+                expected_manifest_sha256=expected_manifest_sha256, identifier_policy_bytes=identifier_policy_bytes,
+                expected_identifier_policy_sha256=expected_identifier_policy_sha256)
         if (type(binding) is not runtime._PrivateBinding
                 or not _same_path(Path(bundle_root), binding._PrivateBinding__bundle)
                 or expected_manifest_sha256 != binding._PrivateBinding__manifest):
             raise ValueError('binding')
         snapshot = binding.snapshot_for_query()
+        if supplied_identifier:
+            policy_binding = snapshot.get('identifier_policy_binding')
+            if (type(policy_binding) is not tuple or len(policy_binding) != 3
+                    or type(policy_binding[0]) is not bytes
+                    or not hmac.compare_digest(policy_binding[0], identifier_policy_bytes)):
+                raise ValueError('identifier_policy_mismatch')
         if snapshot['messages']['policy_sha256'] != expected_policy_sha256:
             raise ValueError('policy_pin')
         projection, _, report = reader._verified_complete(snapshot)
@@ -360,6 +379,8 @@ def project_lane_situation(*, enabled=False, binding=None, bundle_root=None, exp
                      for name,value in selected.items()}}
     except Exception:
         pass
+    finally:
+        identifier_policy_bytes = policy_binding = snapshot = binding = projection = rows = None
     if output is None:
         raise StartupSourceRefused('mind_startup_source_refused') from None
     return output

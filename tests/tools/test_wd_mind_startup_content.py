@@ -299,25 +299,77 @@ def test_fleet_rewrite_during_final_code_recheck_is_refused(source_fixture, monk
 from test_wd_mind_full_runtime import synthetic_bundle
 
 
-def _invoke_situation(case, lane='codex-lead-1', policy_pin=None, as_of='2026-01-01T00:05:00Z'):
+def _invoke_situation(case, lane='codex-lead-1', policy_pin=None, as_of='2026-01-01T00:05:00Z',
+                      *, identifier_case='valid', prebound=False):
     import subprocess, sys
     bundle = case['bundle']
     if policy_pin is None:
         policy_pin = hashlib.sha256((bundle / 'wd-mind-message-policy.json').read_bytes()).hexdigest()
     program = r'''
-import json, sys
+import hashlib, json, sys
 sys.path.insert(0, sys.argv[1] + '/tools-bootstrap')
+from tools import wd_mind_full_runtime as runtime
 from tools.wd_mind_startup_content import project_lane_situation
 try:
+    policy = b'{"identifiers":[],"schema":"wd.mind-identifier-policy.v2"}'
+    policy_sha = hashlib.sha256(policy).hexdigest()
+    binding = runtime.assemble_full_runtime(enabled=True, bundle_root=sys.argv[1], expected_manifest_sha256=sys.argv[2],
+        identifier_policy_bytes=policy, expected_identifier_policy_sha256=policy_sha) if sys.argv[7] == 'yes' else None
+    if sys.argv[6] == 'missing_bytes': policy = None
+    if sys.argv[6] == 'missing_pin': policy_sha = None
+    if sys.argv[6] == 'missing_both': policy = policy_sha = None
+    if sys.argv[6] == 'wrong_pin': policy_sha = '0' * 64
+    if sys.argv[6] == 'different_policy':
+        policy = b'{"identifiers":["synthetic-identifier"],"schema":"wd.mind-identifier-policy.v2"}'
+        policy_sha = hashlib.sha256(policy).hexdigest()
     result = project_lane_situation(enabled=True, bundle_root=sys.argv[1], expected_manifest_sha256=sys.argv[2],
-        expected_policy_sha256=sys.argv[3], lane=sys.argv[4], as_of_utc=sys.argv[5])
+        expected_policy_sha256=sys.argv[3], lane=sys.argv[4], as_of_utc=sys.argv[5], binding=binding,
+        identifier_policy_bytes=policy, expected_identifier_policy_sha256=policy_sha)
     print(json.dumps(result, sort_keys=True))
 except Exception:
     print(json.dumps({'status':'REFUSED'}))
 '''
-    result = subprocess.run([sys.executable, '-B', '-c', program, str(bundle), case['digest'], policy_pin, lane, as_of],
+    result = subprocess.run([sys.executable, '-B', '-c', program, str(bundle), case['digest'], policy_pin, lane, as_of,
+                             identifier_case, 'yes' if prebound else 'no'],
                             cwd=str(bundle), text=True, capture_output=True, timeout=30, check=True)
     return json.loads(result.stdout)
+
+
+@pytest.mark.parametrize('prebound', [False, True])
+@pytest.mark.parametrize('identifier_case', ['missing_bytes', 'missing_pin', 'wrong_pin'])
+def test_situation_refuses_incomplete_or_invalid_identifier_policy(synthetic_bundle, prebound, identifier_case):
+    assert _invoke_situation(synthetic_bundle, prebound=prebound, identifier_case=identifier_case) == {'status': 'REFUSED'}
+
+
+def test_situation_requires_identifier_policy_when_building_binding(synthetic_bundle):
+    assert _invoke_situation(synthetic_bundle, identifier_case='missing_both') == {'status': 'REFUSED'}
+
+
+def test_situation_rejects_a_different_valid_policy_for_prebound_binding(synthetic_bundle):
+    assert _invoke_situation(synthetic_bundle, prebound=True, identifier_case='different_policy') == {'status': 'REFUSED'}
+
+
+def test_situation_accepts_prebound_binding_without_repeated_policy(synthetic_bundle):
+    result = _invoke_situation(synthetic_bundle, prebound=True, identifier_case='missing_both')
+    assert result['schema'] == 'wd.mind-lane-situation.v2'
+
+
+def test_situation_accepts_prebound_binding_with_matching_policy(synthetic_bundle):
+    result = _invoke_situation(synthetic_bundle, prebound=True)
+    assert result['schema'] == 'wd.mind-lane-situation.v2'
+
+
+def test_situation_refusal_does_not_retain_identifier_policy_in_traceback(tmp_path):
+    import traceback
+    from tools.wd_mind_startup_content import StartupSourceRefused, project_lane_situation
+    identifier = b'{"identifiers":["synthetic-sensitive-identifier"],"schema":"wd.mind-identifier-policy.v2"}'
+    with pytest.raises(StartupSourceRefused) as caught:
+        project_lane_situation(enabled=True, bundle_root=str(tmp_path), expected_manifest_sha256='a' * 64,
+            expected_policy_sha256='b' * 64, lane='codex-lead-1', as_of_utc='2026-01-01T00:05:00Z',
+            identifier_policy_bytes=identifier, expected_identifier_policy_sha256='0' * 64)
+    stack = traceback.TracebackException.from_exception(caught.value, capture_locals=True).stack
+    frame = next(frame for frame in stack if frame.name == 'project_lane_situation')
+    assert 'synthetic-sensitive-identifier' not in repr(frame.locals)
 
 
 def test_situation_uses_screened_own_latest_and_explicit_next_action(synthetic_bundle):
@@ -447,7 +499,9 @@ import hashlib,json,sys
 sys.path.insert(0, sys.argv[1] + '/tools-bootstrap')
 from tools import wd_mind_full_runtime as runtime
 from tools.wd_mind_startup_content import project_lane_situation
-b=runtime.assemble_full_runtime(enabled=True,bundle_root=sys.argv[1],expected_manifest_sha256=sys.argv[2])
+policy=b'{"identifiers":[],"schema":"wd.mind-identifier-policy.v2"}'
+b=runtime.assemble_full_runtime(enabled=True,bundle_root=sys.argv[1],expected_manifest_sha256=sys.argv[2],
+    identifier_policy_bytes=policy,expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest())
 runtime.assemble_full_runtime=lambda **kw: (_ for _ in ()).throw(AssertionError('unexpected rebuild'))
 pin=hashlib.sha256((__import__('pathlib').Path(sys.argv[1])/'wd-mind-message-policy.json').read_bytes()).hexdigest()
 try:

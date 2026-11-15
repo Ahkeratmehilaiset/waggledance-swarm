@@ -87,6 +87,99 @@ def _require_verified_parent_spawn():
     raise LaunchRefused('mind_e5_start_refused') from None
 
 
+class _PrivateCandidateInput:
+    __slots__ = ('__stream',)
+
+    def __init__(self, stream): self.__stream = stream
+    def __repr__(self): return '<PrivateMindCandidateInput>'
+    def readinto(self, view): return self.__stream.readinto(view)
+
+
+class _PrivateCandidateOutput:
+    __slots__ = ('__stream',)
+
+    def __init__(self, stream): self.__stream = stream
+    def __repr__(self): return '<PrivateMindCandidateOutput>'
+    def write(self, view): return self.__stream.write(view)
+    def close(self): return self.__stream.close()
+
+
+class _CandidateRelayBuffer:
+    __slots__ = ('__data', 'length')
+
+    def __init__(self): self.__data, self.length = bytearray(2049), 0
+    def __repr__(self): return '<PrivateMindCandidateBuffer>'
+    def remaining(self): return memoryview(self.__data)[self.length:]
+    def contents(self): return memoryview(self.__data)[:self.length]
+
+
+def relay_parent_candidates(*, enabled=False, source=None, destination=None, deadline_monotonic=None):
+    """Frame raw candidate refs for a consumer, without granting authority.
+
+    Synchronous I/O may block; caller must retain the whole relay worker and
+    both endpoints in HOLD through uncertainty. A returned receipt only means
+    the bounded bytes were framed and the output close returned before deadline.
+    """
+    authorized = success = False
+    cancelled_type = None
+    try:
+        if (enabled is not True or type(source) is not _PrivateCandidateInput
+                or type(destination) is not _PrivateCandidateOutput
+                or type(deadline_monotonic) not in (int, float) or not math.isfinite(deadline_monotonic)
+                or not time.monotonic() < deadline_monotonic <= time.monotonic() + 1800):
+            raise ValueError('relay_input')
+        _require_verified_parent_spawn()
+        authorized = True
+        data = _CandidateRelayBuffer()
+        while data.length < 2049:
+            if time.monotonic() >= deadline_monotonic:
+                raise ValueError('deadline')
+            count = source.readinto(data.remaining())
+            if (time.monotonic() >= deadline_monotonic or type(count) is not int
+                    or not 0 <= count <= 2049 - data.length):
+                raise ValueError('relay_read')
+            if count == 0:
+                break
+            data.length += count
+        if not 1 <= data.length <= 2048:
+            raise ValueError('relay_size')
+        header = struct.pack('>4sI', b'MCR1', data.length)
+        for part in (memoryview(header), data.contents()):
+            offset = 0
+            while offset < len(part):
+                if time.monotonic() >= deadline_monotonic:
+                    raise ValueError('deadline')
+                count = destination.write(part[offset:])
+                if (time.monotonic() >= deadline_monotonic or type(count) is not int
+                        or not 0 < count <= len(part) - offset):
+                    raise ValueError('relay_write')
+                offset += count
+        destination.close()
+        if time.monotonic() >= deadline_monotonic:
+            raise ValueError('deadline')
+        success = True
+    except KeyboardInterrupt:
+        cancelled_type = KeyboardInterrupt
+    except GeneratorExit:
+        cancelled_type = GeneratorExit
+    except asyncio.CancelledError:
+        cancelled_type = asyncio.CancelledError
+    except BaseException:
+        pass
+    finally:
+        if authorized and not success:
+            try:
+                destination.close()
+            except BaseException:
+                pass  # Closure remains unproven; retain owner in HOLD.
+        source = destination = None
+    if cancelled_type is not None:
+        raise cancelled_type() from None
+    if not success:
+        raise LaunchRefused('mind_e5_start_refused') from None
+    return {'status':'RELAYED', 'authority':'none'}
+
+
 def _validate_parent_pipe_fds(*fds):
     if (len(fds) != 3 or any(type(fd) is not int or fd < 0 for fd in fds)
             or any(not stat.S_ISFIFO(os.fstat(fd).st_mode) for fd in fds)):

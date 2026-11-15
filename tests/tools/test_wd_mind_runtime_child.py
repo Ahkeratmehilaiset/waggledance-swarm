@@ -817,6 +817,48 @@ def test_owner_child_fixed_cli_refuses_without_trusted_parent():
     assert proc.returncode == 2 and proc.stdout == b'' and proc.stderr == b''
 
 
+def test_parent_candidate_relay_frames_bounded_stream_without_granting_authority(monkeypatch):
+    class PartialInput:
+        def __init__(self, data): self.data, self.reads = data, 0
+        def readinto(self, view):
+            self.reads += 1
+            count = min(3, len(view), len(self.data))
+            view[:count], self.data = self.data[:count], self.data[count:]
+            return count
+    class PartialOutput:
+        def __init__(self): self.data, self.closed = bytearray(), False
+        def write(self, data):
+            count = min(2, len(data))
+            self.data.extend(data[:count])
+            return count
+        def close(self): self.closed = True
+    raw = b'{"synthetic":"candidate"}'
+    source, sink = PartialInput(raw), PartialOutput()
+    inp, out = child._PrivateCandidateInput(source), child._PrivateCandidateOutput(sink)
+    with pytest.raises(child.LaunchRefused):
+        child.relay_parent_candidates(enabled=True, source=inp, destination=out,
+                                      deadline_monotonic=time.monotonic()+5)
+    assert source.reads == 0 and not sink.data and not sink.closed
+    monkeypatch.setattr(child, '_require_verified_parent_spawn', lambda: None)
+    receipt = child.relay_parent_candidates(enabled=True, source=inp, destination=out,
+                                             deadline_monotonic=time.monotonic()+5)
+    assert receipt == {'status':'RELAYED', 'authority':'none'}
+    assert bytes(sink.data) == b'MCR1' + struct.pack('>I', len(raw)) + raw and sink.closed
+
+
+def test_parent_candidate_relay_rejects_oversized_input_before_output(monkeypatch):
+    class Sink:
+        def __init__(self): self.data, self.closed = bytearray(), False
+        def write(self, data): self.data.extend(data); return len(data)
+        def close(self): self.closed = True
+    monkeypatch.setattr(child, '_require_verified_parent_spawn', lambda: None)
+    sink = Sink()
+    with pytest.raises(child.LaunchRefused):
+        child.relay_parent_candidates(enabled=True, source=child._PrivateCandidateInput(io.BytesIO(b'x'*2049)),
+            destination=child._PrivateCandidateOutput(sink), deadline_monotonic=time.monotonic()+5)
+    assert not sink.data and sink.closed
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows handle inheritance test')
 def test_windows_handle_list_excludes_unrelated_inheritable_handle():
     """Probe in an isolated synthetic parent, without mutating fleet handles."""

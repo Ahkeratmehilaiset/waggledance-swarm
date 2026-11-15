@@ -553,6 +553,66 @@ function Assert-WdBridgeCodeManifestFile {
     return [IO.Path]::GetFullPath($Path)
 }
 
+function Assert-WdMindPackageManifest {
+    param([string]$BundleRoot, $Deployment)
+    # Legacy manifests retain their explicit package closure. New snapshots bind
+    # every discovered Mind module; they never add executable entrypoints.
+    $bridgeProperty = $Deployment.PSObject.Properties['bridge_code_package']
+    if ($null -eq $bridgeProperty) { return }
+    $property = $bridgeProperty.Value.PSObject.Properties['mind_modules']
+    if ($null -eq $property) { return }
+    $package = $property.Value
+    if ($package.schema -cne 'wd.mind-code-package.v1' -or
+        $package.source_commit -cnotmatch '^[0-9a-f]{40}$' -or
+        $package.source_commit -cne $Deployment.source_commit -or
+        $package.files -isnot [array] -or @($package.files).Count -gt 256) {
+        throw 'pinned Mind package snapshot is malformed or from another commit'
+    }
+    $manifest = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    foreach ($entry in $Deployment.files.PSObject.Properties) {
+        $name = [string]$entry.Name
+        if ($name.StartsWith('tools-bootstrap/tools/wd_mind_', [StringComparison]::OrdinalIgnoreCase)) {
+            if ($name -cnotmatch '^tools-bootstrap/tools/wd_mind_[a-z0-9_]+\.py$') { throw 'aliased Mind package manifest member' }
+            [void]$manifest.Add($name.Substring('tools-bootstrap/'.Length))
+        }
+    }
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $last = ''
+    [long]$total = 0
+    foreach ($member in $package.files) {
+        $relative = [string]$member.relative_path
+        if ($relative -cnotmatch '^tools/wd_mind_[a-z0-9_]+\.py$' -or
+            -not $seen.Add($relative) -or [StringComparer]::Ordinal.Compare($last, $relative) -ge 0 -or
+            $member.blob_oid -cnotmatch '^[0-9a-f]{40}$' -or
+            $member.sha256 -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+            ($member.bytes -isnot [int] -and $member.bytes -isnot [long]) -or
+            $member.bytes -lt 0 -or $member.bytes -gt 8388608) { throw 'invalid Mind package member' }
+        $last = $relative
+        $total += $member.bytes
+        if ($total -gt 67108864) { throw 'Mind package total byte budget exceeded' }
+        $pin = $Deployment.files.PSObject.Properties['tools-bootstrap/' + $relative]
+        if ($null -eq $pin -or [string]$pin.Value -cnotmatch '^[0-9A-Fa-f]{64}$' -or
+            ([string]$pin.Value).ToUpperInvariant() -cne ([string]$member.sha256).ToUpperInvariant()) {
+            throw 'Mind package member differs from the anchored manifest'
+        }
+        $path = Assert-WdBridgeCodeManifestFile -Deployment $Deployment -RelativeName ('tools-bootstrap/' + $relative) -Path (Join-Path (Join-Path $BundleRoot 'tools-bootstrap') $relative) -TrustedRoot ([IO.Path]::GetPathRoot($BundleRoot))
+        if ((Get-Item -LiteralPath $path).Length -ne $member.bytes) { throw 'Mind package member size mismatch' }
+        $bytes = [IO.File]::ReadAllBytes($path)
+        $header = [Text.Encoding]::ASCII.GetBytes('blob ' + $bytes.Length + [char]0)
+        $stream = New-Object IO.MemoryStream
+        $sha = [Security.Cryptography.SHA1]::Create()
+        try {
+            $stream.Write($header, 0, $header.Length)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Position = 0
+            $oid = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+        }
+        finally { $stream.Dispose(); $sha.Dispose() }
+        if ($oid -cne $member.blob_oid) { throw 'Mind package Git blob identity mismatch' }
+    }
+    if (-not $seen.SetEquals($manifest)) { throw 'incomplete Mind package manifest membership' }
+}
+
 function Assert-WdBridgeCodePackageIntegrity {
     param(
         [Parameter(Mandatory)] [string] $BundleRoot,
@@ -646,6 +706,7 @@ function Assert-WdBridgeCodePackageIntegrity {
             }
         }
     }
+    Assert-WdMindPackageManifest -BundleRoot $bundleFull -Deployment $Deployment
     return [pscustomobject]@{
         CodeRoot = $codeRoot
         BridgeBin = (Join-Path $codeRoot '.agent-bridge\bin')
@@ -894,6 +955,17 @@ function Invoke-WdBridgePythonTool {
     }
     elseif ($normalizedTool -cnotin $entrypoints -or $normalizedTool -cin $executors) {
         throw "pinned bridge invocation refuses a tool outside the packaged entrypoints: $Tool"
+    }
+    $mindInvocation = $normalizedTool -cmatch '^tools/(wd_|wd_bridge_|bridge_)?mind_[a-z0-9_]+\.py$' -or
+        $normalizedTool.StartsWith('sandbox/mind/', [StringComparison]::Ordinal) -or
+        @($definition.python_entrypoints.PSObject.Properties | Where-Object {
+            $_.Name -cmatch '^mind_' -and [string]$_.Value -ceq $normalizedTool
+        }).Count -gt 0
+    if ($mindInvocation) {
+        if ($expectedManifestHash -cnotmatch '^[0-9A-Fa-f]{64}$') {
+            throw 'Mind invocation requires an external deployment manifest anchor'
+        }
+        $VerifyPackage = $true
     }
     $codeRoot = Join-Path $bundleFull $script:WdBridgeCodePackageRoot
     $toolPath = Assert-WdBridgeCodeManifestFile `

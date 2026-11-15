@@ -139,6 +139,60 @@ def test_runtime_descriptor_default_off_creates_nothing(tmp_path):
     assert not (tmp_path / "staged-descriptors").exists()
 
 
+@pytest.mark.parametrize('fault', ['none', 'off', 'missing_ref', 'missing_path', 'bad_ref', 'bom', 'invalid_json', 'changed', 'collision'])
+def test_operator_policy_descriptor_binds_hash_without_staging_private_bytes(tmp_path, fault):
+    policy = tmp_path / 'synthetic-policy.json'
+    private_bytes = b'{"schema":"synthetic-private-policy","identifiers":["synthetic-secret-marker"]}'
+    if fault == 'bom': private_bytes = b'\xef\xbb\xbf' + private_bytes
+    if fault == 'invalid_json': private_bytes = b'{invalid'
+    policy.write_bytes(private_bytes)
+    stage = tmp_path / 'staged'
+    stage.mkdir()
+    script = tmp_path / 'policy-probe.ps1'
+    script.write_text(
+        "$ErrorActionPreference='Stop'\nSet-StrictMode -Version Latest\n"
+        f". {_quote(ROOT / '.agent-bridge/bin/BridgeLogReader.ps1')}\n"
+        "$tokens=$null;$errors=$null\n"
+        f"$ast=[Management.Automation.Language.Parser]::ParseFile({_quote(DEPLOY)},[ref]$tokens,[ref]$errors)\n"
+        "if($errors.Count){throw 'PARSE_FAILED'}\n"
+        "$names=@('Resolve-FullPath','Assert-WdPathWithoutReparse','Read-WdMindRuntimeFileSnapshot',"
+        "'New-WdMindPolicyApprovalDescriptor','Assert-WdMindPolicyApprovalInput','Add-WdMindPolicyApprovalDescriptor')\n"
+        "foreach($name in $names){$f=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true));"
+        "if($f.Count -ne 1){throw 'HELPER_MISSING'};. ([scriptblock]::Create($f[0].Extent.Text))}\n"
+        "$hashes=[ordered]@{};$paths=[ordered]@{}\n"
+        + ("$hashes['wd-mind-identifier-policy-approval.json']='occupied'\n" if fault == 'collision' else '')
+        + "try {\n"
+        + f" $approval=New-WdMindPolicyApprovalDescriptor -PolicyPath {_quote('' if fault in ('off','missing_path') else policy)} "
+        + f"-ApprovalReferenceSha256 {_quote('' if fault in ('off','missing_ref') else ('z'*64 if fault == 'bad_ref' else 'a'*64))}\n"
+        + (f" [IO.File]::WriteAllText({_quote(policy)}, '{{}}')\n" if fault == 'changed' else '')
+        + f" Add-WdMindPolicyApprovalDescriptor -Approval $approval -SourceHashes $hashes -SourcePaths $paths -StagingRoot {_quote(stage)}\n"
+        + f" $head='{COMMIT}';$targetRoot={_quote(stage)};$branch='synthetic';$upstream='synthetic';$sourceHashes=$hashes\n"
+        + " $bridgeCodeDefinition=@{schema='synthetic'};$bridgeCodePackage=@{Hash=('A'*64)}\n"
+        + " $bridgePython=@{Path='inert';Sha256=('B'*64)};$bridgePythonStage=@{Wheels=@{};Site=@{}}\n"
+        + " $entry=@($ast.FindAll({param($n)$n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$manifestObject'},$true))\n"
+        + " if($entry.Count -ne 1){throw 'MANIFEST_ASSIGNMENT_MISSING'};. ([scriptblock]::Create($entry[0].Extent.Text))\n"
+        + " [ordered]@{accepted=$true;hashes=$hashes;paths=$paths;manifest=$manifestObject}|ConvertTo-Json -Compress -Depth 8\n"
+        + "} catch { [ordered]@{accepted=$false}|ConvertTo-Json -Compress;exit 23 }\n", encoding='utf-8')
+    run = subprocess.run([str(POWERSHELL), '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', str(script)],
+                         capture_output=True, text=True, timeout=45)
+    assert 'synthetic-secret-marker' not in run.stdout + run.stderr
+    result = json.loads(run.stdout.strip().splitlines()[-1])
+    if fault == 'none':
+        assert run.returncode == 0 and result['accepted']
+        files = list(stage.iterdir())
+        assert len(files) == 1 and private_bytes not in files[0].read_bytes()
+        descriptor = json.loads(files[0].read_bytes())
+        assert descriptor == {'schema':'wd.mind-identifier-policy-approval.v1',
+            'identifier_policy_sha256':hashlib.sha256(private_bytes).hexdigest(), 'approval_reference_sha256':'a'*64}
+        assert result['hashes'][files[0].name].lower() == hashlib.sha256(files[0].read_bytes()).hexdigest()
+        assert result['manifest']['files'][files[0].name] == result['hashes'][files[0].name]
+        assert 'synthetic-secret-marker' not in json.dumps(result['manifest'])
+    elif fault == 'off':
+        assert run.returncode == 0 and result['accepted'] and not list(stage.iterdir())
+    else:
+        assert run.returncode != 0 and not result['accepted'] and not list(stage.iterdir())
+
+
 @pytest.mark.parametrize("case", ["commit", "hash", "extra", "missing", "worker", "revision", "weights", "bool_size", "bad_path", "case_alias", "file_directory", "roles", "policy_type", "duplicate", "nan", "utf16", "oversize"])
 def test_runtime_descriptor_refuses_before_materialization(tmp_path, case):
     docs = _documents()

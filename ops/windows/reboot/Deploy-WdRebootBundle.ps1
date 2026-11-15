@@ -29,6 +29,10 @@ param(
     [string] $RcoEnrollmentRecordPath = '',
     # Optional, source-bound runtime descriptors; omission keeps the bundle unchanged.
     [string] $MindRuntimeDescriptorSetPath = '',
+    # Operator-supplied private policy stays outside the bundle. Only its hash
+    # and the independently supplied approval reference enter the manifest.
+    [string] $MindIdentifierPolicyPath = '',
+    [string] $MindApprovalReferenceSha256 = '',
     # Verify and stage the commit-addressed bundle only: no machine wrapper,
     # data copy, state pointer, Grok resolve or task registration is touched.
     [switch] $StageOnly,
@@ -475,6 +479,53 @@ function Add-WdMindRuntimeDescriptorFiles {
     # These are caller-selected descriptor pins, not authentication of assets,
     # model/interpreter execution, operator approval, or a same-user ABA defense.
     Assert-WdMindRuntimeDescriptorInputs $Set
+}
+
+function New-WdMindPolicyApprovalDescriptor {
+    param([string] $PolicyPath, [string] $ApprovalReferenceSha256)
+    if ($PolicyPath -ceq '' -and $ApprovalReferenceSha256 -ceq '') { return $null }
+    if ($PolicyPath -ceq '' -or $ApprovalReferenceSha256 -cnotmatch '\A[0-9a-fA-F]{64}\z') {
+        throw 'Mind policy path and approval reference must both be supplied'
+    }
+    $snapshot = Read-WdMindRuntimeFileSnapshot -Path $PolicyPath -Limit 65536
+    if ($snapshot.Bytes.Length -ge 3 -and $snapshot.Bytes[0] -eq 0xef -and
+        $snapshot.Bytes[1] -eq 0xbb -and $snapshot.Bytes[2] -eq 0xbf) { throw 'Mind policy encoding differs' }
+    # Schema and identifier semantics are checked by the pinned reader. This
+    # staging step binds bytes; it does not assert that the policy is usable.
+    $reference = $ApprovalReferenceSha256.ToLowerInvariant()
+    $text = '{"approval_reference_sha256":"' + $reference + '","identifier_policy_sha256":"' +
+        $snapshot.Hash + '","schema":"wd.mind-identifier-policy-approval.v1"}'
+    $bytes = (New-Object Text.UTF8Encoding($false, $true)).GetBytes($text)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+    # Do not retain the policy text or bytes in the returned object.
+    return [pscustomobject]@{ PolicyPath=$snapshot.Path; PolicyHash=$snapshot.Hash;
+        DescriptorBytes=$bytes; DescriptorHash=$hash }
+}
+
+function Assert-WdMindPolicyApprovalInput {
+    param($Approval)
+    if ($null -eq $Approval) { return }
+    $snapshot = Read-WdMindRuntimeFileSnapshot -Path $Approval.PolicyPath -Limit 65536
+    if ($snapshot.Hash -cne $Approval.PolicyHash) { throw 'Mind policy input changed after validation' }
+}
+
+function Add-WdMindPolicyApprovalDescriptor {
+    param($Approval, $SourceHashes, $SourcePaths, [string] $StagingRoot)
+    if ($null -eq $Approval) { return }
+    Assert-WdMindPolicyApprovalInput $Approval
+    $name = 'wd-mind-identifier-policy-approval.json'
+    if ($SourceHashes.Contains($name) -or $SourcePaths.Contains($name)) { throw 'Mind approval descriptor already exists' }
+    [void](Assert-WdPathWithoutReparse -Path $StagingRoot -TrustedRoot 'C:\' -ExpectedType Directory)
+    $path = Join-Path $StagingRoot $name
+    $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($Approval.DescriptorBytes, 0, $Approval.DescriptorBytes.Length) } finally { $stream.Dispose() }
+    $staged = Read-WdMindRuntimeFileSnapshot -Path $path -Limit 65536
+    if ($staged.Hash -cne $Approval.DescriptorHash) { throw 'Mind approval descriptor staging hash differs' }
+    $SourceHashes[$name] = $Approval.DescriptorHash.ToUpperInvariant()
+    $SourcePaths[$name] = $path
+    Assert-WdMindPolicyApprovalInput $Approval
 }
 
 function Assert-ChildPath {
@@ -1454,6 +1505,13 @@ if ($MindRuntimeDescriptorSetPath -cne '') {
     $mindRuntimeDescriptors = Read-WdMindRuntimeDescriptorSet -Path $MindRuntimeDescriptorSetPath `
         -SourceCommit $head -WorkerSha256 ([string]$sourceHashes[$workerName]).ToLowerInvariant()
 }
+$mindPolicyApproval = New-WdMindPolicyApprovalDescriptor -PolicyPath $MindIdentifierPolicyPath `
+    -ApprovalReferenceSha256 $MindApprovalReferenceSha256
+if ($null -ne $mindPolicyApproval -and ($null -eq $mindRuntimeDescriptors -or
+    -not $mindRuntimeDescriptors.Files.Contains('wd-mind-runtime-location.json') -or
+    -not $mindRuntimeDescriptors.Files.Contains('wd-mind-message-policy.json'))) {
+    throw 'Mind policy approval requires the complete source-bound runtime descriptor set'
+}
 $manualFleetAgents = @()
 $manualActivation = $null
 if ($null -ne $manualApprovalText) {
@@ -1482,6 +1540,8 @@ $bridgePythonStage = Install-WdBridgePythonSite `
     -WorkDirectory (Join-Path $materializationRoot 'python-work') `
     -WheelSource $WheelSource
 Add-WdMindRuntimeDescriptorFiles -Set $mindRuntimeDescriptors -SourceHashes $sourceHashes -SourcePaths $sourcePaths `
+    -StagingRoot (Join-Path $materializationRoot 'mind-runtime-descriptors')
+Add-WdMindPolicyApprovalDescriptor -Approval $mindPolicyApproval -SourceHashes $sourceHashes -SourcePaths $sourcePaths `
     -StagingRoot (Join-Path $materializationRoot 'mind-runtime-descriptors')
 foreach ($stagedName in @($bridgePythonStage.Wheels.Keys)) {
     $sourceHashes['tools-bootstrap/' + $stagedName] = [string]$bridgePythonStage.Wheels[$stagedName]
@@ -1639,6 +1699,7 @@ if ($DryRun) {
 }
 
 Assert-WdMindRuntimeDescriptorInputs $mindRuntimeDescriptors
+Assert-WdMindPolicyApprovalInput $mindPolicyApproval
 if (-not (Test-Path -LiteralPath $storeFull -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $storeFull -Force)
 }
@@ -1706,7 +1767,7 @@ $installedManifestPath = Join-Path $targetRoot 'deployment-manifest.json'
     -ExpectedType Leaf)
 $installedManifestSnapshot = Read-Utf8DeploymentSnapshot `
     -Path $installedManifestPath
-if (($null -ne $manualActivation -or $null -ne $rcoEnrollment -or $null -ne $mindRuntimeDescriptors) -and
+if (($null -ne $manualActivation -or $null -ne $rcoEnrollment -or $null -ne $mindRuntimeDescriptors -or $null -ne $mindPolicyApproval) -and
     -not [WaggleDance.BridgeSnapshotDeltaV1.JsonContractValidator]::IsValid([string]$installedManifestSnapshot.Text)) {
     throw 'installed manual execution manifest violates the strict JSON contract'
 }

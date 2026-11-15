@@ -383,13 +383,16 @@ def _decode_owner_control_bytes(raw, expected_manifest_sha256):
 
 class _PrivatePairControls:
     """Opaque, one-use pair of owner and consumer control frames."""
-    __slots__ = ('__bootstrap',)
+    __slots__ = ('__bootstrap', '__metadata')
 
-    def __init__(self, owner_control, consumer_control):
+    def __init__(self, owner_control, consumer_control, metadata):
         from tools import wd_mind_full_runtime as runtime
         self.__bootstrap = runtime._ParentBootstrap((owner_control, consumer_control))
+        self.__metadata = metadata
 
     def __repr__(self): return '<PrivateMindPairControls>'
+
+    def metadata(self): return dict(self.__metadata)
 
     def take(self):
         try:
@@ -439,7 +442,9 @@ def _derive_parent_child_controls_bytes(raw, expected_manifest_sha256):
     lane_bytes = lane.encode('ascii')
     consumer_control = (b'MCC1' + bytes.fromhex(manifest) + bytes.fromhex(policy_sha)
         + bytes.fromhex(approval_sha) + bound_nonce + channel_key + bytes([len(lane_bytes)]) + lane_bytes)
-    return _PrivatePairControls(owner_control, consumer_control)
+    return _PrivatePairControls(owner_control, consumer_control, {'manifest_sha256':manifest,
+        'identifier_policy_sha256':policy_sha, 'approval_reference_sha256':approval_sha,
+        'lane':lane, 'nonce':nonce})
 
 
 def _wait_for_owner_close(owner):

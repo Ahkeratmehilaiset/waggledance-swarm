@@ -872,6 +872,8 @@ def test_parent_control_derives_distinct_child_controls_from_bound_input(monkeyp
     controls = child._derive_parent_child_controls(enabled=True, control_buffer=buffer,
                                                     expected_manifest_sha256=manifest.hex())
     assert 'synthetic' not in repr(controls)
+    assert controls.metadata() == {'manifest_sha256':manifest.hex(), 'identifier_policy_sha256':policy_sha.hex(),
+        'approval_reference_sha256':approval_sha.hex(), 'lane':lane.decode(), 'nonce':nonce.hex()}
     owner_control, consumer_control = controls.take()
     assert owner_control == b'MCO1' + raw[4:]
     assert consumer_control == (b'MCC1' + manifest + policy_sha + approval_sha + nonce + key

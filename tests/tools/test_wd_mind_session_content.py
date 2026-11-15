@@ -515,7 +515,35 @@ def test_consumer_child_cli_refuses_before_access(monkeypatch, capsys):
     assert out.out == '' and out.err == ''
 
 
-def test_parent_consumer_pipeline_is_private_gate_only(flat_consumer_case, monkeypatch):
+@pytest.mark.parametrize('fault', ['none', 'off', 'manifest', 'policy', 'approval', 'lane', 'length', 'truncated'])
+def test_parent_consumer_control_requires_separate_anchors_and_keeps_mcr_unread(monkeypatch, fault):
+    manifest, policy, approval, nonce, key = [bytes([n])*32 for n in range(1, 6)]
+    lane = b'codex-lead-1'
+    data = b'MCC1' + manifest + policy + approval + nonce + key + bytes([len(lane)]) + lane + b'MCR1'
+    if fault == 'length': data = data[:164] + b'\x00' + data[165:]
+    if fault == 'truncated': data = data[:100]
+    stream = io.BytesIO(data)
+    args = dict(enabled=fault != 'off', stream=stream, expected_manifest_sha256=('a'*64 if fault == 'manifest' else manifest.hex()),
+        expected_identifier_policy_sha256=('b'*64 if fault == 'policy' else policy.hex()),
+        expected_approval_reference_sha256=('c'*64 if fault == 'approval' else approval.hex()),
+        expected_lane=('fable-5' if fault == 'lane' else lane.decode()), deadline_monotonic=time.monotonic()+5)
+    # Unverified parent must fail before touching control bytes.
+    with pytest.raises(session.MindContentSessionRefused):
+        session._read_parent_consumer_control(**args)
+    assert stream.tell() == 0
+    monkeypatch.setattr(session, '_require_trusted_consumer_parent', lambda: None)
+    if fault != 'none':
+        with pytest.raises(session.MindContentSessionRefused):
+            session._read_parent_consumer_control(**args)
+    else:
+        box = session._read_parent_consumer_control(**args)
+        assert box._key == key and box._nonce == nonce.hex() and box._lane == lane.decode()
+        assert stream.read(4) == b'MCR1'
+        assert repr(key) not in repr(box)
+
+
+@pytest.mark.parametrize('mismatch', ['none', 'nonce', 'lane', 'manifest', 'policy', 'approval'])
+def test_parent_consumer_pipeline_is_private_gate_only(flat_consumer_case, monkeypatch, mismatch):
     _, owner, proposals, snapshot, _, response = flat_consumer_case
     meta, blocks = _export_fixture(owner, snapshot)
     wire = _synthetic_export_wire(meta, blocks, b'B'*32)
@@ -524,16 +552,28 @@ def test_parent_consumer_pipeline_is_private_gate_only(flat_consumer_case, monke
     payload = json.dumps(frame, separators=(',', ':')).encode()
     control = session._ConsumerKeyBox()
     control._key = b'B'*32
+    control._nonce, control._lane = '1'*64, 'codex-lead-1'
+    control._manifest, control._policy, control._approval = owner._pin, content._sha(snapshot['identifier_policy_binding'][0]), '3'*64
     args = dict(enabled=True, open_export=lambda: io.BytesIO(wire),
         open_candidate=lambda: io.BytesIO(struct.pack('>4sI', b'MCR1', len(payload)) + payload),
         control=control, bundle_root=owner._root, expected_manifest_sha256=owner._pin,
         expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]),
+        expected_approval_reference_sha256='3'*64,
         expected_nonce='1'*64, lane='codex-lead-1', max_total_bytes=64*1024*1024,
         max_wire_bytes=64*1024*1024, deadline_monotonic=time.monotonic()+30)
     with pytest.raises(session.MindContentSessionRefused):
         session._run_parent_consumer(**args)
     # No production-provider injection: this replacement exists only in the fixture.
     monkeypatch.setattr(session, '_require_trusted_consumer_parent', lambda: None)
+    if mismatch == 'nonce': control._nonce = '2'*64
+    if mismatch == 'lane': control._lane = 'fable-5'
+    if mismatch == 'manifest': control._manifest = 'a'*64
+    if mismatch == 'policy': control._policy = 'b'*64
+    if mismatch == 'approval': control._approval = 'c'*64
+    if mismatch != 'none':
+        with pytest.raises(session.MindContentSessionRefused):
+            session._run_parent_consumer(**args)
+        return
     result = session._run_parent_consumer(**args)
     assert result['authority'] == 'none' and result['sender_authentication'] == 'UNKNOWN'
     assert [r['source_event_sha256'] for r in result['results']] == [p['source_event_sha256'] for p in proposals]
@@ -566,6 +606,8 @@ def test_parent_consumer_decoder_first_line_interrupt_does_not_render_key(flat_c
     _, owner, _, snapshot, _, _ = flat_consumer_case
     control = session._ConsumerKeyBox()
     control._key = b'synthetic-key-32-synthetic-key!!'
+    control._nonce, control._lane = '1'*64, 'codex-lead-1'
+    control._manifest, control._policy, control._approval = owner._pin, content._sha(snapshot['identifier_policy_binding'][0]), '3'*64
     secret = control._key
     monkeypatch.setattr(session, '_require_trusted_consumer_parent', lambda: None)
     def trace(frame, event, arg):
@@ -578,6 +620,7 @@ def test_parent_consumer_decoder_first_line_interrupt_does_not_render_key(flat_c
         session._run_parent_consumer(enabled=True, control=control, open_export=lambda: io.BytesIO(b''),
             open_candidate=lambda: io.BytesIO(b''), bundle_root=owner._root, expected_manifest_sha256=owner._pin,
             expected_identifier_policy_sha256=content._sha(snapshot['identifier_policy_binding'][0]),
+            expected_approval_reference_sha256='3'*64,
             expected_nonce='1'*64, lane='codex-lead-1', max_total_bytes=1024, max_wire_bytes=1024,
             deadline_monotonic=time.monotonic()+5)
     except KeyboardInterrupt as exc:

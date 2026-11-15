@@ -705,18 +705,101 @@ def _require_trusted_consumer_parent():
 
 class _ConsumerKeyBox:
     """Opaque handle for a future controlled bootstrap; not memory isolation."""
-    __slots__ = ('_key',)
+    __slots__ = ('_key', '_nonce', '_lane', '_manifest', '_policy', '_approval')
 
     def __init__(self):
-        self._key = None
+        self._key = self._nonce = self._lane = self._manifest = self._policy = self._approval = None
 
     def __repr__(self):
         return '<PrivateMindConsumerKey>'
 
 
+class _ConsumerControlBuffer:
+    __slots__ = ('_data',)
+
+    def __init__(self):
+        self._data = bytearray(197)
+
+    def __repr__(self):
+        return '<PrivateMindConsumerControlBuffer>'
+
+
+def _read_parent_consumer_control(*, enabled=False, stream=None, expected_manifest_sha256=None,
+                                  expected_identifier_policy_sha256=None,
+                                  expected_approval_reference_sha256=None, expected_lane=None,
+                                  deadline_monotonic=None):
+    """Read MCC1 only; independently trusted parent and retained I/O required.
+
+    Leaves the subsequent MCR1 segment unread. The guard intentionally refuses
+    in production. Python-process memory and synchronous I/O are not isolated.
+    """
+    data = output = view = None
+    interrupted = None
+    try:
+        if (enabled is not True or not callable(getattr(stream, 'readinto', None))
+                or any(type(pin) is not str or not _SHA256.fullmatch(pin) for pin in
+                       (expected_manifest_sha256, expected_identifier_policy_sha256,
+                        expected_approval_reference_sha256))
+                or type(expected_lane) is not str or type(deadline_monotonic) not in (int, float)
+                or not math.isfinite(deadline_monotonic) or time.monotonic() >= deadline_monotonic):
+            raise ValueError('input')
+        _require_trusted_consumer_parent()
+        from tools import wd_mind_content_query_readonly as reader
+        if expected_lane not in reader._LANES:
+            raise ValueError('lane')
+        data = _ConsumerControlBuffer()
+        def fill(start, end):
+            nonlocal view
+            while start < end:
+                if time.monotonic() >= deadline_monotonic:
+                    raise ValueError('deadline')
+                view = memoryview(data._data)[start:end]
+                count = stream.readinto(view)
+                if (time.monotonic() >= deadline_monotonic or type(count) is not int
+                        or not 0 < count <= end-start):
+                    raise ValueError('read')
+                view = None
+                start += count
+        fill(0, 165)
+        length = data._data[164]
+        if (bytes(data._data[:4]) != b'MCC1' or not 1 <= length <= 32
+                or data._data[4:36].hex() != expected_manifest_sha256
+                or data._data[36:68].hex() != expected_identifier_policy_sha256
+                or data._data[68:100].hex() != expected_approval_reference_sha256):
+            raise ValueError('binding')
+        fill(165, 165+length)
+        lane = data._data[165:165+length].decode('ascii')
+        if lane != expected_lane:
+            raise ValueError('lane')
+        output = _ConsumerKeyBox()
+        output._nonce = data._data[100:132].hex()
+        output._key = bytes(data._data[132:164])
+        output._lane = lane
+        output._manifest, output._policy, output._approval = (
+            expected_manifest_sha256, expected_identifier_policy_sha256, expected_approval_reference_sha256)
+        if time.monotonic() >= deadline_monotonic:
+            raise ValueError('deadline')
+    except KeyboardInterrupt:
+        interrupted, output = KeyboardInterrupt, None
+    except GeneratorExit:
+        interrupted, output = GeneratorExit, None
+    except asyncio.CancelledError:
+        interrupted, output = asyncio.CancelledError, None
+    except BaseException:
+        output = None
+    finally:
+        data = view = stream = None
+    if interrupted is not None:
+        raise interrupted() from None
+    if output is None:
+        raise MindContentSessionRefused('mind_session_content_refused') from None
+    return output
+
+
 def _run_parent_consumer(*, enabled=False, open_export=None, open_candidate=None, control=None,
                          bundle_root=None, expected_manifest_sha256=None,
-                         expected_identifier_policy_sha256=None, expected_nonce=None, lane=None,
+                         expected_identifier_policy_sha256=None, expected_approval_reference_sha256=None,
+                         expected_nonce=None, lane=None,
                          max_total_bytes=None, max_wire_bytes=None, deadline_monotonic=None):
     """Prepare one parent-bound read; production gate intentionally refuses.
 
@@ -730,6 +813,14 @@ def _run_parent_consumer(*, enabled=False, open_export=None, open_candidate=None
             raise ValueError('disabled')
         _require_trusted_consumer_parent()
         if (type(control) is not _ConsumerKeyBox or type(control._key) is not bytes or len(control._key) != 32
+                or any(type(pin) is not str or not _SHA256.fullmatch(pin) for pin in
+                       (expected_manifest_sha256, expected_identifier_policy_sha256,
+                        expected_approval_reference_sha256, expected_nonce))
+                or type(lane) is not str
+                or control._nonce != expected_nonce or control._lane != lane
+                or control._manifest != expected_manifest_sha256
+                or control._policy != expected_identifier_policy_sha256
+                or control._approval != expected_approval_reference_sha256
                 or type(deadline_monotonic) not in (int, float) or not math.isfinite(deadline_monotonic)
                 or not 0 < deadline_monotonic - time.monotonic() <= 840):
             raise ValueError('deadline')

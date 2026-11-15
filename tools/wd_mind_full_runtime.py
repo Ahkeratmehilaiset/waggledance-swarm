@@ -232,6 +232,10 @@ class FullRuntimeRefused(ValueError):
     """Fixed refusal without source paths, contents or key material."""
 
 
+class _RefreshLockBusy(FullRuntimeRefused):
+    """A refresh has not started because the handler is already in use."""
+
+
 class _PrivateBinding:
     __slots__ = ('__snapshot', '__bundle', '__manifest', '__controls', '__args')
     authority = 'none'
@@ -724,7 +728,7 @@ class _FlatRequestHandler:
         cooperative owner remains reachable until close proves it has exited.
         """
         if not self._lock.acquire(blocking=False):
-            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+            raise _RefreshLockBusy('mind_full_runtime_refused') from None
         try:
             if self._closed or self._failed or self._memory is None or self._pending_rotator is not None:
                 raise ValueError('state')
@@ -1345,7 +1349,13 @@ class _FlatAutoRefresh:
     def _run(self):
         try:
             while not self._stop.wait(self._interval):
-                refreshed = self._handler.refresh()
+                try:
+                    refreshed = self._handler.refresh()
+                except _RefreshLockBusy:
+                    # A query or another operation owns the lock. No refresh
+                    # started; retry at the next scheduled interval. All
+                    # failures after lock acquisition remain fail-closed.
+                    continue
                 if (type(refreshed) is not dict or refreshed.get('schema') != 'wd.mind-flat-owner-refresh.v1'
                         or refreshed.get('status') not in ('REFRESHED', 'UNCHANGED')):
                     raise ValueError('refresh')

@@ -870,6 +870,77 @@ def test_auto_refresh_is_default_off(synthetic_bundle):
     assert invoke(synthetic_bundle, 'handler_auto_disabled') == {'result':'ok', 'closed':'EXITED', 'starts':1}
 
 
+def test_auto_refresh_skips_transient_query_lock_without_poisoning_owner(monkeypatch):
+    """A scheduler tick during an active query is busy, not an integrity error."""
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+
+    handler = runtime._FlatRequestHandler(None, None, 'codex-lead-1', (), None, None, None, 0, None)
+    handler._memory = object()
+    attempted = threading.Event()
+    allow_return = threading.Event()
+
+    class ObservedLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+
+        def acquire(self, blocking=True):
+            acquired = self.lock.acquire(blocking=blocking)
+            if not blocking and not acquired:
+                attempted.set()
+                assert allow_return.wait(2), 'test did not release the busy signal'
+            return acquired
+
+        def release(self):
+            self.lock.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            self.release()
+
+    handler._lock = ObservedLock()
+    control = runtime._FlatAutoRefresh(handler, 0.01)
+    handler._lock.acquire()
+    try:
+        control.start()
+        assert attempted.wait(2), 'scheduler never attempted the contended refresh'
+        control._stop.set()
+    finally:
+        allow_return.set()
+        handler._lock.release()
+    control._thread.join(2)
+    assert not control._thread.is_alive()
+    assert control._state == 'STOPPED'
+    assert handler._failed is False
+
+
+def test_auto_refresh_source_integrity_failure_still_poisoned(monkeypatch):
+    """Only the lock-busy signal is transient; actual source failure refuses."""
+    import threading
+    from tools import wd_mind_full_runtime as runtime
+
+    handler = runtime._FlatRequestHandler(None, None, 'codex-lead-1', (), None, None, None, 0, None)
+    handler._memory = object()
+    failed_check = threading.Event()
+    monkeypatch.setattr(runtime._FlatRequestHandler, '_running_owner', lambda self: None)
+
+    def fail_source(self):
+        failed_check.set()
+        raise ValueError('source_changed')
+
+    monkeypatch.setattr(runtime._FlatRequestHandler, '_source_check', fail_source)
+    control = runtime._FlatAutoRefresh(handler, 0.01)
+    control.start()
+    assert failed_check.wait(2), 'scheduler never checked source'
+    control._thread.join(2)
+    assert not control._thread.is_alive()
+    assert control._state == 'REFUSED'
+    assert handler._failed is True
+
+
 def test_auto_refresh_reserves_one_controller_until_explicit_stop(synthetic_bundle):
     result = invoke(synthetic_bundle, 'handler_auto_duplicate')
     assert result == {'result':'ok','duplicate_rejected':True,'close_while_reserved':'BUSY',

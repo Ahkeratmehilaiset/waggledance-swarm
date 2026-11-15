@@ -12,8 +12,9 @@ exact little-endian float32 bytes. Serializers receive immutable vector bytes
 and dimension 384, returning index bytes. Decoders use the existing read-only
 v3 adapter protocol: reconstruct_n must accept ranges of at most 128 rows;
 there is no full-cell fallback. No model/native module is imported, no casting
-or additional normalization is performed, and provider exceptions never leave
-this boundary.
+or additional normalization is performed. Provider failures are converted to a
+fixed refusal. Keyboard and asyncio cancellation signals propagate without
+provider-supplied details; cancellation groups are flattened and sanitized.
 
 These are caller-trusted synchronous callbacks: their metadata/code digests
 do not authenticate code, computation or assets, constrain provider allocation,
@@ -413,7 +414,7 @@ def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=No
     source-checkpoint protocol. Its index allowance is float32 rows plus 64 KiB;
     a serializer exceeding that allowance refuses without a fallback.
     """
-    output = None
+    output, problem = None, None
     succeeded = False
     try:
         if enabled is not True:
@@ -422,8 +423,12 @@ def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=No
         output = _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder_binding_bytes,
                           encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity)
         succeeded = True
-    except (Exception, SystemExit, GeneratorExit):
-        pass
+    except BaseException as exc:
+        problem = exc
     if not succeeded:
+        cancellation = reader._provider_cancellation(problem)
+        problem = None
+        if cancellation is not None:
+            raise cancellation from None
         raise SnapshotPackageRefused("content_snapshot_package_refused") from None
     return output

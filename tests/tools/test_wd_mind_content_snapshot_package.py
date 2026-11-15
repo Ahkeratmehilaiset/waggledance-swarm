@@ -1249,6 +1249,49 @@ def test_provider_keyboard_interrupt_remains_interrupt(package, fixtures, tmp_pa
         package.package_content_snapshot(**args)
 
 
+@pytest.mark.parametrize("phase", ["passage_encoder", "index_serializer", "index_decoder"])
+@pytest.mark.parametrize("kind", ["custom", "termination_group", "nested_group"])
+def test_snapshot_provider_baseexception_tree_is_fixed_refusal(package, fixtures, tmp_path, capsys, phase, kind):
+    import traceback
+
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    args = _arguments(case, Codec(fixtures), FULL_PREFIX_PROFILE)
+    marker = "synthetic-provider-group-private-detail"
+    calls = []
+    def fail(*unused):
+        calls.append(phase)
+        raise fixtures._provider_abort_problem(kind, marker)
+    args[phase] = fail
+    with pytest.raises(package.SnapshotPackageRefused, match="^content_snapshot_package_refused$") as caught:
+        package.package_content_snapshot(**args)
+    assert calls == [phase]
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert marker not in "".join(traceback.format_exception(caught.value))
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("phase", ["passage_encoder", "index_serializer", "index_decoder"])
+@pytest.mark.parametrize("kind", ["keyboard", "cancelled", "mixed_group"])
+def test_snapshot_provider_cancellation_tree_is_preserved_without_detail(package, fixtures, tmp_path, capsys, phase, kind):
+    import asyncio
+
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    args = _arguments(case, Codec(fixtures), FULL_PREFIX_PROFILE)
+    marker = "synthetic-provider-group-private-detail"
+    calls = []
+    def fail(*unused):
+        calls.append(phase)
+        raise fixtures._provider_abort_problem(kind, marker)
+    args[phase] = fail
+    with pytest.raises(BaseException) as caught:
+        package.package_content_snapshot(**args)
+    expected = ([KeyboardInterrupt] if kind == "keyboard" else [asyncio.CancelledError]
+                if kind == "cancelled" else [KeyboardInterrupt, asyncio.CancelledError])
+    fixtures._assert_provider_cancel_safe(caught.value, expected, marker)
+    assert calls == [phase]
+    assert capsys.readouterr() == ("", "")
+
+
 @pytest.mark.parametrize("capacity_profile", [None, CAPACITY_PROFILE])
 def test_only_screened_source_text_reaches_passage_and_artifacts(package, fixtures, tmp_path, capacity_profile):
     case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)

@@ -16,6 +16,7 @@ runtime authority and installed delivery are separate unproven boundaries.
 from __future__ import annotations
 
 import datetime as dt
+import asyncio
 import hashlib
 import hmac
 import importlib
@@ -1574,16 +1575,48 @@ def _q4_vector(raw):
     return tuple(vector)
 
 
+def _provider_cancellation(error):
+    """Keep cancellation signals, not provider-supplied messages or contexts.
+
+    For an exception group, inspect every leaf and propagate the cancellation
+    signals as a new flat group in their original order. Other leaves and all
+    original messages, causes, contexts and tracebacks are intentionally not
+    returned. Exact exception subclass identity and group shape are not kept.
+    """
+    pending, signals = [error], []
+    while pending:
+        current = pending.pop()
+        kind = type(current)
+        if issubclass(kind, BaseExceptionGroup):
+            # Access the built-in descriptor directly, bypassing any custom
+            # exception subclass's attribute hooks.
+            pending.extend(reversed(BaseExceptionGroup.exceptions.__get__(current)))
+        elif issubclass(kind, KeyboardInterrupt):
+            signals.append(KeyboardInterrupt())
+        elif issubclass(kind, asyncio.CancelledError):
+            signals.append(asyncio.CancelledError())
+    if not signals:
+        return None
+    if issubclass(type(error), BaseExceptionGroup):
+        return BaseExceptionGroup("provider_cancelled", signals)
+    return signals[0]
+
+
 def _provider_result(operation):
-    # Leave the except block before denying: no provider exception is chained.
-    succeeded, output = False, None
+    # Leave the except block before denying or propagating a cancellation, so
+    # the original provider exception is never attached as implicit context.
+    succeeded, output, problem = False, None, None
     try:
         output = operation()
         succeeded = True
-    except (Exception, SystemExit, GeneratorExit):
-        pass
+    except BaseException as exc:
+        problem = exc
     operation = None
     if not succeeded:
+        cancellation = _provider_cancellation(problem)
+        problem = None
+        if cancellation is not None:
+            raise cancellation from None
         _deny()
     return output
 
@@ -2411,16 +2444,20 @@ def query_content_snapshot(**inputs):
     methods are synchronous; the caller owns external deadlines and memory
     controls. This API installs no process watchdog.
     """
-    output = None
+    output, problem = None, None
     succeeded = False
     try:
         output = _query_content_snapshot(inputs)
         succeeded = True
-    except (Exception, SystemExit, GeneratorExit):
-        pass
+    except BaseException as exc:
+        problem = exc
     inputs = None
     if not succeeded:
         output = None
+        cancellation = _provider_cancellation(problem)
+        problem = None
+        if cancellation is not None:
+            raise cancellation from None
         _deny()
     return output
 

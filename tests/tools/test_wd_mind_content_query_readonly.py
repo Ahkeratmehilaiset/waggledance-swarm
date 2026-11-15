@@ -1970,6 +1970,96 @@ def test_provider_result_contains_termination_without_chaining(reader, exception
     assert caught.value.__cause__ is None and caught.value.__context__ is None
 
 
+def _provider_abort_problem(kind, marker):
+    import asyncio
+
+    class SyntheticAbort(BaseException):
+        pass
+
+    if kind == "custom":
+        return SyntheticAbort(marker)
+    if kind == "termination_group":
+        return BaseExceptionGroup(marker, [SystemExit(marker), GeneratorExit(marker)])
+    if kind == "nested_group":
+        return BaseExceptionGroup(marker, [SyntheticAbort(marker),
+            BaseExceptionGroup(marker, [GeneratorExit(marker), SystemExit(marker)])])
+    if kind == "keyboard":
+        return KeyboardInterrupt(marker)
+    if kind == "cancelled":
+        return asyncio.CancelledError(marker)
+    if kind == "mixed_group":
+        return BaseExceptionGroup(marker, [SystemExit(marker),
+            BaseExceptionGroup(marker, [KeyboardInterrupt(marker), asyncio.CancelledError(marker)]),
+            SyntheticAbort(marker)])
+    raise AssertionError("unknown synthetic problem")
+
+
+def _assert_provider_cancel_safe(error, expected, marker):
+    import traceback
+
+    pending, kinds = [error], []
+    while pending:
+        item = pending.pop()
+        assert item.__cause__ is None and item.__context__ is None
+        if isinstance(item, BaseExceptionGroup):
+            pending.extend(reversed(item.exceptions))
+        else:
+            kinds.append(type(item))
+    assert kinds == expected
+    assert marker not in "".join(traceback.format_exception(error))
+
+
+@pytest.mark.parametrize("kind", ["custom", "termination_group", "nested_group"])
+@pytest.mark.parametrize("phase", ["encoder", "index"])
+@pytest.mark.parametrize("complete", [False, True])
+def test_query_provider_baseexception_tree_is_fixed_refusal(reader, tmp_path, capsys, kind, phase, complete):
+    import traceback
+
+    case = _semantic_case(reader, tmp_path, all_tasks=complete)
+    marker = "synthetic-provider-group-private-detail"
+    calls = []
+    def fail(*unused):
+        calls.append(phase)
+        raise _provider_abort_problem(kind, marker)
+    if phase == "encoder":
+        case["encoder_provider"].on_query = fail
+    else:
+        case["index_provider"].on_load = fail
+    entry = reader.query_complete_content_snapshot if complete else reader.query_content_snapshot
+    with pytest.raises(reader.ContentQueryRefused, match="^content_query_refused$") as caught:
+        entry(**case)
+    assert calls == [phase]
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert marker not in "".join(traceback.format_exception(caught.value))
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("kind", ["keyboard", "cancelled", "mixed_group"])
+@pytest.mark.parametrize("phase", ["encoder", "index"])
+@pytest.mark.parametrize("complete", [False, True])
+def test_query_provider_cancellation_tree_is_preserved_without_detail(reader, tmp_path, capsys, kind, phase, complete):
+    import asyncio
+
+    case = _semantic_case(reader, tmp_path, all_tasks=complete)
+    marker = "synthetic-provider-group-private-detail"
+    calls = []
+    def fail(*unused):
+        calls.append(phase)
+        raise _provider_abort_problem(kind, marker)
+    if phase == "encoder":
+        case["encoder_provider"].on_query = fail
+    else:
+        case["index_provider"].on_load = fail
+    entry = reader.query_complete_content_snapshot if complete else reader.query_content_snapshot
+    with pytest.raises(BaseException) as caught:
+        entry(**case)
+    expected = ([KeyboardInterrupt] if kind == "keyboard" else [asyncio.CancelledError]
+                if kind == "cancelled" else [KeyboardInterrupt, asyncio.CancelledError])
+    _assert_provider_cancel_safe(caught.value, expected, marker)
+    assert calls == [phase]
+    assert capsys.readouterr() == ("", "")
+
+
 def test_provider_adapter_never_coerces_arbitrary_float_like_objects(reader, tmp_path):
     case = _semantic_case(reader, tmp_path)
     encoder, decode, _ = _provider_objects(case, "plain")

@@ -397,6 +397,54 @@ def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder
     return output
 
 
+def build_narrow_source_manifest(*, enabled=False, snapshot=None, descriptor_bytes=None,
+                                 descriptor_sha256=None, memory_bytes=None, memory_sha256=None):
+    """Build source row locations after a complete verification, without writing.
+
+    A publisher must independently place these exact bytes and their digest in
+    an authorized deployment manifest before any narrow query can use them.
+    This does not authenticate the publisher, sender or operator, and does not
+    change the producer's existing per-callback complete-source checkpoints.
+    """
+    output = None
+    try:
+        if enabled is not True or type(snapshot) is not dict:
+            raise ValueError('disabled')
+        projection, context, before = reader._verified_complete(snapshot)
+        descriptor = reader._pinned(descriptor_bytes, descriptor_sha256)
+        memory = reader._pinned(memory_bytes, memory_sha256, limit=1024 * 1024)
+        records = projection['messages']['records']
+        if (type(descriptor) is not dict or descriptor.get('schema') != 'wd.bridge-mind-q4-memory-descriptor.v3'
+                or descriptor.get('scope') != reader._ALL_TASK_ROUTE_SCOPE
+                or descriptor.get('memory_sha256') != memory_sha256 or type(memory) is not dict
+                or memory.get('schema') != 'wd.bridge-mind-hex-memory-step2.v1'
+                or memory.get('projection_sha256') != snapshot['projection_sha256']
+                or type(memory.get('records')) is not int or memory['records'] != len(records)):
+            raise ValueError('memory_binding')
+        references = {record['provenance']['source_event_ref'] for record in records}
+        if not references or any(not reader._hex(ref) for ref in references):
+            raise ValueError('references')
+        entries = reader._narrow_row_index(context, references)
+        _, _, after = reader._verified_complete(snapshot)
+        if before != after:
+            raise ValueError('source_changed')
+        cursor = context['messages']['end_cursor']
+        manifest = {'schema': reader._NARROW_SCHEMA, 'authority': 'none',
+                    'source_prefix': dict(context['decision']['source_prefix'], file_identity=cursor.file_identity),
+                    'source_locations': {'log': context['messages']['source_path'],
+                                         'generation': context['messages']['generation_path']},
+                    'projection_sha256': snapshot['projection_sha256'],
+                    'decision_sha256': context['decision_sha256'], 'descriptor_sha256': descriptor_sha256,
+                    'memory_sha256': memory_sha256, 'entries': entries}
+        raw = reader._canonical(manifest)
+        output = {'manifest_bytes': raw, 'manifest_sha256': reader._sha(raw)}
+    except Exception:
+        pass
+    if output is None:
+        raise SnapshotPackageRefused('content_snapshot_package_refused') from None
+    return output
+
+
 def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=None, index_serializer=None,
                              index_decoder=None, encoder_binding_bytes=None, encoder_binding_sha256=None,
                              index_binding_bytes=None, index_binding_sha256=None, capacity_profile=None):

@@ -17,6 +17,259 @@ CAPACITY_PROFILE = "bounded_v3_capacity_v1"
 FULL_PREFIX_PROFILE = "full_prefix_stream_v1"
 
 
+def test_narrow_source_manifest_requires_complete_verified_build_and_external_anchor(package, fixtures, tmp_path):
+    """A hash next to untrusted bytes is not a deployment approval."""
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    output = package.package_content_snapshot(**_arguments(case, codec, FULL_PREFIX_PROFILE))
+    snapshot = {key: case[key] for key in reader._Q4_SOURCE_KEYS}
+    narrow = package.build_narrow_source_manifest(enabled=True, snapshot=snapshot,
+        descriptor_bytes=output['descriptor_bytes'], descriptor_sha256=output['descriptor_sha256'],
+        memory_bytes=output['memory_bytes'], memory_sha256=output['memory_sha256'])
+    bundle = tmp_path / 'synthetic-bundle'
+    bundle.mkdir()
+    (bundle / 'wd-mind-narrow-source-manifest.json').write_bytes(narrow['manifest_bytes'])
+    deploy = fixtures._raw({'schema_version': 1, 'files': {
+        'wd-mind-narrow-source-manifest.json': narrow['manifest_sha256']}})
+    (bundle / 'deployment-manifest.json').write_bytes(deploy)
+    encoder, index = reader.adapt_complete_readonly_providers(
+        encoder=case['encoder_provider'], index_decoder=codec.decode,
+        **{key: output[key] for key in ('encoder_binding_bytes', 'encoder_binding_sha256',
+                                       'index_binding_bytes', 'index_binding_sha256')})
+    def run(pin):
+        stream = fixtures._ObservedStream(fixtures._raw(
+            {'situation': 'retry network outage', 'time': fixtures.QUERY_TIME}))
+        return reader.query_narrow_content_snapshot(
+            bundle_root=str(bundle), expected_deployment_manifest_sha256=pin,
+            **snapshot, **output, encoder_provider=encoder, index_provider=index, stream=stream)
+    with pytest.raises(reader.ContentQueryRefused):
+        run('0' * 64)
+    answer = run(fixtures._sha(deploy))
+    assert answer['status'] == 'ANSWER'
+    assert answer['authority'] == 'none'
+    assert answer['results'] and all(hit['source_reference']['verified'] == 'MATCH_SELECTED_ROW'
+                                     for hit in answer['results'])
+
+
+def _narrow_fixture(package, fixtures, tmp_path, *, generationless=False, rows=None):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    if rows is not None:
+        source = fixtures._all_tasks_case(reader, tmp_path, rows)
+        case.update(fixtures._snapshot(source, reader.rederive_complete_message_projection(**source)))
+    if generationless:
+        from waggledance.core.bridge_log_reader import BridgeCursor
+        cursor = case['messages']['end_cursor']
+        case['messages']['end_cursor'] = BridgeCursor(cursor.offset, cursor.file_identity, None)
+        Path(case['messages']['generation_path']).unlink()
+        case['messages']['generation_path'] = str(Path(case['messages']['source_path']).with_name('events.generation.json'))
+        decision = json.loads(case['decision_bytes'])
+        decision['source_prefix']['generation'] = None
+        case['decision_bytes'] = fixtures._raw(decision)
+        case['decision_sha256'] = reader._sha(case['decision_bytes'])
+        source = {key: case[key] for key in reader._INPUT_KEYS}
+        case.update(fixtures._snapshot(source, reader.rederive_complete_message_projection(**source)))
+    codec = Codec(fixtures)
+    output = package.package_content_snapshot(**_arguments(case, codec, FULL_PREFIX_PROFILE))
+    snapshot = {key: case[key] for key in reader._Q4_SOURCE_KEYS}
+    narrow = package.build_narrow_source_manifest(enabled=True, snapshot=snapshot,
+        descriptor_bytes=output['descriptor_bytes'], descriptor_sha256=output['descriptor_sha256'],
+        memory_bytes=output['memory_bytes'], memory_sha256=output['memory_sha256'])
+    bundle = tmp_path / 'synthetic-bundle'
+    bundle.mkdir()
+    (bundle / 'wd-mind-narrow-source-manifest.json').write_bytes(narrow['manifest_bytes'])
+    deploy = fixtures._raw({'schema_version': 1, 'files': {
+        'wd-mind-narrow-source-manifest.json': narrow['manifest_sha256']}})
+    (bundle / 'deployment-manifest.json').write_bytes(deploy)
+    encoder, index = reader.adapt_complete_readonly_providers(
+        encoder=case['encoder_provider'], index_decoder=codec.decode,
+        **{key: output[key] for key in ('encoder_binding_bytes', 'encoder_binding_sha256',
+                                       'index_binding_bytes', 'index_binding_sha256')})
+    def run(pin=None):
+        stream = fixtures._ObservedStream(fixtures._raw(
+            {'situation': 'retry network outage', 'time': fixtures.QUERY_TIME}))
+        return reader.query_narrow_content_snapshot(
+            bundle_root=str(bundle), expected_deployment_manifest_sha256=pin or fixtures._sha(deploy),
+            **snapshot, **output, encoder_provider=encoder, index_provider=index, stream=stream)
+    return case, codec, output, snapshot, bundle, deploy, narrow, run
+
+
+@pytest.mark.parametrize('selected', [False, True])
+def test_narrow_read_checks_selected_rows_but_allows_unselected_corruption(package, fixtures, tmp_path, selected):
+    case, codec, output, _, _, _, _, run = _narrow_fixture(package, fixtures, tmp_path)
+    original = run()
+    selected_refs = {hit['source_reference']['sha256'] for hit in original['results']}
+    path = Path(case['messages']['source_path'])
+    lines = path.read_bytes().splitlines(keepends=True)
+    refs = [fixtures._sha(fixtures._raw(json.loads(line))) for line in lines]
+    chosen = next(index for index, ref in enumerate(refs) if (ref in selected_refs) is selected)
+    assert lines[chosen].endswith(b'}\n')
+    lines[chosen] = lines[chosen][:-2] + b'!\n'
+    path.write_bytes(b''.join(lines))
+    with pytest.raises(reader.ContentQueryRefused):
+        _complete_query(case, output, codec)
+    if selected:
+        with pytest.raises(reader.ContentQueryRefused):
+            run()
+    else:
+        assert run()['results'] == original['results']
+
+
+@pytest.mark.parametrize('fault', ['append', 'truncate', 'generation', 'replace'])
+def test_narrow_read_fences_source_identity_generation_and_length(package, fixtures, tmp_path, fault):
+    case, _, _, _, _, _, _, run = _narrow_fixture(package, fixtures, tmp_path)
+    assert run()['results']
+    path = Path(case['messages']['source_path'])
+    original = path.read_bytes()
+    if fault == 'append':
+        with path.open('ab') as stream:
+            stream.write(fixtures._raw(fixtures._row('synthetic later event')) + b'\n')
+    elif fault == 'truncate':
+        path.write_bytes(original[:-1])
+    elif fault == 'generation':
+        Path(case['messages']['generation_path']).write_bytes(fixtures._raw({'generation': 'synthetic-g2'}))
+    else:
+        replacement = path.with_name('synthetic-replacement.jsonl')
+        replacement.write_bytes(original)
+        replacement.replace(path)
+    if fault == 'append':
+        assert run()['results']
+    else:
+        with pytest.raises(reader.ContentQueryRefused):
+            run()
+
+
+def test_narrow_read_refuses_generation_sidecar_retarget(package, fixtures, tmp_path):
+    case, _, _, snapshot, _, _, _, run = _narrow_fixture(package, fixtures, tmp_path)
+    assert run()['results']
+    original = Path(case['messages']['generation_path'])
+    stale = tmp_path / 'synthetic-stale-generation.json'
+    stale.write_bytes(original.read_bytes())
+    original.write_bytes(fixtures._raw({'generation': 'synthetic-g2'}))
+    snapshot['messages']['generation_path'] = str(stale)
+    with pytest.raises(reader.ContentQueryRefused):
+        run()
+
+
+def test_narrow_deployment_pin_refuses_reanchored_manifest_tampering(package, fixtures, tmp_path):
+    _, _, _, _, bundle, _, narrow, run = _narrow_fixture(package, fixtures, tmp_path)
+    assert run()['results']
+    manifest = json.loads(narrow['manifest_bytes'])
+    entry = next(iter(manifest['entries'].values()))
+    entry['offset'] += 1
+    changed = reader._canonical(manifest)
+    (bundle / 'wd-mind-narrow-source-manifest.json').write_bytes(changed)
+    forged_deploy = fixtures._raw({'schema_version': 1, 'files': {
+        'wd-mind-narrow-source-manifest.json': fixtures._sha(changed)}})
+    (bundle / 'deployment-manifest.json').write_bytes(forged_deploy)
+    with pytest.raises(reader.ContentQueryRefused):
+        run()
+
+
+@pytest.mark.parametrize('fault', ['middle', 'wrong_row', 'raw_hash', 'chunk'])
+def test_narrow_read_refuses_forged_but_pinned_offsets_and_chunks(package, fixtures, tmp_path, fault):
+    case, _, _, _, bundle, _, narrow, run = _narrow_fixture(package, fixtures, tmp_path)
+    result = run()
+    selected = result['results'][0]['source_reference']['sha256']
+    manifest = json.loads(narrow['manifest_bytes'])
+    entry = manifest['entries'][selected]
+    if fault == 'middle':
+        entry['offset'] += 1
+    elif fault == 'wrong_row':
+        other = next(ref for ref in manifest['entries'] if ref != selected)
+        manifest['entries'][selected] = dict(manifest['entries'][other])
+    elif fault == 'raw_hash':
+        entry['raw_sha256'] = '0' * 64
+    else:
+        source = Path(case['messages']['source_path'])
+        raw = source.read_bytes()
+        at = entry['offset']
+        end = at + entry['length']
+        line = raw[at:end]
+        changed = line.replace(b'network retry', b'changed retry', 1)
+        assert changed != line and len(changed) == len(line)
+        source.write_bytes(raw[:at] + changed + raw[end:])
+        entry['raw_sha256'] = fixtures._sha(changed)
+    narrow_bytes = reader._canonical(manifest)
+    (bundle / 'wd-mind-narrow-source-manifest.json').write_bytes(narrow_bytes)
+    deploy = fixtures._raw({'schema_version': 1, 'files': {
+        'wd-mind-narrow-source-manifest.json': fixtures._sha(narrow_bytes)}})
+    (bundle / 'deployment-manifest.json').write_bytes(deploy)
+    # Even with a separately pinned changed deployment manifest, source event
+    # identity and the exact projected chunk must still be re-derived.
+    with pytest.raises(reader.ContentQueryRefused):
+        run(fixtures._sha(deploy))
+
+
+def test_narrow_builder_refuses_changed_source_even_when_projection_was_valid(package, fixtures, tmp_path):
+    case, _, output, snapshot, _, _, _, _ = _narrow_fixture(package, fixtures, tmp_path)
+    source = Path(case['messages']['source_path'])
+    source.write_bytes(source.read_bytes().replace(b'network retry', b'changed retry', 1))
+    with pytest.raises(package.SnapshotPackageRefused):
+        package.build_narrow_source_manifest(enabled=True, snapshot=snapshot,
+            descriptor_bytes=output['descriptor_bytes'], descriptor_sha256=output['descriptor_sha256'],
+            memory_bytes=output['memory_bytes'], memory_sha256=output['memory_sha256'])
+
+
+def test_narrow_selected_row_is_rechecked_after_provider_callback(package, fixtures, tmp_path):
+    case, _, _, _, _, _, _, run = _narrow_fixture(package, fixtures, tmp_path)
+    source = Path(case['messages']['source_path'])
+    initial = run()
+    selected = initial['results'][0]['source_reference']['sha256']
+    lines = source.read_bytes().splitlines(keepends=True)
+    index = next(i for i, line in enumerate(lines) if fixtures._sha(fixtures._raw(json.loads(line))) == selected)
+    def mutate():
+        lines[index] = lines[index][:-2] + b'!\n'
+        source.write_bytes(b''.join(lines))
+    case['encoder_provider'].on_query = mutate
+    with pytest.raises(reader.ContentQueryRefused):
+        run()
+
+
+@pytest.mark.parametrize('fault', ['append', 'sidecar', 'selected'])
+def test_narrow_generationless_checks_sidecar_and_selected_row(package, fixtures, tmp_path, fault):
+    case, _, _, _, _, _, _, run = _narrow_fixture(package, fixtures, tmp_path, generationless=True)
+    initial = run()
+    assert initial['results']
+    source = Path(case['messages']['source_path'])
+    if fault == 'sidecar':
+        Path(case['messages']['generation_path']).write_bytes(fixtures._raw({'generation': 'synthetic-g1'}))
+    elif fault == 'append':
+        with source.open('ab') as stream:
+            stream.write(fixtures._raw(fixtures._row('synthetic appended row')) + b'\n')
+    else:
+        ref = initial['results'][0]['source_reference']['sha256']
+        lines = source.read_bytes().splitlines(keepends=True)
+        index = next(i for i, line in enumerate(lines) if fixtures._sha(fixtures._raw(json.loads(line))) == ref)
+        lines[index] = lines[index][:-2] + b'!\n'
+        source.write_bytes(b''.join(lines))
+    if fault == 'append':
+        assert run()['results']
+    else:
+        with pytest.raises(reader.ContentQueryRefused):
+            run()
+
+
+def test_narrow_builder_deduplicates_identical_canonical_events_without_leaking_excluded_rows(package, fixtures, tmp_path):
+    build = fixtures._row(fixtures.SEMANTIC_TEXTS[0], type='message', task_id='synthetic-build-1')
+    other = fixtures._row(fixtures.SEMANTIC_TEXTS[1], type='done', task_id='synthetic-build-2')
+    third = fixtures._row(fixtures.SEMANTIC_TEXTS[2], type='message', task_id='synthetic-build-4')
+    fourth = fixtures._row(fixtures.SEMANTIC_TEXTS[3], type='message', task_id='synthetic-build-5')
+    secret = fixtures._row('password=syntheticfixturevalue', task_id='synthetic-build-3')
+    rco = fixtures._row('synthetic reviewer private', agent='claude-rco-1',
+                        agent_uuid=fixtures.ROSTER['claude-rco-1'], task_id='synthetic-review-1')
+    _, _, _, _, _, _, narrow, run = _narrow_fixture(package, fixtures, tmp_path,
+                                                     rows=[build, build, secret, rco, other, third, fourth])
+    manifest = json.loads(narrow['manifest_bytes'])
+    build_ref = fixtures._sha(fixtures._raw(build))
+    secret_ref = fixtures._sha(fixtures._raw(secret))
+    rco_ref = fixtures._sha(fixtures._raw(rco))
+    assert manifest['entries'][build_ref]['offset'] == 0
+    assert secret_ref not in manifest['entries'] and rco_ref not in manifest['entries']
+    assert b'synthetic reviewer private' not in narrow['manifest_bytes']
+    assert b'syntheticfixturevalue' not in narrow['manifest_bytes']
+    assert run()['results']
+
+
 def test_full_decoder_retains_canonical_float32_and_legacy_preserves_float64():
     """Equal verified f32 bytes imply equal full-profile ranking inputs."""
     vector = (1.00000001, -0.0) + (0.0,) * 382

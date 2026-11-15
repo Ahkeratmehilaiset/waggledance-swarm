@@ -146,6 +146,151 @@ $r = Invoke-WdMindStartupRead -BundleRoot 'Z:\not-a-bundle' -ExpectedManifestHas
                       'view':'', 'record_written':False, 'probe_calls':0, 'worktree_created':False}
 
 
+@WINDOWS
+def test_parent_bootstrap_uses_pinned_wrapper_and_inherited_binary_stdin(tmp_path):
+    """Synthetic wrapper receives control only through stdin; no real owner is started."""
+    bundle, _ = _package(tmp_path)
+    wrapper = bundle / 'Invoke-WdBridgePython.ps1'
+    wrapper.write_text(r'''
+$s=[Console]::OpenStandardInput()
+$m=New-Object IO.MemoryStream
+$buf=New-Object byte[] 4096
+while(($n=$s.Read($buf,0,$buf.Length)) -gt 0){$m.Write($buf,0,$n)}
+$bytes=$m.ToArray()
+if($bytes.Length -lt 137 -or [Text.Encoding]::ASCII.GetString($bytes,0,4) -cne 'MCT1'){exit 4}
+$lenBytes=New-Object byte[] 4;[Array]::Copy($bytes,4,$lenBytes,0,4)
+if([BitConverter]::IsLittleEndian){[Array]::Reverse($lenBytes)}
+$policyLen=[BitConverter]::ToUInt32($lenBytes,0)
+if($bytes.Length -ne (136 + $policyLen)){exit 5}
+$key=New-Object byte[] 32;[Array]::Copy($bytes,72,$key,0,32)
+$nonce=New-Object byte[] 32;[Array]::Copy($bytes,40,$nonce,0,32)
+$manifest=New-Object byte[] 32;[Array]::Copy($bytes,8,$manifest,0,32)
+$policyHash=New-Object byte[] 32;[Array]::Copy($bytes,104,$policyHash,0,32)
+$policy=New-Object byte[] $policyLen;[Array]::Copy($bytes,136,$policy,0,$policyLen)
+$sha=[Security.Cryptography.SHA256]::Create()
+try {$actualPolicyHash=$sha.ComputeHash($policy)} finally {$sha.Dispose()}
+$policyHashOk=([BitConverter]::ToString($policyHash) -ceq [BitConverter]::ToString($actualPolicyHash))
+$manifestOk=([BitConverter]::ToString($manifest).Replace('-','') -ceq $env:WD_REBOOT_EXPECTED_MANIFEST_HASH)
+$independentRandom=([BitConverter]::ToString($key) -cne [BitConverter]::ToString($nonce))
+$keyHex=[BitConverter]::ToString($key).Replace('-','')
+$commandHasKey=[Environment]::CommandLine.IndexOf($keyHex,[StringComparison]::OrdinalIgnoreCase) -ge 0
+$environmentHasKey=$false
+foreach($v in [Environment]::GetEnvironmentVariables().Values){
+ if(([string]$v).IndexOf($keyHex,[StringComparison]::OrdinalIgnoreCase) -ge 0){$environmentHasKey=$true}
+}
+[Console]::Out.Write((@{is_redirected=[Console]::IsInputRedirected;command_has_key=$commandHasKey;
+ environment_has_key=$environmentHasKey;policy_length=$policyLen;
+ policy_hash_ok=$policyHashOk;manifest_ok=$manifestOk;independent_random=$independentRandom;
+ secret_env_present=([bool]$env:OPENAI_API_KEY -or [bool]$env:AGENT_BRIDGE_OWNER_TOKEN)} | ConvertTo-Json -Compress))
+''', encoding='utf-8')
+    entry = bundle / 'tools-bootstrap/tools/wd_mind_runtime_child.py'
+    entry.write_text('# synthetic pinned entry, wrapper never executes it\n', encoding='utf-8')
+    manifest = bundle / 'deployment-manifest.json'
+    doc = json.loads(manifest.read_text(encoding='utf-8'))
+    for relative in ('Invoke-WdBridgePython.ps1', 'tools-bootstrap/tools/wd_mind_runtime_child.py'):
+        doc['files'][relative] = hashlib.sha256((bundle / relative).read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(doc, separators=(',', ':')), encoding='utf-8')
+    pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    policy = b'{"schema":"synthetic"}'
+    policy_pin = hashlib.sha256(policy).hexdigest()
+    functions = _startup_functions('Invoke-WdMindStartupRead.ps1',
+        ['Read-WdMindPinnedSnapshot', 'ConvertTo-WdMindLiteral', 'Start-WdMindParentBootstrap'])
+    script = functions + r'''
+$policy=[Text.Encoding]::UTF8.GetBytes('{"schema":"synthetic"}')
+$env:OPENAI_API_KEY='synthetic-only-env-sentinel'
+$env:AGENT_BRIDGE_OWNER_TOKEN='synthetic-only-owner-sentinel'
+$owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
+    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 5
+if(-not $owner.Process.WaitForExit(5000)){throw 'synthetic_parent_not_exited'}
+$r=$owner.Process.StandardOutput.ReadToEnd() | ConvertFrom-Json
+[pscustomobject]@{state=$owner.State;child_exit=$owner.Process.ExitCode;is_redirected=$r.is_redirected;
+  command_has_key=$r.command_has_key;environment_has_key=$r.environment_has_key;
+  secret_env_present=$r.secret_env_present;policy_length=$r.policy_length;
+  policy_hash_ok=$r.policy_hash_ok;manifest_ok=$r.manifest_ok;independent_random=$r.independent_random} |
+  ConvertTo-Json -Compress
+'''.replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin)).replace('POLICY_PIN', _literal(policy_pin))
+    result = _run_startup_script(script)
+    assert result == {'state':'BOOTSTRAP_SENT', 'child_exit':0, 'is_redirected':True,
+                      'command_has_key':False, 'environment_has_key':False,
+                      'secret_env_present':False, 'policy_length':len(policy),
+                      'policy_hash_ok':True, 'manifest_ok':True, 'independent_random':True}
+
+
+@WINDOWS
+@pytest.mark.parametrize('fault', ['disabled', 'policy', 'manifest', 'wrapper', 'entry'])
+def test_parent_bootstrap_refuses_before_process_on_untrusted_inputs(tmp_path, fault):
+    bundle, _ = _package(tmp_path)
+    marker = tmp_path / 'not-created-marker'
+    wrapper = bundle / 'Invoke-WdBridgePython.ps1'
+    wrapper.write_text('[IO.File]::WriteAllText(' + _literal(marker) + ", 'unexpected')", encoding='utf-8')
+    entry = bundle / 'tools-bootstrap/tools/wd_mind_runtime_child.py'
+    entry.write_bytes(b'# synthetic fixture\n')
+    manifest = bundle / 'deployment-manifest.json'
+    doc = json.loads(manifest.read_text(encoding='utf-8'))
+    for relative in ('Invoke-WdBridgePython.ps1', 'tools-bootstrap/tools/wd_mind_runtime_child.py'):
+        doc['files'][relative] = hashlib.sha256((bundle / relative).read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(doc, separators=(',', ':')), encoding='utf-8')
+    pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    policy_pin = hashlib.sha256(b'synthetic-policy').hexdigest()
+    if fault == 'manifest': pin = 'b'*64
+    if fault == 'policy': policy_pin = 'a'*64
+    if fault == 'wrapper': wrapper.write_text('# tampered', encoding='utf-8')
+    if fault == 'entry': entry.write_text('# tampered', encoding='utf-8')
+    functions = _startup_functions('Invoke-WdMindStartupRead.ps1',
+        ['Read-WdMindPinnedSnapshot', 'ConvertTo-WdMindLiteral', 'Start-WdMindParentBootstrap'])
+    enabled = '' if fault == 'disabled' else '-Enabled'
+    script = functions + r'''
+$policy=[Text.Encoding]::UTF8.GetBytes('synthetic-policy')
+$caught=$false
+try { Start-WdMindParentBootstrap ENABLED -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
+    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 2 | Out-Null }
+catch { $caught=$true }
+[pscustomobject]@{refused=$caught;marker=(Test-Path -LiteralPath MARKER_PATH);
+    retained=(Test-Path variable:script:WdMindParentBootstrapOwners)} | ConvertTo-Json -Compress
+'''.replace('ENABLED', enabled).replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin))
+    script = script.replace('POLICY_PIN', _literal(policy_pin)).replace('MARKER_PATH', _literal(marker))
+    assert _run_startup_script(script) == {'refused':True, 'marker':False, 'retained':False}
+
+
+@WINDOWS
+def test_parent_bootstrap_write_timeout_retains_owner_without_termination(tmp_path):
+    bundle, _ = _package(tmp_path)
+    wrapper = bundle / 'Invoke-WdBridgePython.ps1'
+    wrapper.write_text(r'''
+Start-Sleep -Seconds 3
+$s=[Console]::OpenStandardInput();$b=New-Object byte[] 4096
+while($s.Read($b,0,$b.Length) -gt 0){}
+''', encoding='utf-8')
+    entry = bundle / 'tools-bootstrap/tools/wd_mind_runtime_child.py'
+    entry.write_bytes(b'# synthetic fixture\n')
+    manifest = bundle / 'deployment-manifest.json'
+    doc = json.loads(manifest.read_text(encoding='utf-8'))
+    for relative in ('Invoke-WdBridgePython.ps1', 'tools-bootstrap/tools/wd_mind_runtime_child.py'):
+        doc['files'][relative] = hashlib.sha256((bundle / relative).read_bytes()).hexdigest()
+    manifest.write_text(json.dumps(doc, separators=(',', ':')), encoding='utf-8')
+    pin = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    policy_pin = hashlib.sha256(b'A' * 65536).hexdigest()
+    functions = _startup_functions('Invoke-WdMindStartupRead.ps1',
+        ['Read-WdMindPinnedSnapshot', 'ConvertTo-WdMindLiteral', 'Start-WdMindParentBootstrap'])
+    script = functions + r'''
+$policy=New-Object byte[] 65536;for($i=0;$i -lt $policy.Length;$i++){$policy[$i]=65}
+$owner=Start-WdMindParentBootstrap -Enabled -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
+    -ApprovedPolicyBytes $policy -ApprovedPolicySha256 POLICY_PIN -TimeoutSeconds 1
+$held=($owner.State -ceq 'HOLD' -and -not $owner.Process.HasExited -and
+       $script:WdMindParentBootstrapOwners.Contains($owner) -and
+       $script:WdMindParentBootstrapBuffers.ContainsKey($owner.Token))
+$completed=$owner.WriteTask.Wait(8000)
+if($completed){$owner.Process.StandardInput.Close()}
+$exited=$owner.Process.WaitForExit(8000)
+if($script:WdMindParentBootstrapBuffers.ContainsKey($owner.Token)){
+  $buffer=$script:WdMindParentBootstrapBuffers[$owner.Token];[Array]::Clear($buffer,0,$buffer.Length)
+  $script:WdMindParentBootstrapBuffers.Remove($owner.Token)
+}
+[pscustomobject]@{held=$held;write_finished=$completed;child_exited=$exited} | ConvertTo-Json -Compress
+'''.replace('BUNDLE_PATH', _literal(bundle)).replace('MANIFEST_PIN', _literal(pin)).replace('POLICY_PIN', _literal(policy_pin))
+    assert _run_startup_script(script) == {'held':True, 'write_finished':True, 'child_exited':True}
+
+
 def _startup_functions(filename, names):
     return f'''
 $tokens=$null;$errors=$null

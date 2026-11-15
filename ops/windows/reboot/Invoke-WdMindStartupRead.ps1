@@ -56,6 +56,120 @@ function Invoke-WdMindStartupRead {
         return [pscustomobject]@{Text=$utf8.GetString($bytes).TrimStart([char]0xFEFF);Hash=$digest}
     }
     function ConvertTo-WdMindLiteral([string] $Value) { return "'" + $Value.Replace("'","''") + "'" }
+    function Start-WdMindParentBootstrap {
+        <# Default-off primitive: a caller must independently authorize the
+           policy hash. This does not establish a parent entrypoint, prove a
+           child's identity, or return a Mind answer. The caller retains the
+           returned owner and must drain bounded output and preserve HOLD. #>
+        [CmdletBinding()]
+        param(
+            [switch] $Enabled,
+            [Parameter(Mandatory)] [string] $BundleRoot,
+            [Parameter(Mandatory)] [string] $ExpectedManifestHash,
+            [Parameter(Mandatory)] [byte[]] $ApprovedPolicyBytes,
+            [Parameter(Mandatory)] [string] $ApprovedPolicySha256,
+            [ValidateRange(1,90)] [int] $TimeoutSeconds=15
+        )
+        if (-not $Enabled -or $ApprovedPolicyBytes.Length -lt 1 -or $ApprovedPolicyBytes.Length -gt 65536 -or
+            $ApprovedPolicySha256 -cnotmatch '\A[0-9a-fA-F]{64}\z') { throw 'mind_parent_bootstrap_refused' }
+        $clock=[Diagnostics.Stopwatch]::StartNew()
+        $sha=[Security.Cryptography.SHA256]::Create()
+        try { $policyHash=[BitConverter]::ToString($sha.ComputeHash($ApprovedPolicyBytes)).Replace('-','').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        if ($policyHash -cne $ApprovedPolicySha256.ToLowerInvariant()) { throw 'mind_parent_bootstrap_refused' }
+        $root=[IO.Path]::GetFullPath($BundleRoot).TrimEnd('\')
+        $manifestPath=Join-Path $root 'deployment-manifest.json'
+        $manifest=Read-WdMindPinnedSnapshot -Path $manifestPath -Pin $ExpectedManifestHash -Limit 4194304
+        $deployment=$manifest.Text | ConvertFrom-Json -ErrorAction Stop
+        $wrapperPath=Join-Path $root 'Invoke-WdBridgePython.ps1'
+        $entryPath=Join-Path $root 'tools-bootstrap/tools/wd_mind_runtime_child.py'
+        $wrapperPin=$deployment.files.PSObject.Properties['Invoke-WdBridgePython.ps1']
+        $entryPin=$deployment.files.PSObject.Properties['tools-bootstrap/tools/wd_mind_runtime_child.py']
+        if ($null -eq $wrapperPin -or $null -eq $entryPin -or
+            $wrapperPin.Value -isnot [string] -or $entryPin.Value -isnot [string]) { throw 'mind_parent_bootstrap_refused' }
+        [void](Read-WdMindPinnedSnapshot -Path $wrapperPath -Pin $wrapperPin.Value -Limit 8388608)
+        [void](Read-WdMindPinnedSnapshot -Path $entryPath -Pin $entryPin.Value -Limit 8388608)
+        $command='$ErrorActionPreference="Stop"; if((Get-FileHash -LiteralPath ' +
+            (ConvertTo-WdMindLiteral $wrapperPath) + ' -Algorithm SHA256).Hash.ToLowerInvariant() -cne ' +
+            (ConvertTo-WdMindLiteral $wrapperPin.Value.ToLowerInvariant()) + '){exit 2}; $global:LASTEXITCODE=0; & ' +
+            (ConvertTo-WdMindLiteral $wrapperPath) + ' tools/wd_mind_runtime_child.py -VerifyPackage --parent-control; exit $LASTEXITCODE'
+        $start=New-Object Diagnostics.ProcessStartInfo
+        $shell=if($PSVersionTable.PSEdition -ceq 'Core'){'pwsh.exe'}else{'powershell.exe'}
+        $start.FileName=Join-Path $PSHOME $shell
+        $start.Arguments='-NoProfile -NonInteractive -EncodedCommand ' +
+            [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $start.WorkingDirectory=$root;$start.UseShellExecute=$false;$start.CreateNoWindow=$true
+        $start.RedirectStandardInput=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
+        $environmentAllow=@('SYSTEMROOT','SYSTEMDRIVE','WINDIR','PATH','PATHEXT','TEMP','TMP',
+                            'USERPROFILE','LOCALAPPDATA','APPDATA')
+        foreach($name in @($start.EnvironmentVariables.Keys)){
+            if($environmentAllow -cnotcontains ([string]$name).ToUpperInvariant()){
+                $start.EnvironmentVariables.Remove([string]$name)
+            }
+        }
+        $start.EnvironmentVariables['WD_REBOOT_EXPECTED_MANIFEST_HASH']=$ExpectedManifestHash.ToUpperInvariant()
+        $control=New-Object byte[] (136+$ApprovedPolicyBytes.Length)
+        $nonce=New-Object byte[] 32;$key=New-Object byte[] 32;$owner=$null
+        try {
+            $rng=[Security.Cryptography.RandomNumberGenerator]::Create()
+            try { $rng.GetBytes($nonce);$rng.GetBytes($key) } finally { $rng.Dispose() }
+            [Array]::Copy([Text.Encoding]::ASCII.GetBytes('MCT1'),0,$control,0,4)
+            $length=[BitConverter]::GetBytes([uint32]$ApprovedPolicyBytes.Length)
+            if([BitConverter]::IsLittleEndian){[Array]::Reverse($length)}
+            [Array]::Copy($length,0,$control,4,4)
+            for($i=0;$i -lt 32;$i++){
+                $control[8+$i]=[Convert]::ToByte($ExpectedManifestHash.Substring(2*$i,2),16)
+                $control[104+$i]=[Convert]::ToByte($ApprovedPolicySha256.Substring(2*$i,2),16)
+            }
+            [Array]::Copy($nonce,0,$control,40,32);[Array]::Copy($key,0,$control,72,32)
+            [Array]::Copy($ApprovedPolicyBytes,0,$control,136,$ApprovedPolicyBytes.Length)
+            [void](Read-WdMindPinnedSnapshot -Path $manifestPath -Pin $ExpectedManifestHash -Limit 4194304)
+            [void](Read-WdMindPinnedSnapshot -Path $wrapperPath -Pin $wrapperPin.Value -Limit 8388608)
+            [void](Read-WdMindPinnedSnapshot -Path $entryPath -Pin $entryPin.Value -Limit 8388608)
+            if($clock.ElapsedMilliseconds -ge ([long]$TimeoutSeconds*1000)){throw 'mind_parent_bootstrap_refused'}
+            if(-not (Test-Path variable:script:WdMindParentBootstrapOwners)){
+                $script:WdMindParentBootstrapOwners=New-Object Collections.ArrayList
+            }
+            if(-not (Test-Path variable:script:WdMindParentBootstrapBuffers)){
+                $script:WdMindParentBootstrapBuffers=@{}
+            }
+            $process=New-Object Diagnostics.Process
+            $process.StartInfo=$start
+            $token=[Guid]::NewGuid().ToString('N')
+            $owner=[pscustomobject]@{State='HOLD';Process=$process;WriteTask=$null;Token=$token}
+            # The process and any pending write remain strongly owned on every
+            # post-reservation failure; no process termination is attempted.
+            [void]$script:WdMindParentBootstrapOwners.Add($owner)
+            $script:WdMindParentBootstrapBuffers[$token]=$control
+            if(-not $process.Start()){return $owner}
+            if($clock.ElapsedMilliseconds -ge ([long]$TimeoutSeconds*1000)){
+                [Array]::Clear($control,0,$control.Length)
+                $script:WdMindParentBootstrapBuffers.Remove($token)
+                $process.StandardInput.Close()
+                return $owner
+            }
+            $owner.WriteTask=$process.StandardInput.BaseStream.WriteAsync($control,0,$control.Length)
+            while(-not $owner.WriteTask.IsCompleted -and $clock.ElapsedMilliseconds -lt ([long]$TimeoutSeconds*1000)){
+                [Threading.Thread]::Sleep(5)
+            }
+            if(-not $owner.WriteTask.IsCompleted -or $clock.ElapsedMilliseconds -ge ([long]$TimeoutSeconds*1000)){
+                return $owner
+            }
+            $owner.WriteTask.GetAwaiter().GetResult()
+            [Array]::Clear($control,0,$control.Length)
+            $script:WdMindParentBootstrapBuffers.Remove($token)
+            $process.StandardInput.Close()
+            if($clock.ElapsedMilliseconds -ge ([long]$TimeoutSeconds*1000)){return $owner}
+            $owner.State='BOOTSTRAP_SENT'
+            return $owner
+        } catch {
+            if($null -ne $owner){return $owner}
+            [Array]::Clear($control,0,$control.Length)
+            throw 'mind_parent_bootstrap_refused'
+        } finally {
+            [Array]::Clear($nonce,0,$nonce.Length);[Array]::Clear($key,0,$key.Length)
+        }
+    }
     # Closed shapes apply recursively: a known outer object is not permission to
     # forward arbitrary nested message/payload fields or free-form strings.
     function Assert-WdMindObject($Value, [string[]] $Required, [string[]] $Optional=@()) {

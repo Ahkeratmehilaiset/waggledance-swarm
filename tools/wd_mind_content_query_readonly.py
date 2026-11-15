@@ -114,17 +114,30 @@ _PERSONAL_CONTEXT_V1 = (
 # A terminal noun excludes technical continuations such as diagnosis.json and
 # sairaus-malli. These rules are not a general health/PII classifier.
 _HEALTH_CLAUSE_END = r"\b(?=\s*(?:[.!?;](?:\s|$)|$))"
+# Optional complete clinical predicates, not bare punctuation/conjunctions.
+# The same strict ending also follows the predicate: treatment metadata and
+# treatment.json remain technical continuations. Other prose is not covered.
+_HEALTH_EN_CONTINUATION = (
+    r"\b(?:,\s+(?:recovery\s+is\s+(?:slow|ongoing)|(?:treatment|care)\s+is\s+ongoing)"
+    r"|(?:,\s*|\s+)(?:which|that)\s+(?:requires|needs)\s+(?:(?:ongoing|continued)\s+)?(?:treatment|care|medication)"
+    r"|(?:,\s*|\s+)but\s+(?:(?:the\s+)?operator\s+)?(?:is\s+recovering|cannot\s+work))"
+)
+_HEALTH_FI_CONTINUATION = (
+    r"\b(?:,\s+toipuminen\s+on\s+(?:hidasta|kesken)"
+    r"|(?:,\s*|\s+)joka\s+vaatii\s+(?:(?:jatkuvaa|pitkäaikaista)\s+)?(?:hoitoa|lääkitystä)"
+    r"|(?:,\s*|\s+)mutta\s+(?:operaattori\s+)?on\s+toipumassa)"
+)
 _PERSONAL_HEALTH_CONTEXT = (
     re.compile(r"(?i)\boperator\s+(?:has|had)\s+(?:[\w'-]+[,\.]?\s+){0,4}"
                r"(?:illness|disease|diagnosis)(?:\s+|-)(?:classifier|detector|model|parser)\b"
                r"(?:\s*,\s*|\s+)and\s+(?:also\s+)?(?:(?:has|had)\s+)?(?:(?:a|an|the)\s+)?"
                r"(?:(?:serious|chronic|persistent|severe|mild|acute|long-term)\s+)*"
-               r"(?:illness|disease|diagnosis)" + _HEALTH_CLAUSE_END),
+               r"(?:illness|disease|diagnosis)(?:" + _HEALTH_EN_CONTINUATION + r")?" + _HEALTH_CLAUSE_END),
     # Repetition is bounded by the existing input limit, not an arbitrary larger
     # generic prefix count that would newly reject named technical examples.
     re.compile(r"(?i)\boperaattorilla\s+(?:on|oli)\s+"
                r"(?:(?:jo|pitkään|tutkimuksissa|aiemmin|toistuvasti|havaittu|todettu|vakava|lievä|krooninen|pitkäaikainen),?\s+){5,}"
-               r"(?:sairaus|tauti|diagnoosi)" + _HEALTH_CLAUSE_END),
+               r"(?:sairaus|tauti|diagnoosi)(?:" + _HEALTH_FI_CONTINUATION + r")?" + _HEALTH_CLAUSE_END),
 )
 _HEALTH_LINE_END = re.compile(r"(?i)\b(?:illness|disease|diagnosis)[.!?;]?$")
 _HEALTH_HEADING = re.compile(r"(?i)^(?:classifier|detector|model|parser)\s*:")

@@ -73,7 +73,54 @@ HEALTH_CONTEXT_GAPS = [
 ]
 
 
-@pytest.mark.parametrize('text', HEALTH_CONTEXT_GAPS)
+_CLINICAL_EN = 'Operator has a disease classifier and a chronic illness'
+_CLINICAL_FI = 'Operaattorilla on jo pitkään tutkimuksissa havaittu krooninen sairaus'
+CLINICAL_CONTINUATIONS = [_CLINICAL_EN + suffix for suffix in (
+    ', recovery is slow.',
+    ', care is ongoing.',
+    ' that requires ongoing treatment.',
+    ', which requires treatment.',
+    ' which needs continued medication.',
+    ', but the operator is recovering.',
+    ' but cannot work.',
+)] + [_CLINICAL_FI + suffix for suffix in (
+    ', toipuminen on hidasta.',
+    ', toipuminen on kesken.',
+    ', joka vaatii jatkuvaa hoitoa.',
+    ' joka vaatii lääkitystä.',
+    ', mutta operaattori on toipumassa.',
+    ' mutta on toipumassa.',
+)] + [
+    _CLINICAL_EN + ', WHICH NEEDS CONTINUED MEDICATION.',
+    _CLINICAL_EN + ' which\nrequires\tcontinued medication.',
+]
+_CLINICAL_BOUNDARY_CASES = [CLINICAL_CONTINUATIONS[index] for index in (0, 2, 5, 7, 9, 11)]
+CLINICAL_TECHNICAL_CONTROLS = [_CLINICAL_EN + suffix for suffix in (
+    ', disease, or diagnosis detector.',
+    ' or disease classifier.',
+    ' and disease models.',
+    ' but not a disease model.',
+    ' that requires JSON serialization.',
+    ' that requires treatment metadata.',
+    ', recovery is slow.json.',
+    ', which requires treatment.json.',
+    ' model, recovery is slow.',
+    '-model, recovery is slow.',
+)] + [_CLINICAL_FI + suffix for suffix in (
+    ', tauti ja diagnoosi -malli.',
+    ' ja tauti -luokitin.',
+    ', mutta ei tauti -malli.',
+    ', joka vaatii JSON-skeeman.',
+    ', joka vaatii hoitoa kuvaavan tietomallin.',
+    ', toipuminen on hidasta.json.',
+    ', joka vaatii hoitoa.json.',
+    'malli, toipuminen on hidasta.',
+    '-malli, toipuminen on hidasta.',
+    ' malli, toipuminen on hidasta.',
+)]
+
+
+@pytest.mark.parametrize('text', HEALTH_CONTEXT_GAPS + CLINICAL_CONTINUATIONS)
 def test_health_context_gaps_drop_as_personal(text):
     assert reader._classify_with_policy(text, 4096, reader.IdentifierPolicy(())) == ('DROP', 'personal')
 
@@ -95,7 +142,7 @@ def test_health_context_gaps_drop_as_personal(text):
     'Operaattorilla on jo pitkään tutkimuksissa havaittu krooninen sairaus-malli.',
     'Operaattorilla on jo pitkään tutkimuksissa havaittu krooninen sairaus malli.',
     'Operaattorilla on jo pitkään tutkimuksissa havaittu krooninen sairaus.json.',
-])
+] + CLINICAL_TECHNICAL_CONTROLS)
 def test_health_context_keeps_bounded_technical_counterexamples(text):
     outcome, encoded = reader._classify_with_policy(text, 4096, reader.IdentifierPolicy(()))
     assert outcome == 'KEEP'
@@ -109,7 +156,8 @@ def test_health_context_keeps_existing_long_compound_token_redaction():
     assert reader.decode_text(encoded) == 'Operaattorilla on jo pitkään tutkimuksissa havaittu krooninen token-redacted'
 
 
-@pytest.mark.parametrize('text', [HEALTH_CONTEXT_GAPS[0], HEALTH_CONTEXT_GAPS[4], HEALTH_CONTEXT_GAPS[8]])
+@pytest.mark.parametrize('text', [HEALTH_CONTEXT_GAPS[0], HEALTH_CONTEXT_GAPS[4], HEALTH_CONTEXT_GAPS[8]]
+                         + _CLINICAL_BOUNDARY_CASES)
 @pytest.mark.parametrize('prefix,reason', [
     ('password = synthetic-private-value. ', 'credential'),
     ('Synthetic Private Operator. ', 'identifier'),
@@ -129,7 +177,7 @@ def test_health_line_context_keeps_input_validation(text, reason):
 
 
 @pytest.mark.parametrize('text', [HEALTH_CONTEXT_GAPS[0], HEALTH_CONTEXT_GAPS[4], HEALTH_CONTEXT_GAPS[8],
-                                HEALTH_CONTEXT_GAPS[11]])
+                                HEALTH_CONTEXT_GAPS[11]] + _CLINICAL_BOUNDARY_CASES)
 @pytest.mark.parametrize('with_allowed', [False, True])
 def test_health_context_real_source_never_reaches_synthetic_provider(tmp_path, text, with_allowed):
     case = fixture._semantic_case(reader, tmp_path, all_tasks=True)

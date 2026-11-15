@@ -45,6 +45,15 @@ def _flat_owner_fixture(package, fixtures, tmp_path, monkeypatch, fault=None):
     if fault == 'schema': manifest['schema'] = 'wd.bridge-mind-hex-memory-step2.v1'
     if fault == 'projection': manifest['projection_sha256'] = '0' * 64
     if fault == 'vector': vectors = b'\0' * len(vectors)
+    if fault == 'vector_norm':
+        vector = b'\0' * 1536
+        vectors = vector * len(ids)
+        pairs = hashlib.sha256()
+        for record_id in ids:
+            pairs.update(record_id.encode() + b'\0' + vector)
+        manifest['vectors_sha256'] = reader._sha(vectors)
+        manifest['pairs_sha256'] = pairs.hexdigest()
+    if fault == 'pairs': manifest['pairs_sha256'] = '0' * 64
     if fault == 'ids': ids = ids[::-1]
     manifest_bytes = reader._canonical(manifest)
     owner = package.create_consumer_flat_source_owner(enabled=True, bundle_root=str(bundle),
@@ -63,7 +72,7 @@ def test_flat_consumer_owner_resolves_actual_source(package, fixtures, tmp_path,
     assert result['authority'] == 'none' and result['index_match'] == 'UNKNOWN' and result['results']
 
 
-@pytest.mark.parametrize('fault', ['schema','projection','vector','ids'])
+@pytest.mark.parametrize('fault', ['schema','projection','vector','vector_norm','pairs','ids'])
 def test_flat_consumer_owner_rejects_bad_format_or_memory(package, fixtures, tmp_path, monkeypatch, fault):
     with pytest.raises(package.SnapshotPackageRefused):
         _flat_owner_fixture(package, fixtures, tmp_path, monkeypatch, fault)

@@ -365,6 +365,38 @@ class FullRuntimeCancellationUnknown(BaseException):
         super().__init__('mind_full_runtime_cancellation_unknown')
 
 
+def _flat_cancellation(exc):
+    """Copy cancellation signals with bounded inspection and fixed text."""
+    kind = type(exc)
+    if issubclass(kind, BaseExceptionGroup):
+        pending, found, visited = [exc], [], 0
+        try:
+            while pending:
+                visited += 1
+                if visited > 1024 or len(pending) + len(found) > 1024:
+                    return FullRuntimeCancellationUnknown()
+                item = pending.pop()
+                item_type = type(item)
+                if issubclass(item_type, BaseExceptionGroup):
+                    children = BaseExceptionGroup.exceptions.__get__(item)
+                    if len(pending) + len(found) + len(children) > 1024:
+                        return FullRuntimeCancellationUnknown()
+                    pending.extend(reversed(children))
+                else:
+                    for signal_type in (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError,
+                                        FullRuntimeCancellationUnknown):
+                        if issubclass(item_type, signal_type):
+                            found.append(signal_type())
+                            break
+            return BaseExceptionGroup('provider_cancelled', found) if found else None
+        except BaseException:
+            return FullRuntimeCancellationUnknown()
+    for signal_type in (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError, FullRuntimeCancellationUnknown):
+        if issubclass(kind, signal_type):
+            return signal_type()
+    return None
+
+
 class _OwnedSnapshotWatcher:
     """Retain only the verifier reserved for this owner, including on HOLD."""
     __slots__ = ('_watcher', '_lock', '_closed')
@@ -1101,38 +1133,7 @@ def _build_flat_memory_immutable(binding, passage_encoder, encoder_binding_bytes
                 cleanup_problem = exc
             finally:
                 package._release_watcher(watcher)
-    def cancellation(exc):
-        kind = type(exc)
-        if issubclass(kind, BaseExceptionGroup):
-            # Do not treat an oversized or unreadable group as a normal
-            # refusal: it could contain a cancellation beyond the budget.
-            # The fixed signal contains no original group text or leaves.
-            pending, found, visited = [exc], [], 0
-            try:
-                while pending:
-                    visited += 1
-                    if visited > 1024 or len(pending) + len(found) > 1024:
-                        return FullRuntimeCancellationUnknown()
-                    item = pending.pop()
-                    item_type = type(item)
-                    if issubclass(item_type, BaseExceptionGroup):
-                        children = BaseExceptionGroup.exceptions.__get__(item)
-                        if len(pending) + len(found) + len(children) > 1024:
-                            return FullRuntimeCancellationUnknown()
-                        pending.extend(reversed(children))
-                    else:
-                        for signal_type in (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
-                            if issubclass(item_type, signal_type):
-                                found.append(signal_type())
-                                break
-                return BaseExceptionGroup('provider_cancelled', found) if found else None
-            except BaseException:
-                return FullRuntimeCancellationUnknown()
-        for signal_type in (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
-            if issubclass(kind, signal_type):
-                return signal_type()
-        return None
-    signals = [cancellation(exc) for exc in (problem, cleanup_problem) if exc is not None]
+    signals = [_flat_cancellation(exc) for exc in (problem, cleanup_problem) if exc is not None]
     signals = [signal for signal in signals if signal is not None]
     if signals:
         problem = cleanup_problem = None
@@ -2018,6 +2019,7 @@ class _SingleManifestOwner:
     def start(self):
         if not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        pending_cancel = None
         try:
             if self._state != 'NEW':
                 raise FullRuntimeRefused('mind_full_runtime_refused') from None
@@ -2061,10 +2063,16 @@ class _SingleManifestOwner:
                 self._launch_cancel.set()
                 self._state = 'HOLD'
                 raise
+            except (BaseExceptionGroup, FullRuntimeCancellationUnknown) as exc:
+                self._launch_cancel.set()
+                self._state = 'HOLD'
+                pending_cancel = _flat_cancellation(exc)
             except BaseException:
                 # Unknown post-launch states are never declared exited. The
                 # saved owner (if present) remains reachable for explicit EOF.
                 self._state = 'HOLD'
+            if pending_cancel is not None:
+                raise pending_cancel from None
             return self._status()
         finally:
             self._lock.release()

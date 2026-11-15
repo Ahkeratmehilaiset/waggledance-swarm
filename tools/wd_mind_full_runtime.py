@@ -47,6 +47,8 @@ class _ManifestPolicyCandidate:
 
 class _TrustedManifestPolicyAnchor:
     """Reserved type; no trusted approval provider is implemented yet."""
+    __slots__ = ('bundle_root', 'manifest_sha256', 'policy_sha256', 'approval_reference_sha256')
+
     def __new__(cls, *args, **kwargs):
         raise FullRuntimeRefused('mind_full_runtime_refused') from None
 
@@ -610,6 +612,76 @@ def _parse_parent_control(*, enabled=False, control_buffer=None, expected_manife
         output = None
     finally:
         control_buffer = None
+    if cancelled_type is not None:
+        raise cancelled_type() from None
+    if cancellation_group is not None:
+        raise cancellation_group from None
+    if output is None:
+        raise FullRuntimeRefused('mind_full_runtime_refused') from None
+    return output
+
+
+def _prepare_owner_from_control_values(values, *, bundle_root, expected_manifest_sha256, lane,
+                                       worker_timeout_seconds, lock_timeout_seconds,
+                                       shutdown_timeout, bulk_contract_sha256):
+    manifest, nonce, channel_key, policy_sha, policy = values
+    if manifest != expected_manifest_sha256:
+        raise ValueError('manifest')
+    binding = assemble_full_runtime(enabled=True, bundle_root=bundle_root,
+        expected_manifest_sha256=expected_manifest_sha256, identifier_policy_bytes=policy,
+        expected_identifier_policy_sha256=policy_sha)
+    factory = create_manifest_worker_factory(enabled=True, bundle_root=bundle_root,
+        expected_manifest_sha256=expected_manifest_sha256, worker_timeout_seconds=worker_timeout_seconds,
+        lock_timeout_seconds=lock_timeout_seconds, bulk_contract_sha256=bulk_contract_sha256)
+    owner = create_single_manifest_owner(enabled=True, binding=binding, lane=lane,
+                                         worker_factory=factory, shutdown_timeout=shutdown_timeout)
+    return {'state':'PREPARED_NOT_RUNNING', 'authority':'none', 'owner':owner,
+            'bootstrap':_ParentBootstrap(values)}
+
+
+def prepare_manifest_bound_owner(*, enabled=False, policy_anchor: _TrustedManifestPolicyAnchor | None = None,
+                                 control_buffer=None, bundle_root=None, expected_manifest_sha256=None,
+                                 lane=None, worker_timeout_seconds=None, lock_timeout_seconds=None,
+                                 shutdown_timeout=None, bulk_contract_sha256=None):
+    """Prepare a retained inert owner after trusted control and policy checks.
+
+    The trusted provider is absent and therefore production always refuses.
+    The returned owner has not been started; its parent must retain it before
+    starting and retain any worker/pipe in HOLD through uncertain completion.
+    """
+    output = cancelled_type = cancellation_group = bootstrap = None
+    try:
+        if (enabled is not True or type(policy_anchor) is not _TrustedManifestPolicyAnchor
+                or type(control_buffer) is not _ParentControlBuffer or type(bundle_root) is not str
+                or type(expected_manifest_sha256) is not str
+                or not startup._same_path(Path(bundle_root), Path(policy_anchor.bundle_root))
+                or expected_manifest_sha256 != policy_anchor.manifest_sha256):
+            raise ValueError('input')
+        _require_trusted_parent_export(owner=None, stream=None, bootstrap=control_buffer)
+        candidate = inspect_manifest_policy_candidate(enabled=True, bundle_root=bundle_root,
+            expected_manifest_sha256=expected_manifest_sha256).status()
+        if (candidate['identifier_policy_sha256'] != policy_anchor.policy_sha256
+                or candidate['approval_reference_sha256'] != policy_anchor.approval_reference_sha256):
+            raise ValueError('approval_binding')
+        bootstrap = _parse_parent_control(enabled=True, control_buffer=control_buffer,
+            expected_manifest_sha256=expected_manifest_sha256,
+            expected_identifier_policy_sha256=policy_anchor.policy_sha256)
+        output = _prepare_owner_from_control_values(bootstrap.take(), bundle_root=bundle_root,
+            expected_manifest_sha256=expected_manifest_sha256, lane=lane,
+            worker_timeout_seconds=worker_timeout_seconds, lock_timeout_seconds=lock_timeout_seconds,
+            shutdown_timeout=shutdown_timeout, bulk_contract_sha256=bulk_contract_sha256)
+    except KeyboardInterrupt:
+        cancelled_type, output = KeyboardInterrupt, None
+    except GeneratorExit:
+        cancelled_type, output = GeneratorExit, None
+    except asyncio.CancelledError:
+        cancelled_type, output = asyncio.CancelledError, None
+    except BaseExceptionGroup as group:
+        cancellation_group, output = _fixed_group_cancellation(group), None
+    except BaseException:
+        output = None
+    finally:
+        control_buffer = bootstrap = None
     if cancelled_type is not None:
         raise cancelled_type() from None
     if cancellation_group is not None:

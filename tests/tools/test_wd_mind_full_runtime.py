@@ -425,8 +425,33 @@ def encode(payload, **kwargs):
     count = len(payload['passages']) if payload['operation'] == 'refresh' else 1
     return {'nonce':payload['nonce'], 'request_sha256':payload['request_sha256'], 'vector_bytes':vector * count}
 client.encode_supervised = encode
-wrapper = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane='codex-lead-1',
-    worker_factory=factory, shutdown_timeout=0)
+import io
+policy_pin = hashlib.sha256(policy).hexdigest()
+anchor = object.__new__(runtime._TrustedManifestPolicyAnchor)  # Fixture only; production has no provider.
+anchor.bundle_root, anchor.manifest_sha256 = str(root), pin
+anchor.policy_sha256, anchor.approval_reference_sha256 = policy_pin, 'b'*64
+control = struct.pack('>4sI', b'MCT1', len(policy)) + bytes.fromhex(pin) + bytes.fromhex('e'*64) + b'k'*32 + bytes.fromhex(policy_pin) + policy
+control_buffer = runtime._ParentControlBuffer(runtime._PrivateParentStream(io.BytesIO(control)))
+control_buffer.read_from(enabled=True)
+entry_args = dict(enabled=True, policy_anchor=anchor, control_buffer=control_buffer,
+    bundle_root=str(root), expected_manifest_sha256=pin, lane='codex-lead-1',
+    worker_timeout_seconds=1, lock_timeout_seconds=0, shutdown_timeout=0,
+    bulk_contract_sha256=client_module.BULK_CONTRACT_SHA256)
+try:
+    runtime.prepare_manifest_bound_owner(**entry_args)
+    raise AssertionError('untrusted production parent must refuse')
+except runtime.FullRuntimeRefused:
+    pass
+original_provider = runtime._require_trusted_parent_export
+def synthetic_entry_provider(*, owner, stream, bootstrap):
+    assert owner is None and stream is None and bootstrap is control_buffer
+runtime._require_trusted_parent_export = synthetic_entry_provider
+runtime.create_manifest_worker_factory = lambda **kwargs: factory
+entry = runtime.prepare_manifest_bound_owner(**entry_args)
+runtime._require_trusted_parent_export = original_provider
+assert entry['state'] == 'PREPARED_NOT_RUNNING' and entry['authority'] == 'none'
+wrapper, binding, entry_bootstrap = entry['owner'], entry['owner']._binding, entry['bootstrap']
+assert wrapper.status()['state'] == 'NEW'
 assert wrapper.start() == {'state':'READY','owned':True,'authority':'none'}
 assert type(wrapper._adapter) is adapter._SingleFlatAdapter and wrapper._client is client
 assert wrapper._handler._memory is not None and wrapper._handler._memory.binding is binding
@@ -494,11 +519,7 @@ sink = Sink()
 candidate = runtime.inspect_manifest_policy_candidate(enabled=True, bundle_root=str(root), expected_manifest_sha256=pin)
 assert candidate.status()['identifier_policy_sha256'] == policy_pin
 assert candidate.status()['approval'] == 'UNVERIFIED'
-control = struct.pack('>4sI', b'MCT1', len(policy)) + bytes.fromhex(pin) + bytes.fromhex('e'*64) + b'k'*32 + bytes.fromhex(policy_pin) + policy
-control_buffer = runtime._ParentControlBuffer(runtime._PrivateParentStream(io.BytesIO(control)))
-control_buffer.read_from(enabled=True)
-bootstrap = runtime._parse_parent_control(enabled=True, control_buffer=control_buffer,
-    expected_manifest_sha256=pin, expected_identifier_policy_sha256=policy_pin)
+bootstrap = entry_bootstrap
 parent_stream = runtime._PrivateExportStream(sink)
 try:
     prepared._send_parent_stream(enabled=True, stream=parent_stream,

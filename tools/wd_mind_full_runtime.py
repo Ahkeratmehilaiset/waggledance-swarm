@@ -1248,7 +1248,12 @@ class _SingleManifestOwner:
             self._state = 'HOLD'
             # Validation frames can contain the policy binding. Preserve the
             # cancellation type, but not its object, arguments or inner frames.
-            cancelled_type = type(cancellation)
+            if isinstance(cancellation, KeyboardInterrupt):
+                cancelled_type = KeyboardInterrupt
+            elif isinstance(cancellation, GeneratorExit):
+                cancelled_type = GeneratorExit
+            else:
+                cancelled_type = asyncio.CancelledError
             cancellation.__traceback__ = None
             cancellation.__context__ = None
             cancellation.__cause__ = None

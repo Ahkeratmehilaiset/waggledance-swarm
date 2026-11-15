@@ -8,6 +8,21 @@ from tools import wd_mind_content_snapshot_package as producer
 
 
 @pytest.mark.parametrize('changes', [
+    {'to': 'claude-rco\u0301-1'},
+    {'to': 'claude-rco\u0308-2'},
+    {'payload': {'recipient': 'claude-rco\u0301-1'}},
+    {'payload': {'nested': {'recipient-agent': 'claude-rco\u0308-2'}}},
+    {'payload': {'nested': {'targets': ['codex-tools-1', 'claude-rco\u0301-1']}}},
+    {'payload': {'nested': [{'cc': ['fable-5', 'rco\u0308-2']}]}},
+])
+def test_raw_rco_recipient_match_survives_combining_marks(tmp_path, changes):
+    row = fixture._row('Synthetic review update.', task_id='synthetic-raw-recipient-policy',
+                       status='info', **changes)
+    projection = reader.rederive_message_projection(**fixture._all_tasks_case(reader, tmp_path, [row]))
+    assert projection['messages']['records'] == []
+
+
+@pytest.mark.parametrize('changes', [
     {'to': 'ｃｌａｕｄｅ－ｒｃｏ－１'},
     {'to': 'claude-r\u200bco-1'},
     {'payload': {'recipient': 'ｃｌａｕｄｅ－ｒｃｏ－１'}},

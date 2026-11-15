@@ -855,6 +855,8 @@ def _inputs(values):
 def _rco_recipient_name(value):
     # Normalize only to detect an excluded RCO; never authorize this spelling
     # or alter the event/ref used for provenance.
+    if _RCO_NAME.search(value) is not None:
+        return True
     text = ''.join(char for char in value if unicodedata.category(char) != 'Cf')
     text = unicodedata.normalize('NFKC', text)
     text = ''.join(char for char in text if unicodedata.category(char) != 'Cf')

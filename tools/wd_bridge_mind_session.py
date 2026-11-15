@@ -220,10 +220,14 @@ def _situation_read_pinned(path, digest, limit):
 
 def _situation_validate_output(view, inputs):
     """Check the bounded wire shape and link each observation to input bytes."""
+    task_events = inputs.get("include_task_events", False)
+    if type(task_events) is not bool:
+        raise ValueError("task_events_opt_in")
+    expected_schema = "wd.mind-situation-observations.v2" if task_events else "wd.mind-situation-observations.v1"
     lanes = {"codex-lead-1", "codex-tools-1", "claude-rco-1", "claude-rco-2", "fable-5"}
     if (type(view) is not dict or set(view) != {"schema", "authority", "scope", "as_of_utc", "source",
                                                "bundle", "lanes", "request_observations"}
-            or view["schema"] != "wd.mind-situation-observations.v1" or view["authority"] != "none"
+            or view["schema"] != expected_schema or view["authority"] != "none"
             or view["scope"] != "bounded_tail_not_current_state_or_gate"
             or view["as_of_utc"] != inputs["as_of_utc"]):
         raise ValueError("view")
@@ -301,7 +305,10 @@ def _situation_validate_output(view, inputs):
                 or item["status"] != ("OBSERVED" if age_ticks < inputs["ttl_seconds"] * 10000000 else "UNKNOWN")):
             raise ValueError("observation_age")
         if item["status"] == "OBSERVED":
-            if (item["event_type"] not in {"claim", "release", "done", "handoff", "message", "request", "wake_request"}
+            allowed_types = {"claim", "release", "done", "handoff", "message", "request", "wake_request"}
+            if task_events:
+                allowed_types.add("status")
+            if (item["event_type"] not in allowed_types
                     or item["event_type"] != event.get("type")
                     or (item["task_id"] != "UNKNOWN" and (type(item["task_id"]) is not str
                         or not re.fullmatch(r"sha256:[0-9a-f]{64}", item["task_id"])) )):
@@ -317,17 +324,22 @@ def _situation_validate_output(view, inputs):
     if type(view["lanes"]) is not dict or set(view["lanes"]) != lanes:
         raise ValueError("lanes")
     lane_fields = {"current_task", "latest_work_event", "latest_claim_event", "latest_done_event", "latest_handoff_event"}
+    if task_events:
+        lane_fields.add("latest_observed_task")
     lane_event_types = {"latest_work_event": {"claim", "release", "done", "handoff"},
                         "latest_claim_event": {"claim", "release"},
                         "latest_done_event": {"done"}, "latest_handoff_event": {"handoff"}}
     latest = {lane: {} for lane in lanes}
+    latest_task = {}
     for record in records:
         event = record["event"]
         agent, uuid, kind = event.get("agent"), event.get("agent_uuid"), event.get("type")
         if agent not in roster or type(uuid) is not str or uuid.lower() != roster[agent]:
             continue
         categories = [key for key, event_types in lane_event_types.items() if kind in event_types]
-        if not categories:
+        progress = kind == "status" and event.get("status") == "in_progress"
+        candidate = task_events and (bool(categories) or progress)
+        if not categories and not candidate:
             continue
         observed, observed_tick = ticks(event.get("ts_utc"))
         delta = as_of - observed
@@ -335,6 +347,12 @@ def _situation_validate_output(view, inputs):
                + delta.microseconds * 10 + as_of_tick - observed_tick)
         if age < 0:
             raise ValueError("future_event")
+        if candidate:
+            previous = latest_task.get(agent)
+            if previous is None or age < previous[0]:
+                latest_task[agent] = (age, record["ref"], False, event)
+            elif age == previous[0] and record["ref"] != previous[1]:
+                latest_task[agent] = (previous[0], previous[1], True, previous[3])
         for key in categories:
             previous = latest[agent].get(key)
             if previous is None or age <= previous[0]:
@@ -342,7 +360,7 @@ def _situation_validate_output(view, inputs):
     for lane_name, lane in view["lanes"].items():
         if type(lane) is not dict or set(lane) != lane_fields or lane["current_task"] != "UNKNOWN":
             raise ValueError("lane")
-        for key in lane_fields - {"current_task"}:
+        for key in lane_event_types:
             expected = latest[lane_name].get(key)
             if expected is None:
                 if lane[key] != "UNKNOWN": raise ValueError("unexpected_lane_event")
@@ -352,6 +370,22 @@ def _situation_validate_output(view, inputs):
                 observation(lane[key], set(), lane_name)
                 if refs[lane[key]["event_ref"]].get("type") not in lane_event_types[key]:
                     raise ValueError("lane_event_type")
+        if task_events:
+            selected = latest_task.get(lane_name)
+            task = selected[3].get("task_id") if selected is not None else None
+            available = (selected is not None and not selected[2]
+                         and selected[0] < inputs["ttl_seconds"] * 10000000
+                         and type(task) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", task))
+            item = lane["latest_observed_task"]
+            if not available:
+                if item != "UNKNOWN":
+                    raise ValueError("unavailable_task_observation")
+            else:
+                if (type(item) is not dict or item.get("event_ref") != selected[1]
+                        or item.get("status") != "OBSERVED" or item.get("activity") != "UNKNOWN"
+                        or item.get("declared_status") != ("in_progress" if selected[3]["type"] == "status" else "UNKNOWN")):
+                    raise ValueError("task_observation_binding")
+                observation(item, {"declared_status", "activity"}, lane_name)
     requests = view["request_observations"]
     request_fields = {"request_id", "recipients", "requested_review", "pr", "head", "resolution", "approval", "binding_valid"}
     if type(requests) is not list or len(requests) > 50:
@@ -400,14 +434,16 @@ def _situation_cli(argv):
     package or publisher trust. The caller owns source selection and timing.
     """
     try:
-        parser = _SituationArgumentParser(add_help=False)
+        parser = _SituationArgumentParser(add_help=False, allow_abbrev=False)
         for name in ("snapshot", "fleet", "pointer", "manifest"):
             parser.add_argument("--" + name, required=True)
             parser.add_argument("--" + name + "-sha256", required=True)
         parser.add_argument("--pointer-observed-utc", required=True)
         parser.add_argument("--as-of-utc", required=True)
         parser.add_argument("--ttl-seconds", required=True, type=int)
-        if any(argv.count(option) != 1 for option in parser._option_string_actions):
+        parser.add_argument("--task-events-v2", action="store_true")
+        if (any(argv.count(option) != 1 for option in parser._option_string_actions if option != "--task-events-v2")
+                or argv.count("--task-events-v2") > 1):
             raise ValueError("ambiguous_arguments")
         args = parser.parse_args(argv)
         inputs = {}
@@ -418,6 +454,8 @@ def _situation_cli(argv):
             inputs[name + "_sha256"] = digest
         inputs.update(pointer_observed_utc=args.pointer_observed_utc, as_of_utc=args.as_of_utc,
                       ttl_seconds=args.ttl_seconds)
+        if args.task_events_v2:
+            inputs["include_task_events"] = True
         from tools import wd_mind_situation_view as situation_reader
         view = situation_reader.project_situation(**inputs, allow_missing_bundle=False)
         _situation_validate_output(view, inputs)
@@ -439,14 +477,16 @@ def _situation_live_cli(argv):
     authentication remain unknown. No bridge queue or cursor is mutated.
     """
     try:
-        parser = _SituationArgumentParser(add_help=False)
+        parser = _SituationArgumentParser(add_help=False, allow_abbrev=False)
         parser.add_argument("--bridge-root", required=True)
         for name in ("fleet", "pointer", "manifest"):
             parser.add_argument("--" + name, required=True)
             parser.add_argument("--" + name + "-sha256", required=True)
         parser.add_argument("--pointer-observed-utc", required=True)
         parser.add_argument("--ttl-seconds", required=True, type=int)
-        if any(argv.count(option) != 1 for option in parser._option_string_actions):
+        parser.add_argument("--task-events-v2", action="store_true")
+        if (any(argv.count(option) != 1 for option in parser._option_string_actions if option != "--task-events-v2")
+                or argv.count("--task-events-v2") > 1):
             raise ValueError("ambiguous_arguments")
         args = parser.parse_args(argv)
         root = _situation_checked_path(args.bridge_root)
@@ -480,10 +520,13 @@ def _situation_live_cli(argv):
                       pointer_observed_utc=args.pointer_observed_utc,
                       as_of_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                       ttl_seconds=args.ttl_seconds)
+        if args.task_events_v2:
+            inputs["include_task_events"] = True
         from tools import wd_mind_situation_view as situation_reader
         view = situation_reader.project_situation(**inputs, allow_missing_bundle=False)
         _situation_validate_output(view, inputs)
-        envelope = {"schema": "wd.mind-situation-live.v1", "authority": "none",
+        envelope = {"schema": "wd.mind-situation-live.v2" if args.task_events_v2 else "wd.mind-situation-live.v1",
+                    "authority": "none",
                     "scope": "bounded_complete_records_not_current_state_or_gate",
                     "partial_final_record": stats["unconsumed_bytes"] > 0,
                     "current_state": "UNKNOWN", "continuity": "UNKNOWN", "view": view}

@@ -134,7 +134,8 @@ def _bundle(pointer, manifest_raw, manifest_pin, observed_utc, as_of_utc, ttl):
 
 def project_situation(*, snapshot_bytes, snapshot_sha256, fleet_bytes, fleet_sha256,
                       pointer_bytes, pointer_sha256, manifest_bytes, manifest_sha256,
-                      pointer_observed_utc, as_of_utc, ttl_seconds=900, allow_missing_bundle=False):
+                      pointer_observed_utc, as_of_utc, ttl_seconds=900, allow_missing_bundle=False,
+                      include_task_events=False):
     """Project observations, revalidating pins and each canonical event reference.
 
     The caller selects hashes and reads sources through its approved pinned
@@ -143,9 +144,16 @@ def project_situation(*, snapshot_bytes, snapshot_sha256, fleet_bytes, fleet_sha
     The explicit missing-bundle mode is for historical observations whose
     pointer and manifest are unavailable; it exposes no bundle assertion and
     labels the fleet-to-manifest binding UNKNOWN.
+
+    Exact opt-in adds v2's latest_observed_task: a task mentioned in a control
+    event or a status/in_progress declaration. It never asserts activity or
+    ownership. Distinct references at the latest timestamp are ambiguous; a
+    stale or invalid latest task never falls back to older evidence. Digests
+    remain correlation aids, not anonymization or sender authentication.
     """
     try:
-        if type(ttl_seconds) is not int or not 1 <= ttl_seconds <= 900 or type(allow_missing_bundle) is not bool:
+        if (type(ttl_seconds) is not int or not 1 <= ttl_seconds <= 900
+                or type(allow_missing_bundle) is not bool or type(include_task_events) is not bool):
             raise ValueError("ttl")
         _time(as_of_utc)
         roster = _roster(_json(fleet_bytes, fleet_sha256, 1024 * 1024))
@@ -180,6 +188,10 @@ def project_situation(*, snapshot_bytes, snapshot_sha256, fleet_bytes, fleet_sha
         lanes = {lane: {"current_task": UNKNOWN, "latest_work_event": UNKNOWN,
                         "latest_claim_event": UNKNOWN, "latest_done_event": UNKNOWN,
                         "latest_handoff_event": UNKNOWN} for lane in LANES}
+        task_events = {}
+        if include_task_events:
+            for lane in lanes.values():
+                lane["latest_observed_task"] = UNKNOWN
         requests = []
         for item in events:
             if type(item) is not dict or set(item) != {"ref", "event"} or type(item["event"]) is not dict:
@@ -191,9 +203,17 @@ def project_situation(*, snapshot_bytes, snapshot_sha256, fleet_bytes, fleet_sha
             if agent not in roster or type(uuid) is not str or uuid.lower() != roster[agent]:
                 continue
             kind = event.get("type")
-            if kind not in {"claim", "release", "done", "handoff", "message", "request", "wake_request"}:
+            progress = include_task_events and kind == "status" and event.get("status") == "in_progress"
+            if kind not in {"claim", "release", "done", "handoff", "message", "request", "wake_request"} and not progress:
                 continue
             obs = _event_observation(ref, event, as_of_utc, ttl_seconds)
+            if include_task_events and (progress or kind in {"claim", "release", "done", "handoff"}):
+                age = _age_ticks(as_of_utc, obs["observed_utc"])
+                old = task_events.get(agent)
+                if old is None or age < old[0]:
+                    task_events[agent] = (age, ref, dict(obs), False, progress)
+                elif age == old[0] and ref != old[1]:
+                    task_events[agent] = (old[0], old[1], old[2], True, old[4])
             if kind in {"claim", "release", "done", "handoff"}:
                 categories = ["latest_work_event"]
                 if kind in {"claim", "release"}: categories.append("latest_claim_event")
@@ -226,7 +246,12 @@ def project_situation(*, snapshot_bytes, snapshot_sha256, fleet_bytes, fleet_sha
                            head=head if obs["status"] == "OBSERVED" else UNKNOWN,
                            resolution=UNKNOWN, approval=UNKNOWN, binding_valid=UNKNOWN)
                 requests.append(obs)
-        return {"schema": "wd.mind-situation-observations.v1", "authority": "none",
+        for agent, (_, _, obs, ambiguous, progress) in task_events.items():
+            if not ambiguous and obs["status"] == "OBSERVED" and obs["task_id"] != UNKNOWN:
+                lanes[agent]["latest_observed_task"] = dict(
+                    obs, declared_status="in_progress" if progress else UNKNOWN, activity=UNKNOWN)
+        return {"schema": "wd.mind-situation-observations.v2" if include_task_events else "wd.mind-situation-observations.v1",
+                "authority": "none",
                 "scope": "bounded_tail_not_current_state_or_gate", "as_of_utc": as_of_utc,
                 "source": {"snapshot_sha256": snapshot_sha256, "fleet_sha256": fleet_sha256,
                            "coverage": "bounded_tail", "sender_authentication": UNKNOWN,

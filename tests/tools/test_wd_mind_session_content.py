@@ -165,6 +165,184 @@ def _situation_cursor(log):
     return "bc1." + base64.urlsafe_b64encode(json.dumps(data).encode()).decode().rstrip("=")
 
 
+def _progress_snapshot_cli_args(tmp_path):
+    args, _ = _situation_cli_args(tmp_path)
+    path = Path(args[args.index('--snapshot') + 1])
+    rows = json.loads(path.read_bytes())
+    progress = dict(rows[0]['event'], type='status', status='in_progress',
+                    ts_utc='2026-11-14T05:29:30Z', task_id='invented-progress-b',
+                    message='invented-private-progress-body')
+    rows.append({'ref': bridge_compact_view.event_id(progress), 'event': progress})
+    data = json.dumps(rows, sort_keys=True, separators=(',', ':')).encode()
+    path.write_bytes(data)
+    args[args.index('--snapshot-sha256') + 1] = hashlib.sha256(data).hexdigest()
+    return args, rows
+
+
+def test_situation_v2_cli_observes_new_progress_and_keeps_v1_default(tmp_path, capsys):
+    args, rows = _progress_snapshot_cli_args(tmp_path)
+    assert session.main(args) == 0
+    old = json.loads(capsys.readouterr().out)
+    assert 'latest_observed_task' not in old['lanes']['codex-lead-1']
+    assert session.main(args + ['--task-events-v2']) == 0
+    captured = capsys.readouterr()
+    assert captured.err == '' and 'invented-private-progress-body' not in captured.out
+    result = json.loads(captured.out)
+    assert result['schema'] == 'wd.mind-situation-observations.v2'
+    observed = result['lanes']['codex-lead-1']['latest_observed_task']
+    assert observed['event_ref'] == rows[1]['ref'] and observed['activity'] == 'UNKNOWN'
+
+
+def test_situation_v2_live_cli_uses_existing_reader_and_keeps_unknown_authority(tmp_path, capsys):
+    args, log, event = _situation_live_cli_args(tmp_path)
+    progress = dict(event, type='status', status='in_progress', message='invented-private-progress')
+    log.write_bytes(json.dumps(progress).encode() + b'\n')
+    before = {str(path.relative_to(tmp_path)): hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in tmp_path.rglob('*') if path.is_file()}
+    assert session.main(args + ['--task-events-v2']) == 0
+    captured = capsys.readouterr()
+    assert captured.err == '' and 'invented-private-progress' not in captured.out
+    result = json.loads(captured.out)
+    assert result['schema'] == 'wd.mind-situation-live.v2'
+    assert result['current_state'] == result['continuity'] == 'UNKNOWN'
+    observed = result['view']['lanes']['codex-lead-1']['latest_observed_task']
+    assert observed['event_ref'] == bridge_compact_view.event_id(progress)
+    after = {str(path.relative_to(tmp_path)): hashlib.sha256(path.read_bytes()).hexdigest()
+             for path in tmp_path.rglob('*') if path.is_file()}
+    assert before == after
+
+
+@pytest.mark.parametrize('fault', ['older', 'unknown', 'wrong_task', 'wrong_time', 'wrong_age',
+    'active', 'wrong_status', 'raw_body', 'current_task', 'schema'])
+def test_situation_v2_validator_rejects_unbound_or_invented_observation(tmp_path, capsys, monkeypatch, fault):
+    from tools import wd_mind_situation_view as projection
+    args, rows = _progress_snapshot_cli_args(tmp_path)
+    original = projection.project_situation
+    called = []
+    def untrusted(**kwargs):
+        called.append(True)
+        result = original(**kwargs)
+        lane = result['lanes']['codex-lead-1']
+        observed = lane['latest_observed_task']
+        if fault == 'older':
+            lane['latest_observed_task'] = dict(lane['latest_work_event'], declared_status='UNKNOWN', activity='UNKNOWN')
+        if fault == 'unknown': lane['latest_observed_task'] = 'UNKNOWN'
+        if fault == 'wrong_task': observed['task_id'] = 'sha256:' + '0' * 64
+        if fault == 'wrong_time': observed['observed_utc'] = '2026-11-14T05:29:29Z'
+        if fault == 'wrong_age': observed['age_seconds_upper_bound'] = 0
+        if fault == 'active': observed['activity'] = 'ACTIVE'
+        if fault == 'wrong_status': observed['declared_status'] = 'done'
+        if fault == 'raw_body': observed['message'] = 'invented-private-progress-body'
+        if fault == 'current_task': lane['current_task'] = observed['task_id']
+        if fault == 'schema': result['schema'] = 'wd.mind-situation-observations.v1'
+        return result
+    monkeypatch.setattr(projection, 'project_situation', untrusted)
+    assert session.main(args + ['--task-events-v2']) == 2
+    assert called == [True]
+    captured = capsys.readouterr()
+    assert captured.out == '' and json.loads(captured.err) == {'error': 'mind_session_situation_refused', 'authority': 'none'}
+
+
+@pytest.mark.parametrize('flags', [['--task-events-v2', '--task-events-v2'], ['--task-events'],
+                                 ['--task-events', '--task-events-v2']])
+@pytest.mark.parametrize('live', [False, True])
+def test_situation_v2_cli_rejects_duplicate_or_abbreviated_flag_before_read(tmp_path, capsys, monkeypatch, flags, live):
+    args = _situation_live_cli_args(tmp_path)[0] if live else _situation_cli_args(tmp_path)[0]
+    monkeypatch.setattr(session, '_situation_read_pinned', lambda *args: pytest.fail('duplicate flag read input'))
+    assert session.main(args + flags) == 2
+    assert capsys.readouterr().out == ''
+
+
+def test_situation_v2_cannot_be_selected_by_projector_without_caller_opt_in(tmp_path, capsys, monkeypatch):
+    from tools import wd_mind_situation_view as projection
+    args, _ = _progress_snapshot_cli_args(tmp_path)
+    original = projection.project_situation
+    def upgrade(**kwargs):
+        kwargs['include_task_events'] = True
+        return original(**kwargs)
+    monkeypatch.setattr(projection, 'project_situation', upgrade)
+    assert session.main(args) == 2
+    assert capsys.readouterr().out == ''
+
+
+@pytest.mark.parametrize('recipients,accepted', [(5000, True), (7000, False)])
+def test_situation_v2_serialized_64k_byte_limit(tmp_path, capsys, recipients, accepted):
+    from tools import wd_mind_situation_view as projection
+    args, rows = _progress_snapshot_cli_args(tmp_path)
+    request = dict(rows[0]['event'], type='request', request_id='invented-request',
+                   to=['fable-5'] * recipients)
+    rows.append({'ref': bridge_compact_view.event_id(request), 'event': request})
+    data = json.dumps(rows, sort_keys=True, separators=(',', ':')).encode()
+    path = Path(args[args.index('--snapshot') + 1])
+    path.write_bytes(data)
+    args[args.index('--snapshot-sha256') + 1] = hashlib.sha256(data).hexdigest()
+    source, _ = _situation_inputs()
+    source.update(snapshot_bytes=data, snapshot_sha256=hashlib.sha256(data).hexdigest())
+    result = projection.project_situation(**source, include_task_events=True)
+    serialized = json.dumps(result, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
+    assert (len(serialized) <= 65536) is accepted
+    assert session.main(args + ['--task-events-v2']) == (0 if accepted else 2)
+    captured = capsys.readouterr()
+    if accepted:
+        assert captured.err == '' and captured.out.strip().encode('ascii') == serialized
+    else:
+        assert captured.out == ''
+        assert json.loads(captured.err) == {'error': 'mind_session_situation_refused', 'authority': 'none'}
+
+
+def _v2_validator_case(events, **options):
+    from tools import wd_mind_situation_view as projection
+    source, _ = _situation_inputs()
+    data = json.dumps([{'ref': bridge_compact_view.event_id(event), 'event': event} for event in events],
+                      sort_keys=True, separators=(',', ':')).encode()
+    source.update(snapshot_bytes=data, snapshot_sha256=hashlib.sha256(data).hexdigest(), include_task_events=True)
+    source.update(options)
+    result = projection.project_situation(**source)
+    session._situation_validate_output(result, source)
+    return result, source
+
+
+@pytest.mark.parametrize('fault', ['tie_done', 'tie_release', 'invalid_newest', 'message_progress', 'newer_other_task'])
+@pytest.mark.parametrize('reverse', [False, True])
+def test_situation_v2_validator_rederives_full_candidate_set(fault, reverse):
+    source, _ = _situation_inputs()
+    claim = json.loads(source['snapshot_bytes'])[0]['event']
+    progress = dict(claim, type='status', status='in_progress', task_id='invented-progress',
+                    ts_utc='2026-11-14T05:29:30.0000001Z')
+    single, _ = _v2_validator_case([progress])
+    forged = single['lanes']['codex-lead-1']['latest_observed_task']
+    if fault in ('tie_done', 'tie_release'):
+        events = [progress, dict(progress, type=fault.removeprefix('tie_'))]
+    elif fault == 'invalid_newest':
+        events = [progress, dict(progress, ts_utc='2026-11-14T05:29:30.0000002Z', task_id=None)]
+    elif fault == 'newer_other_task':
+        events = [progress, dict(progress, ts_utc='2026-11-14T05:29:30.0000002Z', task_id='invented-other-task')]
+    else:
+        progress = dict(progress, type='message')
+        events = [claim, progress]
+        forged = dict(forged, event_ref=bridge_compact_view.event_id(progress), event_type='message')
+    result, source = _v2_validator_case(list(reversed(events)) if reverse else events)
+    result['lanes']['codex-lead-1']['latest_observed_task'] = forged
+    with pytest.raises(ValueError):
+        session._situation_validate_output(result, source)
+
+
+@pytest.mark.parametrize('time,fresh', [('2026-11-14T05:29:59.0000001Z', True), ('2026-11-14T05:29:59Z', False)])
+def test_situation_v2_validator_checks_one_tick_ttl(time, fresh):
+    source, _ = _situation_inputs()
+    event = dict(json.loads(source['snapshot_bytes'])[0]['event'], type='status', status='in_progress', ts_utc=time)
+    result, source = _v2_validator_case([event], ttl_seconds=1)
+    observed = result['lanes']['codex-lead-1']['latest_observed_task']
+    assert (isinstance(observed, dict)) is fresh
+    if fresh:
+        assert observed['age_seconds_upper_bound'] == 1
+    else:
+        valid, _ = _v2_validator_case([event], ttl_seconds=2)
+        result['lanes']['codex-lead-1']['latest_observed_task'] = valid['lanes']['codex-lead-1']['latest_observed_task']
+        with pytest.raises(ValueError):
+            session._situation_validate_output(result, source)
+
+
 def test_situation_live_uses_canonical_reader_without_raw_leak_or_file_writes(tmp_path, capsys):
     args, log, event = _situation_live_cli_args(tmp_path)
     before = {str(path.relative_to(tmp_path)): hashlib.sha256(path.read_bytes()).hexdigest()

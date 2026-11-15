@@ -245,3 +245,126 @@ def test_historical_opt_in_does_not_hide_invalid_supplied_pointer_or_manifest_pi
     args["allow_missing_bundle"] = True
     args["manifest_sha256"] = "0" * 64
     with pytest.raises(view.SituationRefused): view.project_situation(**args)
+
+
+def _v2(rows, **options):
+    import inspect
+    assert 'include_task_events' in inspect.signature(view.project_situation).parameters, 'v2 task observation seam absent'
+    args = inputs(rows)
+    args.update(options)
+    return view.project_situation(**args, include_task_events=True)
+
+
+def test_v2_progress_adds_metadata_missing_from_v1_for_all_five_lanes():
+    rows = [event(lane, 'status', task='invented-progress-' + str(number), status='in_progress',
+                  payload={'review': 'invented-private-review-body'}) for number, lane in enumerate(view.LANES)]
+    old = view.project_situation(**inputs(rows))
+    result = _v2(rows)
+    assert result['schema'] == 'wd.mind-situation-observations.v2'
+    assert old['schema'] == 'wd.mind-situation-observations.v1'
+    for number, lane in enumerate(view.LANES):
+        assert old['lanes'][lane]['latest_work_event'] == 'UNKNOWN'
+        observed = result['lanes'][lane].pop('latest_observed_task')
+        assert observed == dict(status='OBSERVED', event_ref=rows[number]['ref'],
+            observed_utc='2026-11-14T05:29:00Z', age_seconds_upper_bound=60,
+            event_type='status', task_id='sha256:' + pin(('invented-progress-' + str(number)).encode()),
+            declared_status='in_progress', activity='UNKNOWN', sender_authentication='UNKNOWN')
+        assert result['lanes'][lane]['current_task'] == 'UNKNOWN'
+    result['schema'] = old['schema']
+    assert result == old
+    assert 'invented-private-review-body' not in json.dumps(result)
+
+
+def test_v2_new_progress_task_is_not_old_claim_alias():
+    rows = [event('codex-lead-1', 'claim', task='invented-claim-a'),
+            event('codex-lead-1', 'status', time='2026-11-14T05:29:30Z', task='invented-progress-b', status='in_progress')]
+    lane = _v2(rows)['lanes']['codex-lead-1']
+    assert lane['latest_work_event']['event_ref'] == rows[0]['ref']
+    assert lane['latest_observed_task']['event_ref'] == rows[1]['ref']
+    assert lane['latest_observed_task']['task_id'] == 'sha256:' + pin(b'invented-progress-b')
+
+
+@pytest.mark.parametrize('kind', ['done', 'release', 'handoff'])
+@pytest.mark.parametrize('reverse', [False, True])
+def test_v2_newer_terminal_event_never_falls_back_to_progress(kind, reverse):
+    rows = [event('codex-lead-1', 'status', task='invented-progress-b', status='in_progress'),
+            event('codex-lead-1', kind, time='2026-11-14T05:29:30Z', task='invented-terminal-a')]
+    terminal = rows[1]['ref']
+    observed = _v2(list(reversed(rows)) if reverse else rows)['lanes']['codex-lead-1']['latest_observed_task']
+    assert observed['event_ref'] == terminal and observed['event_type'] == kind
+    assert observed['declared_status'] == observed['activity'] == 'UNKNOWN'
+
+
+@pytest.mark.parametrize('kind', ['done', 'release', 'status'])
+@pytest.mark.parametrize('reverse', [False, True])
+def test_v2_equal_time_distinct_refs_are_unknown_independent_of_order(kind, reverse):
+    rows = [event('codex-lead-1', 'status', status='in_progress'),
+            event('codex-lead-1', kind, status='in_progress', message='different invented body')]
+    assert rows[0]['ref'] != rows[1]['ref']
+    result = _v2(list(reversed(rows)) if reverse else rows)
+    assert result['lanes']['codex-lead-1']['latest_observed_task'] == 'UNKNOWN'
+
+
+def test_v2_identical_event_duplicate_is_one_observation():
+    row = event('codex-lead-1', 'status', status='in_progress')
+    assert _v2([row, row])['lanes']['codex-lead-1']['latest_observed_task']['event_ref'] == row['ref']
+
+
+def test_v2_orders_seventh_timestamp_digit():
+    rows = [event('codex-lead-1', 'status', time='2026-11-14T05:29:00.0000002Z', status='in_progress'),
+            event('codex-lead-1', 'done', time='2026-11-14T05:29:00.0000001Z')]
+    assert _v2(rows)['lanes']['codex-lead-1']['latest_observed_task']['event_ref'] == rows[0]['ref']
+
+
+@pytest.mark.parametrize('time,fresh', [('2026-11-14T05:15:00.0000001Z', True), ('2026-11-14T05:15:00Z', False)])
+def test_v2_ttl_boundary_is_strict_at_100ns(time, fresh):
+    observed = _v2([event('codex-lead-1', 'status', time=time, status='in_progress')])['lanes']['codex-lead-1']['latest_observed_task']
+    if fresh:
+        assert observed['status'] == 'OBSERVED' and observed['age_seconds_upper_bound'] == 900
+    else:
+        assert observed == 'UNKNOWN'
+
+
+@pytest.mark.parametrize('task', [None, 'invented task with spaces', 'työ', 'x' * 257])
+def test_v2_newest_invalid_task_does_not_fall_back(task):
+    rows = [event('codex-lead-1', 'claim'), event('codex-lead-1', 'status',
+        time='2026-11-14T05:29:30Z', task=task, status='in_progress', payload={'task_id': 'invented-payload-task'})]
+    assert _v2(rows)['lanes']['codex-lead-1']['latest_observed_task'] == 'UNKNOWN'
+
+
+@pytest.mark.parametrize('kind,status', [('heartbeat', 'in_progress'), ('liveness', 'in_progress'),
+    ('message', 'in_progress'), ('message', 'progress'), ('message', 'active'),
+    ('status', 'active'), ('status', 'progress'), ('status', 'review_requested'),
+    ('status', 'done'), ('status', 'IN_PROGRESS'), ('request', 'in_progress')])
+def test_v2_nonprogress_events_do_not_invent_task_observations(kind, status):
+    assert _v2([event('codex-lead-1', kind, status=status)])['lanes']['codex-lead-1']['latest_observed_task'] == 'UNKNOWN'
+
+
+def test_v2_wrong_uuid_is_ignored_and_bad_ref_or_future_refused():
+    assert _v2([event('codex-lead-1', 'status', status='in_progress', agent_uuid=UUIDS['fable-5'])])['lanes']['codex-lead-1']['latest_observed_task'] == 'UNKNOWN'
+    row = event('codex-lead-1', 'status', status='in_progress')
+    row['ref'] = '0' * 64
+    with pytest.raises(view.SituationRefused):
+        _v2([row])
+    with pytest.raises(view.SituationRefused):
+        _v2([event('codex-lead-1', 'status', status='in_progress', time='2026-11-14T05:30:00.0000001Z')])
+
+
+@pytest.mark.parametrize('flag', [None, 0, 1, 'true', [], {}])
+def test_v2_opt_in_requires_exact_boolean(flag):
+    with pytest.raises(view.SituationRefused):
+        view.project_situation(**inputs([]), include_task_events=flag)
+
+
+def test_v2_explicit_false_keeps_default_v1():
+    args = inputs([event('codex-lead-1', 'status', status='in_progress')])
+    assert view.project_situation(**args, include_task_events=False) == view.project_situation(**args)
+
+
+@pytest.mark.parametrize('time,fresh', [('2026-11-14T05:29:59.0000001Z', True), ('2026-11-14T05:29:59Z', False)])
+def test_v2_one_second_ttl_has_one_tick_boundary(time, fresh):
+    observed = _v2([event('codex-lead-1', 'status', time=time, status='in_progress')], ttl_seconds=1)['lanes']['codex-lead-1']['latest_observed_task']
+    if fresh:
+        assert observed['status'] == 'OBSERVED' and observed['age_seconds_upper_bound'] == 1
+    else:
+        assert observed == 'UNKNOWN'

@@ -438,9 +438,9 @@ def encode(payload, **kwargs):
 client.encode_supervised = encode
 import io
 policy_pin = hashlib.sha256(policy).hexdigest()
-anchor = object.__new__(runtime._TrustedManifestPolicyAnchor)  # Fixture only; production has no provider.
-anchor.bundle_root, anchor.manifest_sha256 = str(root), pin
-anchor.policy_sha256, anchor.approval_reference_sha256 = policy_pin, 'b'*64
+anchor = runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=str(root),
+    expected_manifest_sha256=pin, operator_policy_sha256=policy_pin,
+    operator_approval_reference_sha256='b'*64)  # Synthetic operator inputs only.
 control = struct.pack('>4sI', b'MCT1', len(policy)) + bytes.fromhex(pin) + bytes.fromhex('e'*64) + b'k'*32 + bytes.fromhex(policy_pin) + policy
 control_buffer = runtime._ParentControlBuffer(runtime._PrivateParentStream(io.BytesIO(control)))
 control_buffer.read_from(enabled=True)

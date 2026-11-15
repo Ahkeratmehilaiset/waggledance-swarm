@@ -666,6 +666,75 @@ raise SystemExit(child._fixed_child_main(['--mind-owner-child']))
     assert candidate['candidates'][0]['source_event_sha256'] == event_sha
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows standard-handle control pipe')
+def test_retained_parent_pair_wires_control_relay_and_two_synthetic_children(synthetic_bundle):
+    """Exercise actual parent/pipe ownership; child roles and auth are fixtures."""
+    import struct
+    bundle = synthetic_bundle['bundle']
+    policy = b'{"identifiers":[],"schema":"wd.mind-identifier-policy.v2"}'
+    policy_sha = hashlib.sha256(policy).hexdigest()
+    descriptor = canonical({'schema':'wd.mind-identifier-policy-approval.v1',
+                            'identifier_policy_sha256':policy_sha, 'approval_reference_sha256':'b'*64})
+    (bundle / 'wd-mind-identifier-policy-approval.json').write_bytes(descriptor)
+    manifest_path = bundle / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest['files'].pop('tools-bootstrap/tools/wd_mind_e5_rotating_client.py')
+    manifest['files']['wd-mind-identifier-policy-approval.json'] = hashlib.sha256(descriptor).hexdigest()
+    manifest_raw = canonical(manifest)
+    manifest_path.write_bytes(manifest_raw)
+    pin, nonce, key, lane = hashlib.sha256(manifest_raw).hexdigest(), b'n'*32, b'k'*32, b'codex-lead-1'
+    mct = struct.pack('>4sI', b'MCT1', len(policy)) + bytes.fromhex(pin) + nonce + key + bytes.fromhex(policy_sha) + policy
+    raw = b'MCP1' + bytes.fromhex(pin) + bytes.fromhex(policy_sha) + bytes.fromhex('b'*64) + bytes([len(lane)]) + lane + mct
+    script = r'''
+import io, pathlib, sys, time
+root,pin = pathlib.Path(sys.argv[1]),sys.argv[2]
+sys.path.insert(0, str(root / 'tools-bootstrap'))
+from tools import wd_mind_runtime_child as child, wd_mind_full_runtime as runtime
+owner_code = "import sys; c=sys.stdin.buffer.read(); assert c[:4]==b'MCO1'; sys.stderr.buffer.write(b'{}'); sys.stderr.buffer.close(); sys.stdout.buffer.write(b'synthetic-mex1'); sys.stdout.buffer.close()"
+consumer_code = r"""
+import ctypes,hashlib,json,sys
+k=ctypes.WinDLL('kernel32',use_last_error=True)
+k.GetStdHandle.argtypes=[ctypes.c_ulong]; k.GetStdHandle.restype=ctypes.c_void_p
+k.ReadFile.argtypes=[ctypes.c_void_p,ctypes.c_void_p,ctypes.c_ulong,ctypes.POINTER(ctypes.c_ulong),ctypes.c_void_p]; k.ReadFile.restype=ctypes.c_int
+h=k.GetStdHandle((-12)&0xffffffff); out=bytearray()
+while True:
+    b=ctypes.create_string_buffer(4096); n=ctypes.c_ulong()
+    ok=k.ReadFile(h,b,4096,ctypes.byref(n),None)
+    if not ok or not n.value: break
+    out.extend(b.raw[:n.value])
+assert out[:4]==b'MCC1' and b'MCR1' in out
+assert sys.stdin.buffer.read()==b'synthetic-mex1'
+fleet=hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest()
+result={'schema':'wd.mind-flat-verified-session.v1','authority':'none','lane':'codex-lead-1',
+ 'fleet_sha256':fleet,'sender_authentication':'UNKNOWN','index_match':'UNKNOWN','same_user_aba':'UNKNOWN',
+ 'results':[{'text':'synthetic','source_event_sha256':'a'*64,'event_time_utc_floor':'2026-01-01T00:00:00Z',
+ 'source_agent':'codex-lead-1','event_age_seconds_upper_bound':1}]}
+sys.stdout.write(json.dumps(result))
+"""
+child._require_verified_parent_spawn=lambda:None
+child._verified_parent_child_command=lambda **kw: (sys.executable,'-I','-S','-B','-c',owner_code) if kw['role']=='owner' else (sys.executable,'-I','-S','-B','-c',consumer_code,str(root/'wd-fleet.json'))
+box=runtime._ParentControlBuffer(runtime._PrivateParentStream(io.BytesIO(sys.stdin.buffer.read())),prefix_budget=133)
+box.read_from(enabled=True)
+controls=child._derive_parent_child_controls(enabled=True,control_buffer=box,expected_manifest_sha256=pin)
+pair=child.create_retained_parent_pair(enabled=True,bundle_root=str(root),expected_manifest_sha256=pin,
+    controls=controls,deadline_monotonic=time.monotonic()+20)
+token=pair.start()
+result=pair.wait(token)
+assert pair.status()['owner']['state']=='EXITED' and pair.status()['consumer']['state']=='EXITED'
+sys.stdout.buffer.write(result)
+'''
+    proc = subprocess.Popen([sys.executable, '-I', '-S', '-B', '-c', script, str(bundle), pin], cwd=bundle,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        stdout, _ = proc.communicate(input=raw, timeout=30)
+    except subprocess.TimeoutExpired:
+        pytest.fail('synthetic parent remains held after deadline; no process was killed')
+    assert proc.returncode == 0, 'synthetic parent process failed'
+    result = json.loads(stdout)
+    assert result['lane'] == 'codex-lead-1' and result['results'][0]['source_event_sha256'] == 'a'*64
+
+
 def test_single_manifest_owner_retains_failed_launch_owner(tmp_path, monkeypatch):
     """A post-reservation HOLD must stay reachable without an extra worker."""
     from tools import wd_mind_full_runtime as runtime

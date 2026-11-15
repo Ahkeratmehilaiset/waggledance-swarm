@@ -447,6 +447,210 @@ def _derive_parent_child_controls_bytes(raw, expected_manifest_sha256):
         'lane':lane, 'nonce':nonce})
 
 
+class _RetainedParentPair:
+    """Own the actual fixed child launch/pipe graph until both exits are proven."""
+    __slots__ = ('_bundle', '_manifest', '_controls', '_metadata', '_deadline', '_owner', '_consumer',
+                 '_thread', '_done', '_result', '_token', '_fds', '_streams', '_start_confirmed')
+
+    def __init__(self, bundle, manifest, controls, deadline):
+        self._bundle, self._manifest, self._controls = bundle, manifest, controls
+        self._metadata, self._deadline = controls.metadata(), deadline
+        self._owner = self._consumer = self._thread = self._result = self._token = None
+        self._done, self._fds, self._streams = threading.Event(), set(), []
+        self._start_confirmed = False
+
+    def __repr__(self): return '<PrivateMindRetainedParentPair>'
+
+    def status(self):
+        return {'state':'HOLD', 'owner':None if self._owner is None else self._owner.status(),
+                'consumer':None if self._consumer is None else self._consumer.status(),
+                'worker_active':None if self._thread is not None and not self._start_confirmed and not self._done.is_set()
+                                else self._thread is not None and self._thread.is_alive()}
+
+    def _pipe(self):
+        read_fd, write_fd = os.pipe()
+        self._fds.update((read_fd, write_fd))
+        return read_fd, write_fd
+
+    def _close_fd(self, fd):
+        os.close(fd)
+        self._fds.remove(fd)
+
+    def _write_fd(self, fd, value):
+        offset = 0
+        while offset < len(value):
+            if time.monotonic() >= self._deadline:
+                raise ValueError('deadline')
+            count = os.write(fd, memoryview(value)[offset:])
+            if type(count) is not int or not 0 < count <= len(value) - offset:
+                raise ValueError('write')
+            offset += count
+        if time.monotonic() >= self._deadline:
+            raise ValueError('deadline')
+
+    def _launch(self, role, fds):
+        launch = create_parent_child_launch(enabled=True, role=role, bundle_root=self._bundle,
+            expected_manifest_sha256=self._manifest, stdin_fd=fds[0], stdout_fd=fds[1], stderr_fd=fds[2],
+            deadline_monotonic=self._deadline)
+        if role == 'owner': self._owner = launch
+        else: self._consumer = launch
+        token = launch.start()
+        remaining = max(0, self._deadline - time.monotonic())
+        if not launch._done.wait(remaining):
+            raise ValueError('launch_timeout')
+        launch._thread.join(timeout=max(0, self._deadline - time.monotonic()))
+        launch.confirm_started(token)
+
+    def _read_result(self, fd):
+        result = bytearray()
+        while len(result) <= 16384:
+            if time.monotonic() >= self._deadline:
+                raise ValueError('deadline')
+            part = os.read(fd, min(4096, 16385 - len(result)))
+            if time.monotonic() >= self._deadline:
+                raise ValueError('deadline')
+            if not part:
+                break
+            result.extend(part)
+        if not 0 < len(result) <= 16384:
+            raise ValueError('result_size')
+        return bytes(result)
+
+    def _validated_result(self, raw, fleet_sha):
+        from tools import wd_mind_full_runtime as runtime
+        result = json.loads(raw.decode('utf-8'), object_pairs_hook=runtime.prefix._unique_object,
+                            parse_constant=runtime.reader._bad_constant)
+        expected_keys = {'schema','authority','lane','fleet_sha256','sender_authentication',
+                         'index_match','same_user_aba','results'}
+        if (type(result) is not dict or set(result) != expected_keys
+                or result['schema'] != 'wd.mind-flat-verified-session.v1' or result['authority'] != 'none'
+                or result['lane'] != self._metadata['lane'] or result['fleet_sha256'] != fleet_sha
+                or result['sender_authentication'] != 'UNKNOWN' or result['index_match'] != 'UNKNOWN'
+                or result['same_user_aba'] != 'UNKNOWN' or type(result['results']) is not list
+                or not 1 <= len(result['results']) <= 3):
+            raise ValueError('result_binding')
+        for hit in result['results']:
+            if (type(hit) is not dict or set(hit) != {'text','source_event_sha256','event_time_utc_floor',
+                    'source_agent','event_age_seconds_upper_bound'} or type(hit['text']) is not str
+                    or not _HEX.fullmatch(hit['source_event_sha256']) or type(hit['event_age_seconds_upper_bound']) is not int
+                    or not 0 <= hit['event_age_seconds_upper_bound'] < 900):
+                raise ValueError('result_hit')
+        return runtime.reader._canonical(result)
+
+    def _run_pipeline(self):
+        from tools import wd_mind_full_runtime as runtime
+        controls = runtime._bundle_inputs(Path(self._bundle), self._manifest)
+        fleet_sha = hashlib.sha256(controls[0]).hexdigest()
+        roster = json.loads(controls[1].decode('utf-8'), object_pairs_hook=runtime.prefix._unique_object)
+        lanes = {entry['agent'] for entry in roster['lanes']} | {roster['tools_supervisor']['agent']}
+        if self._metadata['lane'] not in lanes:
+            raise ValueError('lane')
+        runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=self._bundle,
+            expected_manifest_sha256=self._manifest, operator_policy_sha256=self._metadata['identifier_policy_sha256'],
+            operator_approval_reference_sha256=self._metadata['approval_reference_sha256'])
+        owner_r, owner_w = self._pipe()
+        control_r, control_w = self._pipe()
+        data_r, data_w = self._pipe()
+        candidate_r, candidate_w = self._pipe()
+        result_r, result_w = self._pipe()
+        self._launch('owner', (owner_r, data_w, candidate_w))
+        self._launch('consumer', (data_r, result_w, control_r))
+        for fd in (owner_r, data_w, candidate_w, data_r, result_w, control_r):
+            self._close_fd(fd)
+        owner_control, consumer_control = self._controls.take()
+        self._write_fd(owner_w, owner_control)
+        self._close_fd(owner_w)
+        self._write_fd(control_w, consumer_control)
+        source = os.fdopen(candidate_r, 'rb', buffering=0)
+        self._fds.remove(candidate_r)
+        self._streams.append(source)
+        destination = os.fdopen(control_w, 'wb', buffering=0)
+        self._fds.remove(control_w)
+        self._streams.append(destination)
+        relay_parent_candidates(enabled=True, source=_PrivateCandidateInput(source),
+            destination=_PrivateCandidateOutput(destination), deadline_monotonic=self._deadline)
+        source.close()
+        raw_result = self._read_result(result_r)
+        self._close_fd(result_r)
+        result = self._validated_result(raw_result, fleet_sha)
+        for launch in (self._owner, self._consumer):
+            remaining = self._deadline - time.monotonic()
+            if remaining <= 0 or launch._process.wait(timeout=remaining) != 0:
+                raise ValueError('child_exit')
+        return result
+
+    def _release_children(self):
+        for launch in (self._owner, self._consumer):
+            if launch is None:
+                continue
+            while True:
+                status = launch.status()
+                if status['state'] == 'NEW':
+                    break
+                if status['state'] == 'EXITED' and status['worker_active'] is False:
+                    try:
+                        launch.close()
+                        break
+                    except BaseException:
+                        pass
+                time.sleep(0.25)  # Unknown/running child remains retained; never kill it.
+
+    def _run(self):
+        try:
+            self._result = self._run_pipeline()
+        except BaseException:
+            self._result = None
+        finally:
+            for stream in self._streams:
+                try: stream.close()
+                except BaseException: pass
+            for fd in tuple(self._fds):
+                try: self._close_fd(fd)
+                except BaseException: pass
+            self._release_children()
+            self._done.set()
+
+    def start(self):
+        if self._thread is not None or time.monotonic() >= self._deadline:
+            raise LaunchRefused('mind_e5_start_refused') from None
+        self._token = object()
+        self._thread = threading.Thread(target=self._run, name='mind-parent-pair', daemon=False)
+        self._thread.start()
+        self._start_confirmed = True
+        return self._token
+
+    def wait(self, token):
+        if token is None or token is not self._token or not self._start_confirmed:
+            raise LaunchRefused('mind_e5_start_refused') from None
+        if not self._done.wait(max(0, self._deadline-time.monotonic())):
+            raise LaunchRefused('mind_e5_start_refused') from None
+        self._thread.join(timeout=max(0, self._deadline-time.monotonic()))
+        if self._thread.is_alive() or self._result is None or time.monotonic() >= self._deadline:
+            raise LaunchRefused('mind_e5_start_refused') from None
+        self._token = None
+        return self._result
+
+
+def create_retained_parent_pair(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
+                                controls=None, deadline_monotonic=None):
+    """Prepare an inert fixed-role parent; production control gate is closed."""
+    result = None
+    try:
+        if (enabled is not True or type(controls) is not _PrivatePairControls
+                or type(bundle_root) is not str or type(expected_manifest_sha256) is not str
+                or controls.metadata()['manifest_sha256'] != expected_manifest_sha256
+                or type(deadline_monotonic) not in (int, float) or not math.isfinite(deadline_monotonic)
+                or not time.monotonic() < deadline_monotonic <= time.monotonic() + 1800):
+            raise ValueError('input')
+        _require_verified_parent_spawn()
+        result = _RetainedParentPair(bundle_root, expected_manifest_sha256, controls, float(deadline_monotonic))
+    except Exception:
+        pass
+    if result is None:
+        raise LaunchRefused('mind_e5_start_refused') from None
+    return result
+
+
 def _wait_for_owner_close(owner):
     """Keep this child alive while its owned worker cannot be closed safely."""
     while True:

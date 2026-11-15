@@ -84,6 +84,17 @@ wrapper = runtime.create_single_manifest_owner(enabled=True, binding=binding, la
 assert wrapper.start() == {'state':'READY','owned':True,'authority':'none'}
 assert type(wrapper._adapter) is adapter._SingleFlatAdapter and wrapper._client is client
 assert wrapper._handler._memory is not None and wrapper._handler._memory.binding is binding
+prepared = wrapper.prepare_consumer_export(enabled=True, expected_nonce='e'*64, max_total_bytes=10000000)
+info = prepared.status()
+assert info['state'] == 'PREPARED_LOCAL_ONLY' and info['authority'] == 'none'
+assert info['receiver_authentication'] == 'UNKNOWN' and info['transmission'] == 'NOT_AVAILABLE'
+assert info['block_count'] == 12 and info['total_bytes'] > 0
+assert binding._PrivateBinding__snapshot['identifier_policy_binding'][1].hex() not in repr(prepared)
+try:
+    prepared.write_to_handle(None)
+    raise AssertionError('unverified export must refuse')
+except runtime.FullRuntimeRefused:
+    pass
 response = wrapper.candidates({'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',
     'nonce':'d'*64,'lane':'codex-lead-1','scope':'own'})
 assert response['status'] == 'CANDIDATES' and len(response['candidates']) == 1, repr(response)

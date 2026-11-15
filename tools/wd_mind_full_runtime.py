@@ -999,6 +999,33 @@ class _FlatLaneView:
         return self.__handler._handle_for_lane(request, self.__lane)
 
 
+class _PrivateConsumerExport:
+    """Opaque in-process preparation only; live handle export is unavailable."""
+    __slots__ = ('__metadata', '__blocks', '__total', '__active')
+
+    def __init__(self, metadata, blocks, total):
+        self.__metadata, self.__blocks, self.__total = metadata, blocks, total
+        self.__active = True
+
+    def __repr__(self):
+        return '<PrivateMindConsumerExport>'
+
+    def status(self):
+        return {'schema': 'wd.mind-owner-export-status.v1',
+                'state': 'PREPARED_LOCAL_ONLY' if self.__active else 'DISCARDED',
+                'authority': 'none', 'receiver_authentication': 'UNKNOWN',
+                'transmission': 'NOT_AVAILABLE', 'block_count': len(self.__blocks),
+                'total_bytes': self.__total if self.__active else 0}
+
+    def discard(self):
+        # Python immutable bytes cannot be promised to be securely erased.
+        self.__metadata, self.__blocks, self.__total, self.__active = b'', (), 0, False
+
+    def write_to_handle(self, handle):
+        # No receiver provenance has yet been proved for any inherited handle.
+        raise FullRuntimeRefused('mind_full_runtime_refused') from None
+
+
 class _SingleManifestOwner:
     """Own one graceful worker and an optional in-process flat handler.
 
@@ -1159,6 +1186,70 @@ class _SingleManifestOwner:
             return self._status()
         finally:
             self._lock.release()
+
+    def prepare_consumer_export(self, *, enabled=False, expected_nonce=None, max_total_bytes=None):
+        """Prepare pinned snapshot/flat data in memory; never transfer it.
+
+        The caller-provided nonce is correlation data, not receiver authority.
+        A trusted, separately inherited channel is required before any export.
+        """
+        if not self._lock.acquire(blocking=False):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        result = None
+        try:
+            if (enabled is not True or self._state != 'READY' or self._handler is None
+                    or type(expected_nonce) is not str or not reader._hex(expected_nonce)
+                    or type(max_total_bytes) is not int or not 0 < max_total_bytes < 2**63):
+                raise ValueError('export_input')
+            self._check_factory()
+            self._handler._running_owner()
+            memory = self._handler._memory
+            _flat_check(memory)
+            snapshot = self._binding.snapshot_for_query()
+            if memory.binding is not self._binding or memory.snapshot != snapshot:
+                raise ValueError('export_snapshot')
+            messages = snapshot['messages']
+            identifier, key, tag = snapshot['identifier_policy_binding']
+            cursor = messages['end_cursor']
+            if (type(identifier) is not bytes or type(key) is not bytes or len(key) != 32
+                    or type(tag) is not str or not reader._hex(tag)
+                    or not hmac.compare_digest(hmac.new(key, identifier, hashlib.sha256).hexdigest(), tag)
+                    or type(cursor) is not bridge.BridgeCursor or type(cursor.offset) is not int
+                    or cursor.offset < 0 or type(cursor.file_identity) is not str
+                    or (cursor.generation is not None and type(cursor.generation) is not str)
+                    or type(messages['source_path']) is not str or type(messages['generation_path']) is not str):
+                raise ValueError('export_binding')
+            blocks = (('message_policy', messages['policy_bytes']), ('decision', snapshot['decision_bytes']),
+                ('nonreview_policy', snapshot['policy_bytes']), ('roster', snapshot['roster_bytes']),
+                ('task_scope', snapshot['approved_tasks_bytes']), ('identifier_policy', identifier),
+                ('identifier_key', key), ('projection', snapshot['projection_bytes']),
+                ('flat_manifest', memory.manifest), ('ids', reader._canonical(list(memory.ids))),
+                ('vectors', memory.vectors), ('encoder_binding', memory.encoder_binding))
+            if any(type(value) is not bytes for _, value in blocks):
+                raise ValueError('export_blocks')
+            metadata = reader._canonical({'schema':'wd.mind-owner-export.v1', 'authority':'none',
+                'nonce':expected_nonce, 'source_path':messages['source_path'],
+                'generation_path':messages['generation_path'], 'cursor':{'offset':cursor.offset,
+                    'file_identity':cursor.file_identity, 'generation':cursor.generation},
+                'identifier_policy_tag':tag,
+                'blocks':[{'name':name,'length':len(value)} for name, value in blocks]})
+            total = len(metadata) + sum(len(value) for _, value in blocks)
+            if total > max_total_bytes:
+                raise ValueError('export_size')
+            _flat_check(memory)
+            self._check_factory()
+            self._handler._running_owner()
+            result = _PrivateConsumerExport(metadata, blocks, total)
+        except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+            self._state = 'HOLD'
+            raise
+        except Exception:
+            pass
+        finally:
+            self._lock.release()
+        if result is None:
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        return result
 
     def candidates(self, request):
         if not self._lock.acquire(blocking=False):

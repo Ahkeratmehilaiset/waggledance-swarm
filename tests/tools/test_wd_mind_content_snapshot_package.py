@@ -5,6 +5,7 @@ import hashlib
 import json
 import struct
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,219 @@ from tools import wd_mind_content_query_readonly as reader
 ROOT = Path(__file__).resolve().parents[2]
 CAPACITY_PROFILE = "bounded_v3_capacity_v1"
 FULL_PREFIX_PROFILE = "full_prefix_stream_v1"
+
+
+def test_immutable_build_profile_is_explicit_and_verifies_initial_and_final_source(package, fixtures, tmp_path, monkeypatch):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    calls = []
+    original = reader._verified_complete
+
+    def observed(snapshot):
+        calls.append(True)
+        return original(snapshot)
+
+    monkeypatch.setattr(reader, '_verified_complete', observed)
+    output = package.package_content_snapshot(**_arguments(case, codec, FULL_PREFIX_PROFILE),
+        source_verification='verified_immutable_snapshot_v1')
+    assert json.loads(output['memory_bytes'])['records'] > 0
+    assert len(calls) == 2
+
+
+def test_immutable_build_refuses_permanent_source_change_after_callback(package, fixtures, tmp_path):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    original = codec.passage
+    source = Path(case['messages']['source_path'])
+
+    def mutate(batch):
+        value = original(batch)
+        raw = source.read_bytes()
+        source.write_bytes(raw[:-2] + b'X\n')
+        return value
+
+    args['passage_encoder'] = mutate
+    with pytest.raises(package.SnapshotPackageRefused):
+        package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+
+
+@pytest.mark.parametrize('damage', ['truncate', 'replace', 'generation', 'manifest', 'enabled'])
+def test_immutable_build_refuses_callback_tampering(package, fixtures, tmp_path, damage):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    source = Path(case['messages']['source_path'])
+    original = codec.passage
+
+    def mutate(batch):
+        value = original(batch)
+        if damage == 'truncate':
+            source.write_bytes(source.read_bytes()[:-1])
+        elif damage == 'replace':
+            replacement = tmp_path / 'replacement'
+            replacement.write_bytes(source.read_bytes())
+            replacement.replace(source)
+        elif damage == 'generation':
+            Path(case['messages']['generation_path']).write_bytes(b'{"generation":"changed"}')
+        elif damage == 'manifest':
+            args['snapshot']['projection_sha256'] = '0' * 64
+        else:
+            args['snapshot']['enabled'] = 1  # 1 == True; exact-type check must still reject.
+        return value
+
+    args['passage_encoder'] = mutate
+    with pytest.raises(package.SnapshotPackageRefused):
+        package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+
+
+def test_immutable_build_watcher_failure_during_callback_refuses_and_joins(package, fixtures, tmp_path, monkeypatch):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    observed = threading.Event()
+    verifier = reader._verified_complete
+
+    def verify(snapshot):
+        if threading.current_thread().name == 'mind-source-verifier':
+            observed.set()
+            raise RuntimeError('synthetic watcher failure')
+        return verifier(snapshot)
+
+    def block_until_watched(batch):
+        assert observed.wait(10)
+        return codec.passage(batch)
+
+    monkeypatch.setattr(package, '_WATCH_INTERVAL_SECONDS', 0.01)
+    monkeypatch.setattr(reader, '_verified_complete', verify)
+    args['passage_encoder'] = block_until_watched
+    with pytest.raises(package.SnapshotPackageRefused):
+        package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+    assert not any(t.name == 'mind-source-verifier' for t in threading.enumerate())
+
+
+def test_immutable_build_watcher_detects_source_mutation_during_callback(package, fixtures, tmp_path, monkeypatch):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    source = Path(case['messages']['source_path'])
+    failed = threading.Event()
+    verify = reader._verified_complete
+
+    def observed(snapshot):
+        try:
+            return verify(snapshot)
+        except Exception:
+            if threading.current_thread().name == 'mind-source-verifier':
+                failed.set()
+            raise
+
+    def mutate_and_wait(batch):
+        source.write_bytes(source.read_bytes()[:-1])
+        assert failed.wait(10)
+        return codec.passage(batch)
+
+    monkeypatch.setattr(package, '_WATCH_INTERVAL_SECONDS', 0.01)
+    monkeypatch.setattr(reader, '_verified_complete', observed)
+    args['passage_encoder'] = mutate_and_wait
+    with pytest.raises(package.SnapshotPackageRefused):
+        package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+    assert not any(t.name == 'mind-source-verifier' for t in threading.enumerate())
+
+
+def test_immutable_build_callback_error_joins_watcher(package, fixtures, tmp_path):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    args = _arguments(case, Codec(fixtures), FULL_PREFIX_PROFILE)
+    def broken(_):
+        raise RuntimeError('synthetic callback error')
+    args['passage_encoder'] = broken
+    with pytest.raises(package.SnapshotPackageRefused):
+        package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+    assert not any(t.name == 'mind-source-verifier' for t in threading.enumerate())
+
+
+def test_immutable_build_accepted_transient_aba_is_not_claimed_detected(package, fixtures, tmp_path, monkeypatch):
+    # Operator accepted a transient in-place mutation that is restored between
+    # the full scans may go unnoticed. This test exhibits that exact limit.
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    source = Path(case['messages']['source_path'])
+    def transient(batch):
+        raw = source.read_bytes()
+        source.write_bytes(raw[:-2] + b'X\n')
+        source.write_bytes(raw)
+        return codec.passage(batch)
+    monkeypatch.setattr(package, '_WATCH_INTERVAL_SECONDS', 60)
+    args['passage_encoder'] = transient
+    result = package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+    assert json.loads(result['memory_bytes'])['records'] > 0
+    assert not any(t.name == 'mind-source-verifier' for t in threading.enumerate())
+
+
+@pytest.mark.parametrize('mode', ['initial', 'final'])
+def test_immutable_build_endpoint_verification_fails_closed(package, fixtures, tmp_path, monkeypatch, mode):
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    verifier, count = reader._verified_complete, [0]
+    def verify(snapshot):
+        count[0] += 1
+        if count[0] == (1 if mode == 'initial' else 2):
+            raise ValueError('synthetic endpoint failure')
+        return verifier(snapshot)
+    monkeypatch.setattr(package, '_WATCH_INTERVAL_SECONDS', 60)
+    monkeypatch.setattr(reader, '_verified_complete', verify)
+    with pytest.raises(package.SnapshotPackageRefused):
+        package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+    assert not any(t.name == 'mind-source-verifier' for t in threading.enumerate())
+
+
+def test_immutable_build_generationless_sidecar_and_presence(package, fixtures, tmp_path):
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    case = fixtures._semantic_case(reader, tmp_path, all_tasks=True)
+    cursor = case['messages']['end_cursor']
+    case['messages']['end_cursor'] = BridgeCursor(cursor.offset, cursor.file_identity, None)
+    Path(case['messages']['generation_path']).unlink()
+    sidecar = Path(case['messages']['source_path']).with_name('events.generation.json')
+    case['messages']['generation_path'] = str(sidecar)
+    decision = json.loads(case['decision_bytes'])
+    decision['source_prefix']['generation'] = None
+    case['decision_bytes'] = fixtures._raw(decision)
+    case['decision_sha256'] = reader._sha(case['decision_bytes'])
+    source = {key: case[key] for key in reader._INPUT_KEYS}
+    case.update(fixtures._snapshot(source, reader.rederive_complete_message_projection(**source)))
+    codec = Codec(fixtures)
+    args = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    assert json.loads(package.package_content_snapshot(**args,
+        source_verification='verified_immutable_snapshot_v1')['memory_bytes'])['records'] > 0
+    def sidecar_appears(batch):
+        sidecar.write_bytes(b'{"generation":"synthetic"}')
+        return codec.passage(batch)
+    args['passage_encoder'] = sidecar_appears
+    with pytest.raises(package.SnapshotPackageRefused):
+        package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+
+
+def test_immutable_build_explicit_opt_in_preserves_strict_default_and_output(package, fixtures, tmp_path, monkeypatch):
+    case = _chunk_case(fixtures, tmp_path, 33)
+    codec = ChunkCodec(fixtures)
+    args = _arguments(case, codec, FULL_PREFIX_PROFILE)
+    verify, calls = reader._verified_complete, []
+    def observed(snapshot):
+        calls.append(True)
+        return verify(snapshot)
+    monkeypatch.setattr(package, '_WATCH_INTERVAL_SECONDS', 60)
+    monkeypatch.setattr(reader, '_verified_complete', observed)
+    strict = package.package_content_snapshot(**args)
+    assert len(calls) > 2
+    calls.clear()
+    optimized = package.package_content_snapshot(**args, source_verification='verified_immutable_snapshot_v1')
+    assert len(calls) == 2
+    assert strict == optimized
+    for invalid in ('unknown', False, True, 1):
+        with pytest.raises(package.SnapshotPackageRefused):
+            package.package_content_snapshot(**args, source_verification=invalid)
 
 
 def test_full_decoder_retains_canonical_float32_and_legacy_preserves_float64():

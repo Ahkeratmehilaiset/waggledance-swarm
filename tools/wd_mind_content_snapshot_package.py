@@ -40,7 +40,11 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
+import os
 import struct
+import threading
+from pathlib import Path
 
 from tools import wd_mind_content_query_readonly as reader
 
@@ -52,6 +56,7 @@ MAX_TEXT_BYTES = 512 * 1024
 MAX_ARTIFACT_BYTES = 2 * 1024 * 1024
 MAX_PACKAGE_BYTES = 8 * 1024 * 1024
 PASSAGE_BATCH = 16
+_WATCH_INTERVAL_SECONDS = 1.0
 _ROW = struct.Struct("<384f")
 
 
@@ -114,6 +119,83 @@ def _unchanged(original, frozen, report, *, complete=False):
     _, _, checked = (reader._verified_complete(frozen) if complete else reader._verified(frozen))
     if checked != report:
         raise ValueError("source_changed")
+
+
+def _immutable_prefix(context):
+    """Capture bytes from the same identity and SHA anchor as complete verification."""
+    messages, anchor = context["messages"], context["decision"]["source_prefix"]
+    cursor = messages["end_cursor"]
+    source, sidecar = Path(messages["source_path"]), Path(messages["generation_path"])
+    bridge = reader._pinned_dependency("waggledance.core.bridge_log_reader",
+        "waggledance/core/bridge_log_reader.py", ("_open_log", "_file_identity", "_read_generation"))
+    if cursor.generation is None:
+        absent = reader._pinned_dependency("tools.wd_mind_absent_generation_prefix_readonly",
+            "tools/wd_mind_absent_generation_prefix_readonly.py", ("_plain", "_sidecar_absent"))
+        if sidecar != source.with_name("events.generation.json"):
+            raise ValueError("generation_path_mismatch")
+
+        def fence():
+            absent._plain(source, directory=False)
+            absent._sidecar_absent(sidecar)
+    else:
+        def fence():
+            if bridge._read_generation(sidecar) != cursor.generation:
+                raise ValueError("generation_changed")
+
+    fence()
+    with bridge._open_log(source) as stream:
+        size = os.fstat(stream.fileno()).st_size
+        if bridge._file_identity(stream) != cursor.file_identity or size < cursor.offset:
+            raise ValueError("source_changed")
+        parts, remaining = [], cursor.offset
+        while remaining:
+            part = stream.read(min(1024 * 1024, remaining))
+            if not part:
+                raise ValueError("source_truncated")
+            parts.append(part)
+            remaining -= len(part)
+        raw = b"".join(parts)
+        if (raw[-1:] != b"\n" or not reader.hmac.compare_digest(reader._sha(raw), anchor["sha256"])
+                or bridge._file_identity(stream) != cursor.file_identity
+                or os.fstat(stream.fileno()).st_size < size):
+            raise ValueError("source_changed")
+        fence()
+        with bridge._open_log(source) as current:
+            if bridge._file_identity(current) != cursor.file_identity or os.fstat(current.fileno()).st_size < size:
+                raise ValueError("source_replaced")
+        fence()
+    return raw
+
+
+class _SourceWatcher:
+    """Own and join one background verifier; failure always invalidates output."""
+    def __init__(self):
+        self.stop_event = threading.Event()
+        self.failed = threading.Event()
+        self.thread = None
+
+    def start(self, frozen, report):
+        def run():
+            try:
+                while not self.stop_event.wait(_WATCH_INTERVAL_SECONDS):
+                    _, _, observed = reader._verified_complete(frozen)
+                    if observed != report:
+                        raise ValueError("source_changed")
+            except BaseException:
+                self.failed.set()
+        self.thread = threading.Thread(target=run, name="mind-source-verifier", daemon=False)
+        self.thread.start()
+
+    def check(self):
+        if self.failed.is_set() or self.thread is None or not self.thread.is_alive():
+            raise ValueError("source_watcher_failed")
+
+    def stop(self):
+        self.stop_event.set()
+        if self.thread is not None:
+            self.thread.join()
+        if self.failed.is_set():
+            raise ValueError("source_watcher_failed")
 
 
 def _full_prefix_encode_batches(records, passage_encoder, checkpoint, stage):
@@ -278,7 +360,22 @@ def _cell(records, cell_id, vector_rows, identity, projection_sha, cutoff, seria
 
 
 def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder_binding_bytes,
-             encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity=None):
+             encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity=None,
+             source_verification=None):
+    if source_verification is not None and (source_verification != "verified_immutable_snapshot_v1"
+            or type(source_verification) is not str or capacity != {"streamed": True}):
+        raise ValueError("invalid_source_verification")
+    watcher = _SourceWatcher() if source_verification is not None else None
+    try:
+        return _package_inner(snapshot, passage_encoder, index_serializer, index_decoder, encoder_binding_bytes,
+            encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity, watcher)
+    finally:
+        if watcher is not None:
+            watcher.stop()
+
+
+def _package_inner(snapshot, passage_encoder, index_serializer, index_decoder, encoder_binding_bytes,
+                   encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity, watcher):
     full = capacity is not None and capacity.get("streamed") is True
     frozen = _snapshot(snapshot, capacity)
     encoder_binding = reader._pinned(encoder_binding_bytes, encoder_binding_sha256)
@@ -287,7 +384,17 @@ def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder
     if any(isinstance(callback, type) or not callable(callback)
            for callback in (passage_encoder, index_serializer, index_decoder)):
         raise ValueError("invalid_callback")
-    projection, _, report = (reader._verified_complete(frozen) if full else reader._verified(frozen))
+    projection, context, report = (reader._verified_complete(frozen) if full else reader._verified(frozen))
+    if watcher is not None:
+        # The immutable raw prefix and the reader-derived projection are linked
+        # by the same pinned SHA-256 and cursor. Only screened projection bytes
+        # are parsed and provided to the callbacks; raw source never leaves here.
+        immutable_prefix = _immutable_prefix(context)
+        projection = json.loads(frozen["projection_bytes"].decode("utf-8"),
+                                object_pairs_hook=reader._unique_pairs, parse_constant=reader._bad_constant)
+        if reader._serialized(projection) != frozen["projection_bytes"]:
+            raise ValueError("projection_changed")
+        watcher.start(frozen, report)
     records = projection["messages"]["records"]
     if (projection["schema"] != reader._ALL_TASK_COMBINED_SCHEMA
             or not records or (not full and len(records) > _cap(capacity, "records", MAX_RECORDS))
@@ -306,7 +413,19 @@ def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder
         # these source-verified records. Allocation remains subject to the OS.
         capacity = {"records": len(records), "text": text_size,
                     "artifact": None, "package": None, "index_overhead": 65536, "control": 65536}
-    checkpoint = lambda: _unchanged(snapshot, frozen, report, complete=full)
+    if watcher is None:
+        checkpoint = lambda: _unchanged(snapshot, frozen, report, complete=full)
+    else:
+        def checkpoint():
+            watcher.check()
+            if snapshot != frozen:
+                raise ValueError("snapshot_changed")
+            controls = dict(snapshot)
+            controls.pop("projection_bytes")
+            controls.pop("projection_sha256")
+            reader._inputs(controls, complete_source=True)
+            reader._q4_bindings(reader._pinned(encoder_binding_bytes, encoder_binding_sha256),
+                                reader._pinned(index_binding_bytes, index_binding_sha256))
     base_bytes = len(frozen["projection_bytes"]) + len(encoder_binding_bytes) + len(index_binding_bytes)
     prepared = (_capacity_preflight(cells, len(records), base_bytes, capacity)
                 if capacity is not None else {})
@@ -394,12 +513,19 @@ def _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder
             allow_bounded_v3=True)
         reader._q4_decode_cells_bounded_v3(captured, provider, record_map)
     checkpoint()
+    if watcher is not None:
+        watcher.stop()
+        _unchanged(snapshot, frozen, report, complete=True)
+        if (reader._sha(immutable_prefix) != report["source_prefix"]["sha256"]
+                or reader._serialized(projection) != frozen["projection_bytes"]):
+            raise ValueError("immutable_snapshot_changed")
     return output
 
 
 def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=None, index_serializer=None,
                              index_decoder=None, encoder_binding_bytes=None, encoder_binding_sha256=None,
-                             index_binding_bytes=None, index_binding_sha256=None, capacity_profile=None):
+                             index_binding_bytes=None, index_binding_sha256=None, capacity_profile=None,
+                             source_verification=None):
     """Return detached v3 query artifact arguments or a fixed refusal.
 
     Only ``enabled is True`` opts in. Snapshot paths remain caller-supplied and
@@ -412,6 +538,12 @@ def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=No
     v3 capacity profile expands only finite capacity, never the B16 passage or
     source-checkpoint protocol. Its index allowance is float32 rows plus 64 KiB;
     a serializer exceeding that allowance refuses without a fallback.
+    ``source_verification="verified_immutable_snapshot_v1"`` is opt-in and
+    valid only with the full-prefix profile. It validates the complete source
+    at both endpoints and periodically in an owned background thread; batches
+    use the immutable, SHA-bound screened projection. Changes restored between
+    scans may go unnoticed. This is not continuous source authentication, a
+    live index publisher, or a guarantee about what happens after return.
     """
     output = None
     succeeded = False
@@ -420,7 +552,8 @@ def package_content_snapshot(*, enabled=False, snapshot=None, passage_encoder=No
             raise ValueError("disabled")
         capacity = _capacity(capacity_profile)
         output = _package(snapshot, passage_encoder, index_serializer, index_decoder, encoder_binding_bytes,
-                          encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity)
+                          encoder_binding_sha256, index_binding_bytes, index_binding_sha256, capacity,
+                          source_verification)
         succeeded = True
     except Exception:
         pass

@@ -1103,3 +1103,29 @@ def test_source_gate_factory_refusal_scrubs_callback_from_traceback():
     trace = traceback.TracebackException.from_exception(raised.value, capture_locals=True)
     frames = [frame for frame in trace.stack if frame.name == 'create_retained_source_gate_call']
     assert frames and all(fake_secret not in value for frame in frames for value in (frame.locals or {}).values())
+
+
+@pytest.mark.parametrize('signal_name', ['keyboard','cancelled','generator'])
+def test_source_gate_worker_propagates_only_sanitized_builtin_cancellation(signal_name):
+    import asyncio, traceback
+    base = {'keyboard':KeyboardInterrupt, 'cancelled':asyncio.CancelledError, 'generator':GeneratorExit}[signal_name]
+    fake_secret = b'synthetic-worker-only-secret'
+    class UntrustedSignal(base):
+        def __setattr__(self, name, value):
+            if name in ('__traceback__','__context__','__cause__'):
+                raise RuntimeError('synthetic private failure')
+            return super().__setattr__(name, value)
+    event = UntrustedSignal(fake_secret)
+    def gate():
+        private = fake_secret
+        raise event
+    holder = child.create_retained_source_gate_call(enabled=True, callback=gate,
+                                                     deadline_monotonic=time.monotonic()+2)
+    holder.start()
+    with pytest.raises(base) as raised: holder.wait()
+    assert type(raised.value) is base and raised.value.args == () and raised.value.__context__ is None
+    trace = traceback.TracebackException.from_exception(raised.value, capture_locals=True)
+    frames = [frame for frame in trace.stack if frame.name != 'test_source_gate_worker_propagates_only_sanitized_builtin_cancellation']
+    assert all(repr(fake_secret) not in value for frame in frames for value in (frame.locals or {}).values())
+    assert holder.status() == {'state':'HOLD','worker_active':False}
+    holder.close()

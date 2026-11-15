@@ -337,12 +337,12 @@ def create_cancelable_pipe_reader(*, enabled=False, handle=None, deadline_monoto
 class _RetainedSourceGateCall:
     """Retain one decoder/source-gate worker through timeout or uncertainty."""
     __slots__ = ('_callback', '_deadline', '_lock', '_result_lock', '_done', '_thread',
-                 '_start_confirmed', '_abandoned', '_result', '_state')
+                 '_start_confirmed', '_abandoned', '_result', '_signal_type', '_state')
 
     def __init__(self, callback, deadline):
         self._callback, self._deadline = callback, deadline
         self._lock, self._result_lock, self._done = threading.Lock(), threading.Lock(), threading.Event()
-        self._thread, self._result = None, None
+        self._thread, self._result, self._signal_type = None, None, None
         self._start_confirmed, self._abandoned, self._state = False, False, 'NEW'
 
     def __repr__(self):
@@ -360,14 +360,21 @@ class _RetainedSourceGateCall:
 
     def _run(self):
         value = None
+        signal_type = None
         try:
             value = self._callback()
+        except KeyboardInterrupt:
+            signal_type = KeyboardInterrupt
+        except GeneratorExit:
+            signal_type = GeneratorExit
+        except asyncio.CancelledError:
+            signal_type = asyncio.CancelledError
         except BaseException:
             pass
         finally:
             with self._result_lock:
                 if not self._abandoned:
-                    self._result = value
+                    self._result, self._signal_type = value, signal_type
             value = None
             self._done.set()
 
@@ -406,9 +413,15 @@ class _RetainedSourceGateCall:
             if self._state != 'STARTING' or not self._done.wait(max(0, self._deadline-time.monotonic())):
                 raise ValueError('source_gate_deadline')
             self._thread.join(timeout=max(0, self._deadline-time.monotonic()))
-            if self._thread.is_alive() or time.monotonic() >= self._deadline or self._result is None:
+            if self._thread.is_alive() or time.monotonic() >= self._deadline:
                 raise ValueError('source_gate_incomplete')
-            result, self._result, self._state = self._result, None, 'SUCCEEDED'
+            if self._signal_type is not None:
+                cancelled_type = self._signal_type
+                self._abandon()
+            elif self._result is None:
+                raise ValueError('source_gate_incomplete')
+            else:
+                result, self._result, self._state = self._result, None, 'SUCCEEDED'
         except KeyboardInterrupt:
             self._abandon(); cancelled_type = KeyboardInterrupt
         except GeneratorExit:

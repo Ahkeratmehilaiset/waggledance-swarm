@@ -60,6 +60,61 @@ QUERY_TIME = "2026-01-01T00:02:00Z"
 REVIEW_TEXT = "RCO review found a bounded parser issue and the fix is ready"
 
 
+@pytest.mark.parametrize("message", [
+    "pipeline counts 1 2 3 4 5 complete",
+    "test cases 12-34-56 complete",
+    "versions 12 34 56 passed",
+])
+def test_short_numeric_groups_are_not_phone_numbers(reader, message):
+    policy = reader.IdentifierPolicy([])
+    assert reader._classify_with_policy(message, 4096, policy)[0] == "KEEP"
+
+
+@pytest.mark.parametrize("message", [
+    "task synthetic-build-20261214-0357 ready",
+    "task synthetic_build_20261214_0357 ready",
+    "CI run 43634001549 completed",
+])
+def test_numeric_identifiers_are_not_phone_numbers(reader, message):
+    policy = reader.IdentifierPolicy([])
+    assert reader._classify_with_policy(message, 4096, policy)[0] == "KEEP"
+
+
+@pytest.mark.parametrize("message", [
+    "contact +358 40 123 4567",
+    "contact 040 123 4567",
+    "contact 0401234567",
+    "contact 123-4567",
+    "phone-123456",
+    "CI run 43634001549 phone: 123456",
+    "phone-number-041-234-5678",
+    "phone_number_0412345678",
+    "puhelinnumero-041-234-5678",
+    "mobile-041-234-5678",
+    "contact-041-234-5678",
+    "taskphone-number-041-234-5678",
+    "task_idphone-number-041-234-5678",
+    "branchmobile-041-234-5678",
+    "Task task-041-234-5678",
+    "Phone: task phone-number-041-234-5678",
+    "CI run 0412345678",
+    "Phone: task contact-202-555-0142",
+    "CI run 2025550142",
+    "contact +12-34-56",
+    "phone: 12-34-56",
+    "tel=12 34 56",
+    "telephone is 123456",
+    "puhelin 12 34 56",
+    "contact fixture@example.invalid",
+    "account FI21 1234 5600 0007 85",
+    "personal identity 131052-308T",
+    "password=syntheticfixturevalue",
+])
+def test_numeric_group_fix_preserves_structured_identifier_screening(reader, message):
+    policy = reader.IdentifierPolicy([])
+    assert reader._classify_with_policy(message, 4096, policy)[0] == "DROP"
+
+
 def _raw(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True,
                       separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -308,6 +363,228 @@ def _refused(reader, operation):
         operation()
     # Nothing from source messages, paths, query or private policy is echoed.
     assert str(caught.value) == "content_query_refused"
+
+
+def _all_tasks_case(reader, tmp_path, rows):
+    case = _case(reader, tmp_path, rows)
+    scope = _raw({"schema": "wd.mind-task-scope.v1", "mode": "all_tasks"})
+    policy = _raw({"schema": "wd.q4-non-review-policy.v2", "task_scope": "all_tasks"})
+    message_policy = json.loads(case["messages"]["policy_bytes"])
+    message_policy.pop("approved_tasks")
+    message_policy.update(schema="wd.mind-content-policy.v3", task_scope="all_tasks")
+    message_policy = _raw(message_policy)
+    case.update(approved_tasks_bytes=scope, approved_tasks_sha256=_sha(scope),
+                policy_bytes=policy, policy_sha256=_sha(policy))
+    case["messages"].update(policy_bytes=message_policy, policy_sha256=_sha(message_policy))
+    _edit_decision(case, schema="wd.mind-content-route-decision.v3",
+        projection_schema="wd.mind-content-memory-projection.v3",
+        message_projection_schema="wd.bridge-mind-content-projection.v3",
+        scope="wd.mind-all-task-projected-events.v1",
+        approved_tasks_sha256=_sha(scope), nonreview_policy_sha256=_sha(policy),
+        message_policy_sha256=_sha(message_policy))
+    return case
+
+
+def _synthetic_identifier_binding(case, document, *, key=None, decision_tag=None):
+    raw = _raw(document)
+    key = b'synthetic-only-hmac-key-0123456789abcdef' if key is None else key
+    tag = hmac.new(key, raw, hashlib.sha256).hexdigest()
+    case['identifier_policy_binding'] = (raw, key, tag)
+    _edit_decision(case, identifier_policy_hmac=tag if decision_tag is None else decision_tag)
+
+
+def test_complete_all_tasks_accepts_bound_empty_v2_without_weakening_screens(reader, tmp_path):
+    rows = [_row('ordinary build task outcome'),
+            _row('password=syntheticfixturevalue'),
+            _row('contact fixture@example.invalid'),
+            _row('contact 040 123 4567'),
+            _row('account FI21 1234 5600 0007 85'),
+            _row('personal identity 131052-308T'),
+            _row('review author excluded', agent=LANES[3], agent_uuid=ROSTER[LANES[3]]),
+            _row('review recipient excluded', to=LANES[3]),
+            _row('sealed material internal only')]
+    case = _all_tasks_case(reader, tmp_path, rows)
+    _synthetic_identifier_binding(case, {'schema': 'wd.mind-identifier-policy.v2', 'identifiers': []})
+    result = reader.rederive_complete_message_projection(**case)
+    assert result['messages']['accepted'] == 1
+    assert reader.decode_text(result['messages']['records'][0]['stored_text']) == 'ordinary build task outcome'
+    assert result['messages']['identifier_policy_hmac'] == case['identifier_policy_binding'][2]
+    _refused(reader, lambda: reader.rederive_message_projection(**case))
+
+
+def test_empty_v2_is_never_accepted_by_legacy_eight_task_route(reader, tmp_path):
+    case = _case(reader, tmp_path)
+    _synthetic_identifier_binding(case, {'schema': 'wd.mind-identifier-policy.v2', 'identifiers': []})
+    _refused(reader, lambda: reader.rederive_message_projection(**case))
+    _refused(reader, lambda: reader.rederive_complete_message_projection(**case))
+
+
+@pytest.mark.parametrize('fault', ['legacy_empty', 'v2_nonempty', 'wrong_schema', 'wrong_tag',
+                                   'short_key', 'decision_pin', 'extra_key'])
+def test_complete_empty_identifier_policy_still_requires_versioned_hmac_and_pins(reader, tmp_path, fault):
+    case = _all_tasks_case(reader, tmp_path, [_row('ordinary build task outcome')])
+    document = {'schema': 'wd.mind-identifier-policy.v2', 'identifiers': []}
+    if fault == 'legacy_empty': document['schema'] = 'wd.mind-identifier-policy.v1'
+    if fault == 'v2_nonempty': document['identifiers'] = ['synthetic extra']
+    if fault == 'wrong_schema': document['schema'] = 'wd.mind-identifier-policy.v3'
+    if fault == 'extra_key': document['extra'] = True
+    _synthetic_identifier_binding(case, document, key=b'too-short' if fault == 'short_key' else None,
+                                  decision_tag='0' * 64 if fault == 'decision_pin' else None)
+    if fault == 'wrong_tag':
+        raw, key, _ = case['identifier_policy_binding']
+        case['identifier_policy_binding'] = (raw, key, '0' * 64)
+        _edit_decision(case, identifier_policy_hmac='0' * 64)
+    _refused(reader, lambda: reader.rederive_complete_message_projection(**case))
+
+
+def test_versioned_all_tasks_admits_other_build_work_but_preserves_privacy(reader, tmp_path):
+    task = "synthetic-customer-jane-doe-0401234567-20261114"
+    allowed = _row("RCO review discussed bounded parser fix", task_id=task)
+    rco = _row("RCO secret review text", agent=LANES[3], agent_uuid=ROSTER[LANES[3]], task_id=task)
+    addressed = _row("Build work addressed to review", to=LANES[3], task_id=task)
+    secret = _row("password = synthetic-private-value", task_id=task)
+    case = _all_tasks_case(reader, tmp_path, [allowed, rco, addressed, secret])
+    projection = _derive(reader, case)
+    assert projection["schema"] == "wd.mind-content-memory-projection.v3"
+    assert projection["messages"]["schema"] == "wd.bridge-mind-content-projection.v3"
+    assert projection["messages"]["accepted"] == 1
+    assert projection["messages"]["records"][0]["meta"]["task_id"] == "sha256:" + _sha(task.encode())
+    text = json.dumps(projection)
+    assert task not in text and "synthetic-private-value" not in text and "secret review text" not in text
+
+
+def test_all_task_mode_cannot_be_mixed_with_legacy_decision(reader, tmp_path):
+    case = _all_tasks_case(reader, tmp_path, [_row(task_id="synthetic-task-other")])
+    _edit_decision(case, schema=DECISION_SCHEMA, projection_schema=SCHEMA,
+        message_projection_schema=MESSAGE_SCHEMA, scope=ROUTE_SCOPE)
+    _refused(reader, lambda: _derive(reader, case))
+
+
+def test_all_task_large_event_still_uses_content_screening(reader, tmp_path):
+    good = _row('bounded work completed', task_id='other-task', payload={'padding': 'x' * 70000})
+    secret = _row('password = synthetic-private-value', task_id='other-task',
+                  payload={'padding': 'x' * 70000})
+    projection = _derive(reader, _all_tasks_case(reader, tmp_path, [good, secret]))
+    assert projection['messages']['accepted'] == 1
+    assert 'synthetic-private-value' not in json.dumps(projection)
+
+
+def test_all_task_record_budget_covers_measured_scale_but_stays_bounded(reader):
+    # The wide-policy diagnostic accumulated 35,195,141 canonical record
+    # bytes before refusal. This is scale evidence, not a real-data fixture or
+    # proof of the final operator policy, query row capacity, or latency.
+    assert reader._ALL_TASK_MAX_RECORD_BYTES == 40 * 1024 * 1024
+    assert reader._ALL_TASK_MAX_RECORD_BYTES >= 35_195_141
+    assert reader._ALL_TASK_MAX_RECORD_BYTES < reader._MAX_PROJECTION_BYTES
+    assert reader._ALL_TASK_MAX_RECORDS == 65_536
+    assert reader._MAX_PROJECTION_BYTES == 64 * 1024 * 1024
+
+
+def test_all_task_record_budget_boundary_refuses_instead_of_truncating(reader, tmp_path, monkeypatch):
+    rows = [_row("bounded synthetic first", task_id="synthetic-budget-a"),
+            _row("bounded synthetic second", task_id="synthetic-budget-b")]
+    case = _all_tasks_case(reader, tmp_path, rows)
+    expected = _derive(reader, case)
+    assert len(expected["messages"]["records"]) == 2
+    exact = sum(len(_raw(record)) for record in expected["messages"]["records"])
+    monkeypatch.setattr(reader, "_ALL_TASK_MAX_RECORD_BYTES", exact + 1)
+    assert _derive(reader, case) == expected
+    monkeypatch.setattr(reader, "_ALL_TASK_MAX_RECORD_BYTES", exact)
+    assert _derive(reader, case) == expected
+    monkeypatch.setattr(reader, "_ALL_TASK_MAX_RECORD_BYTES", exact - 1)
+    _refused(reader, lambda: _derive(reader, case))
+
+
+def test_complete_projection_has_no_old_record_budget_and_keeps_route_policy(reader, tmp_path, monkeypatch):
+    rows = [_row('synthetic event %d' % n, task_id='synthetic-task-%d' % n) for n in range(300)]
+    rows.append(_row('password = synthetic-private-value', task_id='synthetic-secret'))
+    case = _all_tasks_case(reader, tmp_path, rows)
+    monkeypatch.setattr(reader, '_ALL_TASK_MAX_RECORDS', 1)
+    monkeypatch.setattr(reader, '_ALL_TASK_MAX_RECORD_BYTES', 1)
+    projection = reader.rederive_complete_message_projection(**case)
+    assert projection['messages']['accepted'] == 300
+    assert 'synthetic-private-value' not in json.dumps(projection)
+    _refused(reader, lambda: _derive(reader, case))
+
+
+def test_complete_projection_rejects_legacy_task_scope(reader, tmp_path):
+    case = _case(reader, tmp_path)
+    _refused(reader, lambda: reader.rederive_complete_message_projection(**case))
+
+
+def test_complete_snapshot_rederives_and_refuses_changed_source(reader, tmp_path, monkeypatch):
+    rows = [_row('neutral event %d' % n, task_id='synthetic-task-%d' % n) for n in range(300)]
+    case = _all_tasks_case(reader, tmp_path, rows)
+    monkeypatch.setattr(reader, '_ALL_TASK_MAX_RECORDS', 1)
+    projection = reader.rederive_complete_message_projection(**case)
+    snapshot = _snapshot(case, projection)
+    verified, _, report = reader._verified_complete(snapshot)
+    assert verified == projection and report['status'] == 'MATCH'
+    path = Path(case['messages']['source_path'])
+    path.write_bytes(path.read_bytes().replace(b'neutral event 0', b'changed event 0', 1))
+    with pytest.raises(ValueError):
+        reader._verified_complete(snapshot)
+
+
+def test_complete_projection_accepts_anchored_generationless_source(reader, tmp_path):
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    case = _all_tasks_case(reader, tmp_path, [_row('synthetic neutral event', task_id='task-ungenerated')])
+    cursor = case['messages']['end_cursor']
+    case['messages']['end_cursor'] = BridgeCursor(cursor.offset, cursor.file_identity, None)
+    Path(case['messages']['generation_path']).unlink()
+    case['messages']['generation_path'] = str(Path(case['messages']['source_path']).with_name('events.generation.json'))
+    decision = json.loads(case['decision_bytes'])
+    decision['source_prefix']['generation'] = None
+    case['decision_bytes'] = _raw(decision)
+    case['decision_sha256'] = _sha(case['decision_bytes'])
+    projection = reader.rederive_complete_message_projection(**case)
+    assert projection['messages']['accepted'] == 1
+    assert projection['authority'] == 'none'
+    snapshot = _snapshot(case, projection)
+    verified, _, report = reader._verified_complete(snapshot)
+    assert verified == projection and report['source_prefix']['generation'] is None
+    # The bounded legacy API keeps refusing a missing generation.
+    _refused(reader, lambda: _derive(reader, case))
+    Path(case['messages']['generation_path']).write_text('{"generation":"g1"}', encoding='utf-8')
+    _refused(reader, lambda: reader.rederive_complete_message_projection(**case))
+    with pytest.raises(ValueError):
+        reader._verified_complete(snapshot)
+
+
+@pytest.mark.parametrize('generationless', [False, True])
+def test_complete_decisions_accept_declared_status_but_exclude_rco_and_secret(reader, tmp_path, generationless):
+    from waggledance.core.bridge_log_reader import BridgeCursor
+    statuses = ('completed', 'open', 'superseded', 'cancelled', 'fyi')
+    rows = [_row('Synthetic build decision item %d' % index, type='decision', status=status,
+                 task_id='synthetic-decision-%d' % index) for index, status in enumerate(statuses)]
+    rows += [_row('Synthetic review author', type='decision', agent=LANES[3], agent_uuid=ROSTER[LANES[3]]),
+             _row('Synthetic review recipient', type='decision', to=LANES[3]),
+             _row('password = synthetic-secret-value', type='decision'),
+             _row('Synthetic invalid status', type='decision', status='unknown-unapproved')]
+    case = _all_tasks_case(reader, tmp_path, rows)
+    policy = json.loads(case['messages']['policy_bytes'])
+    policy['types'].append('decision')
+    raw = _raw(policy)
+    case['messages'].update(policy_bytes=raw, policy_sha256=_sha(raw))
+    _edit_decision(case, message_policy_sha256=_sha(raw))
+    if generationless:
+        cursor = case['messages']['end_cursor']
+        case['messages']['end_cursor'] = BridgeCursor(cursor.offset, cursor.file_identity, None)
+        Path(case['messages']['generation_path']).unlink()
+        case['messages']['generation_path'] = str(Path(case['messages']['source_path']).with_name('events.generation.json'))
+        decision = json.loads(case['decision_bytes'])
+        decision['source_prefix']['generation'] = None
+        case['decision_bytes'] = _raw(decision)
+        case['decision_sha256'] = _sha(case['decision_bytes'])
+    projection = reader.rederive_complete_message_projection(**case)
+    records = projection['messages']['records']
+    assert len(records) == len(statuses)
+    assert {record['meta']['declared_status'] for record in records} == set(statuses)
+    assert all(record['meta']['type'] == 'decision' for record in records)
+    assert reader._Q4_PLACEMENT['decision'] == 'general'
+    assert 'synthetic-secret-value' not in json.dumps(projection)
+    assert projection['messages']['refused']['credential'] == 1
+    assert projection['messages']['refused']['status_not_allowed'] == 1
 
 
 def test_allowed_build_lane_review_discussion_matches_independent_projection(reader, tmp_path):
@@ -831,7 +1108,8 @@ def _semantic_projection(case, rows):
     return projection
 
 
-def _semantic_cell(records, cell_id, index_bytes, vectors, encoder_identity, projection_sha256):
+def _semantic_cell(records, cell_id, index_bytes, vectors, encoder_identity, projection_sha256,
+                   *, scope=ROUTE_SCOPE, projection_schema=SCHEMA):
     ids, texts, provenance = [], [], []
     for record in records:
         for view in ("w", "d"):
@@ -849,34 +1127,45 @@ def _semantic_cell(records, cell_id, index_bytes, vectors, encoder_identity, pro
         "provenance": b"".join(_raw(row) + b"\n" for row in provenance)}
     content = {"cell_id": cell_id, "count": len(ids), "dim": SEMANTIC_DIM,
         "cutoff_utc": AVAILABLE, "encoder": encoder_identity,
-        "projection_sha256": projection_sha256, "projection_schema": SCHEMA,
+        "projection_sha256": projection_sha256, "projection_schema": projection_schema,
         "files": {name: _sha(raw) for name, raw in artifacts.items()},
         "ids_sha256": _sha("\n".join(ids).encode()), "pairs_sha256": _sha(pairs)}
     artifacts["receipt"] = _raw({"schema": "wd.bridge-mind-hex-cell.v1", "authority": "none",
-        "scope": ROUTE_SCOPE, "content": content, "content_sha256": _sha(_raw(content))})
+        "scope": scope, "content": content, "content_sha256": _sha(_raw(content))})
     receipt_sha = _sha(artifacts["receipt"])
     pointer = {"generation": 1, "seq": 1, "receipt_sha256": receipt_sha}
     log = dict(pointer, schema="wd.bridge-mind-hex-cell-log.v1", prev_line_sha256="0" * 64)
     return {"pointer": _raw(pointer), "log": _raw(log) + b"\n", "artifacts": artifacts}, pointer
 
 
-def _semantic_case(reader, tmp_path, *, count=4):
+def _semantic_case(reader, tmp_path, *, count=4, all_tasks=False):
     tasks = json.loads(OPERATOR_TASK_BYTES)
     assert _sha(OPERATOR_TASK_BYTES) == REQUIRED_RELEASE_TASK_LIST_SHA256
-    rows = [_row(text, task_id=tasks[0], type="message" if i < 2 else "done")
+    rows = [_row(text, task_id=f"synthetic-other-task-{i}" if all_tasks else tasks[0],
+                 type="message" if i < 2 else "done")
             for i, text in enumerate(SEMANTIC_TEXTS[:count])]
-    case = _case(reader, tmp_path, rows)
-    policy = json.loads(case["policy_bytes"])
-    policy["approved_tasks"] = tasks
-    case.update(policy_bytes=_raw(policy), policy_sha256=_sha(_raw(policy)),
-                approved_tasks_bytes=OPERATOR_TASK_BYTES, approved_tasks_sha256=_sha(OPERATOR_TASK_BYTES))
-    message_policy = json.loads(case["messages"]["policy_bytes"])
-    message_policy["approved_tasks"] = tasks
-    case["messages"].update(policy_bytes=_raw(message_policy), policy_sha256=_sha(_raw(message_policy)))
-    _edit_decision(case, nonreview_policy_sha256=case["policy_sha256"],
-                   message_policy_sha256=case["messages"]["policy_sha256"],
-                   approved_tasks_sha256=case["approved_tasks_sha256"])
+    if all_tasks:
+        case = _all_tasks_case(reader, tmp_path, rows)
+    else:
+        case = _case(reader, tmp_path, rows)
+        policy = json.loads(case["policy_bytes"])
+        policy["approved_tasks"] = tasks
+        case.update(policy_bytes=_raw(policy), policy_sha256=_sha(_raw(policy)),
+                    approved_tasks_bytes=OPERATOR_TASK_BYTES, approved_tasks_sha256=_sha(OPERATOR_TASK_BYTES))
+        message_policy = json.loads(case["messages"]["policy_bytes"])
+        message_policy["approved_tasks"] = tasks
+        case["messages"].update(policy_bytes=_raw(message_policy), policy_sha256=_sha(_raw(message_policy)))
+        _edit_decision(case, nonreview_policy_sha256=case["policy_sha256"],
+                       message_policy_sha256=case["messages"]["policy_sha256"],
+                       approved_tasks_sha256=case["approved_tasks_sha256"])
     projection = _semantic_projection(case, rows)
+    scope = "wd.mind-all-task-projected-events.v1" if all_tasks else ROUTE_SCOPE
+    projection_schema = "wd.mind-content-memory-projection.v3" if all_tasks else SCHEMA
+    if all_tasks:
+        projection["schema"] = projection_schema
+        projection["messages"]["schema"] = "wd.bridge-mind-content-projection.v3"
+        for record in projection["messages"]["records"]:
+            record["meta"]["task_id"] = "sha256:" + _sha(record["meta"]["task_id"].encode())
     snapshot = _snapshot(case, projection)
     # Same-fixture positive control: a broken source fixture must not masquerade
     # as a missing semantic feature or a valid negative pin test.
@@ -906,15 +1195,17 @@ def _semantic_case(reader, tmp_path, *, count=4):
         index_bytes = b"synthetic-faiss-flat-ip:" + cell_id.encode()
         indices[index_bytes] = vectors
         cells[cell_id], pointers[cell_id] = _semantic_cell(
-            records, cell_id, index_bytes, vectors, identity, snapshot["projection_sha256"])
+            records, cell_id, index_bytes, vectors, identity, snapshot["projection_sha256"],
+            scope=scope, projection_schema=projection_schema)
         pointers[cell_id]["count"] = len(vectors)
-    manifest = {"schema": "wd.bridge-mind-hex-memory-step2.v1", "authority": "none", "scope": ROUTE_SCOPE,
-        "dim": SEMANTIC_DIM, "encoder": identity, "projection_schema": SCHEMA,
+    manifest = {"schema": "wd.bridge-mind-hex-memory-step2.v1", "authority": "none", "scope": scope,
+        "dim": SEMANTIC_DIM, "encoder": identity, "projection_schema": projection_schema,
         "cutoff_utc": AVAILABLE,
         "projection_sha256": snapshot["projection_sha256"], "cells": pointers,
         "records": count, "views": ["w", "d"], "independent_views": False}
     memory_bytes = _raw(manifest)
-    descriptor = {"schema": "wd.bridge-mind-q4-memory-descriptor.v2", "scope": ROUTE_SCOPE,
+    descriptor = {"schema": ("wd.bridge-mind-q4-memory-descriptor.v3" if all_tasks else
+                             "wd.bridge-mind-q4-memory-descriptor.v2"), "scope": scope,
                   "memory_sha256": _sha(memory_bytes), "dim": SEMANTIC_DIM, "encoder": identity}
     return dict(snapshot, descriptor_bytes=_raw(descriptor), descriptor_sha256=_sha(_raw(descriptor)),
         memory_bytes=memory_bytes, memory_sha256=_sha(memory_bytes), cell_snapshots=cells,
@@ -936,6 +1227,19 @@ def _semantic_refuses_without_callbacks(reader, case):
     encoder, index, stream = case["encoder_provider"], case["index_provider"], case["stream"]
     _refused(reader, lambda: _semantic_entry(reader, case))
     assert stream.reads == 0 and encoder.calls == [] and index.calls == []
+
+
+def test_semantic_all_tasks_query_returns_source_ref_and_scope_pin(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    result = _semantic_entry(reader, case)
+    assert result["schema"] == "wd.q4-content-snapshot-query.v3"
+    assert result["status"] == "ANSWER" and result["authority"] == "none"
+    assert result["binding"]["task_scope_sha256"] == _sha(case["approved_tasks_bytes"])
+    source_refs = {_sha(_raw(_row(text, task_id=f"synthetic-other-task-{index}",
+                                  type="message" if index < 2 else "done")))
+                   for index, text in enumerate(SEMANTIC_TEXTS)}
+    assert result["results"] and all(hit["source_reference"]["sha256"] in source_refs
+                                     for hit in result["results"])
 
 
 def test_semantic_query_uses_both_vector_views_and_lexical_agreement(reader, tmp_path):
@@ -970,8 +1274,9 @@ def test_semantic_low_candidate_count_abstains_without_encoder(reader, tmp_path,
 
 
 @pytest.mark.parametrize("enabled", [False, None, 1, "true"])
-def test_semantic_query_is_default_closed_before_input_or_providers(reader, tmp_path, enabled):
-    case = _semantic_case(reader, tmp_path)
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+def test_semantic_query_is_default_closed_before_input_or_providers(reader, tmp_path, enabled, all_tasks):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
     case["enabled"] = enabled
     _semantic_refuses_without_callbacks(reader, case)
 
@@ -979,8 +1284,9 @@ def test_semantic_query_is_default_closed_before_input_or_providers(reader, tmp_
 @pytest.mark.parametrize("field", ["descriptor_sha256", "memory_sha256", "projection_sha256", "policy_sha256",
     "roster_sha256", "decision_sha256", "approved_tasks_sha256", "encoder_sha256", "encoder_binding_sha256", "index_binding_sha256"])
 @pytest.mark.parametrize("bad", [None, "f" * 64])
-def test_semantic_missing_or_wrong_pin_refuses_before_input_or_providers(reader, tmp_path, field, bad):
-    case = _semantic_case(reader, tmp_path)
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+def test_semantic_missing_or_wrong_pin_refuses_before_input_or_providers(reader, tmp_path, field, bad, all_tasks):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
     case[field] = bad
     _semantic_refuses_without_callbacks(reader, case)
 
@@ -1053,6 +1359,123 @@ def _semantic_repin_cell(case, cell_id):
     case.update(descriptor_bytes=_raw(descriptor), descriptor_sha256=_sha(_raw(descriptor)))
 
 
+def _semantic_repin_memory(case, memory):
+    case.update(memory_bytes=_raw(memory), memory_sha256=_sha(_raw(memory)))
+    descriptor = json.loads(case["descriptor_bytes"])
+    descriptor["memory_sha256"] = case["memory_sha256"]
+    case.update(descriptor_bytes=_raw(descriptor), descriptor_sha256=_sha(_raw(descriptor)))
+
+
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+@pytest.mark.parametrize("field", ["schema", "scope"])
+def test_semantic_cross_version_descriptor_refuses_even_with_matching_pin(reader, tmp_path, all_tasks, field):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    descriptor = json.loads(case["descriptor_bytes"])
+    other = {"schema": "wd.bridge-mind-q4-memory-descriptor.v2" if all_tasks
+             else "wd.bridge-mind-q4-memory-descriptor.v3",
+             "scope": ROUTE_SCOPE if all_tasks else "wd.mind-all-task-projected-events.v1"}
+    descriptor[field] = other[field]
+    case.update(descriptor_bytes=_raw(descriptor), descriptor_sha256=_sha(_raw(descriptor)))
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+@pytest.mark.parametrize("field", ["scope", "projection_schema"])
+def test_semantic_cross_version_memory_refuses_even_when_repinned(reader, tmp_path, all_tasks, field):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    memory = json.loads(case["memory_bytes"])
+    other = {"scope": ROUTE_SCOPE if all_tasks else "wd.mind-all-task-projected-events.v1",
+             "projection_schema": SCHEMA if all_tasks else "wd.mind-content-memory-projection.v3"}
+    memory[field] = other[field]
+    _semantic_repin_memory(case, memory)
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+@pytest.mark.parametrize("field", ["schema", "scope", "projection_schema", "message_projection_schema"])
+def test_semantic_cross_version_decision_refuses_even_when_repinned(reader, tmp_path, all_tasks, field):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    other = {
+        "schema": DECISION_SCHEMA if all_tasks else "wd.mind-content-route-decision.v3",
+        "scope": ROUTE_SCOPE if all_tasks else "wd.mind-all-task-projected-events.v1",
+        "projection_schema": SCHEMA if all_tasks else "wd.mind-content-memory-projection.v3",
+        "message_projection_schema": MESSAGE_SCHEMA if all_tasks else "wd.bridge-mind-content-projection.v3",
+    }
+    _edit_decision(case, **{field: other[field]})
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+@pytest.mark.parametrize("field", ["policy", "message_policy"])
+def test_semantic_cross_version_policy_refuses_even_when_repinned(reader, tmp_path, all_tasks, field):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    if field == "policy":
+        policy = ({"schema": "wd.q4-non-review-policy.v1", "approved_tasks": json.loads(OPERATOR_TASK_BYTES)}
+                  if all_tasks else {"schema": "wd.q4-non-review-policy.v2", "task_scope": "all_tasks"})
+        raw = _raw(policy)
+        case.update(policy_bytes=raw, policy_sha256=_sha(raw))
+        _edit_decision(case, nonreview_policy_sha256=case["policy_sha256"])
+    else:
+        policy = json.loads(case["messages"]["policy_bytes"])
+        if all_tasks:
+            policy.pop("task_scope")
+            policy.update(schema="wd.mind-content-policy.v1", approved_tasks=json.loads(OPERATOR_TASK_BYTES))
+        else:
+            policy.pop("approved_tasks")
+            policy.update(schema="wd.mind-content-policy.v3", task_scope="all_tasks")
+        raw = _raw(policy)
+        case["messages"].update(policy_bytes=raw, policy_sha256=_sha(raw))
+        _edit_decision(case, message_policy_sha256=case["messages"]["policy_sha256"])
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+@pytest.mark.parametrize("field", ["scope", "projection_schema"])
+def test_semantic_cross_version_cell_refuses_even_when_repinned(reader, tmp_path, all_tasks, field):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    data = case["cell_snapshots"]["general"]["artifacts"]
+    receipt = json.loads(data["receipt"])
+    if field == "scope":
+        receipt["scope"] = ROUTE_SCOPE if all_tasks else "wd.mind-all-task-projected-events.v1"
+    else:
+        receipt["content"]["projection_schema"] = SCHEMA if all_tasks else "wd.mind-content-memory-projection.v3"
+    data["receipt"] = _raw(receipt)
+    _semantic_repin_cell(case, "general")
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+def test_semantic_all_tasks_rehashed_noncanonical_scope_refuses_before_callbacks(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    noncanonical = json.dumps(json.loads(case["approved_tasks_bytes"]), indent=1).encode()
+    assert noncanonical != case["approved_tasks_bytes"]
+    case.update(approved_tasks_bytes=noncanonical, approved_tasks_sha256=_sha(noncanonical))
+    _edit_decision(case, approved_tasks_sha256=_sha(noncanonical))
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+@pytest.mark.parametrize("field", ["schema", "message_schema"])
+def test_semantic_cross_version_projection_refuses_even_when_repinned(reader, tmp_path, all_tasks, field):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    projection = json.loads(case["projection_bytes"])
+    if field == "schema":
+        projection["schema"] = SCHEMA if all_tasks else "wd.mind-content-memory-projection.v3"
+    else:
+        projection["messages"]["schema"] = MESSAGE_SCHEMA if all_tasks else "wd.bridge-mind-content-projection.v3"
+    raw = _serialized(projection)
+    case.update(projection_bytes=raw, projection_sha256=_sha(raw))
+    memory = json.loads(case["memory_bytes"])
+    memory["projection_sha256"] = case["projection_sha256"]
+    _semantic_repin_memory(case, memory)
+    for cell_id, cell in case["cell_snapshots"].items():
+        data = cell["artifacts"]
+        receipt = json.loads(data["receipt"])
+        receipt["content"]["projection_sha256"] = case["projection_sha256"]
+        data["receipt"] = _raw(receipt)
+        _semantic_repin_cell(case, cell_id)
+    _semantic_refuses_without_callbacks(reader, case)
+
+
 def test_semantic_fully_rehashed_foreign_record_refuses_before_index_decode(reader, tmp_path):
     case = _semantic_case(reader, tmp_path)
     data = case["cell_snapshots"]["system"]["artifacts"]
@@ -1093,8 +1516,9 @@ def test_semantic_time_guard_abstains_at_exact_one_second_boundary(reader, tmp_p
     assert case["encoder_provider"].calls == []
 
 
-def test_semantic_source_change_during_query_refuses_final_output(reader, tmp_path):
-    case = _semantic_case(reader, tmp_path)
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+def test_semantic_source_change_during_query_refuses_final_output(reader, tmp_path, all_tasks):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
     path = Path(case["messages"]["source_path"])
     original = path.read_bytes()
     case["encoder_provider"].on_query = lambda: path.write_bytes(b" " + original[1:])
@@ -1488,6 +1912,192 @@ def test_provider_adapter_contains_underlying_exception_without_echo(reader, tmp
         _refused(reader, lambda: loader.load(next(iter(case["index_provider"].indices))))
 
 
+@pytest.mark.parametrize("exception", [SystemExit, GeneratorExit])
+@pytest.mark.parametrize("phase", ["encoder", "index"])
+@pytest.mark.parametrize("complete", [False, True])
+def test_query_provider_termination_has_fixed_refusal_without_private_context(
+        reader, tmp_path, capsys, exception, phase, complete):
+    import traceback
+
+    case = _semantic_case(reader, tmp_path, all_tasks=complete)
+    marker = "synthetic-provider-private-detail"
+    calls = []
+
+    def fail(*unused):
+        calls.append(phase)
+        raise exception(marker)
+
+    if phase == "encoder":
+        case["encoder_provider"].on_query = fail
+    else:
+        case["index_provider"].on_load = fail
+    entry = reader.query_complete_content_snapshot if complete else reader.query_content_snapshot
+    with pytest.raises(reader.ContentQueryRefused, match="^content_query_refused$") as caught:
+        entry(**case)
+    assert calls == [phase]
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert marker not in "".join(traceback.format_exception(caught.value))
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("phase", ["encoder", "index"])
+@pytest.mark.parametrize("complete", [False, True])
+def test_query_provider_keyboard_interrupt_remains_interrupt(reader, tmp_path, phase, complete):
+    case = _semantic_case(reader, tmp_path, all_tasks=complete)
+    calls = []
+
+    def interrupt(*unused):
+        calls.append(phase)
+        raise KeyboardInterrupt()
+
+    if phase == "encoder":
+        case["encoder_provider"].on_query = interrupt
+    else:
+        case["index_provider"].on_load = interrupt
+    entry = reader.query_complete_content_snapshot if complete else reader.query_content_snapshot
+    with pytest.raises(KeyboardInterrupt):
+        entry(**case)
+    assert calls == [phase]
+
+
+@pytest.mark.parametrize("exception", [SystemExit, GeneratorExit])
+def test_provider_result_contains_termination_without_chaining(reader, exception):
+    def fail():
+        raise exception("synthetic-provider-private-detail")
+
+    with pytest.raises(reader.ContentQueryRefused, match="^content_query_refused$") as caught:
+        reader._provider_result(fail)
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+
+
+def _provider_abort_problem(kind, marker):
+    import asyncio
+
+    class SyntheticAbort(BaseException):
+        pass
+
+    if kind == "custom":
+        return SyntheticAbort(marker)
+    if kind == "termination_group":
+        return BaseExceptionGroup(marker, [SystemExit(marker), GeneratorExit(marker)])
+    if kind == "nested_group":
+        return BaseExceptionGroup(marker, [SyntheticAbort(marker),
+            BaseExceptionGroup(marker, [GeneratorExit(marker), SystemExit(marker)])])
+    if kind == "keyboard":
+        return KeyboardInterrupt(marker)
+    if kind == "cancelled":
+        return asyncio.CancelledError(marker)
+    if kind == "mixed_group":
+        return BaseExceptionGroup(marker, [SystemExit(marker),
+            BaseExceptionGroup(marker, [KeyboardInterrupt(marker), asyncio.CancelledError(marker)]),
+            SyntheticAbort(marker)])
+    raise AssertionError("unknown synthetic problem")
+
+
+def _assert_provider_cancel_safe(error, expected, marker):
+    import traceback
+
+    pending, kinds = [error], []
+    while pending:
+        item = pending.pop()
+        assert item.__cause__ is None and item.__context__ is None
+        if isinstance(item, BaseExceptionGroup):
+            pending.extend(reversed(item.exceptions))
+        else:
+            kinds.append(type(item))
+    assert kinds == expected
+    assert marker not in "".join(traceback.format_exception(error))
+
+
+@pytest.mark.parametrize("kind", ["custom", "termination_group", "nested_group"])
+@pytest.mark.parametrize("phase", ["encoder", "index"])
+@pytest.mark.parametrize("complete", [False, True])
+def test_query_provider_baseexception_tree_is_fixed_refusal(reader, tmp_path, capsys, kind, phase, complete):
+    import traceback
+
+    case = _semantic_case(reader, tmp_path, all_tasks=complete)
+    marker = "synthetic-provider-group-private-detail"
+    calls = []
+    def fail(*unused):
+        calls.append(phase)
+        raise _provider_abort_problem(kind, marker)
+    if phase == "encoder":
+        case["encoder_provider"].on_query = fail
+    else:
+        case["index_provider"].on_load = fail
+    entry = reader.query_complete_content_snapshot if complete else reader.query_content_snapshot
+    with pytest.raises(reader.ContentQueryRefused, match="^content_query_refused$") as caught:
+        entry(**case)
+    assert calls == [phase]
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert marker not in "".join(traceback.format_exception(caught.value))
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("kind", ["keyboard", "cancelled", "mixed_group"])
+@pytest.mark.parametrize("phase", ["encoder", "index"])
+@pytest.mark.parametrize("complete", [False, True])
+def test_query_provider_cancellation_tree_is_preserved_without_detail(reader, tmp_path, capsys, kind, phase, complete):
+    import asyncio
+
+    case = _semantic_case(reader, tmp_path, all_tasks=complete)
+    marker = "synthetic-provider-group-private-detail"
+    calls = []
+    def fail(*unused):
+        calls.append(phase)
+        raise _provider_abort_problem(kind, marker)
+    if phase == "encoder":
+        case["encoder_provider"].on_query = fail
+    else:
+        case["index_provider"].on_load = fail
+    entry = reader.query_complete_content_snapshot if complete else reader.query_content_snapshot
+    with pytest.raises(BaseException) as caught:
+        entry(**case)
+    expected = ([KeyboardInterrupt] if kind == "keyboard" else [asyncio.CancelledError]
+                if kind == "cancelled" else [KeyboardInterrupt, asyncio.CancelledError])
+    _assert_provider_cancel_safe(caught.value, expected, marker)
+    assert calls == [phase]
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("kind", ["system_exit", "cancelled", "mixed_group"])
+@pytest.mark.parametrize("mode", ["adapter", "legacy_query", "complete_query"])
+def test_provider_refusal_suppresses_already_active_caller_context(reader, tmp_path, capsys, kind, mode):
+    import asyncio
+    import traceback
+
+    marker = "synthetic-caller-provider-detail"
+    problem = SystemExit(marker) if kind == "system_exit" else _provider_abort_problem(kind, marker)
+    case = None if mode == "adapter" else _semantic_case(reader, tmp_path, all_tasks=mode == "complete_query")
+    calls = []
+    try:
+        raise problem
+    except BaseException as active:
+        def fail(*unused):
+            calls.append(True)
+            raise active
+        if mode == "adapter":
+            operation = lambda: reader._provider_result(fail)
+        else:
+            case["encoder_provider"].on_query = fail
+            entry = reader.query_complete_content_snapshot if mode == "complete_query" else reader.query_content_snapshot
+            operation = lambda: entry(**case)
+        with pytest.raises(BaseException) as caught:
+            operation()
+        result = caught.value
+        if kind == "system_exit":
+            assert type(result) is reader.ContentQueryRefused
+        elif kind == "cancelled":
+            assert type(result) is asyncio.CancelledError
+        else:
+            assert type(result) is BaseExceptionGroup
+            assert [type(item) for item in result.exceptions] == [KeyboardInterrupt, asyncio.CancelledError]
+        assert result.__context__ is active and result.__cause__ is None and result.__suppress_context__
+        assert marker not in "".join(traceback.format_exception(result))
+        assert calls == [True]
+    assert capsys.readouterr() == ("", "")
+
+
 def test_provider_adapter_never_coerces_arbitrary_float_like_objects(reader, tmp_path):
     case = _semantic_case(reader, tmp_path)
     encoder, decode, _ = _provider_objects(case, "plain")
@@ -1598,3 +2208,723 @@ def test_provider_adapter_does_not_change_environment_or_input_files(reader, tmp
     assert _semantic_entry(reader, case)["status"] == "ANSWER"
     assert dict(os.environ) == before_env
     assert {str(path): _sha(path.read_bytes()) for path in tmp_path.rglob("*") if path.is_file()} == before_files
+
+
+def test_semantic_v3_bounded_decoding_preserves_query_result(reader, tmp_path, monkeypatch):
+    """Use a small threshold to exercise the large-v3 path on complete fixtures."""
+    (tmp_path / "original").mkdir()
+    (tmp_path / "candidate").mkdir()
+    original = _semantic_case(reader, tmp_path / "original", all_tasks=True)
+    expected = _semantic_entry(reader, original)
+    candidate = _semantic_case(reader, tmp_path / "candidate", all_tasks=True)
+    # The independent v3 cap remains higher; v2's historical threshold is only
+    # lowered to force this tiny fixture through bounded reconstruction.
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    monkeypatch.setattr(reader, "_Q4_BOUNDED_CHUNK_ROWS", 2, raising=False)
+    observed = _semantic_entry(reader, candidate)
+    assert observed == expected
+
+
+def test_semantic_v3_corrupt_last_cell_never_reads_query(reader, tmp_path, monkeypatch):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    last_cell = sorted(case["cell_snapshots"])[-1]
+    index_bytes = case["cell_snapshots"][last_cell]["artifacts"]["index"]
+    # Remains a finite normalized vector, so integrity/pair checks must catch it.
+    case["index_provider"].indices[index_bytes][-1] = (0.0, 1.0) + (0.0,) * (SEMANTIC_DIM - 2)
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    monkeypatch.setattr(reader, "_Q4_BOUNDED_CHUNK_ROWS", 2, raising=False)
+    _refused(reader, lambda: _semantic_entry(reader, case))
+    assert len(case["index_provider"].calls) == len(case["cell_snapshots"])
+    assert case["encoder_provider"].calls == [] and case["stream"].reads == 0
+
+
+def test_bounded_v3_adapter_preserves_legacy_full_only_surface(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    encoder, decode, state = _provider_objects(case)
+    args = _provider_arguments(case, encoder, decode)
+    args["allow_bounded_v3"] = True
+    _, loader = _provider_adapt(reader, args)
+    index = loader.load(next(iter(case["index_provider"].indices)))
+    _refused(reader, lambda: index.reconstruct_n(0, index.ntotal - 1))
+    assert state["indices"][-1].calls == []
+    chunk = index.reconstruct_chunk(0, 1)
+    assert len(chunk) == 1 and state["indices"][-1].calls == [(0, 1)]
+
+
+def test_bounded_v3_query_uses_opt_in_native_chunks_before_encoder(reader, tmp_path, monkeypatch):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    encoder, decode, state = _provider_objects(case)
+    args = _provider_arguments(case, encoder, decode)
+    args["allow_bounded_v3"] = True
+    case["encoder_provider"], case["index_provider"] = _provider_adapt(reader, args)
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    monkeypatch.setattr(reader, "_Q4_BOUNDED_CHUNK_ROWS", 2)
+    observed = _semantic_entry(reader, case)
+    assert observed["status"] == "ANSWER"
+    assert encoder.calls == ["retry network outage"]
+    assert state["indices"] and all(index.calls == [(0, 2), (2, 2)] for index in state["indices"])
+
+
+def test_bounded_v3_bad_native_dtype_refuses_before_query(reader, tmp_path, monkeypatch):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    encoder, decode, state = _provider_objects(case)
+
+    def change(index):
+        index.result = _ProviderArray32(index.rows[:2], matrix=True)
+        index.result.dtype.str = "<f8"
+
+    state["on_decode"] = change
+    args = _provider_arguments(case, encoder, decode)
+    args["allow_bounded_v3"] = True
+    case["encoder_provider"], case["index_provider"] = _provider_adapt(reader, args)
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    monkeypatch.setattr(reader, "_Q4_BOUNDED_CHUNK_ROWS", 2)
+    _refused(reader, lambda: _semantic_entry(reader, case))
+    assert state["calls"] and encoder.calls == [] and case["stream"].reads == 0
+
+
+@pytest.mark.parametrize("start,count", [(-1, 1), (False, 1), (0, True), (0, 0), (1, 99), (99, 1)])
+def test_bounded_v3_adapter_rejects_bad_chunk_before_decoder(reader, tmp_path, start, count):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    encoder, decode, state = _provider_objects(case)
+    args = _provider_arguments(case, encoder, decode)
+    args["allow_bounded_v3"] = True
+    _, loader = _provider_adapt(reader, args)
+    index = loader.load(next(iter(case["index_provider"].indices)))
+    _refused(reader, lambda: index.reconstruct_chunk(start, count))
+    assert state["indices"][-1].calls == []
+
+
+def test_default_adapter_refuses_v3_chunk_without_opt_in(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    encoder, decode, state = _provider_objects(case)
+    _, loader = _provider_adapt(reader, _provider_arguments(case, encoder, decode))
+    index = loader.load(next(iter(case["index_provider"].indices)))
+    _refused(reader, lambda: index.reconstruct_chunk(0, 1))
+    assert state["indices"][-1].calls == []
+
+
+def test_bounded_v3_large_adapter_requires_opt_in_and_never_full_reconstructs(reader):
+    class LargeIndex:
+        d, ntotal, metric_type = SEMANTIC_DIM, 20002, 0
+        calls = []
+
+        def reconstruct_n(self, start, count):
+            self.calls.append((start, count))
+            return [(1.0,) + (0.0,) * (SEMANTIC_DIM - 1)] * count
+
+    native = LargeIndex()
+    with pytest.raises(ValueError):
+        reader._ReadonlyDecodedIndex(native)
+    index = reader._ReadonlyDecodedIndex(native, True)
+    _refused(reader, lambda: index.reconstruct_n(0, index.ntotal))
+    assert native.calls == []
+    assert len(index.reconstruct_chunk(20001, 1)) == 1
+    assert native.calls == [(20001, 1)]
+
+
+def test_bounded_v3_adapter_rejects_index_control_changes_after_chunk(reader):
+    class MutableIndex:
+        d, ntotal, metric_type = SEMANTIC_DIM, 4, 0
+
+        def reconstruct_n(self, start, count):
+            self.ntotal -= 1
+            return [(1.0,) + (0.0,) * (SEMANTIC_DIM - 1)] * count
+
+    index = reader._ReadonlyDecodedIndex(MutableIndex(), True)
+    _refused(reader, lambda: index.reconstruct_chunk(0, 1))
+
+
+def test_semantic_legacy_row_limit_remains_unchanged(reader, tmp_path, monkeypatch):
+    case = _semantic_case(reader, tmp_path)
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("control", ["global_rows", "vector_bytes", "total_bytes"])
+def test_semantic_v3_bounded_preflight_refuses_before_provider(reader, tmp_path, monkeypatch, control):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    if control == "global_rows":
+        monkeypatch.setattr(reader, "_Q4_BOUNDED_V3_MAX_ROWS", 6)
+    elif control == "vector_bytes":
+        monkeypatch.setattr(reader, "_Q4_BOUNDED_VECTOR_BYTES", 8 * 384 * 8 - 1)
+    else:
+        monkeypatch.setattr(reader, "_Q4_TOTAL_BYTES", 1)
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+def test_semantic_v3_bounded_all_cell_metadata_precedes_provider(reader, tmp_path, monkeypatch):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    case["cell_snapshots"][sorted(case["cell_snapshots"])[-1]]["artifacts"]["index"] += b"changed"
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+def test_bounded_v3_rejects_aggregate_rows_before_expanding_cells(reader, tmp_path, monkeypatch):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    cell = case["cell_snapshots"]["general"]
+    receipt = json.loads(cell["artifacts"]["receipt"])
+    receipt["content"]["count"] += 2
+    receipt["content_sha256"] = _sha(_raw(receipt["content"]))
+    cell["artifacts"]["receipt"] = _raw(receipt)
+    _semantic_repin_cell(case, "general")
+    monkeypatch.setattr(reader, "_Q4_MAX_ROWS", 2)
+    expanded = []
+    original = reader._q4_cell_controls
+
+    def observe(*args):
+        expanded.append(True)
+        return original(*args)
+
+    monkeypatch.setattr(reader, "_q4_cell_controls", observe)
+    _semantic_refuses_without_callbacks(reader, case)
+    assert expanded == []
+
+
+def test_bounded_rank_preserves_double_precision_values(reader, tmp_path):
+    import math
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    projection = json.loads(case["projection_bytes"])
+    records = {record["record_id"]: record for record in projection["messages"]["records"]}
+    for record in records.values():
+        record["stored_text"] = "synthetic network retry candidate"
+    exact, compact, rounded = {}, {}, {}
+    for number, key in enumerate(sorted(records)):
+        # Some values have the same float32 representation but different
+        # float64 values. Packing only float32 would lose ranking information.
+        x = 0.5 + number * 1e-9
+        vector = (x, math.sqrt(1.0 - x * x)) + (0.0,) * (SEMANTIC_DIM - 2)
+        exact[key] = {view: vector for view in ("w", "d")}
+        compact[key] = {view: struct.pack("<" + "d" * SEMANTIC_DIM, *vector) for view in ("w", "d")}
+        f32 = struct.unpack("<" + "f" * SEMANTIC_DIM, struct.pack("<" + "f" * SEMANTIC_DIM, *vector))
+        rounded[key] = {view: f32 for view in ("w", "d")}
+    time = reader._utc(QUERY_TIME)
+    expected = reader._q4_rank(records, exact, _SyntheticEncoder({}), "retry network outage", time)
+    observed = reader._q4_rank(records, compact, _SyntheticEncoder({}), "retry network outage", time)
+    assert expected and observed == expected
+    assert reader._q4_rank(records, rounded, _SyntheticEncoder({}), "retry network outage", time) != expected
+
+
+def test_bounded_decode_large_synthetic_row_count_uses_small_chunks(reader, monkeypatch):
+    # Exercise the diagnosed row scale cheaply; the real dimension and float64
+    # byte ceiling are verified separately without creating a production index.
+    monkeypatch.setattr(reader, "_Q4_DIM", 4)
+    count = 31600
+    keys = ["synthetic-" + str(i) for i in range(count)]
+    rows = [(key, view) for key in keys for view in ("w", "d")]
+    ids = [key + "#" + view for key, view in rows]
+    vector = (1.0, 0.0, 0.0, 0.0)
+    packed = struct.pack("<4f", *vector)
+    pairs = hashlib.sha256()
+    for doc_id in ids:
+        pairs.update(doc_id.encode() + b"\x00" + packed)
+
+    class Index:
+        d, ntotal, metric_type = 4, len(rows), 0
+        calls = []
+
+        def reconstruct_n(self, start, size):
+            self.calls.append((start, size))
+            assert 0 < size <= reader._Q4_BOUNDED_CHUNK_ROWS
+            return [vector] * size
+
+    class Provider:
+        index = Index()
+
+        def load(self, raw):
+            assert raw == b"synthetic-index"
+            return self.index
+
+    provider = Provider()
+    captured = {"general": ({"index": b"synthetic-index"},
+        {"count": len(rows), "pairs_sha256": pairs.hexdigest()}, {"doc_ids": ids}, rows)}
+    entries = reader._q4_decode_cells_bounded_v3(captured, provider, dict.fromkeys(keys))
+    assert len(entries) == count
+    assert sum(size for _, size in provider.index.calls) == len(rows)
+    assert all(type(entries[key][view]) is bytes and len(entries[key][view]) == 4 * 8
+               for key in keys for view in ("w", "d"))
+
+
+def _pad_synthetic_cell(case, name, size):
+    """Add JSON whitespace without changing the parsed synthetic cell."""
+    cell = case["cell_snapshots"]["general"]
+    raw = cell["artifacts"][name]
+    assert len(raw) <= size
+    if name == "meta":
+        cell["artifacts"][name] = raw + b" " * (size - len(raw))
+    else:
+        first, rest = raw.split(b"\n", 1)
+        cell["artifacts"][name] = first + b" " * (size - len(raw)) + b"\n" + rest
+    _semantic_repin_cell(case, "general")
+
+
+@pytest.mark.parametrize("artifact", ["meta", "provenance"])
+def test_v3_cell_accepts_over_legacy_budget_without_weakening_pins(reader, tmp_path, artifact):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    _pad_synthetic_cell(case, artifact, reader._Q4_ARTIFACT_BYTES + 1)
+    assert _semantic_entry(reader, case)["status"] == "ANSWER"
+
+
+@pytest.mark.parametrize("artifact", ["meta", "provenance"])
+def test_v2_cell_retains_legacy_artifact_limit(reader, tmp_path, artifact):
+    case = _semantic_case(reader, tmp_path)
+    _pad_synthetic_cell(case, artifact, reader._Q4_ARTIFACT_BYTES + 1)
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+def test_v3_cell_log_keeps_legacy_artifact_limit(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    cell = case["cell_snapshots"]["general"]
+    cell["log"] += b" " * (reader._Q4_ARTIFACT_BYTES + 1)
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+@pytest.mark.parametrize("artifact", ["meta", "provenance"])
+@pytest.mark.parametrize("delta", [-1, 0, 1])
+def test_v3_cell_artifact_budget_boundary(reader, tmp_path, monkeypatch, artifact, delta):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    budget = 8192
+    _pad_synthetic_cell(case, artifact, budget + delta)
+    monkeypatch.setattr(reader, "_Q4_BOUNDED_V3_ARTIFACT_BYTES", budget, raising=False)
+    if delta > 0:
+        _semantic_refuses_without_callbacks(reader, case)
+    else:
+        assert _semantic_entry(reader, case)["status"] == "ANSWER"
+
+
+def test_v3_small_query_checks_total_budget_before_cell_expansion(reader, tmp_path, monkeypatch):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    monkeypatch.setattr(reader, "_Q4_TOTAL_BYTES", 1)
+    expanded = []
+    original = reader._q4_cell_controls
+
+    def observe(*args):
+        expanded.append(True)
+        return original(*args)
+
+    monkeypatch.setattr(reader, "_q4_cell_controls", observe)
+    _semantic_refuses_without_callbacks(reader, case)
+    assert expanded == []
+
+
+@pytest.mark.parametrize("artifact", ["meta", "provenance"])
+def test_v3_larger_last_cell_corruption_refuses_before_provider(reader, tmp_path, artifact):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    cell = case["cell_snapshots"][sorted(case["cell_snapshots"])[-1]]
+    cell["artifacts"][artifact] += b" " * (reader._Q4_ARTIFACT_BYTES + 1)
+    # The artifact is intentionally not repinned.
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+def _synthetic_json_extra(case, artifact, value):
+    data = case["cell_snapshots"]["general"]["artifacts"]
+    if artifact == "meta":
+        parsed = json.loads(data[artifact])
+        parsed["metadata"][0] = {"extra": value}
+        data[artifact] = _raw(parsed)
+        target = data[artifact]
+    else:
+        lines = data[artifact].splitlines()
+        parsed = json.loads(lines[0])
+        parsed["extra"] = value
+        target = lines[0] = _raw(parsed)
+        data[artifact] = b"\n".join(lines) + b"\n"
+    _semantic_repin_cell(case, "general")
+    return target
+
+
+@pytest.mark.parametrize("artifact", ["meta", "provenance"])
+@pytest.mark.parametrize("shape", ["containers", "scalars", "members", "depth"])
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+def test_v3_json_expansion_refuses_before_parsing_without_changing_v2(
+        reader, tmp_path, monkeypatch, artifact, shape, all_tasks):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    if shape == "containers":
+        value = [{} for _ in range(1000)]
+    elif shape == "scalars":
+        value = [None, True, False, 0, -1.25e3] * 200
+    elif shape == "members":
+        value = {str(number): None for number in range(1000)}
+    else:
+        value = None
+        for _ in range(32):
+            value = [value]
+    target = _synthetic_json_extra(case, artifact, value)
+    expanded = []
+    original = reader.json.loads
+
+    def observe(raw, *args, **kwargs):
+        if raw == target or raw == target.decode("utf-8"):
+            expanded.append(True)
+        return original(raw, *args, **kwargs)
+
+    monkeypatch.setattr(reader.json, "loads", observe)
+    if all_tasks:
+        _semantic_refuses_without_callbacks(reader, case)
+        assert expanded == []
+    else:
+        assert _semantic_entry(reader, case)["status"] == "ANSWER"
+        assert expanded
+
+
+@pytest.mark.parametrize("artifact", ["meta", "provenance"])
+def test_v3_json_budget_ignores_escaped_structure_in_unicode_strings(reader, tmp_path, artifact):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    value = {"quoted\"key\\": "snowman \u2603 and \U0001f600 []{}:\"\\" * 500,
+             "scalars": [None, True, False, 0, -1.25e3]}
+    _synthetic_json_extra(case, artifact, value)
+    assert _semantic_entry(reader, case)["status"] == "ANSWER"
+
+
+def test_v3_json_node_budget_counts_keys_scalars_and_empty_containers(reader):
+    raw = b'{"\\u0061":[null,true,false,0,-2.5e+3,{},[],"escaped \\" {[ ]} \\\\ \\u2603"]}'
+    assert json.loads(raw)["a"][-1] == 'escaped " {[ ]} \\ \u2603'
+    reader._q4_json_budget(raw, 11)
+    with pytest.raises(ValueError, match="^cell_json_node_budget$"):
+        reader._q4_json_budget(raw, 10)
+
+
+def test_v3_json_depth_budget_checks_container_boundary(reader):
+    depth = reader._Q4_V3_JSON_MAX_DEPTH
+    reader._q4_json_budget(b"[" * depth + b"0" + b"]" * depth, depth + 1)
+    with pytest.raises(ValueError, match="^cell_json_depth_budget$"):
+        reader._q4_json_budget(b"[" * (depth + 1) + b"0" + b"]" * (depth + 1), depth + 2)
+
+
+@pytest.mark.parametrize("slashes", range(6))
+def test_v3_json_budget_escape_parity_cannot_hide_following_nodes(reader, slashes):
+    raw = _raw({"a": "\\" * slashes + '\"{}[] snowman \u2603', "z": [0]})
+    reader._q4_json_budget(raw, 6)
+    with pytest.raises(ValueError, match="^cell_json_node_budget$"):
+        reader._q4_json_budget(raw, 5)
+
+
+@pytest.mark.parametrize("raw", [b'{"a":[1,]}', b'{"a":"unterminated}', b'{"a":1} []', b'{"a":"\\q"}'])
+def test_v3_json_budget_leaves_malformed_syntax_rejection_to_parser(reader, raw):
+    reader._q4_json_budget(raw, 100)
+    with pytest.raises(ValueError):
+        reader._pinned(raw, _sha(raw))
+
+
+@pytest.mark.parametrize("separator", [b"\n", b"\r\n", b"\r"])
+def test_v3_provenance_json_budget_preserves_line_endings(reader, tmp_path, separator):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    data = case["cell_snapshots"]["general"]["artifacts"]
+    data["provenance"] = separator.join(data["provenance"].splitlines()) + separator
+    _semantic_repin_cell(case, "general")
+    assert _semantic_entry(reader, case)["status"] == "ANSWER"
+
+
+@pytest.mark.parametrize("fault", ["duplicate_key", "nonfinite"])
+def test_v3_json_budget_preserves_strict_parser_rejections(reader, tmp_path, fault):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    data = case["cell_snapshots"]["general"]["artifacts"]
+    if fault == "duplicate_key":
+        data["meta"] = data["meta"].replace(b'"dim":384', b'"dim":384,"dim":384', 1)
+    else:
+        _synthetic_json_extra(case, "meta", None)
+        data["meta"] = data["meta"].replace(b'"extra":null', b'"extra":NaN', 1)
+    _semantic_repin_cell(case, "general")
+    _semantic_refuses_without_callbacks(reader, case)
+
+
+def test_v3_provenance_blank_line_bomb_refuses_before_split_or_parse(reader, tmp_path):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    data = case["cell_snapshots"]["general"]["artifacts"]
+    data["provenance"] += b"\n" * 1000
+    _semantic_repin_cell(case, "general")
+    with pytest.raises(ValueError, match="^cell_json_line_budget$"):
+        reader._query_content_snapshot(case)
+    assert case["index_provider"].calls == [] and case["stream"].reads == 0
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
+@pytest.mark.parametrize("all_tasks", [False, True], ids=["legacy-v2", "all-tasks-v3"])
+def test_v3_provenance_rejects_encoding_autodetection_before_json_parser(
+        reader, tmp_path, monkeypatch, encoding, all_tasks):
+    case = _semantic_case(reader, tmp_path, all_tasks=all_tasks)
+    data = case["cell_snapshots"]["general"]["artifacts"]
+    lines = data["provenance"].splitlines()
+    row = json.loads(lines[0])
+    # U+0122 includes an ASCII quote byte in UTF-16/32. A UTF-8 byte scanner
+    # could mistake it for a string delimiter and hide the following nodes.
+    row["!"] = {"marker": "\u0122", "values": [0] * 1000}
+    target = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(encoding)
+    assert len(json.loads(target)["!"]["values"]) == 1000
+    lines[0] = target
+    data["provenance"] = b"\n".join(lines) + b"\n"
+    _semantic_repin_cell(case, "general")
+    parsed = []
+    original = reader.json.loads
+
+    def observe(raw, *args, **kwargs):
+        if raw == target:
+            parsed.append(True)
+        return original(raw, *args, **kwargs)
+
+    monkeypatch.setattr(reader.json, "loads", observe)
+    if all_tasks:
+        _semantic_refuses_without_callbacks(reader, case)
+        assert parsed == []
+    else:
+        assert _semantic_entry(reader, case)["status"] == "ANSWER"
+        assert parsed
+
+
+@pytest.mark.parametrize("escaped", [False, True])
+def test_v3_provenance_parses_only_utf8_text_with_unicode_and_escapes(reader, tmp_path, monkeypatch, escaped):
+    case = _semantic_case(reader, tmp_path, all_tasks=True)
+    data = case["cell_snapshots"]["general"]["artifacts"]
+    lines = data["provenance"].splitlines()
+    row = json.loads(lines[0])
+    row["!"] = {"marker": '\u0122\u2603\U0001f600 \\"{}[]', "values": [0, 1]}
+    text = json.dumps(row, ensure_ascii=escaped, sort_keys=True, separators=(",", ":"))
+    lines[0] = text.encode("utf-8")
+    data["provenance"] = b"\n".join(lines) + b"\n"
+    _semantic_repin_cell(case, "general")
+    parsed = []
+    original = reader.json.loads
+
+    def observe(raw, *args, **kwargs):
+        if raw == text or raw == text.encode("utf-8"):
+            parsed.append(type(raw))
+        return original(raw, *args, **kwargs)
+
+    monkeypatch.setattr(reader.json, "loads", observe)
+    assert _semantic_entry(reader, case)["status"] == "ANSWER"
+    assert parsed == [str]
+
+
+@pytest.mark.parametrize("bad", [b"\xff", b"\xc0\x80", b"\xed\xa0\x80", b"\xf4\x90\x80\x80", b"\xe2", b"\x00"])
+def test_v3_json_budget_refuses_invalid_utf8_or_raw_nul_before_scanning(reader, bad):
+    with pytest.raises(ValueError, match="^cell_json_encoding$"):
+        reader._q4_json_budget(b'{"a":"' + bad + b'"}', 3)
+
+
+def test_v3_json_utf8_validation_preserves_split_multibyte_character(reader):
+    raw = b'{"a":"' + b"x" * 65529 + "\u2603".encode("utf-8") + b'"}'
+    assert raw[65535:65538] == "\u2603".encode("utf-8")
+    reader._q4_json_budget(raw, 3)
+
+
+def test_v3_json_utf8_validation_flushes_incomplete_final_character(reader):
+    with pytest.raises(ValueError, match="^cell_json_encoding$"):
+        reader._q4_json_budget(b'{"a":"ok"}' + b"\xe2", 100)
+
+
+@pytest.mark.parametrize('message, digits', [
+    ('branch a-35850123456 ready', '35850123456'),
+    ('task a-35850123456 ready', '35850123456'),
+    ('CI run 35850123456 completed', '35850123456'),
+    ('CI run 1234567890 completed', '1234567890'),
+    ('job run 1234567890 completed', '1234567890'),
+    ('task synthetic-build-20261214-0357 ready', '20261214'),
+])
+def test_context_numeric_ids_never_survive_in_projection(reader, message, digits):
+    verdict, value = reader._classify_with_policy(message, 4096, reader.IdentifierPolicy([]))
+    assert verdict == 'KEEP'
+    visible = reader.decode_text(value)
+    assert digits not in visible and 'redacted' in visible
+
+
+@pytest.mark.parametrize('message', [
+    'task x-a010101A0101 ready', 'branch x-a010101A0101 ready',
+    'task x-a120204A512W ready', 'branch x-a120204A512W ready',
+    'task a-35850123456 password=syntheticfixturevalue',
+    'branch a-35850123456 fixture@example.invalid',
+    'CI run 35850123456 account FI21 1234 5600 0007 85',
+    'task synthetic-build-20261214-0357 phone: 123456',
+    'task synthetic-build-20261214-0357 secret=syntheticfixture',
+    'task synthetic-build-20261214-0357 sealed',
+])
+def test_original_sensitive_content_survives_no_numeric_context_redaction(reader, message):
+    assert reader._classify_with_policy(message, 4096, reader.IdentifierPolicy([]))[0] == 'DROP'
+
+
+@pytest.mark.parametrize('message', [
+    'contact 040.123.4567', 'contact 040/123/4567',
+    'phone: 040.123.4567', 'tel 040/123/4567',
+    'IBAN FI21. 1234. 5600. 0007. 85',
+    'IBAN FI21 / 1234 / 5600 / 0007 / 85',
+    'identity 010101 A 0101', 'identity 010101/A/0101',
+    'task x-a010101/A/0101 ready', 'branch x-a010101 A 0101 ready',
+])
+def test_structured_identifier_separator_forms_drop_before_projection(reader, message):
+    assert reader._classify_with_policy(message, 4096, reader.IdentifierPolicy([]))[0] == 'DROP'
+
+
+@pytest.mark.parametrize('message', [
+    'python version 3.12.14 ready',
+    'service 192.168.100.12 ready',
+    'repository path local /tools/v1/config ready',
+    'versions 12 34 56 passed',
+    'pipeline counts 1 2 3 4 5 complete',
+])
+def test_structured_separator_rules_keep_technical_context(reader, message):
+    assert reader._classify_with_policy(message, 4096, reader.IdentifierPolicy([]))[0] == 'KEEP'
+
+
+@pytest.mark.parametrize('message', [
+    'phone: +358.50. 123. 4567', 'phone: +358/50/ 123/ 4567',
+    'phone: 202. 555. 0142', 'contact +358 (0) 40. 123. 4567',
+])
+def test_explicit_phone_separator_combinations_drop(reader, message):
+    assert reader._classify_with_policy(message, 4096, reader.IdentifierPolicy([]))[0] == 'DROP'
+
+
+@pytest.mark.parametrize('message', [
+    'release v0.12.34.56.78.90 completed', 'version 0.12.34.56.78.90 completed',
+])
+def test_long_technical_version_is_kept_without_ambiguous_number(reader, message):
+    verdict, value = reader._classify_with_policy(message, 4096, reader.IdentifierPolicy([]))
+    assert verdict == 'KEEP'
+    assert '0.12.34.56.78.90' not in reader.decode_text(value)
+
+
+@pytest.mark.parametrize('message, date_digits, meaningful_words', [
+    ('synthetic-run-20261214 has completed', '20261214', ('synthetic', 'run')),
+    ('work item synthetic-task-20261214 is ready', '20261214', ('synthetic', 'task')),
+    ('codex-lead-1/mind-thin-production-20261115-1422 is next', '20261115', ('mind', 'thin', 'production')),
+    ('task synthetic-task-20261214-1422 is ready', '20261214', ('synthetic', 'task')),
+])
+def test_unlabelled_dated_task_identifier_is_retained_without_ambiguous_digits(reader, message, date_digits, meaningful_words):
+    verdict, value = reader._classify_with_policy(message, 4096, reader.IdentifierPolicy([]))
+    assert verdict == 'KEEP'
+    visible = reader.decode_text(value)
+    assert date_digits not in visible
+    assert '1422' not in visible
+    assert all(word in visible.split() for word in meaningful_words)
+
+
+@pytest.mark.parametrize('message, secretlike', [
+    ('synthetic-AbCdEfGhIjKlMnOp-20261214 completed', 'AbCdEfGhIjKlMnOp'),
+    ('synthetic-abcdefghijklmno-20261214 completed', 'abcdefghijklmno'),
+    ('synthetic-20261214-a completed', 'date-redacted-a'),
+    ('synthetic-20261214-shortsecret completed', 'shortsecret'),
+    ('secretprefix.synthetic-20261214 completed', 'secretprefix'),
+])
+def test_dated_task_keeps_only_safe_words_without_unknown_secretlike_segment(reader, message, secretlike):
+    verdict, value = reader._classify_with_policy(message, 4096, reader.IdentifierPolicy([]))
+    assert verdict == 'KEEP'
+    visible = reader.decode_text(value)
+    assert 'synthetic' in visible.split()
+    assert secretlike not in visible
+    assert '20261214' not in visible
+
+
+def test_dated_named_task_cannot_retain_ambiguous_contact_number(reader):
+    message = 'task synthetic-20261214-contact-2025550142 is ready'
+    verdict, value = reader._classify_with_policy(message, 4096, reader.IdentifierPolicy([]))
+    assert verdict == 'KEEP'
+    visible = reader.decode_text(value)
+    assert '20261214' not in visible and '2025550142' not in visible
+    assert 'contact' not in visible
+
+
+def test_long_datelike_free_token_never_uses_dated_identifier_regex(reader, monkeypatch):
+    class UnexpectedDatedRegex:
+        def search(self, *args, **kwargs):
+            pytest.fail('dated regex used without a date candidate')
+        def sub(self, *args, **kwargs):
+            pytest.fail('dated regex used without a date candidate')
+
+    monkeypatch.setattr(reader, '_DATED_TASK_IDENTIFIER_RE', UnexpectedDatedRegex())
+    verdict, _ = reader._classify_with_policy(('a-' * 1800) + 'notadate', 4096, reader.IdentifierPolicy([]))
+    assert verdict == 'KEEP'
+
+
+def test_overcomplex_dated_identifier_refuses_before_dated_regex(reader, monkeypatch):
+    class UnexpectedDatedRegex:
+        def search(self, *args, **kwargs):
+            pytest.fail('dated regex used after complexity limit')
+        def sub(self, *args, **kwargs):
+            pytest.fail('dated regex used after complexity limit')
+
+    monkeypatch.setattr(reader, '_DATED_TASK_IDENTIFIER_RE', UnexpectedDatedRegex())
+    verdict, reason = reader._classify_with_policy(('a-' * 65) + '20261214', 4096, reader.IdentifierPolicy([]))
+    assert (verdict, reason) == ('DROP', 'oversize')
+
+
+def test_dated_identifier_at_complexity_limit_preserves_redaction(reader):
+    verdict, encoded = reader._classify_with_policy(('a-' * 64) + '20261214', 4096, reader.IdentifierPolicy([]))
+    assert verdict == 'KEEP'
+    assert '20261214' not in reader.decode_text(encoded)
+
+
+def test_dated_identifier_phone_mask_matches_original_on_bounded_tokens(reader):
+    import itertools
+    prefixes = ('synthetic-run', 'alpha', 'codex-lead-1/mind-thin', 'task_x', '9/beta')
+    dates = ('20261214', '19900208-1234', '20261340', 'notadate',
+             '2026121', '202612140', '20261214X', '20991231')
+    suffixes = ('', '-tail', '/1234567', '.suffix')
+    surroundings = ('{}', 'before {} after', '({}), next')
+    for prefix, date, suffix, template in itertools.product(prefixes, dates, suffixes, surroundings):
+        text = template.format(prefix + '-' + date + suffix)
+        expected = reader._DATED_TASK_IDENTIFIER_RE.sub(
+            lambda match: match.group('prefix') + 'date-redacted', text)
+        assert reader._mask_dated_tasks_for_phone(text) == expected
+
+
+@pytest.mark.parametrize('message', [
+    'phone: synthetic-task-20261214',
+    'call +358 40 123 4567 about synthetic-task-20261214',
+    'synthetic-task-20261214 contact fixture@example.invalid',
+    'synthetic-task-20261214 password=syntheticfixturevalue',
+    'synthetic-task-20261214 account FI21 1234 5600 0007 85',
+    'synthetic-task-20261214 personal identity 131052-308T',
+    'synthetic-task-20261214 sealed',
+    'contact 0401234567 on synthetic-task-20261214',
+    'call 20261214',
+    'build 20261214 completed',
+    'synthetic-task-20261340 completed',
+    'synthetic-task-2026121407 completed',
+    'synthetic-task-20261214-0401234567 completed',
+    'synthetic-sk-AbCd1234Xyz-20261214 completed',
+])
+def test_unlabelled_dated_task_never_overrides_sensitive_screening(reader, message):
+    assert reader._classify_with_policy(message, 4096, reader.IdentifierPolicy([]))[0] == 'DROP'
+
+
+@pytest.mark.parametrize('status', [
+    'build_consensus_pass', 'approved', 'rejected', 'approved_ci_green', 'build_consensus',
+    'concur', 'concurred', 'agree', 'agreed',
+    'rco_pass', 'rco_pass_pending_ci', 'no_changes_requested', 'operator_sign',
+    'changes_requested', 'finding', 'veto', 'hold', 'changes_requested_resolved',
+    'changes_requested_cleared', 'changes_requested_retracted', 'block_retracted',
+    'received', 'concurrence', 'acknowledged',
+])
+def test_all_tasks_build_lane_known_decision_status_is_screened_data(reader, tmp_path, status):
+    row = _row('synthetic build decision and next step', type='decision', status=status)
+    case = _all_tasks_case(reader, tmp_path, [row])
+    policy=json.loads(case['messages']['policy_bytes'])
+    policy['types']=['message','done','decision']
+    case['messages']['policy_bytes']=_raw(policy)
+    case['messages']['policy_sha256']=_sha(case['messages']['policy_bytes'])
+    _edit_decision(case, message_policy_sha256=case['messages']['policy_sha256'])
+    result=reader.rederive_complete_message_projection(**case)
+    assert result['messages']['accepted'] == 1
+    record=result['messages']['records'][0]
+    assert record['meta']['declared_status']==status
+    assert record['meta']['agent']=='codex-lead-1'
+    assert reader.decode_text(record['stored_text'])=='synthetic build decision and next step'
+    assert result.get('authority', 'none') == 'none'
+
+
+def test_decision_expansion_keeps_unknown_legacy_rco_and_secrets_out(reader, tmp_path):
+    rows=[_row('synthetic unknown state',type='decision',status='synthetic_unknown'),
+          _row('synthetic non decision',type='message',status='build_consensus_pass'),
+          _row('synthetic rco authored',type='decision',status='build_consensus_pass',agent='claude-rco-1',agent_uuid=ROSTER['claude-rco-1']),
+          _row('synthetic rco addressed',type='decision',status='build_consensus_pass',to='claude-rco-2'),
+          _row('password=syntheticfixturevalue',type='decision',status='build_consensus_pass'),
+          _row('synthetic valid decision',type='decision',status='build_consensus_pass')]
+    case=_all_tasks_case(reader,tmp_path,rows)
+    policy=json.loads(case['messages']['policy_bytes']);policy['types']=['message','done','decision']
+    case['messages']['policy_bytes']=_raw(policy);case['messages']['policy_sha256']=_sha(case['messages']['policy_bytes'])
+    _edit_decision(case,message_policy_sha256=case['messages']['policy_sha256'])
+    result=reader.rederive_complete_message_projection(**case)
+    assert result['messages']['accepted']==1
+    assert reader.decode_text(result['messages']['records'][0]['stored_text'])=='synthetic valid decision'
+    (tmp_path/'legacy').mkdir()
+    legacy=_case(reader,tmp_path/'legacy',[_row('synthetic build decision',type='decision',status='build_consensus_pass')])
+    assert _derive(reader,legacy)['messages']['accepted']==0

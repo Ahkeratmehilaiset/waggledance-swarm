@@ -31,6 +31,68 @@ def test_expected_rows_and_digest(source):
     assert next(iter(rows.values()))['message'] == 'alpha'
 
 
+def test_complete_prefix_includes_all_tasks_above_existing_row_cap(source, monkeypatch):
+    path, generation, _, end = source
+    raw = b''.join(('{"task_id":"task-%d","n":%d}\n' % (n, n)).encode() for n in range(4100))
+    path.write_bytes(raw)
+    monkeypatch.setattr(reader, 'PAGE_BYTES', 8192)
+    rows = reader.read_complete_prefix_rows(str(path), str(generation),
+        bridge.BridgeCursor(len(raw), end.file_identity, end.generation), hashlib.sha256(raw).hexdigest())
+    assert len(rows) == 4100
+    assert {row['n'] for row in rows.values()} == set(range(4100))
+
+
+def test_complete_prefix_never_returns_mutated_source(source, monkeypatch):
+    path, generation, raw, end = source
+    original = bridge._parse_rows
+    def alter(payload, **kwargs):
+        result = original(payload, **kwargs)
+        path.write_bytes(raw.replace(b'alpha', b'omega'))
+        return result
+    monkeypatch.setattr(bridge, '_parse_rows', alter)
+    with pytest.raises(ValueError):
+        reader.read_complete_prefix_rows(str(path), str(generation), end, hashlib.sha256(raw).hexdigest())
+
+
+def test_complete_prefix_rejects_digest_and_generation_changes(source):
+    path, generation, raw, end = source
+    with pytest.raises(ValueError):
+        reader.read_complete_prefix_rows(str(path), str(generation), end, '0' * 64)
+    generation.write_bytes(b'{"generation":"g2"}')
+    with pytest.raises(ValueError):
+        reader.read_complete_prefix_rows(str(path), str(generation), end, hashlib.sha256(raw).hexdigest())
+
+
+def test_complete_prefix_rechecks_generation_after_path_reopen(source, monkeypatch):
+    path, generation, raw, end = source
+    original = bridge._open_log
+    calls = 0
+    def reopen(candidate):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            generation.write_bytes(b'{"generation":"g2"}')
+        return original(candidate)
+    monkeypatch.setattr(bridge, '_open_log', reopen)
+    with pytest.raises(ValueError):
+        reader.read_complete_prefix_rows(str(path), str(generation), end, hashlib.sha256(raw).hexdigest())
+
+
+def test_complete_prefix_refuses_tail_truncation_during_parse(source, monkeypatch):
+    path, generation, raw, end = source
+    with path.open('ab') as stream:
+        stream.write(b'{"task_id":"later"}\n')
+    original = bridge._parse_rows
+    def truncate_tail(payload, **kwargs):
+        result = original(payload, **kwargs)
+        with path.open('r+b') as stream:
+            stream.truncate(len(raw))
+        return result
+    monkeypatch.setattr(bridge, '_parse_rows', truncate_tail)
+    with pytest.raises(ValueError):
+        reader.read_complete_prefix_rows(str(path), str(generation), end, hashlib.sha256(raw).hexdigest())
+
+
 def test_bad_digest_refuses(source):
     with pytest.raises(ValueError):
         read(source, digest='0' * 64)

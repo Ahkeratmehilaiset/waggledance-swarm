@@ -317,6 +317,57 @@ def test_call_and_shutdown_timeouts_remain_distinct(fake_client):
         client.close(timeout=1)
 
 
+def test_worker_uses_bounded_launch_remainder_across_rotations(fake_client, monkeypatch):
+    # Real launcher uses its remaining startup deadline for the handshake and
+    # retains that bounded value on the client; every rotation may differ.
+    monkeypatch.setattr(rotation, '_BULK_NONCE_LIMIT', 1)
+    factory = Factory()
+    remaining = iter((29.99, 0.001))
+
+    def launch(*, owner_sink):
+        result = factory(owner_sink=owner_sink)
+        result['client']._timeout = next(remaining)
+        return result
+
+    client = create(launch)
+    try:
+        assert client.encode_supervised(request(1))['vector_bytes'] == b'v' * 1536
+        assert client.active_client._timeout == 29.99
+        assert client.encode_supervised(request(2))['vector_bytes'] == b'v' * 1536
+        assert client.active_client._timeout == 0.001
+        assert factory.owners[0].owned is False and factory.owners[1].owned is True
+    finally:
+        client.close(timeout=1)
+
+
+@pytest.mark.parametrize('bad_timeout', [0, -1, float('nan'), float('inf'), True, 30.001, '30'])
+def test_worker_rejects_invalid_or_unbounded_launch_remainder(fake_client, bad_timeout):
+    factory = Factory()
+
+    def launch(*, owner_sink):
+        result = factory(owner_sink=owner_sink)
+        result['client']._timeout = bad_timeout
+        return result
+
+    client = create(launch)
+    with pytest.raises(rotation.RotationRefused):
+        client.encode_supervised(request(1))
+    assert client.status()['state'] == 'HOLD' and client.owner is factory.owners[0]
+    assert len(factory.owners) == 1
+    client.close(timeout=1)
+
+
+def test_worker_launch_remainder_cannot_change_after_binding(fake_client):
+    client = create(Factory())
+    try:
+        client.encode_supervised(request(1))
+        client.active_client._timeout = 29
+        with pytest.raises(rotation.RotationRefused):
+            client.encode_supervised(request(2))
+    finally:
+        client.close(timeout=1)
+
+
 def test_zero_shutdown_timeout_never_waits_and_new_owner_closes_cleanly(fake_client, monkeypatch):
     monkeypatch.setattr(rotation, '_BULK_NONCE_LIMIT', 1)
     factory = Factory(hold=True)
@@ -411,7 +462,9 @@ def test_rotation_uses_real_cooperative_pumps_and_protocol(monkeypatch):
         owner_sink(owner)
         owner.set_job(Job())
         owner.bind(process)
-        client = e5_client.GracefulE5WorkerClient(owner, timeout=30,
+        # Match a successful real launch whose startup deadline has elapsed
+        # partially before the real cooperative client is constructed.
+        client = e5_client.GracefulE5WorkerClient(owner, timeout=29.99,
             encoder_binding_sha256=BINDING, bulk_contract_sha256=BULK)
         owner.mark_ready()
         return {'status': 'READY', 'owner': owner, 'client': client,
@@ -424,6 +477,7 @@ def test_rotation_uses_real_cooperative_pumps_and_protocol(monkeypatch):
             result = client.encode_supervised(request(nonce), frame_check=lambda: checks.append(True),
                                               call_deadline=time.monotonic() + 10)
             assert len(result['vector_bytes']) == 1536
+            assert client.active_client._timeout == 29.99
         assert len(processes) == 2
         assert len(checks) == 6
         assert processes[0].poll() == 0 and client.status()['state'] == 'RUNNING'

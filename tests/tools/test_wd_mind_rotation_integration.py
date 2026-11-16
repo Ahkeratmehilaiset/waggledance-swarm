@@ -124,7 +124,8 @@ def synthetic_factory(self, *, owner_sink):
     owner_sink(owner)
     job = Job(); jobs.append(job)
     owner.set_job(job); owner.bind(process)
-    client = e5.GracefulE5WorkerClient(owner, timeout=30, encoder_binding_sha256=runtime_hash,
+    # The native launcher spends part of its startup deadline on the handshake.
+    client = e5.GracefulE5WorkerClient(owner, timeout=29.99, encoder_binding_sha256=runtime_hash,
                                         bulk_contract_sha256=e5.BULK_CONTRACT_SHA256)
     owner.mark_ready()
     return {'status':'READY','owner':owner,'client':client,

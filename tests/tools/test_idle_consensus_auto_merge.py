@@ -4687,6 +4687,9 @@ def test_mind_lane_prefers_the_pool_reviewer_and_keeps_one_rco(tmp_path: Path) -
          | {"agent_uuid": "00000000-0000-4000-8000-000000000000"}],             # another identity
         [_mind_vote("codex-tools-1", "build_consensus_pass", 20)],              # Lead's own family
         [_mind_vote("grok-scout-1", "build_consensus_pass", 20)],               # not in the review pool
+        [_mind_vote("claude-rco-1", "build_consensus_pass", 20)],               # the lane that holds the RCO slot
+        [_mind_vote("claude-rco-2", "build_consensus_pass", 20)],               # an RCO build approval is not its pass
+        [_mind_vote("claude-rco-3", "build_consensus_pass", 20)],
         [_mind_vote("fable-5", "build_consensus_pass", 20),
          _mind_vote("fable-5", "changes_requested", 21)],                       # later block
     ],

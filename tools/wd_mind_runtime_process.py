@@ -123,6 +123,321 @@ def _guardian_entrypoint(argv, stdin, stdout):
     return 2
 
 
+_LOCAL_CANDIDATE_PIPE_PREFIX = r"\\.\pipe\wd-mind-"
+_LOCAL_CANDIDATE_MAX_BYTES = 4096
+_LOCAL_CANDIDATE_LANES = frozenset(('codex-lead-1', 'codex-tools-1', 'claude-rco-1', 'claude-rco-2', 'fable-5'))
+
+
+def local_candidate_pipe_name(*, manifest_sha256):
+    """Return a local rendezvous name, not proof of the server's identity."""
+    if type(manifest_sha256) is not str or not _SHA256.fullmatch(manifest_sha256):
+        raise RuntimePreflightRefused('runtime_process_preflight_refused') from None
+    return _LOCAL_CANDIDATE_PIPE_PREFIX + manifest_sha256
+
+
+def _local_candidate_pipe_name_valid(value):
+    return (type(value) is str and value.startswith(_LOCAL_CANDIDATE_PIPE_PREFIX)
+            and bool(_SHA256.fullmatch(value[len(_LOCAL_CANDIDATE_PIPE_PREFIX):])))
+
+
+def _local_candidate_json(raw):
+    if type(raw) is not bytes or not 0 < len(raw) <= _LOCAL_CANDIDATE_MAX_BYTES:
+        raise ValueError('frame_size')
+    return json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_json_object,
+                      parse_constant=lambda _: (_ for _ in ()).throw(ValueError('constant')))
+
+
+def _local_candidate_encode(value):
+    raw = json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(',', ':'), allow_nan=False).encode('ascii')
+    if not 0 < len(raw) <= _LOCAL_CANDIDATE_MAX_BYTES:
+        raise ValueError('frame_size')
+    return raw
+
+
+def _local_candidate_request(value):
+    keys = {'schema', 'query_id', 'nonce', 'lane', 'scope'}
+    if (type(value) is not dict or set(value) != keys or any(type(value[key]) is not str for key in keys)
+            or value['schema'] not in ('wd.mind-pipe-request.v1', 'wd.mind-pipe-request.v2')
+            or value['query_id'] != 'startup_work_overview' or not _SHA256.fullmatch(value['nonce'])
+            or value['lane'] not in _LOCAL_CANDIDATE_LANES or value['scope'] not in ('own', 'shared')):
+        raise ValueError('request')
+    return dict(value)
+
+
+def _local_candidate_reply(value, request):
+    keys = {'schema', 'nonce', 'lane', 'scope', 'status', 'candidates'}
+    version = 'v2' if request['schema'] == 'wd.mind-pipe-request.v2' else 'v1'
+    if (type(value) is not dict or set(value) != keys or value['schema'] != 'wd.mind-pipe-candidates.' + version
+            or type(value['nonce']) is not str or not hmac.compare_digest(value['nonce'], request['nonce'])
+            or value['lane'] != request['lane'] or value['scope'] != request['scope']
+            or value['status'] not in ('CANDIDATES', 'ABSTAIN') or type(value['candidates']) is not list
+            or len(value['candidates']) > 3 or ((value['status'] == 'CANDIDATES') != bool(value['candidates']))):
+        raise ValueError('reply')
+    seen = set()
+    for candidate in value['candidates']:
+        names = ('ref_sha256', 'doc_id_sha256', 'source_event_sha256')
+        expected = set(names) | ({'source_offset', 'source_length', 'chunk_index'} if version == 'v2' else set())
+        if (type(candidate) is not dict or set(candidate) != expected
+                or any(type(candidate[name]) is not str or not _SHA256.fullmatch(candidate[name]) for name in names)):
+            raise ValueError('candidate')
+        if version == 'v2':
+            offset, length, index = (candidate['source_offset'], candidate['source_length'], candidate['chunk_index'])
+            if (type(offset) is not int or type(length) is not int or type(index) is not int
+                    or offset < 0 or not 1 <= length <= 4 * 1024 * 1024 or not 0 <= index <= 4 * 1024 * 1024
+                    or offset + length > 2**63 - 1):
+                raise ValueError('candidate_location')
+        key = tuple(candidate[name] for name in names)
+        if key in seen:
+            raise ValueError('duplicate')
+        seen.add(key)
+    return value
+
+
+class _LocalCandidateService:
+    """One caller-owned owner and local reference-only service; no caller authentication.
+
+    The caller retains this object, especially after HOLD. Its own owner is not
+    started or closed here; process creation and source verification are separate.
+    """
+    def __init__(self, owner, pipe_name):
+        self._owner, self._name = owner, pipe_name
+        self._listener = self._thread = self._wake_thread = None
+        self._stop, self._lock, self._failed = threading.Event(), threading.Lock(), False
+        self._serve_done, self._start_uncertain = threading.Event(), False
+        self._wake_done, self._wake_start_uncertain = None, False
+
+    def start(self):
+        from multiprocessing.connection import Listener
+        with self._lock:
+            if self._thread is not None or self._stop.is_set():
+                raise RuntimePreflightRefused('runtime_process_preflight_refused') from None
+            try:
+                self._listener = Listener(address=self._name, family='AF_PIPE', authkey=None)
+                self._thread = threading.Thread(target=self._serve, name='mind-local-candidates', daemon=False)
+                self._thread.start()
+            except BaseException as exc:
+                # Once Thread.start has been entered, native execution may
+                # have begun even if Python never observed the start event.
+                # Retain the listener and owner until the worker proves exit.
+                if self._thread is not None:
+                    self._start_uncertain = True
+                elif self._listener is not None:
+                    self._listener.close()
+                self._stop.set()
+                if not isinstance(exc, Exception):
+                    raise
+                raise RuntimePreflightRefused('runtime_process_preflight_refused') from None
+
+    def _serve(self):
+        try:
+            while not self._stop.is_set():
+                connection = None
+                try:
+                    connection = self._listener.accept()
+                except BaseException:
+                    self._failed = True
+                    break
+                try:
+                    if self._stop.is_set():
+                        break
+                    if not connection.poll(1):
+                        continue
+                    request = _local_candidate_request(_local_candidate_json(connection.recv_bytes(_LOCAL_CANDIDATE_MAX_BYTES)))
+                    if request['schema'] == 'wd.mind-pipe-request.v2':
+                        response = self._owner.located_candidates(dict(request))
+                    else:
+                        response = self._owner.candidates(dict(request))
+                    response = _local_candidate_reply(response, request)
+                    if not self._stop.is_set():
+                        connection.send_bytes(_local_candidate_encode(response))
+                except Exception:
+                    pass
+                except BaseException:
+                    self._failed = True
+                    break
+                finally:
+                    if connection is not None:
+                        try:
+                            connection.close()
+                        except Exception:
+                            pass
+        finally:
+            try:
+                self._listener.close()
+            except BaseException:
+                self._failed = True
+            finally:
+                self._serve_done.set()
+
+    def status(self):
+        with self._lock:
+            if ((self._start_uncertain and not self._serve_done.is_set()) or
+                    (self._wake_thread is not None and not self._wake_done.is_set())):
+                state = 'HOLD'
+            elif self._failed:
+                state = 'FAILED'
+            elif self._thread is None:
+                state = 'STOPPED' if self._stop.is_set() else 'NEW'
+            elif self._thread.is_alive():
+                state = 'HOLD' if self._stop.is_set() else 'RUNNING'
+            else:
+                state = 'STOPPED'
+        return {'state':state, 'authority':'none', 'caller_authentication':'UNKNOWN'}
+
+    def close(self, *, timeout=0):
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 <= timeout <= 90:
+            raise RuntimePreflightRefused('runtime_process_preflight_refused') from None
+        deadline = time.monotonic() + float(timeout)
+        self._stop.set()
+        with self._lock:
+            thread = self._thread
+            if thread is None:
+                return {'state':'STOPPED', 'authority':'none', 'caller_authentication':'UNKNOWN'}
+            if self._start_uncertain and not self._serve_done.is_set() and not thread.is_alive():
+                return {'state':'HOLD', 'authority':'none', 'caller_authentication':'UNKNOWN'}
+            if (self._wake_thread is not None and self._wake_done.is_set()
+                    and not self._wake_thread.is_alive()):
+                self._wake_thread, self._wake_done, self._wake_start_uncertain = None, None, False
+            if self._wake_start_uncertain and not self._wake_done.is_set():
+                return {'state':'HOLD', 'authority':'none', 'caller_authentication':'UNKNOWN'}
+            if thread.is_alive() and self._wake_thread is None:
+                done = threading.Event()
+                try:
+                    wake = threading.Thread(target=lambda: self._wake_then_done(done),
+                                            name='mind-local-wake', daemon=True)
+                except Exception:
+                    # Construction failed before Thread.start was called.
+                    # A later close may retry without abandoning a worker.
+                    return {'state':'HOLD', 'authority':'none', 'caller_authentication':'UNKNOWN'}
+                self._wake_thread, self._wake_done = wake, done
+                try:
+                    wake.start()
+                except BaseException as exc:
+                    # is_alive() and the Python _started event cannot prove
+                    # whether native start raced the exception. Retain the
+                    # wake and listener until the target itself finishes.
+                    self._wake_start_uncertain = True
+                    if not isinstance(exc, Exception):
+                        raise
+                    return {'state':'HOLD', 'authority':'none', 'caller_authentication':'UNKNOWN'}
+        if thread.is_alive():
+            thread.join(max(0, deadline - time.monotonic()))
+        wake_done = self._wake_done
+        if wake_done is not None and not wake_done.is_set():
+            wake_done.wait(max(0, deadline - time.monotonic()))
+        state = ('HOLD' if thread.is_alive() or (self._start_uncertain and not self._serve_done.is_set())
+                 or (wake_done is not None and not wake_done.is_set())
+                 else 'FAILED' if self._failed else 'STOPPED')
+        return {'state':state, 'authority':'none',
+                'caller_authentication':'UNKNOWN'}
+
+    def _wake_then_done(self, done):
+        try:
+            self._wake()
+        finally:
+            done.set()
+
+    def _wake(self):
+        from multiprocessing.connection import Client
+        try:
+            connection = Client(address=self._name, family='AF_PIPE', authkey=None)
+            connection.close()
+        except Exception:
+            pass
+
+
+def create_local_candidate_service(*, enabled=False, owner=None, pipe_name=None):
+    """Prepare a local service; it never authenticates peers or serves message text."""
+    if (enabled is not True or os.name != 'nt' or not _local_candidate_pipe_name_valid(pipe_name)
+            or owner is None or not callable(getattr(owner, 'candidates', None))):
+        raise RuntimePreflightRefused('runtime_process_preflight_refused') from None
+    return _LocalCandidateService(owner, pipe_name)
+
+
+class _LocalCandidateQuery:
+    """A retained bounded-wait client; received hashes remain untrusted proposals."""
+    def __init__(self, name, request):
+        self._name, self._request = name, request
+        self._thread = None
+        self._done, self._lock = threading.Event(), threading.Lock()
+        self._result, self._timed_out, self._start_uncertain, self._closed = None, False, False, False
+
+    def start(self):
+        with self._lock:
+            if self._thread is not None or self._closed:
+                raise RuntimePreflightRefused('runtime_process_preflight_refused') from None
+            self._thread = threading.Thread(target=self._run, name='mind-local-query', daemon=False)
+            try:
+                self._thread.start()
+            except BaseException:
+                self._start_uncertain = True
+                self._timed_out = True
+                raise
+
+    def _run(self):
+        from multiprocessing.connection import Client
+        result = None
+        try:
+            with Client(address=self._name, family='AF_PIPE', authkey=None) as connection:
+                connection.send_bytes(_local_candidate_encode(self._request))
+                if not connection.poll(90):
+                    raise ValueError('timeout')
+                response = _local_candidate_reply(_local_candidate_json(connection.recv_bytes(_LOCAL_CANDIDATE_MAX_BYTES)),
+                                                  self._request)
+                result = _local_candidate_encode(response)
+        except BaseException:
+            pass
+        finally:
+            with self._lock:
+                if not self._timed_out:
+                    self._result = result
+            self._done.set()
+
+    def wait(self, *, timeout):
+        if (self._thread is None or type(timeout) not in (int, float) or not math.isfinite(timeout)
+                or not 0 <= timeout <= 90):
+            raise RuntimePreflightRefused('runtime_process_preflight_refused') from None
+        complete = self._done.wait(float(timeout))
+        with self._lock:
+            if not complete:
+                self._timed_out = True
+            raw = None if self._timed_out else self._result
+            status = ('HOLD' if self._start_uncertain and not self._done.is_set() else
+                      'TIMEOUT' if self._timed_out else ('REFUSED' if raw is None else _local_candidate_json(raw)['status']))
+        return {'status':status, 'authority':'none', 'sender_authentication':'UNKNOWN',
+                'source_verification':'UNVERIFIED', 'candidate_frame':raw}
+
+    def status(self):
+        with self._lock:
+            state = (('STOPPED' if self._closed else 'NEW') if self._thread is None else
+                     'HOLD' if not self._done.is_set() and (self._timed_out or self._start_uncertain) else
+                     'RUNNING' if not self._done.is_set() else 'STOPPED')
+        return {'state':state, 'authority':'none', 'sender_authentication':'UNKNOWN'}
+
+    def close(self, *, timeout=0):
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 <= timeout <= 90:
+            raise RuntimePreflightRefused('runtime_process_preflight_refused') from None
+        with self._lock:
+            self._closed = True
+            if self._thread is None:
+                return {'state':'STOPPED', 'authority':'none', 'sender_authentication':'UNKNOWN'}
+            self._timed_out = True
+            self._result = None
+        stopped = self._done.wait(float(timeout))
+        return {'state':'STOPPED' if stopped else 'HOLD', 'authority':'none',
+                'sender_authentication':'UNKNOWN'}
+
+
+def create_local_candidate_query(*, enabled=False, pipe_name=None, request=None):
+    """Prepare a local lookup; caller must independently verify returned source rows."""
+    try:
+        if enabled is not True or os.name != 'nt' or not _local_candidate_pipe_name_valid(pipe_name):
+            raise ValueError('input')
+        return _LocalCandidateQuery(pipe_name, _local_candidate_request(request))
+    except Exception:
+        raise RuntimePreflightRefused('runtime_process_preflight_refused') from None
+
+
 def verify_runtime_process_preflight(*, interpreter, interpreter_sha256, bootstrap, bootstrap_sha256,
                                      bundle_root, deployment_manifest_sha256, verifier, verifier_sha256,
                                      runtime_root, runtime_manifest,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import shutil
@@ -146,6 +147,105 @@ def test_real_pytest_collect_only_is_not_accepted_as_execution(tmp_path):
     assert result.returncode == 0 and junit.is_file()
     with pytest.raises(ValueError, match='junit'):
         export._junit_counts(junit.read_bytes())
+
+
+def _selection_phase(tmp_path, phase, target, *extra):
+    hook = tmp_path / 'hook'
+    hook.mkdir(exist_ok=True)
+    (hook / 'hook_verified_selection.py').write_text(export._SELECTION_PLUGIN, encoding='utf-8')
+    report = tmp_path / (phase + '.json')
+    junit = tmp_path / 'executed.xml'
+    env = {key: value for key, value in os.environ.items() if key in ('SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'PATH')}
+    env.update(PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', PYTHONPATH=str(hook),
+               PYTEST_ADDOPTS='-p hook_verified_selection -p no:cacheprovider',
+               WD_VERIFIED_SELECTION_TARGETS=json.dumps([target]), WD_VERIFIED_SELECTION_PHASE=phase,
+               WD_VERIFIED_SELECTION_REPORT=str(report))
+    args = [sys.executable, '-B', '-m', 'pytest', '-q', '--tb=short', '--rootdir=' + str(tmp_path)]
+    args += ['--collect-only'] if phase == 'collect' else ['--junitxml=' + str(junit)]
+    result = subprocess.run(args + list(extra) + [target], cwd=tmp_path, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45)
+    return result, report, junit
+
+
+def _synthetic_parameterized_suite(tmp_path):
+    tests = tmp_path / 'tests'
+    tests.mkdir()
+    (tests / 'test_synthetic.py').write_text(
+        "import pytest\n@pytest.mark.parametrize('n',[1,2],ids=['one','two'])\n"
+        "def test_parameterized(n): assert n > 0\n", encoding='utf-8')
+    return 'tests/test_synthetic.py::test_parameterized'
+
+
+def test_collected_and_executed_parameterized_node_ids_match_junit(tmp_path):
+    target = _synthetic_parameterized_suite(tmp_path)
+    collected, c_report, _ = _selection_phase(tmp_path, 'collect', target)
+    executed, e_report, junit = _selection_phase(tmp_path, 'execute', target)
+    assert collected.returncode == 0 and executed.returncode == 0
+    c = json.loads(c_report.read_bytes())
+    e = json.loads(e_report.read_bytes())
+    assert export._selection_evidence(c, e, junit.read_bytes(), 1) == {
+        'tests_total': 2, 'tests_passed': 2, 'tests_skipped': 0}
+    # The node-id hashes in evidence must not disclose parameter names.
+    assert b'one' not in c_report.read_bytes() and b'two' not in e_report.read_bytes()
+    e['after'].pop()
+    with pytest.raises(ValueError, match='selection'):
+        export._selection_evidence(c, e, junit.read_bytes(), 1)
+
+
+def _synthetic_selection_evidence():
+    node = 'a' * 64
+    common = {'schema': 'wd.pytest-selection-observation.v1', 'before': [node],
+              'after': [node], 'matches': [1], 'deselected': 0}
+    collected = {**common, 'phase': 'collect', 'phases': {}}
+    executed = {**common, 'phase': 'execute', 'phases': {
+        node: {'setup': ['passed'], 'call': ['passed'], 'teardown': ['passed']}}}
+    junit = ('<testsuites><testcase><properties><property name="wd_nodeid_sha256" value="'
+             + node + '"/></properties></testcase></testsuites>').encode()
+    return collected, executed, junit
+
+
+@pytest.mark.parametrize('fault', ['missing_node', 'missing_target', 'deselected', 'skipped',
+                                  'failed', 'duplicate_phase', 'bad_junit_node', 'missing_junit_property'])
+def test_selection_evidence_refuses_missing_filtered_or_unexecuted_node(fault):
+    collected, executed, junit = _synthetic_selection_evidence()
+    node = 'a' * 64
+    if fault == 'missing_node': executed['before'] = []
+    elif fault == 'missing_target': collected['matches'] = [0]
+    elif fault == 'deselected': executed['deselected'] = 1
+    elif fault == 'skipped': executed['phases'][node]['call'] = ['skipped']
+    elif fault == 'failed': executed['phases'][node]['teardown'] = ['failed']
+    elif fault == 'duplicate_phase': executed['phases'][node]['call'] = ['passed', 'passed']
+    elif fault == 'bad_junit_node': junit = junit.replace(node.encode(), b'b' * 64)
+    elif fault == 'missing_junit_property': junit = b'<testsuites><testcase/></testsuites>'
+    with pytest.raises(ValueError, match='selection'):
+        export._selection_evidence(collected, executed, junit, 1)
+
+
+@pytest.mark.parametrize('targets', [[], ['tests/test_a.py'], ['tests/test_a.py::'],
+                                     ['tests/../other.py::test_a'], ['tests/test_a.py::test_a\n-k bad']])
+def test_only_explicit_safe_test_nodes_are_accepted(targets):
+    with pytest.raises(ValueError):
+        export._validate_targets(targets)
+
+
+@pytest.mark.parametrize('bad_option', ['-k', '-m'])
+def test_pytest_keyword_and_marker_filtering_refused(tmp_path, bad_option):
+    target = _synthetic_parameterized_suite(tmp_path)
+    result, _, _ = _selection_phase(tmp_path, 'collect', target, bad_option, 'one')
+    assert result.returncode != 0
+
+
+def test_project_addopts_keyword_filtering_refused(tmp_path):
+    target = _synthetic_parameterized_suite(tmp_path)
+    (tmp_path / 'pytest.ini').write_text('[pytest]\naddopts = -k one\n', encoding='utf-8')
+    result, _, _ = _selection_phase(tmp_path, 'collect', target)
+    assert result.returncode != 0
+
+
+def test_execution_phase_rejects_collect_only(tmp_path):
+    target = _synthetic_parameterized_suite(tmp_path)
+    result, _, _ = _selection_phase(tmp_path, 'execute', target, '--collect-only')
+    assert result.returncode != 0
 
 
 def test_execution_refuses_without_any_windows_job(monkeypatch):

@@ -325,17 +325,22 @@ function Invoke-WdVerifiedTestExport {
     if ($receipt.schema -cne 'wd.test-export-intermediate.v1' -or $receipt.authority -cne 'none' -or $receipt.commit -cne $Commit -or
         $receipt.pytest_exit -ne 0 -or $receipt.scope -cne 'export_test_only' -or $receipt.files -le 0 -or
         $receipt.tree_manifest_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
-        $receipt.selection_coverage -cne 'UNKNOWN' -or
+        $receipt.selection_coverage -cne 'OBSERVED_EXACT' -or
         ($receipt.tests_passed -isnot [int] -and $receipt.tests_passed -isnot [long]) -or $receipt.tests_passed -lt 1 -or
-        ($receipt.tests_skipped -isnot [int] -and $receipt.tests_skipped -isnot [long]) -or $receipt.tests_skipped -lt 0 -or
+        ($receipt.tests_skipped -isnot [int] -and $receipt.tests_skipped -isnot [long]) -or $receipt.tests_skipped -ne 0 -or
         $receipt.tests_total -ne ($receipt.tests_passed + $receipt.tests_skipped)) { throw 'verified_export_refused' }
     $testAudit=Join-Path $work 'export\.codex-audit\verified-export'
-    $hookReport=Join-Path $testAudit 'd15.jsonl'; $junitReport=Join-Path $testAudit 'pytest.xml'
-    foreach ($pair in @(@($hookReport,$receipt.hook_report_sha256),@($junitReport,$receipt.junit_sha256))) {
+    $hookReport=Join-Path $testAudit 'd15-execute.jsonl'; $junitReport=Join-Path $testAudit 'pytest.xml'
+    $collectHook=Join-Path $testAudit 'd15-collect.jsonl'
+    $collectSelection=Join-Path $testAudit 'selection-collect.json'; $executeSelection=Join-Path $testAudit 'selection-execute.json'
+    $selectionPlugin=Join-Path $testAudit 'hook\hook_verified_selection.py'
+    foreach ($pair in @(@($hookReport,$receipt.hook_report_sha256),@($junitReport,$receipt.junit_sha256),
+                        @($collectHook,$receipt.collect_hook_sha256),@($collectSelection,$receipt.collect_selection_sha256),
+                        @($executeSelection,$receipt.execute_selection_sha256),@($selectionPlugin,$receipt.selection_plugin_sha256))) {
         if ($pair[1] -cnotmatch '^[0-9a-f]{64}$' -or
             (Get-FileHash -LiteralPath $pair[0] -Algorithm SHA256).Hash.ToLowerInvariant() -cne $pair[1]) { throw 'verified_export_refused' }
     }
     # This object is meaningful only to the trusted caller invoking this pinned wrapper.
     # The child's JSON alone never proves the identity or limits of a Job.
-    return [pscustomobject]@{schema='wd.verified-test-export-job-result.v1';status='PARTIAL';selection_coverage='UNKNOWN';job_outcome=$result.Outcome;job_cleanup=$result.Cleanup;job_exit=$result.ExitCode;intermediate=$receipt;audit_directory=$root;hook_report=$hookReport;junit_report=$junitReport;runner_sha256=$RunnerSha256;git_sha256=$GitSha256;python_sha256=$PythonSha256;same_user_path_race='UNKNOWN';child_filesystem_attestation='UNKNOWN'}
+    return [pscustomobject]@{schema='wd.verified-test-export-job-result.v1';status='OBSERVED_PASS';selection_coverage='OBSERVED_EXACT';job_outcome=$result.Outcome;job_cleanup=$result.Cleanup;job_exit=$result.ExitCode;intermediate=$receipt;audit_directory=$root;hook_report=$hookReport;collect_hook_report=$collectHook;collect_selection_report=$collectSelection;execute_selection_report=$executeSelection;junit_report=$junitReport;runner_sha256=$RunnerSha256;git_sha256=$GitSha256;python_sha256=$PythonSha256;same_user_path_race='UNKNOWN';child_filesystem_attestation='UNKNOWN';pytest_discovery_authentication='UNKNOWN'}
 }

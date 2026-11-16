@@ -27,9 +27,67 @@ _SHA256 = re.compile(r'^[0-9a-f]{64}$')
 _COMMIT = re.compile(r'^[0-9a-f]{40}$')
 _RESERVED = re.compile(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$', re.I)
 
+# Additional measurement plugin. The pinned D15 plugin is copied unchanged.
+# Only hashes of node IDs are written; this is an observation within pytest,
+# not attestation against a malicious same-user process or malicious plugin.
+_SELECTION_PLUGIN = r'''import hashlib, json, os
+import pytest
+
+PHASE = os.environ['WD_VERIFIED_SELECTION_PHASE']
+REPORT = os.environ['WD_VERIFIED_SELECTION_REPORT']
+TARGETS = json.loads(os.environ['WD_VERIFIED_SELECTION_TARGETS'])
+STATE = {'before': None, 'after': None, 'matches': None, 'deselected': 0, 'phases': {}}
+
+def nodehash(node):
+    return hashlib.sha256(node.encode('utf-8')).hexdigest()
+
+def matches(node, target):
+    return node == target or node.startswith(target + '[') or node.startswith(target + '::')
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    if PHASE not in ('collect', 'execute') or bool(config.option.collectonly) != (PHASE == 'collect'):
+        raise pytest.UsageError('verified export refuses unexpected collect-only mode')
+    if config.getoption('keyword') or config.getoption('markexpr'):
+        raise pytest.UsageError('verified export refuses keyword or marker filtering')
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_collection_modifyitems(session, config, items):
+    STATE['before'] = [nodehash(item.nodeid) for item in items]
+    yield
+    STATE['after'] = [nodehash(item.nodeid) for item in items]
+    STATE['matches'] = [sum(matches(item.nodeid, target) for item in items) for target in TARGETS]
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_deselected(items):
+    STATE['deselected'] += len(items)
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_logreport(report):
+    node = nodehash(report.nodeid)
+    STATE['phases'].setdefault(node, {}).setdefault(report.when, []).append(report.outcome)
+    if report.when == 'teardown':
+        report.user_properties.append(('wd_nodeid_sha256', node))
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    value = {'schema': 'wd.pytest-selection-observation.v1', 'phase': PHASE, **STATE}
+    with open(REPORT, 'x', encoding='utf-8') as out:
+        json.dump(value, out, sort_keys=True)
+'''
+
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _bounded_file(path: Path, limit: int) -> bytes:
+    _plain(path)
+    with path.open('rb') as stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError('report_too_large')
+    return data
 
 
 def _plain(path: Path) -> None:
@@ -212,6 +270,59 @@ def _junit_counts(data: bytes) -> dict[str, int]:
     return {'tests_total': len(cases), 'tests_passed': passed, 'tests_skipped': skipped}
 
 
+def _selection_evidence(collect: dict, execute: dict, junit: bytes, target_count: int) -> dict[str, int]:
+    """Cross-check two observed pytest selections, per-node phases, and JUnit."""
+    schema = 'wd.pytest-selection-observation.v1'
+    keys = {'schema', 'phase', 'before', 'after', 'matches', 'deselected', 'phases'}
+    for value, phase in ((collect, 'collect'), (execute, 'execute')):
+        if type(value) is not dict or set(value) != keys or value['schema'] != schema or value['phase'] != phase:
+            raise ValueError('selection')
+        before, after, matches = value['before'], value['after'], value['matches']
+        if (type(before) is not list or type(after) is not list or not before or
+                any(type(x) is not str or not _SHA256.fullmatch(x) for x in before + after) or
+                len(before) != len(set(before)) or len(after) != len(set(after)) or
+                set(before) != set(after) or value['deselected'] != 0 or
+                type(matches) is not list or len(matches) != target_count or
+                any(type(x) is not int or x < 1 for x in matches)):
+            raise ValueError('selection')
+    nodes = set(collect['after'])
+    if (nodes != set(execute['after']) or collect['matches'] != execute['matches'] or
+            collect['phases'] != {} or type(execute['phases']) is not dict):
+        raise ValueError('selection')
+    if set(execute['phases']) != nodes:
+        raise ValueError('selection')
+    for phases in execute['phases'].values():
+        if type(phases) is not dict or phases != {'setup': ['passed'], 'call': ['passed'], 'teardown': ['passed']}:
+            raise ValueError('selection')
+    counts = _junit_counts(junit)
+    if counts['tests_total'] != len(nodes) or counts['tests_skipped']:
+        raise ValueError('selection')
+    cases = list(ET.fromstring(junit).iter('testcase'))
+    hashes = []
+    for case in cases:
+        properties = case.findall("./properties/property[@name='wd_nodeid_sha256']")
+        if len(properties) != 1:
+            raise ValueError('selection')
+        node = properties[0].get('value')
+        if type(node) is not str or not _SHA256.fullmatch(node):
+            raise ValueError('selection')
+        hashes.append(node)
+    if len(hashes) != len(set(hashes)) or set(hashes) != nodes:
+        raise ValueError('selection')
+    return counts
+
+
+def _validate_targets(targets: object) -> list[str]:
+    if type(targets) is not list or not targets or len(targets) > 500 or sum(len(x) for x in targets if type(x) is str) > 16000:
+        raise ValueError('targets')
+    for item in targets:
+        if (type(item) is not str or not item.startswith('tests/') or '::' not in item or
+                any(not part for part in item.split('::')) or '\n' in item or '\r' in item or
+                not _safe_name(item.split('::')[0]).endswith('.py')):
+            raise ValueError('target')
+    return targets
+
+
 def _validate_workspace(git: str, repo: Path, workspace: Path) -> None:
     """Require a registered, non-nested workspace in the same Git repository."""
     for parent in workspace.parents:
@@ -253,12 +364,7 @@ def _run(config: dict) -> dict:
     if _sha(hook_bytes) != HOOK_SHA256:
         raise ValueError('hook_pin')
     _validate_workspace(str(git), repo, workspace)
-    targets = config['targets']
-    if type(targets) is not list or not targets or len(targets) > 500:
-        raise ValueError('targets')
-    for item in targets:
-        if type(item) is not str or not item.startswith('tests/') or not _safe_name(item.split('::')[0]).endswith('.py'):
-            raise ValueError('target')
+    targets = _validate_targets(config['targets'])
     command = _git(str(git), str(repo), 'rev-parse', '--verify', config['commit'] + '^{commit}')
     if subprocess.check_output(command, stderr=subprocess.DEVNULL).decode('ascii').strip() != config['commit']:
         raise ValueError('commit')
@@ -281,31 +387,56 @@ def _run(config: dict) -> dict:
     audit = target / '.codex-audit' / 'verified-export'
     hook_dir = audit / 'hook'
     hook_dir.mkdir(parents=True)
-    (hook_dir / 'hook_plugin_d15.py').write_bytes(hook_bytes)
-    report = audit / 'd15.jsonl'
+    d15_plugin = hook_dir / 'hook_plugin_d15.py'
+    selection_plugin = hook_dir / 'hook_verified_selection.py'
+    d15_plugin.write_bytes(hook_bytes)
+    selection_bytes = _SELECTION_PLUGIN.encode('utf-8')
+    selection_plugin.write_bytes(selection_bytes)
+    collect_report = audit / 'd15-collect.jsonl'
+    report = audit / 'd15-execute.jsonl'
+    collect_selection = audit / 'selection-collect.json'
+    execute_selection = audit / 'selection-execute.json'
     junit = audit / 'pytest.xml'
     env = {key: value for key, value in os.environ.items() if key in ('SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP')}
-    env.update(PYTEST_ADDOPTS='-p hook_plugin_d15 -p no:cacheprovider',
+    env.update(PYTEST_ADDOPTS='-p hook_plugin_d15 -p hook_verified_selection -p no:cacheprovider',
                PYTHONPATH=str(hook_dir) + os.pathsep + str(target), PYTHONDONTWRITEBYTECODE='1',
-               WD_D15_HOOK_REPORT=str(report))
-    args = [sys.executable, '-B', '-m', 'pytest', '-q', '--tb=short', '-ra',
-            '--basetemp=' + str(Path(env['TEMP']) / 'pytest'), '--junitxml=' + str(junit), *targets]
-    result = subprocess.run(args, cwd=str(target), env=env, stdin=subprocess.DEVNULL, check=False)
+               WD_VERIFIED_SELECTION_TARGETS=json.dumps(targets, ensure_ascii=True))
+    results = []
+    for phase, d15_report, selected in (('collect', collect_report, collect_selection),
+                                        ('execute', report, execute_selection)):
+        env.update(WD_D15_HOOK_REPORT=str(d15_report), WD_VERIFIED_SELECTION_PHASE=phase,
+                   WD_VERIFIED_SELECTION_REPORT=str(selected))
+        args = [sys.executable, '-B', '-m', 'pytest', '-q', '--tb=short', '-ra',
+                '--rootdir=' + str(target), '--basetemp=' + str(Path(env['TEMP']) / ('pytest-' + phase))]
+        args += ['--collect-only'] if phase == 'collect' else ['--junitxml=' + str(junit)]
+        result = subprocess.run(args + targets, cwd=str(target), env=env, stdin=subprocess.DEVNULL, check=False)
+        results.append(result.returncode)
+        if result.returncode != 0 or not d15_report.is_file() or not selected.is_file():
+            raise ValueError('pytest_or_hook')
+        for path in (d15_report, selected, d15_plugin, selection_plugin):
+            _plain(path)
+        if _sha(d15_plugin.read_bytes()) != HOOK_SHA256 or selection_plugin.read_bytes() != selection_bytes:
+            raise ValueError('hook_pin')
+        rows = [json.loads(line) for line in _bounded_file(d15_report, 64 * 1024 * 1024).decode('utf-8').splitlines()]
+        if not rows or rows[-1].get('kind') != 'summary' or rows[-1].get('refused') != 0 or rows[-1].get('exit') != 0:
+            raise ValueError('pytest_or_hook')
     after = _verify_tree(str(git), str(repo), target, entries, audit_allowed=True)
-    if before != after or not report.is_file() or not junit.is_file():
+    if before != after or not junit.is_file():
         raise ValueError('postcheck')
-    _plain(report)
-    _plain(junit)
-    counts = _junit_counts(junit.read_bytes())
-    records = [json.loads(line) for line in report.read_text(encoding='utf-8').splitlines()]
-    if not records or records[-1].get('kind') != 'summary' or records[-1].get('refused') != 0 or records[-1].get('exit') != 0 or result.returncode != 0:
-        raise ValueError('pytest_or_hook')
+    junit_bytes = _bounded_file(junit, 16 * 1024 * 1024)
+    collect_bytes = _bounded_file(collect_selection, 16 * 1024 * 1024)
+    execute_bytes = _bounded_file(execute_selection, 16 * 1024 * 1024)
+    counts = _selection_evidence(json.loads(collect_bytes), json.loads(execute_bytes), junit_bytes, len(targets))
     return {'schema': 'wd.test-export-intermediate.v1', 'authority': 'none', **counts,
             'commit': config['commit'], 'files': len(entries),
-            'tree_manifest_sha256': before, 'hook_sha256': HOOK_SHA256, 'pytest_exit': result.returncode,
-            'junit_sha256': _sha(junit.read_bytes()), 'hook_report_sha256': _sha(report.read_bytes()),
-            'scope': 'export_test_only', 'selection_coverage': 'UNKNOWN',
-            'child_filesystem_attestation': 'UNKNOWN'}
+            'tree_manifest_sha256': before, 'hook_sha256': HOOK_SHA256, 'pytest_exit': results[-1],
+            'junit_sha256': _sha(junit_bytes), 'hook_report_sha256': _sha(_bounded_file(report, 64 * 1024 * 1024)),
+            'collect_hook_sha256': _sha(_bounded_file(collect_report, 64 * 1024 * 1024)),
+            'collect_selection_sha256': _sha(collect_bytes),
+            'execute_selection_sha256': _sha(execute_bytes),
+            'selection_plugin_sha256': _sha(selection_bytes), 'scope': 'export_test_only',
+            'selection_coverage': 'OBSERVED_EXACT', 'child_filesystem_attestation': 'UNKNOWN',
+            'pytest_discovery_authentication': 'UNKNOWN'}
 
 
 def main() -> int:
@@ -322,7 +453,7 @@ def main() -> int:
                         'empty_tree', 'archive_member', 'archive_member_too_large',
                         'archive_truncated', 'archive_missing', 'archive', 'reparse_point',
                         'not_directory', 'blob_header', 'blob_mismatch', 'git_cat_file',
-                        'extra_file', 'postcheck', 'pytest_or_hook', 'junit'}
+                        'extra_file', 'postcheck', 'pytest_or_hook', 'junit', 'selection', 'report_too_large'}
         reason = str(exc) if type(exc) is ValueError and str(exc) in safe_reasons else 'internal_error'
         print(json.dumps({'schema': 'wd.test-export-intermediate.v1', 'authority': 'none',
                           'status': 'refused', 'reason': reason}))

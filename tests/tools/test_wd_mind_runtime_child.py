@@ -632,6 +632,43 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def _fixture_pinned_verifier_bytes(data):
+    expected = anchor._PACKAGED_VERIFIER_SHA256
+    if digest(data) == expected:
+        return data
+    candidate = data.replace(b'\r\n', b'\n')
+    if digest(candidate) != expected:
+        raise ValueError('synthetic_verifier_pin_mismatch')
+    return candidate
+
+
+def test_synthetic_verifier_checkout_translation_never_changes_the_pin():
+    source = Path(__file__).resolve().parents[2] / 'tools/wd_mind_runtime_manifest.py'
+    canonical = _fixture_pinned_verifier_bytes(source.read_bytes())
+    assert digest(canonical) == anchor._PACKAGED_VERIFIER_SHA256
+    assert _fixture_pinned_verifier_bytes(canonical.replace(b'\n', b'\r\n')) == canonical
+    with pytest.raises(ValueError, match='synthetic_verifier_pin_mismatch'):
+        _fixture_pinned_verifier_bytes(canonical + b'# altered\n')
+
+
+@pytest.fixture
+def synthetic_windows_subprocess(monkeypatch):
+    # Only tests replacing Popen use these missing POSIX attributes. No native
+    # process launch or production platform guard is changed by this fixture.
+    if os.name != 'nt':
+        monkeypatch.setattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000, raising=False)
+        monkeypatch.setattr(subprocess, 'STARTUPINFO', SimpleNamespace, raising=False)
+
+
+@pytest.fixture
+def synthetic_windows_job_platform(monkeypatch):
+    if os.name != 'nt':
+        class WindowsOS:
+            name = 'nt'
+            def __getattr__(self, attr): return getattr(os, attr)
+        monkeypatch.setattr(child, 'os', WindowsOS())
+
+
 @pytest.fixture
 def staged(candidate, tmp_path, monkeypatch):
     bundle = candidate["bundle_root"]
@@ -642,7 +679,10 @@ def staged(candidate, tmp_path, monkeypatch):
         relative = "tools-bootstrap/tools/" + name
         path = bundle / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes((source / "tools" / name).read_bytes())
+        data = (source / "tools" / name).read_bytes()
+        if name == 'wd_mind_runtime_manifest.py':
+            data = _fixture_pinned_verifier_bytes(data)
+        path.write_bytes(data)
         files[relative] = digest(path.read_bytes())
     runtime_manifest = bundle / "wd-mind-runtime-manifest.json"
     runtime_manifest.write_bytes(candidate["runtime_manifest"].read_bytes())
@@ -825,7 +865,7 @@ def staged_graceful(staged_e5, monkeypatch):
     return {key: value for key, value in staged_e5.items() if key != "query"}
 
 
-def test_bulk_worker_only_launch_is_pinned_and_preserves_owner(staged_graceful, monkeypatch):
+def test_bulk_worker_only_launch_is_pinned_and_preserves_owner(staged_graceful, monkeypatch, synthetic_windows_subprocess):
     from test_wd_mind_e5_lifecycle import Job as OwnedJob, Process as OwnedProcess, finish
     from test_wd_mind_e5_client import response
     process = OwnedProcess(response(0, 0), on_eof=False)
@@ -929,7 +969,7 @@ def test_graceful_all_pins_before_spawn(staged_graceful, monkeypatch, fault):
 
 
 @pytest.mark.parametrize("fault", [None, "attach", "handshake", "late_spawn"])
-def test_graceful_launch_retains_owner_on_post_spawn_failure(staged_graceful, monkeypatch, fault):
+def test_graceful_launch_retains_owner_on_post_spawn_failure(staged_graceful, monkeypatch, fault, synthetic_windows_subprocess):
     from test_wd_mind_e5_lifecycle import Job as OwnedJob, Process as OwnedProcess, finish
     from test_wd_mind_e5_client import response
     calls = []
@@ -1020,7 +1060,7 @@ def test_cooperative_job_close_failure_retains_actual_handle():
 
 
 @pytest.mark.parametrize("registered", [False, True])
-def test_review_bind_failure_keeps_live_process_owned(staged_graceful, monkeypatch, registered):
+def test_review_bind_failure_keeps_live_process_owned(staged_graceful, monkeypatch, registered, synthetic_windows_subprocess):
     from test_wd_mind_e5_lifecycle import Job, Process
     from tools import wd_mind_e5_lifecycle as lifecycle
     process, job = Process(on_eof=False), Job()
@@ -1129,7 +1169,7 @@ def test_review_spawn_and_job_close_failure_return_owner_without_raw_error(stage
             assert not lifecycle._active.shutdown(timeout=2)["owned"]
 
 
-def test_review_partial_job_constructor_failure_retains_created_handle(staged_graceful, monkeypatch):
+def test_review_partial_job_constructor_failure_retains_created_handle(staged_graceful, monkeypatch, synthetic_windows_job_platform):
     from tools import wd_mind_e5_lifecycle as lifecycle
     allow_close = threading.Event()
 
@@ -1162,7 +1202,7 @@ def test_review_partial_job_constructor_failure_retains_created_handle(staged_gr
 
 
 @pytest.mark.parametrize('signal_name', ['keyboard', 'cancelled'])
-def test_graceful_launch_preserves_owner_after_spawn_interruption(staged_graceful, monkeypatch, signal_name):
+def test_graceful_launch_preserves_owner_after_spawn_interruption(staged_graceful, monkeypatch, signal_name, synthetic_windows_subprocess):
     import asyncio
     from test_wd_mind_e5_lifecycle import Job as OwnedJob, Process as OwnedProcess, finish
     from tools import wd_mind_e5_lifecycle as lifecycle
@@ -1193,7 +1233,7 @@ def test_graceful_launch_preserves_owner_after_spawn_interruption(staged_gracefu
             finish(captured[0], process)
 
 
-def test_single_owner_caller_interrupt_keeps_real_launch_owner_during_spawn(staged_graceful, monkeypatch, tmp_path):
+def test_single_owner_caller_interrupt_keeps_real_launch_owner_during_spawn(staged_graceful, monkeypatch, tmp_path, synthetic_windows_subprocess):
     from test_wd_mind_e5_lifecycle import Job as OwnedJob, Process as OwnedProcess, finish
     from test_wd_mind_e5_client import response
     from tools import wd_mind_e5_client, wd_mind_full_runtime as runtime
@@ -1310,7 +1350,7 @@ def test_parent_child_spawn_default_refuses_before_command_or_process(monkeypatc
             deadline_monotonic=time.monotonic()+5)
 
 
-def test_parent_child_spawn_interrupted_constructor_retains_unknown_owner(monkeypatch):
+def test_parent_child_spawn_interrupted_constructor_retains_unknown_owner(monkeypatch, synthetic_windows_subprocess):
     import threading
     created = []
     class InterruptedPopen:
@@ -1333,7 +1373,7 @@ def test_parent_child_spawn_interrupted_constructor_retains_unknown_owner(monkey
     with pytest.raises(child.LaunchRefused): launch.close()
 
 
-def test_parent_child_interrupted_thread_start_remains_hold_after_late_spawn(monkeypatch):
+def test_parent_child_interrupted_thread_start_remains_hold_after_late_spawn(monkeypatch, synthetic_windows_subprocess):
     actual_thread = threading.Thread
     class InterruptedStartThread(actual_thread):
         def start(self):
@@ -1357,7 +1397,7 @@ def test_parent_child_interrupted_thread_start_remains_hold_after_late_spawn(mon
     with pytest.raises(child.LaunchRefused): launch.close()
 
 
-def test_parent_child_late_constructor_cannot_self_adopt_after_start_cancellation(monkeypatch):
+def test_parent_child_late_constructor_cannot_self_adopt_after_start_cancellation(monkeypatch, synthetic_windows_subprocess):
     import inspect, sys
     entered, release = threading.Event(), threading.Event()
     class DelayedPopen:
@@ -1388,7 +1428,7 @@ def test_parent_child_late_constructor_cannot_self_adopt_after_start_cancellatio
     assert launch.status() == {'state':'HOLD', 'owned':True, 'worker_active':False}
 
 
-def test_parent_child_requires_one_use_adoption_before_spawned_status(monkeypatch):
+def test_parent_child_requires_one_use_adoption_before_spawned_status(monkeypatch, synthetic_windows_subprocess):
     class SyntheticPopen:
         def __new__(cls, *args, **kwargs): return object.__new__(cls)
         def __init__(self, *args, **kwargs): self.exit_code = None
@@ -1885,6 +1925,6 @@ def test_deferred_historical_launch_never_spawns_or_terminates(staged, staged_e5
 
 
 def test_job_refuses_kill_on_close_before_native_calls(monkeypatch):
-    monkeypatch.setattr(child.ctypes, 'WinDLL', lambda *args, **kwargs: pytest.fail('native call forbidden'))
+    monkeypatch.setattr(child.ctypes, 'WinDLL', lambda *args, **kwargs: pytest.fail('native call forbidden'), raising=False)
     with pytest.raises(child.LaunchRefused): child._Job(kill_on_close=True)
     assert not hasattr(child._Job, 'terminate')

@@ -258,6 +258,38 @@ namespace WaggleDance {
         $Owner.State='HOLD'
         return $Owner
     }
+    function ConvertFrom-WdMindCompletedLocalBootstrap {
+        <# A completed private buffer is not a lane result until the caller
+           validates its full content contract. No bytes are returned on HOLD,
+           failed exit, incomplete pipes, invalid UTF-8 or incomplete JSON. #>
+        param([Parameter(Mandatory)] $Owner, [Parameter(Mandatory)] $Process,
+              [Parameter(Mandatory)] $IO)
+        try {
+            if ($Owner.State -cne 'EXITED' -or -not $Process.HasExited -or $Process.ExitCode -ne 0 -or
+                -not $IO.OutDone -or -not $IO.ErrDone -or
+                ($IO.ContainsKey('OutBlocked') -and $IO.OutBlocked) -or
+                ($IO.ContainsKey('ErrBlocked') -and $IO.ErrBlocked) -or
+                $IO.OutBytes -isnot [IO.MemoryStream] -or
+                $IO.OutBytes.Length -lt 1 -or $IO.OutBytes.Length -gt 8192 -or
+                -not ('WaggleDance.BridgeSnapshotDeltaV1.JsonContractValidator' -as [type])) { throw 'local_output' }
+            $bytes=$IO.OutBytes.ToArray()
+            if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xef -and $bytes[1] -eq 0xbb -and $bytes[2] -eq 0xbf) {
+                throw 'local_output'
+            }
+            $utf8=New-Object Text.UTF8Encoding($false,$true)
+            $text=$utf8.GetString($bytes)
+            if (-not $text.TrimStart().StartsWith('{') -or
+                -not [WaggleDance.BridgeSnapshotDeltaV1.JsonContractValidator]::IsValid($text)) { throw 'local_output' }
+            $jsonArgs=@{InputObject=$text;ErrorAction='Stop'}
+            if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { $jsonArgs.DateKind='String' }
+            $parsed=ConvertFrom-Json @jsonArgs
+            if ($null -eq $parsed -or $parsed.GetType() -ne [Management.Automation.PSCustomObject]) { throw 'local_output' }
+            $sha=[Security.Cryptography.SHA256]::Create()
+            try {$digest=[BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','').ToLowerInvariant()}
+            finally {$sha.Dispose()}
+            return [pscustomobject]@{view_json=$text;view_sha256=$digest}
+        } catch { return $null }
+    }
     function Start-WdMindParentBootstrap {
         <# Default-off primitive: a caller must independently authorize the
            policy hash. This does not establish a parent entrypoint, prove a

@@ -4,12 +4,76 @@ import importlib
 import json
 import os
 from pathlib import Path
+import base64
+import shutil
 import stat
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from waggledance.core import bridge_log_reader as bridge
+
+
+@pytest.mark.skipif(os.name != 'nt' or not os.environ.get('WD_BRIDGE_BIN'),
+                    reason='requires pinned Windows bridge JSON validator')
+@pytest.mark.parametrize('shell', [
+    str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+    pytest.param(shutil.which('pwsh'), marks=pytest.mark.skipif(shutil.which('pwsh') is None,
+                                                                reason='PowerShell 7 unavailable')),
+], ids=['powershell51', 'pwsh7'])
+@pytest.mark.parametrize('case', ['valid', 'failed_exit', 'hold', 'stdout_pending', 'stderr_pending',
+                                  'overflow', 'invalid_utf8', 'partial_json', 'duplicate', 'non_object',
+                                  'one_object_array', 'scalar'])
+def test_completed_local_bootstrap_never_returns_partial_output(shell, case):
+    helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Invoke-WdMindStartupRead.ps1'
+    validator = Path(os.environ['WD_BRIDGE_BIN']) / 'BridgeLogReader.ps1'
+    contents = {
+        'valid': b'{"schema":"synthetic","value":"ok"}',
+        'failed_exit': b'{"schema":"synthetic","value":"sensitive"}',
+        'hold': b'{"schema":"synthetic"}',
+        'stdout_pending': b'{"schema":"synthetic"}',
+        'stderr_pending': b'{"schema":"synthetic"}',
+        'overflow': b'{' + b' ' * 8192 + b'}',
+        'invalid_utf8': b'{"value":"\xff"}',
+        'partial_json': b'{"schema":"synthetic"',
+        'duplicate': b'{"schema":"a","schema":"b"}',
+        'non_object': b'[1,2]',
+        'one_object_array': b'[{"schema":"synthetic"}]',
+        'scalar': b'42',
+    }
+    raw = contents[case]
+    encoded = base64.b64encode(raw).decode('ascii')
+    quote = lambda p: "'" + str(p).replace("'", "''") + "'"
+    script = f"""
+$ErrorActionPreference='Stop'
+. {quote(validator)}
+$tokens=$null;$errors=$null
+$ast=[Management.Automation.Language.Parser]::ParseFile({quote(helper)},[ref]$tokens,[ref]$errors)
+if($errors.Count){{throw 'parse failed'}}
+$fn=@($ast.FindAll({{param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'ConvertFrom-WdMindCompletedLocalBootstrap'}},$true))
+if($fn.Count -ne 1){{throw 'missing function'}}
+. ([scriptblock]::Create($fn[0].Extent.Text))
+$raw=[Convert]::FromBase64String('{encoded}')
+$buffer=New-Object IO.MemoryStream
+$buffer.Write($raw,0,$raw.Length)
+$owner=[pscustomobject]@{{State={'HOLD' if case == 'hold' else 'EXITED'!r}}}
+$process=[pscustomobject]@{{HasExited=$true;ExitCode={2 if case == 'failed_exit' else 0}}}
+$io=@{{OutDone=${str(case != 'stdout_pending').lower()};ErrDone=${str(case != 'stderr_pending').lower()};OutBytes=$buffer}}
+$result=ConvertFrom-WdMindCompletedLocalBootstrap -Owner $owner -Process $process -IO $io
+[ordered]@{{accepted=($null -ne $result);view=if($null -eq $result){{''}}else{{$result.view_json}};digest=if($null -eq $result){{''}}else{{$result.view_sha256}}}} | ConvertTo-Json -Compress
+"""
+    command = base64.b64encode(script.encode('utf-16le')).decode('ascii')
+    run = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', command],
+                         capture_output=True, text=True, encoding='utf-8', errors='strict', timeout=30)
+    assert run.returncode == 0, run.stderr
+    result = json.loads(run.stdout.lstrip('\ufeff'))
+    assert result['accepted'] is (case == 'valid')
+    if case == 'valid':
+        assert result['view'].encode('utf-8') == raw
+        assert result['digest'] == hashlib.sha256(raw).hexdigest()
+    else:
+        assert result['view'] == '' and result['digest'] == ''
 
 
 @pytest.fixture

@@ -354,6 +354,10 @@ def test_e5_worker_dependency_exception_is_limited_to_worker(tmp_path, monkeypat
     worker.write_text('def main():\n    import sentence_transformers\n', encoding='utf-8')
     _, different_import = _intra_repo_closure(['tools/wd_mind_e5_worker.py'])
     assert different_import == {'sentence_transformers'}
+    worker.write_text('def main():\n    from sentence_transformers import SentenceTransformer\n'
+                      'def other():\n    from sentence_transformers import SentenceTransformer\n', encoding='utf-8')
+    _, other_function_import = _intra_repo_closure(['tools/wd_mind_e5_worker.py'])
+    assert other_function_import == {'sentence_transformers'}
 
 
 def test_package_closes_over_every_intra_repo_import_and_pins_its_third_party_closure():

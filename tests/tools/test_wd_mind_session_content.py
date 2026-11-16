@@ -18,6 +18,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import py_compile
+import subprocess
 import sys
 import struct
 import time
@@ -33,6 +35,344 @@ from tools import wd_mind_content_query_readonly as content
 PROVIDER_KEYS = {"encoder_provider", "index_provider"}
 INPUT_KEYS = content._Q4_KEYS - PROVIDER_KEYS
 TOKEN = "mind_session_content_refused"
+
+
+def _located_candidates(flat_consumer_case, monkeypatch):
+    """Synthetic source rows are real; deployment/policy pin readers are fixtures."""
+    from tools import wd_mind_full_runtime as runtime
+    package, existing, proposals, snapshot, clock, _ = flat_consumer_case
+    source_map = json.loads(existing._gate._raw_map)
+    records = json.loads(snapshot['projection_bytes'])['messages']['records']
+    candidates = []
+    for item in proposals:
+        record = next(row for row in records
+            if content._sha(row['provenance']['event_ref'].encode()) == item['ref_sha256']
+            and content._sha(row['record_id'].encode()) == item['doc_id_sha256'])
+        entry = source_map['entries'][item['source_event_sha256']]
+        candidates.append(dict(item, source_offset=entry['offset'], source_length=entry['length'],
+                               chunk_index=record['provenance']['chunk_index']))
+    controls = existing._controls
+    fake_fleet = b'synthetic fleet bytes'
+    controls = (controls[0], controls[1], content._sha(fake_fleet), controls[3], controls[4])
+    monkeypatch.setattr(package, '_consumer_bundle_controls', lambda *_: controls)
+    monkeypatch.setattr(session, '_pin_selected_resolver_code', lambda *_: None)
+    monkeypatch.setattr(session, '_preflight_selected_resolver_code', lambda *_: None)
+    monkeypatch.setattr(runtime, '_bundle_inputs', lambda *_: (fake_fleet, controls[3], controls[4]))
+    monkeypatch.setattr(runtime, 'create_operator_pinned_policy_anchor', lambda **_: object())
+    policy_bytes = snapshot['identifier_policy_binding'][0]
+    resolver = session.create_selected_row_resolver(enabled=True, bundle_root=existing._root,
+        expected_manifest_sha256=existing._pin, identifier_policy_bytes=policy_bytes,
+        expected_identifier_policy_sha256=content._sha(policy_bytes),
+        expected_approval_reference_sha256='c' * 64)
+    frame = {'schema':'wd.mind-pipe-candidates.v2', 'nonce':'1'*64, 'lane':'codex-lead-1',
+             'scope':'shared', 'status':'CANDIDATES', 'candidates':candidates}
+    return resolver, frame, snapshot, clock
+
+
+def test_selected_row_resolver_reads_and_rescreens_synthetic_local_source(flat_consumer_case, monkeypatch):
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    started = time.monotonic()
+    result = resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                              lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    print(f'synthetic_selected_query_seconds={time.monotonic() - started:.6f}')
+    assert result['authority'] == 'none' and result['sender_authentication'] == 'UNKNOWN'
+    assert result['current_status_freshness'] == 'UNKNOWN'
+    assert [row['source_event_sha256'] for row in result['results']] == [
+        item['source_event_sha256'] for item in frame['candidates']]
+    assert all(type(row['event_age_seconds_upper_bound']) is int and row['event_time_utc_floor']
+               for row in result['results'])
+
+
+def test_selected_row_resolver_selected_gate_uses_retained_prefix_verifier(flat_consumer_case, monkeypatch):
+    from datetime import timezone
+    from tools import wd_mind_retained_query as retained
+    resolver, frame, _, clock = _located_candidates(flat_consumer_case, monkeypatch)
+    resolver._check_controls()
+    context = resolver._context()
+    retained._source_check(context)
+    rows = resolver._selected(context, frame['candidates'], 'codex-lead-1', 'shared', clock.now(timezone.utc))
+    assert rows
+
+
+@pytest.mark.parametrize('fault', ['none', 'origin', 'code', 'missing_pin', 'manifest'])
+def test_selected_row_resolver_requires_manifest_pinned_prefix_code(tmp_path, monkeypatch, fault):
+    from tools import wd_mind_retained_query as retained
+    bundle = tmp_path / 'bundle'
+    path = bundle / 'tools-bootstrap' / 'tools' / 'wd_mind_retained_query.py'
+    path.parent.mkdir(parents=True)
+    code = Path(retained.__file__).read_bytes()
+    path.write_bytes(code)
+    relative = 'tools-bootstrap/tools/wd_mind_retained_query.py'
+    manifest = {'schema_version':1, 'files':{} if fault == 'missing_pin' else {relative:content._sha(code)}}
+    raw = json.dumps(manifest, separators=(',', ':')).encode()
+    (bundle / 'deployment-manifest.json').write_bytes(raw)
+    pin = content._sha(raw)
+    if fault == 'manifest': pin = '0'*64
+    if fault == 'code': path.write_bytes(code + b'\n# changed\n')
+    monkeypatch.setattr(retained, '__file__', str(bundle / 'other.py' if fault == 'origin' else path))
+    if fault == 'none':
+        session._pin_selected_resolver_code(str(bundle), pin)
+    else:
+        with pytest.raises(Exception):
+            session._pin_selected_resolver_code(str(bundle), pin)
+
+
+@pytest.mark.parametrize('target', ['wd_mind_content_query_readonly',
+                                    'wd_mind_content_snapshot_package',
+                                    'wd_mind_full_runtime', 'wd_mind_retained_query', 'unchanged', 'pycache'])
+def test_selected_resolver_refuses_changed_module_before_import(tmp_path, target):
+    """A mismatched module cannot run its top-level code in a fresh interpreter."""
+    source = Path(session.__file__).resolve().parent.parent
+    bundle = tmp_path / 'bundle'
+    root = bundle / 'tools-bootstrap'
+    names = ['tools/__init__.py', 'tools/wd_bridge_mind_session.py',
+             'tools/bridge_compact_view.py', 'tools/wd_bridge_mind_lane_read.py',
+             'tools/wd_bridge_mind.py', 'tools/wd_mind_content_query_readonly.py',
+             'tools/wd_mind_content_snapshot_package.py', 'tools/wd_mind_full_runtime.py',
+             'tools/wd_mind_retained_query.py', 'tools/wd_mind_absent_generation_prefix_readonly.py',
+             'tools/wd_mind_startup_content.py', 'waggledance/__init__.py',
+             'waggledance/core/__init__.py', 'waggledance/core/bridge_log_reader.py']
+    files = {}
+    for name in names:
+        raw = (source / name).read_bytes()
+        dest = root / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(raw)
+        files['tools-bootstrap/' + name] = hashlib.sha256(raw).hexdigest()
+    raw_manifest = json.dumps({'schema_version':1, 'files':files}).encode()
+    (bundle / 'deployment-manifest.json').write_bytes(raw_manifest)
+    sentinel = tmp_path / 'side-effect'
+    if target == 'pycache':
+        victim = root / 'tools' / 'wd_mind_retained_query.py'
+        original = victim.read_bytes()
+        original_stat = victim.stat()
+        poison = b'from pathlib import Path\nPath(' + repr(str(sentinel)).encode() + b').write_text("unsafe")\n'
+        assert len(poison) < len(original)
+        victim.write_bytes(poison + b' ' * (len(original) - len(poison)))
+        os.utime(victim, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+        py_compile.compile(str(victim), doraise=True, invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
+        victim.write_bytes(original)
+        os.utime(victim, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    elif target != 'unchanged':
+        victim = root / 'tools' / (target + '.py')
+        victim.write_bytes(b'from pathlib import Path\nPath(' + repr(str(sentinel)).encode() +
+                           b').write_text("unsafe")\n')
+    script = '''
+import hashlib, sys
+sys.path.insert(0, sys.argv[1])
+from tools import wd_bridge_mind_session as session
+if sys.argv[4] in ('unchanged', 'pycache'):
+    session._preflight_selected_resolver_code(sys.argv[2], sys.argv[3])
+    assert 'tools.wd_mind_retained_query' in sys.modules
+try:
+    session.create_selected_row_resolver(enabled=True, bundle_root=sys.argv[2],
+        expected_manifest_sha256=sys.argv[3], identifier_policy_bytes=b'{}',
+        expected_identifier_policy_sha256=hashlib.sha256(b'{}').hexdigest(),
+        expected_approval_reference_sha256='c'*64)
+except session.MindContentSessionRefused:
+    print('refused')
+else:
+    print('unexpected')
+'''
+    run = subprocess.run([sys.executable, '-c', script, str(root), str(bundle),
+                          hashlib.sha256(raw_manifest).hexdigest(), target],
+                         cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip() == 'refused'
+    assert not sentinel.exists()
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='real packaged PowerShell wrapper requires Windows')
+def test_real_wrapper_checks_early_session_dependencies_before_python(tmp_path):
+    """Exercise the actual -VerifyPackage wrapper, not a standalone import."""
+    helper_path = Path(__file__).with_name('test_wd_bridge_code_context.py')
+    spec = importlib.util.spec_from_file_location('mind_wrapper_fixture', helper_path)
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    if helper.PWSH is None or not helper.HAS_BRIDGE_PYTHON:
+        pytest.skip('PowerShell or the configured bridge Python is unavailable')
+    targets = ('tools/bridge_compact_view.py', 'tools/wd_bridge_mind_lane_read.py',
+               'tools/wd_bridge_mind.py', 'waggledance/core/bridge_log_reader.py')
+    bundle = helper._stage_fake_bundle(tmp_path, real_files=(
+        'tools/wd_bridge_mind_session.py', *targets,
+        'waggledance/__init__.py', 'waggledance/core/__init__.py'),
+        real_entrypoints={'mind_session':'tools/wd_bridge_mind_session.py'})
+    wrapper = str(bundle / 'Invoke-WdBridgePython.ps1').replace("'", "''")
+    script = (f"$ErrorActionPreference = 'Stop'; & '{wrapper}' "
+              "-Tool 'tools/wd_bridge_mind_session.py' -VerifyPackage --help; exit $LASTEXITCODE")
+    env = {'WD_REBOOT_EXPECTED_MANIFEST_HASH': helper._manifest_anchor(bundle),
+           'WD_BRIDGE_PYTHON': helper.BRIDGE_PYTHON}
+    ok = helper._run_pwsh(script, env=env)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert 'usage:' in ok.stdout.lower()
+    for index, relative in enumerate(targets):
+        sentinel = tmp_path / f'early-side-effect-{index}'
+        path = bundle / 'tools-bootstrap' / relative
+        original = path.read_bytes()
+        try:
+            path.write_bytes(b'from pathlib import Path\nPath(' + repr(str(sentinel)).encode() +
+                             b').write_text("unsafe")\n' + original)
+            result = helper._run_pwsh(script, env=env)
+            assert result.returncode != 0, result.stdout + result.stderr
+            assert 'pinned bridge code hash mismatch' in result.stdout + result.stderr
+            assert not sentinel.exists(), relative
+        finally:
+            path.write_bytes(original)
+
+
+def test_selected_row_resolver_reuses_state_without_rederiving_projection(flat_consumer_case, monkeypatch):
+    monkeypatch.setattr(content, '_verified_complete', lambda *_: (_ for _ in ()).throw(AssertionError('rederive')))
+    monkeypatch.setattr(content, '_projection', lambda *_a, **_k: (_ for _ in ()).throw(AssertionError('projection')))
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    for _ in range(2):
+        result = resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                                  lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+        assert result['results'] and result['index_match'] == 'UNKNOWN'
+
+
+@pytest.mark.parametrize('fault', ['offset', 'length', 'chunk', 'ref', 'doc', 'source', 'extra', 'duplicate'])
+def test_selected_row_resolver_refuses_untrusted_candidate_fields(flat_consumer_case, monkeypatch, fault):
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    item = frame['candidates'][0]
+    if fault == 'offset': item['source_offset'] += 1
+    if fault == 'length': item['source_length'] -= 1
+    if fault == 'chunk': item['chunk_index'] = 999999
+    if fault == 'ref': item['ref_sha256'] = '0'*64
+    if fault == 'doc': item['doc_id_sha256'] = '0'*64
+    if fault == 'source': item['source_event_sha256'] = '0'*64
+    if fault == 'extra': item['text'] = 'untrusted and never accepted'
+    if fault == 'duplicate': frame['candidates'].append(dict(item))
+    with pytest.raises(session.MindContentSessionRefused, match='^mind_session_content_refused$'):
+        resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                         lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+
+
+def test_selected_row_resolver_accepts_append_and_historical_hits(flat_consumer_case, monkeypatch):
+    from datetime import timedelta
+    resolver, frame, snapshot, clock = _located_candidates(flat_consumer_case, monkeypatch)
+    clock.value += timedelta(days=2)
+    with Path(snapshot['messages']['source_path']).open('ab') as stream:
+        stream.write(b'{"agent":"later"}\n')
+    result = resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                              lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    assert all(row['event_age_seconds_upper_bound'] >= 900 for row in result['results'])
+    assert result['current_status_freshness'] == 'UNKNOWN'
+
+
+def test_selected_row_resolver_refuses_future_source(flat_consumer_case, monkeypatch):
+    from datetime import timedelta
+    resolver, frame, _, clock = _located_candidates(flat_consumer_case, monkeypatch)
+    clock.value -= timedelta(days=1)
+    with pytest.raises(session.MindContentSessionRefused):
+        resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                         lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+
+
+def test_selected_row_resolver_refuses_changed_policy_pin(flat_consumer_case, monkeypatch):
+    from tools import wd_mind_full_runtime as runtime
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    monkeypatch.setattr(runtime, 'create_operator_pinned_policy_anchor', lambda **_: (_ for _ in ()).throw(ValueError('pin')))
+    with pytest.raises(session.MindContentSessionRefused):
+        resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                         lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+
+
+def test_selected_row_resolver_scope_and_rco_shared_access(flat_consumer_case, monkeypatch):
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    frame['lane'] = 'claude-rco-1'
+    result = resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                              lane='claude-rco-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    assert result['results'] and all(row['source_agent'] in content._BUILD_LANES for row in result['results'])
+    other = next(lane for lane in content._BUILD_LANES if lane != result['results'][0]['source_agent'])
+    frame['lane'], frame['scope'] = other, 'own'
+    with pytest.raises(session.MindContentSessionRefused):
+        resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                         lane=other, scope='own', deadline_monotonic=time.monotonic()+60)
+
+
+def test_selected_row_resolver_bad_request_and_timeout_do_not_drop_state(flat_consumer_case, monkeypatch):
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    raw = content._canonical(frame)
+    with pytest.raises(session.MindContentSessionRefused):
+        resolver.resolve(ipc_bytes=raw, expected_nonce='2'*64, lane='codex-lead-1', scope='shared',
+                         deadline_monotonic=time.monotonic()+60)
+    assert not resolver._closed
+    now = time.monotonic()
+    calls = iter([now, now + 61])
+    monkeypatch.setattr(session, 'time', SimpleNamespace(monotonic=lambda: next(calls)))
+    with pytest.raises(session.MindContentSessionRefused):
+        resolver.resolve(ipc_bytes=raw, expected_nonce='1'*64, lane='codex-lead-1', scope='shared',
+                         deadline_monotonic=now+60)
+    assert not resolver._closed
+    monkeypatch.setattr(session, 'time', time)
+    assert resolver.resolve(ipc_bytes=raw, expected_nonce='1'*64, lane='codex-lead-1', scope='shared',
+                            deadline_monotonic=time.monotonic()+60)['results']
+
+
+def test_selected_row_resolver_refuses_new_generation(flat_consumer_case, monkeypatch):
+    resolver, frame, snapshot, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    Path(snapshot['messages']['generation_path']).write_text('unexpected', encoding='utf-8')
+    with pytest.raises(session.MindContentSessionRefused):
+        resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                         lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    assert resolver._closed
+
+
+@pytest.mark.parametrize('route', ['review_mention', 'rco_sender', 'rco_recipient'])
+def test_selected_row_resolver_review_mentions_and_rco_routes(flat_consumer_case, monkeypatch, route):
+    _, old_owner, proposals, snapshot, _, _ = flat_consumer_case
+    source = Path(snapshot['messages']['source_path'])
+    old_map = json.loads(old_owner._gate._raw_map)
+    entry = old_map['entries'][proposals[0]['source_event_sha256']]
+    with source.open('rb') as stream:
+        stream.seek(entry['offset'])
+        row = json.loads(stream.read(entry['length']))
+    row['message'] = 'Synthetic build discussion cites RCO_PASS and a review outcome.'
+    if route == 'rco_sender': row['agent'] = 'claude-rco-1'
+    if route == 'rco_recipient': row['to'] = 'claude-rco-1'
+    line = content._canonical(row) + b'\n'
+    offset = source.stat().st_size
+    with source.open('ab') as stream:
+        stream.write(line)
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    source_ref = content._sha(content._canonical(row))
+    candidate = dict(frame['candidates'][0], source_event_sha256=source_ref,
+                     source_offset=offset, source_length=len(line), chunk_index=0)
+    if route == 'review_mention':
+        context = resolver._context()
+        fields = content._fields(row, context['policy'], context['roster'])
+        verdict, screened = content._classify_with_policy(row['message'], context['policy']['max_message_chars'],
+                                                          context['private'])
+        assert type(fields) is dict and verdict == 'KEEP'
+        record = content._record(source_ref, fields, content.chunk(screened, context['policy']['max_chunk_chars']), 0)
+        candidate['ref_sha256'] = content._sha(record['provenance']['event_ref'].encode())
+        candidate['doc_id_sha256'] = content._sha(record['record_id'].encode())
+    frame['candidates'] = [candidate]
+    args = dict(ipc_bytes=content._canonical(frame), expected_nonce='1'*64, lane='codex-lead-1',
+                scope='shared', deadline_monotonic=time.monotonic()+60)
+    if route == 'review_mention':
+        assert 'RCO' in resolver.resolve(**args)['results'][0]['text']
+    else:
+        with pytest.raises(session.MindContentSessionRefused):
+            resolver.resolve(**args)
+
+
+def test_selected_row_resolver_refuses_change_after_first_local_read(flat_consumer_case, monkeypatch):
+    resolver, frame, snapshot, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    original = type(resolver)._selected
+    def mutate_after_first(self, *args):
+        result = original(self, *args)
+        path = Path(snapshot['messages']['source_path'])
+        raw = path.read_bytes()
+        changed = raw.replace(b'"message":', b'"messagE":', 1)
+        assert len(changed) == len(raw) and changed != raw
+        path.write_bytes(changed)
+        return result
+    monkeypatch.setattr(type(resolver), '_selected', mutate_after_first)
+    with pytest.raises(session.MindContentSessionRefused):
+        resolver.resolve(ipc_bytes=content._canonical(frame), expected_nonce='1'*64,
+                         lane='codex-lead-1', scope='shared', deadline_monotonic=time.monotonic()+60)
+    assert resolver._closed and resolver._private is None
 
 
 @pytest.fixture

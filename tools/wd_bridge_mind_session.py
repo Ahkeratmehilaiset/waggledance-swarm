@@ -17,6 +17,7 @@ import builtins
 from datetime import datetime, timezone
 import hashlib
 import hmac
+import importlib.util
 import json
 import math
 import os
@@ -516,6 +517,378 @@ def read_flat_owner_stream(*, enabled=False, authorization=None, open_read=None,
     if output is None:
         raise MindContentSessionRefused('mind_session_content_refused') from None
     return output
+
+
+class _SelectedReadDeadline(Exception):
+    pass
+
+
+def _selected_pin_read(path, expected, limit):
+    """Read a pinned plain file without importing code from the bundle."""
+    if type(expected) is not str or _SHA256.fullmatch(expected) is None:
+        raise ValueError('pin')
+    if not path.is_absolute() or '..' in path.parts:
+        raise ValueError('path')
+    for index, component in enumerate((path, *path.parents)):
+        info = os.lstat(component)
+        if (stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400
+                or (index == 0 and not stat.S_ISREG(info.st_mode))
+                or (index != 0 and not stat.S_ISDIR(info.st_mode))):
+            raise ValueError('path')
+    before = os.lstat(path)
+    with path.open('rb') as stream:
+        opened = os.fstat(stream.fileno())
+        raw = stream.read(limit + 1)
+        after = os.fstat(stream.fileno())
+    current = os.lstat(path)
+    identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    if (len(raw) > limit or len(raw) != opened.st_size
+            or identity(before) != identity(opened) or identity(opened) != identity(after)
+            or identity(after) != identity(current)
+            or not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected)):
+        raise ValueError('pin')
+    return raw
+
+
+def _selected_unique_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('duplicate')
+        result[key] = value
+    return result
+
+
+def _selected_manifest(bundle_root, expected_manifest_sha256):
+    root = Path(bundle_root)
+    if not root.is_absolute() or '..' in root.parts:
+        raise ValueError('anchor')
+    raw = _selected_pin_read(root / 'deployment-manifest.json', expected_manifest_sha256, 4 * 1024 * 1024)
+    manifest = json.loads(raw.decode('utf-8-sig'), object_pairs_hook=_selected_unique_pairs,
+                          parse_constant=lambda _: (_ for _ in ()).throw(ValueError('constant')))
+    if (type(manifest) is not dict or type(manifest.get('schema_version')) is not int or manifest['schema_version'] != 1
+            or type(manifest.get('files')) is not dict):
+        raise ValueError('manifest')
+    return root, manifest['files']
+
+
+def _selected_pin_module(root, files, module_name, relative):
+    expected = root.joinpath(*relative.split('/'))
+    _selected_pin_read(expected, files.get(relative), 8 * 1024 * 1024)
+    loaded = sys.modules.get(module_name)
+    if loaded is not None:
+        origin = getattr(loaded, '__file__', None)
+        if type(origin) is not str or os.path.normcase(os.path.abspath(origin)) != os.path.normcase(os.path.abspath(expected)):
+            raise ValueError('origin')
+
+
+def _pin_selected_resolver_code(bundle_root, expected_manifest_sha256):
+    root, files = _selected_manifest(bundle_root, expected_manifest_sha256)
+    _selected_pin_module(root, files, 'tools.wd_mind_retained_query',
+                         'tools-bootstrap/tools/wd_mind_retained_query.py')
+
+
+def _preflight_selected_resolver_code(bundle_root, expected_manifest_sha256):
+    """Check every resolver dependency before its first lazy import can run."""
+    root, files = _selected_manifest(bundle_root, expected_manifest_sha256)
+    for name, relative in (('tools', 'tools-bootstrap/tools/__init__.py'),
+                           ('waggledance', 'tools-bootstrap/waggledance/__init__.py'),
+                           ('waggledance.core', 'tools-bootstrap/waggledance/core/__init__.py')):
+        _selected_pin_module(root, files, name, relative)
+        loaded = sys.modules.get(name)
+        if loaded is not None:
+            expected_dir = root.joinpath(*relative.split('/')).parent
+            paths = getattr(loaded, '__path__', ())
+            if (len(paths) != 1 or os.path.normcase(os.path.abspath(paths[0])) !=
+                    os.path.normcase(os.path.abspath(expected_dir))):
+                raise ValueError('package_path')
+    for name in ('wd_mind_content_query_readonly', 'wd_mind_content_snapshot_package',
+                 'wd_mind_full_runtime', 'wd_mind_retained_query',
+                 'wd_mind_absent_generation_prefix_readonly', 'wd_mind_startup_content',
+                 'bridge_compact_view', 'wd_bridge_mind_lane_read', 'wd_bridge_mind'):
+        _selected_pin_module(root, files, 'tools.' + name, 'tools-bootstrap/tools/' + name + '.py')
+    _selected_pin_module(root, files, 'waggledance.core.bridge_log_reader',
+                         'tools-bootstrap/waggledance/core/bridge_log_reader.py')
+    # Execute verified source bytes directly, rather than accepting an
+    # unrelated import hook or a stale bytecode cache after checking .py files.
+    # Existing imports must already have the verified bundle origin above.
+    parent = sys.modules.get('tools')
+    if parent is None:
+        raise ValueError('package_missing')
+    for name in ('wd_mind_absent_generation_prefix_readonly', 'wd_mind_content_query_readonly',
+                 'wd_mind_startup_content', 'wd_mind_content_snapshot_package',
+                 'wd_mind_full_runtime', 'wd_mind_retained_query'):
+        qualified = 'tools.' + name
+        if qualified in sys.modules:
+            if getattr(parent, name, None) is not sys.modules[qualified]:
+                raise ValueError('module_binding')
+            continue
+        relative = 'tools-bootstrap/tools/' + name + '.py'
+        path = root.joinpath(*relative.split('/'))
+        source = _selected_pin_read(path, files.get(relative), 8 * 1024 * 1024)
+        spec = importlib.util.spec_from_file_location(qualified, path)
+        if spec is None or spec.loader is None:
+            raise ValueError('module_spec')
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[qualified] = module
+        try:
+            exec(compile(source, str(path), 'exec'), module.__dict__)
+            setattr(parent, name, module)
+        except BaseException:
+            sys.modules.pop(qualified, None)
+            raise
+
+
+class _SelectedRowResolver:
+    """Process-local source verifier. Pipe peers supply locations, never text or pins."""
+    __slots__ = ('_root', '_pin', '_policy_sha', '_approval_sha', '_controls', '_runtime_controls',
+                 '_cursor', '_prefix_sha', '_private', '_pid', '_lock', '_closed')
+
+    def __init__(self, root, pin, policy_sha, approval_sha, controls, runtime_controls, cursor, prefix_sha, private):
+        self._root, self._pin = root, pin
+        self._policy_sha, self._approval_sha = policy_sha, approval_sha
+        self._controls, self._runtime_controls = controls, runtime_controls
+        self._cursor, self._prefix_sha, self._private = cursor, prefix_sha, private
+        self._pid, self._lock, self._closed = os.getpid(), threading.Lock(), False
+
+    def __repr__(self):
+        return '<PrivateMindSelectedRowResolver>'
+
+    def close(self):
+        if not self._lock.acquire(blocking=False):
+            raise MindContentSessionRefused('mind_session_content_refused') from None
+        try:
+            self._closed, self._private = True, None
+        finally:
+            self._lock.release()
+
+    def _check_controls(self):
+        _preflight_selected_resolver_code(self._root, self._pin)
+        from tools import wd_mind_content_snapshot_package as package
+        from tools import wd_mind_full_runtime as runtime
+        _pin_flat_session(self._root, self._pin)
+        _pin_selected_resolver_code(self._root, self._pin)
+        if (package._consumer_bundle_controls(self._root, self._pin) != self._controls
+                or runtime._bundle_inputs(Path(self._root), self._pin) != self._runtime_controls):
+            raise ValueError('controls_changed')
+        runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=self._root,
+            expected_manifest_sha256=self._pin, operator_policy_sha256=self._policy_sha,
+            operator_approval_reference_sha256=self._approval_sha)
+
+    def _context(self):
+        from tools import wd_mind_content_query_readonly as reader
+        source, sidecar, _, roster_bytes, policy_bytes = self._controls
+        roster = json.loads(roster_bytes.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                            parse_constant=reader._bad_constant)
+        policy = json.loads(policy_bytes.decode('utf-8'), object_pairs_hook=reader._unique_pairs,
+                            parse_constant=reader._bad_constant)
+        return {'messages': {'source_path':source, 'generation_path':sidecar, 'end_cursor':self._cursor},
+                'decision': {'source_prefix': {'sha256':self._prefix_sha}},
+                'policy':reader._message_policy(policy, None), 'roster':reader._roster(roster),
+                'private':self._private}
+
+    def _selected(self, context, candidates, lane, scope, when):
+        from tools import wd_mind_content_query_readonly as reader
+        bridge, absent = reader._narrow_dependencies()
+        source, sidecar = Path(context['messages']['source_path']), Path(context['messages']['generation_path'])
+        policy, cursor = context['policy'], self._cursor
+        results = []
+        with bridge._open_log(source) as stream:
+            reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+            for item in candidates:
+                offset, size, index = item['source_offset'], item['source_length'], item['chunk_index']
+                if offset + size > cursor.offset:
+                    raise ValueError('row_boundary')
+                if offset > 0:
+                    stream.seek(offset - 1)
+                    if stream.read(1) != b'\n':
+                        raise ValueError('row_boundary')
+                stream.seek(offset)
+                line = stream.read(size)
+                if len(line) != size or not line.endswith(b'\n') or b'\n' in line[:-1]:
+                    raise ValueError('row_length')
+                rows = bridge._parse_rows(line, starts_at_zero=(offset == 0))
+                if len(rows) != 1 or not hmac.compare_digest(reader._sha(reader._canonical(rows[0])),
+                                                               item['source_event_sha256']):
+                    raise ValueError('source_ref')
+                row = rows[0]
+                fields = reader._fields(row, policy, context['roster'])
+                if (type(fields) is not dict or (scope == 'own' and fields['agent'] != lane)
+                        or item['source_event_sha256'] in policy['removed_source_refs']
+                        or ('approved_source_refs' in policy and
+                            item['source_event_sha256'] not in policy['approved_source_refs'])
+                        or reader._utc(row['ts_utc']) > when):
+                    raise ValueError('source_policy')
+                verdict, screened = reader._classify_with_policy(row.get('message'), policy['max_message_chars'],
+                                                                 context['private'])
+                if verdict != 'KEEP':
+                    raise ValueError('source_screen')
+                chunks = reader.chunk(screened, policy['max_chunk_chars'])
+                if (not chunks or any(reader._OUTPUT.fullmatch(text) is None or reader._has_marker(text)
+                                      for text in chunks) or index >= len(chunks)):
+                    raise ValueError('source_chunk')
+                record = reader._record(item['source_event_sha256'], fields, chunks, index)
+                if (not hmac.compare_digest(reader._sha(record['provenance']['event_ref'].encode()), item['ref_sha256'])
+                        or not hmac.compare_digest(reader._sha(record['record_id'].encode()), item['doc_id_sha256'])
+                        or reader._utc(record['provenance']['available_utc']) >= when - reader.dt.timedelta(seconds=1)):
+                    raise ValueError('chunk_ref')
+                decoded = reader.decode_text(record['stored_text'])
+                verdict, encoded = reader._classify_with_policy(decoded, reader.MAX_MESSAGE_CHARS, context['private'])
+                if verdict != 'KEEP' or encoded != record['stored_text']:
+                    raise ValueError('result_screen')
+                age = (when - reader._utc(record['time_utc'])).total_seconds()
+                if age < 0:
+                    raise ValueError('future_event')
+                results.append(({'text':decoded, 'source_event_sha256':item['source_event_sha256'],
+                                 'event_time_utc_floor':record['time_utc'], 'source_agent':fields['agent'],
+                                 'event_age_seconds_upper_bound':math.ceil(age)}, reader._sha(line)))
+            reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+        return results
+
+    def resolve(self, *, ipc_bytes=None, expected_nonce=None, lane=None, scope=None, deadline_monotonic=None):
+        """Re-read selected local rows. Synchronous I/O requires a retained caller deadline."""
+        try:
+            if (type(ipc_bytes) is not bytes or not 0 < len(ipc_bytes) <= 4096
+                    or type(expected_nonce) is not str or not _SHA256.fullmatch(expected_nonce)
+                    or type(lane) is not str or lane not in {'codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5'}
+                    or type(scope) is not str or scope not in ('own','shared')
+                    or type(deadline_monotonic) not in (int,float) or not math.isfinite(deadline_monotonic)
+                    or not 0 < deadline_monotonic - time.monotonic() <= 90):
+                raise ValueError('request')
+            frame = json.loads(ipc_bytes.decode('utf-8'), object_pairs_hook=_selected_unique_pairs,
+                               parse_constant=lambda _: (_ for _ in ()).throw(ValueError('constant')))
+            if (type(frame) is not dict or set(frame) != {'schema','nonce','lane','scope','status','candidates'}
+                    or frame['schema'] != 'wd.mind-pipe-candidates.v2' or frame['nonce'] != expected_nonce
+                    or frame['lane'] != lane or frame['scope'] != scope or frame['status'] != 'CANDIDATES'
+                    or type(frame['candidates']) is not list or not 1 <= len(frame['candidates']) <= 3):
+                raise ValueError('frame')
+            seen = set()
+            for item in frame['candidates']:
+                if (type(item) is not dict or set(item) != {'ref_sha256','doc_id_sha256','source_event_sha256',
+                                                           'source_offset','source_length','chunk_index'}
+                        or any(type(item[key]) is not str or _SHA256.fullmatch(item[key]) is None
+                               for key in ('ref_sha256','doc_id_sha256','source_event_sha256'))
+                        or type(item['source_offset']) is not int or item['source_offset'] < 0
+                        or type(item['source_length']) is not int or not 0 < item['source_length'] <= 4 * 1024 * 1024
+                        or type(item['chunk_index']) is not int or item['chunk_index'] < 0):
+                    raise ValueError('candidate')
+                triple = (item['ref_sha256'], item['doc_id_sha256'], item['source_event_sha256'])
+                if triple in seen:
+                    raise ValueError('duplicate')
+                seen.add(triple)
+            candidates = frame['candidates']
+        except Exception:
+            raise MindContentSessionRefused('mind_session_content_refused') from None
+        if not self._lock.acquire(blocking=False):
+            raise MindContentSessionRefused('mind_session_content_refused') from None
+        try:
+            if self._closed or self._pid != os.getpid():
+                raise ValueError('closed')
+            def deadline():
+                if time.monotonic() >= deadline_monotonic:
+                    raise _SelectedReadDeadline()
+            self._check_controls(); deadline()
+            from tools import wd_mind_retained_query as retained
+            context = self._context()
+            retained._source_check(context); deadline()
+            first = self._selected(context, candidates, lane, scope, datetime.now(timezone.utc)); deadline()
+            self._check_controls(); deadline()
+            retained._source_check(context); deadline()
+            self._check_controls(); deadline()
+            final = self._selected(context, candidates, lane, scope, datetime.now(timezone.utc)); deadline()
+            for (before, before_raw), (after, after_raw) in zip(first, final):
+                if (before_raw != after_raw or
+                        {k:v for k,v in before.items() if k != 'event_age_seconds_upper_bound'} !=
+                        {k:v for k,v in after.items() if k != 'event_age_seconds_upper_bound'}):
+                    raise ValueError('source_changed')
+            return {'schema':'wd.mind-flat-verified-session.v1', 'authority':'none', 'lane':lane,
+                    'fleet_sha256':self._controls[2], 'sender_authentication':'UNKNOWN', 'index_match':'UNKNOWN',
+                    'same_user_aba':'UNKNOWN', 'current_status_freshness':'UNKNOWN',
+                    'results':[item[0] for item in final]}
+        except _SelectedReadDeadline:
+            raise MindContentSessionRefused('mind_session_content_refused') from None
+        except BaseException as exc:
+            self._closed, self._private = True, None
+            if isinstance(exc, (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError)):
+                raise
+            raise MindContentSessionRefused('mind_session_content_refused') from None
+        finally:
+            self._lock.release()
+
+
+def create_selected_row_resolver(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
+                                 identifier_policy_bytes=None, expected_identifier_policy_sha256=None,
+                                 expected_approval_reference_sha256=None):
+    """Capture a locally pinned LF-complete prefix without deriving a projection or vectors.
+
+    All inputs are independent caller-supplied pins. Prefix and selected rows are
+    rechecked for every call; sender identity and same-user ABA remain UNKNOWN.
+    The caller owns this one-process state and any synchronous I/O deadlines.
+    """
+    try:
+        if (enabled is not True or type(bundle_root) is not str or not Path(bundle_root).is_absolute()
+                or type(expected_manifest_sha256) is not str or not _SHA256.fullmatch(expected_manifest_sha256)
+                or type(identifier_policy_bytes) is not bytes or not 0 < len(identifier_policy_bytes) <= 65536
+                or type(expected_identifier_policy_sha256) is not str or not _SHA256.fullmatch(expected_identifier_policy_sha256)
+                or not hmac.compare_digest(hashlib.sha256(identifier_policy_bytes).hexdigest(), expected_identifier_policy_sha256)
+                or type(expected_approval_reference_sha256) is not str or not _SHA256.fullmatch(expected_approval_reference_sha256)):
+            raise ValueError('input')
+        _preflight_selected_resolver_code(bundle_root, expected_manifest_sha256)
+        from tools import wd_mind_content_query_readonly as reader
+        from tools import wd_mind_content_snapshot_package as package
+        from tools import wd_mind_full_runtime as runtime
+        _pin_flat_session(bundle_root, expected_manifest_sha256)
+        _pin_selected_resolver_code(bundle_root, expected_manifest_sha256)
+        controls = package._consumer_bundle_controls(bundle_root, expected_manifest_sha256)
+        runtime_controls = runtime._bundle_inputs(Path(bundle_root), expected_manifest_sha256)
+        if (type(controls) is not tuple or len(controls) != 5 or type(runtime_controls) is not tuple
+                or len(runtime_controls) != 3 or reader._sha(runtime_controls[0]) != controls[2]
+                or runtime_controls[1] != controls[3] or runtime_controls[2] != controls[4]):
+            raise ValueError('bundle_controls')
+        runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=bundle_root,
+            expected_manifest_sha256=expected_manifest_sha256,
+            operator_policy_sha256=expected_identifier_policy_sha256,
+            operator_approval_reference_sha256=expected_approval_reference_sha256)
+        key = os.urandom(32)
+        private = reader._load_identifier_policy(identifier_policy_bytes, key,
+            hmac.new(key, identifier_policy_bytes, hashlib.sha256).hexdigest(), allow_empty_v2=True)
+        source, sidecar = Path(controls[0]), Path(controls[1])
+        bridge, absent = reader._narrow_dependencies()
+        tail = bridge.read_bridge_log_tail_lines(source, tail_rows=1, max_bytes=bridge.MAX_MAX_BYTES,
+                                                generation_path=sidecar)
+        if (tail.status not in (bridge.BridgeReadStatus.OK, bridge.BridgeReadStatus.IDLE)
+                or type(tail.end_offset) is not int or tail.end_offset <= 0
+                or type(tail.file_identity) is not str or not tail.file_identity):
+            raise ValueError('source_tail')
+        cursor = bridge.BridgeCursor(tail.end_offset, tail.file_identity, tail.generation)
+        if bridge._validate_cursor(cursor):
+            raise ValueError('source_cursor')
+        with bridge._open_log(source) as stream:
+            reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+            stream.seek(cursor.offset - 1)
+            if stream.read(1) != b'\n':
+                raise ValueError('source_boundary')
+            stream.seek(0)
+            digest = hashlib.sha256()
+            remaining = cursor.offset
+            while remaining:
+                block = stream.read(min(1024 * 1024, remaining))
+                if not block:
+                    raise ValueError('source_short')
+                digest.update(block)
+                remaining -= len(block)
+            reader._narrow_fence(stream, source, sidecar, cursor, bridge, absent)
+        result = _SelectedRowResolver(bundle_root, expected_manifest_sha256,
+            expected_identifier_policy_sha256, expected_approval_reference_sha256, controls,
+            runtime_controls, cursor, digest.hexdigest(), private)
+        from tools import wd_mind_retained_query as retained
+        retained._source_check(result._context())
+        result._check_controls()
+        return result
+    except Exception:
+        raise MindContentSessionRefused('mind_session_content_refused') from None
+    finally:
+        identifier_policy_bytes = None
 
 
 def query_flat_source_candidates(*, enabled=False, owner=None, ipc_bytes=None, bundle_root=None,

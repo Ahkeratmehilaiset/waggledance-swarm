@@ -52,6 +52,12 @@ def _packaged_python() -> list[str]:
     return [entry for entry in _definition()["python_files"] if entry.endswith(".py")]
 
 
+def test_mind_retained_query_is_packaged_and_smoke_imported():
+    definition = _definition()
+    assert 'tools/wd_mind_retained_query.py' in definition['python_files']
+    assert 'tools.wd_mind_retained_query' in definition['import_smoke']['package_modules']
+
+
 def test_manual_capability_declares_only_the_two_existing_drivers_not_default_entrypoints():
     definition = _definition()
     capability = definition["manual_execution_capability"]

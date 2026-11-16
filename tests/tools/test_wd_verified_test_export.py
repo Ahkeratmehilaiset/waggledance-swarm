@@ -149,7 +149,7 @@ def test_real_pytest_collect_only_is_not_accepted_as_execution(tmp_path):
         export._junit_counts(junit.read_bytes())
 
 
-def _selection_phase(tmp_path, phase, target, *extra):
+def _selection_phase(tmp_path, phase, target, *extra, override_addopts=True):
     hook = tmp_path / 'hook'
     hook.mkdir(exist_ok=True)
     (hook / 'hook_verified_selection.py').write_text(export._SELECTION_PLUGIN, encoding='utf-8')
@@ -158,9 +158,12 @@ def _selection_phase(tmp_path, phase, target, *extra):
     env = {key: value for key, value in os.environ.items() if key in ('SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'PATH')}
     env.update(PYTEST_DISABLE_PLUGIN_AUTOLOAD='1', PYTHONPATH=str(hook),
                PYTEST_ADDOPTS='-p hook_verified_selection -p no:cacheprovider',
+               WD_VERIFIED_SELECTION_ROOT=str(tmp_path),
                WD_VERIFIED_SELECTION_TARGETS=json.dumps([target]), WD_VERIFIED_SELECTION_PHASE=phase,
                WD_VERIFIED_SELECTION_REPORT=str(report))
     args = [sys.executable, '-B', '-m', 'pytest', '-q', '--tb=short', '--rootdir=' + str(tmp_path)]
+    if override_addopts:
+        args += ['-o', 'addopts=']
     args += ['--collect-only'] if phase == 'collect' else ['--junitxml=' + str(junit)]
     result = subprocess.run(args + list(extra) + [target], cwd=tmp_path, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45)
@@ -170,6 +173,7 @@ def _selection_phase(tmp_path, phase, target, *extra):
 def _synthetic_parameterized_suite(tmp_path):
     tests = tmp_path / 'tests'
     tests.mkdir()
+    (tmp_path / 'pytest.ini').write_text('[pytest]\n', encoding='utf-8')
     (tests / 'test_synthetic.py').write_text(
         "import pytest\n@pytest.mark.parametrize('n',[1,2],ids=['one','two'])\n"
         "def test_parameterized(n): assert n > 0\n", encoding='utf-8')
@@ -195,7 +199,7 @@ def test_collected_and_executed_parameterized_node_ids_match_junit(tmp_path):
 def _synthetic_selection_evidence():
     node = 'a' * 64
     common = {'schema': 'wd.pytest-selection-observation.v1', 'before': [node],
-              'after': [node], 'matches': [1], 'deselected': 0}
+              'after': [node], 'matches': [1], 'unmatched': [], 'deselected': 0}
     collected = {**common, 'phase': 'collect', 'phases': {}}
     executed = {**common, 'phase': 'execute', 'phases': {
         node: {'setup': ['passed'], 'call': ['passed'], 'teardown': ['passed']}}}
@@ -204,13 +208,14 @@ def _synthetic_selection_evidence():
     return collected, executed, junit
 
 
-@pytest.mark.parametrize('fault', ['missing_node', 'missing_target', 'deselected', 'skipped',
+@pytest.mark.parametrize('fault', ['missing_node', 'missing_target', 'extra_unmatched_node', 'deselected', 'skipped',
                                   'failed', 'duplicate_phase', 'bad_junit_node', 'missing_junit_property'])
 def test_selection_evidence_refuses_missing_filtered_or_unexecuted_node(fault):
     collected, executed, junit = _synthetic_selection_evidence()
     node = 'a' * 64
     if fault == 'missing_node': executed['before'] = []
     elif fault == 'missing_target': collected['matches'] = [0]
+    elif fault == 'extra_unmatched_node': collected['unmatched'] = ['b' * 64]
     elif fault == 'deselected': executed['deselected'] = 1
     elif fault == 'skipped': executed['phases'][node]['call'] = ['skipped']
     elif fault == 'failed': executed['phases'][node]['teardown'] = ['failed']
@@ -235,11 +240,54 @@ def test_pytest_keyword_and_marker_filtering_refused(tmp_path, bad_option):
     assert result.returncode != 0
 
 
-def test_project_addopts_keyword_filtering_refused(tmp_path):
+def test_project_addopts_keyword_filtering_refuses_before_collection(tmp_path):
     target = _synthetic_parameterized_suite(tmp_path)
     (tmp_path / 'pytest.ini').write_text('[pytest]\naddopts = -k one\n', encoding='utf-8')
-    result, _, _ = _selection_phase(tmp_path, 'collect', target)
-    assert result.returncode != 0
+    result, report, _ = _selection_phase(tmp_path, 'collect', target)
+    assert result.returncode != 0 and not report.exists()
+
+
+def test_unrequested_node_in_project_addopts_is_refused_before_execution(tmp_path):
+    target = _synthetic_parameterized_suite(tmp_path)
+    extra = tmp_path / 'tests' / 'test_extra.py'
+    imported, executed = tmp_path / 'extra-imported', tmp_path / 'extra-executed'
+    extra.write_text("from pathlib import Path\nPath('extra-imported').write_text('synthetic')\n"
+                     "def test_extra(): Path('extra-executed').write_text('synthetic')\n", encoding='utf-8')
+    (tmp_path / 'pytest.ini').write_text('[pytest]\naddopts = tests/test_extra.py::test_extra\n', encoding='utf-8')
+    env = {key: value for key, value in os.environ.items() if key in ('SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'PATH')}
+    env['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+    result = subprocess.run([sys.executable, '-B', '-m', 'pytest', '-q', '--collect-only',
+                             '--rootdir=' + str(tmp_path), target], cwd=tmp_path, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45)
+    assert result.returncode == 0 and imported.exists()
+    assert b'tests/test_extra.py::test_extra' in result.stdout
+    assert not executed.exists()
+
+
+def test_project_addopts_extra_module_is_not_imported_when_overridden(tmp_path):
+    target = _synthetic_parameterized_suite(tmp_path)
+    extra = tmp_path / 'tests' / 'test_extra.py'
+    imported = tmp_path / 'extra-imported'
+    extra.write_text("from pathlib import Path\nPath('extra-imported').write_text('synthetic')\n"
+                     "def test_extra(): pass\n", encoding='utf-8')
+    (tmp_path / 'pytest.ini').write_text('[pytest]\naddopts = tests/test_extra.py::test_extra\n', encoding='utf-8')
+    result, report, _ = _selection_phase(tmp_path, 'collect', target)
+    assert result.returncode != 0 and not imported.exists() and not report.exists()
+
+
+@pytest.mark.parametrize(('filename', 'contents'), [
+    ('pytest.ini', '[pytest]\naddopts = -W error\n'),
+    ('pytest.ini', '[pytest]\naddopts = --strict-markers\n'),
+    ('pyproject.toml', '[tool.pytest.ini_options]\naddopts = ["-W", "error"]\n'),
+    ('pyproject.toml', '[tool.pytest.ini_options]\naddopts = ["--strict-markers"]\n'),
+])
+def test_strict_repo_addopts_refuse_instead_of_being_silently_dropped(tmp_path, filename, contents):
+    target = _synthetic_parameterized_suite(tmp_path)
+    if filename == 'pyproject.toml':
+        (tmp_path / 'pytest.ini').unlink()
+    (tmp_path / filename).write_text(contents, encoding='utf-8')
+    result, report, _ = _selection_phase(tmp_path, 'collect', target)
+    assert result.returncode != 0 and not report.exists()
 
 
 def test_execution_phase_rejects_collect_only(tmp_path):

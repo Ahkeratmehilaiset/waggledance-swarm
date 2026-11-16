@@ -31,12 +31,14 @@ _RESERVED = re.compile(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$', re.I)
 # Only hashes of node IDs are written; this is an observation within pytest,
 # not attestation against a malicious same-user process or malicious plugin.
 _SELECTION_PLUGIN = r'''import hashlib, json, os
+from pathlib import Path
 import pytest
+from _pytest.config.findpaths import load_config_dict_from_file
 
 PHASE = os.environ['WD_VERIFIED_SELECTION_PHASE']
 REPORT = os.environ['WD_VERIFIED_SELECTION_REPORT']
 TARGETS = json.loads(os.environ['WD_VERIFIED_SELECTION_TARGETS'])
-STATE = {'before': None, 'after': None, 'matches': None, 'deselected': 0, 'phases': {}}
+STATE = {'before': None, 'after': None, 'matches': None, 'unmatched': None, 'deselected': 0, 'phases': {}}
 
 def nodehash(node):
     return hashlib.sha256(node.encode('utf-8')).hexdigest()
@@ -48,6 +50,28 @@ def matches(node, target):
 def pytest_configure(config):
     if PHASE not in ('collect', 'execute') or bool(config.option.collectonly) != (PHASE == 'collect'):
         raise pytest.UsageError('verified export refuses unexpected collect-only mode')
+    # The override suppresses config addopts before pytest expands positional
+    # paths, but also suppresses strict options. Re-read pytest's selected config
+    # with pytest's own parser; its effective inicfg may already be overridden.
+    original = ''
+    if config.inipath is not None:
+        root = os.path.normcase(os.path.abspath(os.environ['WD_VERIFIED_SELECTION_ROOT']))
+        config_path = os.path.normcase(os.path.abspath(str(config.inipath)))
+        if os.path.commonpath((root, config_path)) != root:
+            raise pytest.UsageError('verified export refuses config outside export')
+        selected_config = load_config_dict_from_file(Path(config.inipath))
+        if not isinstance(selected_config, dict):
+            raise pytest.UsageError('verified export refuses unsupported pytest config')
+        original = selected_config.get('addopts', '')
+        original = getattr(original, 'value', original)
+    if isinstance(original, str):
+        configured = bool(original.strip())
+    elif isinstance(original, (list, tuple)) and all(isinstance(x, str) for x in original):
+        configured = any(x.strip() for x in original)
+    else:
+        raise pytest.UsageError('verified export refuses unknown addopts representation')
+    if configured:
+        raise pytest.UsageError('verified export refuses configured addopts')
     if config.getoption('keyword') or config.getoption('markexpr'):
         raise pytest.UsageError('verified export refuses keyword or marker filtering')
 
@@ -57,6 +81,8 @@ def pytest_collection_modifyitems(session, config, items):
     yield
     STATE['after'] = [nodehash(item.nodeid) for item in items]
     STATE['matches'] = [sum(matches(item.nodeid, target) for item in items) for target in TARGETS]
+    STATE['unmatched'] = [nodehash(item.nodeid) for item in items
+                          if not any(matches(item.nodeid, target) for target in TARGETS)]
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_deselected(items):
@@ -270,21 +296,27 @@ def _junit_counts(data: bytes) -> dict[str, int]:
     return {'tests_total': len(cases), 'tests_passed': passed, 'tests_skipped': skipped}
 
 
+def _selection_observation(value: dict, phase: str, target_count: int) -> None:
+    """Refuse unexpected nodes, including before execution is started."""
+    schema = 'wd.pytest-selection-observation.v1'
+    keys = {'schema', 'phase', 'before', 'after', 'matches', 'unmatched', 'deselected', 'phases'}
+    if type(value) is not dict or set(value) != keys or value['schema'] != schema or value['phase'] != phase:
+        raise ValueError('selection')
+    before, after, matches = value['before'], value['after'], value['matches']
+    if (type(before) is not list or type(after) is not list or not before or
+            any(type(x) is not str or not _SHA256.fullmatch(x) for x in before + after) or
+            len(before) != len(set(before)) or len(after) != len(set(after)) or
+            set(before) != set(after) or type(value['unmatched']) is not list or value['unmatched'] or value['deselected'] != 0 or
+            type(matches) is not list or len(matches) != target_count or
+            any(type(x) is not int or x < 1 for x in matches) or
+            (phase == 'collect' and value['phases'] != {})):
+        raise ValueError('selection')
+
+
 def _selection_evidence(collect: dict, execute: dict, junit: bytes, target_count: int) -> dict[str, int]:
     """Cross-check two observed pytest selections, per-node phases, and JUnit."""
-    schema = 'wd.pytest-selection-observation.v1'
-    keys = {'schema', 'phase', 'before', 'after', 'matches', 'deselected', 'phases'}
-    for value, phase in ((collect, 'collect'), (execute, 'execute')):
-        if type(value) is not dict or set(value) != keys or value['schema'] != schema or value['phase'] != phase:
-            raise ValueError('selection')
-        before, after, matches = value['before'], value['after'], value['matches']
-        if (type(before) is not list or type(after) is not list or not before or
-                any(type(x) is not str or not _SHA256.fullmatch(x) for x in before + after) or
-                len(before) != len(set(before)) or len(after) != len(set(after)) or
-                set(before) != set(after) or value['deselected'] != 0 or
-                type(matches) is not list or len(matches) != target_count or
-                any(type(x) is not int or x < 1 for x in matches)):
-            raise ValueError('selection')
+    _selection_observation(collect, 'collect', target_count)
+    _selection_observation(execute, 'execute', target_count)
     nodes = set(collect['after'])
     if (nodes != set(execute['after']) or collect['matches'] != execute['matches'] or
             collect['phases'] != {} or type(execute['phases']) is not dict):
@@ -400,13 +432,16 @@ def _run(config: dict) -> dict:
     env = {key: value for key, value in os.environ.items() if key in ('SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP')}
     env.update(PYTEST_ADDOPTS='-p hook_plugin_d15 -p hook_verified_selection -p no:cacheprovider',
                PYTHONPATH=str(hook_dir) + os.pathsep + str(target), PYTHONDONTWRITEBYTECODE='1',
-               WD_VERIFIED_SELECTION_TARGETS=json.dumps(targets, ensure_ascii=True))
+               WD_VERIFIED_SELECTION_ROOT=str(target), WD_VERIFIED_SELECTION_TARGETS=json.dumps(targets, ensure_ascii=True))
     results = []
     for phase, d15_report, selected in (('collect', collect_report, collect_selection),
                                         ('execute', report, execute_selection)):
         env.update(WD_D15_HOOK_REPORT=str(d15_report), WD_VERIFIED_SELECTION_PHASE=phase,
                    WD_VERIFIED_SELECTION_REPORT=str(selected))
-        args = [sys.executable, '-B', '-m', 'pytest', '-q', '--tb=short', '-ra',
+        # Do not let repository config add unrelated positional targets before
+        # collection: even importing an unrequested test can have side effects.
+        # D15 remains enabled through the controlled PYTEST_ADDOPTS environment.
+        args = [sys.executable, '-B', '-m', 'pytest', '-q', '--tb=short', '-ra', '-o', 'addopts=',
                 '--rootdir=' + str(target), '--basetemp=' + str(Path(env['TEMP']) / ('pytest-' + phase))]
         args += ['--collect-only'] if phase == 'collect' else ['--junitxml=' + str(junit)]
         result = subprocess.run(args + targets, cwd=str(target), env=env, stdin=subprocess.DEVNULL, check=False)
@@ -420,6 +455,9 @@ def _run(config: dict) -> dict:
         rows = [json.loads(line) for line in _bounded_file(d15_report, 64 * 1024 * 1024).decode('utf-8').splitlines()]
         if not rows or rows[-1].get('kind') != 'summary' or rows[-1].get('refused') != 0 or rows[-1].get('exit') != 0:
             raise ValueError('pytest_or_hook')
+        # Enforce the requested selection before starting the execute phase;
+        # a config-added test must not be run merely to reject its result later.
+        _selection_observation(json.loads(_bounded_file(selected, 16 * 1024 * 1024)), phase, len(targets))
     after = _verify_tree(str(git), str(repo), target, entries, audit_allowed=True)
     if before != after or not junit.is_file():
         raise ValueError('postcheck')

@@ -4577,6 +4577,35 @@ def test_mind_lane_keeps_the_diff_content_gate(tmp_path: Path) -> None:
     assert report["decision"] == "auto_merge_plan_ready"
 
 
+def _mind_diff_with_added_line(line: str) -> str:
+    """The clean two-file Mind diff with one more added line in the first file; the hunk header counts it."""
+    clean = _mind_diff(MIND_PATHS)
+    changed = clean.replace("@@ -1 +1 @@\n-old\n+new\n", "@@ -1 +1,2 @@\n-old\n+new\n+" + line + "\n", 1)
+    assert changed != clean
+    return changed
+
+
+def test_mind_lane_diff_content_gate_refuses_denied_content(tmp_path: Path) -> None:
+    """Negative twin of the test above (Tools build review, P2). The Mind paths and both lane approvals are
+    valid and the lane engages; only the diff text carries a line the charter denies. The unchanged
+    diff-content gate refuses, as on every other route. The control shows that the refusal comes from the
+    content of the added line and not from the two-line hunk."""
+    harmless = _mind_diff_with_added_line("    retry_policy.attempts=3")
+    control = _mind_gate(tmp_path / "control", pr_status=_mind_status(diff_text=harmless))
+    assert control["diff_gate"]["allowed"] is True
+    assert control["decision"] == "auto_merge_plan_ready", control["reasons"]
+
+    denied = _mind_diff_with_added_line("    retry_policy.gate_" + "skip=True")
+    report = _mind_gate(tmp_path / "denied", pr_status=_mind_status(diff_text=denied))
+    lane = report["mind_class_lane"]
+    assert lane["engaged"] is True and lane["classification"]["mind_class"] is True   # the lane itself holds
+    assert lane["classification"]["diff_checked"] is True
+    assert report["bridge_consensus"]["ok"] is True
+    assert report["diff_gate"]["allowed"] is False
+    assert report["decision"] == "operator_review_required"
+    assert len(report["reasons"]) == 1 and report["reasons"][0].startswith("diff gate failed:")
+
+
 @pytest.mark.parametrize(
     "mode",
     [

@@ -1139,8 +1139,9 @@ def _mind_event(agent: str, status: str, minute: int, author: str, type_: str = 
     return event
 
 
-def _mind_runner(paths: list[str], author: str, *, events_file: Path | None = None, late: tuple = ()):
-    """gh stub for a Mind-class PR; ``late`` events land between the receipt and the fresh gate."""
+def _mind_runner(paths: list[str], author: str, *, events_file: Path | None = None, late: tuple = (), line: str = ""):
+    """gh stub for a Mind-class PR; ``late`` events land between the receipt and the fresh gate. ``line`` is one
+    more added line in the first file of the diff; the hunk header counts it."""
     payload = _gh_payload(headRefName=_mind_task(author), changedFiles=len(paths))
     calls, inner = _runner(payload=payload, post_head_ref=_mind_task(author))
     views = 0
@@ -1148,6 +1149,10 @@ def _mind_runner(paths: list[str], author: str, *, events_file: Path | None = No
         f"diff --git a/{p} b/{p}\nindex 1111111..2222222 100644\n--- a/{p}\n+++ b/{p}\n@@ -1 +1 @@\n-old\n+new\n"
         for p in paths
     )
+    if line:
+        clean = diff
+        diff = clean.replace("@@ -1 +1 @@\n-old\n+new\n", "@@ -1 +1,2 @@\n-old\n+new\n+" + line + "\n", 1)
+        assert diff != clean
 
     def run(command: Sequence[str]) -> SimpleNamespace:
         nonlocal views
@@ -1307,6 +1312,31 @@ def test_mind_lane_approval_taken_back_after_the_receipt_never_merges(
     assert not _MERGE_CLAIM_KEYS & set(report)
     # the receipt written at T1 named the lane; it stays on disk as the record of that evaluation only
     assert _receipt_payload(report)["consensus_lane"] == "rule14a_mind_class"
+
+
+def test_mind_lane_denied_diff_content_never_reaches_a_merge(tmp_path: Path) -> None:
+    """Tools build review P2, at executor level: valid Mind paths and both lane approvals, but the diff text
+    carries a line the charter denies. GitHub is never asked to merge. The control with a harmless added line
+    in the same two-line hunk merges, so the refusal comes from the content of the line."""
+    author = "codex-tools-1"
+    votes = _mind_votes(author, ("codex-lead-1", "build_consensus_pass"), ("claude-rco-1", "rco_pass"))
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    control_calls, control_runner = _mind_runner(MIND_FILES, author, line="    retry_policy.attempts=3")
+    control = _mind_merge(tmp_path, "control", _events_path(tmp_path / "a", votes), control_runner, author)
+    assert control["decision"] == "merge_executed_after_receipt", control
+    assert len(_merge_calls(control_calls)) == 1
+
+    calls, runner = _mind_runner(MIND_FILES, author, line="    retry_policy.gate_" + "skip=True")
+    refused = _mind_merge(tmp_path, "denied", _events_path(tmp_path / "b", votes), runner, author)
+    assert _merge_calls(calls) == []                                 # GitHub was never asked to merge
+    assert refused["decision"] == "receipt_preflight_failed", refused
+    assert refused["errors"] == ["diff gate failed: code pattern denylist hit"]
+    assert refused["gh_merge_attempted"] is False
+    assert not _MERGE_CLAIM_KEYS & set(refused)                      # the report claims no merge
+    assert refused["merge_executed"] is False and refused["ok"] is False
+    written = sorted(p.relative_to(tmp_path / "denied").as_posix() for p in (tmp_path / "denied").rglob("*"))
+    assert written == ["pr-status.json"]                             # the status snapshot only: no receipt bundle
 
 
 def test_mind_lane_receipt_of_a_refused_run_is_no_proof_of_a_merge(tmp_path: Path) -> None:

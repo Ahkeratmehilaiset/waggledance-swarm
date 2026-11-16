@@ -77,7 +77,7 @@ anchor = runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=
 factory = runtime._ManifestWorkerFactory(root, manifest, {}, pathlib.Path(root) / 'synthetic.lock',
     30.0, 0.0, e5.BULK_CONTRACT_SHA256)
 runtime_hash = hashlib.sha256((pathlib.Path(root) / 'wd-mind-e5-encoder-binding.json').read_bytes()).hexdigest()
-processes = []
+processes, jobs, trace = [], [], []
 checks = {'source': 0, 'policy': 0}
 real_checkpoint = runtime._PrivateBinding._immutable_checkpoint
 def checked_source(self, *args, **kwargs):
@@ -90,6 +90,11 @@ def checked_policy(self):
     return real_policy(self)
 runtime._SingleManifestOwner._check_policy_anchor = checked_policy
 def synthetic_factory(self, *, owner_sink):
+    # Rotation must release every preceding worker before reserving the next.
+    assert all(item.poll() == 0 for item in processes)
+    assert all(item.closed for item in jobs)
+    assert lifecycle._active is None
+    trace.append(('start', len(processes)))
     process = Process(response(0, 0))
     processes.append(process)
     class Input:
@@ -104,7 +109,10 @@ def synthetic_factory(self, *, owner_sink):
                 process.stdout.condition.notify_all()
             if mode == 'source_mutation':
                 path = pathlib.Path(source)
-                path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
+                before = path.read_bytes()
+                after = before.replace(b'ordinary', b'Ordinary')
+                trace.append(('source_write', len(processes), before != after))
+                path.write_bytes(after)
             if mode == 'policy_mutation':
                 (pathlib.Path(root) / 'wd-mind-message-policy.json').write_bytes(b'{}')
             return len(packet)
@@ -114,7 +122,8 @@ def synthetic_factory(self, *, owner_sink):
     process.stdin = Input()
     owner = lifecycle.reserve(enabled=True, bulk_contract_sha256=e5.BULK_CONTRACT_SHA256)
     owner_sink(owner)
-    owner.set_job(Job()); owner.bind(process)
+    job = Job(); jobs.append(job)
+    owner.set_job(job); owner.bind(process)
     client = e5.GracefulE5WorkerClient(owner, timeout=30, encoder_binding_sha256=runtime_hash,
                                         bulk_contract_sha256=e5.BULK_CONTRACT_SHA256)
     owner.mark_ready()
@@ -127,10 +136,24 @@ owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane
 try:
     started = owner.start()
     if mode in ('hold', 'source_mutation', 'policy_mutation'):
-        assert started['state'] == 'HOLD' and started['owned'] is True, started
-        assert len(processes) == 1
-        if mode == 'hold': assert processes[0].poll() is None
-        assert owner._client.owner is not None
+        assert started['state'] == 'HOLD' and type(started['owned']) is bool, started
+        assert len(processes) == len(jobs) and processes, (mode, started, trace)
+        try:
+            owner.query_local(enabled=True, lane='codex-lead-1', scope='own', query='rotation task')
+        except runtime.FullRuntimeRefused:
+            pass
+        else:
+            raise AssertionError('held owner returned a query result')
+        if mode == 'hold':
+            assert len(processes) == len(jobs) == 1
+            assert started['owned'] is True and processes[0].poll() is None
+            assert lifecycle._active is owner._client.owner and not jobs[0].closed
+        if not started['owned']:
+            assert all(process.poll() == 0 for process in processes)
+            assert all(job.closed for job in jobs)
+            assert lifecycle._active is None
+        if mode == 'source_mutation':
+            assert any(item[0] == 'source_write' and item[2] for item in trace), trace
     else:
         assert started['state'] == 'READY', started
         assert len(processes) >= 2 and processes[0].poll() == 0
@@ -140,8 +163,13 @@ try:
     assert checks['source'] and checks['policy'], checks
     print(json.dumps({'status':'ok','workers':len(processes)}))
 finally:
+    count = len(processes)
     for process in processes: process.finish(0)
-    owner.close()
+    closed = owner.close()
+    # A fail-closed owner can remain HOLD after its resources are released.
+    assert closed['state'] in ('STOPPED', 'HOLD') and closed['owned'] is False, closed
+    assert len(processes) == count and all(process.poll() == 0 for process in processes)
+    assert all(job.closed for job in jobs) and lifecycle._active is None
 '''
 
 

@@ -199,6 +199,17 @@ def test_expired_deadline_never_starts_worker(fake_client):
     assert not factory.owners
 
 
+def test_source_failure_before_launch_reports_failed_without_owner(fake_client):
+    factory = Factory()
+    client = create(factory, lambda: '3' * 64)
+    with pytest.raises(rotation.RotationRefused):
+        client.encode_supervised(request(1))
+    assert not factory.owners and client.owner is None
+    assert client.status() == {'state': 'FAILED', 'owned': False, 'authority': 'none'}
+    assert client.close(timeout=0)['owned'] is False
+    assert client.status() == {'state': 'FAILED', 'owned': False, 'authority': 'none'}
+
+
 def test_unexpected_worker_stdout_refuses_without_replacement(fake_client):
     factory = Factory()
     client = create(factory)

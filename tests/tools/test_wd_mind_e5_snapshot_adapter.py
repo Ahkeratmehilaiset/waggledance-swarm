@@ -651,6 +651,7 @@ def rotating_case(b16_worker, rotating_bundle):
     rotator = make_rotator()
     rotator._client, rotator._owner = worker, owner
     rotator._owned_process, rotator._owned_job = owner.resources.process, owner.resources.job
+    rotator._worker_timeout = worker._timeout
     return adapter, rotating, rotator, bundle, pin, owner, process, texts
 
 
@@ -799,6 +800,42 @@ def test_rotating_adapter_refuses_changed_bindings_before_transport(rotating_cas
     assert not process.written and rotator.owner is owner
 
 
+@pytest.mark.parametrize('bound,worker', [
+    (0, 0), (-1, -1), (float('nan'), float('nan')), (float('inf'), float('inf')),
+    (True, True), (30.001, 30.001), (29, 29.0), (29.99, 29.98),
+])
+def test_rotating_adapter_refuses_changed_or_invalid_worker_timeout(rotating_case, monkeypatch, bound, worker):
+    adapter, rotating, rotator, bundle, pin, owner, process, texts = rotating_case
+    current = adapter.create_rotating_flat_adapter(enabled=True, bundle_root=str(bundle),
+        expected_manifest_sha256=pin, client=rotator, expected_snapshot_sha256='a' * 64)
+    rotator._worker_timeout = bound
+    rotator.active_client._timeout = worker
+    monkeypatch.setattr(rotating.RotatingGracefulE5Client, 'encode_supervised',
+                        lambda *a, **k: pytest.fail('invalid worker timeout must not reach transport'))
+    with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+        current.passage(tuple(texts))
+    assert not process.written and rotator.owner is owner
+
+
+def test_rotating_frame_timeout_change_never_returns_partial_vectors(rotating_case, monkeypatch):
+    adapter, rotating, rotator, bundle, pin, owner, _, texts = rotating_case
+    def encode(self, payload, *, frame_check, call_deadline):
+        assert self._lock.acquire(blocking=False)
+        try:
+            frame_check()
+            self.active_client._timeout = 29.99
+            frame_check()
+            pytest.fail('changed worker timeout must be refused')
+        finally:
+            self._lock.release()
+    monkeypatch.setattr(rotating.RotatingGracefulE5Client, 'encode_supervised', encode)
+    current = adapter.create_rotating_flat_adapter(enabled=True, bundle_root=str(bundle),
+        expected_manifest_sha256=pin, client=rotator, expected_snapshot_sha256='a' * 64)
+    with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+        current.passage(tuple(texts))
+    assert rotator.owner is owner
+
+
 def test_rotating_b16_checks_each_frame_without_reentering_rotator_lock(rotating_case, monkeypatch):
     adapter, rotating, rotator, bundle, pin, owner, _, texts = rotating_case
     checks = []
@@ -864,6 +901,7 @@ def test_rotating_frame_deadline_refuses_late_result_and_retains_owner(rotating_
     import time
     adapter, rotating, rotator, bundle, pin, owner, _, texts = rotating_case
     rotator._factory._timeout = rotator._timeout = rotator.active_client._timeout = 0.15
+    rotator._worker_timeout = 0.15
     def delayed(self, payload, *, frame_check, call_deadline):
         assert self._lock.acquire(blocking=False)
         try:
@@ -925,7 +963,9 @@ def test_rotating_adapter_uses_real_cooperative_pumps_across_rotation(rotating_b
         owner = lifecycle.reserve(enabled=True, bulk_contract_sha256=e5_client.BULK_CONTRACT_SHA256)
         owner_sink(owner)
         owner.set_job(Job()); owner.bind(process)
-        client = e5_client.GracefulE5WorkerClient(owner, timeout=30,
+        # The real launcher spends part of its timeout on startup before
+        # constructing the client with its remaining deadline.
+        client = e5_client.GracefulE5WorkerClient(owner, timeout=29.99,
             encoder_binding_sha256=rotator._binding, bulk_contract_sha256=e5_client.BULK_CONTRACT_SHA256)
         owner.mark_ready()
         return {'status': 'READY', 'owner': owner, 'client': client,

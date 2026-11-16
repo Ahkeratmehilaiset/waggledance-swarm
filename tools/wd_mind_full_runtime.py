@@ -2626,6 +2626,19 @@ class _SingleManifestOwner:
             owned = True if owned is True else None
         return {'state': self._state, 'owned': owned, 'authority': 'none'}
 
+    def invalidate_external_policy(self):
+        """Fence this owner after its caller detects an external policy-pin failure.
+
+        Keep the underlying worker owned for an explicit graceful shutdown.  The
+        lock serializes invalidation with any in-flight use of retained data.
+        """
+        with self._lock:
+            self._state = 'HOLD'
+            self._retained = None
+            if self._handler is not None:
+                self._handler._retained = None
+            return self._status()
+
     def status(self):
         if not self._lock.acquire(blocking=False):
             return {'state': 'BUSY', 'owned': None, 'authority': 'none'}

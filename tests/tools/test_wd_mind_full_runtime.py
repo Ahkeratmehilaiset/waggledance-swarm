@@ -1541,6 +1541,25 @@ def test_candidate_factory_or_provider_failure_drops_retained_state(tmp_path, mo
 
 
 @pytest.mark.parametrize('located', [False, True], ids=['v1', 'v2'])
+def test_external_policy_invalidation_drops_retained_and_fences_owner(tmp_path, monkeypatch, located):
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start()['state'] == 'READY'
+    retained = object()
+    owner._retained = owner._handler._retained = retained
+    assert owner.invalidate_external_policy() == {'state':'HOLD', 'owned':True, 'authority':'none'}
+    assert owner._retained is None and owner._handler._retained is None
+    request = {'schema':'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
+               'query_id':'startup_work_overview', 'nonce':'d'*64, 'lane':'codex-lead-1', 'scope':'own'}
+    with pytest.raises(runtime.FullRuntimeRefused):
+        (owner.located_candidates if located else owner.candidates)(request)
+    assert owner.status() == {'state':'HOLD', 'owned':True, 'authority':'none'}
+
+
+@pytest.mark.parametrize('located', [False, True], ids=['v1', 'v2'])
 def test_malformed_candidate_request_preserves_retained_state(tmp_path, monkeypatch, located):
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {

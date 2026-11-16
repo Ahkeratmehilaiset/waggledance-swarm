@@ -524,7 +524,8 @@ def _mind_pr_status(paths: list[str] | None = None) -> dict:
     status = _pr_status()
     status["changed_paths"] = list(MIND_PATHS if paths is None else paths)
     status["diff_text"] = "".join(
-        f"diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n@@ -1 +1 @@\n-old\n+new\n"
+        f"diff --git a/{p} b/{p}\nindex 1111111..2222222 100644\n"
+        f"--- a/{p}\n+++ b/{p}\n@@ -1 +1 @@\n-old\n+new\n"
         for p in status["changed_paths"]
     )
     return status

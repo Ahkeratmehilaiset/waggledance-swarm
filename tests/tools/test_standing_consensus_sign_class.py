@@ -357,7 +357,9 @@ def test_unenrolled_third_rco_cannot_replace_a_real_standing_voice():
 
 
 # --- Rule 14 Mind-class path list: mechanical, separate from classify_ab -----
+import os as _os
 import re as _re
+import subprocess as _subprocess
 from pathlib import Path as _Path
 
 from tools.check_standing_consensus_sign_class import (
@@ -393,8 +395,9 @@ def _mind_git_diff(*paths: str, renames: tuple[tuple[str, str], ...] = ()) -> st
         for p in paths
     )
     return text + "".join(
-        f"diff --git a/{old} b/{new}\nsimilarity index 100%\n"
-        f"rename from {old}\nrename to {new}\n"
+        f"diff --git a/{old} b/{new}\nsimilarity index 90%\n"
+        f"rename from {old}\nrename to {new}\nindex 1111111..2222222 100644\n"
+        f"--- a/{old}\n+++ b/{new}\n@@ -1 +1 @@\n-old\n+new\n"
         for old, new in renames
     )
 
@@ -639,6 +642,129 @@ def test_mind_class_refuses_a_diff_that_does_not_name_exactly_the_changed_paths(
     assert report["mind_class"] is False, report
     assert report["diff_checked"] is False
     assert report["reason"]
+
+
+@pytest.mark.parametrize("verb", ["rename", "copy"])
+def test_mind_class_refuses_an_exact_rename_or_copy_because_it_shows_no_file_mode(verb: str) -> None:
+    old, new = "tools/wd_mind_old.py", "tools/wd_mind_new.py"
+    exact = f"diff --git a/{old} b/{new}\nsimilarity index 100%\n{verb} from {old}\n{verb} to {new}\n"
+    report = classify_mind_class([new, old], exact)
+    assert report["mind_class"] is False, report
+    assert report["diff_checked"] is False
+    assert "regular-file mode" in report["reason"]
+    # the same move with a shown mode and its content change is readable and stays Mind-class
+    shown = classify_mind_class([new, old], _mind_git_diff(renames=((old, new),)))
+    assert shown["mind_class"] is True, shown
+
+
+_MIND_SIDES = f"--- a/{MIND_PATH}\n+++ b/{MIND_PATH}\n@@ -1 +1 @@\n-old\n+new\n"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        _MIND_SIDES,                                                  # no index line: no mode shown
+        "index 1111111..2222222\n" + _MIND_SIDES,                     # index line without a mode
+        "old mode 100644\nindex 1111111..2222222\n" + _MIND_SIDES,    # one mode line of the pair
+        "new mode 100755\nindex 1111111..2222222\n" + _MIND_SIDES,
+        "old mode 100644\nold mode 100644\nnew mode 100755\n",        # repeated mode line
+        "old mode 120000\nnew mode 100644\n",                         # symlink on the old side
+        "old mode 100644\nnew mode 160000\n",                         # submodule on the new side
+        "old mode 100644\nnew mode 100600\n",                         # a mode git never records
+        "new file mode 100644\nnew file mode 100644\nindex 0000000..e69de29\n",   # repeated
+        "index 1111111..2222222 040000\n" + _MIND_SIDES,              # a tree mode
+        "old mode 1006444\nnew mode 100755\n",                        # unreadable mode
+    ],
+)
+def test_mind_class_refuses_an_entry_without_complete_regular_mode_evidence(entry: str) -> None:
+    report = classify_mind_class([MIND_PATH], f"diff --git a/{MIND_PATH} b/{MIND_PATH}\n" + entry)
+    assert report["mind_class"] is False, report
+    assert report["diff_checked"] is False
+    assert "the diff cannot confirm the changed paths" in report["reason"]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "index 1111111..2222222 100644\n" + _MIND_SIDES,
+        "index 1111111..2222222 100755\n" + _MIND_SIDES,
+        "old mode 100644\nnew mode 100755\n",
+        "old mode 100755\nnew mode 100644\nindex 1111111..2222222\n" + _MIND_SIDES,
+    ],
+)
+def test_mind_class_admits_an_entry_with_complete_regular_mode_evidence(entry: str) -> None:
+    report = classify_mind_class([MIND_PATH], f"diff --git a/{MIND_PATH} b/{MIND_PATH}\n" + entry)
+    assert report["mind_class"] is True, report
+    assert report["diff_checked"] is True
+
+
+def _real_git(repo: _Path, *args: str, stdin: bytes | None = None) -> str:
+    env = dict(_os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=_os.devnull)
+    done = _subprocess.run(
+        ["git", "-c", "core.autocrlf=false", "-C", str(repo), *args],
+        input=stdin, capture_output=True, check=True, env=env,
+    )
+    return done.stdout.decode("utf-8")
+
+
+def _real_git_tree(repo: _Path, entries: dict[str, tuple[str, str]]) -> str:
+    _real_git(repo, "read-tree", "--empty")
+    for path, (mode, blob) in sorted(entries.items()):
+        _real_git(repo, "update-index", "--add", "--cacheinfo", f"{mode},{blob},{path}")
+    return _real_git(repo, "write-tree").strip()
+
+
+def test_mind_class_reads_genuine_git_output_and_refuses_every_symlink_shape(tmp_path: _Path) -> None:
+    """Entries are written straight into git objects (no working tree, no real link), then diffed by git itself."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _real_git(repo, "init", "--quiet")
+
+    def blob(text: str) -> str:
+        return _real_git(repo, "hash-object", "-w", "--stdin", stdin=text.encode("utf-8")).strip()
+
+    body = "".join(f"line {number}\n" for number in range(40))
+    code, edited = blob(body), blob(body.replace("line 7\n", "line seven\n"))
+    link, relink = blob("wd_mind_target.py"), blob("../CLAUDE.md")
+    old, new, keep = "tools/wd_mind_old.py", "tools/wd_mind_new.py", "sandbox/mind/keep.py"
+    base = {keep: ("100644", code)}
+    cases = [
+        # name, before, after, changed paths as the pull request lists them, expected Mind-class
+        ("regular edit", {old: ("100644", code)}, {old: ("100644", edited)}, [old], True),
+        ("regular add", {}, {new: ("100644", code)}, [new], True),
+        ("regular delete", {old: ("100644", code)}, {}, [old], True),
+        ("mode change only", {old: ("100644", code)}, {old: ("100755", code)}, [old], True),
+        ("mode change with edit", {old: ("100644", code)}, {old: ("100755", edited)}, [old], True),
+        ("regular rename with edit", {old: ("100644", code)}, {new: ("100644", edited)}, [new, old], True),
+        ("regular exact rename", {old: ("100644", code)}, {new: ("100644", code)}, [new, old], False),
+        ("symlink exact rename", {old: ("120000", link)}, {new: ("120000", link)}, [new, old], False),
+        ("symlink add", {}, {new: ("120000", link)}, [new], False),
+        ("symlink delete", {old: ("120000", link)}, {}, [old], False),
+        ("symlink retarget", {old: ("120000", link)}, {old: ("120000", relink)}, [old], False),
+        ("regular file becomes symlink", {old: ("100644", code)}, {old: ("120000", link)}, [old], False),
+        ("symlink becomes regular file", {old: ("120000", link)}, {old: ("100644", code)}, [old], False),
+    ]
+    for name, before, after, paths, expected in cases:
+        left, right = _real_git_tree(repo, base | before), _real_git_tree(repo, base | after)
+        diff = _real_git(repo, "diff-tree", "-r", "-M", "-p", left, right)
+        assert diff.startswith("diff --git "), name
+        report = classify_mind_class(paths, diff)
+        assert report["mind_class"] is expected, (name, report["reason"], diff[:400])
+        assert report["diff_checked"] is expected, name
+        if name == "symlink exact rename":
+            # the shape that shows no mode at all: nothing in the text tells it from a regular rename
+            assert "similarity index 100%" in diff and "120000" not in diff and "mode" not in diff
+            assert diff == _real_git(
+                repo, "diff-tree", "-r", "-M", "-p",
+                _real_git_tree(repo, base | {old: ("100644", code)}),
+                _real_git_tree(repo, base | {new: ("100644", code)}),
+            )
+    # an exact copy has no mode line either
+    left = _real_git_tree(repo, base)
+    right = _real_git_tree(repo, base | {new: ("100644", code)})
+    copied = _real_git(repo, "diff-tree", "-r", "-C", "--find-copies-harder", "-p", left, right)
+    assert "copy from " + keep in copied
+    assert classify_mind_class([keep, new], copied)["mind_class"] is False
 
 
 def test_mind_class_diff_headers_ignore_hunk_content_and_cover_mode_and_binary_changes() -> None:

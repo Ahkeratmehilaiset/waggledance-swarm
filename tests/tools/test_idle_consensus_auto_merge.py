@@ -4459,13 +4459,25 @@ def _mind_veto(agent: str, minute: int) -> dict:
 def test_mind_lane_hidden_rename_source_falls_back_to_the_unchanged_gate(tmp_path: Path) -> None:
     diff = (
         "diff --git a/tools/idle_daily_summary.py b/tools/wd_mind_reader.py\n"
-        "similarity index 100%\nrename from tools/idle_daily_summary.py\n"
-        "rename to tools/wd_mind_reader.py\n"
+        "similarity index 90%\nrename from tools/idle_daily_summary.py\n"
+        "rename to tools/wd_mind_reader.py\nindex 1111111..2222222 100644\n"
+        "--- a/tools/idle_daily_summary.py\n+++ b/tools/wd_mind_reader.py\n@@ -1 +1 @@\n-old\n+new\n"
     )
     report = _mind_gate(
         tmp_path,
         pr_status=_mind_status(changed_paths=["tools/wd_mind_reader.py"], diff_text=diff),
     )
+    assert "mind_class_lane" not in report
+    assert report["decision"] == "operator_review_required"
+
+
+def test_mind_lane_exact_rename_shows_no_file_mode_and_falls_back_to_the_unchanged_gate(tmp_path: Path) -> None:
+    paths = ["tools/wd_mind_new.py", "tools/wd_mind_old.py"]
+    diff = (
+        "diff --git a/tools/wd_mind_old.py b/tools/wd_mind_new.py\n"
+        "similarity index 100%\nrename from tools/wd_mind_old.py\nrename to tools/wd_mind_new.py\n"
+    )
+    report = _mind_gate(tmp_path, pr_status=_mind_status(changed_paths=paths, diff_text=diff))
     assert "mind_class_lane" not in report
     assert report["decision"] == "operator_review_required"
 

@@ -480,7 +480,11 @@ def _mind_path_refusal(path: Any) -> str:
 
 
 _DIFF_HUNK_HEADER_RE = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@(?: .*)?")
-_DIFF_INDEX_LINE_RE = re.compile(r"index ([0-9a-f]{7,64})[.][.]([0-9a-f]{7,64})(?: [0-7]{6})?")
+_DIFF_INDEX_LINE_RE = re.compile(r"index ([0-9a-f]{7,64})[.][.]([0-9a-f]{7,64})(?: ([0-7]{6}))?")
+_DIFF_MODE_LINE_RE = re.compile(r"(new file mode|deleted file mode|old mode|new mode) ([0-7]{6})")
+# A diff shows an entry's file mode only on these lines. An exact rename or copy
+# has none of them, so its mode (a symlink, for example) cannot be read at all.
+_DIFF_REGULAR_MODES = frozenset({"100644", "100755"})
 _DIFF_SIMILARITY_LINE_RE = re.compile(r"(dis)?similarity index (\d{1,3})%")
 _DIFF_EMPTY_BLOB_SHA1 = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
 _DIFF_FILE_LINE_PREFIXES = (
@@ -494,7 +498,7 @@ def _diff_new_entry() -> dict[str, Any]:
     return {
         "lines": 0, "old_side": False, "new_side": False, "hunks": 0,
         "binary": False, "needs_index": False, "index": False, "content_changed": False,
-        "needs_content": False,
+        "needs_content": False, "mode": False, "old_mode": False, "new_mode": False,
     }
 
 
@@ -506,6 +510,13 @@ def _diff_entry_error(entry: Mapping[str, Any]) -> str:
         return "a file entry has only one of its two side lines"
     if entry["old_side"] and not entry["hunks"]:
         return "a file entry names its sides but has no hunk"
+    if entry["old_mode"] != entry["new_mode"]:
+        return "a file entry has only one of its two mode lines"
+    if not entry["mode"] and not entry["old_mode"]:
+        return (
+            "a file entry does not show a regular-file mode "
+            "(an exact rename or copy cannot be checked)"
+        )
     if entry["needs_index"] and not entry["index"]:
         return "an added or deleted file entry has no index line"
     if (
@@ -532,8 +543,16 @@ def _diff_entry_line_error(entry: dict[str, Any], line: str) -> str:
         return "a file entry has a header line after its side lines"
     elif line.startswith("Binary files "):
         entry["binary"] = True
-    elif line.startswith(("new file mode ", "deleted file mode ")):
-        entry["needs_index"] = True
+    elif line.startswith(("new file mode ", "deleted file mode ", "old mode ", "new mode ")):
+        match = _DIFF_MODE_LINE_RE.fullmatch(line)
+        if match is None or match.group(2) not in _DIFF_REGULAR_MODES:
+            return "a file entry has an unreadable or non-regular file mode"
+        kind = match.group(1)
+        seen = "old_mode" if kind == "old mode" else "new_mode" if kind == "new mode" else "mode"
+        if entry[seen]:
+            return "a file entry repeats a mode line"
+        entry[seen] = True
+        entry["needs_index"] = entry["needs_index"] or seen == "mode"
     elif line.startswith(("similarity index ", "dissimilarity index ")):
         match = _DIFF_SIMILARITY_LINE_RE.fullmatch(line)
         if match is None:
@@ -544,8 +563,11 @@ def _diff_entry_line_error(entry: dict[str, Any], line: str) -> str:
         match = _DIFF_INDEX_LINE_RE.fullmatch(line)
         if match is None or entry["index"]:
             return "a file entry has an unreadable or repeated index line"
-        old, new = match.groups()
+        old, new, mode = match.groups()
+        if mode is not None and mode not in _DIFF_REGULAR_MODES:
+            return "a file entry has an unreadable or non-regular file mode"
         entry["index"] = True
+        entry["mode"] = entry["mode"] or mode is not None
         empty_add = set(old) == {"0"} and _DIFF_EMPTY_BLOB_SHA1.startswith(new)
         empty_delete = set(new) == {"0"} and _DIFF_EMPTY_BLOB_SHA1.startswith(old)
         entry["content_changed"] = old != new and not empty_add and not empty_delete
@@ -560,6 +582,7 @@ def _diff_header_paths(diff_text: Any) -> dict[str, Any]:
     header, a rename or copy header without matching from/to lines, a symlink
     or submodule entry, a line that is neither a known file-header line nor a
     hunk, a hunk whose line count differs from its ``@@`` header, a file entry
+    that shows no regular-file mode (an exact rename or copy), a file entry
     that is structurally incomplete (no header line, one side line, side lines
     without a hunk, a content change or an inexact rename without a hunk or
     binary note), or text

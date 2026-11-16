@@ -1270,3 +1270,79 @@ def test_unrelated_late_event_does_not_disturb_a_mind_lane_merge(tmp_path: Path)
     report = _mind_merge(tmp_path, "out", events, runner, author)
     assert report["decision"] == "merge_executed_after_receipt", report
     assert len(_merge_calls(calls)) == 1
+
+
+_MERGE_CLAIM_KEYS = {"merge_commit_sha", "post_merge", "merge_command_result", "external_effect"}
+
+
+@pytest.mark.parametrize(
+    ("author", "voters", "files", "late"),
+    [
+        # the reviewer lane takes its own approval back
+        ("codex-tools-1", (("codex-lead-1", "build_consensus_pass"), ("claude-rco-1", "rco_pass")), MIND_FILES,
+         ("claude-rco-1", "changes_requested", "finding")),
+        # the other recognized reviewer lane objects
+        ("codex-tools-1", (("codex-lead-1", "build_consensus_pass"), ("claude-rco-1", "rco_pass")), MIND_FILES,
+         ("claude-rco-2", "changes_requested", "finding")),
+        # the pool reviewer standing in for Lead takes its approval back, with a Tools approval present
+        ("codex-lead-1", (("fable-5", "build_consensus_pass"), ("claude-rco-1", "rco_pass"),
+                          ("codex-tools-1", "build_consensus_pass")), MIND_FILES[1:],
+         ("fable-5", "changes_requested", "decision")),
+        # a build lane the two-identity lane does not need objects
+        ("codex-lead-1", (("fable-5", "build_consensus_pass"), ("claude-rco-1", "rco_pass")), MIND_FILES,
+         ("codex-tools-1", "changes_requested", "decision")),
+    ],
+)
+def test_mind_lane_approval_taken_back_after_the_receipt_never_merges(
+    tmp_path: Path, author: str, voters: tuple, files: list[str], late: tuple[str, str, str],
+) -> None:
+    events = _events_path(tmp_path, _mind_votes(author, *voters))
+    late_event = _mind_event(late[0], late[1], 15, author, type_=late[2])
+    calls, runner = _mind_runner(files, author, events_file=events, late=(late_event,))
+    report = _mind_merge(tmp_path, "out", events, runner, author)
+    assert report["decision"] == "apply_gate_recheck_failed", report
+    assert report["fresh_gate"]["ok"] is False
+    assert _merge_calls(calls) == []
+    assert report["ok"] is False and report["merge_executed"] is False and report["gh_merge_attempted"] is False
+    assert not _MERGE_CLAIM_KEYS & set(report)
+    # the receipt written at T1 named the lane; it stays on disk as the record of that evaluation only
+    assert _receipt_payload(report)["consensus_lane"] == "rule14a_mind_class"
+
+
+def test_mind_lane_receipt_of_a_refused_run_is_no_proof_of_a_merge(tmp_path: Path) -> None:
+    """The receipt is written before the merge. It records one gate evaluation and nothing after it:
+    whether a merge followed is stated only by the executor's report, with GitHub's confirmation."""
+    from tools.verify_magma_receipt import verify_manifest
+
+    author = "codex-tools-1"
+    votes = _mind_votes(author, ("codex-lead-1", "build_consensus_pass"), ("claude-rco-1", "rco_pass"))
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    refused_events = _events_path(tmp_path / "a", votes)
+    late = _mind_event("claude-rco-2", "rco_pass", 15, author)
+    calls, runner = _mind_runner(MIND_FILES, author, events_file=refused_events, late=(late,))
+    refused = _mind_merge(tmp_path, "refused", refused_events, runner, author)
+    merged_events = _events_path(tmp_path / "b", votes)
+    merged_calls, merged_runner = _mind_runner(MIND_FILES, author)
+    merged = _mind_merge(tmp_path, "merged", merged_events, merged_runner, author)
+
+    assert refused["decision"] == "apply_gate_recheck_failed" and _merge_calls(calls) == []
+    assert refused["merge_executed"] is False and not _MERGE_CLAIM_KEYS & set(refused)
+    assert merged["decision"] == "merge_executed_after_receipt" and len(_merge_calls(merged_calls)) == 1
+    assert merged["merge_executed"] is True and merged["post_merge"]["merged"] is True
+    assert merged["merge_commit_sha"] == merged["post_merge"]["merge_commit_sha"]
+    refused_payload, merged_payload = _receipt_payload(refused), _receipt_payload(merged)
+    assert merged["fresh_gate"]["mind_class_lane_evidence"] == merged_payload["mind_class_lane_evidence"]
+    assert refused["fresh_gate"]["mind_class_lane_evidence"] != refused_payload["mind_class_lane_evidence"]
+    for payload in (refused_payload, merged_payload):
+        assert payload["gate_decision"] == "auto_merge_plan_ready"      # a plan, written before the merge
+        assert not {"merge_executed", *_MERGE_CLAIM_KEYS} & set(payload)
+    # The bundle is whole either way, and nothing inside it tells the two runs apart: integrity
+    # of a receipt is never evidence that its merge happened.
+    assert verify_manifest(Path(refused["receipt_bundle_path"]))["ok"] is True
+    assert set(refused_payload) == set(merged_payload)
+    # The folder of the refused run cannot be reused: a new decision needs its own receipt.
+    again_calls, again_runner = _mind_runner(MIND_FILES, author)
+    with pytest.raises(ValueError, match="out_dir must not exist"):
+        _mind_merge(tmp_path, "refused", refused_events, again_runner, author)
+    assert _merge_calls(again_calls) == []

@@ -1,4 +1,5 @@
 """Cooperative worker rotation with small synthetic budgets; no model or disk I/O."""
+import asyncio
 import hashlib
 import json
 import threading
@@ -232,6 +233,68 @@ def test_bad_input_does_not_retire_healthy_owner(fake_client):
         assert client.encode_supervised(request(2))['vector_bytes'] == b'v' * 1536
     finally:
         client.close(timeout=1)
+
+
+@pytest.mark.parametrize('error_type', [OSError, KeyboardInterrupt, asyncio.CancelledError])
+def test_close_exception_keeps_owner_in_hold(fake_client, monkeypatch, error_type):
+    factory = Factory()
+    client = create(factory)
+    client.encode_supervised(request(1))
+    owner = client.owner
+
+    def interrupted_close(self, *, timeout=0):
+        raise error_type('synthetic close failure')
+
+    monkeypatch.setattr(FakeClient, 'close', interrupted_close)
+    expected = rotation.RotationRefused if issubclass(error_type, Exception) else error_type
+    with pytest.raises(expected):
+        client.close(timeout=1)
+    assert client.owner is owner and owner.owned is True
+    assert client.retained_owners == (owner,)
+    assert client.status() == {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+    with pytest.raises(rotation.RotationRefused):
+        client.encode_supervised(request(2))
+    assert len(factory.owners) == 1
+
+
+@pytest.mark.parametrize('error_type', [OSError, KeyboardInterrupt, asyncio.CancelledError])
+def test_rotation_close_exception_retains_owner_without_retry(fake_client, monkeypatch, error_type):
+    monkeypatch.setattr(rotation, '_BULK_NONCE_LIMIT', 1)
+    factory = Factory()
+    client = create(factory)
+    client.encode_supervised(request(1))
+    owner, calls = client.owner, []
+
+    def interrupted_close(self, *, timeout=0):
+        calls.append(timeout)
+        raise error_type('synthetic rotation close failure')
+
+    monkeypatch.setattr(FakeClient, 'close', interrupted_close)
+    expected = rotation.RotationRefused if issubclass(error_type, Exception) else error_type
+    with pytest.raises(expected):
+        client.encode_supervised(request(2))
+    assert len(calls) == 1 and len(factory.owners) == 1
+    assert client.owner is owner and owner.owned is True
+    assert client.status()['state'] == 'HOLD'
+
+
+@pytest.mark.parametrize('error_type', [OSError, KeyboardInterrupt, asyncio.CancelledError])
+def test_partial_launch_shutdown_exception_keeps_owner(fake_client, monkeypatch, error_type):
+    factory = Factory(fail_after_sink=True)
+    client = create(factory)
+    with pytest.raises(rotation.RotationRefused):
+        client.encode_supervised(request(1))
+    owner = client.owner
+
+    def interrupted_shutdown(self, *, timeout=0):
+        raise error_type('synthetic partial-owner shutdown failure')
+
+    monkeypatch.setattr(FakeOwner, 'shutdown', interrupted_shutdown)
+    expected = rotation.RotationRefused if issubclass(error_type, Exception) else error_type
+    with pytest.raises(expected):
+        client.close(timeout=1)
+    assert client.owner is owner and owner.owned is True
+    assert client.status()['state'] == 'HOLD'
 
 
 def test_status_does_not_wait_for_an_inflight_call(fake_client):

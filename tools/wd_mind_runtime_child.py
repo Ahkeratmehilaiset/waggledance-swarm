@@ -789,16 +789,17 @@ class _LocalManifestQuery:
     terminate an owned worker on a timeout. Neither startup latency nor
     automatic refresh is provided by this adapter.
     """
-    __slots__ = ('_owner', '_metadata', '_bundle', '_manifest', '_policy', '_policy_sha', '_approval_sha',
+    __slots__ = ('_owner', '_metadata', '_bundle', '_manifest', '_policy', '_policy_sha', '_approval_sha', '_policy_path',
                  '_worker_timeout', '_lock_timeout', '_shutdown_timeout', '_thread', '_lock', '_cancel',
                  '_state', '_policy_invalid', '_pending_result')
 
     def __init__(self, lane, bundle, manifest, policy, policy_sha, approval_sha,
-                 worker_timeout, lock_timeout, shutdown_timeout):
+                 worker_timeout, lock_timeout, shutdown_timeout, policy_path=None):
         self._owner = None
         self._metadata = {'lane': lane}
         self._bundle, self._manifest = bundle, manifest
         self._policy, self._policy_sha, self._approval_sha = policy, policy_sha, approval_sha
+        self._policy_path = policy_path
         self._worker_timeout, self._lock_timeout, self._shutdown_timeout = worker_timeout, lock_timeout, shutdown_timeout
         self._thread, self._lock, self._cancel = None, threading.Lock(), threading.Event()
         self._state, self._policy_invalid = 'NEW', False
@@ -812,12 +813,29 @@ class _LocalManifestQuery:
         try:
             if self._policy_invalid:
                 raise ValueError('policy_invalid')
-            runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=self._bundle,
+            return runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=self._bundle,
                 expected_manifest_sha256=self._manifest, operator_policy_sha256=self._policy_sha,
                 operator_approval_reference_sha256=self._approval_sha)
         except Exception:
             self._policy_invalid = True
             raise
+
+    def _check_external_policy(self):
+        if self._policy_path is None:
+            return
+        raw = None
+        try:
+            from tools import wd_mind_absent_generation_prefix_readonly as absent
+            raw = absent._read_pinned(Path(self._policy_path), self._policy_sha, 65536)
+        except Exception:
+            self._policy_invalid = True
+            owner = self._owner
+            if owner is not None:
+                try: owner.invalidate_external_policy()
+                except Exception: pass  # This wrapper remains HOLD and returns no data.
+            raise
+        finally:
+            raw = None
 
     def _prepare(self):
         from tools import wd_mind_full_runtime as runtime
@@ -825,6 +843,7 @@ class _LocalManifestQuery:
         binding = factory = owner = None
         try:
             self._check_policy()
+            self._check_external_policy()
             if self._cancel.is_set():
                 return
             binding = runtime.assemble_full_runtime(enabled=True, bundle_root=self._bundle,
@@ -835,11 +854,12 @@ class _LocalManifestQuery:
             factory = runtime.create_manifest_worker_factory(enabled=True, bundle_root=self._bundle,
                 expected_manifest_sha256=self._manifest, worker_timeout_seconds=self._worker_timeout,
                 lock_timeout_seconds=self._lock_timeout, bulk_contract_sha256=client.BULK_CONTRACT_SHA256)
+            anchor = self._check_policy()
             owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane=self._metadata['lane'],
-                worker_factory=factory, shutdown_timeout=self._shutdown_timeout)
+                worker_factory=factory, shutdown_timeout=self._shutdown_timeout, policy_anchor=anchor)
             with self._lock:
                 self._owner = owner  # Retain before any worker may be launched.
-            self._check_policy()
+            self._check_external_policy()
             if self._cancel.is_set():
                 return
             outcome = owner.start()
@@ -919,6 +939,31 @@ class _LocalManifestQuery:
                            and outcome.get('owned') is False else 'HOLD')
         return outcome
 
+    def _candidate_query(self, request, method):
+        try:
+            with self._lock:
+                if self._state != 'READY' or self._policy_invalid or self._cancel.is_set():
+                    raise ValueError('owner_not_ready')
+                owner = self._owner
+            self._check_external_policy()
+            result = getattr(owner, method)(request)
+            self._check_external_policy()
+            with self._lock:
+                if self._state != 'READY' or self._policy_invalid or self._cancel.is_set():
+                    raise ValueError('owner_not_ready')
+            return result
+        except Exception:
+            if self._policy_invalid:
+                with self._lock:
+                    self._state = 'HOLD'
+            raise LaunchRefused('mind_e5_start_refused') from None
+
+    def candidates(self, request):
+        return self._candidate_query(request, 'candidates')
+
+    def located_candidates(self, request):
+        return self._candidate_query(request, 'located_candidates')
+
     def query(self):
         from tools import wd_mind_full_runtime as runtime
         try:
@@ -929,11 +974,13 @@ class _LocalManifestQuery:
             lane = self._metadata['lane']
             scope = _startup_scope_for_lane(lane)
             self._check_policy()
+            self._check_external_policy()
             controls = runtime._bundle_inputs(Path(self._bundle), self._manifest)
             fleet_sha = hashlib.sha256(controls[0]).hexdigest()
             result = self._owner.query_local(enabled=True, lane=lane, scope=scope,
                                              query=runtime._STARTUP_PIPE_QUERY)
             self._check_policy()
+            self._check_external_policy()
             with self._lock:
                 if self._state != 'READY' or self._cancel.is_set() or self._policy_invalid:
                     raise ValueError('owner_not_ready')
@@ -970,6 +1017,7 @@ class _LocalManifestQuery:
             if owner._state != 'STOPPED' or type(owner._snapshot) is not dict:
                 raise ValueError('owner_state')
             self._check_policy()
+            self._check_external_policy()
             if not hmac.compare_digest(runtime._local_generation_policy_pin(owner), self._policy_sha):
                 raise ValueError('policy_changed')
             controls = runtime._bundle_inputs(Path(self._bundle), self._manifest)
@@ -1000,6 +1048,7 @@ class _LocalManifestQuery:
                         or runtime.reader.decode_text(fresh['stored_text']) != hit['text']):
                     raise ValueError('source_changed')
             self._check_policy()
+            self._check_external_policy()
             if owner._snapshot is not snapshot or runtime._local_generation_policy_pin(owner) != self._policy_sha:
                 raise ValueError('policy_changed')
             finished = runtime.reader.dt.datetime.now(runtime.reader.dt.timezone.utc)
@@ -1022,7 +1071,8 @@ class _LocalManifestQuery:
 def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
                                 identifier_policy_bytes=None, expected_identifier_policy_sha256=None,
                                 operator_approval_reference_sha256=None, lane=None,
-                                worker_timeout_seconds=300, lock_timeout_seconds=0, shutdown_timeout=5):
+                                worker_timeout_seconds=300, lock_timeout_seconds=0, shutdown_timeout=5,
+                                policy_path=None):
     """Prepare, but do not start, a pinned in-process Mind owner.
 
     The manifest and operator-policy inputs must come independently from the
@@ -1036,6 +1086,7 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
                 or type(identifier_policy_bytes) is not bytes or not 0 < len(identifier_policy_bytes) <= 65536
                 or type(expected_identifier_policy_sha256) is not str or not _HEX.fullmatch(expected_identifier_policy_sha256)
                 or type(operator_approval_reference_sha256) is not str or not _HEX.fullmatch(operator_approval_reference_sha256)
+                or (policy_path is not None and type(policy_path) is not str)
                 or not hmac.compare_digest(hashlib.sha256(identifier_policy_bytes).hexdigest(),
                                            expected_identifier_policy_sha256)
                 or type(worker_timeout_seconds) not in (int, float) or not math.isfinite(worker_timeout_seconds)
@@ -1049,7 +1100,7 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
         # Return before the expensive source preparation or any worker launch.
         result = _LocalManifestQuery(lane, bundle_root, expected_manifest_sha256, identifier_policy_bytes,
             expected_identifier_policy_sha256, operator_approval_reference_sha256,
-            worker_timeout_seconds, lock_timeout_seconds, shutdown_timeout)
+            worker_timeout_seconds, lock_timeout_seconds, shutdown_timeout, policy_path)
     except Exception:
         pass
     finally:
@@ -1961,7 +2012,7 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
 _PARENT_ACTIVE = None
 
 
-def _read_local_policy_frame(stream):
+def _read_local_policy_frame(stream, *, require_eof=True):
     """Read the bounded one-shot policy frame; never log or echo its bytes."""
     def read_exact(size):
         output = bytearray()
@@ -1976,7 +2027,7 @@ def _read_local_policy_frame(stream):
     if magic != b'MCL1' or not 1 <= length <= 65536:
         raise ValueError('local_frame')
     policy = read_exact(length)
-    if stream.read(1) != b'':
+    if require_eof and stream.read(1) != b'':
         raise ValueError('local_frame')
     return policy
 
@@ -2035,6 +2086,143 @@ def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_m
         return 0
     except BaseException:
         return 2
+
+
+def _local_candidate_owner_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
+                                 policy_sha256, approval_reference_sha256, policy_path=None):
+    """Retain one owner and a reference-only service until a graceful stop.
+
+    The service does not authenticate clients or establish source correctness;
+    every consumer must independently verify the proposed source references.
+    """
+    from tools import wd_mind_runtime_process as process
+    policy = adapter = service = service_thread = control_thread = None
+    stop, service_done = threading.Event(), threading.Event()
+    service_error, control_error = [], []
+    last_state, failed = None, False
+
+    def emit(state):
+        nonlocal last_state
+        if state == last_state:
+            return
+        raw = json.dumps({'schema':'wd.mind-local-owner-status.v1', 'state':state,
+            'manifest_sha256':expected_manifest_sha256, 'authority':'none',
+            'caller_authentication':'UNKNOWN', 'source_authentication':'UNKNOWN',
+            'index_refresh':'NOT_SCHEDULED'}, sort_keys=True, separators=(',', ':')).encode('ascii') + b'\n'
+        offset = 0
+        while offset < len(raw):
+            count = output_stream.write(memoryview(raw)[offset:])
+            if type(count) is not int or not 0 < count <= len(raw) - offset:
+                raise ValueError('status_write')
+            offset += count
+        output_stream.flush()
+        last_state = state
+
+    def read_stop():
+        try:
+            if control_stream.read(1) not in (b'S', b''):
+                control_error.append(True)
+        except BaseException:
+            control_error.append(True)
+        finally:
+            stop.set()
+
+    def start_service():
+        try:
+            service.start()
+        except BaseException:
+            service_error.append(True)
+        finally:
+            service_done.set()
+
+    try:
+        if policy_path is None:
+            policy = _read_local_policy_frame(control_stream, require_eof=False)
+        else:
+            from tools import wd_mind_absent_generation_prefix_readonly as absent
+            if type(policy_path) is not str:
+                raise ValueError('policy_path')
+            policy = absent._read_pinned(Path(policy_path), policy_sha256, 65536)
+        adapter = create_local_manifest_query(enabled=True, bundle_root=bundle_root,
+            expected_manifest_sha256=expected_manifest_sha256, identifier_policy_bytes=policy,
+            expected_identifier_policy_sha256=policy_sha256,
+            operator_approval_reference_sha256=approval_reference_sha256, lane='codex-lead-1',
+            policy_path=policy_path)
+        policy = None
+        if adapter.start().get('state') != 'STARTING':
+            raise ValueError('owner_start')
+        emit('STARTING')
+        control_thread = threading.Thread(target=read_stop, name='mind-local-control', daemon=False)
+        control_thread.start()
+        while not stop.is_set():
+            owner_status = adapter.status()
+            if type(owner_status) is not dict or owner_status.get('state') not in ('STARTING', 'READY'):
+                failed = True
+                break
+            if owner_status.get('state') == 'READY' and service is None:
+                if owner_status.get('owned') is not True or adapter._owner is None:
+                    raise ValueError('owner_not_ready')
+                name = process.local_candidate_pipe_name(manifest_sha256=expected_manifest_sha256)
+                service = process.create_local_candidate_service(enabled=True, owner=adapter, pipe_name=name)
+                service_thread = threading.Thread(target=start_service, name='mind-local-service-start', daemon=False)
+                service_thread.start()
+            if service is not None and service_done.is_set():
+                if service_error:
+                    failed = True
+                    break
+                service_status = service.status()
+                if type(service_status) is not dict or service_status.get('state') != 'RUNNING':
+                    failed = True
+                    break
+                emit('READY')
+            stop.wait(0.1)
+    except BaseException:
+        failed = True
+    finally:
+        policy = None
+        if failed:
+            try: emit('HOLD')
+            except BaseException: pass
+        if service_thread is not None:
+            while not service_done.is_set() or service_thread.is_alive():
+                try: emit('HOLD')
+                except BaseException: failed = True
+                try: service_done.wait(0.25)
+                except BaseException: pass
+        if service is not None:
+            while True:
+                try:
+                    service_status = service.close(timeout=0)
+                    if type(service_status) is dict and service_status.get('state') == 'STOPPED':
+                        break
+                except BaseException:
+                    pass
+                try: emit('HOLD')
+                except BaseException: failed = True
+                try: time.sleep(0.25)
+                except BaseException: pass
+        if adapter is not None:
+            while True:
+                try:
+                    owner_status = adapter.close()
+                    if (type(owner_status) is dict and owner_status.get('state') == 'STOPPED'
+                            and owner_status.get('owned') is False):
+                        break
+                except BaseException:
+                    pass
+                try: emit('HOLD')
+                except BaseException: failed = True
+                try: time.sleep(0.25)
+                except BaseException: pass
+        if control_thread is not None:
+            while control_thread.is_alive():
+                try: emit('HOLD')
+                except BaseException: failed = True
+                try: control_thread.join(timeout=0.25)
+                except BaseException: pass
+        try: emit('STOPPED')
+        except BaseException: failed = True
+    return 2 if failed or control_error else 0
 
 
 def _wait_parent_pair_release(pair):
@@ -2100,13 +2288,28 @@ def _fixed_child_main(argv):
     local = (len(argv) == 7 and argv[0] == '--mind-local-query'
              and argv[1] == '--policy-sha256' and argv[3] == '--approval-reference-sha256'
              and argv[5] == '--lane' and _HEX.fullmatch(argv[2]) and _HEX.fullmatch(argv[4]))
-    if argv not in (['--mind-owner-child'], ['--parent-control']) and not local:
+    local_owner = (len(argv) == 5 and argv[0] == '--mind-local-candidate-owner'
+                   and argv[1] == '--policy-sha256' and argv[3] == '--approval-reference-sha256'
+                   and _HEX.fullmatch(argv[2]) and _HEX.fullmatch(argv[4]))
+    local_owner_path = (len(argv) == 7 and argv[0] == '--mind-local-candidate-owner'
+                        and argv[1] == '--policy-path' and argv[3] == '--policy-sha256'
+                        and argv[5] == '--approval-reference-sha256'
+                        and _HEX.fullmatch(argv[4]) and _HEX.fullmatch(argv[6]))
+    if argv not in (['--mind-owner-child'], ['--parent-control']) and not local and not local_owner and not local_owner_path:
         return 2
     try:
         expected = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
         if not _HEX.fullmatch(expected):
             return 2
         bundle = str(Path(__file__).resolve().parents[2])
+        if local_owner_path:
+            return _local_candidate_owner_entry(control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
+                bundle_root=bundle, expected_manifest_sha256=expected, policy_path=argv[2],
+                policy_sha256=argv[4], approval_reference_sha256=argv[6])
+        if local_owner:
+            return _local_candidate_owner_entry(control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
+                bundle_root=bundle, expected_manifest_sha256=expected, policy_sha256=argv[2],
+                approval_reference_sha256=argv[4])
         if local:
             _startup_scope_for_lane(argv[6])
             return _local_query_entry(control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,

@@ -297,6 +297,183 @@ def test_fixed_local_cli_uses_named_arguments_and_manifest_environment(monkeypat
     assert child._fixed_child_main(args[:-1]) == 2
 
 
+@pytest.mark.parametrize('policy_mode', ['frame', 'path'])
+@pytest.mark.parametrize('stop_byte,expected_exit', [(b'S', 0), (b'', 0), (b'X', 2)])
+def test_local_candidate_owner_shares_one_owner_for_five_lanes_and_holds_on_close(monkeypatch, tmp_path, stop_byte, expected_exit, policy_mode):
+    from tools import wd_mind_runtime_process as process
+    ready = threading.Event()
+    policy = b'synthetic-private-policy'
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(policy)
+    source = io.BytesIO(b'MCL1' + struct.pack('>I', len(policy)) + policy if policy_mode == 'frame' else b'')
+    class Input:
+        def read(self, size):
+            value = source.read(size)
+            if value: return value
+            assert ready.wait(5)
+            return stop_byte
+    statuses, requests, starts = [], [], []
+    class Output:
+        def write(self, data):
+            raw = bytes(data)
+            statuses.append(json.loads(raw))
+            if statuses[-1]['state'] == 'READY': ready.set()
+            return len(raw)
+        def flush(self): pass
+    class Owner:
+        def __init__(self): self._owner = self; self.closes = 0
+        def start(self): starts.append('owner'); return {'state':'STARTING'}
+        def status(self): return {'state':'READY', 'owned':True}
+        def located_candidates(self, request):
+            requests.append(request)
+            return {'schema':'wd.mind-pipe-candidates.v2', 'lane':request['lane'],
+                    'scope':request['scope'], 'nonce':request['nonce'], 'status':'ABSTAIN', 'candidates':[]}
+        def close(self):
+            self.closes += 1
+            return {'state':'HOLD', 'owned':None} if self.closes == 1 else {'state':'STOPPED', 'owned':False}
+    owner = Owner()
+    class Service:
+        def __init__(self, adapter): self.adapter, self.closes = adapter, 0
+        def start(self):
+            for lane in ('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5'):
+                request = {'schema':'wd.mind-pipe-request.v2', 'query_id':'startup_work_overview',
+                           'nonce':'a'*64, 'lane':lane, 'scope':'shared'}
+                assert self.adapter.located_candidates(request)['status'] == 'ABSTAIN'
+        def status(self): return {'state':'RUNNING', 'authority':'none', 'caller_authentication':'UNKNOWN'}
+        def close(self, *, timeout):
+            self.closes += 1
+            return {'state':'HOLD'} if self.closes == 1 else {'state':'STOPPED'}
+    def service_factory(**kwargs):
+        assert kwargs['owner'] is owner
+        assert kwargs['pipe_name'] == process.local_candidate_pipe_name(manifest_sha256='a'*64)
+        return Service(kwargs['owner'])
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: owner)
+    monkeypatch.setattr(process, 'create_local_candidate_service', service_factory)
+    result = child._local_candidate_owner_entry(control_stream=Input(), output_stream=Output(),
+        bundle_root='synthetic', expected_manifest_sha256='a'*64,
+        policy_sha256=hashlib.sha256(policy).hexdigest(), approval_reference_sha256='c'*64,
+        policy_path=str(policy_path) if policy_mode == 'path' else None)
+    assert result == expected_exit and starts == ['owner'] and len(requests) == 5
+    assert [row['state'] for row in statuses] == ['STARTING','READY','HOLD','STOPPED']
+    assert all(row['authority'] == 'none' and row['caller_authentication'] == 'UNKNOWN'
+               and row['source_authentication'] == 'UNKNOWN' and row['index_refresh'] == 'NOT_SCHEDULED'
+               for row in statuses)
+    assert policy.decode() not in json.dumps(statuses)
+
+
+def test_fixed_local_candidate_owner_cli_uses_named_pins(monkeypatch):
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'a'*64)
+    seen = []
+    monkeypatch.setattr(child, '_local_candidate_owner_entry', lambda **kwargs: seen.append(kwargs) or 0)
+    args = ['--mind-local-candidate-owner', '--policy-sha256', 'b'*64,
+            '--approval-reference-sha256', 'c'*64]
+    assert child._fixed_child_main(args) == 0
+    assert seen[0]['expected_manifest_sha256'] == 'a'*64
+    assert seen[0]['policy_sha256'] == 'b'*64 and seen[0]['approval_reference_sha256'] == 'c'*64
+    assert child._fixed_child_main(args[:-1]) == 2
+    args = ['--mind-local-candidate-owner', '--policy-path', 'C:\\synthetic\\policy.json',
+            '--policy-sha256', 'b'*64, '--approval-reference-sha256', 'c'*64]
+    assert child._fixed_child_main(args) == 0
+    assert seen[-1]['policy_path'] == 'C:\\synthetic\\policy.json'
+
+
+def test_local_candidate_owner_rejects_wrong_path_policy_hash(tmp_path):
+    policy = tmp_path / 'policy.json'
+    policy.write_bytes(b'synthetic-private-policy')
+    output = io.BytesIO()
+    result = child._local_candidate_owner_entry(control_stream=io.BytesIO(), output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a'*64, policy_sha256='b'*64,
+        approval_reference_sha256='c'*64, policy_path=str(policy))
+    assert result == 2
+    assert b'synthetic-private-policy' not in output.getvalue()
+
+
+@pytest.mark.parametrize('when', ['before', 'during'])
+@pytest.mark.parametrize('method', ['candidates', 'located_candidates'])
+def test_candidate_proxy_rechecks_real_external_policy_file(monkeypatch, tmp_path, when, method):
+    from tools import wd_mind_full_runtime as runtime
+    policy = b'synthetic-approved-policy'
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(policy)
+    calls = []
+    class Owner:
+        def __init__(self): self.state='NEW'; self.retained=object()
+        def start(self): self.state='READY'; return {'state':'READY','owned':True,'authority':'none'}
+        def status(self): return {'state':self.state,'owned':True,'authority':'none'}
+        def close(self): return {'state':'HOLD','owned':True,'authority':'none'}
+        def invalidate_external_policy(self):
+            self.state='HOLD'; self.retained=None
+            return {'state':'HOLD','owned':True,'authority':'none'}
+        def candidates(self, request):
+            calls.append('query')
+            if when == 'during': policy_path.write_bytes(b'x' * len(policy))
+            return {'status':'ABSTAIN','candidates':[]}
+        def located_candidates(self, request): return self.candidates(request)
+    held=Owner()
+    monkeypatch.setattr(runtime, 'create_operator_pinned_policy_anchor', lambda **kwargs: object())
+    monkeypatch.setattr(runtime, 'assemble_full_runtime', lambda **kwargs: object())
+    monkeypatch.setattr(runtime, 'create_manifest_worker_factory', lambda **kwargs: object())
+    monkeypatch.setattr(runtime, 'create_single_manifest_owner', lambda **kwargs: held)
+    adapter=child.create_local_manifest_query(enabled=True, bundle_root=str(tmp_path),
+        expected_manifest_sha256='a'*64, identifier_policy_bytes=policy,
+        expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest(),
+        operator_approval_reference_sha256='c'*64, lane='codex-lead-1', policy_path=str(policy_path))
+    assert adapter.start()['state'] == 'STARTING'
+    assert adapter.wait(timeout=5)['state'] == 'READY'
+    if when == 'before': policy_path.write_bytes(b'x' * len(policy))
+    with pytest.raises(child.LaunchRefused): getattr(adapter, method)({})
+    assert calls == ([] if when == 'before' else ['query'])
+    assert held.retained is None and held.state == 'HOLD' and adapter.status()['state'] == 'HOLD'
+    policy_path.write_bytes(policy)
+    with pytest.raises(child.LaunchRefused): getattr(adapter, method)({})
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows junction test')
+def test_local_candidate_owner_rejects_policy_through_real_junction(tmp_path):
+    real = tmp_path / 'real'
+    real.mkdir()
+    policy = real / 'policy.json'
+    raw = b'synthetic-approved-policy'
+    policy.write_bytes(raw)
+    link = tmp_path / 'junction'
+    made = subprocess.run(['cmd.exe', '/c', 'mklink', '/J', str(link), str(real)],
+                          capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    if made.returncode != 0:
+        pytest.skip('junction creation unavailable in synthetic test directory')
+    output = io.BytesIO()
+    result = child._local_candidate_owner_entry(control_stream=io.BytesIO(), output_stream=output,
+        bundle_root='synthetic', expected_manifest_sha256='a'*64,
+        policy_sha256=hashlib.sha256(raw).hexdigest(), approval_reference_sha256='c'*64,
+        policy_path=str(link / 'policy.json'))
+    assert result == 2 and raw not in output.getvalue()
+
+
+def test_local_candidate_owner_rejects_missing_manifest_and_reports_hold(tmp_path):
+    held = threading.Event()
+    policy = b'synthetic-private-policy'
+    source = io.BytesIO(b'MCL1' + struct.pack('>I', len(policy)) + policy)
+    class Input:
+        def read(self, size):
+            value = source.read(size)
+            if value: return value
+            assert held.wait(5)
+            return b'S'
+    statuses = []
+    class Output:
+        def write(self, data):
+            raw = bytes(data)
+            statuses.append(json.loads(raw))
+            if statuses[-1]['state'] == 'HOLD': held.set()
+            return len(raw)
+        def flush(self): pass
+    result = child._local_candidate_owner_entry(control_stream=Input(), output_stream=Output(),
+        bundle_root=str(tmp_path), expected_manifest_sha256='a'*64,
+        policy_sha256=hashlib.sha256(policy).hexdigest(), approval_reference_sha256='c'*64)
+    assert result == 2
+    assert [row['state'] for row in statuses] == ['STARTING', 'HOLD', 'STOPPED']
+    assert policy.decode() not in json.dumps(statuses)
+
+
 @pytest.mark.parametrize('mutation', ['none', 'source', 'approval'])
 def test_local_post_close_rechecks_real_synthetic_source_and_approval(monkeypatch, tmp_path, mutation):
     from test_wd_mind_content_snapshot_package import _flat_owner_fixture, fixtures, package

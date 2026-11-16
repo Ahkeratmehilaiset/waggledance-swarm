@@ -498,12 +498,16 @@ class _RotatingFlatAdapter(_Adapter):
             raise ValueError('worker_module_changed')
         rotator = self._client
         worker, owner = rotator.active_client, rotator.owner
+        worker_timeout = rotator._worker_timeout
         if (type(worker) is not e5_client.GracefulE5WorkerClient or type(owner) is not lifecycle._Owner
                 or worker.owner is not owner or worker._process is not worker._transport
                 or worker._transport.owner is not owner or worker._closed is not False
                 or worker._binding_sha256 != self._runtime_hash
                 or worker._bulk_contract_sha256 != e5_client.BULK_CONTRACT_SHA256
-                or worker._timeout != self._timeout
+                or type(worker_timeout) not in (int, float) or not math.isfinite(worker_timeout)
+                or not 0 < worker_timeout <= self._timeout
+                or type(worker._timeout) is not type(worker_timeout)
+                or worker._timeout != worker_timeout
                 or owner._bulk_contract_sha256 != e5_client.BULK_CONTRACT_SHA256
                 or owner.resources.process is None or owner.resources.job is None
                 or owner.resources.process is not rotator._owned_process

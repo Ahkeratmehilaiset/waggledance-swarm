@@ -1,5 +1,213 @@
 #requires -Version 5.1
 
+$script:WdMindSharedOwnerHelperText = $MyInvocation.MyCommand.ScriptBlock.Ast.Extent.Text
+
+function Read-WdMindSharedPinnedBytes {
+    param([string] $Path, [string] $Sha256, [int] $MaxBytes)
+    if (-not [IO.Path]::IsPathRooted($Path) -or $Sha256 -cnotmatch '\A[0-9a-fA-F]{64}\z') { throw 'mind_shared_pin' }
+    $pathFull = [IO.Path]::GetFullPath($Path)
+    $current = $pathFull
+    while ($current) {
+        if (([IO.File]::GetAttributes($current) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'mind_shared_path' }
+        $parent = [IO.Path]::GetDirectoryName($current)
+        if (-not $parent -or $parent -ceq $current) { break }
+        $current = $parent
+    }
+    $stream = [IO.File]::Open($pathFull,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {
+        if ($stream.Length -lt 1 -or $stream.Length -gt $MaxBytes) { throw 'mind_shared_size' }
+        $bytes = New-Object byte[] ([int]$stream.Length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $n = $stream.Read($bytes,$offset,$bytes.Length-$offset)
+            if ($n -le 0) { throw 'mind_shared_read' }
+            $offset += $n
+        }
+        if ($stream.ReadByte() -ne -1) { throw 'mind_shared_changed' }
+    } finally { $stream.Dispose() }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $actual = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+    if ($actual -cne $Sha256.ToLowerInvariant()) { throw 'mind_shared_pin' }
+    return ,$bytes
+}
+
+function Get-WdMindSharedOwnerRecord {
+    param([Parameter(Mandatory)] $Owner)
+    if ($null -eq $Owner -or $Owner.Token -cnotmatch '\A[0-9a-f]{32}\z' -or
+        -not (Test-Path variable:global:WdMindSharedOwnerRecords) -or
+        -not $global:WdMindSharedOwnerRecords.ContainsKey([string]$Owner.Token)) { throw 'mind_shared_owner_refused' }
+    return $global:WdMindSharedOwnerRecords[[string]$Owner.Token]
+}
+
+function Update-WdMindSharedOwner {
+    param([Parameter(Mandatory)] $Record)
+    try {
+        foreach ($which in @('Out','Err')) {
+            $task=$Record[($which+'Read')]
+            if ($null -eq $task -or -not $task.IsCompleted) { continue }
+            $count=$task.GetAwaiter().GetResult()
+            if ($count -eq 0) { $Record[($which+'Done')]=$true; $Record[($which+'Read')]=$null; continue }
+            if ($which -ceq 'Err') { throw 'mind_shared_stderr' }
+            $buffer=$Record.OutBuffer
+            for($i=0;$i -lt $count;$i++) {
+                if ($buffer[$i] -eq 10) {
+                    if ($Record.Line.Length -eq 0 -or $Record.Line.Length -gt 1024) { throw 'mind_shared_status' }
+                    $lineBytes=$Record.Line.ToArray()
+                    $lineLength=$lineBytes.Length
+                    if($lineLength -gt 0 -and $lineBytes[$lineLength-1] -eq 13){$lineLength--}
+                    $line=[Text.Encoding]::ASCII.GetString($lineBytes,0,$lineLength)
+                    $Record.Line.SetLength(0)
+                    $matched=$false
+                    foreach($state in @('STARTING','READY','HOLD','STOPPED')) {
+                        $expected='{"authority":"none","caller_authentication":"UNKNOWN","index_refresh":"NOT_SCHEDULED",'+
+                            '"manifest_sha256":"'+$Record.Manifest+'","schema":"wd.mind-local-owner-status.v1",'+
+                            '"source_authentication":"UNKNOWN","state":"'+$state+'"}'
+                        if($line -ceq $expected){$Record.ReportedState=$state;$matched=$true;break}
+                    }
+                    if(-not $matched){throw 'mind_shared_status'}
+                } else {
+                    if($buffer[$i] -gt 127 -or $Record.Line.Length -ge 1024){throw 'mind_shared_status'}
+                    $Record.Line.WriteByte($buffer[$i])
+                }
+            }
+            if($which -ceq 'Out') {
+                $Record.OutRead=$Record.Process.StandardOutput.BaseStream.ReadAsync($Record.OutBuffer,0,$Record.OutBuffer.Length)
+            } else {
+                $Record.ErrRead=$Record.Process.StandardError.BaseStream.ReadAsync($Record.ErrBuffer,0,$Record.ErrBuffer.Length)
+            }
+        }
+        if($Record.Process.HasExited) {
+            if($Record.Process.ExitCode -eq 0 -and $Record.OutDone -and $Record.ErrDone -and
+               $Record.Line.Length -eq 0 -and $Record.ReportedState -ceq 'STOPPED') {$Record.State='STOPPED'}
+            elseif($Record.OutDone -and $Record.ErrDone) {$Record.State='FAILED'}
+            else {$Record.State='HOLD'}
+        } elseif($Record.Stopping) {$Record.State='HOLD'}
+        elseif($Record.ReportedState -ceq 'READY') {$Record.State='READY'}
+        elseif($Record.ReportedState -ceq 'HOLD' -or $Record.ReportedState -ceq 'STOPPED') {$Record.State='HOLD'}
+        else {$Record.State='STARTING'}
+    } catch { $Record.State='HOLD'; $Record.Invalid=$true }
+}
+
+function Start-WdMindSharedOwner {
+    <# Opt-in persistent owner. The creating PowerShell session owns the process;
+       closing that session is not claimed to preserve it. No lane identity is authenticated. #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string] $BundleRoot, [Parameter(Mandatory)][string] $ExpectedManifestHash,
+          [Parameter(Mandatory)][string] $OperatorPolicyPath, [Parameter(Mandatory)][string] $OperatorPolicySha256,
+          [Parameter(Mandatory)][string] $OperatorApprovalReferenceSha256,
+          [Parameter(Mandatory)][string] $BridgePythonPath,
+          [Parameter(Mandatory)][string] $BridgePythonSha256)
+    $policy=$null; $record=$null
+    try {
+        if(-not [IO.Path]::IsPathRooted($BundleRoot) -or $BundleRoot -match '(^|[\\/])\.\.([\\/]|$)' -or
+           $OperatorApprovalReferenceSha256 -cnotmatch '\A[0-9a-fA-F]{64}\z' -or
+           $BridgePythonSha256 -cnotmatch '\A[0-9a-fA-F]{64}\z'){throw 'input'}
+        $root=[IO.Path]::GetFullPath($BundleRoot).TrimEnd('\')
+        $manifestPath=Join-Path $root 'deployment-manifest.json'
+        $manifestBytes=Read-WdMindSharedPinnedBytes $manifestPath $ExpectedManifestHash 4194304
+        $utf8=New-Object Text.UTF8Encoding($false,$true)
+        $manifest=$utf8.GetString($manifestBytes).TrimStart([char]0xFEFF)|ConvertFrom-Json -ErrorAction Stop
+        if($manifest.schema_version -ne 1 -or $null -eq $manifest.files){throw 'manifest'}
+        $descriptorName='wd-mind-identifier-policy-approval.json'
+        $descriptorPin=$manifest.files.PSObject.Properties[$descriptorName]
+        if($null -eq $descriptorPin -or $descriptorPin.Value -isnot [string]){throw 'descriptor'}
+        $descriptor=Read-WdMindSharedPinnedBytes (Join-Path $root $descriptorName) $descriptorPin.Value 65536
+        $expected='{"approval_reference_sha256":"'+$OperatorApprovalReferenceSha256.ToLowerInvariant()+'",'+
+            '"identifier_policy_sha256":"'+$OperatorPolicySha256.ToLowerInvariant()+'",'+
+            '"schema":"wd.mind-identifier-policy-approval.v1"}'
+        if($utf8.GetString($descriptor) -cne $expected){throw 'descriptor'}
+        $policy=Read-WdMindSharedPinnedBytes $OperatorPolicyPath $OperatorPolicySha256 65536
+        [void](Read-WdMindSharedPinnedBytes $BridgePythonPath $BridgePythonSha256 134217728)
+        $wrapper=Join-Path $root 'Invoke-WdBridgePython.ps1'
+        $helperBytes=$null
+        foreach($relative in @('Invoke-WdBridgePython.ps1','Invoke-WdMindStartupRead.ps1',
+                                'tools-bootstrap/tools/wd_mind_runtime_child.py')) {
+            $pin=$manifest.files.PSObject.Properties[$relative]
+            if($null -eq $pin -or $pin.Value -isnot [string]){throw 'entry'}
+            $entryBytes=Read-WdMindSharedPinnedBytes (Join-Path $root $relative) $pin.Value 8388608
+            if($relative -ceq 'Invoke-WdMindStartupRead.ps1'){$helperBytes=$entryBytes}
+        }
+        if($null -eq $helperBytes -or $utf8.GetString($helperBytes).TrimStart([char]0xFEFF) -cne
+           $script:WdMindSharedOwnerHelperText){throw 'helper_source'}
+        [void](Read-WdMindSharedPinnedBytes $manifestPath $ExpectedManifestHash 4194304)
+        [void](Read-WdMindSharedPinnedBytes (Join-Path $root $descriptorName) $descriptorPin.Value 65536)
+        $wrapperPin=[string]$manifest.files.PSObject.Properties['Invoke-WdBridgePython.ps1'].Value
+        $quote={param([string]$v) "'"+$v.Replace("'","''")+"'"}
+        $command='$ErrorActionPreference="Stop"; $ProgressPreference="SilentlyContinue"; $f=[IO.File]::OpenRead('+(& $quote $wrapper)+
+            ');$s=[Security.Cryptography.SHA256]::Create();try{$h=[BitConverter]::ToString($s.ComputeHash($f)).Replace("-","").ToLowerInvariant()}finally{$f.Dispose();$s.Dispose()}; if($h -cne '+
+            (& $quote $wrapperPin.ToLowerInvariant())+' ){exit 2}; & '+(& $quote $wrapper)+
+            ' tools/wd_mind_runtime_child.py -VerifyPackage --mind-local-candidate-owner --policy-path '+
+            (& $quote ([IO.Path]::GetFullPath($OperatorPolicyPath)))+' --policy-sha256 '+
+            (& $quote $OperatorPolicySha256.ToLowerInvariant())+' --approval-reference-sha256 '+
+            (& $quote $OperatorApprovalReferenceSha256.ToLowerInvariant())+'; exit $LASTEXITCODE'
+        $info=New-Object Diagnostics.ProcessStartInfo
+        $shell=if($PSVersionTable.PSEdition -ceq 'Core'){'pwsh.exe'}else{'powershell.exe'}
+        $info.FileName=Join-Path $PSHOME $shell
+        $info.Arguments='-NoProfile -NonInteractive -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $info.WorkingDirectory=$root; $info.UseShellExecute=$false; $info.CreateNoWindow=$true
+        $info.RedirectStandardInput=$true; $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
+        $environmentAllow=@('SYSTEMROOT','SYSTEMDRIVE','WINDIR','PATH','PATHEXT','TEMP','TMP',
+                            'USERPROFILE','LOCALAPPDATA','APPDATA')
+        foreach($name in @($info.EnvironmentVariables.Keys)) {
+            if($environmentAllow -cnotcontains ([string]$name).ToUpperInvariant()){
+                $info.EnvironmentVariables.Remove([string]$name)
+            }
+        }
+        $info.EnvironmentVariables['PSModulePath']=(Join-Path $PSHOME 'Modules')+';'+
+            (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules')
+        $info.EnvironmentVariables['WD_REBOOT_EXPECTED_MANIFEST_HASH']=$ExpectedManifestHash.ToUpperInvariant()
+        # Explicit caller-provided handshake measurement; not a manifest-approved interpreter identity.
+        $info.EnvironmentVariables['WD_BRIDGE_PYTHON_SHA256']=$BridgePythonSha256.ToUpperInvariant()
+        $info.EnvironmentVariables['WD_BRIDGE_PYTHON']=[IO.Path]::GetFullPath($BridgePythonPath)
+        if(-not (Test-Path variable:global:WdMindSharedOwnerRecords)){$global:WdMindSharedOwnerRecords=@{}}
+        $token=[Guid]::NewGuid().ToString('N')
+        $proc=New-Object Diagnostics.Process; $proc.StartInfo=$info
+        $record=@{Process=$proc;Manifest=$ExpectedManifestHash.ToLowerInvariant();State='HOLD';ReportedState='';
+            Stopping=$false;Invalid=$false;
+            OutBuffer=(New-Object byte[] 4096);ErrBuffer=(New-Object byte[] 4096);Line=(New-Object IO.MemoryStream);
+            OutRead=$null;ErrRead=$null;OutDone=$false;ErrDone=$false}
+        $global:WdMindSharedOwnerRecords[$token]=$record
+        $handle=[pscustomobject]@{schema='wd.mind-shared-owner-handle.v1';Token=$token;authority='none'}
+        if(-not $proc.Start()){return $handle}
+        $record.OutRead=$proc.StandardOutput.BaseStream.ReadAsync($record.OutBuffer,0,$record.OutBuffer.Length)
+        $record.ErrRead=$proc.StandardError.BaseStream.ReadAsync($record.ErrBuffer,0,$record.ErrBuffer.Length)
+        $record.State='STARTING'
+        return $handle
+    } catch {
+        if($null -ne $record){return $handle}
+        throw 'mind_shared_owner_refused'
+    } finally {
+        if($null -ne $policy){[Array]::Clear($policy,0,$policy.Length)}
+    }
+}
+
+function Get-WdMindSharedOwnerStatus {
+    [CmdletBinding()] param([Parameter(Mandatory)] $Owner)
+    $record=Get-WdMindSharedOwnerRecord $Owner
+    if(-not $record.Invalid){Update-WdMindSharedOwner $record}
+    else {
+        try { $record.State=if($record.Process.HasExited){'FAILED'}else{'HOLD'} }
+        catch { $record.State='HOLD' }
+    }
+    return [pscustomobject]@{schema='wd.mind-shared-owner-status.v1';state=$record.State;
+        authority='none';caller_authentication='UNKNOWN';index_refresh='NOT_SCHEDULED'}
+}
+
+function Stop-WdMindSharedOwner {
+    [CmdletBinding()] param([Parameter(Mandatory)] $Owner)
+    $record=Get-WdMindSharedOwnerRecord $Owner
+    if(-not $record.Invalid){Update-WdMindSharedOwner $record}
+    if($record.State -in @('STOPPED','FAILED')){return Get-WdMindSharedOwnerStatus $Owner}
+    if(-not $record.Stopping -and -not $record.Process.HasExited) {
+        try {
+            $record.Stopping=$true
+            $record.Process.StandardInput.Close()
+        } catch { $record.Invalid=$true; $record.State='HOLD' }
+    }
+    return Get-WdMindSharedOwnerStatus $Owner
+}
+
 function Invoke-WdMindStartupRead {
     <# One optional, bounded status read through the manifest-pinned session CLI.
        This helper defines no writer/producer route and never starts an agent.
@@ -32,6 +240,7 @@ function Invoke-WdMindStartupRead {
     }
     $result = [ordered]@{schema='wd.mind-startup-status.v1';outcome='refused';reason='package_refused';
         authority='none';view_json='';view_sha256='';cleanup='not_started';record_written=$false}
+    $requestClock=[Diagnostics.Stopwatch]::StartNew()
     $process = $null
     function Read-WdMindPinnedSnapshot {
         param([string] $Path, [string] $Pin, [int] $Limit=1048576)
@@ -289,6 +498,63 @@ namespace WaggleDance {
             finally {$sha.Dispose()}
             return [pscustomobject]@{view_json=$text;view_sha256=$digest}
         } catch { return $null }
+    }
+    function Start-WdMindLocalCandidate {
+        param([string]$Root,[string]$Manifest,[string]$PolicyPath,[string]$PolicySha,
+              [string]$ApprovalSha,[string]$LaneName,[Diagnostics.Stopwatch]$Clock,[int]$Budget)
+        # Launcher supplies the interpreter hash measured during its verified
+        # BridgeCodeContext handshake; standalone callers must arrange the same.
+        $bridgePythonPin=[string]$env:WD_BRIDGE_PYTHON_SHA256
+        $bridgePythonPath=[string]$env:WD_BRIDGE_PYTHON
+        if($bridgePythonPin -cnotmatch '\A[0-9a-fA-F]{64}\z'){throw 'local_interpreter_pin'}
+        [void](Read-WdMindSharedPinnedBytes $bridgePythonPath $bridgePythonPin 134217728)
+        $manifestPath=Join-Path $Root 'deployment-manifest.json'
+        $deployment=(Read-WdMindPinnedSnapshot -Path $manifestPath -Pin $Manifest -Limit 4194304).Text | ConvertFrom-Json -ErrorAction Stop
+        $wrapper=Join-Path $Root 'Invoke-WdBridgePython.ps1'
+        $entry=Join-Path $Root 'tools-bootstrap/tools/wd_bridge_mind_session.py'
+        $wrapperPin=$deployment.files.PSObject.Properties['Invoke-WdBridgePython.ps1']
+        $entryPin=$deployment.files.PSObject.Properties['tools-bootstrap/tools/wd_bridge_mind_session.py']
+        if($null -eq $wrapperPin -or $null -eq $entryPin){throw 'local_pin'}
+        [void](Read-WdMindPinnedSnapshot -Path $wrapper -Pin $wrapperPin.Value -Limit 8388608)
+        [void](Read-WdMindPinnedSnapshot -Path $entry -Pin $entryPin.Value -Limit 8388608)
+        $remaining=[int][Math]::Floor(($Budget*1000-$Clock.ElapsedMilliseconds)/1000)
+        if($remaining -lt 1){throw 'local_timeout'}
+        $command='$ErrorActionPreference="Stop";if((Get-FileHash -LiteralPath '+(ConvertTo-WdMindLiteral $wrapper)+
+            ' -Algorithm SHA256).Hash.ToLowerInvariant() -cne '+(ConvertTo-WdMindLiteral $wrapperPin.Value.ToLowerInvariant())+
+            '){exit 2}; & '+(ConvertTo-WdMindLiteral $wrapper)+' tools/wd_bridge_mind_session.py -VerifyPackage --mind-local-candidate-read --policy-path '+
+            (ConvertTo-WdMindLiteral $PolicyPath)+' --policy-sha256 '+(ConvertTo-WdMindLiteral $PolicySha.ToLowerInvariant())+
+            ' --approval-reference-sha256 '+(ConvertTo-WdMindLiteral $ApprovalSha.ToLowerInvariant())+
+            ' --lane '+(ConvertTo-WdMindLiteral $LaneName)+' --timeout-seconds '+$remaining+'; exit $LASTEXITCODE'
+        $start=New-Object Diagnostics.ProcessStartInfo
+        $shell=if($PSVersionTable.PSEdition -ceq 'Core'){'pwsh.exe'}else{'powershell.exe'}
+        $start.FileName=Join-Path $PSHOME $shell
+        $start.Arguments='-NoProfile -NonInteractive -EncodedCommand '+[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $start.WorkingDirectory=$Root;$start.UseShellExecute=$false;$start.CreateNoWindow=$true
+        $start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
+        $allowed=@('SYSTEMROOT','SYSTEMDRIVE','WINDIR','PATH','PATHEXT','TEMP','TMP','USERPROFILE','LOCALAPPDATA','APPDATA')
+        foreach($name in @($start.EnvironmentVariables.Keys)){
+            if($allowed -cnotcontains ([string]$name).ToUpperInvariant()){$start.EnvironmentVariables.Remove([string]$name)}
+        }
+        $start.EnvironmentVariables['WD_REBOOT_EXPECTED_MANIFEST_HASH']=$Manifest.ToUpperInvariant()
+        $start.EnvironmentVariables['WD_BRIDGE_PYTHON_SHA256']=$bridgePythonPin.ToUpperInvariant()
+        $start.EnvironmentVariables['WD_BRIDGE_PYTHON']=[IO.Path]::GetFullPath($bridgePythonPath)
+        foreach($name in @('WdMindLocalCandidateOwners','WdMindParentBootstrapIO','WdMindParentBootstrapProcesses')){
+            if(-not (Test-Path ('variable:global:'+$name))){Set-Variable -Scope Global -Name $name -Value @{} }
+        }
+        $token=[Guid]::NewGuid().ToString('N')
+        $proc=New-Object Diagnostics.Process;$proc.StartInfo=$start
+        $owner=[pscustomobject]@{State='HOLD';Token=$token;Approval='UNVERIFIED';Authority='none';
+            Clock=$Clock;TimeoutMilliseconds=([long]$Budget*1000)}
+        $global:WdMindLocalCandidateOwners[$token]=$owner
+        $global:WdMindParentBootstrapProcesses[$token]=@{Process=$proc;WriteTask=$null}
+        if(-not $proc.Start()){return $owner}
+        $io=@{OutBuffer=(New-Object byte[] 4096);ErrBuffer=(New-Object byte[] 4096);
+            OutRead=$null;ErrRead=$null;OutDone=$false;ErrDone=$false;ErrBytes=0;OutBytes=(New-Object IO.MemoryStream)}
+        $global:WdMindParentBootstrapIO[$token]=$io
+        $io.OutRead=$proc.StandardOutput.BaseStream.ReadAsync($io.OutBuffer,0,$io.OutBuffer.Length)
+        $io.ErrRead=$proc.StandardError.BaseStream.ReadAsync($io.ErrBuffer,0,$io.ErrBuffer.Length)
+        $owner.State='BOOTSTRAP_SENT'
+        return Wait-WdMindParentBootstrap -Owner $owner
     }
     function Start-WdMindParentBootstrap {
         <# Default-off primitive: a caller must independently authorize the
@@ -621,10 +887,9 @@ namespace WaggleDance {
         return Join-Path $directory '.codex-audit'
     }
     if ($ParentBoundContent) {
-        # A matching operator-supplied manifest/approval pair is a necessary
-        # admission check, not proof of parent provenance or a live route.
         $result.reason='parent_approval_refused'
         $operatorPolicySnapshot=$null
+        $owner=$null;$temp=$null;$receiptPublished=$false
         try {
             if (@('codex-lead-1','codex-tools-1','claude-rco-1','claude-rco-2','fable-5') -cnotcontains $Lane) {
                 throw 'lane'
@@ -636,14 +901,116 @@ namespace WaggleDance {
             [void](Test-WdMindParentAdmission -Enabled -BundleRoot $BundleRoot -ExpectedManifestHash $ExpectedManifestHash `
                 -OperatorPolicySha256 $OperatorPolicySha256 -OperatorApprovalReferenceSha256 $OperatorApprovalReferenceSha256 `
                 -ApprovedPolicyBytes $ApprovedIdentifierPolicyBytes)
-            if ($null -ne $operatorPolicySnapshot) {
-                [void](Read-WdMindOperatorPolicySnapshot -Path $OperatorPolicyPath -ExpectedSha256 $OperatorPolicySha256)
-            }
             $result.reason='parent_content_unavailable'
-        } catch { }
+            # The live local client rereads the operator-selected pinned file;
+            # a byte-only admission has no persistent file to recheck.
+            if ($null -ne $operatorPolicySnapshot -and $Worktree) {
+                $root=[IO.Path]::GetFullPath($BundleRoot).TrimEnd('\')
+                [void](Get-WdMindReceiptAudit $Worktree)
+                $owner=Start-WdMindLocalCandidate -Root $root -Manifest $ExpectedManifestHash `
+                    -PolicyPath ([IO.Path]::GetFullPath($OperatorPolicyPath)) -PolicySha $OperatorPolicySha256 `
+                    -ApprovalSha $OperatorApprovalReferenceSha256 -LaneName $Lane -Clock $requestClock -Budget $TimeoutSeconds
+                if($owner.State -ceq 'HOLD'){
+                    $result.outcome='unknown'
+                    $result.reason=if($requestClock.ElapsedMilliseconds -ge ([long]$TimeoutSeconds*1000)){'timeout'}else{'reader_unknown'}
+                }
+                elseif($owner.State -ceq 'EXIT_FAILED'){$result.reason='reader_refused';$result.cleanup='wrapper_exited'}
+                elseif($owner.State -ceq 'EXITED'){
+                    $result.cleanup='wrapper_exited'
+                    $io=$global:WdMindParentBootstrapIO[$owner.Token]
+                    $completed=ConvertFrom-WdMindCompletedLocalBootstrap -Owner $owner `
+                        -Process $global:WdMindParentBootstrapProcesses[$owner.Token].Process -IO $io
+                    if($null -eq $completed){throw 'local_output'}
+                    $jsonArgs=@{InputObject=$completed.view_json;ErrorAction='Stop'}
+                    if((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')){$jsonArgs.DateKind='String'}
+                    $view=ConvertFrom-Json @jsonArgs
+                    $manifest=(Read-WdMindPinnedSnapshot -Path (Join-Path $root 'deployment-manifest.json') `
+                        -Pin $ExpectedManifestHash -Limit 4194304).Text | ConvertFrom-Json -ErrorAction Stop
+                    $fleetPin=$manifest.files.PSObject.Properties['wd-fleet.json']
+                    if($null -eq $fleetPin -or $fleetPin.Value -isnot [string]){throw 'fleet_pin'}
+                    $fleet=Read-WdMindPinnedSnapshot -Path (Join-Path $root 'wd-fleet.json') -Pin $fleetPin.Value
+                    $keys=@('schema','authority','lane','fleet_sha256','sender_authentication','index_match',
+                        'same_user_aba','current_status_freshness','results')
+                    if($view -isnot [pscustomobject] -or @($view.PSObject.Properties).Count -ne $keys.Count -or
+                        @($view.PSObject.Properties.Name | Where-Object {$_ -cnotin $keys}).Count -ne 0 -or
+                        $view.schema -cne 'wd.mind-flat-verified-session.v1' -or $view.authority -cne 'none' -or
+                        $view.lane -cne $Lane -or $view.fleet_sha256 -cne $fleet.Hash -or
+                        $view.sender_authentication -cne 'UNKNOWN' -or $view.index_match -cne 'UNKNOWN' -or
+                        $view.same_user_aba -cne 'UNKNOWN' -or $view.current_status_freshness -cne 'UNKNOWN' -or
+                        $view.results -isnot [array] -or $view.results.Count -lt 1 -or $view.results.Count -gt 3){throw 'local_shape'}
+                    $refs=@()
+                    foreach($hit in $view.results){
+                        $hitKeys=@('text','source_event_sha256','event_time_utc_floor','source_agent','event_age_seconds_upper_bound')
+                        if($hit -isnot [pscustomobject] -or @($hit.PSObject.Properties).Count -ne $hitKeys.Count -or
+                            @($hit.PSObject.Properties.Name | Where-Object {$_ -cnotin $hitKeys}).Count -ne 0 -or
+                            $hit.text -isnot [string] -or [string]::IsNullOrWhiteSpace($hit.text) -or $hit.text.Length -gt 8192 -or
+                            $hit.source_event_sha256 -isnot [string] -or $hit.source_event_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
+                            $hit.source_agent -cnotin @('codex-lead-1','codex-tools-1','fable-5') -or
+                            ($hit.event_age_seconds_upper_bound -isnot [int] -and $hit.event_age_seconds_upper_bound -isnot [long]) -or
+                            $hit.event_age_seconds_upper_bound -lt 0 -or $hit.event_time_utc_floor -isnot [string] -or
+                            $hit.event_time_utc_floor -cnotmatch '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z\z'){throw 'local_hit'}
+                        $stamp=[DateTimeOffset]::MinValue
+                        if(-not [DateTimeOffset]::TryParse($hit.event_time_utc_floor,[Globalization.CultureInfo]::InvariantCulture,
+                            [Globalization.DateTimeStyles]::AssumeUniversal,[ref]$stamp) -or $stamp -gt [DateTimeOffset]::UtcNow){throw 'local_time'}
+                        $refs+=@($hit.source_event_sha256)
+                    }
+                    [void](Read-WdMindOperatorPolicySnapshot -Path $OperatorPolicyPath -ExpectedSha256 $OperatorPolicySha256)
+                    [void](Test-WdMindParentAdmission -Enabled -BundleRoot $BundleRoot -ExpectedManifestHash $ExpectedManifestHash `
+                        -OperatorPolicySha256 $OperatorPolicySha256 -OperatorApprovalReferenceSha256 $OperatorApprovalReferenceSha256 `
+                        -ApprovedPolicyBytes $ApprovedIdentifierPolicyBytes)
+                    if($requestClock.ElapsedMilliseconds -ge ([long]$TimeoutSeconds*1000)){throw 'local_timeout'}
+                    $result.view_json=$completed.view_json;$result.view_sha256=$completed.view_sha256
+                    $result.outcome='success';$result.reason='content_projection'
+                    $audit=Get-WdMindReceiptAudit $Worktree
+                    if(-not [IO.Directory]::Exists($audit)){[void][IO.Directory]::CreateDirectory($audit)}
+                    Assert-WdMindReceiptDirectory $audit
+                    $path=Join-Path $audit 'wd-mind-startup-view.json';Assert-WdMindReceiptTarget $path
+                    # Publication itself can overrun the deadline. A durable
+                    # record cannot claim that delivery finished on time.
+                    $record=[ordered]@{schema=$result.schema;lane=$Lane;outcome='unconfirmed';reason='content_result_pending_delivery';
+                        authority='none';view_sha256=$result.view_sha256;cleanup=$result.cleanup;
+                        manifest_sha256=$ExpectedManifestHash.ToLowerInvariant();observed_utc=[DateTime]::UtcNow.ToString('o');
+                        fleet_sha256=$fleet.Hash;source_event_refs=$refs;observation_status='OBSERVED'}
+                    $temp=$path+'.'+[Guid]::NewGuid().ToString('N')+'.tmp'
+                    $stream=[IO.File]::Open($temp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+                    try{$bytes=[Text.Encoding]::ASCII.GetBytes(($record|ConvertTo-Json -Compress));$stream.Write($bytes,0,$bytes.Length)}finally{$stream.Dispose()}
+                    Assert-WdMindReceiptDirectory $audit;Assert-WdMindReceiptTarget $path
+                    if($requestClock.ElapsedMilliseconds -ge ([long]$TimeoutSeconds*1000)){throw 'local_timeout'}
+                    if([IO.File]::Exists($path)){[IO.File]::Replace($temp,$path,$null)}else{[IO.File]::Move($temp,$path)}
+                    $receiptPublished=$true
+                    $result.record_written=$true
+                }
+            }
+        } catch {
+            if($result.reason -cne 'parent_approval_refused'){
+                if($requestClock.ElapsedMilliseconds -ge ([long]$TimeoutSeconds*1000)){$result.outcome='unknown';$result.reason='timeout'}
+                else{$result.outcome='refused';$result.reason='startup_read_refused'}
+            }
+            $result.view_json='';$result.view_sha256='';$result.record_written=$false
+        } finally {
+            if($null -ne $temp -and -not $receiptPublished){$result.cleanup='receipt_temp_unconfirmed'}
+            # Completed children and fully drained pipes can be released. Any
+            # unfinished or uncertain child remains reachable in HOLD.
+            if($null -ne $owner -and $owner.State -cin @('EXITED','EXIT_FAILED')){
+                $io=$global:WdMindParentBootstrapIO[$owner.Token]
+                $proc=$global:WdMindParentBootstrapProcesses[$owner.Token].Process
+                if($null -ne $io -and $io.OutDone -and $io.ErrDone -and $proc.HasExited){
+                    $io.OutBytes.Dispose();$proc.Dispose()
+                    $global:WdMindParentBootstrapIO.Remove($owner.Token)
+                    $global:WdMindParentBootstrapProcesses.Remove($owner.Token)
+                    $global:WdMindLocalCandidateOwners.Remove($owner.Token)
+                }
+            }
+        }
         $ApprovedIdentifierPolicyBytes=$null
         $operatorPolicySnapshot=$null
         [void]$PSBoundParameters.Remove('ApprovedIdentifierPolicyBytes')
+        if($result.outcome -ceq 'success' -and $requestClock.ElapsedMilliseconds -ge ([long]$TimeoutSeconds*1000)){
+            # A pathname may have been replaced by another writer after any
+            # comparison. Without an identity-bound delete do not remove it.
+            $result.outcome='unknown';$result.reason='receipt_expired_cleanup_failed'
+            $result.cleanup='receipt_unconfirmed';$result.view_json='';$result.view_sha256='';$result.record_written=$false
+        }
         return [pscustomobject]$result
     }
     try {

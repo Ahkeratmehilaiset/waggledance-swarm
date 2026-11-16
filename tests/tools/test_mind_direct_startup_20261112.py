@@ -1395,3 +1395,128 @@ def test_discarded_duplicate_fields_never_reach_context(tmp_path, location):
     assert 'synthetic-private-duplicate-never-deliver' not in json.dumps(result)
     if result['outcome'] == 'success':
         assert json.loads(result['view_json']) == _view()
+
+
+@WINDOWS
+@pytest.mark.parametrize('mode', ['success', 'refused', 'timeout', 'wrong_lane', 'future', 'bad_ref', 'oversize',
+                                  'receipt_before_publish', 'receipt_after_publish', 'receipt_other_writer', 'overflow', 'missing_python_pin',
+                                  'missing_python_path', 'wrong_python_pin'])
+def test_parent_content_full_synthetic_wrapper_and_receipt(tmp_path, mode):
+    bundle, _ = _package(tmp_path)
+    worktree = tmp_path / 'synthetic-worktree'
+    worktree.mkdir()
+    policy_path = tmp_path / 'operator-policy.json'
+    policy = b'{"schema":"synthetic-private-policy"}'
+    policy_path.write_bytes(policy)
+    policy_pin, approval = hashlib.sha256(policy).hexdigest(), 'a' * 64
+    descriptor = bundle / 'wd-mind-identifier-policy-approval.json'
+    descriptor.write_text(json.dumps({'schema':'wd.mind-identifier-policy-approval.v1',
+        'identifier_policy_sha256':policy_pin, 'approval_reference_sha256':approval},
+        sort_keys=True, separators=(',', ':')), encoding='utf-8')
+    manifest_path = bundle / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest['schema_version'] = 1
+    for relative in ('tools-bootstrap/tools/wd_mind_runtime_child.py', 'tools-bootstrap/tools/wd_mind_full_runtime.py'):
+        path = bundle / relative
+        path.write_bytes(b'# inert synthetic entry\n')
+        manifest['files'][relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    fleet_pin = manifest['files']['wd-fleet.json']
+    event_time = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    view = {'schema':'wd.mind-flat-verified-session.v1', 'authority':'none', 'lane':'codex-tools-1',
+        'fleet_sha256':fleet_pin, 'sender_authentication':'UNKNOWN', 'index_match':'UNKNOWN',
+        'same_user_aba':'UNKNOWN', 'current_status_freshness':'UNKNOWN', 'results':[{
+            'text':'synthetic accepted content', 'source_event_sha256':'e'*64,
+            'event_time_utc_floor':event_time, 'source_agent':'codex-tools-1', 'event_age_seconds_upper_bound':30}]}
+    if mode == 'wrong_lane': view['lane'] = 'codex-lead-1'
+    if mode == 'future':
+        view['results'][0]['event_time_utc_floor'] = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    if mode == 'bad_ref': view['results'][0]['source_event_sha256'] = 'not-a-source-reference'
+    if mode == 'oversize': view['results'][0]['text'] = 'x' * 9000
+    raw = json.dumps(view, separators=(',', ':'))
+    scratch = tmp_path / '.codex-audit'
+    scratch.mkdir()
+    bridge_python = scratch / 'synthetic-bridge-python.exe'
+    bridge_python.write_bytes(b'synthetic-bridge-interpreter')
+    bridge_python_sha = hashlib.sha256(bridge_python.read_bytes()).hexdigest()
+    wrapper = bundle / 'Invoke-WdBridgePython.ps1'
+    script = "if ($args[0] -cne 'tools/wd_bridge_mind_session.py' -or $args -cnotcontains '--mind-local-candidate-read') {exit 7};"
+    script += 'if ($env:WD_BRIDGE_PYTHON_SHA256 -ine ' + _literal(bridge_python_sha) + ' -or $env:WD_BRIDGE_PYTHON -ine ' + _literal(bridge_python) + ') {exit 8};'
+    if mode == 'timeout': script += 'Start-Sleep -Seconds 6;'
+    script += '[Console]::Out.Write(' + _literal('x'*70000 if mode == 'overflow' else raw) + ');exit ' + ('2' if mode == 'refused' else '0')
+    wrapper.write_bytes(script.encode('utf-8'))
+    for path in (descriptor, wrapper):
+        manifest['files'][path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest, separators=(',', ':')), encoding='utf-8')
+    manifest_pin = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    validator = Path(os.environ['WD_BRIDGE_BIN']) / 'BridgeLogReader.ps1'
+    helper_path = HELPER
+    if mode.startswith('receipt_'):
+        # A private test copy delays only the selected receipt operation; no
+        # production time controls or hooks are introduced.
+        scratch = tmp_path / '.codex-audit'
+        scratch.mkdir(exist_ok=True)
+        helper_path = scratch / 'synthetic-slow-receipt-helper.ps1'
+        helper_text = HELPER.read_text(encoding='utf-8')
+        marker = ("                    Assert-WdMindReceiptDirectory $audit;Assert-WdMindReceiptTarget $path"
+                  if mode == 'receipt_before_publish' else "                    $result.record_written=$true")
+        assert helper_text.count(marker) == 1
+        delay = "                    $TimeoutSeconds=1; $requestClock.Restart(); Start-Sleep -Milliseconds 1100\n"
+        if mode == 'receipt_other_writer':
+            replace_by_other = "[IO.File]::WriteAllText($path,'{\"outcome\":\"other-writer\"}')"
+            deletion = '[IO.File]::Delete($path)'
+            if deletion in helper_text:
+                # Force the old compare/delete race at the actual last instant.
+                helper_text = helper_text.replace(deletion, replace_by_other + ';' + deletion)
+            else:
+                delay += '                    ' + replace_by_other + '\n'
+        helper_text = helper_text.replace(marker, delay + marker)
+        helper_path.write_text(helper_text, encoding='utf-8')
+    harness = r'''
+. HELPER_PATH
+. VALIDATOR_PATH
+SUFFIX_FUNCTION
+$env:WD_BRIDGE_PYTHON_SHA256=PIN_VALUE
+$env:WD_BRIDGE_PYTHON=PYTHON_VALUE
+$watch=[Diagnostics.Stopwatch]::StartNew()
+$r=Invoke-WdMindStartupRead -ParentBoundContent -BundleRoot BUNDLE_PATH -ExpectedManifestHash MANIFEST_PIN `
+    -Lane codex-tools-1 -Worktree WORKTREE -OperatorPolicyPath POLICY_PATH -OperatorPolicySha256 POLICY_PIN `
+    -OperatorApprovalReferenceSha256 APPROVAL -TimeoutSeconds TIMEOUT
+$elapsed=$watch.ElapsedMilliseconds
+$receiptPath=Join-Path (Join-Path WORKTREE '.codex-audit') 'wd-mind-startup-view.json'
+$receipt=if(Test-Path -LiteralPath $receiptPath){Get-Content -LiteralPath $receiptPath -Raw|ConvertFrom-Json}else{$null}
+$suffix=Get-WdMindContentPromptSuffix -Read $r -ExpectedLane codex-tools-1 -ExpectedFleetSha256 FLEET_PIN
+$handles=if(Test-Path variable:global:WdMindLocalCandidateOwners){@($global:WdMindLocalCandidateOwners.Values)}else{@()}
+$live=@($handles | Where-Object { $_.State -ceq 'HOLD' -and -not $global:WdMindParentBootstrapProcesses[$_.Token].Process.HasExited }).Count
+[ordered]@{outcome=$r.outcome;reason=$r.reason;view=$r.view_json;digest=$r.view_sha256;
+    record=$r.record_written;cleanup=$r.cleanup;elapsed=$elapsed;receipt=$receipt;suffix=$suffix;live=$live}|ConvertTo-Json -Compress -Depth 16
+'''
+    harness = harness.replace('SUFFIX_FUNCTION', _startup_functions('start-wd-agent.ps1', ['Get-WdMindContentPromptSuffix']))
+    for key, value in {'HELPER_PATH':helper_path, 'VALIDATOR_PATH':validator, 'BUNDLE_PATH':bundle,
+                       'MANIFEST_PIN':manifest_pin, 'WORKTREE':worktree, 'POLICY_PATH':policy_path,
+                       'POLICY_PIN':policy_pin, 'APPROVAL':approval, 'FLEET_PIN':fleet_pin}.items():
+        harness = harness.replace(key, _literal(value))
+    harness = harness.replace('TIMEOUT', '3' if mode == 'timeout' else '15')
+    harness = harness.replace('PIN_VALUE', "''" if mode == 'missing_python_pin' else _literal('b'*64 if mode == 'wrong_python_pin' else bridge_python_sha))
+    harness = harness.replace('PYTHON_VALUE', "''" if mode == 'missing_python_path' else _literal(bridge_python))
+    result = _run_startup_script(harness)
+    assert 'synthetic-private-policy' not in json.dumps(result)
+    if mode == 'success':
+        assert result['outcome'] == 'success' and result['reason'] == 'content_projection'
+        assert result['view'] == raw and result['digest'] == hashlib.sha256(raw.encode()).hexdigest()
+        assert result['record'] is True and result['receipt']['source_event_refs'] == ['e'*64]
+        assert result['receipt']['lane'] == 'codex-tools-1' and result['receipt']['manifest_sha256'] == manifest_pin
+        assert result['receipt']['outcome'] == 'unconfirmed'
+        assert result['receipt']['reason'] == 'content_result_pending_delivery'
+        assert 'synthetic accepted content' in result['suffix']
+        assert 'e'*64 in result['suffix']
+    else:
+        assert result['outcome'] != 'success' and result['view'] == '' and result['suffix'] == ''
+        if mode == 'timeout':
+            assert result['elapsed'] < 5000 and result['live'] == 1
+        if mode.startswith('receipt_'):
+            assert result['reason'] == ('timeout' if mode == 'receipt_before_publish' else 'receipt_expired_cleanup_failed')
+            assert result['record'] is False
+            assert result['receipt'] is None or result['receipt']['outcome'] != 'success'
+            assert result['cleanup'] == ('receipt_temp_unconfirmed' if mode == 'receipt_before_publish' else 'receipt_unconfirmed')
+            if mode == 'receipt_other_writer': assert result['receipt']['outcome'] == 'other-writer'
+        if mode == 'overflow': assert result['reason'] == 'reader_unknown'

@@ -8,11 +8,189 @@ import base64
 import shutil
 import stat
 import subprocess
+import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
 
 from waggledance.core import bridge_log_reader as bridge
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell native stdin/EOF probe')
+def test_synthetic_powershell_native_child_observes_eof_after_ready(tmp_path):
+    scratch = tmp_path / '.codex-audit'
+    scratch.mkdir()
+    script = scratch / 'synthetic-eof-probe.py'
+    script.write_text('import sys\nprint("READY",flush=True)\nb=sys.stdin.buffer.read(1)\n'
+                      'print("EOF" if b==b"" else "DATA",flush=True)\n', encoding='utf-8')
+    def quote(value): return "'" + str(value).replace("'", "''") + "'"
+    command = '& ' + quote(sys.executable) + ' -I -S -B ' + quote(script) + '; exit $LASTEXITCODE'
+    encoded = base64.b64encode(command.encode('utf-16le')).decode()
+    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    proc = subprocess.Popen([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+    first = []
+    thread = threading.Thread(target=lambda: first.append(proc.stdout.readline()), daemon=True)
+    try:
+        thread.start()
+        thread.join(timeout=5)
+        ready_before_eof = not thread.is_alive() and first == [b'READY\r\n']
+        proc.stdin.close()
+        code = proc.wait(timeout=8)
+        thread.join(timeout=2)
+        remainder = proc.stdout.read()
+        assert ready_before_eof, f'READY was not observed before stdin EOF; first={first!r}'
+        assert code == 0 and b'EOF' in remainder
+    finally:
+        if proc.poll() is None: proc.kill()  # Synthetic test process only.
+        proc.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows pinned wrapper EOF probe')
+def test_real_pinned_wrapper_observes_eof_after_ready(tmp_path, monkeypatch):
+    import test_wd_bridge_code_context as bridge_tests
+    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    monkeypatch.setattr(bridge_tests, 'PWSH', shell)
+    if not Path(bridge_tests.BRIDGE_PYTHON).is_file():
+        pytest.skip('pinned per-user bridge Python unavailable')
+    monkeypatch.setenv('PSModulePath', str(Path(os.environ.get('SystemRoot', 'C:/Windows')) /
+                                          'System32/WindowsPowerShell/v1.0/Modules'))
+    bundle = bridge_tests._stage_fake_bundle(tmp_path)
+    entry = bundle / 'tools-bootstrap/tools/bridge_next_action.py'
+    entry.write_text('import sys\nprint("READY",flush=True)\nb=sys.stdin.buffer.read(1)\n'
+                     'print("EOF" if b==b"" else "DATA",flush=True)\n', encoding='utf-8')
+    manifest_path = bundle / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    manifest['files']['tools-bootstrap/tools/bridge_next_action.py'] = hashlib.sha256(entry.read_bytes()).hexdigest().upper()
+    manifest_path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+    anchor = hashlib.sha256(manifest_path.read_bytes()).hexdigest().upper()
+    wrapper = str(bundle / 'Invoke-WdBridgePython.ps1').replace("'", "''")
+    command = "& '" + wrapper + "' tools/bridge_next_action.py -VerifyPackage; exit $LASTEXITCODE"
+    encoded = base64.b64encode(command.encode('utf-16le')).decode()
+    env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH=anchor, WD_BRIDGE_PYTHON=bridge_tests.BRIDGE_PYTHON)
+    env.pop('WD_BRIDGE_PYTHON_SHA256', None)
+    proc = subprocess.Popen([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+        creationflags=subprocess.CREATE_NO_WINDOW)
+    first = []
+    thread = threading.Thread(target=lambda: first.append(proc.stdout.readline()), daemon=True)
+    try:
+        thread.start()
+        thread.join(timeout=15)
+        ready_before_eof = not thread.is_alive() and first == [b'READY\r\n']
+        proc.stdin.close()
+        code = proc.wait(timeout=10)
+        thread.join(timeout=2)
+        remainder, error = proc.stdout.read(), proc.stderr.read()
+        assert ready_before_eof, f'pinned wrapper READY not observed before EOF; first={first!r}; error={error!r}'
+        assert code == 0 and b'EOF' in remainder, error
+    finally:
+        if proc.poll() is None: proc.kill()  # Synthetic test process only.
+        proc.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows process and inherited pipe integration')
+@pytest.mark.parametrize('mode', ['normal', 'normal_scriptblock', 'bad_status', 'bad_scriptblock', 'bad_policy', 'bad_wrapper',
+                                  'missing_python_pin', 'wrong_python_pin', 'missing_python_path'])
+def test_shared_owner_real_synthetic_process_keeps_stdin_and_stops(tmp_path, mode):
+    bundle = tmp_path / 'bundle'
+    bundle.mkdir()
+    helper = Path(__file__).resolve().parents[2] / 'ops/windows/reboot/Invoke-WdMindStartupRead.ps1'
+    helper_copy = bundle / helper.name
+    helper_copy.write_bytes(helper.read_bytes())
+    child = bundle / 'tools-bootstrap/tools/wd_mind_runtime_child.py'
+    child.parent.mkdir(parents=True)
+    child.write_bytes(b'# synthetic pinned entrypoint\n')
+    policy = b'{"synthetic":"private-test-only"}'
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(policy)
+    policy_sha = hashlib.sha256(policy).hexdigest()
+    approval_sha = 'c' * 64
+    descriptor = json.dumps({'schema':'wd.mind-identifier-policy-approval.v1',
+        'identifier_policy_sha256':policy_sha, 'approval_reference_sha256':approval_sha},
+        sort_keys=True, separators=(',', ':')).encode()
+    descriptor_path = bundle / 'wd-mind-identifier-policy-approval.json'
+    descriptor_path.write_bytes(descriptor)
+    program = '''import hashlib,json,os,sys\np=open(sys.argv[1],"rb").read()\nif hashlib.sha256(p).hexdigest()!=sys.argv[2]: sys.exit(5)\ndef emit(s):\n print(json.dumps({"schema":"wd.mind-local-owner-status.v1","state":s,"manifest_sha256":os.environ["WD_REBOOT_EXPECTED_MANIFEST_HASH"].lower(),"authority":"none","caller_authentication":"UNKNOWN","source_authentication":"UNKNOWN","index_refresh":"NOT_SCHEDULED"},sort_keys=True,separators=(",",":")),flush=True)\nemit("STARTING");emit("READY")\nif sys.stdin.buffer.read(1)!=b"": sys.exit(6)\nemit("STOPPED")\n'''
+    if mode == 'bad_status': program = program.replace('emit("READY")', 'emit("INVALID")')
+    marker = tmp_path / '.codex-audit' / 'synthetic-owner-stage.txt'
+    marker.parent.mkdir()
+    program = program.replace('p=open(sys.argv[1],"rb").read()',
+        'open(sys.argv[3],"w").write("started")\np=open(sys.argv[1],"rb").read()\nopen(sys.argv[3],"a").write(" policy-read")')
+    child.write_text(program, encoding='utf-8')
+    def psquote(value):
+        return "'" + str(value).replace("'", "''") + "'"
+    bridge_python = marker.parent / 'synthetic-bridge-python.exe'
+    bridge_python.write_bytes(b'synthetic-bridge-interpreter')
+    bridge_python_sha = hashlib.sha256(bridge_python.read_bytes()).hexdigest()
+    wrapper = bundle / 'Invoke-WdBridgePython.ps1'
+    wrapper.write_text('''param([Parameter(Position=0)][string]$Tool,[switch]$VerifyPackage,
+      [Parameter(ValueFromRemainingArguments)][string[]]$Rest)
+if ($env:WD_BRIDGE_PYTHON_SHA256 -ine ''' + psquote(bridge_python_sha) + ''' -or
+    $env:WD_BRIDGE_PYTHON -ine ''' + psquote(bridge_python) + ''') { exit 8 }
+if (-not $VerifyPackage -or $Tool -cne 'tools/wd_mind_runtime_child.py' -or
+    $Rest[0] -cne '--mind-local-candidate-owner' -or $Rest[1] -cne '--policy-path') { exit 7 }
+& ''' + psquote(sys.executable) + ' -I -S -B ' + psquote(child) + ' $Rest[2] $Rest[4] ' + psquote(marker) + '''
+exit $LASTEXITCODE
+''', encoding='utf-8')
+    files = {str(path.relative_to(bundle)).replace('\\','/'): hashlib.sha256(path.read_bytes()).hexdigest()
+             for path in (helper_copy, child, descriptor_path, wrapper)}
+    manifest = json.dumps({'schema_version':1, 'files':files}, separators=(',', ':')).encode()
+    (bundle / 'deployment-manifest.json').write_bytes(manifest)
+    manifest_sha = hashlib.sha256(manifest).hexdigest()
+    if mode == 'bad_wrapper': wrapper.write_text('# modified', encoding='utf-8')
+    actual_policy_sha = 'd' * 64 if mode == 'bad_policy' else policy_sha
+    if mode in ('normal_scriptblock', 'bad_scriptblock'):
+        extra = " + [Environment]::NewLine + '# synthetic altered text'" if mode == 'bad_scriptblock' else ''
+        loader = '. ([scriptblock]::Create([IO.File]::ReadAllText(' + psquote(helper_copy) + ')' + extra + '))'
+    else:
+        loader = '. ' + psquote(helper_copy)
+    harness = '''$ErrorActionPreference='Stop'
+''' + loader + '''
+$result=[ordered]@{accepted=$false; states=@(); final=''; detail=''; stage=''}
+try {
+  $h=Start-WdMindSharedOwner -BundleRoot ''' + psquote(bundle) + ' -ExpectedManifestHash ' + psquote(manifest_sha) + \
+        ' -OperatorPolicyPath ' + psquote(policy_path) + ' -OperatorPolicySha256 ' + psquote(actual_policy_sha) + \
+        ' -OperatorApprovalReferenceSha256 ' + psquote(approval_sha) + \
+        ('' if mode == 'missing_python_pin' else ' -BridgePythonSha256 ' + psquote('b'*64 if mode == 'wrong_python_pin' else bridge_python_sha)) + \
+        ('' if mode == 'missing_python_path' else ' -BridgePythonPath ' + psquote(bridge_python)) + '''
+  $result.accepted=$true
+  $deadline=[DateTime]::UtcNow.AddSeconds(7)
+  do { $s=Get-WdMindSharedOwnerStatus $h; $result.states+=@($s.state); Start-Sleep -Milliseconds 30 }
+    while($s.state -notin @('READY','FAILED') -and -not $global:WdMindSharedOwnerRecords[$h.Token].Invalid -and [DateTime]::UtcNow -lt $deadline)
+  $result.stage=if([IO.File]::Exists(''' + psquote(marker) + ''')){[IO.File]::ReadAllText(''' + psquote(marker) + ''')}else{'not-started'}
+  if($s.state -eq 'READY') {
+    for($i=0;$i -lt 5;$i++){ $s=Get-WdMindSharedOwnerStatus $h; if($s.state -ne 'READY'){throw 'not_ready'} }
+    do { $s=Stop-WdMindSharedOwner $h; Start-Sleep -Milliseconds 30 }
+      while($s.state -notin @('STOPPED','FAILED') -and [DateTime]::UtcNow -lt $deadline)
+  } elseif($global:WdMindSharedOwnerRecords[$h.Token].Invalid) {
+    do { $s=Stop-WdMindSharedOwner $h; Start-Sleep -Milliseconds 30 }
+      while($s.state -notin @('STOPPED','FAILED') -and [DateTime]::UtcNow -lt $deadline)
+  }
+  $result.final=$s.state
+  $r=$global:WdMindSharedOwnerRecords[$h.Token]
+  $result.detail=[pscustomobject]@{reported=$r.ReportedState; invalid=$r.Invalid;
+    out_done=$r.OutDone; err_done=$r.ErrDone; exited=$r.Process.HasExited;
+    exit_code=$(if($r.Process.HasExited){$r.Process.ExitCode}else{$null});
+    synthetic_error=([Text.Encoding]::UTF8.GetString($r.ErrBuffer).Trim([char]0)+$(if($r.Process.HasExited){$r.Process.StandardError.ReadToEnd()}else{''})).Replace('private-test-only','<synthetic>')}
+} catch { $result.detail='refused' }
+$result|ConvertTo-Json -Compress -Depth 5
+'''
+    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    encoded = base64.b64encode(harness.encode('utf-16le')).decode()
+    proc = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+                          capture_output=True, timeout=30, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert policy.decode() not in proc.stdout + proc.stderr
+    result = json.loads(proc.stdout.lstrip('\ufeff'))
+    if mode in ('normal', 'normal_scriptblock'):
+        detail = dict(result['detail'], synthetic_stage=result['stage'])
+        assert result['accepted'] is True and 'READY' in result['states'] and result['final'] == 'STOPPED', json.dumps(detail)
+    elif mode == 'bad_status':
+        assert result['accepted'] is True and result['final'] == 'FAILED', result
+    else:
+        assert result['accepted'] is False and result['detail'] == 'refused', result
 
 
 @pytest.mark.skipif(os.name != 'nt' or not os.environ.get('WD_BRIDGE_BIN'),

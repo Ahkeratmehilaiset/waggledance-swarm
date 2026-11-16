@@ -24,6 +24,9 @@ param(
   [string] $RunId = '',
   [string] $ExternalSessionsPath = '',
   [string] $ExternalSessionsHash = '',
+  [string] $MindOperatorPolicyPath = '',
+  [string] $MindOperatorPolicySha256 = '',
+  [string] $MindOperatorApprovalReferenceSha256 = '',
   [ValidateRange(10, 300)]
   [int] $HandshakeTimeoutSeconds = 90,
   [switch] $SkipCliUpdate,
@@ -93,6 +96,25 @@ function Resolve-WdLauncherMode {
   return 'DryRun'
 }
 
+function Get-WdMindFleetPolicyArguments {
+  <# Forward only explicit pins. Consumers still verify the policy and bundle. #>
+  param([string] $PolicyPath = '', [string] $PolicySha256 = '', [string] $ApprovalSha256 = '')
+  if ($PolicyPath -ceq '' -and $PolicySha256 -ceq '' -and $ApprovalSha256 -ceq '') { return }
+  if ([string]::IsNullOrWhiteSpace($PolicyPath) -or
+      $PolicyPath -cne $PolicyPath.Trim() -or
+      $PolicyPath -cnotmatch '\A[A-Za-z]:\\' -or
+      $PolicyPath -match '[\x00-\x1f"<>|?*;&]' -or
+      $PolicyPath.Substring(2).Contains(':') -or
+      $PolicyPath -match '(^|[\\/])\.\.([\\/]|$)' -or
+      $PolicyPath.EndsWith('\') -or $PolicyPath.EndsWith('/') -or
+      $PolicySha256 -cnotmatch '\A[0-9a-fA-F]{64}\z' -or
+      $ApprovalSha256 -cnotmatch '\A[0-9a-fA-F]{64}\z') { throw 'mind_fleet_policy_arguments' }
+  $full = [IO.Path]::GetFullPath($PolicyPath)
+  return @('-MindOperatorPolicyPath', ('"' + $full + '"'),
+           '-MindOperatorPolicySha256', $PolicySha256.ToLowerInvariant(),
+           '-MindOperatorApprovalReferenceSha256', $ApprovalSha256.ToLowerInvariant())
+}
+
 function Assert-WdLauncherBundleMode {
   param(
     [Parameter(Mandatory)] [string] $BundleMode,
@@ -141,6 +163,13 @@ function Get-WdSupervisorInvocationPlan {
   }
 }
 
+$mindPolicyArguments = @()
+try {
+  $mindPolicyArguments = @(Get-WdMindFleetPolicyArguments -PolicyPath $MindOperatorPolicyPath `
+      -PolicySha256 $MindOperatorPolicySha256 -ApprovalSha256 $MindOperatorApprovalReferenceSha256)
+} catch {
+  Write-Warning 'Mind policy inputs refused; lanes will start without Mind content.'
+}
 $modeWasDefaulted = -not $Apply -and -not $DryRun
 $launcherMode = Resolve-WdLauncherMode `
   -ApplyRequested ([bool]$Apply) `
@@ -3964,6 +3993,7 @@ try {
       $wtArguments += @('-ExternalSessionsPath', ('"{0}"' -f $ExternalSessionsPath),
         '-ExternalSessionsHash', $ExternalSessionsHash)
     }
+    $wtArguments += $mindPolicyArguments
     [void](Start-Process -FilePath $wtPath -ArgumentList $wtArguments -PassThru)
     $launched += [string]$state.lane.agent
   }

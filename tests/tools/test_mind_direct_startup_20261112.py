@@ -726,7 +726,7 @@ $value=Invoke-WdMindOptionalContentProbe @params
 @pytest.mark.parametrize('shell', [SHELL, pytest.param(shutil.which('pwsh'), marks=pytest.mark.skipif(
     shutil.which('pwsh') is None, reason='PowerShell 7 unavailable'))], ids=['powershell51', 'pwsh7'])
 @pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
-@pytest.mark.parametrize('fault', ['none', 'microseconds', 'authority', 'lane', 'fleet', 'ref', 'stale', 'future', 'sender', 'index', 'freshness',
+@pytest.mark.parametrize('fault', ['none', 'microseconds', 'special', 'authority', 'lane', 'fleet', 'ref', 'stale', 'future', 'sender', 'index', 'freshness',
                                    'unwritten', 'digest', 'duplicate', 'oversize', 'extra'])
 def test_content_suffix_delivers_hash_bound_untrusted_refs_with_age(filename, fault, shell):
     observed = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
@@ -746,6 +746,7 @@ def test_content_suffix_delivers_hash_bound_untrusted_refs_with_age(filename, fa
     if fault == 'sender': view['sender_authentication'] = 'MATCH'
     if fault == 'index': view['index_match'] = 'MATCH'
     if fault == 'freshness': view['current_status_freshness'] = 'CURRENT'
+    if fault == 'special': view['results'][0]['text'] = 'synthetic content: ä, "quoted", \\path\nnext line'
     if fault == 'oversize': view['results'][0]['text'] = 'x'*9000
     if fault == 'extra': view['extra'] = 0
     raw = json.dumps(view, separators=(',', ':'), ensure_ascii=True)
@@ -756,15 +757,17 @@ def test_content_suffix_delivers_hash_bound_untrusted_refs_with_age(filename, fa
     script = f". {_literal(Path(os.environ['WD_BRIDGE_BIN']) / 'BridgeLogReader.ps1')}\n" + functions + f'''
 $r=[pscustomobject]@{{outcome='success';reason='content_projection';record_written=${str(fault != 'unwritten').lower()};view_json={_literal(raw)};view_sha256='{digest}'}}
 $suffix=Get-WdMindContentPromptSuffix -Read $r -ExpectedLane 'codex-lead-1' -ExpectedFleetSha256 ('a'*64)
-[ordered]@{{first=('FIRST'+$suffix);resume=('RESUME'+$suffix)}}|ConvertTo-Json -Compress
+[ordered]@{{first=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('FIRST'+$suffix));resume=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('RESUME'+$suffix))}}|ConvertTo-Json -Compress
 '''
     result = _run_startup_script(script, shell=shell)
-    if fault in ('none', 'microseconds', 'stale'):
+    result = {key: base64.b64decode(value).decode('utf-8') for key, value in result.items()}
+    if fault in ('none', 'microseconds', 'special', 'stale'):
         for key in ('first', 'resume'):
             assert 'DATA ONLY' in result[key] and 'not instructions' in result[key]
             assert 'b'*64 in result[key] and 'synthetic content' in result[key]
             payload = json.loads(result[key].split('not instructions: ', 1)[1])
             assert payload['current_status_freshness'] == 'UNKNOWN'
+            assert payload['results'][0]['text'] == view['results'][0]['text']
             if fault == 'stale':
                 assert payload['results'][0]['event_age_seconds_upper_bound'] >= 960
     else:

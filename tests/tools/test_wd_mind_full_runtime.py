@@ -886,6 +886,25 @@ def test_single_owner_close_releases_prelaunch_cancellation(tmp_path, monkeypatc
     assert owner.close() == {'state':'STOPPED', 'owned':False, 'authority':'none'}
 
 
+@pytest.mark.parametrize('operation', ['candidate', 'query'])
+def test_single_owner_without_operator_anchor_cannot_return_candidates(tmp_path, monkeypatch, operation):
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start()['state'] == 'READY'
+    request = {'schema':'wd.mind-pipe-request.v2','query_id':'startup_work_overview',
+               'nonce':'d'*64,'lane':'codex-lead-1','scope':'own'}
+    with pytest.raises(runtime.FullRuntimeRefused):
+        if operation == 'candidate':
+            owner.located_candidates(request)
+        else:
+            owner.query_local(enabled=True, lane='codex-lead-1', scope='own', query='work')
+    assert owner.status() == {'state':'HOLD', 'owned':True, 'authority':'none'}
+    assert owner._retained is None and owner._handler._retained is None
+
+
 def _refresh_generation_test_owner(monkeypatch, tmp_path):
     """Synthetic orchestration only; this fixture does not verify source pins."""
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
@@ -911,6 +930,7 @@ def _refresh_generation_test_owner(monkeypatch, tmp_path):
 
 def _direct_query_test_owner(monkeypatch, tmp_path):
     """Synthetic orchestration; not evidence of an authenticated caller or live source."""
+    from types import SimpleNamespace
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
     monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
         'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
@@ -928,12 +948,17 @@ def _direct_query_test_owner(monkeypatch, tmp_path):
               'provenance':{'source_event_ref':event_ref}}
     monkeypatch.setattr(runtime, '_flat_check', lambda memory: {record_id:record})
     monkeypatch.setattr(runtime, '_local_generation_policy_pin', lambda owner: 'c'*64)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda self: None)
     monkeypatch.setattr(runtime.reader, 'decode_text', lambda value: value)
     source = {'ref_sha256':ref, 'doc_id_sha256':doc_id, 'ref_kind':'sha256_of_projected_metadata',
               'canonical_event':False, 'stored_text':text,
               'source_reference':{'sha256':event_ref, 'kind':'sha256_of_canonical_event_json',
-                                  'verified':'MATCH_WITHIN_PREFIX', 'sender_authentication':'UNKNOWN'}}
-    monkeypatch.setattr(runtime.reader, 'resolve_content_results', lambda *args, **kwargs: [dict(source)])
+                                  'verified':'MATCH_SELECTED_ROW', 'sender_authentication':'UNKNOWN'}}
+    source_owner = SimpleNamespace(resolve=lambda **kwargs: {'results':[{
+        'text':source['stored_text'], 'source_event_sha256':source['source_reference']['sha256']}]})
+    retained = SimpleNamespace(_source_owner=source_owner, _records={record_id:record},
+                               _controls=lambda:None, _prefix=lambda context:None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', lambda self: retained)
     hit = dict(source, source_agent='codex-lead-1', source_time_utc=record['time_utc'],
                source_valid_until_utc=None, event_age_seconds_upper_bound=1)
     def handle(self, request, lane):
@@ -987,11 +1012,10 @@ def test_single_owner_direct_query_accepts_over_2000_valid_characters(tmp_path, 
 
 def test_single_owner_direct_query_refuses_source_expiry_during_final_checks(tmp_path, monkeypatch):
     runtime, owner, _, record, _, _ = _direct_query_test_owner(monkeypatch, tmp_path)
-    original = runtime._FlatRequestHandler._source_check
-    def expire(self):
-        original(self)
+    retained = owner._ensure_retained_locked()
+    def expire(context):
         record['provenance']['valid_until_utc'] = '2020-01-01T00:00:00Z'
-    monkeypatch.setattr(runtime._FlatRequestHandler, '_source_check', expire)
+    retained._prefix = expire
     with pytest.raises(runtime.FullRuntimeRefused):
         owner.query_local(enabled=True, lane='codex-lead-1', scope='own', query='work')
     assert owner.status() == {'state':'HOLD', 'owned':True, 'authority':'none'}
@@ -1406,14 +1430,19 @@ def test_single_manifest_owner_ready_and_close_are_explicit(tmp_path, monkeypatc
         'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'})
     expected = {'schema': 'synthetic-refs-only', 'authority': 'none', 'results': []}
     monkeypatch.setattr(runtime, 'map_pipe_candidates', lambda **kwargs: expected)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', lambda self: None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda self: None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_candidate_delivery', lambda self: None)
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
         lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    request = {'schema':'wd.mind-pipe-request.v1', 'query_id':'startup_work_overview',
+               'nonce':'d'*64, 'lane':'codex-lead-1', 'scope':'own'}
     assert calls == []
     assert owner.start() == {'state': 'READY', 'owned': True, 'authority': 'none'}
-    assert owner.candidates({'synthetic': 'request'}) == expected
+    assert owner.candidates(request) == expected
     assert owner.close() == {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
     with pytest.raises(runtime.FullRuntimeRefused):
-        owner.candidates({'synthetic': 'request'})
+        owner.candidates(request)
     assert calls == [True]
 
 
@@ -1467,14 +1496,136 @@ def test_single_manifest_owner_holds_and_never_returns_retargeted_candidates(tmp
         if phase == 'during': factory._manifest = '0' * 64
         return {'synthetic': 'must not escape'}
     monkeypatch.setattr(runtime, 'map_pipe_candidates', candidates)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', lambda self: None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda self: None)
     owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
         lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    request = {'schema':'wd.mind-pipe-request.v1', 'query_id':'startup_work_overview',
+               'nonce':'d'*64, 'lane':'codex-lead-1', 'scope':'own'}
     assert owner.start() == {'state': 'READY', 'owned': True, 'authority': 'none'}
     if phase == 'before': factory._manifest = '0' * 64
     with pytest.raises(runtime.FullRuntimeRefused, match='^mind_full_runtime_refused$'):
-        owner.candidates({'synthetic': 'request'})
+        owner.candidates(request)
     assert owner.status() == {'state': 'HOLD', 'owned': True, 'authority': 'none'}
     assert calls == ([] if phase == 'before' else [True])
+
+
+@pytest.mark.parametrize('located', [False, True], ids=['v1', 'v2'])
+@pytest.mark.parametrize('phase', ['before', 'after', 'provider'])
+def test_candidate_factory_or_provider_failure_drops_retained_state(tmp_path, monkeypatch, located, phase):
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', lambda self: self._retained)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda self: None)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start()['state'] == 'READY'
+    retained = object()
+    owner._retained = owner._handler._retained = retained
+    request = {'schema':'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
+               'query_id':'startup_work_overview', 'nonce':'d'*64, 'lane':'codex-lead-1', 'scope':'own'}
+    def candidate(**kwargs):
+        if phase in ('after', 'provider'):
+            factory._manifest = '0'*64
+        if phase == 'provider':
+            owner._check_factory_or_hold()
+        return {'synthetic':'not returned'}
+    monkeypatch.setattr(runtime, 'map_pipe_candidates', candidate)
+    if phase == 'before':
+        factory._manifest = '0'*64
+    with pytest.raises(runtime.FullRuntimeRefused):
+        (owner.located_candidates if located else owner.candidates)(request)
+    assert owner.status() == {'state':'HOLD', 'owned':True, 'authority':'none'}
+    assert owner._retained is None and owner._handler._retained is None
+
+
+@pytest.mark.parametrize('located', [False, True], ids=['v1', 'v2'])
+def test_malformed_candidate_request_preserves_retained_state(tmp_path, monkeypatch, located):
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start()['state'] == 'READY'
+    retained = object()
+    owner._retained = owner._handler._retained = retained
+    request = {'schema':'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
+               'query_id':'startup_work_overview', 'nonce':'bad', 'lane':'codex-lead-1', 'scope':'own'}
+    with pytest.raises(runtime.FullRuntimeRefused):
+        (owner.located_candidates if located else owner.candidates)(request)
+    assert owner.status() == {'state':'READY', 'owned':True, 'authority':'none'}
+    assert owner._retained is retained and owner._handler._retained is retained
+
+
+@pytest.mark.parametrize('located', [False, True], ids=['v1', 'v2'])
+@pytest.mark.parametrize('changed_value', ['shared', None], ids=['valid-string', 'wrong-type'])
+def test_changed_caller_request_refuses_without_dropping_retained_state(tmp_path, monkeypatch, located, changed_value):
+    import threading
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', lambda self: self._retained)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda self: None)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_candidate_delivery', lambda self: None)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start()['state'] == 'READY'
+    retained = object()
+    owner._retained = owner._handler._retained = retained
+    request = {'schema':'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
+               'query_id':'startup_work_overview', 'nonce':'d'*64, 'lane':'codex-lead-1', 'scope':'own'}
+    ready, changed = threading.Event(), threading.Event()
+    def mutate():
+        if ready.wait(5):
+            request['scope'] = changed_value
+            changed.set()
+    worker = threading.Thread(target=mutate)
+    worker.start()
+    first = [True]
+    def candidate(**kwargs):
+        if first[0]:
+            first[0] = False
+            ready.set()
+            assert changed.wait(5)
+        return {'synthetic':'ok'}
+    monkeypatch.setattr(runtime, 'map_pipe_candidates', candidate)
+    try:
+        with pytest.raises(runtime.FullRuntimeRefused):
+            (owner.located_candidates if located else owner.candidates)(request)
+    finally:
+        ready.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert owner.status() == {'state':'READY', 'owned':True, 'authority':'none'}
+    assert owner._retained is retained and owner._handler._retained is retained
+    request['scope'] = 'own'
+    assert (owner.located_candidates if located else owner.candidates)(request) == {'synthetic':'ok'}
+
+
+@pytest.mark.parametrize('located', [False, True], ids=['v1', 'v2'])
+def test_changed_request_cannot_hide_simultaneous_factory_failure(tmp_path, monkeypatch, located):
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda self: {
+        'schema':'wd.mind-flat-owner-build.v1', 'status':'BUILT_IN_MEMORY', 'authority':'none'})
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_ensure_retained_locked', lambda self: self._retained)
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda self: None)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    assert owner.start()['state'] == 'READY'
+    retained = object()
+    owner._retained = owner._handler._retained = retained
+    request = {'schema':'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
+               'query_id':'startup_work_overview', 'nonce':'d'*64, 'lane':'codex-lead-1', 'scope':'own'}
+    def candidate(**kwargs):
+        request['scope'] = 'shared'
+        factory._manifest = '0'*64
+        return {'synthetic':'must not escape'}
+    monkeypatch.setattr(runtime, 'map_pipe_candidates', candidate)
+    with pytest.raises(runtime.FullRuntimeRefused):
+        (owner.located_candidates if located else owner.candidates)(request)
+    assert owner.status() == {'state':'HOLD', 'owned':True, 'authority':'none'}
+    assert owner._retained is None and owner._handler._retained is None
 
 
 def test_single_manifest_owner_never_reports_ready_when_owner_status_raises(tmp_path, monkeypatch):
@@ -1588,6 +1739,21 @@ def synthetic_bundle(tmp_path):
 
 
 def invoke(case, scenario='normal'):
+    if scenario.startswith(('package_direct_', 'refresh_real_delivery')):
+        # Synthetic operator pins: the approval descriptor is part of the
+        # test's independently pinned deployment manifest, never live data.
+        policy = b'{"identifiers":[],"schema":"wd.mind-identifier-policy.v2"}'
+        descriptor = canonical({'schema':'wd.mind-identifier-policy-approval.v1',
+                                'identifier_policy_sha256':hashlib.sha256(policy).hexdigest(),
+                                'approval_reference_sha256':'b'*64})
+        bundle = case['bundle']
+        (bundle / 'wd-mind-identifier-policy-approval.json').write_bytes(descriptor)
+        manifest_path = bundle / 'deployment-manifest.json'
+        manifest = json.loads(manifest_path.read_bytes())
+        manifest['files']['wd-mind-identifier-policy-approval.json'] = hashlib.sha256(descriptor).hexdigest()
+        raw = canonical(manifest)
+        manifest_path.write_bytes(raw)
+        case = dict(case, digest=hashlib.sha256(raw).hexdigest())
     code = r'''
 import hashlib, io, json, os, pathlib, struct, sys
 sys.path.insert(0, sys.argv[1] + '/tools-bootstrap')
@@ -1719,8 +1885,12 @@ try:
         adapter_module.create_single_flat_adapter = lambda **kwargs: SyntheticAdapter()
         factory = runtime._ManifestWorkerFactory(str(root), sys.argv[2], {}, root / 'synthetic.lock', 5, 0,
                                                   client_module.BULK_CONTRACT_SHA256)
+        anchor = (runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=str(root),
+                    expected_manifest_sha256=sys.argv[2], operator_policy_sha256=hashlib.sha256(policy).hexdigest(),
+                    operator_approval_reference_sha256='b'*64)
+                  if mode.startswith('refresh_real_delivery') else None)
         owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane='codex-lead-1',
-                                                     worker_factory=factory, shutdown_timeout=0)
+                                                     worker_factory=factory, shutdown_timeout=0, policy_anchor=anchor)
         if owner.start()['state'] != 'READY': raise ValueError('synthetic owner not ready')
         old = (owner._binding, owner._snapshot, owner._handler._memory)
         if mode.startswith('refresh_real_delivery_error_'):
@@ -1851,7 +2021,7 @@ try:
         runtime_binding = json.loads(runtime_binding_raw)
         identity = runtime_binding['encoder']
         encoder_binding = canonical({'schema':'wd.mind-readonly-encoder-binding.v1','encoder':identity,
-            'code_sha256':(runtime_binding['code_sha256'] if mode.startswith('handler') else '2'*64), 'query_policy':{'prefix':'query: ', 'truncate_chars':2000,
+            'code_sha256':(runtime_binding['code_sha256'] if mode.startswith('handler') or mode.startswith('package_direct_') else '2'*64), 'query_policy':{'prefix':'query: ', 'truncate_chars':2000,
             'normalize':True, 'dtype':'float32', 'dim':384}})
         row = struct.pack('<384f', 1.0, *([0.0]*383))
         def mutate(stage):
@@ -2402,7 +2572,29 @@ try:
             mutate('query')
             if mode == 'package_orthogonal': return (0.0, 1.0) + (0.0,) * 382
             return (1.0,) + (0.0,) * 383
-        if mode == 'package_direct_owner_source_recheck':
+        if mode == 'package_direct_narrow_probe':
+            from tools import wd_mind_content_snapshot_package as package
+            source_owner = package.create_consumer_flat_source_owner(enabled=True, bundle_root=sys.argv[1],
+                expected_manifest_sha256=sys.argv[2], snapshot=product.snapshot,
+                flat_manifest_bytes=product.manifest, flat_manifest_sha256=sha(product.manifest),
+                ids=product.ids, vectors=product.vectors, encoder_binding_bytes=product.encoder_binding)
+            projection = json.loads(product.snapshot['projection_bytes'].decode('utf-8'))
+            record = next(item for item in projection['messages']['records'] if item['meta']['agent']=='codex-lead-1')
+            proposal = {'ref_sha256':sha(record['provenance']['event_ref'].encode()),
+                'doc_id_sha256':sha(record['record_id'].encode()),
+                'source_event_sha256':record['provenance']['source_event_ref']}
+            resolved = source_owner.resolve(proposals=[proposal], lane='codex-lead-1', scope='own')
+            print(json.dumps({'result':'ok', 'resolved':len(resolved['results']),
+                'ref_match':resolved['results'][0]['source_event_sha256'] == proposal['source_event_sha256']})); sys.exit(0)
+        if mode in ('package_direct_owner_source_recheck', 'package_direct_narrow_append',
+                    'package_direct_narrow_policy', 'package_direct_narrow_equivalence',
+                    'package_direct_narrow_candidates', 'package_direct_narrow_wrong_pin',
+                    'package_direct_narrow_generation', 'package_direct_narrow_foreign_pid',
+                    'package_direct_narrow_candidate_mutation', 'package_direct_narrow_candidates_first',
+                    'package_direct_narrow_approval_before', 'package_direct_narrow_approval_during',
+                    'package_direct_narrow_approval_direct_before', 'package_direct_narrow_approval_direct_during',
+                    'package_direct_candidate_race_source_v1', 'package_direct_candidate_race_source_v2',
+                    'package_direct_candidate_race_caller_v1', 'package_direct_candidate_race_caller_v2'):
             import threading
             from types import SimpleNamespace
             lanes = {'codex-lead-1', 'codex-tools-1', 'fable-5', 'claude-rco-1', 'claude-rco-2'}
@@ -2415,9 +2607,155 @@ try:
             owner = object.__new__(runtime._SingleManifestOwner)
             owner._generation = (binding, product.snapshot, handler)
             owner._lanes, owner._state, owner._lock = frozenset(lanes), 'READY', threading.Lock()
-            first = owner.query_local(enabled=True, lane='codex-lead-1', scope='own',
-                                      query='yhteyskatko uudelleenyritys')
+            owner._lane, owner._client, owner._adapter = 'codex-lead-1', handler._rotator, handler._adapter
+            owner._factory, owner._timeout, owner._watcher_lease = SimpleNamespace(_bulk=None), 1, None
+            handler._factory = owner._factory
+            owner._retained = None
+            anchor = runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=sys.argv[1],
+                expected_manifest_sha256=sys.argv[2], operator_policy_sha256=hashlib.sha256(policy).hexdigest(),
+                operator_approval_reference_sha256='b'*64)
+            owner._policy_pins, owner._state = None, 'NEW'
+            owner._bind_policy_anchor(anchor)
+            owner._state = 'READY'
+            first = (None if mode == 'package_direct_narrow_candidates_first' else
+                     owner.query_local(enabled=True, lane='codex-lead-1', scope='own',
+                                       query='yhteyskatko uudelleenyritys'))
             path = pathlib.Path(sys.argv[3]); original = path.read_bytes()
+            if mode in ('package_direct_candidate_race_source_v1', 'package_direct_candidate_race_source_v2',
+                        'package_direct_candidate_race_caller_v1', 'package_direct_candidate_race_caller_v2'):
+                located = mode.endswith('_v2')
+                source_changed = '_race_source_' in mode
+                request = {'schema':'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1',
+                           'query_id':'startup_work_overview','nonce':'d'*64,'lane':'codex-lead-1','scope':'own'}
+                mapper = runtime.map_pipe_candidates
+                retained_before = owner._retained
+                def mutate_after_mapper(**kwargs):
+                    mapped = mapper(**kwargs)
+                    if source_changed:
+                        changed = original.replace(b'ordinary', b'Ordinary')
+                        assert changed != original and len(changed) == len(original)
+                        path.write_bytes(changed)
+                    request['scope'] = 'shared'
+                    return mapped
+                runtime.map_pipe_candidates = mutate_after_mapper
+                try:
+                    (owner.located_candidates if located else owner.candidates)(request)
+                except runtime.FullRuntimeRefused:
+                    refused = True
+                else:
+                    refused = False
+                if not source_changed:
+                    preserved = owner._state == 'READY' and owner._retained is retained_before
+                    runtime.map_pipe_candidates = mapper
+                    request['scope'] = 'own'
+                    next_reply = (owner.located_candidates if located else owner.candidates)(request)
+                    print(json.dumps({'result':'ok','refused':refused,'preserved':preserved,
+                        'next_status':next_reply['status']})); sys.exit(0)
+                print(json.dumps({'result':'ok','refused':refused,'state':owner._state,
+                    'retained_cleared':owner._retained is None and handler._retained is None})); sys.exit(0)
+            if mode in ('package_direct_narrow_approval_before', 'package_direct_narrow_approval_during',
+                        'package_direct_narrow_approval_direct_before', 'package_direct_narrow_approval_direct_during'):
+                descriptor_path = pathlib.Path(sys.argv[1]) / 'wd-mind-identifier-policy-approval.json'
+                if mode.endswith('before'):
+                    descriptor_path.write_bytes(b'{}')
+                else:
+                    def alter_descriptor_during_query(text):
+                        descriptor_path.write_bytes(b'{}')
+                        return encode_query(text)
+                    handler._adapter.query = alter_descriptor_during_query
+                request = {'schema':'wd.mind-pipe-request.v2','query_id':'startup_work_overview',
+                           'nonce':'d'*64,'lane':'codex-lead-1','scope':'own'}
+                try:
+                    if '_approval_direct_' in mode:
+                        owner.query_local(enabled=True, lane='codex-lead-1', scope='own',
+                                          query='yhteyskatko uudelleenyritys')
+                    else:
+                        owner.located_candidates(request)
+                except runtime.FullRuntimeRefused:
+                    refused = True
+                else:
+                    refused = False
+                print(json.dumps({'result':'ok','refused':refused,'state':owner._state,
+                    'retained_cleared':owner._retained is None and handler._retained is None})); sys.exit(0)
+            if mode == 'package_direct_narrow_candidate_mutation':
+                changed = original.replace(b'ordinary', b'Ordinary')
+                assert changed != original and len(changed) == len(original)
+                path.write_bytes(changed)
+                request = {'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',
+                           'nonce':'d'*64,'lane':'codex-lead-1','scope':'own'}
+                try:
+                    owner.candidates(request)
+                except runtime.FullRuntimeRefused:
+                    refused = True
+                else:
+                    refused = False
+                print(json.dumps({'result':'ok','refused':refused,'state':owner._state,
+                    'retained_cleared':owner._retained is None and handler._retained is None})); sys.exit(0)
+            if mode in ('package_direct_narrow_candidates', 'package_direct_narrow_candidates_first'):
+                if mode == 'package_direct_narrow_candidates':
+                    runtime.reader._verified_complete = lambda *a, **kw: (_ for _ in ()).throw(AssertionError('full_rederive'))
+                request = {'schema':'wd.mind-pipe-request.v1','query_id':'startup_work_overview',
+                           'nonce':'d'*64,'lane':'codex-lead-1','scope':'own'}
+                legacy = owner.candidates(request)
+                retained_before = owner._retained
+                try:
+                    owner.candidates(dict(request, nonce='bad'))
+                except runtime.FullRuntimeRefused:
+                    invalid_preserved = owner._state == 'READY' and owner._retained is retained_before
+                else:
+                    invalid_preserved = False
+                runtime.reader._verified_complete = lambda *a, **kw: (_ for _ in ()).throw(AssertionError('full_rederive'))
+                request['schema'] = 'wd.mind-pipe-request.v2'
+                located = owner.located_candidates(request)
+                projection = json.loads(product.snapshot['projection_bytes'])['messages']['records']
+                by_doc = {sha(row['record_id'].encode()):row for row in projection}
+                locations_ok = all(sha(canonical(json.loads(original[row['source_offset']:
+                        row['source_offset'] + row['source_length']]))) == row['source_event_sha256']
+                    and by_doc[row['doc_id_sha256']]['provenance']['chunk_index'] == row['chunk_index']
+                    for row in located['candidates'])
+                print(json.dumps({'result':'ok','v1':legacy['schema'],'v2':located['schema'],
+                    'count':len(located['candidates']), 'locations_ok':locations_ok,
+                    'invalid_preserved':invalid_preserved,
+                    'same_refs':[row['source_event_sha256'] for row in legacy['candidates']] ==
+                                [row['source_event_sha256'] for row in located['candidates']]})); sys.exit(0)
+            if mode == 'package_direct_narrow_equivalence':
+                import datetime
+                full = runtime.query_flat_memory(enabled=True, memory=product, lane='codex-lead-1',
+                    own_lane_only=True, query='yhteyskatko uudelleenyritys',
+                    as_of_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    query_encoder=encode_query, include_historical=True)
+                print(json.dumps({'result':'ok', 'same_refs':
+                    [item['source_event_sha256'] for item in first['results']] ==
+                    [item['source_reference']['sha256'] for item in full['results']]})); sys.exit(0)
+            if mode == 'package_direct_narrow_append':
+                extra = json.loads(original.splitlines()[0]); extra['message'] = 'synthetic later append'
+                with path.open('ab') as target:
+                    target.write(json.dumps(extra, sort_keys=True, separators=(',', ':')).encode() + b'\n')
+                runtime.reader._verified_complete = lambda *a, **kw: (_ for _ in ()).throw(AssertionError('full_rederive'))
+                second = owner.query_local(enabled=True, lane='codex-lead-1', scope='own',
+                                           query='yhteyskatko uudelleenyritys')
+                print(json.dumps({'result':'ok','first_hits':len(first['results']),
+                    'same_refs':[item['source_event_sha256'] for item in first['results']] ==
+                                [item['source_event_sha256'] for item in second['results']]})); sys.exit(0)
+            if mode in ('package_direct_narrow_policy', 'package_direct_narrow_wrong_pin',
+                        'package_direct_narrow_generation', 'package_direct_narrow_foreign_pid'):
+                if mode == 'package_direct_narrow_policy':
+                    (pathlib.Path(sys.argv[1]) / 'wd-mind-message-policy.json').write_bytes(b'{}')
+                elif mode == 'package_direct_narrow_wrong_pin':
+                    binding._PrivateBinding__manifest = '0'*64
+                elif mode == 'package_direct_narrow_generation':
+                    path.with_name('events.generation.json').write_bytes(b'{}')
+                else:
+                    actual_pid = os.getpid()
+                    runtime.os.getpid = lambda: actual_pid + 1
+                try:
+                    owner.query_local(enabled=True, lane='codex-lead-1', scope='own', query='yhteyskatko uudelleenyritys')
+                except runtime.FullRuntimeRefused:
+                    refused = True
+                else:
+                    refused = False
+                print(json.dumps({'result':'ok','refused':refused,'state':owner._state,
+                    'retained_cleared':owner._retained is None and handler._retained is None})); sys.exit(0)
             changed = original.replace(b'ordinary', b'Ordinary')
             assert changed != original and len(changed) == len(original)
             path.write_bytes(changed)
@@ -2429,7 +2767,8 @@ try:
             else:
                 refused = False
             print(json.dumps({'result':'ok', 'first_hits':len(first['results']),
-                              'source_mutation_refused':refused, 'state':owner._state})); sys.exit(0)
+                              'source_mutation_refused':refused, 'state':owner._state,
+                              'retained_cleared':owner._retained is None and handler._retained is None})); sys.exit(0)
         if mode.startswith('package_historical'):
             if mode == 'package_historical_orthogonal':
                 encode_query = lambda text: (0.0,1.0) + (0.0,)*382
@@ -2792,6 +3131,66 @@ def test_single_owner_direct_query_rechecks_real_synthetic_source_between_calls(
     result = invoke(synthetic_bundle, 'package_direct_owner_source_recheck')
     assert result['result'] == 'ok' and result['first_hits'] > 0
     assert result['source_mutation_refused'] is True and result['state'] == 'HOLD'
+    assert result['retained_cleared'] is True
+
+
+def test_flat_source_owner_accepts_synthetic_runtime_memory(synthetic_bundle):
+    assert invoke(synthetic_bundle, 'package_direct_narrow_probe') == {'result':'ok','resolved':1,'ref_match':True}
+
+
+def test_single_owner_narrow_query_allows_append_without_full_rederive(synthetic_bundle):
+    result = invoke(synthetic_bundle, 'package_direct_narrow_append')
+    assert result['result'] == 'ok' and result['first_hits'] > 0 and result['same_refs'] is True
+
+
+def test_single_owner_narrow_query_agrees_with_full_ranking(synthetic_bundle):
+    assert invoke(synthetic_bundle, 'package_direct_narrow_equivalence') == {'result':'ok','same_refs':True}
+
+
+def test_single_owner_narrow_query_refuses_changed_policy(synthetic_bundle):
+    assert invoke(synthetic_bundle, 'package_direct_narrow_policy') == {
+        'result':'ok','refused':True,'state':'HOLD','retained_cleared':True}
+
+
+def test_single_owner_narrow_query_refuses_changed_binding_manifest_pin(synthetic_bundle):
+    assert invoke(synthetic_bundle, 'package_direct_narrow_wrong_pin') == {
+        'result':'ok','refused':True,'state':'HOLD','retained_cleared':True}
+
+
+@pytest.mark.parametrize('scenario', ['package_direct_narrow_approval_before', 'package_direct_narrow_approval_during',
+                                     'package_direct_narrow_approval_direct_before', 'package_direct_narrow_approval_direct_during'])
+def test_located_candidates_refuse_changed_real_approval_descriptor(synthetic_bundle, scenario):
+    assert invoke(synthetic_bundle, scenario) == {
+        'result':'ok','refused':True,'state':'HOLD','retained_cleared':True}
+
+
+@pytest.mark.parametrize('scenario', ['package_direct_narrow_generation', 'package_direct_narrow_foreign_pid'])
+def test_single_owner_narrow_query_refuses_changed_generation_or_process(synthetic_bundle, scenario):
+    assert invoke(synthetic_bundle, scenario) == {'result':'ok','refused':True,'state':'HOLD','retained_cleared':True}
+
+
+@pytest.mark.parametrize('scenario', ['package_direct_narrow_candidates', 'package_direct_narrow_candidates_first'])
+def test_single_owner_v1_and_located_v2_candidates_share_narrow_source(synthetic_bundle, scenario):
+    result = invoke(synthetic_bundle, scenario)
+    assert result == {'result':'ok','v1':'wd.mind-pipe-candidates.v1','v2':'wd.mind-pipe-candidates.v2',
+                      'count':3,'locations_ok':True,'same_refs':True,'invalid_preserved':True}
+
+
+def test_single_owner_candidate_source_mutation_drops_retained_state(synthetic_bundle):
+    assert invoke(synthetic_bundle, 'package_direct_narrow_candidate_mutation') == {
+        'result':'ok','refused':True,'state':'HOLD','retained_cleared':True}
+
+
+@pytest.mark.parametrize('scenario', ['package_direct_candidate_race_source_v1', 'package_direct_candidate_race_source_v2'])
+def test_changed_candidate_request_cannot_hide_real_source_mutation(synthetic_bundle, scenario):
+    assert invoke(synthetic_bundle, scenario) == {
+        'result':'ok','refused':True,'state':'HOLD','retained_cleared':True}
+
+
+@pytest.mark.parametrize('scenario', ['package_direct_candidate_race_caller_v1', 'package_direct_candidate_race_caller_v2'])
+def test_changed_candidate_request_preserves_real_source_owner(synthetic_bundle, scenario):
+    assert invoke(synthetic_bundle, scenario) == {
+        'result':'ok','refused':True,'preserved':True,'next_status':'CANDIDATES'}
 
 
 def test_owner_and_mapper_keep_historical_candidates_with_unknown_freshness(monkeypatch):

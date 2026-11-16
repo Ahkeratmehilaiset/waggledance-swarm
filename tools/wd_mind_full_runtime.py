@@ -21,6 +21,7 @@ import struct
 import sys
 import threading
 import time
+from types import MappingProxyType
 
 from tools import wd_mind_absent_generation_prefix_readonly as prefix
 from tools import wd_mind_content_query_readonly as reader
@@ -847,7 +848,7 @@ def _parse_parent_control(*, enabled=False, control_buffer=None, expected_manife
 
 def _prepare_owner_from_control_values(values, *, bundle_root, expected_manifest_sha256, lane,
                                        worker_timeout_seconds, lock_timeout_seconds,
-                                       shutdown_timeout, bulk_contract_sha256):
+                                       shutdown_timeout, bulk_contract_sha256, policy_anchor):
     manifest, nonce, channel_key, policy_sha, policy = values
     if manifest != expected_manifest_sha256:
         raise ValueError('manifest')
@@ -858,7 +859,8 @@ def _prepare_owner_from_control_values(values, *, bundle_root, expected_manifest
         expected_manifest_sha256=expected_manifest_sha256, worker_timeout_seconds=worker_timeout_seconds,
         lock_timeout_seconds=lock_timeout_seconds, bulk_contract_sha256=bulk_contract_sha256)
     owner = create_single_manifest_owner(enabled=True, binding=binding, lane=lane,
-                                         worker_factory=factory, shutdown_timeout=shutdown_timeout)
+                                         worker_factory=factory, shutdown_timeout=shutdown_timeout,
+                                         policy_anchor=policy_anchor)
     return {'state':'PREPARED_NOT_RUNNING', 'authority':'none', 'owner':owner,
             'bootstrap':_ParentBootstrap(values)}
 
@@ -893,7 +895,8 @@ def prepare_manifest_bound_owner(*, enabled=False, policy_anchor: _TrustedManife
         output = _prepare_owner_from_control_values(bootstrap.take(), bundle_root=bundle_root,
             expected_manifest_sha256=expected_manifest_sha256, lane=lane,
             worker_timeout_seconds=worker_timeout_seconds, lock_timeout_seconds=lock_timeout_seconds,
-            shutdown_timeout=shutdown_timeout, bulk_contract_sha256=bulk_contract_sha256)
+            shutdown_timeout=shutdown_timeout, bulk_contract_sha256=bulk_contract_sha256,
+            policy_anchor=policy_anchor)
     except KeyboardInterrupt:
         cancelled_type, output = KeyboardInterrupt, None
     except GeneratorExit:
@@ -1420,11 +1423,169 @@ def _query_historical_flat_memory(*, enabled=False, memory=None, lane=None, own_
     return result
 
 
+class _RetainedFlatQueryState:
+    """One owner's verified flat rows and selected-row gate, retained in memory."""
+    __slots__ = ('_owner', '_generation', '_handler', '_memory', '_flat', '_snapshot',
+                 '_source_owner', '_records', '_policy_pin', '_binding_pin', '_pid')
+
+    def __init__(self, owner):
+        from tools import wd_mind_content_snapshot_package as package
+        generation = owner._generation
+        binding, snapshot, handler = generation
+        memory = handler._memory
+        if (type(binding) is not _PrivateBinding or type(handler) is not _FlatRequestHandler
+                or type(memory) is not _PrivateFlatMemory or memory.binding is not binding
+                or memory.snapshot != snapshot or handler._binding is not binding
+                or handler._snapshot != snapshot):
+            raise ValueError('retained_binding')
+        owner._check_factory()
+        owner._check_policy_anchor()
+        policy_pin = _local_generation_policy_pin(owner)
+        source_owner = package.create_consumer_flat_source_owner(enabled=True,
+            bundle_root=str(binding._PrivateBinding__bundle),
+            expected_manifest_sha256=binding._PrivateBinding__manifest, snapshot=snapshot,
+            flat_manifest_bytes=memory.manifest, flat_manifest_sha256=reader._sha(memory.manifest),
+            ids=memory.ids, vectors=memory.vectors, encoder_binding_bytes=memory.encoder_binding)
+        projection, _, _ = source_owner._gate.verify_snapshot(source_owner._snapshot)
+        records = {row['record_id']:row for row in projection['messages']['records']}
+        if tuple(sorted(records)) != memory.ids or len(records) != len(projection['messages']['records']):
+            raise ValueError('retained_records')
+        self._owner, self._generation, self._handler, self._memory = owner, generation, handler, memory
+        self._flat = (memory.manifest, memory.ids, memory.vectors, memory.encoder_binding)
+        self._snapshot = dict(source_owner._snapshot, messages=dict(source_owner._snapshot['messages']))
+        self._source_owner, self._records = source_owner, reader._freeze_json(records)
+        self._policy_pin = policy_pin
+        self._binding_pin = (binding._PrivateBinding__bundle, binding._PrivateBinding__manifest,
+                             binding._PrivateBinding__controls)
+        self._pid = os.getpid()
+        self._controls()
+
+    def _controls(self):
+        from tools import wd_mind_content_snapshot_package as package
+        owner, memory = self._owner, self._memory
+        if (os.getpid() != self._pid or owner._state not in ('READY', 'STARTING')
+                or owner._generation is not self._generation or owner._handler is not self._handler
+                or not _refresh_handler_matches_owner(owner, self._handler)
+                or self._handler._memory is not memory or memory.binding is not owner._binding
+                or (owner._binding._PrivateBinding__bundle, owner._binding._PrivateBinding__manifest,
+                    owner._binding._PrivateBinding__controls) != self._binding_pin
+                or memory.snapshot != self._snapshot or owner._snapshot != self._snapshot
+                or (memory.manifest, memory.ids, memory.vectors, memory.encoder_binding) != self._flat
+                or self._handler._frozen_flat != self._flat
+                or not hmac.compare_digest(_local_generation_policy_pin(owner), self._policy_pin)):
+            raise ValueError('retained_changed')
+        owner._check_factory()
+        owner._check_policy_anchor()
+        self._handler._running_owner()
+        consumer = self._source_owner
+        if (os.path.normcase(os.path.abspath(consumer._root)) != os.path.normcase(os.path.abspath(str(self._binding_pin[0])))
+                or consumer._pin != self._binding_pin[1]
+                or consumer._gate._manifest_pin != self._binding_pin[1]
+                or package._consumer_bundle_controls(consumer._root, consumer._pin) != consumer._controls
+                or consumer._snapshot != self._snapshot):
+            raise ValueError('retained_controls')
+        consumer._gate._check_delivery_binding()
+        _, context, _ = consumer._gate.verify_snapshot(self._snapshot)
+        return context
+
+    def _prefix(self, context):
+        source = Path(context['messages']['source_path'])
+        sidecar = Path(context['messages']['generation_path'])
+        cursor = context['messages']['end_cursor']
+        native_bridge, absent = reader._narrow_dependencies()
+        with native_bridge._open_log(source) as stream:
+            before = os.fstat(stream.fileno())
+            identity = native_bridge._file_identity(stream)
+            reader._narrow_fence(stream, source, sidecar, cursor, native_bridge, absent)
+            digest = hashlib.sha256()
+            remaining = cursor.offset
+            while remaining:
+                block = stream.read(min(1024 * 1024, remaining))
+                if not block:
+                    raise ValueError('short_prefix')
+                digest.update(block)
+                remaining -= len(block)
+            if not hmac.compare_digest(digest.hexdigest(), context['decision']['source_prefix']['sha256']):
+                raise ValueError('prefix_changed')
+            reader._narrow_fence(stream, source, sidecar, cursor, native_bridge, absent)
+            after = os.fstat(stream.fileno())
+            if after.st_size < before.st_size or (after.st_size == before.st_size and after.st_mtime_ns != before.st_mtime_ns):
+                raise ValueError('source_changed_during_hash')
+            return identity, after.st_size, after.st_mtime_ns
+
+    def query(self, *, lane, scope, query):
+        if self._handler._retained is not self:
+            raise ValueError('retained_owner_changed')
+        context = self._controls()
+        before = self._prefix(context)
+        when = reader.dt.datetime.now(reader.dt.timezone.utc)
+        memory, records = self._memory, self._records
+        eligible = []
+        for index, record_id in enumerate(memory.ids):
+            record = records[record_id]
+            if scope == 'own' and record['meta']['agent'] != lane:
+                continue
+            stamp, provenance = reader._utc(record['time_utc']), record['provenance']
+            if ((when - stamp).total_seconds() < 0
+                    or reader._utc(provenance['available_utc']) >= when - reader.dt.timedelta(seconds=1)
+                    or ('valid_until_utc' in provenance and when >= reader._utc(provenance['valid_until_utc']))
+                    or reader._q4_self_match(query, reader.decode_text(record['stored_text']))):
+                continue
+            eligible.append((index, record_id))
+        selected = []
+        if eligible:
+            vector = reader._provider_vector(self._handler._adapter.query(query))
+            self._controls()
+            vector = reader._q4_vector(struct.unpack('<384f', struct.pack('<384f', *vector)))
+            tokens = set(reader._Q4_TOKEN.findall(query.lower()))
+            for index, record_id in eligible:
+                values = struct.unpack('<384f', memory.vectors[index * 1536:(index + 1) * 1536])
+                score = sum(a * b for a, b in zip(values, vector))
+                if math.isfinite(score) and score >= 0.55:
+                    record = records[record_id]
+                    lexical = len(tokens & set(reader._Q4_TOKEN.findall(reader.decode_text(record['stored_text']).lower())))
+                    selected.append((record_id, score, lexical, reader._utc(record['time_utc'])))
+            selected.sort(key=lambda item: (-item[1], -item[2], -item[3].timestamp(), item[0]))
+        selected = selected[:3]
+        proposals = [{'ref_sha256':reader._sha(records[key]['provenance']['event_ref'].encode()),
+                      'doc_id_sha256':reader._sha(key.encode()),
+                      'source_event_sha256':records[key]['provenance']['source_event_ref']}
+                     for key, _, _, _ in selected]
+        resolved = (self._source_owner.resolve(proposals=proposals, lane=lane, scope=scope)['results']
+                    if proposals else [])
+        if len(resolved) != len(selected):
+            raise ValueError('retained_resolution')
+        hits = []
+        manifest = self._source_owner._gate._manifest()
+        for proposal, item, (key, _, _, _) in zip(proposals, resolved, selected):
+            record = records[key]
+            entry = manifest['entries'][proposal['source_event_sha256']]
+            hits.append({'ref_sha256':proposal['ref_sha256'], 'doc_id_sha256':proposal['doc_id_sha256'],
+                'ref_kind':'sha256_of_projected_metadata', 'canonical_event':False,
+                'stored_text':item['text'], 'source_reference':{'sha256':item['source_event_sha256'],
+                    'kind':'sha256_of_canonical_event_json', 'verified':'MATCH_SELECTED_ROW',
+                    'sender_authentication':'UNKNOWN'}, 'source_agent':item['source_agent'],
+                'source_time_utc':item['event_time_utc_floor'],
+                'event_age_seconds_upper_bound':item['event_age_seconds_upper_bound'],
+                'source_valid_until_utc':record['provenance'].get('valid_until_utc'),
+                'source_offset':entry['offset'], 'source_length':entry['length'],
+                'chunk_index':record['provenance']['chunk_index']})
+        context = self._controls()
+        after = self._prefix(context)
+        if (before[0] != after[0] or after[1] < before[1]
+                or (after[1] == before[1] and after[2] != before[2])):
+            raise ValueError('source_changed_during_query')
+        return {'schema':'wd.mind-flat-f32-query.v1', 'status':'SEMANTIC_CANDIDATE' if hits else 'ABSTAIN',
+                'relevance':'UNVERIFIED', 'authority':'none', 'index_match':'NOT_APPLICABLE',
+                'own_latest_task':'UNKNOWN', 'results':hits, 'provider_authentication':'UNKNOWN',
+                'source_authentication':'UNKNOWN', 'continuity':'UNKNOWN', 'same_user_aba':'UNKNOWN'}
+
+
 class _FlatRequestHandler:
     """In-process owner; caller retains this object through any HOLD."""
     __slots__ = ('_binding', '_snapshot', '_lane', '_lanes', '_rotator', '_adapter', '_memory',
                  '_frozen_flat', '_closed', '_failed', '_lock', '_factory', '_timeout', '_bulk', '_pending_rotator',
-                 '_refresh_controller', '_watcher_lease')
+                 '_refresh_controller', '_watcher_lease', '_retained')
 
     def __init__(self, binding, snapshot, lane, lanes, rotator, adapter, factory, timeout, bulk, watcher_lease=None):
         self._binding, self._snapshot, self._lane = binding, snapshot, lane
@@ -1434,6 +1595,7 @@ class _FlatRequestHandler:
         self._factory, self._timeout, self._bulk, self._pending_rotator = factory, timeout, bulk, None
         self._refresh_controller = None
         self._watcher_lease = watcher_lease
+        self._retained = None
         self._closed = self._failed = False
         self._lock = threading.Lock()
 
@@ -1506,13 +1668,18 @@ class _FlatRequestHandler:
                     or len(frozen['query']) > 4000 or '\x00' in frozen['query']):
                 raise ValueError('request')
             self._running_owner()
-            self._source_check()
-            now = reader.dt.datetime.now(reader.dt.timezone.utc)
-            result = query_flat_memory(enabled=True, memory=self._memory, lane=bound_lane,
-                own_lane_only=frozen['scope'] == 'own',
-                query=frozen['query'], as_of_utc=reader._utc_text(now), query_encoder=self._adapter.query,
-                include_historical=True)
-            self._source_check()
+            if self._retained is None:
+                self._source_check()
+                now = reader.dt.datetime.now(reader.dt.timezone.utc)
+                result = query_flat_memory(enabled=True, memory=self._memory, lane=bound_lane,
+                    own_lane_only=frozen['scope'] == 'own',
+                    query=frozen['query'], as_of_utc=reader._utc_text(now), query_encoder=self._adapter.query,
+                    include_historical=True)
+                self._source_check()
+            else:
+                if type(self._retained) is not _RetainedFlatQueryState or self._retained._handler is not self:
+                    raise ValueError('retained_binding')
+                result = self._retained.query(lane=bound_lane, scope=frozen['scope'], query=frozen['query'])
             self._running_owner()
             if request != frozen:
                 raise ValueError('request_changed')
@@ -2040,12 +2207,15 @@ def _prepare_generation_delivery(owner, request, expected_nonce, policy_pin, max
     if not hmac.compare_digest(policy_pin, _local_generation_policy_pin(owner)):
         raise _GenerationInputRefused('mind_full_runtime_refused') from None
     owner._check_factory_or_hold()
+    owner._check_policy_anchor()
+    owner._ensure_retained_locked()
     candidates = map_pipe_candidates(enabled=True, handler=owner._handler, request=request)
     if len(reader._canonical(candidates)) > 2048:
         raise ValueError('candidate_size')
     prepared = owner._prepare_consumer_export_locked(enabled=True, expected_nonce=expected_nonce,
         expected_identifier_policy_sha256=policy_pin, max_total_bytes=max_total_bytes)
     owner._check_factory_or_hold()
+    owner._check_policy_anchor()
     return {'schema':'wd.mind-generation-delivery.v1', 'authority':'none',
             'generation_sha256':owner._snapshot['projection_sha256'],
             'candidates':candidates, 'export':prepared}
@@ -2060,7 +2230,7 @@ class _SingleManifestOwner:
     __slots__ = ('_generation', '_lane', '_lanes', '_factory', '_factory_anchor', '_factory_bytes', '_timeout',
                  '_state', '_launch', '_owner', '_client', '_adapter', '_lock',
                  '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts',
-                 '_watcher_lease')
+                 '_watcher_lease', '_retained', '_policy_pins')
 
     def __init__(self, binding, snapshot, lane, lanes, factory, timeout):
         self._generation = (binding, snapshot, None)
@@ -2075,6 +2245,8 @@ class _SingleManifestOwner:
         self._launch_error = None
         self._owner_conflicts = []
         self._watcher_lease = _OwnedSnapshotWatcher()
+        self._retained = None
+        self._policy_pins = None
 
     @property
     def _binding(self):
@@ -2103,6 +2275,35 @@ class _SingleManifestOwner:
         generation = getattr(self, '_generation', (None, None, None))
         self._generation = (generation[0], generation[1], value)
 
+    def _bind_policy_anchor(self, anchor):
+        """Bind operator-supplied hashes once, before launching the owner."""
+        if (self._state != 'NEW' or self._policy_pins is not None
+                or type(anchor) is not _TrustedManifestPolicyAnchor):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        binding = self._binding
+        if (type(binding) is not _PrivateBinding
+                or not startup._same_path(Path(anchor.bundle_root), binding._PrivateBinding__bundle)
+                or anchor.manifest_sha256 != binding._PrivateBinding__manifest
+                or anchor.policy_sha256 != binding._PrivateBinding__policy_pin):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        create_operator_pinned_policy_anchor(enabled=True, bundle_root=anchor.bundle_root,
+            expected_manifest_sha256=anchor.manifest_sha256, operator_policy_sha256=anchor.policy_sha256,
+            operator_approval_reference_sha256=anchor.approval_reference_sha256)
+        self._policy_pins = (anchor.bundle_root, anchor.manifest_sha256, anchor.policy_sha256,
+                             anchor.approval_reference_sha256)
+
+    def _check_policy_anchor(self):
+        """Recheck the independently supplied policy and approval pins."""
+        pins, binding = self._policy_pins, self._binding
+        if (type(pins) is not tuple or len(pins) != 4 or type(binding) is not _PrivateBinding
+                or not startup._same_path(Path(pins[0]), binding._PrivateBinding__bundle)
+                or pins[1] != binding._PrivateBinding__manifest
+                or pins[2] != binding._PrivateBinding__policy_pin):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        create_operator_pinned_policy_anchor(enabled=True, bundle_root=pins[0],
+            expected_manifest_sha256=pins[1], operator_policy_sha256=pins[2],
+            operator_approval_reference_sha256=pins[3])
+
     def _capture_owner(self, owner):
         # The launch thread records the reservation before any native spawn.
         if self._owner is not None:
@@ -2122,11 +2323,16 @@ class _SingleManifestOwner:
             _verify_refresh_basis(self)
             staged = _stage_refresh_generation(self)
             generation = _validate_refresh_generation(self, staged)
+            self._handler._retained = None
+            self._retained = None
             self._generation = generation
             self._state = 'READY'
             accepted = True
         except BaseException as exc:
             self._generation = previous
+            if self._handler is not None:
+                self._handler._retained = None
+            self._retained = None
             self._state = 'HOLD'
             pending = _flat_cancellation(exc)
         finally:
@@ -2139,6 +2345,17 @@ class _SingleManifestOwner:
         if not accepted:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         return {'schema':'wd.mind-flat-owner-refresh.v1', 'status':'REFRESHED', 'authority':'none'}
+
+    def _ensure_retained_locked(self):
+        if self._retained is None:
+            retained = _RetainedFlatQueryState(self)
+            self._handler._retained = retained
+            self._retained = retained
+        if (type(self._retained) is not _RetainedFlatQueryState
+                or self._handler._retained is not self._retained
+                or self._retained._generation is not self._generation):
+            raise ValueError('retained_binding')
+        return self._retained
 
     def query_local(self, *, enabled=False, lane=None, scope=None, query=None):
         """Query this retained owner in-process; the caller is not authenticated here."""
@@ -2159,7 +2376,9 @@ class _SingleManifestOwner:
             checking = True
             generation = self._generation
             self._check_factory()
+            self._check_policy_anchor()
             policy_pin = _local_generation_policy_pin(self)
+            retained = self._ensure_retained_locked()
             reply = self._handler._handle_for_lane({'schema':'wd.mind-flat-owner-request.v1',
                 'lane':lane, 'query':query, 'scope':scope}, lane)
             if (type(reply) is not dict or reply.get('schema') != 'wd.mind-flat-owner-response.v1'
@@ -2179,22 +2398,25 @@ class _SingleManifestOwner:
                 if (type(hit) is not dict or not reader._hex(hit.get('ref_sha256'))
                         or not reader._hex(hit.get('doc_id_sha256'))):
                     raise ValueError('query_hit')
+                reference = hit.get('source_reference')
+                if (type(reference) is not dict or reference.get('verified') != 'MATCH_SELECTED_ROW'
+                        or not reader._hex(reference.get('sha256'))):
+                    raise ValueError('selected_reference')
                 proposals.append({'ref_sha256':hit['ref_sha256'], 'doc_id_sha256':hit['doc_id_sha256'],
-                                  'ref_kind':'sha256_of_projected_metadata', 'canonical_event':False})
-            now = reader.dt.datetime.now(reader.dt.timezone.utc)
-            verified = reader.resolve_content_results(proposals, reader._utc_text(now), _complete=True, **self._snapshot)
+                                  'source_event_sha256':reference['sha256']})
+            verified = (retained._source_owner.resolve(proposals=proposals, lane=lane, scope=scope)['results']
+                        if proposals else [])
             if len(verified) != len(hits):
                 raise ValueError('selected_count')
-            records = _flat_check(self._handler._memory)
+            records = retained._records
             by_doc = {reader._sha(key.encode()):record for key, record in records.items()}
             visible, selected_records = [], []
             for hit, fresh in zip(hits, verified):
                 record = by_doc.get(hit['doc_id_sha256'])
-                if (type(record) is not dict or fresh.get('ref_sha256') != hit['ref_sha256']
-                        or fresh.get('doc_id_sha256') != hit['doc_id_sha256']
-                        or fresh.get('stored_text') != hit.get('stored_text')
-                        or fresh.get('source_reference') != hit.get('source_reference')
-                        or fresh['source_reference'].get('sha256') != record['provenance']['source_event_ref']
+                if (type(record) not in (dict, MappingProxyType)
+                        or fresh.get('text') != hit.get('stored_text')
+                        or fresh.get('source_event_sha256') != hit['source_reference']['sha256']
+                        or fresh['source_event_sha256'] != record['provenance']['source_event_ref']
                         or record['meta']['agent'] not in reader._BUILD_LANES
                         or hit.get('source_agent') != record['meta']['agent']
                         or hit.get('source_time_utc') != record['time_utc']
@@ -2206,14 +2428,16 @@ class _SingleManifestOwner:
                 expiry = record['provenance'].get('valid_until_utc')
                 if age < 0 or (expiry is not None and finished >= reader._utc(expiry)):
                     raise ValueError('selected_time')
-                visible.append({'text':reader.decode_text(fresh['stored_text']),
-                    'source_event_sha256':fresh['source_reference']['sha256'],
+                visible.append({'text':reader.decode_text(fresh['text']),
+                    'source_event_sha256':fresh['source_event_sha256'],
                     'event_time_utc_floor':record['time_utc'], 'source_agent':record['meta']['agent'],
                     'event_age_seconds_upper_bound':math.ceil(age)})
                 selected_records.append(record)
-            self._handler._source_check()
+            context = retained._controls()
+            retained._prefix(context)
             self._handler._running_owner()
             self._check_factory()
+            self._check_policy_anchor()
             if (self._generation is not generation or self._state != 'READY'
                     or not hmac.compare_digest(policy_pin, _local_generation_policy_pin(self))):
                 raise ValueError('controls_changed')
@@ -2235,6 +2459,9 @@ class _SingleManifestOwner:
             pending = _flat_cancellation(exc)
             if checking or pending is not None:
                 self._state = 'HOLD'
+                self._retained = None
+                if self._handler is not None:
+                    self._handler._retained = None
         finally:
             generation = None
             self._lock.release()
@@ -2267,6 +2494,9 @@ class _SingleManifestOwner:
             if (pending is not None or
                     not isinstance(exc, (_GenerationInputRefused, _GenerationSizeRefused))):
                 self._state = 'HOLD'
+                self._retained = None
+                if self._handler is not None:
+                    self._handler._retained = None
         finally:
             generation = None
             self._lock.release()
@@ -2563,19 +2793,72 @@ class _SingleManifestOwner:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         return result
 
-    def candidates(self, request):
+    def _check_candidate_delivery(self):
+        retained = self._retained
+        if (type(retained) is not _RetainedFlatQueryState or self._handler is None
+                or self._handler._retained is not retained):
+            raise ValueError('retained_binding')
+        retained._prefix(retained._controls())
+
+    def _candidate_request(self, request, *, located):
+        expected = 'wd.mind-pipe-request.v2' if located else 'wd.mind-pipe-request.v1'
+        if (type(request) is not dict or set(request) != {'schema','query_id','nonce','lane','scope'}
+                or any(type(value) is not str for value in request.values())
+                or request['schema'] != expected or request['query_id'] != 'startup_work_overview'
+                or not reader._hex(request['nonce']) or request['lane'] not in self._lanes
+                or request['lane'] not in reader._LANES or request['scope'] not in ('own','shared')):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        frozen = dict(request, schema='wd.mind-pipe-request.v1')
         if not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        response, pending, checking = None, None, False
         try:
             if self._state != 'READY' or self._handler is None:
-                raise FullRuntimeRefused('mind_full_runtime_refused') from None
+                raise ValueError('owner_not_ready')
+            checking = True
             self._check_factory_or_hold()
-            # Pipe candidates contain references only, not the message body.
-            response = map_pipe_candidates(enabled=True, handler=self._handler, request=request)
+            self._check_policy_anchor()
+            self._ensure_retained_locked()
+            response = map_pipe_candidates(enabled=True, handler=self._handler, request=frozen,
+                                           _include_locations=located)
             self._check_factory_or_hold()
-            return response
+            self._check_policy_anchor()
+            # The caller can mutate its original dict during the query. Complete
+            # all source/control checks before refusing that caller-only error.
+            self._check_candidate_delivery()
+            self._check_factory_or_hold()
+            self._check_policy_anchor()
+            try:
+                latest = dict(request)
+                caller_changed = (len(latest) != len(frozen)
+                    or any(type(value) is not str for value in latest.values())
+                    or latest != dict(frozen, schema=expected))
+            except Exception:
+                caller_changed = True
+            if caller_changed:
+                response = None
+        except BaseException as exc:
+            response = None
+            pending = _flat_cancellation(exc)
+            if checking or pending is not None:
+                self._state = 'HOLD'
+                self._retained = None
+                if self._handler is not None:
+                    self._handler._retained = None
         finally:
             self._lock.release()
+        if pending is not None:
+            raise pending from None
+        if response is None:
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        return response
+
+    def candidates(self, request):
+        return self._candidate_request(request, located=False)
+
+    def located_candidates(self, request):
+        """Return untrusted row locations; the receiver must independently verify them."""
+        return self._candidate_request(request, located=True)
 
     def close(self):
         if not self._lock.acquire(blocking=False):
@@ -2630,6 +2913,9 @@ class _SingleManifestOwner:
                     result = self._owner.shutdown(timeout=self._timeout)
                 if (type(result) is dict and result.get('state') == 'EXITED'
                         and result.get('owned') is False):
+                    self._retained = None
+                    if self._handler is not None:
+                        self._handler._retained = None
                     self._state = 'STOPPED'
                     return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
             except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
@@ -2649,7 +2935,7 @@ class _SingleManifestOwner:
 
 
 def create_single_manifest_owner(*, enabled=False, binding=None, lane=None, worker_factory=None,
-                                 shutdown_timeout=None):
+                                 shutdown_timeout=None, policy_anchor=None):
     """Create an inert single-worker owner, retaining it through any HOLD.
 
     The manifest and lane must already be independently bound. No worker is
@@ -2675,6 +2961,8 @@ def create_single_manifest_owner(*, enabled=False, binding=None, lane=None, work
         if lane not in names:
             raise ValueError('lane')
         result = _SingleManifestOwner(binding, snapshot, lane, names, worker_factory, float(shutdown_timeout))
+        if policy_anchor is not None:
+            result._bind_policy_anchor(policy_anchor)
     except Exception:
         pass
     if result is None:
@@ -2691,7 +2979,7 @@ def create_flat_request_handler(*, enabled=False, binding=None, lane=None, worke
 _STARTUP_PIPE_QUERY = 'current task active work next step recent status'
 
 
-def map_pipe_candidates(*, enabled=False, handler=None, request=None):
+def map_pipe_candidates(*, enabled=False, handler=None, request=None, _include_locations=False):
     """Map one fixed public in-process query to source hashes, never text.
 
     The caller must authenticate and bind the peer separately; accepting a
@@ -2699,7 +2987,9 @@ def map_pipe_candidates(*, enabled=False, handler=None, request=None):
     """
     result = None
     try:
-        if enabled is not True or type(handler) is not _FlatRequestHandler or type(request) is not dict:
+        if (enabled is not True or type(handler) is not _FlatRequestHandler or type(request) is not dict
+                or type(_include_locations) is not bool
+                or (_include_locations and type(handler._retained) is not _RetainedFlatQueryState)):
             raise ValueError('input')
         frozen = dict(request)
         if (set(frozen) != {'schema', 'query_id', 'nonce', 'lane', 'scope'}
@@ -2735,13 +3025,21 @@ def map_pipe_candidates(*, enabled=False, handler=None, request=None):
             reference = hit['source_reference']
             if (set(reference) != {'sha256', 'kind', 'verified', 'sender_authentication'}
                     or reference['kind'] != 'sha256_of_canonical_event_json'
-                    or reference['verified'] != 'MATCH_WITHIN_PREFIX'
+                    or reference['verified'] != ('MATCH_SELECTED_ROW' if handler._retained is not None
+                                                 else 'MATCH_WITHIN_PREFIX')
                     or reference['sender_authentication'] != 'UNKNOWN'):
                 raise ValueError('reference')
             row = {'ref_sha256': hit.get('ref_sha256'), 'doc_id_sha256': hit.get('doc_id_sha256'),
                    'source_event_sha256': reference['sha256']}
             if any(not reader._hex(value) for value in row.values()):
                 raise ValueError('hash')
+            if _include_locations:
+                offset, length, chunk = hit.get('source_offset'), hit.get('source_length'), hit.get('chunk_index')
+                if (type(offset) is not int or type(length) is not int or type(chunk) is not int
+                        or offset < 0 or not 1 <= length <= 4 * 1024 * 1024
+                        or not 0 <= chunk <= 4 * 1024 * 1024 or offset + length > 2**63 - 1):
+                    raise ValueError('location')
+                row.update(source_offset=offset, source_length=length, chunk_index=chunk)
             key = tuple(row[name] for name in ('ref_sha256', 'doc_id_sha256', 'source_event_sha256'))
             if key in seen:
                 raise ValueError('duplicate')
@@ -2756,7 +3054,8 @@ def map_pipe_candidates(*, enabled=False, handler=None, request=None):
             raise ValueError('expiry')
         if request != frozen:
             raise ValueError('request_changed')
-        result = {'schema': 'wd.mind-pipe-candidates.v1', 'nonce': frozen['nonce'],
+        result = {'schema': ('wd.mind-pipe-candidates.v2' if _include_locations else 'wd.mind-pipe-candidates.v1'),
+                  'nonce': frozen['nonce'],
                   'lane': frozen['lane'], 'scope': frozen['scope'],
                   'status': 'CANDIDATES' if candidates else 'ABSTAIN', 'candidates': candidates}
     except Exception:

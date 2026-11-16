@@ -1764,7 +1764,7 @@ def synthetic_bundle(tmp_path):
 
 
 def invoke(case, scenario='normal'):
-    if scenario.startswith(('package_direct_', 'refresh_real_delivery')):
+    if scenario.startswith(('package_direct_', 'refresh_real_delivery', 'refresh_real_worker_')):
         # Synthetic operator pins: the approval descriptor is part of the
         # test's independently pinned deployment manifest, never live data.
         policy = b'{"identifiers":[],"schema":"wd.mind-identifier-policy.v2"}'
@@ -1914,7 +1914,7 @@ try:
         anchor = (runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=str(root),
                     expected_manifest_sha256=sys.argv[2], operator_policy_sha256=hashlib.sha256(policy).hexdigest(),
                     operator_approval_reference_sha256='b'*64)
-                  if mode.startswith('refresh_real_delivery') else None)
+                  if mode.startswith(('refresh_real_delivery', 'refresh_real_worker_')) else None)
         owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane='codex-lead-1',
                                                      worker_factory=factory, shutdown_timeout=0, policy_anchor=anchor)
         if owner.start()['state'] != 'READY': raise ValueError('synthetic owner not ready')
@@ -3297,6 +3297,7 @@ def test_owner_and_mapper_keep_historical_candidates_with_unknown_freshness(monk
     handler = object.__new__(runtime._FlatRequestHandler)
     handler._lock, handler._closed, handler._failed = threading.Lock(), False, False
     handler._memory, handler._lanes = object(), frozenset({'codex-lead-1'})
+    handler._retained = None
     handler._adapter = SimpleNamespace(query=lambda _: None)
     monkeypatch.setattr(runtime._FlatRequestHandler, '_running_owner', lambda self: None)
     monkeypatch.setattr(runtime._FlatRequestHandler, '_source_check', lambda self: None)

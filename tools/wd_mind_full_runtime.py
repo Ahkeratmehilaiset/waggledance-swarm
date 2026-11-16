@@ -2223,7 +2223,7 @@ def _prepare_generation_delivery(owner, request, expected_nonce, policy_pin, max
 
 
 class _SingleManifestOwner:
-    """Own one graceful worker and an optional in-process flat handler.
+    """Own a graceful worker, or an explicitly enabled rotator, and flat handler.
 
     The caller must retain this object through HOLD. This is not an IPC server,
     an authenticated lane, an installed startup path, or an automatic refresh.
@@ -2231,9 +2231,10 @@ class _SingleManifestOwner:
     __slots__ = ('_generation', '_lane', '_lanes', '_factory', '_factory_anchor', '_factory_bytes', '_timeout',
                  '_state', '_launch', '_owner', '_client', '_adapter', '_lock',
                  '_launch_thread', '_launch_done', '_launch_cancel', '_launch_error', '_owner_conflicts',
-                 '_watcher_lease', '_retained', '_policy_pins')
+                 '_watcher_lease', '_retained', '_policy_pins', '_rotation_enabled', '_rotation_anchor',
+                 '_rotation_type')
 
-    def __init__(self, binding, snapshot, lane, lanes, factory, timeout):
+    def __init__(self, binding, snapshot, lane, lanes, factory, timeout, rotation_enabled=False):
         self._generation = (binding, snapshot, None)
         self._lane = lane
         self._lanes, self._factory, self._timeout = frozenset(lanes), factory, timeout
@@ -2248,6 +2249,9 @@ class _SingleManifestOwner:
         self._watcher_lease = _OwnedSnapshotWatcher()
         self._retained = None
         self._policy_pins = None
+        self._rotation_enabled = rotation_enabled
+        self._rotation_anchor = None
+        self._rotation_type = None
 
     @property
     def _binding(self):
@@ -2304,6 +2308,25 @@ class _SingleManifestOwner:
         create_operator_pinned_policy_anchor(enabled=True, bundle_root=pins[0],
             expected_manifest_sha256=pins[1], operator_policy_sha256=pins[2],
             operator_approval_reference_sha256=pins[3])
+
+    def _rotation_source_check(self):
+        """Revalidate real source and operator controls without taking the owner lock.
+
+        Rotation runs while start/query already owns that lock. This callback
+        must never echo an unverified caller-provided digest or re-enter it.
+        """
+        self._check_factory()
+        self._check_policy_anchor()
+        snapshot = self._snapshot
+        self._binding._immutable_checkpoint(snapshot)
+        self._check_factory()
+        return snapshot['projection_sha256']
+
+    def _rotation_is_bound(self):
+        if self._client is None or self._rotation_anchor is None:
+            return self._client is None and self._rotation_anchor is None
+        return (self._client is self._rotation_anchor and type(self._rotation_type) is type
+                and type(self._client) is self._rotation_type)
 
     def _capture_owner(self, owner):
         # The launch thread records the reservation before any native spawn.
@@ -2582,7 +2605,27 @@ class _SingleManifestOwner:
         if self._owner_conflicts:
             self._state = 'HOLD'
             return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
-        if self._owner is None:
+        if self._rotation_enabled and not self._rotation_is_bound():
+            self._state = 'HOLD'
+            return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
+        if self._rotation_enabled and self._client is not None:
+            try:
+                current = self._client.status()
+                owned = current.get('owned') if type(current) is dict else None
+                if type(owned) is not bool:
+                    owned = None
+                if self._state == 'READY' and (owned is not True or current.get('state') != 'RUNNING'):
+                    self._state = 'HOLD'
+            except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+                self._state = 'HOLD'
+                raise
+            except (BaseExceptionGroup, FullRuntimeCancellationUnknown) as exc:
+                self._state = 'HOLD'
+                owned = None
+                worker_cancel = _flat_cancellation(exc)
+            except BaseException:
+                self._state, owned = 'HOLD', None
+        elif self._owner is None:
             owned = False if self._state == 'NEW' else None
         else:
             try:
@@ -2659,30 +2702,48 @@ class _SingleManifestOwner:
             try:
                 self._check_factory()
                 _flat_snapshot(self._binding, self._snapshot)
-                self._launch_thread = threading.Thread(target=self._run_launch,
-                    name='mind-e5-launch', daemon=False)
-                self._launch_thread.start()
-                self._wait_for_launch()
-                if self._launch_error is not None:
-                    raise self._launch_error
-                launched = self._launch
-                # Retain the entire factory result before any fallible binding
-                # or model work, including the owner on a returned HOLD.
-                self._launch = launched
-                if type(launched) is not dict:
-                    raise ValueError('launch')
-                if self._owner is None or launched.get('owner') is not self._owner:
-                    self._owner_conflicts.append(launched.get('owner'))
-                    raise ValueError('launch_owner_changed')
-                self._client = launched.get('client')
-                self._check_factory()
-                if (launched.get('status') != 'READY' or self._owner is None
-                        or self._client is None or getattr(self._client, 'owner', None) is not self._owner):
-                    raise ValueError('launch_not_ready')
                 from tools import wd_mind_e5_snapshot_adapter as adapter_module
                 bundle, manifest = self._binding._PrivateBinding__bundle, self._binding._PrivateBinding__manifest
-                self._adapter = adapter_module.create_single_flat_adapter(enabled=True, bundle_root=str(bundle),
-                    expected_manifest_sha256=manifest, client=self._client)
+                if self._rotation_enabled:
+                    _, runtime_hash = adapter_module._flat_bundle_bindings(str(bundle), manifest)
+                    # Do not execute an unverified candidate module: this loader
+                    # checks its manifest pin and exact origin before import.
+                    rotation = adapter_module._load_pinned_rotating_module(str(bundle), manifest)
+                    self._rotation_type = rotation.RotatingGracefulE5Client
+                    if type(self._rotation_type) is not type:
+                        raise ValueError('rotation_type')
+                    # Rotator construction is inert. Store it before adapter or
+                    # worker activity so any later HOLD remains reachable.
+                    self._client = self._rotation_type(factory=self._factory,
+                        encoder_binding_sha256=runtime_hash, snapshot_sha256=self._snapshot['projection_sha256'],
+                        source_check=self._rotation_source_check, call_timeout=self._factory._timeout,
+                        shutdown_timeout=self._timeout, bulk_contract_sha256=self._factory._bulk)
+                    self._rotation_anchor = self._client
+                    self._adapter = adapter_module.create_rotating_flat_adapter(enabled=True, bundle_root=str(bundle),
+                        expected_manifest_sha256=manifest, client=self._client,
+                        expected_snapshot_sha256=self._snapshot['projection_sha256'])
+                else:
+                    self._launch_thread = threading.Thread(target=self._run_launch,
+                        name='mind-e5-launch', daemon=False)
+                    self._launch_thread.start()
+                    self._wait_for_launch()
+                    if self._launch_error is not None:
+                        raise self._launch_error
+                    launched = self._launch
+                    # Retain the entire result before fallible binding checks.
+                    self._launch = launched
+                    if type(launched) is not dict:
+                        raise ValueError('launch')
+                    if self._owner is None or launched.get('owner') is not self._owner:
+                        self._owner_conflicts.append(launched.get('owner'))
+                        raise ValueError('launch_owner_changed')
+                    self._client = launched.get('client')
+                    self._check_factory()
+                    if (launched.get('status') != 'READY' or self._owner is None
+                            or self._client is None or getattr(self._client, 'owner', None) is not self._owner):
+                        raise ValueError('launch_not_ready')
+                    self._adapter = adapter_module.create_single_flat_adapter(enabled=True, bundle_root=str(bundle),
+                        expected_manifest_sha256=manifest, client=self._client)
                 self._handler = _FlatRequestHandler(self._binding, self._snapshot, self._lane, self._lanes,
                     self._client, self._adapter, self._factory, self._timeout, self._factory._bulk,
                     self._watcher_lease)
@@ -2913,6 +2974,31 @@ class _SingleManifestOwner:
             if self._launch_thread is not None and self._launch_thread.is_alive():
                 self._state = 'HOLD'
                 return self._status()
+            if self._rotation_enabled and not self._rotation_is_bound():
+                self._state = 'HOLD'
+                return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
+            if self._rotation_enabled and self._client is not None:
+                try:
+                    result = self._client.close(timeout=self._timeout)
+                    if (type(result) is dict and result.get('state') == 'EXITED'
+                            and result.get('owned') is False and result.get('exit_code') == 0):
+                        self._retained = None
+                        if self._handler is not None:
+                            self._handler._retained = None
+                        self._state = 'STOPPED'
+                        return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
+                except (KeyboardInterrupt, GeneratorExit, asyncio.CancelledError):
+                    self._state = 'HOLD'
+                    raise
+                except (BaseExceptionGroup, FullRuntimeCancellationUnknown) as exc:
+                    self._state = 'HOLD'
+                    pending_cancel = _flat_cancellation(exc)
+                    if pending_cancel is not None:
+                        raise pending_cancel from None
+                except BaseException:
+                    pass
+                self._state = 'HOLD'
+                return self._status()
             if self._owner_conflicts:
                 self._state = 'HOLD'
                 return self._status()
@@ -2949,18 +3035,19 @@ class _SingleManifestOwner:
 
 
 def create_single_manifest_owner(*, enabled=False, binding=None, lane=None, worker_factory=None,
-                                 shutdown_timeout=None, policy_anchor=None):
-    """Create an inert single-worker owner, retaining it through any HOLD.
+                                 shutdown_timeout=None, policy_anchor=None, worker_rotation=False):
+    """Create an inert owner, retaining its worker or explicit rotator on HOLD.
 
     The manifest and lane must already be independently bound. No worker is
-    launched until start(); no rotation, guardian, listener or refresh is added.
+    launched until start(). Rotation defaults off; no guardian or listener is added.
     """
     result = None
     try:
         from tools import wd_mind_e5_client as worker_client
         if (enabled is not True or type(binding) is not _PrivateBinding
                 or type(worker_factory) is not _ManifestWorkerFactory or type(lane) is not str
-                or lane not in reader._LANES or type(shutdown_timeout) not in (int, float)
+                or lane not in reader._LANES or type(worker_rotation) is not bool
+                or type(shutdown_timeout) not in (int, float)
                 or not math.isfinite(shutdown_timeout) or not 0 <= shutdown_timeout <= 15):
             raise ValueError('input')
         bundle, manifest = binding._PrivateBinding__bundle, binding._PrivateBinding__manifest
@@ -2974,7 +3061,8 @@ def create_single_manifest_owner(*, enabled=False, binding=None, lane=None, work
         names = {entry['agent'] for entry in fleet['lanes']} | {fleet['tools_supervisor']['agent']}
         if lane not in names:
             raise ValueError('lane')
-        result = _SingleManifestOwner(binding, snapshot, lane, names, worker_factory, float(shutdown_timeout))
+        result = _SingleManifestOwner(binding, snapshot, lane, names, worker_factory, float(shutdown_timeout),
+                                      rotation_enabled=worker_rotation)
         if policy_anchor is not None:
             result._bind_policy_anchor(policy_anchor)
     except Exception:

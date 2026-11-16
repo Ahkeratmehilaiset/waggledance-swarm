@@ -369,3 +369,216 @@ def evaluate_standing_consensus_sign(
         "ci_all_green": True,
     }
     return out
+
+
+# ----------------------------------------------------------------------------
+# Rule 14 Mind-class: the documented whole-file path list, checked mechanically.
+# SEPARATE from classify_ab, whose output is unchanged. FAIL-CLOSED: a diff is
+# Mind-class only when EVERY changed path is an exact plain repository path that
+# matches one documented pattern as a whole file, NONE is (a)-class or Stage-2,
+# and (when the diff text is given) the git file headers of the diff name exactly
+# the same paths. Nothing is normalised into an allowed path. Prose never widens
+# this list; a test pins it to the list in CLAUDE.md Rule 14.
+# ----------------------------------------------------------------------------
+MIND_CLASS_REPORT_VERSION = "wd.mind_class_paths.v1"
+MIND_CLASS_PATTERNS = (
+    "sandbox/mind/**",
+    "configs/mind/**",
+    "tools/wd_q4_*",
+    "tests/tools/test_wd_q4_*",
+    "ops/windows/reboot/Get-WdQ4*.ps1",
+    "ops/windows/reboot/Invoke-WdQ4*.ps1",
+    "tools/wd_mind_*",
+    "tools/wd_bridge_mind*",
+    "tools/bridge_mind_workspace.py",
+    "tests/tools/test_wd_mind_*",
+    "tests/tools/test_wd_bridge_mind*",
+    "tests/tools/test_mind_*",
+    "tests/tools/test_bridge_mind_workspace.py",
+    "tests/windows/wd_mind_*",
+    "ops/windows/reboot/Get-WdMind*.ps1",
+    "ops/windows/reboot/Invoke-WdMind*.ps1",
+    "ops/windows/reboot/Start-WdMind*.ps1",
+)
+
+
+def _mind_pattern_regex(pattern: str) -> re.Pattern[str]:
+    """``**`` spans directories, ``*`` stays inside one path segment, the rest is literal."""
+    parts: list[str] = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**", index):
+            parts.append(".+")
+            index += 2
+        elif pattern[index] == "*":
+            parts.append("[^/]*")
+            index += 1
+        else:
+            parts.append(re.escape(pattern[index]))
+            index += 1
+    return re.compile("".join(parts))
+
+
+_MIND_CLASS_REGEXES = tuple(
+    (pattern, _mind_pattern_regex(pattern)) for pattern in MIND_CLASS_PATTERNS
+)
+_MIND_PLAIN_PATH_RE = re.compile(r"[A-Za-z0-9._/-]+")
+_MIND_STAGE2_SUBSTR = ("stage2", "stage-2", "stage_2", "cutover", "atomic_flip", "atomic-flip")
+_MIND_RESERVED_STEMS = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{number}" for number in range(1, 10)}
+    | {f"lpt{number}" for number in range(1, 10)}
+)
+_DIFF_SPECIAL_ENTRY_RE = re.compile(
+    r"(?:new file mode|deleted file mode|old mode|new mode) (?:120000|160000)"
+    r"|index [0-9a-f]+[.][.][0-9a-f]+ (?:120000|160000)"
+)
+
+
+def _mind_path_refusal(path: Any) -> str:
+    """Why ``path`` is not an exact plain repository file path ('' when it is one)."""
+    if type(path) is not str or not path:
+        return "path is empty or not a string"
+    if _MIND_PLAIN_PATH_RE.fullmatch(path) is None:
+        return "path has a character outside A-Z a-z 0-9 . _ / -"
+    if path.startswith("/") or path.endswith("/"):
+        return "path is absolute or names a directory"
+    for segment in path.split("/"):
+        if segment in ("", ".", ".."):
+            return "path has an empty, dot or dot-dot segment"
+        if segment.endswith("."):
+            return "path segment ends with a dot"
+        if segment.split(".", 1)[0].lower() in _MIND_RESERVED_STEMS:
+            return "path segment is a reserved device name"
+    return ""
+
+
+def _diff_header_paths(diff_text: Any) -> dict[str, Any]:
+    """Paths named by the git file headers of a unified diff, read exactly.
+
+    ``error`` is non-empty when the headers cannot prove the complete file list:
+    no header at all, a quoted or unreadable header, a rename or copy header
+    without matching from/to lines, or a symlink or submodule entry. Hunk lines
+    always start with a space, plus, minus or backslash, so they are never read
+    as headers.
+    """
+    result: dict[str, Any] = {"paths": set(), "error": ""}
+    if type(diff_text) is not str:
+        result["error"] = "diff text is not a string"
+        return result
+    paths: set[str] = result["paths"]
+    headers = 0
+    pending = ""    # "a/X b/Y" of a header whose sides differ, until from/to lines confirm it
+    source = ""
+    for line in diff_text.split("\n"):
+        if line.startswith("diff --git "):
+            if pending:
+                result["error"] = "a rename or copy header has no matching from/to lines"
+                return result
+            headers += 1
+            source = ""
+            rest = line[len("diff --git "):]
+            half, odd = divmod(len(rest) - 5, 2)
+            same = rest[2:2 + half] if half > 0 and not odd else ""
+            if same and rest == f"a/{same} b/{same}":
+                paths.add(same)
+            else:
+                pending = rest
+            continue
+        if not headers:
+            continue
+        if _DIFF_SPECIAL_ENTRY_RE.fullmatch(line) is not None:
+            result["error"] = "the diff has a symlink or submodule entry"
+            return result
+        if not pending:
+            continue
+        for word in ("rename", "copy"):
+            if line.startswith(word + " from "):
+                source = line[len(word) + 6:]
+            elif line.startswith(word + " to ") and source:
+                target = line[len(word) + 4:]
+                if pending != f"a/{source} b/{target}":
+                    result["error"] = "a rename or copy header disagrees with its from/to lines"
+                    return result
+                paths.update((source, target))
+                pending = ""
+                source = ""
+    if pending:
+        result["error"] = "a rename or copy header has no matching from/to lines"
+    elif not headers:
+        result["error"] = "the diff has no git file header"
+    return result
+
+
+def classify_mind_class(changed_paths: Any, diff_text: Any = None) -> dict[str, Any]:
+    """Mechanical Rule 14 Mind-class check of a whole diff. FAIL-CLOSED.
+
+    ``mind_class`` is True only when every changed path is Mind-class. With
+    ``diff_text`` the git headers of the diff must also name exactly the changed
+    paths (``diff_checked``); the merge gate requires that. ``classify_ab`` is
+    not consulted for the verdict and is not changed by this function.
+    """
+    out: dict[str, Any] = {
+        "report_version": MIND_CLASS_REPORT_VERSION,
+        "mind_class": False,
+        "reason": "",
+        "patterns": list(MIND_CLASS_PATTERNS),
+        "matches": [],
+        "refused": [],
+        "diff_checked": False,
+        "only_in_diff": [],
+        "only_in_changed_paths": [],
+    }
+    if not isinstance(changed_paths, (list, tuple)) or not changed_paths:
+        out["reason"] = "changed paths must be a non-empty list -> not Mind-class (fail-closed)"
+        return out
+    seen: set[str] = set()
+    for raw in changed_paths:
+        refusal = _mind_path_refusal(raw)
+        if not refusal:
+            if raw.lower() in seen:
+                refusal = "path repeats or aliases another changed path"
+            seen.add(raw.lower())
+        if not refusal and _path_is_a(raw):
+            refusal = "(a)-class path"
+        if not refusal and any(part in raw.lower() for part in _MIND_STAGE2_SUBSTR):
+            refusal = "Stage-2 path"
+        pattern = "" if refusal else next(
+            (name for name, regex in _MIND_CLASS_REGEXES if regex.fullmatch(raw) is not None), ""
+        )
+        if not refusal and not pattern:
+            refusal = "no documented Mind-class pattern matches the whole file path"
+        if refusal:
+            shown = raw if type(raw) is str else repr(raw)
+            out["refused"].append({"path": shown[:300], "reason": refusal})
+        else:
+            out["matches"].append({"path": raw, "pattern": pattern})
+    if out["refused"]:
+        out["reason"] = "not every changed path is Mind-class: " + "; ".join(
+            f"{row['path']!r}: {row['reason']}" for row in out["refused"]
+        )
+        return out
+    if diff_text is None:
+        out["mind_class"] = True
+        out["reason"] = (
+            "every changed path matches a documented Mind-class pattern "
+            "(diff headers not checked)"
+        )
+        return out
+    header = _diff_header_paths(diff_text)
+    if header["error"]:
+        out["reason"] = "the diff cannot confirm the changed paths: " + header["error"]
+        return out
+    listed = {row["path"] for row in out["matches"]}
+    out["only_in_diff"] = sorted(header["paths"] - listed)
+    out["only_in_changed_paths"] = sorted(listed - header["paths"])
+    if out["only_in_diff"] or out["only_in_changed_paths"]:
+        out["reason"] = "the diff headers and the changed paths name different files"
+        return out
+    out["diff_checked"] = True
+    out["mind_class"] = True
+    out["reason"] = (
+        "every changed path matches a documented Mind-class pattern and the diff "
+        "headers name the same files"
+    )
+    return out

@@ -4247,3 +4247,380 @@ def test_rco_neutral_record_matrix_in_bridge_consensus() -> None:
                     assert report["ok"] is expect_ok, (case, report["reasons"])
                     if not expect_ok:
                         assert _cause_b_rco_vetoed(report, agent), case
+
+
+# --- Rule 14a Mind-class lane: wholly Mind-class diff merges on two identities -
+from tools.idle_consensus_auto_merge import (  # noqa: E402
+    MIND_CLASS_LANE,
+    verify_mind_class_consensus,
+)
+
+MIND_PATHS = ["sandbox/mind/reader.py", "tools/wd_mind_reader.py"]
+MIND_TASK = "idle-consensus-001"
+PATH_BLOCKER = "path gate failed: paths not on allowlist"
+
+
+def _mind_diff(paths: list[str]) -> str:
+    return "".join(
+        f"diff --git a/{p} b/{p}\nindex 1111111..2222222 100644\n"
+        f"--- a/{p}\n+++ b/{p}\n@@ -1 +1 @@\n-old\n+new\n"
+        for p in paths
+    )
+
+
+def _mind_status(**overrides) -> dict:
+    paths = overrides.pop("changed_paths", list(MIND_PATHS))
+    base = dict(author_agent="fable-5", changed_paths=paths, diff_text=_mind_diff(paths))
+    base.update(overrides)
+    return _status(**base)
+
+
+def _mind_vote(agent: str, status: str, minute: int, *, head: str = HEAD, type_: str = "decision") -> dict:
+    return _bridge_event(
+        agent=agent, type_=type_, status=status, ts=f"2026-11-16T08:{minute:02d}:00Z",
+    ) | {"payload": {"exact_head": head, "pr": 477}}
+
+
+def _mind_events(
+    *, author: str = "fable-5", lead: bool = True, tools: bool = False,
+    rcos: tuple[str, ...] = ("claude-rco-1",), head: str = HEAD,
+) -> list[dict]:
+    rows = [_claim(author, MIND_TASK, ts="2026-11-16T08:00:00Z")]
+    if lead:
+        rows.append(_mind_vote("codex-lead-1", "build_consensus_pass", 1, head=head))
+    if tools:
+        rows.append(_mind_vote("codex-tools-1", "build_consensus_pass", 2, head=head))
+    rows.extend(_mind_vote(rco, "rco_pass", 3 + i, head=head) for i, rco in enumerate(rcos))
+    return rows
+
+
+def _mind_gate(tmp_path: Path, *, events: list[dict] | None = None, **over) -> dict:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    kw = dict(
+        pr_status=_mind_status(),
+        expected_head=HEAD,
+        expected_base_sha=BASE,
+        consensus_proposal_id=MIND_TASK,
+        receipt_bundle_path="docs/receipts/manifest.json",
+        events_path=_events_path(tmp_path, _mind_events() if events is None else events),
+        bridge_task_id=MIND_TASK,
+        require_bridge_consensus=True,
+    )
+    kw.update(over)
+    return evaluate_auto_merge_gate(**kw)
+
+
+def test_mind_lane_admits_lead_plus_one_rco_without_a_tools_vote(tmp_path: Path) -> None:
+    report = _mind_gate(tmp_path)
+    assert report["decision"] == "auto_merge_plan_ready", report["reasons"]
+    lane, consensus = report["mind_class_lane"], report["bridge_consensus"]
+    assert lane["engaged"] is True and lane["policy"] == MIND_CLASS_LANE
+    assert report["path_gate"]["allowed"] is False      # sandbox/mind/** is off the allowlist
+    assert lane["path_gate_lifted"] is True
+    assert lane["classification"]["mind_class"] is True
+    assert lane["classification"]["diff_checked"] is True
+    assert consensus["ok"] is True and consensus["consensus_lane"] == MIND_CLASS_LANE
+    assert consensus["required_identities"] == [
+        {"role": "lead", "agent": "codex-lead-1"},
+        {"role": "rco", "agent": "claude-rco-1"},
+    ]
+    tools_row = consensus["identities"]["build_tools"]
+    assert tools_row["required"] is False and tools_row["direct_approval"] is False
+    assert consensus["approver_ref"]["agent"] == "codex-lead-1"
+    assert consensus["rco_pass_ref"]["agent"] == "claude-rco-1"
+    assert consensus["legacy"]["ok"] is False           # the three-identity gate did not pass
+
+
+def test_mind_lane_same_votes_on_a_non_mind_diff_keep_the_unchanged_gate(tmp_path: Path) -> None:
+    report = _mind_gate(tmp_path, pr_status=_status(author_agent="fable-5"))
+    assert "mind_class_lane" not in report
+    assert "consensus_lane" not in report["bridge_consensus"]
+    assert report["decision"] == "operator_review_required"
+    assert any("build_tools" in reason for reason in report["reasons"])
+
+
+def test_mind_lane_on_allowlisted_mind_paths_lifts_nothing(tmp_path: Path) -> None:
+    report = _mind_gate(tmp_path, pr_status=_mind_status(changed_paths=["tools/wd_mind_reader.py"]))
+    assert report["decision"] == "auto_merge_plan_ready", report["reasons"]
+    assert report["path_gate"]["allowed"] is True
+    assert report["mind_class_lane"]["engaged"] is True
+    assert report["mind_class_lane"]["path_gate_lifted"] is False
+
+
+def test_mind_lane_lead_author_needs_a_second_rco_in_leads_place(tmp_path: Path) -> None:
+    status = _mind_status(author_agent="codex-lead-1")
+    # The author's own vote plus one RCO: the legacy author waiver is never a vote here.
+    one = _mind_gate(tmp_path / "one", pr_status=status, events=_mind_events(author="codex-lead-1"))
+    assert one["decision"] == "operator_review_required"
+    assert one["mind_class_lane"]["engaged"] is False
+    assert any("opposite-family" in reason for reason in one["mind_class_lane"]["reasons"])
+    assert "consensus_lane" not in one["bridge_consensus"]
+    # A Tools vote is the same family as Lead and does not fill Lead's place.
+    tools = _mind_gate(
+        tmp_path / "tools", pr_status=status,
+        events=_mind_events(author="codex-lead-1", tools=True),
+    )
+    assert tools["mind_class_lane"]["engaged"] is False
+    assert tools["reasons"] == [PATH_BLOCKER]           # unchanged gate: operator for off-allowlist
+    two = _mind_gate(
+        tmp_path / "two", pr_status=status,
+        events=_mind_events(author="codex-lead-1", rcos=("claude-rco-1", "claude-rco-2")),
+    )
+    assert two["decision"] == "auto_merge_plan_ready", two["reasons"]
+    consensus = two["bridge_consensus"]
+    assert consensus["required_identities"] == [
+        {"role": "opposite_family_rco", "agent": "claude-rco-1"},
+        {"role": "rco", "agent": "claude-rco-2"},
+    ]
+    lead_row = consensus["identities"]["build_lead"]
+    assert lead_row["required"] is False and lead_row["is_author"] is True
+    assert lead_row["direct_approval"] is False         # self approval is never counted
+    assert consensus["approver_ref"]["agent"] == "claude-rco-1"
+    assert consensus["rco_pass_ref"]["agent"] == "claude-rco-2"
+
+
+def test_mind_lane_lead_author_with_tools_vote_on_allowlisted_paths_keeps_legacy_result(tmp_path: Path) -> None:
+    report = _mind_gate(
+        tmp_path,
+        pr_status=_mind_status(author_agent="codex-lead-1", changed_paths=["tools/wd_mind_reader.py"]),
+        events=_mind_events(author="codex-lead-1", tools=True),
+    )
+    assert report["decision"] == "auto_merge_plan_ready", report["reasons"]
+    assert report["mind_class_lane"]["engaged"] is False
+    assert "consensus_lane" not in report["bridge_consensus"]
+    assert report["bridge_consensus"]["build_author_slot_waivers"] == ["codex-lead-1"]
+
+
+@pytest.mark.parametrize(
+    ("author", "rcos", "ready", "rco_holder"),
+    [
+        ("codex-tools-1", ("claude-rco-1",), True, "claude-rco-1"),
+        ("claude-rco-1", ("claude-rco-1",), False, ""),         # an RCO never passes its own change
+        ("claude-rco-1", ("claude-rco-2",), True, "claude-rco-2"),
+        ("claude-rco-1", ("claude-rco-1", "claude-rco-2"), True, "claude-rco-2"),
+        ("claude-rco-2", ("claude-rco-2", "claude-rco-1"), True, "claude-rco-1"),
+    ],
+)
+def test_mind_lane_author_exclusion_is_separate_from_the_path_class(
+    tmp_path: Path, author: str, rcos: tuple[str, ...], ready: bool, rco_holder: str,
+) -> None:
+    report = _mind_gate(
+        tmp_path, pr_status=_mind_status(author_agent=author),
+        events=_mind_events(author=author, rcos=rcos),
+    )
+    assert report["mind_class_lane"]["engaged"] is ready, report["mind_class_lane"]["reasons"]
+    assert (report["decision"] == "auto_merge_plan_ready") is ready
+    if ready:
+        consensus = report["bridge_consensus"]
+        assert consensus["author_agent"] == author
+        assert consensus["required_identities"] == [
+            {"role": "lead", "agent": "codex-lead-1"},
+            {"role": "rco", "agent": rco_holder},
+        ]
+
+
+def test_mind_lane_lead_author_never_counts_the_same_rco_twice(tmp_path: Path) -> None:
+    events = _mind_events(author="codex-lead-1") + [_mind_vote("claude-rco-1", "rco_pass", 9)]
+    report = _mind_gate(tmp_path, pr_status=_mind_status(author_agent="codex-lead-1"), events=events)
+    assert report["mind_class_lane"]["engaged"] is False
+    assert report["decision"] == "operator_review_required"
+
+
+@pytest.mark.parametrize(
+    "changed_paths",
+    [
+        MIND_PATHS + ["tools/idle_daily_summary.py"],           # mixed diff
+        ["tools/wd_mind_idle_consensus_auto_merge.py"],         # gate code under a Mind spelling
+        ["sandbox/mind/reader.py", "CLAUDE.md"],                # governance
+        ["ops/windows/reboot/start-wd-agent.ps1"],              # shared launcher
+        ["tools/wd_mind_stage2_cutover.py"],                    # Stage-2
+        ["Tools/wd_mind_reader.py"],                            # case alias
+        ["tools" + chr(92) + "wd_mind_reader.py"],                           # backslash
+    ],
+)
+def test_mind_lane_never_applies_to_mixed_protected_or_misspelled_paths(
+    tmp_path: Path, changed_paths: list[str],
+) -> None:
+    report = _mind_gate(tmp_path, pr_status=_mind_status(changed_paths=changed_paths))
+    assert "mind_class_lane" not in report
+    assert "consensus_lane" not in report["bridge_consensus"]
+    assert report["decision"] == "operator_review_required"
+    # the unchanged gate refuses: no Tools vote, or (backslash) no canonical path at all
+    assert any(
+        "build_tools" in reason or "canonical repository path" in reason
+        for reason in report["reasons"]
+    )
+
+
+def _mind_veto(agent: str, minute: int) -> dict:
+    return _mind_vote(agent, "changes_requested", minute, type_="finding")
+
+
+def test_mind_lane_hidden_rename_source_falls_back_to_the_unchanged_gate(tmp_path: Path) -> None:
+    diff = (
+        "diff --git a/tools/idle_daily_summary.py b/tools/wd_mind_reader.py\n"
+        "similarity index 100%\nrename from tools/idle_daily_summary.py\n"
+        "rename to tools/wd_mind_reader.py\n"
+    )
+    report = _mind_gate(
+        tmp_path,
+        pr_status=_mind_status(changed_paths=["tools/wd_mind_reader.py"], diff_text=diff),
+    )
+    assert "mind_class_lane" not in report
+    assert report["decision"] == "operator_review_required"
+
+
+@pytest.mark.parametrize("veto_minute", [2, 9])              # before and after the other RCO's pass
+def test_mind_lane_one_rco_pass_never_outvotes_another_rcos_veto(tmp_path: Path, veto_minute: int) -> None:
+    events = sorted(
+        _mind_events() + [_mind_veto("claude-rco-2", veto_minute)],
+        key=lambda event: event["ts_utc"],
+    )
+    report = _mind_gate(tmp_path, events=events)
+    assert report["decision"] == "operator_review_required"
+    assert report["mind_class_lane"]["engaged"] is False
+    assert any("veto" in reason for reason in report["mind_class_lane"]["reasons"])
+    assert report["mind_class_lane"]["consensus"]["blocking_rco_agents"] == ["claude-rco-2"]
+
+
+def test_mind_lane_author_rco_veto_still_blocks(tmp_path: Path) -> None:
+    events = _mind_events(author="claude-rco-1", rcos=("claude-rco-2",)) + [_mind_veto("claude-rco-1", 9)]
+    report = _mind_gate(tmp_path, pr_status=_mind_status(author_agent="claude-rco-1"), events=events)
+    assert report["mind_class_lane"]["engaged"] is False
+    assert report["decision"] == "operator_review_required"
+
+
+@pytest.mark.parametrize("agent", ["codex-tools-1", "codex-lead-1"])
+def test_mind_lane_refuses_while_a_build_lane_block_is_active(tmp_path: Path, agent: str) -> None:
+    report = _mind_gate(tmp_path, events=_mind_events() + [_mind_veto(agent, 9)])
+    assert report["mind_class_lane"]["engaged"] is False
+    assert report["decision"] == "operator_review_required"
+
+
+def test_mind_lane_tools_block_followed_by_tools_pass_is_resolved(tmp_path: Path) -> None:
+    events = _mind_events() + [
+        _mind_veto("codex-tools-1", 9),
+        _mind_vote("codex-tools-1", "build_consensus_pass", 10),
+    ]
+    report = _mind_gate(tmp_path, events=events)
+    assert report["mind_class_lane"]["engaged"] is True, report["mind_class_lane"]["reasons"]
+
+
+def test_mind_lane_blocks_on_incomplete_accepted_queue_and_identity_mismatch(tmp_path: Path) -> None:
+    queue = _mind_gate(
+        tmp_path / "queue",
+        accepted_queue_checker=lambda **kwargs: {
+            "ok": False, "complete": False, "decision": "accepted_queue_incomplete",
+        },
+    )
+    assert queue["decision"] == "operator_review_required"
+    assert any("accepted bridge queue" in reason for reason in queue["reasons"])
+    events = _mind_events()
+    events[1]["agent_uuid"] = "00000000-0000-4000-8000-000000000000"     # not Lead's identity
+    forged = _mind_gate(tmp_path / "forged", events=events)
+    assert forged["mind_class_lane"]["engaged"] is False
+    assert forged["decision"] == "operator_review_required"
+    missing = _mind_gate(tmp_path / "missing", events_path=None)
+    assert "mind_class_lane" not in missing
+    assert missing["decision"] == "operator_review_required"
+
+
+def test_mind_lane_votes_for_another_head_never_count(tmp_path: Path) -> None:
+    other = "0" * 40
+    stale = _mind_gate(tmp_path / "stale", events=_mind_events(head=other))
+    assert stale["mind_class_lane"]["engaged"] is False
+    assert stale["decision"] == "operator_review_required"
+    moved = _mind_gate(tmp_path / "moved", expected_head=other)
+    assert moved["decision"] == "operator_review_required"
+    assert "exact head mismatch" in moved["reasons"]
+
+
+@pytest.mark.parametrize(
+    ("override", "needle"),
+    [
+        ({"pr_status": {"checks": []}}, "status checks snapshot is required"),
+        ({"pr_status": {"checks": [{"name": "unified", "state": "pending", "status": "", "conclusion": ""}]}},
+         "status checks not green"),
+        ({"pr_status": {"checks": [{"name": "unified", "state": "failure", "status": "", "conclusion": ""}]}},
+         "status checks not green"),
+        ({"receipt_bundle_path": ""}, "receipt_bundle_path is required"),
+        ({"pr_status": {"receipt_verified": False}}, "receipt bundle verification is required"),
+        ({"pr_status": {"mergeable": "dirty"}}, "mergeable state is not clean"),
+        ({"pr_status": {"is_draft": True}}, "PR must not be a draft"),
+    ],
+)
+def test_mind_lane_keeps_every_other_gate(tmp_path: Path, override: dict, needle: str) -> None:
+    kw = dict(override)
+    if "pr_status" in kw:
+        kw["pr_status"] = _mind_status(**kw["pr_status"])
+    report = _mind_gate(tmp_path, **kw)
+    assert report["mind_class_lane"]["engaged"] is True       # consensus and path class hold ...
+    assert report["decision"] == "operator_review_required"   # ... and the other gate still blocks
+    assert len(report["reasons"]) == 1 and needle in report["reasons"][0]
+
+
+def test_mind_lane_keeps_the_diff_content_gate(tmp_path: Path) -> None:
+    report = _mind_gate(tmp_path)
+    assert report["diff_gate"]["allowed"] is True
+    assert report["decision"] == "auto_merge_plan_ready"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        {"require_bridge_consensus": False},
+        {"standing_consensus_sign": True},
+        {"allow_lead_stall_failover": True},
+        {"review_policy": "rule12"},
+    ],
+)
+def test_mind_lane_is_inactive_in_every_other_gate_mode(tmp_path: Path, mode: dict) -> None:
+    kw = dict(mode)
+    if kw.get("review_policy") == "rule12":
+        kw["now_utc"] = datetime.now(timezone.utc)
+    report = _mind_gate(tmp_path, **kw)
+    assert "mind_class_lane" not in report
+    assert "consensus_lane" not in report["bridge_consensus"]
+    assert report["decision"] == "operator_review_required"   # off-allowlist path, no Tools vote
+
+
+def test_verify_mind_class_consensus_is_fail_closed_on_bad_input() -> None:
+    good = verify_mind_class_consensus(
+        events=_mind_events(), task_id=MIND_TASK, head_sha=HEAD, pr_number=477, author_agent="fable-5",
+    )
+    assert good["ok"] is True and good["decision"] == "mind_class_consensus_verified"
+    assert good["reasons"] == []
+    for kwargs in (
+        {"events": "not-a-list"},
+        {"events": []},
+        {"task_id": ""},
+        {"head_sha": "abc"},
+        {"author_agent": ""},
+        {"author_agent": "unknown-agent"},
+        {"pr_number": 0},
+    ):
+        call = dict(events=_mind_events(), task_id=MIND_TASK, head_sha=HEAD, pr_number=477, author_agent="fable-5")
+        call.update(kwargs)
+        result = verify_mind_class_consensus(**call)
+        assert result["ok"] is False, kwargs
+        assert result["decision"] == "mind_class_consensus_incomplete"
+        assert result["reasons"], kwargs
+        assert result["consensus_lane"] == MIND_CLASS_LANE
+
+
+def test_verify_mind_class_consensus_never_uses_a_non_roster_or_same_identity_vote() -> None:
+    def verify(events: list[dict], author: str = "fable-5") -> dict:
+        return verify_mind_class_consensus(
+            events=events, task_id=MIND_TASK, head_sha=HEAD, pr_number=477, author_agent=author,
+        )
+
+    # fable-5 is not an approver in this gate; a second vote of one RCO is one identity
+    assert verify(_mind_events(lead=False) + [_mind_vote("fable-5", "build_consensus_pass", 8)])["ok"] is False
+    assert verify(_mind_events(lead=False, rcos=("claude-rco-1", "claude-rco-2")))["ok"] is False
+    assert verify(_mind_events(lead=False, tools=True))["ok"] is False
+    assert verify(_mind_events(rcos=()))["ok"] is False
+    # an RCO's build-shaped status is not a pass
+    assert verify(_mind_events(rcos=()) + [_mind_vote("claude-rco-1", "build_consensus_pass", 8)])["ok"] is False
+    lead_author = verify(_mind_events(author="codex-lead-1", rcos=("claude-rco-1", "claude-rco-2")), "codex-lead-1")
+    assert lead_author["ok"] is True
+    assert {row["agent"] for row in lead_author["required_identities"]} == {"claude-rco-1", "claude-rco-2"}

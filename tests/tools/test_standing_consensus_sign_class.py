@@ -354,3 +354,220 @@ def test_unenrolled_third_rco_cannot_replace_a_real_standing_voice():
     }
     # A field in a caller report is not operator-anchored actual enrollment.
     assert _eval(bridge_consensus=bc)["admitted"] is False
+
+
+# --- Rule 14 Mind-class path list: mechanical, separate from classify_ab -----
+import re as _re
+from pathlib import Path as _Path
+
+from tools.check_standing_consensus_sign_class import (
+    MIND_CLASS_PATTERNS,
+    classify_mind_class,
+)
+
+MIND_CLASS_EXAMPLES = {
+    "sandbox/mind/**": ["sandbox/mind/reader.py", "sandbox/mind/deep/er/index.json"],
+    "configs/mind/**": ["configs/mind/reader.json", "configs/mind/a/b.yaml"],
+    "tools/wd_q4_*": ["tools/wd_q4_transport.py"],
+    "tests/tools/test_wd_q4_*": ["tests/tools/test_wd_q4_transport.py"],
+    "ops/windows/reboot/Get-WdQ4*.ps1": ["ops/windows/reboot/Get-WdQ4Status.ps1"],
+    "ops/windows/reboot/Invoke-WdQ4*.ps1": ["ops/windows/reboot/Invoke-WdQ4Read.ps1"],
+    "tools/wd_mind_*": ["tools/wd_mind_reader.py"],
+    "tools/wd_bridge_mind*": ["tools/wd_bridge_mind_session.py"],
+    "tools/bridge_mind_workspace.py": ["tools/bridge_mind_workspace.py"],
+    "tests/tools/test_wd_mind_*": ["tests/tools/test_wd_mind_reader.py"],
+    "tests/tools/test_wd_bridge_mind*": ["tests/tools/test_wd_bridge_mind_session.py"],
+    "tests/tools/test_mind_*": ["tests/tools/test_mind_reader.py"],
+    "tests/tools/test_bridge_mind_workspace.py": ["tests/tools/test_bridge_mind_workspace.py"],
+    "tests/windows/wd_mind_*": ["tests/windows/wd_mind_startup.Tests.ps1"],
+    "ops/windows/reboot/Get-WdMind*.ps1": ["ops/windows/reboot/Get-WdMindStatus.ps1"],
+    "ops/windows/reboot/Invoke-WdMind*.ps1": ["ops/windows/reboot/Invoke-WdMindRead.ps1"],
+    "ops/windows/reboot/Start-WdMind*.ps1": ["ops/windows/reboot/Start-WdMindReader.ps1"],
+}
+
+
+def _mind_git_diff(*paths: str, renames: tuple[tuple[str, str], ...] = ()) -> str:
+    text = "".join(
+        f"diff --git a/{p} b/{p}\nindex 1111111..2222222 100644\n"
+        f"--- a/{p}\n+++ b/{p}\n@@ -1 +1 @@\n-old\n+new\n"
+        for p in paths
+    )
+    return text + "".join(
+        f"diff --git a/{old} b/{new}\nsimilarity index 100%\n"
+        f"rename from {old}\nrename to {new}\n"
+        for old, new in renames
+    )
+
+
+def test_mind_class_code_list_equals_the_documented_rule14_list() -> None:
+    text = (_Path(__file__).resolve().parents[2] / "CLAUDE.md").read_text(encoding="utf-8")
+    start = text.index("**Mind-class** = a change whose every changed path")
+    end = text.index("The patterns added on 2026-11-14 take", start)
+    documented = _re.findall(r"`([^`]+)`", text[start:end])
+    assert documented == list(MIND_CLASS_PATTERNS)
+    assert set(MIND_CLASS_EXAMPLES) == set(MIND_CLASS_PATTERNS)
+
+
+@pytest.mark.parametrize(
+    ("pattern", "path"),
+    [(pattern, path) for pattern, paths in MIND_CLASS_EXAMPLES.items() for path in paths],
+)
+def test_mind_class_admits_every_documented_whole_file_pattern(pattern: str, path: str) -> None:
+    report = classify_mind_class([path])
+    assert report["mind_class"] is True, report
+    assert report["matches"] == [{"path": path, "pattern": pattern}]
+    assert report["refused"] == []
+    assert report["diff_checked"] is False
+
+
+def test_mind_class_whole_diff_of_many_patterns_is_admitted_with_matching_diff() -> None:
+    paths = sorted(path for paths in MIND_CLASS_EXAMPLES.values() for path in paths)
+    report = classify_mind_class(paths, _mind_git_diff(*paths))
+    assert report["mind_class"] is True, report
+    assert report["diff_checked"] is True
+    assert [row["path"] for row in report["matches"]] == paths
+
+
+MIND_CLASS_REFUSED_PATHS = [
+    # (a)-class, governance, gate code and Stage-2 under a Mind spelling
+    "CLAUDE.md",
+    ".agent-bridge/bin/Get-WdMindStatus.ps1",
+    "tools/wd_mind_idle_consensus_auto_merge.py",
+    "sandbox/mind/check_rco_pass_present.py",
+    "sandbox/mind/merge_with_bridge_receipt.py",
+    "tests/tools/test_wd_mind_conformance.py",
+    "tools/wd_mind_token_budget.py",
+    "configs/mind/credential_store.json",
+    "tools/wd_mind_stage2_cutover.py",
+    "sandbox/mind/atomic_flip.py",
+    # multi-purpose launcher and installer files are never Mind-class
+    "ops/windows/reboot/start-wd-agent.ps1",
+    "ops/windows/reboot/start-wd-tools-consumer.ps1",
+    "ops/windows/reboot/Deploy-WdRebootBundle.ps1",
+    "ops/windows/reboot/bridge-code-files.json",
+    "ops/windows/reboot/Get-WdFleetStatus.ps1",
+    # near misses of a documented pattern
+    "tools/idle_daily_summary.py",
+    "tools/wd_mind_dir/reader.py",
+    "tools/sub/wd_mind_reader.py",
+    "ops/windows/reboot/sub/Get-WdMindStatus.ps1",
+    "ops/windows/reboot/Get-WdMindStatus.ps1.bak",
+    "ops/windows/reboot/Get-WdMindStatus.psm1",
+    "sandbox/mind",
+    "sandbox/minds/reader.py",
+    "tests/tools/test_minder.py",
+    # spellings that are never normalised into an allowed path
+    "Tools/wd_mind_reader.py",
+    "tools/WD_MIND_reader.py",
+    "SANDBOX/mind/reader.py",
+    "ops/windows/reboot/get-wdmindstatus.ps1",
+    "tools" + chr(92) + "wd_mind_reader.py",
+    "/tools/wd_mind_reader.py",
+    "C:/repo/tools/wd_mind_reader.py",
+    "./tools/wd_mind_reader.py",
+    "tools/./wd_mind_reader.py",
+    "tools/../tools/wd_mind_reader.py",
+    "sandbox/mind/../../CLAUDE.md",
+    "tools//wd_mind_reader.py",
+    " tools/wd_mind_reader.py",
+    "tools/wd_mind_reader.py ",
+    "tools/wd_mind_reader.py.",
+    "sandbox/mind/",
+    "tools/wd_mind_reader.py:stream",
+    "sandbox/mind/reader~1.py",
+    "sandbox/mind/nul.txt",
+    "sandbox/mind/COM1",
+    "sandbox/mind/caf\u00e9.py",
+    "sandbox/mind/reader.py\n",
+    "sandbox/mind/a b.py",
+    "",
+    None,
+    7,
+]
+
+
+@pytest.mark.parametrize("path", MIND_CLASS_REFUSED_PATHS)
+def test_mind_class_refuses_other_paths_and_spellings(path: object) -> None:
+    alone = classify_mind_class([path])
+    assert alone["mind_class"] is False, alone
+    assert alone["matches"] == [] and len(alone["refused"]) == 1
+    # one such path makes a mixed diff: never Mind-class
+    mixed = classify_mind_class(["tools/wd_mind_reader.py", path])
+    assert mixed["mind_class"] is False, mixed
+
+
+@pytest.mark.parametrize(
+    "changed_paths",
+    [[], (), None, "tools/wd_mind_reader.py", {"tools/wd_mind_reader.py"}, 7,
+     ["sandbox/mind/reader.py", "sandbox/mind/reader.py"],
+     ["sandbox/mind/Reader.py", "sandbox/mind/reader.py"]],
+)
+def test_mind_class_refuses_empty_malformed_repeated_or_aliased_lists(changed_paths: object) -> None:
+    report = classify_mind_class(changed_paths)
+    assert report["mind_class"] is False, report
+    assert report["reason"]
+
+
+def test_mind_class_leaves_classify_ab_unchanged() -> None:
+    # Mind-class is its own lane; classify_ab keeps treating these paths as before.
+    for paths in MIND_CLASS_EXAMPLES.values():
+        assert classify_ab(paths)["ab_class"] == "a"
+
+
+def test_mind_class_rename_needs_both_endpoints_to_be_mind_class() -> None:
+    old, new, other = "tools/wd_mind_old.py", "tools/wd_mind_new.py", "tools/idle_daily_summary.py"
+    inside = classify_mind_class([new, old], _mind_git_diff(renames=((old, new),)))
+    assert inside["mind_class"] is True, inside
+    # a rename out of non-Mind code: the listed source refuses by its path ...
+    listed = classify_mind_class([other, new], _mind_git_diff(renames=((other, new),)))
+    assert listed["mind_class"] is False
+    # ... and a path list that leaves the source out disagrees with the diff headers
+    hidden = classify_mind_class([new], _mind_git_diff(renames=((other, new),)))
+    assert hidden["mind_class"] is False
+    assert hidden["diff_checked"] is False
+    assert other in hidden["only_in_diff"]
+
+
+MIND_PATH = "tools/wd_mind_reader.py"
+
+
+@pytest.mark.parametrize(
+    "diff_text",
+    [
+        "",                                                     # no git file header at all
+        "+ def helper():\n+     return 1\n",                    # content without headers
+        _mind_git_diff(MIND_PATH, "tools/idle_daily_summary.py"),   # an extra file
+        _mind_git_diff("sandbox/mind/other.py"),                # another file
+        f'diff --git "a/{MIND_PATH}" "b/{MIND_PATH}"\n',        # quoted header
+        f"diff --git a/tools/x.py b/{MIND_PATH}\n",             # rename header without from/to
+        f"diff --git a/tools/x.py b/{MIND_PATH}\nrename to {MIND_PATH}\n",
+        f"diff --git a/tools/x.py b/{MIND_PATH}\nrename from tools/y.py\nrename to {MIND_PATH}\n",
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\nnew file mode 120000\n",    # symlink
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\nold mode 100644\nnew mode 120000\n",
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\nindex 1111111..2222222 120000\n",
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\nnew file mode 160000\n",    # submodule
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\ndeleted file mode 120000\n",
+        b"diff --git a/x b/x\n",
+        7,
+    ],
+)
+def test_mind_class_refuses_a_diff_that_does_not_name_exactly_the_changed_paths(diff_text: object) -> None:
+    report = classify_mind_class([MIND_PATH], diff_text)
+    assert report["mind_class"] is False, report
+    assert report["diff_checked"] is False
+    assert report["reason"]
+
+
+def test_mind_class_diff_headers_ignore_hunk_content_and_cover_mode_and_binary_changes() -> None:
+    paths = ["sandbox/mind/a.bin", "sandbox/mind/b.py", "sandbox/mind/c.sh"]
+    diff = (
+        "diff --git a/sandbox/mind/a.bin b/sandbox/mind/a.bin\nindex 1111111..2222222 100644\n"
+        "Binary files a/sandbox/mind/a.bin and b/sandbox/mind/a.bin differ\n"
+        "diff --git a/sandbox/mind/b.py b/sandbox/mind/b.py\nindex 1111111..2222222 100644\n"
+        "--- a/sandbox/mind/b.py\n+++ b/sandbox/mind/b.py\n@@ -1,3 +1,3 @@\n"
+        " diff --git a/tools/x.py b/tools/x.py\n-rename from tools/x.py\n+new file mode 120000\n"
+        "diff --git a/sandbox/mind/c.sh b/sandbox/mind/c.sh\nold mode 100644\nnew mode 100755\n"
+    )
+    report = classify_mind_class(paths, diff)
+    assert report["mind_class"] is True, report
+    assert report["diff_checked"] is True

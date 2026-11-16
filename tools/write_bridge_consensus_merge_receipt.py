@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from tools.idle_consensus_auto_merge import (  # noqa: E402
+    MIND_CLASS_LANE,
     REVIEW_POLICIES,
     REVIEW_POLICY_LEGACY,
     REVIEW_POLICY_RULE12,
@@ -247,6 +248,30 @@ def write_bridge_consensus_merge_receipt(
                 "exit_code": 2,
             }
         )
+    lane_report = gate_report.get("mind_class_lane")
+    lane_engaged = (
+        isinstance(lane_report, Mapping)
+        and lane_report.get("engaged") is True
+        and lane_report.get("policy") == MIND_CLASS_LANE
+    )
+    lane_evidence = gate_report.get("mind_class_lane_evidence")
+    if (
+        _is_mind_class_lane(bridge_consensus) != lane_engaged
+        or isinstance(lane_evidence, Mapping) != lane_engaged
+    ):
+        # A Rule 14a verdict without its own lane report (or the reverse) is
+        # never written as a receipt.
+        raise BridgeConsensusMergeReceiptError(
+            {
+                "decision": "mind_class_lane_report_inconsistent",
+                "ok": False,
+                "errors": [
+                    "the Mind-class lane report and the consensus verdict disagree"
+                ],
+                "gate_report": gate_report,
+                "exit_code": 2,
+            }
+        )
 
     payload = _receipt_payload(
         pr_status=pr_status,
@@ -404,6 +429,23 @@ def _receipt_payload(
             # The pool-holder tuple the merge executor's fresh gate must
             # reproduce (operator 2026-10-10 06:56Z pool fallback).
             payload["rule12_review"]["pool_rco_fallback"] = dict(pool_evidence)
+    if _is_mind_class_lane(bridge_consensus):
+        # Rule 14a receipts name the lane and keep its mechanical path
+        # classification, so a consumer can re-derive the path class and the two
+        # required identities. The lane's consensus is recorded once, under
+        # bridge_consensus; other payloads are unchanged.
+        lane = gate_report.get("mind_class_lane")
+        payload["consensus_lane"] = MIND_CLASS_LANE
+        payload["mind_class_lane"] = {
+            key: value
+            for key, value in (dict(lane) if isinstance(lane, Mapping) else {}).items()
+            if key != "consensus"
+        }
+        # The exact tuple the merge executor's fresh gate must reproduce: lane,
+        # both required identities, both approval events and the path classes.
+        payload["mind_class_lane_evidence"] = dict(
+            gate_report.get("mind_class_lane_evidence") or {}
+        )
     return payload
 
 
@@ -423,6 +465,10 @@ def _is_rule12(bridge_consensus: Mapping[str, Any]) -> bool:
     return bridge_consensus.get("review_policy") == REVIEW_POLICY_RULE12
 
 
+def _is_mind_class_lane(bridge_consensus: Mapping[str, Any]) -> bool:
+    return bridge_consensus.get("consensus_lane") == MIND_CLASS_LANE
+
+
 def _write_receipt_bundle(
     *,
     payload: Mapping[str, Any],
@@ -433,12 +479,27 @@ def _write_receipt_bundle(
     pr_number = str(payload.get("pr_number", "unknown"))
     head = str(payload["head_sha"])
     rule12 = _is_rule12(bridge_consensus)
-    consensus_verifier = (
-        "bridge_rule12_review_eligibility" if rule12 else "verify_bridge_consensus"
+    mind_lane = _is_mind_class_lane(bridge_consensus)
+    lane_payload = payload.get("mind_class_lane")
+    mind_path_lifted = (
+        mind_lane
+        and isinstance(lane_payload, Mapping)
+        and lane_payload.get("path_gate_lifted") is True
     )
+    consensus_verifier = (
+        "bridge_rule12_review_eligibility"
+        if rule12
+        else "verify_mind_class_consensus"
+        if mind_lane
+        else "verify_bridge_consensus"
+    )
+    # A Rule 14a merge has two required identities and is never labelled as the
+    # three-identity Rule 9a consensus.
     consensus_reason = (
         "rule12:best_available_consensus"
         if rule12
+        else "rule14a:mind_class_two_identity_head_bound"
+        if mind_lane
         else "bridge_consensus:three_identity_head_bound"
     )
     grok_evidence = _grok_evidence(payload) if rule12 else None
@@ -457,6 +518,12 @@ def _write_receipt_bundle(
         if rule12
         else bridge_consensus["rco_pass_ref"]
     )
+    if mind_lane:
+        # Both required Rule 14a approvals feed the decision digest.
+        rco_decision_basis = {
+            "rco_pass_ref": bridge_consensus["rco_pass_ref"],
+            "approver_ref": bridge_consensus["approver_ref"],
+        }
     if grok_evidence is not None:
         rco_decision_basis = {
             "rco_pass_refs": rco_decision_basis,
@@ -477,6 +544,7 @@ def _write_receipt_bundle(
         verifier_path=[
             "idle_consensus_auto_merge_gate",
             consensus_verifier,
+            *(["classify_mind_class"] if mind_lane else []),
             *(["rule12_grok_ledger_adapter"] if grok_evidence is not None else []),
             "check_rco_pass_present",
             "check_bridge_changes_requested",
@@ -486,6 +554,8 @@ def _write_receipt_bundle(
         policy_version=(
             "policy:rule12_best_available_consensus_v1"
             if rule12
+            else "policy:rule14a_mind_class_fast_path_v1"
+            if mind_lane
             else "policy:bridge_consensus_approval_v1"
         ),
         charter_version="charter:idle_autonomy_v1",
@@ -495,6 +565,7 @@ def _write_receipt_bundle(
             consensus_reason,
             "ci:green",
             ("path_gate:explicit_operator_exception" if payload.get("operator_path_exception")
+             else "path_gate:rule14a_mind_class_whole_diff" if mind_path_lifted
              else "path_gate:allowlist_clean"),
             *rco_reason_codes,
             "merge:match_head_commit",
@@ -577,6 +648,15 @@ def _solver_selection(
         return [agent for agent in holders if agent] or [
             "bridge_rule12_review_eligibility"
         ]
+    if _is_mind_class_lane(bridge_consensus):
+        # The two required Rule 14a identities, never a third pro forma one.
+        required = bridge_consensus.get("required_identities")
+        holders = [
+            str(row.get("agent", ""))
+            for row in (required if isinstance(required, list) else [])
+            if isinstance(row, Mapping)
+        ]
+        return [agent for agent in holders if agent] or ["verify_mind_class_consensus"]
     identities = bridge_consensus.get("identities")
     if not isinstance(identities, Mapping):
         return ["verify_bridge_consensus"]

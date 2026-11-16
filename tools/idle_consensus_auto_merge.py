@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -55,6 +56,7 @@ from tools.bridge_rule12_review_eligibility import (  # noqa: E402
     RCO_PASS_STATUSES as RULE12_RCO_PASS_STATUSES,
     RCO_POOL_FALLBACK as RULE12_RCO_POOL_FALLBACK,
     RECOGNIZED_RCOS as RULE12_RECOGNIZED_RCOS,
+    REVIEW_POOL as RULE12_REVIEW_POOL,
     _event_head as _rule12_event_head,
     _evidence_time_ok as _rule12_evidence_time_ok,
     _is_pass_status as _rule12_is_pass_status,
@@ -75,6 +77,7 @@ from tools.pr_status_snapshot import (  # noqa: E402
     build_pr_status_snapshot,
 )
 from tools.check_standing_consensus_sign_class import (  # noqa: E402
+    classify_mind_class,
     evaluate_standing_consensus_sign,
 )
 from waggledance.core.idle_consensus_charter import (  # noqa: E402
@@ -100,6 +103,12 @@ MERGEABLE_STATES = {"clean", "mergeable", "MERGEABLE", "CLEAN"}
 # A fail-closed three-identity consensus replaces the per-action operator
 # query for autonomous MERGE. Any missing/duplicate/stale/forged signal
 # refuses; silence never default-allows.
+# CLAUDE.md Rule 14a: a wholly Mind-class diff may merge on two identities
+# (``verify_mind_class_consensus``). The lane lifts only this charter refusal.
+MIND_CLASS_LANE = "rule14a_mind_class"
+MIND_CLASS_LANE_SCHEMA = "wd.rule14a-mind-class-lane.v1"
+MIND_CLASS_LANE_EVIDENCE_SCHEMA = "wd.rule14a-mind-class-lane-evidence.v1"
+_PATH_GATE_OFF_ALLOWLIST_REASON = "paths not on allowlist"
 BRIDGE_CONSENSUS_LEAD = "codex-lead-1"
 BRIDGE_CONSENSUS_TOOLS = "codex-tools-1"
 BRIDGE_CONSENSUS_RCO = "claude-rco-1"
@@ -652,6 +661,36 @@ def evaluate_auto_merge_gate(
     ):
         blockers.append("receipt bundle verification is required before merge")
 
+    # Rule 14a Mind-class lane. Active only in the plain bridge-consensus mode;
+    # every other mode (no consensus requirement, rule12, standing sign, lead
+    # failover) keeps its own outcome. The report exists only for a wholly
+    # Mind-class diff, so every other report stays unchanged.
+    mind_class_lane = _evaluate_mind_class_lane(
+        active=(
+            require_bridge_consensus
+            and review_policy == REVIEW_POLICY_LEGACY
+            and not standing_consensus_sign
+            and not allow_lead_stall_failover
+        ),
+        events=events,
+        events_path=events_path,
+        task_id=bridge_gate_task_id,
+        head_sha=head_sha,
+        pr_number=pr_number,
+        author_agent=author_agent,
+        changed_paths=changed_paths,
+        diff_text=diff_text,
+        path_gate=path_gate,
+    )
+    if mind_class_lane is not None and mind_class_lane["engaged"] is True:
+        bridge_consensus = mind_class_lane["consensus"]
+        if mind_class_lane["path_gate_lifted"] is True:
+            blockers = [
+                blocker
+                for blocker in blockers
+                if blocker != f"path gate failed: {_PATH_GATE_OFF_ALLOWLIST_REASON}"
+            ]
+
     if require_bridge_consensus:
         if events_path is None:
             blockers.append("bridge events path is required for bridge consensus")
@@ -706,6 +745,18 @@ def evaluate_auto_merge_gate(
     )
     base["author_resolution"] = author_resolution
     base["review_policy"] = review_policy
+    if mind_class_lane is not None:
+        # Only present for a wholly Mind-class diff, so other reports stay unchanged.
+        base["mind_class_lane"] = mind_class_lane
+        # The exact tuple the receipt binds; the executor refuses a merge whose
+        # fresh gate does not reproduce it. None while the lane is not engaged.
+        base["mind_class_lane_evidence"] = _mind_class_lane_evidence(
+            lane=mind_class_lane,
+            task_id=bridge_gate_task_id,
+            pr_number=pr_number,
+            base_sha=expected_base_sha or snapshot_base_sha,
+            head_sha=head_sha,
+        )
     if pool_rco_slot_lift is not None:
         # Only present under rule12, so legacy reports stay unchanged.
         base["pool_rco_slot_lift"] = pool_rco_slot_lift
@@ -2376,6 +2427,453 @@ def _evaluate_bridge_consensus(
                 *result["reasons"],
             ]
     return result
+
+
+def verify_mind_class_consensus(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    task_id: str,
+    head_sha: str,
+    pr_number: int | None = None,
+    author_agent: str = "",
+) -> dict[str, Any]:
+    """Fail-closed Rule 14a consensus for a wholly Mind-class diff: two identities.
+
+    The verdict is derived from the structured result of the unchanged
+    ``verify_bridge_consensus`` (no lead-stall failover), so approval shape,
+    exact-head binding, identity binding, author exclusion and the per-identity
+    RCO veto are computed by the same code as for every other merge. Only the
+    set of REQUIRED positive approvals differs:
+
+    * Lead's own head-bound build approval; or, when Lead is the author, an
+      approver of the model family opposite to Lead in Lead's place: an
+      ordinary-pool lane that is not a recognized RCO (its own head-bound build
+      approval) or a second eligible recognized RCO (its pass). The legacy
+      author waiver is never read as a vote;
+    * one eligible recognized RCO pass, from an identity other than the approver.
+
+    A Tools approval is not required and is never invented. An unresolved block
+    from Lead, Tools or an opposite-family pool reviewer, and a veto from any
+    recognized RCO, still refuse. Only Lead, the opposite-family lanes of the
+    ordinary review pool and recognized RCOs can approve here; Grok cannot.
+    Silence never default-allows.
+    """
+    legacy = verify_bridge_consensus(
+        events=events,
+        task_id=task_id,
+        head_sha=head_sha,
+        pr_number=pr_number,
+        author_agent=author_agent,
+    )
+    reasons: list[str] = []
+    legacy_reasons = [str(reason) for reason in legacy.get("reasons") or []]
+    result: dict[str, Any] = {
+        "ok": False,
+        "decision": "mind_class_consensus_incomplete",
+        "consensus_lane": MIND_CLASS_LANE,
+        "reasons": reasons,
+        "head_sha": head_sha if type(head_sha) is str else "",
+        "canonical_task_id": task_id if type(task_id) is str else "",
+        "required_identities": [],
+        "identities": {},
+        "approver_ref": None,
+        "rco_pass_ref": None,
+        "rco_pass_event_sha256": "",
+        "recognized_rco_agents": list(legacy.get("recognized_rco_agents") or []),
+        "eligible_rco_agents": list(legacy.get("eligible_rco_agents") or []),
+        "author_agent": str(legacy.get("author_agent") or ""),
+        "blocking_rco_agents": sorted(
+            str(agent) for agent in legacy.get("blocking_rco_agents") or []
+        ),
+        "ignored_identity_mismatch_events": list(
+            legacy.get("ignored_identity_mismatch_events") or []
+        ),
+        "legacy": {
+            "ok": legacy.get("ok") is True,
+            "decision": str(legacy.get("decision", "")),
+            "reasons": legacy_reasons,
+        },
+    }
+    identities = legacy.get("identities")
+    identities = identities if isinstance(identities, Mapping) else {}
+    lead = identities.get("build_lead")
+    tools = identities.get("build_tools")
+    rco = identities.get("rco")
+    if legacy.get("decision") not in (
+        "bridge_consensus_verified",
+        "bridge_consensus_incomplete",
+    ) or not all(isinstance(row, Mapping) for row in (lead, tools, rco)):
+        reasons.append(
+            "consensus evidence was refused before any identity was read: "
+            + "; ".join(legacy_reasons or [str(legacy.get("decision", "unknown"))])
+        )
+        return result
+    assert isinstance(lead, Mapping) and isinstance(tools, Mapping)
+    assert isinstance(rco, Mapping)
+    lead_agent = str(lead.get("agent", ""))
+    tools_agent = str(tools.get("agent", ""))
+    author = result["author_agent"]
+    lead_is_author = lead_agent == author
+    if result["blocking_rco_agents"]:
+        reasons.append(
+            "recognized RCO veto blocks consensus: "
+            + ", ".join(result["blocking_rco_agents"])
+        )
+    for role, row in (("build_lead", lead), ("build_tools", tools)):
+        if row.get("block_index") is not None and row.get("direct_approval") is not True:
+            reasons.append(f"{role} ({row.get('agent')}): an unresolved block is active")
+
+    by_agent = rco.get("by_agent")
+    by_agent = by_agent if isinstance(by_agent, Mapping) else {}
+    eligible_rcos = set(result["eligible_rco_agents"])
+    enrollment_context: Any = None
+
+    def rco_counts(agent: Any, row: Any) -> bool:
+        nonlocal enrollment_context
+        if (
+            type(agent) is not str
+            or agent not in eligible_rcos
+            or agent == author
+            or not isinstance(row, Mapping)
+            or row.get("eligible") is not True
+            or row.get("approved") is not True
+            or type(row.get("approval_index")) is not int
+        ):
+            return False
+        if agent != "claude-rco-3":
+            return True
+        if enrollment_context is None:
+            enrollment_context = load_rco_enrollment_context()
+        return rco_event_enrollment_matches(
+            row.get("enrollment_event") or {}, context=enrollment_context
+        )
+
+    approved_rcos = sorted(
+        (agent for agent, row in by_agent.items() if rco_counts(agent, row)),
+        key=lambda agent: by_agent[agent]["approval_index"],
+        reverse=True,
+    )
+    rco_agent = str(rco.get("agent", ""))
+    rco_ref = legacy.get("rco_pass_ref")
+    rco_ok = (
+        not result["blocking_rco_agents"]
+        and rco.get("approved") is True
+        and isinstance(rco_ref, Mapping)
+        and rco_ref.get("agent") == rco_agent
+        and rco_agent in approved_rcos
+    )
+    if not rco_ok:
+        reasons.append(
+            f"rco (recognized non-author RCO): no head-bound approval at {head_sha}"
+        )
+
+    approver: dict[str, Any] | None = None
+    pool_reviewers: dict[str, dict[str, Any]] = {}
+    if lead_is_author:
+        lead_family = RULE12_FAMILIES.get(lead_agent)
+        recognized = set(result["recognized_rco_agents"])
+        # Rule 14a: "another opposite-family approver when Lead authored the
+        # change". Two kinds qualify, both of the model family opposite to Lead:
+        # an ordinary-pool lane that is not a recognized RCO, by its own
+        # head-bound build approval, or a second eligible recognized RCO, by its
+        # pass. Tools is Lead's family and Grok is not in the pool, so neither
+        # can stand in for Lead here.
+        for agent in RULE12_REVIEW_POOL:
+            if (
+                lead_family is None
+                or agent in recognized
+                or agent in (lead_agent, tools_agent, author)
+                or RULE12_FAMILIES.get(agent) in (None, lead_family)
+            ):
+                continue
+            pool_reviewers[agent] = _mind_pool_reviewer_row(
+                events=events,
+                task_id=task_id,
+                head_sha=head_sha,
+                pr_number=pr_number,
+                author_agent=author,
+                reviewer_agent=agent,
+                tools_agent=tools_agent,
+            )
+        for agent, row in pool_reviewers.items():
+            if row["block_index"] is not None and row["direct_approval"] is not True:
+                reasons.append(
+                    f"opposite-family reviewer ({agent}): an unresolved block is active"
+                )
+        pool_candidates = [
+            agent
+            for agent, row in pool_reviewers.items()
+            if row["direct_approval"] is True and type(row["approval_index"]) is int
+        ]
+        rco_candidates = [
+            agent
+            for agent in approved_rcos
+            if agent != rco_agent
+            and lead_family is not None
+            and RULE12_FAMILIES.get(agent) not in (None, lead_family)
+        ]
+        if rco_ok and pool_candidates:
+            approver = {
+                "role": "opposite_family_reviewer",
+                "agent": pool_candidates[0],
+                "approval_index": pool_reviewers[pool_candidates[0]]["approval_index"],
+            }
+        elif rco_ok and rco_candidates:
+            approver = {
+                "role": "opposite_family_rco",
+                "agent": rco_candidates[0],
+                "approval_index": by_agent[rco_candidates[0]]["approval_index"],
+            }
+        else:
+            reasons.append(
+                "opposite-family approver (an ordinary-pool reviewer of the family "
+                "opposite to Lead, or a second eligible recognized RCO, because Lead "
+                f"is the author): no head-bound approval at {head_sha}"
+            )
+    elif (
+        lead.get("eligible") is True
+        and lead.get("direct_approval") is True
+        and lead.get("failover_engaged") is not True
+        and type(lead.get("approval_index")) is int
+    ):
+        approver = {
+            "role": "lead",
+            "agent": lead_agent,
+            "approval_index": lead["approval_index"],
+        }
+    else:
+        reasons.append(f"lead ({lead_agent}): no head-bound approval at {head_sha}")
+
+    if approver is not None:
+        index = approver["approval_index"]
+        event = events[index] if 0 <= index < len(events) else None
+        if isinstance(event, Mapping) and event.get("agent") == approver["agent"]:
+            result["approver_ref"] = {
+                "agent": approver["agent"],
+                "agent_uuid": str(event.get("agent_uuid", "")),
+                "ts_utc": str(event.get("ts_utc", "")),
+                "status": str(event.get("status", "")),
+                "task_id": str(event.get("task_id", "")),
+                "event_sha256": _mind_event_sha256(event),
+            }
+        else:
+            reasons.append("the approver's approval event could not be re-read")
+    if rco_ok:
+        assert isinstance(rco_ref, Mapping)
+        result["rco_pass_ref"] = dict(rco_ref)
+        rco_index = by_agent[rco_agent]["approval_index"]
+        rco_event = events[rco_index] if 0 <= rco_index < len(events) else None
+        if isinstance(rco_event, Mapping) and rco_event.get("agent") == rco_agent:
+            result["rco_pass_event_sha256"] = _mind_event_sha256(rco_event)
+        else:
+            reasons.append("the RCO pass event could not be re-read")
+    if approver is not None and rco_ok:
+        if len({approver["agent"], rco_agent, author}) != 3:
+            reasons.append("the approver, the RCO and the author must be distinct identities")
+        result["required_identities"] = [
+            {"role": approver["role"], "agent": approver["agent"]},
+            {"role": "rco", "agent": rco_agent},
+        ]
+    result["identities"] = {
+        "approver": dict(approver) if approver is not None else None,
+        "build_lead": {
+            "agent": lead_agent,
+            "required": not lead_is_author,
+            "is_author": lead_is_author,
+            "direct_approval": lead.get("direct_approval") is True,
+            "block_index": lead.get("block_index"),
+        },
+        "build_tools": {
+            "agent": tools_agent,
+            "required": False,
+            "is_author": tools_agent == author,
+            "direct_approval": tools.get("direct_approval") is True,
+            "block_index": tools.get("block_index"),
+        },
+        "pool_reviewers": pool_reviewers,
+        "rco": dict(rco),
+    }
+    if not reasons and not (
+        (result["approver_ref"] or {}).get("event_sha256")
+        and result["rco_pass_event_sha256"]
+    ):
+        reasons.append("an approval event could not be digested")
+    if not reasons:
+        result["ok"] = True
+        result["decision"] = "mind_class_consensus_verified"
+    return result
+
+
+def _mind_event_sha256(event: Any) -> str:
+    """SHA-256 of one bridge event in canonical JSON, or empty when unreadable."""
+    try:
+        text = json.dumps(event, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    except (TypeError, ValueError):
+        return ""
+
+
+def _mind_pool_reviewer_row(
+    *,
+    events: Sequence[Mapping[str, Any]],
+    task_id: str,
+    head_sha: str,
+    pr_number: int | None,
+    author_agent: str,
+    reviewer_agent: str,
+    tools_agent: str,
+) -> dict[str, Any]:
+    """Head-bound build approval of one ordinary-pool lane, read fail-closed.
+
+    The lane is placed in the first build slot of the unchanged
+    ``verify_bridge_consensus``, so event type, status, exact head, canonical
+    task, identity binding and block ordering are judged by the same code as a
+    Lead approval. Any refusal of that call reads as no approval.
+    """
+    report = verify_bridge_consensus(
+        events=events,
+        task_id=task_id,
+        head_sha=head_sha,
+        pr_number=pr_number,
+        lead_agent=reviewer_agent,
+        tools_agent=tools_agent,
+        author_agent=author_agent,
+    )
+    identities = report.get("identities")
+    row = identities.get("build_lead") if isinstance(identities, Mapping) else None
+    if (
+        report.get("decision")
+        not in ("bridge_consensus_verified", "bridge_consensus_incomplete")
+        or not isinstance(row, Mapping)
+        or row.get("agent") != reviewer_agent
+    ):
+        return {
+            "agent": reviewer_agent,
+            "readable": False,
+            "direct_approval": False,
+            "approval_index": None,
+            "block_index": None,
+        }
+    index = row.get("approval_index")
+    return {
+        "agent": reviewer_agent,
+        "readable": True,
+        "direct_approval": (
+            row.get("eligible") is True
+            and row.get("direct_approval") is True
+            and row.get("failover_engaged") is not True
+        ),
+        "approval_index": index if type(index) is int else None,
+        "block_index": row.get("block_index"),
+    }
+
+
+def _mind_class_lane_evidence(
+    *,
+    lane: Mapping[str, Any] | None,
+    task_id: str,
+    pr_number: int,
+    base_sha: str,
+    head_sha: str,
+) -> dict[str, Any] | None:
+    """The Rule 14a tuple a receipt binds and a fresh gate must reproduce.
+
+    ``None`` unless the lane is engaged. The merge executor compares this value
+    from the receipt's gate report with the one from its fresh gate; any
+    difference (another lane, another approver, another approval event, another
+    path class) refuses the merge before GitHub.
+    """
+    if not isinstance(lane, Mapping) or lane.get("engaged") is not True:
+        return None
+    consensus = lane.get("consensus")
+    consensus = consensus if isinstance(consensus, Mapping) else {}
+    classification = lane.get("classification")
+    classification = classification if isinstance(classification, Mapping) else {}
+    return {
+        "schema": MIND_CLASS_LANE_EVIDENCE_SCHEMA,
+        "policy": MIND_CLASS_LANE,
+        "task_id": task_id,
+        "pr_number": pr_number,
+        "base_sha": base_sha,
+        "head_sha": head_sha,
+        "author_agent": str(consensus.get("author_agent", "")),
+        "required_identities": [
+            dict(row)
+            for row in consensus.get("required_identities") or []
+            if isinstance(row, Mapping)
+        ],
+        "approver_ref": dict(consensus.get("approver_ref") or {}),
+        "rco_pass_ref": dict(consensus.get("rco_pass_ref") or {}),
+        "rco_pass_event_sha256": str(consensus.get("rco_pass_event_sha256", "")),
+        "path_gate_lifted": lane.get("path_gate_lifted") is True,
+        "path_classes": [
+            dict(row)
+            for row in classification.get("matches") or []
+            if isinstance(row, Mapping)
+        ],
+    }
+
+
+def _evaluate_mind_class_lane(
+    *,
+    active: bool,
+    events: Sequence[Mapping[str, Any]],
+    events_path: Path | None,
+    task_id: str,
+    head_sha: str,
+    pr_number: int,
+    author_agent: str,
+    changed_paths: Sequence[str],
+    diff_text: str,
+    path_gate: Any,
+) -> dict[str, Any] | None:
+    """Rule 14a lane report, or None when the lane does not apply.
+
+    The lane applies only when it is active for this gate mode, bridge events
+    were read, and the diff is wholly Mind-class by the mechanical path list with
+    the diff headers naming exactly the changed paths. It is never selected by a
+    caller flag. ``engaged`` additionally needs the two-identity consensus; an
+    engaged lane lifts exactly one refusal, the charter's off-allowlist path
+    reason. Every other gate (CI, exact head, base, receipt, diff content,
+    accepted queue, peer blocks, RCO pass presence) is left as it is.
+    """
+    if not active or events_path is None:
+        return None
+    classification = classify_mind_class(list(changed_paths), diff_text)
+    if (
+        classification.get("mind_class") is not True
+        or classification.get("diff_checked") is not True
+    ):
+        return None
+    consensus = verify_mind_class_consensus(
+        events=events,
+        task_id=task_id,
+        head_sha=head_sha,
+        pr_number=pr_number,
+        author_agent=author_agent,
+    )
+    path_allowed = getattr(path_gate, "allowed", None) is True
+    off_allowlist = (
+        getattr(path_gate, "allowed", None) is False
+        and getattr(path_gate, "reason", None) == _PATH_GATE_OFF_ALLOWLIST_REASON
+    )
+    reasons = [
+        f"Rule 14a consensus incomplete: {reason}"
+        for reason in (consensus.get("reasons") or ["consensus incomplete"])
+        if consensus.get("ok") is not True
+    ]
+    if not path_allowed and not off_allowlist:
+        reasons.append("the path gate refused for a reason this lane never lifts")
+    engaged = not reasons
+    return {
+        "schema": MIND_CLASS_LANE_SCHEMA,
+        "policy": MIND_CLASS_LANE,
+        "engaged": engaged,
+        "reasons": reasons,
+        "path_gate_lifted": engaged and off_allowlist,
+        "classification": classification,
+        "consensus": consensus,
+    }
 
 
 def _evaluate_rule12_review(

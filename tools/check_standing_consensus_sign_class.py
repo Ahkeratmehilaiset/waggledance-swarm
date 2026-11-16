@@ -19,7 +19,7 @@ design is FAIL-CLOSED and this module is itself (a)-class + charter-denylisted, 
   diff-clean, MAGMA receipt). Any missing/ambiguous element -> operator_review.
 
 Two pure entry points (no side effects, dict in / dict out):
-  classify_ab(changed_paths)            -> mechanical (a)/(b) classification.
+  classify_ab(changed_paths)            -> mechanical (a)/(b)/Mind classification.
   evaluate_standing_consensus_sign(...) -> admission verdict (admitted bool).
 """
 from __future__ import annotations
@@ -230,9 +230,17 @@ def _path_is_b(path: str) -> bool:
 
 
 def classify_ab(changed_paths: Sequence[str]) -> dict[str, Any]:
-    """Classify a PR's changed paths as (a) or (b). FAIL-CLOSED: the PR is (b) ONLY
+    """Classify a PR's changed paths as (a), (b) or Mind-class. FAIL-CLOSED: the PR is (b) ONLY
     if EVERY changed path is a recognized (b) category and NONE is (a). An empty or
-    unrecognized path forces (a)."""
+    unrecognized path forces (a).
+
+    Rule 14: a path list that is wholly Mind-class by ``classify_mind_class``
+    (every path matches a documented pattern; none is (a)-class or Stage-2) is
+    reported as ``ab_class == "mind"``. That is never (a)-class (Rule 14a: no
+    operator signature) and never (b): the standing sign admits only ``"b"``.
+    Every result carries ``mind_class``. A mixed list, and any list with an
+    (a)-class path, keeps exactly the result it had before this class existed.
+    """
     paths = list(changed_paths or [])
     a_hits: list[str] = []
     unrecognized: list[str] = []
@@ -241,6 +249,7 @@ def classify_ab(changed_paths: Sequence[str]) -> dict[str, Any]:
             "ab_class": "a",
             "a_hits": [],
             "unrecognized": [],
+            "mind_class": False,
             "reason": "no changed paths -> operator-explicit (fail-closed)",
         }
     for raw in paths:
@@ -248,11 +257,27 @@ def classify_ab(changed_paths: Sequence[str]) -> dict[str, Any]:
             a_hits.append(_norm(raw))
         elif not _path_is_b(raw):
             unrecognized.append(_norm(raw))
+    mind = classify_mind_class(paths)
+    mind_class = mind["mind_class"] is True and not a_hits
+    if mind_class and unrecognized:
+        return {
+            "ab_class": "mind",
+            "a_hits": [],
+            "unrecognized": [],
+            "mind_class": True,
+            "mind_matches": list(mind["matches"]),
+            "reason": (
+                "every changed path is Mind-class (Rule 14 path list) -> Rule 14a: "
+                "not (a)-class, no per-PR operator signature; not (b) for the "
+                "standing sign"
+            ),
+        }
     if a_hits or unrecognized:
         return {
             "ab_class": "a",
             "a_hits": sorted(set(a_hits)),
             "unrecognized": sorted(set(unrecognized)),
+            "mind_class": False,
             "reason": (
                 "(a)-class or unrecognized path present -> operator-explicit "
                 f"(a_hits={sorted(set(a_hits))}, unrecognized={sorted(set(unrecognized))})"
@@ -262,6 +287,7 @@ def classify_ab(changed_paths: Sequence[str]) -> dict[str, Any]:
         "ab_class": "b",
         "a_hits": [],
         "unrecognized": [],
+        "mind_class": mind_class,
         "reason": "all changed paths are recognized reversible (b)-class artifacts",
     }
 
@@ -368,4 +394,371 @@ def evaluate_standing_consensus_sign(
         "no_rco_veto": True,
         "ci_all_green": True,
     }
+    return out
+
+
+# ----------------------------------------------------------------------------
+# Rule 14 Mind-class: the documented whole-file path list, checked mechanically.
+# SEPARATE from classify_ab, whose output is unchanged. FAIL-CLOSED: a diff is
+# Mind-class only when EVERY changed path is an exact plain repository path that
+# matches one documented pattern as a whole file, NONE is (a)-class or Stage-2,
+# and (when the diff text is given) the git file headers of the diff name exactly
+# the same paths. Nothing is normalised into an allowed path. Prose never widens
+# this list; a test pins it to the list in CLAUDE.md Rule 14.
+# ----------------------------------------------------------------------------
+MIND_CLASS_REPORT_VERSION = "wd.mind_class_paths.v1"
+MIND_CLASS_PATTERNS = (
+    "sandbox/mind/**",
+    "configs/mind/**",
+    "tools/wd_q4_*",
+    "tests/tools/test_wd_q4_*",
+    "ops/windows/reboot/Get-WdQ4*.ps1",
+    "ops/windows/reboot/Invoke-WdQ4*.ps1",
+    "tools/wd_mind_*",
+    "tools/wd_bridge_mind*",
+    "tools/bridge_mind_workspace.py",
+    "tests/tools/test_wd_mind_*",
+    "tests/tools/test_wd_bridge_mind*",
+    "tests/tools/test_mind_*",
+    "tests/tools/test_bridge_mind_workspace.py",
+    "tests/windows/wd_mind_*",
+    "ops/windows/reboot/Get-WdMind*.ps1",
+    "ops/windows/reboot/Invoke-WdMind*.ps1",
+    "ops/windows/reboot/Start-WdMind*.ps1",
+)
+
+
+def _mind_pattern_regex(pattern: str) -> re.Pattern[str]:
+    """``**`` spans directories, ``*`` stays inside one path segment, the rest is literal."""
+    parts: list[str] = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**", index):
+            parts.append(".+")
+            index += 2
+        elif pattern[index] == "*":
+            parts.append("[^/]*")
+            index += 1
+        else:
+            parts.append(re.escape(pattern[index]))
+            index += 1
+    return re.compile("".join(parts))
+
+
+_MIND_CLASS_REGEXES = tuple(
+    (pattern, _mind_pattern_regex(pattern)) for pattern in MIND_CLASS_PATTERNS
+)
+_MIND_PLAIN_PATH_RE = re.compile(r"[A-Za-z0-9._/-]+")
+_MIND_STAGE2_SUBSTR = ("stage2", "stage-2", "stage_2", "cutover", "atomic_flip", "atomic-flip")
+_MIND_RESERVED_STEMS = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{number}" for number in range(1, 10)}
+    | {f"lpt{number}" for number in range(1, 10)}
+)
+_DIFF_SPECIAL_ENTRY_RE = re.compile(
+    r"(?:new file mode|deleted file mode|old mode|new mode) (?:120000|160000)"
+    r"|index [0-9a-f]+[.][.][0-9a-f]+ (?:120000|160000)"
+)
+
+
+def _mind_path_refusal(path: Any) -> str:
+    """Why ``path`` is not an exact plain repository file path ('' when it is one)."""
+    if type(path) is not str or not path:
+        return "path is empty or not a string"
+    if _MIND_PLAIN_PATH_RE.fullmatch(path) is None:
+        return "path has a character outside A-Z a-z 0-9 . _ / -"
+    if path.startswith("/") or path.endswith("/"):
+        return "path is absolute or names a directory"
+    for segment in path.split("/"):
+        if segment in ("", ".", ".."):
+            return "path has an empty, dot or dot-dot segment"
+        if segment.endswith("."):
+            return "path segment ends with a dot"
+        if segment.split(".", 1)[0].lower() in _MIND_RESERVED_STEMS:
+            return "path segment is a reserved device name"
+    return ""
+
+
+_DIFF_HUNK_HEADER_RE = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@(?: .*)?")
+_DIFF_INDEX_LINE_RE = re.compile(r"index ([0-9a-f]{7,64})[.][.]([0-9a-f]{7,64})(?: ([0-7]{6}))?")
+_DIFF_MODE_LINE_RE = re.compile(r"(new file mode|deleted file mode|old mode|new mode) ([0-7]{6})")
+# A diff shows an entry's file mode only on these lines. An exact rename or copy
+# has none of them, so its mode (a symlink, for example) cannot be read at all.
+_DIFF_REGULAR_MODES = frozenset({"100644", "100755"})
+_DIFF_SIMILARITY_LINE_RE = re.compile(r"(dis)?similarity index (\d{1,3})%")
+_DIFF_EMPTY_BLOB_SHA1 = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+_DIFF_FILE_LINE_PREFIXES = (
+    "index ", "--- ", "+++ ", "new file mode ", "deleted file mode ", "old mode ",
+    "new mode ", "similarity index ", "dissimilarity index ", "rename from ",
+    "rename to ", "copy from ", "copy to ", "Binary files ",
+)
+
+
+def _diff_new_entry() -> dict[str, Any]:
+    return {
+        "lines": 0, "old_side": False, "new_side": False, "hunks": 0,
+        "binary": False, "needs_index": False, "index": False, "content_changed": False,
+        "needs_content": False, "mode": False, "old_mode": False, "new_mode": False,
+    }
+
+
+def _diff_entry_error(entry: Mapping[str, Any]) -> str:
+    """Why one file entry of a diff is structurally incomplete, or empty when it is whole."""
+    if not entry["lines"]:
+        return "a file entry has no line after its git header"
+    if entry["old_side"] != entry["new_side"]:
+        return "a file entry has only one of its two side lines"
+    if entry["old_side"] and not entry["hunks"]:
+        return "a file entry names its sides but has no hunk"
+    if entry["old_mode"] != entry["new_mode"]:
+        return "a file entry has only one of its two mode lines"
+    if not entry["mode"] and not entry["old_mode"]:
+        return (
+            "a file entry does not show a regular-file mode "
+            "(an exact rename or copy cannot be checked)"
+        )
+    if entry["needs_index"] and not entry["index"]:
+        return "an added or deleted file entry has no index line"
+    if (
+        (entry["content_changed"] or entry["needs_content"])
+        and not entry["hunks"]
+        and not entry["binary"]
+    ):
+        return "a file entry changes content but has neither a hunk nor a binary note"
+    return ""
+
+
+def _diff_entry_line_error(entry: dict[str, Any], line: str) -> str:
+    """Record one file-header line of the current entry; non-empty when it is out of place."""
+    entry["lines"] += 1
+    if line.startswith("--- "):
+        if entry["old_side"]:
+            return "a file entry repeats a side line"
+        entry["old_side"] = True
+    elif line.startswith("+++ "):
+        if not entry["old_side"] or entry["new_side"]:
+            return "a file entry has its side lines out of order"
+        entry["new_side"] = True
+    elif entry["old_side"]:
+        return "a file entry has a header line after its side lines"
+    elif line.startswith("Binary files "):
+        entry["binary"] = True
+    elif line.startswith(("new file mode ", "deleted file mode ", "old mode ", "new mode ")):
+        match = _DIFF_MODE_LINE_RE.fullmatch(line)
+        if match is None or match.group(2) not in _DIFF_REGULAR_MODES:
+            return "a file entry has an unreadable or non-regular file mode"
+        kind = match.group(1)
+        seen = "old_mode" if kind == "old mode" else "new_mode" if kind == "new mode" else "mode"
+        if entry[seen]:
+            return "a file entry repeats a mode line"
+        entry[seen] = True
+        entry["needs_index"] = entry["needs_index"] or seen == "mode"
+    elif line.startswith(("similarity index ", "dissimilarity index ")):
+        match = _DIFF_SIMILARITY_LINE_RE.fullmatch(line)
+        if match is None:
+            return "a file entry has an unreadable similarity line"
+        # Anything but an exact rename or copy must show its content change.
+        entry["needs_content"] = bool(match.group(1)) or match.group(2) != "100"
+    elif line.startswith("index "):
+        match = _DIFF_INDEX_LINE_RE.fullmatch(line)
+        if match is None or entry["index"]:
+            return "a file entry has an unreadable or repeated index line"
+        old, new, mode = match.groups()
+        if mode is not None and mode not in _DIFF_REGULAR_MODES:
+            return "a file entry has an unreadable or non-regular file mode"
+        entry["index"] = True
+        entry["mode"] = entry["mode"] or mode is not None
+        empty_add = set(old) == {"0"} and _DIFF_EMPTY_BLOB_SHA1.startswith(new)
+        empty_delete = set(new) == {"0"} and _DIFF_EMPTY_BLOB_SHA1.startswith(old)
+        entry["content_changed"] = old != new and not empty_add and not empty_delete
+    return ""
+
+
+def _diff_header_paths(diff_text: Any) -> dict[str, Any]:
+    """Paths named by the git file headers of a unified diff, read exactly.
+
+    ``error`` is non-empty when the text cannot prove the complete file list:
+    no header at all, text before the first header, a quoted or unreadable
+    header, a rename or copy header without matching from/to lines, a symlink
+    or submodule entry, a line that is neither a known file-header line nor a
+    hunk, a hunk whose line count differs from its ``@@`` header, a file entry
+    that shows no regular-file mode (an exact rename or copy), a file entry
+    that is structurally incomplete (no header line, one side line, side lines
+    without a hunk, a content change or an inexact rename without a hunk or
+    binary note), or text
+    that does not end with a newline. Hunk lines are consumed by their declared
+    count, so hunk content is never read as a header. A cut exactly between two
+    files is left to the caller's comparison with the changed-path list; a cut
+    inside the very last line cannot be seen at all.
+    """
+    result: dict[str, Any] = {"paths": set(), "error": ""}
+    if type(diff_text) is not str:
+        result["error"] = "diff text is not a string"
+        return result
+    if not diff_text.endswith("\n"):
+        result["error"] = "the diff does not end with a newline"
+        return result
+    paths: set[str] = result["paths"]
+    headers = 0
+    pending = ""    # "a/X b/Y" of a header whose sides differ, until from/to lines confirm it
+    source = ""
+    old_left = new_left = 0
+    entry = _diff_new_entry()
+    for line in diff_text[:-1].split("\n"):
+        if old_left or new_left:
+            marker = line[:1]
+            if marker == " ":
+                old_left -= 1
+                new_left -= 1
+            elif marker == "-":
+                old_left -= 1
+            elif marker == "+":
+                new_left -= 1
+            elif marker != "\\":
+                result["error"] = "a hunk ends before its declared length"
+                return result
+            if old_left < 0 or new_left < 0:
+                result["error"] = "a hunk has more lines than its header declares"
+                return result
+            continue
+        if line.startswith("diff --git "):
+            if pending:
+                result["error"] = "a rename or copy header has no matching from/to lines"
+                return result
+            if headers:
+                result["error"] = _diff_entry_error(entry)
+                if result["error"]:
+                    return result
+            headers += 1
+            source = ""
+            entry = _diff_new_entry()
+            rest = line[len("diff --git "):]
+            half, odd = divmod(len(rest) - 5, 2)
+            same = rest[2:2 + half] if half > 0 and not odd else ""
+            if same and rest == f"a/{same} b/{same}":
+                paths.add(same)
+            else:
+                pending = rest
+            continue
+        if not headers:
+            result["error"] = "the diff has text before its first git file header"
+            return result
+        hunk = _DIFF_HUNK_HEADER_RE.fullmatch(line)
+        if hunk is not None:
+            if pending or not entry["new_side"]:
+                result["error"] = "a hunk comes before its file entry is complete"
+                return result
+            old_left = 1 if hunk.group(1) is None else int(hunk.group(1))
+            new_left = 1 if hunk.group(2) is None else int(hunk.group(2))
+            entry["hunks"] += 1
+            continue
+        if entry["hunks"]:
+            if line.startswith("\\ "):
+                continue    # "no newline at end of file" note after a hunk's last line
+            result["error"] = "a hunk has more lines than its header declares"
+            return result
+        if not line.startswith(_DIFF_FILE_LINE_PREFIXES):
+            result["error"] = "the diff has a line that is neither a file header nor a hunk"
+            return result
+        if _DIFF_SPECIAL_ENTRY_RE.fullmatch(line) is not None:
+            result["error"] = "the diff has a symlink or submodule entry"
+            return result
+        result["error"] = _diff_entry_line_error(entry, line)
+        if result["error"]:
+            return result
+        if not pending:
+            continue
+        for word in ("rename", "copy"):
+            if line.startswith(word + " from "):
+                source = line[len(word) + 6:]
+            elif line.startswith(word + " to ") and source:
+                target = line[len(word) + 4:]
+                if pending != f"a/{source} b/{target}":
+                    result["error"] = "a rename or copy header disagrees with its from/to lines"
+                    return result
+                paths.update((source, target))
+                pending = ""
+                source = ""
+    if old_left or new_left:
+        result["error"] = "the diff ends inside a hunk"
+    elif pending:
+        result["error"] = "a rename or copy header has no matching from/to lines"
+    elif not headers:
+        result["error"] = "the diff has no git file header"
+    else:
+        result["error"] = _diff_entry_error(entry)
+    return result
+
+
+def classify_mind_class(changed_paths: Any, diff_text: Any = None) -> dict[str, Any]:
+    """Mechanical Rule 14 Mind-class check of a whole diff. FAIL-CLOSED.
+
+    ``mind_class`` is True only when every changed path is Mind-class. With
+    ``diff_text`` the git headers of the diff must also name exactly the changed
+    paths (``diff_checked``); the merge gate requires that. ``classify_ab``
+    reports a wholly Mind-class path list from this function's path verdict.
+    """
+    out: dict[str, Any] = {
+        "report_version": MIND_CLASS_REPORT_VERSION,
+        "mind_class": False,
+        "reason": "",
+        "patterns": list(MIND_CLASS_PATTERNS),
+        "matches": [],
+        "refused": [],
+        "diff_checked": False,
+        "only_in_diff": [],
+        "only_in_changed_paths": [],
+    }
+    if not isinstance(changed_paths, (list, tuple)) or not changed_paths:
+        out["reason"] = "changed paths must be a non-empty list -> not Mind-class (fail-closed)"
+        return out
+    seen: set[str] = set()
+    for raw in changed_paths:
+        refusal = _mind_path_refusal(raw)
+        if not refusal:
+            if raw.lower() in seen:
+                refusal = "path repeats or aliases another changed path"
+            seen.add(raw.lower())
+        if not refusal and _path_is_a(raw):
+            refusal = "(a)-class path"
+        if not refusal and any(part in raw.lower() for part in _MIND_STAGE2_SUBSTR):
+            refusal = "Stage-2 path"
+        pattern = "" if refusal else next(
+            (name for name, regex in _MIND_CLASS_REGEXES if regex.fullmatch(raw) is not None), ""
+        )
+        if not refusal and not pattern:
+            refusal = "no documented Mind-class pattern matches the whole file path"
+        if refusal:
+            shown = raw if type(raw) is str else repr(raw)
+            out["refused"].append({"path": shown[:300], "reason": refusal})
+        else:
+            out["matches"].append({"path": raw, "pattern": pattern})
+    if out["refused"]:
+        out["reason"] = "not every changed path is Mind-class: " + "; ".join(
+            f"{row['path']!r}: {row['reason']}" for row in out["refused"]
+        )
+        return out
+    if diff_text is None:
+        out["mind_class"] = True
+        out["reason"] = (
+            "every changed path matches a documented Mind-class pattern "
+            "(diff headers not checked)"
+        )
+        return out
+    header = _diff_header_paths(diff_text)
+    if header["error"]:
+        out["reason"] = "the diff cannot confirm the changed paths: " + header["error"]
+        return out
+    listed = {row["path"] for row in out["matches"]}
+    out["only_in_diff"] = sorted(header["paths"] - listed)
+    out["only_in_changed_paths"] = sorted(listed - header["paths"])
+    if out["only_in_diff"] or out["only_in_changed_paths"]:
+        out["reason"] = "the diff headers and the changed paths name different files"
+        return out
+    out["diff_checked"] = True
+    out["mind_class"] = True
+    out["reason"] = (
+        "every changed path matches a documented Mind-class pattern and the diff "
+        "headers name the same files"
+    )
     return out

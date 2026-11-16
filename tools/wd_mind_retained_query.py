@@ -6,6 +6,7 @@ The owner never writes a cache. A permanent source/control deviation closes it.
 Same-user change-and-restore between checks remains UNKNOWN.
 """
 from dataclasses import dataclass
+import asyncio
 import hashlib
 import hmac
 import json
@@ -15,6 +16,49 @@ import threading
 from types import MappingProxyType
 
 from tools import wd_mind_content_query_readonly as r
+
+
+class RetainedCancellationUnknown(BaseException):
+    """A bounded exception-group scan could not determine all cancellations."""
+
+
+def _clean_cancellation(problem):
+    pending, signals, visited = [problem], [], 0
+    grouped = isinstance(problem, BaseExceptionGroup)
+    while pending:
+        visited += 1
+        if visited > 1024 or len(pending) > 1024:
+            return RetainedCancellationUnknown('retained_cancellation_unknown')
+        current = pending.pop()
+        kind = type(current)
+        if issubclass(kind, BaseExceptionGroup):
+            pending.extend(reversed(BaseExceptionGroup.exceptions.__get__(current)))
+        elif issubclass(kind, RetainedCancellationUnknown):
+            return RetainedCancellationUnknown('retained_cancellation_unknown')
+        elif issubclass(kind, GeneratorExit):
+            signals.append(GeneratorExit())
+        elif issubclass(kind, KeyboardInterrupt):
+            signals.append(KeyboardInterrupt())
+        elif issubclass(kind, asyncio.CancelledError):
+            signals.append(asyncio.CancelledError())
+    if not signals:
+        return None
+    return BaseExceptionGroup('provider_cancelled', signals) if grouped else signals[0]
+
+
+def _public(operation):
+    output = cancellation = None
+    try:
+        output = operation()
+    except BaseException as exc:
+        cancellation = _clean_cancellation(exc)
+    finally:
+        operation = None
+    if cancellation is not None:
+        raise cancellation from None
+    if output is None:
+        r._deny()
+    return output
 
 
 def _pid():
@@ -124,6 +168,8 @@ def _prepare_state(values, gate):
     scalar_items = tuple((key, values[key]) for key in sorted(scalar_keys))
 
     def checkpoint():
+        if values['encoder_provider'] is not encoder or values['index_provider'] is not index_provider:
+            raise ValueError('providers_changed')
         if r._q4_freeze_complete_cells(values['cell_snapshots']) != frozen_cells:
             raise ValueError('cells_changed')
         if any(type(values[key]) is not type(value) or values[key] != value for key, value in scalar_items):
@@ -134,6 +180,8 @@ def _prepare_state(values, gate):
         _, _, current = gate.verify_snapshot(snapshot, _return_projection=False)
         if current != initial_report:
             raise ValueError('source_changed')
+        r._q4_provider_identity(encoder, encoder_binding, 'query')
+        r._q4_provider_identity(index_provider, index_binding, 'load')
 
     def load(raw):
         index = index_provider.load(raw)
@@ -189,7 +237,7 @@ class _RetainedQueryOwner:
                 raise
             finally:
                 self._lock.release()
-        return r._provider_result(run)
+        return _public(run)
 
     def _query(self, query_bytes):
         state, gate = self._state, self._gate
@@ -243,8 +291,6 @@ class _RetainedQueryOwner:
                  'canonical_event': False} for key in selected]
         resolved = gate.resolve(hits, query['time'], snapshot)
         checkpoint()
-        _, context, _ = gate.verify_snapshot(snapshot, _return_projection=False)
-        _source_check(context, state.source_size)
         gate.recheck_selection(snapshot)
         checkpoint()
         output = {'schema': 'wd.q4-content-snapshot-query.v3', 'status': 'ANSWER' if resolved else 'ABSTAIN',
@@ -255,6 +301,11 @@ class _RetainedQueryOwner:
             output.update(status='SEMANTIC_CANDIDATE', rule='q4-complete-semantic-candidate-v1', relevance='UNVERIFIED')
         if len(r._canonical(output)) > 1024 * 1024:
             raise ValueError('output')
+        # Providers may execute code while their identity attributes are read.
+        # Do not invoke them after the final selected-row and prefix checks.
+        gate.recheck_selection(snapshot)
+        _, context, _ = gate.verify_snapshot(snapshot, _return_projection=False)
+        _source_check(context, state.source_size)
         return output
 
 
@@ -268,4 +319,16 @@ def create_retained_query_owner(*, enabled=False, bundle_root=None,
         gate = r._NarrowReadGate(bundle_root, expected_deployment_manifest_sha256, values)
         state = _prepare_state(values, gate)
         return _RetainedQueryOwner(state, gate, values['encoder_provider'], values['index_provider'])
-    return r._provider_result(build)
+    output = cancellation = None
+    try:
+        output = _public(build)
+    except BaseException as exc:
+        cancellation = _clean_cancellation(exc)
+    finally:
+        # The public traceback must not retain the caller's policy/key tuple.
+        inputs = build = None
+    if cancellation is not None:
+        raise cancellation from None
+    if output is None:
+        r._deny()
+    return output

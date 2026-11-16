@@ -850,6 +850,141 @@ def _single_owner_synthetic(monkeypatch, tmp_path):
     return runtime, adapter_module, binding, factory, calls
 
 
+@pytest.mark.parametrize('scenario', ['ready', 'held', 'interrupt', 'nonzero', 'client_swapped',
+                                      'close_error', 'close_interrupt'])
+def test_rotating_owner_retains_current_worker_and_closes_cooperatively(tmp_path, monkeypatch, scenario):
+    """The optional route must retain the rotating owner through every outcome."""
+    import types
+    runtime, adapter_module, binding, factory, old_launches = _single_owner_synthetic(monkeypatch, tmp_path)
+    checks, rotators = [], []
+    monkeypatch.setattr(runtime._PrivateBinding, '_immutable_checkpoint', lambda self, frozen: checks.append('source'))
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', lambda self: checks.append('policy'))
+    monkeypatch.setattr(adapter_module, '_flat_bundle_bindings', lambda *args: (b'query-binding', 'c' * 64))
+
+    class Rotator:
+        def __init__(self, **kwargs):
+            self.options, self.owner = kwargs, None
+            self.state, self.closed = 'NEW', False
+            rotators.append(self)
+        def status(self):
+            return {'state': self.state, 'owned': self.owner is not None, 'authority': 'none'}
+        def close(self, *, timeout):
+            self.closed = True
+            if scenario == 'close_error': raise ValueError('synthetic close failure')
+            if scenario == 'close_interrupt': raise KeyboardInterrupt()
+            if self.state == 'HOLD':
+                return {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+            if scenario == 'nonzero':
+                return {'state': 'EXITED', 'owned': False, 'exit_code': 1, 'authority': 'none'}
+            self.owner, self.state = None, 'EXITED'
+            return {'state': 'EXITED', 'owned': False, 'exit_code': 0, 'authority': 'none'}
+
+    module = types.ModuleType('tools.wd_mind_e5_rotating_client')
+    module.RotatingGracefulE5Client = Rotator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.setattr(adapter_module, '_load_pinned_rotating_module', lambda *args: module, raising=False)
+    monkeypatch.setattr(adapter_module, 'create_rotating_flat_adapter', lambda **kwargs: object(), raising=False)
+
+    def build(handler):
+        rotator = handler._rotator
+        assert rotator.options['source_check']() == 'b' * 64
+        rotator.owner, rotator.state = object(), 'RUNNING'
+        if scenario == 'held':
+            rotator.state = 'HOLD'
+            raise ValueError('synthetic hold')
+        if scenario == 'interrupt':
+            raise KeyboardInterrupt()
+        return {'schema': 'wd.mind-flat-owner-build.v1', 'status': 'BUILT_IN_MEMORY', 'authority': 'none'}
+
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', build)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0, worker_rotation=True)
+    assert old_launches == [] and rotators == []
+    if scenario == 'interrupt':
+        with pytest.raises(KeyboardInterrupt):
+            owner.start()
+    else:
+        outcome = owner.start()
+        assert outcome['state'] == ('HOLD' if scenario == 'held' else 'READY')
+    assert checks == ['policy', 'source']
+    assert old_launches == [] and len(rotators) == 1
+    assert owner._client is rotators[0]
+    if scenario == 'client_swapped':
+        replacement = object()
+        owner._client = replacement
+        assert owner.status()['state'] == 'HOLD'
+        assert owner.close()['state'] == 'HOLD'
+        assert not rotators[0].closed and owner._client is replacement
+        assert owner._rotation_anchor is rotators[0]
+        return
+    if scenario == 'close_interrupt':
+        with pytest.raises(KeyboardInterrupt):
+            owner.close()
+        assert owner.status()['state'] == 'HOLD' and rotators[0].owner is not None
+        return
+    outcome = owner.close()
+    assert rotators[0].closed
+    if scenario in ('held', 'nonzero', 'close_error'):
+        assert outcome['state'] == 'HOLD' and rotators[0].owner is not None
+    else:
+        assert outcome == {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
+
+
+def test_rotating_owner_requires_explicit_boolean_opt_in(tmp_path, monkeypatch):
+    runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
+    for invalid in (None, 1, 'true'):
+        with pytest.raises(runtime.FullRuntimeRefused):
+            runtime.create_single_manifest_owner(enabled=True, binding=binding,
+                lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0, worker_rotation=invalid)
+
+
+@pytest.mark.parametrize('changed', ['source', 'policy'])
+def test_rotating_owner_refuses_changed_controls_before_worker_start(tmp_path, monkeypatch, changed):
+    import types
+    runtime, adapter_module, binding, factory, old_launches = _single_owner_synthetic(monkeypatch, tmp_path)
+    calls = []
+
+    def policy(self):
+        calls.append('policy')
+        if changed == 'policy': raise ValueError('changed')
+    def source(self, frozen):
+        calls.append('source')
+        if changed == 'source': raise ValueError('changed')
+    monkeypatch.setattr(runtime._SingleManifestOwner, '_check_policy_anchor', policy)
+    monkeypatch.setattr(runtime._PrivateBinding, '_immutable_checkpoint', source)
+    monkeypatch.setattr(adapter_module, '_flat_bundle_bindings', lambda *args: (b'query-binding', 'c' * 64))
+
+    class Rotator:
+        def __init__(self, **kwargs): self.options, self.owner = kwargs, None
+        def status(self): return {'state': 'NEW', 'owned': False, 'authority': 'none'}
+        def close(self, *, timeout): return {'state': 'EXITED', 'owned': False, 'exit_code': 0}
+
+    module = types.ModuleType('tools.wd_mind_e5_rotating_client')
+    module.RotatingGracefulE5Client = Rotator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.setattr(adapter_module, '_load_pinned_rotating_module', lambda *args: module, raising=False)
+    monkeypatch.setattr(adapter_module, 'create_rotating_flat_adapter', lambda **kwargs: object(), raising=False)
+    monkeypatch.setattr(runtime._FlatRequestHandler, 'build', lambda handler: handler._rotator.options['source_check']())
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0, worker_rotation=True)
+    assert owner.start() == {'state': 'HOLD', 'owned': False, 'authority': 'none'}
+    assert old_launches == []
+    assert calls == (['policy'] if changed == 'policy' else ['policy', 'source'])
+    assert owner.close() == {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
+
+
+def test_rotating_owner_refuses_unverified_loader_before_worker_start(tmp_path, monkeypatch):
+    runtime, adapter, binding, factory, old_launches = _single_owner_synthetic(monkeypatch, tmp_path)
+    monkeypatch.setattr(adapter, '_flat_bundle_bindings', lambda *args: (b'query-binding', 'c' * 64))
+
+    def reject(*args): raise ValueError('synthetic invalid module pin')
+    monkeypatch.setattr(adapter, '_load_pinned_rotating_module', reject, raising=False)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0, worker_rotation=True)
+    assert owner.start()['state'] == 'HOLD'
+    assert owner._client is None and owner._rotation_anchor is None and old_launches == []
+
+
 @pytest.mark.parametrize('failure', ['factory', 'snapshot'])
 def test_single_owner_close_releases_proven_prelaunch_failure(tmp_path, monkeypatch, failure):
     runtime, _, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)

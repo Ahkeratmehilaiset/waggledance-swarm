@@ -3472,8 +3472,8 @@ if ($toolsMindStartupRead.outcome -ceq 'success' -and [bool]$toolsMindStartupRea
     $prompt += 'The status read succeeded; if data is included below, verify its bridge source refs before acting. '
 } else { $prompt += 'No status context was delivered; read the bridge. ' }
 $mindStatusSuffix = Get-WdMindStatusPromptSuffix -Read $toolsMindStartupRead
-$prompt += $mindStatusSuffix
 if ($mindContentProbe.state -cne 'off') { $prompt += ' Mind content startup: ' + $mindContentProbe.state + '. ' + $mindContentProbe.suffix }
+$prompt += $mindStatusSuffix
 if ($conversationSurface -cne 'native_terminal' -and $mindStatusSuffix) {
     # Managed transports have their own argument framing; retain their prior bounded prompt.
     $prompt = $prompt.Substring(0, $prompt.Length - $mindStatusSuffix.Length) + ' Mind status projection omitted: unsupported_managed_transport. '
@@ -3694,7 +3694,11 @@ if ($conversationSurface -cin @('local_window','native_terminal')) {
                     -WritableRoots @($codexWritableDirectories + $conversationWritableRoots) -NetworkAccess $conversationPermissions.NetworkAccess
             }
             if (-not (Test-WdMindCommandLineFits -CliPath $codexCommand -Arguments $nativeToolsArguments)) {
-                Write-Warning 'Mind status projection omitted: command_line_too_long; using baseline prompt'
+                if ($mindContentProbe.state -ceq 'validated_content') {
+                    $mindContentProbe.state = 'omitted_command_line_too_long'
+                    $mindContentProbe.suffix = ''
+                    Write-Warning 'Mind status projection and content omitted: command_line_too_long; using baseline prompt'
+                } else { Write-Warning 'Mind status projection omitted: command_line_too_long; using baseline prompt' }
                 $nativeToolsArguments = Get-WdNativeToolsArguments -Saved $nativeToolsSaved -Worktree $worktree `
                     -Model $model -Effort $reasoningEffort -Prompt $mindOriginalPrompt -ImagePath $targetImagePath `
                     -WritableRoots @($codexWritableDirectories + $conversationWritableRoots) -NetworkAccess $conversationPermissions.NetworkAccess

@@ -2881,8 +2881,8 @@ if ($mindStartupRead.outcome -ceq 'success' -and [bool]$mindStartupRead.record_w
   $mindStartupGuidance += 'The status read succeeded; if data is included below, verify its bridge source refs before acting. '
 } else { $mindStartupGuidance += 'No status context was delivered; read the bridge. ' }
 $mindStatusSuffix = Get-WdMindStatusPromptSuffix -Read $mindStartupRead
-$mindStartupGuidance += $mindStatusSuffix
 if ($mindContentProbe.state -cne 'off') { $mindStartupGuidance += ' Mind content startup: ' + $mindContentProbe.state + '. ' + $mindContentProbe.suffix }
+$mindStartupGuidance += $mindStatusSuffix
 $startupPrompt += $mindStartupGuidance
 $continuationPrompt += $mindStartupGuidance
 
@@ -3266,7 +3266,11 @@ try {
     }
     if (-not (Test-WdMindCommandLineFits -CliPath $cliPath -Arguments $launchArguments)) {
       $launchArguments[-1] = $mindOriginalSelectedPrompt
-      Write-Warning 'Mind status projection omitted: command_line_too_long; using baseline prompt'
+      if ($mindContentProbe.state -ceq 'validated_content') {
+        $mindContentProbe.state = 'omitted_command_line_too_long'
+        $mindContentProbe.suffix = ''
+        Write-Warning 'Mind status projection and content omitted: command_line_too_long; using baseline prompt'
+      } else { Write-Warning 'Mind status projection omitted: command_line_too_long; using baseline prompt' }
       if (-not (Test-WdMindCommandLineFits -CliPath $cliPath -Arguments $launchArguments)) { throw 'Baseline lane command line exceeds the Windows limit' }
     }
   }

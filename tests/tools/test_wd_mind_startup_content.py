@@ -17,6 +17,86 @@ import pytest
 from waggledance.core import bridge_log_reader as bridge
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell launcher integration')
+@pytest.mark.parametrize('lane', ['agent', 'tools'])
+@pytest.mark.parametrize('has_content', [True, False])
+def test_managed_launch_omits_status_without_truncating_content(lane, has_content):
+    root = Path(__file__).resolve().parents[2]
+    path = root / ('ops/windows/reboot/start-wd-agent.ps1' if lane == 'agent'
+                   else 'ops/windows/reboot/start-wd-tools-consumer.ps1')
+    source = path.read_text(encoding='utf-8-sig')
+    if lane == 'agent':
+        assembly = source[source.index('$mindStartupGuidance ='):source.index('$targetPayload =')]
+        managed = source[source.index("if ($launchTurnMode -ceq 'managed' -and $mindStatusSuffix)"):
+                         source.index("if ($launchTurnMode -ceq 'managed')", source.index("if ($launchTurnMode -ceq 'managed' -and $mindStatusSuffix)"))]
+        result = "@{startup=$startupPrompt;continuation=$continuationPrompt}|ConvertTo-Json -Compress"
+    else:
+        assembly = source[source.index('$mindOriginalPrompt = $prompt'):source.index("$writer = Join-Path $bootstrapRoot", source.index('$mindOriginalPrompt = $prompt'))]
+        managed = ''
+        result = "@{startup=$prompt;continuation=$prompt}|ConvertTo-Json -Compress"
+    state = 'validated_content' if has_content else 'off'
+    setup = """
+function Get-WdMindStatusPromptSuffix { param($Read) return 'STATUS_SENTINEL_123456789' }
+$mindStartupRead=[pscustomobject]@{outcome='success';reason='status_projection';record_written=$true}
+$toolsMindStartupRead=$mindStartupRead
+$mindContentProbe=[pscustomobject]@{state='%s';suffix=' CONTENT_SENTINEL_COMPLETE '}
+$startupPrompt='STARTUP_BASE';$continuationPrompt='CONTINUATION_BASE';$prompt='TOOLS_BASE'
+$launchTurnMode='managed';$conversationSurface='managed'
+""" % state
+    program = setup + assembly + managed + result
+    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    encoded = base64.b64encode(program.encode('utf-16le')).decode()
+    proc = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+                          capture_output=True, text=True, timeout=15)
+    assert proc.returncode == 0, proc.stderr
+    prompts = json.loads(proc.stdout.lstrip('\ufeff'))
+    for prompt in prompts.values():
+        assert 'STATUS_SENTINEL_123456789' not in prompt
+        assert 'Mind status projection omitted: unsupported_managed_transport.' in prompt
+        assert ('CONTENT_SENTINEL_COMPLETE' in prompt) is has_content
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell launcher integration')
+@pytest.mark.parametrize('lane', ['agent', 'tools'])
+def test_command_line_fallback_reports_content_removal(lane):
+    root = Path(__file__).resolve().parents[2]
+    path = root / ('ops/windows/reboot/start-wd-agent.ps1' if lane == 'agent'
+                   else 'ops/windows/reboot/start-wd-tools-consumer.ps1')
+    source = path.read_text(encoding='utf-8-sig')
+    if lane == 'agent':
+        start = source.index('$mindOriginalSelectedPrompt = if (')
+        end = source.index('  if ($nativeLead) {', start)
+        snippet = source[start:end]
+        output = '$chosen=$launchArguments[-1]'
+    else:
+        start = source.index('$nativeToolsArguments = Get-WdNativeToolsArguments -Saved', source.index("if ($conversationSurface -ceq 'native_terminal')", source.index('$mindOriginalPrompt = $prompt')))
+        end = source.index('        Invoke-WdNativeToolsTerminal', start)
+        snippet = source[start:end]
+        output = '$chosen=$nativeToolsArguments[-1]'
+    setup = """
+$script:warnings=@()
+function Write-Warning { param($Message) $script:warnings += $Message }
+function Test-WdMindCommandLineFits { param($CliPath,$Arguments) return ($Arguments[-1] -ceq 'BASELINE') }
+function Get-WdNativeToolsArguments { param($Saved,$Worktree,$Model,$Effort,$Prompt,$ImagePath,$WritableRoots,$NetworkAccess) return ,@($Prompt) }
+$mindContentProbe=[pscustomobject]@{state='validated_content';suffix=' CONTENT_SENTINEL_COMPLETE '}
+$mindStatusSuffix='STATUS_SENTINEL';$prompt='BASELINE CONTENT_SENTINEL_COMPLETE STATUS_SENTINEL'
+$mindOriginalPrompt='BASELINE';$mindOriginalStartupPrompt='BASELINE';$mindOriginalContinuationPrompt='BASELINE'
+$launchArguments=@($prompt);$cliName='codex.cmd';$nativeLead=$false;$claudeResume=$null
+$conversationPermissions=[pscustomobject]@{NetworkAccess=$false}
+$codexWritableDirectories=@();$conversationWritableRoots=@()
+"""
+    program = setup + snippet + output + "; @{prompt=$chosen;warnings=$script:warnings;state=$mindContentProbe.state;suffix=$mindContentProbe.suffix}|ConvertTo-Json -Compress"
+    shell = str(Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe')
+    proc = subprocess.run([shell, '-NoProfile', '-NonInteractive', '-EncodedCommand',
+                           base64.b64encode(program.encode('utf-16le')).decode()],
+                          capture_output=True, text=True, timeout=15)
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.lstrip('\ufeff'))
+    assert result['prompt'] == 'BASELINE'
+    assert 'content' in ' '.join(result['warnings']).lower()
+    assert result['state'] == 'omitted_command_line_too_long' and result['suffix'] == ''
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell native stdin/EOF probe')
 def test_synthetic_powershell_native_child_observes_eof_after_ready(tmp_path):
     scratch = tmp_path / '.codex-audit'

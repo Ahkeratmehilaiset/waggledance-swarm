@@ -1120,3 +1120,153 @@ def _event(agent: str, status: str, ts_utc: str) -> dict[str, object]:
         "message": f"{status} at head {HEAD}",
         "payload": {"head": HEAD, "pr": 1174},
     }
+
+
+# --- Rule 14a: the receipt binds the lane tuple; a changed fresh gate never merges ---
+MIND_FILES = ["sandbox/mind/reader.py", "tools/wd_mind_reader.py"]
+
+
+def _mind_task(author: str) -> str:
+    return f"{author}/mind-lane-receipt-test"
+
+
+def _mind_event(agent: str, status: str, minute: int, author: str, type_: str = "decision") -> dict[str, object]:
+    from waggledance.core.bridge_identity_registry import load_bridge_identity_registry
+    event = _event("codex-lead-1", status, f"2026-06-14T06:{minute:02d}:00Z")
+    event.update(agent=agent, agent_uuid=load_bridge_identity_registry()[agent], type=type_, task_id=_mind_task(author))
+    if type_ == "claim":
+        event["write_scope"] = ["*"]
+    return event
+
+
+def _mind_runner(paths: list[str], author: str, *, events_file: Path | None = None, late: tuple = ()):
+    """gh stub for a Mind-class PR; ``late`` events land between the receipt and the fresh gate."""
+    payload = _gh_payload(headRefName=_mind_task(author), changedFiles=len(paths))
+    calls, inner = _runner(payload=payload, post_head_ref=_mind_task(author))
+    views = 0
+    diff = "".join(
+        f"diff --git a/{p} b/{p}\nindex 1111111..2222222 100644\n--- a/{p}\n+++ b/{p}\n@@ -1 +1 @@\n-old\n+new\n"
+        for p in paths
+    )
+
+    def run(command: Sequence[str]) -> SimpleNamespace:
+        nonlocal views
+        call = list(command)
+        if call[:3] == ["gh", "pr", "view"] and not any("mergeCommit" in part for part in call):
+            views += 1
+            if views == 3 and events_file is not None:      # first read of the apply recheck
+                with events_file.open("a", encoding="utf-8") as handle:
+                    handle.writelines("\n" + json.dumps(event, sort_keys=True) for event in late)
+        if call[:2] == ["gh", "api"] and "/git/ref/heads/" not in call[4]:
+            calls.append(call)
+            records = [{"filename": path, "status": "modified"} for path in paths]
+            return SimpleNamespace(returncode=0, stdout=json.dumps(records), stderr="")
+        if call[:3] == ["gh", "pr", "diff"]:
+            calls.append(call)
+            return SimpleNamespace(returncode=0, stdout=diff)
+        return inner(command)
+
+    return calls, run
+
+
+def _mind_merge(tmp_path: Path, name: str, events_file: Path, runner, author: str, *, apply: bool = True):
+    return merge_with_bridge_receipt(
+        pr_number=1174, repo="example/repo", events_path=events_file, out_dir=tmp_path / name,
+        expected_head=HEAD, expected_base_sha=BASE, consensus_proposal_id=_mind_task(author),
+        from_agent="codex-lead-1", bridge_task_id=_mind_task(author), apply=apply, now_utc=NOW, runner=runner,
+    )
+
+
+def _receipt_payload(report: dict) -> dict:
+    manifest = Path(report["receipt_bundle_path"])
+    return json.loads((manifest.parent / "payload-001-merge.json").read_text(encoding="utf-8"))
+
+
+def _mind_votes(author: str, *voters: tuple[str, str]) -> list[dict[str, object]]:
+    rows = [_mind_event(author, "active", 9, author, type_="claim")]
+    rows.extend(_mind_event(agent, status, 10 + i, author) for i, (agent, status) in enumerate(voters))
+    return rows
+
+
+def test_mind_lane_merges_when_the_fresh_gate_reproduces_the_receipt_tuple(tmp_path: Path) -> None:
+    author = "codex-tools-1"
+    events = _events_path(tmp_path, _mind_votes(author, ("codex-lead-1", "build_consensus_pass"), ("claude-rco-1", "rco_pass")))
+    calls, runner = _mind_runner(MIND_FILES, author)
+    report = _mind_merge(tmp_path, "out", events, runner, author)
+    assert report["decision"] == "merge_executed_after_receipt", report
+    assert len(_merge_calls(calls)) == 1
+    payload = _receipt_payload(report)
+    assert payload["consensus_lane"] == "rule14a_mind_class"
+    assert [row["agent"] for row in payload["mind_class_lane_evidence"]["required_identities"]] == [
+        "codex-lead-1", "claude-rco-1",
+    ]
+
+
+def test_mind_lane_new_rco_pass_after_the_receipt_refuses_merge_and_the_old_receipt(tmp_path: Path) -> None:
+    # T1: the receipt binds Lead + RCO1. T2: an RCO2 pass lands before the fresh gate, which
+    # would now pass on Lead + RCO2. Both approvals stand, but the receipt would describe
+    # another decision, so nothing is merged with it.
+    author = "codex-tools-1"
+    votes = _mind_votes(author, ("codex-lead-1", "build_consensus_pass"), ("claude-rco-1", "rco_pass"))
+    late = _mind_event("claude-rco-2", "rco_pass", 15, author)
+    events = _events_path(tmp_path, votes)
+    calls, runner = _mind_runner(MIND_FILES, author, events_file=events, late=(late,))
+    report = _mind_merge(tmp_path, "out", events, runner, author)
+    assert report["decision"] == "apply_gate_recheck_failed", report
+    assert report["ok"] is False and report["stage"] == "apply_recheck"
+    assert report["errors"] == ["fresh gate Rule 14a Mind-class lane evidence differs from the receipt"]
+    assert _merge_calls(calls) == []                                 # GitHub was never asked to merge
+    fresh = report["fresh_gate"]
+    assert fresh["ok"] is True                                       # the fresh gate alone would pass
+    old, new = report["receipt_mind_class_lane_evidence"], fresh["mind_class_lane_evidence"]
+    assert old["rco_pass_ref"]["agent"] == "claude-rco-1"
+    assert new["rco_pass_ref"]["agent"] == "claude-rco-2"
+    assert old["approver_ref"] == new["approver_ref"]
+    assert _receipt_payload(report)["mind_class_lane_evidence"] == old
+    # A new run writes its own receipt for the decision that now holds, and merges on that one.
+    calls_again, runner_again = _mind_runner(MIND_FILES, author)
+    again = _mind_merge(tmp_path, "again", events, runner_again, author)
+    assert again["decision"] == "merge_executed_after_receipt", again
+    assert len(_merge_calls(calls_again)) == 1
+    assert again["receipt_bundle_path"] != report["receipt_bundle_path"]
+    assert _receipt_payload(again)["mind_class_lane_evidence"] == new
+
+
+def test_three_identity_receipt_is_not_used_once_the_mind_lane_engages(tmp_path: Path) -> None:
+    # T1: Lead-authored, Tools + RCO1 on an allowlisted Mind path: the unchanged three-identity
+    # verdict. T2: a pool reviewer's approval engages the Rule 14a lane. The lane changed, so
+    # the three-identity receipt is not used for the merge.
+    author = "codex-lead-1"
+    votes = _mind_votes(author, ("codex-tools-1", "build_consensus_pass"), ("claude-rco-1", "rco_pass"))
+    late = _mind_event("fable-5", "build_consensus_pass", 15, author)
+    events = _events_path(tmp_path, votes)
+    calls, runner = _mind_runner(MIND_FILES[1:], author, events_file=events, late=(late,))
+    report = _mind_merge(tmp_path, "out", events, runner, author)
+    assert report["decision"] == "apply_gate_recheck_failed", report
+    assert _merge_calls(calls) == []
+    assert report["receipt_mind_class_lane_evidence"] is None
+    assert "consensus_lane" not in _receipt_payload(report)
+    assert report["fresh_gate"]["mind_class_lane_evidence"]["approver_ref"]["agent"] == "fable-5"
+
+
+def test_mind_lane_receipt_is_not_used_once_the_lane_no_longer_holds(tmp_path: Path) -> None:
+    # T1: the lane holds (Lead + RCO1). T2: Lead blocks. Nothing is merged.
+    author = "codex-tools-1"
+    votes = _mind_votes(author, ("codex-lead-1", "build_consensus_pass"), ("claude-rco-1", "rco_pass"))
+    late = _mind_event("codex-lead-1", "changes_requested", 15, author)
+    events = _events_path(tmp_path, votes)
+    calls, runner = _mind_runner(MIND_FILES, author, events_file=events, late=(late,))
+    report = _mind_merge(tmp_path, "out", events, runner, author)
+    assert report["decision"] == "apply_gate_recheck_failed", report
+    assert _merge_calls(calls) == []
+
+
+def test_unrelated_late_event_does_not_disturb_a_mind_lane_merge(tmp_path: Path) -> None:
+    author = "codex-tools-1"
+    votes = _mind_votes(author, ("codex-lead-1", "build_consensus_pass"), ("claude-rco-1", "rco_pass"))
+    late = _mind_event("codex-lead-1", "info", 15, author, type_="message")
+    events = _events_path(tmp_path, votes)
+    calls, runner = _mind_runner(MIND_FILES, author, events_file=events, late=(late,))
+    report = _mind_merge(tmp_path, "out", events, runner, author)
+    assert report["decision"] == "merge_executed_after_receipt", report
+    assert len(_merge_calls(calls)) == 1

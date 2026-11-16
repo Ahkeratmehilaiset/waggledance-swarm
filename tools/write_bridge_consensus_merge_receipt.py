@@ -254,7 +254,11 @@ def write_bridge_consensus_merge_receipt(
         and lane_report.get("engaged") is True
         and lane_report.get("policy") == MIND_CLASS_LANE
     )
-    if _is_mind_class_lane(bridge_consensus) != lane_engaged:
+    lane_evidence = gate_report.get("mind_class_lane_evidence")
+    if (
+        _is_mind_class_lane(bridge_consensus) != lane_engaged
+        or isinstance(lane_evidence, Mapping) != lane_engaged
+    ):
         # A Rule 14a verdict without its own lane report (or the reverse) is
         # never written as a receipt.
         raise BridgeConsensusMergeReceiptError(
@@ -437,6 +441,11 @@ def _receipt_payload(
             for key, value in (dict(lane) if isinstance(lane, Mapping) else {}).items()
             if key != "consensus"
         }
+        # The exact tuple the merge executor's fresh gate must reproduce: lane,
+        # both required identities, both approval events and the path classes.
+        payload["mind_class_lane_evidence"] = dict(
+            gate_report.get("mind_class_lane_evidence") or {}
+        )
     return payload
 
 

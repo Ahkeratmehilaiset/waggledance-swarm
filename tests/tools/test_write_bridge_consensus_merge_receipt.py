@@ -617,3 +617,47 @@ def test_mind_lane_receipt_is_refused_without_the_rco_pass_or_on_a_mixed_diff(tm
             _write_mind(tmp_path / name, **kwargs)
         assert excinfo.value.report["decision"] == "merge_plan_not_receipt_eligible"
         assert not (tmp_path / name / "receipt").exists()
+
+
+def _mind_payload(report: dict) -> dict:
+    manifest = Path(report["receipt_bundle_path"])
+    return json.loads((manifest.parent / "payload-001-merge.json").read_text(encoding="utf-8"))
+
+
+def test_mind_lane_receipt_carries_the_exact_lane_evidence_tuple(tmp_path: Path) -> None:
+    report = _write_mind(tmp_path)
+    payload = _mind_payload(report)
+    evidence = payload["mind_class_lane_evidence"]
+    assert evidence == report["gate_report"]["mind_class_lane_evidence"]
+    assert evidence["schema"] == "wd.rule14a-mind-class-lane-evidence.v1"
+    assert evidence["policy"] == "rule14a_mind_class"
+    assert evidence["head_sha"] == HEAD and evidence["base_sha"] == BASE and evidence["task_id"] == TASK
+    assert evidence["required_identities"] == payload["bridge_consensus"]["required_identities"]
+    assert evidence["approver_ref"] == payload["bridge_consensus"]["approver_ref"]
+    assert len(evidence["approver_ref"]["event_sha256"]) == 64
+    assert len(evidence["rco_pass_event_sha256"]) == 64
+    assert [row["path"] for row in evidence["path_classes"]] == MIND_PATHS
+
+
+def test_three_identity_receipt_has_no_lane_evidence(tmp_path: Path) -> None:
+    report = _write_mind(tmp_path, events=_full_consensus(), status=_pr_status())
+    assert "mind_class_lane_evidence" not in _mind_payload(report)
+    assert "mind_class_lane_evidence" not in report["gate_report"]
+
+
+def test_mind_lane_receipt_is_refused_when_the_gate_report_lacks_its_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tools.write_bridge_consensus_merge_receipt as writer
+    real = writer.evaluate_auto_merge_gate
+
+    def without_evidence(**kwargs):
+        report = dict(real(**kwargs))
+        report["mind_class_lane_evidence"] = None
+        return report
+
+    monkeypatch.setattr(writer, "evaluate_auto_merge_gate", without_evidence)
+    with pytest.raises(BridgeConsensusMergeReceiptError) as excinfo:
+        _write_mind(tmp_path)
+    assert excinfo.value.report["decision"] == "mind_class_lane_report_inconsistent"
+    assert not (tmp_path / "receipt").exists()

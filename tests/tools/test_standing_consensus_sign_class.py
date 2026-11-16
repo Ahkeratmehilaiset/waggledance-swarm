@@ -508,10 +508,67 @@ def test_mind_class_refuses_empty_malformed_repeated_or_aliased_lists(changed_pa
     assert report["reason"]
 
 
-def test_mind_class_leaves_classify_ab_unchanged() -> None:
-    # Mind-class is its own lane; classify_ab keeps treating these paths as before.
+MIND_PATH_FOR_AB = "tools/wd_mind_reader.py"
+
+
+def test_classify_ab_reports_a_wholly_mind_class_list_as_mind() -> None:
+    # Rule 14a: a wholly Mind-class change is never (a)-class; classify_ab says so itself.
     for paths in MIND_CLASS_EXAMPLES.values():
-        assert classify_ab(paths)["ab_class"] == "a"
+        report = classify_ab(paths)
+        assert report["ab_class"] == "mind", report
+        assert report["mind_class"] is True
+        assert report["a_hits"] == [] and report["unrecognized"] == []
+        assert [row["path"] for row in report["mind_matches"]] == list(paths)
+        assert "Rule 14a" in report["reason"]
+    everything = [path for paths in MIND_CLASS_EXAMPLES.values() for path in paths]
+    assert classify_ab(everything)["ab_class"] == "mind"
+
+
+@pytest.mark.parametrize(
+    "paths,a_hits,unrecognized",
+    [
+        ([MIND_PATH_FOR_AB, "tools/idle_daily_summary.py"], [],
+         ["tools/idle_daily_summary.py", MIND_PATH_FOR_AB]),                 # mixed with an ordinary path
+        ([MIND_PATH_FOR_AB, "CLAUDE.md"], ["claude.md"], [MIND_PATH_FOR_AB]),  # mixed with governance
+        ([MIND_PATH_FOR_AB, "docs/runs/board.md"], [], [MIND_PATH_FOR_AB]),    # mixed with a (b) path
+        (["tools/wd_mind_token_store.py"], ["tools/wd_mind_token_store.py"], []),   # protected name
+        (["sandbox/mind/stage2_cutover.py"], ["sandbox/mind/stage2_cutover.py"], []),
+        ([MIND_PATH_FOR_AB, "ops/windows/reboot/start-wd-agent.ps1"], [],
+         ["ops/windows/reboot/start-wd-agent.ps1", MIND_PATH_FOR_AB]),       # launcher file
+        (["Tools/wd_mind_reader.py"], [], ["tools/wd_mind_reader.py"]),      # wrong case is not Mind
+    ],
+)
+def test_classify_ab_keeps_its_prior_result_for_mixed_and_a_class_lists(
+    paths: list[str], a_hits: list[str], unrecognized: list[str],
+) -> None:
+    report = classify_ab(paths)
+    assert report["ab_class"] == "a", report
+    assert report["mind_class"] is False
+    assert report["a_hits"] == a_hits
+    assert sorted(report["unrecognized"]) == sorted(unrecognized)
+    assert "mind_matches" not in report
+
+
+def test_classify_ab_results_outside_mind_class_only_gain_the_mind_class_key() -> None:
+    assert classify_ab([]) == {
+        "ab_class": "a", "a_hits": [], "unrecognized": [], "mind_class": False,
+        "reason": "no changed paths -> operator-explicit (fail-closed)",
+    }
+    assert classify_ab(["tools/run_hex_readiness_proof.py", "docs/runs/board.md"]) == {
+        "ab_class": "b", "a_hits": [], "unrecognized": [], "mind_class": False,
+        "reason": "all changed paths are recognized reversible (b)-class artifacts",
+    }
+    report = classify_ab(["tools/idle_daily_summary.py"])
+    assert set(report) == {"ab_class", "a_hits", "unrecognized", "mind_class", "reason"}
+    assert report["ab_class"] == "a" and report["mind_class"] is False
+
+
+def test_standing_sign_never_admits_a_mind_class_list() -> None:
+    # The standing sign reads only "b" as admissible; Mind-class has its own lane.
+    report = _eval(changed_paths=[MIND_PATH_FOR_AB, "sandbox/mind/notes.md"])
+    assert report["admitted"] is False
+    assert report["ab_class"] == "mind"
+    assert any("Rule 14a" in reason for reason in report["reasons"])
 
 
 def test_mind_class_rename_needs_both_endpoints_to_be_mind_class() -> None:
@@ -547,6 +604,32 @@ MIND_PATH = "tools/wd_mind_reader.py"
         f"diff --git a/{MIND_PATH} b/{MIND_PATH}\nindex 1111111..2222222 120000\n",
         f"diff --git a/{MIND_PATH} b/{MIND_PATH}\nnew file mode 160000\n",    # submodule
         f"diff --git a/{MIND_PATH} b/{MIND_PATH}\ndeleted file mode 120000\n",
+        _mind_git_diff(MIND_PATH)[:-1],                         # no final newline
+        _mind_git_diff(MIND_PATH)[:-5],                         # cut inside the last line
+        "note\n" + _mind_git_diff(MIND_PATH),                   # text before the first header
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\n--- a/{MIND_PATH}\n+++ b/{MIND_PATH}\n"
+        "@@ -1,3 +1,3 @@\n context\n-old\n",                    # cut inside a hunk
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\n--- a/{MIND_PATH}\n+++ b/{MIND_PATH}\n"
+        "@@ -1 +1 @@\n-old\n+new\n+one line too many\n",        # more lines than declared
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\n--- a/{MIND_PATH}\n+++ b/{MIND_PATH}\n"
+        "@@ -1,2 +1,2 @@\n-old\n+new\n"
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\n",            # next header arrives inside a hunk
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\n--- a/{MIND_PATH}\n+++ b/{MIND_PATH}\n"
+        "@@ -1,2 +1,2 @@\n-old\n\n+new\n",                      # hunk line without a marker
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\nGIT binary patch\nliteral 3\nabc\n",
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\n+content without a hunk header\n",
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\n@@ -1 +1 @@ x\n-old\n+new\n@@ broken @@\n",
+        f"diff --git a/tools/wd_mind_old.py b/{MIND_PATH}\n@@ -1 +1 @@\n-old\n+new\n"
+        f"rename from tools/wd_mind_old.py\nrename to {MIND_PATH}\n",   # hunk before from/to
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\n",            # bare header, nothing after it
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\nindex 1111111..2222222 100644\n",   # change, no hunk
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\nindex 1111111..2222222 100644\n"
+        f"--- a/{MIND_PATH}\n+++ b/{MIND_PATH}\n",              # sides without a hunk
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\nindex 1111111..2222222 100644\n--- a/{MIND_PATH}\n",
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\nnew file mode 100644\n",   # added file, no index
+        f"diff --git a/{MIND_PATH} b/{MIND_PATH}\nindex 1111111..222 100644\n",
+        f"diff --git a/tools/wd_mind_old.py b/{MIND_PATH}\nsimilarity index 90%\n"
+        f"rename from tools/wd_mind_old.py\nrename to {MIND_PATH}\n",    # inexact rename, no content
         b"diff --git a/x b/x\n",
         7,
     ],
@@ -566,8 +649,42 @@ def test_mind_class_diff_headers_ignore_hunk_content_and_cover_mode_and_binary_c
         "diff --git a/sandbox/mind/b.py b/sandbox/mind/b.py\nindex 1111111..2222222 100644\n"
         "--- a/sandbox/mind/b.py\n+++ b/sandbox/mind/b.py\n@@ -1,3 +1,3 @@\n"
         " diff --git a/tools/x.py b/tools/x.py\n-rename from tools/x.py\n+new file mode 120000\n"
+        " index 1111111..2222222 120000\n"
         "diff --git a/sandbox/mind/c.sh b/sandbox/mind/c.sh\nold mode 100644\nnew mode 100755\n"
     )
     report = classify_mind_class(paths, diff)
     assert report["mind_class"] is True, report
     assert report["diff_checked"] is True
+
+
+def test_mind_class_reads_every_ordinary_git_entry_shape_completely() -> None:
+    names = ("new.py", "gone.py", "empty.py", "two.py", "eol.txt", "mode.sh")
+    paths = [f"sandbox/mind/{name}" for name in names] + ["tools/wd_mind_new.py", "tools/wd_mind_old.py"]
+    p = "sandbox/mind/"
+    diff = (
+        f"diff --git a/{p}new.py b/{p}new.py\nnew file mode 100644\nindex 0000000..2222222\n"
+        f"--- /dev/null\n+++ b/{p}new.py\n@@ -0,0 +1,2 @@\n+one\n+two\n"
+        f"diff --git a/{p}gone.py b/{p}gone.py\ndeleted file mode 100644\nindex 1111111..0000000\n"
+        f"--- a/{p}gone.py\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-one\n-two\n"
+        f"diff --git a/{p}empty.py b/{p}empty.py\nnew file mode 100644\nindex 0000000..e69de29\n"
+        f"diff --git a/{p}two.py b/{p}two.py\nindex 1111111..2222222 100644\n"
+        f"--- a/{p}two.py\n+++ b/{p}two.py\n@@ -1,2 +1,2 @@ def first():\n context\n-old\n+new\n"
+        "@@ -10 +10,2 @@\n-diff --git a/CLAUDE.md b/CLAUDE.md\n+--- a/CLAUDE.md\n+@@ -1 +1 @@\n"
+        f"diff --git a/{p}eol.txt b/{p}eol.txt\nindex 1111111..2222222 100644\n"
+        f"--- a/{p}eol.txt\n+++ b/{p}eol.txt\n@@ -1 +1 @@\n-old\n\\ No newline at end of file\n"
+        "+new\n\\ No newline at end of file\n"
+        f"diff --git a/{p}mode.sh b/{p}mode.sh\nold mode 100644\nnew mode 100755\n"
+        "diff --git a/tools/wd_mind_old.py b/tools/wd_mind_new.py\nsimilarity index 90%\n"
+        "rename from tools/wd_mind_old.py\nrename to tools/wd_mind_new.py\nindex 1111111..2222222 100644\n"
+        "--- a/tools/wd_mind_old.py\n+++ b/tools/wd_mind_new.py\n@@ -3 +3 @@\n-old\n+new\n"
+    )
+    report = classify_mind_class(paths, diff)
+    assert report["mind_class"] is True, report
+    assert report["diff_checked"] is True
+    # The same text cut at any byte, with or without a closing newline, never passes.
+    for cut in range(1, len(diff)):
+        assert classify_mind_class(paths, diff[:cut])["mind_class"] is False, cut
+        closed = classify_mind_class(paths, diff[:cut] + "\n")
+        if closed["mind_class"] is True:
+            # Only a cut inside the very last line keeps the same files and line counts.
+            assert "\n" not in diff[cut:-1], cut

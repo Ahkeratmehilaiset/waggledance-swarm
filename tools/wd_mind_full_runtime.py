@@ -1620,7 +1620,8 @@ class _FlatRequestHandler:
                 raise ValueError('state')
             memory = build_flat_memory(enabled=True, binding=self._binding, passage_encoder=self._adapter.passage,
                 encoder_binding_bytes=self._adapter.encoder_binding_bytes,
-                encoder_binding_sha256=self._adapter.encoder_binding_sha256, _watcher_lease=self._watcher_lease)
+                encoder_binding_sha256=self._adapter.encoder_binding_sha256,
+                source_verification='verified_immutable_snapshot_v1', _watcher_lease=self._watcher_lease)
             self._memory = memory
             self._frozen_flat = (memory.manifest, memory.ids, memory.vectors, memory.encoder_binding)
             self._source_check()

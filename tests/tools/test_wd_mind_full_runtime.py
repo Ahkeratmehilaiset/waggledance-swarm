@@ -1713,7 +1713,13 @@ def synthetic_bundle(tmp_path):
         'tools/wd_mind_runtime_child.py', 'tools/wd_mind_runtime_process.py',
         'tools/wd_mind_runtime_bootstrap.py', 'tools/wd_mind_runtime_mutex.py'}
     for relative in sorted(code_paths):
-        put('tools-bootstrap/' + relative, (ROOT / relative).read_bytes())
+        data = (ROOT / relative).read_bytes()
+        if relative in reader._REQUIRED_CODE and hashlib.sha256(data).hexdigest() != reader._REQUIRED_CODE[relative]:
+            # Windows checkout may translate the committed, hash-pinned LF bytes.
+            candidate = data.replace(b'\r\n', b'\n')
+            if hashlib.sha256(candidate).hexdigest() == reader._REQUIRED_CODE[relative]:
+                data = candidate
+        put('tools-bootstrap/' + relative, data)
     model_root, interpreter_root = tmp_path / 'model-root', tmp_path / 'interpreter-root'
     def asset(root, relative, data):
         path = root.joinpath(*relative.split('/')); path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
@@ -1784,8 +1790,9 @@ if mode.startswith(('package', 'handler')):
     path = pathlib.Path(sys.argv[3])
     row = json.loads(path.read_bytes().splitlines()[0])
     with path.open('ab') as output:
-        for number in range(25 if mode in ('handler_fast_multibatch','handler_fast_rebind',
-                                          'package_immutable_multibatch') else 4):
+        for number in range(40 if mode.startswith('package_owner_build_') else
+                            25 if mode in ('handler_fast_multibatch','handler_fast_rebind',
+                                           'package_immutable_multibatch') else 4):
             row['message'] = 'synthetic additional working item ' + str(number)
             if mode.startswith('handler') and not mode.startswith('handler_historical'):
                 import datetime
@@ -2073,6 +2080,60 @@ try:
                 other = struct.pack('<384f', 0.0, 1.0, *([0.0]*382))
                 return b''.join(row if 'synthetic external note' in text else other for text in texts)
             return row * len(texts)
+        if mode.startswith('package_owner_build_'):
+            import threading
+            from types import SimpleNamespace
+            from tools import wd_mind_content_snapshot_package as package
+            default_join = package._WATCH_JOIN_TIMEOUT_SECONDS
+            checks, batch_checks = {'main':0}, []
+            original_verify = reader._verified_complete
+            entered, release = threading.Event(), threading.Event()
+            def counted(*args, **kwargs):
+                if threading.current_thread().name == 'mind-source-verifier' and mode == 'package_owner_build_hold':
+                    entered.set()
+                    if not release.wait(10): raise RuntimeError('test watcher deadline')
+                if threading.current_thread() is threading.main_thread(): checks['main'] += 1
+                return original_verify(*args, **kwargs)
+            reader._verified_complete = counted
+            if mode == 'package_owner_build_hold':
+                package._WATCH_INTERVAL_SECONDS, package._WATCH_JOIN_TIMEOUT_SECONDS = .001, .01
+            class Adapter:
+                encoder_binding_bytes = encoder_binding
+                encoder_binding_sha256 = sha(encoder_binding)
+                def passage(self, texts):
+                    batch_checks.append(checks['main'])
+                    path = pathlib.Path(sys.argv[3])
+                    if len(batch_checks) == 1 and mode == 'package_owner_build_mutation':
+                        path.write_bytes(path.read_bytes().replace(b'ordinary', b'Ordinary'))
+                    if len(batch_checks) == 1 and mode == 'package_owner_build_control':
+                        (pathlib.Path(sys.argv[1]) / 'wd-mind-message-policy.json').write_bytes(b'{}')
+                    if len(batch_checks) == 1 and mode == 'package_owner_build_append':
+                        with path.open('ab') as out: out.write(b'{"synthetic":"append"}\n')
+                    if mode == 'package_owner_build_hold' and not entered.wait(5):
+                        raise RuntimeError('test watcher did not enter')
+                    return row * len(texts)
+            worker = SimpleNamespace(status=lambda: {'state':'RUNNING','owned':True})
+            lease = runtime._OwnedSnapshotWatcher()
+            handler = runtime._FlatRequestHandler(binding, binding.snapshot_for_query(), 'codex-lead-1',
+                {'codex-lead-1'}, SimpleNamespace(owner=worker), Adapter(), None, 1, None, lease)
+            try:
+                handler.build()
+                baseline = runtime.build_flat_memory(enabled=True, binding=binding,
+                    passage_encoder=lambda texts: row * len(texts), encoder_binding_bytes=encoder_binding,
+                    encoder_binding_sha256=sha(encoder_binding))
+                result = {'result':'ok', 'records':len(handler._memory.ids), 'batch_checks':batch_checks,
+                          'same_vectors':handler._memory.ids == baseline.ids and handler._memory.vectors == baseline.vectors,
+                          'held':lease._held(), 'default_join':default_join}
+            except Exception:
+                result = {'result':'refused', 'no_partial':handler._memory is None,
+                          'held':lease._held(), 'default_join':default_join}
+            finally:
+                release.set()
+                watcher = lease._current()
+                if watcher is not None and watcher.thread is not None:
+                    watcher.thread.join(10)
+            result['released'] = lease._held() is False
+            print(json.dumps(result)); sys.exit(0)
         if mode.startswith('handler'):
             import threading
             from tools import wd_mind_e5_client, wd_mind_e5_rotating_client
@@ -3004,6 +3065,23 @@ def test_generation_delivery_real_worker_failure_preserves_hold_and_private_loca
 def test_generation_delivery_integrity_failure_differs_from_user_refusal(synthetic_bundle, fault, state):
     assert invoke(synthetic_bundle, 'refresh_real_delivery_error_' + fault) == {
         'result':'refused', 'state':state, 'clean':True}
+
+
+@pytest.mark.parametrize('scenario', ['package_owner_build_multibatch', 'package_owner_build_append'])
+def test_owner_build_uses_immutable_prefix_with_bounded_full_checks(synthetic_bundle, scenario):
+    result = invoke(synthetic_bundle, scenario)
+    assert result['result'] == 'ok' and result['records'] > 32
+    assert len(result['batch_checks']) >= 3 and result['same_vectors'] is True
+    assert len(set(result['batch_checks'])) == 1
+    assert result['default_join'] == 600.0 and result['held'] is False and result['released'] is True
+
+
+@pytest.mark.parametrize('scenario', ['package_owner_build_mutation', 'package_owner_build_control', 'package_owner_build_hold'])
+def test_owner_build_refuses_mutation_and_retains_watcher_on_hold(synthetic_bundle, scenario):
+    result = invoke(synthetic_bundle, scenario)
+    assert result['result'] == 'refused' and result['no_partial'] is True
+    assert result['held'] is (scenario == 'package_owner_build_hold')
+    assert result['default_join'] == 600.0 and result['released'] is True
 
 
 def test_immutable_snapshot_build_returns_verified_synthetic_results(synthetic_bundle):

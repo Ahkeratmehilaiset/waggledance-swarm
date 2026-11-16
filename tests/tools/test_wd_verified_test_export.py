@@ -1,0 +1,178 @@
+# SPDX-License-Identifier: BUSL-1.1
+"""Synthetic coverage for the test-only, byte-verified export route."""
+from __future__ import annotations
+
+import hashlib
+import io
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tarfile
+
+import pytest
+
+from tools import wd_verified_test_export as export
+
+
+def _tar(members):
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode='w') as archive:
+        for name, body, kind in members:
+            item = tarfile.TarInfo(name)
+            item.type = kind
+            item.size = len(body) if kind == tarfile.REGTYPE else 0
+            archive.addfile(item, io.BytesIO(body) if item.size else None)
+    return io.BytesIO(stream.getvalue())
+
+
+@pytest.mark.parametrize('name', ['', '../x', '/root', 'a//b', 'a/../b', 'a\\b',
+                                  'x:stream', '.git/config', 'CON.txt', 'x.'])
+def test_unsafe_or_git_paths_are_refused(name):
+    with pytest.raises(ValueError):
+        export._safe_name(name)
+
+
+def test_git_tree_accepts_only_unique_regular_files():
+    oid = b'a' * 40
+    assert export._tree_entries(b'100644 blob ' + oid + b'\ttools/a.py\0') == {'tools/a.py': 'a' * 40}
+    for raw in (b'120000 blob ' + oid + b'\tlink\0',
+                b'160000 commit ' + oid + b'\tsubmodule\0',
+                b'100644 blob ' + oid + b'\tA\0' + b'100644 blob ' + oid + b'\ta\0'):
+        with pytest.raises(ValueError):
+            export._tree_entries(raw)
+
+
+def test_archive_only_writes_exact_regular_selected_members(tmp_path):
+    target = tmp_path / 'export'
+    target.mkdir()
+    content = b'synthetic file\n'
+    export._extract_archive(_tar([('tests/a.py', content, tarfile.REGTYPE)]), target, {'tests/a.py': 'a' * 40})
+    assert (target / 'tests/a.py').read_bytes() == content
+    assert not (target / '.git').exists()
+
+
+@pytest.mark.parametrize('members,entries', [
+    ([('../escape', b'x', tarfile.REGTYPE)], {'safe': 'a' * 40}),
+    ([('safe', b'x', tarfile.SYMTYPE)], {'safe': 'a' * 40}),
+    ([('wrong', b'x', tarfile.REGTYPE)], {'safe': 'a' * 40}),
+    ([], {'missing': 'a' * 40}),
+    ([('safe', b'x', tarfile.REGTYPE), ('safe', b'y', tarfile.REGTYPE)], {'safe': 'a' * 40}),
+])
+def test_archive_refuses_traversal_links_missing_extra_or_duplicates(tmp_path, members, entries):
+    target = tmp_path / 'export'
+    target.mkdir()
+    with pytest.raises(ValueError):
+        export._extract_archive(_tar(members), target, entries)
+    assert not (tmp_path / 'escape').exists()
+    assert not (target / '.git').exists()
+
+
+def test_existing_symlink_parent_refuses_before_creating_outside_directory(tmp_path):
+    target, outside = tmp_path / 'export', tmp_path / 'outside'
+    target.mkdir()
+    outside.mkdir()
+    try:
+        os.symlink(outside, target / 'tests', target_is_directory=True)
+    except OSError as error:
+        if getattr(error, 'winerror', None) == 1314:
+            pytest.skip('Windows account cannot create a symbolic link')
+        raise
+    archive = _tar([('tests/new/test.py', b'x', tarfile.REGTYPE)])
+    with pytest.raises(ValueError, match='reparse_point'):
+        export._extract_archive(archive, target, {'tests/new/test.py': 'a' * 40})
+    assert not (outside / 'new').exists()
+
+
+def test_actual_git_blob_comparison_rejects_changes_and_extra_files(tmp_path):
+    git = shutil.which('git')
+    if not git:
+        pytest.skip('git unavailable')
+    repo = Path(__file__).resolve().parents[2]
+    oid = subprocess.check_output([git, '-C', str(repo), 'rev-parse', 'HEAD:README.md']).decode().strip()
+    body = subprocess.check_output([git, '-C', str(repo), 'cat-file', 'blob', oid])
+    target = tmp_path / 'export'
+    target.mkdir()
+    (target / 'README.md').write_bytes(body)
+    entries = {'README.md': oid}
+    first = export._verify_tree(git, str(repo), target, entries, audit_allowed=False)
+    assert len(first) == 64
+    (target / 'README.md').write_bytes(body + b'altered')
+    with pytest.raises(ValueError):
+        export._verify_tree(git, str(repo), target, entries, audit_allowed=False)
+    (target / 'README.md').write_bytes(body)
+    (target / 'unexpected.py').write_bytes(b'synthetic')
+    with pytest.raises(ValueError):
+        export._verify_tree(git, str(repo), target, entries, audit_allowed=False)
+
+
+def test_reparse_attributes_are_refused_without_following_target(tmp_path, monkeypatch):
+    path = tmp_path / 'synthetic'
+    path.write_bytes(b'x')
+    real_lstat = Path.lstat
+    class Reparse:
+        st_file_attributes = 0x400
+        def __init__(self, actual): self.actual = actual
+        def __getattr__(self, name): return getattr(self.actual, name)
+    monkeypatch.setattr(Path, 'lstat', lambda self: Reparse(real_lstat(self)) if self == path else real_lstat(self))
+    with pytest.raises(ValueError, match='reparse_point'):
+        export._plain(path)
+
+
+def test_execution_refuses_when_job_and_path_boundaries_unproven():
+    with pytest.raises(ValueError, match='execution_boundary_unproven'):
+        export._run({})
+
+
+def test_wrong_d15_pin_refuses_before_creating_export(tmp_path, monkeypatch):
+    monkeypatch.setattr(export, '_execution_boundary_proven', lambda: True)
+    monkeypatch.setattr(export, '_inside_windows_job', lambda: True)
+    audit = tmp_path / '.codex-audit'
+    work = audit / 'work'
+    work.mkdir(parents=True)
+    fake_git = tmp_path / 'git.exe'
+    fake_git.write_bytes(b'synthetic executable')
+    hook = tmp_path / 'hook.py'
+    hook.write_bytes(b'synthetic wrong hook')
+    config = {'git': str(fake_git), 'git_sha256': hashlib.sha256(fake_git.read_bytes()).hexdigest(),
+              'repo': str(tmp_path), 'workspace': str(tmp_path), 'commit': 'a' * 40, 'work': str(work), 'hook': str(hook),
+              'python_sha256': hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
+              'targets': ['tests/synthetic.py']}
+    with pytest.raises(ValueError, match='hook_pin'):
+        export._run(config)
+    assert not (work / 'export').exists()
+
+
+def test_powershell_includes_unmodified_owned_job_and_bounds():
+    content = (Path(__file__).resolve().parents[2] / 'tools' / 'Invoke-WdVerifiedTestExport.ps1').read_bytes()
+    marker = b'# The preceding helper is byte-identical'
+    prefix, sep, _ = content.partition(marker)
+    assert sep
+    # Git may normalize line endings; compare canonicalized helper bytes.
+    original_lf_sha = '411307227939a2e6255730bc2f1b0261f591dddfc5590bde8d858361c7269113'
+    assert hashlib.sha256(prefix.rstrip(b'\r\n').replace(b'\r\n', b'\n') + b'\n').hexdigest() == original_lf_sha
+    assert b'Invoke-WdQ4ProcessJob -Executable' in content
+    assert b'-TimeoutSeconds $TimeoutSeconds -MaxOutputBytes $MaxOutputBytes -DetailedOutcome' in content
+    assert b"$result.Cleanup -cne 'confirmed'" in content
+    wrapper = content.split(b'function Invoke-WdVerifiedTestExport', 1)[1]
+    assert wrapper.index(b"throw 'verified_export_boundary_unproven'") < wrapper.index(b'[IO.Directory]::CreateDirectory')
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='PowerShell boundary guard is Windows-specific')
+def test_powershell_refuses_before_creating_any_workspace(tmp_path):
+    powershell = Path(os.environ['SYSTEMROOT']) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+    script = Path(__file__).resolve().parents[2] / 'tools' / 'Invoke-WdVerifiedTestExport.ps1'
+    workspace = tmp_path / 'must-not-be-created'
+    quoted_script = str(script).replace("'", "''")
+    quoted_workspace = str(workspace).replace("'", "''")
+    command = (f". '{quoted_script}'; try {{ Invoke-WdVerifiedTestExport "
+               f"-Workspace '{quoted_workspace}' -Repository '{quoted_workspace}' "
+               "-Commit ('a'*40) -GitExecutable 'C:\\fake.exe' -GitSha256 ('b'*64) "
+               "-PythonExecutable 'C:\\fake.exe' -PythonSha256 ('c'*64) "
+               "-RunnerSha256 ('d'*64) -D15HookPath 'C:\\fake.py' -Targets 'tests/a.py' | Out-Null; exit 7 "
+               "} catch { if ($_.Exception.Message -eq 'verified_export_boundary_unproven') { exit 0 }; exit 8 }")
+    result = subprocess.run([str(powershell), '-NoProfile', '-NonInteractive', '-Command', command],
+                            capture_output=True, timeout=30)
+    assert result.returncode == 0
+    assert not workspace.exists()

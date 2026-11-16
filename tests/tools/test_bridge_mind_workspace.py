@@ -7,12 +7,14 @@ test feeds an actual core output through the workspace.
 """
 from __future__ import annotations
 
+import ast
 import copy
 from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
 import random
+import re
 
 import pytest
 
@@ -1057,17 +1059,152 @@ def test_the_cli_reads_an_optional_context_file(tmp_path, capsys):
     assert "not one canonical JSON object" in capsys.readouterr().err
 
 
+_GATE_PATH_LIST = "check_standing_consensus_sign_class.py"
+_RULE14_WORKSPACE_PATHS = ("tools/bridge_mind_workspace.py", "tests/tools/test_bridge_mind_workspace.py")
+
+
+def _rule14_list_and_other_text(source: str) -> tuple[tuple[str, ...], str]:
+    """The Rule 14 path list of the merge-gate classifier, and the rest of its source text.
+
+    The classifier has to name the workspace: the documented Rule 14 list (CLAUDE.md) holds this module and
+    this test file as two whole-file paths. Exactly those two constants, written as plain quoted strings in
+    the one module-level ``MIND_CLASS_PATTERNS`` tuple of string constants, are cut out. Everything else in
+    the file stays under the substring ban. Any other structure raises, so the tripwire refuses.
+    """
+    tree = ast.parse(source)
+
+    def target(node: ast.AST) -> ast.AST | None:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            return node.targets[0]
+        return node.target if isinstance(node, ast.AnnAssign) else None
+
+    declared = [node for node in tree.body
+                if isinstance(target(node), ast.Name) and target(node).id == "MIND_CLASS_PATTERNS"]
+    bound = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Name) and node.id == "MIND_CLASS_PATTERNS" and not isinstance(node.ctx, ast.Load)]
+    if len(declared) != 1 or len(bound) != 1 or bound[0] is not target(declared[0]):
+        raise ValueError("MIND_CLASS_PATTERNS is not declared exactly once, at module level")
+    value = declared[0].value
+    if not isinstance(value, ast.Tuple) or not all(
+            isinstance(item, ast.Constant) and type(item.value) is str for item in value.elts):
+        raise ValueError("MIND_CLASS_PATTERNS is not a plain tuple of string constants")
+    named = [item for item in value.elts if "bridge_mind_workspace" in item.value]
+    if sorted(item.value for item in named) != sorted(_RULE14_WORKSPACE_PATHS):
+        raise ValueError("the path list names the workspace other than by its two documented paths, once each")
+    lines = source.encode("utf-8").split(b"\n")
+    for item in sorted(named, key=lambda item: (item.lineno, item.col_offset), reverse=True):
+        line = lines[item.lineno - 1]
+        literal = b'"' + item.value.encode("utf-8") + b'"'
+        if item.end_lineno != item.lineno or line[item.col_offset:item.end_col_offset] != literal:
+            raise ValueError("a documented workspace path is not written as one plain quoted constant")
+        lines[item.lineno - 1] = line[:item.col_offset] + line[item.end_col_offset:]
+    return tuple(item.value for item in value.elts), b"\n".join(lines).decode("utf-8")
+
+
 def test_the_workspace_is_not_wired_into_any_gate_or_bridge_code():
     """M1 / P9: nothing in tools, the bridge bin or waggledance reads the workspace, except the one named dormant
-    shadow pipeline, which nothing reads in turn (tests/tools/test_wd_bridge_mind_shadow.py)."""
+    shadow pipeline, which nothing reads in turn (tests/tools/test_wd_bridge_mind_shadow.py).
+
+    The merge-gate classifier is scanned like every other file, minus the two documented Rule 14 path constants
+    (see ``_rule14_list_and_other_text``). This is a text tripwire, not a proof: a name assembled or looked up at
+    run time was outside the plain substring scan before this exception too."""
     root = Path(mind.__file__).resolve().parents[1]
     readers = [path for path in (root / "tools").glob("*.py")
                if path.name not in ("bridge_mind_workspace.py", "wd_bridge_mind_shadow.py")]
     readers += list((root / ".agent-bridge" / "bin").glob("*.ps1"))
     readers += list((root / "waggledance").rglob("*.py"))
     assert len(readers) > 100
-    assert not [path.name for path in readers
-                if "bridge_mind_workspace" in path.read_text(encoding="utf-8", errors="replace")]
+    assert [path.name for path in readers].count(_GATE_PATH_LIST) == 1
+
+    def scanned(path: Path) -> str:
+        if path.name == _GATE_PATH_LIST and path.parent == root / "tools":
+            return _rule14_list_and_other_text(path.read_text(encoding="utf-8"))[1]
+        return path.read_text(encoding="utf-8", errors="replace")
+
+    assert not [path.name for path in readers if "bridge_mind_workspace" in scanned(path)]
+
+
+def test_the_gate_path_list_that_names_the_workspace_is_the_documented_rule14_list():
+    from tools.check_standing_consensus_sign_class import MIND_CLASS_PATTERNS
+
+    root = Path(mind.__file__).resolve().parents[1]
+    patterns, _ = _rule14_list_and_other_text((root / "tools" / _GATE_PATH_LIST).read_text(encoding="utf-8"))
+    text = (root / "CLAUDE.md").read_text(encoding="utf-8")
+    start = text.index("**Mind-class** = a change whose every changed path")
+    end = text.index("The patterns added on 2026-11-14 take", start)
+    assert re.findall(r"`([^`]+)`", text[start:end]) == list(patterns)
+    assert patterns == MIND_CLASS_PATTERNS            # the declaration read as text is the value the gate uses
+
+
+_LIST_LINE = '    "tools/bridge_mind_workspace.py",\n'
+_LIST_HEAD = "MIND_CLASS_PATTERNS = (\n"
+_BOTH = '"tools/bridge_mind_workspace.py", "tests/tools/test_bridge_mind_workspace.py"'
+
+
+def _swapped(source: str, old: str, new: str) -> str:
+    assert source.count(old) == 1, old
+    return source.replace(old, new)
+
+
+def _tripwire_refuses(source: str) -> bool:
+    try:
+        return "bridge_mind_workspace" in _rule14_list_and_other_text(source)[1]
+    except (SyntaxError, ValueError):
+        return True
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        # the workspace is imported, loaded or read
+        lambda source: source + "\nfrom tools import bridge_mind_workspace\n",
+        lambda source: source + "\nimport tools.bridge_mind_workspace as workspace\n",
+        lambda source: source + '\nimport importlib\nimportlib.import_module("tools.bridge_mind_workspace")\n',
+        lambda source: source + '\nPath("tools/bridge_mind_workspace.py").read_text(encoding="utf-8")\n',
+        lambda source: source + "\n__import__('tools.bridge_mind_workspace')\n",
+        # one more mention anywhere outside the two constants of the list
+        lambda source: source + "\n# bridge_mind_workspace\n",
+        lambda source: source + '\nOTHER = "tools/bridge_mind_workspace.py"\n',
+        lambda source: source + '\nOTHER = ("tests/tools/test_bridge_mind_workspace.py",)\n',
+        lambda source: source + "\nOTHER = (" + _BOTH + ")\n",
+        # the list itself names the workspace in any other way
+        lambda source: _swapped(source, _LIST_LINE, _LIST_LINE + _LIST_LINE),
+        lambda source: _swapped(source, _LIST_LINE, _LIST_LINE + '    "tools/bridge_mind_workspace_extra.py",\n'),
+        lambda source: _swapped(source, _LIST_LINE, ""),
+        lambda source: _swapped(source, _LIST_LINE, '    "tools/bridge_mind_workspace.py" "",\n'),
+        lambda source: _swapped(source, _LIST_LINE, '    r"tools/bridge_mind_workspace.py",\n'),
+        lambda source: _swapped(source, _LIST_LINE, "    'tools/bridge_mind_workspace.py',\n"),
+        lambda source: _swapped(source, _LIST_LINE, '    "tools/bridge_mind_workspace.py"[:],\n'),
+        lambda source: _swapped(source, _LIST_LINE, '    "tools/bridge_mind_" "workspace.py",\n'),
+        # the declaration is not one plain module-level tuple
+        lambda source: _swapped(source, _LIST_HEAD, "MIND_CLASS_PATTERNS = () + (\n"),
+        lambda source: _swapped(source, _LIST_HEAD, "MIND_CLASS_PATTERNS = OTHER_NAME = (\n"),
+        lambda source: source + "\nMIND_CLASS_PATTERNS += ()\n",
+        lambda source: source + "\nMIND_CLASS_PATTERNS = MIND_CLASS_PATTERNS\n",
+        lambda source: source + "\ndef rebind():\n    global MIND_CLASS_PATTERNS\n    MIND_CLASS_PATTERNS = ()\n",
+        lambda source: "if True:\n    MIND_CLASS_PATTERNS = (" + _BOTH + ")\n",
+        lambda source: "MIND_CLASS_PATTERNS = [" + _BOTH + "]\n",
+        lambda source: "OTHER_LIST = (" + _BOTH + ")\n",
+        lambda source: source + "\n(\n",
+    ],
+)
+def test_the_gate_path_list_exception_still_refuses_every_other_mention(change):
+    root = Path(mind.__file__).resolve().parents[1]
+    source = (root / "tools" / _GATE_PATH_LIST).read_text(encoding="utf-8")
+    assert _tripwire_refuses(source) is False                 # the file as it is passes
+    assert _tripwire_refuses(change(source)) is True
+
+
+def test_the_gate_path_list_exception_cuts_exactly_the_two_constants():
+    root = Path(mind.__file__).resolve().parents[1]
+    source = (root / "tools" / _GATE_PATH_LIST).read_text(encoding="utf-8")
+    patterns, rest = _rule14_list_and_other_text(source)
+    assert [pattern for pattern in patterns if "bridge_mind_workspace" in pattern] == list(_RULE14_WORKSPACE_PATHS)
+    assert len(source) - len(rest) == sum(len(path) + 2 for path in _RULE14_WORKSPACE_PATHS)
+    assert source.count("bridge_mind_workspace") == 2
+    # an annotated declaration of the same plain tuple reads the same way
+    annotated = _swapped(source, _LIST_HEAD, "MIND_CLASS_PATTERNS: tuple[str, ...] = (\n")
+    assert _rule14_list_and_other_text(annotated)[0] == patterns
 
 
 # The positive twin: an actual output of the projector core, tools/wd_bridge_mind.py at codex-tools-1/mind-20261013

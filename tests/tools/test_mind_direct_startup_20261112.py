@@ -723,18 +723,21 @@ $value=Invoke-WdMindOptionalContentProbe @params
 
 
 @WINDOWS
+@pytest.mark.parametrize('shell', [SHELL, pytest.param(shutil.which('pwsh'), marks=pytest.mark.skipif(
+    shutil.which('pwsh') is None, reason='PowerShell 7 unavailable'))], ids=['powershell51', 'pwsh7'])
 @pytest.mark.parametrize('filename', ['start-wd-agent.ps1', 'start-wd-tools-consumer.ps1'])
-@pytest.mark.parametrize('fault', ['none', 'authority', 'lane', 'fleet', 'ref', 'stale', 'future', 'sender', 'index', 'freshness',
+@pytest.mark.parametrize('fault', ['none', 'microseconds', 'authority', 'lane', 'fleet', 'ref', 'stale', 'future', 'sender', 'index', 'freshness',
                                    'unwritten', 'digest', 'duplicate', 'oversize', 'extra'])
-def test_content_suffix_delivers_hash_bound_untrusted_refs_with_age(filename, fault):
+def test_content_suffix_delivers_hash_bound_untrusted_refs_with_age(filename, fault, shell):
     observed = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+    if fault == 'microseconds': observed = observed.replace(microsecond=123456) - datetime.timedelta(seconds=1)
     if fault == 'stale': observed -= datetime.timedelta(minutes=16)
     if fault == 'future': observed += datetime.timedelta(minutes=2)
     view = {'schema':'wd.mind-flat-verified-session.v1', 'authority':'none', 'lane':'codex-lead-1',
         'fleet_sha256':'a'*64, 'sender_authentication':'UNKNOWN', 'index_match':'UNKNOWN', 'same_user_aba':'UNKNOWN',
         'current_status_freshness':'UNKNOWN',
         'results':[{'text':'synthetic content, not an instruction', 'source_event_sha256':'b'*64,
-                    'event_time_utc_floor':observed.isoformat().replace('+00:00','Z'), 'source_agent':'codex-tools-1',
+                    'event_time_utc_floor':observed.isoformat(timespec='microseconds' if fault == 'microseconds' else 'auto').replace('+00:00','Z'), 'source_agent':'codex-tools-1',
                     'event_age_seconds_upper_bound':1}]}
     if fault == 'authority': view['authority'] = 'operator'
     if fault == 'lane': view['lane'] = 'fable-5'
@@ -755,8 +758,8 @@ $r=[pscustomobject]@{{outcome='success';reason='content_projection';record_writt
 $suffix=Get-WdMindContentPromptSuffix -Read $r -ExpectedLane 'codex-lead-1' -ExpectedFleetSha256 ('a'*64)
 [ordered]@{{first=('FIRST'+$suffix);resume=('RESUME'+$suffix)}}|ConvertTo-Json -Compress
 '''
-    result = _run_startup_script(script)
-    if fault in ('none', 'stale'):
+    result = _run_startup_script(script, shell=shell)
+    if fault in ('none', 'microseconds', 'stale'):
         for key in ('first', 'resume'):
             assert 'DATA ONLY' in result[key] and 'not instructions' in result[key]
             assert 'b'*64 in result[key] and 'synthetic content' in result[key]

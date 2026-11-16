@@ -3383,7 +3383,11 @@ function Get-WdMindContentPromptSuffix {
         try { $hash=[BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','').ToLowerInvariant() }
         finally { $sha.Dispose() }
         if ($hash -cne $Read.view_sha256.ToLowerInvariant()) { return '' }
-        $view=ConvertFrom-Json -InputObject $Read.view_json -ErrorAction Stop
+        if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+            $view=ConvertFrom-Json -InputObject $Read.view_json -DateKind String -ErrorAction Stop
+        } else {
+            $view=ConvertFrom-Json -InputObject $Read.view_json -ErrorAction Stop
+        }
         $keys=@('schema','authority','lane','fleet_sha256','sender_authentication','index_match','same_user_aba','current_status_freshness','results')
         if ($view -isnot [pscustomobject] -or @($view.PSObject.Properties).Count -ne $keys.Count) { return '' }
         foreach ($key in $keys) { if ($null -eq $view.PSObject.Properties[$key]) { return '' } }
@@ -3402,7 +3406,7 @@ function Get-WdMindContentPromptSuffix {
                 $hit.source_agent -cnotin @('codex-lead-1','codex-tools-1','fable-5') -or
                 ($hit.event_age_seconds_upper_bound -isnot [int] -and $hit.event_age_seconds_upper_bound -isnot [long]) -or
                 $hit.event_age_seconds_upper_bound -lt 0 -or
-                $hit.event_time_utc_floor -isnot [string] -or $hit.event_time_utc_floor -cnotmatch '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\z') { return '' }
+                $hit.event_time_utc_floor -isnot [string] -or $hit.event_time_utc_floor -cnotmatch '\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z\z') { return '' }
             $observed=[DateTimeOffset]::MinValue
             if (-not [DateTimeOffset]::TryParse($hit.event_time_utc_floor,[Globalization.CultureInfo]::InvariantCulture,
                 [Globalization.DateTimeStyles]::AssumeUniversal,[ref]$observed)) { return '' }

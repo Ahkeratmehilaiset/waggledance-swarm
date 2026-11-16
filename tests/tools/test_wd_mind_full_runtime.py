@@ -850,6 +850,42 @@ def _single_owner_synthetic(monkeypatch, tmp_path):
     return runtime, adapter_module, binding, factory, calls
 
 
+@pytest.mark.parametrize('failure', ['factory', 'snapshot'])
+def test_single_owner_close_releases_proven_prelaunch_failure(tmp_path, monkeypatch, failure):
+    runtime, _, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    if failure == 'factory':
+        factory._manifest = '0' * 64
+    else:
+        monkeypatch.setattr(runtime, '_flat_snapshot', lambda *args: (_ for _ in ()).throw(ValueError()))
+    assert owner.start()['state'] == 'HOLD'
+    assert owner._launch_thread is None and owner._owner is None and calls == []
+    assert owner.close() == {'state':'STOPPED', 'owned':False, 'authority':'none'}
+
+
+def test_single_owner_close_preserves_uncertain_thread_start_failure(tmp_path, monkeypatch):
+    import threading
+    runtime, _, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    monkeypatch.setattr(threading.Thread, 'start', lambda self: (_ for _ in ()).throw(RuntimeError()))
+    assert owner.start()['state'] == 'HOLD'
+    assert owner._launch_thread is not None and calls == []
+    assert owner.close() == {'state':'HOLD', 'owned':None, 'authority':'none'}
+
+
+def test_single_owner_close_releases_prelaunch_cancellation(tmp_path, monkeypatch):
+    runtime, _, binding, factory, calls = _single_owner_synthetic(monkeypatch, tmp_path)
+    owner = runtime.create_single_manifest_owner(enabled=True, binding=binding,
+        lane='codex-lead-1', worker_factory=factory, shutdown_timeout=0)
+    monkeypatch.setattr(runtime, '_flat_snapshot', lambda *args: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        owner.start()
+    assert owner._launch_thread is None and calls == []
+    assert owner.close() == {'state':'STOPPED', 'owned':False, 'authority':'none'}
+
+
 def _refresh_generation_test_owner(monkeypatch, tmp_path):
     """Synthetic orchestration only; this fixture does not verify source pins."""
     runtime, _, binding, factory, _ = _single_owner_synthetic(monkeypatch, tmp_path)
@@ -932,11 +968,21 @@ def test_single_owner_direct_query_refuses_mutation_and_retains_hold(tmp_path, m
     assert owner.status() == {'state':'HOLD', 'owned':True, 'authority':'none'}
 
 
-def test_single_owner_direct_query_bad_request_does_not_close_owner(tmp_path, monkeypatch):
+@pytest.mark.parametrize('query', ['', ' '*2000 + 'x', '\ud800', 'x'*2000 + '\ud800',
+                                   'x'*4001, 'a\x00b'])
+def test_single_owner_direct_query_bad_request_does_not_close_owner(tmp_path, monkeypatch, query):
     runtime, owner, _, _, _, _ = _direct_query_test_owner(monkeypatch, tmp_path)
     with pytest.raises(runtime.FullRuntimeRefused):
-        owner.query_local(enabled=True, lane='codex-lead-1', scope='own', query='')
+        owner.query_local(enabled=True, lane='codex-lead-1', scope='own', query=query)
     assert owner.status() == {'state':'READY', 'owned':True, 'authority':'none'}
+    result = owner.query_local(enabled=True, lane='codex-lead-1', scope='own', query='work')
+    assert result['results'][0]['source_event_sha256'] == 'b'*64
+
+
+def test_single_owner_direct_query_accepts_over_2000_valid_characters(tmp_path, monkeypatch):
+    _, owner, _, _, _, _ = _direct_query_test_owner(monkeypatch, tmp_path)
+    result = owner.query_local(enabled=True, lane='codex-lead-1', scope='own', query='x'*2001)
+    assert result['results'][0]['source_event_sha256'] == 'b'*64
 
 
 def test_single_owner_direct_query_refuses_source_expiry_during_final_checks(tmp_path, monkeypatch):

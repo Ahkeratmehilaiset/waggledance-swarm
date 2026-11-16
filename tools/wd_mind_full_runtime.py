@@ -2144,7 +2144,11 @@ class _SingleManifestOwner:
         """Query this retained owner in-process; the caller is not authenticated here."""
         if (enabled is not True or type(lane) is not str or lane not in self._lanes
                 or type(scope) is not str or scope not in ('own', 'shared')
-                or type(query) is not str or not query.strip() or len(query) > 4000 or '\x00' in query):
+                or type(query) is not str or not query[:2000].strip() or len(query) > 4000 or '\x00' in query):
+            raise FullRuntimeRefused('mind_full_runtime_refused') from None
+        try:
+            query.encode('utf-8')
+        except UnicodeEncodeError:
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
         if not self._lock.acquire(blocking=False):
             raise FullRuntimeRefused('mind_full_runtime_refused') from None
@@ -2598,6 +2602,15 @@ class _SingleManifestOwner:
             if watcher_check_failed:
                 return self._status()
             if self._state == 'NEW':
+                self._state = 'STOPPED'
+                return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
+            # A failure before the launch thread is even constructed cannot
+            # have invoked the worker factory. Keep every ambiguous state in
+            # HOLD, including a Thread.start() failure after construction.
+            if (self._state == 'HOLD' and self._launch_thread is None
+                    and self._owner is None and self._launch is None and self._client is None
+                    and self._adapter is None and self._handler is None and not self._owner_conflicts
+                    and self._launch_error is None and not self._launch_done.is_set()):
                 self._state = 'STOPPED'
                 return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
             if self._launch_thread is not None and self._launch_thread.is_alive():

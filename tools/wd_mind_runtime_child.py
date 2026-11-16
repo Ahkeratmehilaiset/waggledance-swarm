@@ -759,6 +759,29 @@ def _startup_scope_for_lane(lane):
     raise ValueError('lane')
 
 
+def _select_local_source_record(reader, records, hit, used):
+    """Choose an equivalent chunk deterministically after source re-derivation."""
+    matches = [record for record in records
+        if record['provenance']['source_event_ref'] == hit['source_event_sha256']
+        and record['time_utc'] == hit['event_time_utc_floor']
+        and record['meta']['agent'] == hit['source_agent']
+        and reader.decode_text(record['stored_text']) == hit['text']]
+    if not matches:
+        raise ValueError('selected_source')
+    def comparable(record):
+        return ({key: value for key, value in record.items() if key not in ('record_id', 'provenance')},
+                {key: value for key, value in record['provenance'].items() if key not in ('event_ref', 'chunk_index')})
+    if any(comparable(record) != comparable(matches[0]) for record in matches[1:]):
+        raise ValueError('ambiguous_source')
+    remaining = sorted((record for record in matches if record['record_id'] not in used),
+                       key=lambda record: record['record_id'])
+    if not remaining:
+        raise ValueError('selected_source')
+    selected = remaining[0]
+    used.add(selected['record_id'])
+    return selected
+
+
 class _LocalManifestQuery:
     """Retain one pinned owner in this process; no lane identity is authenticated.
 
@@ -766,42 +789,234 @@ class _LocalManifestQuery:
     terminate an owned worker on a timeout. Neither startup latency nor
     automatic refresh is provided by this adapter.
     """
-    __slots__ = ('_owner', '_metadata', '_bundle', '_manifest')
+    __slots__ = ('_owner', '_metadata', '_bundle', '_manifest', '_policy', '_policy_sha', '_approval_sha',
+                 '_worker_timeout', '_lock_timeout', '_shutdown_timeout', '_thread', '_lock', '_cancel',
+                 '_state', '_policy_invalid', '_pending_result')
 
-    def __init__(self, owner, lane, bundle, manifest):
-        self._owner = owner
+    def __init__(self, lane, bundle, manifest, policy, policy_sha, approval_sha,
+                 worker_timeout, lock_timeout, shutdown_timeout):
+        self._owner = None
         self._metadata = {'lane': lane}
         self._bundle, self._manifest = bundle, manifest
+        self._policy, self._policy_sha, self._approval_sha = policy, policy_sha, approval_sha
+        self._worker_timeout, self._lock_timeout, self._shutdown_timeout = worker_timeout, lock_timeout, shutdown_timeout
+        self._thread, self._lock, self._cancel = None, threading.Lock(), threading.Event()
+        self._state, self._policy_invalid = 'NEW', False
+        self._pending_result = None
 
     def __repr__(self):
         return '<PrivateMindLocalManifestQuery>'
 
+    def _check_policy(self):
+        from tools import wd_mind_full_runtime as runtime
+        try:
+            if self._policy_invalid:
+                raise ValueError('policy_invalid')
+            runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=self._bundle,
+                expected_manifest_sha256=self._manifest, operator_policy_sha256=self._policy_sha,
+                operator_approval_reference_sha256=self._approval_sha)
+        except Exception:
+            self._policy_invalid = True
+            raise
+
+    def _prepare(self):
+        from tools import wd_mind_full_runtime as runtime
+        from tools import wd_mind_e5_client as client
+        binding = factory = owner = None
+        try:
+            self._check_policy()
+            if self._cancel.is_set():
+                return
+            binding = runtime.assemble_full_runtime(enabled=True, bundle_root=self._bundle,
+                expected_manifest_sha256=self._manifest, identifier_policy_bytes=self._policy,
+                expected_identifier_policy_sha256=self._policy_sha)
+            if self._cancel.is_set():
+                return
+            factory = runtime.create_manifest_worker_factory(enabled=True, bundle_root=self._bundle,
+                expected_manifest_sha256=self._manifest, worker_timeout_seconds=self._worker_timeout,
+                lock_timeout_seconds=self._lock_timeout, bulk_contract_sha256=client.BULK_CONTRACT_SHA256)
+            owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane=self._metadata['lane'],
+                worker_factory=factory, shutdown_timeout=self._shutdown_timeout)
+            with self._lock:
+                self._owner = owner  # Retain before any worker may be launched.
+            self._check_policy()
+            if self._cancel.is_set():
+                return
+            outcome = owner.start()
+            with self._lock:
+                self._state = ('READY' if not self._cancel.is_set() and type(outcome) is dict
+                               and outcome.get('state') == 'READY' and outcome.get('owned') is True else 'HOLD')
+        except BaseException:
+            with self._lock:
+                self._state = 'HOLD'
+        finally:
+            self._policy = binding = factory = owner = None
+            with self._lock:
+                if self._cancel.is_set() and self._owner is None:
+                    self._state = 'STOPPED'
+
     def start(self):
-        return self._owner.start()
+        with self._lock:
+            if self._state != 'NEW':
+                raise LaunchRefused('mind_e5_start_refused') from None
+            self._state = 'STARTING'
+            self._thread = threading.Thread(target=self._prepare, name='mind-local-owner', daemon=False)
+            try:
+                self._thread.start()
+            except BaseException:
+                self._cancel.set()
+                self._state = 'HOLD'
+                raise
+            return {'state': 'STARTING', 'owned': None, 'authority': 'none'}
+
+    def wait(self, *, timeout):
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 <= timeout <= 1800:
+            raise LaunchRefused('mind_e5_start_refused') from None
+        thread = self._thread
+        if thread is None:
+            raise LaunchRefused('mind_e5_start_refused') from None
+        try:
+            thread.join(timeout=float(timeout))
+        except BaseException:
+            self._cancel.set()
+            with self._lock:
+                self._state = 'HOLD'
+            raise
+        if thread.is_alive():
+            self._cancel.set()
+            with self._lock:
+                self._state = 'HOLD'
+        return self.status()
 
     def status(self):
-        return self._owner.status()
+        with self._lock:
+            state, owner = self._state, self._owner
+            active = self._thread is not None and self._thread.is_alive()
+        if active:
+            return {'state': 'HOLD' if state == 'HOLD' else 'STARTING', 'owned': None, 'authority': 'none'}
+        if owner is None:
+            return {'state': state, 'owned': False if state in ('NEW', 'STOPPED') else None, 'authority': 'none'}
+        outcome = owner.status()
+        if state == 'HOLD' or self._policy_invalid:
+            return {'state': 'HOLD', 'owned': outcome.get('owned') if type(outcome) is dict else None, 'authority': 'none'}
+        return outcome
 
     def close(self):
-        return self._owner.close()
+        self._cancel.set()
+        with self._lock:
+            owner = self._owner
+            active = self._thread is not None and self._thread.is_alive()
+            if active:
+                self._state = 'HOLD'
+                return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
+            if owner is None:
+                self._state = 'STOPPED'
+                self._policy = None
+                return {'state': 'STOPPED', 'owned': False, 'authority': 'none'}
+        outcome = owner.close()
+        with self._lock:
+            self._state = ('STOPPED' if type(outcome) is dict and outcome.get('state') == 'STOPPED'
+                           and outcome.get('owned') is False else 'HOLD')
+        return outcome
 
     def query(self):
         from tools import wd_mind_full_runtime as runtime
         try:
+            with self._lock:
+                if (self._state != 'READY' or self._policy_invalid or self._cancel.is_set()
+                        or self._pending_result is not None):
+                    raise ValueError('owner_not_ready')
             lane = self._metadata['lane']
             scope = _startup_scope_for_lane(lane)
+            self._check_policy()
             controls = runtime._bundle_inputs(Path(self._bundle), self._manifest)
             fleet_sha = hashlib.sha256(controls[0]).hexdigest()
             result = self._owner.query_local(enabled=True, lane=lane, scope=scope,
                                              query=runtime._STARTUP_PIPE_QUERY)
+            self._check_policy()
+            with self._lock:
+                if self._state != 'READY' or self._cancel.is_set() or self._policy_invalid:
+                    raise ValueError('owner_not_ready')
             raw = runtime.reader._canonical(result)
             if not 0 < len(raw) <= 16384:
                 raise ValueError('result_size')
             # The owner re-reads and screens selected source rows. Validate the
             # lane-facing envelope and recalculate age at this last boundary.
-            return _RetainedParentPair._validated_result(self, raw, fleet_sha)
+            raw = _RetainedParentPair._validated_result(self, raw, fleet_sha)
+            with self._lock:
+                if self._state != 'READY' or self._cancel.is_set() or self._policy_invalid:
+                    raise ValueError('owner_not_ready')
+                self._pending_result = raw
+            return raw
+        except Exception:
+            if self._policy_invalid:
+                with self._lock:
+                    self._state = 'HOLD'
+            raise LaunchRefused('mind_e5_start_refused') from None
+
+    def finalize_result(self):
+        """Re-read selected source rows after a confirmed stop, before delivery."""
+        from tools import wd_mind_full_runtime as runtime
+        owner = snapshot = projection = context = report = records = None
+        acquired = False
+        try:
+            with self._lock:
+                if self._state != 'STOPPED' or self._policy_invalid or self._pending_result is None:
+                    raise ValueError('not_stopped')
+                owner, raw = self._owner, self._pending_result
+            if owner is None or not owner._lock.acquire(blocking=False):
+                raise ValueError('owner_busy')
+            acquired = True
+            if owner._state != 'STOPPED' or type(owner._snapshot) is not dict:
+                raise ValueError('owner_state')
+            self._check_policy()
+            if not hmac.compare_digest(runtime._local_generation_policy_pin(owner), self._policy_sha):
+                raise ValueError('policy_changed')
+            controls = runtime._bundle_inputs(Path(self._bundle), self._manifest)
+            fleet_sha = hashlib.sha256(controls[0]).hexdigest()
+            result = json.loads(_RetainedParentPair._validated_result(self, raw, fleet_sha).decode('utf-8'),
+                                object_pairs_hook=runtime.prefix._unique_object,
+                                parse_constant=runtime.reader._bad_constant)
+            snapshot = owner._snapshot
+            projection, context, report = runtime.reader._verified_complete(snapshot)
+            records = projection['messages']['records']
+            selected, proposals, used = [], [], set()
+            for hit in result['results']:
+                record = _select_local_source_record(runtime.reader, records, hit, used)
+                if (_startup_scope_for_lane(self._metadata['lane']) == 'own'
+                        and record['meta']['agent'] != self._metadata['lane']):
+                    raise ValueError('source_scope')
+                selected.append(record)
+                proposals.append({'ref_sha256': runtime.reader._sha(record['provenance']['event_ref'].encode()),
+                    'doc_id_sha256': runtime.reader._sha(record['record_id'].encode()),
+                    'ref_kind': 'sha256_of_projected_metadata', 'canonical_event': False})
+            now = runtime.reader.dt.datetime.now(runtime.reader.dt.timezone.utc)
+            resolved = runtime.reader.resolve_content_results(proposals, runtime.reader._utc_text(now),
+                                                               _complete=True, **snapshot)
+            if len(resolved) != len(selected):
+                raise ValueError('selected_count')
+            for hit, record, fresh in zip(result['results'], selected, resolved):
+                if (fresh['source_reference']['sha256'] != hit['source_event_sha256']
+                        or runtime.reader.decode_text(fresh['stored_text']) != hit['text']):
+                    raise ValueError('source_changed')
+            self._check_policy()
+            if owner._snapshot is not snapshot or runtime._local_generation_policy_pin(owner) != self._policy_sha:
+                raise ValueError('policy_changed')
+            finished = runtime.reader.dt.datetime.now(runtime.reader.dt.timezone.utc)
+            for hit, record in zip(result['results'], selected):
+                age = (finished - runtime.reader._utc(record['time_utc'])).total_seconds()
+                expiry = record['provenance'].get('valid_until_utc')
+                if age < 0 or (expiry is not None and finished >= runtime.reader._utc(expiry)):
+                    raise ValueError('selected_time')
+                hit['event_age_seconds_upper_bound'] = max(hit['event_age_seconds_upper_bound'], math.ceil(age))
+            return runtime.reader._canonical(result)
         except Exception:
             raise LaunchRefused('mind_e5_start_refused') from None
+        finally:
+            self._pending_result = None
+            if acquired:
+                owner._lock.release()
+            owner = snapshot = projection = context = report = records = None
 
 
 def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_manifest_sha256=None,
@@ -814,35 +1029,31 @@ def create_local_manifest_query(*, enabled=False, bundle_root=None, expected_man
     authorized caller. Matching hashes do not authenticate that caller. The
     retained result must be kept alive across a start, query, timeout or HOLD.
     """
-    result = binding = factory = owner = None
+    result = None
     try:
-        from tools import wd_mind_full_runtime as runtime
-        from tools import wd_mind_e5_client as client
         if (enabled is not True or type(bundle_root) is not str
-                or type(expected_manifest_sha256) is not str
-                or type(identifier_policy_bytes) is not bytes
-                or type(expected_identifier_policy_sha256) is not str
-                or type(operator_approval_reference_sha256) is not str):
+                or type(expected_manifest_sha256) is not str or not _HEX.fullmatch(expected_manifest_sha256)
+                or type(identifier_policy_bytes) is not bytes or not 0 < len(identifier_policy_bytes) <= 65536
+                or type(expected_identifier_policy_sha256) is not str or not _HEX.fullmatch(expected_identifier_policy_sha256)
+                or type(operator_approval_reference_sha256) is not str or not _HEX.fullmatch(operator_approval_reference_sha256)
+                or not hmac.compare_digest(hashlib.sha256(identifier_policy_bytes).hexdigest(),
+                                           expected_identifier_policy_sha256)
+                or type(worker_timeout_seconds) not in (int, float) or not math.isfinite(worker_timeout_seconds)
+                or not 0 < worker_timeout_seconds <= 1800
+                or type(lock_timeout_seconds) not in (int, float) or not math.isfinite(lock_timeout_seconds)
+                or not 0 <= lock_timeout_seconds <= 30
+                or type(shutdown_timeout) not in (int, float) or not math.isfinite(shutdown_timeout)
+                or not 0 <= shutdown_timeout <= 15):
             raise ValueError('input')
         _startup_scope_for_lane(lane)
-        runtime.create_operator_pinned_policy_anchor(enabled=True, bundle_root=bundle_root,
-            expected_manifest_sha256=expected_manifest_sha256,
-            operator_policy_sha256=expected_identifier_policy_sha256,
-            operator_approval_reference_sha256=operator_approval_reference_sha256)
-        binding = runtime.assemble_full_runtime(enabled=True, bundle_root=bundle_root,
-            expected_manifest_sha256=expected_manifest_sha256, identifier_policy_bytes=identifier_policy_bytes,
-            expected_identifier_policy_sha256=expected_identifier_policy_sha256)
-        factory = runtime.create_manifest_worker_factory(enabled=True, bundle_root=bundle_root,
-            expected_manifest_sha256=expected_manifest_sha256, worker_timeout_seconds=worker_timeout_seconds,
-            lock_timeout_seconds=lock_timeout_seconds, bulk_contract_sha256=client.BULK_CONTRACT_SHA256)
-        owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane=lane,
-            worker_factory=factory, shutdown_timeout=shutdown_timeout)
-        # Return the owner before any start operation can launch a worker.
-        result = _LocalManifestQuery(owner, lane, bundle_root, expected_manifest_sha256)
+        # Return before the expensive source preparation or any worker launch.
+        result = _LocalManifestQuery(lane, bundle_root, expected_manifest_sha256, identifier_policy_bytes,
+            expected_identifier_policy_sha256, operator_approval_reference_sha256,
+            worker_timeout_seconds, lock_timeout_seconds, shutdown_timeout)
     except Exception:
         pass
     finally:
-        identifier_policy_bytes = binding = factory = owner = None
+        identifier_policy_bytes = None
     if result is None:
         raise LaunchRefused('mind_e5_start_refused') from None
     return result
@@ -1750,6 +1961,82 @@ def _start_e5_worker(*, bundle_root, deployment_manifest_sha256, interpreter, in
 _PARENT_ACTIVE = None
 
 
+def _read_local_policy_frame(stream):
+    """Read the bounded one-shot policy frame; never log or echo its bytes."""
+    def read_exact(size):
+        output = bytearray()
+        while len(output) < size:
+            part = stream.read(size - len(output))
+            if type(part) is not bytes or not part or len(part) > size - len(output):
+                raise ValueError('local_frame')
+            output.extend(part)
+        return bytes(output)
+    header = read_exact(8)
+    magic, length = struct.unpack('>4sI', header)
+    if magic != b'MCL1' or not 1 <= length <= 65536:
+        raise ValueError('local_frame')
+    policy = read_exact(length)
+    if stream.read(1) != b'':
+        raise ValueError('local_frame')
+    return policy
+
+
+def _local_query_entry(*, control_stream, output_stream, bundle_root, expected_manifest_sha256,
+                       lane, policy_sha256, approval_reference_sha256):
+    """Run one local query; retain uncertain work and write only after STOPPED."""
+    adapter = policy = result = None
+    try:
+        policy = _read_local_policy_frame(control_stream)
+        adapter = create_local_manifest_query(enabled=True, bundle_root=bundle_root,
+            expected_manifest_sha256=expected_manifest_sha256, identifier_policy_bytes=policy,
+            expected_identifier_policy_sha256=policy_sha256,
+            operator_approval_reference_sha256=approval_reference_sha256, lane=lane)
+        policy = None
+        if adapter.start().get('state') != 'STARTING':
+            raise ValueError('local_start')
+        status = adapter.wait(timeout=300)
+        if status.get('state') != 'READY' or status.get('owned') is not True:
+            raise ValueError('local_not_ready')
+        result = adapter.query()
+        if type(result) is not bytes or not 0 < len(result) <= 16384:
+            raise ValueError('local_result')
+    except BaseException:
+        result = None
+    finally:
+        policy = None
+        if adapter is not None:
+            # Preserve the process while a thread or worker remains uncertain;
+            # never kill or treat HOLD as an exit.
+            while True:
+                try:
+                    closed = adapter.close()
+                    if (type(closed) is dict and closed.get('state') == 'STOPPED'
+                            and closed.get('owned') is False):
+                        break
+                except BaseException:
+                    pass
+                try:
+                    time.sleep(0.25)
+                except BaseException:
+                    pass  # Keep the process holding uncertain ownership.
+    if result is None:
+        return 2
+    try:
+        # Closing a worker may take arbitrarily long. The selected rows and
+        # approval descriptor must still match after that wait.
+        result = adapter.finalize_result()
+        offset = 0
+        while offset < len(result):
+            count = output_stream.write(memoryview(result)[offset:])
+            if type(count) is not int or not 0 < count <= len(result) - offset:
+                raise ValueError('local_write')
+            offset += count
+        output_stream.flush()
+        return 0
+    except BaseException:
+        return 2
+
+
 def _wait_parent_pair_release(pair):
     """Do not let an uncertain parent process abandon retained child owners."""
     if pair._thread is None:
@@ -1809,14 +2096,22 @@ def _parent_control_entry(*, control_stream, output_stream, bundle_root, expecte
 
 
 def _fixed_child_main(argv):
-    """Route only the fixed parent and owner flags; all other inputs refuse."""
-    if argv not in (['--mind-owner-child'], ['--parent-control']):
+    """Route fixed parent, owner and local-query flags; all other inputs refuse."""
+    local = (len(argv) == 7 and argv[0] == '--mind-local-query'
+             and argv[1] == '--policy-sha256' and argv[3] == '--approval-reference-sha256'
+             and argv[5] == '--lane' and _HEX.fullmatch(argv[2]) and _HEX.fullmatch(argv[4]))
+    if argv not in (['--mind-owner-child'], ['--parent-control']) and not local:
         return 2
     try:
         expected = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
         if not _HEX.fullmatch(expected):
             return 2
         bundle = str(Path(__file__).resolve().parents[2])
+        if local:
+            _startup_scope_for_lane(argv[6])
+            return _local_query_entry(control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
+                bundle_root=bundle, expected_manifest_sha256=expected, lane=argv[6],
+                policy_sha256=argv[2], approval_reference_sha256=argv[4])
         if argv == ['--parent-control']:
             return _parent_control_entry(control_stream=sys.stdin.buffer, output_stream=sys.stdout.buffer,
                                          bundle_root=bundle, expected_manifest_sha256=expected)

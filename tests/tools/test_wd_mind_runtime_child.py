@@ -61,25 +61,73 @@ def test_parent_result_refuses_invalid_time_age_or_status(timestamp, age, freshn
 
 
 def test_local_manifest_query_is_default_off_and_refuses_an_unpinned_bundle(tmp_path):
+    policy = b'synthetic'
     args = {'bundle_root': str(tmp_path), 'expected_manifest_sha256': 'a' * 64,
-            'identifier_policy_bytes': b'synthetic', 'expected_identifier_policy_sha256': 'b' * 64,
+            'identifier_policy_bytes': policy, 'expected_identifier_policy_sha256': hashlib.sha256(policy).hexdigest(),
             'operator_approval_reference_sha256': 'c' * 64, 'lane': 'codex-lead-1'}
     with pytest.raises(child.LaunchRefused, match='^mind_e5_start_refused$'):
         child.create_local_manifest_query(**args)
-    with pytest.raises(child.LaunchRefused, match='^mind_e5_start_refused$'):
-        child.create_local_manifest_query(enabled=True, **args)
+    adapter = child.create_local_manifest_query(enabled=True, **args)
+    assert adapter.start()['state'] == 'STARTING'
+    assert adapter.wait(timeout=5)['state'] == 'HOLD'
+    assert adapter.close()['state'] == 'STOPPED'
 
 
-def test_local_manifest_query_retains_owner_after_interrupted_start():
-    class HeldOwner:
-        def start(self): raise KeyboardInterrupt()
-        def status(self): return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
-        def close(self): return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
-    adapter = child._LocalManifestQuery(HeldOwner(), 'codex-lead-1', 'synthetic', 'a' * 64)
-    with pytest.raises(KeyboardInterrupt):
-        adapter.start()
-    assert adapter.status() == {'state': 'HOLD', 'owned': None, 'authority': 'none'}
-    assert adapter.close() == {'state': 'HOLD', 'owned': None, 'authority': 'none'}
+def test_local_manifest_query_timeout_retains_preparation_and_never_launches_late(monkeypatch, tmp_path):
+    from tools import wd_mind_full_runtime as runtime
+    entered, release = threading.Event(), threading.Event()
+    launches = []
+    monkeypatch.setattr(runtime, 'create_operator_pinned_policy_anchor', lambda **kwargs: object())
+    def prepare(**kwargs):
+        entered.set()
+        release.wait(5)
+        return object()
+    monkeypatch.setattr(runtime, 'assemble_full_runtime', prepare)
+    monkeypatch.setattr(runtime, 'create_manifest_worker_factory', lambda **kwargs: launches.append('factory'))
+    policy = b'synthetic'
+    adapter = child.create_local_manifest_query(enabled=True, bundle_root=str(tmp_path),
+        expected_manifest_sha256='a'*64, identifier_policy_bytes=policy,
+        expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest(),
+        operator_approval_reference_sha256='c'*64, lane='codex-lead-1')
+    assert not entered.is_set()  # The caller has the owner before preparation.
+    try:
+        assert adapter.start()['state'] == 'STARTING'
+        assert entered.wait(2)
+        assert adapter.wait(timeout=0.01)['state'] == 'HOLD'
+        assert adapter.status()['state'] == 'HOLD'
+    finally:
+        release.set()
+        adapter._thread.join(timeout=5)
+    assert not adapter._thread.is_alive()
+    assert launches == []
+    assert adapter.close()['state'] == 'STOPPED'
+
+
+def test_local_manifest_query_timeout_during_anchor_never_prepares_or_launches(monkeypatch, tmp_path):
+    from tools import wd_mind_full_runtime as runtime
+    entered, release = threading.Event(), threading.Event()
+    launches = []
+    def anchor(**kwargs):
+        entered.set()
+        release.wait(5)
+        return object()
+    monkeypatch.setattr(runtime, 'create_operator_pinned_policy_anchor', anchor)
+    monkeypatch.setattr(runtime, 'assemble_full_runtime', lambda **kwargs: launches.append('assemble'))
+    policy = b'synthetic'
+    adapter = child.create_local_manifest_query(enabled=True, bundle_root=str(tmp_path),
+        expected_manifest_sha256='a'*64, identifier_policy_bytes=policy,
+        expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest(),
+        operator_approval_reference_sha256='c'*64, lane='codex-lead-1')
+    assert not entered.is_set()
+    try:
+        assert adapter.start()['state'] == 'STARTING'
+        assert entered.wait(2)
+        assert adapter.wait(timeout=0.01)['state'] == 'HOLD'
+    finally:
+        release.set()
+        adapter._thread.join(timeout=5)
+    assert not adapter._thread.is_alive() and launches == []
+    assert adapter.close()['state'] == 'STOPPED'
 
 
 @pytest.mark.parametrize('lane,scope', [
@@ -93,9 +141,10 @@ def test_local_manifest_query_retains_owner_and_routes_bound_lane(monkeypatch, t
     fleet_sha = hashlib.sha256(controls[0]).hexdigest()
     calls = []
     class Owner:
-        def start(self): calls.append('start'); return {'state': 'READY', 'owned': True, 'authority': 'none'}
-        def status(self): return {'state': 'HOLD', 'owned': True, 'authority': 'none'}
-        def close(self): calls.append('close'); return {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+        def __init__(self): self.state = 'NEW'
+        def start(self): self.state = 'READY'; calls.append('start'); return {'state': self.state, 'owned': True, 'authority': 'none'}
+        def status(self): return {'state': self.state, 'owned': True, 'authority': 'none'}
+        def close(self): self.state = 'HOLD'; calls.append('close'); return {'state': self.state, 'owned': True, 'authority': 'none'}
         def query_local(self, **kwargs):
             calls.append(kwargs)
             result = _verified_parent_result(timestamp=(datetime.now(timezone.utc)-timedelta(days=1)).isoformat(), age=1)
@@ -107,13 +156,16 @@ def test_local_manifest_query_retains_owner_and_routes_bound_lane(monkeypatch, t
     monkeypatch.setattr(runtime, 'create_manifest_worker_factory', lambda **kwargs: calls.append(('factory', kwargs)) or object())
     monkeypatch.setattr(runtime, 'create_single_manifest_owner', lambda **kwargs: calls.append(('owner', kwargs)) or held)
     monkeypatch.setattr(runtime, '_bundle_inputs', lambda root, manifest: controls)
+    policy = b'synthetic'
     adapter = child.create_local_manifest_query(enabled=True, bundle_root=str(tmp_path),
-        expected_manifest_sha256='a'*64, identifier_policy_bytes=b'synthetic',
-        expected_identifier_policy_sha256='b'*64, operator_approval_reference_sha256='c'*64, lane=lane)
-    assert [row[0] for row in calls] == ['anchor', 'binding', 'factory', 'owner']
-    assert calls[2][1]['bulk_contract_sha256'] == client.BULK_CONTRACT_SHA256
+        expected_manifest_sha256='a'*64, identifier_policy_bytes=policy,
+        expected_identifier_policy_sha256=hashlib.sha256(policy).hexdigest(),
+        operator_approval_reference_sha256='c'*64, lane=lane)
+    assert calls == []
     assert 'start' not in calls
-    assert adapter.start()['state'] == 'READY'
+    assert adapter.start()['state'] == 'STARTING'
+    assert adapter.wait(timeout=5)['state'] == 'READY', [row if type(row) is str else row[0] for row in calls]
+    assert next(row[1] for row in calls if type(row) is tuple and row[0] == 'factory')['bulk_contract_sha256'] == client.BULK_CONTRACT_SHA256
     answer = json.loads(adapter.query())
     assert answer['lane'] == lane and answer['fleet_sha256'] == fleet_sha
     assert answer['authority'] == 'none' and answer['sender_authentication'] == 'UNKNOWN'
@@ -122,6 +174,210 @@ def test_local_manifest_query_retains_owner_and_routes_bound_lane(monkeypatch, t
     assert {'enabled': True, 'lane': lane, 'scope': scope, 'query': runtime._STARTUP_PIPE_QUERY} in calls
     assert adapter.close() == {'state': 'HOLD', 'owned': True, 'authority': 'none'}
     assert adapter.status()['owned'] is True
+
+
+@pytest.mark.parametrize('when', ['before_query', 'during_query'])
+def test_local_query_rejects_real_approval_descriptor_mutation(monkeypatch, tmp_path, when):
+    from tools import wd_mind_full_runtime as runtime
+    policy = b'synthetic-policy'
+    policy_sha = hashlib.sha256(policy).hexdigest()
+    approval_sha = 'c' * 64
+    descriptor_name = 'wd-mind-identifier-policy-approval.json'
+    descriptor = json.dumps({'schema': 'wd.mind-identifier-policy-approval.v1',
+        'identifier_policy_sha256': policy_sha, 'approval_reference_sha256': approval_sha}).encode()
+    descriptor_path = tmp_path / descriptor_name
+    descriptor_path.write_bytes(descriptor)
+    manifest = json.dumps({'schema_version': 1, 'files': {descriptor_name: hashlib.sha256(descriptor).hexdigest()}}).encode()
+    (tmp_path / 'deployment-manifest.json').write_bytes(manifest)
+    manifest_sha = hashlib.sha256(manifest).hexdigest()
+    controls = (b'synthetic-fleet', b'synthetic-roster', b'synthetic-policy')
+    calls = []
+    def mutate():
+        descriptor_path.write_bytes(descriptor.replace(b'"c' + b'c' * 63, b'"d' + b'c' * 63))
+        assert descriptor_path.read_bytes() != descriptor
+    class Owner:
+        def start(self): return {'state': 'READY', 'owned': True, 'authority': 'none'}
+        def status(self): return {'state': 'READY', 'owned': True, 'authority': 'none'}
+        def close(self): return {'state': 'HOLD', 'owned': True, 'authority': 'none'}
+        def query_local(self, **kwargs):
+            calls.append('query')
+            if when == 'during_query': mutate()
+            result = _verified_parent_result(timestamp=(datetime.now(timezone.utc)-timedelta(days=1)).isoformat(), age=1)
+            result['fleet_sha256'] = hashlib.sha256(controls[0]).hexdigest()
+            return result
+    monkeypatch.setattr(runtime, 'assemble_full_runtime', lambda **kwargs: object())
+    monkeypatch.setattr(runtime, 'create_manifest_worker_factory', lambda **kwargs: object())
+    monkeypatch.setattr(runtime, 'create_single_manifest_owner', lambda **kwargs: Owner())
+    monkeypatch.setattr(runtime, '_bundle_inputs', lambda root, pin: controls)
+    adapter = child.create_local_manifest_query(enabled=True, bundle_root=str(tmp_path),
+        expected_manifest_sha256=manifest_sha, identifier_policy_bytes=policy,
+        expected_identifier_policy_sha256=policy_sha, operator_approval_reference_sha256=approval_sha,
+        lane='codex-lead-1')
+    assert adapter.start()['state'] == 'STARTING'
+    assert adapter.wait(timeout=5)['state'] == 'READY'
+    if when == 'before_query': mutate()
+    with pytest.raises(child.LaunchRefused): adapter.query()
+    assert calls == ([] if when == 'before_query' else ['query'])
+    assert adapter.status()['state'] == 'HOLD'
+    descriptor_path.write_bytes(descriptor)  # Restoring bytes must not revive invalidated state.
+    with pytest.raises(child.LaunchRefused): adapter.query()
+
+
+@pytest.mark.parametrize('raw', [b'', b'MCL2\x00\x00\x00\x01x', b'MCL1\x00\x00\x00\x00',
+                                 b'MCL1\x00\x01\x00\x01', b'MCL1\x00\x00\x00\x02x',
+                                 b'MCL1\x00\x00\x00\x01xy'])
+def test_local_policy_frame_rejects_bad_or_extra_bytes(raw):
+    with pytest.raises(ValueError): child._read_local_policy_frame(io.BytesIO(raw))
+
+
+def test_local_policy_frame_accepts_exact_bounded_bytes():
+    assert child._read_local_policy_frame(io.BytesIO(b'MCL1\x00\x00\x00\x03abc')) == b'abc'
+
+
+@pytest.mark.parametrize('query_ok', [True, False])
+def test_local_cli_buffers_until_owner_is_confirmed_stopped(monkeypatch, query_ok):
+    writes, events = [], []
+    class Owner:
+        def __init__(self): self.closes = 0
+        def start(self): return {'state':'STARTING'}
+        def wait(self, *, timeout): return {'state':'READY', 'owned':True}
+        def query(self):
+            if not query_ok: raise ValueError('private')
+            return b'{"synthetic":true}'
+        def close(self):
+            self.closes += 1
+            if self.closes == 1: return {'state':'HOLD', 'owned':True}
+            events.append('stopped')
+            return {'state':'STOPPED', 'owned':False}
+        def finalize_result(self):
+            assert events == ['stopped']
+            return b'{"synthetic":true}'
+    class Output:
+        def write(self, data):
+            assert events == ['stopped']
+            writes.append(bytes(data))
+            return len(data)
+        def flush(self): pass
+    owner = Owner()
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: owner)
+    monkeypatch.setattr(child.time, 'sleep', lambda _: None)
+    status = child._local_query_entry(control_stream=io.BytesIO(b'MCL1\x00\x00\x00\x03abc'),
+        output_stream=Output(), bundle_root='synthetic', expected_manifest_sha256='a'*64,
+        lane='codex-lead-1', policy_sha256='b'*64, approval_reference_sha256='c'*64)
+    assert status == (0 if query_ok else 2)
+    assert writes == ([b'{"synthetic":true}'] if query_ok else [])
+    assert events == ['stopped']
+
+
+def test_local_cli_discards_whole_result_if_post_close_validation_fails(monkeypatch):
+    class Owner:
+        def start(self): return {'state':'STARTING'}
+        def wait(self, *, timeout): return {'state':'READY', 'owned':True}
+        def query(self): return b'{"synthetic":true}'
+        def close(self): return {'state':'STOPPED', 'owned':False}
+        def finalize_result(self): raise child.LaunchRefused('mind_e5_start_refused')
+    output = io.BytesIO()
+    monkeypatch.setattr(child, 'create_local_manifest_query', lambda **kwargs: Owner())
+    status = child._local_query_entry(control_stream=io.BytesIO(b'MCL1\x00\x00\x00\x03abc'),
+        output_stream=output, bundle_root='synthetic', expected_manifest_sha256='a'*64,
+        lane='codex-lead-1', policy_sha256='b'*64, approval_reference_sha256='c'*64)
+    assert status == 2 and output.getvalue() == b''
+
+
+def test_fixed_local_cli_uses_named_arguments_and_manifest_environment(monkeypatch):
+    monkeypatch.setenv('WD_REBOOT_EXPECTED_MANIFEST_HASH', 'a'*64)
+    seen = []
+    monkeypatch.setattr(child, '_local_query_entry', lambda **kwargs: seen.append(kwargs) or 0)
+    args = ['--mind-local-query', '--policy-sha256', 'b'*64,
+            '--approval-reference-sha256', 'c'*64, '--lane', 'codex-lead-1']
+    assert child._fixed_child_main(args) == 0
+    assert seen[0]['lane'] == 'codex-lead-1'
+    assert seen[0]['policy_sha256'] == 'b'*64 and seen[0]['approval_reference_sha256'] == 'c'*64
+    assert seen[0]['expected_manifest_sha256'] == 'a'*64
+    assert child._fixed_child_main(args[:-1]) == 2
+
+
+@pytest.mark.parametrize('mutation', ['none', 'source', 'approval'])
+def test_local_post_close_rechecks_real_synthetic_source_and_approval(monkeypatch, tmp_path, mutation):
+    from test_wd_mind_content_snapshot_package import _flat_owner_fixture, fixtures, package
+    from tools import wd_mind_full_runtime as runtime
+    source_owner, proposals, snapshot, _ = _flat_owner_fixture(
+        package.__wrapped__(), fixtures.__wrapped__(), tmp_path, monkeypatch)
+    chosen = None
+    for proposal in proposals:
+        try:
+            chosen = source_owner.resolve(proposals=[proposal], lane='codex-lead-1', scope='own')['results'][0]
+            break
+        except ValueError:
+            pass
+    assert chosen is not None
+    wrapper_bundle = tmp_path / 'post-close-bundle'
+    wrapper_bundle.mkdir()
+    descriptor_name = 'wd-mind-identifier-policy-approval.json'
+    policy_sha, approval_sha = 'b' * 64, 'c' * 64
+    descriptor = json.dumps({'schema': 'wd.mind-identifier-policy-approval.v1',
+        'identifier_policy_sha256': policy_sha, 'approval_reference_sha256': approval_sha}).encode()
+    descriptor_path = wrapper_bundle / descriptor_name
+    descriptor_path.write_bytes(descriptor)
+    manifest = json.dumps({'schema_version': 1, 'files': {descriptor_name: hashlib.sha256(descriptor).hexdigest()}}).encode()
+    (wrapper_bundle / 'deployment-manifest.json').write_bytes(manifest)
+    manifest_sha = hashlib.sha256(manifest).hexdigest()
+    controls = (b'synthetic-fleet', b'synthetic-roster', b'synthetic-policy')
+    class Owner:
+        def __init__(self):
+            self._snapshot, self._lock, self._state = snapshot, threading.Lock(), 'READY'
+        def close(self):
+            if mutation == 'source':
+                path = Path(snapshot['messages']['source_path'])
+                lines = path.read_bytes().splitlines(keepends=True)
+                index = next(i for i, line in enumerate(lines)
+                    if runtime.reader._sha(runtime.reader._canonical(json.loads(line))) == chosen['source_event_sha256'])
+                old = lines[index]
+                lines[index] = old.replace(b'"message":', b'"messagE":', 1)
+                assert lines[index] != old and len(lines[index]) == len(old)
+                path.write_bytes(b''.join(lines))
+            elif mutation == 'approval':
+                descriptor_path.write_bytes(descriptor.replace(b'"c' + b'c'*63, b'"d' + b'c'*63))
+            self._state = 'STOPPED'
+            return {'state':'STOPPED', 'owned':False, 'authority':'none'}
+    monkeypatch.setattr(runtime, '_bundle_inputs', lambda root, pin: controls)
+    monkeypatch.setattr(runtime, '_local_generation_policy_pin', lambda owner: policy_sha)
+    adapter = child._LocalManifestQuery('codex-lead-1', str(wrapper_bundle), manifest_sha,
+        b'synthetic-policy', policy_sha, approval_sha, 5, 0, 5)
+    adapter._owner, adapter._state = Owner(), 'READY'
+    answer = _verified_parent_result(timestamp=chosen['event_time_utc_floor'],
+                                      age=chosen['event_age_seconds_upper_bound'])
+    answer['fleet_sha256'] = hashlib.sha256(controls[0]).hexdigest()
+    answer['results'][0].update(text=runtime.reader.decode_text(chosen['text']),
+        source_event_sha256=chosen['source_event_sha256'], source_agent=chosen['source_agent'])
+    adapter._pending_result = runtime.reader._canonical(answer)
+    assert adapter.close()['state'] == 'STOPPED'
+    if mutation == 'none':
+        delivered = json.loads(adapter.finalize_result())
+        assert delivered['results'][0]['source_event_sha256'] == chosen['source_event_sha256']
+        assert delivered['current_status_freshness'] == 'UNKNOWN'
+    else:
+        with pytest.raises(child.LaunchRefused): adapter.finalize_result()
+    assert adapter._pending_result is None
+
+
+def test_local_post_close_selects_identical_duplicate_chunks_deterministically():
+    from tools import wd_mind_content_query_readonly as reader
+    source = 'a' * 64
+    def record(doc, chunk, *, available='2026-01-01T00:01:00Z'):
+        return {'record_id': doc, 'kind':'event', 'time_utc':'2026-01-01T00:00:00Z',
+            'stored_text':reader.encode_text('same synthetic chunk'), 'meta':{'agent':'codex-lead-1'},
+            'provenance':{'source_event_ref':source, 'event_ref':'ref-'+doc, 'chunk_index':chunk,
+                          'chunk_count':2, 'available_utc':available}}
+    one, two = record('b', 1), record('a', 0)
+    hit = {'source_event_sha256':source, 'event_time_utc_floor':'2026-01-01T00:00:00Z',
+           'source_agent':'codex-lead-1', 'text':'same synthetic chunk'}
+    used = set()
+    assert child._select_local_source_record(reader, [one, two], hit, used)['record_id'] == 'a'
+    assert child._select_local_source_record(reader, [one, two], hit, used)['record_id'] == 'b'
+    with pytest.raises(ValueError): child._select_local_source_record(reader, [one, two], hit, used)
+    with pytest.raises(ValueError):
+        child._select_local_source_record(reader, [one, record('a', 0, available='2026-01-02T00:01:00Z')], hit, set())
 
 
 def digest(data):

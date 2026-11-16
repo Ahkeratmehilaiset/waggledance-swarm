@@ -856,7 +856,8 @@ class _LocalManifestQuery:
                 lock_timeout_seconds=self._lock_timeout, bulk_contract_sha256=client.BULK_CONTRACT_SHA256)
             anchor = self._check_policy()
             owner = runtime.create_single_manifest_owner(enabled=True, binding=binding, lane=self._metadata['lane'],
-                worker_factory=factory, shutdown_timeout=self._shutdown_timeout, policy_anchor=anchor)
+                worker_factory=factory, shutdown_timeout=self._shutdown_timeout, policy_anchor=anchor,
+                worker_rotation=True)
             with self._lock:
                 self._owner = owner  # Retain before any worker may be launched.
             self._check_external_policy()

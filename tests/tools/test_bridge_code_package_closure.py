@@ -64,6 +64,12 @@ def test_mind_runtime_child_is_an_explicit_packaged_entrypoint():
     assert definition['python_entrypoints']['mind_runtime_child'] == 'tools/wd_mind_runtime_child.py'
 
 
+def test_mind_rotating_client_is_packaged_and_smoke_imported():
+    definition = _definition()
+    assert 'tools/wd_mind_e5_rotating_client.py' in definition['python_files']
+    assert 'tools.wd_mind_e5_rotating_client' in definition['import_smoke']['package_modules']
+
+
 def test_manual_capability_declares_only_the_two_existing_drivers_not_default_entrypoints():
     definition = _definition()
     capability = definition["manual_execution_capability"]

@@ -63,6 +63,7 @@ class RotatingGracefulE5Client:
         self._request_limit = _BULK_NONCE_LIMIT if bulk_contract_sha256 else _ORDINARY_NONCE_LIMIT
         self._client = self._owner = None
         self._owned_process = self._owned_job = None
+        self._worker_timeout = None
         self._owner_conflicts = []
         self._used_bytes, self._requests = _FRAME_OVERHEAD, 0
         self._frames = 0
@@ -140,13 +141,18 @@ class RotatingGracefulE5Client:
         if (result.get('status') != 'READY' or type(client) is not GracefulE5WorkerClient
                 or client.owner is not self._owner or client._binding_sha256 != self._binding
                 or client._bulk_contract_sha256 != self._bulk_contract_sha256
-                or client._timeout != self._timeout
+                or type(client._timeout) not in (int, float) or not math.isfinite(client._timeout)
+                or not 0 < client._timeout <= self._timeout
                 or client._closed is not False or client._next_id != 1 or client._used_nonces
                 or getattr(self._owner, '_bulk_contract_sha256', None) != self._bulk_contract_sha256
                 or (self._bulk_contract_sha256 is not None
                     and result.get('bulk_contract_sha256') != self._bulk_contract_sha256)):
             self._hold = True
             raise ValueError('start')
+        # The launcher completes the handshake within its remaining startup
+        # deadline. Retain that (possibly shorter) call timeout exactly; never
+        # extend it to the factory's configured ceiling.
+        self._worker_timeout = client._timeout
         status = self._owner.status()
         if (type(status) is not dict or status.get('state') != 'RUNNING'
                 or status.get('owned') is not True or status.get('reason') is not None):
@@ -180,7 +186,10 @@ class RotatingGracefulE5Client:
                 or self._owner.resources.job is not self._owned_job
                 or self._client._closed is not False or self._client._binding_sha256 != self._binding
                 or self._client._bulk_contract_sha256 != self._bulk_contract_sha256
-                or self._client._timeout != self._timeout):
+                or type(self._worker_timeout) not in (int, float) or not math.isfinite(self._worker_timeout)
+                or not 0 < self._worker_timeout <= self._timeout
+                or type(self._client._timeout) is not type(self._worker_timeout)
+                or self._client._timeout != self._worker_timeout):
             raise ValueError('worker_binding')
         status = self._owner.status()
         if (type(status) is not dict or status.get('state') != 'RUNNING'
@@ -226,6 +235,7 @@ class RotatingGracefulE5Client:
             raise ValueError('owner_retained')
         self._client = self._owner = None
         self._owned_process = self._owned_job = None
+        self._worker_timeout = None
         self._hold = False
         return status
 

@@ -1059,6 +1059,58 @@ def test_the_cli_reads_an_optional_context_file(tmp_path, capsys):
     assert "not one canonical JSON object" in capsys.readouterr().err
 
 
+_LIST_NAME, _TABLE_NAME = "MIND_CLASS_PATTERNS", "_MIND_CLASS_REGEXES"
+_KNOWN_TABLE_STATEMENT = (
+    "_MIND_CLASS_REGEXES = tuple((pattern, _mind_pattern_regex(pattern)) for pattern in MIND_CLASS_PATTERNS)"
+)
+_KNOWN_REPORT_VALUE = "list(MIND_CLASS_PATTERNS)"
+_KNOWN_TABLE_USE = "(name for name, regex in _MIND_CLASS_REGEXES if regex.fullmatch(raw) is not None)"
+
+
+def _refuse_unknown_uses_of_the_rule14_list(tree: ast.Module, source: str) -> None:
+    """The cut-out constants stay reachable through the list, so the list is held to its three known uses.
+
+    The list is read in two places: the module-level statement that compiles it into the pattern table, and
+    the ``patterns`` field of the classifier's report. The table is read in one place, the whole-path match.
+    Any other read (an index, an alias, another loop, a changed statement) and any other mention of either
+    name in the text raises. NOT followed, and unknown to this test: what happens to the values after those
+    three places (the matched pattern name and the ``patterns`` / ``matches`` report fields are plain data
+    for callers), and any name assembled or looked up at run time.
+    """
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+
+    def loads(name: str) -> list[ast.Name]:
+        return [node for node in ast.walk(tree)
+                if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)]
+
+    def same(node: ast.AST, text: str, mode: str = "eval") -> bool:
+        known = ast.parse(text, mode=mode)
+        return ast.dump(node) == ast.dump(known.body if mode == "eval" else known.body[0])
+
+    def statement(node: ast.AST) -> ast.AST:
+        while parents[node] is not tree:
+            node = parents[node]
+        return node
+
+    shapes = []
+    for node in loads(_LIST_NAME):
+        call = parents[node]
+        holder = parents.get(call)
+        if same(statement(node), _KNOWN_TABLE_STATEMENT, "exec"):
+            shapes.append("table")
+        elif (same(call, _KNOWN_REPORT_VALUE) and isinstance(holder, ast.Dict)
+              and [key.value for key, value in zip(holder.keys, holder.values)
+                   if value is call and isinstance(key, ast.Constant)] == ["patterns"]):
+            shapes.append("report")
+        else:
+            shapes.append("other")
+    table_reads = loads(_TABLE_NAME)
+    if (sorted(shapes) != ["report", "table"]
+            or len(table_reads) != 1 or not same(parents[parents[table_reads[0]]], _KNOWN_TABLE_USE)
+            or source.count(_LIST_NAME) != 3 or source.count(_TABLE_NAME) != 2):
+        raise ValueError("the Rule 14 path list or its pattern table is used outside the three known places")
+
+
 _GATE_PATH_LIST = "check_standing_consensus_sign_class.py"
 _RULE14_WORKSPACE_PATHS = ("tools/bridge_mind_workspace.py", "tests/tools/test_bridge_mind_workspace.py")
 
@@ -1069,7 +1121,8 @@ def _rule14_list_and_other_text(source: str) -> tuple[tuple[str, ...], str]:
     The classifier has to name the workspace: the documented Rule 14 list (CLAUDE.md) holds this module and
     this test file as two whole-file paths. Exactly those two constants, written as plain quoted strings in
     the one module-level ``MIND_CLASS_PATTERNS`` tuple of string constants, are cut out. Everything else in
-    the file stays under the substring ban. Any other structure raises, so the tripwire refuses.
+    the file stays under the substring ban, and the list is held to its known uses
+    (``_refuse_unknown_uses_of_the_rule14_list``). Any other structure raises, so the tripwire refuses.
     """
     tree = ast.parse(source)
 
@@ -1091,6 +1144,7 @@ def _rule14_list_and_other_text(source: str) -> tuple[tuple[str, ...], str]:
     named = [item for item in value.elts if "bridge_mind_workspace" in item.value]
     if sorted(item.value for item in named) != sorted(_RULE14_WORKSPACE_PATHS):
         raise ValueError("the path list names the workspace other than by its two documented paths, once each")
+    _refuse_unknown_uses_of_the_rule14_list(tree, source)
     lines = source.encode("utf-8").split(b"\n")
     for item in sorted(named, key=lambda item: (item.lineno, item.col_offset), reverse=True):
         line = lines[item.lineno - 1]
@@ -1106,7 +1160,8 @@ def test_the_workspace_is_not_wired_into_any_gate_or_bridge_code():
     shadow pipeline, which nothing reads in turn (tests/tools/test_wd_bridge_mind_shadow.py).
 
     The merge-gate classifier is scanned like every other file, minus the two documented Rule 14 path constants
-    (see ``_rule14_list_and_other_text``). This is a text tripwire, not a proof: a name assembled or looked up at
+    (see ``_rule14_list_and_other_text``), and no other scanned file may name that list. This is a text tripwire,
+    not a proof: values that leave the classifier's report are not followed, and a name assembled or looked up at
     run time was outside the plain substring scan before this exception too."""
     root = Path(mind.__file__).resolve().parents[1]
     readers = [path for path in (root / "tools").glob("*.py")
@@ -1122,6 +1177,9 @@ def test_the_workspace_is_not_wired_into_any_gate_or_bridge_code():
         return path.read_text(encoding="utf-8", errors="replace")
 
     assert not [path.name for path in readers if "bridge_mind_workspace" in scanned(path)]
+    # The two constants stay reachable through the list, so no other scanned file may even name it.
+    assert not [path.name for path in readers if path.name != _GATE_PATH_LIST
+                and _LIST_NAME in path.read_text(encoding="utf-8", errors="replace")]
 
 
 def test_the_gate_path_list_that_names_the_workspace_is_the_documented_rule14_list():
@@ -1205,6 +1263,45 @@ def test_the_gate_path_list_exception_cuts_exactly_the_two_constants():
     # an annotated declaration of the same plain tuple reads the same way
     annotated = _swapped(source, _LIST_HEAD, "MIND_CLASS_PATTERNS: tuple[str, ...] = (\n")
     assert _rule14_list_and_other_text(annotated)[0] == patterns
+
+
+_TABLE_LINE = "    (pattern, _mind_pattern_regex(pattern)) for pattern in MIND_CLASS_PATTERNS\n"
+_REPORT_LINE = '        "patterns": list(MIND_CLASS_PATTERNS),\n'
+_MATCH_PART = "(name for name, regex in _MIND_CLASS_REGEXES if regex.fullmatch(raw) is not None)"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        # the cut-out constants reached through the list itself
+        lambda source: source + "\nPath(MIND_CLASS_PATTERNS[8]).read_text()\n",
+        lambda source: source + "\nALIAS = MIND_CLASS_PATTERNS\n",
+        lambda source: source + "\nPath(list(MIND_CLASS_PATTERNS)[8]).read_text()\n",
+        lambda source: source + "\nEVERY = [*MIND_CLASS_PATTERNS]\n",
+        lambda source: source + "\nfor item in MIND_CLASS_PATTERNS:\n    open(item)\n",
+        lambda source: source + "\ndef late():\n    return MIND_CLASS_PATTERNS\n",
+        lambda source: source + '\nglobals()["MIND_CLASS_PATTERNS"]\n',
+        lambda source: source + '\ngetattr(sys.modules[__name__], "MIND_CLASS_PATTERNS")\n',
+        lambda source: source + "\n# MIND_CLASS_PATTERNS\n",
+        # the two known uses of the list, changed
+        lambda source: _swapped(source, _TABLE_LINE, "    (pattern, open(pattern)) for pattern in MIND_CLASS_PATTERNS\n"),
+        lambda source: _swapped(source, _TABLE_LINE, "    (pattern, _mind_pattern_regex(pattern)) for pattern in MIND_CLASS_PATTERNS[8:]\n"),
+        lambda source: _swapped(source, _REPORT_LINE, '        "patterns": [open(item) for item in MIND_CLASS_PATTERNS],\n'),
+        lambda source: _swapped(source, _REPORT_LINE, '        "other": list(MIND_CLASS_PATTERNS),\n'),
+        lambda source: _swapped(source, _REPORT_LINE, '        "patterns": list(MIND_CLASS_PATTERNS)[8],\n'),
+        # the pattern table compiled from the list
+        lambda source: source + "\nPath(_MIND_CLASS_REGEXES[8][0]).read_text()\n",
+        lambda source: source + "\nALIAS = _MIND_CLASS_REGEXES\n",
+        lambda source: source + "\n# _MIND_CLASS_REGEXES\n",
+        lambda source: _swapped(source, _MATCH_PART, _MATCH_PART.replace("(name for", "(open(name) for")),
+        lambda source: _swapped(source, _MATCH_PART, _MATCH_PART.replace(" if regex.fullmatch(raw) is not None", "")),
+    ],
+)
+def test_the_gate_path_list_is_held_to_its_three_known_uses(change):
+    root = Path(mind.__file__).resolve().parents[1]
+    source = (root / "tools" / _GATE_PATH_LIST).read_text(encoding="utf-8")
+    assert _tripwire_refuses(source) is False
+    assert _tripwire_refuses(change(source)) is True
 
 
 # The positive twin: an actual output of the projector core, tools/wd_bridge_mind.py at codex-tools-1/mind-20261013

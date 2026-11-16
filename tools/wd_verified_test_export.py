@@ -371,6 +371,12 @@ def _validate_workspace(git: str, repo: Path, workspace: Path) -> None:
         raise ValueError('workspace_binding')
 
 
+def _pytest_boundary_args(root: Path) -> list[str]:
+    # rootdir controls node IDs; confcutdir separately prevents parent
+    # conftest imports before our plugin can refuse an external config.
+    return ['--rootdir=' + str(root), '--confcutdir=' + str(root)]
+
+
 def _run(config: dict) -> dict:
     # A positive result is a diagnostic only: any other job may also satisfy it.
     # The trusted pinned PowerShell caller must check its own bounded Job result.
@@ -441,8 +447,9 @@ def _run(config: dict) -> dict:
         # Do not let repository config add unrelated positional targets before
         # collection: even importing an unrequested test can have side effects.
         # D15 remains enabled through the controlled PYTEST_ADDOPTS environment.
-        args = [sys.executable, '-B', '-m', 'pytest', '-q', '--tb=short', '-ra', '-o', 'addopts=',
-                '--rootdir=' + str(target), '--basetemp=' + str(Path(env['TEMP']) / ('pytest-' + phase))]
+        args = [sys.executable, '-B', '-m', 'pytest', '-q', '--tb=short', '-ra', '-o', 'addopts=']
+        args += _pytest_boundary_args(target)
+        args += ['--basetemp=' + str(Path(env['TEMP']) / ('pytest-' + phase))]
         args += ['--collect-only'] if phase == 'collect' else ['--junitxml=' + str(junit)]
         result = subprocess.run(args + targets, cwd=str(target), env=env, stdin=subprocess.DEVNULL, check=False)
         results.append(result.returncode)

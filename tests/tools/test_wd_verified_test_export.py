@@ -161,7 +161,7 @@ def _selection_phase(tmp_path, phase, target, *extra, override_addopts=True):
                WD_VERIFIED_SELECTION_ROOT=str(tmp_path),
                WD_VERIFIED_SELECTION_TARGETS=json.dumps([target]), WD_VERIFIED_SELECTION_PHASE=phase,
                WD_VERIFIED_SELECTION_REPORT=str(report))
-    args = [sys.executable, '-B', '-m', 'pytest', '-q', '--tb=short', '--rootdir=' + str(tmp_path)]
+    args = [sys.executable, '-B', '-m', 'pytest', '-q', '--tb=short'] + export._pytest_boundary_args(tmp_path)
     if override_addopts:
         args += ['-o', 'addopts=']
     args += ['--collect-only'] if phase == 'collect' else ['--junitxml=' + str(junit)]
@@ -178,6 +178,21 @@ def _synthetic_parameterized_suite(tmp_path):
         "import pytest\n@pytest.mark.parametrize('n',[1,2],ids=['one','two'])\n"
         "def test_parameterized(n): assert n > 0\n", encoding='utf-8')
     return 'tests/test_synthetic.py::test_parameterized'
+
+
+def test_parent_conftest_is_not_imported_before_external_config_refusal(tmp_path):
+    export_root = tmp_path / 'export'
+    export_root.mkdir()
+    target = _synthetic_parameterized_suite(export_root)
+    (export_root / 'pytest.ini').unlink()
+    marker = tmp_path / 'parent-conftest-ran'
+    (tmp_path / 'pytest.ini').write_text('[pytest]\n', encoding='utf-8')
+    (tmp_path / 'conftest.py').write_text(
+        'from pathlib import Path\nPath(' + repr(str(marker)) + ").write_text('unexpected')\n",
+        encoding='utf-8')
+    result, report, _ = _selection_phase(export_root, 'collect', target)
+    assert result.returncode != 0 and not report.exists()
+    assert not marker.exists()
 
 
 def test_collected_and_executed_parameterized_node_ids_match_junit(tmp_path):

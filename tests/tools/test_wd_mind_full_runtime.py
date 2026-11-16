@@ -3612,11 +3612,11 @@ def test_deferred_legacy_rotator_routes_refuse_without_starting_a_worker(monkeyp
         call()
 
 
-def test_single_owner_package_has_unchanged_static_closure_without_rotator():
+def test_single_owner_package_has_static_closure_with_rotator():
     from test_bridge_code_package_closure import _closure, _packaged_python, _definition
-    omitted = 'tools/wd_mind_e5_rotating_client.py'
+    rotator = 'tools/wd_mind_e5_rotating_client.py'
     entries = _packaged_python()
-    assert omitted not in entries
+    assert rotator in entries
     assert 'mind_guardian' not in _definition()['python_entrypoints']
     gaps, unresolved = _closure(entries)
     assert not gaps, gaps

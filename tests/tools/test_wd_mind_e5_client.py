@@ -65,6 +65,74 @@ def test_cooperative_client_preserves_nonce_pair_and_float32_bytes(monkeypatch):
         finish(owner, process)
 
 
+def test_cooperative_handshake_deadline_does_not_shorten_later_request():
+    from test_wd_mind_e5_lifecycle import Process as OwnedProcess, bind, finish
+    import threading
+
+    request = supervised("query", "d" * 64, texts="query: synthetic")
+    frame = response(1, 1, nonce=bytes.fromhex(request["nonce"]),
+                     digest=bytes.fromhex(request["request_sha256"]))
+    process = OwnedProcess(response(0, 0))
+    owner, _ = bind(process)
+    timer = None
+    try:
+        subject = client.GracefulE5WorkerClient(owner, timeout=0.5,
+            handshake_deadline=time.monotonic() + 0.2, encoder_binding_sha256="c" * 64)
+        def publish():
+            with process.stdout.condition:
+                process.stdout.data.extend(frame)
+                process.stdout.condition.notify_all()
+        # The startup deadline is expired before this later request begins.
+        time.sleep(0.21)
+        timer = threading.Timer(0.05, publish)
+        timer.start()
+        assert len(subject.encode_supervised(request)['vector_bytes']) == 1536
+        assert subject.close(timeout=2)['state'] == 'EXITED'
+    finally:
+        if timer is not None:
+            timer.join()
+        finish(owner, process)
+
+
+@pytest.mark.parametrize('deadline', [float('nan'), float('inf'), True, -1])
+def test_cooperative_client_rejects_invalid_handshake_deadline(deadline):
+    from test_wd_mind_e5_lifecycle import Process as OwnedProcess, bind, finish
+    process = OwnedProcess(response(0, 0), on_eof=False)
+    owner, _ = bind(process)
+    try:
+        with pytest.raises(client.E5ClientRefused):
+            client.GracefulE5WorkerClient(owner, timeout=1, handshake_deadline=deadline)
+    finally:
+        finish(owner, process)
+
+
+@pytest.mark.parametrize('response_delay,startup_window,accepted', [(0.02, 0.5, True), (0.15, 0.03, False)])
+def test_cooperative_handshake_obeys_startup_deadline(response_delay, startup_window, accepted):
+    from test_wd_mind_e5_lifecycle import Process as OwnedProcess, bind, finish
+    import threading
+
+    process = OwnedProcess(on_eof=False)
+    owner, job = bind(process)
+    def publish():
+        with process.stdout.condition:
+            process.stdout.data.extend(response(0, 0))
+            process.stdout.condition.notify_all()
+    timer = threading.Timer(response_delay, publish)
+    try:
+        timer.start()
+        deadline = time.monotonic() + startup_window
+        if accepted:
+            subject = client.GracefulE5WorkerClient(owner, timeout=1, handshake_deadline=deadline)
+            assert subject._timeout == 1.0
+        else:
+            with pytest.raises(client.E5ClientRefused):
+                client.GracefulE5WorkerClient(owner, timeout=1, handshake_deadline=deadline)
+            assert owner.status()['owned'] and not job.closed
+    finally:
+        timer.join()
+        finish(owner, process)
+
+
 @pytest.mark.parametrize("bad", [b"", response(4, 0), response(0, 0, magic=b"BAD!"), struct.pack("<I", 65537)])
 def test_cooperative_bad_handshake_requests_eof_without_termination(bad):
     from test_wd_mind_e5_lifecycle import Process as OwnedProcess, bind, finish

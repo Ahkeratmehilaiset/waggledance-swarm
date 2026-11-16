@@ -36,7 +36,8 @@ class E5ClientRefused(ValueError):
 class E5WorkerClient:
     """One request at a time over private pipes; no fallback or retries."""
 
-    def __init__(self, process, job, *, timeout, encoder_binding_sha256=None, bulk_contract_sha256=None):
+    def __init__(self, process, job, *, timeout, encoder_binding_sha256=None, bulk_contract_sha256=None,
+                 handshake_deadline=None):
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 1800:
             raise E5ClientRefused("mind_e5_worker_refused")
         self._process, self._job, self._timeout = process, job, float(timeout)
@@ -53,7 +54,16 @@ class E5WorkerClient:
         try:
             if process.stdin is None or process.stdout is None:
                 raise ValueError("pipes")
-            self._response(0, 0, time.monotonic() + self._timeout, b"\0" * 32, b"\0" * 32)
+            deadline = time.monotonic() + self._timeout
+            if handshake_deadline is not None:
+                if type(handshake_deadline) not in (int, float) or not math.isfinite(handshake_deadline):
+                    raise ValueError("deadline")
+                deadline = min(deadline, float(handshake_deadline))
+            if time.monotonic() >= deadline:
+                raise ValueError("deadline")
+            self._response(0, 0, deadline, b"\0" * 32, b"\0" * 32)
+            if time.monotonic() >= deadline:
+                raise ValueError("deadline")
         except Exception:
             self.close()
             raise E5ClientRefused("mind_e5_worker_refused") from None
@@ -310,13 +320,14 @@ class GracefulE5WorkerClient(E5WorkerClient):
     Existing frame, nonce, digest, batching and float32 checks are unchanged.
     """
 
-    def __init__(self, owner, *, timeout, encoder_binding_sha256=None, bulk_contract_sha256=None):
+    def __init__(self, owner, *, timeout, encoder_binding_sha256=None, bulk_contract_sha256=None,
+                 handshake_deadline=None):
         if getattr(owner, '_bulk_contract_sha256', None) != bulk_contract_sha256:
             raise E5ClientRefused("mind_e5_worker_refused")
         self.owner = owner
         self._transport = _OwnedPipes(owner)
         super().__init__(self._transport, None, timeout=timeout, encoder_binding_sha256=encoder_binding_sha256,
-                         bulk_contract_sha256=bulk_contract_sha256)
+                         bulk_contract_sha256=bulk_contract_sha256, handshake_deadline=handshake_deadline)
 
     def _bounded(self, operation, deadline):
         self._transport.deadline = deadline

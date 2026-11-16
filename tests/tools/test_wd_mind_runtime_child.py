@@ -660,13 +660,45 @@ def synthetic_windows_subprocess(monkeypatch):
         monkeypatch.setattr(subprocess, 'STARTUPINFO', SimpleNamespace, raising=False)
 
 
+def _patch_windows_job_platform(monkeypatch):
+    class WindowsOS:
+        name = 'nt'
+        def __getattr__(self, attr): return getattr(os, attr)
+    real_os, real_job = child.os, child._Job
+
+    def make_job(*args, **kwargs):
+        # Keep POSIX path validation genuine; simulate Windows only while
+        # constructing the mocked Job object, including failure cleanup.
+        monkeypatch.setattr(child, 'os', WindowsOS())
+        try:
+            return real_job(*args, **kwargs)
+        finally:
+            monkeypatch.setattr(child, 'os', real_os)
+
+    monkeypatch.setattr(child, '_Job', make_job)
+
+
 @pytest.fixture
 def synthetic_windows_job_platform(monkeypatch):
     if os.name != 'nt':
-        class WindowsOS:
-            name = 'nt'
-            def __getattr__(self, attr): return getattr(os, attr)
-        monkeypatch.setattr(child, 'os', WindowsOS())
+        _patch_windows_job_platform(monkeypatch)
+
+
+def test_synthetic_job_platform_restores_os_after_failed_constructor(monkeypatch):
+    real_os = child.os
+    observed = []
+
+    def failing_job(**kwargs):
+        observed.append(child.os.name)
+        raise RuntimeError('synthetic failure')
+
+    monkeypatch.setattr(child, '_Job', failing_job)
+    _patch_windows_job_platform(monkeypatch)
+    assert child.os is real_os
+    with pytest.raises(RuntimeError, match='synthetic failure'):
+        child._Job()
+    assert observed == ['nt']
+    assert child.os is real_os
 
 
 @pytest.fixture

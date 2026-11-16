@@ -605,3 +605,343 @@ def test_single_b16_forwards_remaining_deadline_to_client(b16_worker, monkeypatc
     monkeypatch.setattr(client, 'encode_supervised', immediate)
     assert len(single.passage(tuple(texts))) == 16 * 1536
     assert len(seen) == 1 and 0 < seen[0] <= 0.5
+
+
+@pytest.fixture
+def rotating_bundle(flat_bundle, monkeypatch):
+    from tools import (wd_mind_e5_snapshot_adapter as adapter,
+                       wd_mind_e5_rotating_client as rotating,
+                       wd_mind_e5_client as client_module,
+                       wd_mind_full_runtime as runtime)
+    bundle, _, _, _ = flat_bundle
+    # The existing synthetic fixture has already rebound module origins into
+    # this bundle; add the independently pinned rotating module in the same way.
+    manifest_path = bundle / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    for module in (rotating, runtime):
+        source = Path(module.__file__)
+        relative = 'tools-bootstrap/tools/' + source.name
+        target = bundle.joinpath(*relative.split('/'))
+        target.write_bytes(source.read_bytes())
+        manifest['files'][relative] = hashlib.sha256(target.read_bytes()).hexdigest()
+        monkeypatch.setattr(module, '__file__', str(target))
+    raw = _json(manifest)
+    manifest_path.write_bytes(raw)
+    pin = hashlib.sha256(raw).hexdigest()
+    # Synthetic tests that exercise adapter behavior use an already-imported
+    # fake worker; the separate loader tests exercise real byte attestation.
+    rotator_path = bundle / 'tools-bootstrap' / 'tools' / 'wd_mind_e5_rotating_client.py'
+    monkeypatch.setattr(adapter, '_ROTATOR_ATTESTATION', (rotating, str(rotator_path), pin))
+    runtime_hash = hashlib.sha256((bundle / 'wd-mind-e5-encoder-binding.json').read_bytes()).hexdigest()
+    factory = runtime._ManifestWorkerFactory(str(bundle), pin, {'schema': 'synthetic'},
+                                             bundle / 'unused.lock', 30.0, 1.0,
+                                             client_module.BULK_CONTRACT_SHA256)
+    def make_rotator():
+        return rotating.RotatingGracefulE5Client(factory=factory, encoder_binding_sha256=runtime_hash,
+            snapshot_sha256='a' * 64, source_check=lambda: 'a' * 64, shutdown_timeout=1.0,
+            call_timeout=30.0, bulk_contract_sha256=client_module.BULK_CONTRACT_SHA256)
+    return adapter, rotating, factory, make_rotator, bundle, pin
+
+
+@pytest.fixture
+def rotating_case(b16_worker, rotating_bundle):
+    adapter, rotating, _, make_rotator, bundle, pin = rotating_bundle
+    _, worker, owner, process, texts, _ = b16_worker
+    worker._timeout = 30.0
+    rotator = make_rotator()
+    rotator._client, rotator._owner = worker, owner
+    rotator._owned_process, rotator._owned_job = owner.resources.process, owner.resources.job
+    return adapter, rotating, rotator, bundle, pin, owner, process, texts
+
+
+def test_rotating_adapter_requires_opt_in_exact_type_and_snapshot(rotating_case):
+    adapter, rotating, rotator, bundle, pin, _, _, _ = rotating_case
+    kwargs = dict(bundle_root=str(bundle), expected_manifest_sha256=pin,
+                  client=rotator, expected_snapshot_sha256='a' * 64)
+    with pytest.raises(ValueError):
+        adapter.create_rotating_flat_adapter(**kwargs)
+    with pytest.raises(ValueError):
+        adapter.create_rotating_flat_adapter(enabled=True, **dict(kwargs, client=FakeClient()))
+    class DerivedRotator(rotating.RotatingGracefulE5Client):
+        pass
+    with pytest.raises(ValueError):
+        adapter.create_rotating_flat_adapter(enabled=True, **dict(kwargs, client=object.__new__(DerivedRotator)))
+    with pytest.raises(ValueError):
+        adapter.create_rotating_flat_adapter(enabled=True, **dict(kwargs, expected_snapshot_sha256='b' * 64))
+    result = adapter.create_rotating_flat_adapter(enabled=True, **kwargs)
+    assert result._client is rotator
+
+
+def test_rotating_adapter_can_bind_new_owner_without_starting_a_worker(rotating_bundle):
+    adapter, _, _, make_rotator, bundle, pin = rotating_bundle
+    rotator = make_rotator()
+    result = adapter.create_rotating_flat_adapter(enabled=True, bundle_root=str(bundle),
+        expected_manifest_sha256=pin, client=rotator, expected_snapshot_sha256='a' * 64)
+    assert result._client is rotator and rotator.owner is None
+    assert rotator.status()['state'] == 'NEW'
+
+
+def test_rotating_loader_checks_pinned_bytes_before_import(rotating_bundle, monkeypatch):
+    import sys
+    import tools
+    from types import SimpleNamespace
+    adapter, rotating, _, _, bundle, pin = rotating_bundle
+    target = Path(rotating.__file__)
+    target.write_bytes(b'changed untrusted module')
+    monkeypatch.delitem(sys.modules, 'tools.wd_mind_e5_rotating_client')
+    monkeypatch.delattr(tools, 'wd_mind_e5_rotating_client', raising=False)
+    monkeypatch.setattr(adapter.importlib.util, 'find_spec', lambda name: SimpleNamespace(origin=str(target)))
+    calls = []
+    monkeypatch.setattr(adapter, 'compile', lambda *a, **k: calls.append(a), raising=False)
+    with pytest.raises(ValueError):
+        adapter._load_pinned_rotating_module(str(bundle), pin)
+    assert calls == []
+
+
+def test_rotating_loader_rejects_unattested_preloaded_module(rotating_bundle, monkeypatch):
+    adapter, rotating, _, _, bundle, pin = rotating_bundle
+    monkeypatch.setattr(adapter, '_ROTATOR_ATTESTATION', None)
+    with pytest.raises(ValueError, match='rotator_unverified_preload'):
+        adapter._load_pinned_rotating_module(str(bundle), pin)
+
+
+def test_rotating_loader_rejects_foreign_origin_before_import(rotating_bundle, monkeypatch):
+    import sys
+    import tools
+    from types import SimpleNamespace
+    adapter, _, _, _, bundle, pin = rotating_bundle
+    monkeypatch.delitem(sys.modules, 'tools.wd_mind_e5_rotating_client')
+    monkeypatch.delattr(tools, 'wd_mind_e5_rotating_client', raising=False)
+    monkeypatch.setattr(adapter.importlib.util, 'find_spec',
+                        lambda name: SimpleNamespace(origin=str(bundle / 'foreign.py')))
+    calls = []
+    monkeypatch.setattr(adapter, 'compile', lambda *a, **k: calls.append(a), raising=False)
+    with pytest.raises(ValueError):
+        adapter._load_pinned_rotating_module(str(bundle), pin)
+    assert calls == []
+
+
+def test_rotating_loader_executes_verified_source_bytes_on_cold_load(rotating_bundle, monkeypatch):
+    import sys
+    import tools
+    from types import SimpleNamespace
+    adapter, rotating, _, _, bundle, pin = rotating_bundle
+    target = Path(rotating.__file__)
+    monkeypatch.delitem(sys.modules, 'tools.wd_mind_e5_rotating_client')
+    monkeypatch.delattr(tools, 'wd_mind_e5_rotating_client', raising=False)
+    class PoisonLoader:
+        def create_module(self, spec):
+            pytest.fail('unverified loader must not create a module')
+        def exec_module(self, module):
+            pytest.fail('unverified loader must not execute a module')
+    monkeypatch.setattr(adapter.importlib.util, 'find_spec',
+                        lambda name: SimpleNamespace(origin=str(target), loader=PoisonLoader()))
+    loaded = adapter._load_pinned_rotating_module(str(bundle), pin)
+    assert loaded is sys.modules['tools.wd_mind_e5_rotating_client']
+    assert loaded is tools.wd_mind_e5_rotating_client and loaded is not rotating
+    assert loaded.__file__ == str(target) and callable(loaded.RotatingGracefulE5Client)
+
+
+def test_rotating_loader_refuses_concurrent_initialization(rotating_bundle):
+    adapter, _, _, _, bundle, pin = rotating_bundle
+    assert adapter._ROTATOR_LOAD_LOCK.acquire(blocking=False)
+    try:
+        with pytest.raises(ValueError):
+            adapter._load_pinned_rotating_module(str(bundle), pin)
+    finally:
+        adapter._ROTATOR_LOAD_LOCK.release()
+
+
+def test_rotating_loader_discards_module_if_pinned_file_changes_during_import(rotating_bundle, monkeypatch):
+    import sys
+    import tools
+    from types import SimpleNamespace
+    adapter, rotating, _, _, bundle, _ = rotating_bundle
+    target = Path(rotating.__file__)
+    target.write_bytes(b"from pathlib import Path\nPath(__file__).write_bytes(b'changed')\n")
+    manifest_path = bundle / 'deployment-manifest.json'
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest['files']['tools-bootstrap/tools/wd_mind_e5_rotating_client.py'] = hashlib.sha256(target.read_bytes()).hexdigest()
+    raw = _json(manifest); manifest_path.write_bytes(raw); pin = hashlib.sha256(raw).hexdigest()
+    monkeypatch.delitem(sys.modules, 'tools.wd_mind_e5_rotating_client')
+    monkeypatch.delattr(tools, 'wd_mind_e5_rotating_client', raising=False)
+    monkeypatch.setattr(adapter.importlib.util, 'find_spec', lambda name: SimpleNamespace(origin=str(target)))
+    with pytest.raises(ValueError):
+        adapter._load_pinned_rotating_module(str(bundle), pin)
+    assert 'tools.wd_mind_e5_rotating_client' not in sys.modules
+    assert not hasattr(tools, 'wd_mind_e5_rotating_client')
+
+
+@pytest.mark.parametrize('fault', ['source', 'snapshot', 'factory', 'timeout', 'bulk', 'module', 'runtime_module'])
+def test_rotating_adapter_refuses_changed_bindings_before_transport(rotating_case, monkeypatch, fault):
+    adapter, rotating, rotator, bundle, pin, owner, process, texts = rotating_case
+    current = adapter.create_rotating_flat_adapter(enabled=True, bundle_root=str(bundle),
+        expected_manifest_sha256=pin, client=rotator, expected_snapshot_sha256='a' * 64)
+    if fault == 'source':
+        rotator._source_check = lambda: 'a' * 64
+    elif fault == 'snapshot':
+        rotator._snapshot = 'b' * 64
+    elif fault == 'factory':
+        rotator._factory._location = {'schema': 'retargeted'}
+    elif fault == 'timeout':
+        rotator._timeout += 1
+    elif fault == 'bulk':
+        rotator._bulk_contract_sha256 = '0' * 64
+    elif fault == 'module':
+        Path(rotating.__file__).write_bytes(b'changed synthetic module')
+    else:
+        from tools import wd_mind_full_runtime as runtime
+        Path(runtime.__file__).write_bytes(b'changed synthetic runtime')
+    monkeypatch.setattr(rotating.RotatingGracefulE5Client, 'encode_supervised',
+                        lambda *a, **k: pytest.fail('changed pins must not reach transport'))
+    with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+        current.passage(tuple(texts))
+    assert not process.written and rotator.owner is owner
+
+
+def test_rotating_b16_checks_each_frame_without_reentering_rotator_lock(rotating_case, monkeypatch):
+    adapter, rotating, rotator, bundle, pin, owner, _, texts = rotating_case
+    checks = []
+    def encode(self, payload, *, frame_check, call_deadline):
+        assert self._lock.acquire(blocking=False)
+        try:
+            for _ in range(4):
+                frame_check(); checks.append('before')
+                frame_check(); checks.append('after')
+        finally:
+            self._lock.release()
+        return {'nonce': payload['nonce'], 'request_sha256': payload['request_sha256'],
+                'vector_bytes': ROW * len(payload['passages'])}
+    monkeypatch.setattr(rotating.RotatingGracefulE5Client, 'encode_supervised', encode)
+    current = adapter.create_rotating_flat_adapter(enabled=True, bundle_root=str(bundle),
+        expected_manifest_sha256=pin, client=rotator, expected_snapshot_sha256='a' * 64)
+    assert len(current.passage(tuple(texts))) == 16 * 1536
+    assert checks == ['before', 'after'] * 4 and rotator.owner is owner
+
+
+def test_rotating_frame_owner_change_never_returns_partial_vectors(rotating_case, monkeypatch):
+    adapter, rotating, rotator, bundle, pin, owner, _, texts = rotating_case
+    original_job = owner.resources.job
+    def encode(self, payload, *, frame_check, call_deadline):
+        assert self._lock.acquire(blocking=False)
+        try:
+            frame_check()
+            owner.resources.job = object()
+            frame_check()
+            pytest.fail('changed worker job must be refused')
+        finally:
+            owner.resources.job = original_job
+            self._lock.release()
+    monkeypatch.setattr(rotating.RotatingGracefulE5Client, 'encode_supervised', encode)
+    current = adapter.create_rotating_flat_adapter(enabled=True, bundle_root=str(bundle),
+        expected_manifest_sha256=pin, client=rotator, expected_snapshot_sha256='a' * 64)
+    with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+        current.passage(tuple(texts))
+    assert rotator.owner is owner
+
+
+@pytest.mark.parametrize('checks', [0, 1, 7, 9])
+def test_rotating_response_without_all_frame_checks_is_refused(rotating_case, monkeypatch, checks):
+    adapter, rotating, rotator, bundle, pin, owner, _, texts = rotating_case
+    def unchecked(self, payload, *, frame_check, call_deadline):
+        assert self._lock.acquire(blocking=False)
+        try:
+            for _ in range(checks):
+                frame_check()
+        finally:
+            self._lock.release()
+        return {'nonce': payload['nonce'], 'request_sha256': payload['request_sha256'],
+                'vector_bytes': ROW * len(payload['passages'])}
+    monkeypatch.setattr(rotating.RotatingGracefulE5Client, 'encode_supervised', unchecked)
+    current = adapter.create_rotating_flat_adapter(enabled=True, bundle_root=str(bundle),
+        expected_manifest_sha256=pin, client=rotator, expected_snapshot_sha256='a' * 64)
+    with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+        current.passage(tuple(texts))
+    assert rotator.owner is owner
+
+
+def test_rotating_frame_deadline_refuses_late_result_and_retains_owner(rotating_case, monkeypatch):
+    import time
+    adapter, rotating, rotator, bundle, pin, owner, _, texts = rotating_case
+    rotator._factory._timeout = rotator._timeout = rotator.active_client._timeout = 0.15
+    def delayed(self, payload, *, frame_check, call_deadline):
+        assert self._lock.acquire(blocking=False)
+        try:
+            frame_check()
+            time.sleep(0.25)
+            frame_check()
+            pytest.fail('late frame must be refused')
+        finally:
+            self._lock.release()
+    monkeypatch.setattr(rotating.RotatingGracefulE5Client, 'encode_supervised', delayed)
+    current = adapter.create_rotating_flat_adapter(enabled=True, bundle_root=str(bundle),
+        expected_manifest_sha256=pin, client=rotator, expected_snapshot_sha256='a' * 64)
+    with pytest.raises(ValueError, match='^mind_e5_snapshot_adapter_refused$'):
+        current.passage(tuple(texts))
+    assert rotator.owner is owner
+
+
+def test_rotating_close_preserves_hold_owner(rotating_case, monkeypatch):
+    adapter, rotating, rotator, bundle, pin, owner, _, _ = rotating_case
+    monkeypatch.setattr(rotating.RotatingGracefulE5Client, 'close',
+                        lambda self, *, timeout=0: {'state': 'HOLD', 'owned': True})
+    current = adapter.create_rotating_flat_adapter(enabled=True, bundle_root=str(bundle),
+        expected_manifest_sha256=pin, client=rotator, expected_snapshot_sha256='a' * 64)
+    assert current.close(timeout=1) == {'state': 'HOLD', 'owned': True}
+    assert rotator.owner is owner
+
+
+def test_rotating_adapter_uses_real_cooperative_pumps_across_rotation(rotating_bundle, monkeypatch):
+    from test_wd_mind_e5_client import response
+    from test_wd_mind_e5_lifecycle import Job, Process
+    from tools import wd_mind_e5_client as e5_client, wd_mind_e5_lifecycle as lifecycle
+    adapter, rotating, factory, make_rotator, bundle, pin = rotating_bundle
+    budget = 79 + 2 * (79 + 1536)
+    monkeypatch.setattr(rotating, 'BULK_STDOUT_BYTES', budget)
+    monkeypatch.setattr(lifecycle, 'BULK_STDOUT_BYTES', budget)
+    processes, nonces = [], iter(['a' * 64, 'b' * 64, 'c' * 64])
+    monkeypatch.setattr(adapter.secrets, 'token_hex', lambda _: next(nonces))
+
+    def launch(self, *, owner_sink):
+        assert self is factory
+        process = Process(response(0, 0))
+        processes.append(process)
+
+        class Input:
+            def write(self, packet):
+                size = int.from_bytes(packet[:4], 'little')
+                body = json.loads(packet[4:].decode('ascii'))
+                assert size == len(packet) - 4
+                frame = response(body['id'], len(body['texts']), nonce=bytes.fromhex(body['nonce']),
+                                 digest=bytes.fromhex(body['request_sha256']))
+                with process.stdout.condition:
+                    process.stdout.data.extend(frame)
+                    process.stdout.condition.notify_all()
+                return len(packet)
+            def flush(self): pass
+            def close(self): process.finish(0)
+
+        process.stdin = Input()
+        owner = lifecycle.reserve(enabled=True, bulk_contract_sha256=e5_client.BULK_CONTRACT_SHA256)
+        owner_sink(owner)
+        owner.set_job(Job()); owner.bind(process)
+        client = e5_client.GracefulE5WorkerClient(owner, timeout=30,
+            encoder_binding_sha256=rotator._binding, bulk_contract_sha256=e5_client.BULK_CONTRACT_SHA256)
+        owner.mark_ready()
+        return {'status': 'READY', 'owner': owner, 'client': client,
+                'bulk_contract_sha256': e5_client.BULK_CONTRACT_SHA256}
+
+    monkeypatch.setattr(type(factory), '__call__', launch)
+    rotator = make_rotator()
+    current = adapter.create_rotating_flat_adapter(enabled=True, bundle_root=str(bundle),
+        expected_manifest_sha256=pin, client=rotator, expected_snapshot_sha256='a' * 64)
+    try:
+        for _ in range(3):
+            assert current.query('synthetic question')[0] == 1.0
+        assert len(processes) == 2 and processes[0].poll() == 0
+        assert current.close(timeout=2)['state'] == 'EXITED'
+    finally:
+        for process in processes:
+            process.finish(0)
+        if rotator.owner is not None:
+            rotator.close(timeout=2)

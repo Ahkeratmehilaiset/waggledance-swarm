@@ -67,7 +67,7 @@ PASSAGE_BATCH = 16
 _WATCH_INTERVAL_SECONDS = 1.0
 # The full-prefix verifier has measured runs above two minutes on the target
 # host. This is a bounded close wait, not a deadline for synchronous providers.
-_WATCH_JOIN_TIMEOUT_SECONDS = 180.0
+_WATCH_JOIN_TIMEOUT_SECONDS = 600.0
 _WATCH_JOIN_MAX_SECONDS = 600.0
 _ROW = struct.Struct("<384f")
 _PACKAGE_INTERNAL_HOLD = object()

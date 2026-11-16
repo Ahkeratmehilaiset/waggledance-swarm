@@ -65,6 +65,40 @@ def test_fleet_supplies_explicit_pins_to_each_interactive_launch():
     assert launch.index('$wtArguments += $mindPolicyArguments') < launch.index('Start-Process -FilePath $wtPath')
 
 
+@pytest.mark.skipif(os.name != 'nt', reason='Windows launcher argument construction')
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_four_fleet_launches_receive_explicit_pins_without_starting_terminal(ps):
+    source = FLEET.read_text(encoding='utf-8-sig')
+    start = source.index('  foreach ($state in $laneStates) {', source.index('$launchStartedUtc ='))
+    end = source.index('  if ($launched.Count -gt 0)', start)
+    launch = source[start:end]
+    script = load(FLEET, 'Get-WdMindFleetPolicyArguments') + r'''
+$ErrorActionPreference='Stop'
+$script:captured=@()
+function Write-Host { }
+function Start-Process { param($FilePath,$ArgumentList,[switch]$PassThru)
+  $script:captured += ,@($ArgumentList)
+}
+$names=@('codex-lead-1','claude-rco-1','claude-rco-2','fable-5')
+$laneStates=@(foreach ($name in $names) { [pscustomobject]@{live=@();lane=[pscustomobject]@{agent=$name;worktree='C:\Python\project2'}} })
+$launched=@();$wtPath='C:\synthetic\wt.exe';$expectedSupervisorExecutable='C:\synthetic\powershell.exe'
+$agentLauncher='C:\synthetic\start-wd-agent.ps1';$ManifestPath='C:\synthetic\fleet.json'
+$RunId='synthetic';$handshakeDirectory='C:\synthetic\handshake';$bundleManifestAnchor='a'*64
+$ExternalSessionsPath='';$ExternalSessionsHash=''
+$mindPolicyArguments=@(Get-WdMindFleetPolicyArguments -PolicyPath 'C:\Synthetic Space\policy.json' -PolicySha256 ('a'*64) -ApprovalSha256 ('b'*64))
+''' + launch + '''
+ConvertTo-Json -InputObject @($script:captured) -Depth 5 -Compress
+'''
+    calls = json.loads(_run_powershell(script, executable=ps).stdout.lstrip('\ufeff'))
+    assert len(calls) == 4
+    assert {args[args.index('-Agent') + 1] for args in calls} == {
+        'codex-lead-1', 'claude-rco-1', 'claude-rco-2', 'fable-5'}
+    for args in calls:
+        assert args[-6:] == ['-MindOperatorPolicyPath', r'"C:\Synthetic Space\policy.json"',
+                             '-MindOperatorPolicySha256', SHA,
+                             '-MindOperatorApprovalReferenceSha256', APPROVAL]
+
+
 @pytest.mark.skipif(os.name != 'nt', reason='Windows launch arguments')
 @pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
 @pytest.mark.parametrize('policy,sha,approval,warning', [
@@ -80,7 +114,7 @@ def test_invalid_mind_configuration_keeps_fleet_launchable(ps, policy, sha, appr
     script = load(FLEET, 'Get-WdMindFleetPolicyArguments') + f'''
 $ErrorActionPreference='Stop'
 $warnings=@()
-function Write-Warning {{ param([string]$Message) $script:warnings += $Message }}
+function Write-Warning {{ param([string]$Message,[string]$WarningAction) $script:warnings += $Message }}
 $MindOperatorPolicyPath={q(policy)}
 $MindOperatorPolicySha256={q(sha)}
 $MindOperatorApprovalReferenceSha256={q(approval)}
@@ -92,6 +126,28 @@ $MindOperatorApprovalReferenceSha256={q(approval)}
     assert bool(result['warnings']) is warning
     if warning:
         assert 'refused' in result['warnings'][0] and 'without Mind' in result['warnings'][0]
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows launch arguments')
+@pytest.mark.parametrize('ps', LANE_TEST_SHELLS, ids=lambda value: Path(value).stem)
+def test_warning_preference_stop_does_not_block_lane_launch(ps):
+    source = FLEET.read_text(encoding='utf-8-sig')
+    start = source.index('$mindPolicyArguments = @()')
+    end = source.index('$modeWasDefaulted =', start)
+    preflight = source[start:end]
+    script = load(FLEET, 'Get-WdMindFleetPolicyArguments') + '''
+$ErrorActionPreference='Stop'
+$WarningPreference='Stop'
+$MindOperatorPolicyPath='C:\\Python\\synthetic.json'
+$MindOperatorPolicySha256=''
+$MindOperatorApprovalReferenceSha256=''
+. {
+''' + preflight + '''
+} 3>$null
+@{arguments=@($mindPolicyArguments);lane_launch_reached=$true} | ConvertTo-Json -Compress
+'''
+    result = json.loads(_run_powershell(script, executable=ps).stdout.lstrip('\ufeff'))
+    assert result == {'arguments': [], 'lane_launch_reached': True}
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='Windows launch arguments')

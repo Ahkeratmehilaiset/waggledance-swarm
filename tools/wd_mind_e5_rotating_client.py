@@ -199,7 +199,11 @@ class RotatingGracefulE5Client:
                 if not self._closed:
                     self._hold = True
                     raise ValueError('owner_retained')
-                status = self._owner.shutdown(timeout=timeout)
+                try:
+                    status = self._owner.shutdown(timeout=timeout)
+                except BaseException:
+                    self._hold = True
+                    raise
                 if (type(status) is not dict or status.get('owned') is not False
                         or status.get('state') not in ('CANCELLED', 'EXITED')):
                     self._hold = True
@@ -211,7 +215,11 @@ class RotatingGracefulE5Client:
         if type(self._client) is not GracefulE5WorkerClient or self._client.owner is not self._owner:
             self._hold = True
             raise ValueError('owner_changed')
-        status = self._client.close(timeout=timeout)
+        try:
+            status = self._client.close(timeout=timeout)
+        except BaseException:
+            self._hold = True
+            raise
         if (type(status) is not dict or status.get('state') != 'EXITED'
                 or status.get('owned') is not False or status.get('exit_code') != 0):
             self._hold = True
@@ -337,7 +345,10 @@ class RotatingGracefulE5Client:
             self._closed = True
             try:
                 return self._finish(float(timeout))
-            except Exception:
-                raise RotationRefused('mind_e5_rotation_refused') from None
+            except BaseException as error:
+                self._hold = True
+                if isinstance(error, Exception):
+                    raise RotationRefused('mind_e5_rotation_refused') from None
+                raise
         finally:
             self._lock.release()

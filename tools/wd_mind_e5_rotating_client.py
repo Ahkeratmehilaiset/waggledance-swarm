@@ -39,6 +39,8 @@ class RotatingGracefulE5Client:
     The caller must retain this instance whenever ``owner`` is not None.  Its
     source callback and manifest-backed factory require independent trust.
     Replay tracking is process-local and is not an authentication guarantee.
+    It retains at most 65,536 distinct request nonces across worker rotations;
+    later requests refuse without resetting that replay boundary.
     """
 
     def __init__(self, *, factory, encoder_binding_sha256, snapshot_sha256,
@@ -95,7 +97,8 @@ class RotatingGracefulE5Client:
             if self._owner_conflicts:
                 return {'state': 'HOLD', 'owned': None, 'authority': 'none'}
             if self._owner is None:
-                return {'state': 'EXITED' if self._closed else 'NEW',
+                state = 'FAILED' if self._failed else ('EXITED' if self._closed else 'NEW')
+                return {'state': state,
                         'owned': False, 'authority': 'none'}
             try:
                 status = self._owner.status()

@@ -129,7 +129,8 @@ def test_selected_resolver_refuses_changed_module_before_import(tmp_path, target
              'tools/bridge_compact_view.py', 'tools/wd_bridge_mind_lane_read.py',
              'tools/wd_bridge_mind.py', 'tools/wd_mind_content_query_readonly.py',
              'tools/wd_mind_content_snapshot_package.py', 'tools/wd_mind_full_runtime.py',
-             'tools/wd_mind_retained_query.py', 'tools/wd_mind_absent_generation_prefix_readonly.py',
+             'tools/wd_mind_retained_query.py', 'tools/wd_mind_runtime_process.py',
+             'tools/wd_mind_absent_generation_prefix_readonly.py',
              'tools/wd_mind_startup_content.py', 'waggledance/__init__.py',
              'waggledance/core/__init__.py', 'waggledance/core/bridge_log_reader.py']
     files = {}
@@ -218,6 +219,156 @@ def test_real_wrapper_checks_early_session_dependencies_before_python(tmp_path):
             assert not sentinel.exists(), relative
         finally:
             path.write_bytes(original)
+
+
+def _local_client_args(policy_path, policy, *, lane='codex-lead-1', timeout='10'):
+    return ['--mind-local-candidate-read', '--policy-path', str(policy_path),
+            '--policy-sha256', hashlib.sha256(policy).hexdigest(),
+            '--approval-reference-sha256', 'c'*64, '--lane', lane, '--timeout-seconds', timeout]
+
+
+@pytest.mark.parametrize(('lane', 'scope'), [('codex-lead-1', 'own'), ('claude-rco-1', 'shared')])
+def test_local_candidate_cli_rechecks_real_synthetic_rows(flat_consumer_case, monkeypatch, tmp_path, lane, scope):
+    from tools import wd_mind_runtime_process as process
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    monkeypatch.setattr(session, 'create_selected_row_resolver', lambda **_: resolver)
+    observed = {}
+    class Query:
+        def __init__(self, request): self.request = request
+        def start(self): pass
+        def wait(self, *, timeout):
+            frame.update(nonce=self.request['nonce'], lane=self.request['lane'], scope=self.request['scope'])
+            return {'status':'CANDIDATES', 'authority':'none', 'sender_authentication':'UNKNOWN',
+                    'source_verification':'UNVERIFIED', 'candidate_frame':content._canonical(frame)}
+        def status(self): return {'state':'STOPPED'}
+    def factory(*, enabled, pipe_name, request):
+        observed.update(request)
+        return Query(request)
+    monkeypatch.setattr(process, 'create_local_candidate_query', factory)
+    policy = b'{"private":"synthetic-only"}'
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(policy)
+    out, err = io.BytesIO(), io.BytesIO()
+    code = session._local_candidate_entry(_local_client_args(policy_path, policy, lane=lane),
+                                          out, err, str(Path.cwd()), 'a'*64)
+    assert code == 0 and err.getvalue() == b''
+    result = json.loads(out.getvalue())
+    assert result['schema'] == 'wd.mind-flat-verified-session.v1'
+    assert result['authority'] == 'none' and result['sender_authentication'] == 'UNKNOWN'
+    assert result['results'][0]['source_event_sha256'] == frame['candidates'][0]['source_event_sha256']
+    assert observed['schema'] == 'wd.mind-pipe-request.v2' and observed['scope'] == scope
+    assert policy not in out.getvalue()
+
+
+@pytest.mark.parametrize('fault', ['missing', 'relative', 'wrong_hash', 'oversized', 'untrusted_row'])
+def test_local_candidate_cli_refuses_without_partial_output(flat_consumer_case, monkeypatch, tmp_path, fault):
+    from tools import wd_mind_runtime_process as process
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    monkeypatch.setattr(session, 'create_selected_row_resolver', lambda **_: resolver)
+    class Query:
+        def __init__(self, request): self.request = request
+        def start(self): pass
+        def wait(self, *, timeout):
+            frame['nonce'] = self.request['nonce']
+            frame['scope'] = self.request['scope']
+            frame['candidates'][0]['source_event_sha256'] = '0'*64
+            return {'status':'CANDIDATES', 'authority':'none', 'sender_authentication':'UNKNOWN',
+                    'source_verification':'UNVERIFIED', 'candidate_frame':content._canonical(frame)}
+        def status(self): return {'state':'STOPPED'}
+    monkeypatch.setattr(process, 'create_local_candidate_query', lambda **kw: Query(kw['request']))
+    policy = b'{"private":"synthetic-only"}'
+    policy_path = tmp_path / 'policy.json'
+    if fault != 'missing':
+        policy_path.write_bytes(b'wrong' if fault == 'wrong_hash' else b'x' * 65537 if fault == 'oversized' else policy)
+    if fault == 'relative':
+        policy_path = Path('policy.json')
+    out, err = io.BytesIO(), io.BytesIO()
+    code = session._local_candidate_entry(_local_client_args(policy_path, policy),
+                                          out, err, str(Path.cwd()), 'a'*64)
+    assert code == 2 and out.getvalue() == b''
+    assert err.getvalue() == b'{"error":"mind_session_content_refused","authority":"none"}\n'
+    assert policy not in err.getvalue()
+
+
+def test_local_candidate_cli_rechecks_policy_after_candidate_query(flat_consumer_case, monkeypatch, tmp_path):
+    from tools import wd_mind_runtime_process as process
+    resolver, frame, _, _ = _located_candidates(flat_consumer_case, monkeypatch)
+    monkeypatch.setattr(session, 'create_selected_row_resolver', lambda **_: resolver)
+    policy = b'{"private":"synthetic-only"}'
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(policy)
+    class Query:
+        def __init__(self, request): self.request = request
+        def start(self): pass
+        def wait(self, *, timeout):
+            frame.update(nonce=self.request['nonce'], lane=self.request['lane'], scope=self.request['scope'])
+            policy_path.write_bytes(b'changed')
+            return {'status':'CANDIDATES', 'authority':'none', 'sender_authentication':'UNKNOWN',
+                    'source_verification':'UNVERIFIED', 'candidate_frame':content._canonical(frame)}
+        def status(self): return {'state':'STOPPED'}
+    monkeypatch.setattr(process, 'create_local_candidate_query', lambda **kw: Query(kw['request']))
+    out, err = io.BytesIO(), io.BytesIO()
+    code = session._local_candidate_entry(_local_client_args(policy_path, policy), out, err, str(Path.cwd()), 'a'*64)
+    assert code == 2 and out.getvalue() == b''
+    assert err.getvalue() == b'{"error":"mind_session_content_refused","authority":"none"}\n'
+    assert policy not in err.getvalue()
+
+
+def test_local_candidate_cli_timeout_retains_work_without_kill(monkeypatch, tmp_path):
+    entered, release = threading.Event(), threading.Event()
+    def delayed(**_):
+        entered.set()
+        release.wait(5)
+        raise ValueError('synthetic')
+    monkeypatch.setattr(session, 'create_selected_row_resolver', delayed)
+    policy = b'{}'
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(policy)
+    out, err = io.BytesIO(), io.BytesIO()
+    try:
+        code = session._local_candidate_entry(_local_client_args(policy_path, policy, timeout='1'),
+            out, err, str(Path.cwd()), 'a'*64)
+        assert entered.is_set() and code == 2 and out.getvalue() == b''
+        worker, _ = session._LOCAL_CANDIDATE_PENDING[-1]
+        assert worker.is_alive() and worker.daemon is False
+    finally:
+        release.set()
+        worker.join(5)
+        session._LOCAL_CANDIDATE_PENDING.remove((worker, _))
+
+
+def test_local_candidate_cli_preserves_uncertain_query_owner(monkeypatch, tmp_path):
+    from tools import wd_mind_runtime_process as process
+    query = SimpleNamespace(start=lambda: None,
+                            wait=lambda **_: {'status':'TIMEOUT'},
+                            status=lambda: {'state':'HOLD'})
+    resolver = object()
+    monkeypatch.setattr(session, 'create_selected_row_resolver', lambda **_: resolver)
+    monkeypatch.setattr(process, 'create_local_candidate_query', lambda **_: query)
+    policy = b'{}'
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(policy)
+    out, err = io.BytesIO(), io.BytesIO()
+    code = session._local_candidate_entry(_local_client_args(policy_path, policy),
+        out, err, str(Path.cwd()), 'a'*64)
+    assert code == 2 and out.getvalue() == b''
+    pending = session._LOCAL_CANDIDATE_PENDING[-1]
+    assert pending[1]['query'] is query and pending[1]['resolver'] is resolver
+    session._LOCAL_CANDIDATE_PENDING.remove(pending)
+
+
+def test_local_candidate_cli_subprocess_fails_closed_with_unpinned_bundle(tmp_path):
+    policy = b'{"private":"synthetic-only"}'
+    policy_path = tmp_path / 'policy.json'
+    policy_path.write_bytes(policy)
+    env = dict(os.environ, WD_REBOOT_EXPECTED_MANIFEST_HASH='a'*64,
+               PYTHONPATH=str(Path(session.__file__).parent.parent))
+    run = subprocess.run([sys.executable, str(Path(session.__file__)), *_local_client_args(policy_path, policy)],
+                         cwd=Path(session.__file__).parent.parent, env=env,
+                         capture_output=True, timeout=30)
+    assert run.returncode == 2 and run.stdout == b''
+    assert run.stderr == b'{"error":"mind_session_content_refused","authority":"none"}\n'
+    assert policy not in run.stderr
 
 
 def test_selected_row_resolver_reuses_state_without_rederiving_projection(flat_consumer_case, monkeypatch):

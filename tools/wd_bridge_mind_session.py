@@ -23,6 +23,7 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import struct
 import sys
@@ -603,7 +604,7 @@ def _preflight_selected_resolver_code(bundle_root, expected_manifest_sha256):
                     os.path.normcase(os.path.abspath(expected_dir))):
                 raise ValueError('package_path')
     for name in ('wd_mind_content_query_readonly', 'wd_mind_content_snapshot_package',
-                 'wd_mind_full_runtime', 'wd_mind_retained_query',
+                 'wd_mind_full_runtime', 'wd_mind_retained_query', 'wd_mind_runtime_process',
                  'wd_mind_absent_generation_prefix_readonly', 'wd_mind_startup_content',
                  'bridge_compact_view', 'wd_bridge_mind_lane_read', 'wd_bridge_mind'):
         _selected_pin_module(root, files, 'tools.' + name, 'tools-bootstrap/tools/' + name + '.py')
@@ -617,7 +618,7 @@ def _preflight_selected_resolver_code(bundle_root, expected_manifest_sha256):
         raise ValueError('package_missing')
     for name in ('wd_mind_absent_generation_prefix_readonly', 'wd_mind_content_query_readonly',
                  'wd_mind_startup_content', 'wd_mind_content_snapshot_package',
-                 'wd_mind_full_runtime', 'wd_mind_retained_query'):
+                 'wd_mind_full_runtime', 'wd_mind_retained_query', 'wd_mind_runtime_process'):
         qualified = 'tools.' + name
         if qualified in sys.modules:
             if getattr(parent, name, None) is not sys.modules[qualified]:
@@ -1385,9 +1386,119 @@ def query_content_prompt_fragment(*, enabled=False, inputs=None, providers=None)
         return None
 
 
+_LOCAL_CANDIDATE_PENDING = []
+
+
+def _local_candidate_entry(argv, output, error, bundle_root, manifest_pin):
+    """Read candidates as proposals; only locally rederived results may leave."""
+    pending = None
+    try:
+        names = {'--policy-path', '--policy-sha256', '--approval-reference-sha256', '--lane', '--timeout-seconds'}
+        if len(argv) != 11 or argv[0] != '--mind-local-candidate-read':
+            raise ValueError('args')
+        pairs = list(zip(argv[1::2], argv[2::2]))
+        if len(pairs) != 5 or {key for key, _ in pairs} != names:
+            raise ValueError('args')
+        args = dict(pairs)
+        policy_pin, approval = args['--policy-sha256'], args['--approval-reference-sha256']
+        lane = args['--lane']
+        scope = _startup_scope_for_lane(lane)
+        timeout_text = args['--timeout-seconds']
+        if (not _SHA256.fullmatch(policy_pin) or not _SHA256.fullmatch(approval)
+                or type(manifest_pin) is not str or not _SHA256.fullmatch(manifest_pin)
+                or re.fullmatch(r'(?:[1-9]|[1-8][0-9]|90)', timeout_text) is None):
+            raise ValueError('args')
+        deadline = time.monotonic() + int(timeout_text)
+        state = {'result':None, 'query':None, 'resolver':None}
+
+        def work():
+            policy = None
+            try:
+                # The wrapper does not reliably forward binary stdin. Read the
+                # approved local file in this process, never argv or the pipe.
+                policy = _selected_pin_read(Path(args['--policy-path']), policy_pin, 65536)
+                if not policy:
+                    raise ValueError('policy_empty')
+                state['resolver'] = create_selected_row_resolver(enabled=True, bundle_root=bundle_root,
+                    expected_manifest_sha256=manifest_pin, identifier_policy_bytes=policy,
+                    expected_identifier_policy_sha256=policy_pin,
+                    expected_approval_reference_sha256=approval)
+                policy = None
+                if time.monotonic() >= deadline:
+                    raise ValueError('deadline')
+                # The resolver preflight pins and source-loads this module.
+                from tools import wd_mind_runtime_process as runtime_process
+                nonce = secrets.token_hex(32)
+                request = {'schema':'wd.mind-pipe-request.v2', 'query_id':'startup_work_overview',
+                           'nonce':nonce, 'lane':lane, 'scope':scope}
+                query = runtime_process.create_local_candidate_query(enabled=True,
+                    pipe_name=runtime_process.local_candidate_pipe_name(manifest_sha256=manifest_pin), request=request)
+                state['query'] = query
+                query.start()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError('deadline')
+                received = query.wait(timeout=min(remaining, 90))
+                if (received.get('status') != 'CANDIDATES' or received.get('authority') != 'none'
+                        or received.get('sender_authentication') != 'UNKNOWN'
+                        or received.get('source_verification') != 'UNVERIFIED'):
+                    raise ValueError('candidate')
+                result = state['resolver'].resolve(ipc_bytes=received.get('candidate_frame'),
+                    expected_nonce=nonce, lane=lane, scope=scope, deadline_monotonic=deadline)
+                # Recheck the external approved policy after reading source
+                # rows; the bundle descriptor alone does not pin the live file.
+                if not _selected_pin_read(Path(args['--policy-path']), policy_pin, 65536):
+                    raise ValueError('policy_empty')
+                if (type(result) is not dict or result.get('schema') != 'wd.mind-flat-verified-session.v1'
+                        or result.get('authority') != 'none' or result.get('sender_authentication') != 'UNKNOWN'
+                        or result.get('lane') != lane or type(result.get('results')) is not list
+                        or not 1 <= len(result['results']) <= 3 or time.monotonic() >= deadline):
+                    raise ValueError('result')
+                encoded = json.dumps(result, sort_keys=True, separators=(',', ':'), ensure_ascii=True,
+                                     allow_nan=False).encode('ascii')
+                if not 0 < len(encoded) <= 16384:
+                    raise ValueError('result')
+                state['result'] = encoded
+            except BaseException:
+                state['result'] = None
+            finally:
+                policy = None
+
+        worker = threading.Thread(target=work, name='mind-local-selected-client', daemon=False)
+        pending = (worker, state)
+        _LOCAL_CANDIDATE_PENDING.append(pending)
+        worker.start()
+        worker.join(max(0, deadline - time.monotonic()))
+        if worker.is_alive() or state['result'] is None or time.monotonic() >= deadline:
+            raise ValueError('refused')
+        output.write(state['result'])
+        output.flush()
+        return 0
+    except BaseException:
+        try:
+            error.write(b'{"error":"mind_session_content_refused","authority":"none"}\n')
+            error.flush()
+        except Exception:
+            pass
+        return 2
+    finally:
+        if pending is not None:
+            worker, state = pending
+            query = state.get('query')
+            try:
+                if (not worker.is_alive() and (query is None or query.status().get('state') == 'STOPPED')):
+                    _LOCAL_CANDIDATE_PENDING.remove(pending)
+            except Exception:
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
+    if '--mind-local-candidate-read' in argv:
+        pin = os.environ.get('WD_REBOOT_EXPECTED_MANIFEST_HASH', '').lower()
+        root = str(Path(__file__).absolute().parents[2])
+        return _local_candidate_entry(argv, sys.stdout.buffer, sys.stderr.buffer, root, pin)
     if '--mind-consumer-child' in argv:
         # The reserved stderr handle is input, not diagnostics. Never read or
         # write either inherited handle until parent authority is implemented.
